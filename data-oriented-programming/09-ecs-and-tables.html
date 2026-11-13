@@ -1,0 +1,1139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>9. ECS and Thinking in Tables · Data-Oriented Design</title>
+<link rel="stylesheet" href="assets/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="assets/book.css">
+<link rel="stylesheet" href="assets/ch09.css">
+<script>window.Prism = { manual: true };</script>
+<script defer src="assets/vendor/prism/prism.min.js"></script>
+<script defer src="assets/vendor/prism/prism-rust.min.js"></script>
+<script defer src="assets/vendor/prism/prism-zig.min.js"></script>
+<script defer src="assets/vendor/prism/prism-odin.min.js"></script>
+<script defer src="assets/vendor/prism/prism-bash.min.js"></script>
+<script defer src="assets/book.js"></script>
+<script defer src="assets/data/bench-ch09.js"></script>
+<script defer src="assets/viz/bench-bars.js"></script>
+<script defer src="assets/viz/ch09-sparse-set.js"></script>
+<script defer src="assets/viz/ch09-archetypes.js"></script>
+</head>
+<body>
+<main>
+  <p class="kicker">Chapter 9</p>
+  <h1>ECS and Thinking in Tables</h1>
+  <p class="lede">Open any game's save file, or any compiler's symbol table, and squint. You will see rows, columns and
+  keys. Somewhere along the way that data was turned into a forest of objects that point at each other, and the
+  program spends its time chasing those pointers. An entity-component system (ECS) is what you get if you put the
+  tables back: an entity is a key, a component is a table keyed by entities, and a system is a query that joins a few
+  tables. This chapter builds a small ECS twice, once with sparse sets and once with one table per combination of
+  components (archetypes), in Rust, Zig and Odin, and measures where each one wins. Then it lets the critics speak,
+  because an ECS is one thing data-oriented design can produce, not the thing itself.</p>
+
+  <h2 id="tables">Your program is already a database</h2>
+  <p>Richard Fabian's book has a chapter called "Relational Databases" that starts from an unlikely place: the setup
+  script of a small dungeon level, full of calls like <code>CreatePickup</code>, <code>AddDoor</code> and
+  <code>SetRoomAsSpecial</code><a class="cite" href="#src-1">[1]</a>. He pours all of that into one big table per kind
+  of thing, and immediately the tables are full of holes. Only keys have an animation, and the armour has no colour
+  tint, so those cells hold <code>NULL</code>. A room can have several doors and several pickups, so some cells hold
+  lists.</p>
+  <p>Then he normalises it. <b>First normal form</b> says that "every cell contains one and only one atomic value. That
+  is, no arrays of values, and no NULL entries"<a class="cite" href="#src-1">[1]</a>. Each optional attribute moves into its
+  own table keyed by the same id (<code>PickupTints</code>, <code>PickupAnims</code>), with rows only for the pickups that
+  have one, and lists become many rows. Second and third normal form then store each fact once.</p>
+
+  <figure class="figure wide" id="fig-normalise">
+    <svg class="ch09-diagram" viewBox="0 0 760 300" role="img" aria-label="An object with nullable fields becomes three tables keyed by PickupID; the same shape is an entity with components">
+      <defs><marker id="ch09-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+      <g fill="none" stroke="currentColor" opacity="0.9">
+        <rect x="10" y="40" width="210" height="150" rx="8"/>
+      </g>
+      <g font-size="12" fill="currentColor">
+        <text x="20" y="30" font-weight="700">one object per pickup</text>
+        <text x="22" y="64">Pickup k1</text>
+        <text x="22" y="86">  mesh    = msh_key</text>
+        <text x="22" y="106">  type    = KEY</text>
+        <text x="22" y="126">  tint    = Copper</text>
+        <text x="22" y="146">  anim    = keybob</text>
+        <text x="22" y="168" opacity="0.7">Pickup a1:</text>
+        <text x="22" y="184" opacity="0.7">  tint NULL, anim NULL</text>
+      </g>
+      <path d="M232,115 L292,115" stroke="currentColor" stroke-width="2" marker-end="url(#ch09-arr)" style="color:var(--accent)"/>
+      <text x="236" y="104" font-size="11" fill="currentColor">1NF</text>
+      <g font-size="12" fill="currentColor">
+        <text x="305" y="30" font-weight="700">Pickups</text>
+        <rect x="305" y="38" width="200" height="104" rx="6" fill="none" stroke="currentColor"/>
+        <text x="315" y="56" font-weight="700" style="fill:var(--c-flag)">PickupID</text><text x="400" y="56" opacity="0.8">Mesh  Type</text>
+        <text x="315" y="76">k1</text><text x="400" y="76">key   KEY</text>
+        <text x="315" y="94">k2</text><text x="400" y="94">key   KEY</text>
+        <text x="315" y="112">p1</text><text x="400" y="112">pot   POTION</text>
+        <text x="315" y="130">a1</text><text x="400" y="130">arm   ARMOUR</text>
+        <text x="535" y="30" font-weight="700">PickupTints</text>
+        <rect x="535" y="38" width="210" height="86" rx="6" fill="none" stroke="currentColor"/>
+        <text x="545" y="56" font-weight="700" style="fill:var(--c-flag)">PickupID</text><text x="630" y="56" opacity="0.8">Tint</text>
+        <text x="545" y="76">k1</text><text x="630" y="76">Copper</text>
+        <text x="545" y="94">k2</text><text x="630" y="94">Silver</text>
+        <text x="545" y="112">p1</text><text x="630" y="112">Green</text>
+        <text x="535" y="160" font-weight="700">PickupAnims</text>
+        <rect x="535" y="168" width="210" height="68" rx="6" fill="none" stroke="currentColor"/>
+        <text x="545" y="186" font-weight="700" style="fill:var(--c-flag)">PickupID</text><text x="630" y="186" opacity="0.8">Anim</text>
+        <text x="545" y="206">k1</text><text x="630" y="206">keybob</text>
+        <text x="545" y="224">k2</text><text x="630" y="224">keybob</text>
+        <text x="305" y="176" opacity="0.85">no NULLs: a1 simply has no row</text>
+        <text x="305" y="196" opacity="0.85">in the optional tables</text>
+        <text x="10" y="262" font-weight="700" style="fill:var(--accent)">read it as an ECS:</text>
+        <text x="10" y="284">PickupID = entity   ·   each table = one component   ·   "pickups with a tint" = a join on the key</text>
+      </g>
+    </svg>
+    <figcaption>Fabian's first normal form applied to pickups (data from his chapter<a class="cite" href="#src-1">[1]</a>,
+    abbreviated). Optional attributes move to their own tables, so "has a tint" becomes "has a row in
+    <code>PickupTints</code>". Squint and the key column is an entity id and each table is a component.</figcaption>
+  </figure>
+
+  <p>Fabian is candid that this looks wasteful at first: "normalisation appears to create more tables and fewer
+  columns in each table". The payoff is the second observation in the same sentence: "there are only rows for things
+  which matter". A loop over <code>PickupTints</code> never asks whether a tint is <code>NULL</code>, because the rows
+  that would have held <code>NULL</code> do not exist. This is <a href="07-branches-batches-existence.html">Chapter 7</a>'s
+  existence-based processing, arrived at from the database side: whether a thing has a property is decided by which
+  table it is in, not by a flag inside it. Adding monsters later means adding a <code>Monsters</code> table "without
+  touching any of the original level data"<a class="cite" href="#src-1">[1]</a>.</p>
+  <p>Now rename the pieces. The <code>PickupID</code> column is an <b>entity</b>: a key that has no data of its own,
+  which Fabian describes as "an alias ... it contains no data in and of itself, but merely acts as a handle". Each
+  narrow table keyed by it is a <b>component</b>. A loop such as "for every pickup that has both a tint and an
+  animation" is a <b>join</b> on the key, and the code that runs it is a <b>system</b>. Catherine West put it in one
+  line in her RustConf 2018 keynote write-up: "ECS is just SQL for games"<a class="cite" href="#src-2">[2]</a>.</p>
+  <p>The one thing SQL does not tell you is how to lay the tables out in memory so that the join is fast. That is the
+  whole engineering problem of an ECS, and there are two classic answers.</p>
+
+  <details class="predict"><summary>A world has 1,000,000 entities with <code>Pos</code>, 500,000 of them also have
+  <code>Vel</code>, and 10,000 have <code>Burning</code>. A system needs <code>Pos</code> and <code>Burning</code>. If each
+  component is its own keyed table, which table should the join loop walk, and how many lookups does it do in the
+  other one?</summary>
+  <p>Walk <code>Burning</code>, the smallest, and look each of its 10,000 entities up in <code>Pos</code>: 10,000 probes.
+  Walking <code>Pos</code> instead would do a million probes to find the same 10,000 rows. Join order matters in an ECS
+  for the same reason it matters in a database, and the sparse-set query below always drives from the smallest set.</p>
+  </details>
+
+  <h2 id="entities">An entity is a key with a generation</h2>
+  <p>Before either storage, we need the keys. An entity id has the same problem as any index: it can outlive the thing it
+  names, and the slot gets reused. <a href="05-indices-handles.html#generations">Chapter 5</a> solved that with a
+  generation counter per slot. An ECS uses exactly that pool, minus the values: the "values" are spread across the
+  component tables. Our <code>Entity</code> is an index plus a generation, 8 bytes, and the allocator keeps one
+  generation and one live bit per index and a LIFO free list of indices. Catherine West's version splits it the same
+  way, into a "GenerationalIndexAllocator" and one "GenerationalIndexArray" per component, which is the ECS shape in
+  miniature<a class="cite" href="#src-2">[2]</a>.</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch09-ecs-and-tables/rust/src/entity.rs"><code class="language-rust">/// A generational entity id, as in Chapter 5: the index names a slot, the generation says
+/// which occupant of that slot this id means.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Entity {
+    pub index: u32,
+    pub generation: u32,
+}
+
+    pub fn alive(&amp;self, e: Entity) -&gt; bool {
+        let i = e.index as usize;
+        i &lt; self.live.len() &amp;&amp; self.live[i] &amp;&amp; self.generations[i] == e.generation
+    }
+
+    /// Caller checks `alive` first. Bumps the generation: every copy of `e` goes stale.
+    pub fn despawn(&amp;mut self, e: Entity) {
+        let i = e.index as usize;
+        self.live[i] = false;
+        // Out of generations: retire the slot, as Chapter 5's pool does (wrapping would revive old ids).
+        if let Some(g) = self.generations[i].checked_add(1) {
+            self.generations[i] = g;
+            self.free.push(e.index);
+        }
+    }</code></pre>
+<pre data-lang="Zig" data-file="code/ch09-ecs-and-tables/zig/entity.zig"><code class="language-zig">/// The index names a slot, the generation says which occupant of that slot this id means.
+/// A packed struct compares with `==` as one 64-bit integer.
+pub const Entity = packed struct(u64) {
+    index: u32,
+    generation: u32,
+};
+
+    pub fn alive(self: *const Entities, e: Entity) bool {
+        return e.index &lt; self.live.items.len and self.live.items[e.index] and
+            self.generations.items[e.index] == e.generation;
+    }
+
+    /// Caller checks `alive` first. Bumps the generation: every copy of `e` goes stale.
+    pub fn despawn(self: *Entities, gpa: Allocator, e: Entity) Allocator.Error!void {
+        const g = &amp;self.generations.items[e.index];
+        self.live.items[e.index] = false;
+        // Out of generations: retire the slot, as Chapter 5's pool does (wrapping would revive old ids).
+        if (g.* == std.math.maxInt(u32)) return;
+        g.* += 1;
+        try self.free.append(gpa, e.index);
+    }</code></pre>
+<pre data-lang="Odin" data-file="code/ch09-ecs-and-tables/odin/entity.odin"><code class="language-odin">// The index names a slot, the generation says which occupant of that slot this id means.
+// A struct of two u32s compares with == field by field.
+Entity :: struct {
+	index:      u32,
+	generation: u32,
+}
+
+entities_alive :: proc(es: ^Entities, e: Entity) -&gt; bool {
+	i := int(e.index)
+	return i &lt; len(es.live) &amp;&amp; es.live[i] &amp;&amp; es.generations[i] == e.generation
+}
+
+// Caller checks entities_alive first. Bumps the generation: every copy of `e` goes stale.
+entities_despawn :: proc(es: ^Entities, e: Entity) {
+	g := &amp;es.generations[e.index]
+	es.live[e.index] = false
+	// Out of generations: retire the slot, as Chapter 5's pool does (wrapping would revive old ids).
+	if g^ == max(u32) {
+		return
+	}
+	g^ += 1
+	append(&amp;es.free, e.index)
+}</code></pre>
+  </div>
+  <p>One small difference shows up already. Zig's <code>Entity</code> is a <code>packed struct(u64)</code>, so
+  <code>e == other</code> is a single 64-bit compare, and Zig does not let you write <code>==</code> on an ordinary
+  struct at all. Rust derives <code>PartialEq</code>, and Odin compares structs field by field with <code>==</code>
+  out of the box. All three compile the comparison to the same thing. Generations start at 1, so a zeroed
+  <code>Entity</code> is never alive, and a slot whose counter would overflow is retired rather than wrapped, exactly as
+  Chapter 5's pool does: it never goes back on the free list, so no old id can come back to life.</p>
+
+  <h2 id="sparse-sets">Storage one: a sparse set per component</h2>
+  <p>A sparse set is three arrays. <code>sparse</code> is indexed by entity index and holds a position. <code>dense</code>
+  holds the entities that have the component, packed with no holes. <code>data</code> holds their component values in
+  the same order as <code>dense</code>. To find entity <i>e</i>'s component, read <code>d = sparse[e.index]</code>, check
+  that <code>dense[d] == e</code>, and read <code>data[d]</code>. Michele Caini, the author of EnTT, gives the membership
+  test as <code>dense[sparse[element]] == element</code><a class="cite" href="#src-4">[4]</a>. The structure is old: it
+  is usually credited to Briggs and Torczon's 1993 paper "An efficient representation for sparse sets"
+  <a class="cite" href="#src-3">[3]</a>, whose trick is that the check against <code>dense</code> makes it safe even if
+  <code>sparse</code> was never initialised.</p>
+  <ul>
+    <li><b>Insert</b> appends: <code>sparse[e.index] = dense.len</code>, then push <code>e</code> and its value. O(1).</li>
+    <li><b>Remove</b> is Chapter 5's swap-and-pop: move the last element into the hole, fix the moved element's sparse
+    slot, pop. O(1), and the dense arrays stay packed. Caini notes that clearing the removed entity's sparse slot is
+    optional, since the <code>dense</code> check fails anyway<a class="cite" href="#src-4">[4]</a>; we clear it, so a miss is a single load.</li>
+    <li><b>Iterate</b> is a straight walk over <code>dense</code> and <code>data</code>. It never sees a hole and never
+    touches <code>sparse</code>.</li>
+  </ul>
+  <p>This is where <a href="05-indices-handles.html#deletion">Chapter 5</a> left off: "Put swap-and-pop together with an
+  id → index table and you have a sparse set". The difference from Chapter 5's pool is the direction of the promise. A
+  pool promises that an item stays where it is, and a sparse set promises that iteration is dense. Try it below:
+  tap an id in the top row to select it, then insert, remove or look it up.</p>
+
+  <figure class="figure wide" id="fig-sparse">
+    <div class="figure-body" data-viz="ch09-sparse-set" data-opts='{}'>
+      <p>Interactive figure: a sparse array indexed by id above a dense array and a data array. Insert appends; remove
+      moves the last element into the hole; lookup reads sparse then dense.</p>
+    </div>
+    <figcaption>One sparse set. Watch step 7: removing id 3 moves id 4, the last element, from the end into position 0,
+    and exactly one sparse slot changes. The "array loads" counter counts two loads per hit (sparse, then dense to
+    confirm) and one per miss. Memory grows with the id universe for <code>sparse</code>, but only with the member count
+    for <code>dense</code> and <code>data</code>.</figcaption>
+  </figure>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch09-ecs-and-tables/rust/src/sparse.rs"><code class="language-rust">/// Sparse array indexed by entity index -&gt; position in the packed arrays.
+/// `dense[i]` is the entity whose component is `data[i]`.
+pub struct SparseSet&lt;T&gt; {
+    sparse: Vec&lt;u32&gt;,
+    dense: Vec&lt;Entity&gt;,
+    data: Vec&lt;T&gt;,
+}
+
+impl&lt;T&gt; Default for SparseSet&lt;T&gt; {
+    fn default() -&gt; Self {
+        Self { sparse: Vec::new(), dense: Vec::new(), data: Vec::new() }
+    }
+}
+
+impl&lt;T&gt; SparseSet&lt;T&gt; {
+    pub fn len(&amp;self) -&gt; usize {
+        self.dense.len()
+    }
+
+    /// Two dependent loads: sparse, then dense. Comparing the whole Entity (with its
+    /// generation) means a stale id fails here even if its index was reused.
+    fn position(&amp;self, e: Entity) -&gt; Option&lt;usize&gt; {
+        let d = *self.sparse.get(e.index as usize)? as usize;
+        (self.dense.get(d) == Some(&amp;e)).then_some(d)
+    }
+
+    pub fn get(&amp;self, e: Entity) -&gt; Option&lt;&amp;T&gt; {
+        self.position(e).map(|d| &amp;self.data[d])
+    }
+
+    pub fn get_mut(&amp;mut self, e: Entity) -&gt; Option&lt;&amp;mut T&gt; {
+        self.position(e).map(|d| &amp;mut self.data[d])
+    }
+
+    /// O(1): append to the packed arrays and point the sparse slot at the new position.
+    pub fn insert(&amp;mut self, e: Entity, value: T) {
+        if let Some(d) = self.position(e) {
+            self.data[d] = value;
+            return;
+        }
+        let i = e.index as usize;
+        if i &gt;= self.sparse.len() {
+            self.sparse.resize(i + 1, NONE);
+        }
+        self.sparse[i] = self.dense.len() as u32;
+        self.dense.push(e);
+        self.data.push(value);
+    }
+
+    /// O(1) swap-and-pop: the last element moves into the hole and its sparse slot is fixed.
+    pub fn remove(&amp;mut self, e: Entity) -&gt; Option&lt;T&gt; {
+        let d = self.position(e)?;
+        let last = *self.dense.last()?;
+        self.sparse[last.index as usize] = d as u32;
+        self.sparse[e.index as usize] = NONE;
+        self.dense.swap_remove(d);
+        Some(self.data.swap_remove(d))
+    }</code></pre>
+<pre data-lang="Zig" data-file="code/ch09-ecs-and-tables/zig/sparse.zig"><code class="language-zig">/// Sparse array indexed by entity index -&gt; position in the packed arrays.
+/// `dense[i]` is the entity whose component is `data[i]`.
+pub fn SparseSet(comptime T: type) type {
+    return struct {
+        const Self = @This();
+        sparse: std.ArrayList(u32) = .empty,
+        dense: std.ArrayList(Entity) = .empty,
+        data: std.ArrayList(T) = .empty,
+
+        pub const empty: Self = .{};
+
+        pub fn deinit(s: *Self, gpa: Allocator) void {
+            s.sparse.deinit(gpa);
+            s.dense.deinit(gpa);
+            s.data.deinit(gpa);
+        }
+
+        pub fn len(s: *const Self) usize {
+            return s.dense.items.len;
+        }
+
+        /// Two dependent loads: sparse, then dense. Comparing the whole Entity (with its
+        /// generation) means a stale id fails here even if its index was reused.
+        fn position(s: *const Self, e: Entity) ?u32 {
+            if (e.index &gt;= s.sparse.items.len) return null;
+            const d = s.sparse.items[e.index];
+            if (d &gt;= s.dense.items.len or s.dense.items[d] != e) return null;
+            return d;
+        }
+
+        pub fn get(s: *const Self, e: Entity) ?*T {
+            const d = s.position(e) orelse return null;
+            return &amp;s.data.items[d];
+        }
+
+        /// O(1): append to the packed arrays and point the sparse slot at the new position.
+        pub fn insert(s: *Self, gpa: Allocator, e: Entity, value: T) Allocator.Error!void {
+            if (s.position(e)) |d| {
+                s.data.items[d] = value;
+                return;
+            }
+            if (e.index &gt;= s.sparse.items.len) {
+                const old = s.sparse.items.len;
+                try s.sparse.resize(gpa, e.index + 1);
+                @memset(s.sparse.items[old..], none);
+            }
+            s.sparse.items[e.index] = @intCast(s.dense.items.len);
+            try s.dense.append(gpa, e);
+            try s.data.append(gpa, value);
+        }
+
+        /// O(1) swap-and-pop: the last element moves into the hole and its sparse slot is fixed.
+        pub fn remove(s: *Self, e: Entity) ?T {
+            const d = s.position(e) orelse return null;
+            const last = s.dense.last().?;
+            s.sparse.items[last.index] = d;
+            s.sparse.items[e.index] = none;
+            _ = s.dense.swapRemove(d);
+            return s.data.swapRemove(d);
+        }</code></pre>
+<pre data-lang="Odin" data-file="code/ch09-ecs-and-tables/odin/sparse.odin"><code class="language-odin">// Sparse array indexed by entity index -&gt; position in the packed arrays.
+// `dense[i]` is the entity whose component is `data[i]`.
+Sparse_Set :: struct($T: typeid) {
+	sparse: [dynamic]u32,
+	dense:  [dynamic]Entity,
+	data:   [dynamic]T,
+}
+
+sparse_destroy :: proc(s: ^Sparse_Set($T)) {
+	delete(s.sparse)
+	delete(s.dense)
+	delete(s.data)
+}
+
+// Two dependent loads: sparse, then dense. Comparing the whole Entity (with its
+// generation) means a stale id fails here even if its index was reused.
+sparse_position :: #force_inline proc(s: ^Sparse_Set($T), e: Entity) -&gt; (int, bool) {
+	if int(e.index) &gt;= len(s.sparse) {
+		return 0, false
+	}
+	d := int(s.sparse[e.index])
+	if d &gt;= len(s.dense) || s.dense[d] != e {
+		return 0, false
+	}
+	return d, true
+}
+
+sparse_get :: #force_inline proc(s: ^Sparse_Set($T), e: Entity) -&gt; ^T {
+	d, ok := sparse_position(s, e)
+	return &amp;s.data[d] if ok else nil
+}
+
+// O(1): append to the packed arrays and point the sparse slot at the new position.
+sparse_insert :: proc(s: ^Sparse_Set($T), e: Entity, value: T) {
+	if d, ok := sparse_position(s, e); ok {
+		s.data[d] = value
+		return
+	}
+	if int(e.index) &gt;= len(s.sparse) {
+		old := len(s.sparse)
+		resize(&amp;s.sparse, int(e.index) + 1)
+		for &amp;x in s.sparse[old:] {
+			x = NONE
+		}
+	}
+	s.sparse[e.index] = u32(len(s.dense))
+	append(&amp;s.dense, e)
+	append(&amp;s.data, value)
+}
+
+// O(1) swap-and-pop: the last element moves into the hole and its sparse slot is fixed.
+sparse_remove :: proc(s: ^Sparse_Set($T), e: Entity) -&gt; (value: T, ok: bool) {
+	d := sparse_position(s, e) or_return
+	last := s.dense[len(s.dense) - 1]
+	s.sparse[last.index] = u32(d)
+	s.sparse[e.index] = NONE
+	value = s.data[d]
+	unordered_remove(&amp;s.dense, d)
+	unordered_remove(&amp;s.data, d)
+	return value, true
+}</code></pre>
+  </div>
+  <p>Comparing the whole <code>Entity</code>, generation included, gives stale-id detection for free. If entity
+  2v1 is despawned and its index is reused by 2v2, <code>sparse[2]</code> may point at a live row, but
+  <code>dense[d]</code> holds 2v2, which is not equal to 2v1. Every program checks this at start-up and prints
+  "despawned 2v1, respawn reused it as 2v2; the old id resolves to nothing in both storages".</p>
+
+  <aside class="callout note"><p>Real sparse sets add two things this one leaves out. EnTT <b>pages</b> the sparse array,
+  so that a huge entity index allocates one page rather than a giant array, at the cost of one more indirection on
+  lookup that Caini says "has never shown up so far in profiling bottlenecks"<a class="cite" href="#src-4">[4]</a>. And when
+  a component needs stable addresses, EnTT can leave a <b>tombstone</b> instead of swapping, which keeps references
+  valid but makes every iteration check for tombstones (Chapter 5 has the trade-off table)<a class="cite" href="#src-22">[22]</a>.</p></aside>
+
+  <h3 id="query">A query: walk the smallest set, probe the others</h3>
+  <p>Each set is dense on its own, but a system that needs <code>Pos</code>, <code>Vel</code> and <code>Hp</code> has three
+  sets in three different orders. The standard sparse-set query, as Sander Mertens' ECS FAQ describes it, "iterates all
+  entities in one of the queried for components (usually the one with the least entities) and tests for each
+  subsequent component if the entity has it"<a class="cite" href="#src-8">[8]</a>. That is a nested-loop join with an
+  index on the inner tables, and the outer table is the smallest one, as in the prediction above.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch09-ecs-and-tables/rust/src/sparse.rs"><code class="language-rust">/// Join of three sets, driven by the smallest; the other two are probed per entity.
+pub fn query3&lt;A, B, C&gt;(
+    a: &amp;SparseSet&lt;A&gt;,
+    b: &amp;SparseSet&lt;B&gt;,
+    c: &amp;mut SparseSet&lt;C&gt;,
+    mut f: impl FnMut(&amp;A, &amp;B, &amp;mut C),
+) {
+    let smallest = a.len().min(b.len()).min(c.len());
+    if c.len() == smallest {
+        for (e, vc) in c.iter_mut() {
+            if let (Some(va), Some(vb)) = (a.get(e), b.get(e)) {
+                f(va, vb, vc);
+            }
+        }
+    } else if a.len() == smallest {
+        for (e, va) in a.iter() {
+            if let Some(vb) = b.get(e)
+                &amp;&amp; let Some(vc) = c.get_mut(e)
+            {
+                f(va, vb, vc);
+            }
+        }
+    } else {
+        for (e, vb) in b.iter() {
+            if let Some(va) = a.get(e)
+                &amp;&amp; let Some(vc) = c.get_mut(e)
+            {
+                f(va, vb, vc);
+            }
+        }
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch09-ecs-and-tables/zig/sparse.zig"><code class="language-zig">/// Join of three sets, driven by the smallest; the other two are probed per entity.
+pub fn query3(a: anytype, b: anytype, c: anytype, ctx: anytype, comptime f: anytype) void {
+    const smallest = @min(a.len(), b.len(), c.len());
+    if (c.len() == smallest) {
+        for (c.dense.items, c.data.items) |e, *vc| {
+            const va = a.get(e) orelse continue;
+            const vb = b.get(e) orelse continue;
+            f(ctx, va, vb, vc);
+        }
+    } else if (a.len() == smallest) {
+        for (a.dense.items, a.data.items) |e, *va| {
+            const vb = b.get(e) orelse continue;
+            const vc = c.get(e) orelse continue;
+            f(ctx, va, vb, vc);
+        }
+    } else {
+        for (b.dense.items, b.data.items) |e, *vb| {
+            const va = a.get(e) orelse continue;
+            const vc = c.get(e) orelse continue;
+            f(ctx, va, vb, vc);
+        }
+    }
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch09-ecs-and-tables/odin/sparse.odin"><code class="language-odin">// Join of three sets, driven by the smallest; the other two are probed per entity.
+query3 :: proc(
+	a: ^Sparse_Set($A),
+	b: ^Sparse_Set($B),
+	c: ^Sparse_Set($K),
+	ctx: $C,
+	$f: proc(ctx: C, a: ^A, b: ^B, c: ^K),
+) {
+	smallest := min(len(a.dense), len(b.dense), len(c.dense))
+	switch smallest {
+	case len(c.dense):
+		dense, data := c.dense[:], c.data[:]
+		for e, i in dense {
+			va, vb := sparse_get(a, e), sparse_get(b, e)
+			if va != nil &amp;&amp; vb != nil {
+				f(ctx, va, vb, &amp;data[i])
+			}
+		}
+	case len(a.dense):
+		dense, data := a.dense[:], a.data[:]
+		for e, i in dense {
+			vb, vc := sparse_get(b, e), sparse_get(c, e)
+			if vb != nil &amp;&amp; vc != nil {
+				f(ctx, &amp;data[i], vb, vc)
+			}
+		}
+	case:
+		dense, data := b.dense[:], b.data[:]
+		for e, i in dense {
+			va, vc := sparse_get(a, e), sparse_get(c, e)
+			if va != nil &amp;&amp; vc != nil {
+				f(ctx, va, &amp;data[i], vc)
+			}
+		}
+	}
+}</code></pre>
+  </div>
+  <p>The outer walk is sequential, but every probe is two dependent loads into another set's arrays at a position chosen
+  by that set's history. Dennis Gustafsson makes the point bluntly: components "are only packed tighly in memory if you
+  read from <i>one</i> component type. As soon as you read from multiple, this is no longer the case", and a movement
+  system reading three components has "three potential cache misses instead of one"<a class="cite" href="#src-16">[16]</a>.
+  When the sets happen to be in the same order (for instance right after spawning), the probes walk forward too and the
+  prefetcher keeps up. After enough adds and removes the orders diverge, and the probes become random. EnTT's answer is
+  <b>groups</b>, which sort several pools so that the entities they share sit at the front at the same positions, with
+  the limitation that a component "can only appear in one group"<a class="cite" href="#src-10">[10]</a>. Our version
+  keeps the plain query, because that is what most sparse-set code does and it is the honest baseline.</p>
+
+  <aside class="callout pitfall"><p>Rust's borrow checker shapes this function. <code>query3</code> takes the set it
+  mutates as <code>&amp;mut</code> and the others as <code>&amp;</code>, which is why <code>Hp</code> is the mutated
+  component: the caller passes <code>&amp;w.pos, &amp;w.vel, &amp;mut w.hp</code>, three disjoint fields, and the compiler
+  is satisfied. Write a query that mutates two components from the same set, or wants to read and write the same set,
+  and you are into <code>split_at_mut</code> or <code>get_disjoint_mut</code> territory. Zig and Odin let you alias and
+  trust you not to.</p></aside>
+
+  <h2 id="archetypes">Storage two: one table per component combination</h2>
+  <p>The other answer is to stop keeping one table per component and keep one table per <i>set</i> of components.
+  Every entity with exactly {Pos, Vel} lives in the {Pos, Vel} table, which has a <code>Pos</code> column and a
+  <code>Vel</code> column with aligned rows. An entity with {Pos, Vel, Hp} lives in a different table. This set is
+  called the entity's <b>archetype</b>. Unity's DOTS blog describes it exactly that way: "ECS groups all entities that
+  have the exact same set of components together in memory. It calls such a set an archetype", and stores them in
+  "chunks of 16k. Each chunk will only contain the component data for entities of a single archetype"
+  <a class="cite" href="#src-9">[9]</a>.</p>
+  <p>A query becomes a filter over tables rather than over entities. To run "Pos and Vel" you find every table whose type
+  contains both, and in each one you zip two columns. There are no probes at all, because a row in a table has every
+  component the table has. Sander Mertens, the author of flecs, builds this up in his "Building an ECS" series: an
+  <b>entity index</b> maps each entity to its archetype and row, and a <b>component index</b> keeps "a set per component
+  that has archetype ids", because "the number of components is always way less than the number of archetypes"
+  <a class="cite" href="#src-5">[5]</a>. Part 2 stores the columns as type-erased buffers and caches the move targets as
+  edges of an <b>archetype graph</b>, so that "add Health to an entity in [Position, Velocity]" is one O(1) lookup
+  <a class="cite" href="#src-6">[6]</a>. Part 3 draws the whole thing<a class="cite" href="#src-7">[7]</a>.</p>
+  <p>The price is structural change. Adding a component changes the entity's type, so its whole row has to move. Mertens
+  lists the steps: find the destination archetype, "insert a new row into the destination archetype", "move overlapping
+  components over", "remove the entity from the current archetype"<a class="cite" href="#src-6">[6]</a>. Unity: "We move
+  it from its current chunk to a chunk of the new archetype, and back swap the last entity of the previous chunk to
+  'fill the hole'"<a class="cite" href="#src-9">[9]</a>.</p>
+
+  <figure class="figure wide" id="fig-arch">
+    <div class="figure-body" data-viz="ch09-archetypes" data-opts='{}'>
+      <p>Interactive figure: four archetype tables. Adding or removing a component moves a row between tables; a query
+      highlights the matching tables.</p>
+    </div>
+    <figcaption>Archetype storage. Each step adds or removes one component and moves one row, and the source table fills
+    the hole with its last row. The byte counter adds up what moved: the entity id plus every component the row keeps.
+    Switch the query to see which tables it visits. The last counter is what a sparse-set query over the same entities
+    would probe.</figcaption>
+  </figure>
+
+  <p>Our minimal version has three component types, so a combination fits in three bits and the "archetype graph edge"
+  for adding <code>Vel</code> is just <code>mask | VEL</code>. The eight tables live in an array indexed by mask, and every
+  table has all three columns, of which only the ones in its mask are used. A general ECS cannot do that. It does not know
+  the component types when it is compiled, so it needs type-erased columns, a hash map from type to table, and the cached
+  edges. Keep that in mind when you read the benchmark: this archetype storage is the best case for its family.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch09-ecs-and-tables/rust/src/archetype.rs"><code class="language-rust">/// One archetype: SoA columns with aligned rows. Columns for components outside `mask` stay empty.
+#[derive(Default)]
+pub struct Table {
+    pub mask: u8,
+    pub entities: Vec&lt;Entity&gt;,
+    pub pos: Vec&lt;Pos&gt;,
+    pub vel: Vec&lt;Vel&gt;,
+    pub hp: Vec&lt;Hp&gt;,
+}
+
+    /// Appends a row to the table that matches exactly the components present.
+    fn put(&amp;mut self, e: Entity, r: Row) {
+        let mask = r.pos.map_or(0, |_| POS) | r.vel.map_or(0, |_| VEL) | r.hp.map_or(0, |_| HP);
+        let t = &amp;mut self.tables[mask as usize];
+        self.loc[e.index as usize] = Location { table: mask, row: t.entities.len() as u32 };
+        t.entities.push(e);
+        t.pos.extend(r.pos);
+        t.vel.extend(r.vel);
+        t.hp.extend(r.hp);
+    }
+
+    /// Swap-and-pops the entity's row out of its table, column by column, and fixes the
+    /// location of the entity that moved into the hole.
+    fn take(&amp;mut self, e: Entity) -&gt; Row {
+        let Location { table, row } = self.loc[e.index as usize];
+        let (t, row) = (&amp;mut self.tables[table as usize], row as usize);
+        t.entities.swap_remove(row);
+        if let Some(moved) = t.entities.get(row) {
+            self.loc[moved.index as usize].row = row as u32;
+        }
+        Row {
+            pos: (table &amp; POS != 0).then(|| t.pos.swap_remove(row)),
+            vel: (table &amp; VEL != 0).then(|| t.vel.swap_remove(row)),
+            hp: (table &amp; HP != 0).then(|| t.hp.swap_remove(row)),
+        }
+    }
+
+    /// Adding a component is a move: the whole row is copied to the table for `mask | VEL`.
+    pub fn add_vel(&amp;mut self, e: Entity, v: Vel) {
+        let mut r = self.take(e);
+        r.vel = Some(v);
+        self.put(e, r);
+    }</code></pre>
+<pre data-lang="Zig" data-file="code/ch09-ecs-and-tables/zig/archetype.zig"><code class="language-zig">/// One archetype: SoA columns with aligned rows. Columns for components outside `mask` stay empty.
+pub const Table = struct {
+    mask: u8,
+    entities: std.ArrayList(Entity) = .empty,
+    pos: std.ArrayList(Pos) = .empty,
+    vel: std.ArrayList(Vel) = .empty,
+    hp: std.ArrayList(Hp) = .empty,
+};
+
+    /// Appends a row to the table that matches exactly the components present.
+    fn put(w: *ArchWorld, gpa: Allocator, e: Entity, r: Row) !void {
+        const mask = (if (r.pos != null) POS else 0) | (if (r.vel != null) VEL else 0) | (if (r.hp != null) HP else 0);
+        const t = &amp;w.tables[mask];
+        w.loc.items[e.index] = .{ .table = mask, .row = @intCast(t.entities.items.len) };
+        try t.entities.append(gpa, e);
+        if (r.pos) |p| try t.pos.append(gpa, p);
+        if (r.vel) |v| try t.vel.append(gpa, v);
+        if (r.hp) |h| try t.hp.append(gpa, h);
+    }
+
+    /// Swap-and-pops the entity's row out of its table, column by column, and fixes the
+    /// location of the entity that moved into the hole.
+    fn take(w: *ArchWorld, e: Entity) Row {
+        const l = w.loc.items[e.index];
+        const t = &amp;w.tables[l.table];
+        _ = t.entities.swapRemove(l.row);
+        if (l.row &lt; t.entities.items.len) w.loc.items[t.entities.items[l.row].index].row = l.row;
+        return .{
+            .pos = if (l.table &amp; POS != 0) t.pos.swapRemove(l.row) else null,
+            .vel = if (l.table &amp; VEL != 0) t.vel.swapRemove(l.row) else null,
+            .hp = if (l.table &amp; HP != 0) t.hp.swapRemove(l.row) else null,
+        };
+    }
+
+    /// Adding a component is a move: the whole row is copied to the table for `mask | VEL`.
+    pub fn addVel(w: *ArchWorld, gpa: Allocator, e: Entity, v: Vel) !void {
+        var r = w.take(e);
+        r.vel = v;
+        try w.put(gpa, e, r);
+    }</code></pre>
+<pre data-lang="Odin" data-file="code/ch09-ecs-and-tables/odin/archetype.odin"><code class="language-odin">// One archetype: SoA columns with aligned rows. Columns for components outside `mask` stay empty.
+Table :: struct {
+	mask:     Mask,
+	entities: [dynamic]Entity,
+	pos:      [dynamic]Pos,
+	vel:      [dynamic]Vel,
+	hp:       [dynamic]Hp,
+}
+
+// Appends a row to the table that matches exactly the components present.
+@(private = "file")
+arch_put :: proc(w: ^Arch_World, e: Entity, r: Row) {
+	mask: Mask
+	if r.pos != nil {mask += {.Pos}}
+	if r.vel != nil {mask += {.Vel}}
+	if r.hp != nil {mask += {.Hp}}
+	t := &amp;w.tables[transmute(u8)mask]
+	w.loc[e.index] = {transmute(u8)mask, u32(len(t.entities))}
+	append(&amp;t.entities, e)
+	if p, ok := r.pos.?; ok {append(&amp;t.pos, p)}
+	if v, ok := r.vel.?; ok {append(&amp;t.vel, v)}
+	if h, ok := r.hp.?; ok {append(&amp;t.hp, h)}
+}
+
+// Swap-and-pops the entity's row out of its table, column by column, and fixes the
+// location of the entity that moved into the hole.
+@(private = "file")
+arch_take :: proc(w: ^Arch_World, e: Entity) -&gt; (r: Row) {
+	l := w.loc[e.index]
+	t := &amp;w.tables[l.table]
+	row := int(l.row)
+	unordered_remove(&amp;t.entities, row)
+	if row &lt; len(t.entities) {
+		w.loc[t.entities[row].index].row = l.row
+	}
+	if .Pos in t.mask {
+		r.pos = t.pos[row]
+		unordered_remove(&amp;t.pos, row)
+	}
+	if .Vel in t.mask {
+		r.vel = t.vel[row]
+		unordered_remove(&amp;t.vel, row)
+	}
+	if .Hp in t.mask {
+		r.hp = t.hp[row]
+		unordered_remove(&amp;t.hp, row)
+	}
+	return
+}
+
+// Adding a component is a move: the whole row is copied to the table for `mask + {.Vel}`.
+arch_add_vel :: proc(w: ^Arch_World, e: Entity, v: Vel) {
+	r := arch_take(w, e)
+	r.vel = v
+	arch_put(w, e, r)
+}</code></pre>
+  </div>
+  <p>The systems show the payoff. In archetype storage a system is a loop over tables, and inside a table a loop over
+  columns zipped together, which is <a href="04-aos-soa-hot-cold.html">Chapter 4</a>'s SoA loop with nothing in the way.
+  In sparse-set storage the same system is a call to the query with a small function for one entity.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch09-ecs-and-tables/rust/src/main.rs"><code class="language-rust">fn sparse_move(w: &amp;mut SparseWorld) -&gt; u64 {
+    let mut s = 0u64;
+    query2(&amp;mut w.pos, &amp;w.vel, |p, v| {
+        p.x = p.x.wrapping_add(v.x);
+        p.y = p.y.wrapping_add(v.y);
+        s = s.wrapping_add(p.x as u32 as u64);
+    });
+    s
+}
+
+fn arch_move(w: &amp;mut ArchWorld) -&gt; u64 {
+    let mut s = 0u64;
+    for t in w.tables_with(POS | VEL) {
+        for (p, v) in t.pos.iter_mut().zip(&amp;t.vel) {
+            p.x = p.x.wrapping_add(v.x);
+            p.y = p.y.wrapping_add(v.y);
+            s = s.wrapping_add(p.x as u32 as u64);
+        }
+    }
+    s
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch09-ecs-and-tables/zig/main.zig"><code class="language-zig">fn moveOne(s: *u64, p: *Pos, v: *const Vel) void {
+    p.x +%= v.x;
+    p.y +%= v.y;
+    s.* +%= bits(p.x);
+}
+
+fn sparseMove(w: *SparseWorld) u64 {
+    var s: u64 = 0;
+    sparse.query2(&amp;w.pos, &amp;w.vel, &amp;s, moveOne);
+    return s;
+}
+
+fn archMove(w: *ArchWorld) u64 {
+    var s: u64 = 0;
+    for (&amp;w.tables) |*t| {
+        if (t.mask &amp; (POS | VEL) != POS | VEL) continue;
+        for (t.pos.items, t.vel.items) |*p, v| {
+            p.x +%= v.x;
+            p.y +%= v.y;
+            s +%= bits(p.x);
+        }
+    }
+    return s;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch09-ecs-and-tables/odin/main.odin"><code class="language-odin">move_one :: proc(s: ^u64, p: ^Pos, v: ^Vel) {
+	p.x += v.x
+	p.y += v.y
+	s^ += bits(p.x)
+}
+
+sparse_move :: proc(w: ^Sparse_World) -&gt; (s: u64) {
+	query2(&amp;w.pos, &amp;w.vel, &amp;s, move_one)
+	return
+}
+
+arch_move :: proc(w: ^Arch_World) -&gt; (s: u64) {
+	for &amp;t in w.tables {
+		if !({.Pos, .Vel} &lt;= t.mask) {
+			continue
+		}
+		pos, vel := t.pos[:], t.vel[:]
+		for &amp;p, i in pos {
+			p.x += vel[i].x
+			p.y += vel[i].y
+			s += bits(p.x)
+		}
+	}
+	return
+}</code></pre>
+  </div>
+
+  <h3 id="languages">Where the three languages differ</h3>
+  <p>The algorithm is identical in all three programs, down to the random stream (splitmix64, seeded the same way as
+  Chapter 5) and the order of operations, so the final checksum is the same 64-bit number in every language. How each
+  language expresses "run this function inside the join loop" is where they part.</p>
+  <ul>
+    <li><b>Rust</b> passes a closure, <code>impl FnMut(&amp;A, &amp;B, &amp;mut C)</code>, monomorphised and inlined per call
+    site. The probe-and-test reads as a let-chain (<code>if let Some(vb) = b.get(e) &amp;&amp; let Some(vc) = ...</code>,
+    stable since 1.88), and the archetype loop is <code>iter_mut().zip(..)</code>, which elides bounds checks.</li>
+    <li><b>Zig</b> passes <code>comptime f: anytype</code> plus a context pointer, the <code>std.sort</code> idiom. The
+    archetype loop is a multi-object <code>for (t.pos.items, t.vel.items) |*p, v|</code>, whose lengths must match. The
+    unmanaged <code>std.ArrayList</code> takes an allocator per call, so <code>insert</code> can fail with
+    <code>error.OutOfMemory</code>.</li>
+    <li><b>Odin</b> passes <code>$f: proc(ctx: C, a: ^A, ...)</code>, a compile-time proc parameter, so it also
+    specialises the loop per system. The archetype type is a <code>bit_set[Component; u8]</code>, so "the table contains
+    every queried component" is literally <code>{.Pos, .Vel} &lt;= t.mask</code>, a subset test.</li>
+  </ul>
+
+  <p>Zig's archetype loops stay scalar, because Zig 0.17.1 ships with LLVM's loop vectorizer off
+  (<a href="04-aos-soa-hot-cold.html#zig-loop-vectorizer">Chapter 4</a>); we did not rewrite them with <code>@Vector</code>,
+  since this chapter compares storages, not SIMD.</p>
+
+  <aside class="callout pitfall"><p>Odin's sparse-set query copies the slices into locals
+  (<code>dense, data := a.dense[:], a.data[:]</code>) before the loop. Indexing <code>a.data[i]</code> through the pointer
+  inside the loop can make the compiler reload the slice header after every store through <code>f</code>, because it
+  cannot always prove the store did not change <code>a</code> (<a href="04-aos-soa-hot-cold.html#odin-hoist-slices">Chapter 4</a>'s lesson). The same reasoning is why the archetype loops hoist
+  <code>t.pos[:]</code> and <code>t.vel[:]</code>.</p></aside>
+
+  <h2 id="measure">Measuring both</h2>
+  <p>The benchmark builds the same world in both storages: <i>N</i> entities, each with <code>Pos</code>, every second one
+  with <code>Vel</code>, every fourth with <code>Hp</code>. Components are small integer structs (<code>Pos</code> and
+  <code>Vel</code> are two <code>i32</code>, 8 B; <code>Hp</code> is one <code>i32</code>), so the checksum is exact. Then it
+  times three things with the harness from <a href="02-the-machine.html">Chapter 2</a> (one warm-up, median of 7):</p>
+  <ol>
+    <li><b>Churn.</b> <i>N</i>/16 times, pick a random entity and toggle its <code>Vel</code>: remove it if present, add it
+    otherwise. In the sparse-set world that touches one set. In the archetype world it moves a row. Eight runs including
+    the warm-up means <i>N</i>/2 toggles in total, which also scrambles the order of the <code>Vel</code> set.</li>
+    <li><b>Move</b>, a 2-component query: <code>Pos += Vel</code> for every entity that has both.</li>
+    <li><b>Damage</b>, a 3-component query: read <code>Pos</code> and <code>Vel</code>, write <code>Hp</code>.</li>
+  </ol>
+  <p>Each system folds what it wrote into a sum that goes to <code>black_box</code>, <code>doNotOptimizeAway</code> or Odin's
+  volatile sink. At the end the program walks every live entity in both worlds and hashes its components with an
+  order-independent sum. The storages hold rows in completely different orders, so the only way the two sums can match
+  is if both worlds contain the same components with the same values. They do, in all three languages:</p>
+  <pre><code class="language-bash">$ cargo run --release -q -p ch09_ecs_and_tables -- 262144     # Zig and Odin print the same last line
+...
+archetype table sizes by mask [-, P, V, PV, H, PH, VH, PVH]: [0, 110363, 0, 86245, 0, 20709, 0, 44827]
+checksum sparse 0x0103037600f0e668 archetype 0x0103037600f0e668 (match)</code></pre>
+
+  <aside class="callout try"><p>Run it (quick mode, or pick N):</p>
+  <pre><code class="language-bash">cd code &amp;&amp; ./run_all.sh ch09
+cargo run --release -q -p ch09_ecs_and_tables -- 262144
+cd ch09-ecs-and-tables/zig &amp;&amp; zig run -O fast main.zig -- 262144
+cd .. &amp;&amp; odin run odin -o:speed -vet -strict-style -- 262144</code></pre></aside>
+
+  <details class="predict"><summary>Before you look at the charts: which storage wins the 2-component query, and by
+  roughly how much? Which wins churn?</summary>
+  <p>Archetypes win iteration by more than an order of magnitude here, and sparse sets win churn by a few times. The rest
+  of this section explains why the iteration gap is so large in this particular test.</p></details>
+
+  <figure class="figure wide" id="fig-iter">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch09-iterate" data-opts='{"metric":"ns/n","per":"entity","labels":["archetype: move P+=V","sparse set: move P+=V","archetype: damage P,V->H","sparse set: damage P,V->H"]}'></div>
+    <figcaption>Iterating the two queries, in ns per entity in the world (all <i>N</i>, not only the matching ones), measured
+    on this orb. The archetype query zips columns. The sparse-set query walks the smallest set and probes the others in
+    an order that churn has scrambled. All of this chapter's numbers come from one 4-vCPU KVM Xeon (Ice Lake) and are
+    noisy; read them as ratios.</figcaption>
+  </figure>
+  <figure class="figure wide" id="fig-churn">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch09-churn" data-opts='{"metric":"ns/n","per":"toggle"}'></div>
+    <figcaption>Adding or removing <code>Vel</code> on a random entity, in ns per toggle. In sparse-set storage it is one
+    swap-and-pop or one append in one set. In archetype storage it is a row move between two tables, with a swap-and-pop
+    in every column of the source.</figcaption>
+  </figure>
+
+  <p>In our runs the archetype move query was
+  <span data-bench-ratio="ch09-iterate" data-num="sparse set: move P+=V" data-den="archetype: move P+=V" data-lang="rust">about 20×</span>
+  faster in Rust,
+  <span data-bench-ratio="ch09-iterate" data-num="sparse set: move P+=V" data-den="archetype: move P+=V" data-lang="zig">about 18×</span>
+  in Zig and
+  <span data-bench-ratio="ch09-iterate" data-num="sparse set: move P+=V" data-den="archetype: move P+=V" data-lang="odin">about 14×</span>
+  in Odin. Churn went the other way: archetype toggles cost
+  <span data-bench-ratio="ch09-churn" data-num="archetype: toggle Vel" data-den="sparse set: toggle Vel" data-lang="rust">about 4×</span>
+  as much as sparse-set toggles in Rust,
+  <span data-bench-ratio="ch09-churn" data-num="archetype: toggle Vel" data-den="sparse set: toggle Vel" data-lang="zig">about 4×</span>
+  in Zig and
+  <span data-bench-ratio="ch09-churn" data-num="archetype: toggle Vel" data-den="sparse set: toggle Vel" data-lang="odin">about 2.4×</span>
+  in Odin.</p>
+
+  <h3 id="worked">Worked example: why the gap is that large</h3>
+  <p>Take the charted run, <i>N</i> = 1,048,576. The churn toggles <code>Vel</code> on random entities, so afterwards it is on
+  about half of them, roughly 524,000, spread over the {P,V} and {P,V,H} tables. Count the bytes the move query touches.</p>
+  <ul>
+    <li><b>Archetype:</b> it visits {P,V} and {P,V,H}, about 524,000 rows in total. Per row it reads 8 B of <code>Pos</code> and
+    8 B of <code>Vel</code> and writes 8 B back, all in two sequential streams. That is about 524,000 × 16 B ≈ 8 MiB read, in
+    two strides the prefetcher understands. Nothing else is touched.</li>
+    <li><b>Sparse set:</b> the smallest set is <code>Vel</code> (about 524,000 vs 1,048,576 for <code>Pos</code>), so the query
+    walks <code>Vel.dense</code> (8 B per entity) and <code>Vel.data</code> (8 B) in order. Then, per entity, it reads
+    <code>Pos.sparse[e.index]</code> (4 B), <code>Pos.dense[d]</code> (8 B) and <code>Pos.data[d]</code> (8 B). That is
+    36 B per entity instead of 16 B, already 2.25× more. But the real cost is where those last three loads land. The
+    <code>Pos</code> arrays together are 1,048,576 × 20 B = 20 MiB, sixteen times this orb's 1.25 MiB L2 and far more than
+    the few MiB of L3 it really gets, and the churn has shuffled <code>Vel</code>'s order, so the probes jump around inside
+    those 20 MiB. Each probe is two dependent
+    misses, as <a href="02-the-machine.html">Chapter 2</a>'s pointer chase showed.</li>
+  </ul>
+  <p>Sequential streams against dependent random loads into data far larger than the caches is exactly the gap Chapter 2
+  measured between an array walk and a pointer chase, and that is the size of gap we see. Shrink <i>N</i> so everything
+  fits in L1 and L2 and the gap shrinks with it; run the program in quick mode (<i>N</i> = 4,096) to see it. Turn the churn
+  off, so that <code>Vel</code> stays in entity order, and the gap also shrinks (Exercise 9.3).</p>
+  <p>The churn numbers follow from counting too. A sparse-set toggle touches one set: on remove, two sparse slots, one
+  dense slot and one data slot. An archetype toggle reads the entity's location, swap-and-pops every column of the
+  source table (entity, <code>Pos</code>, maybe <code>Hp</code>), appends to every column of the destination, and fixes
+  two locations. That is two to three times the memory traffic, spread over twice as many arrays.</p>
+
+  <h3 id="staffordshire">What a controlled study found</h3>
+  <p>Our result agrees in direction with the one peer-reviewed comparison we know of. Cox, Williams, Vickers, Ward and
+  Headleand at the University of Staffordshire wrote two minimal C++20 ECSes, one sparse-set (with paged sparse arrays)
+  and one archetype-based, and ran Conway's Game of Life with one entity per cell, single-threaded, for 5,000 frames
+  <a class="cite" href="#src-13">[13]</a>. At 100 and 1,000 entities there was no statistically significant difference. At
+  10,000 and 50,000 the archetype version was significantly faster, "nearly twice the performance of the sparse-set
+  equivalent" at 50,000, which they attribute to "the cache-coherent nature of archetypal storage". The sparse-set
+  version created entities "by an average factor of 6.6×" faster.</p>
+  <figure class="figure" id="fig-staffs">
+    <div class="figure-body" data-viz="bench-bars" data-opts='{"source":"cited: Cox et al., CGVC 2025, median frame latency","metric":"value","unit":"ms/frame","sort":"none","log":false,"runs":[{"label":"10,000 entities: archetype","value":1.721},{"label":"10,000 entities: sparse set","value":2.945},{"label":"50,000 entities: archetype","value":7.410},{"label":"50,000 entities: sparse set","value":13.819}]}'></div>
+    <figcaption>Cited, not measured here: median frame latency for Game of Life in the Staffordshire study
+    <a class="cite" href="#src-13">[13]</a>. Their gap (about 1.7–1.9×) is far smaller than ours, because each frame does
+    real work per cell and the measurement is a whole frame, while our loop body is two additions.</figcaption>
+  </figure>
+  <p>The authors' own caveat applies to us too: "these findings are dependent on the specific implementations used"
+  <a class="cite" href="#src-13">[13]</a>; the caveats section below lists how ours is idealised. Library benchmark
+  suites (for example abeimler's <code>ecs_benchmark</code><a class="cite" href="#src-23">[23]</a>) put mature sparse-set and archetype libraries within a
+  small factor of each other for typical workloads, and every one of them warns you to benchmark your own access
+  pattern.</p>
+
+  <h3 id="hybrid">Choosing per component: Bevy</h3>
+  <p>Because the trade-off is per component rather than per program, Bevy lets you choose per component. Its default is
+  table (archetype) storage, and <code>#[component(storage = "SparseSet")]</code> opts a component into a sparse set.
+  The Bevy Cheat Book explains the rule: tables are "optimized for fast query iteration", while adding or removing a
+  table component "requires copying the data of all table components for the entity to a different location in memory";
+  sparse sets are "optimized for fast adding/removing of a component to existing entities, at the cost of slower
+  querying"<a class="cite" href="#src-11">[11]</a>. Its examples are exactly the components our churn benchmark toggles:
+  a <code>CanSeePlayer</code> marker added and removed every frame, and a temporary <code>Bleeding</code> effect, which
+  would otherwise "fragment tables". Bevy 0.5 introduced this hybrid as part of a rewrite of its ECS
+  <a class="cite" href="#src-12">[12]</a>. Having two storage paths has its own cost in complexity.</p>
+  <div class="table-wrap"><table>
+    <tr><th></th><th>Sparse set per component</th><th>Table per combination (archetype)</th></tr>
+    <tr><td>iterate one component</td><td>dense walk</td><td>dense walk over each matching table</td></tr>
+    <tr><td>iterate a join of <i>k</i></td><td>walk smallest, <i>k</i>−1 probes per entity</td><td>zip <i>k</i> columns, no probes</td></tr>
+    <tr><td>add/remove a component</td><td>O(1) in one set</td><td>move the whole row to another table</td></tr>
+    <tr><td>many distinct combinations</td><td>no effect</td><td>many small tables, fragmented iteration</td></tr>
+    <tr><td>random lookup by entity</td><td>2 loads per component</td><td>location, then column</td></tr>
+    <tr><td>used by</td><td>EnTT, Shipyard, Bevy (opt-in)</td><td>Unity DOTS, flecs, Bevy (default), hecs, Unreal Mass</td></tr>
+  </table></div>
+
+  <h2 id="overwatch">Overwatch: an ECS for complexity, not speed</h2>
+  <p>The most cited production ECS talk is not about cache misses at all. In "Overwatch Gameplay Architecture and Netcode"
+  (GDC 2017), Blizzard's Tim Ford described an ECS in which an entity is a 32-bit id, components hold state but no
+  behaviour, and systems hold behaviour but no state<a class="cite" href="#src-14">[14]</a>. The client had about 46 systems
+  and 103 components. The lesson they learned the hard way was that system state which looked private was nearly always
+  shared, so they moved it into components with exactly one instance. In the English translation of the talk: "the
+  singleton pattern was so prevalent that 40% of the components in our entire game were singletons"
+  <a class="cite" href="#src-14">[14]</a>.</p>
+  <p>Ford says up front that the techniques are for "reducing the complexity of an ever-growing code base", that "ECS
+  architecture could manage rapidly increasing code complexity", and that the hardest problem they used it for was
+  netcode: prediction and rollback need to know exactly which state a system reads and writes, and a component tuple says
+  so by construction<a class="cite" href="#src-14">[14]</a>. Forty per cent singletons means 40% of the "tables" have one
+  row, which is the opposite of what a cache-friendly design needs. The win was knowing who touches what. That is a
+  data-oriented argument, but it is about the shape of dependencies rather than the layout of bytes.</p>
+
+  <h2 id="columnar">The database people got here first</h2>
+  <p>Everything in this chapter has a database name, usually an older one. Storing each column contiguously is a
+  <b>column store</b>, and Abadi, Madden and Hachem showed that its advantage on analytical queries comes from more than
+  layout: per-column compression, late materialisation and processing a block of values at a time<a class="cite" href="#src-20">[20]</a>.
+  Block-at-a-time is MonetDB/X100's vectorised execution<a class="cite" href="#src-18">[18]</a>, whose vector-size curve
+  <a href="07-branches-batches-existence.html#one-many">Chapter 7</a> reproduced; DuckDB still processes 2,048 rows at a
+  time<a class="cite" href="#src-19">[19]</a>, 16 KiB at 8 B per value, the same size Unity chose for a chunk. X100's
+  <b>selection vectors</b>, positions that matched instead of copies, are the dense id list of a sparse set used as a
+  filter, and Apache Arrow standardises such columns in memory<a class="cite" href="#src-21">[21]</a>.</p>
+  <p>The mapping onto an ECS is direct. An archetype table is a column store with one table per schema. A system is a
+  query plan. A Unity chunk is an X100 vector. A sparse-set query is an index nested-loop join, and EnTT's groups are a
+  co-clustered index. Knowing the database names gives you access to forty years of work on join order, partitioning and
+  vectorised operators.</p>
+
+  <h2 id="not-dod">ECS is not data-oriented design</h2>
+  <p>Chapter 1 promised to look at ECS critically, and the strongest critiques come from people who like data-oriented
+  design. Sebastian Schöner, writing at a time when Unity's DOTS made "DOD" a buzzword among his co-workers, titled a section of his essay "Data-Oriented Design is not just ECS
+  and fewer cache misses". He describes the usual story (OOP causes cache misses, ECS has nice access patterns, "That's
+  DOD for you! Apply this pattern everywhere") and rejects it: "You probably do not need a full-blown ECS in your custom
+  engine, because that is most likely not the problem that you are solving", and "ECS is something that you can arrive at
+  when using DOD with a specific set of requirements in mind. It's a consequence of, not a prerequisite for DOD"
+  <a class="cite" href="#src-15">[15]</a>.</p>
+  <p>Dennis Gustafsson (Teardown) lists the costs in his 2025 "Thoughts on ECS": "Added complexity", lookups between
+  entities and components whose cost is "difficult to detect, since they are scattered all over the code", and "Hard to
+  debug", because a debugger can follow pointers but not an integer id through an indirection table, and archetype data
+  sits in "a memory blob with no debug info whatsoever"<a class="cite" href="#src-16">[16]</a>. His alternative, if your
+  game does not need to change an entity's composition at run time, is to compose entity types statically, one plain
+  array per type, so the code "literaly does exactly what it says from top to bottom"<a class="cite" href="#src-16">[16]</a>.
+  That is the per-kind arrays of <a href="01-the-data-is-the-problem.html">Chapter 1</a> and Chapter 7, and it is exactly what
+  our archetype storage turns into when there are few combinations and they are known in advance.</p>
+  <p>Niklas Gray's Our Machinery posts, which Chapter 5 leaned on, make a related point from the engine side: most bulk
+  data is better off as a plain array with holes and stable indices, and packed SoA is worth it only for the few hot,
+  SIMD-friendly systems<a class="cite" href="#src-17">[17]</a>. And Catherine West, after building an ECS in Rust, said
+  that ECS is great "because it forces you to think about your data rather than be stuck in OO mode, not because of the
+  magic of 'structs of arrays'"<a class="cite" href="#src-2">[2]</a>.</p>
+  <p>Put together, the critiques do not say "never use an ECS". They say: know which problem you have. If your entities
+  change shape at run time, and many systems compose behaviour over the same entities, a general ECS buys flexibility and
+  clear dependencies, as at Blizzard. If you have a few kinds of thing that never change shape, a struct of arrays per kind
+  is simpler, faster to compile, easier to debug, and at least as fast.</p>
+
+  <h2 id="caveats">Caveats, and when not to build one</h2>
+  <ul>
+    <li><b>Our benchmark favours archetypes on iteration.</b> The loop body is two additions, so memory access is all
+    there is to measure, and the churn has scrambled the sparse sets. A system that does real work per entity, or sets
+    that stay in the same order, narrows the gap, as the Staffordshire numbers show.</li>
+    <li><b>Our archetype storage is idealised.</b> Three component types and eight tables known at compile time. Real
+    archetype ECSes pay for type erasure, table lookup and graph edges, and suffer when the number of distinct
+    combinations explodes into many tiny tables (the "table fragmentation" the Bevy Cheat Book warns about
+    <a class="cite" href="#src-11">[11]</a>).</li>
+    <li><b>Memory.</b> A sparse set's <code>sparse</code> array is as long as the largest entity index, per component. With
+    a million entities and 50 components that is 200 MB of 4-byte slots unless you page it, as EnTT does.</li>
+    <li><b>Address stability.</b> Both storages move components: swap-and-pop in a sparse set, row moves in an archetype.
+    A pointer or reference into either is valid only until the next structural change. Keep the entity id, as Chapter 5
+    taught, and look it up again.</li>
+    <li><b>Small worlds.</b> At a few hundred entities, both storages are fast and the difference is noise (the
+    Staffordshire study found none at 100 or 1,000). Pick on design grounds.</li>
+  </ul>
+
+  <aside class="recap"><p>An ECS is a small in-memory database: entities are keys, components are tables, systems are
+  joins; store one table per component (sparse sets) when composition changes often and one table per combination
+  (archetypes) when iteration dominates, and do not build either if a struct of arrays per kind of thing will do.</p></aside>
+
+  <h2 id="exercises">Exercises</h2>
+  <details class="exercise"><summary>In the sparse-set figure, remove an id that is already the last element of
+  <code>dense</code>. How many elements move, and how many sparse slots change?</summary>
+  <p>None move: swap-and-pop with the last element is just a pop. One sparse slot changes (the removed id's, cleared to
+  empty). In the code, <code>last</code> equals <code>e</code>, so the first store writes <code>d</code> into the removed
+  entity's own slot and the second store immediately overwrites it with <code>NONE</code>. That is harmless, and cheaper
+  than a branch.</p></details>
+  <details class="exercise"><summary>A {Pos, Vel, Hp} entity loses <code>Vel</code>. How many bytes does the archetype
+  storage copy, with this chapter's sizes, and how many does the sparse-set storage move in the worst case?</summary>
+  <p>Archetype: the row keeps its entity id (8 B), <code>Pos</code> (8 B) and <code>Hp</code> (4 B), so 20 B are copied into
+  the {Pos, Hp} table, plus the source table's last row (8 + 8 + 8 + 4 = 28 B) moves into the hole. Sparse set: only the
+  <code>Vel</code> set changes, and its last entity (8 B) and value (8 B) move into the hole, 16 B in total, plus two
+  4-byte sparse slots.</p></details>
+  <details class="exercise"><summary>Change the program so the <code>Vel</code> toggle never happens (<i>k</i> = 0) and run
+  it at full size. Predict what happens to the sparse-set move query, then try it. Why?</summary>
+  <p>Expect it to get several times faster, and the gap to the archetype query to shrink to a small multiple; we did not
+  record this variant, so the measurement is yours to make. Without churn, <code>Vel.dense</code> is in increasing entity order, which is also
+  <code>Pos</code>'s order, so the probes into <code>Pos.sparse</code>, <code>Pos.dense</code> and <code>Pos.data</code> walk
+  forward with a stride of two and the prefetcher hides most of the latency. The archetype query does not change much. The point is that a
+  sparse-set ECS's speed depends on its history, which is why EnTT offers sorting and groups.</p></details>
+  <details class="exercise"><summary>Mertens keeps a set of archetypes per component, not a set of components per
+  archetype. Why is that the better direction for queries?</summary>
+  <p>There are far fewer components than archetypes, so the index is smaller. More importantly, a query starts from the
+  components it needs: intersect the archetype sets of <code>Pos</code> and <code>Vel</code> and you have the matching tables
+  directly, without scanning every archetype. Our version scans all eight tables, which is fine for eight.</p></details>
+  <details class="exercise"><summary>Overwatch had about 40% singleton components. Which storage would you choose for a
+  singleton such as the input state, and does it matter?</summary>
+  <p>Neither. A singleton has one row, so there is nothing to iterate and nothing to lay out. Overwatch attached them to one
+  anonymous entity and accessed them directly through the world object<a class="cite" href="#src-14">[14]</a>. In a
+  hand-written program it is a global or a field of the world struct. The storage question only matters for components
+  with many instances.</p></details>
+  <details class="exercise"><summary>DuckDB's default vector is 2048 rows. A query reads five 8-byte columns and writes two.
+  How big is one batch's working set, and where does it fit on this orb?</summary>
+  <p>7 columns × 2048 × 8 B = 112 KiB. That is more than the 48 KiB L1d but well inside the 1.25 MiB L2, which is the
+  regime X100's Figure 10 says works well. At X100's extreme of 4M rows it would be 224 MiB, far past any L3 (this orb's
+  usable share of its 54 MiB host L3 is only a few MiB), and every operator would stream from DRAM.</p></details>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="sources">
+    <li id="src-1">Richard Fabian, <i>Data-Oriented Design</i>, chapter "Relational Databases" (online edition, 2018).
+    <a href="http://www.dataorienteddesign.com/dodbook/node3.html">online</a>. The dungeon setup script, normalisation
+    to 1NF/2NF/3NF, primary and foreign keys. Quotes checked against the online chapter.</li>
+    <li id="src-2">Catherine West, "My RustConf 2018 Closing Keynote", 2018.
+    <a href="https://kyren.github.io/2018/09/14/rustconf-talk.html">blog</a>. Generational indices, the allocator/array
+    split, "ECS is just SQL for games".</li>
+    <li id="src-3">Preston Briggs and Linda Torczon, "An efficient representation for sparse sets", <i>ACM LOPLAS</i> 2(1–4),
+    1993, pp. 59–69. Not opened for this book; the citation is taken from the reference list of [13].</li>
+    <li id="src-4">Michele Caini (skypjack), "ECS back and forth, Part 9: Sparse sets and EnTT", 2020.
+    <a href="https://skypjack.github.io/2020-08-02-ecs-baf-part-9">blog</a>. Sparse/dense arrays, membership test,
+    swap-and-pop remove, pagination, tombstone lookup.</li>
+    <li id="src-5">Sander Mertens, "Building an ECS #1: Where are my Entities and Components", 2022.
+    <a href="https://ajmmertens.medium.com/building-an-ecs-1-where-are-my-entities-and-components-63d07c7da742">Medium</a>.
+    Entity index, archetype, component index.</li>
+    <li id="src-6">Sander Mertens, "Building an ECS #2: Archetypes and Vectorization".
+    <a href="https://ajmmertens.medium.com/building-an-ecs-2-archetypes-and-vectorization-fe21690805f9">Medium</a>.
+    Columns per archetype, type erasure, adding components, the archetype graph.</li>
+    <li id="src-7">Sander Mertens, "Building an ECS #3: Storage in Pictures", 2024.
+    <a href="https://ajmmertens.medium.com/building-an-ecs-storage-in-pictures-642b8bfd6e04">Medium</a>. Diagrams of the
+    archetype graph and paged entity index. Found by search and summarised in this book's <a href="references.html#notes">research notes</a>; not re-read for
+    this chapter.</li>
+    <li id="src-8">Sander Mertens, "Entity Component System FAQ".
+    <a href="https://github.com/SanderMertens/ecs-faq">GitHub</a>. Definitions of archetype and sparse-set ECS; the
+    smallest-set query quote is taken from this book's <a href="references.html#notes">research notes</a>.</li>
+    <li id="src-9">Lucas Meijer, "On DOTS: Entity Component System", Unity blog, 2019.
+    <a href="https://blog.unity.com/technology/on-dots-entity-component-system">blog</a>. Archetypes, 16k chunks, moving
+    entities between chunks, loading raw bytes.</li>
+    <li id="src-10">Sander Mertens, "How are components/entity stored in memory?", flecs issue #3.
+    <a href="https://github.com/SanderMertens/flecs/issues/3">GitHub</a>. Archetype SoA vs EnTT sparse sets and groups;
+    taken from this book's <a href="references.html#notes">research notes</a>.</li>
+    <li id="src-11">Unofficial Bevy Cheat Book, "Component Storage (Table/Sparse-Set)".
+    <a href="https://bevy-cheatbook.github.io/patterns/component-storage.html">page</a>. Table vs sparse-set trade-offs,
+    <code>#[component(storage = "SparseSet")]</code>, table fragmentation.</li>
+    <li id="src-12">Carter Anderson, "Bevy 0.5", 2021, <a href="https://bevy.org/news/bevy-0-5/">release notes</a>
+    (hybrid archetype/sparse-set storage); Bevy contributors, "Consider Removing Sparse Set Component Storage",
+    discussion #19164, 2025, <a href="https://github.com/bevyengine/bevy/discussions/19164">GitHub</a>. Both summarised in
+    this book's <a href="references.html#notes">research notes</a>.</li>
+    <li id="src-13">L. Cox, B. Williams, J. Vickers, D. Ward, C. Headleand, "Run-time Performance Comparison of Sparse-set and
+    Archetype Entity-Component Systems", EG UK Computer Graphics &amp; Visual Computing 2025, doi:10.2312/cgvc.20251224.
+    <a href="https://eprints.staffs.ac.uk/9315/1/cgvc20251224.pdf">PDF</a>. Figures and quotes checked against the PDF.</li>
+    <li id="src-14">Timothy Ford, "Overwatch Gameplay Architecture and Netcode", GDC 2017 (GDC Vault). English translation
+    used here: <a href="https://www.mo4tech.com/overwatchs-architecture-is-designed-to-synchronize-with-the-web.html">mo4tech</a>;
+    Chinese translation: <a href="https://www.lfzxb.top/ow-gdc-gameplay-architecture-and-netcode/index.html">lfzxb.top</a>.
+    46 systems, 103 components, 40% singletons.</li>
+    <li id="src-15">Sebastian Schöner, "Data Oriented Design: An Interpretation", 2019.
+    <a href="https://blog.s-schoener.com/2019-06-09-data-oriented-design">blog</a>.</li>
+    <li id="src-16">Dennis Gustafsson, "Thoughts on ECS", Voxagon blog, 28 March 2025.
+    <a href="https://blog.voxagon.se/2025/03/28/thoughts-on-ecs.html">blog</a>.</li>
+    <li id="src-17">Niklas Gray, "Data Structures Part 1: Bulk Data", Our Machinery blog, 2019 (archive).
+    <a href="https://ruby0x1.github.io/machinery_blog_archive/post/data-structures-part-1-bulk-data/index.html">archive</a>.</li>
+    <li id="src-18">Peter Boncz, Marcin Zukowski, Niels Nes, "MonetDB/X100: Hyper-Pipelining Query Execution", CIDR 2005.
+    <a href="https://15721.courses.cs.cmu.edu/spring2024/papers/04-execution1/boncz-cidr2005.pdf">PDF</a>. Vectors of ~1000
+    values, Figure 10 (vector size), selection vectors. Quotes checked against the PDF.</li>
+    <li id="src-19">DuckDB, <code>src/include/duckdb/common/vector_size.hpp</code> (main branch, read November 2026).
+    <a href="https://github.com/duckdb/duckdb/blob/main/src/include/duckdb/common/vector_size.hpp">GitHub</a>.
+    <code>DEFAULT_STANDARD_VECTOR_SIZE 2048U</code>, power-of-two check.</li>
+    <li id="src-20">Daniel Abadi, Samuel Madden, Nabil Hachem, "Column-Stores vs. Row-Stores: How Different Are They
+    Really?", SIGMOD 2008. <a href="https://www.cs.umd.edu/~abadi/papers/abadi-sigmod08.pdf">PDF</a>. Summarised from this
+    book's <a href="references.html#notes">research notes</a>; not re-read for this chapter.</li>
+    <li id="src-21">Apache Arrow, "Arrow Columnar Format" specification.
+    <a href="https://arrow.apache.org/docs/format/Columnar.html">docs</a>. Further reading only; not re-checked for this
+    chapter.</li>
+    <li id="src-22">Michele Caini (skypjack), "ECS back and forth, Part 12" and "Part 13", 2021.
+    <a href="https://skypjack.github.io/2021-08-29-ecs-baf-part-12">part 12</a> ·
+    <a href="https://skypjack.github.io/2021-10-09-ecs-baf-part-13">part 13</a>. Pointer stability and tombstones; cited in
+    Chapter 5.</li>
+    <li id="src-23">Andreas Beimler, <code>ecs_benchmark</code>, 2023 onwards.
+    <a href="https://github.com/abeimler/ecs_benchmark">GitHub</a>. C++ ECS library comparisons (EnTT, flecs and others);
+    summarised from this book's <a href="references.html#notes">research notes</a>.</li>
+  </ol>
+</main>
+</body>
+</html>

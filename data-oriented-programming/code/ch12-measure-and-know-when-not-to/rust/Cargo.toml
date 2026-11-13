@@ -1,0 +1,8 @@
+[package]
+name = "ch12_measure_and_know_when_not_to"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]

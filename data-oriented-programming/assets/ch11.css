@@ -1,0 +1,38 @@
+/* Chapter 11 figure styles. Every selector is scoped with .ch11-. */
+.ch11-flat .ch11-top { margin-top: 0; }
+.ch11-flat .ch11-dim, .ch11-dim { color: var(--text-dim); font-size: .85rem; }
+.ch11-flat .ch11-srcwrap { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; margin-top: .6rem; }
+@media (max-width: 640px) { .ch11-flat .ch11-srcwrap { grid-template-columns: 1fr; } }
+.ch11-flat .ch11-src-input, .ch11-flat .ch11-src-view { font: .82rem/1.55 var(--font-mono); margin: 0; padding: .5rem .6rem; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg-elev2); color: var(--text); min-height: 7.5em; white-space: pre-wrap; overflow-wrap: anywhere; box-sizing: border-box; width: 100%; }
+.ch11-flat .ch11-src-input { resize: vertical; }
+.ch11-flat .ch11-tk { border-radius: 3px; cursor: pointer; padding: 0 1px; box-shadow: inset 0 -1px 0 var(--border); }
+.ch11-flat .ch11-tk.ch11-span { background: color-mix(in srgb, var(--c-line) 22%, transparent); }
+.ch11-flat .ch11-tk.ch11-main, .ch11-flat tr.ch11-main td { background: var(--c-flag); color: #06121f; }
+.ch11-flat tr.ch11-span td { background: color-mix(in srgb, var(--c-line) 18%, transparent); }
+.ch11-flat .ch11-status { margin: .5rem 0 0; font-size: .85rem; min-height: 0; }
+.ch11-flat .ch11-status.ch11-bad { color: var(--c-miss); }
+.ch11-flat .ch11-info { margin: .5rem 0 0; font: .8rem/1.45 var(--font-mono); color: var(--text); min-height: 2.9em; overflow-wrap: anywhere; }
+.ch11-flat .ch11-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.9fr) minmax(0, .8fr); gap: .6rem; margin-top: .6rem; }
+@media (max-width: 640px) { .ch11-flat .ch11-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .ch11-flat .ch11-tbl-nodes { grid-column: 1 / -1; grid-row: 1; } }
+.ch11-flat .ch11-tbl { max-height: 19rem; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev2); }
+.ch11-flat .ch11-cap { position: sticky; top: 0; z-index: 2; background: var(--bg-elev); font: 600 .75rem var(--font-mono); color: var(--heading); padding: .3rem .5rem; border-bottom: 1px solid var(--border); }
+.ch11-flat table { width: 100%; border-collapse: collapse; margin: 0; font: .75rem/1.3 var(--font-mono); }
+.ch11-flat th { position: sticky; top: 1.55rem; background: var(--bg-elev2); color: var(--text-dim); font-weight: 600; padding: .2rem .4rem; text-align: left; z-index: 1; }
+.ch11-flat td { padding: .22rem .4rem; border-top: 1px solid var(--border); white-space: nowrap; }
+.ch11-flat td.num, .ch11-flat th.num { text-align: right; }
+.ch11-flat tbody tr { cursor: pointer; }
+.ch11-flat tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ch11-flat tr.ch11-sel td { background: var(--accent); color: #06121f; font-weight: 700; }
+.ch11-flat tr.ch11-kid td { background: color-mix(in srgb, var(--c-vel) 30%, transparent); }
+.ch11-flat tr.ch11-cell td { background: color-mix(in srgb, var(--c-hp) 35%, transparent); }
+.ch11-flat .ch11-tag { color: var(--c-flag); }
+.ch11-flat tr.ch11-sel .ch11-tag { color: #06121f; }
+.ch11-flat .legend i.ch11-sw-main { background: var(--c-flag); }
+.ch11-flat .legend i.ch11-sw-span { background: color-mix(in srgb, var(--c-line) 40%, transparent); }
+.ch11-flat .legend i.ch11-sw-sel { background: var(--accent); }
+.ch11-flat .legend i.ch11-sw-kid { background: color-mix(in srgb, var(--c-vel) 60%, transparent); }
+.ch11-flat .legend i.ch11-sw-cell { background: color-mix(in srgb, var(--c-hp) 60%, transparent); }
+.ch11-diagram { display: block; width: 100%; height: auto; margin: 1.5rem 0; }
+.ch11-diagram text { font-family: var(--font-mono); }
+@media print { .ch11-flat .ch11-tbl { max-height: none; overflow: visible; } }

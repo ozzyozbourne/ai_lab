@@ -1,0 +1,950 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>8. SIMD and Parallelism · Data-Oriented Design</title>
+<link rel="stylesheet" href="assets/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="assets/book.css">
+<link rel="stylesheet" href="assets/ch08.css">
+<script>window.Prism = { manual: true };</script>
+<script defer src="assets/vendor/prism/prism.min.js"></script>
+<script defer src="assets/vendor/prism/prism-rust.min.js"></script>
+<script defer src="assets/vendor/prism/prism-zig.min.js"></script>
+<script defer src="assets/vendor/prism/prism-odin.min.js"></script>
+<script defer src="assets/vendor/prism/prism-bash.min.js"></script>
+<script defer src="assets/book.js"></script>
+<script defer src="assets/data/bench-ch08.js"></script>
+<script defer src="assets/viz/bench-bars.js"></script>
+<script defer src="assets/viz/ch08-simd-lanes.js"></script>
+<script defer src="assets/viz/ch08-false-sharing.js"></script>
+</head>
+<body>
+<main>
+  <p class="kicker">Chapter 8</p>
+  <h1>SIMD and Parallelism</h1>
+  <p class="lede">A dot product of two 4,096-float arrays fits in the L1 cache with room to spare. Written the obvious way, in any of
+  our three languages, it runs at about <span data-bench-val="ch08-dot-l1" data-label="naive (1 accumulator)" data-lang="rust" data-metric="ns/n">1.2 ns</span> per element. That is roughly four clock cycles per multiply-add, on a core that
+  can start two vector loads and two 8-wide floating-point operations every cycle. The data is already in the fastest memory the machine has.
+  The loop is slow because every addition waits for the previous one to finish. Change one line so the additions no longer depend on each
+  other and the same loop runs <span data-bench-ratio="ch08-dot-l1" data-num="naive (1 accumulator)" data-den="8 accumulators" data-lang="rust">7×</span>
+  to <span data-bench-ratio="ch08-dot-l1" data-num="naive (1 accumulator)" data-den="explicit SIMD (4x8 lanes)" data-lang="zig">27×</span> faster. This chapter is about the two kinds of width a modern CPU offers, lanes inside one core
+  and cores inside one chip, and about the data layouts and code shapes that let you use them.</p>
+
+  <p>Chapters 3 to 7 made data smaller, put it in columns and made loops uniform. That pays off here: SIMD (single instruction,
+  multiple data) wants contiguous runs of one field, which SoA gives you (<a href="04-aos-soa-hot-cold.html">Chapter 4</a>), and threads want
+  disjoint chunks with no shared writes, which flat arrays give you. We will measure both, and find where they buy nothing.</p>
+
+  <h2 id="chain">One accumulator is a queue</h2>
+  <p>Here is the loop, in the form you would write it without thinking:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch08-simd-and-parallelism/rust/src/main.rs"><code class="language-rust">/// 1. The obvious loop: one accumulator, strict left-to-right order. Each add waits for the previous one.
+fn dot_naive(a: &amp;[f32], b: &amp;[f32]) -&gt; f32 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch08-simd-and-parallelism/zig/main.zig"><code class="language-zig">/// 1. The obvious loop: one accumulator, strict left-to-right order. Each add waits for the previous one.
+fn dotNaive(a: []const f32, b: []const f32) f32 {
+    var s: f32 = 0;
+    for (a, b) |x, y| s += x * y;
+    return s;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch08-simd-and-parallelism/odin/main.odin"><code class="language-odin">// 1. The obvious loop: one accumulator, strict left-to-right order. Each add waits for the previous one.
+dot_naive :: proc(a, b: []f32) -&gt; f32 {
+	s: f32
+	#no_bounds_check for x, i in a {
+		s += x * b[i]
+	}
+	return s
+}</code></pre>
+  </div>
+  <p>Each iteration does a multiply and an add. The multiplies are independent: <code>a[7] * b[7]</code> does not care about
+  <code>a[6] * b[6]</code>. The adds are not. The sum after element 7 is the sum after element 6 plus one product, so the add for element 7 cannot
+  start until the add for element 6 has produced its result. A floating-point add on recent Intel cores has a latency of about four cycles
+  and a throughput of two per cycle<a class="cite" href="#src-1">[1]</a>. The hardware could start eight adds in the time this loop finishes one.
+  An out-of-order core can run ahead on loads and multiplies, but every one of them ends up waiting in the same queue: the one register
+  called <code>s</code>.</p>
+
+  <svg class="ch08-diagram" viewBox="0 0 720 230" role="img" aria-label="Diagram: with one accumulator, eight adds form a chain of eight steps of four cycles each. With eight accumulators, eight adds run side by side in one step, and a final reduction combines them.">
+    <text x="0" y="18" style="font-weight:700">one accumulator: a chain of dependent adds</text>
+    <g>
+      <rect class="add" x="0" y="30" width="78" height="30" rx="5"/><text x="39" y="50" text-anchor="middle">s+=p0</text>
+      <rect class="add" x="90" y="30" width="78" height="30" rx="5"/><text x="129" y="50" text-anchor="middle">s+=p1</text>
+      <rect class="add" x="180" y="30" width="78" height="30" rx="5"/><text x="219" y="50" text-anchor="middle">s+=p2</text>
+      <rect class="add" x="270" y="30" width="78" height="30" rx="5"/><text x="309" y="50" text-anchor="middle">s+=p3</text>
+      <rect class="add" x="360" y="30" width="78" height="30" rx="5"/><text x="399" y="50" text-anchor="middle">s+=p4</text>
+      <rect class="add" x="450" y="30" width="78" height="30" rx="5"/><text x="489" y="50" text-anchor="middle">s+=p5</text>
+      <rect class="add" x="540" y="30" width="78" height="30" rx="5"/><text x="579" y="50" text-anchor="middle">s+=p6</text>
+      <rect class="add" x="630" y="30" width="78" height="30" rx="5"/><text x="669" y="50" text-anchor="middle">s+=p7</text>
+      <text class="dim" x="0" y="80">8 adds × ~4 cycles latency = ~32 cycles, one add in flight at a time</text>
+    </g>
+    <text x="0" y="118" style="font-weight:700">eight accumulators: independent chains, one vector add</text>
+    <g>
+      <rect class="add2" x="0" y="130" width="78" height="30" rx="5"/><text x="39" y="150" text-anchor="middle">s0+=p0</text>
+      <rect class="add2" x="90" y="130" width="78" height="30" rx="5"/><text x="129" y="150" text-anchor="middle">s1+=p1</text>
+      <rect class="add2" x="180" y="130" width="78" height="30" rx="5"/><text x="219" y="150" text-anchor="middle">s2+=p2</text>
+      <rect class="add2" x="270" y="130" width="78" height="30" rx="5"/><text x="309" y="150" text-anchor="middle">s3+=p3</text>
+      <rect class="add2" x="360" y="130" width="78" height="30" rx="5"/><text x="399" y="150" text-anchor="middle">s4+=p4</text>
+      <rect class="add2" x="450" y="130" width="78" height="30" rx="5"/><text x="489" y="150" text-anchor="middle">s5+=p5</text>
+      <rect class="add2" x="540" y="130" width="78" height="30" rx="5"/><text x="579" y="150" text-anchor="middle">s6+=p6</text>
+      <rect class="add2" x="630" y="130" width="78" height="30" rx="5"/><text x="669" y="150" text-anchor="middle">s7+=p7</text>
+      <text class="dim" x="0" y="182">all eight fit in one 256-bit register: one vaddps, ~4 cycles for 8 elements</text>
+      <text class="dim" x="0" y="204">four such registers keep four vector adds in flight: ~4 cycles for 32 elements</text>
+      <text class="dim" x="0" y="226">after the loop, add the lanes together once</text>
+    </g>
+  </svg>
+
+  <p>The fix is to keep several running sums. With eight accumulators, element <em>i</em> goes into sum <em>i</em> mod 8, and the eight
+  chains are independent. Now two things happen. The out-of-order core can overlap the chains, and, better, the eight sums fit exactly in one
+  256-bit register, so one <code>vaddps</code> instruction advances all eight at once. With four such registers (32 partial sums) there are four
+  independent vector chains, which is enough to hide the four-cycle latency completely. At that point the loop is limited by how fast it can
+  load data, two 32-byte loads per cycle, which is the ceiling we want to hit.</p>
+
+  <details class="predict"><summary>If the eight-accumulator version is so much better, why doesn&rsquo;t the compiler just rewrite the naive loop into it?</summary>
+    <p>Because it would change the answer. Floating-point addition is not associative: <code>(a + b) + c</code> and <code>a + (b + c)</code> can round
+    differently. Splitting one sum into eight and adding them up at the end is a reassociation, so a compiler that promises to give you exactly what
+    you wrote is not allowed to do it. The next section shows this is not a theoretical worry: every variant in this chapter returns different bits.</p></details>
+
+  <h2 id="when">When compilers vectorize</h2>
+  <p>An auto-vectorizer turns a scalar loop into one that handles <em>W</em> elements per iteration (plus a scalar tail). LLVM, which all three of
+  our compilers use, has two of them: the <em>loop vectorizer</em>, which widens whole loops, and the <em>SLP</em> (superword-level parallelism)
+  vectorizer, which packs similar straight-line operations into one vector instruction. Before either one may touch a loop it has to prove three
+  things (alignment is not one of them: compilers emit unaligned loads and move on).</p>
+  <ol>
+    <li><b>No aliasing that matters.</b> If <code>out</code> might overlap <code>in</code>, writing eight results at once could clobber inputs a
+    later lane still needs. Rust's <code>&amp;mut</code> and <code>&amp;</code> rules give the compiler this for free (an <code>&amp;mut [f32]</code>
+    cannot overlap anything else). Zig has <code>noalias</code> for pointer parameters. In C, and in Odin for raw pointers, the compiler may add a
+    runtime overlap check or give up.</li>
+    <li><b>A countable trip count.</b> The loop must run a number of times known on entry: a <code>for</code> over a slice is fine, a
+    <code>while</code> that exits when it finds a sentinel is not, because lane 5 might be past the end. Early <code>break</code>s and calls to
+    functions the compiler cannot see also stop it.</li>
+
+    <li><b>The reordering is legal.</b> For integers, <code>a + b + c</code> in any order gives the same bits (wrapping arithmetic is associative),
+    so integer sums vectorize with no help. For floats it does not, so a float reduction stays scalar unless you either write the reassociation
+    yourself or tell the compiler that you allow it.</li>
+  </ol>
+  <p>The third rule is why <code>xs.iter().sum::&lt;f32&gt;()</code> in Rust compiles to a chain of scalar <code>addss</code> instructions, even
+  with <code>-C target-cpu=native</code>, while the same code over <code>i32</code> compiles to packed <code>paddd</code>. We checked the assembly
+  for every variant in this chapter (<code>cargo rustc --release -- --emit asm</code>, <code>zig build-obj -femit-asm</code>, <code>odin build
+  -build-mode:asm</code>). Here is what each compiler did:</p>
+  <div class="table-wrap"><table>
+    <tr><th>variant</th><th>Rust 1.100 (baseline x86-64)</th><th>Zig 0.17.1 (native: Ice Lake)</th><th>Odin dev-2026-11 (x86-64-v2)</th></tr>
+    <tr><td>naive, one accumulator</td><td>scalar <code>addss</code></td><td>scalar <code>vaddss</code></td><td>scalar <code>addss</code></td></tr>
+    <tr><td>8 accumulators</td><td>packed SSE <code>addps</code>/<code>mulps</code></td><td>mostly scalar <code>vaddss</code> (SLP packed only the multiplies in part)</td><td>packed SSE <code>addps</code></td></tr>
+    <tr><td>reassociation allowed</td><td>packed SSE <code>addps</code> (<code>algebraic_add</code>)</td><td>scalar <code>vfmadd</code> chain (<code>@setFloatMode(.optimized)</code>)</td><td>packed SSE <code>addps</code> (<code>@(fast_math)</code>)</td></tr>
+    <tr><td>explicit SIMD</td><td>AVX2 <code>vaddps ymm</code></td><td><code>vaddps ymm</code></td><td>AVX2 <code>vaddps ymm</code> (dispatched)</td></tr>
+  </table></div>
+  <p>Two cells in the Zig column need explaining, and they are the same explanation.</p>
+
+  <p>Zig 0.17.1 ships with LLVM's loop vectorizer switched off (<a href="04-aos-soa-hot-cold.html#zig-loop-vectorizer">Chapter 4</a> has the
+  details<a class="cite" href="#src-2">[2]</a>), so a plain Zig loop stays scalar, and so does one under <code>@setFloatMode(.optimized)</code>: the
+  permission to reassociate is there, but the pass that would use it is not. LLVM still applies contraction, fusing each multiply and add into one
+  <code>vfmadd</code>, which rounds once instead of twice, so that variant returns different bits from the naive loop at the same speed. In Zig,
+  writing <code>@Vector</code> yourself is the idiom.</p>
+
+  <h3 id="accumulators">Reassociating by hand: eight accumulators</h3>
+  <p>The portable fix, which works in every language and every compiler, is to write the eight sums yourself. Rust's
+  <code>as_chunks::&lt;8&gt;()</code> (stable since 1.88) splits a slice into <code>&amp;[[f32; 8]]</code> plus a tail, so the chunk length is in the
+  type and the inner loop has no bounds checks. Zig and Odin write the index arithmetic out; Zig's <code>inline for</code> unrolls the eight
+  lanes at compile time.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch08-simd-and-parallelism/rust/src/main.rs"><code class="language-rust">/// 2. Eight accumulators: we reassociate by hand, so the compiler may put `acc` in SIMD lanes.
+fn dot_acc8(a: &amp;[f32], b: &amp;[f32]) -&gt; f32 {
+    let (ca, ta) = a.as_chunks::&lt;8&gt;();
+    let (cb, tb) = b.as_chunks::&lt;8&gt;();
+    let mut acc = [0.0_f32; 8];
+    for (x, y) in ca.iter().zip(cb) {
+        for ((s, x), y) in acc.iter_mut().zip(x).zip(y) {
+            *s += x * y;
+        }
+    }
+    let mut s = 0.0;
+    for v in acc {
+        s += v;
+    }
+    for (x, y) in ta.iter().zip(tb) {
+        s += x * y;
+    }
+    s
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch08-simd-and-parallelism/zig/main.zig"><code class="language-zig">/// 2. Eight accumulators: we reassociate by hand. (Zig 0.17.1 has LLVM's loop vectorizer off;
+/// the SLP vectorizer may still pack the eight independent adds into one register.)
+fn dotAcc8(a: []const f32, b: []const f32) f32 {
+    var acc: [8]f32 = @splat(0);
+    var i: usize = 0;
+    while (i + 8 &lt;= a.len) : (i += 8) {
+        inline for (0..8) |j| acc[j] += a[i + j] * b[i + j];
+    }
+    var s: f32 = 0;
+    for (acc) |v| s += v;
+    while (i &lt; a.len) : (i += 1) s += a[i] * b[i];
+    return s;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch08-simd-and-parallelism/odin/main.odin"><code class="language-odin">// 2. Eight accumulators: we reassociate by hand, so the compiler may put `acc` in SIMD lanes.
+dot_acc8 :: proc(a, b: []f32) -&gt; f32 {
+	acc: [8]f32
+	i := 0
+	#no_bounds_check for ; i + 8 &lt;= len(a); i += 8 {
+		for j in 0 ..&lt; 8 {
+			acc[j] += a[i + j] * b[i + j]
+		}
+	}
+	s: f32
+	for v in acc {
+		s += v
+	}
+	#no_bounds_check for ; i &lt; len(a); i += 1 {
+		s += a[i] * b[i]
+	}
+	return s
+}</code></pre>
+  </div>
+  <p>Notice the final combine: <code>for v in acc { s += v }</code> rather than <code>acc.iter().sum()</code> or <code>@reduce(.Add, ...)</code>.
+  An ordered left-to-right combine is spelled the same way in all three languages, so the three programs return the <em>same bits</em>, which is
+  how we check that they really compute the same thing. Zig's <code>@reduce(.Add, v)</code> on floats, by contrast, does not promise an order.</p>
+
+  <h3 id="algebraic">Giving permission: <code>algebraic_add</code>, <code>@(fast_math)</code>, <code>@setFloatMode</code></h3>
+  <p>The other route is to keep the simple loop and tell the compiler that you accept a different rounding. Each language scopes the permission
+  differently, which matters: a global <code>-ffast-math</code> in C also assumes there are no NaNs or infinities anywhere in the program, which is a
+  correctness hazard far from the loop you meant.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch08-simd-and-parallelism/rust/src/main.rs"><code class="language-rust">/// 4. The naive loop with algebraic ops (stable 1.98): the compiler may reassociate, so it vectorizes.
+fn dot_algebraic(a: &amp;[f32], b: &amp;[f32]) -&gt; f32 {
+    a.iter().zip(b).fold(0.0, |s, (x, y)| s.algebraic_add(x.algebraic_mul(*y)))
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch08-simd-and-parallelism/zig/main.zig"><code class="language-zig">/// 4. The naive loop with reassociation (and contraction) allowed for this one function.
+fn dotReassoc(a: []const f32, b: []const f32) f32 {
+    @setFloatMode(.optimized);
+    var s: f32 = 0;
+    for (a, b) |x, y| s += x * y;
+    return s;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch08-simd-and-parallelism/odin/main.odin"><code class="language-odin">// 4. The naive loop with reassociation allowed for this one procedure.
+@(fast_math = {.Allow_Reassoc})
+dot_reassoc :: proc(a, b: []f32) -&gt; f32 {
+	s: f32
+	#no_bounds_check for x, i in a {
+		s += x * b[i]
+	}
+	return s
+}</code></pre>
+  </div>
+  <aside class="callout version" data-title="New in Rust 1.98: algebraic float operations">
+    <p><code>f32::algebraic_add</code>, <code>algebraic_sub</code>, <code>algebraic_mul</code>, <code>algebraic_div</code> and
+    <code>algebraic_rem</code> (and the <code>f64</code>, <code>f16</code>, <code>f128</code> versions) were stabilized in Rust 1.98.0
+    (<code>#[stable(feature = "float_algebraic", since = "1.98.0")]</code> in <code>core/src/num/f32.rs</code>), and are
+    <code>const</code>-stable too<a class="cite" href="#src-3">[3]</a>. They are per-operation: only the adds and multiplies you wrote this way
+    may be reassociated or contracted, and the rest of your program keeps IEEE semantics. On 1.100 the fold above compiles to packed
+    <code>addps</code>; in this run it happened to pick the same 8-way split as our hand-written version, so at L1 size the two return identical
+  bits (at DRAM size they differ by one ulp; see below). That
+    is a coincidence of this compiler version, not a promise. Odin's <code>@(fast_math = {.Allow_Reassoc})</code> is per-procedure and lets you
+    choose flags one by one (<code>.No_NaNs</code>, <code>.Allow_Contract</code>, …). Zig's <code>@setFloatMode(.optimized)</code> is per scope and
+    enables the whole fast-math set.</p>
+  </aside>
+
+  <h2 id="explicit">Explicit SIMD in three languages</h2>
+  <p>Auto-vectorization is a negotiation with the optimizer. Explicit SIMD skips the negotiation: you name a vector type, load eight floats into it,
+  and do arithmetic on all eight. All three languages can do this; how they spell it says a lot about each language.</p>
+
+  <h3 id="zig-vector">Zig: <code>@Vector</code> is a builtin type</h3>
+  <p>In Zig a vector is a first-class type, <code>@Vector(8, f32)</code>, with the ordinary operators. An array coerces to a vector of the same
+  length, so <code>a[i..][0..8].*</code> (slice to array to vector) is one unaligned 256-bit load. Comparisons give <code>@Vector(8, bool)</code>,
+  and <code>@select</code>, <code>@reduce</code> and <code>@shuffle</code> cover the rest. <code>std.simd.suggestVectorLength(f32)</code> tells
+  you the width the standard library considers native: 8 here. The CPU has AVX-512, but LLVM's model of it sets <code>prefer_256_bit</code>, and
+  <code>std.simd</code> only suggests 512-bit vectors when that flag is absent. Our fixed width of 8 matches it, and the three programs do the same work.</p>
+  <div class="code-tabs">
+<pre data-lang="Zig" data-file="code/ch08-simd-and-parallelism/zig/main.zig"><code class="language-zig">const V = @Vector(8, f32);
+
+/// 3. Explicit SIMD: four @Vector(8, f32) accumulators (32 partial sums), four adds in flight at once.
+fn dotSimd(a: []const f32, b: []const f32) f32 {
+    var acc: [4]V = @splat(@splat(0));
+    var i: usize = 0;
+    while (i + 32 &lt;= a.len) : (i += 32) {
+        inline for (0..4) |k| {
+            const va: V = a[i + 8 * k ..][0..8].*; // slice → array → vector: one unaligned load
+            const vb: V = b[i + 8 * k ..][0..8].*;
+            acc[k] += va * vb;
+        }
+    }
+    const lanes: [8]f32 = ((acc[0] + acc[1]) + acc[2]) + acc[3];
+    var s: f32 = 0;
+    for (lanes) |l| s += l; // ordered, so the bits match Rust and Odin
+    while (i &lt; a.len) : (i += 1) s += a[i] * b[i];
+    return s;
+}</code></pre>
+  </div>
+
+  <h3 id="odin-simd">Odin: <code>#simd</code> and <code>core:simd</code></h3>
+  <p>Odin's vector type is <code>#simd[8]f32</code>, also with built-in operators, and the <code>core:simd</code> package wraps the intrinsics:
+  <code>lanes_gt</code>, <code>select</code>, <code>reduce_add_ordered</code>, <code>masked_load</code>, <code>gather</code> and more
+  <a class="cite" href="#src-5">[5]</a>. There are two Odin-specific details. First, <code>#simd[8]f32</code> has 32-byte alignment while a
+  <code>[]f32</code> element is only 4-byte aligned, so casting <code>&amp;a[i]</code> to <code>^V</code> and dereferencing it would assume an
+  alignment you do not have. Use <code>intrinsics.unaligned_load</code> (or <code>simd.from_slice</code>, which copies through an array). Second,
+  Odin's default target is <code>x86-64-v2</code> (&ldquo;close to Nehalem&rdquo;, SSE4.2, no AVX)<a class="cite" href="#src-6">[6]</a>, so a
+  <code>#simd[8]f32</code> is lowered to two 128-bit halves unless you opt in. The opt-in is a procedure attribute,
+  <code>@(enable_target_feature = "avx2")</code>, which compiles one procedure for AVX2 while the rest of the program stays portable. The caller
+  checks the CPU once with <code>core:sys/info</code>:</p>
+  <div class="code-tabs">
+<pre data-lang="Odin" data-file="code/ch08-simd-and-parallelism/odin/main.odin"><code class="language-odin">V :: #simd[8]f32
+
+// 3. Explicit SIMD: four #simd[8]f32 accumulators (32 partial sums), four adds in flight at once.
+// Written once; the AVX2 wrapper below compiles the same body with 256-bit registers.
+dot_lanes :: #force_inline proc "contextless" (a, b: []f32) -&gt; f32 {
+	acc: [4]V
+	i := 0
+	#no_bounds_check for ; i + 32 &lt;= len(a); i += 32 {
+		#unroll for k in 0 ..&lt; 4 {
+			// slice elements are only 4-byte aligned, #simd[8]f32 wants 32: use unaligned loads
+			va := intrinsics.unaligned_load((^V)(&amp;a[i + 8 * k]))
+			vb := intrinsics.unaligned_load((^V)(&amp;b[i + 8 * k]))
+			acc[k] += va * vb
+		}
+	}
+	lanes := simd.to_array(((acc[0] + acc[1]) + acc[2]) + acc[3])
+	s: f32
+	for l in lanes {
+		s += l // ordered, so the bits match Rust and Zig
+	}
+	#no_bounds_check for ; i &lt; len(a); i += 1 {
+		s += a[i] * b[i]
+	}
+	return s
+}
+
+@(enable_target_feature = "avx2")
+dot_avx2 :: proc "contextless" (a, b: []f32) -&gt; f32 {
+	return dot_lanes(a, b)
+}
+
+// Odin's default target is x86-64-v2 (SSE4.2), so #simd[8]f32 is two 128-bit halves unless we opt in.
+// Runtime dispatch: checked once at startup, because cpuid is slow (and traps in a VM).
+has_avx2: bool
+
+dot_simd :: proc(a, b: []f32) -&gt; f32 {
+	return has_avx2 ? dot_avx2(a, b) : dot_lanes(a, b)
+}</code></pre>
+  </div>
+  <p><code>dot_lanes</code> is <code>#force_inline</code>, so each caller gets its own copy compiled with its own target features: inside
+  <code>dot_avx2</code> it becomes 256-bit <code>vaddps ymm</code>; in the fallback it becomes pairs of SSE <code>addps</code>. One body, two
+  instruction sets.</p>
+
+  <h3 id="rust-arch">Rust: <code>std::arch</code>, <code>#[target_feature]</code>, runtime detection</h3>
+  <p>Stable Rust has no portable vector type. What it has is <code>std::arch::x86_64</code>: every Intel intrinsic, by its Intel name
+  (<code>_mm256_add_ps</code>), working on opaque register types like <code>__m256</code>. You compile a function for AVX2 with
+  <code>#[target_feature(enable = "avx2")]</code>, check at run time with <code>is_x86_feature_detected!("avx2")</code>, and fall back to portable
+  code otherwise. Calling the AVX2 function is <code>unsafe</code>, because calling it on a CPU without AVX2 would execute illegal instructions; the
+  runtime check is what makes the call sound.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch08-simd-and-parallelism/rust/src/main.rs"><code class="language-rust">/// 3a. Explicit AVX2: four 8-lane accumulators (32 partial sums) so four adds are in flight at once.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+fn dot_avx2(a: &amp;[f32], b: &amp;[f32]) -&gt; f32 {
+    use std::arch::x86_64::*;
+    let (ca, ta) = a.as_chunks::&lt;32&gt;();
+    let (cb, tb) = b.as_chunks::&lt;32&gt;();
+    let mut acc = [_mm256_setzero_ps(); 4];
+    for (x, y) in ca.iter().zip(cb) {
+        for (k, acc) in acc.iter_mut().enumerate() {
+            // SAFETY: x and y are [f32; 32], so lanes 8k..8k+8 are in bounds; loadu needs no alignment.
+            let (vx, vy) = unsafe { (_mm256_loadu_ps(x.as_ptr().add(8 * k)), _mm256_loadu_ps(y.as_ptr().add(8 * k))) };
+            *acc = _mm256_add_ps(*acc, _mm256_mul_ps(vx, vy)); // value-only intrinsics are safe here (1.87+)
+        }
+    }
+    let v = _mm256_add_ps(_mm256_add_ps(_mm256_add_ps(acc[0], acc[1]), acc[2]), acc[3]);
+    let mut lanes = [0.0_f32; 8];
+    // SAFETY: `lanes` has room for 8 f32; storeu needs no alignment.
+    unsafe { _mm256_storeu_ps(lanes.as_mut_ptr(), v) };
+    let mut s = 0.0;
+    for l in lanes {
+        s += l;
+    }
+    for (x, y) in ta.iter().zip(tb) {
+        s += x * y;
+    }
+    s
+}
+
+/// 3. Runtime dispatch: AVX2 if this CPU has it, the portable version otherwise.
+fn dot_simd(a: &amp;[f32], b: &amp;[f32]) -&gt; f32 {
+    #[cfg(target_arch = "x86_64")]
+    if is_x86_feature_detected!("avx2") {
+        // SAFETY: we just checked at run time that the CPU supports AVX2.
+        return unsafe { dot_avx2(a, b) };
+    }
+    dot_acc32(a, b)
+}</code></pre>
+  </div>
+  <aside class="callout version" data-title="Changed in Rust 1.86 and 1.87: less unsafe">
+    <p>Since 1.86, a <code>#[target_feature]</code> function may itself be a safe <code>fn</code>; only calling it from code without the feature needs
+    <code>unsafe</code>. Since 1.87, intrinsics that only take and return values (<code>_mm256_add_ps</code>, <code>_mm256_mul_ps</code>) are safe
+    to call inside such a function. What remains <code>unsafe</code> is what should be: raw-pointer loads and stores (<code>_mm256_loadu_ps</code>)
+    and the dispatch call<a class="cite" href="#src-4">[4]</a>. Older code wraps the whole body in <code>unsafe { }</code>; you no longer need to.</p>
+  </aside>
+  <p>The scalar fallback, <code>dot_acc32</code>, keeps the same 4×8 accumulator layout and the same combine order, and the program asserts that it
+  returns the same bits as <code>dot_avx2</code>. That assertion is worth having in real code: a SIMD path that silently disagrees with its
+  fallback is a bug that only shows up on someone else's machine.</p>
+
+  <aside class="callout pitfall" data-title="std::simd is still nightly-only">
+    <p>Rust's portable SIMD module, <code>std::simd</code>, is <code>#[unstable(feature = "portable_simd", issue = "86656")]</code> in 1.100 and does
+    not compile on stable<a class="cite" href="#src-7">[7]</a>. It looks like this. The snippet is shown for comparison only; it is <em>not</em> part of
+    the book's compiled code, because it needs a nightly toolchain:</p>
+<pre><code class="language-rust">// nightly only: rustup run nightly cargo run   (not built by run_all.sh)
+#![feature(portable_simd)]
+use std::simd::prelude::*;
+
+fn dot(a: &amp;[f32], b: &amp;[f32]) -&gt; f32 {
+    let (ca, ta) = a.as_chunks::&lt;8&gt;();
+    let (cb, tb) = b.as_chunks::&lt;8&gt;();
+    let mut acc = f32x8::splat(0.0);
+    for (x, y) in ca.iter().zip(cb) {
+        acc += f32x8::from_array(*x) * f32x8::from_array(*y);
+    }
+    acc.reduce_sum() + ta.iter().zip(tb).map(|(x, y)| x * y).sum::&lt;f32&gt;()
+}</code></pre>
+    <p>It is close to Zig's <code>@Vector</code> and Odin's <code>#simd</code>. Until it stabilizes, stable Rust code either uses
+    <code>std::arch</code> as above, or writes the accumulator arrays and lets LLVM vectorize them, or uses a crate such as <code>wide</code>.</p>
+  </aside>
+
+  <h3 id="widths">Which width? AVX-512 here, AVX2 as the baseline</h3>
+  <p>This orb is an Ice Lake server and has AVX-512 (16 floats per register, plus mask registers). The book still targets AVX2 (8 floats) for
+  explicit code. AVX2 (part of the <code>x86-64-v3</code> level) is in almost every desktop, laptop and server x86-64 CPU since Haswell (2013),
+  though some low-end Atom-based Pentium and Celeron chips still lack it, which is why the code keeps a runtime check and a fallback. AVX-512 is
+  missing from most Intel client chips and differs across AMD generations (<a href="02-the-machine.html#simd">Chapter 2</a> has the table). And as
+  the measurements show, 8 lanes are already enough to hit the load limit.</p>
+  <p>If you only run on the machine you compile on, you can let the compiler use everything it has: <code>RUSTFLAGS="-C target-cpu=native"</code>
+  for Rust, <code>-mcpu=native</code> for Zig (its default when you compile for the host, which is why Zig's column above says Ice Lake), and
+  <code>-microarch:native</code> for Odin. The binaries may then crash on an older CPU: Rust's default is the most portable (SSE2), Odin's is in the middle (SSE4.2), Zig's assumes the host.</p>
+
+  <h2 id="measured-dot">Measured: four dot products at three sizes</h2>
+  <p>The program computes the same dot product four ways over arrays of three sizes: 4,096 floats per array (32 KiB for both arrays, inside the
+  48 KiB L1d), 65,536 floats (512 KiB, inside the 1.25 MiB L2), and a DRAM control of 16 M floats per array (128 MiB, far past any L3). Small
+  sizes are repeated so every measurement does the same 16 M multiply-adds. The harness is the one from
+  <a href="02-the-machine.html#harness">Chapter 2</a>: one warm-up, median of seven, and the result is kept alive. Data comes from the same
+  integer hash in all three languages, so the inputs are bit-identical.</p>
+  <figure class="figure wide" id="fig-dot-l1">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch08-dot-l1" data-opts='{"metric":"ns/n","per":"elem","labels":["naive (1 accumulator)","8 accumulators","reassociation allowed","explicit SIMD (4x8 lanes)"]}'></div>
+    <figcaption>Dot product, L1-resident (2 × 16 KiB), nanoseconds per element. The naive loop runs at the latency of one add per
+    element in every language. Everything that breaks the chain is several times to tens of times faster. Zig's &ldquo;reassociation allowed&rdquo;
+    bar stays with the naive one because its loop vectorizer is off. The default targets differ (Rust SSE2, Odin SSE4.2, Zig the native CPU), so
+    compare languages with care. All of this chapter's numbers come from one 4-vCPU KVM Xeon (Ice Lake) and are noisy.</figcaption>
+  </figure>
+
+  <h3 id="worked">A worked example with real numbers</h3>
+  <p>Take the Rust row at L1 size. The naive loop takes <span data-bench-ratio="ch08-dot-l1" data-num="naive (1 accumulator)" data-den="8 accumulators" data-lang="rust">about 7×</span>
+  as long as eight accumulators and <span data-bench-ratio="ch08-dot-l1" data-num="naive (1 accumulator)" data-den="explicit SIMD (4x8 lanes)" data-lang="rust">about 13×</span>
+  as long as explicit AVX2. In absolute terms the naive loop took
+  <span data-bench-val="ch08-dot-l1" data-label="naive (1 accumulator)" data-lang="rust" data-metric="ns/n" data-digits="3">1.21 ns</span> per element.
+  This orb's clock is not exposed (no performance counters), but at 2.6 to 3.5 GHz that is about 3 to 4 cycles: one add latency per element, as
+  the chain predicts.</p>
+  <p>Now the explicit SIMD loop. Per 32 elements it does 8 loads of 32 bytes, 4 multiplies and 4 adds. Ice Lake can issue two loads per cycle, so
+  the loads alone need 4 cycles per 32 elements, or 0.125 cycles per element: about 0.04 ns at 3 GHz. Zig's explicit loop measured
+  <span data-bench-val="ch08-dot-l1" data-label="explicit SIMD (4x8 lanes)" data-lang="zig" data-metric="ns/n">0.044 ns</span> per element,
+  within about 1.5× of that ceiling. Rust's and Odin's explicit loops came in at
+  <span data-bench-val="ch08-dot-l1" data-label="explicit SIMD (4x8 lanes)" data-lang="rust" data-metric="ns/n">0.095 ns</span> and
+  <span data-bench-val="ch08-dot-l1" data-label="explicit SIMD (4x8 lanes)" data-lang="odin" data-metric="ns/n">0.14 ns</span>. For Odin the
+  assembly shows why: <code>@(enable_target_feature = "avx2")</code> enables the instructions but keeps the x86-64-v2 tuning, which treats
+  unaligned 32-byte loads as slow, so LLVM splits each one into a 16-byte <code>vmovups</code> plus <code>vinsertf128</code>. That doubles
+  the load count and halves the ceiling, to about 0.08 ns. Rust's gap we did not track down. The solid ratio is the one all three agree on:
+  breaking the chain is worth about an order of magnitude, and 32 AVX2 lanes are worth another
+  <span data-bench-ratio="ch08-dot-l1" data-num="8 accumulators" data-den="explicit SIMD (4x8 lanes)" data-lang="odin">1.1×</span> (Odin) to
+  <span data-bench-ratio="ch08-dot-l1" data-num="8 accumulators" data-den="explicit SIMD (4x8 lanes)" data-lang="zig">3.2×</span> (Zig) while the
+  data is in L1.</p>
+
+  <figure class="figure wide" id="fig-dot-dram">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch08-dot-dram" data-opts='{"metric":"ns/n","per":"elem","labels":["naive (1 accumulator)","8 accumulators","reassociation allowed","explicit SIMD (4x8 lanes)"]}'></div>
+    <figcaption>The DRAM control: 2 × 64 MiB arrays read once. Every variant that vectorizes lands at about the same speed, because they all wait
+    for memory. SIMD buys only about
+    <span data-bench-ratio="ch08-dot-dram" data-num="naive (1 accumulator)" data-den="explicit SIMD (4x8 lanes)" data-lang="rust">1.8×</span> here.</figcaption>
+  </figure>
+  <p>At DRAM size the picture flattens. Each element is 8 bytes of input (one float from each array), and explicit SIMD sits at about
+  <span data-bench-val="ch08-dot-dram" data-label="explicit SIMD (4x8 lanes)" data-lang="rust" data-metric="ns/n">0.77 ns</span> per element in
+  Rust: roughly 10 GB/s from one core for this two-stream read (other workloads in this book reach different rates). The naive loop is
+  still slower (<span data-bench-val="ch08-dot-dram" data-label="naive (1 accumulator)" data-lang="rust" data-metric="ns/n">1.4 ns</span>), because four cycles per element is slower
+  than DRAM can feed one core, but explicit AVX2 is now no faster than eight accumulators. <span data-bench-ratio="ch08-dot-dram" data-num="naive (1 accumulator)" data-den="explicit SIMD (4x8 lanes)" data-lang="rust">About 1.8×</span>
+  is all SIMD buys when the loop is memory-bound. This is the same lesson as <a href="02-the-machine.html#mlp">Chapter 2's bandwidth section</a>
+  from the other direction: SIMD makes computation cheap, and once computation is cheap, the bytes are all that is left. The layout work of
+  Chapters 3 and 4, fewer bytes per element, is what helps a memory-bound loop.</p>
+
+  <h3 id="bits">The answers differ, and that is fine (mostly)</h3>
+  <p>Every variant was checked against a sum computed in <code>f64</code>. All three languages agree bit for bit on each variant, and the variants
+  disagree with each other:</p>
+  <div class="table-wrap"><table>
+    <tr><th>variant (identical in Rust, Zig, Odin)</th><th class="num">L1: 4,096 elements</th><th class="num">|error|</th><th class="num">DRAM: 16 M elements</th><th class="num">|error|</th></tr>
+    <tr><td>f64 reference</td><td class="num">−7.886158</td><td class="num"></td><td class="num">−987.909446</td><td class="num"></td></tr>
+    <tr><td>naive, 1 accumulator</td><td class="num">−7.886168</td><td class="num">1.0e−5</td><td class="num">−987.994690</td><td class="num">8.5e−2</td></tr>
+    <tr><td>8 accumulators</td><td class="num">−7.886152</td><td class="num">5.4e−6</td><td class="num">−987.918823</td><td class="num">9.4e−3</td></tr>
+    <tr><td>explicit SIMD, 4×8 lanes</td><td class="num">−7.886162</td><td class="num">4.1e−6</td><td class="num">−987.920776</td><td class="num">1.1e−2</td></tr>
+    <tr><td>Rust algebraic / Odin fast_math</td><td class="num">−7.886152</td><td class="num">5.4e−6</td><td class="num">−987.918884</td><td class="num">9.4e−3</td></tr>
+    <tr><td>Zig <code>.optimized</code> (scalar FMA)</td><td class="num">−7.886160</td><td class="num">2.7e−6</td><td class="num">−987.996030</td><td class="num">8.7e−2</td></tr>
+  </table></div>
+  <p>Two things to notice. First, reassociation did not make the answer worse; at 16 M elements the single accumulator is about nine times
+  <em>less</em> accurate than eight, because a running sum that has grown large loses the low bits of every small product added to it. Splitting
+  the sum into partial sums is a crude form of pairwise summation. Second, &ldquo;reassociation allowed&rdquo; is not a stable spec: Rust's algebraic
+  version matched the 8-accumulator bits at L1 size and missed by one ulp at DRAM size, because LLVM is free to pick a different split. If you need
+  reproducible results (lockstep networking, golden test files), write the accumulators yourself and fix the combine order, as the programs do.
+  If you only need a good answer, any of the vectorized variants is better than the naive one.</p>
+
+  <h2 id="masks">Branches become masks</h2>
+  <p>So far every lane did the same thing. Real loops have conditions. Say we want the sum and the count of the positive values. The scalar
+  version is a branch per element, and with random signs that branch is a coin flip the predictor cannot learn
+  (<a href="07-branches-batches-existence.html">Chapter 7</a> measures exactly how much that costs). A vector loop cannot branch per lane at all,
+  since all eight lanes run one instruction stream. So it does what Chapter 7 calls branch-free selection, eight times at once: compute a
+  <em>mask</em> (all ones in each lane where <code>x &gt; 0</code>, all zeros elsewhere), then use the mask to keep <code>x</code> or replace it
+  with zero, and add everything. The work for the lanes that &ldquo;didn't take the branch&rdquo; is wasted, and that is the price of having no
+  branch to mispredict.</p>
+  <figure class="figure wide" id="fig-lanes">
+    <div class="figure-body" data-viz="ch08-simd-lanes" data-opts='{}'></div>
+    <figcaption>The same 16 values summed two ways. Toggle <b>Scalar + branch</b> to step one element at a time: count the data-dependent branches
+    and how often the outcome flips. <b>8 lanes + mask</b> does the compare for 8 elements at once, the mask decides which lanes add zero, and one
+    reduction at the end gives the same sum. Every counter is computed from the model.</figcaption>
+  </figure>
+  <p>In code the mask is a compare instruction whose result is a vector, not a flag. Zig's <code>v &gt; zero</code> has type
+  <code>@Vector(8, bool)</code> and goes straight into <code>@select</code>. Odin's <code>simd.lanes_gt</code> returns an integer vector of
+  all-ones/all-zeros, so the count is <code>m &amp; 1</code>. In Rust's AVX2 version the mask is a <code>__m256</code> of bit patterns; ANDing
+  it with <code>x</code> keeps <code>x</code> or gives <code>+0.0</code>, and since all-ones is −1 as an integer, subtracting the mask counts.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch08-simd-and-parallelism/rust/src/main.rs"><code class="language-rust">/// Branch-free lanes, AVX2: compare makes a mask (all ones where x &gt; 0); AND keeps x or 0.0.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+fn pos_avx2(a: &amp;[f32]) -&gt; (f32, u32) {
+    use std::arch::x86_64::*;
+    let (chunks, tail) = a.as_chunks::&lt;8&gt;();
+    let zero = _mm256_setzero_ps();
+    let (mut s, mut c) = (zero, _mm256_setzero_si256());
+    for x in chunks {
+        // SAFETY: x is [f32; 8]; loadu needs no alignment.
+        let v = unsafe { _mm256_loadu_ps(x.as_ptr()) };
+        let m = _mm256_cmp_ps::&lt;_CMP_GT_OQ&gt;(v, zero); // lane = 0xFFFF_FFFF where x &gt; 0, else 0
+        s = _mm256_add_ps(s, _mm256_and_ps(v, m)); // x where true, +0.0 where false
+        c = _mm256_sub_epi32(c, _mm256_castps_si256(m)); // all ones is -1, so subtracting counts
+    }
+    let (mut sl, mut cl) = ([0.0_f32; 8], [0_u32; 8]);
+    // SAFETY: both arrays hold exactly 8 lanes; storeu needs no alignment.
+    unsafe {
+        _mm256_storeu_ps(sl.as_mut_ptr(), s);
+        _mm256_storeu_si256(cl.as_mut_ptr().cast(), c);
+    }
+    let (mut s, mut c) = (0.0, 0);
+    for j in 0..8 {
+        s += sl[j];
+        c += cl[j];
+    }
+    let (ts, tc) = pos_branchy(tail);
+    (s + ts, c + tc)
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch08-simd-and-parallelism/zig/main.zig"><code class="language-zig">/// Branch-free lanes: `v &gt; zero` is a @Vector(8, bool) mask; @select keeps x or 0.0 per lane.
+fn posMask(a: []const f32) Pos {
+    const zero: V = @splat(0);
+    const U = @Vector(8, u32);
+    var s: V = zero;
+    var c: U = @splat(0);
+    var i: usize = 0;
+    while (i + 8 &lt;= a.len) : (i += 8) {
+        const v: V = a[i..][0..8].*;
+        const m = v &gt; zero;
+        s += @select(f32, m, v, zero);
+        c += @select(u32, m, @as(U, @splat(1)), @as(U, @splat(0)));
+    }
+    const sl: [8]f32 = s;
+    var r: Pos = .{ .sum = 0, .count = @reduce(.Add, c) };
+    for (sl) |l| r.sum += l;
+    const t = posBranchy(a[i..]);
+    return .{ .sum = r.sum + t.sum, .count = r.count + t.count };
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch08-simd-and-parallelism/odin/main.odin"><code class="language-odin">// Branch-free lanes: lanes_gt gives all-ones where x &gt; 0; select keeps x or 0.0 per lane.
+pos_mask :: proc(a: []f32) -&gt; (r: Pos) {
+	U :: #simd[8]u32
+	zero: V
+	s: V
+	c: U
+	i := 0
+	#no_bounds_check for ; i + 8 &lt;= len(a); i += 8 {
+		v := intrinsics.unaligned_load((^V)(&amp;a[i]))
+		m := simd.lanes_gt(v, zero) // #simd[8]u32: 0xFFFF_FFFF or 0
+		s += simd.select(m, v, zero)
+		c += m &amp; U(1)
+	}
+	for l in simd.to_array(s) {
+		r.sum += l
+	}
+	r.count = simd.reduce_add_ordered(c)
+	t := pos_branchy(a[i:])
+	return {r.sum + t.sum, r.count + t.count}
+}</code></pre>
+  </div>
+  <figure class="figure wide" id="fig-mask">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch08-mask" data-opts='{"metric":"ns/n","per":"elem","labels":["branchy scalar","8-lane mask"]}'></div>
+    <figcaption>Sum and count of positives over 65,536 random floats (L2-resident). Rust's and Odin's branchy loops pay for a coin-flip branch on
+    every element. Zig's &ldquo;branchy&rdquo; loop was compiled without a branch (see the text), which is why its bar is short.</figcaption>
+  </figure>
+  <p>Rust and Odin compiled the branchy loop as written: a compare, a conditional jump and an add. With random signs, about half of those jumps
+  mispredict, and the loop runs at about
+  <span data-bench-val="ch08-mask" data-label="branchy scalar" data-lang="rust" data-metric="ns/n">4.6 ns</span> per element in Rust. The 8-lane mask
+  version runs at <span data-bench-val="ch08-mask" data-label="8-lane mask" data-lang="rust" data-metric="ns/n">0.15 ns</span> (Rust) and
+  <span data-bench-val="ch08-mask" data-label="8-lane mask" data-lang="odin" data-metric="ns/n">0.34 ns</span> (Odin): <span data-bench-ratio="ch08-mask" data-num="branchy scalar" data-den="8-lane mask" data-lang="rust">about 30×</span>
+  for Rust. Zig is the honest exception. Because Zig compiled for this Ice Lake with AVX-512, LLVM turned the <code>if</code> into a scalar compare
+  that writes an AVX-512 <em>mask register</em> (<code>vucomiss</code>, <code>seta</code>, <code>kmovd</code>) and a masked add. There is no
+  branch left to mispredict, so Zig's scalar loop already runs at
+  <span data-bench-val="ch08-mask" data-label="branchy scalar" data-lang="zig" data-metric="ns/n">0.40 ns</span>, and its explicit mask version at
+  <span data-bench-val="ch08-mask" data-label="8-lane mask" data-lang="zig" data-metric="ns/n">0.10 ns</span>. The lesson is not that Zig
+  predicts better; it is that &ldquo;branchy&rdquo; source does not guarantee branchy machine code, so look at the assembly before you explain a
+  number.</p>
+
+  <h2 id="threads">Threads: split the arrays, not the objects</h2>
+  <p>SIMD is width inside one core. Threads are width across cores. DOD's contribution to threading is simple and very effective: if the state is
+  a set of flat arrays and the update is the same for every element, then splitting the arrays into contiguous chunks and giving one chunk to each
+  thread needs no locks, no atomics and no shared writes. Each thread streams its own cache lines. The only coordination is &ldquo;start&rdquo; and
+  &ldquo;wait for all&rdquo;.</p>
+  <p>Our kernel is the SoA particle step from Chapter 4, shrunk to two dimensions: <code>x += vx * dt; y += vy * dt</code> over four columns. All
+  three languages split the same way: they round the chunk length up to a multiple of 32 floats (128 bytes) <em>and</em> start every column on a
+  128-byte boundary, so that no two threads ever write into the same 128-byte pair of cache lines. Rounding the length alone is not enough, since
+  ordinary allocations are only 4- or 16-byte aligned and the boundaries would then fall inside a pair. Rust allocates each column with 31 floats of
+  slack and starts at the first aligned element, Zig uses <code>gpa.alignedAlloc(f32, .fromByteUnits(std.atomic.cache_line), n)</code> (128 on x86-64), and Odin uses
+  <code>make_soa_aligned(#soa[]Particle, n, 128)</code>. The next section explains why 128 and not 64.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch08-simd-and-parallelism/rust/src/main.rs"><code class="language-rust">/// Split the SoA columns into `threads` disjoint chunks (whole multiples of 32 floats = 128 B; the columns
+/// are 128-byte aligned, so no two threads write the same cache-line pair), and let each thread run `passes` steps over its chunk.
+fn step_parallel(x: &amp;mut [f32], y: &amp;mut [f32], vx: &amp;[f32], vy: &amp;[f32], threads: usize, passes: usize) {
+    let chunk = x.len().div_ceil(threads).next_multiple_of(32);
+    thread::scope(|s| {
+        let cols = x.chunks_mut(chunk).zip(y.chunks_mut(chunk)).zip(vx.chunks(chunk)).zip(vy.chunks(chunk));
+        for (((x, y), vx), vy) in cols {
+            s.spawn(move || {
+                for _ in 0..passes {
+                    step(x, y, vx, vy);
+                }
+            });
+        }
+    });
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch08-simd-and-parallelism/zig/main.zig"><code class="language-zig">/// Split the columns into `threads` disjoint chunks (whole multiples of 32 floats = 128 B; the columns are
+/// 128-byte aligned, so no two threads write the same cache-line pair), one std.Thread each, then join them all.
+fn stepParallel(s: Soa, threads: usize, passes: usize) void {
+    const chunk = std.mem.alignForward(usize, std.math.divCeil(usize, s.x.len, threads) catch unreachable, 32);
+    var pool: [8]std.Thread = undefined;
+    var spawned: usize = 0;
+    var lo: usize = 0;
+    while (lo &lt; s.x.len) : (lo += chunk) {
+        const hi = @min(lo + chunk, s.x.len);
+        const part: Soa = .{ .x = s.x[lo..hi], .y = s.y[lo..hi], .vx = s.vx[lo..hi], .vy = s.vy[lo..hi] };
+        pool[spawned] = std.Thread.spawn(.{}, worker, .{ part, passes }) catch @panic("spawn failed");
+        spawned += 1;
+    }
+    for (pool[0..spawned]) |t| t.join();
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch08-simd-and-parallelism/odin/main.odin"><code class="language-odin">// One particle step over a chunk: x += vx·dt, y += vy·dt. Columns hoisted into locals first.
+worker :: proc(c: Chunk) {
+	n := len(c.p)
+	xs, ys, vxs, vys := c.p.x[:n], c.p.y[:n], c.p.vx[:n], c.p.vy[:n]
+	for _ in 0 ..&lt; c.passes {
+		#no_bounds_check for i in 0 ..&lt; n {
+			xs[i] += vxs[i] * DT
+			ys[i] += vys[i] * DT
+		}
+	}
+}
+
+// Split the #soa slice into `threads` disjoint chunks (whole multiples of 32 elements, so every column
+// chunk is a multiple of 128 B; make_particles aligns each column to 128 B, so no two threads write the
+// same cache-line pair).
+step_parallel :: proc(p: #soa[]Particle, threads, passes: int) {
+	chunk := ((len(p) + threads - 1) / threads + 31) &amp;~ 31
+	pool: [8]^thread.Thread
+	k := 0
+	for lo := 0; lo &lt; len(p); lo += chunk {
+		hi := min(lo + chunk, len(p))
+		pool[k] = thread.create_and_start_with_poly_data(Chunk{p[lo:hi], passes}, worker)
+		k += 1
+	}
+	thread.join_multiple(..pool[:k])
+	for t in pool[:k] {
+		thread.destroy(t)
+	}
+}</code></pre>
+  </div>
+  <ul>
+    <li><b>Rust: <code>std::thread::scope</code></b> (stable since 1.63)<a class="cite" href="#src-8">[8]</a> lets threads borrow local data, and
+    <code>chunks_mut</code> hands each an <code>&amp;mut</code> to a disjoint piece: the borrow checker <em>proves</em> the pieces don't overlap.
+    (In production, <code>rayon</code>'s <code>par_chunks_mut</code> adds work stealing.)</li>
+    <li><b>Zig: <code>std.Thread.spawn</code></b> with a function and an argument tuple, then <code>join</code>. Nothing checks that the chunks
+    are disjoint; it's the code's job.</li>
+    <li><b>Odin: <code>thread.create_and_start_with_poly_data</code></b> passes one <code>Chunk</code> (slicing an <code>#soa</code> slice slices
+    every column at once) to a typed procedure; <code>join_multiple</code> and <code>destroy</code> finish up<a class="cite" href="#src-9">[9]</a>.
+    The worker hoists the column slices into locals, which matters in Odin
+    (<a href="04-aos-soa-hot-cold.html#odin-hoist-slices">Chapter 4</a> explains why).</li>
+  </ul>
+  <aside class="callout version" data-title="Changed in Zig 0.16: Thread.Pool is gone, and io.async is not a thread">
+    <p>Zig 0.16 removed <code>std.Thread.Pool</code>, <code>Mutex</code>, <code>WaitGroup</code> and friends in favour of the <code>std.Io</code>
+    interface<a class="cite" href="#src-10">[10]</a>. <code>io.async</code> expresses <em>asynchrony</em>, not parallelism: an implementation may run
+    the function inline, so a benchmark that must use two cores uses <code>std.Thread.spawn</code>, which still means one OS thread.</p>
+  </aside>
+  <p>Every run checks that the thread count does not change the result: the particles are stepped three times with 1, 2 and 4 threads, and the
+  checksum of the output bits is the same (<code>446be9f861039fff</code>) in all nine runs, three languages × three thread counts. </p>
+
+  <h2 id="false-sharing">False sharing: when threads fight over a line they don't share</h2>
+  <p>Coherence works in whole cache lines. When a core writes to a line, every other core's copy of that line must be invalidated first; when another
+  core then writes to the same line, ownership moves back. That is correct and necessary when two threads write the same variable. It is pure waste
+  when they write <em>different</em> variables that happen to share a line: per-thread counters in one array, a queue's head and tail pointers
+  declared next to each other, a struct of per-worker stats. Nothing is logically shared, and the line bounces anyway. Drepper measured this on a
+  four-socket Pentium 4 in 2007: threads incrementing their own variables on one shared line took 390%, 734% and 1,147% longer with 2, 3 and 4
+  threads than with the variables on separate lines<a class="cite" href="#src-11">[11]</a>.</p>
+  <figure class="figure wide" id="fig-fs">
+    <div class="figure-body" data-viz="ch08-false-sharing" data-opts='{}'></div>
+    <figcaption>Two cores alternate writes to their own counters. In <b>same line</b>, every write after the first two is a core-to-core transfer
+    and an invalidation. <b>Padded 64 B</b> puts the counters on adjacent lines; with the spatial prefetcher on, the first misses still snoop the
+    other core's line once. <b>Padded 128 B</b> puts them in different 128-byte pairs: after two cold misses, every write is an L1 hit. Toggle the
+    prefetcher to see which costs come from it. The counters come from a small MSI model replayed from the start.</figcaption>
+  </figure>
+  <details class="predict"><summary>In the figure, with 16 alternating writes and the counters in the same line, how many invalidations will the model count?</summary>
+    <p>15. The first write is a cold miss from memory; each of the other 15 finds the line Modified in the other core, takes it, and invalidates the
+    other copy. With 128-byte padding the count is 0: each core takes its line once and then only hits.</p></details>
+
+  <h3 id="prefetch-pair">Why 128 bytes: the adjacent-line prefetcher</h3>
+  <p>Cache lines on x86 are 64 bytes, so padding each counter to 64 bytes should be enough, and on many machines it is. But since Sandy Bridge,
+  Intel's L2 <em>spatial prefetcher</em> &ldquo;strives to complete every cache line fetched to the L2 cache with the pair line that completes it to a
+  128-byte aligned chunk&rdquo;<a class="cite" href="#src-12">[12]</a>. When core 0 misses on line 0, it may also fetch line 1, and if core 1 owns
+  line 1, that is coherence traffic for a line core 0 never asked for. That is why crossbeam's <code>CachePadded</code> uses
+  <code>#[repr(align(128))]</code> on x86-64<a class="cite" href="#src-13">[13]</a> and why Zig's <code>std.atomic.cache_line</code> is 128 on
+  x86-64 and aarch64, with a comment citing the same prefetcher<a class="cite" href="#src-14">[14]</a>.</p>
+  <p>The benchmark gives each of two threads its own <code>AtomicU64</code> (relaxed <code>fetch_add</code>, 16 M times each) in four placements:
+  one thread alone (the baseline), both counters in one 64-byte line, one counter per 64-byte line, and one per 128 bytes. The three languages spell
+  the padding three ways:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch08-simd-and-parallelism/rust/src/main.rs"><code class="language-rust">/// Two counters in one 64-byte line (the array is aligned so it cannot straddle two lines).
+#[repr(align(64))]
+struct Packed([AtomicU64; 2]);
+
+/// One counter per 64-byte line: adjacent lines still form one 128-byte pair for the spatial prefetcher.
+#[repr(align(64))]
+struct Pad64(AtomicU64);
+
+/// One counter per 128-byte block, as crossbeam's CachePadded does on x86-64.
+#[repr(align(128))]
+struct Pad128(AtomicU64);
+
+const _: () = assert!(size_of::&lt;Packed&gt;() == 64 &amp;&amp; size_of::&lt;Pad64&gt;() == 64 &amp;&amp; size_of::&lt;Pad128&gt;() == 128);
+
+/// Each of the two threads increments its own counter `iters` times. Returns the total.
+fn two_threads(c0: &amp;AtomicU64, c1: &amp;AtomicU64, iters: u64) -&gt; u64 {
+    thread::scope(|s| {
+        s.spawn(|| hammer(c0, iters));
+        s.spawn(|| hammer(c1, iters));
+    });
+    c0.load(Ordering::Relaxed) + c1.load(Ordering::Relaxed)
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch08-simd-and-parallelism/zig/main.zig"><code class="language-zig">/// Two counters in one 64-byte line (aligned so the pair cannot straddle two lines).
+const Packed = struct { c: [2]Counter align(64) };
+/// One counter per 64-byte line: adjacent lines still form one 128-byte pair for the spatial prefetcher.
+const Pad64 = struct { c: Counter align(64) };
+/// One counter per std.atomic.cache_line (128 on x86-64: Zig already accounts for the pair prefetch).
+const Pad128 = struct { c: Counter align(std.atomic.cache_line) };
+
+comptime {
+    std.debug.assert(@sizeOf(Packed) == 64 and @sizeOf(Pad64) == 64);
+    std.debug.assert(std.atomic.cache_line == 128 and @sizeOf(Pad128) == 128);
+}
+
+/// Each of the two threads increments its own counter `iters` times. Returns the total.
+fn twoThreads(t: Two) u64 {
+    const t0 = std.Thread.spawn(.{}, hammer, .{ t.c0, t.iters }) catch @panic("spawn failed");
+    const t1 = std.Thread.spawn(.{}, hammer, .{ t.c1, t.iters }) catch @panic("spawn failed");
+    t0.join();
+    t1.join();
+    return t.c0.load(.monotonic) + t.c1.load(.monotonic);
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch08-simd-and-parallelism/odin/main.odin"><code class="language-odin">// Two counters in one 64-byte line (aligned so the pair cannot straddle two lines).
+Packed :: struct #align (64) {
+	c: [2]u64,
+}
+// One counter per 64-byte line: adjacent lines still form one 128-byte pair for the spatial prefetcher.
+Pad64 :: struct #align (64) {
+	c: u64,
+}
+// One counter per 128-byte block, as crossbeam and Zig's std.atomic.cache_line do on x86-64.
+Pad128 :: struct #align (128) {
+	c: u64,
+}
+#assert(size_of(Packed) == 64 &amp;&amp; size_of(Pad64) == 64 &amp;&amp; size_of(Pad128) == 128)
+
+// Each of the two threads increments its own counter `iters` times. Returns the total.
+two_threads :: proc(t: Two) -&gt; u64 {
+	t0 := thread.create_and_start_with_poly_data(Job{t.c0, t.iters}, hammer)
+	t1 := thread.create_and_start_with_poly_data(Job{t.c1, t.iters}, hammer)
+	thread.join_multiple(t0, t1)
+	thread.destroy(t0)
+	thread.destroy(t1)
+	return intrinsics.atomic_load_explicit(t.c0, .Relaxed) + intrinsics.atomic_load_explicit(t.c1, .Relaxed)
+}</code></pre>
+  </div>
+  <p>Rust puts the alignment on a wrapper type with <code>#[repr(align(128))]</code>, Zig on the field with
+  <code>align(std.atomic.cache_line)</code> (so the constant follows the target), and Odin on the struct with <code>struct #align (128)</code>.
+  All three pin the sizes at compile time, the habit from
+  <a href="03-size-alignment-padding.html#asserts">Chapter 3</a>. The charted runs are pinned to CPUs 0 and 2 (the <code>taskset</code> file in
+  the chapter's code directory), which on this orb are two different physical cores (more on that below).</p>
+  <figure class="figure wide" id="fig-fs-bench">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch08-false-sharing" data-opts='{"ratio":false,"metric":"ns/n","per":"increment","labels":["1 thread alone","2 threads, same line","2 threads, padded 64 B","2 threads, padded 128 B"]}'></div>
+    <figcaption>Wall time per increment (each thread does the same count), pinned to two physical cores. Sharing one line makes each increment
+    between <span data-bench-ratio="ch08-false-sharing" data-num="2 threads, same line" data-den="1 thread alone" data-lang="odin">4.4×</span>
+    (Odin) and <span data-bench-ratio="ch08-false-sharing" data-num="2 threads, same line" data-den="1 thread alone" data-lang="rust">5.2×</span>
+    (Rust) slower than a thread running alone. Either padding restores the single-thread speed. On this Ice Lake, 64 and 128 bytes are the same.</figcaption>
+  </figure>
+  <p>In Rust the same-line case runs at
+  <span data-bench-val="ch08-false-sharing" data-label="2 threads, same line" data-lang="rust" data-metric="ns/n">29 ns</span> per increment
+  against <span data-bench-val="ch08-false-sharing" data-label="1 thread alone" data-lang="rust" data-metric="ns/n">6.4 ns</span> for a thread
+  alone: <span data-bench-ratio="ch08-false-sharing" data-num="2 threads, same line" data-den="2 threads, padded 128 B" data-lang="rust">about 4.3×</span>
+  slower, for counters that never interact. Two threads with padded counters finish in the same wall time as one thread doing half the total work,
+  which is perfect scaling. We could not measure a difference between 64- and 128-byte padding on this machine. That matches the one public
+  measurement we found: a 2026 benchmark reproduced the prefetcher effect at 64-byte spacing on a Skylake Xeon (AWS c5d, up to about 1.1× with much
+  higher variance) but found &ldquo;practically no difference&rdquo; on an Ice Lake Xeon (AWS c6i)<a class="cite" href="#src-15">[15]</a>. So 128 is
+  the pessimistic choice: it costs 64 extra bytes per padded slot and protects you on the CPUs where the pair prefetch does bite.</p>
+  <aside class="callout pitfall" data-title="Padding is for the few, not the many">
+    <p>Pad things that different threads write: per-thread counters, queue ends, per-worker accumulators. Don't pad every element of a big array:
+    128 bytes per <code>u64</code> is a 16× memory cost and throws away the density this book has been fighting for. For per-element data, use the
+    previous section's pattern: each thread owns a contiguous chunk, so only the chunk boundaries could share a line, and 128-byte-aligned columns
+    split into 128-byte multiples remove even that. Read-mostly data needs no padding at all: many cores can hold the same line in Shared state at once.</p>
+  </aside>
+
+  <h2 id="scaling">Scaling: two cores, four threads</h2>
+  <p>This orb has 4 vCPUs, but they are 2 physical cores with 2 hyperthreads each. <code>lscpu -e</code> says CPUs 0 and 1 are core 0, CPUs 2 and 3
+  are core 1. Two hyperthreads on one core share its execution units, its L1 and its L2. They help when one thread stalls (on a cache miss, a
+  mispredict) and the other can use the idle units, and they help little when both are busy with the same kind of work.</p>
+  <svg class="ch08-diagram" viewBox="0 0 640 140" role="img" aria-label="Diagram: two physical cores, each with two hyperthreads sharing one L1 and L2. CPUs 0 and 1 are on core 0, CPUs 2 and 3 on core 1. The taskset 0,2 picks one hyperthread on each core. Both cores share the L3.">
+    <rect class="core" x="4" y="6" width="300" height="94" rx="8"/>
+    <text x="14" y="26" style="font-weight:700">core 0 · L1d 48 KiB · L2 1.25 MiB</text>
+    <rect class="ht used" x="16" y="38" width="130" height="48" rx="6"/><text x="81" y="60" text-anchor="middle">CPU 0</text><text class="dim" x="81" y="78" text-anchor="middle">taskset 0,2</text>
+    <rect class="ht" x="160" y="38" width="130" height="48" rx="6"/><text x="225" y="60" text-anchor="middle">CPU 1</text><text class="dim" x="225" y="78" text-anchor="middle">HT sibling of 0</text>
+    <rect class="core" x="336" y="6" width="300" height="94" rx="8"/>
+    <text x="346" y="26" style="font-weight:700">core 1 · L1d 48 KiB · L2 1.25 MiB</text>
+    <rect class="ht used" x="348" y="38" width="130" height="48" rx="6"/><text x="413" y="60" text-anchor="middle">CPU 2</text><text class="dim" x="413" y="78" text-anchor="middle">taskset 0,2</text>
+    <rect class="ht" x="492" y="38" width="130" height="48" rx="6"/><text x="557" y="60" text-anchor="middle">CPU 3</text><text class="dim" x="557" y="78" text-anchor="middle">HT sibling of 2</text>
+    <text class="dim" x="320" y="128" text-anchor="middle">shared L3 (54 MiB, also shared with other tenants of the host) and DRAM</text>
+  </svg>
+  <p>The charted runs are pinned to <code>taskset -c 0,2</code>: one hyperthread on each core, so &ldquo;two threads&rdquo; means two
+  real cores. Under that pinning, a 4-thread run oversubscribes two CPUs, which shows what more
+  threads than cores buys you: little or nothing. (<code>std::thread::available_parallelism</code> respects the affinity mask and reports 2 under this
+  taskset; Zig's <code>getCpuCount</code> says 2 as well.)</p>
+  <figure class="figure wide" id="fig-threads-l2">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch08-threads-l2" data-opts='{"metric":"ns/n","per":"particle-step","labels":["1 thread","2 threads","4 threads"]}'></div>
+    <figcaption>SoA particle step, 65,536 particles (1 MiB of columns), 256 passes, pinned to CPUs 0 and 2. Two cores give between
+    <span data-bench-ratio="ch08-threads-l2" data-num="1 thread" data-den="2 threads" data-lang="odin">1.6×</span> (Odin) and
+    <span data-bench-ratio="ch08-threads-l2" data-num="1 thread" data-den="2 threads" data-lang="zig">3.2×</span> (Zig). The 4-thread
+    bar is no faster than the 2-thread bar, and in Zig and Odin up to about 20% slower: four threads on two CPUs just take turns.</figcaption>
+  </figure>
+  <p>Two threads give <span data-bench-ratio="ch08-threads-l2" data-num="1 thread" data-den="2 threads" data-lang="rust">about 1.9×</span> in Rust and
+  more in Zig, <span data-bench-ratio="ch08-threads-l2" data-num="1 thread" data-den="2 threads" data-lang="zig">3.2×</span>. A superlinear
+  speedup often means the working set changed level: 1 MiB of columns sits near the edge of one core's 1.25 MiB L2, and half of it fits in each of
+  two L2s comfortably. That is a hypothesis we did not test, and it does not explain why Rust and Odin, with the same working set, gain less; Zig's
+  single-thread time is also the slowest of the three. The DRAM-sized run (8 M particles,
+  128 MiB, one pass) gives
+  <span data-bench-ratio="ch08-threads-dram" data-num="1 thread" data-den="2 threads" data-lang="odin">1.8×</span> (Odin) to
+  <span data-bench-ratio="ch08-threads-dram" data-num="1 thread" data-den="2 threads" data-lang="zig">2.0×</span> (Zig) with two cores. One core alone could not saturate memory here, so the second core's extra outstanding
+  misses still help.</p>
+  <figure class="figure wide" id="fig-threads-dram">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch08-threads-dram" data-opts='{"metric":"ns/n","per":"particle-step","labels":["1 thread","2 threads","4 threads"]}'></div>
+    <figcaption>The same step over 8 M particles (128 MiB), one pass, from DRAM. Two cores help about 2×; four threads on two CPUs help little or nothing.</figcaption>
+  </figure>
+  <p>Whether the hyperthreads help as well depends on how much of each core one thread leaves idle; an unpinned run cannot tell you, because
+  the OS may put the &ldquo;2 threads&rdquo; case on two siblings of one core. The robust conclusions are the pinned ones: two physical cores give
+  close to 2× on a loop with no shared writes, and threads beyond your CPUs give little or nothing.</p>
+  <aside class="callout try"><p>Run the chapter's programs in quick mode, then the full-size pinned run the book's charts come from:</p>
+<pre><code class="language-bash">cd code &amp;&amp; ./run_all.sh ch08
+cd ch08-simd-and-parallelism/zig &amp;&amp; zig build-exe -O fast main.zig &amp;&amp; taskset -c 0,2 ./main
+# compare: two hyperthreads of one core
+taskset -c 0,1 ./main | grep -A4 ch08-false-sharing
+# on your own machine, with perf installed (not available on this orb):
+perf stat -e cycles,instructions,branch-misses ./main --quick</code></pre></aside>
+
+  <h2 id="caveats">Caveats</h2>
+  <ul>
+    <li><b>Algorithm and layout first.</b> SIMD multiplies whatever the algorithm leaves; it does not fix an O(n²)
+    (<a href="12-measure-and-know-when-not-to.html#algorithm">Chapter 12</a> has a path tracer where a BVH beat SIMD by
+    orders of magnitude<a class="cite" href="#src-16">[16]</a>). And the vector loads in this chapter all read contiguous runs of one field; on AoS
+    data the same code needs gathers or shuffles and most of the gain disappears<a class="cite" href="#src-17">[17]</a>.</li>
+    <li><b>Memory-bound loops gain little.</b> The DRAM controls show it twice: SIMD and threads both run into bandwidth. Two cores helped us
+    because one core could not saturate memory; on a big server with many cores the curve flattens much earlier.</li>
+
+    <li><b>Wide vectors can lower the clock.</b> On some Intel generations heavy 512-bit (and, on older ones, 256-bit) code reduces the core's
+    frequency, which can make AVX-512 a net loss in mixed workloads. We did not measure frequency here (no counters), which is one more reason the
+    book's explicit code stays at AVX2.</li>
+  </ul>
+
+  <aside class="recap"><p>Break the dependency chain so lanes and cores can work side by side, put the work in contiguous columns so one load fills a
+  register and one chunk belongs to one thread, keep threads' writes at least 128 bytes apart, and stop when the loop is waiting for memory.</p></aside>
+
+  <h2 id="exercises">Exercises</h2>
+  <details class="exercise"><summary>The naive dot product runs at about
+  <span data-bench-val="ch08-dot-l1" data-label="naive (1 accumulator)" data-lang="rust" data-metric="ns/n">1.2 ns</span> per element at L1 size
+  and about <span data-bench-val="ch08-dot-dram" data-label="naive (1 accumulator)" data-lang="rust" data-metric="ns/n">1.4 ns</span> at DRAM size. Why is the
+  DRAM version barely slower, when DRAM is a hundred times further away than L1?</summary>
+    <p>Because the naive loop is limited by the add chain, about four cycles per element, not by memory. Four cycles per 8 bytes is slower than
+    the roughly 10 GB/s one core got from DRAM in this chapter's dot product, so memory keeps up. Only once the chain is broken does the memory side
+    become the limit, and then the DRAM version is several times slower than the L1 version.</p></details>
+  <details class="exercise"><summary>With eight accumulators, why might four <em>vector</em> accumulators (32 partial sums) still be faster than one
+  vector of eight?</summary>
+    <p>One vector of eight is still one chain: each <code>vaddps</code> waits ~4 cycles for the previous one, so you get 8 elements per 4 cycles.
+    Four independent vectors keep four adds in flight, 32 elements per 4 cycles, which reaches the two-loads-per-cycle limit. The rule of thumb:
+    accumulators ≈ latency × throughput (4 cycles × 2 adds/cycle = 8 vector registers would be the maximum useful; 4 is enough when loads limit you).</p></details>
+  <details class="exercise"><summary>Integer sums vectorize without help. Why is <code>u32</code> wrapping addition allowed to be reordered when
+  <code>f32</code> addition is not?</summary>
+    <p>Wrapping integer addition is associative and commutative: any order gives the same bits modulo 2³². Floating-point addition rounds after
+    every operation, and the rounding depends on the magnitudes involved, so different orders give different bits (the table in this chapter shows
+    six different answers to one dot product).</p></details>
+  <details class="exercise"><summary>A thread pool has 8 workers, each with a <code>struct Stats { jobs: u64, ns: u64 }</code>, stored in
+  <code>[8]Stats</code>. How many bytes do all eight occupy, how many 128-byte pairs do they span, and what is the smallest fix?</summary>
+    <p>16 bytes each, 128 bytes total: all eight workers' stats fit in one 128-byte pair (two 64-byte lines, four workers per line), so every update
+    contends with three or seven other workers. Align <code>Stats</code> to 128 (<code>#[repr(align(128))]</code>, <code>align(std.atomic.cache_line)</code>,
+    <code>#align (128)</code>) for 1 KiB total, or keep the counts in each worker's local variables and write them once at the end.</p></details>
+  <details class="exercise"><summary>The 4-thread runs under <code>taskset -c 0,2</code> are barely faster than the 2-thread runs, if at all. Under
+  <code>taskset -c 0,1</code>, what would you expect for 1 vs 2 threads, and why?</summary>
+    <p>CPUs 0 and 1 are hyperthreads of the same core. Two threads there share one core's execution units, L1 and L2. For a compute-bound loop that
+    already keeps the units busy, expect well under 2×; for a loop that stalls a lot, more. For false sharing, the two threads share one L1, so you
+    might expect the &ldquo;same line&rdquo; penalty to vanish. Do not count on it: two <code>lock</code>-prefixed read-modify-writes to one line
+    still serialize each other, even inside one core. Run the <code>taskset -c 0,1</code> line from the try box above and measure before you assume
+    siblings are immune.</p></details>
+  <details class="exercise"><summary>Rewrite the &ldquo;sum of positives&rdquo; to compute a <em>clamped</em> sum, adding <code>min(x, 1.0)</code> for
+  positive <code>x</code>. Which extra vector operation do you need, and is there still a branch?</summary>
+    <p>A lane-wise minimum: <code>_mm256_min_ps</code> in Rust's <code>std::arch</code>, <code>@min(v, one)</code> on vectors in Zig,
+    <code>simd.min</code> in Odin. Apply it before the select. There is still no branch: the mask selects between <code>min(x, 1)</code> and 0.</p></details>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="sources">
+    <li id="src-1">Agner Fog, &ldquo;Instruction tables: lists of instruction latencies, throughputs and micro-operation breakdowns for Intel, AMD and VIA
+    CPUs&rdquo;, updated regularly. ADDSS/ADDPS latency about 4 cycles and reciprocal throughput 0.5 on Skylake-family cores.
+    <a href="https://www.agner.org/optimize/instruction_tables.pdf">agner.org/optimize/instruction_tables.pdf</a></li>
+    <li id="src-2">Zig 0.17.1 source, <code>src/zig_llvm.cpp</code> line 288 (<code>pipeline_opts.LoopVectorization = false</code>), and mlugg,
+    &ldquo;miscompilation: incorrect vectorization of loop copying i32 values&rdquo;, LLVM issue #186922, 2026.
+    <a href="https://github.com/llvm/llvm-project/issues/186922">github.com/llvm/llvm-project/issues/186922</a></li>
+    <li id="src-3">Rust project, RELEASES.md, &ldquo;Version 1.98.0 (2026-08-20)&rdquo;, stabilized APIs <code>{fN}::algebraic_add</code> … <code>algebraic_rem</code>;
+    and <code>library/core/src/num/f32.rs</code> in the 1.100 source. <a href="https://doc.rust-lang.org/stable/core/primitive.f32.html#method.algebraic_add">doc.rust-lang.org: f32::algebraic_add</a></li>
+    <li id="src-4">Rust Release Team, &ldquo;Announcing Rust 1.87.0 and ten years of Rust!&rdquo;, 2025 (safe <code>std::arch</code> intrinsics), and RELEASES.md 1.86
+    (&ldquo;Allow safe functions to be marked with the #[target_feature] attribute&rdquo;). <a href="https://blog.rust-lang.org/2025/05/15/Rust-1.87.0/">blog.rust-lang.org/2025/05/15/Rust-1.87.0</a></li>
+    <li id="src-5">Odin project, <code>core/simd/simd.odin</code> (dev-2026-11 tree): <code>lanes_gt</code>, <code>select</code>, <code>reduce_add_ordered</code>,
+    <code>from_slice</code>, <code>to_array</code>. <a href="https://github.com/odin-lang/Odin/blob/master/core/simd/simd.odin">github.com/odin-lang/Odin/…/core/simd/simd.odin</a></li>
+    <li id="src-6">Odin project, <code>src/llvm_backend.cpp</code>, <code>get_default_microarchitecture()</code>: &ldquo;x86-64-v2 is more than enough for
+    everyone&rdquo;. <a href="https://github.com/odin-lang/Odin/blob/master/src/llvm_backend.cpp">github.com/odin-lang/Odin/…/src/llvm_backend.cpp</a></li>
+    <li id="src-7">rust-lang, &ldquo;Tracking Issue for RFC 2948: Portable SIMD&rdquo;, #86656, open, and Caleb Zulawski, &ldquo;Critical issues before
+    stabilization&rdquo;, portable-simd #364. <a href="https://github.com/rust-lang/rust/issues/86656">github.com/rust-lang/rust/issues/86656</a>,
+    <a href="https://github.com/rust-lang/portable-simd/issues/364">github.com/rust-lang/portable-simd/issues/364</a></li>
+    <li id="src-8">Rust standard library documentation, <code>std::thread::scope</code> (stable since 1.63).
+    <a href="https://doc.rust-lang.org/std/thread/fn.scope.html">doc.rust-lang.org/std/thread/fn.scope.html</a></li>
+    <li id="src-9">Odin project, <code>core/thread/thread.odin</code> (dev-2026-11 tree): <code>create_and_start_with_poly_data</code>, <code>join_multiple</code>,
+    <code>destroy</code>. <a href="https://github.com/odin-lang/Odin/blob/master/core/thread/thread.odin">github.com/odin-lang/Odin/…/core/thread/thread.odin</a></li>
+    <li id="src-10">Zig Software Foundation, &ldquo;0.16.0 Release Notes&rdquo; (I/O as an interface; <code>std.Thread.Pool</code> and the thread
+    synchronization types removed). <a href="https://ziglang.org/download/0.16.0/release-notes.html">ziglang.org/download/0.16.0/release-notes.html</a></li>
+    <li id="src-11">Ulrich Drepper, &ldquo;Memory part 6: More things programmers can do&rdquo;, LWN.net, 2007 (false sharing: 390%, 734%, 1,147%).
+    <a href="https://lwn.net/Articles/256433/">lwn.net/Articles/256433</a></li>
+    <li id="src-12">Intel, &ldquo;Intel 64 and IA-32 Architectures Optimization Reference Manual&rdquo; (L2 spatial prefetcher, 128-byte aligned pairs),
+    as quoted in the documentation-changes document. <a href="https://cdrdv2-public.intel.com/814201/355308-Software-Optimization-Manual-048-Changes-Doc.pdf">cdrdv2-public.intel.com/814201</a></li>
+    <li id="src-13">crossbeam-rs, <code>crossbeam-utils/src/cache_padded.rs</code>: <code>#[repr(align(128))]</code> on x86-64, aarch64 and powerpc64.
+    <a href="https://github.com/crossbeam-rs/crossbeam/blob/master/crossbeam-utils/src/cache_padded.rs">github.com/crossbeam-rs/crossbeam/…/cache_padded.rs</a></li>
+    <li id="src-14">Zig 0.17.1 standard library, <code>lib/std/atomic.zig</code>, <code>cacheLineForCpu</code> (128 on x86_64, aarch64, powerpc64).
+    <a href="https://github.com/ziglang/zig/blob/master/lib/std/atomic.zig">github.com/ziglang/zig/…/lib/std/atomic.zig</a></li>
+    <li id="src-15">Monoidal Transformation blog, &ldquo;False Sharing Alignment&rdquo;, June 2026 (64 vs 128 on AWS c5d Skylake, c6i Ice Lake, Apple M1).
+    <a href="https://monoid.github.io/posts/false-sharing-alignment">monoid.github.io/posts/false-sharing-alignment</a></li>
+    <li id="src-16">Aras Pranckevičius, ToyMeshPathTracer, 2019 (BVH about 370×; SIMD a further 1.28×).
+    <a href="https://github.com/aras-p/ToyMeshPathTracer">github.com/aras-p/ToyMeshPathTracer</a></li>
+    <li id="src-17">Tony Albrecht, &ldquo;Pitfalls of Object Oriented Programming – Revisited&rdquo;, Riot Games, 2017 (17.5 → 9.5 → 6.2 ms), transcript.
+    <a href="https://www.slideserve.com/cheng/object-oriented-programming">slideserve.com/cheng/object-oriented-programming</a></li>
+  </ol>
+</main>
+</body>
+</html>

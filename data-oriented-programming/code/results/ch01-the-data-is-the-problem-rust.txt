@@ -1,0 +1,15 @@
+1048576 shapes: 262202 squares, 262044 rectangles, 261475 triangles, 262855 circles (random order)
+bytes per shape read: Box<dyn Shape> 16 + heap object (median 32 B apart) | ShapeEnum 12 | FlatShape 12 | per-kind 6.0 avg
+dynamic dispatch            8.900 ns/shape   checksum 0x000424fc68e6dec1   total area 130080042.0
+BENCH {"id":"ch01-shapes","label":"dynamic dispatch","lang":"rust","n":1048576,"ns":9332244,"samples":[9163540,9172132,9172513,9332244,9379163,9449448,9534137]}
+tagged union                8.756 ns/shape   checksum 0x000424fc68e6dec1   total area 130080042.0
+BENCH {"id":"ch01-shapes","label":"tagged union","lang":"rust","n":1048576,"ns":9180965,"samples":[8871861,8891983,9003970,9180965,9424590,10099429,10099703]}
+coefficient table           1.210 ns/shape   checksum 0x000424fc68e6dec1   total area 130080042.0
+BENCH {"id":"ch01-shapes","label":"coefficient table","lang":"rust","n":1048576,"ns":1268430,"samples":[900481,1139264,1174124,1268430,1345952,1413679,1471266]}
+per-kind arrays             0.339 ns/shape   checksum 0x000424fc68e6dec1   total area 130080042.0
+BENCH {"id":"ch01-shapes","label":"per-kind arrays","lang":"rust","n":1048576,"ns":355629,"samples":[329142,329585,346805,355629,384971,389526,708389]}
+dynamic dispatch, sorted    4.246 ns/shape   checksum 0x000424fc68e6dec1   total area 130080042.0
+BENCH {"id":"ch01-shapes","label":"dynamic dispatch, sorted","lang":"rust","n":1048576,"ns":4452049,"samples":[3796998,3998163,4005265,4452049,4529280,4552081,4912781]}
+tagged union, sorted        1.229 ns/shape   checksum 0x000424fc68e6dec1   total area 130080042.0
+BENCH {"id":"ch01-shapes","label":"tagged union, sorted","lang":"rust","n":1048576,"ns":1288933,"samples":[1202230,1231375,1260598,1288933,1428851,1459795,1714883]}
+checksums: all 6 runs match

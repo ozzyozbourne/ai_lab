@@ -1,0 +1,41 @@
+# Machine used for the serial benchmark pass
+date: 2026-11-13T08:55:19Z
+kernel: Linux 6.1.189+ x86_64
+
+## lscpu
+Architecture:                            x86_64
+CPU(s):                                  4
+On-line CPU(s) list:                     0-3
+Model name:                              Intel(R) Xeon(R) Processor @ 2.60GHz
+Thread(s) per core:                      2
+Core(s) per socket:                      2
+Socket(s):                               1
+BogoMIPS:                                5200.02
+Hypervisor vendor:                       KVM
+Virtualization type:                     full
+L1d cache:                               96 KiB (2 instances)
+L1i cache:                               64 KiB (2 instances)
+L2 cache:                                2.5 MiB (2 instances)
+L3 cache:                                54 MiB (1 instance)
+NUMA node(s):                            1
+
+## topology (lscpu -e)
+CPU NODE SOCKET CORE L1d:L1i:L2:L3 ONLINE
+  0    0      0    0 0:0:0:0          yes
+  1    0      0    0 0:0:0:0          yes
+  2    0      0    1 1:1:1:0          yes
+  3    0      0    1 1:1:1:0          yes
+
+## cache line / page
+coherency_line_size: 64 B
+page size: 4096 B
+transparent_hugepage: always [madvise] never
+SIMD flags: avx avx2 avx512bw avx512f avx512vl fma sse4_2 
+
+## compilers
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+zig 0.17.1
+odin version dev-2026-11-nightly:9a69916
+
+## pinning
+single-threaded: taskset -c 2; chapters with a 'taskset' file use its CPU list

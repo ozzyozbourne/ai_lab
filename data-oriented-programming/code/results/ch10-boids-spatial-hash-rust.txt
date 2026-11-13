@@ -1,0 +1,96 @@
+ch10 (rust): boids step, 4 boids per unit cell on average, neighbour radius 1, 2 threads; quick=false
+
+N = 1024: world 16×16 cells, distance checks per step: naive 1048576, grid 34054 (33.3 per boid)
+  variant               median    ns/boid   neighbours     max |diff|
+  (naive state checksum 88ec952907c0dbeb)
+  naive                2.931ms    2862.55        12708         0.00e0 ok
+BENCH {"id":"ch10-boids","label":"naive","lang":"rust","n":1024,"ns":2931255,"samples":[2869513,2879510,2918156,2931255,2955390,2961076,3025002]}
+  (grid state checksum d103c2338bc6d549)
+  grid               181.447µs     177.19        12708        5.96e-8 ok
+BENCH {"id":"ch10-boids","label":"grid","lang":"rust","n":1024,"ns":181447,"samples":[177042,177097,177975,181447,184500,191244,243756]}
+  sorted             155.362µs     151.72        12708        5.96e-8 ok
+BENCH {"id":"ch10-boids","label":"sorted","lang":"rust","n":1024,"ns":155362,"samples":[153950,154604,154959,155362,156869,158007,169421]}
+  morton             209.746µs     204.83        12708        5.96e-8 ok
+BENCH {"id":"ch10-boids","label":"morton","lang":"rust","n":1024,"ns":209746,"samples":[206970,207716,208371,209746,214261,242291,327360]}
+  sorted simd         94.667µs      92.45        12708        5.96e-8 ok
+BENCH {"id":"ch10-boids","label":"sorted simd","lang":"rust","n":1024,"ns":94667,"samples":[93853,94107,94333,94667,94799,95102,99163]}
+  simd 2 threads     149.293µs     145.79        12708        5.96e-8 ok
+BENCH {"id":"ch10-boids","label":"simd 2 threads","lang":"rust","n":1024,"ns":149293,"samples":[113568,123282,134002,149293,150133,158161,179291]}
+
+N = 4096: world 32×32 cells, distance checks per step: naive 16777216, grid 144180 (35.2 per boid)
+  variant               median    ns/boid   neighbours     max |diff|
+  (naive state checksum 38742adf48b869f9)
+  naive               47.113ms   11502.23        53578         0.00e0 ok
+BENCH {"id":"ch10-boids","label":"naive","lang":"rust","n":4096,"ns":47113149,"samples":[45738004,45940439,46942619,47113149,49444219,49685868,49748341]}
+  (grid state checksum 3796a98cec5aa82a)
+  grid                 1.054ms     257.33        53578        5.96e-8 ok
+BENCH {"id":"ch10-boids","label":"grid","lang":"rust","n":4096,"ns":1054015,"samples":[863243,997759,998879,1054015,1103300,1149833,1199382]}
+  sorted             725.069µs     177.02        53578        5.96e-8 ok
+BENCH {"id":"ch10-boids","label":"sorted","lang":"rust","n":4096,"ns":725069,"samples":[707524,719172,720403,725069,726488,729433,819343]}
+  morton             994.282µs     242.74        53578        5.96e-8 ok
+BENCH {"id":"ch10-boids","label":"morton","lang":"rust","n":4096,"ns":994282,"samples":[947308,977781,979827,994282,997036,1003006,1006501]}
+  sorted simd        403.761µs      98.57        53578        5.96e-8 ok
+BENCH {"id":"ch10-boids","label":"sorted simd","lang":"rust","n":4096,"ns":403761,"samples":[401025,401303,402725,403761,413247,414497,484504]}
+  simd 2 threads     405.583µs      99.02        53578        5.96e-8 ok
+BENCH {"id":"ch10-boids","label":"simd 2 threads","lang":"rust","n":4096,"ns":405583,"samples":[314129,385143,388599,405583,408754,420747,429163]}
+
+N = 16384: world 64×64 cells, distance checks per step: naive 268435456, grid 591348 (36.1 per boid)
+  variant               median    ns/boid   neighbours     max |diff|
+  (naive state checksum df87f6458ea3c9fc)
+  naive              742.087ms   45293.37       219588         0.00e0 ok
+BENCH {"id":"ch10-boids","label":"naive","lang":"rust","n":16384,"ns":742086587,"samples":[737049983,738308869,740271259,742086587,747507184,763881003,813198048]}
+  (grid state checksum 27982cf931644c89)
+  grid                 4.060ms     247.83       219588        1.91e-6 ok
+BENCH {"id":"ch10-boids","label":"grid","lang":"rust","n":16384,"ns":4060404,"samples":[4055540,4058153,4058175,4060404,4063428,4071256,4076354]}
+  sorted               2.907ms     177.43       219588        1.91e-6 ok
+BENCH {"id":"ch10-boids","label":"sorted","lang":"rust","n":16384,"ns":2907033,"samples":[2880812,2889836,2899552,2907033,2908099,2927083,2951548]}
+  morton               3.992ms     243.64       219588        1.91e-6 ok
+BENCH {"id":"ch10-boids","label":"morton","lang":"rust","n":16384,"ns":3991851,"samples":[3953447,3954510,3987509,3991851,3998159,3998583,4008553]}
+  sorted simd          1.648ms     100.56       219588        1.91e-6 ok
+BENCH {"id":"ch10-boids","label":"sorted simd","lang":"rust","n":16384,"ns":1647513,"samples":[1623238,1636917,1642071,1647513,1656275,1664165,1676476]}
+  simd 2 threads       1.049ms      64.03       219588        1.91e-6 ok
+BENCH {"id":"ch10-boids","label":"simd 2 threads","lang":"rust","n":16384,"ns":1049098,"samples":[980017,998953,1011709,1049098,1060699,1160628,1681155]}
+
+N = 65536: world 128×128 cells, distance checks per step: naive 4294967296, grid 2404358 (36.7 per boid)
+  variant               median    ns/boid   neighbours     max |diff|
+  (grid state checksum 48fb07eec5687340)
+  grid                21.968ms     335.21       882928         0.00e0 ok
+BENCH {"id":"ch10-boids","label":"grid","lang":"rust","n":65536,"ns":21968174,"samples":[21869574,21916698,21926779,21968174,22022904,22260983,22767285]}
+  sorted              11.752ms     179.33       882928         0.00e0 ok
+BENCH {"id":"ch10-boids","label":"sorted","lang":"rust","n":65536,"ns":11752434,"samples":[11679255,11689174,11730815,11752434,11813078,12383821,13365223]}
+  morton              16.134ms     246.18       882928         0.00e0 ok
+BENCH {"id":"ch10-boids","label":"morton","lang":"rust","n":65536,"ns":16133683,"samples":[16022602,16053807,16063350,16133683,16303133,16554415,16559329]}
+  sorted simd          6.746ms     102.93       882928        9.54e-7 ok
+BENCH {"id":"ch10-boids","label":"sorted simd","lang":"rust","n":65536,"ns":6745518,"samples":[6627476,6692977,6710736,6745518,6777960,6878760,6889397]}
+  simd 2 threads       3.962ms      60.46       882928        9.54e-7 ok
+BENCH {"id":"ch10-boids","label":"simd 2 threads","lang":"rust","n":65536,"ns":3962167,"samples":[3795949,3805652,3836823,3962167,4648515,4726541,4787542]}
+
+N = 262144: world 256×256 cells, distance checks per step: naive 68719476736, grid 9648076 (36.8 per boid)
+  variant               median    ns/boid   neighbours     max |diff|
+  (grid state checksum bbdd0ab98e072237)
+  grid               148.527ms     566.59      3543522         0.00e0 ok
+BENCH {"id":"ch10-boids","label":"grid","lang":"rust","n":262144,"ns":148526900,"samples":[146437301,146933393,147896234,148526900,148893328,150835140,152631029]}
+  sorted              47.209ms     180.09      3543522         0.00e0 ok
+BENCH {"id":"ch10-boids","label":"sorted","lang":"rust","n":262144,"ns":47208815,"samples":[47003057,47121943,47143359,47208815,47351803,47448893,47534732]}
+  morton              65.989ms     251.73      3543522         0.00e0 ok
+BENCH {"id":"ch10-boids","label":"morton","lang":"rust","n":262144,"ns":65989254,"samples":[64809846,64811101,65530534,65989254,66545741,67492373,68208904]}
+  sorted simd         27.177ms     103.67      3543522        7.63e-6 ok
+BENCH {"id":"ch10-boids","label":"sorted simd","lang":"rust","n":262144,"ns":27177026,"samples":[27037983,27107809,27128486,27177026,27231828,27429800,28766665]}
+  simd 2 threads      15.216ms      58.04      3543522        7.63e-6 ok
+BENCH {"id":"ch10-boids","label":"simd 2 threads","lang":"rust","n":262144,"ns":15215539,"samples":[14937442,15126285,15185787,15215539,15335605,15539168,15879104]}
+
+N = 1048576: world 512×512 cells, distance checks per step: naive 1099511627776, grid 38719758 (36.9 per boid)
+  variant               median    ns/boid   neighbours     max |diff|
+  (grid state checksum c9356f9c3691824d)
+  grid                  1.346s    1283.57     14217542         0.00e0 ok
+BENCH {"id":"ch10-boids","label":"grid","lang":"rust","n":1048576,"ns":1345920922,"samples":[1082267118,1083718987,1240010766,1345920922,1377978022,1422418908,1480330139]}
+  sorted             199.104ms     189.88     14217542         0.00e0 ok
+BENCH {"id":"ch10-boids","label":"sorted","lang":"rust","n":1048576,"ns":199103804,"samples":[191582242,195652659,196024432,199103804,200141386,207882939,208468820]}
+  morton             264.194ms     251.95     14217542         0.00e0 ok
+BENCH {"id":"ch10-boids","label":"morton","lang":"rust","n":1048576,"ns":264193921,"samples":[261277663,262916448,263425985,264193921,264854685,266094069,273529453]}
+  sorted simd        112.392ms     107.19     14217542        3.05e-5 ok
+BENCH {"id":"ch10-boids","label":"sorted simd","lang":"rust","n":1048576,"ns":112392311,"samples":[110119483,110724337,111214060,112392311,114668333,116888638,116919305]}
+  simd 2 threads      62.772ms      59.86     14217542        3.05e-5 ok
+BENCH {"id":"ch10-boids","label":"simd 2 threads","lang":"rust","n":1048576,"ns":62772126,"samples":[62331055,62346014,62648085,62772126,62871717,64875137,66155086]}
+
+all variants agree (neighbour counts exact, state within 1e-4): yes

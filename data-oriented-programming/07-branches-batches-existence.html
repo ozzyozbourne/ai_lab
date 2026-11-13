@@ -1,0 +1,1140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>7. Branches, Batches and Existence · Data-Oriented Design</title>
+<link rel="stylesheet" href="assets/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="assets/book.css">
+<link rel="stylesheet" href="assets/ch07.css">
+<script>window.Prism = { manual: true };</script>
+<script defer src="assets/vendor/prism/prism.min.js"></script>
+<script defer src="assets/vendor/prism/prism-rust.min.js"></script>
+<script defer src="assets/vendor/prism/prism-zig.min.js"></script>
+<script defer src="assets/vendor/prism/prism-odin.min.js"></script>
+<script defer src="assets/vendor/prism/prism-bash.min.js"></script>
+<script defer src="assets/book.js"></script>
+<script defer src="assets/data/bench-ch07.js"></script>
+<script defer src="assets/viz/bench-bars.js"></script>
+<script defer src="assets/viz/bench-line.js"></script>
+<script defer src="assets/viz/ch07-branch-predictor.js"></script>
+<script defer src="assets/viz/ch07-existence.js"></script>
+<script defer src="assets/viz/ch07-sweep.js"></script>
+</head>
+<body>
+<main>
+  <p class="kicker">Chapter 7</p>
+  <h1>Branches, Batches and Existence</h1>
+  <p class="lede">A game has a million entities and half of them are dead. The update loop visits every one, loads its
+  <code>alive</code> flag, and jumps over the dead ones. On this machine that loop takes about <span data-bench-val="ch07-exist" data-label="flag in struct + if" data-lang="rust" data-metric="ns/n">5.5 ns</span> per entity.
+  Move the living entities into a table of their own, so that being in the table <em>is</em> being alive, and the same
+  update takes about <span data-bench-val="ch07-exist" data-label="alive table, no branch" data-lang="rust" data-metric="ns/n">0.36 ns</span>, roughly <span data-bench-ratio="ch07-exist" data-num="flag in struct + if" data-den="alive table, no branch" data-lang="rust">15×</span>
+  faster. Nothing about the arithmetic changed. What changed is that the loop stopped asking a question for every element,
+  and stopped paying for the answer.</p>
+
+  <p>This chapter is about questions a loop asks: <em>is this one alive</em>, <em>which kind is this</em>, <em>is this
+  byte a letter</em>. Each question is a branch, and each branch has a price that depends on how predictable the answers
+  are. We will measure that price properly, in a benchmark built so the optimizer cannot hide it, and then look at three
+  ways to stop paying it: answer the question once for a whole batch, make the answer part of <em>where the data
+  lives</em>, or look the answer up instead of computing it.</p>
+
+  <h2 id="one-many">Where there is one, there are many</h2>
+  <p>Mike Acton's CppCon 2014 keynote put it as a rule of thumb: &ldquo;Where there is one, there are many. Try looking on
+  the time axis.&rdquo;<a class="cite" href="#src-1">[1]</a> Noel Llopis made the same point five years earlier<a class="cite" href="#src-2">[2]</a>.
+  A function that takes one particle is a lie about the program, which has a thousand and will re-do every piece of setup on
+  each call: load the constants, check the mode, look up the vtable, ask the predictor to guess the same branch again.</p>
+  <p>Batching means writing the function for the collection instead. The per-call work is paid once per batch and the
+  per-item work runs in a tight loop that the compiler can unroll, vectorize and schedule. Two real systems show how far
+  this goes.</p>
+  <ul>
+    <li><b>TigerBeetle</b>, a financial database written in Zig, only accepts batches: &ldquo;up to 8,190 transfers per
+    query&rdquo;. The cost of consensus and replication &ldquo;is paid only once per batch&rdquo;, and on the CPU side
+    &ldquo;executing a batch of transfers is just one tight CPU loop!&rdquo;<a class="cite" href="#src-3">[3]</a> Under light
+    load the batches shrink on their own, trading throughput for latency. What small batches cost TigerBeetle's storage, and
+    the fix that followed, is one of <a href="12-measure-and-know-when-not-to.html#tigerbeetle">Chapter&nbsp;12</a>'s case
+    studies<a class="cite" href="#src-4">[4]</a>.</li>
+    <li><b>MonetDB/X100</b> (Boncz, Zukowski and Nes, CIDR 2005) is the database version. Instead of passing one tuple at a
+    time between query operators, X100 passes &ldquo;vectors&rdquo; of about 1,000 values. The paper's Figure 10 runs TPC-H
+    Query 1 at vector sizes from 1 to 4M. At size 1, &ldquo;interpretation overhead also hits MonetDB/X100 strongly&rdquo;;
+    &ldquo;with increasing vector size, the execution time quickly improves&rdquo;; the best size &ldquo;seems to be 1000, but
+    all values between 128 and 8K actually work well&rdquo;; and &ldquo;performance starts to deteriorate when intermediate
+    results do not fit in the cache anymore&rdquo;. At 4M tuples per vector it behaves like the older column-at-a-time
+    engine<a class="cite" href="#src-6">[6]</a>. DuckDB, its descendant, fixes its vector size at 2,048 at compile
+    time<a class="cite" href="#src-7">[7]</a>.</li>
+  </ul>
+
+
+
+  <p>The X100 curve has a shape worth memorising, because every batch-size experiment has it. Too small and you pay the
+  per-call overhead on every item. Big enough and that overhead vanishes into the noise. Too big and the batch no longer
+  fits in cache, so every stage writes its intermediate results out to a slower level and the next stage reads them back.
+  <a class="figref" href="#fig-batch-timeline">The figure below</a> draws the first half of that argument.</p>
+
+  <figure class="figure" id="fig-batch-timeline">
+    <svg class="ch07-diagram" viewBox="0 0 640 190" role="img" aria-label="Timeline. One at a time: every item pays call, setup and dispatch before its work, six times. Batched: call, setup and dispatch once, then six work blocks back to back.">
+      <style>
+        .ch07s-t { font: 12px var(--font-body, sans-serif); fill: var(--text-dim, #9aa5b5); }
+        .ch07s-h { font: 600 13px var(--font-body, sans-serif); fill: var(--heading, #e8eef7); }
+        .ch07s-o { fill: var(--c-miss, #ff6b6b); fill-opacity: .8; }
+        .ch07s-w { fill: var(--c-pos, #7cc4ff); }
+      </style>
+      <text class="ch07s-h" x="8" y="18">one item per call: overhead on every item</text>
+      <g transform="translate(8,28)">
+        <rect class="ch07s-o" x="0" y="0" width="54" height="26"/><rect class="ch07s-w" x="56" y="0" width="40" height="26"/>
+        <rect class="ch07s-o" x="98" y="0" width="54" height="26"/><rect class="ch07s-w" x="154" y="0" width="40" height="26"/>
+        <rect class="ch07s-o" x="196" y="0" width="54" height="26"/><rect class="ch07s-w" x="252" y="0" width="40" height="26"/>
+        <rect class="ch07s-o" x="294" y="0" width="54" height="26"/><rect class="ch07s-w" x="350" y="0" width="40" height="26"/>
+        <rect class="ch07s-o" x="392" y="0" width="54" height="26"/><rect class="ch07s-w" x="448" y="0" width="40" height="26"/>
+        <rect class="ch07s-o" x="490" y="0" width="54" height="26"/><rect class="ch07s-w" x="546" y="0" width="40" height="26"/>
+      </g>
+      <text class="ch07s-h" x="8" y="86">one batch per call: overhead once</text>
+      <g transform="translate(8,96)">
+        <rect class="ch07s-o" x="0" y="0" width="54" height="26"/>
+        <rect class="ch07s-w" x="56" y="0" width="40" height="26"/><rect class="ch07s-w" x="98" y="0" width="40" height="26"/>
+        <rect class="ch07s-w" x="140" y="0" width="40" height="26"/><rect class="ch07s-w" x="182" y="0" width="40" height="26"/>
+        <rect class="ch07s-w" x="224" y="0" width="40" height="26"/><rect class="ch07s-w" x="266" y="0" width="40" height="26"/>
+      </g>
+      <rect class="ch07s-o" x="8" y="146" width="14" height="12"/><text class="ch07s-t" x="28" y="156">call + setup + dispatch + re-asking invariant questions</text>
+      <rect class="ch07s-w" x="8" y="166" width="14" height="12"/><text class="ch07s-t" x="28" y="176">the work you wanted (and, batched, a loop the compiler can optimize)</text>
+    </svg>
+    <figcaption>Batching does not make the work faster; it removes the red blocks between the work. Once they are gone, the
+    remaining cost is the work itself and the memory it touches, which is where the cache-size limit comes back in.</figcaption>
+  </figure>
+
+  <h3 id="batch-code">A batch-size sweep</h3>
+  <p>Our version of the X100 experiment is a three-stage pipeline: generate a value from an index, mix its bits, multiply
+  by a constant, then sum. Each stage is called through a dynamic interface (a trait object in Rust, a function pointer in
+  Zig, a procedure value in Odin), like an operator in a query interpreter. The pipeline pushes 4M items through in batches
+  of size <var>B</var>, so per batch it makes three indirect calls and keeps two buffers of <var>B</var>&nbsp;× 8 bytes
+  alive. The result is the same for every <var>B</var>, and the program asserts it.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch07-branches-batches-existence/rust/src/main.rs"><code class="language-rust">/// Push `total` items through gen -&gt; mix -&gt; scale -&gt; sum, `batch` at a time.
+/// Per batch: three dynamic calls and a sum. Working set: two buffers of `batch` u64.
+#[inline(never)]
+fn run_pipeline(ops: &amp;[&amp;dyn Op], total: usize, batch: usize, a: &amp;mut [u64], b: &amp;mut [u64]) -&gt; u64 {
+    let mut sum = 0u64;
+    let mut base = 0;
+    while base &lt; total {
+        let len = batch.min(total - base);
+        let (a, b) = (&amp;mut a[..len], &amp;mut b[..len]);
+        ops[0].run(base as u64, &amp;[], a);
+        ops[1].run(base as u64, a, b);
+        ops[2].run(base as u64, b, a);
+        sum = a.iter().fold(sum, |s, &amp;x| s.wrapping_add(x));
+        base += len;
+    }
+    sum
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch07-branches-batches-existence/zig/main.zig"><code class="language-zig">const Stage = struct {
+    k: u64,
+    runFn: *const fn (k: u64, base: u64, inp: []const u64, out: []u64) void,
+};
+
+/// Push `total` items through gen -&gt; mix -&gt; scale -&gt; sum, `batch` at a time.
+/// Per batch: three indirect calls and a sum. Working set: two buffers of `batch` u64.
+noinline fn runPipeline(c: PipeCtx) u64 {
+    var sum: u64 = 0;
+    var base: usize = 0;
+    const s = c.stages;
+    while (base &lt; c.total) {
+        const len = @min(c.batch, c.total - base);
+        const a = c.a[0..len];
+        const b = c.b[0..len];
+        s[0].runFn(s[0].k, base, &amp;.{}, a);
+        s[1].runFn(s[1].k, base, a, b);
+        s[2].runFn(s[2].k, base, b, a);
+        for (a) |x| sum +%= x;
+        base += len;
+    }
+    return sum;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch07-branches-batches-existence/odin/main.odin"><code class="language-odin">Stage :: struct {
+	k:   u64,
+	run: proc(k, base: u64, inp, out: []u64),
+}
+
+// Push `total` items through gen -&gt; mix -&gt; scale -&gt; sum, `batch` at a time.
+// Per batch: three indirect calls and a sum. Working set: two buffers of `batch` u64.
+run_pipeline :: #force_no_inline proc(c: Pipe_Ctx) -&gt; u64 {
+	sum: u64
+	s := c.stages
+	for base := 0; base &lt; c.total; base += c.batch {
+		n := min(c.batch, c.total - base)
+		a, b := c.a[:n], c.b[:n]
+		s[0].run(s[0].k, u64(base), nil, a)
+		s[1].run(s[1].k, u64(base), a, b)
+		s[2].run(s[2].k, u64(base), b, a)
+		for x in a {
+			sum += x
+		}
+	}
+	return sum
+}</code></pre>
+  </div>
+  <p>Rust's <code>&amp;dyn Op</code> is a fat pointer (data + vtable); Zig and Odin store a plain function pointer next to its
+  parameter. All three compile to one indirect <code>call</code> per stage per batch (the Rust binary has exactly three
+  <code>call *0x18(%rax)</code> in <code>run_pipeline</code>).</p>
+
+  <details class="predict"><summary>The working set is 16 bytes per item of batch size. Where should the per-item time
+  start rising again on this machine (L1d 48 KiB, L2 1.25 MiB, and an L3 of 54 MiB shared with the host, of which
+  <a href="02-the-machine.html">Chapter&nbsp;2</a> measured only a few MiB as usable)?</summary>
+  <p>Not at L1. The stages stream through their buffers sequentially, so the prefetcher keeps L2 almost as good as L1 here:
+  the curve stays flat from batch 64 (1 KiB) to 64K (1 MiB). It rises once the two buffers outgrow L2, at 256K items
+  (4 MiB), which is already about all the L3 we get, and climbs further as they head for DRAM.</p></details>
+
+  <figure class="figure wide" id="fig-batch">
+    <div class="figure-body" data-viz="bench-line" data-bench="ch07-batch" data-opts='{"metric":"ns/n","per":"item","xScale":16,"xUnit":"bytes","xLabel":"batch working set (16 B per item)","bands":true,"logY":true}'></div>
+    <figcaption>Measured. Nanoseconds per item against batch size (as bytes of buffer). At batch 1 every item pays three
+    indirect calls and loop setup, about <span data-bench-val="ch07-batch" data-label="pipeline" data-lang="rust" data-n="1" data-metric="ns/n">7 ns</span> in Rust. By batch 64 that overhead is amortized to nothing and the curve is flat
+    at about <span data-bench-val="ch07-batch" data-label="pipeline" data-lang="rust" data-n="1024" data-metric="ns/n">1 ns</span>. Past L2 the intermediate buffers spill, and at 64&nbsp;MiB the cost is back to about
+    <span data-bench-val="ch07-batch" data-label="pipeline" data-lang="rust" data-n="4194304" data-metric="ns/n">5 ns</span> per
+    item. The same U as X100's Figure&nbsp;10, on a 2026 Xeon. All of this chapter's measurements come from one 4-vCPU KVM
+    Xeon (Ice Lake) and are noisy; compare ratios and shapes, not the last digit.</figcaption>
+  </figure>
+  <p>In Rust the flat region is several times cheaper than batch 1, and the right-hand end gives most of it back:
+  batch 4M is several times slower than batch 1K. The language does not matter much. All three show the drop, the
+  plateau and the rise, with Zig and Odin a little above Rust on the plateau, plausibly because Zig's plain loops are scalar
+  (its loop vectorizer is off: see <a href="04-aos-soa-hot-cold.html#zig-loop-vectorizer">Chapter&nbsp;4</a>); we did not check
+  the assembly. The lesson is DuckDB's: pick a batch that keeps
+  everything one stage hands to the next in L1 or L2, and stop there.</p>
+
+  <h2 id="branches">What a branch costs, measured properly</h2>
+  <p><a href="02-the-machine.html">Chapter&nbsp;2</a> gave the price of a mispredicted branch: Agner Fog's &ldquo;approximately
+  15&nbsp;-&nbsp;25 clock cycles, depending on the processor&rdquo;, roughly the length of the pipeline<a class="cite" href="#src-13">[13]</a>.
+  A correctly predicted branch is nearly free, &ldquo;typically 0&nbsp;-&nbsp;2 clock cycles&rdquo;. So a branch costs
+  whatever its <em>mispredictions</em> cost, and that depends entirely on the data.</p>
+  <p>The famous demonstration is Stack Overflow's most-voted question: a loop that adds up the elements <code>&gt;= 128</code>
+  ran about six times faster once the array was sorted<a class="cite" href="#src-14">[14]</a>. It often fails to reproduce,
+  because modern compilers turn that loop into a conditional move or vector code. Our program includes it, so you can see
+  it fail:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch07-branches-batches-existence/rust/src/main.rs"><code class="language-rust">/// The famous sorted-array loop: sum the elements below `t`. No store depends on the
+/// condition, so the optimizer is free to make it branchless (and vectorize it).
+#[inline(never)]
+fn sum_if(input: &amp;[u32], t: u32) -&gt; u64 {
+    let mut s = 0u64;
+    for &amp;x in input {
+        if x &lt; t {
+            s += x as u64;
+        }
+    }
+    s
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch07-branches-batches-existence/zig/main.zig"><code class="language-zig">/// The famous sorted-array loop: sum the elements below `t`. No store depends on the
+/// condition, so the optimizer is free to make it branchless.
+noinline fn sumIf(input: []const u32, t: u32) u64 {
+    var s: u64 = 0;
+    for (input) |x| {
+        if (x &lt; t) s += x;
+    }
+    return s;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch07-branches-batches-existence/odin/main.odin"><code class="language-odin">// The famous sorted-array loop: sum the elements below `t`. No store depends on the
+// condition, so the optimizer is free to make it branchless.
+sum_if :: #force_no_inline proc(input: []u32, t: u32) -&gt; u64 {
+	s: u64
+	for x in input {
+		if x &lt; t {
+			s += u64(x)
+		}
+	}
+	return s
+}</code></pre>
+  </div>
+  <p>In all three languages the sorted and random versions take the same time, about
+  <span data-bench-val="ch07-patterns" data-label="if-sum, random" data-lang="rust" data-metric="ns/n">0.3 ns</span> per element. The
+  disassembly shows why: there is no branch left to predict. Rust and Zig emit <code>cmp</code> + <code>cmovae</code>
+  (select zero or the value, then add), unrolled; Odin, which targets x86-64-v2 by default, goes further and vectorizes it
+  with SSE4 <code>pmaxud</code>/<code>pcmpeqd</code>/<code>pandn</code> masks. The <code>if</code> in the source was never a
+  jump in the binary.</p>
+
+  <h3 id="filter">A branch the optimizer cannot remove</h3>
+  <p>To measure a real branch we need a loop where the condition controls a <em>side effect</em> that cannot be done
+  speculatively. A filter does it: copy each element that passes into an output buffer, and advance the output cursor only
+  when it passed. Stream compaction like this is everywhere (building a list of visible objects, a selection vector in a
+  database, the alive list in the next section). The branchy version stores conditionally, so the compiler cannot convert it
+  into arithmetic without inventing a store the program did not ask for. The branchless version always stores and advances
+  the cursor by 0 or 1; if the element failed, the next store overwrites it. This needs an output buffer as long as the
+  input, a cost the branchy version does not have.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch07-branches-batches-existence/rust/src/main.rs"><code class="language-rust">/// Branchy: push `x` into the output only when it passes. The store itself is conditional,
+/// so the compiler cannot turn this into a conditional move: it must keep the jump.
+#[inline(never)]
+fn filter_branchy(input: &amp;[u32], t: u32, out: &amp;mut [u32]) -&gt; usize {
+    let mut n = 0;
+    for &amp;x in input {
+        if x &lt; t {
+            out[n] = x;
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Branchless: always write, then advance the cursor by 0 or 1. `out` must be as long as
+/// `input`. `select_unpredictable` asks for a conditional move instead of a jump.
+#[inline(never)]
+fn filter_branchless(input: &amp;[u32], t: u32, out: &amp;mut [u32]) -&gt; usize {
+    let mut n = 0;
+    for &amp;x in input {
+        out[n] = x;
+        n = std::hint::select_unpredictable(x &lt; t, n + 1, n);
+    }
+    n
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch07-branches-batches-existence/zig/main.zig"><code class="language-zig">/// Branchy: push `x` into the output only when it passes. The store itself is conditional,
+/// so the compiler cannot turn this into a conditional move: it must keep the jump.
+noinline fn filterBranchy(input: []const u32, t: u32, out: []u32) usize {
+    var n: usize = 0;
+    for (input) |x| {
+        if (x &lt; t) {
+            out[n] = x;
+            n += 1;
+        }
+    }
+    return n;
+}
+
+/// Branchless: always write, then advance the cursor by 0 or 1. `out` must be as long as
+/// `input`. `@intFromBool` turns the comparison into a number: no jump to predict.
+noinline fn filterBranchless(input: []const u32, t: u32, out: []u32) usize {
+    var n: usize = 0;
+    for (input) |x| {
+        out[n] = x;
+        n += @intFromBool(x &lt; t);
+    }
+    return n;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch07-branches-batches-existence/odin/main.odin"><code class="language-odin">// Branchy: push `x` into the output only when it passes. The store itself is conditional,
+// so the compiler cannot turn this into a conditional move: it must keep the jump.
+filter_branchy :: #force_no_inline proc(input: []u32, t: u32, out: []u32) -&gt; int {
+	n := 0
+	for x in input {
+		if x &lt; t {
+			out[n] = x
+			n += 1
+		}
+	}
+	return n
+}
+
+// Branchless: always write, then advance the cursor by 0 or 1. `out` must be as long as
+// `input`. Converting the bool to an int gives a number, not a jump.
+filter_branchless :: #force_no_inline proc(input: []u32, t: u32, out: []u32) -&gt; int {
+	n := 0
+	for x in input {
+		out[n] = x
+		n += int(x &lt; t)
+	}
+	return n
+}</code></pre>
+  </div>
+  <p>Zig's <code>@intFromBool</code> returns a <code>u1</code> and Odin converts with <code>int(x &lt; t)</code>; Rust could write
+  <code>n += (x &lt; t) as usize</code>, and we use <code>std::hint::select_unpredictable</code> because it states the intent.</p>
+  <aside class="callout version" data-title="Stable since Rust 1.88: std::hint::select_unpredictable"><p>
+  <code>select_unpredictable(condition, true_val, false_val)</code> is &ldquo;functionally equivalent to <code>if b { true_val }
+  else { false_val }</code>&rdquo; but tells the optimizer the condition is hard to predict. The lowering &ldquo;is not
+  guaranteed (on any platform)&rdquo; and &ldquo;might <em>decrease</em> performance if <code>condition</code> is
+  well-predictable&rdquo;<a class="cite" href="#src-15">[15]</a>. Here LLVM did something better than
+  <code>cmov</code>: for <code>n + 1</code> versus <code>n</code> it emitted <code>cmp</code> + <code>adc $0x0</code>, adding
+  the carry flag straight into the cursor.</p></aside>
+
+  <p>We run both filters over 64K values (256&nbsp;KiB in, the same out: L2-resident, so memory is not the bottleneck) in
+  three families of input:</p>
+  <ul>
+    <li><b>random, keep <var>p</var>%</b>: values uniform in 0..100, keep <code>x &lt; p</code>, for <var>p</var> = 0, 10, …, 100.
+    At 0% and 100% the branch always goes the same way; at 50% it is a coin flip.</li>
+    <li><b>sorted</b>: the same values at 50%, sorted, so the branch flips once.</li>
+    <li><b>period <var>k</var></b>: a random pattern of <var>k</var> keep/drop decisions, repeated, keeping half. A predictor
+    that remembers enough history learns short periods and loses long ones.</li>
+  </ul>
+
+  <h3 id="predictor">How the predictor guesses</h3>
+  <p>Before the numbers, a model. The simplest predictor that works is a <b>2-bit saturating counter</b>: four states,
+  strongly not-taken to strongly taken. Predict &ldquo;taken&rdquo; in the upper two states; move one step towards whatever
+  actually happened. Two states per direction means one surprise does not flip the prediction, which is what makes a loop
+  branch (taken, taken, …, not taken once at the end) cheap. Real predictors are far better at patterns: TAGE-style designs
+  keep several tables of such counters, indexed by longer and longer histories of recent branch outcomes. But no history
+  helps with a coin flip. Algorithmica's measurements show the price on a Zen 2 core: about
+  14 cycles per element for a 50/50 branch, against a little over 4 once the data is sorted<a class="cite" href="#src-11">[11]</a>. <a class="figref" href="#fig-predictor">The figure below</a> runs the counter.</p>
+
+  <details class="predict"><summary>Random values, keep 50%. What fraction of the branches will the 2-bit counter
+  mispredict? And with &ldquo;alternating&rdquo; input (keep, drop, keep, drop…)?</summary>
+  <p>About half on random input: any rule is right half the time against a fair coin. On alternating input the single counter
+  swings between the two weak states, and depending on where it starts it can be wrong on every branch. Switch to
+  &ldquo;counter per history&rdquo;, which picks a counter by the last two outcomes, and it learns the pattern after a few
+  steps and stops missing. That is the period-<var>k</var> experiment in miniature.</p></details>
+
+  <figure class="figure wide" id="fig-predictor">
+    <div class="figure-body" data-viz="ch07-branch-predictor" data-opts='{"n":32}'>
+      <p>Static fallback: a 2-bit counter mispredicts about once on sorted input (when the values cross 50), about half the
+      time on random input, and on alternating input anywhere from half the time to every time, depending on its starting
+      state, unless it is indexed by recent history.</p></div>
+    <figcaption>One idea: the predictor is a tiny state machine fed by outcomes, so its accuracy is a property of the data's
+    order. Step through each input and watch the ✗ marks and the two cycle estimates (model: 1 cycle per predicted element,
+    15 per mispredict, 2 flat for branchless). Sorted input costs one miss; random costs one in two.</figcaption>
+  </figure>
+
+  <h3 id="sweep">The predictability sweep</h3>
+  <details class="predict"><summary>Sketch both curves (time per element against the fraction kept, 0 to 100%) before you
+  look. Where do they cross?</summary>
+  <p>The branchy filter traces an upside-down U: cheap at the ends, worst at 50%, where every other element mispredicts. The
+  branchless filter is flat, because it does the same work whatever the data. They cross very close to the ends. Branchy wins
+  only when almost nothing is kept, because it then skips almost every store. At 100% kept it stores every element too, so it
+  can at best tie: in our runs branchless was still ahead in Rust and Odin, and branchy slightly ahead in Zig. Already at 10%
+  and 90% branchless wins in all three. That is far narrower than Algorithmica's rule of thumb that branchy code wins above
+  ~75% predictability<a class="cite" href="#src-12">[12]</a>, because our branchless loop is so cheap.</p></details>
+
+  <figure class="figure wide" id="fig-sweep">
+    <div class="figure-body" data-viz="ch07-sweep" data-bench="ch07-predict"></div>
+    <figcaption>Measured. Branchy (red) against branchless (green) filters over 64K L2-resident values, keeping 0–100%
+    of them in random order. Toggle the language: all three compilers produce the same shape, because all three kept the
+    jump in the branchy loop and removed it in the branchless one.</figcaption>
+  </figure>
+
+  <p>The curves are as clean as benchmarks get. At 50% the branchy filter takes about
+  <span data-bench-val="ch07-predict" data-label="branchy 50%" data-lang="rust" data-metric="ns/n">4 ns</span> per element in Rust and
+  <span data-bench-val="ch07-predict" data-label="branchy 50%" data-lang="zig" data-metric="ns/n">3.4 ns</span> in Zig; the
+  branchless filter is about
+  <span data-bench-ratio="ch07-patterns" data-num="branchy, random" data-den="branchless, random" data-lang="rust">8×</span>
+  faster. Sort the input and the branchy filter falls to about
+  <span data-bench-val="ch07-patterns" data-label="branchy, sorted" data-lang="rust" data-metric="ns/n">0.46 ns</span>, slightly faster
+  than branchless, because a predicted branch skips the store for the dropped half:</p>
+
+  <figure class="figure" id="fig-patterns">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch07-patterns" data-opts='{"metric":"ns/n","per":"elem","sort":"none","labels":["branchy, random","branchy, sorted","branchless, random","branchless, sorted","if-sum, random","if-sum, sorted"]}'></div>
+    <figcaption>Measured. Keep 50%. Sorting fixes the branchy filter, does nothing for the branchless one, and does nothing
+    for the classic &ldquo;sum if&rdquo; loop either, because the compiler had already removed its branch.</figcaption>
+  </figure>
+
+  <h3 id="worked">Worked example: reading the penalty off the curve</h3>
+  <p>The sweep lets us estimate the mispredict penalty without performance counters, which this machine does not expose.
+  In Rust at 50%, branchy costs
+  <span data-bench-val="ch07-predict" data-label="branchy 50%" data-lang="rust" data-metric="ns/n" data-digits="2">4.2 ns</span> and branchless
+  <span data-bench-val="ch07-predict" data-label="branchless 50%" data-lang="rust" data-metric="ns/n">0.52 ns</span> per element. Both do
+  roughly the same useful work, so the difference, about 3.5&nbsp;ns, is mostly the mispredictions. Any predictor against a fair
+  coin mispredicts about half the elements: 3.5&nbsp;ns&nbsp;/&nbsp;0.5 ≈ 7.0&nbsp;ns per mispredict. If the core runs near its
+  2.6&nbsp;GHz nominal clock, that is about 18 cycles. We cannot read the actual clock here, so take it as a range, but it sits
+  inside Agner Fog's 15–25 cycles.</p>
+  <p>Now use the penalty to predict another point. Take the branchless cost, about 0.5&nbsp;ns, as the base. At 10% kept, a
+  perfect &ldquo;always guess the common case&rdquo; predictor misses 10% of the time: 0.5 + 0.10 × 7.0 ≈ 1.20&nbsp;ns. For the
+  2-bit counter on independent random outcomes, the four states form a small Markov chain whose steady state gives a miss rate
+  of <var>p</var>(1 − <var>p</var>) / (<var>p</var><sup>2</sup> + (1 − <var>p</var>)<sup>2</sup>): 11.0% at <var>p</var> = 0.1 (a
+  million-step simulation agrees to three decimals), so 0.5 + 0.11 × 7.0 ≈ 1.27&nbsp;ns. We measured
+  <span data-bench-val="ch07-predict" data-label="branchy 10%" data-lang="rust" data-metric="ns/n" data-digits="3">1.31 ns</span>: a few
+  percent above the 2-bit model and the oracle. That is what we should expect. Random outcomes carry no pattern for a big
+  predictor's history to find, so it can do no better than guess the majority, and a 2-bit counter already gets within one point
+  of that; the small excess is the kind of thing aliasing between branches in a real predictor adds. Sanity checks like this are
+  how you know a benchmark is measuring what you think.</p>
+
+  <h3 id="period">Patterns the predictor can learn</h3>
+  <figure class="figure wide" id="fig-period">
+    <div class="figure-body" data-viz="bench-line" data-bench="ch07-period" data-opts='{"metric":"ns/n","per":"elem","labels":["branchy"],"xLabel":"pattern period k (branches)","series":"lang","logY":false}'></div>
+    <figcaption>Measured. The branchy filter at 50% kept, on a random keep/drop pattern of period <var>k</var> repeated over
+    64K elements. Short periods are learned and cost about as much as sorted input. Rust and Odin lose the pattern between
+    2K and 8K; Zig's loop holds on until somewhere past 8K. The branchless filter (not drawn) stays flat for every
+    <var>k</var>.</figcaption>
+  </figure>
+  <p>The period sweep is the best evidence that modern predictors are not 2-bit counters: a pattern of 2,048 random-looking
+  decisions, repeated, is predicted almost perfectly. Then, between 2K and 8K, the history runs out and the branchy filter
+  climbs back to its coin-flip cost. Zig's binary, whose branchy loop is unrolled four times, learns longer periods; we did not
+  find out why. The practical point is the other one: you cannot rely on the predictor's history size, which changes between
+  CPU generations.</p>
+
+  <h3 id="asm">What each compiler emitted</h3>
+  <p>&ldquo;Branchy&rdquo; and &ldquo;branchless&rdquo; describe the binary, not the source, so we checked it. The functions are
+  marked <code>#[inline(never)]</code>, <code>noinline</code> and <code>#force_no_inline</code> so they exist as symbols.</p>
+  <aside class="callout try"><p>Disassemble the two filters yourself:</p><pre><code class="language-bash">cd code &amp;&amp; cargo build --release -p ch07_branches_batches_existence
+objdump -d --no-show-raw-insn -C target/release/ch07_branches_batches_existence | awk '/::filter_branchy&gt;:/,/^$/'
+cd ch07-branches-batches-existence/zig &amp;&amp; zig build-exe -O fast main.zig -femit-asm=ch07.s   # or objdump the binary
+cd .. &amp;&amp; odin build odin -o:speed -build-mode:asm -out:ch07     # writes assembly</code></pre></aside>
+  <p>The inner loop of the Rust branchy filter, from <code>objdump</code> (comments ours):</p>
+<pre class="ch07-asm"><code>1a969: mov    (%rdi,%r9,1),%r10d     ; x = input[i]
+1a96d: cmp    %edx,%r10d             ; x &lt; t ?
+1a970: jae    1a960                  ; no: skip the store   &lt;- the branch
+1a972: cmp    %r8,%rax               ; bounds check on out[n]
+1a975: jae    1a984
+1a977: mov    %r10d,(%rcx,%rax,4)    ; out[n] = x
+1a97b: inc    %rax                   ; n += 1</code></pre>
+  <p>and of the branchless one:</p>
+<pre class="ch07-asm"><code>1aa60: cmp    %r8,%rax               ; bounds check on out[n] (never fails)
+1aa63: jae    1aa81
+1aa65: mov    (%rdi,%r9,1),%r10d     ; x = input[i]
+1aa69: mov    %r10d,(%rcx,%rax,4)    ; out[n] = x, always
+1aa6d: cmp    %edx,%r10d             ; carry = (x &lt; t)
+1aa6f: adc    $0x0,%rax              ; n += carry: no jump on the data</code></pre>
+  <p>The branchless loop still has two jumps, the bounds check and the loop condition, but both go the same way every time
+  and are predicted perfectly. Here is the whole survey:</p>
+  <div class="table-wrap"><table>
+    <tr><th>function</th><th>Rust 1.100</th><th>Zig 0.17.1 <code>-O fast</code></th><th>Odin <code>-o:speed</code></th></tr>
+    <tr><td>filter, branchy</td><td><code>jae</code> per element</td><td><code>jb</code> per element, unrolled ×4</td><td><code>jae</code> per element</td></tr>
+    <tr><td>filter, branchless</td><td><code>cmp</code> + <code>adc</code></td><td><code>setb</code> + <code>lea</code> / <code>adc</code>, unrolled ×4</td><td><code>cmp</code> + <code>adc</code></td></tr>
+    <tr><td>sum if <code>x &lt; t</code></td><td><code>cmovae</code>, scalar, unrolled ×4</td><td><code>cmovae</code>, scalar, unrolled ×8</td><td>SSE4 masks, vectorized</td></tr>
+    <tr><td>update if alive (next section)</td><td><code>cmpb</code> + <code>jne</code></td><td><code>testb</code>/<code>cmpb</code> + <code>jne</code></td><td><code>cmpb</code> + <code>je</code></td></tr>
+    <tr><td>is identifier byte (comparisons)</td><td>SSE vector code</td><td><code>setb</code>/<code>sete</code>, branchless scalar</td><td><code>jb</code>/<code>jne</code>, branchy</td></tr>
+  </table></div>
+  <p>The compilers agree on everything we designed the benchmark to force, which is why its numbers are trustworthy. Where we
+  left them freedom (the sum and the character classifier) they disagreed, silently: the classifier gets three strategies and,
+  as we will see, a 4× spread in speed.</p>
+  <aside class="callout pitfall"><p><b>The benchmark that measured nothing.</b> Our first Zig version called the read-only
+  <code>sumIf</code> 16 times on one slice and LLVM computed it once; the repetition loops below hide the input on every pass
+  (<a href="12-measure-and-know-when-not-to.html#deadcode">Chapter&nbsp;12</a> has the full story).</p></aside>
+  <div class="code-tabs">
+<pre data-lang="Zig" data-file="code/ch07-branches-batches-existence/zig/main.zig"><code class="language-zig">/// One timed run: `reps` passes of filter `f` over the same input.
+fn repeated(comptime f: FilterFn) fn (FilterCtx) usize {
+    return struct {
+        fn run(c: FilterCtx) usize {
+            var total: usize = 0;
+            for (0..c.reps) |_| {
+                std.mem.doNotOptimizeAway(c.input.ptr); // memory barrier: each pass really runs
+                total += f(c.input, c.t, c.out);
+            }
+            return total;
+        }
+    }.run;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch07-branches-batches-existence/odin/main.odin"><code class="language-odin">// Odin has no black_box. A volatile load of a slice header makes the optimizer forget what the
+// slice is, so a loop of `reps` calls to a read-only procedure cannot collapse into one call.
+opaque :: proc "contextless" (s: $T/[]$E) -&gt; T {
+	s := s
+	return intrinsics.volatile_load(&amp;s)
+}</code></pre>
+  </div>
+
+  <h2 id="existence">Existence-based processing</h2>
+  <p>So far the branch was a property of the data that we could only work around. Richard Fabian's book takes a stronger
+  position: most of these branches should not exist, because where the data is stored should answer the question. His chapter
+  on <em>existential processing</em> has section headings that are instructions: &ldquo;Don't use booleans&rdquo;,
+  &ldquo;Don't use enums quite as much&rdquo;<a class="cite" href="#src-8">[8]</a>.</p>
+  <p>Instead of an <code>isHurt</code> field checked by every update, keep a table that contains a row only for hurt entities,
+  and regenerate health for every row in it. In Fabian's words, each such table has an &ldquo;implicit boolean hidden in the
+  row existing in the table&rdquo;. The same works for enums: &ldquo;Any enum can be emulated with a variety of tables. All you
+  need is one table per enumerable value. Setting the enumeration is an insert into a table or a migration from one table to
+  another.&rdquo;<a class="cite" href="#src-8">[8]</a> That is Chapter&nbsp;1's version 4, the per-kind shape arrays, stated as a
+  general rule; Muratori gives the same advice for his shapes: n kinds, n arrays, n loops, no dispatch<a class="cite" href="#src-10">[10]</a>.
+  Andrew Kelley applies it to the monster from <a href="03-size-alignment-padding.html">Chapter&nbsp;3</a>: the bool is still
+  there, &ldquo;it's which array is it in&rdquo;, and the struct shrinks from 24 to 16 bytes<a class="cite" href="#src-9">[9]</a>.</p>
+  <p>The benefits stack up: no branch to mispredict; no bytes loaded for dead entities; a homogeneous loop the compiler can
+  unroll and vectorize; and visible work, since the length of the table is the to-do list.</p>
+  <p>The rest of this section uses the second of the chapter's three ways, <em>place</em>: four places to keep
+  &ldquo;alive&rdquo;, then tables, bucketing by type, compaction and dirty lists. The third way, <em>look it up</em>, follows in
+  <a href="#lookup">its own section</a>.</p>
+
+  <h3 id="four-ways">Four places to keep &ldquo;alive&rdquo;</h3>
+  <p>Our benchmark updates a million entities (<code>x += vx; y += vy</code>) with a random half, then a random 90%, dead.
+  It keeps the alive state in four places:</p>
+  <ol>
+    <li><b>A field and an <code>if</code>.</b> <code>Entity</code> is four <code>i32</code>s and a <code>bool</code>: 17 bytes of
+    data, 20 with padding.</li>
+    <li><b>An out-of-band bool array.</b> The bodies are 16 bytes and the flags live in a parallel <code>[]bool</code>.
+    Still a branch per entity, but the struct lost its padding.</li>
+    <li><b>An out-of-band bit set.</b> One bit per entity; the loop walks the set bits with &ldquo;count trailing
+    zeros&rdquo;, so it never even looks at dead entities' bodies.</li>
+    <li><b>Tables.</b> An alive table and a dead table. Killing an entity moves its row from one to the other with
+    swap-and-pop, and the update runs over the alive table with no condition at all.</li>
+  </ol>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch07-branches-batches-existence/rust/src/main.rs"><code class="language-rust">/// Version 1: the flag is a field. 17 bytes of data, 20 with padding.
+#[derive(Clone, Copy)]
+struct Entity {
+    x: i32,
+    y: i32,
+    vx: i32,
+    vy: i32,
+    alive: bool,
+}
+
+/// Versions 2-4: the same data without the flag. 16 bytes.
+#[derive(Clone, Copy)]
+struct Body {
+    x: i32,
+    y: i32,
+    vx: i32,
+    vy: i32,
+}
+
+const _: () = assert!(size_of::&lt;Entity&gt;() == 20);
+const _: () = assert!(size_of::&lt;Body&gt;() == 16);
+
+fn update_flag(es: &amp;mut [Entity]) {
+    for e in es {
+        if e.alive {
+            e.x += e.vx;
+            e.y += e.vy;
+        }
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch07-branches-batches-existence/zig/main.zig"><code class="language-zig">/// Version 1: the flag is a field. 17 bytes of data, 20 with padding.
+const Entity = struct { x: i32, y: i32, vx: i32, vy: i32, alive: bool };
+
+/// Versions 2-4: the same data without the flag. 16 bytes.
+const Body = struct { x: i32, y: i32, vx: i32, vy: i32 };
+
+comptime {
+    std.debug.assert(@sizeOf(Entity) == 20);
+    std.debug.assert(@sizeOf(Body) == 16);
+}
+
+noinline fn updateFlag(es: []Entity) usize {
+    for (es) |*e| {
+        if (e.alive) {
+            e.x += e.vx;
+            e.y += e.vy;
+        }
+    }
+    return es.len;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch07-branches-batches-existence/odin/main.odin"><code class="language-odin">// Version 1: the flag is a field. 17 bytes of data, 20 with padding.
+Entity :: struct {
+	x, y, vx, vy: i32,
+	alive:        bool,
+}
+
+// Versions 2-4: the same data without the flag. 16 bytes.
+Body :: struct {
+	x, y, vx, vy: i32,
+}
+
+#assert(size_of(Entity) == 20)
+#assert(size_of(Body) == 16)
+
+update_flag :: #force_no_inline proc(es: []Entity) -&gt; u64 {
+	for &amp;e in es {
+		if e.alive {
+			e.x += e.vx
+			e.y += e.vy
+		}
+	}
+	return u64(len(es))
+}</code></pre>
+  </div>
+  <p>The size assertions pin the claim from Chapter&nbsp;3: the one-byte flag costs four bytes per entity, because the struct's
+  alignment is 4.</p>
+
+  <h3 id="bitsets">Bit sets in three standard libraries</h3>
+  <p>When state must stay attached to the entity's index (other systems hold indices into this array, as in
+  <a href="05-indices-handles.html">Chapter&nbsp;5</a>), you cannot move rows freely. Then the next best thing is to take the
+  flag out of the struct and pack it: one bit per entity is 128&nbsp;KiB for a million, against 1&nbsp;MiB of bools or 4&nbsp;MiB
+  of padding. Rust's standard library has no bit-set type, so we write the loop on <code>u64</code> words directly. Zig has
+  <code>std.bit_set</code>, and Odin has <code>core:container/bit_array</code> for runtime sizes and the built-in
+  <code>bit_set</code> type for small fixed ones.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch07-branches-batches-existence/rust/src/main.rs"><code class="language-rust">/// Out-of-band bits: visit only the set bits, 64 entities per word.
+#[inline(never)]
+fn update_bitset(bodies: &amp;mut [Body], alive: &amp;[u64]) {
+    for (w, &amp;word) in alive.iter().enumerate() {
+        let mut m = word;
+        while m != 0 {
+            let b = &amp;mut bodies[w * 64 + m.trailing_zeros() as usize];
+            b.x += b.vx;
+            b.y += b.vy;
+            m &amp;= m - 1; // clear the lowest set bit
+        }
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch07-branches-batches-existence/zig/main.zig"><code class="language-zig">/// Out-of-band bits: the bit set's iterator visits only the set bits.
+noinline fn updateBitset(c: BitsCtx) usize {
+    var it = c.alive.iterator(.{});
+    while (it.next()) |i| {
+        const b = &amp;c.bodies[i];
+        b.x += b.vx;
+        b.y += b.vy;
+    }
+    return c.bodies.len;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch07-branches-batches-existence/odin/main.odin"><code class="language-odin">// Out-of-band bits: core:container/bit_array's iterator visits only the set bits.
+update_bitset :: #force_no_inline proc(c: Bits_Ctx) -&gt; u64 {
+	bodies := c.bodies
+	it := ba.make_iterator(c.alive)
+	for i in ba.iterate_by_set(&amp;it) {
+		b := &amp;bodies[i]
+		b.x += b.vx
+		b.y += b.vy
+	}
+	return u64(len(c.bodies))
+}</code></pre>
+  </div>
+  <p>All three iterators do the same thing underneath: Zig's <code>next()</code> is literally <code>@ctz(bits_remain)</code>
+  followed by <code>bits_remain &amp;= bits_remain - 1</code>, the two lines in our Rust loop. Zig's iterator inlines into a
+  tight loop; Odin's <code>iterate_by_set</code> supports a bias and re-checks the word index on every call, and in our
+  measurements it is about three times as slow as the other two.</p>
+  <aside class="callout version" data-title="Changed in Zig 0.17: std.bit_set renames"><p><code>std.bit_set.Static(n)</code>
+  (formerly <code>StaticBitSet</code>) and <code>std.bit_set.Dynamic</code> (formerly <code>DynamicBitSetUnmanaged</code>, now a
+  deprecated alias). <code>Dynamic</code> is unmanaged: <code>try .initEmpty(gpa, n)</code> and <code>deinit(gpa)</code>; static
+  sets use the <code>.empty</code> and <code>.full</code> declaration literals<a class="cite" href="#src-16">[16]</a>.</p></aside>
+
+  <p>For a handful of flags per entity, pack them into one byte in its own column, so a system that needs &ldquo;alive and
+  visible&rdquo; reads one byte per entity. Odin has a set type; Zig uses a <code>packed struct(u8)</code>; Rust uses masks.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch07-branches-batches-existence/rust/src/main.rs"><code class="language-rust">const ALIVE: u8 = 1 &lt;&lt; 0;
+const VISIBLE: u8 = 1 &lt;&lt; 1;
+const DIRTY: u8 = 1 &lt;&lt; 2;
+#[allow(dead_code)]
+const SELECTED: u8 = 1 &lt;&lt; 3;
+
+fn flags_demo(n: usize) {
+    let mut rng = Rng(9);
+    let flags: Vec&lt;u8&gt; = (0..n).map(|_| (rng.next() &amp; 0xF) as u8).collect();
+    let want = ALIVE | VISIBLE;
+    let count = flags.iter().filter(|&amp;&amp;f| f &amp; (want | DIRTY) == want).count();
+    println!("== flags: {n} entities x 1 B of flags (4 separate bools: 4 B); alive, visible and clean: {count}");
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch07-branches-batches-existence/zig/main.zig"><code class="language-zig">/// Several bools per entity, packed into one byte and kept out of band in their own column.
+const Flags = packed struct(u8) { alive: bool, visible: bool, dirty: bool, selected: bool, _: u4 = 0 };
+
+fn flagsDemo(e: Env, n: usize) !void {
+    var rng: Rng = .{ .state = 9 };
+    const flags = try e.gpa.alloc(Flags, n);
+    defer e.gpa.free(flags);
+    for (flags) |*f| f.* = @bitCast(@as(u8, @truncate(rng.next() &amp; 0xF)));
+    var count: usize = 0;
+    for (flags) |f| count += @intFromBool(f.alive and f.visible and !f.dirty);
+    try e.out.print("== flags: {d} entities x {d} B of flags (4 separate bools: 4 B); alive, visible and clean: {d}\n", .{ n, @sizeOf(Flags), count });
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch07-branches-batches-existence/odin/main.odin"><code class="language-odin">// Several bools per entity, packed into one byte and kept out of band in their own column.
+Flag :: enum u8 {
+	Alive,
+	Visible,
+	Dirty,
+	Selected,
+}
+Flags :: bit_set[Flag;u8]
+
+	want :: Flags{.Alive, .Visible}
+	count := 0
+	for f in flags {
+		if want &lt;= f &amp;&amp; .Dirty not_in f {
+			count += 1
+		}
+	}</code></pre>
+  </div>
+  <aside class="callout version" data-title="New in Odin (Oct 2026): array-backed bit_set"><p>A <code>bit_set</code> is no longer
+  limited to 128 elements: it can be backed by an array, for example <code>bit_set[Big; [4]u64]</code><a class="cite" href="#src-17">[17]</a>.
+  For per-entity flags you still want a small <code>bit_set[Flag; u8]</code> in a column of its own.</p></aside>
+
+  <h3 id="tables">Tables and swap-and-pop</h3>
+  <p>The fourth version is existence proper. Killing an entity is a table migration: take its row out of <code>alive</code>,
+  push it onto <code>dead</code>. Taking a row out of the middle of a dense array with swap-and-pop (move the last row into
+  the hole, shrink by one) is O(1) and keeps the table dense, at the cost of order. Chapter&nbsp;5 compared it with holes and
+  tombstones; here it is the engine of state change.</p>
+
+  <figure class="figure wide" id="fig-existence">
+    <div class="figure-body" data-viz="ch07-existence" data-opts='{"n":16}'>
+      <p>Static fallback: with a flag, an update pass loads all 16 entities (5–6 cache lines) and tests 16 flags to update 8.
+      With alive and dead tables, the pass visits the 8 alive rows (2 lines of 16-byte bodies) and tests nothing.</p></div>
+    <figcaption>One idea: state can be a place instead of a field. In &ldquo;flag + if&rdquo; mode, step an update pass and count
+    the lines it touches and the flags it tests. In &ldquo;alive/dead tables&rdquo; mode, step through the kills: each one moves a
+    row, the last alive row jumps into the hole (orange arrow), and the counters show the update pass shrinking with no branch.</figcaption>
+  </figure>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch07-branches-batches-existence/rust/src/main.rs"><code class="language-rust">impl Table {
+    fn push(&amp;mut self, id: u32, b: Body) {
+        self.ids.push(id);
+        self.bodies.push(b);
+    }
+    /// Swap-and-pop: the last row moves into the hole. O(1), and the table stays dense.
+    fn swap_remove(&amp;mut self, row: usize) -&gt; (u32, Body) {
+        (self.ids.swap_remove(row), self.bodies.swap_remove(row))
+    }
+}
+
+/// Changing state is moving a row from one table to another.
+fn kill_where(alive: &amp;mut Table, dead: &amp;mut Table, pred: impl Fn(u32) -&gt; bool) {
+    let mut row = 0;
+    while row &lt; alive.ids.len() {
+        if pred(alive.ids[row]) {
+            let (id, b) = alive.swap_remove(row);
+            dead.push(id, b);
+            // do not advance: the row now holds what was the last element
+        } else {
+            row += 1;
+        }
+    }
+}
+
+/// Existence: no flag, no branch. Every row in this table is alive.
+#[inline(never)]
+fn update_alive(alive: &amp;mut [Body]) {
+    for b in alive {
+        b.x += b.vx;
+        b.y += b.vy;
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch07-branches-batches-existence/zig/main.zig"><code class="language-zig">/// A table per state: MultiArrayList keeps `id` and `body` in two columns.
+const Row = struct { id: u32, body: Body };
+const Table = std.MultiArrayList(Row);
+
+/// Changing state is moving a row from one table to another.
+fn killWhere(gpa: Allocator, alive: *Table, dead: *Table, dead_pct: u64) !void {
+    var row: usize = 0;
+    while (row &lt; alive.len) {
+        if (dies(alive.items(.id)[row], dead_pct)) {
+            try dead.append(gpa, alive.get(row));
+            alive.swapRemove(row); // the last row moves into the hole, in every column
+            // do not advance: the row now holds what was the last element
+        } else row += 1;
+    }
+}
+
+/// Existence: no flag, no branch. Every row in this table is alive.
+noinline fn updateAlive(alive: []Body) usize {
+    for (alive) |*b| {
+        b.x += b.vx;
+        b.y += b.vy;
+    }
+    return alive.len;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch07-branches-batches-existence/odin/main.odin"><code class="language-odin">// A table per state: #soa stores `id` and `body` as two columns.
+Row :: struct {
+	id:   u32,
+	body: Body,
+}
+
+// Changing state is moving a row from one table to another.
+kill_where :: proc(alive, dead: ^#soa[dynamic]Row, dead_pct: u64) {
+	row := 0
+	for row &lt; len(alive) {
+		if dies(alive[row].id, dead_pct) {
+			append(dead, alive[row])
+			unordered_remove(alive, row) // the last row moves into the hole, in every column
+			// do not advance: the row now holds what was the last element
+		} else {
+			row += 1
+		}
+	}
+}
+
+// Existence: no flag, no branch. Every row in this table is alive.
+update_alive :: #force_no_inline proc(alive: []Body) -&gt; u64 {
+	for &amp;b in alive {
+		b.x += b.vx
+		b.y += b.vy
+	}
+	return u64(len(alive))
+}</code></pre>
+  </div>
+  <p>A table has two columns, the stable id and the body. Rust has no SoA container, so <code>Table</code> keeps two
+  <code>Vec</code>s in step by hand; Zig's <code>MultiArrayList.swapRemove</code> moves the last row in every column at once;
+  Odin's <code>#soa[dynamic]Row</code> does the same with <code>unordered_remove</code>, and <code>soa_unzip</code> splits out
+  the bodies. In all three the update loop sees a plain <code>[]Body</code>.</p>
+
+  <details class="predict"><summary>Half the entities alive, in random order. The opening of this chapter said the table
+  version is roughly <span data-bench-ratio="ch07-exist" data-num="flag in struct + if" data-den="alive table, no branch" data-lang="rust">14×</span>
+  faster. The flag version reads 20&nbsp;MiB and the table version 8&nbsp;MiB. How much of that do the bytes explain, and where
+  does the rest come from?</summary>
+  <p>Bytes explain only 2.5×; the rest is the coin-flip branch. A million unpredictable branches at
+  roughly 18 cycles per miss, half of them missing, is several milliseconds by itself. The bool array, with smaller structs but
+  the same branch, is only a little faster than the flag. The bit set has no data branch on the bodies and lands in between.</p></details>
+
+  <figure class="figure wide" id="fig-exist">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch07-exist" data-opts='{"metric":"ns/n","per":"entity","sort":"none","labels":["flag in struct + if","bool array + if","bitset, set bits only","alive table, no branch"]}'></div>
+    <figcaption>Measured. One update pass over 2<sup>20</sup> entities, 50% alive in random order, time per entity (alive or
+    dead). The same checksum in all twelve runs: every version updates exactly the same entities.</figcaption>
+  </figure>
+  <figure class="figure wide" id="fig-exist-10">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch07-exist-10" data-opts='{"metric":"ns/n","per":"entity","sort":"none","labels":["flag in struct + if","bool array + if","bitset, set bits only","alive table, no branch"]}'></div>
+    <figcaption>Measured. The same with only 10% alive. The branch is now predictable (90% go the same way), so the flag
+    versions speed up, but they still load every dead entity. The alive table only touches the 10%, and the gap grows to
+    about <span data-bench-ratio="ch07-exist-10" data-num="flag in struct + if" data-den="alive table, no branch" data-lang="rust">40×</span>.</figcaption>
+  </figure>
+
+  <p>The rough budget for the 50% case: the flag loop takes about
+  <span data-bench-val="ch07-exist" data-label="flag in struct + if" data-lang="rust" data-metric="ms">5.5 ms</span> for a million
+  entities. The table loop moves its 8&nbsp;MiB (read and written) in about
+  <span data-bench-val="ch07-exist" data-label="alive table, no branch" data-lang="rust" data-metric="ms">0.36 ms</span>, about
+  22&nbsp;GB/s for this workload. Reading 20&nbsp;MiB at that rate would take about 1&nbsp;ms, and half a million mispredicts at
+  ~7&nbsp;ns would take about 3.5&nbsp;ms, which adds up to most of the flag loop's time.</p>
+  <p>All three languages land within about 10% of each other on the flag, bool-array and table versions. The table version in
+  particular costs the same per entity in all three, because it is limited by memory, not by code. The exception is the bit set
+  in Odin, for the iterator reason above.</p>
+
+  <aside class="callout pitfall"><p><b>When existence is the wrong tool.</b> Moving rows costs a copy and a swap-remove per
+  state change, and it reorders the table. If most entities change state every frame, the migrations can cost more than the
+  branch you removed. Asking &ldquo;what state is entity 42 in?&rdquo; becomes a search across tables; Fabian concedes that
+  &ldquo;finding out the value of an enum in an entity is difficult&rdquo;<a class="cite" href="#src-8">[8]</a>. Keep an id → (table,
+  row) index if that query is hot, and fix it up on every swap (that is a sparse set, Chapter&nbsp;9). If order matters, as it
+  does for draw order, use a bit set or sort a key array instead.</p></aside>
+
+  <h3 id="bucketing">Sorting and bucketing by type</h3>
+  <p>A mixed array processed with a <code>switch</code> per element has the same disease as the alive flag, multiplied by the
+  number of kinds. Fabian's one-table-per-enum-value is the cure, and Chapter&nbsp;1 measured it with per-kind shape arrays.
+  If the data must arrive mixed, there are two cheaper half-measures. Sorting by kind
+  makes the branch predictable but costs O(n log n) every time the data changes; greyblake's note is blunt, &ldquo;sorting the
+  input is not a fix: sorting costs much more than the filtering itself&rdquo;<a class="cite" href="#src-20">[20]</a>. Bucketing as
+  the data is produced (append each new item to its kind's array) costs nothing extra and is what TigerBeetle does with its
+  homogeneous batches: a batch is all accounts or all transfers, so the kind is decided once per batch.</p>
+
+  <h3 id="compaction">Stream compaction and dirty lists</h3>
+  <p>The branchless filter from the first half of the chapter is the general tool for <em>building</em> such tables: compact
+  the survivors of a predicate into a dense output (a selection vector, in X100's terms<a class="cite" href="#src-6">[6]</a>),
+  and downstream loops run over it with no condition.</p>
+  <p>The same idea applied to change tracking is the dirty list. A <code>dirty</code> flag per row means every consumer scans
+  every row to find the few that changed. A list of dirty row indices means the consumer visits exactly those rows. A bit per
+  row makes marking idempotent, so a row changed ten times is listed once:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch07-branches-batches-existence/rust/src/main.rs"><code class="language-rust">/// A dirty list: remember *which* rows changed, once each, instead of a dirty flag per row
+/// that every consumer has to scan for.
+struct DirtyList {
+    seen: Vec&lt;u64&gt;, // one bit per row: already listed?
+    rows: Vec&lt;u32&gt;,
+}
+
+impl DirtyList {
+    fn new(n: usize) -&gt; Self {
+        DirtyList { seen: vec![0; n.div_ceil(64)], rows: Vec::new() }
+    }
+    fn mark(&amp;mut self, row: u32) {
+        let (w, bit) = (row as usize / 64, 1u64 &lt;&lt; (row % 64));
+        if self.seen[w] &amp; bit == 0 {
+            self.seen[w] |= bit;
+            self.rows.push(row);
+        }
+    }
+    /// Hand the dirty rows to `f`, then forget them. Cost: O(dirty), not O(rows).
+    fn drain(&amp;mut self, mut f: impl FnMut(u32)) {
+        for &amp;row in &amp;self.rows {
+            f(row);
+            self.seen[row as usize / 64] &amp;= !(1u64 &lt;&lt; (row % 64));
+        }
+        self.rows.clear();
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch07-branches-batches-existence/zig/main.zig"><code class="language-zig">/// A dirty list: remember *which* rows changed, once each, instead of a dirty flag per row
+/// that every consumer has to scan for.
+const DirtyList = struct {
+    seen: std.bit_set.Dynamic, // one bit per row: already listed?
+    rows: std.ArrayList(u32) = .empty,
+
+    fn mark(d: *DirtyList, gpa: Allocator, row: u32) !void {
+        if (!d.seen.isSet(row)) {
+            d.seen.set(row);
+            try d.rows.append(gpa, row);
+        }
+    }
+
+    /// Hand the dirty rows to the caller, then forget them. Cost: O(dirty), not O(rows).
+    /// The returned slice is valid until the next `mark`.
+    fn drain(d: *DirtyList) []const u32 {
+        for (d.rows.items) |row| d.seen.unset(row);
+        defer d.rows.clearRetainingCapacity();
+        return d.rows.items;
+    }
+};</code></pre>
+<pre data-lang="Odin" data-file="code/ch07-branches-batches-existence/odin/main.odin"><code class="language-odin">// A dirty list: remember *which* rows changed, once each, instead of a dirty flag per row
+// that every consumer has to scan for.
+Dirty_List :: struct {
+	seen: ba.Bit_Array, // one bit per row: already listed?
+	rows: [dynamic]u32,
+}
+
+dirty_mark :: proc(d: ^Dirty_List, row: u32) {
+	if !ba.get(&amp;d.seen, row) {
+		ba.set(&amp;d.seen, row)
+		append(&amp;d.rows, row)
+	}
+}
+
+// Hand the dirty rows to the caller, then forget them. Cost: O(dirty), not O(rows).
+// The returned slice is valid until the next `dirty_mark`.
+dirty_drain :: proc(d: ^Dirty_List) -&gt; []u32 {
+	for row in d.rows {
+		ba.unset(&amp;d.seen, row)
+	}
+	defer clear(&amp;d.rows)
+	return d.rows[:]
+}</code></pre>
+  </div>
+  <p>In quick mode the program marks 512 random rows out of 1,024 and drains 395 distinct ones; the cost of the drain is 395
+  visits, not 1,024. This is Acton's cache-line arithmetic from Chapter&nbsp;1 turned around: instead of paying a cache line per
+  entity to find out that nothing happened, you pay only for what did.</p>
+
+  <h2 id="lookup">Lookup tables, and recompute versus store</h2>
+  <p>The third way to stop asking a question is to have answered it in advance. Ghostty's profiling found that &ldquo;30% of
+  the time taken for every printed character was spent calculating codepoint width&rdquo;. Hashimoto &ldquo;precalculated the
+  codepoint width for every single Unicode codepoint value&rdquo; into a 3-stage lookup table, and even folded a branch into it:
+  triple-width characters are clamped to double width in the table, &ldquo;without an additional conditional at runtime&rdquo;.
+  ASCII throughput went up 2.8× in his benchmark, random UTF-8 about 5×, and <code>cat</code> of ASCII a further 2.5× in wall
+  time<a class="cite" href="#src-18">[18]</a>. Years later the same print path was batched too: a 2026 PR hands whole runs of
+  codepoints to one call that &ldquo;hoists the invariants&rdquo;, and plain ASCII parsing went from 128 to 725&nbsp;MB/s<a class="cite" href="#src-5">[5]</a>.</p>
+  <p>Our small version classifies bytes as identifier characters, <code>[A-Za-z0-9_]</code>, either with comparisons or with a
+  256-entry table built at compile time. The table is 256 bytes, four cache lines, so it lives in L1.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch07-branches-batches-existence/rust/src/main.rs"><code class="language-rust">/// Built at compile time: 1 for [A-Za-z0-9_], else 0.
+const IDENT: [u8; 256] = {
+    let mut t = [0u8; 256];
+    let mut c = 0;
+    while c &lt; 256 {
+        let b = c as u8;
+        t[c] = (b.is_ascii_alphanumeric() || b == b'_') as u8;
+        c += 1;
+    }
+    t
+};
+
+fn count_ident_lut(text: &amp;[u8]) -&gt; usize {
+    text.iter().map(|&amp;c| IDENT[c as usize] as usize).sum()
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch07-branches-batches-existence/zig/main.zig"><code class="language-zig">/// Built at compile time: 1 for [A-Za-z0-9_], else 0.
+const IDENT: [256]u8 = blk: {
+    var t: [256]u8 = undefined;
+    for (&amp;t, 0..) |*x, c| x.* = @intFromBool(std.ascii.isAlphanumeric(c) or c == '_');
+    break :blk t;
+};
+
+noinline fn countIdentLut(text: []const u8) usize {
+    var n: usize = 0;
+    for (text) |c| n += IDENT[c];
+    return n;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch07-branches-batches-existence/odin/main.odin"><code class="language-odin">// A table written as a literal with index ranges: 1 for [A-Za-z0-9_], else 0.
+@(rodata)
+IDENT := [256]u8 {
+	'a' ..= 'z' = 1,
+	'A' ..= 'Z' = 1,
+	'0' ..= '9' = 1,
+	'_'         = 1,
+}
+
+count_ident_lut :: #force_no_inline proc(text: []u8) -&gt; int {
+	n := 0
+	for c in text {
+		n += int(IDENT[c])
+	}
+	return n
+}</code></pre>
+  </div>
+  <p>Rust builds the table in a <code>const</code> block with a <code>while</code> loop (no <code>for</code> in const fn yet), Zig
+  with a comptime <code>for</code>, and Odin with an array literal that accepts ranges like <code>'a' ..= 'z' = 1</code>.</p>
+  <figure class="figure" id="fig-lut">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch07-lut" data-opts='{"metric":"ns/n","per":"byte","sort":"none","labels":["comparisons","256-entry table"]}'></div>
+    <figcaption>Measured. Counting identifier bytes in 64&nbsp;KiB of random source-like text. The table version costs about
+    the same per byte in all three languages (0.3–0.4&nbsp;ns); the comparison version varies about 4× between compilers.</figcaption>
+  </figure>
+  <p>The table wins in every language, by about <span data-bench-ratio="ch07-lut" data-num="comparisons" data-den="256-entry table" data-lang="zig">4×</span>
+  in Zig and more in Odin and Rust. The comparison versions are where the compilers' choices from the asm table show up: Zig's
+  branchless scalar code is the fastest of the three at about
+  <span data-bench-val="ch07-lut" data-label="comparisons" data-lang="zig" data-metric="ns/n">1.2 ns</span> per byte; Odin's branches
+  mispredict on random text and cost about
+  <span data-bench-val="ch07-lut" data-label="comparisons" data-lang="odin" data-metric="ns/n">4.5 ns</span>; and Rust's vectorized
+  version lands in between at about
+  <span data-bench-val="ch07-lut" data-label="comparisons" data-lang="rust" data-metric="ns/n">2.7 ns</span>, more than twice Zig's scalar code. It
+  unpacks bytes into wide lanes and repacks them, a reminder that &ldquo;the compiler vectorized it&rdquo; is not the same as
+  &ldquo;it got faster&rdquo;. The table version sidesteps all of that: one load per byte, the same machine code everywhere.</p>
+  <p>The opposite trade is just as data-oriented. Carbon's toolchain stores no line and column with its tokens; they are
+  recomputed from the token index when a diagnostic needs them<a class="cite" href="#src-19">[19]</a>. Count how often each answer
+  is needed and what it costs to keep in cache: a 256-byte table used for every byte belongs in L1, a per-token line number
+  used once per error belongs nowhere.</p>
+
+  <h2 id="languages">How the three languages differ here</h2>
+  <div class="table-wrap"><table>
+    <tr><th>need</th><th>Rust 1.100</th><th>Zig 0.17.1</th><th>Odin dev-2026-11</th></tr>
+    <tr><td>bool → number</td><td><code>b as usize</code>, <code>hint::select_unpredictable</code></td><td><code>@intFromBool</code> (a <code>u1</code>)</td><td><code>int(b)</code></td></tr>
+    <tr><td>runtime bit set</td><td>none in std: <code>Vec&lt;u64&gt;</code> + <code>trailing_zeros</code></td><td><code>std.bit_set.Dynamic</code></td><td><code>core:container/bit_array</code></td></tr>
+    <tr><td>flags in one byte</td><td><code>u8</code> + constants</td><td><code>packed struct(u8)</code></td><td><code>bit_set[Flag; u8]</code>, set operators</td></tr>
+    <tr><td>table with columns + swap-remove</td><td>two <code>Vec</code>s by hand</td><td><code>MultiArrayList.swapRemove</code></td><td><code>#soa[dynamic]</code> + <code>unordered_remove</code></td></tr>
+    <tr><td>compile-time table</td><td><code>const</code> block, <code>while</code></td><td>comptime <code>for</code></td><td>array literal with ranges</td></tr>
+    <tr><td>keep a benchmark honest</td><td><code>black_box</code></td><td><code>doNotOptimizeAway</code></td><td><code>volatile_store</code> / <code>volatile_load</code></td></tr>
+  </table></div>
+
+
+  <aside class="recap"><p>A branch costs what its mispredictions cost, so either make the answer predictable, compute it without
+  a jump, look it up, or, best of all, store the data so the question never needs asking: in batches that answer it once, and
+  in tables whose membership is the answer.</p></aside>
+
+  <aside class="callout try"><p>Run the chapter's programs in quick mode, or at full size:</p><pre><code class="language-bash">cd code &amp;&amp; ./run_all.sh ch07
+cargo run --release -q -p ch07_branches_batches_existence          # full size
+cd ch07-branches-batches-existence/zig &amp;&amp; zig run -O fast main.zig
+cd .. &amp;&amp; odin run odin -o:speed -vet -strict-style</code></pre></aside>
+
+  <h2 id="exercises">Exercises</h2>
+  <details class="exercise"><summary>The branchless filter needs an output buffer as long as the input, even when it keeps 1%.
+  Why, and how would you avoid allocating that much for a mostly-empty result?</summary>
+  <p>It stores every element before deciding whether to keep it, so the store position must be valid even if everything is
+  kept. Process the input in batches of, say, 1,024 into a small scratch buffer and copy the survivors out after each batch.
+  That is batching again: the bound is per batch, not per input.</p></details>
+  <details class="exercise"><summary>Using the 2-bit counter model, what misprediction rate do you expect on a random branch that
+  is taken with probability <var>p</var>? Compare with the measured sweep at 10% and 30%.</summary>
+  <p>Number the states 0 (strong not-taken) to 3 (strong taken), with <var>q</var> = 1 − <var>p</var>. In steady state each
+  neighbouring pair balances, π<sub>k+1</sub> = π<sub>k</sub> · <var>p</var>/<var>q</var>. The counter misses a taken branch in
+  states 0–1 and a not-taken one in 2–3, which works out to <var>p</var><var>q</var> / (<var>p</var><sup>2</sup> + <var>q</var><sup>2</sup>):
+  11.0% at 10%, 36.2% at 30%, 50% at 50%. (Simulate it to check; 2<var>p</var><var>q</var>, the chance two outcomes differ, is
+  the 1-bit &ldquo;same as last time&rdquo; predictor, which misses 18% and 42%.) With ~7.0&nbsp;ns per miss on a ~0.5&nbsp;ns
+  branchless base, the 2-bit model predicts about 1.27&nbsp;ns and 3.0&nbsp;ns. We measured
+  <span data-bench-val="ch07-predict" data-label="branchy 10%" data-lang="rust" data-metric="ns/n">1.3 ns</span> and
+  <span data-bench-val="ch07-predict" data-label="branchy 30%" data-lang="rust" data-metric="ns/n">3.2 ns</span> in Rust, a few
+  percent worse: the real predictor behaves like a 2-bit counter here, because on random outcomes there is no history for it to
+  exploit, and aliasing in a real predictor costs a little extra.</p></details>
+  <details class="exercise"><summary>In the existence benchmark at 10% alive, the bool array is only
+  <span data-bench-ratio="ch07-exist-10" data-num="flag in struct + if" data-den="bool array + if" data-lang="odin">1.2×</span> (Odin) to
+  <span data-bench-ratio="ch07-exist-10" data-num="flag in struct + if" data-den="bool array + if" data-lang="rust">1.5×</span> (Rust)
+  faster than the flag in the struct, although 90% of the entities it tests are dead. Why so little?</summary>
+  <p>Both walk their arrays in index order, testing every entity, and the hardware prefetcher streams in body lines whether
+  or not their entities are alive. With the branch now 90% predictable, memory is the main cost, and the gain is just the
+  20% smaller bodies plus a separate, dense flag array. Only the versions that skip the dead (bit set, table) stop touching
+  their memory.</p></details>
+  <details class="exercise"><summary>Write the Odin bit-set loop without <code>core:container/bit_array</code>, using a
+  <code>[]u64</code> and <code>intrinsics.count_trailing_zeros</code>. What do you expect it to cost compared with the Rust
+  version?</summary>
+  <p><code>for word, w in alive { m := word; for m != 0 { i := w*64 + int(intrinsics.count_trailing_zeros(m)); b := &amp;bodies[i];
+  b.x += b.vx; b.y += b.vy; m &amp;= m - 1 } }</code>, with <code>bodies</code> hoisted into a local. It should match Rust and Zig,
+  since all three then compile to the same count-trailing-zeros / clear-lowest-bit loop (<code>tzcnt</code>/<code>blsr</code> on
+  Zig's native target, <code>rep bsf</code> plus <code>lea</code>/<code>and</code> on Rust's and Odin's default targets, which lack
+  BMI); the gap in the chart is library overhead, not language overhead.</p></details>
+  <details class="exercise"><summary>Your game kills about 1% of entities per frame and spawns as many. Each update system reads
+  the alive table once. Is moving rows between tables worth it, compared with a bit set?</summary>
+  <p>Almost certainly. 1% migrations per frame cost about 0.01 × <var>n</var> row copies, while every system saves the dead
+  entities' loads and the branch on every row, every frame. The bit set is the better choice when other code holds stable
+  indices into the array (moving rows would invalidate them) or when most entities change state every frame.</p></details>
+  <details class="exercise"><summary>The batch sweep's right-hand end is 64&nbsp;MiB of buffers. Suggest a change to the pipeline
+  that keeps the same total work but makes even a huge requested batch run at plateau speed.</summary>
+  <p>Internally cap the batch: split any requested batch into chunks of about 1K–64K items and run all three stages on one chunk
+  before moving to the next, so intermediates stay in L1/L2. This is exactly X100's and DuckDB's design: the user sees a table,
+  the engine sees cache-sized vectors.</p></details>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="sources">
+    <li id="src-1">Mike Acton, &ldquo;Data-Oriented Design and C++&rdquo;, CppCon 2014 keynote. <a href="https://youtu.be/rX0ItVEVjHc">video</a>,
+    <a href="https://neil3d.github.io/assets/img/ecs/DOD-Cpp.pdf">slides</a>. &ldquo;Where there is one, there are many. Try looking on the time axis.&rdquo;</li>
+    <li id="src-2">Noel Llopis, &ldquo;Data-Oriented Design (Or Why You Might Be Shooting Yourself in The Foot With OOP)&rdquo;, Game Developer, 2009.
+    <a href="https://gamesfromwithin.com/data-oriented-design">gamesfromwithin.com</a></li>
+    <li id="src-3">TigerBeetle, &ldquo;Performance&rdquo; (documentation). <a href="https://docs.tigerbeetle.com/concepts/performance">docs.tigerbeetle.com</a>.
+    8,190 transfers per query; replication paid once per batch; &ldquo;one tight CPU loop&rdquo;. Checked.</li>
+    <li id="src-4">TigerBeetle issue #2469, &ldquo;LSM performance poor when batches are small&rdquo;, 2024–2025. <a href="https://github.com/tigerbeetle/tigerbeetle/issues/2469">GitHub</a>.
+    Checked: 27&nbsp;GB per replica for 1M transfers in 1,000 batches of 1,000, then 17&nbsp;GB more for 1,000 single-transfer
+    batches; PR #2592 later gave 4.25× TPS at 256 transfers per batch with 1/12 of the bytes written.</li>
+    <li id="src-5">Ghostty PR #13220, &ldquo;terminal: various VT processing optimizations (~1.5x to ~6x throughput increase)&rdquo;, 2026.
+    <a href="https://github.com/ghostty-org/ghostty/pull/13220">GitHub</a>. ~85% in <code>Terminal.print</code>; 128 → 725&nbsp;MB/s (5.7×). Checked.</li>
+    <li id="src-6">Peter Boncz, Marcin Zukowski, Niels Nes, &ldquo;MonetDB/X100: Hyper-Pipelining Query Execution&rdquo;, CIDR 2005.
+    <a href="https://15721.courses.cs.cmu.edu/spring2024/papers/04-execution1/boncz-cidr2005.pdf">PDF</a>. §5.1.1 and Figure 10, vector-size impact; selection vectors. Checked.</li>
+    <li id="src-7">DuckDB, <code>STANDARD_VECTOR_SIZE = 2048</code>. <a href="https://github.com/duckdb/duckdb/blob/main/src/include/duckdb/common/vector_size.hpp">source</a>. From our <a href="references.html#notes">research notes</a>.</li>
+    <li id="src-8">Richard Fabian, <i>Data-Oriented Design</i>, chapter &ldquo;Existential Processing&rdquo;, 2018.
+    <a href="https://www.dataorienteddesign.com/dodbook/node4.html">online</a>. Quotes checked.</li>
+    <li id="src-9">Andrew Kelley, &ldquo;A Practical Guide to Applying Data-Oriented Design&rdquo;, Handmade Seattle 2021.
+    <a href="https://vimeo.com/649009599">video</a>, via the transcript at
+    <a href="https://josherich.me/podcast/andrew-kelley-practical-data-oriented-design-dod">josherich.me</a>.</li>
+    <li id="src-10">Casey Muratori, &ldquo;Response to a Reporter Regarding &lsquo;Clean Code, Horrible Performance&rsquo;&rdquo;, 2023 (and comments).
+    <a href="https://www.computerenhance.com/p/response-to-a-reporter-regarding">computerenhance.com</a>.</li>
+    <li id="src-11">Sergey Slotin, &ldquo;The Cost of Branching&rdquo;, <i>Algorithms for Modern Hardware</i>.
+    <a href="https://en.algorithmica.org/hpc/pipelining/branching/">algorithmica.org</a>.</li>
+    <li id="src-12">Sergey Slotin, &ldquo;Branchless Programming&rdquo;, <i>Algorithms for Modern Hardware</i>.
+    <a href="https://en.algorithmica.org/hpc/pipelining/branchless">algorithmica.org</a>. Branchy wins above ~75% predictability (<a href="references.html#notes">research notes</a>).</li>
+    <li id="src-13">Agner Fog, &ldquo;Optimizing software in C++&rdquo; and &ldquo;The microarchitecture of Intel, AMD and VIA CPUs&rdquo;.
+    <a href="https://www.agner.org/optimize/optimizing_cpp.pdf">optimizing_cpp.pdf</a>, <a href="https://www.agner.org/optimize/microarchitecture.pdf">microarchitecture.pdf</a>.</li>
+    <li id="src-14">Stack Overflow, &ldquo;Why is processing a sorted array faster than processing an unsorted array?&rdquo;, 2012.
+    <a href="https://stackoverflow.com/questions/11227809">stackoverflow.com</a>.</li>
+    <li id="src-15">Rust standard library, <code>std::hint::select_unpredictable</code>, stable since 1.88 (<code>library/core/src/hint.rs</code> in the 1.100 source).
+    <a href="https://doc.rust-lang.org/std/hint/fn.select_unpredictable.html">docs</a>. Quotes checked against the local source.</li>
+    <li id="src-16">Zig 0.17.1 standard library, <code>lib/std/bit_set.zig</code>; Zig 0.17.0 release notes.
+    <a href="https://ziglang.org/download/0.17.0/release-notes.html">release notes</a>. Checked against the local source.</li>
+    <li id="src-17">Odin Overview (bit_set, #soa, soa_unzip) and the October 2026 newsletter (array-backed bit sets).
+    <a href="https://odin-lang.org/docs/overview/">overview</a>, <a href="http://odin-lang.org/news/newsletter-2026-10">newsletter</a>; <code>core:container/bit_array</code> source checked locally.</li>
+    <li id="src-18">Mitchell Hashimoto, &ldquo;Ghostty Devlog 006&rdquo;, 2024. <a href="https://mitchellh.com/writing/ghostty-devlog-006">mitchellh.com</a>. 30% in codepoint width; 3-stage table; 2.8× / ~5× / 2.5×. Checked.</li>
+    <li id="src-19">Chandler Carruth, &ldquo;Modernizing Compiler Design for Carbon's Toolchain&rdquo;, C++Now 2023.
+    <a href="https://chandlerc.blog/slides/2023-cppnow-compiler/index.html">slides</a>. Token index as source location: from our <a href="references.html#notes">research notes</a>.</li>
+    <li id="src-20">Serhii Potapov (greyblake), &ldquo;Branchless Rust: Making a Filter 4x Faster by Removing an if&rdquo;.
+    <a href="https://www.greyblake.com/blog/branchless-rust">greyblake.com</a>. From our <a href="references.html#notes">research notes</a>.</li>
+  </ol>
+</main>
+</body>
+</html>

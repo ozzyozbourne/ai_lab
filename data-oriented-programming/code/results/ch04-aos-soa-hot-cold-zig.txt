@@ -1,0 +1,85 @@
+ch04 (zig): @sizeOf Particle 64 B, Hot 24 B, Cold 40 B, Block 512 B; quick=false
+MultiArrayList(Particle), capacity 4096: px, vx, seed columns start at +0, +49152, +212992 B (mod 4096: 0, 0, 0)
+
+n = 16384 particles (1024 KiB of AoS)
+  layout          B/p    update ns/p     every ns/p   random ns/read   checksums (update / every / random)
+BENCH {"id":"ch04-update","label":"AoS","lang":"zig","n":16384,"ns":20987,"samples":[20347,20386,20438,20987,22642,30318,59253]}
+BENCH {"id":"ch04-every","label":"AoS","lang":"zig","n":16384,"ns":29241,"samples":[29226,29230,29239,29241,29246,29309,94790]}
+BENCH {"id":"ch04-random","label":"AoS","lang":"zig","n":16384,"ns":33719,"samples":[33703,33704,33714,33719,33724,33726,33980]}
+BENCH {"id":"ch04-update","label":"hot/cold","lang":"zig","n":16384,"ns":16406,"samples":[15520,15564,16170,16406,16435,16500,16553]}
+BENCH {"id":"ch04-every","label":"hot/cold","lang":"zig","n":16384,"ns":42625,"samples":[36824,36835,37305,42625,107738,161349,184930]}
+BENCH {"id":"ch04-random","label":"hot/cold","lang":"zig","n":16384,"ns":47756,"samples":[47632,47649,47706,47756,47788,47798,47843]}
+BENCH {"id":"ch04-update","label":"SoA","lang":"zig","n":16384,"ns":30933,"samples":[30883,30886,30904,30933,33741,33772,56029]}
+BENCH {"id":"ch04-every","label":"SoA","lang":"zig","n":16384,"ns":143911,"samples":[138493,143625,143824,143911,144417,163043,242701]}
+BENCH {"id":"ch04-random","label":"SoA","lang":"zig","n":16384,"ns":183174,"samples":[175505,175516,175629,183174,187103,187114,212846]}
+BENCH {"id":"ch04-update","label":"SoA @Vector","lang":"zig","n":16384,"ns":19278,"samples":[15705,18939,19275,19278,19300,19311,24417]}
+BENCH {"id":"ch04-every","label":"SoA @Vector","lang":"zig","n":16384,"ns":141246,"samples":[138352,138359,140783,141246,143562,148493,191615]}
+BENCH {"id":"ch04-random","label":"SoA @Vector","lang":"zig","n":16384,"ns":186459,"samples":[186299,186433,186442,186459,187063,193710,211795]}
+BENCH {"id":"ch04-update","label":"AoSoA","lang":"zig","n":16384,"ns":8182,"samples":[8178,8179,8182,8182,8184,8184,8236]}
+BENCH {"id":"ch04-every","label":"AoSoA","lang":"zig","n":16384,"ns":13931,"samples":[13924,13926,13929,13931,14004,14187,43158]}
+BENCH {"id":"ch04-random","label":"AoSoA","lang":"zig","n":16384,"ns":182347,"samples":[182127,182134,182179,182347,182462,210878,223792]}
+  AoS              64          1.281          1.785            2.058   000031b2beb7c022 / 00011001adfff139 / 00010fc6bef7ef21
+  hot/cold         24          1.001          2.602            2.915   000031b2beb7c022 / 00011001adfff139 / 00010fc6bef7ef21
+  SoA              24          1.888          8.784           11.180   000031b2beb7c022 / 00011001adfff139 / 00010fc6bef7ef21
+  SoA @Vector      24          1.177          8.621           11.381   000031b2beb7c022 / 00011001adfff139 / 00010fc6bef7ef21
+  AoSoA            24          0.499          0.850           11.130   000031b2beb7c022 / 00011001adfff139 / 00010fc6bef7ef21
+  4 KiB-aligned columns     8.175 ns/elem  checksum 0001ffa648e7cc0d  column starts mod 4096: 0, 0, 0, 0 ...
+BENCH {"id":"ch04-alias","label":"4 KiB-aligned columns","lang":"zig","n":16384,"ns":133946,"samples":[128862,128944,129467,133946,136948,137035,159264]}
+  staggered columns         7.096 ns/elem  checksum 0001ffa648e7cc0d  column starts mod 4096: 0, 64, 128, 192 ...
+BENCH {"id":"ch04-alias","label":"staggered columns","lang":"zig","n":16384,"ns":116269,"samples":[110548,110615,110663,116269,117651,119485,122730]}
+
+n = 1048576 particles (65536 KiB of AoS)
+  layout          B/p    update ns/p     every ns/p   random ns/read   checksums (update / every / random)
+BENCH {"id":"ch04-update","label":"AoS","lang":"zig","n":1048576,"ns":6257414,"samples":[6100519,6239145,6246855,6257414,6284867,6302081,6311512]}
+BENCH {"id":"ch04-every","label":"AoS","lang":"zig","n":1048576,"ns":7192967,"samples":[6739512,6788487,7013931,7192967,7200062,7245938,7286597]}
+BENCH {"id":"ch04-random","label":"AoS","lang":"zig","n":1048576,"ns":17442189,"samples":[16647178,16872821,17266651,17442189,17500624,17863838,17968736]}
+BENCH {"id":"ch04-update","label":"hot/cold","lang":"zig","n":1048576,"ns":2134929,"samples":[1992727,2033324,2100605,2134929,2257940,2433272,2746839]}
+BENCH {"id":"ch04-every","label":"hot/cold","lang":"zig","n":1048576,"ns":5717885,"samples":[5564250,5571613,5572679,5717885,5788233,5899919,6021302]}
+BENCH {"id":"ch04-random","label":"hot/cold","lang":"zig","n":1048576,"ns":33012575,"samples":[31391087,31998336,32115109,33012575,33150560,33637415,33767896]}
+BENCH {"id":"ch04-update","label":"SoA","lang":"zig","n":1048576,"ns":2209268,"samples":[2147026,2181410,2206162,2209268,2241170,2357705,2374532]}
+BENCH {"id":"ch04-every","label":"SoA","lang":"zig","n":1048576,"ns":9877378,"samples":[9779154,9781083,9830431,9877378,9911909,9995166,10003715]}
+BENCH {"id":"ch04-random","label":"SoA","lang":"zig","n":1048576,"ns":167723683,"samples":[161514180,163388999,164541308,167723683,168176273,168561762,180860672]}
+BENCH {"id":"ch04-update","label":"SoA @Vector","lang":"zig","n":1048576,"ns":1512428,"samples":[1286851,1340516,1467243,1512428,1630146,1646059,1917972]}
+BENCH {"id":"ch04-every","label":"SoA @Vector","lang":"zig","n":1048576,"ns":9861841,"samples":[9798350,9847322,9851249,9861841,9862405,9922143,9924579]}
+BENCH {"id":"ch04-random","label":"SoA @Vector","lang":"zig","n":1048576,"ns":157011158,"samples":[149838384,152389747,152454779,157011158,157310680,157383744,162617384]}
+BENCH {"id":"ch04-update","label":"AoSoA","lang":"zig","n":1048576,"ns":2359082,"samples":[2132542,2252546,2289910,2359082,2402988,2445742,2683843]}
+BENCH {"id":"ch04-every","label":"AoSoA","lang":"zig","n":1048576,"ns":5925231,"samples":[5698033,5842632,5857647,5925231,6099366,6126413,6215102]}
+BENCH {"id":"ch04-random","label":"AoSoA","lang":"zig","n":1048576,"ns":61735441,"samples":[60928724,61213709,61540707,61735441,61939502,62175543,65112422]}
+  AoS              64          5.968          6.860           16.634   000c6cc22f8797e7 / 0043e8f3b6c41537 / 0043ed91446f6814
+  hot/cold         24          2.036          5.453           31.483   000c6cc22f8797e7 / 0043e8f3b6c41537 / 0043ed91446f6814
+  SoA              24          2.107          9.420          159.954   000c6cc22f8797e7 / 0043e8f3b6c41537 / 0043ed91446f6814
+  SoA @Vector      24          1.442          9.405          149.738   000c6cc22f8797e7 / 0043e8f3b6c41537 / 0043ed91446f6814
+  AoSoA            24          2.250          5.651           58.876   000c6cc22f8797e7 / 0043e8f3b6c41537 / 0043ed91446f6814
+  4 KiB-aligned columns     8.935 ns/elem  checksum 007ffb5af1f41f8f  column starts mod 4096: 0, 0, 0, 0 ...
+BENCH {"id":"ch04-alias","label":"4 KiB-aligned columns","lang":"zig","n":1048576,"ns":9369286,"samples":[9202652,9362549,9364847,9369286,9369532,9472809,9504634]}
+  staggered columns         7.281 ns/elem  checksum 007ffb5af1f41f8f  column starts mod 4096: 0, 64, 128, 192 ...
+BENCH {"id":"ch04-alias","label":"staggered columns","lang":"zig","n":1048576,"ns":7634812,"samples":[7581165,7589100,7603193,7634812,7656080,7743211,8233983]}
+
+n = 4194304 particles (262144 KiB of AoS)
+  layout          B/p    update ns/p     every ns/p   random ns/read   checksums (update / every / random)
+BENCH {"id":"ch04-update","label":"AoS","lang":"zig","n":4194304,"ns":25302432,"samples":[24787519,24808735,24860218,25302432,25492247,25508986,25819495]}
+BENCH {"id":"ch04-every","label":"AoS","lang":"zig","n":4194304,"ns":27343510,"samples":[26992911,27227131,27233687,27343510,27347638,27525829,27600341]}
+BENCH {"id":"ch04-random","label":"AoS","lang":"zig","n":4194304,"ns":93125362,"samples":[92551536,92871317,92974360,93125362,93642391,94750063,108719286]}
+BENCH {"id":"ch04-update","label":"hot/cold","lang":"zig","n":4194304,"ns":11403997,"samples":[11213894,11312239,11346725,11403997,11618373,11949102,12235674]}
+BENCH {"id":"ch04-every","label":"hot/cold","lang":"zig","n":4194304,"ns":23472616,"samples":[23248706,23269162,23313952,23472616,23581521,23586168,23690597]}
+BENCH {"id":"ch04-random","label":"hot/cold","lang":"zig","n":4194304,"ns":165636243,"samples":[161655777,164060934,164839733,165636243,166833857,168408595,179064580]}
+BENCH {"id":"ch04-update","label":"SoA","lang":"zig","n":4194304,"ns":9593921,"samples":[9299480,9376829,9462707,9593921,9611930,9680737,9748300]}
+BENCH {"id":"ch04-every","label":"SoA","lang":"zig","n":4194304,"ns":39308356,"samples":[39242073,39250324,39292232,39308356,39394302,39399280,39405166]}
+BENCH {"id":"ch04-random","label":"SoA","lang":"zig","n":4194304,"ns":1005725208,"samples":[963469161,973271030,977013908,1005725208,1012306644,1017703726,1020304001]}
+BENCH {"id":"ch04-update","label":"SoA @Vector","lang":"zig","n":4194304,"ns":8165684,"samples":[8045150,8117325,8120379,8165684,8241143,8439186,8442911]}
+BENCH {"id":"ch04-every","label":"SoA @Vector","lang":"zig","n":4194304,"ns":39459620,"samples":[39320613,39383155,39449059,39459620,39533926,39558327,39565788]}
+BENCH {"id":"ch04-random","label":"SoA @Vector","lang":"zig","n":4194304,"ns":970961341,"samples":[954569249,960737422,969426054,970961341,972675798,980259292,1015872806]}
+BENCH {"id":"ch04-update","label":"AoSoA","lang":"zig","n":4194304,"ns":12069669,"samples":[11847285,11970552,12048359,12069669,12117530,12216990,13124018]}
+BENCH {"id":"ch04-every","label":"AoSoA","lang":"zig","n":4194304,"ns":26177634,"samples":[25830375,25914887,26031071,26177634,26280336,26546114,27182885]}
+BENCH {"id":"ch04-random","label":"AoSoA","lang":"zig","n":4194304,"ns":333658323,"samples":[310375929,314016175,327795510,333658323,338562986,344209646,355729022]}
+  AoS              64          6.033          6.519           22.203   0031b310af0983d1 / 010fac8984f6b176 / 010fa9d4d5123c44
+  hot/cold         24          2.719          5.596           39.491   0031b310af0983d1 / 010fac8984f6b176 / 010fa9d4d5123c44
+  SoA              24          2.287          9.372          239.784   0031b310af0983d1 / 010fac8984f6b176 / 010fa9d4d5123c44
+  SoA @Vector      24          1.947          9.408          231.495   0031b310af0983d1 / 010fac8984f6b176 / 010fa9d4d5123c44
+  AoSoA            24          2.878          6.241           79.550   0031b310af0983d1 / 010fac8984f6b176 / 010fa9d4d5123c44
+  4 KiB-aligned columns     9.282 ns/elem  checksum 020001108cd6cd63  column starts mod 4096: 0, 0, 0, 0 ...
+BENCH {"id":"ch04-alias","label":"4 KiB-aligned columns","lang":"zig","n":4194304,"ns":38931462,"samples":[38369865,38559107,38667541,38931462,39080984,39535337,41346148]}
+  staggered columns         7.489 ns/elem  checksum 020001108cd6cd63  column starts mod 4096: 0, 64, 128, 192 ...
+BENCH {"id":"ch04-alias","label":"staggered columns","lang":"zig","n":4194304,"ns":31410680,"samples":[30924628,31014981,31074483,31410680,31536961,33536202,37470944]}
+
+checksums match across layouts: yes

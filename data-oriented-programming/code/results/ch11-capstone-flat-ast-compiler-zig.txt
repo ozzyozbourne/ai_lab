@@ -1,0 +1,24 @@
+source: 3750573 bytes, 170470 lines, 1214430 tokens, 771749 nodes, 230185 extra u32s, 11844 symbols
+sizes: token 5 B (SoA) vs 8 B as a struct; node 13 B (SoA) vs 16 B as a struct; boxed Node = 40 B
+bytes/token 5.00, bytes/node fixed 13, avg incl. extra 14.19; nodes/token 0.635
+boxed: 745242 nodes, 822174 allocations, 41.99 requested B/node (allocator headers not counted)
+eval: flat 5749108524495203818, boxed 5749108524495203818, loaded from file 5749108524495203818: match
+checksum 5749108524495203818
+tokenize only          17.830 ms
+flat  tokenize+parse   44.670 ms     84.0 MB/s    3.82 M lines/s
+boxed tokenize+parse   78.697 ms     47.7 MB/s    2.17 M lines/s  (incl. freeing the tree)
+eval  flat   13.719 ms, boxed   27.323 ms
+file: 17132908 bytes (4.57x the source); write 26.160 ms, read (views, no decode) 9.440 ms
+BENCH {"id":"ch11-parse","label":"tokenize only","lang":"zig","n":1214430,"ns":17829595,"samples":[17754482,17802857,17806759,17829595,17847772,17861300,17861576]}
+BENCH {"id":"ch11-parse","label":"flat: tokenize+parse","lang":"zig","n":1214430,"ns":44669790,"samples":[42973231,42979066,43562505,44669790,44867058,46062352,47178680]}
+BENCH {"id":"ch11-parse","label":"boxed: tokenize+parse","lang":"zig","n":1214430,"ns":78696649,"samples":[72816177,73509601,75100983,78696649,79745624,85218525,93659157]}
+BENCH {"id":"ch11-eval","label":"flat nodes","lang":"zig","n":771749,"ns":13719262,"samples":[12707485,13194245,13534769,13719262,14701828,14852087,15387881]}
+BENCH {"id":"ch11-eval","label":"boxed tree","lang":"zig","n":771749,"ns":27322712,"samples":[27046433,27113720,27305527,27322712,33500848,33651287,34208956]}
+BENCH {"id":"ch11-file","label":"write file","lang":"zig","n":17132908,"ns":26160076,"samples":[24265021,25106467,26144943,26160076,35570733,41317601,43948155]}
+BENCH {"id":"ch11-file","label":"read file","lang":"zig","n":17132908,"ns":9439975,"samples":[8886719,9025794,9335200,9439975,9641354,9653198,12275871]}
+BENCH {"id":"ch11-bytes","label":"token","lang":"zig","n":1214430,"ns":0,"value":5.000,"unit":"B"}
+BENCH {"id":"ch11-bytes","label":"node, fixed","lang":"zig","n":771749,"ns":0,"value":13.000,"unit":"B"}
+BENCH {"id":"ch11-bytes","label":"node, avg incl. extra","lang":"zig","n":771749,"ns":0,"value":14.193,"unit":"B"}
+BENCH {"id":"ch11-bytes","label":"boxed node, avg","lang":"zig","n":771749,"ns":0,"value":41.990,"unit":"B"}
+BENCH {"id":"ch11-throughput","label":"flat","lang":"zig","n":1214430,"ns":0,"value":3.816,"unit":"M lines/s"}
+BENCH {"id":"ch11-throughput","label":"boxed","lang":"zig","n":1214430,"ns":0,"value":2.166,"unit":"M lines/s"}

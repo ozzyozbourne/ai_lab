@@ -1,0 +1,3117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4. AoS, SoA and Hot/Cold Splitting · Data-Oriented Design</title>
+<link rel="stylesheet" href="assets/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="assets/book.css">
+<link rel="stylesheet" href="assets/ch04.css">
+<script>window.Prism = { manual: true };</script>
+<script defer src="assets/vendor/prism/prism.min.js"></script>
+<script defer src="assets/vendor/prism/prism-rust.min.js"></script>
+<script defer src="assets/vendor/prism/prism-zig.min.js"></script>
+<script defer src="assets/vendor/prism/prism-odin.min.js"></script>
+<script defer src="assets/vendor/prism/prism-bash.min.js"></script>
+<script defer src="assets/book.js"></script>
+<script defer src="assets/data/bench-ch04.js"></script>
+<script defer src="assets/viz/cache-sim.js"></script>
+<script defer src="assets/viz/bench-bars.js"></script>
+<script defer src="assets/viz/ch04-columns.js"></script>
+</head>
+<body>
+<main>
+  <p class="kicker">Chapter 4</p>
+  <h1>AoS, SoA and Hot/Cold Splitting</h1>
+  <p class="lede">Our particle is 64 bytes. The loop that runs every frame reads 24 of them. The cache does not know or
+  care which 24 you wanted: it moves whole 64-byte lines, so the loop pays for all 64. This chapter turns the array inside out so the hot loop moves only the bytes it uses. Then it
+  shows the two cases where turning it inside out makes things worse.</p>
+
+  <h2 id="the-problem">Sixty-four bytes to use twenty-four</h2>
+  <p>Here is the record the whole chapter uses, a plausible particle for a game or a visual-effects tool: a position and a
+  velocity, which every frame needs, and ten fields that other systems read now and then (mass, age, lifetime, size, colour, id,
+  flags, a random seed, the emitter and a render group). Sixteen four-byte fields make exactly 64 bytes, one cache line here, and
+  aligning it to 64 puts every particle in exactly one line.</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch04-aos-soa-hot-cold/rust/src/main.rs"><code class="language-rust">/// Sixteen 4-byte fields. The update reads 6 of them (24 B) and writes 3.
+#[derive(Clone, Copy, Default)]
+#[repr(align(64))] // one particle = exactly one cache line
+struct Particle {
+    px: f32, py: f32, pz: f32, // hot: read and written every frame
+    vx: f32, vy: f32, vz: f32, // hot: read every frame
+    mass: f32, age: f32, life: f32, size: f32, // cold from here on
+    color: u32, id: u32, flags: u32, seed: u32, emitter: u32, group: u32,
+}
+const _: () = assert!(size_of::&lt;Particle&gt;() == 64);</code></pre>
+<pre data-lang="Zig" data-file="code/ch04-aos-soa-hot-cold/zig/main.zig"><code class="language-zig">/// Sixteen 4-byte fields. The update reads 6 of them (24 B) and writes 3.
+const Particle = struct {
+    px: f32, py: f32, pz: f32, // hot: read and written every frame
+    vx: f32, vy: f32, vz: f32, // hot: read every frame
+    mass: f32, age: f32, life: f32, size: f32, // cold from here on
+    color: u32, id: u32, flags: u32, seed: u32, emitter: u32, group: u32,
+};
+comptime {
+    std.debug.assert(@sizeOf(Particle) == 64);
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch04-aos-soa-hot-cold/odin/main.odin"><code class="language-odin">// Sixteen 4-byte fields. The update reads 6 of them (24 B) and writes 3.
+// Odin keeps declaration order; #align(64) makes one particle exactly one cache line.
+Particle :: struct #align (64) {
+    px, py, pz:              f32, // hot: read and written every frame
+    vx, vy, vz:              f32, // hot: read every frame
+    mass, age, life, size:   f32, // cold from here on
+    color, id, flags, seed:  u32,
+    emitter, group:          u32,
+}
+#assert(size_of(Particle) == 64)</code></pre>
+  </div>
+
+  <p>Rust puts <code>#[repr(align(64))]</code> on the type and Odin puts <code>#align(64)</code> on the struct. Plain Zig
+  structs have no type-level alignment attribute, so Zig asks for it where the array is allocated
+  (<code>gpa.alignedAlloc(Particle, .fromByteUnits(64), n)</code>). All three check the 64-byte size at compile time
+  (<a href="03-size-alignment-padding.html">Chapter 3</a>), and with sixteen four-byte fields no field order can add padding.</p>
+
+  <p>The update is the smallest loop that still counts as physics:</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch04-aos-soa-hot-cold/rust/src/main.rs"><code class="language-rust">fn update(&amp;mut self, dt: f32) {
+    for p in &amp;mut self.ps {
+        p.px += p.vx * dt;
+        p.py += p.vy * dt;
+        p.pz += p.vz * dt;
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch04-aos-soa-hot-cold/zig/main.zig"><code class="language-zig">fn update(self: *Aos) void {
+    for (self.ps) |*p| {
+        p.px += p.vx * dt;
+        p.py += p.vy * dt;
+        p.pz += p.vz * dt;
+    }
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch04-aos-soa-hot-cold/odin/main.odin"><code class="language-odin">aos_update :: proc(l: Aos) -&gt; u64 {
+    for &amp;p in l.ps {
+        p.px += p.vx * DT
+        p.py += p.vy * DT
+        p.pz += p.vz * DT
+    }
+    return 0
+}</code></pre>
+  </div>
+
+  <p>Each iteration reads six floats (24 bytes) and writes three (12 bytes). The CPU cannot fetch 24 bytes from memory.
+  The smallest unit it moves between DRAM, L3, L2 and L1 is a 64-byte cache line (<a href="02-the-machine.html">Chapter 2</a>).
+  So the loop fetches the whole particle and uses three eighths of it.</p>
+
+  <details class="predict"><summary>Before reading on: if the 4,194,304 particles (256 MiB) do not fit in any cache,
+  how many bytes does one pass of this loop move between the core and DRAM, and how many does it need?</summary>
+  <p>It moves 256 MiB in (every line is read) and 256 MiB out: the loop wrote to every line, and a dirty line goes back to
+  memory whole. That is 512 MiB. It needs
+  4,194,304 × 36 B = 144 MiB. About 72% of the traffic is bytes the loop never looks at.</p></details>
+
+  <p>Per particle, that is 128 bytes of memory traffic to do 36 bytes of work. Mike Acton's version of this argument, in his CppCon 2014 keynote, is the reason this book exists: when you read one
+  field from a fat object in a loop, most of every cache line you pay for is waste, and the waste is the cost<a class="cite" href="#src-1">[1]</a>.
+  The rest of this chapter is four ways to stop paying for it, three languages' ways of writing them, and measurements
+  that show where each one stops working.</p>
+
+  <h2 id="four-layouts">Four ways to store the same particles</h2>
+  <p>The same sixteen fields of the same N particles can be laid out in memory in four standard ways:</p>
+  <ul>
+    <li><b>Array of structs (AoS).</b> <code>[N]Particle</code>. A particle's fields sit next to each other. This is what every
+    language gives you by default, and what "an array of objects" means.</li>
+    <li><b>Hot/cold split.</b> Two parallel arrays with the same index: <code>hot[N]</code> holds what the frame loop touches
+    (pos, vel: 24 B), and <code>cold[N]</code> holds everything else (40 B). It is still an array of structs, just two of them.</li>
+    <li><b>Struct of arrays (SoA).</b> One array per field: <code>px[N], py[N], …, group[N]</code>. Particle <i>i</i> is the
+    <i>i</i>-th element of sixteen arrays. A loop that reads <code>px</code> streams a dense array of floats.</li>
+    <li><b>Array of structs of arrays (AoSoA).</b> Blocks of 8 particles. Inside a block each field is an
+    <code>[8]f32</code>: <code>{px[8], py[8], …, group[8]}</code>, 512 bytes per block. It is SoA in small tiles, which
+    keeps SoA's vector-friendly layout while keeping one particle's fields within one 512-byte block. ISPC calls this
+    "hybrid SoA" and has a <code>soa&lt;8&gt;</code> qualifier for it<a class="cite" href="#src-9">[9]</a>.</li>
+  </ul>
+
+  <figure class="figure wide" id="fig-strips">
+    <div class="ch04-wide"><svg class="ch04-svg ch04-strips" viewBox="0 0 680 298" role="img" aria-labelledby="ch04-svg1-t0" style="--cw:2.1px">
+<title id="ch04-svg1-t0">The same sixteen 64-byte particles stored four ways. Each box is one 64-byte cache line; coloured cells are the bytes the update loop reads (pos and vel).</title>
+<text class="ttl" x="0" y="26">AoS</text><text class="dim" x="78" y="26">particle i = one line; update uses 24 of 64 B</text>
+<rect class="pos" x="0.0" y="34"/>
+<rect class="pos" x="2.5" y="34"/>
+<rect class="pos" x="5.0" y="34"/>
+<rect class="vel" x="7.5" y="34"/>
+<rect class="vel" x="10.0" y="34"/>
+<rect class="vel" x="12.5" y="34"/>
+<rect class="hp o" x="15.1" y="34"/>
+<rect class="hp o" x="17.6" y="34"/>
+<rect class="hp o" x="20.1" y="34"/>
+<rect class="hp o" x="22.6" y="34"/>
+<rect class="flag o" x="25.1" y="34"/>
+<rect class="flag o" x="27.6" y="34"/>
+<rect class="line o" x="30.1" y="34"/>
+<rect class="line o" x="32.6" y="34"/>
+<rect class="line o" x="35.1" y="34"/>
+<rect class="line o" x="37.6" y="34"/>
+<rect class="ln" x="-0.8" y="32.5" width="41.4"/>
+<rect class="pos" x="42.7" y="34"/>
+<rect class="pos" x="45.2" y="34"/>
+<rect class="pos" x="47.7" y="34"/>
+<rect class="vel" x="50.2" y="34"/>
+<rect class="vel" x="52.7" y="34"/>
+<rect class="vel" x="55.2" y="34"/>
+<rect class="hp o" x="57.7" y="34"/>
+<rect class="hp o" x="60.2" y="34"/>
+<rect class="hp o" x="62.7" y="34"/>
+<rect class="hp o" x="65.2" y="34"/>
+<rect class="flag o" x="67.8" y="34"/>
+<rect class="flag o" x="70.3" y="34"/>
+<rect class="line o" x="72.8" y="34"/>
+<rect class="line o" x="75.3" y="34"/>
+<rect class="line o" x="77.8" y="34"/>
+<rect class="line o" x="80.3" y="34"/>
+<rect class="ln" x="41.9" y="32.5" width="41.4"/>
+<rect class="pos" x="85.3" y="34"/>
+<rect class="pos" x="87.8" y="34"/>
+<rect class="pos" x="90.3" y="34"/>
+<rect class="vel" x="92.8" y="34"/>
+<rect class="vel" x="95.4" y="34"/>
+<rect class="vel" x="97.9" y="34"/>
+<rect class="hp o" x="100.4" y="34"/>
+<rect class="hp o" x="102.9" y="34"/>
+<rect class="hp o" x="105.4" y="34"/>
+<rect class="hp o" x="107.9" y="34"/>
+<rect class="flag o" x="110.4" y="34"/>
+<rect class="flag o" x="112.9" y="34"/>
+<rect class="line o" x="115.4" y="34"/>
+<rect class="line o" x="117.9" y="34"/>
+<rect class="line o" x="120.4" y="34"/>
+<rect class="line o" x="123.0" y="34"/>
+<rect class="ln" x="84.5" y="32.5" width="41.4"/>
+<rect class="pos" x="128.0" y="34"/>
+<rect class="pos" x="130.5" y="34"/>
+<rect class="pos" x="133.0" y="34"/>
+<rect class="vel" x="135.5" y="34"/>
+<rect class="vel" x="138.0" y="34"/>
+<rect class="vel" x="140.5" y="34"/>
+<rect class="hp o" x="143.0" y="34"/>
+<rect class="hp o" x="145.5" y="34"/>
+<rect class="hp o" x="148.0" y="34"/>
+<rect class="hp o" x="150.6" y="34"/>
+<rect class="flag o" x="153.1" y="34"/>
+<rect class="flag o" x="155.6" y="34"/>
+<rect class="line o" x="158.1" y="34"/>
+<rect class="line o" x="160.6" y="34"/>
+<rect class="line o" x="163.1" y="34"/>
+<rect class="line o" x="165.6" y="34"/>
+<rect class="ln" x="127.2" y="32.5" width="41.4"/>
+<rect class="pos" x="170.6" y="34"/>
+<rect class="pos" x="173.1" y="34"/>
+<rect class="pos" x="175.6" y="34"/>
+<rect class="vel" x="178.2" y="34"/>
+<rect class="vel" x="180.7" y="34"/>
+<rect class="vel" x="183.2" y="34"/>
+<rect class="hp o" x="185.7" y="34"/>
+<rect class="hp o" x="188.2" y="34"/>
+<rect class="hp o" x="190.7" y="34"/>
+<rect class="hp o" x="193.2" y="34"/>
+<rect class="flag o" x="195.7" y="34"/>
+<rect class="flag o" x="198.2" y="34"/>
+<rect class="line o" x="200.7" y="34"/>
+<rect class="line o" x="203.3" y="34"/>
+<rect class="line o" x="205.8" y="34"/>
+<rect class="line o" x="208.3" y="34"/>
+<rect class="ln" x="169.8" y="32.5" width="41.4"/>
+<rect class="pos" x="213.3" y="34"/>
+<rect class="pos" x="215.8" y="34"/>
+<rect class="pos" x="218.3" y="34"/>
+<rect class="vel" x="220.8" y="34"/>
+<rect class="vel" x="223.3" y="34"/>
+<rect class="vel" x="225.8" y="34"/>
+<rect class="hp o" x="228.3" y="34"/>
+<rect class="hp o" x="230.8" y="34"/>
+<rect class="hp o" x="233.4" y="34"/>
+<rect class="hp o" x="235.9" y="34"/>
+<rect class="flag o" x="238.4" y="34"/>
+<rect class="flag o" x="240.9" y="34"/>
+<rect class="line o" x="243.4" y="34"/>
+<rect class="line o" x="245.9" y="34"/>
+<rect class="line o" x="248.4" y="34"/>
+<rect class="line o" x="250.9" y="34"/>
+<rect class="ln" x="212.5" y="32.5" width="41.4"/>
+<rect class="pos" x="255.9" y="34"/>
+<rect class="pos" x="258.4" y="34"/>
+<rect class="pos" x="261.0" y="34"/>
+<rect class="vel" x="263.5" y="34"/>
+<rect class="vel" x="266.0" y="34"/>
+<rect class="vel" x="268.5" y="34"/>
+<rect class="hp o" x="271.0" y="34"/>
+<rect class="hp o" x="273.5" y="34"/>
+<rect class="hp o" x="276.0" y="34"/>
+<rect class="hp o" x="278.5" y="34"/>
+<rect class="flag o" x="281.0" y="34"/>
+<rect class="flag o" x="283.5" y="34"/>
+<rect class="line o" x="286.1" y="34"/>
+<rect class="line o" x="288.6" y="34"/>
+<rect class="line o" x="291.1" y="34"/>
+<rect class="line o" x="293.6" y="34"/>
+<rect class="ln" x="255.1" y="32.5" width="41.4"/>
+<rect class="pos" x="298.6" y="34"/>
+<rect class="pos" x="301.1" y="34"/>
+<rect class="pos" x="303.6" y="34"/>
+<rect class="vel" x="306.1" y="34"/>
+<rect class="vel" x="308.6" y="34"/>
+<rect class="vel" x="311.1" y="34"/>
+<rect class="hp o" x="313.7" y="34"/>
+<rect class="hp o" x="316.2" y="34"/>
+<rect class="hp o" x="318.7" y="34"/>
+<rect class="hp o" x="321.2" y="34"/>
+<rect class="flag o" x="323.7" y="34"/>
+<rect class="flag o" x="326.2" y="34"/>
+<rect class="line o" x="328.7" y="34"/>
+<rect class="line o" x="331.2" y="34"/>
+<rect class="line o" x="333.7" y="34"/>
+<rect class="line o" x="336.2" y="34"/>
+<rect class="ln" x="297.8" y="32.5" width="41.4"/>
+<rect class="pos" x="341.2" y="34"/>
+<rect class="pos" x="343.8" y="34"/>
+<rect class="pos" x="346.3" y="34"/>
+<rect class="vel" x="348.8" y="34"/>
+<rect class="vel" x="351.3" y="34"/>
+<rect class="vel" x="353.8" y="34"/>
+<rect class="hp o" x="356.3" y="34"/>
+<rect class="hp o" x="358.8" y="34"/>
+<rect class="hp o" x="361.3" y="34"/>
+<rect class="hp o" x="363.8" y="34"/>
+<rect class="flag o" x="366.3" y="34"/>
+<rect class="flag o" x="368.9" y="34"/>
+<rect class="line o" x="371.4" y="34"/>
+<rect class="line o" x="373.9" y="34"/>
+<rect class="line o" x="376.4" y="34"/>
+<rect class="line o" x="378.9" y="34"/>
+<rect class="ln" x="340.4" y="32.5" width="41.4"/>
+<rect class="pos" x="383.9" y="34"/>
+<rect class="pos" x="386.4" y="34"/>
+<rect class="pos" x="388.9" y="34"/>
+<rect class="vel" x="391.4" y="34"/>
+<rect class="vel" x="393.9" y="34"/>
+<rect class="vel" x="396.5" y="34"/>
+<rect class="hp o" x="399.0" y="34"/>
+<rect class="hp o" x="401.5" y="34"/>
+<rect class="hp o" x="404.0" y="34"/>
+<rect class="hp o" x="406.5" y="34"/>
+<rect class="flag o" x="409.0" y="34"/>
+<rect class="flag o" x="411.5" y="34"/>
+<rect class="line o" x="414.0" y="34"/>
+<rect class="line o" x="416.5" y="34"/>
+<rect class="line o" x="419.0" y="34"/>
+<rect class="line o" x="421.6" y="34"/>
+<rect class="ln" x="383.1" y="32.5" width="41.4"/>
+<rect class="pos" x="426.6" y="34"/>
+<rect class="pos" x="429.1" y="34"/>
+<rect class="pos" x="431.6" y="34"/>
+<rect class="vel" x="434.1" y="34"/>
+<rect class="vel" x="436.6" y="34"/>
+<rect class="vel" x="439.1" y="34"/>
+<rect class="hp o" x="441.6" y="34"/>
+<rect class="hp o" x="444.1" y="34"/>
+<rect class="hp o" x="446.6" y="34"/>
+<rect class="hp o" x="449.2" y="34"/>
+<rect class="flag o" x="451.7" y="34"/>
+<rect class="flag o" x="454.2" y="34"/>
+<rect class="line o" x="456.7" y="34"/>
+<rect class="line o" x="459.2" y="34"/>
+<rect class="line o" x="461.7" y="34"/>
+<rect class="line o" x="464.2" y="34"/>
+<rect class="ln" x="425.8" y="32.5" width="41.4"/>
+<rect class="pos" x="469.2" y="34"/>
+<rect class="pos" x="471.7" y="34"/>
+<rect class="pos" x="474.2" y="34"/>
+<rect class="vel" x="476.7" y="34"/>
+<rect class="vel" x="479.3" y="34"/>
+<rect class="vel" x="481.8" y="34"/>
+<rect class="hp o" x="484.3" y="34"/>
+<rect class="hp o" x="486.8" y="34"/>
+<rect class="hp o" x="489.3" y="34"/>
+<rect class="hp o" x="491.8" y="34"/>
+<rect class="flag o" x="494.3" y="34"/>
+<rect class="flag o" x="496.8" y="34"/>
+<rect class="line o" x="499.3" y="34"/>
+<rect class="line o" x="501.8" y="34"/>
+<rect class="line o" x="504.4" y="34"/>
+<rect class="line o" x="506.9" y="34"/>
+<rect class="ln" x="468.4" y="32.5" width="41.4"/>
+<rect class="pos" x="511.9" y="34"/>
+<rect class="pos" x="514.4" y="34"/>
+<rect class="pos" x="516.9" y="34"/>
+<rect class="vel" x="519.4" y="34"/>
+<rect class="vel" x="521.9" y="34"/>
+<rect class="vel" x="524.4" y="34"/>
+<rect class="hp o" x="526.9" y="34"/>
+<rect class="hp o" x="529.4" y="34"/>
+<rect class="hp o" x="532.0" y="34"/>
+<rect class="hp o" x="534.5" y="34"/>
+<rect class="flag o" x="537.0" y="34"/>
+<rect class="flag o" x="539.5" y="34"/>
+<rect class="line o" x="542.0" y="34"/>
+<rect class="line o" x="544.5" y="34"/>
+<rect class="line o" x="547.0" y="34"/>
+<rect class="line o" x="549.5" y="34"/>
+<rect class="ln" x="511.1" y="32.5" width="41.4"/>
+<rect class="pos" x="554.5" y="34"/>
+<rect class="pos" x="557.0" y="34"/>
+<rect class="pos" x="559.6" y="34"/>
+<rect class="vel" x="562.1" y="34"/>
+<rect class="vel" x="564.6" y="34"/>
+<rect class="vel" x="567.1" y="34"/>
+<rect class="hp o" x="569.6" y="34"/>
+<rect class="hp o" x="572.1" y="34"/>
+<rect class="hp o" x="574.6" y="34"/>
+<rect class="hp o" x="577.1" y="34"/>
+<rect class="flag o" x="579.6" y="34"/>
+<rect class="flag o" x="582.1" y="34"/>
+<rect class="line o" x="584.6" y="34"/>
+<rect class="line o" x="587.2" y="34"/>
+<rect class="line o" x="589.7" y="34"/>
+<rect class="line o" x="592.2" y="34"/>
+<rect class="ln" x="553.7" y="32.5" width="41.4"/>
+<rect class="pos" x="597.2" y="34"/>
+<rect class="pos" x="599.7" y="34"/>
+<rect class="pos" x="602.2" y="34"/>
+<rect class="vel" x="604.7" y="34"/>
+<rect class="vel" x="607.2" y="34"/>
+<rect class="vel" x="609.7" y="34"/>
+<rect class="hp o" x="612.2" y="34"/>
+<rect class="hp o" x="614.8" y="34"/>
+<rect class="hp o" x="617.3" y="34"/>
+<rect class="hp o" x="619.8" y="34"/>
+<rect class="flag o" x="622.3" y="34"/>
+<rect class="flag o" x="624.8" y="34"/>
+<rect class="line o" x="627.3" y="34"/>
+<rect class="line o" x="629.8" y="34"/>
+<rect class="line o" x="632.3" y="34"/>
+<rect class="line o" x="634.8" y="34"/>
+<rect class="ln" x="596.4" y="32.5" width="41.4"/>
+<rect class="pos" x="639.8" y="34"/>
+<rect class="pos" x="642.4" y="34"/>
+<rect class="pos" x="644.9" y="34"/>
+<rect class="vel" x="647.4" y="34"/>
+<rect class="vel" x="649.9" y="34"/>
+<rect class="vel" x="652.4" y="34"/>
+<rect class="hp o" x="654.9" y="34"/>
+<rect class="hp o" x="657.4" y="34"/>
+<rect class="hp o" x="659.9" y="34"/>
+<rect class="hp o" x="662.4" y="34"/>
+<rect class="flag o" x="664.9" y="34"/>
+<rect class="flag o" x="667.5" y="34"/>
+<rect class="line o" x="670.0" y="34"/>
+<rect class="line o" x="672.5" y="34"/>
+<rect class="line o" x="675.0" y="34"/>
+<rect class="line o" x="677.5" y="34"/>
+<rect class="ln" x="639.0" y="32.5" width="41.4"/>
+<text class="dim" x="0" y="76">update touches 16 of 16 lines · uses 384 of 1024 B</text>
+<text class="ttl" x="0" y="96">Hot/cold</text><text class="dim" x="78" y="96">hot[16] = 6 lines, cold[16] = 10 lines</text>
+<rect class="pos" x="0.0" y="104"/>
+<rect class="pos" x="2.5" y="104"/>
+<rect class="pos" x="5.0" y="104"/>
+<rect class="vel" x="7.5" y="104"/>
+<rect class="vel" x="10.0" y="104"/>
+<rect class="vel" x="12.5" y="104"/>
+<rect class="pos" x="15.1" y="104"/>
+<rect class="pos" x="17.6" y="104"/>
+<rect class="pos" x="20.1" y="104"/>
+<rect class="vel" x="22.6" y="104"/>
+<rect class="vel" x="25.1" y="104"/>
+<rect class="vel" x="27.6" y="104"/>
+<rect class="pos" x="30.1" y="104"/>
+<rect class="pos" x="32.6" y="104"/>
+<rect class="pos" x="35.1" y="104"/>
+<rect class="vel" x="37.6" y="104"/>
+<rect class="ln" x="-0.8" y="102.5" width="41.4"/>
+<rect class="vel" x="42.7" y="104"/>
+<rect class="vel" x="45.2" y="104"/>
+<rect class="pos" x="47.7" y="104"/>
+<rect class="pos" x="50.2" y="104"/>
+<rect class="pos" x="52.7" y="104"/>
+<rect class="vel" x="55.2" y="104"/>
+<rect class="vel" x="57.7" y="104"/>
+<rect class="vel" x="60.2" y="104"/>
+<rect class="pos" x="62.7" y="104"/>
+<rect class="pos" x="65.2" y="104"/>
+<rect class="pos" x="67.8" y="104"/>
+<rect class="vel" x="70.3" y="104"/>
+<rect class="vel" x="72.8" y="104"/>
+<rect class="vel" x="75.3" y="104"/>
+<rect class="pos" x="77.8" y="104"/>
+<rect class="pos" x="80.3" y="104"/>
+<rect class="ln" x="41.9" y="102.5" width="41.4"/>
+<rect class="pos" x="85.3" y="104"/>
+<rect class="vel" x="87.8" y="104"/>
+<rect class="vel" x="90.3" y="104"/>
+<rect class="vel" x="92.8" y="104"/>
+<rect class="pos" x="95.4" y="104"/>
+<rect class="pos" x="97.9" y="104"/>
+<rect class="pos" x="100.4" y="104"/>
+<rect class="vel" x="102.9" y="104"/>
+<rect class="vel" x="105.4" y="104"/>
+<rect class="vel" x="107.9" y="104"/>
+<rect class="pos" x="110.4" y="104"/>
+<rect class="pos" x="112.9" y="104"/>
+<rect class="pos" x="115.4" y="104"/>
+<rect class="vel" x="117.9" y="104"/>
+<rect class="vel" x="120.4" y="104"/>
+<rect class="vel" x="123.0" y="104"/>
+<rect class="ln" x="84.5" y="102.5" width="41.4"/>
+<rect class="pos" x="128.0" y="104"/>
+<rect class="pos" x="130.5" y="104"/>
+<rect class="pos" x="133.0" y="104"/>
+<rect class="vel" x="135.5" y="104"/>
+<rect class="vel" x="138.0" y="104"/>
+<rect class="vel" x="140.5" y="104"/>
+<rect class="pos" x="143.0" y="104"/>
+<rect class="pos" x="145.5" y="104"/>
+<rect class="pos" x="148.0" y="104"/>
+<rect class="vel" x="150.6" y="104"/>
+<rect class="vel" x="153.1" y="104"/>
+<rect class="vel" x="155.6" y="104"/>
+<rect class="pos" x="158.1" y="104"/>
+<rect class="pos" x="160.6" y="104"/>
+<rect class="pos" x="163.1" y="104"/>
+<rect class="vel" x="165.6" y="104"/>
+<rect class="ln" x="127.2" y="102.5" width="41.4"/>
+<rect class="vel" x="170.6" y="104"/>
+<rect class="vel" x="173.1" y="104"/>
+<rect class="pos" x="175.6" y="104"/>
+<rect class="pos" x="178.2" y="104"/>
+<rect class="pos" x="180.7" y="104"/>
+<rect class="vel" x="183.2" y="104"/>
+<rect class="vel" x="185.7" y="104"/>
+<rect class="vel" x="188.2" y="104"/>
+<rect class="pos" x="190.7" y="104"/>
+<rect class="pos" x="193.2" y="104"/>
+<rect class="pos" x="195.7" y="104"/>
+<rect class="vel" x="198.2" y="104"/>
+<rect class="vel" x="200.7" y="104"/>
+<rect class="vel" x="203.3" y="104"/>
+<rect class="pos" x="205.8" y="104"/>
+<rect class="pos" x="208.3" y="104"/>
+<rect class="ln" x="169.8" y="102.5" width="41.4"/>
+<rect class="pos" x="213.3" y="104"/>
+<rect class="vel" x="215.8" y="104"/>
+<rect class="vel" x="218.3" y="104"/>
+<rect class="vel" x="220.8" y="104"/>
+<rect class="pos" x="223.3" y="104"/>
+<rect class="pos" x="225.8" y="104"/>
+<rect class="pos" x="228.3" y="104"/>
+<rect class="vel" x="230.8" y="104"/>
+<rect class="vel" x="233.4" y="104"/>
+<rect class="vel" x="235.9" y="104"/>
+<rect class="pos" x="238.4" y="104"/>
+<rect class="pos" x="240.9" y="104"/>
+<rect class="pos" x="243.4" y="104"/>
+<rect class="vel" x="245.9" y="104"/>
+<rect class="vel" x="248.4" y="104"/>
+<rect class="vel" x="250.9" y="104"/>
+<rect class="ln" x="212.5" y="102.5" width="41.4"/>
+<rect class="hp o" x="255.9" y="104"/>
+<rect class="hp o" x="258.4" y="104"/>
+<rect class="hp o" x="261.0" y="104"/>
+<rect class="hp o" x="263.5" y="104"/>
+<rect class="flag o" x="266.0" y="104"/>
+<rect class="flag o" x="268.5" y="104"/>
+<rect class="line o" x="271.0" y="104"/>
+<rect class="line o" x="273.5" y="104"/>
+<rect class="line o" x="276.0" y="104"/>
+<rect class="line o" x="278.5" y="104"/>
+<rect class="hp o" x="281.0" y="104"/>
+<rect class="hp o" x="283.5" y="104"/>
+<rect class="hp o" x="286.1" y="104"/>
+<rect class="hp o" x="288.6" y="104"/>
+<rect class="flag o" x="291.1" y="104"/>
+<rect class="flag o" x="293.6" y="104"/>
+<rect class="line o" x="298.6" y="104"/>
+<rect class="line o" x="301.1" y="104"/>
+<rect class="line o" x="303.6" y="104"/>
+<rect class="line o" x="306.1" y="104"/>
+<rect class="hp o" x="308.6" y="104"/>
+<rect class="hp o" x="311.1" y="104"/>
+<rect class="hp o" x="313.7" y="104"/>
+<rect class="hp o" x="316.2" y="104"/>
+<rect class="flag o" x="318.7" y="104"/>
+<rect class="flag o" x="321.2" y="104"/>
+<rect class="line o" x="323.7" y="104"/>
+<rect class="line o" x="326.2" y="104"/>
+<rect class="line o" x="328.7" y="104"/>
+<rect class="line o" x="331.2" y="104"/>
+<rect class="hp o" x="333.7" y="104"/>
+<rect class="hp o" x="336.2" y="104"/>
+<rect class="hp o" x="341.2" y="104"/>
+<rect class="hp o" x="343.8" y="104"/>
+<rect class="flag o" x="346.3" y="104"/>
+<rect class="flag o" x="348.8" y="104"/>
+<rect class="line o" x="351.3" y="104"/>
+<rect class="line o" x="353.8" y="104"/>
+<rect class="line o" x="356.3" y="104"/>
+<rect class="line o" x="358.8" y="104"/>
+<rect class="hp o" x="361.3" y="104"/>
+<rect class="hp o" x="363.8" y="104"/>
+<rect class="hp o" x="366.3" y="104"/>
+<rect class="hp o" x="368.9" y="104"/>
+<rect class="flag o" x="371.4" y="104"/>
+<rect class="flag o" x="373.9" y="104"/>
+<rect class="line o" x="376.4" y="104"/>
+<rect class="line o" x="378.9" y="104"/>
+<rect class="line o" x="383.9" y="104"/>
+<rect class="line o" x="386.4" y="104"/>
+<rect class="hp o" x="388.9" y="104"/>
+<rect class="hp o" x="391.4" y="104"/>
+<rect class="hp o" x="393.9" y="104"/>
+<rect class="hp o" x="396.5" y="104"/>
+<rect class="flag o" x="399.0" y="104"/>
+<rect class="flag o" x="401.5" y="104"/>
+<rect class="line o" x="404.0" y="104"/>
+<rect class="line o" x="406.5" y="104"/>
+<rect class="line o" x="409.0" y="104"/>
+<rect class="line o" x="411.5" y="104"/>
+<rect class="hp o" x="414.0" y="104"/>
+<rect class="hp o" x="416.5" y="104"/>
+<rect class="hp o" x="419.0" y="104"/>
+<rect class="hp o" x="421.6" y="104"/>
+<rect class="flag o" x="426.6" y="104"/>
+<rect class="flag o" x="429.1" y="104"/>
+<rect class="line o" x="431.6" y="104"/>
+<rect class="line o" x="434.1" y="104"/>
+<rect class="line o" x="436.6" y="104"/>
+<rect class="line o" x="439.1" y="104"/>
+<rect class="hp o" x="441.6" y="104"/>
+<rect class="hp o" x="444.1" y="104"/>
+<rect class="hp o" x="446.6" y="104"/>
+<rect class="hp o" x="449.2" y="104"/>
+<rect class="flag o" x="451.7" y="104"/>
+<rect class="flag o" x="454.2" y="104"/>
+<rect class="line o" x="456.7" y="104"/>
+<rect class="line o" x="459.2" y="104"/>
+<rect class="line o" x="461.7" y="104"/>
+<rect class="line o" x="464.2" y="104"/>
+<rect class="hp o" x="469.2" y="104"/>
+<rect class="hp o" x="471.7" y="104"/>
+<rect class="hp o" x="474.2" y="104"/>
+<rect class="hp o" x="476.7" y="104"/>
+<rect class="flag o" x="479.3" y="104"/>
+<rect class="flag o" x="481.8" y="104"/>
+<rect class="line o" x="484.3" y="104"/>
+<rect class="line o" x="486.8" y="104"/>
+<rect class="line o" x="489.3" y="104"/>
+<rect class="line o" x="491.8" y="104"/>
+<rect class="hp o" x="494.3" y="104"/>
+<rect class="hp o" x="496.8" y="104"/>
+<rect class="hp o" x="499.3" y="104"/>
+<rect class="hp o" x="501.8" y="104"/>
+<rect class="flag o" x="504.4" y="104"/>
+<rect class="flag o" x="506.9" y="104"/>
+<rect class="line o" x="511.9" y="104"/>
+<rect class="line o" x="514.4" y="104"/>
+<rect class="line o" x="516.9" y="104"/>
+<rect class="line o" x="519.4" y="104"/>
+<rect class="hp o" x="521.9" y="104"/>
+<rect class="hp o" x="524.4" y="104"/>
+<rect class="hp o" x="526.9" y="104"/>
+<rect class="hp o" x="529.4" y="104"/>
+<rect class="flag o" x="532.0" y="104"/>
+<rect class="flag o" x="534.5" y="104"/>
+<rect class="line o" x="537.0" y="104"/>
+<rect class="line o" x="539.5" y="104"/>
+<rect class="line o" x="542.0" y="104"/>
+<rect class="line o" x="544.5" y="104"/>
+<rect class="hp o" x="547.0" y="104"/>
+<rect class="hp o" x="549.5" y="104"/>
+<rect class="hp o" x="554.5" y="104"/>
+<rect class="hp o" x="557.0" y="104"/>
+<rect class="flag o" x="559.6" y="104"/>
+<rect class="flag o" x="562.1" y="104"/>
+<rect class="line o" x="564.6" y="104"/>
+<rect class="line o" x="567.1" y="104"/>
+<rect class="line o" x="569.6" y="104"/>
+<rect class="line o" x="572.1" y="104"/>
+<rect class="hp o" x="574.6" y="104"/>
+<rect class="hp o" x="577.1" y="104"/>
+<rect class="hp o" x="579.6" y="104"/>
+<rect class="hp o" x="582.1" y="104"/>
+<rect class="flag o" x="584.6" y="104"/>
+<rect class="flag o" x="587.2" y="104"/>
+<rect class="line o" x="589.7" y="104"/>
+<rect class="line o" x="592.2" y="104"/>
+<rect class="line o" x="597.2" y="104"/>
+<rect class="line o" x="599.7" y="104"/>
+<rect class="hp o" x="602.2" y="104"/>
+<rect class="hp o" x="604.7" y="104"/>
+<rect class="hp o" x="607.2" y="104"/>
+<rect class="hp o" x="609.7" y="104"/>
+<rect class="flag o" x="612.2" y="104"/>
+<rect class="flag o" x="614.8" y="104"/>
+<rect class="line o" x="617.3" y="104"/>
+<rect class="line o" x="619.8" y="104"/>
+<rect class="line o" x="622.3" y="104"/>
+<rect class="line o" x="624.8" y="104"/>
+<rect class="hp o" x="627.3" y="104"/>
+<rect class="hp o" x="629.8" y="104"/>
+<rect class="hp o" x="632.3" y="104"/>
+<rect class="hp o" x="634.8" y="104"/>
+<rect class="flag o" x="639.8" y="104"/>
+<rect class="flag o" x="642.4" y="104"/>
+<rect class="line o" x="644.9" y="104"/>
+<rect class="line o" x="647.4" y="104"/>
+<rect class="line o" x="649.9" y="104"/>
+<rect class="line o" x="652.4" y="104"/>
+<rect class="hp o" x="654.9" y="104"/>
+<rect class="hp o" x="657.4" y="104"/>
+<rect class="hp o" x="659.9" y="104"/>
+<rect class="hp o" x="662.4" y="104"/>
+<rect class="flag o" x="664.9" y="104"/>
+<rect class="flag o" x="667.5" y="104"/>
+<rect class="line o" x="670.0" y="104"/>
+<rect class="line o" x="672.5" y="104"/>
+<rect class="line o" x="675.0" y="104"/>
+<rect class="line o" x="677.5" y="104"/>
+<text class="dim" x="0" y="146">update touches 6 of 16 lines · uses 384 of 384 B</text>
+<text class="ttl" x="0" y="166">SoA</text><text class="dim" x="78" y="166">16 columns, one line each for 16 particles</text>
+<rect class="pos" x="0.0" y="174"/>
+<rect class="pos" x="2.5" y="174"/>
+<rect class="pos" x="5.0" y="174"/>
+<rect class="pos" x="7.5" y="174"/>
+<rect class="pos" x="10.0" y="174"/>
+<rect class="pos" x="12.5" y="174"/>
+<rect class="pos" x="15.1" y="174"/>
+<rect class="pos" x="17.6" y="174"/>
+<rect class="pos" x="20.1" y="174"/>
+<rect class="pos" x="22.6" y="174"/>
+<rect class="pos" x="25.1" y="174"/>
+<rect class="pos" x="27.6" y="174"/>
+<rect class="pos" x="30.1" y="174"/>
+<rect class="pos" x="32.6" y="174"/>
+<rect class="pos" x="35.1" y="174"/>
+<rect class="pos" x="37.6" y="174"/>
+<rect class="ln" x="-0.8" y="172.5" width="41.4"/>
+<rect class="pos" x="42.7" y="174"/>
+<rect class="pos" x="45.2" y="174"/>
+<rect class="pos" x="47.7" y="174"/>
+<rect class="pos" x="50.2" y="174"/>
+<rect class="pos" x="52.7" y="174"/>
+<rect class="pos" x="55.2" y="174"/>
+<rect class="pos" x="57.7" y="174"/>
+<rect class="pos" x="60.2" y="174"/>
+<rect class="pos" x="62.7" y="174"/>
+<rect class="pos" x="65.2" y="174"/>
+<rect class="pos" x="67.8" y="174"/>
+<rect class="pos" x="70.3" y="174"/>
+<rect class="pos" x="72.8" y="174"/>
+<rect class="pos" x="75.3" y="174"/>
+<rect class="pos" x="77.8" y="174"/>
+<rect class="pos" x="80.3" y="174"/>
+<rect class="ln" x="41.9" y="172.5" width="41.4"/>
+<rect class="pos" x="85.3" y="174"/>
+<rect class="pos" x="87.8" y="174"/>
+<rect class="pos" x="90.3" y="174"/>
+<rect class="pos" x="92.8" y="174"/>
+<rect class="pos" x="95.4" y="174"/>
+<rect class="pos" x="97.9" y="174"/>
+<rect class="pos" x="100.4" y="174"/>
+<rect class="pos" x="102.9" y="174"/>
+<rect class="pos" x="105.4" y="174"/>
+<rect class="pos" x="107.9" y="174"/>
+<rect class="pos" x="110.4" y="174"/>
+<rect class="pos" x="112.9" y="174"/>
+<rect class="pos" x="115.4" y="174"/>
+<rect class="pos" x="117.9" y="174"/>
+<rect class="pos" x="120.4" y="174"/>
+<rect class="pos" x="123.0" y="174"/>
+<rect class="ln" x="84.5" y="172.5" width="41.4"/>
+<rect class="vel" x="128.0" y="174"/>
+<rect class="vel" x="130.5" y="174"/>
+<rect class="vel" x="133.0" y="174"/>
+<rect class="vel" x="135.5" y="174"/>
+<rect class="vel" x="138.0" y="174"/>
+<rect class="vel" x="140.5" y="174"/>
+<rect class="vel" x="143.0" y="174"/>
+<rect class="vel" x="145.5" y="174"/>
+<rect class="vel" x="148.0" y="174"/>
+<rect class="vel" x="150.6" y="174"/>
+<rect class="vel" x="153.1" y="174"/>
+<rect class="vel" x="155.6" y="174"/>
+<rect class="vel" x="158.1" y="174"/>
+<rect class="vel" x="160.6" y="174"/>
+<rect class="vel" x="163.1" y="174"/>
+<rect class="vel" x="165.6" y="174"/>
+<rect class="ln" x="127.2" y="172.5" width="41.4"/>
+<rect class="vel" x="170.6" y="174"/>
+<rect class="vel" x="173.1" y="174"/>
+<rect class="vel" x="175.6" y="174"/>
+<rect class="vel" x="178.2" y="174"/>
+<rect class="vel" x="180.7" y="174"/>
+<rect class="vel" x="183.2" y="174"/>
+<rect class="vel" x="185.7" y="174"/>
+<rect class="vel" x="188.2" y="174"/>
+<rect class="vel" x="190.7" y="174"/>
+<rect class="vel" x="193.2" y="174"/>
+<rect class="vel" x="195.7" y="174"/>
+<rect class="vel" x="198.2" y="174"/>
+<rect class="vel" x="200.7" y="174"/>
+<rect class="vel" x="203.3" y="174"/>
+<rect class="vel" x="205.8" y="174"/>
+<rect class="vel" x="208.3" y="174"/>
+<rect class="ln" x="169.8" y="172.5" width="41.4"/>
+<rect class="vel" x="213.3" y="174"/>
+<rect class="vel" x="215.8" y="174"/>
+<rect class="vel" x="218.3" y="174"/>
+<rect class="vel" x="220.8" y="174"/>
+<rect class="vel" x="223.3" y="174"/>
+<rect class="vel" x="225.8" y="174"/>
+<rect class="vel" x="228.3" y="174"/>
+<rect class="vel" x="230.8" y="174"/>
+<rect class="vel" x="233.4" y="174"/>
+<rect class="vel" x="235.9" y="174"/>
+<rect class="vel" x="238.4" y="174"/>
+<rect class="vel" x="240.9" y="174"/>
+<rect class="vel" x="243.4" y="174"/>
+<rect class="vel" x="245.9" y="174"/>
+<rect class="vel" x="248.4" y="174"/>
+<rect class="vel" x="250.9" y="174"/>
+<rect class="ln" x="212.5" y="172.5" width="41.4"/>
+<rect class="hp o" x="255.9" y="174"/>
+<rect class="hp o" x="258.4" y="174"/>
+<rect class="hp o" x="261.0" y="174"/>
+<rect class="hp o" x="263.5" y="174"/>
+<rect class="hp o" x="266.0" y="174"/>
+<rect class="hp o" x="268.5" y="174"/>
+<rect class="hp o" x="271.0" y="174"/>
+<rect class="hp o" x="273.5" y="174"/>
+<rect class="hp o" x="276.0" y="174"/>
+<rect class="hp o" x="278.5" y="174"/>
+<rect class="hp o" x="281.0" y="174"/>
+<rect class="hp o" x="283.5" y="174"/>
+<rect class="hp o" x="286.1" y="174"/>
+<rect class="hp o" x="288.6" y="174"/>
+<rect class="hp o" x="291.1" y="174"/>
+<rect class="hp o" x="293.6" y="174"/>
+<rect class="hp o" x="298.6" y="174"/>
+<rect class="hp o" x="301.1" y="174"/>
+<rect class="hp o" x="303.6" y="174"/>
+<rect class="hp o" x="306.1" y="174"/>
+<rect class="hp o" x="308.6" y="174"/>
+<rect class="hp o" x="311.1" y="174"/>
+<rect class="hp o" x="313.7" y="174"/>
+<rect class="hp o" x="316.2" y="174"/>
+<rect class="hp o" x="318.7" y="174"/>
+<rect class="hp o" x="321.2" y="174"/>
+<rect class="hp o" x="323.7" y="174"/>
+<rect class="hp o" x="326.2" y="174"/>
+<rect class="hp o" x="328.7" y="174"/>
+<rect class="hp o" x="331.2" y="174"/>
+<rect class="hp o" x="333.7" y="174"/>
+<rect class="hp o" x="336.2" y="174"/>
+<rect class="hp o" x="341.2" y="174"/>
+<rect class="hp o" x="343.8" y="174"/>
+<rect class="hp o" x="346.3" y="174"/>
+<rect class="hp o" x="348.8" y="174"/>
+<rect class="hp o" x="351.3" y="174"/>
+<rect class="hp o" x="353.8" y="174"/>
+<rect class="hp o" x="356.3" y="174"/>
+<rect class="hp o" x="358.8" y="174"/>
+<rect class="hp o" x="361.3" y="174"/>
+<rect class="hp o" x="363.8" y="174"/>
+<rect class="hp o" x="366.3" y="174"/>
+<rect class="hp o" x="368.9" y="174"/>
+<rect class="hp o" x="371.4" y="174"/>
+<rect class="hp o" x="373.9" y="174"/>
+<rect class="hp o" x="376.4" y="174"/>
+<rect class="hp o" x="378.9" y="174"/>
+<rect class="hp o" x="383.9" y="174"/>
+<rect class="hp o" x="386.4" y="174"/>
+<rect class="hp o" x="388.9" y="174"/>
+<rect class="hp o" x="391.4" y="174"/>
+<rect class="hp o" x="393.9" y="174"/>
+<rect class="hp o" x="396.5" y="174"/>
+<rect class="hp o" x="399.0" y="174"/>
+<rect class="hp o" x="401.5" y="174"/>
+<rect class="hp o" x="404.0" y="174"/>
+<rect class="hp o" x="406.5" y="174"/>
+<rect class="hp o" x="409.0" y="174"/>
+<rect class="hp o" x="411.5" y="174"/>
+<rect class="hp o" x="414.0" y="174"/>
+<rect class="hp o" x="416.5" y="174"/>
+<rect class="hp o" x="419.0" y="174"/>
+<rect class="hp o" x="421.6" y="174"/>
+<rect class="flag o" x="426.6" y="174"/>
+<rect class="flag o" x="429.1" y="174"/>
+<rect class="flag o" x="431.6" y="174"/>
+<rect class="flag o" x="434.1" y="174"/>
+<rect class="flag o" x="436.6" y="174"/>
+<rect class="flag o" x="439.1" y="174"/>
+<rect class="flag o" x="441.6" y="174"/>
+<rect class="flag o" x="444.1" y="174"/>
+<rect class="flag o" x="446.6" y="174"/>
+<rect class="flag o" x="449.2" y="174"/>
+<rect class="flag o" x="451.7" y="174"/>
+<rect class="flag o" x="454.2" y="174"/>
+<rect class="flag o" x="456.7" y="174"/>
+<rect class="flag o" x="459.2" y="174"/>
+<rect class="flag o" x="461.7" y="174"/>
+<rect class="flag o" x="464.2" y="174"/>
+<rect class="flag o" x="469.2" y="174"/>
+<rect class="flag o" x="471.7" y="174"/>
+<rect class="flag o" x="474.2" y="174"/>
+<rect class="flag o" x="476.7" y="174"/>
+<rect class="flag o" x="479.3" y="174"/>
+<rect class="flag o" x="481.8" y="174"/>
+<rect class="flag o" x="484.3" y="174"/>
+<rect class="flag o" x="486.8" y="174"/>
+<rect class="flag o" x="489.3" y="174"/>
+<rect class="flag o" x="491.8" y="174"/>
+<rect class="flag o" x="494.3" y="174"/>
+<rect class="flag o" x="496.8" y="174"/>
+<rect class="flag o" x="499.3" y="174"/>
+<rect class="flag o" x="501.8" y="174"/>
+<rect class="flag o" x="504.4" y="174"/>
+<rect class="flag o" x="506.9" y="174"/>
+<rect class="line o" x="511.9" y="174"/>
+<rect class="line o" x="514.4" y="174"/>
+<rect class="line o" x="516.9" y="174"/>
+<rect class="line o" x="519.4" y="174"/>
+<rect class="line o" x="521.9" y="174"/>
+<rect class="line o" x="524.4" y="174"/>
+<rect class="line o" x="526.9" y="174"/>
+<rect class="line o" x="529.4" y="174"/>
+<rect class="line o" x="532.0" y="174"/>
+<rect class="line o" x="534.5" y="174"/>
+<rect class="line o" x="537.0" y="174"/>
+<rect class="line o" x="539.5" y="174"/>
+<rect class="line o" x="542.0" y="174"/>
+<rect class="line o" x="544.5" y="174"/>
+<rect class="line o" x="547.0" y="174"/>
+<rect class="line o" x="549.5" y="174"/>
+<rect class="line o" x="554.5" y="174"/>
+<rect class="line o" x="557.0" y="174"/>
+<rect class="line o" x="559.6" y="174"/>
+<rect class="line o" x="562.1" y="174"/>
+<rect class="line o" x="564.6" y="174"/>
+<rect class="line o" x="567.1" y="174"/>
+<rect class="line o" x="569.6" y="174"/>
+<rect class="line o" x="572.1" y="174"/>
+<rect class="line o" x="574.6" y="174"/>
+<rect class="line o" x="577.1" y="174"/>
+<rect class="line o" x="579.6" y="174"/>
+<rect class="line o" x="582.1" y="174"/>
+<rect class="line o" x="584.6" y="174"/>
+<rect class="line o" x="587.2" y="174"/>
+<rect class="line o" x="589.7" y="174"/>
+<rect class="line o" x="592.2" y="174"/>
+<rect class="line o" x="597.2" y="174"/>
+<rect class="line o" x="599.7" y="174"/>
+<rect class="line o" x="602.2" y="174"/>
+<rect class="line o" x="604.7" y="174"/>
+<rect class="line o" x="607.2" y="174"/>
+<rect class="line o" x="609.7" y="174"/>
+<rect class="line o" x="612.2" y="174"/>
+<rect class="line o" x="614.8" y="174"/>
+<rect class="line o" x="617.3" y="174"/>
+<rect class="line o" x="619.8" y="174"/>
+<rect class="line o" x="622.3" y="174"/>
+<rect class="line o" x="624.8" y="174"/>
+<rect class="line o" x="627.3" y="174"/>
+<rect class="line o" x="629.8" y="174"/>
+<rect class="line o" x="632.3" y="174"/>
+<rect class="line o" x="634.8" y="174"/>
+<rect class="line o" x="639.8" y="174"/>
+<rect class="line o" x="642.4" y="174"/>
+<rect class="line o" x="644.9" y="174"/>
+<rect class="line o" x="647.4" y="174"/>
+<rect class="line o" x="649.9" y="174"/>
+<rect class="line o" x="652.4" y="174"/>
+<rect class="line o" x="654.9" y="174"/>
+<rect class="line o" x="657.4" y="174"/>
+<rect class="line o" x="659.9" y="174"/>
+<rect class="line o" x="662.4" y="174"/>
+<rect class="line o" x="664.9" y="174"/>
+<rect class="line o" x="667.5" y="174"/>
+<rect class="line o" x="670.0" y="174"/>
+<rect class="line o" x="672.5" y="174"/>
+<rect class="line o" x="675.0" y="174"/>
+<rect class="line o" x="677.5" y="174"/>
+<text class="dim" x="0" y="216">update touches 6 of 16 lines · uses 384 of 384 B</text>
+<text class="ttl" x="0" y="236">AoSoA-8</text><text class="dim" x="78" y="236">2 blocks × 8 lines; pos/vel = first 3 lines</text>
+<rect class="pos" x="0.0" y="244"/>
+<rect class="pos" x="2.5" y="244"/>
+<rect class="pos" x="5.0" y="244"/>
+<rect class="pos" x="7.5" y="244"/>
+<rect class="pos" x="10.0" y="244"/>
+<rect class="pos" x="12.5" y="244"/>
+<rect class="pos" x="15.1" y="244"/>
+<rect class="pos" x="17.6" y="244"/>
+<rect class="pos" x="20.1" y="244"/>
+<rect class="pos" x="22.6" y="244"/>
+<rect class="pos" x="25.1" y="244"/>
+<rect class="pos" x="27.6" y="244"/>
+<rect class="pos" x="30.1" y="244"/>
+<rect class="pos" x="32.6" y="244"/>
+<rect class="pos" x="35.1" y="244"/>
+<rect class="pos" x="37.6" y="244"/>
+<rect class="ln" x="-0.8" y="242.5" width="41.4"/>
+<rect class="pos" x="42.7" y="244"/>
+<rect class="pos" x="45.2" y="244"/>
+<rect class="pos" x="47.7" y="244"/>
+<rect class="pos" x="50.2" y="244"/>
+<rect class="pos" x="52.7" y="244"/>
+<rect class="pos" x="55.2" y="244"/>
+<rect class="pos" x="57.7" y="244"/>
+<rect class="pos" x="60.2" y="244"/>
+<rect class="vel" x="62.7" y="244"/>
+<rect class="vel" x="65.2" y="244"/>
+<rect class="vel" x="67.8" y="244"/>
+<rect class="vel" x="70.3" y="244"/>
+<rect class="vel" x="72.8" y="244"/>
+<rect class="vel" x="75.3" y="244"/>
+<rect class="vel" x="77.8" y="244"/>
+<rect class="vel" x="80.3" y="244"/>
+<rect class="ln" x="41.9" y="242.5" width="41.4"/>
+<rect class="vel" x="85.3" y="244"/>
+<rect class="vel" x="87.8" y="244"/>
+<rect class="vel" x="90.3" y="244"/>
+<rect class="vel" x="92.8" y="244"/>
+<rect class="vel" x="95.4" y="244"/>
+<rect class="vel" x="97.9" y="244"/>
+<rect class="vel" x="100.4" y="244"/>
+<rect class="vel" x="102.9" y="244"/>
+<rect class="vel" x="105.4" y="244"/>
+<rect class="vel" x="107.9" y="244"/>
+<rect class="vel" x="110.4" y="244"/>
+<rect class="vel" x="112.9" y="244"/>
+<rect class="vel" x="115.4" y="244"/>
+<rect class="vel" x="117.9" y="244"/>
+<rect class="vel" x="120.4" y="244"/>
+<rect class="vel" x="123.0" y="244"/>
+<rect class="ln" x="84.5" y="242.5" width="41.4"/>
+<rect class="hp o" x="128.0" y="244"/>
+<rect class="hp o" x="130.5" y="244"/>
+<rect class="hp o" x="133.0" y="244"/>
+<rect class="hp o" x="135.5" y="244"/>
+<rect class="hp o" x="138.0" y="244"/>
+<rect class="hp o" x="140.5" y="244"/>
+<rect class="hp o" x="143.0" y="244"/>
+<rect class="hp o" x="145.5" y="244"/>
+<rect class="hp o" x="148.0" y="244"/>
+<rect class="hp o" x="150.6" y="244"/>
+<rect class="hp o" x="153.1" y="244"/>
+<rect class="hp o" x="155.6" y="244"/>
+<rect class="hp o" x="158.1" y="244"/>
+<rect class="hp o" x="160.6" y="244"/>
+<rect class="hp o" x="163.1" y="244"/>
+<rect class="hp o" x="165.6" y="244"/>
+<rect class="hp o" x="170.6" y="244"/>
+<rect class="hp o" x="173.1" y="244"/>
+<rect class="hp o" x="175.6" y="244"/>
+<rect class="hp o" x="178.2" y="244"/>
+<rect class="hp o" x="180.7" y="244"/>
+<rect class="hp o" x="183.2" y="244"/>
+<rect class="hp o" x="185.7" y="244"/>
+<rect class="hp o" x="188.2" y="244"/>
+<rect class="hp o" x="190.7" y="244"/>
+<rect class="hp o" x="193.2" y="244"/>
+<rect class="hp o" x="195.7" y="244"/>
+<rect class="hp o" x="198.2" y="244"/>
+<rect class="hp o" x="200.7" y="244"/>
+<rect class="hp o" x="203.3" y="244"/>
+<rect class="hp o" x="205.8" y="244"/>
+<rect class="hp o" x="208.3" y="244"/>
+<rect class="flag o" x="213.3" y="244"/>
+<rect class="flag o" x="215.8" y="244"/>
+<rect class="flag o" x="218.3" y="244"/>
+<rect class="flag o" x="220.8" y="244"/>
+<rect class="flag o" x="223.3" y="244"/>
+<rect class="flag o" x="225.8" y="244"/>
+<rect class="flag o" x="228.3" y="244"/>
+<rect class="flag o" x="230.8" y="244"/>
+<rect class="flag o" x="233.4" y="244"/>
+<rect class="flag o" x="235.9" y="244"/>
+<rect class="flag o" x="238.4" y="244"/>
+<rect class="flag o" x="240.9" y="244"/>
+<rect class="flag o" x="243.4" y="244"/>
+<rect class="flag o" x="245.9" y="244"/>
+<rect class="flag o" x="248.4" y="244"/>
+<rect class="flag o" x="250.9" y="244"/>
+<rect class="line o" x="255.9" y="244"/>
+<rect class="line o" x="258.4" y="244"/>
+<rect class="line o" x="261.0" y="244"/>
+<rect class="line o" x="263.5" y="244"/>
+<rect class="line o" x="266.0" y="244"/>
+<rect class="line o" x="268.5" y="244"/>
+<rect class="line o" x="271.0" y="244"/>
+<rect class="line o" x="273.5" y="244"/>
+<rect class="line o" x="276.0" y="244"/>
+<rect class="line o" x="278.5" y="244"/>
+<rect class="line o" x="281.0" y="244"/>
+<rect class="line o" x="283.5" y="244"/>
+<rect class="line o" x="286.1" y="244"/>
+<rect class="line o" x="288.6" y="244"/>
+<rect class="line o" x="291.1" y="244"/>
+<rect class="line o" x="293.6" y="244"/>
+<rect class="line o" x="298.6" y="244"/>
+<rect class="line o" x="301.1" y="244"/>
+<rect class="line o" x="303.6" y="244"/>
+<rect class="line o" x="306.1" y="244"/>
+<rect class="line o" x="308.6" y="244"/>
+<rect class="line o" x="311.1" y="244"/>
+<rect class="line o" x="313.7" y="244"/>
+<rect class="line o" x="316.2" y="244"/>
+<rect class="line o" x="318.7" y="244"/>
+<rect class="line o" x="321.2" y="244"/>
+<rect class="line o" x="323.7" y="244"/>
+<rect class="line o" x="326.2" y="244"/>
+<rect class="line o" x="328.7" y="244"/>
+<rect class="line o" x="331.2" y="244"/>
+<rect class="line o" x="333.7" y="244"/>
+<rect class="line o" x="336.2" y="244"/>
+<rect class="pos" x="341.2" y="244"/>
+<rect class="pos" x="343.8" y="244"/>
+<rect class="pos" x="346.3" y="244"/>
+<rect class="pos" x="348.8" y="244"/>
+<rect class="pos" x="351.3" y="244"/>
+<rect class="pos" x="353.8" y="244"/>
+<rect class="pos" x="356.3" y="244"/>
+<rect class="pos" x="358.8" y="244"/>
+<rect class="pos" x="361.3" y="244"/>
+<rect class="pos" x="363.8" y="244"/>
+<rect class="pos" x="366.3" y="244"/>
+<rect class="pos" x="368.9" y="244"/>
+<rect class="pos" x="371.4" y="244"/>
+<rect class="pos" x="373.9" y="244"/>
+<rect class="pos" x="376.4" y="244"/>
+<rect class="pos" x="378.9" y="244"/>
+<rect class="ln" x="340.4" y="242.5" width="41.4"/>
+<rect class="pos" x="383.9" y="244"/>
+<rect class="pos" x="386.4" y="244"/>
+<rect class="pos" x="388.9" y="244"/>
+<rect class="pos" x="391.4" y="244"/>
+<rect class="pos" x="393.9" y="244"/>
+<rect class="pos" x="396.5" y="244"/>
+<rect class="pos" x="399.0" y="244"/>
+<rect class="pos" x="401.5" y="244"/>
+<rect class="vel" x="404.0" y="244"/>
+<rect class="vel" x="406.5" y="244"/>
+<rect class="vel" x="409.0" y="244"/>
+<rect class="vel" x="411.5" y="244"/>
+<rect class="vel" x="414.0" y="244"/>
+<rect class="vel" x="416.5" y="244"/>
+<rect class="vel" x="419.0" y="244"/>
+<rect class="vel" x="421.6" y="244"/>
+<rect class="ln" x="383.1" y="242.5" width="41.4"/>
+<rect class="vel" x="426.6" y="244"/>
+<rect class="vel" x="429.1" y="244"/>
+<rect class="vel" x="431.6" y="244"/>
+<rect class="vel" x="434.1" y="244"/>
+<rect class="vel" x="436.6" y="244"/>
+<rect class="vel" x="439.1" y="244"/>
+<rect class="vel" x="441.6" y="244"/>
+<rect class="vel" x="444.1" y="244"/>
+<rect class="vel" x="446.6" y="244"/>
+<rect class="vel" x="449.2" y="244"/>
+<rect class="vel" x="451.7" y="244"/>
+<rect class="vel" x="454.2" y="244"/>
+<rect class="vel" x="456.7" y="244"/>
+<rect class="vel" x="459.2" y="244"/>
+<rect class="vel" x="461.7" y="244"/>
+<rect class="vel" x="464.2" y="244"/>
+<rect class="ln" x="425.8" y="242.5" width="41.4"/>
+<rect class="hp o" x="469.2" y="244"/>
+<rect class="hp o" x="471.7" y="244"/>
+<rect class="hp o" x="474.2" y="244"/>
+<rect class="hp o" x="476.7" y="244"/>
+<rect class="hp o" x="479.3" y="244"/>
+<rect class="hp o" x="481.8" y="244"/>
+<rect class="hp o" x="484.3" y="244"/>
+<rect class="hp o" x="486.8" y="244"/>
+<rect class="hp o" x="489.3" y="244"/>
+<rect class="hp o" x="491.8" y="244"/>
+<rect class="hp o" x="494.3" y="244"/>
+<rect class="hp o" x="496.8" y="244"/>
+<rect class="hp o" x="499.3" y="244"/>
+<rect class="hp o" x="501.8" y="244"/>
+<rect class="hp o" x="504.4" y="244"/>
+<rect class="hp o" x="506.9" y="244"/>
+<rect class="hp o" x="511.9" y="244"/>
+<rect class="hp o" x="514.4" y="244"/>
+<rect class="hp o" x="516.9" y="244"/>
+<rect class="hp o" x="519.4" y="244"/>
+<rect class="hp o" x="521.9" y="244"/>
+<rect class="hp o" x="524.4" y="244"/>
+<rect class="hp o" x="526.9" y="244"/>
+<rect class="hp o" x="529.4" y="244"/>
+<rect class="hp o" x="532.0" y="244"/>
+<rect class="hp o" x="534.5" y="244"/>
+<rect class="hp o" x="537.0" y="244"/>
+<rect class="hp o" x="539.5" y="244"/>
+<rect class="hp o" x="542.0" y="244"/>
+<rect class="hp o" x="544.5" y="244"/>
+<rect class="hp o" x="547.0" y="244"/>
+<rect class="hp o" x="549.5" y="244"/>
+<rect class="flag o" x="554.5" y="244"/>
+<rect class="flag o" x="557.0" y="244"/>
+<rect class="flag o" x="559.6" y="244"/>
+<rect class="flag o" x="562.1" y="244"/>
+<rect class="flag o" x="564.6" y="244"/>
+<rect class="flag o" x="567.1" y="244"/>
+<rect class="flag o" x="569.6" y="244"/>
+<rect class="flag o" x="572.1" y="244"/>
+<rect class="flag o" x="574.6" y="244"/>
+<rect class="flag o" x="577.1" y="244"/>
+<rect class="flag o" x="579.6" y="244"/>
+<rect class="flag o" x="582.1" y="244"/>
+<rect class="flag o" x="584.6" y="244"/>
+<rect class="flag o" x="587.2" y="244"/>
+<rect class="flag o" x="589.7" y="244"/>
+<rect class="flag o" x="592.2" y="244"/>
+<rect class="line o" x="597.2" y="244"/>
+<rect class="line o" x="599.7" y="244"/>
+<rect class="line o" x="602.2" y="244"/>
+<rect class="line o" x="604.7" y="244"/>
+<rect class="line o" x="607.2" y="244"/>
+<rect class="line o" x="609.7" y="244"/>
+<rect class="line o" x="612.2" y="244"/>
+<rect class="line o" x="614.8" y="244"/>
+<rect class="line o" x="617.3" y="244"/>
+<rect class="line o" x="619.8" y="244"/>
+<rect class="line o" x="622.3" y="244"/>
+<rect class="line o" x="624.8" y="244"/>
+<rect class="line o" x="627.3" y="244"/>
+<rect class="line o" x="629.8" y="244"/>
+<rect class="line o" x="632.3" y="244"/>
+<rect class="line o" x="634.8" y="244"/>
+<rect class="line o" x="639.8" y="244"/>
+<rect class="line o" x="642.4" y="244"/>
+<rect class="line o" x="644.9" y="244"/>
+<rect class="line o" x="647.4" y="244"/>
+<rect class="line o" x="649.9" y="244"/>
+<rect class="line o" x="652.4" y="244"/>
+<rect class="line o" x="654.9" y="244"/>
+<rect class="line o" x="657.4" y="244"/>
+<rect class="line o" x="659.9" y="244"/>
+<rect class="line o" x="662.4" y="244"/>
+<rect class="line o" x="664.9" y="244"/>
+<rect class="line o" x="667.5" y="244"/>
+<rect class="line o" x="670.0" y="244"/>
+<rect class="line o" x="672.5" y="244"/>
+<rect class="line o" x="675.0" y="244"/>
+<rect class="line o" x="677.5" y="244"/>
+<text class="dim" x="0" y="286">update touches 6 of 16 lines · uses 384 of 384 B</text>
+</svg></div><div class="ch04-narrow"><svg class="ch04-svg ch04-strips" viewBox="0 0 340 754" role="img" aria-labelledby="ch04-svg1-t1" style="--cw:4.8px">
+<title id="ch04-svg1-t1">The same sixteen 64-byte particles stored four ways. Each box is one 64-byte cache line; coloured cells are the bytes the update loop reads (pos and vel).</title>
+<text class="ttl" x="0" y="26">AoS</text>
+<text class="dim" x="0" y="41">particle i = one line; update uses 24 of 64 B</text>
+<rect class="pos" x="0.0" y="49"/>
+<rect class="pos" x="5.2" y="49"/>
+<rect class="pos" x="10.4" y="49"/>
+<rect class="vel" x="15.6" y="49"/>
+<rect class="vel" x="20.8" y="49"/>
+<rect class="vel" x="26.0" y="49"/>
+<rect class="hp o" x="31.2" y="49"/>
+<rect class="hp o" x="36.4" y="49"/>
+<rect class="hp o" x="41.6" y="49"/>
+<rect class="hp o" x="46.8" y="49"/>
+<rect class="flag o" x="52.0" y="49"/>
+<rect class="flag o" x="57.1" y="49"/>
+<rect class="line o" x="62.3" y="49"/>
+<rect class="line o" x="67.5" y="49"/>
+<rect class="line o" x="72.7" y="49"/>
+<rect class="line o" x="77.9" y="49"/>
+<rect class="ln" x="-0.8" y="47.5" width="84.3"/>
+<rect class="pos" x="85.6" y="49"/>
+<rect class="pos" x="90.8" y="49"/>
+<rect class="pos" x="96.0" y="49"/>
+<rect class="vel" x="101.2" y="49"/>
+<rect class="vel" x="106.4" y="49"/>
+<rect class="vel" x="111.6" y="49"/>
+<rect class="hp o" x="116.8" y="49"/>
+<rect class="hp o" x="122.0" y="49"/>
+<rect class="hp o" x="127.2" y="49"/>
+<rect class="hp o" x="132.4" y="49"/>
+<rect class="flag o" x="137.6" y="49"/>
+<rect class="flag o" x="142.8" y="49"/>
+<rect class="line o" x="148.0" y="49"/>
+<rect class="line o" x="153.2" y="49"/>
+<rect class="line o" x="158.4" y="49"/>
+<rect class="line o" x="163.6" y="49"/>
+<rect class="ln" x="84.8" y="47.5" width="84.3"/>
+<rect class="pos" x="171.2" y="49"/>
+<rect class="pos" x="176.4" y="49"/>
+<rect class="pos" x="181.6" y="49"/>
+<rect class="vel" x="186.8" y="49"/>
+<rect class="vel" x="192.0" y="49"/>
+<rect class="vel" x="197.2" y="49"/>
+<rect class="hp o" x="202.4" y="49"/>
+<rect class="hp o" x="207.6" y="49"/>
+<rect class="hp o" x="212.8" y="49"/>
+<rect class="hp o" x="218.0" y="49"/>
+<rect class="flag o" x="223.2" y="49"/>
+<rect class="flag o" x="228.4" y="49"/>
+<rect class="line o" x="233.6" y="49"/>
+<rect class="line o" x="238.8" y="49"/>
+<rect class="line o" x="244.0" y="49"/>
+<rect class="line o" x="249.2" y="49"/>
+<rect class="ln" x="170.4" y="47.5" width="84.3"/>
+<rect class="pos" x="256.9" y="49"/>
+<rect class="pos" x="262.1" y="49"/>
+<rect class="pos" x="267.3" y="49"/>
+<rect class="vel" x="272.5" y="49"/>
+<rect class="vel" x="277.7" y="49"/>
+<rect class="vel" x="282.9" y="49"/>
+<rect class="hp o" x="288.0" y="49"/>
+<rect class="hp o" x="293.2" y="49"/>
+<rect class="hp o" x="298.4" y="49"/>
+<rect class="hp o" x="303.6" y="49"/>
+<rect class="flag o" x="308.8" y="49"/>
+<rect class="flag o" x="314.0" y="49"/>
+<rect class="line o" x="319.2" y="49"/>
+<rect class="line o" x="324.4" y="49"/>
+<rect class="line o" x="329.6" y="49"/>
+<rect class="line o" x="334.8" y="49"/>
+<rect class="ln" x="256.1" y="47.5" width="84.3"/>
+<rect class="pos" x="0.0" y="82"/>
+<rect class="pos" x="5.2" y="82"/>
+<rect class="pos" x="10.4" y="82"/>
+<rect class="vel" x="15.6" y="82"/>
+<rect class="vel" x="20.8" y="82"/>
+<rect class="vel" x="26.0" y="82"/>
+<rect class="hp o" x="31.2" y="82"/>
+<rect class="hp o" x="36.4" y="82"/>
+<rect class="hp o" x="41.6" y="82"/>
+<rect class="hp o" x="46.8" y="82"/>
+<rect class="flag o" x="52.0" y="82"/>
+<rect class="flag o" x="57.1" y="82"/>
+<rect class="line o" x="62.3" y="82"/>
+<rect class="line o" x="67.5" y="82"/>
+<rect class="line o" x="72.7" y="82"/>
+<rect class="line o" x="77.9" y="82"/>
+<rect class="ln" x="-0.8" y="80.5" width="84.3"/>
+<rect class="pos" x="85.6" y="82"/>
+<rect class="pos" x="90.8" y="82"/>
+<rect class="pos" x="96.0" y="82"/>
+<rect class="vel" x="101.2" y="82"/>
+<rect class="vel" x="106.4" y="82"/>
+<rect class="vel" x="111.6" y="82"/>
+<rect class="hp o" x="116.8" y="82"/>
+<rect class="hp o" x="122.0" y="82"/>
+<rect class="hp o" x="127.2" y="82"/>
+<rect class="hp o" x="132.4" y="82"/>
+<rect class="flag o" x="137.6" y="82"/>
+<rect class="flag o" x="142.8" y="82"/>
+<rect class="line o" x="148.0" y="82"/>
+<rect class="line o" x="153.2" y="82"/>
+<rect class="line o" x="158.4" y="82"/>
+<rect class="line o" x="163.6" y="82"/>
+<rect class="ln" x="84.8" y="80.5" width="84.3"/>
+<rect class="pos" x="171.2" y="82"/>
+<rect class="pos" x="176.4" y="82"/>
+<rect class="pos" x="181.6" y="82"/>
+<rect class="vel" x="186.8" y="82"/>
+<rect class="vel" x="192.0" y="82"/>
+<rect class="vel" x="197.2" y="82"/>
+<rect class="hp o" x="202.4" y="82"/>
+<rect class="hp o" x="207.6" y="82"/>
+<rect class="hp o" x="212.8" y="82"/>
+<rect class="hp o" x="218.0" y="82"/>
+<rect class="flag o" x="223.2" y="82"/>
+<rect class="flag o" x="228.4" y="82"/>
+<rect class="line o" x="233.6" y="82"/>
+<rect class="line o" x="238.8" y="82"/>
+<rect class="line o" x="244.0" y="82"/>
+<rect class="line o" x="249.2" y="82"/>
+<rect class="ln" x="170.4" y="80.5" width="84.3"/>
+<rect class="pos" x="256.9" y="82"/>
+<rect class="pos" x="262.1" y="82"/>
+<rect class="pos" x="267.3" y="82"/>
+<rect class="vel" x="272.5" y="82"/>
+<rect class="vel" x="277.7" y="82"/>
+<rect class="vel" x="282.9" y="82"/>
+<rect class="hp o" x="288.0" y="82"/>
+<rect class="hp o" x="293.2" y="82"/>
+<rect class="hp o" x="298.4" y="82"/>
+<rect class="hp o" x="303.6" y="82"/>
+<rect class="flag o" x="308.8" y="82"/>
+<rect class="flag o" x="314.0" y="82"/>
+<rect class="line o" x="319.2" y="82"/>
+<rect class="line o" x="324.4" y="82"/>
+<rect class="line o" x="329.6" y="82"/>
+<rect class="line o" x="334.8" y="82"/>
+<rect class="ln" x="256.1" y="80.5" width="84.3"/>
+<rect class="pos" x="0.0" y="115"/>
+<rect class="pos" x="5.2" y="115"/>
+<rect class="pos" x="10.4" y="115"/>
+<rect class="vel" x="15.6" y="115"/>
+<rect class="vel" x="20.8" y="115"/>
+<rect class="vel" x="26.0" y="115"/>
+<rect class="hp o" x="31.2" y="115"/>
+<rect class="hp o" x="36.4" y="115"/>
+<rect class="hp o" x="41.6" y="115"/>
+<rect class="hp o" x="46.8" y="115"/>
+<rect class="flag o" x="52.0" y="115"/>
+<rect class="flag o" x="57.1" y="115"/>
+<rect class="line o" x="62.3" y="115"/>
+<rect class="line o" x="67.5" y="115"/>
+<rect class="line o" x="72.7" y="115"/>
+<rect class="line o" x="77.9" y="115"/>
+<rect class="ln" x="-0.8" y="113.5" width="84.3"/>
+<rect class="pos" x="85.6" y="115"/>
+<rect class="pos" x="90.8" y="115"/>
+<rect class="pos" x="96.0" y="115"/>
+<rect class="vel" x="101.2" y="115"/>
+<rect class="vel" x="106.4" y="115"/>
+<rect class="vel" x="111.6" y="115"/>
+<rect class="hp o" x="116.8" y="115"/>
+<rect class="hp o" x="122.0" y="115"/>
+<rect class="hp o" x="127.2" y="115"/>
+<rect class="hp o" x="132.4" y="115"/>
+<rect class="flag o" x="137.6" y="115"/>
+<rect class="flag o" x="142.8" y="115"/>
+<rect class="line o" x="148.0" y="115"/>
+<rect class="line o" x="153.2" y="115"/>
+<rect class="line o" x="158.4" y="115"/>
+<rect class="line o" x="163.6" y="115"/>
+<rect class="ln" x="84.8" y="113.5" width="84.3"/>
+<rect class="pos" x="171.2" y="115"/>
+<rect class="pos" x="176.4" y="115"/>
+<rect class="pos" x="181.6" y="115"/>
+<rect class="vel" x="186.8" y="115"/>
+<rect class="vel" x="192.0" y="115"/>
+<rect class="vel" x="197.2" y="115"/>
+<rect class="hp o" x="202.4" y="115"/>
+<rect class="hp o" x="207.6" y="115"/>
+<rect class="hp o" x="212.8" y="115"/>
+<rect class="hp o" x="218.0" y="115"/>
+<rect class="flag o" x="223.2" y="115"/>
+<rect class="flag o" x="228.4" y="115"/>
+<rect class="line o" x="233.6" y="115"/>
+<rect class="line o" x="238.8" y="115"/>
+<rect class="line o" x="244.0" y="115"/>
+<rect class="line o" x="249.2" y="115"/>
+<rect class="ln" x="170.4" y="113.5" width="84.3"/>
+<rect class="pos" x="256.9" y="115"/>
+<rect class="pos" x="262.1" y="115"/>
+<rect class="pos" x="267.3" y="115"/>
+<rect class="vel" x="272.5" y="115"/>
+<rect class="vel" x="277.7" y="115"/>
+<rect class="vel" x="282.9" y="115"/>
+<rect class="hp o" x="288.0" y="115"/>
+<rect class="hp o" x="293.2" y="115"/>
+<rect class="hp o" x="298.4" y="115"/>
+<rect class="hp o" x="303.6" y="115"/>
+<rect class="flag o" x="308.8" y="115"/>
+<rect class="flag o" x="314.0" y="115"/>
+<rect class="line o" x="319.2" y="115"/>
+<rect class="line o" x="324.4" y="115"/>
+<rect class="line o" x="329.6" y="115"/>
+<rect class="line o" x="334.8" y="115"/>
+<rect class="ln" x="256.1" y="113.5" width="84.3"/>
+<rect class="pos" x="0.0" y="148"/>
+<rect class="pos" x="5.2" y="148"/>
+<rect class="pos" x="10.4" y="148"/>
+<rect class="vel" x="15.6" y="148"/>
+<rect class="vel" x="20.8" y="148"/>
+<rect class="vel" x="26.0" y="148"/>
+<rect class="hp o" x="31.2" y="148"/>
+<rect class="hp o" x="36.4" y="148"/>
+<rect class="hp o" x="41.6" y="148"/>
+<rect class="hp o" x="46.8" y="148"/>
+<rect class="flag o" x="52.0" y="148"/>
+<rect class="flag o" x="57.1" y="148"/>
+<rect class="line o" x="62.3" y="148"/>
+<rect class="line o" x="67.5" y="148"/>
+<rect class="line o" x="72.7" y="148"/>
+<rect class="line o" x="77.9" y="148"/>
+<rect class="ln" x="-0.8" y="146.5" width="84.3"/>
+<rect class="pos" x="85.6" y="148"/>
+<rect class="pos" x="90.8" y="148"/>
+<rect class="pos" x="96.0" y="148"/>
+<rect class="vel" x="101.2" y="148"/>
+<rect class="vel" x="106.4" y="148"/>
+<rect class="vel" x="111.6" y="148"/>
+<rect class="hp o" x="116.8" y="148"/>
+<rect class="hp o" x="122.0" y="148"/>
+<rect class="hp o" x="127.2" y="148"/>
+<rect class="hp o" x="132.4" y="148"/>
+<rect class="flag o" x="137.6" y="148"/>
+<rect class="flag o" x="142.8" y="148"/>
+<rect class="line o" x="148.0" y="148"/>
+<rect class="line o" x="153.2" y="148"/>
+<rect class="line o" x="158.4" y="148"/>
+<rect class="line o" x="163.6" y="148"/>
+<rect class="ln" x="84.8" y="146.5" width="84.3"/>
+<rect class="pos" x="171.2" y="148"/>
+<rect class="pos" x="176.4" y="148"/>
+<rect class="pos" x="181.6" y="148"/>
+<rect class="vel" x="186.8" y="148"/>
+<rect class="vel" x="192.0" y="148"/>
+<rect class="vel" x="197.2" y="148"/>
+<rect class="hp o" x="202.4" y="148"/>
+<rect class="hp o" x="207.6" y="148"/>
+<rect class="hp o" x="212.8" y="148"/>
+<rect class="hp o" x="218.0" y="148"/>
+<rect class="flag o" x="223.2" y="148"/>
+<rect class="flag o" x="228.4" y="148"/>
+<rect class="line o" x="233.6" y="148"/>
+<rect class="line o" x="238.8" y="148"/>
+<rect class="line o" x="244.0" y="148"/>
+<rect class="line o" x="249.2" y="148"/>
+<rect class="ln" x="170.4" y="146.5" width="84.3"/>
+<rect class="pos" x="256.9" y="148"/>
+<rect class="pos" x="262.1" y="148"/>
+<rect class="pos" x="267.3" y="148"/>
+<rect class="vel" x="272.5" y="148"/>
+<rect class="vel" x="277.7" y="148"/>
+<rect class="vel" x="282.9" y="148"/>
+<rect class="hp o" x="288.0" y="148"/>
+<rect class="hp o" x="293.2" y="148"/>
+<rect class="hp o" x="298.4" y="148"/>
+<rect class="hp o" x="303.6" y="148"/>
+<rect class="flag o" x="308.8" y="148"/>
+<rect class="flag o" x="314.0" y="148"/>
+<rect class="line o" x="319.2" y="148"/>
+<rect class="line o" x="324.4" y="148"/>
+<rect class="line o" x="329.6" y="148"/>
+<rect class="line o" x="334.8" y="148"/>
+<rect class="ln" x="256.1" y="146.5" width="84.3"/>
+<text class="dim" x="0" y="190">update touches 16 of 16 lines · uses 384 of 1024 B</text>
+<text class="ttl" x="0" y="210">Hot/cold</text>
+<text class="dim" x="0" y="225">hot[16] = 6 lines, cold[16] = 10 lines</text>
+<rect class="pos" x="0.0" y="233"/>
+<rect class="pos" x="5.2" y="233"/>
+<rect class="pos" x="10.4" y="233"/>
+<rect class="vel" x="15.6" y="233"/>
+<rect class="vel" x="20.8" y="233"/>
+<rect class="vel" x="26.0" y="233"/>
+<rect class="pos" x="31.2" y="233"/>
+<rect class="pos" x="36.4" y="233"/>
+<rect class="pos" x="41.6" y="233"/>
+<rect class="vel" x="46.8" y="233"/>
+<rect class="vel" x="52.0" y="233"/>
+<rect class="vel" x="57.1" y="233"/>
+<rect class="pos" x="62.3" y="233"/>
+<rect class="pos" x="67.5" y="233"/>
+<rect class="pos" x="72.7" y="233"/>
+<rect class="vel" x="77.9" y="233"/>
+<rect class="ln" x="-0.8" y="231.5" width="84.3"/>
+<rect class="vel" x="85.6" y="233"/>
+<rect class="vel" x="90.8" y="233"/>
+<rect class="pos" x="96.0" y="233"/>
+<rect class="pos" x="101.2" y="233"/>
+<rect class="pos" x="106.4" y="233"/>
+<rect class="vel" x="111.6" y="233"/>
+<rect class="vel" x="116.8" y="233"/>
+<rect class="vel" x="122.0" y="233"/>
+<rect class="pos" x="127.2" y="233"/>
+<rect class="pos" x="132.4" y="233"/>
+<rect class="pos" x="137.6" y="233"/>
+<rect class="vel" x="142.8" y="233"/>
+<rect class="vel" x="148.0" y="233"/>
+<rect class="vel" x="153.2" y="233"/>
+<rect class="pos" x="158.4" y="233"/>
+<rect class="pos" x="163.6" y="233"/>
+<rect class="ln" x="84.8" y="231.5" width="84.3"/>
+<rect class="pos" x="171.2" y="233"/>
+<rect class="vel" x="176.4" y="233"/>
+<rect class="vel" x="181.6" y="233"/>
+<rect class="vel" x="186.8" y="233"/>
+<rect class="pos" x="192.0" y="233"/>
+<rect class="pos" x="197.2" y="233"/>
+<rect class="pos" x="202.4" y="233"/>
+<rect class="vel" x="207.6" y="233"/>
+<rect class="vel" x="212.8" y="233"/>
+<rect class="vel" x="218.0" y="233"/>
+<rect class="pos" x="223.2" y="233"/>
+<rect class="pos" x="228.4" y="233"/>
+<rect class="pos" x="233.6" y="233"/>
+<rect class="vel" x="238.8" y="233"/>
+<rect class="vel" x="244.0" y="233"/>
+<rect class="vel" x="249.2" y="233"/>
+<rect class="ln" x="170.4" y="231.5" width="84.3"/>
+<rect class="pos" x="256.9" y="233"/>
+<rect class="pos" x="262.1" y="233"/>
+<rect class="pos" x="267.3" y="233"/>
+<rect class="vel" x="272.5" y="233"/>
+<rect class="vel" x="277.7" y="233"/>
+<rect class="vel" x="282.9" y="233"/>
+<rect class="pos" x="288.0" y="233"/>
+<rect class="pos" x="293.2" y="233"/>
+<rect class="pos" x="298.4" y="233"/>
+<rect class="vel" x="303.6" y="233"/>
+<rect class="vel" x="308.8" y="233"/>
+<rect class="vel" x="314.0" y="233"/>
+<rect class="pos" x="319.2" y="233"/>
+<rect class="pos" x="324.4" y="233"/>
+<rect class="pos" x="329.6" y="233"/>
+<rect class="vel" x="334.8" y="233"/>
+<rect class="ln" x="256.1" y="231.5" width="84.3"/>
+<rect class="vel" x="0.0" y="266"/>
+<rect class="vel" x="5.2" y="266"/>
+<rect class="pos" x="10.4" y="266"/>
+<rect class="pos" x="15.6" y="266"/>
+<rect class="pos" x="20.8" y="266"/>
+<rect class="vel" x="26.0" y="266"/>
+<rect class="vel" x="31.2" y="266"/>
+<rect class="vel" x="36.4" y="266"/>
+<rect class="pos" x="41.6" y="266"/>
+<rect class="pos" x="46.8" y="266"/>
+<rect class="pos" x="52.0" y="266"/>
+<rect class="vel" x="57.1" y="266"/>
+<rect class="vel" x="62.3" y="266"/>
+<rect class="vel" x="67.5" y="266"/>
+<rect class="pos" x="72.7" y="266"/>
+<rect class="pos" x="77.9" y="266"/>
+<rect class="ln" x="-0.8" y="264.5" width="84.3"/>
+<rect class="pos" x="85.6" y="266"/>
+<rect class="vel" x="90.8" y="266"/>
+<rect class="vel" x="96.0" y="266"/>
+<rect class="vel" x="101.2" y="266"/>
+<rect class="pos" x="106.4" y="266"/>
+<rect class="pos" x="111.6" y="266"/>
+<rect class="pos" x="116.8" y="266"/>
+<rect class="vel" x="122.0" y="266"/>
+<rect class="vel" x="127.2" y="266"/>
+<rect class="vel" x="132.4" y="266"/>
+<rect class="pos" x="137.6" y="266"/>
+<rect class="pos" x="142.8" y="266"/>
+<rect class="pos" x="148.0" y="266"/>
+<rect class="vel" x="153.2" y="266"/>
+<rect class="vel" x="158.4" y="266"/>
+<rect class="vel" x="163.6" y="266"/>
+<rect class="ln" x="84.8" y="264.5" width="84.3"/>
+<rect class="hp o" x="171.2" y="266"/>
+<rect class="hp o" x="176.4" y="266"/>
+<rect class="hp o" x="181.6" y="266"/>
+<rect class="hp o" x="186.8" y="266"/>
+<rect class="flag o" x="192.0" y="266"/>
+<rect class="flag o" x="197.2" y="266"/>
+<rect class="line o" x="202.4" y="266"/>
+<rect class="line o" x="207.6" y="266"/>
+<rect class="line o" x="212.8" y="266"/>
+<rect class="line o" x="218.0" y="266"/>
+<rect class="hp o" x="223.2" y="266"/>
+<rect class="hp o" x="228.4" y="266"/>
+<rect class="hp o" x="233.6" y="266"/>
+<rect class="hp o" x="238.8" y="266"/>
+<rect class="flag o" x="244.0" y="266"/>
+<rect class="flag o" x="249.2" y="266"/>
+<rect class="line o" x="256.9" y="266"/>
+<rect class="line o" x="262.1" y="266"/>
+<rect class="line o" x="267.3" y="266"/>
+<rect class="line o" x="272.5" y="266"/>
+<rect class="hp o" x="277.7" y="266"/>
+<rect class="hp o" x="282.9" y="266"/>
+<rect class="hp o" x="288.0" y="266"/>
+<rect class="hp o" x="293.2" y="266"/>
+<rect class="flag o" x="298.4" y="266"/>
+<rect class="flag o" x="303.6" y="266"/>
+<rect class="line o" x="308.8" y="266"/>
+<rect class="line o" x="314.0" y="266"/>
+<rect class="line o" x="319.2" y="266"/>
+<rect class="line o" x="324.4" y="266"/>
+<rect class="hp o" x="329.6" y="266"/>
+<rect class="hp o" x="334.8" y="266"/>
+<rect class="hp o" x="0.0" y="299"/>
+<rect class="hp o" x="5.2" y="299"/>
+<rect class="flag o" x="10.4" y="299"/>
+<rect class="flag o" x="15.6" y="299"/>
+<rect class="line o" x="20.8" y="299"/>
+<rect class="line o" x="26.0" y="299"/>
+<rect class="line o" x="31.2" y="299"/>
+<rect class="line o" x="36.4" y="299"/>
+<rect class="hp o" x="41.6" y="299"/>
+<rect class="hp o" x="46.8" y="299"/>
+<rect class="hp o" x="52.0" y="299"/>
+<rect class="hp o" x="57.1" y="299"/>
+<rect class="flag o" x="62.3" y="299"/>
+<rect class="flag o" x="67.5" y="299"/>
+<rect class="line o" x="72.7" y="299"/>
+<rect class="line o" x="77.9" y="299"/>
+<rect class="line o" x="85.6" y="299"/>
+<rect class="line o" x="90.8" y="299"/>
+<rect class="hp o" x="96.0" y="299"/>
+<rect class="hp o" x="101.2" y="299"/>
+<rect class="hp o" x="106.4" y="299"/>
+<rect class="hp o" x="111.6" y="299"/>
+<rect class="flag o" x="116.8" y="299"/>
+<rect class="flag o" x="122.0" y="299"/>
+<rect class="line o" x="127.2" y="299"/>
+<rect class="line o" x="132.4" y="299"/>
+<rect class="line o" x="137.6" y="299"/>
+<rect class="line o" x="142.8" y="299"/>
+<rect class="hp o" x="148.0" y="299"/>
+<rect class="hp o" x="153.2" y="299"/>
+<rect class="hp o" x="158.4" y="299"/>
+<rect class="hp o" x="163.6" y="299"/>
+<rect class="flag o" x="171.2" y="299"/>
+<rect class="flag o" x="176.4" y="299"/>
+<rect class="line o" x="181.6" y="299"/>
+<rect class="line o" x="186.8" y="299"/>
+<rect class="line o" x="192.0" y="299"/>
+<rect class="line o" x="197.2" y="299"/>
+<rect class="hp o" x="202.4" y="299"/>
+<rect class="hp o" x="207.6" y="299"/>
+<rect class="hp o" x="212.8" y="299"/>
+<rect class="hp o" x="218.0" y="299"/>
+<rect class="flag o" x="223.2" y="299"/>
+<rect class="flag o" x="228.4" y="299"/>
+<rect class="line o" x="233.6" y="299"/>
+<rect class="line o" x="238.8" y="299"/>
+<rect class="line o" x="244.0" y="299"/>
+<rect class="line o" x="249.2" y="299"/>
+<rect class="hp o" x="256.9" y="299"/>
+<rect class="hp o" x="262.1" y="299"/>
+<rect class="hp o" x="267.3" y="299"/>
+<rect class="hp o" x="272.5" y="299"/>
+<rect class="flag o" x="277.7" y="299"/>
+<rect class="flag o" x="282.9" y="299"/>
+<rect class="line o" x="288.0" y="299"/>
+<rect class="line o" x="293.2" y="299"/>
+<rect class="line o" x="298.4" y="299"/>
+<rect class="line o" x="303.6" y="299"/>
+<rect class="hp o" x="308.8" y="299"/>
+<rect class="hp o" x="314.0" y="299"/>
+<rect class="hp o" x="319.2" y="299"/>
+<rect class="hp o" x="324.4" y="299"/>
+<rect class="flag o" x="329.6" y="299"/>
+<rect class="flag o" x="334.8" y="299"/>
+<rect class="line o" x="0.0" y="332"/>
+<rect class="line o" x="5.2" y="332"/>
+<rect class="line o" x="10.4" y="332"/>
+<rect class="line o" x="15.6" y="332"/>
+<rect class="hp o" x="20.8" y="332"/>
+<rect class="hp o" x="26.0" y="332"/>
+<rect class="hp o" x="31.2" y="332"/>
+<rect class="hp o" x="36.4" y="332"/>
+<rect class="flag o" x="41.6" y="332"/>
+<rect class="flag o" x="46.8" y="332"/>
+<rect class="line o" x="52.0" y="332"/>
+<rect class="line o" x="57.1" y="332"/>
+<rect class="line o" x="62.3" y="332"/>
+<rect class="line o" x="67.5" y="332"/>
+<rect class="hp o" x="72.7" y="332"/>
+<rect class="hp o" x="77.9" y="332"/>
+<rect class="hp o" x="85.6" y="332"/>
+<rect class="hp o" x="90.8" y="332"/>
+<rect class="flag o" x="96.0" y="332"/>
+<rect class="flag o" x="101.2" y="332"/>
+<rect class="line o" x="106.4" y="332"/>
+<rect class="line o" x="111.6" y="332"/>
+<rect class="line o" x="116.8" y="332"/>
+<rect class="line o" x="122.0" y="332"/>
+<rect class="hp o" x="127.2" y="332"/>
+<rect class="hp o" x="132.4" y="332"/>
+<rect class="hp o" x="137.6" y="332"/>
+<rect class="hp o" x="142.8" y="332"/>
+<rect class="flag o" x="148.0" y="332"/>
+<rect class="flag o" x="153.2" y="332"/>
+<rect class="line o" x="158.4" y="332"/>
+<rect class="line o" x="163.6" y="332"/>
+<rect class="line o" x="171.2" y="332"/>
+<rect class="line o" x="176.4" y="332"/>
+<rect class="hp o" x="181.6" y="332"/>
+<rect class="hp o" x="186.8" y="332"/>
+<rect class="hp o" x="192.0" y="332"/>
+<rect class="hp o" x="197.2" y="332"/>
+<rect class="flag o" x="202.4" y="332"/>
+<rect class="flag o" x="207.6" y="332"/>
+<rect class="line o" x="212.8" y="332"/>
+<rect class="line o" x="218.0" y="332"/>
+<rect class="line o" x="223.2" y="332"/>
+<rect class="line o" x="228.4" y="332"/>
+<rect class="hp o" x="233.6" y="332"/>
+<rect class="hp o" x="238.8" y="332"/>
+<rect class="hp o" x="244.0" y="332"/>
+<rect class="hp o" x="249.2" y="332"/>
+<rect class="flag o" x="256.9" y="332"/>
+<rect class="flag o" x="262.1" y="332"/>
+<rect class="line o" x="267.3" y="332"/>
+<rect class="line o" x="272.5" y="332"/>
+<rect class="line o" x="277.7" y="332"/>
+<rect class="line o" x="282.9" y="332"/>
+<rect class="hp o" x="288.0" y="332"/>
+<rect class="hp o" x="293.2" y="332"/>
+<rect class="hp o" x="298.4" y="332"/>
+<rect class="hp o" x="303.6" y="332"/>
+<rect class="flag o" x="308.8" y="332"/>
+<rect class="flag o" x="314.0" y="332"/>
+<rect class="line o" x="319.2" y="332"/>
+<rect class="line o" x="324.4" y="332"/>
+<rect class="line o" x="329.6" y="332"/>
+<rect class="line o" x="334.8" y="332"/>
+<text class="dim" x="0" y="374">update touches 6 of 16 lines · uses 384 of 384 B</text>
+<text class="ttl" x="0" y="394">SoA</text>
+<text class="dim" x="0" y="409">16 columns, one line each for 16 particles</text>
+<rect class="pos" x="0.0" y="417"/>
+<rect class="pos" x="5.2" y="417"/>
+<rect class="pos" x="10.4" y="417"/>
+<rect class="pos" x="15.6" y="417"/>
+<rect class="pos" x="20.8" y="417"/>
+<rect class="pos" x="26.0" y="417"/>
+<rect class="pos" x="31.2" y="417"/>
+<rect class="pos" x="36.4" y="417"/>
+<rect class="pos" x="41.6" y="417"/>
+<rect class="pos" x="46.8" y="417"/>
+<rect class="pos" x="52.0" y="417"/>
+<rect class="pos" x="57.1" y="417"/>
+<rect class="pos" x="62.3" y="417"/>
+<rect class="pos" x="67.5" y="417"/>
+<rect class="pos" x="72.7" y="417"/>
+<rect class="pos" x="77.9" y="417"/>
+<rect class="ln" x="-0.8" y="415.5" width="84.3"/>
+<rect class="pos" x="85.6" y="417"/>
+<rect class="pos" x="90.8" y="417"/>
+<rect class="pos" x="96.0" y="417"/>
+<rect class="pos" x="101.2" y="417"/>
+<rect class="pos" x="106.4" y="417"/>
+<rect class="pos" x="111.6" y="417"/>
+<rect class="pos" x="116.8" y="417"/>
+<rect class="pos" x="122.0" y="417"/>
+<rect class="pos" x="127.2" y="417"/>
+<rect class="pos" x="132.4" y="417"/>
+<rect class="pos" x="137.6" y="417"/>
+<rect class="pos" x="142.8" y="417"/>
+<rect class="pos" x="148.0" y="417"/>
+<rect class="pos" x="153.2" y="417"/>
+<rect class="pos" x="158.4" y="417"/>
+<rect class="pos" x="163.6" y="417"/>
+<rect class="ln" x="84.8" y="415.5" width="84.3"/>
+<rect class="pos" x="171.2" y="417"/>
+<rect class="pos" x="176.4" y="417"/>
+<rect class="pos" x="181.6" y="417"/>
+<rect class="pos" x="186.8" y="417"/>
+<rect class="pos" x="192.0" y="417"/>
+<rect class="pos" x="197.2" y="417"/>
+<rect class="pos" x="202.4" y="417"/>
+<rect class="pos" x="207.6" y="417"/>
+<rect class="pos" x="212.8" y="417"/>
+<rect class="pos" x="218.0" y="417"/>
+<rect class="pos" x="223.2" y="417"/>
+<rect class="pos" x="228.4" y="417"/>
+<rect class="pos" x="233.6" y="417"/>
+<rect class="pos" x="238.8" y="417"/>
+<rect class="pos" x="244.0" y="417"/>
+<rect class="pos" x="249.2" y="417"/>
+<rect class="ln" x="170.4" y="415.5" width="84.3"/>
+<rect class="vel" x="256.9" y="417"/>
+<rect class="vel" x="262.1" y="417"/>
+<rect class="vel" x="267.3" y="417"/>
+<rect class="vel" x="272.5" y="417"/>
+<rect class="vel" x="277.7" y="417"/>
+<rect class="vel" x="282.9" y="417"/>
+<rect class="vel" x="288.0" y="417"/>
+<rect class="vel" x="293.2" y="417"/>
+<rect class="vel" x="298.4" y="417"/>
+<rect class="vel" x="303.6" y="417"/>
+<rect class="vel" x="308.8" y="417"/>
+<rect class="vel" x="314.0" y="417"/>
+<rect class="vel" x="319.2" y="417"/>
+<rect class="vel" x="324.4" y="417"/>
+<rect class="vel" x="329.6" y="417"/>
+<rect class="vel" x="334.8" y="417"/>
+<rect class="ln" x="256.1" y="415.5" width="84.3"/>
+<rect class="vel" x="0.0" y="450"/>
+<rect class="vel" x="5.2" y="450"/>
+<rect class="vel" x="10.4" y="450"/>
+<rect class="vel" x="15.6" y="450"/>
+<rect class="vel" x="20.8" y="450"/>
+<rect class="vel" x="26.0" y="450"/>
+<rect class="vel" x="31.2" y="450"/>
+<rect class="vel" x="36.4" y="450"/>
+<rect class="vel" x="41.6" y="450"/>
+<rect class="vel" x="46.8" y="450"/>
+<rect class="vel" x="52.0" y="450"/>
+<rect class="vel" x="57.1" y="450"/>
+<rect class="vel" x="62.3" y="450"/>
+<rect class="vel" x="67.5" y="450"/>
+<rect class="vel" x="72.7" y="450"/>
+<rect class="vel" x="77.9" y="450"/>
+<rect class="ln" x="-0.8" y="448.5" width="84.3"/>
+<rect class="vel" x="85.6" y="450"/>
+<rect class="vel" x="90.8" y="450"/>
+<rect class="vel" x="96.0" y="450"/>
+<rect class="vel" x="101.2" y="450"/>
+<rect class="vel" x="106.4" y="450"/>
+<rect class="vel" x="111.6" y="450"/>
+<rect class="vel" x="116.8" y="450"/>
+<rect class="vel" x="122.0" y="450"/>
+<rect class="vel" x="127.2" y="450"/>
+<rect class="vel" x="132.4" y="450"/>
+<rect class="vel" x="137.6" y="450"/>
+<rect class="vel" x="142.8" y="450"/>
+<rect class="vel" x="148.0" y="450"/>
+<rect class="vel" x="153.2" y="450"/>
+<rect class="vel" x="158.4" y="450"/>
+<rect class="vel" x="163.6" y="450"/>
+<rect class="ln" x="84.8" y="448.5" width="84.3"/>
+<rect class="hp o" x="171.2" y="450"/>
+<rect class="hp o" x="176.4" y="450"/>
+<rect class="hp o" x="181.6" y="450"/>
+<rect class="hp o" x="186.8" y="450"/>
+<rect class="hp o" x="192.0" y="450"/>
+<rect class="hp o" x="197.2" y="450"/>
+<rect class="hp o" x="202.4" y="450"/>
+<rect class="hp o" x="207.6" y="450"/>
+<rect class="hp o" x="212.8" y="450"/>
+<rect class="hp o" x="218.0" y="450"/>
+<rect class="hp o" x="223.2" y="450"/>
+<rect class="hp o" x="228.4" y="450"/>
+<rect class="hp o" x="233.6" y="450"/>
+<rect class="hp o" x="238.8" y="450"/>
+<rect class="hp o" x="244.0" y="450"/>
+<rect class="hp o" x="249.2" y="450"/>
+<rect class="hp o" x="256.9" y="450"/>
+<rect class="hp o" x="262.1" y="450"/>
+<rect class="hp o" x="267.3" y="450"/>
+<rect class="hp o" x="272.5" y="450"/>
+<rect class="hp o" x="277.7" y="450"/>
+<rect class="hp o" x="282.9" y="450"/>
+<rect class="hp o" x="288.0" y="450"/>
+<rect class="hp o" x="293.2" y="450"/>
+<rect class="hp o" x="298.4" y="450"/>
+<rect class="hp o" x="303.6" y="450"/>
+<rect class="hp o" x="308.8" y="450"/>
+<rect class="hp o" x="314.0" y="450"/>
+<rect class="hp o" x="319.2" y="450"/>
+<rect class="hp o" x="324.4" y="450"/>
+<rect class="hp o" x="329.6" y="450"/>
+<rect class="hp o" x="334.8" y="450"/>
+<rect class="hp o" x="0.0" y="483"/>
+<rect class="hp o" x="5.2" y="483"/>
+<rect class="hp o" x="10.4" y="483"/>
+<rect class="hp o" x="15.6" y="483"/>
+<rect class="hp o" x="20.8" y="483"/>
+<rect class="hp o" x="26.0" y="483"/>
+<rect class="hp o" x="31.2" y="483"/>
+<rect class="hp o" x="36.4" y="483"/>
+<rect class="hp o" x="41.6" y="483"/>
+<rect class="hp o" x="46.8" y="483"/>
+<rect class="hp o" x="52.0" y="483"/>
+<rect class="hp o" x="57.1" y="483"/>
+<rect class="hp o" x="62.3" y="483"/>
+<rect class="hp o" x="67.5" y="483"/>
+<rect class="hp o" x="72.7" y="483"/>
+<rect class="hp o" x="77.9" y="483"/>
+<rect class="hp o" x="85.6" y="483"/>
+<rect class="hp o" x="90.8" y="483"/>
+<rect class="hp o" x="96.0" y="483"/>
+<rect class="hp o" x="101.2" y="483"/>
+<rect class="hp o" x="106.4" y="483"/>
+<rect class="hp o" x="111.6" y="483"/>
+<rect class="hp o" x="116.8" y="483"/>
+<rect class="hp o" x="122.0" y="483"/>
+<rect class="hp o" x="127.2" y="483"/>
+<rect class="hp o" x="132.4" y="483"/>
+<rect class="hp o" x="137.6" y="483"/>
+<rect class="hp o" x="142.8" y="483"/>
+<rect class="hp o" x="148.0" y="483"/>
+<rect class="hp o" x="153.2" y="483"/>
+<rect class="hp o" x="158.4" y="483"/>
+<rect class="hp o" x="163.6" y="483"/>
+<rect class="flag o" x="171.2" y="483"/>
+<rect class="flag o" x="176.4" y="483"/>
+<rect class="flag o" x="181.6" y="483"/>
+<rect class="flag o" x="186.8" y="483"/>
+<rect class="flag o" x="192.0" y="483"/>
+<rect class="flag o" x="197.2" y="483"/>
+<rect class="flag o" x="202.4" y="483"/>
+<rect class="flag o" x="207.6" y="483"/>
+<rect class="flag o" x="212.8" y="483"/>
+<rect class="flag o" x="218.0" y="483"/>
+<rect class="flag o" x="223.2" y="483"/>
+<rect class="flag o" x="228.4" y="483"/>
+<rect class="flag o" x="233.6" y="483"/>
+<rect class="flag o" x="238.8" y="483"/>
+<rect class="flag o" x="244.0" y="483"/>
+<rect class="flag o" x="249.2" y="483"/>
+<rect class="flag o" x="256.9" y="483"/>
+<rect class="flag o" x="262.1" y="483"/>
+<rect class="flag o" x="267.3" y="483"/>
+<rect class="flag o" x="272.5" y="483"/>
+<rect class="flag o" x="277.7" y="483"/>
+<rect class="flag o" x="282.9" y="483"/>
+<rect class="flag o" x="288.0" y="483"/>
+<rect class="flag o" x="293.2" y="483"/>
+<rect class="flag o" x="298.4" y="483"/>
+<rect class="flag o" x="303.6" y="483"/>
+<rect class="flag o" x="308.8" y="483"/>
+<rect class="flag o" x="314.0" y="483"/>
+<rect class="flag o" x="319.2" y="483"/>
+<rect class="flag o" x="324.4" y="483"/>
+<rect class="flag o" x="329.6" y="483"/>
+<rect class="flag o" x="334.8" y="483"/>
+<rect class="line o" x="0.0" y="516"/>
+<rect class="line o" x="5.2" y="516"/>
+<rect class="line o" x="10.4" y="516"/>
+<rect class="line o" x="15.6" y="516"/>
+<rect class="line o" x="20.8" y="516"/>
+<rect class="line o" x="26.0" y="516"/>
+<rect class="line o" x="31.2" y="516"/>
+<rect class="line o" x="36.4" y="516"/>
+<rect class="line o" x="41.6" y="516"/>
+<rect class="line o" x="46.8" y="516"/>
+<rect class="line o" x="52.0" y="516"/>
+<rect class="line o" x="57.1" y="516"/>
+<rect class="line o" x="62.3" y="516"/>
+<rect class="line o" x="67.5" y="516"/>
+<rect class="line o" x="72.7" y="516"/>
+<rect class="line o" x="77.9" y="516"/>
+<rect class="line o" x="85.6" y="516"/>
+<rect class="line o" x="90.8" y="516"/>
+<rect class="line o" x="96.0" y="516"/>
+<rect class="line o" x="101.2" y="516"/>
+<rect class="line o" x="106.4" y="516"/>
+<rect class="line o" x="111.6" y="516"/>
+<rect class="line o" x="116.8" y="516"/>
+<rect class="line o" x="122.0" y="516"/>
+<rect class="line o" x="127.2" y="516"/>
+<rect class="line o" x="132.4" y="516"/>
+<rect class="line o" x="137.6" y="516"/>
+<rect class="line o" x="142.8" y="516"/>
+<rect class="line o" x="148.0" y="516"/>
+<rect class="line o" x="153.2" y="516"/>
+<rect class="line o" x="158.4" y="516"/>
+<rect class="line o" x="163.6" y="516"/>
+<rect class="line o" x="171.2" y="516"/>
+<rect class="line o" x="176.4" y="516"/>
+<rect class="line o" x="181.6" y="516"/>
+<rect class="line o" x="186.8" y="516"/>
+<rect class="line o" x="192.0" y="516"/>
+<rect class="line o" x="197.2" y="516"/>
+<rect class="line o" x="202.4" y="516"/>
+<rect class="line o" x="207.6" y="516"/>
+<rect class="line o" x="212.8" y="516"/>
+<rect class="line o" x="218.0" y="516"/>
+<rect class="line o" x="223.2" y="516"/>
+<rect class="line o" x="228.4" y="516"/>
+<rect class="line o" x="233.6" y="516"/>
+<rect class="line o" x="238.8" y="516"/>
+<rect class="line o" x="244.0" y="516"/>
+<rect class="line o" x="249.2" y="516"/>
+<rect class="line o" x="256.9" y="516"/>
+<rect class="line o" x="262.1" y="516"/>
+<rect class="line o" x="267.3" y="516"/>
+<rect class="line o" x="272.5" y="516"/>
+<rect class="line o" x="277.7" y="516"/>
+<rect class="line o" x="282.9" y="516"/>
+<rect class="line o" x="288.0" y="516"/>
+<rect class="line o" x="293.2" y="516"/>
+<rect class="line o" x="298.4" y="516"/>
+<rect class="line o" x="303.6" y="516"/>
+<rect class="line o" x="308.8" y="516"/>
+<rect class="line o" x="314.0" y="516"/>
+<rect class="line o" x="319.2" y="516"/>
+<rect class="line o" x="324.4" y="516"/>
+<rect class="line o" x="329.6" y="516"/>
+<rect class="line o" x="334.8" y="516"/>
+<text class="dim" x="0" y="558">update touches 6 of 16 lines · uses 384 of 384 B</text>
+<text class="ttl" x="0" y="578">AoSoA-8</text>
+<text class="dim" x="0" y="593">2 blocks × 8 lines; pos/vel = first 3 lines</text>
+<rect class="pos" x="0.0" y="601"/>
+<rect class="pos" x="5.2" y="601"/>
+<rect class="pos" x="10.4" y="601"/>
+<rect class="pos" x="15.6" y="601"/>
+<rect class="pos" x="20.8" y="601"/>
+<rect class="pos" x="26.0" y="601"/>
+<rect class="pos" x="31.2" y="601"/>
+<rect class="pos" x="36.4" y="601"/>
+<rect class="pos" x="41.6" y="601"/>
+<rect class="pos" x="46.8" y="601"/>
+<rect class="pos" x="52.0" y="601"/>
+<rect class="pos" x="57.1" y="601"/>
+<rect class="pos" x="62.3" y="601"/>
+<rect class="pos" x="67.5" y="601"/>
+<rect class="pos" x="72.7" y="601"/>
+<rect class="pos" x="77.9" y="601"/>
+<rect class="ln" x="-0.8" y="599.5" width="84.3"/>
+<rect class="pos" x="85.6" y="601"/>
+<rect class="pos" x="90.8" y="601"/>
+<rect class="pos" x="96.0" y="601"/>
+<rect class="pos" x="101.2" y="601"/>
+<rect class="pos" x="106.4" y="601"/>
+<rect class="pos" x="111.6" y="601"/>
+<rect class="pos" x="116.8" y="601"/>
+<rect class="pos" x="122.0" y="601"/>
+<rect class="vel" x="127.2" y="601"/>
+<rect class="vel" x="132.4" y="601"/>
+<rect class="vel" x="137.6" y="601"/>
+<rect class="vel" x="142.8" y="601"/>
+<rect class="vel" x="148.0" y="601"/>
+<rect class="vel" x="153.2" y="601"/>
+<rect class="vel" x="158.4" y="601"/>
+<rect class="vel" x="163.6" y="601"/>
+<rect class="ln" x="84.8" y="599.5" width="84.3"/>
+<rect class="vel" x="171.2" y="601"/>
+<rect class="vel" x="176.4" y="601"/>
+<rect class="vel" x="181.6" y="601"/>
+<rect class="vel" x="186.8" y="601"/>
+<rect class="vel" x="192.0" y="601"/>
+<rect class="vel" x="197.2" y="601"/>
+<rect class="vel" x="202.4" y="601"/>
+<rect class="vel" x="207.6" y="601"/>
+<rect class="vel" x="212.8" y="601"/>
+<rect class="vel" x="218.0" y="601"/>
+<rect class="vel" x="223.2" y="601"/>
+<rect class="vel" x="228.4" y="601"/>
+<rect class="vel" x="233.6" y="601"/>
+<rect class="vel" x="238.8" y="601"/>
+<rect class="vel" x="244.0" y="601"/>
+<rect class="vel" x="249.2" y="601"/>
+<rect class="ln" x="170.4" y="599.5" width="84.3"/>
+<rect class="hp o" x="256.9" y="601"/>
+<rect class="hp o" x="262.1" y="601"/>
+<rect class="hp o" x="267.3" y="601"/>
+<rect class="hp o" x="272.5" y="601"/>
+<rect class="hp o" x="277.7" y="601"/>
+<rect class="hp o" x="282.9" y="601"/>
+<rect class="hp o" x="288.0" y="601"/>
+<rect class="hp o" x="293.2" y="601"/>
+<rect class="hp o" x="298.4" y="601"/>
+<rect class="hp o" x="303.6" y="601"/>
+<rect class="hp o" x="308.8" y="601"/>
+<rect class="hp o" x="314.0" y="601"/>
+<rect class="hp o" x="319.2" y="601"/>
+<rect class="hp o" x="324.4" y="601"/>
+<rect class="hp o" x="329.6" y="601"/>
+<rect class="hp o" x="334.8" y="601"/>
+<rect class="hp o" x="0.0" y="634"/>
+<rect class="hp o" x="5.2" y="634"/>
+<rect class="hp o" x="10.4" y="634"/>
+<rect class="hp o" x="15.6" y="634"/>
+<rect class="hp o" x="20.8" y="634"/>
+<rect class="hp o" x="26.0" y="634"/>
+<rect class="hp o" x="31.2" y="634"/>
+<rect class="hp o" x="36.4" y="634"/>
+<rect class="hp o" x="41.6" y="634"/>
+<rect class="hp o" x="46.8" y="634"/>
+<rect class="hp o" x="52.0" y="634"/>
+<rect class="hp o" x="57.1" y="634"/>
+<rect class="hp o" x="62.3" y="634"/>
+<rect class="hp o" x="67.5" y="634"/>
+<rect class="hp o" x="72.7" y="634"/>
+<rect class="hp o" x="77.9" y="634"/>
+<rect class="flag o" x="85.6" y="634"/>
+<rect class="flag o" x="90.8" y="634"/>
+<rect class="flag o" x="96.0" y="634"/>
+<rect class="flag o" x="101.2" y="634"/>
+<rect class="flag o" x="106.4" y="634"/>
+<rect class="flag o" x="111.6" y="634"/>
+<rect class="flag o" x="116.8" y="634"/>
+<rect class="flag o" x="122.0" y="634"/>
+<rect class="flag o" x="127.2" y="634"/>
+<rect class="flag o" x="132.4" y="634"/>
+<rect class="flag o" x="137.6" y="634"/>
+<rect class="flag o" x="142.8" y="634"/>
+<rect class="flag o" x="148.0" y="634"/>
+<rect class="flag o" x="153.2" y="634"/>
+<rect class="flag o" x="158.4" y="634"/>
+<rect class="flag o" x="163.6" y="634"/>
+<rect class="line o" x="171.2" y="634"/>
+<rect class="line o" x="176.4" y="634"/>
+<rect class="line o" x="181.6" y="634"/>
+<rect class="line o" x="186.8" y="634"/>
+<rect class="line o" x="192.0" y="634"/>
+<rect class="line o" x="197.2" y="634"/>
+<rect class="line o" x="202.4" y="634"/>
+<rect class="line o" x="207.6" y="634"/>
+<rect class="line o" x="212.8" y="634"/>
+<rect class="line o" x="218.0" y="634"/>
+<rect class="line o" x="223.2" y="634"/>
+<rect class="line o" x="228.4" y="634"/>
+<rect class="line o" x="233.6" y="634"/>
+<rect class="line o" x="238.8" y="634"/>
+<rect class="line o" x="244.0" y="634"/>
+<rect class="line o" x="249.2" y="634"/>
+<rect class="line o" x="256.9" y="634"/>
+<rect class="line o" x="262.1" y="634"/>
+<rect class="line o" x="267.3" y="634"/>
+<rect class="line o" x="272.5" y="634"/>
+<rect class="line o" x="277.7" y="634"/>
+<rect class="line o" x="282.9" y="634"/>
+<rect class="line o" x="288.0" y="634"/>
+<rect class="line o" x="293.2" y="634"/>
+<rect class="line o" x="298.4" y="634"/>
+<rect class="line o" x="303.6" y="634"/>
+<rect class="line o" x="308.8" y="634"/>
+<rect class="line o" x="314.0" y="634"/>
+<rect class="line o" x="319.2" y="634"/>
+<rect class="line o" x="324.4" y="634"/>
+<rect class="line o" x="329.6" y="634"/>
+<rect class="line o" x="334.8" y="634"/>
+<rect class="pos" x="0.0" y="667"/>
+<rect class="pos" x="5.2" y="667"/>
+<rect class="pos" x="10.4" y="667"/>
+<rect class="pos" x="15.6" y="667"/>
+<rect class="pos" x="20.8" y="667"/>
+<rect class="pos" x="26.0" y="667"/>
+<rect class="pos" x="31.2" y="667"/>
+<rect class="pos" x="36.4" y="667"/>
+<rect class="pos" x="41.6" y="667"/>
+<rect class="pos" x="46.8" y="667"/>
+<rect class="pos" x="52.0" y="667"/>
+<rect class="pos" x="57.1" y="667"/>
+<rect class="pos" x="62.3" y="667"/>
+<rect class="pos" x="67.5" y="667"/>
+<rect class="pos" x="72.7" y="667"/>
+<rect class="pos" x="77.9" y="667"/>
+<rect class="ln" x="-0.8" y="665.5" width="84.3"/>
+<rect class="pos" x="85.6" y="667"/>
+<rect class="pos" x="90.8" y="667"/>
+<rect class="pos" x="96.0" y="667"/>
+<rect class="pos" x="101.2" y="667"/>
+<rect class="pos" x="106.4" y="667"/>
+<rect class="pos" x="111.6" y="667"/>
+<rect class="pos" x="116.8" y="667"/>
+<rect class="pos" x="122.0" y="667"/>
+<rect class="vel" x="127.2" y="667"/>
+<rect class="vel" x="132.4" y="667"/>
+<rect class="vel" x="137.6" y="667"/>
+<rect class="vel" x="142.8" y="667"/>
+<rect class="vel" x="148.0" y="667"/>
+<rect class="vel" x="153.2" y="667"/>
+<rect class="vel" x="158.4" y="667"/>
+<rect class="vel" x="163.6" y="667"/>
+<rect class="ln" x="84.8" y="665.5" width="84.3"/>
+<rect class="vel" x="171.2" y="667"/>
+<rect class="vel" x="176.4" y="667"/>
+<rect class="vel" x="181.6" y="667"/>
+<rect class="vel" x="186.8" y="667"/>
+<rect class="vel" x="192.0" y="667"/>
+<rect class="vel" x="197.2" y="667"/>
+<rect class="vel" x="202.4" y="667"/>
+<rect class="vel" x="207.6" y="667"/>
+<rect class="vel" x="212.8" y="667"/>
+<rect class="vel" x="218.0" y="667"/>
+<rect class="vel" x="223.2" y="667"/>
+<rect class="vel" x="228.4" y="667"/>
+<rect class="vel" x="233.6" y="667"/>
+<rect class="vel" x="238.8" y="667"/>
+<rect class="vel" x="244.0" y="667"/>
+<rect class="vel" x="249.2" y="667"/>
+<rect class="ln" x="170.4" y="665.5" width="84.3"/>
+<rect class="hp o" x="256.9" y="667"/>
+<rect class="hp o" x="262.1" y="667"/>
+<rect class="hp o" x="267.3" y="667"/>
+<rect class="hp o" x="272.5" y="667"/>
+<rect class="hp o" x="277.7" y="667"/>
+<rect class="hp o" x="282.9" y="667"/>
+<rect class="hp o" x="288.0" y="667"/>
+<rect class="hp o" x="293.2" y="667"/>
+<rect class="hp o" x="298.4" y="667"/>
+<rect class="hp o" x="303.6" y="667"/>
+<rect class="hp o" x="308.8" y="667"/>
+<rect class="hp o" x="314.0" y="667"/>
+<rect class="hp o" x="319.2" y="667"/>
+<rect class="hp o" x="324.4" y="667"/>
+<rect class="hp o" x="329.6" y="667"/>
+<rect class="hp o" x="334.8" y="667"/>
+<rect class="hp o" x="0.0" y="700"/>
+<rect class="hp o" x="5.2" y="700"/>
+<rect class="hp o" x="10.4" y="700"/>
+<rect class="hp o" x="15.6" y="700"/>
+<rect class="hp o" x="20.8" y="700"/>
+<rect class="hp o" x="26.0" y="700"/>
+<rect class="hp o" x="31.2" y="700"/>
+<rect class="hp o" x="36.4" y="700"/>
+<rect class="hp o" x="41.6" y="700"/>
+<rect class="hp o" x="46.8" y="700"/>
+<rect class="hp o" x="52.0" y="700"/>
+<rect class="hp o" x="57.1" y="700"/>
+<rect class="hp o" x="62.3" y="700"/>
+<rect class="hp o" x="67.5" y="700"/>
+<rect class="hp o" x="72.7" y="700"/>
+<rect class="hp o" x="77.9" y="700"/>
+<rect class="flag o" x="85.6" y="700"/>
+<rect class="flag o" x="90.8" y="700"/>
+<rect class="flag o" x="96.0" y="700"/>
+<rect class="flag o" x="101.2" y="700"/>
+<rect class="flag o" x="106.4" y="700"/>
+<rect class="flag o" x="111.6" y="700"/>
+<rect class="flag o" x="116.8" y="700"/>
+<rect class="flag o" x="122.0" y="700"/>
+<rect class="flag o" x="127.2" y="700"/>
+<rect class="flag o" x="132.4" y="700"/>
+<rect class="flag o" x="137.6" y="700"/>
+<rect class="flag o" x="142.8" y="700"/>
+<rect class="flag o" x="148.0" y="700"/>
+<rect class="flag o" x="153.2" y="700"/>
+<rect class="flag o" x="158.4" y="700"/>
+<rect class="flag o" x="163.6" y="700"/>
+<rect class="line o" x="171.2" y="700"/>
+<rect class="line o" x="176.4" y="700"/>
+<rect class="line o" x="181.6" y="700"/>
+<rect class="line o" x="186.8" y="700"/>
+<rect class="line o" x="192.0" y="700"/>
+<rect class="line o" x="197.2" y="700"/>
+<rect class="line o" x="202.4" y="700"/>
+<rect class="line o" x="207.6" y="700"/>
+<rect class="line o" x="212.8" y="700"/>
+<rect class="line o" x="218.0" y="700"/>
+<rect class="line o" x="223.2" y="700"/>
+<rect class="line o" x="228.4" y="700"/>
+<rect class="line o" x="233.6" y="700"/>
+<rect class="line o" x="238.8" y="700"/>
+<rect class="line o" x="244.0" y="700"/>
+<rect class="line o" x="249.2" y="700"/>
+<rect class="line o" x="256.9" y="700"/>
+<rect class="line o" x="262.1" y="700"/>
+<rect class="line o" x="267.3" y="700"/>
+<rect class="line o" x="272.5" y="700"/>
+<rect class="line o" x="277.7" y="700"/>
+<rect class="line o" x="282.9" y="700"/>
+<rect class="line o" x="288.0" y="700"/>
+<rect class="line o" x="293.2" y="700"/>
+<rect class="line o" x="298.4" y="700"/>
+<rect class="line o" x="303.6" y="700"/>
+<rect class="line o" x="308.8" y="700"/>
+<rect class="line o" x="314.0" y="700"/>
+<rect class="line o" x="319.2" y="700"/>
+<rect class="line o" x="324.4" y="700"/>
+<rect class="line o" x="329.6" y="700"/>
+<rect class="line o" x="334.8" y="700"/>
+<text class="dim" x="0" y="742">update touches 6 of 16 lines · uses 384 of 384 B</text>
+</svg></div>
+    <figcaption>The first sixteen particles in each layout. Each box is one 64-byte cache line and each cell is one 4-byte field;
+    pos is orange and vel is green. Outlined lines are the ones the update loop must fetch. All four layouts store the same
+    1,024 bytes; they differ in how many of those lines also hold bytes the loop does not want.</figcaption>
+  </figure>
+
+  <p>Count the outlined lines in <a class="figref" href="#fig-strips">the figure above</a>. AoS touches all 16 lines for 16 particles. The other
+  three layouts each fetch 6 lines, 24 bytes per particle, exactly what the loop reads. For reads they tie. For writes they do
+  not, because a line with one written byte goes back to memory whole: every hot/cold line holds some particle's <code>pos</code>, so
+  all 6 are written back, while SoA writes back only its 3 pos columns and AoSoA the 2 lines per block that hold px, py and pz.</p>
+
+  <h2 id="bytes-fetched">Bytes fetched, bytes used</h2>
+  <p>The cost model behind all of this is short. In a loop over many records that do not fit in cache, the time is roughly
+  <i>bytes moved ÷ bandwidth</i>. Bytes moved is the number of distinct cache lines that hold any byte the loop reads,
+  times 64, plus 64 for every line it dirties. Bytes used is the sum of the field sizes the loop actually reads. Their ratio is
+  the fraction of the bandwidth you are paying for that does useful work.</p>
+  <p>That model fits in a figure. <a class="figref" href="#fig-columns">The figure below</a> uses the chapter's real 64-byte particle. Pick the
+  fields the loop reads, and each layout computes which of its lines hold those fields. Switch to <em>random records</em> to
+  see the opposite access pattern: one whole record at a random index, where no two accesses share a line.</p>
+
+  <figure class="figure wide" id="fig-columns">
+    <div class="figure-body" data-viz="ch04-columns" data-opts='{"reads":"update","access":"seq","writes":true}'>
+      <p>Static fallback: for the update (pos and vel, writing pos) in a loop, the model gives AoS 64 B read + 64 B written back
+      per particle; hot/cold, SoA and AoSoA 24 B read + 12 B written back.</p>
+    </div>
+    <figcaption>Choose the fields; every number is computed from byte addresses in the four layouts. Green is bytes used, the
+    outlined bar is bytes fetched, and red is dirty bytes written back. Notice three things: the update costs AoS 3.6 times
+    the traffic of SoA, with hot/cold and AoSoA in between because of their write-backs; <em>every field</em> makes all four layouts equal in bytes; and <em>random records</em> flips the order,
+    with AoS fetching 1 line per record and SoA 16.</figcaption>
+  </figure>
+
+  <details class="predict"><summary>In the figure, select only <code>pos</code> with <em>random records</em>. Which layout is
+  cheapest, and by how much?</summary>
+  <p>AoS, with exactly 1 line per record: pos sits at the start of the particle's own line. Hot/cold is close behind at 1.13
+  lines (one record in eight has its 12 bytes of pos straddling a line boundary). AoSoA needs 2 lines, because px, py and pz are
+  three 32-byte arrays in the same block. SoA needs 3, one per column. With random access, the cost is the number of
+  <i>different places</i> a record's fields live, not the number of bytes.</p></details>
+
+  <h3 id="worked-example">A worked example with real numbers</h3>
+  <p>Take 4,194,304 particles (2<sup>22</sup>). In AoS that is 256 MiB, far bigger than this machine's 1.25 MiB of L2 and
+  the roughly 6–8 MiB of L3 this virtual machine could use in Chapter 2's sweep (<a href="02-the-machine.html">Chapter 2</a>). Per pass of the update:</p>
+  <div class="table-wrap"><table>
+    <tr><th>layout</th><th class="num">read</th><th class="num">written back</th><th class="num">total</th><th class="num">relative</th></tr>
+    <tr><td>AoS</td><td class="num">256 MiB</td><td class="num">256 MiB</td><td class="num">512 MiB</td><td class="num">3.56×</td></tr>
+    <tr><td>hot/cold</td><td class="num">96 MiB</td><td class="num">96 MiB</td><td class="num">192 MiB</td><td class="num">1.33×</td></tr>
+    <tr><td>SoA</td><td class="num">96 MiB</td><td class="num">48 MiB</td><td class="num">144 MiB</td><td class="num">1×</td></tr>
+    <tr><td>AoSoA-8</td><td class="num">96 MiB</td><td class="num">64 MiB</td><td class="num">160 MiB</td><td class="num">1.11×</td></tr>
+  </table></div>
+  <p>If every loop runs at the same bandwidth, the model predicts AoS about 3.6 times slower than SoA, with AoSoA and hot/cold
+  close behind SoA. Measured
+  on this orb, Rust's AoS update is <span data-bench-ratio="ch04-update" data-num="AoS" data-den="SoA" data-lang="rust" data-n="4194304">about 4.2×</span>
+  slower than its SoA update, Odin's is <span data-bench-ratio="ch04-update" data-num="AoS" data-den="SoA" data-lang="odin" data-n="4194304">about 4.0×</span>,
+  and Zig's is <span data-bench-ratio="ch04-update" data-num="AoS" data-den="SoA" data-lang="zig" data-n="4194304">about 2.6×</span>.
+  In Rust, the AoS loop took <span data-bench-val="ch04-update" data-label="AoS" data-lang="rust" data-n="4194304" data-metric="ns/n" data-digits="2">7.1 ns</span> per particle and the SoA loop
+  <span data-bench-val="ch04-update" data-label="SoA" data-lang="rust" data-n="4194304" data-metric="ns/n" data-digits="2">1.7 ns</span>. AoS moves 128 bytes per particle (64 read, 64 written back) and SoA moves 36,
+  so divide bytes by time and the two loops come out at roughly the same rate. <b>Both loops run at about the same bandwidth.
+  SoA is faster because it moves fewer bytes,</b> which is the whole argument in one measurement. (That rate counts reads plus
+  write-backs for this one loop. Chapter 2's read-only streams measure something else, and neither is "the" bandwidth of the
+  machine.) At 60 frames per second, the AoS pass alone (<span data-bench-val="ch04-update" data-label="AoS" data-lang="rust" data-n="4194304" data-metric="ms" data-digits="2">30 ms</span>) would not fit in a
+  16.7 ms frame. The SoA pass (<span data-bench-val="ch04-update" data-label="SoA" data-lang="rust" data-n="4194304" data-metric="ms" data-digits="2">7.1 ms</span>) would.</p>
+  <p>The model is less good at the middle of the table. It says hot/cold and AoSoA should be within a third of SoA. Measured in
+  Rust, hot/cold took <span data-bench-ratio="ch04-update" data-num="hot/cold" data-den="SoA" data-lang="rust" data-n="4194304">about 1.9×</span> SoA's time and AoSoA
+  <span data-bench-ratio="ch04-update" data-num="AoSoA" data-den="SoA" data-lang="rust" data-n="4194304">about 2.2×</span>. We will come back to why after the code.</p>
+
+  <h2 id="rust-soa">SoA in Rust: you write it yourself</h2>
+  <p>Rust has no struct-of-arrays type in the language or in <code>std</code>. You write one <code>Vec</code> per field and keep
+  them the same length yourself. Crates such as <code>soa_derive</code><a class="cite" href="#src-12">[12]</a> and
+  <code>soa-rs</code><a class="cite" href="#src-13">[13]</a> generate this from a derive macro (soa-rs uses one allocation for all
+  fields), but this book uses <code>std</code> only, so here it is by hand:</p>
+
+<pre data-file="code/ch04-aos-soa-hot-cold/rust/src/main.rs"><code class="language-rust">// ---- 3. SoA, hand-written: one Vec per field ----
+#[derive(Default)]
+struct Soa {
+    px: Vec&lt;f32&gt;, py: Vec&lt;f32&gt;, pz: Vec&lt;f32&gt;,
+    vx: Vec&lt;f32&gt;, vy: Vec&lt;f32&gt;, vz: Vec&lt;f32&gt;,
+    mass: Vec&lt;f32&gt;, age: Vec&lt;f32&gt;, life: Vec&lt;f32&gt;, size: Vec&lt;f32&gt;,
+    color: Vec&lt;u32&gt;, id: Vec&lt;u32&gt;, flags: Vec&lt;u32&gt;, seed: Vec&lt;u32&gt;, emitter: Vec&lt;u32&gt;, group: Vec&lt;u32&gt;,
+}
+impl Soa {
+    fn push(&amp;mut self, p: Particle) {
+        self.px.push(p.px); self.py.push(p.py); self.pz.push(p.pz);
+        self.vx.push(p.vx); self.vy.push(p.vy); self.vz.push(p.vz);
+        self.mass.push(p.mass); self.age.push(p.age); self.life.push(p.life); self.size.push(p.size);
+        self.color.push(p.color); self.id.push(p.id); self.flags.push(p.flags);
+        self.seed.push(p.seed); self.emitter.push(p.emitter); self.group.push(p.group);
+    }
+}
+impl Layout for Soa {
+    const LABEL: &amp;'static str = "SoA";
+    const UPDATE_BYTES: usize = 24;
+    fn build(n: usize) -&gt; Self {
+        let mut s = Soa::default();
+        (0..n).for_each(|i| s.push(particle(i)));
+        s
+    }
+    fn update(&amp;mut self, dt: f32) {
+        // No multi-slice `for` in Rust: zip the columns. Disjoint field borrows are fine.
+        let pos = self.px.iter_mut().zip(&amp;mut self.py).zip(&amp;mut self.pz);
+        let vel = self.vx.iter().zip(&amp;self.vy).zip(&amp;self.vz);
+        for (((x, y), z), ((vx, vy), vz)) in pos.zip(vel) {
+            *x += vx * dt;
+            *y += vy * dt;
+            *z += vz * dt;
+        }
+    }</code></pre>
+
+  <p>Three things are worth noticing. First, <code>self.px.iter_mut()</code> and <code>self.vx.iter()</code> borrow different
+  fields of the same struct, which the borrow checker allows. Second, Rust has no multi-slice <code>for</code>, so the update zips six
+  iterators; it is ugly, but zipped slice iterators compile to plain indexed loops with no bounds checks. Third, and this is the big
+  one, <code>&amp;mut</code> means "no other reference can see this memory". Rust passes that to LLVM as <code>noalias</code>, so LLVM
+  knows a store to <code>px</code> cannot change <code>vx</code> and can vectorize without a run-time overlap check. In the
+  cache-resident run below, Rust's SoA update is the fastest plain loop of the three languages.</p>
+
+  <p>The cost of doing it by hand shows up as soon as you need a whole record. A <code>get(i)</code> that copies particle
+  <i>i</i> out of sixteen <code>Vec</code>s does sixteen bounds checks, because the compiler cannot know the sixteen lengths are
+  equal. In the "read every field" loop, that made SoA several times slower than AoS on a cache-resident run, before the fix below.
+  The fix is to prove the lengths once, by re-slicing every column to <code>..n</code> before the loop:</p>
+
+<pre data-file="code/ch04-aos-soa-hot-cold/rust/src/main.rs"><code class="language-rust">fn every(&amp;self) -&gt; u64 {
+    // Row by row over 16 columns. Re-slicing every column to n proves the lengths once,
+    // so the loop has no bounds checks (a plain self.get(i) loop pays 16 per record).
+    let n = self.px.len();
+    let f = [&amp;self.px, &amp;self.py, &amp;self.pz, &amp;self.vx, &amp;self.vy, &amp;self.vz, &amp;self.mass, &amp;self.age, &amp;self.life, &amp;self.size];
+    let u = [&amp;self.color, &amp;self.id, &amp;self.flags, &amp;self.seed, &amp;self.emitter, &amp;self.group];
+    let (f, u) = (f.map(|c| &amp;c[..n]), u.map(|c| &amp;c[..n]));
+    let mut total = 0u64;
+    for i in 0..n {
+        let fs: u64 = f.iter().map(|c| c[i].to_bits() as u64).sum();
+        let us: u64 = u.iter().map(|c| c[i] as u64).sum();
+        total = total.wrapping_add(fs + us);
+    }
+    total
+}</code></pre>
+
+  <aside class="callout pitfall"><p>A hand-written SoA has invariants the type system does not know: every column has the same
+  length, and every push, swap-remove and sort must touch all of them. Forget one column in <code>swap_remove</code> and the
+  particles' fields quietly stop lining up. Keep every mutation in one <code>impl</code> block, and assert the lengths in debug
+  builds.</p></aside>
+
+  <h2 id="zig-soa">SoA in Zig: <code>std.MultiArrayList</code></h2>
+  <p>Zig's standard library has SoA built in, as a comptime-generated container. Its doc comment states the case plainly: it
+  "allows for memory savings if the struct or union has padding, and also improves cache usage if only some fields or just tags
+  are needed for a computation"<a class="cite" href="#src-3">[3]</a>. Andrew Kelley's talk on data-oriented design calls switching an
+  <code>ArrayList</code> to a <code>MultiArrayList</code> "a five-character fix, same API", and in his monster example it takes
+  10,000 monsters from 160 KB to 91 KB, because the padding disappears<a class="cite" href="#src-2">[2]</a>.</p>
+
+<pre data-file="code/ch04-aos-soa-hot-cold/zig/main.zig"><code class="language-zig">list: std.MultiArrayList(Particle),
+cols: std.MultiArrayList(Particle).Slice, // column pointers, computed once (valid until the list grows)
+
+fn build(gpa: Allocator, n: usize) !Self {
+    var list = try std.MultiArrayList(Particle).initCapacity(gpa, n); // exactly n: no rounding up
+    for (0..n) |i| list.appendAssumeCapacity(particle(i));
+    return .{ .list = list, .cols = list.slice() };
+}
+fn deinit(self: *Self, gpa: Allocator) void {
+    self.list.deinit(gpa);
+}
+fn update(self: *Self) void {
+    const s = self.cols;
+    if (vectorized) {
+        integrateVec(s.items(.px), s.items(.vx));
+        integrateVec(s.items(.py), s.items(.vy));
+        integrateVec(s.items(.pz), s.items(.vz));
+    } else {
+        for (s.items(.px), s.items(.py), s.items(.pz), s.items(.vx), s.items(.vy), s.items(.vz)) |*x, *y, *z, vx, vy, vz| {
+            x.* += vx * dt;
+            y.* += vy * dt;
+            z.* += vz * dt;
+        }
+    }
+}</code></pre>
+
+  <p>The idioms to learn: build it with <code>.empty</code> or <code>initCapacity</code> and pass the allocator to every call that
+  allocates; call <code>slice()</code> once, outside the loop, to compute the column pointers; <code>s.items(.px)</code> is then a plain
+  <code>[]f32</code>. The multi-object <code>for</code> walks six columns in lockstep and checks their lengths match in safe builds.
+  <code>list.get(i)</code> and <code>list.set(i, p)</code> convert between one <code>Particle</code> and the columns. A
+  <code>MultiArrayList</code> of a tagged union stores <code>tags</code> and <code>data</code> columns, the layout of the Zig
+  compiler's own AST and of <a href="11-capstone-flat-ast-compiler.html">Chapter 11</a>.</p>
+
+  <p>Under the hood it is one allocation. The columns sit back to back, sorted by field alignment (descending), so there is no
+  padding between them; fields with equal alignment keep their declaration order. The program prints where the columns start
+  for a 4,096-particle list: px at +0, vx at +49,152 (3 × 16 KiB) and seed at +212,992 (13 × 16 KiB). Remember those multiples
+  of 16 KiB; they come back in <a href="#aliasing">the aliasing section</a>.</p>
+
+  <aside class="callout version" id="zig-loop-vectorizer" data-title="Zig 0.17.1: the loop vectorizer is off">
+    <p>Zig 0.17.1 does not auto-vectorize loops. It builds its LLVM pipeline with <code>LoopVectorization = false</code>
+    (<code>src/zig_llvm.cpp</code>, line 288), as a workaround for an LLVM miscompilation of a vectorized loop (llvm-project
+    issue #186922) that broke the Zig compiler's own bootstrap<a class="cite" href="#src-4">[4]</a>. In practice:</p>
+    <ul>
+      <li><b>Loops stay scalar.</b> The multi-object <code>for</code> above compiles to scalar <code>vmulss</code> and
+      <code>vaddss</code>, one float at a time, even though Zig targets this machine's own CPU (which has AVX-512) and the
+      columns cannot overlap.</li>
+      <li><b>Straight-line code still vectorizes.</b> The SLP vectorizer, which packs independent operations within a block of
+      code, still runs. Zig's AoSoA update loops over a fixed <code>[8]f32</code>; LLVM unrolls that into straight-line code and
+      SLP packs it into 8-wide AVX (<code>vmulps ymm</code>).</li>
+      <li><b>For SIMD, write the vectors yourself</b> with <code>@Vector</code>:</li>
+    </ul>
+<pre data-file="code/ch04-aos-soa-hot-cold/zig/main.zig"><code class="language-zig">/// p += v * dt, eight lanes at a time, then a scalar tail.
+fn integrateVec(p: []f32, v: []const f32) void {
+    const V = @Vector(lanes, f32);
+    const dtv: V = @splat(dt);
+    var i: usize = 0;
+    while (i + lanes &lt;= p.len) : (i += lanes) {
+        const pv: V = p[i..][0..lanes].*;
+        const vv: V = v[i..][0..lanes].*;
+        p[i..][0..lanes].* = pv + vv * dtv;
+    }
+    for (p[i..], v[i..]) |*x, u| x.* += u * dt;
+}</code></pre>
+    <p>The program measures both versions, as <code>SoA</code> and <code>SoA @Vector</code>; the charts below show that the difference
+    is larger in cache than in DRAM. The setting is a workaround, not a design choice, so check <code>src/zig_llvm.cpp</code> again
+    when you upgrade Zig.</p>
+  </aside>
+
+  <aside class="callout pitfall"><p><code>ensureTotalCapacity(gpa, n)</code> may round the capacity up (it grows by a formula),
+  and <code>slice()</code> places the columns by <i>capacity</i>, not length. If you need the exact layout, as this benchmark
+  does, use <code>initCapacity(gpa, n)</code> or <code>setCapacity</code>. A <code>Slice</code> is only valid until the list grows,
+  just like a pointer into an <code>ArrayList</code>.</p></aside>
+
+  <h2 id="odin-soa">SoA in Odin: <code>#soa</code></h2>
+  <p>Odin puts the layout in the type system. <code>#soa[]Particle</code> is a slice of particles stored as columns, and you
+  index it exactly as you would index <code>[]Particle</code>. The overview's own example comment says "Same syntax as AOS and
+  treat as if it was an array"<a class="cite" href="#src-5">[5]</a>:</p>
+
+<pre data-file="code/ch04-aos-soa-hot-cold/odin/main.odin"><code class="language-odin">soa_build :: proc(l: ^Soa, n: int) {
+    l.ps = make(#soa[]Particle, n)
+    for i in 0 ..&lt; n {
+        l.ps[i] = particle(i) // same syntax as AoS
+    }
+    return
+}
+soa_update :: proc(l: Soa) -&gt; u64 {
+    for &amp;p in l.ps {     // p is an SOA proxy: p.px reads column px at this index
+        p.px += p.vx * DT
+        p.py += p.vy * DT
+        p.pz += p.vz * DT
+    }
+    return 0
+}
+soa_get :: proc(l: Soa, i: int) -&gt; Particle {return l.ps[i]} // gathers 16 columns
+soa_every :: proc(l: Soa) -&gt; (s: u64) {
+    for p in l.ps {
+        s += field_sum(p)
+    }
+    return
+}
+soa_free :: proc(l: Soa) {delete(l.ps)}</code></pre>
+
+  <p>Compare <code>soa_update</code> with <code>aos_update</code> earlier: the loop body is identical, character for character.
+  Switching layout is one keyword in the declaration. <code>for &amp;p in ps</code> gives you a SoA proxy for row
+  <i>i</i>, so <code>p.px</code> reads column <code>px</code>; <code>l.ps[i] = particle(i)</code> scatters one struct across
+  sixteen columns; <code>l.ps[i]</code> gathers it back. You can also take a column as a plain slice: <code>l.ps.px[:len(l.ps)]</code>
+  is a <code>[]f32</code>.</p>
+  <p>There are three kinds. <code>#soa[N]T</code> is a fixed array, a struct of <code>[N]</code> arrays with no allocation.
+  <code>#soa[]T</code> is a slice: one pointer per field plus a length, so <code>size_of(#soa[]Particle)</code> is 136 bytes (the
+  program prints it). <code>#soa[dynamic]T</code> adds capacity and an allocator. As in Zig, <code>make_soa_aligned</code> in
+  <code>base/runtime/core_builtin_soa.odin</code> makes one allocation and lays the columns back to back, here in declaration
+  order<a class="cite" href="#src-7">[7]</a>.</p>
+
+  <aside class="callout version" data-title="Odin dev-2026-11: plain builtins on #soa">
+    <p>The general <code>make</code>, <code>append</code>, <code>delete</code>, <code>pop</code>, <code>unordered_remove</code> and
+    <code>ordered_remove</code> procedure groups include the <code>#soa</code> versions, so you no longer need to spell
+    <code>append_soa</code> or <code>delete_soa</code> (they still exist). <code>#soa[dynamic; N]T</code> is rejected; use
+    <code>#soa[N]T</code> with your own length.</p>
+  </aside>
+
+  <aside class="callout pitfall"><p>Two Odin <code>#soa</code> surprises. <code>for p in ps</code> gives you a read-only copy;
+  writing <code>p.px += …</code> is a compile error that tells you to write <code>for &amp;p in ps</code>. And
+  <code>&amp;ps[i]</code> is not a <code>^Particle</code>: it is what Odin calls an <i>SOA pointer</i> (container plus index), because there is no
+  <code>Particle</code> in memory to point at. A procedure that takes <code>^Particle</code> cannot accept it; pass the index or
+  the column slices instead.</p></aside>
+
+  <aside class="callout pitfall" id="odin-hoist-slices"><p><b>Odin: hoist slices out of a pointer before a hot loop.</b> If a loop reads
+  <code>s.xs[i]</code> through <code>s: ^T</code> and stores through another slice, LLVM must assume the store might overwrite the
+  slice header behind <code>s</code>, so it reloads the header every iteration and does not vectorize. That is why Chapter 1's
+  first Odin per-kind loop was much slower than Rust's. Copy the slices into locals first (<code>xs := s.xs</code>); this chapter's
+  procedures take their layouts by value, which has the same effect.</p></aside>
+
+  <p>Odin makes switching cheap, but it does not tell you when to switch: its own forum calls <code>#soa</code> "a somewhat niche
+  feature … [not] something you should be using by default"<a class="cite" href="#src-6">[6]</a>.</p>
+
+  <h3 id="three-languages">How much each language helps</h3>
+  <div class="table-wrap"><table>
+    <tr><th></th><th>Rust 1.100</th><th>Zig 0.17.1</th><th>Odin dev-2026-11</th></tr>
+    <tr><td>SoA container</td><td>none in <code>std</code>; write it or use a crate</td><td><code>std.MultiArrayList(T)</code></td><td><code>#soa[N]T</code>, <code>#soa[]T</code>, <code>#soa[dynamic]T</code></td></tr>
+    <tr><td>Switching AoS → SoA</td><td>rewrite the type and every access</td><td>change the container; field access becomes <code>items(.f)[i]</code></td><td>one keyword; <code>a[i].f</code> still compiles</td></tr>
+    <tr><td>Allocations</td><td>one per field (as written here)</td><td>one, columns sorted by alignment</td><td>one, columns in declaration order</td></tr>
+    <tr><td>Whole record</td><td>hand-written <code>get</code></td><td><code>get(i)</code> / <code>set(i, v)</code></td><td><code>a[i]</code>, <code>a[i] = v</code></td></tr>
+    <tr><td>Pointer to an element</td><td>to a field only</td><td>to a field only</td><td>SOA pointer (container + index)</td></tr>
+    <tr><td>Plain SoA loop vectorized?</td><td>ran at vectorized speed (<code>&amp;mut</code> is <code>noalias</code>)</td><td>no (loop vectorizer off); use <code>@Vector</code></td><td>ran at near-vectorized speed here</td></tr>
+    <tr><td>Default target</td><td>x86-64 baseline (SSE2, no AVX: 4 lanes)</td><td>the host CPU (AVX2/AVX-512 here)</td><td>x86-64-v2 (SSE4.2, no AVX: 4 lanes; <code>-microarch:native</code> to change)</td></tr>
+  </table></div>
+
+  <h2 id="hot-cold">Hot/cold splitting</h2>
+  <p>Full SoA is the extreme. Most of its benefit in this benchmark comes from one cut: the fields the frame loop reads go into
+  one struct, everything else into another, in two parallel arrays with the same index. That is <i>hot/cold splitting</i>, which
+  predates the data-oriented vocabulary: Chilimbi, Davidson and Larus called it structure splitting in 1999 and had a compiler do it
+  from profile data<a class="cite" href="#src-10">[10]</a>. You keep a struct, a debugger that shows a whole hot record, and code
+  that looks like AoS code.</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch04-aos-soa-hot-cold/rust/src/main.rs"><code class="language-rust">// ---- 2. hot/cold split: two parallel Vecs, same index ----
+#[derive(Clone, Copy, Default)]
+struct Hot {
+    px: f32, py: f32, pz: f32,
+    vx: f32, vy: f32, vz: f32,
+}
+#[derive(Clone, Copy, Default)]
+struct Cold {
+    mass: f32, age: f32, life: f32, size: f32,
+    color: u32, id: u32, flags: u32, seed: u32, emitter: u32, group: u32,
+}
+const _: () = assert!(size_of::&lt;Hot&gt;() == 24 &amp;&amp; size_of::&lt;Cold&gt;() == 40);
+
+struct HotCold {
+    hot: Vec&lt;Hot&gt;,
+    cold: Vec&lt;Cold&gt;,
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch04-aos-soa-hot-cold/zig/main.zig"><code class="language-zig">// ---- 2. hot/cold split: a MultiArrayList with two columns, each an AoS ----
+const Hot = struct { px: f32, py: f32, pz: f32, vx: f32, vy: f32, vz: f32 };
+const Cold = struct {
+    mass: f32, age: f32, life: f32, size: f32,
+    color: u32, id: u32, flags: u32, seed: u32, emitter: u32, group: u32,
+};
+comptime {
+    std.debug.assert(@sizeOf(Hot) == 24 and @sizeOf(Cold) == 40);
+}
+
+const HotCold = struct {
+    pub const label = "hot/cold";
+    pub const update_bytes = 24;
+    list: std.MultiArrayList(struct { hot: Hot, cold: Cold }),</code></pre>
+<pre data-lang="Odin" data-file="code/ch04-aos-soa-hot-cold/odin/main.odin"><code class="language-odin">// ---- 2. hot/cold split: two plain slices, zipped into one #soa view with soa_zip ----
+Hot :: struct {
+    px, py, pz, vx, vy, vz: f32,
+}
+Cold :: struct {
+    mass, age, life, size:                   f32,
+    color, id, flags, seed, emitter, group: u32,
+}
+#assert(size_of(Hot) == 24 &amp;&amp; size_of(Cold) == 40)
+
+Hot_Cold :: struct {
+    hc: #soa[]struct {
+        hot:  Hot,
+        cold: Cold,
+    },
+}
+
+hot_cold_build :: proc(l: ^Hot_Cold, n: int) {
+    hot := make([]Hot, n)
+    cold := make([]Cold, n)
+    for i in 0 ..&lt; n {
+        p := particle(i)
+        hot[i] = {p.px, p.py, p.pz, p.vx, p.vy, p.vz}
+        cold[i] = {p.mass, p.age, p.life, p.size, p.color, p.id, p.flags, p.seed, p.emitter, p.group}
+    }
+    l.hc = soa_zip(hot = hot, cold = cold) // no copy: a #soa slice over the two existing arrays
+    return
+}
+
+hot_cold_free :: proc(l: Hot_Cold) {
+    hot, cold := soa_unzip(l.hc) // back to the two plain slices
+    delete(hot)
+    delete(cold)
+}</code></pre>
+  </div>
+
+  <p>Rust uses two <code>Vec</code>s built with <code>unzip()</code>. Zig uses a <code>MultiArrayList</code> whose element has two
+  struct fields: two columns, each an array of structs, in one allocation. Odin glues two ordinary slices into one <code>#soa</code>
+  view with <code>soa_zip</code>, which copies nothing; <code>soa_unzip</code> takes it apart again to free it.</p>
+  <p>In the measurements, hot/cold takes Rust's AoS update at 4M particles from <span data-bench-val="ch04-update" data-label="AoS" data-lang="rust" data-n="4194304" data-metric="ns/n" data-digits="2">7.1 ns</span> per
+  particle to <span data-bench-val="ch04-update" data-label="hot/cold" data-lang="rust" data-n="4194304" data-metric="ns/n" data-digits="2">3.3 ns</span>, and the other two languages behave alike: most of SoA's win
+  for the smallest change to the code. The rest of the gap is probably vectorization. Filling eight float lanes from interleaved
+  24-byte <code>Hot</code> structs takes shuffles, and in cache the hot/cold loop stayed well behind the vectorized SoA and AoSoA loops in
+  every language. That fits scalar code; we did not read every compiler's assembly to confirm it.</p>
+
+  <aside class="callout note"><p>"Cold" has to be cold on <i>every</i> path that runs often. If the frame loop also reads
+  <code>age</code> to retire dead particles, <code>age</code> is hot, and leaving it in <code>cold[i]</code> adds a second stream
+  and a second cache line per particle. Decide the split from what the loops read, not from what the fields mean.</p></aside>
+
+  <h2 id="aosoa">AoSoA: blocks of eight</h2>
+  <p>AoSoA keeps SoA's best property for SIMD (eight consecutive <code>px</code> values are one 32-byte vector load) and
+  undoes its worst property for random access (sixteen arrays that may be hundreds of megabytes apart). Every field of particle
+  <i>i</i> lives in block <code>i / 8</code>, at lane <code>i % 8</code>, within 512 bytes.</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch04-aos-soa-hot-cold/rust/src/main.rs"><code class="language-rust">// ---- 4. AoSoA: blocks of 8 particles, SoA inside each block ----
+#[derive(Clone, Copy, Default)]
+#[repr(align(64))]
+struct Block {
+    px: [f32; LANES], py: [f32; LANES], pz: [f32; LANES],
+    vx: [f32; LANES], vy: [f32; LANES], vz: [f32; LANES],
+    mass: [f32; LANES], age: [f32; LANES], life: [f32; LANES], size: [f32; LANES],
+    color: [u32; LANES], id: [u32; LANES], flags: [u32; LANES],
+    seed: [u32; LANES], emitter: [u32; LANES], group: [u32; LANES],
+}
+const _: () = assert!(size_of::&lt;Block&gt;() == 16 * 4 * LANES);
+
+// AoSoA update: a lane loop over each block's fixed [f32; 8] arrays.
+fn update(&amp;mut self, dt: f32) {
+    for b in &amp;mut self.blocks {
+        for j in 0..LANES {
+            b.px[j] += b.vx[j] * dt;
+            b.py[j] += b.vy[j] * dt;
+            b.pz[j] += b.vz[j] * dt;
+        }
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch04-aos-soa-hot-cold/zig/main.zig"><code class="language-zig">// ---- 4. AoSoA: blocks of 8 particles, SoA inside each block ----
+const Block = struct {
+    px: [lanes]f32, py: [lanes]f32, pz: [lanes]f32,
+    vx: [lanes]f32, vy: [lanes]f32, vz: [lanes]f32,
+    mass: [lanes]f32, age: [lanes]f32, life: [lanes]f32, size: [lanes]f32,
+    color: [lanes]u32, id: [lanes]u32, flags: [lanes]u32,
+    // …
+fn update(self: *Aosoa) void {
+    for (self.blocks) |*b| {
+        for (&amp;b.px, &amp;b.py, &amp;b.pz, b.vx, b.vy, b.vz) |*x, *y, *z, vx, vy, vz| {
+            x.* += vx * dt;
+            y.* += vy * dt;
+            z.* += vz * dt;
+        }
+    }
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch04-aos-soa-hot-cold/odin/main.odin"><code class="language-odin">// ---- 4. AoSoA: a slice of fixed #soa[8]Particle blocks ----
+// #soa[8]Particle is a struct of sixteen [8]f32/[8]u32 arrays: exactly one AoSoA block.
+Block :: #soa[LANES]Particle
+#assert(size_of(Block) == 16 * 4 * LANES)
+
+aosoa_update :: proc(l: Aosoa) -&gt; u64 {
+    for &amp;b in l.blocks {
+        b.px += b.vx * DT // array programming: eight lanes per statement
+        b.py += b.vy * DT
+        b.pz += b.vz * DT
+    }
+    return 0
+}</code></pre>
+  </div>
+
+  <p>Odin wins the elegance contest outright. A fixed <code>#soa[8]Particle</code> <i>is</i> an AoSoA block, a struct of
+  sixteen <code>[8]</code> arrays, and array programming turns <code>b.px += b.vx * DT</code> into an eight-lane update. It compiled
+  to packed SSE, four lanes at a time, because Odin's default x86-64-v2 target, like Rust's x86-64 baseline, has no AVX. Zig gets
+  8-wide AVX from a multi-object <code>for</code> over the block's arrays (through the SLP vectorizer), and Rust writes the lane loop
+  out. AoSoA costs <code>i / 8</code> and <code>i % 8</code> on every random access, plus a tail block when N is not a multiple of 8,
+  which this benchmark avoids.</p>
+
+  <p>Now the surprise from the worked example: in the DRAM-sized runs, AoSoA's update was slower than hot/cold in Rust and Odin
+  and about equal in Zig, although the model says it moves 17% fewer bytes than hot/cold. Each 512-byte block holds the six hot
+  fields in its first 3 lines, then 5 lines the update skips. The hardware prefetchers that make sequential reads fast fetch ahead
+  in a stream, and a pattern of "3 lines, skip 5" is likely to pull some skipped lines in anyway. Without performance counters we
+  cannot confirm that, but the measured time fits AoSoA moving clearly more than its modelled 40 bytes per particle. Niklas Gray,
+  who built data-oriented engines at Bitsquid and Our Machinery, guessed at the same cost when he recommended this layout: "There might also be some cost associated with the skipping, even if we were
+  processing full cache lines, not 100 % sure"<a class="cite" href="#src-8">[8]</a>.</p>
+
+  <h2 id="measured">What the measurements say</h2>
+  <p>The program runs every layout at three sizes: 16,384 particles (1 MiB of AoS, fits in L2), 1,048,576 (64 MiB) and 4,194,304
+  (256 MiB). Each measurement is the median of seven runs after a warm-up, on one pinned core. Every layout must produce the same
+  checksums (bit patterns of all positions after eight updates; of all sixteen fields for the other two experiments), and they
+  match bit for bit across layouts and languages: the inputs come from the same integer hash<a class="cite" href="#src-11">[11]</a>,
+  and <code>dt</code> is a power of two, so <code>v * dt</code> is exact and a fused multiply-add cannot change the result.</p>
+
+  <aside class="callout try"><p>Run it (quick mode takes seconds; full size takes about a minute per language):</p>
+<pre><code class="language-bash">cd code &amp;&amp; ./run_all.sh ch04
+cargo run --release -q -p ch04_aos_soa_hot_cold            # full size, from code/
+cd ch04-aos-soa-hot-cold/zig &amp;&amp; zig run -O fast main.zig
+cd ch04-aos-soa-hot-cold &amp;&amp; odin run odin -o:speed -vet -strict-style</code></pre></aside>
+
+  <details class="predict"><summary>At 4M particles, which is faster: the Zig SoA update with explicit <code>@Vector</code>, or
+  the plain scalar one?</summary>
+  <p>The vector version, but only by <span data-bench-ratio="ch04-update" data-num="SoA" data-den="SoA @Vector" data-lang="zig" data-n="4194304">about 1.2×</span>
+  (<span data-bench-val="ch04-update" data-label="SoA @Vector" data-lang="zig" data-n="4194304" data-metric="ns/n" data-digits="2">1.9 ns</span> against <span data-bench-val="ch04-update" data-label="SoA" data-lang="zig" data-n="4194304" data-metric="ns/n" data-digits="2">2.3 ns</span> per particle),
+  because the loop mostly waits on memory, not arithmetic. Gray's line applies: "if we're completely memory-bound, SIMD can't make us
+  run faster"<a class="cite" href="#src-8">[8]</a>. At 16K particles, where the data sits in L2, the gap was
+  <span data-bench-ratio="ch04-update" data-num="SoA" data-den="SoA @Vector" data-lang="zig" data-n="16384">about 1.6×</span>.</p></details>
+
+  <figure class="figure" id="fig-update-dram">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch04-update" data-opts='{"metric":"ns/n","per":"particle","n":4194304}'></div>
+    <figcaption>The update at 4,194,304 particles (256 MiB in AoS), nanoseconds per particle. Memory-bound: the order follows
+    bytes moved, and AoS sits at the bottom in all three languages. Vectorizing matters less here than in cache. All numbers in this
+    chapter come from one 4-vCPU KVM Xeon (Ice Lake) and are noisy, so read them as ratios and shapes (machine: see
+    <a href="02-the-machine.html">Chapter 2</a>).</figcaption>
+  </figure>
+
+  <figure class="figure" id="fig-update-l2">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch04-update" data-opts='{"metric":"ns/n","per":"particle","n":16384}'></div>
+    <figcaption>The same update at 16,384 particles (1 MiB, in L2). Now the loop is compute-bound and the ranking is about
+    vectorization: the SoA and AoSoA loops that vectorize pull ahead, and Zig's plain SoA loop, scalar because of the disabled loop
+    vectorizer, is slower than its AoS. Zig's <code>SoA @Vector</code> fixes that. Default targets differ: Zig compiles for this
+    AVX-512 CPU, Rust and Odin for baselines without AVX (see <a href="01-the-data-is-the-problem.html">Chapter 1</a>).</figcaption>
+  </figure>
+
+  <p>The two charts are the same code at two sizes, and they tell different stories. When the data is in DRAM, layout is
+  most of the story and SIMD adds little. When the data fits in cache, layout matters only because it enables SIMD. With 16,384
+  particles Rust's AoS loop takes <span data-bench-ratio="ch04-update" data-num="AoS" data-den="SoA" data-lang="rust" data-n="16384">about 2.2×</span> as long as its vectorized SoA loop, and
+  Odin's AoS <span data-bench-ratio="ch04-update" data-num="AoS" data-den="AoSoA" data-lang="odin" data-n="16384">about 2.5×</span> as long as its AoSoA. Gray's article makes the same point as
+  arithmetic: a ×10 from better cache use and a ×8 from 8-wide SIMD do not multiply to ×80. You get the bandwidth win when you are
+  memory-bound and the SIMD win when you are not, and the two rarely stack<a class="cite" href="#src-8">[8]</a>.</p>
+
+  <h2 id="when-aos-wins">When AoS wins</h2>
+  <p>Gray ends his careful AoS-vs-SoA analysis like this: "My take on AoS vs SoA is that in most cases, the performance
+  improvements are not worth the extra hassle of writing code in this more cumbersome way. I would use a regular AoS as the
+  'default' storage format for systems and only switch to SoA for systems that need the speed of SIMD calculations, such as culling
+  and particles"<a class="cite" href="#src-8">[8]</a>. He also suggests a middle path: keep the data in AoS and copy it into a
+  temporary SoA buffer for one heavy algorithm. The benchmark has two controls that show when he is right.</p>
+
+  <h3 id="every-field">Control 1: touch every field</h3>
+  <p>SoA's advantage is entirely "don't fetch what you don't read". If the loop reads every field, there is nothing to skip.
+  The <code>every</code> experiment sums all sixteen fields of every particle (think of a save, a network snapshot, or a
+  checksum). AoS now uses 100% of every line it fetches, and so does SoA. The model in <a class="figref" href="#fig-columns">the bytes figure above</a>
+  says all four layouts tie at 64 bytes per particle.</p>
+
+  <figure class="figure" id="fig-every">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch04-every" data-opts='{"metric":"ns/n","per":"particle","n":4194304}'></div>
+    <figcaption>Reading every field of 4M particles. The gap from the update shrinks, but not to zero: SoA is still
+    <span data-bench-ratio="ch04-every" data-num="AoS" data-den="SoA" data-lang="rust" data-n="4194304">about 2.0×</span> ahead in Rust and <span data-bench-ratio="ch04-every" data-num="AoS" data-den="SoA" data-lang="odin" data-n="4194304">about 1.5×</span> in Odin,
+    and in Zig AoS beats SoA.</figcaption>
+  </figure>
+
+  <p>AoS narrows the gap. In Rust it shrinks from the update's ratio to <span data-bench-ratio="ch04-every" data-num="AoS" data-den="SoA" data-lang="rust" data-n="4194304">about 2.0×</span>,
+  in Odin to <span data-bench-ratio="ch04-every" data-num="AoS" data-den="SoA" data-lang="odin" data-n="4194304">about 1.5×</span>,
+  and in Zig SoA is now slower: AoS takes <span data-bench-ratio="ch04-every" data-num="AoS" data-den="SoA" data-lang="zig" data-n="4194304">about 0.7×</span>
+  of SoA's time. Why is SoA still up to twice as fast in Rust when the bytes are equal? Probably not bytes but streams: SoA reads
+  sixteen arrays at once, each needing its own prefetch stream and its own TLB entries, while AoS reads one. And in Zig, where
+  <code>MultiArrayList</code> places the sixteen columns at exact multiples of 4 KiB, the next section's problem also applies.</p>
+
+  <h3 id="random-access">Control 2: random whole records</h3>
+  <p>The second control is the access pattern SoA is worst at: look up a particle by index, read the whole record, move on to
+  an unrelated index. Think of "the particle the player clicked on", or a join from another table. AoS fetches one line per
+  record. SoA fetches sixteen, one from each column, and none of them helps the next lookup.</p>
+
+  <figure class="figure" id="fig-random">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch04-random" data-opts='{"metric":"ns/n","per":"read","n":4194304}'></div>
+    <figcaption>4M random whole-record reads among 4M particles, nanoseconds per record. AoS wins clearly. AoSoA, whose sixteen
+    fields share eight adjacent lines, is in between.</figcaption>
+  </figure>
+
+  <p>SoA is <span data-bench-ratio="ch04-random" data-num="SoA" data-den="AoS" data-lang="rust" data-n="4194304">about 6×</span> slower
+  than AoS in Rust, <span data-bench-ratio="ch04-random" data-num="SoA" data-den="AoS" data-lang="zig" data-n="4194304">about 11×</span>
+  in Zig and <span data-bench-ratio="ch04-random" data-num="SoA" data-den="AoS" data-lang="odin" data-n="4194304">about 6×</span>
+  in Odin. It is not 16×, because the CPU can have several cache misses in flight at once (memory-level parallelism, Chapter 2): the
+  sixteen loads of one SoA record are independent, so they overlap. The random lookup is the one place where the AoSoA tiles earn
+  their awkward indexing. A record's sixteen 4-byte fields sit in eight adjacent lines of one 512-byte block, so random reads cost
+  <span data-bench-ratio="ch04-random" data-num="AoSoA" data-den="AoS" data-lang="rust" data-n="4194304">about 1.6×</span> AoS's time in Rust, <span data-bench-ratio="ch04-random" data-num="AoSoA" data-den="AoS" data-lang="odin" data-n="4194304">about 1.9×</span> in
+  Odin and <span data-bench-ratio="ch04-random" data-num="AoSoA" data-den="AoS" data-lang="zig" data-n="4194304">about 3.6×</span> in Zig, instead of 6× or more. Hot/cold costs two or three lines per record (2.75 on average): it takes
+  <span data-bench-ratio="ch04-random" data-num="hot/cold" data-den="AoS" data-lang="rust" data-n="4194304">about 1.2×</span> AoS's time in Rust and <span data-bench-ratio="ch04-random" data-num="hot/cold" data-den="AoS" data-lang="odin" data-n="4194304">about 1.2×</span>
+  in Odin, but <span data-bench-ratio="ch04-random" data-num="hot/cold" data-den="AoS" data-lang="zig" data-n="4194304">about 1.8×</span> in Zig, whose AoS lookup is the fastest of the three.</p>
+
+  <p>So the honest summary is not "SoA is faster". It is: <b>SoA is faster for loops that read a few fields of many records,
+  much less ahead (or behind) for loops that read all fields, and much slower for code that reads whole records at random.</b> Most programs
+  have all three kinds of access. The layout should follow whichever one dominates the time.</p>
+
+  <h2 id="aliasing">Page-aligned columns fight over cache sets</h2>
+  <p>There is one more way SoA can hurt, and it is about addresses rather than bytes. A cache is not one big bag of lines. Each
+  address can only go into one <i>set</i>, picked by a few address bits, and each set holds a fixed number of lines (the
+  <i>ways</i>). On this orb the L1 data cache is 48 KiB, 12-way, with 64 sets of 64-byte lines (from
+  <code>/sys/devices/system/cpu/cpu0/cache/index0/</code>). The set index is address bits 6 to 11:</p>
+
+  <figure class="figure" id="fig-bits">
+    <div class="ch04-wide"><svg class="ch04-svg" viewBox="0 0 680 216" role="img" aria-labelledby="ch04-svg2-t0">
+<title id="ch04-svg2-t0">An address split into tag, set index (bits 6 to 11) and line offset (bits 0 to 5) for this orb's 48 KiB, 12-way L1 data cache. Addresses 4 KiB apart share bits 0 to 11, so they land in the same set.</title>
+<rect x="40" y="20" width="18" height="26" rx="2" style="fill:var(--c-hp)"/>
+<text class="dim" x="43" y="60">23</text>
+<rect x="60" y="20" width="18" height="26" rx="2" style="fill:var(--c-hp)"/>
+<text class="dim" x="63" y="60">22</text>
+<rect x="80" y="20" width="18" height="26" rx="2" style="fill:var(--c-hp)"/>
+<text class="dim" x="83" y="60">21</text>
+<rect x="100" y="20" width="18" height="26" rx="2" style="fill:var(--c-hp)"/>
+<text class="dim" x="103" y="60">20</text>
+<rect x="120" y="20" width="18" height="26" rx="2" style="fill:var(--c-hp)"/>
+<text class="dim" x="123" y="60">19</text>
+<rect x="140" y="20" width="18" height="26" rx="2" style="fill:var(--c-hp)"/>
+<text class="dim" x="143" y="60">18</text>
+<rect x="160" y="20" width="18" height="26" rx="2" style="fill:var(--c-hp)"/>
+<text class="dim" x="163" y="60">17</text>
+<rect x="180" y="20" width="18" height="26" rx="2" style="fill:var(--c-hp)"/>
+<text class="dim" x="183" y="60">16</text>
+<rect x="200" y="20" width="18" height="26" rx="2" style="fill:var(--c-hp)"/>
+<text class="dim" x="203" y="60">15</text>
+<rect x="220" y="20" width="18" height="26" rx="2" style="fill:var(--c-hp)"/>
+<text class="dim" x="223" y="60">14</text>
+<rect x="240" y="20" width="18" height="26" rx="2" style="fill:var(--c-hp)"/>
+<text class="dim" x="243" y="60">13</text>
+<rect x="260" y="20" width="18" height="26" rx="2" style="fill:var(--c-hp)"/>
+<text class="dim" x="263" y="60">12</text>
+<rect x="280" y="20" width="18" height="26" rx="2" style="fill:var(--c-flag)"/>
+<text class="dim" x="283" y="60">11</text>
+<rect x="300" y="20" width="18" height="26" rx="2" style="fill:var(--c-flag)"/>
+<text class="dim" x="303" y="60">10</text>
+<rect x="320" y="20" width="18" height="26" rx="2" style="fill:var(--c-flag)"/>
+<text class="dim" x="323" y="60">9</text>
+<rect x="340" y="20" width="18" height="26" rx="2" style="fill:var(--c-flag)"/>
+<text class="dim" x="343" y="60">8</text>
+<rect x="360" y="20" width="18" height="26" rx="2" style="fill:var(--c-flag)"/>
+<text class="dim" x="363" y="60">7</text>
+<rect x="380" y="20" width="18" height="26" rx="2" style="fill:var(--c-flag)"/>
+<text class="dim" x="383" y="60">6</text>
+<rect x="400" y="20" width="18" height="26" rx="2" style="fill:var(--c-pad)"/>
+<text class="dim" x="403" y="60">5</text>
+<rect x="420" y="20" width="18" height="26" rx="2" style="fill:var(--c-pad)"/>
+<text class="dim" x="423" y="60">4</text>
+<rect x="440" y="20" width="18" height="26" rx="2" style="fill:var(--c-pad)"/>
+<text class="dim" x="443" y="60">3</text>
+<rect x="460" y="20" width="18" height="26" rx="2" style="fill:var(--c-pad)"/>
+<text class="dim" x="463" y="60">2</text>
+<rect x="480" y="20" width="18" height="26" rx="2" style="fill:var(--c-pad)"/>
+<text class="dim" x="483" y="60">1</text>
+<rect x="500" y="20" width="18" height="26" rx="2" style="fill:var(--c-pad)"/>
+<text class="dim" x="503" y="60">0</text>
+<text x="40" y="14">… tag (bits 12 and up)</text>
+<text x="280" y="14">set (6 bits)</text>
+<text x="400" y="14">offset (6 bits)</text>
+<text class="ttl" x="0" y="82">Element 0 of three columns of a 4,096-particle SoA (columns 16 KiB apart)</text>
+<text x="0" y="106">px column</text>
+<text x="120" y="106">0x010000</text>
+<text x="210" y="106">set  0</text>
+<rect x="270" y="95" width="384" height="14" rx="2" style="fill:var(--bg-elev2);stroke:var(--border)"/>
+<rect x="270" y="95" width="6" height="14" style="fill:var(--c-miss)"/>
+<text x="0" y="132">vx column</text>
+<text x="120" y="132">0x01c000</text>
+<text x="210" y="132">set  0</text>
+<rect x="270" y="121" width="384" height="14" rx="2" style="fill:var(--bg-elev2);stroke:var(--border)"/>
+<rect x="270" y="121" width="6" height="14" style="fill:var(--c-miss)"/>
+<text x="0" y="158">seed column</text>
+<text x="120" y="158">0x044000</text>
+<text x="210" y="158">set  0</text>
+<rect x="270" y="147" width="384" height="14" rx="2" style="fill:var(--bg-elev2);stroke:var(--border)"/>
+<rect x="270" y="147" width="6" height="14" style="fill:var(--c-miss)"/>
+<text x="0" y="184">vx, staggered</text>
+<text x="120" y="184">0x01c0c0</text>
+<text x="210" y="184">set  3</text>
+<rect x="270" y="173" width="384" height="14" rx="2" style="fill:var(--bg-elev2);stroke:var(--border)"/>
+<rect x="288" y="173" width="6" height="14" style="fill:var(--c-hit)"/>
+<text class="dim" x="270" y="206">the 64 sets of L1d (12 ways each)</text>
+</svg></div><div class="ch04-narrow"><svg class="ch04-svg" viewBox="0 0 340 256" role="img" aria-labelledby="ch04-svg2-t1">
+<title id="ch04-svg2-t1">An address split into tag, set index (bits 6 to 11) and line offset (bits 0 to 5) for this orb's 48 KiB, 12-way L1 data cache. Addresses 4 KiB apart share bits 0 to 11, so they land in the same set.</title>
+<rect x="10" y="20" width="11" height="26" rx="2" style="fill:var(--c-hp)"/>
+<text class="dim" x="11" y="60">23</text>
+<rect x="23" y="20" width="11" height="26" rx="2" style="fill:var(--c-hp)"/>
+<rect x="36" y="20" width="11" height="26" rx="2" style="fill:var(--c-hp)"/>
+<rect x="49" y="20" width="11" height="26" rx="2" style="fill:var(--c-hp)"/>
+<rect x="62" y="20" width="11" height="26" rx="2" style="fill:var(--c-hp)"/>
+<rect x="75" y="20" width="11" height="26" rx="2" style="fill:var(--c-hp)"/>
+<rect x="88" y="20" width="11" height="26" rx="2" style="fill:var(--c-hp)"/>
+<rect x="101" y="20" width="11" height="26" rx="2" style="fill:var(--c-hp)"/>
+<rect x="114" y="20" width="11" height="26" rx="2" style="fill:var(--c-hp)"/>
+<rect x="127" y="20" width="11" height="26" rx="2" style="fill:var(--c-hp)"/>
+<rect x="140" y="20" width="11" height="26" rx="2" style="fill:var(--c-hp)"/>
+<rect x="153" y="20" width="11" height="26" rx="2" style="fill:var(--c-hp)"/>
+<text class="dim" x="154" y="60">12</text>
+<rect x="166" y="20" width="11" height="26" rx="2" style="fill:var(--c-flag)"/>
+<rect x="179" y="20" width="11" height="26" rx="2" style="fill:var(--c-flag)"/>
+<rect x="192" y="20" width="11" height="26" rx="2" style="fill:var(--c-flag)"/>
+<rect x="205" y="20" width="11" height="26" rx="2" style="fill:var(--c-flag)"/>
+<rect x="218" y="20" width="11" height="26" rx="2" style="fill:var(--c-flag)"/>
+<rect x="231" y="20" width="11" height="26" rx="2" style="fill:var(--c-flag)"/>
+<text class="dim" x="232" y="60">6</text>
+<rect x="244" y="20" width="11" height="26" rx="2" style="fill:var(--c-pad)"/>
+<rect x="257" y="20" width="11" height="26" rx="2" style="fill:var(--c-pad)"/>
+<rect x="270" y="20" width="11" height="26" rx="2" style="fill:var(--c-pad)"/>
+<rect x="283" y="20" width="11" height="26" rx="2" style="fill:var(--c-pad)"/>
+<rect x="296" y="20" width="11" height="26" rx="2" style="fill:var(--c-pad)"/>
+<rect x="309" y="20" width="11" height="26" rx="2" style="fill:var(--c-pad)"/>
+<text class="dim" x="310" y="60">0</text>
+<text x="10" y="14">tag</text>
+<text x="166" y="14">set</text>
+<text x="244" y="14">offset</text>
+<text class="ttl" x="0" y="82">Element 0 of three SoA columns</text>
+<text x="0" y="102">px column  0x010000  set 0</text>
+<rect x="0" y="108" width="320" height="10" rx="2" style="fill:var(--bg-elev2);stroke:var(--border)"/>
+<rect x="0" y="108" width="5" height="10" style="fill:var(--c-miss)"/>
+<text x="0" y="138">vx column  0x01c000  set 0</text>
+<rect x="0" y="144" width="320" height="10" rx="2" style="fill:var(--bg-elev2);stroke:var(--border)"/>
+<rect x="0" y="144" width="5" height="10" style="fill:var(--c-miss)"/>
+<text x="0" y="174">seed column  0x044000  set 0</text>
+<rect x="0" y="180" width="320" height="10" rx="2" style="fill:var(--bg-elev2);stroke:var(--border)"/>
+<rect x="0" y="180" width="5" height="10" style="fill:var(--c-miss)"/>
+<text x="0" y="210">vx, staggered  0x01c0c0  set 3</text>
+<rect x="0" y="216" width="320" height="10" rx="2" style="fill:var(--bg-elev2);stroke:var(--border)"/>
+<rect x="15" y="216" width="5" height="10" style="fill:var(--c-hit)"/>
+<text class="dim" x="0" y="246">the 64 sets of L1d (12 ways each)</text>
+</svg></div>
+    <figcaption>Bits 6 to 11 choose one of 64 L1 sets. Two addresses that differ by a multiple of 4 KiB have the same low 12 bits,
+    so they compete for the same 12 ways. Element 0 of every column of a power-of-two SoA lands in set 0. Staggering each column by
+    one cache line spreads them out.</figcaption>
+  </figure>
+
+  <p>Now look at where SoA columns start. <code>MultiArrayList</code> and <code>#soa</code> put the columns back to back, each
+  <code>capacity × 4</code> bytes long. With a power-of-two capacity, every column starts a multiple of 4 KiB after the first, so
+  <code>px[i]</code> … <code>group[i]</code> all map to the same L1 set. (L1 is indexed by bits inside the 4 KiB page, so this is
+  guaranteed; whether they also collide in L2 depends on which physical pages the kernel handed out.) A loop that reads all sixteen
+  columns row by row needs sixteen lines in one 12-way set, so lines get evicted while the loop still needs them. Hand-written Rust
+  SoA is no safer: each large <code>Vec</code> is its own <code>mmap</code>, and the program prints that <code>px</code>,
+  <code>vx</code> and <code>size</code> all start at offset 16 within their pages.</p>
+
+  <p>Gray describes the same trap with VM-allocated SoA arrays: "all of the 10 fields of a particle's struct will map to the
+  same cache block. If our cache is 8-way set associative this means that all the fields of the particle can't be in the cache at
+  the same time. Oops!"<a class="cite" href="#src-8">[8]</a> His fix is AoSoA in groups of 8. The cheaper fix, when you control the
+  allocation, is to stagger the columns. The benchmark's alias experiment does exactly that: one buffer, sixteen
+  <code>u32</code> columns, read row by row, once with column <i>k</i> at <code>k × n</code> and once at <code>k × (n + 16)</code>,
+  which shifts each column by one more cache line. Same data, same loop, same checksum:</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch04-aos-soa-hot-cold/rust/src/main.rs"><code class="language-rust">fn sum_columns(cols: &amp;[&amp;[u32]; COLS]) -&gt; u64 {
+    let n = cols[0].len();
+    let cols = cols.map(|c| &amp;c[..n]); // equal lengths: no bounds checks in the loop
+    let mut total = 0u64;
+    for i in 0..n {
+        total = total.wrapping_add(cols.iter().map(|c| c[i] as u64).sum::&lt;u64&gt;());
+    }
+    total
+}
+
+/// Column k starts at k * stride elements. stride = n (n a power of two): every column start is a
+/// multiple of 4 KiB from the first, so element i of all 16 columns maps to the same L1 set.
+fn columns(buf: &amp;[u32], n: usize, stride: usize) -&gt; [&amp;[u32]; COLS] {
+    std::array::from_fn(|k| &amp;buf[k * stride..k * stride + n])
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch04-aos-soa-hot-cold/zig/main.zig"><code class="language-zig">fn sumColumns(cols: *const [cols_n][]const u32) u64 {
+    var total: u64 = 0;
+    for (0..cols[0].len) |i| {
+        var s: u64 = 0;
+        inline for (cols) |c| s += c[i];
+        total +%= s;
+    }
+    return total;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch04-aos-soa-hot-cold/odin/main.odin"><code class="language-odin">sum_columns :: proc(cols: ^[COLS][]u32) -&gt; (total: u64) {
+    n := len(cols[0])
+    for i in 0 ..&lt; n {
+        s: u64
+        #unroll for k in 0 ..&lt; COLS {
+            s += u64(cols[k][i])
+        }
+        total += s
+    }
+    return
+}</code></pre>
+  </div>
+
+  <figure class="figure" id="fig-alias">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch04-alias" data-opts='{"metric":"ns/n","per":"row","n":4194304}'></div>
+    <figcaption>Summing sixteen 4M-element columns row by row. Only the column start addresses differ. The 4 KiB-aligned version
+    is slower in every language.</figcaption>
+  </figure>
+
+  <p>The staggered columns win by <span data-bench-ratio="ch04-alias" data-num="4 KiB-aligned columns" data-den="staggered columns" data-lang="rust" data-n="4194304">about 1.3×</span>
+  in Rust, <span data-bench-ratio="ch04-alias" data-num="4 KiB-aligned columns" data-den="staggered columns" data-lang="zig" data-n="4194304">about 1.2×</span>
+  in Zig and <span data-bench-ratio="ch04-alias" data-num="4 KiB-aligned columns" data-den="staggered columns" data-lang="odin" data-n="4194304">about 1.2×</span>
+  in Odin, and by 1.1× to 1.3× at every size we ran: modest next to the 4× from layout, and without counters we cannot say how much
+  is L1 conflict misses and how much L2 or prefetcher behaviour. (Odin is slower overall, probably because <code>-o:speed</code> keeps
+  bounds checks on the sixteen column reads; we did not check the assembly.) It is the kind of effect that makes a benchmark jump when
+  N changes from 1,000,000 to 1,048,576. If an SoA loop reads many columns at once, keep the count well below the associativity
+  (hot/cold, or AoSoA) or pad the allocation. Odin's runtime source gives the same advice in a comment on its SoA allocation code:
+  with a power-of-two capacity of 1,024 or more, same-size fields map to one L1 set, so pad the capacity<a class="cite" href="#src-7">[7]</a>.</p>
+
+  <p>The shared cache simulator shows the mechanism on a toy cache. The preset walks a stride that maps every access to the same
+  set:</p>
+  <figure class="figure wide" id="fig-cache-sim">
+    <div class="figure-body" data-viz="cache-sim" data-opts='{"sets":4,"ways":2,"line":16,"preset":3}'></div>
+    <figcaption>A 4-set, 2-way toy cache. The same-set stride keeps evicting lines from one set while three sets stay empty. These
+    are conflict misses: the cache has room, just not in the set the addresses insist on.</figcaption>
+  </figure>
+
+  <h2 id="caveats">Caveats</h2>
+  <ul>
+    <li><b>No hardware counters here.</b> The explanations for AoSoA's skipping cost and the aliasing effect fit the data, but we
+    could not confirm them with <code>perf</code>. On your machine, compare the layouts with
+    <code>perf stat -e cycles,L1-dcache-load-misses,LLC-load-misses</code>.</li>
+    <li><b>One CPU.</b> Apple's M-series uses 128-byte lines (Chapter 2), which makes AoS waste worse for small hot sets, and other
+    prefetchers will treat the AoSoA skip pattern differently.</li>
+    <li><b>The update is the friendliest case for SoA:</b> three multiply-adds per particle and no branches. Real systems mix loops
+    that want different layouts, and you pay for each conversion between them.</li>
+  </ul>
+
+  <aside class="recap"><p>Lay data out for the loops that dominate the time: SoA or hot/cold when a hot loop reads a few fields of
+  many records, AoS when code reads whole records or every field, AoSoA when you need both SIMD and locality, and in every case
+  measure, because a layout that halves the bytes can lose to prefetchers, bounds checks, a disabled vectorizer or four kilobytes of
+  bad luck.</p></aside>
+
+  <h2 id="exercises">Exercises</h2>
+  <details class="exercise"><summary>A loop reads <code>pos</code> and <code>age</code> of the chapter's particle and writes
+  <code>age</code>. How many bytes per particle does each layout move (reads plus write-backs), in a long sequential loop?</summary>
+  <p>Used: 16 B (12 + 4). AoS: 64 read + 64 written back = 128 B. Hot/cold as defined (age is cold): 24 B hot + 40 B cold read,
+  and 40 B written back because <code>age</code> is cold, so 104 B. SoA: 16 B read + 4 B written back = 20 B. AoSoA: px/py, pz/vx and
+  age/mass share lines, so 3 of 8 lines per block, 24 B read plus 8 B written back (only the age line is dirty) = 32 B. Hot/cold is
+  only as good as the split; moving <code>age</code> into <code>Hot</code> fixes it. Check it in <a class="figref" href="#fig-columns">the bytes figure</a>
+  (the figure's write toggle only covers pos).</p></details>
+  <details class="exercise"><summary>Why does the random-record control get <i>worse</i> for SoA as N grows, while AoS stays
+  at about one line per record?</summary>
+  <p>At 16K particles everything is in L2, so SoA's sixteen loads per record are L2 hits plus the gather overhead. At 4M
+  particles each of the sixteen columns is 16 MiB, so each load is a likely L3 or DRAM miss and also a TLB miss with 4 KiB pages
+  (16 columns × 16 MiB is far beyond the second-level TLB's reach). AoS needs one line and one page per record. Memory-level
+  parallelism hides part of the sixteen misses, which is why the measured factor is <span data-bench-ratio="ch04-random" data-num="SoA" data-den="AoS" data-lang="rust" data-n="4194304">about 6×</span> in Rust,
+  <span data-bench-ratio="ch04-random" data-num="SoA" data-den="AoS" data-lang="odin" data-n="4194304">about 6×</span> in Odin and <span data-bench-ratio="ch04-random" data-num="SoA" data-den="AoS" data-lang="zig" data-n="4194304">about 11×</span> in Zig, not 16×.</p></details>
+  <details class="exercise"><summary>Zig's <code>MultiArrayList</code> sorts columns by alignment. Give a struct where that
+  sorting changes the column order, and say whether it matters for the aliasing problem.</summary>
+  <p>For example <code>struct { a: u8, b: u64, c: u32 }</code>: the columns go <code>b</code> (align 8), <code>c</code> (4),
+  <code>a</code> (1). It removes padding between columns but does not help aliasing: with a power-of-two capacity every column's
+  size (8n, 4n, n bytes) is still a multiple of 4 KiB once n ≥ 4,096, so every column start still lines up modulo 4 KiB.</p></details>
+  <details class="exercise"><summary>Write the Odin hot/cold update without <code>soa_zip</code>, using only <code>#soa</code>.
+  What changes in memory?</summary>
+  <p>Declare <code>hc: #soa[]struct { hot: Hot, cold: Cold }</code> and allocate it with <code>make</code>; the loop is the same.
+  In memory there is now one allocation, the hot column followed by the cold column (like Zig's), instead of two allocations glued
+  by a view. <code>soa_zip</code> is for arrays that already exist, for example ones that come from different systems.</p></details>
+  <details class="exercise"><summary>The update's model says AoS moves 3.56× the bytes of SoA, yet the measured ratio in
+  Rust is <span data-bench-ratio="ch04-update" data-num="AoS" data-den="SoA" data-lang="rust" data-n="4194304">about 4.2×</span>. Give two reasons the measured ratio can exceed the byte ratio.</summary>
+  <p>(1) The two loops need not reach the same bandwidth: if the scalar AoS loop reaches slightly less of it than the vectorized
+  SoA loop, the time ratio exceeds the byte ratio. (2) AoS dirties every line it reads, and a mix of reads and write-backs can cost
+  more than its byte count suggests. Without counters both stay hypotheses; <code>perf stat</code> would let you compare bytes
+  per cycle.</p></details>
+  <details class="exercise"><summary>Gray suggests keeping data as AoS and converting to a temporary SoA for one algorithm. For
+  the update loop at 4M particles, would that pay off?</summary>
+  <p>No. Converting reads all of AoS (256 MiB) and writes a pos/vel copy (96 MiB); the update then reads and writes the copy, and
+  copying pos back rewrites the AoS lines (another 256 MiB in and out). That is more than the plain AoS update's 512 MiB. The trick
+  pays when the algorithm makes <i>many</i> passes over the data, or does enough arithmetic per byte that SIMD matters.</p></details>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="sources">
+    <li id="src-1">Mike Acton, “Data-Oriented Design and C++”, CppCon 2014. <a href="https://www.youtube.com/watch?v=rX0ItVEVjHc">video</a>,
+      <a href="https://neil3d.github.io/assets/img/ecs/DOD-Cpp.pdf">slides (mirror)</a>.</li>
+    <li id="src-2">Andrew Kelley, “A Practical Guide to Applying Data-Oriented Design”, Handmade Seattle 2021.
+      <a href="https://vimeo.com/649009599">talk page</a>; quotes and the 160 KB → 91 KB monster
+      numbers from the <a href="https://josherich.me/podcast/andrew-kelley-practical-data-oriented-design-dod">transcript</a>.</li>
+    <li id="src-3">Zig project, <code>lib/std/multi_array_list.zig</code> (Zig 0.17.1 source), doc comment and column layout.
+      <a href="https://github.com/ziglang/zig/blob/master/lib/std/multi_array_list.zig">source</a>.</li>
+    <li id="src-4">Zig 0.17.1 source, <code>src/zig_llvm.cpp</code> line 288 (<code>LoopVectorization = false</code>), and mlugg, “miscompilation: incorrect vectorization of loop copying i32 values”, LLVM issue #186922, March 2026.
+      <a href="https://github.com/llvm/llvm-project/issues/186922">issue</a>.</li>
+    <li id="src-5">Odin team, “Odin Overview”, section on SOA data types, <code>soa_zip</code> and <code>soa_unzip</code> (read November 2026).
+      <a href="https://odin-lang.org/docs/overview/">overview</a>.</li>
+    <li id="src-6">Odin forum, “How SOA works under the hood?” (community answers, undated).
+      <a href="https://forum.odin-lang.org/t/how-soa-works-under-the-hood/383">thread</a>.</li>
+    <li id="src-7">Odin dev-2026-11 source, <code>base/runtime/core_builtin_soa.odin</code> (<code>make_soa_aligned</code> and the
+      comment on 4 KiB strides). <a href="https://github.com/odin-lang/Odin/blob/master/base/runtime/core_builtin_soa.odin">source</a>.</li>
+    <li id="src-8">Niklas Gray, “Data Structures Part 1: Bulk Data”, Our Machinery blog, 2019.
+      <a href="https://ruby0x1.github.io/machinery_blog_archive/post/data-structures-part-1-bulk-data/index.html">archived post</a>.</li>
+    <li id="src-9">Intel, “Intel ISPC User's Guide”, <code>soa&lt;N&gt;</code> types (hybrid SoA). <a href="https://ispc.github.io/ispc.html">guide</a>;
+      and Intel, “Memory Layout Transformations”. <a href="https://www.intel.com/content/www/us/en/developer/articles/technical/memory-layout-transformations.html">article</a>.</li>
+    <li id="src-10">Trishul Chilimbi, Bob Davidson, James Larus, “Cache-Conscious Structure Definition”, PLDI 1999. <a href="https://www.microsoft.com/en-us/research/publication/cache-conscious-structure-definition-2/">paper page</a>.</li>
+    <li id="src-11">Chris Wellons, “Hash Function Prospector” (<code>lowbias32</code>). <a href="https://github.com/skeeto/hash-prospector">repository</a>.</li>
+    <li id="src-12">Guillaume Fraux, <code>soa_derive</code> crate. <a href="https://docs.rs/soa_derive/latest/soa_derive">docs</a>.</li>
+    <li id="src-13">Tim Harding, <code>soa-rs</code> crate (one allocation for all fields). <a href="https://github.com/tim-harding/soa-rs">repository</a>.</li>
+  </ol>
+</main>
+</body>
+</html>

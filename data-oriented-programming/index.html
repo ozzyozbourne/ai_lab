@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data-Oriented Design in Rust, Zig and Odin</title>
+<meta name="description" content="An interactive book on data-oriented design, with runnable code in Rust, Zig and Odin.">
+<link rel="stylesheet" href="assets/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="assets/book.css">
+<script>window.Prism = { manual: true };</script>
+<script defer src="assets/vendor/prism/prism.min.js"></script>
+<script defer src="assets/vendor/prism/prism-bash.min.js"></script>
+<script defer src="assets/book.js"></script>
+<!-- Three.js only for the decorative hero; the rest of the page works offline. -->
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.187.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body data-sidebar="off">
+<main class="cover">
+  <p class="kicker">An interactive book</p>
+  <h1>Data-Oriented Design in Rust, Zig and Odin</h1>
+  <p class="lede">The CPU never reads a single byte: it pulls in a 64-byte cache line. This book is about arranging your data so
+  that those bytes are the ones you need. Each idea comes with a figure you can poke, code in three languages that compiles,
+  and benchmarks measured on a real machine.</p>
+
+  <div class="hero" id="hero" aria-hidden="true">
+    <div class="fallback">Memory as rows of 4-byte cells, one 64-byte cache line per row. (The 3D view needs WebGL and the Three.js CDN.)</div>
+  </div>
+
+  <h2 id="contents">Contents</h2>
+  <ol class="book-toc" data-book-toc></ol>
+
+  <h2 id="how-to-read">How to read this book</h2>
+  <p>Read the chapters in order. Chapters 1–3 give you the vocabulary (the machine, cache lines, layout), 4–9 are the core
+  techniques, 10 and 11 are projects that combine them, and 12 is about measuring, including when not to bother.</p>
+  <ul>
+    <li><b>Figures are live.</b> Use Play, Step, Back and Reset to move through them, and use the toggles under them. Every counter is
+    computed by the figure's own model. With reduced motion turned on, figures don't animate and show their final state.</li>
+    <li><b>Predict before you reveal.</b> Yellow "Predict first" boxes ask a question before a figure answers it.</li>
+    <li><b>Code tabs</b> switch between Rust, Zig and Odin across the whole book, and your choice is remembered.</li>
+    <li><b>Callouts</b> mark notes, pitfalls, version changes (e.g. "Changed in Zig 0.17"), and commands to try.</li>
+    <li><b>Numbers.</b> Benchmarks come from the programs in <code>code/</code>, run on one cloud VM: an Intel Xeon Ice Lake-SP at 2.6 GHz,
+    2 cores × 2 threads, L1d 48 KiB, L2 1.25 MiB, and a 54 MiB L3 shared with other tenants (Chapter 2 measures only a few MiB of it as usable). The text calls this machine “this orb”. Your machine will give different
+    numbers. The ratios and shapes are what matter. Numbers quoted from other people are labelled "cited".</li>
+  </ul>
+
+  <h2 id="how-to-run">How to run the code</h2>
+  <p>Every chapter has a Rust package, a single-file Zig program, and an Odin package under <code>code/chNN-&lt;slug&gt;/</code>. They use
+  only the standard library. The versions used are Rust 1.100 (edition 2024), Zig 0.17.1 and Odin dev-2026-11.</p>
+  <aside class="callout try"><p>Run one chapter in all three languages, or everything in quick mode:</p>
+<pre><code class="language-bash">cd code
+cargo run --release -p chNN_slug -- --quick             # Rust (one Cargo workspace; package = dir name with _)
+cd chNN-slug/zig &amp;&amp; zig run -O fast main.zig -- --quick
+cd .. &amp;&amp; odin run odin -o:speed -vet -strict-style -- --quick
+cd .. &amp;&amp; ./run_all.sh                                     # lint + build + run all, prints a table</code></pre>
+  <p>Leave out <code>--quick</code> for full-size runs, or pass a size: <code>-- 1000000</code>. <code>./bench_all.sh</code> does the serial, pinned
+  benchmark pass that produces the charts.</p></aside>
+  <aside class="callout version" data-title="Changed in Zig 0.17"><p>Zig 0.17 spells the release mode <code>-O fast</code> (formerly <code>-O ReleaseFast</code>, which is still accepted). Code
+  in this book follows 0.17.1 idioms: <code>main(init: std.process.Init)</code>, <code>std.Io</code> clocks, and unmanaged containers.</p></aside>
+  <p>To read offline, open <code>index.html</code> directly (double-click it). Everything except the 3D picture above is local.</p>
+</main>
+
+<script type="module">
+  const hero = document.getElementById("hero");
+  try {
+    const THREE = await import("three");
+    const reduce = matchMedia("(prefers-reduced-motion: reduce)");
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    hero.append(renderer.domElement);
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
+    camera.position.set(5.5, 5.5, 8.5); camera.lookAt(0, 0, 0);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(5, 10, 7); scene.add(sun);
+
+    // 8 cache lines × 16 four-byte cells, coloured like an AoS particle: pos pos pos alive vel vel vel hp
+    const COLS = 16, ROWS = 8, geo = new THREE.BoxGeometry(0.42, 0.42, 0.42);
+    const mesh = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.1 }), COLS * ROWS);
+    const palette = [0xff8f6b, 0xff8f6b, 0xff8f6b, 0xffd166, 0x6bd6a8, 0x6bd6a8, 0x6bd6a8, 0xc79bff].map((c) => new THREE.Color(c));
+    const m = new THREE.Matrix4(), col = new THREE.Color();
+    scene.add(mesh);
+
+    let lastT = 2.5;
+    function frame(t) {
+      lastT = t;
+      const active = (t * 1.2) % ROWS; // the cache line currently being "loaded"
+      for (let r = 0, i = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++, i++) {
+        const lift = Math.max(0, 1 - Math.abs(r - active)) * 0.8;
+        m.makeTranslation((c - COLS / 2 + 0.5) * 0.55, lift, (r - ROWS / 2 + 0.5) * 0.75);
+        mesh.setMatrixAt(i, m);
+        col.copy(palette[c % 8]).multiplyScalar(0.35 + lift * 0.8);
+        mesh.setColorAt(i, col);
+      }
+      mesh.instanceMatrix.needsUpdate = true; mesh.instanceColor.needsUpdate = true;
+      mesh.rotation.y = reduce.matches ? -0.35 : -0.35 + Math.sin(t * 0.25) * 0.15;
+      renderer.render(scene, camera);
+    }
+    function resize() {
+      const w = hero.clientWidth, h = hero.clientHeight;
+      if (!w || !h) return;
+      renderer.setSize(w, h, false); camera.aspect = w / h;
+      camera.position.z = w < 500 ? 11.5 : 9.5; camera.lookAt(0, -0.35, 0); // fit the whole grid on narrow screens
+      camera.updateProjectionMatrix();
+      frame(lastT); // redraw immediately (matters when the animation is off)
+    }
+    new ResizeObserver(resize).observe(hero); resize();
+
+    let visible = true;
+    new IntersectionObserver((es) => (visible = es[es.length - 1].isIntersecting)).observe(hero);
+    const start = () => {
+      if (reduce.matches) { renderer.setAnimationLoop(null); frame(2.5); }
+      else renderer.setAnimationLoop((ms) => visible && frame(ms / 1000));
+    };
+    reduce.addEventListener("change", start);
+    start();
+    hero.classList.add("ready");
+    window.__heroOK = THREE.REVISION;
+  } catch (err) {
+    hero.classList.add("offline"); // collapse to a one-line caption
+    console.info("3D hero disabled (offline or no WebGL):", err && err.message);
+  }
+</script>
+</body>
+</html>

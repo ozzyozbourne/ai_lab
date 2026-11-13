@@ -1,0 +1,24 @@
+/* Chapter 4 styles. Every selector is scoped with .ch04- */
+.ch04-columns .ch04-top { margin-top: 0; margin-bottom: .6rem; }
+.ch04-columns .ch04-lab { font-size: .85rem; color: var(--text-dim); }
+.ch04-columns .ch04-chips button { display: inline-flex; align-items: center; gap: .35em; }
+.ch04-columns .ch04-chips button[aria-pressed="false"] { opacity: .6; }
+.ch04-columns .ch04-chips button[aria-pressed="true"] { border-color: var(--accent); }
+.ch04-columns .ch04-swatch { display: inline-block; width: .8em; height: .8em; border-radius: 2px; }
+.ch04-columns .ch04-check { display: inline-flex; align-items: center; gap: .35em; font-size: .88rem; min-height: 44px; }
+.ch04-columns .ch04-check input { width: 1.1rem; height: 1.1rem; }
+.ch04-columns .ch04-col-panel .counters { gap: .2rem 1rem; }
+.ch04-columns .ch04-summary { line-height: 1.5; }
+.ch04-svg text { font-family: var(--font-mono); font-size: 11px; fill: var(--text); }
+.ch04-svg .dim { fill: var(--text-dim); }
+.ch04-svg .ttl { font-family: var(--font-body); font-size: 12.5px; font-weight: 600; fill: var(--heading); }
+.ch04-narrow { display: none; }
+@media (max-width: 600px) { .ch04-wide { display: none; } .ch04-narrow { display: block; } }
+@media print { .ch04-wide { display: block; } .ch04-narrow { display: none; } }
+/* Figure 4.1 strips: one class per field group keeps the two inline SVGs small. */
+.ch04-strips rect { width: var(--cw); height: 26px; }
+.ch04-strips rect.pos { fill: var(--c-pos); } .ch04-strips rect.vel { fill: var(--c-vel); }
+.ch04-strips rect.hp { fill: var(--c-hp); } .ch04-strips rect.flag { fill: var(--c-flag); }
+.ch04-strips rect.line { fill: var(--c-line); } .ch04-strips rect.pad { fill: var(--c-pad); }
+.ch04-strips rect.o { opacity: .28; }
+.ch04-strips rect.ln { height: 29px; rx: 2px; fill: none; stroke: var(--c-line); stroke-width: 1.4; }

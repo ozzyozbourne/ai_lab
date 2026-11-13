@@ -1,0 +1,869 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3. Size, Alignment and Padding · Data-Oriented Design</title>
+<link rel="stylesheet" href="assets/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="assets/book.css">
+<link rel="stylesheet" href="assets/ch03.css">
+<script>window.Prism = { manual: true };</script>
+<script defer src="assets/vendor/prism/prism.min.js"></script>
+<script defer src="assets/vendor/prism/prism-rust.min.js"></script>
+<script defer src="assets/vendor/prism/prism-zig.min.js"></script>
+<script defer src="assets/vendor/prism/prism-odin.min.js"></script>
+<script defer src="assets/vendor/prism/prism-bash.min.js"></script>
+<script defer src="assets/book.js"></script>
+<script defer src="assets/data/bench-ch03.js"></script>
+<script defer src="assets/viz/struct-padding.js"></script>
+<script defer src="assets/viz/bench-bars.js"></script>
+<script defer src="assets/viz/bench-line.js"></script>
+<script defer src="assets/viz/ch03-reorder.js"></script>
+</head>
+<body>
+<main>
+  <p class="kicker">Chapter 3</p>
+  <h1>Size, Alignment and Padding</h1>
+  <p class="lede">Take a 16-byte struct and add one <code>bool</code>. In information-theory terms you added one bit, but the struct
+  is now 24 bytes. Andrew Kelley puts it this way: &ldquo;We paid the cost of 64 bits just to add one to the struct.&rdquo;<a class="cite" href="#src-2">[2]</a>
+  This chapter explains where those bytes go, which of the three languages moves your fields around and which leaves them alone, and how to
+  win the bytes back. It ends with a measurement showing when bytes turn into time.</p>
+
+  <p>Chapter 2 showed that the machine moves memory in 64-byte cache lines and that a trip to DRAM costs about a hundred times
+  more than an L1 hit. Once you know that, the size of an element is not a bookkeeping detail. It sets how many elements arrive per
+  line, how many lines a loop pulls in, and so whether a working set fits in a cache level or spills out of it. The unit of
+  thought in this chapter is <em>bytes per element</em>. Every struct in it has a <code>size_of</code> you can predict on paper,
+  and three compilers that check you.</p>
+
+  <h2 id="rules">The rules, in three lines</h2>
+  <p>On x86-64 and AArch64 every primitive type has a <b>natural alignment</b> equal to its size: <code>u8</code> and <code>bool</code>
+  are 1, <code>u16</code> is 2, <code>u32</code> and <code>f32</code> are 4, and <code>u64</code>, <code>f64</code> and pointers are 8.
+  A value of alignment <var>a</var> must start at an address that is a multiple of <var>a</var>. A struct obeys three rules:</p>
+  <ol>
+    <li>Each field starts at the next offset that is a multiple of its alignment. The skipped bytes are <b>padding</b>.</li>
+    <li>The struct's alignment is the largest alignment of its fields.</li>
+    <li>The struct's size is rounded up to a multiple of its alignment. The bytes added at the end are <b>tail padding</b>. They exist
+    so that element <code>i + 1</code> of an array is aligned too, because arrays have no gaps between elements.</li>
+  </ol>
+  <p>That is the whole algorithm. Eric Raymond's &ldquo;The Lost Art of Structure Packing&rdquo; works through the same rules for C
+  at length<a class="cite" href="#src-10">[10]</a>. Kelley's talk on data-oriented design walks an audience through it as a quiz<a class="cite" href="#src-1">[1]</a><a class="cite" href="#src-2">[2]</a>,
+  and it is worth doing the same quiz yourself before you look at a tool.</p>
+
+  <details class="predict"><summary>In C order, what are the size and alignment of <code>struct { a: u32, b: bool }</code>, of
+  <code>struct { a: u32, b: u64, c: u32 }</code>, and of the same three fields written as <code>u32, u32, u64</code>?</summary>
+  <p>8 B with alignment 4 (4 + 1, then 3 bytes of tail padding). 24 B with alignment 8: <code>a</code> at 0, 4 bytes of padding,
+  <code>b</code> at 8, <code>c</code> at 16, then 4 bytes of tail padding. Written as <code>u32, u32, u64</code> it is 16 B with no
+  padding at all. All three programs print exactly these numbers. Add a <code>bool</code> to the 16-byte version and it is 24 B again.</p></details>
+
+  <figure class="figure" id="fig-quiz">
+    <div class="figure-body" data-viz="struct-padding" data-opts='{"name":"Quiz","fields":[["a","u32"],["b","u64"],["c","u32"]],"count":0}'>
+      <p>Quiz in C order: a at 0, 4 bytes padding, b at 8, c at 16, 4 bytes tail padding = 24 B. Reordered: 16 B.</p></div>
+    <figcaption>Kelley's <code>u32, u64, u32</code> quiz. Hatched cells are padding. In declaration order a third of the struct is
+    padding. Flip the toggle and the two <code>u32</code>s pair up into one 8-byte word.</figcaption>
+  </figure>
+
+  <h3 id="why-hardware">Why the hardware wants it</h3>
+  <p>Alignment exists because loads and stores work on aligned chunks. A naturally aligned value of up to 8 bytes can never straddle
+  a 64-byte cache line, so the load touches one line and one bank. A misaligned value can cross a line boundary and then needs two
+  line accesses. AMD's Zen 5 optimization guide says a misaligned load that spans a 64-byte boundary &ldquo;suffers, at minimum, a one
+  cycle penalty&rdquo;<a class="cite" href="#src-17">[17]</a>, and crossing a 4 KiB page boundary is worse. Some architectures fault on
+  misaligned accesses altogether, and atomics must be naturally aligned everywhere. So compilers pad by default, and when you ask for no
+  padding they emit byte-wise or unaligned loads instead.</p>
+  <p>Padding costs you because the cache does not know which bytes are padding. A line arrives whole. Padding takes up cache capacity,
+  memory bandwidth, page-table reach and disk space, exactly like real data. <a class="figref" href="#fig-lines">the figure below</a> shows the arithmetic
+  for the monster struct that runs through this chapter.</p>
+
+  <figure class="figure" id="fig-lines">
+    <div class="figure-body ch03-scroll">
+    <svg class="ch03-diagram" viewBox="0 0 720 212" role="img" aria-label="One 64-byte cache line holds 2.67 monsters of 24 bytes, 4 of 16 bytes, or 5.33 of 12 bytes.">
+      <defs><pattern id="ch03-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#3a4756"/><line x1="0" y1="0" x2="0" y2="6" stroke="rgba(255,255,255,.3)" stroke-width="2"/></pattern></defs>
+      <text x="96" y="18" class="dim">one 64-byte cache line, 1 cell = 1 byte</text>
+      <text x="0" y="51">24 B</text><text x="0" y="65" class="dim">2.67/line</text>
+      <rect x="96" y="36" width="72" height="34" rx="3" fill="#7cc4ff"/><rect x="168" y="36" width="72" height="34" rx="3" fill="#9be08f"/><rect x="240" y="36" width="9" height="34" fill="#ffd27a"/><rect x="249" y="36" width="63" height="34" fill="url(#ch03-hatch)"/>
+      <rect x="312" y="36" width="72" height="34" rx="3" fill="#7cc4ff" opacity=".8"/><rect x="384" y="36" width="72" height="34" rx="3" fill="#9be08f" opacity=".8"/><rect x="456" y="36" width="9" height="34" fill="#ffd27a" opacity=".8"/><rect x="465" y="36" width="63" height="34" fill="url(#ch03-hatch)"/>
+      <rect x="528" y="36" width="72" height="34" rx="3" fill="#7cc4ff" opacity=".6"/><rect x="600" y="36" width="72" height="34" fill="#9be08f" opacity=".6"/>
+      <text x="678" y="60" class="dim">→</text>
+      <text x="0" y="111">16 B</text><text x="0" y="125" class="dim">4/line</text>
+      <g><rect x="96" y="96" width="36" height="34" rx="3" fill="#7cc4ff"/><rect x="132" y="96" width="72" height="34" fill="#9be08f"/><rect x="204" y="96" width="9" height="34" fill="#ffd27a"/><rect x="213" y="96" width="27" height="34" fill="url(#ch03-hatch)"/></g>
+      <g transform="translate(144 0)"><rect x="96" y="96" width="36" height="34" rx="3" fill="#7cc4ff"/><rect x="132" y="96" width="72" height="34" fill="#9be08f"/><rect x="204" y="96" width="9" height="34" fill="#ffd27a"/><rect x="213" y="96" width="27" height="34" fill="url(#ch03-hatch)"/></g>
+      <g transform="translate(288 0)"><rect x="96" y="96" width="36" height="34" rx="3" fill="#7cc4ff"/><rect x="132" y="96" width="72" height="34" fill="#9be08f"/><rect x="204" y="96" width="9" height="34" fill="#ffd27a"/><rect x="213" y="96" width="27" height="34" fill="url(#ch03-hatch)"/></g>
+      <g transform="translate(432 0)"><rect x="96" y="96" width="36" height="34" rx="3" fill="#7cc4ff"/><rect x="132" y="96" width="72" height="34" fill="#9be08f"/><rect x="204" y="96" width="9" height="34" fill="#ffd27a"/><rect x="213" y="96" width="27" height="34" fill="url(#ch03-hatch)"/></g>
+      <text x="0" y="171">12 B</text><text x="0" y="185" class="dim">5.33/line</text>
+      <g><rect x="96" y="156" width="36" height="34" rx="3" fill="#7cc4ff"/><rect x="132" y="156" width="54" height="34" fill="#9be08f"/><rect x="186" y="156" width="9" height="34" fill="#ffd27a"/><rect x="195" y="156" width="9" height="34" fill="url(#ch03-hatch)"/></g>
+      <g transform="translate(108 0)"><rect x="96" y="156" width="36" height="34" rx="3" fill="#7cc4ff"/><rect x="132" y="156" width="54" height="34" fill="#9be08f"/><rect x="186" y="156" width="9" height="34" fill="#ffd27a"/><rect x="195" y="156" width="9" height="34" fill="url(#ch03-hatch)"/></g>
+      <g transform="translate(216 0)"><rect x="96" y="156" width="36" height="34" rx="3" fill="#7cc4ff"/><rect x="132" y="156" width="54" height="34" fill="#9be08f"/><rect x="186" y="156" width="9" height="34" fill="#ffd27a"/><rect x="195" y="156" width="9" height="34" fill="url(#ch03-hatch)"/></g>
+      <g transform="translate(324 0)"><rect x="96" y="156" width="36" height="34" rx="3" fill="#7cc4ff"/><rect x="132" y="156" width="54" height="34" fill="#9be08f"/><rect x="186" y="156" width="9" height="34" fill="#ffd27a"/><rect x="195" y="156" width="9" height="34" fill="url(#ch03-hatch)"/></g>
+      <g transform="translate(432 0)"><rect x="96" y="156" width="36" height="34" rx="3" fill="#7cc4ff"/><rect x="132" y="156" width="54" height="34" fill="#9be08f"/><rect x="186" y="156" width="9" height="34" fill="#ffd27a"/><rect x="195" y="156" width="9" height="34" fill="url(#ch03-hatch)"/></g>
+      <rect x="636" y="156" width="36" height="34" rx="3" fill="#7cc4ff" opacity=".5"/>
+      <text x="676" y="178" class="dim">→</text>
+      <line x1="672" y1="28" x2="672" y2="200" stroke="#ff8f8f" stroke-dasharray="4 3"/>
+    </svg>
+    </div>
+    <figcaption>The same 64-byte line under the chapter's three monster layouts. Blue is the anim handle (8 B pointer or 4 B index),
+    green is <code>hp</code> and <code>y</code>, yellow is <code>alive</code>, and hatching is padding. Going from 24 to 12 bytes doubles the
+    monsters per line, so a full scan pulls in half as many lines.</figcaption>
+  </figure>
+
+  <h2 id="who-orders">Who decides the field order</h2>
+  <p>The three rules are fixed. What varies is <em>whose order</em> they apply to. If the compiler may lay fields out in any order, it can
+  sort them so that padding nearly disappears. If it must follow the order you wrote, the padding is your responsibility. Here the three
+  languages differ, and the differences matter when you read other people's numbers: Kelley's quiz is about C order, and it gives
+  different answers for a plain Zig struct.</p>
+
+  <div class="table-wrap"><table>
+    <tr><th>Language</th><th>Default struct</th><th>Declaration (C) order</th><th>No padding</th><th>Raise alignment</th></tr>
+    <tr><td>Rust</td><td>may reorder (<code>repr(Rust)</code>)</td><td><code>#[repr(C)]</code></td><td><code>#[repr(C, packed)]</code></td><td><code>#[repr(align(64))]</code></td></tr>
+    <tr><td>Zig</td><td>may reorder (plain <code>struct</code>)</td><td><code>extern struct</code></td><td><code>packed struct</code> (bit-level, backed by an integer)</td><td><code>field: T align(64)</code></td></tr>
+    <tr><td>Odin</td><td>declaration order (verified below)</td><td>the default</td><td><code>struct #packed</code></td><td><code>struct #align (64)</code></td></tr>
+  </table></div>
+
+  <p><b>Rust.</b> The Reference says that for the default representation &ldquo;the ordering does not have to be the same as the order in which
+  the fields are specified in the declaration of the type&rdquo;, and that the layout may change between compilations<a class="cite" href="#src-3">[3]</a>.
+  In practice rustc sorts fields to keep padding small, which is why the Rust performance book tells you that you &ldquo;do not have to worry about
+  field ordering&rdquo;<a class="cite" href="#src-4">[4]</a>. <code>#[repr(C)]</code> switches to the C algorithm in declaration order, and that is
+  what you need for FFI, for memory-mapped files, or whenever you want to control the order yourself.</p>
+  <p><b>Zig.</b> A plain <code>struct</code> has no guaranteed layout. The language reference says that if well-defined layout is not needed,
+  <code>struct</code> &ldquo;is a better choice because it places fewer restrictions on the compiler&rdquo;<a class="cite" href="#src-7">[7]</a>, and
+  Zig 0.17.1 does reorder. <code>extern struct</code> matches the C ABI of the target. <code>packed struct</code> is something else again:
+  a struct made of bits, covered in its own section below.</p>
+  <p><b>Odin.</b> The documentation lists struct directives (<code>#packed</code>, <code>#align</code>, <code>#raw_union</code>,
+  <code>#min_field_align</code>, <code>#max_field_align</code>)<a class="cite" href="#src-8">[8]</a> but does not state the default ordering in
+  so many words. So we measured it. The <code>offset_of</code> probes in <code>layout.odin</code> below put <code>Mixed</code>'s fields at 0, 8, 16
+  and 20, exactly in declaration order, with 24 B total. The struct-level <code>#assert</code>s make the build fail if that ever changes. Odin
+  keeps the order you write, the same as C and as Rust's <code>repr(C)</code>.</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch03-size-alignment-padding/rust/src/layout.rs"><code class="language-rust">struct Mixed {
+    a: u8,
+    b: u64,
+    c: u8,
+    d: u32,
+}
+
+#[repr(C)]
+struct MixedC {
+    a: u8,
+    b: u64,
+    c: u8,
+    d: u32,
+}
+
+#[repr(C, packed)]
+struct MixedPacked {
+    a: u8,
+    b: u64,
+    c: u8,
+    d: u32,
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch03-size-alignment-padding/zig/layout.zig"><code class="language-zig">// ---- the same fields, three layouts ----
+const Mixed = struct { a: u8, b: u64, c: u8, d: u32 }; // compiler picks the order
+const MixedExtern = extern struct { a: u8, b: u64, c: u8, d: u32 }; // C order
+const MixedPacked = packed struct { a: u8, b: u64, c: u8, d: u32 }; // a u112 bit field</code></pre>
+<pre data-lang="Odin" data-file="code/ch03-size-alignment-padding/odin/layout.odin"><code class="language-odin">// Odin keeps declaration order (C layout). #packed drops all padding; #align(N) raises the struct's alignment.
+Mixed :: struct {
+	a: u8,
+	b: u64,
+	c: u8,
+	d: u32,
+}
+Mixed_Packed :: struct #packed {
+	a: u8,
+	b: u64,
+	c: u8,
+	d: u32,
+}
+Mixed_Sorted :: struct {
+	b: u64,
+	d: u32,
+	a: u8,
+	c: u8,
+}
+Cache_Line :: struct #align (64) {
+	counter: u64,
+}
+
+#assert(size_of(Mixed) == 24 &amp;&amp; offset_of(Mixed, b) == 8 &amp;&amp; offset_of(Mixed, d) == 20)
+#assert(size_of(Mixed_Packed) == 14 &amp;&amp; align_of(Mixed_Packed) == 1)
+#assert(size_of(Mixed_Sorted) == 16)
+#assert(size_of(Cache_Line) == 64 &amp;&amp; align_of(Cache_Line) == 64)</code></pre>
+  </div>
+
+  <p>The probe programs print these lines (rustc 1.100, Zig 0.17.1 and Odin dev-2026-11, all on x86-64 Linux):</p>
+  <div class="table-wrap"><table>
+    <tr><th><code>{a: u8, b: u64, c: u8, d: u32}</code></th><th class="num">size</th><th class="num">align</th><th>offsets a, b, c, d</th></tr>
+    <tr><td>Rust default / Zig <code>struct</code></td><td class="num">16</td><td class="num">8</td><td>12, 0, 13, 8</td></tr>
+    <tr><td>Rust <code>repr(C)</code> / Zig <code>extern struct</code> / Odin <code>struct</code></td><td class="num">24</td><td class="num">8</td><td>0, 8, 16, 20</td></tr>
+    <tr><td>Rust <code>repr(C, packed)</code> / Odin <code>#packed</code></td><td class="num">14</td><td class="num">1</td><td>0, 1, 9, 10</td></tr>
+    <tr><td>Zig <code>packed struct</code></td><td class="num">16</td><td class="num">16</td><td>bits 0, 8, 72, 80 (112 bits)</td></tr>
+    <tr><td>Odin, sorted by hand (<code>Mixed_Sorted</code>)</td><td class="num">16</td><td class="num">8</td><td>12, 0, 13, 8</td></tr>
+  </table></div>
+  <p>Rust and Zig pick exactly the same order: the 8-byte field first, then the 4-byte one, then the bytes. That is what &ldquo;sort by alignment,
+  largest first&rdquo; gives you, and sorting by hand in Odin gives the same offsets. Neither Rust nor Zig promises that algorithm. If an offset
+  matters, ask the compiler with <code>offset_of!</code> or <code>@offsetOf</code>. Do not derive it from the declaration.</p>
+
+  <figure class="figure wide" id="fig-reorder">
+    <div class="figure-body" data-viz="ch03-reorder" data-opts='{"preset":0}'>
+      <p>Interactive: reorder the fields of a struct and see its size under C rules and under a reordering compiler. Monster as written
+      (alive bool, anim pointer, hp u32, kind u8, y u32) is 32 B in C order and 24 B sorted.</p></div>
+    <figcaption>Drag the ⠿ handles (or use ▲▼, or focus a handle and press the arrow keys) to change the declaration order. Under
+    <em>C order</em> the size jumps around as you drag. Under <em>Reordering compiler</em> it never changes, because the compiler ignores the
+    order you wrote. The &ldquo;best possible&rdquo; counter is what sorting by alignment gives. Try to reach it by hand, then add a <code>bool</code>.</figcaption>
+  </figure>
+
+  <details class="predict"><summary>In <a class="figref" href="#fig-reorder">the figure above</a>, the Monster preset starts at 32 B in C order. Can any
+  ordering get below 24 B?</summary>
+  <p>No. The data is 8 + 4 + 4 + 1 + 1 = 18 bytes and the alignment is 8, so the size must be a multiple of 8 that is at least 18, which is 24.
+  Sorting reaches that bound. The only ways below it are to change the fields themselves (narrower types, an index instead of a pointer,
+  moving the bools out) or to change the alignment. That is the rest of the chapter.</p></details>
+
+  <aside class="callout pitfall"><p><b>Packed is not free.</b> <code>repr(packed)</code> and <code>#packed</code> drop padding by giving every
+  field alignment 1. The compiler then has to assume any field may be misaligned. Rust makes taking a reference to a packed field a compile
+  error, because references must be aligned: copy the field out by value, or use <code>&amp;raw const s.field</code> with
+  <code>read_unaligned</code>. Odin allows <code>&amp;p.b</code> on a <code>#packed</code> struct, but the pointer you get may be misaligned,
+  and passing it to code that expects an aligned <code>^u64</code> (atomics, SIMD loads) is a bug. Use packed layouts for wire formats and
+  file headers, and sort fields everywhere else. Sorting gets you within a few bytes of packed for free.</p></aside>
+
+  <aside class="callout version" data-title="Changed in Odin (2024–2026)"><p><code>#field_align(N)</code> is deprecated in favour of
+  <code>#min_field_align(N)</code>, and there is now also <code>#max_field_align(N)</code>, which caps every field's alignment like C's
+  <code>#pragma pack</code>. The parser also wants parentheses: <code>#align(64)</code> without them gets the warning
+  &ldquo;#align requires parentheses around the expression&rdquo;<a class="cite" href="#src-9">[9]</a>.</p></aside>
+
+  <h2 id="monster">Kelley's monster: 24 → 16 → 12 bytes</h2>
+  <p>The middle of Kelley's talk is one struct shrunk in stages. A monster has a pointer to its animation, two 32-bit integers
+  (hit points and a coordinate) and an <code>alive</code> flag. On a 64-bit CPU that is 8 + 4 + 4 + 1 = 17 bytes of data and 24 bytes of
+  struct, &ldquo;24 bytes on 64-bit CPUs&rdquo;, and 2.4 KB for 100 of them<a class="cite" href="#src-2">[2]</a>. Reordering does not help, because
+  the fields are already sorted. The padding comes from the single byte at the end, which forces 7 bytes of tail padding.</p>
+  <p>Kelley removes the <code>bool</code> first. Instead of a flag in every monster, he keeps two arrays, one of live monsters and one of dead
+  ones. The bit is still there, &ldquo;it's which array is it in&rdquo;, but it no longer costs memory, and the size falls to 16 B<a class="cite" href="#src-2">[2]</a>.
+  Then he replaces the 8-byte pointer with a 32-bit index into an animation array. That halves the field and also drops the struct's alignment
+  from 8 to 4, so the size falls to 12 B: &ldquo;Instead of taking up 2.4 kilobytes for 100 monsters, we're taking up 1.2&rdquo;<a class="cite" href="#src-2">[2]</a>.
+  Out-of-band booleans, and the existence-based processing they lead to, are the subject of Chapter 7. Indices instead of pointers are
+  Chapter 5. Here we only count the bytes.</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch03-size-alignment-padding/rust/src/layout.rs"><code class="language-rust">struct Animation {
+    frames: Vec&lt;u32&gt;,
+}
+
+/// A pointer, two u32s and a bool: 8 + 4 + 4 + 1 = 17 bytes of data, 24 bytes of struct.
+struct Monster&lt;'a&gt; {
+    anim: &amp;'a Animation,
+    hp: u32,
+    y: u32,
+    alive: bool,
+}
+
+/// `alive` moved out of band (one array of live monsters, one of dead ones): 16 bytes.
+struct MonsterOob&lt;'a&gt; {
+    anim: &amp;'a Animation,
+    hp: u32,
+    y: u32,
+}
+
+/// The pointer replaced by a u32 index into an animation table: 12 bytes, alignment 4.
+struct MonsterIdx {
+    anim: u32,
+    hp: u32,
+    y: u32,
+}
+
+const _: () = assert!(size_of::&lt;Monster&gt;() == 24);
+const _: () = assert!(size_of::&lt;MonsterOob&gt;() == 16);
+const _: () = assert!(size_of::&lt;MonsterIdx&gt;() == 12);</code></pre>
+<pre data-lang="Zig" data-file="code/ch03-size-alignment-padding/zig/layout.zig"><code class="language-zig">const Animation = struct { frames: []const u32 };
+
+/// A pointer, two u32s and a bool: 8 + 4 + 4 + 1 = 17 bytes of data, 24 bytes of struct.
+const Monster = struct { anim: *const Animation, hp: u32, y: u32, alive: bool };
+/// `alive` moved out of band (one list of live monsters, one of dead ones): 16 bytes.
+const MonsterOob = struct { anim: *const Animation, hp: u32, y: u32 };
+/// The pointer replaced by a u32 index into an animation table: 12 bytes, alignment 4.
+const MonsterIdx = struct { anim: u32, hp: u32, y: u32 };
+
+comptime {
+    std.debug.assert(@sizeOf(Monster) == 24);
+    std.debug.assert(@sizeOf(MonsterOob) == 16);
+    std.debug.assert(@sizeOf(MonsterIdx) == 12);
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch03-size-alignment-padding/odin/layout.odin"><code class="language-odin">Animation :: struct {
+	frames: []u32,
+}
+
+// A pointer, two u32s and a bool: 8 + 4 + 4 + 1 = 17 bytes of data, 24 bytes of struct.
+Monster :: struct {
+	anim:  ^Animation,
+	hp:    u32,
+	y:     u32,
+	alive: bool,
+}
+// `alive` moved out of band (one array of live monsters, one of dead ones): 16 bytes.
+Monster_Oob :: struct {
+	anim: ^Animation,
+	hp:   u32,
+	y:    u32,
+}
+// The pointer replaced by a u32 index into an animation table: 12 bytes, alignment 4.
+Monster_Idx :: struct {
+	anim: u32,
+	hp:   u32,
+	y:    u32,
+}
+
+#assert(size_of(Monster) == 24)
+#assert(size_of(Monster_Oob) == 16)
+#assert(size_of(Monster_Idx) == 12)</code></pre>
+  </div>
+
+  <p>In all three languages the sizes are checked when the program compiles. Change a field and the build stops. The section on compile-time
+  asserts below comes back to that. The struct-padding grids show the three stages side by side.</p>
+
+  <figure class="figure" id="fig-monster24">
+    <div class="figure-body" data-viz="struct-padding" data-opts='{"name":"Monster","fields":[["anim","*Animation"],["hp","u32"],["y","u32"],["alive","bool"]],"reorder":false,"count":100,"labels":["pointer + bool, 24 B","-"]}'>
+      <p>Monster: anim pointer at 0, hp at 8, y at 12, alive at 16, 7 bytes tail padding: 24 B.</p></div>
+    <figcaption>Stage 1: Kelley's monster. Seven of its 24 bytes are tail padding paid for one bit. The &ldquo;× 100&rdquo; readout matches his 2.4 KB.</figcaption>
+  </figure>
+  <figure class="figure" id="fig-monster12">
+    <div class="figure-body" data-viz="struct-padding" data-opts='{"name":"MonsterIdx","fields":[["anim","u32"],["hp","u32"],["y","u32"]],"reorder":false,"count":100,"labels":["u32 index, no bool, 12 B","-"]}'>
+      <p>MonsterIdx: anim u32 at 0, hp at 4, y at 8: 12 B, no padding.</p></div>
+    <figcaption>Stage 3: with <code>alive</code> moved out of band and the pointer replaced by a <code>u32</code> index, nothing is padding and the
+    alignment is 4. That is half the bytes and twice the monsters per cache line.</figcaption>
+  </figure>
+
+  <figure class="figure" id="fig-kelley-cited">
+    <div class="figure-body" data-viz="bench-bars" data-opts='{"source":"cited: Kelley, “A Practical Guide to Applying Data-Oriented Design”, Handmade Seattle 2021 (via transcript)","metric":"value","unit":"bytes","sort":"none","ratio":false,"runs":[{"label":"Monster {ptr, u32, u32, bool}","value":24},{"label":"bool stored out of band","value":16},{"label":"+ u32 index instead of ptr","value":12},{"label":"tagged-union monster (Human/Bee)","value":32},{"label":"encoding with extra array (avg)","value":17}]}'></div>
+    <figcaption>Kelley's numbers (cited, not re-measured here). The last two bars are the same talk's tagged-union monster, which an
+    &ldquo;encoding&rdquo; approach shrinks from 32 to about 17 bytes on average. Chapter 11 builds that pattern for a compiler.</figcaption>
+  </figure>
+
+  <h2 id="enums">Enums as one byte</h2>
+  <p>An enum with five variants needs three bits, and every language stores it in at least a byte. How many bytes beyond that depends on the
+  language. Rust picks the smallest integer that fits the discriminants, so a five-variant fieldless enum is 1 byte unless you ask for
+  something else with <code>#[repr(u32)]</code>. Zig infers the tag type: <code>enum { bee, human, snake, wolf, ghost }</code> has tag type
+  <code>u3</code> and occupies 1 byte. You can pin it with <code>enum(u8)</code>, which also makes it usable in <code>extern</code> and
+  <code>packed</code> structs.</p>
+  <p><b>Odin is different</b>: &ldquo;By default, <code>int</code> is used as the backing type for an enumeration&rdquo;<a class="cite" href="#src-8">[8]</a>,
+  so a plain <code>enum {Bee, Human}</code> is 8 bytes with alignment 8, and the program prints exactly that. Put that enum in a struct next
+  to a <code>u32</code> and the struct is 16 B, where <code>enum u8</code> would give 8 B.</p>
+
+  <aside class="callout pitfall"><p><b>Odin enums default to 8 bytes.</b> Write <code>Kind :: enum u8 { ... }</code> for any enum that is
+  stored in bulk. An enum that is only passed around in procedure arguments can stay <code>int</code>-backed, but one per entity in a
+  ten-million-element array is 70 MB of zeros.</p></aside>
+
+  <h2 id="niches">Niches: making <code>Option</code> free</h2>
+  <p>&ldquo;Maybe a value&rdquo; needs one more state than the value has. If the type already has bit patterns that are never valid, the compiler can
+  use one of them for <em>none</em> and the optional costs no extra bytes. Rust calls such an invalid bit pattern a <b>niche</b>, and uses niches
+  aggressively. A <code>&amp;T</code> or <code>Box&lt;T&gt;</code> is never null, so <code>Option&lt;&amp;T&gt;</code> is 8 bytes. A
+  <code>bool</code> only uses 0 and 1, so <code>Option&lt;bool&gt;</code> is 1 byte. A five-variant enum leaves 251 byte values unused,
+  so <code>Option&lt;Kind&gt;</code> is 1 byte. A plain <code>u32</code> has no invalid pattern, so <code>Option&lt;u32&gt;</code> needs a separate
+  tag and, after padding, takes 8 bytes. <code>NonZeroU32</code> rules out 0, which gives the niche back: <code>Option&lt;NonZeroU32&gt;</code>
+  is 4 bytes. The standard library documents this as a guaranteed representation for <code>Option</code> of the <code>NonZero</code>
+  types, references, <code>Box</code> and a few more<a class="cite" href="#src-12">[12]</a>.</p>
+  <p>This matters most for indices. A parent link stored as <code>Option&lt;u32&gt;</code> doubles the field. A newtype around <code>NonZeroU32</code>
+  (store index + 1, or reserve 0 for a sentinel node) keeps it at 4 bytes. The Rust compiler does the same with its own index types: its
+  <code>newtype_index!</code> macro reserves the values above <code>0xFFFF_FF00</code>, so that <code>Option</code> of an index stays 4 bytes.</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch03-size-alignment-padding/rust/src/layout.rs"><code class="language-rust">#[derive(Clone, Copy)]
+enum Kind {
+    Bee,
+    Human,
+    Snake,
+    Wolf,
+    Ghost,
+}
+
+/// A typed index whose zero bit pattern is forbidden, so `Option&lt;AnimId&gt;` can use 0 for `None`.
+#[derive(Clone, Copy)]
+struct AnimId(NonZeroU32);
+
+const _: () = assert!(size_of::&lt;Kind&gt;() == 1);
+const _: () = assert!(size_of::&lt;Option&lt;Kind&gt;&gt;() == 1); // spare discriminant values
+const _: () = assert!(size_of::&lt;Option&lt;u32&gt;&gt;() == 8); // no spare bit pattern: tag + padding
+const _: () = assert!(size_of::&lt;Option&lt;AnimId&gt;&gt;() == 4); // 0 is the niche
+const _: () = assert!(size_of::&lt;Option&lt;&amp;u64&gt;&gt;() == 8); // null is the niche</code></pre>
+<pre data-lang="Zig" data-file="code/ch03-size-alignment-padding/zig/layout.zig"><code class="language-zig">const Kind = enum { bee, human, snake, wolf, ghost }; // tag type u3, stored in 1 byte
+/// Zig has no NonZero types. The idiom is a non-exhaustive enum with a named sentinel.
+const AnimId = enum(u32) { none = std.math.maxInt(u32), _ };
+
+comptime {
+    std.debug.assert(@sizeOf(Kind) == 1);
+    std.debug.assert(@sizeOf(?Kind) == 2); // no niche: a separate "has value" byte
+    std.debug.assert(@sizeOf(?u32) == 8); // tag + padding
+    std.debug.assert(@sizeOf(AnimId) == 4); // the sentinel costs nothing
+    std.debug.assert(@sizeOf(?AnimId) == 8); // but `?` does not know about it
+    std.debug.assert(@sizeOf(?*const u64) == 8); // optional pointers use address 0
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch03-size-alignment-padding/odin/layout.odin"><code class="language-odin">Kind :: enum u8 {
+	Bee,
+	Human,
+	Snake,
+	Wolf,
+	Ghost,
+}
+Kind_Default :: enum {
+	Bee,
+	Human,
+} // backing type defaults to int: 8 bytes
+// Odin has no NonZero types; a distinct integer with a reserved value is the usual typed index.
+Anim_Id :: distinct u32
+ANIM_NONE :: Anim_Id(max(u32))
+
+#assert(size_of(Kind) == 1 &amp;&amp; size_of(Kind_Default) == 8)
+#assert(size_of(Maybe(Kind)) == 2) // a union tag byte; no niche from unused enum values
+#assert(size_of(Maybe(u32)) == 8) // tag + padding
+#assert(size_of(Maybe(Anim_Id)) == 8) // the reserved value is a convention, not a niche
+#assert(size_of(Maybe(^u64)) == 8) // a single-pointer union uses nil: no tag</code></pre>
+  </div>
+
+  <p><b>Zig</b> guarantees exactly one niche: &ldquo;An optional pointer is guaranteed to be the same size as a pointer. The null of the optional is
+  guaranteed to be address 0&rdquo;<a class="cite" href="#src-7">[7]</a>. Other optionals get a separate flag. In 0.17.1 <code>?Kind</code> is 2 bytes
+  even though the enum's <code>u3</code> tag has three unused values, and <code>?u31</code> is 8 bytes even though a whole bit is free. There
+  is no <code>NonZero</code> type either. The Zig idiom for an optional index is a non-exhaustive enum with a named sentinel,
+  <code>enum(u32) { none = std.math.maxInt(u32), _ }</code>, which stays 4 bytes and gives each index its own type (Alex Kladov calls the
+  pattern a &ldquo;happy accident of language design&rdquo;<a class="cite" href="#src-16">[16]</a>). You compare against <code>.none</code> by hand.
+  Wrap it in <code>?</code> and you are back to 8 bytes.</p>
+  <p><b>Odin</b>'s <code>Maybe(T)</code> is a union with one variant. A union whose only variant is a pointer uses <code>nil</code> as its
+  empty state, so <code>Maybe(^u64)</code> is 8 bytes. Everything else carries a tag: <code>Maybe(u32)</code> is 8 bytes, and so is
+  <code>Maybe(Anim_Id)</code> for a <code>distinct u32</code>. The idiom matches Zig's: a <code>distinct u32</code> plus a reserved constant
+  such as <code>ANIM_NONE :: Anim_Id(max(u32))</code>. The Odin overview also notes that multiple return values (<code>-&gt; (int, bool)</code>)
+  usually replace <code>Maybe</code> in APIs<a class="cite" href="#src-8">[8]</a>. That is fine for a return value, but a struct field
+  still needs a sentinel.</p>
+
+  <div class="table-wrap"><table>
+    <tr><th>Type</th><th class="num">Rust</th><th class="num">Zig</th><th class="num">Odin</th></tr>
+    <tr><td>optional pointer</td><td class="num">8 (<code>Option&lt;&amp;u64&gt;</code>)</td><td class="num">8 (<code>?*const u64</code>)</td><td class="num">8 (<code>Maybe(^u64)</code>)</td></tr>
+    <tr><td>optional <code>u32</code></td><td class="num">8</td><td class="num">8</td><td class="num">8</td></tr>
+    <tr><td>optional non-zero / typed index</td><td class="num">4 (<code>NonZeroU32</code>)</td><td class="num">8 (<code>?AnimId</code>), 4 with a <code>.none</code> sentinel</td><td class="num">8 (<code>Maybe(Anim_Id)</code>), 4 with a sentinel</td></tr>
+    <tr><td>optional 5-variant enum</td><td class="num">1</td><td class="num">2</td><td class="num">2</td></tr>
+  </table></div>
+
+  <h2 id="smaller">Smaller types: narrow integers, f16, quantization, bit packing</h2>
+  <p>Reordering and niches remove padding. The next step is to make the fields themselves smaller. The Rust performance book's advice
+  applies to all three languages: indices &ldquo;are often reasonable to store as <code>u32</code>, <code>u16</code>, or even <code>u8</code>,
+  and then coerce to <code>usize</code> at use points&rdquo;<a class="cite" href="#src-4">[4]</a>. A hit-point count below 1000 fits a <code>u16</code>,
+  and a tile coordinate on a 4096-wide map fits 12 bits.</p>
+  <p><b>Quantization</b> does the same for floats. A position inside a 1 km cell stored as three <code>f32</code>s takes 12 bytes. Store each
+  axis as a <code>u16</code> fraction of the cell and it takes 6 bytes, with a step of 1000 m / 65535 ≈ 1.5 cm, so the worst-case rounding
+  error is half that. All three programs quantize 123.456 m to 8091 and decode it to 123.4607 m, an error of 4.7 mm. meshoptimizer's
+  documentation describes the same trade for vertex data, for example &ldquo;it's common to quantize normals using 3 8-bit integers&rdquo;<a class="cite" href="#src-19">[19]</a>.
+  Quantize what you <em>store</em>. Do the arithmetic in full precision and convert at the edges.</p>
+  <p><b>Half floats</b> are the built-in version of the same trade. Zig and Odin both have a native <code>f16</code> (2 bytes, 11 significant
+  bits). It holds 123.456 as 123.4375, an error of 1.85 cm at that magnitude, and the error grows with the magnitude. Quantization spreads
+  its precision evenly over a known range instead. In Rust 1.100, <code>f16</code> is still unstable (feature <code>f16</code>, tracking
+  issue #116909<a class="cite" href="#src-15">[15]</a>). On stable, store the raw <code>u16</code> bits or quantize.</p>
+  <p><b>Bit packing</b> goes below the byte. Zig's <code>packed struct(u32) { kind: u4, layer: u4, index: u24 }</code> is a <code>u32</code> whose
+  fields are bit ranges &ldquo;arranged from least to most significant&rdquo;<a class="cite" href="#src-7">[7]</a>, and Zig's arbitrary-width integers
+  (<code>u4</code>, <code>u24</code>) make the widths part of the type. Odin's <code>bit_field u32 { kind: u8 | 4, ... }</code> does the same, with
+  a &ldquo;well defined layout (Least-Significant-Bit)&rdquo; that the docs contrast with C bit-fields, which &ldquo;are undefined and are not portable&rdquo;<a class="cite" href="#src-8">[8]</a>.
+  Rust has no bit-fields, so you write the shifts and masks yourself in a newtype. All three encode (3, 7, 123456) as the same word,
+  <code>0x01e24073</code>.</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch03-size-alignment-padding/rust/src/layout.rs"><code class="language-rust">/// World position as three f32: 12 bytes.
+struct PosF32 {
+    x: f32,
+    y: f32,
+    z: f32,
+}
+
+/// The same position quantized to u16 steps inside a 1 km cell (1000 m / 65535 ≈ 1.5 cm): 6 bytes.
+struct PosU16 {
+    x: u16,
+    y: u16,
+    z: u16,
+}
+
+const CELL_M: f32 = 1000.0;
+
+fn quantize(v: f32) -&gt; u16 {
+    ((v / CELL_M).clamp(0.0, 1.0) * u16::MAX as f32).round() as u16
+}
+
+fn dequantize(q: u16) -&gt; f32 {
+    q as f32 / u16::MAX as f32 * CELL_M
+}
+
+/// Rust has no bit-fields: pack kind (4 bits), layer (4 bits) and index (24 bits) into a u32 by hand.
+#[derive(Clone, Copy)]
+struct PackedRef(u32);
+
+impl PackedRef {
+    fn new(kind: u32, layer: u32, index: u32) -&gt; Self {
+        assert!(kind &lt; 16 &amp;&amp; layer &lt; 16 &amp;&amp; index &lt; (1 &lt;&lt; 24));
+        PackedRef(kind | layer &lt;&lt; 4 | index &lt;&lt; 8)
+    }
+    fn kind(self) -&gt; u32 {
+        self.0 &amp; 0xF
+    }
+    fn layer(self) -&gt; u32 {
+        (self.0 &gt;&gt; 4) &amp; 0xF
+    }
+    fn index(self) -&gt; u32 {
+        self.0 &gt;&gt; 8
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch03-size-alignment-padding/zig/layout.zig"><code class="language-zig">const PosF32 = struct { x: f32, y: f32, z: f32 }; // 12 bytes
+const PosU16 = struct { x: u16, y: u16, z: u16 }; // 6 bytes: 1 km cell / 65535 ≈ 1.5 cm steps
+const PosF16 = struct { x: f16, y: f16, z: f16 }; // 6 bytes, but only ~3 significant digits
+
+/// Fields are laid out from the least significant bit: kind = bits 0..3, layer = 4..7, index = 8..31.
+const PackedRef = packed struct(u32) { kind: u4, layer: u4, index: u24 };
+
+comptime {
+    std.debug.assert(@sizeOf(PackedRef) == 4);
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch03-size-alignment-padding/odin/layout.odin"><code class="language-odin">Pos_F32 :: struct {
+	x, y, z: f32,
+} // 12 bytes
+Pos_U16 :: struct {
+	x, y, z: u16,
+} // 6 bytes: 1 km cell / 65535 ≈ 1.5 cm steps
+Pos_F16 :: struct {
+	x, y, z: f16,
+} // 6 bytes, but only ~3 significant digits
+
+// Least-significant bit first: kind = bits 0..3, layer = 4..7, index = 8..31.
+Packed_Ref :: bit_field u32 {
+	kind:  u8  | 4,
+	layer: u8  | 4,
+	index: u32 | 24,
+}
+
+#assert(size_of(Packed_Ref) == 4)</code></pre>
+  </div>
+
+  <aside class="callout pitfall"><p><b>Zig's <code>packed struct</code> is not C's <code>packed</code>.</b> It is an integer. The four-field
+  <code>Mixed</code> as a <code>packed struct</code> is a 112-bit integer, and <code>u112</code> has the size and alignment of a
+  <code>u128</code> on x86-64, so it comes out at <b>16 bytes with alignment 16</b>, not the 14 bytes that <code>repr(C, packed)</code> and
+  <code>#packed</code> give. Use <code>packed struct</code> for flags and bit-level encodings with an explicit backing type such as
+  <code>packed struct(u32)</code>. For &ldquo;no padding between byte-sized fields&rdquo;, sort the fields of a plain struct, or use SoA
+  (Chapter 4).</p></aside>
+
+  <aside class="callout version" data-title="Changed in Zig 0.17"><p>To read the backing integer of a packed struct (or of an enum), use
+  <code>@backingInt(p)</code>, and <code>@fromBackingInt</code> for the reverse. (Chapter 1 has the matching enum renames.)</p></aside>
+
+  <p>Bit sets of booleans (Odin's <code>bit_set[Flag; u8]</code>, Zig's <code>std.bit_set</code>, a <code>u8</code> of flags in Rust) are the
+  other common packing. They pay off most when the flags move out of the struct altogether, which is the out-of-band idea again, so they
+  are covered in Chapter 7.</p>
+
+  <h2 id="asserts">Pin sizes at compile time</h2>
+  <p>Size is a property you design for, so it should be checked like one. A colleague adds a <code>bool</code> to a hot struct and it grows
+  from 16 to 24 bytes without any visible change. A size assert turns that into a compile error. Each language has a one-line form, and the
+  chapter's programs use all three:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch03-size-alignment-padding/rust/src/main.rs"><code class="language-rust">/// 8 + 4 + 4 + 1 = 17 bytes of fields, padded to 24 (align 8).
+#[derive(Clone, Copy)]
+struct Fat {
+    anim: usize, // stands in for a pointer: same size and alignment
+    hp: u32,
+    y: u32,
+    alive: bool,
+}
+
+/// 4 + 4 + 4 + 1 = 13 bytes of fields, padded to 16 (align 4).
+#[derive(Clone, Copy)]
+struct Index {
+    anim: u32,
+    hp: u32,
+    y: u32,
+    alive: bool,
+}
+
+/// 4 + 4 + 2 + 1 = 11 bytes of fields, padded to 12 (align 4).
+#[derive(Clone, Copy)]
+struct Small {
+    anim: u32,
+    hp: u32,
+    y: u16,
+    alive: bool,
+}
+
+const _: () = assert!(size_of::&lt;Fat&gt;() == 24);
+const _: () = assert!(size_of::&lt;Index&gt;() == 16);
+const _: () = assert!(size_of::&lt;Small&gt;() == 12);</code></pre>
+<pre data-lang="Zig" data-file="code/ch03-size-alignment-padding/zig/main.zig"><code class="language-zig">/// 8 + 4 + 4 + 1 = 17 bytes of fields, padded to 24 (align 8).
+const Fat = struct { anim: usize, hp: u32, y: u32, alive: bool };
+/// 4 + 4 + 4 + 1 = 13 bytes of fields, padded to 16 (align 4).
+const Index = struct { anim: u32, hp: u32, y: u32, alive: bool };
+/// 4 + 4 + 2 + 1 = 11 bytes of fields, padded to 12 (align 4).
+const Small = struct { anim: u32, hp: u32, y: u16, alive: bool };
+
+comptime {
+    std.debug.assert(@sizeOf(Fat) == 24);
+    std.debug.assert(@sizeOf(Index) == 16);
+    std.debug.assert(@sizeOf(Small) == 12);
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch03-size-alignment-padding/odin/main.odin"><code class="language-odin">// 8 + 4 + 4 + 1 = 17 bytes of fields, padded to 24 (align 8).
+Fat :: struct {
+	anim:  uintptr, // stands in for a pointer: same size and alignment
+	hp:    u32,
+	y:     u32,
+	alive: bool,
+}
+// 4 + 4 + 4 + 1 = 13 bytes of fields, padded to 16 (align 4).
+Index :: struct {
+	anim:  u32,
+	hp:    u32,
+	y:     u32,
+	alive: bool,
+}
+// 4 + 4 + 2 + 1 = 11 bytes of fields, padded to 12 (align 4).
+Small :: struct {
+	anim:  u32,
+	hp:    u32,
+	y:     u16,
+	alive: bool,
+}
+
+#assert(size_of(Fat) == 24)
+#assert(size_of(Index) == 16)
+#assert(size_of(Small) == 12)</code></pre>
+  </div>
+  <p>Rust evaluates the <code>const _: () = assert!(...)</code> item during compilation. Since 1.80 <code>size_of</code> is in the prelude, so it
+  needs no import. Zig runs the <code>comptime</code> block in the compiler. Odin's <code>#assert</code> is a compile-time directive. Both compilers
+  use this on themselves. rustc's AST has a list of <code>static_assert_size!(Expr, 64)</code>-style guards<a class="cite" href="#src-14">[14]</a>,
+  and Zig's <code>Air.zig</code> asserts <code>@sizeOf(Data) == 8</code> for its instruction payload<a class="cite" href="#src-13">[13]</a>. The Rust
+  performance book suggests putting the assert behind <code>#[cfg(target_arch = "x86_64")]</code>, &ldquo;because type sizes can vary on different
+  platforms&rdquo;<a class="cite" href="#src-4">[4]</a>. A struct with a pointer is 24 B on x86-64 and 16 B on a 32-bit target.</p>
+
+  <aside class="callout try"><p>See a compiler's view of every type. These need tools this orb does not have (nightly Rust, <code>pahole</code>
+  with debug info), so no output is shown here. Run them on your own machine:</p>
+<pre><code class="language-bash"># Rust (nightly only): size, alignment, field order and padding of every type in the crate
+RUSTFLAGS=-Zprint-type-sizes cargo +nightly build --release 2&gt;&amp;1 | grep -A8 'type: `Monster'
+
+# C, Zig or Odin binaries with DWARF debug info: holes and padding per struct (Linux, package "dwarves")
+pahole -C Monster ./a.out
+pahole --reorganize -C Monster ./a.out     # suggests a tighter field order
+
+# Everything printed in this chapter, in all three languages
+cd code &amp;&amp; ./run_all.sh ch03</code></pre></aside>
+  <p>The Linux networking developers used <code>pahole</code> exactly this way: Eric Dumazet's <code>tcp_sock</code> work found and removed
+  holes, and kernel slides show <code>pahole --reorganize</code> on <code>task_struct</code> reporting &ldquo;saved 80 bytes and 1 cacheline&rdquo;<a class="cite" href="#src-20">[20]</a><a class="cite" href="#src-18">[18]</a>.
+  Rust's <code>-Zprint-type-sizes</code> is nightly-only. On stable, <code>size_of</code>, <code>align_of</code> and <code>offset_of!</code>
+  (stable since 1.77) give you the same numbers one type at a time<a class="cite" href="#src-4">[4]</a>.</p>
+
+  <h2 id="thresholds">Thresholds: 64 bytes and 128 bytes</h2>
+  <p>Shrinking a type does not pay off evenly. Some sizes are cliffs. Nicholas Nethercote's long series on speeding up rustc gives two
+  of them with numbers.</p>
+  <p><b>64 bytes: one cache line.</b> In July 2026 he shrank rustc's AST expression node from 72 to 64 bytes, &ldquo;small enough to fit in a cache
+  line&rdquo;. Expressions are the most common AST node, and the change &ldquo;reduced wall-time on a small number of AST-heavy benchmarks, some by more
+  than 10%&rdquo;, while &ldquo;cache miss rates on those same benchmarks fell by as much as 29%&rdquo;<a class="cite" href="#src-5">[5]</a>. At 72 bytes,
+  most nodes straddle two lines. At 64, each node in a line-aligned array is exactly one line.</p>
+  <p><b>128 bytes: inline copy or <code>memcpy</code>.</b> &ldquo;Rust types that are larger than 128 bytes are copied with memcpy rather than inline
+  code&rdquo;<a class="cite" href="#src-4">[4]</a>. Above that size, every move of a value becomes a function call. In the same July 2026 post, a hot vector
+  element was 136 bytes. Nethercote avoided two-thirds of the moves and &ldquo;shrank the type down to 104 bytes so that memcpy wasn't used for
+  the remaining moves&rdquo;, and wall time on the two worst crates fell by 40%<a class="cite" href="#src-5">[5]</a>. We did not check whether rustc or
+  LLVM sets that threshold, so treat it as a property of rustc, not a law of hardware; we did not check Zig's or Odin's either.</p>
+  <p>The same series is honest about the other side. In 2022 he shrank
+  <code>Attribute</code> from 152 to 32 bytes for a 5.13% drop in peak memory, and explicitly credited the Zig compiler's work<a class="cite" href="#src-11">[11]</a>.
+  Size wins are real, but how big they are depends on how hot the type is and which threshold you cross.</p>
+
+  <h2 id="measure">Measuring padding waste</h2>
+  <p>Do padding bytes cost time, or only memory? The benchmark answers that for one loop. It builds N monsters, for N from 10 thousand to
+  10 million, in three layouts that hold <em>the same values</em>:</p>
+  <ul>
+    <li><b>24 B fat</b>: a pointer-sized <code>anim</code> handle, <code>hp: u32</code>, <code>y: u32</code>, <code>alive: bool</code>, which is Kelley's starting struct;</li>
+    <li><b>16 B index</b>: the handle as a <code>u32</code> index (alignment drops to 4);</li>
+    <li><b>12 B small</b>: the index, and <code>y</code> narrowed to <code>u16</code>.</li>
+  </ul>
+  <p>The values come from a stateless splitmix64 hash of the index, so all three languages build identical monsters. The pass reads every
+  field and sums the live ones. Each program stops with an error if the layouts' checksums differ; at 10 M
+  monsters all nine runs printed 264,734,445,134. The sum is written without a branch, multiplying by
+  <code>alive</code>, because a quarter of the monsters are dead at random and a branch would measure mispredictions instead of bytes. That
+  effect gets its own chapter. Timing uses the harness from Chapter 2.
+  This benchmark keeps <code>alive</code> inside the struct so that the work stays identical across layouts. Its 24 → 16 → 12 path
+  therefore differs from Kelley's in the middle step, but the sizes are the same.</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch03-size-alignment-padding/rust/src/main.rs"><code class="language-rust">/// The per-monster work: read every field, sum the live ones.
+/// Branch-free on purpose: `alive` is random, and a branch would measure mispredictions (Chapter 7).
+trait Score {
+    fn score(&amp;self) -&gt; u64;
+}
+
+impl Score for Fat {
+    fn score(&amp;self) -&gt; u64 {
+        (self.anim as u64 + self.hp as u64 + self.y as u64) * self.alive as u64
+    }
+}
+
+impl Score for Index {
+    fn score(&amp;self) -&gt; u64 {
+        (self.anim as u64 + self.hp as u64 + self.y as u64) * self.alive as u64
+    }
+}
+
+impl Score for Small {
+    fn score(&amp;self) -&gt; u64 {
+        (self.anim as u64 + self.hp as u64 + self.y as u64) * self.alive as u64
+    }
+}
+
+fn total&lt;M: Score&gt;(ms: &amp;[M]) -&gt; u64 {
+    ms.iter().map(M::score).sum()
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch03-size-alignment-padding/zig/main.zig"><code class="language-zig">/// The per-monster work: read every field, sum the live ones. One function per element type.
+fn totalOf(comptime M: type) fn ([]const M) u64 {
+    return struct {
+        fn total(ms: []const M) u64 {
+            var s: u64 = 0;
+            for (ms) |m| {
+                // Branch-free on purpose: `alive` is random, and a branch would measure mispredictions (Chapter 7).
+                s += (@as(u64, m.anim) + m.hp + m.y) * @intFromBool(m.alive);
+            }
+            return s;
+        }
+    }.total;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch03-size-alignment-padding/odin/main.odin"><code class="language-odin">// The per-monster work: read every field, sum the live ones. One instantiation per element type.
+// Branch-free on purpose: `alive` is random, and a branch would measure mispredictions (Chapter 7).
+total :: proc(ms: []$M) -&gt; u64 {
+	s: u64
+	for m in ms {
+		s += (u64(m.anim) + u64(m.hp) + u64(m.y)) * u64(m.alive)
+	}
+	return s
+}</code></pre>
+  </div>
+  <p>The three versions differ where the languages do. Rust uses a small trait and one generic <code>total</code>. Zig returns one
+  concrete function per layout from a comptime function (<code>totalOf(M)</code>), because the harness takes a <code>comptime f</code>. Odin's
+  parametric <code>total :: proc(ms: []$M)</code> has to be pinned to a concrete instantiation before it can be passed as a procedure value.</p>
+
+  <details class="predict"><summary>At 10 M monsters the arrays are 240 MB, 160 MB and 120 MB, far beyond any cache on this orb. If the loop is
+  limited by memory bandwidth, how should the 24 B and 12 B times compare? And what about at 10 thousand monsters (240 KB, inside L2)?</summary>
+  <p>At 10 M the time should follow the bytes, so the 24 B layout should take up to twice as long. On this orb it is
+  <span data-bench-ratio="ch03-monsters" data-num="24 B fat" data-den="12 B small" data-lang="rust">about 1.75×</span> slower in Rust,
+  <span data-bench-ratio="ch03-monsters" data-num="24 B fat" data-den="12 B small" data-lang="zig">about 1.7×</span> in Zig and
+  <span data-bench-ratio="ch03-monsters" data-num="24 B fat" data-den="12 B small" data-lang="odin">about 1.7×</span> in Odin. At 10 thousand,
+  everything is in cache, and the gap shrinks to
+  <span data-bench-ratio="ch03-monsters" data-num="24 B fat" data-den="12 B small" data-lang="rust" data-n="10000">about 1.3×</span> (Rust).
+  What is left there comes from the code the compiler generates for each layout, not from memory.</p></details>
+
+  <figure class="figure wide" id="fig-sweep">
+    <div class="figure-body" data-viz="bench-line" data-bench="ch03-monsters" data-opts='{"metric":"ns/n","per":"monster","langs":["rust"],"series":"label","xLabel":"monsters N"}'></div>
+    <figcaption>Time per monster for one pass, Rust, pinned to one core of one 4-vCPU KVM guest on an Ice Lake Xeon
+    (machine: see Chapter 2; the numbers are noisy). Up to about 300 k monsters
+    (7 MB for the fat layout) all three stay low and nearly flat. Past that the fat layout steps up first, at 1 M (24 MB), while the 12 B
+    layout (12 MB) is still fast. From 3 M on, all three come from DRAM and the gaps settle near the ratio of their sizes.</figcaption>
+  </figure>
+
+  <figure class="figure" id="fig-sweep-langs">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch03-monsters" data-opts='{"metric":"ns/n","per":"monster","n":10000000}'></div>
+    <figcaption>All three languages at N = 10 M. Each language's lines are in the same order and roughly the same lengths. The layout
+    matters much more than the language.</figcaption>
+  </figure>
+
+  <h3 id="worked">Worked example: from bytes to milliseconds</h3>
+  <p>Take the Rust numbers at 10 M monsters, the ones charted above. The fat layout took <span data-bench-val="ch03-monsters" data-label="24 B fat" data-lang="rust" data-n="10000000" data-metric="ns/n" data-digits="2">2.9 ns</span> per monster, so
+  <span data-bench-val="ch03-monsters" data-label="24 B fat" data-lang="rust" data-n="10000000" data-metric="ms" data-digits="2">29 ms</span> per pass over 240 MB. The small layout took <span data-bench-val="ch03-monsters" data-label="12 B small" data-lang="rust" data-n="10000000" data-metric="ns/n" data-digits="2">1.6 ns</span> per monster, so
+  <span data-bench-val="ch03-monsters" data-label="12 B small" data-lang="rust" data-n="10000000" data-metric="ms" data-digits="2">16 ms</span> over 120 MB. Both read their bytes at a similar rate, so the loop is bandwidth-bound and
+  time ≈ bytes ÷ bandwidth. Halving the bytes would ideally halve the time. We got <span data-bench-ratio="ch03-monsters" data-num="24 B fat" data-den="12 B small" data-lang="rust">1.75×</span> instead of 2× because
+  the smaller layout reads its bytes slightly more slowly than the fat one. The 16 B layout falls in between, at
+  <span data-bench-val="ch03-monsters" data-label="16 B index" data-lang="rust" data-n="10000000" data-metric="ns/n" data-digits="2">2.1 ns</span> per monster.</p>
+  <p>Kelley's point, in milliseconds: at this size, on this machine, each padding byte costs about the same as a data byte, about one
+  twenty-fourth of the fat layout's per-monster time per pass. A 60 Hz frame is 16.7 ms. The small layout's pass alone takes about a frame,
+  and the fat layout's pass takes <span data-bench-ratio="ch03-monsters" data-num="24 B fat" data-den="12 B small" data-lang="rust">about 1.75×</span> as long, far more than a
+  frame. A game that really walks ten million monsters every frame must shrink them further, or touch fewer.</p>
+
+  <div class="table-wrap"><table>
+    <tr><th>Layout</th><th class="num">bytes/monster</th><th class="num">monsters per 64 B line</th><th class="num">MB at 10 M</th><th class="num">time/monster at 10 M (Rust)</th></tr>
+    <tr><td>24 B fat</td><td class="num">24</td><td class="num">2.67</td><td class="num">240</td><td class="num"><span data-bench-val="ch03-monsters" data-label="24 B fat" data-lang="rust" data-n="10000000" data-metric="ns/n" data-digits="2">2.9 ns</span></td></tr>
+    <tr><td>16 B index</td><td class="num">16</td><td class="num">4</td><td class="num">160</td><td class="num"><span data-bench-val="ch03-monsters" data-label="16 B index" data-lang="rust" data-n="10000000" data-metric="ns/n" data-digits="2">2.1 ns</span></td></tr>
+    <tr><td>12 B small</td><td class="num">12</td><td class="num">5.33</td><td class="num">120</td><td class="num"><span data-bench-val="ch03-monsters" data-label="12 B small" data-lang="rust" data-n="10000000" data-metric="ns/n" data-digits="2">1.6 ns</span></td></tr>
+  </table></div>
+
+  <h3 id="in-cache">What happens in cache</h3>
+  <p>The left side of <a class="figref" href="#fig-sweep">the figure above</a> is just as instructive. When the array fits in L2, all three layouts run
+  several times faster per monster, and the differences between them are not proportional to bytes. In Zig, the 16 B layout is as slow as
+  the 24 B one in cache, and only the 12 B layout is faster. In Rust and Odin, the 16 B and 12 B layouts are close together. These are
+  differences in the code the compiler generates for each layout (how it loads the fields, and whether and how it vectorizes), and they
+  can change with a compiler version. In cache, size buys you <em>capacity</em>: the 12 B array stays in a cache level that the 24 B
+  array has already left, and that is why the fat line in <a class="figref" href="#fig-sweep">the figure above</a> steps up a size earlier than the others.</p>
+
+  <aside class="callout note"><p>Machine: see Chapter 2. The runs were pinned with <code>taskset -c 2</code>; the L3 is shared with other
+  tenants, which blurs where the L3-to-DRAM step happens. Read the shapes and ratios, not the absolute nanoseconds.</p></aside>
+
+  <h2 id="caveats">When not to shrink</h2>
+  <ul>
+    <li><b>Layouts that are part of a contract.</b> FFI structs, file formats, network packets and memory-mapped data need a fixed order
+    (<code>repr(C)</code>, <code>extern struct</code>, Odin's default). Do not &ldquo;optimize&rdquo; them by reordering.</li>
+    <li><b>Deliberate grouping.</b> Fields that different threads write should be on separate cache lines (Chapter 8). Hot fields are
+    sometimes kept together on the first line on purpose. A reordering compiler does not know about either, so annotate with
+    <code>repr(C)</code> or an alignment and assert the offsets.</li>
+    <li><b>Packed and misaligned data</b> costs extra instructions on every access, may cross cache lines, and breaks atomics.</li>
+    <li><b>Narrow types have edges.</b> A <code>u16</code> hit-point count silently wraps in release builds unless you check. Quantized
+    positions lose precision, and repeated physics updates in 16-bit fixed point drift. Keep full precision for the arithmetic.</li>
+    <li><b>Cold types.</b> Shrinking a struct that is touched once per frame, or of which there are twenty, buys nothing: Nethercote
+    abandoned a 16-byte token type because the speedup was negligible<a class="cite" href="#src-6">[6]</a>
+    (<a href="12-measure-and-know-when-not-to.html#nethercote">Chapter 12</a> tells the story). Shrink the types that a
+    profiler, a heap profiler or a count of elements says are hot.</li>
+    <li><b>Beyond sorting</b>, the remaining padding sits between differently sized fields of the same element. The structural fix for that is to
+    stop storing them together at all: struct-of-arrays, the subject of the next chapter.</li>
+  </ul>
+
+  <aside class="recap"><p>Every element pays for its padding in cache lines and bandwidth. So know your sizes (and pin them with a
+  compile-time assert), let the compiler sort fields or sort them yourself in Odin and <code>repr(C)</code>, and then shrink the fields
+  themselves: one-byte enums, niches, indices, narrow and quantized types, and bits.</p></aside>
+
+  <h2 id="exercises">Exercises</h2>
+  <details class="exercise"><summary>What are the sizes of <code>struct { a: u8, b: u32, c: u16, d: u8 }</code> in C order and with
+  reordering? Check your answer in <a class="figref" href="#fig-reorder">the figure above</a>.</summary>
+  <p>C order: <code>a</code> at 0, 3 bytes of padding, <code>b</code> at 4, <code>c</code> at 8, <code>d</code> at 10, then 1 byte of tail padding,
+  so 12 B. Sorted (<code>u32, u16, u8, u8</code>): 8 B with no padding. rustc agrees: 12 for <code>repr(C)</code> and 8 for the default
+  layout.</p></details>
+  <details class="exercise"><summary>A tree of 10 million nodes stores a parent link per node. How much memory does
+  <code>Option&lt;NonZeroU32&gt;</code> save compared with <code>Option&lt;u32&gt;</code>, and what is the equivalent in Zig and Odin?</summary>
+  <p>4 bytes per node, so 40 MB (80 MB versus 40 MB for the field alone, and possibly more if the extra 4 bytes add padding to the node).
+  In Zig, use <code>enum(u32) { none = std.math.maxInt(u32), _ }</code> rather than <code>?u32</code>. In Odin, use a <code>distinct u32</code> with a
+  reserved constant rather than <code>Maybe(u32)</code>. Both stay at 4 bytes, but you check for the sentinel by hand.</p></details>
+  <details class="exercise"><summary>Why is <code>Option&lt;Option&lt;NonZeroU32&gt;&gt;</code> 8 bytes, while <code>Option&lt;Option&lt;bool&gt;&gt;</code>
+  is 1 byte?</summary>
+  <p><code>NonZeroU32</code> has exactly one invalid bit pattern (0), and the inner <code>Option</code> uses it, so the outer one needs a tag.
+  A <code>bool</code> leaves 254 byte values unused, enough for both levels of <code>None</code>. rustc 1.100 prints 8 and 1.</p></details>
+  <details class="exercise"><summary>In Zig, what are <code>@sizeOf</code> and <code>@alignOf</code> of
+  <code>packed struct { a: u8, b: u16, c: u1 }</code>? And if <code>c</code> becomes a <code>u48</code>?</summary>
+  <p>A packed struct is its backing integer. The first is a <code>u25</code>, which x86-64 stores like a <code>u32</code>: 4 bytes, aligned to 4.
+  The second is a <code>u72</code>, which LLVM stores like a <code>u128</code>: 16 bytes, aligned to 16, for 9 bytes of fields. Zig 0.17.1 prints 4/4 and 16/16.</p></details>
+  <details class="exercise"><summary>In Odin, what are the size and alignment of <code>struct { a: u8, kind: Kind, b: u8 }</code> when
+  <code>Kind :: enum u16 { A, B }</code>? And with the default <code>Kind :: enum { A, B }</code>, in this order and with <code>kind</code> first?</summary>
+  <p>With <code>enum u16</code>: <code>a</code> at 0, 1 byte of padding, <code>kind</code> at 2, <code>b</code> at 4, then 1 byte of tail padding:
+  6 B, alignment 2. The default enum is <code>int</code>-backed (8 bytes, alignment 8): <code>a</code> at 0, 7 bytes of padding, <code>kind</code>
+  at 8, <code>b</code> at 16, tail padding to 24 B. Putting <code>kind</code> first gives 8 + 1 + 1 = 10, rounded up to 16 B. Odin prints
+  6/2, 24/8 and 16.</p></details>
+  <details class="exercise"><summary>You quantize positions in a 1 km cell to <code>u16</code>. What is the worst-case error, and how many bits
+  would you need for 1 mm?</summary>
+  <p>The step is 1000 m / 65535 ≈ 15.3 mm, and rounding to the nearest step gives at most half of that, ≈ 7.6 mm. The program's 4.7 mm is
+  within that bound. For 1 mm worst-case error you need a step of at most 2 mm, so 1000 / 0.002 = 500,000 steps, which needs 19 bits.
+  A 64-bit word could pack three 19-bit axes (57 bits) with a <code>packed struct(u64)</code> or <code>bit_field u64</code>.</p></details>
+  <details class="exercise"><summary>Run <code>code/ch03-size-alignment-padding</code> with N = 300000 and N = 3000000. At which N does the
+  24 B layout leave L2 (1.25 MiB on this orb), and at which does it leave L3? Does the chart show it there?</summary>
+  <p>The 24 B layout exceeds 1.25 MiB at about 55 thousand monsters and 54 MiB at about 2.4 million. The 12 B layout reaches the same
+  points at twice those counts. In the run charted above, the big step for the fat layout is at 1 M monsters (24 MB), before the nominal L3 size.
+  The L3 is shared with other tenants and the prefetcher hides the L2 step for a sequential scan, so the measured steps are blurrier and
+  earlier than the nominal sizes. That is why this book plots measurements instead of drawing cache sizes.</p></details>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="sources">
+    <li id="src-1">Andrew Kelley, “A Practical Guide to Applying Data-Oriented Design”, Handmade Seattle, 2021. <a href="https://vimeo.com/649009599">talk page</a>, <a href="https://www.youtube.com/watch?v=IroPQ150F6c">video</a>.</li>
+    <li id="src-2">Transcript of Kelley's talk [1], Josherich's Blog. <a href="https://josherich.me/podcast/andrew-kelley-practical-data-oriented-design-dod">josherich.me</a>. Source of the quotes and of the 24/16/12 B, 2.4/1.2 KB and 32→17 B numbers (a third-party transcript, not the slides).</li>
+    <li id="src-3">The Rust Reference, “Type layout”. <a href="https://doc.rust-lang.org/reference/type-layout.html">doc.rust-lang.org/reference/type-layout.html</a>.</li>
+    <li id="src-4">Nicholas Nethercote et al., <i>The Rust Performance Book</i>, “Type Sizes”. <a href="https://nnethercote.github.io/perf-book/type-sizes.html">nnethercote.github.io/perf-book/type-sizes.html</a>. The 128-byte memcpy rule, <code>-Zprint-type-sizes</code>, smaller integers, and size asserts.</li>
+    <li id="src-5">Nicholas Nethercote, “How to speed up the Rust compiler in July 2026”. <a href="https://nnethercote.github.io/2026/07/31/how-to-speed-up-the-rust-compiler-in-july-2026.html">nnethercote.github.io</a>. <code>ast::Expr</code> 72 → 64 B, and the 136 → 104 B element with −40% wall time.</li>
+    <li id="src-6">Nicholas Nethercote, “How to speed up the Rust compiler some more in 2018”. <a href="https://blog.mozilla.org/nnethercote/2018/06/05/how-to-speed-up-the-rust-compiler-some-more-in-2018/">blog.mozilla.org</a>. Token 32 → 24 B, and the abandoned 16 B version.</li>
+    <li id="src-7">Zig Language Reference (0.17), sections “extern struct”, “packed struct” and “Optional Pointers”. <a href="https://ziglang.org/documentation/master/">ziglang.org/documentation</a>. Read from <code>doc/langref.html.in</code> at tag 0.17.1.</li>
+    <li id="src-8">Odin Overview: struct directives, enumerations, <code>bit_field</code>, <code>Maybe(T)</code>. <a href="https://odin-lang.org/docs/overview/">odin-lang.org/docs/overview</a>.</li>
+    <li id="src-9">Odin compiler source, <code>src/parser.cpp</code> (struct directive parsing, <code>#field_align</code> deprecation). <a href="https://github.com/odin-lang/Odin/blob/master/src/parser.cpp">github.com/odin-lang/Odin</a>.</li>
+    <li id="src-10">Eric S. Raymond, “The Lost Art of Structure Packing”. <a href="http://www.catb.org/esr/structure-packing/">catb.org/esr/structure-packing</a>. Background on C padding rules.</li>
+    <li id="src-11">Nicholas Nethercote, “How to speed up the Rust compiler in October 2022”. <a href="https://nnethercote.github.io/2022/10/27/how-to-speed-up-the-rust-compiler-in-october-2022.html">nnethercote.github.io</a>. <code>Attribute</code> 152 → 32 B, −5.13% max-rss, crediting Zig.</li>
+    <li id="src-12">Rust standard library, <code>std::option</code>, “Representation”. <a href="https://doc.rust-lang.org/std/option/index.html#representation">doc.rust-lang.org/std/option</a>.</li>
+    <li id="src-13">Zig compiler source, <code>src/Air.zig</code> (<code>assert(@sizeOf(Data) == 8)</code>). <a href="https://github.com/ziglang/zig/blob/master/src/Air.zig">github.com/ziglang/zig</a>.</li>
+    <li id="src-14">rustc source, <code>compiler/rustc_ast/src/ast.rs</code> (<code>static_assert_size!</code> guards). <a href="https://github.com/rust-lang/rust/blob/master/compiler/rustc_ast/src/ast.rs">github.com/rust-lang/rust</a>.</li>
+    <li id="src-15">Rust tracking issue #116909, “Tracking Issue for f16 and f128 float types”. <a href="https://github.com/rust-lang/rust/issues/116909">github.com/rust-lang/rust/issues/116909</a>.</li>
+    <li id="src-16">Alex Kladov (matklad), “Newtype Index Pattern In Zig”, 2025. <a href="https://matklad.github.io/2025/12/23/zig-newtype-index-pattern.html">matklad.github.io</a>.</li>
+    <li id="src-17">AMD, “Software Optimization Guide for the AMD Zen5 Microarchitecture” (58455 Rev 1.00), 2024. <a href="https://docs.amd.com/api/khub/documents/RCLISlZoOyWkKA9SYwLLDQ/content">docs.amd.com</a>. Penalty for a misaligned load that crosses a 64-byte boundary.</li>
+    <li id="src-18">Arnaldo Carvalho de Melo, <code>pahole</code> (dwarves). <a href="https://git.kernel.org/pub/scm/devel/pahole/pahole.git/">git.kernel.org/pub/scm/devel/pahole</a>.</li>
+    <li id="src-19">Arseny Kapoulkine, meshoptimizer README, “Vertex quantization”. <a href="https://github.com/zeux/meshoptimizer">github.com/zeux/meshoptimizer</a>.</li>
+    <li id="src-20">“Assisted reorganization of data structures”, Kernel Recipes, 2024 (slides; <code>pahole --reorganize</code>, Dumazet's <code>tcp_sock</code> hole removal). <a href="https://speakerdeck.com/ennael/assisted-reorganization-of-data-structures">speakerdeck.com/ennael</a>.</li>
+  </ol>
+</main>
+</body>
+</html>

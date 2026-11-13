@@ -1,0 +1,27 @@
+pool: orc=0v1 elf=1v1 goblin=0v2 (goblin reused orc's slot)
+pool: get(orc) = None  <- stale handle detected
+pool: get(goblin) = Some(Monster { hp: 30 })
+pool: live 0v2:25hp 1v1:15hp
+pool: size_of Handle = 8 B, Option<Handle> = 8 B, live = 2, slots = 2
+tree: n=1048576 average depth 24.3; pointer node 24 B (heap span 32.0 B/node), index node 12 B (Vec capacity 12.0 B/node)
+BENCH {"id":"ch05-memory","label":"pointers: node size","lang":"rust","n":1048576,"ns":0,"value":24.00,"unit":"B/node"}
+BENCH {"id":"ch05-memory","label":"pointers: heap span","lang":"rust","n":1048576,"ns":0,"value":32.00,"unit":"B/node"}
+BENCH {"id":"ch05-memory","label":"indices: node size","lang":"rust","n":1048576,"ns":0,"value":12.00,"unit":"B/node"}
+BENCH {"id":"ch05-memory","label":"indices: array capacity","lang":"rust","n":1048576,"ns":0,"value":12.00,"unit":"B/node"}
+traverse checksum: pointers 0xb465fe24fa4194d4  indices 0xb465fe24fa4194d4  indices/DFS 0xb465fe24fa4194d4
+traverse pointer nodes               52.58ms  (50.15 ns/node)
+BENCH {"id":"ch05-traverse","label":"pointer nodes","lang":"rust","n":1048576,"ns":52583311,"samples":[51014814,52226083,52485305,52583311,53059973,54782966,55101520]}
+traverse u32 indices                 29.15ms  (27.80 ns/node)
+BENCH {"id":"ch05-traverse","label":"u32 indices","lang":"rust","n":1048576,"ns":29145699,"samples":[25338128,26332971,27245331,29145699,47551732,63953574,72453959]}
+traverse u32 indices, DFS order      10.40ms  (9.92 ns/node)
+BENCH {"id":"ch05-traverse","label":"u32 indices, DFS order","lang":"rust","n":1048576,"ns":10397135,"samples":[10286728,10294734,10389242,10397135,10926672,11028712,11203126]}
+build+free checksum (sum of depths): pointers 25466630  indices 25466630
+build+free pointer nodes               1.17s
+BENCH {"id":"ch05-build","label":"pointer nodes","lang":"rust","n":1048576,"ns":1167218465,"samples":[1019375222,1075271924,1157119087,1167218465,1192215495,1278521169,1293432023]}
+build+free u32 indices              327.99ms
+BENCH {"id":"ch05-build","label":"u32 indices","lang":"rust","n":1048576,"ns":327994920,"samples":[304391762,312804022,319627799,327994920,333530876,349188016,352793501]}
+lookup checksum: Vec 549562591753  pool 549562591753
+lookup array[index]               2.89ms  (2.75 ns/lookup)
+BENCH {"id":"ch05-lookup","label":"array[index]","lang":"rust","n":1048576,"ns":2885779,"samples":[2667247,2695607,2776680,2885779,3021984,3330691,3537500]}
+lookup pool.get(handle)          11.08ms  (10.57 ns/lookup)
+BENCH {"id":"ch05-lookup","label":"pool.get(handle)","lang":"rust","n":1048576,"ns":11079705,"samples":[10297224,10659114,10723143,11079705,11373981,11606774,11619870]}

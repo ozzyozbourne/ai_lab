@@ -1,0 +1,122 @@
+== branches: filter 65536 u32 values (256 KiB), 16 passes per run
+  keep%  branchy ns/elem  branchless ns/elem
+BENCH {"id":"ch07-predict","label":"branchy 0%","lang":"odin","n":1048576,"ns":312190,"samples":[308984,309025,309342,312190,312386,356553,392088]}
+BENCH {"id":"ch07-predict","label":"branchless 0%","lang":"odin","n":1048576,"ns":550283,"samples":[533323,543530,544381,550283,559884,586162,596021]}
+     0%             0.30                0.52
+BENCH {"id":"ch07-predict","label":"branchy 10%","lang":"odin","n":1048576,"ns":1418822,"samples":[1353361,1372121,1374967,1418822,1467116,1471213,1480622]}
+BENCH {"id":"ch07-predict","label":"branchless 10%","lang":"odin","n":1048576,"ns":571980,"samples":[534715,544658,555855,571980,608482,791295,893267]}
+    10%             1.35                0.55
+BENCH {"id":"ch07-predict","label":"branchy 20%","lang":"odin","n":1048576,"ns":2422008,"samples":[2350419,2409746,2411328,2422008,2596588,2652711,2673319]}
+BENCH {"id":"ch07-predict","label":"branchless 20%","lang":"odin","n":1048576,"ns":561568,"samples":[531079,531457,537335,561568,572665,605341,642276]}
+    20%             2.31                0.54
+BENCH {"id":"ch07-predict","label":"branchy 30%","lang":"odin","n":1048576,"ns":3311465,"samples":[3271592,3278084,3285524,3311465,3311692,3325231,3406229]}
+BENCH {"id":"ch07-predict","label":"branchless 30%","lang":"odin","n":1048576,"ns":577935,"samples":[535133,544815,562189,577935,592972,607383,622991]}
+    30%             3.16                0.55
+BENCH {"id":"ch07-predict","label":"branchy 40%","lang":"odin","n":1048576,"ns":4166661,"samples":[3955660,3972985,3992284,4166661,4388708,4400323,4870993]}
+BENCH {"id":"ch07-predict","label":"branchless 40%","lang":"odin","n":1048576,"ns":563174,"samples":[543084,549941,560501,563174,582919,595461,651975]}
+    40%             3.97                0.54
+BENCH {"id":"ch07-predict","label":"branchy 50%","lang":"odin","n":1048576,"ns":4426594,"samples":[4239777,4298902,4337825,4426594,4454970,4504885,4505171]}
+BENCH {"id":"ch07-predict","label":"branchless 50%","lang":"odin","n":1048576,"ns":581312,"samples":[532135,552621,563033,581312,593138,630190,633309]}
+    50%             4.22                0.55
+BENCH {"id":"ch07-predict","label":"branchy 60%","lang":"odin","n":1048576,"ns":3940094,"samples":[3884173,3892023,3932720,3940094,3961917,3975751,4018875]}
+BENCH {"id":"ch07-predict","label":"branchless 60%","lang":"odin","n":1048576,"ns":613777,"samples":[532562,562928,597139,613777,617730,617858,636963]}
+    60%             3.76                0.59
+BENCH {"id":"ch07-predict","label":"branchy 70%","lang":"odin","n":1048576,"ns":3249282,"samples":[3210170,3228830,3244524,3249282,3263673,3264594,3277093]}
+BENCH {"id":"ch07-predict","label":"branchless 70%","lang":"odin","n":1048576,"ns":548557,"samples":[529963,530163,548111,548557,586190,596460,619335]}
+    70%             3.10                0.52
+BENCH {"id":"ch07-predict","label":"branchy 80%","lang":"odin","n":1048576,"ns":2266654,"samples":[2232330,2246675,2262011,2266654,2267104,2291122,2347669]}
+BENCH {"id":"ch07-predict","label":"branchless 80%","lang":"odin","n":1048576,"ns":575185,"samples":[553143,557030,570179,575185,579944,618485,621371]}
+    80%             2.16                0.55
+BENCH {"id":"ch07-predict","label":"branchy 90%","lang":"odin","n":1048576,"ns":1271207,"samples":[1251186,1254141,1259279,1271207,1275461,1278462,1312242]}
+BENCH {"id":"ch07-predict","label":"branchless 90%","lang":"odin","n":1048576,"ns":554008,"samples":[526903,546839,548566,554008,570252,582953,619529]}
+    90%             1.21                0.53
+BENCH {"id":"ch07-predict","label":"branchy 100%","lang":"odin","n":1048576,"ns":637438,"samples":[619323,635101,637351,637438,644910,653848,709239]}
+BENCH {"id":"ch07-predict","label":"branchless 100%","lang":"odin","n":1048576,"ns":552795,"samples":[529929,534113,545176,552795,571438,574693,634162]}
+   100%             0.61                0.53
+BENCH {"id":"ch07-patterns","label":"branchy, random","lang":"odin","n":1048576,"ns":4240498,"samples":[4209256,4236085,4240418,4240498,4289727,4455749,5048529]}
+BENCH {"id":"ch07-patterns","label":"branchless, random","lang":"odin","n":1048576,"ns":581196,"samples":[528260,544241,567532,581196,587601,587931,589182]}
+BENCH {"id":"ch07-patterns","label":"branchy, sorted","lang":"odin","n":1048576,"ns":489756,"samples":[466899,481529,482067,489756,490260,507536,532025]}
+BENCH {"id":"ch07-patterns","label":"branchless, sorted","lang":"odin","n":1048576,"ns":575722,"samples":[545029,546493,547131,575722,577023,608838,678942]}
+  keep 50%: branchy random 4.04 / sorted 0.47 ns/elem, branchless random 0.55 / sorted 0.55
+BENCH {"id":"ch07-patterns","label":"if-sum, random","lang":"odin","n":1048576,"ns":284486,"samples":[281214,283188,283626,284486,285000,302204,331956]}
+  if-sum, random: 0.27 ns/elem
+BENCH {"id":"ch07-patterns","label":"if-sum, sorted","lang":"odin","n":1048576,"ns":283432,"samples":[281143,282136,283120,283432,283564,368171,390248]}
+  if-sum, sorted: 0.27 ns/elem
+  period k  branchy ns/elem  branchless ns/elem
+BENCH {"id":"ch07-period","label":"branchy","lang":"odin","n":2,"ns":1,"samples":[1,1,1,1,1,1,1]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"odin","n":2,"ns":1,"samples":[1,1,1,1,1,1,1]}
+         2             0.64                0.54
+BENCH {"id":"ch07-period","label":"branchy","lang":"odin","n":8,"ns":5,"samples":[4,5,5,5,6,6,7]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"odin","n":8,"ns":4,"samples":[4,4,4,4,4,4,4]}
+         8             0.68                0.54
+BENCH {"id":"ch07-period","label":"branchy","lang":"odin","n":32,"ns":21,"samples":[20,20,21,21,21,22,22]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"odin","n":32,"ns":17,"samples":[16,16,16,17,17,18,19]}
+        32             0.67                0.54
+BENCH {"id":"ch07-period","label":"branchy","lang":"odin","n":128,"ns":72,"samples":[69,71,72,72,72,74,81]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"odin","n":128,"ns":69,"samples":[65,66,67,69,69,73,74]}
+       128             0.57                0.54
+BENCH {"id":"ch07-period","label":"branchy","lang":"odin","n":512,"ns":376,"samples":[368,369,376,376,381,385,427]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"odin","n":512,"ns":271,"samples":[264,264,265,271,280,285,289]}
+       512             0.74                0.53
+BENCH {"id":"ch07-period","label":"branchy","lang":"odin","n":2048,"ns":1507,"samples":[1444,1445,1475,1507,1517,1529,1537]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"odin","n":2048,"ns":1126,"samples":[1057,1074,1114,1126,1135,1196,1266]}
+      2048             0.74                0.55
+BENCH {"id":"ch07-period","label":"branchy","lang":"odin","n":8192,"ns":19349,"samples":[18760,19143,19158,19349,19761,20264,20652]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"odin","n":8192,"ns":4284,"samples":[4179,4265,4266,4284,4377,4440,4476]}
+      8192             2.36                0.52
+BENCH {"id":"ch07-period","label":"branchy","lang":"odin","n":32768,"ns":128066,"samples":[127806,127842,127962,128066,128785,129054,130092]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"odin","n":32768,"ns":18103,"samples":[16638,16918,17712,18103,18155,18161,20397]}
+     32768             3.91                0.55
+  checksums: branchy == branchless for every pattern (asserted)
+== existence: 1048576 entities, 525095 alive (50%), Entity 20 B, Body 16 B
+  bytes read per update: flag 20971520 | bool array 17825792 | bitset 8401520 + 131072 | table 8401520
+  flag in struct + if          5.09 ns/entity  checksum 0xfffffffffff023eb
+BENCH {"id":"ch07-exist","label":"flag in struct + if","lang":"odin","n":1048576,"ns":5338524,"samples":[5287049,5303592,5307967,5338524,5356195,5471564,5943807]}
+  bool array + if              4.82 ns/entity  checksum 0xfffffffffff023eb
+BENCH {"id":"ch07-exist","label":"bool array + if","lang":"odin","n":1048576,"ns":5050452,"samples":[5015649,5025083,5031337,5050452,5080376,5110325,5127196]}
+  bitset, set bits only        2.65 ns/entity  checksum 0xfffffffffff023eb
+BENCH {"id":"ch07-exist","label":"bitset, set bits only","lang":"odin","n":1048576,"ns":2783736,"samples":[2737956,2754665,2775802,2783736,2829925,2873385,2944480]}
+  alive table, no branch       0.36 ns/entity  checksum 0xfffffffffff023eb
+BENCH {"id":"ch07-exist","label":"alive table, no branch","lang":"odin","n":1048576,"ns":378815,"samples":[352270,354832,360117,378815,461822,569005,897750]}
+== existence: 1048576 entities, 105261 alive (10%), Entity 20 B, Body 16 B
+  bytes read per update: flag 20971520 | bool array 17825792 | bitset 1684176 + 131072 | table 1684176
+  flag in struct + if          2.18 ns/entity  checksum 0xfffffffffffd1cba
+BENCH {"id":"ch07-exist-10","label":"flag in struct + if","lang":"odin","n":1048576,"ns":2285921,"samples":[2022484,2110285,2137077,2285921,2389363,2533616,2673429]}
+  bool array + if              1.88 ns/entity  checksum 0xfffffffffffd1cba
+BENCH {"id":"ch07-exist-10","label":"bool array + if","lang":"odin","n":1048576,"ns":1970621,"samples":[1875712,1887123,1889679,1970621,2084465,2381973,2596855]}
+  bitset, set bits only        0.88 ns/entity  checksum 0xfffffffffffd1cba
+BENCH {"id":"ch07-exist-10","label":"bitset, set bits only","lang":"odin","n":1048576,"ns":924987,"samples":[739882,758525,859121,924987,1044131,1520685,1875544]}
+  alive table, no branch       0.06 ns/entity  checksum 0xfffffffffffd1cba
+BENCH {"id":"ch07-exist-10","label":"alive table, no branch","lang":"odin","n":1048576,"ns":62788,"samples":[61169,61757,61980,62788,67754,69490,96518]}
+== dirty list: 131072 marks over 262144 rows -> 103356 distinct dirty rows, row sum 13585295539
+== flags: 1048576 entities x 1 B of flags (4 separate bools: 4 B); alive, visible and clean: 130854
+== batches: 4194304 items through 3 stages; per item ns by batch size (working set = 16 B x batch)
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"odin","n":1,"ns":9,"samples":[8,8,8,9,9,9,9]}
+  batch        1 (       16 B):   9.06 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"odin","n":4,"ns":15,"samples":[15,15,15,15,15,15,15]}
+  batch        4 (       64 B):   3.88 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"odin","n":16,"ns":27,"samples":[27,27,27,27,27,27,28]}
+  batch       16 (      256 B):   1.74 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"odin","n":64,"ns":87,"samples":[86,86,87,87,87,87,89]}
+  batch       64 (     1024 B):   1.37 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"odin","n":256,"ns":327,"samples":[325,326,327,327,328,334,336]}
+  batch      256 (     4096 B):   1.28 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"odin","n":1024,"ns":1368,"samples":[1354,1358,1361,1368,1391,1391,1974]}
+  batch     1024 (    16384 B):   1.34 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"odin","n":4096,"ns":5536,"samples":[5477,5484,5528,5536,5549,5771,8008]}
+  batch     4096 (    65536 B):   1.35 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"odin","n":16384,"ns":22164,"samples":[21957,22062,22132,22164,22263,22379,22601]}
+  batch    16384 (   262144 B):   1.35 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"odin","n":65536,"ns":90817,"samples":[90414,90555,90579,90817,91038,91215,91244]}
+  batch    65536 (  1048576 B):   1.39 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"odin","n":262144,"ns":471967,"samples":[468475,470539,471016,471967,472123,472704,482460]}
+  batch   262144 (  4194304 B):   1.80 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"odin","n":1048576,"ns":1981435,"samples":[1945781,1965356,1972827,1981435,1988802,1989345,2021087]}
+  batch  1048576 ( 16777216 B):   1.89 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"odin","n":4194304,"ns":16412291,"samples":[15896561,16004345,16314091,16412291,17805093,17911480,17945521]}
+  batch  4194304 ( 67108864 B):   3.91 ns/item  checksum 0x6de704fff34d9c9f
+== lookup: 65536 bytes, 49320 identifier bytes
+  comparisons      4.315 ns/byte
+BENCH {"id":"ch07-lut","label":"comparisons","lang":"odin","n":1048576,"ns":4525051,"samples":[4485004,4503428,4519002,4525051,4545692,4550799,4608760]}
+  256-entry table  0.304 ns/byte
+BENCH {"id":"ch07-lut","label":"256-entry table","lang":"odin","n":1048576,"ns":319152,"samples":[314802,315729,318657,319152,329201,329825,336981]}

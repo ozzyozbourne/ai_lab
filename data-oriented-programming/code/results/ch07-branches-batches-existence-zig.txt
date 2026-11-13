@@ -1,0 +1,122 @@
+== branches: filter 65536 u32 values (256 KiB), 16 passes per run
+  keep%  branchy ns/elem  branchless ns/elem
+BENCH {"id":"ch07-predict","label":"branchy 0%","lang":"zig","n":1048576,"ns":245649,"samples":[231600,231634,236707,245649,245796,247148,251347]}
+BENCH {"id":"ch07-predict","label":"branchless 0%","lang":"zig","n":1048576,"ns":401182,"samples":[387454,390516,390770,401182,401422,411663,425303]}
+     0%             0.23                0.38
+BENCH {"id":"ch07-predict","label":"branchy 10%","lang":"zig","n":1048576,"ns":857210,"samples":[844943,847665,850769,857210,872830,884892,896284]}
+BENCH {"id":"ch07-predict","label":"branchless 10%","lang":"zig","n":1048576,"ns":406442,"samples":[389342,393716,397431,406442,413186,414354,454664]}
+    10%             0.82                0.39
+BENCH {"id":"ch07-predict","label":"branchy 20%","lang":"zig","n":1048576,"ns":1931660,"samples":[1894063,1897591,1918991,1931660,1965644,1979793,1989994]}
+BENCH {"id":"ch07-predict","label":"branchless 20%","lang":"zig","n":1048576,"ns":404478,"samples":[388624,391584,395178,404478,409176,415804,426805]}
+    20%             1.84                0.39
+BENCH {"id":"ch07-predict","label":"branchy 30%","lang":"zig","n":1048576,"ns":2886438,"samples":[2732131,2840969,2871390,2886438,2907097,2974097,2996192]}
+BENCH {"id":"ch07-predict","label":"branchless 30%","lang":"zig","n":1048576,"ns":403162,"samples":[390671,393982,398067,403162,405415,405510,408384]}
+    30%             2.75                0.38
+BENCH {"id":"ch07-predict","label":"branchy 40%","lang":"zig","n":1048576,"ns":3353520,"samples":[3179904,3274597,3307018,3353520,3363468,3394847,3444632]}
+BENCH {"id":"ch07-predict","label":"branchless 40%","lang":"zig","n":1048576,"ns":396418,"samples":[386261,389401,390136,396418,400204,465942,532660]}
+    40%             3.20                0.38
+BENCH {"id":"ch07-predict","label":"branchy 50%","lang":"zig","n":1048576,"ns":3725368,"samples":[3562457,3626963,3672943,3725368,3732720,3780975,3940208]}
+BENCH {"id":"ch07-predict","label":"branchless 50%","lang":"zig","n":1048576,"ns":400573,"samples":[390381,390543,393680,400573,401039,419709,445278]}
+    50%             3.55                0.38
+BENCH {"id":"ch07-predict","label":"branchy 60%","lang":"zig","n":1048576,"ns":3273959,"samples":[3060310,3156041,3264768,3273959,3294076,3307536,3322218]}
+BENCH {"id":"ch07-predict","label":"branchless 60%","lang":"zig","n":1048576,"ns":401968,"samples":[388197,391324,391477,401968,402862,415820,445732]}
+    60%             3.12                0.38
+BENCH {"id":"ch07-predict","label":"branchy 70%","lang":"zig","n":1048576,"ns":2360354,"samples":[2316534,2336543,2340104,2360354,2376111,2451769,2500305]}
+BENCH {"id":"ch07-predict","label":"branchless 70%","lang":"zig","n":1048576,"ns":405887,"samples":[391740,394677,394796,405887,405948,416683,566950]}
+    70%             2.25                0.39
+BENCH {"id":"ch07-predict","label":"branchy 80%","lang":"zig","n":1048576,"ns":1486262,"samples":[1433833,1458014,1470239,1486262,1580358,1613662,1649921]}
+BENCH {"id":"ch07-predict","label":"branchless 80%","lang":"zig","n":1048576,"ns":424121,"samples":[410546,413617,413764,424121,425839,450253,493101]}
+    80%             1.42                0.40
+BENCH {"id":"ch07-predict","label":"branchy 90%","lang":"zig","n":1048576,"ns":745411,"samples":[706306,724573,725548,745411,753286,797621,813106]}
+BENCH {"id":"ch07-predict","label":"branchless 90%","lang":"zig","n":1048576,"ns":398138,"samples":[382922,389652,389880,398138,399409,414538,560728]}
+    90%             0.71                0.38
+BENCH {"id":"ch07-predict","label":"branchy 100%","lang":"zig","n":1048576,"ns":312465,"samples":[309343,309412,312406,312465,328842,330952,362510]}
+BENCH {"id":"ch07-predict","label":"branchless 100%","lang":"zig","n":1048576,"ns":398496,"samples":[383569,389034,389435,398496,398623,410323,422891]}
+   100%             0.30                0.38
+BENCH {"id":"ch07-patterns","label":"branchy, random","lang":"zig","n":1048576,"ns":3605887,"samples":[3481803,3534318,3534425,3605887,3664465,3739941,3746379]}
+BENCH {"id":"ch07-patterns","label":"branchless, random","lang":"zig","n":1048576,"ns":391164,"samples":[387612,390302,391007,391164,401981,438929,454346]}
+BENCH {"id":"ch07-patterns","label":"branchy, sorted","lang":"zig","n":1048576,"ns":284827,"samples":[270816,270871,274004,284827,288017,291552,461037]}
+BENCH {"id":"ch07-patterns","label":"branchless, sorted","lang":"zig","n":1048576,"ns":399502,"samples":[388913,388943,389089,399502,403304,424106,439859]}
+  keep 50%: branchy random 3.44 / sorted 0.27 ns/elem, branchless random 0.37 / sorted 0.38
+BENCH {"id":"ch07-patterns","label":"if-sum, random","lang":"zig","n":1048576,"ns":318385,"samples":[304985,308135,309288,318385,318445,328820,340909]}
+  if-sum, random: 0.30 ns/elem
+BENCH {"id":"ch07-patterns","label":"if-sum, sorted","lang":"zig","n":1048576,"ns":319869,"samples":[305071,308221,310699,319869,327449,363851,475325]}
+  if-sum, sorted: 0.31 ns/elem
+  period k  branchy ns/elem  branchless ns/elem
+BENCH {"id":"ch07-period","label":"branchy","lang":"zig","n":2,"ns":0,"samples":[0,0,0,0,0,0,0]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"zig","n":2,"ns":0,"samples":[0,0,0,0,0,0,0]}
+         2             0.31                0.38
+BENCH {"id":"ch07-period","label":"branchy","lang":"zig","n":8,"ns":3,"samples":[3,3,3,3,3,3,4]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"zig","n":8,"ns":3,"samples":[3,3,3,3,3,3,3]}
+         8             0.40                0.39
+BENCH {"id":"ch07-period","label":"branchy","lang":"zig","n":32,"ns":13,"samples":[12,13,13,13,14,14,16]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"zig","n":32,"ns":12,"samples":[11,11,11,12,12,12,13]}
+        32             0.42                0.38
+BENCH {"id":"ch07-period","label":"branchy","lang":"zig","n":128,"ns":62,"samples":[61,61,61,62,65,69,99]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"zig","n":128,"ns":49,"samples":[47,47,47,49,49,51,55]}
+       128             0.49                0.38
+BENCH {"id":"ch07-period","label":"branchy","lang":"zig","n":512,"ns":273,"samples":[268,269,271,273,274,276,287]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"zig","n":512,"ns":203,"samples":[193,197,198,203,214,221,221]}
+       512             0.53                0.40
+BENCH {"id":"ch07-period","label":"branchy","lang":"zig","n":2048,"ns":1113,"samples":[1045,1065,1096,1113,1127,1130,1172]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"zig","n":2048,"ns":787,"samples":[761,767,767,787,889,931,1063]}
+      2048             0.54                0.38
+BENCH {"id":"ch07-period","label":"branchy","lang":"zig","n":8192,"ns":4651,"samples":[4470,4543,4568,4651,4752,4836,5153]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"zig","n":8192,"ns":3170,"samples":[3062,3088,3121,3170,3174,3258,3445]}
+      8192             0.57                0.39
+BENCH {"id":"ch07-period","label":"branchy","lang":"zig","n":32768,"ns":96168,"samples":[95165,95530,95718,96168,96811,97661,100049]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"zig","n":32768,"ns":13317,"samples":[12961,13059,13103,13317,13440,13492,13520]}
+     32768             2.93                0.41
+  checksums: branchy == branchless for every pattern (asserted)
+== existence: 1048576 entities, 525095 alive (50%), Entity 20 B, Body 16 B
+  bytes read per update: flag 20971520 | bool array 17825792 | bitset 8401520 + 131072 | table 8401520
+  flag in struct + if          5.16 ns/entity  checksum 0xfffffffffff023eb
+BENCH {"id":"ch07-exist","label":"flag in struct + if","lang":"zig","n":1048576,"ns":5411905,"samples":[5384965,5387235,5399229,5411905,5422328,5504042,5546464]}
+  bool array + if              4.39 ns/entity  checksum 0xfffffffffff023eb
+BENCH {"id":"ch07-exist","label":"bool array + if","lang":"zig","n":1048576,"ns":4603345,"samples":[4556681,4587956,4593446,4603345,4610772,4631780,4632372]}
+  bitset, set bits only        0.85 ns/entity  checksum 0xfffffffffff023eb
+BENCH {"id":"ch07-exist","label":"bitset, set bits only","lang":"zig","n":1048576,"ns":892016,"samples":[773815,847595,858590,892016,1131788,1332726,1701467]}
+  alive table, no branch       0.35 ns/entity  checksum 0xfffffffffff023eb
+BENCH {"id":"ch07-exist","label":"alive table, no branch","lang":"zig","n":1048576,"ns":363156,"samples":[335509,342382,347027,363156,396811,544873,796777]}
+== existence: 1048576 entities, 105261 alive (10%), Entity 20 B, Body 16 B
+  bytes read per update: flag 20971520 | bool array 17825792 | bitset 1684176 + 131072 | table 1684176
+  flag in struct + if          1.92 ns/entity  checksum 0xfffffffffffd1cba
+BENCH {"id":"ch07-exist-10","label":"flag in struct + if","lang":"zig","n":1048576,"ns":2015282,"samples":[1888202,1936126,1937200,2015282,2026983,2256520,2403004]}
+  bool array + if              1.42 ns/entity  checksum 0xfffffffffffd1cba
+BENCH {"id":"ch07-exist-10","label":"bool array + if","lang":"zig","n":1048576,"ns":1492526,"samples":[1284272,1317306,1428622,1492526,1578345,1783744,1847894]}
+  bitset, set bits only        0.51 ns/entity  checksum 0xfffffffffffd1cba
+BENCH {"id":"ch07-exist-10","label":"bitset, set bits only","lang":"zig","n":1048576,"ns":539050,"samples":[446916,490487,530331,539050,598129,733003,1054397]}
+  alive table, no branch       0.12 ns/entity  checksum 0xfffffffffffd1cba
+BENCH {"id":"ch07-exist-10","label":"alive table, no branch","lang":"zig","n":1048576,"ns":124936,"samples":[68157,82351,120529,124936,126659,130992,173318]}
+== dirty list: 131072 marks over 262144 rows -> 103356 distinct dirty rows, row sum 13585295539
+== flags: 1048576 entities x 1 B of flags (4 separate bools: 4 B); alive, visible and clean: 130854
+== batches: 4194304 items through 3 stages; per item ns by batch size (working set = 16 B x batch)
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"zig","n":1,"ns":9,"samples":[7,7,8,9,9,10,11]}
+  batch        1 (       16 B):   9.01 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"zig","n":4,"ns":16,"samples":[16,16,16,16,16,16,18]}
+  batch        4 (       64 B):   4.15 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"zig","n":16,"ns":19,"samples":[19,19,19,19,19,19,19]}
+  batch       16 (      256 B):   1.21 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"zig","n":64,"ns":71,"samples":[71,71,71,71,72,73,76]}
+  batch       64 (     1024 B):   1.12 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"zig","n":256,"ns":495,"samples":[474,493,494,495,496,497,519]}
+  batch      256 (     4096 B):   1.93 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"zig","n":1024,"ns":1200,"samples":[1191,1194,1200,1200,1213,1382,1682]}
+  batch     1024 (    16384 B):   1.17 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"zig","n":4096,"ns":4968,"samples":[4944,4946,4952,4968,4970,4981,4982]}
+  batch     4096 (    65536 B):   1.21 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"zig","n":16384,"ns":20265,"samples":[20031,20056,20211,20265,20298,26029,27450]}
+  batch    16384 (   262144 B):   1.24 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"zig","n":65536,"ns":102644,"samples":[90529,98616,100423,102644,105245,118929,131781]}
+  batch    65536 (  1048576 B):   1.57 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"zig","n":262144,"ns":458240,"samples":[451012,451538,452824,458240,631002,686381,1091480]}
+  batch   262144 (  4194304 B):   1.75 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"zig","n":1048576,"ns":2268421,"samples":[2158342,2214958,2224743,2268421,2314413,2562282,2731069]}
+  batch  1048576 ( 16777216 B):   2.16 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"zig","n":4194304,"ns":19158717,"samples":[18970946,18994476,19068762,19158717,19181111,19320187,19561705]}
+  batch  4194304 ( 67108864 B):   4.57 ns/item  checksum 0x6de704fff34d9c9f
+== lookup: 65536 bytes, 49320 identifier bytes
+  comparisons      1.174 ns/byte
+BENCH {"id":"ch07-lut","label":"comparisons","lang":"zig","n":1048576,"ns":1230644,"samples":[1217504,1218595,1220410,1230644,1242264,1259366,1282940]}
+  256-entry table  0.311 ns/byte
+BENCH {"id":"ch07-lut","label":"256-entry table","lang":"zig","n":1048576,"ns":326075,"samples":[312356,315243,322644,326075,326888,335147,350510]}

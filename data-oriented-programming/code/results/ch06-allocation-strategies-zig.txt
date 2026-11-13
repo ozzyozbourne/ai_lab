@@ -1,0 +1,18 @@
+ch06 frame workload: 16 ticks x 65536 messages (8..=71 B), quick=false
+  one tick: 65537 allocations, fixed-buffer high-water mark 3636193 of 5701696 B (55.5 B/message)
+  checksum heap=0x0277eab53a846fae arena=0x0277eab53a846fae fixed=0x0277eab53a846fae match=true
+  arena capacity after reset(.retain_capacity): 3942324 B
+  heap per object: 63.4 ns/message
+  frame arena:     49.7 ns/message (1.3x)
+  fixed buffer:    43.5 ns/message (1.5x)
+BENCH {"id":"ch06-frame","label":"heap per object","lang":"zig","n":1048576,"ns":66465966,"samples":[65832621,66244408,66422720,66465966,66608171,66647685,69203012]}
+BENCH {"id":"ch06-frame","label":"frame arena","lang":"zig","n":1048576,"ns":52101143,"samples":[51492413,51519528,51600952,52101143,52121875,52151552,52577132]}
+BENCH {"id":"ch06-frame","label":"FixedBufferAllocator","lang":"zig","n":1048576,"ns":45595981,"samples":[45311628,45552450,45573934,45595981,45617720,45687442,45880513]}
+ch06 pool workload: 64 ticks x 4096 spawns, 24 B projectiles, ttl 1..=16
+  checksum heap=0xfd95a8b0393ee1b9 pool=0xfd95a8b0393ee1b9 match=true
+  create per object: 44.1 ns/projectile
+  MemoryPool:        31.5 ns/projectile (1.4x)
+BENCH {"id":"ch06-pool","label":"heap per object","lang":"zig","n":262144,"ns":11563826,"samples":[11494533,11508934,11510379,11563826,11567317,11712352,11771859]}
+BENCH {"id":"ch06-pool","label":"pool","lang":"zig","n":262144,"ns":8255506,"samples":[8192407,8198318,8202385,8255506,8670411,8816888,8970736]}
+arena + growing ArrayList: 2 x 1000 u32, live 8544 B, arena used 21920 B (2.6x)
+1 GiB mmap reservation: RSS +0.0 MiB after mmap, +16.0 MiB after touching 16 MiB

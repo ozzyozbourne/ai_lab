@@ -1,0 +1,699 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>12. Measure, and Know When Not To · Data-Oriented Design</title>
+<link rel="stylesheet" href="assets/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="assets/book.css">
+<link rel="stylesheet" href="assets/ch12.css">
+<script>window.Prism = { manual: true };</script>
+<script defer src="assets/vendor/prism/prism.min.js"></script>
+<script defer src="assets/vendor/prism/prism-rust.min.js"></script>
+<script defer src="assets/vendor/prism/prism-zig.min.js"></script>
+<script defer src="assets/vendor/prism/prism-odin.min.js"></script>
+<script defer src="assets/vendor/prism/prism-bash.min.js"></script>
+<script defer src="assets/book.js"></script>
+<script defer src="assets/data/bench-ch12.js"></script>
+<script defer src="assets/viz/bench-bars.js"></script>
+<script defer src="assets/viz/bench-dist.js"></script>
+<script defer src="assets/viz/ch12-strip.js"></script>
+<script defer src="assets/viz/ch12-noise.js"></script>
+<script defer src="assets/viz/ch12-checklist.js"></script>
+</head>
+<body>
+<main>
+  <p class="kicker">Chapter 12</p>
+  <h1>Measure, and Know When Not To</h1>
+  <p class="lede">On the machine this book was measured on, a Rust benchmark reported summing the squares of a million numbers at
+  about ten thousand elements per clock cycle, from a core that can do a handful of additions per cycle. The number was not fast. It
+  was wrong, and the benchmark had no way to tell. This last chapter
+  is about the ways a benchmark lies, how to catch each lie with a cheap check, the tools that see what a stopwatch cannot, and the
+  harder question that measuring finally lets you answer honestly: whether the data-oriented rewrite is worth doing at all.</p>
+
+  <p>Every earlier chapter leaned on the harness from <a href="02-the-machine.html#harness">Chapter 2</a>: one warm-up run, the median
+  of seven, a keep-alive on every result, and a checksum that every variant must match. Here we take that harness apart on purpose.
+  We break the keep-alive in two ways and see what the stopwatch reports. We time one tiny kernel 41 times and look at the
+  spread instead of the median. We compare a function with <em>itself</em>, where any difference is an error of method.
+  Then we turn to the critics, and end with a checklist and a language table.</p>
+
+  <aside class="callout note"><p><b>The machine</b> (details in <a href="02-the-machine.html">Chapter 2</a>): one 4-vCPU KVM Xeon
+  (Ice Lake) shared with other work, with no hardware performance counters and no <code>perf</code>, <code>valgrind</code> or
+  <code>pahole</code>. Benchmarks ran pinned with <code>taskset -c 2</code>, and the numbers are noisy, so read ratios and
+  ranges.</p></aside>
+
+  <h2 id="deadcode">The 0 ns benchmark</h2>
+  <p>Chapter 2 warned about this trap in one paragraph. Now we spring it deliberately. The kernel is a wrapping sum of squares over
+  <code>n</code> numbers, <code>v[i] = i</code>. We time it three ways with otherwise identical code, plus a fourth "benchmark" that does
+  nothing at all, so we know what the clock itself costs:</p>
+  <ul>
+    <li><b>empty (timer only):</b> a function that returns 0. Its time is the floor: two clock reads and nothing between them.</li>
+    <li><b>result discarded:</b> the harness, but the result goes to <code>_</code> instead of the black box.</li>
+    <li><b>input visible:</b> the result is kept, but the loop is written over <code>0..n</code>, so the optimizer can see every input.</li>
+    <li><b>kept alive:</b> the real harness, with the result kept (Rust also passes the slice through <code>black_box</code>).</li>
+  </ul>
+  <p>The broken harness differs from the real one by one token per line. In Rust it is <code>let _ = f()</code> instead of
+  <code>black_box(f())</code>; in Zig <code>_ = f(ctx)</code> instead of <code>std.mem.doNotOptimizeAway(f(ctx))</code>; in Odin
+  <code>_ = f(ctx)</code> instead of <code>keep(f(ctx))</code>:</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch12-measure-and-know-when-not-to/rust/src/main.rs"><code class="language-rust">/// A broken harness: identical to `bench_runs`, except that the result is dropped.
+fn bench_runs_discarding&lt;R&gt;(mut f: impl FnMut() -&gt; R) -&gt; [Duration; RUNS] {
+    let _ = f();
+    let mut t = [Duration::ZERO; RUNS];
+    for slot in &amp;mut t {
+        let t0 = Instant::now();
+        let _ = f(); // nothing reads this, so the optimizer may delete the call
+        *slot = t0.elapsed();
+    }
+    t.sort_unstable();
+    t
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch12-measure-and-know-when-not-to/zig/main.zig"><code class="language-zig">/// A broken harness: identical to `benchRuns`, except that the result is thrown away.
+fn benchRunsDiscarding(io: Io, comptime f: anytype, ctx: anytype) [RUNS]u64 {
+    _ = f(ctx);
+    var t: [RUNS]u64 = undefined;
+    for (&amp;t) |*slot| {
+        const t0 = nowNs(io);
+        _ = f(ctx); // nothing reads this, so the optimizer may delete the call
+        slot.* = @intCast(nowNs(io) - t0);
+    }
+    std.mem.sort(u64, &amp;t, {}, std.sort.asc(u64));
+    return t;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch12-measure-and-know-when-not-to/odin/main.odin"><code class="language-odin">// A broken harness: identical to bench_runs, except that the result is thrown away.
+bench_runs_discarding :: proc(f: proc(ctx: $C) -&gt; u64, ctx: C) -&gt; (t: [RUNS]time.Duration) {
+	_ = f(ctx)
+	for &amp;d in t {
+		t0 := time.tick_now()
+		_ = f(ctx) // nothing reads this, so the optimizer may delete the call
+		d = time.tick_since(t0)
+	}
+	slice.sort(t[:])
+	return
+}</code></pre>
+  </div>
+
+  <details class="predict"><summary>At n = 1,048,576 the honest run takes about <span data-bench-val="ch12-deadcode" data-label="kept alive" data-lang="rust" data-metric="ms" data-digits="1">0.4 ms</span> in all three languages. What will "result discarded" show?</summary>
+    <p>The same as timing nothing: <span data-bench-val="ch12-deadcode" data-label="result discarded" data-lang="rust" data-metric="ns">42 ns</span> in Rust, <span data-bench-val="ch12-deadcode" data-label="result discarded" data-lang="zig" data-metric="ns">36 ns</span> in Zig and <span data-bench-val="ch12-deadcode" data-label="result discarded" data-lang="odin" data-metric="ns">137 ns</span> in Odin. The call is pure (it reads memory and returns a
+    number), nothing reads the number, so the optimizer removes the call. What remains between the two clock reads is nothing. The
+    honest run is about <span data-bench-ratio="ch12-deadcode" data-num="kept alive" data-den="result discarded" data-lang="rust">9,850×</span>
+    slower in Rust.</p></details>
+
+  <figure class="figure" id="fig-deadcode">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch12-deadcode" data-opts='{"metric":"ns","log":true,"labels":["empty (timer only)","result discarded","input visible","kept alive"]}'>
+      <p>Static fallback: empty, discarded and input-visible all take 35–140 ns; kept alive takes about 0.4 ms.</p></div>
+    <figcaption>The same million-element sum timed four ways on this orb (median of 7, log scale). Three of the bars are the cost of
+    reading the clock. Only "kept alive" measured the loop. Notice that Odin's floor is several times higher than Rust's and Zig's.</figcaption>
+  </figure>
+
+  <p>The program prints its own verdict on every line, and this is the habit worth copying. Two sanity checks catch almost every
+  deleted benchmark before anyone looks at a ratio. First, <b>is it slower than timing nothing?</b> The program measures the empty
+  function first and flags anything under twice that floor. Second, <b>is the time per element physically possible?</b> At 2.6 GHz,
+  0.05 ns per element would mean eight squared-and-added 64-bit numbers per cycle, which this loop cannot sustain; anything
+  faster is flagged. Both checks fire on the broken rows, in all three languages, at every size:</p>
+<pre class="code"><code>(a) sum of squares over 1048576 u64, median of 7:
+    empty (timer only)           42 ns     0.0000 ns/elem  (the floor: two clock reads)
+    result discarded            42 ns     0.0000 ns/elem  &lt;- SUSPICIOUS: no slower than timing nothing
+    input visible               36 ns     0.0000 ns/elem  &lt;- SUSPICIOUS: no slower than timing nothing
+    kept alive              413715 ns     0.3946 ns/elem  plausible
+    checksum: kept alive 384306618446643200, input visible 384306618446643200</code></pre>
+  <p>(Those are the Rust lines of the run the charts show; Zig and Odin print the same checksums.) The checksum line matters too. "Input visible" computed the right
+  answer, so a checksum alone would not have caught it. Checksums catch variants that are fast because they are <em>wrong</em>; the
+  timer floor catches variants that are fast because they are <em>gone</em>. You need both.</p>
+
+  <h3 id="formula">Deleted, or turned into a formula</h3>
+  <p>"Result discarded" and "input visible" fail for different reasons, and the difference matters when you fix them. The first is
+  dead-code elimination: nobody reads the value, so no instruction computes it. The second is subtler. The result <em>is</em> kept,
+  and the loop <em>did</em> run, in a sense. LLVM's scalar evolution pass recognized <code>Σ i²</code> as a polynomial in
+  <code>n</code> and replaced the loop with the closed form. Here is what <code>rustc -O --emit asm</code> produces for the
+  stand-alone function (Zig 0.17.1 emits the same closed form in Intel syntax, using BMI2 <code>mulx</code> and keeping a frame
+  pointer):</p>
+<pre class="code"><code>sum_squares_range:
+	testq	%rdi, %rdi
+	je	.LBB0_1
+	leaq	-1(%rdi), %rax
+	leaq	-2(%rdi), %rcx
+	mulq	%rcx
+	leaq	-3(%rdi), %rcx
+	imulq	%rax, %rcx
+	shrq	%rcx
+	movabsq	$6148914691236517206, %rsi
+	shldq	$63, %rax, %rdx
+	imulq	%rcx, %rsi
+	leaq	(%rdx,%rdx,2), %rax
+	addq	%rdi, %rax
+	decq	%rax
+	addq	%rsi, %rax
+	retq</code></pre>
+  <p>No loop, no branch back, no memory access: a dozen multiplies and shifts that compute <code>(n−1)n(2n−1)/6</code> modulo
+  2<sup>64</sup> (the large constant is the modular inverse trick for dividing by 3). The fix is not "keep the result", which this
+  version already did; it is <b>hide the input</b>. That is why the harness passes <code>black_box(&amp;v)</code> into the closure
+  in Rust and why every chapter builds its inputs from a runtime seed. A benchmark whose input is a compile-time constant measures
+  the compiler's algebra, not your loop.</p>
+
+  <figure class="figure">
+  <svg class="ch12-diagram" viewBox="0 0 640 196" role="img" aria-label="Three timelines between two clock reads: kept alive contains the whole loop; result discarded contains nothing; input visible contains a short closed-form formula.">
+    <style>.ch12-d-t{fill:var(--text);font-size:12px}.ch12-d-dim{fill:var(--text-dim);font-size:11px}</style>
+    <text x="0" y="16" class="ch12-d-dim">what sits between t0 = now() and t1 = now()</text>
+    <g transform="translate(0,34)">
+      <text x="0" y="20" class="ch12-d-t">kept alive</text>
+      <rect x="130" y="4" width="14" height="24" style="fill:var(--accent)"/><rect x="146" y="4" width="460" height="24" style="fill:var(--c-vel);opacity:.85"/>
+      <rect x="608" y="4" width="14" height="24" style="fill:var(--accent)"/>
+      <text x="376" y="21" text-anchor="middle" style="fill:#06121f;font-size:12px">1,048,576 loads, multiplies, adds ≈ 0.4 ms</text>
+    </g>
+    <g transform="translate(0,84)">
+      <text x="0" y="20" class="ch12-d-t">result discarded</text>
+      <rect x="130" y="4" width="14" height="24" style="fill:var(--accent)"/><rect x="146" y="4" width="14" height="24" style="fill:var(--accent)"/>
+      <text x="172" y="21" class="ch12-d-dim">nothing: the call was dead code, ≈ 40 ns of clock reads</text>
+    </g>
+    <g transform="translate(0,134)">
+      <text x="0" y="20" class="ch12-d-t">input visible</text>
+      <rect x="130" y="4" width="14" height="24" style="fill:var(--accent)"/><rect x="146" y="4" width="6" height="24" style="fill:var(--c-flag)"/>
+      <rect x="154" y="4" width="14" height="24" style="fill:var(--accent)"/>
+      <text x="180" y="21" class="ch12-d-dim">≈ 15 instructions of (n−1)n(2n−1)/6: the loop became a formula</text>
+    </g>
+    <text x="130" y="192" class="ch12-d-dim"><tspan style="fill:var(--accent)">■</tspan> clock read   <tspan style="fill:var(--c-vel)">■</tspan> the loop   <tspan style="fill:var(--c-flag)">■</tspan> closed-form formula</text>
+  </svg>
+  <figcaption>Three benchmarks with the same source loop. Only the first one puts the loop between the clock reads.</figcaption>
+  </figure>
+
+  <h3 id="odin-313">An early Odin probe, and why Odin's floor is higher</h3>
+  <p>While preparing this book, an early Odin probe (recorded in our <a href="references.html#notes">research notes</a>) summed the health field
+  of four million entities with <code>time.Stopwatch</code> around a call written as <code>_ = sum_health_soa(soa)</code>. At the default
+  optimization level it took about 17 ms. At <code>-o:speed</code> it printed <b>313 ns</b>, faster than reading one cache line from
+  DRAM per thousand entities. LLVM had deleted the call, exactly as in our "result discarded" row. Odin has no
+  <code>black_box</code>, so the fix is the harness's <code>keep</code>, a volatile store into a file-private global<a class="cite" href="#src-13">[13]</a>:</p>
+  <div class="code-tabs">
+<pre data-lang="Odin" data-file="code/ch12-measure-and-know-when-not-to/odin/main.odin"><code class="language-odin">// Odin has no black_box: a volatile store into a file-private global keeps results alive.
+@(private = "file")
+sink: u64
+
+keep :: proc "contextless" (v: $T) where size_of(T) &lt;= 8 {
+	intrinsics.volatile_store((^T)(&amp;sink), v)
+}</code></pre>
+  </div>
+  <p>A volatile store must happen, so the value must be computed. It is a stronger promise than Rust's <code>black_box</code>, which the
+  standard library documents as "best-effort"<a class="cite" href="#src-11">[11]</a>, and Zig's <code>doNotOptimizeAway</code>, which
+  "tries to prevent" the optimization<a class="cite" href="#src-12">[12]</a>, but it only covers the value you store. In all three
+  languages, the keep-alive protects the <em>result</em>; nothing protects work whose result does not flow into it.</p>
+  <p>The figure also shows a quieter difference. Odin's empty benchmark costs about <span data-bench-val="ch12-deadcode" data-label="empty (timer only)" data-lang="odin" data-metric="ns">137 ns</span>,
+several times Rust's (<span data-bench-val="ch12-deadcode" data-label="empty (timer only)" data-lang="rust" data-metric="ns">42 ns</span>)
+  and Zig's (<span data-bench-val="ch12-deadcode" data-label="empty (timer only)" data-lang="zig" data-metric="ns">36 ns</span>). On Linux,
+  Odin's <code>time.tick_now</code> calls <code>clock_gettime(CLOCK_MONOTONIC_RAW)</code> through a raw <code>syscall</code> instruction
+  (<code>core/time/time_linux.odin</code><a class="cite" href="#src-14">[14]</a>), so every clock read enters the kernel. Rust's
+  <code>Instant</code> and Zig's <code>Io.Clock.awake</code> go through libc or the vDSO, which reads the clock without a system call.
+  The floor sets the smallest thing you can time: loop a short kernel inside the timed region until each sample is far above it.</p>
+
+  <aside class="callout version" data-title="Changed in Rust 1.88"><p>The nightly-only <code>#[bench]</code> attribute is now a hard
+  error without <code>#![feature(custom_test_frameworks)]</code> (it had been a deny-by-default lint since 1.77)<a class="cite" href="#src-15">[15]</a>.
+  On stable Rust the std-only answer is the one this book uses: <code>Instant</code> plus <code>std::hint::black_box</code>. The Rust
+  Performance Book lists Criterion, Divan and Hyperfine as the usual crates and tools<a class="cite" href="#src-16">[16]</a>.</p></aside>
+
+  <h2 id="noise">Noise: warm-up, medians and the coefficient of variation</h2>
+  <p>Once a benchmark measures the right thing, the next question is how much to trust one number. The program's part (b) times
+  the same tiny kernel, a sum of <code>u32</code> into a <code>u64</code>, 41 times after one warm-up, at two sizes: 16 KiB, which lives
+  in L1, and 16 MiB, which spills past L2 into the shared L3 and DRAM. It prints every sample. The minimum, median, maximum and
+  <b>coefficient of variation</b> (CV = standard deviation ÷ mean) summarize them:</p>
+<pre class="code"><code>(b) noise, 41 timed runs each:                                            (Rust, pinned to CPU 2)
+    16 KiB (L1)       min        627 ns  median        629 ns  max        747 ns  CV   4.4%
+    16 MiB (L3/DRAM)  min     711005 ns  median     743725 ns  max    1621692 ns  CV  23.2%</code></pre>
+  <p>(The Rust lines of the run the charts show. Across the three languages the CV was about 1–4% at 16 KiB and 16–24% at
+  16 MiB.)</p>
+
+  <figure class="figure wide" id="fig-dist">
+    <div class="figure-body" data-viz="ch12-strip" data-bench="ch12-noise" data-opts='{"relative":true}'>
+      <p>Static fallback: the 16 KiB sum has a CV of about 1–4%; the 16 MiB sum has a CV of 16–24%, with a long tail of slow runs.</p></div>
+    <figcaption>All 41 timed runs per row, binned into a histogram, as percent from that row's median. The L1-sized kernel is tight; the same code on
+    16 MiB has a tail stretching to about twice the median. That tail is the host: other tenants share the L3 and the memory controller.</figcaption>
+  </figure>
+
+  <p>The harness's usual seven samples already hint at this. Here are the seven behind each "kept alive" median in
+  <a class="figref" href="#fig-deadcode">the figure above</a>, drawn with the book's shared run-spread chart:</p>
+  <figure class="figure" id="fig-seven">
+    <div class="figure-body" data-viz="bench-dist" data-bench="ch12-deadcode" data-opts='{"labels":["kept alive"],"relative":true}'>
+      <p>Static fallback: the seven runs of the million-element sum spread by tens of percent around each median.</p></div>
+    <figcaption>Seven runs per language, one dot each. With seven samples you see the spread but cannot judge a tail; that is why part (b) takes 41.</figcaption>
+  </figure>
+  <p>Three lessons sit in the 41-sample histogram. <b>Warm-up is not the main source of noise here:</b> after the discarded first run, the
+  slow samples are scattered through the sequence, not bunched at the start.</p>
+  <p><b>The distribution is not symmetric.</b> A run can be slowed by an interrupt, a neighbour, a migration or a cache flush, but
+  nothing makes it faster than the hardware allows. Timings therefore pile up near a floor and trail off to the right. The mean
+  is pulled toward the tail; the median is not. The minimum is a fair second statistic for small CPU-bound kernels, but optimistic for
+  anything that touches DRAM, where some interference is part of the real cost.</p>
+  <p><b>The CV tells you the smallest difference worth discussing.</b> With a CV around 3%, a 10% difference between two variants is
+  far outside the noise. With a CV of 20%, a 10% difference from seven runs is close to a coin flip. A rule of thumb: if two medians
+  differ by less than the CV of either, do not report a winner; add runs, or make the kernel bigger, or stop. The next figure lets you
+  check that rule against a model.</p>
+
+  <details class="predict"><summary>B is truly 5% faster than A, the noise is 5% CV, and you compare one run of each. How often does A win?</summary>
+    <p>Roughly one time in four. The difference between two noisy runs has about √2 × 5% ≈ 7% spread, and the true gap is 5%, so a
+    wrong verdict needs only a bit less than one standard deviation of bad luck. The median of seven runs cuts that to about 6%,
+    and the figure shows how many runs push it under 5%.</p></details>
+
+  <figure class="figure wide" id="fig-noise">
+    <div class="figure-body" data-viz="ch12-noise" data-opts='{"effect":5,"cv":5,"runs":7}'>
+      <p>Static fallback: with a 5% true effect and 5% noise, one run per side picks the wrong winner about 23% of the time; the median
+      of 7 runs, about 6%.</p></div>
+    <figcaption>A simulator, not a measurement. Set how much faster B really is, the run-to-run noise, and the number of runs. The top
+    panel draws one experiment; the bars are the share of 2,000 seeded experiments in which each verdict crowns the slower variant.
+    Turn on VM spikes and watch the mean get worse while the median barely moves.</figcaption>
+  </figure>
+
+  <p>Try two things. Set the noise to 20% (our 16 MiB row) and the effect to 5%: even with 51 runs
+  the median picks the wrong winner about one time in seven, and the "runs needed" counter climbs past a hundred. Then switch on spikes at a low CV: the mean of seven gets
+  visibly worse than the median, because one 3× outlier moves a mean by almost 30% and a median not at all.</p>
+
+  <h2 id="aa">Compare a thing with itself: the A/A test</h2>
+  <p>The most useful benchmark you can run is one where you already know the answer. In an <b>A/A test</b>, "A" and "B" are the same
+  code on two identical 256 KiB buffers (both fit in L2 together), so the true ratio is exactly 1.000. Any difference you measure is
+  the error of your method. The program runs it two ways, seven rounds each, 31 timed runs per side:</p>
+  <ul>
+    <li><b>Sequential:</b> all 31 runs of A, then all 31 runs of B. This is what most hand-written comparisons do.</li>
+    <li><b>Alternating:</b> A, B, A, B, … so anything that drifts over time (a neighbour waking up, the host shuffling vCPUs,
+    thermal or power limits) lands on both sides equally.</li>
+  </ul>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch12-measure-and-know-when-not-to/rust/src/main.rs"><code class="language-rust">/// A/A test, alternating: A, B, A, B, ... so slow drift hits both sides equally.
+fn aa_alternating(a: &amp;[u32], b: &amp;[u32]) -&gt; ([Duration; AA], [Duration; AA]) {
+    black_box(sum_u32(black_box(a)));
+    black_box(sum_u32(black_box(b)));
+    let (mut ta, mut tb) = ([Duration::ZERO; AA], [Duration::ZERO; AA]);
+    for i in 0..AA {
+        let t0 = Instant::now();
+        black_box(sum_u32(black_box(a)));
+        ta[i] = t0.elapsed();
+        let t0 = Instant::now();
+        black_box(sum_u32(black_box(b)));
+        tb[i] = t0.elapsed();
+    }
+    ta.sort_unstable();
+    tb.sort_unstable();
+    (ta, tb)
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch12-measure-and-know-when-not-to/zig/main.zig"><code class="language-zig">/// A/A test, alternating: A, B, A, B, ... so slow drift hits both sides equally.
+fn aaAlternating(io: Io, a: []const u32, b: []const u32) Pair {
+    std.mem.doNotOptimizeAway(sumU32(a));
+    std.mem.doNotOptimizeAway(sumU32(b));
+    var p: Pair = undefined;
+    for (&amp;p.a, &amp;p.b) |*ta, *tb| {
+        var t0 = nowNs(io);
+        std.mem.doNotOptimizeAway(sumU32(a));
+        ta.* = @intCast(nowNs(io) - t0);
+        t0 = nowNs(io);
+        std.mem.doNotOptimizeAway(sumU32(b));
+        tb.* = @intCast(nowNs(io) - t0);
+    }
+    std.mem.sort(u64, &amp;p.a, {}, std.sort.asc(u64));
+    std.mem.sort(u64, &amp;p.b, {}, std.sort.asc(u64));
+    return p;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch12-measure-and-know-when-not-to/odin/main.odin"><code class="language-odin">// A/A test, alternating: A, B, A, B, ... so slow drift hits both sides equally.
+aa_alternating :: proc(a, b: []u32) -&gt; (p: Pair) {
+	keep(sum_u32(a))
+	keep(sum_u32(b))
+	for i in 0 ..&lt; AA {
+		t0 := time.tick_now()
+		keep(sum_u32(a))
+		p.a[i] = time.tick_since(t0)
+		t0 = time.tick_now()
+		keep(sum_u32(b))
+		p.b[i] = time.tick_since(t0)
+	}
+	slice.sort(p.a[:])
+	slice.sort(p.b[:])
+	return
+}</code></pre>
+  </div>
+  <p>Zig iterates the two arrays in lockstep with <code>for (&amp;p.a, &amp;p.b) |*ta, *tb|</code>; Odin uses a named result and a bare
+  <code>return</code>. The program prints the B/A ratio of medians for every round; the chart below shows the 31 samples per
+  side from the first round of the final benchmark run. Here are the medians of that round:</p>
+  <ul>
+    <li><b>Zig:</b> sequential A <span data-bench-val="ch12-aa" data-label="A, sequential" data-lang="zig" data-metric="ns" data-digits="3">12.0 µs</span> against B <span data-bench-val="ch12-aa" data-label="B, sequential" data-lang="zig" data-metric="ns" data-digits="3">12.9 µs</span>,
+    a false difference of several percent; alternating A <span data-bench-val="ch12-aa" data-label="A, alternating" data-lang="zig" data-metric="ns" data-digits="3">15.1 µs</span> against B
+    <span data-bench-val="ch12-aa" data-label="B, alternating" data-lang="zig" data-metric="ns" data-digits="3">15.1 µs</span>, identical.</li>
+    <li><b>Odin:</b> sequential <span data-bench-val="ch12-aa" data-label="A, sequential" data-lang="odin" data-metric="ns" data-digits="3">7.97 µs</span> against <span data-bench-val="ch12-aa" data-label="B, sequential" data-lang="odin" data-metric="ns" data-digits="3">7.87 µs</span>,
+    about a percent apart; alternating <span data-bench-val="ch12-aa" data-label="A, alternating" data-lang="odin" data-metric="ns" data-digits="3">7.98 µs</span> against <span data-bench-val="ch12-aa" data-label="B, alternating" data-lang="odin" data-metric="ns" data-digits="3">7.98 µs</span>.</li>
+    <li><b>Rust</b> did the opposite: sequential <span data-bench-val="ch12-aa" data-label="A, sequential" data-lang="rust" data-metric="ns" data-digits="3">10.8 µs</span> against
+    <span data-bench-val="ch12-aa" data-label="B, sequential" data-lang="rust" data-metric="ns" data-digits="3">10.8 µs</span> agreed, while alternating <span data-bench-val="ch12-aa" data-label="A, alternating" data-lang="rust" data-metric="ns" data-digits="3">9.68 µs</span> against
+    <span data-bench-val="ch12-aa" data-label="B, alternating" data-lang="rust" data-metric="ns" data-digits="3">10.8 µs</span> reported a false difference of about a tenth.</li>
+  </ul>
+  <p>Two of the three languages show the textbook picture: a sequential comparison of a function with itself finds a "winner", and
+  alternation removes it. Rust's round shows that one A/A round is itself a noisy sample: the error landed on the alternating pair,
+  whose A side has a long tail of slow runs in the chart, and in earlier runs the big sequential error moved between languages. Without
+  counters we cannot say why, and that is the point: you rarely know. Alternation <em>spreads</em> noise evenly on average, so read the
+  spread across all seven rounds, not one ratio.</p>
+
+  <figure class="figure wide" id="fig-aa">
+    <div class="figure-body" data-viz="ch12-strip" data-bench="ch12-aa" data-opts='{"relative":false,"labels":["A, sequential","B, sequential","A, alternating","B, alternating"]}'>
+      <p>Static fallback: the 31 samples per side of one A/A round, sequential and alternating, in each language.</p></div>
+    <figcaption>The 31 samples per side from the first A/A round of the final benchmark run, absolute time. Compare each sequential pair with the alternating pair
+    below it: the same code, the same buffers, and only the order of the runs changed.</figcaption>
+  </figure>
+
+  <aside class="callout pitfall"><p><b>"I ran the old version, then the new, and it was 10% faster"</b> says nothing until old against
+  old has been run the same way. Build both into one binary and interleave them; if the A/A error is 5%, nothing under 5% is a result.</p></aside>
+
+  <h2 id="worked">Worked example: is a 6% win real?</h2>
+  <p>Suppose a hot/cold split of a particle struct (<a href="04-aos-soa-hot-cold.html">Chapter 4</a>) makes your update loop 6% faster on a
+  cloud VM, median of seven, measured A-then-B. Apply the chapter:</p>
+  <ol>
+    <li><b>Floor and plausibility.</b> The loop takes 2.1 ms for a million particles, 2.1 ns each: far above the timer floor and below
+    nothing physical. The checksums match. The measurement is of the right thing.</li>
+    <li><b>Noise.</b> Print the samples: the CV is 8%. A 6% difference is smaller than the noise of either side. With 8% CV and a 6% effect,
+    the simulator's estimate is that the median of seven picks the wrong winner about 12% of the time (a single run, about 29%), and it
+    asks for about 15 runs per side to get under 5%.</li>
+    <li><b>Method error.</b> Run an A/A test with the same harness. If sequential A/A shows 5% on this machine, the 6% is mostly method.</li>
+    <li><b>Fix the method.</b> Interleave A and B, 31 runs each, and pin. Suppose the alternating result is 9% with an A/A error of 1%: now
+    you have a result.</li>
+    <li><b>Explain it.</b> The split cut the bytes read per particle from 32 to 24, so a memory-bound loop should gain up to 25%. A 9% gain
+    says the loop is partly compute-bound. On a machine with counters, <code>perf stat</code> would confirm it with a cache-miss count that
+    falls by about a quarter.</li>
+    <li><b>Weigh it.</b> 9% of a loop that is 5% of the frame is under half a percent of the frame. Is the split worth the two arrays? If
+    the particles are the 3%, yes. If they are not, Gray and Nethercote would revert.</li>
+  </ol>
+  <p>(The numbers in steps 1, 2, 4 and 6 are illustrative inputs to the method, not measurements; the step-2 estimates are what
+  <a class="figref" href="#fig-noise">the simulator figure</a> reports for those settings.)</p>
+
+  <h2 id="vm">The machine you are measuring on</h2>
+  <p>A benchmark result is a fact about a program <em>on a machine</em>. Cloud VMs like this orb add four sources of error that a
+  desktop mostly lacks, and each has a cheap mitigation.</p>
+  <p><b>Scheduling and pinning.</b> The kernel may move a thread between cores mid-run, which throws away its warm L1 and L2. Pinning
+  with <code>taskset -c 2 ./bench</code> forbids that. Here CPUs 0/1 and 2/3 are hyperthread pairs (<code>lscpu -e</code>), so single-threaded
+  runs use CPU 2, away from the interrupts on CPU 0, and two-thread runs use 0 and 2. Inside a VM that pins a <em>virtual</em> CPU, which the host can still move.</p>
+  <p><b>Steal time.</b> When the hypervisor runs someone else on "your" core, the guest's clock keeps ticking. Linux counts that time
+  as <em>steal</em>, the eighth number on the <code>cpu</code> line of <code>/proc/stat</code><a class="cite" href="#src-17">[17]</a>, and
+  <code>vmstat 1</code> shows it in the <code>st</code> column. On this orb it was 1,901 ticks out of about four million at the time of
+  writing: small on average, but steal arrives in bursts, which is what the long right tails above look like.</p>
+  <p><b>Frequency.</b> Modern cores change their clock with temperature, power and how many cores are busy. On bare metal, fix the governor
+  (<code>cpupower frequency-set -g performance</code>) and disable turbo. This guest exposes no
+  <code>cpufreq</code> directory at all, so the frequency is whatever the host decides and we cannot even read it. That is another reason
+  to alternate: a frequency change between the A block and the B block becomes a "speed-up".</p>
+  <p><b>Shared caches and memory.</b> The 54 MiB L3 belongs to the host, and only a few MiB of it behave like ours in practice
+  (<a href="02-the-machine.html">Chapter 2</a>), so a neighbour streaming through memory evicts our lines and
+  competes for bandwidth. That is the 16–24% CV on the 16 MiB kernel against about 1–4% at 16 KiB.</p>
+  <p>One mitigation covers all of these: <b>report the machine</b>. <code>code/bench_all.sh</code> writes
+  <code>code/results/machine.txt</code> (CPU, topology, caches, hypervisor, compilers, pinning, date) first. A number without its machine
+  is not wrong, but nobody can check it.</p>
+
+  <aside class="callout try"><p>Look at your own machine before you benchmark on it:</p>
+<pre><code class="language-bash">lscpu -e=CPU,CORE,SOCKET,L1d:L1i:L2:L3      # which logical CPUs share a core
+head -1 /proc/stat                           # cpu user nice system idle iowait irq softirq steal ...
+vmstat 1 5                                   # the st column is steal time
+cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2&gt;/dev/null
+cd code &amp;&amp; taskset -c 2 cargo run --release -q -p ch12_measure_and_know_when_not_to</code></pre></aside>
+
+  <h2 id="tools">Tools that see what a stopwatch cannot</h2>
+  <p>A stopwatch tells you <em>how long</em>, not <em>why</em>; every hardware explanation in this book has been an inference from timings.
+  This orb has no counters and none of these tools, so the commands below are for you to run; <b>no output is shown because we could not
+  produce honest output here</b>.</p>
+
+  <h3 id="perf">perf stat: count the events</h3>
+  <p><code>perf stat</code> runs a program and reads the CPU's counters for it<a class="cite" href="#src-18">[18]</a>. For layout
+  work, the useful events are cycles, instructions (their ratio is IPC) and cache misses at each level:</p>
+<pre><code class="language-bash">perf stat -e cycles,instructions,cache-references,cache-misses,L1-dcache-load-misses,LLC-load-misses \
+    taskset -c 2 ./target/release/ch04_aos_soa_hot_cold
+perf stat -r 10 ./bench          # ten repetitions; prints mean and ± spread for each counter
+perf record -g ./bench &amp;&amp; perf report   # where the cycles went, by function</code></pre>
+  <p>If SoA beats AoS because it moves fewer bytes, its miss count should fall by about the ratio of bytes read; if it does not, your
+  explanation is wrong. Many VMs report these events as "not supported".</p>
+
+  <h3 id="cachegrind">Cachegrind: counts that barely move with noise</h3>
+  <p>Valgrind's Cachegrind runs the program under instrumentation and counts the instructions executed (<code>Ir</code>) per line of
+  source<a class="cite" href="#src-19">[19]</a>. It is tens of times slower than native, but instruction counts are nearly
+  deterministic: the same binary gives almost the same counts on a noisy VM, a laptop or CI (disable address-space randomisation with
+  <code>setarch -R</code>, which the manual says perturbs results). That makes it the right tool for "did this change reduce
+  instructions?" when wall-clock time is too noisy to answer. Its optional cache simulation is off by default, and the manual itself
+  warns that it is "basic and unlikely to reflect the behaviour of a modern machine", ignores kernel activity, and recommends a
+  hardware-counter profiler such as <code>perf</code> for real miss counts.</p>
+<pre><code class="language-bash">valgrind --tool=cachegrind --cache-sim=yes ./bench --quick
+cg_annotate cachegrind.out.&lt;pid&gt;                  # per-function and per-line Ir, D1mr, DLmr ...
+cg_diff cachegrind.out.before cachegrind.out.after # what a change did, event by event</code></pre>
+
+  <h3 id="layout">pahole, -Zprint-type-sizes, and compile-time size checks</h3>
+  <p>Layout bugs are cheaper to catch at build time than with a profiler. <code>pahole</code> reads the DWARF debug info of any binary
+  (C, Zig, Odin or Rust) and prints each struct with its offsets, holes and cache-line boundaries<a class="cite" href="#src-20">[20]</a>.
+  Linux kernel developers use it constantly: Eric Dumazet found and removed 24 bytes of holes in <code>tcp_sock</code> with it, and
+  <code>pahole --reorganize</code> proposes a better order<a class="cite" href="#src-21">[21]</a>.</p>
+<pre><code class="language-bash">pahole -C Particle ./zig-out/bin/app     # one struct: offsets, sizes, /* XXX 2 bytes hole */, cachelines
+pahole --reorganize -C Particle ./app    # suggested field order with the bytes saved
+cargo +nightly rustc --release -- -Zprint-type-sizes   # Rust: every type's size, padding and enum variants (nightly only)
+objdump -d --no-show-raw-insn -M intel ./bench | less  # read the machine code the loop became
+cargo rustc --release -- --emit asm      # or: zig build-obj -O fast -femit-asm=out.s main.zig</code></pre>
+  <p>On stable Rust the tool you can rely on is the language itself: all three languages can assert a size at compile time, so a hot
+  record cannot silently grow, and print offsets at run time.
+  <a href="03-size-alignment-padding.html">Chapter 3</a> introduced these asserts; here they guard a 28-byte particle:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch12-measure-and-know-when-not-to/rust/src/main.rs"><code class="language-rust">/// A layout guard: the build fails if someone grows the hot record.
+#[allow(dead_code)] // only its layout matters in this program
+#[derive(Clone, Copy)]
+struct Particle {
+    pos: [f32; 3],
+    vel: [f32; 3],
+    alive: bool,
+    kind: u8,
+}
+const _: () = assert!(size_of::&lt;Particle&gt;() == 28);</code></pre>
+<pre data-lang="Zig" data-file="code/ch12-measure-and-know-when-not-to/zig/main.zig"><code class="language-zig">/// A layout guard: compilation fails if someone grows the hot record.
+const Particle = struct { pos: [3]f32, vel: [3]f32, alive: bool, kind: u8 };
+comptime {
+    std.debug.assert(@sizeOf(Particle) == 28);
+}
+
+test "Particle stays 28 bytes" {
+    try std.testing.expectEqual(28, @sizeOf(Particle));
+    try std.testing.expectEqual(4, @alignOf(Particle));
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch12-measure-and-know-when-not-to/odin/main.odin"><code class="language-odin">// A layout guard: compilation fails if someone grows the hot record.
+Particle :: struct {
+	pos:   [3]f32,
+	vel:   [3]f32,
+	alive: bool,
+	kind:  u8,
+}
+#assert(size_of(Particle) == 28)</code></pre>
+  </div>
+  <p>Zig adds a second form: a <code>test</code> block, run with <code>zig test main.zig</code>, which reports a size change as a failing
+  test rather than a compile error. The programs also print the offsets, and they disagree:</p>
+<pre class="code"><code>rust  (d) Particle: 28 B, align 4; pos @0, vel @12, alive @25, kind @24
+zig   (d) Particle: 28 B, align 4; pos @0, vel @12, alive @24, kind @25
+odin  (d) Particle: 28 B, align 4; pos @0, vel @12, alive @24, kind @25</code></pre>
+  <p>Same size, different order. Rust's default representation promises nothing about field order and here placed <code>kind</code>
+  before <code>alive</code>; Zig and Odin kept declaration order for this struct (Zig is allowed to reorder plain structs but had no reason
+  to; Odin always keeps declaration order). If any code depends on the order, say a file format or a GPU buffer, that is a bug waiting
+  in Rust until you write <code>#[repr(C)]</code>, and in Zig until you write <code>extern struct</code>. Size asserts catch growth; only
+  <code>offset_of</code> checks catch reordering.</p>
+
+  <p>Reading the assembly also explains a gap in this chapter's own numbers: the 16 KiB <code>u32</code> sum takes
+  <span data-bench-val="ch12-noise" data-label="16 KiB (L1)" data-lang="zig" data-metric="ns">810 ns</span> in Zig against <span data-bench-val="ch12-noise" data-label="16 KiB (L1)" data-lang="rust" data-metric="ns">680 ns</span> in Rust
+  and <span data-bench-val="ch12-noise" data-label="16 KiB (L1)" data-lang="odin" data-metric="ns">750 ns</span> in Odin, because Zig 0.17.1's loop vectorizer is off
+  (<a href="04-aos-soa-hot-cold.html#zig-loop-vectorizer">Chapter 4</a> explains why<a class="cite" href="#src-22">[22]</a>), so its loop is scalar;
+  Chapters 4, 8 and 10 use <code>@Vector</code> where SIMD matters.</p>
+
+  <h2 id="when-not">Know when not to</h2>
+  <p>Measurement cuts both ways. It is how you prove that a data-oriented rewrite won, and it is how you find out that it did not, or
+  that it won something you did not need. The strongest critiques of DOD come from people who practise it.</p>
+
+  <h3 id="gray">"Not worth the extra hassle"</h3>
+  <p>Niklas Gray, who built the Bitsquid and Our Machinery engines around data-oriented ideas, finds SoA "not worth the extra hassle"
+  in most cases<a class="cite" href="#src-2">[2]</a> (<a href="04-aos-soa-hot-cold.html#when-aos-wins">Chapter 4</a> quotes him in
+  full). His AoS is still a flat array with stable indices; what he declines is only the last step, splitting every struct into
+  columns by default.</p>
+
+  <h3 id="teodorescu">Modifiability</h3>
+  <p>Lucian Radu Teodorescu's ACCU essay revisits Acton's principles and states the trade-off precisely: "the more data-oriented a
+  system becomes, the harder it is to make a change when the data needs to change; the less data-oriented a system is, the more difficult
+  it is to make a change when data remains the same."<a class="cite" href="#src-3">[3]</a> A layout tuned to today's access pattern
+  encodes that pattern, so a feature that needs a field the hot loop never read touches every array. Noel Llopis, who named the
+  approach in 2009, argued that transform-focused code is small functions with few dependencies<a class="cite" href="#src-23">[23]</a>.
+  Both are right, about different phases of a project: restructure data once its shape has settled.</p>
+
+  <h3 id="nethercote">The abandoned change</h3>
+  <p>Nicholas Nethercote has spent a decade shrinking the Rust compiler's types, with real wins, and he documents the failures too. In
+  2018, after a <code>Token</code> had gone from 32 to 24 bytes for a small win, he took it to 16: "That change reduced it to 16 bytes,
+  but produced a negligible speed-up and made the code uglier, so I abandoned it."<a class="cite" href="#src-4">[4]</a> That sentence is
+  the whole method of this chapter: he made the change, measured it, weighed the cost in code, and reverted. Not every byte saved is
+  worth keeping.</p>
+
+  <h3 id="algorithm">Algorithm first</h3>
+  <p>Aras Pranckevičius's toy mesh path tracer records every optimization step as a branch<a class="cite" href="#src-5">[5]</a>. Going
+  multi-threaded took the teapot scene to 18.9 Krays/s. A simple bounding volume hierarchy took it to 6,978: about 370× from changing
+  the algorithm. Naive SIMD on top added 1.28×.</p>
+  <figure class="figure" id="fig-bvh">
+    <div class="figure-body" data-viz="bench-bars" data-opts='{"source":"cited: Pranckevičius, ToyMeshPathTracer (2019), teapot scene, branches 02–04","metric":"value","unit":"Krays/s","higherIsBetter":true,"sort":"none","log":true,"runs":[{"label":"multi-threaded (02)","value":18.9},{"label":"+ BVH (03)","value":6978.2},{"label":"+ naive SIMD (04)","value":8919.0}]}'>
+      <p>Static fallback: 18.9 → 6,978 → 8,919 Krays/s.</p></div>
+    <figcaption>Cited, not re-measured. On a log scale the algorithmic change is the whole picture; the SIMD step is a sliver.</figcaption>
+  </figure>
+  <p>Zig's self-hosted compiler makes the same point from the other side. Zig 0.10 replaced the C++ bootstrap compiler with one built on
+  the data-oriented AST, ZIR and AIR of <a href="11-capstone-flat-ast-compiler.html">Chapter 11</a>. Building the compiler itself, peak
+  memory fell from 9.6 GiB to 2.8 GiB, 3.5× less, but wall-clock time went from 43 to 40 seconds, only 7% faster, because, as the notes imply, LLVM code
+  generation dominated the build<a class="cite" href="#src-6">[6]</a>. DOD fixed what it touched. It did not touch the bottleneck.
+  Layout work multiplies whatever the algorithm leaves; make the big division first.</p>
+
+  <h3 id="netdev">Same patch, different hardware</h3>
+  <p>In 2023 Coco Li at Google reorganized the hot fields of <code>tcp_sock</code>, <code>net_device</code> and other core networking
+  structs into read-mostly cache-line groups, with build-time checks so they stay grouped; it shipped in Linux 6.8<a class="cite" href="#src-7">[7]</a>.
+  The cover letter reports CPU seconds per <code>tcp_rr</code> round trip:</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>platform (cited)</th><th>flows</th><th class="num">change in CPU per round trip</th></tr></thead>
+    <tbody>
+      <tr><td>AMD, 100 Gb/s NIC, IPv4</td><td>1k–30k</td><td class="num">−35.4% to −44.5%</td></tr>
+      <tr><td>AMD, 100 Gb/s NIC, IPv6</td><td>1k–30k</td><td class="num">−20.5% to −44.2%</td></tr>
+      <tr><td>Intel, 200 Gb/s NIC, IPv6</td><td>5k–30k</td><td class="num">−1.2% to −5.2%</td></tr>
+      <tr><td>Intel, 200 Gb/s NIC, IPv6</td><td>1k</td><td class="num">+3.3% (slower)</td></tr>
+    </tbody></table></div>
+  <p>The same patch saved 40% of CPU on one vendor's servers and cost 3% at low load on another's. A layout result is a result about a
+  machine; if you ship to several, measure on several.</p>
+
+  <h3 id="tigerbeetle">Batching moves the cost</h3>
+  <p>TigerBeetle's batches (<a href="07-branches-batches-existence.html#one-many">Chapter 7</a>) had a cost at low load. One user loaded a
+  million transfers in 1,000 batches of 1,000, and each replica wrote about 27 GB; a thousand one-transfer batches after that, about
+  10 KB of data, wrote another 17 GB, so each lone transfer cost roughly 600 times the bytes of a transfer in a full batch, because a
+  partly full batch still paid for whole storage writes<a class="cite" href="#src-8">[8]</a>. The fix, PR #2592, made small batches
+  cheaper: at 256 transfers per batch it raised throughput 4.25× while writing a twelfth of the bytes. Batching does not make per-item
+  costs vanish; it moves them into latency, into the API, and into the code that handles the partly full batch.</p>
+
+  <h3 id="muratori">Muratori's own caveats</h3>
+  <p>Casey Muratori's shapes benchmark<a class="cite" href="#src-9">[9]</a>, which <a href="01-the-data-is-the-problem.html#muratori">Chapter
+  1</a> cites and partly reproduces, was "a demonstration and not an explanation"<a class="cite" href="#src-10">[10]</a>: the fastest
+  layout is not available when types cannot be segregated into separate arrays (<a href="01-the-data-is-the-problem.html#caveats">Chapter 1 has his caveats</a>).</p>
+
+  <h3 id="knuth">Knuth, in full</h3>
+  <p>Every argument about optimization eventually quotes six words of Knuth. Here is the passage they come from, from "Structured
+  Programming with go to Statements" (1974)<a class="cite" href="#src-1">[1]</a>:</p>
+  <blockquote><p>"We should forget about small efficiencies, say about 97% of the time: premature optimization is the root of all evil.
+  Yet we should not pass up our opportunities in that critical 3%. A good programmer will not be lulled into complacency by such reasoning,
+  he will be wise to look carefully at the critical code; but only after that code has been identified. It is often a mistake to make a
+  priori judgments about what parts of a program are really critical, since the universal experience of programmers who have been using
+  measurement tools has been that their intuitive guesses fail."</p></blockquote>
+  <p>Read whole, it is an argument for <em>measurement</em>, written by someone who spent the rest of the paper optimizing loops.
+  Data-oriented design fits it: its claim is not "optimize everything early" but "know your data", which is how you find the critical
+  3%. Some decisions, like a pointer graph across a whole compiler, are expensive to change later, so the data's shape deserves thought
+  before the profile exists and a check after it does.</p>
+
+  <h2 id="checklist">A DOD checklist</h2>
+  <p>Everything in this book compressed into the questions to ask before, during and after a data-oriented change:</p>
+  <ol class="ch12-checklist">
+    <li><b>Find the 3%.</b> Profile the real workload. Name the loop that matters and how much of the time it takes.</li>
+    <li><b>Check the algorithm.</b> A better complexity class or less work beats any layout (BVH 370× vs SIMD 1.28×).</li>
+    <li><b>Count the things.</b> Where there is one, there are many: if there are only a few, leave them simple.</li>
+    <li><b>Know what the loop reads.</b> Bytes used per byte fetched; fields touched per record; is the data streamed or chased? (Ch 2, 4)</li>
+    <li><b>Shrink before you split.</b> Remove padding, narrow types, out-of-band bools, assert the size. (Ch 3)</li>
+    <li><b>Replace pointers with indices</b> and allocate by lifetime, in arenas and pools. (Ch 5, 6, 11)</li>
+    <li><b>Split hot from cold, or go SoA,</b> when the hot loop reads a few fields of many records. (Ch 4)</li>
+    <li><b>Process by kind, in batches,</b> instead of branching per item. (Ch 7, 9)</li>
+    <li><b>Vectorize and parallelize last,</b> on data that is already contiguous. (Ch 8, 10)</li>
+    <li><b>Measure honestly:</b> keep-alive, hidden inputs, warm-up, median, checksum, timer floor, A/A test, alternation, the machine written down.</li>
+    <li><b>Weigh the code.</b> If the gain is inside the noise or the code got uglier, revert. Nethercote did.</li>
+  </ol>
+  <p>The same advice as a decision flow you can click through. Each outcome links to the chapter that covers it:</p>
+  <figure class="figure wide" id="fig-checklist">
+    <div class="figure-body" data-viz="ch12-checklist" data-opts='{}'>
+      <p>Static fallback: profile first; fix the algorithm; only many things processed together justify a layout change; wait until the
+      data has settled; then split hot fields, replace pointers with indices, or shrink records depending on what the loop reads.</p></div>
+    <figcaption>Seven yes/no questions, eight outcomes. Three of the outcomes are "don't restructure (yet)". Notice how many answers it
+    takes to reach a layout change, and that every path ends in another measurement.</figcaption>
+  </figure>
+
+  <h2 id="languages">What each language gives you</h2>
+  <p>Across eleven chapters the three languages solved every problem, but they started from different places. This is what each
+  provides natively, in the versions this book used (Rust 1.100, Zig 0.17.1, Odin dev-2026-11):</p>
+  <div class="table-wrap"><table class="ch12-table">
+    <thead><tr><th>need</th><th>Rust</th><th>Zig</th><th>Odin</th></tr></thead>
+    <tbody>
+      <tr><td>keep a result alive</td><td><code>std::hint::black_box</code> ("best-effort")</td><td><code>std.mem.doNotOptimizeAway</code></td><td>none built in; <code>intrinsics.volatile_store</code> to a global</td></tr>
+      <tr><td>monotonic timer</td><td><code>Instant</code></td><td><code>Io.Clock.awake.now(io)</code> (needs <code>io</code>)</td><td><code>time.tick_now</code> (a raw syscall on Linux)</td></tr>
+      <tr><td>benchmark harness</td><td>none on stable (<code>#[bench]</code> removed); crates</td><td>none; hand-written</td><td><code>time.benchmark</code> with options struct</td></tr>
+      <tr><td>size / offset checks</td><td><code>const _: () = assert!(size_of…)</code>, <code>offset_of!</code></td><td><code>comptime</code> assert, <code>@sizeOf</code>, <code>@offsetOf</code>, <code>test</code></td><td><code>#assert</code>, <code>size_of</code>, <code>offset_of</code></td></tr>
+      <tr><td>field order</td><td>compiler reorders; <code>#[repr(C)]</code> for C order</td><td>plain structs may reorder; <code>extern struct</code>, <code>packed struct</code></td><td>declaration order; <code>#packed</code>, <code>#align</code></td></tr>
+      <tr><td>SoA</td><td>by hand (Vec per field)</td><td><code>std.MultiArrayList</code></td><td><code>#soa</code> arrays, slices, dynamic arrays</td></tr>
+      <tr><td>bit packing</td><td>by hand (shifts and masks)</td><td><code>packed struct</code>, any-width ints (<code>u5</code>)</td><td><code>bit_field</code>, <code>bit_set</code></td></tr>
+      <tr><td>typed indices</td><td>newtype + <code>NonZeroU32</code> niche</td><td><code>enum(u32) { _ }</code></td><td><code>distinct u32</code>; <code>core:container/handle_map</code></td></tr>
+      <tr><td>allocators</td><td>global allocator; <code>Allocator</code> trait, <code>Vec::with_capacity_in</code>; borrow checker stops use after reset</td><td>allocator passed to every call; arenas in std</td><td><code>context.allocator</code>, <code>context.temp_allocator</code>, virtual arenas</td></tr>
+      <tr><td>SIMD</td><td><code>std::arch</code> + runtime detection; <code>std::simd</code> still unstable</td><td><code>@Vector</code> (loop vectorizer off in 0.17.1)</td><td><code>#simd</code>, <code>core:simd</code></td></tr>
+      <tr><td>threads</td><td><code>thread::scope</code></td><td><code>std.Thread.spawn</code></td><td><code>core:thread</code></td></tr>
+    </tbody></table></div>
+  <p><b>Zig</b> puts data-oriented tools in the standard library and type system; <b>Odin</b> puts them in the syntax and never reorders;
+  <b>Rust</b> gives fewer layout features and more guarantees. None of the three can time a benchmark correctly for you.</p>
+
+  <h2 id="caveats">Caveats</h2>
+  <ul>
+    <li><b>One noisy VM.</b> The A/A errors change from run to run; the lesson is that they exist and alternation shrinks them.</li>
+    <li><b>The simulator's noise is independent.</b> Real noise is correlated in time, which hurts sequential comparisons more; the A/A test measured that.</li>
+    <li><b>No counters.</b> The tool sections show commands we could not run here. The "why" behind the A/A drift and the 16 MiB tail is an
+    inference.</li>
+    <li><b>Cited numbers are cited.</b> The path tracer, Zig 0.10, netdev and TigerBeetle figures are from their authors, on their hardware.</li>
+  </ul>
+
+  <h2 id="next">Where to go next</h2>
+  <p>Beyond the book: Fabian's <em>Data-Oriented Design</em>, Drepper's "What Every Programmer Should Know About Memory", the Rust
+  Performance Book<a class="cite" href="#src-16">[16]</a>, and the source of <code>std.zig.Ast</code>.</p>
+
+  <aside class="callout try"><p>Run the chapter's programs (quick mode takes seconds; full size about ten seconds per language):</p>
+<pre><code class="language-bash">cd code &amp;&amp; ./run_all.sh ch12
+taskset -c 2 cargo run --release -q -p ch12_measure_and_know_when_not_to     # from code/
+cd ch12-measure-and-know-when-not-to/zig &amp;&amp; zig run -O fast main.zig &amp;&amp; zig test main.zig
+cd ch12-measure-and-know-when-not-to &amp;&amp; odin run odin -o:speed -vet -strict-style</code></pre></aside>
+
+  <aside class="recap"><p>Before you believe a benchmark, check that it is slower than timing nothing, that its inputs are hidden, that the
+  difference beats the noise and survives an A/A test with alternation, and that you wrote down the machine; then ask whether the win is in
+  the code that matters and worth the code it costs.</p></aside>
+
+  <h2 id="exercises">Exercises</h2>
+  <details class="exercise"><summary>Your benchmark of a 4096-element loop reports 41 ns in Rust. The timer floor is 44 ns. Name the two
+  distinct ways the optimizer might have produced that number, and the fix for each.</summary>
+    <p>Dead-code elimination (the result is unused): fix by passing the result through <code>black_box</code>. Constant folding or closed-form
+    replacement (the inputs are visible at compile time): fix by passing the <em>input</em> through <code>black_box</code> or building it from a
+    runtime seed. The second one survives a checksum, because the answer is still correct.</p></details>
+  <details class="exercise"><summary>Odin's timer floor here is about <span data-bench-val="ch12-deadcode" data-label="empty (timer only)" data-lang="odin" data-metric="ns">137 ns</span>. You want to time a function that takes about 50 ns. How do you
+  design the measurement?</summary>
+    <p>Put a loop of, say, 10,000 calls inside each timed region (with each result fed into <code>keep</code>, and inputs that vary per call),
+    divide by 10,000, and take the median over runs. Each sample is then about 0.5 ms, so the floor is a few hundredths of a percent of it.</p></details>
+  <details class="exercise"><summary>Seven runs give 100, 101, 101, 102, 103, 104 and 190 µs. Compute the mean, the median and roughly the
+  CV. Which would you report, and what else would you say?</summary>
+    <p>Mean ≈ 114.4 µs, median 102 µs. The standard deviation is about 33 µs, so the CV is about 29%, all from one outlier. Report the
+    median, and say that one run in seven was nearly 2× slow: on a VM that is likely steal or a neighbour, and it is worth checking whether
+    it recurs.</p></details>
+  <details class="exercise"><summary>In <a class="figref" href="#fig-noise">the simulator figure</a>, set the effect to 2% and the noise to 10%. How many runs per
+  side does the counter ask for, and what does that tell you about chasing 2% wins on a cloud VM?</summary>
+    <p>About 209. Even with 51 runs per side, the simulator's median verdict is still wrong about one time in five. Two-percent effects on a 10% CV machine are not
+    practically measurable by wall clock; use instruction counts (Cachegrind, <code>perf stat</code>), a quieter machine, or a bigger kernel.</p></details>
+  <details class="exercise"><summary>Why does alternating A and B help against frequency changes and noisy neighbours, but not against a
+  difference in where the two buffers sit in memory?</summary>
+    <p>Alternation spreads anything that varies <em>over time</em> evenly across both sides. A difference in placement (alignment, which
+    cache sets or physical pages a buffer uses) is fixed for the life of the process and always hits the same side. To cancel that, swap
+    which buffer is "A" in a second run, or allocate fresh buffers per round.</p></details>
+  <details class="exercise"><summary>The Rust <code>Particle</code> printed <code>alive @25, kind @24</code>. Write the one-line change that
+  makes Rust match Zig and Odin, and the assert that would catch a future reorder.</summary>
+    <p>Add <code>#[repr(C)]</code> above the struct. Then <code>const _: () = assert!(std::mem::offset_of!(Particle, alive) == 24);</code>
+    turns any reorder into a compile error.</p></details>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="sources">
+    <li id="src-1">Donald E. Knuth, “Structured Programming with go to Statements”, <i>Computing Surveys</i> 6(4), Dec 1974, p. 268. <a href="https://dl.acm.org/doi/10.1145/356635.356640">doi:10.1145/356635.356640</a></li>
+    <li id="src-2">Niklas Gray, “Data Structures Part 1: Bulk Data”, Our Machinery blog, 2019 (archive). <a href="https://ruby0x1.github.io/machinery_blog_archive/post/data-structures-part-1-bulk-data/index.html">ruby0x1.github.io</a></li>
+    <li id="src-3">Lucian Radu Teodorescu, “Revisiting Data-Oriented Design”, <i>ACCU Overload</i> 30(167), Feb 2022. <a href="https://accu.org/journals/overload/30/167/teodorescu">accu.org</a></li>
+    <li id="src-4">Nicholas Nethercote, “How to speed up the Rust compiler some more in 2018”, Jun 2018 (section “Failures and incompletes”). <a href="https://blog.mozilla.org/nnethercote/2018/06/05/how-to-speed-up-the-rust-compiler-some-more-in-2018/">blog.mozilla.org</a></li>
+    <li id="src-5">Aras Pranckevičius, “ToyMeshPathTracer” (README with per-branch Krays/s), 2019. <a href="https://github.com/aras-p/ToyMeshPathTracer">github.com</a></li>
+    <li id="src-6">Zig Software Foundation, “0.10.0 Release Notes”, section “Self-Hosted Compiler”, 2022. <a href="https://ziglang.org/download/0.10.0/release-notes.html">ziglang.org</a></li>
+    <li id="src-7">Coco Li, “[PATCH v7 net-next 0/5] Analyze and Reorganize core Networking Structs to optimize cacheline consumption”, Nov 2023. <a href="https://lwn.net/Articles/951321">lwn.net</a></li>
+    <li id="src-8">gladkikhartem and TigerBeetle maintainers, “LSM performance poor when batches are small”, issue #2469, 2024–2025. <a href="https://github.com/tigerbeetle/tigerbeetle/issues/2469">github.com</a></li>
+    <li id="src-9">Casey Muratori, “‘Clean’ Code, Horrible Performance”, Computer, Enhance!, Feb 2023. <a href="https://www.computerenhance.com/p/clean-code-horrible-performance">computerenhance.com</a></li>
+    <li id="src-10">Casey Muratori, “Response to a Reporter Regarding ‘Clean Code, Horrible Performance’”, Computer, Enhance!, Apr 2023. <a href="https://www.computerenhance.com/p/response-to-a-reporter-regarding">computerenhance.com</a></li>
+    <li id="src-11">Rust standard library, <code>std::hint::black_box</code> (Rust 1.100). <a href="https://doc.rust-lang.org/std/hint/fn.black_box.html">doc.rust-lang.org</a></li>
+    <li id="src-12">Zig 0.17.1 standard library, <code>std.mem.doNotOptimizeAway</code> (<code>lib/std/mem.zig</code>). <a href="https://ziglang.org/documentation/master/std/#std.mem.doNotOptimizeAway">ziglang.org</a></li>
+    <li id="src-13">Odin, <code>base:intrinsics</code> (<code>volatile_store</code>). <a href="https://pkg.odin-lang.org/base/intrinsics/">pkg.odin-lang.org</a></li>
+    <li id="src-14">Odin, <code>core/time/time_linux.odin</code> (<code>_tick_now</code> calls <code>linux.clock_gettime(.MONOTONIC_RAW)</code>, a raw syscall). <a href="https://github.com/odin-lang/Odin/blob/master/core/time/time_linux.odin">github.com</a></li>
+    <li id="src-15">Rust, <code>RELEASES.md</code>, Version 1.88.0: “Fully de-stabilize the <code>#[bench]</code> attribute” (PR #134273). <a href="https://github.com/rust-lang/rust/pull/134273">github.com</a></li>
+    <li id="src-16">Nicholas Nethercote et al., <i>The Rust Performance Book</i>, chapters “Benchmarking” and “Type Sizes”. <a href="https://nnethercote.github.io/perf-book/benchmarking.html">benchmarking</a> · <a href="https://nnethercote.github.io/perf-book/type-sizes.html">type sizes</a></li>
+    <li id="src-17">Linux man-pages, <code>proc(5)</code>, <code>/proc/stat</code> (the <i>steal</i> field). <a href="https://man7.org/linux/man-pages/man5/proc.5.html">man7.org</a></li>
+    <li id="src-18">Linux man-pages, <code>perf-stat(1)</code>. <a href="https://man7.org/linux/man-pages/man1/perf-stat.1.html">man7.org</a></li>
+    <li id="src-19">Valgrind, “Cachegrind: a high-precision tracing profiler” (user manual). <a href="https://valgrind.org/docs/manual/cg-manual.html">valgrind.org</a></li>
+    <li id="src-20">Arnaldo Carvalho de Melo et al., pahole / dwarves source repository. <a href="https://git.kernel.org/pub/scm/devel/pahole/pahole.git">git.kernel.org</a></li>
+    <li id="src-21">Arnaldo Carvalho de Melo, “Assisted reorganization of data structures”, Kernel Recipes 2024 (slides: Dumazet's <code>tcp_sock</code> holes, <code>pahole --reorganize</code>). <a href="http://oldvger.kernel.org/~acme/prez/kernel-recipes-2024-Paris">oldvger.kernel.org</a></li>
+    <li id="src-22">LLVM issue #186922 (loop-vectorize miscompile), referenced by <code>src/zig_llvm.cpp</code> in Zig 0.17.1 where <code>LoopVectorization = false</code>. <a href="https://github.com/llvm/llvm-project/issues/186922">github.com</a></li>
+    <li id="src-23">Noel Llopis, “Data-Oriented Design (Or Why You Might Be Shooting Yourself in The Foot With OOP)”, Game Developer, Sept 2009 (blog reprint Dec 2009). <a href="https://gamesfromwithin.com/data-oriented-design">gamesfromwithin.com</a></li>
+  </ol>
+</main>
+</body>
+</html>

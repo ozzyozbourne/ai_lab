@@ -1,0 +1,82 @@
+== layout (odin, x86-64) ==
+U32_Bool                     size   8  align  4  
+Quiz {u32,u64,u32}           size  24  align  8  
+Quiz_Sorted {u32,u32,u64}    size  16  align  8  
+Quiz_Sorted + bool           size  24  align  8  
+Mixed (struct)               size  24  align  8  offsets a=0 b=8 c=16 d=20
+Mixed struct #packed         size  14  align  1  offsets a=0 b=1 c=9 d=10
+Mixed sorted by hand         size  16  align  8  offsets a=12 b=0 c=13 d=8
+Monster {^Anim,u32,u32,bool} size  24  align  8  offsets anim=0 hp=8 y=12 alive=16
+Monster_Oob (bool out of band) size  16  align  8  
+Monster_Idx (u32 index)      size  12  align  4  
+Kind enum u8                 size   1  align  1  
+enum (default int)           size   8  align  8  
+Maybe(Kind)                  size   2  align  1  
+Maybe(u32)                   size   8  align  4  
+Maybe(Anim_Id)               size   8  align  4  
+Maybe(^u64)                  size   8  align  8  
+Pos_F32                      size  12  align  4  
+Pos_U16                      size   6  align  2  
+Pos_F16                      size   6  align  2  
+Packed_Ref bit_field u32     size   4  align  4  
+Cache_Line #align (64)       size  64  align 64  
+Packed_Ref(3, 7, 123456) -> kind=3 layer=7 index=123456 raw=0x01e24073
+quantize(123.456 m) = 8091 -> 123.4607 m (error 0.0047 m)
+f16 123.456 -> 123.4375 (error 0.0185)
+== padding-waste sweep (one pass, median of 7) ==
+N = 10000
+  24 B fat    24 B/elem       240000 B total   0.830 ns/elem  checksum 264605615
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"odin","n":10000,"ns":8299,"samples":[8290,8292,8298,8299,8326,8338,9005]}
+  16 B index  16 B/elem       160000 B total   0.677 ns/elem  checksum 264605615
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"odin","n":10000,"ns":6768,"samples":[6646,6663,6676,6768,7016,11005,12724]}
+  12 B small  12 B/elem       120000 B total   0.656 ns/elem  checksum 264605615
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"odin","n":10000,"ns":6563,"samples":[6478,6520,6537,6563,8415,13093,31416]}
+  checksums match
+N = 30000
+  24 B fat    24 B/elem       720000 B total   0.814 ns/elem  checksum 793598549
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"odin","n":30000,"ns":24430,"samples":[24383,24391,24405,24430,24439,24448,24465]}
+  16 B index  16 B/elem       480000 B total   0.657 ns/elem  checksum 793598549
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"odin","n":30000,"ns":19700,"samples":[19648,19666,19678,19700,19722,19856,37657]}
+  12 B small  12 B/elem       360000 B total   0.639 ns/elem  checksum 793598549
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"odin","n":30000,"ns":19183,"samples":[19128,19144,19169,19183,19186,19204,19349]}
+  checksums match
+N = 100000
+  24 B fat    24 B/elem      2400000 B total   1.739 ns/elem  checksum 2649054248
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"odin","n":100000,"ns":173861,"samples":[160325,171896,172016,173861,186069,192883,200756]}
+  16 B index  16 B/elem      1600000 B total   0.790 ns/elem  checksum 2649054248
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"odin","n":100000,"ns":79010,"samples":[73760,74356,78470,79010,87499,100274,127409]}
+  12 B small  12 B/elem      1200000 B total   0.950 ns/elem  checksum 2649054248
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"odin","n":100000,"ns":95029,"samples":[89389,91859,93178,95029,112003,114331,132845]}
+  checksums match
+N = 300000
+  24 B fat    24 B/elem      7200000 B total   0.965 ns/elem  checksum 7950833696
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"odin","n":300000,"ns":289621,"samples":[279617,280103,280701,289621,306051,315679,662683]}
+  16 B index  16 B/elem      4800000 B total   0.744 ns/elem  checksum 7950833696
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"odin","n":300000,"ns":223171,"samples":[215545,216596,219654,223171,224412,231292,273326]}
+  12 B small  12 B/elem      3600000 B total   0.647 ns/elem  checksum 7950833696
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"odin","n":300000,"ns":193977,"samples":[193133,193362,193963,193977,197737,203993,259013]}
+  checksums match
+N = 1000000
+  24 B fat    24 B/elem     24000000 B total   2.094 ns/elem  checksum 26481704971
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"odin","n":1000000,"ns":2094038,"samples":[1762882,1979512,2031270,2094038,2109207,2423640,2747393]}
+  16 B index  16 B/elem     16000000 B total   0.817 ns/elem  checksum 26481704971
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"odin","n":1000000,"ns":816933,"samples":[744254,770771,783827,816933,866948,1037616,1543035]}
+  12 B small  12 B/elem     12000000 B total   0.719 ns/elem  checksum 26481704971
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"odin","n":1000000,"ns":718856,"samples":[671302,688161,703619,718856,756423,785279,1007255]}
+  checksums match
+N = 3000000
+  24 B fat    24 B/elem     72000000 B total   3.009 ns/elem  checksum 79413987244
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"odin","n":3000000,"ns":9027584,"samples":[8637105,8694962,8699517,9027584,9413357,9439533,9641475]}
+  16 B index  16 B/elem     48000000 B total   2.117 ns/elem  checksum 79413987244
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"odin","n":3000000,"ns":6350641,"samples":[6224254,6245618,6256270,6350641,6408920,6547291,6688672]}
+  12 B small  12 B/elem     36000000 B total   1.626 ns/elem  checksum 79413987244
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"odin","n":3000000,"ns":4879427,"samples":[4724656,4782683,4813300,4879427,4882447,4900875,5117500]}
+  checksums match
+N = 10000000
+  24 B fat    24 B/elem    240000000 B total   3.044 ns/elem  checksum 264734445134
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"odin","n":10000000,"ns":30443482,"samples":[29994723,30004756,30195054,30443482,30583184,30672733,30678349]}
+  16 B index  16 B/elem    160000000 B total   2.211 ns/elem  checksum 264734445134
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"odin","n":10000000,"ns":22105514,"samples":[21763269,22018213,22077639,22105514,22206248,22246695,23055087]}
+  12 B small  12 B/elem    120000000 B total   1.781 ns/elem  checksum 264734445134
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"odin","n":10000000,"ns":17813463,"samples":[17590318,17697519,17767565,17813463,18305813,18375357,19424582]}
+  checksums match

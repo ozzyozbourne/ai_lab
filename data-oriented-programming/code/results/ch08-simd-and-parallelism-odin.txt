@@ -1,0 +1,57 @@
+ch08 odin: N=1048576 quick=false avx2=true
+ch08-dot-l1: 4096 floats x2 (32 KiB), 4096 reps, f64 reference -7.886158
+  naive (1 accumulator)         1.201 ns/elem  result      -7.886168 (bits c0fc5b7d, |err| 1.03e-05)
+BENCH {"id":"ch08-dot-l1","label":"naive (1 accumulator)","lang":"odin","n":16777216,"ns":20152419,"samples":[20043818,20073072,20141929,20152419,20196750,20227997,20260395]}
+  8 accumulators                0.152 ns/elem  result      -7.886152 (bits c0fc5b5c, |err| 5.44e-06)
+BENCH {"id":"ch08-dot-l1","label":"8 accumulators","lang":"odin","n":16777216,"ns":2553420,"samples":[2521983,2538087,2541287,2553420,2559808,2570915,2583413]}
+  explicit SIMD (4x8 lanes)     0.107 ns/elem  result      -7.886162 (bits c0fc5b70, |err| 4.10e-06)
+BENCH {"id":"ch08-dot-l1","label":"explicit SIMD (4x8 lanes)","lang":"odin","n":16777216,"ns":1795293,"samples":[1777692,1781136,1790308,1795293,1811560,1817771,1819184]}
+  reassociation allowed         0.150 ns/elem  result      -7.886152 (bits c0fc5b5c, |err| 5.44e-06)
+BENCH {"id":"ch08-dot-l1","label":"reassociation allowed","lang":"odin","n":16777216,"ns":2518704,"samples":[2484272,2494432,2508014,2518704,2520189,2524633,2537990]}
+ch08-dot-l2: 65536 floats x2 (512 KiB), 256 reps, f64 reference -36.215195
+  naive (1 accumulator)         1.211 ns/elem  result     -36.215260 (bits c210dc6d, |err| 6.49e-05)
+BENCH {"id":"ch08-dot-l2","label":"naive (1 accumulator)","lang":"odin","n":16777216,"ns":20314118,"samples":[20292783,20293385,20299708,20314118,20434330,20461702,20548452]}
+  8 accumulators                0.154 ns/elem  result     -36.214996 (bits c210dc28, |err| 1.98e-04)
+BENCH {"id":"ch08-dot-l2","label":"8 accumulators","lang":"odin","n":16777216,"ns":2585985,"samples":[2570269,2577071,2582057,2585985,2603065,2610977,2683154]}
+  explicit SIMD (4x8 lanes)     0.149 ns/elem  result     -36.215034 (bits c210dc32, |err| 1.60e-04)
+BENCH {"id":"ch08-dot-l2","label":"explicit SIMD (4x8 lanes)","lang":"odin","n":16777216,"ns":2501059,"samples":[2467914,2476393,2482803,2501059,2502664,2532144,2537441]}
+  reassociation allowed         0.152 ns/elem  result     -36.214996 (bits c210dc28, |err| 1.98e-04)
+BENCH {"id":"ch08-dot-l2","label":"reassociation allowed","lang":"odin","n":16777216,"ns":2557848,"samples":[2521627,2549885,2552895,2557848,2572668,2592920,2611084]}
+ch08-dot-dram: 16777216 floats x2 (131072 KiB), 1 reps, f64 reference -987.909446
+  naive (1 accumulator)         1.315 ns/elem  result    -987.994690 (bits c476ffa9, |err| 8.52e-02)
+BENCH {"id":"ch08-dot-dram","label":"naive (1 accumulator)","lang":"odin","n":16777216,"ns":22068201,"samples":[21899311,21991247,22029225,22068201,22090522,22093876,22328420]}
+  8 accumulators                0.653 ns/elem  result    -987.918823 (bits c476face, |err| 9.38e-03)
+BENCH {"id":"ch08-dot-dram","label":"8 accumulators","lang":"odin","n":16777216,"ns":10963379,"samples":[10861465,10929902,10949939,10963379,10981514,11105361,11117980]}
+  explicit SIMD (4x8 lanes)     0.653 ns/elem  result    -987.920776 (bits c476faee, |err| 1.13e-02)
+BENCH {"id":"ch08-dot-dram","label":"explicit SIMD (4x8 lanes)","lang":"odin","n":16777216,"ns":10953686,"samples":[10761426,10919194,10930714,10953686,10959538,11031000,11453716]}
+  reassociation allowed         0.663 ns/elem  result    -987.918884 (bits c476facf, |err| 9.44e-03)
+BENCH {"id":"ch08-dot-dram","label":"reassociation allowed","lang":"odin","n":16777216,"ns":11122755,"samples":[10776864,10812406,10907422,11122755,11309567,11372782,11463184]}
+ch08-mask: 65536 floats, 256 reps, count 32577 (both), sum branchy 16303.4238 vs mask 16303.4004
+  branchy scalar                4.443 ns/elem
+BENCH {"id":"ch08-mask","label":"branchy scalar","lang":"odin","n":16777216,"ns":74545994,"samples":[73786281,74416047,74518760,74545994,74882385,75700645,84287347]}
+  8-lane mask                   0.152 ns/elem
+BENCH {"id":"ch08-mask","label":"8-lane mask","lang":"odin","n":16777216,"ns":2553155,"samples":[2536096,2538864,2546940,2553155,2553439,2598021,2799675]}
+ch08-false-sharing: 16777216 relaxed atomic adds per thread
+  1 thread alone                6.335 ns per increment (wall), total 134217728
+BENCH {"id":"ch08-false-sharing","label":"1 thread alone","lang":"odin","n":16777216,"ns":106278686,"samples":[104314492,104745013,106162161,106278686,106844752,108123331,110216241]}
+  2 threads, same line         28.099 ns per increment (wall), total 268435456
+BENCH {"id":"ch08-false-sharing","label":"2 threads, same line","lang":"odin","n":16777216,"ns":471428591,"samples":[438700841,460823865,468031562,471428591,472027920,490358072,529380787]}
+  2 threads, padded 64 B        6.437 ns per increment (wall), total 268435456
+BENCH {"id":"ch08-false-sharing","label":"2 threads, padded 64 B","lang":"odin","n":16777216,"ns":107986590,"samples":[106574105,107863528,107870395,107986590,108140410,108829994,111137274]}
+  2 threads, padded 128 B       6.383 ns per increment (wall), total 268435456
+BENCH {"id":"ch08-false-sharing","label":"2 threads, padded 128 B","lang":"odin","n":16777216,"ns":107093040,"samples":[106084693,106923987,107064953,107093040,107546564,108055698,108100470]}
+ch08-threads: checksum 446be9f861039fff for 1, 2 and 4 threads (identical)
+ch08-threads-l2: 65536 particles (1024 KiB of SoA), 256 passes
+  1 thread                      0.392 ns/particle-step
+BENCH {"id":"ch08-threads-l2","label":"1 thread","lang":"odin","n":16777216,"ns":6573112,"samples":[6445640,6498123,6526665,6573112,6670610,6983447,7224520]}
+  2 threads                     0.200 ns/particle-step
+BENCH {"id":"ch08-threads-l2","label":"2 threads","lang":"odin","n":16777216,"ns":3362155,"samples":[3311819,3347839,3349609,3362155,3374640,3420852,3423112]}
+  4 threads                     0.240 ns/particle-step
+BENCH {"id":"ch08-threads-l2","label":"4 threads","lang":"odin","n":16777216,"ns":4020409,"samples":[3387737,3400582,3456985,4020409,4304109,4832007,4859132]}
+ch08-threads-dram: 8388608 particles (131072 KiB of SoA), 1 passes
+  1 thread                      1.200 ns/particle-step
+BENCH {"id":"ch08-threads-dram","label":"1 thread","lang":"odin","n":8388608,"ns":10067978,"samples":[9960616,9999328,10002360,10067978,10206165,10249934,10321287]}
+  2 threads                     0.654 ns/particle-step
+BENCH {"id":"ch08-threads-dram","label":"2 threads","lang":"odin","n":8388608,"ns":5487756,"samples":[5384421,5415105,5475110,5487756,5509171,5540504,5580928]}
+  4 threads                     0.659 ns/particle-step
+BENCH {"id":"ch08-threads-dram","label":"4 threads","lang":"odin","n":8388608,"ns":5525400,"samples":[5425036,5436439,5523081,5525400,5583830,5605022,5674417]}

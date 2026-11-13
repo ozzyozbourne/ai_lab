@@ -1,0 +1,13 @@
+stale id check: despawned 2v1, respawn reused it as 2v2; the old id resolves to nothing in both storages
+1048576 entities: Pos 1048576, Vel 524288, Hp 262144; Entity = 8 B, sparse slot = 4 B
+BENCH {"id":"ch09-churn","label":"sparse set: toggle Vel","lang":"rust","n":65536,"ns":3591416,"samples":[2747611,2896732,2989619,3591416,3965053,4174256,4207572]}
+BENCH {"id":"ch09-churn","label":"archetype: toggle Vel","lang":"rust","n":65536,"ns":10184526,"samples":[9937563,10072676,10085864,10184526,10528723,10892455,11106802]}
+churn, 65536 toggles: sparse 54.8 ns/op, archetype 155.4 ns/op; Vel now on 523740 | 523740 entities
+archetype table sizes by mask [-, P, V, PV, H, PH, VH, PVH]: [0, 441780, 0, 344652, 0, 83056, 0, 179088]
+BENCH {"id":"ch09-iterate","label":"sparse set: move P+=V","lang":"rust","n":1048576,"ns":7717825,"samples":[6519433,6735538,7235456,7717825,8336118,8771770,8857585]}
+BENCH {"id":"ch09-iterate","label":"archetype: move P+=V","lang":"rust","n":1048576,"ns":272074,"samples":[263636,264054,268169,272074,329640,355186,626982]}
+move P+=V      sparse    7.36 ns/entity  archetype    0.26 ns/entity  (28.4x)
+BENCH {"id":"ch09-iterate","label":"sparse set: damage P,V->H","lang":"rust","n":1048576,"ns":2781704,"samples":[2707872,2735303,2766176,2781704,2862119,2912893,3152773]}
+BENCH {"id":"ch09-iterate","label":"archetype: damage P,V->H","lang":"rust","n":1048576,"ns":110023,"samples":[109729,109874,109946,110023,118081,135797,246141]}
+damage P,V->H  sparse    2.65 ns/entity  archetype    0.10 ns/entity  (25.3x)
+checksum sparse 0x040c0fcc03cc97be archetype 0x040c0fcc03cc97be (match)

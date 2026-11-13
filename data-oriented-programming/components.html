@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Components and author API · Data-Oriented Design</title>
+<link rel="stylesheet" href="assets/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="assets/book.css">
+<script>window.Prism = { manual: true };</script>
+<script defer src="assets/vendor/prism/prism.min.js"></script>
+<script defer src="assets/vendor/prism/prism-rust.min.js"></script>
+<script defer src="assets/vendor/prism/prism-zig.min.js"></script>
+<script defer src="assets/vendor/prism/prism-odin.min.js"></script>
+<script defer src="assets/vendor/prism/prism-bash.min.js"></script>
+<script defer src="assets/book.js"></script>
+<script defer src="assets/data/demo.js"></script>
+<script defer src="assets/viz/aos-soa.js"></script>
+<script defer src="assets/viz/struct-padding.js"></script>
+<script defer src="assets/viz/latency-ladder.js"></script>
+<script defer src="assets/viz/cache-sim.js"></script>
+<script defer src="assets/viz/pointer-chase.js"></script>
+<script defer src="assets/viz/bench-bars.js"></script>
+<script defer src="assets/viz/bench-line.js"></script>
+<script defer src="assets/viz/bench-dist.js"></script>
+</head>
+<body>
+<main>
+  <p class="kicker">QA fixture · not part of the book</p>
+  <h1>Components and the author API</h1>
+  <p class="lede">Every shared component and figure on one page, plus the rules for writing a chapter. If something here looks
+  wrong, it is wrong in every chapter.</p>
+
+  <h2 id="api">API for chapter authors</h2>
+  <p>The shared files (<code>assets/book.css</code>, <code>assets/book.js</code>, <code>assets/viz/*.js</code> without a
+  <code>chNN-</code> prefix, <code>assets/vendor/</code>) are <b>frozen</b>. A chapter owns only <code>NN-*.html</code>,
+  <code>assets/viz/chNN-*.js</code>, <code>assets/chNN.css</code> (styles scoped to <code>.chNN-*</code>),
+  <code>assets/data/bench-chNN.js</code> and <code>code/chNN-*/</code>. Ask for core changes in
+  <code>scratchpad/core-requests.md</code>.</p>
+
+  <h3>Chapter skeleton</h3>
+  <p>Chapter files sit next to <code>index.html</code>, so every path starts with <code>assets/</code>. Write only
+  <code>&lt;main&gt;</code>: the top bar, sidebar contents, heading anchors, figure and exercise numbers, and the
+  previous/next links are generated from <code>Book.chapters</code> (the manifest in <code>book.js</code>).</p>
+<pre><code class="language-html">&lt;!doctype html&gt;
+&lt;html lang="en"&gt;
+&lt;head&gt;
+&lt;meta charset="utf-8"&gt;
+&lt;meta name="viewport" content="width=device-width, initial-scale=1"&gt;
+&lt;title&gt;3. Size, Alignment and Padding · Data-Oriented Design&lt;/title&gt;
+&lt;link rel="stylesheet" href="assets/vendor/fonts/fonts.css"&gt;
+&lt;link rel="stylesheet" href="assets/book.css"&gt;
+&lt;link rel="stylesheet" href="assets/ch03.css"&gt;            &lt;!-- optional, chapter-owned --&gt;
+&lt;script&gt;window.Prism = { manual: true };&lt;/script&gt;
+&lt;script defer src="assets/vendor/prism/prism.min.js"&gt;&lt;/script&gt;
+&lt;script defer src="assets/vendor/prism/prism-rust.min.js"&gt;&lt;/script&gt;
+&lt;script defer src="assets/vendor/prism/prism-zig.min.js"&gt;&lt;/script&gt;
+&lt;script defer src="assets/vendor/prism/prism-odin.min.js"&gt;&lt;/script&gt;
+&lt;script defer src="assets/vendor/prism/prism-bash.min.js"&gt;&lt;/script&gt;
+&lt;script defer src="assets/book.js"&gt;&lt;/script&gt;
+&lt;script defer src="assets/data/bench-ch03.js"&gt;&lt;/script&gt;    &lt;!-- this chapter's numbers --&gt;
+&lt;script defer src="assets/viz/struct-padding.js"&gt;&lt;/script&gt; &lt;!-- only the shared figures you use --&gt;
+&lt;script defer src="assets/viz/bench-bars.js"&gt;&lt;/script&gt;
+&lt;script defer src="assets/viz/ch03-reorder.js"&gt;&lt;/script&gt;    &lt;!-- chapter-local figures --&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;main&gt;
+  &lt;p class="kicker"&gt;Chapter 3&lt;/p&gt;
+  &lt;h1&gt;Size, Alignment and Padding&lt;/h1&gt;
+  &lt;p class="lede"&gt;One-paragraph hook.&lt;/p&gt;
+  &lt;h2&gt;Section&lt;/h2&gt; … prose, code tabs, figures, callouts …
+  &lt;aside class="recap"&gt;&lt;p&gt;The one sentence.&lt;/p&gt;&lt;/aside&gt;
+  &lt;h2&gt;Exercises&lt;/h2&gt; &lt;details class="exercise"&gt;…&lt;/details&gt;
+  &lt;h2&gt;Sources&lt;/h2&gt; &lt;ol class="sources"&gt;&lt;li id="src-1"&gt;…&lt;/li&gt;&lt;/ol&gt;
+&lt;/main&gt;
+&lt;/body&gt;
+&lt;/html&gt;</code></pre>
+  <ul>
+    <li>Use <code>&lt;p class="kicker"&gt;</code> above the <code>h1</code>. Sections are <code>h2</code>/<code>h3</code>, which go into the
+    sidebar. Add <code>class="no-toc"</code> to leave one out.</li>
+    <li>Every script is <code>defer</code>, and the order does not matter except that Prism comes before <code>book.js</code>. Never use
+    <code>type="module"</code> for local files, because <code>file://</code> blocks local ES modules.</li>
+    <li>Three.js is only on <code>index.html</code>. Chapters have no 3D hero.</li>
+  </ul>
+
+  <h3>The command queue (BookQ)</h3>
+  <p>Any code that needs <code>Book</code> goes through the queue. It works whether it runs before or after
+  <code>book.js</code>: queued functions run once the page chrome is built, and later pushes run immediately.</p>
+<pre><code class="language-js">(window.BookQ ||= []).push((B) =&gt; {
+  B.selectLang("Zig");          // any Book API is safe in here
+});</code></pre>
+
+  <h3>Registering a chapter figure</h3>
+  <p>Chapter figures are named <code>chNN-*</code> and live in <code>assets/viz/chNN-*.js</code> (a classic script) or an inline
+  <code>&lt;script&gt;</code> at the end of the page. A figure mounts once, about 300px before it scrolls into view. Any static
+  content inside the element is a no-JS fallback and is removed when the figure mounts. A thrown error becomes a visible red
+  box with its message, so validate <code>opts</code> with <code>B.viz.check(cond, "message")</code>. An unregistered name
+  becomes a yellow "unknown figure" box. Registering a name twice logs a warning, and the first registration wins.</p>
+<pre><code class="language-js">(window.BookQ ||= []).push((B) =&gt; B.viz.register("ch03-reorder", (root, opts) =&gt; {
+  const n = opts.n ?? 8;
+  B.viz.check(Number.isInteger(n) &amp;&amp; n &gt; 0, 'ch03-reorder: "n" must be a positive integer');
+  const canvas = B.h("canvas", { role: "img", "aria-label": "…what it shows…" });
+  const k = B.canvas(canvas, 600, 200);             // logical size; k.fit(w, h) to change it
+  const C = B.colors();                              // C.pos C.vel C.hp C.flag C.pad C.hit C.miss C.line C.text C.dim …
+  const cnt = B.counters([["steps", "steps"], ["miss", "misses", "bad"]]);  // &lt;output aria-live=polite&gt;
+  let i = 0;                                         // the model
+  const draw = () =&gt; {                               // pure: model → pixels + counters
+    const ctx = k.ctx; ctx.clearRect(0, 0, k.width, k.height);
+    /* … */ cnt.set("steps", i); cnt.set("miss", missesFor(i));
+  };
+  const player = B.player(root, {                    // Play/Pause · Step · Back · Reset
+    step: () =&gt; (i &lt; n ? (i++, true) : false), back: () =&gt; (i &gt; 0 ? (i--, true) : false),
+    reset: () =&gt; { i = 0; }, atEnd: () =&gt; i === n, draw, interval: 0.4,
+  });                                                // reduced motion: no autoplay, shows the end state
+  root.append(canvas, cnt.el, B.h("div", { class: "controls" }, player.el,
+    B.segmented(["AoS", "SoA"], 0, (j) =&gt; { /* … */ draw(); }, "Layout")));
+  B.onResize(root, (w) =&gt; { k.fit(w, w &lt; 600 ? 320 : 200); draw(); }); // real CSS width: stack below 600px
+  draw();
+}));</code></pre>
+  <p>Other helpers: <code>B.h(tag, attrs, ...kids)</code> and <code>B.svg(...)</code> (DOM builders; <code>on*</code> attributes become
+  listeners), <code>B.slider({label, min, max, step, value, format, oninput})</code>, <code>B.loop(el, (dt, t) =&gt; …)</code>
+  (requestAnimationFrame while on screen, never autoplays under reduced motion), <code>B.chart(root, (width) =&gt; svg)</code> (re-renders
+  an SVG at the real width), <code>B.scaleLinear</code>/<code>B.scaleLog</code>, <code>B.fmtNs</code>, <code>B.fmtBytes</code>,
+  <code>B.fmtInt</code>, <code>B.rng(seed)</code>, <code>B.reducedMotion()</code>, <code>B.langColor("zig")</code>, and
+  <code>B.viz.empty(root, msg)</code>. Rules for figures: one idea per figure, every number computed from the model, a still frame under
+  reduced motion, readable at 375px, and a <code>figcaption</code> that says what to notice.</p>
+
+  <h3>Shared figures and their <code>data-opts</code></h3>
+  <div class="table-wrap"><table>
+    <tr><th>data-viz</th><th>data-opts (all optional unless marked)</th></tr>
+    <tr><td><code>aos-soa</code></td><td><code>entities</code> 1..64 (16) · <code>layouts</code> any of <code>"aos" "hotcold" "soa" "aosoa"</code> (["aos","soa"]) ·
+      <code>block</code> 4|8|16 (8) · <code>reads</code> 0 pos · 1 pos+vel · 2 every field, or a field list like ["pos","hp"] (0) · <code>interval</code> s (0.35)</td></tr>
+    <tr><td><code>struct-padding</code></td><td><b>fields</b> (required): <code>[["hp","u32"],["pos","[3]f32"]]</code> or <code>[{"name","size","align"}]</code> ·
+      <code>name</code> · <code>labels</code> [decl, reordered] · <code>initial</code> 0|1 · <code>reorder</code> false hides the toggle · <code>count</code> (100000; 0 hides it)</td></tr>
+    <tr><td><code>latency-ladder</code></td><td><code>set</code> "classic"|"2026"|"orb" ("2026") · <code>human</code> bool · <code>rows</code> [{"label","ns","note"}] + <code>source</code> ·
+      or <code>data-bench="id"</code> with <code>lang</code> ("rust"), <code>metric</code> ("ns/n"), <code>labels</code>, <code>n</code>: one row per run label</td></tr>
+    <tr><td><code>cache-sim</code></td><td><code>sets</code> pow2 ≤16 (4) · <code>ways</code> 1..8 (2) · <code>line</code> pow2 4..64 (16) · <code>preset</code> 0 seq · 1 fits · 2 too big · 3 same-set (0) ·
+      <code>trace</code> [addresses] · <code>interval</code></td></tr>
+    <tr><td><code>pointer-chase</code></td><td><code>nodes</code> 2..32 (12) · <code>nodeBytes</code> 8|16|32 (16) · <code>lines</code> (max(nodes,12)) · <code>seed</code> (7) ·
+      <code>hitNs</code> (1) · <code>missNs</code> (100) · <code>interval</code></td></tr>
+    <tr><td><code>bench-bars</code></td><td><code>data-bench="id"</code> or inline <code>runs</code> · <code>metric</code> "ns"|"ns/n"|"value" · <code>unit</code> · <code>per</code> ·
+      <code>n</code> · <code>labels</code> · <code>langs</code> · <code>sort</code> "value"|"none" · <code>log</code> · <code>ratio</code> · <code>higherIsBetter</code> · <code>source machine date note</code></td></tr>
+    <tr><td><code>bench-line</code></td><td><code>data-bench</code> or <code>runs</code> · <code>metric</code> ("ns/n") · <code>xScale</code> (bytes per n) · <code>xUnit</code> "bytes"|"count" · <code>xLabel</code> ·
+      <code>series</code> "lang"|"label" · <code>labels</code> · <code>langs</code> · <code>logY</code> · <code>bands</code> true (this orb's L1d/L2/L3) or [{"label","bytes"}]</td></tr>
+    <tr><td><code>bench-dist</code></td><td><code>data-bench</code> or <code>runs</code> (needs <code>samples</code>) (7 to ~50 per row; dots stay inside their row) · <code>labels</code> · <code>langs</code> · <code>n</code> · <code>relative</code></td></tr>
+  </table></div>
+  <p>Unknown option keys and bad values throw, so mistakes show up as a red box instead of a silently wrong figure.</p>
+
+  <h3>Benchmark data</h3>
+  <p>Programs print <code>BENCH {"id":"ch04-particles","label":"SoA","lang":"rust","n":1048576,"ns":123456,"samples":[…7 sorted ns]}</code>
+  using the harness's <code>emit_bench</code> / <code>emitBench</code>. <code>ns</code> is the median time of one whole run over
+  <code>n</code> elements. <code>code/bench_all.sh</code> collects these lines into <code>assets/data/bench.js</code> and
+  <code>assets/data/bench-chNN.js</code>:</p>
+<pre><code class="language-js">Book.data["ch04-particles"] = { id: "ch04-particles", machine: "Intel(R) Xeon(R) Processor @ 2.60GHz, Linux, taskset -c 2 …",
+  date: "2026-11-13", source: "measured", compilers: { rust: "rustc 1.100.0 …", zig: "zig 0.17.1", odin: "odin version dev-2026-11…" },
+  runs: [ { label: "AoS", lang: "rust", n: 1048576, ns: 812345, samples: [ … ] }, … ] };</code></pre>
+  <p>Before the serial bench pass, write your dev numbers by hand to <code>assets/data/bench-chNN.js</code> in the same format, with
+  <code>source: "dev, noisy"</code>. Bind a chart with <code>data-bench="id"</code> on the figure body. A bare
+  <code>&lt;div data-bench="id"&gt;</code> becomes a <code>bench-bars</code>. Missing data shows a grey "no data yet" box. In prose, use a live
+  ratio with fallback text:
+  <code>&lt;span data-bench-ratio="ch04-particles" data-num="AoS" data-den="SoA" data-lang="rust"&gt;about 3×&lt;/span&gt;</code>
+  (optional <code>data-n</code>; the default is the largest n). Third-party numbers go inline with <code>"source":"cited: …"</code> and <code>"metric":"value"</code>.</p>
+  <p><b>Absolute numbers in prose must be bound, not typed</b>, so the serial bench pass updates them:</p>
+<pre><code class="language-html">&lt;span data-bench-val="ch04-update" data-label="SoA" data-lang="rust" data-n="1048576" data-metric="ns/n" data-digits="2"&gt;0.80 ns&lt;/span&gt;</code></pre>
+  <ul>
+    <li><code>data-metric</code>: <code>"ns"</code> (median of one run, default), <code>"ns/n"</code> (per element), <code>"value"</code>
+    (<code>run.value</code> + <code>run.unit</code>, e.g. ch05-memory's B/node), <code>"ms"</code> (median in ms).</li>
+    <li><code>data-lang</code> defaults to <code>rust</code>; <code>data-n</code> defaults to the largest n for that label and language;
+    <code>data-digits</code> is significant digits (default 2).</li>
+    <li>The text inside is the fallback. If the id, label, language or n is missing, it stays and a <code>console.warn</code> names the binding
+    (smoke.sh lists warnings but does not fail on them). Hovering a bound number shows id, label, language, n and source.</li>
+    <li>Ratios keep using <code>data-bench-ratio</code> (printed as 1.3×, 13×, 127×, 12,700×). A range across languages is two bindings:
+    “<code>about &lt;span data-bench-val … data-lang="zig"&gt;…&lt;/span&gt;–&lt;span … data-lang="odin"&gt;…&lt;/span&gt;</code>”.</li>
+  </ul>
+  <p>Live: one sequential pass costs <span data-bench-val="demo-smoke" data-label="sequential" data-metric="ns/n">0.4 ns</span> per u64 in Rust,
+  <span data-bench-val="demo-smoke" data-label="sequential" data-lang="zig" data-metric="ns/n">0.3 ns</span> in Zig; the whole stride-16 run takes
+  <span data-bench-val="demo-smoke" data-label="stride 16" data-lang="odin" data-metric="ms" data-digits="3">3.6 ms</span> in Odin.</p>
+  <p><b>Figure references</b>: put fallback text inside, e.g. <code>&lt;a class="figref" href="#fig-x"&gt;the figure below&lt;/a&gt;</code>;
+  <code>book.js</code> replaces it with “Figure N.M”, and print / no-JS readers still get a sentence.</p>
+  <p><b>Wide static SVGs</b> (viewBox width ≥ 560) are wrapped automatically in a horizontal scroller with a minimum width, so their text
+  stays legible on phones; a “Scroll sideways” hint appears only when the diagram actually overflows. A chapter's own
+  <code>overflow-x:auto</code> figure container gets the same hint. Prefer a narrow-layout SVG when the diagram can be redrawn.</p>
+
+  <h3>Prose markup</h3>
+<pre><code class="language-html">&lt;aside class="callout note"&gt;&lt;p&gt;…&lt;/p&gt;&lt;/aside&gt;
+&lt;aside class="callout pitfall"&gt;&lt;p&gt;…&lt;/p&gt;&lt;/aside&gt;
+&lt;aside class="callout version" data-title="Changed in Zig 0.17"&gt;&lt;p&gt;…&lt;/p&gt;&lt;/aside&gt;
+&lt;aside class="callout try"&gt;&lt;p&gt;Run it:&lt;/p&gt;&lt;pre&gt;&lt;code class="language-bash"&gt;cd code &amp;&amp; ./run_all.sh ch03&lt;/code&gt;&lt;/pre&gt;&lt;/aside&gt;
+&lt;aside class="recap"&gt;&lt;p&gt;The one sentence to remember.&lt;/p&gt;&lt;/aside&gt;   &lt;!-- titled "In one sentence" --&gt;
+&lt;details class="exercise"&gt;&lt;summary&gt;Question?&lt;/summary&gt;&lt;p&gt;Answer.&lt;/p&gt;&lt;/details&gt;   &lt;!-- auto "Exercise N.M" --&gt;
+&lt;details class="predict"&gt;&lt;summary&gt;What will the counter say?&lt;/summary&gt;&lt;p&gt;Reveal.&lt;/p&gt;&lt;/details&gt;
+… as Acton showed&lt;a class="cite" href="#src-3"&gt;[3]&lt;/a&gt; …
+&lt;ol class="sources"&gt;&lt;li id="src-3"&gt;Mike Acton, “Data-Oriented Design and C++”, CppCon 2014. &lt;a href="…"&gt;video&lt;/a&gt;&lt;/li&gt;&lt;/ol&gt;
+&lt;figure class="figure wide" id="fig-layout"&gt;&lt;div class="figure-body" data-viz="…"&gt;&lt;/div&gt;&lt;figcaption&gt;What to notice.&lt;/figcaption&gt;&lt;/figure&gt;
+… see &lt;a class="figref" href="#fig-layout"&gt;&lt;/a&gt; …    &lt;!-- filled with "Figure N.M" --&gt;
+&lt;div class="code-tabs"&gt;
+&lt;pre data-lang="Rust" data-file="code/ch03-size/rust/src/main.rs"&gt;&lt;code class="language-rust"&gt;…&lt;/code&gt;&lt;/pre&gt;
+&lt;pre data-lang="Zig" data-file="code/ch03-size/zig/main.zig"&gt;&lt;code class="language-zig"&gt;…&lt;/code&gt;&lt;/pre&gt;
+&lt;pre data-lang="Odin" data-file="code/ch03-size/odin/main.odin"&gt;&lt;code class="language-odin"&gt;…&lt;/code&gt;&lt;/pre&gt;
+&lt;/div&gt;</code></pre>
+  <p>Escape <code>&amp;</code>, <code>&lt;</code> and <code>&gt;</code> in code. Panes are put in Rust | Zig | Odin order whatever order you write them in.
+  The selected language is shared across the page and remembered across pages (<code>localStorage["book.lang"]</code>). A group without the
+  selected language falls back to its first pane. Excerpts must be copied from compiled files in <code>code/</code>. For tables of numbers,
+  use <code>&lt;div class="table-wrap"&gt;</code> and <code>td class="num"</code>.</p>
+
+  <h2 id="demo-prose">Prose components</h2>
+  <p>Inline <code>code</code>, <kbd>Ctrl</kbd>+<kbd>C</kbd>, <b>bold</b>, and a citation to the classic talk<a class="cite" href="#src-1">[1]</a>
+  and another source<a class="cite" href="#src-2">[2]</a>. This links to <a class="figref" href="#fig-aos-all"></a>.</p>
+  <aside class="callout note"><p>A note: context the reader may want but can skip.</p></aside>
+  <aside class="callout pitfall"><p>A pitfall: <code>for p in slice</code> in Odin gives you copies; write <code>for &amp;p in slice</code> to mutate.</p></aside>
+  <aside class="callout version" data-title="Changed in Zig 0.17"><p><code>-O ReleaseFast</code> is spelled <code>-O fast</code>, and
+  <code>builtin.mode == .ReleaseFast</code> no longer compiles.</p></aside>
+  <aside class="callout try"><p>Run every example in quick mode:</p><pre><code class="language-bash">cd code &amp;&amp; ./run_all.sh</code></pre></aside>
+  <aside class="recap"><p>Lay data out for the loop that reads it, and measure.</p></aside>
+  <details class="predict"><summary>AoS reads only <code>pos</code> from 32-byte particles. What fraction of each fetched line is useful?</summary>
+    <p>12 of every 32 bytes, so 37.5%. The figure below shows 38%.</p></details>
+  <details class="exercise"><summary>A struct holds <code>bool, u64, bool</code>. What is its size in C order, and after reordering?</summary>
+    <p>24 B in C order (1 + 7 padding + 8 + 1 + 7 tail padding) and 16 B reordered (8 + 1 + 1 + 6 tail padding).</p></details>
+  <details class="exercise"><summary>Why does the linked list miss on every node in <a class="figref" href="#fig-chase"></a>?</summary>
+    <p>Each node sits in its own cache line, so every hop touches a new line, and the next address is only known once the load completes.</p></details>
+  <div class="table-wrap"><table>
+    <tr><th>Layout</th><th class="num">bytes/particle</th><th class="num">lines for 16 (pos only)</th></tr>
+    <tr><td>AoS</td><td class="num">32</td><td class="num">8</td></tr>
+    <tr><td>SoA</td><td class="num">29</td><td class="num">3</td></tr>
+  </table></div>
+
+  <h3>Code tabs</h3>
+  <div class="code-tabs">
+<pre data-lang="Odin" data-file="code/harness/odin/main.odin"><code class="language-odin">// Odin has no black_box: a volatile store keeps results alive.
+@(private = "file")
+sink: u64
+
+keep :: proc "contextless" (v: $T) where size_of(T) &lt;= 8 {
+	intrinsics.volatile_store((^T)(&amp;sink), v)
+}</code></pre>
+<pre data-lang="Rust" data-file="code/harness/harness.rs"><code class="language-rust">fn bench_runs&lt;R&gt;(mut f: impl FnMut() -&gt; R) -&gt; [Duration; RUNS] {
+    black_box(f());
+    let mut t = [Duration::ZERO; RUNS];
+    for slot in &amp;mut t {
+        let t0 = Instant::now();
+        black_box(f());
+        *slot = t0.elapsed();
+    }
+    t.sort_unstable();
+    t
+}</code></pre>
+<pre data-lang="Zig" data-file="code/harness/harness.zig"><code class="language-zig">fn nowNs(io: Io) i96 {
+    return Io.Clock.awake.now(io).nanoseconds;
+}</code></pre>
+  </div>
+  <p>This group has no Odin pane, so when Odin is selected it falls back to its first pane:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust"><code class="language-rust">const _: () = assert!(size_of::&lt;Monster&gt;() == 16);</code></pre>
+<pre data-lang="Zig"><code class="language-zig">comptime { std.debug.assert(@sizeOf(Monster) == 16); }</code></pre>
+  </div>
+  <p>Single-language block:</p>
+<pre><code class="language-bash">flock /tmp/dod-build.lock zig run -O fast main.zig -- --quick</code></pre>
+
+  <h2 id="demo-figures">Shared figures</h2>
+  <h3>aos-soa</h3>
+  <figure class="figure wide" id="fig-aos-all">
+    <div class="figure-body" data-viz="aos-soa" data-opts='{"entities":16,"layouts":["aos","hotcold","soa","aosoa"]}'><p>Static fallback: AoS loads 8 lines, SoA 3.</p></div>
+    <figcaption>All four layouts reading the same particles. Switch to <em>every field</em> and AoS stops looking bad.</figcaption>
+  </figure>
+  <figure class="figure">
+    <div class="figure-body" data-viz="aos-soa" data-opts='{"entities":8,"layouts":["aos","soa"],"reads":["pos","hp"]}'></div>
+    <figcaption>Default two-panel form in the text column, with a custom access set (pos+hp).</figcaption>
+  </figure>
+
+  <h3>struct-padding</h3>
+  <figure class="figure">
+    <div class="figure-body" data-viz="struct-padding" data-opts='{"name":"Monster","fields":[["alive","bool"],["hp","u32"],["team","u8"],["pos","[3]f32"],["id","u64"],["kind","u8"]],"count":100000}'></div>
+    <figcaption>Padding is hatched. Reordering by alignment removes most of it.</figcaption>
+  </figure>
+
+  <h3>latency-ladder</h3>
+  <figure class="figure wide">
+    <div class="figure-body" data-viz="latency-ladder" data-opts='{"set":"2026"}'></div>
+    <figcaption>Each grid line is ten times slower. DRAM is about 80× slower than L1.</figcaption>
+  </figure>
+
+  <h3>cache-sim</h3>
+  <figure class="figure wide">
+    <div class="figure-body" data-viz="cache-sim" data-opts='{"sets":4,"ways":2,"line":16,"preset":3}'></div>
+    <figcaption>The same-set stride thrashes one set while three sit empty. Those are conflict misses.</figcaption>
+  </figure>
+
+  <h3>pointer-chase</h3>
+  <figure class="figure wide" id="fig-chase">
+    <div class="figure-body" data-viz="pointer-chase" data-opts='{"nodes":12}'></div>
+    <figcaption>Twelve nodes: the list misses on every hop, while the array misses once per four nodes.</figcaption>
+  </figure>
+
+  <h3>bench-bars (measured, via data-bench)</h3>
+  <figure class="figure">
+    <div class="figure-body" data-viz="bench-bars" data-bench="demo-smoke" data-opts='{"metric":"ns/n","per":"u64"}'></div>
+    <figcaption>The ch00 smoke program (sequential sum vs stride-16 sum of 1 M u64) on this orb. In the prose, stride 16 is
+    <span data-bench-ratio="demo-smoke" data-num="stride 16" data-den="sequential" data-lang="rust">about 10×</span> slower in Rust.</figcaption>
+  </figure>
+  <h3>bench-bars (cited, inline)</h3>
+  <figure class="figure">
+    <div class="figure-body" data-viz="bench-bars" data-opts='{"source":"cited: Muratori, “Clean” Code, Horrible Performance (2023)","metric":"value","unit":"cycles/shape","runs":[{"label":"virtual calls","value":35},{"label":"switch","value":24},{"label":"coefficient table","value":3.5}]}'></div>
+    <figcaption>Third-party numbers are labelled as cited, and nothing is re-measured here.</figcaption>
+  </figure>
+
+  <h3>bench-line</h3>
+  <figure class="figure wide">
+    <div class="figure-body" data-viz="bench-line" data-bench="demo-sweep" data-opts='{"metric":"ns/n","per":"load","xScale":4,"xUnit":"bytes","xLabel":"working set","bands":true}'></div>
+    <figcaption>A dependent random chase gets slower in steps as the working set leaves each cache level (ch00 smoke data, Rust only).</figcaption>
+  </figure>
+
+  <h3>bench-dist</h3>
+  <figure class="figure">
+    <div class="figure-body" data-viz="bench-dist" data-bench="demo-smoke"></div>
+    <figcaption>The seven timed runs behind each median. A wide spread means you should not trust small differences.</figcaption>
+  </figure>
+
+  <h3>A chapter-local figure (registered inline via BookQ)</h3>
+  <figure class="figure">
+    <div class="figure-body" data-viz="ch00-counter" data-opts='{"n":8}'></div>
+    <figcaption>A minimal <code>chNN-*</code> figure built with <code>Book.player</code> and <code>Book.counters</code>.</figcaption>
+  </figure>
+
+  <h3>Failure states</h3>
+  <figure class="figure">
+    <div class="figure-body" data-viz="no-such-figure" data-expect="unknown"></div>
+    <figcaption>Unknown name: a yellow box.</figcaption>
+  </figure>
+  <figure class="figure">
+    <div class="figure-body" data-viz="aos-soa" data-expect="error" data-opts='{"layouts":["aos","bogus"]}'></div>
+    <figcaption>Invalid options: a red box with the validation message.</figcaption>
+  </figure>
+  <figure class="figure">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch99-not-measured-yet"></div>
+    <figcaption>Missing data: a neutral box (not an error).</figcaption>
+  </figure>
+
+  <h2 id="sources-demo">Sources</h2>
+  <ol class="sources">
+    <li id="src-1">Mike Acton, “Data-Oriented Design and C++”, CppCon 2014.</li>
+    <li id="src-2">Casey Muratori, “‘Clean’ Code, Horrible Performance”, Computer, Enhance!, 2023.</li>
+  </ol>
+</main>
+<script>
+  (window.BookQ ||= []).push((B) => B.viz.register("ch00-counter", (root, opts) => {
+    const n = opts.n ?? 8;
+    B.viz.check(Number.isInteger(n) && n > 0 && n <= 32, 'ch00-counter: "n" must be 1..32');
+    const C = B.colors();
+    const canvas = B.h("canvas", { role: "img", "aria-label": "Squares filling in one per step" });
+    const k = B.canvas(canvas, 400, 40);
+    const cnt = B.counters([["i", "step"], ["bytes", "bytes touched"]]);
+    let i = 0;
+    const draw = () => {
+      const w = k.width / n;
+      k.ctx.clearRect(0, 0, k.width, k.height);
+      for (let j = 0; j < n; j++) { k.ctx.fillStyle = j < i ? C.vel : C.pad; k.ctx.fillRect(j * w + 2, 4, w - 4, 32); }
+      cnt.set("i", i + "/" + n); cnt.set("bytes", i * 4 + " B");
+    };
+    const player = B.player(root, { step: () => (i < n ? (i++, true) : false), back: () => (i > 0 ? (i--, true) : false), reset: () => { i = 0; }, atEnd: () => i === n, draw });
+    root.append(canvas, cnt.el, B.h("div", { class: "controls" }, player.el));
+    B.onResize(root, (w) => { k.fit(Math.max(200, w - 32), 40); draw(); });
+    draw();
+  }));
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+/* Chapter 7 figure styles. Every selector is scoped with .ch07-. */
+.ch07-result { display: block; margin-top: .6rem; padding: .45rem .7rem; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg-elev2); font: .82rem/1.45 var(--font-mono); color: var(--text); min-height: 2.6em; overflow-wrap: anywhere; }
+.ch07-result[data-kind="bad"] { border-color: var(--c-miss); }
+.ch07-diagram { display: block; width: 100%; height: auto; margin: 1.5rem 0; }
+.ch07-diagram text { font-family: var(--font-mono); }
+.ch07-asm { font-size: .8rem; overflow-x: auto; max-width: 100%; }

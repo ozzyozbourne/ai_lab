@@ -1,0 +1,122 @@
+== branches: filter 65536 u32 values (256 KiB), 16 passes per run
+  keep%  branchy ns/elem  branchless ns/elem
+BENCH {"id":"ch07-predict","label":"branchy 0%","lang":"rust","n":1048576,"ns":313031,"samples":[309041,309094,309189,313031,323581,325331,365052]}
+BENCH {"id":"ch07-predict","label":"branchless 0%","lang":"rust","n":1048576,"ns":545764,"samples":[535080,536401,538806,545764,549000,578967,584436]}
+     0%             0.30                0.52
+BENCH {"id":"ch07-predict","label":"branchy 10%","lang":"rust","n":1048576,"ns":1377269,"samples":[1343274,1346944,1376505,1377269,1381170,1395274,1415585]}
+BENCH {"id":"ch07-predict","label":"branchless 10%","lang":"rust","n":1048576,"ns":548932,"samples":[534869,545824,546155,548932,579907,587763,618841]}
+    10%             1.31                0.52
+BENCH {"id":"ch07-predict","label":"branchy 20%","lang":"rust","n":1048576,"ns":2380014,"samples":[2335202,2368326,2379775,2380014,2398023,2413143,2448481]}
+BENCH {"id":"ch07-predict","label":"branchless 20%","lang":"rust","n":1048576,"ns":553028,"samples":[542349,544277,549080,553028,553403,557495,591083]}
+    20%             2.27                0.53
+BENCH {"id":"ch07-predict","label":"branchy 30%","lang":"rust","n":1048576,"ns":3362326,"samples":[3341121,3341578,3341937,3362326,3369670,3374610,3434004]}
+BENCH {"id":"ch07-predict","label":"branchless 30%","lang":"rust","n":1048576,"ns":554236,"samples":[534541,541100,552360,554236,563829,578886,601685]}
+    30%             3.21                0.53
+BENCH {"id":"ch07-predict","label":"branchy 40%","lang":"rust","n":1048576,"ns":3895401,"samples":[3808553,3835935,3878179,3895401,3898908,4034611,4121353]}
+BENCH {"id":"ch07-predict","label":"branchless 40%","lang":"rust","n":1048576,"ns":540029,"samples":[529852,530010,530358,540029,541341,541394,574831]}
+    40%             3.71                0.52
+BENCH {"id":"ch07-predict","label":"branchy 50%","lang":"rust","n":1048576,"ns":4189883,"samples":[4160810,4163034,4180323,4189883,4190298,4202376,4303733]}
+BENCH {"id":"ch07-predict","label":"branchless 50%","lang":"rust","n":1048576,"ns":532617,"samples":[531057,531460,531489,532617,543895,546623,565161]}
+    50%             4.00                0.51
+BENCH {"id":"ch07-predict","label":"branchy 60%","lang":"rust","n":1048576,"ns":3974348,"samples":[3846579,3850336,3899591,3974348,3976714,4065777,4076554]}
+BENCH {"id":"ch07-predict","label":"branchless 60%","lang":"rust","n":1048576,"ns":588596,"samples":[530941,547350,558645,588596,613683,643997,718522]}
+    60%             3.79                0.56
+BENCH {"id":"ch07-predict","label":"branchy 70%","lang":"rust","n":1048576,"ns":3296185,"samples":[3151815,3222984,3275566,3296185,3307411,3312969,3383433]}
+BENCH {"id":"ch07-predict","label":"branchless 70%","lang":"rust","n":1048576,"ns":545394,"samples":[531271,531361,532075,545394,552709,572756,582693]}
+    70%             3.14                0.52
+BENCH {"id":"ch07-predict","label":"branchy 80%","lang":"rust","n":1048576,"ns":2279071,"samples":[2239943,2256919,2268095,2279071,2286200,2552020,2782576]}
+BENCH {"id":"ch07-predict","label":"branchless 80%","lang":"rust","n":1048576,"ns":763454,"samples":[542478,547263,550387,763454,832915,851058,854665]}
+    80%             2.17                0.73
+BENCH {"id":"ch07-predict","label":"branchy 90%","lang":"rust","n":1048576,"ns":1376001,"samples":[1263908,1268958,1308262,1376001,1783542,1843374,1866259]}
+BENCH {"id":"ch07-predict","label":"branchless 90%","lang":"rust","n":1048576,"ns":1067376,"samples":[1018494,1025479,1041947,1067376,1087039,1087058,1276628]}
+    90%             1.31                1.02
+BENCH {"id":"ch07-predict","label":"branchy 100%","lang":"rust","n":1048576,"ns":1100032,"samples":[696593,836061,1076444,1100032,1127244,1153093,1153923]}
+BENCH {"id":"ch07-predict","label":"branchless 100%","lang":"rust","n":1048576,"ns":645912,"samples":[529146,531478,622568,645912,1108919,1141692,1464331]}
+   100%             1.05                0.62
+BENCH {"id":"ch07-patterns","label":"branchy, random","lang":"rust","n":1048576,"ns":4493654,"samples":[4367044,4397328,4414176,4493654,4646826,4726615,4726722]}
+BENCH {"id":"ch07-patterns","label":"branchless, random","lang":"rust","n":1048576,"ns":577884,"samples":[531582,532080,545867,577884,577918,612634,625101]}
+BENCH {"id":"ch07-patterns","label":"branchy, sorted","lang":"rust","n":1048576,"ns":485807,"samples":[467022,468214,475265,485807,489172,490073,507588]}
+BENCH {"id":"ch07-patterns","label":"branchless, sorted","lang":"rust","n":1048576,"ns":548158,"samples":[530208,530258,530316,548158,551411,577161,605831]}
+  keep 50%: branchy random 4.29 / sorted 0.46 ns/elem, branchless random 0.55 / sorted 0.52
+BENCH {"id":"ch07-patterns","label":"if-sum, random","lang":"rust","n":1048576,"ns":320699,"samples":[317341,317468,317472,320699,320704,338749,342206]}
+  if-sum, random: 0.31 ns/elem
+BENCH {"id":"ch07-patterns","label":"if-sum, sorted","lang":"rust","n":1048576,"ns":320541,"samples":[317337,317596,320486,320541,320624,343000,367443]}
+  if-sum, sorted: 0.31 ns/elem
+  period k  branchy ns/elem  branchless ns/elem
+BENCH {"id":"ch07-period","label":"branchy","lang":"rust","n":2,"ns":1,"samples":[1,1,1,1,1,1,1]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"rust","n":2,"ns":1,"samples":[1,1,1,1,1,1,1]}
+         2             0.62                0.54
+BENCH {"id":"ch07-period","label":"branchy","lang":"rust","n":8,"ns":5,"samples":[5,5,5,5,5,5,6]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"rust","n":8,"ns":4,"samples":[4,4,4,4,4,5,6]}
+         8             0.65                0.53
+BENCH {"id":"ch07-period","label":"branchy","lang":"rust","n":32,"ns":22,"samples":[21,21,22,22,23,23,23]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"rust","n":32,"ns":17,"samples":[16,17,17,17,17,18,18]}
+        32             0.70                0.53
+BENCH {"id":"ch07-period","label":"branchy","lang":"rust","n":128,"ns":75,"samples":[72,74,75,75,76,78,81]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"rust","n":128,"ns":66,"samples":[65,65,65,66,67,68,69]}
+       128             0.59                0.52
+BENCH {"id":"ch07-period","label":"branchy","lang":"rust","n":512,"ns":383,"samples":[369,375,379,383,391,392,408]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"rust","n":512,"ns":293,"samples":[279,279,284,293,333,371,406]}
+       512             0.75                0.57
+BENCH {"id":"ch07-period","label":"branchy","lang":"rust","n":2048,"ns":1824,"samples":[1711,1747,1823,1824,1829,1849,1859]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"rust","n":2048,"ns":1850,"samples":[1037,1072,1424,1850,1864,2079,2397]}
+      2048             0.89                0.90
+BENCH {"id":"ch07-period","label":"branchy","lang":"rust","n":8192,"ns":19215,"samples":[18733,18892,19093,19215,19237,20114,20476]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"rust","n":8192,"ns":4308,"samples":[4155,4157,4296,4308,4309,4326,4385]}
+      8192             2.35                0.53
+BENCH {"id":"ch07-period","label":"branchy","lang":"rust","n":32768,"ns":128933,"samples":[127715,128593,128917,128933,129844,129964,131042]}
+BENCH {"id":"ch07-period","label":"branchless","lang":"rust","n":32768,"ns":17246,"samples":[16624,16638,16647,17246,17264,17647,17994]}
+     32768             3.93                0.53
+  checksums: branchy == branchless for every pattern (asserted)
+== existence: 1048576 entities, 525095 alive (50%), Entity 20 B, Body 16 B
+  bytes read per update: flag 20971520 | bool array 17825792 | bitset 8401520 + 131072 | table 8401520
+  flag in struct + if          5.17 ns/entity  checksum 0xfffffffffff023eb
+BENCH {"id":"ch07-exist","label":"flag in struct + if","lang":"rust","n":1048576,"ns":5416350,"samples":[5275225,5275940,5350638,5416350,5468606,5506212,5527067]}
+  bool array + if              4.46 ns/entity  checksum 0xfffffffffff023eb
+BENCH {"id":"ch07-exist","label":"bool array + if","lang":"rust","n":1048576,"ns":4680390,"samples":[4649928,4658546,4660986,4680390,4680586,4700376,4730487]}
+  bitset, set bits only        0.98 ns/entity  checksum 0xfffffffffff023eb
+BENCH {"id":"ch07-exist","label":"bitset, set bits only","lang":"rust","n":1048576,"ns":1027554,"samples":[879586,902856,935737,1027554,1276391,1482599,1660202]}
+  alive table, no branch       0.36 ns/entity  checksum 0xfffffffffff023eb
+BENCH {"id":"ch07-exist","label":"alive table, no branch","lang":"rust","n":1048576,"ns":380259,"samples":[338114,340863,361419,380259,420952,531455,834374]}
+== existence: 1048576 entities, 105261 alive (10%), Entity 20 B, Body 16 B
+  bytes read per update: flag 20971520 | bool array 17825792 | bitset 1684176 + 131072 | table 1684176
+  flag in struct + if          2.05 ns/entity  checksum 0xfffffffffffd1cba
+BENCH {"id":"ch07-exist-10","label":"flag in struct + if","lang":"rust","n":1048576,"ns":2151966,"samples":[1920996,1941880,2073867,2151966,2318758,2377514,2493671]}
+  bool array + if              1.35 ns/entity  checksum 0xfffffffffffd1cba
+BENCH {"id":"ch07-exist-10","label":"bool array + if","lang":"rust","n":1048576,"ns":1413894,"samples":[1350642,1358732,1408152,1413894,1669416,1798404,2103053]}
+  bitset, set bits only        0.37 ns/entity  checksum 0xfffffffffffd1cba
+BENCH {"id":"ch07-exist-10","label":"bitset, set bits only","lang":"rust","n":1048576,"ns":386751,"samples":[360640,363032,384640,386751,392875,477182,837448]}
+  alive table, no branch       0.06 ns/entity  checksum 0xfffffffffffd1cba
+BENCH {"id":"ch07-exist-10","label":"alive table, no branch","lang":"rust","n":1048576,"ns":65578,"samples":[64759,64856,64868,65578,72496,83597,124264]}
+== dirty list: 131072 marks over 262144 rows -> 103356 distinct dirty rows, row sum 13585295539
+== flags: 1048576 entities x 1 B of flags (4 separate bools: 4 B); alive, visible and clean: 130854
+== batches: 4194304 items through 3 stages; per item ns by batch size (working set = 16 B x batch)
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"rust","n":1,"ns":7,"samples":[7,7,7,7,7,7,7]}
+  batch        1 (       16 B):   6.99 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"rust","n":4,"ns":19,"samples":[19,19,19,19,19,19,19]}
+  batch        4 (       64 B):   4.81 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"rust","n":16,"ns":24,"samples":[23,23,24,24,24,24,24]}
+  batch       16 (      256 B):   1.50 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"rust","n":64,"ns":70,"samples":[63,64,68,70,70,70,71]}
+  batch       64 (     1024 B):   1.09 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"rust","n":256,"ns":246,"samples":[246,246,246,246,246,246,252]}
+  batch      256 (     4096 B):   0.96 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"rust","n":1024,"ns":1058,"samples":[1055,1058,1058,1058,1059,1061,1064]}
+  batch     1024 (    16384 B):   1.03 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"rust","n":4096,"ns":4486,"samples":[4234,4392,4393,4486,4490,4608,4917]}
+  batch     4096 (    65536 B):   1.10 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"rust","n":16384,"ns":17878,"samples":[17464,17524,17581,17878,18134,18447,18533]}
+  batch    16384 (   262144 B):   1.09 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"rust","n":65536,"ns":70331,"samples":[69741,69748,69840,70331,70817,72100,80254]}
+  batch    65536 (  1048576 B):   1.07 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"rust","n":262144,"ns":415934,"samples":[414634,414652,415713,415934,416628,416888,417259]}
+  batch   262144 (  4194304 B):   1.59 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"rust","n":1048576,"ns":1965126,"samples":[1896855,1902039,1933318,1965126,1967039,1978104,2020912]}
+  batch  1048576 ( 16777216 B):   1.87 ns/item  checksum 0x6de704fff34d9c9f
+BENCH {"id":"ch07-batch","label":"pipeline","lang":"rust","n":4194304,"ns":19954173,"samples":[17802379,18298544,19259380,19954173,20052212,20563420,22153638]}
+  batch  4194304 ( 67108864 B):   4.76 ns/item  checksum 0x6de704fff34d9c9f
+== lookup: 65536 bytes, 49320 identifier bytes
+  comparisons      2.821 ns/byte
+BENCH {"id":"ch07-lut","label":"comparisons","lang":"rust","n":1048576,"ns":2958296,"samples":[2910410,2930906,2935076,2958296,2963943,3242631,3346155]}
+  256-entry table  0.383 ns/byte
+BENCH {"id":"ch07-lut","label":"256-entry table","lang":"rust","n":1048576,"ns":401555,"samples":[340470,366700,391944,401555,431629,456009,460839]}

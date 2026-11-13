@@ -1,0 +1,24 @@
+(a) sum of squares over 1048576 u64, median of 7:
+    empty (timer only)          137 ns     0.0001 ns/elem  (the floor: two clock reads)
+BENCH {"id":"ch12-deadcode","label":"empty (timer only)","lang":"odin","n":1048576,"ns":137,"samples":[135,136,137,137,137,155,805]}
+    result discarded           137 ns     0.0001 ns/elem  <- SUSPICIOUS: no slower than timing nothing
+BENCH {"id":"ch12-deadcode","label":"result discarded","lang":"odin","n":1048576,"ns":137,"samples":[136,136,137,137,138,138,184]}
+    input visible              137 ns     0.0001 ns/elem  <- SUSPICIOUS: no slower than timing nothing
+BENCH {"id":"ch12-deadcode","label":"input visible","lang":"odin","n":1048576,"ns":137,"samples":[135,136,136,137,137,137,137]}
+    kept alive              394397 ns     0.3761 ns/elem  plausible
+BENCH {"id":"ch12-deadcode","label":"kept alive","lang":"odin","n":1048576,"ns":394397,"samples":[369343,377961,380062,394397,394980,454619,808302]}
+    checksum: kept alive 384306618446643200, input visible 384306618446643200
+(b) noise, 41 timed runs each:
+    16 KiB (L1)       min        749 ns  median        750 ns  max        885 ns  CV   2.9%  checksum 8796574480384
+BENCH {"id":"ch12-noise","label":"16 KiB (L1)","lang":"odin","n":4096,"ns":750,"samples":[749,750,750,750,750,750,750,750,750,750,750,750,750,750,750,750,750,750,750,750,750,750,750,750,750,750,750,750,751,751,751,751,751,751,751,751,751,751,769,788,885]}
+    16 MiB (L3/DRAM)  min     653605 ns  median     683866 ns  max    1646492 ns  CV  23.9%  checksum 9007198346674176
+BENCH {"id":"ch12-noise","label":"16 MiB (L3/DRAM)","lang":"odin","n":4194304,"ns":683866,"samples":[653605,653930,654036,655837,656814,659951,661557,666161,666961,668804,669485,671689,673092,674176,674612,675620,676615,678440,679959,680389,683866,683931,684880,686487,687308,687916,689341,691992,693007,704863,707649,717215,722057,724628,726501,729424,745707,937344,941655,1172964,1646492]}
+(c) A/A test on 2 x 256 KiB, 31 runs per side; B/A ratio of medians (truth: 1.000)
+BENCH {"id":"ch12-aa","label":"A, sequential","lang":"odin","n":65536,"ns":7971,"samples":[7866,7870,7878,7887,7890,7893,7900,7902,7922,7945,7946,7946,7949,7956,7963,7971,7978,7979,7980,7980,7981,7981,7981,7983,7984,7986,7987,7988,8100,28842,47383]}
+BENCH {"id":"ch12-aa","label":"B, sequential","lang":"odin","n":65536,"ns":7870,"samples":[7850,7851,7858,7860,7861,7863,7864,7864,7864,7866,7866,7867,7867,7868,7868,7870,7871,7872,7872,7875,7876,7877,7878,7880,7884,7884,7885,7886,7898,7932,7943]}
+BENCH {"id":"ch12-aa","label":"A, alternating","lang":"odin","n":65536,"ns":7978,"samples":[7882,7887,7891,7891,7898,7930,7932,7954,7969,7969,7970,7971,7975,7975,7976,7978,7978,7980,7981,7981,7982,7982,7983,7986,7986,7987,7991,7993,7993,11907,23072]}
+BENCH {"id":"ch12-aa","label":"B, alternating","lang":"odin","n":65536,"ns":7975,"samples":[7883,7885,7911,7932,7936,7950,7951,7957,7960,7966,7966,7970,7971,7971,7971,7975,7975,7977,7977,7977,7979,7980,7980,7981,7981,7981,7984,7985,7987,7989,9971]}
+    sequential  0.987 0.987 0.987 0.997 0.997 0.987 0.996  |B/A-1| median 1.3%, worst 1.3%
+    alternating 1.000 1.000 0.994 0.995 0.999 0.999 0.999  |B/A-1| median 0.1%, worst 0.6%
+    checksum: A 140736467533824 B 140736467533824
+(d) Particle: 28 B, align 4; pos @0, vel @12, alive @24, kind @25

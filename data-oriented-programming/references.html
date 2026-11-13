@@ -1,0 +1,832 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>References · Data-Oriented Design</title>
+<link rel="stylesheet" href="assets/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="assets/book.css">
+<script>window.Prism = { manual: true };</script>
+<script defer src="assets/vendor/prism/prism.min.js"></script>
+<script defer src="assets/book.js"></script>
+<style>
+/* references.html only: entry layout, verification labels, filter box */
+.ref-filter { padding: .4rem 0 .6rem; border-bottom: 1px solid var(--border); }
+.ref-filter input[type=search] { flex: 1 1 14rem; min-width: 0; min-height: var(--touch); padding: .35rem .6rem; font: inherit;
+  color: var(--text); background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px; }
+.ref-filter input[type=search]:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ref-filter .stat { margin: .4rem 0 0; }
+ol.refs { list-style: none; padding: 0; margin: 1rem 0 2rem; }
+ol.refs > li { margin: 0 0 .9rem; padding: .55rem .75rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); }
+ol.refs > li:target { outline: 1px solid var(--accent); }
+ol.refs .ref-t { color: var(--heading); font-weight: 600; }
+ol.refs .ref-m, ol.refs .ref-c { font-size: .88rem; color: var(--text-dim); margin: .2rem 0 0; }
+ol.refs .ref-n { font-size: .92rem; margin: .25rem 0 0; }
+ol.refs a { overflow-wrap: anywhere; }
+.vlabel { display: inline-block; font: .72rem var(--font-mono); padding: 0 .4em; margin-left: .35em; border-radius: 4px;
+  border: 1px solid var(--border); vertical-align: .1em; white-space: nowrap; }
+.vlabel.v-read { border-color: var(--c-hit); color: var(--c-hit); }
+.vlabel.v-seen { border-color: var(--c-miss); color: var(--c-miss); }
+.vlabel.v-notes { border-color: var(--c-flag); color: var(--c-flag); }
+</style>
+</head>
+<body>
+<main>
+  <p class="kicker">Back matter</p>
+  <h1>References</h1>
+  <p class="lede">Every source the twelve chapters cite, merged into one list: 159 works from 207 numbered
+  chapter entries. Each entry says which chapters cite it, with links to the exact item in that chapter's source list, and how
+  well we checked it.</p>
+
+  <h2 id="how">How this book was researched</h2>
+  <p>Before any chapter was written, seven research passes ran in parallel, each with its own brief: foundations and
+  hardware; Zig; Odin; Rust; a language-neutral catalogue of techniques; real-world case studies with measured results; and the
+  visualisation and front-end design of the book itself. Each pass searched the web, opened the pages it relied on, and wrote a
+  notes file with a SOURCES section that says which pages were opened and which were only seen in search results. Those notes are
+  published unchanged apart from path scrubbing, in <a href="#notes">Research notes</a> below.</p>
+  <p>Language claims were then checked against the toolchains and their source trees rather than against blog posts: every code
+  sample in the book is copied from a file in <code>code/</code> that compiles and runs with the versions listed in
+  <a href="#versions">Language versions and source trees</a>, and the three languages' versions of each program must print the same
+  checksum. Stability attributes, default targets, allocator behaviour and standard-library doc comments were read in the local
+  source trees (<code>~/langsrc/rust</code>, <code>~/langsrc/zig</code>, <code>~/langsrc/odin</code>). Third-party numbers are
+  quoted with their context and marked as cited; our own numbers come from one 4-vCPU KVM guest on an Intel Xeon (Ice Lake-SP),
+  described in <a href="code/results/machine.txt"><code>code/results/machine.txt</code></a>, and are noisy.</p>
+  <p>Each source carries one verification label, taken from the chapter's own source notes and, where those are silent, from the
+  research notes' SOURCES sections. When neither records that a page was opened, it gets the weakest label, <i>seen</i>. Tools and
+  libraries are labelled <i>read</i> because their files are in the book or were run while building it.</p>
+  <ul>
+    <li><span class="vlabel v-read">read</span> Opened and checked against the claim the book makes. (42 sources)</li>
+    <li><span class="vlabel v-seen">seen</span> Seen as a search result or excerpt only; not opened in full. (66 sources)</li>
+    <li><span class="vlabel v-notes">via research notes</span> Taken from the research notes below; not re-opened when the chapter was written. (51 sources)</li>
+  </ul>
+  <p>Duplicates were merged by normalising URLs (scheme, <code>www.</code>, trailing slashes and punctuation, <code>youtu.be</code>
+  links, <code>index.html</code>) and by treating mirrors, transcripts and slide copies of one talk as one work. Where chapters gave
+  different dates or affiliations for the same work, one form was chosen and used here.</p>
+
+  <h2 id="sources">Sources by topic</h2>
+  <div class="ref-filter no-toc" role="search">
+    <div class="controls" style="margin-top:0">
+      <label class="visually-hidden" for="ref-q">Filter sources</label>
+      <input type="search" id="ref-q" placeholder="Filter: title, author, year, chapter…" autocomplete="off">
+    </div>
+    <div class="controls"><div class="seg" id="ref-topics" role="group" aria-label="Topic"><button type="button" data-topic="all" aria-pressed="true">All</button><button type="button" data-topic="origins" aria-pressed="false">Origins</button><button type="button" data-topic="hardware" aria-pressed="false">Hardware</button><button type="button" data-topic="layout" aria-pressed="false">Layout</button><button type="button" data-topic="zig" aria-pressed="false">Zig</button><button type="button" data-topic="odin" aria-pressed="false">Odin</button><button type="button" data-topic="rust" aria-pressed="false">Rust</button><button type="button" data-topic="ecs" aria-pressed="false">ECS &amp; games</button><button type="button" data-topic="compilers" aria-pressed="false">Compilers</button><button type="button" data-topic="databases" aria-pressed="false">Databases &amp; systems</button><button type="button" data-topic="measurement" aria-pressed="false">Measurement</button><button type="button" data-topic="tools" aria-pressed="false">Tools</button></div></div>
+    <p class="stat" id="ref-count" aria-live="polite">159 sources</p>
+  </div>
+  <section class="ref-group" data-topic="origins">
+  <h3 id="t-origins">Origins and philosophy <span class="dim">(9)</span></h3>
+  <ol class="refs">
+    <li id="ref-noel-llopis-data-oriented-design-or-why-you-migh" data-topic="origins"><span class="ref-t"><a href="https://gamesfromwithin.com/data-oriented-design">Data-Oriented Design (Or Why You Might Be Shooting Yourself in The Foot With OOP)</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Noel Llopis · 2009 · Game Developer, Sept 2009; blog reprint Dec 2009</p>
+      <p class="ref-n">The article that named data-oriented design: “where there&#x27;s one, there are many”, and DOD is not data-driven design.</p>
+      <p class="ref-c">Cited in <a href="01-the-data-is-the-problem.html#src-1">Ch 1 [1]</a>, <a href="07-branches-batches-existence.html#src-2">Ch 7 [2]</a>, <a href="12-measure-and-know-when-not-to.html#src-23">Ch 12 [23]</a></p></li>
+    <li id="ref-tony-albrecht-sony-computer-entertainment-europe" data-topic="origins"><span class="ref-t"><a href="https://www.gamedevs.org/uploads/pitfalls-of-object-oriented-programming.pdf">Pitfalls of Object Oriented Programming</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Tony Albrecht (Sony Computer Entertainment Europe R&amp;D) · 2009 · GCAP Australia 2009</p>
+      <p class="ref-n">An 11,111-node scene tree rewritten for the cache: 19.6 → 3.3 ms, with mispredicts versus L2 misses counted.</p>
+      <p class="ref-c">Cited in <a href="01-the-data-is-the-problem.html#src-2">Ch 1 [2]</a>, <a href="02-the-machine.html#src-18">Ch 2 [18]</a></p></li>
+    <li id="ref-mike-acton-data-oriented-design-and-c" data-topic="origins"><span class="ref-t"><a href="https://www.youtube.com/watch?v=rX0ItVEVjHc">Data-Oriented Design and C++</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Mike Acton · 2014 · CppCon 2014 keynote, 30 Sept 2014</p>
+      <p class="ref-n">The three lies, “where there is one, there are many”, and the cache-line arithmetic of UpdateFoo. Slides from the CppCon2014 repository and a PDF mirror.</p>
+      <p class="ref-c">Cited in <a href="01-the-data-is-the-problem.html#src-3">Ch 1 [3]</a>, <a href="02-the-machine.html#src-28">Ch 2 [28]</a>, <a href="04-aos-soa-hot-cold.html#src-1">Ch 4 [1]</a>, <a href="07-branches-batches-existence.html#src-1">Ch 7 [1]</a></p></li>
+    <li id="ref-tony-albrecht-pitfalls-of-object-oriented-progra" data-topic="origins"><span class="ref-t"><a href="https://www.slideserve.com/cheng/object-oriented-programming">Pitfalls of Object Oriented Programming – Revisited</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Tony Albrecht · 2017</p>
+      <p class="ref-n">Albrecht&#x27;s 2017 revisit of the 2009 talk on newer hardware.</p>
+      <p class="ref-c">Cited in <a href="01-the-data-is-the-problem.html#src-10">Ch 1 [10]</a>, <a href="08-simd-and-parallelism.html#src-17">Ch 8 [17]</a></p></li>
+    <li id="ref-richard-fabian-data-oriented-design-software-eng" data-topic="origins"><span class="ref-t"><a href="https://www.dataorienteddesign.com/dodbook/node2.html">Data-Oriented Design: Software Engineering for Limited Resources and Short Schedules</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Richard Fabian · 2018 · ISBN 978-1-138-03545-4; free online edition</p>
+      <p class="ref-n">The book-length treatment. Chapters cited: the introduction (node2), Relational Databases (node3) and Existential Processing (node4).</p>
+      <p class="ref-c">Cited in <a href="01-the-data-is-the-problem.html#src-4">Ch 1 [4]</a>, <a href="07-branches-batches-existence.html#src-8">Ch 7 [8]</a>, <a href="09-ecs-and-tables.html#src-1">Ch 9 [1]</a></p></li>
+    <li id="ref-sebastian-sch-ner-data-oriented-design-an-interp" data-topic="origins"><span class="ref-t"><a href="https://blog.s-schoener.com/2019-06-09-data-oriented-design">Data Oriented Design: An Interpretation</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Sebastian Schöner · 2019</p>
+      <p class="ref-n"></p>
+      <p class="ref-c">Cited in <a href="09-ecs-and-tables.html#src-15">Ch 9 [15]</a></p></li>
+    <li id="ref-andrew-kelley-a-practical-guide-to-applying-data" data-topic="origins"><span class="ref-t"><a href="https://vimeo.com/649009599">A Practical Guide to Applying Data-Oriented Design</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Andrew Kelley · 2021 · Handmade Seattle, 23 Nov 2021 (video on Vimeo and YouTube; third-party transcript by Josherich)</p>
+      <p class="ref-n">Tokens 64 → 5 B, AST nodes 120 → 15.6 B, ZIR 54 → 20.3 B, and the monster-struct exercises (24 → 16 → 12 B). Also: <a href="https://www.youtube.com/watch?v=IroPQ150F6c">www.youtube.com/watch?v=IroPQ150F6c</a>, <a href="https://josherich.me/podcast/andrew-kelley-practical-data-oriented-design-dod">josherich.me/podcast/andrew-kelley-practical-data-oriented-d</a>.</p>
+      <p class="ref-c">Cited in <a href="01-the-data-is-the-problem.html#src-5">Ch 1 [5]</a>, <a href="03-size-alignment-padding.html#src-1">Ch 3 [1]</a>, <a href="03-size-alignment-padding.html#src-2">Ch 3 [2]</a>, <a href="04-aos-soa-hot-cold.html#src-2">Ch 4 [2]</a>, <a href="05-indices-handles.html#src-1">Ch 5 [1]</a>, <a href="07-branches-batches-existence.html#src-9">Ch 7 [9]</a>, <a href="11-capstone-flat-ast-compiler.html#src-2">Ch 11 [2]</a></p></li>
+    <li id="ref-brian-goetz-data-oriented-programming-in-java" data-topic="origins"><span class="ref-t"><a href="https://www.infoq.com/articles/data-oriented-programming-java/">Data Oriented Programming in Java</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Brian Goetz · 2022</p>
+      <p class="ref-n">Java&#x27;s “data-oriented programming” (records, sealed types): a different idea with a similar name.</p>
+      <p class="ref-c">Cited in <a href="01-the-data-is-the-problem.html#src-9">Ch 1 [9]</a></p></li>
+    <li id="ref-yehonathan-sharvit-principles-of-data-oriented-p" data-topic="origins"><span class="ref-t"><a href="https://blog.klipse.tech/dop/2022/06/22/principles-of-dop.html">Principles of Data-Oriented Programming</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Yehonathan Sharvit · 2022</p>
+      <p class="ref-n">Sharvit&#x27;s “data-oriented programming” (immutable generic data): not the same thing as DOD. Also: <a href="https://www.manning.com/books/data-oriented-programming">www.manning.com/books/data-oriented-programming</a>.</p>
+      <p class="ref-c">Cited in <a href="01-the-data-is-the-problem.html#src-8">Ch 1 [8]</a></p></li>
+  </ol>
+  </section>
+  <section class="ref-group" data-topic="hardware">
+  <h3 id="t-hardware">Hardware and memory <span class="dim">(26)</span></h3>
+  <ol class="refs">
+    <li id="ref-ulrich-drepper-what-every-programmer-should-know" data-topic="hardware"><span class="ref-t"><a href="https://www.akkadia.org/drepper/cpumemory.pdf">What Every Programmer Should Know About Memory</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Ulrich Drepper · 2007</p>
+      <p class="ref-n">The long reference on caches, TLBs and NUMA (PDF). Also serialised on LWN: the series index (250967), part 2 “CPU caches” (252125) and part 6 “More things programmers can do” (256433). Also: <a href="https://lwn.net/Articles/250967/">lwn.net/Articles/250967/</a>, <a href="https://lwn.net/Articles/252125/">lwn.net/Articles/252125/</a>, <a href="https://lwn.net/Articles/256433/">lwn.net/Articles/256433/</a>.</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-8">Ch 2 [8]</a>, <a href="08-simd-and-parallelism.html#src-11">Ch 8 [11]</a></p></li>
+    <li id="ref-igor-ostrovsky-gallery-of-processor-cache-effect" data-topic="hardware"><span class="ref-t"><a href="https://igoro.com/archive/gallery-of-processor-cache-effects">Gallery of Processor Cache Effects</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Igor Ostrovsky · 2010</p>
+      <p class="ref-n"></p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-22">Ch 2 [22]</a></p></li>
+    <li id="ref-jonas-bon-r-latency-numbers-every-programmer-sho" data-topic="hardware"><span class="ref-t"><a href="https://gist.github.com/jboner/2841832">Latency Numbers Every Programmer Should Know</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Jonas Bonér · 2012</p>
+      <p class="ref-n">(gist, ~2012, credits Jeff Dean and Peter Norvig).</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-2">Ch 2 [2]</a></p></li>
+    <li id="ref-stack-overflow-why-is-processing-a-sorted-array-" data-topic="hardware"><span class="ref-t"><a href="https://stackoverflow.com/questions/11227809">Why is processing a sorted array faster than processing an unsorted array?</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Stack Overflow · 2012</p>
+      <p class="ref-n">The classic branch-prediction demonstration: sorting the input makes a branchy loop several times faster.</p>
+      <p class="ref-c">Cited in <a href="07-branches-batches-existence.html#src-14">Ch 7 [14]</a></p></li>
+    <li id="ref-chips-and-cheese-amd-s-zen-4-part-2-memory-subsy" data-topic="hardware"><span class="ref-t"><a href="https://chipsandcheese.com/p/amds-zen-4-part-2-memory-subsystem-and-conclusion">AMD’s Zen 4, Part 2: Memory Subsystem and Conclusion</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Chips and Cheese · 2022</p>
+      <p class="ref-n">Nov 2022.</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-15">Ch 2 [15]</a></p></li>
+    <li id="ref-battling-the-prefetcher-exploring-coffee-lake-pa" data-topic="hardware"><span class="ref-t"><a href="https://abertschi.ch/blog/2022/prefetching">Battling the Prefetcher: Exploring Coffee Lake (Part 1)</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">2022</p>
+      <p class="ref-n"></p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-14">Ch 2 [14]</a></p></li>
+    <li id="ref-jiajie-chen-jia-je-amd-zen-5" data-topic="hardware"><span class="ref-t"><a href="https://jia.je/hardware/2024/11/11/amd-zen5">AMD Zen 5 微架构评测</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Jiajie Chen (jia.je) · 2024</p>
+      <p class="ref-n">Nov 2024.</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-16">Ch 2 [16]</a></p></li>
+    <li id="ref-chester-lam-amd-s-ryzen-9950x-zen-5-on-desktop" data-topic="hardware"><span class="ref-t"><a href="https://chipsandcheese.com/p/amds-ryzen-9950x-zen-5-on-desktop">AMD’s Ryzen 9950X: Zen 5 on Desktop</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Chester Lam · 2024</p>
+      <p class="ref-n">Chips and Cheese, Aug 2024.</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-5">Ch 2 [5]</a></p></li>
+    <li id="ref-wrenger-et-al-analyzing-the-memory-ordering-mode" data-topic="hardware"><span class="ref-t"><a href="https://www.sciencedirect.com/science/article/pii/S1383762124000390">Analyzing the memory ordering models of the Apple M1</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Wrenger et al · 2024</p>
+      <p class="ref-n">Journal of Systems Architecture, 2024.</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-10">Ch 2 [10]</a></p></li>
+    <li id="ref-jia-je-apple-m1-firestorm-icestorm" data-topic="hardware"><span class="ref-t"><a href="https://jia.je/hardware/2024/12/26/apple-m1">Apple M1 (Firestorm &amp; Icestorm) 微架构评测</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">jia.je · 2024</p>
+      <p class="ref-n">Dec 2024, and “Apple M2 (Avalanche &amp; Blizzard) 微架构评测”, 2026 (quoting Apple’s CPU Optimization Guide on line sizes). M1 · M2. Also: <a href="https://jia.je/hardware/2026/07/06/apple-m2/index.md">jia.je/hardware/2026/07/06/apple-m2/index.md</a>.</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-11">Ch 2 [11]</a></p></li>
+    <li id="ref-amd-software-optimization-guide-for-the-amd-zen5" data-topic="hardware"><span class="ref-t"><a href="https://docs.amd.com/v/u/en-US/58455_1.00">Software Optimization Guide for the AMD Zen5 Microarchitecture</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">AMD · 2024 · publication 58455 rev. 1.00</p>
+      <p class="ref-n">Penalty for a misaligned load that crosses a 64-byte boundary. The first link is the AMD documentation page; the second downloads the guide as a ZIP of the PDF (58455_1.00.zip). Also: <a href="https://docs.amd.com/api/khub/documents/RCLISlZoOyWkKA9SYwLLDQ/content">docs.amd.com/api/khub/documents/RCLISlZoOyWkKA9SYwLLDQ/conte</a>.</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-7">Ch 2 [7]</a>, <a href="03-size-alignment-padding.html#src-17">Ch 3 [17]</a></p></li>
+    <li id="ref-chester-lam-zen-5-variants-and-more-clock-for-cl" data-topic="hardware"><span class="ref-t"><a href="https://chipsandcheese.com/p/zen-5-variants-and-more-clock-for-clock">Zen 5 Variants and More, Clock for Clock</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Chester Lam · 2024</p>
+      <p class="ref-n">Chips and Cheese, Aug 2024.</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-6">Ch 2 [6]</a></p></li>
+    <li id="ref-chips-and-cheese-inside-nvidia-gb10-s-memory-sub" data-topic="hardware"><span class="ref-t"><a href="https://chipsandcheese.com/p/inside-nvidia-gb10s-memory-subsystem">Inside Nvidia GB10’s Memory Subsystem</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Chips and Cheese · 2025</p>
+      <p class="ref-n">Dec 2025 (single Zen core bandwidth comparison).</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-20">Ch 2 [20]</a></p></li>
+    <li id="ref-monoidal-transformation-blog-false-sharing-align" data-topic="hardware"><span class="ref-t"><a href="https://monoid.github.io/posts/false-sharing-alignment">False Sharing Alignment</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Monoidal Transformation blog · 2026</p>
+      <p class="ref-n">June 2026 (64 vs 128 on AWS c5d Skylake, c6i Ice Lake, Apple M1).</p>
+      <p class="ref-c">Cited in <a href="08-simd-and-parallelism.html#src-15">Ch 8 [15]</a></p></li>
+    <li id="ref-omar-bohsali-latency-numbers-you-should-know-in-" data-topic="hardware"><span class="ref-t"><a href="https://omarish.com/latency-numbers-you-should-know">Latency Numbers You Should Know in 2026</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Omar Bohsali · 2026</p>
+      <p class="ref-n">May 2026.</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-4">Ch 2 [4]</a></p></li>
+    <li id="ref-sergey-slotin-branchless-programming" data-topic="hardware"><span class="ref-t"><a href="https://en.algorithmica.org/hpc/pipelining/branchless">Branchless Programming</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Sergey Slotin · n.d.</p>
+      <p class="ref-n">Algorithms for Modern Hardware. Branchy wins above ~75% predictability (research notes).</p>
+      <p class="ref-c">Cited in <a href="07-branches-batches-existence.html#src-12">Ch 7 [12]</a></p></li>
+    <li id="ref-wikipedia-fisher-yates-shuffle-sattolo-s-algorit" data-topic="hardware"><span class="ref-t"><a href="https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle#Sattolo&#x27;s_algorithm">Fisher–Yates shuffle (Sattolo&#x27;s algorithm)</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Wikipedia · n.d.</p>
+      <p class="ref-n">Sattolo&#x27;s variant builds a single random cycle, which the pointer-chasing latency benchmark walks.</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-23">Ch 2 [23]</a></p></li>
+    <li id="ref-agner-fog-instruction-tables-lists-of-instructio" data-topic="hardware"><span class="ref-t"><a href="https://www.agner.org/optimize/instruction_tables.pdf">Instruction tables: lists of instruction latencies, throughputs and micro-operation breakdowns for Intel, AMD and VIA CPUs</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Agner Fog · n.d.</p>
+      <p class="ref-n">Updated regularly. ADDSS/ADDPS latency about 4 cycles and reciprocal throughput 0.5 on Skylake-family cores.</p>
+      <p class="ref-c">Cited in <a href="08-simd-and-parallelism.html#src-1">Ch 8 [1]</a></p></li>
+    <li id="ref-intel-intel-64-and-ia-32-architectures-optimizat" data-topic="hardware"><span class="ref-t"><a href="https://cdrdv2-public.intel.com/814201/355308-Software-Optimization-Manual-048-Changes-Doc.pdf">Intel 64 and IA-32 Architectures Optimization Reference Manual</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Intel · n.d.</p>
+      <p class="ref-n">(L2 spatial prefetcher, 128-byte aligned pairs), as quoted in the documentation-changes document.</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-13">Ch 2 [13]</a>, <a href="08-simd-and-parallelism.html#src-12">Ch 8 [12]</a></p></li>
+    <li id="ref-arm-introducing-sve" data-topic="hardware"><span class="ref-t"><a href="https://developer.arm.com/documentation/102476/0101/Introducing-SVE">Introducing SVE</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Arm · n.d.</p>
+      <p class="ref-n">(102476).</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-21">Ch 2 [21]</a></p></li>
+    <li id="ref-google-sre-latency-numbers-everyone-should-know" data-topic="hardware"><span class="ref-t"><a href="https://sre.google/static/pdf/rule-of-thumb-latency-numbers-letter.pdf">Latency Numbers Everyone Should Know</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Google SRE · n.d.</p>
+      <p class="ref-n">(handout).</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-3">Ch 2 [3]</a></p></li>
+    <li id="ref-peter-norvig-teach-yourself-programming-in-ten-y" data-topic="hardware"><span class="ref-t"><a href="https://www.norvig.com/21-days.html">Teach Yourself Programming in Ten Years</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Peter Norvig · n.d.</p>
+      <p class="ref-n">The original “approximate timing for various operations” table.</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-1">Ch 2 [1]</a></p></li>
+    <li id="ref-sergey-slotin-the-cost-of-branching" data-topic="hardware"><span class="ref-t"><a href="https://en.algorithmica.org/hpc/pipelining/branching/">The Cost of Branching</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Sergey Slotin · n.d.</p>
+      <p class="ref-n">Algorithms for Modern Hardware.</p>
+      <p class="ref-c">Cited in <a href="07-branches-batches-existence.html#src-11">Ch 7 [11]</a></p></li>
+    <li id="ref-agner-fog-the-microarchitecture-of-intel-amd-and" data-topic="hardware"><span class="ref-t"><a href="https://www.agner.org/optimize/optimizing_cpp.pdf">The microarchitecture of Intel, AMD, and VIA CPUs</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Agner Fog · n.d.</p>
+      <p class="ref-n">(optimization manual 3), and “Optimizing software in C++” (manual 1).  ·. Also: <a href="https://www.agner.org/optimize/microarchitecture.pdf">www.agner.org/optimize/microarchitecture.pdf</a>.</p>
+      <p class="ref-c">Cited in <a href="01-the-data-is-the-problem.html#src-14">Ch 1 [14]</a>, <a href="02-the-machine.html#src-19">Ch 2 [19]</a>, <a href="07-branches-batches-existence.html#src-13">Ch 7 [13]</a></p></li>
+    <li id="ref-the-linux-kernel-documentation-transparent-hugep" data-topic="hardware"><span class="ref-t"><a href="https://docs.kernel.org/admin-guide/mm/transhuge.html">Transparent Hugepage Support</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">The Linux kernel documentation · n.d.</p>
+      <p class="ref-n">(the madvise mode).</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-17">Ch 2 [17]</a></p></li>
+    <li id="ref-apple-developer-tune-cpu-job-scheduling-for-appl" data-topic="hardware"><span class="ref-t"><a href="https://developer.apple.com/videos/play/tech-talks/110147">Tune CPU job scheduling for Apple silicon games</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Apple Developer · n.d.</p>
+      <p class="ref-n">(tech talk 110147).</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-9">Ch 2 [9]</a></p></li>
+  </ol>
+  </section>
+  <section class="ref-group" data-topic="layout">
+  <h3 id="t-layout">Layout and techniques <span class="dim">(9)</span></h3>
+  <ol class="refs">
+    <li id="ref-trishul-chilimbi-cache-conscious-structure-defin" data-topic="layout"><span class="ref-t"><a href="https://www.microsoft.com/en-us/research/publication/cache-conscious-structure-definition-2/">Cache-Conscious Structure Definition</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Trishul Chilimbi, Bob Davidson, James Larus · 1999 · PLDI 1999</p>
+      <p class="ref-n">Hot/cold field splitting chosen from profile data.</p>
+      <p class="ref-c">Cited in <a href="04-aos-soa-hot-cold.html#src-10">Ch 4 [10]</a></p></li>
+    <li id="ref-noel-llopis-managing-data-relationships" data-topic="layout"><span class="ref-t"><a href="https://gamesfromwithin.com/managing-data-relationships">Managing Data Relationships</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Noel Llopis · 2008</p>
+      <p class="ref-n">Indices instead of pointers between game objects.</p>
+      <p class="ref-c">Cited in <a href="05-indices-handles.html#src-2">Ch 5 [2]</a></p></li>
+    <li id="ref-andre-weissflog-handles-are-the-better-pointers" data-topic="layout"><span class="ref-t"><a href="https://floooh.github.io/2018/06/17/handles-vs-pointers.html">Handles are the better pointers</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Andre Weissflog · 2018</p>
+      <p class="ref-n">(update 28 Nov 2018: per-slot generation counters).</p>
+      <p class="ref-c">Cited in <a href="05-indices-handles.html#src-7">Ch 5 [7]</a></p></li>
+    <li id="ref-niklas-gray-data-structures-part-1-bulk-data" data-topic="layout"><span class="ref-t"><a href="https://ruby0x1.github.io/machinery_blog_archive/post/data-structures-part-1-bulk-data/index.html">Data Structures Part 1: Bulk Data</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Niklas Gray · 2019 · Our Machinery blog (archive)</p>
+      <p class="ref-n">Our Machinery blog, 2019 (archive). archive. Shift vs swap-and-pop vs holes, in-array free list, id → index table. Gray is Niklas Frykholm of [6] under a later name (his Game Developer author bio: &quot;Niklas Gray (aka Niklas Frykholm)&quot;). Also: <a href="https://www.gamedeveloper.com/programming/little-machines-working-together-part-1-">www.gamedeveloper.com/programming/little-machines-working-to</a>.</p>
+      <p class="ref-c">Cited in <a href="04-aos-soa-hot-cold.html#src-8">Ch 4 [8]</a>, <a href="05-indices-handles.html#src-8">Ch 5 [8]</a>, <a href="09-ecs-and-tables.html#src-17">Ch 9 [17]</a>, <a href="12-measure-and-know-when-not-to.html#src-2">Ch 12 [2]</a></p></li>
+    <li id="ref-ryan-fleury-untangling-lifetimes-the-arena-alloc" data-topic="layout"><span class="ref-t"><a href="https://www.rfleury.com/p/untangling-lifetimes-the-arena-allocator">Untangling Lifetimes: The Arena Allocator</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Ryan Fleury · 2022</p>
+      <p class="ref-n">Frame arenas, reserve then commit.</p>
+      <p class="ref-c">Cited in <a href="06-allocation-strategies.html#src-7">Ch 6 [7]</a></p></li>
+    <li id="ref-chris-wellons-hash-function-prospector" data-topic="layout"><span class="ref-t"><a href="https://github.com/skeeto/hash-prospector">Hash Function Prospector</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Chris Wellons · n.d.</p>
+      <p class="ref-n">(lowbias32).</p>
+      <p class="ref-c">Cited in <a href="04-aos-soa-hot-cold.html#src-11">Ch 4 [11]</a></p></li>
+    <li id="ref-intel-intel-ispc-user-s-guide" data-topic="layout"><span class="ref-t"><a href="https://ispc.github.io/ispc.html">Intel ISPC User&#x27;s Guide</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Intel · n.d.</p>
+      <p class="ref-n">Soa&lt;N&gt; types (hybrid SoA). guide; and Intel, “Memory Layout Transformations”. Also: <a href="https://www.intel.com/content/www/us/en/developer/articles/technical/memory-layout-transformations.html">www.intel.com/content/www/us/en/developer/articles/technical</a>.</p>
+      <p class="ref-c">Cited in <a href="04-aos-soa-hot-cold.html#src-9">Ch 4 [9]</a></p></li>
+    <li id="ref-eric-s-raymond-the-lost-art-of-structure-packing" data-topic="layout"><span class="ref-t"><a href="http://www.catb.org/esr/structure-packing/">The Lost Art of Structure Packing</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Eric S. Raymond · n.d.</p>
+      <p class="ref-n">Background on C padding rules.</p>
+      <p class="ref-c">Cited in <a href="03-size-alignment-padding.html#src-10">Ch 3 [10]</a></p></li>
+    <li id="ref-arseny-kapoulkine-vertex-quantization" data-topic="layout"><span class="ref-t"><a href="https://github.com/zeux/meshoptimizer">Vertex quantization</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Arseny Kapoulkine · n.d. · meshoptimizer README</p>
+      <p class="ref-n"></p>
+      <p class="ref-c">Cited in <a href="03-size-alignment-padding.html#src-19">Ch 3 [19]</a></p></li>
+  </ol>
+  </section>
+  <section class="ref-group" data-topic="zig">
+  <h3 id="t-zig">Zig <span class="dim">(15)</span></h3>
+  <ol class="refs">
+    <li id="ref-andrew-kelley-and-the-zig-team-zig-0-8-0-release" data-topic="zig"><span class="ref-t"><a href="https://ziglang.org/download/0.8.0/release-notes.html">Zig 0.8.0 Release Notes</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Andrew Kelley and the Zig team · 2021</p>
+      <p class="ref-n">“Reworked Memory Layout”: token 5 B, node 13 B, parser −15% cache misses / −22% wall clock, ZIR −39% wall clock.</p>
+      <p class="ref-c">Cited in <a href="11-capstone-flat-ast-compiler.html#src-1">Ch 11 [1]</a></p></li>
+    <li id="ref-zig-software-foundation-0-10-0-release-notes" data-topic="zig"><span class="ref-t"><a href="https://ziglang.org/download/0.10.0/release-notes.html">0.10.0 Release Notes</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Zig Software Foundation · 2022</p>
+      <p class="ref-n">Section “Self-Hosted Compiler”, 2022.</p>
+      <p class="ref-c">Cited in <a href="12-measure-and-know-when-not-to.html#src-6">Ch 12 [6]</a></p></li>
+    <li id="ref-alex-kladov-matklad-newtype-index-pattern-in-zig" data-topic="zig"><span class="ref-t"><a href="https://matklad.github.io/2025/12/23/zig-newtype-index-pattern.html">Newtype Index Pattern In Zig</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Alex Kladov (matklad) · 2025</p>
+      <p class="ref-n"></p>
+      <p class="ref-c">Cited in <a href="03-size-alignment-padding.html#src-16">Ch 3 [16]</a>, <a href="05-indices-handles.html#src-5">Ch 5 [5]</a></p></li>
+    <li id="ref-zig-software-foundation-0-16-0-release-notes" data-topic="zig"><span class="ref-t"><a href="https://ziglang.org/download/0.16.0/release-notes.html">0.16.0 Release Notes</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Zig Software Foundation · 2026</p>
+      <p class="ref-n">(I/O as an interface, Juicy Main, lock-free ArenaAllocator); Zig 0.17.1 sources lib/std/heap/{ArenaAllocator,FixedBufferAllocator,memory_pool,SmpAllocator}.zig and lib/std/start.zig.</p>
+      <p class="ref-c">Cited in <a href="06-allocation-strategies.html#src-13">Ch 6 [13]</a>, <a href="08-simd-and-parallelism.html#src-10">Ch 8 [10]</a></p></li>
+    <li id="ref-zig-software-foundation-0-17-0-release-notes" data-topic="zig"><span class="ref-t"><a href="https://ziglang.org/download/0.17.0/release-notes.html">0.17.0 Release Notes</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Zig Software Foundation · 2026</p>
+      <p class="ref-n">@intFromEnum → @backingInt, the -O fast rename, SafeAllocator and BufferFirstAllocator, std.bit_set renames.</p>
+      <p class="ref-c">Cited in <a href="01-the-data-is-the-problem.html#src-13">Ch 1 [13]</a>, <a href="06-allocation-strategies.html#src-12">Ch 6 [12]</a>, <a href="07-branches-batches-existence.html#src-16">Ch 7 [16]</a></p></li>
+    <li id="ref-zig-project-prefetch-and-std-mem-language-refere" data-topic="zig"><span class="ref-t"><a href="https://ziglang.org/documentation/master/#prefetch">@prefetch and std.mem (language reference)</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Zig project · 2026</p>
+      <p class="ref-n">@prefetch and std.lang.PrefetchOptions.</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-25">Ch 2 [25]</a></p></li>
+    <li id="ref-richard-feldman-how-our-rust-to-zig-rewrite-is-g" data-topic="zig"><span class="ref-t"><a href="https://rtfeldman.com/rust-to-zig">How Our Rust-to-Zig Rewrite is Going</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Richard Feldman · 2026</p>
+      <p class="ref-n">. u32 indices, data written to disk as-is and reloaded with relocation fix-ups only.</p>
+      <p class="ref-c">Cited in <a href="05-indices-handles.html#src-3">Ch 5 [3]</a></p></li>
+    <li id="ref-mlugg-miscompilation-incorrect-vectorization-of-" data-topic="zig"><span class="ref-t"><a href="https://github.com/llvm/llvm-project/issues/186922">miscompilation: incorrect vectorization of loop copying i32 values (LLVM #186922)</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">mlugg · 2026</p>
+      <p class="ref-n">Why Zig 0.17.1 builds with LoopVectorization = false (src/zig_llvm.cpp), so Zig loops stay scalar unless written with @Vector.</p>
+      <p class="ref-c">Cited in <a href="01-the-data-is-the-problem.html#src-12">Ch 1 [12]</a>, <a href="04-aos-soa-hot-cold.html#src-4">Ch 4 [4]</a>, <a href="08-simd-and-parallelism.html#src-2">Ch 8 [2]</a>, <a href="10-boids-spatial-hash.html#src-6">Ch 10 [6]</a>, <a href="12-measure-and-know-when-not-to.html#src-22">Ch 12 [22]</a></p></li>
+    <li id="ref-zig-project-std-atomic-lib-std-atomic-zig-cache-" data-topic="zig"><span class="ref-t"><a href="https://github.com/ziglang/zig/blob/master/lib/std/atomic.zig">std.atomic (lib/std/atomic.zig, cache_line)</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Zig project · 2026</p>
+      <p class="ref-n">Lib/std/atomic.zig, cacheLineForCpu (128 on x86_64, aarch64, powerpc64). github.com/ziglang/zig/…/lib/std/atomic.zig.</p>
+      <p class="ref-c">Cited in <a href="08-simd-and-parallelism.html#src-14">Ch 8 [14]</a></p></li>
+    <li id="ref-zig-project-std-mem-donotoptimizeaway" data-topic="zig"><span class="ref-t"><a href="https://ziglang.org/documentation/master/std/#std.mem.doNotOptimizeAway">std.mem.doNotOptimizeAway</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Zig project · 2026</p>
+      <p class="ref-n">The Zig keep-alive used by the book&#x27;s harness (lib/std/mem.zig in 0.17.1).</p>
+      <p class="ref-c">Cited in <a href="12-measure-and-know-when-not-to.html#src-12">Ch 12 [12]</a></p></li>
+    <li id="ref-zig-project-std-multiarraylist-lib-std-multi-arr" data-topic="zig"><span class="ref-t"><a href="https://github.com/ziglang/zig/blob/master/lib/std/multi_array_list.zig">std.MultiArrayList (lib/std/multi_array_list.zig)</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Zig project · 2026</p>
+      <p class="ref-n">Doc comment on padding savings; one allocation; columns sorted by alignment, largest first.</p>
+      <p class="ref-c">Cited in <a href="04-aos-soa-hot-cold.html#src-3">Ch 4 [3]</a></p></li>
+    <li id="ref-zig-project-std-zig-ast-and-astgen-zig-0-17-1-st" data-topic="zig"><span class="ref-t"><a href="https://github.com/ziglang/zig/tree/master/lib/std/zig">std.zig.Ast and AstGen (Zig 0.17.1 standard library)</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Zig project · 2026</p>
+      <p class="ref-n">Node.Index as enum(u32), the full* accessors and AstGen&#x27;s string_table, read in the local 0.17.1 tree. Mitchell Hashimoto&#x27;s “Zig Parser” (2022) explains the same layout. Also: <a href="https://mitchellh.com/zig/parser">mitchellh.com/zig/parser</a>.</p>
+      <p class="ref-c">Cited in <a href="11-capstone-flat-ast-compiler.html#src-5">Ch 11 [5]</a></p></li>
+    <li id="ref-zig-project-zig-compiler-source-src-air-zig" data-topic="zig"><span class="ref-t"><a href="https://github.com/ziglang/zig/blob/master/src/Air.zig">Zig compiler source: src/Air.zig</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Zig project · 2026</p>
+      <p class="ref-n">Src/Air.zig (assert(@sizeOf(Data) == 8)).</p>
+      <p class="ref-c">Cited in <a href="03-size-alignment-padding.html#src-13">Ch 3 [13]</a></p></li>
+    <li id="ref-zig-project-zig-compiler-source-src-zcu-zig" data-topic="zig"><span class="ref-t"><a href="https://github.com/ziglang/zig/blob/master/src/Zcu.zig">Zig compiler source: src/Zcu.zig</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Zig project · 2026</p>
+      <p class="ref-n">Src/Zcu.zig: saveZirCache / loadZirCacheBody (header plus writeVecAll / readVecAll of the instruction, string and extra arrays), read locally.</p>
+      <p class="ref-c">Cited in <a href="11-capstone-flat-ast-compiler.html#src-6">Ch 11 [6]</a></p></li>
+    <li id="ref-zig-project-zig-language-reference-0-17" data-topic="zig"><span class="ref-t"><a href="https://ziglang.org/documentation/master/">Zig Language Reference (0.17)</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Zig project · n.d.</p>
+      <p class="ref-n">extern struct, packed struct, alignment and @prefetch sections.</p>
+      <p class="ref-c">Cited in <a href="03-size-alignment-padding.html#src-7">Ch 3 [7]</a></p></li>
+  </ol>
+  </section>
+  <section class="ref-group" data-topic="odin">
+  <h3 id="t-odin">Odin <span class="dim">(17)</span></h3>
+  <ol class="refs">
+    <li id="ref-ginger-bill-memory-allocation-strategies-part-1-" data-topic="odin"><span class="ref-t"><a href="https://www.gingerbill.org/article/2019/02/01/memory-allocation-strategies-001/">Memory Allocation Strategies, Part 1: Thinking About Memory and Allocation</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Ginger Bill · 2019</p>
+      <p class="ref-n">Size/lifetime table, generations of lifetimes.</p>
+      <p class="ref-c">Cited in <a href="06-allocation-strategies.html#src-3">Ch 6 [3]</a></p></li>
+    <li id="ref-ginger-bill-memory-allocation-strategies-part-2-" data-topic="odin"><span class="ref-t"><a href="https://www.gingerbill.org/article/2019/02/08/memory-allocation-strategies-002">Memory Allocation Strategies, Part 2: Linear/Arena Allocators</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Ginger Bill · 2019</p>
+      <p class="ref-n"></p>
+      <p class="ref-c">Cited in <a href="06-allocation-strategies.html#src-4">Ch 6 [4]</a></p></li>
+    <li id="ref-ginger-bill-memory-allocation-strategies-part-3-" data-topic="odin"><span class="ref-t"><a href="https://www.gingerbill.org/article/2019/02/15/memory-allocation-strategies-003">Memory Allocation Strategies, Part 3: Stack Allocators</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Ginger Bill · 2019</p>
+      <p class="ref-n"></p>
+      <p class="ref-c">Cited in <a href="06-allocation-strategies.html#src-5">Ch 6 [5]</a></p></li>
+    <li id="ref-ginger-bill-memory-allocation-strategies-part-4-" data-topic="odin"><span class="ref-t"><a href="https://www.gingerbill.org/article/2019/02/16/memory-allocation-strategies-004">Memory Allocation Strategies, Part 4: Pool Allocators</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Ginger Bill · 2019</p>
+      <p class="ref-n"></p>
+      <p class="ref-c">Cited in <a href="06-allocation-strategies.html#src-6">Ch 6 [6]</a></p></li>
+    <li id="ref-karl-zylinski-mistakes-and-cool-things-to-do-wit" data-topic="odin"><span class="ref-t"><a href="https://zylinski.se/posts/dynamic-arrays-and-arenas">Mistakes and cool things to do with arena allocators</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Karl Zylinski · 2025</p>
+      <p class="ref-n">The “graveyard” of old blocks; panic_allocator trick.</p>
+      <p class="ref-c">Cited in <a href="06-allocation-strategies.html#src-11">Ch 6 [11]</a></p></li>
+    <li id="ref-odin-project-moving-towards-a-new-core-os" data-topic="odin"><span class="ref-t"><a href="https://odin-lang.org/news/moving-towards-a-new-core-os">Moving Towards a New core:os</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Odin project · 2025</p>
+      <p class="ref-n"></p>
+      <p class="ref-c">Cited in <a href="06-allocation-strategies.html#src-16">Ch 6 [16]</a></p></li>
+    <li id="ref-odin-project-soa-runtime-base-runtime-core-built" data-topic="odin"><span class="ref-t"><a href="https://github.com/odin-lang/Odin/blob/master/base/runtime/core_builtin_soa.odin">#soa runtime (base/runtime/core_builtin_soa.odin)</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Odin project · 2026</p>
+      <p class="ref-n">Base/runtime/core_builtin_soa.odin (make_soa_aligned and the comment on 4 KiB strides).</p>
+      <p class="ref-c">Cited in <a href="04-aos-soa-hot-cold.html#src-7">Ch 4 [7]</a></p></li>
+    <li id="ref-odin-project-core-simd-core-simd-simd-odin" data-topic="odin"><span class="ref-t"><a href="https://github.com/odin-lang/Odin/blob/master/core/simd/simd.odin">core:simd (core/simd/simd.odin)</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Odin project · 2026</p>
+      <p class="ref-n">Core/simd/simd.odin (dev-2026-11 tree): lanes_gt, select, reduce_add_ordered, from_slice, to_array. github.com/odin-lang/Odin/…/core/simd/simd.odin.</p>
+      <p class="ref-c">Cited in <a href="08-simd-and-parallelism.html#src-5">Ch 8 [5]</a></p></li>
+    <li id="ref-odin-project-core-thread-core-thread-thread-odin" data-topic="odin"><span class="ref-t"><a href="https://github.com/odin-lang/Odin/blob/master/core/thread/thread.odin">core:thread (core/thread/thread.odin)</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Odin project · 2026</p>
+      <p class="ref-n">Core/thread/thread.odin (dev-2026-11 tree): create_and_start_with_poly_data, join_multiple, destroy. github.com/odin-lang/Odin/…/core/thread/thread.odin.</p>
+      <p class="ref-c">Cited in <a href="08-simd-and-parallelism.html#src-9">Ch 8 [9]</a></p></li>
+    <li id="ref-odin-project-odin-newsletter-2025-q4-and-2026-q1" data-topic="odin"><span class="ref-t"><a href="http://odin-lang.org/news/newsletter-2026-q1">Odin Newsletter, 2025 Q4 and 2026 Q1</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Odin project · 2026</p>
+      <p class="ref-n">(core:container/handle_map, core:container/xar). Source read: core/container/handle_map/*.odin at dev-2026-11 (9a69916).</p>
+      <p class="ref-c">Cited in <a href="05-indices-handles.html#src-9">Ch 5 [9]</a></p></li>
+    <li id="ref-odin-project-odin-newsletter-october-2026" data-topic="odin"><span class="ref-t"><a href="http://odin-lang.org/news/newsletter-2026-10">Odin Newsletter, October 2026</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Odin project · 2026</p>
+      <p class="ref-n">Array-backed bit_set. A different issue from the 2025 Q4/2026 Q1 newsletter.</p>
+      <p class="ref-c">Cited in <a href="07-branches-batches-existence.html#src-17">Ch 7 [17]</a></p></li>
+    <li id="ref-odin-project-overview" data-topic="odin"><span class="ref-t"><a href="https://odin-lang.org/docs/overview/">Overview</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Odin project · 2026</p>
+      <p class="ref-n">The language overview: struct directives, bit_set, bit_field, #soa, Maybe(T), the context system and allocators.</p>
+      <p class="ref-c">Cited in <a href="03-size-alignment-padding.html#src-8">Ch 3 [8]</a>, <a href="04-aos-soa-hot-cold.html#src-5">Ch 4 [5]</a>, <a href="06-allocation-strategies.html#src-15">Ch 6 [15]</a>, <a href="07-branches-batches-existence.html#src-17">Ch 7 [17]</a>, <a href="10-boids-spatial-hash.html#src-7">Ch 10 [7]</a></p></li>
+    <li id="ref-odin-project-base-intrinsics-prefetch-volatile-s" data-topic="odin"><span class="ref-t"><a href="https://pkg.odin-lang.org/base/intrinsics/">base:intrinsics (prefetch, volatile_store)</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Odin project · n.d.</p>
+      <p class="ref-n">Base:intrinsics (volatile_store, prefetch_read_data).</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-26">Ch 2 [26]</a>, <a href="12-measure-and-know-when-not-to.html#src-13">Ch 12 [13]</a></p></li>
+    <li id="ref-odin-project-core-time-time-linux-odin" data-topic="odin"><span class="ref-t"><a href="https://github.com/odin-lang/Odin/blob/master/core/time/time_linux.odin">core/time/time_linux.odin</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Odin project · n.d.</p>
+      <p class="ref-n">_tick_now calls linux.clock_gettime(.MONOTONIC_RAW), a raw syscall: the source of Odin&#x27;s higher timer floor.</p>
+      <p class="ref-c">Cited in <a href="12-measure-and-know-when-not-to.html#src-14">Ch 12 [14]</a></p></li>
+    <li id="ref-odin-forum-how-soa-works-under-the-hood" data-topic="odin"><span class="ref-t"><a href="https://forum.odin-lang.org/t/how-soa-works-under-the-hood/383">How SOA works under the hood?</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Odin forum · n.d.</p>
+      <p class="ref-n">(community answers, undated). thread.</p>
+      <p class="ref-c">Cited in <a href="04-aos-soa-hot-cold.html#src-6">Ch 4 [6]</a></p></li>
+    <li id="ref-odin-project-odin-compiler-source-src-parser-cpp" data-topic="odin"><span class="ref-t"><a href="https://github.com/odin-lang/Odin/blob/master/src/parser.cpp">Odin compiler source: src/parser.cpp</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Odin project · n.d.</p>
+      <p class="ref-n">Src/parser.cpp (struct directive parsing, #field_align deprecation).</p>
+      <p class="ref-c">Cited in <a href="03-size-alignment-padding.html#src-9">Ch 3 [9]</a></p></li>
+    <li id="ref-odin-project-src-llvm-backend-cpp-default-microa" data-topic="odin"><span class="ref-t"><a href="https://github.com/odin-lang/Odin/blob/master/src/llvm_backend.cpp">src/llvm_backend.cpp (default microarchitecture)</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Odin project · n.d.</p>
+      <p class="ref-n">The default target is x86-64-v2 (SSE4.2, no AVX); the source comment reads “x86-64-v2 is more than enough for everyone”.</p>
+      <p class="ref-c">Cited in <a href="08-simd-and-parallelism.html#src-6">Ch 8 [6]</a></p></li>
+  </ol>
+  </section>
+  <section class="ref-group" data-topic="rust">
+  <h3 id="t-rust">Rust <span class="dim">(24)</span></h3>
+  <ol class="refs">
+    <li id="ref-nick-fitzgerald-fitzgen-generational-arena" data-topic="rust"><span class="ref-t"><a href="https://crates.io/crates/generational-arena/0.2.0">generational-arena</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Nick Fitzgerald (fitzgen) · 2018</p>
+      <p class="ref-n">Generational-arena crate, 2018.</p>
+      <p class="ref-c">Cited in <a href="05-indices-handles.html#src-12">Ch 5 [12]</a></p></li>
+    <li id="ref-nicholas-nethercote-how-to-speed-up-the-rust-com" data-topic="rust"><span class="ref-t"><a href="https://blog.mozilla.org/nnethercote/2018/06/05/how-to-speed-up-the-rust-compiler-some-more-in-2018/">How to speed up the Rust compiler some more in 2018</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Nicholas Nethercote · 2018</p>
+      <p class="ref-n">Token 32 → 24 B, and the abandoned 16 B version.</p>
+      <p class="ref-c">Cited in <a href="03-size-alignment-padding.html#src-6">Ch 3 [6]</a>, <a href="12-measure-and-know-when-not-to.html#src-4">Ch 12 [4]</a></p></li>
+    <li id="ref-catherine-west-my-rustconf-2018-closing-keynote" data-topic="rust"><span class="ref-t"><a href="https://kyren.github.io/2018/09/14/rustconf-talk.html">My RustConf 2018 Closing Keynote</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Catherine West · 2018</p>
+      <p class="ref-n">. Generational indices, the allocator/array split, &quot;ECS is just SQL for games&quot;. Also: <a href="https://kyren.github.io/rustconf_2018_slides/index.html">kyren.github.io/rustconf_2018_slides/index.html</a>.</p>
+      <p class="ref-c">Cited in <a href="05-indices-handles.html#src-10">Ch 5 [10]</a>, <a href="09-ecs-and-tables.html#src-2">Ch 9 [2]</a></p></li>
+    <li id="ref-nicholas-nethercote-et-al-the-rust-performance-b" data-topic="rust"><span class="ref-t"><a href="https://nnethercote.github.io/perf-book/type-sizes.html">The Rust Performance Book: “Type Sizes” and “Benchmarking”</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Nicholas Nethercote et al. · 2020</p>
+      <p class="ref-n">-Zprint-type-sizes, size assertions, and why benchmark harnesses need black_box. Also: <a href="https://nnethercote.github.io/perf-book/benchmarking.html">nnethercote.github.io/perf-book/benchmarking.html</a>.</p>
+      <p class="ref-c">Cited in <a href="03-size-alignment-padding.html#src-4">Ch 3 [4]</a>, <a href="12-measure-and-know-when-not-to.html#src-16">Ch 12 [16]</a></p></li>
+    <li id="ref-nicholas-nethercote-how-to-speed-up-the-rust-com-2" data-topic="rust"><span class="ref-t"><a href="https://nnethercote.github.io/2022/10/27/how-to-speed-up-the-rust-compiler-in-october-2022.html">How to speed up the Rust compiler in October 2022</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Nicholas Nethercote · 2022</p>
+      <p class="ref-n">Attribute 152 → 32 B, −5.13% max-rss, crediting Zig.</p>
+      <p class="ref-c">Cited in <a href="03-size-alignment-padding.html#src-11">Ch 3 [11]</a></p></li>
+    <li id="ref-rust-release-team-announcing-rust-1-87-0-and-ten" data-topic="rust"><span class="ref-t"><a href="https://blog.rust-lang.org/2025/05/15/Rust-1.87.0/">Announcing Rust 1.87.0 and ten years of Rust!</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Rust Release Team · 2025</p>
+      <p class="ref-n">(safe std::arch intrinsics), and RELEASES.md 1.86 (“Allow safe functions to be marked with the #[target_feature] attribute”).</p>
+      <p class="ref-c">Cited in <a href="08-simd-and-parallelism.html#src-4">Ch 8 [4]</a></p></li>
+    <li id="ref-rust-project-fully-de-stabilize-the-bench-attrib" data-topic="rust"><span class="ref-t"><a href="https://github.com/rust-lang/rust/pull/134273">Fully de-stabilize the #[bench] attribute (PR #134273)</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Rust project · 2025 · RELEASES.md, Version 1.88.0</p>
+      <p class="ref-n">(PR #134273).</p>
+      <p class="ref-c">Cited in <a href="12-measure-and-know-when-not-to.html#src-15">Ch 12 [15]</a></p></li>
+    <li id="ref-rust-release-team-announcing-rust-1-100-0" data-topic="rust"><span class="ref-t"><a href="https://blog.rust-lang.org/2026/11/12/Rust-1.100.0">Announcing Rust 1.100.0</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Rust Release Team · 2026</p>
+      <p class="ref-n">Release announcement for the Rust version the book uses; the Allocator trait is still unstable. Also: <a href="https://doc.rust-lang.org/std/alloc/trait.Allocator.html">doc.rust-lang.org/std/alloc/trait.Allocator.html</a>.</p>
+      <p class="ref-c">Cited in <a href="06-allocation-strategies.html#src-14">Ch 6 [14]</a></p></li>
+    <li id="ref-rust-project-f32-algebraic-add-and-friends-stabl" data-topic="rust"><span class="ref-t"><a href="https://doc.rust-lang.org/stable/core/primitive.f32.html#method.algebraic_add">f32::algebraic_add and friends (stable since 1.98.0)</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Rust project · 2026</p>
+      <p class="ref-n">RELEASES.md 1.98.0 and library/core/src/num/f32.rs: reassociable float ops that let LLVM vectorise reductions.</p>
+      <p class="ref-c">Cited in <a href="08-simd-and-parallelism.html#src-3">Ch 8 [3]</a></p></li>
+    <li id="ref-nicholas-nethercote-how-to-speed-up-the-rust-com-3" data-topic="rust"><span class="ref-t"><a href="https://nnethercote.github.io/2026/07/31/how-to-speed-up-the-rust-compiler-in-july-2026.html">How to speed up the Rust compiler in July 2026</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Nicholas Nethercote · 2026</p>
+      <p class="ref-n">Ast::Expr 72 → 64 B, and the 136 → 104 B element with −40% wall time.</p>
+      <p class="ref-c">Cited in <a href="03-size-alignment-padding.html#src-5">Ch 3 [5]</a></p></li>
+    <li id="ref-serhii-potapov-greyblake-branchless-rust-making-" data-topic="rust"><span class="ref-t"><a href="https://www.greyblake.com/blog/branchless-rust">Branchless Rust: Making a Filter 4x Faster by Removing an if</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Serhii Potapov (greyblake) · n.d.</p>
+      <p class="ref-n"></p>
+      <p class="ref-c">Cited in <a href="07-branches-batches-existence.html#src-20">Ch 7 [20]</a></p></li>
+    <li id="ref-crossbeam-rs-contributors-cachepadded-cache-padd" data-topic="rust"><span class="ref-t"><a href="https://github.com/crossbeam-rs/crossbeam/blob/master/crossbeam-utils/src/cache_padded.rs">CachePadded (cache_padded.rs)</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">crossbeam-rs contributors · n.d.</p>
+      <p class="ref-n">Padding to 128 B on x86-64 because of the adjacent-line prefetcher; comments list the per-architecture choices.</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-12">Ch 2 [12]</a>, <a href="08-simd-and-parallelism.html#src-13">Ch 8 [13]</a></p></li>
+    <li id="ref-rust-project-core-arch-x86-64-mm-prefetch" data-topic="rust"><span class="ref-t"><a href="https://doc.rust-lang.org/core/arch/x86_64/fn._mm_prefetch.html">core::arch::x86_64::_mm_prefetch</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Rust project · n.d.</p>
+      <p class="ref-n"></p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-27">Ch 2 [27]</a></p></li>
+    <li id="ref-rust-project-rustc-newtype-index-macro" data-topic="rust"><span class="ref-t"><a href="https://github.com/rust-lang/rust/blob/master/compiler/rustc_index_macros/src/newtype.rs">rustc newtype_index! macro</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Rust project · n.d.</p>
+      <p class="ref-n">Typed u32 indices with a maximum of 0xFFFF_FF00, leaving a niche at the top; read in the local source tree.</p>
+      <p class="ref-c">Cited in <a href="05-indices-handles.html#src-4">Ch 5 [4]</a></p></li>
+    <li id="ref-rust-project-rustc-source-compiler-rustc-ast-src" data-topic="rust"><span class="ref-t"><a href="https://github.com/rust-lang/rust/blob/master/compiler/rustc_ast/src/ast.rs">rustc source: compiler/rustc_ast/src/ast.rs</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Rust project · n.d.</p>
+      <p class="ref-n">Size assertions on AST types (static_assert_size!).</p>
+      <p class="ref-c">Cited in <a href="03-size-alignment-padding.html#src-14">Ch 3 [14]</a></p></li>
+    <li id="ref-tim-harding-soa-rs" data-topic="rust"><span class="ref-t"><a href="https://github.com/tim-harding/soa-rs">soa-rs</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Tim Harding · n.d.</p>
+      <p class="ref-n">#[derive(Soars)]: SoA with one allocation for all fields.</p>
+      <p class="ref-c">Cited in <a href="04-aos-soa-hot-cold.html#src-13">Ch 4 [13]</a></p></li>
+    <li id="ref-guillaume-fraux-soa-derive" data-topic="rust"><span class="ref-t"><a href="https://docs.rs/soa_derive/latest/soa_derive">soa_derive</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Guillaume Fraux · n.d.</p>
+      <p class="ref-n">Soa_derive crate.</p>
+      <p class="ref-c">Cited in <a href="04-aos-soa-hot-cold.html#src-12">Ch 4 [12]</a></p></li>
+    <li id="ref-rust-project-std-hint-black-box" data-topic="rust"><span class="ref-t"><a href="https://doc.rust-lang.org/std/hint/fn.black_box.html">std::hint::black_box</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Rust project · n.d.</p>
+      <p class="ref-n">The Rust keep-alive, and its “best effort” caveat.</p>
+      <p class="ref-c">Cited in <a href="02-the-machine.html#src-24">Ch 2 [24]</a>, <a href="12-measure-and-know-when-not-to.html#src-11">Ch 12 [11]</a></p></li>
+    <li id="ref-rust-project-std-hint-select-unpredictable" data-topic="rust"><span class="ref-t"><a href="https://doc.rust-lang.org/std/hint/fn.select_unpredictable.html">std::hint::select_unpredictable</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Rust project · n.d.</p>
+      <p class="ref-n">Stable since 1.88: asks for a branchless select (cmov); doc quotes checked against library/core/src/hint.rs in the 1.100 tree.</p>
+      <p class="ref-c">Cited in <a href="07-branches-batches-existence.html#src-15">Ch 7 [15]</a>, <a href="10-boids-spatial-hash.html#src-7">Ch 10 [7]</a></p></li>
+    <li id="ref-rust-project-std-option-representation" data-topic="rust"><span class="ref-t"><a href="https://doc.rust-lang.org/std/option/index.html#representation">std::option, “Representation”</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Rust project · n.d.</p>
+      <p class="ref-n">Which Option&lt;T&gt; types are guaranteed to use the null-pointer niche.</p>
+      <p class="ref-c">Cited in <a href="03-size-alignment-padding.html#src-12">Ch 3 [12]</a></p></li>
+    <li id="ref-rust-project-std-thread-scope" data-topic="rust"><span class="ref-t"><a href="https://doc.rust-lang.org/std/thread/fn.scope.html">std::thread::scope</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Rust project · n.d.</p>
+      <p class="ref-n">Std::thread::scope (stable since 1.63).</p>
+      <p class="ref-c">Cited in <a href="08-simd-and-parallelism.html#src-8">Ch 8 [8]</a></p></li>
+    <li id="ref-rust-tracking-issue-116909-tracking-issue-for-f1" data-topic="rust"><span class="ref-t"><a href="https://github.com/rust-lang/rust/issues/116909">Tracking Issue for f16 and f128 float types</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Rust tracking issue #116909 · n.d.</p>
+      <p class="ref-n"></p>
+      <p class="ref-c">Cited in <a href="03-size-alignment-padding.html#src-15">Ch 3 [15]</a></p></li>
+    <li id="ref-rust-lang-tracking-issue-for-rfc-2948-portable-s" data-topic="rust"><span class="ref-t"><a href="https://github.com/rust-lang/rust/issues/86656">Tracking Issue for RFC 2948: Portable SIMD</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">rust-lang · n.d.</p>
+      <p class="ref-n">#86656, open, and Caleb Zulawski, “Critical issues before stabilization”, portable-simd #364. Also: <a href="https://github.com/rust-lang/portable-simd/issues/364">github.com/rust-lang/portable-simd/issues/364</a>.</p>
+      <p class="ref-c">Cited in <a href="08-simd-and-parallelism.html#src-7">Ch 8 [7]</a></p></li>
+    <li id="ref-rust-project-type-layout-the-rust-reference" data-topic="rust"><span class="ref-t"><a href="https://doc.rust-lang.org/reference/type-layout.html">Type layout (The Rust Reference)</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Rust project · n.d.</p>
+      <p class="ref-n"></p>
+      <p class="ref-c">Cited in <a href="03-size-alignment-padding.html#src-3">Ch 3 [3]</a></p></li>
+  </ol>
+  </section>
+  <section class="ref-group" data-topic="ecs">
+  <h3 id="t-ecs">ECS and games <span class="dim">(22)</span></h3>
+  <ol class="refs">
+    <li id="ref-g-m-morton-a-computer-oriented-geodetic-data-bas" data-topic="ecs"><span class="ref-t">A Computer Oriented Geodetic Data Base and a New Technique in File Sequencing</span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">G. M. Morton · 1966 · IBM Ltd., Ottawa</p>
+      <p class="ref-n">The origin of the Z-order (Morton) key. Cited from standard references; not re-read.</p>
+      <p class="ref-c">Cited in <a href="10-boids-spatial-hash.html#src-5">Ch 10 [5]</a></p></li>
+    <li id="ref-craig-w-reynolds-flocks-herds-and-schools-a-dist" data-topic="ecs"><span class="ref-t"><a href="https://www.red3d.com/cwr/boids/">Flocks, Herds, and Schools: A Distributed Behavioral Model</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Craig W. Reynolds · 1987 · SIGGRAPH ’87, Computer Graphics 21(4)</p>
+      <p class="ref-n">SIGGRAPH &#x27;87, Computer Graphics 21(4), 1987. Reynolds&#x27; boids page (with the paper).</p>
+      <p class="ref-c">Cited in <a href="10-boids-spatial-hash.html#src-1">Ch 10 [1]</a></p></li>
+    <li id="ref-preston-briggs-and-linda-torczon-an-efficient-re" data-topic="ecs"><span class="ref-t">An efficient representation for sparse sets</span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Preston Briggs and Linda Torczon · 1993 · ACM LOPLAS 2(1–4), pp. 59–69</p>
+      <p class="ref-n">The original sparse-set paper. Not opened for this book: the citation comes from the reference list of Cox et al. 2025.</p>
+      <p class="ref-c">Cited in <a href="09-ecs-and-tables.html#src-3">Ch 9 [3]</a></p></li>
+    <li id="ref-university-of-freiburg-graphics-group-uniform-gr" data-topic="ecs"><span class="ref-t"><a href="https://cg.informatik.uni-freiburg.de/publications/2011_TR263_uniformGrids.pdf">Uniform grids for collision handling</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">University of Freiburg graphics group · 2011</p>
+      <p class="ref-n">Uniform-grid construction and query for particle collision handling.</p>
+      <p class="ref-c">Cited in <a href="10-boids-spatial-hash.html#src-4">Ch 10 [4]</a></p></li>
+    <li id="ref-niklas-frykholm-building-a-data-oriented-entity-" data-topic="ecs"><span class="ref-t"><a href="https://bitsquid.blogspot.com/2014/08/building-data-oriented-entity-system.html">Building a Data-Oriented Entity System (part 1)</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Niklas Frykholm · 2014</p>
+      <p class="ref-n">Bitsquid blog, 2014. 22-bit index + 8-bit generation, Array&lt;unsigned char&gt; _generation, MINIMUM_FREE_INDICES = 1024.</p>
+      <p class="ref-c">Cited in <a href="05-indices-handles.html#src-6">Ch 5 [6]</a></p></li>
+    <li id="ref-timothy-ford-overwatch-gameplay-architecture-and" data-topic="ecs"><span class="ref-t"><a href="https://www.mo4tech.com/overwatchs-architecture-is-designed-to-synchronize-with-the-web.html">Overwatch Gameplay Architecture and Netcode</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Timothy Ford · 2017</p>
+      <p class="ref-n">GDC 2017 (GDC Vault). English translation used here: mo4tech; Chinese translation 46 systems, 103 components, 40% singletons. Also: <a href="https://www.lfzxb.top/ow-gdc-gameplay-architecture-and-netcode/index.html">www.lfzxb.top/ow-gdc-gameplay-architecture-and-netcode/index</a>.</p>
+      <p class="ref-c">Cited in <a href="09-ecs-and-tables.html#src-14">Ch 9 [14]</a></p></li>
+    <li id="ref-lucas-meijer-on-dots-entity-component-system" data-topic="ecs"><span class="ref-t"><a href="https://blog.unity.com/technology/on-dots-entity-component-system">On DOTS: Entity Component System</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Lucas Meijer · 2019</p>
+      <p class="ref-n">Unity, 2019. Archetypes, 16k chunks, moving entities between chunks, loading raw bytes.</p>
+      <p class="ref-c">Cited in <a href="09-ecs-and-tables.html#src-9">Ch 9 [9]</a></p></li>
+    <li id="ref-michele-caini-skypjack-ecs-back-and-forth-part-9" data-topic="ecs"><span class="ref-t"><a href="https://skypjack.github.io/2020-08-02-ecs-baf-part-9">ECS back and forth, Part 9: Sparse sets and EnTT</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Michele Caini (skypjack) · 2020</p>
+      <p class="ref-n">. Sparse/dense arrays, membership test, swap-and-pop remove, pagination, tombstone lookup.</p>
+      <p class="ref-c">Cited in <a href="09-ecs-and-tables.html#src-4">Ch 9 [4]</a></p></li>
+    <li id="ref-carter-anderson-bevy-0-5" data-topic="ecs"><span class="ref-t"><a href="https://bevy.org/news/bevy-0-5/">Bevy 0.5</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Carter Anderson · 2021</p>
+      <p class="ref-n">(hybrid archetype/sparse-set storage); Bevy contributors, &quot;Consider Removing Sparse Set Component Storage&quot;, discussion #19164, 2025,. Both summarised in this book&#x27;s research notes. Also: <a href="https://github.com/bevyengine/bevy/discussions/19164">github.com/bevyengine/bevy/discussions/19164</a>.</p>
+      <p class="ref-c">Cited in <a href="09-ecs-and-tables.html#src-12">Ch 9 [12]</a></p></li>
+    <li id="ref-michele-caini-skypjack-ecs-back-and-forth-part-1" data-topic="ecs"><span class="ref-t"><a href="https://skypjack.github.io/2021-08-29-ecs-baf-part-12">ECS back and forth, Part 12</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Michele Caini (skypjack) · 2021</p>
+      <p class="ref-n">And &quot;Part 13&quot;, 2021.  Pointer stability and tombstones; cited in Chapter 5. Also: <a href="https://skypjack.github.io/2021-10-09-ecs-baf-part-13">skypjack.github.io/2021-10-09-ecs-baf-part-13</a>.</p>
+      <p class="ref-c">Cited in <a href="05-indices-handles.html#src-11">Ch 5 [11]</a>, <a href="09-ecs-and-tables.html#src-22">Ch 9 [22]</a></p></li>
+    <li id="ref-sander-mertens-building-an-ecs-1-where-are-my-en" data-topic="ecs"><span class="ref-t"><a href="https://ajmmertens.medium.com/building-an-ecs-1-where-are-my-entities-and-components-63d07c7da742">Building an ECS #1: Where are my Entities and Components</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Sander Mertens · 2022</p>
+      <p class="ref-n">Medium. Entity index, archetype, component index.</p>
+      <p class="ref-c">Cited in <a href="09-ecs-and-tables.html#src-5">Ch 9 [5]</a></p></li>
+    <li id="ref-carmen-cincotti-how-to-create-spatial-hash-maps-" data-topic="ecs"><span class="ref-t"><a href="https://carmencincotti.com/2022-10-31/spatial-hash-maps-part-one">How to Create Spatial Hash Maps for XPBD Self Collisions</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Carmen Cincotti · 2022</p>
+      <p class="ref-n">. Count array, prefix sum, p array, step by step.</p>
+      <p class="ref-c">Cited in <a href="10-boids-spatial-hash.html#src-3">Ch 10 [3]</a></p></li>
+    <li id="ref-andreas-beimler-ecs-benchmark" data-topic="ecs"><span class="ref-t"><a href="https://github.com/abeimler/ecs_benchmark">ecs_benchmark</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Andreas Beimler · 2023</p>
+      <p class="ref-n">Ecs_benchmark, 2023 onwards. C++ ECS library comparisons (EnTT, flecs and others); summarised from this book&#x27;s research notes.</p>
+      <p class="ref-c">Cited in <a href="09-ecs-and-tables.html#src-23">Ch 9 [23]</a></p></li>
+    <li id="ref-sander-mertens-building-an-ecs-3-storage-in-pict" data-topic="ecs"><span class="ref-t"><a href="https://ajmmertens.medium.com/building-an-ecs-storage-in-pictures-642b8bfd6e04">Building an ECS #3: Storage in Pictures</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Sander Mertens · 2024</p>
+      <p class="ref-n">Medium. Diagrams of the archetype graph and paged entity index. Found by search and summarised in this book&#x27;s research notes; not re-read for this chapter.</p>
+      <p class="ref-c">Cited in <a href="09-ecs-and-tables.html#src-7">Ch 9 [7]</a></p></li>
+    <li id="ref-l-cox-run-time-performance-comparison-of-sparse-" data-topic="ecs"><span class="ref-t"><a href="https://eprints.staffs.ac.uk/9315/1/cgvc20251224.pdf">Run-time Performance Comparison of Sparse-set and Archetype Entity-Component Systems</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">L. Cox, B. Williams, J. Vickers, D. Ward, C. Headleand · 2025 · EG UK Computer Graphics &amp; Visual Computing 2025, doi:10.2312/cgvc.20251224</p>
+      <p class="ref-n">EG UK Computer Graphics &amp; Visual Computing 2025, doi:10.2312/cgvc.20251224. Figures and quotes  against the.</p>
+      <p class="ref-c">Cited in <a href="09-ecs-and-tables.html#src-13">Ch 9 [13]</a></p></li>
+    <li id="ref-dennis-gustafsson-thoughts-on-ecs" data-topic="ecs"><span class="ref-t"><a href="https://blog.voxagon.se/2025/03/28/thoughts-on-ecs.html">Thoughts on ECS</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Dennis Gustafsson · 2025</p>
+      <p class="ref-n">Voxagon, 28 March 2025.</p>
+      <p class="ref-c">Cited in <a href="09-ecs-and-tables.html#src-16">Ch 9 [16]</a></p></li>
+    <li id="ref-p-messow-zelll-a-fast-framework-free-and-flexibl" data-topic="ecs"><span class="ref-t"><a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC12910374">zelll: a fast, framework-free, and flexible implementation of the cell lists method</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">P. Messow, C. Höner zu Siederdissen et al. · 2026</p>
+      <p class="ref-n">. Cell lists via counting sort, in Rust.</p>
+      <p class="ref-c">Cited in <a href="10-boids-spatial-hash.html#src-8">Ch 10 [8]</a></p></li>
+    <li id="ref-matthias-m-ller-blazing-fast-neighbor-search-wit" data-topic="ecs"><span class="ref-t"><a href="https://matthias-research.github.io/pages/tenMinutePhysics/11-hashing.pdf">Blazing Fast Neighbor Search with Spatial Hashing</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Matthias Müller · n.d.</p>
+      <p class="ref-n">Ten Minute Physics #11. Dense hash grid with a count/start array and a particle array, cell size from the radius, collisions are harmless, 100,000 points = 10¹⁰ naive tests.</p>
+      <p class="ref-c">Cited in <a href="10-boids-spatial-hash.html#src-2">Ch 10 [2]</a></p></li>
+    <li id="ref-sander-mertens-building-an-ecs-2-archetypes-and-" data-topic="ecs"><span class="ref-t"><a href="https://ajmmertens.medium.com/building-an-ecs-2-archetypes-and-vectorization-fe21690805f9">Building an ECS #2: Archetypes and Vectorization</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Sander Mertens · n.d.</p>
+      <p class="ref-n">Medium. Columns per archetype, type erasure, adding components, the archetype graph.</p>
+      <p class="ref-c">Cited in <a href="09-ecs-and-tables.html#src-6">Ch 9 [6]</a></p></li>
+    <li id="ref-unofficial-bevy-cheat-book-component-storage-tab" data-topic="ecs"><span class="ref-t"><a href="https://bevy-cheatbook.github.io/patterns/component-storage.html">Component Storage (Table/Sparse-Set)</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Unofficial Bevy Cheat Book · n.d.</p>
+      <p class="ref-n">Page. Table vs sparse-set trade-offs, #[component(storage = &quot;SparseSet&quot;)], table fragmentation.</p>
+      <p class="ref-c">Cited in <a href="09-ecs-and-tables.html#src-11">Ch 9 [11]</a></p></li>
+    <li id="ref-sander-mertens-entity-component-system-faq" data-topic="ecs"><span class="ref-t"><a href="https://github.com/SanderMertens/ecs-faq">Entity Component System FAQ</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Sander Mertens · n.d.</p>
+      <p class="ref-n">Definitions of archetype and sparse-set ECS; the smallest-set query quote is taken from this book&#x27;s research notes.</p>
+      <p class="ref-c">Cited in <a href="09-ecs-and-tables.html#src-8">Ch 9 [8]</a></p></li>
+    <li id="ref-sander-mertens-how-are-components-entity-stored-" data-topic="ecs"><span class="ref-t"><a href="https://github.com/SanderMertens/flecs/issues/3">How are components/entity stored in memory?</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Sander Mertens · n.d.</p>
+      <p class="ref-n">Flecs issue #3. Archetype SoA vs EnTT sparse sets and groups; taken from this book&#x27;s research notes.</p>
+      <p class="ref-c">Cited in <a href="09-ecs-and-tables.html#src-10">Ch 9 [10]</a></p></li>
+  </ol>
+  </section>
+  <section class="ref-group" data-topic="compilers">
+  <h3 id="t-compilers">Compilers <span class="dim">(5)</span></h3>
+  <ol class="refs">
+    <li id="ref-vaughan-r-pratt-top-down-operator-precedence" data-topic="compilers"><span class="ref-t"><a href="https://doi.org/10.1145/512927.512931">Top Down Operator Precedence</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Vaughan R. Pratt · 1973</p>
+      <p class="ref-n">POPL 1973.</p>
+      <p class="ref-c">Cited in <a href="11-capstone-flat-ast-compiler.html#src-8">Ch 11 [8]</a></p></li>
+    <li id="ref-bob-nystrom-pratt-parsers-expression-parsing-mad" data-topic="compilers"><span class="ref-t"><a href="https://journal.stuffwithstuff.com/2011/03/19/pratt-parsers-expression-parsing-made-easy/">Pratt Parsers: Expression Parsing Made Easy</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Bob Nystrom · 2011</p>
+      <p class="ref-n"></p>
+      <p class="ref-c">Cited in <a href="11-capstone-flat-ast-compiler.html#src-9">Ch 11 [9]</a></p></li>
+    <li id="ref-chandler-carruth-modernizing-compiler-design-for" data-topic="compilers"><span class="ref-t"><a href="https://chandlerc.blog/slides/2023-cppnow-compiler/index.html">Modernizing Compiler Design for Carbon&#x27;s Toolchain</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Chandler Carruth · 2023</p>
+      <p class="ref-n">C++Now 2023. Goals of 10 M lines/s lex+parse, 1 M semantics, 0.1 M lowering; postorder parse tree; token index as source location.</p>
+      <p class="ref-c">Cited in <a href="07-branches-batches-existence.html#src-19">Ch 7 [19]</a>, <a href="11-capstone-flat-ast-compiler.html#src-3">Ch 11 [3]</a></p></li>
+    <li id="ref-richard-smith-semir-carbon-s-high-level-semantic" data-topic="compilers"><span class="ref-t"><a href="https://llvm.org/devmtg/2024-04/slides/LightningTalks/Smith-Carbons-high-level-semanticIR.pdf">SemIR: Carbon&#x27;s high-level semantic IR</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Richard Smith · 2024</p>
+      <p class="ref-n">EuroLLVM 2024 lightning talk. slides (PDF). About one 12-byte parse node per token; 16-byte instructions.</p>
+      <p class="ref-c">Cited in <a href="11-capstone-flat-ast-compiler.html#src-4">Ch 11 [4]</a></p></li>
+    <li id="ref-chandler-carruth-benchmarking-optimizing-the-car" data-topic="compilers"><span class="ref-t"><a href="https://chandlerc.blog/slides/2026-ndc-toronto-carbon-benchmarking/index.html">Benchmarking &amp; Optimizing the Carbon Compiler</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Chandler Carruth · 2026</p>
+      <p class="ref-n">NDC Toronto 2026. Tail-call dispatch and SIMD scanning in the lexer; no achieved lines/s figure in the  read.</p>
+      <p class="ref-c">Cited in <a href="11-capstone-flat-ast-compiler.html#src-7">Ch 11 [7]</a></p></li>
+  </ol>
+  </section>
+  <section class="ref-group" data-topic="databases">
+  <h3 id="t-databases">Databases and systems <span class="dim">(16)</span></h3>
+  <ol class="refs">
+    <li id="ref-peter-boncz-monetdb-x100-hyper-pipelining-query-" data-topic="databases"><span class="ref-t"><a href="https://15721.courses.cs.cmu.edu/spring2024/papers/04-execution1/boncz-cidr2005.pdf">MonetDB/X100: Hyper-Pipelining Query Execution</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Peter Boncz, Marcin Zukowski, Niels Nes · 2005 · CIDR 2005</p>
+      <p class="ref-n">Vectorised query execution: operators work on cache-sized vectors of values rather than one tuple at a time.</p>
+      <p class="ref-c">Cited in <a href="07-branches-batches-existence.html#src-6">Ch 7 [6]</a>, <a href="09-ecs-and-tables.html#src-18">Ch 9 [18]</a></p></li>
+    <li id="ref-daniel-abadi-column-stores-vs-row-stores-how-dif" data-topic="databases"><span class="ref-t"><a href="https://www.cs.umd.edu/~abadi/papers/abadi-sigmod08.pdf">Column-Stores vs. Row-Stores: How Different Are They Really?</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Daniel Abadi, Samuel Madden, Nabil Hachem · 2008 · SIGMOD 2008</p>
+      <p class="ref-n">SIGMOD 2008. Summarised from this book&#x27;s research notes; not re-read for this chapter.</p>
+      <p class="ref-c">Cited in <a href="09-ecs-and-tables.html#src-20">Ch 9 [20]</a></p></li>
+    <li id="ref-a-h-hunter-beyond-malloc-efficiency-to-fleet-eff" data-topic="databases"><span class="ref-t"><a href="https://www.usenix.org/conference/osdi21/presentation/hunter">Beyond malloc efficiency to fleet efficiency: a hugepage-aware memory allocator</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">A. H. Hunter, C. Kennelly, P. Turner, D. Gove, T. Moseley, P. Ranganathan · 2021 · OSDI 2021; with C. Kennelly&#x27;s Google Cloud blog post</p>
+      <p class="ref-n">OSDI 2021; and C. Kennelly, “Trading off malloc costs and fleet efficiency”, Google Cloud, 2021. Also: <a href="https://cloud.google.com/blog/topics/systems/trading-off-malloc-costs-and-fleet-efficiency/">cloud.google.com/blog/topics/systems/trading-off-malloc-cost</a>.</p>
+      <p class="ref-c">Cited in <a href="06-allocation-strategies.html#src-2">Ch 6 [2]</a></p></li>
+    <li id="ref-phil-eaton-a-database-without-dynamic-memory-all" data-topic="databases"><span class="ref-t"><a href="https://tigerbeetle.com/blog/a-database-without-dynamic-memory">A Database Without Dynamic Memory Allocation</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Phil Eaton · 2022</p>
+      <p class="ref-n">TigerBeetle blog, 2022.</p>
+      <p class="ref-c">Cited in <a href="06-allocation-strategies.html#src-17">Ch 6 [17]</a></p></li>
+    <li id="ref-coco-li-patch-v7-net-next-0-5-analyze-and-reorga" data-topic="databases"><span class="ref-t"><a href="https://lwn.net/Articles/951321">[PATCH v7 net-next 0/5] Analyze and Reorganize core Networking Structs to optimize cacheline consumption</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Coco Li · 2023</p>
+      <p class="ref-n">Nov 2023.</p>
+      <p class="ref-c">Cited in <a href="12-measure-and-know-when-not-to.html#src-7">Ch 12 [7]</a></p></li>
+    <li id="ref-z-zhou-characterizing-a-memory-allocator-at-ware" data-topic="databases"><span class="ref-t"><a href="https://storage.googleapis.com/gweb-research2023-media/pubtools/7777.pdf">Characterizing a Memory Allocator at Warehouse Scale</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Z. Zhou, T. Moseley, C. Delimitrou, P. Ranganathan et al. · 2024 · ASPLOS 2024</p>
+      <p class="ref-n">malloc is 4.3% of Google&#x27;s fleet CPU cycles; 3.6–10.1% for the top five users.</p>
+      <p class="ref-c">Cited in <a href="06-allocation-strategies.html#src-1">Ch 6 [1]</a></p></li>
+    <li id="ref-mitchell-hashimoto-ghostty-devlog-006" data-topic="databases"><span class="ref-t"><a href="https://mitchellh.com/writing/ghostty-devlog-006">Ghostty Devlog 006</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Mitchell Hashimoto · 2024</p>
+      <p class="ref-n">. 30% in codepoint width; 3-stage table; 2.8× / ~5× / 2.5×.</p>
+      <p class="ref-c">Cited in <a href="07-branches-batches-existence.html#src-18">Ch 7 [18]</a></p></li>
+    <li id="ref-gladkikhartem-and-tigerbeetle-maintainers-lsm-pe" data-topic="databases"><span class="ref-t"><a href="https://github.com/tigerbeetle/tigerbeetle/issues/2469">LSM performance poor when batches are small (issue #2469)</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">gladkikhartem and TigerBeetle maintainers · 2024</p>
+      <p class="ref-n">Loading 1M transfers in 1,000 batches of 1,000 wrote 27 GB per replica; 1,000 one-transfer batches then wrote 17 GB more. The fix, PR #2592, gave 4.25× throughput at 256 transfers per batch while writing 1/12 of the bytes. Thread re-read (closed 14 Jan 2025).</p>
+      <p class="ref-c">Cited in <a href="07-branches-batches-existence.html#src-4">Ch 7 [4]</a>, <a href="12-measure-and-know-when-not-to.html#src-8">Ch 12 [8]</a></p></li>
+    <li id="ref-mitchell-hashimoto-finding-and-fixing-ghostty-s-" data-topic="databases"><span class="ref-t"><a href="https://mitchellh.com/writing/ghostty-memory-leak-fix">Finding and Fixing Ghostty&#x27;s Largest Memory Leak</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Mitchell Hashimoto · 2026</p>
+      <p class="ref-n">-01-10 (fix: ghostty PR #10251).</p>
+      <p class="ref-c">Cited in <a href="06-allocation-strategies.html#src-8">Ch 6 [8]</a></p></li>
+    <li id="ref-mitchell-hashimoto-terminal-scrollback-page-comp" data-topic="databases"><span class="ref-t"><a href="https://github.com/ghostty-org/ghostty/pull/13264">terminal: scrollback page compression</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Mitchell Hashimoto · 2026</p>
+      <p class="ref-n">Ghostty PR #13264, 2026. PR.</p>
+      <p class="ref-c">Cited in <a href="06-allocation-strategies.html#src-18">Ch 6 [18]</a></p></li>
+    <li id="ref-ghostty-contributors-pr-13220-terminal-various-v" data-topic="databases"><span class="ref-t"><a href="https://github.com/ghostty-org/ghostty/pull/13220">terminal: various VT processing optimizations (~1.5x to ~6x throughput increase)</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Ghostty contributors (PR #13220) · 2026</p>
+      <p class="ref-n">. ~85% in Terminal.print; 128 → 725 MB/s (5.7×).</p>
+      <p class="ref-c">Cited in <a href="07-branches-batches-existence.html#src-5">Ch 7 [5]</a></p></li>
+    <li id="ref-duckdb-vector-size-hpp-standard-vector-size-2048" data-topic="databases"><span class="ref-t"><a href="https://github.com/duckdb/duckdb/blob/main/src/include/duckdb/common/vector_size.hpp">vector_size.hpp (STANDARD_VECTOR_SIZE = 2048)</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">DuckDB · 2026</p>
+      <p class="ref-n">DuckDB processes columns in vectors of 2048 values; read on the main branch in November 2026.</p>
+      <p class="ref-c">Cited in <a href="07-branches-batches-existence.html#src-7">Ch 7 [7]</a>, <a href="09-ecs-and-tables.html#src-19">Ch 9 [19]</a></p></li>
+    <li id="ref-apache-arrow-arrow-columnar-format" data-topic="databases"><span class="ref-t"><a href="https://arrow.apache.org/docs/format/Columnar.html">Arrow Columnar Format</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Apache Arrow · n.d.</p>
+      <p class="ref-n">Specification. Further reading only; not re- for this chapter.</p>
+      <p class="ref-c">Cited in <a href="09-ecs-and-tables.html#src-21">Ch 9 [21]</a></p></li>
+    <li id="ref-tigerbeetle-performance" data-topic="databases"><span class="ref-t"><a href="https://docs.tigerbeetle.com/concepts/performance">Performance</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">TigerBeetle · n.d.</p>
+      <p class="ref-n">(documentation). 8,190 transfers per query; replication paid once per batch; “one tight CPU loop”.</p>
+      <p class="ref-c">Cited in <a href="07-branches-batches-existence.html#src-3">Ch 7 [3]</a></p></li>
+    <li id="ref-tigerbeetle-tigerbeetle-architecture-and-static-" data-topic="databases"><span class="ref-t"><a href="https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/ARCHITECTURE.md">TigerBeetle architecture and static_allocator.zig</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">TigerBeetle · n.d.</p>
+      <p class="ref-n">All memory allocated at startup; static_allocator.zig enforces it. Also: <a href="https://github.com/tigerbeetle/tigerbeetle/blob/main/src/static_allocator.zig">github.com/tigerbeetle/tigerbeetle/blob/main/src/static_allo</a>.</p>
+      <p class="ref-c">Cited in <a href="06-allocation-strategies.html#src-10">Ch 6 [10]</a></p></li>
+    <li id="ref-tigerbeetle-tigerstyle" data-topic="databases"><span class="ref-t"><a href="https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md">TigerStyle</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">TigerBeetle · n.d.</p>
+      <p class="ref-n">(TIGER_STYLE.md), living document.</p>
+      <p class="ref-c">Cited in <a href="06-allocation-strategies.html#src-9">Ch 6 [9]</a></p></li>
+  </ol>
+  </section>
+  <section class="ref-group" data-topic="measurement">
+  <h3 id="t-measurement">Measurement and critiques <span class="dim">(10)</span></h3>
+  <ol class="refs">
+    <li id="ref-donald-e-knuth-structured-programming-with-go-to" data-topic="measurement"><span class="ref-t"><a href="https://dl.acm.org/doi/10.1145/356635.356640">Structured Programming with go to Statements</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Donald E. Knuth · 1974 · Computing Surveys 6(4), p. 268</p>
+      <p class="ref-n">The full “premature optimization” passage, including the critical 3%.</p>
+      <p class="ref-c">Cited in <a href="12-measure-and-know-when-not-to.html#src-1">Ch 12 [1]</a></p></li>
+    <li id="ref-aras-pranckevi-ius-toymeshpathtracer" data-topic="measurement"><span class="ref-t"><a href="https://github.com/aras-p/ToyMeshPathTracer">ToyMeshPathTracer</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Aras Pranckevičius · 2019</p>
+      <p class="ref-n">README with per-branch Krays/s: a BVH gives about 370×, naive SIMD a further 1.28×. Algorithms first.</p>
+      <p class="ref-c">Cited in <a href="08-simd-and-parallelism.html#src-16">Ch 8 [16]</a>, <a href="12-measure-and-know-when-not-to.html#src-5">Ch 12 [5]</a></p></li>
+    <li id="ref-lucian-radu-teodorescu-revisiting-data-oriented-" data-topic="measurement"><span class="ref-t"><a href="https://www.accu.org/journals/overload/30/167/teodorescu">Revisiting Data-Oriented Design</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Lucian Radu Teodorescu · 2022</p>
+      <p class="ref-n">ACCU Overload 30(167), February 2022 (source of the Brooks quotation).</p>
+      <p class="ref-c">Cited in <a href="01-the-data-is-the-problem.html#src-11">Ch 1 [11]</a>, <a href="12-measure-and-know-when-not-to.html#src-3">Ch 12 [3]</a></p></li>
+    <li id="ref-casey-muratori-response-to-a-reporter-regarding-" data-topic="measurement"><span class="ref-t"><a href="https://www.computerenhance.com/p/response-to-a-reporter-regarding">Response to a Reporter Regarding ‘Clean Code, Horrible Performance’</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Casey Muratori · 2023</p>
+      <p class="ref-n">Computer, Enhance!, 7 April 2023.</p>
+      <p class="ref-c">Cited in <a href="01-the-data-is-the-problem.html#src-7">Ch 1 [7]</a>, <a href="07-branches-batches-existence.html#src-10">Ch 7 [10]</a>, <a href="12-measure-and-know-when-not-to.html#src-10">Ch 12 [10]</a></p></li>
+    <li id="ref-casey-muratori-clean-code-horrible-performance" data-topic="measurement"><span class="ref-t"><a href="https://www.computerenhance.com/p/clean-code-horrible-performance">‘Clean’ Code, Horrible Performance</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Casey Muratori · 2023</p>
+      <p class="ref-n">Computer, Enhance!, 28 February 2023.</p>
+      <p class="ref-c">Cited in <a href="01-the-data-is-the-problem.html#src-6">Ch 1 [6]</a>, <a href="12-measure-and-know-when-not-to.html#src-9">Ch 12 [9]</a></p></li>
+    <li id="ref-arnaldo-carvalho-de-melo-assisted-reorganization" data-topic="measurement"><span class="ref-t"><a href="https://speakerdeck.com/ennael/assisted-reorganization-of-data-structures">Assisted reorganization of data structures</a></span><span class="vlabel v-notes" title="Taken from the research notes below; not re-opened when the chapter was written.">via research notes</span>
+      <p class="ref-m">Arnaldo Carvalho de Melo · 2024 · Kernel Recipes 2024, Paris (slides)</p>
+      <p class="ref-n">pahole --reorganize and Eric Dumazet&#x27;s tcp_sock hole hunting.</p>
+      <p class="ref-c">Cited in <a href="03-size-alignment-padding.html#src-20">Ch 3 [20]</a>, <a href="12-measure-and-know-when-not-to.html#src-21">Ch 12 [21]</a></p></li>
+    <li id="ref-valgrind-cachegrind-a-high-precision-tracing-pro" data-topic="measurement"><span class="ref-t"><a href="https://valgrind.org/docs/manual/cg-manual.html">Cachegrind: a high-precision tracing profiler</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Valgrind · n.d.</p>
+      <p class="ref-n">(user manual).</p>
+      <p class="ref-c">Cited in <a href="12-measure-and-know-when-not-to.html#src-19">Ch 12 [19]</a></p></li>
+    <li id="ref-arnaldo-carvalho-de-melo-et-al-pahole-dwarves" data-topic="measurement"><span class="ref-t"><a href="https://git.kernel.org/pub/scm/devel/pahole/pahole.git/">pahole / dwarves</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Arnaldo Carvalho de Melo et al. · n.d.</p>
+      <p class="ref-n">Shows struct holes and padding from DWARF; not installed on the book&#x27;s machine.</p>
+      <p class="ref-c">Cited in <a href="03-size-alignment-padding.html#src-18">Ch 3 [18]</a>, <a href="12-measure-and-know-when-not-to.html#src-20">Ch 12 [20]</a></p></li>
+    <li id="ref-linux-man-pages-project-perf-stat-1" data-topic="measurement"><span class="ref-t"><a href="https://man7.org/linux/man-pages/man1/perf-stat.1.html">perf-stat(1)</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Linux man-pages project · n.d.</p>
+      <p class="ref-n">Perf-stat(1).</p>
+      <p class="ref-c">Cited in <a href="12-measure-and-know-when-not-to.html#src-18">Ch 12 [18]</a></p></li>
+    <li id="ref-linux-man-pages-project-proc-5-proc-stat-the-ste" data-topic="measurement"><span class="ref-t"><a href="https://man7.org/linux/man-pages/man5/proc.5.html">proc(5): /proc/stat (the steal field)</a></span><span class="vlabel v-seen" title="Seen as a search result or excerpt only; not opened in full.">seen</span>
+      <p class="ref-m">Linux man-pages project · n.d.</p>
+      <p class="ref-n">Proc(5), /proc/stat (the steal field).</p>
+      <p class="ref-c">Cited in <a href="12-measure-and-know-when-not-to.html#src-17">Ch 12 [17]</a></p></li>
+  </ol>
+  </section>
+  <section class="ref-group" data-topic="tools">
+  <h3 id="t-tools">Tools and libraries used to build the book <span class="dim">(6)</span></h3>
+  <ol class="refs">
+    <li id="ref-three-js-authors-ricardo-cabello-et-al-three-js" data-topic="tools"><span class="ref-t"><a href="https://threejs.org/">Three.js</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">three.js authors (Ricardo Cabello et al.) · 2010 · three 0.187.0 (r187), MIT licence</p>
+      <p class="ref-n">The decorative 3D hero on the cover page, loaded from jsDelivr through an import map; the rest of the book works offline. Also: <a href="https://github.com/mrdoob/three.js/blob/dev/LICENSE">github.com/mrdoob/three.js/blob/dev/LICENSE</a>.</p>
+      <p class="ref-c">Vendored in the book; see <a href="assets/vendor/README.md"><code>assets/vendor/README.md</code></a>.</p></li>
+    <li id="ref-lea-verou-and-contributors-prism" data-topic="tools"><span class="ref-t"><a href="https://prismjs.com/">Prism</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Lea Verou and contributors · 2012 · prismjs 1.30.0, MIT licence</p>
+      <p class="ref-n">Syntax highlighting, with the official rust, zig, odin and bash components; vendored in assets/vendor/prism. Also: <a href="https://github.com/PrismJS/prism/blob/master/LICENSE">github.com/PrismJS/prism/blob/master/LICENSE</a>.</p>
+      <p class="ref-c">Vendored in the book; see <a href="assets/vendor/README.md"><code>assets/vendor/README.md</code></a>.</p></li>
+    <li id="ref-rasmus-andersson-inter" data-topic="tools"><span class="ref-t"><a href="https://rsms.me/inter/">Inter</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Rasmus Andersson · 2017 · @fontsource-variable/inter 5.3.0, SIL Open Font License 1.1</p>
+      <p class="ref-n">Body text font (variable weight, latin and latin-ext); vendored in assets/vendor/fonts. Also: <a href="https://fontsource.org/fonts/inter">fontsource.org/fonts/inter</a>.</p>
+      <p class="ref-c">Vendored in the book; see <a href="assets/vendor/README.md"><code>assets/vendor/README.md</code></a>.</p></li>
+    <li id="ref-fontsource-contributors-fontsource" data-topic="tools"><span class="ref-t"><a href="https://fontsource.org/">Fontsource</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Fontsource contributors · 2020 · npm packages, MIT licence (fonts keep their own licences)</p>
+      <p class="ref-n">Packaging of Inter and JetBrains Mono; assets/vendor/fonts/fonts.css is a hand-written subset of its CSS.</p>
+      <p class="ref-c">Vendored in the book; see <a href="assets/vendor/README.md"><code>assets/vendor/README.md</code></a>.</p></li>
+    <li id="ref-jetbrains-jetbrains-mono" data-topic="tools"><span class="ref-t"><a href="https://www.jetbrains.com/lp/mono/">JetBrains Mono</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">JetBrains · 2020 · @fontsource/jetbrains-mono 5.3.0, SIL Open Font License 1.1</p>
+      <p class="ref-n">Code font (400, 400 italic, 700); vendored in assets/vendor/fonts. Also: <a href="https://fontsource.org/fonts/jetbrains-mono">fontsource.org/fonts/jetbrains-mono</a>.</p>
+      <p class="ref-c">Vendored in the book; see <a href="assets/vendor/README.md"><code>assets/vendor/README.md</code></a>.</p></li>
+    <li id="ref-vercel-labs-the-chromium-project-agent-browser-a" data-topic="tools"><span class="ref-t"><a href="https://github.com/vercel-labs/agent-browser">agent-browser and Chromium</a></span><span class="vlabel v-read" title="Opened and checked against the claim the book makes.">read</span>
+      <p class="ref-m">Vercel Labs; the Chromium project · 2026 · headless Chromium</p>
+      <p class="ref-n">Used by tools/smoke.sh and for the screenshots that checked every page at 1280 px and 375 px. Not shipped with the book.</p>
+      <p class="ref-c">Used to test the book; not shipped with it.</p></li>
+  </ol>
+  </section>
+
+  <h2 id="versions">Language versions and source trees</h2>
+  <p>Every program in <code>code/</code> was compiled and run with exactly these toolchains, and API claims were checked in these
+  source trees. Code written for older releases, especially Zig before 0.16, will often not compile with them.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Language</th><th>Toolchain</th><th>Source tree read</th><th>Release notes</th></tr></thead>
+    <tbody>
+      <tr><td>Rust</td><td><code>rustc 1.100.0 (0ef1bc386 2026-11-09)</code>, cargo 1.100.0, edition 2024</td>
+        <td><code>~/langsrc/rust</code> (stability attributes and <code>RELEASES.md</code> checked at commit <code>8eb778d04</code>, 2026-11-12)</td>
+        <td><a href="https://blog.rust-lang.org/2026/11/12/Rust-1.100.0/">Announcing Rust 1.100.0</a></td></tr>
+      <tr><td>Zig</td><td><code>zig 0.17.1</code></td>
+        <td><code>~/langsrc/zig</code>, tag 0.17.1 (commit <code>be248cc1</code>, 2026-11-02)</td>
+        <td><a href="https://ziglang.org/download/0.17.0/release-notes.html">0.17.0 release notes</a></td></tr>
+      <tr><td>Odin</td><td><code>dev-2026-11a</code> (commit <code>9a69916</code>; <code>odin version</code> prints <code>dev-2026-11-nightly:9a69916</code>)</td>
+        <td><code>~/langsrc/odin</code> at <code>9a69916</code> (2026-11-03)</td>
+        <td><a href="https://github.com/odin-lang/Odin/releases">Odin releases</a></td></tr>
+    </tbody>
+  </table></div>
+  <p>Two toolchain facts matter for SIMD results throughout the book: Odin's default target is x86-64-v2 (SSE4.2, no AVX), and
+  Zig 0.17.1 disables LLVM's loop vectorizer. The machine itself is described in
+  <a href="code/results/machine.txt"><code>code/results/machine.txt</code></a>.</p>
+
+  <h2 id="notes">Research notes</h2>
+  <p>The raw notes from the seven research passes, as Markdown. They are working notes, not polished prose: they record what was
+  opened, what was only seen in search results, and what was compiled, and some of their numbers were later re-measured or corrected
+  in the chapters. Absolute local paths have been replaced with <code>~/langsrc/…</code> or repository-relative paths.
+  <a href="research/README.md">research/README.md</a> describes each file.</p>
+  <ul>
+    <li><a href="research/01-foundations-hardware.md"><code>research/01-foundations-hardware.md</code></a>: <b>Foundations and hardware.</b> Llopis, Acton, Fabian and Kelley; latency numbers, caches, prefetchers, TLBs and branch prediction.</li>
+    <li><a href="research/02-zig.md"><code>research/02-zig.md</code></a>: <b>Zig.</b> Zig 0.17.1 idioms checked against the compiler: MultiArrayList, allocators, std.Io, the vectorizer, and the Zig compiler's own data layout.</li>
+    <li><a href="research/03-odin.md"><code>research/03-odin.md</code></a>: <b>Odin.</b> Odin dev-2026-11 idioms checked against the compiler: #soa, the context and allocators, bit_set, core:simd.</li>
+    <li><a href="research/04-rust.md"><code>research/04-rust.md</code></a>: <b>Rust.</b> Rust 1.100 / edition 2024: layout and repr, generational arenas, SoA crates, autovectorization and std::simd status.</li>
+    <li><a href="research/05-techniques.md"><code>research/05-techniques.md</code></a>: <b>Techniques catalogue.</b> Language-neutral catalogue: what each technique is, why the hardware rewards it, when not to use it, and its best sources.</li>
+    <li><a href="research/06-case-studies.md"><code>research/06-case-studies.md</code></a>: <b>Case studies.</b> Real-world rewrites with measured results (Zig, Carbon, TigerBeetle, Ghostty, Linux networking, ECS engines) and their context.</li>
+    <li><a href="research/07-visualization.md"><code>research/07-visualization.md</code></a>: <b>Visualisation and front end.</b> How the book's pages are built: libraries and versions, shared assets, component APIs and the visual style.</li>
+  </ul>
+
+<script>
+(window.BookQ ||= []).push(() => {
+  const box = document.getElementById("ref-q"), seg = document.getElementById("ref-topics"), out = document.getElementById("ref-count");
+  const items = [...document.querySelectorAll("ol.refs > li")];
+  let topic = "all";
+  const run = () => {
+    const words = box.value.toLowerCase().split(/\s+/).filter(Boolean);
+    let shown = 0;
+    for (const li of items) {
+      const hay = li.dataset.hay || (li.dataset.hay = li.textContent.toLowerCase());
+      const ok = (topic === "all" || li.dataset.topic === topic) && words.every((w) => hay.includes(w));
+      li.hidden = !ok; shown += ok;
+    }
+    for (const sec of document.querySelectorAll("section.ref-group"))
+      sec.hidden = !sec.querySelector("ol.refs > li:not([hidden])");
+    out.textContent = shown === items.length ? `${items.length} sources` : `${shown} of ${items.length} sources`;
+  };
+  box.addEventListener("input", run);
+  seg.addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    topic = b.dataset.topic;
+    for (const x of seg.querySelectorAll("button")) x.setAttribute("aria-pressed", String(x === b));
+    run();
+  });
+  run();
+});
+</script>
+</main>
+</body>
+</html>

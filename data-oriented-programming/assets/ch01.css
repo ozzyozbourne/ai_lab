@@ -1,0 +1,31 @@
+/* ch01.css — Chapter 1 only. Every selector is scoped under a .ch01-* class. */
+
+/* Figure 1.x: the three memory layouts (inline SVG) */
+.ch01-svg { display: block; width: 100%; height: auto; max-width: 620px; margin: 0 auto; }
+.ch01-svg text { font-family: var(--font-mono); }
+.ch01-svg .t { font-size: 11.5px; fill: var(--heading); font-weight: 600; }
+.ch01-svg .s { font-size: 10px; fill: var(--text); }
+.ch01-svg .d { font-size: 10px; fill: var(--text-dim); }
+.ch01-svg .sq { fill: var(--c-pos); }
+.ch01-svg .re { fill: var(--c-vel); }
+.ch01-svg .tr { fill: var(--c-hp); }
+.ch01-svg .ci { fill: var(--c-flag); }
+.ch01-svg .vt, .ch01-svg .tag { fill: #5b6676; }
+.ch01-svg .sq, .ch01-svg .re, .ch01-svg .tr, .ch01-svg .ci, .ch01-svg .vt, .ch01-svg .tag { stroke: var(--bg-elev); stroke-width: 1; }
+.ch01-svg .gap { fill: var(--c-pad); stroke: var(--border); stroke-width: 0.5; stroke-dasharray: 2 2; }
+.ch01-svg .box { fill: var(--bg-elev2); stroke: var(--border); }
+.ch01-svg .ar, .ch01-svg .ar2 { fill: none; stroke: var(--c-line); stroke-width: 1.25; }
+.ch01-svg .ar2 { stroke-dasharray: 4 3; }
+
+
+@media print {
+  .ch01-svg .t, .ch01-svg .s { fill: #000; }
+  .ch01-svg .d { fill: #444; }
+}
+.ch01-svg .k { fill: #06121f; }
+
+/* Figure 1.4 on phones: keep the 10px labels readable by scrolling instead of shrinking */
+@media (max-width: 560px) {
+  .ch01-scroll { overflow-x: auto; }
+  .ch01-scroll .ch01-svg { min-width: 440px; }
+}

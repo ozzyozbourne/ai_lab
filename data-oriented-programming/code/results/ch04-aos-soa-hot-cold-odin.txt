@@ -1,0 +1,73 @@
+ch04 (odin): size_of Particle 64 B, Hot 24 B, Cold 40 B, Block 512 B; quick=false
+#soa[]Particle, len 4096: px, vx, seed columns start at +0, +49152, +212992 B (mod 4096: 64, 64, 64); size_of(#soa[]Particle) = 136 B
+
+n = 16384 particles (1024 KiB of AoS)
+  layout        B/p    update ns/p     every ns/p   random ns/read   checksums (update / every / random)
+BENCH {"id":"ch04-update","label":"AoS","lang":"odin","n":16384,"ns":20877,"samples":[20758,20776,20794,20877,20886,20929,22282]}
+BENCH {"id":"ch04-every","label":"AoS","lang":"odin","n":16384,"ns":39398,"samples":[39320,39325,39367,39398,39406,39413,39435]}
+BENCH {"id":"ch04-random","label":"AoS","lang":"odin","n":16384,"ns":65763,"samples":[65406,65425,65454,65763,66870,66998,98475]}
+BENCH {"id":"ch04-update","label":"hot/cold","lang":"odin","n":16384,"ns":14980,"samples":[14933,14954,14959,14980,14983,15000,15090]}
+BENCH {"id":"ch04-every","label":"hot/cold","lang":"odin","n":16384,"ns":34195,"samples":[32977,33068,33133,34195,35390,58525,112427]}
+BENCH {"id":"ch04-random","label":"hot/cold","lang":"odin","n":16384,"ns":72101,"samples":[71898,72021,72061,72101,72163,72366,78947]}
+BENCH {"id":"ch04-update","label":"SoA","lang":"odin","n":16384,"ns":11792,"samples":[11678,11765,11785,11792,11805,11806,11863]}
+BENCH {"id":"ch04-every","label":"SoA","lang":"odin","n":16384,"ns":57761,"samples":[57618,57658,57698,57761,57789,58378,79776]}
+BENCH {"id":"ch04-random","label":"SoA","lang":"odin","n":16384,"ns":189586,"samples":[183803,183839,184138,189586,192731,194832,208860]}
+BENCH {"id":"ch04-update","label":"AoSoA","lang":"odin","n":16384,"ns":8379,"samples":[8301,8330,8358,8379,8523,8897,13839]}
+BENCH {"id":"ch04-every","label":"AoSoA","lang":"odin","n":16384,"ns":32778,"samples":[32700,32719,32722,32778,32808,32881,33053]}
+BENCH {"id":"ch04-random","label":"AoSoA","lang":"odin","n":16384,"ns":117163,"samples":[117099,117122,117152,117163,117467,117603,122913]}
+  AoS            64          1.274          2.405            4.014   000031b2beb7c022 / 00011001adfff139 / 00010fc6bef7ef21
+  hot/cold       24          0.914          2.087            4.401   000031b2beb7c022 / 00011001adfff139 / 00010fc6bef7ef21
+  SoA            24          0.720          3.525           11.571   000031b2beb7c022 / 00011001adfff139 / 00010fc6bef7ef21
+  AoSoA          24          0.511          2.001            7.151   000031b2beb7c022 / 00011001adfff139 / 00010fc6bef7ef21
+  4 KiB-aligned columns    12.993 ns/elem  checksum 0001ffa648e7cc0d  column starts mod 4096: 768, 768, 768, 768 ...
+BENCH {"id":"ch04-alias","label":"4 KiB-aligned columns","lang":"odin","n":16384,"ns":212870,"samples":[207600,207717,212827,212870,216923,222453,227568]}
+  staggered columns        11.321 ns/elem  checksum 0001ffa648e7cc0d  column starts mod 4096: 768, 832, 896, 960 ...
+BENCH {"id":"ch04-alias","label":"staggered columns","lang":"odin","n":16384,"ns":185477,"samples":[180070,181196,181285,185477,203687,208656,216956]}
+
+n = 1048576 particles (65536 KiB of AoS)
+  layout        B/p    update ns/p     every ns/p   random ns/read   checksums (update / every / random)
+BENCH {"id":"ch04-update","label":"AoS","lang":"odin","n":1048576,"ns":6161665,"samples":[5857254,5880662,5888512,6161665,6349072,6433487,6887280]}
+BENCH {"id":"ch04-every","label":"AoS","lang":"odin","n":1048576,"ns":7088593,"samples":[6880222,6910201,7050938,7088593,7090378,7128930,7215223]}
+BENCH {"id":"ch04-random","label":"AoS","lang":"odin","n":1048576,"ns":26623219,"samples":[24695652,25974073,26511498,26623219,27268970,28809850,32345343]}
+BENCH {"id":"ch04-update","label":"hot/cold","lang":"odin","n":1048576,"ns":2204152,"samples":[1893785,1964094,2085839,2204152,2672798,2943117,3073493]}
+BENCH {"id":"ch04-every","label":"hot/cold","lang":"odin","n":1048576,"ns":5506638,"samples":[5381831,5412030,5499647,5506638,5621746,5702861,5953085]}
+BENCH {"id":"ch04-random","label":"hot/cold","lang":"odin","n":1048576,"ns":33810540,"samples":[27965117,31933029,33215781,33810540,34717828,35741669,36539853]}
+BENCH {"id":"ch04-update","label":"SoA","lang":"odin","n":1048576,"ns":986494,"samples":[933576,969291,985224,986494,1041874,1334540,1621522]}
+BENCH {"id":"ch04-every","label":"SoA","lang":"odin","n":1048576,"ns":6172621,"samples":[5069983,5111844,5242785,6172621,6210494,6264843,6528163]}
+BENCH {"id":"ch04-random","label":"SoA","lang":"odin","n":1048576,"ns":155004843,"samples":[146827548,148813708,151265639,155004843,157373036,158492679,164695113]}
+BENCH {"id":"ch04-update","label":"AoSoA","lang":"odin","n":1048576,"ns":4895574,"samples":[3544783,3760368,4647099,4895574,4920794,4959449,5086012]}
+BENCH {"id":"ch04-every","label":"AoSoA","lang":"odin","n":1048576,"ns":9439133,"samples":[8557240,8611505,9278544,9439133,9508117,9975702,10054661]}
+BENCH {"id":"ch04-random","label":"AoSoA","lang":"odin","n":1048576,"ns":59953458,"samples":[51245526,55047373,56495766,59953458,61863749,64075279,73198761]}
+  AoS            64          5.876          6.760           25.390   000c6cc22f8797e7 / 0043e8f3b6c41537 / 0043ed91446f6814
+  hot/cold       24          2.102          5.252           32.244   000c6cc22f8797e7 / 0043e8f3b6c41537 / 0043ed91446f6814
+  SoA            24          0.941          5.887          147.824   000c6cc22f8797e7 / 0043e8f3b6c41537 / 0043ed91446f6814
+  AoSoA          24          4.669          9.002           57.176   000c6cc22f8797e7 / 0043e8f3b6c41537 / 0043ed91446f6814
+  4 KiB-aligned columns    14.350 ns/elem  checksum 007ffb5af1f41f8f  column starts mod 4096: 64, 64, 64, 64 ...
+BENCH {"id":"ch04-alias","label":"4 KiB-aligned columns","lang":"odin","n":1048576,"ns":15047456,"samples":[15001339,15006525,15037821,15047456,15051054,15083539,15235091]}
+  staggered columns        11.744 ns/elem  checksum 007ffb5af1f41f8f  column starts mod 4096: 64, 128, 192, 256 ...
+BENCH {"id":"ch04-alias","label":"staggered columns","lang":"odin","n":1048576,"ns":12314535,"samples":[12249042,12297776,12307294,12314535,12328838,12349462,12387549]}
+
+n = 4194304 particles (262144 KiB of AoS)
+  layout        B/p    update ns/p     every ns/p   random ns/read   checksums (update / every / random)
+BENCH {"id":"ch04-update","label":"AoS","lang":"odin","n":4194304,"ns":26208063,"samples":[25740462,25863479,25938070,26208063,26263174,26392929,26823066]}
+BENCH {"id":"ch04-every","label":"AoS","lang":"odin","n":4194304,"ns":30244357,"samples":[30002743,30118188,30233967,30244357,30261161,30339419,30508354]}
+BENCH {"id":"ch04-random","label":"AoS","lang":"odin","n":4194304,"ns":153514426,"samples":[148651871,149150249,151878988,153514426,156126539,179901406,194589588]}
+BENCH {"id":"ch04-update","label":"hot/cold","lang":"odin","n":4194304,"ns":12725060,"samples":[11902865,11967638,12046616,12725060,12852113,13336553,13407294]}
+BENCH {"id":"ch04-every","label":"hot/cold","lang":"odin","n":4194304,"ns":26824351,"samples":[26560963,26587999,26803336,26824351,27020427,27386437,29274929]}
+BENCH {"id":"ch04-random","label":"hot/cold","lang":"odin","n":4194304,"ns":182553318,"samples":[176743447,177998072,180518915,182553318,186125785,187329757,195009496]}
+BENCH {"id":"ch04-update","label":"SoA","lang":"odin","n":4194304,"ns":6575666,"samples":[6516249,6538364,6575546,6575666,6646665,6672557,6739829]}
+BENCH {"id":"ch04-every","label":"SoA","lang":"odin","n":4194304,"ns":20752669,"samples":[20667005,20719617,20725718,20752669,20790765,20849478,21352329]}
+BENCH {"id":"ch04-random","label":"SoA","lang":"odin","n":4194304,"ns":979327598,"samples":[945897582,970166342,973936299,979327598,985054235,996542654,1025320178]}
+BENCH {"id":"ch04-update","label":"AoSoA","lang":"odin","n":4194304,"ns":15222346,"samples":[14766467,14851392,15055122,15222346,15244969,15321047,15583498]}
+BENCH {"id":"ch04-every","label":"AoSoA","lang":"odin","n":4194304,"ns":31678565,"samples":[30790518,31214951,31583439,31678565,31842010,32467290,32627550]}
+BENCH {"id":"ch04-random","label":"AoSoA","lang":"odin","n":4194304,"ns":296856002,"samples":[277445720,283541113,289569878,296856002,306990185,307097129,318904143]}
+  AoS            64          6.248          7.211           36.601   0031b310af0983d1 / 010fac8984f6b176 / 010fa9d4d5123c44
+  hot/cold       24          3.034          6.395           43.524   0031b310af0983d1 / 010fac8984f6b176 / 010fa9d4d5123c44
+  SoA            24          1.568          4.948          233.490   0031b310af0983d1 / 010fac8984f6b176 / 010fa9d4d5123c44
+  AoSoA          24          3.629          7.553           70.776   0031b310af0983d1 / 010fac8984f6b176 / 010fa9d4d5123c44
+  4 KiB-aligned columns    14.261 ns/elem  checksum 020001108cd6cd63  column starts mod 4096: 64, 64, 64, 64 ...
+BENCH {"id":"ch04-alias","label":"4 KiB-aligned columns","lang":"odin","n":4194304,"ns":59813462,"samples":[59759338,59782808,59787513,59813462,59889779,59980343,60333452]}
+  staggered columns        11.805 ns/elem  checksum 020001108cd6cd63  column starts mod 4096: 64, 128, 192, 256 ...
+BENCH {"id":"ch04-alias","label":"staggered columns","lang":"odin","n":4194304,"ns":49514179,"samples":[49360599,49400414,49414735,49514179,49631202,49666329,50598109]}
+
+checksums match across layouts: yes

@@ -1,0 +1,9 @@
+/* Chapter 9 figure styles. Every selector is scoped with .ch09-. */
+.ch09-result { display: block; margin-top: .6rem; padding: .45rem .7rem; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg-elev2); font: .82rem/1.45 var(--font-mono); color: var(--text); min-height: 2.6em; overflow-wrap: anywhere; }
+.ch09-result[data-kind="miss"] { border-color: var(--c-miss); }
+.ch09-result[data-kind="hit"] { border-color: var(--c-hit); }
+.ch09-result[data-kind="move"], .ch09-result[data-kind="rem"] { border-color: var(--accent); }
+.ch09-sel { font: .8rem var(--font-mono); color: var(--text-dim); align-self: center; padding: 0 .3rem; }
+.ch09-diagram { display: block; width: 100%; height: auto; margin: 1.5rem 0; }
+.ch09-diagram text { font-family: var(--font-mono); }

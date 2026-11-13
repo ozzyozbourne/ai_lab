@@ -1,0 +1,997 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5. Indices, Handles and Generations · Data-Oriented Design</title>
+<link rel="stylesheet" href="assets/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="assets/book.css">
+<link rel="stylesheet" href="assets/ch05.css">
+<script>window.Prism = { manual: true };</script>
+<script defer src="assets/vendor/prism/prism.min.js"></script>
+<script defer src="assets/vendor/prism/prism-rust.min.js"></script>
+<script defer src="assets/vendor/prism/prism-zig.min.js"></script>
+<script defer src="assets/vendor/prism/prism-odin.min.js"></script>
+<script defer src="assets/vendor/prism/prism-bash.min.js"></script>
+<script defer src="assets/book.js"></script>
+<script defer src="assets/data/bench-ch05.js"></script>
+<script defer src="assets/viz/bench-bars.js"></script>
+<script defer src="assets/viz/ch05-pointer-vs-index.js"></script>
+<script defer src="assets/viz/ch05-gen-handles.js"></script>
+</head>
+<body>
+<main>
+  <p class="kicker">Chapter 5</p>
+  <h1>Indices, Handles and Generations</h1>
+  <p class="lede">Chapter 4 laid fields out for the loops that read them. This chapter does the same for the links between
+  records. On a 64-bit machine every pointer costs eight bytes, and it points at one address that the allocator
+  chose. Replace it with a 32-bit index into an array you own and the link shrinks by half. The data can then move,
+  grow, go to disk and come back, and the borrow checker stops objecting. There is a cost: an index can outlive the
+  thing it refers to. This chapter fixes that with generations, builds the same generational pool (a slot map) in Rust, Zig and
+  Odin, and measures a million-node tree stored both ways.</p>
+
+  <h2 id="trust">A pointer is eight bytes of trust</h2>
+  <p>Picture a binary search tree in the textbook style. Each node holds a key and two child pointers, and each node is
+  its own heap allocation. In Rust that is <code>Option&lt;Box&lt;Node&gt;&gt;</code>, in Zig <code>?*Node</code>, in Odin
+  <code>^Node</code>. The code is short and the picture in your head is clean. The machine sees something else. A
+  4-byte key is followed by 4 bytes of padding, because the pointers after it need 8-byte alignment. Then come 16 bytes
+  of addresses. Of a 24-byte node, a sixth is payload and a sixth is padding. Two thirds are links, and each link is
+  wide enough to address 16 exabytes when the tree holds a million nodes.</p>
+  <p>Andrew Kelley put this in one line in his Handmade Seattle talk on how the Zig compiler was rebuilt: a struct with
+  four pointers is 32 bytes on a 64-bit target, the same struct with four <code>u32</code> indices is 16 bytes, and its
+  alignment drops from 8 to 4<a class="cite" href="#src-1">[1]</a>. Smaller alignment matters as much as the size. A
+  4-aligned struct can follow a <code>u32</code> or a <code>u8</code> with less padding, and sits more tightly in arrays and in
+  other structs. Noel Llopis made the same argument in 2008, in a column on how to manage relationships between game
+  objects<a class="cite" href="#src-2">[2]</a>.</p>
+
+  <details class="predict"><summary>A tree node is <code>{key: u32, left, right}</code>. With 8-byte pointers it is 24 bytes. With
+  <code>u32</code> indices, how big is it, and how much memory does a million-node tree save once you count what
+  <code>malloc</code> adds per allocation?</summary>
+  <p>12 bytes, align 4, no padding. On this orb glibc hands out a 32-byte chunk for every 24-byte request (an 8-byte
+  header plus the payload, rounded to 16), so a million pointer nodes occupy about 32 MB. The index tree is one 12 MB
+  array. Most of the saving comes from <code>malloc</code>, not from the pointers, and it shows up in the
+  measurements below.</p></details>
+
+  <svg class="ch05-diagram" viewBox="0 0 400 192" role="img" aria-labelledby="svg-layout-t">
+    <title id="svg-layout-t">Byte layout of a pointer node (24 bytes: key, 4 bytes padding, two 8-byte pointers) and an index node (12 bytes: key and two 4-byte indices)</title>
+    <defs><pattern id="ch05-hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="5" height="5" fill="var(--bg-elev)"/><line x1="0" y1="0" x2="0" y2="5" stroke="var(--c-pad)" stroke-width="2"/></pattern></defs>
+    <text x="20" y="18" font-size="11" fill="var(--heading)" font-weight="700">pointer node: 24 B, align 8</text>
+    <g font-size="10" text-anchor="middle">
+      <rect x="20" y="26" width="60" height="30" fill="var(--c-pos)" stroke="var(--bg)"/><text x="50" y="45" fill="var(--bg)">key</text>
+      <rect x="80" y="26" width="60" height="30" fill="url(#ch05-hatch)" stroke="var(--bg)"/><text x="110" y="45" fill="var(--text-dim)">pad</text>
+      <rect x="140" y="26" width="120" height="30" fill="var(--c-hp)" stroke="var(--bg)"/><text x="200" y="45" fill="var(--bg)">left: 8 B pointer</text>
+      <rect x="260" y="26" width="120" height="30" fill="var(--c-hp)" stroke="var(--bg)"/><text x="320" y="45" fill="var(--bg)">right: 8 B pointer</text>
+    </g>
+    <text x="20" y="98" font-size="11" fill="var(--heading)" font-weight="700">index node: 12 B, align 4</text>
+    <g font-size="10" text-anchor="middle">
+      <rect x="20" y="106" width="60" height="30" fill="var(--c-pos)" stroke="var(--bg)"/><text x="50" y="125" fill="var(--bg)">key</text>
+      <rect x="80" y="106" width="60" height="30" fill="var(--c-vel)" stroke="var(--bg)"/><text x="110" y="125" fill="var(--bg)">left</text>
+      <rect x="140" y="106" width="60" height="30" fill="var(--c-vel)" stroke="var(--bg)"/><text x="170" y="125" fill="var(--bg)">right</text>
+    </g>
+    <g font-size="9" fill="var(--text-dim)" text-anchor="middle">
+      <text x="20" y="70">0</text><text x="80" y="70">4</text><text x="140" y="70">8</text><text x="260" y="70">16</text><text x="380" y="70">24</text>
+      <text x="20" y="150">0</text><text x="80" y="150">4</text><text x="140" y="150">8</text><text x="200" y="150">12</text>
+    </g>
+    <text x="20" y="170" font-size="10" fill="var(--text-dim)">one cell = 1 byte · a 64 B cache line holds</text>
+    <text x="20" y="184" font-size="10" fill="var(--text-dim)">five index nodes, but only two pointer nodes</text>
+  </svg>
+
+  <h2 id="indices">Pointers become indices</h2>
+  <p>The change is easy to state. Keep every node of one kind in one growable array, and store a link as the position
+  of the target in that array. Here is the same node in all three languages, once with pointers and once with typed
+  32-bit indices. Each file asserts the sizes at compile time, so the claims in this section are checked every time
+  the code builds:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch05-indices-handles/rust/src/main.rs"><code class="language-rust">struct PNode {
+    key: u32,
+    left: Option&lt;Box&lt;PNode&gt;&gt;, // 8 bytes: Box is never null, so None uses the null niche
+    right: Option&lt;Box&lt;PNode&gt;&gt;,
+}
+const _: () = assert!(size_of::&lt;PNode&gt;() == 24); // 4 + 4 padding + 8 + 8, align 8
+// …
+struct INode {
+    key: u32,
+    left: Option&lt;NodeId&gt;,
+    right: Option&lt;NodeId&gt;,
+}
+const _: () = assert!(size_of::&lt;Option&lt;NodeId&gt;&gt;() == 4);
+const _: () = assert!(size_of::&lt;INode&gt;() == 12 &amp;&amp; align_of::&lt;INode&gt;() == 4);</code></pre>
+<pre data-lang="Zig" data-file="code/ch05-indices-handles/zig/main.zig"><code class="language-zig">const PNode = struct {
+    key: u32,
+    left: ?*PNode = null, // 8 bytes: optional pointers use null as "none"
+    right: ?*PNode = null,
+};
+comptime {
+    std.debug.assert(@sizeOf(PNode) == 24); // 4 + 4 padding + 8 + 8, align 8
+}
+// …
+const INode = struct {
+    key: u32,
+    left: NodeId = .none,
+    right: NodeId = .none,
+};
+comptime {
+    std.debug.assert(@sizeOf(NodeId) == 4);
+    std.debug.assert(@sizeOf(INode) == 12 and @alignOf(INode) == 4);
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch05-indices-handles/odin/main.odin"><code class="language-odin">PNode :: struct {
+	key:   u32,
+	left:  ^PNode, // 8 bytes; nil means "no child"
+	right: ^PNode,
+}
+#assert(size_of(PNode) == 24) // declaration order: 4 + 4 padding + 8 + 8, align 8
+// …
+INode :: struct {
+	key:   u32,
+	left:  Node_Id,
+	right: Node_Id,
+}
+#assert(size_of(Node_Id) == 4)
+#assert(size_of(INode) == 12 &amp;&amp; align_of(INode) == 4)</code></pre>
+  </div>
+  <p>The three pointer versions are 24 bytes for different reasons. Odin keeps fields in declaration order, so the
+  padding sits after <code>key</code> where you wrote it. Rust and Zig may reorder fields, but nothing helps here: one
+  4-byte field next to two 8-byte fields always rounds up to 24. In Rust, <code>Option&lt;Box&lt;PNode&gt;&gt;</code> is
+  still 8 bytes because a <code>Box</code> is never null, so <code>None</code> takes the null value. Zig's
+  <code>?*PNode</code> does the same, and so does Odin's nilable <code>^PNode</code>.</p>
+  <p>What does the change buy? Five things, and they are worth keeping apart because they matter in different
+  programs.</p>
+  <ol>
+    <li><b>Size.</b> Links drop from 8 bytes to 4 and alignment from 8 to 4. The 24-byte node becomes 12. A 64-byte
+    cache line now holds five nodes instead of two, and a 4 KiB page holds 341 instead of 170. Narrowing rarely costs anything measurable: on x86-64 and
+    AArch64, 32-bit integer instructions are generally no slower than 64-bit ones, and the extra work is an occasional
+    zero-extension or the +1 of a <code>NonZero</code> index (below).</li>
+    <li><b>One allocation instead of n.</b> The pointer tree calls <code>malloc</code> once per node and
+    <code>free</code> once per node at teardown. The index tree grows one array by doubling, so about 20 reallocations
+    for a million nodes, and one free.</li>
+    <li><b>Relocatable.</b> An index is a position, not an address. When the array reallocates, every index is still
+    right, while every pointer into the old block is now dangling. You can also move nodes on purpose: sort them,
+    compact them, or lay them out in the order you will walk them. The benchmark below does exactly that.</li>
+    <li><b>Serializable.</b> The array plus its indices means the same thing in a file, in another process or on a GPU.
+    You write the bytes and read them back with no parsing, and only a small relocation step that points the top-level
+    structures at the loaded arrays. Richard Feldman's Roc rewrite does this, a technique he says he learned from the Zig
+    compiler<a class="cite" href="#src-3">[3]</a>. Chapter 11 measures it.</li>
+    <li><b>Borrow-checker friendly.</b> A <code>u32</code> borrows nothing. Rust code that would need
+    <code>Rc&lt;RefCell&lt;Node&gt;&gt;</code> for parent links or cycles can hold plain integers instead, and mutate
+    through <code>&amp;mut</code> to the array. This is the heart of Catherine West's 2018 keynote, which we come back to
+    below.</li>
+  </ol>
+
+  <figure class="figure wide" id="fig-pvi">
+    <div class="figure-body" data-viz="ch05-pointer-vs-index" data-opts='{"nodes":7}'>
+      <p>Static fallback: the same 7-node tree is 224 bytes as malloc'd pointer nodes (7 × 32 B chunks) and 84 bytes as
+      an array of 12-byte index nodes.</p></div>
+    <figcaption>One tree, drawn twice to the same byte scale. Each box in a strip is a 64-byte cache line. Grey is
+    malloc's 8-byte chunk header. Tap a node: its two links are drawn as arcs in both strips, and spelled out below as model addresses and as indices. Switch to <em>aged heap</em>
+    to see what years of malloc and free do to placement: the bytes stay the same, but the lines touched go up. The
+    index strip never changes.</figcaption>
+  </figure>
+
+  <p>The figure counts two different things, and keeping them apart is the point. <b>Bytes</b> depend only on the node
+  layout and the allocator: 32 per pointer node (with glibc) against 12 per index node, so 2.67× at any size.
+  <b>Lines touched</b> also depend on where the nodes landed. On a fresh heap, consecutive <code>malloc</code> calls
+  often return consecutive chunks, so the pointer tree is less scattered than the textbook says. On a heap that has
+  been through a lot of malloc and free traffic, every node can land on a different line. The array cannot scatter.
+  That is a property of the data structure, not luck with the allocator.</p>
+
+  <h3 id="worked">Worked example: a million nodes on this orb</h3>
+  <p>The benchmark program builds a binary search tree from 1,048,576 pseudo-random 32-bit keys (splitmix64 with seed
+  42, the same in all three languages), with an average depth of 24.3. Here are the bytes, from the program's own
+  output:</p>
+  <div class="table-wrap"><table>
+    <tr><th>Layout</th><th class="num">node size</th><th class="num">bytes/node actually used</th><th class="num">total for 2<sup>20</sup> nodes</th></tr>
+    <tr><td>Rust <code>Box</code> (glibc malloc)</td><td class="num">24 B</td><td class="num">32.0 (heap span)</td><td class="num">32 MiB</td></tr>
+    <tr><td>Zig <code>gpa.create</code> (<code>smp_allocator</code> in <code>-O fast</code>)</td><td class="num">24 B</td><td class="num">36.4 (heap span)</td><td class="num">≈36 MiB</td></tr>
+    <tr><td>Odin <code>new</code> (<code>heap_allocator</code> → <code>calloc</code>)</td><td class="num">24 B</td><td class="num">48.0 (heap span)</td><td class="num">48 MiB</td></tr>
+    <tr><td>Index array, all three</td><td class="num">12 B</td><td class="num">12.0 – 14.6 (capacity)</td><td class="num">12 – 14.6 MiB</td></tr>
+  </table></div>
+  <p>The "heap span" is the distance from the lowest to the highest node address divided by the node count. It is
+  only a lower bound on what the allocator used, but it lines up with each allocator's rules. glibc rounds a 24-byte
+  request up to a 32-byte chunk. Odin's <code>heap_allocator</code> asks the C heap for <code>alignment - 1 +
+  size_of(rawptr) + size</code> bytes (39 here) so it can align the block itself and store the original pointer just in
+  front of it. That turns each 24-byte node into a 48-byte chunk (<code>base/runtime/heap_allocator.odin</code>). The
+  array's figure is its capacity: Rust's <code>Vec</code> and Odin's <code>[dynamic]</code> happened to land on exactly
+  2<sup>20</sup>, and Zig's <code>ArrayList</code> grows by a different factor and overshot by 22%. Even so, the index
+  tree is 2.5 to 4× smaller, depending on the language and allocator.</p>
+
+  <h2 id="typed">Typed indices: an integer that knows what it points at</h2>
+  <p>A raw <code>u32</code> loses something a pointer had: its type. <code>*Monster</code> cannot be passed where
+  <code>*Item</code> is expected, but nothing stops you from indexing the item array with a monster index. The fix is
+  a distinct integer type for each array, which costs nothing at run time. All three languages can do this, and each
+  does it differently.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch05-indices-handles/rust/src/main.rs"><code class="language-rust">/// A node index that cannot be mixed up with any other integer. It stores index + 1 in a
+/// NonZeroU32, so Option&lt;NodeId&gt; is 4 bytes with 0 meaning None.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct NodeId(NonZeroU32);
+
+impl NodeId {
+    fn new(index: usize) -&gt; Self {
+        let raw = u32::try_from(index + 1).expect("more than 2^32 - 1 nodes");
+        NodeId(NonZeroU32::new(raw).expect("index + 1 is never 0"))
+    }
+    fn index(self) -&gt; usize {
+        self.0.get() as usize - 1
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch05-indices-handles/zig/main.zig"><code class="language-zig">/// A non-exhaustive enum: a u32 that is its own type, so a NodeId cannot be passed where a
+/// plain integer (or some other enum(u32) id) is expected. `none` is the null value.
+const NodeId = enum(u32) {
+    none = std.math.maxInt(u32),
+    _,
+
+    fn from(i: usize) NodeId {
+        return @fromBackingInt(@intCast(i));
+    }
+    fn index(id: NodeId) usize {
+        return @backingInt(id);
+    }
+};</code></pre>
+<pre data-lang="Odin" data-file="code/ch05-indices-handles/odin/main.odin"><code class="language-odin">// `distinct` makes a new type with u32's representation: a Node_Id will not silently
+// convert to or from u32 or any other distinct id; you must write Node_Id(i) or u32(id).
+Node_Id :: distinct u32
+NO_NODE :: Node_Id(max(u32))</code></pre>
+  </div>
+  <ul>
+    <li><b>Rust: a newtype over <code>NonZeroU32</code>.</b> <code>struct NodeId(NonZeroU32)</code> is its own type,
+    and because 0 can never occur, <code>Option&lt;NodeId&gt;</code> uses 0 for <code>None</code> and stays 4 bytes (a plain
+    <code>Option&lt;u32&gt;</code> is 8). The price is storing <code>index + 1</code>. rustc's own
+    <code>newtype_index!</code> macro does the opposite: it caps indices at <code>0xFFFF_FF00</code> and puts the niche at the
+    top<a class="cite" href="#src-4">[4]</a>.</li>
+    <li><b>Zig: a non-exhaustive enum.</b> <code>enum(u32) { none = maxInt(u32), _ }</code> is a <code>u32</code> with
+    one named value and every other bit pattern allowed. It is a new type, so it does not coerce to or from integers.
+    Alex Kladov calls this "a happy accident of language design"<a class="cite" href="#src-5">[5]</a>, and the Zig
+    compiler uses it everywhere (<code>Ast.Node.Index</code>, <code>InternPool.Index</code>).</li>
+    <li><b>Odin: <code>distinct u32</code>.</b> One keyword makes a new nominal type with <code>u32</code>'s
+    representation. You can still index an array with it directly (<code>t.nodes[id]</code>), but mixing it with a plain
+    <code>u32</code> or another distinct id needs an explicit conversion. Like Zig, the code uses <code>max(u32)</code> as
+    "none".</li>
+  </ul>
+  <aside class="callout pitfall"><p><b>Rust: <code>#[derive(Clone, Copy, PartialEq)]</code> on a generic handle adds
+  bounds you do not want.</b> <code>#[derive(Copy)] struct Handle&lt;T&gt;</code> only implements <code>Copy</code> when
+  <code>T: Copy</code>, so <code>Handle&lt;String&gt;</code> would not be <code>Copy</code>. Write the four impls by hand, as
+  <code>pool.rs</code> does. And do not name the field <code>gen</code>: it is a reserved keyword in edition 2024.</p></aside>
+
+  <h3 id="relocate">Indices let you move the data</h3>
+  <p>Here is the payoff of "relocatable" in a few lines. Because the links are positions, the program can copy the
+  tree into a new array in <em>pre-order</em> (a node, then its left subtree, then its right subtree) and renumber the
+  links on the way. After that, walking the tree mostly reads the array front to back. A pointer tree cannot do this
+  without allocating every node again and rewriting every pointer.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch05-indices-handles/rust/src/main.rs"><code class="language-rust">/// Indices are positions, not addresses, so we can move every node and fix the links:
+/// copy the tree in pre-order (a node, then its left subtree, then its right subtree).
+fn relayout_preorder(&amp;self) -&gt; Tree {
+    let mut out = Tree { nodes: Vec::with_capacity(self.nodes.len()), root: None };
+    out.root = self.copy_preorder(self.root, &amp;mut out.nodes);
+    out
+}
+
+fn copy_preorder(&amp;self, node: Option&lt;NodeId&gt;, out: &amp;mut Vec&lt;INode&gt;) -&gt; Option&lt;NodeId&gt; {
+    let n = &amp;self.nodes[node?.index()];
+    let me = out.len();
+    out.push(INode { key: n.key, left: None, right: None });
+    out[me].left = self.copy_preorder(n.left, out);
+    out[me].right = self.copy_preorder(n.right, out);
+    Some(NodeId::new(me))
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch05-indices-handles/zig/main.zig"><code class="language-zig">/// Indices are positions, not addresses, so we can move every node and fix the links:
+/// copy the tree in pre-order (a node, then its left subtree, then its right subtree).
+fn relayoutPreorder(t: *const Tree, gpa: Allocator) !Tree {
+    var out: Tree = .{};
+    try out.nodes.ensureTotalCapacityPrecise(gpa, t.nodes.items.len);
+    out.root = t.copyPreorder(t.root, &amp;out);
+    return out;
+}
+
+fn copyPreorder(t: *const Tree, node: NodeId, out: *Tree) NodeId {
+    if (node == .none) return .none;
+    const n = t.nodes.items[node.index()];
+    const me = out.nodes.items.len;
+    out.nodes.appendAssumeCapacity(.{ .key = n.key });
+    const l = t.copyPreorder(n.left, out);
+    const r = t.copyPreorder(n.right, out);
+    out.nodes.items[me].left = l;
+    out.nodes.items[me].right = r;
+    return .from(me);
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch05-indices-handles/odin/main.odin"><code class="language-odin">// Indices are positions, not addresses, so we can move every node and fix the links:
+// copy the tree in pre-order (a node, then its left subtree, then its right subtree).
+tree_relayout_preorder :: proc(t: ^Tree) -&gt; (out: Tree) {
+	out.nodes = make([dynamic]INode, 0, len(t.nodes))
+	out.root = copy_preorder(t, t.root, &amp;out)
+	return
+}
+
+copy_preorder :: proc(t: ^Tree, id: Node_Id, out: ^Tree) -&gt; Node_Id {
+	if id == NO_NODE {
+		return NO_NODE
+	}
+	n := t.nodes[id]
+	me := Node_Id(len(out.nodes))
+	append(&amp;out.nodes, INode{n.key, NO_NODE, NO_NODE})
+	l := copy_preorder(t, n.left, out)
+	r := copy_preorder(t, n.right, out)
+	out.nodes[me].left, out.nodes[me].right = l, r
+	return me
+}</code></pre>
+  </div>
+  <p>The Rust version uses <code>?</code> on an <code>Option</code> to stop at a missing child. Zig and Odin compare
+  against their "none" value. Zig calls <code>ensureTotalCapacityPrecise</code> once and then
+  <code>appendAssumeCapacity</code>, so the copy can never fail halfway. The Rust and Odin versions reserve capacity and
+  then push.</p>
+
+  <h2 id="generations">The dangling index, and generations</h2>
+  <p>An index fixes size and placement. It does not fix lifetime. Say a monster stores <code>target: u32 = 17</code>.
+  Slot 17 is freed when its occupant dies, and the next spawn reuses it. The monster now attacks a stranger. Nothing
+  crashes and no sanitizer complains, because the index still points at valid memory. This is a stale-index bug (a single-threaded cousin of the
+  ABA problem), and it is arguably worse than a dangling pointer, which at least has a chance of crashing.</p>
+  <p>The standard fix is to make the reference a pair: an <b>index</b> and a <b>generation</b>. Every slot keeps a counter.
+  Freeing a slot increments it. A handle is valid only if its generation equals the slot's current one, so after a
+  slot is reused, every old handle to it fails the comparison. Niklas Frykholm (who later wrote as Niklas Gray) described
+  the version used in the Bitsquid engine (later Autodesk Stingray) in 2014<a class="cite" href="#src-6">[6]</a>:</p>
+
+  <svg class="ch05-diagram" viewBox="0 0 400 140" role="img" aria-labelledby="svg-bits-t">
+    <title id="svg-bits-t">The Bitsquid 32-bit entity id: 2 bits reserved for Lua tagging, 8 generation bits, 22 index bits</title>
+    <text x="20" y="16" font-size="11" fill="var(--heading)" font-weight="700">Bitsquid Entity { unsigned id; }  (32 bits)</text>
+    <g font-size="10" text-anchor="middle">
+      <rect x="20" y="26" width="22.5" height="30" fill="url(#ch05-hatch)" stroke="var(--bg)"/>
+      <rect x="42.5" y="26" width="90" height="30" fill="var(--c-flag)" stroke="var(--bg)"/><text x="87.5" y="45" fill="var(--bg)">generation 8</text>
+      <rect x="132.5" y="26" width="247.5" height="30" fill="var(--c-vel)" stroke="var(--bg)"/><text x="256" y="45" fill="var(--bg)">index 22 bits: up to 4 M live entities</text>
+    </g>
+    <g font-size="9" fill="var(--text-dim)" text-anchor="middle"><text x="20" y="70">31</text><text x="42.5" y="70">29</text><text x="132.5" y="70">21</text><text x="380" y="70">0</text></g>
+    <text x="20" y="88" font-size="10" fill="var(--text-dim)">hatched: 2 bits that tag Lua light userdata</text>
+    <text x="20" y="104" font-size="10" fill="var(--text-dim)">alive(e): _generation[e.index()] == e.generation()</text>
+    <text x="20" y="120" font-size="10" fill="var(--text-dim)">generation table: Array&lt;unsigned char&gt;, 1 byte/slot</text>
+  </svg>
+
+  <p>Three details in the design show how much thought fits in one integer. First, the whole id had to fit in 30
+  bits, because it is passed to Lua as a <em>light userdata</em> pointer and two bits tag it. Frykholm adds that on a
+  64-bit-only engine he would use more bits. Second, the generation table on the C++ side is a separate
+  <code>Array&lt;unsigned char&gt;</code>: one byte per slot, so checking <code>alive()</code> reads a dense byte array that
+  "will fit more in the cache". Third, 8 bits wrap after 256 reuses, which is not many. So freed indices go into a
+  queue and are reused only when the queue holds more than <code>MINIMUM_FREE_INDICES = 1024</code> of them. An id
+  can only come back after "256 * 1024 entities" have been created and destroyed<a class="cite" href="#src-6">[6]</a>.</p>
+  <p>Andre Weissflog's "Handles are the better pointers" (2018) sets out rules in the same spirit: one system owns all
+  items of a type in arrays, outsiders get only handles, and a handle becomes a pointer only briefly, never to be
+  stored<a class="cite" href="#src-7">[7]</a>. His later update adds per-slot generation counters, "bumped when a handle is
+  released", and gives the honest answer to wrap-around: "Once the generation counter would 'overflow', <b>disable</b>
+  that array slot, so that no new handles are returned for this slot." The pool in this chapter does exactly that.</p>
+
+  <figure class="figure wide" id="fig-gen">
+    <div class="figure-body" data-viz="ch05-gen-handles">
+      <p>Static fallback: orc is inserted at slot 0 with generation 1, removed (slot 0 becomes generation 2 and joins the free
+      list), and rat reuses slot 0 as 0v2. The old handle 0v1 fails its check.</p></div>
+    <figcaption>A pool of eight slots. Play runs a short story. You can also Insert, select a handle you hold and Remove
+    it, or Deref it. A handle is <code>index v generation</code>. Watch the third deref of <em>orc</em>: slot 0 now holds a
+    live rat, and only the generation check stops the old handle from reading it. The free list (top line) is threaded
+    through the free slots themselves.</figcaption>
+  </figure>
+
+  <details class="predict"><summary>Before you press Play: after <code>remove orc</code> and <code>remove imp</code>, which slot does
+  the next insert get, 0 or 2?</summary>
+  <p>Slot 2. The free list is a stack: removing imp pushed slot 2 on top of slot 0, so <em>bat</em> pops 2 and
+  <em>rat</em> then gets 0. Bitsquid deliberately uses a FIFO queue with a 1024-entry minimum instead, so that any one slot
+  is reused as rarely as possible and its 8-bit generation takes longer to wrap.</p></details>
+
+  <h2 id="pool">A generational pool in three languages</h2>
+  <p>The pool is about a hundred lines in each language. A handle is 8 bytes, a 32-bit index plus a 32-bit generation,
+  so wrap-around needs four billion reuses of one slot. Slots live in one growable array. Each slot holds either a
+  value or a link to the next free slot, and the generation sits <em>outside</em> that union, because it has to survive the
+  slot being free. That is the layout from Gray's later Our Machinery bulk-data
+  post<a class="cite" href="#src-8">[8]</a>, which says to store the generation "outside the union".</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch05-indices-handles/rust/src/pool.rs"><code class="language-rust">pub struct Handle&lt;T&gt; {
+    index: u32,
+    generation: NonZeroU32,
+    _marker: PhantomData&lt;fn() -&gt; T&gt;, // typed, but owns no T: Send + Sync + Copy for any T
+}
+
+struct Slot&lt;T&gt; {
+    generation: NonZeroU32,
+    state: State&lt;T&gt;,
+}
+
+enum State&lt;T&gt; {
+    Occupied(T),
+    Free { next_free: Option&lt;u32&gt; },
+    Retired, // generation counter exhausted: never handed out again
+}
+
+pub struct Pool&lt;T&gt; {
+    slots: Vec&lt;Slot&lt;T&gt;&gt;,
+    free_head: Option&lt;u32&gt;, // the free list lives *inside* `slots`
+    len: usize,
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch05-indices-handles/zig/pool.zig"><code class="language-zig">/// Declared inside the generic, so Pool(Monster).Handle and Pool(Item).Handle are
+/// different types: a typed handle for free. The zero handle is never valid
+/// because generations start at 1.
+pub const Handle = packed struct(u64) {
+    index: u32,
+    generation: u32,
+    pub const none: Handle = .{ .index = 0, .generation = 0 };
+};
+
+const end = std.math.maxInt(u32); // end of the free list
+
+/// The generation sits outside the union so it survives the slot being freed.
+const Slot = struct {
+    generation: u32,
+    state: union(enum) {
+        occupied: T,
+        free: u32, // index of the next free slot, or `end`
+        retired, // generation counter exhausted: never handed out again
+    },
+};
+
+slots: std.ArrayList(Slot) = .empty,
+free_head: u32 = end, // the free list lives *inside* `slots`
+len: u32 = 0,</code></pre>
+<pre data-lang="Odin" data-file="code/ch05-indices-handles/odin/pool.odin"><code class="language-odin">// The type parameter is used only for typing: Handle(Monster) and Handle(Item) are different types.
+Handle :: struct($T: typeid) {
+	index: u32,
+	gen:   u32, // starts at 1, so the zero value Handle{} is never valid
+}
+
+FREE_END :: max(u32) // end of the free list
+
+Slot :: struct($T: typeid) {
+	item:      T,
+	gen:       u32, // survives the slot being freed and reused
+	next_free: u32, // link in the free list while the slot is free
+	live:      bool,
+}
+
+Pool :: struct($T: typeid) {
+	slots:     [dynamic]Slot(T),
+	free_head: u32, // the free list lives *inside* `slots`
+	len:       int,
+}</code></pre>
+  </div>
+  <p>Each language makes the handle typed in its own way, and each has a reason.</p>
+  <ul>
+    <li><b>Rust</b> uses <code>PhantomData&lt;fn() -&gt; T&gt;</code>. The handle mentions <code>T</code> for type checking but
+    owns no <code>T</code>, so it is <code>Copy</code>, <code>Send</code> and <code>Sync</code> whatever <code>T</code> is. The
+    slot is an <code>enum State</code> next to a <code>NonZeroU32</code> generation, which keeps
+    <code>Option&lt;Handle&gt;</code> at 8 bytes.</li>
+    <li><b>Zig</b> declares <code>Handle</code> <em>inside</em> the function that returns the pool type. Every instantiation
+    makes a new struct, so <code>Pool(Monster).Handle</code> and <code>Pool(Item).Handle</code> do not mix, and no phantom
+    parameter is needed. It is a <code>packed struct(u64)</code>, so a handle is exactly one 64-bit word that compares in one
+    instruction. The slot state is a tagged <code>union(enum)</code>, so reading <code>slot.state.free</code> on an occupied
+    slot traps in <code>-O debug</code> and <code>-O safe</code> builds.</li>
+    <li><b>Odin</b> gives <code>Handle</code> a type parameter it never uses in a field: <code>Handle :: struct($T:
+    typeid)</code>. <code>Handle(Monster)</code> and <code>Handle(Item)</code> are still different types. Odin has no
+    generic union of "a <code>T</code> or a link" that reads as naturally, so the Odin slot keeps both a
+    <code>next_free</code> field and a <code>live</code> flag. That costs a few bytes per slot. Gray notes that SoA/SIMD
+    code is forced into the same layout, where "we have to use a proper struct field"<a class="cite" href="#src-8">[8]</a>.</li>
+  </ul>
+  <p>Insert pops the free list or appends. Remove checks the handle, increments the generation, and pushes the slot.
+  When a generation would overflow, the slot is retired instead, following Weissflog's rule:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch05-indices-handles/rust/src/pool.rs"><code class="language-rust">pub fn insert(&amp;mut self, value: T) -&gt; Handle&lt;T&gt; {
+    self.len += 1;
+    if let Some(index) = self.free_head {
+        let slot = &amp;mut self.slots[index as usize];
+        let State::Free { next_free } = slot.state else { unreachable!("free list points at a used slot") };
+        self.free_head = next_free; // pop the free list
+        slot.state = State::Occupied(value);
+        return Handle { index, generation: slot.generation, _marker: PhantomData };
+    }
+    let index = u32::try_from(self.slots.len()).expect("pool full");
+    let generation = NonZeroU32::MIN; // 1: a zeroed handle is never valid
+    self.slots.push(Slot { generation, state: State::Occupied(value) });
+    Handle { index, generation, _marker: PhantomData }
+}
+
+pub fn remove(&amp;mut self, h: Handle&lt;T&gt;) -&gt; Option&lt;T&gt; {
+    let slot = self.slots.get_mut(h.index as usize)?;
+    if slot.generation != h.generation || !matches!(slot.state, State::Occupied(_)) {
+        return None; // stale or double remove
+    }
+    // Bump the generation so every outstanding copy of `h` stops matching.
+    let state = match slot.generation.checked_add(1) {
+        Some(g) =&gt; {
+            slot.generation = g;
+            let s = State::Free { next_free: self.free_head };
+            self.free_head = Some(h.index); // push onto the free list
+            s
+        }
+        None =&gt; State::Retired, // wrapping would make old handles valid again
+    };
+    self.len -= 1;
+    match std::mem::replace(&amp;mut slot.state, state) {
+        State::Occupied(v) =&gt; Some(v),
+        _ =&gt; unreachable!(),
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch05-indices-handles/zig/pool.zig"><code class="language-zig">pub fn insert(self: *Self, gpa: Allocator, value: T) Allocator.Error!Handle {
+    if (self.free_head != end) {
+        const index = self.free_head;
+        const slot = &amp;self.slots.items[index];
+        self.free_head = slot.state.free; // pop; safety-checked: must be a free slot
+        slot.state = .{ .occupied = value };
+        self.len += 1;
+        return .{ .index = index, .generation = slot.generation };
+    }
+    const index: u32 = @intCast(self.slots.items.len);
+    try self.slots.append(gpa, .{ .generation = 1, .state = .{ .occupied = value } });
+    self.len += 1;
+    return .{ .index = index, .generation = 1 };
+}
+
+pub fn remove(self: *Self, h: Handle) ?T {
+    const slot = self.slotFor(h) orelse return null; // stale or double remove
+    const value = slot.state.occupied;
+    if (std.math.add(u32, slot.generation, 1)) |g| {
+        slot.generation = g; // every outstanding copy of `h` stops matching
+        slot.state = .{ .free = self.free_head };
+        self.free_head = h.index; // push onto the free list
+    } else |_| {
+        slot.state = .retired; // wrapping would make old handles valid again
+    }
+    self.len -= 1;
+    return value;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch05-indices-handles/odin/pool.odin"><code class="language-odin">pool_insert :: proc(p: ^Pool($T), item: T) -&gt; Handle(T) {
+	p.len += 1
+	if p.free_head != FREE_END {
+		index := p.free_head
+		s := &amp;p.slots[index]
+		p.free_head = s.next_free // pop the free list
+		s.item, s.live = item, true
+		return {index, s.gen}
+	}
+	append(&amp;p.slots, Slot(T){item = item, gen = 1, next_free = FREE_END, live = true})
+	return {u32(len(p.slots) - 1), 1}
+}
+
+// The pointer is valid only until the next insert: `slots` may reallocate. Keep the handle.
+pool_get :: proc(p: ^Pool($T), h: Handle(T)) -&gt; (^T, bool) #optional_ok {
+	if int(h.index) &gt;= len(p.slots) {
+		return nil, false
+	}
+	s := &amp;p.slots[h.index]
+	if !s.live || s.gen != h.gen {
+		return nil, false // stale handle, or never issued
+	}
+	return &amp;s.item, true
+}
+
+pool_remove :: proc(p: ^Pool($T), h: Handle(T)) -&gt; (item: T, ok: bool) {
+	if _, live := pool_get(p, h); !live {
+		return // stale or double remove
+	}
+	s := &amp;p.slots[h.index]
+	item, ok = s.item, true
+	s.live = false
+	s.item = {}
+	p.len -= 1
+	if s.gen == max(u32) {
+		return // retired: wrapping to 0 would make old handles valid again
+	}
+	s.gen += 1 // every outstanding copy of `h` stops matching
+	s.next_free = p.free_head
+	p.free_head = h.index // push onto the free list
+	return
+}</code></pre>
+  </div>
+  <p>Lookup is a bounds check, one generation compare and a liveness check, all on the same slot and usually in the
+  same cache line:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch05-indices-handles/rust/src/pool.rs"><code class="language-rust">pub fn get(&amp;self, h: Handle&lt;T&gt;) -&gt; Option&lt;&amp;T&gt; {
+    match self.slots.get(h.index as usize)? {
+        Slot { generation, state: State::Occupied(v) } if *generation == h.generation =&gt; Some(v),
+        _ =&gt; None,
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch05-indices-handles/zig/pool.zig"><code class="language-zig">/// The pointer is valid only until the next insert: `slots` may reallocate.
+/// Keep the handle, not the pointer.
+pub fn get(self: *Self, h: Handle) ?*T {
+    const slot = self.slotFor(h) orelse return null;
+    return &amp;slot.state.occupied;
+}
+
+fn slotFor(self: *Self, h: Handle) ?*Slot {
+    if (h.index &gt;= self.slots.items.len) return null;
+    const slot = &amp;self.slots.items[h.index];
+    if (slot.generation != h.generation or slot.state != .occupied) return null;
+    return slot;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch05-indices-handles/odin/pool.odin"><code class="language-odin">// The pointer is valid only until the next insert: `slots` may reallocate. Keep the handle.
+pool_get :: proc(p: ^Pool($T), h: Handle(T)) -&gt; (^T, bool) #optional_ok {
+	if int(h.index) &gt;= len(p.slots) {
+		return nil, false
+	}
+	s := &amp;p.slots[h.index]
+	if !s.live || s.gen != h.gen {
+		return nil, false // stale handle, or never issued
+	}
+	return &amp;s.item, true
+}</code></pre>
+  </div>
+  <aside class="callout pitfall"><p><b>A handle is stable. The pointer you get from it is not.</b> Zig's <code>get</code>
+  returns <code>?*T</code> and Odin's returns <code>^T</code> into the slot array. The next insert may reallocate that array
+  and leave the pointer dangling. Rust turns this mistake into a compile error: <code>get</code> returns
+  <code>&amp;T</code> borrowed from the pool, and <code>insert</code> needs <code>&amp;mut self</code>, so the borrow checker
+  rejects holding one across the other. In Zig and Odin it is a convention: resolve, use, drop, exactly as Weissflog
+  says<a class="cite" href="#src-7">[7]</a>.</p></aside>
+
+  <h3 id="tests">Tests for stale handles</h3>
+  <p>Each language's tests check the same behaviour. A removed handle does not resolve, a second remove is rejected, a
+  reused slot gets generation + 1 and the old handle still fails, the free list is LIFO and lives inside the array,
+  and a handle taken before 10,000 more inserts (and many reallocations) still finds its value. Here is the central test
+  in Zig:</p>
+<pre data-file="code/ch05-indices-handles/zig/pool.zig"><code class="language-zig">test "stale handle is detected after reuse" {
+    const gpa = testing.allocator;
+    var p: Pool([]const u8) = .empty;
+    defer p.deinit(gpa);
+    const a = try p.insert(gpa, "orc");
+    const b = try p.insert(gpa, "elf");
+    try testing.expectEqualStrings("orc", p.remove(a).?);
+    try testing.expect(p.get(a) == null); // removed handle must not resolve
+    try testing.expect(p.remove(a) == null); // double remove must be rejected
+    const c = try p.insert(gpa, "goblin"); // reuses a's slot
+    try testing.expectEqual(a.index, c.index);
+    try testing.expectEqual(a.generation + 1, c.generation);
+    try testing.expect(p.get(a) == null); // stale handle must not see the new occupant
+    try testing.expectEqualStrings("goblin", p.get(c).?.*);
+    try testing.expectEqualStrings("elf", p.get(b).?.*);
+    try testing.expect(p.get(.none) == null);
+    try testing.expectEqual(2, p.len);
+}</code></pre>
+  <aside class="callout try"><p>Run the tests in each language (from <code>code/</code>):</p>
+<pre><code class="language-bash">cargo test -q -p ch05_indices_handles          # 6 tests, including get_disjoint_mut aliasing
+(cd ch05-indices-handles/zig &amp;&amp; zig test pool.zig)   # 4 tests, leak-checked by std.testing.allocator
+(cd ch05-indices-handles &amp;&amp; odin test odin -vet -strict-style)   # 3 tests, memory-tracked</code></pre></aside>
+
+  <h3 id="handle-map">Odin ships one: <code>core:container/handle_map</code></h3>
+  <p>Since the 2026 Q1 release Odin has a generational map in its core library<a class="cite" href="#src-9">[9]</a>. Read
+  the source in <code>core/container/handle_map/</code> before you use it, because its design differs from the pool
+  above in four ways:</p>
+  <ul>
+    <li><b>The item stores its own handle.</b> <code>Dynamic_Handle_Map($T, $Handle_Type)</code> has a <code>where</code>
+    clause requiring a field named <code>handle</code> of the handle type in <code>T</code>, and the map writes
+    <code>idx</code> and <code>gen</code> into it. There is no separate slot struct: the generation lives in your item.</li>
+    <li><b>You choose the handle size.</b> <code>Handle16</code> (<code>u8</code> + <code>u8</code>), <code>Handle32</code>
+    (<code>u16</code> + <code>u16</code>) or <code>Handle64</code> (<code>u32</code> + <code>u32</code>). The two halves must have
+    the same unsigned type. <code>Handle32</code> holds at most 65,534 items.</li>
+    <li><b>Index 0 is a sentinel.</b> The first add writes a zero-valued item at index 0, so <code>idx == 0</code> means "no
+    handle" and the zero value of any handle is invalid. Removing an item sets its <code>handle.idx</code> to 0, and that is
+    how iteration skips holes. A fixed <code>Static_Handle_Map(N, T, H)</code> therefore holds N − 1 items.</li>
+    <li><b>Pointers are stable.</b> The dynamic map stores items in <code>xar.Array(T, 4)</code>, an exponential array that
+    adds new blocks instead of moving old ones, so <code>get</code>'s <code>^T</code> survives later adds. The free slots go
+    into a separate <code>unused_items</code> array (the static map links them through a parallel <code>[N]u32</code>).
+    On reuse the generation becomes <code>prev_gen + 1</code> with no retirement, so a <code>Handle16</code>'s 8-bit
+    generation can wrap after 256 reuses of one slot.</li>
+  </ul>
+<pre data-file="code/ch05-indices-handles/odin/main.odin"><code class="language-odin">// The same story with core:container/handle_map. The item must carry its own handle.
+Entity :: struct {
+	handle: hm.Handle64, // {idx: u32, gen: u32}
+	hp:     int,
+}
+
+handle_map_demo :: proc() {
+	ents: hm.Dynamic_Handle_Map(Entity, hm.Handle64)
+	hm.dynamic_init(&amp;ents, context.allocator)
+	defer hm.dynamic_destroy(&amp;ents)
+	orc := hm.add(&amp;ents, Entity{hp = 10})
+	elf := hm.add(&amp;ents, Entity{hp = 20})
+	hm.remove(&amp;ents, orc)
+	goblin := hm.add(&amp;ents, Entity{hp = 30}) // reuses orc's slot with gen + 1
+	fmt.printfln("handle_map: orc=%v goblin=%v valid(orc)=%v valid(goblin)=%v len=%d", orc, goblin, hm.is_valid(&amp;ents, orc), hm.is_valid(&amp;ents, goblin), hm.len(ents))
+	if e, ok := hm.get(&amp;ents, elf); ok {
+		e.hp -= 5
+	}
+	assert(!hm.is_valid(&amp;ents, orc) &amp;&amp; goblin.idx == orc.idx &amp;&amp; goblin.gen == orc.gen + 1)
+	assert(orc.idx == 1) // index 0 is a reserved "no handle" sentinel
+}</code></pre>
+  <p>The program prints <code>orc=Handle64{idx = 1, gen = 1} goblin=Handle64{idx = 1, gen = 2} valid(orc)=false
+  valid(goblin)=true len=2</code>. It is the same story as the hand-rolled pool, shifted up by one slot because of the
+  sentinel. Neither Rust nor Zig ships a generational container in its standard library. In Rust the usual choice is
+  the <code>slotmap</code> crate (this book uses std only), and Zig code tends to hand-roll the pool, as above.</p>
+
+  <h2 id="west">Catherine West's argument: indices are how Rust wants you to write games</h2>
+  <p>Catherine West's closing keynote at RustConf 2018, "Using Rust for Game Development", starts from a question
+  Rust newcomers keep asking: how do you structure a game "without needing Rc&lt;RefCell&gt; and Arc&lt;Mutex&gt;
+  everywhere?"<a class="cite" href="#src-10">[10]</a> Her answer starts with the object-oriented design people bring
+  from C++. A <code>World</code> owns a <code>HashMap&lt;EntityId, Rc&lt;Entity&gt;&gt;</code>, and
+  <code>entity.update(&amp;mut world)</code> must borrow the entity mutably and then borrow it <em>again</em> through the
+  world. That does not compile. Wrapping everything in <code>RefCell</code> makes it compile, and then the same
+  re-entrancy becomes a run-time panic instead of a compile error.</p>
+  <p>The way out she shows is data-oriented. Entities become indices, components live in <code>Vec</code>s, and systems are
+  plain functions that take <code>&amp;mut GameState</code>. "You can do a LOT with indexes into Vecs. This is way easier
+  than self borrowing or Rc&lt;RefCell&gt;," she writes. Then she adds generations, with a
+  <code>GenerationalIndexAllocator</code> that hands out <code>(index, generation)</code> pairs, kept separate from
+  <code>GenerationalIndexArray&lt;T&gt;</code> storage, so one allocator can key many component arrays. Her summary:
+  "Rust highly rewards data-oriented design with simple, understandable ownership
+  semantics."<a class="cite" href="#src-10">[10]</a> The <code>generational-arena</code> crate says it was "Inspired by
+  Catherine West's closing keynote at RustConf 2018"<a class="cite" href="#src-12">[12]</a>; <code>slotmap</code> had
+  already been released ("slotmap beat me to releasing a crate for it", West wrote).</p>
+  <p>One Rust problem remains: you sometimes need two <code>&amp;mut</code> into the same array at once. The goblin hits
+  the elf, and both lose hit points. <code>pool.get_mut(a)</code> followed by <code>pool.get_mut(b)</code> fails the borrow
+  check, because the first <code>&amp;mut</code> borrows the whole pool. <code>slice::get_disjoint_mut</code> solves exactly
+  this. It takes an array of indices, checks that they are in bounds and pairwise distinct, and returns that many
+  <code>&amp;mut</code>, or an error. There is no <code>unsafe</code> and no <code>RefCell</code>:</p>
+<pre data-file="code/ch05-indices-handles/rust/src/pool.rs"><code class="language-rust">/// Two `&amp;mut` at once from two distinct live handles: no RefCell, no unsafe.
+/// `get_disjoint_mut` (stable since 1.86) returns Err if the indices overlap.
+pub fn get2_mut(&amp;mut self, a: Handle&lt;T&gt;, b: Handle&lt;T&gt;) -&gt; Option&lt;[&amp;mut T; 2]&gt; {
+    let [sa, sb] = self.slots.get_disjoint_mut([a.index as usize, b.index as usize]).ok()?;
+    match (sa, sb) {
+        (Slot { generation: ga, state: State::Occupied(va) }, Slot { generation: gb, state: State::Occupied(vb) })
+            if *ga == a.generation &amp;&amp; *gb == b.generation =&gt;
+        {
+            Some([va, vb])
+        }
+        _ =&gt; None,
+    }
+}</code></pre>
+  <aside class="callout version" data-title="Stable since Rust 1.86"><p><code>get_disjoint_mut</code> (for slices and for
+  <code>HashMap</code>) was stabilised in Rust 1.86 (feature names <code>get_many_mut</code> for slices,
+  <code>map_many_mut</code> for <code>HashMap</code>), and it is what you should use on 1.100. Before 1.86 you wrote
+  <code>split_at_mut</code> gymnastics or reached for <code>unsafe</code>. It returns <code>Err</code> for an index out of
+  bounds or for overlapping indices, so <code>get2_mut(elf, elf)</code> returns <code>None</code>, and a unit test checks
+  that.</p></aside>
+  <p>Zig and Odin have no such problem: <code>pool.get(a)</code> and <code>pool.get(b)</code> just return two pointers, and
+  if <code>a == b</code> they alias. Rust makes you name the aliasing case; the other two let you forget it.</p>
+
+  <h2 id="deletion">Deleting: swap-and-pop, holes, or tombstones</h2>
+  <p>Our pool leaves a <b>hole</b> when it frees a slot. That is one of three choices, and Gray's bulk-data post lays
+  them out clearly<a class="cite" href="#src-8">[8]</a>.</p>
+  <ul>
+    <li><b>Shift everything down</b> (<code>Vec::remove</code>, <code>orderedRemove</code>, <code>ordered_remove</code>). The
+    array stays packed and in order, but deleting is O(n). Gray: "The first option is terrible".</li>
+    <li><b>Swap-and-pop</b> (<code>Vec::swap_remove</code>, Zig <code>swapRemove</code>, Odin <code>unordered_remove</code>).
+    The last element moves into the hole, in O(1), and the array stays packed. Iteration never skips anything. The catch:
+    elements move, so an element's index is no longer a permanent name. You then need an <b>ID → index indirection
+    table</b>, which is itself "an <code>std::vector</code> with holes", and every external lookup pays one extra dependent
+    load.</li>
+    <li><b>Holes with an in-array free list</b>, like our pool. Indices are permanent, so the index <em>is</em> the id, and
+    there is no indirection. Free slots link to each other through their own unused memory, so the free list costs no
+    extra space. Iteration has to skip holes, which is only expensive when there are many, and holes only appear after the
+    count has gone down. Gray's verdict: "unless you need to optimize for fast iteration, you are probably better of[f] using
+    the 'array with holes' approach."</li>
+  </ul>
+  <p>A fourth option is a hybrid: keep the array packed for iteration, but on delete write a <b>tombstone</b> instead of
+  moving anything, and compact later. EnTT does this when a component type asks for pointer stability. Michele Caini's
+  "ECS back and forth" series shows the trade: references stay valid, and in return every iteration checks for tombstones
+  <a class="cite" href="#src-11">[11]</a>.</p>
+  <div class="table-wrap"><table>
+    <tr><th>Strategy</th><th>delete</th><th>iterate</th><th>external reference</th><th>stable address</th></tr>
+    <tr><td>shift down</td><td>O(n)</td><td>packed, in order</td><td>needs id → index table</td><td>no</td></tr>
+    <tr><td>swap-and-pop</td><td>O(1), moves one</td><td>packed</td><td>needs id → index table (+1 load)</td><td>no</td></tr>
+    <tr><td>holes + free list</td><td>O(1)</td><td>skips holes</td><td>index + generation, direct</td><td>if storage never moves</td></tr>
+    <tr><td>tombstones</td><td>O(1)</td><td>packed, checks tombstones</td><td>index + generation</td><td>until compaction</td></tr>
+  </table></div>
+  <p>Put swap-and-pop together with an id → index table and you have a <em>sparse set</em>: a sparse array indexed by id
+  points into a dense array, and the dense array remembers which id is in each position. That is the storage under EnTT
+  and many other ECS libraries, and it is where Chapter 9 picks up. The difference from this chapter is the direction of the
+  promise. A pool promises <em>stable positions</em>, and a sparse set promises <em>dense iteration</em>.</p>
+
+  <h2 id="measure">Measuring it</h2>
+  <p>The benchmark (<code>code/ch05-indices-handles/</code>) builds the same million-node BST four ways, from the same
+  keys, and checks three times that the trees agree. The sum of insertion depths must match between the pointer tree and
+  the index tree (same shape). Then three in-order walks fold the keys into one order-sensitive hash, and all three must
+  produce the same <code>0xb465fe24fa4194d4</code> in all three languages. The three layouts are:</p>
+  <ul>
+    <li><b>pointer nodes</b>: one allocation per node, in insertion order;</li>
+    <li><b>u32 indices</b>: one array, nodes in insertion order, so the same order as the pointer nodes;</li>
+    <li><b>u32 indices, DFS order</b>: the same array after the pre-order relayout above.</li>
+  </ul>
+  <p>Each walk is a plain recursive in-order traversal, a few dozen levels deep. What differs is where each node's bytes are
+  and how many of them there are.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch05-indices-handles/rust/src/main.rs"><code class="language-rust">fn ptr_walk(node: &amp;Option&lt;Box&lt;PNode&gt;&gt;, mut h: u64) -&gt; u64 {
+    if let Some(n) = node {
+        h = ptr_walk(&amp;n.left, h);
+        h = h.wrapping_mul(31).wrapping_add(n.key as u64);
+        h = ptr_walk(&amp;n.right, h);
+    }
+    h
+}
+// …
+fn walk(&amp;self, node: Option&lt;NodeId&gt;, mut h: u64) -&gt; u64 {
+    if let Some(id) = node {
+        let n = &amp;self.nodes[id.index()];
+        h = self.walk(n.left, h);
+        h = h.wrapping_mul(31).wrapping_add(n.key as u64);
+        h = self.walk(n.right, h);
+    }
+    h
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch05-indices-handles/zig/main.zig"><code class="language-zig">fn ptrWalk(node: ?*const PNode, h0: u64) u64 {
+    const n = node orelse return h0;
+    var h = ptrWalk(n.left, h0);
+    h = h *% 31 +% n.key;
+    return ptrWalk(n.right, h);
+}
+// …
+fn walk(t: *const Tree, node: NodeId, h0: u64) u64 {
+    if (node == .none) return h0;
+    const n = t.nodes.items[node.index()];
+    var h = t.walk(n.left, h0);
+    h = h *% 31 +% n.key;
+    return t.walk(n.right, h);
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch05-indices-handles/odin/main.odin"><code class="language-odin">ptr_walk :: proc(n: ^PNode, h0: u64) -&gt; u64 {
+	if n == nil {
+		return h0
+	}
+	h := ptr_walk(n.left, h0)
+	h = h * 31 + u64(n.key)
+	return ptr_walk(n.right, h)
+}
+// …
+tree_walk :: proc(t: ^Tree, id: Node_Id, h0: u64) -&gt; u64 {
+	if id == NO_NODE {
+		return h0
+	}
+	n := t.nodes[id]
+	h := tree_walk(t, n.left, h0)
+	h = h * 31 + u64(n.key)
+	return tree_walk(t, n.right, h)
+}</code></pre>
+  </div>
+
+  <figure class="figure" id="fig-traverse">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch05-traverse" data-opts='{"metric":"ns/n","per":"node","log":false}'></div>
+    <figcaption>In-order walk of a 2<sup>20</sup>-node BST, nanoseconds per node, single core. All numbers in this chapter come from one 4-vCPU KVM Xeon
+    (Ice Lake) and are noisy, so read them as ratios (machine: see <a href="02-the-machine.html">Chapter 2</a>). The pointer
+    and insertion-order index trees visit nodes in key order, which is random in memory for both. The DFS-ordered array
+    turns most of that into a forward scan.</figcaption>
+  </figure>
+
+  <p>Read the chart in two steps. <b>Pointers → indices, same order:</b> the walk is
+  <span data-bench-ratio="ch05-traverse" data-num="pointer nodes" data-den="u32 indices" data-lang="rust">about 1.8×</span>
+  faster in Rust,
+  <span data-bench-ratio="ch05-traverse" data-num="pointer nodes" data-den="u32 indices" data-lang="zig">about 1.6×</span>
+  in Zig and
+  <span data-bench-ratio="ch05-traverse" data-num="pointer nodes" data-den="u32 indices" data-lang="odin">about 2.1×</span>
+  in Odin. The access pattern is the same random hop for both, so the gain comes only from size: 12 MiB of nodes instead of
+  32–48 MiB means more of the tree stays in the 1.25 MiB L2 and the roughly 6–8 MiB of usable L3, and fewer 4 KiB pages per hop for the TLB.
+  The gap is modest because both trees are well past L2. <b>Insertion order → DFS order:</b> the same index tree walks
+  <span data-bench-ratio="ch05-traverse" data-num="u32 indices" data-den="u32 indices, DFS order" data-lang="rust">about 2.8×</span>
+  faster in Rust after the relayout. The pointer version is
+  <span data-bench-ratio="ch05-traverse" data-num="pointer nodes" data-den="u32 indices, DFS order" data-lang="rust">about 5.1×</span>
+  behind it. Most of the win comes from layout, and the layout was only possible because the links are indices.</p>
+
+  <figure class="figure" id="fig-build">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch05-build" data-opts='{"metric":"ns/n","per":"node","log":false}'></div>
+    <figcaption>Building the tree from 2<sup>20</sup> keys and then freeing it, nanoseconds per node. Pointer
+    trees call the allocator 2 × 2<sup>20</sup> times. Index trees call it about 20 times.</figcaption>
+  </figure>
+  <p>Build plus teardown is
+  <span data-bench-ratio="ch05-build" data-num="pointer nodes" data-den="u32 indices" data-lang="rust">about 3.6×</span>
+  cheaper with indices in Rust,
+  <span data-bench-ratio="ch05-build" data-num="pointer nodes" data-den="u32 indices" data-lang="zig">about 2.3×</span>
+  in Zig and
+  <span data-bench-ratio="ch05-build" data-num="pointer nodes" data-den="u32 indices" data-lang="odin">about 4.3×</span>
+  in Odin. Both versions do the same descent from the root for every key, which is already a cache-missing walk, so the
+  allocator's share is what you see here. Freeing a pointer tree means visiting every node again, and the index tree frees
+  one block. Zig's <code>smp_allocator</code> is the cheapest per-node allocator of the three, and Odin's
+  <code>calloc</code>-plus-alignment path, which turns each node into a 48-byte chunk, is the most expensive. Chapter 6 covers allocators. For now the lesson is simply to make
+  fewer allocations.</p>
+
+  <figure class="figure" id="fig-memory">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch05-memory" data-opts='{"metric":"value","unit":"B/node","sort":"none","labels":["pointers: heap span","pointers: node size","indices: array capacity","indices: node size"]}'></div>
+    <figcaption>Bytes per node as each program reports it (2<sup>20</sup> nodes). "Node size" is <code>size_of</code>.
+    "Heap span" is the highest node address minus the lowest, divided by n, a lower bound on what the allocator used.
+    "Array capacity" includes the growth slack.</figcaption>
+  </figure>
+
+  <h3 id="check-cost">What the generation check costs</h3>
+  <p>A handle lookup does more than <code>array[i]</code>: a bounds check, a compare and a liveness test. The last part of the
+  benchmark does 2<sup>20</sup> random lookups both ways over the same 2<sup>20</sup> <code>u64</code> values, once into a plain
+  array and once through pool handles, with the same random order and the same checksum.</p>
+  <figure class="figure" id="fig-lookup">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch05-lookup" data-opts='{"metric":"ns/n","per":"lookup","log":false}'></div>
+    <figcaption>2<sup>20</sup> random lookups, nanoseconds each. A pool slot holding a <code>u64</code> is 24
+    bytes in all three languages, against 8 bytes in the plain array, so most of the gap is the working set (24 MiB vs
+    8 MiB), not the compare.</figcaption>
+  </figure>
+  <p>The pool is
+  <span data-bench-ratio="ch05-lookup" data-num="pool.get(handle)" data-den="array[index]" data-lang="rust">about 3.8×</span>
+  slower in Rust here. Do not read that as "generations are expensive". Each lookup is an independent random access, the
+  loop has plenty of memory-level parallelism, and what grew is the bytes per element: the value, the generation, the state
+  tag or flag, and padding to 8. A value 8 bytes wide is close to the worst case for overhead. With a 64-byte component the
+  slot would add about 25% instead of 200%. If lookups dominate, do what Bitsquid did: move the generations into their
+  own dense array (one byte per slot there), so the check reads a small hot array and the values stay in theirs. When
+  you iterate rather than look up, skip handles altogether and walk the array.</p>
+
+
+  <aside class="callout try"><p>Run the benchmark at full size, pinned to one core, in each language (from <code>code/</code>):</p>
+<pre><code class="language-bash">cargo run --release -q -p ch05_indices_handles -- 1048576
+(cd ch05-indices-handles/zig &amp;&amp; zig run -O fast main.zig -- 1048576)
+(cd ch05-indices-handles &amp;&amp; odin run odin -o:speed -vet -strict-style -- 1048576)
+# on Linux with perf (not available on the orb that produced these numbers):
+perf stat -e cache-misses,dTLB-load-misses ./target/release/ch05_indices_handles</code></pre></aside>
+
+  <h2 id="caveats">Caveats, and when to keep the pointer</h2>
+  <ul>
+    <li><b>An index needs its array.</b> A pointer can be followed on its own. An index means nothing without knowing
+    which array it belongs to. Code that passes references across many unrelated containers, or into a library, may be
+    clearer with pointers. Typed indices help, but they do not carry the base address.</li>
+    <li><b>2<sup>32</sup> is a limit.</b> Four billion elements is plenty for a compiler or a game, but not for every
+    database. Choose the index width on purpose and check for overflow. Rust's <code>u32::try_from(...).expect</code> always
+    checks. Zig's <code>@intCast</code> checks in <code>-O debug</code> and <code>-O safe</code> but not in <code>-O fast</code>.
+    Odin's <code>u32(x)</code> truncates silently, so the Odin program would need an explicit <code>assert</code> to handle
+    more than 2<sup>32</sup> nodes.</li>
+    <li><b>Indices hide bugs a pointer would expose.</b> A stale pointer may crash. A stale index reads valid, wrong data.
+    Use plain indices only when lifetimes are simple (build once, free all at once, as with the tree and with ASTs), and use
+    generations when things come and go.</li>
+    <li><b>Generations wrap.</b> 8 bits wrap after 256 reuses of a slot, 16 bits after 65,536. Use 32 bits, retire
+    exhausted slots (Weissflog), or delay reuse (Bitsquid).</li>
+    <li><b>The pointer you resolve is temporary.</b> Growing the array moves the slots. Use storage that never moves (a
+    large virtual-memory reservation, fixed-size blocks, Odin's <code>xar</code>) if you need stable addresses as well as
+    handles. Gray's conclusion leans that way: holes, permanent pointers, and one big VM reservation or 16 KiB
+    blocks<a class="cite" href="#src-8">[8]</a>.</li>
+    <li><b>Most of the speed is layout.</b> The <span data-bench-ratio="ch05-traverse" data-num="pointer nodes" data-den="u32 indices" data-lang="zig">1.6×</span> to <span data-bench-ratio="ch05-traverse" data-num="pointer nodes" data-den="u32 indices" data-lang="odin">2.1×</span> from smaller nodes is real, but the larger gain came from walking the
+    nodes in memory order. Indices made that possible; they did not do it on their own.</li>
+  </ul>
+
+  <aside class="recap"><p>Store links as typed 32-bit indices into arrays you own, add a generation when slots are reused, and
+  then use the freedom indices give you to put the data in the order you read it.</p></aside>
+
+  <h2 id="exercises">Exercises</h2>
+  <details class="exercise"><summary>A Zig node is <code>struct { a: *Node, b: *Node, c: *Node, tag: u8 }</code>. What are its
+  size and alignment, and what are they with <code>enum(u32)</code> indices? How many fit in a 64-byte line in each case?</summary>
+  <p>With pointers: 24 B of pointers plus 1 B of tag, rounded up to the 8-byte alignment, so 32 B with align 8, and two per line.
+  With indices: 12 B plus 1 B, rounded up to align 4, so 16 B, and four per line. The tag's padding shrinks from 7 bytes to 3
+  because the alignment dropped as well as the link size.</p></details>
+  <details class="exercise"><summary>How big is <code>Option&lt;Option&lt;NodeId&gt;&gt;</code>? Would the answer change if
+  <code>NodeId</code> used the representation of rustc's <code>newtype_index!</code> instead of <code>NonZeroU32</code>?</summary>
+  <p>8 bytes. <code>NonZeroU32</code> has exactly one spare bit pattern, 0, and the inner <code>Option</code> uses it for
+  <code>None</code>; the outer one has no niche left, so it needs a separate tag, padded to 4-byte alignment. A
+  <code>newtype_index!</code> type reserves every value above <code>0xFFFF_FF00</code>, about 255 spare patterns, so each nested
+  <code>Option</code> takes the next one and the whole thing stays 4 bytes.</p></details>
+  <details class="exercise"><summary>In <a class="figref" href="#fig-gen">the pool figure</a>, after the story ends, which handle would a pool
+  <em>without</em> generations return for the third <code>deref orc</code>, and why is that worse than a crash?</summary>
+  <p>It would return the rat now in slot 0. The program keeps running with wrong data, and the bug shows up far from its
+  cause: a monster attacks the wrong target, or a save file references the wrong item.</p></details>
+  <details class="exercise"><summary>Bitsquid's ids have 8 generation bits and wait for 1024 free indices before reusing one. How
+  many entities must be created and destroyed before one id can repeat? What changes if the free list is a LIFO stack as in
+  this chapter's pool?</summary>
+  <p>256 × 1024 = 262,144 creations (Frykholm's own number<a class="cite" href="#src-6">[6]</a>). With a LIFO stack and no
+  minimum, one entity created and destroyed in a loop reuses the same slot every time, so its generation wraps after 256
+  iterations. That is why 8-bit generations need a delay and 32-bit generations can use a stack.</p></details>
+  <details class="exercise"><summary>Change <code>Pool</code> to keep generations in a separate <code>Vec&lt;u32&gt;</code> (or
+  <code>[]u32</code>, <code>[dynamic]u32</code>) next to the values. Which benchmark should improve, and which operation becomes two
+  cache misses instead of one?</summary>
+  <p>A loop that only checks <code>is_valid</code> reads a dense 4-byte array and gets faster. A full <code>get</code> that also reads
+  the value now touches two arrays, generation then value, so it can miss twice. In Rust, storing values without an
+  <code>Option</code>/enum per slot needs <code>MaybeUninit</code> and therefore <code>unsafe</code>, which this book avoids
+  forbid outside <code>std::arch</code>, so keep the enum or store <code>Option&lt;T&gt;</code>.</p></details>
+  <details class="exercise"><summary>You need to delete particles fast and iterate them every frame, and gameplay code holds
+  references to a few of them. Which deletion strategy, and which extra structure?</summary>
+  <p>Swap-and-pop for dense iteration, plus an id → index table (a pool of indices with generations) for the few external
+  references. When a particle moves into a hole, update its entry in the table. Together that is a sparse set, which is
+  Chapter 9's subject.</p></details>
+  <details class="exercise"><summary>Run the benchmark with N = 4096 (<code>--quick</code>). Why do pointers and indices walk at nearly
+  the same speed there, and sometimes the pointer tree wins?</summary>
+  <p>4096 nodes take roughly 100 to 200 KiB as pointer nodes and 48 KiB as an array. Both fit in L2 (1.25 MiB), so neither walk
+  misses much. Then instruction details dominate: the index walk computes <code>base + 12·i</code> and in Rust also subtracts the +1.
+  At these sizes the layout difference has no cache effect to show.</p></details>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="sources">
+    <li id="src-1">Andrew Kelley, "A Practical Guide to Applying Data-Oriented Design", Handmade Seattle, 2021.
+      <a href="https://vimeo.com/649009599">talk</a>; transcript:
+      <a href="https://josherich.me/podcast/andrew-kelley-practical-data-oriented-design-dod">josherich.me</a>. Pointers → u32 indices, 32 → 16 B, alignment 8 → 4; the monster example.</li>
+    <li id="src-2">Noel Llopis, "Managing Data Relationships", Game Developer (Inner Product), Sept 2008; blog 2010.
+      <a href="https://gamesfromwithin.com/managing-data-relationships">gamesfromwithin.com</a>.</li>
+    <li id="src-3">Richard Feldman, "How Our Rust-to-Zig Rewrite is Going", 2026. <a href="https://rtfeldman.com/rust-to-zig">rtfeldman.com</a>. u32 indices, data written to disk as-is and reloaded with relocation fix-ups only.</li>
+    <li id="src-4">The Rust compiler, <code>compiler/rustc_index_macros/src/newtype.rs</code> (<code>newtype_index!</code>, max <code>0xFFFF_FF00</code>). <a href="https://github.com/rust-lang/rust/blob/master/compiler/rustc_index_macros/src/newtype.rs">GitHub</a>.</li>
+    <li id="src-5">Alex Kladov (matklad), "Newtype Index Pattern In Zig", 2025. <a href="https://matklad.github.io/2025/12/23/zig-newtype-index-pattern.html">matklad.github.io</a>.</li>
+    <li id="src-6">Niklas Frykholm, "Building a Data-Oriented Entity System (part 1)", Bitsquid blog, 2014. <a href="https://bitsquid.blogspot.com/2014/08/building-data-oriented-entity-system.html">bitsquid.blogspot.com</a>. 22-bit index + 8-bit generation, <code>Array&lt;unsigned char&gt; _generation</code>, <code>MINIMUM_FREE_INDICES = 1024</code>.</li>
+    <li id="src-7">Andre Weissflog, "Handles are the better pointers", 2018 (update 28 Nov 2018: per-slot generation counters). <a href="https://floooh.github.io/2018/06/17/handles-vs-pointers.html">floooh.github.io</a>.</li>
+    <li id="src-8">Niklas Gray, "Data Structures Part 1: Bulk Data", Our Machinery blog, 2019 (archive). <a href="https://ruby0x1.github.io/machinery_blog_archive/post/data-structures-part-1-bulk-data/index.html">archive</a>. Shift vs swap-and-pop vs holes, in-array free list, id → index table. Gray is Niklas Frykholm of [6] under a later name
+      (his <a href="https://www.gamedeveloper.com/programming/little-machines-working-together-part-1-">Game Developer author bio</a>:
+      "Niklas Gray (aka Niklas Frykholm)").</li>
+    <li id="src-9">Odin, "2025 Q4 and 2026 Q1 Newsletter" (<code>core:container/handle_map</code>, <code>core:container/xar</code>). <a href="http://odin-lang.org/news/newsletter-2026-q1">odin-lang.org</a>. Source read: <code>core/container/handle_map/*.odin</code> at dev-2026-11 (9a69916).</li>
+    <li id="src-10">Catherine West (kyren), "My RustConf 2018 Closing Keynote" (blog draft of "Using Rust for Game Development"), 2018.
+      <a href="https://kyren.github.io/2018/09/14/rustconf-talk.html">kyren.github.io</a>; <a href="https://kyren.github.io/rustconf_2018_slides/index.html">slides</a>.</li>
+    <li id="src-11">Michele Caini (skypjack), "ECS back and forth, Part 12" (pointer stability, tombstones), 2021. <a href="https://skypjack.github.io/2021-08-29-ecs-baf-part-12">skypjack.github.io</a>.</li>
+    <li id="src-12">fitzgen, <code>generational-arena</code> crate, 2018. <a href="https://crates.io/crates/generational-arena/0.2.0">crates.io</a>.</li>
+  </ol>
+</main>
+</body>
+</html>

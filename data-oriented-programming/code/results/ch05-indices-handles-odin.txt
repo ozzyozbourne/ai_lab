@@ -1,0 +1,27 @@
+pool: orc=0v1 elf=1v1 goblin=0v2 (goblin reused orc's slot)
+pool: get(orc) ok = false  <- stale handle detected
+pool: get(goblin).hp = 30
+pool: size_of(Handle) = 8 B, live = 2, slots = 2
+handle_map: orc=Handle64{idx = 1, gen = 1} goblin=Handle64{idx = 1, gen = 2} valid(orc)=false valid(goblin)=true len=2
+tree: n=1048576 average depth 24.3; pointer node 24 B (heap span 48.0 B/node), index node 12 B ([dynamic] capacity 12.0 B/node)
+BENCH {"id":"ch05-memory","label":"pointers: node size","lang":"odin","n":1048576,"ns":0,"value":24.00,"unit":"B/node"}
+BENCH {"id":"ch05-memory","label":"pointers: heap span","lang":"odin","n":1048576,"ns":0,"value":48.00,"unit":"B/node"}
+BENCH {"id":"ch05-memory","label":"indices: node size","lang":"odin","n":1048576,"ns":0,"value":12.00,"unit":"B/node"}
+BENCH {"id":"ch05-memory","label":"indices: array capacity","lang":"odin","n":1048576,"ns":0,"value":12.00,"unit":"B/node"}
+traverse checksum: pointers 0xb465fe24fa4194d4  indices 0xb465fe24fa4194d4  indices/DFS 0xb465fe24fa4194d4
+traverse pointer nodes              50899612 ns  (48.54 ns/node)
+BENCH {"id":"ch05-traverse","label":"pointer nodes","lang":"odin","n":1048576,"ns":50899612,"samples":[48861862,49786358,50246894,50899612,51122390,51667227,51815897]}
+traverse u32 indices                23888415 ns  (22.78 ns/node)
+BENCH {"id":"ch05-traverse","label":"u32 indices","lang":"odin","n":1048576,"ns":23888415,"samples":[23289005,23660884,23757109,23888415,23956702,24376669,24863031]}
+traverse u32 indices, DFS order      9622756 ns  (9.18 ns/node)
+BENCH {"id":"ch05-traverse","label":"u32 indices, DFS order","lang":"odin","n":1048576,"ns":9622756,"samples":[9574948,9600774,9617434,9622756,9652288,9659398,10098804]}
+build+free checksum (sum of depths): pointers 25466630  indices 25466630
+build+free pointer nodes          1226953226 ns
+BENCH {"id":"ch05-build","label":"pointer nodes","lang":"odin","n":1048576,"ns":1226953226,"samples":[1047042780,1055745630,1179319565,1226953226,1249895323,1263368765,1294416801]}
+build+free u32 indices             287262934 ns
+BENCH {"id":"ch05-build","label":"u32 indices","lang":"odin","n":1048576,"ns":287262934,"samples":[264932693,279606201,282412036,287262934,298389376,316185358,389957410]}
+lookup checksum: plain 549562591753  pool 549562591753
+lookup array[index]              2183024 ns  (2.08 ns/lookup)
+BENCH {"id":"ch05-lookup","label":"array[index]","lang":"odin","n":1048576,"ns":2183024,"samples":[2121415,2135677,2176544,2183024,2188260,2226321,2414448]}
+lookup pool.get(handle)          8316825 ns  (7.93 ns/lookup)
+BENCH {"id":"ch05-lookup","label":"pool.get(handle)","lang":"odin","n":1048576,"ns":8316825,"samples":[8130577,8175146,8306055,8316825,8339366,8920297,9660760]}

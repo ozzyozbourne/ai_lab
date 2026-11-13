@@ -1,0 +1,33 @@
+/* Chapter 12 figure and table styles. Every selector is scoped with .ch12-. */
+.ch12-crumbs { list-style: none; margin: 0 0 .6rem; padding: 0; display: flex; flex-direction: column; gap: .3rem; }
+.ch12-crumbs:empty { display: none; }
+.ch12-crumb { display: flex; justify-content: space-between; gap: .75rem; width: 100%; min-height: 44px; padding: .35rem .7rem;
+  text-align: left; font: .82rem/1.35 var(--font-body); color: var(--text-dim); background: var(--bg-elev2);
+  border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+.ch12-crumb:hover { border-color: var(--accent); }
+.ch12-crumb b { font-family: var(--font-mono); text-transform: uppercase; font-size: .75rem; align-self: center; }
+.ch12-yes { color: var(--c-hit); }
+.ch12-no { color: var(--c-flag); }
+.ch12-card { border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 8px; padding: .8rem 1rem; background: var(--bg); }
+.ch12-card.ch12-stop { border-left-color: var(--c-flag); }
+.ch12-card.ch12-go { border-left-color: var(--c-hit); }
+.ch12-card p { margin: .3rem 0; }
+.ch12-step { font: .72rem var(--font-mono); text-transform: uppercase; letter-spacing: .08em; color: var(--text-dim); }
+.ch12-q { font-size: 1.05rem; font-weight: 700; color: var(--heading); }
+.ch12-hint { font-size: .85rem; color: var(--text-dim); }
+.ch12-answers { display: flex; gap: .6rem; margin-top: .6rem; }
+.ch12-answers button { min-height: 44px; min-width: 6rem; font-weight: 700; border-radius: 6px; cursor: pointer;
+  background: var(--bg-elev2); color: var(--text); border: 1px solid var(--border); }
+.ch12-answers .ch12-btn-yes:hover { border-color: var(--c-hit); }
+.ch12-answers .ch12-btn-no:hover { border-color: var(--c-flag); }
+.ch12-links { margin: .4rem 0; padding-left: 1.2rem; }
+.ch12-links li { margin: .2rem 0; }
+.ch12-diagram { display: block; width: 100%; height: auto; margin: 1.5rem 0; }
+.ch12-diagram text { font-family: var(--font-mono); }
+.ch12-table td:first-child { white-space: nowrap; font-weight: 600; }
+.ch12-table td { vertical-align: top; }
+.ch12-checklist { counter-reset: ch12c; list-style: none; padding-left: 0; }
+.ch12-checklist li { counter-increment: ch12c; position: relative; padding-left: 2.2rem; margin: .5rem 0; }
+.ch12-checklist li::before { content: counter(ch12c); position: absolute; left: 0; top: .05rem; width: 1.6rem; height: 1.6rem;
+  border-radius: 50%; background: var(--bg-elev2); border: 1px solid var(--border); color: var(--c-vel);
+  font: 700 .78rem/1.6rem var(--font-mono); text-align: center; }

@@ -1,0 +1,24 @@
+source: 3750573 bytes, 170470 lines, 1214430 tokens, 771749 nodes, 230185 extra u32s, 11844 symbols
+sizes: token 5 B (#soa) vs 8 B as a struct; node 13 B (#soa) vs 16 B as a struct; boxed Node = 40 B
+bytes/token 5.00, bytes/node fixed 13, avg incl. extra 14.19; nodes/token 0.635
+boxed: 745242 nodes, 822174 allocations, 41.99 requested B/node (allocator headers not counted)
+eval: flat 5749108524495203818, boxed 5749108524495203818, loaded from file 5749108524495203818: match
+checksum 5749108524495203818
+tokenize only          18.581 ms
+flat  tokenize+parse   46.519 ms     80.6 MB/s    3.66 M lines/s
+boxed tokenize+parse  136.955 ms     27.4 MB/s    1.24 M lines/s  (incl. freeing the tree)
+eval  flat   12.224 ms, boxed   19.975 ms
+file: 17132908 bytes (4.57x the source); write 34.182 ms, read (views, no decode) 3.582 ms
+BENCH {"id":"ch11-parse","label":"tokenize only","lang":"odin","n":1214430,"ns":18580651,"samples":[18397349,18462941,18558662,18580651,18752651,18823501,21539847]}
+BENCH {"id":"ch11-parse","label":"flat: tokenize+parse","lang":"odin","n":1214430,"ns":46518620,"samples":[44835329,45714447,45889045,46518620,48017047,54756288,61393853]}
+BENCH {"id":"ch11-parse","label":"boxed: tokenize+parse","lang":"odin","n":1214430,"ns":136954611,"samples":[133982553,136322466,136613777,136954611,138792127,143488006,150569796]}
+BENCH {"id":"ch11-eval","label":"flat nodes","lang":"odin","n":771749,"ns":12224272,"samples":[12009933,12122055,12126864,12224272,12326646,14416606,14645810]}
+BENCH {"id":"ch11-eval","label":"boxed tree","lang":"odin","n":771749,"ns":19974827,"samples":[18982455,19218779,19610059,19974827,20451050,20910573,21406616]}
+BENCH {"id":"ch11-file","label":"write file","lang":"odin","n":17132908,"ns":34182001,"samples":[27652123,28071214,29200753,34182001,35160558,36407827,46491753]}
+BENCH {"id":"ch11-file","label":"read file","lang":"odin","n":17132908,"ns":3581560,"samples":[3373182,3495128,3573692,3581560,3916897,4662704,7590078]}
+BENCH {"id":"ch11-bytes","label":"token","lang":"odin","n":1214430,"ns":0,"value":5.000,"unit":"B"}
+BENCH {"id":"ch11-bytes","label":"node, fixed","lang":"odin","n":771749,"ns":0,"value":13.000,"unit":"B"}
+BENCH {"id":"ch11-bytes","label":"node, avg incl. extra","lang":"odin","n":771749,"ns":0,"value":14.193,"unit":"B"}
+BENCH {"id":"ch11-bytes","label":"boxed node, avg","lang":"odin","n":771749,"ns":0,"value":41.990,"unit":"B"}
+BENCH {"id":"ch11-throughput","label":"flat","lang":"odin","n":1214430,"ns":0,"value":3.665,"unit":"M lines/s"}
+BENCH {"id":"ch11-throughput","label":"boxed","lang":"odin","n":1214430,"ns":0,"value":1.245,"unit":"M lines/s"}

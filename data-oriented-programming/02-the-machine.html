@@ -1,0 +1,849 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2. The Machine · Data-Oriented Design</title>
+<link rel="stylesheet" href="assets/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="assets/book.css">
+<script>window.Prism = { manual: true };</script>
+<script defer src="assets/vendor/prism/prism.min.js"></script>
+<script defer src="assets/vendor/prism/prism-rust.min.js"></script>
+<script defer src="assets/vendor/prism/prism-zig.min.js"></script>
+<script defer src="assets/vendor/prism/prism-odin.min.js"></script>
+<script defer src="assets/vendor/prism/prism-bash.min.js"></script>
+<script defer src="assets/book.js"></script>
+<script defer src="assets/data/bench-ch02.js"></script>
+<script defer src="assets/viz/ch02-ladder.js"></script>   <!-- must come after bench-ch02.js and before latency-ladder.js -->
+<script defer src="assets/viz/latency-ladder.js"></script>
+<script defer src="assets/viz/pointer-chase.js"></script>
+<script defer src="assets/viz/cache-sim.js"></script>
+<script defer src="assets/viz/bench-bars.js"></script>
+<script defer src="assets/viz/bench-line.js"></script>
+<script defer src="assets/viz/ch02-prefetch.js"></script>
+</head>
+<body>
+<main>
+  <p class="kicker">Chapter 2</p>
+  <h1>The Machine</h1>
+  <p class="lede">Your program never reads "memory". It reads a cache line that may already be sitting next to the core, or may be
+  a trip to DRAM away, and the code looks the same either way. On the machine this book was measured on, summing four million numbers
+  stored in an array took <span data-bench-val="ch02-list" data-label="array" data-lang="rust" data-metric="ms" data-digits="2">6.6 ms</span>. Following the same numbers through a shuffled linked list took <span data-bench-val="ch02-list" data-label="list, shuffled" data-lang="rust" data-metric="ms" data-digits="2">580 ms</span>. Nothing about the arithmetic changed. This chapter is about the hardware facts behind that gap, the
+  ones every later chapter relies on, and about how to measure them without fooling yourself.</p>
+
+  <p>Chapter 1 argued that the data, not the code, is the problem. Here we put numbers on the hardware behind that: the latency table,
+  cache lines, prefetchers, the TLB, bandwidth versus latency. Along the way we build the benchmark harness the rest of the book uses and run four experiments in Rust, Zig
+  and Odin: an array against a linked list, a working-set sweep from 4 KiB to 512 MiB, four access orders over the same bytes, and a pointer
+  chase split into independent chains.</p>
+
+  <aside class="callout note"><p><b>The machine.</b> Every number marked "measured" comes from an Amp orb: a KVM guest
+  with 2 physical cores × 2 hyperthreads of an Intel Xeon (Ice Lake-SP) at a nominal 2.6 GHz. Per core: L1d 48 KiB and L2 1.25 MiB.
+  L3 is 54 MiB, but it is shared with whatever else runs on the host. Lines are 64 B and pages 4 KiB, transparent huge pages are set to
+  <code>madvise</code>, AVX-512 is present, and there are no hardware performance counters. In short: one 4-vCPU KVM guest on an
+  Ice Lake Xeon. Its timings are noisy, so read ratios and shapes rather than exact nanoseconds. Every later chapter was measured on the same
+  machine.</p></aside>
+
+  <h2 id="ladder">The latency ladder</h2>
+  <p>Peter Norvig's table of operation timings, made famous by Jeff Dean<a class="cite" href="#src-1">[1]</a>, is best known from Jonas
+  Bonér's gist, labelled "~2012"<a class="cite" href="#src-2">[2]</a>. It gives an L1 cache reference as 0.5 ns, an L2 reference as 7 ns, a
+  main-memory reference as 100 ns and reading 1 MB sequentially from memory as 250 µs. Google's current SRE handout revises these to 1, 4 and
+  100 ns, and sequential reads at about 100 GB/s<a class="cite" href="#src-3">[3]</a>.
+  A 2026 update by Omar Bohsali gives 1, 3, 15 and 80 ns for L1, L2, L3 and DDR5<a class="cite" href="#src-4">[4]</a>.</p>
+
+  <p>Measured numbers for current cores are in the table below<a class="cite" href="#src-5">[5]</a>. <b>An L1 hit costs a few cycles and a DRAM access costs hundreds</b>: "70 ns of DRAM
+  latency is nearly 400 cycles at 5.7 GHz, but only 210 cycles at 3 GHz"<a class="cite" href="#src-6">[6]</a>.</p>
+
+  <div class="table-wrap"><table>
+    <tr><th>cited</th><th class="num">Zen 5 desktop</th><th class="num">Lion Cove (Core Ultra 9 285K)</th><th class="num">Apple M1 P-core</th></tr>
+    <tr><td>L1D</td><td class="num">48 KB, 4 cycles</td><td class="num">48 KB, 4 cycles</td><td class="num">128 KB, 3 cycles</td></tr>
+    <tr><td>L2</td><td class="num">1 MB, 14 cycles</td><td class="num">3 MB, 17 cycles</td><td class="num">12 MB shared, ~16–18 cycles</td></tr>
+    <tr><td>L3 / SLC</td><td class="num">32 MB, ~48 cycles</td><td class="num">36 MB, ~84 cycles</td><td class="num">8 MB SLC</td></tr>
+    <tr><td>DRAM</td><td class="num">just over 70 ns (DDR5-6000)</td><td class="num">—</td><td class="num">~96 ns</td></tr>
+  </table></div>
+  <p class="chart-meta">Cited: Chips and Cheese (Zen 5, Lion Cove)<a class="cite" href="#src-5">[5]</a><a class="cite" href="#src-6">[6]</a>, Apple M1 via
+  7-cpu and AnandTech as collected in <a href="references.html">this book's research notes</a>. These are not re-measured here.</p>
+
+  <p>Two things have changed since the classic table. First, the 1 MB sequential read is now far faster than 250 µs: a single Zen 4 or Zen 5
+  core "can pull over 50 GB/s from DRAM, or well north of 100 GB/s from L3"<a class="cite" href="#src-20">[20]</a>, which is about 20 µs per MB.
+  Second, DRAM <em>latency</em> in nanoseconds has barely moved. Chips and Cheese notes that the 9950X
+  with DDR5-6000 "is just about able to match a Core i7-4770 with DDR3-1333"<a class="cite" href="#src-5">[5]</a>, a chip from 2013. Clocks went
+  up while DRAM latency stayed at about 70–130 ns, so a cache miss costs <em>more cycles</em> now than it did when the classic table was written.
+  Ulrich Drepper predicted this in 2007: "the limiting factor for most programs is now, and will be for some time, memory access"<a class="cite" href="#src-8">[8]</a>.</p>
+
+  <figure class="figure wide" id="fig-ladder-presets">
+    <div class="figure-body" data-viz="latency-ladder" data-opts='{"set":"2026"}'><p>Static fallback: L1 ≈ 1 ns, L2 ≈ 3 ns, L3 ≈ 15 ns, DRAM ≈ 80 ns, on a log scale.</p></div>
+    <figcaption>The latency ladder on a log scale: each grid line is ten times slower. Switch between the ~2012 classic table, the 2026
+    figures and "this orb". Then try "if 1 ns were 1 s". The "this orb"
+    preset is built into the shared figure and came from a <em>single</em> earlier run. <a class="figref" href="#fig-ladder-orb">the figure below</a>
+    later in this chapter is computed from this chapter's own sweep.</figcaption>
+  </figure>
+
+  <details class="predict"><summary>Before reading on: if one L1 hit took one second, how long would one DRAM access on this orb take?</summary>
+    <p>Our sweep measured about <span data-bench-val="ch02-sweep" data-label="random chase" data-lang="rust" data-n="64" data-metric="ns/n" data-digits="2">1.5 ns</span> for an L1 hit and about <span data-bench-val="ch02-sweep" data-label="random chase" data-lang="rust" data-n="1048576" data-metric="ns/n" data-digits="2">140 ns</span> for a dependent DRAM load at 64 MiB, a ratio of roughly a
+    hundred. So the DRAM access would take two or three minutes. A whole <em>row</em> of a table that misses on every access is a coffee break.</p></details>
+
+  <h2 id="lines">Cache lines: you pay per line, not per byte</h2>
+  <p>Caches do not store bytes. They store <b>lines</b>: aligned blocks that are moved, cached and evicted as a unit. On every x86-64 CPU the
+  line is 64 B. Drepper wrote in 2007: "In early caches these lines were 32 bytes long; now the norm is 64 bytes"<a class="cite" href="#src-8">[8]</a>.
+  AMD's Zen 5 guide states the consequence for alignment: a load that spans a 64-byte boundary "suffers, at minimum, a one cycle
+  penalty"<a class="cite" href="#src-7">[7]</a>. On this orb <code>/sys/…/coherency_line_size</code> reports 64.</p>
+
+  <p>The consequence for data layout is that reading <em>one byte</em> costs the same as reading the other 63 bytes of its line. Whether
+  those other 63 bytes are useful is decided entirely by your data layout. Mike Acton's CppCon 2014 talk shows a loop that uses 4 of a
+  line's 64 bytes and sums it up as "Waste 60 bytes / 64 bytes", "90% waste!"<a class="cite" href="#src-28">[28]</a> (Chapter 1 walks through it). Igor Ostrovsky showed the flip side: touching every 16th
+  <code>int</code> takes about as long as touching every one, because both touch every line<a class="cite" href="#src-22">[22]</a>.</p>
+
+  <figure class="figure" id="fig-address">
+    <svg viewBox="0 0 640 250" role="img" aria-label="A 64-bit virtual address split into page number (bits 63 to 12), line within page (bits 11 to 6) and byte within line (bits 5 to 0); one 4 KiB page holds 64 lines; one 64 B line holds 16 u32 values." style="width:100%;height:auto;font-family:var(--font-mono);font-size:15px">
+      <text x="10" y="18" fill="var(--text-dim)">virtual address (x86-64, 4 KiB pages)</text>
+      <rect x="10" y="28" width="380" height="34" rx="4" fill="var(--c-vel)" fill-opacity=".25" stroke="var(--c-vel)"/>
+      <rect x="390" y="28" width="130" height="34" rx="4" fill="var(--c-pos)" fill-opacity=".25" stroke="var(--c-pos)"/>
+      <rect x="520" y="28" width="110" height="34" rx="4" fill="var(--c-hit)" fill-opacity=".25" stroke="var(--c-hit)"/>
+      <text x="200" y="51" text-anchor="middle" fill="var(--text)">page number · bits 63–12</text>
+      <text x="455" y="50" text-anchor="middle" fill="var(--text)">line · 11–6</text>
+      <text x="575" y="50" text-anchor="middle" fill="var(--text)">byte · 5–0</text>
+      <text x="200" y="80" text-anchor="middle" fill="var(--text-dim)">translated by the TLB</text>
+      <text x="455" y="80" text-anchor="middle" fill="var(--text-dim)">64 lines/page</text>
+      <text x="575" y="80" text-anchor="middle" fill="var(--text-dim)">64 B/line</text>
+      <text x="10" y="112" fill="var(--text-dim)">one 4 KiB page = 64 lines</text>
+      <g stroke="var(--border)">
+        <rect x="10" y="120" width="620" height="26" fill="none"/>
+      </g>
+      <g fill="var(--c-pos)" fill-opacity=".35">
+        <rect x="11" y="121" width="8.6" height="24"/><rect x="20.7" y="121" width="8.6" height="24"/><rect x="30.4" y="121" width="8.6" height="24"/><rect x="40.1" y="121" width="8.6" height="24"/>
+      </g>
+      <path d="M 50 133 H 600" stroke="var(--c-flag)" stroke-width="2" marker-end="url(#ch02-arrow)" fill="none"/>
+      <line x1="630" y1="114" x2="630" y2="152" stroke="var(--c-miss)" stroke-width="3"/>
+      <text x="625" y="166" text-anchor="end" fill="var(--c-miss)">page edge: prefetching stops</text>
+      <text x="10" y="196" fill="var(--text-dim)">one 64 B line = 16 × u32: a miss brings all 16</text>
+      <g fill="var(--c-hit)" fill-opacity=".3" stroke="var(--c-hit)">
+        <rect x="10" y="204" width="37" height="30"/><rect x="48.75" y="204" width="37" height="30"/><rect x="87.5" y="204" width="37" height="30"/><rect x="126.25" y="204" width="37" height="30"/>
+        <rect x="165" y="204" width="37" height="30"/><rect x="203.75" y="204" width="37" height="30"/><rect x="242.5" y="204" width="37" height="30"/><rect x="281.25" y="204" width="37" height="30"/>
+        <rect x="320" y="204" width="37" height="30"/><rect x="358.75" y="204" width="37" height="30"/><rect x="397.5" y="204" width="37" height="30"/><rect x="436.25" y="204" width="37" height="30"/>
+        <rect x="475" y="204" width="37" height="30"/><rect x="513.75" y="204" width="37" height="30"/><rect x="552.5" y="204" width="37" height="30"/><rect x="591.25" y="204" width="37" height="30"/>
+      </g>
+      <defs><marker id="ch02-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--c-flag)"/></marker></defs>
+    </svg>
+    <figcaption>How one address is cut up. The low 6 bits pick a byte inside a 64 B line, the next 6 pick one of a page's 64 lines, and the rest
+    is the page number that the TLB has to translate. The prefetcher works inside the middle field, and the TLB covers the top one.</figcaption>
+  </figure>
+
+  <h3 id="apple">The Apple 128-byte nuance</h3>
+  <p>On Apple Silicon "64 bytes" is only half true. <code>sysctl hw.cachelinesize</code> returns 128 on an M1, and Apple's game-scheduling
+  talk says "On Apple silicon, a cache line is 128 bytes long"<a class="cite" href="#src-9">[9]</a>. Yet Wrenger et al. found that on Asahi
+  Linux "getconf and the CTR_EL0 register &hellip; returns 64 B, which is also supported by our measurements"<a class="cite" href="#src-10">[10]</a>,
+  and Apple's optimization guide, as quoted by jia.je, gives 64 B lines in L1D and 128 B in L2<a class="cite" href="#src-11">[11]</a>. On x86,
+  Rust's <code>crossbeam_utils::CachePadded</code> also aligns to 128 B, because "spatial prefetcher is now pulling pairs of 64-byte cache
+  lines at a time"<a class="cite" href="#src-12">[12]</a>, and Zig's <code>std.atomic.cache_line</code> is 128 here too. So 64 B is the unit
+  of fills and alignment, and 128 B the safe padding for data that cores fight over (Chapter 8).</p>
+
+  <aside class="callout try"><p>Ask your own machine (reader commands; macOS also reports 16 KiB pages):</p>
+<pre><code class="language-bash">getconf LEVEL1_DCACHE_LINESIZE                              # Linux
+cat /sys/devices/system/cpu/cpu0/cache/index0/coherency_line_size
+sysctl hw.cachelinesize hw.pagesize                          # macOS</code></pre></aside>
+
+  <h3 id="sets">Lines live in sets</h3>
+  <p>A cache is split into <b>sets</b>, each holding a few lines (its <b>ways</b>), and each address can live in only one set, chosen by
+  the bits just above the line offset. Too many lines mapping to one set cause conflict misses (the reason power-of-two strides sometimes behave
+  badly), and a working set that is simply too large causes capacity misses. <a class="figref" href="#fig-cache-sim">the figure below</a> is a toy cache small enough to watch.
+  With LRU, a loop slightly too big evicts every line just before its reuse, which is why working-set curves have <em>cliffs</em>.</p>
+
+  <figure class="figure wide" id="fig-cache-sim">
+    <div class="figure-body" data-viz="cache-sim" data-opts='{"sets":4,"ways":2,"line":16,"preset":2}'><p>Static fallback: a 4-set, 2-way cache misses on every access of a loop 1.5× its size.</p></div>
+    <figcaption>A 128-byte, 4-set, 2-way LRU cache stepping through a loop 1.5× its size, twice. Every access in the second pass misses again,
+    which is why the sweep in <a class="figref" href="#fig-sweep">the figure below</a> falls off a step the moment the working set outgrows a level. Try the
+    "same-set stride" trace for conflict misses.</figcaption>
+  </figure>
+
+  <h2 id="harness">Measuring without fooling yourself</h2>
+  <p>Before we measure anything, we need a harness we trust. Microbenchmarks fail in a few predictable ways, and the harness every chapter in
+  this book copies (<code>code/harness/</code>, pasted verbatim between <code>// ---- harness ----</code> markers) handles each of them:</p>
+  <ul>
+    <li><b>Warm-up.</b> The first run pays for page faults, cold caches and cold predictors, so the harness runs the function once and discards the time.</li>
+    <li><b>Median of 7.</b> One run on a shared VM can double when a neighbour gets busy. The median ignores the three slowest and three fastest;
+    the samples are printed too (Chapter 12 charts the spread).</li>
+    <li><b>Keep-alive.</b> An unused result lets the optimizer delete the work. Every result goes through a "black box" the compiler must assume is read.</li>
+    <li><b>Checksums.</b> Every variant must compute the <em>same</em> answer, which catches a variant that is fast because it is wrong. All three
+    languages share one generator (splitmix64) and the same seeds, so they print identical checksums.</li>
+  </ul>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch02-the-machine/rust/src/main.rs"><code class="language-rust">use std::hint::black_box;
+use std::time::{Duration, Instant};
+
+// …
+
+/// Runs `f` once to warm up, then RUNS timed times. Returns the sorted timings.
+fn bench_runs&lt;R&gt;(mut f: impl FnMut() -&gt; R) -&gt; [Duration; RUNS] {
+    black_box(f());
+    let mut t = [Duration::ZERO; RUNS];
+    for slot in &amp;mut t {
+        let t0 = Instant::now();
+        black_box(f());
+        *slot = t0.elapsed();
+    }
+    t.sort_unstable();
+    t
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch02-the-machine/zig/main.zig"><code class="language-zig">fn nowNs(io: Io) i96 {
+    return Io.Clock.awake.now(io).nanoseconds;
+}
+
+/// Runs `f(ctx)` once to warm up, then RUNS timed times. Returns the sorted timings in ns.
+fn benchRuns(io: Io, comptime f: anytype, ctx: anytype) [RUNS]u64 {
+    std.mem.doNotOptimizeAway(f(ctx));
+    var t: [RUNS]u64 = undefined;
+    for (&amp;t) |*slot| {
+        const t0 = nowNs(io);
+        std.mem.doNotOptimizeAway(f(ctx));
+        slot.* = @intCast(nowNs(io) - t0);
+    }
+    std.mem.sort(u64, &amp;t, {}, std.sort.asc(u64));
+    return t;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch02-the-machine/odin/main.odin"><code class="language-odin">// Odin has no black_box: a volatile store into a file-private global keeps results alive.
+@(private = "file")
+sink: u64
+
+keep :: proc "contextless" (v: $T) where size_of(T) &lt;= 8 {
+	intrinsics.volatile_store((^T)(&amp;sink), v)
+}
+
+// Runs f(ctx) once to warm up, then RUNS timed times. Returns the sorted timings.
+bench_runs :: proc(f: proc(ctx: $C) -&gt; u64, ctx: C) -&gt; (t: [RUNS]time.Duration) {
+	keep(f(ctx))
+	for &amp;d in t {
+		t0 := time.tick_now()
+		keep(f(ctx))
+		d = time.tick_since(t0)
+	}
+	slice.sort(t[:])
+	return
+}</code></pre>
+  </div>
+
+  <p><b>Rust</b> has
+  <code>std::hint::black_box</code>, an identity function the compiler is "encouraged to assume" can use its argument in any way.
+  The docs add that it is only provided "on a 'best-effort' basis"<a class="cite" href="#src-24">[24]</a>. <b>Zig</b> has <code>std.mem.doNotOptimizeAway</code>, which in its own words "tries to prevent the compiler
+  from optimizing the computation away"<a class="cite" href="#src-25">[25]</a>. Zig's timer is now <code>Io.Clock.awake</code>, and it needs the
+  <code>io</code> that <code>main</code> receives. <b>Odin has no black box at all.</b> The idiom is an
+  <code>intrinsics.volatile_store</code> into a file-private global. The optimizer may not remove a volatile store, so the value must be computed<a class="cite" href="#src-26">[26]</a>. Odin times with the monotonic <code>time.tick_now</code>/<code>tick_since</code>.
+  Rust benches any closure; Zig and Odin take a function plus a small context struct.</p>
+
+  <aside class="callout version" data-title="Changed in Zig 0.16 and 0.17"><p>Zig 0.16 removed <code>std.time.Timer</code> and <code>Instant</code>.
+  Clocks, like files and randomness, now hang off <code>std.Io</code>: <code>Io.Clock.awake.now(io)</code>. Zig 0.17 renamed the
+  optimization modes: <code>-O ReleaseFast</code> is now <code>-O fast</code> (the old flag is still accepted) and
+  <code>.ReleaseFast</code> is <code>.fast</code>. <code>std.lang.Optimize.ReleaseFast</code> survives only as a deprecated declaration, so
+  <code>builtin.mode == .ReleaseFast</code> no longer compiles; write <code>.fast</code>.
+  Most Zig benchmark code online predates both changes.</p></aside>
+
+  <aside class="callout pitfall"><p><b>The 0 ns benchmark.</b> If a timing looks too good, suspect that the work was deleted: an unused sum or a
+  computation folded at compile time shows up as nanoseconds. Keep-alive plus checksum is the defence. Chapter 12 comes back to this trap with an example.</p></aside>
+
+  <h2 id="list">Experiment 1: an array against a linked list</h2>
+  <p>Here is the cleanest demonstration of why layout matters. Take 4·N 16-byte nodes, each with a <code>value</code> and a
+  <code>next</code> index (indices instead of pointers keep the Rust version free of <code>unsafe</code>, and Chapter 5 argues they are better anyway).
+  Sum the values three ways: as an <b>array</b> in memory order, as a <b>list linked in memory order</b>, and as a <b>list linked in shuffled
+  order</b>. All three read exactly the same nodes and produce the same sum.</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch02-the-machine/rust/src/main.rs"><code class="language-rust">/// 16 bytes: 8 value + 4 next + 4 padding, so four nodes share a 64-byte line.
+#[derive(Clone, Copy)]
+struct Node {
+    value: u64,
+    next: u32,
+}
+
+// …
+
+fn sum_list(nodes: &amp;[Node], head: u32) -&gt; u64 {
+    let (mut s, mut i) = (0, head);
+    while i != END {
+        let n = nodes[i as usize];
+        s += n.value;
+        i = n.next; // the next address is only known when this load returns
+    }
+    s
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch02-the-machine/zig/main.zig"><code class="language-zig">/// 16 bytes: 8 value + 4 next + 4 padding, so four nodes share a 64-byte line.
+const Node = struct { value: u64, next: u32 };
+
+// …
+
+fn sumList(l: List) u64 {
+    var s: u64 = 0;
+    var i = l.head;
+    while (i != END) {
+        const n = l.nodes[i];
+        s += n.value;
+        i = n.next; // the next address is only known when this load returns
+    }
+    return s;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch02-the-machine/odin/main.odin"><code class="language-odin">// 16 bytes: 8 value + 4 next + 4 padding, so four nodes share a 64-byte line.
+Node :: struct {
+	value: u64,
+	next:  u32,
+}
+
+// …
+
+sum_list :: proc(l: List) -&gt; (s: u64) {
+	i := l.head
+	for i != END {
+		n := l.nodes[i]
+		s += n.value
+		i = n.next // the next address is only known when this load returns
+	}
+	return
+}</code></pre>
+  </div>
+
+  <p>The important line is the last one in the loop. The address of the next node is <em>inside</em> the current node, so the core cannot
+  start the next load until the current one has returned. When the nodes are shuffled, almost every load is to a different line, and
+  with 64 MiB of nodes almost every line comes from DRAM. <a class="figref" href="#fig-chase">the figure below</a> steps through that with a model where a hit costs
+  1.5 ns and a miss 150 ns, round figures from the two ends of our own sweep.</p>
+
+  <figure class="figure wide" id="fig-chase">
+    <div class="figure-body" data-viz="pointer-chase" data-opts='{"nodes":16,"nodeBytes":16,"hitNs":1.5,"missNs":150}'><p>Static fallback: the shuffled list misses on every node; the array misses once per four nodes.</p></div>
+    <figcaption>Sixteen 16-byte nodes. The array touches four lines and four nodes share each one, so it misses once per four nodes. The shuffled list
+    misses on every hop. The model even flatters the list: a real core also <em>prefetches</em> the array's next lines and overlaps them, which
+    the list cannot allow.</figcaption>
+  </figure>
+
+  <details class="predict"><summary>Predict the three results at 64 MiB: array, in-order list, shuffled list. How far apart?</summary>
+    <p>On this orb the array took about <span data-bench-val="ch02-list" data-label="array" data-lang="rust" data-metric="ns/n" data-digits="2">1.6 ns</span> per node, the in-order list about <span data-bench-val="ch02-list" data-label="list, in order" data-lang="rust" data-metric="ns/n" data-digits="2">3.0 ns</span> and the shuffled list about <span data-bench-val="ch02-list" data-label="list, shuffled" data-lang="rust" data-metric="ns/n" data-digits="2">140 ns</span> (Rust; Zig and Odin
+    were within about a quarter). So the shuffled list was <span data-bench-ratio="ch02-list" data-num="list, shuffled" data-den="array" data-lang="rust">about 90×</span>
+    slower than the array, and the in-order list only <span data-bench-ratio="ch02-list" data-num="list, in order" data-den="array" data-lang="rust">about 2×</span>.</p></details>
+
+  <figure class="figure" id="fig-list-bars">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch02-list" data-opts='{"metric":"ns/n","per":"node","log":true,"labels":["array","list, in order","list, shuffled"]}'></div>
+    <figcaption>Measured on this orb: time per node for 4,194,304 nodes (64 MiB), log scale. The in-order list is only about twice the array.
+    The shuffled list is two orders of magnitude slower. The <em>pointers</em> are not what costs. Where they point is.</figcaption>
+  </figure>
+
+  <p>The middle bar is the instructive one. A list whose nodes happen to be in memory order is only about twice as slow, because the
+  addresses are sequential and the prefetcher already has the lines on their way. A freshly built list often looks like this; after an hour
+  of inserts and deletes it becomes the third bar.</p>
+
+  <aside class="callout note"><p>The <code>array</code> number, <span data-bench-val="ch02-list" data-label="array" data-lang="rust" data-metric="ns/n" data-digits="2">1.6 ns</span> per 16-byte node, is a bandwidth figure: on the order of 10 GB/s of
+  reads from DRAM for one core running this loop. Experiment 3's sequential sum reaches a somewhat lower figure, so treat both as what
+  these loops reached, not as the machine's bandwidth. Without <code>next</code> and padding it would move half the bytes; Chapter 3
+  is about that half.</p></aside>
+
+  <h2 id="sweep">Experiment 2: the working-set sweep</h2>
+  <p>To see each cache level on its own, chase pointers through a buffer of a chosen size, from 4 KiB to 512 MiB, and plot the time per load. Two
+  details make this measure latency and nothing else. First, <b>one load per 64-byte line</b>: only the first <code>u32</code> of each line is
+  used, so every hop is a new line. Second, the order is a <b>single random cycle</b> through all the lines, built with Sattolo's algorithm<a class="cite" href="#src-23">[23]</a>.
+  That is Fisher–Yates with the swap partner drawn from <code>0..i</code> instead of <code>0..=i</code>, which guarantees that
+  following <code>next</code> from any line visits every line before coming back.</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch02-the-machine/rust/src/main.rs"><code class="language-rust">/// Sattolo's algorithm: like Fisher-Yates but j &lt; i, never j == i. The result, read as
+/// "next = p[i]", is ONE cycle through all n elements, so a chase can never get stuck in a short loop.
+fn sattolo(n: usize, rng: &amp;mut Rng) -&gt; Vec&lt;u32&gt; {
+    let mut p: Vec&lt;u32&gt; = (0..n as u32).collect();
+    for i in (1..n).rev() {
+        p.swap(i, rng.below(i));
+    }
+    p
+}
+
+// …
+
+fn chase(buf: &amp;[u32], hops: usize) -&gt; u64 {
+    let (mut s, mut i) = (0u64, 0usize);
+    for _ in 0..hops {
+        i = buf[i] as usize; // each load needs the previous one's result
+        s += i as u64;
+    }
+    s
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch02-the-machine/zig/main.zig"><code class="language-zig">/// Sattolo's algorithm: like Fisher-Yates but j &lt; i, never j == i. The result, read as
+/// "next = p[i]", is ONE cycle through all n elements, so a chase can never get stuck in a short loop.
+fn sattolo(gpa: Allocator, n: usize, rng: *Rng) ![]u32 {
+    const p = try identity(gpa, n);
+    var i = n - 1;
+    while (i &gt; 0) : (i -= 1) std.mem.swap(u32, &amp;p[i], &amp;p[rng.below(i)]);
+    return p;
+}
+
+// …
+
+fn chase(c: Chase) u64 {
+    var s: u64 = 0;
+    var i: usize = 0;
+    for (0..c.hops) |_| {
+        i = c.buf[i]; // each load needs the previous one's result
+        s += i;
+    }
+    return s;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch02-the-machine/odin/main.odin"><code class="language-odin">// Sattolo's algorithm: like Fisher-Yates but j &lt; i, never j == i. The result, read as
+// "next = p[i]", is ONE cycle through all n elements, so a chase can never get stuck in a short loop.
+sattolo :: proc(n: int, r: ^Rng) -&gt; []u32 {
+	p := identity(n)
+	for i := n - 1; i &gt; 0; i -= 1 {
+		slice.swap(p, i, rng_below(r, i))
+	}
+	return p
+}
+
+// …
+
+chase :: proc(c: Chase) -&gt; (s: u64) {
+	i := 0
+	for _ in 0 ..&lt; c.hops {
+		i = int(c.buf[i]) // each load needs the previous one's result
+		s += u64(i)
+	}
+	return
+}</code></pre>
+  </div>
+
+  <aside class="callout pitfall"><p><b>Fisher–Yates is the wrong shuffle for a chase.</b> A uniformly random permutation splits into several
+  cycles, and the one containing your starting element can be short. A chase that starts there loops over a few kilobytes and reports L1
+  latency for a "512 MiB" buffer. Sattolo's one-character change (<code>below(i)</code> instead of <code>below(i + 1)</code>) rules that out.
+  The program checks it, too: one trip of <code>lines</code> hops must sum to 16·(0 + 1 + … + lines−1).</p></aside>
+
+  <p>Small buffers are walked many times, so that every size does at least 2<sup>21</sup> loads. The harness times the whole run, and the program
+  divides each sample by the number of trips before printing <code>BENCH</code>. That way <code>n</code> is the number of lines and
+  <code>ns / n</code> is the latency of one load:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch02-the-machine/rust/src/main.rs"><code class="language-rust">            let runs = bench_runs(|| chase(black_box(&amp;buf), rounds * lines));
+            // one sample = one trip around the cycle, so ns/n is the latency of one load
+            let per_trip = runs.map(|d| d / rounds as u32);
+            println!("    {:&gt;8} KiB  {:&gt;7.2} ns/load", bytes &gt;&gt; 10, ns_per(per_trip[RUNS / 2], lines));
+            emit_bench("ch02-sweep", "random chase", lines, &amp;per_trip);</code></pre>
+<pre data-lang="Zig" data-file="code/ch02-the-machine/zig/main.zig"><code class="language-zig">                var runs = benchRuns(io, chase, c);
+                // one sample = one trip around the cycle, so ns/n is the latency of one load
+                for (&amp;runs) |*r| r.* /= rounds;
+                try out.print("    {d:&gt;8} KiB  {d:&gt;7.2} ns/load\n", .{ bytes &gt;&gt; 10, nsPer(runs[RUNS / 2], lines) });
+                try emitBench(out, "ch02-sweep", "random chase", lines, &amp;runs);</code></pre>
+<pre data-lang="Odin" data-file="code/ch02-the-machine/odin/main.odin"><code class="language-odin">				runs := bench_runs(chase, c)
+				// one sample = one trip around the cycle, so ns/n is the latency of one load
+				for &amp;d in runs {
+					d /= time.Duration(rounds)
+				}
+				fmt.printfln("    %8d KiB  %7.2f ns/load", bytes &gt;&gt; 10, ns_per(runs[RUNS / 2], lines))
+				emit_bench("ch02-sweep", "random chase", lines, runs[:])</code></pre>
+  </div>
+
+  <figure class="figure wide" id="fig-sweep">
+    <div class="figure-body" data-viz="bench-line" data-bench="ch02-sweep" data-opts='{"metric":"ns/n","per":"load","xScale":64,"xUnit":"bytes","xLabel":"working set","bands":true,"logY":true}'></div>
+    <figcaption>Measured on this orb: nanoseconds per dependent load against working-set size, one line per language, log–log. The shaded bands are this
+    core's L1d (48 KiB), L2 (1.25 MiB) and L3 (54 MiB, host-shared). Read the first step at 48 KiB, the second just past 1 MiB, and then
+    a cliff into DRAM that arrives <em>well before</em> 54 MiB.</figcaption>
+  </figure>
+
+  <p>Read the curve from left to right:</p>
+  <ul>
+    <li><b>Up to 48 KiB: about <span data-bench-val="ch02-sweep" data-label="random chase" data-lang="rust" data-n="64" data-metric="ns/n" data-digits="2">1.5 ns</span>.</b> That is L1, and it matches the L1d size exactly: the 48 KiB point is still flat and 64 KiB has
+    already jumped. That is about 4 cycles at the nominal 2.6 GHz (or 5, the
+    usually quoted Sunny Cove figure, at a ~3.3 GHz turbo; we cannot read the real clock inside this VM).</li>
+    <li><b>64 KiB to about 1 MiB: about 4–8 ns.</b> That is L2. It climbs gently past 256 KiB, the first hint of the TLB (see below).</li>
+    <li><b>1.5 MiB to somewhere between 6 and 16 MiB: about 20–27 ns.</b> That is L3. Every run is still at L3 latency at 6 MiB, and every run
+    has reached DRAM by 16 MiB, far short of 54 MiB; where in between the step falls differs between the three runs.</li>
+    <li><b>Beyond that: about 130–200 ns.</b> DRAM plus address translation. In Zig and Odin the cost keeps climbing toward 512 MiB (the TLB
+    again); Rust's run stays roughly flat.</li>
+  </ul>
+
+  <aside class="callout pitfall"><p><b>A host-shared L3 blurs the L3 → DRAM step.</b> The 54 MiB that <code>lscpu</code> reports is the whole
+  socket's L3. It is split into slices across the die and shared
+  with the host's other tenants, so we see a usable L3 of roughly 6–8 MiB in our runs, and the edge moves from run to run. On a desktop the step lines up with the L3 size;
+  on a cloud VM, do not infer the L3 size from a sweep. We also cannot separate "L3 miss" from "second-level
+  TLB miss" at the L3 edge without performance counters, which this VM does not expose.</p></aside>
+
+  <p>Now we can draw a ladder from our own data. <a class="figref" href="#fig-ladder-orb">the figure below</a> picks the sweep point nearest each level, and adds two
+  rows from the experiments below: a DRAM load with eight in flight, and a 1 MiB sequential read.</p>
+
+  <figure class="figure wide" id="fig-ladder-orb">
+    <div class="figure-body" data-viz="latency-ladder" data-ch02-ladder data-opts='{"set":"orb"}'><p>Static fallback: L1 1.5 ns, L2 4.2 ns, L3 ≈ 24 ns, DRAM ≈ 140–190 ns.</p></div>
+    <figcaption>This orb's latency ladder, computed in the page from <code>bench-ch02.js</code> (Rust). Compare the DRAM rows with
+    the 2026 preset's 80 ns: a dependent DRAM load on this KVM guest costs about twice what a desktop pays. Note that eight loads in flight
+    bring the cost <em>per load</em> close to an L3 hit.</figcaption>
+  </figure>
+
+  <h2 id="prefetch">Prefetchers and the 4 KiB page boundary</h2>
+  <p>If every DRAM access cost a full dependent-miss latency, the sequential array in Experiment 1 could not have run at <span data-bench-val="ch02-list" data-label="array" data-lang="rust" data-metric="ns/n" data-digits="2">1.6 ns</span> per node. It did, because the core does
+  not wait to be asked. Intel's optimization manual describes several hardware prefetchers that guess the next line and fetch it early<a class="cite" href="#src-13">[13]</a>:</p>
+  <ul>
+    <li>the L1 <b>streaming</b> and <b>stride</b> prefetchers, which fetch the next line or detect "strides of up to 2K bytes";</li>
+    <li>the L2 <b>spatial prefetcher</b>, which "strives to complete every cache line fetched to the L2 cache with the pair line that completes it to a
+    128-byte aligned chunk" (this is crossbeam's reason for 128-byte padding);</li>
+    <li>the L2 <b>streamer</b>, which follows forward and backward streams, with one important limit: "Prefetched cache lines must be in the same 4K page."</li>
+  </ul>
+  <p>The last limit exists because the next virtual page could be mapped anywhere or nowhere; the hardware cannot prefetch across pages because it "could initiate page table walks that are invalid"<a class="cite" href="#src-8">[8]</a>.
+  So a sequential stream has to retrain at every page boundary. A 2022 post on abertschi.ch confirmed the boundary experimentally on Coffee Lake<a class="cite" href="#src-14">[14]</a>.
+</p>
+
+  <figure class="figure wide" id="fig-prefetch">
+    <div class="figure-body" data-viz="ch02-prefetch" data-opts='{"latency":200,"distance":16}'><p>Static fallback: sequential reading stalls only while the prefetcher trains at the start of each page; a random chase stalls on every line.</p></div>
+    <figcaption>A model of two 4 KiB pages (128 lines). In <em>sequential</em> mode the first two lines of each page are demand misses (red), the streamer
+    trains, and amber lines fill in ahead of the core. In <em>random chase</em> mode every line waits the full latency. Both timelines share one time axis.
+    Push the prefetch distance below latency ÷ work and stalls come back. Move to page 1 and watch the prefetcher stop at the page edge and
+    retrain.</figcaption>
+  </figure>
+
+  <details class="predict"><summary>With 200-cycle memory, 8 cycles of work per line and a prefetch distance of 16 lines, does sequential reading still stall after training?</summary>
+    <p>Yes, a little. A line is requested 16 lines ahead, which is 16 × 8 = 128 cycles before it is needed, but it takes 200 cycles to arrive. So each
+    line still waits about 72 cycles. Set the distance to 25 or more (200 ÷ 8) and the stalls after training disappear. Real streamers ramp their distance
+    up when they see stalls for this reason.</p></details>
+
+  <h3 id="access">Experiment 3: the same bytes in four orders</h3>
+  <p>To see the prefetchers on real hardware, read the same 16·N <code>u32</code>s (64 MiB) and visit every element exactly once in different orders:
+  <b>sequential</b>, at a <b>64 B stride</b> (16 passes, each touching every line once), at a <b>4 KiB stride</b> (1,024 passes, each load on a new page),
+  and in <b>random</b> order through a shuffled index array. All four sum the same values, and the checksum confirms it.</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch02-the-machine/rust/src/main.rs"><code class="language-rust">/// Visits every element exactly once: `stride` passes, each touching every stride-th element.
+fn sum_strided(a: &amp;[u32], stride: usize) -&gt; u64 {
+    let mut s = 0;
+    for off in 0..stride {
+        s += a[off..].iter().step_by(stride).map(|&amp;x| x as u64).sum::&lt;u64&gt;();
+    }
+    s
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch02-the-machine/zig/main.zig"><code class="language-zig">/// Visits every element exactly once: `stride` passes, each touching every stride-th element.
+fn sumStrided(c: Strided) u64 {
+    var s: u64 = 0;
+    for (0..c.stride) |off| {
+        var i = off;
+        while (i &lt; c.a.len) : (i += c.stride) s += c.a[i];
+    }
+    return s;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch02-the-machine/odin/main.odin"><code class="language-odin">// Visits every element exactly once: `stride` passes, each touching every stride-th element.
+sum_strided :: proc(c: Strided) -&gt; (s: u64) {
+	for off in 0 ..&lt; c.stride {
+		for i := off; i &lt; len(c.a); i += c.stride {
+			s += u64(c.a[i])
+		}
+	}
+	return
+}</code></pre>
+  </div>
+
+  <figure class="figure" id="fig-access">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch02-access" data-opts='{"metric":"ns/n","per":"u32","log":true,"labels":["sequential","stride 64 B","stride 4 KiB","random","random + prefetch"]}'></div>
+    <figcaption>Measured on this orb: time per element for the same 16,777,216 <code>u32</code>s (64 MiB), log scale. Every bar sums the same bytes.
+    Random order is <span data-bench-ratio="ch02-access" data-num="random" data-den="sequential" data-lang="rust">about 22×</span> slower than sequential (Rust), but still far
+    faster than the dependent chase, because these loads do not wait for each other.</figcaption>
+  </figure>
+
+  <p><b>Sequential</b> is about <span data-bench-val="ch02-access" data-label="sequential" data-lang="rust" data-metric="ns/n" data-digits="2">0.53 ns</span> per element: every byte of every line is used. The <b>64 B stride</b> is <span data-bench-ratio="ch02-access" data-num="stride 64 B" data-den="sequential" data-lang="rust">about 12×</span>
+  slower. Every line is fetched 16 times, once per pass: you pay per line. The <b>4 KiB stride</b> costs <span data-bench-ratio="ch02-access" data-num="stride 4 KiB" data-den="stride 64 B" data-lang="rust">about 1.9×</span>
+  the 64 B stride (Rust), since every load is on a new page: a TLB lookup per load and no stream within a page. In Rust and Zig it is even
+  slower than random order. <b>Random</b> costs
+  <span data-bench-ratio="ch02-access" data-num="random" data-den="sequential" data-lang="rust">about 24×</span> sequential. Yet at <span data-bench-val="ch02-access" data-label="random" data-lang="rust" data-metric="ns/n" data-digits="2">12 ns</span> per load it is still
+  an order of magnitude faster than the dependent chase in Experiment 2 at the same size (<span data-bench-val="ch02-sweep" data-label="random chase" data-lang="rust" data-n="1048576" data-metric="ns/n" data-digits="2">140 ns</span>). That gap is the subject of the next section.</p>
+
+  <h2 id="tlb">TLB reach, and huge pages that are not used</h2>
+  <p>Every load starts with a virtual address, and the page-number bits of that address have to be translated to a physical page. The
+  <b>TLB</b> caches recent translations. When it misses, the core walks the page table, which on x86-64 is four levels deep, so a full walk can
+  add up to four more dependent memory accesses<a class="cite" href="#src-15">[15]</a>. The number that matters is the TLB's <b>reach</b>:
+  entries × page size.</p>
+
+  <div class="table-wrap"><table>
+    <tr><th>TLB (cited)</th><th class="num">entries</th><th class="num">reach with 4 KiB pages</th><th class="num">with 2 MiB pages</th></tr>
+    <tr><td>Zen 4 L1 DTLB</td><td class="num">72</td><td class="num">288 KiB</td><td class="num">144 MiB</td></tr>
+    <tr><td>Zen 5 L1 DTLB</td><td class="num">96</td><td class="num">384 KiB</td><td class="num">192 MiB</td></tr>
+    <tr><td>Zen 5 L2 DTLB</td><td class="num">4,096</td><td class="num">16 MiB</td><td class="num">8 GiB</td></tr>
+  </table></div>
+  <p class="chart-meta">Cited: Chips and Cheese (Zen 4: "288 KB of memory with no latency overhead, or 12 MB with a slight 7-8 cycle penalty")<a class="cite" href="#src-15">[15]</a>;
+  jia.je (Zen 5: 96 and 4,096 entries, 4 cycles on an L1 DTLB hit and 11 on an L2 DTLB hit)<a class="cite" href="#src-16">[16]</a>. Reach columns are entries × page size.</p>
+
+  <p>Our sweep shows this structure. The gentle climb inside L2, from <span data-bench-val="ch02-sweep" data-label="random chase" data-lang="rust" data-n="4096" data-metric="ns/n" data-digits="2">4.3 ns</span> at 256 KiB to a little more at 512–768 KiB, starts just past
+  256 KiB, which is 64 entries × 4 KiB. That is consistent with a 64-entry L1 DTLB, the size usually reported for this core family (not verified
+  for this exact part; without counters it is an inference from the shape). In Zig and Odin the DRAM region climbs further, to <span data-bench-val="ch02-sweep" data-label="random chase" data-lang="zig" data-n="8388608" data-metric="ns/n" data-digits="2">180 ns</span> and
+  <span data-bench-val="ch02-sweep" data-label="random chase" data-lang="odin" data-n="8388608" data-metric="ns/n" data-digits="2">200 ns</span> at 512 MiB, probably because the page tables themselves leave the cache
+  (Rust's run stays roughly flat, so the effect is small and noisy here): 512 MiB is 131,072 pages, 1 MiB of page-table entries. Without counters this is also an inference.</p>
+
+  <p>Huge pages fix this. One 2 MiB page has 512× the reach of a 4 KiB one. Linux can supply them transparently, but on this orb
+  <code>/sys/kernel/mm/transparent_hugepage/enabled</code> reads <code>always [madvise] never</code>. In <code>madvise</code> mode the kernel only
+  backs a region with huge pages if the program asks for it with <code>madvise(MADV_HUGEPAGE)</code><a class="cite" href="#src-17">[17]</a>. None of our
+  programs asks (Rust's standard library has no call for it; Odin has <code>linux.madvise(…, .HUGEPAGE)</code> in <code>core:sys/linux</code>,
+  but we did not use it), so every number here is a 4 KiB-page number. With THP set to
+  <code>always</code>, the right half of <a class="figref" href="#fig-sweep">the figure above</a> would be lower and flatter.</p>
+
+  <aside class="callout try"><p>Check your own settings, and (on a machine that has them) count the TLB misses directly. These are reader commands;
+  this orb has no <code>perf</code> and no counters, so the book shows no output for them:</p>
+<pre><code class="language-bash">cat /sys/kernel/mm/transparent_hugepage/enabled
+grep -i huge /proc/meminfo
+perf stat -e cycles,instructions,cache-misses,dTLB-load-misses \
+    taskset -c 2 target/release/ch02_the_machine</code></pre></aside>
+
+  <h2 id="mlp">Bandwidth, latency and memory-level parallelism</h2>
+  <p>Experiment 2 and Experiment 3 both did random loads into 64 MiB. The chase cost about <span data-bench-val="ch02-sweep" data-label="random chase" data-lang="rust" data-n="1048576" data-metric="ns/n" data-digits="2">140 ns</span> per load and the random sum about <span data-bench-val="ch02-access" data-label="random" data-lang="rust" data-metric="ns/n" data-digits="2">12 ns</span>.
+  The difference is in the <em>dependencies</em>. In the chase the next address is the result of the current load; in the random sum the
+  indices come from a sequentially read array, so the out-of-order core issues the next dozen loads together and waits for the group once. That is <b>memory-level parallelism (MLP)</b>.</p>
+
+  <p>Latency and bandwidth are linked by Little's law: <em>throughput = requests in flight ÷ latency</em>. With one miss in flight and about 150 ns
+  latency, a core moves 64 B per 150 ns, about 0.43 GB/s. With ten in flight it moves ten times that. Sequential code is fast because the prefetcher keeps
+  many misses in flight, not because any miss got shorter. A pointer chase allows one, however much bandwidth the machine has.</p>
+
+  <h3 id="chains">Experiment 4: split the chase</h3>
+  <p>We can measure MLP directly. Walk the same 64 MiB Sattolo cycle with K cursors spread evenly around it, advancing all K each round. The total
+  number of loads is the same, and every line is still visited exactly once (the checksum is identical for every K), but within one round the K loads
+  are independent.</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch02-the-machine/rust/src/main.rs"><code class="language-rust">/// K cursors spread evenly around the same cycle, advanced in lockstep. The K loads in one
+/// round do not depend on each other, so the core can have K misses in flight at once.
+fn chase_k&lt;const K: usize&gt;(buf: &amp;[u32], starts: &amp;[usize; K], hops_each: usize) -&gt; u64 {
+    let (mut cur, mut s) = (*starts, 0u64);
+    for _ in 0..hops_each {
+        for c in &amp;mut cur {
+            *c = buf[*c] as usize;
+            s += *c as u64;
+        }
+    }
+    s
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch02-the-machine/zig/main.zig"><code class="language-zig">/// K cursors spread evenly around the same cycle, advanced in lockstep. The K loads in one
+/// round do not depend on each other, so the core can have K misses in flight at once.
+fn chaseK(comptime K: usize) fn (Chains) u64 {
+    return struct {
+        fn run(c: Chains) u64 {
+            var cur: [K]usize = c.starts[0..K].*;
+            var s: u64 = 0;
+            for (0..c.hops_each) |_| {
+                inline for (&amp;cur) |*p| {
+                    p.* = c.buf[p.*];
+                    s += p.*;
+                }
+            }
+            return s;
+        }
+    }.run;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch02-the-machine/odin/main.odin"><code class="language-odin">// K cursors spread evenly around the same cycle, advanced in lockstep. The K loads in one
+// round do not depend on each other, so the core can have K misses in flight at once.
+chase_k :: proc(c: Chains, $K: int) -&gt; (s: u64) {
+	cur: [K]int
+	copy(cur[:], c.starts)
+	for _ in 0 ..&lt; c.hops_each {
+		#unroll for j in 0 ..&lt; K {
+			cur[j] = int(c.buf[cur[j]])
+			s += u64(cur[j])
+		}
+	}
+	return
+}
+
+// The harness takes proc(ctx) -&gt; u64, so each K gets a tiny wrapper.
+chase_1 :: proc(c: Chains) -&gt; u64 {return chase_k(c, 1)}
+chase_2 :: proc(c: Chains) -&gt; u64 {return chase_k(c, 2)}
+chase_4 :: proc(c: Chains) -&gt; u64 {return chase_k(c, 4)}
+chase_8 :: proc(c: Chains) -&gt; u64 {return chase_k(c, 8)}</code></pre>
+  </div>
+  <p>K must be a compile-time constant so the cursors live in registers: a const generic in Rust, a function returning a function per
+  <code>comptime K</code> with <code>inline for</code> in Zig, and a <code>$K</code> parameter with <code>#unroll for</code> in Odin (plus four
+  small wrappers, because the harness wants a <code>proc(ctx) -&gt; u64</code>).</p>
+
+  <figure class="figure" id="fig-mlp">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch02-mlp" data-opts='{"metric":"ns/n","per":"load","sort":"none","labels":["1 chain","2 chains","4 chains","8 chains"]}'></div>
+    <figcaption>Measured on this orb: the same 1,048,576-line (64 MiB) cycle walked by 1, 2, 4 and 8 independent chains. The time per load falls almost
+    exactly in proportion to K: the memory latency did not change, but the core overlapped up to eight misses at once.</figcaption>
+  </figure>
+
+  <p>Eight chains are <span data-bench-ratio="ch02-mlp" data-num="1 chain" data-den="8 chains" data-lang="rust">about 7×</span> faster than one, and
+  the scaling is almost perfect. The random sum in Experiment 3, at <span data-bench-val="ch02-access" data-label="random" data-lang="rust" data-metric="ns/n" data-digits="2">12 ns</span> per load, corresponds to roughly ten or more overlapped misses. Past that,
+  the core runs out of resources for tracking outstanding misses. The practical lesson for data layout: <b>if you cannot avoid a miss, at least avoid
+  making the next address depend on it.</b> A list or pointer tree allows one miss in flight; an index array or a batch of independent lookups allows many.</p>
+
+  <h3 id="swprefetch">Software prefetch, and Albrecht's PS3</h3>
+  <p>In 2009 Tony Albrecht walked through a PS3 scene-tree update in "Pitfalls of Object Oriented Programming"<a class="cite" href="#src-18">[18]</a>. Its
+  profile counted "L2 Cache misses: 36,345 @ 400 cycles each ~= 4.54ms". Reordering memory took the update from 19.6 ms to 12.9 ms ("35% faster just by moving
+  things around in memory!"). A linear traversal took it to 4.8 ms, and a software prefetch instruction, <code>dcbt</code>, issued ahead of use took it to
+  <b>3.3 ms</b>.</p>
+
+  <figure class="figure" id="fig-albrecht">
+    <div class="figure-body" data-viz="bench-bars" data-opts='{"source":"cited: Tony Albrecht, Pitfalls of Object Oriented Programming (Sony, 2009), PS3","metric":"value","unit":"ms","sort":"none","log":false,"runs":[{"label":"original OOP tree","value":19.6},{"label":"reordered in memory","value":12.9},{"label":"linear traversal","value":4.8},{"label":"+ software prefetch (dcbt)","value":3.3}]}'></div>
+    <figcaption>Cited, not re-measured. The last step is software prefetch. The PS3's PPU was an in-order core: it could not run ahead past a miss on its
+    own, so explicitly asking for lines early was the only way to overlap them.</figcaption>
+  </figure>
+
+  <p>All three of our languages can issue the same hint. Rust exposes the x86 intrinsic <code>_mm_prefetch</code><a class="cite" href="#src-27">[27]</a>, Zig has
+  the builtin <code>@prefetch</code> with a <code>std.lang.PrefetchOptions</code> struct<a class="cite" href="#src-25">[25]</a>, and Odin has
+  <code>intrinsics.prefetch_read_data</code><a class="cite" href="#src-26">[26]</a>. We added a prefetch 16 iterations ahead to the random sum:</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch02-the-machine/rust/src/main.rs"><code class="language-rust">/// Software prefetch hint (`prefetcht0`). Other targets get a no-op.
+#[cfg(target_arch = "x86_64")]
+fn prefetch(p: &amp;u32) {
+    use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+    // The check is a cached bit test, and always true: SSE is part of the x86_64 baseline.
+    if is_x86_feature_detected!("sse") {
+        // SAFETY: the CPU supports SSE (checked above), which is all `_mm_prefetch` requires.
+        // A prefetch is only a hint: it never faults and does not change program behaviour.
+        unsafe { _mm_prefetch::&lt;_MM_HINT_T0&gt;(std::ptr::from_ref(p).cast()) }
+    }
+}
+#[cfg(not(target_arch = "x86_64"))]
+fn prefetch(_: &amp;u32) {}
+
+// …
+
+fn sum_gather_prefetch(a: &amp;[u32], idx: &amp;[u32]) -&gt; u64 {
+    let mut s = 0;
+    for (k, &amp;i) in idx.iter().enumerate() {
+        if let Some(&amp;ahead) = idx.get(k + PREFETCH_AHEAD) {
+            prefetch(&amp;a[ahead as usize]); // ask for a line we will need 16 iterations from now
+        }
+        s += a[i as usize] as u64;
+    }
+    s
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch02-the-machine/zig/main.zig"><code class="language-zig">fn sumGatherPrefetch(g: Gather) u64 {
+    var s: u64 = 0;
+    for (g.idx, 0..) |i, k| {
+        if (k + PREFETCH_AHEAD &lt; g.idx.len) {
+            // ask for a line we will need 16 iterations from now (a no-op where unsupported)
+            @prefetch(&amp;g.a[g.idx[k + PREFETCH_AHEAD]], .{ .rw = .read, .locality = 3, .cache = .data });
+        }
+        s += g.a[i];
+    }
+    return s;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch02-the-machine/odin/main.odin"><code class="language-odin">sum_gather_prefetch :: proc(g: Gather) -&gt; (s: u64) {
+	for i, k in g.idx {
+		if k + PREFETCH_AHEAD &lt; len(g.idx) {
+			// ask for a line we will need 16 iterations from now (locality 3 = keep in all levels)
+			intrinsics.prefetch_read_data(&amp;g.a[g.idx[k + PREFETCH_AHEAD]], 3)
+		}
+		s += u64(g.a[i])
+	}
+	return
+}</code></pre>
+  </div>
+
+  <aside class="callout version" data-title="Since Rust 1.86"><p><code>_mm_prefetch</code> is a <em>safe</em> function marked
+  <code>#[target_feature(enable = "sse")]</code>, so since Rust 1.86 it is safe to call only from code that itself enables the feature. Otherwise
+  the call needs <code>unsafe</code>, even though SSE is part of the x86-64 baseline: "the sse target feature being enabled in the build configuration
+  does not remove the requirement". Zig's <code>@prefetch</code> and Odin's intrinsic are ordinary calls; Zig's builtin "has no effect on the behavior
+  of the program".</p></aside>
+
+  <p>And it did not help. The prefetching version measured
+  <span data-bench-ratio="ch02-access" data-num="random + prefetch" data-den="random" data-lang="rust">about 1.0×</span> the time of the plain random sum
+  in Rust (within noise), <span data-bench-ratio="ch02-access" data-num="random + prefetch" data-den="random" data-lang="odin">1.1×</span> in Odin and <span data-bench-ratio="ch02-access" data-num="random + prefetch" data-den="random" data-lang="zig">1.1×</span> in Zig:
+  no help, and in two languages a little <em>slower</em>. That is not a contradiction of Albrecht. An Ice Lake core is out of order:
+  it already sees the next independent loads and issues them early, so the explicit hint only adds instructions and a second load of each index.
+  Software prefetch pays off when the hardware cannot find the parallelism itself: in-order cores like the PS3's, or addresses known
+  far earlier than the out-of-order window can see. It cannot replace the fix in the layout.</p>
+
+  <h2 id="branches">What a mispredicted branch costs</h2>
+  <p>Memory is the big stall. Two smaller facts finish the picture: branches and vector width. When the branch predictor guesses wrong, the core throws away the work it started down the wrong
+  path. Agner Fog puts the penalty at "approximately equal to the length of the pipeline", 15–25 cycles on current cores<a class="cite" href="#src-19">[19]</a>.
+  AMD's Zen 5 guide says 12–18, with a "common case penalty" of 15 cycles<a class="cite" href="#src-7">[7]</a>. At this orb's clock that is roughly 5–7 ns,
+  the same as an L2 hit and far below a DRAM miss. Albrecht's PS3 profile shows the proportion: 50,421 mispredicts cost about 0.36 ms
+  and 36,345 L2 misses about 4.54 ms<a class="cite" href="#src-18">[18]</a>.</p>
+
+  <p>A mispredict is worth avoiding in a hot loop, but it is the smaller problem. Chapter 7 measures branchy against branchless code properly, including why
+  the famous "sorted array is faster" demo often fails to reproduce on a modern compiler.</p>
+
+  <h2 id="simd">SIMD widths</h2>
+  <p>The vector units' width explains a layout rule you will see throughout this book (Chapter 8 uses them).</p>
+  <div class="table-wrap"><table>
+    <tr><th>ISA</th><th class="num">register width</th><th class="num">f32 lanes</th><th>notes</th></tr>
+    <tr><td>x86 SSE, SSE2</td><td class="num">128-bit</td><td class="num">4</td><td>SSE2 is the baseline for every x86-64 CPU (Rust's default target)</td></tr>
+    <tr><td>x86 SSE3 … SSE4.2</td><td class="num">128-bit</td><td class="num">4</td><td>part of x86-64-v2 (Odin's default target)</td></tr>
+    <tr><td>x86 AVX / AVX2</td><td class="num">256-bit</td><td class="num">8</td><td>part of x86-64-v3; not every recent x86-64 CPU has it (low-end Atom-class Pentium and Celeron parts lack it)</td></tr>
+    <tr><td>x86 AVX-512</td><td class="num">512-bit</td><td class="num">16</td><td>present on this orb; Zen 4 splits it over 256-bit units, desktop Zen 5 has a full 512-bit datapath</td></tr>
+    <tr><td>Arm NEON</td><td class="num">128-bit</td><td class="num">4</td><td>all Apple M-series; Apple has no SVE</td></tr>
+    <tr><td>Arm SVE / SVE2</td><td class="num">128–2048-bit</td><td class="num">4–64</td><td>vector-length agnostic: "must be a power of two"<a class="cite" href="#src-21">[21]</a></td></tr>
+  </table></div>
+  <p>A 512-bit register holds 16 <code>f32</code>s, one cache line. If they are 16 consecutive <code>x</code> fields, one load fills it; if they
+  are the <code>x</code> fields of 16 structs, the core must gather them from 16 places. Wider vectors make layout <em>more</em> important.</p>
+
+  <h2 id="worked">Worked example: a miss budget for one frame</h2>
+  <p>Put the measured numbers together the way a game programmer would. A 60 Hz frame is 16.7 ms. On this orb a dependent DRAM miss costs about
+  <span data-bench-val="ch02-sweep" data-label="random chase" data-lang="rust" data-n="1048576" data-metric="ns/n" data-digits="2">150 ns</span>; take 150 ns as a round figure, so a frame can afford about</p>
+  <p style="text-align:center"><code>16.7 ms ÷ 150 ns ≈ 111,000</code> dependent misses</p>
+  <p>and nothing else. Experiment 1's shuffled list of 4,194,304 nodes took <span data-bench-val="ch02-list" data-label="list, shuffled" data-lang="rust" data-metric="ms" data-digits="2">580 ms</span>: dozens of frames. The same nodes as an array took <span data-bench-val="ch02-list" data-label="array" data-lang="rust" data-metric="ms" data-digits="2">6.6 ms</span>,
+  under half a frame. Albrecht's PS3 spent 4.54 ms, over a quarter of a frame, on 36,345 misses for 11,111 objects. The two fixes from this chapter:
+  make it a stream (<span data-bench-val="ch02-list" data-label="array" data-lang="rust" data-metric="ns/n" data-digits="2">1.6 ns</span> per node instead of <span data-bench-val="ch02-list" data-label="list, shuffled" data-lang="rust" data-metric="ns/n" data-digits="2">140 ns</span>), or, if the accesses must stay random, make them independent (eight chains:
+  <span data-bench-val="ch02-mlp" data-label="8 chains" data-lang="rust" data-metric="ns/n" data-digits="2">20 ns</span> per load instead of <span data-bench-val="ch02-mlp" data-label="1 chain" data-lang="rust" data-metric="ns/n" data-digits="2">150 ns</span>).</p>
+
+  <h2 id="caveats">Caveats</h2>
+  <ul>
+    <li><b>One VM, no counters.</b> These timings came from one run per language on the shared guest described above, and every hardware
+    explanation here is inferred from timing shapes and vendor documentation. A desktop has lower DRAM latency (about 70–80 ns), a usable L3
+    and often huge pages. Trust the <em>shapes</em> and ratios, not the nanoseconds.</li>
+    <li><b>Bounds checks differ.</b> Rust and Odin check every index in these loops (Odin's <code>-o:speed</code> keeps them unless you add
+    <code>-no-bounds-check</code>). Zig's <code>-O fast</code> drops safety checks. Next to a DRAM load the check is free; in the
+    sequential loops it can matter a little. The three languages usually land within 10–40% of each other.</li>
+    <li><b>Models are models.</b> The prefetch and chase figures teach the mechanism, not the cycle count.</li>
+  </ul>
+
+  <aside class="callout try"><p>Run the chapter's programs yourself (quick mode finishes in seconds; the full sizes take a minute or two per language and
+  allocate up to 512 MiB):</p>
+<pre><code class="language-bash">cd code && ./run_all.sh ch02
+cargo run --release -q -p ch02_the_machine                  # full size, from code/
+cd ch02-the-machine/zig && zig run -O fast main.zig
+cd ch02-the-machine && odin run odin -o:speed -vet -strict-style</code></pre></aside>
+
+  <aside class="recap"><p>A DRAM miss costs about a hundred times an L1 hit and the hardware hides it only when it can predict the next
+  address, so lay data out as contiguous streams and, where you cannot, make the next address independent of the current load.</p></aside>
+
+  <h2 id="exercises">Exercises</h2>
+  <details class="exercise"><summary>A core has a 64-entry L1 DTLB and a 2,048-entry second-level TLB. What is the reach of each with 4 KiB pages, and with 2 MiB pages?</summary>
+    <p>4 KiB pages: 64 × 4 KiB = 256 KiB and 2,048 × 4 KiB = 8 MiB. 2 MiB pages: 128 MiB and 4 GiB. That is why the gentle rise in our sweep begins
+    just past 256 KiB, and why huge pages flatten the DRAM side of the curve.</p></details>
+  <details class="exercise"><summary>Use Little's law. Assume DRAM latency is 140 ns and a core can keep 12 line misses in flight. What is the best bandwidth a random gather of
+  whole lines can reach? What does a pointer chase reach?</summary>
+    <p>12 × 64 B ÷ 140 ns ≈ 5.5 GB/s for the gather. The chase has one miss in flight: 64 B ÷ 140 ns ≈ 0.46 GB/s, and it uses only 4 of each 64 bytes, so about
+    0.03 GB/s of useful data.</p></details>
+  <details class="exercise"><summary>The in-order linked list was only <span data-bench-ratio="ch02-list" data-num="list, in order" data-den="array" data-lang="rust">about 2×</span> slower than the array, but the shuffled one was <span data-bench-ratio="ch02-list" data-num="list, shuffled" data-den="array" data-lang="rust">about 90×</span> slower. What does that tell you about
+  benchmarking a linked list right after building it?</summary>
+    <p>A fresh list is often in allocation order, so the prefetcher makes it look almost like an array. Inserts, deletes and allocator reuse later scatter
+    it toward the shuffled bar. Benchmarking a fresh list measures the allocator's luck.</p></details>
+  <details class="exercise"><summary>In <a class="figref" href="#fig-prefetch">the figure above</a>, set the latency to 300 cycles. What prefetch distance hides it completely, and why does page 1 still
+  start with two red stalls?</summary>
+    <p>The distance needs to be at least latency ÷ work = 300 ÷ 8 ≈ 38 lines, more than the slider's 32, so some stall remains at any setting. Page 1 starts with two
+    demand misses because the streamer does not cross the 4 KiB boundary. It must see two ascending accesses in the new page before it trains again.</p></details>
+  <details class="exercise"><summary>Software prefetch cut about 30% of the time from Albrecht's PS3 code but did not help our random sum. Name two situations on an
+  out-of-order x86 core where a software prefetch could still help.</summary>
+    <p>First, when the addresses are known much further ahead than the out-of-order window can reach, for example item i+64 of an index array with hundreds of
+    instructions in between. Second, batched lookups: in a hash join, prefetch the buckets for a whole batch of keys before probing any of them.</p></details>
+  <details class="exercise"><summary>Predict, then measure: the same 64 MiB array read at a <em>128-byte</em> stride (32 passes, each touching every
+  other line). Is it cheaper or dearer than the 64 B stride, and what does Intel's spatial (pair-line) prefetcher have to do with it?</summary>
+    <p>Each pass reads only half the lines, so without the pair-line prefetcher the total traffic would equal the 64 B stride's: every line from
+    DRAM 16 times. But the L2 spatial prefetcher completes each fetched line with its 128-byte partner, so each pass drags in the whole array and
+    the traffic doubles: up to about twice the 64 B stride's cost. Where the result lands between those bounds tells you how hard the pair
+    prefetcher works on this machine. We did not measure it; this is a prediction to check.</p></details>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="sources">
+    <li id="src-1">Peter Norvig, “Teach Yourself Programming in Ten Years” (answers section with the timing table). <a href="https://www.norvig.com/21-days.html">norvig.com</a></li>
+    <li id="src-2">Jonas Bonér, “Latency Numbers Every Programmer Should Know” (gist, ~2012, credits Jeff Dean and Peter Norvig). <a href="https://gist.github.com/jboner/2841832">gist.github.com</a></li>
+    <li id="src-3">Google SRE, “Latency Numbers Everyone Should Know” (handout). <a href="https://sre.google/static/pdf/rule-of-thumb-latency-numbers-letter.pdf">sre.google</a></li>
+    <li id="src-4">Omar Bohsali, “Latency Numbers You Should Know in 2026”, May 2026. <a href="https://omarish.com/latency-numbers-you-should-know">omarish.com</a></li>
+    <li id="src-5">Chester Lam, “AMD’s Ryzen 9950X: Zen 5 on Desktop”, Chips and Cheese, Aug 2024. <a href="https://chipsandcheese.com/p/amds-ryzen-9950x-zen-5-on-desktop">chipsandcheese.com</a></li>
+    <li id="src-6">Chester Lam, “Zen 5 Variants and More, Clock for Clock”, Chips and Cheese, Aug 2024. <a href="https://chipsandcheese.com/p/zen-5-variants-and-more-clock-for-clock">chipsandcheese.com</a></li>
+    <li id="src-7">AMD, “Software Optimization Guide for the AMD Zen5 Microarchitecture” (58455 Rev 1.00), Aug 2024. <a href="https://docs.amd.com/api/khub/documents/RCLISlZoOyWkKA9SYwLLDQ/content">docs.amd.com</a></li>
+    <li id="src-8">Ulrich Drepper, “What Every Programmer Should Know About Memory”, Nov 2007. <a href="https://www.akkadia.org/drepper/cpumemory.pdf">PDF</a>; LWN serialisation, part 2 “CPU caches”: <a href="https://lwn.net/Articles/252125">lwn.net</a></li>
+    <li id="src-9">Apple Developer, “Tune CPU job scheduling for Apple silicon games” (tech talk 110147). <a href="https://developer.apple.com/videos/play/tech-talks/110147">developer.apple.com</a></li>
+    <li id="src-10">Wrenger et al., “Analyzing the memory ordering models of the Apple M1”, Journal of Systems Architecture, 2024. <a href="https://www.sciencedirect.com/science/article/pii/S1383762124000390">sciencedirect.com</a></li>
+    <li id="src-11">jia.je, “Apple M1 (Firestorm &amp; Icestorm) 微架构评测”, Dec 2024, and “Apple M2 (Avalanche &amp; Blizzard) 微架构评测”, 2026 (quoting Apple’s CPU Optimization Guide on line sizes). <a href="https://jia.je/hardware/2024/12/26/apple-m1">M1</a> · <a href="https://jia.je/hardware/2026/07/06/apple-m2/index.md">M2</a></li>
+    <li id="src-12">crossbeam-utils, <code>cache_padded.rs</code> (source and comments). <a href="https://github.com/crossbeam-rs/crossbeam/blob/master/crossbeam-utils/src/cache_padded.rs">github.com</a></li>
+    <li id="src-13">Intel, “Intel 64 and IA-32 Architectures Optimization Reference Manual”, documentation changes (prefetcher descriptions), 2023. <a href="https://cdrdv2-public.intel.com/814201/355308-Software-Optimization-Manual-048-Changes-Doc.pdf">intel.com (PDF)</a></li>
+    <li id="src-14">abertschi.ch, “Battling the Prefetcher: Exploring Coffee Lake (Part 1)”, 2022. <a href="https://abertschi.ch/blog/2022/prefetching">abertschi.ch</a></li>
+    <li id="src-15">Chips and Cheese, “AMD’s Zen 4, Part 2: Memory Subsystem and Conclusion”, Nov 2022. <a href="https://chipsandcheese.com/p/amds-zen-4-part-2-memory-subsystem-and-conclusion">chipsandcheese.com</a></li>
+    <li id="src-16">jia.je, “AMD Zen 5 微架构评测”, Nov 2024. <a href="https://jia.je/hardware/2024/11/11/amd-zen5">jia.je</a></li>
+    <li id="src-17">The Linux kernel documentation, “Transparent Hugepage Support” (the <code>madvise</code> mode). <a href="https://docs.kernel.org/admin-guide/mm/transhuge.html">docs.kernel.org</a></li>
+    <li id="src-18">Tony Albrecht, “Pitfalls of Object Oriented Programming”, Sony Computer Entertainment Europe, 2009. <a href="https://www.gamedevs.org/uploads/pitfalls-of-object-oriented-programming.pdf">PDF</a></li>
+    <li id="src-19">Agner Fog, “The microarchitecture of Intel, AMD, and VIA CPUs” (optimization manual 3), and “Optimizing software in C++” (manual 1). <a href="https://www.agner.org/optimize/microarchitecture.pdf">microarchitecture.pdf</a> · <a href="https://www.agner.org/optimize/optimizing_cpp.pdf">optimizing_cpp.pdf</a></li>
+    <li id="src-20">Chips and Cheese, “Inside Nvidia GB10’s Memory Subsystem”, Dec 2025 (single Zen core bandwidth comparison). <a href="https://chipsandcheese.com/p/inside-nvidia-gb10s-memory-subsystem">chipsandcheese.com</a></li>
+    <li id="src-21">Arm, “Introducing SVE” (102476). <a href="https://developer.arm.com/documentation/102476/0101/Introducing-SVE">developer.arm.com</a></li>
+    <li id="src-22">Igor Ostrovsky, “Gallery of Processor Cache Effects”, 2010. <a href="https://igoro.com/archive/gallery-of-processor-cache-effects">igoro.com</a></li>
+    <li id="src-23">Wikipedia, “Fisher–Yates shuffle”, section “Sattolo’s algorithm”. <a href="https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle#Sattolo's_algorithm">wikipedia.org</a></li>
+    <li id="src-24">Rust standard library, <code>std::hint::black_box</code> documentation (Rust 1.100). <a href="https://doc.rust-lang.org/std/hint/fn.black_box.html">doc.rust-lang.org</a></li>
+    <li id="src-25">Zig 0.17.1 standard library and language reference: <code>std.mem.doNotOptimizeAway</code> (<code>lib/std/mem.zig</code>), <code>@prefetch</code> and <code>std.lang.PrefetchOptions</code>. <a href="https://ziglang.org/documentation/master/#prefetch">ziglang.org</a></li>
+    <li id="src-26">Odin, <code>base:intrinsics</code> (<code>volatile_store</code>, <code>prefetch_read_data</code>). <a href="https://pkg.odin-lang.org/base/intrinsics/">pkg.odin-lang.org</a></li>
+    <li id="src-27">Rust <code>core::arch::x86_64::_mm_prefetch</code> documentation. <a href="https://doc.rust-lang.org/core/arch/x86_64/fn._mm_prefetch.html">doc.rust-lang.org</a></li>
+    <li id="src-28">Mike Acton, “Data-Oriented Design and C++”, CppCon 2014 (slides, mirror). <a href="https://neil3d.github.io/assets/img/ecs/DOD-Cpp.pdf">neil3d.github.io</a></li>
+  </ol>
+</main>
+</body>
+</html>

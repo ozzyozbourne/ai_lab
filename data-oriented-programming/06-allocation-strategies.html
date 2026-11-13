@@ -1,0 +1,1087 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6. Allocation Strategies · Data-Oriented Design</title>
+<link rel="stylesheet" href="assets/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="assets/book.css">
+<script>window.Prism = { manual: true };</script>
+<script defer src="assets/vendor/prism/prism.min.js"></script>
+<script defer src="assets/vendor/prism/prism-rust.min.js"></script>
+<script defer src="assets/vendor/prism/prism-zig.min.js"></script>
+<script defer src="assets/vendor/prism/prism-odin.min.js"></script>
+<script defer src="assets/vendor/prism/prism-bash.min.js"></script>
+<script defer src="assets/book.js"></script>
+<script defer src="assets/data/bench-ch06.js"></script>
+<script defer src="assets/viz/bench-bars.js"></script>
+<script defer src="assets/viz/ch06-arena.js"></script>
+<script defer src="assets/viz/ch06-lifetimes.js"></script>
+</head>
+<body>
+<main>
+  <p class="kicker">Chapter 6</p>
+  <h1>Allocation Strategies</h1>
+  <p class="lede">A game frame builds 65,536 little strings, a debug label for every entity, say, prints a few,
+  and throws them all away 16 milliseconds later. Written the obvious way, that frame calls <code>malloc</code>
+  65,537 times and <code>free</code> 65,537 times, every frame, forever. Each of those calls is cheap, and together
+  they still decide where every string lands in memory and how much bookkeeping surrounds it. This chapter is about
+  replacing that per-object bookkeeping with something that matches how the data actually lives: allocate by
+  <em>lifetime</em>, not by object.</p>
+
+  <p>The previous chapters changed the <em>shape</em> of data. This one changes <em>where the bytes come from</em>. The ideas
+  are old (arenas, pools, stacks, regions), and each of our languages takes them seriously in its own way. Zig makes you pass
+  an allocator to every function that allocates. Odin passes one implicitly in a <code>context</code> and gives every program
+  a per-frame scratch arena. Rust 1.100 has just stabilised the <code>Allocator</code> trait, and its borrow checker can
+  prove that nobody uses frame memory after the frame has been reset.</p>
+
+  <h2 id="malloc-cost">What malloc actually costs</h2>
+  <p>A general-purpose allocator has a hard job: requests of any size, in any order, from any thread, and any block may
+  be freed at any time, alone. To serve that it keeps metadata: a header next to each block (glibc stores the chunk size
+  in the 8 bytes before the pointer it returns), size classes that round requests up, per-class free lists, per-thread
+  caches, and a way to merge free neighbours. Modern allocators serve the common case from a thread-local cache in a few
+  dozen instructions, but the costs add up in four places:</p>
+  <ol>
+    <li><b>Instructions per call.</b> Both <code>malloc</code> and <code>free</code> are function calls that look up a
+    size class, pop or push a list, and sometimes take a slow path (refill the cache, ask the OS for pages, merge
+    holes). At Google, across the whole fleet, allocation and deallocation took <b>4.3% of all CPU cycles</b>, and
+    3.6–10.1% in the five applications that spend the most there<a class="cite" href="#src-1">[1]</a>.</li>
+    <li><b>Bytes per object.</b> A 40-byte request becomes a 48-byte chunk (8 B header, rounded to 16), and a 1-byte
+    request becomes 32. Small objects pay the most, proportionally.</li>
+    <li><b>Placement.</b> The allocator puts your object wherever a hole of the right class happens to be. In a
+    long-running program, objects created together end up scattered across pages, so a loop over them touches more
+    cache lines and more TLB entries than it needs to. Google's hugepage-aware TCMalloc rework
+    (<i>Temeraire</i>) did not make <code>malloc</code> itself faster; it changed placement, and the fleet saw 6% fewer
+    TLB-miss stalls and 26% less memory wasted to fragmentation<a class="cite" href="#src-2">[2]</a>. One service
+    spent <em>more</em> time inside the allocator and still served 3.4% more requests per second.</li>
+    <li><b>Freeing.</b> Every object you allocated alone must be freed alone: a walk over a whole data structure at
+    teardown, and a bug (leak, double free, use after free) each time you get it wrong.</li>
+  </ol>
+
+  <figure class="figure" id="fig-chunks">
+    <div class="ch06s-scroll"><svg viewBox="0 0 600 196" role="img" aria-label="Three requests of 24, 40 and 16 bytes. On a malloc heap they become chunks of 32, 48 and 32 bytes, each with an 8-byte header, totalling 112 bytes in three separate places. In an arena they are packed back to back in 80 bytes with no headers.">
+      <style>
+        .ch06s-t { font: 12px var(--font-body, sans-serif); fill: var(--text-dim, #9aa5b5); }
+        .ch06s-h { font: 600 13px var(--font-body, sans-serif); fill: var(--heading, #e8eef7); }
+        .ch06s-m { font: 10px var(--font-mono, monospace); fill: #06121f; }
+        .ch06s-hd { fill: var(--c-pad, #3a4352); }
+        .ch06s-a { fill: var(--c-pos, #7cc4ff); } .ch06s-b { fill: var(--c-vel, #ffb86b); } .ch06s-c { fill: var(--c-hp, #c792ea); }
+        .ch06s-r { fill: none; stroke: var(--border, #2a3240); }
+        .ch06s-pad { fill: url(#ch06s-hatch); }
+        .ch06s-scroll { overflow-x: auto; } .ch06s-scroll svg { display: block; min-width: 520px; }
+      </style>
+      <defs><pattern id="ch06s-hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="5" height="5" fill="#2a313c"/><line x1="0" y1="0" x2="0" y2="5" stroke="#5b6676" stroke-width="2"/></pattern></defs>
+      <text class="ch06s-h" x="8" y="18">malloc: three chunks, wherever there is a hole</text>
+      <g transform="translate(8,28)">
+        <rect class="ch06s-hd" x="0" y="0" width="32" height="30"/><rect class="ch06s-a" x="32" y="0" width="96" height="30"/>
+        <text class="ch06s-m" x="36" y="19">24 B</text>
+        <rect class="ch06s-r" x="0" y="0" width="128" height="30"/>
+        <rect class="ch06s-hd" x="176" y="0" width="32" height="30"/><rect class="ch06s-b" x="208" y="0" width="160" height="30"/>
+        <rect class="ch06s-pad" x="368" y="0" width="0" height="30"/>
+        <text class="ch06s-m" x="212" y="19">40 B</text>
+        <rect class="ch06s-r" x="176" y="0" width="192" height="30"/>
+        <rect class="ch06s-hd" x="416" y="0" width="32" height="30"/><rect class="ch06s-c" x="448" y="0" width="64" height="30"/>
+        <rect class="ch06s-pad" x="512" y="0" width="32" height="30"/>
+        <text class="ch06s-m" x="452" y="19">16 B</text>
+        <rect class="ch06s-r" x="416" y="0" width="128" height="30"/>
+        <text class="ch06s-t" x="0" y="48">8 B header + payload, rounded to 16 B (minimum 32): 32 + 48 + 32 = 112 B, 3 frees later</text>
+      </g>
+      <text class="ch06s-h" x="8" y="112">arena: one block, bump pointer, no headers</text>
+      <g transform="translate(8,122)">
+        <rect class="ch06s-a" x="0" y="0" width="96" height="30"/><rect class="ch06s-b" x="96" y="0" width="160" height="30"/><rect class="ch06s-c" x="256" y="0" width="64" height="30"/>
+        <text class="ch06s-m" x="4" y="19">24 B</text><text class="ch06s-m" x="100" y="19">40 B</text><text class="ch06s-m" x="260" y="19">16 B</text>
+        <rect class="ch06s-r" x="0" y="0" width="544" height="30"/>
+        <path d="M320 -6 l-5 -8 h10 z" fill="var(--heading, #e8eef7)"/><text class="ch06s-t" x="330" y="-6">ptr = 80</text>
+        <text class="ch06s-t" x="0" y="48">24 + 40 + 16 = 80 B, contiguous, freed together by setting ptr = 0</text>
+      </g>
+    </svg></div>
+    <figcaption>The same three requests, drawn to scale (4 px per byte). Grey is the allocator's header, hatched is
+    rounding. The arena spends nothing on bookkeeping because it does not need to free anything alone.</figcaption>
+  </figure>
+
+  <p>The fix is not a faster <code>malloc</code>. It is to notice that most objects do not need what
+  <code>malloc</code> offers: an individual lifetime.</p>
+
+  <h2 id="lifetimes">Think in lifetimes, not objects</h2>
+  <p>Ginger Bill (Odin's creator) starts his allocator series with three questions: how big is the allocation, how
+  long does it live, and how is it used<a class="cite" href="#src-3">[3]</a>. Then he makes a rough table of his own
+  programs: size and lifetime both known, <b>95%</b>; size unknown but lifetime known, ~4%; size known but lifetime
+  unknown, ~1%; both unknown, under 1%. It is a guess from experience, not a measurement, but anyone who has written a
+  game, a compiler or a server will recognise it. You usually know exactly when a whole group of objects dies:</p>
+  <ul>
+    <li><b>Permanent</b>: configuration, asset tables, the interned string table. Dies at exit.</li>
+    <li><b>Transient</b>, with a cycle-based lifetime: everything belonging to one level, one HTTP request, one file
+    being compiled. Dies at the end of the cycle.</li>
+    <li><b>Scratch</b>: a formatted log line, a temporary array inside one function, the strings of one frame. Dies in
+    moments.</li>
+  </ul>
+  <p>Bill calls these the <em>generations</em> of lifetimes; Ryan Fleury makes the same argument in <i>Untangling
+  Lifetimes</i> and concludes that a program needs only a handful of lifetimes, each served by its own
+  arena<a class="cite" href="#src-7">[7]</a>. Once you sort your objects that way, freeing stops being a per-object
+  problem. You free a <em>phase</em>.</p>
+
+  <figure class="figure wide" id="fig-lifetimes">
+    <div class="figure-body" data-viz="ch06-lifetimes" data-opts='{"levels":3,"framesPerLevel":6,"perFrame":4}'>
+      <p>Static fallback: object lifetimes on a timeline in three lanes (program, level, frame). Each lane is one arena, freed with one reset at its phase boundary.</p>
+    </div>
+    <figcaption>Every bar is one object's lifetime. Each lane is an arena that is reset at its phase boundary (thin
+    ticks for frames, thick for levels). Compare the two counters at the end: individual <code>free</code> calls
+    versus resets. Then switch to <b>Bug</b>: one level object allocated from the frame arena keeps being used after
+    the first frame reset wipes it. That red bar is the classic arena bug.</figcaption>
+  </figure>
+
+  <details class="predict"><summary>Three levels of six frames, four temporaries per frame, plus a few level and
+  program objects. How many <code>free</code> calls does a per-object allocator make by the end, and how many arena
+  resets replace them?</summary>
+  <p>The figure counts 87 objects (3 program + 12 level + 72 frame), so 87 individual frees. The arenas need 18 frame
+  resets, 3 level resets and 1 program reset: 22. The ratio grows with objects per frame. The real benchmark below has
+  65,536 per frame, so one reset replaces 65,537 frees.</p></details>
+
+  <h2 id="arena">The arena (bump allocator)</h2>
+  <p>An arena, also called a linear, bump or region allocator, is a block of memory and an offset. To allocate
+  <i>n</i> bytes with alignment <i>a</i>, round the offset up to a multiple of <i>a</i>, hand out the bytes from there,
+  and add <i>n</i>. To free one object, do nothing. To free everything, set the offset back to
+  zero<a class="cite" href="#src-4">[4]</a>. That is the whole algorithm.</p>
+  <p>The win is more than the few instructions saved. Objects allocated together sit together, in allocation order,
+  which is usually the order you will read them in, so a loop over the frame's strings streams through consecutive
+  cache lines, and the hardware prefetcher sees a straight line. Nothing is wasted on headers. Freeing a million
+  objects costs one store. And because the arena never reuses memory in the middle of a phase, a whole class of
+  bugs (double free, freeing the wrong pointer, leaking one object) cannot happen inside it.</p>
+
+  <figure class="figure wide" id="fig-arena">
+    <div class="figure-body" data-viz="ch06-arena" data-opts='{"frames":3,"perFrame":8}'>
+      <p>Static fallback: the arena packs a frame's objects behind a bump pointer and resets it to zero; the heap places the same objects into scattered holes between long-lived objects and frees them one by one.</p>
+    </div>
+    <figcaption>The same request sequence on both sides, three frames of eight short-lived objects. Left: the bump
+    pointer only moves forward, and the frame ends with one reset. Right: a heap that already holds long-lived
+    objects (grey) serves each request from the first hole that fits (dashed, linked in address order) and needs one
+    <code>free</code> per object. Watch <i>cache lines</i> and <i>holes searched</i>, and step to the end of a frame
+    to see the free list merge back.</figcaption>
+  </figure>
+
+  <details class="predict"><summary>After the first eight allocations, which side touches more cache lines, and by
+  roughly how much?</summary>
+  <p>The heap, by almost 2× in this model: the arena packs the frame's 240 bytes of payload into 4 cache lines, while
+  the heap turns them into 384 bytes of chunks (headers and rounding) dropped into holes across 2 KiB, touching 7
+  lines, after searching 9 holes. With an empty, fresh heap the gap would be smaller; it is the aged heap, with its
+  long-lived residents, that scatters new objects.</p></details>
+
+  <p>Here is the arena in Rust, as an implementation of the <code>Allocator</code> trait that Rust 1.100 has just
+  stabilised. The bytes live in a heap-allocated <code>Box&lt;[Cell&lt;u8&gt;]&gt;</code>; the <code>Cell</code> lets it hand
+  out writable memory through a shared reference. The trait is implemented for <code>&amp;Bump</code>, not
+  <code>Bump</code>, so every container holds a borrow and the arena cannot be moved, reset or dropped while a block is alive.
+  (Moving the owning value would move its <code>Box</code>, which Stacked Borrows, one of the candidate aliasing models Miri checks, treats as a fresh
+  unique pointer; a
+  doc test checks that <code>Vec&lt;u8, Bump&gt;</code> is rejected.) The trait is unsafe to <em>implement</em> because
+  the compiler cannot check its promises, so a <code>SAFETY</code> comment states them. Apart from the
+  <code>unsafe fn deallocate</code> signature the trait requires, every method body is safe code.</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch06-allocation-strategies/rust/src/lib.rs"><code class="language-rust">pub struct Bump {
+    buf: Box&lt;[Cell&lt;u8&gt;]&gt;,
+    used: Cell&lt;usize&gt;,
+}
+
+// SAFETY:
+// * The allocator is `&amp;Bump`, not `Bump`. Every block lies inside `buf`, and a container holding a
+//   `&amp;Bump` keeps the arena borrowed, so the arena cannot be dropped, moved or `reset` (which takes
+//   `&amp;mut self`) while a block is alive. Copying or moving the `&amp;Bump` itself never touches `buf`.
+//   We deliberately give the owning `Bump` no `Allocator` impl: moving it by value would move the
+//   `Box`, and under Stacked Borrows that move retags the `Box` and invalidates pointers into it.
+// * Blocks never overlap: `used` only moves forward between resets, and each block starts at or
+//   after the end of the previous one.
+// * `base + capacity` cannot overflow the address space, because `buf` is a real allocation.
+// * Nothing here can panic (all arithmetic is checked), so no method unwinds.
+// * The arena never reads or writes the bytes it has handed out.
+unsafe impl Allocator for &amp;Bump {
+    fn allocate(&amp;self, layout: Layout) -&gt; Result&lt;NonNull&lt;[u8]&gt;, AllocError&gt; {
+        // `Cell&lt;u8&gt;` has the same layout as `u8`, and writing through a pointer derived from a
+        // shared reference is allowed because the bytes are inside `UnsafeCell`s.
+        let base = self.buf.as_ptr().cast_mut().cast::&lt;u8&gt;();
+        let start = (base.addr() + self.used.get())
+            .checked_next_multiple_of(layout.align())
+            .ok_or(AllocError)?
+            - base.addr();
+        let end = start.checked_add(layout.size()).ok_or(AllocError)?;
+        if end &gt; self.buf.len() {
+            return Err(AllocError);
+        }
+        self.used.set(end);
+        let ptr = NonNull::new(base.wrapping_add(start)).ok_or(AllocError)?;
+        Ok(NonNull::slice_from_raw_parts(ptr, layout.size()))
+    }
+
+    unsafe fn deallocate(&amp;self, _ptr: NonNull&lt;u8&gt;, _layout: Layout) {
+        // Individual frees do nothing. `reset` frees the whole frame at once.
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch06-allocation-strategies/zig/main.zig"><code class="language-zig">fn framesArena(f: Frame) u64 {
+    var acc: u64 = 0;
+    for (0..TICKS) |t| {
+        acc +%= tick(f.arena.allocator(), t, f.count, false) catch @panic("out of memory");
+        _ = f.arena.reset(.retain_capacity); // keep the block, drop its contents
+    }
+    return acc;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch06-allocation-strategies/odin/main.odin"><code class="language-odin">frames_arena :: proc(f: ^Frame) -&gt; u64 {
+	context.allocator = mem.arena_allocator(f.arena) // every make/append below now bumps
+	acc: u64
+	for t in 0 ..&lt; u64(TICKS) {
+		acc += tick(t, f.count, false)
+		free_all(context.allocator) // offset = 0
+	}
+	return acc
+}</code></pre>
+  </div>
+
+  <p>The Rust version is about thirty lines because it is the allocator itself. The Zig and Odin versions only
+  <em>use</em> an arena, because both standard libraries already have one. That difference is the first lesson in
+  how each language thinks about allocation, and we will come back to it.</p>
+
+  <h3 id="same-code">The same code, any allocator</h3>
+  <p>The interesting part is what does <em>not</em> change. The per-frame work below is written once, and the caller
+  chooses where its memory comes from. In Rust the allocator is a type parameter: <code>Vec&lt;u8, A&gt;</code> with
+  <code>A = Global</code> is the ordinary heap vector, and with <code>A = &amp;Bump</code> it is a vector inside the
+  frame arena. In Zig it is a runtime <code>Allocator</code> value (a pointer plus a vtable) passed to every call
+  that allocates. In Odin it is nothing at all in the signature: <code>make</code> and <code>non_zero_make</code>
+  read <code>context.allocator</code>, which the caller set.</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch06-allocation-strategies/rust/src/main.rs"><code class="language-rust">/// One frame: build `count` short-lived messages (8..=71 bytes), use them, drop them.
+/// The same code runs on the global heap (`Global`) and on a frame arena (`&amp;Bump`).
+fn tick&lt;A: Allocator + Copy&gt;(alloc: A, t: u64, count: usize) -&gt; u64 {
+    let mut msgs: Vec&lt;Vec&lt;u8, A&gt;, A&gt; = Vec::with_capacity_in(count, alloc);
+    for i in 0..count as u64 {
+        let h = mix(t, i);
+        let len = 8 + (h &gt;&gt; 58) as usize;
+        let mut m = Vec::with_capacity_in(len, alloc);
+        m.extend((0..len).map(|j| (h as u8).wrapping_add(j as u8)));
+        msgs.push(m);
+    }
+    let mut sum = 0u64;
+    for m in &amp;msgs {
+        let bytes: u64 = m.iter().map(|&amp;b| u64::from(b)).sum();
+        sum = sum.wrapping_add(bytes ^ ((m.len() as u64) &lt;&lt; 32));
+    }
+    sum
+    // `msgs` drops here: count + 1 calls to `free` on Global, nothing at all on &amp;Bump.
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch06-allocation-strategies/zig/main.zig"><code class="language-zig">/// One frame: build `count` short-lived messages (8..=71 bytes), use them, drop them.
+/// The same code runs on any allocator. With an arena there is nothing to free one by one.
+fn tick(alloc: Allocator, t: u64, count: usize, comptime free_each: bool) Allocator.Error!u64 {
+    var msgs: std.ArrayList([]u8) = try .initCapacity(alloc, count);
+    defer if (free_each) msgs.deinit(alloc);
+    for (0..count) |i| {
+        const h = mix(t, i);
+        const m = try alloc.alloc(u8, 8 + @as(usize, @intCast(h &gt;&gt; 58)));
+        for (m, 0..) |*b, j| b.* = @as(u8, @truncate(h)) +% @as(u8, @truncate(j));
+        msgs.appendAssumeCapacity(m);
+    }
+    var sum: u64 = 0;
+    for (msgs.items) |m| {
+        var bytes: u64 = 0;
+        for (m) |b| bytes += b;
+        sum +%= bytes ^ (@as(u64, m.len) &lt;&lt; 32);
+    }
+    if (free_each) for (msgs.items) |m| alloc.free(m);
+    return sum;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch06-allocation-strategies/odin/main.odin"><code class="language-odin">// One frame: build `count` short-lived messages (8..=71 bytes), use them, drop them.
+// Everything comes from context.allocator, so the caller decides where the frame lives.
+tick :: proc(t: u64, count: int, free_each: bool) -&gt; u64 {
+	msgs := make([dynamic][]u8, 0, count)
+	for i in 0 ..&lt; count {
+		h := mix(t, u64(i))
+		m := non_zero_make([]u8, 8 + int(h &gt;&gt; 58))
+		for &amp;b, j in m {
+			b = u8(h) + u8(j)
+		}
+		append(&amp;msgs, m)
+	}
+	sum: u64
+	for m in msgs {
+		bytes: u64
+		for b in m {
+			bytes += u64(b)
+		}
+		sum += bytes ~ (u64(len(m)) &lt;&lt; 32)
+	}
+	if free_each {
+		for m in msgs {
+			delete(m)
+		}
+		delete(msgs)
+	}
+	return sum
+}</code></pre>
+  </div>
+
+  <p>Notice the asymmetry in freeing. Rust frees through <code>Drop</code> either way, but
+  <code>Bump::deallocate</code> is an empty function, so after inlining the 65,537 drops on the arena path compile to
+  nothing. Zig and Odin take a <code>free_each</code> flag: on the heap path somebody has to call
+  <code>free</code>/<code>delete</code> on each message, and on the arena path the whole point is that nobody
+  does. In Zig, <code>ArenaAllocator.free</code> is a no-op unless the block is the most recent one, so calling it
+  would be correct but pointless; skipping it is the idiom.</p>
+
+  <aside class="callout version" data-title="New in Rust 1.100">
+    <p>The <code>Allocator</code> trait, <code>Global</code>, <code>Vec::new_in</code>,
+    <code>Vec::with_capacity_in</code> and <code>Box::new_in</code> are stable as of 1.100.0 (they had been nightly-only
+    since 2016). Only <code>Vec</code> and <code>Box</code> take an allocator parameter on stable so far:
+    <code>String</code>, <code>HashMap</code> and the other collections do not yet, and <code>Rc</code>/<code>Arc</code>
+    with allocators are still behind the <code>allocator_ext</code> feature<a class="cite" href="#src-14">[14]</a>. That
+    is why the Rust program builds its strings as <code>Vec&lt;u8, A&gt;</code> rather than <code>String</code>.</p>
+  </aside>
+
+  <h2 id="borrowck">The borrow checker forbids reset while anything is alive</h2>
+  <p>An arena's one real danger is the red bar in <a class="figref" href="#fig-lifetimes">the lifetimes figure</a>: a pointer that
+  outlives its phase. In Zig and Odin, nothing stops you from keeping a slice into the frame arena after
+  <code>reset</code>/<code>free_all</code>; the next frame silently overwrites it. Rust can rule it out, and the
+  design falls out naturally. Every <code>Vec&lt;_, &amp;Bump&gt;</code> holds a shared borrow of the arena, and
+  <code>reset</code> takes <code>&amp;mut self</code>. You cannot hold both, so the compiler rejects any program that
+  resets the arena while something allocated from it is still reachable:</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch06-allocation-strategies/rust/src/lib.rs"><code class="language-rust">    /// Frees everything at once by moving the bump pointer back to the start.
+    ///
+    /// It takes `&amp;mut self`, so it can only be called when no `&amp;Bump` borrow is alive, which means
+    /// no `Vec&lt;_, &amp;Bump&gt;` or `Box&lt;_, &amp;Bump&gt;` still points into the buffer:
+    ///
+    /// ```compile_fail,E0502
+    /// use ch06_allocation_strategies::Bump;
+    /// let mut frame = Bump::with_capacity(1024);
+    /// let names: Vec&lt;u8, &amp;Bump&gt; = Vec::with_capacity_in(16, &amp;frame);
+    /// frame.reset(); // error[E0502]: cannot borrow `frame` as mutable because it is also borrowed as immutable
+    /// println!("{}", names.len());
+    /// ```
+    pub fn reset(&amp;mut self) {
+        *self.used.get_mut() = 0;
+    }</code></pre>
+  </div>
+<pre><code class="language-bash">error[E0502]: cannot borrow `frame` as mutable because it is also borrowed as immutable
+ --&gt; src/main.rs:5:5
+  |
+4 |     let names: Vec&lt;u8, &amp;Bump&gt; = Vec::with_capacity_in(16, &amp;frame);
+  |                                                           ------ immutable borrow occurs here
+5 |     frame.reset(); // error[E0502]: cannot borrow `frame` as mutable because it is also borrowed as immutable
+  |     ^^^^^^^^^^^^^ mutable borrow occurs here
+6 |     println!("{}", names.len());
+  |                    ----- immutable borrow later used here</code></pre>
+  <p>(That is rustc 1.100's output for the doc comment's snippet, compiled as a standalone <code>src/main.rs</code> with the
+  lines wrapped in <code>fn main</code>; the doc test itself is marked
+  <code>compile_fail,E0502</code>, so <code>cargo test</code> checks that it keeps failing.) The frame loop that does
+  compile shows the other side: inside the loop body, <code>tick</code> borrows <code>&amp;*frame</code>, returns a
+  plain <code>u64</code>, and its vectors are dropped before the call returns. By the time
+  <code>frame.reset()</code> runs, no borrow is left.</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch06-allocation-strategies/rust/src/main.rs"><code class="language-rust">fn frames_arena(frame: &amp;mut Bump, count: usize) -&gt; u64 {
+    let mut acc = 0u64;
+    for t in 0..TICKS as u64 {
+        acc = acc.wrapping_add(tick(&amp;*frame, t, count));
+        frame.reset(); // compiles only because nothing from this frame is still alive
+    }
+    acc
+}</code></pre>
+  </div>
+
+  <p>There is a price. Because every arena vector borrows the arena, storing one in a struct needs a lifetime parameter,
+  and long-lived code has to thread <code>'frame</code> through its types, as <code>rustc</code> does with its
+  <code>'tcx</code> arenas. Zig and Odin trade that friction for discipline and tooling: Odin's
+  <code>Tracking_Allocator</code> and Zig's <code>SafeAllocator</code> catch leaks and double frees in the heap at run time,
+  but neither catches a stale slice into an arena that was reset. In debug builds, poison the arena on reset (fill it with
+  <code>0xAA</code>) so stale reads produce obvious garbage instead of last frame's plausible data.</p>
+
+  <aside class="callout pitfall"><p>The borrow check covers the arena <em>value</em>. If you hand out raw pointers
+  (<code>Vec::as_ptr</code>, <code>Box::into_raw</code>) and dereference them in <code>unsafe</code> code after a reset,
+  Rust cannot help. That is one more reason the book's Rust code keeps <code>unsafe</code> to the
+  <code>impl</code> blocks.</p></aside>
+
+  <h2 id="frame">Frame, temporary and stack allocators</h2>
+  <p>A <b>frame arena</b> is just an arena with a schedule: allocated once, reset at the top or bottom of every frame,
+  tick or request. A <b>scratch</b> or <b>temporary</b> allocator is the same thing at a smaller scale, often shared
+  by everything in a thread. And a <b>stack allocator</b> is an arena that can also give back its most recent
+  allocations: either with a small header per allocation, so you can pop them one at a time in LIFO order, or with a
+  saved offset, a "savepoint" you roll back to<a class="cite" href="#src-5">[5]</a>.</p>
+
+  <p>Odin builds the scratch arena into the language runtime. Every thread has a
+  <code>context.temp_allocator</code>, a growing arena whose first block is 4 MiB by default
+  (<code>DEFAULT_TEMP_ALLOCATOR_BACKING_SIZE</code>), and the overview says it plainly: it is "for temporary and short
+  lived allocations, which are to be freed once per cycle/frame/etc."<a class="cite" href="#src-15">[15]</a> Library
+  procedures like <code>fmt.tprintf</code> use it on purpose. You call <code>free_all(context.temp_allocator)</code>
+  once per frame. For a savepoint inside a frame, the runtime gives you
+  <code>runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()</code>, a <code>@(deferred_out)</code> procedure that records the
+  temp arena's position and rolls it back when the enclosing scope ends: a stack allocator in one line. The program's
+  <code>rss_bytes</code> uses it, so reading <code>/proc/self/statm</code> never leaves anything behind in the temp
+  arena:</p>
+
+  <div class="code-tabs">
+<pre data-lang="Odin" data-file="code/ch06-allocation-strategies/odin/main.odin"><code class="language-odin">frames_temp :: proc(f: ^Frame) -&gt; u64 {
+	context.allocator = context.temp_allocator
+	acc: u64
+	for t in 0 ..&lt; u64(TICKS) {
+		acc += tick(t, f.count, false)
+		free_all(context.temp_allocator)
+	}
+	return acc
+}
+
+rss_bytes :: proc() -&gt; int {
+	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD() // rewinds the temp arena when this proc returns
+	data, err := os.read_entire_file("/proc/self/statm", context.temp_allocator)
+	if err != nil {
+		return 0
+	}
+	fields := strings.fields(string(data), context.temp_allocator)
+	pages, _ := strconv.parse_int(fields[1] if len(fields) &gt; 1 else "0")
+	return pages * 4096
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch06-allocation-strategies/zig/main.zig"><code class="language-zig">fn framesFixed(f: Frame) u64 {
+    var acc: u64 = 0;
+    for (0..TICKS) |t| {
+        acc +%= tick(f.fba.allocator(), t, f.count, false) catch @panic("out of memory");
+        f.fba.reset(); // end_index = 0
+    }
+    return acc;
+}</code></pre>
+  </div>
+
+  <p>Zig spells the same ideas as separate types. <code>FixedBufferAllocator</code> is an arena over a buffer you own.
+  <code>ArenaAllocator</code> grows by asking its child allocator for blocks, and <code>reset(.retain_capacity)</code> keeps
+  one block big enough for the last frame, so after the first frame it stops calling its child at all.
+  <code>BufferFirstAllocator</code> tries a stack buffer first and falls back to a real allocator. Odin also ships
+  <code>mem.Stack</code>, <code>mem.Small_Stack</code> and <code>mem.Scratch</code> if you want them explicitly.</p>
+
+  <aside class="callout version" data-title="Changed in Zig 0.16 and 0.17">
+    <p>0.16 made <code>std.heap.ArenaAllocator</code> thread-safe and lock-free (allocation is an atomic add on the
+    block's end index) and introduced "Juicy Main", <code>pub fn main(init: std.process.Init)</code><a class="cite" href="#src-13">[13]</a>. 0.17 renamed
+    <code>StackFallbackAllocator</code> to <code>BufferFirstAllocator</code> (the buffer is now an argument, and
+    <code>std.heap.stackFallback</code> is gone) and replaced <code>DebugAllocator</code> with
+    <code>std.heap.SafeAllocator</code><a class="cite" href="#src-12">[12]</a>. Code from 2024 that writes
+    <code>std.heap.GeneralPurposeAllocator(.{}){}</code> no longer compiles.</p>
+  </aside>
+
+  <h2 id="languages">Who chooses the allocator?</h2>
+  <p>All three languages agree that the <em>caller</em> should be able to choose where a library's memory comes from.
+  They disagree about how visible that choice should be.</p>
+
+  <h3 id="zig-explicit">Zig: an allocator argument on every call</h3>
+  <p>Zig has no global allocator. A function that allocates takes an <code>std.mem.Allocator</code>, and the
+  standard containers are "unmanaged" since 0.15: they do not even store one, so you write
+  <code>list.append(gpa, x)</code> and <code>list.deinit(gpa)</code>. You can see from a function's signature whether
+  it can allocate, and a test can pass <code>std.testing.allocator</code>, which fails the test on a leak.
+  <code>main</code> receives the program's allocators in <code>std.process.Init</code> (<a href="02-the-machine.html">Chapter 2</a>):
+  <code>init.gpa</code> is <code>SafeAllocator</code> in <code>-O debug</code>/<code>-O safe</code> and
+  <code>smp_allocator</code> in <code>-O fast</code> without libc, and <code>init.arena</code> is a process-lifetime arena.
+  The fixed-buffer frame's buffer comes from <code>init.arena</code>, so nobody ever frees it by hand:</p>
+
+  <div class="code-tabs">
+<pre data-lang="Zig" data-file="code/ch06-allocation-strategies/zig/main.zig"><code class="language-zig">pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const gpa = init.gpa; // smp_allocator in -O fast, SafeAllocator (leak-checking) in -O debug/safe
+    var buf: [4096]u8 = undefined;
+    var fw = Io.File.stdout().writer(io, &amp;buf);
+    const out = &amp;fw.interface;
+    // …
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    // Worst case per tick: one slice header and MAX_MSG bytes per message (TigerStyle: size it once).
+    // It lives as long as the program, so it comes from init.arena and is never freed by hand.
+    const fixed = try init.arena.allocator().alloc(u8, per_tick * (@sizeOf([]u8) + MAX_MSG) + 64);
+    var fba: std.heap.FixedBufferAllocator = .init(fixed);
+    const frame: Frame = .{ .gpa = gpa, .arena = &amp;arena, .fba = &amp;fba, .count = per_tick };</code></pre>
+  </div>
+
+  <h3 id="odin-context">Odin: an implicit context</h3>
+  <p>Odin passes a hidden <code>context</code> to every procedure with the default calling convention. It carries
+  <code>context.allocator</code> (by default the libc heap via <code>runtime.heap_allocator</code>) and
+  <code>context.temp_allocator</code>. Assigning <code>context.allocator</code> inside a scope redirects every
+  allocation in every procedure called from that scope, including library code that was never written with arenas
+  in mind. That is how <code>frames_arena</code> turns <code>tick</code> into arena code without touching it. The
+  same mechanism installs debugging: in a <code>-debug</code> build, the program wraps the heap in a
+  <code>Tracking_Allocator</code> that prints every leak with its source location at exit (it prints nothing for
+  this program).</p>
+
+  <div class="code-tabs">
+<pre data-lang="Odin" data-file="code/ch06-allocation-strategies/odin/main.odin"><code class="language-odin">	when ODIN_DEBUG {
+		// Debug builds: wrap the heap in a tracking allocator and report leaks at exit.
+		track: mem.Tracking_Allocator
+		mem.tracking_allocator_init(&amp;track, context.allocator)
+		context.allocator = mem.tracking_allocator(&amp;track)
+		defer {
+			for _, entry in track.allocation_map {
+				fmt.eprintf("%v leaked %v bytes\n", entry.location, entry.size)
+			}
+			mem.tracking_allocator_destroy(&amp;track)
+		}
+	}</code></pre>
+  </div>
+
+  <aside class="callout pitfall"><p>Implicit is not invisible. <code>context.allocator</code> is still set when you
+  call a procedure that stores what it allocates somewhere long-lived (a cache, a global map). If that procedure runs
+  while <code>context.allocator</code> is your frame arena, its data dies at the next <code>free_all</code>. Set the
+  context in the smallest scope that needs it, as <code>frames_arena</code> does, and pass allocators explicitly to
+  anything that keeps memory. The new <code>core:os</code> made its allocator parameters required for this reason:
+  "Requiring an explicit allocator makes it very clear who and what is allocating where"<a class="cite" href="#src-16">[16]</a>.</p></aside>
+
+  <h3 id="rust-generic">Rust: a type parameter with a default</h3>
+  <p>Rust's collections were always parameterised by an allocator internally; 1.100 makes the parameter public.
+  <code>Vec&lt;T&gt;</code> is <code>Vec&lt;T, Global&gt;</code>, so existing code is unchanged, and
+  <code>Vec&lt;T, &amp;Bump&gt;</code> is a different type. Being a type has consequences in both directions. The
+  compiler knows statically which allocator each vector uses, so it inlines the bump and deletes the no-op frees
+  (the benchmark below shows what that buys). But a function that takes <code>&amp;Vec&lt;u8&gt;</code> will not
+  accept a <code>Vec&lt;u8, &amp;Bump&gt;</code>; generic code has to say <code>A: Allocator</code>, as
+  <code>tick</code> does. Taking slices (<code>&amp;[u8]</code>) at API boundaries avoids most of that.</p>
+
+  <h2 id="pool">Pools: same size, individual lifetimes</h2>
+  <p>Arenas need a shared lifetime. Some objects really do live and die one by one: projectiles, network
+  connections, particles with random lifetimes, nodes in a tree you edit. If they are all the same size, a
+  <b>pool</b> serves them in O(1) without any of a general allocator's search: split a buffer into equal chunks and
+  thread a free list <em>through the free chunks themselves</em>, so each free chunk stores the index or address of
+  the next one<a class="cite" href="#src-6">[6]</a>. Allocate = pop the head. Free = push it back. No headers, no
+  size classes, no fragmentation (every hole fits every request), and all objects stay inside one buffer, which keeps
+  them dense in cache and TLB. Chapter 5's generational pool is this pool with a generation check added.</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch06-allocation-strategies/rust/src/lib.rs"><code class="language-rust">    fn pop_free(&amp;self) -&gt; Option&lt;u32&gt; {
+        let i = self.free_head.get();
+        let link = self.link(i)?; // NIL is out of range, so an empty pool returns None here
+        let next = u32::from_le_bytes([link[0].get(), link[1].get(), link[2].get(), link[3].get()]);
+        self.free_head.set(next);
+        Some(i)
+    }
+
+unsafe impl Allocator for &amp;Pool {
+    fn allocate(&amp;self, layout: Layout) -&gt; Result&lt;NonNull&lt;[u8]&gt;, AllocError&gt; {
+        if layout.size() &gt; self.chunk || layout.align() &gt; self.align {
+            return Err(AllocError);
+        }
+        let i = self.pop_free().ok_or(AllocError)?;
+        let base = self.buf.as_ptr().cast_mut().cast::&lt;u8&gt;();
+        let ptr = NonNull::new(base.wrapping_add(self.first + i as usize * self.chunk)).ok_or(AllocError)?;
+        Ok(NonNull::slice_from_raw_parts(ptr, layout.size()))
+    }
+
+    unsafe fn deallocate(&amp;self, ptr: NonNull&lt;u8&gt;, _layout: Layout) {
+        let offset = ptr.as_ptr().addr().wrapping_sub(self.buf.as_ptr().addr() + self.first);
+        self.push_free((offset / self.chunk) as u32);
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch06-allocation-strategies/zig/main.zig"><code class="language-zig">    var pool: std.heap.MemoryPool(Projectile) = try .initCapacity(gpa, spawn * MAX_TTL);
+    defer pool.deinit(gpa);
+    // …
+/// ...or a MemoryPool: a free list threaded through equal-size chunks.
+const PoolSource = struct {
+    pool: *std.heap.MemoryPool(Projectile),
+    gpa: Allocator, // only used if the pool has to grow
+    fn create(s: PoolSource) !*Projectile {
+        return s.pool.create(s.gpa);
+    }
+    fn destroy(s: PoolSource, p: *Projectile) void {
+        s.pool.destroy(@alignCast(p)); // pool chunks are 8-aligned (they double as free-list nodes)
+    }
+};</code></pre>
+<pre data-lang="Odin" data-file="code/ch06-allocation-strategies/odin/main.odin"><code class="language-odin">pool_allocator_proc :: proc(
+	data: rawptr,
+	mode: mem.Allocator_Mode,
+	size, alignment: int,
+	old_memory: rawptr,
+	old_size: int,
+	loc := #caller_location,
+) -&gt; (
+	[]byte,
+	mem.Allocator_Error,
+) {
+	p := (^Pool)(data)
+	switch mode {
+	case .Alloc, .Alloc_Non_Zeroed:
+		if size &gt; p.chunk || alignment &gt; p.align {
+			return nil, .Invalid_Argument
+		}
+		c := p.free_head
+		if c == nil {
+			return nil, .Out_Of_Memory
+		}
+		p.free_head = c.next
+		bytes := ([^]byte)(c)[:size]
+		if mode == .Alloc {
+			mem.zero_slice(bytes)
+		}
+		return bytes, nil
+	case .Free:
+		if old_memory != nil {
+			c := (^Free_Chunk)(old_memory)
+			c.next = p.free_head
+			p.free_head = c
+		}
+	case .Free_All:
+		pool_free_all(p)
+	case .Resize, .Resize_Non_Zeroed, .Query_Info:
+		return nil, .Mode_Not_Implemented
+	case .Query_Features:
+		if set := (^mem.Allocator_Mode_Set)(old_memory); set != nil {
+			set^ = {.Alloc, .Alloc_Non_Zeroed, .Free, .Free_All, .Query_Features}
+		}
+	}
+	return nil, nil
+}</code></pre>
+  </div>
+
+  <p>Odin's <code>core:container/pool</code> is a typed object pool, not an <code>Allocator</code>, and <code>core:mem</code>
+  has no fixed-size pool allocator, so the Odin program writes one as an allocator procedure: a single <code>proc</code> that
+  switches on the requested mode (<code>.Alloc</code>, <code>.Free</code>, <code>.Free_All</code>, …), which is why any Odin
+  allocator can slot into <code>context.allocator</code>. Rust's version keeps the free list as <code>u32</code> indices in
+  the first four bytes of each free chunk (safe byte reads through <code>Cell</code>). Zig's <code>MemoryPool</code> uses an
+  intrusive linked list and hands out pointers aligned for a list node (8 bytes), so returning a <code>*Projectile</code>
+  (alignment 4) needs an <code>@alignCast</code>; the compiler refused the first version without it.</p>
+
+  <p>The pool benchmark simulates 64 ticks; each tick spawns a batch of 24-byte projectiles with a time-to-live of 1
+  to 16 ticks, moves every live projectile, and despawns those whose time is up. Lifetimes overlap and end in random
+  order, so an arena cannot serve them, and the comparison is pool versus one heap allocation per projectile. The
+  same <code>simulate</code> function runs on both:</p>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch06-allocation-strategies/rust/src/main.rs"><code class="language-rust">/// Spawn `spawn` projectiles per tick, move them, despawn each when its ttl runs out.
+/// Every projectile is its own allocation with its own lifetime.
+fn simulate&lt;A: Allocator + Copy&gt;(alloc: A, spawn: usize) -&gt; u64 {
+    let mut live: Vec&lt;Box&lt;Projectile, A&gt;&gt; = Vec::new();
+    let mut sum = 0u64;
+    for t in 0..POOL_TICKS as u64 {
+        for i in 0..spawn as u64 {
+            let h = mix(t + 1000, i);
+            let p = Projectile {
+                x: (h &amp; 0xFFFF) as i32,
+                y: ((h &gt;&gt; 16) &amp; 0xFFFF) as i32,
+                vx: ((h &gt;&gt; 32) &amp; 15) as i32 - 8,
+                vy: ((h &gt;&gt; 36) &amp; 15) as i32 - 8,
+                ttl: 1 + ((h &gt;&gt; 40) % MAX_TTL) as u32,
+                id: (t * spawn as u64 + i) as u32,
+            };
+            live.push(Box::new_in(p, alloc));
+        }
+        let mut k = 0;
+        while k &lt; live.len() {
+            let p = &amp;mut live[k];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.ttl -= 1;
+            if p.ttl == 0 {
+                sum = sum.wrapping_add(score(p));
+                live.swap_remove(k); // drops the Box: `free`, or a push onto the pool's free list
+            } else {
+                k += 1;
+            }
+        }
+    }
+    live.iter().fold(sum, |s, p| s.wrapping_add(score(p)))
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch06-allocation-strategies/zig/main.zig"><code class="language-zig">/// Spawn `spawn` projectiles per tick, move them, despawn each when its ttl runs out.
+/// Every projectile is its own allocation with its own lifetime.
+fn simulate(src: anytype, gpa: Allocator, spawn: usize) !u64 {
+    var live: std.ArrayList(*Projectile) = .empty;
+    defer live.deinit(gpa);
+    var sum: u64 = 0;
+    for (0..POOL_TICKS) |t| {
+        for (0..spawn) |i| {
+            const h = mix(t + 1000, i);
+            const p = try src.create();
+            p.* = .{
+                .x = @intCast(h &amp; 0xFFFF),
+                .y = @intCast((h &gt;&gt; 16) &amp; 0xFFFF),
+                .vx = @as(i32, @intCast((h &gt;&gt; 32) &amp; 15)) - 8,
+                .vy = @as(i32, @intCast((h &gt;&gt; 36) &amp; 15)) - 8,
+                .ttl = 1 + @as(u32, @intCast((h &gt;&gt; 40) % MAX_TTL)),
+                .id = @truncate(t * spawn + i),
+            };
+            try live.append(gpa, p);
+        }
+        var k: usize = 0;
+        while (k &lt; live.items.len) {
+            const p = live.items[k];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.ttl -= 1;
+            if (p.ttl == 0) {
+                sum +%= score(p);
+                src.destroy(p); // gpa.free, or a push onto the pool's free list
+                _ = live.swapRemove(k);
+            } else k += 1;
+        }
+    }
+    for (live.items) |p| {
+        sum +%= score(p);
+        src.destroy(p);
+    }
+    return sum;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch06-allocation-strategies/odin/main.odin"><code class="language-odin">// Spawn `spawn` projectiles per tick, move them, despawn each when its ttl runs out.
+// Every projectile is its own allocation with its own lifetime.
+simulate :: proc(alloc: mem.Allocator, spawn: int) -&gt; u64 {
+	live: [dynamic]^Projectile
+	defer delete(live)
+	sum: u64
+	for t in 0 ..&lt; POOL_TICKS {
+		for i in 0 ..&lt; spawn {
+			h := mix(u64(t) + 1000, u64(i))
+			p := new_clone(
+				Projectile {
+					x = i32(h &amp; 0xFFFF),
+					y = i32((h &gt;&gt; 16) &amp; 0xFFFF),
+					vx = i32((h &gt;&gt; 32) &amp; 15) - 8,
+					vy = i32((h &gt;&gt; 36) &amp; 15) - 8,
+					ttl = 1 + u32((h &gt;&gt; 40) % MAX_TTL),
+					id = u32(t * spawn + i),
+				},
+				alloc,
+			)
+			append(&amp;live, p)
+		}
+		k := 0
+		for k &lt; len(live) {
+			p := live[k]
+			p.x += p.vx
+			p.y += p.vy
+			p.ttl -= 1
+			if p.ttl == 0 {
+				sum += score(p)
+				free(p, alloc) // libc free, or a push onto the pool's free list
+				unordered_remove(&amp;live, k)
+			} else {
+				k += 1
+			}
+		}
+	}
+	for p in live {
+		sum += score(p)
+		free(p, alloc)
+	}
+	return sum
+}</code></pre>
+  </div>
+
+  <h3 id="ghostty">A cautionary tale: Ghostty's largest memory leak</h3>
+  <p>Custom allocators move bookkeeping into your code, where it can go wrong. The Ghostty terminal (written in Zig) takes
+  standard-size scrollback pages from a memory pool and <code>mmap</code>s rare oversized ones directly; on free, a
+  standard-size page went back to the pool and anything else was <code>munmap</code>ed. A hot-path optimisation reused the
+  oldest page as the newest and "resized" it to standard size <em>in its metadata only</em>. When that page was freed, its
+  metadata said "standard", so the big mapping went to the pool and was never unmapped<a class="cite" href="#src-8">[8]</a>.
+  The bug lived since at least 1.0 and surfaced when a popular CLI tool filled scrollback with multi-codepoint graphemes;
+  one user reported <b>37 GB</b> after ten days. The lessons: a pool must know for certain which blocks it owns, "size
+  says where it came from" is a fragile ownership test, and leak checkers in CI (Ghostty runs leak-detecting Zig
+  allocators and Valgrind) only catch the conditions the tests produce.</p>
+
+  <h2 id="pitfall-growth">Pitfall: growing arrays in an arena</h2>
+  <p>An arena can only extend an allocation in place if it is the most recent one. A dynamic array that grows by
+  doubling asks to resize; if something else was allocated after it, the arena must allocate a new, bigger block and
+  copy, and the old block stays behind, dead but not reclaimable until the reset. Karl Zylinski, writing about Odin,
+  calls it "a graveyard of old blocks in a trail behind the currently used block"<a class="cite" href="#src-11">[11]</a>.
+  Two arrays growing in turns is the worst case, because each always blocks the other:</p>
+
+  <div class="code-tabs">
+<pre data-lang="Odin" data-file="code/ch06-allocation-strategies/odin/main.odin"><code class="language-odin">		scratch_buf: [1 &lt;&lt; 16]byte
+		scratch: mem.Arena
+		mem.arena_init(&amp;scratch, scratch_buf[:])
+		context.allocator = mem.arena_allocator(&amp;scratch)
+		a, b: [dynamic]u32
+		for i in 0 ..&lt; u32(1000) {
+			append(&amp;a, i) // the two arrays take turns at the end of the arena, so
+			append(&amp;b, i) // neither can grow in place: every regrow copies and abandons the old block
+		}
+		live := (cap(a) + cap(b)) * 4
+		fmt.printfln("arena + growing [dynamic]: 2 x 1000 u32, live %d B, arena used %d B (%.1fx)", live, scratch.offset, f64(scratch.offset) / f64(live))
+
+		// The fix: size both arrays once, then make any further growth a loud error.
+		free_all(context.allocator)
+		c := make([dynamic]u32, 0, 1000)
+		d := make([dynamic]u32, 0, 1000)
+		c.allocator = mem.panic_allocator()
+		d.allocator = mem.panic_allocator()
+		for i in 0 ..&lt; u32(1000) {
+			append(&amp;c, i)
+			append(&amp;d, i)
+		}
+		fmt.printfln("  pre-sized with a panic_allocator guard: live %d B, arena used %d B", (cap(c) + cap(d)) * 4, scratch.offset)</code></pre>
+<pre data-lang="Rust" data-file="code/ch06-allocation-strategies/rust/src/main.rs"><code class="language-rust">    let scratch = Bump::with_capacity(1 &lt;&lt; 16);
+    let mut a: Vec&lt;u32, &amp;Bump&gt; = Vec::new_in(&amp;scratch);
+    let mut b: Vec&lt;u32, &amp;Bump&gt; = Vec::new_in(&amp;scratch);
+    for i in 0..1000 {
+        a.push(i); // the two vectors take turns at the end of the arena, so
+        b.push(i); // neither can grow in place: every regrow copies and abandons the old block
+    }
+    let live = (a.capacity() + b.capacity()) * 4;
+    println!("arena + growing Vec: 2 x 1000 u32, live {live} B, arena used {} B ({:.1}x)", scratch.used(), scratch.used() as f64 / live as f64);</code></pre>
+<pre data-lang="Zig" data-file="code/ch06-allocation-strategies/zig/main.zig"><code class="language-zig">        var scratch_buf: [1 &lt;&lt; 16]u8 = undefined;
+        var scratch: std.heap.FixedBufferAllocator = .init(&amp;scratch_buf);
+        const sa = scratch.allocator();
+        var a: std.ArrayList(u32) = .empty;
+        var b: std.ArrayList(u32) = .empty;
+        for (0..1000) |i| {
+            try a.append(sa, @intCast(i)); // the two lists take turns at the end of the buffer, so
+            try b.append(sa, @intCast(i)); // neither can grow in place: each regrow copies and abandons
+        }
+        const live = (a.capacity + b.capacity) * 4;
+        try out.print("arena + growing ArrayList: 2 x 1000 u32, live {d} B, arena used {d} B ({d:.1}x)\n", .{
+            live, scratch.end_index, @as(f64, @floatFromInt(scratch.end_index)) / @as(f64, @floatFromInt(live)),
+        });</code></pre>
+  </div>
+
+  <div class="table-wrap"><table>
+    <tr><th>2 × 1000 <code>u32</code> appended in turns</th><th class="num">live capacity</th><th class="num">arena used</th><th class="num">waste</th></tr>
+    <tr><td>Odin <code>[dynamic]u32</code> in <code>mem.Arena</code></td><td class="num">8,192 B</td><td class="num">16,320 B</td><td class="num">2.0×</td></tr>
+    <tr><td>Rust <code>Vec&lt;u32, &amp;Bump&gt;</code></td><td class="num">8,192 B</td><td class="num">16,352 B</td><td class="num">2.0×</td></tr>
+    <tr><td>Zig <code>ArrayList(u32)</code> in a <code>FixedBufferAllocator</code></td><td class="num">8,544 B</td><td class="num">21,920 B</td><td class="num">2.6×</td></tr>
+    <tr><td>Odin, pre-sized with <code>make([dynamic]u32, 0, 1000)</code></td><td class="num">8,000 B</td><td class="num">8,000 B</td><td class="num">1.0×</td></tr>
+  </table></div>
+  <p>With doubling, the dead copies add up to about the live size, hence 2×; Zig's <code>ArrayList</code> grows by
+  roughly 1.5× plus a constant, which leaves more, smaller corpses. The fixes, in order of preference: know the size
+  and reserve it once (the Odin program then sets each array's <code>allocator</code> to
+  <code>mem.panic_allocator()</code>, so an accidental regrow crashes loudly instead of leaking); keep growing arrays
+  on the general heap or in their own arena; or use a virtual-memory arena, which can grow its last allocation in
+  place, which brings us to the next trick.</p>
+
+  <h2 id="virtual">Reserve, then commit</h2>
+  <p>On a 64-bit machine, address space is nearly free and physical memory is not. The operating system lets you
+  separate the two: <b>reserve</b> a huge contiguous range of virtual addresses (it costs a kernel bookkeeping entry,
+  no RAM), then <b>commit</b> pages as you reach them. On Linux, an anonymous <code>mmap</code> already behaves this
+  way, because the kernel backs a page with RAM only when it is first touched; Windows makes the two steps explicit
+  with <code>VirtualAlloc(MEM_RESERVE)</code> and <code>MEM_COMMIT</code>. Fleury's advice is to "reserve a massive
+  upper-bound of contiguous virtual address space, then commit physical pages as needed"<a class="cite" href="#src-7">[7]</a>.</p>
+  <p>An arena built that way never moves and never chains blocks: it is one contiguous range that can grow to its
+  reservation, its last allocation can always grow in place (so the graveyard above disappears for the top-most array),
+  and pointers into it stay valid. Page granularity also lets you give memory back without moving anything: Ghostty
+  later compresses idle scrollback pages and returns them to the OS with <code>madvise</code> while their addresses
+  stay reserved<a class="cite" href="#src-18">[18]</a>. Each program reserves 1 GiB, writes one byte in each 4 KiB page of the first 16 MiB, and reads
+  its resident set size from <code>/proc/self/statm</code>:</p>
+
+  <div class="code-tabs">
+<pre data-lang="Odin" data-file="code/ch06-allocation-strategies/odin/main.odin"><code class="language-odin">	// arena_init_static reserves address space (mmap PROT_NONE on Linux) and commits it in
+	// steps (mprotect) as the arena fills. Only pages that are written take RAM.
+	before := rss_bytes()
+	big: vmem.Arena
+	if err := vmem.arena_init_static(&amp;big, reserved = 1 &lt;&lt; 30); err != nil {
+		fmt.panicf("arena_init_static: %v", err)
+	}
+	defer vmem.arena_destroy(&amp;big)
+	reserved := rss_bytes()
+	used := non_zero_make([]u8, 16 &lt;&lt; 20, vmem.arena_allocator(&amp;big))</code></pre>
+<pre data-lang="Zig" data-file="code/ch06-allocation-strategies/zig/main.zig"><code class="language-zig">    // Reserve 1 GiB of address space. MAP_NORESERVE: no RAM or swap is set aside; the kernel backs
+    // each 4 KiB page only when it is first written.
+    const before = rssBytes(io);
+    const region = try std.posix.mmap(null, 1 &lt;&lt; 30, .{ .READ = true, .WRITE = true }, .{ .TYPE = .PRIVATE, .ANONYMOUS = true, .NORESERVE = true }, -1, 0);
+    defer std.posix.munmap(region);
+    const reserved = rssBytes(io);
+    var big: std.heap.FixedBufferAllocator = .init(region);
+    const used = try big.allocator().alloc(u8, 16 &lt;&lt; 20);
+    var off: usize = 0;
+    while (off &lt; used.len) : (off += 4096) used[off] = 1;</code></pre>
+<pre data-lang="Rust" data-file="code/ch06-allocation-strategies/rust/src/main.rs"><code class="language-rust">    // Rust's std has no reserve/commit API. A huge zeroed Vec gets fresh zero pages from mmap
+    // (via calloc), and the kernel only backs a page with RAM when it is first written.
+    let before = rss_bytes();
+    let mut big = vec![0u8; 1 &lt;&lt; 30];
+    let reserved = rss_bytes();
+    for page in big[..16 &lt;&lt; 20].chunks_mut(4096) {
+        page[0] = 1;
+    }
+    let touched = rss_bytes();</code></pre>
+  </div>
+<pre><code class="language-bash">odin: 1 GiB virtual arena: reserved 1024 MiB, committed 16 MiB; RSS +0.0 MiB after reserve, +16.0 MiB after touching 16 MiB
+zig:  1 GiB mmap reservation: RSS +0.0 MiB after mmap, +16.0 MiB after touching 16 MiB
+rust: 1 GiB zeroed Vec: RSS +0.0 MiB after allocating, +16.0 MiB after touching 16 MiB</code></pre>
+  <p>All three agree: a gigabyte of addresses costs nothing until you write to it. Odin's <code>core:mem/virtual</code>
+  arena reserves (on Linux, <code>mmap</code> with no access rights) and commits in steps with <code>mprotect</code> as it
+  fills. Zig gives you <code>std.posix.mmap</code>, and a <code>FixedBufferAllocator</code> over the mapping is a good reserved
+  arena. Rust's standard library has no reserve/commit API; a huge <code>vec![0u8; N]</code> gets the same effect only because
+  glibc serves it from fresh <code>mmap</code> zero pages, an implementation detail rather than a guarantee. (Transparent huge
+  pages are set to <code>madvise</code> on this orb, so pages are 4 KiB here.)</p>
+
+
+  <h2 id="static">Static allocation: the TigerStyle extreme</h2>
+  <p>If you can put every allocation into a known phase, you can take the last step: allocate everything at startup
+  and never again. TigerBeetle, a financial database written in Zig, makes this a rule in its TigerStyle guide: "All
+  memory must be statically allocated at startup. No memory may be dynamically allocated (or freed and reallocated)
+  after initialization."<a class="cite" href="#src-9">[9]</a> At startup it computes a worst-case count for every
+  kind of object from its configuration (connections, messages in flight, batch sizes), allocates exactly that, and
+  then wraps its allocator in a state machine (<code>init → static → deinit</code>) that asserts if anyone allocates
+  after initialisation. Its architecture document calls static allocation "a forcing function to ensure that
+  everything has a limit"<a class="cite" href="#src-10">[10]</a>.</p>
+  <p>The benefits are not mainly speed. A program that cannot allocate after startup cannot run out of memory halfway
+  through a request, has a footprint you can read off its configuration, and cannot use heap memory after freeing it. The
+  cost is that you must <em>know</em> your limits and reject work beyond them. Phil Eaton notes that Zig's fixed-capacity
+  container methods (<code>initCapacity</code> plus <code>*AssumeCapacity</code>) make this practical<a class="cite" href="#src-17">[17]</a>.
+  This chapter's programs take a small step that way: frame buffers and the pool are sized once from the worst case, so
+  neither asks for memory inside the timed loop.</p>
+
+  <h2 id="measure">Measuring it</h2>
+  <p>The frame benchmark runs 16 ticks. Each tick builds 65,536 messages of 8 to 71 bytes (a mixing function of tick
+  and index chooses the length and the bytes, identically in all three languages), sums their bytes, and discards
+  them. "Heap per object" allocates each message and the per-tick list from the general-purpose heap and frees them
+  all; "frame arena" allocates the same from an arena reset once per tick. Every variant prints a checksum, and the
+  checksums match to the last bit across variants and languages (<code>0x0277eab53a846fae</code> at full size).</p>
+
+  <h3 id="worked">A worked example with real numbers</h3>
+  <p>Payload length is 8 plus a uniform value in 0–63, so 39.5 bytes on average. In the Zig and Odin arenas each
+  message also needs a 16-byte slice (pointer + length) in the tick's list: 39.5 + 16 = 55.5 bytes per message, within
+  0.03% of the high-water mark the programs print (3,636,193 bytes for 65,536 messages). Rust's list holds
+  <code>Vec&lt;u8, &amp;Bump&gt;</code> values, which are 32 bytes (pointer, capacity, length and the
+  <code>&amp;Bump</code>), so its arena reaches 71.5 bytes per message. On a glibc heap, the same 39.5-byte average
+  payload becomes a chunk of header + payload rounded up to 16: about 56 bytes per message <em>before</em> the list.
+  So per tick the heap version makes 65,537 calls to <code>malloc</code>, 65,537 to <code>free</code>, and spreads
+  about 3.7 MB of chunks over whatever holes it finds; the arena version makes zero calls to either, writes 2.6 MB
+  of payload in one contiguous run, and resets with one store. The working set (3.6 MB) is bigger than L2 (1.25 MiB)
+  but within the usable L3 that <a href="02-the-machine.html">Chapter 2</a> measured, so most of the gap is probably allocator
+  instructions and frees rather than cache misses; without performance counters we cannot prove it.</p>
+
+  <figure class="figure" id="fig-bench-frame">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch06-frame" data-opts='{"metric":"ns/n","per":"message"}'></div>
+    <figcaption>Per-tick temporary strings (median of 7 runs of 16 ticks × 65,536 messages, pinned to one core). All
+    numbers in this chapter come from one 4-vCPU KVM Xeon (Ice Lake) and are noisy, so read them as ratios (machine: see
+    <a href="02-the-machine.html">Chapter 2</a>). Rust's frame arena is
+    <span data-bench-ratio="ch06-frame" data-num="heap per object" data-den="frame arena" data-lang="rust">about 2.4×</span>
+    faster than its heap version, Odin's
+    <span data-bench-ratio="ch06-frame" data-num="heap per object" data-den="frame arena" data-lang="odin">about 2.3×</span>
+    and Zig's only
+    <span data-bench-ratio="ch06-frame" data-num="heap per object" data-den="frame arena" data-lang="zig">about 1.3×</span>.</figcaption>
+  </figure>
+
+  <p>Three things in that chart need explaining, and none of them is "Zig is slow".</p>
+  <ul>
+    <li><b>The heap baselines differ.</b> Rust's <code>Global</code> and Odin's default <code>context.allocator</code>
+    both call glibc's <code>malloc</code>/<code>free</code>. Zig in <code>-O fast</code> without libc uses
+    <code>smp_allocator</code>, a simpler per-thread free-list design, and on this single-threaded workload it is
+    noticeably faster than glibc. The arena has less to beat.</li>
+    <li><b>The arenas differ.</b> Rust's <code>&amp;Bump</code> is a type parameter, so <code>allocate</code> is
+    inlined into <code>tick</code> and the empty <code>deallocate</code> vanishes. Zig's
+    <code>Allocator</code> is a runtime interface: every <code>alloc</code> is an indirect call through a vtable, and
+    <code>ArenaAllocator</code>'s fast path is an atomic add because it is thread-safe since 0.16.
+    <code>FixedBufferAllocator</code> skips the atomics and came out ahead of <code>ArenaAllocator</code>
+    here. Odin's allocator is also a procedure pointer, called per allocation.</li>
+    <li><b>Odin's temp allocator</b> is slightly behind its <code>mem.Arena</code>. One visible difference in the
+    runtime source: <code>free_all</code> on the temp arena zeroes the used part of its block, while
+    <code>mem.Arena</code>'s <code>free_all</code> only sets <code>offset = 0</code>. We have not profiled it, so treat that as a plausible
+    reason, not a finding.</li>
+  </ul>
+
+  <figure class="figure" id="fig-bench-pool">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch06-pool" data-opts='{"metric":"ns/n","per":"projectile"}'></div>
+    <figcaption>Projectiles with individual lifetimes (64 ticks × 4,096 spawns, ttl 1–16): one heap allocation each
+    versus a pool. The pool wins by
+    <span data-bench-ratio="ch06-pool" data-num="heap per object" data-den="pool" data-lang="zig">about 1.4×</span> in Zig,
+    <span data-bench-ratio="ch06-pool" data-num="heap per object" data-den="pool" data-lang="odin">about 1.6×</span> in Odin and
+    <span data-bench-ratio="ch06-pool" data-num="heap per object" data-den="pool" data-lang="rust">about 1.2×</span> in Rust.</figcaption>
+  </figure>
+
+  <p>In Rust and Odin the pool's margin is smaller than the arena's, and that is the honest result. (In Zig the two
+  margins are about the same, because its <code>smp_allocator</code> heap left the arena little to beat.) Every projectile still gets
+  created and destroyed one at a time, the simulation does real work per tick, and glibc's thread cache is already
+  very good at recycling same-size 32-byte chunks; it is itself a pool for that size class. What the pool adds is a
+  guarantee rather than a big speed-up: all projectiles live inside one buffer, there are no headers, and no
+  allocation can fail or fragment inside the loop.</p>
+
+  <figure class="figure" id="fig-cited">
+    <div class="figure-body" data-viz="bench-bars" data-opts='{"source":"cited: Zhou et al., Characterizing a Memory Allocator at Warehouse Scale, ASPLOS 2024","metric":"value","unit":"% of CPU cycles","sort":"none","runs":[{"label":"Google fleet, all binaries","value":4.3},{"label":"top-5 malloc users, low end","value":3.6},{"label":"top-5 malloc users, high end","value":10.1}]}'></div>
+    <figcaption>Cited, not measured here: the share of CPU cycles Google's production fleet spends inside TCMalloc's
+    allocation and deallocation functions<a class="cite" href="#src-1">[1]</a>. Our microbenchmark exaggerates
+    the effect on purpose; in real programs, allocation is a few percent of the time, and the larger effect is where it
+    puts the data<a class="cite" href="#src-2">[2]</a>.</figcaption>
+  </figure>
+
+  <aside class="callout try"><p>Run all three versions in quick mode, then at full size, pinned to one core:</p>
+<pre><code class="language-bash">cd code &amp;&amp; ./run_all.sh ch06
+cargo run --release -q -p ch06_allocation_strategies
+cd ch06-allocation-strategies/zig &amp;&amp; zig run -O fast main.zig
+cd .. &amp;&amp; odin run odin -o:speed -vet -strict-style
+odin run odin -debug -vet -strict-style -- --quick   # tracking allocator: reports leaks, if any</code></pre>
+  <p>Try <code>-O safe</code> in Zig to see how much <code>SafeAllocator</code>'s checks cost the heap path, and change
+  <code>TICKS</code> and the per-tick count to shrink the working set into L2.</p></aside>
+
+  <h2 id="caveats">When not to</h2>
+  <ul>
+    <li><b>Long-lived arenas accumulate garbage.</b> An arena that is never reset is a leak with good locality. If
+    objects in one "phase" actually die at very different times (a server whose request arena lives as long as a
+    slow client), you pay for the slowest one.</li>
+    <li><b>Escaping pointers.</b> Anything that outlives its arena is a use-after-free. Rust catches it at compile
+    time for values that borrow the arena; in Zig and Odin, keep arenas phase-scoped, poison memory on reset in debug
+    builds, and copy what must survive into a longer-lived arena before the reset.</li>
+    <li><b>Drop and destructors.</b> In Rust, a <code>Vec&lt;T, &amp;Bump&gt;</code> still runs each <code>T</code>'s
+    destructor; only the memory is free. If <code>T</code> owns heap memory of its own (a <code>String</code>), that
+    memory is still freed one by one. Arena-friendly data is plain data.</li>
+    <li><b>The heap is good.</b> Modern allocators are fast, and for objects with genuinely unpredictable lifetimes
+    they are the right tool. Measure before replacing one; our pool result shows how small the margin can be.</li>
+    <li><b>Custom allocators are code you maintain.</b> Ghostty's leak lived for years in a pool that worked for
+    the common case. Keep the ownership rules simple, and test the rare path.</li>
+  </ul>
+
+  <aside class="recap"><p>Group objects by when they die, give each lifetime its own arena (or a pool when objects
+  of one size die one by one), and freeing a million objects becomes a single reset that the hardware, the
+  allocator and in Rust even the borrow checker can reason about.</p></aside>
+
+  <h2 id="exercises">Exercises</h2>
+  <details class="exercise"><summary>A bump arena holds a 1-byte <code>bool</code>, then a <code>u64</code>, then a
+  <code>u16</code>, starting at offset 0. What is the offset after each allocation, and how many bytes are
+  padding?</summary>
+  <p>The bool goes at 0 (offset 1). The <code>u64</code> needs 8-byte alignment, so the pointer rounds up to 8 and
+  ends at 16 (7 bytes of padding). The <code>u16</code> goes at 16 and ends at 18. Total 18 bytes, 7 of them padding.
+  Allocating in decreasing alignment order (u64, u16, bool) gives 11 bytes and no padding, the same lesson as Chapter
+  3, now applied to an allocator.</p></details>
+  <details class="exercise"><summary>Why does <code>Bump::reset</code> take <code>&amp;mut self</code> while
+  <code>allocate</code> takes <code>&amp;self</code>? What would go wrong if <code>reset</code> took
+  <code>&amp;self</code>?</summary>
+  <p>Collections hold a shared reference to the allocator (<code>Vec&lt;T, &amp;Bump&gt;</code>), so allocation
+  must work through <code>&amp;self</code>. If <code>reset</code> also took <code>&amp;self</code>, you could call it
+  while vectors still point into the buffer, and the next allocations would overwrite their contents: a use-after-free
+  in safe code, which would make the <code>unsafe impl</code> unsound. Requiring <code>&amp;mut self</code> lets the
+  borrow checker prove no borrow is alive, and the trait's documentation explicitly allows mutation through
+  <code>&amp;mut</code> access to invalidate blocks.</p></details>
+  <details class="exercise"><summary>In Odin, a procedure called during a frame does
+  <code>cache[key] = strings.clone(name)</code>, while <code>context.allocator</code> is the frame arena. What happens,
+  and what are two fixes?</summary>
+  <p>The clone lives in the frame arena, the map entry outlives the frame, and after <code>free_all</code> the next
+  frame overwrites the bytes: the cache now holds garbage strings. Fixes: pass an explicit long-lived allocator to
+  <code>strings.clone(name, cache_allocator)</code>, or narrow the scope where <code>context.allocator</code> is the
+  frame arena so the caching code runs outside it. (Interning into a permanent arena is a third.)</p></details>
+  <details class="exercise"><summary>The frame benchmark's working set is about 3.6 MB per tick. If each tick builds only
+  4,096 messages (about 230 KB, inside L2), which effects push the arena's advantage up, which push it down, and how would
+  you find out which wins?</summary>
+  <p>Up: the arena's writes get cheaper because everything stays in L2, while the heap path still pays its allocator
+  instructions per message. Down: glibc's thread cache also does better on a small, hot heap, recycling the same few chunks
+  from cache. Which wins depends on the machine and the allocator. On this orb a quick Rust run (256 ticks × 4,096 messages)
+  gave a smaller ratio than the full-size run, so the second effect won. The way to find out is to change the
+  count and measure both sizes.</p></details>
+  <details class="exercise"><summary>Ghostty's pool decided ownership from a page's size field. Design an ownership
+  test that cannot drift out of sync with the real allocation.</summary>
+  <p>Decide from the memory itself, not from mutable metadata: for example, check whether the page's address lies
+  inside the pool's own reserved range (one comparison when the pool reserves one contiguous region), or store an
+  immutable "origin" tag set when the page is created and never changed by resizes. Either way, also keep the true
+  mapping length next to the pointer so <code>munmap</code> always gets the right size. Hashimoto's actual fix was
+  simpler: never reuse non-standard pages at all.</p></details>
+  <details class="exercise"><summary>TigerBeetle allocates everything at startup. Name one thing this program would
+  have to bound, and how, to follow TigerStyle completely.</summary>
+  <p>The number of live projectiles: it is already bounded by spawns per tick × maximum ttl (the pool is sized to
+  exactly that), but the <code>live</code> list still grows on the heap. Allocate it once with that capacity and use
+  <code>appendAssumeCapacity</code> (Zig), <code>Vec::with_capacity</code> plus an assertion (Rust), or a pre-sized
+  <code>[dynamic]</code> with <code>mem.panic_allocator()</code> (Odin). Then reject spawns beyond the limit instead
+  of growing.</p></details>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="sources">
+    <li id="src-1">Z. Zhou et al. (Google and MIT; co-authors include T. Moseley, C. Delimitrou, P. Ranganathan), “Characterizing a Memory Allocator at Warehouse Scale”, ASPLOS 2024. Malloc is 4.3% of fleet CPU cycles; 3.6–10.1% for the top five users. <a href="https://storage.googleapis.com/gweb-research2023-media/pubtools/7777.pdf">PDF</a></li>
+    <li id="src-2">A. H. Hunter, C. Kennelly, P. Turner, D. Gove, T. Moseley, P. Ranganathan, “Beyond malloc efficiency to fleet efficiency: a hugepage-aware memory allocator”, OSDI 2021; and C. Kennelly, “Trading off malloc costs and fleet efficiency”, Google Cloud blog, 2021. <a href="https://www.usenix.org/conference/osdi21/presentation/hunter">paper</a>, <a href="https://cloud.google.com/blog/topics/systems/trading-off-malloc-costs-and-fleet-efficiency/">blog</a></li>
+    <li id="src-3">Ginger Bill, “Memory Allocation Strategies, Part 1: Thinking About Memory and Allocation”, 2019. Size/lifetime table, generations of lifetimes. <a href="https://www.gingerbill.org/article/2019/02/01/memory-allocation-strategies-001/">article</a></li>
+    <li id="src-4">Ginger Bill, “Memory Allocation Strategies, Part 2: Linear/Arena Allocators”, 2019. <a href="https://www.gingerbill.org/article/2019/02/08/memory-allocation-strategies-002">article</a></li>
+    <li id="src-5">Ginger Bill, “Memory Allocation Strategies, Part 3: Stack Allocators”, 2019. <a href="https://www.gingerbill.org/article/2019/02/15/memory-allocation-strategies-003">article</a></li>
+    <li id="src-6">Ginger Bill, “Memory Allocation Strategies, Part 4: Pool Allocators”, 2019. <a href="https://www.gingerbill.org/article/2019/02/16/memory-allocation-strategies-004">article</a></li>
+    <li id="src-7">Ryan Fleury, “Untangling Lifetimes: The Arena Allocator”, 2022. Frame arenas, reserve then commit. <a href="https://www.rfleury.com/p/untangling-lifetimes-the-arena-allocator">article</a></li>
+    <li id="src-8">Mitchell Hashimoto, “Finding and Fixing Ghostty's Largest Memory Leak”, 2026-01-10 (fix: ghostty PR #10251). <a href="https://mitchellh.com/writing/ghostty-memory-leak-fix">article</a></li>
+    <li id="src-9">TigerBeetle, “TigerStyle” (TIGER_STYLE.md), living document. <a href="https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md">GitHub</a></li>
+    <li id="src-10">TigerBeetle, ARCHITECTURE.md and src/static_allocator.zig. <a href="https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/ARCHITECTURE.md">architecture</a>, <a href="https://github.com/tigerbeetle/tigerbeetle/blob/main/src/static_allocator.zig">static_allocator.zig</a></li>
+    <li id="src-11">Karl Zylinski, “Mistakes and cool things to do with arena allocators”, 2025. The “graveyard” of old blocks; panic_allocator trick. <a href="https://zylinski.se/posts/dynamic-arrays-and-arenas">article</a></li>
+    <li id="src-12">Zig Software Foundation, “0.17.0 Release Notes”, 2026 (SafeAllocator, BufferFirstAllocator). <a href="https://ziglang.org/download/0.17.0/release-notes.html">notes</a></li>
+    <li id="src-13">Zig Software Foundation, “0.16.0 Release Notes”, 2026 (I/O as an interface, Juicy Main, lock-free ArenaAllocator); Zig 0.17.1 sources lib/std/heap/{ArenaAllocator,FixedBufferAllocator,memory_pool,SmpAllocator}.zig and lib/std/start.zig. <a href="https://ziglang.org/download/0.16.0/release-notes.html">notes</a></li>
+    <li id="src-14">Rust Release Team, “Announcing Rust 1.100.0”, 2026; and the <code>std::alloc::Allocator</code> documentation (safety contract, pinning caveat). <a href="https://blog.rust-lang.org/2026/11/12/Rust-1.100.0">announcement</a>, <a href="https://doc.rust-lang.org/std/alloc/trait.Allocator.html">docs</a></li>
+    <li id="src-15">Odin, “Overview”: the context system and allocators; Odin dev-2026-11 sources base/runtime/default_temporary_allocator.odin, core/mem/allocators.odin, core/mem/virtual/arena.odin. <a href="https://odin-lang.org/docs/overview/">overview</a></li>
+    <li id="src-16">Odin, “Moving Towards a New core:os”, 2025. <a href="https://odin-lang.org/news/moving-towards-a-new-core-os">article</a></li>
+    <li id="src-17">Phil Eaton, “A Database Without Dynamic Memory Allocation”, TigerBeetle blog, 2022. <a href="https://tigerbeetle.com/blog/a-database-without-dynamic-memory">article</a></li>
+    <li id="src-18">Mitchell Hashimoto, “terminal: scrollback page compression”, ghostty PR #13264, 2026. <a href="https://github.com/ghostty-org/ghostty/pull/13264">PR</a></li>
+  </ol>
+</main>
+</body>
+</html>

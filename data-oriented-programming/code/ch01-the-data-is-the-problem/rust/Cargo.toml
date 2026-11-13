@@ -1,0 +1,8 @@
+[package]
+name = "ch01_the_data_is_the_problem"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]

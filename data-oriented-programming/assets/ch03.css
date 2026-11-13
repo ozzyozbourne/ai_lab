@@ -1,0 +1,25 @@
+/* Chapter 3 styles. Every selector is scoped with .ch03-. */
+.ch03-reorder .ch03-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 1rem; align-items: start; }
+@media (max-width: 640px) { .ch03-reorder .ch03-split { grid-template-columns: 1fr; } }
+.ch03-reorder .ch03-cap { margin: 0 0 .35rem; font-size: .78rem; }
+.ch03-reorder .ch03-fields { list-style: none; margin: 0; padding: 0; display: grid; gap: .3rem; }
+.ch03-reorder .ch03-row { display: flex; align-items: center; gap: .35rem; padding: .15rem .3rem; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--bg-elev); font-size: .85rem; }
+.ch03-reorder .ch03-row.dragging { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.ch03-reorder .ch03-row button { min-width: 44px; min-height: 44px; padding: 0; background: transparent; color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: .85rem; }
+.ch03-reorder .ch03-row button:disabled { opacity: .3; cursor: default; }
+.ch03-reorder .ch03-row button:hover:not(:disabled) { border-color: var(--accent); }
+.ch03-reorder .ch03-handle { cursor: grab; touch-action: none; font-size: 1.1rem !important; }
+.ch03-reorder .ch03-row.dragging .ch03-handle { cursor: grabbing; }
+.ch03-reorder .ch03-swatch { width: .8em; height: .8em; border-radius: 2px; flex: none; }
+.ch03-reorder .ch03-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ch03-reorder .ch03-sz { flex: none; font-size: .78rem; }
+.ch03-reorder .ch03-note { margin: .4rem 0 0; font-size: .85rem; }
+.ch03-reorder select { min-height: 36px; background: var(--bg-elev); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0 .4rem; }
+.ch03-diagram { width: 100%; height: auto; max-width: 720px; display: block; margin: 0 auto; }
+.ch03-diagram text { font: 15px var(--font-mono); fill: var(--text); }
+.ch03-diagram text.dim { font-size: 13px; }
+.ch03-scroll { overflow-x: auto; }
+.ch03-scroll .ch03-diagram { min-width: 520px; }
+.ch03-diagram .dim { fill: var(--text-dim); }

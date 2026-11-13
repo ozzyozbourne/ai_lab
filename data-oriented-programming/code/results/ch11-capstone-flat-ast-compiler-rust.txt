@@ -1,0 +1,24 @@
+source: 3750573 bytes, 170470 lines, 1214430 tokens, 771749 nodes, 230185 extra u32s, 11844 symbols
+sizes: token 5 B (SoA) vs 8 B as a struct; node 13 B (SoA) vs 16 B as a struct; boxed Node = 40 B
+bytes/token 5.00, bytes/node fixed 13, avg incl. extra 14.19; nodes/token 0.635
+boxed: 745242 nodes, 822174 allocations, 41.99 requested B/node (allocator headers not counted)
+eval: flat 5749108524495203818, boxed 5749108524495203818, loaded from file 5749108524495203818: match
+checksum 5749108524495203818
+tokenize only          15.488 ms
+flat  tokenize+parse   34.539 ms    108.6 MB/s    4.94 M lines/s
+boxed tokenize+parse   77.071 ms     48.7 MB/s    2.21 M lines/s  (incl. freeing the tree)
+eval  flat   11.137 ms, boxed   15.516 ms
+file: 17132908 bytes (4.57x the source); write 43.332 ms, read+decode 6.353 ms
+BENCH {"id":"ch11-parse","label":"tokenize only","lang":"rust","n":1214430,"ns":15487539,"samples":[15428470,15434721,15482990,15487539,15531237,15537920,15610540]}
+BENCH {"id":"ch11-parse","label":"flat: tokenize+parse","lang":"rust","n":1214430,"ns":34539245,"samples":[34413615,34510544,34538469,34539245,34695166,34922569,34943226]}
+BENCH {"id":"ch11-parse","label":"boxed: tokenize+parse","lang":"rust","n":1214430,"ns":77071445,"samples":[73755705,73949906,76900193,77071445,77170818,77261678,93429034]}
+BENCH {"id":"ch11-eval","label":"flat nodes","lang":"rust","n":771749,"ns":11136597,"samples":[11112099,11118830,11129075,11136597,11174415,11200844,11289926]}
+BENCH {"id":"ch11-eval","label":"boxed tree","lang":"rust","n":771749,"ns":15515809,"samples":[14508958,14588547,15072562,15515809,16513434,16975193,17725906]}
+BENCH {"id":"ch11-file","label":"write file","lang":"rust","n":17132908,"ns":43332130,"samples":[32953947,38241837,38517553,43332130,43451220,44100912,49440074]}
+BENCH {"id":"ch11-file","label":"read file","lang":"rust","n":17132908,"ns":6353112,"samples":[6233082,6302527,6311619,6353112,6428274,6855031,7760007]}
+BENCH {"id":"ch11-bytes","label":"token","lang":"rust","n":1214430,"ns":0,"value":5.000,"unit":"B"}
+BENCH {"id":"ch11-bytes","label":"node, fixed","lang":"rust","n":771749,"ns":0,"value":13.000,"unit":"B"}
+BENCH {"id":"ch11-bytes","label":"node, avg incl. extra","lang":"rust","n":771749,"ns":0,"value":14.193,"unit":"B"}
+BENCH {"id":"ch11-bytes","label":"boxed node, avg","lang":"rust","n":771749,"ns":0,"value":41.990,"unit":"B"}
+BENCH {"id":"ch11-throughput","label":"flat","lang":"rust","n":1214430,"ns":0,"value":4.936,"unit":"M lines/s"}
+BENCH {"id":"ch11-throughput","label":"boxed","lang":"rust","n":1214430,"ns":0,"value":2.212,"unit":"M lines/s"}

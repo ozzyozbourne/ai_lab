@@ -1,0 +1,9 @@
+/* Chapter 10 styles (scoped to .ch10-*). */
+.ch10-svg { width: 100%; height: auto; display: block; margin: .5rem 0; font: 11px var(--font-mono); }
+.ch10-svg text { fill: var(--text); }
+.ch10-svg .ttl { fill: var(--heading); font-weight: 600; font-family: var(--font-body); font-size: 12px; }
+.ch10-svg .dim { fill: var(--text-dim); }
+.ch10-svg .num { fill: var(--text-dim); font-size: 9px; }
+.ch10-svg .num.on { fill: #06121f; font-weight: 700; }
+.ch10-narrow { display: none; }
+@media (max-width: 600px) { .ch10-wide { display: none; } .ch10-narrow { display: block; } }

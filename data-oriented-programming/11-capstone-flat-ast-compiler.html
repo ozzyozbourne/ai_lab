@@ -1,0 +1,1185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>11. Capstone: A Compiler Front End the Zig Way · Data-Oriented Design</title>
+<link rel="stylesheet" href="assets/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="assets/book.css">
+<link rel="stylesheet" href="assets/ch11.css">
+<script>window.Prism = { manual: true };</script>
+<script defer src="assets/vendor/prism/prism.min.js"></script>
+<script defer src="assets/vendor/prism/prism-rust.min.js"></script>
+<script defer src="assets/vendor/prism/prism-zig.min.js"></script>
+<script defer src="assets/vendor/prism/prism-odin.min.js"></script>
+<script defer src="assets/vendor/prism/prism-bash.min.js"></script>
+<script defer src="assets/book.js"></script>
+<script defer src="assets/data/bench-ch11.js"></script>
+<script defer src="assets/viz/bench-bars.js"></script>
+<script defer src="assets/viz/ch11-flat-ast.js"></script>
+<script defer src="assets/viz/ch11-encodings.js"></script>
+</head>
+<body>
+<main>
+  <p class="kicker">Chapter 11</p>
+  <h1>Capstone: A Compiler Front End the Zig Way</h1>
+  <p class="lede">A compiler's front end makes millions of tiny objects, reads them back mostly in order, and throws them
+  away. That is the most data-oriented workload there is, and in 2021 the Zig compiler's front end was rebuilt around
+  that fact: tokens went from 64 bytes to 5, syntax nodes from about 120 bytes to 13, and the parser got 22% faster. This
+  chapter builds a small front end the same way, in Rust, Zig and Odin. It has a tokenizer that writes two parallel
+  arrays, a Pratt parser that writes four more plus one shared <code>extra</code> array, string interning, and an
+  evaluator that runs the result. It is measured against the textbook design with one heap allocation per node, and the
+  arrays are written to disk and read back without parsing. Almost every idea from Chapters 3 to 6 shows up here.</p>
+
+  <h2 id="why">Why a compiler, and why Zig's</h2>
+  <p>Most of this book's examples are particles, monsters and boids, data you would expect to put in arrays. A syntax
+  tree looks like the opposite: it is a tree, a recursive structure that every compiler textbook draws with boxes and
+  arrows. If DOD only worked on data that already looks like a table, a tree would be the place to find out. It turns
+  out to be one of the clearest wins. Andrew Kelley's account in the Zig 0.8.0 release notes says why<a class="cite"
+  href="#src-1">[1]</a>. His premise was that <em>"using less memory will make things faster, because of fewer
+  allocations and better cache utilization. Also using less memory is valuable in and of itself."</em> His key
+  observation was that a node needs nothing except indices: <em>"The only purpose of an AST is to bring a tree structure
+  to a list of tokens."</em></p>
+  <p>The numbers are some of the best documented in the DOD literature. The parser rewrite (176 commits,
+  +20,800/&minus;16,573 lines) gave 15% fewer cache misses, 28% fewer instructions, 26% fewer cycles and 22% faster
+  wall-clock time<a class="cite" href="#src-1">[1]</a>. The same treatment for the next stage, ZIR (Zig's untyped
+  intermediate representation, which AstGen produces from the AST), cut another 39% of wall time and 40% of peak
+  memory<a class="cite" href="#src-1">[1]</a>. Carbon's toolchain was designed this way from the start, with a
+  lex+parse goal of 10 million lines per second<a class="cite" href="#src-3">[3]</a>. Our language is far smaller, so
+  the comparison is about the shape: bytes per token, bytes per node, nodes per token, and how the flat tree does
+  against boxes and pointers on the same input.</p>
+
+  <h2 id="language">The language and the pipeline</h2>
+  <p>The language has integers, identifiers, the binary operators <code>== &lt; + - * / %</code> in four precedence
+  levels, unary minus, parentheses, <code>let x = e;</code>, <code>fn name(a, b) { ... }</code>, calls,
+  <code>if</code>/<code>else</code> (including <code>else if</code>), <code>return</code> and blocks. A program is a
+  list of functions, and running it means calling <code>main</code>. Integers are wrapping <code>i64</code>s, and
+  dividing by zero gives zero, so every generated program has exactly one result. That gives the three languages and
+  the two tree layouts a single number to agree on.</p>
+<pre><code class="language-rust">fn f1(a, b) {
+    let v0 = a * 3 + -b;
+    if v0 &lt; 50 { return f0(v0); } else { let v1 = v0 % 7; }
+    return v0 - b;
+}</code></pre>
+  <p>Each program in <code>code/ch11-capstone-flat-ast-compiler/</code> runs this pipeline:</p>
+  <ol>
+    <li><b>generate</b> a deterministic source text of about N tokens (default 2<sup>20</sup>; <code>--quick</code> uses 4,096);</li>
+    <li><b>tokenize</b> it into two parallel arrays, <code>tag: []u8</code> and <code>start: []u32</code>;</li>
+    <li><b>parse</b> the tokens into four parallel arrays <code>tag, main_token, lhs, rhs</code> plus
+      <code>extra: []u32</code>, interning every identifier;</li>
+    <li><b>evaluate</b> the flat tree by walking it, children first;</li>
+    <li>parse the same tokens again into a <b>boxed tree</b>, one allocation per node, and evaluate that;</li>
+    <li><b>write</b> the flat arrays to a file, <b>read</b> them back, and evaluate what was read.</li>
+  </ol>
+  <p>All three evaluations must give the same number. The generator is byte-identical in the three languages, so they
+  must also agree with each other. They do: at the default size all nine evaluations (three languages × flat, boxed,
+  reloaded) print <code>5749108524495203818</code>.</p>
+  <aside class="callout try"><p>Run all three in quick mode (this is what <code>run_all.sh</code> does):</p>
+<pre><code class="language-bash">cd code &amp;&amp; ./run_all.sh ch11
+cargo run --release -q -p ch11_capstone_flat_ast_compiler -- --quick
+cd ch11-capstone-flat-ast-compiler/zig &amp;&amp; zig run -O fast main.zig -- --quick
+cd .. &amp;&amp; odin run odin -o:speed -vet -strict-style -- --quick</code></pre></aside>
+
+  <h2 id="tokens">Tokens: five bytes each</h2>
+  <p>A conventional lexer emits a token struct with a kind, a start offset, an end offset, a line, a column, and often a
+  copy of the text or a pointer to it. Zig's old tokens were 64 bytes<a class="cite" href="#src-2">[2]</a>. Kelley
+  stored two things instead: a one-byte tag and a four-byte start offset. The release notes give the reason for dropping
+  the end<a class="cite" href="#src-1">[1]</a>: for most tokens the length follows from the tag (<code>(</code> is one
+  byte, <code>==</code> is two), and for the rest you can run the tokenizer again from the start offset. A string literal
+  has to be scanned again later anyway, so re-tokenizing it costs nothing. Line and column are not stored either. An
+  error message can count newlines up to the offset, and an error message is rare.</p>
+  <details class="predict"><summary>The generated source averages about 3.1 bytes per token. Storing
+  <code>end: u32</code> as well would make tokens 9 bytes. How much bigger than the source would the token arrays be?</summary>
+  <p>At 5 bytes per token the token arrays are already 5 / 3.1 ≈ 1.6× the source. At 9 bytes they would be ≈ 2.9×. Real
+  code has longer tokens and comments: Zig's <code>std/os.zig</code> is 238 KB of source and 35,023 tokens<a
+  class="cite" href="#src-1">[1]</a>, about 6.8 source bytes per token, so there the 5-byte tokens are smaller than the
+  text they describe.</p></details>
+  <p>"Calculate instead of store" needs one function that recomputes a token's text from its tag and start. All three
+  programs have it, and it is the only place that knows how long each kind of token is:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch11-capstone-flat-ast-compiler/rust/src/main.rs"><code class="language-rust">/// The token's text, recomputed from its tag and start ("calculate instead of store").
+fn token_text(src: &amp;[u8], tag: Tok, start: u32) -&gt; &amp;[u8] {
+    let s = start as usize;
+    let end = match tag {
+        Tok::Int =&gt; scan_while(src, s, |c| c.is_ascii_digit()),
+        Tok::Ident | Tok::KwFn | Tok::KwLet | Tok::KwIf | Tok::KwElse | Tok::KwReturn =&gt; scan_while(src, s, is_ident),
+        Tok::EqualEqual =&gt; s + 2,
+        Tok::Eof =&gt; s,
+        _ =&gt; s + 1,
+    };
+    &amp;src[s..end]
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch11-capstone-flat-ast-compiler/zig/main.zig"><code class="language-zig">/// The token's text, recomputed from its tag and start ("calculate instead of store").
+fn tokenText(src: []const u8, tag: Tok, start: u32) []const u8 {
+    const end = switch (tag) {
+        .int =&gt; scanDigits(src, start),
+        .ident, .kw_fn, .kw_let, .kw_if, .kw_else, .kw_return =&gt; scanIdent(src, start),
+        .equal_equal =&gt; start + 2,
+        .eof =&gt; start,
+        else =&gt; start + 1,
+    };
+    return src[start..end];
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch11-capstone-flat-ast-compiler/odin/main.odin"><code class="language-odin">// The token's text, recomputed from its tag and start ("calculate instead of store").
+token_text :: proc(src: []u8, tag: Tok, start: u32) -&gt; []u8 {
+	s := int(start)
+	end: int
+	#partial switch tag {
+	case .Int:                                               end = scan_digits(src, s)
+	case .Ident, .Kw_Fn, .Kw_Let, .Kw_If, .Kw_Else, .Kw_Return: end = scan_ident(src, s)
+	case .Equal_Equal:                                       end = s + 2
+	case .Eof:                                               end = s
+	case:                                                    end = s + 1
+	}
+	return src[s:end]
+}</code></pre>
+  </div>
+  <p>As one struct, <code>{tag: u8, start: u32}</code> is 8 bytes because of the 3 padding bytes after the tag (see <a
+  href="03-size-alignment-padding.html#rules">Chapter 3</a>). Stored as two arrays it is 5. This is <a
+  href="04-aos-soa-hot-cold.html">Chapter 4</a>'s struct of arrays, and the three languages spell it the way that
+  chapter showed. Rust has no built-in SoA, so <code>Tokens</code> is two <code>Vec</code>s. Zig uses
+  <code>std.MultiArrayList(Token)</code>, the container Kelley added to the standard library in the same release for this
+  purpose. Odin uses <code>#soa[dynamic]Token</code>. Each version pins the size at compile time:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch11-capstone-flat-ast-compiler/rust/src/main.rs"><code class="language-rust">/// Struct of arrays: no `end`, no line/column. Both are recomputed from `start` when needed.
+#[derive(Default)]
+struct Tokens {
+    tag: Vec&lt;Tok&gt;,
+    start: Vec&lt;u32&gt;,
+}
+const _: () = assert!(size_of::&lt;Tok&gt;() + size_of::&lt;u32&gt;() == 5);</code></pre>
+<pre data-lang="Zig" data-file="code/ch11-capstone-flat-ast-compiler/zig/main.zig"><code class="language-zig">/// No `end`, no line/column: both are recomputed from `start` when needed.
+const Token = struct { tag: Tok, start: u32 };
+const TokenList = std.MultiArrayList(Token);
+comptime {
+    assert(@sizeOf(Token) == 8); // as one struct: padded
+    assert(TokenList.capacityInBytes(1) == 5); // as columns: not padded
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch11-capstone-flat-ast-compiler/odin/main.odin"><code class="language-odin">// No `end`, no line/column: both are recomputed from `start` when needed.
+Token :: struct {
+	tag:   Tok,
+	start: u32,
+}
+#assert(size_of(Token) == 8) // as one struct: padded; #soa stores the 1 B and 4 B columns separately</code></pre>
+  </div>
+  <p>The Zig assert is the most direct of the three: <code>MultiArrayList(Token).capacityInBytes(1) == 5</code> asks the
+  container itself what one element costs. The SoA layout has a second benefit that the release notes point out<a
+  class="cite" href="#src-1">[1]</a>: the parser mostly needs only the tags, so peeking ahead reads a dense byte array
+  and never touches the offsets.</p>
+  <p>The tokenizer is a plain loop over bytes that switches on the first byte. Keywords are looked up after scanning an
+  identifier (Zig uses <code>std.StaticStringMap(Tok).initComptime</code>, as <code>std.zig.Tokenizer</code> does), and
+  every program reserves about one token per four source bytes up front.</p>
+
+  <h2 id="nodes">Nodes: thirteen bytes and an index</h2>
+  <p>Every node in the flat tree has the same four fields, stored as four parallel arrays<a class="cite"
+  href="#src-1">[1]</a>:</p>
+  <ul>
+    <li><code>tag: u8</code>, which says what kind of node it is <em>and how to read the other three fields</em>;</li>
+    <li><code>main_token: u32</code>, an index into the token arrays (the operator of <code>a + b</code>, the
+      <code>(</code> of a call, the <code>let</code> of a declaration). This is the node's source location, and the
+      neighbouring tokens can be found from it;</li>
+    <li><code>lhs: u32</code> and <code>rhs: u32</code>, two words whose meaning depends on the tag: a child node, a
+      symbol, an integer value, or an index into <code>extra</code>.</li>
+  </ul>
+  <p>That is 13 bytes per node in SoA form, against 16 as an aligned struct. No field is a pointer, so all four arrays
+  can move, grow and go to disk unchanged, as in <a href="05-indices-handles.html#indices">Chapter 5</a>. Node 0 is the
+  root, and since nothing can point at the root, <code>0</code> works as "no node" in every other field. This is
+  Zig's convention too (<code>Node.Index</code> in <code>std.zig.Ast</code> is
+  <code>enum(u32) { root = 0, _ }</code><a class="cite" href="#src-5">[5]</a>), and it means no field needs an
+  <code>Option</code>.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch11-capstone-flat-ast-compiler/rust/src/main.rs"><code class="language-rust">/// Hand-written struct of arrays: Rust has no MultiArrayList or #soa, so each column is a Vec.
+#[derive(Default)]
+struct Nodes {
+    tag: Vec&lt;Tag&gt;,
+    main_token: Vec&lt;u32&gt;,
+    lhs: Vec&lt;u32&gt;,
+    rhs: Vec&lt;u32&gt;,
+}
+/// The same node as one struct (AoS) would be padded to 16 bytes; the columns use 13.
+#[allow(dead_code)]
+struct NodeAos {
+    tag: Tag,
+    main_token: u32,
+    lhs: u32,
+    rhs: u32,
+}
+const _: () = assert!(size_of::&lt;NodeAos&gt;() == 16);
+const NODE_BYTES: usize = size_of::&lt;Tag&gt;() + 3 * size_of::&lt;u32&gt;();
+const _: () = assert!(NODE_BYTES == 13);
+
+    fn add(&amp;mut self, tag: Tag, main_token: u32, lhs: u32, rhs: u32) -&gt; u32 {
+        let n = &amp;mut self.nodes;
+        n.tag.push(tag);
+        n.main_token.push(main_token);
+        n.lhs.push(lhs);
+        n.rhs.push(rhs);
+        (n.tag.len() - 1) as u32
+    }</code></pre>
+<pre data-lang="Zig" data-file="code/ch11-capstone-flat-ast-compiler/zig/main.zig"><code class="language-zig">const Node = struct { tag: Tag, main_token: u32, lhs: u32, rhs: u32 };
+const NodeList = std.MultiArrayList(Node);
+comptime {
+    assert(@sizeOf(Node) == 16); // as one struct: padded
+    assert(NodeList.capacityInBytes(1) == 13); // as columns: not padded
+}
+
+    fn add(p: *Parser, tag: Tag, main_token: u32, lhs: u32, rhs: u32) Error!u32 {
+        try p.nodes.append(p.gpa, .{ .tag = tag, .main_token = main_token, .lhs = lhs, .rhs = rhs });
+        return @intCast(p.nodes.len - 1);
+    }</code></pre>
+<pre data-lang="Odin" data-file="code/ch11-capstone-flat-ast-compiler/odin/main.odin"><code class="language-odin">Node :: struct {
+	tag:        Tag,
+	main_token: u32,
+	lhs:        u32,
+	rhs:        u32,
+}
+#assert(size_of(Node) == 16) // as one struct: padded
+#assert(size_of(Tag) + 3 * size_of(u32) == 13) // as #soa columns: not padded
+
+add :: proc(p: ^Parser, tag: Tag, main_token, lhs, rhs: u32) -&gt; u32 {
+	append(&amp;p.nodes, Node{tag, main_token, lhs, rhs})
+	return u32(len(p.nodes) - 1)
+}</code></pre>
+  </div>
+  <p>As in Chapter 4, Rust pushes into four <code>Vec</code>s by hand and keeps them the same length itself, while
+  Zig's <code>nodes.append(gpa, .{...})</code> and Odin's <code>append(&amp;p.nodes, Node{...})</code> take one struct
+  value and split it into columns.</p>
+  <p>Here is what <code>f(a, b)</code> turns into. Six tokens become four nodes and four <code>extra</code> words. The
+  call node owns one token (its <code>(</code>), points at its callee directly, and finds its arguments through
+  <code>extra</code>:</p>
+  <svg class="ch11-diagram" viewBox="0 0 600 300" role="img" aria-label="f(a, b) as three arrays: six tokens, four nodes and four extra words, with the call node's rhs pointing at extra[2..4], which holds the range 0..2 of argument nodes">
+    <style>.d-t{font-size:13px;fill:var(--text)}.d-d{font-size:11px;fill:var(--text-dim)}.d-h{font-size:12px;font-weight:700;fill:var(--heading)}</style>
+    <text class="d-h" x="8" y="18">tokens  (tag u8 · start u32)</text>
+    <g>
+      <rect x="8" y="26" width="92" height="40" rx="4" fill="var(--bg-elev2)" stroke="var(--c-line)"/><text class="d-d" x="14" y="40">t0 ident</text><text class="d-t" x="14" y="58">f  @0</text>
+      <rect x="104" y="26" width="92" height="40" rx="4" fill="var(--bg-elev2)" stroke="var(--c-flag)" stroke-width="2"/><text class="d-d" x="110" y="40">t1 l_paren</text><text class="d-t" x="110" y="58">(  @1</text>
+      <rect x="200" y="26" width="92" height="40" rx="4" fill="var(--bg-elev2)" stroke="var(--c-line)"/><text class="d-d" x="206" y="40">t2 ident</text><text class="d-t" x="206" y="58">a  @2</text>
+      <rect x="296" y="26" width="92" height="40" rx="4" fill="var(--bg-elev2)" stroke="var(--c-line)"/><text class="d-d" x="302" y="40">t3 comma</text><text class="d-t" x="302" y="58">,  @3</text>
+      <rect x="392" y="26" width="92" height="40" rx="4" fill="var(--bg-elev2)" stroke="var(--c-line)"/><text class="d-d" x="398" y="40">t4 ident</text><text class="d-t" x="398" y="58">b  @5</text>
+      <rect x="488" y="26" width="92" height="40" rx="4" fill="var(--bg-elev2)" stroke="var(--c-line)"/><text class="d-d" x="494" y="40">t5 r_paren</text><text class="d-t" x="494" y="58">)  @6</text>
+    </g>
+    <text class="d-h" x="8" y="112">nodes  (tag · main_token · lhs · rhs)</text>
+    <g>
+      <rect x="8" y="120" width="136" height="44" rx="4" fill="var(--bg-elev2)" stroke="var(--c-vel)"/><text class="d-d" x="14" y="135">n1 identifier</text><text class="d-t" x="14" y="155">t0 · s0 "f" · –</text>
+      <rect x="152" y="120" width="136" height="44" rx="4" fill="var(--bg-elev2)" stroke="var(--c-vel)"/><text class="d-d" x="158" y="135">n2 identifier</text><text class="d-t" x="158" y="155">t2 · s1 "a" · –</text>
+      <rect x="296" y="120" width="136" height="44" rx="4" fill="var(--bg-elev2)" stroke="var(--c-vel)"/><text class="d-d" x="302" y="135">n3 identifier</text><text class="d-t" x="302" y="155">t4 · s2 "b" · –</text>
+      <rect x="440" y="120" width="140" height="44" rx="4" fill="var(--bg-elev2)" stroke="var(--accent)" stroke-width="2"/><text class="d-d" x="446" y="135">n4 call</text><text class="d-t" x="446" y="155">t1 · n1 · x2</text>
+    </g>
+    <path d="M150 66 C 300 90, 470 92, 500 118" fill="none" stroke="var(--c-flag)" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <text class="d-d" x="232" y="88">main_token of n4 = t1</text>
+    <path d="M470 164 C 420 200, 140 190, 76 166" fill="none" stroke="var(--c-pos)" stroke-width="1.5"/>
+    <text class="d-d" x="190" y="196">lhs = callee n1</text>
+    <text class="d-h" x="8" y="232">extra  (u32 each)</text>
+    <g>
+      <rect x="8" y="240" width="80" height="44" rx="4" fill="var(--bg-elev2)" stroke="var(--c-hp)"/><text class="d-d" x="14" y="255">x0</text><text class="d-t" x="14" y="275">n2</text>
+      <rect x="92" y="240" width="80" height="44" rx="4" fill="var(--bg-elev2)" stroke="var(--c-hp)"/><text class="d-d" x="98" y="255">x1</text><text class="d-t" x="98" y="275">n3</text>
+      <rect x="176" y="240" width="80" height="44" rx="4" fill="var(--bg-elev2)" stroke="var(--c-vel)"/><text class="d-d" x="182" y="255">x2 start</text><text class="d-t" x="182" y="275">0</text>
+      <rect x="260" y="240" width="80" height="44" rx="4" fill="var(--bg-elev2)" stroke="var(--c-vel)"/><text class="d-d" x="266" y="255">x3 end</text><text class="d-t" x="266" y="275">2</text>
+    </g>
+    <path d="M560 164 C 560 230, 230 210, 216 238" fill="none" stroke="var(--c-vel)" stroke-width="1.5"/>
+    <text class="d-d" x="392" y="226">rhs = x2 → extra[2..4]</text>
+    <path d="M216 286 C 200 298, 60 298, 48 286" fill="none" stroke="var(--c-vel)" stroke-width="1.2" stroke-dasharray="3 3"/>
+    <text class="d-d" x="360" y="268">arguments = extra[0..2] = n2, n3</text>
+  </svg>
+  <p>The token tags and the node tags are both byte arrays, and everything else is a <code>u32</code>. No field holds
+  a string: identifiers are symbols (<code>s0</code>, <code>s1</code>) from the interner described below. The argument
+  list was written to <code>extra</code> <em>before</em> the <code>{start, end}</code> pair that points at it, because
+  the parser only knows where the list ends after it has parsed it. More on that below.</p>
+  <p>Now try it. The figure runs a JavaScript port of the same tokenizer and parser. It builds the same arrays, index for
+  index, as the three programs; we checked it against the Rust parser on the presets and on a generated program of 3,600
+  tokens.</p>
+  <figure class="figure wide" id="fig-flat">
+    <div class="figure-body" data-viz="ch11-flat-ast" data-opts='{"preset":1}'><p>Static fallback: <code>add3(1, 2, 3)</code>
+    becomes a <code>call</code> node whose <code>rhs</code> points at a <code>{start, end}</code> pair in <code>extra</code>.</p></div>
+    <figcaption>The three arrays for a snippet you can edit. Hover, focus or tap a node row to light up its main token, the
+    source of its subtree, its children and its extra cells. Tap a token to jump to its node. Switch between
+    <em>call_one</em> and <em>call</em> and watch the extra array change while the nodes stay 13 bytes.</figcaption>
+  </figure>
+  <details class="predict"><summary>Before you pick the <em>block</em> preset: <code>main</code> has four statements.
+  Which tag will its body get, and how many <code>extra</code> words will the body use?</summary>
+  <p>Four statements do not fit in <code>lhs</code>/<code>rhs</code>, so the body is a <code>block</code> whose
+  <code>lhs..rhs</code> is a range of four statement indices in <code>extra</code>: 4 words, 16 bytes. The function's
+  prototype uses two more (<code>{name, 0 params}</code>). With two statements or fewer the body would be a
+  <code>block_two</code> and would use no <code>extra</code> at all.</p></details>
+
+  <h2 id="encodings">Encodings instead of polymorphism</h2>
+  <p>A call can have any number of arguments, a block any number of statements. A pointer tree handles that with a
+  growable list per node. Kelley's answer is that <em>there is no need for one canonical tag per construct</em><a
+  class="cite" href="#src-1">[1]</a>: <code>foo(bar)</code> is encoded as a call with one parameter, with the callee in
+  <code>lhs</code> and the argument in <code>rhs</code>, while <code>foo(bar, baz)</code> is a different tag whose
+  <code>rhs</code> indexes <code>extra_data</code>, where <code>extra_data[rhs]</code> and <code>extra_data[rhs+1]</code>
+  are the start and end of the argument list. <em>"You only have to pay for the extra bytes if the AST actually requires
+  it."</em> The cost is a limit of 256 encodings, since the tag is one byte, and a tag-specific accessor for each
+  construct.</p>
+  <p>Our language uses five pairs of encodings and one construct that always spills:</p>
+  <div class="table-wrap"><table>
+    <tr><th>construct</th><th>small encoding (fits in the node)</th><th>large encoding (uses extra)</th></tr>
+    <tr><td>call</td><td><code>call_one</code>: lhs = callee, rhs = argument or 0</td><td><code>call</code>: rhs → <code>{start, end}</code> → argument list</td></tr>
+    <tr><td>block</td><td><code>block_two</code>: lhs, rhs = up to two statements</td><td><code>block</code>: lhs..rhs = statement range</td></tr>
+    <tr><td>if</td><td><code>if_simple</code>: lhs = condition, rhs = then</td><td><code>if_else</code>: rhs → <code>{then, else}</code></td></tr>
+    <tr><td>fn</td><td colspan="2"><code>fn_decl</code>: lhs → <code>{name, n, param...}</code>, rhs = body (always uses extra)</td></tr>
+    <tr><td>literals, names</td><td colspan="2"><code>int_literal</code> keeps its value in lhs; <code>identifier</code> keeps its symbol. No children, no extra.</td></tr>
+  </table></div>
+  <p>Here is the whole tag list, with the encoding of each tag in its comment. It is the format specification of the
+  tree:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch11-capstone-flat-ast-compiler/rust/src/main.rs"><code class="language-rust">enum Tag {
+    Root,       // lhs..rhs = extra range of fn_decl nodes
+    FnDecl,     // main_token = `fn`; lhs = extra index of {name_sym, n_params, param_sym...}; rhs = body
+    BlockTwo,   // lhs, rhs = first and second statement (0 = none)
+    Block,      // lhs..rhs = extra range of statements (3 or more)
+    LetDecl,    // lhs = name symbol; rhs = initializer
+    ReturnStmt, // lhs = value
+    IfSimple,   // lhs = condition; rhs = then-block
+    IfElse,     // lhs = condition; rhs = extra index of {then, else}
+    IntLiteral, // lhs = value
+    Identifier, // lhs = symbol
+    Negate,     // lhs = operand
+    Add, Sub, Mul, Div, Mod, LessThan, EqualEqual, // lhs op rhs
+    CallOne,    // main_token = `(`; lhs = callee identifier; rhs = the argument (0 = none)
+    Call,       // lhs = callee identifier; rhs = extra index of {args_start, args_end}
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch11-capstone-flat-ast-compiler/zig/main.zig"><code class="language-zig">const Tag = enum(u8) {
+    root, // lhs..rhs = extra range of fn_decl nodes
+    fn_decl, // main_token = `fn`; lhs = extra index of {name_sym, n_params, param_sym...}; rhs = body
+    block_two, // lhs, rhs = first and second statement (0 = none)
+    block, // lhs..rhs = extra range of statements (3 or more)
+    let_decl, // lhs = name symbol; rhs = initializer
+    return_stmt, // lhs = value
+    if_simple, // lhs = condition; rhs = then-block
+    if_else, // lhs = condition; rhs = extra index of {then, else}
+    int_literal, // lhs = value
+    identifier, // lhs = symbol
+    negate, // lhs = operand
+    add,
+    sub,
+    mul,
+    div,
+    mod,
+    less_than,
+    equal_equal, // lhs op rhs
+    call_one, // main_token = `(`; lhs = callee identifier; rhs = the argument (0 = none)
+    call, // lhs = callee identifier; rhs = extra index of {args_start, args_end}
+};</code></pre>
+<pre data-lang="Odin" data-file="code/ch11-capstone-flat-ast-compiler/odin/main.odin"><code class="language-odin">Tag :: enum u8 {
+	Root,        // lhs..rhs = extra range of fn_decl nodes
+	Fn_Decl,     // main_token = `fn`; lhs = extra index of {name_sym, n_params, param_sym...}; rhs = body
+	Block_Two,   // lhs, rhs = first and second statement (0 = none)
+	Block,       // lhs..rhs = extra range of statements (3 or more)
+	Let_Decl,    // lhs = name symbol; rhs = initializer
+	Return_Stmt, // lhs = value
+	If_Simple,   // lhs = condition; rhs = then-block
+	If_Else,     // lhs = condition; rhs = extra index of {then, else}
+	Int_Literal, // lhs = value
+	Identifier,  // lhs = symbol
+	Negate,      // lhs = operand
+	Add, Sub, Mul, Div, Mod, Less_Than, Equal_Equal, // lhs op rhs
+	Call_One,    // main_token = `(`; lhs = callee identifier; rhs = the argument (0 = none)
+	Call,        // lhs = callee identifier; rhs = extra index of {args_start, args_end}
+}</code></pre>
+  </div>
+  <p>A node never changes size. When a construct outgrows the small encoding, the parser picks the other tag and moves
+  the children into <code>extra</code>. The next figure shows that step one child at a time, with the boxed tree's cost
+  for the same construct next to it.</p>
+  <figure class="figure" id="fig-enc">
+    <div class="figure-body" data-viz="ch11-encodings" data-opts='{"kind":"call","n":1}'><p>Static fallback: one argument
+    → <code>call_one</code>, 13 B. Two arguments → <code>call</code>, 13 B + 4 extra words = 29 B.</p></div>
+    <figcaption>Drag <em>children</em> from 1 to 2 with <em>call</em> selected: the node stays 13 B, its tag changes, and the
+    arguments plus a <code>{start, end}</code> pair appear in extra. A block switches at 3. A function's parameter list
+    always lives in extra. The grey bar is a node sized for the worst case: 33 B for every node, integer literals
+    included.</figcaption>
+  </figure>
+  <p>The interesting code is how a list of unknown length gets into <code>extra</code> in one contiguous piece. The
+  arguments of <code>f(g(1, 2), 3)</code> are parsed recursively, and the inner call writes its own list while the outer
+  list is half built. If both wrote straight into <code>extra</code> they would interleave. The fix, which the Zig
+  parser uses too (0.8.0's "shared scratch buffer to avoid allocating and freeing many small lists"<a class="cite"
+  href="#src-1">[1]</a>), is one scratch stack. Each list pushes its elements on top, and when the list is done its
+  slice of the stack is copied to the end of <code>extra</code> and popped:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch11-capstone-flat-ast-compiler/rust/src/main.rs"><code class="language-rust">    /// Moves scratch[top..] into `extra` and returns the range: lists are built in one shared
+    /// scratch stack, then copied once into their final, contiguous place.
+    fn list_to_extra(&amp;mut self, top: usize) -&gt; (u32, u32) {
+        let start = self.extra.len() as u32;
+        self.extra.extend_from_slice(&amp;self.scratch[top..]);
+        self.scratch.truncate(top);
+        (start, self.extra.len() as u32)
+    }
+
+    /// Two encodings of one construct: `f()` and `f(x)` fit in the node; `f(x, y, ...)` spills to extra.
+    fn parse_call(&amp;mut self, callee: u32) -&gt; PResult&lt;u32&gt; {
+        let lparen = self.next();
+        let top = self.scratch.len();
+        if self.peek() != Tok::RParen {
+            loop {
+                let a = self.parse_expr(0)?;
+                self.scratch.push(a);
+                if self.peek() != Tok::Comma {
+                    break;
+                }
+                self.next();
+            }
+        }
+        self.expect(Tok::RParen, "`)`")?;
+        if self.scratch.len() - top &lt;= 1 {
+            let arg = self.scratch.get(top).copied().unwrap_or(0);
+            self.scratch.truncate(top);
+            return Ok(self.add(Tag::CallOne, lparen, callee, arg));
+        }
+        let (s, e) = self.list_to_extra(top);
+        let range = self.extra.len() as u32;
+        self.extra.extend([s, e]);
+        Ok(self.add(Tag::Call, lparen, callee, range))
+    }</code></pre>
+<pre data-lang="Zig" data-file="code/ch11-capstone-flat-ast-compiler/zig/main.zig"><code class="language-zig">    /// Moves scratch[top..] into `extra` and returns the range: lists are built in one shared
+    /// scratch stack, then copied once into their final, contiguous place.
+    fn listToExtra(p: *Parser, top: usize) Error![2]u32 {
+        const start: u32 = @intCast(p.extra.items.len);
+        try p.extra.appendSlice(p.gpa, p.scratch.items[top..]);
+        p.scratch.shrinkRetainingCapacity(top);
+        return .{ start, @intCast(p.extra.items.len) };
+    }
+
+    /// Two encodings of one construct: `f()` and `f(x)` fit in the node; `f(x, y, ...)` spills to extra.
+    fn parseCall(p: *Parser, callee: u32) Error!u32 {
+        const lparen = p.next();
+        const top = p.scratch.items.len;
+        if (p.peek() != .r_paren) while (true) {
+            const a = try p.parseExpr(0);
+            try p.scratch.append(p.gpa, a);
+            if (p.peek() != .comma) break;
+            _ = p.next();
+        };
+        _ = try p.expect(.r_paren, "`)`");
+        if (p.scratch.items.len - top &lt;= 1) {
+            const arg = if (p.scratch.items.len &gt; top) p.scratch.items[top] else 0;
+            p.scratch.shrinkRetainingCapacity(top);
+            return p.add(.call_one, lparen, callee, arg);
+        }
+        const r = try p.listToExtra(top);
+        const range: u32 = @intCast(p.extra.items.len);
+        try p.extra.appendSlice(p.gpa, &amp;r);
+        return p.add(.call, lparen, callee, range);
+    }</code></pre>
+<pre data-lang="Odin" data-file="code/ch11-capstone-flat-ast-compiler/odin/main.odin"><code class="language-odin">// Moves scratch[top:] into `extra` and returns the range: lists are built in one shared
+// scratch stack, then copied once into their final, contiguous place.
+list_to_extra :: proc(p: ^Parser, top: int) -&gt; (start, end: u32) {
+	start = u32(len(p.extra))
+	append(&amp;p.extra, ..p.scratch[top:])
+	resize(&amp;p.scratch, top)
+	return start, u32(len(p.extra))
+}
+
+// Two encodings of one construct: `f()` and `f(x)` fit in the node; `f(x, y, ...)` spills to extra.
+parse_call :: proc(p: ^Parser, callee: u32) -&gt; (n: u32, err: Error) {
+	lparen := next(p)
+	top := len(p.scratch)
+	if peek(p) != .R_Paren {
+		for {
+			a := parse_expr(p, 0) or_return
+			append(&amp;p.scratch, a)
+			if peek(p) != .Comma {
+				break
+			}
+			next(p)
+		}
+	}
+	expect(p, .R_Paren, "`)`") or_return
+	if len(p.scratch) - top &lt;= 1 {
+		arg := len(p.scratch) &gt; top ? p.scratch[top] : 0
+		resize(&amp;p.scratch, top)
+		return add(p, .Call_One, lparen, callee, arg), nil
+	}
+	s, e := list_to_extra(p, top)
+	rng := u32(len(p.extra))
+	append(&amp;p.extra, s, e)
+	return add(p, .Call, lparen, callee, rng), nil
+}</code></pre>
+  </div>
+  <p>The scratch stack never shrinks, so after the first few functions the parser stops allocating for lists; all the
+  growth is in a few big arrays, amortized as in <a href="06-allocation-strategies.html">Chapter 6</a>.</p>
+
+  <h2 id="pratt">The Pratt parser</h2>
+  <p>Statements are parsed by plain recursive descent: look at the current token's tag and call the matching function.
+  Expressions use Vaughan Pratt's top-down operator precedence<a class="cite" href="#src-8">[8]</a>, in the form Bob
+  Nystrom made popular<a class="cite" href="#src-9">[9]</a>. Parse a prefix (a literal, a name, a parenthesized
+  expression, or <code>-</code> followed by a prefix). Then, while the next token is a binary operator that binds
+  more tightly than the caller's minimum, consume it and parse its right operand with that operator's precedence as the
+  new minimum. Passing <code>prec</code> (not <code>prec - 1</code>) as the minimum for the right side is what makes
+  <code>a - b - c</code> group as <code>(a - b) - c</code>.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch11-capstone-flat-ast-compiler/rust/src/main.rs"><code class="language-rust">    /// Pratt loop: operators that bind tighter than `min_prec` extend the left operand.
+    fn parse_expr(&amp;mut self, min_prec: u8) -&gt; PResult&lt;u32&gt; {
+        let mut lhs = self.parse_prefix()?;
+        while let Some((prec, tag)) = binary_op(self.peek())
+            &amp;&amp; prec &gt; min_prec
+        {
+            let op = self.next();
+            let rhs = self.parse_expr(prec)?;
+            lhs = self.add(tag, op, lhs, rhs);
+        }
+        Ok(lhs)
+    }</code></pre>
+<pre data-lang="Zig" data-file="code/ch11-capstone-flat-ast-compiler/zig/main.zig"><code class="language-zig">    /// Pratt loop: operators that bind tighter than `min_prec` extend the left operand.
+    fn parseExpr(p: *Parser, min_prec: u8) Error!u32 {
+        var lhs = try p.parsePrefix();
+        while (binaryOp(p.peek())) |op| {
+            if (op.prec &lt;= min_prec) break;
+            const tok = p.next();
+            const rhs = try p.parseExpr(op.prec);
+            lhs = try p.add(op.tag, tok, lhs, rhs);
+        }
+        return lhs;
+    }</code></pre>
+<pre data-lang="Odin" data-file="code/ch11-capstone-flat-ast-compiler/odin/main.odin"><code class="language-odin">// Pratt loop: operators that bind tighter than `min_prec` extend the left operand.
+parse_expr :: proc(p: ^Parser, min_prec: u8) -&gt; (lhs: u32, err: Error) {
+	lhs = parse_prefix(p) or_return
+	for {
+		op, ok := binary_op(peek(p))
+		if !ok || op.prec &lt;= min_prec {
+			break
+		}
+		tok := next(p)
+		rhs := parse_expr(p, op.prec) or_return
+		lhs = add(p, op.tag, tok, lhs, rhs)
+	}
+	return
+}</code></pre>
+  </div>
+  <p>Two details matter for the data. First, parentheses produce no node: <code>(a + b) * c</code> is just a
+  <code>mul</code> whose <code>lhs</code> is an <code>add</code>, because the tree's shape already records the grouping.
+  Second, nodes are appended in <em>post-order</em>: a binary node is added after both operands, so every child has a
+  smaller index than its parent. Carbon's parse tree is designed around that property: it is a postorder array with
+  close to one node per token, and its checker walks it front to back instead of chasing edges<a class="cite"
+  href="#src-3">[3]</a>. Our evaluator still recurses from the root, but the order is why a node's subtree sits in a
+  nearby block of memory, which the next sections rely on.</p>
+  <aside class="callout version" data-title="Rust 1.88: let chains"><p>The Rust Pratt loop is
+  <code>while let Some((prec, tag)) = binary_op(self.peek()) &amp;&amp; prec &gt; min_prec</code>. Combining a
+  <code>let</code> pattern with a boolean condition is a <em>let chain</em>, stable since Rust 1.88 in edition 2024; Zig
+  and Odin unwrap the optional and <code>break</code> inside the loop.</p></aside>
+
+  <h2 id="interning">String interning</h2>
+  <p>Identifiers appear thousands of times: every <code>let</code>, every use, every call. If the parser stored strings,
+  the evaluator would compare strings on every variable lookup. Instead the parser <em>interns</em> each identifier
+  once: it looks the text up in a hash table and gets back a small integer, the <em>symbol</em>. Equal names get equal
+  symbols, so the rest of the compiler compares <code>u32</code>s. Each symbol's bytes are stored once, back to back in
+  one byte buffer, with a <code>starts</code> array giving each symbol's offset. Zig's AstGen does the same for ZIR
+  string literals: its <code>string_table</code> is a
+  <code>std.HashMapUnmanaged(u32, void, StringIndexContext, ...)</code> whose keys are offsets into
+  <code>string_bytes</code>, not strings<a class="cite" href="#src-5">[5]</a>.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch11-capstone-flat-ast-compiler/rust/src/main.rs"><code class="language-rust">    fn intern(&amp;mut self, s: &amp;[u8]) -&gt; u32 {
+        let mask = self.table.len() - 1;
+        let mut h = fnv1a(s) as usize &amp; mask;
+        loop {
+            match self.table[h] {
+                0 =&gt; break,
+                e if self.strings.get(e - 1) == s =&gt; return e - 1,
+                _ =&gt; h = (h + 1) &amp; mask,
+            }
+        }
+        let sym = self.strings.len() as u32;
+        self.strings.bytes.extend_from_slice(s);
+        self.strings.starts.push(self.strings.bytes.len() as u32);
+        self.table[h] = sym + 1;
+        if 2 * self.strings.len() &gt; self.table.len() {
+            self.grow();
+        }
+        sym
+    }</code></pre>
+<pre data-lang="Zig" data-file="code/ch11-capstone-flat-ast-compiler/zig/main.zig"><code class="language-zig">    fn intern(in: *Interner, gpa: Allocator, s: []const u8) Allocator.Error!u32 {
+        const mask = in.table.len - 1;
+        var h = fnv1a(s) &amp; mask;
+        while (in.table[h] != 0) : (h = (h + 1) &amp; mask) {
+            if (std.mem.eql(u8, in.strings().get(in.table[h] - 1), s)) return in.table[h] - 1;
+        }
+        const sym: u32 = @intCast(in.strings().len());
+        try in.bytes.appendSlice(gpa, s);
+        try in.starts.append(gpa, @intCast(in.bytes.items.len));
+        in.table[h] = sym + 1;
+        if (2 * in.strings().len() &gt; in.table.len) try in.grow(gpa);
+        return sym;
+    }</code></pre>
+<pre data-lang="Odin" data-file="code/ch11-capstone-flat-ast-compiler/odin/main.odin"><code class="language-odin">intern :: proc(in_: ^Interner, s: []u8) -&gt; u32 {
+	mask := u32(len(in_.table) - 1)
+	h := fnv1a(s) &amp; mask
+	for in_.table[h] != 0 {
+		if strings_get(interner_strings(in_), in_.table[h] - 1) == string(s) {
+			return in_.table[h] - 1
+		}
+		h = (h + 1) &amp; mask
+	}
+	sym := u32(strings_len(interner_strings(in_)))
+	append(&amp;in_.bytes, ..s)
+	append(&amp;in_.starts, u32(len(in_.bytes)))
+	in_.table[h] = sym + 1
+	if 2 * strings_len(interner_strings(in_)) &gt; len(in_.table) {
+		table := make([]u32, 2 * len(in_.table))
+		m := u32(len(table) - 1)
+		for k in 0 ..&lt; strings_len(interner_strings(in_)) {
+			g := fnv1a(transmute([]u8)strings_get(interner_strings(in_), u32(k))) &amp; m
+			for table[g] != 0 {
+				g = (g + 1) &amp; m
+			}
+			table[g] = u32(k + 1)
+		}
+		delete(in_.table)
+		in_.table = table
+	}
+	return sym
+}</code></pre>
+  </div>
+  <p>The table is hand-written in all three programs: open addressing, slots holding <code>symbol + 1</code> (0 means
+  empty), FNV-1a hashing, linear probing, and doubling when it is half full. A library map would have worked, but this
+  way the table is a flat <code>[]u32</code> with no pointers, the same in every language, and the symbols come out in
+  first-seen order. That order is part of the file format: the JavaScript port in <a class="figref"
+  href="#fig-flat">the figure above</a> numbers symbols the same way.</p>
+  <aside class="callout pitfall"><p>Do not let names back into the evaluator: its environment is a stack of
+  <code>(symbol, value)</code> pairs searched from the top, so looking up a variable never touches a string.</p></aside>
+
+  <h2 id="eval">Running the flat tree</h2>
+  <p>The evaluator is a post-order walk: evaluate the children, then combine. It uses no node pointers, only indices
+  into four slices. In Rust the slices are fields of a small <code>FlatEval</code> struct, built once. In Zig and Odin
+  they are a <code>Flat</code> struct of slices that can come either from a parsed <code>Ast</code> or from a file
+  mapped back into memory, so the same evaluator runs both, which is how the serialization test checks its result.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch11-capstone-flat-ast-compiler/rust/src/main.rs"><code class="language-rust">    /// Expressions, children first (post-order).
+    fn eval(&amp;mut self, n: u32) -&gt; i64 {
+        let (l, r) = (self.lhs[n as usize], self.rhs[n as usize]);
+        match self.tag[n as usize] {
+            Tag::IntLiteral =&gt; l as i64,
+            Tag::Identifier =&gt; self.env.lookup(l),
+            Tag::Negate =&gt; self.eval(l).wrapping_neg(),
+            Tag::CallOne =&gt; {
+                let nargs = if r != 0 {
+                    let v = self.eval(r);
+                    self.env.args.push(v);
+                    1
+                } else {
+                    0
+                };
+                self.call_sym(self.lhs[l as usize], nargs)
+            }
+            Tag::Call =&gt; {
+                let (s, e) = (self.extra[r as usize] as usize, self.extra[r as usize + 1] as usize);
+                for k in s..e {
+                    let v = self.eval(self.extra[k]);
+                    self.env.args.push(v);
+                }
+                self.call_sym(self.lhs[l as usize], e - s)
+            }
+            op =&gt; {
+                let a = self.eval(l);
+                let b = self.eval(r);
+                apply(op, a, b)
+            }
+        }
+    }</code></pre>
+<pre data-lang="Zig" data-file="code/ch11-capstone-flat-ast-compiler/zig/main.zig"><code class="language-zig">    /// Expressions, children first (post-order).
+    fn eval(e: *FlatEval, n: u32) Allocator.Error!i64 {
+        const l = e.f.lhs[n];
+        const r = e.f.rhs[n];
+        switch (e.f.tag[n]) {
+            .int_literal =&gt; return l,
+            .identifier =&gt; return e.env.lookup(l),
+            .negate =&gt; return 0 -% try e.eval(l),
+            .call_one =&gt; {
+                if (r != 0) try e.env.args.append(e.gpa, try e.eval(r));
+                return e.callSym(e.f.lhs[l], @intFromBool(r != 0));
+            },
+            .call =&gt; {
+                const s = e.f.extra[r];
+                const end = e.f.extra[r + 1];
+                for (e.f.extra[s..end]) |a| try e.env.args.append(e.gpa, try e.eval(a));
+                return e.callSym(e.f.lhs[l], end - s);
+            },
+            else =&gt; |op| {
+                const a = try e.eval(l);
+                const b = try e.eval(r);
+                return apply(op, a, b);
+            },
+        }
+    }</code></pre>
+<pre data-lang="Odin" data-file="code/ch11-capstone-flat-ast-compiler/odin/main.odin"><code class="language-odin">// Expressions, children first (post-order).
+flat_eval :: proc(e: ^Flat_Eval, n: u32) -&gt; i64 {
+	f := &amp;e.flat
+	l, r := f.lhs[n], f.rhs[n]
+	#partial switch op := f.tag[n]; op {
+	case .Int_Literal:
+		return i64(l)
+	case .Identifier:
+		return lookup(&amp;e.env, l)
+	case .Negate:
+		return -flat_eval(e, l)
+	case .Call_One:
+		if r != 0 {
+			append(&amp;e.env.args, flat_eval(e, r))
+		}
+		return flat_call(e, f.lhs[l], r != 0 ? 1 : 0)
+	case .Call:
+		s, end := f.extra[r], f.extra[r + 1]
+		for a in f.extra[s:end] {
+			append(&amp;e.env.args, flat_eval(e, a))
+		}
+		return flat_call(e, f.lhs[l], int(end - s))
+	case:
+		a := flat_eval(e, l)
+		b := flat_eval(e, r)
+		return apply(op, a, b)
+	}
+}</code></pre>
+  </div>
+  <p>Each case reads its node's encoding exactly as the tag comment says. That is the cost Kelley warned about: with
+  several encodings per construct, every consumer of the tree needs tag-specific accessors. <code>std.zig.Ast</code> has a family of them (<code>fullCall</code>,
+  <code>fullVarDecl</code>, ...) that turn the encodings back into one uniform view<a class="cite" href="#src-5">[5]</a>.
+  At our size a <code>switch</code> in the evaluator is enough.</p>
+  <p>A tree-walking interpreter is the slowest reasonable way to run a program (Exercise 11.2 compiles the flat tree to
+  bytecode); here its job is to prove that both trees, and the file, contain the same program.</p>
+  <aside class="callout pitfall"><p>Recursion depth is the program's nesting depth, so a hostile input like
+  <code>----...--1</code> with a million minus signs would overflow the stack. A production front end limits nesting or
+  uses an explicit stack, as Carbon's parser does<a class="cite" href="#src-3">[3]</a>.</p></aside>
+
+  <h2 id="boxed">The baseline: one allocation per node</h2>
+  <p>The comparison is the tree you would write without thinking about memory. It uses the same grammar, the same
+  tokens, the same interner and the same integer semantics. Only the representation differs: a tagged union per node,
+  children behind owning pointers (<code>Box&lt;Node&gt;</code>, <code>*BNode</code>, <code>^B_Node</code>), and
+  each list as its own exactly sized heap slice. Each node keeps its token index, as the flat tree's
+  <code>main_token</code> does, so the two trees hold the same information.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch11-capstone-flat-ast-compiler/rust/src/main.rs"><code class="language-rust">enum Node {
+    Int { token: u32, value: i64 },
+    Ident { token: u32, sym: u32 },
+    Negate { token: u32, operand: Box&lt;Node&gt; },
+    Binary { token: u32, op: Tag, lhs: Box&lt;Node&gt;, rhs: Box&lt;Node&gt; },
+    Call { token: u32, callee: u32, args: Box&lt;[Box&lt;Node&gt;]&gt; },
+    Let { token: u32, sym: u32, init: Box&lt;Node&gt; },
+    Return { token: u32, value: Box&lt;Node&gt; },
+    If { token: u32, cond: Box&lt;Node&gt;, then: Box&lt;Node&gt;, els: Option&lt;Box&lt;Node&gt;&gt; },
+    Block { token: u32, stmts: Box&lt;[Box&lt;Node&gt;]&gt; },
+    Fn { token: u32, name: u32, params: Box&lt;[u32]&gt;, body: Box&lt;Node&gt; },
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch11-capstone-flat-ast-compiler/zig/main.zig"><code class="language-zig">const BNode = union(enum) {
+    int: struct { token: u32, value: i64 },
+    ident: struct { token: u32, sym: u32 },
+    negate: struct { token: u32, operand: *BNode },
+    binary: struct { token: u32, op: Tag, lhs: *BNode, rhs: *BNode },
+    call: struct { token: u32, callee: u32, args: []*BNode },
+    let: struct { token: u32, sym: u32, init: *BNode },
+    ret: struct { token: u32, value: *BNode },
+    @"if": struct { token: u32, cond: *BNode, then: *BNode, els: ?*BNode },
+    block: struct { token: u32, stmts: []*BNode },
+    @"fn": struct { token: u32, name: u32, params: []u32, body: *BNode },
+};</code></pre>
+<pre data-lang="Odin" data-file="code/ch11-capstone-flat-ast-compiler/odin/main.odin"><code class="language-odin">B_Binary :: struct {
+	token:    u32,
+	op:       Tag,
+	lhs, rhs: ^B_Node,
+}
+B_If :: struct {
+	token:           u32,
+	cond, then, els: ^B_Node, // els may be nil
+}
+B_Call :: struct {
+	token, callee: u32,
+	args:          []^B_Node,
+}
+// ... B_Int, B_Ident, B_Negate, B_Let, B_Return, B_Block, B_Fn alike
+B_Node :: union {
+	B_Int, B_Ident, B_Negate, B_Binary, B_Call, B_Let, B_Return, B_If, B_Block, B_Fn,
+}</code></pre>
+  </div>
+  <p>All three languages land on the same size. The largest variant, <code>if</code> with a token and three pointers, is
+  4 + 4 (padding) + 24 = 32 bytes, and the discriminant plus alignment makes the union 40 bytes in each language. This
+  baseline is not a strawman, and it is smaller than the pre-0.8 Zig AST. The tree has no parent pointers and no line
+  or column fields, the token index is a <code>u32</code>, and a call stores its callee's symbol directly instead of
+  pointing at an identifier node. That last point is why the boxed tree has about 3% fewer nodes than the flat one.
+  The benchmark frees the tree inside the timed region, because a compiler that drops the AST after lowering pays for
+  that too. The flat tree frees five arrays. In all three languages the boxed grammar functions are line-for-line
+  parallel to the flat ones, so the timing difference is the representation, not the algorithm.</p>
+
+  <h2 id="disk">Writing the tree to disk and reading it back</h2>
+  <p>A flat tree has no pointers, so its in-memory form <em>is</em> a file format. Zig uses this for its incremental
+  cache. ZIR is stored as four arrays (instruction tags, 8-byte instruction data, string bytes, <code>extra</code>), and
+  when a source file has not changed the compiler loads its ZIR instead of tokenizing, parsing and running AstGen
+  again<a class="cite" href="#src-1">[1]</a>. The code that does it, <code>saveZirCache</code> and
+  <code>loadZirCacheBody</code> in <code>src/Zcu.zig</code>, writes a small header and then hands the arrays to one
+  vectored write, <code>writeVecAll(&amp;vecs)</code>. On load it allocates the arrays at their final size and fills
+  them with one <code>readVecAll</code><a class="cite" href="#src-6">[6]</a>. Our format is the same idea for our
+  arrays: an eight-word header with magic number, counts and <code>main</code>'s symbol, then every column in order,
+  each byte column padded to a multiple of four so every <code>u32</code> column starts aligned.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch11-capstone-flat-ast-compiler/rust/src/main.rs"><code class="language-rust">fn serialize(ast: &amp;Ast) -&gt; Vec&lt;u8&gt; {
+    let (nt, nn) = (ast.tokens.tag.len(), ast.nodes.tag.len());
+    let mut out = Vec::with_capacity(32 + 5 * nt + 13 * nn + 4 * ast.extra.len() + ast.strings.bytes.len() + 16);
+    let s = &amp;ast.strings;
+    put_u32s(&amp;mut out, &amp;[MAGIC, nt as u32, nn as u32, ast.extra.len() as u32, s.bytes.len() as u32, s.len() as u32, ast.main_sym, 0]);
+    out.extend(ast.tokens.tag.iter().map(|&amp;t| t as u8));
+    pad4(&amp;mut out);
+    put_u32s(&amp;mut out, &amp;ast.tokens.start);
+    out.extend(ast.nodes.tag.iter().map(|&amp;t| t as u8));
+    pad4(&amp;mut out);
+    put_u32s(&amp;mut out, &amp;ast.nodes.main_token);
+    put_u32s(&amp;mut out, &amp;ast.nodes.lhs);
+    put_u32s(&amp;mut out, &amp;ast.nodes.rhs);
+    put_u32s(&amp;mut out, &amp;ast.extra);
+    out.extend_from_slice(&amp;s.bytes);
+    pad4(&amp;mut out);
+    put_u32s(&amp;mut out, &amp;s.starts);
+    out
+}
+
+impl&lt;'a&gt; Reader&lt;'a&gt; {
+    fn bytes(&amp;mut self, n: usize) -&gt; Result&lt;&amp;'a [u8], String&gt; {
+        let end = self.at.checked_add(n).filter(|&amp;e| e &lt;= self.b.len()).ok_or("file too short")?;
+        let s = &amp;self.b[self.at..end];
+        self.at = end.next_multiple_of(4);
+        Ok(s)
+    }
+    fn u32s(&amp;mut self, n: usize) -&gt; Result&lt;Vec&lt;u32&gt;, String&gt; {
+        let (chunks, _) = self.bytes(4 * n)?.as_chunks::&lt;4&gt;();
+        Ok(chunks.iter().map(|c| u32::from_le_bytes(*c)).collect())
+    }
+    fn tags&lt;T: Copy&gt;(&amp;mut self, n: usize, table: &amp;[T]) -&gt; Result&lt;Vec&lt;T&gt;, String&gt; {
+        self.bytes(n)?.iter().map(|&amp;b| table.get(b as usize).copied().ok_or_else(|| format!("bad tag {b}"))).collect()
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch11-capstone-flat-ast-compiler/zig/main.zig"><code class="language-zig">fn writeAst(io: Io, ast: *const Ast, path: []const u8) !void {
+    const s = ast.strings;
+    const header = [8]u32{
+        MAGIC,                 @intCast(ast.tokens.len), @intCast(ast.nodes.len), @intCast(ast.extra.len),
+        @intCast(s.bytes.len), @intCast(s.len()),        ast.main_sym,            0,
+    };
+    const tok_tags: []const u8 = @ptrCast(ast.tokens.items(.tag));
+    const node_tags: []const u8 = @ptrCast(ast.nodes.items(.tag));
+    var vecs = [_][]const u8{
+        std.mem.sliceAsBytes(&amp;header),
+        tok_tags,
+        pad4(tok_tags.len),
+        std.mem.sliceAsBytes(ast.tokens.items(.start)),
+        node_tags,
+        pad4(node_tags.len),
+        std.mem.sliceAsBytes(ast.nodes.items(.main_token)),
+        std.mem.sliceAsBytes(ast.nodes.items(.lhs)),
+        std.mem.sliceAsBytes(ast.nodes.items(.rhs)),
+        std.mem.sliceAsBytes(ast.extra),
+        s.bytes,
+        pad4(s.bytes.len),
+        std.mem.sliceAsBytes(s.starts),
+    };
+    var file = try Io.Dir.createFileAbsolute(io, path, .{});
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var fw = file.writer(io, &amp;buf);
+    try fw.interface.writeVecAll(&amp;vecs);
+    try fw.interface.flush();
+}
+
+const Cursor = struct {
+    b: []align(4) const u8,
+    at: usize = 0,
+
+    fn bytes(c: *Cursor, n: usize) ![]align(4) const u8 {
+        if (c.at &gt; c.b.len or n &gt; c.b.len - c.at) return error.FileTooShort;
+        const s: []align(4) const u8 = @alignCast(c.b[c.at..][0..n]);
+        c.at = std.mem.alignForward(usize, c.at + n, 4);
+        return s;
+    }
+    fn words(c: *Cursor, n: usize) ![]const u32 {
+        return std.mem.bytesAsSlice(u32, try c.bytes(4 * n));
+    }
+    /// Checks every byte before the bytes are viewed as an exhaustive enum.
+    fn tags(c: *Cursor, comptime T: type, n: usize) ![]const T {
+        const raw = try c.bytes(n);
+        for (raw) |b| if (b &gt;= @typeInfo(T).@"enum".field_names.len) return error.BadTag;
+        return @ptrCast(raw);
+    }
+};</code></pre>
+<pre data-lang="Odin" data-file="code/ch11-capstone-flat-ast-compiler/odin/main.odin"><code class="language-odin">write_ast :: proc(a: ^Ast, path: string) -&gt; os.Error {
+	f := os.create(path) or_return
+	defer os.close(f)
+	zeros: [4]u8
+	pad := proc(n: int) -&gt; int { return (4 - n % 4) % 4 }
+	nt, nn, s := len(a.tokens), len(a.nodes), a.strings
+	header := [8]u32{MAGIC, u32(nt), u32(nn), u32(len(a.extra)), u32(len(s.bytes)), u32(strings_len(s)), a.main_sym, 0}
+	parts := [?][]u8 {
+		slice.to_bytes(header[:]),
+		slice.to_bytes(a.tokens.tag[:nt]), zeros[:pad(nt)],
+		slice.to_bytes(a.tokens.start[:nt]),
+		slice.to_bytes(a.nodes.tag[:nn]), zeros[:pad(nn)],
+		slice.to_bytes(a.nodes.main_token[:nn]),
+		slice.to_bytes(a.nodes.lhs[:nn]),
+		slice.to_bytes(a.nodes.rhs[:nn]),
+		slice.to_bytes(a.extra[:]),
+		s.bytes, zeros[:pad(len(s.bytes))],
+		slice.to_bytes(s.starts),
+	}
+	for part in parts {
+		os.write(f, part) or_return
+	}
+	return nil
+}
+
+take_u32 :: proc(c: ^Cursor, n: int) -&gt; ([]u32, bool) {
+	b, ok := take(c, 4 * n)
+	return slice.reinterpret([]u32, b), ok
+}
+
+// Checks every byte before the bytes are viewed as an enum.
+take_tags :: proc(c: ^Cursor, $T: typeid, n: int) -&gt; ([]T, bool) where intrinsics.type_is_enum(T) {
+	b, ok := take(c, n)
+	for x in b {
+		if int(x) &gt;= len(T) {
+			return nil, false
+		}
+	}
+	return slice.reinterpret([]T, b), ok
+}</code></pre>
+  </div>
+  <p>This is where the three languages differ the most, and the difference is about trust in bytes, not speed.
+  <b>Zig</b> reads into a <code>u32</code>-aligned buffer (<code>readFileAllocOptions(..., .of(u32), null)</code>) and
+  views each column in place with <code>std.mem.bytesAsSlice</code>. <b>Odin</b> reads into a <code>[]u32</code> and
+  views the columns with <code>slice.reinterpret</code>. Both check the tag columns byte by byte first, because a byte
+  outside an exhaustive enum would be undefined behaviour; after that nothing is copied. <b>Rust</b> without
+  <code>unsafe</code> cannot view <code>&amp;[u8]</code> as <code>&amp;[u32]</code> (<code>bytemuck</code> and
+  <code>zerocopy</code> wrap that <code>unsafe</code>, but this book uses std only), so it decodes each column in one
+  tight pass with <code>as_chunks::&lt;4&gt;()</code> and <code>u32::from_le_bytes</code>, and a bad tag byte is a
+  returned error.</p>
+  <aside class="callout pitfall"><p>"Zero-copy" means the file's bytes become the program's arrays, so the file must be
+  trusted. The tag check protects the enums, but nothing checks that every <code>lhs</code>, <code>rhs</code> and
+  <code>extra</code> index is in range. A corrupt file makes Rust panic on a bounds check and Odin trap on its bounds
+  check (on by default, also at <code>-o:speed</code>). In Zig at <code>-O fast</code> it is undefined behaviour. Zig's
+  own cache stores the source file's size, inode and mtime in the header and treats the cache as its own output; a cache
+  you download needs a checksum and a validation pass. The format is also native-endian (little-endian here) and has no
+  version field beyond the magic number.</p></aside>
+  <aside class="callout version" data-title="Changed in Odin dev-2026: the new core:os"><p>The Odin writer uses the
+  rewritten <code>core:os</code>: <code>os.create</code> returns <code>(^os.File, os.Error)</code>,
+  <code>os.write</code>, <code>os.read_full</code> and <code>os.file_size</code> all take that <code>^File</code>.
+  <code>or_return</code> passes the <code>os.Error</code> straight up, so
+  <code>write_ast</code> is a straight line of calls.</p></aside>
+
+  <h2 id="generator">The input: a seeded generator</h2>
+  <p>The benchmark needs a large program that is the same in all three languages and that terminates. The generator is
+  the same splitmix64 sequence used since Chapter 1, driving the same choices in the same order, so the three programs
+  write byte-identical source (3,750,573 bytes and 170,470 lines at the default size). Function <code>i</code> may only
+  call the two functions before it, so the call graph is acyclic and evaluation always finishes. Each function has 1–3
+  parameters and 2–4 statements, and <code>main</code> folds every function's result into one accumulator, so one wrong
+  operator anywhere changes the final number.</p>
+  <p>Generated code is not real code. It has short names, no comments and no strings, so its lines are short (22 bytes
+  and 7.1 tokens on average) and its tokens are short (3.1 bytes). That affects every "per line" and "per byte"
+  number below.</p>
+
+  <h2 id="measured">What the measurements say</h2>
+  <p>All timings come from one full-size run per language, pinned with <code>taskset -c 2</code> on one 4-vCPU KVM
+  Xeon (Ice Lake) shared with other work, so they are noisy (machine: see <a href="02-the-machine.html">Chapter
+  2</a>). The sizes, though, are exact and identical in all three languages, because they depend only on the input:</p>
+  <div class="table-wrap"><table>
+    <tr><th>at 1,214,430 tokens</th><th class="num">flat</th><th class="num">boxed</th><th class="num">Zig 0.8.0 (cited)</th></tr>
+    <tr><td>bytes per token</td><td class="num">5</td><td class="num">5 (same tokens)</td><td class="num">64 → 5</td></tr>
+    <tr><td>bytes per node, fixed part</td><td class="num">13</td><td class="num">40</td><td class="num">≈120 → 13</td></tr>
+    <tr><td>bytes per node, average incl. lists / extra</td><td class="num">14.19</td><td class="num">41.99 requested</td><td class="num">15.6</td></tr>
+    <tr><td>nodes</td><td class="num">771,749</td><td class="num">745,242</td><td class="num">—</td></tr>
+    <tr><td>nodes per token</td><td class="num">0.635</td><td class="num">0.614</td><td class="num">0.50 (std/os.zig)</td></tr>
+    <tr><td>heap allocations for the tree</td><td class="num">amortized growth of 5 arrays</td><td class="num">822,174</td><td class="num">—</td></tr>
+    <tr><td>tokens + nodes + extra, MB</td><td class="num">6.07 + 10.03 + 0.92</td><td class="num">6.07 + 31.3 + headers</td><td class="num">—</td></tr>
+  </table></div>
+  <p>Our 14.19 B/node average is a little below Zig's 15.6 because our language has fewer constructs with more than two
+  children. Zig's 0.50 nodes per token for <code>std/os.zig</code> (17,397 nodes for 35,023 tokens<a class="cite"
+  href="#src-1">[1]</a>) is lower than ours because much of Zig's syntax (<code>.</code>, <code>:</code>,
+  <code>const</code>) never gets a node of its own. Carbon reports about one
+  parse node per token at 12 bytes each<a class="cite" href="#src-4">[4]</a>, a different trade: more nodes, but each
+  node is close to its token.</p>
+  <figure class="figure" id="fig-bytes">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch11-bytes" data-opts='{"metric":"value","unit":"B","labels":["token","node, fixed","node, avg incl. extra","boxed node, avg"],"langs":["rust"],"log":false}'></div>
+    <figcaption>Bytes per token and per node in this chapter's programs (identical in all three languages; Rust shown).
+    The boxed number counts the bytes requested from the allocator: the 40-byte node plus its share of argument,
+    statement and parameter slices. Malloc headers and size-class rounding come on top.</figcaption>
+  </figure>
+  <figure class="figure" id="fig-zig-cited">
+    <div class="figure-body" data-viz="bench-bars" data-opts='{"source":"cited: Kelley, Zig 0.8.0 release notes and Handmade Seattle 2021 talk","metric":"value","unit":"B","sort":"none","log":false,"runs":[{"label":"token, before 0.8","value":64},{"label":"token, 0.8.0","value":5},{"label":"AST node, before 0.8 (approx.)","value":120},{"label":"AST node, 0.8.0 fixed","value":13},{"label":"AST node, 0.8.0 avg incl. extra","value":15.6},{"label":"ZIR instruction, before","value":54},{"label":"ZIR instruction, after (avg)","value":20.3}]}'></div>
+    <figcaption>Cited, not measured here: the Zig compiler's before/after sizes<a class="cite" href="#src-1">[1]</a><a
+    class="cite" href="#src-2">[2]</a>.</figcaption>
+  </figure>
+  <p>Now the timings. "Tokenize+parse" includes building the tree and, for the boxed tree, freeing it again. Both
+  variants tokenize, so the difference between them is parsing into the two representations.</p>
+  <figure class="figure" id="fig-parse">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch11-parse" data-opts='{"metric":"ns/n","per":"token","labels":["tokenize only","flat: tokenize+parse","boxed: tokenize+parse"]}'></div>
+    <figcaption>Median time per token over 1.2 M tokens (3.75 MB). The flat parser is
+    <span data-bench-ratio="ch11-parse" data-num="boxed: tokenize+parse" data-den="flat: tokenize+parse" data-lang="rust">about 2.2×</span>
+    faster than the boxed one in Rust,
+    <span data-bench-ratio="ch11-parse" data-num="boxed: tokenize+parse" data-den="flat: tokenize+parse" data-lang="zig">about 1.8×</span>
+    in Zig and
+    <span data-bench-ratio="ch11-parse" data-num="boxed: tokenize+parse" data-den="flat: tokenize+parse" data-lang="odin">about 2.9×</span>
+    in Odin.</figcaption>
+  </figure>
+  <p>The parse ratio runs from about 1.8× to 2.9×. Zig's boxed parser (<code>init.gpa</code> at <code>-O fast</code> is
+  <code>smp_allocator</code>) runs level with Rust's, which uses glibc <code>malloc</code> directly, while Odin's is
+  markedly slower: its default heap allocator goes to libc <code>malloc</code> with extra alignment bookkeeping (see
+  <a href="05-indices-handles.html#measure">Chapter 5</a>). Zig's ratio is the smallest mainly because its flat parser
+  is the slowest of the three. The flat parsers are within about 35% of each other. The
+  tokenizer alone is about 40–45% of the flat pipeline. Notice what this means: on the flat side, building the AST costs about
+  as much as tokenizing.</p>
+  <figure class="figure" id="fig-eval">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch11-eval" data-opts='{"metric":"ns","labels":["flat nodes","boxed tree"]}'></div>
+    <figcaption>Median time to run the generated program once, over the flat arrays and over the boxed tree (same
+    program, same result). Flat is
+    <span data-bench-ratio="ch11-eval" data-num="boxed tree" data-den="flat nodes" data-lang="rust">about 1.4×</span>
+    faster in Rust, <span data-bench-ratio="ch11-eval" data-num="boxed tree" data-den="flat nodes" data-lang="zig">about 2×</span>
+    in Zig and <span data-bench-ratio="ch11-eval" data-num="boxed tree" data-den="flat nodes" data-lang="odin">about 1.6×</span> in Odin.</figcaption>
+  </figure>
+  <p>The evaluation numbers are the most interesting ones, because the two evaluators execute the same algorithm with
+  the same branches. They differ only in where the node data is. At the <code>--quick</code> size (3,000 nodes, a few
+  dozen KiB) they tie, since both trees fit in L1 and L2. At full size the flat evaluator touches about 9 bytes per
+  node plus extra, laid out in post-order, while the boxed one fetches 40-byte nodes plus separate slices, roughly five
+  times as many bytes, through dependent loads. This is <a
+  href="02-the-machine.html#list">Chapter 2</a>'s array-versus-linked-list experiment with a real workload on top.</p>
+  <figure class="figure" id="fig-file">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch11-file" data-opts='{"metric":"ns","labels":["read file","write file"]}'></div>
+    <figcaption>Writing the 17.1 MB of arrays to a file and reading them back (page cache warm: this measures memory
+    copies and system calls, not the disk). Rust's read includes decoding every word; Zig's and Odin's reads are
+    zero-copy views.</figcaption>
+  </figure>
+  <p>Reading the file back is several times faster than tokenizing and parsing again (compare the two charts), even
+  though the file is 4.6× the size of the source. With real code the file would be closer to the source's size: Kelley
+  measured source + tokens + AST at about 1.3× the ZIR. Rust's decode pass did not make it the slowest reader: at this
+  size the read is dominated by copying 17 MB out of the page cache, and one more streaming pass over data already in
+  cache is cheap, a reasonable price for not writing <code>unsafe</code>. Writing is slower than reading in all three
+  because it creates and truncates the file each time.</p>
+
+  <h3 id="worked">Worked example: one megabyte of tokens, in lines per second</h3>
+  <p>Take the Rust run: 3,750,573 bytes, 170,470 lines, flat tokenize+parse in
+  <span data-bench-val="ch11-parse" data-label="flat: tokenize+parse" data-lang="rust" data-metric="ms">37 ms</span>.
+  Dividing gives
+  <span data-bench-val="ch11-throughput" data-label="flat" data-lang="rust" data-metric="value">4.6 M lines/s</span>
+  on one core, and at 22 bytes per line roughly 110 MB/s. Zig's and Odin's flat parsers land at
+  <span data-bench-val="ch11-throughput" data-label="flat" data-lang="zig" data-metric="value">3.7 M lines/s</span> and
+  <span data-bench-val="ch11-throughput" data-label="flat" data-lang="odin" data-metric="value">3.4 M lines/s</span>;
+  the boxed parsers between
+  <span data-bench-val="ch11-throughput" data-label="boxed" data-lang="odin" data-metric="value">1.2 M lines/s</span>
+  (Odin) and
+  <span data-bench-val="ch11-throughput" data-label="boxed" data-lang="rust" data-metric="value">2.2 M lines/s</span>
+  (Rust, with Zig just behind).</p>
+  <figure class="figure" id="fig-lines">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch11-throughput" data-opts='{"metric":"value","unit":"M lines/s","higherIsBetter":true}'></div>
+    <figcaption>Tokenize+parse throughput in millions of (short, generated) lines per second, one core. Context only: see
+    the next paragraph before comparing it with anything.</figcaption>
+  </figure>
+  <p>Do not put this next to Zig's 8.9 M lines/s or Carbon's 10 M. Zig's figure is <em>AstGen</em> (tokenize, parse
+  and lowering to ZIR) over the whole standard library on an 8-core i9-9980HK, with files processed in parallel; the
+  same release notes give 1.8 M lines/s for AstGen of a single file of about a million lines (0.57 s), a job that does not
+  run in parallel<a class="cite" href="#src-1">[1]</a>, for more
+  work per line on far more varied code. Carbon's 10 M is a <em>goal</em>, not a measured result<a class="cite"
+  href="#src-3">[3]</a>, and its lexer is being built for it with SIMD scanning and tail-call dispatch<a class="cite"
+  href="#src-7">[7]</a>, while ours is a byte-at-a-time loop over short generated lines. The flat layout puts this
+  simple front end in the same order of magnitude as production compilers; the next factor would come from the
+  tokenizer, not the tree.</p>
+
+  <h2 id="caveats">Caveats, and what this cost</h2>
+  <ul>
+    <li><b>The flat tree is append-only.</b> Building it in one pass is easy. Inserting a node in the middle, or
+      rewriting a subtree in place, is not: indices would shift. Compilers get away with it because each stage builds a
+      new array (AST → ZIR → AIR in Zig; AIR is the typed, analysed IR that code generation consumes) instead of mutating the old one. An IDE that edits the tree in place has
+      different needs.</li>
+    <li><b>Encodings spread knowledge.</b> Every reader of the tree has to know every encoding. Zig's parser rewrite was
+      176 commits, and <code>std.zig.Ast</code> needs a set of <code>full*</code> accessors to undo the encodings for
+      code that does not care<a class="cite" href="#src-5">[5]</a>. Mitchell Hashimoto, walking through the Zig parser,
+      warns that "the AST node structures can be <em>confusing</em> because there is a lot of indirection"<a class="cite"
+      href="#src-5">[5]</a>.</li>
+    <li><b>Requested bytes are not resident bytes.</b> The boxed 42 B/node counts what the parser asked for. glibc adds
+      an 8-byte header and rounds to 16, so a 40-byte <code>Box&lt;Node&gt;</code> occupies a 48-byte chunk; the real
+      footprint is higher, but we did not measure resident memory here (<code>/usr/bin/time -v</code> reports max RSS if
+      you want it).</li>
+    <li><b>Fresh heaps flatter the baseline.</b> The boxed tree is built into an almost empty heap, so consecutive nodes
+      land next to each other (Chapter 5). A fragmented heap would make it worse.</li>
+  </ul>
+
+  <aside class="recap"><p>An AST only adds structure to a token list: store tokens as a byte of tag and a <code>u32</code>
+  offset, nodes as a tag, a token and two <code>u32</code>s, put anything bigger in one shared <code>extra</code> array
+  under a different tag, and the tree becomes a few flat arrays that are three times smaller, parse up to three times
+  faster, evaluate 1.4–2× faster, and can be written to disk as they are.</p></aside>
+
+  <h2 id="exercises">Exercises</h2>
+  <details class="exercise"><summary>Add <code>while cond { ... }</code> to the language. How many encodings does it need,
+  and does it use <code>extra</code>?</summary>
+  <p>One encoding fits: <code>while_loop</code> with <code>lhs</code> = condition and <code>rhs</code> = body block. It
+  uses no extra, because the body is already one node (a <code>block_two</code> or <code>block</code>). You would add a
+  second encoding only if <code>while</code> grew more parts, for example Zig's <code>while (c) : (step)</code>, which
+  is why Zig has both <code>while_simple</code> and <code>while_cont</code>. The tokenizer needs a <code>kw_while</code>
+  tag, the evaluator one more case, and the boxed tree one more variant.</p></details>
+  <details class="exercise"><summary>Compile the flat tree to bytecode: one post-order pass that writes
+  <code>push_int v</code>, <code>load sym</code>, <code>add</code>, <code>call f n</code>, <code>jump_if_zero</code>, ...
+  into a <code>[]u32</code>. What is the order of the instructions for <code>a * (b + 1)</code>, and what does the
+  interpreter loop look like?</summary>
+  <p><code>load a; load b; push_int 1; add; mul</code>: exactly the post-order of the nodes. The interpreter is a
+  <code>while (pc &lt; code.len) switch (code[pc])</code> over an operand stack of <code>i64</code>s. <code>if</code>
+  needs forward jumps patched once the then-block's length is known (write a placeholder, remember its index, fill it
+  in), and calls need a frame stack of return addresses and variable bases. It is one more flat array and one more pass,
+  the same move Zig makes from AST to ZIR.</p></details>
+  <details class="exercise"><summary>Store <code>end: u32</code> in the tokens as well. Using this chapter's numbers,
+  how much memory does it add at the default size, and what code gets simpler?</summary>
+  <p>4 bytes × 1,214,430 tokens ≈ 4.9 MB, taking the token arrays from 6.07 MB to 10.9 MB. <code>token_text</code>
+  becomes a slice instead of a re-scan, but it runs once per identifier and integer, so no hot path gets faster.</p></details>
+  <details class="exercise"><summary>Remove <code>call_one</code> so every call uses <code>call</code>. How many extra
+  bytes per call does that cost for zero and one arguments? Which other tag pair would you remove first if you had to
+  free up tag values?</summary>
+  <p>A <code>call</code> always uses the <code>{start, end}</code> pair (8 B) plus 4 B per argument, so a zero-argument
+  call grows from 13 to 21 B and a one-argument call from 13 to 25 B. Our generator's functions take 1–3 parameters, so
+  about a third of calls would pay 12 B each. <code>if_simple</code>/<code>if_else</code> is a cheaper pair to merge: an
+  <code>if</code> without <code>else</code> would cost 8 B more, and there are fewer <code>if</code>s than calls in this
+  workload. Measure before choosing: count each tag in the node array.</p></details>
+  <details class="exercise"><summary>Why can 0 mean "no node" in <code>lhs</code>, <code>rhs</code> and
+  <code>extra</code>? What would break if the root were the <em>last</em> node, as post-order would naturally make
+  it?</summary>
+  <p>Node 0 is the root, and nothing points at the root, so the index 0 is free to mean "none" everywhere else, without
+  an <code>Option</code> or a sentinel like <code>u32::MAX</code>. If the root were last, index 0 would be the first leaf
+  of the first function, a real node. You would need another sentinel and a comparison against it in every
+  <code>block_two</code> and <code>call_one</code>. The parser reserves slot 0 up front with
+  <code>add(.root, 0, 0, 0)</code> and fills in its range at the end.</p></details>
+  <details class="exercise"><summary>Make the Rust reader zero-copy with std only and no <code>unsafe</code>. Is it
+  possible? What would you change in the file format instead?</summary>
+  <p>Not for <code>u32</code> columns: safe std cannot view <code>&amp;[u8]</code> as <code>&amp;[u32]</code>
+  (<code>align_to</code> is <code>unsafe</code>). Keep the decode pass, use <code>zerocopy</code> or
+  <code>bytemuck</code>, or change what you read: the tag columns are bytes and can be borrowed directly, and an
+  evaluator could decode <code>lhs</code>/<code>rhs</code> with <code>u32::from_le_bytes</code> at each access.</p></details>
+  <details class="exercise"><summary>Each generated function only refers to symbols and to other functions by name.
+  How would you tokenize and parse the input on two threads, and how would you merge the results into one set of
+  arrays?</summary>
+  <p>Split the source at a <code>fn</code> keyword at the start of a line near the middle. Each thread tokenizes and
+  parses its half into its own arrays with its own interner. To merge, append the second thread's arrays to the first,
+  adding offsets: token indices shift by the first half's token count, node indices by its node count, extra indices by
+  its extra length, and symbols are remapped through a small table built by interning the second interner's strings
+  into the first. The merge needs the tag table to know which fields to shift. Zig avoids the merge by keeping one AST
+  per file and parallelizing over files<a class="cite" href="#src-1">[1]</a>.</p></details>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="sources">
+    <li id="src-1">Andrew Kelley and the Zig team, “Zig 0.8.0 Release Notes” (Reworked Memory Layout; Whole-File AST
+      Lowering; MultiArrayList), 2021. <a href="https://ziglang.org/download/0.8.0/release-notes.html">ziglang.org</a>.
+      Token 5 B, node 13 B, <code>FunctionCallOnlyOneParam</code> vs <code>FunctionCall</code>, parser −22% wall,
+      ZIR −39% wall / −40% memory, <code>std/os.zig</code> ast-check counts, 8.9 M lines/s (re-read for this chapter).</li>
+    <li id="src-2">Andrew Kelley, “A Practical Guide to Applying Data-Oriented Design”, Handmade Seattle, 2021.
+      <a href="https://vimeo.com/649009599">video</a>,
+      <a href="https://www.josherich.me/podcast/andrew-kelley-practical-data-oriented-design-dod">transcript</a>. Tokens
+      64 → 5 B, nodes ≈120 → 15.6 B average, ZIR 54 → 20.3 B.</li>
+    <li id="src-3">Chandler Carruth, “Modernizing Compiler Design for Carbon's Toolchain”, C++Now 2023.
+      <a href="https://chandlerc.blog/slides/2023-cppnow-compiler/index.html">slides</a>. Goals of 10 M lines/s lex+parse,
+      1 M semantics, 0.1 M lowering; postorder parse tree; token index as source location.</li>
+    <li id="src-4">Richard Smith, “SemIR: Carbon's high-level semantic IR”, EuroLLVM 2024 lightning talk.
+      <a href="https://llvm.org/devmtg/2024-04/slides/LightningTalks/Smith-Carbons-high-level-semanticIR.pdf">slides
+      (PDF)</a>. About one 12-byte parse node per token; 16-byte instructions.</li>
+    <li id="src-5">Zig 0.17.1 standard library source: <code>lib/std/zig/Ast.zig</code> (<code>Node.Index</code>, the
+      <code>full*</code> accessors) and <code>lib/std/zig/AstGen.zig</code> (<code>string_table</code>), read locally;
+      online at <a href="https://github.com/ziglang/zig/tree/master/lib/std/zig">github.com/ziglang/zig</a>. See also
+      Mitchell Hashimoto, “Zig Parser”, 2022, <a href="https://mitchellh.com/zig/parser">mitchellh.com</a> (the “confusing” quote; checked 2026-11-13).</li>
+    <li id="src-6">Zig 0.17.1 compiler source, <code>src/Zcu.zig</code>: <code>saveZirCache</code> /
+      <code>loadZirCacheBody</code> (header plus <code>writeVecAll</code> / <code>readVecAll</code> of the instruction,
+      string and extra arrays), read locally; online at <a href="https://github.com/ziglang/zig/blob/master/src/Zcu.zig">github.com/ziglang/zig</a>.</li>
+    <li id="src-7">Chandler Carruth, “Benchmarking &amp; Optimizing the Carbon Compiler”, NDC Toronto 2026.
+      <a href="https://chandlerc.blog/slides/2026-ndc-toronto-carbon-benchmarking/index.html">slides</a>. Tail-call
+      dispatch and SIMD scanning in the lexer; no achieved lines/s figure in the slides read.</li>
+    <li id="src-8">Vaughan R. Pratt, “Top Down Operator Precedence”, POPL 1973.
+      <a href="https://doi.org/10.1145/512927.512931">doi:10.1145/512927.512931</a>.</li>
+    <li id="src-9">Bob Nystrom, “Pratt Parsers: Expression Parsing Made Easy”, 2011.
+      <a href="https://journal.stuffwithstuff.com/2011/03/19/pratt-parsers-expression-parsing-made-easy/">journal.stuffwithstuff.com</a>.</li>
+  </ol>
+</main>
+</body>
+</html>

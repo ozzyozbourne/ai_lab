@@ -1,0 +1,100 @@
+ch02 the machine: N = 1048576, quick = false
+(a) 4194304 nodes x 16 B = 65536 KiB, checksum 8796090925056 (all match)
+    array               1.37 ns/node
+BENCH {"id":"ch02-list","label":"array","lang":"rust","n":4194304,"ns":5746298,"samples":[5594029,5647588,5708878,5746298,5762549,5922906,6027683]}
+    list, in order      2.62 ns/node
+BENCH {"id":"ch02-list","label":"list, in order","lang":"rust","n":4194304,"ns":10999101,"samples":[10873484,10940159,10990760,10999101,11030860,11174883,11200997]}
+    list, shuffled    127.66 ns/node
+BENCH {"id":"ch02-list","label":"list, shuffled","lang":"rust","n":4194304,"ns":535460629,"samples":[516900258,517613062,523913080,535460629,536056461,540442653,540956989]}
+(b) dependent random chase, one load per 64 B line, >= 2097152 loads per size
+           4 KiB     1.56 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":64,"ns":100,"samples":[98,98,99,100,100,100,101]}
+           6 KiB     1.60 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":96,"ns":154,"samples":[148,151,151,154,155,156,160]}
+           8 KiB     1.56 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":128,"ns":200,"samples":[197,199,200,200,201,201,201]}
+          12 KiB     1.52 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":192,"ns":292,"samples":[287,290,292,292,294,297,313]}
+          16 KiB     1.51 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":256,"ns":386,"samples":[385,385,386,386,387,391,400]}
+          24 KiB     1.62 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":384,"ns":622,"samples":[582,606,613,622,641,645,648]}
+          32 KiB     1.65 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":512,"ns":847,"samples":[781,782,786,847,901,904,1191]}
+          48 KiB     1.54 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":768,"ns":1180,"samples":[1173,1178,1179,1180,1198,1209,1210]}
+          64 KiB     4.24 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":1024,"ns":4337,"samples":[4322,4330,4335,4337,4346,4346,4368]}
+          96 KiB     4.23 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":1536,"ns":6503,"samples":[6479,6481,6497,6503,6509,6510,6534]}
+         128 KiB     4.27 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":2048,"ns":8737,"samples":[8647,8686,8715,8737,8931,8971,11402]}
+         192 KiB     4.26 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":3072,"ns":13072,"samples":[12993,13033,13042,13072,13084,13088,13172]}
+         256 KiB     4.26 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":4096,"ns":17466,"samples":[17371,17379,17409,17466,17475,17496,17497]}
+         384 KiB     4.99 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":6144,"ns":30666,"samples":[30561,30585,30622,30666,30754,31342,33481]}
+         512 KiB     5.34 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":8192,"ns":43760,"samples":[43435,43482,43521,43760,43787,44719,46944]}
+         768 KiB     5.92 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":12288,"ns":72721,"samples":[70526,70539,70701,72721,72866,73328,80069]}
+        1024 KiB     8.16 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":16384,"ns":133662,"samples":[125144,126003,131602,133662,134065,140241,220271]}
+        1536 KiB    19.85 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":24576,"ns":487765,"samples":[478545,481425,485880,487765,502313,512501,518636]}
+        2048 KiB    25.44 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":32768,"ns":833674,"samples":[805633,826781,827768,833674,842190,875524,884453]}
+        3072 KiB    24.19 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":49152,"ns":1188976,"samples":[1178698,1181723,1186351,1188976,1194496,1199104,1476803]}
+        4096 KiB    24.42 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":65536,"ns":1600299,"samples":[1594559,1594857,1598699,1600299,1710573,1735151,1759831]}
+        6144 KiB    26.82 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":98304,"ns":2636982,"samples":[2615137,2627111,2628162,2636982,2646125,2646480,2683342]}
+        8192 KiB    27.47 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":131072,"ns":3600989,"samples":[3559749,3573480,3575152,3600989,3644479,3657865,4788096]}
+       12288 KiB   143.90 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":196608,"ns":28292339,"samples":[26950940,27194762,27799180,28292339,28576691,28735545,28898279]}
+       16384 KiB   145.10 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":262144,"ns":38036110,"samples":[37305467,37493411,37700632,38036110,38618950,38954617,39655642]}
+       24576 KiB   149.68 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":393216,"ns":58856806,"samples":[56579377,58770234,58796532,58856806,59510745,59697989,60927234]}
+       32768 KiB   148.39 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":524288,"ns":77801132,"samples":[76468834,76618008,77177364,77801132,77972902,78010894,78448349]}
+       49152 KiB   147.21 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":786432,"ns":115771282,"samples":[115267856,115485694,115640145,115771282,118040582,120172950,120478329]}
+       65536 KiB   153.20 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":1048576,"ns":160642394,"samples":[146019953,147762602,159896575,160642394,162345845,168909740,172595617]}
+       98304 KiB   139.57 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":1572864,"ns":219526949,"samples":[209088112,214515560,219077128,219526949,227065781,230471941,231370996]}
+      131072 KiB   132.46 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":2097152,"ns":277790752,"samples":[274166381,275370875,275599962,277790752,284450845,287721377,323531251]}
+      196608 KiB   137.63 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":3145728,"ns":432941334,"samples":[426229310,426350849,428461361,432941334,444181678,462010164,482193447]}
+      262144 KiB   139.62 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":4194304,"ns":585598266,"samples":[572173481,572795223,579559735,585598266,592526461,599102097,621062903]}
+      393216 KiB   147.31 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":6291456,"ns":926800540,"samples":[907054233,912595306,920322450,926800540,931788982,942065444,964425279]}
+      524288 KiB   151.40 ns/load
+BENCH {"id":"ch02-sweep","label":"random chase","lang":"rust","n":8388608,"ns":1270020176,"samples":[1195151986,1225155424,1228223801,1270020176,1374073030,1582174767,1606092725]}
+    every trip visited every line once: yes
+(c) 16777216 u32 = 65536 KiB, checksum 36028801976631296 (all match)
+    sequential            0.47 ns/elem
+BENCH {"id":"ch02-access","label":"sequential","lang":"rust","n":16777216,"ns":7964547,"samples":[7832231,7886690,7939650,7964547,8034372,8065663,8306527]}
+    stride 64 B           6.55 ns/elem
+BENCH {"id":"ch02-access","label":"stride 64 B","lang":"rust","n":16777216,"ns":109888288,"samples":[95838573,106969843,108640748,109888288,117325330,124720917,127886914]}
+    stride 4 KiB         12.41 ns/elem
+BENCH {"id":"ch02-access","label":"stride 4 KiB","lang":"rust","n":16777216,"ns":208259318,"samples":[194242822,200160838,204202968,208259318,208784910,216132118,216793795]}
+    random               11.63 ns/elem
+BENCH {"id":"ch02-access","label":"random","lang":"rust","n":16777216,"ns":195081305,"samples":[174265171,180626185,191444161,195081305,205080101,219767040,225968563]}
+    random + prefetch    11.22 ns/elem
+BENCH {"id":"ch02-access","label":"random + prefetch","lang":"rust","n":16777216,"ns":188161340,"samples":[181826514,182988041,183869838,188161340,188479678,188913199,189757382]}
+(d) 1048576 lines = 65536 KiB, checksum 8796084633600 (all match)
+    1 chain    126.40 ns/load
+BENCH {"id":"ch02-mlp","label":"1 chain","lang":"rust","n":1048576,"ns":132543692,"samples":[130526947,131456770,131586205,132543692,137001667,140303060,143746327]}
+    2 chains    62.79 ns/load
+BENCH {"id":"ch02-mlp","label":"2 chains","lang":"rust","n":1048576,"ns":65843836,"samples":[65143655,65608913,65781460,65843836,66374619,67558668,68780112]}
+    4 chains    32.63 ns/load
+BENCH {"id":"ch02-mlp","label":"4 chains","lang":"rust","n":1048576,"ns":34211920,"samples":[33986555,34004110,34202216,34211920,34225217,34254181,34821921]}
+    8 chains    16.59 ns/load
+BENCH {"id":"ch02-mlp","label":"8 chains","lang":"rust","n":1048576,"ns":17399881,"samples":[16845412,16988891,17076738,17399881,17559081,17749105,17779680]}

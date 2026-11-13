@@ -1,0 +1,1650 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10. Project: Boids with a Spatial Hash · Data-Oriented Design</title>
+<link rel="stylesheet" href="assets/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="assets/book.css">
+<link rel="stylesheet" href="assets/ch10.css">
+<script>window.Prism = { manual: true };</script>
+<script defer src="assets/vendor/prism/prism.min.js"></script>
+<script defer src="assets/vendor/prism/prism-rust.min.js"></script>
+<script defer src="assets/vendor/prism/prism-zig.min.js"></script>
+<script defer src="assets/vendor/prism/prism-odin.min.js"></script>
+<script defer src="assets/vendor/prism/prism-bash.min.js"></script>
+<script defer src="assets/book.js"></script>
+<script defer src="assets/data/bench-ch10.js"></script>
+<script defer src="assets/viz/bench-line.js"></script>
+<script defer src="assets/viz/bench-bars.js"></script>
+<script defer src="assets/viz/ch10-boids.js"></script>
+<script defer src="assets/viz/ch10-spatial-grid.js"></script>
+</head>
+<body>
+<main>
+  <p class="kicker">Chapter 10</p>
+  <h1>Project: Boids with a Spatial Hash</h1>
+  <p class="lede">A million birds, each one looking only at the few birds within one wingspan. The obvious program
+  asks every bird about every other bird: a trillion distance checks per step, of which about fourteen million matter.
+  This chapter builds the flock in Rust, Zig and Odin, and makes it fast in the order the earlier chapters taught.
+  First the algorithm, then the layout, then the branches, then the lanes, then the cores. Each step is measured. One
+  step that looks like it should help turns out to be slower, and the chapter explains why.</p>
+
+  <h2 id="flock">A flock in three rules</h2>
+  <p>Craig Reynolds' 1987 boids paper gave each simulated bird (a "bird-oid", or boid) three local rules and no global
+  plan<a class="cite" href="#src-1">[1]</a>. <b>Cohesion</b>: steer toward the average position of your neighbours.
+  <b>Alignment</b>: steer toward their average velocity. <b>Separation</b>: steer away from neighbours that are too
+  close. Flocking emerges from these rules; nobody wrote it down. For this book the interesting part is the word
+  <em>neighbours</em>. Each rule is a sum over the boids within some radius, so every step asks, for every boid, "who
+  is near me?" That question is the whole cost of the simulation.</p>
+  <p>Our version is a 2D boids step with fixed constants, so all three languages compute exactly the same thing:</p>
+  <ul>
+    <li>The neighbour radius is 1.0, so a boid <code>j</code> is a neighbour of <code>i</code> when
+    <code>dx² + dy² &lt; 1</code>. A boid counts as its own neighbour, so the neighbour count is never zero and we never
+    divide by zero.</li>
+    <li>The separation radius is 0.25 (<code>d² &lt; 0.0625</code>).</li>
+    <li>Velocity change: cohesion 0.02 × mean offset, alignment 0.05 × (mean velocity − own velocity), separation
+    0.5 × the summed push-away. The speed is clamped to 2, the time step is 0.05, and boids bounce off the walls.</li>
+    <li>The world is a square of <code>side × side</code> unit cells with <code>side = round(√(N/4))</code>. Boids start
+    uniformly at random, so there are four boids per cell on average at every N. The density stays fixed while the
+    world grows, which is what makes the problem interesting: the useful work per boid stays constant, and only the
+    wasted work changes.</li>
+  </ul>
+  <p>The random numbers come from SplitMix64, written out by hand in Rust and Odin and taken from
+  <code>std.Random.SplitMix64</code> in Zig. Each <code>f32</code> is built from the top 24 bits of a draw, so every
+  starting value is exactly representable and the three programs start from bit-identical states. This matters later,
+  when we check that they also <em>finish</em> in bit-identical states.</p>
+
+  <h3 id="worked">The arithmetic of "near"</h3>
+  <p>With four boids per unit area and a radius of 1, the expected number of other boids inside the circle is
+  π × 1² × 4 ≈ 12.6. Add the boid itself and you get 13.6. The program measures 14,217,542 neighbour pairs for
+  1,048,576 boids, which is 13.56 per boid. That is the useful work. The naive search does N² = 1,099,511,627,776
+  distance tests to find those 14 million pairs, so it throws away 99.9987% of them. Matthias Müller makes the same
+  point for 100,000 particles: the naive test is 10¹⁰ pairs per step (cited)<a class="cite" href="#src-2">[2]</a>.</p>
+  <details class="predict"><summary>A uniform grid with cell size 1 tests each boid against the boids in its own cell and
+  the eight around it. With four boids per cell, how many distance checks per boid should that be, and what fraction of
+  them find a neighbour?</summary>
+  <p>Nine cells × 4 boids ≈ 36 checks per boid. The program counts 36.9 at N = 1M (edge cells have fewer neighbours,
+  and random clumps add a little). 13.56 of them are neighbours, so 37% of the checks are useful, against 0.0013% for
+  naive. A circle of radius 1 has area π; the 3 × 3 block has area 9; π / 9 ≈ 35%. The grid's waste is just the
+  corners of the square that the circle does not cover.</p></details>
+
+  <h2 id="grid">From O(n²) to a uniform grid</h2>
+  <p>The fix is old and simple: cut the world into square cells with the same side as the neighbour radius. Then every
+  neighbour of a boid lies in the boid's own cell or one of the eight cells around it, because a boid more than one
+  cell away is more than one radius away. The question "who is near me?" becomes "who is in these nine cells?" To
+  answer that cheaply we need, for each cell, the list of boids in it.</p>
+  <p>Play with it below. The grey boids are the ones the selected boid never has to look at. Switch to naive search
+  and watch the checks counter jump while the neighbour count stays the same.</p>
+
+  <figure class="figure wide" id="fig-boids">
+    <div class="figure-body" data-viz="ch10-boids" data-opts='{"boids":640}'>
+      <p>Static fallback: 640 boids on a 16 × 10 grid. Naive search runs 409,600 distance checks per step; the grid runs
+      about 20,000 (about 9 cells × 4 boids per boid); both find the same neighbours.</p></div>
+    <figcaption>A live flock using the chapter's step and constants. The blue square is the selected boid's 3 × 3 block,
+    and the dashed circle is its neighbour radius. The counters come from the grid the figure rebuilds every step: naive
+    checks are n², and grid checks are the sum of the 3 × 3 block sizes. Raise the boid count and the ratio grows
+    roughly with n, because the grid's work per boid stays fixed.</figcaption>
+  </figure>
+
+  <details class="predict"><summary>Set the slider to 2,000 boids. Before you look: about how much bigger is the naive
+  checks counter than the grid one?</summary>
+  <p>In a 16 × 10 world, 2,000 boids are 12.5 per cell, so the grid does about 9 × 12.5 ≈ 110 checks per boid
+  (somewhat fewer at the walls), and naive does 2,000. The ratio is roughly 20×. It is far below the 454× drop in
+  checks the benchmark sees at 16,384 boids, because this world is tiny: the 3 × 3 block covers 9 of 160 cells. The grid wins by the ratio of world
+  area to block area, which is why it gets better as the world grows.</p></details>
+
+  <p>The naive version is the baseline for correctness and nothing else. It loops over every pair, so it is also the
+  most obviously correct code in the file:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch10-boids-spatial-hash/rust/src/main.rs"><code class="language-rust">fn step_naive(w: World, cur: &amp;Boids, next: &amp;mut Boids) -&gt; u64 {
+    let n = cur.n;
+    let mut out = next.out();
+    let mut total = 0;
+    for i in 0..n {
+        let mut acc = Acc::default();
+        visit_span(&amp;mut acc, cur, 0..n, cur.x[i], cur.y[i]);
+        total += acc.n as u64;
+        out.set(i, acc.integrate(w, cur.x[i], cur.y[i], cur.vx[i], cur.vy[i]), cur.id[i]);
+    }
+    total
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch10-boids-spatial-hash/zig/main.zig"><code class="language-zig">fn stepNaive(w: World, cur: *const Boids, next: *Boids) u64 {
+    const n = cur.n;
+    const c = cur.c;
+    var total: u64 = 0;
+    for (0..n) |i| {
+        var acc: Acc = .{};
+        visitSpan(&amp;acc, c, 0, n, c.x[i], c.y[i]);
+        total += acc.n;
+        setOut(next.c, i, acc.integrate(w, c.x[i], c.y[i], c.vx[i], c.vy[i]), c.id[i]);
+    }
+    return total;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch10-boids-spatial-hash/odin/main.odin"><code class="language-odin">step_naive :: proc(w: World, cur, next: ^Boids) -&gt; (total: u64) {
+    n, c, out := cur.n, cur.c, next.c
+    for i in 0 ..&lt; n {
+        acc: Acc
+        visit_span(&amp;acc, c, 0, n, c.x[i], c.y[i])
+        total += u64(acc.n)
+        set_out(out, i, integrate(acc, w, c.x[i], c.y[i], c.vx[i], c.vy[i]), c.id[i])
+    }
+    return
+}</code></pre>
+  </div>
+  <p>Note the shape: it reads <code>cur</code> and writes <code>next</code>. Every variant in this chapter
+  double-buffers the boid state. If we updated boids in place, boid 7 would see boid 3's <em>new</em> position and
+  boid 2's <em>old</em> one, and the result would depend on the loop order. With two buffers, every boid reads the same
+  frozen snapshot, so the order of the outer loop no longer matters. That is what lets us sort it, split it across
+  threads, and still get the same answer. The driver swaps the roles of the buffers between frames (the benchmark
+  reruns one step from the same input, so it keeps them fixed).</p>
+
+  <h2 id="counting-sort">The grid as a counting sort</h2>
+  <p>"For each cell, a list of boids" tempts you toward <code>Vec&lt;Vec&lt;u32&gt;&gt;</code>, a
+  <code>HashMap&lt;Cell, Vec&lt;u32&gt;&gt;</code>, or a linked list per cell. All three put a small allocation or a
+  pointer chase behind every cell, and a million-boid world has 262,144 cells. The data-oriented version is three flat
+  arrays, rebuilt from scratch every step in O(n + cells) time with no allocation at all
+  <a class="cite" href="#src-2">[2]</a><a class="cite" href="#src-3">[3]</a><a class="cite" href="#src-8">[8]</a>:</p>
+  <ul>
+    <li><code>cell[i]</code>: the cell of boid <code>i</code>.</li>
+    <li><code>start[c]</code>: where cell <code>c</code>'s boids begin in <code>order</code>. It has
+    <code>cells + 1</code> entries, so cell <code>c</code> is always <code>start[c] .. start[c+1]</code>, the last cell
+    included.</li>
+    <li><code>order[p]</code>: boid indices, sorted by cell.</li>
+  </ul>
+  <p>Building them is a counting sort in three passes. <b>Count</b>: one pass over the boids increments
+  <code>start[cell]</code>. <b>Prefix sum</b>: one pass over the cells turns counts into running totals. <b>Scatter</b>:
+  one more pass over the boids, back to front, decrements <code>start[cell]</code> and writes the boid into that slot.
+  Going back to front has two benefits. Each <code>start[c]</code> ends exactly at the first slot of its cell, so no
+  second array or shifted copy is needed. And the sort is stable: boids keep their spawn order inside a cell, which
+  makes the result deterministic. Step through it on a small example:</p>
+
+  <figure class="figure wide" id="fig-grid">
+    <div class="figure-body" data-viz="ch10-spatial-grid" data-opts='{"boids":10}'>
+      <p>Static fallback: 10 boids in a 3 × 2 grid. Count fills start with per-cell counts, the prefix sum turns them into
+      running totals, and the scatter walks the boids back to front, decrementing start[c] and writing each boid into
+      order. At the end, start[c]..start[c+1] is cell c's slice of order.</p></div>
+    <figcaption>The counting sort with the same three arrays as the code. Use the phase buttons to jump. After the
+    prefix sum, <code>start[c]</code> points one past the end of cell <code>c</code>; the scatter walks it back to the
+    beginning. The brackets at the end show that each cell's boids are one contiguous slice.</figcaption>
+  </figure>
+
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch10-boids-spatial-hash/rust/src/main.rs"><code class="language-rust">/// `start[c]..start[c + 1]` is the slice of `order` holding the boids of cell c.
+struct Grid {
+    start: Vec&lt;u32&gt;, // cells + 1 entries
+    cell: Vec&lt;u32&gt;,  // cell of each boid
+    order: Vec&lt;u32&gt;, // boid indices sorted by cell
+}
+
+impl Grid {
+    fn new(cells: usize, n: usize) -&gt; Self {
+        Grid { start: vec![0; cells + 1], cell: vec![0; n], order: vec![0; n] }
+    }
+
+    /// Counting sort by cell key: count, prefix sum, scatter. O(n + cells), no allocation.
+    fn build(&amp;mut self, xs: &amp;[f32], ys: &amp;[f32], key: impl Fn(f32, f32) -&gt; u32) {
+        // 1. count: start[c] = boids in cell c
+        self.start.fill(0);
+        for ((c, &amp;x), &amp;y) in self.cell.iter_mut().zip(xs).zip(ys) {
+            *c = key(x, y);
+            self.start[*c as usize] += 1;
+        }
+        // 2. inclusive prefix sum: start[c] = boids in cells 0..=c
+        let mut sum = 0;
+        for s in &amp;mut self.start {
+            sum += *s;
+            *s = sum;
+        }
+        // 3. scatter back to front: each boid takes the last free slot of its cell, so start[c]
+        //    ends at the first slot of cell c and boids keep their spawn order inside a cell.
+        for (i, &amp;c) in self.cell.iter().enumerate().rev() {
+            let s = &amp;mut self.start[c as usize];
+            *s -= 1;
+            self.order[*s as usize] = i as u32;
+        }
+    }
+
+    /// Positions in `order` of cells first..=last (consecutive cell numbers).
+    fn span(&amp;self, first: u32, last: u32) -&gt; Range&lt;usize&gt; {
+        self.start[first as usize] as usize..self.start[last as usize + 1] as usize
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch10-boids-spatial-hash/zig/main.zig"><code class="language-zig">/// `start[c]..start[c + 1]` is the slice of `order` holding the boids of cell c.
+const Grid = struct {
+    start: []u32, // cells + 1 entries
+    cell: []u32, // cell of each boid
+    order: []u32, // boid indices sorted by cell
+
+    fn init(gpa: std.mem.Allocator, cells: usize, n: usize) !Grid {
+        return .{ .start = try gpa.alloc(u32, cells + 1), .cell = try gpa.alloc(u32, n), .order = try gpa.alloc(u32, n) };
+    }
+    fn deinit(g: *Grid, gpa: std.mem.Allocator) void {
+        gpa.free(g.start);
+        gpa.free(g.cell);
+        gpa.free(g.order);
+    }
+
+    /// Counting sort by cell key: count, prefix sum, scatter. O(n + cells), no allocation.
+    fn build(g: *Grid, w: World, xs: []const f32, ys: []const f32, comptime key: fn (World, f32, f32) u32) void {
+        // 1. count: start[c] = boids in cell c
+        @memset(g.start, 0);
+        for (g.cell, xs, ys) |*c, x, y| {
+            c.* = key(w, x, y);
+            g.start[c.*] += 1;
+        }
+        // 2. inclusive prefix sum: start[c] = boids in cells 0..=c
+        var sum: u32 = 0;
+        for (g.start) |*s| {
+            sum += s.*;
+            s.* = sum;
+        }
+        // 3. scatter back to front: each boid takes the last free slot of its cell, so start[c]
+        //    ends at the first slot of cell c and boids keep their spawn order inside a cell.
+        var i = g.cell.len;
+        while (i &gt; 0) {
+            i -= 1;
+            const c = g.cell[i];
+            g.start[c] -= 1;
+            g.order[g.start[c]] = @intCast(i);
+        }
+    }
+
+    /// Positions in `order` of cells first..=last (consecutive cell numbers).
+    fn span(g: *const Grid, first: u32, last: u32) [2]usize {
+        return .{ g.start[first], g.start[last + 1] };
+    }
+};</code></pre>
+<pre data-lang="Odin" data-file="code/ch10-boids-spatial-hash/odin/main.odin"><code class="language-odin">// Counting sort by cell key: count, prefix sum, scatter. O(n + cells), no allocation.
+grid_build :: proc(g: ^Grid, w: World, xs, ys: []f32, key: proc(w: World, x, y: f32) -&gt; u32) {
+    start, cell, order := g.start, g.cell, g.order // hoisted out of the struct
+    // 1. count: start[c] = boids in cell c
+    for &amp;s in start {
+        s = 0
+    }
+    #no_bounds_check for &amp;c, i in cell {
+        c = key(w, xs[i], ys[i])
+        start[c] += 1
+    }
+    // 2. inclusive prefix sum: start[c] = boids in cells 0..=c
+    sum: u32
+    for &amp;s in start {
+        sum += s
+        s = sum
+    }
+    // 3. scatter back to front: each boid takes the last free slot of its cell, so start[c]
+    //    ends at the first slot of cell c and boids keep their spawn order inside a cell.
+    #no_bounds_check #reverse for c, i in cell {
+        start[c] -= 1
+        order[start[c]] = u32(i)
+    }
+}
+
+// Positions in `order` of cells first..=last (consecutive cell numbers).
+span :: #force_inline proc(g: ^Grid, first, last: u32) -&gt; (int, int) {
+    return int(g.start[first]), int(g.start[last + 1])
+}</code></pre>
+  </div>
+  <p>The three versions differ in small, telling ways. Rust passes the cell function as a closure
+  (<code>impl Fn(f32, f32) -&gt; u32</code>), and the compiler inlines it into the counting loop. Zig takes it as a
+  <code>comptime</code> function parameter, which specialises <code>build</code> for each key in the same way. Odin
+  passes a plain procedure value; it is called through a pointer unless the optimiser can see through it. Each
+  language writes the back-to-front scatter its own way: Rust with <code>.iter().enumerate().rev()</code>, Zig with a
+  manual countdown, since its <code>for</code> has no reverse form, and Odin with the <code>#reverse for</code>
+  directive. Odin's version also copies <code>g.start</code>, <code>g.cell</code> and <code>g.order</code> into locals
+  first; reading slices through a struct pointer inside a hot loop forces a reload on every iteration (the pitfall from
+  <a href="04-aos-soa-hot-cold.html#odin-hoist-slices">Chapter 4</a>).</p>
+  <p>With the grid built, the query is three spans per boid. Because cells are numbered row by row, the three cells of
+  one row of the 3 × 3 block have consecutive numbers, so their boids form one contiguous run of <code>order</code>:
+  <code>start[row·side + x0] .. start[row·side + x1 + 1]</code>. Nine cells become three slices:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch10-boids-spatial-hash/rust/src/main.rs"><code class="language-rust">for row in y0..=y1 {
+    // three cells of one row are consecutive in `order`, but the boids they name are anywhere
+    for &amp;j in &amp;g.order[g.span(row * w.side + x0, row * w.side + x1)] {
+        let j = j as usize;
+        acc.visit(xi, yi, cur.x[j], cur.y[j], cur.vx[j], cur.vy[j]);
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch10-boids-spatial-hash/zig/main.zig"><code class="language-zig">for (b[2]..b[3] + 1) |row_| {
+    const row: u32 = @intCast(row_);
+    // three cells of one row are consecutive in `order`, but the boids they name are anywhere
+    const r = g.span(row * w.side + b[0], row * w.side + b[1]);
+    for (g.order[r[0]..r[1]]) |j| acc.visit(xi, yi, c.x[j], c.y[j], c.vx[j], c.vy[j]);
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch10-boids-spatial-hash/odin/main.odin"><code class="language-odin">for row in y0 ..= y1 {
+    // three cells of one row are consecutive in `order`, but the boids they name are anywhere
+    lo, hi := span(g, row * w.side + x0, row * w.side + x1)
+    #no_bounds_check for j in order[lo:hi] {
+        visit(&amp;acc, xi, yi, c.x[j], c.y[j], c.vx[j], c.vy[j])
+    }
+}</code></pre>
+  </div>
+
+  <h2 id="layout">SoA boids, and the cost of a gather</h2>
+  <p>The boid state is struct-of-arrays, exactly as in <a href="04-aos-soa-hot-cold.html">Chapter 4</a>: one column
+  each for <code>x</code>, <code>y</code>, <code>vx</code>, <code>vy</code> and <code>id</code>, 20 bytes per boid.
+  <code>id</code> is the spawn index. It is never read by the physics, but it survives reordering, and it is how the
+  correctness check lines up outputs that come out in different orders.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch10-boids-spatial-hash/rust/src/main.rs"><code class="language-rust">/// The boid state as hand-written SoA: one Vec per field. `id` is the spawn index, which survives
+/// reordering. Every column has LANES spare elements at the end so 8-wide loads never run off it.
+#[derive(Clone)]
+struct Boids {
+    n: usize,
+    x: Vec&lt;f32&gt;,
+    y: Vec&lt;f32&gt;,
+    vx: Vec&lt;f32&gt;,
+    vy: Vec&lt;f32&gt;,
+    id: Vec&lt;u32&gt;,
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch10-boids-spatial-hash/zig/main.zig"><code class="language-zig">/// One boid. std.MultiArrayList(Boid) stores each field as its own column in one allocation.
+/// `id` is the spawn index, which survives reordering.
+const Boid = struct { x: f32, y: f32, vx: f32, vy: f32, id: u32 };
+
+/// The column slices of a MultiArrayList, fetched once and passed by value (no reloads in hot loops).
+const Cols = struct {
+    x: []f32,
+    y: []f32,
+    vx: []f32,
+    vy: []f32,
+    id: []u32,
+
+    fn of(list: *const std.MultiArrayList(Boid)) Cols {
+        const s = list.slice();
+        return .{ .x = s.items(.x), .y = s.items(.y), .vx = s.items(.vx), .vy = s.items(.vy), .id = s.items(.id) };
+    }
+};</code></pre>
+<pre data-lang="Odin" data-file="code/ch10-boids-spatial-hash/odin/main.odin"><code class="language-odin">// One boid. #soa[]Boid stores each field as its own column; `id` is the spawn index,
+// which survives reordering.
+Boid :: struct {
+    x, y, vx, vy: f32,
+    id:           u32,
+}
+
+// The column slices of a #soa slice, taken once (Odin pitfall: hoist them out of hot loops).
+Cols :: struct {
+    x, y, vx, vy: []f32,
+    id:           []u32,
+}
+
+// n boids plus LANES zeroed spare elements at the end, so 8-wide loads never run off a column.
+Boids :: struct {
+    n:    int,
+    soa:  #soa[]Boid,
+    c:    Cols,
+}
+
+boids_make :: proc(n: int) -&gt; (b: Boids) {
+    b.n = n
+    b.soa = make(#soa[]Boid, n + LANES) // zeroed
+    m := n + LANES
+    b.c = Cols{b.soa.x[:m], b.soa.y[:m], b.soa.vx[:m], b.soa.vy[:m], b.soa.id[:m]}
+    return
+}</code></pre>
+  </div>
+  <p>Rust spells the columns out by hand. Zig declares a plain <code>Boid</code> struct and lets
+  <code>std.MultiArrayList(Boid)</code> build the columns in one allocation. Odin writes <code>#soa[]Boid</code> and
+  gets the same thing from the compiler. Zig and Odin both reach the columns through a small <code>Cols</code> struct of
+  plain slices, fetched once per call, so the hot loops never go back through the container. Every column also has
+  eight spare zeroed elements at the end, which the SIMD variant needs (more on that below).</p>
+  <p>Now look again at the grid query. <code>order</code> gives us boid <em>indices</em>, and the boids they name are
+  wherever they happened to spawn. Boid 17 and boid 900,341 may share a cell, so the inner loop reads
+  <code>x[17]</code>, then <code>x[900341]</code>: a gather across 4 MiB columns. The grid fixed the
+  <em>algorithm</em>, and left the <em>memory access</em> as random as a hash table's. At a thousand boids the columns
+  fit in L1 and nobody notices. At a million, each of the four columns the query reads is 4 MiB, 16 MiB in total. That
+  is far bigger than this machine's 1.25 MiB L2, and spread over more 4 KiB pages than the TLB can map
+  (<a href="02-the-machine.html#tlb">Chapter 2</a>).</p>
+
+  <h3 id="sorted">Sort the boids, not just the indices</h3>
+  <p>The fix costs one more pass. After building the grid, copy all five columns into cell order:
+  <code>s.x[k] = cur.x[order[k]]</code> and so on. Now cell <code>c</code>'s boids are not just listed together, they
+  <em>are</em> together: <code>s[start[c] .. start[c+1]]</code>. The three spans of the query are three contiguous runs
+  of the boid columns, read front to back, and the three rows above and below a boid are only <code>side × 4</code>
+  boids apart. That is the "spatially close is close in memory" property the Freiburg uniform-grid report describes
+  <a class="cite" href="#src-4">[4]</a>.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch10-boids-spatial-hash/rust/src/main.rs"><code class="language-rust">fn step_sorted(w: World, g: &amp;mut Grid, cur: &amp;Boids, s: &amp;mut Boids, next: &amp;mut Boids) -&gt; u64 {
+    let n = cur.n;
+    g.build(&amp;cur.x[..n], &amp;cur.y[..n], |x, y| w.row_major(x, y));
+    s.gather_from(cur, &amp;g.order); // now cell c is s[start[c]..start[c + 1]]
+    let mut out = next.out();
+    let mut total = 0;
+    for k in 0..n {
+        let (xi, yi) = (s.x[k], s.y[k]);
+        let (x0, x1, y0, y1) = w.block(xi, yi);
+        let mut acc = Acc::default();
+        for row in y0..=y1 {
+            visit_span(&amp;mut acc, s, g.span(row * w.side + x0, row * w.side + x1), xi, yi);
+        }
+        total += acc.n as u64;
+        out.set(k, acc.integrate(w, xi, yi, s.vx[k], s.vy[k]), s.id[k]);
+    }
+    total
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch10-boids-spatial-hash/zig/main.zig"><code class="language-zig">fn stepSorted(w: World, g: *Grid, cur: *const Boids, s: *Boids, next: *Boids) u64 {
+    const n = cur.n;
+    g.build(w, cur.c.x[0..n], cur.c.y[0..n], World.rowMajor);
+    s.gatherFrom(cur, g.order); // now cell c is s[start[c]..start[c + 1]]
+    const c = s.c;
+    var total: u64 = 0;
+    for (0..n) |k| {
+        const xi = c.x[k];
+        const yi = c.y[k];
+        const b = w.block(xi, yi);
+        var acc: Acc = .{};
+        for (b[2]..b[3] + 1) |row_| {
+            const row: u32 = @intCast(row_);
+            const r = g.span(row * w.side + b[0], row * w.side + b[1]);
+            visitSpan(&amp;acc, c, r[0], r[1], xi, yi);
+        }
+        total += acc.n;
+        setOut(next.c, k, acc.integrate(w, xi, yi, c.vx[k], c.vy[k]), c.id[k]);
+    }
+    return total;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch10-boids-spatial-hash/odin/main.odin"><code class="language-odin">step_sorted :: proc(w: World, g: ^Grid, cur, s, next: ^Boids) -&gt; (total: u64) {
+    n := cur.n
+    grid_build(g, w, cur.c.x[:n], cur.c.y[:n], row_major)
+    gather_from(s, cur, g.order) // now cell c is s[start[c]..start[c + 1]]
+    c, out := s.c, next.c
+    for k in 0 ..&lt; n {
+        xi, yi := c.x[k], c.y[k]
+        x0, x1, y0, y1 := block(w, xi, yi)
+        acc: Acc
+        for row in y0 ..= y1 {
+            lo, hi := span(g, row * w.side + x0, row * w.side + x1)
+            visit_span(&amp;acc, c, lo, hi, xi, yi)
+        }
+        total += u64(acc.n)
+        set_out(out, k, integrate(acc, w, xi, yi, c.vx[k], c.vy[k]), c.id[k])
+    }
+    return
+}</code></pre>
+  </div>
+  <p>The output stays in cell order too. Next frame, the boids arrive almost sorted, because boids move at most
+  0.1 units per step, so few of them change cells. The benchmark feeds the sorted variants exactly that: an input that
+  is already in the cell order of the previous frame, as a real simulation loop would. The plain grid variant gets the
+  spawn-order input, as it would if it never reordered. Re-sorting an almost-sorted array still costs the full three
+  passes plus the gather, and it is still cheap: those are a few linear passes over the boids, while the neighbour
+  pass that follows does about 37 distance checks per boid.</p>
+
+  <details class="predict"><summary>Sorting adds a full copy of the boid state every step. At 1,024 boids, where
+  everything fits in L1, will "sorted" be faster or slower than "grid"? At 1M boids?</summary>
+  <p>Faster at both sizes. At 1,024 boids sorted is only about
+  <span data-bench-ratio="ch10-boids" data-num="grid" data-den="sorted" data-lang="odin" data-n="1024">1.1×</span>–<span data-bench-ratio="ch10-boids" data-num="grid" data-den="sorted" data-lang="rust" data-n="1024">1.2×</span> faster (Odin–Rust), because even in L1 it
+  saves the indirect index load per neighbour, and by 4,096 boids, where the columns leave L1, the gap is already
+  <span data-bench-ratio="ch10-boids" data-num="grid" data-den="sorted" data-lang="zig" data-n="4096">1.2×</span>–<span data-bench-ratio="ch10-boids" data-num="grid" data-den="sorted" data-lang="odin" data-n="4096">1.6×</span> (Zig–Odin). At 1M boids, sorted is about
+  <span data-bench-ratio="ch10-boids" data-num="grid" data-den="sorted" data-lang="rust">6.8×</span> faster in Rust
+  (see the chart below): the same algorithm, the same number of distance checks, and one extra pass. The whole
+  difference is where the bytes are.</p></details>
+
+  <h2 id="branches">The branch that ate the speedup</h2>
+  <p>The first version of the inner loop looked like the rules read (the source keeps it as a comment):</p>
+<pre data-lang="Rust" data-file="code/ch10-boids-spatial-hash/rust/src/main.rs"><code class="language-rust">//     if d2 &lt; NEIGHBOR_R2 {
+//         self.n += 1;
+//         self.sx += dx;
+//         // ...
+//         if d2 &lt; SEPARATION_R2 { self.qx -= dx; self.qy -= dy; }
+//     }</code></pre>
+  <p>About 37% of the candidates are neighbours, and which ones they are depends on positions that look random to the
+  branch predictor. That is close to the worst case from <a href="07-branches-batches-existence.html#branches">Chapter 7</a>:
+  a branch that is taken a third of the time with no pattern. The final code computes both outcomes and selects
+  between them:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch10-boids-spatial-hash/rust/src/main.rs"><code class="language-rust">fn visit(&amp;mut self, xi: f32, yi: f32, xj: f32, yj: f32, vxj: f32, vyj: f32) {
+    let dx = xj - xi;
+    let dy = yj - yi;
+    let d2 = dx * dx + dy * dy;
+    // About a third of the candidates are neighbours, so a branch here mispredicts all the time
+    // (Chapter 7). The first version branched the way the rules read:
+    //     if d2 &lt; NEIGHBOR_R2 {
+    //         self.n += 1;
+    //         self.sx += dx;
+    //         // ...
+    //         if d2 &lt; SEPARATION_R2 { self.qx -= dx; self.qy -= dy; }
+    //     }
+    // select_unpredictable asks for a conditional move/blend instead; a plain
+    // `if near { dx } else { 0.0 }` was compiled back into a jump.
+    let near = d2 &lt; NEIGHBOR_R2;
+    let close = d2 &lt; SEPARATION_R2;
+    self.n += near as u32;
+    self.sx += select_unpredictable(near, dx, 0.0);
+    self.sy += select_unpredictable(near, dy, 0.0);
+    self.ax += select_unpredictable(near, vxj, 0.0);
+    self.ay += select_unpredictable(near, vyj, 0.0);
+    self.qx -= select_unpredictable(close, dx, 0.0);
+    self.qy -= select_unpredictable(close, dy, 0.0);
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch10-boids-spatial-hash/zig/main.zig"><code class="language-zig">/// `v` when `c` holds, else 0. The hint tells LLVM the condition is a coin flip,
+/// so it emits a conditional move/blend instead of a jump (Rust: select_unpredictable).
+inline fn pick(c: bool, v: f32) f32 {
+    if (c) {
+        @branchHint(.unpredictable);
+        return v;
+    }
+    return 0.0;
+}
+
+/// What one boid accumulates over its neighbours (itself included, so n &gt;= 1).
+const Acc = struct {
+    n: u32 = 0,
+    sx: f32 = 0, // sum of offsets to neighbours (cohesion)
+    sy: f32 = 0,
+    ax: f32 = 0, // sum of neighbour velocities (alignment)
+    ay: f32 = 0,
+    qx: f32 = 0, // push away from very close neighbours (separation)
+    qy: f32 = 0,
+
+    inline fn visit(self: *Acc, xi: f32, yi: f32, xj: f32, yj: f32, vxj: f32, vyj: f32) void {
+        const dx = xj - xi;
+        const dy = yj - yi;
+        const d2 = dx * dx + dy * dy;
+        const near = d2 &lt; NEIGHBOR_R2;
+        const close = d2 &lt; SEPARATION_R2;
+        self.n += @intFromBool(near);
+        self.sx += pick(near, dx);
+        self.sy += pick(near, dy);
+        self.ax += pick(near, vxj);
+        self.ay += pick(near, vyj);
+        self.qx -= pick(close, dx);
+        self.qy -= pick(close, dy);
+    }</code></pre>
+<pre data-lang="Odin" data-file="code/ch10-boids-spatial-hash/odin/main.odin"><code class="language-odin">// `v` when `c` holds, else 0, without a jump: AND the bits with an all-ones or all-zeros mask.
+// Odin has no select hint, and `c ? v : 0` may compile to a branch that mispredicts here.
+pick :: #force_inline proc "contextless" (c: bool, v: f32) -&gt; f32 {
+    return transmute(f32)(transmute(u32)v &amp; -u32(c))
+}
+
+// What one boid accumulates over its neighbours (itself included, so n &gt;= 1).
+Acc :: struct {
+    n:      u32,
+    sx, sy: f32, // sum of offsets to neighbours (cohesion)
+    ax, ay: f32, // sum of neighbour velocities (alignment)
+    qx, qy: f32, // push away from very close neighbours (separation)
+}
+
+visit :: #force_inline proc(a: ^Acc, xi, yi, xj, yj, vxj, vyj: f32) {
+    dx := xj - xi
+    dy := yj - yi
+    d2 := dx * dx + dy * dy
+    near := d2 &lt; NEIGHBOR_R2
+    close := d2 &lt; SEPARATION_R2
+    a.n += u32(near)
+    a.sx += pick(near, dx)
+    a.sy += pick(near, dy)
+    a.ax += pick(near, vxj)
+    a.ay += pick(near, vyj)
+    a.qx -= pick(close, dx)
+    a.qy -= pick(close, dy)
+}</code></pre>
+  </div>
+  <aside class="callout pitfall"><p>Writing it as a plain select is not enough. In Rust, <code>if near { dx } else
+  { 0.0 }</code> looks branch-free, but the disassembly of that build still had a <code>ucomiss</code> followed by a
+  conditional <code>ja</code> in the inner loop: LLVM turned the selects back into a jump around the adds. Switching to
+  <code>std::hint::select_unpredictable</code> (stable since Rust 1.88)<a class="cite" href="#src-7">[7]</a> removed the jump, and the scalar sorted step got noticeably faster in our run from that one hint. Zig has the same hint as
+  <code>@branchHint(.unpredictable)</code> inside the taken branch. Odin has no select hint, so its <code>pick</code>
+  ANDs the float's bits with a mask made from the bool (<code>-u32(c)</code> is all ones or zero), and there is nothing
+  left to turn back into a branch. Check your compiler's output before you trust either spelling, as Chapter 7
+  recommends.</p></aside>
+
+  <h2 id="simd">Eight lanes over a span</h2>
+  <p>After the sort, each of the three row spans is a contiguous run of about 12 boids in four columns. That is SIMD
+  food, with two complications. First, the spans are short and their lengths vary, so a scalar tail loop would run on
+  almost every span. Instead the SIMD loop always loads 8 lanes and masks off the lanes past the end of the span. Those
+  lanes read the next cell's boids, or the 8 zeroed padding elements at the end of the column, and the mask throws
+  their contribution away. That is why every column has <code>n + 8</code> elements. Second, a SIMD sum adds in a
+  different order than a scalar one. Each lane keeps its own partial sums for elements <code>l, l+8, l+16, …</code>,
+  and the eight lanes are added at the end, in lane order 0..7 in all three languages, so the languages agree with each
+  other bit for bit. They do not agree with the scalar variants, and the check below has to allow for that.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch10-boids-spatial-hash/rust/src/main.rs"><code class="language-rust">fn visit_span(&amp;mut self, b: &amp;Boids, r: Range&lt;usize&gt;, xi: f32, yi: f32) {
+    let mut j = r.start;
+    while j &lt; r.end {
+        let x = b.x[j..].first_chunk::&lt;LANES&gt;().unwrap();
+        let y = b.y[j..].first_chunk::&lt;LANES&gt;().unwrap();
+        let vx = b.vx[j..].first_chunk::&lt;LANES&gt;().unwrap();
+        let vy = b.vy[j..].first_chunk::&lt;LANES&gt;().unwrap();
+        for l in 0..LANES {
+            let dx = x[l] - xi;
+            let dy = y[l] - yi;
+            let d2 = dx * dx + dy * dy;
+            let live = (j + l &lt; r.end) &amp; (d2 &lt; NEIGHBOR_R2);
+            let close = live &amp; (d2 &lt; SEPARATION_R2);
+            self.n[l] += live as u32;
+            self.sx[l] += select_unpredictable(live, dx, 0.0);
+            self.sy[l] += select_unpredictable(live, dy, 0.0);
+            self.ax[l] += select_unpredictable(live, vx[l], 0.0);
+            self.ay[l] += select_unpredictable(live, vy[l], 0.0);
+            self.qx[l] -= select_unpredictable(close, dx, 0.0);
+            self.qy[l] -= select_unpredictable(close, dy, 0.0);
+        }
+        j += LANES;
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch10-boids-spatial-hash/zig/main.zig"><code class="language-zig">inline fn visitSpan(self: *Acc8, b: Cols, a: usize, e: usize, xi: f32, yi: f32) void {
+    const zero: V = @splat(0);
+    const none: @Vector(LANES, bool) = @splat(false);
+    var j = a;
+    while (j &lt; e) : (j += LANES) {
+        const x: V = b.x[j..][0..LANES].*;
+        const y: V = b.y[j..][0..LANES].*;
+        const vx: V = b.vx[j..][0..LANES].*;
+        const vy: V = b.vy[j..][0..LANES].*;
+        const dx = x - @as(V, @splat(xi));
+        const dy = y - @as(V, @splat(yi));
+        const d2 = dx * dx + dy * dy;
+        const in_span = lane_index &lt; @as(VU, @splat(@intCast(e - j)));
+        const live = @select(bool, in_span, d2 &lt; @as(V, @splat(NEIGHBOR_R2)), none);
+        const close = @select(bool, live, d2 &lt; @as(V, @splat(SEPARATION_R2)), none);
+        self.n += @select(u32, live, @as(VU, @splat(1)), @as(VU, @splat(0)));
+        self.sx += @select(f32, live, dx, zero);
+        self.sy += @select(f32, live, dy, zero);
+        self.ax += @select(f32, live, vx, zero);
+        self.ay += @select(f32, live, vy, zero);
+        self.qx -= @select(f32, close, dx, zero);
+        self.qy -= @select(f32, close, dy, zero);
+    }
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch10-boids-spatial-hash/odin/main.odin"><code class="language-odin">visit_span8 :: #force_inline proc "contextless" (a: ^Acc8, b: Cols, lo, hi: int, xi, yi: f32) {
+    zero: V
+    lane := simd.indices(U)
+    #no_bounds_check for j := lo; j &lt; hi; j += LANES {
+        // slice elements are only 4-byte aligned and #simd[8]f32 wants 32: unaligned loads
+        x := intrinsics.unaligned_load((^V)(&amp;b.x[j]))
+        y := intrinsics.unaligned_load((^V)(&amp;b.y[j]))
+        vx := intrinsics.unaligned_load((^V)(&amp;b.vx[j]))
+        vy := intrinsics.unaligned_load((^V)(&amp;b.vy[j]))
+        dx := x - V(xi)
+        dy := y - V(yi)
+        d2 := dx * dx + dy * dy
+        live := simd.lanes_lt(lane, U(u32(hi - j))) &amp; simd.lanes_lt(d2, V(NEIGHBOR_R2)) // all-ones or 0
+        close := live &amp; simd.lanes_lt(d2, V(SEPARATION_R2))
+        a.n += live &amp; U(1)
+        a.sx += simd.select(live, dx, zero)
+        a.sy += simd.select(live, dy, zero)
+        a.ax += simd.select(live, vx, zero)
+        a.ay += simd.select(live, vy, zero)
+        a.qx -= simd.select(close, dx, zero)
+        a.qy -= simd.select(close, dy, zero)
+    }
+}</code></pre>
+  </div>
+  <p>The three spellings show three attitudes. Rust 1.100 still has no stable portable SIMD type
+  (<code>std::simd</code> is nightly-only), so the Rust version writes the lanes as plain <code>[f32; 8]</code> arrays
+  and a fixed 8-iteration inner loop, then trusts LLVM's loop and SLP vectorizers to turn it into vector code.
+  <code>first_chunk::&lt;8&gt;()</code> gives a bounds-checked <code>&amp;[f32; 8]</code> once per block, so there are
+  no per-lane checks. Zig writes <code>@Vector(8, f32)</code> and <code>@select</code> directly. Odin writes
+  <code>#simd[8]f32</code>, loads with <code>intrinsics.unaligned_load</code> because a slice element is only 4-byte
+  aligned while <code>#simd[8]f32</code> wants 32, and builds the masks with <code>simd.lanes_lt</code>, which returns
+  all-ones or all-zeros lanes. <a href="08-simd-and-parallelism.html">Chapter 8</a> covers these tools in depth.</p>
+  <p>Zig 0.17.1 has its loop vectorizer switched off (<a href="04-aos-soa-hot-cold.html#zig-loop-vectorizer">Chapter 4</a> explains
+  why)<a class="cite" href="#src-6">[6]</a>, so the Rust-style fixed lane loop would stay scalar in Zig. That is why
+  <code>Acc8</code> writes <code>@Vector</code>, and why the Zig file is the only one whose SIMD code looks like SIMD.</p>
+  <aside class="callout note"><p>The three SIMD versions are not running the same instructions. <code>zig build-exe</code> and
+  <code>zig run</code> target the host CPU by default, so the Zig binary uses 256-bit <code>ymm</code> registers on this
+  AVX-512 machine. Cargo (x86-64) and Odin (x86-64-v2) target portable baselines without AVX by default. The Rust and Odin binaries contain
+  <code>cmpltps</code> on 128-bit <code>xmm</code> registers and no <code>ymm</code> at all, so each 8-lane step is two
+  4-wide halves. That, more than language, is why Zig's SIMD speedup over its own scalar loop is larger. Building Rust with
+  <code>-C target-cpu=native</code> or Odin with <code>-microarch:native</code> should narrow the gap. We did not
+  measure that, because the book's numbers use each toolchain's defaults.</p></aside>
+
+  <h2 id="threads">Two cores</h2>
+  <p>Double buffering pays off here. The neighbour pass reads <code>s</code> (the sorted snapshot) and the grid, and
+  writes only <code>next[k]</code> for its own <code>k</code>. Splitting <code>k</code> into two halves gives two
+  threads disjoint outputs and shared read-only inputs: no locks and no atomics. The build and gather stay serial; we
+  come back to that.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch10-boids-spatial-hash/rust/src/main.rs"><code class="language-rust">/// Build and gather stay serial; the neighbour pass is split into THREADS disjoint output ranges.
+fn step_threads(w: World, g: &amp;mut Grid, cur: &amp;Boids, s: &amp;mut Boids, next: &amp;mut Boids) -&gt; u64 {
+    let n = cur.n;
+    g.build(&amp;cur.x[..n], &amp;cur.y[..n], |x, y| w.row_major(x, y));
+    s.gather_from(cur, &amp;g.order);
+    let (g, s) = (&amp;*g, &amp;*s);
+    let chunk = n.div_ceil(THREADS);
+    thread::scope(|scope| {
+        let mut rest = next.out();
+        let mut handles = Vec::with_capacity(THREADS);
+        for t in 0..THREADS {
+            let k0 = t * chunk;
+            let (mine, tail) = rest.split_at(chunk.min(n - k0));
+            rest = tail;
+            handles.push(scope.spawn(move || simd_range(w, g, s, mine, k0)));
+        }
+        handles.into_iter().map(|h| h.join().unwrap()).sum()
+    })
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch10-boids-spatial-hash/zig/main.zig"><code class="language-zig">/// One thread's share of the output. Padded to a cache line so the two `total`s never share one.
+const Job = struct {
+    w: World,
+    g: *const Grid,
+    s: Cols,
+    out: Cols,
+    k0: usize,
+    k1: usize,
+    total: u64 align(std.atomic.cache_line) = 0,
+
+    fn run(j: *Job) void {
+        j.total = simdRange(j.w, j.g, j.s, j.out, j.k0, j.k1);
+    }
+};
+
+/// Build and gather stay serial; the neighbour pass is split into THREADS disjoint output ranges.
+fn stepThreads(w: World, g: *Grid, cur: *const Boids, s: *Boids, next: *Boids) u64 {
+    const n = cur.n;
+    g.build(w, cur.c.x[0..n], cur.c.y[0..n], World.rowMajor);
+    s.gatherFrom(cur, g.order);
+    const chunk = std.math.divCeil(usize, n, THREADS) catch unreachable;
+    var jobs: [THREADS]Job = undefined;
+    var threads: [THREADS]std.Thread = undefined;
+    for (&amp;jobs, &amp;threads, 0..) |*j, *t, i| {
+        j.* = .{ .w = w, .g = g, .s = s.c, .out = next.c, .k0 = @min(i * chunk, n), .k1 = @min((i + 1) * chunk, n) };
+        t.* = std.Thread.spawn(.{}, Job.run, .{j}) catch @panic("thread spawn failed");
+    }
+    var total: u64 = 0;
+    for (threads, &amp;jobs) |t, *j| {
+        t.join(); // read j.total only after the join
+        total += j.total;
+    }
+    return total;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch10-boids-spatial-hash/odin/main.odin"><code class="language-odin">// One thread's share of the output. Aligned to 128 B so the two `total`s never share a line pair.
+Job :: struct #align (128) {
+    w:      World,
+    g:      ^Grid,
+    s, out: Cols,
+    k0, k1: int,
+    total:  u64,
+}
+
+run_job :: proc(j: ^Job) {
+    j.total = simd_range(j.w, j.g, j.s, j.out, j.k0, j.k1)
+}
+
+// Build and gather stay serial; the neighbour pass is split into THREADS disjoint output ranges.
+step_threads :: proc(w: World, g: ^Grid, cur, s, next: ^Boids) -&gt; (total: u64) {
+    n := cur.n
+    grid_build(g, w, cur.c.x[:n], cur.c.y[:n], row_major)
+    gather_from(s, cur, g.order)
+    chunk := (n + THREADS - 1) / THREADS
+    jobs: [THREADS]Job
+    pool: [THREADS]^thread.Thread
+    for &amp;j, i in jobs {
+        j = Job{w = w, g = g, s = s.c, out = next.c, k0 = min(i * chunk, n), k1 = min((i + 1) * chunk, n)}
+        pool[i] = thread.create_and_start_with_poly_data(&amp;j, run_job)
+    }
+    thread.join_multiple(..pool[:])
+    for t, i in pool {
+        thread.destroy(t)
+        total += jobs[i].total // read only after the join
+    }
+    return
+}</code></pre>
+  </div>
+  <p>Rust's borrow checker turns "disjoint outputs" into a type-level fact. <code>Out::split_at</code> splits all five
+  output columns with <code>split_at_mut</code>, and <code>thread::scope</code> lets the threads borrow the grid and the
+  sorted boids without <code>Arc</code>. If the ranges overlapped, the program would not compile. Zig and Odin hand each
+  thread a <code>Job</code> by pointer, and the disjointness is the programmer's promise. Both align the
+  <code>Job</code> (Zig the <code>total</code> field to <code>std.atomic.cache_line</code>, which is 128 here; Odin the
+  struct to 128 B) so the two threads' result slots cannot share a cache line pair. That is the false-sharing rule
+  from Chapter 8. Zig uses <code>std.Thread.spawn</code> rather than <code>io.async</code>, because
+  <code>io.async</code> may run the function inline and would not guarantee two cores.</p>
+  <aside class="callout pitfall"><p>The first Zig version of this function printed a neighbour total of 0 for the
+  threaded variant, and the check caught it. The collect loop was <code>for (threads, jobs) |t, j|</code>, which copies
+  <code>jobs</code> by value when the loop starts, before any <code>join</code>, so it summed results the threads had not
+  written yet. Iterating <code>&amp;jobs</code> with <code>|t, *j|</code> reads each job after its thread is joined.
+  This is the kind of bug a strict result check exists for.</p></aside>
+  <p>Threads are spawned on every step. At 1,024 boids a whole step takes about
+  <span data-bench-val="ch10-boids" data-label="sorted simd" data-lang="rust" data-n="1024" data-metric="ms" data-digits="1">0.09 ms</span>
+  (Rust), and starting and joining two threads costs a sizeable fraction of that. In all three languages the threaded
+  variant is slower than the single-threaded one at that size:
+  <span data-bench-ratio="ch10-boids" data-num="simd 2 threads" data-den="sorted simd" data-lang="rust" data-n="1024">1.6×</span> slower in Rust,
+  <span data-bench-ratio="ch10-boids" data-num="simd 2 threads" data-den="sorted simd" data-lang="odin" data-n="1024">1.3×</span> in Odin and
+  <span data-bench-ratio="ch10-boids" data-num="simd 2 threads" data-den="sorted simd" data-lang="zig" data-n="1024">4.9×</span> in Zig. As N grows the second core pays off, and in Rust the gain rises to
+  about
+  <span data-bench-ratio="ch10-boids" data-num="sorted simd" data-den="simd 2 threads" data-lang="rust">1.8×</span>
+  from a quarter-million boids up, on two physical cores. It cannot reach 2×, because the build and gather still run on one core.</p>
+
+  <h2 id="morton">Morton order: a good idea that loses here</h2>
+  <p>Row-major cell numbers have a weakness: the row above a boid is <code>side</code> cells away in memory. Locality
+  is good along x and poor along y. The usual fix is a space-filling curve. Number the cells along a Z-order (Morton)
+  curve by interleaving the bits of <code>x</code> and <code>y</code><a class="cite" href="#src-5">[5]</a>, so every
+  aligned 2 × 2, 4 × 4, 8 × 8 square of cells is a contiguous range of numbers. Sort by that key and boids that are
+  close in <em>both</em> directions tend to be close in memory. The chapter's fourth variant does exactly this, reusing
+  the same counting sort with a different key function.</p>
+  <figure class="figure">
+    <div class="ch10-wide"><svg class="ch10-svg" viewBox="0 0 680 305" role="img" aria-labelledby="ch10-svg-t0">
+<title id="ch10-svg-t0">An 8 by 8 grid numbered two ways. Row-major numbering puts the three cells of each row of a 3 by 3 block next to each other, so the block is three runs of cell numbers. Morton (Z-order) numbering keeps 2 by 2 and 4 by 4 squares together, but the same block becomes nine scattered cell numbers.</title>
+<text class="ttl" x="0" y="14">row-major: c = y·side + x</text>
+<rect x="0" y="24" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="12.0" y="39.5" text-anchor="middle">0</text>
+<rect x="24" y="24" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="36.0" y="39.5" text-anchor="middle">1</text>
+<rect x="48" y="24" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="60.0" y="39.5" text-anchor="middle">2</text>
+<rect x="72" y="24" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="84.0" y="39.5" text-anchor="middle">3</text>
+<rect x="96" y="24" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="108.0" y="39.5" text-anchor="middle">4</text>
+<rect x="120" y="24" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="132.0" y="39.5" text-anchor="middle">5</text>
+<rect x="144" y="24" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="156.0" y="39.5" text-anchor="middle">6</text>
+<rect x="168" y="24" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="180.0" y="39.5" text-anchor="middle">7</text>
+<rect x="0" y="48" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="12.0" y="63.5" text-anchor="middle">8</text>
+<rect x="24" y="48" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="36.0" y="63.5" text-anchor="middle">9</text>
+<rect x="48" y="48" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="60.0" y="63.5" text-anchor="middle">10</text>
+<rect x="72" y="48" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="84.0" y="63.5" text-anchor="middle">11</text>
+<rect x="96" y="48" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="108.0" y="63.5" text-anchor="middle">12</text>
+<rect x="120" y="48" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="132.0" y="63.5" text-anchor="middle">13</text>
+<rect x="144" y="48" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="156.0" y="63.5" text-anchor="middle">14</text>
+<rect x="168" y="48" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="180.0" y="63.5" text-anchor="middle">15</text>
+<rect x="0" y="72" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="12.0" y="87.5" text-anchor="middle">16</text>
+<rect x="24" y="72" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="36.0" y="87.5" text-anchor="middle">17</text>
+<rect x="48" y="72" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="60.0" y="87.5" text-anchor="middle">18</text>
+<rect x="72" y="72" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="84.0" y="87.5" text-anchor="middle">19</text>
+<rect x="96" y="72" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="108.0" y="87.5" text-anchor="middle">20</text>
+<rect x="120" y="72" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="132.0" y="87.5" text-anchor="middle">21</text>
+<rect x="144" y="72" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="156.0" y="87.5" text-anchor="middle">22</text>
+<rect x="168" y="72" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="180.0" y="87.5" text-anchor="middle">23</text>
+<rect x="0" y="96" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="12.0" y="111.5" text-anchor="middle">24</text>
+<rect x="24" y="96" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="36.0" y="111.5" text-anchor="middle">25</text>
+<rect x="48" y="96" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="60.0" y="111.5" text-anchor="middle">26</text>
+<rect x="72" y="96" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="84.0" y="111.5" text-anchor="middle">27</text>
+<rect x="96" y="96" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="108.0" y="111.5" text-anchor="middle">28</text>
+<rect x="120" y="96" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="132.0" y="111.5" text-anchor="middle">29</text>
+<rect x="144" y="96" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="156.0" y="111.5" text-anchor="middle">30</text>
+<rect x="168" y="96" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="180.0" y="111.5" text-anchor="middle">31</text>
+<rect x="0" y="120" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="12.0" y="135.5" text-anchor="middle">32</text>
+<rect x="24" y="120" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="36.0" y="135.5" text-anchor="middle">33</text>
+<rect x="48" y="120" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="60.0" y="135.5" text-anchor="middle">34</text>
+<rect x="72" y="120" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="84.0" y="135.5" text-anchor="middle">35</text>
+<rect x="96" y="120" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="108.0" y="135.5" text-anchor="middle">36</text>
+<rect x="120" y="120" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="132.0" y="135.5" text-anchor="middle">37</text>
+<rect x="144" y="120" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="156.0" y="135.5" text-anchor="middle">38</text>
+<rect x="168" y="120" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="180.0" y="135.5" text-anchor="middle">39</text>
+<rect x="0" y="144" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="12.0" y="159.5" text-anchor="middle">40</text>
+<rect x="24" y="144" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="36.0" y="159.5" text-anchor="middle">41</text>
+<rect x="48" y="144" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="60.0" y="159.5" text-anchor="middle">42</text>
+<rect x="72" y="144" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="84.0" y="159.5" text-anchor="middle">43</text>
+<rect x="96" y="144" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="108.0" y="159.5" text-anchor="middle">44</text>
+<rect x="120" y="144" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="132.0" y="159.5" text-anchor="middle">45</text>
+<rect x="144" y="144" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="156.0" y="159.5" text-anchor="middle">46</text>
+<rect x="168" y="144" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="180.0" y="159.5" text-anchor="middle">47</text>
+<rect x="0" y="168" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="12.0" y="183.5" text-anchor="middle">48</text>
+<rect x="24" y="168" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="36.0" y="183.5" text-anchor="middle">49</text>
+<rect x="48" y="168" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="60.0" y="183.5" text-anchor="middle">50</text>
+<rect x="72" y="168" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="84.0" y="183.5" text-anchor="middle">51</text>
+<rect x="96" y="168" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="108.0" y="183.5" text-anchor="middle">52</text>
+<rect x="120" y="168" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="132.0" y="183.5" text-anchor="middle">53</text>
+<rect x="144" y="168" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="156.0" y="183.5" text-anchor="middle">54</text>
+<rect x="168" y="168" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="180.0" y="183.5" text-anchor="middle">55</text>
+<rect x="0" y="192" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="12.0" y="207.5" text-anchor="middle">56</text>
+<rect x="24" y="192" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="36.0" y="207.5" text-anchor="middle">57</text>
+<rect x="48" y="192" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="60.0" y="207.5" text-anchor="middle">58</text>
+<rect x="72" y="192" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="84.0" y="207.5" text-anchor="middle">59</text>
+<rect x="96" y="192" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="108.0" y="207.5" text-anchor="middle">60</text>
+<rect x="120" y="192" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="132.0" y="207.5" text-anchor="middle">61</text>
+<rect x="144" y="192" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="156.0" y="207.5" text-anchor="middle">62</text>
+<rect x="168" y="192" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="180.0" y="207.5" text-anchor="middle">63</text>
+<text class="dim" x="0" y="238">3 spans of cells:</text>
+<text x="0" y="254">10–12, 18–20, 26–28</text>
+<text class="ttl" x="232" y="14">Morton: bits of x and y interleaved</text>
+<rect x="232" y="24" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="244.0" y="39.5" text-anchor="middle">0</text>
+<rect x="256" y="24" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="268.0" y="39.5" text-anchor="middle">1</text>
+<rect x="280" y="24" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="292.0" y="39.5" text-anchor="middle">4</text>
+<rect x="304" y="24" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="316.0" y="39.5" text-anchor="middle">5</text>
+<rect x="328" y="24" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="340.0" y="39.5" text-anchor="middle">16</text>
+<rect x="352" y="24" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="364.0" y="39.5" text-anchor="middle">17</text>
+<rect x="376" y="24" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="388.0" y="39.5" text-anchor="middle">20</text>
+<rect x="400" y="24" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="412.0" y="39.5" text-anchor="middle">21</text>
+<rect x="232" y="48" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="244.0" y="63.5" text-anchor="middle">2</text>
+<rect x="256" y="48" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="268.0" y="63.5" text-anchor="middle">3</text>
+<rect x="280" y="48" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="292.0" y="63.5" text-anchor="middle">6</text>
+<rect x="304" y="48" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="316.0" y="63.5" text-anchor="middle">7</text>
+<rect x="328" y="48" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="340.0" y="63.5" text-anchor="middle">18</text>
+<rect x="352" y="48" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="364.0" y="63.5" text-anchor="middle">19</text>
+<rect x="376" y="48" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="388.0" y="63.5" text-anchor="middle">22</text>
+<rect x="400" y="48" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="412.0" y="63.5" text-anchor="middle">23</text>
+<rect x="232" y="72" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="244.0" y="87.5" text-anchor="middle">8</text>
+<rect x="256" y="72" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="268.0" y="87.5" text-anchor="middle">9</text>
+<rect x="280" y="72" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="292.0" y="87.5" text-anchor="middle">12</text>
+<rect x="304" y="72" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="316.0" y="87.5" text-anchor="middle">13</text>
+<rect x="328" y="72" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="340.0" y="87.5" text-anchor="middle">24</text>
+<rect x="352" y="72" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="364.0" y="87.5" text-anchor="middle">25</text>
+<rect x="376" y="72" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="388.0" y="87.5" text-anchor="middle">28</text>
+<rect x="400" y="72" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="412.0" y="87.5" text-anchor="middle">29</text>
+<rect x="232" y="96" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="244.0" y="111.5" text-anchor="middle">10</text>
+<rect x="256" y="96" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="268.0" y="111.5" text-anchor="middle">11</text>
+<rect x="280" y="96" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="292.0" y="111.5" text-anchor="middle">14</text>
+<rect x="304" y="96" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="316.0" y="111.5" text-anchor="middle">15</text>
+<rect x="328" y="96" width="23" height="23" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="340.0" y="111.5" text-anchor="middle">26</text>
+<rect x="352" y="96" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="364.0" y="111.5" text-anchor="middle">27</text>
+<rect x="376" y="96" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="388.0" y="111.5" text-anchor="middle">30</text>
+<rect x="400" y="96" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="412.0" y="111.5" text-anchor="middle">31</text>
+<rect x="232" y="120" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="244.0" y="135.5" text-anchor="middle">32</text>
+<rect x="256" y="120" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="268.0" y="135.5" text-anchor="middle">33</text>
+<rect x="280" y="120" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="292.0" y="135.5" text-anchor="middle">36</text>
+<rect x="304" y="120" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="316.0" y="135.5" text-anchor="middle">37</text>
+<rect x="328" y="120" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="340.0" y="135.5" text-anchor="middle">48</text>
+<rect x="352" y="120" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="364.0" y="135.5" text-anchor="middle">49</text>
+<rect x="376" y="120" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="388.0" y="135.5" text-anchor="middle">52</text>
+<rect x="400" y="120" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="412.0" y="135.5" text-anchor="middle">53</text>
+<rect x="232" y="144" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="244.0" y="159.5" text-anchor="middle">34</text>
+<rect x="256" y="144" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="268.0" y="159.5" text-anchor="middle">35</text>
+<rect x="280" y="144" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="292.0" y="159.5" text-anchor="middle">38</text>
+<rect x="304" y="144" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="316.0" y="159.5" text-anchor="middle">39</text>
+<rect x="328" y="144" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="340.0" y="159.5" text-anchor="middle">50</text>
+<rect x="352" y="144" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="364.0" y="159.5" text-anchor="middle">51</text>
+<rect x="376" y="144" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="388.0" y="159.5" text-anchor="middle">54</text>
+<rect x="400" y="144" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="412.0" y="159.5" text-anchor="middle">55</text>
+<rect x="232" y="168" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="244.0" y="183.5" text-anchor="middle">40</text>
+<rect x="256" y="168" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="268.0" y="183.5" text-anchor="middle">41</text>
+<rect x="280" y="168" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="292.0" y="183.5" text-anchor="middle">44</text>
+<rect x="304" y="168" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="316.0" y="183.5" text-anchor="middle">45</text>
+<rect x="328" y="168" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="340.0" y="183.5" text-anchor="middle">56</text>
+<rect x="352" y="168" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="364.0" y="183.5" text-anchor="middle">57</text>
+<rect x="376" y="168" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="388.0" y="183.5" text-anchor="middle">60</text>
+<rect x="400" y="168" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="412.0" y="183.5" text-anchor="middle">61</text>
+<rect x="232" y="192" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="244.0" y="207.5" text-anchor="middle">42</text>
+<rect x="256" y="192" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="268.0" y="207.5" text-anchor="middle">43</text>
+<rect x="280" y="192" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="292.0" y="207.5" text-anchor="middle">46</text>
+<rect x="304" y="192" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="316.0" y="207.5" text-anchor="middle">47</text>
+<rect x="328" y="192" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="340.0" y="207.5" text-anchor="middle">58</text>
+<rect x="352" y="192" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="364.0" y="207.5" text-anchor="middle">59</text>
+<rect x="376" y="192" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="388.0" y="207.5" text-anchor="middle">62</text>
+<rect x="400" y="192" width="23" height="23" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="412.0" y="207.5" text-anchor="middle">63</text>
+<text class="dim" x="232" y="238">5 spans of cells:</text>
+<text x="232" y="254">6–7, 12–15, 18</text>
+<text x="232" y="269">24, 26</text>
+</svg></div><div class="ch10-narrow"><svg class="ch10-svg" viewBox="0 0 340 249" role="img" aria-labelledby="ch10-svg-t1">
+<title id="ch10-svg-t1">An 8 by 8 grid numbered two ways. Row-major numbering puts the three cells of each row of a 3 by 3 block next to each other, so the block is three runs of cell numbers. Morton (Z-order) numbering keeps 2 by 2 and 4 by 4 squares together, but the same block becomes nine scattered cell numbers.</title>
+<text class="ttl" x="0" y="14">row-major</text>
+<rect x="0" y="24" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="8.5" y="36.0" text-anchor="middle">0</text>
+<rect x="17" y="24" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="25.5" y="36.0" text-anchor="middle">1</text>
+<rect x="34" y="24" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="42.5" y="36.0" text-anchor="middle">2</text>
+<rect x="51" y="24" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="59.5" y="36.0" text-anchor="middle">3</text>
+<rect x="68" y="24" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="76.5" y="36.0" text-anchor="middle">4</text>
+<rect x="85" y="24" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="93.5" y="36.0" text-anchor="middle">5</text>
+<rect x="102" y="24" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="110.5" y="36.0" text-anchor="middle">6</text>
+<rect x="119" y="24" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="127.5" y="36.0" text-anchor="middle">7</text>
+<rect x="0" y="41" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="8.5" y="53.0" text-anchor="middle">8</text>
+<rect x="17" y="41" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="25.5" y="53.0" text-anchor="middle">9</text>
+<rect x="34" y="41" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="42.5" y="53.0" text-anchor="middle">10</text>
+<rect x="51" y="41" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="59.5" y="53.0" text-anchor="middle">11</text>
+<rect x="68" y="41" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="76.5" y="53.0" text-anchor="middle">12</text>
+<rect x="85" y="41" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="93.5" y="53.0" text-anchor="middle">13</text>
+<rect x="102" y="41" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="110.5" y="53.0" text-anchor="middle">14</text>
+<rect x="119" y="41" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="127.5" y="53.0" text-anchor="middle">15</text>
+<rect x="0" y="58" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="8.5" y="70.0" text-anchor="middle">16</text>
+<rect x="17" y="58" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="25.5" y="70.0" text-anchor="middle">17</text>
+<rect x="34" y="58" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="42.5" y="70.0" text-anchor="middle">18</text>
+<rect x="51" y="58" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="59.5" y="70.0" text-anchor="middle">19</text>
+<rect x="68" y="58" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="76.5" y="70.0" text-anchor="middle">20</text>
+<rect x="85" y="58" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="93.5" y="70.0" text-anchor="middle">21</text>
+<rect x="102" y="58" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="110.5" y="70.0" text-anchor="middle">22</text>
+<rect x="119" y="58" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="127.5" y="70.0" text-anchor="middle">23</text>
+<rect x="0" y="75" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="8.5" y="87.0" text-anchor="middle">24</text>
+<rect x="17" y="75" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="25.5" y="87.0" text-anchor="middle">25</text>
+<rect x="34" y="75" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="42.5" y="87.0" text-anchor="middle">26</text>
+<rect x="51" y="75" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="59.5" y="87.0" text-anchor="middle">27</text>
+<rect x="68" y="75" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="76.5" y="87.0" text-anchor="middle">28</text>
+<rect x="85" y="75" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="93.5" y="87.0" text-anchor="middle">29</text>
+<rect x="102" y="75" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="110.5" y="87.0" text-anchor="middle">30</text>
+<rect x="119" y="75" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="127.5" y="87.0" text-anchor="middle">31</text>
+<rect x="0" y="92" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="8.5" y="104.0" text-anchor="middle">32</text>
+<rect x="17" y="92" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="25.5" y="104.0" text-anchor="middle">33</text>
+<rect x="34" y="92" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="42.5" y="104.0" text-anchor="middle">34</text>
+<rect x="51" y="92" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="59.5" y="104.0" text-anchor="middle">35</text>
+<rect x="68" y="92" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="76.5" y="104.0" text-anchor="middle">36</text>
+<rect x="85" y="92" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="93.5" y="104.0" text-anchor="middle">37</text>
+<rect x="102" y="92" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="110.5" y="104.0" text-anchor="middle">38</text>
+<rect x="119" y="92" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="127.5" y="104.0" text-anchor="middle">39</text>
+<rect x="0" y="109" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="8.5" y="121.0" text-anchor="middle">40</text>
+<rect x="17" y="109" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="25.5" y="121.0" text-anchor="middle">41</text>
+<rect x="34" y="109" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="42.5" y="121.0" text-anchor="middle">42</text>
+<rect x="51" y="109" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="59.5" y="121.0" text-anchor="middle">43</text>
+<rect x="68" y="109" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="76.5" y="121.0" text-anchor="middle">44</text>
+<rect x="85" y="109" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="93.5" y="121.0" text-anchor="middle">45</text>
+<rect x="102" y="109" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="110.5" y="121.0" text-anchor="middle">46</text>
+<rect x="119" y="109" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="127.5" y="121.0" text-anchor="middle">47</text>
+<rect x="0" y="126" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="8.5" y="138.0" text-anchor="middle">48</text>
+<rect x="17" y="126" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="25.5" y="138.0" text-anchor="middle">49</text>
+<rect x="34" y="126" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="42.5" y="138.0" text-anchor="middle">50</text>
+<rect x="51" y="126" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="59.5" y="138.0" text-anchor="middle">51</text>
+<rect x="68" y="126" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="76.5" y="138.0" text-anchor="middle">52</text>
+<rect x="85" y="126" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="93.5" y="138.0" text-anchor="middle">53</text>
+<rect x="102" y="126" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="110.5" y="138.0" text-anchor="middle">54</text>
+<rect x="119" y="126" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="127.5" y="138.0" text-anchor="middle">55</text>
+<rect x="0" y="143" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="8.5" y="155.0" text-anchor="middle">56</text>
+<rect x="17" y="143" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="25.5" y="155.0" text-anchor="middle">57</text>
+<rect x="34" y="143" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="42.5" y="155.0" text-anchor="middle">58</text>
+<rect x="51" y="143" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="59.5" y="155.0" text-anchor="middle">59</text>
+<rect x="68" y="143" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="76.5" y="155.0" text-anchor="middle">60</text>
+<rect x="85" y="143" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="93.5" y="155.0" text-anchor="middle">61</text>
+<rect x="102" y="143" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="110.5" y="155.0" text-anchor="middle">62</text>
+<rect x="119" y="143" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="127.5" y="155.0" text-anchor="middle">63</text>
+<text class="dim" x="0" y="182">3 spans of cells:</text>
+<text x="0" y="198">10–12, 18–20, 26–28</text>
+<text class="ttl" x="154" y="14">Morton</text>
+<rect x="154" y="24" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="162.5" y="36.0" text-anchor="middle">0</text>
+<rect x="171" y="24" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="179.5" y="36.0" text-anchor="middle">1</text>
+<rect x="188" y="24" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="196.5" y="36.0" text-anchor="middle">4</text>
+<rect x="205" y="24" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="213.5" y="36.0" text-anchor="middle">5</text>
+<rect x="222" y="24" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="230.5" y="36.0" text-anchor="middle">16</text>
+<rect x="239" y="24" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="247.5" y="36.0" text-anchor="middle">17</text>
+<rect x="256" y="24" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="264.5" y="36.0" text-anchor="middle">20</text>
+<rect x="273" y="24" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="281.5" y="36.0" text-anchor="middle">21</text>
+<rect x="154" y="41" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="162.5" y="53.0" text-anchor="middle">2</text>
+<rect x="171" y="41" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="179.5" y="53.0" text-anchor="middle">3</text>
+<rect x="188" y="41" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="196.5" y="53.0" text-anchor="middle">6</text>
+<rect x="205" y="41" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="213.5" y="53.0" text-anchor="middle">7</text>
+<rect x="222" y="41" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="230.5" y="53.0" text-anchor="middle">18</text>
+<rect x="239" y="41" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="247.5" y="53.0" text-anchor="middle">19</text>
+<rect x="256" y="41" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="264.5" y="53.0" text-anchor="middle">22</text>
+<rect x="273" y="41" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="281.5" y="53.0" text-anchor="middle">23</text>
+<rect x="154" y="58" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="162.5" y="70.0" text-anchor="middle">8</text>
+<rect x="171" y="58" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="179.5" y="70.0" text-anchor="middle">9</text>
+<rect x="188" y="58" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="196.5" y="70.0" text-anchor="middle">12</text>
+<rect x="205" y="58" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="213.5" y="70.0" text-anchor="middle">13</text>
+<rect x="222" y="58" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="230.5" y="70.0" text-anchor="middle">24</text>
+<rect x="239" y="58" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="247.5" y="70.0" text-anchor="middle">25</text>
+<rect x="256" y="58" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="264.5" y="70.0" text-anchor="middle">28</text>
+<rect x="273" y="58" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="281.5" y="70.0" text-anchor="middle">29</text>
+<rect x="154" y="75" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="162.5" y="87.0" text-anchor="middle">10</text>
+<rect x="171" y="75" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="179.5" y="87.0" text-anchor="middle">11</text>
+<rect x="188" y="75" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="196.5" y="87.0" text-anchor="middle">14</text>
+<rect x="205" y="75" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="213.5" y="87.0" text-anchor="middle">15</text>
+<rect x="222" y="75" width="16" height="16" style="fill:var(--c-vel);opacity:.85;stroke:var(--border)"/>
+<text class="num on" x="230.5" y="87.0" text-anchor="middle">26</text>
+<rect x="239" y="75" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="247.5" y="87.0" text-anchor="middle">27</text>
+<rect x="256" y="75" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="264.5" y="87.0" text-anchor="middle">30</text>
+<rect x="273" y="75" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="281.5" y="87.0" text-anchor="middle">31</text>
+<rect x="154" y="92" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="162.5" y="104.0" text-anchor="middle">32</text>
+<rect x="171" y="92" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="179.5" y="104.0" text-anchor="middle">33</text>
+<rect x="188" y="92" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="196.5" y="104.0" text-anchor="middle">36</text>
+<rect x="205" y="92" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="213.5" y="104.0" text-anchor="middle">37</text>
+<rect x="222" y="92" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="230.5" y="104.0" text-anchor="middle">48</text>
+<rect x="239" y="92" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="247.5" y="104.0" text-anchor="middle">49</text>
+<rect x="256" y="92" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="264.5" y="104.0" text-anchor="middle">52</text>
+<rect x="273" y="92" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="281.5" y="104.0" text-anchor="middle">53</text>
+<rect x="154" y="109" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="162.5" y="121.0" text-anchor="middle">34</text>
+<rect x="171" y="109" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="179.5" y="121.0" text-anchor="middle">35</text>
+<rect x="188" y="109" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="196.5" y="121.0" text-anchor="middle">38</text>
+<rect x="205" y="109" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="213.5" y="121.0" text-anchor="middle">39</text>
+<rect x="222" y="109" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="230.5" y="121.0" text-anchor="middle">50</text>
+<rect x="239" y="109" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="247.5" y="121.0" text-anchor="middle">51</text>
+<rect x="256" y="109" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="264.5" y="121.0" text-anchor="middle">54</text>
+<rect x="273" y="109" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="281.5" y="121.0" text-anchor="middle">55</text>
+<rect x="154" y="126" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="162.5" y="138.0" text-anchor="middle">40</text>
+<rect x="171" y="126" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="179.5" y="138.0" text-anchor="middle">41</text>
+<rect x="188" y="126" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="196.5" y="138.0" text-anchor="middle">44</text>
+<rect x="205" y="126" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="213.5" y="138.0" text-anchor="middle">45</text>
+<rect x="222" y="126" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="230.5" y="138.0" text-anchor="middle">56</text>
+<rect x="239" y="126" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="247.5" y="138.0" text-anchor="middle">57</text>
+<rect x="256" y="126" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="264.5" y="138.0" text-anchor="middle">60</text>
+<rect x="273" y="126" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="281.5" y="138.0" text-anchor="middle">61</text>
+<rect x="154" y="143" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="162.5" y="155.0" text-anchor="middle">42</text>
+<rect x="171" y="143" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="179.5" y="155.0" text-anchor="middle">43</text>
+<rect x="188" y="143" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="196.5" y="155.0" text-anchor="middle">46</text>
+<rect x="205" y="143" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="213.5" y="155.0" text-anchor="middle">47</text>
+<rect x="222" y="143" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="230.5" y="155.0" text-anchor="middle">58</text>
+<rect x="239" y="143" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="247.5" y="155.0" text-anchor="middle">59</text>
+<rect x="256" y="143" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="264.5" y="155.0" text-anchor="middle">62</text>
+<rect x="273" y="143" width="16" height="16" style="fill:var(--bg-elev2);opacity:1;stroke:var(--border)"/>
+<text class="num" x="281.5" y="155.0" text-anchor="middle">63</text>
+<text class="dim" x="154" y="182">5 spans of cells:</text>
+<text x="154" y="198">6–7, 12–15, 18</text>
+<text x="154" y="213">24, 26</text>
+</svg></div>
+    <figcaption>The same 3 × 3 block (highlighted) under two numberings of an 8 × 8 grid. Row-major turns it into three runs of
+    consecutive cells, one per row. Morton keeps aligned squares together but breaks this block into five short runs, and in general the
+    code cannot know which cells are adjacent in number, so the Morton query loops over nine single-cell spans.</figcaption>
+  </figure>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch10-boids-spatial-hash/rust/src/main.rs"><code class="language-rust">/// Interleaves the bits of x and y (x in the even bits): the Z-order curve.
+fn morton(cx: u32, cy: u32) -&gt; u32 {
+    fn spread(v: u32) -&gt; u32 {
+        let mut v = v &amp; 0xFFFF;
+        v = (v | (v &lt;&lt; 8)) &amp; 0x00FF_00FF;
+        v = (v | (v &lt;&lt; 4)) &amp; 0x0F0F_0F0F;
+        v = (v | (v &lt;&lt; 2)) &amp; 0x3333_3333;
+        (v | (v &lt;&lt; 1)) &amp; 0x5555_5555
+    }
+    spread(cx) | (spread(cy) &lt;&lt; 1)
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch10-boids-spatial-hash/zig/main.zig"><code class="language-zig">/// Interleaves the bits of x and y (x in the even bits): the Z-order curve.
+fn morton(cx: u32, cy: u32) u32 {
+    const spread = struct {
+        fn f(v0: u32) u32 {
+            var v = v0 &amp; 0xFFFF;
+            v = (v | (v &lt;&lt; 8)) &amp; 0x00FF_00FF;
+            v = (v | (v &lt;&lt; 4)) &amp; 0x0F0F_0F0F;
+            v = (v | (v &lt;&lt; 2)) &amp; 0x3333_3333;
+            return (v | (v &lt;&lt; 1)) &amp; 0x5555_5555;
+        }
+    }.f;
+    return spread(cx) | (spread(cy) &lt;&lt; 1);
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch10-boids-spatial-hash/odin/main.odin"><code class="language-odin">// Interleaves the bits of x and y (x in the even bits): the Z-order curve.
+morton :: #force_inline proc(cx, cy: u32) -&gt; u32 {
+    spread :: #force_inline proc(v0: u32) -&gt; u32 {
+        v := v0 &amp; 0xFFFF
+        v = (v | (v &lt;&lt; 8)) &amp; 0x00FF_00FF
+        v = (v | (v &lt;&lt; 4)) &amp; 0x0F0F_0F0F
+        v = (v | (v &lt;&lt; 2)) &amp; 0x3333_3333
+        return (v | (v &lt;&lt; 1)) &amp; 0x5555_5555
+    }
+    return spread(cx) | (spread(cy) &lt;&lt; 1)
+}</code></pre>
+  </div>
+  <p>On this machine Morton order is consistently <em>slower</em> than row-major, at every size and in every language:
+  at a million boids by <span data-bench-ratio="ch10-boids" data-num="morton" data-den="sorted" data-lang="rust">1.3×</span> in Rust, <span data-bench-ratio="ch10-boids" data-num="morton" data-den="sorted" data-lang="odin">1.3×</span> in Odin
+  and <span data-bench-ratio="ch10-boids" data-num="morton" data-den="sorted" data-lang="zig">1.4×</span> in Zig, and by 1.3–1.5× across all the sizes we ran. The reason is in the figure. The win that Morton order offers is cache locality across rows.
+  But with row-major sorting, the three rows a boid reads are only <code>side × 4 × 20</code> bytes apart, about 40 KiB
+  at N = 1M. Worse, the next boid reads almost the same rows, so the working set of the sweep is a band of three rows
+  of boids, roughly 120 KiB, that slides along as the sweep proceeds. That fits comfortably in L2, and the hardware
+  prefetchers see three sequential streams. Row-major sorting already has the locality; Morton cannot add more. What
+  Morton does add is cost: nine short spans of about four boids instead of three of about twelve, nine Morton
+  encodings per boid, and nine loop setups with their own branch exits. The extra work is real and the locality gain
+  is zero.</p>
+  <p>Morton order earns its keep when the band of rows does <em>not</em> fit in cache: a much wider world, 3D (where a
+  3 × 3 × 3 query touches nine rows spread over three planes), or bigger records. It is also cheap to try, since it is
+  only a different key for the same sort. But this is a good place to repeat the book's rule: measure, because the
+  textbook improvement does not always apply to your data.</p>
+
+  <h2 id="check">Checking that six programs agree</h2>
+  <p>The variants must compute the same step, but "the same" needs a careful definition for floats. Floating-point
+  addition is not associative, and each variant adds the neighbour terms in a different order. Naive adds them in
+  spawn order. Grid and sorted add them cell by cell. The SIMD variants add eight interleaved partial sums. So the check
+  has three layers:</p>
+  <ol>
+    <li><b>Neighbour counts must match exactly.</b> Each variant returns the total number of neighbour pairs it found.
+    That is an integer, and the comparison <code>d² &lt; 1</code> is computed the same way in every variant, so any
+    difference means the search missed or double-counted someone. This is the check that catches real bugs, like the
+    Zig thread total above.</li>
+    <li><b>The state must match within a tolerance.</b> Each output is re-indexed by spawn <code>id</code>, and the
+    largest difference in any of <code>x, y, vx, vy</code> must be at most 1e-4. Positions go up to 512 at N = 1M, where
+    one f32 step (ulp) is 2⁻¹⁵ ≈ 3.05e-5. The largest difference the program reports there is exactly 3.05e-5: the SIMD
+    sums land one ulp away from the scalar sums. 1e-4 allows about three ulps at the largest world, and catches anything
+    bigger.</li>
+    <li><b>The languages must match exactly.</b> The programs print an FNV-1a hash of the bits of the state after the
+    naive and grid steps. Rust, Zig and Odin print identical hashes at every N (for example
+    <code>c9356f9c3691824d</code> for the grid step at 1M boids). That shows the three implementations are the same
+    algorithm down to the order of every addition, and that none of the three compilers fused a multiply-add or
+    reassociated anything.</li>
+  </ol>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch10-boids-spatial-hash/rust/src/main.rs"><code class="language-rust">/// The state indexed by spawn id, so outputs stored in different orders can be compared.
+fn by_id(b: &amp;Boids) -&gt; Vec&lt;[f32; 4]&gt; {
+    let mut v = vec![[0.0; 4]; b.n];
+    for k in 0..b.n {
+        v[b.id[k] as usize] = [b.x[k], b.y[k], b.vx[k], b.vy[k]];
+    }
+    v
+}
+
+/// FNV-1a over the bits of the state in spawn order: equal only if every float is bit-identical.
+fn checksum(v: &amp;[[f32; 4]]) -&gt; u64 {
+    v.iter().flatten().fold(0xCBF2_9CE4_8422_2325, |h, f| (h ^ f.to_bits() as u64).wrapping_mul(0x100_0000_01B3))
+}
+
+/// Largest difference in any position or velocity component.
+fn max_diff(a: &amp;[[f32; 4]], b: &amp;[[f32; 4]]) -&gt; f32 {
+    let d = |p: &amp;[f32; 4], q: &amp;[f32; 4]| p.iter().zip(q).map(|(u, v)| (u - v).abs()).fold(0.0, f32::max);
+    a.iter().zip(b).map(|(p, q)| d(p, q)).fold(0.0, f32::max)
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch10-boids-spatial-hash/zig/main.zig"><code class="language-zig">/// The state indexed by spawn id, so outputs stored in different orders can be compared.
+fn byId(b: *const Boids, v: [][4]f32) void {
+    const c = b.c;
+    for (0..b.n) |k| v[c.id[k]] = .{ c.x[k], c.y[k], c.vx[k], c.vy[k] };
+}
+
+/// FNV-1a over the bits of the state in spawn order: equal only if every float is bit-identical.
+fn checksum(v: []const [4]f32) u64 {
+    var h: u64 = 0xCBF2_9CE4_8422_2325;
+    for (v) |s| for (s) |f| {
+        h = (h ^ @as(u32, @bitCast(f))) *% 0x100_0000_01B3;
+    };
+    return h;
+}
+
+/// Largest difference in any position or velocity component.
+fn maxDiff(a: []const [4]f32, b: []const [4]f32) f32 {
+    var m: f32 = 0;
+    for (a, b) |p, q| for (p, q) |u, v| {
+        m = @max(m, @abs(u - v));
+    };
+    return m;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch10-boids-spatial-hash/odin/main.odin"><code class="language-odin">// The state indexed by spawn id, so outputs stored in different orders can be compared.
+by_id :: proc(b: ^Boids, v: [][4]f32) {
+    c := b.c
+    for k in 0 ..&lt; b.n {
+        v[c.id[k]] = {c.x[k], c.y[k], c.vx[k], c.vy[k]}
+    }
+}
+
+// FNV-1a over the bits of the state in spawn order: equal only if every float is bit-identical.
+checksum :: proc(v: [][4]f32) -&gt; u64 {
+    h := u64(0xCBF2_9CE4_8422_2325)
+    for s in v {
+        for f in s {
+            h = (h ~ u64(transmute(u32)f)) * 0x100_0000_01B3
+        }
+    }
+    return h
+}
+
+// Largest difference in any position or velocity component.
+max_diff :: proc(a, b: [][4]f32) -&gt; (m: f32) {
+    for p, i in a {
+        for u, k in p {
+            m = max(m, abs(u - b[i][k]))
+        }
+    }
+    return
+}</code></pre>
+  </div>
+  <aside class="callout note"><p>The check covers one step. Boids are a chaotic system: run a thousand steps and a
+  one-ulp difference grows until two variants show visibly different flocks, even though both are correct. For
+  long runs, compare statistics (neighbour counts, mean speed, a histogram of positions) or, if you need bit-equality,
+  fix the summation order everywhere, as the three languages do here against each other.</p></aside>
+  <aside class="callout try"><p>Run every variant in quick mode (N = 1,024 and 4,096), or one language at full size:</p>
+<pre><code class="language-bash">cd code &amp;&amp; ./run_all.sh ch10
+taskset -c 0,2 cargo run --release -q -p ch10_boids_spatial_hash -- 1048576
+cd ch10-boids-spatial-hash/zig &amp;&amp; zig run -O fast main.zig -- 262144
+cd ch10-boids-spatial-hash &amp;&amp; odin run odin -o:speed -vet -strict-style -- 65536</code></pre></aside>
+
+  <h2 id="measured">Measured</h2>
+  <p>Every variant runs once to warm up and then seven timed times (the harness from
+  <a href="02-the-machine.html#harness">Chapter 2</a>), from N = 1,024 to 1,048,576 in steps of 4×. Naive stops at
+  16,384, where one step already takes most of a second. The runs are pinned to CPUs 0 and 2, two separate physical
+  cores; only the threaded variant uses the second. Times are per boid per step, so a flat line means linear
+  scaling.</p>
+  <figure class="figure wide" id="fig-line">
+    <div class="figure-body" data-viz="bench-line" data-bench="ch10-boids" data-opts='{"metric":"ns/n","per":"boid","xLabel":"boids (N)","series":"label","langs":["rust"],"logY":true}'></div>
+    <figcaption>Rust, ns per boid per step against N (log y). Naive grows linearly per boid because its total is n². Unsorted
+    grid is flat until the columns leave the caches, then climbs steeply. Sorted, Morton and the SIMD variants stay flat
+    to a million boids. Measured on one 4-vCPU KVM Xeon (Ice Lake) shared with other work, so the times are noisy
+    (machine: see <a href="02-the-machine.html">Chapter 2</a>); trust ratios and shapes.</figcaption>
+  </figure>
+  <figure class="figure" id="fig-bars">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch10-boids" data-opts='{"metric":"ns/n","per":"boid","n":1048576,"labels":["grid","morton","sorted","sorted simd","simd 2 threads"]}'></div>
+    <figcaption>All three languages at N = 1,048,576, ns per boid per step. The layout change (grid → sorted) is the
+    biggest single win at this size. SIMD and threads each multiply on top of it. Default targets differ (Zig
+    native with AVX, Rust and Odin without; see <a href="01-the-data-is-the-problem.html">Chapter 1</a>), so the SIMD
+    bars compare toolchain defaults, not languages.</figcaption>
+  </figure>
+  <p>Read the chart from the top of the stack down. Naive against grid, at the largest size where both run (16,384),
+  is <span data-bench-ratio="ch10-boids" data-num="naive" data-den="grid" data-lang="rust" data-n="16384">about 180×</span>
+  in Rust. That is a lot, but less than the 454× drop in distance checks (268 million against 591,348), because a grid
+  check costs more than a naive one: an index load, an indirect gather, and the per-step build. Grid against sorted is
+  the layout lesson. Both do the same 38.7 million checks per step at N = 1M. Sorted is
+  <span data-bench-ratio="ch10-boids" data-num="grid" data-den="sorted" data-lang="rust">6.8×</span> faster in Rust,
+  <span data-bench-ratio="ch10-boids" data-num="grid" data-den="sorted" data-lang="zig">7.5×</span> in Zig and
+  <span data-bench-ratio="ch10-boids" data-num="grid" data-den="sorted" data-lang="odin">6.3×</span> in Odin, and the
+  ratio grows with N, from about 1.1–1.2× at 1,024 boids, as the unsorted gather falls out of each cache level. The SIMD
+  lanes give
+  <span data-bench-ratio="ch10-boids" data-num="sorted" data-den="sorted simd" data-lang="rust">1.8×</span> in Rust and
+  <span data-bench-ratio="ch10-boids" data-num="sorted" data-den="sorted simd" data-lang="odin">1.7×</span> in Odin (two 4-wide halves) and
+  <span data-bench-ratio="ch10-boids" data-num="sorted" data-den="sorted simd" data-lang="zig">about 2.6×</span> in
+  Zig (one 8-wide register). The second core adds
+  <span data-bench-ratio="ch10-boids" data-num="sorted simd" data-den="simd 2 threads" data-lang="zig">about 1.7×</span>
+  more in Zig. All together, the fastest variant at a million boids is roughly
+  <span data-bench-ratio="ch10-boids" data-num="grid" data-den="simd 2 threads" data-lang="zig">34×</span> faster than
+  the plain grid in Zig
+  (<span data-bench-ratio="ch10-boids" data-num="grid" data-den="simd 2 threads" data-lang="rust">21×</span> in Rust,
+  <span data-bench-ratio="ch10-boids" data-num="grid" data-den="simd 2 threads" data-lang="odin">20×</span> in Odin), and incomparably faster than naive, whose single step at that size would be about a trillion checks.</p>
+  <div class="table-wrap"><table>
+    <tr><th>Rust</th><th class="num">N = 1,024</th><th class="num">16,384</th><th class="num">1,048,576</th></tr>
+    <tr><td>distance checks / boid: naive</td><td class="num">1,024</td><td class="num">16,384</td><td class="num">1,048,576</td></tr>
+    <tr><td>distance checks / boid: grid</td><td class="num">33.3</td><td class="num">36.1</td><td class="num">36.9</td></tr>
+    <tr><td>neighbours / boid (itself included)</td><td class="num">12.4</td><td class="num">13.4</td><td class="num">13.6</td></tr>
+    <tr><td>boid state, one buffer (5 columns × 4 B)</td><td class="num">20 KiB</td><td class="num">320 KiB</td><td class="num">20 MiB</td></tr>
+  </table></div>
+  <p>The machine-independent rows are the ones to trust. Check counts and neighbour counts are exact and identical in
+  all three languages. The times are noisy, so read them as ratios and shapes.</p>
+
+  <h2 id="caveats">Caveats and what we left out</h2>
+  <ul>
+    <li><b>Uniform density is the friendly case.</b> The grid assumes boids spread out. Real flocks clump: a thousand
+    boids in one cell make that cell's 3 × 3 query quadratic again. Fixes include a cell size tuned to density,
+    hierarchical grids, or a tree, at the cost of the simplicity that makes this version fast.</li>
+    <li><b>A bounded world.</b> Our grid is dense: <code>start</code> has one entry per cell. An unbounded or very sparse
+    world would hash cell coordinates into a fixed-size table, Müller's "spatial hash". Hash collisions only add
+    candidates that the distance test then rejects<a class="cite" href="#src-2">[2]</a>. The counting sort is the
+    same.</li>
+    <li><b>Serial build.</b> The count, prefix sum, scatter and gather run on one thread. They are a small slice of the
+    step here, but Amdahl's law caps the speedup of the threaded variant, and with more cores the build would dominate.
+    The parallel version (per-thread counts, a parallel prefix sum, then a parallel scatter) is a standard exercise.</li>
+    <li><b>Threads per step.</b> Spawning threads every step is the simplest correct code, and it is visible as overhead
+    at small N. A long-running simulation would keep a pool of worker threads and hand them work each frame.</li>
+    <li><b>Morton result is machine- and size-specific.</b> We showed it losing on a 2D world whose three-row band fits
+    in L2. Do not read that as "Morton order is slow".</li>
+  </ul>
+
+  <aside class="recap"><p>Make the algorithm stop asking useless questions (a grid), then put the answers next to each
+  other in memory (sort the boids by cell), then remove the branches and use the lanes and cores. Each step is only
+  safe because double buffering and a strict check keep the result fixed.</p></aside>
+
+  <h2 id="exercises">Exercises</h2>
+  <details class="exercise"><summary>Why must the grid's cell size be at least the neighbour radius? What goes wrong
+  if you make cells half the radius but still search only the 3 × 3 block?</summary>
+  <p>With cells of side r/2, a neighbour can be up to two cells away, so the 3 × 3 block misses some of them. The
+  neighbour counts would be too low, and the exact count check would fail. With half-size cells you must search a
+  5 × 5 block (25 cells of area r²/4, total 6.25 r², less than 9 r²). That can be a net win: fewer wasted checks,
+  but more spans per boid.</p></details>
+  <details class="exercise"><summary>The scatter pass runs back to front. Write the front-to-back version and say what
+  else you need.</summary>
+  <p>Use an exclusive prefix sum (start[c] = boids in cells before c), then for each boid in order:
+  <code>order[cursor[c]] = i; cursor[c] += 1</code>, where <code>cursor</code> is a copy of <code>start</code>. You
+  need that second array (or a second prefix-sum pass to restore <code>start</code>), because the scatter destroys the
+  values it increments. Back to front with an inclusive sum leaves <code>start</code> correct with no copy.</p></details>
+  <details class="exercise"><summary>The neighbour totals are compared exactly, but positions only within 1e-4. Why
+  would an exact position check fail even though every variant is correct?</summary>
+  <p>Each variant adds the neighbour terms in a different order (spawn order, cell order, or eight interleaved lane
+  sums), and float addition is not associative, so the sums differ in the last bits. The program reports differences up
+  to one ulp (3.05e-5 at positions near 512). Integer neighbour counts have no rounding, so they can and must be
+  exact.</p></details>
+  <details class="exercise"><summary>Estimate the memory traffic of the unsorted grid at N = 1M. Each distance check
+  reads x, y, vx and vy of a random boid. How many cache lines per check, and how many bytes per step?</summary>
+  <p>Four columns, each a separate 4 MiB array, so a random boid is about four cache-line misses (some neighbours
+  share lines by chance). 38.7 M checks × 4 lines × 64 B ≈ 9.9 GB per step if nothing hit in cache. In practice many
+  neighbours recur from boid to boid, but that is the scale of what sorting removes. Sorted, the same checks stream
+  through about three rows of boids, and the whole step touches each 20 MiB buffer a few times.</p></details>
+  <details class="exercise"><summary>Build the Rust program with <code>RUSTFLAGS="-C target-cpu=native"</code> and
+  compare "sorted simd" with the default build. What changed in the binary?</summary>
+  <p>On this AVX-512 machine LLVM may use 256-bit (or 512-bit) <code>ymm</code>/<code>zmm</code> registers for the
+  8-lane loop, as Zig does by default, instead of two 128-bit halves. Check with
+  <code>objdump -d target/release/ch10_boids_spatial_hash | grep -c ymm</code>. We did not measure the speedup; expect
+  the Rust SIMD ratio to move toward Zig's. The binary then no longer runs on CPUs that lack this one's features
+  (here, AVX-512).</p></details>
+  <details class="exercise"><summary>Make the build parallel: give each of T threads its own counts, then combine
+  them. What does the scatter need to know so threads never write the same slot?</summary>
+  <p>Each thread counts its slice of boids into <code>count[t][c]</code>. The prefix sum runs over cells and, within a
+  cell, over threads: thread t's first slot in cell c is the total of all cells before c plus thread 0..t−1's counts in
+  c. Each thread then scatters its own boids using its own cursors. The slots are disjoint by construction, and the
+  result is still stable if threads own contiguous slices of the boids in order.</p></details>
+  <details class="exercise"><summary>Under what change to this benchmark would you expect Morton order to beat
+  row-major sorting?</summary>
+  <p>When the band of rows a sweep touches no longer fits in cache: a 3D world (a 3 × 3 × 3 query spans three planes
+  that are side² cells apart), much larger records per boid, a very wide world, or a smaller cache. You could also
+  keep row-major cells but traverse boids in Morton order of their cells, so the band stays small. Measure before you
+  believe any of these.</p></details>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="sources">
+    <li id="src-1">Craig W. Reynolds, “Flocks, Herds, and Schools: A Distributed Behavioral Model”, SIGGRAPH '87,
+    Computer Graphics 21(4), 1987. <a href="https://www.red3d.com/cwr/boids/">Reynolds' boids page (with the paper)</a>.</li>
+    <li id="src-2">Matthias Müller, “Blazing Fast Neighbor Search with Spatial Hashing”, Ten Minute Physics #11.
+    <a href="https://matthias-research.github.io/pages/tenMinutePhysics/11-hashing.pdf">PDF</a>. Dense hash grid with a
+    count/start array and a particle array, cell size from the radius, collisions are harmless, 100,000 points = 10¹⁰
+    naive tests.</li>
+    <li id="src-3">Carmen Cincotti, “How to Create Spatial Hash Maps for XPBD Self Collisions”, 2022.
+    <a href="https://carmencincotti.com/2022-10-31/spatial-hash-maps-part-one">article</a>. Count array, prefix sum,
+    particle array, step by step.</li>
+    <li id="src-4">University of Freiburg graphics group, “Uniform grids for collision handling”, Technical Report 263,
+    2011. <a href="https://cg.informatik.uni-freiburg.de/publications/2011_TR263_uniformGrids.pdf">PDF</a>. Sorting by cell
+    index makes spatial neighbours memory neighbours.</li>
+    <li id="src-5">G. M. Morton, “A Computer Oriented Geodetic Data Base and a New Technique in File Sequencing”, IBM
+    Ltd., Ottawa, 1966. The origin of the Z-order (Morton) key; cited from the standard references, not re-read for this
+    chapter.</li>
+    <li id="src-6">Zig 0.17.1 source, <code>src/zig_llvm.cpp</code> (<code>pipeline_opts.LoopVectorization = false</code>),
+    and <a href="https://github.com/llvm/llvm-project/issues/186922">LLVM issue #186922</a>.</li>
+    <li id="src-7">Rust standard library, <a href="https://doc.rust-lang.org/std/hint/fn.select_unpredictable.html"><code>std::hint::select_unpredictable</code></a>
+    (stable since 1.88); Zig language reference, <code>@branchHint(.unpredictable)</code> and <code>@Vector</code>;
+    Odin <code>core:simd</code> and <code>#soa</code> (<a href="https://odin-lang.org/docs/overview/">overview</a>).</li>
+    <li id="src-8">P. Messow, C. Höner zu Siederdissen, M. Habeck, “zelll: a fast, framework-free, and flexible
+    implementation of the cell lists algorithm for Rust”, 2026. <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC12910374">article</a>.
+    Cell lists via counting sort, in Rust.</li>
+  </ol>
+</main>
+</body>
+</html>

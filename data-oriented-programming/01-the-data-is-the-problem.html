@@ -1,0 +1,842 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1. The Data Is the Problem · Data-Oriented Design</title>
+<link rel="stylesheet" href="assets/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="assets/book.css">
+<link rel="stylesheet" href="assets/ch01.css">
+<script>window.Prism = { manual: true };</script>
+<script defer src="assets/vendor/prism/prism.min.js"></script>
+<script defer src="assets/vendor/prism/prism-rust.min.js"></script>
+<script defer src="assets/vendor/prism/prism-zig.min.js"></script>
+<script defer src="assets/vendor/prism/prism-odin.min.js"></script>
+<script defer src="assets/vendor/prism/prism-bash.min.js"></script>
+<script defer src="assets/book.js"></script>
+<script defer src="assets/data/bench-ch01.js"></script>
+<script defer src="assets/viz/bench-bars.js"></script>
+<script defer src="assets/viz/ch01-acton.js"></script>
+<script defer src="assets/viz/ch01-dispatch.js"></script>
+</head>
+<body>
+<main>
+  <p class="kicker">Chapter 1</p>
+  <h1>The Data Is the Problem</h1>
+  <p class="lede">&ldquo;Picture this: Toward the end of the development cycle, your game crawls, but you don&rsquo;t see any obvious
+  hotspots in the profiler. The culprit? Random memory access patterns and constant cache misses.&rdquo; Noel Llopis opened the 2009
+  article that named data-oriented design with that scene<a class="cite" href="#src-1">[1]</a>. Fourteen years later Casey Muratori took
+  the textbook example of &ldquo;clean&rdquo; polymorphic code, a class hierarchy of shapes with a virtual <code>Area()</code>, and made it
+  ten times faster by changing how the shapes were stored<a class="cite" href="#src-6">[6]</a>. This chapter is about why that works.
+  It covers where the idea came from, what it is and is not, and the same shapes benchmark rebuilt in Rust, Zig and Odin and measured on
+  a real machine.</p>
+
+  <p>The short version: your program runs on a CPU that is very fast at arithmetic, slow to fetch memory it has not seen recently, and
+  good at guessing branches only when they follow a pattern. Most programs do the same thing to many items, so the way those items sit
+  in memory decides how much of the machine you actually use.
+  <b>Data-oriented design</b> (DOD) is the habit of designing that layout first: work out what data you have, how much of it, and how it
+  will be read, then write the code that transforms it. The rest of this book is techniques for doing that well, in three languages
+  that make it easier than C++ did.</p>
+
+  <h2 id="what">What data-oriented design is</h2>
+  <p>Llopis gave the definition that stuck: &ldquo;Data-oriented design shifts the perspective of programming from objects to the
+  data itself: The type of the data, how it is laid out in memory, and how it will be read and processed&rdquo;<a class="cite" href="#src-1">[1]</a>.
+  Programming, he wrote, &ldquo;by definition, is about transforming data&rdquo;. A program takes input data and produces output data, so it
+  makes sense to start from the data rather than from the code that happens to touch it.</p>
+
+  <p>Mike Acton put the same idea as the first principle of his CppCon 2014 keynote: &ldquo;The purpose of all programs, and all parts of
+  those programs, is to transform data from one form to another.&rdquo; He followed it with &ldquo;If you don&rsquo;t understand the data
+  you don&rsquo;t understand the problem&rdquo; and &ldquo;If you don&rsquo;t understand the hardware, you can&rsquo;t reason about the cost
+  of solving the problem&rdquo;<a class="cite" href="#src-3">[3]</a>. Richard Fabian&rsquo;s book gives the most careful version:
+  &ldquo;data-oriented design is the practice of designing software by developing transformations for well-formed data where the criteria
+  for well-formed is guided by the target hardware and the patterns and types of transforms that need to operate on it&rdquo;<a class="cite" href="#src-4">[4]</a>.</p>
+
+  <p>Three ideas run through all three definitions, and through every chapter after this one:</p>
+  <ol>
+    <li><b>Where there is one, there are many.</b> Llopis asked how many places in your last program had only one of something:
+    &ldquo;One enemy? One vehicle? One pathfinding node? One bullet? One particle? Never!&rdquo;<a class="cite" href="#src-1">[1]</a>
+    Code written for one object at a time pays its overheads once per object. Code written for the whole batch pays them once.</li>
+    <li><b>The data is not the problem domain.</b> That is Fabian&rsquo;s first principle<a class="cite" href="#src-4">[4]</a>.
+    The way you <em>talk</em> about a game (a monster has a position, health and an inventory) does not have to be the way you
+    <em>store</em> it. Store it the way it is read.</li>
+    <li><b>The hardware is the platform.</b> A cache line, a branch predictor and a SIMD register have costs you can estimate on paper.
+    Acton&rsquo;s blunt phrasing: &ldquo;Software does not run in a magic fairy aether powered by the fevered dreams of CS PhDs&rdquo;<a class="cite" href="#src-3">[3]</a>.</li>
+  </ol>
+
+  <aside class="callout note"><p>DOD is not &ldquo;only about cache misses&rdquo;. Fabian calls that &ldquo;a common misconception&rdquo;
+  and says the approach &ldquo;is about all aspects of the data&rdquo;<a class="cite" href="#src-4">[4]</a>: how much of it there is,
+  how often it changes, which parts are read together, and what you can avoid storing at all. Caches are just where the cost shows up
+  first, which is why this chapter starts with them.</p></aside>
+
+  <h2 id="history">A short history, 2009 to 2023</h2>
+  <p>None of the ideas are new. Acton said so himself: DOD is &ldquo;certainly not new ideas&rdquo;, it is &ldquo;more of a reminder of first
+  principles&rdquo; and &ldquo;a response to the culture of C++&rdquo;<a class="cite" href="#src-3">[3]</a>. Fred Brooks wrote in 1975,
+  &ldquo;Show me your tables, and I won&rsquo;t usually need your flowcharts; they&rsquo;ll be obvious&rdquo; (quoted in Teodorescu&rsquo;s
+  ACCU retrospective<a class="cite" href="#src-11">[11]</a>). Database people and HPC people had laid data out by access pattern for
+  decades. What changed around 2009 was the hardware: memory latency, measured in CPU cycles, had grown so large that object-at-a-time code
+  left most of the chip idle. Fabian: &ldquo;The time was right in 2009. The hardware was ripe for a change in how to develop&rdquo;<a class="cite" href="#src-4">[4]</a>.</p>
+
+
+  <h3 id="llopis">Llopis, 2009: the name</h3>
+  <p>Llopis&rsquo;s column in the September 2009 <em>Game Developer</em> blamed &ldquo;object-oriented programming (OOP) and the culture that
+  surrounds it&rdquo; for games that were slow without an obvious hotspot and hard to parallelize<a class="cite" href="#src-1">[1]</a>.
+  His fix was to organize the program around its &ldquo;ideal data format&rdquo;, usually &ldquo;large blocks of contiguous, homogeneous
+  data that we can process sequentially&rdquo;.</p>
+
+  <h3 id="albrecht">Albrecht, 2009: the numbers</h3>
+  <p>Tony Albrecht, then at Sony&rsquo;s European R&amp;D group, gave the movement its first widely shared measurements. His slides start
+  with a chart from Hennessy and Patterson: &ldquo;1980: RAM latency ~ 1 cycle&rdquo;, &ldquo;2009: RAM latency ~ 400+ cycles. What can
+  <em>you</em> do in 400 cycles?&rdquo;<a class="cite" href="#src-2">[2]</a> His test was a scene tree of 11,111 nodes updated on a PS3.
+  The profile showed 50,421 branch mispredictions at 23 cycles each, about 0.36&nbsp;ms, and 36,345 L2 cache misses at 400 cycles each,
+  about 4.54&nbsp;ms: the misses cost more than ten times as much. He then changed the data and left the maths alone. Moving the same
+  objects together in memory took the update from 19.6&nbsp;ms to 12.9&nbsp;ms with no code change, and flattening them into arrays took
+  it to 4.8&nbsp;ms; software prefetch then got it to 3.3&nbsp;ms (Chapter 2 charts all four steps).</p>
+
+  <p>In 2017 Albrecht repeated the exercise on a modern x86 machine with 55,000 objects: layout alone took the update from 17.5&nbsp;ms to
+  9.5&nbsp;ms, &ldquo;No functional code changes&rdquo;, and SIMD then took it to 6.2&nbsp;ms<a class="cite" href="#src-10">[10]</a>. His
+  conclusion is a good motto for this book: &ldquo;Measuring performance is not enough. You need to know <em>why</em> something is slow.&rdquo;</p>
+
+  <h3 id="acton">Acton, 2014: the three lies and a 10× napkin</h3>
+  <p>Mike Acton&rsquo;s keynote at CppCon 2014 is the talk most people mean when they say &ldquo;DOD&rdquo;. He was the engine director
+  at Insomniac Games, and he told a room of C++ programmers that their culture rested on three lies: &ldquo;Software is a
+  platform&rdquo; (&ldquo;Obvious, hardware is the platform&rdquo;), &ldquo;Code designed around model of the world&rdquo; (which hides
+  data and couples unrelated things), and &ldquo;Code is more important than data&rdquo;<a class="cite" href="#src-3">[3]</a>.</p>
+  <p>His rule of thumb from the same talk became the slogan of the whole movement: &ldquo;Where there is one, there are many. Try looking
+  on the time axis.&rdquo; The second sentence matters. Even a value you have exactly one of, like a flag on the player, has many
+  instances over time, one per frame. Then he did arithmetic, which is the part worth copying.</p>
+
+  <h4 class="no-toc">The worked example: UpdateFoo</h4>
+  <p>Acton showed a member function, <code>GameObject::UpdateFoo(float f)</code>, that reads a two-float velocity, takes its length, and
+  adds it into a float member <code>m_Foo</code>. In the compiled code the velocity sat at byte offset 8 of the object and
+  <code>m_Foo</code> at offset 184, in a different cache line. He estimated a cache miss at &ldquo;~200&rdquo; cycles and the maths
+  (multiply, add, square root) at about 40<a class="cite" href="#src-3">[3]</a>.</p>
+  <p>Then he moved the data the loop needs into its own arrays: a 12-byte <code>FooUpdateIn {float m_Velocity[2]; float m_Foo;}</code> and a
+  4-byte <code>FooUpdateOut {float m_Foo;}</code>, processed by a free function <code>UpdateFoos(in, count, out, f)</code>. For 32 items that
+  is 384 bytes of input (6 lines) and 128 bytes of output (2 lines), and the hardware prefetcher can stream the next line while the
+  current one is processed.</p>
+
+  <details class="predict"><summary>Before reading on: with those numbers, roughly how much faster is the array version than the
+  object version?</summary>
+  <p>The object version pays two waited-for misses plus the work: 2 × 200 + 40 = 440 cycles per item. The array version touches 8 lines for
+  32 items. If prefetching overlaps memory with work, time is the larger of 32 × 40 = 1,280 cycles of maths and 8 × 200 = 1,600 cycles of
+  line fetches, so 1,600 / 32 = 50 cycles per item. That is 8.8×, which Acton rounded to 10×. Play with the sliders below and watch which
+  bound wins.</p></details>
+
+  <p>Acton&rsquo;s slides do the same sum. In the object version about 400 of the 440 cycles are waiting: &ldquo;Time spent waiting for L2
+  vs. actual work ~10:1&rdquo;. Each 64-byte line delivered 8 or 4 useful bytes: &ldquo;Waste 56 bytes / 64 bytes&rdquo;, &ldquo;Waste 60
+  bytes / 64 bytes&rdquo;, &ldquo;90% waste!&rdquo; In the array version each input line carries 5.33 items, about 213 cycles of work, roughly
+  the cost of one miss, so the memory cost hides behind the work. His conclusion: &ldquo;Using cache line to capacity* = 10x speedup&rdquo;,
+  with the footnote &ldquo;* Used. Still not necessarily as efficiently as possible.&rdquo;</p>
+
+  <figure class="figure wide" id="fig-acton">
+    <div class="figure-body" data-viz="ch01-acton" data-opts='{"items":32}'>
+      <p>Static fallback: the object version fetches 64 lines for 32 items and uses 9% of the bytes; the array version fetches 8 lines and uses all of them. Model: 440 vs 50 cycles per item.</p></div>
+    <figcaption>Acton&rsquo;s cache-line arithmetic as a model. Each bar is one 64-byte line. On the left, each object costs two lines, of which 12
+    bytes are used; the dashed middle line of each object is never touched. On the right, every fetched byte is used. Raise
+    <em>work per item</em> until the readout says &ldquo;math hides memory&rdquo;: from that point the array version is limited by
+    arithmetic, not memory.</figcaption>
+  </figure>
+
+  <p>The point is not the exact 10×. It is that you can get a useful estimate before writing any code, by counting bytes and lines.  The slide
+  that follows reads: &ldquo;Ignoring inconvenient facts is not engineering; It&rsquo;s dogma.&rdquo;<a class="cite" href="#src-3">[3]</a></p>
+
+  <h3 id="fabian">Fabian, 2018: tables</h3>
+  <p>Richard Fabian&rsquo;s <em>Data-Oriented Design</em> is the book-length treatment, free to read online<a class="cite" href="#src-4">[4]</a>. Its distinctive move is to borrow from databases: normalize your data into
+  tables, and let a row&rsquo;s presence in a table <em>be</em> its state. An entity is not &ldquo;a monster with an <code>isHurt</code>
+  flag&rdquo;. It is a row that appears in the <code>hurt</code> table while it is hurt. He calls this existence-based processing,
+  and Chapters 7 and 9 build on it. He also concedes that objects work well for driver layers and APIs with large, stable handles.</p>
+
+  <h3 id="kelley">Kelley, 2021: making the many smaller</h3>
+  <p>Andrew Kelley&rsquo;s Handmade Seattle talk is the bridge to this book&rsquo;s languages<a class="cite" href="#src-5">[5]</a>. He
+  rewrote the Zig compiler&rsquo;s core data structures and reduced the method to one sentence. In a third-party transcript of the talk
+  it reads: &ldquo;Identify where you have a lot of the same thing in memory and make the size of each thing smaller.&rdquo; The results he
+  reported for the compiler: tokens went from 64 bytes to 5, AST nodes from 120 bytes to 15.6 on average (22% faster parsing), and
+  instructions of ZIR, Zig&rsquo;s untyped intermediate form, from 54 bytes to 20.3 (a further 39% less wall-clock time).
+  Chapters 3, 4, 5 and 11 are this talk, worked through in three languages.</p>
+
+  <h3 id="muratori">Muratori, 2023: the shapes</h3>
+  <p>Casey Muratori&rsquo;s video and article took the example that &ldquo;clean code&rdquo; books use to teach polymorphism and measured
+  it<a class="cite" href="#src-6">[6]</a>. A class with a virtual <code>Area()</code> and four subclasses (square, rectangle,
+  triangle, circle), summed through an array of pointers, ran at about <b>35 cycles per shape</b>. One flat
+  <code>shape_union {type, width, height}</code> and a <code>switch</code> gave <b>24 cycles</b>. Then he noticed that every area is
+  <em>a coefficient × width × height</em>, replaced the switch with a four-entry table lookup, and got <b>3.0–3.5 cycles</b>,
+  &ldquo;fully 10x faster or more&rdquo;. A second per-shape property (corner count) pushed the table version to about
+  15× faster, and a lightly optimized AVX version to 20–25×.</p>
+
+  <figure class="figure" id="fig-muratori">
+    <div class="figure-body" data-viz="bench-bars" data-opts='{"source":"cited: Muratori, “Clean” Code, Horrible Performance (2023)","metric":"value","unit":"cycles/shape","sort":"none","log":false,"runs":[{"label":"virtual Area()","value":35},{"label":"switch on type","value":24},{"label":"coefficient table (3.0–3.5)","value":3.5}]}'>
+      <p>Cited: 35, 24, 3.0–3.5 cycles per shape.</p></div>
+    <figcaption>Muratori&rsquo;s numbers (cited, not re-measured). Compare them with the same three designs measured on this book&rsquo;s
+    machine in <a class="figref" href="#fig-measured">the figure below</a>. The big ratio holds up there; the first step does not, and the reason
+    is more interesting than the virtual call itself.</figcaption>
+  </figure>
+
+  <p>His most quoted lines are &ldquo;It&rsquo;s three or four years of hardware evolution <em>erased</em> because somebody said to use
+  polymorphism instead of switch statements&rdquo;, and &ldquo;Our job is to write programs that run well on the hardware that we are
+  given&rdquo;. His own caveats matter just as much; they come up <a href="#caveats">below</a>.</p>
+
+  <h2 id="not">What DOD is not</h2>
+  <p>This book&rsquo;s folder is called <code>data-oriented-programming</code>, because that is what it was commissioned as. But that phrase
+  already names something else, and the clash causes real confusion, so here it is sorted out.</p>
+
+  <div class="table-wrap"><table>
+    <tr><th></th><th>Data-oriented <b>design</b> (this book)</th><th>Data-Oriented <b>Programming</b> (Sharvit, 2022)</th><th>Data-driven design</th></tr>
+    <tr><td>Goal</td><td>Run well on real hardware; reason about the cost of transforming data</td><td>Reduce complexity in information systems</td><td>Let data files, not code, decide behaviour</td></tr>
+    <tr><td>Data shape</td><td>Specialized, packed arrays of plain values, laid out for the loop that reads them</td><td>Generic maps and lists, JSON-like</td><td>Any; often assets and config</td></tr>
+    <tr><td>Mutation</td><td>In place, in batches</td><td>Immutable; changes make new versions</td><td>Any</td></tr>
+    <tr><td>Schema</td><td>Static types with known sizes and alignment</td><td>Separate from the data, validated at run time</td><td>Any</td></tr>
+    <tr><td>Roots</td><td>Games, HPC, Acton, Llopis, Fabian</td><td>Clojure and Rich Hickey</td><td>Game tools and engines</td></tr>
+  </table></div>
+
+  <p>Yehonathan Sharvit&rsquo;s <em>Data-Oriented Programming</em> (Manning, 2022) is a good book about a different goal. Its four principles
+  are &ldquo;Separating code (behavior) from data&rdquo;, &ldquo;Representing data with generic data structures&rdquo;, &ldquo;Treating
+  data as immutable&rdquo; and &ldquo;Separating data schema from data representation&rdquo;<a class="cite" href="#src-8">[8]</a>. The first
+  overlaps with DOD. The second and third pull the other way: a map of boxed values is the opposite of a packed array. Brian Goetz&rsquo;s
+  &ldquo;Data Oriented Programming in Java&rdquo; means records, sealed types and pattern matching<a class="cite" href="#src-9">[9]</a>:
+  the tagged-union style of version 2 below, a fine way to <em>model</em> data that says nothing about layout.</p>
+  <p>Data-driven design is different again. Llopis was explicit: &ldquo;data-oriented design does not imply that something is data-driven
+  &hellip; That is an orthogonal concept&rdquo;<a class="cite" href="#src-1">[1]</a>. A data-driven game reads its rules from files, and
+  it can still store everything in a tree of objects. Finally, DOD is not the same thing as an entity-component system (ECS). An ECS is one
+  architecture that often uses DOD layouts, and Chapter 9 looks at it critically.</p>
+
+  <h2 id="shapes">The shapes benchmark, in three languages</h2>
+  <p>Now the code. Every program in this book is written three times, in Rust 1.100, Zig 0.17.1 and Odin dev-2026-11, as honest
+  equivalents: the same algorithm, the same data and the same sizes, each written the way that language would naturally write it. Where
+  the languages differ, the difference is the lesson.</p>
+  <p>The job is Muratori&rsquo;s, with one change: instead of summing the areas, each version writes the area of every shape into an output
+  array. That is a transform in Acton&rsquo;s sense, and it avoids a trap: a floating-point sum is a chain of dependent additions that
+  would cap the fast versions at one add per shape (Chapter 8 deals with it). All three programs generate the same shapes from the same seeded
+  SplitMix64 generator, so they compute bit-identical areas. Every version prints a checksum: the wrapping sum of the areas&rsquo; bit
+  patterns, which does not depend on order. At 2<sup>20</sup> shapes it is <code>0x000424fc68e6dec1</code> in all six runs of all three
+  languages.</p>
+
+  <figure class="figure" id="fig-layouts">
+    <div class="figure-body ch01-scroll">
+      <svg class="ch01-svg" viewBox="0 0 480 330" role="img" aria-label="Three memory layouts for the same four shapes. Top: 16-byte handles pointing to separate heap objects and to one of four vtables. Middle: a contiguous array of 12-byte tagged elements. Bottom: four separate arrays, one per kind, with no tag.">
+        <text x="6" y="16" class="t">1. dyn Shape: 16 B handle, heap object, vtable</text>
+        <rect x="6" y="26" width="24" height="18" class="sq"/><rect x="30" y="26" width="24" height="18" class="vt"/>
+        <rect x="58" y="26" width="24" height="18" class="re"/><rect x="82" y="26" width="24" height="18" class="vt"/>
+        <rect x="110" y="26" width="24" height="18" class="ci"/><rect x="134" y="26" width="24" height="18" class="vt"/>
+        <rect x="162" y="26" width="24" height="18" class="tr"/><rect x="186" y="26" width="24" height="18" class="vt"/>
+        <text x="9" y="39" class="s k">ptr</text><text x="35" y="39" class="s">vt</text>
+        <rect x="334" y="22" width="140" height="78" class="box"/>
+        <text x="342" y="37" class="d">four vtables</text>
+        <text x="342" y="53" class="s">Square::area</text><text x="342" y="67" class="s">Rectangle::area</text>
+        <text x="342" y="81" class="s">Triangle::area</text><text x="342" y="95" class="s">Circle::area</text>
+        <path d="M44 44 C 70 62, 260 66, 334 62" class="ar2"/>
+        <text x="6" y="80" class="d">heap</text>
+        <rect x="40" y="86" width="8" height="14" class="sq"/><rect x="48" y="86" width="56" height="14" class="gap"/>
+        <rect x="104" y="86" width="16" height="14" class="re"/><rect x="120" y="86" width="48" height="14" class="gap"/>
+        <rect x="168" y="86" width="8" height="14" class="ci"/><rect x="176" y="86" width="56" height="14" class="gap"/>
+        <rect x="232" y="86" width="16" height="14" class="tr"/><rect x="248" y="86" width="48" height="14" class="gap"/>
+        <path d="M18 44 L44 86 M70 44 L112 86 M122 44 L172 86 M174 44 L240 86" class="ar"/>
+        <text x="6" y="120" class="d">objects sit where the allocator put them: 32 B apart</text>
+        <text x="6" y="133" class="d">with glibc malloc, 8 B with Zig's smp_allocator</text>
+
+        <text x="6" y="164" class="t">2, 3. tagged union or flat struct: 12 B each</text>
+        <rect x="6" y="174" width="12" height="18" class="tag"/><rect x="18" y="174" width="12" height="18" class="sq"/><rect x="30" y="174" width="12" height="18" class="sq"/>
+        <rect x="42" y="174" width="12" height="18" class="tag"/><rect x="54" y="174" width="24" height="18" class="re"/>
+        <rect x="78" y="174" width="12" height="18" class="tag"/><rect x="90" y="174" width="24" height="18" class="ci"/>
+        <rect x="114" y="174" width="12" height="18" class="tag"/><rect x="126" y="174" width="24" height="18" class="tr"/>
+        <text x="162" y="187" class="d">each: tag | width | height</text>
+        <text x="6" y="210" class="d">one array, no pointers: 5.33 shapes per 64 B line</text>
+        <text x="6" y="223" class="d">(versus 4 handles or 2 heap objects per line above)</text>
+
+        <text x="6" y="254" class="t">4. per-kind arrays: no tag at all</text>
+        <text x="6" y="276" class="s">squares</text><rect x="76" y="266" width="12" height="14" class="sq"/><rect x="88" y="266" width="12" height="14" class="sq"/><rect x="100" y="266" width="12" height="14" class="sq"/>
+        <text x="240" y="276" class="s">rectangles</text><rect x="316" y="266" width="24" height="14" class="re"/><rect x="340" y="266" width="24" height="14" class="re"/>
+        <text x="6" y="300" class="s">triangles</text><rect x="76" y="290" width="24" height="14" class="tr"/><rect x="100" y="290" width="24" height="14" class="tr"/>
+        <text x="240" y="300" class="s">circles</text><rect x="316" y="290" width="12" height="14" class="ci"/><rect x="328" y="290" width="12" height="14" class="ci"/><rect x="340" y="290" width="12" height="14" class="ci"/>
+        <text x="6" y="324" class="d">4 or 8 B per shape, one simple loop per array</text>
+      </svg>
+    </div>
+    <figcaption>The same shapes in the three layouts this chapter measures, drawn to scale (one unit of width per byte, except the
+    vtables). The orange, green, purple and yellow cells are squares, rectangles, triangles and circles. Grey is a tag or the vtable pointer,
+    and the dark grey blocks are allocator spacing that the loop drags through the cache but never reads.</figcaption>
+  </figure>
+
+  <h3 id="v1">Version 1: dynamic dispatch</h3>
+  <p>The &ldquo;clean&rdquo; version: each shape is its own type with its own <code>area</code>, the collection holds type-erased handles,
+  and the call site does not know what it is calling. The three languages spell this very differently.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch01-the-data-is-the-problem/rust/src/main.rs"><code class="language-rust">// ---- 1. dynamic dispatch: a trait object per shape ----
+trait Shape {
+    fn area(&amp;self) -&gt; f32;
+}
+impl Shape for Square {
+    fn area(&amp;self) -&gt; f32 {
+        self.side * self.side
+    }
+}
+impl Shape for Rectangle {
+    fn area(&amp;self) -&gt; f32 {
+        self.width * self.height
+    }
+}
+impl Shape for Triangle {
+    fn area(&amp;self) -&gt; f32 {
+        0.5 * self.base * self.height
+    }
+}
+impl Shape for Circle {
+    fn area(&amp;self) -&gt; f32 {
+        PI * self.radius * self.radius
+    }
+}
+
+/// Each element is a 16-byte fat pointer (data pointer + vtable pointer) to its own heap allocation.
+fn areas_dyn(shapes: &amp;[Box&lt;dyn Shape&gt;], out: &amp;mut [f32]) {
+    for (o, s) in out.iter_mut().zip(shapes) {
+        *o = s.area(); // load vtable pointer, load fn pointer, indirect call
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch01-the-data-is-the-problem/zig/main.zig"><code class="language-zig">const Shape = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    const VTable = struct {
+        area: *const fn (ptr: *anyopaque) f32,
+        destroy: *const fn (ptr: *anyopaque, gpa: Allocator) void,
+    };
+
+    fn area(s: Shape) f32 {
+        return s.vtable.area(s.ptr); // load fn pointer from the vtable, indirect call
+    }
+
+    /// Heap-allocates `value` and returns a Shape whose vtable is generated at compile time for T.
+    fn create(gpa: Allocator, value: anytype) !Shape {
+        const T = @TypeOf(value);
+        const gen = struct {
+            fn areaOf(ptr: *anyopaque) f32 {
+                const self: *T = @ptrCast(@alignCast(ptr));
+                return self.area();
+            }
+            fn destroyIt(ptr: *anyopaque, a: Allocator) void {
+                const self: *T = @ptrCast(@alignCast(ptr));
+                a.destroy(self);
+            }
+            const vtable: VTable = .{ .area = areaOf, .destroy = destroyIt };
+        };
+        const p = try gpa.create(T);
+        p.* = value;
+        return .{ .ptr = p, .vtable = &amp;gen.vtable };
+    }
+};
+
+fn areasDyn(shapes: []const Shape, out: []f32) void {
+    for (shapes, out) |s, *o| o.* = s.area();
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch01-the-data-is-the-problem/odin/main.odin"><code class="language-odin">square_area :: proc "contextless" (s: Square) -&gt; f32 {return s.side * s.side}
+rectangle_area :: proc "contextless" (r: Rectangle) -&gt; f32 {return r.width * r.height}
+triangle_area :: proc "contextless" (t: Triangle) -&gt; f32 {return 0.5 * t.base * t.height}
+circle_area :: proc "contextless" (c: Circle) -&gt; f32 {return math.PI * c.radius * c.radius}
+
+// An explicit overload set: `area(x)` picks the procedure by the argument's type at compile time.
+area :: proc {
+	square_area,
+	rectangle_area,
+	triangle_area,
+	circle_area,
+}
+
+// ---- 1. dynamic dispatch: a type-erased pointer plus a pointer to a table of procedure pointers ----
+Shape_VTable :: struct {
+	area: proc "contextless" (data: rawptr) -&gt; f32,
+}
+
+Shape :: struct {
+	data:   rawptr,
+	vtable: ^Shape_VTable,
+}
+
+// One vtable per type. Each entry casts the rawptr back to its concrete type.
+square_vtable := Shape_VTable {
+	area = proc "contextless" (data: rawptr) -&gt; f32 {return area((^Square)(data)^)},
+}
+rectangle_vtable := Shape_VTable {
+	area = proc "contextless" (data: rawptr) -&gt; f32 {return area((^Rectangle)(data)^)},
+}
+triangle_vtable := Shape_VTable {
+	area = proc "contextless" (data: rawptr) -&gt; f32 {return area((^Triangle)(data)^)},
+}
+circle_vtable := Shape_VTable {
+	area = proc "contextless" (data: rawptr) -&gt; f32 {return area((^Circle)(data)^)},
+}
+
+areas_dyn :: proc "contextless" (shapes: []Shape, out: []f32) {
+	for s, i in shapes {
+		out[i] = s.vtable.area(s.data) // load proc pointer from the vtable, indirect call
+	}
+}</code></pre>
+  </div>
+  <p><b>Rust</b> has this built in. <code>Box&lt;dyn Shape&gt;</code> is a <em>fat pointer</em>: 8 bytes pointing to the heap object and 8
+  bytes pointing to a compiler-generated vtable for that concrete type (drop glue, size, alignment, then the trait&rsquo;s methods; the exact
+  layout is unspecified). Each <code>Box::new</code> is a separate heap allocation. <b>Zig</b> has no traits, and its standard library uses this hand-built
+  pattern for its own interfaces: <code>std.mem.Allocator</code> is <code>ptr: *anyopaque, vtable: *const VTable</code>. Here
+  <code>create</code> builds one vtable per concrete type at compile time. <b>Odin</b> has no methods. Procedures are values, so a vtable is just a struct of procedure
+  fields, and <code>Shape</code> mirrors Zig&rsquo;s <code>{data, vtable}</code>. The <code>"contextless"</code> calling convention drops
+  the implicit <code>context</code> pointer, so the call carries only the data pointer, as in the other two.</p>
+
+  <p>Look at what one iteration costs. The loop loads a 16-byte handle and follows the data pointer to the heap object. It loads a function
+  pointer out of the vtable and makes an <b>indirect call</b>, a jump to an address held in a register. The CPU cannot wait to learn
+  that address before it fetches the next instructions, so it predicts the target from history. If the shapes come in random order, the
+  history is useless.</p>
+
+  <h3 id="v2">Version 2: a switch over a tagged union</h3>
+  <p>Muratori&rsquo;s first step was to put every shape in one fixed-size value with a type tag and <code>switch</code> on the tag. All three
+  languages have <em>tagged unions</em> (sum types) built in, so the idiomatic version reuses the very same structs and the very same
+  <code>area</code> functions. Only the dispatch changes.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch01-the-data-is-the-problem/rust/src/main.rs"><code class="language-rust">enum ShapeEnum {
+    Square(Square),
+    Rectangle(Rectangle),
+    Triangle(Triangle),
+    Circle(Circle),
+}
+
+/// Same structs, same `area` methods; only the dispatch changed. The compiler sees every case and inlines it.
+fn areas_match(shapes: &amp;[ShapeEnum], out: &amp;mut [f32]) {
+    for (o, s) in out.iter_mut().zip(shapes) {
+        *o = match s {
+            ShapeEnum::Square(q) =&gt; q.area(),
+            ShapeEnum::Rectangle(r) =&gt; r.area(),
+            ShapeEnum::Triangle(t) =&gt; t.area(),
+            ShapeEnum::Circle(c) =&gt; c.area(),
+        };
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch01-the-data-is-the-problem/zig/main.zig"><code class="language-zig">const ShapeUnion = union(enum) {
+    square: Square,
+    rectangle: Rectangle,
+    triangle: Triangle,
+    circle: Circle,
+
+    /// `inline else` stamps out one prong per variant, each calling that variant's own `area`.
+    fn area(s: ShapeUnion) f32 {
+        return switch (s) {
+            inline else =&gt; |v| v.area(),
+        };
+    }
+};
+
+fn areasSwitch(shapes: []const ShapeUnion, out: []f32) void {
+    for (shapes, out) |s, *o| o.* = s.area();
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch01-the-data-is-the-problem/odin/main.odin"><code class="language-odin">Shape_Union :: union #no_nil {
+	Square,
+	Rectangle,
+	Triangle,
+	Circle,
+}
+
+areas_switch :: proc "contextless" (shapes: []Shape_Union, out: []f32) {
+	for s, i in shapes {
+		switch v in s {
+		case Square:
+			out[i] = area(v)
+		case Rectangle:
+			out[i] = area(v)
+		case Triangle:
+			out[i] = area(v)
+		case Circle:
+			out[i] = area(v)
+		}
+	}
+}</code></pre>
+  </div>
+  <p>Each element is now 12 bytes in all three languages (the programs print it): a tag padded to 4 bytes plus the largest payload, two
+  <code>f32</code>s. They live in one contiguous array, with no pointers and no heap objects. Rust&rsquo;s <code>match</code> calls each
+  <code>area</code> statically. Zig&rsquo;s <code>inline else</code> stamps out one prong per variant. Odin&rsquo;s
+  <code>switch v in s</code> binds <code>v</code> to the payload, and <code>#no_nil</code> removes the union&rsquo;s &ldquo;empty&rdquo;
+  state. All three compilers reject a switch that misses a case (Odin unless you write
+  <code>#partial switch</code>), so adding a fifth shape points you at every place that must handle it.</p>
+  <p>The CPU still has to choose a code path per shape, so there is still a data-dependent jump to predict. Muratori was clear that
+  a switch is not &ldquo;less polymorphic&rdquo; than a vtable. They are &ldquo;two different implementations of the same thing&rdquo;<a class="cite" href="#src-6">[6]</a>.</p>
+
+  <h3 id="v3">Version 3: the coefficient table</h3>
+  <p>Once the four cases sit next to each other, the pattern is plain to see. Every area is <code>c × w × h</code>. Store a kind and two
+  dimensions (squares and circles store theirs twice), look up <code>c</code>, and the branch disappears:</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch01-the-data-is-the-problem/rust/src/main.rs"><code class="language-rust">#[repr(u8)]
+enum Kind {
+    Square,
+    Rectangle,
+    Triangle,
+    Circle,
+}
+
+/// Squares and circles store their one dimension twice (height = width), as in Muratori's version.
+#[derive(Clone, Copy)]
+struct FlatShape {
+    kind: Kind,
+    width: f32,
+    height: f32,
+}
+
+const COEF: [f32; 4] = [1.0, 1.0, 0.5, PI];
+
+fn areas_table(shapes: &amp;[FlatShape], out: &amp;mut [f32]) {
+    for (o, s) in out.iter_mut().zip(shapes) {
+        *o = COEF[s.kind as usize] * s.width * s.height; // no branch: one load from a 16-byte table
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch01-the-data-is-the-problem/zig/main.zig"><code class="language-zig">const Kind = enum(u8) { square, rectangle, triangle, circle };
+
+/// Squares and circles store their one dimension twice (height = width), as in Muratori's version.
+const FlatShape = struct { kind: Kind, width: f32, height: f32 };
+
+const coef = [4]f32{ 1.0, 1.0, 0.5, pi };
+
+fn areasTable(shapes: []const FlatShape, out: []f32) void {
+    for (shapes, out) |s, *o| o.* = coef[@backingInt(s.kind)] * s.width * s.height;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch01-the-data-is-the-problem/odin/main.odin"><code class="language-odin">Kind :: enum u8 {
+	Square,
+	Rectangle,
+	Triangle,
+	Circle,
+}
+
+// Squares and circles store their one dimension twice (height = width), as in Muratori's version.
+Flat_Shape :: struct {
+	kind:          Kind,
+	width, height: f32,
+}
+
+// An enumerated array: indexed by Kind directly, no casts.
+COEF := [Kind]f32 {
+	.Square    = 1.0,
+	.Rectangle = 1.0,
+	.Triangle  = 0.5,
+	.Circle    = math.PI,
+}
+
+areas_table :: proc "contextless" (shapes: []Flat_Shape, out: []f32) {
+	for s, i in shapes {
+		out[i] = COEF[s.kind] * s.width * s.height // no branch: one load from a 16-byte table
+	}
+}</code></pre>
+  </div>
+  <p>This is the step that gives the 10×. The loop body is now a load, a table lookup and two multiplies, with no jump that depends on the
+  data. It was not a clever compiler that made it possible. The programmer saw that the four types were not really four
+  behaviours but one formula with four constants. Muratori&rsquo;s argument is that code organized by <em>operation</em> (all the area cases
+  side by side) makes such patterns visible, while code organized by <em>type</em> (each class in its own file) hides them. To index by an enum,
+  Rust converts it with <code>as usize</code>, Zig uses <code>@backingInt</code>, and Odin has <em>enumerated arrays</em>,
+  <code>[Kind]f32</code>, indexed by the enum directly.</p>
+  <aside class="callout version" data-title="Changed in Zig 0.17"><p><code>@intFromEnum</code> and <code>@enumFromInt</code> still compile
+  but are deprecated in favour of <code>@backingInt</code> and <code>@fromBackingInt</code><a class="cite" href="#src-13">[13]</a>, which
+  this book uses throughout.</p></aside>
+
+  <h3 id="v4">Version 4 (preview): one array per kind</h3>
+  <p>Muratori stopped at the table. In a follow-up he wrote that &ldquo;Data Oriented Design&rdquo; proponents objected that he had not shown
+  a &ldquo;segregated array case, which would have been faster than any of the cases I showed&rdquo;, and answered, &ldquo;I do not disagree
+  with them <em>at all</em>&rdquo;<a class="cite" href="#src-7">[7]</a>. Here it is. If the kind of a shape never changes, do not store it.
+  Store which array the shape is in. Squares need one <code>f32</code>, rectangles and triangles two, and circles one, so the average
+  is 6 bytes per shape instead of 12. Each loop runs one formula with constants the compiler can see.</p>
+  <div class="code-tabs">
+<pre data-lang="Rust" data-file="code/ch01-the-data-is-the-problem/rust/src/main.rs"><code class="language-rust">struct ShapesByKind {
+    squares: Vec&lt;f32&gt;,         // side
+    rectangles: Vec&lt;[f32; 2]&gt;, // width, height
+    triangles: Vec&lt;[f32; 2]&gt;,  // base, height
+    circles: Vec&lt;f32&gt;,         // radius
+}
+
+/// Four tight loops with no dispatch. `out` is filled kind by kind, so its order differs from the other versions.
+fn areas_by_kind(s: &amp;ShapesByKind, out: &amp;mut [f32]) {
+    let (o_sq, rest) = out.split_at_mut(s.squares.len());
+    let (o_re, rest) = rest.split_at_mut(s.rectangles.len());
+    let (o_tr, o_ci) = rest.split_at_mut(s.triangles.len());
+    for (o, &amp;side) in o_sq.iter_mut().zip(&amp;s.squares) {
+        *o = side * side;
+    }
+    for (o, &amp;[w, h]) in o_re.iter_mut().zip(&amp;s.rectangles) {
+        *o = w * h;
+    }
+    for (o, &amp;[b, h]) in o_tr.iter_mut().zip(&amp;s.triangles) {
+        *o = 0.5 * b * h;
+    }
+    for (o, &amp;r) in o_ci.iter_mut().zip(&amp;s.circles) {
+        *o = PI * r * r;
+    }
+}</code></pre>
+<pre data-lang="Zig" data-file="code/ch01-the-data-is-the-problem/zig/main.zig"><code class="language-zig">const ShapesByKind = struct {
+    squares: std.ArrayList(f32) = .empty, // side
+    rectangles: std.ArrayList([2]f32) = .empty, // width, height
+    triangles: std.ArrayList([2]f32) = .empty, // base, height
+    circles: std.ArrayList(f32) = .empty, // radius
+
+    fn deinit(self: *ShapesByKind, gpa: Allocator) void {
+        self.squares.deinit(gpa);
+        self.rectangles.deinit(gpa);
+        self.triangles.deinit(gpa);
+        self.circles.deinit(gpa);
+    }
+};
+
+/// Four tight loops with no dispatch. `out` is filled kind by kind, so its order differs from the other versions.
+fn areasByKind(s: *const ShapesByKind, out: []f32) void {
+    var i: usize = 0;
+    for (s.squares.items, out[i..][0..s.squares.items.len]) |side, *o| o.* = side * side;
+    i += s.squares.items.len;
+    for (s.rectangles.items, out[i..][0..s.rectangles.items.len]) |r, *o| o.* = r[0] * r[1];
+    i += s.rectangles.items.len;
+    for (s.triangles.items, out[i..][0..s.triangles.items.len]) |t, *o| o.* = 0.5 * t[0] * t[1];
+    i += s.triangles.items.len;
+    for (s.circles.items, out[i..][0..s.circles.items.len]) |r, *o| o.* = pi * r * r;
+}</code></pre>
+<pre data-lang="Odin" data-file="code/ch01-the-data-is-the-problem/odin/main.odin"><code class="language-odin">Shapes_By_Kind :: struct {
+	squares:    [dynamic]f32, // side
+	rectangles: [dynamic][2]f32, // width, height
+	triangles:  [dynamic][2]f32, // base, height
+	circles:    [dynamic]f32, // radius
+}
+
+// Four tight loops with no dispatch. `out` is filled kind by kind, so its order differs from the other versions.
+// Copy the slice headers into locals first: read through `s` inside the loops, LLVM must assume a store to
+// `o[i]` might change `s.squares` itself, reloads it every iteration, and does not vectorize (much slower).
+areas_by_kind :: proc(s: ^Shapes_By_Kind, out: []f32) {
+	squares, rectangles, triangles, circles := s.squares[:], s.rectangles[:], s.triangles[:], s.circles[:]
+	o := out
+	for side, i in squares {
+		o[i] = side * side
+	}
+	o = o[len(squares):]
+	for r, i in rectangles {
+		o[i] = r[0] * r[1]
+	}
+	o = o[len(rectangles):]
+	for t, i in triangles {
+		o[i] = 0.5 * t[0] * t[1]
+	}
+	o = o[len(triangles):]
+	for r, i in circles {
+		o[i] = math.PI * r * r
+	}
+}</code></pre>
+  </div>
+  <p>This is Fabian&rsquo;s &ldquo;one table per enum value&rdquo; and Muratori&rsquo;s &ldquo;n different arrays&rdquo;. Chapter 7 develops
+  it properly, including what happens when items change kind and must move between arrays. It is only a preview here because it changes
+  the shape of the API: the output comes out grouped by kind. That is one reason the checksum must not depend on order.</p>
+  <p>The first line of the Odin procedure copies the four slices into locals. Without it the compiler had to assume that each store to
+  the output might change the slice behind the pointer <code>s</code>, so it re-read it on every iteration, did not vectorize, and ran much more slowly
+  (<a href="04-aos-soa-hot-cold.html#odin-hoist-slices">Chapter 4 explains the pitfall</a>). The Zig loops compile to plain one-at-a-time arithmetic, because Zig 0.17.1 switches off
+  LLVM&rsquo;s loop vectorizer<a class="cite" href="#src-12">[12]</a> (the details are in <a href="04-aos-soa-hot-cold.html#zig-loop-vectorizer">Chapter 4</a>).</p>
+
+  <h2 id="per-shape">What the CPU does per shape</h2>
+  <p>Before the measurements, a model. <a class="figref" href="#fig-dispatch">the figure below</a> walks the same twelve shapes through each version. It
+  shows the memory each one touches, drawn to scale (one pixel of width per byte, in every row), and the branch predictor&rsquo;s guesses.
+  The predictor here is the simplest useful one: it guesses that the next shape is the same kind as the last. Real predictors keep long
+  histories; Chapter 7 looks at them.</p>
+
+  <details class="predict"><summary>In the vtable mode with random kinds, roughly how many of the 12 shapes will mispredict? And how many
+  in &ldquo;sorted by kind&rdquo;?</summary>
+  <p>About 3/4 of them, so around 9 of 12: with four equally likely kinds, the next shape matches the last only one time in four, and
+  no history helps when there is no pattern. This particular draw gives 10, counting the first call, which has nothing to go on. Sorted,
+  it is only the four kind changes, however many shapes there are. At 16 cycles each, the mispredicts alone add about 12 cycles to every
+  random shape and almost nothing to sorted ones. The table and per-kind modes have no data-dependent branch, so they have nothing to
+  mispredict.</p></details>
+
+  <figure class="figure wide" id="fig-dispatch">
+    <div class="figure-body" data-viz="ch01-dispatch" data-opts='{"shapes":12}'>
+      <p>Static fallback: vtable ≈ 16 B handle + 32 B heap slot + vtable per shape and ~3/4 mispredicts on random kinds; switch and table
+      read 12 B per shape; per-kind arrays read 6 B on average, with no branch.</p></div>
+    <figcaption>One idea: the expensive part of dynamic dispatch is the <em>unpredictable jump</em>, and the memory it drags in. Step through
+    each mode and watch the ✗ marks and the <em>lines touched</em> counter. Then switch to <em>sorted by kind</em>: the vtable and switch
+    stop mispredicting, but the vtable still reads four times as many bytes as the per-kind arrays.</figcaption>
+  </figure>
+
+  <p>The cycle numbers in the figure come from a deliberately crude model: a base cost per shape when every branch is predicted, plus the
+  mispredict penalty for each wrong guess. Agner Fog puts the penalty at &ldquo;approximately 15 - 25 clock cycles, depending on the
+  processor&rdquo;, and notes that &ldquo;the rules for prediction and misprediction of virtual function calls is the same as for switch
+  statements&rdquo;<a class="cite" href="#src-14">[14]</a>. That last remark predicts our first measured surprise.</p>
+
+  <h2 id="measured">Measured on this machine</h2>
+  <p>Here are the six runs, in all three languages, at 2<sup>20</sup> (about a million) shapes, pinned to one core. Two of them are
+  controls. They run versions 1 and 2 again on the same shapes after a stable sort by kind, with the heap objects allocated in sorted
+  order. That separates the cost of the <em>dispatch mechanism</em> from the cost of <em>unpredictable dispatch</em>.</p>
+
+  <figure class="figure wide" id="fig-measured">
+    <div class="figure-body" data-viz="bench-bars" data-bench="ch01-shapes" data-opts='{"metric":"ns/n","per":"shape","sort":"none","labels":["dynamic dispatch","tagged union","coefficient table","per-kind arrays","dynamic dispatch, sorted","tagged union, sorted"]}'></div>
+    <figcaption>Nanoseconds per shape, median of 7 runs, 2<sup>20</sup> shapes in random kind order (the last two bars: the same
+    shapes sorted by kind). Toggle the log scale to compare the fast versions. Measured on one 4-vCPU KVM virtual machine on an Ice Lake
+    Xeon (see Chapter 2). The numbers are noisy and move by tens of percent between runs, so read the ratios, not the digits. The three
+    compilers target different CPUs by default (see below).</figcaption>
+  </figure>
+
+  <p>Four things stand out.</p>
+  <p><b>The table version is about <span data-bench-ratio="ch01-shapes" data-num="dynamic dispatch" data-den="coefficient table" data-lang="rust">6×</span>
+  faster than dynamic dispatch</b> in Rust, and
+  <span data-bench-ratio="ch01-shapes" data-num="dynamic dispatch" data-den="coefficient table" data-lang="zig">13×</span> and <span data-bench-ratio="ch01-shapes" data-num="dynamic dispatch" data-den="coefficient table" data-lang="odin">11×</span> in Zig and Odin,
+  whose table loops are faster than Rust&rsquo;s. That is Muratori&rsquo;s result, reproduced in three languages on a
+  different CPU. The per-kind arrays go further, about <span data-bench-ratio="ch01-shapes" data-num="dynamic dispatch" data-den="per-kind arrays" data-lang="rust">20×</span>
+  faster than dynamic dispatch in Rust (<span data-bench-ratio="ch01-shapes" data-num="dynamic dispatch" data-den="per-kind arrays" data-lang="zig">23×</span> in Zig, <span data-bench-ratio="ch01-shapes" data-num="dynamic dispatch" data-den="per-kind arrays" data-lang="odin">21×</span> in Odin). They read half the bytes of the table version, and Rust and Odin vectorize those plain loops (Zig does not,
+  as noted above). At a million shapes the per-kind loop mostly waits for memory, so the three languages end up close. At
+  <code>--quick</code> size, where everything fits in L2, the vectorized Rust and Odin loops are clearly faster than Zig&rsquo;s
+  scalar one.</p>
+  <p><b>The switch is hardly faster than the vtable</b>, about <span data-bench-ratio="ch01-shapes" data-num="dynamic dispatch" data-den="tagged union" data-lang="rust">1.1×</span>
+  in Rust, <span data-bench-ratio="ch01-shapes" data-num="dynamic dispatch" data-den="tagged union" data-lang="zig">1.2×</span> in Zig and
+  <span data-bench-ratio="ch01-shapes" data-num="dynamic dispatch" data-den="tagged union" data-lang="odin">1.0×</span> in Odin, not Muratori&rsquo;s 1.5×. In Rust they cost
+  <span data-bench-val="ch01-shapes" data-label="dynamic dispatch" data-lang="rust" data-metric="ns/n" data-digits="2">9.7 ns</span> and
+  <span data-bench-val="ch01-shapes" data-label="tagged union" data-lang="rust" data-metric="ns/n" data-digits="2">8.8 ns</span> per shape
+  (Zig and Odin are in the same range), about two dozen cycles at this chip&rsquo;s 2.6&nbsp;GHz nominal clock. We cannot read the real clock
+  without performance counters, so treat any cycle figure as a range.
+  Agner Fog&rsquo;s remark explains why the two are so close: an indirect call and a switch&rsquo;s jump are predicted the same way, and on
+  random kinds both are wrong most of the time.</p>
+  <p><b>Sorting fixes the switch, and only partly fixes dynamic dispatch.</b> With the same shapes sorted by kind, the tagged
+  union gets about <span data-bench-ratio="ch01-shapes" data-num="tagged union" data-den="tagged union, sorted" data-lang="rust">5×</span> faster in Rust, where it lands close to the table. Sorted dynamic
+  dispatch improves too, but stays <span data-bench-ratio="ch01-shapes" data-num="dynamic dispatch, sorted" data-den="tagged union, sorted" data-lang="rust">2.5×</span> slower than the sorted switch in
+  Rust, <span data-bench-ratio="ch01-shapes" data-num="dynamic dispatch, sorted" data-den="tagged union, sorted" data-lang="odin">2.6×</span> in Odin and <span data-bench-ratio="ch01-shapes" data-num="dynamic dispatch, sorted" data-den="tagged union, sorted" data-lang="zig">1.8×</span>
+  in Zig (the allocator explains Zig, below). With prediction out of the way, what remains is memory. A million handles is 16&nbsp;MB, and the heap
+  objects behind them add another 32&nbsp;MB, against 12&nbsp;MB for the tagged array. That no longer fits in L2, or in the roughly 6–8&nbsp;MiB of L3 this
+  virtual machine actually gets (Chapter 2 measures it), so it streams from memory, and the prefetcher hides only part of that cost.
+  That is Acton&rsquo;s arithmetic again.</p>
+  <p><b>The allocator shows up in the numbers.</b> The programs print the median distance between consecutive heap objects. Rust&rsquo;s
+  <code>Box</code> and Odin&rsquo;s <code>new_clone</code> both went to glibc <code>malloc</code> here, and each 4- or 8-byte object sat
+  <b>32 bytes</b> from the previous one. Zig&rsquo;s <code>init.gpa</code> in <code>-O fast</code> is <code>std.heap.smp_allocator</code>, which
+  packs them <b>8 bytes</b> apart, and Zig&rsquo;s sorted dynamic dispatch is correspondingly faster. None of this is visible in the source
+  code. It is a property of where the data ended up.</p>
+
+  <div class="table-wrap"><table>
+    <tr><th>Layout</th><th class="num">bytes per shape read</th><th class="num">2<sup>20</sup> shapes</th><th>data-dependent branch</th></tr>
+    <tr><td>dynamic dispatch (Rust, Odin: glibc)</td><td class="num">16 + 32 (heap slot)</td><td class="num">48 MiB</td><td>indirect call</td></tr>
+    <tr><td>dynamic dispatch (Zig: smp_allocator)</td><td class="num">16 + 8 (heap slot)</td><td class="num">24 MiB</td><td>indirect call</td></tr>
+    <tr><td>tagged union / coefficient table</td><td class="num">12</td><td class="num">12 MiB</td><td>switch / none</td></tr>
+    <tr><td>per-kind arrays</td><td class="num">6.0 (average)</td><td class="num">6 MiB</td><td>none</td></tr>
+  </table></div>
+  <p>Each program prints these byte counts. The heap slot counts all the bytes between objects, because the loop drags whole lines
+  through the cache. Every version also writes 4 bytes of output per shape.</p>
+
+  <aside class="callout try"><p>Run it yourself (small sizes, takes seconds), then at full size pinned to one core:</p>
+<pre><code class="language-bash">cd code &amp;&amp; ./run_all.sh ch01
+cargo run --release -q -p ch01_the_data_is_the_problem -- 4000000
+cd ch01-the-data-is-the-problem/zig &amp;&amp; taskset -c 2 zig run -O fast main.zig
+cd .. &amp;&amp; odin run odin -o:speed -vet -strict-style -- --quick
+# with performance counters (not available on the machine these numbers came from):
+perf stat -e cycles,instructions,branch-misses,cache-misses ./target/release/ch01_the_data_is_the_problem</code></pre></aside>
+
+  <h3 id="defaults">Three compilers, three default targets</h3>
+  <p>By default Rust compiles for baseline x86-64 (SSE2), Zig for the machine it runs on (here an Ice Lake server with AVX-512), and
+  Odin for <code>x86-64-v2</code> (SSE4.2, no AVX), so when a Zig loop beats a Rust loop, check this before you conclude anything about
+  the language. Chapter 8 measures what the wider vectors are worth.</p>
+
+  <h2 id="caveats">Muratori&rsquo;s caveats, and ours</h2>
+  <p>A demonstration this clean invites overreach, so here are its limits, starting with the ones its author gave. In his reply to a
+  reporter, Muratori said the video&rsquo;s goal was &ldquo;to quickly demonstrate the magnitude of the performance cost for each programming
+  style choice&rdquo;, not to explain why. That explanation comes later in his course<a class="cite" href="#src-7">[7]</a>. He chose not to
+  show separate arrays because he &ldquo;was trying to demonstrate the performance difference between methods that handle data types
+  <em>whose type needs to be dynamic</em>&rdquo;. For a full analysis he &ldquo;would have used real-world examples like graph traversal,
+  where types cannot be easily segregated into separate arrays without a lot of extra work.&rdquo;</p>
+  <p>Our own caveats:</p>
+  <ul>
+    <li><b>It is a microbenchmark.</b> The loop does nothing but dispatch. In a real program, each call does more work, and the dispatch
+    overhead is a smaller share of it. The win from version 3 came from noticing a formula. Most real types will not collapse into
+    one line.</li>
+    <li><b>The heap is pristine.</b> We allocate the boxes in a fresh process, in order, so they sit nearly sequentially in memory. That is
+    the best case for dynamic dispatch. A long-running program with a fragmented heap scatters them, and every handle becomes the pointer
+    chase of Chapter 2.</li>
+    <li><b>Random kind order is a choice.</b> It is a realistic one for a scene full of mixed objects, and it is what makes the branch
+    unpredictable. With sorted kinds the switch is cheap (the control runs show how cheap).</li>
+    <li><b>The machine is a shared virtual machine</b> with no performance counters, so we report noisy wall-clock medians, not
+    cycles (Chapter 12).</li>
+  </ul>
+  <p>None of this makes the result go away. It tells you where the cost lives. You pay for dispatch when it is <em>unpredictable</em>, and you
+  pay for memory when it is <em>scattered or padded</em>. Both are properties of the data, and you can fix both before you write the loop.</p>
+
+  <h2 id="languages">Why Rust, Zig and Odin</h2>
+  <p>DOD grew up in C and C++, where you have full control over layout but no help from the language. The three languages in this book each
+  give you some of that help, in different places, and comparing them is half the fun:</p>
+  <div class="table-wrap"><table>
+    <tr><th></th><th>Rust</th><th>Zig</th><th>Odin</th></tr>
+    <tr><td>Dynamic dispatch</td><td>built in: <code>dyn Trait</code> fat pointers</td><td>by hand: <code>{ptr, vtable}</code>, as in <code>std.mem.Allocator</code></td><td>by hand: struct of procedure fields</td></tr>
+    <tr><td>Tagged union</td><td><code>enum</code> + <code>match</code></td><td><code>union(enum)</code> + <code>switch</code>, <code>inline else</code></td><td><code>union</code> + type <code>switch</code>, <code>#no_nil</code></td></tr>
+    <tr><td>Index by enum</td><td><code>COEF[kind as usize]</code></td><td><code>coef[@backingInt(kind)]</code></td><td>enumerated array <code>[Kind]f32</code></td></tr>
+    <tr><td>Struct of arrays</td><td>by hand (Chapter 4)</td><td><code>std.MultiArrayList</code></td><td><code>#soa</code> in the language</td></tr>
+    <tr><td>Allocator</td><td>global by default; <code>Allocator</code> trait (Chapter 6)</td><td>passed to every call that allocates</td><td><code>context.allocator</code>, overridable per scope</td></tr>
+    <tr><td>Default x86 target</td><td>x86-64 (SSE2)</td><td>native</td><td>x86-64-v2</td></tr>
+  </table></div>
+
+  <h2 id="roadmap">The road ahead</h2>
+  <p>Every chapter follows the same pattern as this one: the idea, the hardware reason, code in all three languages, measurements on a real
+  machine, and the cases where the technique does not pay. <a href="02-the-machine.html">Chapter 2</a> measures the hardware costs this
+  chapter took on faith. Chapters 3 to 9 are the techniques (size, layout, indices, allocation, branches, SIMD, tables), Chapters 10 and
+  11 are projects that combine them, and Chapter 12 is about measuring, and about when not to bother. The full list is on the
+  <a href="index.html">contents page</a>.</p>
+
+  <aside class="recap"><p>Your program is a transformation of many items of data on real hardware, so design the layout of that data
+  (how big each item is, what is next to what, and what the CPU has to guess) before you design the code that touches it.</p></aside>
+
+  <h2 id="exercises">Exercises</h2>
+  <details class="exercise"><summary>Using the bytes-per-shape table, how many 64-byte lines does each version pull through the cache for
+  2<sup>20</sup> shapes (ignore the output array)? Which versions fit in this machine&rsquo;s 1.25&nbsp;MiB L2?</summary>
+  <p>Dynamic dispatch with glibc: 16&nbsp;MiB of handles + 32&nbsp;MiB of heap = 48&nbsp;MiB = 786,432 lines. With Zig&rsquo;s allocator:
+  24&nbsp;MiB = 393,216 lines. Tagged union or table: 12&nbsp;MiB = 196,608 lines. Per-kind: 6&nbsp;MiB = 98,304 lines. None fit in L2. Chapter 2&rsquo;s
+  sweep found that this virtual machine gets roughly 6–8&nbsp;MiB of usable L3 (the chip has 54&nbsp;MiB, shared with the host&rsquo;s
+  other tenants), so only the per-kind arrays can stay in L3; the rest stream from memory. At <code>--quick</code> size (4,096 shapes) everything fits in L2 (the largest is
+  192&nbsp;KiB), which is why the quick-run ratios differ from the full-size ones.</p></details>
+  <details class="exercise"><summary>A predictor remembers the last two kinds and guesses the next from that pair. Does it beat 3/4
+  mispredicts on uniformly random kinds? On kinds that repeat in a fixed cycle (square, circle, triangle, rectangle, square, &hellip;)?</summary>
+  <p>Random: no. Each kind is independent of the history, so any guess is right one time in four, whatever the predictor remembers. Cycle:
+  yes, after a few shapes to learn it, it is never wrong, because the history now determines the next kind. History only helps when the
+  data has a pattern; sorting by kind gives it one.</p></details>
+  <details class="exercise"><summary>Muratori&rsquo;s second experiment weights each area by <code>1 / (1 + corners)</code>. What has to
+  change in each of the four versions?</summary>
+  <p>Version 1 needs a second virtual method (<code>corner_count</code>), so a second indirect call per shape. Version 2 needs a second
+  match or switch, or a bigger one. In version 3 only the constants change: <code>COEF</code> becomes <code>{1/5, 1/5, 0.5/4, π}</code>
+  (a circle has 0 corners), and the loop stays the same. That is why its advantage grew to about 15× in his test. In version 4 each loop gets a
+  different constant, and the code shape is unchanged.</p></details>
+  <details class="exercise"><summary>In <a class="figref" href="#fig-acton">the figure above</a>, set misses to 300 cycles and keep 40 cycles of work. What
+  speedup does the model give, and how much work per item would make the array version compute-bound?</summary>
+  <p>Objects: 2 × 300 + 40 = 640 cycles per item. Arrays (32 items, 8 lines): max(32 × 40, 8 × 300) = 2,400 cycles = 75 per item, so
+  about 8.5×. It becomes compute-bound when 32 × work ≥ 8 × 300, so work ≥ 75 cycles per item. Acton&rsquo;s per-line version of the same
+  argument (5.33 items × work ≥ one miss) ignores the output lines and gives 56.</p></details>
+  <details class="exercise"><summary>Suppose a long-running program had freed and reallocated shapes for an hour, so the boxes are scattered
+  across the heap in random order. Which versions get slower, and does sorting the handle array by kind still help?</summary>
+  <p>Only dynamic dispatch, because it is the only version that follows pointers. Each handle now points to an unrelated line, often a miss,
+  and the hardware cannot prefetch it because the address is only known once the handle has been loaded. Sorting the handles by kind fixes
+  branch prediction but not the memory order, so you pay the pointer chase of Chapter 2 on every shape. The array versions do not
+  care how the heap looks.</p></details>
+  <details class="exercise"><summary><code>std.mem.Allocator</code> in Zig uses exactly the <code>{ptr, vtable}</code> pattern that lost so
+  badly here. Is that a mistake?</summary>
+  <p>No. An allocator call is not the inner loop of anything you care about. A program makes far fewer allocator calls than it touches
+  items, and an indirect call that goes to the same target every time is well predicted. Dynamic dispatch costs a lot when it is per item,
+  in a hot loop, over unpredictable types. At a boundary called rarely (an allocator, an I/O backend, a plugin), it buys flexibility for
+  almost nothing. Fabian makes the same concession for driver layers and APIs. &ldquo;Where there is one, there are many&rdquo; is the test:
+  how many calls are there, really?</p></details>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="sources">
+    <li id="src-1">Noel Llopis, &ldquo;Data-Oriented Design (Or Why You Might Be Shooting Yourself in The Foot With OOP)&rdquo;, <em>Game Developer</em>,
+    September 2009; reprinted on Games from Within, 4 December 2009. <a href="https://gamesfromwithin.com/data-oriented-design">gamesfromwithin.com/data-oriented-design</a></li>
+    <li id="src-2">Tony Albrecht, &ldquo;Pitfalls of Object Oriented Programming&rdquo;, Sony Computer Entertainment Europe R&amp;D, GCAP Australia 2009.
+    <a href="https://www.gamedevs.org/uploads/pitfalls-of-object-oriented-programming.pdf">PDF slides</a></li>
+    <li id="src-3">Mike Acton, &ldquo;Data-Oriented Design and C++&rdquo;, CppCon 2014 keynote, 30 September 2014.
+    <a href="https://youtu.be/rX0ItVEVjHc">video</a> · <a href="https://neil3d.github.io/assets/img/ecs/DOD-Cpp.pdf">slides (mirror)</a>. The three lies,
+    the UpdateFoo arithmetic and all quotations were checked against the slides.</li>
+    <li id="src-4">Richard Fabian, <em>Data-Oriented Design: Software Engineering for Limited Resources and Short Schedules</em>, 2018 (ISBN 978-1-138-03545-4).
+    <a href="https://www.dataorienteddesign.com/dodbook/node2.html">free online edition</a></li>
+    <li id="src-5">Andrew Kelley, &ldquo;A Practical Guide to Applying Data-Oriented Design&rdquo;, Handmade Seattle, 23 November 2021.
+    <a href="https://vimeo.com/649009599">talk</a> · quotes and numbers from a third-party
+    <a href="https://josherich.me/podcast/andrew-kelley-practical-data-oriented-design-dod">transcript</a>.</li>
+    <li id="src-6">Casey Muratori, &ldquo;&lsquo;Clean&rsquo; Code, Horrible Performance&rdquo;, Computer, Enhance!, 28 February 2023.
+    <a href="https://www.computerenhance.com/p/clean-code-horrible-performance">computerenhance.com</a></li>
+    <li id="src-7">Casey Muratori, &ldquo;Response to a Reporter Regarding &lsquo;Clean Code, Horrible Performance&rsquo;&rdquo;, Computer, Enhance!, 7 April 2023.
+    <a href="https://www.computerenhance.com/p/response-to-a-reporter-regarding">computerenhance.com</a></li>
+    <li id="src-8">Yehonathan Sharvit, &ldquo;Principles of Data-Oriented Programming&rdquo;, 22 June 2022, and <em>Data-Oriented Programming</em>, Manning, 2022.
+    <a href="https://blog.klipse.tech/dop/2022/06/22/principles-of-dop.html">blog.klipse.tech</a> · <a href="https://www.manning.com/books/data-oriented-programming">manning.com</a></li>
+    <li id="src-9">Brian Goetz, &ldquo;Data Oriented Programming in Java&rdquo;, InfoQ, 20 June 2022.
+    <a href="https://www.infoq.com/articles/data-oriented-programming-java/">infoq.com</a></li>
+    <li id="src-10">Tony Albrecht, &ldquo;Pitfalls of Object Oriented Programming &ndash; Revisited&rdquo;, Riot Games, 2017 (transcript).
+    <a href="https://www.slideserve.com/cheng/object-oriented-programming">slideserve.com</a></li>
+    <li id="src-11">Lucian Radu Teodorescu, &ldquo;Revisiting Data-Oriented Design&rdquo;, ACCU <em>Overload</em> 30(167), February 2022 (source of the Brooks quotation).
+    <a href="https://www.accu.org/journals/overload/30/167/teodorescu">accu.org</a></li>
+    <li id="src-12">Zig 0.17.1 source, <code>src/zig_llvm.cpp</code> (<code>pipeline_opts.LoopVectorization = false</code>), and LLVM issue #186922,
+    &ldquo;miscompilation: incorrect vectorization of loop copying i32 values&rdquo;.
+    <a href="https://github.com/llvm/llvm-project/issues/186922">github.com/llvm/llvm-project/issues/186922</a></li>
+    <li id="src-13">Zig Software Foundation, &ldquo;0.17.0 Release Notes&rdquo;, 2026.
+    <a href="https://ziglang.org/download/0.17.0/release-notes.html">ziglang.org</a></li>
+    <li id="src-14">Agner Fog, &ldquo;Optimizing software in C++&rdquo; (optimization manual 1): branch misprediction penalties and virtual-call prediction.
+    <a href="https://www.agner.org/optimize/optimizing_cpp.pdf">agner.org</a></li>
+  </ol>
+</main>
+</body>
+</html>

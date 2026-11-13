@@ -1,0 +1,19 @@
+ch06 frame workload: 16 ticks x 65536 messages (8..=71 B), quick=false
+  one tick: 65537 allocations, arena high-water mark 3636193 of 5701696 B (55.5 B/message)
+  checksum heap=0x0277eab53a846fae arena=0x0277eab53a846fae temp=0x0277eab53a846fae match=true
+  temp_allocator after free_all: 4194304 B in its first block
+  heap per object: 114.1 ns/message
+  frame arena:     50.2 ns/message (2.3x)
+  temp_allocator:  55.5 ns/message (2.1x)
+BENCH {"id":"ch06-frame","label":"heap per object","lang":"odin","n":1048576,"ns":119639791,"samples":[118876987,119342069,119424274,119639791,119721269,120714300,124048782]}
+BENCH {"id":"ch06-frame","label":"frame arena","lang":"odin","n":1048576,"ns":52640158,"samples":[52325881,52400994,52587877,52640158,53017723,53745839,56134335]}
+BENCH {"id":"ch06-frame","label":"temp_allocator","lang":"odin","n":1048576,"ns":58214146,"samples":[57941297,58054699,58141631,58214146,58216325,58271072,58516143]}
+ch06 pool workload: 64 ticks x 4096 spawns, 24 B projectiles, ttl 1..=16
+  checksum heap=0xfd95a8b0393ee1b9 pool=0xfd95a8b0393ee1b9 match=true
+  new per object:  76.7 ns/projectile
+  pool:            48.5 ns/projectile (1.6x)
+BENCH {"id":"ch06-pool","label":"heap per object","lang":"odin","n":262144,"ns":20094040,"samples":[19324008,19328541,19476805,20094040,21779707,27420077,29571032]}
+BENCH {"id":"ch06-pool","label":"pool","lang":"odin","n":262144,"ns":12725151,"samples":[12530965,12634952,12642202,12725151,13041738,13104353,14994383]}
+arena + growing [dynamic]: 2 x 1000 u32, live 8192 B, arena used 16320 B (2.0x)
+  pre-sized with a panic_allocator guard: live 8000 B, arena used 8000 B
+1 GiB virtual arena: reserved 1024 MiB, committed 16 MiB; RSS +0.0 MiB after reserve, +16.0 MiB after touching 16 MiB

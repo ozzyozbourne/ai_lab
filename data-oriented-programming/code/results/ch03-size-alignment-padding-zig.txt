@@ -1,0 +1,84 @@
+== layout (zig, x86-64) ==
+U32Bool extern               size   8  align  4  
+Quiz {u32,u64,u32} extern    size  24  align  8  
+QuizSorted {u32,u32,u64}     size  16  align  8  
+QuizSorted + bool            size  24  align  8  
+Mixed (struct)               size  16  align  8  offsets a=12 b=0 c=13 d=8
+Mixed extern struct          size  24  align  8  offsets a=0 b=8 c=16 d=20
+Mixed packed struct          size  16  align 16  112 bits; bit offsets b=8 d=80
+Monster {*Anim,u32,u32,bool} size  24  align  8  offsets anim=0 hp=8 y=12 alive=16
+MonsterOob (bool out of band) size  16  align  8  
+MonsterIdx (u32 index)       size  12  align  4  
+Kind (5 tags)                size   1  align  1  
+?Kind                        size   2  align  1  
+?u32                         size   8  align  4  
+?u31                         size   8  align  4  
+AnimId enum(u32) sentinel    size   4  align  4  
+?AnimId                      size   8  align  4  
+?*const u64                  size   8  align  8  
+PosF32                       size  12  align  4  
+PosU16                       size   6  align  2  
+PosF16                       size   6  align  2  
+PackedRef packed struct(u32) size   4  align  4  
+u24                          size   4  align  4  
+CacheLine align(64)          size  64  align 64  
+PackedRef(3, 7, 123456) -> kind=3 layer=7 index=123456 raw=0x01e24073
+quantize(123.456 m) = 8091 -> 123.4608 m (error 0.0047 m)
+f16 123.456 -> 123.4375 (error 0.0185)
+== padding-waste sweep (one pass, median of 7) ==
+N = 10000
+  24 B fat    24 B/elem       240000 B total   0.959 ns/elem  checksum 264605615
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"zig","n":10000,"ns":9593,"samples":[9574,9582,9592,9593,9597,9619,9624]}
+  16 B index  16 B/elem       160000 B total   0.928 ns/elem  checksum 264605615
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"zig","n":10000,"ns":9283,"samples":[9278,9282,9283,9283,9284,9302,9307]}
+  12 B small  12 B/elem       120000 B total   0.681 ns/elem  checksum 264605615
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"zig","n":10000,"ns":6808,"samples":[6790,6798,6805,6808,6813,6826,6831]}
+  checksums match
+N = 30000
+  24 B fat    24 B/elem       720000 B total   0.955 ns/elem  checksum 793598549
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"zig","n":30000,"ns":28654,"samples":[28634,28635,28635,28654,28692,28844,34601]}
+  16 B index  16 B/elem       480000 B total   0.926 ns/elem  checksum 793598549
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"zig","n":30000,"ns":27790,"samples":[27730,27735,27767,27790,28167,29378,57526]}
+  12 B small  12 B/elem       360000 B total   0.676 ns/elem  checksum 793598549
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"zig","n":30000,"ns":20276,"samples":[20243,20274,20276,20276,20284,20298,20353]}
+  checksums match
+N = 100000
+  24 B fat    24 B/elem      2400000 B total   1.052 ns/elem  checksum 2649054248
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"zig","n":100000,"ns":105179,"samples":[104392,104619,104725,105179,113693,145428,184402]}
+  16 B index  16 B/elem      1600000 B total   0.972 ns/elem  checksum 2649054248
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"zig","n":100000,"ns":97185,"samples":[96736,97030,97162,97185,97556,97736,106862]}
+  12 B small  12 B/elem      1200000 B total   0.653 ns/elem  checksum 2649054248
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"zig","n":100000,"ns":65317,"samples":[64275,64548,65278,65317,66785,67084,90130]}
+  checksums match
+N = 300000
+  24 B fat    24 B/elem      7200000 B total   1.273 ns/elem  checksum 7950833696
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"zig","n":300000,"ns":381771,"samples":[316680,323682,355632,381771,404595,442037,672184]}
+  16 B index  16 B/elem      4800000 B total   0.950 ns/elem  checksum 7950833696
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"zig","n":300000,"ns":284963,"samples":[274479,274493,275383,284963,290817,302880,304930]}
+  12 B small  12 B/elem      3600000 B total   0.821 ns/elem  checksum 7950833696
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"zig","n":300000,"ns":246305,"samples":[209327,225998,242645,246305,249542,318868,433794]}
+  checksums match
+N = 1000000
+  24 B fat    24 B/elem     24000000 B total   3.019 ns/elem  checksum 26481704971
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"zig","n":1000000,"ns":3018902,"samples":[2940976,2979302,2980231,3018902,3057480,3205813,3208337]}
+  16 B index  16 B/elem     16000000 B total   1.153 ns/elem  checksum 26481704971
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"zig","n":1000000,"ns":1153207,"samples":[1035340,1055030,1152773,1153207,1431285,1890641,2381052]}
+  12 B small  12 B/elem     12000000 B total   0.800 ns/elem  checksum 26481704971
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"zig","n":1000000,"ns":800057,"samples":[730074,739940,770906,800057,821354,883447,1078289]}
+  checksums match
+N = 3000000
+  24 B fat    24 B/elem     72000000 B total   3.133 ns/elem  checksum 79413987244
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"zig","n":3000000,"ns":9397917,"samples":[8962768,9072195,9245816,9397917,9402537,9409443,9459530]}
+  16 B index  16 B/elem     48000000 B total   2.251 ns/elem  checksum 79413987244
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"zig","n":3000000,"ns":6753991,"samples":[6638108,6660875,6693721,6753991,6762832,6863771,6973378]}
+  12 B small  12 B/elem     36000000 B total   1.797 ns/elem  checksum 79413987244
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"zig","n":3000000,"ns":5391761,"samples":[5255174,5276866,5293996,5391761,5420452,5464912,5601688]}
+  checksums match
+N = 10000000
+  24 B fat    24 B/elem    240000000 B total   3.073 ns/elem  checksum 264734445134
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"zig","n":10000000,"ns":30729234,"samples":[30571799,30668637,30710373,30729234,30796951,31039799,31122269]}
+  16 B index  16 B/elem    160000000 B total   2.310 ns/elem  checksum 264734445134
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"zig","n":10000000,"ns":23102881,"samples":[22965011,22975277,23027237,23102881,23160450,23207034,23439919]}
+  12 B small  12 B/elem    120000000 B total   1.661 ns/elem  checksum 264734445134
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"zig","n":10000000,"ns":16605422,"samples":[16512252,16523996,16599423,16605422,16666348,16815897,16859571]}
+  checksums match

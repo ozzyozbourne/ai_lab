@@ -1,0 +1,82 @@
+== layout (rustc, x86-64) ==
+U32Bool repr(C)              size   8  align  4  
+Quiz {u32,u64,u32} repr(C)   size  24  align  8  
+QuizSorted {u32,u32,u64}     size  16  align  8  
+QuizSorted + bool            size  24  align  8  
+Mixed (default repr)         size  16  align  8  offsets a=12 b=0 c=13 d=8
+Mixed repr(C)                size  24  align  8  offsets a=0 b=8 c=16 d=20
+Mixed repr(C, packed)        size  14  align  1  offsets a=0 b=1 c=9 d=10
+Monster {&Anim,u32,u32,bool} size  24  align  8  offsets anim=0 hp=8 y=12 alive=16
+MonsterOob (bool out of band) size  16  align  8  
+MonsterIdx (u32 index)       size  12  align  4  
+Kind (5 variants)            size   1  align  1  
+Option<Kind>                 size   1  align  1  
+Option<u32>                  size   8  align  4  
+Option<NonZeroU32>           size   4  align  4  
+Option<AnimId>               size   4  align  4  
+Option<&u64>                 size   8  align  8  
+Option<Box<u64>>             size   8  align  8  
+PosF32                       size  12  align  4  
+PosU16                       size   6  align  2  
+PackedRef (manual bits)      size   4  align  4  
+CacheLine repr(align(64))    size  64  align 64  
+PackedRef(3, 7, 123456) -> kind=3 layer=7 index=123456 raw=0x01e24073
+quantize(123.456 m) = 8091 -> 123.4607 m (error 0.0047 m)
+f16: unstable in Rust 1.100 (feature "f16"); store u16 bits or quantize instead
+== padding-waste sweep (one pass, median of 7) ==
+N = 10000
+  24 B fat    24 B/elem       240000 B total   0.822 ns/elem  checksum 264605615
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"rust","n":10000,"ns":8215,"samples":[8184,8194,8210,8215,8216,8254,8306]}
+  16 B index  16 B/elem       160000 B total   0.670 ns/elem  checksum 264605615
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"rust","n":10000,"ns":6705,"samples":[6589,6612,6699,6705,6721,6724,6736]}
+  12 B small  12 B/elem       120000 B total   0.659 ns/elem  checksum 264605615
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"rust","n":10000,"ns":6591,"samples":[6342,6345,6578,6591,6610,6627,6634]}
+  checksums match
+N = 30000
+  24 B fat    24 B/elem       720000 B total   0.815 ns/elem  checksum 793598549
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"rust","n":30000,"ns":24463,"samples":[24348,24370,24391,24463,24479,24542,46786]}
+  16 B index  16 B/elem       480000 B total   0.655 ns/elem  checksum 793598549
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"rust","n":30000,"ns":19660,"samples":[19533,19551,19573,19660,19668,19957,19969]}
+  12 B small  12 B/elem       360000 B total   0.629 ns/elem  checksum 793598549
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"rust","n":30000,"ns":18864,"samples":[18828,18828,18856,18864,18908,19577,19580]}
+  checksums match
+N = 100000
+  24 B fat    24 B/elem      2400000 B total   0.984 ns/elem  checksum 2649054248
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"rust","n":100000,"ns":98362,"samples":[98142,98217,98222,98362,99417,107394,198688]}
+  16 B index  16 B/elem      1600000 B total   0.764 ns/elem  checksum 2649054248
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"rust","n":100000,"ns":76400,"samples":[73561,74014,75183,76400,86515,100969,113095]}
+  12 B small  12 B/elem      1200000 B total   0.662 ns/elem  checksum 2649054248
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"rust","n":100000,"ns":66155,"samples":[63897,65943,66121,66155,75330,80523,97555]}
+  checksums match
+N = 300000
+  24 B fat    24 B/elem      7200000 B total   1.097 ns/elem  checksum 7950833696
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"rust","n":300000,"ns":329062,"samples":[299359,311301,316739,329062,337656,373060,710490]}
+  16 B index  16 B/elem      4800000 B total   0.764 ns/elem  checksum 7950833696
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"rust","n":300000,"ns":229182,"samples":[227798,228136,228328,229182,236982,334026,336906]}
+  12 B small  12 B/elem      3600000 B total   0.699 ns/elem  checksum 7950833696
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"rust","n":300000,"ns":209804,"samples":[194587,199984,200234,209804,211067,224933,225522]}
+  checksums match
+N = 1000000
+  24 B fat    24 B/elem     24000000 B total   2.278 ns/elem  checksum 26481704971
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"rust","n":1000000,"ns":2278315,"samples":[1605697,1860648,2166234,2278315,2351234,2604953,2744378]}
+  16 B index  16 B/elem     16000000 B total   0.962 ns/elem  checksum 26481704971
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"rust","n":1000000,"ns":961647,"samples":[855471,876978,880743,961647,1125243,1396637,1900674]}
+  12 B small  12 B/elem     12000000 B total   0.717 ns/elem  checksum 26481704971
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"rust","n":1000000,"ns":717152,"samples":[693348,699520,713912,717152,731151,741281,746828]}
+  checksums match
+N = 3000000
+  24 B fat    24 B/elem     72000000 B total   3.035 ns/elem  checksum 79413987244
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"rust","n":3000000,"ns":9105216,"samples":[8907396,8946602,8955522,9105216,9133244,9157107,9220192]}
+  16 B index  16 B/elem     48000000 B total   2.152 ns/elem  checksum 79413987244
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"rust","n":3000000,"ns":6456350,"samples":[6357342,6448233,6450643,6456350,6509603,6527689,6549993]}
+  12 B small  12 B/elem     36000000 B total   1.720 ns/elem  checksum 79413987244
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"rust","n":3000000,"ns":5161043,"samples":[5038426,5131117,5149533,5161043,5214249,5273858,5397005]}
+  checksums match
+N = 10000000
+  24 B fat    24 B/elem    240000000 B total   3.116 ns/elem  checksum 264734445134
+BENCH {"id":"ch03-monsters","label":"24 B fat","lang":"rust","n":10000000,"ns":31155804,"samples":[30688443,30726528,31134074,31155804,31619481,33636909,35515047]}
+  16 B index  16 B/elem    160000000 B total   2.257 ns/elem  checksum 264734445134
+BENCH {"id":"ch03-monsters","label":"16 B index","lang":"rust","n":10000000,"ns":22566106,"samples":[21722366,21849941,21976484,22566106,22574297,22913499,23047554]}
+  12 B small  12 B/elem    120000000 B total   1.745 ns/elem  checksum 264734445134
+BENCH {"id":"ch03-monsters","label":"12 B small","lang":"rust","n":10000000,"ns":17445644,"samples":[16761872,16969474,17158503,17445644,17458524,17485411,17516245]}
+  checksums match

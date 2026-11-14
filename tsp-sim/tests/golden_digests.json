@@ -1,0 +1,12 @@
+{
+ "m1": {
+  "listing_sha256": "9d5e473624d8becb3960aebac0ec186b60cd3050f9293c305d7569e5a9b3903c",
+  "n_cycles": 49,
+  "trace_sha256": "7aa708a9e4f823dac0f9402a2cceb7d7802b6b82894010e378cdae6e0c7a86cf"
+ },
+ "m2": {
+  "listing_sha256": "c9a9cdfc78407a28dadc054cc1edb7af603379657ece2aa7fd51614f56492f93",
+  "n_cycles": 100,
+  "trace_sha256": "148aa8b195c8a8e1e42c3f2e58983e2a97a134a852d007846f497c3539150dfd"
+ }
+}

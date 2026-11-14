@@ -44,7 +44,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..config import EAST, ChipConfig
-from ..isa import IW, Instr, MatVec, Read, Shift, SRef, VOp, Write, plane_tags
+from ..isa import IW, Instr, MatVec, Read, Shift, SRef, VOp, Write, opcode, plane_tags
 from ..program import PlaneLoc
 from .assign import VXM
 from .chains import Chain
@@ -207,6 +207,14 @@ class Scheduler:
                     lb = max(lb, lead + self.t_read.d_skew)
                     if v in self.write_sample:
                         lb = max(lb, self.write_sample[v][j] + self.t_write.d_func + lead)
+            real = self.tables                      # no-self-conflict assertion, as for chains
+            self.tables = Tables(self.config)
+            try:
+                self.try_wave(op, unit, x_p, wave, lb, {"streams": 0})
+            except Fail as e:
+                raise CompileError(f"{self.name(cid)}: install wave conflicts with itself ({e.args[0]})") from None
+            finally:
+                self.tables = real
             last = "nothing"
             for w in range(lb, self.config.max_schedule_cycles + 1):
                 m = self.tables.mark()
@@ -218,6 +226,7 @@ class Scheduler:
                     last = e.args[0]
                     continue
                 self.placed.extend(out)
+                record(rec, out)
                 rec["install_waves"].append(w)
                 prev = w
                 break
@@ -412,7 +421,7 @@ class Scheduler:
         rec = {"chain": cid,
                "nodes": list(dict.fromkeys(self.tg.node_names[self.tg.ops[o].node] for o in c.ops)),
                "ops": [self.tg.vals[self.tg.ops[o].out].prefix for o in c.ops],
-               "ideal_anchor": ideal, "anchor": None, "install_waves": [],
+               "ideal_anchor": ideal, "anchor": None, "install_waves": [], "instructions": [],
                "rejected": {"alus": 0, "slices": 0, "streams": 0, "anchors": 0, "install_cycles": 0}}
         head = self.tg.ops[c.head]
         last_wave = self.install(cid, rec) if head.kind == MATVEC else None
@@ -446,6 +455,7 @@ class Scheduler:
                                f"last conflict: {last}")
         # commit
         self.placed.extend(out)
+        record(rec, out)
         final = self.tg.ops[c.ops[-1]].out
         planes = tuple(PlaneLoc(s, PARK_BANK, self.mem.alloc(s, PARK_BANK)) for s, _ in writes)
         assert [p.addr for p in planes] == [w.instr.addr for w in out if isinstance(w.instr, Write)]
@@ -458,6 +468,11 @@ class Scheduler:
         rec["units"] = [p.unit for p in out if not isinstance(p.instr, (Read, Write))]
         rec["park"] = [p.slice for p in planes]
         return rec
+
+
+def record(rec: dict, placed: list[Placed]) -> None:
+    rec["instructions"].extend({"unit": p.unit, "op": opcode(p.instr), "issue": p.issue, "sample": p.sample}
+                               for p in placed)
 
 
 def make_instr(tg: Tiled, op: TOp, srefs: list[SRef], res: SRef) -> Instr:

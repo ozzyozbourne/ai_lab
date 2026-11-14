@@ -1,0 +1,192 @@
+{
+ "m1": {
+  "chip": "toy",
+  "config_fingerprint": "3e44471c9fbbaef4",
+  "listing_sha256": "9d5e473624d8becb3960aebac0ec186b60cd3050f9293c305d7569e5a9b3903c",
+  "model": "m1",
+  "n_cycles": 49,
+  "n_cycles_last_superlane": 50,
+  "n_events": 177,
+  "n_instructions": 34,
+  "outputs": {
+   "y": {
+    "bit_exact": true,
+    "dtype": "int32",
+    "matches_plain": true,
+    "max_abs_diff_vs_plain": 0.0,
+    "n": 24
+   }
+  },
+  "second_run_identical": true,
+  "trace_sha256": "7aa708a9e4f823dac0f9402a2cceb7d7802b6b82894010e378cdae6e0c7a86cf",
+  "validation": {
+   "A exact arrival": {
+    "checked": 82,
+    "passed": true
+   },
+   "B stream replay": {
+    "checked": 74,
+    "passed": true
+   },
+   "C units": {
+    "checked": 114,
+    "passed": true
+   },
+   "D program/trace agreement": {
+    "checked": 177,
+    "passed": true
+   },
+   "E occupancy replay": {
+    "checked": 49,
+    "passed": true
+   }
+  },
+  "validation_ok": true
+ },
+ "m1_paper": {
+  "chip": "paper",
+  "config_fingerprint": "30cb859550ec8e53",
+  "listing_sha256": "6888e807aa9a1a2bcdd79214795853902f91fd9c5d015f32b8e30fb3f8193d36",
+  "model": "m1",
+  "n_cycles": 103,
+  "n_cycles_last_superlane": 122,
+  "n_events": 1995,
+  "n_instructions": 352,
+  "outputs": {
+   "y": {
+    "bit_exact": true,
+    "dtype": "int32",
+    "matches_plain": true,
+    "max_abs_diff_vs_plain": 0.0,
+    "n": 320
+   }
+  },
+  "second_run_identical": true,
+  "trace_sha256": "b84e532b94cd94fc54c84e2b3688a70eaa012ee5b3c64a7f668d1c421333879e",
+  "validation": {
+   "A exact arrival": {
+    "checked": 982,
+    "passed": true
+   },
+   "B stream replay": {
+    "checked": 674,
+    "passed": true
+   },
+   "C units": {
+    "checked": 1050,
+    "passed": true
+   },
+   "D program/trace agreement": {
+    "checked": 1995,
+    "passed": true
+   },
+   "E occupancy replay": {
+    "checked": 103,
+    "passed": true
+   }
+  },
+  "validation_ok": true
+ },
+ "m2": {
+  "chip": "toy",
+  "config_fingerprint": "3e44471c9fbbaef4",
+  "listing_sha256": "c9a9cdfc78407a28dadc054cc1edb7af603379657ece2aa7fd51614f56492f93",
+  "model": "m2",
+  "n_cycles": 100,
+  "n_cycles_last_superlane": 101,
+  "n_events": 1113,
+  "n_instructions": 209,
+  "outputs": {
+   "y": {
+    "bit_exact": true,
+    "dtype": "int32",
+    "matches_plain": true,
+    "max_abs_diff_vs_plain": 0.0,
+    "n": 10
+   }
+  },
+  "second_run_identical": true,
+  "trace_sha256": "148aa8b195c8a8e1e42c3f2e58983e2a97a134a852d007846f497c3539150dfd",
+  "validation": {
+   "A exact arrival": {
+    "checked": 526,
+    "passed": true
+   },
+   "B stream replay": {
+    "checked": 448,
+    "passed": true
+   },
+   "C units": {
+    "checked": 661,
+    "passed": true
+   },
+   "D program/trace agreement": {
+    "checked": 1113,
+    "passed": true
+   },
+   "E occupancy replay": {
+    "checked": 100,
+    "passed": true
+   }
+  },
+  "validation_ok": true
+ },
+ "m3": {
+  "chip": "toy",
+  "config_fingerprint": "3e44471c9fbbaef4",
+  "listing_sha256": "82e0cd35e55bf9c9b3ad6bb43959ec5b7befe23d7ac25c036164d6fa5edcb90c",
+  "model": "m3",
+  "n_cycles": 402,
+  "n_cycles_last_superlane": 403,
+  "n_events": 3025,
+  "n_instructions": 655,
+  "outputs": {
+   "k": {
+    "bit_exact": true,
+    "dtype": "float32",
+    "matches_plain": true,
+    "max_abs_diff_vs_plain": 0.0,
+    "n": 16
+   },
+   "logits": {
+    "bit_exact": true,
+    "dtype": "float32",
+    "matches_plain": true,
+    "max_abs_diff_vs_plain": 0.00021391708091567097,
+    "n": 32
+   },
+   "v": {
+    "bit_exact": true,
+    "dtype": "float32",
+    "matches_plain": true,
+    "max_abs_diff_vs_plain": 0.0,
+    "n": 16
+   }
+  },
+  "second_run_identical": true,
+  "trace_sha256": "105da7c78382962edea8e0183bf2e32067e14450a17c3b0576f54f40b0be6ec3",
+  "validation": {
+   "A exact arrival": {
+    "checked": 1422,
+    "passed": true
+   },
+   "B stream replay": {
+    "checked": 1352,
+    "passed": true
+   },
+   "C units": {
+    "checked": 1896,
+    "passed": true
+   },
+   "D program/trace agreement": {
+    "checked": 3021,
+    "passed": true
+   },
+   "E occupancy replay": {
+    "checked": 402,
+    "passed": true
+   }
+  },
+  "validation_ok": true
+ }
+}

@@ -403,10 +403,11 @@ def _mxm_rules(c: _Collector, timed: list[_Ins], trace: Trace, config: ChipConfi
             if tag != expect:
                 c.fail(f"{where}: last installed at cycle {t_inst} with {tag!r}, expected {expect!r}")
 
-    # L-X9: no instruction on plane .1 while plane .0 holds F16 rows
+    # L-X9: no instruction may be issued on plane .1 while plane .0 holds F16 rows. Weight-buffer
+    # changes take effect at t_s + d_func(IW) (plan 2.8), and the rule is judged at the issue cycle.
     for hemi_slice in ("MXM_W", "MXM_E"):
         p0 = f"{hemi_slice}.0"
-        events = sorted((x.t_sample, x.instr.dtype) for x in iws if x.unit == p0)
+        events = sorted((x.t_sample + iw_delay, x.instr.dtype) for x in iws if x.unit == p0)
         intervals, start = [], None
         for t_s, dt in events:
             if dt == DType.F16 and start is None:
@@ -419,7 +420,7 @@ def _mxm_rules(c: _Collector, timed: list[_Ins], trace: Trace, config: ChipConfi
         for x in timed:
             if x.unit.startswith(hemi_slice + ".") and x.unit != p0:
                 for lo, hi in intervals:
-                    if x.t_sample >= lo and (hi is None or x.t_sample < hi):
+                    if x.t_issue >= lo and (hi is None or x.t_issue < hi):
                         c.fail(f"cycle {x.t_issue} {x.unit} {text(x.instr)}: plane .0 holds F16 rows "
                                f"since cycle {lo} (L-X9)")
 

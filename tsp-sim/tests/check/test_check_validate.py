@@ -281,8 +281,14 @@ def test_c_fails_on_nop_count():
 def test_c_fails_on_fp16_two_plane_rule():
     """An I8 IW on MXM_W.1 while MXM_W.0 holds F16 rows (L-X9)."""
     items, image, info = mxm_items(TOY)
-    iw1 = IW(DType.I8, ((0, SRef("W", 0, ("W.c0#0",))),))
-    items.append(("MXM_W.1", issue_at(TOY, iw1, info["t_iw"]), iw1))
+    # Issued once the F16 rows on plane .0 have taken effect (t_s + d_func(IW), plan 2.8),
+    # with its own operand arriving exactly then, so that only the L-X9 rule is broken.
+    t1 = info["t_iw"] + TOY.timing["IW"].d_func
+    rd = Read(0, 0, SRef("W", 6, ("X.c0#0",)))
+    items.append(("MEM_W9", issue_at(TOY, rd, t1 - TOY.pos("MEM_W9") - TOY.timing["READ"].d_func), rd))
+    image[("MEM_W9", 0, 0)] = "X.c0#0"
+    iw1 = IW(DType.I8, ((0, SRef("W", 6, ("X.c0#0",))),))
+    items.append(("MXM_W.1", issue_at(TOY, iw1, t1), iw1))
     prog, trace = run(TOY, items, image)
     rep = validate(prog, trace, TOY)
     only_fails(rep, "C")

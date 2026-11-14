@@ -44,7 +44,7 @@ def m2_graph(seed=2):
     b1 = g.vector("b1", DType.I32, 40, data=rng.integers(-1000, 1001, 40).astype(np.int32))
     W2 = g.matrix("W2", DType.I8, 10, 40, data=_i8(rng, (10, 40)))
     b2 = g.vector("b2", DType.I32, 10, data=rng.integers(-1000, 1001, 10).astype(np.int32))
-    h = g.requant(g.relu(g.add(g.matvec(W1, x), b1)), 6, name="h")
+    h = g.requant(g.relu(g.add(g.matvec(W1, x, name="mv1"), b1)), 6, name="h")
     g.output("y", g.add(g.matvec(W2, h), b2, name="y"))
     return g, {"x": _i8(rng, 48, -128, 127)}
 

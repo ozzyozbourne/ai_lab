@@ -18,10 +18,15 @@ Rules (plan 5.2):
 - addresses are bump-allocated per (slice, bank); running out is a CompileError.
 
 Policy choices where the plan is open:
-- Round-robin: plane j of install row r of a weight tile goes to the
-  `(r * nbytes + j) mod S`-th nearest slice (S = min(M, iw_max_streams)); the count
-  restarts at 0 for every weight tile. Matrices that no live MATVEC uses go
-  round-robin next to MXM_W.
+- Round-robin: one counter per hemisphere over the S = min(M, iw_max_streams)
+  slices nearest that hemisphere's MXM (nearest first). Install rows are placed
+  per MATVEC in op order, rows in order, planes in order; each plane takes the
+  next slot, skipping a slice whose bank 0 is full or that holds a lower plane
+  of the same vector. The counter continues across weight tiles (it does not
+  restart), so small weight tiles do not all pile onto the nearest slices;
+  consecutive rows still land in distinct slices, so up to S streams of one
+  tile can be read in one install wave. Matrices that no live MATVEC uses go
+  on the West counter.
 - Cursor: one per hemisphere, an index into MEM_h0, MEM_h1, ... (MEM_h0 is next
   to the VXM). Each plane takes the first acceptable slice at or after the cursor
   (wrapping), and the cursor moves one past it. Leaf vectors are placed in node
@@ -117,14 +122,24 @@ def nearest_slices(unit: str, config: ChipConfig) -> list[str]:
     return sorted(hemisphere_slices(config.hemi(unit), config), key=lambda s: abs(config.pos(s) - x))
 
 
-def place_round_robin(vid: int, r: int, near: list[str], tg: Tiled, mem: Memory, marks: ReadMarks) -> None:
+def place_round_robin(vid: int, near: list[str], hemi: str, rr: dict[str, int], tg: Tiled, mem: Memory,
+                      marks: ReadMarks) -> None:
+    """Next slots of the hemisphere's round-robin over `near`, skipping full slices."""
     nb = tg.vals[vid].dtype.nbytes
     if nb > len(near):
         raise CompileError(f"{tg.vals[vid].prefix}: {nb} planes but only {len(near)} slices")
-    planes = []
+    planes: list[PlaneLoc] = []
     for j in range(nb):
-        s = near[(r * nb + j) % len(near)]
-        planes.append(PlaneLoc(s, LEAF_BANK, mem.alloc(s, LEAF_BANK)))
+        for step in range(len(near)):
+            slot = (rr.get(hemi, 0) + step) % len(near)
+            s = near[slot]
+            if mem.peek(s, LEAF_BANK) is not None and all(p.slice != s for p in planes):
+                planes.append(PlaneLoc(s, LEAF_BANK, mem.alloc(s, LEAF_BANK)))
+                rr[hemi] = slot + 1
+                break
+        else:
+            raise CompileError(f"cannot place plane {j} of {tg.vals[vid].prefix}: bank 0 is full in the "
+                               f"{len(near)} slices nearest MXM_{hemi} ({mem.config.words_per_bank} words, L-M2)")
     mem.loc[vid] = tuple(planes)
     marks.record(vid, mem.loc[vid])
 
@@ -135,14 +150,15 @@ def place_leaves(tg: Tiled, chains: list[Chain], times: list[ChainTime], units: 
     marks = ReadMarks(tg, chains, times, config)
     S = min(config.mem_slices_per_hemi, config.iw_max_streams)
 
-    # 1. install rows, per MATVEC in op order
+    # 1. install rows, per MATVEC in op order, row order
+    rr: dict[str, int] = {}
     for op in tg.ops:
         if op.kind != MATVEC:
             continue
         near = nearest_slices(units[op.oid], config)[:S]
-        for r, v in enumerate(op.rows):
+        for v in op.rows:
             if tg.vals[v].leaf is not None and v not in mem.loc:
-                place_round_robin(v, r, near, tg, mem, marks)
+                place_round_robin(v, near, config.hemi(units[op.oid]), rr, tg, mem, marks)
 
     # 2. other leaf vectors: rotating cursor per hemisphere
     cursor: dict[str, int] = {}
@@ -184,7 +200,7 @@ def place_leaves(tg: Tiled, chains: list[Chain], times: list[ChainTime], units: 
     for name, cols in tg.matrix_cols.items():
         for v in cols:
             if v not in mem.loc:
-                place_round_robin(v, tg.vals[v].index[2], near_w, tg, mem, marks)
+                place_round_robin(v, near_w, WEST, rr, tg, mem, marks)
     return mem, marks
 
 

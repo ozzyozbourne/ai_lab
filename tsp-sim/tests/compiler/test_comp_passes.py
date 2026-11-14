@@ -33,13 +33,13 @@ def ops_of(tg, prefix):
 def test_tile_len_and_m2_shapes():
     tg = tile_graph(m2_graph()[0], TOY)
     assert tg.tile_len == TOY.lanes
-    mv1 = [op for op in tg.ops if op.kind == MATVEC and tg.node_names[op.node].startswith("n4")]
+    mv1 = [op for op in tg.ops if op.kind == MATVEC and tg.node_names[op.node] == "mv1"]
     # W1 is 40x48: 2 output tiles x 2 input tiles, k = 32 and 16
     assert [(op.tile, len(op.rows)) for op in mv1] == [(0, 32), (0, 16), (1, 32), (1, 16)]
-    adds = [op for op in tg.ops if op.kind == "add" and tg.node_names[op.node].startswith("n4")]
-    assert [tg.vals[a.out].prefix for a in adds] == ["n4_matvec.t0", "n4_matvec.t1"]
+    adds = [op for op in tg.ops if op.kind == "add" and tg.node_names[op.node] == "mv1"]
+    assert [tg.vals[a.out].prefix for a in adds] == ["mv1.t0", "mv1.t1"]
     # left-to-right partial sum: p0 + p1
-    assert [tg.vals[v].prefix for v in adds[0].operands] == ["n4_matvec.t0.p0", "n4_matvec.t0.p1"]
+    assert [tg.vals[v].prefix for v in adds[0].operands] == ["mv1.t0.p0", "mv1.t0.p1"]
     # matrix column tags and rows
     assert tg.vals[mv1[1].rows[0]].prefix == "W1.o0.c32"
     assert tg.vals[mv1[2].rows[5]].index == (1, 0, 5)
@@ -51,8 +51,7 @@ def test_tile_len_and_m2_shapes():
 def test_f16_tile_len_and_matvec_cols():
     tg = tile_graph(m3_graph()[0], TOY)
     assert tg.tile_len == TOY.lanes // 2
-    (o,) = [op for op in tg.ops if tg.node_names[op.node] == "n52_matvec_cols"] or [
-        op for op in tg.ops if op.kind == MATVEC and len(op.rows) == 8]
+    (o,) = [op for op in tg.ops if op.kind == MATVEC and len(op.rows) == 8]
     assert [tg.vals[r].prefix for r in o.rows[:7]] == [f"V{i}.t0" for i in range(7)]
     assert tg.vals[o.rows[7]].producer is not None          # c16(v) is computed
     # Wu is 32x16 -> two output tiles
@@ -160,22 +159,29 @@ def test_matvec_cols_columns_are_predecessors():
 def test_leaf_placement_rules():
     tg, units, chains, chain_of, times, mem = front(m3_graph()[0])
     S = min(TOY.mem_slices_per_hemi, TOY.iw_max_streams)
+    seen = {}
     for v in tg.vals:
         planes = mem.loc[v.vid] if v.leaf is not None else ()
         assert all(p.bank == LEAF_BANK for p in planes)
         assert len({p.slice for p in planes}) == len(planes)                 # distinct slices
         assert len({p.slice[:5] for p in planes}) <= 1                       # one hemisphere
-    # install rows of one weight tile: round-robin over the S slices nearest the MXM
+    # install rows: one round-robin per hemisphere over the S slices nearest the MXM, continuing
+    # across weight tiles (no bank fills up in M3, so no slot is skipped)
+    nxt = {"W": 0, "E": 0}
     for op in tg.ops:
         if op.kind != MATVEC:
             continue
         hemi = TOY.hemi(units[op.oid])
         near = sorted((f"MEM_{hemi}{i}" for i in range(TOY.mem_slices_per_hemi)),
                       key=lambda s: abs(TOY.pos(s) - TOY.pos(units[op.oid])))[:S]
-        for r, v in enumerate(op.rows):
-            if tg.vals[v].leaf is not None and tg.vals[v].leaf.startswith("W"):
-                nb = tg.vals[v].dtype.nbytes
-                assert [p.slice for p in mem.loc[v]] == [near[(r * nb + j) % S] for j in range(nb)]
+        rows = [v for v in op.rows if tg.vals[v].leaf is not None]
+        if rows and all(v in seen for v in rows):
+            continue
+        for v in rows:
+            got = [p.slice for p in mem.loc[v]]
+            assert got == [near[(nxt[hemi] + j) % S] for j in range(len(got))]
+            nxt[hemi] = (nxt[hemi] + len(got)) % S
+            seen[v] = True
 
 
 def test_co_read_rule_between_leaves():

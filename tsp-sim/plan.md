@@ -159,7 +159,7 @@ one vector over lanes plus its dtype and tag.
   - `F16`: `a` is a stream pair, `k ≤ lanes/2`, elements `a[0..k−1]` (L-X8); every product is exact in float64, each lane's sum is the correctly rounded sum (`math.fsum`, so order does not matter), rounded once to F32 (L-X4). Defined by `numerics.matvec`.
   - `len(expect_rows) == k`; `expect_rows[r]` is the full tag of the row's first plane, e.g. `"W.c3#0"`.
 - `a` and every `IW` row must be on outward-flowing streams and `out` on an inward-flowing group (L-X6): West MXM reads `W`, writes `E`; East MXM reads `E`, writes `W`.
-- **fp16 uses both planes of a hemisphere as one unit** (L-X9). F16 instructions are legal only on plane `.0`. While plane `.0` holds any F16 row, any instruction issued to plane `.1` of that hemisphere is a fault; an F16 `IW` on plane `.0` clears plane `.1`; an I8 `IW` on plane `.0` clears its F16 rows.
+- **fp16 uses both planes of a hemisphere as one unit** (L-X9). F16 instructions are legal only on plane `.0`. While plane `.0` holds any F16 row, any instruction issued to plane `.1` of that hemisphere is a fault; an F16 `IW` on plane `.0` clears plane `.1`; an I8 `IW` on plane `.0` clears its F16 rows. All weight-buffer changes, including these clears, take effect at `t_s + d_func(IW)`; whether plane `.1` may issue is judged against the buffer state at its issue cycle.
 
 ### 2.9 SXM (L-S1..L-S4)
 
@@ -500,10 +500,15 @@ scheduled, the one with the greatest height (ties: lowest head node id). For it:
 There is no backtracking over earlier chains: every operand of a chain other
 than its internal links comes from memory and can be re-read at any later cycle.
 A later anchor is feasible once earlier reservations have drained, **provided**
-the chain has no conflict with itself. The only self-conflict the machine allows
-is two equidistant Reads in one slice, which the co-read rule (5.2) and the wave
-packing (step 1) exclude by construction; the compiler asserts this before
-searching and raises `CompileError` if it does not hold.
+the chain has no conflict with itself. Self-conflicts are pairs of the chain's
+own memory accesses that land in one slice in one cycle at every anchor: two
+equidistant Reads (the co-read rule, 5.2), two Reads for consumers at different
+positions whose offsets happen to coincide, or a parking Write and a Read on the
+same bank. (The last two were found during the build; the first draft of this
+plan listed only the first.) Placement and parking avoid all three by tracking
+each chain's (slice, read offset) marks, wave packing (step 1) avoids them for
+installs, and before searching the compiler tries each chain once on empty
+tables and raises `CompileError` if it conflicts with itself.
 `Program.report` records, per chain: ideal anchor, actual anchor, and the number
 of rejected candidates of each kind (ALUs, slices, stream groups, anchors).
 

@@ -1,0 +1,355 @@
+; program m2 for chip 'toy'
+MXM_W.0:
+       0  NOP 21
+      21  IW.i8 r0=W0<W1.o0.c0>, r1=W1<W1.o0.c1>, r2=W2<W1.o0.c2>, r3=W3<W1.o0.c3>, r4=W4<W1.o0.c4>, r5=W5<W1.o0.c5>, r6=W6<W1.o0.c6>, r7=W7<W1.o0.c7>, r8=W8<W1.o0.c8>, r9=W9<W1.o0.c9>, r10=W10<W1.o0.c10>, r11=W11<W1.o0.c11>, r12=W12<W1.o0.c12>, r13=W13<W1.o0.c13>, r14=W14<W1.o0.c14>, r15=W15<W1.o0.c15>
+      22  IW.i8 r16=W0<W1.o0.c16>, r17=W1<W1.o0.c17>, r18=W2<W1.o0.c18>, r19=W3<W1.o0.c19>, r20=W4<W1.o0.c20>, r21=W5<W1.o0.c21>, r22=W6<W1.o0.c22>, r23=W7<W1.o0.c23>, r24=W8<W1.o0.c24>, r25=W9<W1.o0.c25>, r26=W10<W1.o0.c26>, r27=W11<W1.o0.c27>, r28=W12<W1.o0.c28>, r29=W13<W1.o0.c29>, r30=W14<W1.o0.c30>, r31=W15<W1.o0.c31>
+      23  NOP 2
+      25  MATVEC.i8 k=32 W0<x.t0> -> E4-7<W1x.t0.p0>
+      26  IW.i8 r0=W0<W2.o0.c0>, r1=W1<W2.o0.c1>, r2=W2<W2.o0.c2>, r3=W3<W2.o0.c3>, r4=W4<W2.o0.c4>, r5=W5<W2.o0.c5>, r6=W6<W2.o0.c6>, r7=W7<W2.o0.c7>, r8=W8<W2.o0.c8>, r9=W9<W2.o0.c9>, r10=W10<W2.o0.c10>, r11=W11<W2.o0.c11>, r12=W12<W2.o0.c12>, r13=W13<W2.o0.c13>, r14=W14<W2.o0.c14>, r15=W15<W2.o0.c15>
+      27  IW.i8 r16=W0<W2.o0.c16>, r17=W1<W2.o0.c17>, r18=W2<W2.o0.c18>, r19=W3<W2.o0.c19>, r20=W4<W2.o0.c20>, r21=W5<W2.o0.c21>, r22=W6<W2.o0.c22>, r23=W7<W2.o0.c23>, r24=W8<W2.o0.c24>, r25=W9<W2.o0.c25>, r26=W10<W2.o0.c26>, r27=W11<W2.o0.c27>, r28=W12<W2.o0.c28>, r29=W13<W2.o0.c29>, r30=W14<W2.o0.c30>, r31=W15<W2.o0.c31>
+      28  NOP 44
+      72  MATVEC.i8 k=32 W0<h.t0> -> E0-3<W2h.t0.p0>
+MXM_W.1:
+       0  NOP 19
+      19  IW.i8 r0=W0<W1.o1.c0>, r1=W1<W1.o1.c1>, r2=W2<W1.o1.c2>, r3=W3<W1.o1.c3>, r4=W4<W1.o1.c4>, r5=W5<W1.o1.c5>, r6=W6<W1.o1.c6>, r7=W7<W1.o1.c7>, r8=W8<W1.o1.c8>, r9=W9<W1.o1.c9>, r10=W10<W1.o1.c10>, r11=W11<W1.o1.c11>, r12=W12<W1.o1.c12>, r13=W13<W1.o1.c13>, r14=W14<W1.o1.c14>, r15=W15<W1.o1.c15>
+      20  IW.i8 r16=W0<W1.o1.c16>, r17=W1<W1.o1.c17>, r18=W2<W1.o1.c18>, r19=W3<W1.o1.c19>, r20=W4<W1.o1.c20>, r21=W5<W1.o1.c21>, r22=W6<W1.o1.c22>, r23=W7<W1.o1.c23>, r24=W8<W1.o1.c24>, r25=W9<W1.o1.c25>, r26=W10<W1.o1.c26>, r27=W11<W1.o1.c27>, r28=W12<W1.o1.c28>, r29=W13<W1.o1.c29>, r30=W14<W1.o1.c30>, r31=W15<W1.o1.c31>
+      21  NOP 2
+      23  MATVEC.i8 k=32 W0<x.t0> -> E0-3<W1x.t1.p0>
+MEM_W15:
+       0  NOP 15
+      15  READ b0@2 -> W0<W1.o1.c0#0>
+      16  READ b0@3 -> W0<W1.o1.c16#0>
+      17  READ b0@0 -> W0<W1.o0.c0#0>
+      18  READ b0@1 -> W0<W1.o0.c16#0>
+      19  NOP 3
+      22  READ b0@4 -> W0<W2.o0.c0#0>
+      23  READ b0@5 -> W0<W2.o0.c16#0>
+MEM_W14:
+       0  NOP 14
+      14  READ b0@2 -> W1<W1.o1.c1#0>
+      15  READ b0@3 -> W1<W1.o1.c17#0>
+      16  READ b0@0 -> W1<W1.o0.c1#0>
+      17  READ b0@1 -> W1<W1.o0.c17#0>
+      18  NOP 3
+      21  READ b0@4 -> W1<W2.o0.c1#0>
+      22  READ b0@5 -> W1<W2.o0.c17#0>
+MEM_W13:
+       0  NOP 13
+      13  READ b0@2 -> W2<W1.o1.c2#0>
+      14  READ b0@3 -> W2<W1.o1.c18#0>
+      15  READ b0@0 -> W2<W1.o0.c2#0>
+      16  READ b0@1 -> W2<W1.o0.c18#0>
+      17  NOP 3
+      20  READ b0@4 -> W2<W2.o0.c2#0>
+      21  READ b0@5 -> W2<W2.o0.c18#0>
+MEM_W12:
+       0  NOP 12
+      12  READ b0@2 -> W3<W1.o1.c3#0>
+      13  READ b0@3 -> W3<W1.o1.c19#0>
+      14  READ b0@0 -> W3<W1.o0.c3#0>
+      15  READ b0@1 -> W3<W1.o0.c19#0>
+      16  NOP 3
+      19  READ b0@4 -> W3<W2.o0.c3#0>
+      20  READ b0@5 -> W3<W2.o0.c19#0>
+      21  NOP 58
+      79  READ b0@6 -> E3<b2.t0#3>
+MEM_W11:
+       0  NOP 11
+      11  READ b0@2 -> W4<W1.o1.c4#0>
+      12  READ b0@3 -> W4<W1.o1.c20#0>
+      13  READ b0@0 -> W4<W1.o0.c4#0>
+      14  READ b0@1 -> W4<W1.o0.c20#0>
+      15  NOP 3
+      18  READ b0@4 -> W4<W2.o0.c4#0>
+      19  READ b0@5 -> W4<W2.o0.c20#0>
+      20  NOP 60
+      80  READ b0@6 -> E2<b2.t0#2>
+MEM_W10:
+       0  NOP 10
+      10  READ b0@2 -> W5<W1.o1.c5#0>
+      11  READ b0@3 -> W5<W1.o1.c21#0>
+      12  READ b0@0 -> W5<W1.o0.c5#0>
+      13  READ b0@1 -> W5<W1.o0.c21#0>
+      14  NOP 3
+      17  READ b0@4 -> W5<W2.o0.c5#0>
+      18  READ b0@5 -> W5<W2.o0.c21#0>
+      19  NOP 62
+      81  READ b0@6 -> E1<b2.t0#1>
+MEM_W9:
+       0  NOP 9
+       9  READ b0@2 -> W6<W1.o1.c6#0>
+      10  READ b0@3 -> W6<W1.o1.c22#0>
+      11  READ b0@0 -> W6<W1.o0.c6#0>
+      12  READ b0@1 -> W6<W1.o0.c22#0>
+      13  NOP 3
+      16  READ b0@4 -> W6<W2.o0.c6#0>
+      17  READ b0@5 -> W6<W2.o0.c22#0>
+      18  NOP 64
+      82  READ b0@6 -> E0<b2.t0#0>
+MEM_W8:
+       0  NOP 8
+       8  READ b0@2 -> W7<W1.o1.c7#0>
+       9  READ b0@3 -> W7<W1.o1.c23#0>
+      10  READ b0@0 -> W7<W1.o0.c7#0>
+      11  READ b0@1 -> W7<W1.o0.c23#0>
+      12  NOP 3
+      15  READ b0@4 -> W7<W2.o0.c7#0>
+      16  READ b0@5 -> W7<W2.o0.c23#0>
+      17  NOP 17
+      34  READ b0@6 -> E3<b1.t1#3>
+MEM_W7:
+       0  NOP 7
+       7  READ b0@2 -> W8<W1.o1.c8#0>
+       8  READ b0@3 -> W8<W1.o1.c24#0>
+       9  READ b0@0 -> W8<W1.o0.c8#0>
+      10  READ b0@1 -> W8<W1.o0.c24#0>
+      11  NOP 3
+      14  READ b0@4 -> W8<W2.o0.c8#0>
+      15  READ b0@5 -> W8<W2.o0.c24#0>
+      16  NOP 19
+      35  READ b0@6 -> E2<b1.t1#2>
+MEM_W6:
+       0  NOP 6
+       6  READ b0@2 -> W9<W1.o1.c9#0>
+       7  READ b0@3 -> W9<W1.o1.c25#0>
+       8  READ b0@0 -> W9<W1.o0.c9#0>
+       9  READ b0@1 -> W9<W1.o0.c25#0>
+      10  NOP 3
+      13  READ b0@4 -> W9<W2.o0.c9#0>
+      14  READ b0@5 -> W9<W2.o0.c25#0>
+      15  NOP 21
+      36  READ b0@6 -> E1<b1.t1#1>
+MEM_W5:
+       0  NOP 5
+       5  READ b0@2 -> W10<W1.o1.c10#0>
+       6  READ b0@3 -> W10<W1.o1.c26#0>
+       7  READ b0@0 -> W10<W1.o0.c10#0>
+       8  READ b0@1 -> W10<W1.o0.c26#0>
+       9  NOP 3
+      12  READ b0@4 -> W10<W2.o0.c10#0>
+      13  READ b0@5 -> W10<W2.o0.c26#0>
+      14  NOP 23
+      37  READ b0@6 -> E0<b1.t1#0>
+MEM_W4:
+       0  NOP 4
+       4  READ b0@2 -> W11<W1.o1.c11#0>
+       5  READ b0@3 -> W11<W1.o1.c27#0>
+       6  READ b0@0 -> W11<W1.o0.c11#0>
+       7  READ b0@1 -> W11<W1.o0.c27#0>
+       8  NOP 3
+      11  READ b0@4 -> W11<W2.o0.c11#0>
+      12  READ b0@5 -> W11<W2.o0.c27#0>
+      13  NOP 27
+      40  READ b0@6 -> E7<b1.t0#3>
+MEM_W3:
+       0  NOP 3
+       3  READ b0@2 -> W12<W1.o1.c12#0>
+       4  READ b0@3 -> W12<W1.o1.c28#0>
+       5  READ b0@0 -> W12<W1.o0.c12#0>
+       6  READ b0@1 -> W12<W1.o0.c28#0>
+       7  NOP 3
+      10  READ b0@4 -> W12<W2.o0.c12#0>
+      11  READ b0@5 -> W12<W2.o0.c28#0>
+      12  NOP 29
+      41  READ b0@6 -> E6<b1.t0#2>
+      42  NOP 57
+      99  WRITE W3<y.t0#3> -> b1@0
+MEM_W2:
+       0  NOP 2
+       2  READ b0@2 -> W13<W1.o1.c13#0>
+       3  READ b0@3 -> W13<W1.o1.c29#0>
+       4  READ b0@0 -> W13<W1.o0.c13#0>
+       5  READ b0@1 -> W13<W1.o0.c29#0>
+       6  NOP 3
+       9  READ b0@4 -> W13<W2.o0.c13#0>
+      10  READ b0@5 -> W13<W2.o0.c29#0>
+      11  NOP 31
+      42  READ b0@6 -> E5<b1.t0#1>
+      43  NOP 55
+      98  WRITE W2<y.t0#2> -> b1@0
+MEM_W1:
+       0  NOP 1
+       1  READ b0@2 -> W14<W1.o1.c14#0>
+       2  READ b0@3 -> W14<W1.o1.c30#0>
+       3  READ b0@0 -> W14<W1.o0.c14#0>
+       4  READ b0@1 -> W14<W1.o0.c30#0>
+       5  NOP 3
+       8  READ b0@4 -> W14<W2.o0.c14#0>
+       9  READ b0@5 -> W14<W2.o0.c30#0>
+      10  NOP 33
+      43  READ b0@6 -> E4<b1.t0#0>
+      44  NOP 53
+      97  WRITE W1<y.t0#1> -> b1@0
+MEM_W0:
+       0  READ b0@2 -> W15<W1.o1.c15#0>
+       1  READ b0@3 -> W15<W1.o1.c31#0>
+       2  READ b0@0 -> W15<W1.o0.c15#0>
+       3  READ b0@1 -> W15<W1.o0.c31#0>
+       4  READ b0@6 -> W0<x.t0#0>
+       5  NOP 1
+       6  READ b0@6 -> W0<x.t0#0>
+       7  READ b0@4 -> W15<W2.o0.c15#0>
+       8  READ b0@5 -> W15<W2.o0.c31#0>
+       9  NOP 42
+      51  WRITE W0<h.t0#0> -> b1@0
+      52  NOP 1
+      53  READ b1@0 -> W0<h.t0#0>
+      54  NOP 42
+      96  WRITE W0<y.t0#0> -> b1@1
+VXM.0:
+       0  NOP 44
+      44  ADD.i32 E0-3<W1x.t1.p0>, W0-3<W1x.t1.p1> -> E4-7<W1x.t1>
+      45  ADD.i32 E4-7<W1x.t1>, E0-3<b1.t1> -> E0-3<W1x_b.t1>
+      46  RELU.i32 E0-3<W1x_b.t1> -> E0-3<z1.t1>
+      47  REQUANT.i32 E0-3<z1.t1> >>6 -> E0<h.t1>
+      48  RELU.i32 E4-7<W1x_b.t0> -> E0-3<z1.t0>
+      49  REQUANT.i32 E0-3<z1.t0> >>6 -> W0<h.t0>
+      50  NOP 43
+      93  ADD.i32 E0-3<W2h.t0.p0>, W0-3<W2h.t0.p1> -> E4-7<W2h.t0>
+      94  ADD.i32 E4-7<W2h.t0>, E0-3<b2.t0> -> W0-3<y.t0>
+VXM.1:
+       0  NOP 46
+      46  ADD.i32 E4-7<W1x.t0.p0>, W0-3<W1x.t0.p1> -> E8-11<W1x.t0>
+      47  ADD.i32 E8-11<W1x.t0>, E4-7<b1.t0> -> E4-7<W1x_b.t0>
+MEM_E0:
+       0  READ b0@1 -> E15<W1.o1.c47#0>
+       1  READ b0@2 -> E0<x.t1#0>
+       2  READ b0@0 -> E15<W1.o0.c47#0>
+       3  READ b0@2 -> E0<x.t1#0>
+       4  NOP 45
+      49  WRITE E0<h.t1#0> -> b1@0
+      50  READ b1@0 -> E0<h.t1#0>
+MEM_E1:
+       0  NOP 1
+       1  READ b0@1 -> E14<W1.o1.c46#0>
+       2  NOP 1
+       3  READ b0@0 -> E14<W1.o0.c46#0>
+MEM_E2:
+       0  NOP 2
+       2  READ b0@1 -> E13<W1.o1.c45#0>
+       3  NOP 1
+       4  READ b0@0 -> E13<W1.o0.c45#0>
+MEM_E3:
+       0  NOP 3
+       3  READ b0@1 -> E12<W1.o1.c44#0>
+       4  NOP 1
+       5  READ b0@0 -> E12<W1.o0.c44#0>
+MEM_E4:
+       0  NOP 4
+       4  READ b0@1 -> E11<W1.o1.c43#0>
+       5  NOP 1
+       6  READ b0@0 -> E11<W1.o0.c43#0>
+MEM_E5:
+       0  NOP 5
+       5  READ b0@1 -> E10<W1.o1.c42#0>
+       6  NOP 1
+       7  READ b0@0 -> E10<W1.o0.c42#0>
+MEM_E6:
+       0  NOP 6
+       6  READ b0@1 -> E9<W1.o1.c41#0>
+       7  NOP 1
+       8  READ b0@0 -> E9<W1.o0.c41#0>
+MEM_E7:
+       0  NOP 7
+       7  READ b0@1 -> E8<W1.o1.c40#0>
+       8  NOP 1
+       9  READ b0@0 -> E8<W1.o0.c40#0>
+MEM_E8:
+       0  NOP 8
+       8  READ b0@1 -> E7<W1.o1.c39#0>
+       9  NOP 1
+      10  READ b0@0 -> E7<W1.o0.c39#0>
+      11  NOP 1
+      12  READ b0@2 -> E7<W2.o0.c39#0>
+MEM_E9:
+       0  NOP 9
+       9  READ b0@1 -> E6<W1.o1.c38#0>
+      10  NOP 1
+      11  READ b0@0 -> E6<W1.o0.c38#0>
+      12  NOP 1
+      13  READ b0@2 -> E6<W2.o0.c38#0>
+MEM_E10:
+       0  NOP 10
+      10  READ b0@1 -> E5<W1.o1.c37#0>
+      11  NOP 1
+      12  READ b0@0 -> E5<W1.o0.c37#0>
+      13  NOP 1
+      14  READ b0@2 -> E5<W2.o0.c37#0>
+MEM_E11:
+       0  NOP 11
+      11  READ b0@1 -> E4<W1.o1.c36#0>
+      12  NOP 1
+      13  READ b0@0 -> E4<W1.o0.c36#0>
+      14  NOP 1
+      15  READ b0@2 -> E4<W2.o0.c36#0>
+MEM_E12:
+       0  NOP 12
+      12  READ b0@1 -> E3<W1.o1.c35#0>
+      13  NOP 1
+      14  READ b0@0 -> E3<W1.o0.c35#0>
+      15  NOP 1
+      16  READ b0@2 -> E3<W2.o0.c35#0>
+      17  NOP 11
+      28  WRITE W3<W1x.t1.p1#3> -> b1@0
+      29  READ b1@0 -> W3<W1x.t1.p1#3>
+      30  WRITE W3<W1x.t0.p1#3> -> b1@1
+      31  READ b1@1 -> W3<W1x.t0.p1#3>
+      32  NOP 45
+      77  WRITE W3<W2h.t0.p1#3> -> b1@2
+      78  READ b1@2 -> W3<W2h.t0.p1#3>
+MEM_E13:
+       0  NOP 13
+      13  READ b0@1 -> E2<W1.o1.c34#0>
+      14  NOP 1
+      15  READ b0@0 -> E2<W1.o0.c34#0>
+      16  NOP 1
+      17  READ b0@2 -> E2<W2.o0.c34#0>
+      18  NOP 9
+      27  WRITE W2<W1x.t1.p1#2> -> b1@0
+      28  READ b1@0 -> W2<W1x.t1.p1#2>
+      29  WRITE W2<W1x.t0.p1#2> -> b1@1
+      30  READ b1@1 -> W2<W1x.t0.p1#2>
+      31  NOP 45
+      76  WRITE W2<W2h.t0.p1#2> -> b1@2
+      77  READ b1@2 -> W2<W2h.t0.p1#2>
+MEM_E14:
+       0  NOP 14
+      14  READ b0@1 -> E1<W1.o1.c33#0>
+      15  NOP 1
+      16  READ b0@0 -> E1<W1.o0.c33#0>
+      17  NOP 1
+      18  READ b0@2 -> E1<W2.o0.c33#0>
+      19  NOP 7
+      26  WRITE W1<W1x.t1.p1#1> -> b1@0
+      27  READ b1@0 -> W1<W1x.t1.p1#1>
+      28  WRITE W1<W1x.t0.p1#1> -> b1@1
+      29  READ b1@1 -> W1<W1x.t0.p1#1>
+      30  NOP 45
+      75  WRITE W1<W2h.t0.p1#1> -> b1@2
+      76  READ b1@2 -> W1<W2h.t0.p1#1>
+MEM_E15:
+       0  NOP 15
+      15  READ b0@1 -> E0<W1.o1.c32#0>
+      16  NOP 1
+      17  READ b0@0 -> E0<W1.o0.c32#0>
+      18  NOP 1
+      19  READ b0@2 -> E0<W2.o0.c32#0>
+      20  NOP 5
+      25  WRITE W0<W1x.t1.p1#0> -> b1@0
+      26  READ b1@0 -> W0<W1x.t1.p1#0>
+      27  WRITE W0<W1x.t0.p1#0> -> b1@1
+      28  READ b1@1 -> W0<W1x.t0.p1#0>
+      29  NOP 45
+      74  WRITE W0<W2h.t0.p1#0> -> b1@2
+      75  READ b1@2 -> W0<W2h.t0.p1#0>
+MXM_E.0:
+       0  NOP 21
+      21  IW.i8 r0=E0<W1.o0.c32>, r1=E1<W1.o0.c33>, r2=E2<W1.o0.c34>, r3=E3<W1.o0.c35>, r4=E4<W1.o0.c36>, r5=E5<W1.o0.c37>, r6=E6<W1.o0.c38>, r7=E7<W1.o0.c39>, r8=E8<W1.o0.c40>, r9=E9<W1.o0.c41>, r10=E10<W1.o0.c42>, r11=E11<W1.o0.c43>, r12=E12<W1.o0.c44>, r13=E13<W1.o0.c45>, r14=E14<W1.o0.c46>, r15=E15<W1.o0.c47>
+      22  MATVEC.i8 k=16 E0<x.t1> -> W0-3<W1x.t0.p1>
+      23  IW.i8 r0=E0<W2.o0.c32>, r1=E1<W2.o0.c33>, r2=E2<W2.o0.c34>, r3=E3<W2.o0.c35>, r4=E4<W2.o0.c36>, r5=E5<W2.o0.c37>, r6=E6<W2.o0.c38>, r7=E7<W2.o0.c39>
+      24  NOP 45
+      69  MATVEC.i8 k=8 E0<h.t1> -> W0-3<W2h.t0.p1>
+MXM_E.1:
+       0  NOP 19
+      19  IW.i8 r0=E0<W1.o1.c32>, r1=E1<W1.o1.c33>, r2=E2<W1.o1.c34>, r3=E3<W1.o1.c35>, r4=E4<W1.o1.c36>, r5=E5<W1.o1.c37>, r6=E6<W1.o1.c38>, r7=E7<W1.o1.c39>, r8=E8<W1.o1.c40>, r9=E9<W1.o1.c41>, r10=E10<W1.o1.c42>, r11=E11<W1.o1.c43>, r12=E12<W1.o1.c44>, r13=E13<W1.o1.c45>, r14=E14<W1.o1.c46>, r15=E15<W1.o1.c47>
+      20  MATVEC.i8 k=16 E0<x.t1> -> W0-3<W1x.t1.p1>

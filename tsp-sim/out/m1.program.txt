@@ -1,0 +1,79 @@
+; program m1 for chip 'toy'
+MXM_W.0:
+       0  NOP 19
+      19  IW.i8 r0=W0<W.o0.c0>, r1=W1<W.o0.c1>, r2=W2<W.o0.c2>, r3=W3<W.o0.c3>, r4=W4<W.o0.c4>, r5=W5<W.o0.c5>, r6=W6<W.o0.c6>, r7=W7<W.o0.c7>, r8=W8<W.o0.c8>, r9=W9<W.o0.c9>, r10=W10<W.o0.c10>, r11=W11<W.o0.c11>, r12=W12<W.o0.c12>, r13=W13<W.o0.c13>, r14=W14<W.o0.c14>, r15=W15<W.o0.c15>
+      20  IW.i8 r16=W0<W.o0.c16>, r17=W1<W.o0.c17>, r18=W2<W.o0.c18>, r19=W3<W.o0.c19>
+      21  MATVEC.i8 k=20 W0<x.t0> -> E4-7<Wx.t0>
+MEM_W15:
+       0  NOP 15
+      15  READ b0@0 -> W0<W.o0.c0#0>
+      16  READ b0@1 -> W0<W.o0.c16#0>
+MEM_W14:
+       0  NOP 14
+      14  READ b0@0 -> W1<W.o0.c1#0>
+      15  READ b0@1 -> W1<W.o0.c17#0>
+MEM_W13:
+       0  NOP 13
+      13  READ b0@0 -> W2<W.o0.c2#0>
+      14  READ b0@1 -> W2<W.o0.c18#0>
+MEM_W12:
+       0  NOP 12
+      12  READ b0@0 -> W3<W.o0.c3#0>
+      13  READ b0@1 -> W3<W.o0.c19#0>
+MEM_W11:
+       0  NOP 11
+      11  READ b0@0 -> W4<W.o0.c4#0>
+MEM_W10:
+       0  NOP 10
+      10  READ b0@0 -> W5<W.o0.c5#0>
+MEM_W9:
+       0  NOP 9
+       9  READ b0@0 -> W6<W.o0.c6#0>
+MEM_W8:
+       0  NOP 8
+       8  READ b0@0 -> W7<W.o0.c7#0>
+MEM_W7:
+       0  NOP 7
+       7  READ b0@0 -> W8<W.o0.c8#0>
+MEM_W6:
+       0  NOP 6
+       6  READ b0@0 -> W9<W.o0.c9#0>
+MEM_W5:
+       0  NOP 5
+       5  READ b0@0 -> W10<W.o0.c10#0>
+MEM_W4:
+       0  NOP 4
+       4  READ b0@0 -> W11<W.o0.c11#0>
+       5  NOP 30
+      35  READ b0@1 -> E3<b.t0#3>
+MEM_W3:
+       0  NOP 3
+       3  READ b0@0 -> W12<W.o0.c12#0>
+       4  NOP 32
+      36  READ b0@1 -> E2<b.t0#2>
+      37  NOP 11
+      48  WRITE W3<y.t0#3> -> b1@0
+MEM_W2:
+       0  NOP 2
+       2  READ b0@0 -> W13<W.o0.c13#0>
+       3  NOP 34
+      37  READ b0@1 -> E1<b.t0#1>
+      38  NOP 9
+      47  WRITE W2<y.t0#2> -> b1@0
+MEM_W1:
+       0  NOP 1
+       1  READ b0@0 -> W14<W.o0.c14#0>
+       2  NOP 36
+      38  READ b0@1 -> E0<b.t0#0>
+      39  NOP 7
+      46  WRITE W1<y.t0#1> -> b1@0
+MEM_W0:
+       0  READ b0@0 -> W15<W.o0.c15#0>
+       1  NOP 1
+       2  READ b0@1 -> W0<x.t0#0>
+       3  NOP 42
+      45  WRITE W0<y.t0#0> -> b1@0
+VXM.0:
+       0  NOP 42
+      42  ADD.i32 E4-7<Wx.t0>, E0-3<b.t0> -> E0-3<Wx_b.t0>
+      43  RELU.i32 E0-3<Wx_b.t0> -> W0-3<y.t0>

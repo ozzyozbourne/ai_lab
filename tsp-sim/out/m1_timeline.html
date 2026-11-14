@@ -1,0 +1,1019 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>M1: y = relu(W·x + b)</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #fcfcfb;
+  --panel: #f3f2ef;
+  --text: #0b0b0b;
+  --text2: #52514e;
+  --muted: #6b6a66;
+  --grid: #e4e3df;
+  --rule: #c9c8c2;
+  --sep: #b5b4ad;
+  --cursor: #c4006a;
+  --hover: rgba(0, 0, 0, 0.06);
+  --cell-empty: #eeede9;
+  --neutral: #8a8984;
+  --accent: #2a78d6;
+  --active: #fff1b8;
+  --active-text: #3d2e00;
+  --v0: #2a78d6; --v1: #eb6834; --v2: #1baf7a; --v3: #eda100;
+  --v4: #e87ba4; --v5: #008300; --v6: #6250d6; --v7: #e34948;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #1a1a19;
+    --panel: #242422;
+    --text: #f0efec;
+    --text2: #c3c2b7;
+    --muted: #a3a29a;
+    --grid: #2e2e2b;
+    --rule: #45443f;
+    --sep: #5c5b55;
+    --cursor: #ff6bb5;
+    --hover: rgba(255, 255, 255, 0.07);
+    --cell-empty: #262624;
+    --neutral: #8f8e88;
+    --accent: #3987e5;
+    --active: #5a4600;
+    --active-text: #fff3c4;
+    --v0: #3987e5; --v1: #d95926; --v2: #199e70; --v3: #c98500;
+    --v4: #d55181; --v5: #0ca30c; --v6: #9085e9; --v7: #e66767;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1a1a19; --panel: #242422; --text: #f0efec; --text2: #c3c2b7; --muted: #a3a29a;
+  --grid: #2e2e2b; --rule: #45443f; --sep: #5c5b55; --cursor: #ff6bb5;
+  --hover: rgba(255, 255, 255, 0.07); --cell-empty: #262624; --neutral: #8f8e88;
+  --accent: #3987e5; --active: #5a4600; --active-text: #fff3c4;
+  --v0: #3987e5; --v1: #d95926; --v2: #199e70; --v3: #c98500;
+  --v4: #d55181; --v5: #0ca30c; --v6: #9085e9; --v7: #e66767;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 var(--sans);
+  padding: 16px;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+h1 { font-size: 1.35rem; margin: 0 0 4px; overflow-wrap: anywhere; }
+code { font-family: var(--mono); font-size: 0.92em; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.facts { margin: 0; color: var(--text2); }
+.facts b { color: var(--text); font-weight: 600; }
+.intro { max-width: 70rem; color: var(--text2); margin: 12px 0; }
+.intro p { margin: 0 0 6px; }
+.intro b { color: var(--text); }
+.sw { display: inline-block; width: 22px; height: 10px; border-radius: 2px; vertical-align: baseline; background: var(--v0); }
+.sw-dead {
+  opacity: 0.45;
+  background: repeating-linear-gradient(135deg, var(--v0) 0 3px, transparent 3px 6px);
+  outline: 1px solid var(--v0);
+}
+
+button, input { font: inherit; color: inherit; }
+button {
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
+  padding: 2px 10px; min-height: 28px; cursor: pointer;
+}
+button:hover { border-color: var(--sep); }
+button:focus-visible, input:focus-visible, .g-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; margin: 8px 0; }
+.toolbar .zoom { display: inline-flex; gap: 4px; align-items: center; }
+.hl { font-family: var(--mono); font-size: 13px; color: var(--text2); min-height: 1.4em; }
+
+.gantt {
+  display: flex; border: 1px solid var(--rule); border-radius: 8px; background: var(--bg);
+  overflow: hidden; max-width: 100%;
+}
+.g-labels { flex: 0 0 auto; width: 92px; border-right: 1px solid var(--rule); background: var(--panel); position: relative; }
+.g-labels .lab {
+  position: absolute; left: 0; right: 0; padding: 0 6px; font: 11px/1 var(--mono);
+  color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: flex; align-items: center;
+}
+.g-labels .lab.group { color: var(--text); font-weight: 600; font-family: var(--sans); font-size: 11px; }
+.g-scroll { flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; }
+.g-inner { position: relative; }
+#gCanvas { position: sticky; left: 0; top: 0; display: block; cursor: crosshair; }
+
+.chip { margin-top: 16px; border: 1px solid var(--rule); border-radius: 8px; padding: 10px; background: var(--bg); }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+#slider { flex: 1 1 200px; min-width: 120px; }
+.cyc input { width: 6em; padding: 2px 4px; background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; }
+
+.chipgrid-wrap { --labw: 34px; max-width: 100%; }
+.slices, .cells { display: grid; grid-template-columns: var(--labw) repeat(var(--npos), minmax(0, 1fr)); }
+.slices { margin-bottom: 2px; }
+.slice {
+  writing-mode: vertical-rl; transform: rotate(180deg); white-space: nowrap; overflow: hidden;
+  font: 10px/1.1 var(--mono); color: var(--text2); padding: 3px 0; text-align: left;
+  border-radius: 2px; height: 92px; display: flex; align-items: center; justify-content: flex-start;
+}
+.slice.kind-VXM, .slice.kind-MXM, .slice.kind-SXM { color: var(--text); font-weight: 600; }
+.slice.active { background: var(--active); color: var(--active-text); }
+.slice .op { font-weight: 700; margin-top: 4px; }
+.cells .ln { font: 10px/1 var(--mono); color: var(--muted); display: flex; align-items: center; padding-right: 3px; justify-content: flex-end; }
+.cells .c { height: 9px; margin: 0 1px 1px 0; background: var(--cell-empty); border-radius: 1px; position: relative; }
+.cells .c.dead { opacity: 0.5; background-image: repeating-linear-gradient(135deg, transparent 0 2px, var(--bg) 2px 4px); }
+.cells .c.drv { box-shadow: inset 0 0 0 1.5px var(--text); }
+.cells .c.smp::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px;
+  border-radius: 50%; background: var(--text);
+}
+.cells .c.dim, .slice.dim { opacity: 0.18; }
+.cells .c.lanesep { margin-top: 4px; }
+.activity { font: 12px/1.5 var(--mono); color: var(--text2); max-height: 12em; overflow-y: auto; overflow-wrap: anywhere; }
+.activity .row { white-space: normal; }
+.activity b { color: var(--text); }
+
+.tip {
+  position: fixed; z-index: 10; max-width: min(460px, calc(100vw - 16px)); pointer-events: none;
+  background: var(--panel); color: var(--text); border: 1px solid var(--sep); border-radius: 6px;
+  padding: 6px 8px; font: 12px/1.4 var(--mono); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  body { padding: 10px; font-size: 13px; }
+  .g-labels { width: 70px; }
+  .chipgrid-wrap { --labw: 26px; }
+  .slice { height: 76px; font-size: 8px; }
+  .hl { display: none; }
+  .cells .c { height: 7px; margin: 0 0 1px 0; }
+}
+
+</style>
+</head>
+<body>
+<header class="top">
+  <h1 id="title">M1: y = relu(W·x + b)</h1>
+  <p class="facts" id="facts"></p>
+</header>
+
+<section class="intro" aria-label="How to read this page">
+  <p>The <b>Gantt view</b> runs left to right in clock cycles: each upper row is one instruction queue (grouped by slice, West to East), with a block at the cycle an instruction was issued, labelled with its opcode, and a thin whisker on to the cycle its result becomes visible. Each lower row is one stream lane, where <b>E</b>&#8239;n is eastward-flowing stream n and <b>W</b>&#8239;n is westward-flowing stream n, and a bar starts in the cycle a value is driven onto that stream.</p>
+  <p>The <span class="sw sw-live"></span> solid part of a bar lasts until the last instruction that reads the value; the <span class="sw sw-dead"></span> faded, hatched part (the dead tail) is the value still travelling, one position per cycle, until another value overwrites it or it leaves the chip. Colour identifies a value (its tag without the byte-plane suffix <code>#j</code>) and repeats in large programs, so hover any block, bar or cell to highlight that one value everywhere and read its tag. The <b>chip view</b> below shows every stream cell at the selected cycle, which you pick with the slider, the arrow keys, or by clicking the Gantt.</p>
+</section>
+
+<div class="toolbar" role="group" aria-label="View options">
+  <label><input type="checkbox" id="showIdle"> Show idle rows</label>
+  <span class="zoom">Zoom
+    <button type="button" id="zoomOut" aria-label="Zoom out">&minus;</button>
+    <button type="button" id="zoomFit">Fit</button>
+    <button type="button" id="zoomIn" aria-label="Zoom in">+</button>
+    <span id="zoomLabel" class="muted"></span>
+  </span>
+  <span class="hl" id="hlLabel" aria-live="polite"></span>
+</div>
+
+<section class="gantt" aria-label="Gantt view">
+  <div class="g-labels" id="gLabels"></div>
+  <div class="g-scroll" id="gScroll" tabindex="0" aria-label="Gantt chart, scroll horizontally">
+    <div class="g-inner" id="gInner"><canvas id="gCanvas"></canvas></div>
+  </div>
+</section>
+
+<section class="chip" aria-label="Chip view">
+  <div class="controls" role="group" aria-label="Cycle controls">
+    <button type="button" id="first" aria-label="First cycle">&#x23EE;</button>
+    <button type="button" id="prev" aria-label="Previous cycle">&#x25C0;</button>
+    <button type="button" id="play" aria-label="Play">Play</button>
+    <button type="button" id="next" aria-label="Next cycle">&#x25B6;</button>
+    <button type="button" id="last" aria-label="Last cycle">&#x23ED;</button>
+    <input type="range" id="slider" min="0" max="0" value="0" aria-label="Cycle">
+    <label class="cyc">Cycle <input type="number" id="cycleNum" min="0" value="0"></label>
+  </div>
+  <div class="chipgrid-wrap">
+    <div class="slices" id="slices"></div>
+    <div class="cells" id="cells"></div>
+  </div>
+  <p class="muted small">Chip view: columns are positions (slices) West&nbsp;&rarr;&nbsp;East; rows are stream lanes. An outlined cell is being driven by a producer in this cycle; a dot marks a cell read by an instruction in this cycle; a faded, hatched cell holds a value nobody will read again.</p>
+  <div class="activity" id="activity" aria-live="polite"></div>
+</section>
+
+<div class="tip" id="tip" role="tooltip" hidden></div>
+
+<script type="application/json" id="trace">{"config_name":"toy","digests":["d41414fbe9171370000f2e68278a70a743242a06904aae9530e6be731864e7cf","d41414fbe9171370000f2e68278a70a743242a06904aae9530e6be731864e7cf","9025f8a1eddd81f3ff8c8e391d1e4d62d5952ed7804e2665f8869d2359d59d52","db19af88adf00c67c32c2cb87259330dc029a11b2a958fb4d00fd1b1dd14bd47","3f36c4ed970160d554aadc55b55f5c6be6d45b5cf278a44d01ce2e729e94ee2c","3a2d5ee246cd0fb0255d33f58079b288f53bf241ac5add130dc52980a67a8ec4","19bfbec61db10d04386e5694b64ccc3441fd70a4badebed0bfbb9b0704b4c9a3","3aa919f6ef27bd8460c2d0e27b41abb3575a5541579d1c06c9658bebf19d2897","d31b3d778b1532911d7d8285df2d432b9920076eb929483733fac3d0a838c339","b7f669ef0ac9e11e5bea000d6deef90176f3be4d11a25057e105a2b84785bd23","56b8f886a8a46524c59456555e12e5c34493a63ef59718efef62ffa320612eec","95c6d0aae2a8932b1b84e6dbddc1116327f3952affb6f80271a179c7bec7326d","0941ce7aa0132df62108d639250284f056b1a7bada0b28572ef7c1409d74f56a","5510add61490cf9abcb07c5728ca7c2e388813962c60f9c73c7ba1e5108095ec","6b8c70ceb5b72f2d187f68673d423affa9932699777c11fa859e2be0062ed849","d7eb4a6280e758bc03a3939287f8bfc9b995e7f1e7f68a92710cb5d496e60ecb","fd8dccc357331f027180eef3a465ae69cd6e4a90906484bf6d92ce5205d2b3b9","d43bd70ca5d66361a633a241a8b0da4ddc0e19256006cc2ebf0a41113bba2581","76d001c599528fdf7feb94cde7cfbd5a02aa42bcdebae21606bc0c63bea537d2","e9b80e7527bca705d632632a2e30636ea831dee9c83c96339b3918614569462d","3e9dcd6c1cbba6bbd6c5ad5e05ef9e5b354aaeb6f50850b69c66bd794ea47a84","81ae68b8bd90bc9e136bd719164fc08c4b35dbe56d72febf3f6abb9894320f33","d41414fbe9171370000f2e68278a70a743242a06904aae9530e6be731864e7cf","d41414fbe9171370000f2e68278a70a743242a06904aae9530e6be731864e7cf","6ea26b547d88c32fe1ec349bc115d7ec53c99f098526794244080ebd2327635e","bcd45835b1c75409b81c4ddee695c5cbaffcfb500a9678bbfc97074f9205cf1d","a700508d4aabf45361249f850da2b98ff9eb0a44df839577e625154850ac9d38","b4e0e60c855b8c701cc81595f32d06012e3f76283167b82ed5c1975a31daefb6","8b56660b964dfacf0d81c839186d6c2cb0a198ce6ea69fbff1b1ead67be403f0","f9cb896113b9a5a0faf86fac2c061a18d42ca06e17ef0901f32be875bbd2692e","ee836b75de5b5153dbda32f144adc1f6efdd2bae7558865ec313227670b339f0","eb03013ac4c2f2612223e36be1ca2d735f7c75830c389cf5a88cad33498600c6","20395550cb014fdb2fc06b03253265f2913c536c7aee31d72565308b4913ed1d","56b8e2bcc6fbfc3b260d1a37029b2d0fda2976c7aed83c3cbce70d5414dd3ef8","f2723494b3cf006334e5f16014ad935619961b157bcc8b08877470b4cde221c7","5466ff7dff71ce5555c6cb150ad7af44be070a8395c51cd69c727cdae0a169c2","11804070a595fe3e68fba8198a0f4815d95a215061ae1a2ae44161a7627ee2df","f34f8d0db6be5702047ce82f808f74272e8e12664f597032da0eb62d1229b2d6","2f6e58e076c4bdbec52a59ec1d0fe9ccb2adb1b8798644eb7e3112d3d2a63d44","bbf14a34a24769549a6e70158ce96562aaa1e6edf584179a110c172fbceb9100","9229d71a90987adf7f1a9ba888bbfc788d0b96c9fa59c01b0ccacebde398caa6","f79be3c12d5b1902a7346ee0da2de7d4f659caa23b99ee6a53510ae6a704c2e6","c0a1f75dcca72ba554a92eac9dd67be912210af21a44a1a12cfaf2ff5f1b8259","f79d6e29b0f16d35e8d821cbf732544f68084973d36aa5aa3933d5ed878b27fc","fc0e20c613d8ae31bc96d5ecb9344a2d970e7960a5076b9d8ff94c500cbcd598","0c18e606a2b854a06d3055a5f5dc4fbfcbfb83d0627eee49627b272024ab5bd8","a37f0232dc9468e65bdf97791cc119c6909243f079c76d77d609b0c3a0ae796e","faf9eaeb8f6335368cfd402c760c2a3e0eb637c1a5e331bbff906c92984ae9cf","79ddc856ef8bbb996db5e0cc6ac86196fcff15824f5dea2909b2838856d48380"],"events":[{"cycle":0,"issue_cycle":0,"kind":"issue","opcode":"READ","pos":17,"sample_cycle":0,"text":"READ b0@0 -> W15<W.o0.c15#0>","unit":"MEM_W0","visible_cycle":2},{"addr":0,"bank":0,"cycle":0,"expect":"W.o0.c15#0","issue_cycle":0,"kind":"mem_read","opcode":"READ","pos":17,"tag":"W.o0.c15#0","unit":"MEM_W0"},{"cycle":1,"issue_cycle":1,"kind":"issue","opcode":"READ","pos":16,"sample_cycle":1,"text":"READ b0@0 -> W14<W.o0.c14#0>","unit":"MEM_W1","visible_cycle":3},{"addr":0,"bank":0,"cycle":1,"expect":"W.o0.c14#0","issue_cycle":1,"kind":"mem_read","opcode":"READ","pos":16,"tag":"W.o0.c14#0","unit":"MEM_W1"},{"cycle":2,"issue_cycle":2,"kind":"issue","opcode":"READ","pos":15,"sample_cycle":2,"text":"READ b0@0 -> W13<W.o0.c13#0>","unit":"MEM_W2","visible_cycle":4},{"addr":0,"bank":0,"cycle":2,"expect":"W.o0.c13#0","issue_cycle":2,"kind":"mem_read","opcode":"READ","pos":15,"tag":"W.o0.c13#0","unit":"MEM_W2"},{"cycle":2,"dir":"W","issue_cycle":0,"kind":"drive","opcode":"READ","pos":17,"stream":15,"tag":"W.o0.c15#0","unit":"MEM_W0"},{"cycle":2,"issue_cycle":2,"kind":"issue","opcode":"READ","pos":17,"sample_cycle":2,"text":"READ b0@1 -> W0<x.t0#0>","unit":"MEM_W0","visible_cycle":4},{"addr":1,"bank":0,"cycle":2,"expect":"x.t0#0","issue_cycle":2,"kind":"mem_read","opcode":"READ","pos":17,"tag":"x.t0#0","unit":"MEM_W0"},{"cycle":3,"issue_cycle":3,"kind":"issue","opcode":"READ","pos":14,"sample_cycle":3,"text":"READ b0@0 -> W12<W.o0.c12#0>","unit":"MEM_W3","visible_cycle":5},{"addr":0,"bank":0,"cycle":3,"expect":"W.o0.c12#0","issue_cycle":3,"kind":"mem_read","opcode":"READ","pos":14,"tag":"W.o0.c12#0","unit":"MEM_W3"},{"cycle":3,"dir":"W","issue_cycle":1,"kind":"drive","opcode":"READ","pos":16,"stream":14,"tag":"W.o0.c14#0","unit":"MEM_W1"},{"cycle":4,"issue_cycle":4,"kind":"issue","opcode":"READ","pos":13,"sample_cycle":4,"text":"READ b0@0 -> W11<W.o0.c11#0>","unit":"MEM_W4","visible_cycle":6},{"addr":0,"bank":0,"cycle":4,"expect":"W.o0.c11#0","issue_cycle":4,"kind":"mem_read","opcode":"READ","pos":13,"tag":"W.o0.c11#0","unit":"MEM_W4"},{"cycle":4,"dir":"W","issue_cycle":2,"kind":"drive","opcode":"READ","pos":15,"stream":13,"tag":"W.o0.c13#0","unit":"MEM_W2"},{"cycle":4,"dir":"W","issue_cycle":2,"kind":"drive","opcode":"READ","pos":17,"stream":0,"tag":"x.t0#0","unit":"MEM_W0"},{"cycle":5,"issue_cycle":5,"kind":"issue","opcode":"READ","pos":12,"sample_cycle":5,"text":"READ b0@0 -> W10<W.o0.c10#0>","unit":"MEM_W5","visible_cycle":7},{"addr":0,"bank":0,"cycle":5,"expect":"W.o0.c10#0","issue_cycle":5,"kind":"mem_read","opcode":"READ","pos":12,"tag":"W.o0.c10#0","unit":"MEM_W5"},{"cycle":5,"dir":"W","issue_cycle":3,"kind":"drive","opcode":"READ","pos":14,"stream":12,"tag":"W.o0.c12#0","unit":"MEM_W3"},{"cycle":6,"issue_cycle":6,"kind":"issue","opcode":"READ","pos":11,"sample_cycle":6,"text":"READ b0@0 -> W9<W.o0.c9#0>","unit":"MEM_W6","visible_cycle":8},{"addr":0,"bank":0,"cycle":6,"expect":"W.o0.c9#0","issue_cycle":6,"kind":"mem_read","opcode":"READ","pos":11,"tag":"W.o0.c9#0","unit":"MEM_W6"},{"cycle":6,"dir":"W","issue_cycle":4,"kind":"drive","opcode":"READ","pos":13,"stream":11,"tag":"W.o0.c11#0","unit":"MEM_W4"},{"cycle":7,"issue_cycle":7,"kind":"issue","opcode":"READ","pos":10,"sample_cycle":7,"text":"READ b0@0 -> W8<W.o0.c8#0>","unit":"MEM_W7","visible_cycle":9},{"addr":0,"bank":0,"cycle":7,"expect":"W.o0.c8#0","issue_cycle":7,"kind":"mem_read","opcode":"READ","pos":10,"tag":"W.o0.c8#0","unit":"MEM_W7"},{"cycle":7,"dir":"W","issue_cycle":5,"kind":"drive","opcode":"READ","pos":12,"stream":10,"tag":"W.o0.c10#0","unit":"MEM_W5"},{"cycle":8,"issue_cycle":8,"kind":"issue","opcode":"READ","pos":9,"sample_cycle":8,"text":"READ b0@0 -> W7<W.o0.c7#0>","unit":"MEM_W8","visible_cycle":10},{"addr":0,"bank":0,"cycle":8,"expect":"W.o0.c7#0","issue_cycle":8,"kind":"mem_read","opcode":"READ","pos":9,"tag":"W.o0.c7#0","unit":"MEM_W8"},{"cycle":8,"dir":"W","issue_cycle":6,"kind":"drive","opcode":"READ","pos":11,"stream":9,"tag":"W.o0.c9#0","unit":"MEM_W6"},{"cycle":9,"issue_cycle":9,"kind":"issue","opcode":"READ","pos":8,"sample_cycle":9,"text":"READ b0@0 -> W6<W.o0.c6#0>","unit":"MEM_W9","visible_cycle":11},{"addr":0,"bank":0,"cycle":9,"expect":"W.o0.c6#0","issue_cycle":9,"kind":"mem_read","opcode":"READ","pos":8,"tag":"W.o0.c6#0","unit":"MEM_W9"},{"cycle":9,"dir":"W","issue_cycle":7,"kind":"drive","opcode":"READ","pos":10,"stream":8,"tag":"W.o0.c8#0","unit":"MEM_W7"},{"cycle":10,"issue_cycle":10,"kind":"issue","opcode":"READ","pos":7,"sample_cycle":10,"text":"READ b0@0 -> W5<W.o0.c5#0>","unit":"MEM_W10","visible_cycle":12},{"addr":0,"bank":0,"cycle":10,"expect":"W.o0.c5#0","issue_cycle":10,"kind":"mem_read","opcode":"READ","pos":7,"tag":"W.o0.c5#0","unit":"MEM_W10"},{"cycle":10,"dir":"W","issue_cycle":8,"kind":"drive","opcode":"READ","pos":9,"stream":7,"tag":"W.o0.c7#0","unit":"MEM_W8"},{"cycle":11,"issue_cycle":11,"kind":"issue","opcode":"READ","pos":6,"sample_cycle":11,"text":"READ b0@0 -> W4<W.o0.c4#0>","unit":"MEM_W11","visible_cycle":13},{"addr":0,"bank":0,"cycle":11,"expect":"W.o0.c4#0","issue_cycle":11,"kind":"mem_read","opcode":"READ","pos":6,"tag":"W.o0.c4#0","unit":"MEM_W11"},{"cycle":11,"dir":"W","issue_cycle":9,"kind":"drive","opcode":"READ","pos":8,"stream":6,"tag":"W.o0.c6#0","unit":"MEM_W9"},{"cycle":12,"issue_cycle":12,"kind":"issue","opcode":"READ","pos":5,"sample_cycle":12,"text":"READ b0@0 -> W3<W.o0.c3#0>","unit":"MEM_W12","visible_cycle":14},{"addr":0,"bank":0,"cycle":12,"expect":"W.o0.c3#0","issue_cycle":12,"kind":"mem_read","opcode":"READ","pos":5,"tag":"W.o0.c3#0","unit":"MEM_W12"},{"cycle":12,"dir":"W","issue_cycle":10,"kind":"drive","opcode":"READ","pos":7,"stream":5,"tag":"W.o0.c5#0","unit":"MEM_W10"},{"cycle":13,"issue_cycle":13,"kind":"issue","opcode":"READ","pos":4,"sample_cycle":13,"text":"READ b0@0 -> W2<W.o0.c2#0>","unit":"MEM_W13","visible_cycle":15},{"addr":0,"bank":0,"cycle":13,"expect":"W.o0.c2#0","issue_cycle":13,"kind":"mem_read","opcode":"READ","pos":4,"tag":"W.o0.c2#0","unit":"MEM_W13"},{"cycle":13,"issue_cycle":13,"kind":"issue","opcode":"READ","pos":5,"sample_cycle":13,"text":"READ b0@1 -> W3<W.o0.c19#0>","unit":"MEM_W12","visible_cycle":15},{"addr":1,"bank":0,"cycle":13,"expect":"W.o0.c19#0","issue_cycle":13,"kind":"mem_read","opcode":"READ","pos":5,"tag":"W.o0.c19#0","unit":"MEM_W12"},{"cycle":13,"dir":"W","issue_cycle":11,"kind":"drive","opcode":"READ","pos":6,"stream":4,"tag":"W.o0.c4#0","unit":"MEM_W11"},{"cycle":14,"issue_cycle":14,"kind":"issue","opcode":"READ","pos":3,"sample_cycle":14,"text":"READ b0@0 -> W1<W.o0.c1#0>","unit":"MEM_W14","visible_cycle":16},{"addr":0,"bank":0,"cycle":14,"expect":"W.o0.c1#0","issue_cycle":14,"kind":"mem_read","opcode":"READ","pos":3,"tag":"W.o0.c1#0","unit":"MEM_W14"},{"cycle":14,"issue_cycle":14,"kind":"issue","opcode":"READ","pos":4,"sample_cycle":14,"text":"READ b0@1 -> W2<W.o0.c18#0>","unit":"MEM_W13","visible_cycle":16},{"addr":1,"bank":0,"cycle":14,"expect":"W.o0.c18#0","issue_cycle":14,"kind":"mem_read","opcode":"READ","pos":4,"tag":"W.o0.c18#0","unit":"MEM_W13"},{"cycle":14,"dir":"W","issue_cycle":12,"kind":"drive","opcode":"READ","pos":5,"stream":3,"tag":"W.o0.c3#0","unit":"MEM_W12"},{"cycle":15,"issue_cycle":15,"kind":"issue","opcode":"READ","pos":2,"sample_cycle":15,"text":"READ b0@0 -> W0<W.o0.c0#0>","unit":"MEM_W15","visible_cycle":17},{"addr":0,"bank":0,"cycle":15,"expect":"W.o0.c0#0","issue_cycle":15,"kind":"mem_read","opcode":"READ","pos":2,"tag":"W.o0.c0#0","unit":"MEM_W15"},{"cycle":15,"issue_cycle":15,"kind":"issue","opcode":"READ","pos":3,"sample_cycle":15,"text":"READ b0@1 -> W1<W.o0.c17#0>","unit":"MEM_W14","visible_cycle":17},{"addr":1,"bank":0,"cycle":15,"expect":"W.o0.c17#0","issue_cycle":15,"kind":"mem_read","opcode":"READ","pos":3,"tag":"W.o0.c17#0","unit":"MEM_W14"},{"cycle":15,"dir":"W","issue_cycle":13,"kind":"drive","opcode":"READ","pos":4,"stream":2,"tag":"W.o0.c2#0","unit":"MEM_W13"},{"cycle":15,"dir":"W","issue_cycle":13,"kind":"drive","opcode":"READ","pos":5,"stream":3,"tag":"W.o0.c19#0","unit":"MEM_W12"},{"cycle":16,"issue_cycle":16,"kind":"issue","opcode":"READ","pos":2,"sample_cycle":16,"text":"READ b0@1 -> W0<W.o0.c16#0>","unit":"MEM_W15","visible_cycle":18},{"addr":1,"bank":0,"cycle":16,"expect":"W.o0.c16#0","issue_cycle":16,"kind":"mem_read","opcode":"READ","pos":2,"tag":"W.o0.c16#0","unit":"MEM_W15"},{"cycle":16,"dir":"W","issue_cycle":14,"kind":"drive","opcode":"READ","pos":3,"stream":1,"tag":"W.o0.c1#0","unit":"MEM_W14"},{"cycle":16,"dir":"W","issue_cycle":14,"kind":"drive","opcode":"READ","pos":4,"stream":2,"tag":"W.o0.c18#0","unit":"MEM_W13"},{"cycle":17,"dir":"W","issue_cycle":15,"kind":"drive","opcode":"READ","pos":2,"stream":0,"tag":"W.o0.c0#0","unit":"MEM_W15"},{"cycle":17,"dir":"W","issue_cycle":15,"kind":"drive","opcode":"READ","pos":3,"stream":1,"tag":"W.o0.c17#0","unit":"MEM_W14"},{"cycle":18,"dir":"W","issue_cycle":16,"kind":"drive","opcode":"READ","pos":2,"stream":0,"tag":"W.o0.c16#0","unit":"MEM_W15"},{"cycle":19,"issue_cycle":19,"kind":"issue","opcode":"IW","pos":0,"sample_cycle":19,"text":"IW.i8 r0=W0<W.o0.c0>, r1=W1<W.o0.c1>, r2=W2<W.o0.c2>, r3=W3<W.o0.c3>, r4=W4<W.o0.c4>, r5=W5<W.o0.c5>, r6=W6<W.o0.c6>, r7=W7<W.o0.c7>, r8=W8<W.o0.c8>, r9=W9<W.o0.c9>, r10=W10<W.o0.c10>, r11=W11<W.o0.c11>, r12=W12<W.o0.c12>, r13=W13<W.o0.c13>, r14=W14<W.o0.c14>, r15=W15<W.o0.c15>","unit":"MXM_W.0","visible_cycle":20},{"cycle":19,"dir":"W","expect":"W.o0.c0#0","issue_cycle":19,"kind":"sample","opcode":"IW","pos":0,"stream":0,"tag":"W.o0.c0#0","unit":"MXM_W.0"},{"cycle":19,"issue_cycle":19,"kind":"iw_row","opcode":"IW","pos":0,"row":0,"tag":"W.o0.c0#0","unit":"MXM_W.0"},{"cycle":19,"dir":"W","expect":"W.o0.c1#0","issue_cycle":19,"kind":"sample","opcode":"IW","pos":0,"stream":1,"tag":"W.o0.c1#0","unit":"MXM_W.0"},{"cycle":19,"issue_cycle":19,"kind":"iw_row","opcode":"IW","pos":0,"row":1,"tag":"W.o0.c1#0","unit":"MXM_W.0"},{"cycle":19,"dir":"W","expect":"W.o0.c2#0","issue_cycle":19,"kind":"sample","opcode":"IW","pos":0,"stream":2,"tag":"W.o0.c2#0","unit":"MXM_W.0"},{"cycle":19,"issue_cycle":19,"kind":"iw_row","opcode":"IW","pos":0,"row":2,"tag":"W.o0.c2#0","unit":"MXM_W.0"},{"cycle":19,"dir":"W","expect":"W.o0.c3#0","issue_cycle":19,"kind":"sample","opcode":"IW","pos":0,"stream":3,"tag":"W.o0.c3#0","unit":"MXM_W.0"},{"cycle":19,"issue_cycle":19,"kind":"iw_row","opcode":"IW","pos":0,"row":3,"tag":"W.o0.c3#0","unit":"MXM_W.0"},{"cycle":19,"dir":"W","expect":"W.o0.c4#0","issue_cycle":19,"kind":"sample","opcode":"IW","pos":0,"stream":4,"tag":"W.o0.c4#0","unit":"MXM_W.0"},{"cycle":19,"issue_cycle":19,"kind":"iw_row","opcode":"IW","pos":0,"row":4,"tag":"W.o0.c4#0","unit":"MXM_W.0"},{"cycle":19,"dir":"W","expect":"W.o0.c5#0","issue_cycle":19,"kind":"sample","opcode":"IW","pos":0,"stream":5,"tag":"W.o0.c5#0","unit":"MXM_W.0"},{"cycle":19,"issue_cycle":19,"kind":"iw_row","opcode":"IW","pos":0,"row":5,"tag":"W.o0.c5#0","unit":"MXM_W.0"},{"cycle":19,"dir":"W","expect":"W.o0.c6#0","issue_cycle":19,"kind":"sample","opcode":"IW","pos":0,"stream":6,"tag":"W.o0.c6#0","unit":"MXM_W.0"},{"cycle":19,"issue_cycle":19,"kind":"iw_row","opcode":"IW","pos":0,"row":6,"tag":"W.o0.c6#0","unit":"MXM_W.0"},{"cycle":19,"dir":"W","expect":"W.o0.c7#0","issue_cycle":19,"kind":"sample","opcode":"IW","pos":0,"stream":7,"tag":"W.o0.c7#0","unit":"MXM_W.0"},{"cycle":19,"issue_cycle":19,"kind":"iw_row","opcode":"IW","pos":0,"row":7,"tag":"W.o0.c7#0","unit":"MXM_W.0"},{"cycle":19,"dir":"W","expect":"W.o0.c8#0","issue_cycle":19,"kind":"sample","opcode":"IW","pos":0,"stream":8,"tag":"W.o0.c8#0","unit":"MXM_W.0"},{"cycle":19,"issue_cycle":19,"kind":"iw_row","opcode":"IW","pos":0,"row":8,"tag":"W.o0.c8#0","unit":"MXM_W.0"},{"cycle":19,"dir":"W","expect":"W.o0.c9#0","issue_cycle":19,"kind":"sample","opcode":"IW","pos":0,"stream":9,"tag":"W.o0.c9#0","unit":"MXM_W.0"},{"cycle":19,"issue_cycle":19,"kind":"iw_row","opcode":"IW","pos":0,"row":9,"tag":"W.o0.c9#0","unit":"MXM_W.0"},{"cycle":19,"dir":"W","expect":"W.o0.c10#0","issue_cycle":19,"kind":"sample","opcode":"IW","pos":0,"stream":10,"tag":"W.o0.c10#0","unit":"MXM_W.0"},{"cycle":19,"issue_cycle":19,"kind":"iw_row","opcode":"IW","pos":0,"row":10,"tag":"W.o0.c10#0","unit":"MXM_W.0"},{"cycle":19,"dir":"W","expect":"W.o0.c11#0","issue_cycle":19,"kind":"sample","opcode":"IW","pos":0,"stream":11,"tag":"W.o0.c11#0","unit":"MXM_W.0"},{"cycle":19,"issue_cycle":19,"kind":"iw_row","opcode":"IW","pos":0,"row":11,"tag":"W.o0.c11#0","unit":"MXM_W.0"},{"cycle":19,"dir":"W","expect":"W.o0.c12#0","issue_cycle":19,"kind":"sample","opcode":"IW","pos":0,"stream":12,"tag":"W.o0.c12#0","unit":"MXM_W.0"},{"cycle":19,"issue_cycle":19,"kind":"iw_row","opcode":"IW","pos":0,"row":12,"tag":"W.o0.c12#0","unit":"MXM_W.0"},{"cycle":19,"dir":"W","expect":"W.o0.c13#0","issue_cycle":19,"kind":"sample","opcode":"IW","pos":0,"stream":13,"tag":"W.o0.c13#0","unit":"MXM_W.0"},{"cycle":19,"issue_cycle":19,"kind":"iw_row","opcode":"IW","pos":0,"row":13,"tag":"W.o0.c13#0","unit":"MXM_W.0"},{"cycle":19,"dir":"W","expect":"W.o0.c14#0","issue_cycle":19,"kind":"sample","opcode":"IW","pos":0,"stream":14,"tag":"W.o0.c14#0","unit":"MXM_W.0"},{"cycle":19,"issue_cycle":19,"kind":"iw_row","opcode":"IW","pos":0,"row":14,"tag":"W.o0.c14#0","unit":"MXM_W.0"},{"cycle":19,"dir":"W","expect":"W.o0.c15#0","issue_cycle":19,"kind":"sample","opcode":"IW","pos":0,"stream":15,"tag":"W.o0.c15#0","unit":"MXM_W.0"},{"cycle":19,"issue_cycle":19,"kind":"iw_row","opcode":"IW","pos":0,"row":15,"tag":"W.o0.c15#0","unit":"MXM_W.0"},{"cycle":20,"issue_cycle":20,"kind":"issue","opcode":"IW","pos":0,"sample_cycle":20,"text":"IW.i8 r16=W0<W.o0.c16>, r17=W1<W.o0.c17>, r18=W2<W.o0.c18>, r19=W3<W.o0.c19>","unit":"MXM_W.0","visible_cycle":21},{"cycle":20,"dir":"W","expect":"W.o0.c16#0","issue_cycle":20,"kind":"sample","opcode":"IW","pos":0,"stream":0,"tag":"W.o0.c16#0","unit":"MXM_W.0"},{"cycle":20,"issue_cycle":20,"kind":"iw_row","opcode":"IW","pos":0,"row":16,"tag":"W.o0.c16#0","unit":"MXM_W.0"},{"cycle":20,"dir":"W","expect":"W.o0.c17#0","issue_cycle":20,"kind":"sample","opcode":"IW","pos":0,"stream":1,"tag":"W.o0.c17#0","unit":"MXM_W.0"},{"cycle":20,"issue_cycle":20,"kind":"iw_row","opcode":"IW","pos":0,"row":17,"tag":"W.o0.c17#0","unit":"MXM_W.0"},{"cycle":20,"dir":"W","expect":"W.o0.c18#0","issue_cycle":20,"kind":"sample","opcode":"IW","pos":0,"stream":2,"tag":"W.o0.c18#0","unit":"MXM_W.0"},{"cycle":20,"issue_cycle":20,"kind":"iw_row","opcode":"IW","pos":0,"row":18,"tag":"W.o0.c18#0","unit":"MXM_W.0"},{"cycle":20,"dir":"W","expect":"W.o0.c19#0","issue_cycle":20,"kind":"sample","opcode":"IW","pos":0,"stream":3,"tag":"W.o0.c19#0","unit":"MXM_W.0"},{"cycle":20,"issue_cycle":20,"kind":"iw_row","opcode":"IW","pos":0,"row":19,"tag":"W.o0.c19#0","unit":"MXM_W.0"},{"cycle":21,"issue_cycle":21,"kind":"issue","opcode":"MATVEC","pos":0,"sample_cycle":21,"text":"MATVEC.i8 k=20 W0<x.t0> -> E4-7<Wx.t0>","unit":"MXM_W.0","visible_cycle":24},{"cycle":21,"dir":"W","expect":"x.t0#0","issue_cycle":21,"kind":"sample","opcode":"MATVEC","pos":0,"stream":0,"tag":"x.t0#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c0#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":0,"tag":"W.o0.c0#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c1#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":1,"tag":"W.o0.c1#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c2#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":2,"tag":"W.o0.c2#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c3#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":3,"tag":"W.o0.c3#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c4#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":4,"tag":"W.o0.c4#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c5#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":5,"tag":"W.o0.c5#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c6#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":6,"tag":"W.o0.c6#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c7#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":7,"tag":"W.o0.c7#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c8#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":8,"tag":"W.o0.c8#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c9#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":9,"tag":"W.o0.c9#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c10#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":10,"tag":"W.o0.c10#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c11#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":11,"tag":"W.o0.c11#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c12#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":12,"tag":"W.o0.c12#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c13#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":13,"tag":"W.o0.c13#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c14#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":14,"tag":"W.o0.c14#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c15#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":15,"tag":"W.o0.c15#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c16#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":16,"tag":"W.o0.c16#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c17#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":17,"tag":"W.o0.c17#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c18#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":18,"tag":"W.o0.c18#0","unit":"MXM_W.0"},{"cycle":21,"expect":"W.o0.c19#0","issue_cycle":21,"kind":"matvec_row","opcode":"MATVEC","pos":0,"row":19,"tag":"W.o0.c19#0","unit":"MXM_W.0"},{"cycle":24,"dir":"E","issue_cycle":21,"kind":"drive","opcode":"MATVEC","pos":0,"stream":4,"tag":"Wx.t0#0","unit":"MXM_W.0"},{"cycle":24,"dir":"E","issue_cycle":21,"kind":"drive","opcode":"MATVEC","pos":0,"stream":5,"tag":"Wx.t0#1","unit":"MXM_W.0"},{"cycle":24,"dir":"E","issue_cycle":21,"kind":"drive","opcode":"MATVEC","pos":0,"stream":6,"tag":"Wx.t0#2","unit":"MXM_W.0"},{"cycle":24,"dir":"E","issue_cycle":21,"kind":"drive","opcode":"MATVEC","pos":0,"stream":7,"tag":"Wx.t0#3","unit":"MXM_W.0"},{"cycle":35,"issue_cycle":35,"kind":"issue","opcode":"READ","pos":13,"sample_cycle":35,"text":"READ b0@1 -> E3<b.t0#3>","unit":"MEM_W4","visible_cycle":37},{"addr":1,"bank":0,"cycle":35,"expect":"b.t0#3","issue_cycle":35,"kind":"mem_read","opcode":"READ","pos":13,"tag":"b.t0#3","unit":"MEM_W4"},{"cycle":36,"issue_cycle":36,"kind":"issue","opcode":"READ","pos":14,"sample_cycle":36,"text":"READ b0@1 -> E2<b.t0#2>","unit":"MEM_W3","visible_cycle":38},{"addr":1,"bank":0,"cycle":36,"expect":"b.t0#2","issue_cycle":36,"kind":"mem_read","opcode":"READ","pos":14,"tag":"b.t0#2","unit":"MEM_W3"},{"cycle":37,"dir":"E","issue_cycle":35,"kind":"drive","opcode":"READ","pos":13,"stream":3,"tag":"b.t0#3","unit":"MEM_W4"},{"cycle":37,"issue_cycle":37,"kind":"issue","opcode":"READ","pos":15,"sample_cycle":37,"text":"READ b0@1 -> E1<b.t0#1>","unit":"MEM_W2","visible_cycle":39},{"addr":1,"bank":0,"cycle":37,"expect":"b.t0#1","issue_cycle":37,"kind":"mem_read","opcode":"READ","pos":15,"tag":"b.t0#1","unit":"MEM_W2"},{"cycle":38,"dir":"E","issue_cycle":36,"kind":"drive","opcode":"READ","pos":14,"stream":2,"tag":"b.t0#2","unit":"MEM_W3"},{"cycle":38,"issue_cycle":38,"kind":"issue","opcode":"READ","pos":16,"sample_cycle":38,"text":"READ b0@1 -> E0<b.t0#0>","unit":"MEM_W1","visible_cycle":40},{"addr":1,"bank":0,"cycle":38,"expect":"b.t0#0","issue_cycle":38,"kind":"mem_read","opcode":"READ","pos":16,"tag":"b.t0#0","unit":"MEM_W1"},{"cycle":39,"dir":"E","issue_cycle":37,"kind":"drive","opcode":"READ","pos":15,"stream":1,"tag":"b.t0#1","unit":"MEM_W2"},{"cycle":40,"dir":"E","issue_cycle":38,"kind":"drive","opcode":"READ","pos":16,"stream":0,"tag":"b.t0#0","unit":"MEM_W1"},{"cycle":42,"issue_cycle":42,"kind":"issue","opcode":"ADD","pos":18,"sample_cycle":42,"text":"ADD.i32 E4-7<Wx.t0>, E0-3<b.t0> -> E0-3<Wx_b.t0>","unit":"VXM.0","visible_cycle":43},{"cycle":42,"dir":"E","expect":"Wx.t0#0","issue_cycle":42,"kind":"sample","opcode":"ADD","pos":18,"stream":4,"tag":"Wx.t0#0","unit":"VXM.0"},{"cycle":42,"dir":"E","expect":"Wx.t0#1","issue_cycle":42,"kind":"sample","opcode":"ADD","pos":18,"stream":5,"tag":"Wx.t0#1","unit":"VXM.0"},{"cycle":42,"dir":"E","expect":"Wx.t0#2","issue_cycle":42,"kind":"sample","opcode":"ADD","pos":18,"stream":6,"tag":"Wx.t0#2","unit":"VXM.0"},{"cycle":42,"dir":"E","expect":"Wx.t0#3","issue_cycle":42,"kind":"sample","opcode":"ADD","pos":18,"stream":7,"tag":"Wx.t0#3","unit":"VXM.0"},{"cycle":42,"dir":"E","expect":"b.t0#0","issue_cycle":42,"kind":"sample","opcode":"ADD","pos":18,"stream":0,"tag":"b.t0#0","unit":"VXM.0"},{"cycle":42,"dir":"E","expect":"b.t0#1","issue_cycle":42,"kind":"sample","opcode":"ADD","pos":18,"stream":1,"tag":"b.t0#1","unit":"VXM.0"},{"cycle":42,"dir":"E","expect":"b.t0#2","issue_cycle":42,"kind":"sample","opcode":"ADD","pos":18,"stream":2,"tag":"b.t0#2","unit":"VXM.0"},{"cycle":42,"dir":"E","expect":"b.t0#3","issue_cycle":42,"kind":"sample","opcode":"ADD","pos":18,"stream":3,"tag":"b.t0#3","unit":"VXM.0"},{"cycle":43,"dir":"E","issue_cycle":42,"kind":"drive","opcode":"ADD","pos":18,"stream":0,"tag":"Wx_b.t0#0","unit":"VXM.0"},{"cycle":43,"dir":"E","issue_cycle":42,"kind":"drive","opcode":"ADD","pos":18,"stream":1,"tag":"Wx_b.t0#1","unit":"VXM.0"},{"cycle":43,"dir":"E","issue_cycle":42,"kind":"drive","opcode":"ADD","pos":18,"stream":2,"tag":"Wx_b.t0#2","unit":"VXM.0"},{"cycle":43,"dir":"E","issue_cycle":42,"kind":"drive","opcode":"ADD","pos":18,"stream":3,"tag":"Wx_b.t0#3","unit":"VXM.0"},{"cycle":43,"issue_cycle":43,"kind":"issue","opcode":"RELU","pos":18,"sample_cycle":43,"text":"RELU.i32 E0-3<Wx_b.t0> -> W0-3<y.t0>","unit":"VXM.0","visible_cycle":44},{"cycle":43,"dir":"E","expect":"Wx_b.t0#0","issue_cycle":43,"kind":"sample","opcode":"RELU","pos":18,"stream":0,"tag":"Wx_b.t0#0","unit":"VXM.0"},{"cycle":43,"dir":"E","expect":"Wx_b.t0#1","issue_cycle":43,"kind":"sample","opcode":"RELU","pos":18,"stream":1,"tag":"Wx_b.t0#1","unit":"VXM.0"},{"cycle":43,"dir":"E","expect":"Wx_b.t0#2","issue_cycle":43,"kind":"sample","opcode":"RELU","pos":18,"stream":2,"tag":"Wx_b.t0#2","unit":"VXM.0"},{"cycle":43,"dir":"E","expect":"Wx_b.t0#3","issue_cycle":43,"kind":"sample","opcode":"RELU","pos":18,"stream":3,"tag":"Wx_b.t0#3","unit":"VXM.0"},{"cycle":44,"dir":"W","issue_cycle":43,"kind":"drive","opcode":"RELU","pos":18,"stream":0,"tag":"y.t0#0","unit":"VXM.0"},{"cycle":44,"dir":"W","issue_cycle":43,"kind":"drive","opcode":"RELU","pos":18,"stream":1,"tag":"y.t0#1","unit":"VXM.0"},{"cycle":44,"dir":"W","issue_cycle":43,"kind":"drive","opcode":"RELU","pos":18,"stream":2,"tag":"y.t0#2","unit":"VXM.0"},{"cycle":44,"dir":"W","issue_cycle":43,"kind":"drive","opcode":"RELU","pos":18,"stream":3,"tag":"y.t0#3","unit":"VXM.0"},{"cycle":45,"issue_cycle":45,"kind":"issue","opcode":"WRITE","pos":17,"sample_cycle":45,"text":"WRITE W0<y.t0#0> -> b1@0","unit":"MEM_W0","visible_cycle":46},{"cycle":45,"dir":"W","expect":"y.t0#0","issue_cycle":45,"kind":"sample","opcode":"WRITE","pos":17,"stream":0,"tag":"y.t0#0","unit":"MEM_W0"},{"addr":0,"bank":1,"cycle":45,"issue_cycle":45,"kind":"mem_write","opcode":"WRITE","pos":17,"tag":"y.t0#0","unit":"MEM_W0"},{"cycle":46,"issue_cycle":46,"kind":"issue","opcode":"WRITE","pos":16,"sample_cycle":46,"text":"WRITE W1<y.t0#1> -> b1@0","unit":"MEM_W1","visible_cycle":47},{"cycle":46,"dir":"W","expect":"y.t0#1","issue_cycle":46,"kind":"sample","opcode":"WRITE","pos":16,"stream":1,"tag":"y.t0#1","unit":"MEM_W1"},{"addr":0,"bank":1,"cycle":46,"issue_cycle":46,"kind":"mem_write","opcode":"WRITE","pos":16,"tag":"y.t0#1","unit":"MEM_W1"},{"cycle":47,"issue_cycle":47,"kind":"issue","opcode":"WRITE","pos":15,"sample_cycle":47,"text":"WRITE W2<y.t0#2> -> b1@0","unit":"MEM_W2","visible_cycle":48},{"cycle":47,"dir":"W","expect":"y.t0#2","issue_cycle":47,"kind":"sample","opcode":"WRITE","pos":15,"stream":2,"tag":"y.t0#2","unit":"MEM_W2"},{"addr":0,"bank":1,"cycle":47,"issue_cycle":47,"kind":"mem_write","opcode":"WRITE","pos":15,"tag":"y.t0#2","unit":"MEM_W2"},{"cycle":48,"issue_cycle":48,"kind":"issue","opcode":"WRITE","pos":14,"sample_cycle":48,"text":"WRITE W3<y.t0#3> -> b1@0","unit":"MEM_W3","visible_cycle":49},{"cycle":48,"dir":"W","expect":"y.t0#3","issue_cycle":48,"kind":"sample","opcode":"WRITE","pos":14,"stream":3,"tag":"y.t0#3","unit":"MEM_W3"},{"addr":0,"bank":1,"cycle":48,"issue_cycle":48,"kind":"mem_write","opcode":"WRITE","pos":14,"tag":"y.t0#3","unit":"MEM_W3"}],"n_cycles":49,"occupancy":[[],[],[["W",15,17,"W.o0.c15#0"]],[["W",14,16,"W.o0.c14#0"],["W",15,16,"W.o0.c15#0"]],[["W",0,17,"x.t0#0"],["W",13,15,"W.o0.c13#0"],["W",14,15,"W.o0.c14#0"],["W",15,15,"W.o0.c15#0"]],[["W",0,16,"x.t0#0"],["W",12,14,"W.o0.c12#0"],["W",13,14,"W.o0.c13#0"],["W",14,14,"W.o0.c14#0"],["W",15,14,"W.o0.c15#0"]],[["W",0,15,"x.t0#0"],["W",11,13,"W.o0.c11#0"],["W",12,13,"W.o0.c12#0"],["W",13,13,"W.o0.c13#0"],["W",14,13,"W.o0.c14#0"],["W",15,13,"W.o0.c15#0"]],[["W",0,14,"x.t0#0"],["W",10,12,"W.o0.c10#0"],["W",11,12,"W.o0.c11#0"],["W",12,12,"W.o0.c12#0"],["W",13,12,"W.o0.c13#0"],["W",14,12,"W.o0.c14#0"],["W",15,12,"W.o0.c15#0"]],[["W",0,13,"x.t0#0"],["W",9,11,"W.o0.c9#0"],["W",10,11,"W.o0.c10#0"],["W",11,11,"W.o0.c11#0"],["W",12,11,"W.o0.c12#0"],["W",13,11,"W.o0.c13#0"],["W",14,11,"W.o0.c14#0"],["W",15,11,"W.o0.c15#0"]],[["W",0,12,"x.t0#0"],["W",8,10,"W.o0.c8#0"],["W",9,10,"W.o0.c9#0"],["W",10,10,"W.o0.c10#0"],["W",11,10,"W.o0.c11#0"],["W",12,10,"W.o0.c12#0"],["W",13,10,"W.o0.c13#0"],["W",14,10,"W.o0.c14#0"],["W",15,10,"W.o0.c15#0"]],[["W",0,11,"x.t0#0"],["W",7,9,"W.o0.c7#0"],["W",8,9,"W.o0.c8#0"],["W",9,9,"W.o0.c9#0"],["W",10,9,"W.o0.c10#0"],["W",11,9,"W.o0.c11#0"],["W",12,9,"W.o0.c12#0"],["W",13,9,"W.o0.c13#0"],["W",14,9,"W.o0.c14#0"],["W",15,9,"W.o0.c15#0"]],[["W",0,10,"x.t0#0"],["W",6,8,"W.o0.c6#0"],["W",7,8,"W.o0.c7#0"],["W",8,8,"W.o0.c8#0"],["W",9,8,"W.o0.c9#0"],["W",10,8,"W.o0.c10#0"],["W",11,8,"W.o0.c11#0"],["W",12,8,"W.o0.c12#0"],["W",13,8,"W.o0.c13#0"],["W",14,8,"W.o0.c14#0"],["W",15,8,"W.o0.c15#0"]],[["W",0,9,"x.t0#0"],["W",5,7,"W.o0.c5#0"],["W",6,7,"W.o0.c6#0"],["W",7,7,"W.o0.c7#0"],["W",8,7,"W.o0.c8#0"],["W",9,7,"W.o0.c9#0"],["W",10,7,"W.o0.c10#0"],["W",11,7,"W.o0.c11#0"],["W",12,7,"W.o0.c12#0"],["W",13,7,"W.o0.c13#0"],["W",14,7,"W.o0.c14#0"],["W",15,7,"W.o0.c15#0"]],[["W",0,8,"x.t0#0"],["W",4,6,"W.o0.c4#0"],["W",5,6,"W.o0.c5#0"],["W",6,6,"W.o0.c6#0"],["W",7,6,"W.o0.c7#0"],["W",8,6,"W.o0.c8#0"],["W",9,6,"W.o0.c9#0"],["W",10,6,"W.o0.c10#0"],["W",11,6,"W.o0.c11#0"],["W",12,6,"W.o0.c12#0"],["W",13,6,"W.o0.c13#0"],["W",14,6,"W.o0.c14#0"],["W",15,6,"W.o0.c15#0"]],[["W",0,7,"x.t0#0"],["W",3,5,"W.o0.c3#0"],["W",4,5,"W.o0.c4#0"],["W",5,5,"W.o0.c5#0"],["W",6,5,"W.o0.c6#0"],["W",7,5,"W.o0.c7#0"],["W",8,5,"W.o0.c8#0"],["W",9,5,"W.o0.c9#0"],["W",10,5,"W.o0.c10#0"],["W",11,5,"W.o0.c11#0"],["W",12,5,"W.o0.c12#0"],["W",13,5,"W.o0.c13#0"],["W",14,5,"W.o0.c14#0"],["W",15,5,"W.o0.c15#0"]],[["W",0,6,"x.t0#0"],["W",2,4,"W.o0.c2#0"],["W",3,4,"W.o0.c3#0"],["W",3,5,"W.o0.c19#0"],["W",4,4,"W.o0.c4#0"],["W",5,4,"W.o0.c5#0"],["W",6,4,"W.o0.c6#0"],["W",7,4,"W.o0.c7#0"],["W",8,4,"W.o0.c8#0"],["W",9,4,"W.o0.c9#0"],["W",10,4,"W.o0.c10#0"],["W",11,4,"W.o0.c11#0"],["W",12,4,"W.o0.c12#0"],["W",13,4,"W.o0.c13#0"],["W",14,4,"W.o0.c14#0"],["W",15,4,"W.o0.c15#0"]],[["W",0,5,"x.t0#0"],["W",1,3,"W.o0.c1#0"],["W",2,3,"W.o0.c2#0"],["W",2,4,"W.o0.c18#0"],["W",3,3,"W.o0.c3#0"],["W",3,4,"W.o0.c19#0"],["W",4,3,"W.o0.c4#0"],["W",5,3,"W.o0.c5#0"],["W",6,3,"W.o0.c6#0"],["W",7,3,"W.o0.c7#0"],["W",8,3,"W.o0.c8#0"],["W",9,3,"W.o0.c9#0"],["W",10,3,"W.o0.c10#0"],["W",11,3,"W.o0.c11#0"],["W",12,3,"W.o0.c12#0"],["W",13,3,"W.o0.c13#0"],["W",14,3,"W.o0.c14#0"],["W",15,3,"W.o0.c15#0"]],[["W",0,2,"W.o0.c0#0"],["W",0,4,"x.t0#0"],["W",1,2,"W.o0.c1#0"],["W",1,3,"W.o0.c17#0"],["W",2,2,"W.o0.c2#0"],["W",2,3,"W.o0.c18#0"],["W",3,2,"W.o0.c3#0"],["W",3,3,"W.o0.c19#0"],["W",4,2,"W.o0.c4#0"],["W",5,2,"W.o0.c5#0"],["W",6,2,"W.o0.c6#0"],["W",7,2,"W.o0.c7#0"],["W",8,2,"W.o0.c8#0"],["W",9,2,"W.o0.c9#0"],["W",10,2,"W.o0.c10#0"],["W",11,2,"W.o0.c11#0"],["W",12,2,"W.o0.c12#0"],["W",13,2,"W.o0.c13#0"],["W",14,2,"W.o0.c14#0"],["W",15,2,"W.o0.c15#0"]],[["W",0,1,"W.o0.c0#0"],["W",0,2,"W.o0.c16#0"],["W",0,3,"x.t0#0"],["W",1,1,"W.o0.c1#0"],["W",1,2,"W.o0.c17#0"],["W",2,1,"W.o0.c2#0"],["W",2,2,"W.o0.c18#0"],["W",3,1,"W.o0.c3#0"],["W",3,2,"W.o0.c19#0"],["W",4,1,"W.o0.c4#0"],["W",5,1,"W.o0.c5#0"],["W",6,1,"W.o0.c6#0"],["W",7,1,"W.o0.c7#0"],["W",8,1,"W.o0.c8#0"],["W",9,1,"W.o0.c9#0"],["W",10,1,"W.o0.c10#0"],["W",11,1,"W.o0.c11#0"],["W",12,1,"W.o0.c12#0"],["W",13,1,"W.o0.c13#0"],["W",14,1,"W.o0.c14#0"],["W",15,1,"W.o0.c15#0"]],[["W",0,0,"W.o0.c0#0"],["W",0,1,"W.o0.c16#0"],["W",0,2,"x.t0#0"],["W",1,0,"W.o0.c1#0"],["W",1,1,"W.o0.c17#0"],["W",2,0,"W.o0.c2#0"],["W",2,1,"W.o0.c18#0"],["W",3,0,"W.o0.c3#0"],["W",3,1,"W.o0.c19#0"],["W",4,0,"W.o0.c4#0"],["W",5,0,"W.o0.c5#0"],["W",6,0,"W.o0.c6#0"],["W",7,0,"W.o0.c7#0"],["W",8,0,"W.o0.c8#0"],["W",9,0,"W.o0.c9#0"],["W",10,0,"W.o0.c10#0"],["W",11,0,"W.o0.c11#0"],["W",12,0,"W.o0.c12#0"],["W",13,0,"W.o0.c13#0"],["W",14,0,"W.o0.c14#0"],["W",15,0,"W.o0.c15#0"]],[["W",0,0,"W.o0.c16#0"],["W",0,1,"x.t0#0"],["W",1,0,"W.o0.c17#0"],["W",2,0,"W.o0.c18#0"],["W",3,0,"W.o0.c19#0"]],[["W",0,0,"x.t0#0"]],[],[],[["E",4,0,"Wx.t0#0"],["E",5,0,"Wx.t0#1"],["E",6,0,"Wx.t0#2"],["E",7,0,"Wx.t0#3"]],[["E",4,1,"Wx.t0#0"],["E",5,1,"Wx.t0#1"],["E",6,1,"Wx.t0#2"],["E",7,1,"Wx.t0#3"]],[["E",4,2,"Wx.t0#0"],["E",5,2,"Wx.t0#1"],["E",6,2,"Wx.t0#2"],["E",7,2,"Wx.t0#3"]],[["E",4,3,"Wx.t0#0"],["E",5,3,"Wx.t0#1"],["E",6,3,"Wx.t0#2"],["E",7,3,"Wx.t0#3"]],[["E",4,4,"Wx.t0#0"],["E",5,4,"Wx.t0#1"],["E",6,4,"Wx.t0#2"],["E",7,4,"Wx.t0#3"]],[["E",4,5,"Wx.t0#0"],["E",5,5,"Wx.t0#1"],["E",6,5,"Wx.t0#2"],["E",7,5,"Wx.t0#3"]],[["E",4,6,"Wx.t0#0"],["E",5,6,"Wx.t0#1"],["E",6,6,"Wx.t0#2"],["E",7,6,"Wx.t0#3"]],[["E",4,7,"Wx.t0#0"],["E",5,7,"Wx.t0#1"],["E",6,7,"Wx.t0#2"],["E",7,7,"Wx.t0#3"]],[["E",4,8,"Wx.t0#0"],["E",5,8,"Wx.t0#1"],["E",6,8,"Wx.t0#2"],["E",7,8,"Wx.t0#3"]],[["E",4,9,"Wx.t0#0"],["E",5,9,"Wx.t0#1"],["E",6,9,"Wx.t0#2"],["E",7,9,"Wx.t0#3"]],[["E",4,10,"Wx.t0#0"],["E",5,10,"Wx.t0#1"],["E",6,10,"Wx.t0#2"],["E",7,10,"Wx.t0#3"]],[["E",4,11,"Wx.t0#0"],["E",5,11,"Wx.t0#1"],["E",6,11,"Wx.t0#2"],["E",7,11,"Wx.t0#3"]],[["E",4,12,"Wx.t0#0"],["E",5,12,"Wx.t0#1"],["E",6,12,"Wx.t0#2"],["E",7,12,"Wx.t0#3"]],[["E",3,13,"b.t0#3"],["E",4,13,"Wx.t0#0"],["E",5,13,"Wx.t0#1"],["E",6,13,"Wx.t0#2"],["E",7,13,"Wx.t0#3"]],[["E",2,14,"b.t0#2"],["E",3,14,"b.t0#3"],["E",4,14,"Wx.t0#0"],["E",5,14,"Wx.t0#1"],["E",6,14,"Wx.t0#2"],["E",7,14,"Wx.t0#3"]],[["E",1,15,"b.t0#1"],["E",2,15,"b.t0#2"],["E",3,15,"b.t0#3"],["E",4,15,"Wx.t0#0"],["E",5,15,"Wx.t0#1"],["E",6,15,"Wx.t0#2"],["E",7,15,"Wx.t0#3"]],[["E",0,16,"b.t0#0"],["E",1,16,"b.t0#1"],["E",2,16,"b.t0#2"],["E",3,16,"b.t0#3"],["E",4,16,"Wx.t0#0"],["E",5,16,"Wx.t0#1"],["E",6,16,"Wx.t0#2"],["E",7,16,"Wx.t0#3"]],[["E",0,17,"b.t0#0"],["E",1,17,"b.t0#1"],["E",2,17,"b.t0#2"],["E",3,17,"b.t0#3"],["E",4,17,"Wx.t0#0"],["E",5,17,"Wx.t0#1"],["E",6,17,"Wx.t0#2"],["E",7,17,"Wx.t0#3"]],[["E",0,18,"b.t0#0"],["E",1,18,"b.t0#1"],["E",2,18,"b.t0#2"],["E",3,18,"b.t0#3"],["E",4,18,"Wx.t0#0"],["E",5,18,"Wx.t0#1"],["E",6,18,"Wx.t0#2"],["E",7,18,"Wx.t0#3"]],[["E",0,18,"Wx_b.t0#0"],["E",0,19,"b.t0#0"],["E",1,18,"Wx_b.t0#1"],["E",1,19,"b.t0#1"],["E",2,18,"Wx_b.t0#2"],["E",2,19,"b.t0#2"],["E",3,18,"Wx_b.t0#3"],["E",3,19,"b.t0#3"],["E",4,19,"Wx.t0#0"],["E",5,19,"Wx.t0#1"],["E",6,19,"Wx.t0#2"],["E",7,19,"Wx.t0#3"]],[["E",0,19,"Wx_b.t0#0"],["E",0,20,"b.t0#0"],["E",1,19,"Wx_b.t0#1"],["E",1,20,"b.t0#1"],["E",2,19,"Wx_b.t0#2"],["E",2,20,"b.t0#2"],["E",3,19,"Wx_b.t0#3"],["E",3,20,"b.t0#3"],["E",4,20,"Wx.t0#0"],["E",5,20,"Wx.t0#1"],["E",6,20,"Wx.t0#2"],["E",7,20,"Wx.t0#3"],["W",0,18,"y.t0#0"],["W",1,18,"y.t0#1"],["W",2,18,"y.t0#2"],["W",3,18,"y.t0#3"]],[["E",0,20,"Wx_b.t0#0"],["E",0,21,"b.t0#0"],["E",1,20,"Wx_b.t0#1"],["E",1,21,"b.t0#1"],["E",2,20,"Wx_b.t0#2"],["E",2,21,"b.t0#2"],["E",3,20,"Wx_b.t0#3"],["E",3,21,"b.t0#3"],["E",4,21,"Wx.t0#0"],["E",5,21,"Wx.t0#1"],["E",6,21,"Wx.t0#2"],["E",7,21,"Wx.t0#3"],["W",0,17,"y.t0#0"],["W",1,17,"y.t0#1"],["W",2,17,"y.t0#2"],["W",3,17,"y.t0#3"]],[["E",0,21,"Wx_b.t0#0"],["E",0,22,"b.t0#0"],["E",1,21,"Wx_b.t0#1"],["E",1,22,"b.t0#1"],["E",2,21,"Wx_b.t0#2"],["E",2,22,"b.t0#2"],["E",3,21,"Wx_b.t0#3"],["E",3,22,"b.t0#3"],["E",4,22,"Wx.t0#0"],["E",5,22,"Wx.t0#1"],["E",6,22,"Wx.t0#2"],["E",7,22,"Wx.t0#3"],["W",0,16,"y.t0#0"],["W",1,16,"y.t0#1"],["W",2,16,"y.t0#2"],["W",3,16,"y.t0#3"]],[["E",0,22,"Wx_b.t0#0"],["E",0,23,"b.t0#0"],["E",1,22,"Wx_b.t0#1"],["E",1,23,"b.t0#1"],["E",2,22,"Wx_b.t0#2"],["E",2,23,"b.t0#2"],["E",3,22,"Wx_b.t0#3"],["E",3,23,"b.t0#3"],["E",4,23,"Wx.t0#0"],["E",5,23,"Wx.t0#1"],["E",6,23,"Wx.t0#2"],["E",7,23,"Wx.t0#3"],["W",0,15,"y.t0#0"],["W",1,15,"y.t0#1"],["W",2,15,"y.t0#2"],["W",3,15,"y.t0#3"]],[["E",0,23,"Wx_b.t0#0"],["E",0,24,"b.t0#0"],["E",1,23,"Wx_b.t0#1"],["E",1,24,"b.t0#1"],["E",2,23,"Wx_b.t0#2"],["E",2,24,"b.t0#2"],["E",3,23,"Wx_b.t0#3"],["E",3,24,"b.t0#3"],["E",4,24,"Wx.t0#0"],["E",5,24,"Wx.t0#1"],["E",6,24,"Wx.t0#2"],["E",7,24,"Wx.t0#3"],["W",0,14,"y.t0#0"],["W",1,14,"y.t0#1"],["W",2,14,"y.t0#2"],["W",3,14,"y.t0#3"]]]}</script>
+<script type="application/json" id="chip">{"clock_hz":900000000.0,"lanes":32,"n_positions":37,"name":"toy","slices":[{"name":"MXM_W","pos":0,"units":["MXM_W.0","MXM_W.1"]},{"name":"SXM_W","pos":1,"units":["SXM_W.shift","SXM_W.permute","SXM_W.distribute"]},{"name":"MEM_W15","pos":2,"units":["MEM_W15"]},{"name":"MEM_W14","pos":3,"units":["MEM_W14"]},{"name":"MEM_W13","pos":4,"units":["MEM_W13"]},{"name":"MEM_W12","pos":5,"units":["MEM_W12"]},{"name":"MEM_W11","pos":6,"units":["MEM_W11"]},{"name":"MEM_W10","pos":7,"units":["MEM_W10"]},{"name":"MEM_W9","pos":8,"units":["MEM_W9"]},{"name":"MEM_W8","pos":9,"units":["MEM_W8"]},{"name":"MEM_W7","pos":10,"units":["MEM_W7"]},{"name":"MEM_W6","pos":11,"units":["MEM_W6"]},{"name":"MEM_W5","pos":12,"units":["MEM_W5"]},{"name":"MEM_W4","pos":13,"units":["MEM_W4"]},{"name":"MEM_W3","pos":14,"units":["MEM_W3"]},{"name":"MEM_W2","pos":15,"units":["MEM_W2"]},{"name":"MEM_W1","pos":16,"units":["MEM_W1"]},{"name":"MEM_W0","pos":17,"units":["MEM_W0"]},{"name":"VXM","pos":18,"units":["VXM.0","VXM.1","VXM.2","VXM.3","VXM.4","VXM.5","VXM.6","VXM.7","VXM.8","VXM.9","VXM.10","VXM.11","VXM.12","VXM.13","VXM.14","VXM.15"]},{"name":"MEM_E0","pos":19,"units":["MEM_E0"]},{"name":"MEM_E1","pos":20,"units":["MEM_E1"]},{"name":"MEM_E2","pos":21,"units":["MEM_E2"]},{"name":"MEM_E3","pos":22,"units":["MEM_E3"]},{"name":"MEM_E4","pos":23,"units":["MEM_E4"]},{"name":"MEM_E5","pos":24,"units":["MEM_E5"]},{"name":"MEM_E6","pos":25,"units":["MEM_E6"]},{"name":"MEM_E7","pos":26,"units":["MEM_E7"]},{"name":"MEM_E8","pos":27,"units":["MEM_E8"]},{"name":"MEM_E9","pos":28,"units":["MEM_E9"]},{"name":"MEM_E10","pos":29,"units":["MEM_E10"]},{"name":"MEM_E11","pos":30,"units":["MEM_E11"]},{"name":"MEM_E12","pos":31,"units":["MEM_E12"]},{"name":"MEM_E13","pos":32,"units":["MEM_E13"]},{"name":"MEM_E14","pos":33,"units":["MEM_E14"]},{"name":"MEM_E15","pos":34,"units":["MEM_E15"]},{"name":"SXM_E","pos":35,"units":["SXM_E.shift","SXM_E.permute","SXM_E.distribute"]},{"name":"MXM_E","pos":36,"units":["MXM_E.0","MXM_E.1"]}],"streams_per_dir":32,"timing":{"IW":{"d_func":1,"d_skew":0},"MATVEC":{"d_func":3,"d_skew":0},"READ":{"d_func":2,"d_skew":0},"SXM":{"d_func":1,"d_skew":0},"VARITH":{"d_func":1,"d_skew":0},"VTRANS":{"d_func":3,"d_skew":0},"WRITE":{"d_func":1,"d_skew":0}},"vxm_pos":18}</script>
+<script>
+/* Timeline page for one TSP simulator trace. Plain JavaScript, no libraries.
+   Everything is drawn from the two embedded JSON blocks (trace, chip).
+   buildModel() mirrors tsp/viz/model.py (summarise): keep the two in sync.
+   Note: this file must never contain two consecutive slashes (the page is
+   checked for protocol-relative references), so only block comments are used. */
+(function () {
+  'use strict';
+
+  const trace = JSON.parse(document.getElementById('trace').textContent);
+  const chip = JSON.parse(document.getElementById('chip').textContent);
+  const TAGGED = new Set(['drive', 'sample', 'mem_read', 'mem_write', 'iw_row', 'matvec_row']);
+  const NPAL = 8;
+
+  /* ------------------------------------------------------------------ model */
+  function valueOf(tag) {
+    if (tag === undefined || tag === null) return '';
+    const i = tag.lastIndexOf('#');
+    return i < 0 ? tag : tag.slice(0, i);
+  }
+  function diagonal(d, cycle, pos) { return d === 'E' ? cycle - pos : cycle + pos; }
+  function allLanes() {
+    const out = [];
+    for (const d of ['E', 'W']) for (let s = 0; s < chip.streams_per_dir; s++) out.push(d + s);
+    return out;
+  }
+
+  function buildModel() {
+    const events = trace.events;
+    const P = chip.n_positions;
+    const unitOrder = [];
+    for (const s of chip.slices) for (const u of s.units) unitOrder.push(u);
+    const unitSet = new Set(unitOrder);
+
+    const issueCounts = new Map();
+    for (const e of events) if (e.kind === 'issue') issueCounts.set(e.unit, (issueCounts.get(e.unit) || 0) + 1);
+    const known = unitOrder.filter(u => issueCounts.has(u));
+    const unknown = [...issueCounts.keys()].filter(u => !unitSet.has(u)).sort();
+    const issueBlocksPerUnit = {};
+    let nIssue = 0;
+    for (const u of known.concat(unknown)) { issueBlocksPerUnit[u] = issueCounts.get(u); nIssue += issueCounts.get(u); }
+
+    /* one flight per drive, in event order */
+    const flights = [];
+    const groups = new Map();
+    for (const e of events) {
+      if (e.kind !== 'drive') continue;
+      const f = {
+        dir: e.dir, stream: e.stream, lane: e.dir + e.stream, tag: e.tag, value: valueOf(e.tag),
+        unit: e.unit, opcode: e.opcode, start_cycle: e.cycle, start_pos: e.pos,
+        last_sample_cycle: null, last_sample_unit: null, n_samples: 0,
+        end_cycle: null, end_reason: null, end_pos: null, subrow: 0, _by: null
+      };
+      const key = e.dir + '|' + e.stream + '|' + diagonal(e.dir, e.cycle, e.pos);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(flights.length);
+      flights.push(f);
+    }
+    /* each diagonal in flow order; a flight ends where the next one starts, or at the chip edge */
+    const ordered = new Map();
+    for (const [key, idxs] of groups) {
+      const sign = key[0] === 'E' ? 1 : -1;
+      const order = idxs.slice().sort((a, b) =>
+        (sign * flights[a].start_pos - sign * flights[b].start_pos) || (a - b));
+      ordered.set(key, order);
+      for (let k = 0; k < order.length; k++) {
+        const fa = flights[order[k]];
+        if (k + 1 < order.length) {
+          const fb = flights[order[k + 1]];
+          fa.end_cycle = fb.start_cycle; fa.end_reason = 'overwritten'; fa.end_pos = fb.start_pos; fa._by = order[k + 1];
+        } else if (fa.dir === 'E') {
+          fa.end_cycle = fa.start_cycle + (P - fa.start_pos); fa.end_reason = 'edge'; fa.end_pos = P;
+        } else {
+          fa.end_cycle = fa.start_cycle + fa.start_pos + 1; fa.end_reason = 'edge'; fa.end_pos = -1;
+        }
+      }
+    }
+    function findFlight(d, stream, cycle, pos) {
+      const order = ordered.get(d + '|' + stream + '|' + diagonal(d, cycle, pos));
+      if (!order) return null;
+      let found = null;
+      for (const i of order) {
+        const p = flights[i].start_pos;
+        if (d === 'E' ? p <= pos : p >= pos) found = i; else break;
+      }
+      return found;
+    }
+    for (const e of events) {
+      if (e.kind !== 'sample') continue;
+      const i = findFlight(e.dir, e.stream, e.cycle, e.pos);
+      if (i === null) continue;
+      const f = flights[i];
+      f.n_samples += 1;
+      if (f.last_sample_cycle === null || e.cycle >= f.last_sample_cycle) { f.last_sample_cycle = e.cycle; f.last_sample_unit = e.unit; }
+    }
+    /* sub-rows: greedy, by (start_cycle, drive order) */
+    const byLane = new Map();
+    flights.forEach((f, i) => { if (!byLane.has(f.lane)) byLane.set(f.lane, []); byLane.get(f.lane).push(i); });
+    const subrowCount = new Map();
+    for (const [lane, idxs] of byLane) {
+      const ends = [];
+      idxs.slice().sort((a, b) => (flights[a].start_cycle - flights[b].start_cycle) || (a - b)).forEach(i => {
+        const f = flights[i];
+        let r = ends.findIndex(end => end <= f.start_cycle);
+        if (r < 0) { r = ends.length; ends.push(0); }
+        ends[r] = f.end_cycle;
+        f.subrow = r;
+      });
+      subrowCount.set(lane, ends.length);
+    }
+    const laneOrder = allLanes();
+    const laneSet = new Set(laneOrder);
+    const lanesUsed = laneOrder.filter(l => byLane.has(l))
+      .concat([...byLane.keys()].filter(l => !laneSet.has(l)).sort());
+    const flightsPerLane = {}, subrowsPerLane = {};
+    for (const l of lanesUsed) { flightsPerLane[l] = byLane.get(l).length; subrowsPerLane[l] = subrowCount.get(l); }
+
+    const values = [], seen = new Set();
+    for (const e of events) {
+      if (TAGGED.has(e.kind) && e.tag !== undefined && e.tag !== null) {
+        const v = valueOf(e.tag);
+        if (!seen.has(v)) { seen.add(v); values.push(v); }
+      }
+    }
+    return {
+      summary: {
+        n_cycles: trace.n_cycles,
+        issue_blocks_per_unit: issueBlocksPerUnit,
+        n_issue_blocks: nIssue,
+        units_active: known.concat(unknown),
+        flights: flights,
+        n_flights: flights.length,
+        flights_per_lane: flightsPerLane,
+        subrows_per_lane: subrowsPerLane,
+        lanes_used: lanesUsed,
+        values: values
+      },
+      findFlight: findFlight,
+      byLane: byLane
+    };
+  }
+
+  const M = buildModel();
+  const S = M.summary;
+  const flights = S.flights;
+  const valueIndex = new Map(S.values.map((v, i) => [v, i]));
+  window.tspSummary = S;
+
+  /* value carried by each instruction: first drive, else first sample, with the same (unit, issue cycle, opcode) */
+  const instrValue = new Map();
+  for (const kind of ['drive', 'sample']) {
+    for (const e of trace.events) {
+      if (e.kind !== kind || e.issue_cycle === undefined) continue;
+      const k = e.unit + '|' + e.issue_cycle + '|' + e.opcode;
+      if (!instrValue.has(k)) instrValue.set(k, valueOf(e.tag));
+    }
+  }
+  const issuesByUnit = new Map();
+  const slicePos = new Map();
+  const sliceOfUnit = new Map();
+  for (const s of chip.slices) { slicePos.set(s.name, s.pos); for (const u of s.units) sliceOfUnit.set(u, s.name); }
+  for (const e of trace.events) {
+    if (e.kind !== 'issue') continue;
+    const k = e.unit + '|' + e.cycle + '|' + e.opcode;
+    const it = {
+      unit: e.unit, cycle: e.cycle, opcode: e.opcode, text: e.text || e.opcode,
+      sample: e.sample_cycle, visible: e.visible_cycle,
+      value: instrValue.has(k) ? instrValue.get(k) : null
+    };
+    if (!issuesByUnit.has(e.unit)) issuesByUnit.set(e.unit, []);
+    issuesByUnit.get(e.unit).push(it);
+  }
+  for (const list of issuesByUnit.values()) list.sort((a, b) => a.cycle - b.cycle);
+
+  let maxCycle = trace.n_cycles;
+  for (const e of trace.events) maxCycle = Math.max(maxCycle, e.cycle + 1);
+  for (const f of flights) maxCycle = Math.max(maxCycle, f.end_cycle);
+  const NC = Math.max(1, trace.n_cycles, trace.occupancy.length);
+  const SPAN = Math.max(NC, maxCycle);
+
+  const evByCycle = [];
+  for (const e of trace.events) {
+    if (e.kind !== 'issue' && e.kind !== 'sample' && e.kind !== 'drive') continue;
+    (evByCycle[e.cycle] || (evByCycle[e.cycle] = [])).push(e);
+  }
+
+  /* ----------------------------------------------------------------- colours */
+  let C = {};
+  let PAL = [];
+  function readColours() {
+    const cs = getComputedStyle(document.documentElement);
+    const g = n => cs.getPropertyValue(n).trim();
+    C = {
+      bg: g('--bg'), panel: g('--panel'), text: g('--text'), text2: g('--text2'), muted: g('--muted'),
+      grid: g('--grid'), rule: g('--rule'), sep: g('--sep'), cursor: g('--cursor'), hover: g('--hover'),
+      neutral: g('--neutral'), mono: g('--mono')
+    };
+    PAL = [];
+    for (let i = 0; i < NPAL; i++) PAL.push(g('--v' + i));
+    hatch = null;
+  }
+  function colourFor(v) {
+    if (v === null || v === undefined || !valueIndex.has(v)) return C.neutral;
+    return PAL[valueIndex.get(v) % NPAL];
+  }
+  function inkOn(hex) {
+    const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+    if (!m) return '#000';
+    const lin = c => { c = parseInt(c, 16) / 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+    const L = 0.2126 * lin(m[1]) + 0.7152 * lin(m[2]) + 0.0722 * lin(m[3]);
+    return L > 0.22 ? '#0b0b0b' : '#ffffff';
+  }
+
+  /* ------------------------------------------------------------------ header */
+  function fmtTime(sec) {
+    if (sec < 1e-6) return (sec * 1e9).toFixed(1) + ' ns';
+    if (sec < 1e-3) return (sec * 1e6).toFixed(2) + ' µs';
+    return (sec * 1e3).toFixed(3) + ' ms';
+  }
+  function fmtHz(hz) { return hz >= 1e9 ? (hz / 1e9) + ' GHz' : (hz / 1e6) + ' MHz'; }
+  (function header() {
+    const el = document.getElementById('facts');
+    const parts = [
+      ['Chip preset', chip.name + ' (' + chip.n_positions + ' positions, ' + chip.lanes + ' lanes, ' +
+        chip.streams_per_dir + ' streams each way)'],
+      ['Total', trace.n_cycles.toLocaleString('en-US') + ' cycles'],
+      ['Instructions', S.n_issue_blocks.toLocaleString('en-US')],
+      ['Flights', S.n_flights.toLocaleString('en-US') + ' (' + S.values.length + ' values)']
+    ];
+    for (const [k, v] of parts) {
+      const b = document.createElement('b'); b.textContent = k + ': ';
+      el.appendChild(b); el.appendChild(document.createTextNode(v + '   '));
+    }
+    const conv = document.createElement('span');
+    conv.textContent = 'Conversion: ' + trace.n_cycles.toLocaleString('en-US') + ' cycles at ' + fmtHz(chip.clock_hz) +
+      ' ≈ ' + fmtTime(trace.n_cycles / chip.clock_hz) +
+      ' (the clock is a nominal published figure; the cycle latencies in this simulator are assumptions).';
+    el.appendChild(document.createElement('br'));
+    el.appendChild(conv);
+  })();
+
+  /* ------------------------------------------------------------------- state */
+  const state = { cycle: 0, hl: null, showIdle: false, pxc: 4, playing: null };
+
+  /* ------------------------------------------------------------- Gantt rows */
+  const RULER_H = 22, UNIT_H = 18, SUB_H = 12, LANE_PAD = 4, GROUP_H = 18, PAD_L = 6;
+  let rows = [];
+  let totalH = 0;
+  function buildRows() {
+    rows = [];
+    let y = RULER_H;
+    rows.push({ type: 'group', label: 'Queues', y: y, h: GROUP_H }); y += GROUP_H;
+    let band = 0;
+    for (const s of chip.slices) {
+      let any = false;
+      for (const u of s.units) {
+        if (!state.showIdle && !issuesByUnit.has(u)) continue;
+        rows.push({ type: 'unit', unit: u, slice: s.name, label: u, y: y, h: UNIT_H, band: band % 2,
+          items: issuesByUnit.get(u) || [], first: !any });
+        y += UNIT_H; any = true;
+      }
+      if (any) band++;
+    }
+    for (const u of issuesByUnit.keys()) {
+      if (!sliceOfUnit.has(u)) {
+        rows.push({ type: 'unit', unit: u, slice: '?', label: u, y: y, h: UNIT_H, band: 0, items: issuesByUnit.get(u), first: true });
+        y += UNIT_H;
+      }
+    }
+    rows.push({ type: 'group', label: 'Stream lanes', y: y, h: GROUP_H }); y += GROUP_H;
+    const lanes = state.showIdle ? allLanes().concat(S.lanes_used.filter(l => !allLanes().includes(l))) : S.lanes_used;
+    for (const l of lanes) {
+      const idxs = M.byLane.get(l) || [];
+      const n = Math.max(1, S.subrows_per_lane[l] || 0);
+      const h = n * SUB_H + LANE_PAD;
+      rows.push({ type: 'lane', lane: l, label: l, y: y, h: h, nsub: n, items: idxs.map(i => flights[i]),
+        first: l === 'W0' || l === lanes[0] });
+      y += h;
+    }
+    totalH = y + RULER_H;
+  }
+
+  const gScroll = document.getElementById('gScroll');
+  const gInner = document.getElementById('gInner');
+  const canvas = document.getElementById('gCanvas');
+  const gLabels = document.getElementById('gLabels');
+  const ctx = canvas.getContext('2d');
+  let viewW = 600, dpr = 1;
+  let hatch = null;
+
+  function layoutGantt() {
+    buildRows();
+    gLabels.textContent = '';
+    gLabels.style.height = totalH + 'px';
+    const head = document.createElement('div');
+    head.className = 'lab group'; head.style.top = '0px'; head.style.height = RULER_H + 'px'; head.textContent = 'cycle';
+    gLabels.appendChild(head);
+    let nUnitBlocks = 0, nBars = 0;
+    for (const r of rows) {
+      const d = document.createElement('div');
+      d.className = 'lab' + (r.type === 'group' ? ' group' : '');
+      d.style.top = r.y + 'px'; d.style.height = r.h + 'px';
+      d.textContent = r.label;
+      if (r.type === 'unit') { d.title = r.unit + ' (' + r.items.length + ' instructions)'; nUnitBlocks += r.items.length; }
+      if (r.type === 'lane') {
+        d.title = (r.lane[0] === 'E' ? 'eastward' : 'westward') + ' stream ' + r.lane.slice(1) + ' (' + r.items.length + ' flights)';
+        nBars += r.items.length;
+      }
+      gLabels.appendChild(d);
+    }
+    canvas.dataset.issueBlocks = String(nUnitBlocks);
+    canvas.dataset.flightBars = String(nBars);
+    sizeCanvas();
+  }
+  function sizeCanvas() {
+    viewW = Math.max(100, gScroll.clientWidth);
+    gInner.style.width = Math.ceil(SPAN * state.pxc + 2 * PAD_L) + 'px';
+    gInner.style.height = totalH + 'px';
+    dpr = Math.min(window.devicePixelRatio || 1, 32000 / Math.max(1, totalH), 32000 / viewW);
+    canvas.width = Math.floor(viewW * dpr);
+    canvas.height = Math.floor(totalH * dpr);
+    canvas.style.width = viewW + 'px';
+    canvas.style.height = totalH + 'px';
+    document.getElementById('zoomLabel').textContent = fmtZoom(state.pxc);
+    requestDraw();
+  }
+  function fmtZoom(p) { return (p >= 1 ? p.toFixed(p % 1 ? 1 : 0) : p.toFixed(2)) + ' px/cycle'; }
+
+  let drawPending = false;
+  function requestDraw() {
+    if (drawPending) return;
+    drawPending = true;
+    requestAnimationFrame(() => { drawPending = false; drawGantt(); });
+  }
+  function xOf(c) { return PAD_L + c * state.pxc - gScroll.scrollLeft; }
+  function tickStep() {
+    const steps = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000];
+    for (const s of steps) if (s * state.pxc >= 64) return s;
+    return 100000;
+  }
+  function textW(s) { return ctx.measureText(s).width; }
+  function getHatch() {
+    if (hatch) return hatch;
+    const p = document.createElement('canvas');
+    p.width = 6; p.height = 6;
+    const g = p.getContext('2d');
+    g.strokeStyle = C.bg; g.lineWidth = 1.6; g.globalAlpha = 0.85;
+    g.beginPath(); g.moveTo(0, 6); g.lineTo(6, 0); g.moveTo(-1, 1); g.lineTo(1, -1); g.moveTo(5, 7); g.lineTo(7, 5); g.stroke();
+    hatch = ctx.createPattern(p, 'repeat');
+    return hatch;
+  }
+
+  function drawGantt() {
+    const W = viewW, pxc = state.pxc, sl = gScroll.scrollLeft;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, totalH);
+    const c0 = Math.max(0, Math.floor((sl - PAD_L) / pxc) - 1);
+    const c1 = Math.min(SPAN, Math.ceil((sl + W) / pxc) + 1);
+    const step = tickStep();
+    const hl = state.hl;
+
+    /* row backgrounds and separators */
+    for (const r of rows) {
+      if (r.type === 'unit' && r.band) { ctx.fillStyle = C.hover; ctx.fillRect(0, r.y, W, r.h); }
+      if (r.type === 'group') { ctx.fillStyle = C.panel; ctx.fillRect(0, r.y, W, r.h); }
+      if (r.first && r.type !== 'group') { ctx.fillStyle = C.rule; ctx.fillRect(0, r.y, W, 1); }
+      if (r.type === 'lane') { ctx.fillStyle = C.grid; ctx.fillRect(0, r.y + r.h - 1, W, 1); }
+    }
+    /* vertical grid */
+    ctx.fillStyle = C.grid;
+    for (let c = Math.ceil(c0 / step) * step; c <= c1; c += step) ctx.fillRect(Math.round(xOf(c)), RULER_H, 1, totalH - 2 * RULER_H);
+    /* rulers (top and bottom) */
+    ctx.font = '10px ' + C.mono;
+    ctx.textBaseline = 'middle';
+    for (const top of [0, totalH - RULER_H]) {
+      ctx.fillStyle = C.panel; ctx.fillRect(0, top, W, RULER_H);
+      ctx.fillStyle = C.rule; ctx.fillRect(0, top === 0 ? RULER_H - 1 : top, W, 1);
+      ctx.fillStyle = C.text2;
+      for (let c = Math.ceil(c0 / step) * step; c <= c1; c += step) {
+        const x = Math.round(xOf(c));
+        ctx.fillRect(x, top === 0 ? RULER_H - 6 : top, 1, 6);
+        ctx.fillText(String(c), x + 3, top + RULER_H / 2);
+      }
+    }
+    /* group labels inside the canvas */
+    ctx.font = '600 11px ' + C.mono;
+    for (const r of rows) if (r.type === 'group') {
+      ctx.fillStyle = C.text2;
+      ctx.fillText(r.label === 'Queues' ? 'instruction queues, West → East' : 'stream lanes: E = eastward, W = westward',
+        8, r.y + r.h / 2);
+    }
+
+    ctx.font = '10px ' + C.mono;
+    let drawnBlocks = 0;
+    for (const r of rows) {
+      if (r.type === 'unit') {
+        const items = r.items;
+        for (let k = 0; k < items.length; k++) {
+          const it = items[k];
+          const vis = it.visible !== undefined ? it.visible : it.cycle;
+          if (vis + 1 < c0 || it.cycle > c1) continue;
+          drawnBlocks++;
+          const dim = hl !== null && it.value !== hl;
+          ctx.globalAlpha = dim ? 0.15 : 1;
+          const x = xOf(it.cycle);
+          const col = colourFor(it.value);
+          const mid = r.y + r.h / 2;
+          /* whisker issue -> visible, tick at the sample cycle */
+          if (vis > it.cycle) {
+            ctx.fillStyle = C.sep;
+            ctx.fillRect(x + pxc, mid, (vis - it.cycle) * pxc, 1);
+            ctx.fillRect(xOf(vis + 1) - 1, mid - 3, 1, 7);
+            if (it.sample !== undefined && it.sample > it.cycle) ctx.fillRect(xOf(it.sample) + pxc / 2, mid - 2, 1, 5);
+          }
+          ctx.fillStyle = col;
+          ctx.fillRect(x, r.y + 3, Math.max(1.5, pxc - (pxc > 3 ? 1 : 0)), r.h - 6);
+          /* opcode label right of the block when there is room before the next block */
+          const next = k + 1 < items.length ? xOf(items[k + 1].cycle) : Infinity;
+          const tx = x + Math.max(pxc, 2) + 2;
+          const tw = textW(it.opcode);
+          if (tx + tw + 2 < next) {
+            ctx.fillStyle = C.text;
+            ctx.fillText(it.opcode, tx, r.y + 5.5);
+          }
+        }
+      } else if (r.type === 'lane') {
+        for (const f of r.items) {
+          if (f.end_cycle < c0 || f.start_cycle > c1) continue;
+          const dim = hl !== null && f.value !== hl;
+          ctx.globalAlpha = dim ? 0.12 : 1;
+          const col = colourFor(f.value);
+          const y = r.y + LANE_PAD / 2 + f.subrow * SUB_H + 1, h = SUB_H - 2;
+          const liveEnd = f.last_sample_cycle === null ? f.start_cycle : f.last_sample_cycle + 1;
+          const xs = xOf(f.start_cycle), xl = xOf(liveEnd), xe = xOf(f.end_cycle);
+          if (xe > xl) {
+            ctx.globalAlpha = dim ? 0.06 : 0.42;
+            ctx.fillStyle = col; ctx.fillRect(xl, y, xe - xl, h);
+            ctx.fillStyle = getHatch(); ctx.fillRect(xl, y, xe - xl, h);
+            ctx.globalAlpha = dim ? 0.12 : 1;
+          }
+          if (xl > xs) {
+            ctx.fillStyle = col; ctx.fillRect(xs, y, Math.max(1, xl - xs - (pxc > 3 ? 0.5 : 0)), h);
+            const tw = textW(f.value);
+            if (tw + 6 < xl - xs) { ctx.fillStyle = inkOn(col); ctx.fillText(f.value, xs + 3, y + h / 2 + 0.5); }
+          } else {
+            /* never read: a thin solid start mark so the drive cycle is visible */
+            ctx.fillStyle = col; ctx.fillRect(xs, y, Math.max(1, Math.min(2, pxc)), h);
+          }
+        }
+      }
+    }
+    ctx.globalAlpha = 1;
+    canvas.dataset.drawnBlocks = String(drawnBlocks);
+
+    /* end of run (n_cycles): dead tails may continue past it until they leave the chip */
+    if (SPAN > trace.n_cycles) {
+      const xe = Math.round(xOf(trace.n_cycles));
+      ctx.fillStyle = C.text2;
+      for (let y = RULER_H; y < totalH - RULER_H; y += 6) ctx.fillRect(xe, y, 1, 3);
+      ctx.font = '10px ' + C.mono;
+      ctx.fillText('end of run', xe + 4, totalH - RULER_H - 8);
+    }
+
+    /* cursor */
+    const cx = xOf(state.cycle);
+    if (pxc >= 3) { ctx.fillStyle = C.cursor; ctx.globalAlpha = 0.12; ctx.fillRect(cx, RULER_H, pxc, totalH - 2 * RULER_H); ctx.globalAlpha = 1; }
+    ctx.fillStyle = C.cursor;
+    ctx.fillRect(Math.round(cx + pxc / 2) - 1, 0, 2, totalH);
+    ctx.font = '600 10px ' + C.mono;
+    const lab = String(state.cycle);
+    const lw = textW(lab) + 8;
+    const lx = Math.min(Math.max(0, cx + pxc / 2 - lw / 2), W - lw);
+    ctx.fillRect(lx, 2, lw, RULER_H - 6);
+    ctx.fillStyle = inkOn(C.cursor) === '#ffffff' ? '#ffffff' : '#0b0b0b';
+    ctx.fillText(lab, lx + 4, RULER_H / 2 - 1);
+  }
+
+  /* hit testing on the canvas */
+  function hitAt(mx, my) {
+    const r = rows.find(r => my >= r.y && my < r.y + r.h);
+    const cyc = Math.floor((mx + gScroll.scrollLeft - PAD_L) / state.pxc);
+    if (!r) return { cycle: cyc };
+    const slack = Math.max(0, (4 - state.pxc) / 2) / state.pxc;
+    if (r.type === 'unit') {
+      let best = null, bd = Infinity;
+      for (const it of r.items) {
+        const d = cyc < it.cycle ? it.cycle - cyc : (cyc > it.cycle ? cyc - it.cycle : 0);
+        if (d <= slack + 0.0001 && d < bd) { best = it; bd = d; }
+      }
+      return { cycle: cyc, row: r, issue: best };
+    }
+    if (r.type === 'lane') {
+      const sub = Math.floor((my - r.y - LANE_PAD / 2) / SUB_H);
+      const fc = (mx + gScroll.scrollLeft - PAD_L) / state.pxc;
+      const f = r.items.find(f => f.subrow === sub && fc >= f.start_cycle - slack && fc < f.end_cycle + slack);
+      return { cycle: cyc, row: r, flight: f || null };
+    }
+    return { cycle: cyc, row: r };
+  }
+  function sliceAtPos(p) { return p >= 0 && p < chip.slices.length ? chip.slices[p].name : '(off chip)'; }
+  function issueTip(it) {
+    return it.unit + '  ' + it.opcode + '\n' + it.text + '\nissue ' + it.cycle +
+      (it.sample !== undefined ? ' · sample ' + it.sample : '') +
+      (it.visible !== undefined ? ' · visible ' + it.visible : '') +
+      (it.value ? '\nvalue: ' + it.value : '');
+  }
+  function flightTip(f) {
+    const lines = [f.tag + '   (lane ' + f.lane + ', ' + (f.dir === 'E' ? 'eastward' : 'westward') + ')'];
+    lines.push('driven by ' + f.unit + ' ' + f.opcode + ' at pos ' + f.start_pos + ' (' + sliceAtPos(f.start_pos) + '), visible cycle ' + f.start_cycle);
+    if (f.last_sample_cycle === null) lines.push('never read (all dead tail)');
+    else lines.push('last read cycle ' + f.last_sample_cycle + ' by ' + f.last_sample_unit + ' (' + f.n_samples + ' read' + (f.n_samples === 1 ? '' : 's') + ')');
+    if (f.end_reason === 'overwritten') {
+      const by = flights[f._by];
+      lines.push('overwritten at pos ' + f.end_pos + ' (' + sliceAtPos(f.end_pos) + ') in cycle ' + f.end_cycle + ' by ' + by.tag);
+    } else {
+      lines.push('leaves the chip at the ' + (f.dir === 'E' ? 'East' : 'West') + ' edge; gone from cycle ' + f.end_cycle);
+    }
+    return lines.join('\n');
+  }
+
+  const tip = document.getElementById('tip');
+  function showTip(text, ev) {
+    tip.textContent = text;
+    tip.hidden = false;
+    const pad = 12;
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    let x = ev.clientX + pad, y = ev.clientY + pad;
+    if (x + w > window.innerWidth - 4) x = Math.max(4, ev.clientX - w - pad);
+    if (y + h > window.innerHeight - 4) y = Math.max(4, ev.clientY - h - pad);
+    tip.style.left = x + 'px'; tip.style.top = y + 'px';
+  }
+  function hideTip() { tip.hidden = true; }
+
+  canvas.addEventListener('mousemove', ev => {
+    const rect = canvas.getBoundingClientRect();
+    const h = hitAt(ev.clientX - rect.left, ev.clientY - rect.top);
+    if (h.issue) { showTip(issueTip(h.issue), ev); setHL(h.issue.value || null); }
+    else if (h.flight) { showTip(flightTip(h.flight), ev); setHL(h.flight.value); }
+    else { hideTip(); setHL(null); }
+  });
+  canvas.addEventListener('mouseleave', () => { hideTip(); setHL(null); });
+  canvas.addEventListener('click', ev => {
+    const rect = canvas.getBoundingClientRect();
+    const h = hitAt(ev.clientX - rect.left, ev.clientY - rect.top);
+    setCycle(h.cycle, false);
+  });
+  gScroll.addEventListener('scroll', requestDraw, { passive: true });
+
+  /* zoom keeps the cycle at the centre of the view fixed */
+  const ZOOMS = [0.05, 0.1, 0.25, 0.5, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32];
+  function fitZoom() { return Math.min(32, Math.max(0.05, (gScroll.clientWidth - 2 * PAD_L) / SPAN)); }
+  function setZoom(p) {
+    const centre = (gScroll.scrollLeft + gScroll.clientWidth / 2 - PAD_L) / state.pxc;
+    state.pxc = p;
+    sizeCanvas();
+    gScroll.scrollLeft = Math.max(0, centre * p + PAD_L - gScroll.clientWidth / 2);
+    requestDraw();
+  }
+  document.getElementById('zoomIn').addEventListener('click', () => {
+    const n = ZOOMS.find(z => z > state.pxc + 1e-9); if (n) setZoom(n);
+  });
+  document.getElementById('zoomOut').addEventListener('click', () => {
+    const n = ZOOMS.slice().reverse().find(z => z < state.pxc - 1e-9); if (n) setZoom(n);
+  });
+  document.getElementById('zoomFit').addEventListener('click', () => setZoom(fitZoom()));
+
+  /* --------------------------------------------------------------- chip view */
+  const slicesEl = document.getElementById('slices');
+  const cellsEl = document.getElementById('cells');
+  const wrap = document.querySelector('.chipgrid-wrap');
+  wrap.style.setProperty('--npos', String(chip.n_positions));
+  let cellIndex = new Map();
+  let touched = [];
+  const sliceEls = [];
+
+  (function buildSlices() {
+    slicesEl.appendChild(document.createElement('div'));
+    for (const s of chip.slices) {
+      const d = document.createElement('div');
+      d.className = 'slice kind-' + s.name.slice(0, 3);
+      const n = document.createElement('span'); n.textContent = s.name;
+      const op = document.createElement('span'); op.className = 'op';
+      d.appendChild(n); d.appendChild(op);
+      d.dataset.pos = String(s.pos);
+      slicesEl.appendChild(d);
+      sliceEls.push({ el: d, op: op, slice: s });
+    }
+  })();
+
+  function buildCells() {
+    cellsEl.textContent = '';
+    cellIndex = new Map();
+    touched = [];
+    const lanes = state.showIdle ? allLanes() : S.lanes_used;
+    let prevDir = null;
+    for (const l of lanes) {
+      const sep = prevDir !== null && l[0] !== prevDir;
+      prevDir = l[0];
+      const lab = document.createElement('div');
+      lab.className = 'ln' + (sep ? ' lanesep' : '');
+      lab.textContent = l;
+      cellsEl.appendChild(lab);
+      const arr = [];
+      for (let p = 0; p < chip.n_positions; p++) {
+        const c = document.createElement('div');
+        c.className = 'c' + (sep ? ' lanesep' : '');
+        c.dataset.lane = l; c.dataset.pos = String(p);
+        cellsEl.appendChild(c);
+        arr.push({ el: c, sep: sep, value: null, tag: null, flight: null });
+      }
+      cellIndex.set(l, arr);
+    }
+    if (!lanes.length) {
+      const d = document.createElement('div');
+      d.className = 'ln'; d.style.gridColumn = '1 / -1'; d.textContent = 'no stream activity';
+      cellsEl.appendChild(d);
+    }
+  }
+
+  function updateChip() {
+    const t = state.cycle;
+    for (const c of touched) { c.el.className = 'c' + (c.sep ? ' lanesep' : ''); c.el.style.background = ''; c.value = null; c.tag = null; c.flight = null; }
+    touched = [];
+    const occ = trace.occupancy[t] || [];
+    for (const [d, s, p, tag] of occ) {
+      const arr = cellIndex.get(d + s);
+      if (!arr || !arr[p]) continue;
+      const c = arr[p];
+      const v = valueOf(tag);
+      const fi = M.findFlight(d, s, t, p);
+      const f = fi === null ? null : flights[fi];
+      c.value = v; c.tag = tag; c.flight = f;
+      c.el.style.background = colourFor(v);
+      if (f && (f.last_sample_cycle === null || t > f.last_sample_cycle)) c.el.classList.add('dead');
+      touched.push(c);
+    }
+    const evs = evByCycle[t] || [];
+    const ops = new Map();
+    for (const e of evs) {
+      if (e.kind === 'drive' || e.kind === 'sample') {
+        const arr = cellIndex.get(e.dir + e.stream);
+        if (arr && arr[e.pos]) {
+          arr[e.pos].el.classList.add(e.kind === 'drive' ? 'drv' : 'smp');
+          if (!touched.includes(arr[e.pos])) touched.push(arr[e.pos]);
+        }
+      }
+      const p = slicePos.has(sliceOfUnit.get(e.unit)) ? slicePos.get(sliceOfUnit.get(e.unit)) : e.pos;
+      if (!ops.has(p)) ops.set(p, []);
+      const tagged = e.kind === 'issue' ? e.opcode : e.opcode.toLowerCase();
+      if (!ops.get(p).includes(tagged)) ops.get(p).push(tagged);
+    }
+    for (const s of sliceEls) {
+      const o = ops.get(s.slice.pos);
+      s.el.classList.toggle('active', !!o);
+      s.op.textContent = o ? o.join(' ') : '';
+    }
+    applyHLCells();
+    renderActivity(evs, t);
+  }
+
+  const activityEl = document.getElementById('activity');
+  function renderActivity(evs, t) {
+    activityEl.textContent = '';
+    const head = document.createElement('div');
+    head.className = 'row';
+    const b = document.createElement('b');
+    b.textContent = 'Cycle ' + t + ': ';
+    head.appendChild(b);
+    const counts = { issue: 0, sample: 0, drive: 0 };
+    for (const e of evs) counts[e.kind]++;
+    head.appendChild(document.createTextNode(counts.issue + ' issued, ' + counts.sample + ' stream reads, ' +
+      counts.drive + ' stream drives, ' + (trace.occupancy[t] || []).length + ' occupied cells'));
+    activityEl.appendChild(head);
+    const MAXL = 40;
+    let n = 0;
+    for (const e of evs) {
+      if (n++ >= MAXL) { const r = document.createElement('div'); r.className = 'row'; r.textContent = '… ' + (evs.length - MAXL) + ' more'; activityEl.appendChild(r); break; }
+      const r = document.createElement('div');
+      r.className = 'row';
+      if (e.kind === 'issue') r.textContent = 'issue  ' + e.unit + ': ' + (e.text || e.opcode);
+      else if (e.kind === 'drive') r.textContent = 'drive  ' + e.unit + ' ' + e.opcode + ' → ' + e.dir + e.stream + ' @' + e.pos + ' ' + e.tag;
+      else r.textContent = 'read   ' + e.unit + ' ' + e.opcode + ' ← ' + e.dir + e.stream + ' @' + e.pos + ' ' + (e.tag || '(empty)') +
+        (e.expect !== undefined && e.expect !== e.tag ? '  (expected ' + e.expect + ')' : '');
+      activityEl.appendChild(r);
+    }
+  }
+
+  cellsEl.addEventListener('mouseover', ev => {
+    const el = ev.target.closest('.c');
+    if (!el) return;
+    const arr = cellIndex.get(el.dataset.lane);
+    const c = arr && arr[Number(el.dataset.pos)];
+    if (!c || c.tag === null) { setHL(null); return; }
+    setHL(c.value);
+  });
+  cellsEl.addEventListener('mousemove', ev => {
+    const el = ev.target.closest('.c');
+    if (!el) { hideTip(); return; }
+    const arr = cellIndex.get(el.dataset.lane);
+    const p = Number(el.dataset.pos);
+    const c = arr && arr[p];
+    let s = 'lane ' + el.dataset.lane + ', pos ' + p + ' (' + sliceAtPos(p) + '), cycle ' + state.cycle;
+    if (c && c.tag !== null) {
+      s = c.tag + '\n' + s;
+      if (c.flight) s += '\n' + (c.flight.last_sample_cycle !== null && state.cycle <= c.flight.last_sample_cycle ? 'live: read again by cycle ' + c.flight.last_sample_cycle : 'dead tail: not read again');
+    } else s += '\nempty';
+    showTip(s, ev);
+  });
+  cellsEl.addEventListener('mouseleave', () => { hideTip(); setHL(null); });
+  slicesEl.addEventListener('mousemove', ev => {
+    const el = ev.target.closest('.slice');
+    if (!el) { hideTip(); return; }
+    const s = chip.slices[Number(el.dataset.pos)];
+    const evs = (evByCycle[state.cycle] || []).filter(e => sliceOfUnit.get(e.unit) === s.name);
+    const lines = [s.name + '  (pos ' + s.pos + ')', 'units: ' + s.units.join(', ')];
+    for (const e of evs) lines.push(e.kind + ' ' + e.unit + ' ' + (e.kind === 'issue' ? (e.text || e.opcode) : e.opcode + ' ' + e.dir + e.stream + ' ' + e.tag));
+    showTip(lines.join('\n'), ev);
+  });
+  slicesEl.addEventListener('mouseleave', hideTip);
+
+  /* --------------------------------------------------------------- highlight */
+  const hlLabel = document.getElementById('hlLabel');
+  function setHL(v) {
+    if (v === '') v = null;
+    if (v === state.hl) return;
+    state.hl = v;
+    hlLabel.textContent = v === null ? '' : 'Highlighted value: ' + v;
+    requestDraw();
+    applyHLCells();
+  }
+  function applyHLCells() {
+    const v = state.hl;
+    for (const c of touched) c.el.classList.toggle('dim', v !== null && c.value !== v);
+  }
+
+  /* ------------------------------------------------------------ cycle select */
+  const slider = document.getElementById('slider');
+  const cycleNum = document.getElementById('cycleNum');
+  slider.max = String(NC - 1);
+  cycleNum.max = String(NC - 1);
+  function setCycle(c, follow) {
+    c = Math.max(0, Math.min(NC - 1, Math.round(Number(c) || 0)));
+    state.cycle = c;
+    slider.value = String(c);
+    cycleNum.value = String(c);
+    updateChip();
+    if (follow !== false) {
+      const x = PAD_L + c * state.pxc;
+      const sl = gScroll.scrollLeft, w = gScroll.clientWidth;
+      if (x < sl + 20 || x > sl + w - 20) gScroll.scrollLeft = Math.max(0, x - w / 3);
+    }
+    requestDraw();
+  }
+  slider.addEventListener('input', () => setCycle(slider.value));
+  cycleNum.addEventListener('change', () => setCycle(cycleNum.value));
+  document.getElementById('first').addEventListener('click', () => setCycle(0));
+  document.getElementById('last').addEventListener('click', () => setCycle(NC - 1));
+  document.getElementById('prev').addEventListener('click', () => setCycle(state.cycle - 1));
+  document.getElementById('next').addEventListener('click', () => setCycle(state.cycle + 1));
+  const playBtn = document.getElementById('play');
+  function stopPlay() { if (state.playing) { clearInterval(state.playing); state.playing = null; playBtn.textContent = 'Play'; playBtn.setAttribute('aria-label', 'Play'); } }
+  playBtn.addEventListener('click', () => {
+    if (state.playing) { stopPlay(); return; }
+    if (state.cycle >= NC - 1) setCycle(0);
+    playBtn.textContent = 'Pause'; playBtn.setAttribute('aria-label', 'Pause');
+    state.playing = setInterval(() => { if (state.cycle >= NC - 1) stopPlay(); else setCycle(state.cycle + 1); }, 150);
+  });
+  document.addEventListener('keydown', ev => {
+    const t = ev.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+    const big = ev.shiftKey ? 10 : 1;
+    if (ev.key === 'ArrowRight') { setCycle(state.cycle + big); ev.preventDefault(); }
+    else if (ev.key === 'ArrowLeft') { setCycle(state.cycle - big); ev.preventDefault(); }
+    else if (ev.key === 'Home') { setCycle(0); ev.preventDefault(); }
+    else if (ev.key === 'End') { setCycle(NC - 1); ev.preventDefault(); }
+  });
+
+  /* ------------------------------------------------------------- idle toggle */
+  document.getElementById('showIdle').addEventListener('change', ev => {
+    state.showIdle = ev.target.checked;
+    layoutGantt();
+    buildCells();
+    updateChip();
+  });
+
+  /* ------------------------------------------------------------------ start */
+  readColours();
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  const onScheme = () => { readColours(); requestDraw(); updateChip(); };
+  if (mq.addEventListener) mq.addEventListener('change', onScheme);
+  if (window.ResizeObserver) new ResizeObserver(() => sizeCanvas()).observe(gScroll);
+  else window.addEventListener('resize', sizeCanvas);
+
+  layoutGantt();
+  const fz = fitZoom();
+  state.pxc = fz >= 4 ? Math.min(fz, 24) : 4;
+  sizeCanvas();
+  buildCells();
+  setCycle(0);
+  document.body.dataset.ready = '1';
+})();
+
+</script>
+</body>
+</html>

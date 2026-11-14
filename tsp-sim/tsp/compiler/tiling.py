@@ -67,6 +67,7 @@ class Tiled:
     consumers: dict[int, list[int]] = field(default_factory=dict)     # vid -> op ids reading it as operand
     row_users: dict[int, list[int]] = field(default_factory=dict)     # vid -> MATVEC op ids installing it
     is_output: dict[int, bool] = field(default_factory=dict)          # vid -> True for graph output tiles
+    node_names: list[str] = field(default_factory=list)               # graph node id -> name
 
 
 def tile_count(n: int, tile_len: int) -> int:
@@ -114,7 +115,7 @@ def live_nodes(graph: Graph) -> list[bool]:
 def tile_graph(graph: Graph, config: ChipConfig) -> Tiled:
     T = tile_length(graph, config)
     check_restrictions(graph, T)
-    tg = Tiled(tile_len=T, outputs=dict(graph.outputs))
+    tg = Tiled(tile_len=T, outputs=dict(graph.outputs), node_names=[n.name for n in graph.nodes])
 
     def new_val(prefix, dtype, node, tile, leaf=None, index=(), producer=None) -> int:
         vid = len(tg.vals)

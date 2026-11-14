@@ -63,17 +63,17 @@ class ChipConfig:
 
     @property
     def n_positions(self) -> int:  # L-G11: one stream-register position per slice
-        return 2 * self.mem_slices_per_hemi + 5
+        return 2 * self.mem_slices_per_hemi + 5  # L-G9, L-G11: 2 MXM + 2 SXM + 1 VXM slices besides MEM
 
     @property
     def vxm_pos(self) -> int:
-        return self.mem_slices_per_hemi + 2
+        return self.mem_slices_per_hemi + 2  # L-G9: after MXM_W, SXM_W and the West MEM slices
 
     def slice_names(self) -> list[str]:
         """Slices West to East (L-G9). Index in this list == position."""
         m = self.mem_slices_per_hemi
         return (["MXM_W", "SXM_W"]
-                + [f"MEM_W{i}" for i in range(m - 1, -1, -1)]
+                + [f"MEM_W{i}" for i in range(m - 1, -1, -1)]  # L-G9: MEM_W0 is next to the VXM
                 + ["VXM"]
                 + [f"MEM_E{i}" for i in range(m)]
                 + ["SXM_E", "MXM_E"])
@@ -95,30 +95,30 @@ class ChipConfig:
         return [u for s in self.slice_names() for u in self.units_of(s)]
 
     def slice_of(self, unit: str) -> str:
-        return unit.split(".")[0]
+        return unit.split(".")[0]  # not a machine parameter: name parsing
 
     def kind(self, unit: str) -> str:
         """'MEM' | 'VXM' | 'MXM' | 'SXM' for a unit or slice name."""
-        return unit[:3]
+        return unit[:3]  # not a machine parameter: name parsing
 
     def pos(self, unit: str) -> int:
         """Position of a unit or slice name."""
         s = self.slice_of(unit)
         m = self.mem_slices_per_hemi
         if s == "MXM_W":
-            return 0
+            return 0  # L-G9
         if s == "SXM_W":
-            return 1
+            return 1  # L-G9
         if s.startswith("MEM_W"):
-            return m + 1 - int(s[5:])
+            return m + 1 - int(s[5:])  # L-G9, L-G11
         if s == "VXM":
-            return m + 2
+            return m + 2  # L-G9, L-G11
         if s.startswith("MEM_E"):
-            return m + 3 + int(s[5:])
+            return m + 3 + int(s[5:])  # L-G9, L-G11
         if s == "SXM_E":
-            return 2 * m + 3
+            return 2 * m + 3  # L-G9, L-G11
         if s == "MXM_E":
-            return 2 * m + 4
+            return 2 * m + 4  # L-G9, L-G11
         raise KeyError(unit)
 
     def hemi(self, unit: str) -> str | None:

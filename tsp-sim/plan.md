@@ -526,8 +526,8 @@ order (ascending ids). `compile` called twice on equal inputs must return
 
 ## 6. Milestones
 
-All run on `ChipConfig.toy()` (32 lanes), with weights and inputs from
-`np.random.default_rng(seed)` with a fixed seed per model.
+All run on `ChipConfig.toy()` (32 lanes), with weights and inputs from a
+fixed-seed generator (described below).
 
 | | Model | Shapes | Exercises |
 |---|---|---|---|

@@ -28,7 +28,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..config import EAST, WEST, ChipConfig, OpTiming
-from ..graph import ELEMENTWISE_BINARY
 from .assign import VXM, unit_pos
 from .chains import Chain
 from .tiling import MATVEC, TOp, Tiled
@@ -133,7 +132,7 @@ def heights(tg: Tiled, chains: list[Chain], times: list[ChainTime], succ: list[l
 
 
 def ideal_anchors(tg: Tiled, chains: list[Chain], times: list[ChainTime], order: list[int],
-                  chain_of: list[int], leaf_pos: dict[int, tuple[int, ...]], config: ChipConfig) -> list[int]:
+                  leaf_pos: dict[int, tuple[int, ...]], config: ChipConfig) -> list[int]:
     """ASAP anchors ignoring resources (see module docstring for the assumptions)."""
     t_r = timing(config, "READ")
     d_w = timing(config, "WRITE").d_func
@@ -173,6 +172,3 @@ def ideal_anchors(tg: Tiled, chains: list[Chain], times: list[ChainTime], order:
         write_abs[final] = [lb + write_sample_offset(ct, x) for x in park_pos[final]]
     return anchor
 
-
-__all__ = ["ChainTime", "chain_timing", "read_sample_offset", "write_sample_offset", "heights",
-           "ideal_anchors", "flow_dir", "park_plan", "op_timing_key", "ELEMENTWISE_BINARY"]

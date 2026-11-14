@@ -292,7 +292,7 @@ re-runs a milestone with different latencies to show this.
 | L-M3 | One address holds one byte per lane; a Read puts a full vector on one stream | yes | yes | SOURCED | [R1 §2.7] |
 | L-M4 | Ports per slice per cycle: at most one read and one write, on different banks | yes | yes | SOURCED | [R1 §2.7] |
 | L-M5 | Two reads (or two writes) in one slice in one cycle | forbidden | forbidden | ASSUMED | Not stated; conservative |
-| L-M6 | The host places weights and inputs in memory before cycle 0 and reads outputs after the last cycle | yes | yes | SOURCED for the model (PCIe DMA engine, [R1 §2.1]); ASSUMED for inputs and outputs | |
+| L-M6 | The host places weights and inputs in memory before cycle 0 and reads outputs after the last cycle | yes | yes | SOURCED for the model; ASSUMED for inputs and outputs | The paper describes a PCIe DMA engine that emplaces a model in memory [R1 §2.1]; it does not describe how inputs and results are exchanged, so we use the same path |
 
 ### 7.5 VXM
 

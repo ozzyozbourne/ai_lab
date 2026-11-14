@@ -38,9 +38,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ..config import ChipConfig
+from ..config import WEST, ChipConfig
 from ..program import PlaneLoc
-from .assign import VXM, unit_pos
+from .assign import VXM
 from .chains import Chain
 from .errors import CompileError
 from .timetable import ChainTime, hemisphere_slices, read_sample_offset
@@ -147,16 +147,11 @@ def place_leaves(tg: Tiled, chains: list[Chain], times: list[ChainTime], units: 
     # 2. other leaf vectors: rotating cursor per hemisphere
     cursor: dict[str, int] = {}
     m = config.mem_slices_per_hemi
-    by_name = {tg.vals[v].leaf: [] for v in range(len(tg.vals)) if tg.vals[v].node is not None}
-    for v in tg.vals:
-        if v.leaf is not None and v.node is not None:
-            by_name[v.leaf].append(v.vid)
-    for name in tg.leaf_vectors:
-        for vid in by_name[name]:
-            if vid in mem.loc:
-                continue
+    for val in tg.vals:                      # leaf vector tiles were created in node order
+        vid = val.vid
+        if val.leaf is not None and val.node is not None and vid not in mem.loc:
             users = sorted(tg.consumers.get(vid, []) + tg.row_users.get(vid, []))
-            hemi = "W"
+            hemi = WEST
             if users and units[users[0]] != VXM:
                 hemi = config.hemi(units[users[0]])
             slices = hemisphere_slices(hemi, config)
@@ -196,5 +191,3 @@ def place_leaves(tg: Tiled, chains: list[Chain], times: list[ChainTime], units: 
 def leaf_positions(tg: Tiled, mem: Memory, config: ChipConfig) -> dict[int, tuple[int, ...]]:
     return {v: tuple(config.pos(p.slice) for p in planes) for v, planes in mem.loc.items()}
 
-
-__all__ = ["Memory", "ReadMarks", "place_leaves", "LEAF_BANK", "PARK_BANK", "unit_pos", "leaf_positions"]

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{TITLE}}</title>
+<style>
+{{STYLE}}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1 id="title">{{TITLE}}</h1>
+  <p class="facts" id="facts"></p>
+</header>
+
+<section class="intro" aria-label="How to read this page">
+  <p>The <b>Gantt view</b> runs left to right in clock cycles: each upper row is one instruction queue (grouped by slice, West to East), with a block at the cycle an instruction was issued, labelled with its opcode, and a thin whisker on to the cycle its result becomes visible. Each lower row is one stream lane, where <b>E</b>&#8239;n is eastward-flowing stream n and <b>W</b>&#8239;n is westward-flowing stream n, and a bar starts in the cycle a value is driven onto that stream.</p>
+  <p>The <span class="sw sw-live"></span> solid part of a bar lasts until the last instruction that reads the value; the <span class="sw sw-dead"></span> faded, hatched part (the dead tail) is the value still travelling, one position per cycle, until another value overwrites it or it leaves the chip. Colour identifies a value (its tag without the byte-plane suffix <code>#j</code>) and repeats in large programs, so hover any block, bar or cell to highlight that one value everywhere and read its tag. The <b>chip view</b> below shows every stream cell at the selected cycle, which you pick with the slider, the arrow keys, or by clicking the Gantt.</p>
+</section>
+
+<div class="toolbar" role="group" aria-label="View options">
+  <label><input type="checkbox" id="showIdle"> Show idle rows</label>
+  <span class="zoom">Zoom
+    <button type="button" id="zoomOut" aria-label="Zoom out">&minus;</button>
+    <button type="button" id="zoomFit">Fit</button>
+    <button type="button" id="zoomIn" aria-label="Zoom in">+</button>
+    <span id="zoomLabel" class="muted"></span>
+  </span>
+  <span class="hl" id="hlLabel" aria-live="polite"></span>
+</div>
+
+<section class="gantt" aria-label="Gantt view">
+  <div class="g-labels" id="gLabels"></div>
+  <div class="g-scroll" id="gScroll" tabindex="0" aria-label="Gantt chart, scroll horizontally">
+    <div class="g-inner" id="gInner"><canvas id="gCanvas"></canvas></div>
+  </div>
+</section>
+
+<section class="chip" aria-label="Chip view">
+  <div class="controls" role="group" aria-label="Cycle controls">
+    <button type="button" id="first" aria-label="First cycle">&#x23EE;</button>
+    <button type="button" id="prev" aria-label="Previous cycle">&#x25C0;</button>
+    <button type="button" id="play" aria-label="Play">Play</button>
+    <button type="button" id="next" aria-label="Next cycle">&#x25B6;</button>
+    <button type="button" id="last" aria-label="Last cycle">&#x23ED;</button>
+    <input type="range" id="slider" min="0" max="0" value="0" aria-label="Cycle">
+    <label class="cyc">Cycle <input type="number" id="cycleNum" min="0" value="0"></label>
+  </div>
+  <div class="chipgrid-wrap">
+    <div class="slices" id="slices"></div>
+    <div class="cells" id="cells"></div>
+  </div>
+  <p class="muted small">Chip view: columns are positions (slices) West&nbsp;&rarr;&nbsp;East; rows are stream lanes. An outlined cell is being driven by a producer in this cycle; a dot marks a cell read by an instruction in this cycle; a faded, hatched cell holds a value nobody will read again.</p>
+  <div class="activity" id="activity" aria-live="polite"></div>
+</section>
+
+<div class="tip" id="tip" role="tooltip" hidden></div>
+
+<script type="application/json" id="trace">{{TRACE_JSON}}</script>
+<script type="application/json" id="chip">{{CHIP_JSON}}</script>
+<script>
+{{SCRIPT}}
+</script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 # Independent verification of tsp-sim
 
-Verified on 2026-11-14 against the working tree at commit `713c55c` (clean), Python 3.13, NumPy as installed, headless Chromium via Python Playwright.
+Verified on 2026-11-14 against the working tree at commit `713c55c` (clean), and re-verified after fixes at commit `8841250` (see the section "Re-verification after fixes" at the end). Environment: Python 3.13, NumPy as installed, headless Chromium via Python Playwright.
 The verifier did not build any part of the project and did not change any project file apart from creating this one.
 
 Every verdict below rests on scripts written for this verification. The project's tests, `tsp/validate.py`, `tsp/reference.py` and the `reference()` functions in `tsp/models/` were not used as evidence. They were run only as extra information, and where they appear below that is stated.
@@ -9,32 +9,32 @@ The project code was used only to build graphs (`tsp.models.m*.build`), compile,
 
 ## Summary
 
-| Check | Sub-check | Verdict | Evidence |
-|---|---|---|---|
-| 1 Numerical | M1 int, exact | PASS | 5 seeds (0,1,2,3,42): bit-exact against a scalar Python reference; 1–6 of 8 outputs zero per seed |
-| 1 Numerical | M2 int, exact | PASS | 5 seeds bit-exact; hidden layer h has 6–10 zeros of 16, 0–2 saturated; all 8 outputs distinct |
-| 1 Numerical | M3 fp32/fp16 | PASS | 5 seeds **bit-exact** (max abs and rel error 0) against my fp32 + fp16-cast reference; against fp64 with no fp16 casts: max abs 1.7e-3, max rel 7.6e-2 (on an element of size 1e-2) |
-| 1 Numerical | non-trivial, padding | PASS | no output is all zero, all values finite, softmax sums 0.99991–1.00012; output padding lanes all zero |
-| 2 Determinism | separate processes, PYTHONHASHSEED 0/0/1/2/random/12345 | PASS | `Program.to_json()`, full trace JSON and `n_cycles` byte-identical over 6 processes for each milestone |
-| 2 Determinism | code inspection | PASS | no set iteration, hashing, randomness, time or `id()` affects any output; `set` is used only for membership tests (`timeline.py:46`, `validate.py:192`) |
-| 3a | lane exclusivity / no early overwrite | PASS | my reconstruction of all cells from emissions equals `trace.cells` list for list (214 / 533 / 4951 cells); every one of 25 / 55 / 452 reads finds its own vid in the register |
-| 3b | unit booking, queue re-derivation | PASS | at most one dispatch per (unit, cycle); my plan-2.6 expansion of every queue gives exactly the trace's (cycle, kind, text) for 21 / 48 / 401 dispatches |
-| 3c | exact arrival, latency, motion | PASS | every read satisfies t = t_e + \|x − x_e\| on the correct side; every emission lands exactly at the latency parsed from the ledger table (not from `params.py`); motion is 1 position per cycle with values dropped at the edge |
-| 3d | memory | PASS | 13 / 34 / 278 MEM Reads all read a preloaded constant whose bytes are that constant's plane, the poked input named by the tag, or a word committed ≥1 cycle before; no address written twice; outputs read from words written with the output tensor's tag |
-| 3 | instruction semantics vs graph | PASS | each Abc, Vxm and Distribute matches its graph node (op, n, dtype, operands); for every Abc, rows 0..n_rows−1 hold the matrix's rows (latest Iw); every op tensor is produced exactly once |
-| 3 | mutation testing | PARTIAL | all 1,930 timing, stream and whole-instruction-swap mutants are caught by the simulator, and also by `validate.py` once the simulator's tag checks are turned off. **249 of 2,226 mutants (wrong MEM address, changed VXM opcode) pass both the simulator and `validate.py`; 21 of those still give a bit-exact correct answer.** See V1 |
-| 4 | numeric literals | PASS (with notes) | 0 unannotated literals in 32 .py files; 32 `not-a-parameter` notes read: 4 are the chip lane count in disguise (V3), 2 encode an unledgered position rule (V4) |
-| 4 | ledger IDs and values | PASS | all 51 IDs cited in the code exist; every `params.py` value equals its ledger Sim value, or for 20/44/2, 65535 and −128/127 the sourced value or a value derived from the row |
-| 4 | SOURCED rows cited | PASS | all 27 SOURCED or partly SOURCED rows carry a source tag or a derivation; 6 of 7 quoted phrases were found verbatim in research/01–04; the 7th (B8) is an elided form of a quote that is there |
-| 4 | assumed shown as fact | PASS (minor) | README, HTML note and comments mark latencies, geometry and so on as assumed. Minor: the docstring `params.isca2020` "Sourced geometry" overstates (V4), and README says latencies are checked "against the ledger" (V2) |
-| 4 | behaviour rows T3 T4 B1 B2 B4 B10 B12 B18 B19 B21 | PASS | from traces, from a hand-written program (overwrite, two results from one ALU on one cycle, Repeat, collision) and by intercepting 532 emitted planes (B19); see section 4 |
-| 5 | renders, no errors | PASS | 3 pages × (1400×900 light, 1400×900 dark with zoom clicks, 390-px phone): 0 console errors, 0 page errors, no horizontal page scroll on the phone |
-| 5 | embedded data = trace | PASS | `DATA.trace` deep-equals the trace JSON; the embedded digest equals SHA-256 of the trace file |
-| 5 | cells one-to-one | PASS | dispatch cells equal trace dispatches by (unit, cycle, label) (21/48/401), each in its unit's row and the right column. Lane cells equal occupied (lane, cycle) pairs (167/388/2951), with exact label and faded state |
-| 5 | space-time view | PASS | for 5 sampled cycles per milestone, the (dir, stream, pos, tag) of every value and the dispatching units match `trace.cells` exactly, each in the column of its position |
-| 5 | committed = fresh | PASS | `timelines/*` (html, json, asm) byte-identical to `python -m tsp.run all --out out1` |
-| 5 | screenshots | PASS (cosmetic notes) | latencies clearly labelled as assumed; nothing overlaps; labels truncated at default zoom (V6) |
-| 6 | deliverables and README | PASS (minor) | all deliverables present; README cycle counts (68/96/465), the README example ([20 0]) and the 320×320 isca2020 run (bit-exact, my validator clean) all hold. Dossier table formatting defect (V5) |
+| Check | Sub-check | Original (713c55c) | Re-verified (8841250) | Evidence (original run; see "Re-verification after fixes" for the rerun) |
+|---|---|---|---|---|
+| 1 Numerical | M1 int, exact | PASS | PASS | 5 seeds (0,1,2,3,42): bit-exact against a scalar Python reference; 1–6 of 8 outputs zero per seed |
+| 1 Numerical | M2 int, exact | PASS | PASS | 5 seeds bit-exact; hidden layer h has 6–10 zeros of 16, 0–2 saturated; all 8 outputs distinct |
+| 1 Numerical | M3 fp32/fp16 | PASS | PASS | 5 seeds **bit-exact** (max abs and rel error 0) against my fp32 + fp16-cast reference; against fp64 with no fp16 casts: max abs 1.7e-3, max rel 7.6e-2 (on an element of size 1e-2) |
+| 1 Numerical | non-trivial, padding | PASS | PASS | no output is all zero, all values finite, softmax sums 0.99991–1.00012; output padding lanes all zero |
+| 2 Determinism | separate processes, PYTHONHASHSEED 0/0/1/2/random/12345 | PASS | PASS | `Program.to_json()`, full trace JSON and `n_cycles` byte-identical over 6 processes for each milestone |
+| 2 Determinism | code inspection | PASS | PASS | no set iteration, hashing, randomness, time or `id()` affects any output; `set` is used only for membership tests (`timeline.py:46`, `validate.py:192`) |
+| 3a | lane exclusivity / no early overwrite | PASS | PASS | my reconstruction of all cells from emissions equals `trace.cells` list for list (214 / 533 / 4951 cells); every one of 25 / 55 / 452 reads finds its own vid in the register |
+| 3b | unit booking, queue re-derivation | PASS | PASS | at most one dispatch per (unit, cycle); my plan-2.6 expansion of every queue gives exactly the trace's (cycle, kind, text) for 21 / 48 / 401 dispatches |
+| 3c | exact arrival, latency, motion | PASS | PASS | every read satisfies t = t_e + \|x − x_e\| on the correct side; every emission lands exactly at the latency parsed from the ledger table (not from `params.py`); motion is 1 position per cycle with values dropped at the edge |
+| 3d | memory | PASS | PASS | 13 / 34 / 278 MEM Reads all read a preloaded constant whose bytes are that constant's plane, the poked input named by the tag, or a word committed ≥1 cycle before; no address written twice; outputs read from words written with the output tensor's tag |
+| 3 | instruction semantics vs graph | PASS | PASS | each Abc, Vxm and Distribute matches its graph node (op, n, dtype, operands); for every Abc, rows 0..n_rows−1 hold the matrix's rows (latest Iw); every op tensor is produced exactly once |
+| 3 | mutation testing | PARTIAL | PASS (opcode limit ACCEPTED) | all 1,930 timing, stream and whole-instruction-swap mutants are caught by the simulator, and also by `validate.py` once the simulator's tag checks are turned off. **249 of 2,226 mutants (wrong MEM address, changed VXM opcode) pass both the simulator and `validate.py`; 21 of those still give a bit-exact correct answer.** See V1 |
+| 4 | numeric literals | PASS (with notes) | PASS | 0 unannotated literals in 32 .py files; 32 `not-a-parameter` notes read: 4 are the chip lane count in disguise (V3), 2 encode an unledgered position rule (V4) |
+| 4 | ledger IDs and values | PASS | PASS | all 51 IDs cited in the code exist; every `params.py` value equals its ledger Sim value, or for 20/44/2, 65535 and −128/127 the sourced value or a value derived from the row |
+| 4 | SOURCED rows cited | PASS | PASS | all 27 SOURCED or partly SOURCED rows carry a source tag or a derivation; 6 of 7 quoted phrases were found verbatim in research/01–04; the 7th (B8) is an elided form of a quote that is there |
+| 4 | assumed shown as fact | PASS (minor) | PASS | README, HTML note and comments mark latencies, geometry and so on as assumed. Minor: the docstring `params.isca2020` "Sourced geometry" overstates (V4), and README says latencies are checked "against the ledger" (V2) |
+| 4 | behaviour rows T3 T4 B1 B2 B4 B10 B12 B18 B19 B21 | PASS | PASS | from traces, from a hand-written program (overwrite, two results from one ALU on one cycle, Repeat, collision) and by intercepting 532 emitted planes (B19); see section 4 |
+| 5 | renders, no errors | PASS | PASS | 3 pages × (1400×900 light, 1400×900 dark with zoom clicks, 390-px phone): 0 console errors, 0 page errors, no horizontal page scroll on the phone |
+| 5 | embedded data = trace | PASS | PASS | `DATA.trace` deep-equals the trace JSON; the embedded digest equals SHA-256 of the trace file |
+| 5 | cells one-to-one | PASS | PASS | dispatch cells equal trace dispatches by (unit, cycle, label) (21/48/401), each in its unit's row and the right column. Lane cells equal occupied (lane, cycle) pairs (167/388/2951), with exact label and faded state |
+| 5 | space-time view | PASS | PASS | for 5 sampled cycles per milestone, the (dir, stream, pos, tag) of every value and the dispatching units match `trace.cells` exactly, each in the column of its position |
+| 5 | committed = fresh | PASS | PASS | `timelines/*` (html, json, asm) byte-identical to `python -m tsp.run all --out out1` |
+| 5 | screenshots | PASS (cosmetic notes) | PASS (V6 cosmetic, open) | latencies clearly labelled as assumed; nothing overlaps; labels truncated at default zoom (V6) |
+| 6 | deliverables and README | PASS (minor) | PASS (V5 fixed) | all deliverables present; README cycle counts (68/96/465), the README example ([20 0]) and the 320×320 isca2020 run (bit-exact, my validator clean) all hold. Dossier table formatting defect (V5) |
 
 ## 1. Numerical correctness
 
@@ -228,3 +228,50 @@ All in `/tmp/claude-0/-home-user-ai-lab/c8af10d4-242d-50e2-9b7d-29e982e88ffc/scr
 - `check4_traceability.py`, `check4_sourced.py`, `check4_behaviour.py`: check 4 (outputs `check4_out.txt`, `check4_behaviour_out.txt`)
 - `check5_viz.py`, `check5_dark.py`: check 5 (output `check5_out.txt`, screenshots in `shots/`, fresh run output in `out1/`)
 - `check6_misc.py`, `check6_more.py`: check 6
+
+## Re-verification after fixes
+
+Rerun on 2026-11-14 at commit `8841250` ("Add verification report; fix findings V1-V5"), using the same scripts without changes. Outputs went to new files: `mutation_out_v2.txt`, `mutation_noexpect_out_v2.txt` and `check4_out_v2.txt`; `out1/` was regenerated.
+
+**Regression reruns: no differences.**
+
+- `python -m tsp.run all` still gives 68 / 96 / 465 cycles with unchanged trace digests (`c4cc9c76…`, `1a2ec987…`, `edf1da29…`).
+- The regenerated `timelines/*` (html, json, asm) are byte-identical to fresh output.
+- Check 1 passes: all milestones and seeds bit-exact.
+- Check 2 passes: program and trace JSON byte-identical across 6 processes and hash seeds.
+- Checks 3a–d pass: 0 errors on 9 runs, with the same counts as before.
+- `check4_behaviour.py` passes, as do the README example, the 320×320 isca2020 run and `check6_more.py`.
+- Check 5 passes: data, dispatch cells, lane cells and space-time all exact, with 0 console or page errors, light and dark.
+- Project tests (supplementary): 358 passed.
+
+**Mutation testing, rerun in full (2,226 mutants).**
+- `Program.mem_names` names all 248 addresses that M3 uses, with none unnamed, and it survives the JSON round trip that my mutator uses.
+- With tag checks on, the mutants that pass both the simulator and `validate.py` are now:
+
+| class | M1 | M2 | M3 | output |
+|---|---|---|---|---|
+| `swap_read_addrs` | 0 (was 4) | 0 (was 17) | 0 (was 214) | — |
+| `cross_swap_read_addrs` | 0 | 0 (was 2) | 0 (was 2) | — |
+| `vxm_op` (add↔sub) | 1 | 2 | 7 | 8 wrong, **2 accidentally right** (M3 `n1_mse`, `n2_mse`: `ms − eps` vs `ms + eps`) |
+| every other class | 0 | 0 | 0 | — |
+
+- Total undetected: 10, down from 249. **None of the undetected mutants changes an address.** All 278 address mutants now raise `OperandTagError`, and so do all 56 `write_addr` mutants.
+- With `expect` cleared, `validate.py` still flags every timing or stream mutant that runs to completion. The address check keeps working even then, because it uses the Read's own tag.
+
+**Status of each finding**
+
+| ID | Status | Evidence |
+|---|---|---|
+| V1 | **FIXED** (address part); **ACCEPTED LIMIT** (opcode part) | As above, 0 address mutants are undetected. Wrong arithmetic is now stated as a limit in `README.md:124`: "They cannot tell that an instruction does the wrong arithmetic … only the comparison with the NumPy references catches that." I judge this acceptable and clearly stated, since tags model routing, not semantics. One residual is worth knowing: 2 of 10 opcode mutants also pass the reference comparison (an `eps` of 1e-5 is lost in rounding), so that comparison is not a complete guard either. Two further limits are inherent to the design: `mem_names` is written by the same compiler whose placement it checks, so a self-consistent placement bug would not be caught; and the check is skipped for addresses without a name (`simulator.py:160`). `validate.py` itself still has no memory check, because the detection lives in the simulator. |
+| V2 | **FIXED** | `README.md:121` now says the latencies are "the program's own `config.latency`, which defaults to the ledger values". This is accurate: `check6_more.py` still shows that a read=3 / abc=5 program validates clean, which matches the new wording. |
+| V3 | **FIXED** | `graph.py:50` and `m1.py:19`, `m2.py:21`, `m3.py:65` now use `params.LANES_PER_SUPERLANE * params.TILES_TOY`. The rescan finds 0 unannotated literals and 26 `not-a-parameter` notes, all genuine: the remaining 16s are N_HIDDEN, H and V, which are model sizes. README:128-129 is now true. |
+| V4 | **FIXED** | Ledger row G8 (`dossier.md:232`) now states the layout: 2k+5 positions, MXM planes share one position, SXM one inside it, ALUs share the VXM position; it is ASSUMED. `params.py:120,152` cite `ledger: G8`. The `isca2020()` docstring now reads "Published slice counts … with the same assumed latencies and stream-register layout (ledger G8)". All cited IDs exist, and the `params.py` values against the ledger are unchanged (the explained CHK rows only). |
+| V5 | **FIXED** | The blank line is gone, so the Behaviour table B1–B22 is now one table. Cosmetic leftover: rows are still out of order (T18 before T17 at `dossier.md:260-261`, C4 before C3 at `:296-297`). |
+| V6 | **STILL OPEN** (cosmetic, not changed by agreement) | Unchanged: labels are truncated at the default zoom, and the auto-scroll can hide units at the far end. |
+| V7 | **NEW, Low (repo hygiene)** | 7 compiled files `tsp/__pycache__/*.cpython-313.pyc` are tracked in git (added in `0c80ed2`, modified again in `8841250`) despite `.gitignore` listing `__pycache__/` and `*.pyc`. This is harmless to results but adds noise to every diff. |
+
+## Lead's note after re-verification
+
+- V7 (compiled `.pyc` files tracked in git) was fixed after the re-verification run: the files were removed from the repository. This fix was not re-checked by the verifier.
+- The out-of-order ledger rows noted under V5 (T18 before T17, C4 before C3) were put in order at the same time.
+- V6 (label truncation at default zoom; the space-time view can scroll a dispatching unit out of view) remains open.

@@ -257,8 +257,8 @@ Status meanings:
 | T14 | NOP repeat count | 16 bits | SOURCED | [TSP20] Sec. III-A1 |
 | T15 | Sync/Notify barrier | 35 cycles | SOURCED | [TSP20] Sec. III-A2 |
 | T16 | Instructions per queue per cycle | 1 | SOURCED | [SHIP] Sec. 2.1: "Each FU is issued one instruction per cycle" |
-| T18 | Repeat n,d timing | after an instruction dispatched at cycle c, Repeat n,d dispatches it again at c + d, c + 2d, ..., c + n*d, with d >= 1 | ASSUMED | Table I says only "n times, with d cycles between iterations". |
 | T17 | Core clock, used only to convert cycles to time in reports | 900 MHz | SOURCED | [TSP20] Abstract; [TSP22] Sec. 5.2 |
+| T18 | Repeat n,d timing | after an instruction dispatched at cycle c, Repeat n,d dispatches it again at c + d, c + 2d, ..., c + n*d, with d >= 1 | ASSUMED | Table I says only "n times, with d cycles between iterations". |
 
 ### Behaviour
 
@@ -293,5 +293,5 @@ Status meanings:
 |---|---|---|---|
 | C1 | Scheduling algorithm | list scheduling of rigid tiles with reservation tables | See section 4. |
 | C2 | Tile shape | Read -> op chain -> Write | Mirrors the sourced pattern "Read -> Conv2D -> Requantize -> ReLU -> Write" ([TSP20] Sec. IV-C). |
-| C4 | Schedule horizon | compilation fails if a tile cannot be placed within 100,000 cycles | A guard against an endless search; the value is arbitrary. |
 | C3 | Tie-breaking | topological index, then lowest unit index, then lowest stream number | Makes the compiler itself deterministic. |
+| C4 | Schedule horizon | compilation fails if a tile cannot be placed within 100,000 cycles | A guard against an endless search; the value is arbitrary. |

@@ -5,8 +5,8 @@ from __future__ import annotations
 EMPTY_SAMPLE = 1      # an instruction samples an empty cell
 DOUBLE_DRIVE = 2      # two drives of one cell with one visible cycle
 MEM_PORT = 3          # MEM port rules (L-M4, L-M5)
-UNWRITTEN_READ = 4    # Read of a word never written or initialised
-WEIGHT_ROW = 5        # MATVEC row missing / wrong dtype / len(expect_rows) != k
+UNWRITTEN_READ = 4    # not a machine parameter: rule number. Read of a word never written
+WEIGHT_ROW = 5        # not a machine parameter: rule number. MATVEC row missing / wrong dtype / bad expect_rows
 FP16_UNIT = 6         # fp16 MXM unit rule (L-X9)
 QUEUE_ENTRY = 7       # entry too wide for its unit (L-I2) or wrong kind of unit
 OPERAND_RULE = 8      # alignment, range, width or direction (L-G8, L-X6)

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..config import TIMING_KEYS, ChipConfig
-from ..isa import (IW, Distribute, Issue, MatVec, Permute, Read, Shift, VOp, Write,
+from ..isa import (IW, Distribute, MatVec, Permute, Read, Shift, VOp, Write,
                    opcode, text, timing_key, unit_kind)
 from ..trace import Event, Trace
 from . import mem as mem_unit
@@ -111,7 +111,7 @@ class _Run:
         self.events.append((cycle, op.uidx, self._next_seq(), ev))
 
     def _trace(self, n_cycles: int) -> Trace:
-        events = [e for *_, e in sorted(self.events, key=lambda x: x[:3])]
+        events = [e for *_, e in sorted(self.events, key=lambda x: (x[0], x[1], x[2]))]
         return Trace(self.cfg.name, n_cycles, events,
                      self.occupancy[:n_cycles] if self.record else [],
                      self.digests[:n_cycles] if self.record else [])

@@ -1,6 +1,6 @@
 """Cycle-by-cycle timeline of one run, written as one self-contained HTML file.
 
-See plan.md section 7.  Python only gathers the data and fills
+See plan.md, section "Visualisation".  Python only gathers the data and fills
 template.html; all drawing is done by the JavaScript in the template, so
 the page works offline and the embedded JSON is the single source of what
 is shown.  The output is deterministic: the same program and trace always

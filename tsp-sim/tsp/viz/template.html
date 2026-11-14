@@ -539,12 +539,19 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
           var vid = cl[4];
           var col = colourAttr(tileOf(vid));
           var g = isGhost(vid, c, cl[3]);
-          return '<span class="st-val' + col.cls + (g ? " ghost" : "") + '" data-tag="' + esc(tagOf(vid)) + '" data-dir="' + dir + '" data-s="' + cl[2] +
+          return '<span class="st-val' + col.cls + (g ? " ghost" : "") + '" style="' + col.style + '" data-tag="' + esc(tagOf(vid)) + '" data-dir="' + dir + '" data-s="' + cl[2] +
             '" data-pos="' + cl[3] + '" title="v' + vid + (g ? ", past its last reader" : "") + '">' + ARROW[dir] + "s" + cl[2] + " " + esc(tagOf(vid)) + "</span>";
         }).join("") + "</div>");
       });
     });
     st.innerHTML = h.join("");
+    // keep the busy part of the chip in view when the view is narrower than the chip
+    var stWrap = document.getElementById("st-wrap");
+    var busy = st.querySelector(".st-disp, .st-val");
+    if (busy && stWrap.scrollWidth > stWrap.clientWidth) {
+      var wr = stWrap.getBoundingClientRect(), br = busy.parentNode.getBoundingClientRect();
+      if (br.left < wr.left + 46 || br.right > wr.right) stWrap.scrollLeft += br.left - wr.left - 52;
+    }
     document.getElementById("st-title").textContent = "cycle " + c + " · τ = " + (c - barrier) + " · " +
       cells.length + " occupied register" + (cells.length === 1 ? "" : "s") + " · " + disp.length + " dispatch" + (disp.length === 1 ? "" : "es");
     var list = document.getElementById("st-list");

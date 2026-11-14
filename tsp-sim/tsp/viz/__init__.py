@@ -1,4 +1,4 @@
-"""HTML timeline of one simulation run (plan section 7)."""
+"""HTML timeline of one simulation run (plan.md, section "Visualisation")."""
 
 from .timeline import render_timeline, timeline_data
 

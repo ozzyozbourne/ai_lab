@@ -421,3 +421,20 @@ def test_f_fails_on_same_tag_impostor():
     rep = validate(prog, trace, TOY)
     only_fails(rep, "F")
     assert "two locations" in rep.check("F").failures[0]
+
+
+def test_f_fails_when_host_word_is_read_from_the_wrong_place():
+    """Second-round verification finding: the run's memory differs from the program's layout."""
+    from tsp.program import VECTOR, PlaneLoc, TensorLayout, TileLayout
+    items, image, _ = basic_items(TOY)
+    prog, trace = run(TOY, items, image)
+    good = TensorLayout("x", DType.I8, (TOY.lanes,), VECTOR,
+                        (TileLayout((0,), "x.t0", (PlaneLoc("MEM_W1", 0, 0),)),))
+    prog.inputs = {"x": good}
+    assert validate(prog, trace, TOY).ok
+    moved = TensorLayout("x", DType.I8, (TOY.lanes,), VECTOR,
+                         (TileLayout((0,), "x.t0", (PlaneLoc("MEM_W1", 0, 3),)),))
+    prog.inputs = {"x": moved}
+    rep = validate(prog, trace, TOY)
+    only_fails(rep, "F")
+    assert "its layout says" in rep.check("F").failures[0]

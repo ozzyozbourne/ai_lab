@@ -607,16 +607,26 @@ def _check_f(program: Program, trace: Trace, config: ChipConfig) -> Check:
             c.fail(f"{_ev(e)}: location {loc} shows two host tags, {loc_host[loc]!r} and {e.tag!r}")
 
     layout_tags: dict[str, str] = {}
+    layout_loc: dict[str, tuple] = {}
     for name, lay in program.inputs.items():
         for tile in lay.tiles:
-            for j in range(len(tile.planes)):
+            for j, plane in enumerate(tile.planes):
                 c.checked += 1
                 tag = f"{tile.tag}#{j}"
                 if tag in layout_tags:
                     c.fail(f"host layouts {layout_tags[tag]!r} and {name!r} both use tag {tag!r}")
                 layout_tags[tag] = name
+                layout_loc[tag] = (plane.slice, plane.bank, plane.addr)
                 if tag in producers:
                     c.fail(f"host layout {name!r} reuses computed tag {tag!r}")
+    # A host word must be read from where the program's layout puts it (when the program has layouts).
+    if layout_loc:
+        for tag, loc in host_loc.items():
+            c.checked += 1
+            if tag not in layout_loc:
+                c.fail(f"host tag {tag!r} is read from {loc} but no layout of the program holds it")
+            elif layout_loc[tag] != loc:
+                c.fail(f"host tag {tag!r} is read from {loc}, its layout says {layout_loc[tag]}")
     return c.done()
 
 

@@ -41,7 +41,7 @@ Also runs M1 with a 320×320 matrix on the paper-scale chip preset.
 python -m pytest -q
 ```
 
-Runs the 308 tests (about 10 seconds).
+Runs the 309 tests (about 10 seconds).
 
 ## The milestones
 

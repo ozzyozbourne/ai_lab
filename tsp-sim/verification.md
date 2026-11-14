@@ -15,6 +15,11 @@ project's own validator and tests, but only to compare their answers with mine.
 
 ## Summary
 
+There were two rounds. Round 1 is the original verification. Round 2 re-checked only the three
+PARTIAL items after the project made fixes (see "Re-verification after fixes" at the end). The
+"Verdict" column shows round 1 → final. Rows that were PASS in round 1 were not re-run, except for
+a regression run of the test suite and `run_milestones.py --paper-m1`, which still pass.
+
 | Check | Sub-check | Verdict | Evidence (one line) |
 |---|---|---|---|
 | 1 Numerical | M1, M2 (integer) | PASS | Exact match with my int64 reference; 8 extra seeds per model also exact |
@@ -29,18 +34,30 @@ project's own validator and tests, but only to compare their answers with mine.
 | 3a Schedule | No cell driven twice; no live value overwritten | PASS | My reconstruction finds 0 double drives and 0 overwritten live values; occupancy equals the trace on every cycle |
 | 3b Schedule | Issue width, MEM ports, MXM rows, fp16 rule | PASS | 0 violations; all 22 MATVECs use exactly the rows and activation the graph implies |
 | 3c Schedule | Every operand on the exact cycle | PASS | All samples see the expected tag; all 2,482 one-cycle moves are detected (1,186 with a free slot) |
-| 3 Break the checks | Crafted invalid programs | PARTIAL | 34 of 36 crafted programs caught. The project validator accepts a same-tag "impostor" overwrite that changes the outputs |
+| 3 Break the checks | Crafted invalid programs | PARTIAL → PASS (one residual gap, see note) | Round 1: the validator accepted a same-tag impostor that changes the outputs. Round 2: new check F rejects it on M1, M2 and M3, plus 3 new variants. It still accepts a trace whose run used a memory image different from the program's layouts (finding N1, low severity) |
 | 4 Traceability | `tsp/config.py`, line by line | PASS | Every literal carries a ledger ID, or is a hash length marked as not a machine parameter |
-| 4 Traceability | Rest of `tsp/` | PARTIAL | 3 untagged machine-derived constants (`tiling.py:81`, `validate.py:207`, `graph.py:145`) |
+| 4 Traceability | Rest of `tsp/` | PARTIAL → PASS | Round 2: the 3 constants now derive from `DType`, carry an ID or are marked; the re-scan finds no untagged machine parameter |
 | 4 Traceability | Ledger values against code, both presets | PASS | 16 parameters and 14 timing entries match; no ID in the code is missing from the ledger |
-| 4 Traceability | SOURCED entries against raw reports (≈25 checked) | PARTIAL | All cited sections exist and support the main value; 3 entries are partly inference but labelled SOURCED |
+| 4 Traceability | SOURCED entries against raw reports (≈25 checked) | PARTIAL → PASS | Round 2: L-X1, L-M3 and L-V7 now separate the sourced part from the inferred or assumed part, consistent with the raw reports |
 | 4 Traceability | README and outputs present no assumed number as fact | PASS | Every cycle or ns figure is labelled as assumed or as a unit conversion |
 | 5 Visualisation | Page loads, no errors, no network | PASS | 0 console messages, 0 page errors, 0 requests besides the file, light and dark |
 | 5 Visualisation | Embedded trace equals the simulator's | PASS | Parsed JSON equal to a fresh trace; n_cycles 49/100/402 |
 | 5 Visualisation | Drawing matches the trace | PASS | Blocks 34/209/655 at the right cycles; all 37/224/674 flights drawn correctly; chip view equal to my occupancy on every cycle |
 | 5 Visualisation | Interaction | PASS | Slider, number box, arrow/Shift/Home/End keys, buttons, Play, canvas click, hover, idle toggle |
 | 5 Visualisation | Visual inspection | PASS | No overlapping or clipped text, empty areas or unreadable colours found |
-| Project tests | `python3 -m pytest -q` | PASS | 307 passed in 7.9 s |
+| Project tests | `python3 -m pytest -q` | PASS | Round 1: 307 passed in 7.9 s. Round 2: 308 passed in 6.1 s |
+
+**Correction to round 1.** Round 1 said "34 of 36 crafted programs caught". That count was wrong.
+`craft.py` builds 27 invalid programs (9 each for M1, M2 and M3) plus 3 tampered traces of a valid
+M1 program.
+
+- In round 1, the simulator or the project validator rejected 21 of the 27 programs and all 3 tampered traces. My own checker rejected all 27 programs.
+- The 6 programs the project missed were the same-tag impostor (×3) and the MATVEC with k−1 rows (×3). The k−1 case is a semantic error, outside the validator's timing scope, and the comparison with the reference catches it.
+- The findings themselves are unchanged.
+
+# Round 1 (original verification)
+
+The sections below are unchanged from round 1, apart from marked corrections.
 
 ## Check 1: numerical correctness
 
@@ -334,3 +351,96 @@ clicks had scrolled the canvas off-screen. After fixing the test, everything mat
 - **Paper-scale M1 pages.** No timeline is generated for paper-scale M1, so it was not checked in the browser.
 - **Raw reports against primary papers.** I checked ledger entries against the raw research reports only, not against the primary papers themselves.
 - **Mobile layouts and screen readers** were not tested.
+
+# Re-verification after fixes (round 2)
+
+Scope: only the three round-1 PARTIAL items, plus one regression run. Scripts are in the same
+scratch directory: `craft.py` (re-run; output `craft_r2.out`), `craft2.py` and `craft3.py` (new
+variants; output `craft2.out` and `craft3.out`), and `literals.py` (output `literals_r2.out`).
+
+## Regression
+
+- `python3 -m pytest -q`: 308 passed in 6.1 s.
+- `python3 run_milestones.py --paper-m1`: "ALL CHECKS PASSED". M1, M2, M3 and paper-scale M1 pass validator checks A–F, with F checking 62/374/1128/662 items. All outputs are bit-exact. The cycle counts are unchanged at 49/100/402/103.
+- My own checker (`schedcheck.py`) still finds 0 violations on all four programs.
+
+## Item 1: the validator accepted a same-tag impostor — PARTIAL → PASS, with one residual gap (N1)
+
+**What changed.** `tsp/validate.py` has a new check F, "tag identity" (`_check_f`, about line 564;
+plan section 7, row F). I read it. It fails a run when:
+
+- a computed tag is driven by more than one instruction;
+- a host tag is read from more than one location, or one location shows two host tags;
+- a computed tag is read from a word whose last Write at least d_func(WRITE) earlier did not carry that tag;
+- two host layouts name the same tag, or a host layout reuses a computed tag.
+
+**Re-run of all crafted programs** (`craft.py`, 27 programs and 3 tampered traces):
+
+- The same-tag impostor is now rejected by check F on M1, M2 and M3. In round 1 the validator accepted all three.
+- "Two ALUs drive one cell" is now additionally rejected by F.
+- Every other result is as in round 1.
+- In total, the simulator or validator rejects 24 of 27 programs and all 3 tampered traces. The 3 not rejected are the MATVEC with k−1 rows (a semantic error, outside the validator's timing scope; the reference catches it). My checker still rejects all 27.
+- The three unmodified programs still pass every check.
+
+**New variants built to get around check F:**
+
+| Variant (M1/M2/M3 unless noted) | Simulator | Validator | My checker | Outputs |
+|---|---|---|---|---|
+| Impostor through a Write (M2, M3): an idle ALU computes SUB instead of ADD with the **same result tags** in the same cycle, on another stream group, and the genuine parking Write samples the impostor's plane. The parked word holds wrong data with the right tag, and the read-back delivers it. M1 has no parked binary VXM result to imitate. | no fault | **rejects F** | rejects | changed |
+| A host layout reuses a computed tag (`Wx.t0#0`, `W1x.t1.p0#0`, `q.t0#0`), and a Read of that host word overwrites the computed flight before its consumer | no fault | **rejects F** | rejects | changed |
+| One VXM result whose 4 planes all carry the plane-0 tag | no fault | rejects A,B,F | rejects | unchanged |
+| A parked word overwritten by an extra Write before its read-back (M3; no slot in M1/M2) | no fault | rejects A,B | rejects | unchanged |
+| **Memory image differs from the layouts:** one host Read is redirected to an unused address in the same slice, and the run's initial memory puts a word there with the victim's tag (`W.o0.c0#0`, `W1.o1.c0#0`, `Wq.o0.c0#0`) and other data. The program's layouts are unchanged. Run with `Chip(config).run(queues, image)`, not `run_program`. | no fault | **ACCEPTS** | rejects (unwritten_read, weight_row, wrong_value) | changed |
+
+**Residual gap N1 (new finding, low severity).**
+
+- Check F verifies that a host tag is read from only one location, but not that this location is where `program.inputs` places that tag.
+- So the validator accepts a trace from a run whose initial memory is not the program's own memory image, if each host tag still appears at only one address.
+- This cannot happen through `run_program`, which builds memory from the layouts: there, the redirected Read faults (unwritten word) or reads another tag, and A fails. It needs a host or runtime that loads memory inconsistently with the program.
+- Within that limit, I also argue that F is sound for runs made with `run_program`:
+  - the only sources of tags are host layouts (unique, and disjoint from computed tags under F), computing instructions (each computed tag has a single producer under F), and Writes and Reads, which copy a tag together with its bytes;
+  - by induction, every flight or word with a given tag then holds the same bytes, so A and B tag equality implies the right data.
+- Reproduce: `craft2.py`, function `v_image_mismatch`.
+- Suggested fix: in `_check_f`, compare each host-tag `mem_read` location with the `PlaneLoc` given for that tag in `program.inputs`.
+
+Verdict: the defect reported in round 1 is fixed, and every program-level variant I built is
+caught. N1 remains as a documented limitation of low severity.
+
+## Item 2: untagged constants outside `config.py` — PARTIAL → PASS
+
+Re-scan with `literals.py` (513 numeric literals in `tsp/`):
+
+- `tsp/compiler/tiling.py:81` is now `config.lanes // DType.F16.nbytes ...   # L-X2: K <= lanes/2 for fp16`.
+- `tsp/validate.py:207` is now `if n not in sorted({d.nbytes for d in DType}):   # L-G6, L-G7`.
+- `tsp/graph.py:145` now uses `bits = 8 * DType.I32.nbytes  # not a machine parameter: bits per byte`.
+- `tsp/hw/errors.py:4–5` now explains that the fault codes are rule numbers (labels), not machine parameters, and that the ledger IDs name the rule each fault enforces.
+
+The untagged literals remaining outside `tsp/models` are indices and display counts in
+`validate.py` (tuple unpacking `k[:6]`, `CHECK_NAMES[3]`, "show the first 3"), `ndim != 2` shape
+checks, a sort-key index, and the fault code `DOUBLE_DRIVE = 2`. None is a machine parameter. The
+remaining `config.lanes // 2` at `validate.py:270` is tagged L-X2, as it was in round 1.
+
+## Item 3: SOURCED labels — PARTIAL → PASS
+
+I re-read the three rows of dossier section 7 against the raw reports:
+
+- **L-X1.** Status is now "SOURCED (4 planes); INFERRED (2 per hemisphere)". This matches R1 §2.8: "four (4) independent 320×320 … planes" is marked [P], and "two MXM planes per hemisphere at the outer edges" is marked [I], from Fig. 2 and Fig. 5.
+- **L-M3.** Status is now INFERRED. It cites R1 §2.7, which gives the 20 tiles × 16-byte-word arithmetic as [I], and R2 §7, which quotes the 2022 slide "A read from a single MEM slice creates a 320Byte stream" as [S]. Both are present in the raw reports.
+- **L-V7.** Status is now "SOURCED for add and mul; ASSUMED for sub". This matches R1 §2.6: "saturating and modulo variants `add_sat, add_mod, mul_sat, mul_mod`", with no wrapping subtract.
+
+## Remaining open items after round 2
+
+- **N1:** the validator does not cross-check host-read locations against `program.inputs` (low severity; see item 1).
+- Everything in "Not verified" above still applies.
+
+---
+
+## Note added by the lead engineer after verification (not part of the verifier's report)
+
+Finding N1 was addressed after the verifier finished: check F in `tsp/validate.py`
+now also requires every host word to be read from the location the program's
+layout gives for its tag, and a unit test covers it
+(`test_f_fails_when_host_word_is_read_from_the_wrong_place`). The test suite
+(309 tests) and all four milestone runs pass with this change. **This fix has not
+been re-checked by the independent verifier**: the brief allowed one re-run of
+the failed checks, and N1 was found during that re-run.

@@ -446,3 +446,15 @@ Agents build in parallel against the lead's contract files. An agent that needs 
 2. Five build agents in parallel.
 3. Lead integrates: M1 end to end, then M2, then M3; writes `tsp/run.py`; generates the timelines.
 4. Independent verification (Phase 5).
+
+## 10. As-built notes
+
+Recorded after the build, where the code departs from or sharpens the plan above.
+
+- **Self-check (4.4).** The compiler agent showed that two reads for different operations of one chain can never need the same slice on the same cycle: the later consumer fires at least `|x2 - x1| + 1` cycles after the earlier one, while equal read times would need a gap of at most `|x2 - x1|`. The timing self-check therefore never fires. The restart loop is kept for a different reason: if one stored tensor is read by two operations of the same tile, both reads would carry the same tag (`tensor@tile`), which breaks the unique-tag rule of section 3.2. That pair is added to `no_fuse` and compilation restarts.
+- **Stage order (4.1, 4.2).** Install slots are grouped after placement, because grouping needs to know each row's slices. The order is fusion, placement, install slots. Matrix rows are placed without reference to fusion, so this is consistent.
+- **Tile numbering (4.1).** Tiles are numbered by their first operation as written. This order is not always a dependency order (a tile can depend on a higher-numbered one). The number is used only in tags; the scheduler follows the real dependencies.
+- **Placement details (4.2).** Matrix rows take their slice window by row index. A tensor that is not a row avoids the slices of rows it is read together with. Two rows of different matrices on one slice read by one operation is a `CompileError`.
+- **Validator (3.10).** `validate(program, trace, check_cells=True)`; a run recorded with `record_cells=False` is validated with `check_cells=False`.
+- **Extra structural checks.** `asm.check_program` also rejects lists where tuples are expected, an empty `Iw`, non-MXM data types on the MXM, and a `Repeat` that follows a `Nop`.
+- **Python Playwright.** The browser test needs the Python `playwright` package matching the preinstalled browser (`pip install playwright==1.63.0` in this environment); without it the test is skipped.

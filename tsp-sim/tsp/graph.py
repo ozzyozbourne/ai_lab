@@ -101,9 +101,12 @@ class Graph:
         return self._add("matvec", _mv_out(W.dtype), W.m, inputs=(x.id,), matrix=W.name, name=name)
 
     def matvec_cols(self, cols: list[Value], x: Value, name: str | None = None) -> Value:
-        """sum_r x[r] * cols[r]. Every column is a vector Value (leaf or computed) of one length."""
+        """sum_{r < len(cols)} x[r] * cols[r]; elements of x beyond len(cols) are ignored.
+
+        Every column is a vector Value (leaf or computed) of one length.
+        """
         xn = x.node
-        if not cols or len(cols) != xn.n:
+        if not cols or len(cols) > xn.n:
             raise GraphError(f"matvec_cols: {len(cols)} columns for an operand of {xn.n} elements")
         m = cols[0].node.n
         for c in cols:
@@ -149,7 +152,9 @@ class Graph:
         return self._add("cast", to, a.node.n, inputs=(a.id,), name=name)
 
     def shift(self, a: Value, n: int, name: str | None = None) -> Value:
-        """out[i] = a[i - n] if 0 <= i - n < len(a) else 0."""
+        """out[i] = a[i - n] if i - n >= 0 else 0, for 0 <= i < len(a). n must be >= 0."""
+        if n < 0:
+            raise GraphError("shift: only n >= 0 is supported (a negative shift would read padding lanes)")
         return self._add("shift", a.node.dtype, a.node.n, inputs=(a.id,), imm=n, name=name)
 
     # ---- outputs ----------------------------------------------------------------

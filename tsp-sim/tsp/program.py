@@ -61,6 +61,7 @@ class MemoryLike(Protocol):
 class Program:
     name: str
     config_name: str
+    config_fingerprint: str        # ChipConfig.fingerprint() of the config compiled for
     tile_len: int
     queues: dict[str, list[Entry]]                                  # every unit, in config.unit_names() order
     constants: dict[str, np.ndarray] = field(default_factory=dict)  # values of constant leaves

@@ -23,7 +23,9 @@ class Event:
     addr: int | None = None      # mem_read / mem_write
     row: int | None = None       # iw_row / matvec_row
     text: str | None = None      # issue: isa.text(instr)
-    issue_cycle: int | None = None  # cycle at which the instruction behind this event was issued
+    issue_cycle: int | None = None    # every kind: cycle at which the instruction behind this event was issued
+    sample_cycle: int | None = None   # issue: t_s of the instruction
+    visible_cycle: int | None = None  # issue: t_s + d_func (result on stream / word or row usable)
 
     def to_dict(self) -> dict:
         return {k: v for k, v in asdict(self).items() if v is not None}

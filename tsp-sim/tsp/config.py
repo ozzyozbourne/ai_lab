@@ -6,7 +6,8 @@ recorded there, not here.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import hashlib
+from dataclasses import dataclass, fields, replace
 from types import MappingProxyType
 from typing import Mapping
 
@@ -29,10 +30,10 @@ class OpTiming:
 def _default_timing() -> Mapping[str, OpTiming]:
     return MappingProxyType({
         "READ":   OpTiming(d_skew=0, d_func=2),  # L-T2, L-T3
-        "WRITE":  OpTiming(d_skew=0, d_func=1),  # L-T2, L-T4 (stored word readable one cycle later)
+        "WRITE":  OpTiming(d_skew=0, d_func=1),  # L-T2, L-T4 (word readable by a Read sampling >= t_s + d_func)
         "VARITH": OpTiming(d_skew=0, d_func=1),  # L-T2, L-T5
         "VTRANS": OpTiming(d_skew=0, d_func=3),  # L-T2, L-T6
-        "IW":     OpTiming(d_skew=0, d_func=1),  # L-T2, L-T7 (rows usable one cycle later)
+        "IW":     OpTiming(d_skew=0, d_func=1),  # L-T2, L-T7 (row usable by a MATVEC sampling >= t_s + d_func)
         "MATVEC": OpTiming(d_skew=0, d_func=3),  # L-T2, L-T8
         "SXM":    OpTiming(d_skew=0, d_func=1),  # L-T2, L-T9
     })
@@ -48,12 +49,12 @@ class ChipConfig:
     banks_per_slice: int            # L-M1
     words_per_bank: int             # L-M2
     n_alus: int                     # L-V1
-    planes_per_mxm: int             # L-X1
+    planes_per_mxm: int             # L-X1 (per hemisphere)
     iw_max_streams: int             # L-X3
     nop_max: int                    # L-T10
     clock_hz: float                 # L-C1 (display only)
     timing: Mapping[str, OpTiming]  # L-T2 .. L-T9
-    max_schedule_cycles: int        # L-K6: the compiler gives up beyond this
+    max_schedule_cycles: int        # L-K7: the compiler gives up beyond this
 
     # ---- derived geometry -------------------------------------------------
     @property
@@ -131,6 +132,16 @@ class ChipConfig:
         """Instructions one queue may issue in one cycle (L-I2)."""
         return 2 if self.kind(unit) == "MEM" else 1  # L-I2
 
+    def fingerprint(self) -> str:
+        """Hash of every parameter including latencies; a Program records the one it was compiled for."""
+        parts = []
+        for f in fields(self):
+            v = getattr(self, f.name)
+            if f.name == "timing":
+                v = [(k, v[k].d_skew, v[k].d_func) for k in TIMING_KEYS]
+            parts.append(f"{f.name}={v!r}")
+        return hashlib.sha256(";".join(parts).encode()).hexdigest()[:16]  # not a machine parameter: display length
+
     def cycles_to_seconds(self, cycles: int) -> float:
         return cycles / self.clock_hz
 
@@ -160,7 +171,7 @@ class ChipConfig:
             nop_max=65535,              # L-T10
             clock_hz=900e6,             # L-C1
             timing=_default_timing(),
-            max_schedule_cycles=100000,  # L-K6
+            max_schedule_cycles=100000,  # L-K7
         )
 
     @staticmethod
@@ -179,5 +190,5 @@ class ChipConfig:
             nop_max=65535,              # L-T10
             clock_hz=900e6,             # L-C1
             timing=_default_timing(),
-            max_schedule_cycles=100000,  # L-K6
+            max_schedule_cycles=100000,  # L-K7
         )

@@ -264,10 +264,10 @@ re-runs a milestone with different latencies to show this.
 | L-T1 | Timing rule: an instruction issued at cycle t samples its operands at t + d_skew and its result is on the stream at its own position at t + d_skew + d_func; a consumer δ positions away sees it δ cycles later | — | SOURCED form | Paper's T = N + d_func + δ [R1 §2.5], minus N (see L-G16), plus d_skew as defined in the paper |
 | L-T2 | d_skew, every instruction | 0 | ASSUMED | Concept sourced, values not published. Kept as a per-instruction field |
 | L-T3 | d_func, MEM Read | 2 | ASSUMED | One cycle of SRAM access plus one to drive the stream register |
-| L-T4 | MEM Write: stored word readable by a Read issued in a later cycle | next cycle | ASSUMED | Minimal |
-| L-T5 | d_func, VXM arithmetic (add, sub, mul, relu, requant, casts, mask) | 1 | ASSUMED | Minimum allowed by the paper |
+| L-T4 | d_func, MEM Write: a word written with sample cycle t is seen by a Read whose sample cycle is ≥ t + d_func | 1 | ASSUMED | Minimal |
+| L-T5 | d_func, VXM arithmetic (add, sub, mul, relu, requant, casts) | 1 | ASSUMED | Minimum allowed by the paper |
 | L-T6 | d_func, VXM transcendental (exp, rsqrt, tanh) | 3 | ASSUMED | Longer than arithmetic, to make latencies heterogeneous |
-| L-T7 | MXM weight install: rows usable by a matvec issued in a later cycle | next cycle | ASSUMED | Minimal |
+| L-T7 | d_func, MXM weight install: a row installed with sample cycle t is used by a matvec whose sample cycle is ≥ t + d_func | 1 | ASSUMED | Minimal |
 | L-T8 | d_func, MXM matrix-vector product | 3 | ASSUMED | Capture, multiply, accumulate-and-round |
 | L-T9 | d_func, SXM shift / permute / distribute | 1 | ASSUMED | Minimum allowed |
 | L-T10 | NOP repeat count | 16 bits (max 65,535) | SOURCED | [R1 §2.5] |
@@ -310,14 +310,15 @@ re-runs a milestone with different latencies to show this.
 
 | ID | Parameter | paper | toy | Status | Source / reasoning |
 |---|---|---|---|---|---|
-| L-X1 | Planes | 4 (2 per hemisphere) | same | SOURCED | [R1 §2.8] |
+| L-X1 | Planes | 4 (2 per hemisphere; `planes_per_mxm = 2`) | same | SOURCED | [R1 §2.8] |
 | L-X2 | Unit operation `[1×K]×[K×lanes]`; K ≤ lanes for int8, K ≤ lanes/2 for fp16 | 320 / 160 | 32 / 16 | SOURCED (paper); toy follows L-G3 | [R2 §7] |
 | L-X3 | Weight streams sampled per install cycle | ≤ 16 | ≤ 16 | SOURCED | [R1 §2.8]: 16 streams per plane per cycle. So ≤16 int8 rows or ≤8 fp16 rows per cycle |
 | L-X4 | Numerics: int8×int8 → int32; fp16×fp16 summed exactly, rounded once to fp32 | — | — | SOURCED | [R1 §2.8]. We accumulate in float64 and round once |
-| L-X5 | One `MATVEC` instruction stands for the paper's ABC + ACC pair; the weight buffer (LW) is not modelled; no accumulation across instructions | — | — | ASSUMED simplification | Instructions named in [R1 §2.6] without timing detail |
+| L-X5 | One `MATVEC` instruction stands for the paper's ABC + ACC pair; `IW` installs rows straight from streams into the plane (the paper's separate LW staging buffer is not modelled); no accumulation across instructions | — | — | ASSUMED simplification | Instructions named in [R1 §2.6] without timing detail |
 | L-X6 | MXM reads outward-flowing streams and writes inward-flowing streams | yes | yes | SOURCED | [R2 §7] |
 | L-X7 | Both planes of a hemisphere sit at the same position; one queue per plane | yes | yes | ASSUMED | Positions not published |
 | L-X8 | A fp16 activation vector occupies lanes 0..lanes/2−1 of its stream pair | yes | yes | ASSUMED | Follows from K = lanes/2 but the lane mapping is not stated |
+| L-X9 | An fp16 matvec uses **both planes of a hemisphere as one unit**: fp16 instructions go to plane `.0` only, and plane `.1` must stay idle while plane `.0` holds fp16 rows | yes | yes | INFERRED capacity, ASSUMED mechanism | The 2022 paper says a TSP runs "two FP16 or four int8 sub-operations each cycle" [R2 §7], i.e. one fp16 operation per hemisphere against two int8 ones; the 2020 paper says fp16 uses "two 320×320 byte-planes in tandem" [R1 §2.8]. How the pairing is controlled is not published; the idle-plane rule is ours |
 
 ### 7.7 SXM
 
@@ -338,6 +339,7 @@ re-runs a milestone with different latencies to show this.
 | L-K4 | Operands needed on streams in the same cycle are stored in different MEM slices | SOURCED | [R1 §2.7] |
 | L-K5 | Weights are placed in the MEM slices nearest the MXM that uses them | SOURCED motivation | [R1 §2.7] |
 | L-K6 | Any resource conflict the compiler cannot resolve is a compile error; nothing stalls at run time | SOURCED principle | [R1 §2.11], [R2 §4] |
+| L-K7 | The compiler abandons a schedule search past cycle 100,000 | ASSUMED | A bound so that a search that cannot succeed terminates. About 100× the expected length of the largest milestone |
 
 ### 7.9 Recorded but unused (not simulator parameters)
 

@@ -1,4 +1,4 @@
-# tsp-sim: an educational simulator of a Tensor Streaming Processor
+# sim_grok_1: an educational simulator of a Tensor Streaming Processor
 
 A cycle-level Python simulator of a chip in the style of Groq's LPU / Tensor
 Streaming Processor (TSP), plus a toy compiler that statically schedules a small

@@ -1,4 +1,4 @@
-# Independent verification of tsp-sim
+# Independent verification of sim_grok_1
 
 Verified on 2026-11-14 against the working tree at commit `713c55c` (clean), and re-verified after fixes at commit `8841250` (see the section "Re-verification after fixes" at the end). Environment: Python 3.13, NumPy as installed, headless Chromium via Python Playwright.
 The verifier did not build any part of the project and did not change any project file apart from creating this one.

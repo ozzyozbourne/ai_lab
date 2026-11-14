@@ -148,20 +148,22 @@ def install_slots(graph, matrix_id, placement, config):
     w = isa.width(m.dtype)
     if w > config.iw_max_streams:
         raise CompileError(f"matrix {m.name}: a {m.dtype} row needs {w} streams, more than one Iw takes")
-    slots = []              # each: [rows, streams used, slices used]
+    slots = []              # each: {"rows": [...], "streams": count, "slices": [...]}
     for r, row in enumerate(m.rows):
         slices = [unit for unit, _ in placement[row]]
+        chosen = None
         for slot in slots:
-            fits = slot[1] + w <= config.iw_max_streams and not any(s in slot[2] for s in slices)
-            if fits:
+            if (slot["streams"] + w <= config.iw_max_streams
+                    and not any(s in slot["slices"] for s in slices)):
+                chosen = slot
                 break
-        else:
-            slot = [[], 0, []]
-            slots.append(slot)
-        slot[0].append(r)
-        slot[1] += w
-        slot[2].extend(slices)
-    return [tuple(slot[0]) for slot in slots]
+        if chosen is None:
+            chosen = {"rows": [], "streams": 0, "slices": []}
+            slots.append(chosen)
+        chosen["rows"].append(r)
+        chosen["streams"] += w
+        chosen["slices"].extend(slices)
+    return [tuple(slot["rows"]) for slot in slots]
 
 
 # --------------------------------------------------------------------------

@@ -241,7 +241,7 @@ Status meanings:
 |---|---|---|---|---|
 | T1 | Stream hop rate | 1 position per cycle | SOURCED | [TSP20] Sec. V-c |
 | T2 | Transit time between positions i and j | abs(i - j) cycles | SOURCED (derived) | Eq. 4 with T1 |
-| T3 | Where a result appears | on the next position in the chosen direction, d_func cycles after dispatch | ASSUMED | Based on [TSP20] Sec. II-A: a slice's result overwrites the value that would have propagated to the next slice. The paper does not define the exact cycle accounting. |
+| T3 | Where a result appears | on the producing slice's own stream-register position, in the chosen direction, d_func cycles after dispatch; it replaces whatever had propagated into that register | ASSUMED | Follows the wording of Eq. 4 ("for the output stream to appear on the SR_i ... en route to the consumer at SR_j") and [TSP20] Sec. II-A on overwriting. The paper does not define the exact cycle accounting. |
 | T4 | When operands are sampled (d_skew) | on the dispatch cycle, for every instruction | ASSUMED | [TSP20] defines d_skew but gives no values. Zero skew is the simplest consistent choice. |
 | T5 | Tile stagger | completion time adds (tiles - 1) cycles; the simulator runs in the logical time of tile 0 | SOURCED form, ASSUMED treatment | Eq. 4's N term. Instructions and data are staggered identically, so simulating tile 0's time and adding N - 1 at the end is equivalent for operations that stay within a superlane. |
 | T6 | d_func, MEM Read | 2 | ASSUMED | Not in any source. One cycle of SRAM access plus one to drive the stream. |
@@ -255,6 +255,7 @@ Status meanings:
 | T14 | NOP repeat count | 16 bits | SOURCED | [TSP20] Sec. III-A1 |
 | T15 | Sync/Notify barrier | 35 cycles | SOURCED | [TSP20] Sec. III-A2 |
 | T16 | Instructions per queue per cycle | 1 | SOURCED | [SHIP] Sec. 2.1: "Each FU is issued one instruction per cycle" |
+| T18 | Repeat n,d timing | after an instruction dispatched at cycle c, Repeat n,d dispatches it again at c + d, c + 2d, ..., c + n*d, with d >= 1 | ASSUMED | Table I says only "n times, with d cycles between iterations". |
 | T17 | Core clock, used only to convert cycles to time in reports | 900 MHz | SOURCED | [TSP20] Abstract; [TSP22] Sec. 5.2 |
 
 ### Behaviour
@@ -272,12 +273,18 @@ Status meanings:
 | B9 | MXM instruction set | IW and ABC only; ABC emits the result directly | ASSUMED | LW and ACC exist in Table I. The toy folds the weight buffer into IW and the accumulator into ABC. |
 | B10 | MXM stream directions | operands read from outward-flowing streams, result written inward | SOURCED | [TSP22] Sec. 5.5 |
 | B11 | VXM operation set | add, sub, mul, neg, mask, relu, tanh, exp, rsqrt, cast | SOURCED names ([TSP20] Table I). ASSUMED: wrap-around integer arithmetic, and cast between fp32 and fp16 | Table I lists "type conversions" between fixed and floating point only. |
-| B12 | VXM chaining | an ALU may take an operand from any other ALU's result on the cycle that result is produced | ASSUMED | Chaining is sourced ([TSP20] Sec. III-C); its wiring and timing are not. |
+| B12 | VXM chaining | one ALU's result appears on a stream at the VXM position (T3) and another ALU can read it there on that same cycle | ASSUMED | Chaining is sourced ([TSP20] Sec. III-C); its wiring and timing are not. Using the stream register keeps one rule for all data movement. |
 | B13 | SXM operations | Distribute, Permute, Shift | SOURCED names | [TSP20] Table I. Rotate and Transpose are omitted. |
 | B14 | Program start | every queue begins with Sync; one queue issues Notify | SOURCED | [TSP20] Sec. III-A2 |
 | B15 | Instruction fetch | queues are preloaded; Ifetch is not modelled | ASSUMED | Sourced behaviour: instructions are fetched from MEM via streams ([TSP20] Sec. III-A3). |
 | B16 | Validity of stream registers | each register is either empty or holds a value with a debug name | ASSUMED | The hardware has no valid bit or names. These exist only so the simulator can check that operands arrive on time. |
 | B17 | Not modelled | C2C links, ECC, Gather/Scatter, Config, power, MEM banks | ASSUMED (omission) | All are sourced features left out to keep the simulator small. |
+
+| B18 | Unit pipelining | every unit accepts a new instruction every cycle, whatever its d_func | ASSUMED | [TSP20] Sec. III-D says the MXM can produce a new result every cycle; nothing is stated for other units. |
+| B19 | ABC row count | ABC carries a row count n; result lanes at or above n are zero | ASSUMED | Not in any source. Keeps unused lanes of a result well defined. |
+| B20 | Requantize | VXM operation: arithmetic shift right by an immediate, then saturate to int8 | ASSUMED | [TSP20] Sec. IV-D says the VXM requantizes MXM results; the arithmetic is not given. |
+| B21 | Program end | the run ends when every queue is empty and no result is pending; values still on streams are ignored | ASSUMED | [TSP20] does not say how a program ends. |
+| B22 | Model and input loading | constants and inputs are placed in MEM before cycle 0; outputs are read from MEM after the run | SOURCED (in outline) | [TSP20] Sec. II item 6: a DMA engine emplaces the model in TSP memory. |
 
 ### Compiler policy (all ASSUMED; the sources do not describe Groq's algorithm)
 
@@ -285,4 +292,5 @@ Status meanings:
 |---|---|---|---|
 | C1 | Scheduling algorithm | list scheduling of rigid tiles with reservation tables | See section 4. |
 | C2 | Tile shape | Read -> op chain -> Write | Mirrors the sourced pattern "Read -> Conv2D -> Requantize -> ReLU -> Write" ([TSP20] Sec. IV-C). |
+| C4 | Schedule horizon | compilation fails if a tile cannot be placed within 100,000 cycles | A guard against an endless search; the value is arbitrary. |
 | C3 | Tie-breaking | topological index, then lowest unit index, then lowest stream number | Makes the compiler itself deterministic. |

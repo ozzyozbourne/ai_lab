@@ -61,6 +61,7 @@ Rules used throughout:
 - Streams are a chip-wide, architecturally visible stream register file (Sec. I-B).
 - "On each tick of the core clock, the TSP propagates stream values by one stream register hop in the direction of flow" (Sec. V-c).
 - Streams "simply flow (propagate) Eastward or Westward until they fall off the edge of the chip or are overwritten by a functional slice" (Sec. V-c). The hardware does not track origin or destination.
+- Reading does not consume a value: at time t the vector at slice x1 "can be accessed as operands by that slice", and in the next cycle it has "either propagated to the functional slice at x2, or else it is overwritten with a result r1 produced by the slice at x1" (Sec. II-A).
 - A slice can overwrite a stream with its result instead of letting the old value propagate, and can choose the direction of its result, so a stream can be "turned around" at any slice (Secs. II-A, II-E).
 - Fig. 4 shows 45 stream-register positions (SR0-SR44) per direction, with one register per group of 4 MEM slices (fig. reading, medium confidence). [HC22] slide 57 independently says "45 SRF stations across the superlane" (secondary).
 
@@ -83,7 +84,7 @@ Other details: VXM has saturating and modulo variants of add and mul and produce
 - Eq. 4: **T = N + d_func + delta(j,i)**, where N is the number of tiles in the slice and delta(j,i) is the transit distance in cycles between stream registers j and i. With one hop per cycle, delta = |j - i| [derived].
 - An instruction is issued to the southern tile and moves north one tile per cycle, so tile k executes k cycles later; data on the streams is staggered the same way (Sec. II-C, Fig. 6).
 - NOP has a 16-bit repeat count; "Repeat n, d" repeats the previous instruction n times with d cycles between iterations (Table I, Sec. III-A1).
-- A chip-wide Sync/Notify barrier takes 35 cycles (Sec. III-A2). Programs start with a preamble that ends in a Sync so that all slices share one logical time.
+- A chip-wide Sync/Notify barrier takes 35 cycles (Sec. III-A2): "One IQ is designated as the notifier and it issues a Notify instruction while all other IQs are parked on a Sync instruction". Programs start with a preamble that ends in a Sync so that all slices share one logical time.
 - **No numeric d_func or d_skew is given for any instruction.** This is the largest gap for a simulator.
 
 ### 1.6 Memory
@@ -94,10 +95,11 @@ Other details: VXM has saturating and modulo variants of add and mul and produce
 - The compiler places concurrent operands in different MEM slices so that streams "pick up" operands en route to the MXM, and places weights so that transit to the MXM is short (Secs. IV-A, V-b).
 - The common ResNet pattern is "Read -> Conv2D -> Requantize -> ReLU -> Write" (Sec. IV-C).
 - SECDED ECC covers SRAM and stream registers (Sec. II-D).
+- The PCIe module "provides a lightweight DMA engine to emplace a model onto the TSP memory, and provides an entry point for bootstrapping the model execution" (Sec. II item 6).
 
 ### 1.7 MXM, VXM, SXM
 
-- **MXM:** four independent 320x320 planes of multiply-accumulate cells. Weights are installed from streams, 16 streams per cycle per plane; all 409,600 weights load in under 40 cycles. With weights installed, "every cycle the MXM can generate a new int32 dot-product of input activations with installed weights". Inputs are int8 or fp16 (fp16 uses two byte-planes in tandem); results are int32 or fp32 (Secs. III-D, IV-D).
+- **MXM:** the 320-element sum is produced "with only a single rounding step" (Sec. III-D). Four independent 320x320 planes of multiply-accumulate cells. Weights are installed from streams, 16 streams per cycle per plane; all 409,600 weights load in under 40 cycles. With weights installed, "every cycle the MXM can generate a new int32 dot-product of input activations with installed weights". Inputs are int8 or fp16 (fp16 uses two byte-planes in tandem); results are int32 or fp32 (Secs. III-D, IV-D).
 - [TSP22] Sec. 5.5 adds that MXM inputs are read from streams flowing outward and the output is written to streams flowing inward.
 - **VXM:** a 4x4 mesh of vector ALUs per superlane, 16 ALUs per lane, 32-bit operands on SG4 groups. ALUs are stateless and can be chained "without committing the intermediate results to main memory" (Sec. III-C).
 - **SXM:** lane shifters with a select, a bijective Permute of the 320 lanes, a Distribute that remaps or replicates the 16 lanes within each superlane, Rotate and Transpose (Sec. III-E).
@@ -230,10 +232,10 @@ Status meanings:
 | G8 | Stream-register positions | one per slice (toy: 21 positions) | ASSUMED | Sourced reading is 45 positions with one per 4 MEM slices ([TSP20] Fig. 4, fig. reading). One per slice is simpler to explain and keeps "distance = number of slices". |
 | G9 | Words per MEM slice | 8192 | SOURCED | [TSP20] Sec. II: "13-bits of physical addressing" |
 | G10 | MXM planes per hemisphere | 1 | ASSUMED | Sourced value is 2 ([TSP20] Sec. III-D). Reduced for readability. |
-| G11 | MXM plane size | lanes x lanes | SOURCED | [TSP20] Sec. III-D: 320x320 planes for 320 lanes. Scales with G1 x G2. |
+| G11 | MXM plane size | lanes x lanes (16x16 on the toy chip) | SOURCED rule, scaled value | [TSP20] Sec. III-D: 320x320 planes for 320 lanes. The toy value follows from G2, which is ASSUMED. |
 | G12 | VXM ALUs per lane | 16 | SOURCED | [TSP20] Sec. III-C |
 | G13 | SXM instances | 1 per hemisphere | SOURCED | [TSP20] Sec. III-E |
-| G14 | Instruction queues | one per MEM slice, one per VXM ALU, one per MXM plane, one per SXM | SOURCED for MEM (44 queues for 44 slices) and VXM (16 for 16 ALUs), read from [TSP20] Fig. 2. ASSUMED for MXM and SXM | Fig. 2 shows 6 queues per MXM and 14 per SXM, but the paper does not say what each controls. |
+| G14 | Instruction queues | one per MEM slice, one per VXM ALU, one per MXM plane, one per SXM | ASSUMED | The total of 144 queues is sourced ([TSP20] Sec. II). The split 44 per MEM hemisphere and 16 for the VXM is a figure reading of Fig. 2, which matches one queue per MEM slice and per ALU but is not stated in the text. Fig. 2 shows 6 queues per MXM and 14 per SXM, but the paper does not say what each controls. |
 
 ### Timing
 
@@ -246,7 +248,7 @@ Status meanings:
 | T5 | Tile stagger | completion time adds (tiles - 1) cycles; the simulator runs in the logical time of tile 0 | SOURCED form, ASSUMED treatment | Eq. 4's N term. Instructions and data are staggered identically, so simulating tile 0's time and adding N - 1 at the end is equivalent for operations that stay within a superlane. |
 | T6 | d_func, MEM Read | 2 | ASSUMED | Not in any source. One cycle of SRAM access plus one to drive the stream. |
 | T7 | d_func, MEM Write | 1 (data readable by a Read dispatched 1 or more cycles later) | ASSUMED | Not in any source. |
-| T8 | d_func, VXM add, sub, relu, neg, mask, cast | 1 | ASSUMED | Not in any source. Simple operations take the minimum the paper allows ("1 or more cycles"). |
+| T8 | d_func, VXM add, sub, relu, neg, cast, requant | 1 | ASSUMED | Not in any source. Simple operations take the minimum the paper allows ("1 or more cycles"). |
 | T9 | d_func, VXM mul | 2 | ASSUMED | Not in any source. Chosen to differ from T8 so mixed latencies are visible. |
 | T10 | d_func, VXM exp, tanh, rsqrt | 4 | ASSUMED | Not in any source. Transcendentals are given a longer pipeline. |
 | T11 | d_func, MXM IW | 1 (weights usable by an ABC dispatched 1 or more cycles later) | ASSUMED | Not in any source. |
@@ -268,23 +270,23 @@ Status meanings:
 | B4 | MEM accesses per slice per cycle | 1 instruction (a Read or a Write) | ASSUMED | Sourced behaviour is 1 read plus 1 write if on different banks ([TSP20] Sec. III-B). Banks are not modelled. |
 | B5 | MEM word | one address holds one vector of `lanes` bytes | SOURCED (derived) | [TSP20] Sec. II-B |
 | B6 | MXM numeric types | int8 in, int32 out; fp16 in, fp32 out | SOURCED | [TSP20] Secs. III-D, IV-D |
-| B7 | fp16 on one MXM plane | one plane handles `lanes` fp16 elements | ASSUMED | Sourced: fp16 uses "two 320x320 byte-planes in tandem" ([TSP20] Sec. III-D). With one plane per hemisphere (G10) the toy lets a single plane do it. |
+| B7 | fp16 on one MXM plane | one plane handles `lanes` fp16 elements; products are summed in ascending lane order and rounded once to fp32 | ASSUMED, except the single rounding | Sourced: fp16 uses "two 320x320 byte-planes in tandem" and the sum is produced "with only a single rounding step" ([TSP20] Sec. III-D). With one plane per hemisphere (G10) the toy lets a single plane do it. The summation order is ours. |
 | B8 | Weight install rate | up to 16 streams per IW per cycle | SOURCED | [TSP20] Sec. III-D: "16 streams each with 16 bytes ... on every cycle" |
 | B9 | MXM instruction set | IW and ABC only; ABC emits the result directly | ASSUMED | LW and ACC exist in Table I. The toy folds the weight buffer into IW and the accumulator into ABC. |
 | B10 | MXM stream directions | operands read from outward-flowing streams, result written inward | SOURCED | [TSP22] Sec. 5.5 |
-| B11 | VXM operation set | add, sub, mul, neg, mask, relu, tanh, exp, rsqrt, cast | SOURCED names ([TSP20] Table I). ASSUMED: wrap-around integer arithmetic, and cast between fp32 and fp16 | Table I lists "type conversions" between fixed and floating point only. |
+| B11 | VXM operation set | add, sub, mul, neg, relu, tanh, exp, rsqrt, cast, requant, on int32 and fp32 operands | SOURCED names and 32-bit operands ([TSP20] Table I, Sec. III-C). ASSUMED: wrap-around integer arithmetic, cast between fp32 and fp16 (the one case with a 16-bit operand or result), and the exact floating-point formulas | Table I lists "type conversions" between fixed and floating point only. `mask` from Table I is not implemented. |
 | B12 | VXM chaining | one ALU's result appears on a stream at the VXM position (T3) and another ALU can read it there on that same cycle | ASSUMED | Chaining is sourced ([TSP20] Sec. III-C); its wiring and timing are not. Using the stream register keeps one rule for all data movement. |
 | B13 | SXM operations | Distribute, Permute, Shift | SOURCED names | [TSP20] Table I. Rotate and Transpose are omitted. |
-| B14 | Program start | every queue begins with Sync; one queue issues Notify | SOURCED | [TSP20] Sec. III-A2 |
+| B14 | Program start | one queue begins with Notify and every other queue with Sync; the notifier is always the first VXM ALU | SOURCED mechanism ([TSP20] Sec. III-A2). ASSUMED: which queue is the notifier, and that Notify is dispatched at cycle 0 | The paper says one queue is designated as the notifier but not which. |
 | B15 | Instruction fetch | queues are preloaded; Ifetch is not modelled | ASSUMED | Sourced behaviour: instructions are fetched from MEM via streams ([TSP20] Sec. III-A3). |
 | B16 | Validity of stream registers | each register is either empty or holds a value with a debug name | ASSUMED | The hardware has no valid bit or names. These exist only so the simulator can check that operands arrive on time. |
 | B17 | Not modelled | C2C links, ECC, Gather/Scatter, Config, power, MEM banks | ASSUMED (omission) | All are sourced features left out to keep the simulator small. |
 
-| B18 | Unit pipelining | every unit accepts a new instruction every cycle, whatever its d_func | ASSUMED | [TSP20] Sec. III-D says the MXM can produce a new result every cycle; nothing is stated for other units. |
-| B19 | ABC row count | ABC carries a row count n; result lanes at or above n are zero | ASSUMED | Not in any source. Keeps unused lanes of a result well defined. |
+| B18 | Unit pipelining | every unit accepts a new instruction every cycle, whatever its d_func; one unit may emit two results on one cycle if they go to different stream registers | ASSUMED | [TSP20] Sec. III-D says the MXM can produce a new result every cycle; nothing is stated for other units. |
+| B19 | Result length | every result-producing instruction except Read carries a length n (the row count for ABC); result lanes at or above n are zero | ASSUMED | Not in any source. Keeps unused lanes zero everywhere, so padding never produces infinities or NaN. |
 | B20 | Requantize | VXM operation: arithmetic shift right by an immediate, then saturate to int8 | ASSUMED | [TSP20] Sec. IV-D says the VXM requantizes MXM results; the arithmetic is not given. |
 | B21 | Program end | the run ends when every queue is empty and no result is pending; values still on streams are ignored | ASSUMED | [TSP20] does not say how a program ends. |
-| B22 | Model and input loading | constants and inputs are placed in MEM before cycle 0; outputs are read from MEM after the run | SOURCED (in outline) | [TSP20] Sec. II item 6: a DMA engine emplaces the model in TSP memory. |
+| B22 | Model and input loading | constants and inputs are placed in MEM before cycle 0, zero-padded to the lane count; outputs are read from MEM after the run | SOURCED in outline, ASSUMED in detail | [TSP20] Sec. II item 6: a DMA engine emplaces the model in TSP memory. Padding and the read-back are ours. |
 
 ### Compiler policy (all ASSUMED; the sources do not describe Groq's algorithm)
 

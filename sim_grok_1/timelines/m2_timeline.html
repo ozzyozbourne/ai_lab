@@ -1,0 +1,592 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>M2: two-layer MLP</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f7f7f5;
+  --panel: #ffffff;
+  --fg: #1d1f23;
+  --muted: #5d636e;
+  --line: #d9dbe0;
+  --line-strong: #b5b9c2;
+  --accent: #1f6feb;
+  --sel: rgba(31, 111, 235, 0.16);
+  --band: repeating-linear-gradient(135deg, #e6e7ea 0 6px, #eff0f2 6px 12px);
+  --neutral-bg: #d4d6db;
+  --neutral-fg: #23262b;
+  --tile-s: 62%;
+  --tile-l: 80%;
+  --tile-fg: #15171a;
+  --ghost-op: 0.32;
+  --tip-bg: #1d1f23;
+  --tip-fg: #f2f3f5;
+  --cw: 34px;        /* width of one cycle column */
+  --bw: 0px;         /* width of the collapsed barrier band */
+  --lw: 118px;       /* width of the sticky row labels */
+  --rh: 22px;        /* row height */
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171b;
+    --panel: #1d2026;
+    --fg: #e4e6ea;
+    --muted: #9aa1ad;
+    --line: #30343c;
+    --line-strong: #474c56;
+    --accent: #6ea8ff;
+    --sel: rgba(110, 168, 255, 0.18);
+    --band: repeating-linear-gradient(135deg, #24272e 0 6px, #2b2f37 6px 12px);
+    --neutral-bg: #4a4f59;
+    --neutral-fg: #eef0f3;
+    --tile-s: 42%;
+    --tile-l: 40%;
+    --tile-fg: #f4f5f7;
+    --ghost-op: 0.38;
+    --tip-bg: #f2f3f5;
+    --tip-fg: #15171b;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  overflow-x: hidden;
+}
+main { max-width: 1400px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 1.35rem; margin: 0 0 6px; overflow-wrap: anywhere; }
+h2 { font-size: 1.02rem; margin: 22px 0 8px; }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.muted { color: var(--muted); }
+.facts { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 6px 0 10px; }
+.facts div { min-width: 0; }
+.facts b { font-variant-numeric: tabular-nums; }
+#trace-digest { overflow-wrap: anywhere; }
+.note {
+  background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+  border-radius: 6px; padding: 8px 12px; margin: 8px 0; font-size: 13px;
+}
+.note p { margin: 4px 0; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
+button {
+  font: inherit; font-size: 13px; color: var(--fg); background: var(--panel);
+  border: 1px solid var(--line-strong); border-radius: 5px; padding: 3px 10px; cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ---- Gantt ---- */
+#gantt-wrap {
+  position: relative; overflow: auto; max-height: 72vh;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
+  outline: none;
+}
+#gantt { position: relative; width: max-content; min-width: 100%; }
+.row { display: flex; height: var(--rh); border-bottom: 1px solid var(--line); }
+.row.sep { height: 24px; background: var(--bg); border-bottom: 1px solid var(--line-strong); }
+.row.sep .label { background: var(--bg); font-weight: 600; color: var(--fg); }
+.label {
+  position: sticky; left: 0; z-index: 3; flex: 0 0 var(--lw); width: var(--lw);
+  background: var(--panel); border-right: 1px solid var(--line-strong);
+  padding: 0 6px; display: flex; align-items: center; gap: 4px;
+  font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: nowrap; overflow: hidden;
+}
+.label .sub { color: var(--muted); font-size: 11px; }
+.track { position: relative; flex: 0 0 auto; height: 100%; width: calc(var(--bw) + var(--n) * var(--cw)); }
+.ruler { position: sticky; top: 0; z-index: 4; height: 26px; background: var(--panel); border-bottom: 1px solid var(--line-strong); }
+.ruler .label { z-index: 5; font-weight: 600; }
+.tick {
+  position: absolute; top: 0; bottom: 0; left: calc(var(--bw) + var(--i) * var(--cw)); width: var(--cw);
+  cursor: pointer; font: 11px ui-monospace, Menlo, Consolas, monospace; color: var(--muted);
+}
+.tick.major { border-left: 1px solid var(--line-strong); }
+.tick.major span { position: absolute; left: 3px; top: 5px; white-space: nowrap; }
+.tick:hover { background: var(--sel); }
+.tick.band { left: 0; width: var(--bw); border-right: 1px solid var(--line-strong); }
+.cell {
+  position: absolute; top: 2px; bottom: 2px;
+  left: calc(var(--bw) + var(--i) * var(--cw) + 1px); width: calc(var(--cw) - 2px);
+  border-radius: 3px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font: 11px/18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align: center;
+  padding: 0 2px; cursor: pointer;
+  background: hsl(var(--h) var(--tile-s) var(--tile-l)); color: var(--tile-fg);
+}
+.cell.neutral { background: var(--neutral-bg); color: var(--neutral-fg); }
+.cell.ghost { opacity: var(--ghost-op); }
+.cell[data-kind="lane"] { font-size: 10px; }
+.narrow .cell { color: transparent; }
+.vline {
+  position: absolute; top: 0; bottom: 0; pointer-events: none; z-index: 2;
+  left: calc(var(--lw) + var(--bw) + var(--sel-i) * var(--cw)); width: var(--cw);
+  background: var(--sel); border-left: 1px solid var(--accent); border-right: 1px solid var(--accent);
+}
+.bandbox {
+  position: absolute; top: 0; bottom: 0; left: var(--lw); width: var(--bw); z-index: 1;
+  background: var(--band); border-right: 1px solid var(--line-strong);
+  display: flex; align-items: flex-start; justify-content: center; padding-top: 34px;
+}
+.bandbox span {
+  writing-mode: vertical-rl; transform: rotate(180deg); font-size: 11px; color: var(--muted); white-space: nowrap;
+  position: sticky; top: 34px;
+}
+
+/* ---- space-time view ---- */
+#st-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; }
+#st-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+#spacetime { display: grid; width: max-content; min-width: 100%; }
+.st-c { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 3px 4px; min-width: 0; font-size: 11px; }
+.st-rl { position: sticky; left: 0; background: var(--panel); z-index: 1; font-weight: 600; color: var(--muted); border-right: 1px solid var(--line-strong); }
+.st-unit { font: 600 11px ui-monospace, Menlo, Consolas, monospace; text-align: center; overflow-wrap: anywhere; }
+.st-unit .sub { display: block; color: var(--muted); font-weight: 400; }
+.st-unit.vxm { background: var(--bg); }
+.st-val, .st-disp {
+  display: block; margin: 2px 0; padding: 1px 3px; border-radius: 3px;
+  font: 11px/15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere;
+  background: hsl(var(--h) var(--tile-s) var(--tile-l)); color: var(--tile-fg);
+}
+.st-val.neutral, .st-disp.neutral { background: var(--neutral-bg); color: var(--neutral-fg); }
+.st-val.ghost { opacity: var(--ghost-op); }
+.st-disp { outline: 2px solid var(--accent); outline-offset: -2px; }
+#st-list { margin: 8px 0 0; padding-left: 18px; font-size: 12px; }
+#st-list li { margin: 2px 0; overflow-wrap: anywhere; }
+
+/* ---- legend ---- */
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; }
+.legend .item { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.legend .item span:last-child { overflow-wrap: anywhere; }
+.sw { flex: 0 0 auto; display: inline-block; width: 22px; height: 14px; border-radius: 3px; background: hsl(var(--h) var(--tile-s) var(--tile-l)); }
+.sw.neutral { background: var(--neutral-bg); }
+.sw.ghost { opacity: var(--ghost-op); }
+.sw.band { background: var(--band); border: 1px solid var(--line-strong); }
+.sw.sel { background: var(--sel); border: 1px solid var(--accent); }
+
+#tip {
+  position: fixed; z-index: 20; pointer-events: none; display: none; max-width: min(520px, 92vw);
+  background: var(--tip-bg); color: var(--tip-fg); border-radius: 6px; padding: 7px 9px;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+@media (max-width: 600px) {
+  :root { --lw: 92px; }
+  main { padding: 12px 16px; }
+}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>M2: two-layer MLP</h1>
+  <div class="facts">
+    <div>Cycles simulated: <b id="n-cycles"></b></div>
+    <div>Wall-clock estimate: <b id="wall"></b></div>
+    <div>Dispatches: <b id="n-disp"></b></div>
+    <div>Trace digest (SHA-256): <code id="trace-digest">1a2ec987e41687ed4c2ecbbe8a7fc3283d141d13d7d61558328bf23992f90b8b</code></div>
+  </div>
+  <div class="note">
+    <p><b>What is assumed.</b> Every instruction latency in this run is an assumption: no source gives
+    per-instruction timings (ledger entries T6 to T13). The toy chip's geometry is scaled down from the
+    published one (ledger G2, G7, G10). The barrier length (T15) and the clock used for the wall-clock
+    estimate (T17) are taken from the sources; the estimate is for this simulated chip, not a measured
+    figure. Every parameter is justified in the ASSUMPTIONS LEDGER, <code>research/dossier.md</code> section 7.</p>
+    <p class="muted" id="lat-line"></p>
+  </div>
+</header>
+
+<section>
+  <h2>How to read this</h2>
+  <p>The chip runs one program that a compiler scheduled in full in advance; nothing is decided while it runs.
+  Time runs left to right, one column per clock cycle. The upper rows are the units (memory slices, vector ALUs,
+  matrix and switch units), one row per instruction queue; a box is an instruction dispatched on that cycle,
+  labelled with its mnemonic. The lower rows are the stream lanes: data moves east (&rarr;) or west (&larr;) on
+  numbered streams, one position per cycle, and a box shows that the lane holds a value somewhere on the chip
+  on that cycle (the number in front of a tag is how many values it holds at once). Colours group everything
+  that belongs to one compiler tile; a faded box is a value that every reader has already used but that keeps
+  flowing until it leaves the chip or is overwritten. The striped band at the left is the start-up
+  Sync/Notify barrier, during which nothing happens. Hover over a box for its details, and click a column
+  (or use the left and right arrow keys) to see the whole chip on that cycle in the space-time view below.</p>
+</section>
+
+<section>
+  <h2>Timeline</h2>
+  <div class="toolbar">
+    <button type="button" id="prev" aria-label="Previous cycle">&larr; cycle</button>
+    <button type="button" id="next" aria-label="Next cycle">cycle &rarr;</button>
+    <button type="button" id="zoom-out" aria-label="Narrower columns">&minus;</button>
+    <button type="button" id="zoom-in" aria-label="Wider columns">+</button>
+    <span class="muted" id="sel-label"></span>
+  </div>
+  <div id="gantt-wrap" tabindex="0" aria-label="Cycle-by-cycle timeline">
+    <div id="gantt"></div>
+  </div>
+</section>
+
+<section>
+  <div id="st-head">
+    <h2>Space-time view</h2>
+    <span id="st-title" class="mono"></span>
+  </div>
+  <p class="muted" style="margin:0 0 6px;font-size:12px">Positions west (left) to east (right). Each column is one
+  stream-register position and the unit(s) there; the rows list the units dispatching on this cycle and the
+  values in the eastward and westward stream registers at that position.</p>
+  <div id="st-wrap"><div id="spacetime"></div></div>
+  <ul id="st-list"></ul>
+</section>
+
+<section>
+  <h2>Legend</h2>
+  <div class="legend" id="legend"></div>
+</section>
+</main>
+<div id="tip" role="tooltip"></div>
+
+<script type="application/json" id="timeline-data">{"band_end":35,"digest":"1a2ec987e41687ed4c2ecbbe8a7fc3283d141d13d7d61558328bf23992f90b8b","positions":[["MXM_W0"],["SXM_W"],["MEM_W7"],["MEM_W6"],["MEM_W5"],["MEM_W4"],["MEM_W3"],["MEM_W2"],["MEM_W1"],["MEM_W0"],["VXM_A0","VXM_A1","VXM_A2","VXM_A3","VXM_A4","VXM_A5","VXM_A6","VXM_A7","VXM_A8","VXM_A9","VXM_A10","VXM_A11","VXM_A12","VXM_A13","VXM_A14","VXM_A15"],["MEM_E0"],["MEM_E1"],["MEM_E2"],["MEM_E3"],["MEM_E4"],["MEM_E5"],["MEM_E6"],["MEM_E7"],["SXM_E"],["MXM_E0"]],"schedule":[{"dir":"W","readers":[{"t":46,"unit":"MXM_W0","x":0}],"s":7,"t_emit":37,"tag":"W1[7]@0#0","tile":0,"unit":"MEM_W0","x_from":9},{"dir":"W","readers":[{"t":48,"unit":"MXM_W0","x":0}],"s":0,"t_emit":37,"tag":"x@2#0","tile":2,"unit":"MEM_E0","x_from":11},{"dir":"W","readers":[{"t":46,"unit":"MXM_W0","x":0}],"s":6,"t_emit":38,"tag":"W1[6]@0#0","tile":0,"unit":"MEM_W1","x_from":8},{"dir":"W","readers":[{"t":47,"unit":"MXM_W0","x":0}],"s":7,"t_emit":38,"tag":"W1[15]@1#0","tile":1,"unit":"MEM_W0","x_from":9},{"dir":"E","readers":[{"t":47,"unit":"MXM_E0","x":20}],"s":7,"t_emit":38,"tag":"W2[7]@3#0","tile":3,"unit":"MEM_E0","x_from":11},{"dir":"W","readers":[{"t":46,"unit":"MXM_W0","x":0}],"s":5,"t_emit":39,"tag":"W1[5]@0#0","tile":0,"unit":"MEM_W2","x_from":7},{"dir":"W","readers":[{"t":47,"unit":"MXM_W0","x":0}],"s":6,"t_emit":39,"tag":"W1[14]@1#0","tile":1,"unit":"MEM_W1","x_from":8},{"dir":"E","readers":[{"t":47,"unit":"MXM_E0","x":20}],"s":6,"t_emit":39,"tag":"W2[6]@3#0","tile":3,"unit":"MEM_E1","x_from":12},{"dir":"W","readers":[{"t":46,"unit":"MXM_W0","x":0}],"s":4,"t_emit":40,"tag":"W1[4]@0#0","tile":0,"unit":"MEM_W3","x_from":6},{"dir":"W","readers":[{"t":47,"unit":"MXM_W0","x":0}],"s":5,"t_emit":40,"tag":"W1[13]@1#0","tile":1,"unit":"MEM_W2","x_from":7},{"dir":"E","readers":[{"t":47,"unit":"MXM_E0","x":20}],"s":5,"t_emit":40,"tag":"W2[5]@3#0","tile":3,"unit":"MEM_E2","x_from":13},{"dir":"W","readers":[{"t":46,"unit":"MXM_W0","x":0}],"s":3,"t_emit":41,"tag":"W1[3]@0#0","tile":0,"unit":"MEM_W4","x_from":5},{"dir":"W","readers":[{"t":47,"unit":"MXM_W0","x":0}],"s":4,"t_emit":41,"tag":"W1[12]@1#0","tile":1,"unit":"MEM_W3","x_from":6},{"dir":"E","readers":[{"t":47,"unit":"MXM_E0","x":20}],"s":4,"t_emit":41,"tag":"W2[4]@3#0","tile":3,"unit":"MEM_E3","x_from":14},{"dir":"W","readers":[{"t":46,"unit":"MXM_W0","x":0}],"s":2,"t_emit":42,"tag":"W1[2]@0#0","tile":0,"unit":"MEM_W5","x_from":4},{"dir":"W","readers":[{"t":47,"unit":"MXM_W0","x":0}],"s":3,"t_emit":42,"tag":"W1[11]@1#0","tile":1,"unit":"MEM_W4","x_from":5},{"dir":"E","readers":[{"t":47,"unit":"MXM_E0","x":20}],"s":3,"t_emit":42,"tag":"W2[3]@3#0","tile":3,"unit":"MEM_E4","x_from":15},{"dir":"W","readers":[{"t":46,"unit":"MXM_W0","x":0}],"s":1,"t_emit":43,"tag":"W1[1]@0#0","tile":0,"unit":"MEM_W6","x_from":3},{"dir":"W","readers":[{"t":47,"unit":"MXM_W0","x":0}],"s":2,"t_emit":43,"tag":"W1[10]@1#0","tile":1,"unit":"MEM_W5","x_from":4},{"dir":"E","readers":[{"t":47,"unit":"MXM_E0","x":20}],"s":2,"t_emit":43,"tag":"W2[2]@3#0","tile":3,"unit":"MEM_E5","x_from":16},{"dir":"W","readers":[{"t":46,"unit":"MXM_W0","x":0}],"s":0,"t_emit":44,"tag":"W1[0]@0#0","tile":0,"unit":"MEM_W7","x_from":2},{"dir":"W","readers":[{"t":47,"unit":"MXM_W0","x":0}],"s":1,"t_emit":44,"tag":"W1[9]@1#0","tile":1,"unit":"MEM_W6","x_from":3},{"dir":"E","readers":[{"t":47,"unit":"MXM_E0","x":20}],"s":1,"t_emit":44,"tag":"W2[1]@3#0","tile":3,"unit":"MEM_E6","x_from":17},{"dir":"W","readers":[{"t":47,"unit":"MXM_W0","x":0}],"s":0,"t_emit":45,"tag":"W1[8]@1#0","tile":1,"unit":"MEM_W7","x_from":2},{"dir":"E","readers":[{"t":47,"unit":"MXM_E0","x":20}],"s":0,"t_emit":45,"tag":"W2[0]@3#0","tile":3,"unit":"MEM_E7","x_from":18},{"dir":"E","readers":[{"t":61,"unit":"VXM_A0","x":10}],"s":0,"t_emit":51,"tag":"W1x@2#0","tile":2,"unit":"MXM_W0","x_from":0},{"dir":"E","readers":[{"t":61,"unit":"VXM_A0","x":10}],"s":1,"t_emit":51,"tag":"W1x@2#1","tile":2,"unit":"MXM_W0","x_from":0},{"dir":"E","readers":[{"t":61,"unit":"VXM_A0","x":10}],"s":2,"t_emit":51,"tag":"W1x@2#2","tile":2,"unit":"MXM_W0","x_from":0},{"dir":"E","readers":[{"t":61,"unit":"VXM_A0","x":10}],"s":3,"t_emit":51,"tag":"W1x@2#3","tile":2,"unit":"MXM_W0","x_from":0},{"dir":"E","readers":[{"t":61,"unit":"VXM_A0","x":10}],"s":7,"t_emit":57,"tag":"b1@2#3","tile":2,"unit":"MEM_W3","x_from":6},{"dir":"E","readers":[{"t":61,"unit":"VXM_A0","x":10}],"s":6,"t_emit":58,"tag":"b1@2#2","tile":2,"unit":"MEM_W2","x_from":7},{"dir":"E","readers":[{"t":61,"unit":"VXM_A0","x":10}],"s":5,"t_emit":59,"tag":"b1@2#1","tile":2,"unit":"MEM_W1","x_from":8},{"dir":"E","readers":[{"t":61,"unit":"VXM_A0","x":10}],"s":4,"t_emit":60,"tag":"b1@2#0","tile":2,"unit":"MEM_W0","x_from":9},{"dir":"E","readers":[{"t":62,"unit":"VXM_A0","x":10}],"s":0,"t_emit":62,"tag":"W1x_b1@2#0","tile":2,"unit":"VXM_A0","x_from":10},{"dir":"E","readers":[{"t":62,"unit":"VXM_A0","x":10}],"s":1,"t_emit":62,"tag":"W1x_b1@2#1","tile":2,"unit":"VXM_A0","x_from":10},{"dir":"E","readers":[{"t":62,"unit":"VXM_A0","x":10}],"s":2,"t_emit":62,"tag":"W1x_b1@2#2","tile":2,"unit":"VXM_A0","x_from":10},{"dir":"E","readers":[{"t":62,"unit":"VXM_A0","x":10}],"s":3,"t_emit":62,"tag":"W1x_b1@2#3","tile":2,"unit":"VXM_A0","x_from":10},{"dir":"E","readers":[{"t":63,"unit":"VXM_A0","x":10}],"s":0,"t_emit":63,"tag":"relu1@2#0","tile":2,"unit":"VXM_A0","x_from":10},{"dir":"E","readers":[{"t":63,"unit":"VXM_A0","x":10}],"s":1,"t_emit":63,"tag":"relu1@2#1","tile":2,"unit":"VXM_A0","x_from":10},{"dir":"E","readers":[{"t":63,"unit":"VXM_A0","x":10}],"s":2,"t_emit":63,"tag":"relu1@2#2","tile":2,"unit":"VXM_A0","x_from":10},{"dir":"E","readers":[{"t":63,"unit":"VXM_A0","x":10}],"s":3,"t_emit":63,"tag":"relu1@2#3","tile":2,"unit":"VXM_A0","x_from":10},{"dir":"E","readers":[{"t":65,"unit":"MEM_E0","x":11}],"s":0,"t_emit":64,"tag":"h@2#0","tile":2,"unit":"VXM_A0","x_from":10},{"dir":"E","readers":[{"t":77,"unit":"MXM_E0","x":20}],"s":0,"t_emit":68,"tag":"h@4#0","tile":4,"unit":"MEM_E0","x_from":11},{"dir":"W","readers":[{"t":90,"unit":"VXM_A0","x":10}],"s":0,"t_emit":80,"tag":"W2h@4#0","tile":4,"unit":"MXM_E0","x_from":20},{"dir":"W","readers":[{"t":90,"unit":"VXM_A0","x":10}],"s":1,"t_emit":80,"tag":"W2h@4#1","tile":4,"unit":"MXM_E0","x_from":20},{"dir":"W","readers":[{"t":90,"unit":"VXM_A0","x":10}],"s":2,"t_emit":80,"tag":"W2h@4#2","tile":4,"unit":"MXM_E0","x_from":20},{"dir":"W","readers":[{"t":90,"unit":"VXM_A0","x":10}],"s":3,"t_emit":80,"tag":"W2h@4#3","tile":4,"unit":"MXM_E0","x_from":20},{"dir":"W","readers":[{"t":90,"unit":"VXM_A0","x":10}],"s":7,"t_emit":86,"tag":"b2@4#3","tile":4,"unit":"MEM_E3","x_from":14},{"dir":"W","readers":[{"t":90,"unit":"VXM_A0","x":10}],"s":6,"t_emit":87,"tag":"b2@4#2","tile":4,"unit":"MEM_E2","x_from":13},{"dir":"W","readers":[{"t":90,"unit":"VXM_A0","x":10}],"s":5,"t_emit":88,"tag":"b2@4#1","tile":4,"unit":"MEM_E1","x_from":12},{"dir":"W","readers":[{"t":90,"unit":"VXM_A0","x":10}],"s":4,"t_emit":89,"tag":"b2@4#0","tile":4,"unit":"MEM_E0","x_from":11},{"dir":"E","readers":[{"t":92,"unit":"MEM_E0","x":11}],"s":0,"t_emit":91,"tag":"y@4#0","tile":4,"unit":"VXM_A0","x_from":10},{"dir":"E","readers":[{"t":93,"unit":"MEM_E1","x":12}],"s":1,"t_emit":91,"tag":"y@4#1","tile":4,"unit":"VXM_A0","x_from":10},{"dir":"E","readers":[{"t":94,"unit":"MEM_E2","x":13}],"s":2,"t_emit":91,"tag":"y@4#2","tile":4,"unit":"VXM_A0","x_from":10},{"dir":"E","readers":[{"t":95,"unit":"MEM_E3","x":14}],"s":3,"t_emit":91,"tag":"y@4#3","tile":4,"unit":"VXM_A0","x_from":10}],"title":"M2: two-layer MLP","trace":{"cells":[[37,"W",0,11,1],[37,"W",7,9,0],[38,"E",7,11,4],[38,"W",0,10,1],[38,"W",6,8,2],[38,"W",7,8,0],[38,"W",7,9,3],[39,"E",6,12,7],[39,"E",7,12,4],[39,"W",0,9,1],[39,"W",5,7,5],[39,"W",6,7,2],[39,"W",6,8,6],[39,"W",7,7,0],[39,"W",7,8,3],[40,"E",5,13,10],[40,"E",6,13,7],[40,"E",7,13,4],[40,"W",0,8,1],[40,"W",4,6,8],[40,"W",5,6,5],[40,"W",5,7,9],[40,"W",6,6,2],[40,"W",6,7,6],[40,"W",7,6,0],[40,"W",7,7,3],[41,"E",4,14,13],[41,"E",5,14,10],[41,"E",6,14,7],[41,"E",7,14,4],[41,"W",0,7,1],[41,"W",3,5,11],[41,"W",4,5,8],[41,"W",4,6,12],[41,"W",5,5,5],[41,"W",5,6,9],[41,"W",6,5,2],[41,"W",6,6,6],[41,"W",7,5,0],[41,"W",7,6,3],[42,"E",3,15,16],[42,"E",4,15,13],[42,"E",5,15,10],[42,"E",6,15,7],[42,"E",7,15,4],[42,"W",0,6,1],[42,"W",2,4,14],[42,"W",3,4,11],[42,"W",3,5,15],[42,"W",4,4,8],[42,"W",4,5,12],[42,"W",5,4,5],[42,"W",5,5,9],[42,"W",6,4,2],[42,"W",6,5,6],[42,"W",7,4,0],[42,"W",7,5,3],[43,"E",2,16,19],[43,"E",3,16,16],[43,"E",4,16,13],[43,"E",5,16,10],[43,"E",6,16,7],[43,"E",7,16,4],[43,"W",0,5,1],[43,"W",1,3,17],[43,"W",2,3,14],[43,"W",2,4,18],[43,"W",3,3,11],[43,"W",3,4,15],[43,"W",4,3,8],[43,"W",4,4,12],[43,"W",5,3,5],[43,"W",5,4,9],[43,"W",6,3,2],[43,"W",6,4,6],[43,"W",7,3,0],[43,"W",7,4,3],[44,"E",1,17,22],[44,"E",2,17,19],[44,"E",3,17,16],[44,"E",4,17,13],[44,"E",5,17,10],[44,"E",6,17,7],[44,"E",7,17,4],[44,"W",0,2,20],[44,"W",0,4,1],[44,"W",1,2,17],[44,"W",1,3,21],[44,"W",2,2,14],[44,"W",2,3,18],[44,"W",3,2,11],[44,"W",3,3,15],[44,"W",4,2,8],[44,"W",4,3,12],[44,"W",5,2,5],[44,"W",5,3,9],[44,"W",6,2,2],[44,"W",6,3,6],[44,"W",7,2,0],[44,"W",7,3,3],[45,"E",0,18,24],[45,"E",1,18,22],[45,"E",2,18,19],[45,"E",3,18,16],[45,"E",4,18,13],[45,"E",5,18,10],[45,"E",6,18,7],[45,"E",7,18,4],[45,"W",0,1,20],[45,"W",0,2,23],[45,"W",0,3,1],[45,"W",1,1,17],[45,"W",1,2,21],[45,"W",2,1,14],[45,"W",2,2,18],[45,"W",3,1,11],[45,"W",3,2,15],[45,"W",4,1,8],[45,"W",4,2,12],[45,"W",5,1,5],[45,"W",5,2,9],[45,"W",6,1,2],[45,"W",6,2,6],[45,"W",7,1,0],[45,"W",7,2,3],[46,"E",0,19,24],[46,"E",1,19,22],[46,"E",2,19,19],[46,"E",3,19,16],[46,"E",4,19,13],[46,"E",5,19,10],[46,"E",6,19,7],[46,"E",7,19,4],[46,"W",0,0,20],[46,"W",0,1,23],[46,"W",0,2,1],[46,"W",1,0,17],[46,"W",1,1,21],[46,"W",2,0,14],[46,"W",2,1,18],[46,"W",3,0,11],[46,"W",3,1,15],[46,"W",4,0,8],[46,"W",4,1,12],[46,"W",5,0,5],[46,"W",5,1,9],[46,"W",6,0,2],[46,"W",6,1,6],[46,"W",7,0,0],[46,"W",7,1,3],[47,"E",0,20,24],[47,"E",1,20,22],[47,"E",2,20,19],[47,"E",3,20,16],[47,"E",4,20,13],[47,"E",5,20,10],[47,"E",6,20,7],[47,"E",7,20,4],[47,"W",0,0,23],[47,"W",0,1,1],[47,"W",1,0,21],[47,"W",2,0,18],[47,"W",3,0,15],[47,"W",4,0,12],[47,"W",5,0,9],[47,"W",6,0,6],[47,"W",7,0,3],[48,"W",0,0,1],[51,"E",0,0,25],[51,"E",1,0,26],[51,"E",2,0,27],[51,"E",3,0,28],[52,"E",0,1,25],[52,"E",1,1,26],[52,"E",2,1,27],[52,"E",3,1,28],[53,"E",0,2,25],[53,"E",1,2,26],[53,"E",2,2,27],[53,"E",3,2,28],[54,"E",0,3,25],[54,"E",1,3,26],[54,"E",2,3,27],[54,"E",3,3,28],[55,"E",0,4,25],[55,"E",1,4,26],[55,"E",2,4,27],[55,"E",3,4,28],[56,"E",0,5,25],[56,"E",1,5,26],[56,"E",2,5,27],[56,"E",3,5,28],[57,"E",0,6,25],[57,"E",1,6,26],[57,"E",2,6,27],[57,"E",3,6,28],[57,"E",7,6,29],[58,"E",0,7,25],[58,"E",1,7,26],[58,"E",2,7,27],[58,"E",3,7,28],[58,"E",6,7,30],[58,"E",7,7,29],[59,"E",0,8,25],[59,"E",1,8,26],[59,"E",2,8,27],[59,"E",3,8,28],[59,"E",5,8,31],[59,"E",6,8,30],[59,"E",7,8,29],[60,"E",0,9,25],[60,"E",1,9,26],[60,"E",2,9,27],[60,"E",3,9,28],[60,"E",4,9,32],[60,"E",5,9,31],[60,"E",6,9,30],[60,"E",7,9,29],[61,"E",0,10,25],[61,"E",1,10,26],[61,"E",2,10,27],[61,"E",3,10,28],[61,"E",4,10,32],[61,"E",5,10,31],[61,"E",6,10,30],[61,"E",7,10,29],[62,"E",0,10,33],[62,"E",0,11,25],[62,"E",1,10,34],[62,"E",1,11,26],[62,"E",2,10,35],[62,"E",2,11,27],[62,"E",3,10,36],[62,"E",3,11,28],[62,"E",4,11,32],[62,"E",5,11,31],[62,"E",6,11,30],[62,"E",7,11,29],[63,"E",0,10,37],[63,"E",0,11,33],[63,"E",0,12,25],[63,"E",1,10,38],[63,"E",1,11,34],[63,"E",1,12,26],[63,"E",2,10,39],[63,"E",2,11,35],[63,"E",2,12,27],[63,"E",3,10,40],[63,"E",3,11,36],[63,"E",3,12,28],[63,"E",4,12,32],[63,"E",5,12,31],[63,"E",6,12,30],[63,"E",7,12,29],[64,"E",0,10,41],[64,"E",0,11,37],[64,"E",0,12,33],[64,"E",0,13,25],[64,"E",1,11,38],[64,"E",1,12,34],[64,"E",1,13,26],[64,"E",2,11,39],[64,"E",2,12,35],[64,"E",2,13,27],[64,"E",3,11,40],[64,"E",3,12,36],[64,"E",3,13,28],[64,"E",4,13,32],[64,"E",5,13,31],[64,"E",6,13,30],[64,"E",7,13,29],[65,"E",0,11,41],[65,"E",0,12,37],[65,"E",0,13,33],[65,"E",0,14,25],[65,"E",1,12,38],[65,"E",1,13,34],[65,"E",1,14,26],[65,"E",2,12,39],[65,"E",2,13,35],[65,"E",2,14,27],[65,"E",3,12,40],[65,"E",3,13,36],[65,"E",3,14,28],[65,"E",4,14,32],[65,"E",5,14,31],[65,"E",6,14,30],[65,"E",7,14,29],[66,"E",0,12,41],[66,"E",0,13,37],[66,"E",0,14,33],[66,"E",0,15,25],[66,"E",1,13,38],[66,"E",1,14,34],[66,"E",1,15,26],[66,"E",2,13,39],[66,"E",2,14,35],[66,"E",2,15,27],[66,"E",3,13,40],[66,"E",3,14,36],[66,"E",3,15,28],[66,"E",4,15,32],[66,"E",5,15,31],[66,"E",6,15,30],[66,"E",7,15,29],[67,"E",0,13,41],[67,"E",0,14,37],[67,"E",0,15,33],[67,"E",0,16,25],[67,"E",1,14,38],[67,"E",1,15,34],[67,"E",1,16,26],[67,"E",2,14,39],[67,"E",2,15,35],[67,"E",2,16,27],[67,"E",3,14,40],[67,"E",3,15,36],[67,"E",3,16,28],[67,"E",4,16,32],[67,"E",5,16,31],[67,"E",6,16,30],[67,"E",7,16,29],[68,"E",0,11,42],[68,"E",0,14,41],[68,"E",0,15,37],[68,"E",0,16,33],[68,"E",0,17,25],[68,"E",1,15,38],[68,"E",1,16,34],[68,"E",1,17,26],[68,"E",2,15,39],[68,"E",2,16,35],[68,"E",2,17,27],[68,"E",3,15,40],[68,"E",3,16,36],[68,"E",3,17,28],[68,"E",4,17,32],[68,"E",5,17,31],[68,"E",6,17,30],[68,"E",7,17,29],[69,"E",0,12,42],[69,"E",0,15,41],[69,"E",0,16,37],[69,"E",0,17,33],[69,"E",0,18,25],[69,"E",1,16,38],[69,"E",1,17,34],[69,"E",1,18,26],[69,"E",2,16,39],[69,"E",2,17,35],[69,"E",2,18,27],[69,"E",3,16,40],[69,"E",3,17,36],[69,"E",3,18,28],[69,"E",4,18,32],[69,"E",5,18,31],[69,"E",6,18,30],[69,"E",7,18,29],[70,"E",0,13,42],[70,"E",0,16,41],[70,"E",0,17,37],[70,"E",0,18,33],[70,"E",0,19,25],[70,"E",1,17,38],[70,"E",1,18,34],[70,"E",1,19,26],[70,"E",2,17,39],[70,"E",2,18,35],[70,"E",2,19,27],[70,"E",3,17,40],[70,"E",3,18,36],[70,"E",3,19,28],[70,"E",4,19,32],[70,"E",5,19,31],[70,"E",6,19,30],[70,"E",7,19,29],[71,"E",0,14,42],[71,"E",0,17,41],[71,"E",0,18,37],[71,"E",0,19,33],[71,"E",0,20,25],[71,"E",1,18,38],[71,"E",1,19,34],[71,"E",1,20,26],[71,"E",2,18,39],[71,"E",2,19,35],[71,"E",2,20,27],[71,"E",3,18,40],[71,"E",3,19,36],[71,"E",3,20,28],[71,"E",4,20,32],[71,"E",5,20,31],[71,"E",6,20,30],[71,"E",7,20,29],[72,"E",0,15,42],[72,"E",0,18,41],[72,"E",0,19,37],[72,"E",0,20,33],[72,"E",1,19,38],[72,"E",1,20,34],[72,"E",2,19,39],[72,"E",2,20,35],[72,"E",3,19,40],[72,"E",3,20,36],[73,"E",0,16,42],[73,"E",0,19,41],[73,"E",0,20,37],[73,"E",1,20,38],[73,"E",2,20,39],[73,"E",3,20,40],[74,"E",0,17,42],[74,"E",0,20,41],[75,"E",0,18,42],[76,"E",0,19,42],[77,"E",0,20,42],[80,"W",0,20,43],[80,"W",1,20,44],[80,"W",2,20,45],[80,"W",3,20,46],[81,"W",0,19,43],[81,"W",1,19,44],[81,"W",2,19,45],[81,"W",3,19,46],[82,"W",0,18,43],[82,"W",1,18,44],[82,"W",2,18,45],[82,"W",3,18,46],[83,"W",0,17,43],[83,"W",1,17,44],[83,"W",2,17,45],[83,"W",3,17,46],[84,"W",0,16,43],[84,"W",1,16,44],[84,"W",2,16,45],[84,"W",3,16,46],[85,"W",0,15,43],[85,"W",1,15,44],[85,"W",2,15,45],[85,"W",3,15,46],[86,"W",0,14,43],[86,"W",1,14,44],[86,"W",2,14,45],[86,"W",3,14,46],[86,"W",7,14,47],[87,"W",0,13,43],[87,"W",1,13,44],[87,"W",2,13,45],[87,"W",3,13,46],[87,"W",6,13,48],[87,"W",7,13,47],[88,"W",0,12,43],[88,"W",1,12,44],[88,"W",2,12,45],[88,"W",3,12,46],[88,"W",5,12,49],[88,"W",6,12,48],[88,"W",7,12,47],[89,"W",0,11,43],[89,"W",1,11,44],[89,"W",2,11,45],[89,"W",3,11,46],[89,"W",4,11,50],[89,"W",5,11,49],[89,"W",6,11,48],[89,"W",7,11,47],[90,"W",0,10,43],[90,"W",1,10,44],[90,"W",2,10,45],[90,"W",3,10,46],[90,"W",4,10,50],[90,"W",5,10,49],[90,"W",6,10,48],[90,"W",7,10,47],[91,"E",0,10,51],[91,"E",1,10,52],[91,"E",2,10,53],[91,"E",3,10,54],[91,"W",0,9,43],[91,"W",1,9,44],[91,"W",2,9,45],[91,"W",3,9,46],[91,"W",4,9,50],[91,"W",5,9,49],[91,"W",6,9,48],[91,"W",7,9,47],[92,"E",0,11,51],[92,"E",1,11,52],[92,"E",2,11,53],[92,"E",3,11,54],[92,"W",0,8,43],[92,"W",1,8,44],[92,"W",2,8,45],[92,"W",3,8,46],[92,"W",4,8,50],[92,"W",5,8,49],[92,"W",6,8,48],[92,"W",7,8,47],[93,"E",0,12,51],[93,"E",1,12,52],[93,"E",2,12,53],[93,"E",3,12,54],[93,"W",0,7,43],[93,"W",1,7,44],[93,"W",2,7,45],[93,"W",3,7,46],[93,"W",4,7,50],[93,"W",5,7,49],[93,"W",6,7,48],[93,"W",7,7,47],[94,"E",0,13,51],[94,"E",1,13,52],[94,"E",2,13,53],[94,"E",3,13,54],[94,"W",0,6,43],[94,"W",1,6,44],[94,"W",2,6,45],[94,"W",3,6,46],[94,"W",4,6,50],[94,"W",5,6,49],[94,"W",6,6,48],[94,"W",7,6,47],[95,"E",0,14,51],[95,"E",1,14,52],[95,"E",2,14,53],[95,"E",3,14,54],[95,"W",0,5,43],[95,"W",1,5,44],[95,"W",2,5,45],[95,"W",3,5,46],[95,"W",4,5,50],[95,"W",5,5,49],[95,"W",6,5,48],[95,"W",7,5,47]],"config":{"barrier_cycles":35,"clock_hz":900000000,"iw_max_streams":16,"lanes_per_superlane":16,"latency":{"abc":3,"add":1,"cast":1,"distribute":2,"exp":4,"iw":1,"mul":2,"neg":1,"permute":2,"read":2,"relu":1,"requant":1,"rsqrt":4,"shift":2,"sub":1,"tanh":4,"write":1},"max_schedule_cycles":100000,"mem_slices_per_hemi":8,"mem_words":8192,"mxm_planes_per_hemi":1,"nop_max":65535,"streams_per_dir":32,"tiles":1,"vxm_alus":16},"dispatches":[{"cycle":35,"did":0,"kind":"read","pos":9,"reads":[],"text":"Read addr=0 out=W7 tag=\"W1[7]@0#0\"","unit":"MEM_W0"},{"cycle":35,"did":1,"kind":"read","pos":11,"reads":[],"text":"Read addr=1 out=W0 tag=\"x@2#0\"","unit":"MEM_E0"},{"cycle":36,"did":2,"kind":"read","pos":8,"reads":[],"text":"Read addr=0 out=W6 tag=\"W1[6]@0#0\"","unit":"MEM_W1"},{"cycle":36,"did":3,"kind":"read","pos":9,"reads":[],"text":"Read addr=1 out=W7 tag=\"W1[15]@1#0\"","unit":"MEM_W0"},{"cycle":36,"did":4,"kind":"read","pos":11,"reads":[],"text":"Read addr=0 out=E7 tag=\"W2[7]@3#0\"","unit":"MEM_E0"},{"cycle":37,"did":5,"kind":"read","pos":7,"reads":[],"text":"Read addr=0 out=W5 tag=\"W1[5]@0#0\"","unit":"MEM_W2"},{"cycle":37,"did":6,"kind":"read","pos":8,"reads":[],"text":"Read addr=1 out=W6 tag=\"W1[14]@1#0\"","unit":"MEM_W1"},{"cycle":37,"did":7,"kind":"read","pos":12,"reads":[],"text":"Read addr=0 out=E6 tag=\"W2[6]@3#0\"","unit":"MEM_E1"},{"cycle":38,"did":8,"kind":"read","pos":6,"reads":[],"text":"Read addr=0 out=W4 tag=\"W1[4]@0#0\"","unit":"MEM_W3"},{"cycle":38,"did":9,"kind":"read","pos":7,"reads":[],"text":"Read addr=1 out=W5 tag=\"W1[13]@1#0\"","unit":"MEM_W2"},{"cycle":38,"did":10,"kind":"read","pos":13,"reads":[],"text":"Read addr=0 out=E5 tag=\"W2[5]@3#0\"","unit":"MEM_E2"},{"cycle":39,"did":11,"kind":"read","pos":5,"reads":[],"text":"Read addr=0 out=W3 tag=\"W1[3]@0#0\"","unit":"MEM_W4"},{"cycle":39,"did":12,"kind":"read","pos":6,"reads":[],"text":"Read addr=1 out=W4 tag=\"W1[12]@1#0\"","unit":"MEM_W3"},{"cycle":39,"did":13,"kind":"read","pos":14,"reads":[],"text":"Read addr=0 out=E4 tag=\"W2[4]@3#0\"","unit":"MEM_E3"},{"cycle":40,"did":14,"kind":"read","pos":4,"reads":[],"text":"Read addr=0 out=W2 tag=\"W1[2]@0#0\"","unit":"MEM_W5"},{"cycle":40,"did":15,"kind":"read","pos":5,"reads":[],"text":"Read addr=1 out=W3 tag=\"W1[11]@1#0\"","unit":"MEM_W4"},{"cycle":40,"did":16,"kind":"read","pos":15,"reads":[],"text":"Read addr=0 out=E3 tag=\"W2[3]@3#0\"","unit":"MEM_E4"},{"cycle":41,"did":17,"kind":"read","pos":3,"reads":[],"text":"Read addr=0 out=W1 tag=\"W1[1]@0#0\"","unit":"MEM_W6"},{"cycle":41,"did":18,"kind":"read","pos":4,"reads":[],"text":"Read addr=1 out=W2 tag=\"W1[10]@1#0\"","unit":"MEM_W5"},{"cycle":41,"did":19,"kind":"read","pos":16,"reads":[],"text":"Read addr=0 out=E2 tag=\"W2[2]@3#0\"","unit":"MEM_E5"},{"cycle":42,"did":20,"kind":"read","pos":2,"reads":[],"text":"Read addr=0 out=W0 tag=\"W1[0]@0#0\"","unit":"MEM_W7"},{"cycle":42,"did":21,"kind":"read","pos":3,"reads":[],"text":"Read addr=1 out=W1 tag=\"W1[9]@1#0\"","unit":"MEM_W6"},{"cycle":42,"did":22,"kind":"read","pos":17,"reads":[],"text":"Read addr=0 out=E1 tag=\"W2[1]@3#0\"","unit":"MEM_E6"},{"cycle":43,"did":23,"kind":"read","pos":2,"reads":[],"text":"Read addr=1 out=W0 tag=\"W1[8]@1#0\"","unit":"MEM_W7"},{"cycle":43,"did":24,"kind":"read","pos":18,"reads":[],"text":"Read addr=0 out=E0 tag=\"W2[0]@3#0\"","unit":"MEM_E7"},{"cycle":46,"did":25,"kind":"iw","pos":0,"reads":[{"dir":"W","pos":0,"s":0,"tag":"W1[0]@0#0","vid":20},{"dir":"W","pos":0,"s":1,"tag":"W1[1]@0#0","vid":17},{"dir":"W","pos":0,"s":2,"tag":"W1[2]@0#0","vid":14},{"dir":"W","pos":0,"s":3,"tag":"W1[3]@0#0","vid":11},{"dir":"W","pos":0,"s":4,"tag":"W1[4]@0#0","vid":8},{"dir":"W","pos":0,"s":5,"tag":"W1[5]@0#0","vid":5},{"dir":"W","pos":0,"s":6,"tag":"W1[6]@0#0","vid":2},{"dir":"W","pos":0,"s":7,"tag":"W1[7]@0#0","vid":0}],"text":"Iw dtype=\"int8\" entries=[0:W0,1:W1,2:W2,3:W3,4:W4,5:W5,6:W6,7:W7] expect=[\"W1[0]@0\",\"W1[1]@0\",\"W1[2]@0\",\"W1[3]@0\",\"W1[4]@0\",\"W1[5]@0\",\"W1[6]@0\",\"W1[7]@0\"]","unit":"MXM_W0"},{"cycle":47,"did":26,"kind":"iw","pos":0,"reads":[{"dir":"W","pos":0,"s":0,"tag":"W1[8]@1#0","vid":23},{"dir":"W","pos":0,"s":1,"tag":"W1[9]@1#0","vid":21},{"dir":"W","pos":0,"s":2,"tag":"W1[10]@1#0","vid":18},{"dir":"W","pos":0,"s":3,"tag":"W1[11]@1#0","vid":15},{"dir":"W","pos":0,"s":4,"tag":"W1[12]@1#0","vid":12},{"dir":"W","pos":0,"s":5,"tag":"W1[13]@1#0","vid":9},{"dir":"W","pos":0,"s":6,"tag":"W1[14]@1#0","vid":6},{"dir":"W","pos":0,"s":7,"tag":"W1[15]@1#0","vid":3}],"text":"Iw dtype=\"int8\" entries=[8:W0,9:W1,10:W2,11:W3,12:W4,13:W5,14:W6,15:W7] expect=[\"W1[8]@1\",\"W1[9]@1\",\"W1[10]@1\",\"W1[11]@1\",\"W1[12]@1\",\"W1[13]@1\",\"W1[14]@1\",\"W1[15]@1\"]","unit":"MXM_W0"},{"cycle":47,"did":27,"kind":"iw","pos":20,"reads":[{"dir":"E","pos":20,"s":0,"tag":"W2[0]@3#0","vid":24},{"dir":"E","pos":20,"s":1,"tag":"W2[1]@3#0","vid":22},{"dir":"E","pos":20,"s":2,"tag":"W2[2]@3#0","vid":19},{"dir":"E","pos":20,"s":3,"tag":"W2[3]@3#0","vid":16},{"dir":"E","pos":20,"s":4,"tag":"W2[4]@3#0","vid":13},{"dir":"E","pos":20,"s":5,"tag":"W2[5]@3#0","vid":10},{"dir":"E","pos":20,"s":6,"tag":"W2[6]@3#0","vid":7},{"dir":"E","pos":20,"s":7,"tag":"W2[7]@3#0","vid":4}],"text":"Iw dtype=\"int8\" entries=[0:E0,1:E1,2:E2,3:E3,4:E4,5:E5,6:E6,7:E7] expect=[\"W2[0]@3\",\"W2[1]@3\",\"W2[2]@3\",\"W2[3]@3\",\"W2[4]@3\",\"W2[5]@3\",\"W2[6]@3\",\"W2[7]@3\"]","unit":"MXM_E0"},{"cycle":48,"did":28,"kind":"abc","pos":0,"reads":[{"dir":"W","pos":0,"s":0,"tag":"x@2#0","vid":1}],"text":"Abc dtype=\"int8\" src=W0 out=E0 n_rows=16 tag=\"W1x@2\" expect=[\"x@2\"]","unit":"MXM_W0"},{"cycle":55,"did":29,"kind":"read","pos":6,"reads":[],"text":"Read addr=2 out=E7 tag=\"b1@2#3\"","unit":"MEM_W3"},{"cycle":56,"did":30,"kind":"read","pos":7,"reads":[],"text":"Read addr=2 out=E6 tag=\"b1@2#2\"","unit":"MEM_W2"},{"cycle":57,"did":31,"kind":"read","pos":8,"reads":[],"text":"Read addr=2 out=E5 tag=\"b1@2#1\"","unit":"MEM_W1"},{"cycle":58,"did":32,"kind":"read","pos":9,"reads":[],"text":"Read addr=2 out=E4 tag=\"b1@2#0\"","unit":"MEM_W0"},{"cycle":61,"did":33,"kind":"add","pos":10,"reads":[{"dir":"E","pos":10,"s":0,"tag":"W1x@2#0","vid":25},{"dir":"E","pos":10,"s":1,"tag":"W1x@2#1","vid":26},{"dir":"E","pos":10,"s":2,"tag":"W1x@2#2","vid":27},{"dir":"E","pos":10,"s":3,"tag":"W1x@2#3","vid":28},{"dir":"E","pos":10,"s":4,"tag":"b1@2#0","vid":32},{"dir":"E","pos":10,"s":5,"tag":"b1@2#1","vid":31},{"dir":"E","pos":10,"s":6,"tag":"b1@2#2","vid":30},{"dir":"E","pos":10,"s":7,"tag":"b1@2#3","vid":29}],"text":"Vxm op=\"add\" dtype=\"int32\" a=E0 b=E4 out=E0 n=16 tag=\"W1x_b1@2\" expect=[\"W1x@2\",\"b1@2\"]","unit":"VXM_A0"},{"cycle":62,"did":34,"kind":"relu","pos":10,"reads":[{"dir":"E","pos":10,"s":0,"tag":"W1x_b1@2#0","vid":33},{"dir":"E","pos":10,"s":1,"tag":"W1x_b1@2#1","vid":34},{"dir":"E","pos":10,"s":2,"tag":"W1x_b1@2#2","vid":35},{"dir":"E","pos":10,"s":3,"tag":"W1x_b1@2#3","vid":36}],"text":"Vxm op=\"relu\" dtype=\"int32\" a=E0 b=- out=E0 n=16 tag=\"relu1@2\" expect=[\"W1x_b1@2\"]","unit":"VXM_A0"},{"cycle":63,"did":35,"kind":"requant","pos":10,"reads":[{"dir":"E","pos":10,"s":0,"tag":"relu1@2#0","vid":37},{"dir":"E","pos":10,"s":1,"tag":"relu1@2#1","vid":38},{"dir":"E","pos":10,"s":2,"tag":"relu1@2#2","vid":39},{"dir":"E","pos":10,"s":3,"tag":"relu1@2#3","vid":40}],"text":"Vxm op=\"requant\" dtype=\"int32\" a=E0 b=- out=E0 n=16 out_dtype=\"int8\" imm=8 tag=\"h@2\" expect=[\"relu1@2\"]","unit":"VXM_A0"},{"cycle":65,"did":36,"kind":"write","pos":11,"reads":[{"dir":"E","pos":11,"s":0,"tag":"h@2#0","vid":41}],"text":"Write addr=3 src=E0 expect=[\"h@2#0\"]","unit":"MEM_E0"},{"cycle":66,"did":37,"kind":"read","pos":11,"reads":[],"text":"Read addr=3 out=E0 tag=\"h@4#0\"","unit":"MEM_E0"},{"cycle":77,"did":38,"kind":"abc","pos":20,"reads":[{"dir":"E","pos":20,"s":0,"tag":"h@4#0","vid":42}],"text":"Abc dtype=\"int8\" src=E0 out=W0 n_rows=8 tag=\"W2h@4\" expect=[\"h@4\"]","unit":"MXM_E0"},{"cycle":84,"did":39,"kind":"read","pos":14,"reads":[],"text":"Read addr=1 out=W7 tag=\"b2@4#3\"","unit":"MEM_E3"},{"cycle":85,"did":40,"kind":"read","pos":13,"reads":[],"text":"Read addr=1 out=W6 tag=\"b2@4#2\"","unit":"MEM_E2"},{"cycle":86,"did":41,"kind":"read","pos":12,"reads":[],"text":"Read addr=1 out=W5 tag=\"b2@4#1\"","unit":"MEM_E1"},{"cycle":87,"did":42,"kind":"read","pos":11,"reads":[],"text":"Read addr=2 out=W4 tag=\"b2@4#0\"","unit":"MEM_E0"},{"cycle":90,"did":43,"kind":"add","pos":10,"reads":[{"dir":"W","pos":10,"s":0,"tag":"W2h@4#0","vid":43},{"dir":"W","pos":10,"s":1,"tag":"W2h@4#1","vid":44},{"dir":"W","pos":10,"s":2,"tag":"W2h@4#2","vid":45},{"dir":"W","pos":10,"s":3,"tag":"W2h@4#3","vid":46},{"dir":"W","pos":10,"s":4,"tag":"b2@4#0","vid":50},{"dir":"W","pos":10,"s":5,"tag":"b2@4#1","vid":49},{"dir":"W","pos":10,"s":6,"tag":"b2@4#2","vid":48},{"dir":"W","pos":10,"s":7,"tag":"b2@4#3","vid":47}],"text":"Vxm op=\"add\" dtype=\"int32\" a=W0 b=W4 out=E0 n=8 tag=\"y@4\" expect=[\"W2h@4\",\"b2@4\"]","unit":"VXM_A0"},{"cycle":92,"did":44,"kind":"write","pos":11,"reads":[{"dir":"E","pos":11,"s":0,"tag":"y@4#0","vid":51}],"text":"Write addr=4 src=E0 expect=[\"y@4#0\"]","unit":"MEM_E0"},{"cycle":93,"did":45,"kind":"write","pos":12,"reads":[{"dir":"E","pos":12,"s":1,"tag":"y@4#1","vid":52}],"text":"Write addr=2 src=E1 expect=[\"y@4#1\"]","unit":"MEM_E1"},{"cycle":94,"did":46,"kind":"write","pos":13,"reads":[{"dir":"E","pos":13,"s":2,"tag":"y@4#2","vid":53}],"text":"Write addr=2 src=E2 expect=[\"y@4#2\"]","unit":"MEM_E2"},{"cycle":95,"did":47,"kind":"write","pos":14,"reads":[{"dir":"E","pos":14,"s":3,"tag":"y@4#3","vid":54}],"text":"Write addr=2 src=E3 expect=[\"y@4#3\"]","unit":"MEM_E3"}],"emissions":[{"cycle":37,"did":0,"dir":"W","overwrote":null,"pos":9,"s":7,"tag":"W1[7]@0#0","unit":"MEM_W0","vid":0},{"cycle":37,"did":1,"dir":"W","overwrote":null,"pos":11,"s":0,"tag":"x@2#0","unit":"MEM_E0","vid":1},{"cycle":38,"did":2,"dir":"W","overwrote":null,"pos":8,"s":6,"tag":"W1[6]@0#0","unit":"MEM_W1","vid":2},{"cycle":38,"did":3,"dir":"W","overwrote":null,"pos":9,"s":7,"tag":"W1[15]@1#0","unit":"MEM_W0","vid":3},{"cycle":38,"did":4,"dir":"E","overwrote":null,"pos":11,"s":7,"tag":"W2[7]@3#0","unit":"MEM_E0","vid":4},{"cycle":39,"did":5,"dir":"W","overwrote":null,"pos":7,"s":5,"tag":"W1[5]@0#0","unit":"MEM_W2","vid":5},{"cycle":39,"did":6,"dir":"W","overwrote":null,"pos":8,"s":6,"tag":"W1[14]@1#0","unit":"MEM_W1","vid":6},{"cycle":39,"did":7,"dir":"E","overwrote":null,"pos":12,"s":6,"tag":"W2[6]@3#0","unit":"MEM_E1","vid":7},{"cycle":40,"did":8,"dir":"W","overwrote":null,"pos":6,"s":4,"tag":"W1[4]@0#0","unit":"MEM_W3","vid":8},{"cycle":40,"did":9,"dir":"W","overwrote":null,"pos":7,"s":5,"tag":"W1[13]@1#0","unit":"MEM_W2","vid":9},{"cycle":40,"did":10,"dir":"E","overwrote":null,"pos":13,"s":5,"tag":"W2[5]@3#0","unit":"MEM_E2","vid":10},{"cycle":41,"did":11,"dir":"W","overwrote":null,"pos":5,"s":3,"tag":"W1[3]@0#0","unit":"MEM_W4","vid":11},{"cycle":41,"did":12,"dir":"W","overwrote":null,"pos":6,"s":4,"tag":"W1[12]@1#0","unit":"MEM_W3","vid":12},{"cycle":41,"did":13,"dir":"E","overwrote":null,"pos":14,"s":4,"tag":"W2[4]@3#0","unit":"MEM_E3","vid":13},{"cycle":42,"did":14,"dir":"W","overwrote":null,"pos":4,"s":2,"tag":"W1[2]@0#0","unit":"MEM_W5","vid":14},{"cycle":42,"did":15,"dir":"W","overwrote":null,"pos":5,"s":3,"tag":"W1[11]@1#0","unit":"MEM_W4","vid":15},{"cycle":42,"did":16,"dir":"E","overwrote":null,"pos":15,"s":3,"tag":"W2[3]@3#0","unit":"MEM_E4","vid":16},{"cycle":43,"did":17,"dir":"W","overwrote":null,"pos":3,"s":1,"tag":"W1[1]@0#0","unit":"MEM_W6","vid":17},{"cycle":43,"did":18,"dir":"W","overwrote":null,"pos":4,"s":2,"tag":"W1[10]@1#0","unit":"MEM_W5","vid":18},{"cycle":43,"did":19,"dir":"E","overwrote":null,"pos":16,"s":2,"tag":"W2[2]@3#0","unit":"MEM_E5","vid":19},{"cycle":44,"did":20,"dir":"W","overwrote":null,"pos":2,"s":0,"tag":"W1[0]@0#0","unit":"MEM_W7","vid":20},{"cycle":44,"did":21,"dir":"W","overwrote":null,"pos":3,"s":1,"tag":"W1[9]@1#0","unit":"MEM_W6","vid":21},{"cycle":44,"did":22,"dir":"E","overwrote":null,"pos":17,"s":1,"tag":"W2[1]@3#0","unit":"MEM_E6","vid":22},{"cycle":45,"did":23,"dir":"W","overwrote":null,"pos":2,"s":0,"tag":"W1[8]@1#0","unit":"MEM_W7","vid":23},{"cycle":45,"did":24,"dir":"E","overwrote":null,"pos":18,"s":0,"tag":"W2[0]@3#0","unit":"MEM_E7","vid":24},{"cycle":51,"did":28,"dir":"E","overwrote":null,"pos":0,"s":0,"tag":"W1x@2#0","unit":"MXM_W0","vid":25},{"cycle":51,"did":28,"dir":"E","overwrote":null,"pos":0,"s":1,"tag":"W1x@2#1","unit":"MXM_W0","vid":26},{"cycle":51,"did":28,"dir":"E","overwrote":null,"pos":0,"s":2,"tag":"W1x@2#2","unit":"MXM_W0","vid":27},{"cycle":51,"did":28,"dir":"E","overwrote":null,"pos":0,"s":3,"tag":"W1x@2#3","unit":"MXM_W0","vid":28},{"cycle":57,"did":29,"dir":"E","overwrote":null,"pos":6,"s":7,"tag":"b1@2#3","unit":"MEM_W3","vid":29},{"cycle":58,"did":30,"dir":"E","overwrote":null,"pos":7,"s":6,"tag":"b1@2#2","unit":"MEM_W2","vid":30},{"cycle":59,"did":31,"dir":"E","overwrote":null,"pos":8,"s":5,"tag":"b1@2#1","unit":"MEM_W1","vid":31},{"cycle":60,"did":32,"dir":"E","overwrote":null,"pos":9,"s":4,"tag":"b1@2#0","unit":"MEM_W0","vid":32},{"cycle":62,"did":33,"dir":"E","overwrote":null,"pos":10,"s":0,"tag":"W1x_b1@2#0","unit":"VXM_A0","vid":33},{"cycle":62,"did":33,"dir":"E","overwrote":null,"pos":10,"s":1,"tag":"W1x_b1@2#1","unit":"VXM_A0","vid":34},{"cycle":62,"did":33,"dir":"E","overwrote":null,"pos":10,"s":2,"tag":"W1x_b1@2#2","unit":"VXM_A0","vid":35},{"cycle":62,"did":33,"dir":"E","overwrote":null,"pos":10,"s":3,"tag":"W1x_b1@2#3","unit":"VXM_A0","vid":36},{"cycle":63,"did":34,"dir":"E","overwrote":null,"pos":10,"s":0,"tag":"relu1@2#0","unit":"VXM_A0","vid":37},{"cycle":63,"did":34,"dir":"E","overwrote":null,"pos":10,"s":1,"tag":"relu1@2#1","unit":"VXM_A0","vid":38},{"cycle":63,"did":34,"dir":"E","overwrote":null,"pos":10,"s":2,"tag":"relu1@2#2","unit":"VXM_A0","vid":39},{"cycle":63,"did":34,"dir":"E","overwrote":null,"pos":10,"s":3,"tag":"relu1@2#3","unit":"VXM_A0","vid":40},{"cycle":64,"did":35,"dir":"E","overwrote":null,"pos":10,"s":0,"tag":"h@2#0","unit":"VXM_A0","vid":41},{"cycle":68,"did":37,"dir":"E","overwrote":null,"pos":11,"s":0,"tag":"h@4#0","unit":"MEM_E0","vid":42},{"cycle":80,"did":38,"dir":"W","overwrote":null,"pos":20,"s":0,"tag":"W2h@4#0","unit":"MXM_E0","vid":43},{"cycle":80,"did":38,"dir":"W","overwrote":null,"pos":20,"s":1,"tag":"W2h@4#1","unit":"MXM_E0","vid":44},{"cycle":80,"did":38,"dir":"W","overwrote":null,"pos":20,"s":2,"tag":"W2h@4#2","unit":"MXM_E0","vid":45},{"cycle":80,"did":38,"dir":"W","overwrote":null,"pos":20,"s":3,"tag":"W2h@4#3","unit":"MXM_E0","vid":46},{"cycle":86,"did":39,"dir":"W","overwrote":null,"pos":14,"s":7,"tag":"b2@4#3","unit":"MEM_E3","vid":47},{"cycle":87,"did":40,"dir":"W","overwrote":null,"pos":13,"s":6,"tag":"b2@4#2","unit":"MEM_E2","vid":48},{"cycle":88,"did":41,"dir":"W","overwrote":null,"pos":12,"s":5,"tag":"b2@4#1","unit":"MEM_E1","vid":49},{"cycle":89,"did":42,"dir":"W","overwrote":null,"pos":11,"s":4,"tag":"b2@4#0","unit":"MEM_E0","vid":50},{"cycle":91,"did":43,"dir":"E","overwrote":null,"pos":10,"s":0,"tag":"y@4#0","unit":"VXM_A0","vid":51},{"cycle":91,"did":43,"dir":"E","overwrote":null,"pos":10,"s":1,"tag":"y@4#1","unit":"VXM_A0","vid":52},{"cycle":91,"did":43,"dir":"E","overwrote":null,"pos":10,"s":2,"tag":"y@4#2","unit":"VXM_A0","vid":53},{"cycle":91,"did":43,"dir":"E","overwrote":null,"pos":10,"s":3,"tag":"y@4#3","unit":"VXM_A0","vid":54}],"mem_writes":[{"addr":3,"cycle":65,"did":36,"tag":"h@2#0","unit":"MEM_E0"},{"addr":4,"cycle":92,"did":44,"tag":"y@4#0","unit":"MEM_E0"},{"addr":2,"cycle":93,"did":45,"tag":"y@4#1","unit":"MEM_E1"},{"addr":2,"cycle":94,"did":46,"tag":"y@4#2","unit":"MEM_E2"},{"addr":2,"cycle":95,"did":47,"tag":"y@4#3","unit":"MEM_E3"}],"n_cycles":96,"outputs":{"y":"adca47b411be31440000000000000000bdeaecdc8d1febf40000000000000000ffffffff0000ffff0000000000000000ffffffff0000ffff0000000000000000"},"values":{"0":{"cycle":37,"did":0,"tag":"W1[7]@0#0","unit":"MEM_W0"},"1":{"cycle":37,"did":1,"tag":"x@2#0","unit":"MEM_E0"},"10":{"cycle":40,"did":10,"tag":"W2[5]@3#0","unit":"MEM_E2"},"11":{"cycle":41,"did":11,"tag":"W1[3]@0#0","unit":"MEM_W4"},"12":{"cycle":41,"did":12,"tag":"W1[12]@1#0","unit":"MEM_W3"},"13":{"cycle":41,"did":13,"tag":"W2[4]@3#0","unit":"MEM_E3"},"14":{"cycle":42,"did":14,"tag":"W1[2]@0#0","unit":"MEM_W5"},"15":{"cycle":42,"did":15,"tag":"W1[11]@1#0","unit":"MEM_W4"},"16":{"cycle":42,"did":16,"tag":"W2[3]@3#0","unit":"MEM_E4"},"17":{"cycle":43,"did":17,"tag":"W1[1]@0#0","unit":"MEM_W6"},"18":{"cycle":43,"did":18,"tag":"W1[10]@1#0","unit":"MEM_W5"},"19":{"cycle":43,"did":19,"tag":"W2[2]@3#0","unit":"MEM_E5"},"2":{"cycle":38,"did":2,"tag":"W1[6]@0#0","unit":"MEM_W1"},"20":{"cycle":44,"did":20,"tag":"W1[0]@0#0","unit":"MEM_W7"},"21":{"cycle":44,"did":21,"tag":"W1[9]@1#0","unit":"MEM_W6"},"22":{"cycle":44,"did":22,"tag":"W2[1]@3#0","unit":"MEM_E6"},"23":{"cycle":45,"did":23,"tag":"W1[8]@1#0","unit":"MEM_W7"},"24":{"cycle":45,"did":24,"tag":"W2[0]@3#0","unit":"MEM_E7"},"25":{"cycle":51,"did":28,"tag":"W1x@2#0","unit":"MXM_W0"},"26":{"cycle":51,"did":28,"tag":"W1x@2#1","unit":"MXM_W0"},"27":{"cycle":51,"did":28,"tag":"W1x@2#2","unit":"MXM_W0"},"28":{"cycle":51,"did":28,"tag":"W1x@2#3","unit":"MXM_W0"},"29":{"cycle":57,"did":29,"tag":"b1@2#3","unit":"MEM_W3"},"3":{"cycle":38,"did":3,"tag":"W1[15]@1#0","unit":"MEM_W0"},"30":{"cycle":58,"did":30,"tag":"b1@2#2","unit":"MEM_W2"},"31":{"cycle":59,"did":31,"tag":"b1@2#1","unit":"MEM_W1"},"32":{"cycle":60,"did":32,"tag":"b1@2#0","unit":"MEM_W0"},"33":{"cycle":62,"did":33,"tag":"W1x_b1@2#0","unit":"VXM_A0"},"34":{"cycle":62,"did":33,"tag":"W1x_b1@2#1","unit":"VXM_A0"},"35":{"cycle":62,"did":33,"tag":"W1x_b1@2#2","unit":"VXM_A0"},"36":{"cycle":62,"did":33,"tag":"W1x_b1@2#3","unit":"VXM_A0"},"37":{"cycle":63,"did":34,"tag":"relu1@2#0","unit":"VXM_A0"},"38":{"cycle":63,"did":34,"tag":"relu1@2#1","unit":"VXM_A0"},"39":{"cycle":63,"did":34,"tag":"relu1@2#2","unit":"VXM_A0"},"4":{"cycle":38,"did":4,"tag":"W2[7]@3#0","unit":"MEM_E0"},"40":{"cycle":63,"did":34,"tag":"relu1@2#3","unit":"VXM_A0"},"41":{"cycle":64,"did":35,"tag":"h@2#0","unit":"VXM_A0"},"42":{"cycle":68,"did":37,"tag":"h@4#0","unit":"MEM_E0"},"43":{"cycle":80,"did":38,"tag":"W2h@4#0","unit":"MXM_E0"},"44":{"cycle":80,"did":38,"tag":"W2h@4#1","unit":"MXM_E0"},"45":{"cycle":80,"did":38,"tag":"W2h@4#2","unit":"MXM_E0"},"46":{"cycle":80,"did":38,"tag":"W2h@4#3","unit":"MXM_E0"},"47":{"cycle":86,"did":39,"tag":"b2@4#3","unit":"MEM_E3"},"48":{"cycle":87,"did":40,"tag":"b2@4#2","unit":"MEM_E2"},"49":{"cycle":88,"did":41,"tag":"b2@4#1","unit":"MEM_E1"},"5":{"cycle":39,"did":5,"tag":"W1[5]@0#0","unit":"MEM_W2"},"50":{"cycle":89,"did":42,"tag":"b2@4#0","unit":"MEM_E0"},"51":{"cycle":91,"did":43,"tag":"y@4#0","unit":"VXM_A0"},"52":{"cycle":91,"did":43,"tag":"y@4#1","unit":"VXM_A0"},"53":{"cycle":91,"did":43,"tag":"y@4#2","unit":"VXM_A0"},"54":{"cycle":91,"did":43,"tag":"y@4#3","unit":"VXM_A0"},"6":{"cycle":39,"did":6,"tag":"W1[14]@1#0","unit":"MEM_W1"},"7":{"cycle":39,"did":7,"tag":"W2[6]@3#0","unit":"MEM_E1"},"8":{"cycle":40,"did":8,"tag":"W1[4]@0#0","unit":"MEM_W3"},"9":{"cycle":40,"did":9,"tag":"W1[13]@1#0","unit":"MEM_W2"}}},"units":[["MXM_W0",0],["MEM_W7",2],["MEM_W6",3],["MEM_W5",4],["MEM_W4",5],["MEM_W3",6],["MEM_W2",7],["MEM_W1",8],["MEM_W0",9],["VXM_A0",10],["MEM_E0",11],["MEM_E1",12],["MEM_E2",13],["MEM_E3",14],["MEM_E4",15],["MEM_E5",16],["MEM_E6",17],["MEM_E7",18],["MXM_E0",20]]}</script>
+<script>
+(function () {
+  "use strict";
+  var DATA = JSON.parse(document.getElementById("timeline-data").textContent);
+  var T = DATA.trace;
+  var cfg = T.config;
+  var B = DATA.band_end;                  // first cycle with its own column
+  var barrier = cfg.barrier_cycles;
+
+  function esc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  var ARROW = { E: "→", W: "←" };
+
+  // ---- extent ------------------------------------------------------------
+  var last = T.n_cycles - 1;
+  T.dispatches.forEach(function (d) { if (d.cycle > last) last = d.cycle; });
+  T.cells.forEach(function (c) { if (c[0] > last) last = c[0]; });
+  var NCOL = Math.max(0, last + 1 - B);
+
+  // ---- schedule, values, tiles ------------------------------------------
+  var sched = {};
+  DATA.schedule.forEach(function (e) { sched[e.tag] = e; });
+  var emitByVid = {};
+  T.emissions.forEach(function (e) { emitByVid[e.vid] = e; });
+  var emitsByDid = {};
+  T.emissions.forEach(function (e) { (emitsByDid[e.did] = emitsByDid[e.did] || []).push(e); });
+  var readsByVid = {};
+  T.dispatches.forEach(function (d) {
+    d.reads.forEach(function (r) {
+      if (r.vid === null || r.vid === undefined) return;
+      (readsByVid[r.vid] = readsByVid[r.vid] || []).push({ x: r.pos, t: d.cycle });
+    });
+  });
+
+  var vinfo = {};
+  Object.keys(T.values).forEach(function (k) {
+    var v = T.values[k];
+    var vid = Number(k);
+    var e = sched[v.tag];
+    var em = emitByVid[vid];
+    var dir = e ? e.dir : (em ? em.dir : "E");
+    var readers = e ? e.readers : (readsByVid[vid] || []);
+    var lastT = v.cycle, far = null;
+    readers.forEach(function (r) {
+      if (r.t > lastT) lastT = r.t;
+      if (far === null || (dir === "E" ? r.x > far : r.x < far)) far = r.x;
+    });
+    vinfo[vid] = { tag: v.tag, tile: e ? e.tile : null, dir: dir, lastT: lastT, far: far, unit: v.unit, cycle: v.cycle };
+  });
+  function isGhost(vid, cycle, pos) {
+    var v = vinfo[vid];
+    if (!v) return false;
+    if (cycle > v.lastT) return true;
+    if (v.far === null) return cycle > v.cycle;
+    return v.dir === "E" ? pos > v.far : pos < v.far;
+  }
+  function tileOf(vid) { var v = vinfo[vid]; return v ? v.tile : null; }
+  function tagOf(vid) { var v = vinfo[vid]; return v ? v.tag : "v" + vid; }
+  function hue(tile) { return (tile * 137.508 + 210) % 360; }
+  function colourAttr(tile) {
+    return tile === null || tile === undefined ? { cls: " neutral", style: "" } : { cls: "", style: "--h:" + hue(tile).toFixed(1) + ";" };
+  }
+
+  // ---- header -----------------------------------------------------------
+  document.getElementById("n-cycles").textContent = T.n_cycles + " (barrier: cycles 0–" + (barrier - 1) + ")";
+  document.getElementById("n-disp").textContent = String(T.dispatches.length);
+  var secs = (T.n_cycles + cfg.tiles - 1) / cfg.clock_hz;
+  document.getElementById("wall").textContent =
+    (secs * 1e9).toFixed(1) + " ns = " + (secs * 1e6).toFixed(3) + " µs at " + (cfg.clock_hz / 1e6) +
+    " MHz, (cycles + tiles − 1) / clock";
+  var lat = Object.keys(cfg.latency).sort().map(function (k) { return k + " " + cfg.latency[k]; }).join(", ");
+  document.getElementById("lat-line").textContent = "Assumed latencies (cycles) used in this run: " + lat + ".";
+
+  // ---- index cells -------------------------------------------------------
+  var laneMap = {};      // "E4" -> {dir, s, byCycle: {cycle: [[pos, vid], ...]}}
+  var cellsByCycle = {};
+  T.cells.forEach(function (c) {
+    var key = c[1] + c[2];
+    var L = laneMap[key] || (laneMap[key] = { dir: c[1], s: c[2], byCycle: {} });
+    (L.byCycle[c[0]] = L.byCycle[c[0]] || []).push([c[3], c[4]]);
+    (cellsByCycle[c[0]] = cellsByCycle[c[0]] || []).push(c);
+  });
+  var lanes = Object.keys(laneMap).map(function (k) { return laneMap[k]; });
+  lanes.sort(function (a, b) { return a.dir === b.dir ? a.s - b.s : (a.dir === "E" ? -1 : 1); });
+  var dispByCycle = {};
+  T.dispatches.forEach(function (d) { (dispByCycle[d.cycle] = dispByCycle[d.cycle] || []).push(d); });
+
+  // ---- Gantt -------------------------------------------------------------
+  var gantt = document.getElementById("gantt");
+  var wrap = document.getElementById("gantt-wrap");
+  var root = document.documentElement;
+  var bandPx = B > 0 ? 46 : 0;
+  root.style.setProperty("--bw", bandPx + "px");
+  gantt.style.setProperty("--n", String(NCOL));
+  var ZOOMS = [8, 14, 22, 34, 50, 76];
+  var zoom = 3;
+
+  function rulerHtml() {
+    var cw = ZOOMS[zoom];
+    var steps = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
+    var step = steps[steps.length - 1];
+    for (var k = 0; k < steps.length; k++) { if (steps[k] * cw >= 40) { step = steps[k]; break; } }
+    var h = [];
+    if (B > 0) h.push('<div class="tick band major" data-kind="ruler-band" title="Sync/Notify barrier, cycles 0–' + (B - 1) + '"><span>0–' + (B - 1) + "</span></div>");
+    for (var i = 0; i < NCOL; i++) {
+      var c = B + i;
+      var major = c % step === 0;
+      h.push('<div class="tick' + (major ? " major" : "") + '" data-kind="ruler" data-cycle="' + c + '" style="--i:' + i + '">' + (major ? "<span>" + c + "</span>" : "") + "</div>");
+    }
+    return h.join("");
+  }
+
+  function build() {
+    var h = [];
+    h.push('<div class="row ruler"><div class="label">cycle</div><div class="track" id="ruler-track">' + rulerHtml() + "</div></div>");
+    h.push('<div class="row sep"><div class="label">Units</div><div class="track"></div></div>');
+    var byUnit = {};
+    T.dispatches.forEach(function (d) { (byUnit[d.unit] = byUnit[d.unit] || []).push(d); });
+    DATA.units.forEach(function (up) {
+      var u = up[0];
+      var cells = (byUnit[u] || []).map(function (d) {
+        var em = emitsByDid[d.did];
+        var col = colourAttr(em ? tileOf(em[0].vid) : null);
+        return '<div class="cell' + col.cls + '" data-kind="dispatch" data-cycle="' + d.cycle + '" data-unit="' + esc(u) +
+          '" data-did="' + d.did + '" style="' + col.style + "--i:" + (d.cycle - B) + '">' + esc(d.kind) + "</div>";
+      });
+      h.push('<div class="row"><div class="label">' + esc(u) + ' <span class="sub">x' + up[1] + '</span></div><div class="track">' + cells.join("") + "</div></div>");
+    });
+    h.push('<div class="row sep"><div class="label">Stream lanes</div><div class="track"></div></div>');
+    lanes.forEach(function (L) {
+      var name = L.dir + L.s;
+      var cells = [];
+      Object.keys(L.byCycle).map(Number).sort(function (a, b) { return a - b; }).forEach(function (c) {
+        if (c < B) return;
+        var vals = L.byCycle[c];
+        var live = vals.filter(function (pv) { return !isGhost(pv[1], c, pv[0]); });
+        var lead = live.length ? live[0] : vals[0];
+        var col = colourAttr(tileOf(lead[1]));
+        var txt = (vals.length > 1 ? vals.length + "·" : "") + tagOf(lead[1]);
+        cells.push('<div class="cell' + col.cls + (live.length ? "" : " ghost") + '" data-kind="lane" data-cycle="' + c +
+          '" data-lane="' + name + '" style="' + col.style + "--i:" + (c - B) + '">' + esc(txt) + "</div>");
+      });
+      h.push('<div class="row"><div class="label">' + ARROW[L.dir] + " " + L.dir + " s" + L.s + '</div><div class="track">' + cells.join("") + "</div></div>");
+    });
+    if (B > 0) h.push('<div class="bandbox" aria-label="Sync/Notify barrier"><span>Sync/Notify barrier · cycles 0–' + (B - 1) + "</span></div>");
+    h.push('<div class="vline" id="vline"></div>');
+    gantt.innerHTML = h.join("");
+  }
+
+  function applyZoom() {
+    root.style.setProperty("--cw", ZOOMS[zoom] + "px");
+    gantt.classList.toggle("narrow", ZOOMS[zoom] < 20);
+    document.getElementById("ruler-track").innerHTML = rulerHtml();
+    scrollToSel();
+  }
+
+  // ---- tooltip -----------------------------------------------------------
+  var tip = document.getElementById("tip");
+  function readLine(r) {
+    return "  " + ARROW[r.dir] + " " + r.dir + " s" + r.s + " @x" + r.pos + ": " + (r.tag === null || r.tag === undefined ? "(empty)" : r.tag) +
+      (r.vid === null || r.vid === undefined ? "" : "  [v" + r.vid + "]");
+  }
+  function tipFor(el) {
+    var kind = el.getAttribute("data-kind");
+    var c = Number(el.getAttribute("data-cycle"));
+    if (kind === "dispatch") {
+      var d = T.dispatches[Number(el.getAttribute("data-did"))];
+      var em = emitsByDid[d.did] || [];
+      var lines = [d.unit + " (x" + d.pos + ")  cycle " + d.cycle + "  τ=" + (d.cycle - barrier), d.text];
+      if (em.length) {
+        var tl = tileOf(em[0].vid);
+        if (tl !== null) lines.push("tile " + tl);
+      }
+      lines.push(d.reads.length ? "reads:" : "reads: none");
+      d.reads.forEach(function (r) { lines.push(readLine(r)); });
+      if (em.length) {
+        lines.push("emits:");
+        em.forEach(function (e) { lines.push("  " + ARROW[e.dir] + " " + e.dir + " s" + e.s + " @x" + e.pos + " cycle " + e.cycle + ": " + e.tag); });
+      }
+      return lines.join("\n");
+    }
+    if (kind === "lane") {
+      var L = laneMap[el.getAttribute("data-lane")];
+      var out = [ARROW[L.dir] + " " + L.dir + " s" + L.s + "  cycle " + c + "  τ=" + (c - barrier)];
+      L.byCycle[c].forEach(function (pv) {
+        var tl = tileOf(pv[1]);
+        out.push("  x" + pv[0] + ": " + tagOf(pv[1]) + "  [v" + pv[1] + (tl === null ? "" : ", tile " + tl) + "]" + (isGhost(pv[1], c, pv[0]) ? "  past last reader" : ""));
+      });
+      return out.join("\n");
+    }
+    if (kind === "ruler") return "cycle " + c + "  τ=" + (c - barrier) + "\nclick to inspect";
+    return null;
+  }
+  gantt.addEventListener("mouseover", function (ev) {
+    var el = ev.target.closest("[data-kind]");
+    var t = el ? tipFor(el) : null;
+    if (!t) { tip.style.display = "none"; return; }
+    tip.textContent = t;
+    tip.style.display = "block";
+  });
+  gantt.addEventListener("mousemove", function (ev) {
+    if (tip.style.display !== "block") return;
+    var w = tip.offsetWidth, hgt = tip.offsetHeight;
+    var x = ev.clientX + 14, y = ev.clientY + 16;
+    if (x + w > window.innerWidth - 8) x = Math.max(8, ev.clientX - w - 14);
+    if (y + hgt > window.innerHeight - 8) y = Math.max(8, ev.clientY - hgt - 12);
+    tip.style.left = x + "px"; tip.style.top = y + "px";
+  });
+  gantt.addEventListener("mouseleave", function () { tip.style.display = "none"; });
+
+  // ---- selection ----------------------------------------------------------
+  var sel = null;
+  var lo = B, hi = B + NCOL - 1;
+  function scrollToSel() {
+    if (sel === null) return;
+    var cw = ZOOMS[zoom];
+    var lw = parseFloat(getComputedStyle(root).getPropertyValue("--lw")) || 0;
+    var x = bandPx + (sel - B) * cw;
+    var viewL = wrap.scrollLeft, viewW = wrap.clientWidth - lw;
+    if (x < viewL) wrap.scrollLeft = Math.max(0, x - cw * 2);
+    else if (x + cw > viewL + viewW) wrap.scrollLeft = x + cw * 3 - viewW;
+  }
+  function select(c, scroll) {
+    if (NCOL === 0) return;
+    sel = Math.min(hi, Math.max(lo, c));
+    document.getElementById("vline").style.setProperty("--sel-i", String(sel - B));
+    document.getElementById("sel-label").textContent = "selected: cycle " + sel + " (τ = " + (sel - barrier) + ")";
+    renderSpaceTime(sel);
+    if (scroll) scrollToSel();
+  }
+  gantt.addEventListener("click", function (ev) {
+    var el = ev.target.closest("[data-cycle]");
+    if (el) { select(Number(el.getAttribute("data-cycle")), false); return; }
+    var rect = gantt.getBoundingClientRect();
+    var lw = parseFloat(getComputedStyle(root).getPropertyValue("--lw")) || 0;
+    var x = ev.clientX - rect.left - lw - bandPx;
+    if (x >= 0) select(B + Math.floor(x / ZOOMS[zoom]), false);
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.target && /^(INPUT|TEXTAREA|SELECT)$/.test(ev.target.tagName)) return;
+    var step = ev.shiftKey ? 10 : 1;
+    if (ev.key === "ArrowRight") { select((sel === null ? lo : sel) + step, true); ev.preventDefault(); }
+    else if (ev.key === "ArrowLeft") { select((sel === null ? lo : sel) - step, true); ev.preventDefault(); }
+  });
+  document.getElementById("prev").addEventListener("click", function () { select((sel === null ? lo : sel) - 1, true); });
+  document.getElementById("next").addEventListener("click", function () { select((sel === null ? lo : sel) + 1, true); });
+  document.getElementById("zoom-in").addEventListener("click", function () { if (zoom < ZOOMS.length - 1) { zoom++; applyZoom(); } });
+  document.getElementById("zoom-out").addEventListener("click", function () { if (zoom > 0) { zoom--; applyZoom(); } });
+
+  // ---- space-time view ----------------------------------------------------
+  var P = DATA.positions.length;
+  var st = document.getElementById("spacetime");
+  st.style.gridTemplateColumns = "46px repeat(" + P + ", minmax(74px, 1fr))";
+  function posLabel(units) {
+    if (units.length === 0) return { main: "—", sub: "", vxm: false };
+    if (units.length > 2) {
+      var kind = units[0].split("_")[0];
+      var same = units.every(function (u) { return u.split("_")[0] === kind; });
+      if (same) return { main: kind, sub: units.length + " units", vxm: true };
+    }
+    return { main: units.join(" "), sub: "", vxm: false };
+  }
+  function renderSpaceTime(c) {
+    var disp = dispByCycle[c] || [];
+    var cells = cellsByCycle[c] || [];
+    var byPos = [];
+    for (var x = 0; x < P; x++) byPos.push({ E: [], W: [], D: [] });
+    cells.forEach(function (cl) { byPos[cl[3]][cl[1]].push(cl); });
+    disp.forEach(function (d) { byPos[d.pos].D.push(d); });
+    var h = [];
+    h.push('<div class="st-c st-rl">unit</div>');
+    DATA.positions.forEach(function (units, x) {
+      var lab = posLabel(units);
+      h.push('<div class="st-c st-unit' + (lab.vxm ? " vxm" : "") + '" title="' + esc(units.join(", ")) + '">' + esc(lab.main) +
+        '<span class="sub">x' + x + (lab.sub ? " · " + esc(lab.sub) : "") + "</span></div>");
+    });
+    h.push('<div class="st-c st-rl">issue</div>');
+    byPos.forEach(function (bp) {
+      h.push('<div class="st-c">' + bp.D.map(function (d) {
+        var em = emitsByDid[d.did];
+        var col = colourAttr(em ? tileOf(em[0].vid) : null);
+        var short = d.unit.indexOf("VXM_") === 0 ? d.unit.slice(4) + " " : "";
+        return '<span class="st-disp' + col.cls + '" style="' + col.style + '" data-unit="' + esc(d.unit) + '" title="' + esc(d.text) + '">' + esc(short + d.kind) + "</span>";
+      }).join("") + "</div>");
+    });
+    ["E", "W"].forEach(function (dir) {
+      h.push('<div class="st-c st-rl">' + ARROW[dir] + " " + dir + "</div>");
+      byPos.forEach(function (bp) {
+        bp[dir].sort(function (a, b) { return a[2] - b[2]; });
+        h.push('<div class="st-c">' + bp[dir].map(function (cl) {
+          var vid = cl[4];
+          var col = colourAttr(tileOf(vid));
+          var g = isGhost(vid, c, cl[3]);
+          return '<span class="st-val' + col.cls + (g ? " ghost" : "") + '" style="' + col.style + '" data-tag="' + esc(tagOf(vid)) + '" data-dir="' + dir + '" data-s="' + cl[2] +
+            '" data-pos="' + cl[3] + '" title="v' + vid + (g ? ", past its last reader" : "") + '">' + ARROW[dir] + "s" + cl[2] + " " + esc(tagOf(vid)) + "</span>";
+        }).join("") + "</div>");
+      });
+    });
+    st.innerHTML = h.join("");
+    // keep the busy part of the chip in view when the view is narrower than the chip
+    var stWrap = document.getElementById("st-wrap");
+    var busy = st.querySelector(".st-disp, .st-val");
+    if (busy && stWrap.scrollWidth > stWrap.clientWidth) {
+      var wr = stWrap.getBoundingClientRect(), br = busy.parentNode.getBoundingClientRect();
+      if (br.left < wr.left + 46 || br.right > wr.right) stWrap.scrollLeft += br.left - wr.left - 52;
+    }
+    document.getElementById("st-title").textContent = "cycle " + c + " · τ = " + (c - barrier) + " · " +
+      cells.length + " occupied register" + (cells.length === 1 ? "" : "s") + " · " + disp.length + " dispatch" + (disp.length === 1 ? "" : "es");
+    var list = document.getElementById("st-list");
+    list.innerHTML = disp.map(function (d) {
+      var rs = d.reads.map(function (r) { return r.dir + "s" + r.s + "=" + (r.tag === null || r.tag === undefined ? "(empty)" : r.tag); }).join(", ");
+      return '<li><code>' + esc(d.unit) + "</code>: <code>" + esc(d.text) + "</code>" + (rs ? ' <span class="muted">reads ' + esc(rs) + "</span>" : "") + "</li>";
+    }).join("") || '<li class="muted">no dispatches on this cycle</li>';
+  }
+
+  // ---- legend ------------------------------------------------------------
+  function buildLegend() {
+    var tiles = {};
+    DATA.schedule.forEach(function (e) {
+      var base = e.tag.replace(/#\d+$/, "").replace(/@\d+$/, "");
+      var t = tiles[e.tile] || (tiles[e.tile] = []);
+      if (t.indexOf(base) < 0) t.push(base);
+    });
+    var h = [];
+    Object.keys(tiles).map(Number).sort(function (a, b) { return a - b; }).forEach(function (t) {
+      h.push('<div class="item"><span class="sw" style="--h:' + hue(t).toFixed(1) + '"></span><span>tile ' + t + ": " + esc(tiles[t].join(", ")) + "</span></div>");
+    });
+    h.push('<div class="item"><span class="sw neutral"></span><span>no value emitted / not in the schedule (e.g. Write, Iw)</span></div>');
+    h.push('<div class="item"><span class="sw ghost" style="--h:' + hue(0).toFixed(1) + '"></span><span>faded: value past its last reader, still flowing</span></div>');
+    h.push('<div class="item"><span class="sw band"></span><span>Sync/Notify barrier (collapsed)</span></div>');
+    h.push('<div class="item"><span class="sw sel"></span><span>selected cycle</span></div>');
+    h.push('<div class="item"><span>box text: unit rows = instruction mnemonic; lane rows = [count·]first tag, tag = name@tile#plane</span></div>');
+    document.getElementById("legend").innerHTML = h.join("");
+  }
+
+  build();
+  buildLegend();
+  applyZoom();
+  var first = T.dispatches.length ? T.dispatches[0].cycle : lo;
+  select(first, true);
+})();
+</script>
+</body>
+</html>

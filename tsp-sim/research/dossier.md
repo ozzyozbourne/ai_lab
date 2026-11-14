@@ -143,7 +143,48 @@ The simulator inherits the first of these by construction: the toy compiler acce
 
 ## 4. Static scheduling background
 
-See section 4 of the final dossier below (added from report 04).
+Source tags in this section are defined in report 04, which lists each URL. "[S]" marks lecture notes (secondary).
+
+### 4.1 Why the TSP is a VLIW-style contract
+
+- VLIW machines expose resource timing to the compiler and let it choose what runs in parallel (Fisher, "Very Long Instruction Word Architectures and the ELI-512", ISCA 1983; Colwell et al., "A VLIW Architecture for a Trace Scheduling Compiler", ASPLOS 1987).
+- Trace, superblock and hyperblock scheduling exist to schedule across branches (Colwell et al. 1987; Mahlke et al., MICRO 1992). A tensor graph with fixed shapes has no branches, so they are not needed here.
+
+### 4.2 List scheduling with a reservation table
+
+- ASAP start time is the longest path from the sources; ALAP is the mirror; slack is the difference ([S] Mahlke, EECS 583 lecture 11, slides 6-9).
+- The standard list scheduler walks cycles forward, sorts ready operations by priority (commonly height, the distance to the exit) and places each one if a resource usage map shows its resources free ([S] Mahlke lecture 11, slides 12-15; [S] De Micheli, "Scheduling II").
+- Resource-constrained scheduling is intractable in general, so heuristics are normal ([S] De Micheli; Lee et al. 1998 call space-time scheduling NP-complete, citing Sarkar 1989). Ullman 1975 is the usual citation, but its full text was unreachable.
+- Graham's bound for list scheduling on n identical machines is 2 - 1/n (Graham, Bell System Technical Journal, 1966).
+
+### 4.3 Conflict resolution techniques
+
+- **Delay:** an operation whose resources are busy is tried in a later cycle ([S] Mahlke lecture 11). Groq expresses delays as explicit NOPs ([TSP20] Sec. III-A1).
+- **Re-binding:** an operation may have several units that can run it; the scheduler tries another ([S] Mahlke lecture 13, slide 9; Nowatzki et al. 2013, eqs. 1-2).
+- **Interval colouring:** the left-edge algorithm assigns lifetimes to registers and is optimal when the conflict graph is an interval graph ([S] Isshiki, Tokyo Tech HLS slides). Linear scan is the compiler analogue (Poletto and Sarkar, TOPLAS 1999).
+- **Whole-path reservation:** the RAW compiler treats "a single-source, multiple-destination communication path as a single scheduling unit" and reserves contiguous time slots for it (Lee et al., ASPLOS 1998, Sec. 5).
+- **Space-time routing graphs:** DRESC's modulo routing resource graph replicates the architecture along the time axis (Mei et al., DATE 2003); SPR does the same and pads the schedule when routing fails (Friedman et al., FPGA 2009); both borrow negotiated congestion from PathFinder (McMurchie and Ebeling, FPGA 1995).
+- **Exact timing as an equation:** Nowatzki et al. (PLDI 2013) write T(src) + delay + hops + X = T(dst), where X is buffering. For the fully static PLUG architecture the mismatch is absorbed by NOP padding (their eq. 26). The TSP case is this equation with X = 0.
+
+### 4.4 Modulo scheduling
+
+- Modulo scheduling targets loops: it finds one schedule that repeats every II cycles using a modulo reservation table ([S] Mahlke lectures 12-13). Rau's 1994 paper was not readable, so its eviction step is unverified.
+- It would matter for a TSP when the same step repeats, for example a matrix processed row by row using the ISA's Repeat. The milestones here are small straight-line graphs, so it is not used.
+
+### 4.5 What Groq has published about its compiler
+
+- [TSP20] states the problem (two-dimensional scheduling in time and space, Eq. 4) but not the algorithm.
+- Patent US 11,868,908 (Groq; partly read) describes ordering instructions by a greedy algorithm or a SAT solver, then assigning relative delays implemented as NOPs, then binding to hardware.
+- No source describes how stream numbers are allocated.
+
+### 4.6 Synthesis used by this project (ours, not sourced)
+
+- Use forward list scheduling over a single reservation table that covers units, MEM slices and stream cells in space and time.
+- Treat exact arrival as an equality: consumer fire time = producer dispatch + d_func + transit.
+- Reserve a value's whole path atomically, as RAW does.
+- Park results in memory between tiles. A later MEM Read can be timed freely, so delaying a tile never breaks an earlier decision and the search always terminates.
+- Two values in the same stream and direction can only collide if they are on the same diagonal (same t - x eastward, same t + x westward) and their position ranges overlap. This is our derivation and is checked by tests, not taken from a source.
+- Make the compiler deterministic: no iteration over sets, sort keys ending in a unique integer, and a test that compiles under different `PYTHONHASHSEED` values.
 
 ## 5. Not found
 

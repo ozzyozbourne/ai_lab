@@ -39,6 +39,10 @@
    "E occupancy replay": {
     "checked": 49,
     "passed": true
+   },
+   "F tag identity": {
+    "checked": 62,
+    "passed": true
    }
   },
   "validation_ok": true
@@ -83,6 +87,10 @@
    "E occupancy replay": {
     "checked": 103,
     "passed": true
+   },
+   "F tag identity": {
+    "checked": 662,
+    "passed": true
    }
   },
   "validation_ok": true
@@ -126,6 +134,10 @@
    },
    "E occupancy replay": {
     "checked": 100,
+    "passed": true
+   },
+   "F tag identity": {
+    "checked": 374,
     "passed": true
    }
   },
@@ -184,6 +196,10 @@
    },
    "E occupancy replay": {
     "checked": 402,
+    "passed": true
+   },
+   "F tag identity": {
+    "checked": 1128,
     "passed": true
    }
   },

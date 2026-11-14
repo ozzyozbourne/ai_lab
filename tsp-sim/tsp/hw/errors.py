@@ -1,7 +1,8 @@
 """The one exception the hardware model raises for a broken program (plan.md 2.5)."""
 from __future__ import annotations
 
-# Fault codes: the numbered list in plan.md section 2.5.
+# Fault codes: the rule numbers of the list in plan.md section 2.5. They are labels, not machine
+# parameters; the ledger IDs in the comments name the rule each fault enforces.
 EMPTY_SAMPLE = 1      # an instruction samples an empty cell
 DOUBLE_DRIVE = 2      # two drives of one cell with one visible cycle
 MEM_PORT = 3          # MEM port rules (L-M4, L-M5)

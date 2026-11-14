@@ -192,7 +192,8 @@ def test_b_fails_on_two_drives_of_one_cell():
     items.append(("VXM.1", dup[1], dup[2]))
     prog, trace = run(TOY, items, image)
     rep = validate(prog, trace, TOY)
-    only_fails(rep, "B")
+    # B sees the doubled cell; F sees one tag produced by two instructions.
+    assert rep.failed() == ["B", "F"], rep.summary()
     assert "2 drives on cell" in rep.check("B").failures[0]
 
 
@@ -402,3 +403,21 @@ def test_validator_does_not_crash_on_garbage():
                 trace.events + [Event(0, "drive", "NOPE", 0, "X", "E", 0, "t")], trace.occupancy, trace.digests)
     rep = validate(prog, bad, TOY)
     assert not rep.ok
+
+
+# ---- F: tag identity (added after verification: a same-tag impostor must not pass) -------
+def test_f_fails_on_same_tag_impostor():
+    """A second stored word carrying the tag of x is put on a stream.
+
+    Every sample still sees the tag it expects, so A and B cannot object; only F can tell
+    that the tag no longer names one value.
+    """
+    items, image, _ = basic_items(TOY)
+    unit, t, rd = [it for it in items if isinstance(it[2], Read)][0]
+    imp = Read(rd.bank, rd.addr + 1, SRef(rd.out.dir, rd.out.base + 16, rd.out.tags))
+    items.append((unit, t + 1, imp))
+    image[(unit, rd.bank, rd.addr + 1)] = rd.out.tags[0]
+    prog, trace = run(TOY, items, image)
+    rep = validate(prog, trace, TOY)
+    only_fails(rep, "F")
+    assert "two locations" in rep.check("F").failures[0]

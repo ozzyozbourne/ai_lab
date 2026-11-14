@@ -142,8 +142,9 @@ class Graph:
 
     def requant(self, a: Value, shift: int, name: str | None = None) -> Value:
         self._need(a, (DType.I32,), "requant")
-        if not 0 <= shift < 32:
-            raise GraphError("requant: shift must be in 0..31")
+        bits = 8 * DType.I32.nbytes  # not a machine parameter: bits per byte
+        if not 0 <= shift < bits:
+            raise GraphError(f"requant: shift must be in 0..{bits - 1}")
         return self._add("requant", DType.I8, a.node.n, inputs=(a.id,), imm=shift, name=name)
 
     def cast(self, a: Value, to: DType, name: str | None = None) -> Value:

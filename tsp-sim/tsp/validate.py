@@ -31,7 +31,7 @@ from .trace import Event, Trace
 MAX_FAILURES = 10  # not a machine parameter: failure strings kept per check
 
 CHECK_NAMES = ("A exact arrival", "B stream replay", "C units",
-               "D program/trace agreement", "E occupancy replay")
+               "D program/trace agreement", "E occupancy replay", "F tag identity")
 
 
 # ---- report -----------------------------------------------------------------------
@@ -204,8 +204,8 @@ def _sref_rules(c: _Collector, where: str, s: SRef, width: int | None, config: C
     n = s.n
     if width is not None and n != width:
         c.fail(f"{where}: stream group {s.dir}{s.base} has {n} streams, needs {width}")
-    if n not in (1, 2, 4):
-        c.fail(f"{where}: stream group width {n} is not 1, 2 or 4")
+    if n not in sorted({d.nbytes for d in DType}):   # L-G6, L-G7: widths of the element types
+        c.fail(f"{where}: stream group width {n} is not the width of any element type")
     elif s.base % n != 0:
         c.fail(f"{where}: stream group {s.dir}{s.base}+{n} is not aligned (L-G8)")
     if s.base < 0 or s.base + n > config.streams_per_dir:
@@ -560,6 +560,66 @@ def _check_e(trace: Trace, config: ChipConfig) -> Check:
     return c.done()
 
 
+# ---- F: tag identity ----------------------------------------------------------------
+def _check_f(program: Program, trace: Trace, config: ChipConfig) -> Check:
+    """A tag must name exactly one value, or checks A and B prove nothing (plan 3.4).
+
+    - every tag driven by a computing instruction is driven by exactly one instruction;
+    - every other tag (a host-loaded word) is read from exactly one memory location, and a
+      location read as host data always shows the same tag;
+    - a computed tag read from memory was written to that very location earlier, with that tag;
+    - the host layouts of the program name each tag once and never reuse a computed tag.
+    """
+    c = _Collector(CHECK_NAMES[5])  # not a machine parameter: index of this check
+    timed, _ = _timed(program, config)
+    producers: dict[str, list[str]] = {}
+    for x in timed:
+        if isinstance(x.instr, Read):
+            continue
+        out = _driven(x.instr)
+        for tag in (out.tags if out is not None else ()):
+            producers.setdefault(tag, []).append(f"cycle {x.t_issue} {x.unit}")
+    for tag, who in producers.items():
+        c.checked += 1
+        if len(who) > 1:
+            c.fail(f"tag {tag!r} is produced by {len(who)} instructions: {', '.join(who)}")
+
+    writes: dict[tuple, list[tuple[int, str]]] = {}
+    for e in trace.events:
+        if e.kind == "mem_write":
+            writes.setdefault((e.unit, e.bank, e.addr), []).append((e.cycle, e.tag))
+    host_loc: dict[str, tuple] = {}
+    loc_host: dict[tuple, str] = {}
+    write_delay = config.timing["WRITE"].d_func
+    for e in trace.events:
+        if e.kind != "mem_read":
+            continue
+        c.checked += 1
+        loc = (e.unit, e.bank, e.addr)
+        if e.tag in producers:
+            earlier = [tag for cyc, tag in writes.get(loc, []) if cyc + write_delay <= e.cycle]
+            if not earlier or earlier[-1] != e.tag:
+                c.fail(f"{_ev(e)}: computed tag {e.tag!r} read from a word it was not written to")
+            continue
+        if host_loc.setdefault(e.tag, loc) != loc:
+            c.fail(f"{_ev(e)}: host tag {e.tag!r} is stored at two locations, {host_loc[e.tag]} and {loc}")
+        if loc_host.setdefault(loc, e.tag) != e.tag:
+            c.fail(f"{_ev(e)}: location {loc} shows two host tags, {loc_host[loc]!r} and {e.tag!r}")
+
+    layout_tags: dict[str, str] = {}
+    for name, lay in program.inputs.items():
+        for tile in lay.tiles:
+            for j in range(len(tile.planes)):
+                c.checked += 1
+                tag = f"{tile.tag}#{j}"
+                if tag in layout_tags:
+                    c.fail(f"host layouts {layout_tags[tag]!r} and {name!r} both use tag {tag!r}")
+                layout_tags[tag] = name
+                if tag in producers:
+                    c.fail(f"host layout {name!r} reuses computed tag {tag!r}")
+    return c.done()
+
+
 # ---- entry point --------------------------------------------------------------------
 def _guarded(name: str, fn, *args) -> Check:
     try:
@@ -569,11 +629,12 @@ def _guarded(name: str, fn, *args) -> Check:
 
 
 def validate(program: Program, trace: Trace, config: ChipConfig) -> Report:
-    """Run checks A-E (plan section 7) on one run of `program`."""
+    """Run checks A-F (plan section 7) on one run of `program`."""
     return Report([
         _guarded(CHECK_NAMES[0], _check_a, trace),
         _guarded(CHECK_NAMES[1], _check_b, trace),
         _guarded(CHECK_NAMES[2], _check_c, program, trace, config),
         _guarded(CHECK_NAMES[3], _check_d, program, trace, config),
         _guarded(CHECK_NAMES[4], _check_e, trace, config),
+        _guarded(CHECK_NAMES[5], _check_f, program, trace, config),  # not a machine parameter: check index
     ])

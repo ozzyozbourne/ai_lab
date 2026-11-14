@@ -78,7 +78,7 @@ def tile_length(graph: Graph, config: ChipConfig) -> int:
     """plan 3.4: lanes, or lanes // 2 when the graph holds any F16 value."""
     has_f16 = any(n.dtype == DType.F16 for n in graph.nodes) or any(
         m.dtype == DType.F16 for m in graph.matrices.values())
-    return config.lanes // 2 if has_f16 else config.lanes
+    return config.lanes // DType.F16.nbytes if has_f16 else config.lanes   # L-X2: K <= lanes/2 for fp16
 
 
 def check_restrictions(graph: Graph, tile_len: int) -> None:

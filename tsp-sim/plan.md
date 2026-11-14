@@ -590,6 +590,7 @@ entry per check: name, pass/fail, counts, and up to 10 offending items.
 | **C. units** | recompute every entry's issue cycle from the queues; per queue at most its issue width per cycle; per MEM slice per sample cycle at most one read and one write, on different banks; for each `MATVEC` sampling at `t`, each row it uses was last installed by an `iw_row` event at a cycle `≤ t − d_func(IW)` whose tag equals `expect_rows[r]`; F16 unit rule (L-X9) |
 | **D. program/trace agreement** | the multiset of `issue` events equals the queue contents with recomputed cycles |
 | **E. occupancy replay** | rebuild per-cycle occupancy from `drive` events and the shift rule; it must equal `trace.occupancy` |
+| **F. tag identity** | added after Phase 5, which showed that A and B accept a different value carrying the same tag. A tag must name one value: each computed tag is driven by exactly one instruction; each host tag is read from exactly one memory location; a computed tag read from memory was written to that location, with that tag, at least `d_func(WRITE)` earlier; host layouts name each tag once and never reuse a computed tag |
 
 Numerical checks and determinism checks live in the tests (section 9), because
 they need the reference and two runs.

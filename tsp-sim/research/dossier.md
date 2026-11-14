@@ -289,7 +289,7 @@ re-runs a milestone with different latencies to show this.
 |---|---|---|---|---|---|
 | L-M1 | Banks per MEM slice | 2 | 2 | SOURCED | [R1 §2.7] |
 | L-M2 | Addresses per bank | 4096 | 64 | INFERRED (paper); toy ASSUMED | 13-bit address including the bank bit reproduces the paper's 2.5 MiB per slice; a slide contradicts this [R1 §4 item 5] |
-| L-M3 | One address holds one byte per lane; a Read puts a full vector on one stream | yes | yes | SOURCED | [R1 §2.7] |
+| L-M3 | One address holds one byte per lane; a Read puts a full vector on one stream | yes | yes | INFERRED | From 20 tiles × 16-byte words per address [R1 §2.7]; a 2022 slide says so directly: "A read from a single MEM slice creates a 320Byte stream" [R2 §7] |
 | L-M4 | Ports per slice per cycle: at most one read and one write, on different banks | yes | yes | SOURCED | [R1 §2.7] |
 | L-M5 | Two reads (or two writes) in one slice in one cycle | forbidden | forbidden | ASSUMED | Not stated; conservative |
 | L-M6 | The host places weights and inputs in memory before cycle 0 and reads outputs after the last cycle | yes | yes | SOURCED for the model; ASSUMED for inputs and outputs | The paper describes a PCIe DMA engine that emplaces a model in memory [R1 §2.1]; it does not describe how inputs and results are exchanged, so we use the same path |
@@ -304,13 +304,13 @@ re-runs a milestone with different latencies to show this.
 | L-V4 | Operations: add, sub, mul, relu, exp, rsqrt, tanh, type conversion | — | SOURCED | [R1 §2.6] |
 | L-V5 | `requant`: arithmetic right shift of int32, then saturate to int8 | — | ASSUMED semantics | "Requantize" is named [R1 §2.5]; its definition is not |
 | L-V6 | `cast` fp32→fp16 (round to nearest even) and int8→int32 | — | ASSUMED semantics | "type conversions" are named [R1 §2.6]; these particular ones are not |
-| L-V7 | int32 add/sub/mul wrap modulo 2³² | — | SOURCED variant | `add_mod`, `mul_mod` [R1 §2.6] |
+| L-V7 | int32 add/sub/mul wrap modulo 2³² | — | SOURCED for add and mul; ASSUMED for sub | The paper names `add_mod` and `mul_mod` [R1 §2.6]; a wrapping subtract is our extrapolation |
 
 ### 7.6 MXM
 
 | ID | Parameter | paper | toy | Status | Source / reasoning |
 |---|---|---|---|---|---|
-| L-X1 | Planes | 4 (2 per hemisphere; `planes_per_mxm = 2`) | same | SOURCED | [R1 §2.8] |
+| L-X1 | Planes | 4 (2 per hemisphere; `planes_per_mxm = 2`) | same | SOURCED (4 planes); INFERRED (2 per hemisphere) | Four planes are stated [R1 §2.8]; the split is read from the floorplan figure and die photo [R1 §2.8] |
 | L-X2 | Unit operation `[1×K]×[K×lanes]`; K ≤ lanes for int8, K ≤ lanes/2 for fp16 | 320 / 160 | 32 / 16 | SOURCED (paper); toy follows L-G3 | [R2 §7] |
 | L-X3 | Weight streams sampled per install cycle | ≤ 16 | ≤ 16 | SOURCED | [R1 §2.8]: 16 streams per plane per cycle. So ≤16 int8 rows or ≤8 fp16 rows per cycle |
 | L-X4 | Numerics: int8×int8 → int32; fp16×fp16 summed exactly, rounded once to fp32 | — | — | SOURCED | [R1 §2.8]. We accumulate in float64 and round once |

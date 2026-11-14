@@ -85,7 +85,7 @@ class Graph:
     def const_matrix(self, name, array2d, dtype):
         """A constant matrix: one constant vector per row, named name[r]."""
         a = np.asarray(array2d)
-        if a.ndim != 2:
+        if a.ndim != 2:  # not-a-parameter: a matrix is two-dimensional
             raise GraphError(f"{name}: matrix constant must be 2-D")
         rows = [self.const(f"{name}[{r}]", a[r], dtype) for r in range(a.shape[0])]
         return self.matrix(name, rows)

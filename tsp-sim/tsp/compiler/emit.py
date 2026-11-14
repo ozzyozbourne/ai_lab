@@ -113,7 +113,7 @@ def emit(graph, config, planned, placed_tiles):
     entries.sort(key=lambda e: (e["t_emit"], unit_index[e["unit"]], e["s"], e["dir"]))
 
     queues = {}
-    notifier = config.units()[unit_index["VXM_A0"]]
+    notifier = "VXM_A0"     # ledger: B14
     for unit in config.units():
         items = sorted(dispatches.get(unit, []), key=lambda d: d[0])
         if not items and unit != notifier:

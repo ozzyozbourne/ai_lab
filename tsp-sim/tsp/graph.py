@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from . import isa
+from . import isa, params
 from .errors import GraphError
 
 UNARY_SAME_TYPE = ("neg", "relu", "tanh", "exp", "rsqrt")
@@ -47,7 +47,7 @@ class Matrix:
 @dataclass
 class Graph:
     name: str
-    lanes: int = 16  # not-a-parameter: default equals params.LANES_PER_SUPERLANE * TILES_TOY; pass config.lanes
+    lanes: int = params.LANES_PER_SUPERLANE * params.TILES_TOY  # the toy chip's lane count (ledger G1, G2); pass config.lanes for other chips
     tensors: List[Tensor] = field(default_factory=list)
     matrices: List[Matrix] = field(default_factory=list)
     outputs: Dict[str, int] = field(default_factory=dict)

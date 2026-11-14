@@ -118,9 +118,10 @@ delaying one tile never breaks an earlier decision.
 
 ### Checks
 
-- `tsp/validate.py` checks a trace against the program: no planned value is overwritten before its last reader, dispatches match the queues, every operand arrives exactly when its consumer fires, and every latency matches the ledger.
+- `tsp/validate.py` checks a trace against the program: no planned value is overwritten before its last reader, dispatches match the queues, every operand arrives exactly when its consumer fires, and every result appears exactly the configured latency after its dispatch. The configured latencies are the program's own `config.latency`, which defaults to the ledger values.
 - `tsp/reference.py` interprets a graph in NumPy with the simulator's arithmetic, for bit-for-bit comparison. Each model also has a separate NumPy reference that does not use the graph.
-- The simulator itself raises an error if an instruction samples an empty register or a value with the wrong debug tag.
+- The simulator itself raises an error if an instruction samples an empty register or a value with the wrong debug tag, or if a Read or Write uses an address the compiler assigned to a different tensor.
+- These checks cover timing, routing and addressing. They cannot tell that an instruction does the wrong arithmetic (for example `add` where the graph said `sub`); only the comparison with the NumPy references catches that.
 
 ## What is sourced and what is assumed
 

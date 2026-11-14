@@ -229,7 +229,7 @@ Status meanings:
 | G5 | Streams per value | int8: 1, fp16: 2, int32 and fp32: 4, on aligned groups | SOURCED for int16/int32/fp32 ([TSP20] Sec. I-B). ASSUMED for fp16 | fp16 as 2 streams follows from 1 byte per stream element [derived]. |
 | G6 | Slice order west to east | MXM, SXM, MEM(k-1..0), VXM, MEM(0..k-1), SXM, MXM | SOURCED | [TSP20] Fig. 2, Sec. II-B |
 | G7 | MEM slices per hemisphere | 8 | ASSUMED | Sourced value is 44 ([TSP20] Sec. II-B). Reduced for readability; 8 lets a 4-stream value occupy 4 distinct slices with room to spare. |
-| G8 | Stream-register positions | one per slice (toy: 21 positions) | ASSUMED | Sourced reading is 45 positions with one per 4 MEM slices ([TSP20] Fig. 4, fig. reading). One per slice is simpler to explain and keeps "distance = number of slices". |
+| G8 | Stream-register positions | one per slice, 2k + 5 in all for k MEM slices per hemisphere (toy: 21): MXM at the edge, SXM one position inside it, then the MEM slices, VXM in the middle. All MXM planes of a hemisphere share one position, and all 16 ALUs share the VXM position | ASSUMED | Sourced reading is 45 positions with one per 4 MEM slices and several registers around the SXM and MXM ([TSP20] Fig. 4, fig. reading). One per slice is simpler to explain and keeps "distance = number of slices". |
 | G9 | Words per MEM slice | 8192 | SOURCED | [TSP20] Sec. II: "13-bits of physical addressing" |
 | G10 | MXM planes per hemisphere | 1 | ASSUMED | Sourced value is 2 ([TSP20] Sec. III-D). Reduced for readability. |
 | G11 | MXM plane size | lanes x lanes (16x16 on the toy chip) | SOURCED rule, scaled value | [TSP20] Sec. III-D: 320x320 planes for 320 lanes. The toy value follows from G2, which is ASSUMED. |
@@ -279,9 +279,8 @@ Status meanings:
 | B13 | SXM operations | Distribute, Permute, Shift | SOURCED names | [TSP20] Table I. Rotate and Transpose are omitted. |
 | B14 | Program start | one queue begins with Notify and every other queue with Sync; the notifier is always the first VXM ALU | SOURCED mechanism ([TSP20] Sec. III-A2). ASSUMED: which queue is the notifier, and that Notify is dispatched at cycle 0 | The paper says one queue is designated as the notifier but not which. |
 | B15 | Instruction fetch | queues are preloaded; Ifetch is not modelled | ASSUMED | Sourced behaviour: instructions are fetched from MEM via streams ([TSP20] Sec. III-A3). |
-| B16 | Validity of stream registers | each register is either empty or holds a value with a debug name | ASSUMED | The hardware has no valid bit or names. These exist only so the simulator can check that operands arrive on time. |
+| B16 | Validity of stream registers and memory words | each register is either empty or holds a value with a debug name; each memory address used by a program has the debug name of the tensor plane stored there | ASSUMED | The hardware has no valid bit or names. These exist only so the simulator can check that operands arrive on time and that reads and writes use the right address. |
 | B17 | Not modelled | C2C links, ECC, Gather/Scatter, Config, power, MEM banks | ASSUMED (omission) | All are sourced features left out to keep the simulator small. |
-
 | B18 | Unit pipelining | every unit accepts a new instruction every cycle, whatever its d_func; one unit may emit two results on one cycle if they go to different stream registers | ASSUMED | [TSP20] Sec. III-D says the MXM can produce a new result every cycle; nothing is stated for other units. |
 | B19 | Result length | every result-producing instruction except Read carries a length n (the row count for ABC); result lanes at or above n are zero | ASSUMED | Not in any source. Keeps unused lanes zero everywhere, so padding never produces infinities or NaN. |
 | B20 | Requantize | VXM operation: arithmetic shift right by an immediate, then saturate to int8 | ASSUMED | [TSP20] Sec. IV-D says the VXM requantizes MXM results; the arithmetic is not given. |

@@ -99,7 +99,7 @@ class ChipConfig:
 
     @classmethod
     def isca2020(cls):
-        """Sourced geometry of the ISCA 2020 chip, with the same assumed latencies."""
+        """Published slice counts of the ISCA 2020 chip (ledger G2, G7, G10), with the same assumed latencies and stream-register layout (ledger G8)."""
         return cls(
             tiles=TILES_ISCA2020,
             mem_slices_per_hemi=MEM_SLICES_PER_HEMI_ISCA2020,
@@ -117,7 +117,7 @@ class ChipConfig:
 
     @property
     def vxm_pos(self):
-        return self.mem_slices_per_hemi + 2  # not-a-parameter: MXM and SXM sit west of the MEM block
+        return self.mem_slices_per_hemi + 2  # ledger: G8
 
     def mem_slices(self, hemi):
         """MEM unit names of one hemisphere, index 0 (nearest the VXM) first."""
@@ -149,7 +149,7 @@ class ChipConfig:
         if kind == "MXM":
             return 0 if hemi == "W" else self.n_positions - 1
         if kind == "SXM":
-            return 1 if hemi == "W" else self.n_positions - 2  # not-a-parameter: SXM is one position inside the MXM
+            return 1 if hemi == "W" else self.n_positions - 2  # ledger: G8
         index = int(rest[1:])
         if kind == "MEM":
             return self.vxm_pos - 1 - index if hemi == "W" else self.vxm_pos + 1 + index

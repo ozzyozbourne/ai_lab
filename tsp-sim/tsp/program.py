@@ -26,6 +26,8 @@ class Program:
     inputs: Dict[str, TensorLoc] = field(default_factory=dict)
     outputs: Dict[str, TensorLoc] = field(default_factory=dict)
     schedule: List[dict] = field(default_factory=list)                # planned routes, in cycles (plan 4.6)
+    # (MEM unit, address) -> "tensor#plane": which tensor plane the compiler put there (debug data, ledger B16)
+    mem_names: Dict[Tuple[str, int], str] = field(default_factory=dict)
 
     def to_json(self):
         """Canonical text form; byte-identical for equal programs."""
@@ -36,6 +38,7 @@ class Program:
             "inputs": [_loc_to_obj(v) for _, v in sorted(self.inputs.items())],
             "outputs": [_loc_to_obj(v) for _, v in sorted(self.outputs.items())],
             "schedule": self.schedule,
+            "mem_names": [[u, a, name] for (u, a), name in sorted(self.mem_names.items())],
         }
         return json.dumps(doc, sort_keys=True, separators=(",", ":"))
 
@@ -49,6 +52,7 @@ class Program:
             inputs={o["name"]: _loc_from_obj(o) for o in doc["inputs"]},
             outputs={o["name"]: _loc_from_obj(o) for o in doc["outputs"]},
             schedule=doc["schedule"],
+            mem_names={(u, a): name for u, a, name in doc.get("mem_names", [])},
         )
 
 

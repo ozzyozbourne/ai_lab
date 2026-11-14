@@ -150,6 +150,18 @@ class Simulator:
         for d, s, x, val in self.streams.occupied():
             self.trace.cells.append([cycle, d, s, x, val.vid])
 
+    def _check_mem_name(self, unit, addr, tag, verb):
+        """A Read or Write must touch the address the compiler assigned to that tensor plane.
+
+        Debug check only (ledger B16): skipped when the program has no name for
+        the address or the instruction carries no tag.
+        """
+        want = self.program.mem_names.get((unit, addr))
+        if want is None or not tag:
+            return
+        if isa.stored_name(tag) != want:
+            raise OperandTagError(f"{unit} {verb} address {addr} as {tag!r}, but that address holds {want!r}")
+
     # -- step 3: dispatch -----------------------------------------------------------
     def _dispatch(self, cycle, unit, instr):
         """Sample operands, compute, and file the result or commit."""
@@ -166,11 +178,13 @@ class Simulator:
         self.trace.dispatches.append(record)
 
         if isinstance(instr, isa.Read):
+            self._check_mem_name(unit, instr.addr, instr.tag, "reads")
             data = self.mem.read(unit, instr.addr)
             self._file(cycle + lat, did, unit, pos, instr.out, [data], lambda j: instr.tag)
         elif isinstance(instr, isa.Write):
             plane = operands[0][0]
             tag = self.streams.get(instr.src.dir, instr.src.s, pos).tag
+            self._check_mem_name(unit, instr.addr, tag, "writes")
             self._file_commit(cycle + lat - 1, did, ("write", unit, instr.addr, plane, tag))
         elif isinstance(instr, isa.Vxm):
             values = [isa.from_planes(p, instr.dtype) for p in operands]

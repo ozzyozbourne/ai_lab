@@ -16,7 +16,7 @@ from ..graph import Graph
 
 N_IN = 12  # not-a-parameter: model size
 N_OUT = 8  # not-a-parameter: model size
-LANES = 16  # not-a-parameter: model size (toy chip lane count, ledger G1, G2)
+LANES = params.LANES_PER_SUPERLANE * params.TILES_TOY  # the toy chip lane count (ledger G1, G2)
 BIAS_RANGE = 20000  # not-a-parameter: random scale, puts about half of W.x + b above zero
 
 

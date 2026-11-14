@@ -55,13 +55,14 @@ tsp.reference agrees bit for bit.
 
 import numpy as np
 
+from .. import params
 from ..graph import Graph
 
 D = 8  # not-a-parameter: model size (d_model)
 T = 4  # not-a-parameter: model size (sequence length)
 H = 16  # not-a-parameter: model size (feed-forward hidden size)
 V = 16  # not-a-parameter: model size (vocabulary)
-LANES = 16  # not-a-parameter: model size (toy chip lane count, ledger G1, G2)
+LANES = params.LANES_PER_SUPERLANE * params.TILES_TOY  # the toy chip lane count (ledger G1, G2)
 EPS = 1e-5  # not-a-parameter: model constant, RMS-norm epsilon
 BIAS_SCALE = 0.1  # not-a-parameter: random scale of the biases
 GAIN_SPREAD = 0.1  # not-a-parameter: random scale, gains are 1 +- this

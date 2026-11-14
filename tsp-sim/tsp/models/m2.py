@@ -18,7 +18,7 @@ from ..graph import Graph
 N_IN = 12  # not-a-parameter: model size
 N_HIDDEN = 16  # not-a-parameter: model size
 N_OUT = 8  # not-a-parameter: model size
-LANES = 16  # not-a-parameter: model size (toy chip lane count, ledger G1, G2)
+LANES = params.LANES_PER_SUPERLANE * params.TILES_TOY  # the toy chip lane count (ledger G1, G2)
 SHIFT = 8  # not-a-parameter: model constant, scales W1.x into the int8 range
 BIAS_RANGE = 4000  # not-a-parameter: random scale
 

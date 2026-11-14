@@ -51,6 +51,13 @@ def plane_tag(name, j):
     return f"{name}#{j}"
 
 
+def stored_name(tag):
+    """'tensor@tile#j' -> 'tensor#j': the name a value has in memory, without the emitting tile."""
+    name, _, plane = tag.rpartition("#")
+    base, at, _ = name.rpartition("@")
+    return f"{base if at else name}#{plane}"
+
+
 @dataclass(frozen=True)
 class StreamRef:
     """A stream: direction of flow and stream number (the base stream for wide values)."""

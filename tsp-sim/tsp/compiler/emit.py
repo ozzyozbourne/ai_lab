@@ -137,6 +137,11 @@ def emit(graph, config, planned, placed_tiles):
         for (unit, addr), plane in zip(planned.placement[t.id], isa.to_planes(padded, t.dtype)):
             mem_image[(unit, addr)] = bytes(plane.tobytes())
 
+    mem_names = {}
+    for t in graph.tensors:
+        for j, (unit, addr) in enumerate(planned.placement.get(t.id, ())):
+            mem_names[(unit, addr)] = isa.plane_tag(t.name, j)
+
     inputs = {}
     for t in graph.tensors:
         if t.kind == "input":
@@ -146,4 +151,4 @@ def emit(graph, config, planned, placed_tiles):
         outputs[name] = _loc(name, graph, graph.outputs[name], planned.placement)
 
     return Program(config=config, queues=queues, mem_image=mem_image, inputs=inputs,
-                   outputs=outputs, schedule=entries)
+                   outputs=outputs, schedule=entries, mem_names=mem_names)

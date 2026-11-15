@@ -1,0 +1,12 @@
+workload                   n   rust cyc   mojo cyc   ratio
+remove_seq              1000      3.072      3.087   1.002  <
+remove_rand             1000      3.082      3.102   1.003  <
+churn                   1000     12.238      9.003   0.680
+remove_seq            100000      3.282      3.418   1.098  <<<
+remove_rand           100000      8.038      8.031   1.049  <<<
+churn                 100000     42.615     32.452   0.732
+remove_seq           2000000      8.690      8.151   1.001  <
+remove_rand          2000000     34.508     34.158   1.011  <
+churn                2000000    204.059    130.494   0.615
+
+geomean 0.8923 | worst 1.098 (remove_seq@100000) | mojo<=rust on 3/9

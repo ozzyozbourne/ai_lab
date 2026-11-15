@@ -11,6 +11,7 @@ until it was at least as fast.
 - `ab.py`: interleaved A/B timing of several benchmark binaries.
 - `variants/`: every step of the hill climb, `v0_port` to `v16_scaled`.
 - `results/`: per-variant tables and `log.tsv`.
+- `hill_climb.html`: illustrated walk through every step, with Rust and Mojo assembly side by side. Open it in a browser.
 
 Toolchains used: Mojo 1.2.0, Rust 1.100.0 with `slotmap` 1.1.1, on a 4-vCPU
 Intel Emerald Rapids VM (Linux 6.18, transparent huge pages in `madvise` mode).

@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
+<title>SlotMap Hill Climb</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@500;700&display=swap">
+<style>
+/* Layout: one lab-notebook column; wide instruments (assembly, charts, simulators) sit in framed panels. Rust is always copper, Mojo always teal. */
+:root{
+  --bg:#f2f4f6; --surface:#ffffff; --sunk:#e8ecf0; --ink:#16202b; --muted:#566475; --line:#d3dae2;
+  --rust:#b3501f; --mojo:#0b7a80; --good:#2c7a4b; --bad:#b03045; --warn:#946200;
+  --code-bg:#0f1720; --code-fg:#d5dde6; --code-dim:#7c8a99; --code-hot:#ff9d7a; --code-ok:#6fe0c8;
+  --f-display:"Space Grotesk","IBM Plex Sans",system-ui,sans-serif;
+  --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0d131a; --surface:#141c26; --sunk:#0a0f15; --ink:#e5eaf0; --muted:#93a2b3; --line:#27333f;
+  --rust:#e88b5c; --mojo:#4fc6ca; --good:#5fc48a; --bad:#f0778a; --warn:#e0b050;
+  --code-bg:#080c11; --code-fg:#d5dde6; --code-dim:#738191; --code-hot:#ff9d7a; --code-ok:#6fe0c8; color-scheme:dark } }
+:root[data-theme="dark"]{
+  --bg:#0d131a; --surface:#141c26; --sunk:#0a0f15; --ink:#e5eaf0; --muted:#93a2b3; --line:#27333f;
+  --rust:#e88b5c; --mojo:#4fc6ca; --good:#5fc48a; --bad:#f0778a; --warn:#e0b050;
+  --code-bg:#080c11; --code-fg:#d5dde6; --code-dim:#738191; --code-hot:#ff9d7a; --code-ok:#6fe0c8; color-scheme:dark }
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:16px/1.6 var(--f-body);margin:0}
+.wrap{max-width:1080px;margin:0 auto;padding-block:28px 80px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;line-height:1.15;margin:0}
+h1{font-size:clamp(2rem,5vw,3.2rem);font-weight:700;letter-spacing:-.02em}
+h2{font-size:1.65rem;margin-top:64px;padding-top:20px;border-top:2px solid var(--ink)}
+h3{font-size:1.1rem;margin-top:28px}
+p{max-width:68ch;margin:12px 0}
+code,.mono{font-family:var(--f-mono);font-size:.86em}
+p code,li code,td code{background:var(--sunk);padding:1px 5px;border-radius:3px}
+.eyebrow{font:600 .75rem var(--f-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.rust{color:var(--rust)} .mojo{color:var(--mojo)}
+.lede{font-size:1.15rem;color:var(--muted)}
+nav.toc{display:flex;flex-wrap:wrap;gap:6px 14px;margin:20px 0 0;font:500 .85rem var(--f-mono)}
+nav.toc a{color:var(--ink);text-decoration:none;border-bottom:1px solid var(--line)}
+nav.toc a:hover{border-color:var(--mojo)}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:18px;margin:18px 0;min-width:0}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:16px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:6px;overflow:hidden;margin:24px 0}
+.stat{background:var(--surface);padding:14px 16px}
+.stat b{display:block;font:700 1.9rem var(--f-display);font-variant-numeric:tabular-nums}
+.stat span{font-size:.82rem;color:var(--muted)}
+button,.chip{font:500 .82rem var(--f-mono);color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:6px 11px;cursor:pointer}
+button:hover{border-color:var(--ink)}
+button:focus-visible,summary:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--mojo);outline-offset:2px}
+button[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font:600 .72rem var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+td.n{font-variant-numeric:tabular-nums;font-family:var(--f-mono);font-size:.82rem}
+.note{font-size:.88rem;color:var(--muted)}
+/* hill chart */
+#hillsvg text{font:11px var(--f-mono);fill:var(--muted)}
+#hillsvg .path{fill:none;stroke:var(--mojo);stroke-width:2.5;stroke-dasharray:1200;stroke-dashoffset:0;animation:draw 2.4s ease-out}
+@keyframes draw{from{stroke-dashoffset:1200}to{stroke-dashoffset:0}}
+#hillsvg .climber{animation:pulse 1.8s ease-in-out infinite}
+@keyframes pulse{50%{r:9;opacity:.55}}
+/* assembly */
+.asm-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:12px}
+.asm{background:var(--code-bg);color:var(--code-fg);border-radius:6px;min-width:0;display:flex;flex-direction:column}
+.asm header{padding:9px 12px;font:600 .78rem var(--f-mono);border-bottom:1px solid #ffffff22;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.asm header .cyc{color:var(--code-dim);font-weight:400}
+.asm pre{margin:0;padding:10px 0;font:12px/1.55 var(--f-mono);overflow-x:auto;flex:1}
+.asm .ln{display:block;padding:0 12px;white-space:pre}
+.asm .ln.hot{background:#ff9d7a22;color:var(--code-hot)}
+.asm .ln.ok{background:#6fe0c81f;color:var(--code-ok)}
+.asm .ln.dim{color:var(--code-dim)}
+.asm .ln i{font-style:normal;color:var(--code-dim)}
+.asm .ln.hot i,.asm .ln.ok i{color:inherit;opacity:.8}
+.asm footer{padding:9px 12px;font-size:.8rem;color:var(--code-dim);border-top:1px solid #ffffff22}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font:.75rem var(--f-mono);color:var(--muted);margin-top:10px}
+.legend span::before{content:"";display:inline-block;width:10px;height:10px;margin-right:5px;border-radius:2px;vertical-align:-1px}
+.legend .l-hot::before{background:var(--code-hot)} .legend .l-ok::before{background:var(--code-ok)} .legend .l-dim::before{background:var(--code-dim)}
+/* timeline */
+.step{border:1px solid var(--line);border-radius:6px;background:var(--surface);margin:8px 0}
+.step summary{cursor:pointer;list-style:none;display:grid;grid-template-columns:118px 1fr auto;gap:10px;align-items:center;padding:10px 14px}
+.step summary::-webkit-details-marker{display:none}
+.step .id{font:600 .8rem var(--f-mono)}
+.step .ttl{font-weight:500;min-width:0}
+.badge{font:600 .68rem var(--f-mono);letter-spacing:.06em;text-transform:uppercase;padding:3px 7px;border-radius:3px;border:1px solid currentColor;white-space:nowrap}
+.b-kept{color:var(--good)} .b-rejected{color:var(--bad)} .b-superseded{color:var(--warn)} .b-probe,.b-harness,.b-baseline{color:var(--muted)} .b-final{color:var(--mojo)}
+.step .body{padding:2px 14px 14px;border-top:1px dashed var(--line);display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:4px 22px}
+.step .body div{min-width:0}
+.step .body h4{font:600 .7rem var(--f-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:12px 0 2px}
+.step .body p{margin:0;font-size:.92rem}
+@media(max-width:560px){.step summary{grid-template-columns:1fr auto}.step .ttl{grid-column:1/-1}}
+/* slot layout */
+.bytes{display:grid;grid-template-columns:repeat(16,1fr);gap:2px;font:10px var(--f-mono);text-align:center;margin:6px 0 2px}
+.bytes span{padding:7px 0;border-radius:2px;background:var(--sunk);color:var(--muted)}
+.bytes .v{background:color-mix(in srgb,var(--ink) 16%,var(--surface));color:var(--ink)}
+.bytes .ver{background:color-mix(in srgb,var(--warn) 30%,var(--surface));color:var(--ink)}
+.bytes .cellm{background:color-mix(in srgb,var(--mojo) 35%,var(--surface));color:var(--ink)}
+.bytes .nf{background:color-mix(in srgb,var(--rust) 35%,var(--surface));color:var(--ink)}
+/* free list sim */
+.slots{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:4px;margin:10px 0}
+.slot{border:1px solid var(--line);border-radius:3px;padding:6px 2px;text-align:center;font:11px var(--f-mono);overflow:hidden;background:var(--sunk);transition:background .25s,border-color .25s,transform .25s;min-height:42px}
+.slot small{display:block;color:var(--muted);font-size:9px}
+.slot.occ{background:color-mix(in srgb,var(--ink) 10%,var(--surface))}
+.slot.act-r{border-color:var(--rust);background:color-mix(in srgb,var(--rust) 28%,var(--surface));transform:translateY(-3px)}
+.slot.act-m{border-color:var(--mojo);background:color-mix(in srgb,var(--mojo) 28%,var(--surface));transform:translateY(-3px)}
+.lane{position:relative;height:74px;background:var(--sunk);border-radius:4px;overflow:hidden;margin-top:6px}
+.lane i{position:absolute;height:7px;border-radius:2px;transition:width .5s linear}
+.lane .r{background:var(--rust)} .lane .m{background:var(--mojo)}
+.lane-cap{font:.75rem var(--f-mono);color:var(--muted);margin-top:4px}
+/* iterator sim */
+.mask{display:grid;grid-template-columns:repeat(32,1fr);gap:2px;margin:10px 0}
+.mask b{aspect-ratio:1;border-radius:2px;background:var(--sunk);border:1px solid var(--line);transition:background .12s,transform .12s}
+.mask b.on{background:color-mix(in srgb,var(--ink) 55%,var(--surface));border-color:transparent}
+.mask b.head{outline:2px solid var(--rust);outline-offset:1px;transform:scale(1.15)}
+.mask b.hit{background:var(--mojo)}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-top:8px}
+.kv div{background:var(--sunk);border-radius:4px;padding:8px 10px;font-size:.8rem;color:var(--muted)}
+.kv b{display:block;font:600 1.15rem var(--f-mono);color:var(--ink);font-variant-numeric:tabular-nums}
+/* allocator */
+.abar{height:34px;border:1px dashed var(--muted);border-radius:4px;position:relative;background:repeating-linear-gradient(90deg,transparent 0 11px,var(--line) 11px 12px)}
+.abar i{position:absolute;inset:0 auto 0 0;background:var(--mojo);border-radius:3px 0 0 3px;transition:width .3s;min-width:2px}
+input[type=range]{width:100%;accent-color:var(--mojo)}
+/* heatmap */
+.heat{display:grid;grid-template-columns:minmax(120px,1.4fr) repeat(3,1fr);gap:3px;font:12px var(--f-mono);font-variant-numeric:tabular-nums}
+.heat div{padding:8px 6px;border-radius:3px}
+.heat .h{color:var(--muted);font-size:.7rem;letter-spacing:.08em;text-transform:uppercase}
+.heat .c{text-align:center;color:var(--ink)}
+.heat .c small{display:block;color:var(--muted);font-size:10px}
+ul.tight{padding-left:20px;max-width:70ch} ul.tight li{margin:6px 0}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:0 28px}
+@media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head><body>
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">Lab notebook · Mojo 1.2.0 vs Rust slotmap 1.1.1 · x86-64 Emerald Rapids</div>
+  <h1>How a <span class="mojo">Mojo</span> slot map was climbed past <span class="rust">Rust's</span></h1>
+  <p class="lede">Eighteen variants, several dead ends, four changes to the way time was measured. Every step below shows the hypothesis, the machine code it produced, and what the benchmark said.</p>
+  <div class="stats">
+    <div class="stat"><b>0.57×</b><span>geometric mean, Mojo cycles ÷ Rust cycles, 36 measurements</span></div>
+    <div class="stat"><b>31 / 36</b><span>measurements where Mojo is level or ahead</span></div>
+    <div class="stat"><b>1.10×</b><span>worst cell: sequential lookups at 100,000</span></div>
+    <div class="stat"><b>34×</b><span>best cell: refilling scattered holes at 2,000,000</span></div>
+  </div>
+  <nav class="toc" aria-label="Sections">
+    <a href="#hill">The climb</a><a href="#model">What a slot map is</a><a href="#measure">Measuring</a><a href="#steps">Every step</a><a href="#asm">Assembly lab</a><a href="#freelist">Free list vs stack</a><a href="#iter">Iterator</a><a href="#alloc">Allocator</a><a href="#llvm">Same LLVM</a><a href="#results">Results</a><a href="#open">Open ends</a>
+  </nav>
+</header>
+
+<h2 id="hill">The climb</h2>
+<p>The score is the geometric mean of Mojo/Rust time over 12 workloads at 3 sizes. Below 1.00 means Mojo is faster. The first five scores were taken with a nanosecond protocol that turned out to be too noisy to trust (the same binary scored 1.03 and then 1.16), so they are drawn hollow and not connected.</p>
+<div class="panel scroll"><svg id="hillsvg" viewBox="0 0 860 330" style="min-width:640px;width:100%;display:block" role="img" aria-label="Geometric mean score by variant, falling from about 1.0 to 0.57"></svg></div>
+
+<h3>Key findings</h3>
+<ul class="tight">
+  <li><b>The data structure beat the compiler.</b> The three largest gains (free stack, run iterator, region allocator) are design changes Rust's crate could also make. Code generation tuning was worth 5 to 25% per workload; design was worth 2× to 34×.</li>
+  <li><b>At cache-resident sizes, instruction count decides.</b> These loops retire about 4.2 micro-operations per cycle, so one extra <code>shl</code> or one extra store per operation is visible in the score.</li>
+  <li><b>Rust's remaining edge is loop unrolling.</b> rustc's LLVM pipeline unrolled the lookup loop 4×; Mojo 1.2.0 did not unroll any loop I inspected. Hand-unrolling the Mojo driver closed that gap exactly (2.10 to 1.72 cycles, Rust 1.73).</li>
+  <li><b>Return types leak into hot loops.</b> <code>Optional[V]</code> by value left a tag byte and a <code>cmov</code> in the caller; <code>raises</code> and <code>Optional[Pointer]</code> did not.</li>
+  <li><b>The benchmark was wrong three times.</b> Frequency drift, a harness call that forced a store, and a branch predictor that memorized a fixed seed each produced convincing, false numbers.</li>
+</ul>
+
+<h2 id="model">What a slot map is</h2>
+<p>A slot map is an array of slots with stable keys. A key is a slot position plus a version number. Removing an element bumps the slot's version, so old keys stop matching. An odd version means occupied.</p>
+<div class="grid2">
+  <div class="panel">
+    <div class="eyebrow rust">Rust · Slot&lt;u64&gt; · 16 bytes</div>
+    <div class="bytes" id="lay-rust"></div>
+    <p class="note">The value and the next-free index share the same 8 bytes (a union). A vacant slot stores the index of the next vacant slot. Bytes 12 to 15 are padding.</p>
+    <div class="eyebrow rust" style="margin-top:14px">Key</div>
+    <p class="note"><code>idx: u32</code>, <code>version: NonZeroU32</code>. Address = <code>base + (idx &lt;&lt; 4)</code>.</p>
+  </div>
+  <div class="panel">
+    <div class="eyebrow mojo">Mojo final · slot for UInt64 · 16 bytes</div>
+    <div class="bytes" id="lay-mojo"></div>
+    <p class="note">Same size. The 4 padding bytes become a cell of the free stack: cell <i>i</i> holds the <i>i</i>-th free handle. It is unrelated to the value in the same slot.</p>
+    <div class="eyebrow mojo" style="margin-top:14px">Key</div>
+    <p class="note"><code>slot: UInt32</code> is the index already multiplied by 2, <code>version: UInt32</code>. Address = <code>base + slot*8</code>, which x86 encodes in the addressing mode.</p>
+  </div>
+</div>
+<div class="panel scroll">
+<table>
+<tr><th>Aspect</th><th class="rust">Rust slotmap::SlotMap</th><th class="mojo">Final Mojo SlotMap</th></tr>
+<tr><td>Free slots</td><td>Linked list threaded through vacant slots</td><td>LIFO stack of handles</td></tr>
+<tr><td>Where it lives</td><td>The vacant slot's value bytes</td><td>4-byte cell after each version (padding for 8-byte values)</td></tr>
+<tr><td>Element count</td><td><code>num_elems</code> field, updated on every insert and remove</td><td>Derived: <code>(len − nfree) / UNIT − 1</code></td></tr>
+<tr><td>Bounds miss</td><td>Branch</td><td>Branch, straight to the miss path</td></tr>
+<tr><td>Iteration</td><td>Test every slot's version bit</td><td>Runs of occupied slots from a 64-slot mask; one run when there are no holes</td></tr>
+<tr><td>Removal</td><td><code>remove → Option&lt;V&gt;</code></td><td><code>pop raises InvalidKey</code> and <code>remove → Optional[V]</code></td></tr>
+<tr><td>Storage</td><td><code>Vec</code> on the global allocator</td><td><code>malloc</code>/<code>realloc</code>; from 8 MiB a reserved huge-page <code>mmap</code> region</td></tr>
+</table></div>
+
+<h2 id="measure">Measuring: four fixes before the numbers meant anything</h2>
+<div class="panel scroll">
+<table>
+<tr><th>#</th><th>Symptom</th><th>Cause</th><th>Fix</th></tr>
+<tr><td class="n">1</td><td>Same binary scored 1.03, then 1.16</td><td>The VM's core clock moves between levels about 27% apart, on a timescale of seconds</td><td>Run Rust and Mojo back to back per workload; take the median of ratios</td></tr>
+<tr><td class="n">2</td><td>Single rounds still skewed</td><td>A level change between the two processes</td><td>Bracket every 20 ms batch with a calibration loop: <code>x = (x ^ (x &gt;&gt; 29)) * 0xBF58476D1CE4E5B9</code>, 50,000 iterations, 5 cycles each. Drop the batch if the two calibrations differ by more than 2%. Report cycles, not nanoseconds</td></tr>
+<tr><td class="n">3</td><td>Mojo lookup loop had a store per iteration</td><td><code>keep(sum)</code> takes the accumulator's address, so it lived on the stack</td><td>Pass a copy to <code>keep</code></td></tr>
+<tr><td class="n">4</td><td>Rust's half-empty iteration looked like 2.3 cycles per slot at 1,000 elements</td><td>Fixed seed: the branch predictor learned the whole 1,000-slot pattern across repetitions</td><td>Seed = <code>seed + 100·rep</code>. Real cost: 12.7 cycles</td></tr>
+</table></div>
+<p class="note">One more trap: Rust's optimizer collapsed my first calibration loop (a linear congruential step) and ran it 16× faster than Mojo's. The shift-xor-multiply chain compiles to the same 5-cycle dependency chain in both; I checked both disassemblies. All runs are pinned with <code>taskset -c 2</code>.</p>
+
+<h2 id="steps">Every step</h2>
+<p>Each variant is a directory under <code>variants/</code>. A step stayed if interleaved A/B runs showed a gain on its target workloads and no loss elsewhere. Open a step for the low-level detail.</p>
+<div class="row" id="filters" role="group" aria-label="Filter steps"></div>
+<div id="steplist"></div>
+
+<h2 id="asm">Assembly lab</h2>
+<p>These listings are copied from the compiled benchmarks: <code>mojo build --emit asm</code> for Mojo, <code>objdump -d</code> for Rust. Both are AT&amp;T syntax (source, destination). Only the hot loop is shown.</p>
+<div class="row" id="asmtabs" role="group" aria-label="Choose operation"></div>
+<p id="asmintro" class="note" style="max-width:80ch"></p>
+<div class="asm-grid" id="asmgrid"></div>
+<div class="legend"><span class="l-hot">cost this design pays</span><span class="l-ok">what the change bought</span><span class="l-dim">loop bookkeeping</span></div>
+
+<h2 id="freelist">Free list versus free stack</h2>
+<p>This is the 34× cell. After random removals, Rust's free list visits vacant slots in a scattered order, and the only place the next free index is written is inside the vacant slot itself. Each insert must finish loading one slot before it knows the address of the next. At 2,000,000 elements every one of those loads misses the cache and the TLB, and they cannot overlap.</p>
+<p>The stack keeps free handles in consecutive cells. Popping reads the top cell, whose address depends only on a counter. The slot it points to still misses, but nothing waits on that miss, so the CPU runs many inserts ahead and the misses overlap.</p>
+<div class="grid2">
+  <div class="panel">
+    <div class="eyebrow rust">Rust · intrusive linked list</div>
+    <div class="slots" id="fl-r"></div>
+    <div class="lane" id="lane-r"></div>
+    <div class="lane-cap" id="cap-r">8 inserts, each waits for the previous slot's load</div>
+  </div>
+  <div class="panel">
+    <div class="eyebrow mojo">Mojo · LIFO stack in slot padding</div>
+    <div class="slots" id="fl-m"></div>
+    <div class="lane" id="lane-m"></div>
+    <div class="lane-cap" id="cap-m">8 inserts, slot loads issued back to back</div>
+  </div>
+</div>
+<div class="row"><button id="fl-play">Play 8 reinserts</button><button id="fl-reset">Reset</button><span class="note">Each bar is one slot load that misses the cache. Bar position is when it can start.</span></div>
+<div class="panel scroll"><table>
+<tr><th>reinsert_rand, cycles per insert</th><th>1,000</th><th>100,000</th><th>2,000,000</th></tr>
+<tr><td class="rust">Rust</td><td class="n">6.28</td><td class="n">32.46</td><td class="n">464.44</td></tr>
+<tr><td class="mojo">Mojo</td><td class="n">2.43</td><td class="n">4.58</td><td class="n">13.62</td></tr>
+</table></div>
+<h3>Why the stack ended up inside the slots</h3>
+<p>The first stack (<code>v3</code>) was a separate <code>UInt32</code> array. Remove timings became bimodal: the same binary was fast or slow depending on where <code>malloc</code> placed the two blocks. The stack's stores and the slot and key loads sat at matching offsets within 4 KiB pages, and the CPU's store-to-load disambiguation only compares the low 12 address bits, so it kept suspecting a conflict. Moving each stack cell into the 4 padding bytes of a slot (<code>v6</code>) gave the stack the same stride and page offsets as the slots, removed the second allocation, and made the timing stable.</p>
+
+<h2 id="iter">The iterator: per slot, per bit, per run</h2>
+<p>Rust tests one slot per loop iteration. On a half-empty map that is one unpredictable branch per slot, about 12 to 17 cycles each. The Mojo iterator reads 64 version bytes into one mask, then decides per chunk how to walk it.</p>
+<div class="panel">
+  <div class="row" id="pat" role="group" aria-label="Occupancy pattern"></div>
+  <div class="mask" id="mask" aria-hidden="true"></div>
+  <div class="row" id="strat" role="group" aria-label="Walk strategy"></div>
+  <div class="kv" id="iterkv"></div>
+  <p class="note" id="iternote"></p>
+</div>
+<div class="panel scroll"><table>
+<tr><th>Variant</th><th>Strategy</th><th>Full map, 1,000</th><th>Half-empty</th><th>Verdict</th></tr>
+<tr><td><code>v0</code>–<code>v7</code></td><td>Per slot, like Rust</td><td class="n">2.10 (Rust 1.59)</td><td class="n">about Rust's</td><td>Baseline</td></tr>
+<tr><td><code>v8_bitscan</code></td><td>Mask, then one set bit at a time (<code>tzcnt</code>, <code>blsr</code>)</td><td class="n">2× slower than v0</td><td class="n">4.7× faster than Rust at 100,000</td><td>Superseded</td></tr>
+<tr><td><code>v9_simdscan</code></td><td>Mask from 512-bit loads</td><td class="n">no gain</td><td class="n">timing invalid</td><td>Rejected</td></tr>
+<tr><td><code>v10_cleanscan</code></td><td>Per slot, exhaustion test first, single return</td><td class="n">1.77</td><td class="n">about Rust's</td><td>Superseded</td></tr>
+<tr><td><code>v14_runs</code></td><td>Walk runs of ones; no holes means one run and no mask at all</td><td class="n">1.11</td><td class="n">8.5 (Rust 12.7)</td><td>Kept</td></tr>
+<tr><td><code>v15_adaptive</code></td><td>Runs if they average 8+ slots in this chunk, else single bits</td><td class="n">1.11</td><td class="n">2.8</td><td>Kept</td></tr>
+</table></div>
+<p>The run trick is two instructions of bit arithmetic. With <code>start = tzcnt(m)</code>, the run length is <code>tzcnt(~(m &gt;&gt; start))</code>, and <code>m &amp; (m + (1 &lt;&lt; start))</code> clears exactly that run because the add carries through it. The chunk rule is <code>popcnt(m) &gt;= 8 * popcnt(m &amp; ~(m &lt;&lt; 1))</code>: the second popcount counts 0→1 transitions, which is the number of runs.</p>
+
+<h2 id="alloc">Allocation patterns and the custom allocator</h2>
+<p>Mojo has no allocator trait or parameter. Its <code>List</code> and <code>Dict</code> call <code>alloc</code>, which goes to a bundled TCMalloc and has no <code>realloc</code>: growth is allocate, copy, free. Rust's <code>Vec</code> calls the global allocator's <code>realloc</code>, which for glibc can extend in place. So the first allocator change was parity: call libc directly with <code>external_call["realloc", Int]</code>.</p>
+<div class="panel">
+  <label for="an" class="eyebrow">Elements in the map: <span id="an-v" class="mojo"></span></label>
+  <input type="range" id="an" min="0" max="100" value="62">
+  <div class="abar" style="margin-top:12px" aria-hidden="true"><i id="abar-i"></i></div>
+  <div class="note" id="abar-cap" style="margin-top:4px"></div>
+  <div class="kv" id="allockv"></div>
+</div>
+<div class="panel scroll"><table>
+<tr><th>Experiment</th><th>Result</th><th>Verdict</th></tr>
+<tr><td>libc <code>realloc</code> instead of Mojo <code>alloc</code>+copy+free</td><td>Matches what <code>Vec</code> does; needed for parity on growth</td><td class="b-kept">Kept below 8 MiB</td></tr>
+<tr><td>Free stack inside the slot block</td><td>One <code>realloc</code> per growth instead of two; no 4 KiB aliasing</td><td class="b-kept">Kept</td></tr>
+<tr><td>2 MiB-aligned <code>mmap</code> + <code>madvise(MADV_HUGEPAGE)</code></td><td>Kernel granted huge pages (64 MiB, 0 fallbacks). First-touch cost barely moved (5.0 vs 6.5 ns per slot): page faults here are bound by the host</td><td class="b-kept">Kept for the TLB</td></tr>
+<tr><td>Reserve 16× with <code>MAP_NORESERVE</code>, grow in place</td><td><code>insert_grow</code> at 2,000,000: 22.6 → 11.6 cycles (Rust 23.5)</td><td class="b-kept">Kept</td></tr>
+<tr><td>Huge pages on random access</td><td><code>get_rand</code> at 2,000,000: 26.3 → 23.2 at that step (Rust 29); full iteration 6.0 → 4.0</td><td class="b-kept">Kept</td></tr>
+<tr><td>Switch to the region at 2 MiB</td><td><code>insert_grow</code> at 100,000 became 2.48× slower than Rust: every new map paid a fresh 2 MiB page fault</td><td class="b-rejected">Raised to 8 MiB</td></tr>
+<tr><td>Reserve the whole 32-bit index range (64 GiB)</td><td>Works (verified to 80 GiB) and would delete the bounds check, but small maps fault fresh pages on every creation</td><td class="b-rejected">Not adopted</td></tr>
+<tr><td><code>MAP_POPULATE</code>; pooling retired regions</td><td>Moves or hides fault time and needs global state</td><td class="b-probe">Not attempted</td></tr>
+</table></div>
+<p class="note">How the region is made: <code>mmap(bytes + 2 MiB, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE)</code>, round the address up to 2 MiB, <code>munmap</code> the unaligned head and tail, then <code>madvise(…, MADV_HUGEPAGE)</code>. If <code>mmap</code> fails the reservation halves down to the exact size, then falls back to <code>malloc</code>. The branch is behind <code>comptime if CompilationTarget.is_linux()</code>.</p>
+
+<h2 id="llvm">Same LLVM underneath, different front ends</h2>
+<p>Both compilers lower to LLVM IR and share its instruction selection, register allocation and most scalar optimizations. For the same loop written the same way, the two produced the same instructions in almost the same order. The differences came from what each front end hands to LLVM and which passes it schedules.</p>
+<h3>Where they came out the same</h3>
+<ul class="tight">
+  <li><b>Monomorphized generics.</b> <code>SlotMap&lt;u64&gt;</code> and <code>SlotMap[UInt64]</code> each compile to one specialized copy with all sizes and offsets as constants.</li>
+  <li><b>Full inlining of the map into the benchmark loop</b> (<code>#[inline]</code> plus fat LTO in Rust, <code>@inline(.always)</code> in Mojo). Neither listing contains a call in a hot loop except growth.</li>
+  <li><b>Identical instruction choices:</b> scaled-index addressing, <code>cmp</code>/<code>jcc</code> fusion pairs, <code>tzcnt</code>/<code>popcnt</code>/<code>blsr</code>/<code>shlx</code> from BMI when given bit intrinsics, and with <code>target-cpu=native</code> both use AVX-512.</li>
+  <li><b>Same aliasing behaviour.</b> Once the map's address has escaped, both reload struct fields after a store through a pointer, and both write counters back every iteration.</li>
+  <li><b>Destructor elision at compile time:</b> <code>mem::needs_drop</code> in Rust, <code>comptime if not IsTriviallyDeinitable[V]</code> in Mojo.</li>
+</ul>
+<h3>Where they differ</h3>
+<div class="panel scroll"><table>
+<tr><th>Knob or behaviour</th><th class="rust">Rust 1.100</th><th class="mojo">Mojo 1.2.0</th><th>Effect here</th></tr>
+<tr><td>Loop unrolling</td><td>Yes: lookup and remove loops unrolled 4×</td><td>Not observed in any loop</td><td>0.4 cycles per lookup at 1,000 elements, the whole lookup gap</td></tr>
+<tr><td>Vectorization</td><td>Loop and SLP vectorizers run</td><td>No loop vectorization seen; the SLP vectorizer did run and hurt</td><td>Mask build became a <code>vpinsrb</code> chain until blocked</td></tr>
+<tr><td>Branch hints</td><td><code>#[cold]</code>, <code>likely</code> via intrinsics, affects block layout</td><td><code>likely</code>/<code>unlikely</code> accepted, no layout change seen</td><td>Block order had to be steered by how the source was written</td></tr>
+<tr><td>Optional return</td><td><code>Option&lt;u64&gt;</code> returned in two registers, folded after inlining</td><td><code>Optional[V]</code> left a tag byte and <code>cmov</code> in the caller</td><td>Removes 25% behind until <code>pop raises</code></td></tr>
+<tr><td>Error path</td><td><code>panic=abort</code>; <code>Option</code> for misses</td><td><code>raises</code> is a typed second return, no unwinding tables</td><td><code>raises</code> compiled to a plain branch, cheaper than <code>Optional[V]</code></td></tr>
+<tr><td>Unchecked access</td><td><code>get_unchecked</code> in <code>unsafe</code></td><td><code>Pointer.unsafe_offset</code>, <code>unsafe_bitcast</code></td><td>Equivalent code</td></tr>
+<tr><td>Compile-time layout</td><td><code>size_of</code>, const generics, <code>union</code></td><td><code>comptime</code> fields: <code>VER_OFF</code>, <code>CELL_OFF</code>, <code>STRIDE</code>, <code>SCALE</code>; no union, so raw bytes and bitcasts</td><td>Mojo layout is hand-computed, which is what allowed the padding cell</td></tr>
+<tr><td>Dead generic branches</td><td>Not type-checked when <code>cfg</code>'d out</td><td><code>comptime if</code> dead branches are still type-checked</td><td>API variants were swapped by text substitution in <code>compare.py</code></td></tr>
+<tr><td>Optimizer barrier</td><td><code>black_box</code></td><td><code>keep</code>; empty <code>inlined_assembly</code> as an identity</td><td>Used to stop SLP on the mask build</td></tr>
+<tr><td>Heap</td><td>System allocator (glibc), <code>realloc</code></td><td>Bundled TCMalloc via <code>alloc</code>, no <code>realloc</code>; libc reachable through <code>external_call</code></td><td>Mojo side bypasses the standard allocator entirely</td></tr>
+<tr><td>Build flags</td><td><code>opt-level=3</code>, fat LTO, 1 codegen unit, <code>target-cpu=native</code></td><td><code>mojo build</code> (O3, native CPU by default)</td><td>Both whole-program</td></tr>
+</table></div>
+<h3>The dials that moved the score</h3>
+<div class="two">
+<ul class="tight">
+  <li><b>What a key stores.</b> Index → pre-scaled handle. Removes a shift and an add per access.</li>
+  <li><b>What a miss returns.</b> <code>Optional[V]</code> → <code>raises</code>.</li>
+  <li><b>Where free slots are recorded.</b> In the vacant slot → separate array → the slot's padding.</li>
+  <li><b>How many counters are written.</b> Three fields per remove → one.</li>
+</ul>
+<ul class="tight">
+  <li><b>Counter width.</b> <code>UInt32</code> fields → <code>Int</code>, so no zero-extension before addressing.</li>
+  <li><b>Iteration unit.</b> Slot → bit → run, chosen per 64-slot chunk.</li>
+  <li><b>Allocator threshold.</b> 2 MiB hurt; 8 MiB did not.</li>
+  <li><b>Reservation factor.</b> 16× means one copy per 16× of growth.</li>
+</ul>
+</div>
+
+<h2 id="results">Final results</h2>
+<p>Mojo cycles ÷ Rust cycles per operation, <code>u64</code> values, nine paired rounds. Teal is Mojo ahead, copper is Rust ahead. Small print is Mojo / Rust cycles.</p>
+<div class="panel scroll"><div class="heat" id="heat" style="min-width:520px"></div></div>
+<p class="note">Removal rows time <code>pop(key) raises</code>. With <code>remove(key) → Optional[V]</code> the remove rows are 1.00 to 1.10 and churn is 0.62 to 0.73. Geometric mean by size: 0.64 at 1,000, 0.60 at 100,000, 0.48 at 2,000,000.</p>
+
+<h2 id="open">Open ends</h2>
+<ul class="tight">
+  <li><b>Five cells are above 1.00.</b> Mixed hit/miss lookups at 1,000 and 100,000 (1.06, 1.09) are dominated by branch mispredictions on both sides and I did not find the cause of the difference. Sequential lookups at 100,000 (1.10) sit where results vary with physical page placement. The other two are within 2%, inside noise.</li>
+  <li><b>Only <code>u64</code> values were timed.</b> For 4-byte-aligned values the stack cell adds 4 bytes per slot (12 against Rust's 8 for a <code>u32</code>).</li>
+  <li><b>Key semantics changed.</b> <code>key_to_ffi</code> and <code>key_from_ffi</code> convert to Rust's encoding. Index space is 2<sup>31</sup> slots for 16-byte slots.</li>
+  <li><b>The region allocator is Linux-only</b> and relies on <code>madvise</code> huge pages.</li>
+  <li><b>One virtual machine.</b> Calibration removes clock drift but not the hypervisor's effect on page faults, which dominate the 2,000,000-element insert rows.</li>
+  <li><b>Compiler-version tricks.</b> The inline-assembly barrier and the source shapes that steer block layout were validated on Mojo 1.2.0 only.</li>
+  <li><b>Not tried:</b> struct-of-arrays versions for SIMD scanning, a pooled allocator for short-lived maps, a branch-free <code>get(key, default)</code>.</li>
+</ul>
+<p class="note">Source: <code>slotmap_mojo/</code> in the repository. <code>variants/</code> holds every step, <code>results/log.tsv</code> every scored run, <code>compare.py</code> the scoring protocol.</p>
+</div>
+
+<script>
+const $=s=>document.querySelector(s), el=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e};
+const NS='http://www.w3.org/2000/svg', svg=(t,a,txt)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);if(txt!=null)e.textContent=txt;return e};
+
+/* ---------- hill chart ---------- */
+(()=>{
+  const pts=[['v0',1.030,0],['v0',1.160,0],['v1',1.054,0],['v0',0.993,0],['v1',0.980,0],['v7',0.878,1],['v12',0.806,1],['v15',0.621,1],['v16',0.599,1],['v16 final',0.570,1]];
+  const notes={5:'padding stack|pop raises',6:'huge-page|region',7:'run iterator|honest seeds',8:'scaled|handles',9:'direct|bounds miss'};
+  const s=$('#hillsvg'),L=56,R=20,T=24,B=58,W=860-L-R,H=330-T-B,y=v=>T+(1.2-v)/(1.2-0.5)*H,x=i=>L+ (i+.5)*W/pts.length;
+  for(const v of [0.5,0.6,0.7,0.8,0.9,1.0,1.1,1.2]){s.append(svg('line',{x1:L,x2:L+W,y1:y(v),y2:y(v),stroke:v===1?'var(--rust)':'var(--line)','stroke-width':v===1?1.5:1,'stroke-dasharray':v===1?'5 4':''}));s.append(svg('text',{x:L-8,y:y(v)+4,'text-anchor':'end'},v.toFixed(1)));}
+  s.append(svg('text',{x:L+W,y:y(1)-6,'text-anchor':'end',style:'fill:var(--rust)'},'parity with Rust'));
+  s.append(svg('text',{x:L+4,y:T-8},'geometric mean, Mojo ÷ Rust (lower is better)'));
+  const sep=(x(4)+x(5))/2; s.append(svg('line',{x1:sep,x2:sep,y1:T,y2:T+H,stroke:'var(--muted)','stroke-dasharray':'2 4'}));
+  s.append(svg('text',{x:sep-8,y:T+H-8,'text-anchor':'end'},'nanoseconds, noisy'));s.append(svg('text',{x:sep+8,y:T+H-8},'calibrated cycles'));
+  const d=pts.map((p,i)=>p[2]?(i===5?'M':'L')+x(i)+' '+y(p[1]):'').join(' ');s.append(svg('path',{d,class:'path'}));
+  pts.forEach((p,i)=>{
+    s.append(svg('circle',{cx:x(i),cy:y(p[1]),r:p[2]?5:4,fill:p[2]?'var(--mojo)':'var(--surface)',stroke:p[2]?'var(--mojo)':'var(--muted)','stroke-width':1.5}));
+    s.append(svg('text',{x:x(i),y:y(p[1])-11,'text-anchor':'middle',style:'fill:var(--ink)'},p[1].toFixed(2)));
+    s.append(svg('text',{x:x(i),y:T+H+16,'text-anchor':'middle'},p[0]));
+    if(notes[i]){const t=svg('text',{x:x(i),y:T+H+30,'text-anchor':'middle',style:'font-size:9px'});const w=notes[i].split('|');w.forEach((ln,k)=>t.append(svg('tspan',{x:x(i),dy:k?11:0},ln)));s.append(t);}
+  });
+  s.append(svg('circle',{cx:x(9),cy:y(0.57),r:5,fill:'none',stroke:'var(--mojo)','stroke-width':2,class:'climber'}));
+})();
+
+/* ---------- slot layouts ---------- */
+(()=>{
+  const mk=(id,spec)=>{const b=$(id);spec.forEach(([n,c,t])=>{for(let i=0;i<n;i++)b.append(el('span',c,i===0?t:'·'))})};
+  mk('#lay-rust',[[4,'nf','next'],[4,'v','value'],[4,'ver','ver'],[4,'','pad']]);
+  mk('#lay-mojo',[[8,'v','value'],[4,'ver','ver'],[4,'cellm','cell']]);
+  $('#lay-rust').children[0].textContent='value | next_free';$('#lay-rust').children[0].style.gridColumn='span 8';
+  [...$('#lay-rust').children].slice(1,8).forEach(n=>n.remove());
+  [['#lay-rust',[8,4,4]],['#lay-mojo',[8,4,4]]].forEach(([id,sp])=>{const k=[...$(id).children];let i=0;
+    if(id==='#lay-mojo'){k[0].style.gridColumn='span 8';k.slice(1,8).forEach(n=>n.remove());}
+    const r=[...$(id).children];r[1].style.gridColumn='span 4';r.slice(2,5).forEach(n=>n.remove());const q=[...$(id).children];q[2].style.gridColumn='span 4';q.slice(3).forEach(n=>n.remove());});
+})();
+
+/* ---------- steps ---------- */
+const STEPS=[
+['v0_port','Straight port of Rust basic.rs','baseline','Establish correctness and a baseline.','Array-of-structs slots, intrusive free list, sentinel slot 0, libc realloc growth, UInt32 fields like Rust.','Lookup loop is Rust\'s with one more instruction: <code>shlq $4</code> then a separate load. No unrolling. Remove carries an Optional tag: <code>movb $1,%dl … testb %dl,%dl; cmovneq</code>.','Checksums matched on all 36 at the first attempt. About level overall; later measured 22% behind on small lookups, 25% on removes, 10 to 30% on iteration.'],
+['harness','Copy the accumulator before keep()','harness','<code>keep(sum)</code> takes the address of <code>sum</code>, so the compiler keeps it in memory.','Pass <code>keep</code> a copy.','Before: <code>addq (%r14,%rdx),%rcx; movq %rcx,8(%rsp)</code> every iteration. After: the store is gone and the sum stays in a register.','The first score (1.03) had been flattered or hurt at random by this; rescored 1.16, which exposed the noise problem.'],
+['v1_locals','Hoist fields and slot pointers into locals','kept','After a store through a pointer the compiler must assume struct fields changed and reload them.','Read <code>_data</code>, <code>_len</code>, <code>_free_head</code> into locals at the top of each method; write back once.','Fewer <code>movq N(%rsp),%reg</code> reloads inside insert and remove.','Small gain on insert and remove.'],
+['v2_clamp','Branch-free bounds check','rejected','Two data-dependent branches per lookup (bounds, version) could be one: clamp an out-of-range index to the sentinel slot, whose version is even and never matches.','<code>idx = idx if idx &lt; len else 0</code>.','<code>cmpl; cmovael</code> replaced <code>cmpl; jae</code>. The bounds branch was perfectly predicted already, so the cmov only added latency to the address computation.','No gain. Dropped in v7.'],
+['probe: unroll','Hand-unroll the lookup driver 4×','probe','Rust\'s edge at 1,000 elements is automatic loop unrolling, not a better lookup.','Write the benchmark loop body four times in Mojo.','Rust\'s loop has four lookup bodies per <code>add $0x20,%rcx</code>; Mojo has one body per <code>incq; cmpq; jne</code>.','Mojo 2.10 → 1.72 cycles, Rust 1.73. Cause confirmed. Not used for scoring: the library should not depend on the caller unrolling.'],
+['v3_freestack','Free slots in a separate LIFO array','kept','The linked list makes each insert wait on a load from the vacant slot. A stack makes the next address depend only on a counter.','Second allocation of <code>UInt32</code> indices, pushed on remove, popped on insert.','Insert-reuse path: load <code>stack[n-1]</code>, then write the slot. No load feeds the next iteration.','<code>reinsert_rand</code> at 2,000,000 about 20× faster. Growth got slower: two reallocs.'],
+['v4_nocount','Drop the element counter','kept','<code>len</code> is slot count minus stack height. Growth only happens when the stack is empty, so the stack never needs copying.','Remove <code>_num_elems</code>; on growth replace the stack block without copying.','One fewer <code>incl/decl N(%rsp)</code> read-modify-write per insert and remove.','Small gain on insert, remove, churn.'],
+['v5_rm_locals / v5_rm_branchless','Two remove rewrites, A/B tested','rejected','A fully branch-free remove for trivially copyable values would avoid the miss branch.','Compute the new version, stack height and stack slot with conditional selects.','The <code>Optional</code> result still needed its tag, so the branch came back in the caller, now after more work.','Branchless was slower. The locals version was kept as the base for v6.'],
+['probe: remove','Delete, move or redirect the stack store','probe','Find why remove was still 25% behind although its instruction count matched Rust\'s.','Three throwaway builds: no stack store; store to a fixed address; store moved earlier.','Same instructions, bimodal timing depending on heap placement.','4 KiB aliasing between the stack array\'s stores and slot/key loads. Led to v6.'],
+['v6_padstack','Free stack in a 4-byte cell inside each slot','kept','If stack cells share the slots\' stride and page offsets, a stack store can only alias a load of the same slot.','Slot layout becomes value, version, cell. Cell <i>i</i> of the block is stack entry <i>i</i>.','Push is one store: <code>movl %ecx,12(%r15,%r13,8)</code>. One allocation again.','Timing stable. Random removes at 100,000: 12.3 → 10.9 cycles.'],
+['v7_lean','Int counters, branch bounds, pop() raises','kept','The remaining remove gap is the <code>Optional[V]</code> tag byte and <code>cmov</code> in the caller.','Counters become <code>Int</code> (no zero-extends). Bounds check is a branch again. New <code>pop(key) raises InvalidKey -&gt; V</code>.','The tag/cmov block disappears; miss is a plain jump to the next iteration.','Remove at 1,000: 3.87 → 3.09 cycles, equal to Rust. First calibrated score: 0.88.'],
+['v8_bitscan','Iterate set bits of a 64-slot mask','superseded','One hard-to-predict branch per 64 slots instead of one per slot.','Gather 64 version low bits into a <code>UInt64</code>, loop with <code>tzcnt</code> and <code>blsr</code>.','LLVM\'s SLP vectorizer turned the gather into <code>vpinsrb</code> ×7, <code>vpmovzxbw</code>, <code>vpsllvw</code>, <code>vpshufd</code>… (53 <code>vpinsrb</code> in the binary).','Half-empty iteration 4.7× faster than Rust at 100,000. Full iteration twice as slow as v0.'],
+['v9_simdscan','Build the mask with 512-bit loads','rejected','<code>vpslld $31</code> + <code>vpmovd2m</code> pulls 16 version bits per instruction.','Explicit <code>SIMD[UInt32,16]</code> loads over the slot array.','<code>vpslld $31,(%rax),%zmm10; vpmovd2m %zmm10,%k0; kmovd %k0,%ecx</code> per 4 slots (the versions are 16 bytes apart, so three of four lanes are wasted).','Using zmm registers moved the core to a lower frequency level, which shifted every other timing. No gain at 1,000.'],
+['v10_cleanscan','Per-slot scan shaped for the for-protocol','superseded','<code>__next__</code> that raises <code>StopIteration</code> leaves a "has value" flag unless the exhaustion test comes first and there is one return.','Reorder the iterator body.','v0 had <code>movb $1,%dil; testb %dil,%dil; jne</code> in the loop; v10 folds it away.','Full iteration 2.10 → 1.77 cycles, still 10% behind Rust\'s unrolled-free 1.59.'],
+['v11_bitscan2','Block SLP with an empty inline-asm identity','kept','If each bit passes through an opaque scalar operation, the SLP vectorizer cannot pack them.','<code>inlined_assembly["", UInt64, constraints="=r,0"](bit)</code>.','Visible as empty <code>#APP / #NO_APP</code> pairs between <code>movzbl; andl $1</code> and the shifts. No instruction is emitted for it.','Mask build about 0.5 cycles per slot cheaper. Lives on inside v14.'],
+['v12_region','Reserved huge-page region for large maps','kept','Growth by realloc copies; 4 KiB pages make random access TLB-bound at 32 MB.','At 8 MiB move to an <code>mmap</code> region reserved 16×, <code>MADV_HUGEPAGE</code>.','Teardown shows the two paths: <code>testq %r12,%r12; je → free</code>, else <code>munmap</code>.','Large-map workloads 1.3 to 2.2× faster. With a 2 MiB threshold <code>insert_grow</code> at 100,000 was 2.48× behind, so 8 MiB. Score 0.81.'],
+['v13_final','Skip the redundant or-1 in items()','kept','A stored version of an occupied slot is already odd.','<code>Key(slot=, odd_version=)</code> constructor that trusts the caller.','One <code>orl $1</code> fewer per yielded key.','Within noise. Kept because it is free.'],
+['harness','Vary seeds per repetition','harness','At 1,000 elements the predictor memorizes a fixed hit/miss pattern across repetitions.','<code>seed + 100·rep</code> in both benchmarks.','No code change in the map.','Rust half-empty iteration at 1,000 went from 2.3 to 12.7 cycles. Mojo\'s mixed lookups rose too. Earlier scores are not comparable.'],
+['v14_runs','Walk runs of consecutive occupied slots','kept','A run needs no version test per slot, only a pointer compare. A map with no holes is one run and needs no mask.','<code>_Scan</code> with <code>_cur</code>, <code>_run_end</code>, <code>_mask</code>; dense flag from <code>nfree == 0</code>.','Inner loop: <code>addq (%rdx),%r15; leaq 16(%rdx),%r10; cmpq %r9,%r10; jne</code>.','Full iteration 1.11 cycles against Rust\'s 1.59. Half-empty 8.5 against 12.7: short runs make the end-of-run branch unpredictable.'],
+['v15_adaptive','Per chunk: runs or single bits','kept','If runs in this chunk are short, stepping one set bit at a time makes the "run ended" branch always taken.','<code>long_runs = pop_count(m) &gt;= 8 * pop_count(m &amp; ~(m &lt;&lt; 1))</code>.','<code>popcntq; leaq (%rdi,%rdi); andnq; popcntq; shll $3; cmpl</code> then two <code>cmovae</code> choose run length and mask update without a branch.','Half-empty 8.5 → 2.8 cycles. Full unchanged. Score 0.62.'],
+['v16_scaled','Pre-scaled key handles, direct bounds miss','final','If the key already holds index×2, the slot address is <code>base + handle*8</code>: one addressing mode, no <code>shl</code>, no <code>add</code>.','<code>Key.slot = index * STRIDE / SCALE</code>; <code>_len</code>, <code>_cap</code>, <code>_nfree</code> in handle units. First attempt kept the "redirect to sentinel" on a bounds miss, and the phi brought the <code>shl</code> back; returning the miss directly removed it.','<code>movl 8(%r15,%rcx,8),%edx</code> where v0 had <code>shlq $4,%rdx; movl 8(%r14,%rdx),%esi</code>.','Lookups at 1,000: 2.10 → 1.60 cycles (Rust 1.72). Removes 3.09 → 2.54. Score 0.60, then 0.57 with the direct miss.']
+];
+(()=>{
+  const kinds=['all','kept','final','rejected','superseded','probe','harness','baseline'];
+  const f=$('#filters'),list=$('#steplist');let cur='all';
+  const draw=()=>{list.innerHTML='';STEPS.filter(s=>cur==='all'||s[2]===cur).forEach(s=>{
+    const d=el('details','step');d.append(el('summary','',`<span class="id">${s[0]}</span><span class="ttl">${s[1]}</span><span class="badge b-${s[2]}">${s[2]}</span>`));
+    d.append(el('div','body',`<div><h4>Hypothesis</h4><p>${s[3]}</p><h4>Change</h4><p>${s[4]}</p></div><div><h4>In the machine code</h4><p>${s[5]}</p><h4>Measured</h4><p>${s[6]}</p></div>`));list.append(d)});};
+  kinds.forEach(k=>{const n=k==='all'?STEPS.length:STEPS.filter(s=>s[2]===k).length;const b=el('button','',`${k} ${n}`);b.setAttribute('aria-pressed',k===cur);b.onclick=()=>{cur=k;[...f.children].forEach(c=>c.setAttribute('aria-pressed',c===b));draw()};f.append(b)});
+  draw();list.firstChild.open=true;
+})();
+
+/* ---------- assembly ---------- */
+// line prefix: ! cost, + gain, ~ bookkeeping; text after ## is the comment
+const ASM={
+lookup:{label:'Lookup',intro:'sum += *map.get(key) over an array of keys. Rust unrolls four lookups per loop trip. Mojo v0 pays a shift, and before the harness fix a store. Mojo v16 has no shift because the key already holds the scaled handle.',panes:[
+['Rust','rust','1.72 cycles at 1,000',[
+'mov  0x4(%rcx),%esi ## key.idx','cmp  %rsi,%rbp','jbe  next ## idx >= len','!shl  $0x4,%rsi ## idx * 16','mov  0x8(%r14,%rsi,1),%edi ## slot.version','cmp  (%rcx),%edi','jne  next','!add  %r14,%rsi ## slot address','add  (%rsi),%r15 ## sum += value',
+'+mov  0xc(%rcx),%esi ## 2nd lookup, same trip','~  … 7 more instructions …','+mov  0x14(%rcx),%esi ## 3rd','~  … 7 more instructions …','+mov  0x1c(%rcx),%esi ## 4th','~  … 7 more instructions …','~add  $0x20,%rcx ## 4 keys','~add  $-4,%rdx','~je   done'],
+'9 instructions per lookup plus 3 per four lookups. The unrolling is what LLVM added on rustc\'s behalf.'],
+['Mojo v0_port','mojo','2.10 cycles',[
+'movl (%rbx,%rax,8),%edx ## key.index','cmpl %ebp,%edx','jae  next','!shlq $4,%rdx ## idx * 16','movl 8(%r14,%rdx),%esi ## version','cmpl 4(%rbx,%rax,8),%esi','jne  next','addq (%r14,%rdx),%rcx ## sum += value','!movq %rcx,8(%rsp) ## keep(sum) forces a store','!jmp  next','~incq %rax','~cmpq %rax,%r15','~je   done'],
+'Same lookup as Rust, one trip per key. The store vanished after the harness fix; the shift stayed until v16.'],
+['Mojo v16_scaled','mojo','1.60 cycles',[
+'movl (%r14,%rax,8),%ecx ## key.slot = idx*2','cmpq %rcx,%rbp','jle  next ## direct miss','+movl 8(%r15,%rcx,8),%edx ## version, no shift','cmpl 4(%r14,%rax,8),%edx','jne  next','+addq (%r15,%rcx,8),%rbx ## sum += value','~incq %rax','~cmpq %rax,%r13','~jne  loop'],
+'10 instructions per lookup, still not unrolled. Fewer than Rust\'s 9.75 would need unrolling; it is ahead anyway because the address has no dependency on a shift.']]},
+remove:{label:'Remove',intro:'Remove a key and add the value to a checksum. v0 returns Optional[V]; v16 uses pop(), which raises on a miss. The Rust listing is one of four unrolled copies from the phase that builds the free list (value discarded there).',panes:[
+['Rust','rust','3.01 cycles at 1,000',[
+'mov  0x4(%rax),%esi ## key.idx','cmp  %rsi,%r15','jbe  next','mov  (%rax),%edi ## key.version','mov  %rsi,%r8','!shl  $0x4,%r8','cmp  %edi,0x8(%r14,%r8,1)','jne  next','!add  %r14,%r8','mov  %ecx,(%r8) ## slot.next_free = free_head','inc  %edi','mov  %edi,0x8(%r8) ## version + 1','mov  %esi,%ecx ## free_head = idx'],
+'The free list costs one store into the slot being vacated, which is already in cache. Cheap to push, expensive to pop.'],
+['Mojo v0_port','mojo','3.87 cycles',[
+'movl (%r14,%rax,8),%esi','cmpl %ebp,%esi','jae  miss','movq %rsi,%rdx','!shlq $4,%rdx','movl 8(%r13,%rdx),%ecx','cmpl 4(%r14,%rax,8),%ecx','jne  miss','movq (%r13,%rdx),%rcx ## take value','movl %r15d,(%r13,%rdx) ## next_free = head','!movl %esi,24(%rsp) ## write free_head field','!decl 28(%rsp) ## num_elems -= 1','!movq 8(%rsp),%r13 ## reload data pointer','movl 4(%r14,%rax,8),%edi','incl %edi','movl %edi,8(%r13,%rdx)','!movb $1,%dl ## Optional tag = Some','movl %esi,%r15d','~incq %rax','!testb %dl,%dl ## unwrap the Optional','!movl $0,%edx','!cmovneq %rcx,%rdx','addq %rdx,%rbx','~cmpq %rax,%r12','~je   done'],
+'Three field writes, a reload, and four instructions that exist only to carry and test the Optional tag.'],
+['Mojo v16_scaled','mojo','2.54 cycles',[
+'movl (%r14,%rax,8),%ecx ## key.slot','cmpq %rcx,%rbp','jle  next','movl 4(%r14,%rax,8),%edx ## key.version','+cmpl %edx,8(%r15,%rcx,8) ## compare in place','jne  next','incl %edx','leaq 2(%r13),%rsi ## nfree + UNIT','movl %edx,8(%r15,%rcx,8) ## version + 1','addq (%r15,%rcx,8),%rbx ## sum += value','movq %rsi,40(%rsp) ## the one field write','+movl %ecx,12(%r15,%r13,8) ## push handle into cell','movq %rsi,%r13','~incq %rax','~cmpq %rax,%r12','~jne  loop'],
+'No tag, no counter, no shift. The push lands in the padding cell at stack height, 12 bytes into a slot.']]},
+reuse:{label:'Insert into a hole',intro:'Insert when free slots exist. Watch which load feeds the next iteration: that is the dependency chain that made Rust 34× slower at 2,000,000 elements.',panes:[
+['Rust','rust','464 cycles at 2,000,000',[
+'mov  %ecx,%edi ## free_head','cmp  %rdi,%rbp','ja   reuse','reuse:','mov  %rdi,%rdx','shl  $0x4,%rdx','!mov  (%r12,%rdx,1),%ecx ## next head = slot.next_free','mov  0x8(%r12,%rdx,1),%esi ## version','or   $0x1,%rsi','mov  %r13,(%r12,%rdx,1) ## write value','mov  %esi,0x8(%r12,%rdx,1) ## version |= 1','shl  $0x20,%rsi ## build key','~inc  %r13','~inc  %eax ## num_elems','~cmp  %r13,%r8'],
+'%ecx, loaded from the vacant slot, is the next iteration\'s address. A cache miss here blocks everything after it.'],
+['Mojo v16_scaled','mojo','13.6 cycles',[
+'testq %r12,%r12 ## nfree != 0','jne  reuse','reuse:','+movl -4(%r14,%r12,8),%edx ## handle = top cell','+addq $-2,%r12 ## nfree -= UNIT','movq %r12,32(%rsp)','movl 8(%r14,%rdx,8),%esi ## version (may miss)','orq  $1,%rsi','movq %rcx,(%r14,%rdx,8) ## write value','movl %esi,8(%r14,%rdx,8)','shlq $32,%rsi ## build key','~incq %rcx','~cmpq %rcx,%rbx'],
+'The next iteration needs only %r12, a counter. The top cells are consecutive memory, so the slot misses overlap instead of queueing.']]},
+iter:{label:'Iterate',intro:'Sum every value. Rust and Mojo v0 test one slot per trip. Mojo v16 walks a run with no test on the data at all; the mask work happens once per 64 slots.',panes:[
+['Rust','rust','1.59 full · 12.7 half-empty',[
+'loop:','cmp  %rbx,%rax ## end?','je   done','lea  0x10(%rax),%r15','!testb $0x1,0x8(%rax) ## occupied?','mov  %r15,%rax','!je   loop ## data-dependent branch','add  -0x10(%r15),%r12','jmp  loop'],
+'Tight and fine on a full map. On a half-empty map the je mispredicts about every other slot.'],
+['Mojo v0_port','mojo','2.10 full',[
+'scan:','cmpq %rax,%rsi','je   exhausted','leaq 16(%rsi),%rdx','!testb $1,8(%rsi)','movq %rdx,%rsi','!je   scan','leaq -16(%rdx),%rsi','!movb $1,%dil ## "has value" flag','!testb %dil,%dil','!jne  body','body:','addq (%rsi),%rcx','!movq %rcx,8(%rsp)','jmp  outer'],
+'Rust\'s loop plus the residue of the iterator protocol: a flag set and immediately tested.'],
+['Mojo v16 · run walk','mojo','1.11 full · 2.87 half-empty',[
+'run:','+addq (%rdx),%r15 ## sum += value','movq %r10,%rdx','cmpq %r9,%r10 ## run end?','je   next_run','leaq 16(%rdx),%r10','cmpq %r9,%r10','jne  run','~ ','~; once per 64-slot chunk:','popcntq %rdi,%rsi ## occupied','leaq (%rdi,%rdi),%rdx','andnq %rdi,%rdx,%rdx ## 0→1 transitions','popcntq %rdx,%r8 ## number of runs','shll $3,%r8d','tzcntq %rdi,%rdx ## first occupied','cmpl %r8d,%esi ## runs long enough?','+cmovaeq %r11,%r9 ## run length or 1 slot','+cmovaeq %r10,%rsi ## clear run or 1 bit'],
+'The only branch in the walk is a pointer compare. The run-or-bit decision is two conditional moves, so it cannot mispredict.']]},
+mask:{label:'Mask build',intro:'Collecting 64 "occupied" bits into one register. The same source produced three very different listings depending on what LLVM\'s vectorizers were allowed to see.',panes:[
+['v8 · SLP vectorized','mojo','slow',[
+'movzbl -96(%rsi),%r8d','vmovd  %r8d,%xmm2','!vpinsrb $1,-112(%rsi),%xmm2,%xmm2','!vpinsrb $2,-80(%rsi),%xmm2,%xmm2','!vpinsrb $3,-64(%rsi),%xmm2,%xmm2','!vpinsrb $4,-48(%rsi),%xmm2,%xmm2','!vpinsrb $5,-32(%rsi),%xmm2,%xmm2','!vpinsrb $6,-16(%rsi),%xmm2,%xmm2','!vpinsrb $7,(%rsi),%xmm2,%xmm2','vpmovzxbw %xmm2,%ymm2','vpsllvw %ymm0,%ymm2,%ymm2','vpmovwb %ymm2,%xmm2','vpand  %xmm1,%xmm2,%xmm2','vpshufd $85,%xmm2,%xmm3','vpor   %xmm3,%xmm2,%xmm2','vpsrld $16,%xmm2,%xmm3','vpor   %xmm3,%xmm2,%xmm2'],
+'The SLP vectorizer saw eight independent bytes and packed them. Each vpinsrb is two micro-operations and they chain through %xmm2.'],
+['v9 · 512-bit','mojo','rejected',[
+'!vpslld $31,(%rax),%zmm10 ## 4 slots per load','!vpslld $31,64(%rax),%zmm11','!vpslld $31,192(%rax),%zmm12','vpmovd2m %zmm12,%k0','kmovd  %k0,%ecx','vpmovd2m %zmm10,%k0','kmovd  %k0,%edx','vpmovd2m %zmm11,%k0','kmovd  %k0,%esi','vmovd  %esi,%xmm12','vpinsrw $1,%edx,%xmm12,%xmm12','~ … 16 loads per 64 slots …'],
+'Versions are 16 bytes apart, so each 64-byte load yields 4 useful bits. Touching zmm registers also moved the core to a slower frequency level.'],
+['v11+ · scalar, SLP blocked','mojo','kept',[
+'movzbl -112(%r9),%r11d','andl $1,%r11d','+#APP ## empty inline asm: an identity','+#NO_APP','movzbl -96(%r9),%r12d','andl $1,%r12d','+#APP','+#NO_APP','addq %r12,%r12','orq  %r11,%r12','movzbl -80(%r9),%r13d','andl $1,%r13d','+#APP','+#NO_APP','shlq $2,%r13','~ … 8 bits per group, 8 groups …','shlxq %r8,%r9,%r9','orq  %r9,%rdi'],
+'The barrier emits nothing but hides each bit from the vectorizer. Loads are independent, so eight run in parallel.']]}
+};
+(()=>{
+  const tabs=$('#asmtabs'),grid=$('#asmgrid');
+  const show=k=>{const a=ASM[k];$('#asmintro').textContent=a.intro;grid.innerHTML='';
+    a.panes.forEach(([name,lang,cyc,lines,foot])=>{const p=el('div','asm');p.append(el('header','',`<span style="color:var(--${lang==='rust'?'code-hot':'code-ok'})">${name}</span><span class="cyc">${cyc}</span>`));
+      const pre=el('pre');pre.tabIndex=0;lines.forEach(l=>{let c='';if('!+~'.includes(l[0])){c={'!':'hot','+':'ok','~':'dim'}[l[0]];l=l.slice(1)}const [code,cm]=l.split(' ## ');const s=el('span','ln '+c);s.textContent=code.padEnd(cm?30:0);if(cm){const i=el('i');i.textContent='# '+cm;s.append(i)}pre.append(s)});
+      p.append(pre);p.append(el('footer','',foot));grid.append(p)});
+    [...tabs.children].forEach(b=>b.setAttribute('aria-pressed',b.dataset.k===k));};
+  Object.keys(ASM).forEach(k=>{const b=el('button','',ASM[k].label);b.dataset.k=k;b.onclick=()=>show(k);tabs.append(b)});show('lookup');
+})();
+
+/* ---------- free list sim ---------- */
+(()=>{
+  const N=16,holes=[11,3,14,6,9,1,12,5]; // removal order
+  const chain=[...holes].reverse();      // Rust: head is the last removed
+  const R=$('#fl-r'),M=$('#fl-m'),LR=$('#lane-r'),LM=$('#lane-m');let timer=null;
+  const build=()=>{R.innerHTML='';M.innerHTML='';LR.innerHTML='';LM.innerHTML='';
+    for(let i=0;i<N;i++){const hr=chain.indexOf(i),occ=!holes.includes(i);
+      const r=el('div','slot'+(occ?' occ':''),occ?`v${i}`:`→${hr<7?chain[hr+1]:'∅'}<small>next_free</small>`);R.append(r);
+      const m=el('div','slot'+(occ?' occ':''),(occ?`v${i}`:'–')+`<small>cell ${i<8?holes[i]:'·'}</small>`);M.append(m);}
+    $('#cap-r').textContent='8 inserts, each waits for the previous slot\'s load';$('#cap-m').textContent='8 inserts, slot loads issued back to back';
+    for(let k=0;k<8;k++){const a=el('i','r');a.style.cssText=`left:${k*12.5}%;top:${4+k*8.5}px;width:0`;LR.append(a);const b=el('i','m');b.style.cssText=`left:${k*1.6}%;top:${4+k*8.5}px;width:0`;LM.append(b);}};
+  const play=()=>{clearInterval(timer);build();let k=0;timer=setInterval(()=>{
+      [...R.children].forEach(c=>c.classList.remove('act-r'));[...M.children].forEach(c=>c.classList.remove('act-m'));
+      if(k>=8){clearInterval(timer);$('#cap-r').textContent='Total time ≈ 8 misses end to end';$('#cap-m').textContent='Total time ≈ 1 miss plus a little';return}
+      const rs=R.children[chain[k]];rs.classList.add('act-r','occ');rs.innerHTML='new';LR.children[k].style.width='12.5%';
+      const hm=holes[7-k];const ms=M.children[hm];ms.classList.add('act-m','occ');ms.firstChild.textContent='new';M.children[7-k].classList.add('act-m');LM.children[k].style.width='12.5%';k++},650);};
+  $('#fl-play').onclick=play;$('#fl-reset').onclick=()=>{clearInterval(timer);build()};build();
+  // rest state: show the bars so the picture is complete without pressing play
+  [...LR.children].forEach(b=>b.style.width='12.5%');[...LM.children].forEach(b=>b.style.width='12.5%');
+})();
+
+/* ---------- iterator sim ---------- */
+(()=>{
+  const rnd=(s=>()=>(s=(s*1103515245+12345)&0x7fffffff)/0x7fffffff)(7);
+  const P={ 'Full':Array(64).fill(1), 'Random half':Array.from({length:64},()=>rnd()<.5?1:0),
+    'Long runs':Array.from({length:64},(_,i)=>(i>=9&&i<=11)||(i>=40&&i<=42)?0:1), 'One hole':Array.from({length:64},(_,i)=>i===29?0:1) };
+  const S=['Per slot (Rust, v0)','Per bit (v8)','Per run (v14)','Adaptive (v15, final)'];
+  let pat='Random half',st=3,timer=null;const mask=$('#mask');
+  const runs=m=>{const r=[];let s=-1;m.forEach((b,i)=>{if(b&&s<0)s=i;if((!b||i===63)&&s>=0){r.push([s,b?i:i-1]);s=-1}});return r};
+  const stops=()=>{const m=P[pat],rs=runs(m),pc=m.reduce((a,b)=>a+b,0),long=pc>=8*rs.length;
+    const mode=st===0?'slot':st===1?'bit':st===2?'run':(long?'run':'bit');
+    const seq=mode==='slot'?m.map((_,i)=>[i,i]):mode==='bit'?m.map((b,i)=>b?[i,i]:null).filter(Boolean):rs;return{m,rs,pc,long,mode,seq}};
+  const draw=()=>{clearInterval(timer);const {m,rs,pc,long,mode,seq}=stops();mask.innerHTML='';m.forEach(b=>mask.append(el('b',b?'on':'')));
+    const dd=mode==='slot'?64:0;
+    $('#iterkv').innerHTML=`<div><b>${pc}</b>occupied (popcnt)</div><div><b>${rs.length}</b>runs (0→1 transitions)</div><div><b>${seq.length}</b>loop trips for this chunk</div><div><b>${dd}</b>branches that depend on slot data</div>`;
+    $('#iternote').textContent=st===3?`Rule: ${pc} >= 8 × ${rs.length} is ${long}. This chunk is walked by ${long?'run':'single bit'}.`+(pat==='Full'?' A map with no holes skips the mask entirely and is one run from first slot to last.':''):
+      st===0?'Every slot is loaded and tested. Cheap when the answer is always "occupied", a misprediction about every other slot when it is random.':
+      st===1?'One trip per occupied slot, each with tzcnt and blsr. No data-dependent branch, but on a full map this is slower than just walking.':
+      'One trip per run. The end-of-run compare is predictable when runs are long and a coin flip when they are 1 or 2 slots.';
+    let k=0;timer=setInterval(()=>{[...mask.children].forEach(c=>c.classList.remove('head'));if(k>=seq.length){k=0;[...mask.children].forEach(c=>c.classList.remove('hit'));return}
+      const [a,b]=seq[k++];for(let i=a;i<=b;i++){mask.children[i].classList.add('head');if(m[i])mask.children[i].classList.add('hit')}},mode==='slot'?70:mode==='bit'?110:420);};
+  const grp=(id,names,get,set)=>{const g=$(id);names.forEach((n,i)=>{const b=el('button','',n);b.onclick=()=>{set(n,i);[...g.children].forEach(c=>c.setAttribute('aria-pressed',c===b));draw()};b.setAttribute('aria-pressed',get(n,i));g.append(b)})};
+  grp('#pat',Object.keys(P),n=>n===pat,n=>pat=n);grp('#strat',S,(n,i)=>i===st,(n,i)=>st=i);
+  if(matchMedia('(prefers-reduced-motion: reduce)').matches){draw();clearInterval(timer)}else draw();
+})();
+
+/* ---------- allocator ---------- */
+(()=>{
+  const MiB=1<<20,fmt=b=>b>=1024*MiB?(b/1024/MiB).toFixed(b%(1024*MiB)?1:0)+' GiB':b>=MiB?(b/MiB).toFixed(b%MiB?1:0)+' MiB':(b/1024).toFixed(0)+' KiB';
+  const upd=()=>{const t=+$('#an').value/100,n=Math.round(1000*Math.pow(40000,t));let cap=4,grows=0;while(cap<n+1){cap*=2;grows++}
+    let bytes=cap*16,mode,reserved,note,copies;
+    if(bytes<8*MiB){mode='malloc / realloc';reserved=bytes;copies=`${grows} realloc calls (may move)`;note='Below 8 MiB the block lives on the libc heap, like Rust\'s Vec.'}
+    else{const big=n+1>8388608;reserved=big?4096*MiB:128*MiB;bytes=Math.ceil((n+1)*16/(2*MiB))*2*MiB;mode='mmap region, huge pages';copies=big?'19 reallocs, then 2 region moves':'19 reallocs, then 1 region move';
+      note=big?'Second region: reaching 256 MiB reserved 16× again. No further copy until 268 million slots.':'First region: reaching 8 MiB reserved 128 MiB. Growth from here only touches new pages; nothing is copied until 8.4 million slots.'}
+    $('#an-v').textContent=n.toLocaleString('en-US');$('#abar-i').style.width=Math.max(.4,100*bytes/reserved)+'%';
+    $('#abar-cap').textContent=`Dashed box: ${fmt(reserved)} of address space. Filled: ${fmt(bytes)} in use. ${note}`;
+    $('#allockv').innerHTML=`<div><b>${mode}</b>where the slots live</div><div><b>${fmt(reserved)}</b>address space held</div><div><b>${bytes>=8*MiB?bytes/(2*MiB):'0'}</b>2 MiB pages touched</div><div><b style="font-size:.85rem">${copies}</b>to grow from empty</div>`;};
+  $('#an').oninput=upd;upd();
+})();
+
+/* ---------- heatmap ---------- */
+(()=>{
+  const D=[['insert_grow',3.46,3.96,2.61,3.55,11.56,23.50],['insert_reserved',2.60,3.76,2.56,3.77,9.70,10.73],['get_seq',1.60,1.72,2.71,2.43,6.65,7.80],['get_rand',1.61,1.73,5.09,5.89,17.43,28.62],['get_mixed_rand',14.87,14.10,23.93,21.86,30.71,43.68],['iter_values_full',1.11,1.59,1.49,1.94,3.20,6.84],['iter_values_half',2.87,12.68,3.22,14.31,5.77,16.86],['iter_kv_half',3.45,12.24,3.71,13.59,6.25,16.07],['remove_seq',2.54,3.01,3.34,3.22,7.01,8.58],['remove_rand',3.02,3.09,6.28,8.24,21.76,34.82],['reinsert_rand',2.43,6.28,4.58,32.46,13.62,464.44],['churn',8.37,12.23,26.20,39.33,107.29,189.62]];
+  const h=$('#heat');['workload','1,000','100,000','2,000,000'].forEach(t=>h.append(el('div','h',t)));
+  D.forEach(r=>{h.append(el('div','',r[0]));for(let i=0;i<3;i++){const m=r[1+2*i],ru=r[2+2*i],q=m/ru;
+    const c=el('div','c',`<b>${q.toFixed(2)}</b><small>${m} / ${ru}</small>`);
+    const pct=q<=1?Math.min(70,12+ -Math.log2(q)*22):Math.min(60,15+(q-1)*300);
+    c.style.background=`color-mix(in srgb, var(--${q<=1?'mojo':'rust'}) ${pct.toFixed(0)}%, var(--surface))`;h.append(c)}});
+})();
+</script>
+</body></html>

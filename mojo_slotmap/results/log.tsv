@@ -1,0 +1,11 @@
+time	variant	geomean	worst	worst_at	wins	total	checksums_ok	note
+2026-11-15T05:47:21	v0_port	1.0297	1.509	get_mixed_rand@1000	19	36	yes	straight port of basic.rs
+2026-11-15T05:52:04	v0_port	1.1597	1.682	remove_seq@1000	6	36	yes	v0 after bench keep() fix
+2026-11-15T05:53:15	v1_locals	1.0543	1.779	get_mixed_rand@1000	10	36	yes	hoist fields/pointers into locals
+2026-11-15T05:55:24	v0_port	0.9932	1.393	remove_rand@100000	16	36	yes	v0, 8 rounds
+2026-11-15T05:57:23	v1_locals	0.9799	1.451	get_mixed_rand@1000	19	36	yes	v1, 8 rounds
+2026-11-15T06:18:14	v7_lean	0.8775	1.632	get_mixed_rand@1000	14	36	yes	v7: padding free-stack, Int counters, pop() raises
+2026-11-15T06:31:53	v12_region	0.8057	2.480	insert_grow@100000	21	36	yes	v12: v10 + reserved huge-page region allocator
+2026-11-15T06:39:03	v15_adaptive	0.6210	1.218	get_seq@1000	28	36	yes	v15: adaptive run/bit iterators; bench seeds vary per rep
+2026-11-15T06:43:52	v16_scaled	0.5994	1.218	get_seq@1000	29	36	yes	v16: pre-scaled key handles (no shift in slot addressing)
+2026-11-15T06:47:26	v16_scaled	0.5703	1.096	get_seq@100000	31	36	yes	v16 final: scaled handles + direct bounds miss

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hybrid generative UI on Datastar</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/components.js"></script>
+</head>
+<!-- Signals starting with "_" stay in the browser: Datastar does not send them back to the server. -->
+<body data-signals="{prompt: 'Show me a Q3 revenue dashboard', unsafe: false, _busy: false, _status: '', _raw: '', _blocked: '', _canary: 0, _mode: ''}"
+      data-init="@get('/mode')">
+  <header>
+    <h1>Hybrid generative UI on Datastar</h1>
+    <p class="mode" data-text="$_mode"></p>
+  </header>
+
+  <form data-on:submit__prevent="@post('/generate')">
+    <input type="text" data-bind:prompt aria-label="What should the model build?" placeholder="What should the model build?">
+    <button data-attr:disabled="$_busy">Generate</button>
+  </form>
+  <div class="row">
+    <button type="button" class="ghost" data-on:click="$prompt = 'Show me a Q3 revenue dashboard'; @post('/generate')">Example: dashboard</button>
+    <button type="button" class="ghost" data-on:click="$prompt = 'Simulate a prompt-injection attack'; @post('/generate')">Example: hostile output</button>
+    <label><input type="checkbox" data-bind:unsafe> Skip the sanitizer (unsafe)</label>
+  </div>
+  <p class="status">
+    <span data-text="$_status"></span>
+    <span class="canary" data-class:hit="$_canary > 0" data-text="'Calls to the protected endpoint this run: ' + $_canary"></span>
+  </p>
+
+  <main>
+    <section>
+      <h2>What reached the page</h2>
+      <div id="out" class="out"></div>
+    </section>
+    <aside>
+      <h2>What the model wrote</h2>
+      <pre data-text="$_raw"></pre>
+      <h2>Removed by the sanitizer</h2>
+      <pre class="blocked" data-text="$_blocked || 'Nothing'"></pre>
+    </aside>
+  </main>
+</body>
+</html>

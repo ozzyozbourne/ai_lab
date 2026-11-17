@@ -480,20 +480,20 @@ way a sorted batch of lookups does.</p>
    * ================================================================== */
   (function () {
     var rnd = BTViz.rng(202), KEYS = [], v = 2;
-    for (var i = 0; i < 32; i++) { KEYS.push(v); v += rnd.int(1, 5); }
+    for (var i = 0; i < 64; i++) { KEYS.push(v); v += rnd.int(1, 3); }
     var n = KEYS.length;
     var fig = BTViz.figure('#fig-gallop', {
       title: 'Galloping (exponential) search from a cursor',
       legend: [{ token: 'key-compare', label: 'probe' }, { token: 'key-found', label: 'result' }]
     });
     fig.legend.appendChild(dimSwatch());
-    var fromIn = num('c02-num#g-from', 3, 'Cursor index to start from'), keyIn = num('c02-num#g-key', KEYS[9], 'Key to search for');
+    var fromIn = num('c02-num#g-from', 3, 'Cursor index to start from'), keyIn = num('c02-num#g-key', KEYS[6], 'Key to search for');
     fig.toolbar.append(el('label.bt-field', 'from index', fromIn), el('label.bt-field', 'key', keyIn),
       el('button.bt-btn.bt-primary#g-go', { type: 'button', onclick: function () { go(true); } }, 'Search'),
       el('button.bt-btn#g-next', { type: 'button', title: 'Continue from the answer with a larger key', onclick: function () {
         var g = gallopTrace(KEYS, clampFrom(), intOf(keyIn, 0));
         fromIn.value = g.index;
-        keyIn.value = intOf(keyIn, 0) + rnd.int(1, 9);
+        keyIn.value = intOf(keyIn, 0) + rnd.int(1, 7);
         go(true);
       } }, 'Next probe →'),
       el('button.bt-btn#g-reset', { type: 'button', onclick: function () { fromIn.value = 0; keyIn.value = KEYS[2]; go(false); } }, 'Reset'));

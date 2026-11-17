@@ -63,7 +63,8 @@
   };
 
   /**
-   * new C14.PageRow(target).render({ used: [bytes per page in key order], capacity, marks: {index: 'split'} })
+   * new C14.PageRow(target).render({ used: [bytes per page in key order], capacity, marks: {index: 'split'}, dense? })
+   * dense: draw small gauges (default: when there are more than 80 pages).
    * Pages under a quarter full are drawn in the 'merge' (underfull) colour.
    */
   function PageRow(target) {
@@ -73,7 +74,7 @@
   PageRow.prototype.render = function (st) {
     var rootEl = this.root, marks = st.marks || {};
     rootEl.textContent = '';
-    rootEl.classList.toggle('is-dense', st.used.length > 80);
+    rootEl.classList.toggle('is-dense', st.dense === undefined ? st.used.length > 80 : !!st.dense);
     rootEl.setAttribute('role', 'img');
     rootEl.setAttribute('aria-label', st.used.length + ' pages');
     st.used.forEach(function (used, i) {

@@ -41,7 +41,7 @@
 .c1-bst-svg { display: block; margin: 0 auto; }
 .c1-bnode rect { fill: var(--s-bg, var(--bt-node-bg)); stroke: var(--s, var(--bt-node)); stroke-width: 1; }
 .c1-bnode[class*="s-"] rect { stroke-width: 1.75; }
-.c1-bnode text { font: 600 12px var(--bt-mono); fill: var(--bt-key); }
+.c1-bnode text { font: 600 11px var(--bt-mono); fill: var(--bt-key); }
 .c1-bedge { stroke: var(--s, var(--bt-pointer)); stroke-width: 1.25; }
 .c1-bedge[class*="s-"] { stroke-width: 2.25; }
 
@@ -120,7 +120,7 @@ they sit on is rewritten.</p>
     }
     var laneA = lane('Sorted array'), laneB = lane('Binary search tree'), laneW = lane('Wide nodes (the B-tree idea)');
     var strip = new C1.PageStrip(laneA.body, { ariaLabel: 'Sorted array on pages' });
-    var bstView = new C1.BstView(laneB.body, { ariaLabel: 'Binary search tree', maxHeight: 250 });
+    var bstView = new C1.BstView(laneB.body, { ariaLabel: 'Binary search tree', maxHeight: 300 });
     var treeView = new BTViz.TreeView(laneW.body, { minHeight: 150, maxHeight: 260, ariaLabel: 'Tree of wide nodes' });
 
     var rand = BTViz.rng(11), seed = 5, cur = null;

@@ -57,7 +57,7 @@
     if (this.opts.maxHeight) this.root.style.maxHeight = this.opts.maxHeight + 'px';
     (typeof target === 'string' ? document.querySelector(target) : target).appendChild(this.root);
   }
-  var NODE_W = 30, NODE_H = 24, PITCH_X = 33, PITCH_Y = 40, PAD = 8;
+  var NODE_W = 25, NODE_H = 22, PITCH_X = 26, PITCH_Y = 36, PAD = 8;
   BstView.prototype.render = function (rootNode, hl) {
     hl = hl || {};
     var nodes = hl.nodes || {}, edges = hl.edges || {}, svg = this.svg, placed = [], rank = 0, maxDepth = 0;

@@ -350,8 +350,9 @@ a run of equal keys: the parent then has to store the row id as well as the key.
         var s = step.state;
         head(headA, 'A', s.a);
         head(headB, 'B', s.b);
-        rowA.render({ used: s.a.used, capacity: M.PAGE_CAPACITY, marks: s.a.marks });
-        rowB.render({ used: s.b.used, capacity: M.PAGE_CAPACITY, marks: s.b.marks });
+        var dense = Math.max(s.a.used.length, s.b.used.length) > 80;   // same scale in both rows
+        rowA.render({ used: s.a.used, capacity: M.PAGE_CAPACITY, marks: s.a.marks, dense: dense });
+        rowB.render({ used: s.b.used, capacity: M.PAGE_CAPACITY, marks: s.b.marks, dense: dense });
         chart.render({ labels: BUCKETS, series: [{ name: 'A · ' + s.a.name, values: s.a.hist, token: 'node-active' }, { name: 'B · ' + s.b.name, values: s.b.hist, token: 'split' }] });
       }
     });

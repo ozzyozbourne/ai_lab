@@ -308,9 +308,13 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
       } else {
         answer = e.mergedNext || e.mergedPrev ? 1 : 0; code = 'freed-block';
         hi = { cells: mk('f:' + e.start, 'found') };
-        caption = 'The freed bytes are surrounded by live data, so they become a <b>free block</b>' +
-          (e.mergedNext || e.mergedPrev ? ', and they touch ' + (e.mergedNext && e.mergedPrev ? 'free blocks on both sides' : 'the free block ' + (e.mergedPrev ? 'before' : 'after') + ' them: they <b>merge</b> into one block' : '') +
-          ' of ' + (e.end - e.start) + ' bytes at offset ' + e.start + '. Its first 4 bytes store the offset of the next free block and its own size; the list stays sorted by offset.' + absorbed(e);
+        var merged = e.mergedNext && e.mergedPrev ? 'the free blocks on both sides of them' :
+          e.mergedPrev ? 'the free block before them' : e.mergedNext ? 'the free block after them' : null;
+        caption = (merged ?
+          'The freed bytes touch ' + merged + ', so they <b>merge</b> into one free block' :
+          'The freed bytes are surrounded by live data, so they become a <b>free block</b>') +
+          ' of ' + (e.end - e.start) + ' bytes at offset ' + e.start +
+          '. Its first 4 bytes store the offset of the next free block and its own size; the list stays sorted by offset.' + absorbed(e);
       }
       push({
         state: v, code: code, hi: hi, caption: caption,

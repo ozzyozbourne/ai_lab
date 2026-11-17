@@ -1,5 +1,6 @@
 /* Chapter 09 code panel snippets (trimmed from zig/src/buffer_pool.zig and
- * rust/src/buffer_pool.rs). Inlined because fetch() does not work under file://. */
+ * rust/src/buffer_pool.rs: comments, asserts and the handling of a failed
+ * read are left out). Inlined because fetch() does not work under file://. */
 window.CHAPTER_CODE = {
   'buffer pool': {
     zig: `

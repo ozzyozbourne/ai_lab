@@ -31,9 +31,9 @@ pub fn isSorted(keys: []const u64) bool {
 ///   * `i` is the leftmost position where `key` can be inserted so that the
 ///     array stays sorted.
 ///
-/// The search space is the half-open interval of candidate ANSWERS `[lo, hi]`
-/// (the answer can be `keys.len`, so there are `len + 1` candidates), and the
-/// loop keeps this invariant:
+/// The candidate ANSWERS are the closed range of indices `[lo, hi]` (the answer
+/// can be `keys.len`, so there are `len + 1` candidates); the unknown ELEMENTS
+/// are the half-open range `keys[lo..hi]`. The loop keeps this invariant:
 ///
 ///     keys[0..lo]  are all <  key        (known to be left of the answer)
 ///     keys[hi..]   are all >= key        (known to be at or right of it)

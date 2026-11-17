@@ -5,6 +5,23 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chapter 9 — Pages and the buffer pool</title>
 <link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+/* Figure 2 on a narrow screen: the toolkit stacks stage, side panel (log and
+ * code), caption, controls. That puts the caption and the step buttons a full
+ * screen below the frames they describe. Reorder: frames, caption, controls,
+ * legend, and only then the log and the code. */
+@media (max-width: 820px) {
+  #fig-pool .bt-figure { display: flex; flex-direction: column; }
+  #fig-pool .bt-figure-body { display: contents; }
+  #fig-pool .bt-stage { order: 1; }
+  #fig-pool .bt-caption { order: 2; }
+  #fig-pool .bt-controls-slot { order: 3; }
+  #fig-pool .bt-legend { order: 4; }
+  #fig-pool .bt-side { order: 5; }
+}
+.ch09-hint { font-size: .88rem; color: var(--bt-text-muted, inherit); }
+.ch09-hint[hidden] { display: none; }
+</style>
 </head>
 <body>
 
@@ -388,6 +405,9 @@ is the one the programs print; change how skewed the accesses are and watch the 
       btn('btn-trace', 'Replay chapter trace', function () { loadTrace(true); }),
       btn('btn-reset', 'Reset', reset));
 
+    /* Says why a click did nothing (empty, negative or fractional page number). */
+    var hint = el('div.ch09-hint#pool-hint', { role: 'status', hidden: true });
+    fig.stage.appendChild(hint);
     var counters = el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px' }, role: 'status', 'aria-label': 'Counters' });
     fig.stage.appendChild(counters);
     fig.stage.appendChild(el('div.bt-mem-label', 'Memory: the frames. Each shows the page it holds, its pin count, referenced bit and dirty flag.'));
@@ -461,8 +481,17 @@ is the one the programs print; change how skewed the accesses are and watch the 
       return steps.length;
     }
     function act(kind) {
-      var id = Math.floor(+pageIn.value);
-      if (kind !== 'flush' && (pageIn.value === '' || !isFinite(id) || id < 0)) { pageIn.focus(); return; }
+      var raw = pageIn.value.trim(), id = Math.floor(Number(raw));
+      hint.hidden = true;
+      if (kind !== 'flush') {
+        if (raw === '' || !isFinite(id) || id < 0) {
+          hint.textContent = 'Nothing was done: type a page number from 0 to ' + (PAGES - 1) + ' first. (A larger number is allowed; the pool will refuse it.)';
+          hint.hidden = false;
+          pageIn.focus();
+          return;
+        }
+        if (String(id) !== raw) pageIn.value = id;   // 2.7 was read as 2: show what was used
+      }
       var first = all.length, n = 0;
       if (kind === 'flush') n += record('flush all', function () { var w = pool.flushAll(); return w + ' page' + (w === 1 ? '' : 's') + ' written, 1 sync'; });
       else {
@@ -504,7 +533,11 @@ is the one the programs print; change how skewed the accesses are and watch the 
     fig.stage.appendChild(tableHost);
     var SIZES = [2, 4, 8, 16, 32, 64];
     function draw() {
-      var s = Math.max(0, Math.floor(+seed.value) || 0), hot = +skew.value;
+      /* The seed actually used is written back, so the field never shows a value the table was not made from. */
+      var raw = seed.value.trim(), n = Math.floor(Number(raw));
+      var s = raw !== '' && isFinite(n) ? Math.min(999999, Math.max(0, n)) : 0, hot = +skew.value;
+      var replaced = String(s) !== raw;
+      if (replaced) seed.value = s;
       var rows = SIZES.map(function (n) { return runWorkload(n, s, hot); });
       chart.render({
         labels: SIZES,
@@ -526,7 +559,8 @@ is the one the programs print; change how skewed the accesses are and watch the 
           ? 'With uniform accesses nothing is hotter than anything else, so the hit count grows only in proportion to the pool size: no eviction policy can help.'
           : 'Because most accesses go to a few hot pages, a pool much smaller than the file already catches most of them. That skew is what makes a buffer pool worth having.') +
         ' Up to two pages stay pinned across operations, which is why very small pools do so badly. ' +
-        (rows.every(function (r) { return r.ok; }) ? 'Every run ended with the file equal to the oracle.' : '<strong>Model error: a page had the wrong content.</strong>');
+        (rows.every(function (r) { return r.ok; }) ? 'Every run ended with the file equal to the oracle.' : '<strong>Model error: a page had the wrong content.</strong>') +
+        (replaced ? ' <em>The seed must be a whole number from 0 to 999999; seed ' + s + ' was used instead of what was typed.</em>' : '');
     }
     skew.addEventListener('change', draw);
     seed.addEventListener('change', draw);

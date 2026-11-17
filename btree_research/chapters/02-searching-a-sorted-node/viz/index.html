@@ -9,9 +9,11 @@
   /* Chapter-local layout only; every colour comes from the toolkit's tokens. */
   .c02-inv { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; min-height: 1.9em; }
   .c02-inv .bt-chip { white-space: normal; text-align: center; }
-  .c02-keys { width: 15rem; max-width: 100%; }
+  .c02-keys { width: 19rem; max-width: 100%; }
   .c02-num { width: 5.2rem; }
-  .c02-note { color: var(--bt-muted); font-size: .9rem; }
+  /* One line under a toolbar saying which typed value was not used as typed. */
+  .c02-note { flex: 1 0 100%; margin: 0; color: var(--bt-muted); font-size: .9rem; }
+  .c02-note[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -23,7 +25,9 @@ be inserted. Text and code: <a href="../README.md">chapter 02 README</a>.</p>
 
 <h2>1. Lower bound and upper bound, one comparison at a time</h2>
 <p>The loop keeps one promise: everything left of <code>lo</code> is known to be too small, everything from
-<code>hi</code> on is known to be large enough. Faded keys are ruled out; each step looks at one key
+<code>hi</code> on is known to be large enough. The notation <code>keys[a..b]</code> means the keys at indices
+<em>a</em>, <em>a</em>+1, … up to but <strong>not including</strong> <em>b</em> (a <em>half-open</em> range), so
+<code>keys[0..0]</code> is empty and <code>keys[0..7]</code> stops at index 6. Faded keys are ruled out; each step looks at one key
 (<code>mid</code>) and moves one of the two markers. Type your own keys and key, switch to upper bound, or
 tick <em>Predict</em> to be asked which marker moves before each decision.</p>
 <div id="fig-bound"></div>
@@ -38,7 +42,8 @@ stored key, and a range like <code>(7, 7)</code>.</p>
 <p>If the answer is at or after a cursor and probably close to it, jump 1, 2, 4, 8, … positions until a
 probe is large enough, then binary search between the last two probes. The counters compare it with a
 binary search over the whole array. <em>Next probe</em> continues from the answer with a larger key, the
-way a sorted batch of lookups does.</p>
+way a sorted batch of lookups does, until the cursor reaches the end. Galloping never looks left of the
+cursor: put the cursor past the answer (from index 40, key 10) to see what it returns then.</p>
 <div id="fig-gallop"></div>
 
 <script src="../../../assets/viz.js"></script>
@@ -47,6 +52,7 @@ way a sorted batch of lookups does.</p>
 (function () {
   'use strict';
   var el = BTViz.el, k = BTViz.k;
+  var T = {};   // step builders of the figures, exposed to the self-tests at the end of the page
 
   BTViz.page({
     title: 'Searching a sorted node', chapter: 2,
@@ -86,9 +92,9 @@ way a sorted batch of lookups does.</p>
   /** gallopLowerBound with every comparison recorded as an event. */
   function gallopTrace(keys, from, key) {
     var n = keys.length, ev = [], comparisons = 0;
-    if (from === n) return { index: from, comparisons: 0, events: [{ t: 'at-end' }] };
+    if (from === n) return { index: from, comparisons: 0, early: true, events: [{ t: 'at-end' }] };
     comparisons++;
-    if (keys[from] >= key) return { index: from, comparisons: 1, events: [{ t: 'first', hit: true }] };
+    if (keys[from] >= key) return { index: from, comparisons: 1, early: true, events: [{ t: 'first', hit: true }] };
     ev.push({ t: 'first', hit: false });
     var below = from, step = 1, hi = n, ranOff = true;
     while (step < n - below) {
@@ -106,7 +112,7 @@ way a sorted batch of lookups does.</p>
     var first = below + 1;
     var inner = traceBound(keys.slice(first, hi), key, 'lower');
     ev.push({ t: 'bracket', below: below, first: first, hi: hi, inner: inner });
-    return { index: first + inner.index, comparisons: comparisons + inner.steps.length, events: ev };
+    return { index: first + inner.index, comparisons: comparisons + inner.steps.length, early: false, events: ev };
   }
 
   /* ====================================================================
@@ -211,14 +217,42 @@ way a sorted batch of lookups does.</p>
    * Shared helpers for the three figures
    * ================================================================== */
 
+  var MAX_KEY = 9999;
+  /** Text -> keys. A token is a key only if it is a whole number from 0 to MAX_KEY; anything else
+   *  ("-5", "1.5", "100000") is rejected and reported, never "repaired" into a different number.
+   *  At most `max` keys are kept, in typing order, then sorted. */
   function parseKeys(text, max) {
-    var ks = (String(text).match(/\d+/g) || []).map(Number).filter(function (v) { return v <= 9999; });
-    ks.sort(function (a, b) { return a - b; });
-    return ks.slice(0, max);
+    var keys = [], rejected = [];
+    String(text).split(/[\s,;]+/).forEach(function (tok) {
+      if (!tok) return;
+      if (/^\d+$/.test(tok) && Number(tok) <= MAX_KEY) keys.push(Number(tok)); else rejected.push(tok);
+    });
+    var extra = Math.max(0, keys.length - max);
+    keys = keys.slice(0, max);
+    keys.sort(function (a, b) { return a - b; });
+    return { keys: keys, rejected: rejected, extra: extra };
   }
-  function intOf(input, fallback) {
-    var v = parseInt(input.value, 10);
-    return isNaN(v) ? fallback : Math.max(0, Math.min(9999, v));
+  /** Text of a number field -> {value, changed}: the whole number in [0, max] that is actually used. */
+  function cleanInt(text, fallback, max) {
+    var t = String(text).trim(), v = t === '' ? NaN : Number(t);
+    if (isNaN(v)) return { value: fallback, changed: true, empty: true };
+    var c = Math.max(0, Math.min(max, Math.floor(v)));
+    return { value: c, changed: c !== v, empty: false };
+  }
+  /** Read a number field, write the value that is used back into it, and explain any change in `notes`. */
+  function readInt(input, fallback, max, label, notes) {
+    var typed = input.value, c = cleanInt(typed, fallback, max);
+    if (c.changed) {
+      notes.push(c.empty ? 'The ' + label + ' was empty or not a number: using ' + c.value + '.'
+        : 'The ' + label + ' must be a whole number from 0 to ' + max + ': ' + typed.trim() + ' was changed to ' + c.value + '.');
+    }
+    if (input.value !== String(c.value)) input.value = c.value;
+    return c.value;
+  }
+  var noteLine = function () { return el('p.c02-note', { role: 'status', hidden: '' }); };
+  function showNotes(host, notes) {
+    host.textContent = notes.join(' ');
+    host.hidden = !notes.length;
   }
   function chipRow(host, chips) {
     host.textContent = '';
@@ -228,7 +262,7 @@ way a sorted batch of lookups does.</p>
     return el('span.bt-legend-item', el('span.bt-swatch', { style: { opacity: '.38' } }), 'ruled out');
   };
   var num = function (cls, value, label) {
-    return el('input.bt-input.' + cls, { type: 'number', inputmode: 'numeric', min: 0, max: 9999, value: value, 'aria-label': label });
+    return el('input.bt-input.' + cls, { type: 'number', inputmode: 'numeric', min: 0, max: MAX_KEY, value: value, 'aria-label': label });
   };
 
   /* ====================================================================
@@ -239,7 +273,8 @@ way a sorted batch of lookups does.</p>
     var fig = BTViz.figure('#fig-bound', {
       title: 'Binary search as a shrinking region of unknown keys', side: true,
       legend: [{ token: 'key', label: 'still unknown' }, { token: 'key-compare', label: 'being compared (mid)' },
-        { token: 'key-found', label: 'found / result' }, { token: 'key-inserted', label: 'inserted key' }]
+        { token: 'key-found', label: 'found / result' }, { token: 'node-active', label: 'equal to the key (upper bound)' },
+        { token: 'key-inserted', label: 'inserted key' }]
     });
     fig.legend.appendChild(dimSwatch());
 
@@ -265,6 +300,8 @@ way a sorted batch of lookups does.</p>
       el('label.bt-field', 'keys', keysIn), el('label.bt-field', 'key', keyIn), modeIn,
       el('button.bt-btn.bt-primary#b-go', { type: 'button', onclick: function () { go(true); } }, 'Search'),
       el('span.bt-toolbar-sep'), preset('canonical', 'Canonical'), preset('duplicates', 'Duplicates'), preset('random', 'Random'));
+    var note = noteLine();
+    fig.toolbar.appendChild(note);
 
     var av = new BTViz.ArrayView(fig.stage, { ariaLabel: 'Sorted keys of the node' });
     var inv = el('div.c02-inv', { 'aria-label': 'What is known so far' });
@@ -326,8 +363,7 @@ way a sorted batch of lookups does.</p>
           question: {
             prompt: '<code>keys[' + s.mid + ']</code> = ' + k(s.probe, 'compare') + ' and the key is ' + K + '. The test is <code>keys[mid] ' + op + ' key</code>. Which marker moves?',
             choices: ['<code>lo = mid + 1</code> = ' + (s.mid + 1), '<code>hi = mid</code> = ' + s.mid],
-            answer: s.goRight ? 0 : 1,
-            explain: s.probe + ' ' + op + ' ' + key + ' is ' + (s.goRight ? 'true' : 'false') + '.'
+            answer: s.goRight ? 0 : 1   // no `explain`: the step's own caption follows and says why
           }
         });
       });
@@ -361,13 +397,17 @@ way a sorted batch of lookups does.</p>
           });
         }
       } else {
+        // Two different things are marked here: the copies of the key (indices [a, r)) and the
+        // RESULT of upperBound, index r, the first key greater than the key. Only r is green.
         var a = lowerBound(keys, key), cnt = r - a;
-        for (var j = a; j < r; j++) fst[j] = 'found';
+        for (var j = a; j < r; j++) fst[j] = 'active';
+        if (r < n) fst[r] = 'found';
         cap = '<code>lo == hi == ' + r + '</code> after ' + cmpText + ': ' + r + ' key' + (r === 1 ? ' is' : 's are') + ' ≤ ' + K + ', and ' +
-          (r < n ? 'the first key greater than it is <code>keys[' + r + ']</code> = ' + k(keys[r]) : 'no key is greater, so the answer is ' + n + ', one past the end') + '. ' +
+          (r < n ? 'the first key greater than it is <code>keys[' + r + ']</code> = ' + k(keys[r], 'found') + '. That index, <strong>' + r + '</strong>, is the result'
+            : 'no key is greater, so the result is <strong>' + n + '</strong>, one past the end') + '. ' +
           'The lower bound of ' + K + ' is ' + a + ', so the copies of ' + K + ' are at indices <code>[' + a + ', ' + r + ')</code>: <strong>' +
-          cnt + '</strong> of them' + (cnt ? ' (highlighted).' : '. With no copy present, both bounds are the insertion index.');
-        steps.push({ caption: cap, state: { values: keys, states: fst, pointers: { lo: r, hi: r }, range: cnt ? [a, r] : [r, r], capacity: n + 1 },
+          cnt + '</strong> of them' + (cnt ? ' (marked ' + k(key, 'active') + ', just left of the result).' : '. With no copy present, both bounds are the insertion index.');
+        steps.push({ caption: cap, state: { values: keys, states: fst, pointers: { lo: r, hi: r }, range: [a, Math.min(n, r + 1)], capacity: n + 1 },
           inv: invChips(r, r), lines: [12], hold: 1.6, log: 'result ' + r + ' (' + cnt + ' equal)', logState: 'found' });
       }
       return steps;
@@ -385,17 +425,25 @@ way a sorted batch of lookups does.</p>
       }
     });
     function go(play) {
-      var keys = parseKeys(keysIn.value, 24);
-      if (!keys.length) keys = PRESETS.canonical.slice();
+      var parsed = parseKeys(keysIn.value, 24), keys = parsed.keys, notes = [];
+      if (parsed.rejected.length) {
+        notes.push('Ignored ' + parsed.rejected.slice(0, 6).join(', ') + (parsed.rejected.length > 6 ? ', …' : '') +
+          ': keys are whole numbers from 0 to ' + MAX_KEY + '.');
+      }
+      if (parsed.extra) notes.push('Only the first 24 keys are used (' + parsed.extra + ' dropped).');
+      if (!keys.length) { keys = PRESETS.canonical.slice(); notes.push('No key to show: using the canonical keys.'); }
       keysIn.value = keys.join(' ');
+      var key = readInt(keyIn, 0, MAX_KEY, 'key', notes);
+      showNotes(note, notes);
       mode = modeIn.value;
       codeLower.style.display = mode === 'lower' ? '' : 'none';
       codeUpper.style.display = mode === 'upper' ? '' : 'none';
-      stepper.setSteps(buildSteps(keys, intOf(keyIn, 0), mode), { play: play, instant: true });
+      stepper.setSteps(buildSteps(keys, key, mode), { play: play, instant: true });
     }
     [keysIn, keyIn].forEach(function (inp) { inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') go(true); }); });
     modeIn.addEventListener('change', function () { go(false); });
     go(false);
+    T.boundSteps = buildSteps;
   })();
 
   /* ====================================================================
@@ -416,6 +464,8 @@ way a sorted batch of lookups does.</p>
     var loIn = num('c02-num#r-lo', 5, 'Lower limit'), hiIn = num('c02-num#r-hi', 17, 'Upper limit');
     fig.toolbar.append(setIn, el('span.bt-toolbar-sep'), loKind, loIn, el('span.bt-toolbar-sep'), hiKind, hiIn,
       el('button.bt-btn.bt-primary#r-go', { type: 'button', onclick: function () { go(true); } }, 'Show'));
+    var note = noteLine();
+    fig.toolbar.appendChild(note);
     var av = new BTViz.ArrayView(fig.stage, { ariaLabel: 'Sorted keys of the node' });
     var chips = el('div.c02-inv');
     fig.stage.appendChild(chips);
@@ -461,10 +511,16 @@ way a sorted batch of lookups does.</p>
       onStep: function (s) { av.render(s.state); chipRow(chips, s.chips || []); code.highlight(s.lines); }
     });
     function go(play) {
-      var bound = function (kindSel, input, fb) { return { kind: kindSel.value, k: intOf(input, fb) }; };
+      var notes = [];
+      // An unbounded end has no limit: its (disabled) field is not read, so it is not rewritten either.
+      var bound = function (kindSel, input, label) {
+        return kindSel.value === 'unbounded' ? { kind: 'unbounded' } : { kind: kindSel.value, k: readInt(input, 0, MAX_KEY, label, notes) };
+      };
       loIn.disabled = loKind.value === 'unbounded';
       hiIn.disabled = hiKind.value === 'unbounded';
-      stepper.setSteps(buildSteps(SETS[setIn.value], bound(loKind, loIn, 0), bound(hiKind, hiIn, 0)), { play: play, instant: true });
+      var lo = bound(loKind, loIn, 'lower limit'), hi = bound(hiKind, hiIn, 'upper limit');
+      showNotes(note, notes);
+      stepper.setSteps(buildSteps(SETS[setIn.value], lo, hi), { play: play, instant: true });
       if (!play) stepper.end();
     }
     [setIn, loKind, hiKind].forEach(function (s) { s.addEventListener('change', function () { go(false); }); });
@@ -488,52 +544,76 @@ way a sorted batch of lookups does.</p>
     });
     fig.legend.appendChild(dimSwatch());
     var fromIn = num('c02-num#g-from', 3, 'Cursor index to start from'), keyIn = num('c02-num#g-key', KEYS[6], 'Key to search for');
-    fig.toolbar.append(el('label.bt-field', 'from index', fromIn), el('label.bt-field', 'key', keyIn),
-      el('button.bt-btn.bt-primary#g-go', { type: 'button', onclick: function () { go(true); } }, 'Search'),
-      el('button.bt-btn#g-next', { type: 'button', title: 'Continue from the answer with a larger key', onclick: function () {
-        var g = gallopTrace(KEYS, clampFrom(), intOf(keyIn, 0));
+    fromIn.max = n;
+    // "Next probe" models a sorted batch: continue from the answer with a larger key. Once the
+    // answer is n (one past the end) the batch is over, every later key gets the same answer, so
+    // the button is disabled (see go) until Reset or an edited field starts something new.
+    var nextBtn = el('button.bt-btn#g-next', { type: 'button', title: 'Continue from the answer with a larger key', onclick: function () {
+      var from = readInt(fromIn, 0, n, 'from index', []), key = readInt(keyIn, 0, MAX_KEY, 'key', []);
+      var g = gallopTrace(KEYS, from, key);
+      if (g.index < n) {
         fromIn.value = g.index;
-        keyIn.value = intOf(keyIn, 0) + rnd.int(1, 7);
-        go(true);
-      } }, 'Next probe →'),
+        keyIn.value = Math.min(MAX_KEY, key + rnd.int(1, 7));
+      }
+      go(true);
+    } }, 'Next probe →');
+    fig.toolbar.append(el('label.bt-field', 'from index', fromIn), el('label.bt-field', 'key', keyIn),
+      el('button.bt-btn.bt-primary#g-go', { type: 'button', onclick: function () { go(true); } }, 'Search'), nextBtn,
       el('button.bt-btn#g-reset', { type: 'button', onclick: function () { fromIn.value = 0; keyIn.value = KEYS[2]; go(false); } }, 'Reset'));
+    var note = noteLine();
+    fig.toolbar.appendChild(note);
     var av = new BTViz.ArrayView(fig.stage, { ariaLabel: 'Sorted keys', cellW: 34 });
     var chips = el('div.c02-inv');
     fig.stage.appendChild(chips);
     var code = BTViz.codePanel(fig.stage, 'gallopLowerBound', { title: 'gallopLowerBound' });
-    function clampFrom() { return Math.min(n, intOf(fromIn, 0)); }
 
     function buildSteps(from, key) {
       var g = gallopTrace(KEYS, from, key), steps = [], K = k(key), used = 0;
       var binary = traceBound(KEYS, key, 'lower').steps.length;
+      // gallopLowerBound returns max(from, lowerBound): it is the first key >= key AT OR AFTER the
+      // cursor. If the cursor is already past the first key >= key (`past`), that is a different
+      // index from the plain lower bound, and the captions must not call it "the first key >= key".
+      var global = lowerBound(KEYS, key), past = global < from;
+      var leftNote = 'the first key ≥ ' + K + ' in the whole array is <code>keys[' + global + ']</code> = ' + k(KEYS[global]) +
+        ', left of the cursor, and galloping never looks left';
       var idsArr = KEYS.map(function (x, i) { return 'k' + i; });
       var snap = function (ptrs, states, range) { return { values: KEYS, ids: idsArr, states: states, pointers: ptrs, range: range, capacity: n }; };
-      var counters = function () { return [{ html: 'galloping: ' + used + ' comparison' + (used === 1 ? '' : 's'), state: 'active' }, { html: 'binary search over all ' + n + ' keys: ' + binary }]; };
+      var counters = function () { return [{ html: 'galloping: ' + used + ' comparison' + (used === 1 ? '' : 's'), state: 'active' }, { html: 'binary search over all ' + n + ' keys: ' + binary + (past ? ' (answers index ' + global + ')' : '') }]; };
       var one = function (i, s) { var o = {}; o[i] = s; return o; };
-      var finish = function (why) {
-        var idx = g.index, exact = idx < n && KEYS[idx] === key;
-        var verdict = used < binary ? 'Galloping was cheaper because the answer is only ' + (idx - from) + ' position' + (idx - from === 1 ? '' : 's') + ' from the cursor.'
+      // `line`: the code line that returns. 2 when the function returns on its first line (cursor at
+      // the end, or the cursor itself is large enough), 16 after the bracket's binary search.
+      var finish = function (line) {
+        var idx = g.index, exact = idx < n && KEYS[idx] === key, dist = idx - from;
+        var verdict = past ? 'The two counters are not comparable here: binary search over the whole array answers index ' + global + ', a different question.'
+          : used < binary ? 'Galloping was cheaper because the answer is only ' + dist + ' position' + (dist === 1 ? '' : 's') + ' from the cursor.'
           : used === binary ? 'A tie with plain binary search.'
-          : 'Galloping was <strong>more expensive</strong>: the answer is ' + (idx - from) + ' positions away, and reaching it costs about 2·log₂ of that distance. It only pays off when answers are close.';
+          : 'Galloping was <strong>more expensive</strong>: the answer is ' + dist + ' positions away, and reaching it costs about 2·log₂ of that distance. It only pays off when answers are close.';
+        var what = idx === n ? (past ? ' (one past the end: nothing is at or after the cursor)' : ' (one past the end: every key is smaller)')
+          : ' (' + k(KEYS[idx], 'found') + (exact ? ', equal to the key)' : past ? ', the first key ≥ ' + key + ' at or after the cursor)' : ', the first key ≥ ' + key + ')');
         steps.push({
-          caption: why + ' Result: index <strong>' + idx + '</strong>' + (idx < n ? ' (' + k(KEYS[idx], 'found') + (exact ? ', equal to the key)' : ', the first key ≥ ' + key + ')') : ' (one past the end: every key is smaller)') +
-            '. ' + verdict,
-          state: snap({ from: from, result: idx }, idx < n ? one(idx, 'found') : {}, [idx, Math.min(n, idx + 1)]), chips: counters(), lines: [16], hold: 1.6
+          caption: 'Result: index <strong>' + idx + '</strong>' + what + '. ' + verdict +
+            (idx === n ? ' The cursor is now at the end, so a sorted batch of probes is finished: every later key would get the same answer. <em>Reset</em> starts a new batch.' : ''),
+          state: snap({ from: from, result: idx }, idx < n ? one(idx, 'found') : {}, [idx, Math.min(n, idx + 1)]), chips: counters(), lines: [line], hold: 1.6
         });
       };
       g.events.forEach(function (e) {
         if (e.t === 'at-end') {
-          steps.push({ caption: 'The cursor is already one past the last key, so nothing can be at or after it: the answer is ' + n + ' with no comparison at all.',
+          steps.push({ caption: 'The cursor is already one past the last key, so nothing is at or after it: the answer is ' + n + ' with no comparison at all.' +
+              (past ? ' (Keys ≥ ' + K + ' do exist: ' + leftNote + '.)' : ''),
             state: snap({ from: from }, {}, [n, n]), chips: counters(), lines: [2] });
-          finish('');
+          finish(2);
         } else if (e.t === 'first') {
           used = 1;
           steps.push({
-            caption: 'The answer is known to be at or after the cursor, index ' + from + '. First look at the cursor itself: <code>keys[' + from + ']</code> = ' + k(KEYS[from], 'compare') +
-              (e.hit ? ' ≥ ' + K + ', so the cursor is the answer.' : ' &lt; ' + K + ', so the answer is further right. This key becomes <code>below</code>: a position known to be too small.'),
-            state: snap({ from: from }, one(from, 'compare'), [from, n]), chips: counters(), lines: [2, 3]
+            caption: (past
+              ? 'Galloping answers only "the first key ≥ ' + K + ' <em>at or after</em> the cursor", index ' + from + '; the caller is expected to know the answer is not left of it. ' +
+                'Here the cursor is already past it: ' + leftNote + '. It looks at the cursor itself: <code>keys[' + from + ']</code> = ' + k(KEYS[from], 'compare') +
+                ' ≥ ' + K + ', so it returns the cursor.'
+              : 'The answer is known to be at or after the cursor, index ' + from + '. First look at the cursor itself: <code>keys[' + from + ']</code> = ' + k(KEYS[from], 'compare') +
+                (e.hit ? ' ≥ ' + K + ', so the cursor is the answer.' : ' &lt; ' + K + ', so the answer is further right. This key becomes <code>below</code>: a position known to be too small.')),
+            state: snap({ from: from }, one(from, 'compare'), [from, n]), chips: counters(), lines: e.hit ? [2] : [2, 3]
           });
-          if (e.hit) finish('');
+          if (e.hit) finish(2);
         } else if (e.t === 'probe') {
           used++;
           steps.push({
@@ -564,7 +644,7 @@ way a sorted batch of lookups does.</p>
               state: snap({ lo: nlo, hi: nhi, mid: mid }, one(mid, 'compare'), [nlo, nhi]), chips: counters(), lines: [16]
             });
           });
-          finish('');
+          finish(16);
         }
       });
       return steps;
@@ -574,12 +654,19 @@ way a sorted batch of lookups does.</p>
       onStep: function (s) { av.render(s.state); chipRow(chips, s.chips || []); code.highlight(s.lines); }
     });
     function go(play) {
-      var from = clampFrom();
-      fromIn.value = from;
-      stepper.setSteps(buildSteps(from, intOf(keyIn, 0)), { play: play, instant: true });
+      var notes = [];
+      var from = readInt(fromIn, 0, n, 'from index', notes), key = readInt(keyIn, 0, MAX_KEY, 'key', notes);
+      showNotes(note, notes);
+      nextBtn.disabled = gallopTrace(KEYS, from, key).index === n;   // the batch is finished
+      stepper.setSteps(buildSteps(from, key), { play: play, instant: true });
     }
-    [fromIn, keyIn].forEach(function (inp) { inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') go(true); }); });
+    [fromIn, keyIn].forEach(function (inp) {
+      inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') go(true); });
+      inp.addEventListener('input', function () { nextBtn.disabled = false; });   // a new question was typed
+    });
     go(false);
+    T.gallopKeys = KEYS;
+    T.gallopSteps = buildSteps;
   })();
 
   /* ====================================================================
@@ -606,6 +693,31 @@ way a sorted batch of lookups does.</p>
       }
     }
     BTViz.selfTest('bounds and gallop match linear scan', { arrays: arrays, mismatches: bad }, { arrays: 210, mismatches: 0 });
+  })();
+  (function () {
+    // Regression checks for odd input and for the edge cases of the figures (review round 1).
+    var many = [];
+    for (var i = 0; i < 40; i++) many.push(i);
+    var ints = ['-3', '1e3', '', '100000', '2.7', '13'].map(function (t) { return cleanInt(t, 0, MAX_KEY).value; });
+    var last = function (steps) { return steps[steps.length - 1]; };
+    var KEYS = T.gallopKeys, n = KEYS.length;
+    var past = T.gallopSteps(40, 10), atEnd = T.gallopSteps(n, 5), far = T.gallopSteps(0, MAX_KEY), normal = T.gallopSteps(3, KEYS[6]);
+    var has = function (step, text) { return step.caption.indexOf(text) >= 0; };
+    BTViz.selfTest('odd input and edge cases', {
+      negative: parseKeys('-5 -3 2', 24), decimal: parseKeys('1.5 2.5', 24).keys, tooBig: parseKeys('100000, 7', 24).keys,
+      many: [parseKeys(many.join(' '), 24).keys.length, parseKeys(many.join(' '), 24).extra], ints: ints,
+      // gallop: early return highlights line 2; a cursor past the answer is not called "the first key >= key"
+      earlyLine: [last(past).lines, last(atEnd).lines, last(T.gallopSteps(0, 1)).lines], normalLine: last(normal).lines,
+      pastSaysSo: has(last(past), 'at or after the cursor') && has(last(past), 'not comparable') && !has(last(past), 'cheaper'),
+      atEndSaysSo: has(last(atEnd), 'nothing is at or after the cursor') && !has(last(atEnd), 'every key is smaller'),
+      farEnd: has(last(far), 'every key is smaller') && has(last(far), 'batch of probes is finished'),
+      // upper bound: the result index is 'found', the copies of the key are 'active'
+      upper: last(T.boundSteps([3, 7, 7, 7, 12, 15, 15, 20], 7, 'upper')).state.states
+    }, {
+      negative: { keys: [2], rejected: ['-5', '-3'], extra: 0 }, decimal: [], tooBig: [7], many: [24, 16], ints: [0, 1000, 0, 9999, 2, 13],
+      earlyLine: [[2], [2], [2]], normalLine: [16], pastSaysSo: true, atEndSaysSo: true, farEnd: true,
+      upper: { 1: 'active', 2: 'active', 3: 'active', 4: 'found' }
+    });
   })();
 })();
 </script>

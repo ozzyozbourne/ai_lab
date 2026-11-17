@@ -51,8 +51,13 @@ and inside real indexes) the difference matters a lot.
 ### The loop, derived from an invariant
 
 Binary search is famous for being easy to get wrong. The reliable way to write it is to
-decide first what the two variables *mean* and never break that meaning. For the lower
-bound:
+decide first what the two variables *mean* and never break that meaning.
+
+One piece of notation first. `keys[a..b]` means the elements at indices `a`, `a + 1`,
+..., `b - 1`: the start is included and the end is **excluded**. So `keys[0..7]` stops at
+index 6, `keys[0..0]` is empty, and `keys[hi..]` runs from `hi` to the last element. A
+range written this way is called **half-open** (in maths notation `[a, b)`), and the loop
+below is the half-open style of binary search. For the lower bound:
 
 ```
 keys[0..lo]   are all <  key      "known small": the answer is not left of lo
@@ -317,8 +322,9 @@ exists.
 - **Failure.** A full buffer returns `error.OutOfMemory`; two tests exercise that path.
 - **What would go wrong with another one.** Nothing dramatic, only waste.
   `std.testing.allocator` per array pays for bookkeeping the test does not need; it is
-  used once, as the *backing* buffer of a `FixedBufferAllocator`, so a leak still fails
-  the test. An `ArenaAllocator` allocates from the heap and grows without limit.
+  used only where a test needs a real heap: as the *backing* buffer of one
+  `FixedBufferAllocator` (so a leak still fails the test), for the oracle of the node
+  model test, and for the output buffer of `main`'s test. An `ArenaAllocator` allocates from the heap and grows without limit.
   `page_allocator` rounds every small array up to a page.
 - **A trap that was hit while writing this chapter.** A `[N]u8` buffer has alignment 1.
   Allocating `u64`s from it may first skip up to 7 bytes, so a buffer sized for exactly
@@ -334,7 +340,9 @@ rest, and a buffer that is too small gives `None` (mapped to
 1. **`(lo + hi) / 2` overflows.** With 8-bit indices, `200 + 250` wraps to 194 and the
    "midpoint" is 97, outside the interval; a test shows it. Use `lo + (hi - lo) / 2`.
 2. **Mixing interval conventions.** `hi = len - 1` with a `lo < hi` loop can never
-   return `len`; `lo <= hi` with `hi = mid` never terminates. Choose half-open (this
+   return `len`; `lo <= hi` with `hi = mid` either never terminates (keys `1`, key 0:
+   `lo = hi = mid = 0` forever) or reads one past the end (keys `1`, key 2 reads
+   `keys[1]`). Choose half-open (this
    chapter, Postgres) or closed with a remembered candidate (Turso) and derive every
    line from it.
 3. **`hi - 1` on unsigned indices.** The closed form computes `mid - 1`, which underflows

@@ -28,7 +28,9 @@ action becomes a step, so you can scrub back through what happened. The same see
 
 <h2>3. Does the picture match the code?</h2>
 <p>The JavaScript model behind this page is a port of the chapter's Zig and Rust code. It runs the whole demo
-program here and compares the text with <code>expected_output.txt</code>.</p>
+program here and compares the text with <code>expected_output.txt</code>. The last check replays the
+corner cases of the storage contract that the Zig and Rust tests pin down: a hole below an unsynced write
+reads as zeroes, and recovery works on a fresh disk.</p>
 <div id="selftests" class="bt-selftests" role="status" aria-label="Model self-tests"><span class="bt-selftests-title">Self-tests</span></div>
 <details>
   <summary>Output of the program (all five experiments)</summary>

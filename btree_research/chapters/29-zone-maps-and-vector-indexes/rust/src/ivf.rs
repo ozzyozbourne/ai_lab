@@ -12,6 +12,9 @@
 //!
 //! Everything is integer arithmetic (i32 coordinates, u64 squared distances,
 //! ties broken by id), so the Zig and Rust programs agree bit for bit.
+//! Distances are exact while dim * (largest coordinate difference)^2 fits in
+//! a u64, for example any i32 coordinates with dim = 1, or coordinates within
+//! +-2^29 with dim <= 16. Beyond that `dist2` saturates (see there).
 use crate::prng::SplitMix64;
 
 /// A candidate answer. The derived ordering compares `dist` first, then
@@ -25,20 +28,28 @@ pub struct Hit {
 
 /// Squared Euclidean distance. Squared, because sqrt is monotonic: it would
 /// change no comparison and would bring floating point in.
+///
+/// No input can overflow. The difference of two i32 fits an i64, but its
+/// square does not fit an i64 once the difference passes about 2^31.5, so the
+/// square is taken of the unsigned magnitude (at most 2^32 - 1, whose square
+/// fits a u64). The sum over the dimensions can still pass 2^64;
+/// `saturating_add` stops there instead of wrapping, so an absurdly far
+/// vector compares as "as far as possible" and never as near.
 pub fn dist2(a: &[i32], b: &[i32]) -> u64 {
     assert_eq!(a.len(), b.len());
-    a.iter()
-        .zip(b)
-        .map(|(&x, &y)| {
-            let d = i64::from(x) - i64::from(y);
-            (d * d) as u64
-        })
-        .sum()
+    a.iter().zip(b).fold(0u64, |sum, (&x, &y)| {
+        let d = (i64::from(x) - i64::from(y)).unsigned_abs();
+        sum.saturating_add(d * d)
+    })
 }
 
 /// Offer `hit` to the sorted top-k buffer `out[..len]`; returns the new len.
 /// k is small, so insertion into a sorted array beats a heap here.
+/// k = out.len() may be 0: then nothing is ever kept.
 pub fn topk_offer(out: &mut [Hit], len: usize, hit: Hit) -> usize {
+    if out.is_empty() {
+        return 0; // no last slot to compare with below
+    }
     if len == out.len() && hit >= out[len - 1] {
         return len;
     }
@@ -350,6 +361,39 @@ mod tests {
     }
 
     #[test]
+    fn k_0_returns_nothing_and_still_counts_the_work() {
+        // Regression: topk_offer used to read out[len - 1] with len = 0.
+        let mut none: [Hit; 0] = [];
+        assert_eq!(topk_offer(&mut none, 0, Hit { dist: 1, id: 1 }), 0);
+        assert_eq!(flat_search(&[1, 2, 3], 1, &[2], &mut none), 0);
+        let mut rng = SplitMix64::new(3);
+        let data = random_data(&mut rng, 40, 2, 100);
+        let index = Ivf::build(&data, 2, 4, 1, 10);
+        let stats = index.search(&mut Vec::new(), &[50, 50], 4, &mut none);
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.lists_probed, 4);
+        assert_eq!(stats.vectors_scanned, 40);
+    }
+
+    #[test]
+    fn dist2_cannot_overflow_extreme_coordinates_then_saturation() {
+        // Regression: the square of an i64 difference overflowed i64.
+        let (lo, hi) = (i32::MIN, i32::MAX);
+        let far: u64 = (1 << 32) - 1; // hi - lo
+        assert_eq!(dist2(&[lo], &[hi]), far * far);
+        assert_eq!(dist2(&[hi], &[lo]), far * far);
+        // Two such dimensions pass 2^64: the sum saturates instead of wrapping.
+        assert_eq!(dist2(&[lo, lo], &[hi, hi]), u64::MAX);
+        // Still usable for ranking: the far point loses to a near one.
+        let mut best = [Hit { dist: 0, id: 0 }];
+        let found = flat_search(&[lo, lo, hi - 1, hi - 1], 2, &[hi, hi], &mut best);
+        assert_eq!(found, 1);
+        assert_eq!(best[0], Hit { dist: 2, id: 1 });
+        // Coordinates within +-2^29 in 16 dimensions stay exact (the documented range).
+        assert_eq!(dist2(&[-(1 << 29); 16], &[1 << 29; 16]), 16 << 60);
+    }
+
+    #[test]
     fn one_d_the_nearest_neighbour_is_the_predecessor_or_the_successor() {
         // With one dimension a sorted array answers nearest-neighbour exactly by
         // looking at two slots. This is the last dimension where that works.
@@ -423,8 +467,12 @@ mod tests {
 
     #[test]
     fn search_scratch_is_reused_without_growing() {
-        // Mirror of the Zig allocation-failure test's intent: after the first
-        // query the search path needs no new memory.
+        // Zig's counterpart injects allocation failures into build and search
+        // to prove that no early return leaks. In Rust every buffer is an
+        // owned `Vec` that is dropped on any exit, so that property needs no
+        // test (and `build` does not return a `Result`). What is left to
+        // check is the other half of the Zig setup: after the first query the
+        // search path needs no new memory.
         let mut rng = SplitMix64::new(9);
         let data = random_data(&mut rng, 60, 2, 100);
         let index = Ivf::build(&data, 2, 5, 3, 10);

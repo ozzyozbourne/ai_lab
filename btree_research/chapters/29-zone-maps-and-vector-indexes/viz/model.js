@@ -150,6 +150,7 @@
   function hitCmp(a, b) { return hitLess(a, b) ? -1 : hitLess(b, a) ? 1 : 0; }
   /** Offer a hit to a sorted top-k array (mutates `out`). */
   function topkOffer(out, k, hit) {
+    if (k <= 0) return; // k = 0 keeps nothing (same guard as ivf.zig / ivf.rs)
     if (out.length === k && !hitLess(hit, out[k - 1])) return;
     var i = out.length < k ? out.length : k - 1;
     while (i > 0 && hitLess(hit, out[i - 1])) { out[i] = out[i - 1]; i--; }

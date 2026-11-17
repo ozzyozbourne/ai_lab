@@ -256,3 +256,27 @@ fn printPagerStats(w: *Io.Writer, pager: *const Pager) !void {
     const s = pager.stats;
     try w.print("  pager: reads={d} writes={d} allocations={d} syncs={d}\n", .{ s.reads, s.writes, s.allocations, s.syncs });
 }
+
+test "demo: a failing output writer is reported as an error and leaves no file behind" {
+    const testing = std.testing;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [4200]u8 = undefined;
+    // A fixed writer fails when its buffer is full. Sweep the buffer size so
+    // that the failure lands in every part of the demo, including the steps
+    // of part 2 that hold up to four pins (which used to abort in deinit).
+    var size: usize = 0;
+    var failures: usize = 0;
+    while (size <= buf.len) : (size += 59) {
+        var w: Io.Writer = .fixed(buf[0..size]);
+        if (run(&w, testing.allocator, testing.io, tmp.dir)) |_| {
+            // Only a buffer that holds the whole output gets this far.
+            try testing.expect(size >= @embedFile("expected_output").len);
+        } else |err| {
+            try testing.expectEqual(error.WriteFailed, err);
+            failures += 1;
+        }
+        try testing.expectError(error.FileNotFound, tmp.dir.access(testing.io, db_name, .{}));
+    }
+    try testing.expect(failures > 60);
+}

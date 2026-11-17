@@ -136,11 +136,10 @@
     function guard(fn) {
       return function () {
         try { fn(); } catch (e) {
-          record('<b>That action failed:</b> ' + esc(e && e.message ? e.name + ': ' + e.message : String(e)) + '. Press Reset to start again.');
+          record('<b>That action failed:</b> ' + BTViz.esc(e && e.message ? e.name + ': ' + e.message : String(e)) + '. Press Reset to start again.');
         }
       };
     }
-    function esc(t) { return String(t).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
     function btn(id, text, fn, primary) { return el('button.bt-btn' + (primary ? '.bt-primary' : '') + '#' + id, { type: 'button', onclick: guard(fn) }, text); }
     var bSlot = btn('sb-slot', 'Write slot', function () { write(0, false); });
     var bHome = btn('sb-home', 'Write home', function () { write(homeNo(), true); }, true);

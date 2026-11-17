@@ -177,6 +177,20 @@ pub const Storage = struct {
 "the same code runs on SimDisk and on a real file" checks that both end with
 byte-identical pages.
 
+For that to work the two implementations must agree on the corner cases, so the
+contract is written down at the top of `storage.zig` and tested ("SimDisk and
+FileStorage answer every call alike" runs one random stream of writes, reads and syncs
+against both and compares every answer):
+
+- `size()` is the highest page number ever written plus one, counting writes that are
+  not durable yet.
+- Reading below `size()` always succeeds. A page that was never written (a *hole*, left
+  by writing page 2 into an empty store) reads as zeroes. Reading at or beyond `size()`
+  is `error.OutOfBounds`.
+- A write to a page number at or beyond the implementation's `max_pages` is
+  `error.OutOfBounds`, and a failed write changes nothing.
+- On a powered-off `SimDisk`, `error.PowerLoss` comes before every other check.
+
 **The simulator.** `SimDisk` keeps the two states of the plain-words section apart:
 
 ```zig
@@ -185,8 +199,9 @@ pending: std.ArrayList(Pending), // unsynced writes, oldest first
 ```
 
 - `writePage` copies the page and appends it to `pending`. `durable` is untouched.
-- `readPage` returns the newest pending write for that page, else the durable bytes.
-  This is the OS cache answering, and the reason an unsynced write looks stored.
+- `readPage` returns the newest pending write for that page, else the durable bytes,
+  else zeroes for a hole. This is the OS cache answering, and the reason an unsynced
+  write looks stored.
 - `sync` applies all pending writes in order and empties the list.
 - `crash(mode)` decides each pending write's fate, empties the list and "reboots".
   `.drop` and `.keep` are fates 1 and 2 for everything. `.tear` gives every pending
@@ -211,8 +226,10 @@ Chapter 22 uses exactly this loop on a B-tree split.
 **Checksummed pages.** `seal(page, page_no)` stores CRC-32 of *(page number, payload)*
 in the last four bytes; `verify` returns `.ok`, `.blank` (all zeroes: never written) or
 `.corrupt`. The page number is mixed in so that a correct page at the wrong address
-fails too (experiment 3). The tests check that every single-bit flip and all 254 torn
-mixes of two sealed versions are detected.
+fails too (experiment 3). The tests check that every single-bit flip (all 32768 bits of
+a page, one at a time) and all 254 torn mixes of two sealed versions are detected.
+`readChecked(storage, page_no, out)` is `readPage` plus `verify`; a page at or beyond
+the end of the store counts as `.blank`, which is what recovery wants on a fresh store.
 
 **Double write.** `update` is the two steps of the hand example; the comment on the
 first `sync` says why it cannot be skipped. `recover` reads slot and home for each
@@ -252,8 +269,10 @@ capacity formula must respect. Postgres stores a 16-bit checksum in the page hea
 (`postgres/src/include/storage/bufpage.h:189`) and mixes in the block number "to detect
 the case where a page is somehow moved to a different location"
 (`postgres/src/include/storage/checksum_impl.h:160-193`, the XOR is at `:193`), which is
-what `seal(page, page_no)` imitates. It is checked when a page is read
-(`postgres/src/backend/storage/page/bufpage.c:94`, `:120`).
+what `seal(page, page_no)` imitates. Data checksums are optional in Postgres; when
+they are enabled the checksum is verified as a page is read (`PageIsVerified`,
+`postgres/src/backend/storage/page/bufpage.c:94`; the call at `:120` sits under
+`if (DataChecksumsNeedVerify())` at `:118`).
 
 **Full-page images (Postgres).** Postgres does not double-write. Its second copy lives
 in the write-ahead log: the first time a page is modified after a checkpoint, the WAL
@@ -307,11 +326,19 @@ with the arena there is nothing to forget. What would go wrong the other way: pu
 the *durable* image in the arena. It must outlive every reset, so it belongs to the
 general-purpose allocator passed to `init`.
 
-One more decision: `writePage` reserves the durable space its page may need
-(`ensureTotalCapacity`) before accepting the write. `sync` and `crash` therefore never
-allocate and cannot fail with `OutOfMemory`, which keeps "apply pending writes" a simple
-infallible loop. The test "a failed write leaves the disk unchanged" checks the other
-half: an allocation failure in `writePage` changes nothing.
+One more decision: `writePage` reserves the durable space its page may need before
+accepting the write. `sync` and `crash` therefore never allocate and cannot fail with
+`OutOfMemory`, which keeps "apply pending writes" a simple infallible loop. The test "a
+failed write leaves the disk unchanged" checks the other half: an allocation failure in
+`writePage` changes nothing. The decision has a price. A pending write to page p
+reserves p + 1 pages at once, and the reservation is kept even if a crash drops the
+write: one write to page 1000 holds 4 MiB before anything is durable. `reserveDurable`
+asks for exactly that much on such a jump (and grows by half when pages are appended one
+by one), but a test that writes to very high page numbers still pays for the whole
+range. A second consequence: the reservation may move the durable buffer, so the pointer
+returned by `durablePage` is only valid until the next `writePage`, `sync` or `crash`.
+(Rust's `Vec::resize` aborts on a failed allocation instead of returning an error, so
+reserving would buy nothing there: the Rust version grows the image when a write lands.)
 
 **`FixedBufferAllocator` for sector buffers.** `DoubleWrite.recover` needs exactly two
 page buffers, aligned to a sector (real direct I/O requires sector-aligned buffers; the

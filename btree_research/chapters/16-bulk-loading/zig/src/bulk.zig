@@ -39,7 +39,10 @@ pub const Options = struct {
     inner_fill: u8 = 100,
 };
 
-pub const Error = Allocator.Error || error{NotSorted};
+/// `NotSorted`: the key is not greater than the previous one; the loader is
+/// unchanged and still usable. `LoaderClosed`: the loader was already
+/// finished, or an earlier call ran out of memory (see `BulkLoader.closed`).
+pub const Error = Allocator.Error || error{ NotSorted, LoaderClosed };
 
 const Pair = struct { key: u64, slot: u64 };
 
@@ -73,6 +76,13 @@ pub const BulkLoader = struct {
     levels: [bptree.max_height]Level = undefined,
     n_levels: usize = 0,
     last_key: ?u64 = null,
+    /// A loader is used once: `add` ... `add`, then one `finish`. This flag is
+    /// set by `finish`, and by any call that runs out of memory. Unlike `put`,
+    /// an `add` that fails halfway cannot be undone or retried (a page may
+    /// already have been closed and announced to its parent), so the failed
+    /// load is abandoned instead: the tree is emptied and every later call
+    /// returns `error.LoaderClosed`.
+    closed: bool = false,
 
     /// `tree` must be empty. The loader borrows it until `finish`.
     pub fn init(gpa: Allocator, tree: *Tree, options: Options) BulkLoader {
@@ -92,11 +102,26 @@ pub const BulkLoader = struct {
     }
 
     /// Feed the next entry. Keys must arrive in strictly ascending order.
+    /// `error.NotSorted` rejects the key and changes nothing.
+    /// `error.OutOfMemory` abandons the whole load (see `closed`).
     pub fn add(self: *BulkLoader, key: u64, value: u64) Error!void {
+        if (self.closed) return error.LoaderClosed;
         if (self.last_key) |last| if (key <= last) return error.NotSorted;
+        self.addPair(0, .{ .key = key, .slot = value }) catch |err| return self.abandon(err);
+        // Only now is the key part of the tree.
         self.last_key = key;
-        try self.addPair(0, .{ .key = key, .slot = value });
         self.tree.count += 1;
+    }
+
+    /// Out of memory in the middle of a load. The half-built pages are of no
+    /// use to anyone (there is no root to reach them from), so give them back
+    /// and leave the tree as empty as `init` found it. The page-write counter
+    /// is left alone: those writes did happen.
+    fn abandon(self: *BulkLoader, err: Allocator.Error) Allocator.Error {
+        self.closed = true;
+        self.tree.nodes.clearRetainingCapacity();
+        self.tree.count = 0;
+        return err;
     }
 
     fn target(self: *const BulkLoader, level: usize) usize {
@@ -168,8 +193,16 @@ pub const BulkLoader = struct {
         try self.addPair(level + 1, .{ .key = low_key, .slot = id });
     }
 
-    /// End of input: close the right edge of the tree, bottom to top.
-    pub fn finish(self: *BulkLoader) Allocator.Error!void {
+    /// End of input: close the right edge of the tree, bottom to top. Call it
+    /// exactly once; afterwards the loader is closed and only `deinit` is
+    /// left to do. On `error.OutOfMemory` the load is abandoned (see `closed`).
+    pub fn finish(self: *BulkLoader) Error!void {
+        if (self.closed) return error.LoaderClosed;
+        self.closed = true;
+        self.closeRightEdge() catch |err| return self.abandon(err);
+    }
+
+    fn closeRightEdge(self: *BulkLoader) Allocator.Error!void {
         const tree = self.tree;
         var level: usize = 0;
         while (level < self.n_levels) : (level += 1) {
@@ -231,7 +264,6 @@ pub const BulkLoader = struct {
             self.levels[level].pending = nil;
         }
     }
-
 };
 
 /// Convenience wrapper: build a tree of the given order from a sorted slice.
@@ -340,20 +372,112 @@ test "unsorted or duplicate input is rejected" {
     try testing.expectEqual(2, tree.count);
 }
 
+test "finish closes the loader" {
+    const gpa = testing.allocator;
+    var tree = Tree.init(gpa, 4);
+    defer tree.deinit();
+    var loader = BulkLoader.init(gpa, &tree, .{});
+    defer loader.deinit();
+    for (1..14) |k| try loader.add(k, k);
+    try loader.finish();
+    // A second finish used to index the node array with `nil`.
+    try testing.expectError(error.LoaderClosed, loader.finish());
+    try testing.expectError(error.LoaderClosed, loader.add(14, 14));
+    // The finished tree is untouched by the refused calls.
+    try tree.validate();
+    try testing.expectEqual(13, tree.count);
+    try testing.expectEqual(8, tree.stats.page_writes);
+}
+
+test "out of memory abandons the load and leaves an empty tree" {
+    const gpa = testing.allocator;
+    var failed_in_add: usize = 0;
+    var failed_in_finish: usize = 0;
+    // The tree's nodes come from a FailingAllocator; the loader's own buffers
+    // come from `gpa` and never fail here. So every failure is a node
+    // allocation in the middle of `add` or of `finish`.
+    for (1..61) |n| {
+        // Count the tree's allocations in a load of n keys, then fail each.
+        var counting = testing.FailingAllocator.init(gpa, .{});
+        {
+            var tree = Tree.init(counting.allocator(), 4);
+            defer tree.deinit();
+            var loader = BulkLoader.init(gpa, &tree, .{});
+            defer loader.deinit();
+            for (0..n) |k| try loader.add(k, k);
+            try loader.finish();
+        }
+        for (0..counting.allocations) |fail_index| {
+            var failing = testing.FailingAllocator.init(gpa, .{ .fail_index = fail_index });
+            var tree = Tree.init(failing.allocator(), 4);
+            defer tree.deinit();
+            var loader = BulkLoader.init(gpa, &tree, .{});
+            defer loader.deinit();
+            var k: u64 = 0;
+            const failed_key: ?u64 = while (k < n) : (k += 1) {
+                loader.add(k, k) catch |err| {
+                    try testing.expectEqual(error.OutOfMemory, err);
+                    break k;
+                };
+            } else null;
+            if (failed_key) |key| {
+                failed_in_add += 1;
+                // Retrying the key used to report NotSorted, because the key
+                // was remembered before it was stored.
+                try testing.expectError(error.LoaderClosed, loader.add(key, key));
+                try testing.expectError(error.LoaderClosed, loader.add(key + 1, key));
+                try testing.expectError(error.LoaderClosed, loader.finish());
+            } else {
+                failed_in_finish += 1;
+                try testing.expectError(error.OutOfMemory, loader.finish());
+                try testing.expectError(error.LoaderClosed, loader.finish());
+            }
+            // Not a half-built tree: a valid empty one, which `put` can use.
+            try tree.validate();
+            try testing.expectEqual(0, tree.count);
+            try testing.expectEqual(nil, tree.root);
+            try testing.expectEqual(null, tree.get(0));
+            failing.fail_index = std.math.maxInt(usize);
+            try tree.put(7, 70);
+            try testing.expectEqual(70, tree.get(7));
+            try tree.validate();
+        }
+    }
+    // Both entry points were hit.
+    try testing.expect(failed_in_add > 0);
+    try testing.expect(failed_in_finish > 0);
+}
+
 test "loader memory does not grow with the input" {
     const gpa = testing.allocator;
-    for ([_]usize{ 2_000, 200_000 }) |n| {
-        var tree = Tree.init(gpa, 4);
-        defer tree.deinit();
-        var loader = BulkLoader.init(gpa, &tree, .{});
-        defer loader.deinit();
-        for (0..n) |k| try loader.add(k, k);
-        try loader.finish();
-        // One arena per level, and every arena still holds one small buffer
-        // (less than a single node) whether 600 or 60000 pages went through.
-        try testing.expectEqual(tree.height, loader.n_levels);
-        for (loader.levels[0..loader.n_levels]) |*level| {
-            try testing.expect(level.arena.queryCapacity() < @sizeOf(bptree.Node));
+    for ([_]usize{ 4, 32 }) |order| {
+        // Bytes held by each level's arena after a small load ...
+        var small: [bptree.max_height]usize = undefined;
+        var small_levels: usize = 0;
+        for ([_]usize{ 2_000, 200_000 }) |n| {
+            var tree = Tree.init(gpa, order);
+            defer tree.deinit();
+            var loader = BulkLoader.init(gpa, &tree, .{});
+            defer loader.deinit();
+            for (0..n) |k| try loader.add(k, k);
+            try loader.finish();
+            // One arena per level.
+            try testing.expectEqual(tree.height, loader.n_levels);
+            for (loader.levels[0..loader.n_levels], 0..) |*level, i| {
+                const held = level.arena.queryCapacity();
+                // One buffer of `order` pairs at most, plus the arena's own
+                // bookkeeping, whether a level saw 1 page or 60000.
+                try testing.expect(held <= order * @sizeOf(Pair) + 512);
+                if (n == 2_000) {
+                    small[i] = held;
+                    small_levels = loader.n_levels;
+                } else if (i + 1 < small_levels) {
+                    // ... and after a load 100 times larger: exactly the same.
+                    // (The top level of the small load is left out: it never
+                    // closed a page, so its arena was never reset.)
+                    try testing.expectEqual(small[i], held);
+                }
+            }
         }
     }
 }

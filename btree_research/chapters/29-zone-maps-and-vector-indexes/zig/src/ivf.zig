@@ -12,6 +12,9 @@
 //!
 //! Everything is integer arithmetic (i32 coordinates, u64 squared distances,
 //! ties broken by id), so the Zig and Rust programs agree bit for bit.
+//! Distances are exact while dim * (largest coordinate difference)^2 fits in
+//! a u64, for example any i32 coordinates with dim = 1, or coordinates within
+//! +-2^29 with dim <= 16. Beyond that `dist2` saturates (see there).
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const SplitMix64 = @import("prng.zig").SplitMix64;
@@ -33,19 +36,28 @@ fn hitLessThan(_: void, a: Hit, b: Hit) bool {
 
 /// Squared Euclidean distance. Squared, because sqrt is monotonic: it would
 /// change no comparison and would bring floating point in.
+///
+/// No input can overflow. The difference of two i32 fits an i64, but its
+/// square does not fit an i64 once the difference passes about 2^31.5, so the
+/// square is taken of the unsigned magnitude (at most 2^32 - 1, whose square
+/// fits a u64). The sum over the dimensions can still pass 2^64; `+|=`
+/// saturates there instead of wrapping, so an absurdly far vector compares as
+/// "as far as possible" and never as near.
 pub fn dist2(a: []const i32, b: []const i32) u64 {
     std.debug.assert(a.len == b.len);
     var sum: u64 = 0;
     for (a, b) |x, y| {
-        const d: i64 = @as(i64, x) - y;
-        sum += @intCast(d * d);
+        const d: u64 = @abs(@as(i64, x) - y);
+        sum +|= d * d;
     }
     return sum;
 }
 
 /// Offer `hit` to the sorted top-k buffer `out[0..len]`; returns the new len.
 /// k is small, so insertion into a sorted array beats a heap here.
+/// k = out.len may be 0: then nothing is ever kept.
 pub fn topkOffer(out: []Hit, len: usize, hit: Hit) usize {
+    if (out.len == 0) return 0; // no last slot to compare with below
     if (len == out.len and !hit.lessThan(out[len - 1])) return len;
     var i = if (len < out.len) len else len - 1; // slot that opens up
     while (i > 0 and hit.lessThan(out[i - 1])) : (i -= 1) out[i] = out[i - 1];
@@ -287,6 +299,44 @@ test "dist2 and topkOffer" {
     try testing.expectEqual(3, len);
     // Sorted by distance; the tie at 10 is broken by the smaller id.
     try testing.expectEqualSlices(Hit, &.{ .{ .dist = 5, .id = 5 }, .{ .dist = 10, .id = 1 }, .{ .dist = 10, .id = 3 } }, &out);
+}
+
+test "k = 0 returns nothing and still counts the work" {
+    // Regression: topkOffer used to read out[len - 1] with len = 0.
+    const gpa = testing.allocator;
+    var none: [0]Hit = .{};
+    try testing.expectEqual(0, topkOffer(&none, 0, .{ .dist = 1, .id = 1 }));
+    try testing.expectEqual(0, flatSearch(&.{ 1, 2, 3 }, 1, &.{2}, &none));
+    var rng = SplitMix64.init(3);
+    const data = try randomData(gpa, &rng, 40, 2, 100);
+    defer gpa.free(data);
+    var index = try Ivf.build(gpa, data, 2, 4, 1, 10);
+    defer index.deinit(gpa);
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const stats = try index.search(arena_state.allocator(), &.{ 50, 50 }, 4, &none);
+    try testing.expectEqual(0, stats.hits);
+    try testing.expectEqual(4, stats.lists_probed);
+    try testing.expectEqual(40, stats.vectors_scanned);
+}
+
+test "dist2 cannot overflow: extreme coordinates, then saturation" {
+    // Regression: the square of an i64 difference overflowed i64.
+    const lo = std.math.minInt(i32);
+    const hi = std.math.maxInt(i32);
+    const far: u64 = (1 << 32) - 1; // hi - lo
+    try testing.expectEqual(far * far, dist2(&.{lo}, &.{hi}));
+    try testing.expectEqual(far * far, dist2(&.{hi}, &.{lo}));
+    // Two such dimensions pass 2^64: the sum saturates instead of wrapping.
+    try testing.expectEqual(std.math.maxInt(u64), dist2(&.{ lo, lo }, &.{ hi, hi }));
+    // Still usable for ranking: the far point loses to a near one.
+    var best: [1]Hit = undefined;
+    try testing.expectEqual(1, flatSearch(&.{ lo, lo, hi - 1, hi - 1 }, 2, &.{ hi, hi }, &best));
+    try testing.expectEqual(Hit{ .dist = 2, .id = 1 }, best[0]);
+    // Coordinates within +-2^29 in 16 dimensions stay exact (the documented range).
+    const a: [16]i32 = @splat(-(1 << 29));
+    const b: [16]i32 = @splat(1 << 29);
+    try testing.expectEqual(16 << 60, dist2(&a, &b));
 }
 
 test "1-D: the nearest neighbour is the predecessor or the successor" {

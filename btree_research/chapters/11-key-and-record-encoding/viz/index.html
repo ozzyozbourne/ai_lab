@@ -13,7 +13,7 @@
   display: grid; grid-template-columns: 9.5rem auto; align-items: center; gap: 2px 10px; padding: 4px 8px;
   border-radius: 6px; background: var(--s-bg, var(--bt-surface)); box-shadow: inset 3px 0 0 var(--s, var(--bt-border));
 }
-.c11-row.is-pending .c11-meta { color: var(--bt-muted); }
+.c11-row.r-pending .c11-meta { color: var(--bt-muted); }
 .c11-meta { font: .8rem/1.3 var(--bt-mono); white-space: nowrap; display: flex; gap: .6em; }
 .c11-meta b { min-width: 2.6em; }
 .c11-meta .c11-name { min-width: 3.9em; }
@@ -23,13 +23,13 @@
   border-radius: 3px; background: var(--s-bg, var(--bt-key-bg)); color: var(--bt-text);
   box-shadow: inset 0 0 0 1.5px var(--s, transparent);
 }
-/* A row's highlight state must not leak into its byte cells. */
+/* A row's highlight state must not leak into its byte cells. (Modifier classes are r-*, not is-*: "is-" contains "s-".) */
 .c11-b:not([class*="s-"]) { --s: initial; --s-bg: initial; }
-.c11-b.is-colstart { margin-left: 6px; }
-.c11-b.is-tag { box-shadow: inset 0 -2.5px 0 var(--s, var(--bt-muted)); }
-.c11-b.is-tag[class*="s-"] { box-shadow: inset 0 0 0 1.5px var(--s); }
-.c11-b.is-term, .c11-b.is-esc { font-style: italic; color: var(--bt-muted); }
-.c11-b.is-same { opacity: .4; }
+.c11-b.r-colstart { margin-left: 6px; }
+.c11-b.r-tag { box-shadow: inset 0 -2.5px 0 var(--s, var(--bt-muted)); }
+.c11-b.r-tag[class*="s-"] { box-shadow: inset 0 0 0 1.5px var(--s); }
+.c11-b.r-term, .c11-b.r-esc { font-style: italic; color: var(--bt-muted); }
+.c11-b.r-same { opacity: .4; }
 .c11-b[class*="s-"] { font-weight: 700; color: var(--bt-text); }
 .c11-stats { margin-top: 8px; font-size: .86rem; color: var(--bt-muted); display: flex; flex-wrap: wrap; gap: 4px 16px; }
 .c11-stats b { color: var(--bt-text); font-variant-numeric: tabular-nums; }
@@ -45,8 +45,8 @@
 .c11-strips { display: flex; flex-direction: column; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
 .c11-strip { display: grid; grid-template-columns: 13.5rem auto; align-items: center; gap: 2px 10px; min-width: min-content; }
 .c11-strip-label { font-size: .84rem; color: var(--bt-muted); }
-.c11-strip.is-latest .c11-strip-label { color: var(--bt-text); font-weight: 650; }
-.c11-strip:not(.is-latest) .c11-b { opacity: .78; }
+.c11-strip.r-latest .c11-strip-label { color: var(--bt-text); font-weight: 650; }
+.c11-strip:not(.r-latest) .c11-b { opacity: .78; }
 .c11-strip .c11-b { width: 2em; height: 2.1em; font-size: 12.5px; }
 .c11-empty { font: .8rem var(--bt-mono); color: var(--bt-muted); }
 
@@ -60,7 +60,7 @@
   .c11-strip { grid-template-columns: 1fr; }
   .c11-bytes { font-size: 9.5px; gap: 0; }
   .c11-b { width: 1.42em; border-radius: 2px; }
-  .c11-b.is-colstart { margin-left: 3px; }
+  .c11-b.r-colstart { margin-left: 3px; }
   .c11-strip .c11-b { width: 1.8em; font-size: 11px; }
 }
 </style>
@@ -107,10 +107,10 @@ byte order of each encoding with the numeric order.</p>
   function byteCell(b, role, prevRole, extra) {
     var cls = 'span.c11-b';
     if (role) {
-      if (role.kind !== 'data') cls += '.is-' + role.kind;
-      if (prevRole && prevRole.col !== role.col) cls += '.is-colstart';
+      if (role.kind !== 'data') cls += '.r-' + role.kind;
+      if (prevRole && prevRole.col !== role.col) cls += '.r-colstart';
     }
-    if (extra === 'same') cls += '.is-same'; else if (extra) cls += '.s-' + extra;
+    if (extra === 'same') cls += '.r-same'; else if (extra) cls += '.s-' + extra;
     return el(cls, M.hex([b]));
   }
 
@@ -169,7 +169,7 @@ byte order of each encoding with the numeric order.</p>
         var cls = 'div.c11-row';
         if (inPair) cls += '.s-active';
         else if (state.done) cls += state.wrong.indexOf(r) >= 0 ? '.s-deleted' : '.s-found';
-        else if (pos > state.sortedUpTo) cls += '.is-pending';
+        else if (pos > state.sortedUpTo) cls += '.r-pending';
         var bytes = el('div.c11-bytes');
         key.bytes.forEach(function (b, i) {
           var extra = null;
@@ -291,7 +291,7 @@ byte order of each encoding with the numeric order.</p>
         var bytes = el('div.c11-bytes');
         if (s.bytes.length === 0) bytes.appendChild(el('span.c11-empty', '(no bytes)'));
         s.bytes.forEach(function (b, j) { bytes.appendChild(byteCell(b, null, null, latest ? s.marks[j] : null)); });
-        strips.appendChild(el('div.c11-strip' + (latest ? '.is-latest' : ''), el('div.c11-strip-label', s.label), bytes));
+        strips.appendChild(el('div.c11-strip' + (latest ? '.r-latest' : ''), el('div.c11-strip-label', s.label), bytes));
       });
       Object.keys(panels).forEach(function (k) { panels[k].root.hidden = k !== step.snippet; });
       var lines = step.mark ? window.CHAPTER_CODE_LINES[step.snippet][step.mark] : null;

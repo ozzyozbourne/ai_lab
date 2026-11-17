@@ -502,7 +502,7 @@
     this.parent.appendChild(el('span.bt-chip' + (hlPages[tree.rightmost] ? '.s-' + hlPages[tree.rightmost] : ''), (tree.dividers.length ? 'rest' : 'all keys') + ' → p' + tree.rightmost));
 
     /* page grid: each slot is 130% of a page wide so an overfull page can spill */
-    var cols = W < 460 ? 1 : W < 760 ? 2 : 3, gap = 14;
+    var cols = W < 460 ? 1 : W < 1000 ? 2 : 3, gap = 14;
     var slotW = Math.min(360, (W - gap * (cols - 1)) / cols), scale = slotW / (cap * 1.3), rowH = 70;
     var inStrip = {};
     if (strip) strip.ids.forEach(function (id) { inStrip[id] = true; });
@@ -518,7 +518,7 @@
         void pe.root.offsetWidth;
       }
       seenPages[child.id] = true;
-      var over = child.used > cap;
+      var over = child.used > cap && !inStrip[child.id];
       pe.root.className = 'c15-page' + (over ? ' is-over' : '');
       pe.root.style.transform = 'translate(' + x + 'px,' + y + 'px)';
       pe.root.style.opacity = 1;

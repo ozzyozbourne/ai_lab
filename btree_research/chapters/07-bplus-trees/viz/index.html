@@ -19,6 +19,7 @@
   .c7-note { font-size: .82rem; color: var(--bt-muted); margin: 0; }
   #code { margin-top: 14px; }
   .c7-points li { margin: .35em 0; }
+  .bt-selftest { white-space: normal; border-radius: 10px; }   /* long names must wrap on a phone */
 </style>
 </head>
 <body>
@@ -200,9 +201,9 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     var mid = both();
     var sb = op === 'insert' ? b.put(v, v * 100) : op === 'delete' ? b.delete(v) : b.search(v);
     var after = both();
-    sa.forEach(function (s, i) {
+    sa.forEach(function (s) {
       if (brief && SKIP_A[s.type]) return;
-      out.push({ focus: 'a', type: s.type, caption: chip('B-tree') + s.caption, log: i === 0 ? op + ' ' + v : null,
+      out.push({ focus: 'a', type: s.type, caption: chip('B-tree') + s.caption,
         state: { a: s.state, b: before.b, an: countNodes(s.state), ah: heightOf(s.state), asize: countKeys(s.state) },
         hlA: s.highlight });
     });
@@ -213,6 +214,7 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
         state: { a: mid.a, b: s.state, an: mid.an, ah: mid.ah, asize: mid.asize }, hlB: s.highlight });
     });
     if (brief && !out.length) return out;
+    if (out.length) out[0].log = (op === 'insert' ? 'put ' : op === 'delete' ? 'delete ' : 'get ') + v;
     var hlA = {}, hlB = {};
     if (op === 'insert') { hlA = { keys: mk('*:' + v, 'inserted') }; hlB = { keys: mk('*:' + v, 'inserted') }; }
     out.push({ focus: null, type: 'summary', caption: summary(op, v, sa, sb, after), state: after, hlA: hlA, hlB: hlB });
@@ -288,7 +290,7 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
   /* ---------------------------------------------------------- self-tests */
   var E = window.CHAPTER_EXPECTED;
   BTViz.selfTest('B+tree model = program output, sections 1–5', Ch07.scenarioText(), E.sections1to5);
-  BTViz.selfTest('B+tree model = program output, section 7 (3 × 20000 operations)', Ch07.modelRunText(), E.section7);
+  BTViz.selfTest('B+tree model = program output, section 7', Ch07.modelRunText(), E.section7);
   var ref = BTViz.models.BTree(4).insertMany(Ch07.CANONICAL).snapshot();
   BTViz.selfTest('B-tree model = chapter 05 canonical tree',
     '[' + ref.keys.join(' ') + ']\n' + ref.children.map(function (c) { return '[' + c.keys.join(' ') + ']'; }).join(' '), E.btreeCanonical);

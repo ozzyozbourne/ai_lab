@@ -82,7 +82,7 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
   var code = BTViz.codePanel(fig.side, 'balance', { title: 'balance (abridged)', maxHeight: 300 });
   var statsBody = el('div.bt-panel-body.c15-stats');
   fig.side.appendChild(el('div.bt-panel', el('div.bt-panel-title', 'Structural work so far'), statsBody));
-  var log = new BTViz.Log(fig.side, { title: 'Operations', max: 60 });
+  var log = new BTViz.Log(fig.side, { title: 'Operations in this animation', max: 60 });
 
   function lineOf(lang, marker, from) {
     var lines = String(window.CHAPTER_CODE.balance[lang]).replace(/^\n+|\s+$/g, '').split('\n');
@@ -113,6 +113,7 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
     mount: fig.controls, caption: fig.caption, root: fig.root, predict: false, interval: 1500,
     onStep: function (step) {
       view.render(step.state);
+      log.sync(stepper.steps, step.index);
       code.highlight(step.lines || []);
       var s = step.state.tree.stats;
       statsBody.textContent = '';
@@ -260,7 +261,6 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
     tree.cfg.quickAppend = quick.checked;
     tree.cfg.merge = merge.value;
   }
-  function logSteps(steps) { steps.forEach(function (s) { if (s.log) log.add(s.log.html, s.log.state); }); }
   function idle(text) { return { caption: text, state: { tree: tree.snapshot() } }; }
   function allKeys() {
     var out = [];
@@ -269,7 +269,6 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
   }
   function reset() {
     newTree();
-    log.clear();
     stepper.setSteps([idle('An empty tree is one empty leaf. Put some cells: type a key and a size (1 to 33 bytes), or leave both empty for random values.')]);
   }
   function run(op) {
@@ -292,14 +291,12 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
       return;
     }
     before.caption = op === 'put' ? 'Next: put ' + k(v, 'inserted') + ' with ' + sz + ' bytes.' : 'Next: delete ' + k(v, 'deleted') + '.';
-    logSteps(steps);
     stepper.setSteps([before].concat(steps), { play: true });
     key.value = size.value = '';
     opNo++;
   }
   function scenario(play) {
     newTree();
-    log.clear();
     var steps = [idle('The fixed scenario of the chapter’s programs (section 2 of their output), with the settings chosen above. Press play, or step with → and ←.')];
     Ch15.SCENARIO.forEach(function (part) {
       tree.trace = [];
@@ -309,7 +306,6 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
       tree.trace = null;
     });
     steps.push(idle('End of the scenario: two leaves, 95 and 90 bytes, after one append, one split, two redistributions and one merge. Now try your own keys, or change the policies and replay.'));
-    logSteps(steps);
     stepper.setSteps(steps, { play: !!play });
     return tree;
   }

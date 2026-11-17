@@ -43,6 +43,8 @@
 .cl-mini i.is-hinted { background: var(--bt-pointer-bg); border-color: var(--bt-pointer); }
 .cl-note { color: var(--bt-muted); font-size: .88rem; margin: .4em 0 .8em; }
 h3.cl-h { font-size: .95rem; margin: 1em 0 .3em; }
+.bt-toolbar .bt-select { max-width: 100%; }
+.bt-toolbar .bt-field { max-width: 100%; }
 </style>
 </head>
 <body>
@@ -84,12 +86,12 @@ makes all but the first one start loading early.</p>
   });
 
   var ALGOS = {
-    classic: { label: 'classic binary search (chapter 02)', code: 'classic', prefetch: false },
-    halving: { label: 'halving search (conditional move)', code: 'halving', prefetch: true },
-    'halving-aos': { label: 'halving search on 16-byte entries (array of structs)', code: 'halving', prefetch: true },
-    vector: { label: 'vector scan, 8 keys per step', code: 'vector', prefetch: false },
+    classic: { label: 'classic binary search', code: 'classic', prefetch: false },
+    halving: { label: 'halving search', code: 'halving', prefetch: true },
+    'halving-aos': { label: 'halving, 16-byte entries (AoS)', code: 'halving', prefetch: true },
+    vector: { label: 'vector scan', code: 'vector', prefetch: false },
     eytzinger: { label: 'Eytzinger layout', code: 'eytzinger', prefetch: true },
-    blocktree: { label: 'block tree (8 keys per node)', code: 'blocktree', prefetch: false }
+    blocktree: { label: 'block tree, 8 keys per node', code: 'blocktree', prefetch: false }
   };
 
   function keysFor(n) { return n === 15 ? C.handKeys() : C.makeKeys(n, 1000 + n); }

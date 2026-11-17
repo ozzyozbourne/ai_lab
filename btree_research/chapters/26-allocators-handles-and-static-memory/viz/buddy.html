@@ -146,7 +146,7 @@ Chapter text: <a href="../README.md">README</a>. First page: <a href="index.html
   var ids = [['a', 100], ['b', 60], ['c', 200]].map(function (r) { var blk = b.alloc(r[1], r[0]).result; maps.push(b.map()); return blk; });
   BTViz.selfTest('section 5: allocations', maps.join('\n'),
     '[128 used][128 free][256 free][512 free]\n[128 used][64 used][64 free][256 free][512 free]\n[128 used][64 used][64 free][256 used][512 free]');
-  BTViz.selfTest('section 5: accounting', [b.requested, b.granted, b.freeBytes(), b.largestFree(), b.alloc(600, 'x').result].join(' '), '360 448 576 512 null');
+  BTViz.selfTest('section 5: accounting', [b.requested, b.granted, b.freeBytes(), b.largestFree(), b.alloc(600, 'x').result].map(String).join(' '), '360 448 576 512 null');
   maps = ids.map(function (blk) { b.free(blk); return b.map(); });
   BTViz.selfTest('section 5: frees', maps.join('\n'), '[128 free][64 used][64 free][256 used][512 free]\n[256 free][256 used][512 free]\n[1024 free]');
 })();

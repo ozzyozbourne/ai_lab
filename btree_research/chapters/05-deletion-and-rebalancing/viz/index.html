@@ -145,7 +145,7 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
 
   var tree = null;
   var stepper = new BTViz.Stepper({
-    mount: fig.controls, caption: fig.caption, root: fig.root, predict: true,
+    mount: fig.controls, caption: fig.caption, root: fig.root, predict: false, // false = show the Predict checkbox, unticked
     onStep: function (step) {
       view.render(step.state, step.highlight);
       code.highlight(window.CHAPTER_LINES[step.type] || []);

@@ -254,10 +254,8 @@
       if (this.node(this.root).keys.length === this.K) {
         var newRoot = this.allocStep(false, 'The root ' + hh(this.root) + ' is full: the tree grows by one level.');
         this.node(newRoot).kids = [this.root];
-        var old = this.root;
         this.root = newRoot; this.height++;
         this.splitChild(newRoot, 0);
-        void old;
       }
       var h = this.root;
       for (;;) {

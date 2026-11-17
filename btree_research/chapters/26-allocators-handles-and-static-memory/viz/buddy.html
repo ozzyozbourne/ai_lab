@@ -83,7 +83,7 @@ Chapter text: <a href="../README.md">README</a>. First page: <a href="index.html
       el('span', 'lost to rounding ', el('b', String(s.stats.granted - s.stats.requested))),
       el('span', 'free ', el('b', String(s.stats.free))), el('span', 'largest free block ', el('b', String(s.stats.largest))));
     // The free buttons act on the model's CURRENT state, so they are only live on the last step.
-    var last = i === stepper.steps.length - 1;
+    var last = i === current.length - 1;
     liveEl.textContent = '';
     var used = s.blocks.filter(function (b) { return !b.free && b.name; });
     if (!used.length) liveEl.appendChild(el('span', { style: { color: 'var(--bt-muted)', fontSize: '.82rem' } }, 'none'));

@@ -43,7 +43,7 @@
       cells.appendChild(box);
     });
     if (total < st.capacity) cells.appendChild(el('div.c14-free', { style: { flex: (st.capacity - total) + ' 0 0' }, title: (st.capacity - total) + ' bytes free' },
-      (st.capacity - total) / scale >= 0.12 ? el('span', (st.capacity - total) + 'B free') : null));
+      (st.capacity - total) / scale >= 0.2 ? el('span', (st.capacity - total) + 'B free') : null));
     rootEl.appendChild(cells);
     if (total > st.capacity) {
       // The imaginary page is longer than a real one: mark where a real page ends.

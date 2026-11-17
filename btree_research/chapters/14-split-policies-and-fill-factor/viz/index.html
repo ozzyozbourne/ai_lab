@@ -27,7 +27,7 @@
   color: var(--bt-muted); font: .7rem/1 var(--bt-mono);
   background: repeating-linear-gradient(45deg, var(--bt-free-bg), var(--bt-free-bg) 5px, var(--bt-surface) 5px, var(--bt-surface) 10px);
 }
-.c14-free span { background: var(--bt-surface); padding: 2px 4px; border-radius: 3px; }
+.c14-free span { background: var(--bt-surface); padding: 2px 4px; border-radius: 3px; white-space: nowrap; }
 .c14-cap { position: absolute; top: -5px; bottom: -5px; width: 0; border-left: 2px dashed var(--bt-key-deleted); }
 .c14-cap-label { font: .7rem/1.5 var(--bt-mono); color: var(--bt-key-deleted); white-space: nowrap; text-align: right; box-sizing: border-box; padding-right: 4px; }
 .c14-gaps { position: relative; height: 26px; margin-top: 3px; }
@@ -167,7 +167,7 @@ a run of equal keys: the parent then has to store the row id as well as the key.
         s.rows.forEach(function (row) {
           body.appendChild(el('tr', { class: row.state ? 's-' + row.state : null, style: row.legal ? null : { opacity: 0.5 } },
             el('td.num', String(row.s)), el('td.num', row.left + 'B'), el('td.num', row.right + 'B'),
-            el('td.num', row.legal ? (row.delta === null ? '' : String(row.delta)) : 'too big'), el('td', row.sep)));
+            el('td.num', row.legal ? (row.delta === null ? '' : String(row.delta)) : 'too big'), el('td', { style: { whiteSpace: 'nowrap' } }, row.sep)));
         });
         t.appendChild(body);
         tableHost.appendChild(t);
@@ -192,7 +192,7 @@ a run of equal keys: the parent then has to store the row id as well as the key.
 
       function sepText(s) {
         var a = items[s - 1], b = items[s];
-        return a.key !== b.key ? '(' + b.key + ') · 8B' : cellText(b) + ' · 16B, inside a run';
+        return a.key !== b.key ? '(' + b.key + ') 8B' : cellText(b) + ' 16B';
       }
       /* Table rows in page order. `fill` selects the delta column, `states` colours rows. */
       function rows(fill, withDelta, states) {
@@ -230,7 +230,7 @@ a run of equal keys: the parent then has to store the row id as well as the key.
         { pending: neu, strip: { title: 'the page before the insert', capacity: cap, items: old, gaps: null } });
 
       push('candidates', 'Picture the new cell already in its sorted place. Every gap between two cells is a place to cut: cells left of the gap stay, cells right of it move to a new page, ' +
-        'and the first cell on the right tells the parent where the new page begins. A cut is only legal if both sides fit in ' + cap + ' bytes: ' + nLegal + ' of ' + (items.length - 1) + ' gaps are.',
+        'and the first cell on the right tells the parent where the new page begins. A cut is only legal if both sides fit in ' + cap + ' bytes: ' + nLegal + ' of ' + (items.length - 1) + ' gaps are. The last column is what the parent would have to store: the bare key (8 bytes) if the cells on either side of the cut have different keys, key and row id (16 bytes) if the cut falls inside a run of equal keys.',
         { strip: imaginary(null), rows: rows(null, false, null), deltaLabel: 'delta' });
 
       var firstFill = policy.kind === 'adaptive' ? M.targetFill(policy, upperKey === null) : tr.fill;
@@ -294,14 +294,14 @@ a run of equal keys: the parent then has to store the row id as well as the key.
             right: { title: 'right page (new): ' + choice.right + 'B', capacity: cap, items: items.slice(fr).map(function (c, i) { return mark(c, i + fr); }), gaps: null, ariaLabel: 'Right page' }
           }
         },
-        {
-          question: {
-            prompt: 'Before which index will ' + k(name) + ' cut? (left bytes | right bytes)',
-            choices: cands.map(function (s) { return s + ' (' + legal[s].left + ' | ' + legal[s].right + ')'; }),
-            answer: cands.indexOf(fr),
-            explain: 'Strategy: ' + choice.strategy.replace('_', ' ') + '.'
-          }
-        });
+        null);
+      // Predict mode asks before the first step that gives the cut away.
+      steps[policy.kind === 'adaptive' ? 4 : 2].question = {
+        prompt: 'Before which index will ' + k(name) + ' cut? (left bytes | right bytes)',
+        choices: cands.map(function (s) { return s + ' (' + legal[s].left + ' | ' + legal[s].right + ')'; }),
+        answer: cands.indexOf(fr),
+        explain: 'Strategy: ' + choice.strategy.replace('_', ' ') + '.'
+      };
       stepper.setSteps(steps);
     }
     [selPreset, selPos, selPolicy, selFF].forEach(function (s) { s.addEventListener('change', build); });

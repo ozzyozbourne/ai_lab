@@ -270,7 +270,7 @@ way a sorted batch of lookups does.</p>
     var inv = el('div.c02-inv', { 'aria-label': 'What is known so far' });
     fig.stage.appendChild(inv);
     var codeLower = el('div'), codeUpper = el('div');
-    fig.side.append(codeLower, codeUpper);
+    fig.stage.append(codeLower, codeUpper);
     var panels = {
       lower: BTViz.codePanel(codeLower, 'lowerBound', { title: 'lowerBound' }),
       upper: BTViz.codePanel(codeUpper, 'upperBound', { title: 'upperBound' })
@@ -292,7 +292,9 @@ way a sorted batch of lookups does.</p>
       var snap = function (lo, hi, mid, states) {
         var p = { lo: lo, hi: hi };
         if (mid !== null) p.mid = mid;
-        return { values: keys, states: states || {}, pointers: p, range: [lo, hi], capacity: n };
+        // capacity n + 1 from the first frame: the slot one past the end is where hi starts, and
+        // the insertion step needs it (a slot outline created later would cover the moved cell).
+        return { values: keys, states: states || {}, pointers: p, range: [lo, hi], capacity: n + 1 };
       };
       steps.push({
         caption: 'Looking for the <strong>' + (lower ? 'first key ≥ ' : 'first key &gt; ') + K + '</strong> among ' + n + ' sorted keys. ' +
@@ -365,7 +367,7 @@ way a sorted batch of lookups does.</p>
           (r < n ? 'the first key greater than it is <code>keys[' + r + ']</code> = ' + k(keys[r]) : 'no key is greater, so the answer is ' + n + ', one past the end') + '. ' +
           'The lower bound of ' + K + ' is ' + a + ', so the copies of ' + K + ' are at indices <code>[' + a + ', ' + r + ')</code>: <strong>' +
           cnt + '</strong> of them' + (cnt ? ' (highlighted).' : '. With no copy present, both bounds are the insertion index.');
-        steps.push({ caption: cap, state: { values: keys, states: fst, pointers: { lo: r, hi: r }, range: cnt ? [a, r] : [r, r], capacity: n },
+        steps.push({ caption: cap, state: { values: keys, states: fst, pointers: { lo: r, hi: r }, range: cnt ? [a, r] : [r, r], capacity: n + 1 },
           inv: invChips(r, r), lines: [12], hold: 1.6, log: 'result ' + r + ' (' + cnt + ' equal)', logState: 'found' });
       }
       return steps;
@@ -402,7 +404,7 @@ way a sorted batch of lookups does.</p>
   (function () {
     var SETS = { canonical: [1, 3, 5, 6, 7, 10, 12, 15, 17, 20, 25, 30], duplicates: [3, 7, 7, 7, 12, 15, 15, 20] };
     var fig = BTViz.figure('#fig-range', {
-      title: 'A key range becomes a half-open index range', side: true,
+      title: 'A key range becomes a half-open index range',
       legend: [{ token: 'key-compare', label: 'keys equal to a range end' }, { token: 'key-found', label: 'in the range' }]
     });
     fig.legend.appendChild(dimSwatch());
@@ -417,7 +419,7 @@ way a sorted batch of lookups does.</p>
     var av = new BTViz.ArrayView(fig.stage, { ariaLabel: 'Sorted keys of the node' });
     var chips = el('div.c02-inv');
     fig.stage.appendChild(chips);
-    var code = BTViz.codePanel(fig.side, 'rangeSpan', { title: 'rangeSpan' });
+    var code = BTViz.codePanel(fig.stage, 'rangeSpan', { title: 'rangeSpan' });
 
     function buildSteps(keys, lo, hi) {
       var n = keys.length, s = rangeSpan(keys, lo, hi), steps = [];
@@ -481,7 +483,7 @@ way a sorted batch of lookups does.</p>
     for (var i = 0; i < 32; i++) { KEYS.push(v); v += rnd.int(1, 5); }
     var n = KEYS.length;
     var fig = BTViz.figure('#fig-gallop', {
-      title: 'Galloping (exponential) search from a cursor', side: true,
+      title: 'Galloping (exponential) search from a cursor',
       legend: [{ token: 'key-compare', label: 'probe' }, { token: 'key-found', label: 'result' }]
     });
     fig.legend.appendChild(dimSwatch());
@@ -498,7 +500,7 @@ way a sorted batch of lookups does.</p>
     var av = new BTViz.ArrayView(fig.stage, { ariaLabel: 'Sorted keys', cellW: 34 });
     var chips = el('div.c02-inv');
     fig.stage.appendChild(chips);
-    var code = BTViz.codePanel(fig.side, 'gallopLowerBound', { title: 'gallopLowerBound' });
+    var code = BTViz.codePanel(fig.stage, 'gallopLowerBound', { title: 'gallopLowerBound' });
     function clampFrom() { return Math.min(n, intOf(fromIn, 0)); }
 
     function buildSteps(from, key) {

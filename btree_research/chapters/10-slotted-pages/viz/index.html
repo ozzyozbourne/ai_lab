@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slotted pages</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+/* Chapter-local tweaks, toolkit tokens only. */
+/* Free blocks and fragments are drawn with PageView's hatched "dead" style; they are not
+   dead records, so no strike-through, and a fragment gets its own solid colour. */
+.bt-pb.r-dead .bt-pb-label { text-decoration: none; }
+.bt-pb.r-dead.s-merge { background-image: none; background-color: var(--bt-merge); }
+.bt-pb.r-dead.s-found, .bt-pb.r-dead.s-inserted, .bt-pb.r-dead.s-compare { background-color: var(--s-bg); }
+.ch10-stage { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.ch10-hex summary { cursor: pointer; font-size: .85rem; color: var(--bt-muted); margin-bottom: 6px; }
+.ch10-state td, .ch10-state th { font-size: .8rem; }
+.ch10-state td:last-child { font-family: var(--bt-mono); }
+.ch10-slots td { font-family: var(--bt-mono); font-size: .78rem; white-space: nowrap; }
+.ch10-slots td.v { white-space: normal; word-break: break-all; }
+.ch10-msg { font-size: .82rem; color: var(--bt-muted); min-height: 1.2em; flex-basis: 100%; }
+.ch10-keys { font-size: .85rem; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">One fixed-size page that stores records of different lengths and keeps them sorted. Slots (2-byte
+offsets, in key order) grow forward from the header; cells (the records) grow backward from the end of the page.
+Deleting leaves holes, holes are reused, and when the free bytes are not in one piece the page compacts.</p>
+
+<p>The programs in this chapter use 4096-byte pages. Here the page is small so that every byte is visible; the layout
+and the algorithm are the same, and the self-test at the bottom replays the programs' scenario on 4096 bytes.
+Press <b>Play</b>, or step with <kbd>→</kbd> and <kbd>←</kbd>. Then type your own keys.</p>
+
+<div id="fig"></div>
+
+<h2>What to look for</h2>
+<ul>
+  <li><b>Insert in the middle.</b> Only 2-byte slots move. The new cell is written wherever there is room.</li>
+  <li><b>Delete a cell in the middle.</b> It becomes a <em>free block</em>: the hole stores its own size and the offset
+      of the next hole in its first 4 bytes. Delete its neighbour and the two holes merge.</li>
+  <li><b>Insert something a little smaller than a hole.</b> If fewer than 4 bytes are left over they cannot describe
+      themselves: they become <em>fragment</em> bytes, known only as a count in the header.</li>
+  <li><b>Delete the lowest cell.</b> No free block: the gap simply grows.</li>
+  <li><b>Scenario "Fragmented page".</b> The page has enough free bytes for the new cell but no single piece is
+      large enough, so the insert compacts first. Slot numbers stay; offsets change.</li>
+</ul>
+<p class="ch10-keys">Header fields in the picture: <code>n</code> = cell_count, <code>start</code> = content_start,
+<code>free</code> = first_free (offset of the first free block), <code>fr</code> = frag_bytes, <code>k</code> = kind
+(caller-defined), then the 8-byte user area. Hover any byte for details.</p>
+
+<p>Read the chapter: <a href="../README.md">README.md</a> · exercises and <a href="../solutions.md">solutions</a>.
+Previous visualization: <a href="../../09-pages-and-the-buffer-pool/viz/index.html">09 Pages and the buffer pool</a> ·
+next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and record encoding</a>.</p>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="model.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, esc = BTViz.esc, k = BTViz.k;
+
+  BTViz.page({
+    title: 'Slotted pages', chapter: 10,
+    prev: { href: '../../09-pages-and-the-buffer-pool/viz/index.html', title: '09 Pages and the buffer pool' },
+    next: { href: '../../11-key-and-record-encoding/viz/index.html', title: '11 Key and record encoding' }
+  });
+
+  var fig = BTViz.figure('#fig', {
+    title: 'A slotted page, byte by byte', side: true,
+    legend: [
+      { token: 'pointer', label: 'slot (offset of a cell)' }, { token: 'key', label: 'cell (key + value)' },
+      { token: 'free', label: 'gap / free block' }, { token: 'merge', label: 'fragment byte' },
+      { token: 'key-compare', label: 'compared by the search' }, { token: 'key-found', label: 'chosen place' },
+      { token: 'key-inserted', label: 'written in this step' }, { token: 'key-deleted', label: 'being removed' }
+    ]
+  });
+
+  // ---- views ---------------------------------------------------------------------
+  var stage = el('div.ch10-stage');
+  fig.stage.appendChild(stage);
+  var pv = new BTViz.PageView(stage, { cols: 16, regions: false, ariaLabel: 'Slotted page, one square per byte' });
+  var chips = el('div.bt-page-regions');
+  stage.appendChild(chips);
+  var hexHost = el('details.ch10-hex', { open: 'open' }, el('summary', 'Raw bytes (hex). Highlighted: the bytes this step wrote, or the bytes the search read.'));
+  stage.appendChild(hexHost);
+  var hex = new BTViz.HexGrid(hexHost, { cols: 16, base: 10 });
+
+  var statePanel = el('div.bt-panel', el('div.bt-panel-title', 'Free space'), el('div.bt-panel-body'));
+  var slotPanel = el('div.bt-panel', el('div.bt-panel-title', 'Slot array (logical order)'), el('div.bt-panel-body'));
+  fig.side.appendChild(statePanel);
+  fig.side.appendChild(slotPanel);
+  var panels = {};
+  ['search', 'insert', 'delete', 'compact'].forEach(function (name) {
+    panels[name] = BTViz.codePanel(fig.side, name, { title: 'slotted_page: ' + name, maxHeight: 250 });
+  });
+  var log = new BTViz.Log(fig.side, { title: 'Operations' });
+
+  // Lines to highlight, found by text so the snippets can change without breaking this table.
+  var MARKS = {
+    'probe': ['search', ['const mid =', 'self.key(mid), wanted) == .lt'], ['let mid =', 'if self.key(mid) < wanted']],
+    'searched': ['search', ['const found ='], ['let found =']],
+    'refuse': ['insert', ['return error.PageFull'], ['return Err(PageError::PageFull)']],
+    'plan-block-tail': ['insert', ['self.wr16(block + 2, rest);', 'return block + rest;'], ['self.wr16(block + 2, rest);', 'return Some(block + rest);']],
+    'plan-block-whole': ['insert', ['self.buf[off_frag_bytes] = @intCast(frag + rest);', 'return block;'], ['self.buf[OFF_FRAG_BYTES] = (frag + rest) as u8;', 'return Some(block);']],
+    'plan-gap': ['insert', ['content_start -= size;'], ['content_start -= size;']],
+    'plan-compact': ['insert', ['self.compact();'], ['self.compact();']],
+    'compacted': ['compact', ['top -= size;', '@memcpy(self.buf[top..][0..size]', 'self.wr16(header_size + i * slot_size, top);'],
+      ['top -= size;', 'self.buf[top..top + size].copy_from_slice', 'self.wr16(HEADER_SIZE + i * SLOT_SIZE, top);']],
+    'inserted': ['insert', ['@memmove(self.buf[at + slot_size .. end + slot_size]', 'self.wr16(at, off);'], ['self.buf.copy_within(at..end, at + SLOT_SIZE);', 'self.wr16(at, off);']],
+    'unslot': ['delete', ['@memmove(self.buf[at .. end - slot_size]'], ['self.buf.copy_within(at + SLOT_SIZE..end, at);']],
+    'freed-reset': ['delete', ['self.wr16(off_content_start, page_size);'], ['self.wr16(OFF_CONTENT_START, PAGE_SIZE);']],
+    'freed-gap': ['delete', ['self.wr16(off_content_start, end);'], ['self.wr16(OFF_CONTENT_START, end);']],
+    'freed-block': ['delete', ['self.wr16(start, next);', 'self.wr16(start + 2, end - start);'], ['self.wr16(start, next);', 'self.wr16(start + 2, end - start);']]
+  };
+  var LINES = {};
+  Object.keys(MARKS).forEach(function (name) {
+    var m = MARKS[name], src = window.CHAPTER_CODE[m[0]], spec = { zig: [], rust: [] };
+    [['zig', m[1]], ['rust', m[2]]].forEach(function (pair) {
+      var lines = src[pair[0]].replace(/^\n+|\s+$/g, '').split('\n');
+      pair[1].forEach(function (needle) {
+        var at = -1;
+        lines.forEach(function (l, i) { if (at < 0 && l.indexOf(needle) >= 0) at = i + 1; });
+        if (at < 0) console.error('ch10 viz: code marker not found in ' + m[0] + '/' + pair[0] + ': ' + needle);
+        else spec[pair[0]].push(at);
+      });
+    });
+    LINES[name] = { panel: m[0], spec: spec };
+  });
+
+  // ---- model + step generation ---------------------------------------------------
+  var page, pageSize = 256, rand = BTViz.rng(10);
+
+  function q(s) { return s === '' ? '""' : s; }
+  function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
+
+  /** Run one operation on the model and turn the events it emits into steps. */
+  function runOp(title, fn) {
+    var evs = [];
+    var before = page.view();
+    page.on = function (e) { e.view = page.view(); evs.push(e); };
+    var result;
+    try { result = fn(); } finally { page.on = null; }
+    var bad = page.validate();
+    if (bad) console.error('ch10 viz: model invalid after ' + title + ': ' + bad);
+    return buildSteps(title, before, evs, result);
+  }
+
+  function hl(view, extra) {
+    // Fragments always carry the "merge" colour; everything else comes from the step.
+    var h = { cells: {}, slots: {}, pointers: [] };
+    view.frags.forEach(function (f) { h.cells['x:' + f.offset] = 'merge'; });
+    if (extra) {
+      Object.keys(extra.cells || {}).forEach(function (id) { h.cells[id] = extra.cells[id]; });
+      h.slots = extra.slots || {};
+      h.pointers = extra.pointers || [];
+    }
+    return h;
+  }
+
+  function buildSteps(title, before, evs, result) {
+    var steps = [], cur = before, first = true;
+    function push(o) {
+      o.state = o.state || cur;
+      o.highlight = hl(o.state, o.hi);
+      if (first) { o.log = { html: title, state: null }; first = false; }
+      steps.push(o);
+      cur = o.state;
+    }
+    evs.forEach(function (e) {
+      var v = e.view, st = v.stats, row, id;
+      switch (e.t) {
+        case 'probe':
+          row = v.rows[e.mid];
+          push({
+            state: v, code: 'probe', probe: row,
+            hi: { cells: mk('c:' + row.key, 'compare'), slots: mk(e.mid, 'compare'), pointers: [e.mid] },
+            caption: 'Binary search over slots ' + e.lo + '..' + (e.hi - 1) + ': probe slot <b>' + e.mid + '</b>. It holds the offset ' + row.off +
+              ', and the cell there has the key ' + k(q(row.key), 'compare') + '. ' +
+              (e.equal ? 'That is the key we are looking for, so the search continues to the left to find the first match.' :
+                e.less ? 'It sorts before the wanted key: continue in the right half.' : 'It sorts after the wanted key: continue in the left half.')
+          });
+          break;
+        case 'searched':
+          push({
+            state: v, code: 'searched',
+            hi: e.found ? { cells: mk(v.slots[e.index], 'found'), slots: mk(e.index, 'found'), pointers: [e.index] } : null,
+            caption: e.found ? 'Found: the key is in slot <b>' + e.index + '</b>.' :
+              'Not on the page. The lower bound is slot <b>' + e.index + '</b>: ' +
+              (v.rows.length === 0 ? 'the page is empty.' : e.index === v.rows.length ? 'after every existing key.' : 'just before ' + k(q(v.rows[e.index].key)) + '.')
+          });
+          break;
+        case 'refuse':
+          push({
+            state: v, code: 'refuse',
+            caption: '<b>' + e.error + '.</b> ' + (e.error === 'PageFull' ?
+              'The operation needs ' + e.need + ' bytes and the page can give ' + e.have + ' (gap ' + st.gap + ' + free blocks ' + st.freeBlockBytes +
+              ' + fragments ' + st.fragBytes + '). Nothing was changed. A B-tree reacts to this by splitting the page (chapter 12).' :
+              'A cell of ' + e.need + ' bytes can never fit: the largest possible cell on this page is ' + e.have + ' bytes. Nothing was changed.'),
+            logResult: { html: '→ ' + e.error, state: 'deleted' }
+          });
+          break;
+        case 'overwrite':
+          row = v.rows[e.index];
+          push({
+            state: v, hi: { cells: mk('c:' + row.key, 'inserted'), slots: mk(e.index, 'found'), pointers: [e.index] },
+            caption: 'The key exists and the new cell has the same size (' + e.size + ' bytes): the value bytes are overwritten where they are. No slot and no header field changes.',
+            logResult: { html: '→ overwritten in place', state: 'inserted' }
+          });
+          break;
+        case 'replace':
+          push({
+            state: v, hi: { cells: mk(v.slots[e.index], 'deleted'), slots: mk(e.index, 'compare'), pointers: [e.index] },
+            caption: 'The key exists, but the new cell is ' + e.newSize + ' bytes and the old one ' + e.oldSize +
+              '. The old cell is given back first, then the new one is inserted into the same slot. (The space check was done before anything changed.)'
+          });
+          break;
+        case 'plan':
+          planStep(e, v, st);
+          break;
+        case 'compact-start':
+          push({
+            state: v, hi: { cells: freeHi(v, 'compare'), pointers: 'all' },
+            caption: 'Compact. The page has ' + st.freeBytes + ' free bytes in ' + plural(1 + st.freeBlockCount + v.frags.length, 'piece') +
+              ': gap ' + st.gap + ', ' + plural(st.freeBlockCount, 'free block') + ' (' + st.freeBlockBytes + ' bytes), ' + plural(st.fragBytes, 'fragment byte') + '.'
+          });
+          break;
+        case 'compacted':
+          push({
+            state: v, code: 'compacted', hi: { pointers: 'all' }, hold: 1.6,
+            caption: 'Compacted: every cell was rewritten from the end of the page in slot order (slot 0 is now last). Free blocks and fragments are gone; all ' +
+              st.freeBytes + ' free bytes are one gap. <b>Slot numbers did not change, the offsets stored in them did</b>, so anything that remembered an offset is now wrong.',
+            logResult: e.explicit ? { html: '→ gap ' + st.gap, state: 'found' } : null
+          });
+          break;
+        case 'inserted':
+          row = v.rows[e.index];
+          push({
+            state: v, code: 'inserted', hi: { cells: mk('c:' + row.key, 'inserted'), slots: mk(e.index, 'inserted'), pointers: [e.index] },
+            caption: 'The ' + e.size + '-byte cell is written at offset <b>' + e.off + '</b>. ' +
+              (e.moved ? plural(e.moved, 'slot') + ' moved up by 2 bytes to open slot ' + e.index + '; <b>no cell moved</b>.' : 'It is the last slot, so no slot had to move.') +
+              ' Slot ' + e.index + ' now holds ' + e.off + ' and cell_count is ' + v.rows.length + '.',
+            logResult: { html: '→ slot ' + e.index + ' @' + e.off, state: 'inserted' }
+          });
+          break;
+        case 'unslot':
+          row = v.rows[e.index];
+          push({
+            state: v, code: 'unslot', hi: { cells: mk('c:' + row.key, 'deleted'), slots: mk(e.index, 'deleted'), pointers: [e.index] },
+            caption: 'Slot ' + e.index + ' points at the ' + e.size + '-byte cell at offset ' + e.off + '. The slot is removed' +
+              (e.moved ? ' and ' + plural(e.moved, 'later slot') + ' move' + (e.moved === 1 ? 's' : '') + ' down by 2 bytes.' : '; it was the last one.') +
+              ' What happens to the cell bytes depends on where they are.'
+          });
+          break;
+        case 'freed':
+          freedStep(e, v, st);
+          break;
+      }
+    });
+    if (!steps.length) push({ caption: title });
+    var last = steps[steps.length - 1];
+    if (last.logResult) { last.logAfter = last.logResult; }
+    return steps;
+
+    function planStep(e, v, st) {
+      var answer, caption, hi = null;
+      if (e.how === 'block-tail' || e.how === 'block-whole') {
+        answer = 0;
+        hi = { cells: mk('f:' + e.block, 'found') };
+        caption = 'Where do ' + e.size + ' bytes come from? First fit over the free list: the block at ' + e.block + ' has ' + e.blockSize + ' bytes. ' +
+          (e.how === 'block-tail' ?
+            'The cell takes its <b>last</b> ' + e.size + ' bytes; the block keeps its offset and shrinks to ' + e.rest + ' bytes (4 or more, so it can still hold its own header).' :
+            (e.rest === 0 ? 'It fits exactly: the block is unlinked from the list.' :
+              'Only ' + plural(e.rest, 'byte') + ' would be left, too few for a 4-byte free block header. The block is unlinked and the leftover is counted in <b>frag_bytes</b>.'));
+      } else if (e.how === 'gap') {
+        answer = 1;
+        caption = 'Where do ' + e.size + ' bytes come from? ' +
+          (st.freeBlockCount ? 'No free block is large enough (largest: ' + st.largestFreeBlock + ' bytes). ' : 'There is no free block. ') +
+          'The gap has ' + st.gap + ' bytes, enough for the cell and its 2-byte slot: content_start moves down by ' + e.size + ' to ' + (st.contentStart - e.size) + '.';
+      } else {
+        answer = 2;
+        hi = { cells: freeHi(v, 'compare') };
+        caption = 'Where do ' + e.size + ' bytes come from? The page has ' + st.freeBytes + ' free bytes, enough for the cell and its slot, but not in one piece: ' +
+          (e.noSlotRoom ? 'the gap (' + st.gap + ' bytes) cannot even take the new 2-byte slot, so a free block may not be used. ' :
+            'the gap is ' + st.gap + ' bytes and the largest free block ' + st.largestFreeBlock + '. ') +
+          'The page must <b>compact</b> first.';
+      }
+      push({
+        state: v, code: 'plan-' + e.how, hi: hi, caption: caption,
+        question: {
+          prompt: 'A ' + e.size + '-byte cell has to be stored (plus a 2-byte slot). Where will the cell go?',
+          choices: ['Into a free block', 'Into the gap', 'Nowhere yet: the page compacts first'], answer: answer,
+          explain: 'Order of preference: a free block that is large enough (if the gap still has 2 bytes for the slot), then the gap, then compaction.'
+        }
+      });
+    }
+
+    function freedStep(e, v, st) {
+      var caption, answer, hi = null, code;
+      if (e.how === 'reset') {
+        answer = 2; code = 'freed-reset';
+        caption = 'That was the last cell. The page resets: content_start = ' + v.size + ', no free blocks, no fragments. Everything after the header is gap.';
+      } else if (e.how === 'gap') {
+        answer = 2; code = 'freed-gap';
+        caption = 'The freed bytes ' + (e.mergedNext ? '(together with the free block that followed them) ' : '') +
+          'are at the low end of the content area, so nothing has to be remembered: <b>content_start moves up to ' + e.end + '</b> and the bytes are gap again.' + absorbed(e);
+      } else {
+        answer = e.mergedNext || e.mergedPrev ? 1 : 0; code = 'freed-block';
+        hi = { cells: mk('f:' + e.start, 'found') };
+        caption = 'The freed bytes are surrounded by live data, so they become a <b>free block</b>' +
+          (e.mergedNext || e.mergedPrev ? ', and they touch ' + (e.mergedNext && e.mergedPrev ? 'free blocks on both sides' : 'the free block ' + (e.mergedPrev ? 'before' : 'after') + ' them: they <b>merge</b> into one block' : '') +
+          ' of ' + (e.end - e.start) + ' bytes at offset ' + e.start + '. Its first 4 bytes store the offset of the next free block and its own size; the list stays sorted by offset.' + absorbed(e);
+      }
+      push({
+        state: v, code: code, hi: hi, caption: caption,
+        logResult: { html: '→ ' + (e.how === 'block' ? 'free block ' + e.start + '+' + (e.end - e.start) : 'gap ' + st.gap), state: 'deleted' },
+        question: {
+          prompt: 'The slot is gone. What happens to the ' + e.size + ' bytes of the cell at offset ' + e.off + '?',
+          choices: ['They become a new free block', 'They merge with a neighbouring free block', 'They become part of the gap'], answer: answer,
+          explain: 'A range at the low end of the content area joins the gap; otherwise it becomes a free block, merged with any free block it touches (or is at most 3 bytes away from).'
+        }
+      });
+    }
+    function absorbed(e) {
+      return e.absorbed ? ' ' + plural(e.absorbed, 'fragment byte') + ' next to the range ' + (e.absorbed === 1 ? 'was' : 'were') + ' swallowed and taken out of frag_bytes.' : '';
+    }
+  }
+  function mk(key, value) { var o = {}; o[key] = value; return o; }
+  function freeHi(view, state) {
+    var o = {};
+    view.blocks.forEach(function (b) { o['f:' + b.offset] = state; });
+    return o;
+  }
+
+  // ---- hex ranges: what changed between two snapshots ------------------------------
+  function regionOf(view, off) {
+    if (off < 2) return 'cell_count';
+    if (off < 4) return 'content_start';
+    if (off < 6) return 'first_free';
+    if (off < 7) return 'frag_bytes';
+    if (off < 16) return 'kind / user area';
+    var slotsEnd = 16 + view.slots.length * 2;
+    if (off < slotsEnd) return 'slot array';
+    if (off < view.stats.contentStart) return 'gap';
+    for (var i = 0; i < view.cells.length; i++) {
+      var c = view.cells[i];
+      if (off >= c.off && off < c.off + c.len) return c.kind === 'free' ? (off < c.off + 4 ? 'free block header' : 'free block') : c.kind === 'frag' ? 'fragment' : 'cell';
+    }
+    return 'content';
+  }
+  function diffRanges(prev, cur) {
+    var ranges = [], seen = {};
+    for (var i = 0; i < cur.bytes.length; i++) {
+      if (prev.bytes[i] === cur.bytes[i]) continue;
+      var region = regionOf(cur, i), from = i;
+      while (i + 1 < cur.bytes.length && prev.bytes[i + 1] !== cur.bytes[i + 1] && regionOf(cur, i + 1) === region) i++;
+      ranges.push({ from: from, len: i - from + 1, state: 'inserted', label: seen[region] ? null : region });
+      seen[region] = true;
+    }
+    return ranges;
+  }
+
+  // ---- rendering -----------------------------------------------------------------
+  function chip(token, text, hatch) {
+    return el('span.bt-chip', el('span.bt-swatch' + (hatch ? '.is-hatch' : ''), { style: { '--s': 'var(--bt-' + token + ')', '--s-bg': 'var(--bt-' + token + '-bg)' } }), text);
+  }
+  function render(step, index) {
+    var v = step.state, st = v.stats, slotsEnd = 16 + v.slots.length * 2;
+    pv.render(v, step.highlight);
+    // PageView calls free pieces "dead cell"; say what they are.
+    pv.items.forEach(function (it, key) {
+      if (key.indexOf('c|f:') === 0) it.el.title = it.el.title.replace(/^dead cell /, 'free block: ');
+      else if (key.indexOf('c|x:') === 0) it.el.title = it.el.title.replace(/^dead cell\s*:?/, 'fragment:');
+    });
+
+    chips.textContent = '';
+    chips.appendChild(chip('node', 'header 0–15'));
+    chips.appendChild(chip('pointer', v.slots.length ? 'slots 16–' + (slotsEnd - 1) + ' →' : 'slots (none) →'));
+    chips.appendChild(chip('free', 'gap ' + st.gap + ' B'));
+    chips.appendChild(chip('key', st.contentStart < v.size ? '← content ' + st.contentStart + '–' + (v.size - 1) : '← content (none)'));
+
+    var prev = index > 0 ? stepper.state(index - 1) : null;
+    var ranges = prev ? diffRanges(prev, v) : [];
+    if (!ranges.length && step.probe) {
+      ranges = [{ from: 16 + step.probe.slot * 2, len: 2, state: 'compare', label: 'slot ' + step.probe.slot },
+        { from: step.probe.off, len: 4, state: 'pointer', label: 'key_len, value_len' },
+        { from: step.probe.off + 4, len: step.probe.key.length, state: 'compare', label: 'key bytes' }].filter(function (r) { return r.len > 0; });
+    }
+    hex.render({ bytes: v.bytes, ranges: ranges });
+
+    var body = statePanel.lastChild;
+    body.textContent = '';
+    var largest = Math.max(st.gap, st.largestFreeBlock);
+    body.appendChild(el('div.bt-table-wrap', el('table.bt-table.ch10-state',
+      el('tr', el('td', 'gap'), el('td', st.gap + ' B')),
+      el('tr', el('td', 'free blocks'), el('td', v.blocks.length ? v.blocks.map(function (b) { return b.offset + '+' + b.size; }).join(' ') : 'none')),
+      el('tr', el('td', 'fragment bytes'), el('td', st.fragBytes + ' B')),
+      el('tr', el('th', 'total free'), el('th', st.freeBytes + ' B')),
+      el('tr', el('td', 'largest single piece'), el('td', largest + ' B')))));
+
+    body = slotPanel.lastChild;
+    body.textContent = '';
+    if (!v.rows.length) body.appendChild(el('p.ch10-keys', 'The page is empty.'));
+    else {
+      var table = el('table.bt-table.ch10-slots', el('tr', el('th', 'slot'), el('th', 'offset'), el('th', 'key'), el('th', 'value')));
+      v.rows.forEach(function (r) {
+        var state = step.highlight.slots[r.slot];
+        table.appendChild(el('tr', { class: state ? 's-' + state : '' }, el('td', String(r.slot)), el('td', String(r.off)), el('td', q(r.key)), el('td.v', q(r.value))));
+      });
+      body.appendChild(el('div.bt-table-wrap', table));
+    }
+
+    var lines = step.code ? LINES[step.code] : null;
+    Object.keys(panels).forEach(function (name) {
+      var on = lines ? lines.panel === name : name === 'insert';
+      panels[name].root.hidden = !on;
+      panels[name].highlight(on && lines ? lines.spec : null);
+    });
+
+    log.clear();
+    for (var i = 0; i <= index; i++) {
+      var s = stepper.steps[i];
+      if (s.log) log.add(s.log.html, s.log.state);
+      if (s.logAfter) log.add(s.logAfter.html, s.logAfter.state);
+    }
+  }
+
+  var stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, predict: false, interval: 1500,
+    onStep: function (step, i) { render(step, i); }
+  });
+
+  // ---- scenarios -------------------------------------------------------------------
+  function opTitle(op) {
+    return op[0] === 'put' ? 'put ' + esc(q(op[1])) + '=' + esc(q(op[2])) : op[0] === 'delete' ? 'delete ' + esc(q(op[1])) : 'compact';
+  }
+  function opSteps(op) {
+    var title = opTitle(op), steps;
+    if (op[0] === 'put') {
+      var size = Ch10.cellSize(op[1].length, op[2].length);
+      steps = runOp(title, function () { return page.put(op[1], op[2]); });
+      steps[0].caption = '<b>put ' + k(q(op[1])) + ' = ' + esc(q(op[2])) + '</b>: a ' + size + '-byte cell (4 bytes of lengths + ' + op[1].length +
+        ' key + ' + op[2].length + ' value). ' + steps[0].caption;
+    } else if (op[0] === 'delete') {
+      steps = runOp(title, function () { return page.delete(op[1]); });
+      steps[0].caption = '<b>delete ' + k(q(op[1])) + '</b>. ' + steps[0].caption;
+      if (steps.length && !steps[steps.length - 1].logAfter && steps[steps.length - 1].code === 'searched') {
+        steps[steps.length - 1].caption += ' Nothing to delete.';
+        steps[steps.length - 1].logAfter = { html: '→ not found', state: null };
+      }
+    } else {
+      steps = runOp(title, function () { page.compact(true); });
+    }
+    return steps;
+  }
+  function initialStep(caption) {
+    return { caption: caption, state: page.view(), highlight: hl(page.view(), { pointers: 'all' }) };
+  }
+  function loadReadme() {
+    page = new Ch10.Page(pageSize);
+    var steps = [initialStep('An empty ' + pageSize + '-byte page: a 16-byte header, then nothing but gap. content_start = ' + pageSize +
+      ' means the content area is empty. Press Play to run the chapter\'s worked example.')];
+    Ch10.PART_ONE.forEach(function (op) { steps = steps.concat(opSteps(op)); });
+    stepper.setSteps(steps);
+    return steps;
+  }
+  function loadFragmented() {
+    page = new Ch10.Page(pageSize);
+    var n = 0, i, name = function (j) { return 'k' + ('0' + j).slice(-2); };
+    while (page.fits(3, 9)) { page.put(name(n), 'vvvvvvvvv'); n++; }
+    for (i = 0; i < n; i += 2) page.delete(name(i));
+    var st = page.stats();
+    var big = new Array(Math.min(st.freeBytes - 2 - 4 - 3, st.largestFreeBlock + st.gap + 8) + 1).join('B');
+    var steps = [initialStep(n + ' cells of 16 bytes filled the page, then every other one was deleted. Free: ' + st.freeBytes + ' bytes, but in ' +
+      (1 + st.freeBlockCount) + ' pieces: gap ' + st.gap + ' and ' + st.freeBlockCount + ' free blocks of at most ' + st.largestFreeBlock + ' bytes.')];
+    stepper.setSteps(steps.concat(opSteps(['put', 'big', big])));
+  }
+  function loadEmpty() {
+    page = new Ch10.Page(pageSize);
+    stepper.setSteps([initialStep('An empty ' + pageSize + '-byte page. Type a key and a value, then press Put.')]);
+  }
+
+  // ---- toolbar ---------------------------------------------------------------------
+  var keyIn = el('input.bt-input#ch10-key', { type: 'text', maxlength: 12, size: 8, placeholder: 'key', 'aria-label': 'Key', value: 'date' });
+  var valIn = el('input.bt-input#ch10-value', { type: 'text', maxlength: 60, size: 10, placeholder: 'value', 'aria-label': 'Value', value: 'brown' });
+  var msg = el('span.ch10-msg', { role: 'status', 'aria-live': 'polite' });
+  var scenario = el('select.bt-select#ch10-scenario', { 'aria-label': 'Scenario' },
+    el('option', { value: 'readme' }, 'Worked example (README)'), el('option', { value: 'frag' }, 'Fragmented page'), el('option', { value: 'empty' }, 'Empty page'));
+  var sizeSel = el('select.bt-select#ch10-size', { 'aria-label': 'Page size' },
+    el('option', { value: '256' }, '256 bytes'), el('option', { value: '128' }, '128 bytes'));
+
+  function ascii(s) { return /^[\x20-\x7e]*$/.test(s); }
+  function play(steps) { msg.textContent = ''; stepper.setSteps(steps, { play: true }); }
+  function doPut() {
+    if (!ascii(keyIn.value) || !ascii(valIn.value)) { msg.textContent = 'Printable ASCII only, please: one character is one byte here.'; return; }
+    play(opSteps(['put', keyIn.value, valIn.value]));
+  }
+  function doDelete() {
+    if (!ascii(keyIn.value)) { msg.textContent = 'Printable ASCII only, please.'; return; }
+    play(opSteps(['delete', keyIn.value]));
+  }
+  var WORDS = ['ant', 'bee', 'cat', 'dove', 'eel', 'fox', 'gnu', 'hen', 'ibis', 'jay', 'koi', 'lynx', 'mole', 'newt', 'owl', 'pig', 'quail', 'rat', 'seal', 'toad', 'vole', 'wasp', 'yak', 'zebra'];
+  function doRandom() {
+    var keys = page.view().rows.map(function (r) { return r.key; });
+    if (keys.length && rand() < 0.4) { keyIn.value = rand.pick(keys); doDelete(); return; }
+    keyIn.value = rand.pick(WORDS);
+    valIn.value = new Array(rand.int(0, 14) + 1).join(rand.pick(['x', 'y', 'z']));
+    doPut();
+  }
+  function loadScenario() {
+    msg.textContent = '';
+    pageSize = +sizeSel.value;
+    if (scenario.value === 'readme') loadReadme(); else if (scenario.value === 'frag') loadFragmented(); else loadEmpty();
+  }
+  [keyIn, valIn].forEach(function (input) { input.addEventListener('keydown', function (e) { if (e.key === 'Enter') doPut(); }); });
+  scenario.addEventListener('change', loadScenario);
+  sizeSel.addEventListener('change', loadScenario);
+  fig.toolbar.append(
+    el('label.bt-field', 'Key', keyIn), el('label.bt-field', 'Value', valIn),
+    el('button.bt-btn.bt-primary#ch10-put', { type: 'button', onclick: doPut }, 'Put'),
+    el('button.bt-btn#ch10-delete', { type: 'button', onclick: doDelete }, 'Delete key'),
+    el('button.bt-btn#ch10-compact', { type: 'button', onclick: function () { play(opSteps(['compact'])); } }, 'Compact'),
+    el('button.bt-btn#ch10-random', { type: 'button', onclick: doRandom }, 'Random op'),
+    el('span.bt-toolbar-sep'),
+    el('label.bt-field', 'Scenario', scenario), el('label.bt-field', 'Page', sizeSel),
+    el('button.bt-btn#ch10-reset', { type: 'button', onclick: loadScenario }, 'Reset'),
+    msg);
+
+  // ---- self-tests: the JS model against the Zig/Rust programs -------------------------
+  BTViz.selfTest('model reproduces all of expected_output.txt (4096-byte page, 3 parts)', Ch10.demoText(), window.CHAPTER_EXPECTED_OUTPUT);
+
+  loadReadme();
+  // The picture shows the same scenario on a small page: every offset is lower by 4096 - 256.
+  var printed = /compact\n.*\n  slots:(.*)\n/.exec(window.CHAPTER_EXPECTED_OUTPUT)[1].trim().split(' ').map(function (s) {
+    var parts = s.split('@');
+    return parts[0] + '@' + (+parts[1] - (4096 - pageSize));
+  }).join(' ');
+  BTViz.selfTest('worked example on the 256-byte page ends like the programs (offsets - 3840)',
+    page.view().rows.map(function (r) { return r.key + '@' + r.off; }).join(' '), printed);
+})();
+</script>
+</body>
+</html>

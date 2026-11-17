@@ -1,0 +1,93 @@
+# Brief for chapter implementers
+
+You implement ONE chapter of the guide "Understanding B-trees, from simple to complex"
+in `/home/user/ai_lab/btree_research/chapters/NN-slug/`. Other agents implement the other
+chapters at the same time. Touch only your own chapter directory.
+
+## Read first (in this order)
+
+1. `../PLAN.md`: the Conventions section (binding) and your chapter's table row. Also
+   skim the rows of the neighbouring chapters so you know what was taught before you and
+   what is left for later; do not teach later chapters' material in depth.
+2. `../ZIG_CHEATSHEET.md`: verified Zig 0.17.1 APIs. Your memory of Zig is out of date
+   (I/O, containers, allocators, threads and reflection all changed). When unsure, read
+   the std source in `/opt/zigdl/zig-x86_64-linux-0.17.1/lib/std`, never guess.
+   `../_template/zig` and `../_template/rust` are compiling skeletons to copy.
+3. `../common/README.md`: PRNG, op-stream generator, oracle, CRC32, hexdump. Copy the
+   files you need into your `src/` (keep the "Copied from" header).
+4. `../assets/README.md` (and `../assets/demo.html`): the visualization toolkit API.
+5. `../research/*.md`: source notes with file:line references. Grep them for your
+   topics; open the real source under `/home/user/ai_lab/db_study/<db>/` to confirm
+   anything you quote. Cite as `db/path/file.c:123`.
+
+## Deliverables
+
+```
+chapters/NN-slug/
+  README.md             the chapter (see PLAN "Text" convention), 1500 to 3500 words
+  solutions.md          worked solutions to the exercises
+  expected_output.txt   exact stdout of both `run` programs
+  zig/   build.zig, build.zig.zon (own name + fingerprint), src/main.zig, src/*.zig
+  rust/  Cargo.toml (package chNN_slug, edition 2024, no dependencies), src/main.rs, src/*.rs
+  viz/   index.html (+ extra pages if the plan asks), code.js
+```
+
+Write the Zig version first, then port to Rust so that structure, names, tests and
+output match; then explain the differences in the README. Aim for 250 to 800 lines per
+language; clear, heavily commented teaching code, not production code. Comments explain
+why, and point at the invariant being maintained.
+
+Zig requirements: allocators passed explicitly everywhere; the allocator(s) named in
+your row are used where they are the natural choice and the README section "Allocator
+notes" explains the choice, the lifetime, and what would go wrong with a different one;
+tests use `std.testing.allocator` so leaks fail the test; allocation-failure paths are
+tested where your structure allocates on insert.
+
+## Definition of done (run all of these yourself, repeatedly)
+
+```
+cd zig  && zig build test --summary all && zig build run > /tmp/out_zig.txt
+cd rust && cargo test && cargo clippy --all-targets -- -D warnings && cargo run > /tmp/out_rust.txt
+diff out_zig.txt ../expected_output.txt && diff out_rust.txt ../expected_output.txt
+```
+
+(use your own scratch paths, not /tmp). Then verify the visualization with Playwright
+(`require('playwright')` works from any directory, `chromium.launch()` needs no options;
+install nothing): open every page via `file://`, fail on any console error or page
+error, drive the controls (play, step forward and back, the interactive inputs, theme
+toggle), check there is no horizontal page overflow at 390 px, take screenshots at
+1280x800 and 390x844 in light and dark, and LOOK at them (Read the PNG): fix overlaps,
+clipped labels, unreadable contrast, and animations that do not actually explain the
+idea. Keep screenshots out of the repository.
+
+Delete build output before finishing (`.zig-cache`, `zig-out`, `target` are gitignored,
+but remove any other scratch files). Do not run git commands.
+
+## Visualization rules
+
+- Use only `../../assets/viz.css` and `../../assets/viz.js` via classic script/link tags
+  with relative paths. Do NOT edit anything in `assets/`. If a component you need is
+  missing or buggy, write a small chapter-local helper in `viz/local.js` and mention it
+  in your final report.
+- The page teaches the chapter's central idea to someone who has not read the code:
+  every step has a caption saying what happens and why; colours follow the toolkit's
+  semantic tokens; there is a legend; the reader can interact (type keys, pick
+  parameters, replay). Prefer a real JS model that generates the steps.
+- Embed the final state of your programs' fixed scenario and check the JS model against
+  it with `BTViz.selfTest` where the toolkit provides it.
+- Link back to the chapter README and to the previous / next chapter's visualization.
+
+## Honesty rules
+
+- Statements about a database must be backed by the research notes or the source you
+  opened. Label textbook material as textbook. Do not invent numbers, benchmarks or
+  quotes. Counts printed by your own programs are fine.
+- If something in your plan row turns out to be wrong or infeasible, do the closest
+  correct thing and say so in your final report.
+
+## Final report (your reply)
+
+At most 8 lines: what you built; the exact summary lines of `zig build test`,
+`cargo test`, clippy; whether both outputs match `expected_output.txt`; what the
+Playwright check covered; any deviation from the plan row; anything a later chapter
+that copies your code must know.

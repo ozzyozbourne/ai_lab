@@ -9,6 +9,7 @@ import pytest
 
 from tsp.compiler import compile_graph
 from tsp.compiler.timetable import plan_graph
+from tsp.errors import CompileError
 from tsp.graph import Graph
 from tsp.params import ChipConfig
 
@@ -198,6 +199,18 @@ def test_m1_320_on_isca2020():
     g.output("y", g.relu(g.add(g.matvec(g.const_matrix("W", W, "int8"), tx), g.const("b", b, "int32")), name="y"))
     out, trace = run(g, {"x": x}, config=cfg, record_cells=False)
     assert np.array_equal(out["y"], np.maximum(i32(W.astype(np.int64) @ x.astype(np.int64) + b), 0))
+
+
+def test_vector_longer_than_the_chip_is_rejected():
+    """A graph built for 320 lanes must not compile for the 16-lane toy chip."""
+    big = ChipConfig.isca2020()
+    toy = ChipConfig.toy()
+    n = toy.lanes + 1
+    g = Graph("too_long", lanes=big.lanes)
+    g.output("y", g.cast(g.input("x", "fp16", n), "fp32"))
+    with pytest.raises(CompileError, match="does not fit"):
+        compile_graph(g, toy)
+    assert compile_graph(g, big).inputs["x"].n == n
 
 
 @pytest.mark.parametrize("key", ["m1", "m2", "m3"])

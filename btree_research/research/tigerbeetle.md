@@ -87,7 +87,7 @@ ideas all reappear, but the on-disk part becomes immutable and the mutable part 
 | `cache_line_size` | 64 | `src/config.zig:153` |
 | `lsm_manifest_node_size` | 16 KiB | `src/config.zig:105` |
 | NodePool alignment | 16 | `src/lsm/tree.zig:12` |
-| Default manifest pool | 8192 nodes x 16 KiB = 128 MiB (derived product) | `src/constants.zig:688-693` |
+| Default manifest pool | 8192 nodes x 16 KiB = 128 MiB (derived product) | `src/constants.zig:689-693` |
 | Tables at level i | `growth_factor^(i+1)`: 8, 64, 512, 4096, 32768, 262144, 2097152 | `src/lsm/tree.zig:656-672` |
 | Max tables per tree | 2,396,744 (299592 + 2097152) | `src/lsm/tree.zig:679` |
 | Growth factor bounds | 4..16 asserted, levels 2..10 asserted | `src/lsm/tree.zig:641-644` |
@@ -868,7 +868,7 @@ Rules visible in the code:
 4. After init, the working resources are pools with infallible `acquire`/`release`:
    `NodePool`, `ScratchMemory` (`src/lsm/scratch_memory.zig:35-62`), the compaction `ResourcePool`
    (`src/lsm/compaction.zig:78-90`), `IOPSType` slots.
-5. Capacity reserved up front, then `...AssumeCapacity` (`src/vsr/grid.zig:309-321`,
+5. Capacity reserved up front, then `...AssumeCapacity` (`src/vsr/grid.zig:308-331`,
    `putAssumeCapacityNoClobber`).
 6. Scratch space for the radix sort is one buffer shared by all trees, sized at **comptime** as the
    maximum over all tree types (`src/lsm/forest.zig:257-268`), with a `free`/`busy` state enum
@@ -936,7 +936,7 @@ NodePool, comptime options)`:
 #### Where
 
 - Policy: `docs/TIGER_STYLE.md:104-149`
-- When to guard with `constants.verify`: `src/constants.zig:775-795`
+- When to guard with `constants.verify`: `src/constants.zig:776-795`
 - `maybe()`: `src/stdx/stdx.zig:396-403`
 - `no_padding()`: `src/stdx/stdx.zig:503-...`
 - `copy_left` / `copy_right` / `copy_disjoint`: `src/stdx/stdx.zig:119-200`
@@ -950,7 +950,7 @@ NodePool, comptime options)`:
 /// feasible to add an extra assert per iteration. In the latter case, guard the assert with `if
 /// (constants.verify)`, but prefer an unconditional assert unless benchmarks prove it to be costly.
 ```
-(`src/constants.zig:783-787`)
+(`src/constants.zig:784-787`)
 
 ```zig
 /// `maybe` is the dual of `assert`: it signals that condition is sometimes true
@@ -1327,7 +1327,7 @@ below is my reading of mechanisms that are verified in the source.
   beat (`src/lsm/table_memory.zig:7-9`, `src/lsm/tree.zig:199-205`, `:564-566`). Delete is a put
   of a tombstone (`src/lsm/tree.zig:203-205`). There is no random in-place page write, so no
   page split on the commit path.
-- A bar is 32 commits; a table is sized to one bar of updates (`src/constants.zig:646-654`,
+- A bar is 32 commits; a table is sized to one bar of updates (`src/constants.zig:645-654`,
   `docs/internals/lsm.md:26`).
 - Each compaction merges **one** table from level A with at most `lsm_growth_factor` tables from
   level B (`docs/internals/lsm.md:122-138`, `src/lsm/compaction.zig:55-61`). So each value is
@@ -1373,7 +1373,7 @@ B-tree contrast: a point read is `height` page reads with no merging and no tomb
 - Tombstones occupy space until they reach a level with nothing beneath them
   (`src/lsm/compaction.zig:27-30`, `src/lsm/manifest.zig:636-664`).
 - Blocks may be partially filled; larger blocks increase this (`src/constants.zig:589`). Tables
-  under 50% full are candidates for coalescing (`src/constants.zig:713-715`).
+  under 50% full are candidates for coalescing (`src/constants.zig:714-715`).
 - On the other side, leaves are packed densely at build time, where a B-tree under random inserts
   settles at roughly 2/3 full (the 2/3 figure is general knowledge, **unverified** here).
 

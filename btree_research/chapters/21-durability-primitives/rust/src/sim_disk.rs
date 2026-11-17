@@ -44,8 +44,9 @@
 //!
 //! One difference from Zig: Zig's `writePage` reserves the durable space its
 //! write may need, so that `sync` and `crash` cannot fail for lack of memory.
-//! A `Vec` cannot report a failed allocation, so nothing is gained by
-//! reserving; the durable image grows in `apply`, when a write lands.
+//! `Vec::resize` has no error to return (it aborts the process when memory
+//! runs out), so nothing is gained by reserving; the durable image grows in
+//! `apply`, when a write lands.
 
 use crate::prng::SplitMix64;
 use crate::storage::{PAGE_SIZE, Page, SECTOR_SIZE, SECTORS_PER_PAGE, Storage, StorageError};

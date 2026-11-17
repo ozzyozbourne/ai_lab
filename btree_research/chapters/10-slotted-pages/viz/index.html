@@ -436,15 +436,16 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
   });
 
   // ---- scenarios -------------------------------------------------------------------
+  function short(v) { return v.length > 16 ? v.slice(0, 12) + '… (' + v.length + ' B)' : v; }
   function opTitle(op) {
-    return op[0] === 'put' ? 'put ' + esc(q(op[1])) + '=' + esc(q(op[2])) : op[0] === 'delete' ? 'delete ' + esc(q(op[1])) : 'compact';
+    return op[0] === 'put' ? 'put ' + esc(q(op[1])) + '=' + esc(q(short(op[2]))) : op[0] === 'delete' ? 'delete ' + esc(q(op[1])) : 'compact';
   }
   function opSteps(op) {
     var title = opTitle(op), steps;
     if (op[0] === 'put') {
       var size = Ch10.cellSize(op[1].length, op[2].length);
       steps = runOp(title, function () { return page.put(op[1], op[2]); });
-      steps[0].caption = '<b>put ' + k(q(op[1])) + ' = ' + esc(q(op[2])) + '</b>: a ' + size + '-byte cell (4 bytes of lengths + ' + op[1].length +
+      steps[0].caption = '<b>put ' + k(q(op[1])) + ' = ' + esc(q(short(op[2]))) + '</b>: a ' + size + '-byte cell (4 bytes of lengths + ' + op[1].length +
         ' key + ' + op[2].length + ' value). ' + steps[0].caption;
     } else if (op[0] === 'delete') {
       steps = runOp(title, function () { return page.delete(op[1]); });

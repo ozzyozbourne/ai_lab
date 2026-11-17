@@ -245,6 +245,45 @@ mod tests {
     }
 
     #[test]
+    fn recover_on_a_fresh_store_whose_first_update_was_cut_short() {
+        // Regression: recovery's own repair write extends size(), and the
+        // next slot it reads is then a hole below that pending write.
+        let mut scratch = [payload_of(0); DoubleWrite::SCRATCH_PAGES];
+        for mode in [
+            CrashMode::Drop,
+            CrashMode::Keep,
+            CrashMode::Tear,
+            CrashMode::Random,
+        ] {
+            for crash_after in 0..3 {
+                let mut disk = SimDisk::new(1);
+                let mut page = payload_of(b'A');
+                disk.power_off_after_writes(crash_after);
+                let result = DoubleWrite::new(&mut disk, 3).update(0, &mut page);
+                assert_eq!(result, Err(StorageError::PowerLoss));
+                disk.crash(mode);
+
+                let report = DoubleWrite::new(&mut disk, 3)
+                    .recover(&mut scratch)
+                    .unwrap();
+                let pages = report.intact + report.rolled_forward + report.restored + report.blank;
+                assert_eq!(pages, 3);
+                // Logical page 0 is the new version or was never written;
+                // the other two were never written.
+                let mut out = payload_of(0);
+                let mut dw = DoubleWrite::new(&mut disk, 3);
+                let check = dw.read(0, &mut out).unwrap();
+                assert!(check == Check::Ok || check == Check::Blank);
+                assert_eq!(dw.read(1, &mut out), Ok(Check::Blank));
+                assert_eq!(dw.read(2, &mut out), Ok(Check::Blank));
+                if crash_after == 2 {
+                    assert_eq!(version_of(&mut disk, 3, 0), b'A');
+                }
+            }
+        }
+    }
+
+    #[test]
     fn recovery_interrupted_by_a_second_crash_still_converges() {
         let mut scratch = [payload_of(0); DoubleWrite::SCRATCH_PAGES];
         for seed in 0..200 {

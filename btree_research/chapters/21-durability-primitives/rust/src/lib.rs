@@ -391,4 +391,61 @@ mod tests {
             assert_eq!(a[..], b[..]);
         }
     }
+
+    #[test]
+    fn sim_disk_and_file_storage_answer_every_call_alike() {
+        // One random stream of writes, reads and syncs against both
+        // implementations of `Storage`: every result, error and size must
+        // agree. (No crashes: a real file cannot be crashed from a test.)
+        use crate::prng::SplitMix64;
+        const PAGES: u64 = 12;
+        let tmp = TmpDir::new("differential");
+        for seed in 0..20u64 {
+            let mut file = FileStorage::open(tmp.0.join(format!("diff{seed}.db"))).unwrap();
+            let mut disk = SimDisk::new(seed);
+            let mut rng = SplitMix64::new(seed);
+            let (mut a, mut b) = ([0u8; PAGE_SIZE], [0u8; PAGE_SIZE]);
+            for _ in 0..150 {
+                let p = rng.below(PAGES);
+                match rng.below(8) {
+                    0..=2 => {
+                        let page = [(1 + rng.below(255)) as u8; PAGE_SIZE];
+                        file.write_page(p, &page).unwrap();
+                        disk.write_page(p, &page).unwrap();
+                    }
+                    3..=6 => {
+                        let from_file = file.read_page(p, &mut a);
+                        let from_disk = disk.read_page(p, &mut b);
+                        assert_eq!(from_file, from_disk);
+                        match from_file {
+                            Ok(()) => assert_eq!(a[..], b[..]),
+                            Err(err) => {
+                                assert_eq!(err, StorageError::OutOfBounds);
+                                assert!(p >= file.size());
+                            }
+                        }
+                    }
+                    _ => {
+                        file.sync().unwrap();
+                        disk.sync().unwrap();
+                    }
+                }
+                assert_eq!(file.size(), disk.size());
+            }
+        }
+        // Both refuse a page number beyond their own limit and change nothing.
+        let mut file = FileStorage::open(tmp.0.join("limit.db")).unwrap();
+        let mut disk = SimDisk::new(1);
+        let page = [b'A'; PAGE_SIZE];
+        assert_eq!(
+            file.write_page(FileStorage::MAX_PAGES, &page),
+            Err(StorageError::OutOfBounds)
+        );
+        assert_eq!(
+            disk.write_page(SimDisk::MAX_PAGES, &page),
+            Err(StorageError::OutOfBounds)
+        );
+        assert_eq!(file.size(), 0);
+        assert_eq!(disk.size(), 0);
+    }
 }

@@ -101,7 +101,9 @@ split 2 + 2, and the left halves stayed at two keys forever.
 
 ## Code walk-through
 
-Three source files per language, with the same names and the same tests:
+Three source files per language matter here, with the same names and the same tests.
+(`prng` and `ops` are copied from `common/` and used by the report and the tests;
+`main` only calls `report`, and Rust adds a `lib.rs` that lists the modules.)
 
 | File | Contents |
 |---|---|
@@ -131,8 +133,9 @@ try self.nodes.ensureUnusedCapacity(self.gpa, needed);
 ```
 
 `validate` checks six invariants: key order inside nodes, separator bounds, occupancy,
-equal leaf depth, the leaf chain, and the entry count. There is no `delete` in this
-chapter's tree; chapters 05, 07 and 15 cover it.
+equal leaf depth, the leaf chain, and the entry count. `range(lo, hi)` is half-open
+(`lo <= key < hi`), so it can never return the key `maxInt(u64)`; `get` can. There is
+no `delete` in this chapter's tree; chapters 05, 07 and 15 cover it.
 
 ### The loader (`zig/src/bulk.zig`)
 
@@ -169,10 +172,18 @@ Notice when a page is closed: not when it becomes full, but when it is full *and
 another pair arrives*. That guarantees a closed page always has a right neighbour,
 which is what lets a leaf's `next` link be filled in before the leaf is written.
 
-`finish` walks the levels bottom to top. On each level it first repairs the tail (share
-or combine the pending and the open page if the open page is under the minimum), then
-either declares the single remaining page the root, or seals what is left, which feeds
-the level above.
+`finish` walks the levels bottom to top (the loop is `closeRightEdge`). On each level
+it first repairs the tail (share or combine the pending and the open page if the open
+page is under the minimum), then either declares the single remaining page the root,
+or seals what is left, which feeds the level above.
+
+A loader is used once. `finish` closes it: a second `finish`, or an `add` after it,
+returns `error.LoaderClosed`. Running out of memory closes it too. `put` can promise
+"unchanged on failure" because it reserves before it writes; the loader cannot,
+because by the time a node allocation fails, earlier pages have been sealed and
+announced to their parents. So a failed load is abandoned as a whole: the tree is
+emptied (it is a valid empty tree again) and the loader refuses further calls.
+`error.NotSorted` is different: the key is rejected and nothing has changed.
 
 `fillTarget(cap, min, percent)` is `floor(cap * percent / 100)` clamped to
 `[min, cap]`. With tiny pages the rounding is coarse: 90% of 15 keys is 13 keys, which
@@ -190,6 +201,7 @@ The port is line for line where the languages allow it. The differences:
 | Running out of memory | `error.OutOfMemory` from the allocator, tested with `FailingAllocator` and `checkAllAllocationFailures` | a node budget (`Tree::with_budget`) returning `Err(Error::OutOfNodes)` |
 | `put` reservation | `ensureUnusedCapacity(needed)` | compare `needed` with the remaining budget |
 | Borrowing the tree | the loader holds `*Tree`; nothing stops you from using the tree mid-load | the loader holds `&mut Tree`; the compiler forbids touching the tree until the loader is gone |
+| Using a finished loader | `error.LoaderClosed` at run time, from a `closed` flag | does not compile: `finish(self)` consumes the loader (a `compile_fail` doc test checks it). The flag remains for a load abandoned by `OutOfNodes` |
 | Tail sharing | `copyBackwards` to shift the buffer, then copy | `Vec::splice(0..0, ..)` |
 | Crate layout | one module rooted at `main.zig` | `lib.rs` plus a small `main.rs`, so that public items unused by `main` are not dead code |
 
@@ -217,6 +229,8 @@ How to read experiment 2:
 
 - The bulk loader writes each page once and reads nothing. Its write count *is* its
   page count.
+- The leaf-fill column is rounded down. The 100% load shows 99% because the last of
+  its 667 leaves holds 10 keys, not 15: 10,000 / (667 × 15) = 99.95%.
 - Ascending inserts end at 53% leaf fill and about twice the pages of the packed tree.
   Random-order inserts end at 70%, the usual steady state for 50/50 splits.
 - The page-write column for the insert rows is a write-through count: one flush per
@@ -225,7 +239,8 @@ How to read experiment 2:
   remove is the 38,631 page visits, the 1,401 splits, and the larger tree that results.
   Treat the write column as "pages dirtied", an upper bound on physical writes.
 
-Experiment 3 is the argument for a fill factor below 100%. The packed tree is smallest
+Experiment 3 is the argument for a fill factor below 100%. Its 1000 keys are random,
+all different, and none of them is in the tree yet. The packed tree is smallest
 on the day it is built, and then more than half of the first thousand inserts split a
 page; it ends up larger than the tree that started at 90% / 70%. The tree loaded at
 70% absorbs the same inserts with two splits.
@@ -297,8 +312,8 @@ The row for this chapter asks for one arena per tree level with
   `.retain_capacity` and the next buffer is allocated from it. The reset keeps the
   memory, so after the first page of a level the loader never asks the backing
   allocator for anything again. The test "loader memory does not grow with the input"
-  checks that each level's arena still holds less than one node's worth of memory
-  after 200,000 keys.
+  checks, for orders 4 and 32, that each level's arena holds exactly as many bytes
+  after 200,000 keys as after 2,000: one buffer plus the arena's bookkeeping.
 - Lifetime. A level's arena lives from the first pair that reaches that level until
   `loader.deinit()`. The tree's nodes are *not* in these arenas: they belong to the
   tree (allocated from `gpa` through `tree.nodes`) and outlive the loader. The split
@@ -315,7 +330,9 @@ The row for this chapter asks for one arena per tree level with
   loader copies the buffer into the node before the reset, never after.
 - Failure paths. Tests use `std.testing.allocator`, so a leak fails the test.
   `checkAllAllocationFailures` runs a whole bulk load once per allocation point with
-  that allocation failing and checks that nothing leaks. `put` is tested with
+  that allocation failing and checks that nothing leaks. A second test fails every
+  node allocation in turn and checks that the tree is left empty and valid and that
+  the loader is closed. `put` is tested with
   `FailingAllocator`: after a failed `put` the tree still validates and still holds
   everything inserted before.
 
@@ -338,6 +355,10 @@ typed arena for the nodes.
 - Trusting the input. The loader cannot check sortedness later, and an unsorted input
   produces a tree in which searches silently miss keys. `add` rejects any key that is
   not greater than the previous one (`error.NotSorted`).
+- Retrying after a failure. An `add` that returned `error.OutOfMemory` cannot be
+  repeated: the load is gone and the loader answers `error.LoaderClosed`. Start again
+  with a new loader. (An earlier version of this code remembered the key before
+  storing it, so the retry was rejected as `NotSorted`, which hid the real problem.)
 - Loading at 100% and then inserting. See experiment 3.
 - Comparing the write counts as if they were physical writes. They are pages dirtied
   per operation; see the note under experiment 2.

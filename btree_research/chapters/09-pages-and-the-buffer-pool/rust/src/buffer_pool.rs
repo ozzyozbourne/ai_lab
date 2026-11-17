@@ -53,10 +53,13 @@
 //! could not save.
 //!
 //! Memory: `new` allocates the frames, the frame table and the page table at
-//! full capacity. Nothing allocates after that. (Zig's pool has a hand-written
-//! page table because std's hash map fills up with tombstones when it is used
-//! at a fixed capacity; Rust's `HashMap` reclaims deleted slots in place, so
-//! it is used as is.)
+//! full capacity. Nothing allocates after that. The page table needs care for
+//! that to be true: both std hash maps mark a removed entry with a tombstone,
+//! and a pool removes and inserts one entry per eviction, forever. Zig's map
+//! never clears tombstones at a fixed capacity, so the Zig pool has a
+//! hand-written table. Rust's `HashMap` clears them by rehashing, in place if
+//! the map is at most half full and into a NEW, larger allocation otherwise.
+//! `new` therefore reserves twice the frame count.
 //!
 //! Not thread-safe: one thread, no latches (latching starts in chapter 19).
 
@@ -122,8 +125,11 @@ impl BufferPool {
                 .map(|_| Box::new([0u8; PAGE_SIZE]))
                 .collect(),
             frames: vec![Frame::EMPTY; frame_count],
-            // Reserve room for one entry per frame now; it never holds more.
-            page_table: HashMap::with_capacity(frame_count),
+            // The table never holds more than one entry per frame. Reserving
+            // twice that keeps it at most half full, which is what lets it
+            // clean up after removals without ever reallocating (see the top
+            // of the file).
+            page_table: HashMap::with_capacity(2 * frame_count),
             hand: 0,
             stats: PoolStats::default(),
         }
@@ -319,8 +325,8 @@ impl BufferPool {
             referenced: true,
             dirty: false,
         };
-        // take_frame removed the previous occupant's entry, so this stays
-        // within the capacity reserved in `new`.
+        // take_frame removed the previous occupant's entry, so the table
+        // holds at most frame_count entries and never grows.
         let previous = self.page_table.insert(id, f);
         debug_assert!(previous.is_none());
     }
@@ -739,7 +745,10 @@ mod tests {
     // parameter to inject failures through; the fixed frame budget plays that
     // role: running out is `Err(AllFramesPinned)`, tested above. What can be
     // checked is that the page table never grows, however many pages pass
-    // through it:
+    // through it. `capacity()` is "entries + room left"; tombstones use up
+    // room, so it dips below its first value and comes back when the map
+    // rehashes in place. It can only EXCEED its first value if the map moved
+    // to a larger allocation, and right after such a move it always does.
     #[test]
     fn the_page_table_never_grows_after_new() {
         let mut pool = pool_with_pages(&MemStorage::new(), 64, 4);
@@ -749,25 +758,26 @@ mod tests {
             let id = rng.below(64) as PageId;
             let dirty = rng.chance(1, 3);
             touch(&mut pool, id, dirty).unwrap();
+            assert!(pool.page_table.capacity() <= capacity);
         }
         pool.flush_all().unwrap();
-        assert_eq!(pool.page_table.capacity(), capacity);
         pool.validate().unwrap();
     }
 
     #[test]
-    fn the_page_table_stays_small_after_the_pool_has_cycled_through_many_pages() {
+    fn the_page_table_does_not_grow_while_the_pool_cycles_through_many_pages() {
+        // 100 frames: with room for only 100 entries the map was more than
+        // half full, could not rehash in place and reallocated.
         let mut pool = pool_with_pages(&MemStorage::new(), 2000, 100);
         let capacity = pool.page_table.capacity();
         for _ in 0..3 {
             for id in 0..2000 {
                 touch(&mut pool, id, false).unwrap();
+                assert!(pool.page_table.capacity() <= capacity);
             }
         }
         pool.validate().unwrap();
-        // 5900 evictions later: still 100 entries in the same allocation.
         assert_eq!(pool.page_table.len(), 100);
-        assert_eq!(pool.page_table.capacity(), capacity);
         assert_eq!(pool.stats.evictions, 5900);
     }
 

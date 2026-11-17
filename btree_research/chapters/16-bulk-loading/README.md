@@ -101,9 +101,8 @@ split 2 + 2, and the left halves stayed at two keys forever.
 
 ## Code walk-through
 
-Three source files per language matter here, with the same names and the same tests.
-(`prng` and `ops` are copied from `common/` and used by the report and the tests;
-`main` only calls `report`, and Rust adds a `lib.rs` that lists the modules.)
+Three source files per language matter, with the same names and the same tests. (The
+others: `prng` and `ops` copied from `common/`, `main`, and `lib.rs` in Rust.)
 
 | File | Contents |
 |---|---|
@@ -180,9 +179,8 @@ or seals what is left, which feeds the level above.
 A loader is used once. `finish` closes it: a second `finish`, or an `add` after it,
 returns `error.LoaderClosed`. Running out of memory closes it too. `put` can promise
 "unchanged on failure" because it reserves before it writes; the loader cannot,
-because by the time a node allocation fails, earlier pages have been sealed and
-announced to their parents. So a failed load is abandoned as a whole: the tree is
-emptied (it is a valid empty tree again) and the loader refuses further calls.
+because earlier pages are already sealed when an allocation fails. So a failed load
+is abandoned as a whole: the tree is emptied and the loader refuses further calls.
 `error.NotSorted` is different: the key is rejected and nothing has changed.
 
 `fillTarget(cap, min, percent)` is `floor(cap * percent / 100)` clamped to
@@ -357,8 +355,7 @@ typed arena for the nodes.
   not greater than the previous one (`error.NotSorted`).
 - Retrying after a failure. An `add` that returned `error.OutOfMemory` cannot be
   repeated: the load is gone and the loader answers `error.LoaderClosed`. Start again
-  with a new loader. (An earlier version of this code remembered the key before
-  storing it, so the retry was rejected as `NotSorted`, which hid the real problem.)
+  with a new loader.
 - Loading at 100% and then inserting. See experiment 3.
 - Comparing the write counts as if they were physical writes. They are pages dirtied
   per operation; see the note under experiment 2.

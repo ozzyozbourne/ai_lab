@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 7 — B+trees</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  /* Chapter-local layout only; every colour comes from the toolkit's tokens. */
+  .c7-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: .9rem; }
+  .c7-head strong { font-size: .95rem; }
+  .c7-head span { color: var(--bt-muted); font-size: .82rem; }
+  .c7-tree + .c7-tree { border-top: 1px dashed var(--bt-border); padding-top: 12px; }
+  .c7-tree.is-idle .c7-head strong { color: var(--bt-muted); }
+  .c7-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font: .78rem/1.6 var(--bt-mono); color: var(--bt-muted); }
+  .c7-chain .bt-chip { font-size: .78rem; }
+  .c7-free { font: .78rem/1.6 var(--bt-mono); color: var(--bt-muted); overflow-wrap: anywhere; }
+  .c7-free b { color: var(--bt-text); }
+  .c7-note { font-size: .82rem; color: var(--bt-muted); margin: 0; }
+  #code { margin-top: 14px; }
+  .c7-points li { margin: .35em 0; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">The same keys go into a classic B-tree and into a B+tree. Watch where an entry ends up when a
+node splits, what the leaf chain looks like, and which slot of the node array each B+tree node occupies.</p>
+
+<div id="fig"></div>
+<div id="code"></div>
+
+<h2>What to look for</h2>
+<ul class="c7-points">
+  <li><strong>Copy-up and push-up.</strong> When a B+tree <em>leaf</em> splits, the first key of the new right leaf is
+    copied into the parent and also stays in the leaf. When an <em>internal</em> node splits, the middle separator moves
+    up and is in neither half, as in the classic B-tree. Tick <em>Predict</em> to be asked before each split.</li>
+  <li><strong>Lookups.</strong> Search for 10 in the canonical trees: the B-tree stops in the root, the B+tree carries
+    on to a leaf, because the 10 in its internal node is only a signpost.</li>
+  <li><strong>Stale separators.</strong> Run the delete walk-through. After <em>delete 15</em> the root of the B+tree
+    still shows 15, dimmed: no leaf holds it any more, and the tree is still correct.</li>
+  <li><strong>Handles.</strong> <code>#n</code> above a B+tree node is its index in the arena on the right. Freed slots go
+    to the head of the free list and are the first to be reused: delete until nodes are freed, then insert again.</li>
+  <li><strong>Size.</strong> With the same tiny order the B+tree needs more nodes than the B-tree, because separators are
+    extra copies. In a real page the opposite matters: internal nodes without values hold many more separators.</li>
+</ul>
+<p>Text and code: <a href="../README.md">chapter 07 README</a>. The trees, handles and free list shown here are
+checked against the output of the chapter's Zig and Rust programs (self-tests below).</p>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="local.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, k = BTViz.k;
+  BTViz.page({
+    title: 'B+trees', chapter: 7,
+    prev: { href: '../../06-testing-a-btree/viz/index.html', title: 'Chapter 6: testing a B-tree' },
+    next: { href: '../../08-range-scans-and-cursors/viz/index.html', title: 'Chapter 8: range scans and cursors' }
+  });
+
+  /* ------------------------------------------------------------- figure */
+  var fig = BTViz.figure('#fig', {
+    title: 'Classic B-tree and B+tree, same keys', side: true,
+    legend: ['node-active', 'key-compare', 'key-found', 'key-inserted', 'key-deleted', 'split', 'merge', 'free']
+  });
+  fig.legend.appendChild(el('span.bt-legend-item', el('span.bt-chip.s-dim', '15'), 'stale separator'));
+
+  var order = el('select.bt-select#order', { 'aria-label': 'Order M (maximum children per node)' });
+  [3, 4, 5, 6].forEach(function (m) { order.appendChild(el('option', { value: m, selected: m === 4 }, 'order ' + m)); });
+  var key = el('input.bt-input#key', { type: 'number', inputmode: 'numeric', placeholder: 'key', 'aria-label': 'Key', min: 0, max: 999 });
+  var btn = function (id, text, fn, primary) {
+    return el('button.bt-btn' + (primary ? '.bt-primary' : '') + '#' + id, { type: 'button', onclick: fn }, text);
+  };
+  fig.toolbar.append(order, el('span.bt-toolbar-sep'), key,
+    btn('btn-insert', 'Insert', function () { run('insert'); }, true),
+    btn('btn-delete', 'Delete', function () { run('delete'); }),
+    btn('btn-search', 'Search', function () { run('search'); }),
+    el('span.bt-toolbar-sep'),
+    btn('btn-canonical', 'Canonical build', function () { canonical(true); }),
+    btn('btn-walk', 'Delete walk-through', deleteWalk),
+    btn('btn-random', 'Random fill', randomFill),
+    btn('btn-clear', 'Clear', function () { reset(); showIdle('Both trees are empty. Insert a key, or replay the canonical build.'); }));
+
+  var headA = el('span'), headB = el('span');
+  var boxA = el('div.c7-tree', el('div.c7-head', el('strong', 'Classic B-tree'), el('span', 'entries (key + value) in every node'), headA));
+  var boxB = el('div.c7-tree', el('div.c7-head', el('strong', 'B+tree'), el('span', 'entries only in leaves; separators above; leaves chained'), headB));
+  fig.stage.append(boxA, boxB);
+  var viewA = new BTViz.TreeView(boxA, { minHeight: 150, ariaLabel: 'Classic B-tree' });
+  var viewB = new BTViz.TreeView(boxB, { minHeight: 210, ariaLabel: 'B+tree' });
+  var chainEl = el('div.c7-chain', { 'aria-label': 'Leaf chain of the B+tree' });
+  boxB.appendChild(chainEl);
+
+  var arenaPanel = el('div.bt-panel', el('div.bt-panel-title', 'B+tree arena: one array of nodes'));
+  var arenaBody = el('div.bt-panel-body');
+  var freeEl = el('div.c7-free');
+  arenaPanel.appendChild(arenaBody);
+  fig.side.appendChild(arenaPanel);
+  var mem = new BTViz.MemoryMap(arenaBody, { cell: 32 });
+  arenaBody.append(freeEl, el('p.c7-note', 'A handle #n is an index into this array. Nodes never point at each other.'));
+  var log = new BTViz.Log(fig.side, { title: 'Operations' });
+
+  /* -------------------------------------------------------- code panels */
+  var parts = {};                       // parts[snippet][part] = {zig: [[a, b]], rust: [[a, b]]}
+  Object.keys(window.CHAPTER_PARTS).forEach(function (sn) {
+    parts[sn] = {};
+    Object.keys(window.CHAPTER_PARTS[sn]).forEach(function (part) {
+      var spec = {};
+      ['zig', 'rust'].forEach(function (lang) {
+        var src = String(window.CHAPTER_CODE[sn][lang]).replace(/^\n+|\s+$/g, '').split('\n');
+        var want = window.CHAPTER_PARTS[sn][part][lang];
+        var a = src.findIndex(function (l) { return l.indexOf(want[0]) >= 0; });
+        var b = src.findIndex(function (l, i) { return i >= a && l.indexOf(want[1]) >= 0; });
+        spec[lang] = [[a + 1, b + 1]];
+      });
+      parts[sn][part] = spec;
+    });
+  });
+  var TITLES = {
+    search: 'search — a lookup always ends in a leaf',
+    splitLeaf: 'insert — splitLeaf (copy-up)',
+    splitInternal: 'insert — splitInternal (push-up)',
+    borrow: 'delete — borrowing between leaves',
+    merge: 'delete — merge'
+  };
+  var panels = {};
+  Object.keys(TITLES).forEach(function (sn) {
+    panels[sn] = BTViz.codePanel('#code', sn, { title: TITLES[sn], maxHeight: 330 });
+    panels[sn].root.hidden = sn !== 'splitLeaf';
+  });
+  function showCode(lines) {
+    if (!lines) { Object.keys(panels).forEach(function (sn) { panels[sn].highlight([]); }); return; }
+    Object.keys(panels).forEach(function (sn) { panels[sn].root.hidden = sn !== lines.snippet; });
+    panels[lines.snippet].highlight(parts[lines.snippet][lines.part]);
+  }
+
+  /* ------------------------------------------------------------ models */
+  var a, b, rand = BTViz.rng(7), fills = 0;
+  function reset() {
+    a = BTViz.models.BTree(+order.value);
+    b = new Ch07.BPlus(+order.value);
+    log.clear();
+  }
+  function both() { return { a: a.snapshot(), b: b.snapshot(), an: a.nodeCount(), ah: a.size ? a.height() : 0, asize: a.size }; }
+
+  /* ------------------------------------------------------------- render */
+  var stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
+    onStep: function (step, i) {
+      var s = step.state, hb = step.hlB || {};
+      viewA.render(s.a, step.hlA || {});
+      // Stale separators stay dimmed unless the step itself highlights them.
+      var keys = {};
+      s.b.stale.forEach(function (id) { keys[id] = 'dim'; });
+      Object.keys(hb.keys || {}).forEach(function (id) { keys[id] = hb.keys[id]; });
+      viewB.render(s.b.tree, { nodes: hb.nodes || {}, keys: keys, edges: hb.edges || {}, links: hb.links || {} });
+      boxA.classList.toggle('is-idle', step.focus === 'b');
+      boxB.classList.toggle('is-idle', step.focus === 'a');
+      headA.textContent = '· ' + s.asize + ' keys, ' + s.an + ' node' + (s.an === 1 ? '' : 's') + ', height ' + s.ah;
+      headB.textContent = '· ' + s.b.count + ' keys, ' + s.b.nodes + ' node' + (s.b.nodes === 1 ? '' : 's') + ', height ' + s.b.height;
+      renderChain(s.b, hb.chain || {});
+      renderArena(s.b, hb.arena || {});
+      showCode(step.lines);
+      log.sync(stepper ? stepper.steps : [], i);
+    }
+  });
+
+  function renderChain(sb, hl) {
+    chainEl.textContent = '';
+    if (!sb.chain.length) { chainEl.append('leaf chain: empty (first_leaf = last_leaf = nil)'); return; }
+    chainEl.append('leaf chain: first_leaf →');
+    sb.chain.forEach(function (leaf, i) {
+      if (i) chainEl.append(el('span', { title: 'next and prev links' }, '⇄'));
+      chainEl.append(el('span.bt-chip' + (hl[leaf.h] ? '.s-' + hl[leaf.h] : ''), '#' + leaf.h + ' (' + leaf.keys.join(' ') + ')'));
+    });
+    chainEl.append('← last_leaf');
+  }
+  function renderArena(sb, hl) {
+    mem.render({ slabs: [{
+      label: sb.arena.length + ' slot' + (sb.arena.length === 1 ? '' : 's') + ': ' + sb.nodes + ' live, ' + sb.free.length + ' free',
+      slots: sb.arena.map(function (s) {
+        return { state: hl[s.h] || (s.state === 'free' ? 'free' : 'used'), label: '#' + s.h,
+                 title: 'slot ' + s.h + ': ' + (s.state === 'free' ? 'free' : s.state + ' node') };
+      })
+    }] });
+    freeEl.innerHTML = 'free list: ' + (sb.free.length
+      ? 'head → ' + sb.free.map(function (h) { return '<b>#' + h + '</b>'; }).join(' → ') + ' → nil'
+      : 'empty (the next node is appended)');
+  }
+
+  /* ---------------------------------------------- building a timeline */
+  var chip = function (text, state) { return '<span class="bt-chip' + (state ? ' s-' + state : '') + '">' + text + '</span> '; };
+  var SKIP_A = { start: 1, compare: 1, done: 1 };
+  var SKIP_B = { start: 1, descend: 1, done: 1, found: 1 };
+
+  /** Steps of one operation on both trees: first the B-tree, then the B+tree, then a comparison. */
+  function opSteps(op, v, brief) {
+    var out = [], before = both();
+    var sa = op === 'insert' ? a.insert(v) : op === 'delete' ? a.delete(v) : a.search(v);
+    var mid = both();
+    var sb = op === 'insert' ? b.put(v, v * 100) : op === 'delete' ? b.delete(v) : b.search(v);
+    var after = both();
+    sa.forEach(function (s, i) {
+      if (brief && SKIP_A[s.type]) return;
+      out.push({ focus: 'a', type: s.type, caption: chip('B-tree') + s.caption, log: i === 0 ? op + ' ' + v : null,
+        state: { a: s.state, b: before.b, an: countNodes(s.state), ah: heightOf(s.state), asize: s.type === 'start' || s.type === 'compare' ? before.asize : mid.asize },
+        hlA: s.highlight });
+    });
+    sb.forEach(function (s) {
+      if (brief && SKIP_B[s.type]) return;
+      out.push({ focus: 'b', type: s.type, caption: chip('B+tree', 'active') + s.caption, log: s.log && s.log.html ? { html: '&nbsp;&nbsp;B+: ' + s.log.html, state: s.log.state } : null,
+        lines: s.lines, question: s.question,
+        state: { a: mid.a, b: s.state, an: mid.an, ah: mid.ah, asize: mid.asize }, hlB: s.highlight });
+    });
+    if (brief && !out.length) return out;
+    var hlA = {}, hlB = {};
+    if (op === 'insert') { hlA = { keys: mk('*:' + v, 'inserted') }; hlB = { keys: mk('*:' + v, 'inserted') }; }
+    out.push({ focus: null, type: 'summary', caption: summary(op, v, sa, sb, after), state: after, hlA: hlA, hlB: hlB });
+    return out;
+  }
+  function mk(key, value) { var o = {}; o[key] = value; return o; }
+  function countNodes(n) { var c = 1; (n.children || []).forEach(function (ch) { c += countNodes(ch); }); return c; }
+  function heightOf(n) { var h = 1; while (n.children && n.children.length) { n = n.children[0]; h++; } return n.keys.length || h > 1 ? h : 0; }
+
+  function summary(op, v, sa, sb, s) {
+    var copies = b.separators().filter(function (x) { return !x.stale; }).length;
+    var stale = b.separators().filter(function (x) { return x.stale; });
+    var text = op === 'search'
+      ? 'Search ' + k(v) + ': the B-tree visited ' + visited(sa, 'compare') + ' node(s)' + (sa.found ? ' and may stop in an internal node' : '') +
+        '; the B+tree always walks ' + s.b.height + ' level(s) to a leaf. '
+      : (op === 'insert' ? 'After insert ' : 'After delete ') + k(v) + ': ';
+    text += 'B-tree: ' + s.asize + ' keys in ' + s.an + ' node(s), height ' + s.ah + '. B+tree: ' + s.b.count + ' keys in ' + s.b.nodes + ' node(s), height ' + s.b.height;
+    text += s.b.height > 1 ? ', with ' + (copies + stale.length) + ' separator(s) on top of the entries' : '';
+    text += stale.length ? ' (' + stale.map(function (x) { return k(x.key); }).join(', ') + ' stale: dimmed).' : '.';
+    return text;
+  }
+  function visited(steps, type) { return steps.filter(function (s) { return s.type === type; }).length || 1; }
+
+  function showIdle(caption) {
+    stepper.setSteps([{ caption: caption, state: both(), focus: null }]);
+  }
+
+  /* ------------------------------------------------------------ actions */
+  function run(op) {
+    var v = key.value === '' ? rand.int(1, 99) : Math.floor(+key.value);
+    if (!isFinite(v) || v < 0) return;
+    stepper.setSteps(opSteps(op, v, false), { play: true });
+    key.value = '';
+    key.focus({ preventScroll: true });
+  }
+  /** The chapter's fixed scenario, part 1: the twelve canonical inserts. */
+  function canonical(play) {
+    order.value = 4;
+    reset();
+    var steps = [{ focus: null, caption: 'Two empty trees of order 4: at most 3 keys per node, at least 1 (except the root). Insert ' +
+      Ch07.CANONICAL.map(function (v) { return k(v); }).join(' ') + ' into both. Only the steps that change the structure are shown.', state: both(), log: 'canonical build' }];
+    Ch07.CANONICAL.forEach(function (v) { steps = steps.concat(opSteps('insert', v, true)); });
+    steps[steps.length - 1].caption = 'The same twelve keys. ' + steps[steps.length - 1].caption +
+      ' Use the controls to replay the build, or type a key above.';
+    stepper.setSteps(steps, play ? { play: true } : { index: steps.length - 1 });
+  }
+  /** Part 2 of the scenario: the deletes of section 4 of the program output. */
+  function deleteWalk() {
+    order.value = 4;
+    reset();
+    Ch07.CANONICAL.forEach(function (v) { a.insert(v, { steps: false }); b.put(v, v * 100, { steps: false }); });
+    var steps = [{ focus: null, caption: 'The canonical trees again. Now delete ' + Ch07.DELETES.map(function (v) { return k(v); }).join(' ') +
+      ': a stale separator, three leaf borrows, a merge with an internal rotation, and finally two merges that remove a level.', state: both(), log: 'delete walk-through' }];
+    Ch07.DELETES.forEach(function (v) { steps = steps.concat(opSteps('delete', v, true)); });
+    stepper.setSteps(steps, { play: true });
+  }
+  function randomFill() {
+    var have = b.keys(), n = 0;
+    BTViz.rng(11 + fills++).sample(40, 1, 99).forEach(function (v) {
+      if (n >= 10 || have.indexOf(v) >= 0) return;
+      a.insert(v, { steps: false }); b.put(v, v * 100, { steps: false }); n++;
+    });
+    log.clear();
+    showIdle('Inserted ' + n + ' random keys into both trees. ' + summary('insert', '…', [], [], both()).replace(/^After insert .*?: /, ''));
+  }
+  key.addEventListener('keydown', function (e) { if (e.key === 'Enter') run('insert'); });
+  order.addEventListener('change', function () {
+    reset();
+    showIdle('Empty trees of order ' + order.value + ': at most ' + (order.value - 1) + ' keys per node, at least ' + b.minKeys() + ' in every node but the root.');
+  });
+
+  /* ---------------------------------------------------------- self-tests */
+  var E = window.CHAPTER_EXPECTED;
+  BTViz.selfTest('B+tree model = program output, sections 1–5', Ch07.scenarioText(), E.sections1to5);
+  BTViz.selfTest('B+tree model = program output, section 7 (3 × 20000 operations)', Ch07.modelRunText(), E.section7);
+  var ref = BTViz.models.BTree(4).insertMany(Ch07.CANONICAL).snapshot();
+  BTViz.selfTest('B-tree model = chapter 05 canonical tree',
+    '[' + ref.keys.join(' ') + ']\n' + ref.children.map(function (c) { return '[' + c.keys.join(' ') + ']'; }).join(' '), E.btreeCanonical);
+
+  canonical(false);
+  // The trees this page actually shows after the canonical build are the ones the programs print.
+  BTViz.selfTest('page state after the canonical build', Ch07.dump(b),
+    E.sections1to5.slice(E.sections1to5.indexOf('  height 3, 12 keys'), E.sections1to5.indexOf('\n== 2.')).replace(/^ {2}/, ''));
+})();
+</script>
+</body>
+</html>

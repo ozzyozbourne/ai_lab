@@ -73,9 +73,10 @@ that starts low can still reach high.
 
 Sorting the rows makes the zones disjoint and ordered: `max` of chunk i is at most `min`
 of chunk i + 1. Now a binary search over the summaries finds the first chunk that can
-match, and a range filter touches one contiguous run of chunks. That is the static
-two-level index of chapter 01 (a sorted array with one level of fence keys), or equally
-the leaf level of a B+tree with one inner level and no slack.
+match, and a range filter touches one contiguous run of chunks. That is the chunked
+sorted array with a directory from chapter 01 ("the one-level trap": one slot per chunk
+holding its first key), or equally the leaf level of a B+tree with one inner level and no
+slack.
 
 An insert in the middle now has to shift every later row, O(n), and rewrite every later
 summary. Fixing that cost by leaving free space in chunks and splitting a full chunk in

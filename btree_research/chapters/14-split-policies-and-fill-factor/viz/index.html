@@ -28,7 +28,12 @@
   background: repeating-linear-gradient(45deg, var(--bt-free-bg), var(--bt-free-bg) 5px, var(--bt-surface) 5px, var(--bt-surface) 10px);
 }
 .c14-free span { background: var(--bt-surface); padding: 2px 4px; border-radius: 3px; white-space: nowrap; }
-.c14-cap { position: absolute; top: -5px; bottom: -5px; width: 0; border-left: 2px dashed var(--bt-key-deleted); }
+/* Where a real page ends on the imaginary one. Two ticks outside the strip, not a line
+   across it: the boundary usually falls inside a cell and would cross its label. */
+.c14-cap {
+  position: absolute; top: -8px; bottom: -8px; width: 2px; margin-left: -1px; pointer-events: none;
+  background: linear-gradient(to bottom, var(--bt-key-deleted) 0 7px, transparent 7px calc(100% - 7px), var(--bt-key-deleted) calc(100% - 7px) 100%);
+}
 .c14-cap-label { font: .7rem/1.5 var(--bt-mono); color: var(--bt-key-deleted); white-space: nowrap; text-align: right; box-sizing: border-box; padding-right: 4px; }
 .c14-gaps { position: relative; height: 26px; margin-top: 3px; }
 .c14-gap {
@@ -41,6 +46,15 @@
 .c14-result { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; }
 .c14-sep { grid-column: 1 / -1; text-align: center; }
 @media (max-width: 640px) { .c14-result { grid-template-columns: 1fr; } }
+.c14-tablenote { display: none; font-size: .78rem; color: var(--bt-muted); margin-top: 4px; }
+/* Phone: the candidate table must fit without scrolling sideways. Tighter cells, the
+   byte unit moves from every cell into one note under the table. */
+@media (max-width: 640px) {
+  .c14-cands th, .c14-cands td { padding: 5px 6px; }
+  .c14-cands th { letter-spacing: 0; }
+  .c14-cands .c14-unit { display: none; }
+  .c14-tablenote { display: block; }
+}
 .c14-newcell { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: .86rem; color: var(--bt-muted); margin-bottom: 8px; }
 
 .c14-rowhead { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 10px 0 5px; font-size: .86rem; color: var(--bt-muted); }
@@ -141,10 +155,11 @@ a run of equal keys: the parent then has to store the row id as well as the key.
     var newCell = el('div.c14-newcell');
     var stripHost = el('div');
     var tableHost = el('div.bt-table-wrap');
-    fig.stage.append(newCell, stripHost, tableHost);
-    var code = BTViz.codePanel(fig.side, 'chooseSplit', { title: 'chooseSplit', maxHeight: 420 });
+    fig.stage.append(newCell, stripHost, tableHost, el('div.c14-tablenote', 'left, right and separator sizes are in bytes'));
+    var code = BTViz.codePanel(fig.side, 'chooseSplit', { title: 'chooseSplit (condensed)', maxHeight: 440 });
     var LINES = window.CHAPTER_CODE_LINES;
 
+    function unit() { return el('span.c14-unit', 'B'); }   // hidden on phones, see the style block
     function draw(s) {
       stripHost.textContent = '';
       newCell.textContent = '';
@@ -162,11 +177,11 @@ a run of equal keys: the parent then has to store the row id as well as the key.
       tableHost.textContent = '';
       if (s.rows) {
         var head = ['cut', 'left', 'right', s.deltaLabel || 'delta', 'separator'];
-        var t = el('table.bt-table', el('thead', el('tr', head.map(function (h, i) { return el('th', { class: i > 0 && i < 4 ? 'num' : null }, h); }))));
+        var t = el('table.bt-table.c14-cands', el('thead', el('tr', head.map(function (h, i) { return el('th', { class: i > 0 && i < 4 ? 'num' : null }, h); }))));
         var body = el('tbody');
         s.rows.forEach(function (row) {
           body.appendChild(el('tr', { class: row.state ? 's-' + row.state : null, style: row.legal ? null : { opacity: 0.5 } },
-            el('td.num', String(row.s)), el('td.num', row.left + 'B'), el('td.num', row.right + 'B'),
+            el('td.num', String(row.s)), el('td.num', String(row.left), unit()), el('td.num', String(row.right), unit()),
             el('td.num', row.legal ? (row.delta === null ? '' : String(row.delta)) : 'too big'), el('td', { style: { whiteSpace: 'nowrap' } }, row.sep)));
         });
         t.appendChild(body);
@@ -267,10 +282,15 @@ a run of equal keys: the parent then has to store the row id as well as the key.
             k(choice.firstRight, 'split') + '.',
             { strip: imaginary(st3), rows: rows(firstFill, true, st3), deltaLabel: deltaLabel(firstFill) });
         } else if (tr.reason === 'single-value') {
+          // The candidates are re-sorted with the 96:4 target, so the 50:50
+          // optimum is no longer "best" by the column this step shows.
+          var stSingle = {};
+          stSingle[choice.firstRight] = 'split';
           push('single-value', 'The whole page is one key, so every cut tears the run. ' + (upperKey === null ? 'This is the rightmost page' : 'The next page starts with a different key') +
             ', so this page is the <em>end</em> of the run, and new cells of this key (with higher row ids) will keep arriving here. Strategy “single value”: an append in disguise, so leave the left page ' +
-            M.SINGLE_VALUE_FILL + '% full: cut before ' + k(choice.firstRight, 'split') + '.',
-            { strip: imaginary(st3), rows: rows(M.SINGLE_VALUE_FILL, true, st3), deltaLabel: deltaLabel(M.SINGLE_VALUE_FILL) });
+            M.SINGLE_VALUE_FILL + '% full. The cuts are ranked again with that target (the delta column now shows ' + deltaLabel(M.SINGLE_VALUE_FILL) +
+            ', and the earlier best balance no longer counts); the smallest delta is the cut before ' + k(choice.firstRight, 'split') + '.',
+            { strip: imaginary(stSingle), rows: rows(M.SINGLE_VALUE_FILL, true, stSingle), deltaLabel: deltaLabel(M.SINGLE_VALUE_FILL) });
         } else {
           push('run-continues', 'The whole page is one key, and the next page continues the same run. This insert landed in the middle of the run, not at its end, so there is no reason to expect more cells on one side than the other. Keep the balanced cut before ' +
             k(choice.firstRight, 'split') + '.',
@@ -369,7 +389,9 @@ a run of equal keys: the parent then has to store the row id as well as the key.
         (c.strategy !== 'default' ? ' (strategy “' + c.strategy.replace('_', ' ') + '”)' : '') + (c.penalty === 2 ? ', inside a run of equal keys.' : '.');
     }
     function build() {
-      var n = +selN.value, sd = Math.max(0, Math.floor(+seed.value || 0));
+      // Clamp the seed to the field's range and show the value actually used.
+      var n = +selN.value, sd = Math.min(999999, Math.max(0, Math.floor(+seed.value || 0)));
+      if (seed.value !== String(sd)) seed.value = String(sd);
       var pa = policyOf(selA.value, selFF.value), pb = policyOf(selB.value, selFF.value);
       var na = M.policyLabel(pa), nb = M.policyLabel(pb);
       var ta = new M.Tree(M.PAGE_CAPACITY, pa), tb = new M.Tree(M.PAGE_CAPACITY, pb);

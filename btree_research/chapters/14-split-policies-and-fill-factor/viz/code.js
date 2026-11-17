@@ -1,5 +1,7 @@
 /* Chapter 14: code panel snippets (condensed from zig/src/split.zig and rust/src/split.rs;
- * comments and the Choice bookkeeping are left out so that both fit next to the figure).
+ * comments, the interval bookkeeping and most fields of the returned Choice are left out
+ * so that both fit next to the figure; the panel title says "condensed"). Every name
+ * that appears here exists in the sources.
  * Loaded with a classic script tag: no fetch under file://. */
 window.CHAPTER_CODE = {
   chooseSplit: {
@@ -32,7 +34,8 @@ pub fn chooseSplit(scratch: Allocator, items: []const Cell, new_index: usize,
             deltaSort(cands, page.capacity, single_value_fill);
         }
     }
-    return choiceFrom(items, cands[pick], strategy);
+    const c = cands[pick]; // the result also carries byte counts, penalty and interval
+    return .{ .first_right = c.first_right, .strategy = strategy };
 }`,
     rust: `
 pub fn choose_split(cands: &mut Vec<Candidate>, items: &[Cell], new_index: usize,
@@ -63,7 +66,8 @@ pub fn choose_split(cands: &mut Vec<Candidate>, items: &[Cell], new_index: usize
             delta_sort(cands, page.capacity, Some(SINGLE_VALUE_FILL));
         }
     }
-    choice_from(items, cands[pick], strategy)
+    let c = cands[pick]; // the result also carries byte counts, penalty and interval
+    Choice { first_right: c.first_right, strategy }
 }`
   }
 };
@@ -74,13 +78,13 @@ window.CHAPTER_CODE_LINES = {
   start: [1, 2],
   candidates: 3,
   target: [[7, 12]],
-  space: [14, 29],
+  space: [14, 30],
   interval: [17, 18],
   'default-distinct': [19, 20],
   'many-duplicates': [[21, 23]],
   'single-value': [[24, 26]],
   'run-continues': [24, 27],
-  result: 29
+  result: [29, 30]
 };
 
 /* Copied from ../expected_output.txt (the output of `zig build run` and `cargo run`).

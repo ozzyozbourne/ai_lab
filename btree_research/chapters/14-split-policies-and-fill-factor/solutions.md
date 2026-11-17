@@ -77,8 +77,9 @@ keys `10_000 - i` with ascending `i`. Count the pages under 10% full in `fill()`
 Measured: 2 001 pages, 2 000 of them under 10% full (one 100-byte cell each), 2.4%
 average fill. The stranded right page holds whatever did not belong to the run, so
 the run has to fill nearly the whole page for the effect to be this stark: with
-81-byte cells (the run is 79% of the page) the same workload gives 183 pages, each
-stranded one 20 to 29% full.
+81-byte cells (the run is 79% of the page) the same workload gives 183 pages, 181
+of them 20 to 29% full. With the guard below the two runs need 98 pages (50.8%
+average fill) and 79 pages (51.0%).
 
 The guard, at the end of `chooseSplit` (Zig; `nbtsplitloc.c:833-843`):
 

@@ -82,9 +82,21 @@ root:
 
 ### HNSW: a skip list without order
 
-A skip list gives every key a random height; tall keys form sparse express levels, and
-search moves right while the next key is not past the target, then drops a level. HNSW
-gives every vector a random top level in the same way and links it to a few near
+A skip list is not taught elsewhere in this guide, so here it is in full. It is a sorted
+linked list with express lanes. Every key is on level 0; a coin flip promotes some keys
+to level 1, another flip promotes some of those to level 2, and so on:
+
+```
+level 2:  3 ----------------> 41
+level 1:  3 ------> 17 -----> 41 -----> 60
+level 0:  3 -> 9 -> 17 -> 25 -> 41 -> 52 -> 60
+```
+
+Search starts top left, moves right while the next key is not past the target, then
+drops a level. For 52: level 2 goes 3, 41; level 1 sees 60, too big; level 0 steps to
+52. The levels do the work of a B-tree's inner nodes, built by coin flips, not splits.
+
+HNSW gives every vector a random top level in the same way and links it to a few near
 neighbours on each of its levels. Search starts at one entry point on the top level and
 moves to whichever neighbour is closer to the query; when none is closer it drops a
 level. "Move right while smaller" has become "move to a closer neighbour", and the
@@ -173,8 +185,10 @@ to their ids, so scanning a list is one sequential pass, like scanning a leaf pa
 - Zig passes an allocator to `append`, `build` and `search`. Rust owns its `Vec`s: the
   k-means scratch is locals dropped at the end of `build`, the search scratch a
   `&mut Vec<Hit>` that the caller reuses.
-- Zig tests `append` and `build` with `checkAllAllocationFailures`. Rust cannot make
-  `Vec` fail, so `ZoneMap::with_budget` models the failure as `Err(OutOfRows)`.
+- Zig tests `append` and `build` with `checkAllAllocationFailures`. This chapter's Rust
+  does not use `Vec::try_reserve`, so `ZoneMap::with_budget` models a failed `append` as
+  `Err(OutOfRows)`. `Ivf::build` has no budget and returns no `Result`: what the Zig test
+  proves is that no error path leaks, and Rust's owned `Vec`s are dropped on every exit.
 - Rounded mean: `@divFloor(2 * sum + n, 2 * n)` in Zig, `div_euclid` in Rust. Both are
   floor division, so centroids agree even for negative coordinates.
 
@@ -290,7 +304,7 @@ min/max for ranges, bloom for points, where a B-tree does both by keeping order.
 
 **FAISS IVF.** The class comment describes exactly the structure above: "a few (nprobe)
 quantization indices are selected and several inverted lists are visited"
-(`faiss/faiss/IndexIVF.h:212-217`). The default is `nprobe = 1` (`IndexIVF.h:96`). Search
+(`faiss/faiss/IndexIVF.h:212-217`). The default is `nprobe = 1` (`IndexIVF.h:133`). Search
 asks the coarse quantizer for the nearest centroids, then prefetches those lists
 (`faiss/faiss/IndexIVF.cpp:916-921`), like read-ahead for leaves. FAISS's k-means
 defaults to 25 iterations and seed 1234 (`faiss/faiss/Clustering.h:24`, `:50`) and
@@ -348,7 +362,10 @@ The plan assigns this chapter an arena for clustering scratch.
   return wrong answers silently (the test "validate catches a stale summary" shows it).
   Too-wide bounds after a delete are harmless; too-narrow bounds are a bug.
 - **Comparing distances with a square root or with floats** when exact agreement matters.
-  Squared integer distances order vectors identically and reproduce everywhere.
+  Squared integer distances order vectors identically and reproduce everywhere. Mind
+  the range: `dist2` squares the unsigned difference and is exact while dim x
+  difference^2 fits `u64` (coordinates within +-2^28 at 16 dimensions); beyond that it
+  saturates, it does not wrap.
 - **Unbroken ties.** Two vectors at the same distance must be ordered by something (here
   the id), or top-k results and k-means assignments depend on iteration order.
 - **Leaving the loop after a centroid update.** Then lists are filled from assignments

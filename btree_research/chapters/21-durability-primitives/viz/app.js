@@ -39,10 +39,10 @@
     disk.crash('drop');
     push('<code>crash(drop)</code>: the power fails and the cache is gone. Page 0 never existed; a read now fails with "out of bounds". Nothing was promised, so nothing was broken.',
       [[13, 15]], {}, {
-        prompt: 'The power fails now, before any sync. What is on the disk afterwards?',
+        prompt: 'The power fails now, before any sync, in mode <code>drop</code>. What is on the disk afterwards?',
         choices: ['Page 0 with version A', 'Nothing: the disk is still empty', 'Half of page 0'],
         answer: 1,
-        explain: 'With mode <code>drop</code> every pending write is lost. (Other modes keep or tear it: an unsynced write can end up in any of the three states.)'
+        explain: 'With mode <code>drop</code> every pending write is lost. (The other modes keep or tear it: an unsynced write can end up in any of the three states, and you do not get to choose.)'
       });
     disk.writePage(0, A0);
     push('Write A again…', [[2, 6]]);
@@ -132,7 +132,16 @@
     ['tear', 'drop', 'keep', 'random'].forEach(function (m) { selMode.appendChild(el('option', { value: m }, m)); });
     var seed = el('input.bt-input#sb-seed', { type: 'number', inputmode: 'numeric', min: 0, max: 999999, value: 2121, 'aria-label': 'Seed', style: { width: '5.5em' } });
     var nextChip = el('span.bt-chip#sb-next');
-    function btn(id, text, fn, primary) { return el('button.bt-btn' + (primary ? '.bt-primary' : '') + '#' + id, { type: 'button', onclick: fn }, text); }
+    // No action may fail silently: an exception becomes a step with its message.
+    function guard(fn) {
+      return function () {
+        try { fn(); } catch (e) {
+          record('<b>That action failed:</b> ' + esc(e && e.message ? e.name + ': ' + e.message : String(e)) + '. Press Reset to start again.');
+        }
+      };
+    }
+    function esc(t) { return String(t).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
+    function btn(id, text, fn, primary) { return el('button.bt-btn' + (primary ? '.bt-primary' : '') + '#' + id, { type: 'button', onclick: guard(fn) }, text); }
     var bSlot = btn('sb-slot', 'Write slot', function () { write(0, false); });
     var bHome = btn('sb-home', 'Write home', function () { write(homeNo(), true); }, true);
     var bSync = btn('sb-sync', 'Sync', sync);
@@ -219,6 +228,7 @@
     var want = /== 2\.[\s\S]*?crash\(tear\)[^\n]*\nread {2}page 0 -> (\S+ \S+)/.exec(window.CH21_EXPECTED_OUTPUT)[1];
     BTViz.selfTest('guided torn page = ' + want, guided.torn, want, '#selftests');
     BTViz.selfTest('guided final state', guided.final, ['page 0 -> BBBBBBBB ok', 'page 1 -> BBBBBBBB ok'], '#selftests');
+    BTViz.selfTest('storage contract: holes, bounds, power loss', M.contractChecks(), M.CONTRACT_EXPECTED, '#selftests');
     document.documentElement.setAttribute('data-selftests', 'done');
   }, 30);
 })();

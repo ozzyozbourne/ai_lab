@@ -60,8 +60,20 @@
   function hex8(n) { return ('00000000' + (n >>> 0).toString(16)).slice(-8); }
 
   /* ---- sim_disk.zig ---- */
-  function PowerLoss() { this.name = 'PowerLoss'; }
-  function OutOfBounds() { this.name = 'OutOfBounds'; }
+  // Real Error subclasses, so an uncaught one shows a readable message.
+  function storageError(name, text) {
+    function E(detail) {
+      var e = new Error(text + (detail ? ' (' + detail + ')' : ''));
+      e.name = name;
+      Object.setPrototypeOf(e, E.prototype);
+      return e;
+    }
+    E.prototype = Object.create(Error.prototype);
+    E.prototype.constructor = E;
+    return E;
+  }
+  var PowerLoss = storageError('PowerLoss', 'the simulated disk has lost power');
+  var OutOfBounds = storageError('OutOfBounds', 'page is at or beyond the size of the store');
 
   function SimDisk(seed) {
     this.durable = [];          // array of Uint8Array pages (holes are zero pages)
@@ -78,7 +90,9 @@
     for (var j = this.pending.length - 1; j >= 0; j--) {
       if (this.pending[j].pageNo === pageNo) return this.pending[j].data.slice();
     }
-    if (pageNo >= this.durable.length) throw new OutOfBounds();
+    if (pageNo >= this.size()) throw new OutOfBounds('page ' + pageNo + ', size ' + this.size());
+    // A hole: below a pending write to a higher page but beyond the durable end.
+    if (pageNo >= this.durable.length) return new Uint8Array(PAGE_SIZE);
     return this.durable[pageNo].slice();
   };
   SimDisk.prototype.writePage = function (pageNo, page) {
@@ -124,10 +138,13 @@
     this.stats.crashes++;
     return report;
   };
-  /** readPage + verify; a page past the end counts as blank (page.zig readChecked). */
+  /** readPage + verify; a page past the end counts as blank, PowerLoss passes through (page.zig readChecked). */
   SimDisk.prototype.readChecked = function (pageNo) {
-    if (pageNo >= this.size()) return { page: new Uint8Array(PAGE_SIZE), check: 'blank' };
-    var page = this.readPage(pageNo);
+    var page;
+    try { page = this.readPage(pageNo); } catch (e) {
+      if (!(e instanceof OutOfBounds)) throw e;
+      return { page: new Uint8Array(PAGE_SIZE), check: 'blank' };
+    }
     return { page: page, check: verify(page, pageNo) };
   };
 
@@ -200,6 +217,47 @@
       off: disk.isPoweredOff()
     };
   }
+
+  /**
+   * Regression checks for the Storage contract (the twins of the Zig/Rust tests
+   * "a hole below a pending write reads as zeroes", "readChecked: ... PowerLoss
+   * when the power is off" and "recover on a fresh store whose first update was
+   * cut short"). Returns one line per check; see CONTRACT_EXPECTED.
+   */
+  function contractChecks() {
+    var out = [];
+    function attempt(fn) { try { return fn(); } catch (e) { return e instanceof Error ? e.name : 'threw a non-Error'; } }
+    var d = new SimDisk(1);
+    d.writePage(2, filled('A')); // not synced: the durable image is empty
+    out.push('size=' + d.size() + ' durable=' + d.durable.length);
+    out.push('read hole 1: ' + attempt(function () { return letterMap(d.readPage(1)); }));
+    out.push('read 3: ' + attempt(function () { return letterMap(d.readPage(3)); }));
+    out.push('checked 5: ' + attempt(function () { return d.readChecked(5).check; }));
+    d.powerOffAfterWrites(0);
+    out.push('power off, checked 5: ' + attempt(function () { return d.readChecked(5).check; }));
+
+    // The sandbox sequence that used to throw: double write, "Write home", "Recover".
+    d = new SimDisk(1);
+    d.writePage(1, sealedPage('A', 1));
+    out.push('recover: ' + attempt(function () { var r = new DoubleWrite(d, 1).recover(); return 'intact=' + r.intact + ' blank=' + r.blank; }));
+    // A fresh 3-slot store whose first update stopped after the slot write.
+    d = new SimDisk(1);
+    var dw = new DoubleWrite(d, 3);
+    d.powerOffAfterWrites(2);
+    attempt(function () { dw.update(0, filled('A')); });
+    d.crash('drop'); // the slot is durable, the home write is lost
+    out.push('recover: ' + attempt(function () { var r = dw.recover(); return 'restored=' + r.restored + ' blank=' + r.blank; }));
+    return out;
+  }
+  var CONTRACT_EXPECTED = [
+    'size=3 durable=0',
+    'read hole 1: ........',
+    'read 3: OutOfBounds',
+    'checked 5: blank',
+    'power off, checked 5: PowerLoss',
+    'recover: intact=1 blank=0',
+    'recover: restored=1 blank=2'
+  ];
 
   /* ---- main.zig `run`, line for line ---- */
   function runProgram() {
@@ -315,7 +373,8 @@
     SplitMix64: SplitMix64, SimDisk: SimDisk, DoubleWrite: DoubleWrite, PowerLoss: PowerLoss, OutOfBounds: OutOfBounds,
     checksum: checksum, storedChecksum: storedChecksum, seal: seal, verify: verify,
     filled: filled, sealedPage: sealedPage, hex8: hex8,
-    sectorMap: sectorMap, letterMap: letterMap, snapshot: snapshot, runProgram: runProgram
+    sectorMap: sectorMap, letterMap: letterMap, snapshot: snapshot, runProgram: runProgram,
+    contractChecks: contractChecks, CONTRACT_EXPECTED: CONTRACT_EXPECTED
   };
   root.Ch21 = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

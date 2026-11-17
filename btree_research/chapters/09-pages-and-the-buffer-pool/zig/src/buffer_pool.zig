@@ -89,7 +89,7 @@ const PageTable = struct {
         const capacity = std.math.ceilPowerOfTwo(u32, @max(2, frame_count *| 2)) catch return error.OutOfMemory;
         const slots = try allocator.alloc(Slot, capacity);
         @memset(slots, .{});
-        return .{ .slots = slots, .shift = @intCast(32 - std.math.log2_int(u32, capacity)) };
+        return .{ .slots = slots, .shift = @intCast(@as(u32, 32) - std.math.log2_int(u32, capacity)) };
     }
 
     fn deinit(self: *PageTable, allocator: Allocator) void {
@@ -646,6 +646,193 @@ test "BufferPool: a failed write-back keeps the page cached and dirty" {
     mem.writes_before_failure = null; // the disk recovers
     try touch(&pool, 1, false);
     try testing.expectEqual(1, mem.bytes.items[0]);
+}
+
+test "BufferPool: a victim that cannot be written blocks eviction until the storage recovers" {
+    var mem: MemStorage = .init(testing.allocator);
+    defer mem.deinit();
+    var pager = try pagerWithPages(&mem, 4);
+    var pool: BufferPool = try .init(testing.allocator, &pager, 2);
+    defer pool.deinit();
+    var buf: [2]PageId = undefined;
+
+    try touch(&pool, 0, true); // dirty
+    try touch(&pool, 1, false); // clean
+    mem.writes_before_failure = 0;
+    // The sweep reaches dirty page 0 first. Clean page 1 could be evicted
+    // without any write, but the pool does not skip a page it failed to save.
+    try testing.expectError(error.StorageFailure, pool.fetchPage(2));
+    try testing.expectError(error.StorageFailure, pool.fetchPage(3));
+    try testing.expectEqualSlices(PageId, &.{ 0, 1 }, cachedPages(&pool, &buf));
+    try testing.expectEqual(0, pool.hand);
+    try testing.expect(pool.frames[0].dirty);
+    try pool.validate();
+    // Pages that are cached are still served.
+    try touch(&pool, 1, false);
+
+    mem.writes_before_failure = null;
+    try touch(&pool, 2, false);
+    try testing.expectEqualSlices(PageId, &.{ 2, 1 }, cachedPages(&pool, &buf));
+    try testing.expectEqual(1, mem.bytes.items[0]); // page 0 reached the storage
+}
+
+test "BufferPool: a failed read leaves an empty frame that the next miss reuses" {
+    var mem: MemStorage = .init(testing.allocator);
+    defer mem.deinit();
+    var pager = try pagerWithPages(&mem, 6);
+    var pool: BufferPool = try .init(testing.allocator, &pager, 2);
+    defer pool.deinit();
+    var buf: [2]PageId = undefined;
+
+    try touch(&pool, 0, true);
+    try touch(&pool, 1, true);
+    mem.reads_before_failure = 0;
+    // The miss evicts page 0 (written back first), then the read fails.
+    try testing.expectError(error.StorageFailure, pool.fetchPage(2));
+    try testing.expectEqualSlices(PageId, &.{ invalid_page_id, 1 }, cachedPages(&pool, &buf));
+    try testing.expectEqual(0, pool.hand); // back on the empty frame
+    try testing.expectEqual(0, pool.pinnedFrames()); // the failed fetch took no pin
+    try testing.expectEqual(null, pool.frameOf(2));
+    try pool.validate();
+    try testing.expectEqual(1, mem.bytes.items[0]); // the evicted page was saved
+
+    mem.reads_before_failure = null;
+    try touch(&pool, 3, false);
+    // Page 3 went into the empty frame; page 1 was not evicted for it.
+    try testing.expectEqualSlices(PageId, &.{ 3, 1 }, cachedPages(&pool, &buf));
+    try testing.expectEqual(1, pool.stats.evictions);
+    try testing.expectEqual(1, pool.stats.writebacks);
+    try pool.validate();
+}
+
+test "BufferPool: a failed newPage neither grows the file nor wastes a frame" {
+    var mem: MemStorage = .init(testing.allocator);
+    defer mem.deinit();
+    var pager = try pagerWithPages(&mem, 3);
+    var pool: BufferPool = try .init(testing.allocator, &pager, 2);
+    defer pool.deinit();
+    var buf: [2]PageId = undefined;
+
+    try touch(&pool, 0, false);
+    try touch(&pool, 1, false);
+    mem.writes_before_failure = 0; // growing the file fails
+    try testing.expectError(error.StorageFailure, pool.newPage());
+    try testing.expectEqual(3, pager.pageCount());
+    try testing.expectEqual(0, pool.pinnedFrames());
+    try testing.expectEqualSlices(PageId, &.{ invalid_page_id, 1 }, cachedPages(&pool, &buf));
+    try pool.validate();
+
+    mem.writes_before_failure = null;
+    const np = try pool.newPage(); // the retry works and uses the empty frame
+    try testing.expectEqual(3, np.id);
+    try testing.expectEqualSlices(PageId, &.{ 3, 1 }, cachedPages(&pool, &buf));
+    try testing.expectEqual(1, pool.stats.evictions);
+    pool.unpin(np.id, true);
+}
+
+/// The shape every multi-page operation in later chapters has: hold one pin,
+/// then do something that can fail.
+fn copyFirstByte(pool: *BufferPool, from: PageId, to: PageId) !void {
+    const src = try pool.fetchPage(from);
+    defer pool.unpin(from, false); // read only: the same unpin on both paths
+    const dst = try pool.fetchPage(to); // may fail while `from` is pinned
+    errdefer pool.unpin(to, false); // error path: nothing was changed
+    if (src[0] == 0xFF) return error.BadSource; // a failure with both pinned
+    dst[0] = src[0];
+    pool.unpin(to, true); // success path: released dirty
+}
+
+test "BufferPool: defer and errdefer release the caller's pins when a later step fails" {
+    var mem: MemStorage = .init(testing.allocator);
+    defer mem.deinit();
+    var pager = try pagerWithPages(&mem, 4);
+    var pool: BufferPool = try .init(testing.allocator, &pager, 2);
+    defer pool.deinit(); // would assert if copyFirstByte leaked a pin
+
+    mem.reads_before_failure = 1; // the first fetch works, the second does not
+    try testing.expectError(error.StorageFailure, copyFirstByte(&pool, 0, 1));
+    try testing.expectEqual(0, pool.pinnedFrames());
+    mem.reads_before_failure = null;
+
+    const p0 = try pool.fetchPage(0);
+    p0[0] = 0xFF;
+    pool.unpin(0, true);
+    try testing.expectError(error.BadSource, copyFirstByte(&pool, 0, 1));
+    try testing.expectEqual(0, pool.pinnedFrames());
+    try testing.expect(!pool.frames[pool.frameOf(1).?].dirty); // released clean
+
+    try copyFirstByte(&pool, 2, 1);
+    try testing.expectEqual(0, pool.pinnedFrames());
+}
+
+test "PageTable: matches a model through many insertions and removals" {
+    const frame_count = 37;
+    var table: PageTable = try .init(testing.allocator, frame_count);
+    defer table.deinit(testing.allocator);
+    try testing.expectEqual(128, table.slots.len); // next power of two >= 2 * 37
+
+    // Model: model[f] = the page "cached" in frame f.
+    var model: [frame_count]PageId = @splat(invalid_page_id);
+    var rng = SplitMix64.init(41);
+    for (0..20000) |_| {
+        const f: u32 = @intCast(rng.below(frame_count));
+        if (model[f] != invalid_page_id) {
+            try testing.expect(table.remove(model[f]));
+            try testing.expect(!table.remove(model[f])); // gone
+            model[f] = invalid_page_id;
+        }
+        // Mostly small ids, as in a real file; sometimes any 32-bit id.
+        const id: PageId = @intCast(if (rng.chance(3, 4)) rng.below(300) else rng.below(invalid_page_id));
+        if (table.get(id) == null) {
+            table.put(id, f);
+            model[f] = id;
+        }
+    }
+    var used: u32 = 0;
+    for (model, 0..) |id, f| {
+        if (id == invalid_page_id) continue;
+        used += 1;
+        try testing.expectEqual(@as(?u32, @intCast(f)), table.get(id));
+    }
+    try testing.expectEqual(used, table.count());
+    // No tombstones: every slot that holds no entry is really empty.
+    var empty: u32 = 0;
+    for (table.slots) |slot| {
+        if (slot.page_id == invalid_page_id) empty += 1;
+    }
+    try testing.expectEqual(table.slots.len - used, empty);
+}
+
+test "BufferPool: lookups stay short after the pool has cycled through many pages" {
+    var mem: MemStorage = .init(testing.allocator);
+    defer mem.deinit();
+    var pager = try pagerWithPages(&mem, 2000);
+    var pool: BufferPool = try .init(testing.allocator, &pager, 100);
+    defer pool.deinit();
+
+    for (0..3) |_| {
+        for (0..2000) |id| try touch(&pool, @intCast(id), false);
+    }
+    try pool.validate();
+    // 5900 evictions later the table still has exactly one used slot per
+    // cached page and every other slot free.
+    var empty: usize = 0;
+    var longest_run: usize = 0;
+    var run: usize = 0;
+    for (pool.page_table.slots) |slot| {
+        if (slot.page_id == invalid_page_id) {
+            empty += 1;
+            run = 0;
+        } else {
+            run += 1;
+            longest_run = @max(longest_run, run);
+        }
+    }
+    try testing.expectEqual(pool.page_table.slots.len - 100, empty);
+    // A miss probes at most one run of used slots. (std's hash map, used at
+    // a fixed capacity, had no free slot left at this point: every miss
+    // probed its whole table.)
+    try testing.expect(longest_run <= 16);
 }
 
 fn initAndUse(allocator: Allocator, pager: *Pager) !void {

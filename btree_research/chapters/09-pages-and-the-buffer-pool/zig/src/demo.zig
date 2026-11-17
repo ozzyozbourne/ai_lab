@@ -37,10 +37,11 @@ fn versionOf(page: *const Page) u64 {
 
 pub fn run(w: *Io.Writer, gpa: Allocator, io: Io, dir: Io.Dir) !void {
     try w.writeAll("Chapter 09: pages and the buffer pool\n");
+    // Remove the demo file on every path out of here, errors included.
+    defer dir.deleteFile(io, db_name) catch {};
     try part1(w, io, dir);
     try part2(w, gpa, io, dir);
     try part3(w, gpa);
-    dir.deleteFile(io, db_name) catch {};
 }
 
 fn part1(w: *Io.Writer, io: Io, dir: Io.Dir) !void {
@@ -115,6 +116,12 @@ fn part2(w: *Io.Writer, gpa: Allocator, io: Io, dir: Io.Dir) !void {
         var pager: Pager = try .init(file.storage());
         var pool: BufferPool = try .init(gpa, &pager, frame_count);
         defer pool.deinit();
+        // The trace keeps pages pinned from one step to the next. If a step
+        // fails (a write to `w`, say), release them before `deinit` runs, or
+        // its pin-leak assert would hide the real error.
+        errdefer for (pool.frames) |frame| {
+            for (0..frame.pin_count) |_| pool.unpin(frame.page_id, false);
+        };
 
         // The pointer each fetch returned, by page id (valid while pinned).
         var pinned: [8]?pool_mod.PagePtr = @splat(null);

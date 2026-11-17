@@ -22,6 +22,10 @@ pub const ops = 5000;
 /// read against `expected`. 80% of accesses go to 8 hot pages; one access
 /// in four modifies the page. Up to two pages are kept pinned across
 /// operations to exercise the "skip pinned frames" path.
+///
+/// On an error (a failed fetch, wrong content, a broken invariant) every pin
+/// taken here is released before returning, so the caller's
+/// `defer pool.deinit()` sees no pin and the error reaches the caller.
 pub fn run(pool: *BufferPool, seed: u64, expected: *[page_count]u64) !void {
     const Held = struct { id: PageId, dirty: bool };
     var rng = SplitMix64.init(seed);
@@ -29,6 +33,9 @@ pub fn run(pool: *BufferPool, seed: u64, expected: *[page_count]u64) !void {
     var held_len: usize = 0;
     // Always leave at least one frame unpinned, or fetches would fail.
     const max_held = @min(held.len, pool.frameCount() - 1);
+    // Error path only: give back the long-lived pins. (`held_len` is read
+    // when the errdefer runs, not here.)
+    errdefer for (held[0..held_len]) |h| pool.unpin(h.id, h.dirty);
 
     for (0..ops) |_| {
         const id: PageId = @intCast(if (rng.chance(4, 5)) rng.below(8) else rng.below(page_count));
@@ -44,7 +51,12 @@ pub fn run(pool: *BufferPool, seed: u64, expected: *[page_count]u64) !void {
 
         const page = try pool.fetchPage(id);
         const counter = page[8..16];
-        if (std.mem.readInt(u64, counter, .little) != expected[id]) return error.WrongPageContent;
+        {
+            // Between the fetch and the unpin (or the hand-over to `held`)
+            // this pin is ours to release if something fails.
+            errdefer pool.unpin(id, false);
+            if (std.mem.readInt(u64, counter, .little) != expected[id]) return error.WrongPageContent;
+        }
         if (write) {
             expected[id] += 1;
             std.mem.writeInt(u64, counter, expected[id], .little);
@@ -84,5 +96,41 @@ test "workload: seeded model test against an oracle, several pool sizes" {
             const got = std.mem.readInt(u64, mem.bytes.items[id * page_size + 8 ..][0..8], .little);
             try testing.expectEqual(want, got);
         }
+    }
+}
+
+/// Run the workload on a 4-frame pool with one injected fault and check that
+/// the error comes back with no pin left and the pool still valid.
+fn runWithFault(comptime fault: enum { write, read, content }, after: u64, want: anyerror) !void {
+    var mem: MemStorage = .init(testing.allocator);
+    defer mem.deinit();
+    var pager: Pager = try .init(mem.storage());
+    for (0..page_count) |_| _ = try pager.allocatePage();
+    var pool: BufferPool = try .init(testing.allocator, &pager, 4);
+    // Before the fix this deinit aborted the test: `run` returned its error
+    // with pins held and the assert in deinit fired instead.
+    defer pool.deinit();
+
+    var expected: [page_count]u64 = @splat(0);
+    switch (fault) {
+        .write => mem.writes_before_failure = after,
+        .read => mem.reads_before_failure = after,
+        // Page 0 is hot, so it is read early: make the oracle disagree.
+        .content => expected[0] = 99,
+    }
+    try testing.expectError(want, run(&pool, 2024, &expected));
+    try testing.expectEqual(0, pool.pinnedFrames());
+    try pool.validate();
+}
+
+test "workload: an error while pins are held is returned, and the pins are released" {
+    // 200 write-backs / 300 reads into the run, long-lived pins are held.
+    try runWithFault(.write, 200, error.StorageFailure);
+    try runWithFault(.read, 300, error.StorageFailure);
+    try runWithFault(.content, 0, error.WrongPageContent);
+    // Every failure point in the first part of the run, both kinds.
+    for (0..150) |n| {
+        try runWithFault(.write, n, error.StorageFailure);
+        try runWithFault(.read, n, error.StorageFailure);
     }
 }

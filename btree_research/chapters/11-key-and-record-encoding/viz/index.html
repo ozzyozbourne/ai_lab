@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 11 — Key and record encoding</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+/* Chapter-local views. Colours come from the toolkit's tokens only. */
+.c11-rows { overflow-x: auto; scrollbar-width: thin; padding: 2px 0 6px; }
+.c11-rows-inner { min-width: min-content; display: flex; flex-direction: column; gap: 4px; }
+.c11-row {
+  display: grid; grid-template-columns: 9.5rem auto; align-items: center; gap: 2px 10px; padding: 4px 8px;
+  border-radius: 6px; background: var(--s-bg, var(--bt-surface)); box-shadow: inset 3px 0 0 var(--s, var(--bt-border));
+}
+.c11-row.is-pending .c11-meta { color: var(--bt-muted); }
+.c11-meta { font: .8rem/1.3 var(--bt-mono); white-space: nowrap; display: flex; gap: .6em; }
+.c11-meta b { min-width: 2.6em; }
+.c11-meta .c11-name { min-width: 3.9em; }
+.c11-bytes { display: flex; flex-wrap: nowrap; gap: 1px; font: 11.5px/1 var(--bt-mono); }
+.c11-b {
+  flex: none; width: 1.75em; height: 1.9em; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 3px; background: var(--s-bg, var(--bt-key-bg)); color: var(--bt-text);
+  box-shadow: inset 0 0 0 1.5px var(--s, transparent);
+}
+.c11-b.is-colstart { margin-left: 6px; }
+.c11-b.is-tag { box-shadow: inset 0 -2.5px 0 var(--s, var(--bt-muted)); }
+.c11-b.is-tag[class*="s-"] { box-shadow: inset 0 0 0 1.5px var(--s); }
+.c11-b.is-term, .c11-b.is-esc { font-style: italic; color: var(--bt-muted); }
+.c11-b.is-same { opacity: .4; }
+.c11-b[class*="s-"] { font-weight: 700; color: var(--bt-text); }
+.c11-stats { margin-top: 8px; font-size: .86rem; color: var(--bt-muted); display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.c11-stats b { color: var(--bt-text); font-variant-numeric: tabular-nums; }
+.c11-key { font-size: .8rem; color: var(--bt-muted); margin-top: 6px; }
+.c11-key .c11-b { font: 10.5px/1 var(--bt-mono); vertical-align: middle; }
+.c11-toolrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; width: 100%; }
+.c11-toolrow + .c11-toolrow { margin-top: 6px; }
+.c11-toolrow > span.c11-tl { font-size: .86rem; color: var(--bt-muted); }
+.c11-toolrow .bt-input { width: 7.5rem; }
+.c11-toolrow .bt-input.is-wide { width: 10rem; }
+.c11-error { color: var(--bt-key-deleted); font-size: .86rem; min-height: 1.3em; }
+
+.c11-strips { display: flex; flex-direction: column; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+.c11-strip { display: grid; grid-template-columns: 13.5rem auto; align-items: center; gap: 2px 10px; min-width: min-content; }
+.c11-strip-label { font-size: .84rem; color: var(--bt-muted); }
+.c11-strip.is-latest .c11-strip-label { color: var(--bt-text); font-weight: 650; }
+.c11-strip:not(.is-latest) .c11-b { opacity: .6; }
+.c11-strip .c11-b { width: 2em; height: 2.1em; font-size: 12.5px; }
+.c11-empty { font: .8rem var(--bt-mono); color: var(--bt-muted); }
+
+.c11-verdicts { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.c11-verdict { padding: 5px 10px; border-radius: 6px; font-size: .9rem; background: var(--s-bg, var(--bt-surface-2)); box-shadow: inset 3px 0 0 var(--s, var(--bt-border)); }
+.c11-verdict code { white-space: nowrap; }
+.c11-groups { font-family: var(--bt-mono); font-size: .82rem; }
+
+@media (max-width: 640px) {
+  .c11-row { grid-template-columns: 1fr; }
+  .c11-strip { grid-template-columns: 1fr; }
+  .c11-bytes { font-size: 9.5px; gap: 0; }
+  .c11-b { width: 1.42em; border-radius: 2px; }
+  .c11-b.is-colstart { margin-left: 3px; }
+  .c11-strip .c11-b { width: 1.8em; font-size: 11px; }
+}
+</style>
+</head>
+<body>
+
+<p class="bt-lead">A B-tree that stores byte strings can only compare byte strings. This page shows how a row of
+typed values is turned into bytes whose plain <code>memcmp</code> order is the order you asked for, and what goes
+wrong when any single step of the encoding is left out. It accompanies
+<a href="../README.md">chapter 11 of the guide</a>; the code it mirrors is in <code>zig/src/keycodec.zig</code>
+and <code>rust/src/keycodec.rs</code>.</p>
+
+<h2>1. Sort by bytes, get the order of the values</h2>
+<p>Eight rows with the key <code>(name ASC, score DESC NULLS LAST, id ASC)</code>, in the order the chapter's
+program receives them. Press play: an insertion sort orders them by comparing key bytes only. Then switch one of
+the four fixes off and watch the same sort put rows in the wrong place.</p>
+<div id="fig-sort"></div>
+
+<h2>2. One value becomes one key column</h2>
+<p>Pick a type, type a value, and step through what the encoder does to it and why. The code panel highlights the
+line that performs each step.</p>
+<div id="fig-key"></div>
+
+<h2>3. Why varints are not keys</h2>
+<p>Records store lengths and small integers as varints because they are short. Type two numbers and compare the
+byte order of each encoding with the numeric order.</p>
+<div id="fig-varint"></div>
+
+<script src="code.js"></script>
+<script src="model.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, M = window.CH11;
+
+  BTViz.page({
+    title: 'Key and record encoding', chapter: 11,
+    prev: { href: '../../10-slotted-pages/viz/index.html', title: 'Slotted pages' },
+    next: { href: '../../12-disk-backed-bplus-tree/viz/index.html', title: 'Disk-backed B+tree' }
+  });
+
+  /** One byte cell. role = {col, kind}; extra = state name or 'same'. */
+  function byteCell(b, role, prevRole, extra) {
+    var cls = 'span.c11-b';
+    if (role) {
+      if (role.kind !== 'data') cls += '.is-' + role.kind;
+      if (prevRole && prevRole.col !== role.col) cls += '.is-colstart';
+    }
+    if (extra === 'same') cls += '.is-same'; else if (extra) cls += '.s-' + extra;
+    return el(cls, M.hex([b]));
+  }
+
+  /* ====================================================================
+   * Figure 1: insertion sort over key bytes
+   * ================================================================== */
+  (function () {
+    var fig = BTViz.figure('#fig-sort', {
+      title: 'Insertion sort that only ever calls memcmp', side: true,
+      legend: [{ token: 'node-active', label: 'the two rows being compared' },
+               { token: 'key-compare', label: 'first byte that differs' },
+               { token: 'key-found', label: 'row is where the logical order puts it' },
+               { token: 'key-deleted', label: 'row is in the wrong place' }]
+    });
+
+    var rows = M.arrivalOrder();
+    var nextId = 9, shuffleSeed = 1;
+    var fixes = { bigEndian: true, signFlip: true, framing: true, descInvert: true };
+    var current = null;           // result of M.sortSteps for the current rows + fixes
+
+    // --- toolbar -----------------------------------------------------
+    var fixRow = el('div.c11-toolrow', el('span.c11-tl', 'Fixes applied:'));
+    [['bigEndian', 'big-endian integers'], ['signFlip', 'sign bit flipped'], ['framing', 'tag + terminator'], ['descInvert', 'DESC column inverted']]
+      .forEach(function (f) {
+        var box = el('input', { type: 'checkbox', 'data-fix': f[0], onchange: function () { fixes[f[0]] = box.checked; rebuild('end'); } });
+        box.checked = true;
+        fixRow.appendChild(el('label.bt-field', box, f[1]));
+      });
+    var nameIn = el('input.bt-input', { type: 'text', 'aria-label': 'Name', placeholder: 'name', maxlength: 10 });
+    var scoreIn = el('input.bt-input', { type: 'text', inputmode: 'numeric', 'aria-label': 'Score (empty = NULL)', placeholder: 'score or empty' });
+    var err = el('span.c11-error', { role: 'alert' });
+    var addBtn = el('button.bt-btn.bt-primary', { type: 'button', id: 'c11-add', onclick: addRow }, 'Add row');
+    var rowRow = el('div.c11-toolrow', el('span.c11-tl', 'Your row:'), nameIn, scoreIn, addBtn,
+      el('button.bt-btn', { type: 'button', id: 'c11-shuffle', onclick: function () { rows = BTViz.rng(shuffleSeed++).shuffle(rows.slice()); rebuild('play'); } }, 'Shuffle'),
+      el('button.bt-btn', { type: 'button', id: 'c11-reset', onclick: reset }, 'Reset'), err);
+    fig.toolbar.append(fixRow, rowRow);
+    [nameIn, scoreIn].forEach(function (i) { i.addEventListener('keydown', function (e) { if (e.key === 'Enter') addRow(); }); });
+
+    // --- view ----------------------------------------------------------
+    var inner = el('div.c11-rows-inner');
+    var stats = el('div.c11-stats', { 'aria-live': 'off' });
+    fig.stage.append(el('div.c11-rows', { tabindex: 0, 'aria-label': 'Rows and their key bytes' }, inner), stats,
+      el('div.c11-key', byteCell(1, { col: 0, kind: 'tag' }), ' underlined: tag byte (01 value, 02 NULL)   ',
+        byteCell(0, { col: 0, kind: 'term' }), ' italic: terminator or escape byte'));
+    var log = new BTViz.Log(fig.side, { title: 'Comparisons' });
+    var rowEls = {};
+
+    function render(state) {
+      var oldTop = {};
+      Object.keys(rowEls).forEach(function (r) { oldTop[r] = rowEls[r].getBoundingClientRect().top; });
+      inner.textContent = '';
+      rowEls = {};
+      state.order.forEach(function (r, pos) {
+        var row = rows[r], key = current.keys[r];
+        var inPair = state.pair && (pos === state.pair[0] || pos === state.pair[1]);
+        var cls = 'div.c11-row';
+        if (inPair) cls += '.s-active';
+        else if (state.done) cls += state.wrong.indexOf(r) >= 0 ? '.s-deleted' : '.s-found';
+        else if (pos > state.sortedUpTo) cls += '.is-pending';
+        var bytes = el('div.c11-bytes');
+        key.bytes.forEach(function (b, i) {
+          var extra = null;
+          if (inPair) extra = i < state.diff ? 'same' : (i === state.diff ? 'compare' : null);
+          bytes.appendChild(byteCell(b, key.roles[i], key.roles[i - 1], extra));
+        });
+        var node = el(cls, { 'data-id': row.id },
+          el('div.c11-meta', el('b', 'id ' + row.id), el('span.c11-name', M.quoted(M.textBytes(row.name))),
+            el('span', row.score === null ? 'NULL' : String(row.score))),
+          bytes);
+        inner.appendChild(node);
+        rowEls[r] = node;
+      });
+      // FLIP: rows that changed position slide from where they were.
+      var dur = BTViz.motion.duration();
+      if (dur > 0) Object.keys(rowEls).forEach(function (r) {
+        if (oldTop[r] === undefined) return;
+        var dy = oldTop[r] - rowEls[r].getBoundingClientRect().top;
+        if (!dy) return;
+        var node = rowEls[r];
+        node.style.transition = 'none';
+        node.style.transform = 'translateY(' + dy + 'px)';
+        node.getBoundingClientRect();
+        node.style.transition = 'transform ' + Math.min(dur, 450) + 'ms ease';
+        node.style.transform = '';
+      });
+      stats.innerHTML = 'comparisons so far: <b>' + state.comparisons + '</b><span>byte positions examined: <b>' + state.examined +
+        '</b></span><span>key bytes in total: <b>' + current.keys.reduce(function (n, k) { return n + k.bytes.length; }, 0) + '</b></span>';
+    }
+
+    var stepper = new BTViz.Stepper({
+      mount: fig.controls, caption: fig.caption, root: fig.root, steps: [], predict: false, interval: 1500,
+      onStep: function (step, i) { render(step.state); log.sync(stepper ? stepper.steps : [], i); }
+    });
+
+    function rebuild(mode) {
+      current = M.sortSteps(rows, fixes);
+      rowEls = {};
+      if (mode === 'end') stepper.setSteps(current.steps, { index: current.steps.length - 1 });
+      else stepper.setSteps(current.steps, { play: mode === 'play' });
+    }
+    function addRow() {
+      err.textContent = '';
+      var name = nameIn.value, scoreText = scoreIn.value.trim();
+      var score = scoreText === '' ? null : M.parseIntInput(scoreText);
+      if (scoreText !== '' && score === null) { err.textContent = 'Score must be a whole number that fits in 64 bits, or empty for NULL.'; return; }
+      if (M.textBytes(name).length > 10) { err.textContent = 'Name: at most 10 bytes.'; return; }
+      if (rows.length >= 12) { err.textContent = 'Twelve rows is the limit; press Reset.'; return; }
+      rows = rows.concat([{ id: nextId++, name: name, score: score }]);
+      nameIn.value = ''; scoreIn.value = '';
+      rebuild('play');
+    }
+    function reset() {
+      rows = M.arrivalOrder(); nextId = 9; err.textContent = '';
+      Object.keys(fixes).forEach(function (f) { fixes[f] = true; });
+      fixRow.querySelectorAll('input').forEach(function (b) { b.checked = true; });
+      rebuild('rest');
+    }
+    rebuild('rest');
+
+    // The picture must agree with what the Zig and Rust programs print.
+    var fixed = M.sortSteps(M.arrivalOrder());
+    BTViz.selfTest('sort timeline: order and counts of the programs',
+      { order: fixed.order.map(function (i) { return M.arrivalOrder()[i].id; }).join(' '), comparisons: fixed.comparisons, examined: fixed.examined, columns: fixed.columns },
+      { order: '7 2 3 4 8 1 5 6', comparisons: 27, examined: 117, columns: 66 });
+    var broken = {};
+    Object.keys(M.ALL_FIXES).forEach(function (f) {
+      var fx = BTViz.clone(M.ALL_FIXES); fx[f] = false;
+      broken[f] = M.sortSteps(M.arrivalOrder(), fx).ok;
+    });
+    BTViz.selfTest('every fix is necessary for the fixed rows', broken, { bigEndian: false, signFlip: false, framing: false, descInvert: false });
+  })();
+
+  /* ====================================================================
+   * Figure 2: one value -> one key column
+   * ================================================================== */
+  (function () {
+    var fig = BTViz.figure('#fig-key', {
+      title: 'From a value to a byte-comparable key column', side: true,
+      legend: [{ token: 'key-compare', label: 'bytes changed by this step' },
+               { token: 'key-inserted', label: 'terminator added' },
+               { token: 'split', label: 'inverted for DESC' },
+               { token: 'key-found', label: 'tag byte' }]
+    });
+    var kindSel = el('select.bt-select', { 'aria-label': 'Type', id: 'c11-kind' },
+      el('option', { value: 'int' }, 'i64'), el('option', { value: 'float' }, 'f64'), el('option', { value: 'text' }, 'text'));
+    var valueIn = el('input.bt-input.is-wide', { type: 'text', 'aria-label': 'Value', id: 'c11-value', value: '-2' });
+    var descBox = el('input', { type: 'checkbox', id: 'c11-desc' });
+    var err = el('span.c11-error', { role: 'alert' });
+    var presets = el('div.c11-toolrow', el('span.c11-tl', 'Try:'));
+    [['int', '-2'], ['int', '256'], ['float', '-1.5'], ['float', '-0.0'], ['float', 'nan'], ['text', 'Ann'], ['text', 'a\\x00b']].forEach(function (p) {
+      presets.appendChild(el('button.bt-btn', { type: 'button', onclick: function () { kindSel.value = p[0]; valueIn.value = p[1]; encode(true); } },
+        (p[0] === 'text' ? '"' + p[1] + '"' : p[1]) + ' '));
+    });
+    fig.toolbar.append(
+      el('div.c11-toolrow', el('label.bt-field', 'Type ', kindSel), el('label.bt-field', 'Value ', valueIn),
+        el('label.bt-field', descBox, 'DESC'),
+        el('button.bt-btn.bt-primary', { type: 'button', id: 'c11-encode', onclick: function () { encode(true); } }, 'Encode'), err),
+      presets);
+    kindSel.addEventListener('change', function () {
+      valueIn.value = { int: '-2', float: '-1.5', text: 'Ann' }[kindSel.value];
+      encode(false);
+    });
+    descBox.addEventListener('change', function () { encode(false); });
+    valueIn.addEventListener('keydown', function (e) { if (e.key === 'Enter') encode(true); });
+
+    var strips = el('div.c11-strips', { tabindex: 0, 'aria-label': 'Bytes after each encoding step' });
+    fig.stage.appendChild(strips);
+    var panels = {};
+    ['int', 'float', 'text'].forEach(function (k) {
+      panels[k] = BTViz.codePanel(fig.side, k, { title: { int: 'encodeI64', float: 'encodeF64', text: 'encodeBytes' }[k] });
+    });
+
+    function render(step) {
+      strips.textContent = '';
+      var list = step.state.strips;
+      list.forEach(function (s, i) {
+        var latest = i === list.length - 1;
+        var bytes = el('div.c11-bytes');
+        if (s.bytes.length === 0) bytes.appendChild(el('span.c11-empty', '(no bytes)'));
+        s.bytes.forEach(function (b, j) { bytes.appendChild(byteCell(b, null, null, latest ? s.marks[j] : null)); });
+        strips.appendChild(el('div.c11-strip' + (latest ? '.is-latest' : ''), el('div.c11-strip-label', s.label), bytes));
+      });
+      Object.keys(panels).forEach(function (k) { panels[k].root.hidden = k !== step.snippet; });
+      var lines = step.mark ? window.CHAPTER_CODE_LINES[step.snippet][step.mark] : null;
+      panels[step.snippet].highlight(lines || []);
+    }
+
+    var stepper = new BTViz.Stepper({
+      mount: fig.controls, caption: fig.caption, root: fig.root, steps: [], interval: 2200,
+      onStep: function (step) { render(step); }
+    });
+    function encode(play) {
+      var r = M.keySteps(kindSel.value, valueIn.value, descBox.checked);
+      err.textContent = r.error || '';
+      if (r.error) return;
+      stepper.setSteps(r.steps, { play: play });
+    }
+    encode(false);
+
+    // The pipeline must end in the bytes the programs print for id 3's score column (-2, DESC).
+    var col = M.hex(M.keySteps('int', '-2', true).column);
+    BTViz.selfTest('pipeline for -2 DESC ends in the printed key column',
+      { column: col, inOutput: window.CHAPTER_EXPECTED_OUTPUT.indexOf('01 41 6e 6e 00 ' + col + ' 01 80') >= 0 },
+      { column: '01 80 00 00 00 00 00 00 01', inOutput: true });
+  })();
+
+  /* ====================================================================
+   * Figure 3: varints
+   * ================================================================== */
+  (function () {
+    var fig = BTViz.figure('#fig-varint', {
+      title: 'Two numbers, three encodings',
+      legend: [{ token: 'key-found', label: 'byte order agrees with numeric order' },
+               { token: 'key-deleted', label: 'byte order disagrees' }]
+    });
+    var aIn = el('input.bt-input', { type: 'text', inputmode: 'numeric', 'aria-label': 'A', id: 'c11-va', value: '129' });
+    var bIn = el('input.bt-input', { type: 'text', inputmode: 'numeric', 'aria-label': 'B', id: 'c11-vb', value: '256' });
+    var err = el('span.c11-error', { role: 'alert' });
+    var presets = el('div.c11-toolrow', el('span.c11-tl', 'Try:'));
+    [['129', '256'], ['16383', '16384'], ['5', '300'], ['255', '4294967296']].forEach(function (p) {
+      presets.appendChild(el('button.bt-btn', { type: 'button', onclick: function () { aIn.value = p[0]; bIn.value = p[1]; draw(); } }, p[0] + ' vs ' + p[1]));
+    });
+    fig.toolbar.append(el('div.c11-toolrow', el('label.bt-field', 'A ', aIn), el('label.bt-field', 'B ', bIn), err), presets);
+    [aIn, bIn].forEach(function (i) { i.addEventListener('input', draw); });
+
+    var out = el('div');
+    fig.stage.appendChild(out);
+
+    function parse(s) {
+      s = s.trim();
+      if (!/^\d+$/.test(s)) return null;
+      var v = BigInt(s);
+      return v >= (1n << 64n) ? null : v;
+    }
+    function groups(v) {            // binary, split into 7-bit groups from the right
+      var t = v.toString(2), parts = [];
+      while (t.length > 7) { parts.unshift(t.slice(-7)); t = t.slice(0, -7); }
+      parts.unshift(t);
+      return parts.join(' ');
+    }
+    function be8(v) { var b = []; for (var i = 7; i >= 0; i--) b.push(Number((v >> BigInt(8 * i)) & 0xffn)); return b; }
+    function draw() {
+      var a = parse(aIn.value), b = parse(bIn.value);
+      err.textContent = a === null || b === null ? 'Both must be whole numbers from 0 to 18446744073709551615.' : '';
+      if (a === null || b === null) return;
+      var numeric = a < b ? -1 : (a > b ? 1 : 0);
+      var sym = { '-1': '<', '0': '=', '1': '>' };
+      var encs = [['LEB128 varint', M.leb128], ['SQLite varint', M.sqliteVarint], ['8-byte big-endian key', be8]];
+      var table = el('table.bt-table',
+        el('thead', el('tr', el('th', ''), el('th', 'A = ' + a), el('th', 'B = ' + b))),
+        el('tbody',
+          el('tr', el('td', 'binary, 7-bit groups'), el('td.c11-groups', groups(a)), el('td.c11-groups', groups(b))),
+          encs.map(function (e) { return el('tr', el('td', e[0]), el('td', el('code', M.hex(e[1](a)))), el('td', el('code', M.hex(e[1](b))))); })));
+      var verdicts = el('div.c11-verdicts', { id: 'c11-verdicts' },
+        el('div.c11-verdict', 'Numbers: A ' + sym[numeric] + ' B'));
+      encs.forEach(function (e) {
+        var c = M.compareBytes(e[1](a), e[1](b)).order, ok = c === numeric;
+        verdicts.appendChild(el('div.c11-verdict.s-' + (ok ? 'found' : 'deleted'), { 'data-ok': ok ? '1' : '0' },
+          e[0] + ' as bytes: A ' + sym[c] + ' B ' + (ok ? '✓ same as the numbers' : '✗ the bytes disagree with the numbers')));
+      });
+      out.textContent = '';
+      out.append(el('div.bt-table-wrap', table), verdicts);
+      fig.caption.innerHTML = 'A varint puts its <i>length</i> into the leading bytes: LEB128 starts with the low 7 bits, the SQLite varint with a ' +
+        'continuation flag, so a longer number can begin with a smaller byte. Fixed-width big-endian never has that problem, at the ' +
+        'price of 8 bytes for every value. That is why records use varints and keys do not.';
+    }
+    draw();
+  })();
+
+  /* ====================================================================
+   * Self-test: the JS model reproduces the programs' output
+   * ================================================================== */
+  var expected = window.CHAPTER_EXPECTED_OUTPUT;
+  BTViz.selfTest('model prints sections 1 to 6 of expected_output.txt', M.report(), expected.slice(0, expected.indexOf('== 7.')));
+})();
+</script>
+</body>
+</html>

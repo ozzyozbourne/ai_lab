@@ -471,7 +471,9 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
     while (page.fits(3, 9)) { page.put(name(n), 'vvvvvvvvv'); n++; }
     for (i = 0; i < n; i += 2) page.delete(name(i));
     var st = page.stats();
-    var big = new Array(Math.min(st.freeBytes - 2 - 4 - 3, st.largestFreeBlock + st.gap + 8) + 1).join('B');
+    // A cell that the page as a whole can hold, but neither the gap nor any single block can.
+    var size = Math.min(st.freeBytes - 2, Math.max(st.largestFreeBlock, st.gap) + 6);
+    var big = new Array(size - 4 - 3 + 1).join('B');
     var steps = [initialStep(n + ' cells of 16 bytes filled the page, then every other one was deleted. Free: ' + st.freeBytes + ' bytes, but in ' +
       (1 + st.freeBlockCount) + ' pieces: gap ' + st.gap + ' and ' + st.freeBlockCount + ' free blocks of at most ' + st.largestFreeBlock + ' bytes.')];
     stepper.setSteps(steps.concat(opSteps(['put', 'big', big])));

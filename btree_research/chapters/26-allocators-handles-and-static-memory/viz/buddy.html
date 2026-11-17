@@ -121,7 +121,7 @@ Chapter text: <a href="../README.md">README</a>. First page: <a href="index.html
     var blocks = [];
     for (var i = 0; i < 16; i++) blocks.push(heap.alloc(64, name()).result);
     for (i = 0; i < 16; i += 2) heap.free(blocks[i]);
-    show(heap.idle('Sixteen 64-byte blocks were allocated and every other one freed. 512 bytes are free, but no two free blocks are buddies, so the largest request that can succeed is 64 bytes. Try <b>Alloc 128</b>: it fails. That is external fragmentation. Free one of the remaining blocks and watch two neighbours merge.')));
+    show(heap.idle('Sixteen 64-byte blocks were allocated and every other one freed. 512 bytes are free, but no two free blocks are buddies, so the largest request that can succeed is 64 bytes. Try <b>Alloc 128</b>: it fails. That is external fragmentation. Free one of the remaining blocks and watch two neighbours merge.'));
   }
 
   var input = el('input.bt-input#size', { type: 'number', min: 1, max: 2000, value: 128, 'aria-label': 'Request size in bytes', style: { width: '6em' } });

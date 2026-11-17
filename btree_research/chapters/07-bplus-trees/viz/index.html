@@ -203,7 +203,7 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     sa.forEach(function (s, i) {
       if (brief && SKIP_A[s.type]) return;
       out.push({ focus: 'a', type: s.type, caption: chip('B-tree') + s.caption, log: i === 0 ? op + ' ' + v : null,
-        state: { a: s.state, b: before.b, an: countNodes(s.state), ah: heightOf(s.state), asize: s.type === 'start' || s.type === 'compare' ? before.asize : mid.asize },
+        state: { a: s.state, b: before.b, an: countNodes(s.state), ah: heightOf(s.state), asize: countKeys(s.state) },
         hlA: s.highlight });
     });
     sb.forEach(function (s) {
@@ -219,6 +219,7 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     return out;
   }
   function mk(key, value) { var o = {}; o[key] = value; return o; }
+  function countKeys(n) { var c = n.keys.length; (n.children || []).forEach(function (ch) { c += countKeys(ch); }); return c; }
   function countNodes(n) { var c = 1; (n.children || []).forEach(function (ch) { c += countNodes(ch); }); return c; }
   function heightOf(n) { var h = 1; while (n.children && n.children.length) { n = n.children[0]; h++; } return n.keys.length || h > 1 ? h : 0; }
 
@@ -226,15 +227,15 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     var copies = b.separators().filter(function (x) { return !x.stale; }).length;
     var stale = b.separators().filter(function (x) { return x.stale; });
     var text = op === 'search'
-      ? 'Search ' + k(v) + ': the B-tree visited ' + visited(sa, 'compare') + ' node(s)' + (sa.found ? ' and may stop in an internal node' : '') +
-        '; the B+tree always walks ' + s.b.height + ' level(s) to a leaf. '
+      ? 'Search ' + k(v) + ': the B-tree looked at ' + (visited(sa, 'compare') + (sa.found ? 1 : 0)) + ' node(s) and stops as soon as it sees the key' +
+        '; the B+tree always walks all ' + s.b.height + ' level(s) to a leaf. '
       : (op === 'insert' ? 'After insert ' : 'After delete ') + k(v) + ': ';
     text += 'B-tree: ' + s.asize + ' keys in ' + s.an + ' node(s), height ' + s.ah + '. B+tree: ' + s.b.count + ' keys in ' + s.b.nodes + ' node(s), height ' + s.b.height;
     text += s.b.height > 1 ? ', with ' + (copies + stale.length) + ' separator(s) on top of the entries' : '';
     text += stale.length ? ' (' + stale.map(function (x) { return k(x.key); }).join(', ') + ' stale: dimmed).' : '.';
     return text;
   }
-  function visited(steps, type) { return steps.filter(function (s) { return s.type === type; }).length || 1; }
+  function visited(steps, type) { return steps.filter(function (s) { return s.type === type; }).length; }
 
   function showIdle(caption) {
     stepper.setSteps([{ caption: caption, state: both(), focus: null }]);

@@ -1,0 +1,17 @@
+.{
+    .name = .btree_common,
+    .version = "0.0.0",
+    .fingerprint = 0xcb762b4e66854f2, // unique per package; `zig build` suggests one if missing
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "root.zig",
+        "prng.zig",
+        "ops.zig",
+        "crc32.zig",
+        "hexdump.zig",
+        "golden_test.zig",
+    },
+}

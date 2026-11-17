@@ -1,0 +1,12 @@
+[package]
+name = "btree_common"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# The sources sit next to Cargo.toml (not in src/) so that chapters can copy
+# prng.rs, ops.rs, crc32.rs and hexdump.rs as plain files.
+[lib]
+path = "lib.rs"
+
+[dependencies]

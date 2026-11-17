@@ -11,6 +11,15 @@
 | — | IEEE Xplore / ACM DL | Not fetched. Not needed because the full text was available from [P]. |
 | — | Groq patents, Hot Chips 2020 talk, Groq ISCA 2022 paper | **Not consulted.** Nothing in this report comes from them. |
 
+**Re-check of 2026-11-17 (independent verifier).** [P] could not be re-opened: the two groq.com URLs still return 404, the Wayback Machine was unreachable from the checking machine (connection reset by the network proxy), and IEEE Xplore / ACM DL are closed access. So the *verbatim wording*, page numbers and section labels of the quotations below were **not re-verified against the paper**. What could be cross-checked, and agreed, came from four other documents:
+
+- **[ISC20]** Abts, "Groq's Tensor Streaming Processor (TSP)", ISC 2020 ML Hardware Workshop slides, `https://mlhardware.github.io/2020/groq.pdf` (same author, same month as the paper). Slide 8 gives the ICU split 6 / 14 / 44 / 16 / 44 / 14 / 6, "144 independent instructions queues (ICUs) on-chip", "64 logical streams - 32 Eastward, and 32 Westward", "220 MiBytes of globally shared SRAM", 20 superlanes of 16 lanes; slide 9 is the instruction table; slide 12 gives 44 slices per hemisphere, 2 banks per slice and address offsets 0..8191.
+- **[HC22]** Abts, Hot Chips 34 slides (see `02_tsp_multiprocessor_isca2022.md`): slide 14 (144 queues, 5,120 ALUs, 409,600 MACCs), slide 24 ("Stream register = one-cycle hop"), slide 25 (instruction table), slide 57 ("45 SRF stations across the superlane").
+- **[PAT]** Groq patent US 12,271,339 B2, `https://patents.google.com/patent/US12271339B2/en`, whose description paraphrases much of the paper. It repeats: the 144 ICUs issuing "one or more instructions per clock cycle"; 64 logical streams, 32 each way; the `in(28)` / `out(24)` naming; the first-hop direction and X-Y-X routing; 13-bit addressing of 16-byte words; pseudo-dual-ported SRAM with banks; the 4×4 ALU mesh, "16 vector ALUs per lane", no condition codes, saturating and modulo variants; "twenty 16×16 supercells", 16 streams of 16 bytes installing 256 weights per supercell per cycle, 409,600 weights in under about 40 cycles, a single rounding step; d_func and d_skew; the 16-bit NOP count (1 ns to 65 µs at 1 GHz); the 640-byte Ifetch; the notifier IQ, the preamble and the 35-cycle barrier; the ICU at under 3% of area; the two sets of lane shifters, the permute bijection and the distributor; a nominal 900 MHz core clock; the 20 TiB/s stream-bandwidth equation. A patent is a paraphrase, not the paper, so it confirms the facts but not the exact words.
+- The ISCA 2022 paper (read in full for `02_...`) repeats 220 MiBytes, 20 tiles × 16-way SIMD, 900 MHz, and SYNC / NOTIFY.
+
+**Not cross-checked anywhere** (they rest on the original reading of [P] alone): 26.8B transistors and 820 TeraOps/s; the 43 µs / 49 µs latencies and the ResNet101/152 projections (a third-party summary of the paper at `https://hackmd.io/@nctu-cas-lab/rJfwSx1ju` repeats 20.4K IPS, "< 43us", "49 us", 14.3k and 10.7k IPS); accuracy figures; the 5,500-cycle saving; the A0 date; 176-way concurrency; the ECC widths; the bandwidth equations other than Eq. 1; the C2C link counts (the 480 GB/s on [ISC20] slide 7 equals 16 × 4 × 30 Gb/s × 2 directions); and every figure reading in §2.4 and Fig. 8.
+
 **Citation convention:** "p.N" is the printed proceedings page (145–158). PDF page = p − 144. Section numbers, figure numbers and table numbers are the paper's own. All quotes come from [P] unless marked otherwise. Figures are raster images. I read them from 400-dpi renders, and the small labels are blurry, so readings of figure labels are marked **(fig. reading)**.
 
 ---
@@ -20,6 +29,7 @@
 - **Process and die:** "its 25×29 mm 14nm chip operating at a nominal clock frequency of **900 MHz**" (Abstract, p.145).
 - **The paper uses 1 GHz for its arithmetic:** "For the sake of exposition, assume a 1 GHz operating frequency of the core clock" (Sec. II-B, p.150). Fig. 9 is captioned "(at 1 GHz core clock)" (p.155). The conclusion says "The first-generation Groq TSP (at 1 GHz) in 14nm ASIC ... yields a peak performance of **820 TeraOps/sec** from **26.8B transistors**" (Sec. VII, p.156).
   - Derived (my arithmetic): 4 planes × 320×320 MACC × 2 ops × 1 GHz = 819.2 TOps/s, which matches the 820 figure.
+  - Derived (verifier, 2026-11-17): the same product at the nominal 900 MHz is 737 TOps/s. Groq's own slides quote "~750 Tops (Int8Acc32) peak" ([ISC20] slide 7) and "Peak of ~750 Tops (Int8Acc32) peak (900 MHz)" ([HC22] slide 14), so 820 is the 1 GHz figure and about 750 the 900 MHz one.
 - **Compute density:** "more than 1 TeraOp/s per square mm of silicon" (Abstract, p.145).
 - **Package:** "packaged as a PCIe CEM form factor" (Sec. VII, p.156). The host interface is PCIe Gen4 (Sec. II item 6, p.149).
 - **ResNet-50:** "20.4K processed images per second (IPS) with a batch-size of one" (Abstract). The paper gives two latency figures:
@@ -81,6 +91,7 @@ MXM_W | SR0 SR1 SR2 [ACC] SR3 SR4 (shifter taps) SR5 [RX] SR6 SR7 SR8
   - MEM East: 24/19, 25/18, ..., 35/8.
   - MEM West: 19/24 ... 8/35.
   - Interpretation (mine, unverified): one stream-register hop crosses one quad of 4 MEM slices. The full chip is 44 hops from MXM to MXM.
+  - **Unresolved inconsistency in this reading (verifier, 2026-11-17):** if both directions are numbered SR0..SR44, a register's eastward and westward numbers must sum to 44, not 43. Either the pair labels or the end numbers were misread from the blurry figure, and [P] could not be re-opened to settle it. The count of 45 positions is independently supported by [HC22] slide 57 ("45 SRF stations across the superlane"), so treat 45 as the better-supported number and the individual SR numbers above as approximate.
 - **Legend colours:** MEM memory slice; VXM or MXM arithmetic slice; SXM data movement slice (DST, TSP, PRM, SEL, ACC drawn green); C2C chip-to-chip IO slice (TX, RX).
   - Interpretation: DST = distributor, TSP = transposer, PRM = permuter, SEL = shifter select.
   - LWB, IW and ABC are drawn in MXM colour. They correspond to the LW/IW/ABC instructions in Table I.
@@ -101,6 +112,7 @@ MXM_W | SR0 SR1 SR2 [ACC] SR3 SR4 (shifter taps) SR5 [RX] SR6 SR7 SR8
 - **Memory instruction direction:** "Each instruction specifies the first hop direction (East or West), so memory instruction semantics have both an address and a dataflow direction" (Sec. I-B, p.146).
 - **Routing model:** "X-dim mesh and Y-dim mesh of tiles with X-Y-X dimension order routing". X-dimension routing goes through MEM; Y-dimension routing goes through the SXM permuter and lane shifters (Sec. I-B, p.146).
 - **Stream bandwidth (Eq. 1, Sec. II-B, p.150):** "B = 2 directions × 32 bytes/lane × 320 lanes = 20 TiB/s". The MEM "delivers 32 bytes per lane of stream bandwidth" (Sec. II, p.147).
+  - Derived (verifier): the product is 20,480 bytes per cycle, which is 20.48 × 10¹² bytes/s at the 1 GHz the paper assumes. That is 20 TB/s in decimal units (about 18.6 TiB/s in binary units); the paper's "TiB/s" here and in Eq. 2 is loose.
 - **Into the MXMs:** "MEM slices deliver 32 1-byte stream operands for each of the 320 parallel lanes, or 10 TiB/s of operand stream bandwidth into the MXMs" (Sec. V-b, p.155).
 - **Stagger (Sec. II-C, p.150; Fig. 6):** "a single 320-byte vector, represented as 20 black squares, are moving eastward along a stream. The data for successive 16-element superlanes are lagging by **1 cycle**". This means superlane k's data trails superlane 0 by k cycles.
 
@@ -139,6 +151,11 @@ TABLE I: "Summary of instructions for each functional slice."
 | C2C | Deskew | Manage skew across plesiochronous links |
 | C2C | Send | Send a 320-byte vector |
 | C2C | Receive | Receive a 320-byte vector, emplacing it in main memory |
+
+**Caveat on "verbatim" (verifier, 2026-11-17).** The same table appears on [ISC20] slide 9 and [HC22] slide 25. Every row above matches those slides except:
+
+- The slides list **three more MEM instructions**: "Countdown d — Set the delay d in cycles between loop iterations", "Step a — Set the stride a between subsequent generated memory addresses", "Iterations n — Set the loop bounds for address generation". [P] could not be re-opened to see whether the paper's Table I has these rows and the transcription above dropped them, or whether they exist only in the slides. Until that is checked, treat them as part of the published MEM instruction set (slides, same author) but not as confirmed content of Table I.
+- The slides' Shift row ends at "by N lanes", without "and Select between North/South shifted vectors"; their binary-operation row has no "z" after "producing 1 result,".
 
 Other ISA details from the text:
 

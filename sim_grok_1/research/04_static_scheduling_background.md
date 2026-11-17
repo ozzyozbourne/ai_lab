@@ -37,6 +37,8 @@ Conventions:
 | Proebsting94 | T. A. Proebsting, C. W. Fraser, "Detecting Pipeline Structural Hazards Quickly," POPL 1994. https://cwf.github.io/pro/Proebsting%20and%20Fraser.%20Detecting%20pipeline%20structural%20hazards%20quickly.pdf | [P] (poor OCR; used only for its citation of Davidson et al.) |
 | PyDocs | Python documentation: data model (https://docs.python.org/3/reference/datamodel.html), stdtypes (https://docs.python.org/3/library/stdtypes.html), command line / `PYTHONHASHSEED` (https://docs.python.org/3/using/cmdline.html) | [P] |
 
+**Re-check of 2026-11-17 (independent verifier).** All sources in the table were fetched again except Abts20 (Wayback unreachable from the checking machine, groq.com 404) and Isshiki (host did not respond). Quotations from Colwell87, the three patents, the Mahlke lectures, DeMicheli, Lee98, Mei03, Friedman09, McMurchie95, Nowatzki13, Poletto99, Mahlke92 and PyDocs matched the fetched text; patent titles, inventors and priority dates matched Google Patents. Fisher83 is a scan, so only the phrases that survive its embedded OCR were confirmed ("horrible task", "No arbitration is necessary, since the paths of the addresses will never cross"). **Abts20 quotations, page numbers and section labels in §1.4, §4.3, §5 and §6.1 were not re-verified**; see the caveat at the head of §6.1. Two attributions were corrected (§1.4 item 4, §4.3).
+
 Not accessible: Rau's "Iterative Modulo Scheduling" full text, Paulin & Knight 1989, Llosa et al. 1996 (SMS), the Cydra 5 paper, Fisher 1981, Ullman 1975, Groq ISCA 2022, and Fisher's VLIW retrospective. The "Not found" section gives details.
 
 ---
@@ -71,7 +73,7 @@ Not accessible: Rau's "Iterative Modulo Scheduling" full text, Paulin & Knight 1
 1. Hardware simplicity and clock speed: no interlocks, no conflict-management hardware. [Colwell87, p. 181]
 2. The compiler sees a large window (whole traces), so it can find parallelism that runtime hardware limited to basic blocks cannot. [Colwell87, p. 181; Fisher83, pp. 263–264]
 3. Static prediction removes the need for arbitration. [Fisher83, p. 271]
-4. The Groq TSP takes this to the extreme. It pushes "the complexities associated with scheduling into the compiler… it falls on the compiler to precisely schedule instructions so as to use the hardware correctly and efficiently." Removing dynamic scheduling hardware keeps the ICU under 3% of area. [Abts20, §II, p. 147] Its determinism comes from "eliminating all reactive elements in the hardware (e.g., arbiters and caches)." [AbtsISC20, slides; Abts20 abstract]
+4. The Groq TSP takes this to the extreme. It pushes "the complexities associated with scheduling into the compiler… it falls on the compiler to precisely schedule instructions so as to use the hardware correctly and efficiently." Removing dynamic scheduling hardware keeps the ICU under 3% of area. [Abts20, §II, p. 147] Its determinism comes from "eliminating all reactive elements in the hardware (e.g. arbiters, and caches)." [Abts20 abstract, as transcribed in `01_tsp_isca2020.md` §12. The phrase is not in the AbtsISC20 slides, which say only "Predictable performance through Determinism" (slides 4 and 22).] Groq's patents put the area figure as the ICU "accounting for less than 3% of the chip area" [GroqPat-339; GroqPat-894].
 
 ---
 
@@ -176,7 +178,7 @@ Hu's algorithm is exact for in-trees (forests) with unit-delay operations of one
 
 ### 4.3 When modulo scheduling matters for a streaming tensor chip
 
-- The TSP ISA has `Repeat n,d` ("repeat the previous instruction n times, with d cycles between iterations") and MEM `Countdown d` / `Iterations n` for address-generation loops. [AbtsISC20, ISA table slide; Abts20 Table I] A repeated instruction with a fixed inter-iteration delay d is a hardware-supported fixed-II pattern. (Inference: d plays the role of II.)
+- The TSP ISA has `Repeat n,d` ("repeat the previous instruction n times, with d cycles between iterations") and MEM `Countdown d` ("Set the delay d in cycles between loop iterations"), `Step a` and `Iterations n` ("Set the loop bounds for address generation") for address-generation loops. [`Repeat`: AbtsISC20 slide 9 and Abts20 Table I. `Countdown`, `Step`, `Iterations`: AbtsISC20 slide 9 only; the transcription of Abts20 Table I in `01_tsp_isca2020.md` §4 does not have these three rows, and the paper could not be re-opened to check.] A repeated instruction with a fixed inter-iteration delay d is a hardware-supported fixed-II pattern. (Inference: d plays the role of II.)
 - Abts20 §IV (ResNet50, p. 153) and Fig. 11 ("Example instruction schedule for 3×3 max pool in ResNet50", p. 155) show steady-state, repetitive schedules. The paper does not describe a modulo-scheduling algorithm.
 - Inference: when the graph is "do the same k-op chain on each of R rows/vectors," fully unrolling and list-scheduling R·k ops works for a toy. A modulo schedule is the compact and provably periodic alternative: schedule one iteration under an MRT whose resources are units, MEM ports and **stream-lane cells mod II**, then emit with `Repeat`. ResMII is set by the busiest resource per iteration, for example the number of vectors a single MEM slice must read. RecMII is set by loop-carried dependences, for example an accumulator.
 
@@ -258,6 +260,8 @@ Hu's algorithm is exact for in-trees (forests) with unit-delay operations of one
 ## 6. Published descriptions of Groq's compiler scheduling
 
 ### 6.1 ISCA 2020 ("Think Fast") — what is stated
+
+**Caveat (verifier, 2026-11-17).** The paper could not be re-opened, so the citations in this subsection are as the original author recorded them. Several section labels and page numbers here differ from those given for the same sentences in `01_tsp_isca2020.md`, which is the dedicated reading of the paper: the one-hop-per-cycle sentence (here §IV.F; there Sec. V-c), Eq. 4 and the two-dimensional scheduling sentence (here §II.C; there Sec. III), the 35-cycle barrier (here p. 151; there p. 152), the instruction-dispatch slices (here p. 152; there p. 153), the tensor-layout sentence (here §IV.F; there Sec. V-b) and Fig. 11 (in §4.3 here p. 155; there p. 156). The quoted words agree between the two notes; only the locations differ. Prefer the locations in `01_...` until someone checks the PDF. Much of the content, though not the wording, is also confirmed by GroqPat-339, whose description paraphrases the paper (144 queues, 35-cycle barrier, d_func and d_skew, 64 streams, pseudo-dual-port SRAM banks).
 
 - **Streams:** "Streams are implemented in hardware by a chip-wide streaming register file (SR). They are architecturally-visible and transport operands and results between slices." Example: Z = X + Y is `Read S1,X`, `Read S2,Y` on two MEM slices "directed inward toward an INT slice to perform the Add S1,S2,S3," then `Write S3,Z`. [Abts20, §I.B, p. 147]
 - There are 32 eastward and 32 westward logical streams per lane. Streams are named by id 0..31 plus direction, e.g. in(28) and out(24). [Abts20, §II, p. 147] Multi-byte types use aligned stream groups (int16 on a stream pair, int32 on a quad: SG4_0 = streams 0–3). "Data alignment is accomplished by the compiler." [§I.B, p. 146]
@@ -399,7 +403,7 @@ Phase 4 (codegen): per functional-slice instruction queue, emit ops in time orde
 - **Davidson et al. 1975 / Davidson 1971 (reservation tables).** Not accessed. Attribution is via Proebsting & Fraser 1994.
 - **Hashimoto & Stevens 1971 (left-edge, channel routing)** and **Kurdahi & Parker 1987 (REAL, HLS register allocation by left-edge).** Not accessed; attributions are from memory.
 - **Hwu et al. 1993 (Superblock, J. Supercomputing).** Only the citation, via Mahlke92 ref. [11], was verified.
-- **Groq ISCA 2022 ("A Software-defined Tensor Streaming Multiprocessor…")** returned 404 on groq.com, an HTML page on Wayback, and 403 at the ACM DL. Not read here (a separate report, 02_*, may cover it).
+- **Groq ISCA 2022 ("A Software-defined Tensor Streaming Multiprocessor…")** returned 404 on groq.com, an HTML page on Wayback, and 403 at the ACM DL. Not read here. `02_tsp_multiprocessor_isca2022.md` read it in full from another URL; its §4 records what that paper says about the compiler (a DAG of deadlines, link pacing, link count chosen from tensor size) and that it, too, gives no algorithm.
 - **Fisher's VLIW retrospective** (UW course copy): login-walled.
 - **Groq patents:** only the first ~100k characters of each Google Patents page were processed. Later sections may contain more algorithmic detail.
 

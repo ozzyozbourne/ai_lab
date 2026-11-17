@@ -2,6 +2,8 @@
 
 Research date: 2026-11-14. Every source below was opened by the author of this note (via web fetch or by downloading the PDF and extracting the text), except where a row says otherwise. Verbatim phrases are in "quotes". Arithmetic I did myself is labelled **[derived]**. Anything I recall but could not verify is under §9 and labelled "from memory, unverified".
 
+**Re-check of 2026-11-17 (independent verifier).** Every URL below was fetched again and the quotations compared with the page or PDF text. All were reachable except: EE Times (§6.4, connection failed; not re-verified), the GitHub repository page for GroqFlow (§7.4, blocked; the "archived" date is not re-verified, the README and user guide were), and the sources this note already lists as paywalled or not retrievable. Corrections made: three phrases that were in quotation marks but were not the sources' exact words (§2.1 revenue claim, §2.3 schedule, §7.1 speed advantage), the use of the Series A money (§1), the StorageReview rack counts (§5), and an unsupported "10,996" figure (§8 item 6). One cross-check was added in §4.1.
+
 Primary = written by Groq or NVIDIA (including Groq engineers' peer-reviewed papers). Independent = press, analysts, academics.
 
 ---
@@ -37,7 +39,7 @@ Primary = written by Groq or NVIDIA (including Groq engineers' peer-reviewed pap
 |---|---|---|
 | On 24 Dec 2025 Groq entered a "non-exclusive licensing agreement" with NVIDIA for its inference technology. Founder Jonathan Ross, President Sunny Madra and other team members "join Nvidia to help advance and scale the licensed technology". Groq "will continue to operate as an independent company" with Simon Edwards as CEO, and "GroqCloud will continue to operate without interruption". | https://groq.com/newsroom/groq-and-nvidia-enter-non-exclusive-inference-technology-licensing-agreement-to-accelerate-ai-inference-at-global-scale (Groq press release, 2025-12-24) | Primary |
 | Reported price is about $20B. NVIDIA told press it is not an acquisition of the whole company. Analysts disagree on whether it is a license, an acquihire or an acquisition. | https://www.constellationr.com/insights/news/nvidias-groq-deal-acquisition-acquihire-or-creative-licensing-deal ; https://www.tomshardware.com/tech-industry/semiconductors/nvidia-confirms-20-billion-groq-deal-to-bolster-ai-inference-dominance (search-result summaries only; I did not open the bodies) | Independent |
-| Groq (the remaining company, now a cloud operator) raised a $350M "Series A" (2026-08-17) at a $3.5B valuation, with planned NVIDIA participation, to buy NVIDIA accelerated computing. It became an "NVIDIA Cloud Partner" (2026-08-12). It plans to deploy Vera Rubin NVL72 plus Groq 3 LPX (2026-08-24). | https://groq.com/newsroom/groq-closes-usd350-million-series-a-building-the-world-s-leading-ai-inference-cloud ; https://groq.com/blog (listing) ; https://groq.com/blog/groq-among-the-first-to-bring-nvidia-groq-3-lpx-and-vera-rubin-nvl72-to-market | Primary |
+| Groq (the remaining company, now a cloud operator) raised a $350M "Series A" (2026-08-17) at a $3.5B valuation, with planned NVIDIA participation, led by Disruptive; the release says the capital "will support those seeking usage of medium and larger sized clusters of NVIDIA accelerated computing for training and inference". It became an "NVIDIA Cloud Partner" (blog listing dated 2026-08-12). It plans to deploy Vera Rubin NVL72 plus Groq 3 LPX (2026-08-24). | https://groq.com/newsroom/groq-closes-usd350-million-series-a-building-the-world-s-leading-ai-inference-cloud ; https://groq.com/blog (listing) ; https://groq.com/blog/groq-among-the-first-to-bring-nvidia-groq-3-lpx-and-vera-rubin-nvl72-to-market | Primary |
 
 What this means for reading the sources:
 
@@ -90,8 +92,8 @@ What this means for reading the sources:
 **Marketing claims (vendor, unverified)**
 
 * "Up to 35x higher inference throughput per megawatt" versus GB200 NVL72 at about 400 TPS/user, for a 2T-parameter MoE with 400K input context.
-* "Up to 10x more revenue per megawatt".
-* Annual revenue illustration: $30B / $150B / $300B.
+* "up to 5x more revenue per megawatt compared with the GB200 NVL72, and up to 10x by pairing Vera Rubin NVL72 with LPX"; elsewhere the post says "up to 10x more revenue opportunity for trillion-parameter models".
+* Annual revenue illustration, per gigawatt, from a figure: $30B (Blackwell) / $150B (Rubin) / $300B (Rubin + LPX).
 
 **Not stated:** process node, die size, clock, slice/superlane layout, instruction set. The blog also gives no explicit comparison to the original TSP; it only cites the ISCA 2020 "Think Fast" paper and the ISCA 2022 multiprocessor paper as references.
 
@@ -122,7 +124,7 @@ What this means for reading the sources:
 
 **Architecture statements**
 
-* The compiler sees compute units, memory and C2C links and produces "a cycle-level schedule before the workload runs".
+* The compiler sees compute units, memory and C2C links and can "produce a schedule, down-to-the-clock cycle of exactly how the workload will run before it begins".
 * This "eliminates the need for real-time arbitration of transfers".
 * Each LPU can act as a router.
 * The compiler starts sending each 320-byte slice of a matmul result over C2C as soon as it is ready.
@@ -225,6 +227,8 @@ What this means for reading the sources:
 
 * "At the time of publication, the next-gen LPU—fabricated on Samsung's 4 nm process—is in full production ... this work looks back on LPUv1, built on GlobalFoundries 14 nm."
 * "LPUv1 (GlobalFoundries 14 nm) integrates 230 MB of SRAM and provides 235 GB/s of aggregate chip-to-chip I/O bandwidth across 11 logical ports."
+  * **[derived]** 230 MB agrees with the "220 MiBytes" of the two ISCA papers: 220 × 2²⁰ bytes = 230.7 × 10⁶ bytes. So LPUv1 is the same chip as the TSP of `01_...` and `02_...`, not a revision with more memory.
+  * 11 ports matches the 7 local + 4 global links of the ISCA 2022 paper (`02_...` §1.1). The 235 GB/s is not broken down; it is lower than the 480 GB/s (16 links × 4 lanes × 30 Gb/s × 2 directions) of the 2020 material, and SHIP does not say how it is counted.
 
 ### 4.2 Microarchitecture (matches the original TSP)
 
@@ -268,7 +272,7 @@ What this means for reading the sources:
 * Each added pipeline stage needs another in-flight micro-batch's KV cache
 * MoE: per-token expert execution means expert matmuls run "with an OI of 1"
 * Deterministic power modelling needed "extensive calibration and conservative margining ... This created some deployment headaches"
-* Example configuration: Qwen3-235B-A22B at TP=16, PP=95, so roughly 1,520 LPUs **[derived]**, with max concurrency 380. gpt-oss-120B was partitioned across 72 LPU nodes (576 LPUs) **[derived: 72×8]**.
+* Example configuration: Qwen3-235B-A22B at TP=16, PP=95, with max concurrency 380. That is roughly 1,520 LPUs **[derived, assuming TP=16 means 16 LPUs per pipeline stage; the paper does not state the total]**. gpt-oss-120B was partitioned across 72 LPU nodes (576 LPUs) **[derived: 72×8]**.
 * Paged attention uses page sizes of 128–512 tokens. In production, 92% / 97% of requests use fewer than 8Ki tokens.
 * Dynamic chunked prefill works down to a chunk size of 1 token. Footnote: self-attention operational intensity is 8 for Llama3.3-70B, 16 for Qwen3-235B and 128 for DeepSeek-V3.
 
@@ -279,7 +283,7 @@ What this means for reading the sources:
 | Source | Date / author | Extracted claims |
 |---|---|---|
 | The Register, "Decoding Nvidia's Groq-powered LPX..." https://www.theregister.com/2026/03/19/nvidia_lpx_deep_dive/ | 2026-03-19, Tobias Mann | <ul><li>LP30 is fabbed by **Samsung** (no node given)</li><li>500 MB SRAM, 150 TB/s, "1.2 petaFLOPS of FP8"</li><li>**No FP4**: MX/NVFP4 is slated for "LP35" next year</li><li>96 SerDes × 112 Gbps = 2.5 TB/s</li><li>Based on "Groq's second-gen LPU tech", with last-minute tweaks before tape-out</li><li>**32 trays × 8 LPUs**, with an Oberon ETL256 copper backplane</li><li>A 1T-parameter model needs "between four and eight LPX racks, or 1,024 to 2,048 LPUs" (4- vs 8-bit weights)</li><li>At launch it lacks NVLink and CUDA compatibility</li><li>Long context or large batch needs more GPUs, because KV stays on the GPU</li></ul> |
-| StorageReview, "NVIDIA Groq 3 LPX: everything we know" https://www.storagereview.com/news/nvidia-groq-3-lpx-everything-we-know | 2026-03-18, Divyansh Jain | <ul><li>"1.2 PFLOPS of FP8 compute per chip"</li><li>"1U compute tray contains exactly eight LP30 chips", 32 trays</li><li>Interconnect named "Groq RealScale C2C"</li><li>Model size is bounded by SRAM: DeepSeek R1's FFN needs about 5 racks; GLM 5 in BF16 needs more than 10</li><li>Power efficiency "remains to be validated independently"</li></ul> |
+| StorageReview, "NVIDIA Groq 3 LPX: everything we know" https://www.storagereview.com/news/nvidia-groq-3-lpx-everything-we-know | 2026-03-18, Divyansh Jain | <ul><li>"1.2 PFLOPS of FP8 compute per chip"</li><li>"1U compute tray contains exactly eight LP30 chips", 32 trays</li><li>Interconnect named "Groq RealScale C2C"</li><li>Model size is bounded by SRAM: "DeepSeek R1 at 623 GB would require roughly five LPX racks, while GLM 5 at 1.4 TB in BF16 would need over ten" (whole-model on-disk sizes, not the FFN alone)</li><li>Power efficiency "remains to be validated independently"</li></ul> |
 | StorageReview, "NVIDIA Groq 3 LPX Enters Full Production" https://storagereview.com/news/nvidia-groq-3-lpx-enters-full-production-3400-tokens-per-second-at-100k-context-256-lp30s-per-rack | 2026-08-24, Harold Fritts | <ul><li>"Each 2U liquid-cooled compute tray carries sixteen Groq 3 LPUs", but its own image caption says 1U/8</li><li>NVIDIA's figure came from a "private pre-release endpoint", while competitors' came from "live serverless production endpoints"</li></ul> |
 | The Decoder, "Nvidia says its Groq 3 LPX is four times faster than Cerebras but the math is more complicated" https://the-decoder.com/nvidia-says-its-groq-3-lpx-is-four-times-faster-than-cerebras-but-the-math-is-more-complicated/ | 2026-08-25, Maximilian Schreiner | <ul><li>Benchmark = 50 back-to-back requests</li><li>Gemma 4 31B is a "best-case scenario: a dense model that fits entirely in one rack"</li><li>Needs "at least 64 chips", versus 1–2 Cerebras accelerators</li><li>DeepSeek V3 would need 1,342 LPUs, about 5 racks</li><li>Scaling to large MoE is "an open question"</li></ul> |
 | Rajesh Beri, "3,400 Tokens/s Was Batch 1. At 100K Context, It's Batch 12." https://www.beri.net/article/nvidia-groq-3-lpx-cerebras-cs4-batch-size-one-inference-capacity-sizing | 2026-08-29 | Analyst arithmetic for one standalone rack: <ul><li>~31 GB of 8-bit weights (~64 LPUs) leaves ~97 GB for KV</li><li>~8 GB KV per 100K-token sequence, so **max batch ≈ 12**</li><li>~150 sequences at 8K context</li></ul> This is the author's own estimate, not a measurement. |
@@ -338,6 +342,7 @@ What this means for reading the sources:
 * **URL:** read via the proxy reader https://hn.jakechampion.name/reader/https://www.eetimes.com/groq-demos-fast-llms-on-4-year-old-silicon/
 * **Date:** 2023-09-12
 * **Author:** Sally Ward-Foxton
+* (Not re-verified on 2026-11-17: the proxy reader was not used and eetimes.com did not respond.)
 * Llama 2 70B ran at 240 tok/s/user on a "64-chip" system. The article later says "640-chip", which contradicts itself.
 * "design for batch equals one is critical".
 * Llama 2 was ported in "a couple of days".
@@ -354,7 +359,7 @@ What this means for reading the sources:
 * Four principles: software-first, programmable assembly line, deterministic compute and networking, on-chip memory.
 * "Groq on-chip SRAM has memory bandwidth upwards of 80 terabytes/second", versus about 8 TB/s HBM.
 * "Our current chip set is built on a 14 nanometer process", with a move to 4 nm planned.
-* "up to 10X speed advantage" and "up to 10x more efficiently from an energy perspective" are unquantified marketing claims.
+* "up to a 10X speed advantage" and "up to 10x more efficiently from an energy perspective" are unquantified marketing claims.
 * The compiler is "generic, model-independent".
 
 ### 7.2 "From Speed to Scale: How Groq Is Optimized for MoE & Other Large Models"
@@ -410,7 +415,7 @@ What this means for reading the sources:
 5. **"Process node not stated".** NVIDIA's blog, product page and press release give no node. The 4 nm figure comes from Groq's 2023 announcement, the SHIP paper ("Samsung's 4 nm") and Korean press.
 6. **Gemma 4 31B throughput.**
    * 3,431 tok/s median single-stream (Artificial Analysis, concurrency 1).
-   * "11,000 tokens per second" per rack (STH, Hot Chips), self-reported 10,996, probably aggregate or another configuration.
+   * "11,000 tokens per second" per rack (STH, Hot Chips). STH does not say whether this is aggregate throughput or another configuration; that it is aggregate is my guess. (An earlier version of this note also gave a "self-reported 10,996"; that number is in none of the sources fetched on 2026-11-17 and has been removed.)
    * These measure different things.
 7. **Competitor baseline.** NVIDIA says 870 tok/s for the next-fastest endpoint; The Decoder says Cerebras at 882 tok/s.
 8. **On-chip bandwidth.**

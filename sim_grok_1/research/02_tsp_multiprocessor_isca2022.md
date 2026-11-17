@@ -15,6 +15,8 @@
 
 The paper is not on arXiv (no arXiv ID in Semantic Scholar's externalIds).
 
+**Re-check of 2026-11-17 (independent verifier).** [P] and [HC] were downloaded again from the two URLs above and every quotation, table value, section number and slide number below was compared with the extracted text. The corrections made are: the wording of design item (E) in §3.1, a dropped citation marker in the §3.2 quotation, the slide number for the C2C instruction list in §2.1 (25, not 26), the wording of the AllReduce row in §5, and the three "from memory" items in §7, which other notes in this folder now source. Everything else matched.
+
 Citation convention: "§x.y" is a paper section, "Fig n" or "Tab n" is a paper figure or table, "fn n" is a paper footnote. All of these refer to [P] unless marked [HC].
 
 ---
@@ -26,7 +28,8 @@ Citation convention: "§x.y" is a paper section, "Fig n" or "Tab n" is a paper f
 - It is a direct, "glueless" network with no external routers. "the direct network is extended to create a 'glueless' multiprocessor by combining the processing endpoints and the routers (Fig 4(c)) – thus, directly connect TSPs" (§2.1). Because of this, "the router node bandwidth effectively becomes processing endpoint injection bandwidth" (§2.1).
 - Dragonfly was chosen because "by using a collection of routers as a group, a virtual high-radix network can be created" without the intermediate switches a fat-tree needs (§2.1). The paper names Flattened Butterfly and HyperX as alternatives and says their scalability is limited when node radix is small (§2.1).
 - **Links per TSP:** "The pin-bandwidth from each TSP is partitioned into 7 'local' links and 4 'global' links" (§2.2). That is 11 links, each of 4 lanes: "Each C2C link consist of four (4) lanes and thus in theory, the radix can be increased to 11 × 4 = 44 ports" (§2.2). PCIe-card packaging limits how many links can leave the node (§2.2).
-  - *Discrepancy (secondary):* [HC] slide 65 mentions "the 16 directly connected links on each TSP". The paper describes 11 links in use (7+4). The chip may have 16 C2C ports with only 11 used in this topology, but neither source says so.
+  - *Discrepancy (secondary):* [HC] slide 65 mentions "the 16 directly connected links on each TSP". The paper describes 11 links in use (7+4). Neither of these two sources explains the difference. The ISCA 2020 paper, as recorded in `01_tsp_isca2020.md` §11, gives the chip "sixteen (16) ×4 links", and the 2026 SHIP paper says LPUv1 has "11 logical ports" (`03_recent_lpu.md` §4.1). So the likely reading is 16 physical ×4 links on the chip, of which this topology uses 11. That is an inference from combining sources, not a statement in any one of them.
+  - *Later deployments differ (cross-reference):* SHIP (MLSys 2026) describes the production LPUv1 network as "QuadFour", a linear sequence of 8-LPU nodes each linked to its four nearest nodes forward and backward, with "300 ns per LPU-to-LPU hop" (`03_recent_lpu.md` §4.3). It does not use the word Dragonfly. The topology in this note is what the 2022 paper proposes and partly evaluates, not necessarily what was deployed.
 - **Node as a group:** the 7 local links fully connect 8 TSPs, which are "within the same SMP coherence domain and can communicate synchronously" (§2.2, Fig 6). Combining the global links of the 8 TSPs (8×4) gives a "32 'virtual' port high-radix router" that acts as a Dragonfly "group" (§2.2).
 - **Up to 264 TSPs (33 nodes):** "the TSP system can scale out up to 33 nodes for total of 33×8 = 264 TSPs by providing full connectivity between all of the nodes that results in a three hop topology with minimal routing", with "combined 56 GiBytes of global SRAM" (§2.2, Fig 3). [HC] slide 37 says the same: "32-port 'group' as a building block—scale up to 33 groups in a single global hop".
 - **Rack as the group (large systems):** a rack is "nine (9) nodes, each with eight (8) TSPs, interconnected via the four (4) 'global' links per TSP for a total of 32 × 9 = 288 ports". "half (144) of the ports" doubly-connect the 9 nodes in the rack, giving "the proper 2× 'internal speedup' within the local group". "The remaining 144 ports are used to connect to other racks", which gives "up to 145 racks in the maximally configured system or 145 (racks) ×72 (TSPs per rack) for a total of 10,440 TSPs in the largest system with at-most 5 hop diameter using minimal routing (two in the source-rack, one global hop, and two in the destination-rack)." (§2.2)
@@ -74,7 +77,7 @@ Source for this whole section: §3 (Table 1, Table 2, Fig 7, fn 3–4).
 | TRANSMIT | instruction to send notification to child through C2C link |
 | RUNTIME_DESKEW t | delay TSP for t ± δt |
 
-The text also uses a **RECV** instruction in the alignment procedure (§3.2). [HC] slide 26 (secondary) lists the C2C functional-unit instructions as: "Deskew — Manage skew across plesiochronous links", "Send — Send a 320-byte vector", and "Receive — Receive a 320-byte vector, emplacing it in main memory".
+The text also uses a **RECV** instruction in the alignment procedure (§3.2). [HC] slide 25 (secondary; the same instruction table as the ISCA 2020 paper's Table I) lists the C2C functional-unit instructions as: "Deskew — Manage skew across plesiochronous links", "Send — Send a 320-byte vector", and "Receive — Receive a 320-byte vector, emplacing it in main memory".
 
 ### 2.2 Hardware Aligned Counter (HAC), §3.1
 - "Each TSP maintains a free-running internal hardware aligned counter (HAC) with a low (< 256 cycle) overflow period." fn 3: "The HAC period is also referred to as an epoch."
@@ -125,13 +128,13 @@ The text also uses a **RECV** instruction in the alignment procedure (§3.2). [H
   - (B) Scheduling of communication, not routing
   - (C) Deterministic routing, including non-minimal routes
   - (D) No hardware arbitration and explicit (software) flow control
-  - (E) FEC to avoid reactive link-layer replay
+  - (E) Forward-error-correction (FEC) to avoid reactive link-layer replay
 - **Scheduled, not routed (§4.2):** there are no hardware routing lookup tables. The system "explicitly controls and schedules the hop-by-hop path through the network by orchestrating a sequence of send and receive instructions on the source and destination nodes". Fig 8 contrasts this with backpressure and re-routing in a conventional network. The conclusion (§7) calls it "source-based, software-scheduled routing".
 - **Push model (§4.2, Fig 9):** SSN removes the request leg of a remote read. "data is 'pushed' toward the TSP that will be consuming it". From the program's point of view, local versus remote memory does not matter.
 
 ### 3.2 Flow control (§2.3, §4.4)
 - "the hardware is disallowed from asserting back pressure ... Instead, software explicitly schedules vectors on each physical link in the system taking into account the channel bandwidth and latency of each channel to ensure we never overflow the transmitter or underflow the receiver." (§2.3)
-- "we use the local SRAM storage on each TSP to provide intermediate buffering of the tensor's individual vectors and in this way, a vector is the flow control unit (flit). Since the network path is fully deterministic, a tensor consisting of one or more vector flits can be scheduled using virtual cut through flow control since the receiving TSP can immediately begin sending vectors to the next-hop" (§2.3). So forwarding happens per hop through software, with buffering in SRAM.
+- "we use the local SRAM storage on each TSP to provide intermediate buffering of the tensor's individual vectors and in this way, a vector is the flow control unit (flit). Since the network path is fully deterministic, a tensor consisting of one or more vector flits can be scheduled using virtual cut through [23] flow control since the receiving TSP can immediately begin sending vectors to the next-hop" (§2.3). So forwarding happens per hop through software, with buffering in SRAM.
 - "the interconnection disallows dynamic arbitration ... There is also no conventional 'queuing' or buffers ..., aside from very shallow buffers at the interface between the C2C logic and TSP core clock boundaries." (§4.4)
 - **No virtual channels:** "packets or messages are scheduled in advance; thus, the packets do not hold on to the resource while requesting another resource and routing deadlock cannot occur – and VCs are not needed." (§4.4)
 - [HC] slide 41 (secondary): links are "'paced' using software to avoid overflow / underflow".
@@ -188,7 +191,8 @@ The text also uses a **RECV** instruction in the alignment procedure (§3.2). [H
   - MXM "320 lanes x 320 features", 409,600 MACCs; "~750 Tops (Int8Acc32) peak (900 MHz)" (slide 14).
   - "144 Instruction queues" (slides 14, 68).
   - "88 independent MEM slices with 8192 addresses (220MB)"; "80TBps" across "the full 64 stream bandwidth" (slide 30).
-  - SRFs "(32 x138-bit) east and west for a total of 64 320-byte stream registers on-chip", with "45 SRF stations across the superlane" (slide 57).
+  - SRFs "(32 x138-bit) east and west for a total of 64 320-byte stream registers on-chip", with "45 SRF stations across the superlane" (slide 57). *Note:* 138 bits differs from the "9-bit ECC, 137-bits in total" that `01_tsp_isca2020.md` §6 records from the 2020 paper (128 data bits + 9 check bits = 137). Neither source explains the extra bit.
+  - MEM: "A read from a single MEM slice creates a 320Byte stream; a write terminates a stream" (slide 30). This is the only statement in any source read for this folder that a MEM Write ends the stream it stores.
   - "Stream register = one-cycle hop" (slide 24).
   - MXM "Loads 320B x16 in 20 cycles", "20 cycle execution" (slide 28).
   - Networking "480 GB/s bandwidth" (slide 16; 16 links × 4 lanes × 30 Gb/s = 240 GB/s per direction, so this is presumably bidirectional at 30 Gb/s. This is my inference, not stated).
@@ -203,7 +207,7 @@ The text also uses a **RECV** instruction in the alignment procedure (§3.2). [H
 | Distributed GEMM `[800×32576]×[32576×8192]` | 8 column-wise splits, then row-wise splits N=1..13. Reductions within a node, then between neighbouring nodes. Latency falls as TSPs are added (900 MHz, PCIe Gen4 ×16 assumed) | §5.2, Fig 14 |
 | Large GEMM, 100/200/300 TSPs (column-wise splits) | "over 100× more FP16 throughput compared to the peak performance on 432 GPUs achieving approximately 2800 (fp64) TFlops on matrix sizes of 650000×650000" (the comparison mixes FP16 and FP64, which the paper acknowledges) | §5.2, Fig 15 |
 | Input bandwidth sensitivity | 100000×100000 weight matrix: column-major tile order needs ~570 GB/s in, row-major needs 3.7 GB/s ("well within ... 16-lane PCIe Gen4") | §5.2 |
-| 8-way AllReduce | Saturates network quickly. Beats 8×A100 (NVLink 300 GB/s, NCCL) on small tensors when normalised to pin bandwidth, and matches at large sizes | §5.3, Fig 16, fn 5 |
+| 8-way AllReduce | Saturates network quickly. Outperforms 8×A100 (NVLink 300 GB/s per GPU, nccl-tests) on fine-grained (small-tensor) communication "despite the A100 having more pin bandwidth". With the A100 result normalised to the TSP's pin bandwidth, the TSP "matches A100 at large tensor size while significantly outperforming A100 at smaller tensor size" | §5.3, Fig 16, fn 5 |
 | BERT-Large on 4 TSPs in a GroqNode, 24,240 runs (SQuAD1.1) | "99% of inferences return in under 1225 μs, with all of them returning by 1300μs". Compiler estimate is "within 2% of the actual measured latency in the majority of cases". Deviation attributed to PCIe I/O. BERT-Base on 1 TSP is also within 2% | §5.4, Fig 17 |
 | BERT scaling: 6/24/48/96 encoders on 1/4/8/16 TSPs | "linear scaling"; 4 TSPs give 4× realized TOPs | §5.4, Fig 18 |
 | Cholesky (block-cyclic, 320 rows per TSP) | Speedup 1.2×, 1.4×, 1.5× on 2, 4, 8 TSPs; "14.9 FP16 TFlops on 4 TSPs to 22.4 FP16 TFlops on 8 TSPs, with 3× realized throughput compared to the best known results" | §5.5, Fig 19 |
@@ -256,10 +260,10 @@ The text also uses a **RECV** instruction in the alignment procedure (§3.2). [H
 
 **Unreachable sources:** Groq-hosted paper PDFs (404), ACM DL PDF (403), Wayback Machine (429). Patents US12277444B2 / US20230161621A1 were not read.
 
-**From memory, unverified (not checked against any fetched document; do not rely on these):**
-- From memory, unverified: the GroqChip has 16 C2C links. This is partly corroborated by [HC] slide 65, "16 directly connected links on each TSP". Why only 11 are used in the paper's topology is unknown.
-- From memory, unverified: GroqNode contains 2 host x86 CPUs alongside 8 GroqCards.
-- From memory, unverified: the GroqChip is a 14 nm die of about 725 mm².
+**Originally written from memory; now sourced by other notes in this folder (updated 2026-11-17). None of the three is in [P]:**
+- The GroqChip has 16 C2C links: the ISCA 2020 paper gives "sixteen (16) ×4 links" (`01_tsp_isca2020.md` §11), and [HC] slide 65 says "16 directly connected links on each TSP". Why only 11 are used in this paper's topology is not stated anywhere (see the inference in §1.1).
+- A node has a two-socket x86 host beside the 8 cards: SHIP §7.1.1 says "a dual-socket AMD CPU host" (`03_recent_lpu.md` §4.3), and the ISC 2020 slides say "DP AMD 'Rome' server" (slide 19 of `https://mlhardware.github.io/2020/groq.pdf`).
+- The chip is 14 nm and 25×29 mm: `01_tsp_isca2020.md` §1. The area of about 725 mm² is derived (25 × 29).
 
 ---
 

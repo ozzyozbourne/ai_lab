@@ -17,6 +17,8 @@ Rules used throughout:
 - "[derived]" means arithmetic or inference by us, not a statement in the source.
 - Anything the simulator needs that no source gives is **ASSUMED** in the ledger (section 7), with the reasoning.
 
+**Verification pass, 2026-11-17.** An independent checker re-fetched the sources and compared the four reports and this dossier with them. Result in one paragraph: [TSP22], [HC22], [SHIP], [XPU], [GFLOW], [NV-LPX] and [HC26-STH] were re-read and the statements taken from them stand, after the corrections recorded at the head of each report. **[TSP20] could not be re-opened** (the Wayback Machine was unreachable from the checking machine), so its quotations, page numbers and section labels rest on the original reading. Its facts were cross-checked where possible against Groq's ISC 2020 slides, [HC22] and a Groq patent that paraphrases the paper; report 01 lists what was and was not confirmed that way. Changes to this dossier are marked "(2026-11-17)".
+
 ## 0. Sources and reachability
 
 | Tag | Source | How it was read |
@@ -35,7 +37,7 @@ Rules used throughout:
 - The Hot Chips 2026 slides themselves (paid registration only). The talk is known only through [HC26-STH].
 - Tom's Hardware article bodies, SemiAnalysis and More Than Moore (paywalled or not retrievable).
 - Groq's "Inside the LPU" blog (now redirects) and the GroqChip product brief (404).
-- Groq patents (found in search results, not read).
+- The Groq patents that share the ISCA 2022 paper's title (found in search results, not read). Three other Groq patents were partly read for report 04 and one of them is used in section 4.5. (2026-11-17: this line used to say no Groq patent was read, which contradicted section 4.5.)
 - IEEE Xplore and ACM DL copies of the two ISCA papers (not needed for [TSP20]; 403 for [TSP22]).
 
 ## 1. The single-chip TSP [TSP20]
@@ -76,12 +78,14 @@ Rules used throughout:
 | SXM | Shift up/down N, Permute map, Distribute map, Rotate stream, Transpose sg16 |
 | C2C | Deskew, Send, Receive |
 
+(2026-11-17) The same table on Groq's ISC 2020 slides and on [HC22] slide 25 has three more MEM instructions: Countdown d, Step a and Iterations n, which set the delay, stride and bounds of an address-generation loop. Whether the paper's own Table I has them could not be re-checked; see report 01, section 4. The simulator does not model them.
+
 Other details: VXM has saturating and modulo variants of add and mul and produces no condition codes (Sec. III-C). No binary encoding is given apart from the 16-bit NOP repeat count (Sec. III-A1).
 
 ### 1.5 Timing
 
 - Every instruction carries two parameters (Sec. III): **d_func**, "each instruction requires 1 or more cycles to produce its stream output", and **d_skew**, the relation between dispatch time and when the stream operands are needed.
-- Eq. 4: **T = N + d_func + delta(j,i)**, where N is the number of tiles in the slice and delta(j,i) is the transit distance in cycles between stream registers j and i. With one hop per cycle, delta = |j - i| [derived].
+- Eq. 4: **T = N + d_func + delta(j,i)**, where N is the number of tiles in the slice and delta(j,i) is the transit distance in cycles between stream registers j and i. With one hop per cycle, delta = |j - i| [derived]. [HC22] slide 24 supports this: "Stream register = one-cycle hop" and "Travel time calculation as simple as a single subtract".
 - An instruction is issued to the southern tile and moves north one tile per cycle, so tile k executes k cycles later; data on the streams is staggered the same way (Sec. II-C, Fig. 6).
 - NOP has a 16-bit repeat count; "Repeat n, d" repeats the previous instruction n times with d cycles between iterations (Table I, Sec. III-A1).
 - A chip-wide Sync/Notify barrier takes 35 cycles (Sec. III-A2): "One IQ is designated as the notifier and it issues a Notify instruction while all other IQs are parked on a Sync instruction". Programs start with a preamble that ends in a Sync so that all slices share one logical time.
@@ -99,14 +103,16 @@ Other details: VXM has saturating and modulo variants of add and mul and produce
 
 ### 1.7 MXM, VXM, SXM
 
-- **MXM:** the 320-element sum is produced "with only a single rounding step" (Sec. III-D). Four independent 320x320 planes of multiply-accumulate cells. Weights are installed from streams, 16 streams per cycle per plane; all 409,600 weights load in under 40 cycles. With weights installed, "every cycle the MXM can generate a new int32 dot-product of input activations with installed weights". Inputs are int8 or fp16 (fp16 uses two byte-planes in tandem); results are int32 or fp32 (Secs. III-D, IV-D).
+- **MXM:** the 320-element sum is produced "with only a single rounding step" (Sec. III-D). Four independent 320x320 planes of multiply-accumulate cells. Weights are installed from streams: "16 streams each with 16 bytes to install 256 8-bit weights (IW) in each supercell on every cycle", and the 32 streams of a direction serve the two planes of a hemisphere, so 16 streams per plane [derived]; all 409,600 weights load in under 40 cycles. With weights installed, "every cycle the MXM can generate a new int32 dot-product of input activations with installed weights". Inputs are int8 or fp16 (fp16 uses two byte-planes in tandem); results are int32 or fp32 (Secs. III-D, IV-D).
 - [TSP22] Sec. 5.5 adds that MXM inputs are read from streams flowing outward and the output is written to streams flowing inward.
 - **VXM:** a 4x4 mesh of vector ALUs per superlane, 16 ALUs per lane, 32-bit operands on SG4 groups. ALUs are stateless and can be chained "without committing the intermediate results to main memory" (Sec. III-C).
 - **SXM:** lane shifters with a select, a bijective Permute of the 320 lanes, a Distribute that remaps or replicates the 16 lanes within each superlane, Rotate and Transpose (Sec. III-E).
 
 ### 1.8 Headline numbers
 
-14 nm, 25x29 mm, 26.8B transistors, 900 MHz nominal (1 GHz used for the paper's arithmetic), 820 TeraOps/s peak, ResNet-50 at 20.4K images/s with batch size 1 ([TSP20] Abstract, Secs. II-B, V, VII). The paper quotes both 43 us and 49 us for ResNet-50 latency.
+14 nm, 25x29 mm, 26.8B transistors, 900 MHz nominal (1 GHz used for the paper's arithmetic), 820 TeraOps/s peak, ResNet-50 at 20.4K images/s with batch size 1 ([TSP20] Abstract, Secs. II-B, V, VII). The paper quotes both 43 us and 49 us for ResNet-50 latency. No absolute power figure is given.
+
+(2026-11-17) The 820 TeraOps/s is the 1 GHz figure: 4 planes x 320 x 320 x 2 operations x 1 GHz = 819.2 [derived]. At the nominal 900 MHz the same product is 737, and Groq's slides quote "~750 Tops (Int8Acc32) peak (900 MHz)" ([HC22] slide 14).
 
 ## 2. Multi-chip scaling [TSP22]
 
@@ -119,13 +125,14 @@ The simulator in this project is single-chip. This section records what a multi-
 - **Software-scheduled networking:** no hardware back-pressure, arbitration, virtual channels or link-layer retry. Routes and send times are fixed at compile time. Link errors use FEC, and an uncorrectable error triggers a software replay of the inference (Secs. 2.3, 4.4, 4.5).
 - **Compiler's global role:** the model is partitioned across TSPs, one binary per TSP; communication is scheduled as a DAG of deadlines, and the compiler overlaps compute with communication to hide link latency. Its latency estimate was within 2% of measured for BERT (Secs. 3, 4.1, 5.1, 5.4).
 - **The scheduling algorithm itself is not described** in the paper.
-- Inconsistencies in the paper: counters exchanged "every 256 cycles" versus a 252-cycle epoch; 722 ns per hop in Sec. 5.6 versus about 241 ns implied by Table 2 [derived].
+- Inconsistencies in the paper: counters exchanged "every 256 cycles" versus a 252-cycle epoch; 722 ns per hop in Sec. 5.6 versus about 241 ns implied by Table 2 [derived]. [SHIP] Sec. 4.2 gives a third figure, 300 ns per hop, for the deployed LPUv1 systems.
+- (2026-11-17) The Dragonfly above is the 2022 paper's design. [SHIP] Sec. 4.1 describes the network actually deployed for LPUv1 as "QuadFour": a linear sequence of 8-LPU nodes, each linked to its four nearest nodes forward and backward. It does not call it a Dragonfly.
 
 ## 3. Recent material (2023-2026)
 
-- **Corporate context:** Groq licensed its technology to NVIDIA (Groq press release, 2025-12-24). NVIDIA sells the second Groq silicon design, LP30, as "NVIDIA Groq 3" in LPX racks paired with Rubin GPUs ([NV-LPX]; details and URLs in report 03).
-- **LPUv1** (the TSP of the ISCA papers): GlobalFoundries 14 nm, 230 MB SRAM, 235 GB/s chip-to-chip I/O over 11 logical ports, 300 ns per hop ([SHIP] Secs. 4.2, 7.1).
-- **LP30:** Samsung 4 nm, 500 MB SRAM and 150 TB/s SRAM bandwidth per chip, 96 chip-to-chip links at 112 Gbps, 256 chips per rack ([NV-LPX] and the NVIDIA product page). Its clock, slice counts and instruction set changes are not public.
+- **Corporate context:** Groq licensed its technology to NVIDIA (Groq press release, 2025-12-24). NVIDIA sells a newer Groq-designed chip, LP30, as "NVIDIA Groq 3" in LPX racks paired with Rubin GPUs ([NV-LPX]; details and URLs in report 03). That LP30 is the second Groq silicon design is an inference: The Register reports it is based on "Groq's second-gen LPU tech" and [SHIP] calls it "the next-gen LPU" after LPUv1; no primary source numbers the generations.
+- **LPUv1** (the TSP of the ISCA papers): GlobalFoundries 14 nm, 230 MB SRAM, 235 GB/s chip-to-chip I/O over 11 logical ports, 300 ns per hop ([SHIP] Secs. 4.2, 7.1). That LPUv1 is the same chip is an inference, but a well-supported one: 220 MiB = 230.7 MB [derived], 11 ports = 7 local + 4 global links, and both are 14 nm.
+- **LP30:** 500 MB SRAM and 150 TB/s SRAM bandwidth per chip, 96 chip-to-chip links at 112 Gbps, 256 chips per rack ([NV-LPX] and the NVIDIA product page). The process, Samsung 4 nm, is **not** stated by NVIDIA; it comes from [SHIP] ("the next-gen LPU—fabricated on Samsung's 4 nm process") and from press reports listed in report 03, section 5. Its clock, slice counts and instruction set changes are not public.
 - **Same architecture:** [SHIP] Sec. 2.1 describes functional units as SIMD units "operating on 320-element vectors", each "issued one instruction per cycle", with "directional, arbitration-free buses that move data eastward and westward" and all instruction latencies "statically known".
 - **Hot Chips 2026**, via [HC26-STH]: "This is a fully deterministic chip"; the compiler "schedules all resources, both processing and networking"; "There is no hardware flow control or virtual channels".
 
@@ -194,7 +201,8 @@ Collected from the four reports. None of these is filled from memory.
 
 - Numeric d_func and d_skew for any instruction; SRAM read latency; MXM pipeline depth; VXM per-operation latency ([TSP20]).
 - Instruction encoding, queue depth, Ifetch latency ([TSP20]).
-- Exact stream-register spacing: known only from a blurry Fig. 4 ([TSP20]) and one [HC22] slide.
+- Exact stream-register spacing: known only from a blurry Fig. 4 ([TSP20]) and one [HC22] slide. The count of 45 positions agrees between the two; the individual register numbers read from Fig. 4 do not add up (report 01, section 2.4).
+- Whether a MEM Write ends the stream it stores (see B2), and when a queue issues more than one instruction in a cycle (see T16).
 - How VXM ALUs are wired for chaining within the 4x4 mesh ([TSP20]).
 - How instructions that move data between superlanes (Permute, Shift) interact with the one-cycle-per-tile stagger ([TSP20]).
 - The compiler's scheduling and stream-allocation algorithm ([TSP20], [TSP22]).
@@ -235,7 +243,7 @@ Status meanings:
 | G11 | MXM plane size | lanes x lanes (16x16 on the toy chip) | SOURCED rule, scaled value | [TSP20] Sec. III-D: 320x320 planes for 320 lanes. The toy value follows from G2, which is ASSUMED. |
 | G12 | VXM ALUs per lane | 16 | SOURCED | [TSP20] Sec. III-C |
 | G13 | SXM instances | 1 per hemisphere | SOURCED | [TSP20] Sec. III-E |
-| G14 | Instruction queues | one per MEM slice, one per VXM ALU, one per MXM plane, one per SXM | ASSUMED | The total of 144 queues is sourced ([TSP20] Sec. II). The split 44 per MEM hemisphere and 16 for the VXM is a figure reading of Fig. 2, which matches one queue per MEM slice and per ALU but is not stated in the text. Fig. 2 shows 6 queues per MXM and 14 per SXM, but the paper does not say what each controls. |
+| G14 | Instruction queues | one per MEM slice, one per VXM ALU, one per MXM plane, one per SXM | ASSUMED | The total of 144 queues is sourced ([TSP20] Sec. II). The split 44 per MEM hemisphere and 16 for the VXM is a figure reading of Fig. 2 (the same numbers, 6 / 14 / 44 / 16 / 44 / 14 / 6, are legible as text on slide 8 of Groq's ISC 2020 slides), which matches one queue per MEM slice and per ALU but is not stated in the text. Fig. 2 shows 6 queues per MXM and 14 per SXM, but the paper does not say what each controls. |
 
 ### Timing
 
@@ -252,11 +260,11 @@ Status meanings:
 | T9 | d_func, VXM mul | 2 | ASSUMED | Not in any source. Chosen to differ from T8 so mixed latencies are visible. |
 | T10 | d_func, VXM exp, tanh, rsqrt | 4 | ASSUMED | Not in any source. Transcendentals are given a longer pipeline. |
 | T11 | d_func, MXM IW | 1 (weights usable by an ABC dispatched 1 or more cycles later) | ASSUMED | Not in any source. |
-| T12 | d_func, MXM ABC (activation in to result out) | 3 | ASSUMED | Not in any source. [HC22] slide 28's "20 cycle execution" matches the 20-tile stagger and is covered by T5. |
+| T12 | d_func, MXM ABC (activation in to result out) | 3 | ASSUMED | Not in any source. [HC22] slide 28 says "20 cycle execution"; we read that as the 20-tile stagger, which T5 covers, but the slide does not say what the 20 cycles are. |
 | T13 | d_func, SXM Distribute, Permute, Shift | 2 | ASSUMED | Not in any source. |
 | T14 | NOP repeat count | 16 bits | SOURCED | [TSP20] Sec. III-A1 |
 | T15 | Sync/Notify barrier | 35 cycles | SOURCED | [TSP20] Sec. III-A2 |
-| T16 | Instructions per queue per cycle | 1 | SOURCED | [SHIP] Sec. 2.1: "Each FU is issued one instruction per cycle" |
+| T16 | Instructions per queue per cycle | 1 | SOURCED, with a conflict | [SHIP] Sec. 2.1: "Each FU is issued one instruction per cycle". [TSP20] Sec. II says instead that each of the 144 queues "can issue one or more instructions per cycle" and does not explain when more than one is issued. The simulator follows [SHIP]. |
 | T17 | Core clock, used only to convert cycles to time in reports | 900 MHz | SOURCED | [TSP20] Abstract; [TSP22] Sec. 5.2 |
 | T18 | Repeat n,d timing | after an instruction dispatched at cycle c, Repeat n,d dispatches it again at c + d, c + 2d, ..., c + n*d, with d >= 1 | ASSUMED | Table I says only "n times, with d cycles between iterations". |
 
@@ -265,7 +273,7 @@ Status meanings:
 | ID | Parameter | Sim value | Status | Source or reasoning |
 |---|---|---|---|---|
 | B1 | Stream fate | flows until it leaves the chip edge or is overwritten | SOURCED | [TSP20] Sec. V-c |
-| B2 | Reading a stream | does not consume it; the value keeps flowing | SOURCED | [TSP20] Sec. II-A: the value is "accessed as operands" and then propagates |
+| B2 | Reading a stream | does not consume it; the value keeps flowing | SOURCED for operand reads; open for MEM Write | [TSP20] Sec. II-A: the value is "accessed as operands" and then propagates. One secondary source differs for one case: [HC22] slide 30 says "a write terminates a stream". [TSP20] does not say whether a MEM Write ends the stream it stores, so the simulator's choice for Write is an assumption. |
 | B3 | Result direction | chosen per instruction | SOURCED | [TSP20] Secs. I-B, II-E |
 | B4 | MEM accesses per slice per cycle | 1 instruction (a Read or a Write) | ASSUMED | Sourced behaviour is 1 read plus 1 write if on different banks ([TSP20] Sec. III-B). Banks are not modelled. |
 | B5 | MEM word | one address holds one vector of `lanes` bytes | SOURCED (derived) | [TSP20] Sec. II-B |

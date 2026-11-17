@@ -11,7 +11,8 @@
 //!
 //! Two implementations live here:
 //!   * `FileStorage`: a real file, positional I/O (pread / pwrite / fsync).
-//!   * `MemStorage`:  a byte array, with an optional injected write failure.
+//!   * `MemStorage`:  a byte array, with optional injected read and write
+//!                    failures.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -119,6 +120,8 @@ pub const MemStorage = struct {
     /// Fault injection: when set, this many more writes succeed and every
     /// write after that fails with `StorageFailure`. `null` = never fail.
     writes_before_failure: ?u64 = null,
+    /// The same countdown for reads.
+    reads_before_failure: ?u64 = null,
     sync_count: u64 = 0,
 
     pub fn init(allocator: Allocator) MemStorage {
@@ -138,7 +141,13 @@ pub const MemStorage = struct {
 
     fn read(ptr: *anyopaque, offset: u64, buffer: []u8) Storage.Error!void {
         const self: *MemStorage = @ptrCast(@alignCast(ptr));
-        const end = offset + buffer.len;
+        if (self.reads_before_failure) |*left| {
+            if (left.* == 0) return error.StorageFailure;
+            left.* -= 1;
+        }
+        // An offset so large that the end does not fit in 64 bits is past
+        // the end of any storage.
+        const end = std.math.add(u64, offset, buffer.len) catch return error.ShortRead;
         if (end > self.bytes.items.len) return error.ShortRead;
         @memcpy(buffer, self.bytes.items[@intCast(offset)..@intCast(end)]);
     }
@@ -149,7 +158,9 @@ pub const MemStorage = struct {
             if (left.* == 0) return error.StorageFailure;
             left.* -= 1;
         }
-        const end: usize = @intCast(offset + bytes.len);
+        // A range that cannot be addressed is a range the "disk" cannot hold.
+        const end_u64 = std.math.add(u64, offset, bytes.len) catch return error.StorageFailure;
+        const end = std.math.cast(usize, end_u64) orelse return error.StorageFailure;
         if (end > self.bytes.items.len) {
             // Grow like a file does: new bytes read back as zero. Running out
             // of memory here plays the role of "disk full".
@@ -202,6 +213,36 @@ test "MemStorage: injected write failure" {
     try testing.expectEqualSlices(u8, "ok", &buf); // the failed write changed nothing
     mem.writes_before_failure = null;
     try s.write(0, "go");
+}
+
+test "MemStorage: injected read failure" {
+    var mem: MemStorage = .init(testing.allocator);
+    defer mem.deinit();
+    const s = mem.storage();
+    try s.write(0, "data");
+
+    var buf: [4]u8 = @splat('.');
+    mem.reads_before_failure = 1;
+    try s.read(0, &buf);
+    try testing.expectEqualSlices(u8, "data", &buf);
+    @memset(&buf, '.');
+    try testing.expectError(error.StorageFailure, s.read(0, &buf));
+    try testing.expectEqualSlices(u8, "....", &buf); // the failed read filled nothing
+    mem.reads_before_failure = null;
+    try s.read(0, &buf);
+    try testing.expectEqualSlices(u8, "data", &buf);
+}
+
+test "MemStorage: offsets near the end of the address space are errors, not overflows" {
+    var mem: MemStorage = .init(testing.allocator);
+    defer mem.deinit();
+    const s = mem.storage();
+    try s.write(0, "data");
+    var buf: [4]u8 = undefined;
+    const huge = std.math.maxInt(u64) - 1;
+    try testing.expectError(error.ShortRead, s.read(huge, &buf));
+    try testing.expectError(error.StorageFailure, s.write(huge, "data"));
+    try testing.expectEqual(4, try s.size()); // nothing changed
 }
 
 test "MemStorage: running out of memory is reported as StorageFailure" {

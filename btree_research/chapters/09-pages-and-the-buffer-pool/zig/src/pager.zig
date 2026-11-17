@@ -35,8 +35,12 @@ pub const Pager = struct {
     };
 
     pub const Error = Storage.Error || error{
-        /// The storage size is not a whole number of pages (or too large).
+        /// The storage size is not a whole number of pages, or it holds more
+        /// pages than a 32-bit page id can number.
         CorruptFile,
+        /// `allocatePage` when every page id is in use. The file is not
+        /// damaged, it is full.
+        FileFull,
         /// The page id is >= page_count.
         PageOutOfRange,
     };
@@ -62,7 +66,9 @@ pub const Pager = struct {
     /// (Reusing freed pages is chapter 13.)
     pub fn allocatePage(self: *Pager) Error!PageId {
         const id = self.page_count;
-        if (id == invalid_page_id - 1) return error.CorruptFile;
+        // invalid_page_id must never name a real page, so the last usable id
+        // is invalid_page_id - 1 and the largest page count is the same number.
+        if (id == invalid_page_id - 1) return error.FileFull;
         const zero: Page = @splat(0);
         try self.storage.write(offsetOf(id), &zero);
         // Count the page only after the write succeeded.
@@ -149,6 +155,18 @@ test "Pager: a failed allocation does not change the page count" {
     try testing.expectError(error.StorageFailure, pager.allocatePage());
     try testing.expectEqual(0, pager.pageCount());
     try testing.expectEqual(0, pager.stats.allocations);
+}
+
+test "Pager: running out of page ids is FileFull, and nothing is written" {
+    var mem: storage_mod.MemStorage = .init(testing.allocator);
+    defer mem.deinit();
+    var pager: Pager = try .init(mem.storage());
+    // A 16 TiB file is out of reach for a test; pretend the pages exist.
+    pager.page_count = invalid_page_id - 1;
+    try testing.expectError(error.FileFull, pager.allocatePage());
+    try testing.expectEqual(invalid_page_id - 1, pager.pageCount());
+    try testing.expectEqual(0, pager.stats.allocations);
+    try testing.expectEqual(0, mem.bytes.items.len);
 }
 
 test "Pager: pages survive closing and reopening a real file" {

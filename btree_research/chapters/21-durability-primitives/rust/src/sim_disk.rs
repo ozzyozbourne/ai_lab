@@ -8,7 +8,9 @@
 //!           machine they sit in the OS page cache and the drive's cache)
 //!
 //! write_page(p, bytes)  append to `pending`           (durable untouched)
-//! read_page(p)          newest pending write for p, else durable
+//! read_page(p)          newest pending write for p, else durable, else
+//!                       zeroes (a hole below size()); OutOfBounds at or
+//!                       beyond size()
 //! sync()                apply all pending writes in order, then forget them
 //! crash(mode)           decide the fate of every pending write, then forget
 //! ```
@@ -39,6 +41,11 @@
 //! lives at offset `i * PAGE_SIZE`, and `clear()` forgets them all at once
 //! while keeping the capacity. Zig's allocation-failure tests are mirrored by
 //! `set_pending_limit`, which makes `write_page` return `OutOfMemory`.
+//!
+//! One difference from Zig: Zig's `writePage` reserves the durable space its
+//! write may need, so that `sync` and `crash` cannot fail for lack of memory.
+//! A `Vec` cannot report a failed allocation, so nothing is gained by
+//! reserving; the durable image grows in `apply`, when a write lands.
 
 use crate::prng::SplitMix64;
 use crate::storage::{PAGE_SIZE, Page, SECTOR_SIZE, SECTORS_PER_PAGE, Storage, StorageError};
@@ -250,13 +257,16 @@ impl Storage for SimDisk {
             out.copy_from_slice(&self.pending_bytes[i * PAGE_SIZE..(i + 1) * PAGE_SIZE]);
             return Ok(());
         }
-        match self.durable_page(page_no) {
-            Some(bytes) => {
-                out.copy_from_slice(bytes);
-                Ok(())
-            }
-            None => Err(StorageError::OutOfBounds),
+        if page_no >= self.size() {
+            return Err(StorageError::OutOfBounds);
         }
+        match self.durable_page(page_no) {
+            Some(bytes) => out.copy_from_slice(bytes),
+            // A hole: below a pending write to a higher page, but beyond the
+            // end of the platter. A real file reads such a page as zeroes.
+            None => out.fill(0),
+        }
+        Ok(())
     }
 
     fn write_page(&mut self, page_no: u64, page: &Page) -> Result<(), StorageError> {
@@ -363,6 +373,43 @@ mod tests {
         disk.read_page(0, &mut page).unwrap();
         assert!(all(&page, 0));
         assert_eq!(disk.size(), 3);
+    }
+
+    #[test]
+    fn a_hole_below_a_pending_write_reads_as_zeroes() {
+        let mut disk = SimDisk::new(1);
+        disk.write_page(2, &filled(b'A')).unwrap(); // not synced: the platter is empty
+        assert_eq!(disk.size(), 3);
+        assert_eq!(disk.durable_pages(), 0);
+        let mut page = filled(0xEE);
+        disk.read_page(1, &mut page).unwrap();
+        assert!(all(&page, 0));
+        disk.read_page(0, &mut page).unwrap();
+        assert!(all(&page, 0));
+        // At or beyond size() it is still an error, and `out` is left alone.
+        page = filled(0xEE);
+        assert_eq!(disk.read_page(3, &mut page), Err(StorageError::OutOfBounds));
+        assert!(all(&page, 0xEE));
+        // The hole exists only as long as the write that created it.
+        disk.crash(CrashMode::Drop);
+        assert_eq!(disk.read_page(1, &mut page), Err(StorageError::OutOfBounds));
+    }
+
+    #[test]
+    fn a_dropped_write_to_a_far_page_leaves_no_durable_image() {
+        // Zig's twin test checks its capacity reservation; here the durable
+        // image only grows when a write lands.
+        let mut disk = SimDisk::new(1);
+        disk.write_page(0, &filled(b'A')).unwrap();
+        disk.sync().unwrap();
+        disk.write_page(1000, &filled(b'B')).unwrap();
+        disk.crash(CrashMode::Drop);
+        assert_eq!(disk.durable_pages(), 1);
+        assert_eq!(
+            disk.write_page(SimDisk::MAX_PAGES, &filled(b'C')),
+            Err(StorageError::OutOfBounds)
+        );
+        disk.validate().unwrap();
     }
 
     #[test]
@@ -493,56 +540,72 @@ mod tests {
 
     #[test]
     fn seeded_model_test_write_read_sync_crash_drop_keep() {
-        let mut disk = SimDisk::new(7);
-        let mut model = Model::default();
-        let mut rng = SplitMix64::new(2121);
         let mut page = filled(0);
+        let mut hole_reads = 0; // reads of a hole beyond the durable end
+        let mut crashes = 0;
+        let mut syncs = 0;
+        // Many short runs rather than one long one: the durable image never
+        // shrinks, so "a hole beyond the platter" only occurs early in a run.
+        for round in 0..50 {
+            let mut disk = SimDisk::new(7 + round);
+            let mut model = Model::default();
+            let mut rng = SplitMix64::new(2121 + round);
 
-        for _ in 0..5000 {
-            match rng.below(10) {
-                0..=4 => {
-                    // write
-                    let p = rng.below(MODEL_PAGES as u64);
-                    let byte = (1 + rng.below(255)) as u8;
-                    disk.write_page(p, &filled(byte)).unwrap();
-                    model.cache[p as usize] = Some(byte);
-                    model.cache_size = model.cache_size.max(p + 1);
-                }
-                5..=6 => {
-                    // read
-                    let p = rng.below(MODEL_PAGES as u64);
-                    if p >= model.cache_size {
-                        assert_eq!(disk.read_page(p, &mut page), Err(StorageError::OutOfBounds));
-                    } else {
-                        disk.read_page(p, &mut page).unwrap();
-                        // A hole (never written, below the size) reads as zeroes.
-                        assert!(all(&page, model.cache[p as usize].unwrap_or(0)));
+            for _ in 0..200 {
+                match rng.below(10) {
+                    0..=4 => {
+                        // write
+                        let p = rng.below(MODEL_PAGES as u64);
+                        let byte = (1 + rng.below(255)) as u8;
+                        disk.write_page(p, &filled(byte)).unwrap();
+                        model.cache[p as usize] = Some(byte);
+                        model.cache_size = model.cache_size.max(p + 1);
+                    }
+                    5..=6 => {
+                        // read
+                        let p = rng.below(MODEL_PAGES as u64);
+                        if p >= model.cache_size {
+                            assert_eq!(
+                                disk.read_page(p, &mut page),
+                                Err(StorageError::OutOfBounds)
+                            );
+                        } else {
+                            disk.read_page(p, &mut page).unwrap();
+                            // A hole (never written, below the size) reads as zeroes.
+                            assert!(all(&page, model.cache[p as usize].unwrap_or(0)));
+                            if model.cache[p as usize].is_none() && p >= model.durable_size {
+                                hole_reads += 1;
+                            }
+                        }
+                    }
+                    7 => {
+                        // sync: the cache becomes the durable state
+                        disk.sync().unwrap();
+                        model.durable = model.cache;
+                        model.durable_size = model.cache_size;
+                    }
+                    8 => {
+                        // crash, nothing survives but the durable state
+                        disk.crash(CrashMode::Drop);
+                        model.cache = model.durable;
+                        model.cache_size = model.durable_size;
+                    }
+                    _ => {
+                        // crash, everything pending happened to reach the disk
+                        disk.crash(CrashMode::Keep);
+                        model.durable = model.cache;
+                        model.durable_size = model.cache_size;
                     }
                 }
-                7 => {
-                    // sync: the cache becomes the durable state
-                    disk.sync().unwrap();
-                    model.durable = model.cache;
-                    model.durable_size = model.cache_size;
-                }
-                8 => {
-                    // crash, nothing survives but the durable state
-                    disk.crash(CrashMode::Drop);
-                    model.cache = model.durable;
-                    model.cache_size = model.durable_size;
-                }
-                _ => {
-                    // crash, everything pending happened to reach the disk
-                    disk.crash(CrashMode::Keep);
-                    model.durable = model.cache;
-                    model.durable_size = model.cache_size;
-                }
+                disk.validate().unwrap();
+                assert_eq!(disk.size(), model.cache_size);
+                assert_eq!(disk.durable_pages(), model.durable_size);
             }
-            disk.validate().unwrap();
-            assert_eq!(disk.size(), model.cache_size);
-            assert_eq!(disk.durable_pages(), model.durable_size);
+            crashes += disk.stats.crashes;
+            syncs += disk.stats.syncs;
         }
-        assert!(disk.stats.crashes > 100 && disk.stats.syncs > 100);
+        assert!(crashes > 100 && syncs > 100);
+        assert!(hole_reads >= 10); // the runs reached the case
     }
 
     #[test]

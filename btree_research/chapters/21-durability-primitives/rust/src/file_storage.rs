@@ -21,6 +21,10 @@ pub struct FileStorage {
 }
 
 impl FileStorage {
+    /// Largest page number + 1 this implementation accepts: byte offsets in
+    /// a file are signed 64-bit numbers.
+    pub const MAX_PAGES: u64 = (1 << 63) / PAGE_SIZE as u64;
+
     /// Create or open `path` for reading and writing, keeping existing
     /// contents. The file must be a whole number of pages.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
@@ -55,6 +59,9 @@ impl Storage for FileStorage {
     }
 
     fn write_page(&mut self, page_no: u64, page: &Page) -> Result<(), StorageError> {
+        if page_no >= Self::MAX_PAGES {
+            return Err(StorageError::OutOfBounds);
+        }
         // A write past the end leaves a hole that the file system reads back
         // as zeroes: the same behaviour SimDisk implements by hand.
         self.file
@@ -123,6 +130,31 @@ mod tests {
         assert!(page.iter().all(|&b| b == b'A'));
         s.read_page(1, &mut page).unwrap();
         assert!(page.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn file_storage_a_hole_below_an_unsynced_write_reads_as_zeroes() {
+        let tmp = TmpDir::new("hole");
+        let mut s = FileStorage::open(tmp.0.join("hole.db")).unwrap();
+        let mut page: Page = [b'A'; PAGE_SIZE];
+        s.write_page(2, &page).unwrap(); // no sync
+        assert_eq!(s.size(), 3);
+        s.read_page(1, &mut page).unwrap();
+        assert!(page.iter().all(|&b| b == 0));
+        assert_eq!(s.read_page(3, &mut page), Err(StorageError::OutOfBounds));
+    }
+
+    #[test]
+    fn file_storage_refuses_a_page_number_that_does_not_fit_a_file_offset() {
+        let tmp = TmpDir::new("big");
+        let mut s = FileStorage::open(tmp.0.join("big.db")).unwrap();
+        let page: Page = [b'A'; PAGE_SIZE];
+        assert_eq!(
+            s.write_page(FileStorage::MAX_PAGES, &page),
+            Err(StorageError::OutOfBounds)
+        );
+        assert_eq!(s.write_page(u64::MAX, &page), Err(StorageError::OutOfBounds));
+        assert_eq!(s.size(), 0);
     }
 
     #[test]

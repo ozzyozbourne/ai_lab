@@ -17,6 +17,24 @@
 //! against `&mut dyn Storage` runs unchanged on both; chapter 22 copies this
 //! file.
 //!
+//! The contract both implementations keep (the test
+//! `sim_disk_and_file_storage_answer_every_call_alike` in lib.rs runs one
+//! random stream against both):
+//!
+//! ```text
+//! size()      highest page number ever written + 1, counting writes that
+//!             are not durable yet. Never fails.
+//! read_page   page_no <  size(): the newest write to that page; a page
+//!                                below size() that was never written (a
+//!                                hole) reads as zeroes
+//!             page_no >= size(): OutOfBounds, `out` untouched
+//! write_page  page_no >= the implementation's MAX_PAGES: OutOfBounds.
+//!             Any failed write leaves size() and every page as they were.
+//! PowerLoss   comes before every other check: on a powered-off SimDisk
+//!             read_page, write_page and sync return it whatever the page
+//!             number. (size() still answers, with the last value.)
+//! ```
+//!
 //! Where Zig builds the interface by hand (pointer + table of function
 //! pointers), Rust has it in the language: `dyn Storage` is exactly that pair.
 
@@ -31,8 +49,8 @@ pub type Page = [u8; PAGE_SIZE];
 pub enum StorageError {
     /// The simulated machine lost power; nothing works until `SimDisk::crash`.
     PowerLoss,
-    /// `read_page` of a page at or beyond `size()`, or a page number too
-    /// large for the implementation.
+    /// `read_page` of a page at or beyond `size()`, or `write_page` of a
+    /// page number at or beyond the implementation's `MAX_PAGES`.
     OutOfBounds,
     /// The implementation could not hold the write in memory.
     OutOfMemory,
@@ -42,7 +60,8 @@ pub enum StorageError {
 
 pub trait Storage {
     /// Read page `page_no` as this process currently sees it (including
-    /// writes that are not durable yet).
+    /// writes that are not durable yet). A hole below `size()` is zeroes;
+    /// at or beyond `size()` the result is `OutOfBounds`.
     fn read_page(&mut self, page_no: u64, out: &mut Page) -> Result<(), StorageError>;
 
     /// Replace page `page_no`. Writing at or past `size()` extends the store;

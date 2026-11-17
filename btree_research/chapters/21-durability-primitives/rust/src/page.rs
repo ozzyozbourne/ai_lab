@@ -80,17 +80,23 @@ pub fn verify(page: &Page, page_no: u64) -> Check {
 
 /// Read a page and classify it. A page at or past `storage.size()` is
 /// returned as zeroes and `Blank`, which is what recovery code wants.
+///
+/// The bound is taken from `read_page` itself, not from `size()`: a
+/// powered-off `SimDisk` then reports `PowerLoss` for every page number,
+/// instead of calling pages past the end blank while the power is off.
 pub fn read_checked(
     storage: &mut dyn Storage,
     page_no: u64,
     out: &mut Page,
 ) -> Result<Check, StorageError> {
-    if page_no >= storage.size() {
-        out.fill(0);
-        return Ok(Check::Blank);
+    match storage.read_page(page_no, out) {
+        Ok(()) => Ok(verify(out, page_no)),
+        Err(StorageError::OutOfBounds) => {
+            out.fill(0);
+            Ok(Check::Blank)
+        }
+        Err(err) => Err(err),
     }
-    storage.read_page(page_no, out)?;
-    Ok(verify(out, page_no))
 }
 
 #[cfg(test)]
@@ -134,13 +140,38 @@ mod tests {
             *b = i.wrapping_mul(31) as u8;
         }
         seal(&mut page, 9);
-        // CRC-32 detects all single-bit errors; try one bit in every byte.
+        // CRC-32 detects all single-bit errors: flip each of the 32768 bits
+        // of the page (payload and stored checksum) in turn.
         for i in 0..PAGE_SIZE {
-            page[i] ^= 1 << (i % 8);
-            assert_eq!(verify(&page, 9), Check::Corrupt);
-            page[i] ^= 1 << (i % 8);
+            for bit in 0..8 {
+                page[i] ^= 1 << bit;
+                assert_eq!(verify(&page, 9), Check::Corrupt);
+                page[i] ^= 1 << bit;
+            }
         }
         assert_eq!(verify(&page, 9), Check::Ok);
+    }
+
+    #[test]
+    fn read_checked_blank_past_the_end_power_loss_when_the_power_is_off() {
+        use crate::sim_disk::{CrashMode, SimDisk};
+        let mut disk = SimDisk::new(1);
+        let mut page: Page = [b'A'; PAGE_SIZE];
+        seal(&mut page, 2);
+        disk.write_page(2, &page).unwrap();
+
+        let mut out: Page = [0xEE; PAGE_SIZE];
+        assert_eq!(read_checked(&mut disk, 2, &mut out), Ok(Check::Ok));
+        assert_eq!(read_checked(&mut disk, 1, &mut out), Ok(Check::Blank)); // a hole
+        out = [0xEE; PAGE_SIZE];
+        assert_eq!(read_checked(&mut disk, 5, &mut out), Ok(Check::Blank)); // past the end
+        assert!(out.iter().all(|&b| b == 0));
+
+        disk.power_off_after_writes(0);
+        assert_eq!(read_checked(&mut disk, 2, &mut out), Err(StorageError::PowerLoss));
+        assert_eq!(read_checked(&mut disk, 5, &mut out), Err(StorageError::PowerLoss));
+        disk.crash(CrashMode::Drop);
+        assert_eq!(read_checked(&mut disk, 5, &mut out), Ok(Check::Blank));
     }
 
     #[test]

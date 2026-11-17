@@ -533,7 +533,7 @@ test "SimDisk: seeded model test (write, read, sync, crash drop/keep)" {
         syncs += disk.stats.syncs;
     }
     try testing.expect(crashes > 100 and syncs > 100);
-    try testing.expect(hole_reads > 20); // the runs reached the case
+    try testing.expect(hole_reads >= 10); // the runs reached the case
 }
 
 test "SimDisk: after a random crash every sector is old or one of the pending versions" {

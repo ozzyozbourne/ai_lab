@@ -291,6 +291,66 @@ test "the same code runs on SimDisk and on a real file" {
     }
 }
 
+test "SimDisk and FileStorage answer every call alike" {
+    // One random stream of writes, reads and syncs against both
+    // implementations of `Storage`: every result, error and size must agree.
+    // (No crashes: a real file cannot be crashed from a test.)
+    const SplitMix64 = @import("prng.zig").SplitMix64;
+    const pages = 12;
+    for (0..20) |seed| {
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        var file: file_storage.FileStorage = try .open(testing.io, tmp.dir, "diff.db");
+        defer file.close();
+        var disk: SimDisk = .init(testing.allocator, seed);
+        defer disk.deinit();
+        const f = file.storage();
+        const d = disk.storage();
+
+        var rng: SplitMix64 = .init(seed);
+        var a: Page = undefined;
+        var b: Page = undefined;
+        for (0..150) |_| {
+            const p = rng.below(pages);
+            switch (rng.below(8)) {
+                0...2 => {
+                    const page: Page = @splat(@intCast(1 + rng.below(255)));
+                    try f.writePage(p, &page);
+                    try d.writePage(p, &page);
+                },
+                3...6 => {
+                    const from_file = f.readPage(p, &a);
+                    const from_disk = d.readPage(p, &b);
+                    try testing.expectEqual(from_file, from_disk);
+                    if (from_file) |_| {
+                        try testing.expectEqualSlices(u8, &a, &b);
+                    } else |err| {
+                        try testing.expectEqual(error.OutOfBounds, err);
+                        try testing.expect(p >= f.size());
+                    }
+                },
+                else => {
+                    try f.sync();
+                    try d.sync();
+                },
+            }
+            try testing.expectEqual(f.size(), d.size());
+        }
+    }
+    // Both refuse a page number beyond their own limit and change nothing.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var file: file_storage.FileStorage = try .open(testing.io, tmp.dir, "limit.db");
+    defer file.close();
+    var disk: SimDisk = .init(testing.allocator, 1);
+    defer disk.deinit();
+    const page: Page = @splat('A');
+    try testing.expectError(error.OutOfBounds, file.storage().writePage(file_storage.FileStorage.max_pages, &page));
+    try testing.expectError(error.OutOfBounds, disk.storage().writePage(SimDisk.max_pages, &page));
+    try testing.expectEqual(0, file.storage().size());
+    try testing.expectEqual(0, disk.storage().size());
+}
+
 test {
     // Reach the tests of every file (see common/README.md).
     _ = storage_mod;

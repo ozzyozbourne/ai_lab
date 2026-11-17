@@ -362,7 +362,7 @@ test "SimDisk: a write to a far page reserves exactly what it needs" {
     _ = disk.crash(.drop);
     try testing.expectEqual(1, disk.durablePages());
     try testing.expectEqual(1001 * page_size, disk.durable.capacity);
-    try testing.expectError(error.OutOfBounds, disk.writePage(max_pages, &filled('C')));
+    try testing.expectError(error.OutOfBounds, disk.writePage(SimDisk.max_pages, &filled('C')));
     try disk.validate();
 }
 

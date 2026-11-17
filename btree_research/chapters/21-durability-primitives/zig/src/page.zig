@@ -61,12 +61,18 @@ pub fn verify(page: *const Page, page_no: u64) Check {
 
 /// Read a page and classify it. A page at or past `storage.size()` is
 /// returned as zeroes and `.blank`, which is what recovery code wants.
+///
+/// The bound is taken from `readPage` itself, not from `size()`: a
+/// powered-off `SimDisk` then reports `error.PowerLoss` for every page
+/// number, instead of calling pages past the end blank while the power is off.
 pub fn readChecked(storage: Storage, page_no: u64, out: *Page) Storage.Error!Check {
-    if (page_no >= storage.size()) {
-        @memset(out, 0);
-        return .blank;
-    }
-    try storage.readPage(page_no, out);
+    storage.readPage(page_no, out) catch |err| switch (err) {
+        error.OutOfBounds => {
+            @memset(out, 0);
+            return .blank;
+        },
+        else => return err,
+    };
     return verify(out, page_no);
 }
 
@@ -103,13 +109,38 @@ test "every single-bit flip is detected" {
     var page: Page = undefined;
     for (&page, 0..) |*b, i| b.* = @truncate(i *% 31);
     seal(&page, 9);
-    // CRC-32 detects all single-bit errors; try one bit in every byte.
+    // CRC-32 detects all single-bit errors: flip each of the 32768 bits of
+    // the page (payload and stored checksum) in turn.
     for (0..page_size) |i| {
-        page[i] ^= @as(u8, 1) << @intCast(i % 8);
-        try testing.expectEqual(Check.corrupt, verify(&page, 9));
-        page[i] ^= @as(u8, 1) << @intCast(i % 8);
+        for (0..8) |bit| {
+            page[i] ^= @as(u8, 1) << @intCast(bit);
+            try testing.expectEqual(Check.corrupt, verify(&page, 9));
+            page[i] ^= @as(u8, 1) << @intCast(bit);
+        }
     }
     try testing.expectEqual(Check.ok, verify(&page, 9));
+}
+
+test "readChecked: blank past the end, PowerLoss when the power is off" {
+    const SimDisk = @import("sim_disk.zig").SimDisk;
+    var disk: SimDisk = .init(testing.allocator, 1);
+    defer disk.deinit();
+    var page: Page = @splat('A');
+    seal(&page, 2);
+    try disk.writePage(2, &page);
+
+    var out: Page = @splat(0xEE);
+    try testing.expectEqual(Check.ok, try readChecked(disk.storage(), 2, &out));
+    try testing.expectEqual(Check.blank, try readChecked(disk.storage(), 1, &out)); // a hole
+    out = @splat(0xEE);
+    try testing.expectEqual(Check.blank, try readChecked(disk.storage(), 5, &out)); // past the end
+    try testing.expect(std.mem.allEqual(u8, &out, 0));
+
+    disk.powerOffAfterWrites(0);
+    try testing.expectError(error.PowerLoss, readChecked(disk.storage(), 2, &out));
+    try testing.expectError(error.PowerLoss, readChecked(disk.storage(), 5, &out));
+    _ = disk.crash(.drop);
+    try testing.expectEqual(Check.blank, try readChecked(disk.storage(), 5, &out));
 }
 
 test "every torn mix of two sealed versions is detected" {

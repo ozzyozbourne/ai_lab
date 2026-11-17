@@ -203,6 +203,35 @@ test "DoubleWrite: crash at every write, every mode: old or new, never torn" {
     try testing.expect(saw_old and saw_new and saw_restore); // the test exercised all paths
 }
 
+test "DoubleWrite: recover on a fresh store whose first update was cut short" {
+    // Regression: recovery's own repair write extends size(), and the next
+    // slot it reads is then a hole below that pending write.
+    var buf: [DoubleWrite.scratch_bytes]u8 = undefined;
+    for ([_]CrashMode{ .drop, .keep, .tear, .random }) |mode| {
+        for (0..3) |crash_after| {
+            var disk: SimDisk = .init(testing.allocator, 1);
+            defer disk.deinit();
+            const dw: DoubleWrite = .{ .storage = disk.storage(), .slots = 3 };
+            var page = payloadOf('A');
+            disk.powerOffAfterWrites(crash_after);
+            try testing.expectError(error.PowerLoss, dw.update(0, &page));
+            _ = disk.crash(mode);
+
+            var fba: std.heap.FixedBufferAllocator = .init(&buf);
+            const report = try dw.recover(fba.allocator());
+            try testing.expectEqual(3, report.intact + report.rolled_forward + report.restored + report.blank);
+            // Logical page 0 is the new version or was never written; the
+            // other two were never written.
+            var out: Page = undefined;
+            const check = try dw.read(0, &out);
+            try testing.expect(check == .ok or check == .blank);
+            if (crash_after == 2) try testing.expectEqual('A', try versionOf(dw, 0));
+            try testing.expectEqual(page_mod.Check.blank, try dw.read(1, &out));
+            try testing.expectEqual(page_mod.Check.blank, try dw.read(2, &out));
+        }
+    }
+}
+
 test "DoubleWrite: recovery interrupted by a second crash still converges" {
     var buf: [DoubleWrite.scratch_bytes]u8 = undefined;
     for (0..200) |seed| {

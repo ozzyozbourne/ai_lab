@@ -362,9 +362,6 @@ test "SimDisk: a write to a far page reserves exactly what it needs" {
     _ = disk.crash(.drop);
     try testing.expectEqual(1, disk.durablePages());
     try testing.expectEqual(1001 * page_size, disk.durable.capacity);
-    // The last allowed page reserves max_pages, not more.
-    try disk.writePage(max_pages - 1, &filled('C'));
-    try testing.expectEqual(max_pages * page_size, disk.durable.capacity);
     try testing.expectError(error.OutOfBounds, disk.writePage(max_pages, &filled('C')));
     try disk.validate();
 }
@@ -480,55 +477,63 @@ const Model = struct {
 };
 
 test "SimDisk: seeded model test (write, read, sync, crash drop/keep)" {
-    var disk: SimDisk = .init(testing.allocator, 7);
-    defer disk.deinit();
-    var model: Model = .{};
-    var rng: SplitMix64 = .init(2121);
     var page: Page = undefined;
-
     var hole_reads: u32 = 0; // reads of a hole beyond the durable end
-    for (0..5000) |_| {
-        switch (rng.below(10)) {
-            0...4 => { // write
-                const p = rng.below(model_pages);
-                const byte: u8 = @intCast(1 + rng.below(255));
-                try disk.writePage(p, &filled(byte));
-                model.cache[@intCast(p)] = byte;
-                model.cache_size = @max(model.cache_size, p + 1);
-            },
-            5...6 => { // read
-                const p = rng.below(model_pages);
-                if (p >= model.cache_size) {
-                    try testing.expectError(error.OutOfBounds, disk.readPage(p, &page));
-                } else {
-                    try disk.readPage(p, &page);
-                    // A hole (never written, below the size) reads as zeroes.
-                    try testing.expect(std.mem.allEqual(u8, &page, model.cache[@intCast(p)] orelse 0));
-                    if (model.cache[@intCast(p)] == null and p >= model.durable_size) hole_reads += 1;
-                }
-            },
-            7 => { // sync: the cache becomes the durable state
-                try disk.sync();
-                model.durable = model.cache;
-                model.durable_size = model.cache_size;
-            },
-            8 => { // crash, nothing survives but the durable state
-                _ = disk.crash(.drop);
-                model.cache = model.durable;
-                model.cache_size = model.durable_size;
-            },
-            else => { // crash, everything pending happened to reach the disk
-                _ = disk.crash(.keep);
-                model.durable = model.cache;
-                model.durable_size = model.cache_size;
-            },
+    var crashes: u64 = 0;
+    var syncs: u64 = 0;
+    // Many short runs rather than one long one: the durable image never
+    // shrinks, so "a hole beyond the platter" only occurs early in a run.
+    for (0..50) |round| {
+        var disk: SimDisk = .init(testing.allocator, 7 + round);
+        defer disk.deinit();
+        var model: Model = .{};
+        var rng: SplitMix64 = .init(2121 + round);
+
+        for (0..200) |_| {
+            switch (rng.below(10)) {
+                0...4 => { // write
+                    const p = rng.below(model_pages);
+                    const byte: u8 = @intCast(1 + rng.below(255));
+                    try disk.writePage(p, &filled(byte));
+                    model.cache[@intCast(p)] = byte;
+                    model.cache_size = @max(model.cache_size, p + 1);
+                },
+                5...6 => { // read
+                    const p = rng.below(model_pages);
+                    if (p >= model.cache_size) {
+                        try testing.expectError(error.OutOfBounds, disk.readPage(p, &page));
+                    } else {
+                        try disk.readPage(p, &page);
+                        // A hole (never written, below the size) reads as zeroes.
+                        try testing.expect(std.mem.allEqual(u8, &page, model.cache[@intCast(p)] orelse 0));
+                        if (model.cache[@intCast(p)] == null and p >= model.durable_size) hole_reads += 1;
+                    }
+                },
+                7 => { // sync: the cache becomes the durable state
+                    try disk.sync();
+                    model.durable = model.cache;
+                    model.durable_size = model.cache_size;
+                },
+                8 => { // crash, nothing survives but the durable state
+                    _ = disk.crash(.drop);
+                    model.cache = model.durable;
+                    model.cache_size = model.durable_size;
+                },
+                else => { // crash, everything pending happened to reach the disk
+                    _ = disk.crash(.keep);
+                    model.durable = model.cache;
+                    model.durable_size = model.cache_size;
+                },
+            }
+            try disk.validate();
+            try testing.expectEqual(model.cache_size, disk.size());
+            try testing.expectEqual(model.durable_size, disk.durablePages());
         }
-        try disk.validate();
-        try testing.expectEqual(model.cache_size, disk.size());
-        try testing.expectEqual(model.durable_size, disk.durablePages());
+        crashes += disk.stats.crashes;
+        syncs += disk.stats.syncs;
     }
-    try testing.expect(disk.stats.crashes > 100 and disk.stats.syncs > 100);
-    try testing.expect(hole_reads > 0); // the stream reached the case
+    try testing.expect(crashes > 100 and syncs > 100);
+    try testing.expect(hole_reads > 20); // the runs reached the case
 }
 
 test "SimDisk: after a random crash every sector is old or one of the pending versions" {

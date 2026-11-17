@@ -583,7 +583,7 @@ way a sorted batch of lookups does.</p>
   /* ====================================================================
    * Self-tests (badges at the end of the page)
    * ================================================================== */
-  BTViz.selfTest('JS model reproduces expected_output.txt (all 8 sections)', buildReport(), window.CHAPTER_EXPECTED_OUTPUT);
+  BTViz.selfTest('model prints expected_output.txt', buildReport(), window.CHAPTER_EXPECTED_OUTPUT);
   (function () {
     // Exhaustive check of the JS model against a linear scan, like the Zig and Rust tests.
     var A = [1, 3, 5, 7], bad = 0, arrays = 0;
@@ -603,7 +603,7 @@ way a sorted batch of lookups does.</p>
         }
       }
     }
-    BTViz.selfTest('lower / upper bound and galloping agree with a linear scan on all small arrays', { arrays: arrays, mismatches: bad }, { arrays: 210, mismatches: 0 });
+    BTViz.selfTest('bounds and gallop match linear scan', { arrays: arrays, mismatches: bad }, { arrays: 210, mismatches: 0 });
   })();
 })();
 </script>

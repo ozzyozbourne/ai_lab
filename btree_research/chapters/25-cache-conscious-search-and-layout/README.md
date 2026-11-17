@@ -37,10 +37,9 @@ far longer than the comparison itself (textbook; how much longer depends on whic
 level, if any, still has the line). Reading a second key from the same line is nearly free. So the unit to count is the
 number of *distinct lines*, exactly as chapter 01 counted distinct pages.
 
-**A mispredicted branch.** The CPU runs many instructions ahead of the one it is
-finishing. At an `if` it guesses. In a binary search for a random key the comparison
-`keys[mid] < key` is a coin flip, so the guess is wrong about half the time and the
-speculative work is thrown away.
+**A mispredicted branch.** The CPU runs ahead of the instruction it is finishing, and
+at an `if` it guesses. In a binary search for a random key `keys[mid] < key` is a coin
+flip, so the guess is wrong about half the time and the speculative work is thrown away.
 
 The techniques of this chapter attack one or both:
 
@@ -53,9 +52,8 @@ The techniques of this chapter attack one or both:
 | Block tree (8 keys per node) | misses | A B-tree whose node is one cache line: one line per level |
 | Struct of arrays | misses | Keep keys together so that a line of keys contains only keys |
 
-Notice that the last two rows are the B-tree idea again. A B-tree exists because one
-node should be one unit of I/O. With disk the unit is a 4096-byte page. With memory it is
-a 64-byte line.
+The block tree is the B-tree idea again: one node should be one unit of transfer. With
+disk the unit is a 4096-byte page; with memory it is a 64-byte line.
 
 ## A worked example by hand
 
@@ -175,10 +173,9 @@ eytzinger+prefetch   10.00   12.00              1.00
 
 Without prefetch every line is a miss that must finish before the next address is even
 known: the misses form a chain. With prefetch only the first line is a surprise. The
-halving search needs two hints per step (it does not know which half it will take, so
-one hint is always wasted) and each hint is only one comparison ahead. Eytzinger needs
-one hint per step and each is three comparisons ahead. The model counts hints; it cannot
-tell you whether a hint arrives in time. That depends on the machine.
+halving search needs two hints per step (one is always wasted) and each is only one
+comparison ahead. Eytzinger needs one hint per step, three comparisons ahead. The model
+counts hints; whether a hint arrives in time depends on the machine.
 
 ```
 == 3. One 255-entry node: array of structs vs struct of arrays ==
@@ -205,9 +202,8 @@ Every search takes a `tracer` and calls `tracer.cmp(index)` for each key it comp
 lines in a fixed bitmap and counts. `NoTrace` has empty methods. The search is written
 once and instantiated with both, so the counted code and the fast code cannot diverge.
 
-Zig passes `tracer: anytype` and the compiler checks the calls when the function is
-instantiated. Rust names the contract as `trait Tracer` and uses a generic parameter
-`T: Tracer`. Both produce one specialised copy per tracer type.
+Zig passes `tracer: anytype` (duck typing at compile time); Rust names the contract as
+`trait Tracer`. Both produce one specialised copy per tracer type.
 
 ### `search`: four lower bounds over a sorted slice
 
@@ -339,10 +335,9 @@ shows that "scan a contiguous block very fast" is a first-class strategy, which 
 pointer array (`postgres/src/backend/access/nbtree/nbtsearch.c:394-406`). Turso's
 interior-page search is also a `min`/`max` loop that decodes a cell per probe
 (`turso/core/storage/btree.rs:2141-2159`). Both pages are slotted (chapter 10): a probe
-reads a slot and then follows it to a variable-length cell elsewhere in the page, so each
-comparison can touch two lines. With variable-length keys and a comparator function, the
-comparison itself dominates and none of this chapter's tricks apply directly. They apply
-to fixed-width keys.
+reads a slot and then follows it to a variable-length cell elsewhere in the page. With
+variable-length keys and a comparator function the comparison itself dominates, and this
+chapter's tricks, which need fixed-width keys, do not apply directly.
 
 **DuckDB**'s ART Node16 would be the obvious place for a SIMD compare (16 key bytes), but
 this code base searches it with a plain loop

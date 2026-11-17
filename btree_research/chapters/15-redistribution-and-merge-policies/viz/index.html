@@ -315,11 +315,11 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
   }
 
   /* --------------------------------------------- self-tests against the programs */
-  BTViz.selfTest('JS model = programs: fixed scenario, every dump and the counters', Ch15.reportScenario(), window.CH15_EXPECTED.scenario);
+  BTViz.selfTest('scenario: dumps + counters', Ch15.reportScenario(), window.CH15_EXPECTED.scenario);
   var shown = scenario(false);
   var lines = window.CH15_EXPECTED.scenario.split('\n');
   var at = lines.lastIndexOf('parent: (p0, 30) right=p1');
-  BTViz.selfTest('animated scenario ends in the programs’ final state', shown.dump(), lines.slice(at, at + 3).join('\n'));
+  BTViz.selfTest('animation: final state', shown.dump(), lines.slice(at, at + 3).join('\n'));
   window.CH15_FIG = { stepper: stepper, view: view, tree: function () { return tree; } };
 })();
 </script>

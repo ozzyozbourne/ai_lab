@@ -27,7 +27,7 @@ costs in pages and in churn. Back to <a href="index.html">the step-by-step figur
   <li>Press play to watch the workload progress, or drag the scrubber.</li>
 </ul>
 <p>Cells are 40 to 200 bytes, pages 4096 bytes. With 20,000 keys the numbers are exactly those in
-<code>expected_output.txt</code>. Counts from this model on these workloads; not a benchmark of any engine.</p>
+<code>expected_output.txt</code>; the badge at the bottom of the page confirms it. Counts from this model on these workloads; not a benchmark of any engine.</p>
 
 <script src="code.js"></script>
 <script src="../../../assets/viz.js"></script>
@@ -73,9 +73,10 @@ costs in pages and in churn. Back to <a href="index.html">the step-by-step figur
   Object.keys(WORK).forEach(function (id) { workload.appendChild(el('option', { value: id }, WORK[id].label)); });
   var count = el('select.bt-select#count', { 'aria-label': 'Number of keys' });
   [2000, 5000, 20000].forEach(function (n) { count.appendChild(el('option', { value: n, selected: n === 20000 }, n.toLocaleString('en-US') + ' keys')); });
-  var metric = el('select.bt-select#metric', { 'aria-label': 'Metric shown in the bar chart' });
-  METRICS.forEach(function (m) { metric.appendChild(el('option', { value: m.id }, m.label)); });
-  fig.toolbar.append(el('label.bt-field', 'workload', workload), count, el('label.bt-field', 'bars', metric));
+  var metric = el('select.bt-select#metric', { 'aria-label': 'Metric shown in the bar chart', title: 'Metric shown in the bar chart' });
+  METRICS.forEach(function (m) { metric.appendChild(el('option', { value: m.id }, 'bars: ' + m.label)); });
+  workload.style.maxWidth = metric.style.maxWidth = '100%';
+  fig.toolbar.append(workload, count, metric);
 
   var chartHost = el('div'), profile = el('div.c15-profile'), tableHost = el('div.bt-table-wrap');
   fig.stage.append(chartHost, el('div', { style: { fontSize: '.8rem', color: 'var(--bt-muted)' } }, 'Leaf fill profile, and average fill:'), profile, tableHost);
@@ -140,7 +141,7 @@ costs in pages and in churn. Back to <a href="index.html">the step-by-step figur
   var parts = Ch15.reportPoliciesParts(20000), text = '';
   (function nextPart(i) {
     if (i === parts.length) {
-      BTViz.selfTest('JS model = programs: sections 3 and 4, all 22 rows at 20,000 keys', text, window.CH15_EXPECTED.policies);
+      BTViz.selfTest('policy tables: all 22 rows', text, window.CH15_EXPECTED.policies);
       return;
     }
     setTimeout(function () { text += parts[i](); nextPart(i + 1); }, 60);

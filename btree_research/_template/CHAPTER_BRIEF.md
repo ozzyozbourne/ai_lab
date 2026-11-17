@@ -91,3 +91,17 @@ At most 8 lines: what you built; the exact summary lines of `zig build test`,
 `cargo test`, clippy; whether both outputs match `expected_output.txt`; what the
 Playwright check covered; any deviation from the plan row; anything a later chapter
 that copies your code must know.
+
+## Notes learned from the first wave
+
+- Scratch space is shared by many agents working at once. Use ONLY a private
+  subdirectory `<scratchpad>/work/chNN/` for scripts, screenshots and scratch builds;
+  never read, move or delete files outside it.
+- Zig `build.zig.zon` package names are limited to 32 characters; shorten the name there
+  if your slug is longer (keep the full name for the executable and the Rust crate).
+- In Rust, structure the crate as `src/lib.rs` plus a thin `src/main.rs` so public API
+  that the demo does not call is not flagged as dead code by clippy.
+- From `chapters/NN-slug/viz/` the toolkit is at `../../../assets/`.
+- Known toolkit quirks: give `BTViz.ArrayView` its final `capacity` from the first frame;
+  keep `BTViz.selfTest` names short (they do not wrap on phones).
+- Line counts above the 800-line aim are acceptable when most of the excess is tests.

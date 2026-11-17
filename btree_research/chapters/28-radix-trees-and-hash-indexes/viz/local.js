@@ -573,7 +573,7 @@
 
   /* ------------------------------------------------------- ArtView (SVG) */
 
-  var CW = 24, CH = 26, VGAP = 38, HGAP = 14, PAD = 14, LABEL_H = 15;
+  var CW = 24, CH = 26, VGAP = 38, HGAP = 18, PAD = 18, LABEL_H = 15;
 
   /**
    * new ART28.ArtView(target).render(state)
@@ -685,7 +685,8 @@
         });
         g.appendChild(el('svg:title', 'prefix node: ' + r.bytes.length + ' shared byte' + (r.bytes.length > 1 ? 's' : '') + ' "' + fmtBytes(r.bytes) + '"'));
       } else {
-        g.appendChild(el('text', { class: 'a28-label', x: 0, y: -5 }, NAME[r.t] + ' ' + childCount(r) + '/' + CAP[r.t]));
+        // Right-aligned just left of the centre, where the edge from the parent arrives.
+        g.appendChild(el('text', { class: 'a28-label', x: m.w / 2 - 7, y: -5, 'text-anchor': 'end' }, NAME[r.t] + ' ' + childCount(r) + '/' + CAP[r.t]));
         g.appendChild(el('rect', { class: 'a28-box', width: m.w, height: m.h, rx: 4 }));
         for (var i = 0; i < m.cols * m.rows; i++) {
           var bc = m.bytes[i], cx = (i % m.cols) * CW, cy = Math.floor(i / m.cols) * CH;

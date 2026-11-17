@@ -534,7 +534,8 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
     msg);
 
   // ---- self-tests: the JS model against the Zig/Rust programs -------------------------
-  BTViz.selfTest('model reproduces all of expected_output.txt (4096-byte page, 3 parts)', Ch10.demoText(), window.CHAPTER_EXPECTED_OUTPUT);
+  // The whole stdout of `zig build run` / `cargo run` (4096-byte page, parts 1 to 3).
+  BTViz.selfTest('program output reproduced (3 parts)', Ch10.demoText(), window.CHAPTER_EXPECTED_OUTPUT);
 
   loadReadme();
   // The picture shows the same scenario on a small page: every offset is lower by 4096 - 256.
@@ -542,7 +543,7 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
     var parts = s.split('@');
     return parts[0] + '@' + (+parts[1] - (4096 - pageSize));
   }).join(' ');
-  BTViz.selfTest('worked example on the 256-byte page ends like the programs (offsets - 3840)',
+  BTViz.selfTest('small page = program page, offsets - 3840',
     page.view().rows.map(function (r) { return r.key + '@' + r.off; }).join(' '), printed);
 })();
 </script>

@@ -14,7 +14,7 @@
 //! ties broken by id), so the Zig and Rust programs agree bit for bit.
 //! Distances are exact while dim * (largest coordinate difference)^2 fits in
 //! a u64, for example any i32 coordinates with dim = 1, or coordinates within
-//! +-2^29 with dim <= 16. Beyond that `dist2` saturates (see there).
+//! +-2^28 with dim <= 16. Beyond that `dist2` saturates (see there).
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const SplitMix64 = @import("prng.zig").SplitMix64;
@@ -333,10 +333,10 @@ test "dist2 cannot overflow: extreme coordinates, then saturation" {
     var best: [1]Hit = undefined;
     try testing.expectEqual(1, flatSearch(&.{ lo, lo, hi - 1, hi - 1 }, 2, &.{ hi, hi }, &best));
     try testing.expectEqual(Hit{ .dist = 2, .id = 1 }, best[0]);
-    // Coordinates within +-2^29 in 16 dimensions stay exact (the documented range).
-    const a: [16]i32 = @splat(-(1 << 29));
-    const b: [16]i32 = @splat(1 << 29);
-    try testing.expectEqual(16 << 60, dist2(&a, &b));
+    // Coordinates within +-2^28 in 16 dimensions stay exact (the documented range).
+    const a: [16]i32 = @splat(-(1 << 28));
+    const b: [16]i32 = @splat(1 << 28);
+    try testing.expectEqual(1 << 62, dist2(&a, &b));
 }
 
 test "1-D: the nearest neighbour is the predecessor or the successor" {

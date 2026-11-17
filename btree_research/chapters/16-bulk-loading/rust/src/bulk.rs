@@ -77,6 +77,13 @@ pub struct BulkLoader<'a> {
     inner_target: usize,
     levels: Vec<Level>,
     last_key: Option<u64>,
+    /// Set by any call that runs out of nodes. Unlike `put`, an `add` that
+    /// fails halfway cannot be undone or retried (a page may already have
+    /// been closed and announced to its parent), so the failed load is
+    /// abandoned instead: the tree is emptied and every later call returns
+    /// `Error::LoaderClosed`. (The Zig version also sets its flag in
+    /// `finish`; here `finish` takes `self`, so a finished loader is gone.)
+    closed: bool,
 }
 
 impl<'a> BulkLoader<'a> {
@@ -85,18 +92,37 @@ impl<'a> BulkLoader<'a> {
         assert!(tree.root == NIL && tree.count == 0);
         let leaf_target = fill_target(tree.leaf_cap(), tree.leaf_min(), options.leaf_fill);
         let inner_target = fill_target(tree.inner_cap(), tree.inner_min(), options.inner_fill);
-        Self { tree, leaf_target, inner_target, levels: Vec::new(), last_key: None }
+        Self { tree, leaf_target, inner_target, levels: Vec::new(), last_key: None, closed: false }
     }
 
     /// Feed the next entry. Keys must arrive in strictly ascending order.
+    /// `Error::NotSorted` rejects the key and changes nothing.
+    /// `Error::OutOfNodes` abandons the whole load (see `closed`).
     pub fn add(&mut self, key: u64, value: u64) -> Result<(), Error> {
+        if self.closed {
+            return Err(Error::LoaderClosed);
+        }
         if self.last_key.is_some_and(|last| key <= last) {
             return Err(Error::NotSorted);
         }
+        if let Err(err) = self.add_pair(0, Pair { key, slot: value }) {
+            return Err(self.abandon(err));
+        }
+        // Only now is the key part of the tree.
         self.last_key = Some(key);
-        self.add_pair(0, Pair { key, slot: value })?;
         self.tree.count += 1;
         Ok(())
+    }
+
+    /// Out of nodes in the middle of a load. The half-built pages are of no
+    /// use to anyone (there is no root to reach them from), so give them back
+    /// and leave the tree as empty as `new` found it. The page-write counter
+    /// is left alone: those writes did happen.
+    fn abandon(&mut self, err: Error) -> Error {
+        self.closed = true;
+        self.tree.nodes.clear();
+        self.tree.count = 0;
+        err
     }
 
     fn target(&self, level: usize) -> usize {
@@ -166,7 +192,28 @@ impl<'a> BulkLoader<'a> {
     }
 
     /// End of input: close the right edge of the tree, bottom to top.
-    pub fn finish(&mut self) -> Result<(), Error> {
+    ///
+    /// `finish` consumes the loader, so "call it exactly once, and no `add`
+    /// after it" is checked by the compiler (in Zig it is a run-time error):
+    ///
+    /// ```compile_fail
+    /// use ch16_bulk_loading::{bptree::Tree, bulk::{BulkLoader, Options}};
+    /// let mut tree = Tree::new(4);
+    /// let mut loader = BulkLoader::new(&mut tree, Options::default());
+    /// loader.add(1, 10).unwrap();
+    /// loader.finish().unwrap();
+    /// loader.finish().unwrap(); // error[E0382]: use of moved value: `loader`
+    /// ```
+    ///
+    /// On `Error::OutOfNodes` the load is abandoned (see `closed`).
+    pub fn finish(mut self) -> Result<(), Error> {
+        if self.closed {
+            return Err(Error::LoaderClosed);
+        }
+        self.close_right_edge().map_err(|err| self.abandon(err))
+    }
+
+    fn close_right_edge(&mut self) -> Result<(), Error> {
         let mut level = 0;
         while level < self.levels.len() {
             let is_leaf = level == 0;
@@ -241,12 +288,16 @@ pub fn bulk_load(order: usize, entries: &[Entry], options: Options) -> Result<Tr
 /// Same, but the tree may hold at most `max_nodes` nodes.
 pub fn bulk_load_with_budget(order: usize, entries: &[Entry], options: Options, max_nodes: usize) -> Result<Tree, Error> {
     let mut tree = Tree::with_budget(order, max_nodes);
-    let mut loader = BulkLoader::new(&mut tree, options);
+    load_into(&mut tree, entries, options)?;
+    Ok(tree)
+}
+
+fn load_into(tree: &mut Tree, entries: &[Entry], options: Options) -> Result<(), Error> {
+    let mut loader = BulkLoader::new(tree, options);
     for e in entries {
         loader.add(e.key, e.value)?;
     }
-    loader.finish()?;
-    Ok(tree)
+    loader.finish()
 }
 
 // ---------------------------------------------------------------------------
@@ -341,20 +392,79 @@ mod tests {
     }
 
     #[test]
-    fn loader_memory_does_not_grow_with_the_input() {
-        for n in [2_000u64, 200_000] {
-            let mut tree = Tree::new(4);
-            let mut loader = BulkLoader::new(&mut tree, Options::default());
-            for k in 0..n {
-                loader.add(k, k).unwrap();
+    fn a_closed_loader_refuses_everything() {
+        // `finish` consumes the loader, so "finish twice" and "add after
+        // finish" do not compile (see the compile_fail doc test on `finish`).
+        // What is left to check at run time is a loader closed by a failure.
+        let mut tree = Tree::with_budget(4, 0);
+        let mut loader = BulkLoader::new(&mut tree, Options::default());
+        for k in 1..=3 {
+            loader.add(k, k).unwrap(); // the open leaf needs no node yet
+        }
+        assert_eq!(loader.add(4, 4), Err(Error::OutOfNodes));
+        assert_eq!(loader.finish(), Err(Error::LoaderClosed));
+        assert_eq!(tree.count, 0);
+    }
+
+    #[test]
+    fn out_of_nodes_abandons_the_load_and_leaves_an_empty_tree() {
+        let (mut failed_in_add, mut failed_in_finish) = (0, 0);
+        for n in 1..=60u64 {
+            let needed = bulk_load(4, &ascending(n as usize, 1), Options::default()).unwrap().nodes.len();
+            for budget in 0..needed {
+                let mut tree = Tree::with_budget(4, budget);
+                let mut loader = BulkLoader::new(&mut tree, Options::default());
+                let failed_key = (0..n).find(|&k| {
+                    let result = loader.add(k, k);
+                    assert!(matches!(result, Ok(()) | Err(Error::OutOfNodes)));
+                    result.is_err()
+                });
+                if let Some(key) = failed_key {
+                    failed_in_add += 1;
+                    // Retrying the key used to report NotSorted, because the
+                    // key was remembered before it was stored.
+                    assert_eq!(loader.add(key, key), Err(Error::LoaderClosed));
+                    assert_eq!(loader.add(key + 1, key), Err(Error::LoaderClosed));
+                    assert_eq!(loader.finish(), Err(Error::LoaderClosed));
+                } else {
+                    failed_in_finish += 1;
+                    assert_eq!(loader.finish(), Err(Error::OutOfNodes));
+                }
+                // Not a half-built tree: a valid empty one, which `put` can use.
+                assert_eq!(tree.validate(), Ok(()));
+                assert_eq!(tree.count, 0);
+                assert_eq!(tree.root, NIL);
+                assert_eq!(tree.get(0), None);
+                if budget > 0 {
+                    tree.put(7, 70).unwrap();
+                    assert_eq!(tree.get(7), Some(70));
+                    assert_eq!(tree.validate(), Ok(()));
+                }
             }
-            loader.finish().unwrap();
-            // One buffer per level, and every buffer still has its original
-            // capacity whether 600 or 60000 pages went through it.
-            let capacities: Vec<usize> = loader.levels.iter().map(|lv| lv.buf.capacity()).collect();
-            let height = tree.height;
-            assert_eq!(capacities.len(), height);
-            assert!(capacities.iter().all(|&c| c <= 4));
+        }
+        // Both entry points were hit.
+        assert!(failed_in_add > 0);
+        assert!(failed_in_finish > 0);
+    }
+
+    #[test]
+    fn loader_memory_does_not_grow_with_the_input() {
+        for order in [4usize, 32] {
+            for n in [2_000u64, 200_000] {
+                let mut tree = Tree::new(order);
+                let mut loader = BulkLoader::new(&mut tree, Options::default());
+                for k in 0..n {
+                    loader.add(k, k).unwrap();
+                }
+                // One buffer per level, and every buffer still has its
+                // original capacity whether 1 page or 60000 went through it.
+                // (Checked before `finish`, which consumes the loader; the
+                // levels that `finish` adds on top never hold a full page.)
+                let capacities: Vec<usize> = loader.levels.iter().map(|lv| lv.buf.capacity()).collect();
+                loader.finish().unwrap();
+                assert!(!capacities.is_empty() && capacities.len() <= tree.height);
+                assert!(capacities.iter().all(|&c| c <= order));
+            }
         }
     }
 

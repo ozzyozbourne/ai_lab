@@ -86,7 +86,10 @@ impl Shape {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     OutOfNodes,
+    /// Bulk loader: the key is not greater than the previous one.
     NotSorted,
+    /// Bulk loader: an earlier call ran out of nodes and the load was abandoned.
+    LoaderClosed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -14,7 +14,7 @@
 //! ties broken by id), so the Zig and Rust programs agree bit for bit.
 //! Distances are exact while dim * (largest coordinate difference)^2 fits in
 //! a u64, for example any i32 coordinates with dim = 1, or coordinates within
-//! +-2^29 with dim <= 16. Beyond that `dist2` saturates (see there).
+//! +-2^28 with dim <= 16. Beyond that `dist2` saturates (see there).
 use crate::prng::SplitMix64;
 
 /// A candidate answer. The derived ordering compares `dist` first, then
@@ -389,8 +389,8 @@ mod tests {
         let found = flat_search(&[lo, lo, hi - 1, hi - 1], 2, &[hi, hi], &mut best);
         assert_eq!(found, 1);
         assert_eq!(best[0], Hit { dist: 2, id: 1 });
-        // Coordinates within +-2^29 in 16 dimensions stay exact (the documented range).
-        assert_eq!(dist2(&[-(1 << 29); 16], &[1 << 29; 16]), 16 << 60);
+        // Coordinates within +-2^28 in 16 dimensions stay exact (the documented range).
+        assert_eq!(dist2(&[-(1 << 28); 16], &[1 << 28; 16]), 1 << 62);
     }
 
     #[test]

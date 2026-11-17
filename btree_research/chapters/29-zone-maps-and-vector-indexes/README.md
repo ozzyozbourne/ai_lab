@@ -261,8 +261,7 @@ How to read it:
   data (row number plus a delay of up to 299) zones overlap their neighbours, so three or
   four chunks are scanned; `v = 777` reads 400 rows to find nothing. On `shuffled` data
   the zone map never helps. The last line shows that appends only touch the last zone.
-- Section 3. One probe scans 792 of 5760 vectors and finds 109 of the 120 true
-  neighbours. Query 12 is the hand example again.
+- Section 3. One probe finds 109 of the 120 true neighbours. Query 12 is the hand example again.
 - Section 4. In 16 dimensions with uniform data one probe finds 28% of the true
   neighbours, and it takes half the lists to reach 95%. These are counts from this
   program on this data, not a general law.
@@ -318,14 +317,13 @@ live in one array indexed through `offsets` (`HNSW.h:123-129`).
 kd-trees and ball trees finds nothing.
 
 Not verified in these sources (textbook): the claim that no linear order of two or more
-dimensions keeps all near pairs near, the grid lower bound quoted above, and "distances
-concentrate in high dimensions".
+dimensions keeps all near pairs near, and the grid lower bound quoted above.
 
 ## Allocator notes
 
 - **Where.** `Ivf.build` creates a `std.heap.ArenaAllocator` on top of the caller's
-  allocator and takes four temporary arrays from it: the shuffled ids, the per-centroid
-  coordinate sums, the per-centroid counts and the counting-sort cursors.
+  allocator and takes four temporary arrays from it (shuffled ids, per-centroid sums and
+  counts, counting-sort cursors).
 - **Lifetime.** The scratch dies when `build` returns, on success and on every error
   path. The five slices of the index come from the caller's `gpa` and are freed by
   `Ivf.deinit`.
@@ -359,7 +357,7 @@ concentrate in high dimensions".
   the id), or top-k results and k-means assignments depend on iteration order.
 - **Leaving the loop after a centroid update.** Then lists are filled from assignments
   made against the old centroids, and "each vector is in its nearest centroid's list"
-  is false. Exit after an assignment step.
+  is false.
 - **Reading recall as a guarantee.** B-tree bounds are exact; IVF and HNSW numbers depend
   on the data, the queries and the knobs.
 - **Calling HNSW a tree or a skip list.** It is a graph with cycles and no key order.

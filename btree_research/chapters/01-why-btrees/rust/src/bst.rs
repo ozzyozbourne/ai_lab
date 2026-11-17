@@ -167,22 +167,83 @@ impl<P: Default> Bst<P> {
         Some(node.value)
     }
 
+    // `range`, `height` and `validate` have to visit a whole subtree, so they
+    // must remember where to continue after finishing one side. Recursion
+    // remembers that on the call stack, one frame per level, and an
+    // unbalanced tree can have as many levels as it has nodes: 20000 nodes
+    // inserted in ascending order would need 20000 frames, more than a Rust
+    // test thread's 2 MiB stack holds. All three therefore keep the pending
+    // work in a `Vec` on the heap, which can grow as long as there is memory.
+
     /// All entries with lo <= key < hi, ascending.
     pub fn range(&self, lo: u64, hi: u64) -> Vec<Entry> {
         let mut out = Vec::new();
-        range_node(&self.root, lo, hi, &mut out);
+        // In-order walk. `pending` holds the nodes whose left subtree is
+        // being visited: their own entry and their right subtree come later.
+        let mut pending: Vec<&Node<P>> = Vec::new();
+        let mut current = self.root.as_deref();
+        loop {
+            while let Some(node) = current {
+                if node.key < lo {
+                    // The node and its whole left subtree are below the range.
+                    current = node.right.as_deref();
+                } else {
+                    pending.push(node);
+                    // Keys equal to `lo` cannot have anything useful on the left.
+                    current = if lo < node.key {
+                        node.left.as_deref()
+                    } else {
+                        None
+                    };
+                }
+            }
+            let Some(node) = pending.pop() else { break };
+            // Everything still pending is larger than this node: stop early.
+            if node.key >= hi {
+                break;
+            }
+            out.push(Entry {
+                key: node.key,
+                value: node.value,
+            });
+            current = node.right.as_deref();
+        }
         out
     }
 
     /// Number of nodes on the longest path from the root down (0 if empty).
     /// This is the worst-case number of page reads for one lookup.
     pub fn height(&self) -> usize {
-        height_of(&self.root)
+        let mut pending: Vec<(&Node<P>, usize)> = Vec::new();
+        pending.extend(self.root.as_deref().map(|root| (root, 1)));
+        let mut deepest = 0;
+        while let Some((node, depth)) = pending.pop() {
+            deepest = deepest.max(depth);
+            pending.extend(node.left.as_deref().map(|left| (left, depth + 1)));
+            pending.extend(node.right.as_deref().map(|right| (right, depth + 1)));
+        }
+        deepest
     }
 
     /// Check the search-tree invariant and that `len` matches the node count.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if validate_node(&self.root, None, None)? != self.len {
+        // Every key in the subtree below `node` must lie strictly between
+        // `low` and `high` (None = unbounded).
+        type Bounds = (Option<u64>, Option<u64>);
+        let mut pending: Vec<(&Node<P>, Bounds)> = Vec::new();
+        pending.extend(self.root.as_deref().map(|root| (root, (None, None))));
+        let mut count = 0;
+        while let Some((node, (low, high))) = pending.pop() {
+            if low.is_some_and(|l| node.key <= l) || high.is_some_and(|h| node.key >= h) {
+                return Err("key out of order");
+            }
+            count += 1;
+            // Going left tightens the upper bound, going right the lower one.
+            let key = Some(node.key);
+            pending.extend(node.left.as_deref().map(|left| (left, (low, key))));
+            pending.extend(node.right.as_deref().map(|right| (right, (key, high))));
+        }
+        if count != self.len {
             return Err("len does not match the number of nodes");
         }
         Ok(())
@@ -249,74 +310,6 @@ fn detach_min<P>(mut root: Box<Node<P>>) -> (Box<Node<P>>, Link<P>) {
     (min, Some(root))
 }
 
-fn range_node<P>(link: &Link<P>, lo: u64, hi: u64, out: &mut Vec<Entry>) {
-    let Some(node) = link else { return };
-    // In-order walk, pruning subtrees that cannot contain keys in range.
-    if lo < node.key {
-        range_node(&node.left, lo, hi, out);
-    }
-    if lo <= node.key && node.key < hi {
-        out.push(Entry {
-            key: node.key,
-            value: node.value,
-        });
-    }
-    if node.key < hi {
-        range_node(&node.right, lo, hi, out);
-    }
-}
-
-fn height_of<P>(link: &Link<P>) -> usize {
-    // Loop down chains of single children so that a degenerate tree (every
-    // node has one child) needs no recursion at all.
-    let mut depth = 0;
-    let mut current = link;
-    while let Some(node) = current {
-        depth += 1;
-        if node.left.is_some() && node.right.is_some() {
-            return depth + height_of(&node.left).max(height_of(&node.right));
-        }
-        current = if node.left.is_some() {
-            &node.left
-        } else {
-            &node.right
-        };
-    }
-    depth
-}
-
-/// Every key below `link` must lie strictly between `low` and `high`
-/// (None = unbounded). Returns the number of nodes in the subtree.
-fn validate_node<P>(
-    link: &Link<P>,
-    low: Option<u64>,
-    high: Option<u64>,
-) -> Result<usize, &'static str> {
-    let mut count = 0;
-    let mut current = link;
-    let (mut lo, mut hi) = (low, high);
-    // Same trick as height_of: recurse only where the tree really forks.
-    while let Some(node) = current {
-        if lo.is_some_and(|l| node.key <= l) || hi.is_some_and(|h| node.key >= h) {
-            return Err("key out of order");
-        }
-        count += 1;
-        if node.left.is_some() && node.right.is_some() {
-            count += validate_node(&node.left, lo, Some(node.key))?;
-            count += validate_node(&node.right, Some(node.key), hi)?;
-            return Ok(count);
-        }
-        if node.left.is_some() {
-            hi = Some(node.key);
-            current = &node.left;
-        } else {
-            lo = Some(node.key);
-            current = &node.right;
-        }
-    }
-    Ok(count)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,18 +361,104 @@ mod tests {
         assert_eq!(trace.page_reads, 500);
     }
 
-    #[test]
-    fn drop_height_and_validate_survive_a_very_deep_tree() {
-        // Build a 20000-node chain directly (20000 puts would walk the chain
-        // 20000 times). Recursive code would need 20000 stack frames here.
+    /// Build a deep tree directly, without `put` (which would walk the whole
+    /// chain for every key). `spine` nodes hang below each other; with
+    /// `RightChain` and `LeftChain` that is all. With `Caterpillar` every
+    /// spine node also gets a leaf as its left child, which is what inserting
+    /// 2, 1, 4, 3, 6, 5, ... (nearly sorted input) produces: no long chain of
+    /// single children anywhere, but still `spine` levels.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Shape {
+        RightChain,
+        LeftChain,
+        Caterpillar,
+    }
+
+    fn build_deep(spine: u64, shape: Shape) -> Bst {
         let mut tree: Bst = Bst::new();
         let mut link = &mut tree.root;
-        for i in 0..20_000 {
-            link = &mut link.insert(leaf(i)).right;
+        for i in 0..spine {
+            // Keys 1, 3, 5, ... going down (descending for the left chain).
+            let rank = if shape == Shape::LeftChain {
+                spine - 1 - i
+            } else {
+                i
+            };
+            let mut node = leaf(rank * 2 + 1);
+            tree.len += 1;
+            if shape == Shape::Caterpillar {
+                node.left = Some(leaf(rank * 2));
+                tree.len += 1;
+            }
+            let node = link.insert(node);
+            link = if shape == Shape::LeftChain {
+                &mut node.left
+            } else {
+                &mut node.right
+            };
         }
-        tree.len = 20_000;
+        tree
+    }
+
+    /// Regression test. Recursive versions of these functions overflowed the
+    /// stack: Rust at 20000 levels, Zig at 100000 (validate on the
+    /// caterpillar) and 1000000 (range on a chain).
+    #[test]
+    fn drop_height_validate_and_range_survive_very_deep_trees() {
+        let cases = [
+            (Shape::RightChain, 1_000_000, 1_000_000),
+            (Shape::LeftChain, 1_000_000, 1_000_000),
+            (Shape::Caterpillar, 200_000, 400_000),
+        ];
+        for (shape, spine, nodes) in cases {
+            let tree = build_deep(spine, shape);
+            assert_eq!(tree.len(), nodes);
+            tree.validate().unwrap();
+            let expected_height = spine as usize + usize::from(shape == Shape::Caterpillar);
+            assert_eq!(tree.height(), expected_height);
+
+            let all = tree.range(0, u64::MAX);
+            assert_eq!(all.len(), nodes);
+            assert!(all.windows(2).all(|pair| pair[0].key < pair[1].key));
+
+            // A narrow range deep inside the tree: keys 1000, 1001, 1002.
+            let want = if shape == Shape::Caterpillar { 3 } else { 1 }; // chains hold odd keys only
+            assert_eq!(tree.range(1000, 1003).len(), want);
+        } // every tree is dropped here, without recursion
+    }
+
+    #[test]
+    fn range_prunes_bounds_empty_and_inverted_ranges() {
+        let mut tree: Bst = Bst::new();
+        for k in CANONICAL {
+            tree.put(k, k * 10).unwrap();
+        }
+        let cases: [(u64, u64, &[u64]); 6] = [
+            (6, 17, &[6, 7, 10, 12, 15]), // lo included, hi excluded
+            (8, 9, &[]),
+            (20, 5, &[]), // inverted
+            (10, 10, &[]),
+            (30, u64::MAX, &[30]),
+            (0, 2, &[1]),
+        ];
+        for (lo, hi, want) in cases {
+            let keys: Vec<u64> = tree.range(lo, hi).iter().map(|e| e.key).collect();
+            assert_eq!(keys, want);
+        }
+    }
+
+    /// Insert order 2, 1, 4, 3, ... (here 1, 0, 3, 2, ...): a small
+    /// caterpillar built through `put`. Zig runs the three walks under every
+    /// possible allocation failure here; a `Vec` cannot fail that way.
+    #[test]
+    fn range_height_and_validate_on_nearly_sorted_input() {
+        let mut tree: Bst = Bst::new();
+        for i in 0..12u64 {
+            tree.put(i ^ 1, i).unwrap();
+        }
         tree.validate().unwrap();
-        assert_eq!(tree.height(), 20_000);
+        assert_eq!(tree.height(), 7);
+        assert_eq!(tree.range(0, 100).len(), 12);
     }
 
     #[test]

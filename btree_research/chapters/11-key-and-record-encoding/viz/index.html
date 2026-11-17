@@ -230,7 +230,7 @@ byte order of each encoding with the numeric order.</p>
 
     // The picture must agree with what the Zig and Rust programs print.
     var fixed = M.sortSteps(M.arrivalOrder());
-    BTViz.selfTest('sort timeline: order and counts of the programs',
+    BTViz.selfTest('sort: order and counts',
       { order: fixed.order.map(function (i) { return M.arrivalOrder()[i].id; }).join(' '), comparisons: fixed.comparisons, examined: fixed.examined, columns: fixed.columns },
       { order: '7 2 3 4 8 1 5 6', comparisons: 27, examined: 117, columns: 66 });
     var broken = {};
@@ -238,7 +238,7 @@ byte order of each encoding with the numeric order.</p>
       var fx = BTViz.clone(M.ALL_FIXES); fx[f] = false;
       broken[f] = M.sortSteps(M.arrivalOrder(), fx).ok;
     });
-    BTViz.selfTest('every fix is necessary for the fixed rows', broken, { bigEndian: false, signFlip: false, framing: false, descInvert: false });
+    BTViz.selfTest('each fix is necessary', broken, { bigEndian: false, signFlip: false, framing: false, descInvert: false });
   })();
 
   /* ====================================================================
@@ -310,7 +310,7 @@ byte order of each encoding with the numeric order.</p>
 
     // The pipeline must end in the bytes the programs print for id 3's score column (-2, DESC).
     var col = M.hex(M.keySteps('int', '-2', true).column);
-    BTViz.selfTest('pipeline for -2 DESC ends in the printed key column',
+    BTViz.selfTest('-2 DESC key column',
       { column: col, inOutput: window.CHAPTER_EXPECTED_OUTPUT.indexOf('01 41 6e 6e 00 ' + col + ' 01 80') >= 0 },
       { column: '01 80 00 00 00 00 00 00 01', inOutput: true });
   })();
@@ -382,7 +382,7 @@ byte order of each encoding with the numeric order.</p>
    * Self-test: the JS model reproduces the programs' output
    * ================================================================== */
   var expected = window.CHAPTER_EXPECTED_OUTPUT;
-  BTViz.selfTest('model prints sections 1 to 6 of expected_output.txt', M.report(), expected.slice(0, expected.indexOf('== 7.')));
+  BTViz.selfTest('expected_output.txt, sections 1-6', M.report(), expected.slice(0, expected.indexOf('== 7.')));
 })();
 </script>
 </body>

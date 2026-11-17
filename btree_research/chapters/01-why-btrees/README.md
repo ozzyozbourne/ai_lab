@@ -180,12 +180,12 @@ lookups that found their key: 541
 structure                      avg      max     avg      max
 sorted array, 256 per page      17.68       18     8.52        9
 BST, random insert order        21.69       36    21.69       36
-wide nodes, M = 171            164.90      340     2.84        3
+wide nodes, M = 171            160.45      308     2.99        3
 heights: BST 39, wide nodes 3; the sorted array spans 391 pages
 BST, 2000 keys in ascending order: height 2000, get(largest) reads 2000 pages
 ```
 
-Read the wide-node row twice. It makes almost ten times as many comparisons as the
+Read the wide-node row twice. It makes about nine times as many comparisons as the
 sorted array (this code scans the separators one by one; chapter 02 replaces the scan
 with a binary search) and a third of the page reads. That row is the cost model in one
 line.
@@ -204,7 +204,7 @@ line.
   a `*?*Node` ("pointer to the link I would have to change"), which removes the special
   case for the root, and allocates only when it has found the empty link.
 - `wide.zig`: `getTraced(sorted, m, key, trace)` searches a sorted slice the way a
-  perfectly balanced tree of order `m` laid over it would, and counts one page read per
+  balanced, evenly filled tree of order `m` laid over it would, and counts one page read per
   node. It builds no nodes. It is a stand-in for the real tree of chapter 03, good
   enough to measure lookups.
 - `height.zig`: `minHeight(n, m)` (every node full), `maxHeight(n, m)` (every node as

@@ -116,7 +116,7 @@ Prediction: the page-read columns do not change at all, because the search visit
 same nodes in the same order; only the work inside each node changes. The comparison
 columns drop sharply. A node with 170 separators needs about log2(171), roughly 8,
 comparisons instead of an average of about 85, so with 3 levels the average should fall
-from 164.90 to somewhere near 3 * 8 = 24, close to the 17.68 of the plain binary search
+from 160.45 to somewhere near 3 * 8 = 24, close to the 17.68 of the plain binary search
 (these two figures are estimates, not program output).
 
 The change, in `wide.zig`: an interior node's separators are not contiguous in the
@@ -124,7 +124,7 @@ slice (child `i` sits between separator `i - 1` and separator `i`), so compute t
 of separator `j` directly instead of walking:
 
 ```zig
-// index of separator j (0 <= j < m - 1) in a node covering sorted[lo..hi]
+// index of separator j (0 <= j < children - 1) in a node covering sorted[lo..hi]
 fn separatorIndex(lo: usize, base: usize, extra: usize, j: usize) usize {
     // children 0..j come first: j + 1 children, of which min(j + 1, extra) have one extra key,
     // plus the j separators before this one.

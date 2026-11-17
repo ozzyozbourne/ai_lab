@@ -46,7 +46,7 @@ pub const Policy = union(enum) {
 };
 
 /// Which of the three nbtsplitloc.c strategies decided a split
-/// (FindSplitStrat, nbtsplitloc.c:20-26). Only `adaptive` leaves `default`.
+/// (FindSplitStrat, nbtsplitloc.c:21-27). Only `adaptive` leaves `default`.
 pub const Strategy = enum { default, many_duplicates, single_value };
 
 /// Left-page fill used by the single value strategy
@@ -221,7 +221,7 @@ pub fn chooseSplit(
             // Many duplicates: nothing near the middle works, but the page
             // does hold more than one key. Look at ALL legal gaps and take
             // the best-balanced one at the edge of a duplicate group, however
-            // lopsided (nbtsplitloc.c:392-400).
+            // lopsided (nbtsplitloc.c:376-388, 398-406).
             strategy = .many_duplicates;
             interval = @intCast(cands.len);
             pick = firstDistinct(items, cands).?;
@@ -230,7 +230,7 @@ pub fn chooseSplit(
             // upper bound shows that no page to the right holds this key. New
             // cells of this key carry higher tids and will keep arriving at
             // the right end, so treat it like an append: pack the left page
-            // (nbtsplitloc.c:401-417, 1017-1042).
+            // (nbtsplitloc.c:407-417, 1017-1042).
             strategy = .single_value;
             deltaSort(cands, page.capacity, single_value_fill);
             interval = 1;

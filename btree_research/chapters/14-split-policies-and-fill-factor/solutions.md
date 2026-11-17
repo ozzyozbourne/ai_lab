@@ -71,8 +71,14 @@ the left page again, which is still nearly full; it splits again at the same edg
 leaves behind another right page holding one or two cells that will never receive
 anything.
 
-A workload that shows it: `put(5, tid, size)` for tids 0..40 (most of a page), then
+A workload that shows it (capacity 4096, `adaptive-90`, every cell 100 bytes):
+`put(5, tid, 100)` for tids 0..40, so that the run fills 98% of the page, then 2 000
 keys `10_000 - i` with ascending `i`. Count the pages under 10% full in `fill()`.
+Measured: 2 001 pages, 2 000 of them under 10% full (one 100-byte cell each), 2.4%
+average fill. The stranded right page holds whatever did not belong to the run, so
+the run has to fill nearly the whole page for the effect to be this stark: with
+81-byte cells (the run is 79% of the page) the same workload gives 183 pages, each
+stranded one 20 to 29% full.
 
 The guard, at the end of `chooseSplit` (Zig; `nbtsplitloc.c:833-843`):
 

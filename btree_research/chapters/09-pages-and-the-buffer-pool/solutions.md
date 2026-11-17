@@ -131,6 +131,12 @@ Ways out, each with a price:
   is the shape of Turso's `PinGuard`, which wraps a reference-counted page and unpins in
   `Drop` (`turso/core/storage/btree.rs:409-437`).
 
+Neither guard removes the need to think about errors. In Zig, `defer` covers both paths
+for a page that is only read; for a page whose pin is handed on or released dirty on
+success, `errdefer pool.unpin(id, false)` covers the failing path (README, "Code
+walk-through"). In Rust without a guard, every early `return Err(..)` between the fetch
+and the unpin must unpin first.
+
 ## 5. A scan flushes the hot pages (hard)
 
 Experiment. A pool of `n` frames; a small set of hot pages H (fewer than `n`) that is

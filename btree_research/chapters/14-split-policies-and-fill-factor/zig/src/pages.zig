@@ -97,6 +97,10 @@ pub const RangeSum = struct { cells: u64 = 0, bytes: u64 = 0 };
 
 pub const PutError = Allocator.Error || error{BadCellSize};
 
+/// Smallest page `Tree.init` accepts: the smallest capacity whose
+/// `maxCellSize` (a quarter of the page) is not zero.
+pub const min_capacity: u32 = 4;
+
 pub const Tree = struct {
     /// Long-lived memory: the pages and the directory.
     gpa: Allocator,
@@ -110,7 +114,12 @@ pub const Tree = struct {
     len: usize = 0,
     stats: Stats = .{},
 
+    /// `capacity` must be at least 4 bytes: below that `maxCellSize` is 0, so
+    /// no cell could ever be stored, and a capacity of 0 would make every
+    /// fill percentage a division by zero. Passing less is a programming
+    /// error (asserted), not a runtime condition.
     pub fn init(gpa: Allocator, capacity: u32, policy: Policy) Allocator.Error!Tree {
+        std.debug.assert(capacity >= min_capacity);
         var tree: Tree = .{
             .gpa = gpa,
             .scratch = .init(gpa),
@@ -400,6 +409,26 @@ test "ascending inserts: half leaves pages half empty, rightmost does not" {
     try testing.expectEqual(35, right.fill().pages);
     try testing.expect(half.fill().avgPermille(4096) < 550);
     try testing.expect(right.fill().avgPermille(4096) > 850);
+}
+
+test "the smallest legal page: capacity 4 holds 1-byte cells, splits, and reports its fill" {
+    for (all_policies) |policy| {
+        var tree: Tree = try .init(testing.allocator, min_capacity, policy);
+        defer tree.deinit();
+        try testing.expectEqual(1, tree.maxCellSize());
+        try testing.expectError(error.BadCellSize, tree.put(1, 1, 2));
+        // An empty tree must already be measurable (no division by zero).
+        try testing.expectEqual(1, tree.fill().pages);
+        try testing.expectEqual(0, tree.fill().avgPermille(min_capacity));
+        for (0..9) |i| try testing.expect(try tree.put(i, 0, 1));
+        try tree.validate();
+        const f = tree.fill();
+        try testing.expect(f.pages >= 3);
+        try testing.expectEqual(9, f.used_bytes);
+        var pages: u32 = 0;
+        for (f.histogram) |n| pages += n;
+        try testing.expectEqual(f.pages, pages);
+    }
 }
 
 // Seeded model test: random puts, deletes, gets and ranges against a hash

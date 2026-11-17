@@ -119,7 +119,8 @@ Both languages have the same four layers, one file each, and the same tests.
 **Storage** is an interface built the way `std.mem.Allocator` is built: a type-erased
 pointer and a table of four function pointers. `FileStorage` implements it with
 `readPositionalAll` / `writePositionalAll` / `sync` on a `std.Io.File`; `MemStorage`
-implements it with an `ArrayList(u8)` and a countdown that makes writes fail on request.
+implements it with an `ArrayList(u8)` and two countdowns that make reads or writes fail
+on request.
 Function pointers need one concrete error set, so every backend maps its failures to
 `error{ ShortRead, StorageFailure }`. Chapter 21 adds a third backend that tears and
 drops writes; nothing above this interface will change.
@@ -135,13 +136,23 @@ pub fn readPage(self: *Pager, id: PageId, out: *Page) Error!void {
 ```
 
 `allocatePage` appends a zero page and increments `page_count` only after the write
-succeeded. There is no file header and no free list here: chapter 12 puts a metapage in
+succeeded; when the 32-bit id space is used up it returns `error.FileFull`. There is no
+file header and no free list here: chapter 12 puts a metapage in
 page 0 and chapter 13 adds the free list.
 
 **BufferPool.** `init` allocates three things: one slab of `frame_count * 4096` bytes
 aligned to 4096, an array of `Frame { page_id, pin_count, referenced, dirty }`, and the
-page table with capacity for `frame_count` entries. Frame `f` is
-`slab[f * 4096 ..][0..4096]`; `fetchPage` returns it as `*align(4096) [4096]u8`.
+page table. Frame `f` is `slab[f * 4096 ..][0..4096]`; `fetchPage` returns it as
+`*align(4096) [4096]u8`.
+
+The page table is a small hand-written hash table (`PageTable`, about 90 lines): open
+addressing, linear probing, `2 * frame_count` slots rounded up to a power of two. It is
+not `std.AutoHashMapUnmanaged` because of how the pool uses it: one removal and one
+insertion per eviction, forever, at a fixed capacity. The std map marks a removed entry
+with a tombstone and clears tombstones only when it grows. Ours never grows, so after
+enough evictions it has no free slot left and every miss probes the whole table.
+`PageTable` deletes by shifting the following entries of the probe run back into the gap,
+so there are no tombstones and a lookup stays one short probe.
 
 ```zig
 pub fn fetchPage(self: *BufferPool, id: PageId) Error!PagePtr {
@@ -155,21 +166,29 @@ pub fn fetchPage(self: *BufferPool, id: PageId) Error!PagePtr {
     }
     self.stats.misses += 1;                        // miss
     const f = try self.takeFrame();                // CLOCK; returns an empty frame
+    errdefer self.hand = f;                        // failed read: reuse f next time
     try self.pager.readPage(id, self.frameBytes(f));
     self.install(f, id);                           // pin = 1, referenced, clean
     return self.frameBytes(f);
 }
 ```
 
-`takeFrame` is the clock sweep described above, bounded by `2 * frame_count` steps. Two
-orderings in it matter:
+`takeFrame` is the clock sweep described above, bounded by `2 * frame_count` steps. The
+error paths are where the order of steps matters:
 
 - A dirty victim is written **before** it is removed from the page table. If the write
   fails, the function returns with the page still cached and still dirty; nothing is
   lost. The test "a failed write-back keeps the page cached and dirty" injects that
-  failure.
+  failure. The hand stays on that frame, so later misses retry the same write and fail
+  until the storage recovers: the pool stops evicting rather than skip a page it could
+  not save.
 - `newPage` takes its frame **before** it grows the file, so `AllFramesPinned` cannot
   leave an allocated page that nobody knows about.
+- If the read fails after `takeFrame` has emptied a frame, the `errdefer` puts the hand
+  back on that frame. Otherwise the next miss would start one frame further on and evict
+  a second page while an empty frame sat unused.
+
+A pool call that fails takes no pin and leaves the pool valid.
 
 `validate` checks four invariants: frames and page table agree in both directions, empty
 frames carry no pin or flag, the hand is in range, and no cached page id is beyond the
@@ -177,11 +196,25 @@ end of the file. `deinit` asserts that no pin is left, which turns a forgotten `
 into a test failure, and it does not flush: dropping a pool without `flushAll` loses the
 dirty pages, exactly like a crash.
 
+That assert has a consequence for every caller. If a function returns an error while it
+still holds a pin, the caller's `defer pool.deinit()` trips the assert and the program
+aborts instead of reporting the error. So a pin is released on the error path too:
+
+```zig
+const page = try pool.fetchPage(id);
+errdefer pool.unpin(id, false);     // runs only if a later `try` fails
+try somethingThatCanFail(page);
+pool.unpin(id, true);
+```
+
+`workload.run` does this for its long-lived pins; a test injects a failure at each of
+its first 150 reads and writes and checks that no pin is left.
+
 ### Rust, and the differences
 
 - **Interface.** The hand-built vtable becomes `trait Storage` used as `Box<dyn Storage>`.
 - **Errors.** Zig merges error sets (`Pager.Error = Storage.Error || error{...}`). Rust
-  has no set union, so one flat `enum Error` carries the same five names.
+  has no set union, so one flat `enum Error` carries the same six names.
 - **Ownership.** Zig's pool borrows a `*Pager` that the caller owns. Rust's pool owns its
   `Pager` (`pool.pager()`, `pool.into_pager()`), and the pager owns its storage.
 - **Looking at the disk from a test.** In Zig a test keeps the `MemStorage` and passes a
@@ -197,6 +230,15 @@ dirty pages, exactly like a crash.
   `using_a_page_after_unpin_panics`).
 - **Frames.** One aligned slab in Zig; `Vec<Box<[u8; 4096]>>` in Rust, each frame its own
   allocation made once in `new`.
+- **Page table.** Rust keeps `std::collections::HashMap`. It has tombstones too, but
+  clears them by rehashing: in place while the map is at most half full, into a larger
+  allocation otherwise. `new` therefore reserves `2 * frame_count`; with `frame_count` a
+  100-frame pool reallocated its table (test
+  `the_page_table_does_not_grow_while_the_pool_cycles_through_many_pages`).
+- **Leaked pins and error paths.** Dropping the Rust pool checks nothing. Rust has no
+  `errdefer`, so a `Drop` that panicked on a leftover pin would turn any `?` between a
+  fetch and its unpin into a panic. Instead `workload::run` releases its pins by hand
+  before it returns an error, and the tests assert `pinned_frames() == 0` themselves.
 
 ### The program's output
 
@@ -329,7 +371,8 @@ The featured allocator is a **hand-written slab of page-aligned frames**: one
 - Why page-aligned: a later chapter can lay a header struct over the start of a frame
   without `@alignCast` failing, and direct I/O (not used here) requires aligned buffers.
 - Lifetime: `init` to `deinit`. The frame table and the page table are allocated at
-  their final size in `init` too, so after `init` the pool performs no allocation. The
+  their final size in `init` too (three allocations in all), so after `init` the pool
+  performs no allocation. The
   test "nothing allocates after init" runs 2000 operations on an allocator that fails
   every request made after `init`; `checkAllAllocationFailures` checks that `init` frees
   what it had when its second or third allocation fails.
@@ -346,6 +389,9 @@ of "allocation failed" is the fixed frame budget: running out is `Err(AllFramesP
 
 - **Forgetting to unpin.** The frame can never be evicted again. Leak enough pins and
   every fetch fails. `deinit` asserts on it; use `defer pool.unpin(id, false)` for reads.
+- **Forgetting to unpin on the error path.** A `try` between a fetch and its unpin leaks
+  the pin when it fails, and in Zig the assert in `deinit` then hides the real error. Use
+  `errdefer pool.unpin(id, false)`; in Rust unpin before returning the `Err`.
 - **Using a page after unpinning it.** The frame may now hold a different page. Zig will
   not notice; you will read another node's bytes.
 - **Unpinning a modified page as clean.** The change exists only in memory and vanishes
@@ -382,4 +428,5 @@ Solutions: [solutions.md](solutions.md).
   of these 4096-byte pages.
 - Visualization: [viz/index.html](viz/index.html)
 - Chapter 12 copies `storage`, `pager` and `buffer_pool` as the base of the
-  disk-backed B+tree.
+  disk-backed B+tree. Its tree code holds pins across calls that can fail, so it needs
+  the `errdefer` pattern above.

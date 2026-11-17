@@ -45,7 +45,7 @@ pub enum Policy {
 }
 
 /// Which of the three nbtsplitloc.c strategies decided a split
-/// (FindSplitStrat, nbtsplitloc.c:20-26). Only `Adaptive` leaves `Default`.
+/// (FindSplitStrat, nbtsplitloc.c:21-27). Only `Adaptive` leaves `Default`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strategy {
     Default,
@@ -242,7 +242,7 @@ pub fn choose_split(
             // Many duplicates: nothing near the middle works, but the page
             // does hold more than one key. Look at ALL legal gaps and take
             // the best-balanced one at the edge of a duplicate group, however
-            // lopsided (nbtsplitloc.c:392-400).
+            // lopsided (nbtsplitloc.c:376-388, 398-406).
             strategy = Strategy::ManyDuplicates;
             interval = cands.len() as u32;
             pick = first_distinct(items, cands).expect("the page holds two different keys");
@@ -252,7 +252,7 @@ pub fn choose_split(
             // (None, the rightmost page, also lands here). New cells of this
             // key carry higher tids and will keep arriving at the right end,
             // so treat it like an append: pack the left page
-            // (nbtsplitloc.c:401-417, 1017-1042).
+            // (nbtsplitloc.c:407-417, 1017-1042).
             strategy = Strategy::SingleValue;
             delta_sort(cands, page.capacity, Some(SINGLE_VALUE_FILL));
             interval = 1;

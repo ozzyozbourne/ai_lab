@@ -267,7 +267,7 @@ All of this is PostgreSQL's `_bt_findsplitloc`; file references are to
 `research/postgres.md`, section 5.
 
 - **Candidates.** One per gap of the imaginary page; a candidate is recorded only if
-  `leftfree >= 0 && rightfree >= 0` (`:545`). Postgres charges the first right tuple to
+  `leftfree >= 0 && rightfree >= 0` (`:546`). Postgres charges the first right tuple to
   *both* sides, because a copy of it becomes the left page's high key, plus one aligned
   tid on leaf pages as the worst case (`:525-527`). The model has no high key inside
   the page (separators live only in the directory), so it does not make that charge.
@@ -327,9 +327,10 @@ What would go wrong with other choices:
 
 - The general purpose allocator directly: two `alloc`/`free` pairs per split and two
   `errdefer`s to get right; correct but noisy, and slower.
-- The arena for the *pages*: an arena cannot free one page, so the left page's old
-  buffer and every delete would leak until the tree dies. Pages are long-lived and
-  individually resized; they belong in the general purpose allocator.
+- The arena for the *pages*: an arena cannot give back one buffer, so every time a
+  page's cell list (or the page list, or the directory) grows, the outgrown buffer
+  would stay allocated until the tree dies. Pages are long-lived and individually
+  resized; they belong in the general purpose allocator.
 - A `FixedBufferAllocator` over a stack buffer: fine as long as the size bound
   (capacity plus one cell) is real; the arena does not need the bound.
 - Forgetting the reset: everything still works and nothing leaks at exit, because

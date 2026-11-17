@@ -520,6 +520,51 @@ mod tests {
         );
     }
 
+    /// Bug 3: the closed-style test `lo <= hi` on top of the half-open loop
+    /// body (`hi = mid`). For sorted keys it NEVER returns: when `lo == hi`
+    /// the probe `mid` equals both, and then either `mid == len` (a read one
+    /// past the end) or `keys[mid] >= key` (so `hi = mid` changes nothing,
+    /// forever). A test cannot wait forever or read out of bounds, so this
+    /// version reports which of the two would happen.
+    #[derive(Debug, PartialEq, Eq)]
+    enum MixedOutcome {
+        Index(usize),
+        Spins,
+        ReadsPastEnd(usize),
+    }
+
+    fn buggy_lower_bound_mixed(keys: &[u64], key: u64, max_steps: usize) -> MixedOutcome {
+        let mut lo = 0;
+        let mut hi = keys.len();
+        let mut steps = 0;
+        while lo <= hi {
+            if steps == max_steps {
+                return MixedOutcome::Spins;
+            }
+            let mid = lo + (hi - lo) / 2;
+            if mid >= keys.len() {
+                return MixedOutcome::ReadsPastEnd(mid);
+            }
+            if keys[mid] < key {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+            steps += 1;
+        }
+        MixedOutcome::Index(lo)
+    }
+
+    #[test]
+    fn trap_lo_le_hi_with_hi_eq_mid_spins_forever_or_reads_one_past_the_end() {
+        // Key at or below an element: the loop stops shrinking and spins.
+        assert_eq!(buggy_lower_bound_mixed(&[1], 0, 1000), MixedOutcome::Spins);
+        assert_eq!(buggy_lower_bound_mixed(&[1, 3], 2, 1000), MixedOutcome::Spins);
+        // Key above everything: lo == hi == len, and keys[len] is read.
+        assert_eq!(buggy_lower_bound_mixed(&[1], 2, 1000), MixedOutcome::ReadsPastEnd(1));
+        assert_eq!(buggy_lower_bound_mixed(&[], 5, 1000), MixedOutcome::ReadsPastEnd(0));
+    }
+
     #[test]
     fn seeded_random_sorted_arrays_against_the_linear_scan_and_against_std() {
         // One scratch buffer for all rounds, reused by re-borrowing it.

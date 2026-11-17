@@ -507,6 +507,36 @@ test "trap: the exhaustive checker finds the smallest failing input of two class
     try testing.expectEqual(0, early.want);
 }
 
+/// Bug 3: the closed-style test `lo <= hi` on top of the half-open loop body
+/// (`hi = mid`). For sorted keys it NEVER returns: when `lo == hi` the probe
+/// `mid` equals both, and then either `mid == len` (a read one past the end)
+/// or `keys[mid] >= key` (so `hi = mid` changes nothing, forever). A test
+/// cannot wait forever or read out of bounds, so this version reports which
+/// of the two would happen.
+const MixedOutcome = union(enum) { index: usize, spins, reads_past_end: usize };
+
+fn buggyLowerBoundMixed(keys: []const u64, key: u64, max_steps: usize) MixedOutcome {
+    var lo: usize = 0;
+    var hi: usize = keys.len;
+    var steps: usize = 0;
+    while (lo <= hi) : (steps += 1) {
+        if (steps == max_steps) return .spins;
+        const mid = lo + (hi - lo) / 2;
+        if (mid >= keys.len) return .{ .reads_past_end = mid };
+        if (keys[mid] < key) lo = mid + 1 else hi = mid;
+    }
+    return .{ .index = lo };
+}
+
+test "trap: `lo <= hi` with `hi = mid` spins forever or reads one past the end" {
+    // Key at or below an element: the loop stops shrinking and spins.
+    try testing.expectEqual(MixedOutcome.spins, buggyLowerBoundMixed(&.{1}, 0, 1000));
+    try testing.expectEqual(MixedOutcome.spins, buggyLowerBoundMixed(&.{ 1, 3 }, 2, 1000));
+    // Key above everything: lo == hi == len, and keys[len] is read.
+    try testing.expectEqual(MixedOutcome{ .reads_past_end = 1 }, buggyLowerBoundMixed(&.{1}, 2, 1000));
+    try testing.expectEqual(MixedOutcome{ .reads_past_end = 0 }, buggyLowerBoundMixed(&.{}, 5, 1000));
+}
+
 fn orderOf(key: u64, item: u64) std.math.Order {
     return std.math.order(key, item);
 }

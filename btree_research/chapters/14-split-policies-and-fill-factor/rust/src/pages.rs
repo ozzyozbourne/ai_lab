@@ -109,6 +109,10 @@ pub enum PutError {
     OutOfPages,
 }
 
+/// Smallest page `Tree::new` accepts: the smallest capacity whose
+/// `max_cell_size` (a quarter of the page) is not zero.
+pub const MIN_CAPACITY: u32 = 4;
+
 pub struct Tree {
     pub capacity: u32,
     pub policy: Policy,
@@ -127,7 +131,12 @@ pub struct Tree {
 }
 
 impl Tree {
+    /// `capacity` must be at least 4 bytes: below that `max_cell_size` is 0,
+    /// so no cell could ever be stored, and a capacity of 0 would make every
+    /// fill percentage a division by zero. Passing less is a programming
+    /// error (asserted), not a runtime condition.
     pub fn new(capacity: u32, policy: Policy) -> Tree {
+        assert!(capacity >= MIN_CAPACITY, "capacity must be at least 4");
         Tree {
             capacity,
             policy,
@@ -470,6 +479,26 @@ mod tests {
         assert_eq!(right.fill().pages, 35);
         assert!(half.fill().avg_permille(4096) < 550);
         assert!(right.fill().avg_permille(4096) > 850);
+    }
+
+    #[test]
+    fn the_smallest_legal_page_capacity_4_holds_1_byte_cells_splits_and_reports_its_fill() {
+        for policy in ALL_POLICIES {
+            let mut tree = Tree::new(MIN_CAPACITY, policy);
+            assert_eq!(tree.max_cell_size(), 1);
+            assert_eq!(tree.put(1, 1, 2), Err(PutError::BadCellSize));
+            // An empty tree must already be measurable (no division by zero).
+            assert_eq!(tree.fill().pages, 1);
+            assert_eq!(tree.fill().avg_permille(MIN_CAPACITY), 0);
+            for i in 0..9 {
+                assert_eq!(tree.put(i, 0, 1), Ok(true));
+            }
+            tree.validate().unwrap();
+            let f = tree.fill();
+            assert!(f.pages >= 3);
+            assert_eq!(f.used_bytes, 9);
+            assert_eq!(f.histogram.iter().sum::<u32>(), f.pages);
+        }
     }
 
     // Seeded model test: random puts, deletes, gets and ranges against a hash

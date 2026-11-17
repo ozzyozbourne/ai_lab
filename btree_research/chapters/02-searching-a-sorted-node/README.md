@@ -342,7 +342,7 @@ rest, and a buffer that is too small gives `None` (mapped to
 2. **Mixing interval conventions.** `hi = len - 1` with a `lo < hi` loop can never
    return `len`; `lo <= hi` with `hi = mid` either never terminates (keys `1`, key 0:
    `lo = hi = mid = 0` forever) or reads one past the end (keys `1`, key 2 reads
-   `keys[1]`). Choose half-open (this
+   `keys[1]`); a test shows both. Choose half-open (this
    chapter, Postgres) or closed with a remembered candidate (Turso) and derive every
    line from it.
 3. **`hi - 1` on unsigned indices.** The closed form computes `mid - 1`, which underflows

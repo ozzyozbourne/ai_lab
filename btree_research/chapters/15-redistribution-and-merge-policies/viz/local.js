@@ -401,16 +401,21 @@
   function tableText(id, n) {
     return TABLE_HEADER + runWorkload(id, n).map(function (rows) { return rowText(rows[rows.length - 1]); }).join('');
   }
-  /** Sections 3 and 4 of expected_output.txt. */
-  function reportPolicies(n) {
-    return '== 3. Overflow policies: ' + n + ' inserts, cells of 40..200 bytes, capacity 4096 ==\n' +
-      '-- ascending keys --\n' + tableText('ascending', n) +
-      '-- random order --\n' + tableText('random', n) +
-      '\n== 4. Underflow policies (tree built by ' + n + ' random inserts, balance 3 + quick) ==\n' +
-      '-- delete 90% of the keys in random order (counters: the deletes only) --\n' + tableText('delete-random', n) +
-      '-- delete the 90% smallest keys, a queue being drained --\n' + tableText('delete-queue', n) +
-      '-- steady churn: ' + 2 * n + ' times, toggle a random key (delete it if present, else insert it) --\n' + tableText('churn', n);
+  /** Sections 3 and 4 of expected_output.txt, as five thunks (one per table) so that a
+   *  page can compute them between frames instead of blocking for the whole run. */
+  function reportPoliciesParts(n) {
+    return [
+      function () { return '== 3. Overflow policies: ' + n + ' inserts, cells of 40..200 bytes, capacity 4096 ==\n-- ascending keys --\n' + tableText('ascending', n); },
+      function () { return '-- random order --\n' + tableText('random', n); },
+      function () {
+        return '\n== 4. Underflow policies (tree built by ' + n + ' random inserts, balance 3 + quick) ==\n' +
+          '-- delete 90% of the keys in random order (counters: the deletes only) --\n' + tableText('delete-random', n);
+      },
+      function () { return '-- delete the 90% smallest keys, a queue being drained --\n' + tableText('delete-queue', n); },
+      function () { return '-- steady churn: ' + 2 * n + ' times, toggle a random key (delete it if present, else insert it) --\n' + tableText('churn', n); }
+    ];
   }
+  function reportPolicies(n) { return reportPoliciesParts(n).map(function (f) { return f(); }).join(''); }
 
   /* --------------------------------------------------------------- SiblingView */
   var CSS = [
@@ -620,7 +625,7 @@
 
   root.Ch15 = {
     SplitMix64: SplitMix64, packLeft: packLeft, evenOut: evenOut, PageTree: PageTree, SiblingView: SiblingView,
-    SCENARIO: SCENARIO, reportScenario: reportScenario, reportPolicies: reportPolicies, runWorkload: runWorkload,
+    SCENARIO: SCENARIO, reportScenario: reportScenario, reportPolicies: reportPolicies, reportPoliciesParts: reportPoliciesParts, runWorkload: runWorkload,
     WORKLOADS: WORKLOADS, INSERT_POLICIES: INSERT_POLICIES, MERGE_POLICIES: MERGE_POLICIES, sizeOf: sizeOf
   };
 })(typeof window !== 'undefined' ? window : this);

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 15 — Policies compared</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+</head>
+<body>
+
+<p class="bt-lead">The same workload under every policy. This page runs the chapter's model in your browser (the
+same code path as the Zig and Rust programs, checked against their output below) and shows what each policy
+costs in pages and in churn. Back to <a href="index.html">the step-by-step figure</a> or the
+<a href="../README.md">chapter text</a>.</p>
+
+<div id="fig"></div>
+
+<h2>How to read it</h2>
+<ul>
+  <li><b>Leaf fill profile</b>: one thin column per leaf page, left to right in key order. The height is how full
+    the page is. A solid block means full pages; a comb at half height means half-empty pages.</li>
+  <li><b>leaf writes</b> counts pages rewritten by structural work only (split, balance, merge), not the one write
+    every insert or delete needs anyway.</li>
+  <li><b>onto old pages</b> counts cells that were moved onto a page that already existed. A plain split and the
+    append fast path keep it at zero. Postgres needs it to be zero, because its scans wait between pages; that is
+    why it never redistributes or merges.</li>
+  <li>Press play to watch the workload progress, or drag the scrubber.</li>
+</ul>
+<p>Cells are 40 to 200 bytes, pages 4096 bytes. With 20,000 keys the numbers are exactly those in
+<code>expected_output.txt</code>. Counts from this model on these workloads; not a benchmark of any engine.</p>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="local.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el;
+  BTViz.page({
+    title: 'Policies compared', chapter: 15,
+    prev: { href: 'index.html', title: 'Chapter 15, step by step' },
+    next: { href: '../../16-bulk-loading/viz/index.html', title: '16. Bulk loading' }
+  });
+  var fig = BTViz.figure('#fig', { title: 'Pages and churn per policy', legend: [{ token: 'node-active', label: 'leaf fill (one column per page)' }, { token: 'free', label: 'free space' }] });
+
+  var WORK = {
+    ascending: { label: 'Insert: ascending keys', word: 'inserts', short: ['split', 'split+quick', 'bal 2', 'bal 3', 'bal 3+quick'],
+      intro: 'Ascending keys only ever overflow the right-most leaf.',
+      end: 'A plain split leaves a half-full page behind every time. The append fast path leaves full pages and moves no cell. Balancing gets close to it, but rewrites pages again and again to get there.' },
+    random: { label: 'Insert: random order', word: 'inserts', short: ['split', 'split+quick', 'bal 2', 'bal 3', 'bal 3+quick'],
+      intro: 'Random keys overflow pages all over the tree; the fast path almost never applies.',
+      end: 'Balancing with siblings packs the same cells into fewer pages. The price is in the other metrics: more balance runs, more pages rewritten, and many cells moved onto existing pages.' },
+    'delete-random': { label: 'Delete: 90% of the keys, random order', word: 'deletes', short: ['never', 'at empty', 'below 1/3', 'below 1/2'],
+      intro: 'The tree was built by random inserts (balance 3). Now 90% of the keys are deleted in random order.',
+      end: 'Random deletes thin every page out but rarely empty one, so “at empty” frees almost nothing. Rebalancing shrinks the tree, and moves thousands of cells to do it.' },
+    'delete-queue': { label: 'Delete: the 90% smallest keys (a queue)', word: 'deletes', short: ['never', 'at empty', 'below 1/3', 'below 1/2'],
+      intro: 'The tree was built by random inserts (balance 3). Now the smallest keys are deleted, like a queue being drained.',
+      end: 'Pages empty out completely, one after the other. “At empty” frees them without moving a single cell. The balancing policies reach the same page count but keep pulling cells towards the page that is running low, only to delete them next.' },
+    churn: { label: 'Churn: toggle random keys', word: 'toggles', short: ['never', 'at empty', 'below 1/3', 'below 1/2'],
+      intro: 'The tree was built by random inserts (balance 3). Now a random key is deleted if present and inserted if absent, over and over.',
+      end: 'The population settles at about half the keys. Without merging the tree keeps all its pages, half empty. A tighter minimum keeps pages fuller and pays with more balance runs.' }
+  };
+  var METRICS = [
+    { id: 'pages', label: 'leaf pages', get: function (r) { return r.pages; } },
+    { id: 'fill', label: 'average fill %', get: function (r) { return r.fill / 10; }, max: 100 },
+    { id: 'balances', label: 'balance runs', get: function (r) { return r.balances; } },
+    { id: 'writes', label: 'leaf writes (structural)', get: function (r) { return r.writes; } },
+    { id: 'moved', label: 'cells that changed page', get: function (r) { return r.moved; } },
+    { id: 'movedToOld', label: 'cells moved onto old pages', get: function (r) { return r.movedToOld; } }
+  ];
+
+  var workload = el('select.bt-select#workload', { 'aria-label': 'Workload' });
+  Object.keys(WORK).forEach(function (id) { workload.appendChild(el('option', { value: id }, WORK[id].label)); });
+  var count = el('select.bt-select#count', { 'aria-label': 'Number of keys' });
+  [2000, 5000, 20000].forEach(function (n) { count.appendChild(el('option', { value: n, selected: n === 20000 }, n.toLocaleString('en-US') + ' keys')); });
+  var metric = el('select.bt-select#metric', { 'aria-label': 'Metric shown in the bar chart' });
+  METRICS.forEach(function (m) { metric.appendChild(el('option', { value: m.id }, m.label)); });
+  fig.toolbar.append(el('label.bt-field', 'workload', workload), count, el('label.bt-field', 'bars', metric));
+
+  var chartHost = el('div'), profile = el('div.c15-profile'), tableHost = el('div.bt-table-wrap');
+  fig.stage.append(chartHost, el('div', { style: { fontSize: '.8rem', color: 'var(--bt-muted)' } }, 'Leaf fill profile, and average fill:'), profile, tableHost);
+  var chart = null, view = new Ch15.SiblingView(el('div'));   // SiblingView only to install the chapter CSS
+  void view;
+
+  function profilePath(fills) {
+    var d = 'M0,100';
+    for (var i = 0; i < fills.length; i++) d += 'V' + (100 - Math.min(1, fills[i]) * 100).toFixed(1) + 'H' + (i + 1);
+    return d + 'V100Z';
+  }
+  function draw(rows) {
+    var m = METRICS.filter(function (x) { return x.id === metric.value; })[0], w = WORK[workload.value];
+    if (chart) chart.root.parentNode.removeChild(chart.root);
+    chart = new BTViz.Chart(chartHost, { type: 'bar', height: 210, yLabel: m.label, yMax: m.max });
+    chart.render({ labels: w.short, series: [{ name: m.label, token: 'node-active', values: rows.map(m.get) }] });
+    profile.textContent = '';
+    var widest = Math.max.apply(null, rows.map(function (r) { return r.fills.length; }));
+    rows.forEach(function (r) {
+      var svg = el('svg', { viewBox: '0 0 ' + widest + ' 100', preserveAspectRatio: 'none', role: 'img', 'aria-label': r.label + ': ' + r.pages + ' pages, ' + (r.fill / 10).toFixed(1) + '% full on average' },
+        el('path', { d: profilePath(r.fills) }));
+      profile.append(el('span', r.label), svg, el('span.num', (r.fill / 10).toFixed(1) + '%'));
+    });
+    var num = function (v) { return el('td.num', v.toLocaleString('en-US')); };
+    tableHost.textContent = '';
+    tableHost.appendChild(el('table.bt-table',
+      el('thead', el('tr', el('th', 'policy'), ['pages', 'fill', 'balances', 'leaf writes', 'freed', 'cells moved', 'onto old pages'].map(function (h) { return el('th.num', h); }))),
+      el('tbody', rows.map(function (r) {
+        return el('tr', el('td', r.label), num(r.pages), el('td.num', (r.fill / 10).toFixed(1) + '%'), num(r.balances), num(r.writes), num(r.freed), num(r.moved), num(r.movedToOld));
+      }))));
+  }
+
+  var stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, interval: 900,
+    onStep: function (step) { draw(step.state.rows); }
+  });
+  var current = null;
+  function compute() {
+    var id = workload.value, n = +count.value, w = WORK[id];
+    fig.caption.innerHTML = 'Running ' + w.label.toLowerCase() + ' for every policy…';
+    setTimeout(function () {
+      var byPolicy = Ch15.runWorkload(id, n, 10), len = byPolicy[0].length, steps = [];
+      var total = byPolicy[0][len - 1].ops;
+      for (var c = 0; c < len; c++) {
+        var rows = byPolicy.map(function (p) { return p[c]; }), ops = rows[0].ops || 0;
+        steps.push({
+          caption: (c === len - 1 ? '<b>Done: ' + total.toLocaleString('en-US') + ' ' + w.word + '.</b> ' + w.end
+            : (ops ? 'After ' + ops.toLocaleString('en-US') + ' of ' + total.toLocaleString('en-US') + ' ' + w.word + '. ' : 'Before the first of ' + total.toLocaleString('en-US') + ' ' + w.word + '. ') + w.intro),
+          state: { rows: rows }
+        });
+      }
+      current = { id: id, n: n, steps: steps };
+      stepper.setSteps(steps, { index: steps.length - 1, instant: true });
+    }, 30);
+  }
+  workload.addEventListener('change', compute);
+  count.addEventListener('change', compute);
+  metric.addEventListener('change', function () { if (current) draw(stepper.state(stepper.index).rows); });
+  compute();
+
+  /* Self-test: all five tables of the programs (22 rows), computed one table per tick. */
+  var parts = Ch15.reportPoliciesParts(20000), text = '';
+  (function nextPart(i) {
+    if (i === parts.length) {
+      BTViz.selfTest('JS model = programs: sections 3 and 4, all 22 rows at 20,000 keys', text, window.CH15_EXPECTED.policies);
+      return;
+    }
+    setTimeout(function () { text += parts[i](); nextPart(i + 1); }, 60);
+  })(0);
+  window.CH15_FIG = { stepper: stepper };
+})();
+</script>
+</body>
+</html>

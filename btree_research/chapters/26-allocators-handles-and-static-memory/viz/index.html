@@ -89,8 +89,8 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
       el('p.c26-note', 'An example address. It is where the node happens to be; ' + (f.moved ? 'it just changed, and a tree of pointers could not have been told.' : 'if the node moved, every copy of it would be wrong.')));
   }
 
-  var tree, stepper;
-  stepper = new BTViz.Stepper({
+  var tree;
+  var stepper = new BTViz.Stepper({
     mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
     onStep: function (step, i) {
       var s = step.state;
@@ -100,19 +100,26 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
       leafMap.render(s.leaves);
       intMap.render(s.interiors);
       showFocus(s.focus);
-      log.sync(stepper ? stepper.steps : [], i);
+      syncLog(i);
     }
   });
 
-  var history = [];                      // steps of earlier operations stay in the log
+  // The log keeps the events of earlier operations and adds the current timeline's
+  // events up to the step being shown.
+  var prior = [], current = [];
+  function syncLog(i) {
+    log.clear();
+    prior.concat(current.slice(0, i + 1)).forEach(function (s) { if (s.log) log.add(s.log.html || s.log, s.log.state); });
+  }
   function show(steps, play) {
-    history = history.concat(steps.filter(function (s) { return s.log; }).map(function (s) { return { caption: '', state: s.state, log: s.log, hidden: true }; }));
+    prior = prior.concat(current.filter(function (s) { return s.log; })).slice(-40);
+    current = steps;
     stepper.setSteps(steps, { play: !!play });
   }
   function build(keys) {
     tree = new Ch26.Tree(4, 4);
     keys.forEach(function (k) { tree.put(k); });
-    log.clear();
+    prior = []; current = [];
   }
   function reset() {
     build([10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15]);

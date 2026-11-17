@@ -213,7 +213,7 @@
     steps.push({
       caption: 'The rows in arrival order, each with its key bytes. Insertion sort will now order them using ' +
         '<b>nothing but byte comparisons</b>: it does not know which bytes are a name and which a number.',
-      state: { order: order.slice(), pair: null, diff: null, sortedUpTo: 1, done: false },
+      state: { order: order.slice(), pair: null, diff: null, sortedUpTo: 1, done: false, comparisons: 0, examined: 0 },
       log: 'start: ' + order.map(function (i) { return rows[i].id; }).join(' ')
     });
 
@@ -237,7 +237,7 @@
         steps.push({
           caption: 'Compare ' + k(a) + ' with ' + k(b) + '. ' + where + meaning + '. ' +
             (swap ? 'The upper key is larger, so the two rows <b>swap</b>.' : 'They are already in order; this row has found its place.'),
-          state: { order: before, pair: [j - 1, j], diff: c.at, sortedUpTo: i, done: false, swap: swap },
+          state: { order: before, pair: [j - 1, j], diff: c.at, sortedUpTo: i, done: false, swap: swap, comparisons: comparisons, examined: examined },
           log: label(a) + (c.order < 0 ? ' < ' : c.order > 0 ? ' > ' : ' = ') + label(b) + ' at byte ' + c.at,
           question: {
             prompt: 'Which key is smaller as a byte string: ' + label(a) + ' or ' + label(b) + '?',
@@ -262,7 +262,7 @@
         : 'Sorted by bytes, but <b>' + wrong.length + ' row' + (wrong.length === 1 ? ' is' : 's are') + ' not where the logical order puts ' +
           (wrong.length === 1 ? 'it' : 'them') + '</b> (marked). With a fix switched off, byte order no longer equals value order: ' +
           'a B-tree built on these keys would return wrong range scans.',
-      state: { order: order.slice(), pair: null, diff: null, sortedUpTo: order.length, done: true, wrong: wrong, ok: ok },
+      state: { order: order.slice(), pair: null, diff: null, sortedUpTo: order.length, done: true, wrong: wrong, ok: ok, comparisons: comparisons, examined: examined },
       log: (ok ? 'sorted: ' : 'WRONG: ') + order.map(function (r) { return rows[r].id; }).join(' '),
       hold: 2
     });
@@ -311,8 +311,9 @@
         'Step 1: most significant byte first. Now the first byte that differs between two keys is the most significant difference. ' +
         'This is already correct for unsigned numbers.', 'be');
       payload = encodeI64(v);
+      var bin = function (b) { var t = b.toString(2); while (t.length < 8) t = '0' + t; return t.slice(0, 4) + ' ' + t.slice(4); };
       push('sign bit flipped', payload, { 0: 'compare' },
-        'Step 2: flip the top bit. In two\'s complement negative numbers have the top bit set, so they would sort <i>after</i> the ' +
+        'Step 2: flip the top bit of the first byte (<code>' + bin(u64be(u)[0]) + '</code> becomes <code>' + bin(payload[0]) + '</code>). In two\'s complement negative numbers have the top bit set, so they would sort <i>after</i> the ' +
         'positive ones. Flipping it moves ' + (v < 0n ? 'this negative number below' : 'this non-negative number above') +
         ' the other half and keeps the order inside each half.', 'flip');
     } else if (kind === 'float') {

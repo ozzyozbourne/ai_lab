@@ -62,8 +62,8 @@ Chapter text: <a href="../README.md">README</a>. First page: <a href="index.html
     el('div.c26-sub', 'Free lists, one per block size'), listsEl, statsEl);
   var log = new BTViz.Log(fig.side, { title: 'Events' });
 
-  var heap, nextName, stepper;
-  function render(step, i, info) {
+  var heap, nextName;
+  function render(step, i) {
     var s = step.state;
     heapEl.textContent = '';
     s.blocks.forEach(function (b) {
@@ -92,33 +92,36 @@ Chapter text: <a href="../README.md">README</a>. First page: <a href="index.html
       btn.disabled = !last;
       liveEl.appendChild(btn);
     });
-    log.sync(stepper.steps, i);
-    void info;
+    syncLog(i);
   }
-  stepper = new BTViz.Stepper({ mount: fig.controls, caption: fig.caption, root: fig.root, predict: false, onStep: render });
+  var stepper = new BTViz.Stepper({ mount: fig.controls, caption: fig.caption, root: fig.root, predict: false, onStep: render });
 
-  var done = [];                                     // log entries of earlier operations
+  // The log keeps the events of earlier operations and adds the current timeline's
+  // events up to the step being shown.
+  var prior = [], current = [];
+  function syncLog(i) {
+    log.clear();
+    prior.concat(current.slice(0, i + 1)).forEach(function (s) { if (s.log) log.add(s.log.html || s.log, s.log.state); });
+  }
   function show(steps, play) {
-    var all = done.concat(steps);
-    done = done.concat(steps.filter(function (s) { return s.log; }).map(function (s) { return { log: s.log }; }));
-    // Keep earlier log lines visible: prepend them as zero-length history via the log itself.
+    prior = prior.concat(current.filter(function (s) { return s.log; })).slice(-40);
+    current = steps;
     stepper.setSteps(steps, { play: !!play });
-    void all;
   }
   function name() { var n = String.fromCharCode(97 + nextName % 26) + (nextName >= 26 ? Math.floor(nextName / 26) : ''); nextName++; return n; }
   function reset() {
-    heap = new Ch26.Buddy(10, 6); nextName = 0; done = []; log.clear();
+    heap = new Ch26.Buddy(10, 6); nextName = 0; prior = []; current = [];
     // The fixed scenario of the programs (section 5 of expected_output.txt), as one timeline.
     var steps = heap.idle('An empty heap is one free block of 1024 bytes. Step forward to replay the chapter program: allocate a = 100, b = 60, c = 200 bytes. Then free blocks by clicking them, or type a size.');
     [100, 60, 200].forEach(function (len) { steps = steps.concat(heap.alloc(len, name())); });
-    stepper.setSteps(steps);
+    show(steps);
   }
   function fragment() {
-    heap = new Ch26.Buddy(10, 6); nextName = 0; done = []; log.clear();
+    heap = new Ch26.Buddy(10, 6); nextName = 0; prior = []; current = [];
     var blocks = [];
     for (var i = 0; i < 16; i++) blocks.push(heap.alloc(64, name()).result);
     for (i = 0; i < 16; i += 2) heap.free(blocks[i]);
-    stepper.setSteps(heap.idle('Sixteen 64-byte blocks were allocated and every other one freed. 512 bytes are free, but no two free blocks are buddies, so the largest request that can succeed is 64 bytes. Try <b>Alloc 128</b>: it fails. That is external fragmentation. Free one of the remaining blocks and watch two neighbours merge.'));
+    show(heap.idle('Sixteen 64-byte blocks were allocated and every other one freed. 512 bytes are free, but no two free blocks are buddies, so the largest request that can succeed is 64 bytes. Try <b>Alloc 128</b>: it fails. That is external fragmentation. Free one of the remaining blocks and watch two neighbours merge.')));
   }
 
   var input = el('input.bt-input#size', { type: 'number', min: 1, max: 2000, value: 128, 'aria-label': 'Request size in bytes', style: { width: '6em' } });

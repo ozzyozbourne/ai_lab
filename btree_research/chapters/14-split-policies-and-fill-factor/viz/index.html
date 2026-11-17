@@ -155,7 +155,8 @@ a run of equal keys: the parent then has to store the row id as well as the key.
     var newCell = el('div.c14-newcell');
     var stripHost = el('div');
     var tableHost = el('div.bt-table-wrap');
-    fig.stage.append(newCell, stripHost, tableHost, el('div.c14-tablenote', 'left, right and separator sizes are in bytes'));
+    var tableNote = el('div.c14-tablenote', 'left and right are in bytes');
+    fig.stage.append(newCell, stripHost, tableHost, tableNote);
     var code = BTViz.codePanel(fig.side, 'chooseSplit', { title: 'chooseSplit (condensed)', maxHeight: 440 });
     var LINES = window.CHAPTER_CODE_LINES;
 
@@ -175,6 +176,7 @@ a run of equal keys: the parent then has to store the row id as well as the key.
         new C14.CellStrip(r).render(s.result.right);
       } else new C14.CellStrip(stripHost).render(s.strip);
       tableHost.textContent = '';
+      tableNote.hidden = !s.rows;
       if (s.rows) {
         var head = ['cut', 'left', 'right', s.deltaLabel || 'delta', 'separator'];
         var t = el('table.bt-table.c14-cands', el('thead', el('tr', head.map(function (h, i) { return el('th', { class: i > 0 && i < 4 ? 'num' : null }, h); }))));

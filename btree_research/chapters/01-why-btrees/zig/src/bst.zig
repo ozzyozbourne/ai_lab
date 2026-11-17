@@ -138,74 +138,77 @@ pub const Bst = struct {
         return old;
     }
 
+    // `range`, `height` and `validate` have to visit a whole subtree, so they
+    // must remember where to continue after finishing one side. Recursion
+    // remembers that on the call stack, one frame per level, and an
+    // unbalanced tree can have as many levels as it has nodes: 20000 nodes
+    // inserted in ascending order would need 20000 frames. All three
+    // therefore keep the pending work in an ArrayList on the heap, which can
+    // grow as long as there is memory. That is why they take an allocator.
+
     /// Append all entries with lo <= key < hi to `out`, ascending.
     pub fn range(self: *const Bst, allocator: Allocator, lo: u64, hi: u64, out: *std.ArrayList(Entry)) Allocator.Error!void {
-        try rangeNode(self.root, allocator, lo, hi, out);
-    }
-
-    fn rangeNode(maybe_node: ?*const Node, allocator: Allocator, lo: u64, hi: u64, out: *std.ArrayList(Entry)) Allocator.Error!void {
-        const node = maybe_node orelse return;
-        // In-order walk, pruning subtrees that cannot contain keys in range.
-        if (lo < node.key) try rangeNode(node.left, allocator, lo, hi, out);
-        if (lo <= node.key and node.key < hi) try out.append(allocator, .{ .key = node.key, .value = node.value });
-        if (node.key < hi) try rangeNode(node.right, allocator, lo, hi, out);
+        // In-order walk. `pending` holds the nodes whose left subtree is
+        // being visited: their own entry and their right subtree come later.
+        var pending: std.ArrayList(*const Node) = .empty;
+        defer pending.deinit(allocator);
+        var current: ?*const Node = self.root;
+        while (true) {
+            while (current) |node| {
+                if (node.key < lo) {
+                    // The node and its whole left subtree are below the range.
+                    current = node.right;
+                } else {
+                    try pending.append(allocator, node);
+                    // Keys equal to `lo` cannot have anything useful on the left.
+                    current = if (lo < node.key) node.left else null;
+                }
+            }
+            const node = pending.pop() orelse break;
+            // Everything still pending is larger than this node: stop early.
+            if (node.key >= hi) break;
+            try out.append(allocator, .{ .key = node.key, .value = node.value });
+            current = node.right;
+        }
     }
 
     /// Number of nodes on the longest path from the root down (0 if empty).
     /// This is the worst-case number of page reads for one lookup.
-    pub fn height(self: *const Bst) usize {
-        return heightOf(self.root);
-    }
-
-    fn heightOf(maybe_node: ?*const Node) usize {
-        // Loop down chains of single children so that a degenerate tree
-        // (every node has one child) needs no recursion at all.
-        var depth: usize = 0;
-        var current = maybe_node;
-        while (current) |node| {
-            depth += 1;
-            if (node.left != null and node.right != null) {
-                return depth + @max(heightOf(node.left), heightOf(node.right));
-            }
-            current = node.left orelse node.right;
+    pub fn height(self: *const Bst, allocator: Allocator) Allocator.Error!usize {
+        const Pending = struct { node: *const Node, depth: usize };
+        var pending: std.ArrayList(Pending) = .empty;
+        defer pending.deinit(allocator);
+        if (self.root) |root| try pending.append(allocator, .{ .node = root, .depth = 1 });
+        var deepest: usize = 0;
+        while (pending.pop()) |item| {
+            deepest = @max(deepest, item.depth);
+            if (item.node.left) |left| try pending.append(allocator, .{ .node = left, .depth = item.depth + 1 });
+            if (item.node.right) |right| try pending.append(allocator, .{ .node = right, .depth = item.depth + 1 });
         }
-        return depth;
+        return deepest;
     }
 
     pub const ValidateError = error{ KeyOutOfOrder, CountMismatch };
 
     /// Check the search-tree invariant and that `len` matches the node count.
-    pub fn validate(self: *const Bst) ValidateError!void {
-        const count = try validateNode(self.root, null, null);
-        if (count != self.len) return error.CountMismatch;
-    }
-
-    /// Every key below `node` must lie strictly between `low` and `high`
-    /// (null = unbounded). Returns the number of nodes in the subtree.
-    fn validateNode(maybe_node: ?*const Node, low: ?u64, high: ?u64) ValidateError!usize {
+    pub fn validate(self: *const Bst, allocator: Allocator) (ValidateError || Allocator.Error)!void {
+        // Every key in the subtree below `node` must lie strictly between
+        // `low` and `high` (null = unbounded).
+        const Pending = struct { node: *const Node, low: ?u64, high: ?u64 };
+        var pending: std.ArrayList(Pending) = .empty;
+        defer pending.deinit(allocator);
+        if (self.root) |root| try pending.append(allocator, .{ .node = root, .low = null, .high = null });
         var count: usize = 0;
-        var current = maybe_node;
-        var lo = low;
-        var hi = high;
-        // Same trick as heightOf: recurse only where the tree really forks.
-        while (current) |node| {
-            if (lo) |l| if (node.key <= l) return error.KeyOutOfOrder;
-            if (hi) |h| if (node.key >= h) return error.KeyOutOfOrder;
+        while (pending.pop()) |item| {
+            const node = item.node;
+            if (item.low) |low| if (node.key <= low) return error.KeyOutOfOrder;
+            if (item.high) |high| if (node.key >= high) return error.KeyOutOfOrder;
             count += 1;
-            if (node.left != null and node.right != null) {
-                count += try validateNode(node.left, lo, node.key);
-                count += try validateNode(node.right, node.key, hi);
-                return count;
-            }
-            if (node.left) |left| {
-                hi = node.key;
-                current = left;
-            } else {
-                lo = node.key;
-                current = node.right;
-            }
+            // Going left tightens the upper bound, going right the lower one.
+            if (node.left) |left| try pending.append(allocator, .{ .node = left, .low = item.low, .high = node.key });
+            if (node.right) |right| try pending.append(allocator, .{ .node = right, .low = node.key, .high = item.high });
         }
-        return count;
+        if (count != self.len) return error.CountMismatch;
     }
 
     /// How many distinct 4096-byte pages of REAL memory hold the nodes on the
@@ -241,9 +244,9 @@ test "put, get and node visits on the canonical keys" {
     var tree: Bst = .empty;
     defer tree.deinit(allocator);
     for (canonical) |k| try testing.expectEqual(null, try tree.put(allocator, k, k * 10));
-    try tree.validate();
+    try tree.validate(allocator);
     try testing.expectEqual(12, tree.len);
-    try testing.expectEqual(5, tree.height());
+    try testing.expectEqual(5, try tree.height(allocator));
 
     // 10 -> 20 -> 12 -> 17: four nodes, four page reads.
     var trace: cost.Trace = .{};
@@ -260,29 +263,128 @@ test "ascending inserts degenerate into a linked list" {
     var tree: Bst = .empty;
     defer tree.deinit(allocator);
     for (0..500) |i| _ = try tree.put(allocator, i, i);
-    try tree.validate();
-    try testing.expectEqual(500, tree.height());
+    try tree.validate(allocator);
+    try testing.expectEqual(500, try tree.height(allocator));
     var trace: cost.Trace = .{};
     _ = tree.getTraced(499, &trace);
     try testing.expectEqual(500, trace.page_reads);
 }
 
-test "deinit, height and validate survive a very deep tree" {
+/// Build a deep tree directly, without `put` (which would walk the whole
+/// chain for every key). `spine` nodes hang below each other; with
+/// `.right_chain` and `.left_chain` that is all. With `.caterpillar` every
+/// spine node also gets a leaf as its left child, which is what inserting
+/// 2, 1, 4, 3, 6, 5, ... (nearly sorted input) produces: no long chain of
+/// single children anywhere, but still `spine` levels.
+const Shape = enum { right_chain, left_chain, caterpillar };
+
+fn buildDeep(allocator: Allocator, spine: u64, shape: Shape) !Bst {
+    var tree: Bst = .empty;
+    var link: *?*Bst.Node = &tree.root;
+    for (0..spine) |i| {
+        const node = try allocator.create(Bst.Node);
+        // Keys 1, 3, 5, ... going down (descending for the left chain).
+        const rank = if (shape == .left_chain) spine - 1 - i else i;
+        node.* = .{ .key = rank * 2 + 1, .value = i };
+        link.* = node;
+        tree.len += 1;
+        if (shape == .caterpillar) {
+            const leaf = try allocator.create(Bst.Node);
+            leaf.* = .{ .key = rank * 2, .value = i };
+            node.left = leaf;
+            tree.len += 1;
+        }
+        link = if (shape == .left_chain) &node.left else &node.right;
+    }
+    return tree;
+}
+
+test "deinit, height, validate and range survive very deep trees" {
+    // Regression test. Recursive versions of these functions overflowed the
+    // stack: Rust at 20000 levels, Zig at 100000 (validate on the
+    // caterpillar) and 1000000 (range on a chain). The arena makes a million
+    // small allocations cheap; testing.allocator below it still catches leaks.
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const allocator = testing.allocator;
+    var out: std.ArrayList(Entry) = .empty;
+    defer out.deinit(allocator);
+
+    const cases = [_]struct { shape: Shape, spine: u64, nodes: usize }{
+        .{ .shape = .right_chain, .spine = 1_000_000, .nodes = 1_000_000 },
+        .{ .shape = .left_chain, .spine = 1_000_000, .nodes = 1_000_000 },
+        .{ .shape = .caterpillar, .spine = 200_000, .nodes = 400_000 },
+    };
+    for (cases) |case| {
+        const tree = try buildDeep(arena.allocator(), case.spine, case.shape);
+        try testing.expectEqual(case.nodes, tree.len);
+        try tree.validate(allocator);
+        const expected_height = case.spine + @intFromBool(case.shape == .caterpillar);
+        try testing.expectEqual(expected_height, try tree.height(allocator));
+
+        out.clearRetainingCapacity();
+        try tree.range(allocator, 0, std.math.maxInt(u64), &out);
+        try testing.expectEqual(case.nodes, out.items.len);
+        for (out.items[0 .. out.items.len - 1], out.items[1..]) |a, b| try testing.expect(a.key < b.key);
+
+        // A narrow range deep inside the tree: keys 1000, 1001, 1002.
+        out.clearRetainingCapacity();
+        try tree.range(allocator, 1000, 1003, &out);
+        const want: usize = if (case.shape == .caterpillar) 3 else 1; // chains hold odd keys only
+        try testing.expectEqual(want, out.items.len);
+    }
+}
+
+test "deinit frees a very deep tree node by node" {
+    // The same shapes without an arena, so that `deinit` itself is tested.
+    const allocator = testing.allocator;
+    for ([_]Shape{ .right_chain, .left_chain, .caterpillar }) |shape| {
+        var tree = try buildDeep(allocator, 20_000, shape);
+        defer tree.deinit(allocator);
+        try tree.validate(allocator);
+    }
+}
+
+test "range prunes: bounds, empty and inverted ranges" {
     const allocator = testing.allocator;
     var tree: Bst = .empty;
     defer tree.deinit(allocator);
-    // Build a 20000-node chain directly (20000 puts would walk the chain
-    // 20000 times). Recursive code would need 20000 stack frames here.
-    var link: *?*Bst.Node = &tree.root;
-    for (0..20_000) |i| {
-        const node = try allocator.create(Bst.Node);
-        node.* = .{ .key = i, .value = i };
-        link.* = node;
-        link = &node.right;
-        tree.len += 1;
+    for (canonical) |k| _ = try tree.put(allocator, k, k * 10);
+    var out: std.ArrayList(Entry) = .empty;
+    defer out.deinit(allocator);
+
+    const cases = [_]struct { lo: u64, hi: u64, want: []const u64 }{
+        .{ .lo = 6, .hi = 17, .want = &.{ 6, 7, 10, 12, 15 } }, // lo included, hi excluded
+        .{ .lo = 8, .hi = 9, .want = &.{} },
+        .{ .lo = 20, .hi = 5, .want = &.{} }, // inverted
+        .{ .lo = 10, .hi = 10, .want = &.{} },
+        .{ .lo = 30, .hi = std.math.maxInt(u64), .want = &.{30} },
+        .{ .lo = 0, .hi = 2, .want = &.{1} },
+    };
+    for (cases) |case| {
+        out.clearRetainingCapacity();
+        try tree.range(allocator, case.lo, case.hi, &out);
+        try testing.expectEqual(case.want.len, out.items.len);
+        for (case.want, out.items) |w, e| try testing.expectEqual(w, e.key);
     }
-    try tree.validate();
-    try testing.expectEqual(20_000, tree.height());
+}
+
+fn walkAll(allocator: Allocator) !void {
+    // Insert order 2, 1, 4, 3, ...: a small caterpillar, built with a
+    // separate allocator so that only the three walks are under test.
+    var tree: Bst = .empty;
+    defer tree.deinit(testing.allocator);
+    for (0..12) |i| _ = try tree.put(testing.allocator, i ^ 1, i);
+    var out: std.ArrayList(Entry) = .empty;
+    defer out.deinit(allocator);
+    try tree.validate(allocator);
+    try testing.expectEqual(7, try tree.height(allocator));
+    try tree.range(allocator, 0, 100, &out);
+    try testing.expectEqual(12, out.items.len);
+}
+
+test "range, height and validate under every possible allocation failure" {
+    try testing.checkAllAllocationFailures(testing.allocator, walkAll, .{});
 }
 
 test "delete: leaf, one child, two children, root" {
@@ -296,7 +398,7 @@ test "delete: leaf, one child, two children, root" {
     try testing.expectEqual(200, tree.delete(allocator, 20)); // two children
     try testing.expectEqual(100, tree.delete(allocator, 10)); // the root
     try testing.expectEqual(null, tree.delete(allocator, 10));
-    try tree.validate();
+    try tree.validate(allocator);
     try testing.expectEqual(8, tree.len);
     try testing.expectEqual(12, tree.root.?.key); // successor of 10 moved up
 
@@ -312,11 +414,11 @@ test "validate rejects a tree that breaks the ordering" {
     var right: Bst.Node = .{ .key = 5, .value = 0 }; // 5 on the right of 10
     var root: Bst.Node = .{ .key = 10, .value = 0, .right = &right };
     var tree: Bst = .{ .root = &root, .len = 2 };
-    try testing.expectError(error.KeyOutOfOrder, tree.validate());
+    try testing.expectError(error.KeyOutOfOrder, tree.validate(testing.allocator));
     right.key = 11;
-    try tree.validate();
+    try tree.validate(testing.allocator);
     tree.len = 3;
-    try testing.expectError(error.CountMismatch, tree.validate());
+    try testing.expectError(error.CountMismatch, tree.validate(testing.allocator));
 }
 
 test "put that fails to allocate leaves the tree unchanged" {
@@ -326,7 +428,7 @@ test "put that fails to allocate leaves the tree unchanged" {
     defer tree.deinit(allocator);
     for ([_]u64{ 2, 1, 3 }) |k| _ = try tree.put(allocator, k, k);
     try testing.expectError(error.OutOfMemory, tree.put(allocator, 4, 4));
-    try tree.validate();
+    try tree.validate(testing.allocator); // not the failing one: validate allocates too
     try testing.expectEqual(3, tree.len);
     try testing.expectEqual(null, tree.get(4));
     // Overwriting allocates nothing, so it works even when memory is gone.
@@ -338,7 +440,7 @@ fn putMany(allocator: Allocator, count: u64) !void {
     defer tree.deinit(allocator);
     for (0..count) |i| {
         _ = try tree.put(allocator, (i * 7) % count, i);
-        try tree.validate();
+        try tree.validate(allocator);
     }
 }
 
@@ -387,7 +489,7 @@ test "model test against the oracle" {
                 }
             },
         }
-        try tree.validate();
+        try tree.validate(allocator);
         try testing.expectEqual(oracle.len(), tree.len);
     }
 }

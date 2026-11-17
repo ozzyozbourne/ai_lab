@@ -40,8 +40,8 @@ inner level of a B+tree. If they arrive in random order every zone spans nearly 
 whole domain and every answer is "maybe".
 
 A B-tree pays to keep keys sorted on every insert; a zone map pays one `min` and one
-`max`. That is why analytical engines, which append in bulk and filter on many columns,
-keep zone maps on every column and a real index on few or none.
+`max`. That is why analytical engines keep zone maps on every column and a real index
+on few or none.
 
 ### No total order preserves nearness
 
@@ -82,9 +82,9 @@ root:
 
 ### HNSW: a skip list without order
 
-A skip list is not taught elsewhere in this guide, so here it is in full. It is a sorted
-linked list with express lanes. Every key is on level 0; a coin flip promotes some keys
-to level 1, another flip promotes some of those to level 2, and so on:
+A skip list is not taught elsewhere in this guide. It is a sorted linked list with
+express lanes: every key is on level 0, a coin flip promotes some keys to level 1, and
+another flip some of those to level 2:
 
 ```
 level 2:  3 ----------------> 41
@@ -93,8 +93,8 @@ level 0:  3 -> 9 -> 17 -> 25 -> 41 -> 52 -> 60
 ```
 
 Search starts top left, moves right while the next key is not past the target, then
-drops a level. For 52: level 2 goes 3, 41; level 1 sees 60, too big; level 0 steps to
-52. The levels do the work of a B-tree's inner nodes, built by coin flips, not splits.
+drops a level. For 52: 3 and 41 on level 2; on level 1 the next key, 60, is too big;
+level 0 steps to 52. The levels play the part of a B-tree's inner nodes.
 
 HNSW gives every vector a random top level in the same way and links it to a few near
 neighbours on each of its levels. Search starts at one entry point on the top level and
@@ -103,7 +103,6 @@ level. "Move right while smaller" has become "move to a closer neighbour", and t
 stopping rule has changed from a proof (the next key is too big) to a local minimum
 (nobody I am linked to is closer). A local minimum is not always the nearest point, so
 HNSW is approximate too, and the bottom level keeps several candidates instead of one.
-The third visualization page lets you find queries where the descent stops short.
 
 ## A worked example by hand
 
@@ -170,9 +169,9 @@ vector is stored in the list of its nearest centroid. `search` ranks the centroi
 `nprobe` lists and keeps a sorted top-k buffer. `flatSearch` is brute force and defines
 the right answer.
 
-The lists are not an array of arrays. List `c` owns positions
-`list_offsets[c] .. list_offsets[c+1]` of two flat arrays, with the vectors copied next
-to their ids, so scanning a list is one sequential pass, like scanning a leaf page.
+Lists are not an array of arrays: list `c` owns positions
+`list_offsets[c] .. list_offsets[c+1]` of two flat arrays, so scanning it is one
+sequential pass, like a leaf page.
 
 **`root.zig`** holds the data generators and the fixed scenario.
 
@@ -180,21 +179,19 @@ to their ids, so scanning a list is one sequential pass, like scanning a leaf pa
 
 - `Hit` derives `Ord`; field order (`dist`, then `id`) gives the tie-break that Zig
   writes out in `lessThan`.
-- `check_zone` uses a small `verdict(all, some)` helper instead of chained `if`
-  expressions.
 - Zig passes an allocator to `append`, `build` and `search`. Rust owns its `Vec`s: the
   k-means scratch is locals dropped at the end of `build`, the search scratch a
   `&mut Vec<Hit>` that the caller reuses.
 - Zig tests `append` and `build` with `checkAllAllocationFailures`. This chapter's Rust
-  does not use `Vec::try_reserve`, so `ZoneMap::with_budget` models a failed `append` as
-  `Err(OutOfRows)`. `Ivf::build` has no budget and returns no `Result`: what the Zig test
-  proves is that no error path leaks, and Rust's owned `Vec`s are dropped on every exit.
+  does not use `Vec::try_reserve`; `ZoneMap::with_budget` models a failed `append` as
+  `Err(OutOfRows)`. `Ivf::build` is infallible in Rust: the Zig test proves that no error
+  path leaks, which owned `Vec`s guarantee.
 - Rounded mean: `@divFloor(2 * sum + n, 2 * n)` in Zig, `div_euclid` in Rust. Both are
   floor division, so centroids agree even for negative coordinates.
 
-Why integers? Float k-means would need the same additions in the same order, with no
-fused multiply-add, to print identical centroids in two languages. The cost of integers
-is that a centroid is rounded to the grid, moving it by less than one unit.
+Why integers? Float k-means would need identical addition order and no fused
+multiply-add to print the same centroids in two languages. The cost: a centroid is
+rounded to the grid.
 
 ### Output
 
@@ -264,8 +261,6 @@ How to read it:
   data (row number plus a delay of up to 299) zones overlap their neighbours, so three or
   four chunks are scanned; `v = 777` reads 400 rows to find nothing. On `shuffled` data
   the zone map never helps. The last line shows that appends only touch the last zone.
-- Section 2. Same total gap, distributed differently: row-major makes half the pairs
-  moderately bad, Z-order makes a few pairs very bad.
 - Section 3. One probe scans 792 of 5760 vectors and finds 109 of the 120 true
   neighbours. Query 12 is the hand example again.
 - Section 4. In 16 dimensions with uniform data one probe finds 28% of the true
@@ -328,15 +323,12 @@ concentrate in high dimensions".
 
 ## Allocator notes
 
-The plan assigns this chapter an arena for clustering scratch.
-
 - **Where.** `Ivf.build` creates a `std.heap.ArenaAllocator` on top of the caller's
   allocator and takes four temporary arrays from it: the shuffled ids, the per-centroid
-  coordinate sums, the per-centroid counts and the counting-sort cursors. One
-  `defer arena_state.deinit()` frees them all.
+  coordinate sums, the per-centroid counts and the counting-sort cursors.
 - **Lifetime.** The scratch dies when `build` returns, on success and on every error
   path. The five slices of the index come from the caller's `gpa` and are freed by
-  `Ivf.deinit`. Two lifetimes, two allocators.
+  `Ivf.deinit`.
 - **Why an arena.** The scratch arrays are born and die together. An arena turns four
   `free`s and four `errdefer`s into one line; compare the five `errdefer gpa.free(...)`
   lines the long-lived slices need in the same function.
@@ -349,8 +341,6 @@ The plan assigns this chapter an arena for clustering scratch.
   query, so later queries allocate nothing. Passing `gpa` would leak a buffer per query.
 - **Zone map.** `ZoneMap` holds two `ArrayList`s on the general-purpose allocator: they
   grow as long as the table does, and an arena never gives memory back early.
-- **Rust.** Locals dropped at the end of `build` are the arena; a reused `&mut Vec<Hit>`
-  is `reset(.retain_capacity)`.
 
 ## Pitfalls
 
@@ -363,9 +353,8 @@ The plan assigns this chapter an arena for clustering scratch.
   Too-wide bounds after a delete are harmless; too-narrow bounds are a bug.
 - **Comparing distances with a square root or with floats** when exact agreement matters.
   Squared integer distances order vectors identically and reproduce everywhere. Mind
-  the range: `dist2` squares the unsigned difference and is exact while dim x
-  difference^2 fits `u64` (coordinates within +-2^28 at 16 dimensions); beyond that it
-  saturates, it does not wrap.
+  the range: `dist2` is exact while dim x difference^2 fits `u64` (coordinates within
+  +-2^28 at 16 dimensions), then it saturates.
 - **Unbroken ties.** Two vectors at the same distance must be ordered by something (here
   the id), or top-k results and k-means assignments depend on iteration order.
 - **Leaving the loop after a centroid update.** Then lists are filled from assignments

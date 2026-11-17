@@ -67,10 +67,10 @@ fn handExample(gpa: Allocator, w: *Io.Writer) !void {
     var tree: Bst = .empty;
     defer tree.deinit(gpa);
     for (canonical) |k| _ = try tree.put(gpa, k, k * 10);
-    try tree.validate();
+    try tree.validate(gpa);
     trace = .{};
     _ = tree.getTraced(17, &trace);
-    try w.print("BST, same insert order: height {d}\n", .{tree.height()});
+    try w.print("BST, same insert order: height {d}\n", .{try tree.height(gpa)});
     try w.print("  get(17): {d} comparisons, {d} page reads\n", .{ trace.comparisons, trace.page_reads });
 
     // BST fed the keys in ascending order: a linked list.
@@ -79,7 +79,7 @@ fn handExample(gpa: Allocator, w: *Io.Writer) !void {
     for (array.items()) |e| _ = try chain.put(gpa, e.key, e.value);
     trace = .{};
     _ = chain.getTraced(30, &trace);
-    try w.print("BST, ascending insert order: height {d}\n", .{chain.height()});
+    try w.print("BST, ascending insert order: height {d}\n", .{try chain.height(gpa)});
     try w.print("  get(30): {d} comparisons, {d} page reads\n", .{ trace.comparisons, trace.page_reads });
 
     // Wide nodes of order 4 laid over the sorted array.
@@ -166,7 +166,7 @@ fn race(gpa: Allocator, w: *Io.Writer) !void {
     var tree: Bst = .empty;
     defer tree.deinit(gpa);
     for (unsorted) |e| _ = try tree.put(gpa, e.key, e.value);
-    try tree.validate();
+    try tree.validate(gpa);
 
     // The order of a node that fills one page: 170 entries + 171 pointers.
     const m = height.orderForPage(cost.page_size, @sizeOf(Entry), @sizeOf(u64));
@@ -198,7 +198,7 @@ fn race(gpa: Allocator, w: *Io.Writer) !void {
     try printLane(w, "BST, random insert order", tree_lane);
     try printLane(w, "wide nodes, M = 171", wide_lane);
     try w.print("heights: BST {d}, wide nodes {d}; the sorted array spans {d} pages\n", .{
-        tree.height(),
+        try tree.height(gpa),
         height.minHeight(race_keys, m),
         (race_keys + cost.entries_per_page - 1) / cost.entries_per_page,
     });
@@ -209,7 +209,7 @@ fn race(gpa: Allocator, w: *Io.Writer) !void {
     for (0..2000) |i| _ = try chain.put(gpa, (i + 1) * 10, i);
     var worst: cost.Trace = .{};
     _ = chain.getTraced(2000 * 10, &worst);
-    try w.print("BST, 2000 keys in ascending order: height {d}, get(largest) reads {d} pages\n", .{ chain.height(), worst.page_reads });
+    try w.print("BST, 2000 keys in ascending order: height {d}, get(largest) reads {d} pages\n", .{ try chain.height(gpa), worst.page_reads });
 }
 
 fn printLane(w: *Io.Writer, name: []const u8, lane: Lane) !void {

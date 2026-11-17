@@ -11,7 +11,8 @@
 //!
 //! Two implementations live here:
 //!   * `FileStorage`: a real file, positional I/O (pread / pwrite / fsync).
-//!   * `MemStorage`:  a byte array, with an optional injected write failure.
+//!   * `MemStorage`:  a byte array, with optional injected read and write
+//!                    failures.
 
 use std::cell::RefCell;
 use std::fmt;
@@ -30,8 +31,12 @@ pub enum Error {
     ShortRead,
     /// Storage: the device (or the injected fault) refused the call.
     StorageFailure,
-    /// Pager: the storage size is not a whole number of pages.
+    /// Pager: the storage size is not a whole number of pages, or it holds
+    /// more pages than a 32-bit page id can number.
     CorruptFile,
+    /// Pager: `allocate_page` when every page id is in use. The file is not
+    /// damaged, it is full.
+    FileFull,
     /// Pager: the page id is >= page_count.
     PageOutOfRange,
     /// Buffer pool: every frame is pinned, nothing can be evicted.
@@ -130,6 +135,7 @@ pub struct MemStorage {
 struct MemDisk {
     bytes: Vec<u8>,
     writes_before_failure: Option<u64>,
+    reads_before_failure: Option<u64>,
     sync_count: u64,
 }
 
@@ -149,6 +155,11 @@ impl MemStorage {
         self.disk.borrow_mut().writes_before_failure = n;
     }
 
+    /// The same countdown for reads.
+    pub fn set_reads_before_failure(&self, n: Option<u64>) {
+        self.disk.borrow_mut().reads_before_failure = n;
+    }
+
     pub fn sync_count(&self) -> u64 {
         self.disk.borrow().sync_count
     }
@@ -156,14 +167,25 @@ impl MemStorage {
 
 impl Storage for MemStorage {
     fn read(&mut self, offset: u64, buffer: &mut [u8]) -> Result<(), Error> {
-        let disk = self.disk.borrow();
-        let start = offset as usize;
-        let end = start + buffer.len();
-        if end > disk.bytes.len() {
-            return Err(Error::ShortRead);
+        let mut disk = self.disk.borrow_mut();
+        if let Some(left) = disk.reads_before_failure.as_mut() {
+            if *left == 0 {
+                return Err(Error::StorageFailure);
+            }
+            *left -= 1;
         }
-        buffer.copy_from_slice(&disk.bytes[start..end]);
-        Ok(())
+        // An offset so large that the end cannot be computed is past the end
+        // of any storage.
+        let range = usize::try_from(offset)
+            .ok()
+            .and_then(|start| Some(start..start.checked_add(buffer.len())?));
+        match range.and_then(|range| disk.bytes.get(range)) {
+            Some(bytes) => {
+                buffer.copy_from_slice(bytes);
+                Ok(())
+            }
+            None => Err(Error::ShortRead),
+        }
     }
 
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), Error> {
@@ -174,10 +196,19 @@ impl Storage for MemStorage {
             }
             *left -= 1;
         }
-        let start = offset as usize;
-        let end = start + bytes.len();
-        if end > disk.bytes.len() {
-            // Grow like a file does: new bytes read back as zero.
+        // A range that cannot be addressed is a range the "disk" cannot hold.
+        let start = usize::try_from(offset).map_err(|_| Error::StorageFailure)?;
+        let end = start
+            .checked_add(bytes.len())
+            .ok_or(Error::StorageFailure)?;
+        let len = disk.bytes.len();
+        if end > len {
+            // Grow like a file does: new bytes read back as zero. `resize`
+            // alone would abort the process when memory runs out; reserving
+            // first turns that into an error, the "disk full" of this disk.
+            disk.bytes
+                .try_reserve(end - len)
+                .map_err(|_| Error::StorageFailure)?;
             disk.bytes.resize(end, 0);
         }
         disk.bytes[start..end].copy_from_slice(bytes);
@@ -230,9 +261,38 @@ mod tests {
         s.write(0, b"go").unwrap();
     }
 
-    // Zig has a third MemStorage test here: running out of memory while
-    // growing is reported as StorageFailure. Safe Rust cannot observe a failed
-    // `Vec` growth (it aborts), so there is nothing to port.
+    #[test]
+    fn mem_storage_injected_read_failure() {
+        let mem = MemStorage::new();
+        let mut s = mem.clone();
+        s.write(0, b"data").unwrap();
+
+        let mut buf = [b'.'; 4];
+        mem.set_reads_before_failure(Some(1));
+        s.read(0, &mut buf).unwrap();
+        assert_eq!(&buf, b"data");
+        buf.fill(b'.');
+        assert_eq!(s.read(0, &mut buf), Err(Error::StorageFailure));
+        assert_eq!(&buf, b"...."); // the failed read filled nothing
+        mem.set_reads_before_failure(None);
+        s.read(0, &mut buf).unwrap();
+        assert_eq!(&buf, b"data");
+    }
+
+    #[test]
+    fn mem_storage_offsets_near_the_end_of_the_address_space_are_errors_not_overflows() {
+        let mem = MemStorage::new();
+        let mut s = mem.clone();
+        s.write(0, b"data").unwrap();
+        let mut buf = [0u8; 4];
+        let huge = u64::MAX - 1;
+        assert_eq!(s.read(huge, &mut buf), Err(Error::ShortRead));
+        assert_eq!(s.write(huge, b"data"), Err(Error::StorageFailure));
+        // Addressable, but far more than any allocator will give: "disk full".
+        // (This is the Rust form of Zig's test with a failing allocator.)
+        assert_eq!(s.write(1 << 60, b"data"), Err(Error::StorageFailure));
+        assert_eq!(s.size(), Ok(4)); // nothing changed
+    }
 
     #[test]
     fn file_storage_create_write_reopen_read() {

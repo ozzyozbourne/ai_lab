@@ -65,8 +65,10 @@ impl Pager {
     /// (Reusing freed pages is chapter 13.)
     pub fn allocate_page(&mut self) -> Result<PageId, Error> {
         let id = self.page_count;
+        // INVALID_PAGE_ID must never name a real page, so the last usable id
+        // is INVALID_PAGE_ID - 1 and the largest page count is the same number.
         if id == INVALID_PAGE_ID - 1 {
-            return Err(Error::CorruptFile);
+            return Err(Error::FileFull);
         }
         self.storage.write(Self::offset_of(id), &[0u8; PAGE_SIZE])?;
         // Count the page only after the write succeeded.
@@ -174,6 +176,18 @@ mod tests {
         assert_eq!(pager.allocate_page(), Err(Error::StorageFailure));
         assert_eq!(pager.page_count(), 0);
         assert_eq!(pager.stats.allocations, 0);
+    }
+
+    #[test]
+    fn pager_running_out_of_page_ids_is_file_full_and_nothing_is_written() {
+        let mem = MemStorage::new();
+        let mut pager = Pager::new(Box::new(mem.clone())).unwrap();
+        // A 16 TiB file is out of reach for a test; pretend the pages exist.
+        pager.page_count = INVALID_PAGE_ID - 1;
+        assert_eq!(pager.allocate_page(), Err(Error::FileFull));
+        assert_eq!(pager.page_count(), INVALID_PAGE_ID - 1);
+        assert_eq!(pager.stats.allocations, 0);
+        assert!(mem.bytes().is_empty());
     }
 
     #[test]

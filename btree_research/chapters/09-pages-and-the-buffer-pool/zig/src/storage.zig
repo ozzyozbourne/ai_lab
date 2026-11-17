@@ -242,6 +242,8 @@ test "MemStorage: offsets near the end of the address space are errors, not over
     const huge = std.math.maxInt(u64) - 1;
     try testing.expectError(error.ShortRead, s.read(huge, &buf));
     try testing.expectError(error.StorageFailure, s.write(huge, "data"));
+    // Addressable, but far more than any allocator will give: "disk full".
+    try testing.expectError(error.StorageFailure, s.write(1 << 60, "data"));
     try testing.expectEqual(4, try s.size()); // nothing changed
 }
 

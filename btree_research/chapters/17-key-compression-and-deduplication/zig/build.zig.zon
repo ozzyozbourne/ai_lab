@@ -1,0 +1,12 @@
+.{
+    .name = .ch17_key_compression_and_dedup, // the full slug exceeds the 32-character limit for package names
+    .version = "0.0.0",
+    .fingerprint = 0x58764b3f6bf43f4f,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

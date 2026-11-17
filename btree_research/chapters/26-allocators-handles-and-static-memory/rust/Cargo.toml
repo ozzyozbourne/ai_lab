@@ -1,0 +1,14 @@
+[package]
+name = "ch26_allocators_handles_and_static_memory"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# std only: no external dependencies.
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid" # handles instead of pointers: nothing in this chapter needs unsafe
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

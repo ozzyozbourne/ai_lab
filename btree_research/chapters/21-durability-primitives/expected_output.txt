@@ -1,0 +1,42 @@
+Chapter 21: durability primitives
+page = 4096 bytes = 8 sectors of 512; one letter per sector; SimDisk seed 2121
+
+== 1. A write is not durable until sync ==
+write page 0 = A: pending=1 durable_pages=0
+read  page 0 -> AAAAAAAA ok
+crash(drop): dropped=1 kept=0 torn=0
+read  page 0 -> out of bounds (size=0)
+write page 0 = A, sync: pending=0 durable_pages=1
+crash(drop): dropped=0 kept=0 torn=0
+read  page 0 -> AAAAAAAA ok
+
+== 2. A torn write, caught by the checksum ==
+write page 0 = B: pending=1 durable_pages=1
+read  page 0 -> BBBBBBBB ok
+crash(tear): dropped=0 kept=0 torn=1
+read  page 0 -> ABBAAABB corrupt
+checksum: stored=a6ca308e computed=11258b39
+
+== 3. The checksum binds a page to its address ==
+page sealed for address 0: checksum=70fea20f
+verified at address 0: ok
+verified at address 1: corrupt (expected checksum 8eec239b)
+
+== 4. Double write: a second copy makes repair possible ==
+layout: slot = page 0, home = page 1
+update to A: writes=2 syncs=2
+update to B, power off after 2 writes: PowerLoss
+crash(tear): dropped=0 kept=0 torn=1
+read  page 0 -> BBBBBBBB ok
+read  page 1 -> ABBAAABB corrupt
+recover: intact=0 rolled_forward=0 restored=1 blank=0
+read  page 1 -> BBBBBBBB ok
+
+== 5. Crash at every write: 4 crash modes x 100 seeds per line ==
+in-place update (1 write, 1 sync):
+  power off after 0 writes: old=400 new=0 corrupt=0
+  power off after 1 writes: old=125 new=133 corrupt=142
+double write (2 writes, 2 syncs), after recover:
+  power off after 0 writes: old=400 new=0 corrupt=0
+  power off after 1 writes: old=267 new=133 corrupt=0
+  power off after 2 writes: old=0 new=400 corrupt=0

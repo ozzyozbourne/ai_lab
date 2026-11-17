@@ -285,7 +285,7 @@
       var token = typeof it === 'string' ? it : it.token;
       var label = (typeof it === 'string' ? null : it.label) || LEGEND_LABELS[token] || token;
       var sw = el('span.bt-swatch', { style: { '--s': 'var(--bt-' + token + ')', '--s-bg': 'var(--bt-' + token + '-bg)' } });
-      if (token === 'pointer') sw.classList.add('is-line');
+      if (it === 'pointer' || it.line) sw.classList.add('is-line');
       if (token === 'free') sw.classList.add('is-hatch');
       host.appendChild(el('span.bt-legend-item', sw, label));
     });
@@ -363,6 +363,9 @@
     this.loop = !!o.loop;
     this.onStep = o.onStep || function () {};
     this._timer = null;
+    this.predict = !!o.predict;     // "predict the next step" mode (steps with a `question`)
+    this._answered = {};
+    this._asking = null;
     this.ui = null;
     if (hasDOM && o.mount) this._build();
     steppers.push(this);
@@ -395,6 +398,11 @@
       el('span.bt-controls-buttons', ui.restart, ui.prev, ui.play, ui.next),
       ui.scrub, ui.count,
       el('label.bt-speed', 'Speed', ui.speed, ui.speedOut));
+    ui.predict = el('input', { type: 'checkbox', onchange: function () { self.predict = ui.predict.checked; } });
+    ui.predict.checked = this.predict;
+    ui.predictWrap = el('label.bt-field.bt-predict', ui.predict, 'Predict');
+    ui.predictWrap.title = 'Pause before some steps and ask what happens next';
+    ui.bar.appendChild(ui.predictWrap);
     if (!ui.caption) {
       ui.caption = el('div.bt-caption', { 'aria-live': 'polite' });
       mount.appendChild(ui.caption);
@@ -444,9 +452,12 @@
     this.pause();
     this.steps = steps || [];
     this._snap = [];
+    this._answered = {};
+    this._asking = null;
     this.index = -1;
     if (this.ui) {
       this.ui.scrub.max = Math.max(0, this.steps.length - 1);
+      this.ui.predictWrap.style.display = this.o.predict !== undefined || this.steps.some(function (s) { return !!s.question; }) ? '' : 'none';
     }
     if (this.steps.length) this.go(opts.index || 0, { instant: !!opts.instant });
     else this._sync();
@@ -475,6 +486,7 @@
     if (!n) return;
     i = clamp(i, 0, n - 1);
     var prev = this.index;
+    this._asking = null;
     var instant = !!(info && info.instant) || Math.abs(i - prev) > 1 && prev >= 0;
     this.index = i;
     var step = {};
@@ -492,7 +504,41 @@
     }
     this._sync(step);
   };
-  Stepper.prototype.next = function () { if (this.index < this.steps.length - 1) this.go(this.index + 1); };
+  Stepper.prototype.next = function () {
+    var j = this.index + 1;
+    if (j >= this.steps.length) return;
+    var q = this.steps[j].question;
+    if (q && this.predict && this.ui && !this._answered[j]) this._ask(j, q);
+    else this.go(j);
+  };
+  /** Predict mode: show step j's question {prompt, choices, answer, explain?} instead of advancing. */
+  Stepper.prototype._ask = function (j, q) {
+    var self = this, cap = this.ui.caption;
+    this.pause();
+    if (this._asking === j) return;
+    this._asking = j;
+    var box = el('div.bt-quiz', el('div.bt-quiz-prompt', { html: '<span class="bt-chip s-compare">Predict</span> ' + (q.prompt || 'What happens next?') }));
+    var row = el('div.bt-quiz-choices', { role: 'group', 'aria-label': 'Choices' });
+    (q.choices || []).forEach(function (c, i) {
+      row.appendChild(el('button.bt-btn', {
+        type: 'button', html: c,
+        onclick: function () {
+          var ok = i === q.answer;
+          self._answered[j] = true;
+          self.go(j);
+          var verdict = el('div.bt-quiz-verdict', { html: '<span class="bt-chip ' + (ok ? 's-found">✓ Correct' : 's-deleted">✗ Not quite') + '</span> ' +
+            (ok ? '' : 'Answer: ' + q.choices[q.answer] + '. ') + (q.explain || '') });
+          cap.insertBefore(verdict, cap.firstChild);
+          if (typeof self.o.onAnswer === 'function') self.o.onAnswer(j, i, ok);
+        }
+      }));
+    });
+    box.appendChild(row);
+    cap.textContent = '';
+    cap.appendChild(box);
+    var b = row.querySelector('button');
+    if (b && this.ui.root.contains(document.activeElement)) b.focus();
+  };
   Stepper.prototype.prev = function () { if (this.index > 0) this.go(this.index - 1); };
   Stepper.prototype.restart = function () { this.pause(); this.go(0, { instant: true }); };
   Stepper.prototype.end = function () { this.pause(); this.go(this.steps.length - 1, { instant: true }); };
@@ -519,6 +565,7 @@
       if (self.index >= self.steps.length - 1) {
         if (self.loop) self.go(0, { instant: true }); else { self.pause(); return; }
       } else self.next();
+      if (!self.playing) return;
       if (self.index >= self.steps.length - 1 && !self.loop) { self.pause(); return; }
       self._schedule();
     }, this.interval * (st.hold || 1) / this.speed);
@@ -571,7 +618,9 @@
   };
 
   /**
-   * Pure tidy layout. Returns {nodes: Map(id → info), order: [info…], width, height, depth}
+   * Pure tidy layout of a tree, a forest (array of roots) or a DAG (a child listed under a
+   * second parent, or a {ref: id} stub, becomes an extra edge to the already-placed node).
+   * Returns {nodes: Map(id → info), order: [info…], edges: [{parent, child, ci}], width, height, depth}
    * where info = {id, node, depth, parent, childIndex, x, y, w, h, kw[], anchors[]}.
    */
   function layoutTree(model, opts) {
@@ -579,11 +628,10 @@
     var key;
     for (key in TREE_DEFAULTS) o[key] = TREE_DEFAULTS[key];
     for (key in (opts || {})) if (opts[key] !== undefined && key in TREE_DEFAULTS) o[key] = opts[key];
-    var nodes = new Map(), order = [], maxDepth = 0;
+    var nodes = new Map(), order = [], edges = [], maxDepth = 0;
     var keyW = function (kv) { return Math.max(o.minCellW, String(kv).length * o.charW + o.cellPadX * 2); };
 
     function measure(n, depth, parent, ci) {
-      if (nodes.has(n.id)) throw new Error('BTViz.TreeView: duplicate node id "' + n.id + '"');
       var keys = n.keys || [];
       var kw = keys.map(keyW), keysW = 0, i;
       for (i = 0; i < kw.length; i++) keysW += kw[i];
@@ -608,10 +656,20 @@
       var ch = n.children || [];
       if (ch.length) {
         var cw = 0;
-        for (i = 0; i < ch.length; i++) { var c = measure(ch[i], depth + 1, n, i); info.kids.push(c); cw += c.sw; }
-        cw += o.hGap * (ch.length - 1);
-        info.cw = cw;
-        info.sw = Math.max(w, cw);
+        for (i = 0; i < ch.length; i++) {
+          var cid = ch[i].ref !== undefined ? ch[i].ref : ch[i].id;
+          // DAG mode: a child that is already placed (or a {ref: id} stub) only gets an extra edge.
+          if (ch[i].ref !== undefined || nodes.has(cid)) { edges.push({ parent: n.id, child: cid, ci: i, shared: true }); continue; }
+          var c = measure(ch[i], depth + 1, n, i);
+          info.kids.push(c);
+          edges.push({ parent: n.id, child: cid, ci: i });
+          cw += c.sw;
+        }
+        if (info.kids.length) {
+          cw += o.hGap * (info.kids.length - 1);
+          info.cw = cw;
+          info.sw = Math.max(w, cw);
+        }
       }
       return info;
     }
@@ -623,13 +681,19 @@
       var cx = (a.x + a.w / 2 + b.x + b.w / 2) / 2;
       info.x = clamp(cx - info.w / 2, left, left + info.sw - info.w);
     }
-    if (!model) model = { id: '__empty', keys: [], leaf: true };
-    var rootInfo = measure(model, 0, null, 0);
-    place(rootInfo, o.padX);
+    var roots = Array.isArray(model) ? model : [model];
+    if (!roots.length || !roots[0]) roots = [{ id: '__empty', keys: [], leaf: true }];
+    var left = o.padX;
+    roots.forEach(function (r) {
+      if (nodes.has(r.id)) return;
+      var ri = measure(r, 0, null, 0);
+      place(ri, left);
+      left += ri.sw + o.hGap * 2.5;
+    });
     order.forEach(function (i) { i.x = Math.round(i.x * 2) / 2; });
     return {
-      nodes: nodes, order: order, depth: maxDepth + 1, opts: o,
-      width: rootInfo.sw + o.padX * 2,
+      nodes: nodes, order: order, edges: edges, depth: maxDepth + 1, opts: o,
+      width: left - o.hGap * 2.5 + o.padX,
       height: o.padTop + (maxDepth + 1) * o.cellH + maxDepth * o.vGap + o.padBottom
     };
   }
@@ -650,7 +714,7 @@
    *             ariaLabel, cellH, minCellW, charW, hGap, vGap}
    */
   function TreeView(target, opts) {
-    var o = this.opts = { zoom: 'fit', minScale: 0.5, toolbar: true, minHeight: 0, maxHeight: 0, ariaLabel: 'Tree diagram', onNodeClick: null };
+    var o = this.opts = { zoom: 'fit', minScale: 0.7, toolbar: true, minHeight: 0, maxHeight: 0, ariaLabel: 'Tree diagram', onNodeClick: null };
     var key;
     for (key in TREE_DEFAULTS) o[key] = TREE_DEFAULTS[key];
     for (key in (opts || {})) o[key] = opts[key];
@@ -688,6 +752,7 @@
     }
     resolve(target).appendChild(this.root);
     this._frameB = function (now) { self._frame(now); };
+    this._gestures();
     if (typeof ResizeObserver !== 'undefined') {
       this._ro = new ResizeObserver(function () { self._applyZoom(); });
       this._ro.observe(this.scroller);
@@ -710,6 +775,47 @@
     this.svg.setAttribute('height', Math.floor(this.H * s));
   };
 
+  /** Ctrl/⌘+wheel zooms, mouse drag pans, touch pans natively and pinches to zoom. */
+  TreeView.prototype._gestures = function () {
+    var self = this, sc = this.scroller, pts = new Map(), drag = null, pinch = null;
+    sc.addEventListener('wheel', function (e) {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      self.setZoom(self.scale * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+    }, { passive: false });
+    sc.addEventListener('pointerdown', function (e) {
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (e.pointerType === 'mouse' && e.button === 0) drag = { x: e.clientX, y: e.clientY, l: sc.scrollLeft, t: sc.scrollTop, moved: false };
+      if (pts.size === 2) {
+        var a = Array.from(pts.values());
+        pinch = { d: Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y) || 1, s: self.scale };
+      }
+    });
+    sc.addEventListener('pointermove', function (e) {
+      if (!pts.has(e.pointerId)) return;
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pinch && pts.size === 2) {
+        var a = Array.from(pts.values());
+        self.setZoom(pinch.s * Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y) / pinch.d);
+      } else if (drag) {
+        var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+        if (!drag.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+        drag.moved = true;
+        sc.classList.add('is-panning');
+        sc.scrollLeft = drag.l - dx;
+        sc.scrollTop = drag.t - dy;
+      }
+    });
+    var up = function (e) {
+      pts.delete(e.pointerId);
+      if (pts.size < 2) pinch = null;
+      if (drag) { drag = null; sc.classList.remove('is-panning'); }
+    };
+    sc.addEventListener('pointerup', up);
+    sc.addEventListener('pointercancel', up);
+    sc.addEventListener('pointerleave', up);
+  };
+
   TreeView.prototype._mkNode = function (id) {
     var o = this.opts, self = this;
     var it = { id: id, cur: null, from: null, to: null };
@@ -718,8 +824,7 @@
     it.empty = el('text', { class: 'bt-node-empty', y: o.cellH / 2 });
     it.note = el('text', { class: 'bt-node-note', y: o.cellH + 13 });
     it.dirty = el('circle', { class: 'bt-node-dirty', r: 4.5, cx: 0, cy: 0 });
-    it.lockT = el('text');
-    it.lock = el('g', { class: 'bt-node-lock' }, el('circle', { r: 9 }), it.lockT);
+    it.lock = el('g');
     it.el = el('g', { class: 'bt-node', 'data-id': id }, it.rect, it.label, it.empty, it.note, it.dirty, it.lock);
     if (o.onNodeClick) {
       it.el.classList.add('is-clickable');
@@ -871,20 +976,23 @@
 
     // --- edges (keyed by child id)
     var oldEdges = this.edges, nextEdges = new Map();
-    L.order.forEach(function (info) {
-      if (info.parent === null) return;
-      var p = L.nodes.get(info.parent);
-      var to = { sx: p.x + p.anchors[info.childIndex], sy: p.y + o.cellH, ex: info.x + info.w / 2, ey: info.y, o: 1 };
-      var it = oldEdges.get(info.id);
-      if (it) oldEdges.delete(info.id);
+    L.edges.forEach(function (e) {
+      var p = L.nodes.get(e.parent), info = L.nodes.get(e.child);
+      if (!p || !info) return;
+      var eid = e.parent + '>' + e.child;
+      var ax = p.anchors[Math.min(e.ci, p.anchors.length - 1)];
+      var to = { sx: p.x + ax, sy: p.y + o.cellH, ex: info.x + info.w / 2, ey: info.y, o: 1 };
+      var it = oldEdges.get(eid);
+      if (it) oldEdges.delete(eid);
       else {
-        it = self._mkEdge(info.id);
-        var pn = nextNodes.get(info.parent).from, cn = nextNodes.get(info.id).from;
-        it.cur = { sx: pn.x + (to.sx - p.x), sy: pn.y + o.cellH, ex: cn.x + cn.w / 2, ey: cn.y, o: 0 };
+        it = self._mkEdge(eid);
+        var pn = nextNodes.get(e.parent).from, cn = nextNodes.get(e.child).from;
+        it.cur = { sx: pn.x + ax, sy: pn.y + o.cellH, ex: cn.x + cn.w / 2, ey: cn.y, o: 0 };
       }
+      it.child = e.child;
       it.from = clone(it.cur);
       it.to = to;
-      nextEdges.set(info.id, it);
+      nextEdges.set(eid, it);
     });
     oldEdges.forEach(function (it) {
       it.from = clone(it.cur);
@@ -932,16 +1040,28 @@
     var meta = info.node.meta || {};
     it.meta = meta;
     it.label.textContent = meta.label === undefined || meta.label === null ? '' : String(meta.label);
+    it.label.setAttribute('y', meta.lock ? -13 : -5);
+    it.label.setAttribute('x', meta.dirty && !meta.lock ? 8 : 1);
     it.note.textContent = meta.note === undefined || meta.note === null ? '' : String(meta.note);
     it.empty.textContent = (info.node.keys || []).length || info.hkW ? '' : 'empty';
     it.dirty.style.display = meta.dirty ? '' : 'none';
-    var lock = meta.lock ? String(meta.lock) : '';
-    it.lock.style.display = lock ? '' : 'none';
-    if (lock) {
-      var ex = /^(x|e)/i.test(lock);
-      it.lock.setAttribute('class', 'bt-node-lock ' + (ex ? 'is-exclusive' : 'is-shared'));
-      it.lockT.textContent = ex ? 'X' : lock[0].toUpperCase();
-    }
+    // latch badges: 'S' | 'X' | 'S?' (blocked) | 'T2:X' | {mode, label, blocked} | an array of those
+    var locks = meta.lock === undefined || meta.lock === null || meta.lock === false ? [] : (Array.isArray(meta.lock) ? meta.lock : [meta.lock]);
+    it.lock.textContent = '';
+    var re = 10;
+    locks.forEach(function (lk) {
+      var isObj = lk && typeof lk === 'object';
+      var mode = String(isObj ? (lk.mode || '') : lk);
+      var blocked = (isObj && !!lk.blocked) || /\?$|blocked|wait/i.test(mode);
+      var core = mode.replace(/\?$/, '');
+      var ex = /^(x|excl)/i.test(core) || /[:\s]x$/i.test(core);
+      var text = isObj && lk.label ? String(lk.label) : core.replace(/^shared$/i, 'S').replace(/^exclusive$/i, 'X').replace(/^(blocked|waiting)$/i, '…');
+      var w = Math.max(18, text.length * 6.6 + 8);
+      it.lock.appendChild(el('g', { class: 'bt-node-lock ' + (ex ? 'is-exclusive' : 'is-shared') + (blocked ? ' is-blocked' : ''), transform: 'translate(' + (re - w / 2) + ',0)' },
+        el('rect', { x: -w / 2, y: -9, width: w, height: 18, rx: 9, ry: 9 }), el('text', { y: 0.5 }, text),
+        el('svg:title', (blocked ? 'waiting for ' : 'holds ') + (ex ? 'exclusive' : 'shared') + ' latch')));
+      re -= w + 2;
+    });
   };
 
   /** Change highlight states without touching the layout. */
@@ -957,7 +1077,7 @@
       var st = it.hk ? hk[it.nodeId + ':high'] : (hk[it.nodeId + ':' + it.raw] || hk['*:' + it.raw]);
       it.el.setAttribute('class', stateClass(it.hk ? 'bt-key is-highkey' : 'bt-key', st));
     });
-    this.edges.forEach(function (it, id) { it.el.setAttribute('class', stateClass('bt-edge-g', he[id])); });
+    this.edges.forEach(function (it, id) { it.el.setAttribute('class', stateClass('bt-edge-g', he[id] || he[it.child])); });
     this.links.forEach(function (lk) {
       var st = hlk[lk.from];
       lk.el.setAttribute('class', stateClass('bt-link' + (lk.kind === 'right' ? ' is-right' : ''), st));
@@ -1207,7 +1327,7 @@
     this.size = 0;
     this.offs = el('div.bt-page-offs', { 'aria-hidden': 'true' });
     this.ptrSvg = el('svg', { class: 'bt-page-ptrs', 'aria-hidden': 'true' });
-    this.hfLayer = el('div');
+    this.hfLayer = el('div.bt-page-hf');
     this.grid = el('div.bt-page-grid', { role: 'img', 'aria-label': this.opts.ariaLabel });
     this.regions = el('div.bt-page-regions');
     this.root = el('div.bt-pageview', el('div.bt-page-wrap', this.opts.offsets ? this.offs : null, this.grid),
@@ -1324,9 +1444,9 @@
       var c = cellById.get((model.slots || [])[si]);
       if (!c) return;
       var a = hs + si * ss, x1 = (a % cols) + ss / 2, y1 = Math.floor(a / cols) + 0.5;
-      var x2 = (c.off % cols) + 0.5, y2 = Math.floor(c.off / cols) + 0.5;
+      var x2 = (c.off % cols) + 0.5, y2 = Math.floor(c.off / cols) + 0.12;
       var g = el('g', { class: hsl[si] ? 's-' + hsl[si] : '' },
-        el('line', { x1: x1, y1: y1, x2: x2, y2: y2 }), el('circle', { cx: x1, cy: y1, r: 0.13 }), el('circle', { cx: x2, cy: y2, r: 0.2 }));
+        el('line', { x1: x1, y1: y1, x2: x2, y2: y2 }), el('circle', { cx: x1, cy: y1, r: 0.13 }), el('circle', { cx: x2, cy: y2, r: 0.15 }));
       self.ptrSvg.appendChild(g);
     });
 
@@ -1444,6 +1564,12 @@
    */
   function codePanel(target, sources, opts) {
     opts = opts || {};
+    if (typeof sources === 'string') {
+      var table = root.CHAPTER_CODE || {};
+      if (!table[sources]) throw new Error('BTViz.codePanel: no snippet "' + sources + '" in window.CHAPTER_CODE (load viz/code.js with a classic <script> tag before this script)');
+      if (!opts.title) opts.title = sources;
+      sources = table[sources];
+    }
     var langs = Object.keys(sources);
     var panel = { langs: langs, active: null, lines: {}, pres: {}, tabs: {}, spec: null };
     var tablist = el('div.bt-tabs', { role: 'tablist', 'aria-label': opts.title || 'Source language' });
@@ -1541,7 +1667,7 @@
   function TreeBase() {}
   TreeBase.prototype._init = function (order, opts) {
     opts = opts || {};
-    order = Math.floor(order);
+    order = order === undefined || order === null ? 4 : Math.floor(order);
     if (!(order >= 3)) throw new Error('BTViz.models: order must be an integer ≥ 3 (max children per node)');
     this.order = order;
     this.cmp = opts.cmp || defaultCmp;
@@ -2091,8 +2217,8 @@
     };
     if (this.headerSize >= 8) {
       m.header = [
-        { name: 'n', len: 2, value: this.slots.length }, { name: 'lower', len: 2, value: this.lower() },
-        { name: 'upper', len: 2, value: this.upper() }, { name: 'frag', len: 2, value: this.deadBytes() }
+        { name: 'n', len: 2, value: this.slots.length }, { name: 'lo', len: 2, value: this.lower() },
+        { name: 'hi', len: 2, value: this.upper() }, { name: 'frag', len: 2, value: this.deadBytes() }
       ];
     }
     return m;
@@ -2238,7 +2364,436 @@
   };
 
   /* ======================================================================
-   * 12. Export
+   * 12. More views: Lanes, Timeline, FrameGrid, MemoryMap, HexGrid, Chart, GraphView
+   *     All are "dumb" views: call render(model) from a Stepper's onStep.
+   * ==================================================================== */
+
+  function swatch(token, solid) {
+    var st = { '--s': 'var(--bt-' + token + ')', '--s-bg': 'var(--bt-' + token + (solid ? ')' : '-bg)') };
+    return el('span.bt-swatch', { style: st });
+  }
+  function observeWidth(node, fn) {
+    if (typeof ResizeObserver === 'undefined') return;
+    var last = -1;
+    new ResizeObserver(function () {
+      var w = node.clientWidth;
+      if (w !== last) { last = w; fn(); }
+    }).observe(node);
+  }
+
+  /**
+   * Swim lanes for threads / actors / engines, with a "who steps next" button per lane.
+   * new BTViz.Lanes(target, {onAdvance(id), stepLabel = 'Step'}).render({
+   *   lanes: [{id, label, state?: 'running'|'blocked'|'done'|<state>, status?: html,
+   *            events?: [{text, state?, title?}], canStep?: bool}], next?: id })
+   */
+  var LANE_STATE = { running: 'active', blocked: 'compare', waiting: 'compare', done: 'found', aborted: 'deleted' };
+  function Lanes(target, opts) {
+    this.opts = opts || {};
+    this.root = el('div.bt-lanes');
+    resolve(target).appendChild(this.root);
+  }
+  Lanes.prototype.render = function (model) {
+    var self = this, o = this.opts;
+    var a = document.activeElement, focusId = a && this.root.contains(a) ? a.getAttribute('data-lane') : null;
+    this.root.textContent = '';
+    (model.lanes || []).forEach(function (ln) {
+      var st = LANE_STATE[ln.state] || ln.state;
+      var track = el('div.bt-lane-track');
+      (ln.events || []).forEach(function (ev, i) {
+        if (typeof ev === 'string') ev = { text: ev };
+        track.appendChild(el('span', { class: stateClass('bt-chip', ev.state), title: ev.title || null, html: ev.text }));
+      });
+      if (!(ln.events || []).length) track.appendChild(el('span.bt-log-empty', 'no steps yet'));
+      var btn = el('button.bt-btn', {
+        type: 'button', 'data-lane': ln.id, disabled: ln.canStep === false,
+        'aria-label': 'Advance ' + (ln.label || ln.id),
+        onclick: function () { if (o.onAdvance) o.onAdvance(ln.id); }
+      }, (o.stepLabel || 'Step') + ' ▸');
+      if (model.next === ln.id) btn.classList.add('bt-primary');
+      var lane = el('div', { class: stateClass('bt-lane', st) },
+        el('div.bt-lane-head', el('strong', ln.label || ln.id),
+          ln.state ? el('span', { class: stateClass('bt-chip', st) }, ln.state) : null,
+          o.onAdvance ? btn : null),
+        ln.status ? el('div.bt-lane-status', { html: ln.status }) : null, track);
+      self.root.appendChild(lane);
+      track.scrollLeft = track.scrollWidth;
+    });
+    if (focusId !== null) {
+      var b = this.root.querySelector('button[data-lane="' + focusId + '"]:not(:disabled)') || this.root.querySelector('button:not(:disabled)');
+      if (b) b.focus();
+    }
+    return this;
+  };
+
+  /**
+   * Horizontal record timeline (WAL, event log) with a draggable crash scrubber.
+   * new BTViz.Timeline(target, {onCrash(pos), cellW = 76, crashLabel = 'crash'}).render({
+   *   records: [{label, sub?, state?: 'pending'|'durable'|'lost'|<state>, title?}],
+   *   crash?: n })       // crash position n = "crash after the first n records"; null hides it
+   */
+  var REC_STATE = { pending: 'compare', durable: 'found', lost: 'deleted', applied: 'active', torn: 'dirty' };
+  function Timeline(target, opts) {
+    var self = this;
+    this.opts = { cellW: 96, crashLabel: 'crash', ariaLabel: 'Timeline' };
+    for (var key in (opts || {})) this.opts[key] = opts[key];
+    this.crash = null;
+    this.n = 0;
+    this.row = el('div.bt-tl-row');
+    this.handle = el('div.bt-tl-crash', { role: 'slider', tabindex: 0, 'aria-label': 'Crash point', 'aria-valuemin': 0 },
+      el('span.bt-tl-grip', this.opts.crashLabel));
+    this.inner = el('div.bt-tl-in', this.row, this.handle);
+    this.root = el('div.bt-timeline', { role: 'group', 'aria-label': this.opts.ariaLabel }, this.inner);
+    resolve(target).appendChild(this.root);
+    var dragging = false;
+    var at = function (e) {
+      var r = self.inner.getBoundingClientRect();
+      self._set(Math.round((e.clientX - r.left) / self.opts.cellW), true);
+    };
+    this.handle.addEventListener('pointerdown', function (e) { dragging = true; self.handle.setPointerCapture(e.pointerId); e.preventDefault(); self.handle.focus(); });
+    this.handle.addEventListener('pointermove', function (e) { if (dragging) at(e); });
+    this.handle.addEventListener('pointerup', function () { dragging = false; });
+    this.handle.addEventListener('pointercancel', function () { dragging = false; });
+    this.handle.addEventListener('keydown', function (e) {
+      var d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : e.key === 'Home' ? -1e9 : e.key === 'End' ? 1e9 : 0;
+      if (!d) return;
+      e.preventDefault();
+      e.stopPropagation();
+      self._set((self.crash || 0) + d, true);
+    });
+  }
+  Timeline.prototype._set = function (pos, notify) {
+    pos = clamp(pos, 0, this.n);
+    var changed = pos !== this.crash;
+    this.crash = pos;
+    this.handle.style.transform = 'translateX(' + (pos * this.opts.cellW) + 'px)';
+    this.handle.setAttribute('aria-valuenow', pos);
+    this.handle.setAttribute('aria-valuemax', this.n);
+    this.handle.setAttribute('aria-valuetext', 'after record ' + pos + ' of ' + this.n);
+    if (changed && notify && this.opts.onCrash) this.opts.onCrash(pos);
+  };
+  Timeline.prototype.render = function (model) {
+    var o = this.opts, recs = model.records || [], row = this.row;
+    this.n = recs.length;
+    row.textContent = '';
+    recs.forEach(function (r, i) {
+      var st = REC_STATE[r.state] || r.state;
+      row.appendChild(el('div', { class: stateClass('bt-tl-rec' + (r.state === 'lost' ? ' is-lost' : ''), st), title: r.title || ((r.state ? r.state + ': ' : '') + r.label), style: { width: (o.cellW - 6) + 'px' } },
+        el('span.bt-tl-n', String(r.lsn === undefined ? i + 1 : r.lsn)), el('span.bt-tl-label', { html: r.label }),
+        r.sub ? el('span.bt-tl-sub', { html: r.sub }) : (r.state ? el('span.bt-tl-sub', r.state) : null)));
+    });
+    this.inner.style.width = (Math.max(1, recs.length) * o.cellW + 8) + 'px';
+    var show = model.crash !== null && (model.crash !== undefined || this.crash !== null);
+    this.handle.style.display = show ? '' : 'none';
+    if (show) this._set(model.crash !== undefined ? model.crash : this.crash, false);
+    return this;
+  };
+
+  /**
+   * Buffer-pool frames with a clock hand.
+   * new BTViz.FrameGrid(target).render({ hand?: index,
+   *   frames: [{page: id | null, pin?: n, dirty?: bool, ref?: 0|1, state?, note?}] })
+   */
+  function FrameGrid(target, opts) {
+    this.opts = opts || {};
+    this.root = el('div.bt-frames', { role: 'list', 'aria-label': this.opts.ariaLabel || 'Buffer pool frames' });
+    resolve(target).appendChild(this.root);
+  }
+  FrameGrid.prototype.render = function (model) {
+    var root = this.root;
+    root.textContent = '';
+    (model.frames || []).forEach(function (f, i) {
+      var empty = f.page === null || f.page === undefined;
+      var st = f.state || (empty ? 'free' : f.dirty ? 'dirty' : null);
+      var hand = model.hand === i;
+      root.appendChild(el('div', { class: stateClass('bt-frame' + (hand ? ' is-hand' : ''), st), role: 'listitem' },
+        el('div.bt-frame-top', el('span', 'frame ' + i), hand ? el('span.bt-frame-hand', { title: 'clock hand' }, '◀ hand') : null),
+        el('div.bt-frame-page', empty ? '—' : String(f.page)),
+        el('div.bt-frame-bits',
+          el('span', { title: 'pin count' }, 'pin ' + (f.pin || 0)),
+          f.ref === undefined ? null : el('span', { title: 'reference bit' }, 'ref ' + (f.ref ? 1 : 0)),
+          f.dirty ? el('span.bt-frame-dirty', 'dirty') : null),
+        f.note ? el('div.bt-frame-note', { html: f.note }) : null));
+    });
+    return this;
+  };
+
+  /**
+   * Fixed-size slots / slabs (allocator and pool pictures).
+   * new BTViz.MemoryMap(target, {cell = 30}).render({slots: [slot…]})
+   *                                        or .render({slabs: [{label, slots: [slot…]}]})
+   * slot: 'free' | 'used' | 'handle' | {state, label?, title?}
+   */
+  var SLOT_STATE = { used: 'pointer', allocated: 'pointer', handle: 'active', free: 'free' };
+  function MemoryMap(target, opts) {
+    this.opts = { cell: 30 };
+    for (var key in (opts || {})) this.opts[key] = opts[key];
+    this.root = el('div.bt-memmap', { style: { '--mc': this.opts.cell + 'px' } });
+    resolve(target).appendChild(this.root);
+  }
+  MemoryMap.prototype.render = function (model) {
+    var root = this.root, n = 0;
+    root.textContent = '';
+    var slabs = model.slabs || [{ label: model.label, slots: model.slots || [] }];
+    slabs.forEach(function (sl) {
+      var grid = el('div.bt-mem-grid');
+      (sl.slots || []).forEach(function (s) {
+        if (typeof s === 'string') s = { state: s };
+        var state = s.state || 'free', st = SLOT_STATE[state] || state;
+        grid.appendChild(el('div', { class: stateClass('bt-mem-slot' + (state === 'free' ? ' is-free' : ''), st), title: s.title || ('slot ' + n + ': ' + state) },
+          s.label === undefined || s.label === null ? '' : String(s.label)));
+        n++;
+      });
+      root.appendChild(el('div.bt-mem-slab', sl.label ? el('div.bt-mem-label', sl.label) : null, grid));
+    });
+    return this;
+  };
+
+  /**
+   * Hex dump with offsets, per-range colouring and labels.
+   * new BTViz.HexGrid(target, {cols = 16, base = 16}).render({
+   *   bytes: [n…] | Uint8Array, ranges?: [{from, len, state?, label?}], offset?: n })
+   */
+  function HexGrid(target, opts) {
+    this.opts = { cols: 16, base: 16 };
+    for (var key in (opts || {})) this.opts[key] = opts[key];
+    this.grid = el('div.bt-hex-grid', { role: 'img' });
+    this.labels = el('div.bt-page-regions');
+    this.root = el('div.bt-hex', el('div.bt-hex-scroll', { tabindex: 0 }, this.grid), this.labels);
+    resolve(target).appendChild(this.root);
+  }
+  HexGrid.prototype.render = function (model) {
+    var o = this.opts, cols = o.cols, bytes = model.bytes || [], n = bytes.length, off0 = model.offset || 0;
+    var grid = this.grid, labels = this.labels, own = new Array(n), i;
+    (model.ranges || []).forEach(function (r, ri) { for (var b = r.from; b < r.from + r.len && b < n; b++) own[b] = ri; });
+    grid.textContent = '';
+    grid.style.gridTemplateColumns = 'auto repeat(' + cols + ', minmax(17px, 1fr))';
+    grid.setAttribute('aria-label', 'Hex dump of ' + n + ' bytes');
+    var pad = o.base === 16 ? 4 : 5;
+    for (i = 0; i < n; i++) {
+      if (i % cols === 0) grid.appendChild(el('div.bt-hex-off', ('0000' + (off0 + i).toString(o.base)).slice(-pad)));
+      var v = bytes[i], r = own[i] === undefined ? null : model.ranges[own[i]];
+      var cls = 'bt-hex-b' + (r ? ' in-range' : '') + (r && r.from === i ? ' is-first' : '');
+      grid.appendChild(el('div', { class: stateClass(cls, r ? r.state || 'pointer' : null), title: 'offset ' + (off0 + i) + (r && r.label ? ' · ' + r.label : '') },
+        v === null || v === undefined ? '··' : ('0' + (v & 255).toString(16)).slice(-2)));
+    }
+    labels.textContent = '';
+    (model.ranges || []).forEach(function (r) {
+      if (!r.label) return;
+      labels.appendChild(el('span', { class: stateClass('bt-chip', r.state || 'pointer') },
+        el('span.bt-swatch'), r.label + ' · ' + (off0 + r.from) + (r.len > 1 ? '–' + (off0 + r.from + r.len - 1) : '')));
+    });
+    return this;
+  };
+
+  /**
+   * Small SVG charts: bar histogram and (live) multi-series line chart.
+   * const c = new BTViz.Chart(target, {type: 'bar' | 'line', height = 220, xLabel, yLabel, yMax, maxPoints = 120});
+   * c.render({labels: [..], series: [{name, values: [..], token?}]});
+   * c.push({A: 3, B: 5}[, label])   — append one point per series (line charts; creates series on first use)
+   */
+  var SERIES_TOKENS = ['node-active', 'split', 'merge', 'key-compare', 'key-inserted', 'key-found', 'page-dirty'];
+  function niceMax(v) {
+    if (!(v > 0)) return 1;
+    var p = Math.pow(10, Math.floor(Math.log10(v))), f = v / p;
+    return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 4 ? 4 : f <= 5 ? 5 : 10) * p;
+  }
+  function fmtNum(v) {
+    if (Math.abs(v) >= 1e6) return +(v / 1e6).toFixed(1) + 'M';
+    if (Math.abs(v) >= 1e4) return +(v / 1e3).toFixed(1) + 'k';
+    return String(+v.toFixed(2));
+  }
+  function Chart(target, opts) {
+    var self = this;
+    this.opts = { type: 'bar', height: 220, maxPoints: 120 };
+    for (var key in (opts || {})) this.opts[key] = opts[key];
+    this.data = { labels: [], series: [] };
+    this.svg = el('svg', { class: 'bt-chart-svg', role: 'img' });
+    this.legendEl = el('div.bt-legend.bt-chart-legend');
+    this.root = el('div.bt-chart', this.svg, this.legendEl);
+    resolve(target).appendChild(this.root);
+    observeWidth(this.root, function () { self._draw(); });
+  }
+  Chart.prototype.render = function (data) {
+    this.data = { labels: (data.labels || []).slice(), series: (data.series || []).map(function (s) { return { name: s.name, token: s.token, values: s.values.slice() }; }) };
+    this._draw();
+    return this;
+  };
+  Chart.prototype.push = function (point, label) {
+    var d = this.data, max = this.opts.maxPoints;
+    Object.keys(point).forEach(function (name) {
+      var s = d.series.filter(function (x) { return x.name === name; })[0];
+      if (!s) { s = { name: name, values: [] }; d.series.push(s); }
+      s.values.push(point[name]);
+      if (s.values.length > max) s.values.shift();
+    });
+    this._count = (this._count || 0) + 1;
+    d.labels.push(label === undefined ? this._count : label);
+    if (d.labels.length > max) d.labels.shift();
+    this._draw();
+    return this;
+  };
+  Chart.prototype.clear = function () { this._count = 0; this.data = { labels: [], series: [] }; this._draw(); return this; };
+  Chart.prototype._draw = function () {
+    var o = this.opts, d = this.data, svg = this.svg;
+    var W = Math.max(240, this.root.clientWidth || 600), H = o.height;
+    var m = { l: 44, r: 14, t: o.yLabel ? 28 : 16, b: o.xLabel ? 42 : 26 };
+    var pw = W - m.l - m.r, ph = H - m.t - m.b, S = d.series.length, i, si;
+    var n = 0, vmax = 0;
+    d.series.forEach(function (s) { n = Math.max(n, s.values.length); s.values.forEach(function (v) { if (v > vmax) vmax = v; }); });
+    if (o.type === 'bar') n = Math.max(n, d.labels.length);
+    var ymax = o.yMax || niceMax(vmax);
+    var Y = function (v) { return m.t + ph - (v / ymax) * ph; };
+    svg.textContent = '';
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.setAttribute('width', W);
+    svg.setAttribute('height', H);
+    svg.setAttribute('aria-label', (o.title || (o.type === 'bar' ? 'Bar chart' : 'Line chart')) + ': ' +
+      d.series.map(function (s) { return s.name + ' ' + (s.values.length ? fmtNum(s.values[s.values.length - 1]) : ''); }).join(', '));
+    for (i = 0; i <= 4; i++) {
+      var v = ymax * i / 4, y = Y(v);
+      svg.appendChild(el('line', { class: i ? 'bt-chart-grid' : 'bt-chart-axis', x1: m.l, x2: W - m.r, y1: y, y2: y }));
+      svg.appendChild(el('text', { class: 'bt-chart-tick', x: m.l - 6, y: y, 'text-anchor': 'end', 'dominant-baseline': 'central' }, fmtNum(v)));
+    }
+    if (o.yLabel) svg.appendChild(el('text', { class: 'bt-chart-label', x: 4, y: 11 }, o.yLabel));
+    if (o.xLabel) svg.appendChild(el('text', { class: 'bt-chart-label', x: m.l + pw / 2, y: H - 6, 'text-anchor': 'middle' }, o.xLabel));
+    var every = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(pw / 44))));
+    var tok = function (s, idx) { return 'var(--bt-' + (s.token || SERIES_TOKENS[idx % SERIES_TOKENS.length]) + ')'; };
+    if (o.type === 'bar') {
+      var band = n ? pw / n : pw, bw = Math.min(46, band * 0.72 / Math.max(1, S));
+      for (i = 0; i < n; i++) {
+        var cx = m.l + band * (i + 0.5);
+        if (i % every === 0 && d.labels[i] !== undefined) svg.appendChild(el('text', { class: 'bt-chart-tick', x: cx, y: m.t + ph + 14, 'text-anchor': 'middle' }, String(d.labels[i])));
+        for (si = 0; si < S; si++) {
+          var val = d.series[si].values[i] || 0, x = cx - bw * S / 2 + si * bw, top = Y(val);
+          svg.appendChild(el('rect', { class: 'bt-chart-bar', x: x + 0.5, y: top, width: Math.max(1, bw - 1), height: Math.max(0, m.t + ph - top), rx: 2, style: { fill: tok(d.series[si], si) } },
+            el('svg:title', d.series[si].name + ' · ' + d.labels[i] + ': ' + val)));
+          if (n * S <= 16 && bw >= 16) svg.appendChild(el('text', { class: 'bt-chart-val', x: x + bw / 2, y: top - 4, 'text-anchor': 'middle' }, fmtNum(val)));
+        }
+      }
+    } else {
+      var X = function (idx) { return m.l + (n > 1 ? pw * idx / (n - 1) : pw / 2); };
+      for (i = 0; i < n; i += every) if (d.labels[i] !== undefined) svg.appendChild(el('text', { class: 'bt-chart-tick', x: X(i), y: m.t + ph + 14, 'text-anchor': 'middle' }, String(d.labels[i])));
+      d.series.forEach(function (s, idx) {
+        if (!s.values.length) return;
+        var pts = s.values.map(function (val, j) { return X(j).toFixed(1) + ',' + Y(val).toFixed(1); }).join(' ');
+        svg.appendChild(el('polyline', { class: 'bt-chart-line', points: pts, style: { stroke: tok(s, idx) } }));
+        var lx = X(s.values.length - 1), ly = Y(s.values[s.values.length - 1]);
+        svg.appendChild(el('circle', { cx: lx, cy: ly, r: 3.5, style: { fill: tok(s, idx) } }));
+        svg.appendChild(el('text', { class: 'bt-chart-val', x: Math.min(lx, W - m.r) - 6, y: ly - 7, 'text-anchor': 'end' }, fmtNum(s.values[s.values.length - 1])));
+      });
+    }
+    var lg = this.legendEl;
+    lg.textContent = '';
+    if (S > 1 || o.legend) d.series.forEach(function (s, idx) {
+      lg.appendChild(el('span.bt-legend-item', swatch(s.token || SERIES_TOKENS[idx % SERIES_TOKENS.length], true), s.name));
+    });
+  };
+
+  /**
+   * 2D points and edges (IVF cells, HNSW layers, any small graph).
+   * new BTViz.GraphView(target, {height = 300, onNodeClick}).render({
+   *   nodes: [{id, x, y, label?, state?, shape?: 'circle'|'square'|'diamond'|'cross', r?}],
+   *   edges?: [{from, to, state?, dashed?}],
+   *   regions?: [{points: [[x, y]…], state?, label?}] }, highlight?)
+   * highlight: {nodes: {id: state}, edges: {'from>to': state}}. Coordinates are in your own units.
+   */
+  function GraphView(target, opts) {
+    var self = this;
+    this.opts = { height: 300, pad: 26, r: 6, ariaLabel: 'Graph' };
+    for (var key in (opts || {})) this.opts[key] = opts[key];
+    this.svg = el('svg', { class: 'bt-graph-svg', role: 'img', 'aria-label': this.opts.ariaLabel });
+    this.root = el('div.bt-graph', this.svg);
+    resolve(target).appendChild(this.root);
+    observeWidth(this.root, function () { if (self.model) self.render(self.model, self.hl); });
+  }
+  GraphView.prototype.render = function (model, hl) {
+    this.model = model; this.hl = hl = hl || {};
+    var o = this.opts, svg = this.svg, self = this;
+    var W = Math.max(200, this.root.clientWidth || 600), H = o.height;
+    var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    var see = function (x, y) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); };
+    (model.nodes || []).forEach(function (n) { see(n.x, n.y); });
+    (model.regions || []).forEach(function (r) { r.points.forEach(function (p) { see(p[0], p[1]); }); });
+    if (x0 === Infinity) { x0 = y0 = 0; x1 = y1 = 1; }
+    var sc = Math.min((W - o.pad * 2) / ((x1 - x0) || 1), (H - o.pad * 2) / ((y1 - y0) || 1));
+    var ox = (W - (x1 - x0) * sc) / 2, oy = (H - (y1 - y0) * sc) / 2;
+    var PX = function (x) { return ox + (x - x0) * sc; }, PY = function (y) { return oy + (y - y0) * sc; };
+    svg.textContent = '';
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.setAttribute('width', W);
+    svg.setAttribute('height', H);
+    var byId = {};
+    (model.nodes || []).forEach(function (n) { byId[n.id] = n; });
+    (model.regions || []).forEach(function (r) {
+      svg.appendChild(el('polygon', { class: stateClass('bt-graph-region', r.state), points: r.points.map(function (p) { return PX(p[0]).toFixed(1) + ',' + PY(p[1]).toFixed(1); }).join(' ') }));
+    });
+    (model.edges || []).forEach(function (e) {
+      var a = byId[e.from], b = byId[e.to];
+      if (!a || !b) return;
+      var st = (hl.edges || {})[e.from + '>' + e.to] || (hl.edges || {})[e.to + '>' + e.from] || e.state;
+      svg.appendChild(el('line', { class: stateClass('bt-graph-edge' + (e.dashed ? ' is-dashed' : ''), st), x1: PX(a.x), y1: PY(a.y), x2: PX(b.x), y2: PY(b.y) }));
+    });
+    (model.nodes || []).forEach(function (n) {
+      var st = (hl.nodes || {})[n.id] || n.state, r = n.r || o.r, x = PX(n.x), y = PY(n.y), shape;
+      if (n.shape === 'square') shape = el('rect', { x: x - r, y: y - r, width: 2 * r, height: 2 * r, rx: 1.5 });
+      else if (n.shape === 'diamond') shape = el('path', { d: 'M' + x + ' ' + (y - r * 1.3) + 'L' + (x + r * 1.3) + ' ' + y + 'L' + x + ' ' + (y + r * 1.3) + 'L' + (x - r * 1.3) + ' ' + y + 'z' });
+      else if (n.shape === 'cross') shape = el('path', { class: 'is-cross', d: 'M' + (x - r) + ' ' + (y - r) + 'L' + (x + r) + ' ' + (y + r) + 'M' + (x - r) + ' ' + (y + r) + 'L' + (x + r) + ' ' + (y - r) });
+      else shape = el('circle', { cx: x, cy: y, r: r });
+      var g = el('g', { class: stateClass('bt-graph-node' + (o.onNodeClick ? ' is-clickable' : ''), st), 'data-id': n.id }, shape,
+        el('svg:title', (n.label === undefined ? n.id : n.label) + (st ? ' (' + st + ')' : '')));
+      if (n.label !== undefined && n.label !== null) {
+        var right = x > W - 60;
+        g.appendChild(el('text', { x: x + (right ? -(r + 4) : r + 4), y: y - r - 2, 'text-anchor': right ? 'end' : 'start' }, String(n.label)));
+      }
+      if (o.onNodeClick) g.addEventListener('click', function () { o.onNodeClick(n.id, n); });
+      svg.appendChild(g);
+    });
+    return this;
+  };
+
+  /* ======================================================================
+   * 13. selfTest — "the JS model reproduces what the Zig/Rust program printed"
+   * ==================================================================== */
+
+  function canon(v) {
+    if (typeof v === 'string') return v.replace(/\r\n/g, '\n').split('\n').map(function (l) { return l.replace(/\s+$/, ''); }).join('\n').trim();
+    return JSON.stringify(v, function (key, val) {
+      if (val && typeof val === 'object' && !Array.isArray(val)) {
+        var o = {};
+        Object.keys(val).sort().forEach(function (p) { o[p] = val[p]; });
+        return o;
+      }
+      return val;
+    }, 1);
+  }
+  /**
+   * BTViz.selfTest(name, actual, expected[, target]) → boolean.
+   * Strings are compared ignoring trailing whitespace; everything else structurally.
+   * Shows a ✓/✗ badge (in `target`, or a strip at the end of <main>) and console.error()s on mismatch.
+   * Results accumulate in BTViz.selfTest.results = [{name, ok}].
+   */
+  function selfTest(name, actual, expected, target) {
+    var a = canon(actual), e = canon(expected), ok = a === e;
+    selfTest.results.push({ name: name, ok: ok });
+    if (!ok && typeof console !== 'undefined') console.error('BTViz.selfTest FAILED: ' + name + '\n--- expected ---\n' + e + '\n--- actual ---\n' + a);
+    if (!hasDOM) return ok;
+    var host = target ? resolve(target) : document.querySelector('.bt-selftests');
+    if (!host) {
+      host = el('div.bt-selftests', { role: 'status', 'aria-label': 'Model self-tests' }, el('span.bt-selftests-title', 'Self-tests'));
+      (document.querySelector('main') || document.body).appendChild(host);
+    }
+    var badge = el('span', { class: 'bt-chip bt-selftest ' + (ok ? 's-found' : 's-deleted'), 'data-ok': ok ? '1' : '0', title: ok ? 'JS model output matches the expected output' : 'Mismatch — see below and the console' },
+      (ok ? '✓ ' : '✗ ') + name);
+    host.appendChild(badge);
+    if (!ok) host.appendChild(el('details.bt-selftest-diff', el('summary', name + ': expected vs actual'),
+      el('pre.bt-code', 'expected:\n' + e + '\n\nactual:\n' + a)));
+    return ok;
+  }
+  selfTest.results = [];
+
+  /* ======================================================================
+   * 14. Export
    * ==================================================================== */
 
   BTViz.el = el;
@@ -2258,6 +2813,14 @@
   BTViz.Log = Log;
   BTViz.codePanel = codePanel;
   BTViz.tintLine = tintLine;
+  BTViz.Lanes = Lanes;
+  BTViz.Timeline = Timeline;
+  BTViz.FrameGrid = FrameGrid;
+  BTViz.MemoryMap = MemoryMap;
+  BTViz.HexGrid = HexGrid;
+  BTViz.Chart = Chart;
+  BTViz.GraphView = GraphView;
+  BTViz.selfTest = selfTest;
   BTViz.models = { BTree: BTree, BPlusTree: BPlusTree, SlottedPage: SlottedPage };
   BTViz.steps = steps;
 

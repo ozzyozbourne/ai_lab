@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 21 — Durability primitives</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+</head>
+<body>
+
+<p class="bt-lead">A write is in two places before it is safe: first in the operating system's cache
+(<em>pending</em>), and only after <code>sync</code> on the disk (<em>durable</em>). A power cut decides the
+fate of every pending write: dropped, kept, or <em>torn</em>, with only some of its eight 512-byte sectors
+written. Text and code: <a href="../README.md">chapter README</a>.</p>
+
+<h2>1. The chapter's program, step by step</h2>
+<p>This replays experiments 1, 2 and 4 of <code>zig build run</code> / <code>cargo run</code> on the same
+seeded simulated disk (seed 2121). A page is drawn as eight cells, one letter per sector: <b>A</b> is the old
+version, <b>B</b> the new one. Press <kbd>Space</kbd> to play, <kbd>→</kbd> to step, or tick
+<em>Predict</em> to be asked first.</p>
+<div id="fig-guided"></div>
+
+<h2>2. Your turn: write, sync, crash</h2>
+<p>Choose a protocol, issue writes, and cut the power whenever you like. With <em>double write</em>, follow
+the order slot → sync → home → sync and try to lose a page; then skip the first sync and try again. Every
+action becomes a step, so you can scrub back through what happened. The same seed always tears the same way.</p>
+<div id="fig-sandbox"></div>
+
+<h2>3. Does the picture match the code?</h2>
+<p>The JavaScript model behind this page is a port of the chapter's Zig and Rust code. It runs the whole demo
+program here and compares the text with <code>expected_output.txt</code>.</p>
+<div id="selftests" class="bt-selftests" role="status" aria-label="Model self-tests"><span class="bt-selftests-title">Self-tests</span></div>
+<details>
+  <summary>Output of the program (all five experiments)</summary>
+  <pre class="bt-code" id="program-output" tabindex="0"></pre>
+</details>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="model.js"></script>
+<script src="local.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

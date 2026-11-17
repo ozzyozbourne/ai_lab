@@ -1,0 +1,75 @@
+== 1. varints: small numbers, few bytes ==
+value                leb128                         sqlite
+0                    00                             00
+1                    01                             01
+127                  7f                             7f
+128                  80 01                          81 00
+300                  ac 02                          82 2c
+16383                ff 7f                          ff 7f
+16384                80 80 01                       81 80 00
+4294967296           80 80 80 80 10                 90 80 80 80 00
+18446744073709551615 ff ff ff ff ff ff ff ff ff 01  ff ff ff ff ff ff ff ff ff
+zigzag: 0->0 -1->1 1->2 -2->3 2->4 -64->127 64->128
+as bytes: leb128(129) = 81 01 > leb128(256) = 80 02, but 129 < 256: varints are not sort keys
+
+== 2. integers as keys ==
+i64 values -2 -1 0 1 256, sorted by comparing the bytes of each encoding:
+  little-endian          : 0 256 1 -2 -1  (WRONG)
+  big-endian             : 0 1 256 -2 -1  (WRONG)
+  big-endian + sign flip : -2 -1 0 1 256  (correct)
+    -2 -> 7f ff ff ff ff ff ff fe
+    -1 -> 7f ff ff ff ff ff ff ff
+     0 -> 80 00 00 00 00 00 00 00
+     1 -> 80 00 00 00 00 00 00 01
+   256 -> 80 00 00 00 00 00 01 00
+
+== 3. floats as keys ==
+  -inf -> 00 0f ff ff ff ff ff ff
+  -1.5 -> 40 07 ff ff ff ff ff ff  (> previous)
+  -0.0 -> 80 00 00 00 00 00 00 00  (> previous)
+   0.0 -> 80 00 00 00 00 00 00 00  (= previous)
+   1.5 -> bf f8 00 00 00 00 00 00  (> previous)
+  +inf -> ff f0 00 00 00 00 00 00  (> previous)
+   NaN -> ff f8 00 00 00 00 00 00  (> previous)
+
+== 4. strings as keys ==
+  ""       -> 00
+  "a"      -> 61 00
+  "a\x00"  -> 61 01 00 00
+  "a\x01"  -> 61 01 01 00
+  "a\x02"  -> 61 02 00
+  "ab"     -> 61 62 00
+  "b"      -> 62 00
+  raw concatenation: ("a","b") and ("ab","") are both 61 62
+  as key columns   : ("a","b") = 01 61 00 01 62 00   ("ab","") = 01 61 62 00 01 00
+
+== 5. composite keys: (name ASC, score DESC NULLS LAST, id ASC) ==
+arrival order (ids): 5 6 7 1 8 4 2 3
+sorted by key bytes (27 comparisons, 117 byte positions examined):
+  id 7  ""        0  01 00 01 7f ff ff ff ff ff ff ff 01 80 00 00 00 00 00 00 07
+  id 2  "Ann"     7  01 41 6e 6e 00 01 7f ff ff ff ff ff ff f8 01 80 00 00 00 00 00 00 02
+  id 3  "Ann"    -2  01 41 6e 6e 00 01 80 00 00 00 00 00 00 01 01 80 00 00 00 00 00 00 03
+  id 4  "Ann"  NULL  01 41 6e 6e 00 02 01 80 00 00 00 00 00 00 04
+  id 8  "Anna"  256  01 41 6e 6e 61 00 01 7f ff ff ff ff ff fe ff 01 80 00 00 00 00 00 00 08
+  id 1  "Anna"    7  01 41 6e 6e 61 00 01 7f ff ff ff ff ff ff f8 01 80 00 00 00 00 00 00 01
+  id 5  "Bo"    300  01 42 6f 00 01 7f ff ff ff ff ff fe d3 01 80 00 00 00 00 00 00 05
+  id 6  "Bo"    300  01 42 6f 00 01 7f ff ff ff ff ff fe d3 01 80 00 00 00 00 00 00 06
+sorted by record comparator (27 comparisons, 66 columns decoded):
+  7 2 3 4 8 1 5 6
+same order: yes
+space: 8 keys = 173 bytes of a 256-byte fixed buffer, 8 records = 71 bytes
+
+== 6. one row, two encodings ==
+row    ("Anna", 7, 1)
+record 03 07 01 01 41 6e 6e 61 0e 02  (10 bytes)
+key    01 41 6e 6e 61 00 01 7f ff ff ff ff ff ff f8 01 80 00 00 00 00 00 00 01  (24 bytes)
+record -> ("Anna", 7, 1)   (self-describing)
+key    -> ("Anna", 7, 1)   (needs the schema)
+
+== 7. where the key bytes live ==
+  key for "Bo"                     22 bytes -> 32-byte stack buffer
+  key for "Bartholomew-Maximilian" 34 bytes -> heap fallback
+
+== 8. the property, checked on random rows ==
+seed 11, 2000 pairs: 771 less, 434 equal, 795 greater
+byte order of keys == comparator order of records == logical order: yes

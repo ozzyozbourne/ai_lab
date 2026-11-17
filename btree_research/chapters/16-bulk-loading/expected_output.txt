@@ -1,0 +1,26 @@
+Chapter 16: bulk loading
+
+== 1. Hand example: keys 1..13, order M = 4 ==
+bulk load, fill 100%:
+  level 2: (10)
+  level 1: (4 7) (13)
+  level 0: [1 2 3] [4 5 6] [7 8 9] [10 11 12] [13]
+  pages 8, page writes 8, splits 0
+one-by-one insert, ascending:
+  level 2: (7)
+  level 1: (3 5) (9 11)
+  level 0: [1 2] [3 4] [5 6] [7 8] [9 10] [11 12 13]
+  pages 9, page writes 25, splits 6
+
+== 2. Building n = 10000 keys, order M = 16 ==
+method                 height  leaves  inner  pages  leaf fill  page writes  page reads  splits
+bulk load 100%              4     667     46    713        99%          713           0       0
+bulk load 90% / 70%         4     770     77    847        86%          847           0       0
+insert, ascending           4    1250    155   1405        53%        12802       38631    1401
+insert, shuffled            4     941     92   1033        70%        12058       37884    1029
+
+== 3. 1000 random inserts after the bulk load ==
+leaf / inner fill  pages before  splits  page writes  pages after
+ 100% / 100%              713     566         2132         1279
+  90% /  70%              847     110         1220          957
+  70% /  70%             1100       2         1004         1102

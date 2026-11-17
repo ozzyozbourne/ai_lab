@@ -1,0 +1,63 @@
+Chapter 09: pages and the buffer pool
+
+== Part 1: a file is an array of pages ==
+created ch09_demo.db: 0 pages
+allocated 8 pages: file size = 32768 bytes (8 * 4096)
+  pager: reads=0 writes=8 allocations=8 syncs=1
+reopened: 8 pages
+page 5 is at byte offset 20480; its id field says 5, version 0
+page 8 does not exist: error.PageOutOfRange
+
+== Part 2: a 4-frame buffer pool with CLOCK eviction ==
+frame cell = page, pin count, R = referenced, D = dirty; hand = next frame the clock looks at
+
+ #  op       outcome                               f0       f1       f2       f3       hand
+ 1  fetch 0  miss: load into empty f0              0 p1 R-  -        -        -        1
+ 2  unpin 0  released, page unchanged              0 p0 R-  -        -        -        1
+ 3  fetch 1  miss: load into empty f1              0 p0 R-  1 p1 R-  -        -        2
+ 4  edit 1   version -> 1, released dirty          0 p0 R-  1 p0 RD  -        -        2
+ 5  fetch 2  miss: load into empty f2              0 p0 R-  1 p0 RD  2 p1 R-  -        3
+ 6  unpin 2  released, page unchanged              0 p0 R-  1 p0 RD  2 p0 R-  -        3
+ 7  fetch 3  miss: load into empty f3              0 p0 R-  1 p0 RD  2 p0 R-  3 p1 R-  0
+ 8  unpin 3  released, page unchanged              0 p0 R-  1 p0 RD  2 p0 R-  3 p0 R-  0
+ 9  fetch 1  hit in f1                             0 p0 R-  1 p1 RD  2 p0 R-  3 p0 R-  0
+10  unpin 1  released, page unchanged              0 p0 R-  1 p0 RD  2 p0 R-  3 p0 R-  0
+11  fetch 4  miss: evict page 0 (f0)               4 p1 R-  1 p0 -D  2 p0 --  3 p0 --  1
+12  unpin 4  released, page unchanged              4 p0 R-  1 p0 -D  2 p0 --  3 p0 --  1
+13  fetch 1  hit in f1                             4 p0 R-  1 p1 RD  2 p0 --  3 p0 --  1
+14  unpin 1  released, page unchanged              4 p0 R-  1 p0 RD  2 p0 --  3 p0 --  1
+15  fetch 5  miss: evict page 2 (f2)               4 p0 R-  1 p0 -D  5 p1 R-  3 p0 --  3
+16  unpin 5  released, page unchanged              4 p0 R-  1 p0 -D  5 p0 R-  3 p0 --  3
+17  fetch 3  hit in f3                             4 p0 R-  1 p0 -D  5 p0 R-  3 p1 R-  3
+18  fetch 6  miss: write back + evict page 1 (f1)  4 p0 --  6 p1 R-  5 p0 R-  3 p1 R-  2
+19  edit 6   version -> 1, released dirty          4 p0 --  6 p0 RD  5 p0 R-  3 p1 R-  2
+20  fetch 4  hit in f0                             4 p1 R-  6 p0 RD  5 p0 R-  3 p1 R-  2
+21  fetch 5  hit in f2                             4 p1 R-  6 p0 RD  5 p1 R-  3 p1 R-  2
+22  fetch 6  hit in f1                             4 p1 R-  6 p1 RD  5 p1 R-  3 p1 R-  2
+23  fetch 7  error.AllFramesPinned                 4 p1 R-  6 p1 RD  5 p1 R-  3 p1 R-  2
+24  unpin 3  released, page unchanged              4 p1 R-  6 p1 RD  5 p1 R-  3 p0 R-  2
+25  unpin 4  released, page unchanged              4 p0 R-  6 p1 RD  5 p1 R-  3 p0 R-  2
+26  unpin 5  released, page unchanged              4 p0 R-  6 p1 RD  5 p0 R-  3 p0 R-  2
+27  unpin 6  released, page unchanged              4 p0 R-  6 p0 RD  5 p0 R-  3 p0 R-  2
+28  fetch 7  miss: evict page 5 (f2)               4 p0 --  6 p0 -D  7 p1 R-  3 p0 --  3
+29  unpin 7  released, page unchanged              4 p0 --  6 p0 -D  7 p0 R-  3 p0 --  3
+
+final state (the visualization's self-test checks these lines):
+  frame 0: page=4 pin=0 referenced=0 dirty=0
+  frame 1: page=6 pin=0 referenced=0 dirty=1
+  frame 2: page=7 pin=0 referenced=1 dirty=0
+  frame 3: page=3 pin=0 referenced=0 dirty=0
+  hand=3
+  pool:  hits=6 misses=9 evictions=4 writebacks=1
+  pager: reads=8 writes=1 allocations=0 syncs=0
+after flushAll:
+  pager: reads=8 writes=2 allocations=0 syncs=1
+reopened; versions on disk: 0 1 0 0 0 0 1 0
+
+== Part 3: 5000 page accesses over 64 pages (80% to 8 hot pages), in-memory storage ==
+frames   hits  misses  evictions  writebacks  file reads  file writes
+     4   1567    3433       3429        1145        3433         1145
+     8   2886    2114       2106         919        2114          921
+    16   4074     926        910         394         926          403
+    32   4443     557        525         219         557          233
+every run ended with the same page contents as the oracle

@@ -1,0 +1,59 @@
+== 1. Separators are not keys ==
+  last on left       first on right     full separator     truncated separator
+  "banana"@11        "blackberry"@3     "banana"@11        "bl"
+  "blackberry"@3     "blueberry"@6      "blackberry"@3     "blu"
+  "grape"@9          "grapefruit"@26    "grape"@9          "grapef"
+  "date"@23          "dates"@40         "date"@23          "dates"
+  "cherry"@12        "cherry"@17        "cherry"@12        "cherry"@12
+
+== 2. Fixed scenario: 39 puts, page_size = 256 ==
+page 2 internal low=-inf high=+inf used=46/256
+  separators: "apr" "c" "cr"
+  page 0 leaf low=-inf high="apr" used=150/256
+    apple@1 apple@[2,4,7,10,13] apple@15 apple@[16,19,22,25,28] apple@[31,35]
+  page 4 leaf low="apr" high="c" used=131/256
+    apricot@18 avocado@32 banana@11 blackberry@3 blackcurrant@29 blueberry@6
+  page 1 leaf low="c" high="cr" used=148/256
+    cherry@[1,8,9,12] cherry@17 cherry@[21,24,27,30] cherry@[33,36] coconut@37
+  page 3 leaf low="cr" high=+inf used=130/256
+    cranberry@20 date@23 elderberry@14 fig@5 grape@9 grapefruit@26 guava@34
+  posting list splits (a TID landed inside a posting list): 1
+
+  The same puts under each configuration:
+  config            height  leaves  internal  fanout  sep bytes  bytes/entry  leaf splits  dedup passes
+  neither                2       4         1     4.0       11.7         21.3            3             0
+  truncate               2       4         1     4.0        4.7         19.7            3             0
+  dedup                  2       4         1     4.0       12.7         18.0            3             4
+  truncate + dedup       2       4         1     4.0        2.0         15.5            3             3
+
+== 3. Searching through truncated separators ==
+  get("apple"): page 2 -> child 0 = page 0 -> [1,2,4,7,10,13,15,16,19,22,25,28,31,35]
+  get("blueberry"): page 2 -> child 1 = page 4 -> [6]
+  get("cherry"): page 2 -> child 2 = page 1 -> [1,8,9,12,17,21,24,27,30,33,36]
+  get("c"): page 2 -> child 2 = page 1 -> []
+  get("coconut"): page 2 -> child 2 = page 1 -> [37]
+  get("kiwi"): page 2 -> child 3 = page 3 -> []
+
+== 4. Measurements, page_size = 4096 ==
+A. 20000 unique 32-byte keys (hex hashes), random order
+  config            height  leaves  internal  fanout  sep bytes  bytes/entry  leaf splits  dedup passes
+  neither                3     302         5    61.2       38.0         44.1          301             0
+  truncate               2     300         1   300.0        2.4         42.5          299             0
+  dedup                  3     302         5    61.2       38.0         44.1          301             0
+  truncate + dedup       2     300         1   300.0        2.4         42.5          299             0
+B. 20000 rows over 50 distinct keys ("category-NN")
+  config            height  leaves  internal  fanout  sep bytes  bytes/entry  leaf splits  dedup passes
+  neither                3     183         3    61.7       17.0         21.7          182             0
+  truncate               3     187         3    63.0       15.9         21.7          186             0
+  dedup                  2      45         1    45.0       17.0          7.3           44           706
+  truncate + dedup       2      50         1    50.0       11.9          7.9           49           727
+C. 20000 hierarchical keys ("user/NNNNNN/order/NNNNNN"), random order
+  config            height  leaves  internal  fanout  sep bytes  bytes/entry  leaf splits  dedup passes
+  neither                3     248         5    50.4       30.0         35.4          247             0
+  truncate               3     234         3    78.7       10.3         34.6          233             0
+  dedup                  3     246         5    50.0       30.0         35.4          245             8
+  truncate + dedup       3     233         3    78.3       10.3         34.6          232             7
+
+fanout      = average number of children per internal page
+sep bytes   = average separator payload in internal pages (key bytes, plus 6 when a TID is kept)
+bytes/entry = bytes in use on all pages / number of (key, TID) entries

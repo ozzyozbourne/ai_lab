@@ -1,0 +1,13 @@
+.{
+    // The slug-based name ch28_radix_trees_and_hash_indexes is 33 characters; zon names stop at 32.
+    .name = .ch28_radix_trees_hash_indexes,
+    .version = "0.0.0",
+    .fingerprint = 0x8ab740cadbfc66a5,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

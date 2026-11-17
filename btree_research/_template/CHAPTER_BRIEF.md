@@ -65,7 +65,7 @@ but remove any other scratch files). Do not run git commands.
 
 ## Visualization rules
 
-- Use only `../../assets/viz.css` and `../../assets/viz.js` via classic script/link tags
+- Use only `../../../assets/viz.css` and `../../../assets/viz.js` (from `chapters/NN-slug/viz/`) via classic script/link tags
   with relative paths. Do NOT edit anything in `assets/`. If a component you need is
   missing or buggy, write a small chapter-local helper in `viz/local.js` and mention it
   in your final report.

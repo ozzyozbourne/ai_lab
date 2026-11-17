@@ -18,6 +18,10 @@ pub const FileStorage = struct {
     /// Cached so that `size()` cannot fail; the file is ours alone.
     page_count: u64,
 
+    /// Largest page number + 1 this implementation accepts: byte offsets in
+    /// a file are signed 64-bit numbers.
+    pub const max_pages = (1 << 63) / page_size;
+
     pub const OpenError = error{NotWholePages} || Io.File.OpenError || Io.File.LengthError;
 
     /// Create or open `sub_path` in `dir` for reading and writing, keeping
@@ -57,6 +61,7 @@ pub const FileStorage = struct {
 
     fn writePage(ptr: *anyopaque, page_no: u64, page: *const Page) Storage.Error!void {
         const self: *FileStorage = @ptrCast(@alignCast(ptr));
+        if (page_no >= max_pages) return error.OutOfBounds;
         // A write past the end leaves a hole that the file system reads back
         // as zeroes: the same behaviour SimDisk implements by hand.
         self.file.writePositionalAll(self.io, page, page_no * page_size) catch
@@ -106,6 +111,34 @@ test "FileStorage: write, sync, reopen, read back" {
     try testing.expect(std.mem.allEqual(u8, &page, 'A'));
     try s.readPage(1, &page);
     try testing.expect(std.mem.allEqual(u8, &page, 0));
+}
+
+test "FileStorage: a hole below an unsynced write reads as zeroes" {
+    const testing = std.testing;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var fs: FileStorage = try .open(testing.io, tmp.dir, "hole.db");
+    defer fs.close();
+    const s = fs.storage();
+    var page: Page = @splat('A');
+    try s.writePage(2, &page); // no sync
+    try testing.expectEqual(3, s.size());
+    try s.readPage(1, &page);
+    try testing.expect(std.mem.allEqual(u8, &page, 0));
+    try testing.expectError(error.OutOfBounds, s.readPage(3, &page));
+}
+
+test "FileStorage: a page number that does not fit a file offset is refused" {
+    const testing = std.testing;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var fs: FileStorage = try .open(testing.io, tmp.dir, "big.db");
+    defer fs.close();
+    const s = fs.storage();
+    const page: Page = @splat('A');
+    try testing.expectError(error.OutOfBounds, s.writePage(FileStorage.max_pages, &page));
+    try testing.expectError(error.OutOfBounds, s.writePage(std.math.maxInt(u64), &page));
+    try testing.expectEqual(0, s.size());
 }
 
 test "FileStorage: a file that is not whole pages is rejected" {

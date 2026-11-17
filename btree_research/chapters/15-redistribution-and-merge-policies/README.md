@@ -481,4 +481,5 @@ Solutions: [solutions.md](solutions.md).
 - Previous: [14. Split policies and fill factor](../14-split-policies-and-fill-factor/README.md)
 - Next: [16. Bulk loading](../16-bulk-loading/README.md)
 - Visualization: [viz/index.html](viz/index.html) (cells flowing between three
-  siblings, and the policy comparison)
+  siblings, step by step) and [viz/policies.html](viz/policies.html) (the policies
+  compared on the workloads of sections 3 and 4)

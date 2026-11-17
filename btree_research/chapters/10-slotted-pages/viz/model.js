@@ -341,8 +341,8 @@
     return {
       size: this.size, headerSize: HEADER_SIZE, slotSize: SLOT_SIZE,
       header: [
-        { name: 'n', len: 2, value: n }, { name: 'start', len: 2, value: st.contentStart },
-        { name: 'free', len: 2, value: this.rd16(OFF_FIRST_FREE) }, { name: 'fr', len: 1, value: st.fragBytes },
+        { name: 'n', len: 2, value: n }, { name: 'top', len: 2, value: st.contentStart },
+        { name: 'ff', len: 2, value: this.rd16(OFF_FIRST_FREE) }, { name: 'fr', len: 1, value: st.fragBytes },
         { name: 'k', len: 1, value: this.buf[OFF_KIND] }, { name: 'user area', len: 8, value: '0' }
       ],
       slots: slots, cells: cells, rows: rows, blocks: blocks, frags: frags, stats: st,

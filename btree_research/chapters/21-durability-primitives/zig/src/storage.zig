@@ -14,6 +14,22 @@
 //! `SimDisk` (sim_disk.zig, memory plus simulated crashes). Code written
 //! against `Storage` runs unchanged on both; chapter 22 copies this file.
 //!
+//! The contract both implementations keep (the test "SimDisk and FileStorage
+//! answer every call alike" in main.zig runs one random stream against both):
+//!
+//!   size()      highest page number ever written + 1, counting writes that
+//!               are not durable yet. Never fails.
+//!   readPage    page_no <  size(): the newest write to that page; a page
+//!                                  below size() that was never written (a
+//!                                  hole) reads as zeroes
+//!               page_no >= size(): error.OutOfBounds, `out` untouched
+//!   writePage   page_no >= the implementation's `max_pages`:
+//!               error.OutOfBounds. Any failed write leaves size() and every
+//!               page as they were.
+//!   PowerLoss   comes before every other check: on a powered-off SimDisk
+//!               readPage, writePage and sync return it whatever the page
+//!               number. (size() still answers, with the last value.)
+//!
 //! Zig has no interface keyword: an interface is a struct holding a type-erased
 //! pointer and a table of function pointers, exactly like `std.mem.Allocator`.
 const std = @import("std");
@@ -32,8 +48,8 @@ pub const Storage = struct {
     pub const Error = error{
         /// The simulated machine lost power; nothing works until `SimDisk.crash`.
         PowerLoss,
-        /// `readPage` of a page at or beyond `size()`, or a page number too
-        /// large for the implementation.
+        /// `readPage` of a page at or beyond `size()`, or `writePage` of a
+        /// page number at or beyond the implementation's `max_pages`.
         OutOfBounds,
         /// The implementation could not allocate memory for the write.
         OutOfMemory,
@@ -49,7 +65,8 @@ pub const Storage = struct {
     };
 
     /// Read page `page_no` as this process currently sees it (including
-    /// writes that are not durable yet).
+    /// writes that are not durable yet). A hole below `size()` is zeroes;
+    /// at or beyond `size()` the result is `error.OutOfBounds`.
     pub fn readPage(self: Storage, page_no: u64, out: *Page) Error!void {
         return self.vtable.readPage(self.ptr, page_no, out);
     }

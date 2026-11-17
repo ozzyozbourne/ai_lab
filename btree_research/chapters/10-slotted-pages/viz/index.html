@@ -45,8 +45,8 @@ Press <b>Play</b>, or step with <kbd>→</kbd> and <kbd>←</kbd>. Then type you
   <li><b>Scenario "Fragmented page".</b> The page has enough free bytes for the new cell but no single piece is
       large enough, so the insert compacts first. Slot numbers stay; offsets change.</li>
 </ul>
-<p class="ch10-keys">Header fields in the picture: <code>n</code> = cell_count, <code>start</code> = content_start,
-<code>free</code> = first_free (offset of the first free block), <code>fr</code> = frag_bytes, <code>k</code> = kind
+<p class="ch10-keys">Header fields in the picture: <code>n</code> = cell_count, <code>top</code> = content_start,
+<code>ff</code> = first_free (offset of the first free block), <code>fr</code> = frag_bytes, <code>k</code> = kind
 (caller-defined), then the 8-byte user area. Hover any byte for details.</p>
 
 <p>Read the chapter: <a href="../README.md">README.md</a> · exercises and <a href="../solutions.md">solutions</a>.

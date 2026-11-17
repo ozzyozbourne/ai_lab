@@ -7,7 +7,9 @@
 //!             machine they sit in the OS page cache and the drive's cache)
 //!
 //!   writePage(p, bytes)  append to `pending`           (durable untouched)
-//!   readPage(p)          newest pending write for p, else durable
+//!   readPage(p)          newest pending write for p, else durable, else
+//!                        zeroes (a hole below size()); OutOfBounds at or
+//!                        beyond size()
 //!   sync()               apply all pending writes in order, then forget them
 //!   crash(mode)          decide the fate of every pending write, then forget
 //!
@@ -36,6 +38,10 @@
 //! at every sync and every crash, the two moments at which all pending writes
 //! die together. `writePage` reserves the durable space its write may need,
 //! so `sync` and `crash` never allocate and cannot fail for lack of memory.
+//! The price: a pending write to page p reserves (p + 1) pages of durable
+//! capacity at once, and the reservation stays even if a crash drops the
+//! write. One write to the last allowed page costs `max_pages * page_size`
+//! bytes (256 MiB); keep page numbers small in tests.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const SplitMix64 = @import("prng.zig").SplitMix64;
@@ -100,9 +106,14 @@ pub const SimDisk = struct {
                 return;
             }
         }
-        if (page_no >= self.durablePages()) return error.OutOfBounds;
-        const start: usize = @intCast(page_no * page_size);
-        @memcpy(out, self.durable.items[start..][0..page_size]);
+        if (page_no >= self.size()) return error.OutOfBounds;
+        if (self.durablePage(page_no)) |page| {
+            out.* = page.*;
+        } else {
+            // A hole: below a pending write to a higher page, but beyond the
+            // end of the platter. A real file reads such a page as zeroes.
+            @memset(out, 0);
+        }
     }
 
     pub fn writePage(self: *SimDisk, page_no: u64, page: *const Page) Storage.Error!void {
@@ -110,7 +121,7 @@ pub const SimDisk = struct {
         if (page_no >= max_pages) return error.OutOfBounds;
         // Reserve everything first, so that a failed allocation changes
         // nothing and so that sync/crash never need memory later.
-        try self.durable.ensureTotalCapacity(self.gpa, @intCast((page_no + 1) * page_size));
+        try self.reserveDurable(@intCast((page_no + 1) * page_size));
         const arena = self.arena.allocator();
         try self.pending.ensureUnusedCapacity(arena, 1);
         const copy = try arena.create(Page);
@@ -188,6 +199,10 @@ pub const SimDisk = struct {
 
     /// The durable bytes of a page, ignoring pending writes: what a crash with
     /// `.drop` would leave. null if the durable image is shorter.
+    ///
+    /// The pointer goes into the durable buffer and is invalidated by the next
+    /// `writePage` (which may move the buffer to reserve space), `sync` or
+    /// `crash`. Copy the page (`disk.durablePage(n).?.*`) to keep it longer.
     pub fn durablePage(self: *const SimDisk, page_no: u64) ?*const Page {
         if (page_no >= self.durablePages()) return null;
         const start: usize = @intCast(page_no * page_size);
@@ -211,6 +226,17 @@ pub const SimDisk = struct {
     // ---- internals ----
 
     const all_sectors: u8 = 0xFF;
+
+    /// Make room for `bytes` of durable image. Grows by half when pages are
+    /// appended one after another (amortized, like `ensureTotalCapacity`),
+    /// but never reserves more than is asked for on a jump to a far page and
+    /// never more than `max_pages`.
+    fn reserveDurable(self: *SimDisk, bytes: usize) Allocator.Error!void {
+        const have = self.durable.capacity;
+        if (bytes <= have) return;
+        const want = @min(@max(bytes, have + have / 2), max_pages * page_size);
+        try self.durable.ensureTotalCapacityPrecise(self.gpa, want);
+    }
 
     /// Copy the sectors selected by `mask` (bit s = sector s) from a pending
     /// write onto the platter. Sectors not selected keep their old bytes;
@@ -303,6 +329,44 @@ test "SimDisk: keep applies writes in order, holes read as zeroes" {
     try disk.readPage(0, &page);
     try testing.expect(std.mem.allEqual(u8, &page, 0));
     try testing.expectEqual(3, disk.size());
+}
+
+test "SimDisk: a hole below a pending write reads as zeroes" {
+    var disk: SimDisk = .init(testing.allocator, 1);
+    defer disk.deinit();
+    try disk.writePage(2, &filled('A')); // not synced: the platter is empty
+    try testing.expectEqual(3, disk.size());
+    try testing.expectEqual(0, disk.durablePages());
+    var page: Page = @splat(0xEE);
+    try disk.readPage(1, &page);
+    try testing.expect(std.mem.allEqual(u8, &page, 0));
+    try disk.readPage(0, &page);
+    try testing.expect(std.mem.allEqual(u8, &page, 0));
+    // At or beyond size() it is still an error, and `out` is left alone.
+    page = filled(0xEE);
+    try testing.expectError(error.OutOfBounds, disk.readPage(3, &page));
+    try testing.expect(std.mem.allEqual(u8, &page, 0xEE));
+    // The hole exists only as long as the write that created it.
+    _ = disk.crash(.drop);
+    try testing.expectError(error.OutOfBounds, disk.readPage(1, &page));
+}
+
+test "SimDisk: a write to a far page reserves exactly what it needs" {
+    var disk: SimDisk = .init(testing.allocator, 1);
+    defer disk.deinit();
+    try disk.writePage(0, &filled('A'));
+    try disk.sync();
+    try disk.writePage(1000, &filled('B'));
+    try testing.expectEqual(1001 * page_size, disk.durable.capacity);
+    // A dropped write keeps its reservation (documented in the file comment).
+    _ = disk.crash(.drop);
+    try testing.expectEqual(1, disk.durablePages());
+    try testing.expectEqual(1001 * page_size, disk.durable.capacity);
+    // The last allowed page reserves max_pages, not more.
+    try disk.writePage(max_pages - 1, &filled('C'));
+    try testing.expectEqual(max_pages * page_size, disk.durable.capacity);
+    try testing.expectError(error.OutOfBounds, disk.writePage(max_pages, &filled('C')));
+    try disk.validate();
 }
 
 test "SimDisk: a torn write mixes old and new sectors, never bytes within one" {
@@ -422,6 +486,7 @@ test "SimDisk: seeded model test (write, read, sync, crash drop/keep)" {
     var rng: SplitMix64 = .init(2121);
     var page: Page = undefined;
 
+    var hole_reads: u32 = 0; // reads of a hole beyond the durable end
     for (0..5000) |_| {
         switch (rng.below(10)) {
             0...4 => { // write
@@ -439,6 +504,7 @@ test "SimDisk: seeded model test (write, read, sync, crash drop/keep)" {
                     try disk.readPage(p, &page);
                     // A hole (never written, below the size) reads as zeroes.
                     try testing.expect(std.mem.allEqual(u8, &page, model.cache[@intCast(p)] orelse 0));
+                    if (model.cache[@intCast(p)] == null and p >= model.durable_size) hole_reads += 1;
                 }
             },
             7 => { // sync: the cache becomes the durable state
@@ -462,6 +528,7 @@ test "SimDisk: seeded model test (write, read, sync, crash drop/keep)" {
         try testing.expectEqual(model.durable_size, disk.durablePages());
     }
     try testing.expect(disk.stats.crashes > 100 and disk.stats.syncs > 100);
+    try testing.expect(hole_reads > 0); // the stream reached the case
 }
 
 test "SimDisk: after a random crash every sector is old or one of the pending versions" {

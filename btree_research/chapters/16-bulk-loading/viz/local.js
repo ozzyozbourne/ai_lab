@@ -557,6 +557,13 @@
         }
       });
     });
+    // Wide trees scroll inside the view: keep the page being worked on visible.
+    var focus = Object.keys(hp)[0] || (Object.keys(hc)[0] || '').split(':')[0];
+    if (focus && pos[focus] && this.root.scrollWidth > this.root.clientWidth) {
+      var scale = svg.getBoundingClientRect().width / width;
+      var centre = (pos[focus].x + pos[focus].w / 2) * scale;
+      this.root.scrollLeft = Math.max(0, centre - this.root.clientWidth / 2);
+    }
     return this;
   };
 

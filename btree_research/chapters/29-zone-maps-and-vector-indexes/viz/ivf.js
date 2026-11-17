@@ -115,7 +115,7 @@
         caption: '<span class="bt-chip s-compare">probe ' + (i + 1) + ' of ' + search.probes.length + '</span> Scan list ' + pr.list + ': ' + pr.scanned +
           ' distance computations, one sequential pass over the list (like reading a leaf page). Best so far: id ' + pr.top[0].id + ' at dist² ' + pr.top[0].dist +
           '. Scanned ' + scanned + ' of ' + S.points.length + ' vectors.',
-        state: { ranked: true, probed: i + 1, scanning: pr.list }, lines: { zig: [[8, 12]], rust: [[7, 11]] }
+        state: { ranked: true, probed: i + 1, scanning: pr.list }, lines: [[8, 12]]
       });
     });
     var found = C.overlap(search.top, truth), miss = truth.filter(function (t) { return !search.top.some(function (h) { return h.id === t.id; }); });
@@ -129,7 +129,7 @@
     }
     steps.push({
       caption: '<b>Compare with brute force</b> (all ' + S.points.length + ' vectors). ' + verdict,
-      state: { ranked: true, probed: search.probes.length, scanning: -1, final: true }, lines: { zig: [14], rust: [13] }
+      state: { ranked: true, probed: search.probes.length, scanning: -1, final: true }, lines: [14]
     });
     stepper.setSteps(steps, { index: play ? 0 : steps.length - 1, instant: true, play: !!play });
   }

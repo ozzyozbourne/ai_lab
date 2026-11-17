@@ -366,7 +366,7 @@ is the one the programs print; change how skewed the accesses are and watch the 
         { token: 'key-found', label: 'hit' }, { token: 'key-inserted', label: 'page loaded (miss)' },
         { token: 'key-compare', label: 'second chance: bit cleared' }, { token: 'lock-shared', label: 'pinned: skipped' },
         { token: 'key-deleted', label: 'victim' }, { token: 'page-dirty', label: 'dirty frame / file write' },
-        { token: 'node-active', label: 'file read / unpin' }, 'free'
+        { token: 'node-active', label: 'file read / unpin' }, { token: 'free', label: 'empty frame' }
       ]
     });
 

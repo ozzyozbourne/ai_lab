@@ -29,7 +29,7 @@
 }
 .c14-free span { background: var(--bt-surface); padding: 2px 4px; border-radius: 3px; }
 .c14-cap { position: absolute; top: -5px; bottom: -5px; width: 0; border-left: 2px dashed var(--bt-key-deleted); }
-.c14-cap-label { font: .7rem/1.5 var(--bt-mono); color: var(--bt-key-deleted); white-space: nowrap; overflow: hidden; }
+.c14-cap-label { font: .7rem/1.5 var(--bt-mono); color: var(--bt-key-deleted); white-space: nowrap; text-align: right; box-sizing: border-box; padding-right: 4px; }
 .c14-gaps { position: relative; height: 26px; margin-top: 3px; }
 .c14-gap {
   position: absolute; top: 0; transform: translateX(-50%); min-width: 20px; height: 20px; padding: 0 3px; border-radius: 999px;
@@ -161,7 +161,7 @@ a run of equal keys: the parent then has to store the row id as well as the key.
       } else new C14.CellStrip(stripHost).render(s.strip);
       tableHost.textContent = '';
       if (s.rows) {
-        var head = ['cut before', 'left', 'right', s.deltaLabel || 'delta', 'separator in the parent'];
+        var head = ['cut', 'left', 'right', s.deltaLabel || 'delta', 'separator'];
         var t = el('table.bt-table', el('thead', el('tr', head.map(function (h, i) { return el('th', { class: i > 0 && i < 4 ? 'num' : null }, h); }))));
         var body = el('tbody');
         s.rows.forEach(function (row) {
@@ -192,7 +192,7 @@ a run of equal keys: the parent then has to store the row id as well as the key.
 
       function sepText(s) {
         var a = items[s - 1], b = items[s];
-        return a.key !== b.key ? '(' + b.key + ') · 8 bytes' : cellText(b) + ' · 16 bytes, cuts the run of ' + b.key + 's';
+        return a.key !== b.key ? '(' + b.key + ') · 8B' : cellText(b) + ' · 16B, inside a run';
       }
       /* Table rows in page order. `fill` selects the delta column, `states` colours rows. */
       function rows(fill, withDelta, states) {
@@ -253,6 +253,7 @@ a run of equal keys: the parent then has to store the row id as well as the key.
             : tr.defaultInterval.length + ' cuts are that close: before ' + tr.defaultInterval.map(function (s) { return k(s, s === best ? 'active' : 'compare'); }).join(', ') + '.'),
           { strip: imaginary(st2), rows: rows(firstFill, true, st2), deltaLabel: deltaLabel(firstFill) });
         var st3 = {};
+        if (best !== choice.firstRight) st3[best] = 'active';
         st3[choice.firstRight] = 'split';
         if (tr.reason === 'default-distinct') {
           tr.defaultInterval.forEach(function (s) { if (!st3[s]) st3[s] = 'compare'; });

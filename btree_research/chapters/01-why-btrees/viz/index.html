@@ -90,7 +90,7 @@ they sit on is rewritten.</p>
     prev: { href: '../../../index.html', title: 'Guide index' },
     next: { href: '../../02-searching-a-sorted-node/viz/index.html', title: 'Chapter 2: Searching a sorted node' }
   });
-  function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
+  function plural(n, word) { return n + ' ' + (n === 1 ? word : word === 'entry' ? 'entries' : word + 's'); }
   function chip(text, state) { return el('span', { class: 'bt-chip' + (state ? ' s-' + state : '') }, text); }
   function button(id, text, fn, primary) { return el('button.bt-btn' + (primary ? '.bt-primary' : '') + '#' + id, { type: 'button', onclick: fn }, text); }
 
@@ -342,7 +342,7 @@ they sit on is rewritten.</p>
         code.highlight(s.lines || []);
         statsHost.textContent = '';
         var t = s.state.totals;
-        statsHost.append(chip(plural(t.puts, 'put')), chip(plural(t.shifted, 'entry') .replace('entrys', 'entries') + ' shifted', 'dirty'),
+        statsHost.append(chip(plural(t.puts, 'put')), chip(plural(t.shifted, 'entry') + ' shifted', 'dirty'),
           chip(plural(t.pages, 'page') + ' rewritten', 'dirty'), chip('a binary tree would have written ' + plural(t.puts, 'node'), 'pointer'));
       }
     });
@@ -381,7 +381,7 @@ they sit on is rewritten.</p>
           { caption: 'Binary search: ' + k(key) + ' belongs ' + where + ' (page ' + c.firstPage + ').', lines: LINES.find,
             state: { strip: { keys: before, perPage: PER, cells: at }, totals: t0 } },
           { caption: c.shifted === 0 ? 'Nothing is behind that position, so nothing moves. This is the one cheap case: appending the largest key.'
-              : 'Make room: the ' + plural(c.shifted, 'entry').replace('entrys', 'entries') + ' behind that position each move one slot to the right. Every page from ' +
+              : 'Make room: the ' + plural(c.shifted, 'entry') + ' behind that position each move one slot to the right. Every page from ' +
                 c.firstPage + ' to ' + c.lastPage + ' changes: ' + plural(c.pagesRewritten, 'page') + ' rewritten.',
             lines: LINES.shift, state: { strip: { keys: gap, perPage: PER, cells: moved, pages: dirty }, totals: BTViz.clone(totals) } },
           { caption: 'Write ' + k(key, 'inserted') + ' into the gap. This put shifted ' + c.shifted + ' of ' + before.length + ' entries and rewrote ' +

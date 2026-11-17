@@ -289,13 +289,13 @@
   /**
    * kind: 'int' | 'float' | 'text'; text: what the reader typed; desc: bool.
    * Returns steps whose state is {strips: [{label, bytes, marks}], record}.
-   * `lines` selects code-panel lines (see code.js).
+   * `mark` names the code-panel lines to highlight (CHAPTER_CODE_LINES in code.js).
    */
   function keySteps(kind, text, desc) {
     var steps = [], strips = [];
     function push(label, bytes, marks, caption, lines) {
       strips = strips.concat([{ label: label, bytes: bytes, marks: marks || {} }]);
-      steps.push({ caption: caption, state: { strips: strips }, lines: lines, snippet: kind });
+      steps.push({ caption: caption, state: { strips: strips }, mark: lines || null, snippet: kind });
     }
     function all(n, state) { var m = {}; for (var i = 0; i < n; i++) m[i] = state; return m; }
     var payload;
@@ -306,15 +306,15 @@
       var u = BigInt.asUintN(64, v);
       push('in memory (little-endian)', u64be(u).reverse(), {},
         'The number <b class="bt-k">' + v + '</b> as it sits in memory on most machines: two\'s complement, least significant byte first. ' +
-        'Comparing these bytes left to right would compare the <i>least</i> significant byte first.', []);
+        'Comparing these bytes left to right would compare the <i>least</i> significant byte first.', null);
       push('big-endian', u64be(u), {},
         'Step 1: most significant byte first. Now the first byte that differs between two keys is the most significant difference. ' +
-        'This is already correct for unsigned numbers.', [2]);
+        'This is already correct for unsigned numbers.', 'be');
       payload = encodeI64(v);
       push('sign bit flipped', payload, { 0: 'compare' },
         'Step 2: flip the top bit. In two\'s complement negative numbers have the top bit set, so they would sort <i>after</i> the ' +
         'positive ones. Flipping it moves ' + (v < 0n ? 'this negative number below' : 'this non-negative number above') +
-        ' the other half and keeps the order inside each half.', [1]);
+        ' the other half and keeps the order inside each half.', 'flip');
     } else if (kind === 'float') {
       var x = parseFloatInput(text);
       if (x === null) return { error: 'Type a number, inf, -inf or nan.' };
@@ -322,16 +322,16 @@
       var shown = x !== x ? 'NaN' : (Object.is(x, -0) ? '-0.0' : String(x));
       push('IEEE 754 bits (big-endian)', u64be(bits), {},
         'The double <b class="bt-k">' + shown + '</b>: 1 sign bit, 11 exponent bits, 52 fraction bits. For non-negative numbers a larger ' +
-        'bit pattern means a larger value. For negative numbers it is the other way round (sign-magnitude).', []);
+        'bit pattern means a larger value. For negative numbers it is the other way round (sign-magnitude).', 'bits');
       if (x === 0 && bits !== 0n) {
         bits = 0n;
         push('-0.0 normalised to +0.0', u64be(bits), all(8, 'compare'),
           '-0.0 and +0.0 compare equal, so they must get the same key, or a lookup for 0.0 would miss a stored -0.0. ' +
-          'The price: the sign of zero does not survive encoding.', [3]);
+          'The price: the sign of zero does not survive encoding.', 'zero');
       }
       if (x !== x && bits !== CANONICAL_NAN) {
         bits = CANONICAL_NAN;
-        push('NaN made canonical', u64be(bits), all(8, 'compare'), 'Every NaN is replaced by one fixed NaN pattern, so all NaNs are equal keys.', [4]);
+        push('NaN made canonical', u64be(bits), all(8, 'compare'), 'Every NaN is replaced by one fixed NaN pattern, so all NaNs are equal keys.', 'nan');
       }
       payload = encodeF64(x);
       var neg = (bits & SIGN) !== 0n;
@@ -340,39 +340,39 @@
           ? 'Negative: invert all 64 bits. That clears the top bit (negatives sort first) and reverses the order among negatives, ' +
             'which is what sign-magnitude needs.'
           : 'Non-negative: set the top bit, so every non-negative number sorts after every negative one. The other 63 bits already ' +
-            'sort correctly.' + (x !== x ? ' The canonical NaN lands above +infinity.' : ''), [5]);
+            'sort correctly.' + (x !== x ? ' The canonical NaN lands above +infinity.' : ''), 'sign');
     } else {
       var s = textBytes(text);
       if (s.length > 12) return { error: 'At most 12 bytes, so the strip stays readable.' };
       push('raw bytes', s, {},
         'The string ' + BTViz_esc(quoted(s)) + ' as bytes' + (s.length === 0 ? ' (none at all)' : '') + '. Bytewise comparison of raw strings is ' +
-        'lexicographic order already. The trouble starts when another column follows: nothing marks where this one ends.', []);
+        'lexicographic order already. The trouble starts when another column follows: nothing marks where this one ends.', 'raw');
       var marks = {}, esc = [], n = 0;
       s.forEach(function (c) { if (c <= 1) { marks[esc.length] = 'compare'; esc.push(1); n++; } esc.push(c); });
       if (n > 0) {
         push('00 and 01 escaped', esc, marks,
           'Bytes <code>00</code> and <code>01</code> inside the data get an escape byte <code>01</code> in front (' + n + ' here), ' +
           'so they cannot be mistaken for the terminator. <code>00</code> becomes <code>01 00</code>, <code>01</code> becomes <code>01 01</code>, and ' +
-          '<code>02</code> stays <code>02</code>: the order is preserved.', [4, 5, 6, 7]);
+          '<code>02</code> stays <code>02</code>: the order is preserved.', 'escape');
       }
       payload = encodeBytes(s);
       var tm = {}; tm[payload.length - 1] = 'inserted';
       push('terminator added', payload, tm,
         'A <code>00</code> terminator ends the column. It is the smallest possible byte, so a string sorts before every longer string ' +
-        'it is a prefix of, whatever the next column contains.', [11]);
+        'it is a prefix of, whatever the next column contains.', 'term');
     }
 
     if (desc) {
       payload = invert(payload);
       push('DESC: every byte inverted', payload, all(payload.length, 'split'),
         'Descending column: invert every byte (<code>b ^ ff</code>). If a &lt; b as bytes then ~a &gt; ~b, so the order is exactly reversed.' +
-        (kind === 'text' ? ' The terminator is now <code>ff</code>: a string sorts <i>after</i> its extensions, as descending requires.' : ''), ['desc']);
+        (kind === 'text' ? ' The terminator is now <code>ff</code>: a string sorts <i>after</i> its extensions, as descending requires.' : ''), 'desc');
     }
     var withTag = [TAG_VALUE].concat(payload), tagMark = { 0: 'found' };
     push('key column = tag + payload', withTag, tagMark,
       'Finally one tag byte in front: <code>01</code> = "a value follows". A NULL is the single byte <code>02</code> (NULLS LAST) or ' +
       '<code>00</code> (NULLS FIRST). The tag is never inverted, so where NULLs go does not depend on ASC or DESC. ' +
-      'This column is ' + withTag.length + ' bytes; concatenate the columns and you have a composite key.', ['tag']);
+      'This column is ' + withTag.length + ' bytes; concatenate the columns and you have a composite key.', 'tag');
     steps[steps.length - 1].hold = 2;
     return { steps: steps, column: withTag };
   }

@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slabs and handles</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  /* Chapter-local layout only; every colour comes from the toolkit tokens. */
+  .c26-pools { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px 24px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--bt-border); }
+  .c26-pool-title { font-size: .8rem; font-weight: 650; color: var(--bt-text); margin-bottom: 6px; }
+  .c26-pools .bt-memmap { flex-direction: row; flex-wrap: wrap; gap: 8px 14px; }
+  .c26-pools .bt-mem-grid { grid-template-columns: repeat(4, var(--mc)); }
+  .c26-bits { display: flex; gap: 3px; margin: 6px 0; font: .74rem var(--bt-mono); }
+  .c26-bits > div { flex: 1 1 0; min-width: 0; padding: 3px 4px; border-radius: 4px; text-align: center; background: var(--s-bg, var(--bt-surface-2)); box-shadow: inset 0 0 0 1.25px var(--s, var(--bt-border)); }
+  .c26-bits > div.wide { flex-grow: 2.2; }
+  .c26-bits small { display: block; color: var(--bt-muted); font-size: .66rem; }
+  .c26-row { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .c26-row code { font-size: .8rem; }
+  .c26-note { color: var(--bt-muted); font-size: .78rem; margin: 4px 0 0; }
+  .c26-code { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">A B-tree of order 4 whose nodes live in <b>slabs</b>: blocks of four equal slots with one
+"free" bit per slot. Nodes name each other by a 32-bit <b>handle</b> (pool, slab, slot) and not by address.
+Insert and delete keys and watch slots fill, holes appear, and <b>vacuum</b> move nodes to give a slab back.
+Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.html">the buddy allocator</a>.</p>
+
+<div id="fig"></div>
+
+<h2>Pointer or handle?</h2>
+<div class="bt-table-wrap">
+<table class="bt-table">
+  <thead><tr><th></th><th>Pointer (<code>*Node</code>)</th><th>Handle (slab id, slot)</th></tr></thead>
+  <tbody>
+    <tr><td>Size of one link</td><td>8 bytes</td><td>4 bytes: an interior node of order 4 is 72 bytes, not 88</td></tr>
+    <tr><td>Finding the node</td><td>one load</td><td>two: the slab directory, then the slot</td></tr>
+    <tr><td>Moving a node</td><td>impossible without finding every pointer to it</td><td>copy it, rewrite the one handle in its parent (vacuum above)</td></tr>
+    <tr><td>Writing the tree to disk</td><td>addresses mean nothing after a restart</td><td>the slab can be written and reloaded byte for byte</td></tr>
+    <tr><td>Using a freed node</td><td>reads whatever is there now</td><td>caught while the slot is free; a reused slot needs a generation counter</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>In code</h2>
+<div id="fig-code"></div>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="model.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el;
+  BTViz.page({
+    title: 'Slabs and handles', chapter: 26,
+    prev: '../../25-cache-conscious-search-and-layout/viz/index.html',
+    next: '../../27-btree-vs-lsm/viz/index.html'
+  });
+
+  var fig = BTViz.figure('#fig', { title: 'B-tree nodes in two slab pools (4 slots per slab)', side: true, legend: [
+    { token: 'pointer', label: 'used slot' }, 'free', { token: 'node-active', label: 'node / slot being visited' },
+    { token: 'key-inserted', label: 'slot just allocated, key inserted' }, { token: 'key-deleted', label: 'slot just freed' },
+    'split', { token: 'merge', label: 'merge / borrow' }] });
+
+  var view = new BTViz.TreeView(fig.stage, { minHeight: 250, ariaLabel: 'B-tree; the label above each node is its handle' });
+  var leafTitle = el('div.c26-pool-title'), intTitle = el('div.c26-pool-title');
+  var leafBox = el('div', leafTitle), intBox = el('div', intTitle);
+  fig.stage.appendChild(el('div.c26-pools', leafBox, intBox));
+  var leafMap = new BTViz.MemoryMap(leafBox, { cell: 28 }), intMap = new BTViz.MemoryMap(intBox, { cell: 28 });
+
+  var panelBody = el('div.bt-panel-body');
+  fig.side.appendChild(el('div.bt-panel', el('div.bt-panel-title', 'Handle of the node in focus'), panelBody));
+  var log = new BTViz.Log(fig.side, { title: 'Allocator events' });
+
+  function showFocus(f) {
+    panelBody.textContent = '';
+    if (!f) { panelBody.appendChild(el('p.c26-note', 'Step through an operation: the handle of the node being visited is decoded here.')); return; }
+    panelBody.append(
+      el('div.c26-row', el('b', 'Handle ' + f.name), el('code', f.hex + ' · 4 bytes')),
+      el('div.c26-bits',
+        el('div.s-compare', String(f.c), el('small', 'class · 1 bit')),
+        el('div.wide.s-active', String(f.slab), el('small', 'slab id · 23 bits')),
+        el('div.s-inserted', String(f.slot), el('small', 'slot · 8 bits'))),
+      el('p.c26-note', { html: 'Dereference: ' + (f.c ? 'interior' : 'leaf') + ' pool &rarr; directory entry ' + f.slab + ' &rarr; slot ' + f.slot + '.' + (f.moved ? ' Until this step the node was <code>' + f.moved + '</code>.' : '') }),
+      el('div.c26-row', { style: { marginTop: '8px' } }, el('b', 'As a pointer'), el('code', '0x' + f.addr.toString(16) + ' · 8 bytes')),
+      el('p.c26-note', 'An example address. It is where the node happens to be; ' + (f.moved ? 'it just changed, and a tree of pointers could not have been told.' : 'if the node moved, every copy of it would be wrong.')));
+  }
+
+  var tree, stepper;
+  stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
+    onStep: function (step, i) {
+      var s = step.state;
+      view.render(s.tree, step.highlight);
+      leafTitle.textContent = 'Leaf pool (class 0, 56-byte slots): ' + s.stats.leafMap;
+      intTitle.textContent = 'Interior pool (class 1, 72-byte slots): ' + s.stats.intMap;
+      leafMap.render(s.leaves);
+      intMap.render(s.interiors);
+      showFocus(s.focus);
+      log.sync(stepper ? stepper.steps : [], i);
+    }
+  });
+
+  var history = [];                      // steps of earlier operations stay in the log
+  function show(steps, play) {
+    history = history.concat(steps.filter(function (s) { return s.log; }).map(function (s) { return { caption: '', state: s.state, log: s.log, hidden: true }; }));
+    stepper.setSteps(steps, { play: !!play });
+  }
+  function build(keys) {
+    tree = new Ch26.Tree(4, 4);
+    keys.forEach(function (k) { tree.put(k); });
+    log.clear();
+  }
+  function reset() {
+    build([10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15]);
+    show(tree.idle('The chapter\'s example: keys 10 20 5 6 12 30 7 17 3 25 1 15 inserted in that order. The label above each node is its handle: <code>L0.3</code> is leaf pool, slab 0, slot 3. Four leaves fill leaf slab 0; three interior nodes use slots 0 to 2 of interior slab 0. Try <b>Put 13</b>: leaf <code>L0.1</code> is full and every leaf slot is taken.'));
+  }
+  function holes() {
+    build([10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15]);
+    for (var k = 31; k <= 60; k++) tree.put(k);
+    for (k = 1; k <= 60; k++) if (k % 5) tree.delete(k);
+    show(tree.idle('After inserting 31..60 and deleting every key that is not a multiple of 5: 12 keys are left, but the nodes are scattered over ' + tree.leaves.slabCount + ' leaf slabs and ' + tree.interiors.slabCount +
+      ' interior slabs. Deletes merged nodes and freed their slots, which left holes. Press <b>Vacuum</b>.'));
+  }
+
+  var input = el('input.bt-input#key', { type: 'number', min: 0, max: 999, 'aria-label': 'Key', placeholder: 'key', style: { width: '5.5em' } });
+  var rand = BTViz.rng(26);
+  function key() { var v = input.value === '' ? rand.int(1, 99) : Math.max(0, Math.min(999, Math.floor(+input.value))); input.value = ''; return v; }
+  function guard() {
+    if (tree.leaves.live + tree.interiors.live < 56) return true;
+    show(tree.idle('This demo stops at 56 nodes so that the picture stays readable. Delete some keys or press Reset.'));
+    return false;
+  }
+  fig.toolbar.append(
+    input,
+    el('button.bt-btn.bt-primary#put', { type: 'button', onclick: function () { if (guard()) show(tree.put(key()), true); } }, 'Put'),
+    el('button.bt-btn#del', { type: 'button', onclick: function () {
+      var v = input.value === '' ? (function () { var ks = []; (function walk(n) { if (!n) return; ks = ks.concat(n.keys); n.children.forEach(walk); })(tree.snapshot()); return ks.length ? rand.pick(ks) : 1; })() : key();
+      input.value = '';
+      show(tree.delete(v), true);
+    } }, 'Delete'),
+    el('span.bt-toolbar-sep'),
+    el('button.bt-btn#vacuum', { type: 'button', onclick: function () { show(tree.vacuum(), true); } }, 'Vacuum'),
+    el('button.bt-btn#holes', { type: 'button', onclick: holes }, 'Make holes'),
+    el('button.bt-btn#reset', { type: 'button', onclick: reset }, 'Reset'));
+  input.addEventListener('keydown', function (e) { if (e.key === 'Enter' && guard()) show(tree.put(key()), true); });
+  reset();
+
+  /* ---- code panels */
+  var cf = BTViz.figure('#fig-code', { title: 'The two functions the picture is made of' });
+  var grid = el('div.c26-code');
+  cf.stage.appendChild(grid);
+  BTViz.codePanel(grid, 'create', { title: 'SlabPool.create', maxHeight: 330 }).highlight({ zig: [[4, 5], 11, 12], rust: [[4, 6], 13, 14] });
+  BTViz.codePanel(grid, 'relocate', { title: 'vacuum: relocate + one handle rewrite', maxHeight: 330 }).highlight({ zig: [[4, 6], 15], rust: [[4, 7], 18] });
+
+  /* ---- self-tests: the JS model must reproduce expected_output.txt */
+  var t = new Ch26.Tree(4, 4);
+  [10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15].forEach(function (k) { t.put(k); });
+  BTViz.selfTest('section 2: tree and handles', t.dump(),
+    'I0.1 [10]\n  I0.0 [6]\n    L0.0 [1 3 5]\n    L0.3 [7]\n  I0.2 [20]\n    L0.1 [12 15 17]\n    L0.2 [25 30]\n');
+  BTViz.selfTest('section 2: slab maps', t.leaves.map() + ' | ' + t.interiors.map(), '0[####] | 0[###.]');
+  for (var k = 31; k <= 60; k++) t.put(k);
+  BTViz.selfTest('section 3: after put 31..60', [t.count, t.height, t.leaves.map(), t.interiors.map()].join(' | '),
+    '42 | 5 | 0[####] 1[####] 2[####] 3[####] 4[###.] | 0[####] 1[####] 2[####] 3[####]');
+  for (k = 1; k <= 60; k++) if (k % 5) t.delete(k);
+  BTViz.selfTest('section 3: holes', [t.count, t.height, t.leaves.map(), t.interiors.map()].join(' | '),
+    '12 | 3 | 0[##..] 1[#.#.] 2[released] 3[#.#.] 4[released] | 0[##..] 1[#...] 2[...#] 3[released]');
+  var moved = [];
+  for (;;) { var m = t.vacuum().result; if (!m) break; moved.push(m); }
+  BTViz.selfTest('section 3: vacuum passes', moved.join(' ') + ' | ' + t.leaves.map() + ' | ' + t.interiors.map(),
+    '3 1 | 0[####] 1[#.#.] 2[released] 3[released] 4[released] | 0[####] 1[released] 2[released] 3[released]');
+  BTViz.selfTest('section 3: tree after vacuum', t.dump(),
+    'I0.1 [20 40]\n  I0.0 [10]\n    L0.0 [5]\n    L0.1 [15]\n  I0.3 [30]\n    L1.0 [25]\n    L1.2 [35]\n  I0.2 [50]\n    L0.2 [45]\n    L0.3 [55 60]\n');
+})();
+</script>
+</body>
+</html>

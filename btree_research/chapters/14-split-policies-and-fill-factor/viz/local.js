@@ -48,7 +48,7 @@
     if (total > st.capacity) {
       // The imaginary page is longer than a real one: mark where a real page ends.
       cells.appendChild(el('div.c14-cap', { style: { left: (st.capacity / scale * 100) + '%' } }));
-      rootEl.appendChild(el('div.c14-cap-label', { style: { paddingLeft: 'calc(' + (st.capacity / scale * 100) + '% - 7.5em)' } }, 'page ends here ⤴ ' + st.capacity + 'B'));
+      rootEl.appendChild(el('div.c14-cap-label', { style: { width: (st.capacity / scale * 100) + '%' } }, 'a real page ends at ' + st.capacity + 'B ⤴'));
     }
     if (st.gaps) {
       var row = el('div.c14-gaps'), left = 0;

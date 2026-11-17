@@ -189,7 +189,7 @@
       this._emit('descend', 'Internal node ' + this.fmt(h) + ' holds separators only. ' + text, {
         nodes: mk(h, 'active'), edges: mk(n.children[ci], 'active'),
         keys: n.keys.slice(0, Math.min(n.keys.length, ci + 1)).map(function (kv) { return [h, kv, 'compare']; })
-      }, { lines: null });
+      }, { lines: { snippet: 'search', part: 'route' } });
       path.push({ h: h, ci: ci });
       h = n.children[ci];
     }
@@ -230,18 +230,16 @@
     for (var level = path.length - 1; level >= 0; level--) {
       var leftH = path[level].h, left = this.node(leftH);
       if (left.keys.length <= max) break;
-      var mid = left.keys.length >> 1, right, rightH, sep, hl;
+      var mid = left.keys.length >> 1, right, rightH, sep, hl, question;
       if (left.leaf) {
         this._emit('overflow', 'Leaf ' + this.fmt(leftH) + ' overflows. Split it in the middle: ' + plural(mid, 'key') + ' stay, ' + plural(left.keys.length - mid, 'key') + ' move to a new leaf.',
-          { nodes: mk(leftH, 'split'), keys: [[leftH, left.keys[mid], 'split']] }, {
-            lines: { snippet: 'splitLeaf', zig: [[5, 10]], rust: [[5, 10]] },
-            question: {
-              prompt: 'This leaf is about to split at ' + kfmt(left.keys[mid], 'split') + '. What happens to that key?',
-              choices: ['It moves up into the parent and leaves the leaf', 'A copy goes up; the key and its value stay in the new right leaf'],
-              answer: 1,
-              explain: 'Leaf split = copy-up. Values live only in leaves, so the entry cannot leave the leaf level.'
-            }
-          });
+          { nodes: mk(leftH, 'split'), keys: [[leftH, left.keys[mid], 'split']] }, { lines: { snippet: 'splitLeaf', part: 'divide' } });
+        question = {
+          prompt: 'The leaf splits at ' + kfmt(left.keys[mid], 'split') + '. What happens to that key?',
+          choices: ['It moves up into the parent and leaves the leaf', 'A copy goes up; the key and its value stay in the new right leaf'],
+          answer: 1,
+          explain: 'Leaf split = copy-up. Values live only in leaves, so the entry cannot leave the leaf level.'
+        };
         right = newLeaf();
         right.keys = left.keys.splice(mid);
         right.vals = left.vals.splice(mid);
@@ -255,15 +253,13 @@
         sep = right.keys[0];                              // COPY-UP
       } else {
         this._emit('overflow', 'Internal node ' + this.fmt(leftH) + ' overflows too (' + plural(left.keys.length, 'separator') + ', maximum ' + max + '). Split it around ' + kfmt(left.keys[mid], 'split') + '.',
-          { nodes: mk(leftH, 'split'), keys: [[leftH, left.keys[mid], 'split']] }, {
-            lines: { snippet: 'splitInternal', zig: [[5, 8]], rust: [[5, 8]] },
-            question: {
-              prompt: 'An internal node splits around ' + kfmt(left.keys[mid], 'split') + '. Is that separator copied or moved?',
-              choices: ['Copied: it stays in one half as well', 'Moved: it goes up and is in neither half'],
-              answer: 1,
-              explain: 'Internal split = push-up, exactly as in a classic B-tree. One separator per boundary is enough.'
-            }
-          });
+          { nodes: mk(leftH, 'split'), keys: [[leftH, left.keys[mid], 'split']] }, { lines: { snippet: 'splitInternal', part: 'divide' } });
+        question = {
+          prompt: 'The internal node splits around ' + kfmt(left.keys[mid], 'split') + '. Is that separator copied or moved?',
+          choices: ['Copied: it stays in one half as well', 'Moved: it goes up and is in neither half'],
+          answer: 1,
+          explain: 'Internal split = push-up, exactly as in a classic B-tree. One separator per boundary is enough.'
+        };
         right = newInternal();
         sep = left.keys[mid];                             // PUSH-UP
         right.keys = left.keys.splice(mid + 1);
@@ -278,7 +274,7 @@
       var chainNote = left.leaf ? ' The new leaf is linked in after ' + this.name(leftH) + ' (next and prev on both sides).' : '';
       hl = { nodes: {}, keys: [], arena: mk(rightH, 'inserted'), chain: left.leaf ? mk(rightH, 'inserted') : {}, links: left.leaf ? mk(leftH, 'active') : {} };
       hl.nodes[leftH] = 'split'; hl.nodes[rightH] = 'split';
-      var lines = left.leaf ? { snippet: 'splitLeaf', zig: [[12, 22]], rust: [[12, 22]] } : { snippet: 'splitInternal', zig: [[10, 11]], rust: [[10, 11]] };
+      var lines = left.leaf ? { snippet: 'splitLeaf', part: 'link' } : { snippet: 'splitInternal', part: 'pushup' };
       if (level === 0) {
         var nr = newInternal();
         nr.keys = [sep];
@@ -290,7 +286,7 @@
         if (left.leaf) hl.keys.push([rightH, sep, 'split']);
         this._emit('root-grow', this.fmt(leftH) + ' keeps its handle, the upper half goes to new node ' + this.fmt(rightH) + '. ' + how + chainNote +
           ' The node that split was the root, so a new root ' + this.name(rootH) + ' is allocated above the halves: height ' + this.height + '.', hl,
-          { lines: lines, log: { html: (left.leaf ? 'copy up ' : 'push up ') + sep + ', new root ' + this.name(rootH), state: 'split' } });
+          { lines: lines, question: question, log: { html: (left.leaf ? 'copy up ' : 'push up ') + sep + ', new root ' + this.name(rootH), state: 'split' } });
       } else {
         var parentH = path[level - 1].h, parent = this.node(parentH), pi = path[level - 1].ci;
         parent.keys.splice(pi, 0, sep);
@@ -299,7 +295,7 @@
         if (left.leaf) hl.keys.push([rightH, sep, 'split']);
         this._emit('split', this.fmt(leftH) + ' keeps its handle, the upper half goes to new node ' + this.fmt(rightH) + '. ' + how + chainNote +
           ' The parent ' + this.name(parentH) + ' now has ' + plural(parent.keys.length, 'separator') + '.', hl,
-          { lines: lines, log: { html: (left.leaf ? 'copy up ' : 'push up ') + sep + ' → ' + this.name(parentH), state: 'split' } });
+          { lines: lines, question: question, log: { html: (left.leaf ? 'copy up ' : 'push up ') + sep + ' → ' + this.name(parentH), state: 'split' } });
       }
     }
     this._emit('done', 'Done: ' + plural(this.count, 'key') + ' in ' + plural(this.live, 'node') + ', height ' + this.height + '.',
@@ -325,7 +321,7 @@
       return this._end({ removed: null, ok: false });
     }
     var sepHolder = this.separators().filter(function (s) { return s.key === key; })[0];
-    this._emit('found', 'Found ' + kfmt(key, 'deleted') + ' in leaf ' + this.fmt(leafH) + '.', { nodes: mk(leafH, 'active'), keys: [[leafH, key, 'deleted']] });
+    this._emit('found', 'Found ' + kfmt(key, 'deleted') + ' in leaf ' + this.fmt(leafH) + '.', { nodes: mk(leafH, 'active'), keys: [[leafH, key, 'deleted']] }, { lines: { snippet: 'search', part: 'leaf' } });
     var removed = leaf.vals[i];
     leaf.keys.splice(i, 1);
     leaf.vals.splice(i, 1);
@@ -335,7 +331,7 @@
       : 'No internal node was touched.') +
       (leaf.keys.length < min && path.length > 1 ? ' But the leaf now has ' + plural(leaf.keys.length, 'key') + ', below the minimum of ' + min + '.' : ''),
       { nodes: mk(leafH, leaf.keys.length < min && path.length > 1 ? 'merge' : 'active'), keys: sepHolder ? [[sepHolder.node, key, 'compare']] : [] },
-      { lines: null });
+      {});
 
     // Repair underfull nodes bottom-up.
     for (var level = path.length - 1; level > 0; level--) {
@@ -352,7 +348,7 @@
           child.vals.unshift(L.vals.pop());
           parent.keys[ci - 1] = child.keys[0];
           hl.keys.push([childH, moved, 'inserted'], [parentH, moved, 'split']);
-          this._note('borrow', 'The left sibling ' + this.name(leftH) + ' has a key to spare. Its last entry ' + kfmt(moved, 'inserted') + ' moves over, and the separator between the two leaves is overwritten with a fresh copy of ' + this.name(childH) + '\'s new first key, ' + kfmt(moved, 'split') + '.', hl, childH, leftH, 'borrowLeaf');
+          this._note('borrow', 'The left sibling ' + this.name(leftH) + ' has a key to spare. Its last entry ' + kfmt(moved, 'inserted') + ' moves over, and the separator between the two leaves is overwritten with a fresh copy of ' + this.name(childH) + '\'s new first key, ' + kfmt(moved, 'split') + '.', hl, childH, leftH, 'left');
         } else {
           var down = parent.keys[ci - 1];
           up = L.keys.pop();
@@ -373,7 +369,7 @@
           child.vals.push(R.vals.shift());
           parent.keys[ci] = R.keys[0];
           hl.keys.push([childH, moved, 'inserted'], [parentH, R.keys[0], 'split']);
-          this._note('borrow', 'The right sibling ' + this.name(rightH) + ' has a key to spare. Its first entry ' + kfmt(moved, 'inserted') + ' moves over, and the separator between the two leaves is overwritten with a copy of the sibling\'s new first key, ' + kfmt(R.keys[0], 'split') + '.', hl, childH, rightH, 'borrowLeaf');
+          this._note('borrow', 'The right sibling ' + this.name(rightH) + ' has a key to spare. Its first entry ' + kfmt(moved, 'inserted') + ' moves over, and the separator between the two leaves is overwritten with a copy of the sibling\'s new first key, ' + kfmt(R.keys[0], 'split') + '.', hl, childH, rightH, 'right');
         } else {
           var down2 = parent.keys[ci];
           up = R.keys.shift();
@@ -412,7 +408,7 @@
       path[level].h = aH;
       this._emit('merge', text + ' and its slot goes to the head of the free list. The parent ' + this.name(parentH) + ' lost a separator' +
         (parent.keys.length < min && level - 1 > 0 ? ' and is now underfull itself.' : '.'), hl,
-        { lines: a.leaf ? { snippet: 'merge', zig: [[7, 17]], rust: [[7, 17]] } : { snippet: 'merge', zig: [[19, 25]], rust: [[19, 25]] },
+        { lines: { snippet: 'merge', part: a.leaf ? 'leaf' : 'internal' },
           log: { html: 'merge ' + this.name(bH) + ' into ' + this.name(aH) + ', free ' + this.name(bH), state: 'merge' } });
     }
 
@@ -437,11 +433,11 @@
     this._emit('done', 'Done: ' + plural(this.count, 'key') + ' in ' + plural(this.live, 'node') + ', height ' + this.height + '.', {});
     return this._end({ removed: removed, ok: true });
   };
-  P._note = function (type, caption, hl, childH, siblingH, snippet) {
+  P._note = function (type, caption, hl, childH, siblingH, part) {
     hl.nodes[childH] = 'merge';
     hl.nodes[siblingH] = 'active';
     this._emit(type, caption, hl, {
-      lines: snippet ? { snippet: snippet, zig: [[7, 12]], rust: [[7, 12]] } : null,
+      lines: part ? { snippet: 'borrow', part: part } : null,
       log: { html: 'borrow from ' + this.name(siblingH), state: 'merge' }
     });
   };
@@ -460,7 +456,7 @@
     this._emit(found ? 'found' : 'not-found', found
       ? 'Found ' + kfmt(key, 'found') + ' in leaf ' + this.fmt(h) + ', next to its value. ' + plural(path.length, 'node') + ' visited: always exactly the height of the tree.'
       : K + ' is not in leaf ' + this.fmt(h) + ', so it is not in the tree' + (this.separators().some(function (s) { return s.key === key; }) ? ' — even though an internal node still shows it as a (stale) separator.' : '.'),
-      { nodes: mk(h, found ? 'found' : 'active'), keys: found ? [[h, key, 'found']] : [] }, { log: { html: found ? 'found ' + key : key + ' not found', state: found ? 'found' : null } });
+      { nodes: mk(h, found ? 'found' : 'active'), keys: found ? [[h, key, 'found']] : [] }, { lines: { snippet: 'search', part: 'leaf' }, log: { html: found ? 'found ' + key : key + ' not found', state: found ? 'found' : null } });
     return this._end({ found: found });
   };
 

@@ -30,6 +30,7 @@
 .c17-seprow { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--bt-border); }
 .c17-pending { color: var(--bt-muted); font: 1rem/30px var(--bt-mono); }
 .c17-sizes { display: flex; flex-wrap: wrap; gap: 6px 10px; font-size: .86rem; color: var(--bt-muted); min-height: 1.8em; }
+.c17-sizes .bt-chip { white-space: normal; border-radius: 8px; }
 
 /* the tree of page cards */
 .c17-tree { display: flex; flex-direction: column; gap: 4px; }
@@ -167,7 +168,7 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
   }
 
   var stepper1 = new BTViz.Stepper({
-    mount: f1.controls, caption: f1.caption, root: f1.root, steps: [], predict: true,
+    mount: f1.controls, caption: f1.caption, root: f1.root, steps: [], predict: false,
     onStep: function (step) {
       sepView.render(step.state);
       code1.highlight(step.lines || []);
@@ -227,7 +228,7 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
     el('label.bt-field', 'Page ', sizeSel), el('span.bt-toolbar-sep'), replayBtn, clearBtn);
 
   var stepper2 = new BTViz.Stepper({
-    mount: f2.controls, caption: f2.caption, root: f2.root, steps: [], predict: true, interval: 1500,
+    mount: f2.controls, caption: f2.caption, root: f2.root, steps: [], predict: false, interval: 1500,
     onStep: function (step, i) { cards.render(step.state, step.highlight); log.sync(stepper2 ? stepper2.steps : [step], i); }
   });
 

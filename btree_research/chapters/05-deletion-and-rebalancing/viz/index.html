@@ -32,13 +32,13 @@ try the left sibling first, then the right one, otherwise merge.</p>
 <h2>What to look for</h2>
 <div class="bt-table-wrap">
 <table class="bt-table">
-<thead><tr><th>Situation</th><th>Repair</th><th>Does the parent lose a key?</th></tr></thead>
+<thead><tr><th>Situation</th><th>Repair</th></tr></thead>
 <tbody>
-<tr><td>The key is in a leaf that keeps enough keys</td><td>none</td><td>no</td></tr>
-<tr><td>The key is in an interior node</td><td>overwrite it with its predecessor (largest key of the left subtree), then delete that key from its leaf</td><td>no</td></tr>
-<tr><td>A node is one key short and a direct sibling has a spare key</td><td>borrow: the separator moves down, the sibling's nearest key moves up</td><td>no, so the repair stops here</td></tr>
-<tr><td>A node is one key short and no direct sibling has a spare key</td><td>merge: node + separator + sibling become one node</td><td>yes, so the parent may be one key short now</td></tr>
-<tr><td>The root has no keys left</td><td>its only child becomes the root</td><td>the tree is one level shorter</td></tr>
+<tr><td>The key is in a leaf that keeps enough keys</td><td>None.</td></tr>
+<tr><td>The key is in an interior node</td><td>Overwrite it with its predecessor (largest key of the left subtree), then delete that key from its leaf. The parent keeps all its keys.</td></tr>
+<tr><td>A node is one key short and a direct sibling has a spare key</td><td>Borrow: the separator moves down, the sibling's nearest key moves up. The parent keeps all its keys, so the repair stops here.</td></tr>
+<tr><td>A node is one key short and no direct sibling has a spare key</td><td>Merge: node + separator + sibling become one node. The parent loses a key, so it may be one key short now.</td></tr>
+<tr><td>The root has no keys left</td><td>Its only child becomes the root: the tree is one level shorter.</td></tr>
 </tbody>
 </table>
 </div>
@@ -141,13 +141,15 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
 
   var textPre = el('pre.textform#textform');
   fig.side.append(el('div.bt-panel', el('div.bt-panel-title', 'As the programs print it'), el('div.bt-panel-body', textPre)));
-  var log = new BTViz.Log(fig.side, { title: 'Operations' });
+  var log = new BTViz.Log(fig.side, { title: 'Events so far' });
 
   var tree = null;
   var stepper = new BTViz.Stepper({
     mount: fig.controls, caption: fig.caption, root: fig.root, predict: false, // false = show the Predict checkbox, unticked
-    onStep: function (step) {
+    onStep: function (step, i) {
       view.render(step.state, step.highlight);
+      // Only what has happened up to this step, so Predict mode is not spoiled.
+      log.sync(stepper ? stepper.steps : [], i);
       code.highlight(window.CHAPTER_LINES[step.type] || []);
       textPre.textContent = (step.summary ? step.summary + '\n' : '') + renderText(step.state, step.summary ? '  ' : '');
       showFacts(step.state);
@@ -195,15 +197,9 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
     return steps;
   }
 
-  function logOp(op, key, steps) {
-    log.add(op + ' ' + key + (steps.ok ? '' : ' (no change)'), op === 'insert' ? 'inserted' : 'deleted');
-    steps.slice(1).forEach(function (s) { if (s.log) log.add('&nbsp;&nbsp;' + (s.log.html || s.log), s.log.state); });
-  }
-
   function run(op, key) {
     stepper.pause();
     var steps = decorate(op, key, tree[op](key));
-    logOp(op, key, steps);
     refreshKeyBar();
     stepper.setSteps(steps, { play: true });
   }
@@ -219,7 +215,6 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
     var preset = PRESETS[presetSel.value];
     tree = BTViz.models.BTree(+orderSel.value);
     preset.keys().forEach(function (key) { tree.insert(key, { steps: false }); });
-    log.clear();
     refreshKeyBar();
     scriptBtn.disabled = !preset.script;
     return preset;
@@ -245,7 +240,6 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
     var all = [];
     preset.script.forEach(function (key) {
       var steps = decorate('delete', key, tree.delete(key));
-      logOp('delete', key, steps);
       all = all.concat(steps);
     });
     refreshKeyBar();

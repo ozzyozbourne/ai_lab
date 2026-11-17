@@ -63,7 +63,7 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
   var fig = BTViz.figure('#fig', { title: 'B-tree nodes in two slab pools (4 slots per slab)', side: true, legend: [
     { token: 'pointer', label: 'used slot' }, 'free', { token: 'node-active', label: 'node / slot being visited' },
     { token: 'key-inserted', label: 'slot just allocated, key inserted' }, { token: 'key-deleted', label: 'slot just freed' },
-    'split', { token: 'merge', label: 'merge / borrow' }] });
+    'split', { token: 'merge', label: 'merge / borrow, nodes in the vacuum victim' }] });
 
   var view = new BTViz.TreeView(fig.stage, { minHeight: 250, ariaLabel: 'B-tree; the label above each node is its handle' });
   var leafTitle = el('div.c26-pool-title'), intTitle = el('div.c26-pool-title');
@@ -160,8 +160,8 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
   var cf = BTViz.figure('#fig-code', { title: 'The two functions the picture is made of' });
   var grid = el('div.c26-code');
   cf.stage.appendChild(grid);
-  BTViz.codePanel(grid, 'create', { title: 'SlabPool.create', maxHeight: 330 }).highlight({ zig: [[4, 5], 11, 12], rust: [[4, 6], 13, 14] });
-  BTViz.codePanel(grid, 'relocate', { title: 'vacuum: relocate + one handle rewrite', maxHeight: 330 }).highlight({ zig: [[4, 6], 15], rust: [[4, 7], 18] });
+  BTViz.codePanel(grid, 'create', { title: 'SlabPool.create', maxHeight: 330 }).highlight({ zig: [[3, 5], [10, 11]], rust: [[3, 9], [11, 13]] });
+  BTViz.codePanel(grid, 'relocate', { title: 'vacuum: relocate + one handle rewrite', maxHeight: 330 }).highlight({ zig: [[3, 5], 14], rust: [[3, 6], [16, 17]] });
 
   /* ---- self-tests: the JS model must reproduce expected_output.txt */
   var t = new Ch26.Tree(4, 4);

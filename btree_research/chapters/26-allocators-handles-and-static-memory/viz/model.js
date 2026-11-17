@@ -107,7 +107,7 @@
         label: kind + ' slab ' + id + (self.victim === id ? ' · VICTIM' : '') + ' · ' + slab.used + '/' + self.S + ' used',
         slots: slab.free.map(function (free, slot) {
           var name = (self.c ? 'I' : 'L') + id + '.' + slot;
-          var state = (marks && marks[name]) || (free ? 'free' : 'used');
+          var state = (marks && marks[name]) || (free ? 'free' : self.victim === id ? 'merge' : 'used');
           return { state: state, label: slot, title: name + ': ' + (free ? 'free (bit = 1)' : 'used (bit = 0)') };
         })
       });
@@ -214,7 +214,7 @@
     if (step) {
       var choices = [hName(h)], answer = 0;
       wrong.forEach(function (w) { choices.push(hName(w)); });
-      if (!grew) choices.push('a slot in a new slab');
+      choices.push(grew ? 'none: the pool is full, OutOfMemory' : 'a slot in a new slab');
       if (choices.length > 1) {
         // Fixed, order-independent shuffle so the right answer is not always first.
         answer = (h.slab + h.slot + choices.length) % choices.length;

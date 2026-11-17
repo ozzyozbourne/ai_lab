@@ -318,10 +318,10 @@ test "optionals, optional pointers, sentinel pointers, many-item pointers" {
         none = std.math.maxInt(u32),
         _, // non-exhaustive: any other u32 is a valid page number
         fn unwrap(p: @This()) ?u32 {
-            return if (p == .none) null else @intFromEnum(p);
+            return if (p == .none) null else @backingInt(p);
         }
     };
-    const p: PageNo = @enumFromInt(7);
+    const p: PageNo = @fromBackingInt(@intCast(7));
     try testing.expectEqual(7, p.unwrap().?);
     try testing.expectEqual(null, PageNo.none.unwrap());
 

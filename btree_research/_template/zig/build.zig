@@ -33,8 +33,10 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // `zig build test` runs the test blocks of both modules.
-    const mod_tests = b.addTest(.{ .root_module = mod });
-    const exe_tests = b.addTest(.{ .root_module = exe.root_module });
+    // `zig build test -Dtest-filter=PagePool -Dtest-filter=Pager` runs only matching tests.
+    const filters = b.option([]const []const u8, "test-filter", "Only run tests whose name contains this") orelse &.{};
+    const mod_tests = b.addTest(.{ .root_module = mod, .filters = filters });
+    const exe_tests = b.addTest(.{ .root_module = exe.root_module, .filters = filters });
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(mod_tests).step);
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);

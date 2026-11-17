@@ -3,8 +3,15 @@ const std = @import("std");
 const Io = std.Io;
 const testing = std.testing;
 
-test "std.debug.print goes to stderr, unbuffered, never fails" {
-    std.debug.print("debug: {d} {s}\n", .{ 42, "text" });
+// std.debug.print(fmt, args): stderr, unbuffered, cannot fail, no `try`. See src/main.zig.
+// Avoid it inside tests that pass: any stderr output makes `zig build test` echo the
+// test command as "failed command: ..." (the step still succeeds).
+fn debugDump(keys: []const u32) void {
+    std.debug.print("keys={any} n={d}\n", .{ keys, keys.len });
+}
+
+test "std.debug.print compiles (not called: keeps test output clean)" {
+    _ = &debugDump;
 }
 
 test "format specifiers via bufPrint" {

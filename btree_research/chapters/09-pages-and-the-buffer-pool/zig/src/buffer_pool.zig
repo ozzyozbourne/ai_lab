@@ -22,6 +22,26 @@
 //!   I3  hand < frame count
 //!   I4  every cached page id is < pager.pageCount()
 //!
+//! Errors and pins. A call that returns an error leaves the pool valid and
+//! takes no pin: after a failed `fetchPage` or `newPage` there is nothing to
+//! unpin. Pins that the CALLER already holds are the caller's to release, on
+//! the error path too, because `deinit` asserts that none is left:
+//!
+//!     const page = try pool.fetchPage(id);
+//!     errdefer pool.unpin(id, false);        // runs only if a later `try` fails
+//!     try somethingThatCanFail(page);
+//!     pool.unpin(id, true);
+//!
+//! (`defer pool.unpin(id, false)` covers both paths when the page is only
+//! read.) Without this, an I/O error deep in a tree operation would surface as
+//! an assertion failure in `deinit` instead of as the error.
+//!
+//! A storage error is not retried. In particular a dirty victim whose
+//! write-back fails stays where it is with the hand on it, so every later
+//! miss that needs to evict tries the same write again and fails the same
+//! way until the storage recovers: the pool stops rather than skip a page it
+//! could not save.
+//!
 //! Memory: `init` makes exactly three allocations (the frame slab, the frame
 //! table, the page table at full capacity). Nothing allocates after that, so
 //! fetch / unpin / flush cannot fail with OutOfMemory.
@@ -40,6 +60,109 @@ const PageId = pager_mod.PageId;
 const page_size = pager_mod.page_size;
 const invalid_page_id = pager_mod.invalid_page_id;
 
+/// page id -> frame index for the cached pages: a small hand-written hash
+/// table with open addressing and linear probing.
+///
+/// Why not `std.AutoHashMapUnmanaged`: the pool removes and inserts one entry
+/// per eviction, forever, at a fixed capacity. std's map deletes by leaving a
+/// tombstone and only clears tombstones when it grows. This table never
+/// grows, so after enough evictions no slot would be free any more and every
+/// lookup of an uncached page (every miss) would probe the whole table.
+///
+/// Deletion here is "backward shift": the entries that follow the removed one
+/// in its probe run move up to close the gap. There are no tombstones, so a
+/// probe run always ends at a truly empty slot, and with at most half the
+/// slots in use the runs stay short however long the pool lives.
+const PageTable = struct {
+    /// Length is a power of two and at least 2 * frame_count.
+    slots: []Slot,
+    len: u32 = 0,
+    /// 32 - log2(slots.len): the hash keeps the top bits of a product.
+    shift: u5,
+
+    const Slot = struct {
+        page_id: PageId = invalid_page_id, // invalid_page_id = slot is empty
+        frame: u32 = 0,
+    };
+
+    fn init(allocator: Allocator, frame_count: u32) Allocator.Error!PageTable {
+        const capacity = std.math.ceilPowerOfTwo(u32, @max(2, frame_count *| 2)) catch return error.OutOfMemory;
+        const slots = try allocator.alloc(Slot, capacity);
+        @memset(slots, .{});
+        return .{ .slots = slots, .shift = @intCast(32 - std.math.log2_int(u32, capacity)) };
+    }
+
+    fn deinit(self: *PageTable, allocator: Allocator) void {
+        allocator.free(self.slots);
+        self.* = undefined;
+    }
+
+    /// The slot where the probe run of `id` starts. Fibonacci hashing:
+    /// multiply by 2^32 / golden ratio and keep the top bits, which spreads
+    /// consecutive page ids (the common case) evenly over the table.
+    fn home(self: *const PageTable, id: PageId) u32 {
+        return (id *% 0x9E3779B9) >> self.shift;
+    }
+
+    fn mask(self: *const PageTable) u32 {
+        return @intCast(self.slots.len - 1);
+    }
+
+    fn get(self: *const PageTable, id: PageId) ?u32 {
+        var i = self.home(id);
+        while (true) : (i = (i + 1) & self.mask()) {
+            const slot = self.slots[i];
+            if (slot.page_id == id) return slot.frame;
+            if (slot.page_id == invalid_page_id) return null; // end of the run
+        }
+    }
+
+    /// Insert a page that is not in the table. Cannot fail: the pool holds at
+    /// most frame_count pages, and the table has twice as many slots.
+    fn put(self: *PageTable, id: PageId, frame: u32) void {
+        assert(id != invalid_page_id);
+        assert(self.len < self.slots.len / 2);
+        var i = self.home(id);
+        while (self.slots[i].page_id != invalid_page_id) : (i = (i + 1) & self.mask()) {
+            assert(self.slots[i].page_id != id); // no page is cached twice
+        }
+        self.slots[i] = .{ .page_id = id, .frame = frame };
+        self.len += 1;
+    }
+
+    /// Remove `id`; false if it was not there.
+    fn remove(self: *PageTable, id: PageId) bool {
+        const m = self.mask();
+        var hole = self.home(id);
+        while (self.slots[hole].page_id != id) : (hole = (hole + 1) & m) {
+            if (self.slots[hole].page_id == invalid_page_id) return false;
+        }
+        // Close the gap. An entry at j whose home lies in (hole, j] is still
+        // reachable with the hole empty and stays; any other entry of the run
+        // was pushed past the hole by a collision and moves into it, which
+        // leaves a new hole at j.
+        var j = hole;
+        while (true) {
+            j = (j + 1) & m;
+            const slot = self.slots[j];
+            if (slot.page_id == invalid_page_id) break;
+            const from_home = (j -% self.home(slot.page_id)) & m;
+            const from_hole = (j -% hole) & m;
+            if (from_home >= from_hole) {
+                self.slots[hole] = slot;
+                hole = j;
+            }
+        }
+        self.slots[hole] = .{};
+        self.len -= 1;
+        return true;
+    }
+
+    fn count(self: *const PageTable) u32 {
+        return self.len;
+    }
+};
+
 /// A pointer into the frame slab. The alignment is part of the type: frames
 /// are page-aligned, so a header struct can be laid over the start of one.
 pub const PagePtr = *align(page_size) Page;
@@ -54,7 +177,7 @@ pub const BufferPool = struct {
     /// Bookkeeping for frame f, parallel to the slab.
     frames: []Frame,
     /// page id -> frame index, for the pages currently in memory.
-    page_table: std.AutoHashMapUnmanaged(PageId, u32),
+    page_table: PageTable,
     /// The clock hand: the next frame the eviction sweep will look at.
     hand: u32 = 0,
     stats: Stats = .{},
@@ -92,16 +215,15 @@ pub const BufferPool = struct {
         const frames = try allocator.alloc(Frame, frame_count);
         errdefer allocator.free(frames);
         @memset(frames, .{});
-        var page_table: std.AutoHashMapUnmanaged(PageId, u32) = .empty;
-        errdefer page_table.deinit(allocator);
-        // Reserve room for one entry per frame now; the table never holds more.
-        try page_table.ensureTotalCapacity(allocator, frame_count);
+        // Sized now for one entry per frame; the table never holds more.
+        const page_table: PageTable = try .init(allocator, frame_count);
         return .{ .allocator = allocator, .pager = pager, .slab = slab, .frames = frames, .page_table = page_table };
     }
 
     /// Frees the memory. Does NOT flush: unwritten dirty pages are lost, as
     /// they would be in a crash. Call `flushAll` first to keep them.
-    /// A page still pinned here is a pin leak in the caller.
+    /// A page still pinned here is a pin leak in the caller, and the assert
+    /// says so. That includes error paths: see "Errors and pins" at the top.
     pub fn deinit(self: *BufferPool) void {
         assert(self.pinnedFrames() == 0);
         self.page_table.deinit(self.allocator);
@@ -111,7 +233,8 @@ pub const BufferPool = struct {
     }
 
     /// Return page `id` in memory and pin it. The pointer is valid until the
-    /// matching `unpin`. Every fetchPage needs exactly one unpin.
+    /// matching `unpin`. Every successful fetchPage needs exactly one unpin;
+    /// a failed one took no pin.
     pub fn fetchPage(self: *BufferPool, id: PageId) Error!PagePtr {
         if (id >= self.pager.pageCount()) return error.PageOutOfRange;
 
@@ -128,7 +251,11 @@ pub const BufferPool = struct {
         // Miss: find a frame, then read the page into it.
         self.stats.misses += 1;
         const f = try self.takeFrame();
-        // If the read fails the frame simply stays empty (I2 holds).
+        // If the read fails, frame f stays empty (I2 holds) and whatever page
+        // takeFrame evicted from it stays evicted. Put the hand back on f so
+        // that the next miss takes this empty frame instead of evicting a
+        // second page while one frame sits unused.
+        errdefer self.hand = f;
         try self.pager.readPage(id, self.frameBytes(f));
         self.install(f, id);
         return self.frameBytes(f);
@@ -136,10 +263,12 @@ pub const BufferPool = struct {
 
     /// Allocate a new page at the end of the file and return it pinned and
     /// zero-filled. Nothing is read: a fresh page has no content to load.
+    /// On an error the file has not grown and nothing is pinned.
     pub fn newPage(self: *BufferPool) Error!NewPage {
         // Take the frame first: if every frame is pinned we must not have
         // grown the file yet.
         const f = try self.takeFrame();
+        errdefer self.hand = f; // as in fetchPage: reuse the empty frame next
         const id = try self.pager.allocatePage();
         @memset(self.frameBytes(f), 0);
         self.install(f, id);
@@ -214,9 +343,9 @@ pub const BufferPool = struct {
     /// Record that frame `f` (empty) now holds page `id`, pinned once.
     fn install(self: *BufferPool, f: u32, id: PageId) void {
         self.frames[f] = .{ .page_id = id, .pin_count = 1, .referenced = true, .dirty = false };
-        // Cannot fail: capacity for frame_count entries was reserved in init
+        // Cannot fail: the table was sized for frame_count entries in init
         // and takeFrame removed the previous occupant's entry.
-        self.page_table.putAssumeCapacityNoClobber(id, f);
+        self.page_table.put(id, f);
     }
 
     fn flushFrame(self: *BufferPool, f: u32) Error!void {
@@ -257,6 +386,8 @@ pub const BufferPool = struct {
                 // Victim. A dirty page is the only copy of its changes: write
                 // it BEFORE dropping it. If the write fails we return with the
                 // frame untouched (still cached, still dirty), nothing lost.
+                // The hand stays on this frame, so the next sweep retries the
+                // same write: no eviction happens until it succeeds.
                 if (frame.dirty) {
                     try self.pager.writePage(frame.page_id, self.frameBytes(f));
                     self.stats.writebacks += 1;

@@ -168,8 +168,14 @@ mod tests {
         assert!(out.iter().all(|&b| b == 0));
 
         disk.power_off_after_writes(0);
-        assert_eq!(read_checked(&mut disk, 2, &mut out), Err(StorageError::PowerLoss));
-        assert_eq!(read_checked(&mut disk, 5, &mut out), Err(StorageError::PowerLoss));
+        assert_eq!(
+            read_checked(&mut disk, 2, &mut out),
+            Err(StorageError::PowerLoss)
+        );
+        assert_eq!(
+            read_checked(&mut disk, 5, &mut out),
+            Err(StorageError::PowerLoss)
+        );
         disk.crash(CrashMode::Drop);
         assert_eq!(read_checked(&mut disk, 5, &mut out), Ok(Check::Blank));
     }

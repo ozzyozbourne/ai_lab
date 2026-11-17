@@ -164,7 +164,7 @@ pub const SimDisk = struct {
         var report: CrashReport = .{};
         for (self.pending.items) |w| {
             const fate: CrashMode = switch (mode) {
-                .random => @enumFromInt(@as(u2, @intCast(self.prng.below(3)))), // 0 drop, 1 keep, 2 tear
+                .random => @fromBackingInt(@intCast(@as(u2, @intCast(self.prng.below(3))))), // 0 drop, 1 keep, 2 tear
                 else => mode,
             };
             switch (fate) {

@@ -153,7 +153,10 @@ mod tests {
             s.write_page(FileStorage::MAX_PAGES, &page),
             Err(StorageError::OutOfBounds)
         );
-        assert_eq!(s.write_page(u64::MAX, &page), Err(StorageError::OutOfBounds));
+        assert_eq!(
+            s.write_page(u64::MAX, &page),
+            Err(StorageError::OutOfBounds)
+        );
         assert_eq!(s.size(), 0);
     }
 

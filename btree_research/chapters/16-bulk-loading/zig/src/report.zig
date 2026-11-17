@@ -134,11 +134,15 @@ pub fn write(w: *Io.Writer, gpa: Allocator) !void {
         t.stats = .{}; // count only the inserts
         var rng = SplitMix64.init(1616);
         for (0..extra) |i| {
-            // Loaded keys are multiples of 10; these never are.
-            const key = rng.below(n) * 10 + 1 + rng.below(9);
+            // Loaded keys are multiples of 10; these never are. A key that
+            // was already drawn is drawn again, so that every `put` is a
+            // real insert and not an overwrite.
+            var key = rng.below(n) * 10 + 1 + rng.below(9);
+            while (t.get(key) != null) key = rng.below(n) * 10 + 1 + rng.below(9);
             try t.put(key, i);
         }
         try t.validate();
+        std.debug.assert(t.count == n + extra);
         try w.print("{d:>4}% / {d:>3}%     {d:>12}{d:>8}{d:>13}{d:>13}\n", .{
             fill[0], fill[1], before, t.stats.splits, t.stats.page_writes, t.shape().pages(),
         });

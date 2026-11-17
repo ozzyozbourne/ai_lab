@@ -208,8 +208,7 @@ full leaf. At 1000 inserts the numbers are those of section 3 of the program out
       var t = Ch16.bulkLoad(16, bigEntries, { leafFill: f[0], innerFill: f[1] });
       var b = t.shape().pages;
       t.stats = { writes: 0, reads: 0, splits: 0 };
-      var rng = Ch16.SplitMix64(1616);            // same stream as the Zig and Rust programs
-      for (var j = 0; j < count; j++) { var hi = rng.below(10000); t.put(hi * 10 + 1 + rng.below(9), j); }
+      Ch16.randomInserts(t, 10000, count);        // same stream as the Zig and Rust programs
       before.push(b); splits.push(t.stats.splits); grown.push(t.shape().pages);
     });
     chart.render({

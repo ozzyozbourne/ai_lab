@@ -54,6 +54,8 @@
     mount: fig.controls, caption: fig.caption, root: fig.root, interval: 1500,
     onStep: function (step) { draw(step.state); }
   });
+  C.sideLast(fig);
+  C.fixScrub(stepper);
 
   function draw(st) {
     for (var lv = 0; lv <= G.maxLevel; lv++) {

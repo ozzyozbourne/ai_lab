@@ -22,5 +22,5 @@ insert, shuffled            4     941     92   1033        70%        12058     
 == 3. 1000 random inserts after the bulk load ==
 leaf / inner fill  pages before  splits  page writes  pages after
  100% / 100%              713     566         2132         1279
-  90% /  70%              847     110         1220          957
+  90% /  70%              847     112         1224          959
   70% /  70%             1100       2         1004         1102

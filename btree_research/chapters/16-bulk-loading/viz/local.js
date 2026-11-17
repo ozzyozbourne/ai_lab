@@ -91,6 +91,27 @@
       parent.keys.splice(idx[d] + 1, 0, sep); parent.slots.splice(idx[d] + 1, 0, rightId);
     }
   };
+  Tree.prototype.get = function (key) {
+    if (this.root === NIL) return null;
+    var n = this.nodes[this.root];
+    while (!n.leaf) n = this.nodes[n.slots[childIndex(n, key)]];
+    var pos = lowerBound(n, key);
+    return pos < n.keys.length && n.keys[pos] === key ? n.slots[pos] : null;
+  };
+  /**
+   * Experiment 3 of the programs: `count` random puts of keys that are in
+   * neither the loaded set (multiples of 10) nor drawn before. Same stream as
+   * report.zig / report.rs.
+   */
+  function randomInserts(tree, n, count) {
+    var rng = SplitMix64(1616);
+    function draw() { var hi = rng.below(n); return hi * 10 + 1 + rng.below(9); }
+    for (var j = 0; j < count; j++) {
+      var key = draw();
+      while (tree.get(key) !== null) key = draw();
+      tree.put(key, j);
+    }
+  }
   Tree.prototype.shape = function () {
     var s = { height: this.height, leaves: 0, inner: 0, entries: 0, pages: 0 }, nodes = this.nodes;
     if (this.root === NIL) return s;
@@ -299,8 +320,7 @@
     [[100, 100], [90, 70], [70, 70]].forEach(function (f) {
       var b = bulkLoad(order, entries, { leafFill: f[0], innerFill: f[1] }), before = b.shape().pages;
       b.stats = { writes: 0, reads: 0, splits: 0 };
-      var rng = SplitMix64(1616);
-      for (var j = 0; j < extra; j++) { var hi = rng.below(n); b.put(hi * 10 + 1 + rng.below(9), j); }
+      randomInserts(b, n, extra);
       out += R(f[0], 4) + '% / ' + R(f[1], 3) + '%     ' + R(before, 12) + R(b.stats.splits, 8) + R(b.stats.writes, 13) + R(b.shape().pages, 13) + '\n';
     });
     return out;
@@ -569,7 +589,7 @@
 
   var api = {
     NIL: NIL, Tree: Tree, BulkLoader: BulkLoader, fillTarget: fillTarget, bulkLoad: bulkLoad, insertAll: insertAll,
-    SplitMix64: SplitMix64, report: report, handExample: handExample, dumpTree: dumpTree, leafFill: leafFill,
+    SplitMix64: SplitMix64, randomInserts: randomInserts, report: report, handExample: handExample, dumpTree: dumpTree, leafFill: leafFill,
     bulkSteps: bulkSteps, treeSnapshot: treeSnapshot, LevelView: LevelView
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

@@ -9,6 +9,11 @@
  *       turn a click anywhere on a GraphView into data coordinates, using two
  *       anchor nodes whose data coordinates are known
  *   Ch29.kv(target, rows)             small two-column table of counters
+ *   Ch29.sideLast(fig)                on narrow screens, put the figure's side
+ *       panels below the caption and step controls, so the text that narrates
+ *       the picture stays next to the picture
+ *   Ch29.fixScrub(stepper)            work-around for a toolkit quirk: a click
+ *       on the step slider during auto-play only paused (see the function)
  *
  * Colours come from the toolkit's state classes (s-found, s-compare, ...).
  */
@@ -38,7 +43,17 @@
     '.c29-kv td:last-child { text-align: right; font-family: var(--bt-mono); font-variant-numeric: tabular-nums; }',
     '.c29-layers { display: grid; gap: 8px; width: 100%; }',
     '.c29-layer-title { font-size: .78rem; font-weight: 650; color: var(--bt-muted); margin: 0 0 2px; }',
-    '.c29-plane { cursor: crosshair; }'
+    '.c29-plane { cursor: crosshair; }',
+    '.c29-probe { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); width: 100%; }',
+    '@media (min-width: 1040px) { .c29-probe { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); align-items: start; } }',
+    '.c29-probe .c29-layer-title { min-height: 2.6em; }',
+    // Narrow screens: the toolkit stacks stage, side panels, caption, controls. Dissolve the body
+    // wrapper so the side panels can be ordered after the caption and the controls.
+    '@media (max-width: 820px) {',
+    '  .bt-figure.c29-side-last { display: flex; flex-direction: column; }',
+    '  .bt-figure.c29-side-last > .bt-figure-body { display: contents; }',
+    '  .bt-figure.c29-side-last > .bt-figure-body > .bt-side { order: 1; }',
+    '}'
   ].join('\n');
   document.head.appendChild(el('style', css));
 
@@ -143,8 +158,30 @@
     host.appendChild(el('div.bt-table-wrap', el('table.bt-table.c29-kv', tb)));
   }
 
+  function sideLast(fig) { fig.root.classList.add('c29-side-last'); }
+
+  /**
+   * Toolkit quirk (assets/viz.js, Stepper._build): the step slider's handler calls pause() before it
+   * reads the slider, and pause() writes the current step back into the slider when the stepper was
+   * playing. So the first click on the slider during auto-play only paused. This chapter auto-plays
+   * after most interactions, so remember the value the reader asked for (capture phase, before the
+   * toolkit's handler) and go there afterwards if the toolkit did not. A no-op once the toolkit is fixed.
+   */
+  function fixScrub(stepper) {
+    var scrub = stepper.ui && stepper.ui.scrub, host = stepper.ui && stepper.ui.root, wanted = null;
+    if (!scrub || !host) return;
+    host.addEventListener('input', function (e) { if (e.target === scrub) wanted = +scrub.value; }, true);
+    host.addEventListener('input', function (e) {
+      if (e.target !== scrub || wanted === null) return;
+      if (stepper.index !== wanted) stepper.go(wanted, { instant: true });
+      wanted = null;
+    });
+  }
+
   Ch29.RangeBars = RangeBars;
   Ch29.subnav = subnav;
   Ch29.planeClick = planeClick;
   Ch29.kv = kv;
+  Ch29.sideLast = sideLast;
+  Ch29.fixScrub = fixScrub;
 })();

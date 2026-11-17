@@ -132,11 +132,17 @@ pub fn write(out: &mut String) -> Result<(), Error> {
         t.stats = Stats::default(); // count only the inserts
         let mut rng = SplitMix64::new(1616);
         for i in 0..extra {
-            // Loaded keys are multiples of 10; these never are.
-            let key = rng.below(n) * 10 + 1 + rng.below(9);
+            // Loaded keys are multiples of 10; these never are. A key that
+            // was already drawn is drawn again, so that every `put` is a
+            // real insert and not an overwrite.
+            let mut key = rng.below(n) * 10 + 1 + rng.below(9);
+            while t.get(key).is_some() {
+                key = rng.below(n) * 10 + 1 + rng.below(9);
+            }
             t.put(key, i)?;
         }
         assert_eq!(t.validate(), Ok(()));
+        assert_eq!(t.count as u64, n + extra);
         writeln!(
             out,
             "{:>4}% / {:>3}%     {:>12}{:>8}{:>13}{:>13}",

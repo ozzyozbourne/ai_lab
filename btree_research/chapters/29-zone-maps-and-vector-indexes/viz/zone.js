@@ -50,9 +50,19 @@
     mount: fig.controls, caption: fig.caption, root: fig.root, interval: 700,
     onStep: function (step) { draw(step.state.done, step.state.final); }
   });
+  C.sideLast(fig);
+  C.fixScrub(stepper);
 
+  /** The constant actually used: whatever was typed, rounded and clamped to 0..2299 (empty or junk counts as 0). */
+  function clampC(raw) { return Math.min(2299, Math.max(0, Math.round(+raw || 0))); }
+  /** Make both controls show the constant the filter uses, so the picture never disagrees with the box. */
+  function showC(c) {
+    if (cInput.value !== String(c)) cInput.value = c;
+    if (cSlide.value !== String(c)) cSlide.value = c;
+  }
   function currentFilter() {
-    var c = Math.min(2299, Math.max(0, Math.round(+cInput.value || 0)));
+    var c = clampC(cInput.value);
+    showC(c);
     return opSel.value === 'between' ? { op: 'between', lo: c, hi: c + 49 } : { op: opSel.value, c: c };
   }
   /** Interval of accepted values, for the shaded band (null for "!="). */
@@ -93,6 +103,7 @@
     code.highlight(filter.op === 'between' ? [7, 9, 13] : [CODE_LINE[filter.op]]);
   }
 
+  function plural(n, noun) { return n + ' ' + noun + (n === 1 ? '' : 's'); }
   function rebuild(opts) {
     zm = C.buildLayout(layoutSel.value);
     filter = currentFilter();
@@ -107,7 +118,7 @@
       var ch = result.chunks[i], v = VERDICT[ch.verdict];
       var what = ch.verdict === 'always_false' ? 'Skip the chunk: 0 rows read.' :
         ch.verdict === 'always_true' ? 'Add all ' + z.count + ' rows to the count without reading them.' :
-          'Read and compare all ' + z.count + ' rows: ' + ch.matches + ' match' + (ch.matches === 0 ? ' (the summary could not rule the chunk out, but nothing was there).' : '.');
+          'Read and compare all ' + z.count + ' rows: ' + ch.matches + (ch.matches === 1 ? ' matches' : ' match') + (ch.matches === 0 ? ' (the summary could not rule the chunk out, but nothing was there).' : '.');
       steps.push({
         caption: '<span class="bt-chip s-' + v.state + '">chunk ' + i + ': ' + v.text + '</span> ' + BTViz.esc(C.explain(filter, z)) + '. ' + what,
         state: { done: i + 1 }
@@ -121,8 +132,8 @@
       Math.ceil(Math.log2(n)) + ' tests instead of ' + n + ') would also work: that is a B+tree\'s inner node.' :
       ' All ' + n + ' summaries had to be tested, because the chunks are in no order that a search could use.';
     steps.push({
-      caption: '<b>Done:</b> ' + result.matches + ' matching rows; ' + result.skipped + ' chunks skipped, ' + result.all + ' counted whole, ' +
-        result.scanned + ' scanned, ' + result.rowsCompared + ' rows compared. ' + tail + order,
+      caption: '<b>Done:</b> ' + plural(result.matches, 'matching row') + '; ' + plural(result.skipped, 'chunk') + ' skipped, ' + result.all + ' counted whole, ' +
+        result.scanned + ' scanned, ' + plural(result.rowsCompared, 'row') + ' compared. ' + tail + order,
       state: { done: n, final: true }
     });
     stepper.setSteps(steps, { index: opts && opts.end ? steps.length - 1 : 0, instant: true, play: !!(opts && opts.play) });
@@ -152,7 +163,8 @@
   /* -------------------------------------------------------------- wiring */
   layoutSel.addEventListener('change', function () { rebuild({ play: true }); });
   opSel.addEventListener('change', function () { rebuild({ end: true }); });
-  cInput.addEventListener('change', function () { cSlide.value = cInput.value; rebuild({ end: true }); });
+  // rebuild() reads the box, clamps it and writes the clamped value back to the box and the slider.
+  cInput.addEventListener('change', function () { rebuild({ end: true }); });
   cSlide.addEventListener('input', function () { cInput.value = cSlide.value; rebuild({ end: true }); });
   runBtn.addEventListener('click', function () { rebuild({ play: true }); });
   rebuild();

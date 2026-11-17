@@ -897,3 +897,1241 @@ Strategies for duplicates (`_bt_strategy`):
 - Call out the subtle accounting point as a "gotcha" box: the split calculation must include the
   incoming item, "otherwise it is possible to find that the incoming item doesn't fit on the split
   page where it needs to go!" (README:162-164).
+
+---
+
+## 6. Suffix truncation, heap TID tiebreaker, deduplication / posting lists
+
+### 6.1 Heap TID as a tiebreaker column
+
+#### What it does
+
+Since `BTREE_VERSION 4`, the heap TID is logically the last key column of every index
+(`heapkeyspace`). Consequences:
+
+- Every leaf tuple is unique in the keyspace, so "all btree keys are unique" (the L&Y
+  requirement) holds even for non-unique indexes (README:42-49).
+- Duplicates of a user key are stored in TID order, and a specific (key, TID) has exactly one
+  correct position. This lets VACUUM-style deletion find a given entry by descent and makes
+  splits among duplicates well-defined.
+- An insertion scankey carries `scantid`; `_bt_compare` compares it after all user columns.
+
+#### Where (file:line)
+
+- Version notes: `nbtree.h:125-153`
+- `scantid` semantics: `nbtree.h:782-788`
+- TID comparison in `_bt_compare`: `N/nbtsearch.c:797-857`
+- `BTreeTupleGetHeapTID` (handles pivot / posting / plain): `nbtree.h:640-657`
+
+#### Snippet
+
+`N/nbtsearch.c:847-857` (posting list tuples compare as a TID *range*):
+
+```c
+	result = ItemPointerCompare(key->scantid, heapTid);
+	if (result <= 0 || !BTreeTupleIsPosting(itup))
+		return result;
+	else
+	{
+		result = ItemPointerCompare(key->scantid,
+									BTreeTupleGetMaxHeapTID(itup));
+		if (result > 0)
+			return 1;
+	}
+	return 0;
+```
+
+### 6.2 Suffix truncation of pivot tuples
+
+#### What it does
+
+When a **leaf** page splits, the new high key for the left page (which is then copied up as the
+separator/downlink in the parent) does not need to be a full tuple. It only needs to satisfy
+`lastleft <= highkey < firstright`. `_bt_truncate` keeps the attributes of `firstright` up to and
+including the first one that differs from `lastleft`, and drops the rest. Dropped attributes read
+as minus infinity. INCLUDE (non-key) columns are always dropped from pivots.
+
+If lastleft and firstright are equal on all user key columns, nothing can be truncated and a heap
+TID must be appended to the pivot; the code uses lastleft's (max) TID, which is the L&Y choice of
+"high key = last item on the left".
+
+Truncation is only whole-attribute (no prefix-of-a-string truncation); README:851-856 notes that
+would be a possible extension.
+
+Never done on internal page splits: separators above the leaf level are copied verbatim from the
+level below, because there must be an unbroken "seam" of identical separators at every level
+(`N/nbtinsert.c:1685-1699`).
+
+Benefits (README:871-876): smaller pivots, so higher fan-out and later internal splits; and
+less-restrictive separators.
+
+#### Where (file:line)
+
+- `_bt_truncate`: `N/nbtutils.c:691-823`
+- `_bt_keep_natts` (uses opclass comparison): `N/nbtutils.c:836-886`
+- `_bt_keep_natts_fast` (bitwise datum equality, used for split-point penalty and dedup):
+  `N/nbtutils.c:910-941`
+- Caller in split: `N/nbtinsert.c:1657-1682`; internal case `:1683-1712`
+- Caller in bulk build: `N/nbtsort.c:905-946`
+- Pivot attribute count stored in `t_tid` offset: `nbtree.h:595-611`
+- Prose: README:823-902
+- Size limit that reserves room for an appended TID: `BTMaxItemSize`, `nbtree.h:165-173`
+
+#### Snippet
+
+`N/nbtutils.c:709-718, 737-741`:
+
+```c
+	/* Determine how many attributes must be kept in truncated tuple */
+	keepnatts = _bt_keep_natts(rel, lastleft, firstright, itup_key);
+	...
+	pivot = index_truncate_tuple(itupdesc, firstright,
+								 Min(keepnatts, nkeyatts));
+	...
+	if (keepnatts <= nkeyatts)
+	{
+		BTreeTupleSetNAtts(pivot, keepnatts, false);
+		return pivot;
+	}
+```
+
+`N/nbtutils.c:853-876` (trimmed):
+
+```c
+	scankey = itup_key->scankeys;
+	keepnatts = 1;
+	for (int attnum = 1; attnum <= nkeyatts; attnum++, scankey++)
+	{
+		datum1 = index_getattr(lastleft, attnum, itupdesc, &isNull1);
+		datum2 = index_getattr(firstright, attnum, itupdesc, &isNull2);
+		if (isNull1 != isNull2)
+			break;
+		if (!isNull1 &&
+			DatumGetInt32(FunctionCall2Coll(&scankey->sk_func,
+											scankey->sk_collation,
+											datum1, datum2)) != 0)
+			break;
+		keepnatts++;
+	}
+```
+
+`N/nbtutils.c:771-778`:
+
+```c
+	/*
+	 * Lehman & Yao use lastleft as the leaf high key in all cases, but don't
+	 * consider suffix truncation.  It seems like a good idea to follow that
+	 * example in cases where no truncation takes place -- use lastleft's heap
+	 * TID.  (This is also the closest value to negative infinity that's
+	 * legally usable.)
+	 */
+	ItemPointerCopy(BTreeTupleGetMaxHeapTID(lastleft), pivotheaptid);
+```
+
+### 6.3 Deduplication and posting lists
+
+#### What it does
+
+A **posting list tuple** stores one copy of the key followed by a sorted array of heap TIDs. It
+is a purely physical compression of N equal leaf tuples: "Deduplication alters the physical
+representation of tuples without changing the logical contents of the index" (README:910-912).
+
+Key design decisions (README:904-948):
+
+- **Lazy**: a deduplication pass runs only when a leaf page is full and would otherwise split,
+  after LP_DEAD items were removed and (if applicable) bottom-up deletion was tried.
+- One pass rewrites the whole page into a temp page, merging adjacent equal tuples, then swaps it
+  in and writes one `XLOG_BTREE_DEDUP` record containing only an array of
+  `(baseoff, nitems)` intervals (`nbtree.h:852-856`), not the tuples.
+- Only safe when equality implies identical bytes for every key column
+  (`btm_allequalimage`, `_bt_allequalimage` at `N/nbtutils.c:1175`); the merge test is
+  `_bt_keep_natts_fast(...) > nkeyatts`.
+- A posting tuple is capped at `Min(BTMaxItemSize / 2, INDEX_SIZE_MASK)` bytes
+  (`N/nbtdedup.c:89`).
+- TIDs are stored uncompressed (6 bytes each) on purpose; compression would break the "same
+  size" assumption of posting list splits and slow down partial deletion (README:931-942).
+- In **unique** indexes dedup is used only to buy time for garbage collection, and only when a
+  duplicate was actually observed (README:950-988).
+- `LP_DEAD` can be set on a posting tuple only when all its TIDs are dead (README:546-548).
+  VACUUM can remove a subset of TIDs by rewriting the tuple (`_bt_update_posting`,
+  `N/nbtdedup.c:923`).
+
+**Posting list split**: inserting a (key, TID) whose TID falls *inside* the range of an existing
+posting list. Instead of growing the posting tuple, the code swaps: the new TID is placed into
+the posting list at its sorted position, the posting list's old maximum TID is pushed out, and
+that pushed-out TID becomes the tuple that is actually inserted, immediately to the right of the
+posting tuple. The posting tuple's size does not change, so page space accounting and split-point
+logic need no special case (README:990-1042). Done in the same critical section and WAL record
+as the insert (`XLOG_BTREE_INSERT_POST`), and WAL logs the *original* new tuple plus the offset;
+redo re-runs `_bt_swap_posting`.
+
+During a page split, a posting list in `firstright` is simply dropped from the new high key (it
+is "extra payload that suffix truncation will reliably truncate away", README:924-926;
+`N/nbtutils.c:720-731`).
+
+#### Where (file:line)
+
+- Posting tuple format: `nbtree.h:433-459`; accessors `nbtree.h:492-548`
+- `_bt_dedup_pass`: `N/nbtdedup.c:58-280`
+- `_bt_dedup_save_htid`: `N/nbtdedup.c:485-...`; `_bt_dedup_finish_pending`: `:556-...`
+- `_bt_form_posting`: `N/nbtdedup.c:863-911`
+- `_bt_swap_posting`: `N/nbtdedup.c:1021-1070`
+- `_bt_binsrch_posting` (find offset inside posting list): `N/nbtsearch.c:605`
+- Posting split in insert path: `N/nbtinsert.c:1169-1214`, applied at `:1297-1298`
+- Single-value strategy for dedup (leave a few tuples unmerged so a 96:4 split works well):
+  `N/nbtdedup.c:34-44, 175-198, 821-842`
+- Trigger order: `N/nbtinsert.c:2819-2826`
+- WAL redo: `btree_xlog_dedup`, `N/nbtxlog.c:454`
+
+#### Snippet
+
+`N/nbtdedup.c:151-159` (merge test, trimmed):
+
+```c
+		else if (state->deduplicate &&
+				 _bt_keep_natts_fast(rel, state->base, itup) > nkeyatts &&
+				 _bt_dedup_save_htid(state, itup))
+		{
+			/* Tuple is equal to base tuple; its TIDs were saved in state */
+		}
+```
+
+`N/nbtdedup.c:880-899` (trimmed):
+
+```c
+	if (nhtids > 1)
+		newsize = MAXALIGN(keysize +
+						   nhtids * sizeof(ItemPointerData));
+	else
+		newsize = keysize;
+	itup = palloc0(newsize);
+	memcpy(itup, base, keysize);
+	itup->t_info &= ~INDEX_SIZE_MASK;
+	itup->t_info |= newsize;
+	if (nhtids > 1)
+	{
+		BTreeTupleSetPosting(itup, nhtids, keysize);
+		memcpy(BTreeTupleGetPosting(itup), htids,
+			   sizeof(ItemPointerData) * nhtids);
+	}
+```
+
+`N/nbtdedup.c:1052-1063` (posting list split = swap):
+
+```c
+	nposting = CopyIndexTuple(oposting);
+	replacepos = (char *) BTreeTupleGetPostingN(nposting, postingoff);
+	replaceposright = (char *) BTreeTupleGetPostingN(nposting, postingoff + 1);
+	nmovebytes = (nhtids - postingoff - 1) * sizeof(ItemPointerData);
+	memmove(replaceposright, replacepos, nmovebytes);
+
+	/* Fill the gap at postingoff with TID of new item (original new TID) */
+	ItemPointerCopy(&newitem->t_tid, (ItemPointer) replacepos);
+
+	/* Now copy oposting's rightmost/max TID into new item (final new TID) */
+	ItemPointerCopy(BTreeTupleGetMaxHeapTID(oposting), &newitem->t_tid);
+```
+
+### Teaching idea (section 6)
+
+- Chapter "Separators are not keys": show that an internal key only has to *separate*. Demo with
+  a two-column index `(last_name, first_name)`: splitting between `('Smith','Zoe')` and
+  `('Stone','Al')` yields pivot `('Stone')`; and for strings mention that PostgreSQL does not
+  shorten within an attribute. Rust function `truncate(last_left, first_right) -> Pivot` with the
+  three outcomes (k attributes kept / all attributes kept / all + TID).
+- Visualization: fan-out counter before/after truncation for a wide composite key.
+- Chapter "Duplicates": first show why duplicates break naive B-trees (which page does a
+  duplicate go on? how do you find one to delete?), then introduce TID-as-last-column as the fix,
+  then posting lists as compression on top. Animation of a leaf page collapsing 30 tuples of
+  `status='shipped'` into one tuple with 30 TIDs.
+- Posting-list-split puzzle for the reader: "insert TID 15 into a tuple holding [10, 12, 20, 30]
+  without changing the tuple's size". The answer ([10, 12, 15, 20] + separate tuple for 30) is a
+  nice, small Zig example.
+
+---
+
+## 7. Deletion
+
+### 7.1 LP_DEAD hints and simple deletion
+
+#### What it does
+
+PostgreSQL indexes hold entries for all row versions; there is no synchronous delete from the
+index when a row is deleted. Garbage is removed lazily in layers.
+
+Layer 1, **LP_DEAD hints**: when an index scan follows a TID and the table reports the row is
+dead to all transactions, the executor sets `kill_prior_tuple`; the scan records the item, and
+when it leaves the page `_bt_killitems` sets the `LP_DEAD` bit in the line pointer. This is done
+under a *shared* lock and is not WAL-logged (it is a hint). Later scans skip `LP_DEAD` items
+(`N/nbtreadpage.c:249`). The unique check sets the same bit (`N/nbtinsert.c:700-707`).
+
+Safety detail: if the scan dropped its pin on the leaf, it only sets hints if the page LSN is
+unchanged since it read the page (`N/nbtutils.c:241-245`), because a TID could have been
+recycled by VACUUM and reused by an unrelated new tuple (README:474-489).
+
+Layer 2, **simple deletion**: when an insert finds its leaf page full, all `LP_DEAD` items are
+physically removed under the exclusive lock already held (`_bt_simpledel_pass`). It also checks
+"extra" nearby tuples that point into the same table blocks, since the table access method has
+to visit those blocks anyway to compute the WAL record's `snapshotConflictHorizon`.
+
+Because index scans stop "between" pages (they copy all matches off a leaf before releasing the
+lock), a marked item "can actually be deleted from the index immediately" without confusing any
+scan (README:525-527).
+
+#### Where (file:line)
+
+- README:510-554
+- `btgettuple` records killed items: `N/nbtree.c:261-276`
+- `_bt_killitems`: `N/nbtutils.c:190-390`; `ItemIdMarkDead` at `:361`; flag at `:378`
+- `ItemIdIsDead` / `ItemIdMarkDead`: `itemid.h:113, 179`
+- `_bt_delete_or_dedup_one_page`: `N/nbtinsert.c:2727-2827`
+- `_bt_simpledel_pass`: `N/nbtinsert.c:2856-...`
+- `_bt_delitems_delete_check` / `_bt_delitems_delete` (WAL `XLOG_BTREE_DELETE`):
+  `N/nbtpage.c:1523`, `:1292-1377`
+- Hot standby ignores LP_DEAD: README:736-746
+
+#### Snippet
+
+`N/nbtutils.c:347-363` (trimmed):
+
+```c
+			if (killtuple && !ItemIdIsDead(iid))
+			{
+				if (!killedsomething)
+				{
+					if (!BufferBeginSetHintBits(buf))
+						goto unlock_page;
+				}
+				/* found the item/all posting list items */
+				ItemIdMarkDead(iid);
+				killedsomething = true;
+				break;			/* out of inner search loop */
+			}
+```
+
+`N/nbtinsert.c:2756-2770` (trimmed):
+
+```c
+	for (offnum = minoff; offnum <= maxoff; offnum = OffsetNumberNext(offnum))
+	{
+		ItemId		itemId = PageGetItemId(page, offnum);
+
+		if (ItemIdIsDead(itemId))
+			deletable[ndeletable++] = offnum;
+	}
+	if (ndeletable > 0)
+	{
+		_bt_simpledel_pass(rel, buffer, heapRel, deletable, ndeletable,
+						   insertstate->itup, minoff, maxoff);
+```
+
+### 7.2 Bottom-up deletion
+
+#### What it does
+
+Targets "version churn": UPDATEs that do not change the indexed columns still need a new index
+entry per row version (when heap-only-tuple updates are not possible). Those entries are
+duplicates that soon become garbage. When a leaf is about to split and the executor passed the
+`indexUnchanged` hint (or a unique index saw a duplicate), `_bt_bottomupdel_pass` groups the
+page's duplicates, hands the candidate TIDs to the table AM, which visits a few of the most
+promising table blocks and reports which TIDs are dead; those are deleted. It is heuristic and
+may find nothing.
+
+Success criterion is deliberately generous: asks for `Max(BLCKSZ/16, newitemsz)` free space and
+returns true if at least `Max(BLCKSZ/24, newitemsz)` was freed.
+
+Order of defences before a leaf split (`N/nbtinsert.c:2766-2826`): simple deletion -> bottom-up
+deletion (if hinted) -> deduplication (if enabled and safe) -> split.
+
+#### Where (file:line)
+
+- README:556-618
+- `_bt_bottomupdel_pass`: `N/nbtdedup.c:308-423`; thresholds `:358`, `:422`
+- Trigger: `N/nbtinsert.c:2819-2821`
+
+#### Snippet
+
+`N/nbtinsert.c:2819-2826`:
+
+```c
+	if ((indexUnchanged || uniquedup) &&
+		_bt_bottomupdel_pass(rel, buffer, heapRel, insertstate->itemsz))
+		return;
+
+	/* Perform deduplication pass (when enabled and index-is-allequalimage) */
+	if (BTGetDeduplicateItems(rel) && itup_key->allequalimage)
+		_bt_dedup_pass(rel, buffer, insertstate->itup, insertstate->itemsz,
+					   (indexUnchanged || uniquedup));
+```
+
+`N/nbtdedup.c:358, 422`:
+
+```c
+	delstate.bottomupfreespace = Max(BLCKSZ / 16, newitemsz);
+	...
+	return PageGetExactFreeSpace(page) >= Max(BLCKSZ / 24, newitemsz);
+```
+
+### 7.3 VACUUM (bulk delete)
+
+#### What it does
+
+`btbulkdelete` -> `btvacuumscan` reads the index in **physical block order** (block 1 to end),
+not in key order. For each leaf page it takes a **cleanup lock** (exclusive lock + no other pins),
+calls the callback for each TID ("is this TID dead?"), and deletes dead items / rewrites posting
+lists with `_bt_delitems_vacuum`.
+
+Two concurrency problems and their solutions:
+
+1. A concurrent split can move tuples from a not-yet-visited page to a lower-numbered block the
+   scan already passed (a recycled page). Solution: **vacuum cycle ID**. Each VACUUM gets a
+   16-bit id; any split during it stamps both halves (`btpo_cycleid`,
+   `N/nbtinsert.c:1761, 1772`). If VACUUM sees a page stamped with its own id whose right link
+   points to a lower block number, it backtracks to that block (`N/nbtree.c:1581-1586`,
+   `:1751-1766`). `BTP_SPLIT_END` bounds the chase.
+2. Index scans that keep TIDs in local memory must not have those TIDs recycled under them.
+   Solution: scans that need protection keep a pin on the leaf while visiting the table; VACUUM
+   must get a cleanup lock on **every** leaf page, even ones with nothing to delete
+   (README:166-202).
+
+VACUUM also: records already-deleted-and-now-recyclable pages in the free space map
+(`N/nbtree.c:1527-1533`), retries half-dead pages (`:1542-1545`), and attempts page deletion on
+leaves it emptied (`:1720`, `:1729-1743`).
+
+#### Where (file:line)
+
+- README:166-230
+- `btbulkdelete`: `N/nbtree.c:1152-1175`; `btvacuumscan`: `:1270-1431`; `btvacuumpage`:
+  `:1445-1780`
+- Cleanup lock: `N/nbtree.c:1564-1570`; `_bt_upgradelockbufcleanup` `N/nbtpage.c:1116-1128`;
+  `LockBufferForCleanup` `src/backend/storage/buffer/bufmgr.c:6682-6699`
+- `_bt_delitems_vacuum` (WAL `XLOG_BTREE_VACUUM`): `N/nbtpage.c:1161-1272`
+- Cycle id in opaque: `nbtree.h:45-53`; `MAX_BT_CYCLE_ID`: `nbtree.h:94`
+
+#### Snippet
+
+`N/nbtree.c:1581-1586`:
+
+```c
+		if (vstate->cycleid != 0 &&
+			opaque->btpo_cycleid == vstate->cycleid &&
+			!(opaque->btpo_flags & BTP_SPLIT_END) &&
+			!P_RIGHTMOST(opaque) &&
+			opaque->btpo_next < scanblkno)
+			backtrack_to = opaque->btpo_next;
+```
+
+`bufmgr.c:6685-6691`:
+
+```
+ * Items may be deleted from a disk page only when the caller (a) holds an
+ * exclusive lock on the buffer and (b) has observed that no other backend
+ * holds a pin on the buffer.  If there is a pin, then the other backend
+ * might have a pointer into the buffer (for example, a heapscan reference
+ * to an item --- see README for more details).  It's OK if a pin is added
+ * after the cleanup starts, however; the newly-arrived backend will be
+ * unable to look at the page until we release the exclusive lock.
+```
+
+### 7.4 Page deletion: half-dead, two phases, recycling, FSM; no merging
+
+#### What it does
+
+nbtree **never merges or rebalances** partly full pages. A page is removed only when it is
+completely empty, and only by VACUUM. The stated reason (README:235-239): "Merging partly-full
+pages would allow better space reuse, but it seems impractical to move existing data items left
+or right to make this happen --- a scan moving in the opposite direction might miss the items if
+so." Moving items across page boundaries would break the property that scans rely on: "items are
+never moved across pre-existing page boundaries" (README:96-98).
+
+Restrictions (`N/nbtpage.c:1906-1908`, README:239-245, 270-277):
+
+- never the rightmost page of a level (so never the root, and height never shrinks)
+- page must be an empty leaf, not part of an incomplete split
+- the rightmost child of a parent cannot be deleted unless it is the *only* child, in which case
+  the parent is deleted with it (and so on upward): a "skinny" subtree, one page per level
+
+Two phases, each its own WAL record / atomic action:
+
+**Phase 1, `_bt_mark_page_halfdead`**: with the leaf locked, lock the parent. In the parent,
+overwrite the target's downlink value so that the pivot that used to point at the target now
+points at the target's right sibling, and delete the *next* pivot (which was the right sibling's
+own entry). Net effect: the target's key range is merged into its right sibling's, with no key
+changes needed on either sibling. Mark the leaf `BTP_HALF_DEAD`; reuse its high key slot to stash
+the "top parent" block number if a chain of internal pages is being removed. Searches that land
+on a half-dead page move right.
+
+**Phase 2, `_bt_unlink_halfdead_page`**: lock left sibling, target, right sibling (left to right),
+then metapage if the fast root must change. Set left's `btpo_next` and right's `btpo_prev` to
+bypass the target. Mark target `BTP_DELETED` and store `safexid = ReadNextFullTransactionId()`
+in the page body. The target's *own* sibling links are left intact so that a scan that was "in
+flight" to it can still escape rightward.
+
+**Recycling** is a third, separate step. The deleted page is a tombstone until no scan could
+still hold a pointer to it: `BTPageIsRecyclable` checks `GlobalVisCheckRemovableFullXid(safexid)`
+(`nbtree.h:291-319`). Only then is it put in the free space map (`RecordFreeIndexPage`), from
+where `_bt_allocbuf` hands it to a future split. PostgreSQL 14+ lets the same VACUUM try this at
+the end of its scan using an in-memory list (`_bt_pendingfsm_finalize`, README:417-424).
+`_bt_allocbuf` re-checks recyclability and uses a *conditional* lock because the FSM is only a
+hint (`N/nbtpage.c:862-885`).
+
+Lanin & Shasha's "drain technique" is the cited origin (README:386-392).
+
+#### Where (file:line)
+
+- README:232-328 (deletion), 330-360 (backward scans), 362-381 (fast root), 383-441 (FSM)
+- `_bt_pagedel`: `N/nbtpage.c:1811-2080`; eligibility test `:1906-1915`
+- `_bt_mark_page_halfdead`: `N/nbtpage.c:2100-2300`; parent surgery `:2229-2237`; flag `:2246`
+- `_bt_lock_subtree_parent` (rightmost-child rule, recursion): `N/nbtpage.c:2837-2962`
+- `_bt_unlink_halfdead_page`: `N/nbtpage.c:2327-2800`; lock order comment `:2408-2416`; link
+  updates `:2631-2637`; `safexid` `:2671-2672`; fast root `:2581-2610, 2675-2681`
+- `BTPageSetDeleted`, `BTDeletedPageData`: `nbtree.h:231-258`
+- `BTPageIsRecyclable`: `nbtree.h:291-319`
+- `_bt_pendingfsm_finalize`: `N/nbtpage.c:3019-3080`
+- `_bt_allocbuf`: `N/nbtpage.c:853-973`
+- WAL: `XLOG_BTREE_MARK_PAGE_HALFDEAD` (`N/nbtpage.c:2286`), `XLOG_BTREE_UNLINK_PAGE[_META]`
+  (`:2737-2740`), `XLOG_BTREE_REUSE_PAGE` (`:938`)
+
+#### Snippet
+
+`N/nbtpage.c:1906-1908`:
+
+```c
+		if (P_RIGHTMOST(opaque) || P_ISROOT(opaque) ||
+			P_FIRSTDATAKEY(opaque) <= PageGetMaxOffsetNumber(page) ||
+			P_INCOMPLETE_SPLIT(opaque))
+```
+
+`N/nbtpage.c:2232-2246` (phase 1, trimmed):
+
+```c
+	itemid = PageGetItemId(page, poffset);
+	itup = (IndexTuple) PageGetItem(page, itemid);
+	BTreeTupleSetDownLink(itup, topparentrightsib);
+
+	nextoffset = OffsetNumberNext(poffset);
+	PageIndexTupleDelete(page, nextoffset);
+	...
+	page = BufferGetPage(leafbuf);
+	opaque = BTPageGetOpaque(page);
+	opaque->btpo_flags |= BTP_HALF_DEAD;
+```
+
+`N/nbtpage.c:2408-2410`:
+
+```
+	 * We have to lock the pages we need to modify in the standard order:
+	 * moving right, then up.  Else we will deadlock against other writers.
+```
+
+`nbtree.h:299-316` (trimmed):
+
+```c
+	/* Recycling okay iff page is deleted and safexid is old enough */
+	opaque = BTPageGetOpaque(page);
+	if (P_ISDELETED(opaque))
+	{
+		FullTransactionId safexid = BTPageGetDeleteXid(page);
+		...
+		return GlobalVisCheckRemovableFullXid(heaprel, safexid);
+	}
+	return false;
+```
+
+README:319-325:
+
+```
+A deleted page cannot be recycled immediately, since there may be other
+processes waiting to reference it (ie, search processes that just left the
+parent, or scans moving right or left from one of the siblings).  These
+processes must be able to observe a deleted page for some time after the
+deletion operation, in order to be able to at least recover from it (they
+recover by moving right, as with concurrent page splits).
+```
+
+### Teaching idea (section 7)
+
+- Chapter "Deleting is harder than inserting". Contrast the textbook algorithm (borrow from
+  sibling / merge on underflow) with what a production engine does and why. The single sentence
+  to land: with lock-free-ish readers that sit between pages, you may add pages to the right but
+  you may not move existing items across page boundaries.
+- Four-layer diagram ("garbage pipeline"): hint bit -> simple deletion -> bottom-up deletion ->
+  VACUUM; with what lock each needs (shared / exclusive / exclusive / cleanup) and whether it is
+  WAL-logged.
+- Page-deletion animation as a state machine on one page: `LIVE(empty)` -> `HALF_DEAD` (no
+  downlink, still in sibling chain) -> `DELETED` (out of sibling chain, own links intact,
+  tombstone with safexid) -> `in FSM` -> reused as right half of a split. For each state show
+  what a concurrent forward scan, backward scan and descent do when they hit it.
+- Rust/Zig example: implement phase 1 as "redirect my parent entry to my right sibling and delete
+  my right sibling's entry" on a simple internal node array; assert the key ranges before/after.
+  The trick (key space moves right, no sibling keys change) is surprising and worth an exercise.
+- A simplified teaching implementation can use epoch-based reclamation for the tombstone step;
+  note that PostgreSQL uses transaction-id horizons for the same purpose.
+
+---
+
+## 8. Bulk loading (`nbtsort.c`)
+
+### What it does
+
+`CREATE INDEX` sorts all index tuples with tuplesort (key columns then TID), then builds the tree
+**bottom-up, left to right, in one pass**, writing each page exactly once:
+
+- One `BTPageState` per level, linked leaf -> parent -> ... Each holds the page being filled,
+  its future block number, and the page's **low key** (strict lower bound; minus infinity for the
+  first page on a level).
+- `_bt_buildadd(state, itup)`: if the current page is "full" (hard limit: item does not fit;
+  soft limit: free space below the fill-factor target and the page has at least two items), finish
+  it:
+  1. Allocate the next page on this level.
+  2. Move the last item of the old page to the new page as its first item; the old page's copy
+     becomes the old page's **high key** (on leaves, suffix-truncated against the previous item).
+  3. Insert the old page's low key, with downlink = old page's block, into the parent level by a
+     recursive `_bt_buildadd` (creating the parent level on first use).
+  4. Remember the old page's high key as the new page's low key; set sibling links; write the old
+     page out.
+- `_bt_uppershutdown`: at end of input, walk the levels bottom to top, add each level's last page
+  to its parent, write it; the top level's single page is the root; write the metapage.
+- Fill targets: leaf pages to `fillfactor` (default 90%: stop when free space
+  `< BLCKSZ*(100-ff)/100`), internal pages to 70%.
+- Deduplication happens inline while loading (posting tuples capped at about 10% of a page,
+  `N/nbtsort.c:1307`); not for unique indexes.
+- Pages bypass the buffer cache via the bulk-write facility (`smgr_bulk_write`,
+  `N/nbtsort.c:643`), which WAL-logs whole pages when required
+  (`src/backend/storage/smgr/bulk_write.c:253-273`). No per-tuple WAL, no locks, no splits.
+- Slot 1 is reserved for the high key from the start (`btps_lastoff = P_HIKEY`); if the page turns
+  out to be rightmost, `_bt_slideleft` shifts the slot array down by one.
+- Parallel builds: workers scan and sort, the leader merges and runs the same `_bt_load`
+  (`N/nbtsort.c:1399` onward; not studied in detail).
+
+### Where (file:line)
+
+- File header overview: `N/nbtsort.c:3-30`
+- `BTPageState`: `N/nbtsort.c:235-245`
+- `_bt_leafbuild`: `N/nbtsort.c:541-577`
+- `_bt_pagestate` (fill thresholds): `N/nbtsort.c:651-677`
+- `_bt_slideleft`: `N/nbtsort.c:688-706`
+- `_bt_buildadd`: `N/nbtsort.c:788-1023`; fullness test `:858-859`
+- `_bt_uppershutdown`: `N/nbtsort.c:1066-1132`
+- `_bt_load`: `N/nbtsort.c:1138-1380`
+- `BTGetTargetPageFreeSpace`: `nbtree.h:1133-1134`
+
+### Snippet
+
+`N/nbtsort.c:8-15`:
+
+```
+ * We use tuplesort.c to sort the given index tuples into order.
+ * Then we scan the index tuples in order and build the btree pages
+ * for each level.  We load source tuples into leaf-level pages.
+ * Whenever we fill a page at one level, we add a link to it to its
+ * parent level (starting a new parent level if necessary).  When
+ * done, we write out each final page on each level, adding it to
+ * its parent level.  When we have only one page on a level, it must be
+ * the root -- it can be attached to the btree metapage and we are done.
+```
+
+`N/nbtsort.c:668-671`:
+
+```c
+	if (level > 0)
+		state->btps_full = (BLCKSZ * (100 - BTREE_NONLEAF_FILLFACTOR) / 100);
+	else
+		state->btps_full = BTGetTargetPageFreeSpace(wstate->index);
+```
+
+`N/nbtsort.c:858-859`:
+
+```c
+	if (pgspc < itupsz + (isleaf ? MAXALIGN(sizeof(ItemPointerData)) : 0) ||
+		(pgspc + last_truncextra < state->btps_full && last_off > P_FIRSTKEY))
+```
+
+`N/nbtsort.c:952-969` (trimmed):
+
+```c
+		if (state->btps_next == NULL)
+			state->btps_next = _bt_pagestate(wstate, state->btps_level + 1);
+		...
+		BTreeTupleSetDownLink(state->btps_lowkey, oblkno);
+		_bt_buildadd(wstate, state->btps_next, state->btps_lowkey, 0);
+		pfree(state->btps_lowkey);
+
+		/*
+		 * Save a copy of the high key from the old page.  It is also the low
+		 * key for the new page.
+		 */
+		state->btps_lowkey = CopyIndexTuple(oitup);
+```
+
+Why not 100% full (`N/nbtsort.c:17-24`): "then *any* insertion would cause a split (and not only
+of the leaf page; the need for a split would cascade right up the tree)".
+
+### Teaching idea
+
+- Chapter "Building a tree from sorted data": the cleanest B-tree algorithm in the whole code
+  base and a good *early* chapter after page layout, because it needs no splits and no
+  concurrency. ~80 lines of Zig/Rust: `struct Level { page, low_key, next: ?*Level }` and a
+  recursive `add(level, item)`.
+- Animation: a conveyor of sorted keys filling the leftmost leaf; when it reaches 90% a new leaf
+  appears to its right and one entry pops up into the level above; periodically the level above
+  fills to 70% and pops an entry further up. Final frame: `uppershutdown` zipping the right spine
+  closed and writing the metapage.
+- Comparison experiment for the guide: N sorted inserts via top-down insert (with and without the
+  rightmost-split optimisation) vs bulk load; plot page count and average fill.
+- Point out that "low key of page i+1 == high key of page i == separator in the parent" is visible
+  directly in this code.
+
+---
+
+## 9. Range scans: sibling links, forward/backward, array keys, skip scan
+
+### 9.1 Forward and backward scans
+
+#### What it does
+
+A scan descends once (`_bt_first`), then walks the leaf level via sibling links, never touching
+internal pages again. It processes **one whole leaf page at a time**: under a shared lock,
+`_bt_readpage` evaluates the scan keys against every tuple and copies matching TIDs (expanding
+posting lists) into backend-local `so->currPos.items[]`, along with the page's `prevPage` /
+`nextPage` links as of that moment. Then the lock is dropped. Tuples are returned to the executor
+from the local array with no index lock held (README:88-104).
+
+Remembering the right link at read time matters: "if we move right to the current right-link then
+we'd re-scan any items moved by a page split" (README:99-101).
+
+Stopping: scan keys are marked "required" in a direction (`SK_BT_REQFWD` / `SK_BT_REQBKWD`); when
+a required key fails, `continuescan` is set false and `moreRight` / `moreLeft` cleared. The page
+high key is also checked so a scan can often stop without visiting the next page.
+
+Start position (`_bt_first`): the search keys are turned into an insertion scankey with
+`nextkey`/`backward` chosen by strategy (e.g. `>=` -> `nextkey=false`; `>` -> `nextkey=true`,
+`N/nbtsearch.c:1486-1502`). With no usable boundary key, `_bt_endpoint` walks down the leftmost
+or rightmost edge (`N/nbtsearch.c:2125, 2211`).
+
+Forward step: `_bt_getbuf(nextPage, BT_READ)`; skip pages with `P_IGNORE`.
+
+Backward step is harder because there is no "high key on the left" to validate against, and the
+left sibling may have split (new pages appear to *its* right, between it and us) or we may have
+been deleted. `_bt_lock_and_validate_left` implements the README's 4-step algorithm: go to the
+remembered left link; if that page's right link is not us, walk right up to 4 times looking for
+the page whose right link is us; if not found, go back to the original page, and if it is deleted
+walk right to a live page and restart from *its* left link.
+
+Pins: a scan either keeps a pin on the current leaf (blocks VACUUM's cleanup lock on that page)
+or drops it (`so->dropPin`) and relies on its MVCC snapshot plus the page-LSN check for hint
+bits. Index-only scans cannot drop the pin (README:443-472; `N/nbtree.c:423-425`).
+
+#### Where (file:line)
+
+- README:70-110, 330-360
+- `_bt_first`: `N/nbtsearch.c:884-1576`
+- `_bt_next`: `N/nbtsearch.c:1593`; `_bt_steppage`: `:1654-1731`; `_bt_readnextpage`:
+  `:1846-1964`
+- `_bt_lock_and_validate_left`: `N/nbtsearch.c:1987-2115`; the "4 tries" limit at `:2029`
+- `_bt_readpage`: `N/nbtreadpage.c:134-...`; `_bt_saveitem`: `:1033`; LP_DEAD skip: `:249, :405`
+- `BTScanPosItem`, `BTScanPosData`: `nbtree.h:955-1000`
+- `_bt_drop_lock_and_maybe_pin`: `N/nbtsearch.c:56-75`
+
+#### Snippet
+
+`N/nbtsearch.c:1715-1719`:
+
+```c
+	if (ScanDirectionIsForward(dir))
+		blkno = so->currPos.nextPage;
+	else
+		blkno = so->currPos.prevPage;
+	lastcurrblkno = so->currPos.currPage;
+```
+
+`N/nbtsearch.c:2021-2030` (trimmed):
+
+```c
+		for (;;)
+		{
+			if (likely(!P_ISDELETED(opaque) &&
+					   opaque->btpo_next == lastcurrblkno))
+			{
+				/* Found desired page, return it */
+				return buf;
+			}
+			if (P_RIGHTMOST(opaque) || ++tries > 4)
+				break;
+```
+
+README:339-345:
+
+```
+0. Remember the page we are on as the "original page".
+1. Follow the original page's left-link (we're done if this is zero).
+2. If the current page is live and its right-link matches the "original
+   page", we are done.
+3. Otherwise, move right one or more times looking for a live page whose
+   right-link matches the "original page".  If found, we are done.
+```
+
+`nbtree.h:962-970` (trimmed):
+
+```c
+typedef struct BTScanPosData
+{
+	Buffer		buf;			/* currPage buf (invalid means unpinned) */
+	/* page details as of the saved position's call to _bt_readpage */
+	BlockNumber currPage;		/* page referenced by items array */
+	BlockNumber prevPage;		/* currPage's left link */
+	BlockNumber nextPage;		/* currPage's right link */
+	XLogRecPtr	lsn;			/* currPage's LSN (when so->dropPin) */
+```
+
+### 9.2 Array keys (`IN` lists) and skip scan
+
+#### What it does
+
+Both are present in this commit.
+
+- **SAOP array keys**: `WHERE a IN (1, 5, 9)` becomes an equality scan key with an array of
+  values. The scan keeps a "current element" per array; as it reads leaf tuples in order it
+  advances the arrays to match (`_bt_advance_array_keys`). Array keys "ratchet forwards": they
+  only advance as the scan advances through the key space. If the next matching value is likely on
+  the same or next leaf page the scan just keeps reading; otherwise it ends the current
+  "primitive index scan" and starts a new descent (`so->needPrimScan`, loop in `btgettuple`).
+- **Skip scan** (comment says new in Postgres 18): for an index on `(x, y)` and `WHERE y = 4`,
+  preprocessing invents a *skip array* on `x`, logically `x = ANY(every possible x)`. The array
+  has no stored elements (`num_elems = -1`); its "current element" is taken from the index
+  itself, and it is incremented/decremented either via an opclass "skip support" routine or by
+  using sentinel states (`SK_BT_MINVAL`, `SK_BT_MAXVAL`, `SK_BT_NEXT`, `SK_BT_PRIOR`) that make
+  `_bt_first` reposition to "the first tuple > current x". Inequalities on `x` become the
+  array's `low_compare` / `high_compare`.
+
+Both reuse the same machinery: repeated descents, each one a normal `_bt_search`, chosen
+adaptively against simply continuing along the leaf level.
+
+#### Where (file:line)
+
+- `BTArrayKeyInfo`: `nbtree.h:1034-1051`; scan state flags `nbtree.h:1060-1066`
+- Flags: `nbtree.h:1104-1112`
+- Preprocessing overview incl. skip arrays: `N/nbtpreprocesskeys.c:106-137`
+- `_bt_advance_array_keys`: `N/nbtreadpage.c:2119-2180` (header comment), body from `:2180`
+- `_bt_array_increment` / `_bt_array_decrement`: `N/nbtreadpage.c:2934, 3067`
+- Primitive scan loop: `N/nbtree.c:246-288`; `_bt_start_prim_scan`: `N/nbtree.c:651-...`
+- Positioning rules with skip arrays in `_bt_first`: `N/nbtsearch.c:984-1004`
+
+#### Snippet
+
+`N/nbtpreprocesskeys.c:130-137`:
+
+```
+ * If we never generated skip array scan keys, it would be possible for "gaps"
+ * to appear that make it unsafe to mark any subsequent input scan keys
+ * (copied from scan->keyData[]) as required to continue the scan.  Prior to
+ * Postgres 18, a qual like "WHERE y = 4" always resulted in a full scan.
+ * This qual now becomes "WHERE x = ANY('{every possible x value}') and y = 4"
+ * on output.  In other words, preprocessing now adds a skip array on "x".
+ * This has the potential to be much more efficient than a full index scan
+ * (though it behaves like a full scan when there's many distinct "x" values).
+```
+
+`N/nbtree.c:246-288` (trimmed):
+
+```c
+	/* Each loop iteration performs another primitive index scan */
+	do
+	{
+		if (!BTScanPosIsValid(so->currPos))
+			res = _bt_first(scan, dir);
+		else
+			res = _bt_next(scan, dir);
+		if (res)
+			break;
+	} while (so->numArrayKeys && _bt_start_prim_scan(scan));
+```
+
+`nbtree.h:1106-1112`:
+
+```c
+#define SK_BT_SKIP		0x00040000	/* skip array on column without input = */
+
+/* SK_BT_SKIP-only flags (set and unset by array advancement) */
+#define SK_BT_MINVAL	0x00080000	/* invalid sk_argument, use low_compare */
+#define SK_BT_MAXVAL	0x00100000	/* invalid sk_argument, use high_compare */
+#define SK_BT_NEXT		0x00200000	/* positions the scan > sk_argument */
+#define SK_BT_PRIOR		0x00400000	/* positions the scan < sk_argument */
+```
+
+### Teaching idea (section 9)
+
+- Chapter "Range scans": first the easy forward iterator in Rust (`struct Cursor { page, items:
+  Vec<Tid>, next_page }`) that copies a page's matches and releases the latch; test that
+  concurrent inserts/splits to the right never cause a missed or duplicated key, and explain why
+  the saved `next_page` is the one to use.
+- Animation for backward scan: scanner on page C moving left to B; meanwhile B splits into B, B'.
+  Scanner lands on B, sees `B.next != C`, steps right to B', sees `B'.next == C`, done. A second
+  scenario where C itself was deleted.
+- "Advanced" sidebar: skip scan as "many small range scans glued together". Interactive: index on
+  `(country, city)`, query `city = 'Paris'`; highlight each re-descent to "first key > current
+  country". Slider for number of distinct `country` values shows when it degenerates into a full
+  scan.
+- Keep array-key advancement out of the core chapters; it is intricate (the function header alone
+  is ~60 lines) and not needed to understand B-trees.
+
+---
+
+## 10. WAL and crash safety
+
+### What it does
+
+General contract: every change to a shared page happens inside a critical section in this order:
+modify page(s) in shared buffers -> `MarkBufferDirty` -> build and insert one WAL record that
+*registers* each modified buffer -> stamp each page with the record's LSN -> end critical section
+-> unlock. The buffer manager will not write a dirty page to disk until WAL is flushed up to the
+page's LSN ("thou shalt write xlog before data", `bufpage.h:150-155`). An error inside a critical
+section is escalated to PANIC, so a half-applied multi-page change can never be observed after
+recovery.
+
+"A single WAL entry is effectively an atomic action --- we can redo it from the log if it fails
+to complete" (README:625-626).
+
+**Full-page images**: when a registered page is modified for the first time after a checkpoint
+(`page_lsn <= RedoRecPtr`), XLogInsert includes a full image of the page in the record instead of
+(or in addition to) the delta; this protects against torn pages. `REGBUF_STANDARD` lets it omit
+the free-space "hole" between `pd_lower` and `pd_upper`. `REGBUF_WILL_INIT` means redo rebuilds
+the page from scratch so no image is needed. This is why `_bt_split` copies the original LSN onto
+its temp left page (`N/nbtinsert.c:1586-1591`).
+
+What a **leaf split** writes (one record, `XLOG_BTREE_SPLIT_L` or `_R` depending on which side
+the new item went):
+
+| Block ref | Page | Flags | Payload |
+|---|---|---|---|
+| 0 | original / left page | `REGBUF_STANDARD` | new item (only if it went left), then the left page's new high key |
+| 1 | new right page | `REGBUF_WILL_INIT` | all of the right page's tuples (the bytes from `pd_upper` to `pd_special`) |
+| 2 | old right sibling (if any) | `REGBUF_STANDARD` | none (only its `btpo_prev` changes) |
+| 3 | child whose split this insert completes (internal splits only) | `REGBUF_STANDARD` | none (flag clear) |
+
+Main data: `xl_btree_split {level, firstrightoff, newitemoff, postingoff}`.
+
+The left page's contents are *not* logged: redo reconstructs the left half from the existing
+on-disk page by keeping items `< firstrightoff`, inserting the new item if needed, and adding the
+logged high key (`N/nbtxlog.c:303-423`). The right page is rebuilt from the logged tuples by
+`_bt_restore_page`. Redo sets `BTP_INCOMPLETE_SPLIT` on the left page (`N/nbtxlog.c:415`).
+
+Then a **second record** for the parent: `XLOG_BTREE_INSERT_UPPER` (block 0 = parent with the new
+downlink tuple, block 1 = left child to clear the incomplete-split flag; optionally block 2 =
+metapage -> `XLOG_BTREE_INSERT_META`), or another `SPLIT_L/R` if the parent splits, or
+`XLOG_BTREE_NEWROOT` for a root split (block 0 = new root `WILL_INIT` with its two tuples, block
+1 = left child, block 2 = metapage).
+
+Atomicity of multi-page operations, summarised (README:620-700):
+
+| Operation | WAL records | State if crash between records |
+|---|---|---|
+| Insert, no split | 1 | n/a |
+| Split | 1 for the level (left + right + right sibling's left link), then 1 for the parent (recursively) | right page has no downlink; left page flagged `INCOMPLETE_SPLIT`; searches work via right link; next inserter finishes it |
+| Root split | split record, then `NEWROOT` | same as above; old root is still the root per metapage, with a right sibling |
+| Page deletion | 1 for mark-half-dead (leaf + parent), then 1 per unlinked page | half-dead leaf remains; searches skip it; next VACUUM finishes |
+| Dedup pass | 1 (intervals only) | n/a |
+| LP_DEAD hint | none (hint; may ride along in a full-page image) | hint lost, harmless |
+
+Before 9.4, recovery tracked and finished incomplete splits at end of recovery; that was replaced
+by the flag + lazy completion, which also covers non-crash failures such as out-of-disk during
+the parent insert (README:694-700).
+
+Redo locking: split redo releases the three same-level buffers together "so that readers cannot
+observe inconsistencies" (`N/nbtxlog.c:444-450`), which matters for hot standby queries. Redo
+does not reproduce the parent/child lock coupling (README:712-727).
+
+Unlogged/temporary indexes still need monotonically changing page LSNs for the
+drop-pin/LP_DEAD check, so they use fake LSNs (`XLogGetFakeLSN`, e.g. `N/nbtinsert.c:1410`;
+README:484-489).
+
+### Where (file:line)
+
+- README:620-770
+- Record type list: `nbtxlog.h:27-43`
+- `xl_btree_insert`: `nbtxlog.h:79-85`; `xl_btree_split` and block reference docs:
+  `nbtxlog.h:88-161`
+- Split WAL construction: `N/nbtinsert.c:1994-2084`
+- Insert WAL construction: `N/nbtinsert.c:1330-1410`
+- New root WAL: `N/nbtinsert.c:2602-2644`
+- `btree_xlog_split`: `N/nbtxlog.c:246-451`; `_bt_restore_page`: `:35-...`;
+  `_bt_clear_incomplete_split`: `:136-155`; `btree_redo` dispatcher: `:1004`
+- FPI decision: `src/backend/access/transam/xloginsert.c:670-700` (`needs_backup = (page_lsn <=
+  RedoRecPtr)` at `:698`); hole removal `:738-756`
+- `REGBUF_*` flags: `src/include/access/xloginsert.h:32-38`
+- `MarkBufferDirty`: `src/backend/storage/buffer/bufmgr.c:3172`
+
+### Snippet
+
+`N/nbtinsert.c:2008-2017`:
+
+```c
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfBtreeSplit);
+
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+		XLogRegisterBuffer(1, rbuf, REGBUF_WILL_INIT);
+		/* Log original right sibling, since we've changed its prev-pointer */
+		if (!isrightmost)
+			XLogRegisterBuffer(2, sbuf, REGBUF_STANDARD);
+		if (!isleaf)
+			XLogRegisterBuffer(3, cbuf, REGBUF_STANDARD);
+```
+
+`N/nbtinsert.c:2063-2081` (trimmed):
+
+```c
+		XLogRegisterBufData(0, lefthighkey,
+							MAXALIGN(IndexTupleSize(lefthighkey)));
+		...
+		XLogRegisterBufData(1,
+							(char *) rightpage + ((PageHeader) rightpage)->pd_upper,
+							((PageHeader) rightpage)->pd_special - ((PageHeader) rightpage)->pd_upper);
+
+		xlinfo = newitemonleft ? XLOG_BTREE_SPLIT_L : XLOG_BTREE_SPLIT_R;
+		recptr = XLogInsert(RM_BTREE_ID, xlinfo);
+```
+
+`nbtxlog.h:153-159`:
+
+```c
+typedef struct xl_btree_split
+{
+	uint32		level;			/* tree level of page being split */
+	OffsetNumber firstrightoff; /* first origpage item on rightpage */
+	OffsetNumber newitemoff;	/* new item's offset */
+	uint16		postingoff;		/* offset inside orig posting tuple */
+} xl_btree_split;
+```
+
+`N/nbtxlog.c:414-418` (redo marks the split incomplete):
+
+```c
+		/* Fix opaque fields */
+		oopaque->btpo_flags = BTP_INCOMPLETE_SPLIT;
+		if (isleaf)
+			oopaque->btpo_flags |= BTP_LEAF;
+		oopaque->btpo_next = rightpagenumber;
+```
+
+README:633-637:
+
+```
+An insertion that causes a page split is logged as a single WAL entry for
+the changes occurring on the insertion's level --- including update of the
+right sibling's left-link --- followed by a second WAL entry for the
+insertion on the parent level (which might itself be a page split, requiring
+an additional insertion above that, etc).
+```
+
+### Teaching idea
+
+- Chapter "Surviving a crash": present the design problem as "a split touches 3-4 pages and the
+  parent; you cannot write them atomically". Then the solution in two ideas: (1) make each
+  *level's* change one logical log record; (2) make the in-between state a legal tree (the B-link
+  right link already guarantees that), and leave a flag so someone finishes the job later.
+- Teaching implementation in Rust/Zig: a tiny redo-only WAL with records
+  `Insert{page, slot, tuple}`, `Split{left, right, old_right, first_right, high_key,
+  right_tuples}`, `InsertUpper{parent, slot, tuple, child_to_unflag}`, `NewRoot{...}`; a crash
+  simulator that truncates the log at every record boundary and checks (a) all keys findable,
+  (b) a subsequent insert repairs the incomplete split.
+- Animation: timeline with two log records; a "crash here" marker that can be dragged between
+  them; the tree view shows the flagged left page and the orphan right page reachable only by the
+  right link.
+- Sidebar on full-page images / torn pages with a single picture: page half old/half new on
+  disk, repaired by the image in the first post-checkpoint record.
+
+---
+
+## 11. Concrete numbers
+
+Verified constants:
+
+| Quantity | Value | Where |
+|---|---|---|
+| Default block size `BLCKSZ` | 8 kB (choices 1,2,4,8,16,32) | `meson_options.txt:5-8` |
+| Max page size | 32 kB (15-bit `lp_off`/`lp_len`) | `bufpage.h:180-181` |
+| Leaf fill factor (default / min) | 90% / 10% | `nbtree.h:200-201` |
+| Internal page fill factor (fixed) | 70% | `nbtree.h:202` |
+| "Single value" fill factor | 96% | `nbtree.h:203` |
+| Split interval tolerance | 5% leaf, 7.5% internal | `N/nbtsplitloc.c:850-851` |
+| Max tuple size rule | 1/3 of page (3 items must fit: high key + 2) | `nbtree.h:155-173`, README:792-796 |
+| Pivot attribute count / posting TID count field | 12 bits (`BT_OFFSET_MASK 0x0FFF`) | `nbtree.h:463` |
+| Tuple size field | 13 bits (`INDEX_SIZE_MASK 0x1FFF`) | `itup.h:65` |
+| Vacuum cycle id | 16 bits, max `0xFF7F` | `nbtree.h:30, 94` |
+| Fastpath min tree height | 2 | `N/nbtinsert.c:32` |
+| Backward-scan move-right tries | 4 | `N/nbtsearch.c:2029` |
+| Posting tuple max size (dedup pass) | `Min(BTMaxItemSize/2, INDEX_SIZE_MASK)` | `N/nbtdedup.c:89` |
+| Bottom-up deletion target / success threshold | `BLCKSZ/16` / `BLCKSZ/24` (or new item size) | `N/nbtdedup.c:358, 422` |
+| Pre-v4 "getting tired" move-right probability | 0.99 | `N/nbtinsert.c:945-947, 983` |
+| Metapage block | 0 | `nbtree.h:149` |
+| Current btree version | 4 (min supported 2) | `nbtree.h:151-152` |
+
+Struct sizes **(derived)** from the definitions, assuming a typical 64-bit build with 8-byte
+MAXALIGN and the default 8 kB block:
+
+| Thing | Bytes | Basis |
+|---|---|---|
+| `PageHeaderData` (`SizeOfPageHeaderData`) | 24 | 8 (lsn) + 2+2+2+2+2+2 + 4 (`bufpage.h:184-197`) |
+| `ItemIdData` (line pointer) | 4 | 15+2+15 bits (`itemid.h:25-30`) |
+| `BTPageOpaqueData` | 16 | 4+4+4+2+2 (`nbtree.h:63-70`) |
+| `IndexTupleData` header | 8 | 6-byte TID + 2-byte `t_info` |
+| `ItemPointerData` (TID) | 6 | three 16-bit fields (`itemptr.h:36`) |
+| Usable bytes per page | 8152 | 8192 - 24 - 16 |
+| Leaf tuple, one `int4` or one `int8` key | 16 + 4 line pointer = 20 | MAXALIGN(8+4) = MAXALIGN(8+8) = 16 |
+| `BTMaxItemSize` | 2704 | MAXALIGN_DOWN((8192 - MAXALIGN(24+12) - 16)/3) - 8 |
+| `MaxTIDsPerBTreePage` | 1358 | (8192 - 24 - 16) / 6 (`nbtree.h:186-188`) |
+| `MaxIndexTuplesPerPage` | 408 | (8192 - 24) / (16 + 4) (`itup.h:182-184`) |
+
+Fan-out and height estimates **(derived, not measured)** for a single-integer-key index:
+
+- Leaf page at 100%: about 8152 / 20 = 407 tuples. At the default 90% fill used by bulk build and
+  rightmost splits (target free space = 8192 x 10% = 819 bytes): about (8152 - 819) / 20 = 366.
+- Internal page: a truncated pivot with one integer key is also 16 + 4 = 20 bytes. At the 70%
+  build/rightmost target (free space 2457 bytes): about (8152 - 2457) / 20 = 284 downlinks per
+  internal page; at 100%: about 407.
+- Freshly built tree capacity with those numbers (leaf 366, internal 284):
+
+  | Levels (incl. leaf) | Approx rows |
+  |---|---|
+  | 1 (root is a leaf) | up to ~366-407 |
+  | 2 | 284 x 366 = ~104,000 |
+  | 3 | 284^2 x 366 = ~29.5 million |
+  | 4 | 284^3 x 366 = ~8.4 billion |
+
+  So for a small fixed-width key, 3 levels cover tens of millions of rows and 4 levels cover
+  billions. Add one more page access for the metapage unless it is cached in the relcache
+  (`N/nbtpage.c:360-404`).
+- Random (non-rightmost) inserts split 50:50, so steady-state fill is lower than 90%; the source
+  cites the classic estimate: "The steady-state load factor for btrees is usually estimated at
+  70%" (`N/nbtsort.c:19-20`).
+- With deduplication, a leaf holding one distinct value stores 6 bytes per row instead of 20, so
+  low-cardinality indexes are roughly 3x smaller **(derived)**; upper bound 1358 TIDs per page.
+- Wide keys: the 1/3-page limit means at least 2 data items + high key per page, so worst-case
+  fan-out is 2. Suffix truncation exists precisely to keep internal-page fan-out high when leaf
+  tuples are wide.
+
+### Teaching idea
+
+- A "numbers" page in the guide with an interactive calculator: page size, key size, fill factor
+  -> items per leaf, fan-out, height for N rows. Make the reader predict the height for 1 billion
+  rows before revealing it.
+- Zig comptime exercise: compute `usable_bytes`, `max_item_size`, `leaf_capacity(key_len)` from
+  struct layouts and assert they match the numbers above.
+
+---
+
+## Most important insights for a learner
+
+1. **A B-tree page is a slotted page.** Sort order lives in a small slot array; tuples are
+   variable-size and unordered physically. Fan-out is "as many as fit", not a fixed order `m`.
+2. **The high key + right link are what make concurrency cheap.** Readers and writers hold one
+   page lock at a time while descending. A stale pointer is detected by comparing with the high
+   key and repaired by moving right. Splits only ever move data rightward.
+3. **A split is two atomic steps, and the intermediate state is a valid tree.** Step 1 creates
+   the right sibling (one WAL record for the level). Step 2 inserts the downlink into the parent
+   (a second record). A flag on the left page marks "step 2 pending", and any later writer
+   completes it. The same idea handles crashes, errors and concurrency.
+4. **Internal keys are separators, not copies of data.** They only need to satisfy
+   `left <= sep < right`, so they can be truncated. The first key on each internal page is minus
+   infinity; a rightmost page's high key is plus infinity.
+5. **Every key is unique because the row address is the last key column.** That one decision
+   makes duplicates well-ordered, makes separators strict, and enables posting-list compression.
+6. **Where you split matters as much as how.** 50:50 is right for random inserts, wrong for
+   sequential inserts (use ~90:10 on the rightmost page), and wrong inside a run of duplicates
+   (split at the run's edge, or 96:4 when the page is a single value).
+7. **Production B-trees do not merge on underflow.** PostgreSQL deletes only completely empty
+   pages, in two phases, and keeps the deleted page as a tombstone until no scan can still reach
+   it. The price is possible bloat; the gain is that items never move across existing page
+   boundaries, which is what lets scans run with almost no locks.
+8. **Deletion is garbage collection.** Dead entries are first *hinted* (LP_DEAD, cheap, under a
+   shared lock), then physically removed opportunistically right before a page would split, then
+   swept by VACUUM. "Try to avoid the split" is a pipeline: delete hinted items -> bottom-up
+   deletion -> deduplicate -> split.
+9. **Scans work page-at-a-time and stop "between" pages.** Copy all matches from a leaf into
+   private memory, remember its sibling links, release the lock. Forward scans are trivial;
+   backward scans need a validation loop because splits happen to the right.
+10. **Bulk loading is a different, much simpler algorithm.** Sort, then fill pages left to right,
+    one open page per level, pushing a separator up whenever a page closes. No splits at all.
+11. **Tree height is tiny.** With 8 kB pages and small keys, fan-out is in the hundreds, so 3-4
+    levels cover millions to billions of rows; the root and upper levels stay cached.
+12. **Lock ordering is the deadlock argument.** Left-to-right on a level, child-before-parent
+    going up, metapage last; never hold a lock while going left or down.
+
+## Things that are easy to get wrong
+
+- **Thinking the high key is the largest key on the page.** It is an upper *bound* and is stored
+  in slot 1, before the data items. On a leaf it may be greater than every item on the page (after
+  truncation) or equal to the last one. Rightmost pages have none, which shifts every slot index
+  by one (`P_FIRSTDATAKEY`).
+- **Off-by-one in internal-page binary search.** The search finds the first pivot `>=` key and
+  then steps *back* one; this only works because the first pivot is forced to compare as minus
+  infinity (`N/nbtsearch.c:714-715, 448-450`).
+- **Comparing a truncated pivot as if missing attributes were equal.** Missing attributes are
+  minus infinity, so a scankey with more attributes is *greater* (`N/nbtsearch.c:794-795`). A
+  search for `'foo'` must go right of a pivot `('foo', -inf)`. Backward scans treat this case
+  differently (`N/nbtsearch.c:436-446`).
+- **Truncating separators during internal page splits.** Only leaf splits create new separator
+  values; internal splits must move the existing pivot up unchanged
+  (`N/nbtinsert.c:1685-1699`).
+- **Forgetting the incoming tuple when choosing the split point**, then discovering it does not
+  fit on its half (README:162-164). Also forgetting that the first-right tuple costs space on
+  *both* sides (it becomes the left high key).
+- **Moving the left half to a new page.** The left half must stay at the original block number;
+  only the right half is new (`N/nbtinsert.c:1954-1955`). Otherwise stale downlinks and sibling
+  links break.
+- **Building the split in place.** PostgreSQL builds both halves in scratch memory and acquires
+  the new page as late as possible, so every failure before the critical section leaves the tree
+  untouched (`N/nbtinsert.c:1521-1533`).
+- **Finding the parent by key or by the remembered offset.** The stack is only a hint; the parent
+  may have split or the downlink may have shifted. Re-find by child block number and be ready to
+  move right (`N/nbtinsert.c:2348-2453`).
+- **Assuming "root" means level 0 or block 1.** Leaves are level 0; the root's block number
+  changes on every root split and is found through the metapage; searches actually start at the
+  *fast* root, which may be below the true root.
+- **Upgrading a read lock to a write lock "atomically".** nbtree unlocks and relocks, then
+  re-checks with `_bt_moveright` because the page may have split in between
+  (`N/nbtsearch.c:203-213`).
+- **Following the *current* right link after processing a leaf.** A scan must follow the right
+  link it saw when it read the page, or it will re-read items moved by a later split
+  (README:99-101).
+- **Walking left like walking right.** Moving left needs the validate-and-move-right loop and a
+  fallback for a deleted origin page (README:333-360).
+- **Reusing a deleted page immediately.** A reader may still be about to land on it. Deleted
+  pages must keep their sibling links and stay unreusable until no such reader can exist
+  (README:319-325, 386-401).
+- **Deleting the rightmost page of a level, or the rightmost child of a parent that has other
+  children.** Both are forbidden; the second would change the parent's key range
+  (README:270-277; `N/nbtpage.c:2910-2926`).
+- **Treating LP_DEAD as durable or authoritative.** It is an un-logged hint; standbys ignore it;
+  a scan that dropped its pin may only set it if the page LSN did not change (README:484-489,
+  736-746).
+- **Confusing the three kinds of "truncation" in the source**: suffix truncation of new leaf
+  high keys (`_bt_truncate`); the minus-infinity first item on internal pages (`_bt_pgaddtup`,
+  explicitly "nothing to do with suffix truncation", `N/nbtinsert.c:2672-2673`); and dropping a
+  posting list from a high key.
+- **Assuming unique indexes contain no duplicates.** Physically they often do (several row
+  versions of the same logical row); uniqueness is checked against *live* rows in the table while
+  holding the leaf's write lock (`N/nbtinsert.c:166-204`).
+- **Assuming VACUUM walks the index in key order.** It scans in physical block order and uses
+  the per-page vacuum cycle id to chase tuples moved by concurrent splits (README:204-230).
+- **Reading the classic "minimum degree t / at least half full" invariant into nbtree.** There is
+  no minimum occupancy invariant here; the only hard rule is that three items must be able to fit
+  on a page (hence the 1/3-page tuple limit).
+
+## Coverage notes and limits of this study
+
+- Read in full: `N/README`. Read closely: `nbtinsert.c` (all main functions), `nbtsearch.c`
+  (`_bt_search`, `_bt_moveright`, `_bt_binsrch`, `_bt_compare`, scan stepping),
+  `nbtsplitloc.c`, `nbtutils.c` (`_bt_truncate`, `_bt_keep_natts*`, `_bt_killitems`),
+  `nbtsort.c` (`_bt_buildadd`, `_bt_uppershutdown`), `nbtxlog.c` (`btree_xlog_split`),
+  `nbtree.h` (lines 25-830 and scan structs), `bufpage.h`, `itemid.h`.
+- Read selectively (code paths confirmed, not every line): `nbtpage.c` page deletion
+  (`_bt_unlink_halfdead_page` in particular was read through a filter that kept lock/link/WAL
+  lines and comments), `nbtdedup.c`, `nbtree.c` (`btvacuumpage`), `_bt_first`,
+  `nbtreadpage.c`, `nbtpreprocesskeys.c`, `xloginsert.c`.
+- Not studied: parallel index scan coordination, parallel build internals, `nbtvalidate.c`,
+  `nbtcompare.c`, amcheck, the table-AM side of index deletion
+  (`heap_index_delete_tuples`), predicate locking.
+- Nothing here was executed against a running PostgreSQL; all sizes and capacities in section 11
+  marked (derived) are arithmetic from the source definitions.

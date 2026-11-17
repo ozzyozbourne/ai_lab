@@ -33,8 +33,30 @@
 //! needs that). Using a page without a pin is a silent bug in Zig and a panic
 //! here.
 //!
+//! Errors and pins. A call that returns an error leaves the pool valid and
+//! takes no pin: after a failed `fetch_page` or `new_page` there is nothing to
+//! unpin. Pins that the CALLER already holds are the caller's to release, on
+//! the error path too. Rust has no `errdefer`, so a `?` between a fetch and
+//! its unpin needs care: unpin before returning the error (see
+//! `workload::run`), or wrap the pin in a guard (exercise 4).
+//!
+//! Difference from Zig: Zig's `deinit` asserts that no pin is left, so a
+//! leaked pin fails the test that leaked it. Dropping this pool checks
+//! nothing: a `Drop` that panics would turn every error returned with a pin
+//! held into a panic, and without `errdefer` that is too easy to hit. The
+//! tests assert `pinned_frames() == 0` themselves instead.
+//!
+//! A storage error is not retried. In particular a dirty victim whose
+//! write-back fails stays where it is with the hand on it, so every later
+//! miss that needs to evict tries the same write again and fails the same
+//! way until the storage recovers: the pool stops rather than skip a page it
+//! could not save.
+//!
 //! Memory: `new` allocates the frames, the frame table and the page table at
-//! full capacity. Nothing allocates after that.
+//! full capacity. Nothing allocates after that. (Zig's pool has a hand-written
+//! page table because std's hash map fills up with tombstones when it is used
+//! at a fixed capacity; Rust's `HashMap` reclaims deleted slots in place, so
+//! it is used as is.)
 //!
 //! Not thread-safe: one thread, no latches (latching starts in chapter 19).
 
@@ -109,9 +131,10 @@ impl BufferPool {
 
     // Dropping the pool does NOT flush: unwritten dirty pages are lost, as
     // they would be in a crash. Call `flush_all` first to keep them.
+    // It does not check for leaked pins either (see the top of the file).
 
-    /// Return page `id` in memory and pin it. Every fetch_page needs exactly
-    /// one unpin.
+    /// Return page `id` in memory and pin it. Every successful fetch_page
+    /// needs exactly one unpin; a failed one took no pin.
     pub fn fetch_page(&mut self, id: PageId) -> Result<&mut Page, Error> {
         if id >= self.pager.page_count() {
             return Err(Error::PageOutOfRange);
@@ -130,19 +153,32 @@ impl BufferPool {
         // Miss: find a frame, then read the page into it.
         self.stats.misses += 1;
         let f = self.take_frame()?;
-        // If the read fails the frame simply stays empty (I2 holds).
-        self.pager.read_page(id, &mut self.pages[f])?;
+        if let Err(err) = self.pager.read_page(id, &mut self.pages[f]) {
+            // Frame f stays empty (I2 holds) and whatever page take_frame
+            // evicted from it stays evicted. Put the hand back on f so that
+            // the next miss takes this empty frame instead of evicting a
+            // second page while one frame sits unused.
+            self.hand = f;
+            return Err(err);
+        }
         self.install(f, id);
         Ok(&mut self.pages[f])
     }
 
     /// Allocate a new page at the end of the file and return it pinned and
     /// zero-filled. Nothing is read: a fresh page has no content to load.
+    /// On an error the file has not grown and nothing is pinned.
     pub fn new_page(&mut self) -> Result<(PageId, &mut Page), Error> {
         // Take the frame first: if every frame is pinned we must not have
         // grown the file yet.
         let f = self.take_frame()?;
-        let id = self.pager.allocate_page()?;
+        let id = match self.pager.allocate_page() {
+            Ok(id) => id,
+            Err(err) => {
+                self.hand = f; // as in fetch_page: reuse the empty frame next
+                return Err(err);
+            }
+        };
         self.pages[f].fill(0);
         self.install(f, id);
         Ok((id, &mut self.pages[f]))
@@ -329,6 +365,8 @@ impl BufferPool {
                 // Victim. A dirty page is the only copy of its changes: write
                 // it BEFORE dropping it. If the write fails we return with the
                 // frame untouched (still cached, still dirty), nothing lost.
+                // The hand stays on this frame, so the next sweep retries the
+                // same write: no eviction happens until it succeeds.
                 if frame.dirty {
                     self.pager.write_page(frame.page_id, &self.pages[f])?;
                     self.stats.writebacks += 1;
@@ -398,6 +436,7 @@ mod tests {
         assert_eq!(pool.pager().stats.reads, 2);
         pool.validate().unwrap();
         assert_eq!(pool.fetch_page(4).err(), Some(Error::PageOutOfRange));
+        assert_eq!(pool.pinned_frames(), 0);
     }
 
     #[test]
@@ -440,6 +479,7 @@ mod tests {
         assert_eq!(pool.hand(), 0);
         assert_eq!(pool.stats.evictions, 2);
         pool.validate().unwrap();
+        assert_eq!(pool.pinned_frames(), 0);
     }
 
     #[test]
@@ -465,6 +505,7 @@ mod tests {
         pool.unpin(2, false);
         touch(&mut pool, 3, false).unwrap(); // works again
         pool.unpin(0, true);
+        assert_eq!(pool.pinned_frames(), 0);
     }
 
     #[test]
@@ -489,6 +530,7 @@ mod tests {
         // Reading page 0 again brings the modified bytes back from storage.
         assert_eq!(&pool.fetch_page(0).unwrap()[..5], b"dirty");
         pool.unpin(0, false);
+        assert_eq!(pool.pinned_frames(), 0);
     }
 
     #[test]
@@ -504,6 +546,7 @@ mod tests {
         pool.flush_page(0).unwrap(); // clean: nothing to write
         pool.flush_page(1).unwrap(); // not cached: nothing to write
         assert_eq!(pool.pager().stats.writes, 1);
+        assert_eq!(pool.pinned_frames(), 0);
     }
 
     #[test]
@@ -527,6 +570,7 @@ mod tests {
             pool.flush_all().unwrap(); // nothing dirty any more
             assert_eq!(pool.pager().stats.writes, 3);
             pool.validate().unwrap();
+            assert_eq!(pool.pinned_frames(), 0);
         }
 
         let pager = Pager::new(Box::new(FileStorage::open(&path).unwrap())).unwrap();
@@ -540,6 +584,7 @@ mod tests {
             );
             pool.unpin(i, false);
         }
+        assert_eq!(pool.pinned_frames(), 0);
     }
 
     #[test]
@@ -570,13 +615,131 @@ mod tests {
         mem.set_writes_before_failure(None); // the disk recovers
         touch(&mut pool, 1, false).unwrap();
         assert_eq!(mem.bytes()[0], 1);
+        assert_eq!(pool.pinned_frames(), 0);
     }
 
-    // Zig has two allocation tests here (init under allocation failure,
-    // "nothing allocates after init" with a FailingAllocator). Rust has no
-    // allocator parameter to inject failures through; the fixed frame budget
-    // plays that role: running out is `Err(AllFramesPinned)`, tested above.
-    // What can be checked is that the page table never grows:
+    #[test]
+    fn a_victim_that_cannot_be_written_blocks_eviction_until_the_storage_recovers() {
+        let mem = MemStorage::new();
+        let mut pool = pool_with_pages(&mem, 4, 2);
+
+        touch(&mut pool, 0, true).unwrap(); // dirty
+        touch(&mut pool, 1, false).unwrap(); // clean
+        mem.set_writes_before_failure(Some(0));
+        // The sweep reaches dirty page 0 first. Clean page 1 could be evicted
+        // without any write, but the pool does not skip a page it failed to save.
+        assert_eq!(pool.fetch_page(2).err(), Some(Error::StorageFailure));
+        assert_eq!(pool.fetch_page(3).err(), Some(Error::StorageFailure));
+        assert_eq!(cached_pages(&pool), [0, 1]);
+        assert_eq!(pool.hand(), 0);
+        assert!(pool.frames()[0].dirty);
+        pool.validate().unwrap();
+        // Pages that are cached are still served.
+        touch(&mut pool, 1, false).unwrap();
+
+        mem.set_writes_before_failure(None);
+        touch(&mut pool, 2, false).unwrap();
+        assert_eq!(cached_pages(&pool), [2, 1]);
+        assert_eq!(mem.bytes()[0], 1); // page 0 reached the storage
+        assert_eq!(pool.pinned_frames(), 0);
+    }
+
+    #[test]
+    fn a_failed_read_leaves_an_empty_frame_that_the_next_miss_reuses() {
+        let mem = MemStorage::new();
+        let mut pool = pool_with_pages(&mem, 6, 2);
+
+        touch(&mut pool, 0, true).unwrap();
+        touch(&mut pool, 1, true).unwrap();
+        mem.set_reads_before_failure(Some(0));
+        // The miss evicts page 0 (written back first), then the read fails.
+        assert_eq!(pool.fetch_page(2).err(), Some(Error::StorageFailure));
+        assert_eq!(cached_pages(&pool), [INVALID_PAGE_ID, 1]);
+        assert_eq!(pool.hand(), 0); // back on the empty frame
+        assert_eq!(pool.pinned_frames(), 0); // the failed fetch took no pin
+        assert_eq!(pool.frame_of(2), None);
+        pool.validate().unwrap();
+        assert_eq!(mem.bytes()[0], 1); // the evicted page was saved
+
+        mem.set_reads_before_failure(None);
+        touch(&mut pool, 3, false).unwrap();
+        // Page 3 went into the empty frame; page 1 was not evicted for it.
+        assert_eq!(cached_pages(&pool), [3, 1]);
+        assert_eq!(pool.stats.evictions, 1);
+        assert_eq!(pool.stats.writebacks, 1);
+        pool.validate().unwrap();
+    }
+
+    #[test]
+    fn a_failed_new_page_neither_grows_the_file_nor_wastes_a_frame() {
+        let mem = MemStorage::new();
+        let mut pool = pool_with_pages(&mem, 3, 2);
+
+        touch(&mut pool, 0, false).unwrap();
+        touch(&mut pool, 1, false).unwrap();
+        mem.set_writes_before_failure(Some(0)); // growing the file fails
+        assert_eq!(pool.new_page().err(), Some(Error::StorageFailure));
+        assert_eq!(pool.pager().page_count(), 3);
+        assert_eq!(pool.pinned_frames(), 0);
+        assert_eq!(cached_pages(&pool), [INVALID_PAGE_ID, 1]);
+        pool.validate().unwrap();
+
+        mem.set_writes_before_failure(None);
+        let (id, _) = pool.new_page().unwrap(); // the retry uses the empty frame
+        assert_eq!(id, 3);
+        assert_eq!(cached_pages(&pool), [3, 1]);
+        assert_eq!(pool.stats.evictions, 1);
+        pool.unpin(id, true);
+        assert_eq!(pool.pinned_frames(), 0);
+    }
+
+    /// The shape every multi-page operation in later chapters has: hold one
+    /// pin, then do something that can fail. Zig writes this with `defer` and
+    /// `errdefer`; here every early return unpins by hand.
+    fn copy_first_byte(pool: &mut BufferPool, from: PageId, to: PageId) -> Result<(), Error> {
+        pool.fetch_page(from)?;
+        if let Err(err) = pool.fetch_page(to) {
+            pool.unpin(from, false); // the fetch failed while `from` was pinned
+            return Err(err);
+        }
+        let (src, dst) = pool.page_pair_mut(from, to);
+        let ok = src[0] != 0xFF; // stands for any failure with both pinned
+        if ok {
+            dst[0] = src[0];
+        }
+        pool.unpin(to, ok); // dirty only if it was changed
+        pool.unpin(from, false);
+        if ok { Ok(()) } else { Err(Error::CorruptFile) }
+    }
+
+    #[test]
+    fn the_callers_pins_are_released_when_a_later_step_fails() {
+        let mem = MemStorage::new();
+        let mut pool = pool_with_pages(&mem, 4, 2);
+
+        mem.set_reads_before_failure(Some(1)); // the first fetch works, the second not
+        assert_eq!(copy_first_byte(&mut pool, 0, 1), Err(Error::StorageFailure));
+        assert_eq!(pool.pinned_frames(), 0);
+        mem.set_reads_before_failure(None);
+
+        pool.fetch_page(0).unwrap()[0] = 0xFF;
+        pool.unpin(0, true);
+        assert_eq!(copy_first_byte(&mut pool, 0, 1), Err(Error::CorruptFile));
+        assert_eq!(pool.pinned_frames(), 0);
+        let f1 = pool.frame_of(1).unwrap();
+        assert!(!pool.frames()[f1].dirty); // released clean
+
+        copy_first_byte(&mut pool, 2, 1).unwrap();
+        assert_eq!(pool.pinned_frames(), 0);
+    }
+
+    // Zig has a test of its hand-written page table here, and two allocation
+    // tests (init under allocation failure, "nothing allocates after init"
+    // with a FailingAllocator). Rust uses std's HashMap and has no allocator
+    // parameter to inject failures through; the fixed frame budget plays that
+    // role: running out is `Err(AllFramesPinned)`, tested above. What can be
+    // checked is that the page table never grows, however many pages pass
+    // through it:
     #[test]
     fn the_page_table_never_grows_after_new() {
         let mut pool = pool_with_pages(&MemStorage::new(), 64, 4);
@@ -593,6 +756,22 @@ mod tests {
     }
 
     #[test]
+    fn the_page_table_stays_small_after_the_pool_has_cycled_through_many_pages() {
+        let mut pool = pool_with_pages(&MemStorage::new(), 2000, 100);
+        let capacity = pool.page_table.capacity();
+        for _ in 0..3 {
+            for id in 0..2000 {
+                touch(&mut pool, id, false).unwrap();
+            }
+        }
+        pool.validate().unwrap();
+        // 5900 evictions later: still 100 entries in the same allocation.
+        assert_eq!(pool.page_table.len(), 100);
+        assert_eq!(pool.page_table.capacity(), capacity);
+        assert_eq!(pool.stats.evictions, 5900);
+    }
+
+    #[test]
     fn page_accessors_lend_pinned_pages_two_at_once() {
         let mut pool = pool_with_pages(&MemStorage::new(), 4, 2);
         pool.fetch_page(0).unwrap();
@@ -605,6 +784,7 @@ mod tests {
         assert_eq!((pool.page(0)[0], pool.page(1)[0]), (0, 9));
         pool.unpin(0, true);
         pool.unpin(1, true);
+        assert_eq!(pool.pinned_frames(), 0);
     }
 
     #[test]

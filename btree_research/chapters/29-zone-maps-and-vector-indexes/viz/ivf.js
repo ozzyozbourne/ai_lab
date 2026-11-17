@@ -20,8 +20,9 @@
   var A0 = { id: 'a0', x: BOX[0], y: BOX[1] }, A1 = { id: 'a1', x: BOX[2], y: BOX[3] };
   var anchors = [A0, A1].map(function (a) { return { id: a.id, x: a.x, y: a.y, r: 0.5, state: 'dim', label: null }; });
 
-  function cells(cents, states) {
-    return cents.map(function (c, i) { return { points: C.voronoiCell(cents, i, BOX), state: states ? states[i] : null }; });
+  function cells(cents, states, box) {
+    return cents.map(function (c, i) { return { points: C.voronoiCell(cents, i, box || BOX), state: states ? states[i] : null }; })
+      .filter(function (r) { return r.points.length >= 3; }); // a zoom window does not touch every cell
   }
   function centroidNodes(cents, states) {
     return cents.map(function (c, i) { return { id: 'c' + i, x: c[0], y: c[1], shape: 'diamond', r: 6, label: String(i), state: states ? states[i] : null }; });
@@ -37,7 +38,8 @@
       { token: 'key-compare', label: 'vectors being scanned' },
       { token: 'key-found', label: 'true neighbour, found' },
       { token: 'key-deleted', label: 'true neighbour, missed' },
-      { token: 'key-inserted', label: 'returned, but not a true neighbour' }
+      { token: 'key-inserted', label: 'returned, but not a true neighbour' },
+      { token: 'node', label: 'dashed square: the area shown in the zoom' }
     ]
   });
   var probeSel = el('select.bt-select#nprobe', { 'aria-label': 'nprobe' });
@@ -48,7 +50,15 @@
   var randBtn = el('button.bt-btn#random', { type: 'button' }, 'Random query');
   fig.toolbar.append(probeSel, querySel, randBtn);
 
-  var gv = new BTViz.GraphView(fig.stage, { height: 440, r: 3.2, ariaLabel: 'Points, cells and the query' });
+  // Two pictures of the same search. The whole plane shows which lists are read; but the query, its
+  // k true neighbours and the k returned points sit within a few dozen units of each other, a knot of
+  // rings at that scale. The zoom shows only that neighbourhood, with ids and the cell boundaries.
+  var probeWrap = el('div.c29-probe'), mainCell = el('div', el('p.c29-layer-title', 'All ' + S.points.length + ' points and ' + IX.nlist + ' cells')),
+    zoomTitle = el('p.c29-layer-title'), zoomCell = el('div', zoomTitle);
+  probeWrap.append(mainCell, zoomCell);
+  fig.stage.appendChild(probeWrap);
+  var gv = new BTViz.GraphView(mainCell, { height: 440, r: 3.2, ariaLabel: 'Points, cells and the query' });
+  var gvZoom = new BTViz.GraphView(zoomCell, { height: 320, r: 6, pad: 14, ariaLabel: 'Zoom on the neighbourhood of the query' });
   var ranking = el('div');
   fig.side.appendChild(el('div.bt-panel', el('div.bt-panel-title', 'Centroid ranking for this query'), el('div.bt-panel-body', ranking)));
   var code = BTViz.codePanel(fig.side, 'search', { title: 'Ivf.search' });
@@ -58,6 +68,14 @@
     mount: fig.controls, caption: fig.caption, root: fig.root, interval: 1400,
     onStep: function (step) { drawProbe(step.state); code.highlight(step.lines || []); }
   });
+  C.sideLast(fig);
+  C.fixScrub(stepper);
+
+  /** Half-width of the zoom window: wide enough for all k true neighbours, with room around them. */
+  function zoomHalf() {
+    var far = truth.length ? Math.sqrt(truth[truth.length - 1].dist) : 0;
+    return Math.min(250, Math.max(40, Math.ceil(far * 1.35) + 6));
+  }
 
   function drawProbe(st) {
     // st: {ranked: bool, probed: n lists scanned, scanning: list id or -1, final: bool}
@@ -68,21 +86,52 @@
     var inTop = {}, inTruth = {};
     top.forEach(function (h) { inTop[h.id] = true; });
     truth.forEach(function (h) { inTruth[h.id] = true; });
+    var stateOf = function (id) {
+      var l = IX.assign[id];
+      if (st.final) return inTruth[id] ? (inTop[id] ? 'found' : 'deleted') : inTop[id] ? 'inserted' : (listState[l] ? null : 'dim');
+      if (l === st.scanning) return 'compare';
+      if (inTop[id]) return 'inserted';
+      return st.ranked && !listState[l] ? 'dim' : null;
+    };
+    var marked = function (state) { return state === 'found' || state === 'deleted' || state === 'inserted'; };
     var nodes = S.points.map(function (pt, id) {
-      var l = IX.assign[id], state = null;
-      if (st.final) state = inTruth[id] ? (inTop[id] ? 'found' : 'deleted') : inTop[id] ? 'inserted' : (listState[l] ? null : 'dim');
-      else if (l === st.scanning) state = 'compare';
-      else if (inTop[id]) state = 'inserted';
-      else if (st.ranked && !listState[l]) state = 'dim';
-      return { id: 'p' + id, x: pt[0], y: pt[1], state: state, label: null, r: state && state !== 'dim' && state !== 'compare' ? (small(gv) ? 3.4 : 4.6) : (small(gv) ? 2 : 3.2) };
+      var state = stateOf(id);
+      return { id: 'p' + id, x: pt[0], y: pt[1], state: state, label: null, r: marked(state) ? (small(gv) ? 3.4 : 4.6) : (small(gv) ? 2 : 3.2) };
     });
     var cs = {};
     for (i = 0; i < IX.nlist; i++) cs[i] = listState[i] || null;
+    // The zoom window, drawn on the big picture as a dashed square.
+    var half = zoomHalf(), ZB = [query[0] - half, query[1] - half, query[0] + half, query[1] + half];
+    var cornerXY = [[ZB[0], ZB[1]], [ZB[2], ZB[1]], [ZB[2], ZB[3]], [ZB[0], ZB[3]]].map(function (c) {
+      return [Math.min(BOX[2], Math.max(BOX[0], c[0])), Math.min(BOX[3], Math.max(BOX[1], c[1]))];
+    });
+    var corners = cornerXY.map(function (c, j) { return { id: 'z' + j, x: c[0], y: c[1], r: 0.5, state: 'dim', label: null }; });
+    var frame = corners.map(function (c, j) { return { from: 'z' + j, to: 'z' + (j + 1) % 4, dashed: true }; });
     fitHeight(gv);
     gv.render({
       regions: cells(IX.centroids, cs),
-      nodes: anchors.concat(nodes, centroidNodes(IX.centroids, cs), [{ id: 'q', x: query[0], y: query[1], shape: 'cross', r: 7, label: 'q', state: 'active' }])
+      edges: frame,
+      nodes: anchors.concat(corners, nodes, centroidNodes(IX.centroids, cs), [{ id: 'q', x: query[0], y: query[1], shape: 'cross', r: 7, label: 'q', state: 'active' }])
     });
+
+    // The zoom: the same states, only the points inside the window, ids on every marked point. At the
+    // last step a line joins the query to each true neighbour: green if it was returned, red if missed.
+    var inside = function (pt) { return pt[0] >= ZB[0] && pt[0] <= ZB[2] && pt[1] >= ZB[1] && pt[1] <= ZB[3]; };
+    var znodes = [], zedges = [];
+    S.points.forEach(function (pt, id) {
+      if (!inside(pt)) return;
+      var state = stateOf(id);
+      znodes.push({ id: 'p' + id, x: pt[0], y: pt[1], state: state, label: marked(state) ? String(id) : null, r: marked(state) ? 6 : 4 });
+      if (st.final && inTruth[id]) zedges.push({ from: 'q', to: 'p' + id, state: state });
+    });
+    IX.centroids.forEach(function (c, ci) {
+      if (inside(c)) znodes.push({ id: 'c' + ci, x: c[0], y: c[1], shape: 'diamond', r: 7, label: 'list ' + ci, state: cs[ci] });
+    });
+    znodes.push({ id: 'q', x: query[0], y: query[1], shape: 'cross', r: 8, label: 'q', state: 'active' });
+    gvZoom.opts.height = Math.round(Math.min(400, Math.max(240, gvZoom.root.clientWidth)));
+    gvZoom.render({ regions: cells(IX.centroids, cs, ZB), edges: zedges, nodes: znodes });
+    zoomTitle.textContent = 'Zoom: ' + half + ' units each way around q. Dashed lines are cell boundaries' +
+      (st.final ? '; solid lines join q to its ' + truth.length + ' true neighbours.' : '.');
     var tb = el('tbody');
     search.order.forEach(function (o, rank) {
       var state = !st.ranked ? null : o.id === st.scanning ? 'compare' : rank < st.probed ? 'active' : null;
@@ -125,7 +174,7 @@
       var m = miss[0], home = IX.assign[m.id], rank = 0;
       while (search.order[rank].id !== home) rank++;
       verdict = 'Recall ' + found + '/' + K + '. Missed id ' + m.id + ' at dist² ' + m.dist + ': it is stored in list ' + home + ', whose centroid ranks ' + (rank + 1) +
-        ' for this query, across a cell boundary. nprobe = ' + (rank + 1) + ' would reach it.';
+        ' for this query, across a cell boundary (the red line in the zoom crosses it). nprobe = ' + (rank + 1) + ' would reach it.';
     }
     steps.push({
       caption: '<b>Compare with brute force</b> (all ' + S.points.length + ' vectors). ' + verdict,
@@ -163,7 +212,7 @@
       state: { t: t }
     });
   });
-  new BTViz.Stepper({
+  var trainStepper = new BTViz.Stepper({
     mount: fig2.controls, caption: fig2.caption, root: fig2.root, steps: tsteps, interval: 1300,
     onStep: function (step) {
       var h = H[step.state.t], prev = step.state.t > 0 ? H[step.state.t - 1].assign : null;
@@ -179,6 +228,7 @@
       });
     }
   });
+  C.fixScrub(trainStepper);
 
   /* ----------------------------------------------------------- self-test */
   var exp = window.CH29_EXPECTED;

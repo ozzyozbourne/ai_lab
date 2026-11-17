@@ -11,8 +11,7 @@
 //!
 //! Two implementations live here:
 //!   * `FileStorage`: a real file, positional I/O (pread / pwrite / fsync).
-//!   * `MemStorage`:  a byte array, with optional injected read and write
-//!                    failures.
+//!   * `MemStorage`:  a byte array, with optional injected read and write failures.
 
 use std::cell::RefCell;
 use std::fmt;

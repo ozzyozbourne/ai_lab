@@ -29,8 +29,10 @@ try self.storage.writePage(self.homePage(i), page);
 try self.storage.sync();
 ```
 
-Four tests fail. Two are bookkeeping (the demo output and the "2 syncs" count in "update
-then read"). The other two are the real damage:
+Five tests fail. Two are bookkeeping (the demo output and the "2 syncs" count in "update
+then read"). "recover on a fresh store whose first update was cut short" fails for the
+same reason as the first one below (`.drop`, `crash_after = 2`: it expects the new
+version and finds a blank page). The other two are the real damage:
 
 - "crash at every write, every mode" fails first in `.drop` mode with `crash_after = 2`:
   it expects B and finds A. With the first sync in place, two accepted writes meant the

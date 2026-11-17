@@ -20,6 +20,8 @@
 .c16-page.is-open .c16-cell.is-empty { fill: var(--bt-node-active-bg); }
 .c16-page.is-pending .c16-frame { stroke: var(--bt-page-dirty); stroke-width: 2.5; }
 .c16-page.is-pending .c16-cell.has-key { fill: var(--bt-page-dirty-bg); }
+/* The page that has just been given an id (steps "close" and "last"). */
+.c16-page.s-active .c16-frame { stroke-width: 4.5; }
 .c16-page.s-found .c16-frame { stroke: var(--bt-key-found); stroke-width: 3; }
 .c16-page.s-found .c16-cell.has-key { fill: var(--bt-key-found-bg); }
 .c16-page.s-merge .c16-frame { stroke: var(--bt-merge); stroke-width: 3; }
@@ -61,7 +63,7 @@ writes: a buffer pool would absorb some of them, but not the reads, the splits o
 <h2>3. Why not fill every page to 100%?</h2>
 <p>A tree of 10,000 keys with order 16 is bulk-loaded at three fill factors, then random keys are
 inserted. A packed tree is the smallest on the day it is built, and then nearly every insert finds a
-full leaf. At 1000 inserts the numbers are those of section 3 of the program output.</p>
+full leaf. Move the slider to watch it overtake the other two. At 1000 inserts the numbers are those of section 3 of the program output.</p>
 <div id="fig-fill"></div>
 
 <script src="code.js"></script>
@@ -122,7 +124,7 @@ full leaf. At 1000 inserts the numbers are those of section 3 of the program out
   var levels = new Ch16.LevelView(fig.stage, { ariaLabel: 'Tree under construction' });
   var stats = el('div.c16-stats#build-stats');
   fig.stage.appendChild(stats);
-  var code = BTViz.codePanel(fig.side, 'loader', { title: 'bulk.zig / bulk.rs: addPair, closeOpenPage, seal', maxHeight: 420 });
+  var code = BTViz.codePanel(fig.side, 'loader', { title: 'bulk.zig / bulk.rs: addPair, closeOpenPage, seal, closeRightEdge (finish)', maxHeight: 420 });
 
   var current = null;
   var stepper = new BTViz.Stepper({
@@ -217,7 +219,12 @@ full leaf. At 1000 inserts the numbers are those of section 3 of the program out
     });
     fig3.caption.innerHTML = 'Pages before → after ' + count + ' inserts: ' + fills.map(function (f, k) {
       return '<b>' + f[0] + '/' + f[1] + '</b>: ' + before[k] + ' → ' + grown[k];
-    }).join(', ') + '. The packed tree starts smallest and ends largest once enough inserts have arrived.';
+    }).join(', ') + '. ' + (grown[0] < Math.min(grown[1], grown[2])
+      ? 'The packed tree is still the smallest, but it has already grown by ' + (grown[0] - before[0]) +
+        ' pages and the others by ' + (grown[1] - before[1]) + ' and ' + (grown[2] - before[2]) + '. Move the slider to the right.'
+      : grown[0] > Math.max(grown[1], grown[2])
+        ? 'The packed tree started smallest and is now the largest.'
+        : 'The packed tree started smallest and has already overtaken the 90/70 tree.');
   }
   extra.addEventListener('input', renderFill);
 

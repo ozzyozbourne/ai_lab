@@ -37,12 +37,17 @@ fn version_of(page: &Page) -> u64 {
 
 pub fn run(w: &mut dyn Write, dir: &Path) -> DemoResult {
     let path = dir.join(DB_NAME);
-    writeln!(w, "Chapter 09: pages and the buffer pool")?;
-    part1(w, &path)?;
-    part2(w, &path)?;
-    part3(w)?;
+    let result = run_parts(w, &path);
+    // Remove the demo file on every path out of here, errors included.
     let _ = std::fs::remove_file(&path);
-    Ok(())
+    result
+}
+
+fn run_parts(w: &mut dyn Write, path: &Path) -> DemoResult {
+    writeln!(w, "Chapter 09: pages and the buffer pool")?;
+    part1(w, path)?;
+    part2(w, path)?;
+    part3(w)
 }
 
 fn part1(w: &mut dyn Write, path: &Path) -> DemoResult {
@@ -292,4 +297,48 @@ fn print_pager_stats(w: &mut dyn Write, pager: &Pager) -> DemoResult {
         s.reads, s.writes, s.allocations, s.syncs
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A writer that accepts `left` bytes and then fails, like Zig's fixed
+    /// writer with a full buffer.
+    struct Limited {
+        left: usize,
+    }
+
+    impl Write for Limited {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.left {
+                return Err(std::io::Error::other("output is full"));
+            }
+            self.left -= bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_failing_output_writer_is_reported_as_an_error_and_leaves_no_file_behind() {
+        let tmp = crate::TempDir::new("demo_failing_writer");
+        let full = include_str!("../../expected_output.txt").len();
+        // Sweep the limit so that the failure lands in every part of the
+        // demo, including the steps of part 2 that hold up to four pins.
+        let mut failures = 0;
+        for limit in (0..=4200).step_by(59) {
+            let result = run(&mut Limited { left: limit }, &tmp.0);
+            if limit >= full {
+                assert!(result.is_ok());
+            } else {
+                assert!(result.is_err(), "limit {limit}");
+                failures += 1;
+            }
+            assert!(!tmp.0.join(DB_NAME).exists());
+        }
+        assert!(failures > 60);
+    }
 }

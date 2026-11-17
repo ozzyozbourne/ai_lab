@@ -386,14 +386,20 @@
 
   /**
    * bulkSteps(keys, order, {leafFill, innerFill}) → {steps, tree, loader}
-   * Each step: {caption, state, phase, question?}. `phase` picks code lines.
+   * Each step: {caption, state, phase, question?}. `phase` picks code lines
+   * (window.CHAPTER_LINES in code.js): idle, start, push, close, seal while
+   * keys arrive; end, merge, share, last, root (and seal, push) in finish.
    */
   function bulkSteps(keys, order, options) {
+    // `consumed` counts the keys that are in a page. It moves when the key is
+    // stored, not when it arrives: while the loader closes a page to make
+    // room, the arriving key is still the "next" one in the input strip.
     var tree = new Tree(order), steps = [], consumed = 0, asked = {};
     var loader = new BulkLoader(tree, options, function (kind, info) {
       var level = info.level, lv = level === undefined ? null : loader.levels[level];
       var hl = { pages: {}, cells: {} }, caption = '', question = null, target, t;
       if (kind === 'push') {
+        if (level === 0) consumed++;
         var openId = 'open' + level;
         hl.cells[openId + ':' + (lv.buf.length - 1)] = 'inserted';
         target = loader.target(level);
@@ -463,10 +469,7 @@
         ' keys each, and pass one pair up for every finished page (interior pages: ' + loader.innerTarget + ' of ' + tree.innerCap() + ' children).',
       state: snapshot(loader, 0, {}), phase: 'idle'
     });
-    keys.forEach(function (key) {
-      consumed++;
-      loader.add(key, key * 10);
-    });
+    keys.forEach(function (key) { loader.add(key, key * 10); });
     if (keys.length) loader.finish();
     return { steps: steps, tree: tree, loader: loader };
   }

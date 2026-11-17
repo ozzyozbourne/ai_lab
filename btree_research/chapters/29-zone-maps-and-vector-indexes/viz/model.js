@@ -392,7 +392,7 @@
     var truth = flatSearch(g.nodes.map(function (nd) { return [nd.x, nd.y]; }), q, 1)[0];
     return { result: W[0], truth: truth, trace: trace, computed: computed };
   }
-  var HNSW = { n: 56, m: 2, maxLevel: 2, width: 1000, height: 520, seed: 2905 };
+  var HNSW = { n: 56, m: 2, maxLevel: 2, width: 1000, height: 520, seed: 2907 };
 
   var Ch29 = {
     SplitMix64: SplitMix64, OPS: OPS,

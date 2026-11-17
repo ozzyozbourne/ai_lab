@@ -7,6 +7,9 @@
 <link rel="stylesheet" href="../../../assets/viz.css">
 <style>
 /* Chapter-local views (viz/local.js). Colours are the toolkit's tokens only. */
+/* Long <select> labels must shrink on a phone instead of widening the page. */
+.bt-toolbar .bt-field { max-width: 100%; min-width: 0; }
+.bt-toolbar .bt-field .bt-select { min-width: 0; max-width: 100%; flex: 0 1 auto; text-overflow: ellipsis; }
 .c14-strip { margin: 4px 0 12px; }
 .c14-strip-title { font-size: .86rem; color: var(--bt-muted); margin-bottom: 4px; }
 .c14-cells { position: relative; display: flex; height: 58px; border: 1.5px solid var(--bt-node); border-radius: 6px; background: var(--bt-surface); }
@@ -411,9 +414,9 @@ a run of equal keys: the parent then has to store the row id as well as the key.
   })();
 
   /* ================================================================== self-tests */
-  BTViz.selfTest('hand example: every policy cuts where the programs say',
+  BTViz.selfTest('hand example: 8 split choices',
     M.handChoicesText(40) + M.handChoicesText(null), window.CHAPTER_EXPECTED.handInner.trim() + '\n' + window.CHAPTER_EXPECTED.handRightmost.replace(/^\n/, ''));
-  BTViz.selfTest('fixed scenario: 300 inserts, 4 workloads × 4 policies, bytes per page', M.scenarioText(300, 14), window.CHAPTER_EXPECTED.scenario);
+  BTViz.selfTest('fixed scenario: 16 runs, bytes per page', M.scenarioText(300, 14), window.CHAPTER_EXPECTED.scenario);
 })();
 </script>
 </body>

@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bulk loading</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+/* Chapter-local styles for LevelView (viz/local.js). Colours come from the toolkit tokens. */
+.c16-levels { overflow-x: auto; padding: 4px 2px 8px; }
+.c16-svg { display: block; width: 100%; height: auto; margin: 0 auto; }
+.c16-rowlabel, .c16-pagelabel { font: 11px var(--bt-mono); fill: var(--bt-muted); }
+.c16-cell { fill: var(--bt-node-bg); stroke: var(--bt-border); stroke-width: 1; }
+.c16-cell.has-key { fill: var(--bt-key-bg); }
+.c16-hatch-line { stroke: var(--bt-free); stroke-width: 2; }
+.c16-key { font: 600 13px var(--bt-mono); fill: var(--bt-key); text-anchor: middle; }
+.c16-key.is-ignored { fill: var(--bt-muted); font-weight: 400; font-style: italic; }
+.c16-frame { fill: none; stroke: var(--bt-node); stroke-width: 1.5; }
+.c16-page.is-open .c16-frame { stroke: var(--bt-node-active); stroke-width: 2; stroke-dasharray: 5 3; }
+.c16-page.is-open .c16-cell.is-empty { fill: var(--bt-node-active-bg); }
+.c16-page.is-pending .c16-frame { stroke: var(--bt-page-dirty); stroke-width: 2.5; }
+.c16-page.is-pending .c16-cell.has-key { fill: var(--bt-page-dirty-bg); }
+.c16-page.s-found .c16-frame { stroke: var(--bt-key-found); stroke-width: 3; }
+.c16-page.s-found .c16-cell.has-key { fill: var(--bt-key-found-bg); }
+.c16-page.s-merge .c16-frame { stroke: var(--bt-merge); stroke-width: 3; }
+.c16-page.s-merge .c16-cell.has-key { fill: var(--bt-merge-bg); }
+.c16-cell.s-inserted { fill: var(--bt-key-inserted-bg) !important; stroke: var(--bt-key-inserted); }
+.c16-key.s-inserted { fill: var(--bt-key-inserted); }
+.c16-edge, .c16-link { stroke: var(--bt-pointer); stroke-width: 1.4; }
+.c16-edge.s-inserted { stroke: var(--bt-key-inserted); stroke-width: 2.2; }
+.c16-arrowhead { fill: var(--bt-pointer); }
+.c16-key.is-new { animation: c16-pop .35s ease-out; transform-box: fill-box; transform-origin: center; }
+@keyframes c16-pop { from { transform: scale(1.9); opacity: .2; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .c16-key.is-new { animation: none; } }
+.c16-sub { font-size: .8rem; color: var(--bt-muted); margin: 8px 0 2px; }
+.c16-stats { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: .88rem; color: var(--bt-muted); margin-top: 6px; }
+.c16-stats b { color: var(--bt-text); font-family: var(--bt-mono); }
+.c16-note { font-size: .9rem; color: var(--bt-muted); }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">Building a B+tree from sorted keys, bottom-up. Leaves fill from left to right; each
+finished page hands one pair to the level above, and parents grow only when they are needed.
+Nothing is searched and nothing is split. Text and code: <a href="../README.md">chapter 16 README</a>.</p>
+
+<h2>1. The loader, one event at a time</h2>
+<p>Choose the input and the fill factor, then press <b>Build</b> and step through. The loader keeps one
+<em>open</em> page per level (dashed) and holds back the page before it as <em>pending</em>, so the last two
+pages of a level can still be evened out when the input ends. Tick <em>Predict</em> to be asked what
+happens next at the interesting moments.</p>
+<div id="fig-build"></div>
+
+<h2>2. The same keys, inserted one at a time</h2>
+<p>For comparison, this is the tree that ordinary <code>put</code> calls build from the keys chosen
+above. With ascending input every split leaves a half-full page behind that never fills up.
+"Page writes" counts every page dirtied by every operation, so it is an upper bound on physical
+writes: a buffer pool would absorb some of them, but not the reads, the splits or the extra pages.</p>
+<div id="fig-insert"></div>
+
+<h2>3. Why not fill every page to 100%?</h2>
+<p>A tree of 10,000 keys with order 16 is bulk-loaded at three fill factors, then random keys are
+inserted. A packed tree is the smallest on the day it is built, and then nearly every insert finds a
+full leaf. At 1000 inserts the numbers are those of section 3 of the program output.</p>
+<div id="fig-fill"></div>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="local.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el;
+  BTViz.page({
+    title: 'Bulk loading', chapter: 16,
+    prev: { href: '../../15-redistribution-and-merge-policies/viz/index.html', title: 'Redistribution and merge policies' },
+    next: { href: '../../17-key-compression-and-deduplication/viz/index.html', title: 'Key compression and deduplication' }
+  });
+
+  /* ---------------------------------------------------------------- controls shared by figures 1 and 2 */
+  function select(id, label, values, selected, suffix) {
+    var s = el('select.bt-select#' + id, { 'aria-label': label });
+    values.forEach(function (v) { s.appendChild(el('option', { value: v, selected: v === selected }, v + (suffix || ''))); });
+    return s;
+  }
+  var nInput = el('input.bt-input#in-n', { type: 'number', min: 1, max: 60, value: 13, 'aria-label': 'Number of keys' });
+  var orderSel = select('sel-order', 'Order (max children)', [3, 4, 5, 6, 8], 4);
+  var leafSel = select('sel-leaf', 'Leaf fill factor', [100, 90, 70, 50], 100, '%');
+  var innerSel = select('sel-inner', 'Interior fill factor', [100, 90, 70, 50], 100, '%');
+  function params() {
+    var n = Math.max(1, Math.min(60, Math.round(+nInput.value) || 1));
+    nInput.value = n;
+    var keys = [];
+    for (var i = 1; i <= n; i++) keys.push(i);
+    return { n: n, keys: keys, order: +orderSel.value, leafFill: +leafSel.value, innerFill: +innerSel.value };
+  }
+
+  /* ---------------------------------------------------------------- 1. animated bulk load */
+  var fig = BTViz.figure('#fig-build', {
+    title: 'Bottom-up bulk load', side: true,
+    legend: [
+      { token: 'node-active', label: 'open page (loader buffer, dashed)' },
+      { token: 'page-dirty', label: 'pending: has an id, not yet written' },
+      { token: 'node', label: 'written page' },
+      { token: 'key-inserted', label: 'pair just added' },
+      { token: 'key-found', label: 'page being written' },
+      { token: 'merge', label: 'tail repair' },
+      { token: 'free', label: 'left free by the fill factor' },
+      { token: 'pointer', label: 'downlink / leaf link' }
+    ]
+  });
+  fig.toolbar.append(
+    el('label.bt-field', 'keys 1..', nInput),
+    el('label.bt-field', 'order M', orderSel),
+    el('label.bt-field', 'leaf fill', leafSel),
+    el('label.bt-field', 'interior fill', innerSel),
+    el('button.bt-btn.bt-primary#btn-build', { type: 'button', onclick: function () { build(true); } }, 'Build'));
+
+  fig.stage.appendChild(el('div.c16-sub', 'Sorted input (the next key to arrive is marked)'));
+  var inputView = new BTViz.ArrayView(fig.stage, { ariaLabel: 'Sorted input keys' });
+  fig.stage.appendChild(el('div.c16-sub', 'The tree so far: leaves at the bottom, one row per level'));
+  var levels = new Ch16.LevelView(fig.stage, { ariaLabel: 'Tree under construction' });
+  var stats = el('div.c16-stats#build-stats');
+  fig.stage.appendChild(stats);
+  var code = BTViz.codePanel(fig.side, 'loader', { title: 'bulk.zig / bulk.rs: addPair, closeOpenPage, seal', maxHeight: 420 });
+
+  var current = null;
+  var stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, predict: false, interval: 1300,
+    onStep: function (step) {
+      var s = step.state, keys = current.keys;
+      levels.render(s);
+      inputView.render({
+        values: keys, range: [s.consumed, keys.length],
+        pointers: s.consumed < keys.length ? { next: s.consumed } : {}
+      });
+      var pages = 0, open = 0, pending = 0;
+      s.levels.forEach(function (lv) {
+        lv.pages.forEach(function (p) { if (p.kind === 'open') open++; else { pages++; if (p.kind === 'pending') pending++; } });
+      });
+      stats.innerHTML = 'keys loaded <b>' + s.consumed + ' / ' + keys.length + '</b>' +
+        '<span>pages with an id <b>' + pages + '</b></span>' +
+        '<span>page writes <b>' + s.writes + '</b></span>' +
+        '<span>held by the loader <b>' + open + ' open, ' + pending + ' pending</b></span>' +
+        '<span>page reads <b>0</b></span><span>splits <b>0</b></span>';
+      code.highlight(window.CHAPTER_LINES[step.phase] || null);
+    }
+  });
+
+  function build(play) {
+    var p = params();
+    current = p;
+    var r = Ch16.bulkSteps(p.keys, p.order, { leafFill: p.leafFill, innerFill: p.innerFill });
+    stepper.setSteps(r.steps, { play: play });
+    renderInsert();
+  }
+  [nInput, orderSel, leafSel, innerSel].forEach(function (c) { c.addEventListener('change', function () { build(false); }); });
+  nInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') build(true); });
+
+  /* ---------------------------------------------------------------- 2. one-by-one insert of the same keys */
+  var fig2 = BTViz.figure('#fig-insert', {
+    title: 'One-by-one insert', legend: [{ token: 'node', label: 'page' }, { token: 'pointer', label: 'downlink / leaf link' }]
+  });
+  var orderOfInserts = el('select.bt-select#sel-insert-order', { 'aria-label': 'Insert order' },
+    el('option', { value: 'asc' }, 'ascending'), el('option', { value: 'shuffled' }, 'shuffled (seed 16)'));
+  fig2.toolbar.append(el('label.bt-field', 'insert order', orderOfInserts));
+  var insertView = new Ch16.LevelView(fig2.stage, { ariaLabel: 'Tree built by one-by-one inserts' });
+  var table = el('div.bt-table-wrap');
+  fig2.stage.appendChild(table);
+
+  function renderInsert() {
+    var p = current || params();
+    var entries = p.keys.map(function (k) { return { key: k, value: k * 10 }; });
+    var order = entries.slice();
+    if (orderOfInserts.value === 'shuffled') order = BTViz.rng(16).shuffle(order);
+    var ins = Ch16.insertAll(p.order, order);
+    var bulk = Ch16.bulkLoad(p.order, entries, { leafFill: p.leafFill, innerFill: p.innerFill });
+    insertView.render(Ch16.treeSnapshot(ins));
+    var cell = function (t, v) { return el(t, {}, String(v)); };
+    var line = function (name, t, state) {
+      var s = t.shape();
+      return el('tr', { class: state ? 's-' + state : null }, cell('th', name), cell('td', s.height), cell('td', s.leaves), cell('td', s.pages),
+        cell('td', Ch16.leafFill(t) + '%'), cell('td', t.stats.writes), cell('td', t.stats.reads), cell('td', t.stats.splits));
+    };
+    table.textContent = '';
+    table.appendChild(el('table.bt-table#compare-table',
+      el('thead', el('tr', ['method', 'height', 'leaves', 'pages', 'leaf fill', 'page writes', 'page reads', 'splits'].map(function (h) { return cell('th', h); }))),
+      el('tbody',
+        line('bulk load ' + p.leafFill + '% / ' + p.innerFill + '%', bulk, 'found'),
+        line('insert, ' + (orderOfInserts.value === 'asc' ? 'ascending' : 'shuffled'), ins))));
+    fig2.caption.innerHTML = 'Keys 1..' + p.n + ', order ' + p.order + '. The bulk loader wrote <b>' + bulk.stats.writes + '</b> pages; the inserts dirtied <b>' +
+      ins.stats.writes + '</b>, read <b>' + ins.stats.reads + '</b> and performed <b>' + ins.stats.splits + '</b> splits to build a tree of <b>' + ins.shape().pages + '</b> pages.';
+  }
+  orderOfInserts.addEventListener('change', renderInsert);
+
+  /* ---------------------------------------------------------------- 3. fill factor after the load */
+  var fig3 = BTViz.figure('#fig-fill', { title: 'Splits caused by random inserts after a bulk load (n = 10,000, M = 16)' });
+  var extra = el('input#in-extra', { type: 'range', min: 100, max: 1000, step: 100, value: 1000, 'aria-label': 'Number of inserts after the load' });
+  var extraOut = el('output');
+  fig3.toolbar.append(el('label.bt-field', 'inserts after the load', extra, extraOut));
+  var chart = new BTViz.Chart(fig3.stage, { type: 'bar', xLabel: 'leaf / interior fill factor at load time', yLabel: 'count', height: 230 });
+  var bigEntries = [];
+  for (var i = 0; i < 10000; i++) bigEntries.push({ key: i * 10, value: i });
+  function renderFill() {
+    var count = +extra.value, fills = [[100, 100], [90, 70], [70, 70]], splits = [], grown = [], before = [];
+    extraOut.textContent = count;
+    fills.forEach(function (f) {
+      var t = Ch16.bulkLoad(16, bigEntries, { leafFill: f[0], innerFill: f[1] });
+      var b = t.shape().pages;
+      t.stats = { writes: 0, reads: 0, splits: 0 };
+      var rng = Ch16.SplitMix64(1616);            // same stream as the Zig and Rust programs
+      for (var j = 0; j < count; j++) { var hi = rng.below(10000); t.put(hi * 10 + 1 + rng.below(9), j); }
+      before.push(b); splits.push(t.stats.splits); grown.push(t.shape().pages);
+    });
+    chart.render({
+      labels: fills.map(function (f) { return f[0] + '% / ' + f[1] + '%'; }),
+      series: [{ name: 'splits during the inserts', values: splits, token: 'split' }]
+    });
+    fig3.caption.innerHTML = 'Pages before → after ' + count + ' inserts: ' + fills.map(function (f, k) {
+      return '<b>' + f[0] + '/' + f[1] + '</b>: ' + before[k] + ' → ' + grown[k];
+    }).join(', ') + '. The packed tree starts smallest and ends largest once enough inserts have arrived.';
+  }
+  extra.addEventListener('input', renderFill);
+
+  build(false);
+  renderFill();
+
+  /* ---------------------------------------------------------------- self-tests against the programs' output */
+  BTViz.selfTest('model = expected_output.txt', Ch16.report(), window.CHAPTER_EXPECTED);
+  var hand = Ch16.bulkSteps([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13], 4, { leafFill: 100, innerFill: 100 });
+  var want = window.CHAPTER_EXPECTED.split('bulk load, fill 100%:\n')[1].split('one-by-one insert')[0];
+  BTViz.selfTest('animation = hand example', Ch16.dumpTree(hand.tree), want);
+})();
+</script>
+</body>
+</html>

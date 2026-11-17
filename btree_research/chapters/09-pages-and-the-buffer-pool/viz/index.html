@@ -28,7 +28,8 @@ Tick <em>Predict</em> to be asked which page will be evicted.</p>
 
 <h2>3. How many frames are enough?</h2>
 <p>The same 5000 seeded page accesses over 64 pages, replayed by this page's model against pools
-of different sizes. Every miss is a file read. Change how skewed the accesses are.</p>
+of different sizes. Every miss is a file read. The first setting (80% of accesses go to 8 hot pages, seed 2024)
+is the one the programs print; change how skewed the accesses are and watch the bars.</p>
 <div id="fig-size"></div>
 
 <script src="../../../assets/viz.js"></script>
@@ -493,7 +494,7 @@ of different sizes. Every miss is a file read. Change how skewed the accesses ar
   (function () {
     var fig = BTViz.figure('#fig-size', { title: '5000 page accesses, 64 pages: hits and misses by pool size' });
     var skew = el('select.bt-select#size-skew', { 'aria-label': 'Share of accesses that go to the 8 hot pages' });
-    [[4, '80% to 8 hot pages (as in the programs)'], [2, '40% to 8 hot pages'], [0, 'uniform: every page equally likely']].forEach(function (o) {
+    [[4, '80% to 8 hot pages'], [2, '40% to 8 hot pages'], [0, 'uniform']].forEach(function (o) {
       skew.appendChild(el('option', { value: o[0] }, o[1]));
     });
     var seed = el('input.bt-input#size-seed', { type: 'number', inputmode: 'numeric', min: 0, max: 999999, value: 2024, 'aria-label': 'Seed' });

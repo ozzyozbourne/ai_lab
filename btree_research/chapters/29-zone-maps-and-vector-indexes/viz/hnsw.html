@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 29 — Greedy graph descent</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+</head>
+<body>
+
+<div id="subnav"></div>
+
+<p class="bt-lead">HNSW keeps the other half of the tree idea: sparse upper levels for long steps, a dense bottom
+level for precision. It is a skip list whose "next key" has been replaced by "a neighbour that is closer", because
+points in a plane have no next.</p>
+
+<h2>1. Descent through the layers</h2>
+<p>The same 56 points appear on layer 0; about a third of them also live on layer 1, and a few of those on layer 2.
+On each layer a point is linked to its nearest points <em>on that layer</em>. Click any layer to place the query, then
+step. Try <em>ef = 1</em> first and use the button to find a query it gets wrong.</p>
+<div id="fig-hnsw"></div>
+
+<h2>2. The same idea three times</h2>
+<div class="bt-table-wrap"><table class="bt-table">
+<thead><tr><th></th><th>B+tree</th><th>Skip list</th><th>HNSW</th></tr></thead>
+<tbody>
+<tr><td>Upper levels</td><td>inner nodes, built by splits</td><td>random height per key</td><td>random top layer per vector</td></tr>
+<tr><td>One step</td><td>binary search picks one child</td><td>move right while the next key is not too big</td><td>move to a neighbour that is closer to the query</td></tr>
+<tr><td>Why a step stops</td><td>the separators prove where the key is</td><td>the next key is past the target: proof</td><td>no linked neighbour is closer: a local minimum, not a proof</td></tr>
+<tr><td>Answer</td><td>exact</td><td>exact</td><td>approximate; <code>ef</code> candidates on layer 0 buy recall</td></tr>
+</tbody></table></div>
+
+<h2>What to take away</h2>
+<ul>
+<li><strong>Coarse to fine survives.</strong> The top layer crosses the plane in one or two hops; lower layers refine.</li>
+<li><strong>Order does not.</strong> Without an order there is no "too far" test, so the search can stop at a point
+that merely has no closer neighbour. Keeping several candidates (<code>ef</code>) lets it walk around such a spot.</li>
+<li><strong>This picture is HNSW-like, not HNSW.</strong> Each point is simply linked to its nearest points per layer.
+The real construction inserts points one at a time and chooses links with a heuristic that keeps the graph better
+connected; FAISS stores all links in one flat array (see the chapter text).</li>
+</ul>
+<p>Read the chapter: <a href="../README.md">README.md</a>. Previous page: <a href="ivf.html">IVF probing</a>.
+Next chapter: <a href="../../30-tracing-a-real-insert/viz/index.html">tracing a real insert</a>.</p>
+
+<script src="../../../assets/viz.js"></script>
+<script src="model.js"></script>
+<script src="local.js"></script>
+<script src="code.js"></script>
+<script src="hnsw.js"></script>
+</body>
+</html>

@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deletion and rebalancing</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  /* Chapter-local styles: tokens only, no hard-coded colours. */
+  .keybar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .keybar-label { font-size: .86rem; color: var(--bt-muted); margin-right: 2px; }
+  .keybar .bt-btn { min-width: 2.4em; padding-left: .5em; padding-right: .5em; font-family: var(--bt-mono); }
+  .textform { margin: 0; font-family: var(--bt-mono); font-size: .84rem; line-height: 1.5;
+              white-space: pre; overflow-x: auto; color: var(--bt-text); }
+  .facts { display: flex; flex-wrap: wrap; gap: 6px; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">Deleting a key can leave a node with too few keys. Watch the three repairs
+(borrow from a sibling, merge with a sibling, shrink at the root) and try to predict which one comes next.</p>
+
+<p>This page belongs to <a href="../README.md">Chapter 05: Deletion and rebalancing</a>.
+The tree below is a B-tree of order M: every node holds at most M&nbsp;&minus;&nbsp;1 keys and,
+except the root, at least &lceil;M/2&rceil;&nbsp;&minus;&nbsp;1. Click a key button (or type a key) to delete it.
+Every frame is produced by a real JavaScript B-tree that follows the same rules as the chapter's Zig and Rust code:
+try the left sibling first, then the right one, otherwise merge.</p>
+
+<h2>Delete a key</h2>
+<div id="fig"></div>
+
+<h2>What to look for</h2>
+<div class="bt-table-wrap">
+<table class="bt-table">
+<thead><tr><th>Situation</th><th>Repair</th><th>Does the parent lose a key?</th></tr></thead>
+<tbody>
+<tr><td>The key is in a leaf that keeps enough keys</td><td>none</td><td>no</td></tr>
+<tr><td>The key is in an interior node</td><td>overwrite it with its predecessor (largest key of the left subtree), then delete that key from its leaf</td><td>no</td></tr>
+<tr><td>A node is one key short and a direct sibling has a spare key</td><td>borrow: the separator moves down, the sibling's nearest key moves up</td><td>no, so the repair stops here</td></tr>
+<tr><td>A node is one key short and no direct sibling has a spare key</td><td>merge: node + separator + sibling become one node</td><td>yes, so the parent may be one key short now</td></tr>
+<tr><td>The root has no keys left</td><td>its only child becomes the root</td><td>the tree is one level shorter</td></tr>
+</tbody>
+</table>
+</div>
+<p>Suggested experiments: play both scripted scenarios (they are parts 2 and 3 of the program output);
+switch to order 3, where every non-root node has exactly one or two keys and almost every delete needs a repair;
+then order 6, where repairs become rare. Tick <em>Predict</em> to be asked before each repair.</p>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, k = BTViz.k;
+
+  BTViz.page({
+    title: 'Deletion and rebalancing', chapter: 5,
+    prev: { href: '../../04-insertion-and-splitting/viz/index.html', title: 'Insertion and splitting' },
+    next: { href: '../../06-testing-a-btree/viz/index.html', title: 'Testing a B-tree' }
+  });
+
+  /* ---------------------------------------------------------------- scenarios
+   * The same constants as zig/src/scenario.zig and rust/src/scenario.rs. */
+  var CANONICAL = [10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15];
+  var CASE_DELETES = [3, 7, 6, 20, 10, 12, 15, 17, 30, 25];
+  var TALL_COUNT = 13;
+  var TALL_DELETES = [9, 13, 10, 1, 2, 3];
+  var PRESETS = {
+    canonical: { label: 'Canonical tree (12 keys)', keys: function () { return CANONICAL.slice(); }, script: CASE_DELETES,
+                 about: 'The guide’s canonical tree: 10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15 inserted in that order.' },
+    tall: { label: 'Three levels (keys 1 to 13)', keys: function () { var a = []; for (var i = 1; i <= TALL_COUNT; i++) a.push(i); return a; }, script: TALL_DELETES,
+            about: 'Keys 1 to 13 inserted in ascending order. With order 4 this tree has three levels, so an underflow can travel up.' },
+    random: { label: 'Random (24 keys)', keys: function () { return BTViz.rng(randomSeed).sample(24, 1, 99); }, script: null,
+              about: '24 random keys between 1 and 99.' }
+  };
+  var randomSeed = 5;
+
+  /* ------------------------------------------------- text form of a snapshot
+   * Same format as the programs: one line per level, ' | ' between families. */
+  function renderText(state, indent) {
+    indent = indent || '';
+    if (!state || !state.keys || (!state.keys.length && !(state.children || []).length)) return indent + '(empty)\n';
+    var height = 0, n;
+    for (n = state; n; n = n.children && n.children[0]) height++;
+    var out = '';
+    for (var level = 0; level < height; level++) {
+      var line = '', first = true;
+      (function walk(node, remaining) {
+        if (remaining === 0) { line += '[' + node.keys.join(' ') + ']'; return; }
+        node.children.forEach(function (child, i) {
+          if (remaining === 1) { if (i > 0) line += ' '; else if (!first) line += ' | '; first = false; }
+          walk(child, remaining - 1);
+        });
+      })(state, level);
+      out += indent + line + '\n';
+    }
+    return out;
+  }
+
+  /* The line the programs print for one delete, derived from the step types. */
+  function summarize(key, steps) {
+    var count = {};
+    steps.forEach(function (s) { count[s.type] = (count[s.type] || 0) + 1; });
+    var line = 'delete ' + key + ':';
+    if (!steps.ok) return line + ' not found';
+    line += count['found-internal'] ? ' interior key, replaced by its predecessor;' : ' leaf key;';
+    var parts = [];
+    // In the order they happen: merges first, then at most one borrow, then the root.
+    [['merge', 'merge'], ['borrow-left', 'borrow from left'], ['borrow-right', 'borrow from right'], ['root-shrink', 'root shrink']]
+      .forEach(function (p) { if (count[p[0]]) parts.push((count[p[0]] > 1 ? count[p[0]] + ' x ' : '') + p[1]); });
+    return line + ' ' + (parts.length ? parts.join(', ') : 'no underflow');
+  }
+
+  /* ------------------------------------------------------------------ figure */
+  var fig = BTViz.figure('#fig', {
+    title: 'Delete from a B-tree: borrow, merge, shrink', side: true,
+    legend: ['node-active', 'key-compare', 'key-found', 'key-deleted', 'key-inserted', 'split', 'merge']
+  });
+
+  var presetSel = el('select.bt-select#preset', { 'aria-label': 'Starting tree' });
+  Object.keys(PRESETS).forEach(function (id) { presetSel.appendChild(el('option', { value: id }, PRESETS[id].label)); });
+  var orderSel = el('select.bt-select#order', { 'aria-label': 'Order M (maximum number of children)' });
+  [3, 4, 5, 6].forEach(function (m) { orderSel.appendChild(el('option', { value: m, selected: m === 4 }, 'order ' + m)); });
+  var keyInput = el('input.bt-input#key', { type: 'number', inputmode: 'numeric', placeholder: 'key', 'aria-label': 'Key', min: 0, max: 999 });
+  function button(id, text, fn, primary) {
+    return el('button.bt-btn' + (primary ? '.bt-primary' : '') + '#' + id, { type: 'button', onclick: fn }, text);
+  }
+  var scriptBtn = button('btn-script', 'Play scripted deletes', playScript);
+  fig.toolbar.append(
+    el('label.bt-field', 'Start from ', presetSel), orderSel, el('span.bt-toolbar-sep'),
+    keyInput, button('btn-delete', 'Delete', function () { fromInput('delete'); }, true),
+    button('btn-insert', 'Insert', function () { fromInput('insert'); }),
+    el('span.bt-toolbar-sep'), scriptBtn, button('btn-reset', 'Reset', reset));
+
+  var keyBar = el('div.keybar', { role: 'group', 'aria-label': 'Keys in the tree: press one to delete it' });
+  var facts = el('div.facts');
+  fig.stage.append(keyBar);
+  var view = new BTViz.TreeView(fig.stage, { minHeight: 250, ariaLabel: 'B-tree' });
+  fig.stage.append(facts);
+  var code = BTViz.codePanel(fig.stage, 'delete', { title: 'The delete algorithm (condensed from delete.zig / delete.rs)', maxHeight: 330 });
+
+  var textPre = el('pre.textform#textform');
+  fig.side.append(el('div.bt-panel', el('div.bt-panel-title', 'As the programs print it'), el('div.bt-panel-body', textPre)));
+  var log = new BTViz.Log(fig.side, { title: 'Operations' });
+
+  var tree = null;
+  var stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, predict: true,
+    onStep: function (step) {
+      view.render(step.state, step.highlight);
+      code.highlight(window.CHAPTER_LINES[step.type] || []);
+      textPre.textContent = (step.summary ? step.summary + '\n' : '') + renderText(step.state, step.summary ? '  ' : '');
+      showFacts(step.state);
+    }
+  });
+
+  function showFacts(state) {
+    var nodes = 0, keys = 0, height = 0, n;
+    for (n = state && state.keys && state.keys.length ? state : null; n; n = n.children && n.children[0]) height++;
+    (function walk(node) {
+      if (!node || !node.keys || (!node.keys.length && !(node.children || []).length)) return;
+      nodes++; keys += node.keys.length; (node.children || []).forEach(walk);
+    })(state);
+    var lim = tree.limits();
+    facts.replaceChildren(
+      el('span.bt-chip', 'height ' + height), el('span.bt-chip', 'nodes ' + nodes), el('span.bt-chip', 'keys ' + keys),
+      el('span.bt-chip', 'per node: ' + lim.minLeafKeys + ' to ' + lim.maxKeys + ' keys'));
+  }
+
+  function refreshKeyBar() {
+    keyBar.replaceChildren(el('span.keybar-label', tree.size ? 'Delete:' : 'The tree is empty. Insert a key or press Reset.'));
+    tree.keys().forEach(function (key) {
+      keyBar.appendChild(el('button.bt-btn', { type: 'button', 'aria-label': 'Delete key ' + key, onclick: function () { run('delete', key); } }, String(key)));
+    });
+  }
+
+  /* Decorate the model's steps: code lines come from step.type in onStep; here we
+   * add the predict question and the program-style summary on the last step. */
+  function decorate(op, key, steps) {
+    var lim = tree.limits();
+    steps.forEach(function (s, i) {
+      var prev = steps[i - 1];
+      if (prev && prev.type === 'underflow' && /^(borrow-left|borrow-right|merge)$/.test(s.type)) {
+        s.question = {
+          prompt: 'This node has too few keys. How will its parent repair it?',
+          choices: ['Borrow from the left sibling', 'Borrow from the right sibling', 'Merge with a sibling'],
+          answer: { 'borrow-left': 0, 'borrow-right': 1, 'merge': 2 }[s.type],
+          explain: 'A direct sibling can lend only if it has more than ' + lim.minLeafKeys + ' key' + (lim.minLeafKeys > 1 ? 's' : '') +
+            '. The left sibling is asked first, then the right one. If neither can lend, the nodes merge.'
+        };
+      }
+      if (s.type === 'merge') s.hold = 2;
+    });
+    if (op === 'delete') steps[steps.length - 1].summary = summarize(key, steps);
+    return steps;
+  }
+
+  function logOp(op, key, steps) {
+    log.add(op + ' ' + key + (steps.ok ? '' : ' (no change)'), op === 'insert' ? 'inserted' : 'deleted');
+    steps.slice(1).forEach(function (s) { if (s.log) log.add('&nbsp;&nbsp;' + (s.log.html || s.log), s.log.state); });
+  }
+
+  function run(op, key) {
+    stepper.pause();
+    var steps = decorate(op, key, tree[op](key));
+    logOp(op, key, steps);
+    refreshKeyBar();
+    stepper.setSteps(steps, { play: true });
+  }
+
+  function fromInput(op) {
+    if (keyInput.value === '') { keyInput.focus({ preventScroll: true }); return; }
+    var key = +keyInput.value;
+    keyInput.value = '';
+    if (isFinite(key)) run(op, Math.round(key));
+  }
+
+  function build() {
+    var preset = PRESETS[presetSel.value];
+    tree = BTViz.models.BTree(+orderSel.value);
+    preset.keys().forEach(function (key) { tree.insert(key, { steps: false }); });
+    log.clear();
+    refreshKeyBar();
+    scriptBtn.disabled = !preset.script;
+    return preset;
+  }
+
+  function reset() {
+    stepper.pause();
+    var preset = build();
+    var lim = tree.limits();
+    stepper.setSteps([{
+      type: 'intro', state: tree.snapshot(), highlight: {},
+      caption: preset.about + ' Order ' + tree.order + ': every node holds at most ' + lim.maxKeys + ' keys and, except the root, at least ' +
+        lim.minLeafKeys + '. Press a key button above the tree to delete that key' + (preset.script ? ', or play the scripted deletes.' : '.')
+    }]);
+  }
+
+  /* All scripted deletes of the chapter program as one timeline (order 4). */
+  function playScript() {
+    var preset = PRESETS[presetSel.value];
+    if (!preset.script) return;
+    orderSel.value = '4';
+    build();
+    var all = [];
+    preset.script.forEach(function (key) {
+      var steps = decorate('delete', key, tree.delete(key));
+      logOp('delete', key, steps);
+      all = all.concat(steps);
+    });
+    refreshKeyBar();
+    stepper.setSteps(all, { play: true });
+  }
+
+  presetSel.addEventListener('change', function () { if (presetSel.value === 'random') randomSeed++; reset(); });
+  orderSel.addEventListener('change', reset);
+  keyInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') fromInput('delete'); });
+  reset();
+
+  /* ------------------------------------------------------------- self-tests
+   * Replay parts 1 to 3 of the chapter program with the JavaScript model and
+   * compare with the text the Zig and Rust programs printed (code.js). */
+  (function () {
+    var expected = window.CHAPTER_EXPECTED;
+    var t = BTViz.models.BTree(4);
+    CANONICAL.forEach(function (key) { t.insert(key, { steps: false }); });
+    BTViz.selfTest('part 1: canonical tree', renderText(t.snapshot()), expected.canonical);
+    var out = '';
+    CASE_DELETES.forEach(function (key) { out += summarize(key, t.delete(key)) + '\n' + renderText(t.snapshot(), '  '); });
+    BTViz.selfTest('part 2: one case at a time', out, expected.part2);
+
+    var u = BTViz.models.BTree(4);
+    for (var key = 1; key <= TALL_COUNT; key++) u.insert(key, { steps: false });
+    out = renderText(u.snapshot(), '  ');
+    TALL_DELETES.forEach(function (key) { out += summarize(key, u.delete(key)) + '\n' + renderText(u.snapshot(), '  '); });
+    BTViz.selfTest('part 3: an underflow that travels up', out, expected.part3);
+    BTViz.selfTest('model invariants hold', t.validate().concat(u.validate()), []);
+  })();
+})();
+</script>
+</body>
+</html>

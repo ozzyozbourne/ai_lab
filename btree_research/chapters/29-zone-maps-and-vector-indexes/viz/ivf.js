@@ -26,6 +26,7 @@
   function centroidNodes(cents, states) {
     return cents.map(function (c, i) { return { id: 'c' + i, x: c[0], y: c[1], shape: 'diamond', r: 6, label: String(i), state: states ? states[i] : null }; });
   }
+  function small(view) { return view.root.clientWidth < 520; }
   function fitHeight(gv) { gv.opts.height = Math.round(Math.min(560, Math.max(300, gv.root.clientWidth * 0.95))); }
 
   /* =============================================================== probe */
@@ -73,14 +74,14 @@
       else if (l === st.scanning) state = 'compare';
       else if (inTop[id]) state = 'inserted';
       else if (st.ranked && !listState[l]) state = 'dim';
-      return { id: 'p' + id, x: pt[0], y: pt[1], state: state, label: null, r: state && state !== 'dim' && state !== 'compare' ? 4.6 : 3.2 };
+      return { id: 'p' + id, x: pt[0], y: pt[1], state: state, label: null, r: state && state !== 'dim' && state !== 'compare' ? (small(gv) ? 3.4 : 4.6) : (small(gv) ? 2 : 3.2) };
     });
     var cs = {};
     for (i = 0; i < IX.nlist; i++) cs[i] = listState[i] || null;
     fitHeight(gv);
     gv.render({
       regions: cells(IX.centroids, cs),
-      nodes: anchors.concat(nodes, centroidNodes(IX.centroids, cs), [{ id: 'q', x: query[0], y: query[1], shape: 'cross', r: 7, label: 'query', state: 'active' }])
+      nodes: anchors.concat(nodes, centroidNodes(IX.centroids, cs), [{ id: 'q', x: query[0], y: query[1], shape: 'cross', r: 7, label: 'q', state: 'active' }])
     });
     var tb = el('tbody');
     search.order.forEach(function (o, rank) {
@@ -173,7 +174,7 @@
         regions: cells(h.centroids, null),
         nodes: anchors.concat(S.points.map(function (pt, id) {
           var moved = prev && prev[id] !== h.assign[id];
-          return { id: 'p' + id, x: pt[0], y: pt[1], label: null, state: moved ? 'compare' : null, r: moved ? 4.6 : 3.2 };
+          return { id: 'p' + id, x: pt[0], y: pt[1], label: null, state: moved ? 'compare' : null, r: small(gv2) ? (moved ? 3.2 : 2) : (moved ? 4.6 : 3.2) };
         }), centroidNodes(h.centroids, cs))
       });
     }

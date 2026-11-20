@@ -1,7 +1,7 @@
 .{
     .name = .ch04_insertion_and_splitting,
     .version = "0.0.0",
-    .fingerprint = 0x1,
+    .fingerprint = 0x456a0eb298ed64a0,
     .minimum_zig_version = "0.17.1",
     .dependencies = .{},
     .paths = .{

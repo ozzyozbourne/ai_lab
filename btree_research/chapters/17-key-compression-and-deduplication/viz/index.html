@@ -260,8 +260,23 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
       cards.render(step.state, step.highlight);
       code2.highlight(step.lines || []);
       log.sync(stepper2 ? stepper2.steps : [step], i);
+      renderTable(step.puts);
     }
   });
+
+  // The replay is one long timeline, and `tree` is its END state. A control
+  // must act on the tree the reader is looking at, so before Put, Get or a
+  // configuration change the model is rolled back to the displayed step:
+  // every replay step carries `puts`, the number of scenario puts begun by
+  // then (a put shown half-way, with its page over-full, is completed).
+  function syncToDisplayed() {
+    var step = stepper2.steps[stepper2.index];
+    if (!step || step.puts === undefined || step.puts === history.length) return;
+    var keep = history.slice(0, step.puts);
+    tree = new M.Tree(cfg);
+    keep.forEach(function (h) { tree.put(h[0], h[1]); });
+    history = keep;
+  }
 
   function nextTid() {
     var max = 0;
@@ -273,10 +288,10 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
   }
   function show(steps, play) {
     stepper2.setSteps(steps, { play: !!play });
-    renderTable();
   }
 
   function doPut() {
+    syncToDisplayed();
     var key = keyIn.value, tid = readTid(tidIn);
     if (!asciiOk(key)) { show(still(ASCII_ONLY + ' Nothing was inserted.', 'put: bad key')); return; }
     if (tid === null) { show(still('The TID (' + typed(tidIn) + ') cannot be used. ' + TID_RULE + ' Nothing was inserted.', 'put: bad TID')); return; }
@@ -286,6 +301,7 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
     show(steps, true);
   }
   function doGet() {
+    syncToDisplayed();
     var key = keyIn.value;
     if (!asciiOk(key)) { show(still(ASCII_ONLY + ' Nothing was looked up.', 'get: bad key')); return; }
     show(tree.getSteps(key), true);
@@ -298,6 +314,7 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
   }
   // Rebuild the current history under a changed configuration.
   function rebuild() {
+    syncToDisplayed();
     cfg = { pageSize: +sizeSel.value, truncate: truncBox.checked, dedup: dedupBox.checked };
     var fresh = new M.Tree(cfg), kept = [];
     history.forEach(function (h) { if (fresh.put(h[0], h[1]).ok) kept.push(h); });
@@ -320,9 +337,11 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
     var steps = still('The fixed scenario of the chapter\'s programs: an index on a fruit column, ' + M.SCENARIO.length +
       ' rows. Press play, or step. Watch for three things: a full leaf folding equal keys into a posting list, a leaf splitting with a short separator, and a TID landing inside a posting list.',
       'start');
+    steps[0].puts = 0;
     M.SCENARIO.forEach(function (p) {
       var s = tree.put(p[0], p[1]);
-      if (s.ok) history.push(p);
+      history.push(p); // every scenario put is new and fits (the self-tests below depend on it)
+      s.forEach(function (step) { step.puts = history.length; });
       steps = steps.concat(s);
     });
     nextTid();
@@ -338,13 +357,17 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
   f3.stage.append(tableHost, el('p.c17-note',
     'Fanout = children per internal page. Separator bytes = key bytes kept in a separator, plus 6 when it needs a TID. ' +
     'Bytes per entry = bytes in use on all pages divided by the number of (key, TID) entries. ' +
-    'The highlighted row is the configuration shown in figure 2. With a few dozen tuples the differences are small; ' +
+    'The table counts the puts that figure 2 shows at this moment, and the highlighted row is its configuration. With a few dozen tuples the differences are small; ' +
     'the chapter text has the same table for 20,000 keys, where truncation removes a whole level. ' +
     'Not shown on this page: delete. In the programs it removes one TID from its cell (a posting list shrinks) and never merges pages, so a split is permanent.'));
-  function renderTable() {
+  // `puts`: how many of the puts in `history` the displayed step includes
+  // (a replay step says so; any other step shows all of them).
+  function renderTable(puts) {
+    if (!tableHost) return; // the stepper renders once before this figure exists
+    var shown = puts === undefined ? history : history.slice(0, puts);
     var rows = [[false, false], [true, false], [false, true], [true, true]].map(function (c) {
       var t = new M.Tree({ pageSize: cfg.pageSize, truncate: c[0], dedup: c[1] });
-      history.forEach(function (h) { t.put(h[0], h[1]); });
+      shown.forEach(function (h) { t.put(h[0], h[1]); });
       var s = t.stats(), current = c[0] === cfg.truncate && c[1] === cfg.dedup;
       return el('tr', { class: current ? 's-active' : null },
         el('td', M.configName(t.cfg)), el('td.num', s.height), el('td.num', s.leafPages), el('td.num', s.internalPages),

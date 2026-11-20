@@ -113,7 +113,11 @@ impl Memtable {
             return self.head[h];
         }
         let n = &self.nodes[node as usize];
-        if h < n.height as usize { self.towers[n.tower as usize + h] } else { NIL }
+        if h < n.height as usize {
+            self.towers[n.tower as usize + h]
+        } else {
+            NIL
+        }
     }
 
     /// Finds, per level, the last node with key < `key` (`NIL` = the head).
@@ -161,7 +165,12 @@ impl Memtable {
                 self.towers[p.tower as usize + h] = id;
             }
         }
-        self.nodes.push(Node { key, value, tower, height: height as u8 });
+        self.nodes.push(Node {
+            key,
+            value,
+            tower,
+            height: height as u8,
+        });
         Ok(())
     }
 
@@ -192,7 +201,10 @@ impl Memtable {
 
     pub fn slot(&self, node: u32) -> Slot {
         let n = &self.nodes[node as usize];
-        Slot { key: n.key, value: n.value }
+        Slot {
+            key: n.key,
+            value: n.value,
+        }
     }
 
     /// All slots in key order, starting at `node`.

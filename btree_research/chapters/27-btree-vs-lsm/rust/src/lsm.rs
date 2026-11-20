@@ -61,13 +61,22 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { block_entries: 15, index_fanout: 16, memtable_entries: 60, l0_runs: 4, growth: 4 }
+        Config {
+            block_entries: 15,
+            index_fanout: 16,
+            memtable_entries: 60,
+            l0_runs: 4,
+            growth: 4,
+        }
     }
 }
 
 impl Config {
     pub fn geometry(&self) -> Geometry {
-        Geometry { block_entries: self.block_entries, index_fanout: self.index_fanout }
+        Geometry {
+            block_entries: self.block_entries,
+            index_fanout: self.index_fanout,
+        }
     }
 }
 
@@ -149,7 +158,10 @@ impl Lsm {
 
     /// Number of the deepest level that holds a run (0 if there is none).
     pub fn deepest_level(&self) -> usize {
-        self.levels.iter().rposition(Option::is_some).map_or(0, |i| i + 1)
+        self.levels
+            .iter()
+            .rposition(Option::is_some)
+            .map_or(0, |i| i + 1)
     }
 
     // ------------------------------------------------------------ writes
@@ -179,8 +191,11 @@ impl Lsm {
         if self.l0.len() >= self.cfg.l0_runs {
             return Some(0);
         }
-        (1..MAX_LEVELS)
-            .find(|&n| self.levels[n - 1].as_ref().is_some_and(|run| run.len() > self.level_limit(n)))
+        (1..MAX_LEVELS).find(|&n| {
+            self.levels[n - 1]
+                .as_ref()
+                .is_some_and(|run| run.len() > self.level_limit(n))
+        })
     }
 
     /// Makes room for one more write: finishes compactions left over from a
@@ -220,7 +235,9 @@ impl Lsm {
             // Tombstones are written too: they must hide older runs.
             builder.append(&mut self.dev, slot);
         }
-        let run = builder.finish(&mut self.dev).expect("a non-empty memtable makes a run");
+        let run = builder
+            .finish(&mut self.dev)
+            .expect("a non-empty memtable makes a run");
         self.l0.push(run);
         self.mem.reset(); // every skip-list node is gone in one call
         self.stats.flushes += 1;
@@ -243,7 +260,11 @@ impl Lsm {
         // `upper` is level `from` (None when from == 0: then the inputs are
         // the level-0 runs); `target` is level from + 1.
         let l0: &[Run] = if from == 0 { &self.l0 } else { &[] };
-        let upper = if from == 0 { None } else { self.levels[from - 1].as_ref() };
+        let upper = if from == 0 {
+            None
+        } else {
+            self.levels[from - 1].as_ref()
+        };
         let target = self.levels[from].as_ref();
         let input_slots = l0.iter().map(Run::len).sum::<usize>()
             + upper.map_or(0, Run::len)
@@ -270,13 +291,21 @@ impl Lsm {
         // which is what `Device::peak` records.
         let mut freed = 0;
         if from == 0 {
-            freed += self.l0.drain(..).map(|run| geo.blocks(run.len())).sum::<usize>();
+            freed += self
+                .l0
+                .drain(..)
+                .map(|run| geo.blocks(run.len()))
+                .sum::<usize>();
             self.stats.l0_compactions += 1;
         } else {
-            freed += self.levels[from - 1].take().map_or(0, |run| geo.blocks(run.len()));
+            freed += self.levels[from - 1]
+                .take()
+                .map_or(0, |run| geo.blocks(run.len()));
             self.stats.level_merges += 1;
         }
-        freed += self.levels[from].take().map_or(0, |run| geo.blocks(run.len()));
+        freed += self.levels[from]
+            .take()
+            .map_or(0, |run| geo.blocks(run.len()));
         self.dev.free_blocks(freed as u64);
         self.levels[from] = output;
         Ok(())
@@ -319,7 +348,11 @@ impl Lsm {
         }
         while merger.peek_key().is_some_and(|key| key < hi) {
             // A tombstone has done its job by winning the merge: skip it.
-            if let Some(Slot { key, value: Some(value) }) = merger.next(&mut self.dev) {
+            if let Some(Slot {
+                key,
+                value: Some(value),
+            }) = merger.next(&mut self.dev)
+            {
                 out.push(Entry { key, value });
             }
         }
@@ -329,7 +362,11 @@ impl Lsm {
 
     /// Slots stored on the device, stale versions and tombstones included.
     pub fn slots_on_device(&self) -> usize {
-        self.l0.iter().chain(self.levels.iter().flatten()).map(Run::len).sum()
+        self.l0
+            .iter()
+            .chain(self.levels.iter().flatten())
+            .map(Run::len)
+            .sum()
     }
 
     pub fn validate(&self) -> Result<(), Violation> {

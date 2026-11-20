@@ -122,7 +122,10 @@ impl Builder {
         Ok(Builder {
             geo,
             slots: Vec::with_capacity(max_slots),
-            block: [Slot { key: 0, value: None }; MAX_BLOCK_ENTRIES],
+            block: [Slot {
+                key: 0,
+                value: None,
+            }; MAX_BLOCK_ENTRIES],
             block_len: 0,
         })
     }
@@ -156,7 +159,11 @@ impl Builder {
         let index_blocks = self.geo.index_blocks(self.slots.len()) as u64;
         dev.alloc_blocks(index_blocks);
         dev.write(Kind::Index, index_blocks);
-        Some(Run { slots: self.slots, min_key, max_key })
+        Some(Run {
+            slots: self.slots,
+            min_key,
+            max_key,
+        })
     }
 }
 
@@ -166,7 +173,10 @@ mod tests {
 
     #[test]
     fn geometry_slots_to_blocks() {
-        let g = Geometry { block_entries: 3, index_fanout: 4 };
+        let g = Geometry {
+            block_entries: 3,
+            index_fanout: 4,
+        };
         assert_eq!(g.data_blocks(1), 1);
         assert_eq!(g.data_blocks(3), 1);
         assert_eq!(g.data_blocks(4), 2);
@@ -177,11 +187,20 @@ mod tests {
 
     #[test]
     fn builder_writes_whole_blocks_then_the_index_and_the_run_answers_lookups() {
-        let g = Geometry { block_entries: 3, index_fanout: 4 };
+        let g = Geometry {
+            block_entries: 3,
+            index_fanout: 4,
+        };
         let mut dev = Device::new();
         let mut b = Builder::new(g, 10, usize::MAX).unwrap();
         for k in [2, 4, 6, 8, 10, 12, 14] {
-            b.append(&mut dev, Slot { key: k, value: (k != 8).then_some(k * 10) });
+            b.append(
+                &mut dev,
+                Slot {
+                    key: k,
+                    value: (k != 8).then_some(k * 10),
+                },
+            );
         }
         // Two full blocks are on the device already, the seventh slot is buffered.
         assert_eq!(dev.counters.total_writes(), 2);
@@ -201,14 +220,25 @@ mod tests {
     #[test]
     fn a_builder_with_nothing_appended_produces_no_run() {
         let mut dev = Device::new();
-        let b = Builder::new(Geometry { block_entries: 3, index_fanout: 4 }, 5, usize::MAX).unwrap();
+        let b = Builder::new(
+            Geometry {
+                block_entries: 3,
+                index_fanout: 4,
+            },
+            5,
+            usize::MAX,
+        )
+        .unwrap();
         assert!(b.finish(&mut dev).is_none());
         assert_eq!(dev.live, 0);
     }
 
     #[test]
     fn a_builder_over_budget_is_refused_before_anything_is_written() {
-        let g = Geometry { block_entries: 3, index_fanout: 4 };
+        let g = Geometry {
+            block_entries: 3,
+            index_fanout: 4,
+        };
         assert_eq!(Builder::new(g, 5, 4).err(), Some(OutOfMemory));
         assert!(Builder::new(g, 5, 5).is_ok());
     }

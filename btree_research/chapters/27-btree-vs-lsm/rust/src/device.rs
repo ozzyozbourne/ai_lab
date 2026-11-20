@@ -44,8 +44,14 @@ impl Counters {
     /// `self - earlier`: what happened between two snapshots.
     pub fn since(&self, earlier: &Counters) -> Counters {
         Counters {
-            reads: [self.reads[0] - earlier.reads[0], self.reads[1] - earlier.reads[1]],
-            writes: [self.writes[0] - earlier.writes[0], self.writes[1] - earlier.writes[1]],
+            reads: [
+                self.reads[0] - earlier.reads[0],
+                self.reads[1] - earlier.reads[1],
+            ],
+            writes: [
+                self.writes[0] - earlier.writes[0],
+                self.writes[1] - earlier.writes[1],
+            ],
         }
     }
 
@@ -92,7 +98,11 @@ impl Device {
             counters: Counters::default(),
             live: 0,
             peak: 0,
-            pins: [Pin { id: 0, kind: Kind::Data, dirty: false }; MAX_PINS],
+            pins: [Pin {
+                id: 0,
+                kind: Kind::Data,
+                dirty: false,
+            }; MAX_PINS],
             pin_count: 0,
         }
     }
@@ -122,7 +132,9 @@ impl Device {
     // ------------------------------------- per-operation pinned blocks
 
     fn find_pin(&self, id: usize) -> Option<usize> {
-        self.pins[..self.pin_count].iter().position(|p| p.id as usize == id)
+        self.pins[..self.pin_count]
+            .iter()
+            .position(|p| p.id as usize == id)
     }
 
     fn push_pin(&mut self, id: usize, kind: Kind, dirty: bool) {

@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 24 — MVCC, vacuum and page deletion</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  /* Chapter-local layout only; every colour comes from the toolkit's tokens. */
+  .c24-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font: .8rem/1.7 var(--bt-mono); color: var(--bt-muted); }
+  .c24-bar b { color: var(--bt-text); }
+  .c24-bar .bt-chip { font-size: .78rem; }
+  .c24-bar + .c24-bar { margin-top: 2px; }
+  .c24-strips { border-top: 1px dashed var(--bt-border); margin-top: 8px; padding-top: 8px; }
+  .c24-mark { color: var(--bt-node-active); font-weight: 700; }
+  .c24-msg { font-size: .85rem; min-height: 1.3em; margin: 4px 0 0; color: var(--bt-key-deleted); }
+  .c24-versions { max-height: 260px; overflow: auto; }
+  .c24-versions table { font-size: .78rem; }
+  .c24-note { font-size: .82rem; color: var(--bt-muted); margin: 6px 0 0; }
+  #code { margin-top: 14px; }
+  .c24-points li { margin: .35em 0; }
+  .bt-selftest { white-space: normal; border-radius: 10px; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">A delete does not remove anything from the index: it only writes a number into a row version.
+Watch dead entries pile up, see who is allowed to remove them and when, and follow an empty page through its two-phase
+deletion until it is safe to reuse.</p>
+
+<div id="fig"></div>
+<div id="code"></div>
+
+<h2>What to look for</h2>
+<ul class="c24-points">
+  <li><strong>An entry reads <code>key:xmin-xmax</code>.</strong> The two numbers live in the version store on the right,
+    not in the index. <code>20:2-4</code> is the version of row 20 created by transaction 2 and ended by transaction 4.
+    A snapshot is one number; it sees the versions with <code>xmin ≤ snapshot</code> and no <code>xmax ≤ snapshot</code>.</li>
+  <li><strong>The horizon.</strong> It is the oldest open snapshot (or <em>now</em>). A version with
+    <code>xmax ≤ horizon</code> is dead to everyone. Open a snapshot, delete some rows and run Vacuum: nothing is removed
+    until the snapshot is closed.</li>
+  <li><strong>Hints.</strong> Play scenario 1. A scan that meets a dead version sets <code>!</code> on its index entry.
+    The next insert that finds that leaf full drops the hinted entries instead of splitting.</li>
+  <li><strong>Half-dead, deleted, free.</strong> Play scenario 2 with <em>Predict</em> ticked. An empty leaf first loses
+    its parent downlink, then its place in the chain, and only then, when no snapshot is older than its stamp, its
+    identity. The paused scan still holds the page's handle the whole time.</li>
+  <li><strong>Break it.</strong> Play scenario 3, or do it yourself: start a scan, read one page, run Vacuum, press
+    <em>Recycle anyway</em>, insert until a split reuses the page, then let the scan read on.</li>
+</ul>
+<p>Text and code: <a href="../README.md">chapter 24 README</a>. The three scenarios are the fixed scenario of the
+chapter's Zig and Rust programs; the trees they end in are checked against the programs' output (self-tests below).</p>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="local.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, k = BTViz.k, C = window.Ch24, NIL = C.NIL;
+  BTViz.page({
+    title: 'MVCC, vacuum and page deletion', chapter: 24,
+    prev: { href: '../../23-copy-on-write-btrees/viz/index.html', title: 'Chapter 23: copy-on-write B-trees' },
+    next: { href: '../../25-cache-conscious-search-and-layout/viz/index.html', title: 'Chapter 25: cache-conscious search and layout' }
+  });
+
+  /* ------------------------------------------------------------- figure */
+  var fig = BTViz.figure('#fig', {
+    title: 'An index over row versions (order 4: at most 3 entries per leaf)', side: true,
+    legend: [
+      { token: 'node-active', label: 'page being worked on' },
+      { token: 'key-inserted', label: 'entry just added' },
+      { token: 'key-compare', label: 'old version an open snapshot still sees' },
+      { token: 'key-deleted', label: 'dead to every snapshot (! = hint bit set)' },
+      { token: 'split', label: 'split' },
+      { token: 'merge', label: 'half-dead page' },
+      { token: 'free', label: 'free page / free version slot' }
+    ]
+  });
+
+  var KEY_MIN = 1, KEY_MAX = 99;
+  var key = el('input.bt-input#key', { type: 'number', inputmode: 'numeric', placeholder: 'key', min: KEY_MIN, max: KEY_MAX, step: 1,
+                                       'aria-label': 'Key (whole number, ' + KEY_MIN + ' to ' + KEY_MAX + ')' });
+  function btn(id, text, fn, primary) {
+    return el('button.bt-btn' + (primary ? '.bt-primary' : '') + '#' + id, { type: 'button', onclick: fn }, text);
+  }
+  var scenario = el('select.bt-select#scenario', { 'aria-label': 'Scenario' });
+  [['hints', '1 · Versions, hints, garbage before a split'], ['pages', '2 · Vacuum and two-phase page deletion'],
+   ['early', '3 · Recycling too early']].forEach(function (s) { scenario.appendChild(el('option', { value: s[0] }, s[1])); });
+  var bScanStart = btn('btn-scan', 'Scan: start', scanStart), bScanNext = btn('btn-scan-next', 'Scan: read next page', scanNext);
+  fig.toolbar.append(key,
+    btn('btn-put', 'Put', function () { withKey(doPut); }, true),
+    btn('btn-delete', 'Delete', function () { withKey(doDelete); }),
+    el('span.bt-toolbar-sep'),
+    btn('btn-open', 'Open snapshot', doOpen),
+    btn('btn-close', 'Close oldest', doClose),
+    el('span.bt-toolbar-sep'),
+    bScanStart, bScanNext,
+    el('span.bt-toolbar-sep'),
+    btn('btn-vacuum', 'Vacuum', doVacuum),
+    btn('btn-unsafe', 'Recycle anyway', doUnsafe),
+    el('span.bt-toolbar-sep'),
+    scenario, btn('btn-play', 'Play scenario', function () { playScenario(scenario.value, true); }),
+    btn('btn-reset', 'Empty', function () { message(''); db = C.create(4); steps = []; step('Empty database. Put a few keys, or play a scenario.', {}); commit(false); }));
+  var msg = el('p.c24-msg', { role: 'status', 'aria-live': 'polite' });
+  fig.toolbar.after(msg);
+  function message(text) { msg.textContent = text; }
+
+  var clock = el('div.c24-bar', { 'aria-label': 'Transaction counter and open snapshots' });
+  var treeBox = el('div');
+  var strips = el('div.c24-strips');
+  var chainEl = el('div.c24-bar', { 'aria-label': 'Leaf chain' });
+  var deletedEl = el('div.c24-bar', { 'aria-label': 'Deleted pages waiting to be recycled' });
+  var freeEl = el('div.c24-bar', { 'aria-label': 'Free pages' });
+  var scanEl = el('div.c24-bar', { 'aria-label': 'Paused scan' });
+  strips.append(chainEl, deletedEl, freeEl, scanEl);
+  fig.stage.append(clock, treeBox, strips);
+  var view = new BTViz.TreeView(treeBox, { minHeight: 200, ariaLabel: 'The index' });
+
+  var versionsPanel = el('div.bt-panel', el('div.bt-panel-title', 'Version store (the rows)'));
+  var versionsBody = el('div.bt-panel-body');
+  versionsPanel.appendChild(versionsBody);
+  fig.side.appendChild(versionsPanel);
+  var log = new BTViz.Log(fig.side, { title: 'This operation' });
+
+  var TITLES = {
+    visible: 'visibility: two comparisons and the horizon',
+    'delete': 'delete: one number, no index change',
+    makeRoom: 'a full leaf: garbage first, split last',
+    readPage: 'the scan: read one page, remember the right link',
+    vacuum: 'vacuum',
+    markHalfDead: 'page deletion, phase 1: half-dead',
+    unlink: 'page deletion, phase 2: unlink and stamp',
+    recycle: 'recycle: only when the horizon has passed the stamp'
+  };
+  var panels = {};
+  Object.keys(TITLES).forEach(function (name) {
+    panels[name] = BTViz.codePanel('#code', name, { title: TITLES[name], maxHeight: 330 });
+    panels[name].root.hidden = name !== 'visible';
+  });
+  function showCode(name) {
+    if (!name) return;
+    Object.keys(panels).forEach(function (n) { panels[n].root.hidden = n !== name; });
+  }
+
+  /* -------------------------------------------------------------- render */
+  function pid(id) { return 'p' + id; }
+  function snapName(d, i) { return d.names[i] + '=' + d.open[i]; }
+
+  /** What the version store knows about an entry; the index itself only knows the hint bit. */
+  function versionState(d, tid) {
+    var v = d.versions.slots[tid];
+    if (v.xmax === 0) return null;
+    return C.deadToAll(d, tid) ? 'deleted' : 'compare';
+  }
+
+  function treeModel(d, keyStates) {
+    if (d.root === NIL) return null;
+    var liveNext = {}, prev = NIL;
+    C.chain(d).forEach(function (id) {
+      if (C.page(d, id).state !== 'live') return;
+      if (prev !== NIL) liveNext[prev] = id;
+      prev = id;
+    });
+    function build(id) {
+      var n = C.page(d, id), node = { id: pid(id), leaf: n.leaf, meta: { label: '#' + id } };
+      if (n.leaf) {
+        node.keys = n.keys.map(function (ik, i) {
+          var text = C.entryText(d, n, i), st = versionState(d, C.tidOf(ik));
+          if (st) keyStates[pid(id) + ':' + text] = st;
+          return text;
+        });
+        if (liveNext[id] !== undefined) node.next = pid(liveNext[id]);
+        if (!n.keys.length) node.meta.note = 'empty';
+      } else {
+        node.keys = n.keys.map(function (ik) { return C.userKey(ik) + '.' + C.tidOf(ik); });
+        node.children = n.children.map(build);
+      }
+      return node;
+    }
+    return build(d.root);
+  }
+
+  function chip(text, state, title) { return el('span.bt-chip' + (state ? '.s-' + state : ''), title ? { title: title } : {}, text); }
+  function mark() { return el('span.c24-mark', { title: 'the page handle the paused scan will follow next' }, '◀ scan'); }
+
+  function renderStrips(d, hl) {
+    var target = d.scan && !d.scan.done ? d.scan.next : null;
+    hl = hl || {};
+    clock.textContent = '';
+    clock.append('now = ', el('b', String(d.now)), ' · horizon = ', el('b', String(C.horizon(d))), ' · open snapshots:');
+    if (!d.open.length) clock.append(' none');
+    d.open.forEach(function (s, i) { clock.append(chip(snapName(d, i), s === C.horizon(d) ? 'compare' : null, s === C.horizon(d) ? 'the oldest snapshot: it is the horizon' : '')); });
+
+    chainEl.textContent = '';
+    chainEl.append('leaf chain: first →');
+    var ch = C.chain(d);
+    if (!ch.length) chainEl.append(' (empty)');
+    ch.forEach(function (id, i) {
+      if (i) chainEl.append('→');
+      var p = C.page(d, id);
+      chainEl.append(chip('#' + id + (p.state === 'half-dead' ? ' half-dead' : ''), hl[id] || (p.state === 'half-dead' ? 'merge' : null)));
+      if (target === id) chainEl.append(mark());
+    });
+    if (ch.length) chainEl.append('→ end');
+
+    deletedEl.textContent = '';
+    deletedEl.append('deleted, waiting:');
+    var dq = C.deletedQueue(d);
+    if (!dq.length) deletedEl.append(' none');
+    dq.forEach(function (id) {
+      var p = C.page(d, id);
+      deletedEl.append(chip('#' + id + ' stamp ' + p.stamp + ', right link → ' + (p.next === NIL ? 'end' : '#' + p.next), hl[id] || 'deleted',
+                            'reusable when the horizon reaches ' + p.stamp));
+      if (target === id) deletedEl.append(mark());
+    });
+
+    freeEl.textContent = '';
+    freeEl.append('free pages (the next split takes the first):');
+    var fl = C.freeList(d.pages);
+    if (!fl.length) freeEl.append(' none');
+    fl.forEach(function (id) {
+      freeEl.append(chip('#' + id, 'free'));
+      if (target === id) freeEl.append(mark());
+    });
+
+    scanEl.textContent = '';
+    if (!d.scan) { scanEl.append('scan: none'); return; }
+    scanEl.append('scan under snapshot ', el('b', String(d.scan.snapshot)), ': returned ',
+      el('b', d.scan.out.length ? d.scan.out.map(function (r) { return r.key; }).join(' ') : 'nothing yet'), ' · ');
+    if (d.scan.error) scanEl.append(chip('error: dangling link', 'deleted'));
+    else if (d.scan.done) scanEl.append('finished');
+    else scanEl.append('paused, saved link → ', el('b', d.scan.next === NIL ? 'end' : '#' + d.scan.next));
+  }
+
+  function renderVersions(d, hl) {
+    hl = hl || {};
+    var body = el('tbody');
+    d.versions.slots.forEach(function (v, tid) {
+      var st, what;
+      if (v.free !== undefined) { st = 'free'; what = 'free slot'; v = { key: '', value: '', xmin: '', xmax: '' }; }
+      else if (v.xmax === 0) { st = null; what = 'current'; }
+      else if (C.deadToAll(d, tid)) { st = 'deleted'; what = 'dead to all'; }
+      else { st = 'compare'; what = 'old, still seen'; }
+      if (hl[tid]) st = hl[tid];
+      body.appendChild(el('tr' + (st ? '.s-' + st : ''),
+        el('td', String(tid)), el('td', String(v.key)), el('td', String(v.value)), el('td', String(v.xmin)),
+        el('td', v.xmax === 0 ? '–' : String(v.xmax)), el('td', what)));
+    });
+    versionsBody.textContent = '';
+    if (!d.versions.slots.length) { versionsBody.append(el('p.c24-note', 'No row versions yet.')); return; }
+    versionsBody.append(el('div.bt-table-wrap.c24-versions', el('table.bt-table',
+      el('thead', el('tr', el('th', 'tid'), el('th', 'key'), el('th', 'value'), el('th', 'xmin'), el('th', 'xmax'), el('th', 'state'))), body)),
+      el('p.c24-note', 'An index entry holds (key, tid). xmin and xmax are only here.'));
+  }
+
+  var stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, predict: true,
+    onStep: function (s, i) {
+      var d = s.state, hl = s.hl || {}, keys = {}, nodes = {};
+      var model = treeModel(d, keys);
+      Object.keys(hl.keys || {}).forEach(function (id) { keys[id] = hl.keys[id]; });
+      Object.keys(hl.pages || {}).forEach(function (id) { if (C.isLive(d.pages, +id)) nodes[pid(id)] = hl.pages[id]; });
+      var h = { nodes: nodes, keys: keys };
+      if (d.scan && !d.scan.done && C.isLive(d.pages, d.scan.next) && C.page(d, d.scan.next).state === 'live') {
+        h.cursor = { node: pid(d.scan.next), label: 'scan reads next' };
+      }
+      view.render(model, h);
+      renderStrips(d, hl.pages);
+      renderVersions(d, hl.versions);
+      showCode(s.code);
+      log.sync(stepper ? stepper.steps : [], i);
+      bScanStart.disabled = !!(d.scan && !d.scan.done);
+      bScanNext.disabled = !(d.scan && !d.scan.done);
+    }
+  });
+
+  /* ----------------------------------------------- building a timeline */
+  var db = C.create(4), steps = [];
+  db.names = [];
+  function step(caption, o) {
+    o = o || {};
+    steps.push({ caption: caption, state: BTViz.clone(db), hl: o.hl, log: o.log, code: o.code, question: o.question, hold: o.hold });
+  }
+  function commit(play) { stepper.setSteps(steps, { play: !!play }); }
+
+  /**
+   * Every control acts on the state that is ON SCREEN: the database is restored from the step the
+   * reader is looking at (which may be the middle of a scenario), and the new timeline starts with
+   * that same picture.
+   */
+  function act(title, fn) {
+    message('');
+    if (stepper.steps.length) db = BTViz.clone(stepper.state(stepper.index));
+    if (!db.names) db.names = [];
+    steps = [];
+    step(title, {});
+    fn();
+    commit(steps.length > 1);
+  }
+
+  function withKey(fn) {
+    var raw = key.value.trim();
+    if (raw === '' || !/^\d+$/.test(raw) || +raw < KEY_MIN || +raw > KEY_MAX) {
+      message('Type a whole number from ' + KEY_MIN + ' to ' + KEY_MAX + ' as the key' + (raw === '' ? '.' : ' (got "' + (key.value || 'something that is not a number') + '").'));
+      return;
+    }
+    fn(+raw);
+    key.value = '';
+  }
+  key.addEventListener('keydown', function (e) { if (e.key === 'Enter') withKey(doPut); });
+
+  function pg(id) { var o = {}; o[id] = 'active'; return o; }
+  function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : (word === 'entry' ? '' : 's')).replace(/^$/, '') ; }
+  function entries(n) { return n === 1 ? '1 entry' : n + ' entries'; }
+  function pages(n) { return n === 1 ? '1 page' : n + ' pages'; }
+
+  /* -------------------------------------------------------- operations */
+  function opPut(keyValue, value, question) {
+    var xid = db.now + 1, asked = false;
+    var r = C.put(db, keyValue, value, function (type, info) {
+      var p = info.page, text;
+      if (type === 'full') {
+        var q = !asked && question ? question : null;
+        asked = true;
+        step('Transaction ' + xid + ' needs room for a new entry in leaf #' + p + ', which is full. Before splitting, the insert looks for garbage on this one page.',
+          { hl: { pages: pg(p) }, code: 'makeRoom', question: q, log: 'leaf #' + p + ' is full' });
+      } else if (type === 'simple') {
+        step('<b>Simple deletion</b>: ' + entries(info.removed) + ' on #' + p + ' carried a hint (<code>!</code>). They are removed without asking the version store, and their version slots are freed.',
+          { hl: { pages: pg(p) }, code: 'makeRoom', log: { html: 'simple deletion removed ' + info.removed, state: 'deleted' } });
+      } else if (type === 'bottom-up') {
+        step('<b>Bottom-up deletion</b>: nothing on #' + p + ' was hinted, so the insert asks the version store about every entry. ' + entries(info.removed) + ' dead to every snapshot: removed.',
+          { hl: { pages: pg(p) }, code: 'makeRoom', log: { html: 'bottom-up deletion removed ' + info.removed, state: 'deleted' } });
+      } else if (type === 'insert') {
+        var n = C.page(db, p), i = n.keys.indexOf(info.ik), hk = {};
+        hk[pid(p) + ':' + C.entryText(db, n, i)] = 'inserted';
+        step('The new version of row ' + k(keyValue) + ' (xmin = ' + xid + ') gets an index entry in leaf #' + p + '.',
+          { hl: { pages: pg(p), keys: hk, versions: mk(C.tidOf(info.ik), 'inserted') }, log: { html: 'entry ' + C.entryText(db, n, i) + ' in #' + p, state: 'inserted' } });
+      } else if (type === 'split') {
+        var sp = {}; sp[p] = 'split'; sp[info.right] = 'split';
+        step('Every entry on #' + p + ' is needed by somebody, so the page <b>splits</b>: the upper half moves right into #' + info.right +
+          (info.reused ? ', a <b>recycled</b> page taken from the free list.' : ', a new page.') + ' Entries only ever move right.',
+          { hl: { pages: sp }, log: { html: 'split #' + p + ' → #' + info.right + (info.reused ? ' (recycled page)' : ''), state: 'split' } });
+      }
+    });
+    return r;
+  }
+  function mk(id, state) { var o = {}; o[id] = state; return o; }
+
+  function doPut(keyValue) {
+    act('Put ' + k(keyValue) + ': the next transaction ends the current version of the row (if there is one) and adds a new version with a new index entry.', function () {
+      var cur = currentValue(keyValue);
+      opPut(keyValue, cur === null ? keyValue * 10 : cur + 1);
+    });
+  }
+  function currentValue(keyValue) {
+    var best = null;
+    db.versions.slots.forEach(function (v) { if (v.free === undefined && v.key === keyValue && v.xmax === 0) best = v.value; });
+    return best;
+  }
+
+  function opDelete(keyValue) {
+    var r = C.del(db, keyValue);
+    if (!r) { step('Row ' + k(keyValue) + ' has no current version: nothing to delete, no transaction started.', { log: 'delete ' + keyValue + ': absent' }); return; }
+    step('Delete ' + k(keyValue) + ' = transaction ' + r.xid + ' writes <code>xmax = ' + r.xid + '</code> into version ' + r.tid +
+      '. <b>The index is not touched</b>: its entry stays, because snapshots older than ' + r.xid + ' still have to find the row.',
+      { hl: { versions: mk(r.tid, 'deleted') }, code: 'delete', log: { html: 'delete ' + keyValue + ': xmax = ' + r.xid, state: 'deleted' } });
+  }
+  function doDelete(keyValue) { act('Delete ' + k(keyValue) + '.', function () { opDelete(keyValue); }); }
+
+  function opOpen(name) {
+    var s = C.openSnapshot(db);
+    db.names.push(name);
+    step('Snapshot ' + name + ' = ' + s + ' (the counter when the reader started). It sees a version iff <code>xmin ≤ ' + s + '</code> and (<code>xmax</code> is unset or <code>xmax &gt; ' + s +
+      '</code>). The horizon is ' + C.horizon(db) + '.', { code: 'visible', log: 'open snapshot ' + name + ' = ' + s });
+  }
+  function doOpen() {
+    act('Open a snapshot.', function () {
+      if (db.open.length >= 6) { steps.pop(); message('Six snapshots are open already; close one first.'); return; }
+      db.counter = (db.counter || 0) + 1;
+      opOpen('S' + db.counter);
+    });
+  }
+  function opClose(index) {
+    var before = C.horizon(db), name = snapName(db, index);
+    db.open.splice(index, 1);
+    db.names.splice(index, 1);
+    var after = C.horizon(db);
+    step('Snapshot ' + name + ' is closed. ' + (after > before
+      ? 'The horizon moves from ' + before + ' to ' + after + ': versions with <code>xmax ≤ ' + after + '</code> are now dead to everyone. Nothing in the index knows that yet.'
+      : 'The horizon stays at ' + after + '.'), { code: 'visible', log: 'close ' + name + ', horizon ' + after });
+  }
+  function doClose() {
+    act('Close the oldest snapshot.', function () {
+      // The paused scan keeps its own snapshot; closing it would abandon the scan.
+      var best = -1;
+      db.open.forEach(function (s, i) { if (db.names[i] !== 'scan' && (best < 0 || s < db.open[best])) best = i; });
+      if (best < 0) {
+        steps.pop();
+        message(db.open.length ? 'The only open snapshot belongs to the paused scan; let the scan finish to close it.' : 'No snapshot is open.');
+        return;
+      }
+      opClose(best);
+    });
+  }
+
+  function opScanStart(snapshot, name) {
+    db.scan = C.seek(db, snapshot, 0, 1e9);
+    step('A scan under snapshot ' + name + ' = ' + snapshot + ' descends to the leftmost leaf and remembers its handle, #' + db.scan.next +
+      '. It has read nothing yet. Between two reads a scan holds no pointer into a page, only a page handle.',
+      { hl: { pages: pg(db.scan.next) }, code: 'readPage', log: 'scan starts at #' + db.scan.next });
+  }
+  function scanStart() {
+    act('Start a scan of the whole index.', function () {
+      if (db.root === NIL) { steps.pop(); message('The index is empty: put a key first.'); return; }
+      var s = C.openSnapshot(db);
+      db.names.push('scan');
+      opScanStart(s, 'scan');
+    });
+  }
+  function opScanPage(question) {
+    var c = db.scan, from = c.next;
+    // Is the saved link still the page it was when the scan saved it?
+    var betrayed = c.betrayed !== undefined && c.betrayed === from && C.isLive(db.pages, from) && C.page(db, from).state === 'live';
+    var r = C.readPage(db, c);
+    r.skipped.forEach(function (id, i) {
+      var p = C.page(db, id);
+      step('The saved link leads to #' + id + ', which is ' + p.state + '. It holds nothing, and its <b>own right link is intact</b> (→ ' +
+        (p.next === NIL ? 'end' : '#' + p.next) + '): the scan moves right. Everything that was to the right of #' + id + ' is still to the right.',
+        { hl: { pages: pg(id) }, code: 'readPage', question: i === 0 ? question : null, log: { html: 'move right past ' + p.state + ' #' + id, state: 'merge' } });
+    });
+    if (r.status === 'dangling') {
+      step('The saved link names #' + r.page + ', and that page is on the <b>free list</b>. There is nothing to read and no right link to follow: the programs return <code>error.DanglingLink</code>. This can only happen when a page was recycled while a snapshot older than its stamp was open.',
+        { code: 'readPage', log: { html: 'dangling link to #' + r.page, state: 'deleted' } });
+      return r;
+    }
+    if (r.status === 'end') {
+      finishScan('The chain has ended.');
+      return r;
+    }
+    var rows = r.rows.map(function (row) { return row.key; }).join(' ') || 'nothing';
+    var text = 'The scan reads leaf #' + r.page + ' completely and returns ' + k(rows) + '.';
+    if (betrayed) {
+      text = '<b>Wrong page.</b> #' + r.page + ' was recycled and reused by a split while the scan held its handle. The scan cannot tell: it reads the page as if nothing had happened and returns ' +
+        k(rows) + '. Whatever lay between its old position and here is silently skipped or repeated.';
+    }
+    if (r.hinted.length) text += ' ' + entries(r.hinted.length) + ' it could not see ' + (r.hinted.length === 1 ? 'is' : 'are') + ' dead to <em>every</em> snapshot, so it sets the hint bit (<code>!</code>).';
+    text += c.next === NIL ? ' There is no right link.' : ' It remembers the right link, #' + c.next + ', and pauses.';
+    var hk = {}, n = C.page(db, r.page);
+    r.hinted.forEach(function (ik) { hk[pid(r.page) + ':' + C.entryText(db, n, n.keys.indexOf(ik))] = 'deleted'; });
+    step(text, { hl: { pages: pg(r.page), keys: hk }, code: 'readPage',
+                 log: { html: 'read #' + r.page + ': ' + rows + (r.hinted.length ? ', ' + r.hinted.length + ' hinted' : ''), state: betrayed ? 'deleted' : 'found' } });
+    if (c.next === NIL) finishScan('That was the last leaf.');
+    return r;
+  }
+  function finishScan(why) {
+    var c = db.scan, i = db.names.indexOf('scan');
+    c.done = true;
+    if (i >= 0) { db.open.splice(i, 1); db.names.splice(i, 1); }
+    step(why + ' The scan is finished: it returned ' + k(c.out.map(function (r) { return r.key; }).join(' ') || 'nothing') +
+      (i >= 0 ? '. Its snapshot is closed; the horizon is ' + C.horizon(db) + '.' : '.'), { log: 'scan finished' });
+  }
+  function scanNext() {
+    act('The scan reads its next page.', function () {
+      if (!db.scan || db.scan.done) { steps.pop(); message('No scan is paused: press "Scan: start" first.'); return; }
+      opScanPage();
+    });
+  }
+
+  function vacuumEvent(type, info) {
+    var p = info.page, H = C.horizon(db);
+    if (type === 'sweep') {
+      step(info.removed
+        ? 'Leaf #' + p + ': ' + entries(info.removed) + ' pointed at versions with <code>xmax ≤ horizon</code>. The entries are removed first, then the version slots are freed.'
+        : 'Leaf #' + p + ': nothing here is dead to the horizon.',
+        { hl: { pages: pg(p) }, code: 'vacuum', log: info.removed ? { html: '#' + p + ': removed ' + info.removed, state: 'deleted' } : '#' + p + ': nothing dead' });
+    } else if (type === 'keep') {
+      step('Leaf #' + p + ' is empty, but it cannot be deleted: ' + info.reason + '. It stays in the tree, empty. Non-empty pages are never merged either.',
+        { hl: { pages: pg(p) }, code: 'markHalfDead', log: '#' + p + ' empty, kept' });
+    } else if (type === 'half-dead') {
+      step('<b>Phase 1.</b> Leaf #' + p + ' is empty: the parent drops its downlink and hands its key range to the right sibling. The page is now <b>half-dead</b>: no search can reach it from above, but it is still in the leaf chain.',
+        { hl: { pages: mk(p, 'merge') }, code: 'markHalfDead', log: { html: '#' + p + ' half-dead', state: 'merge' } });
+    } else if (type === 'unlink') {
+      step('<b>Phase 2.</b> The left neighbour\'s right link now bypasses #' + p + '. The page is stamped with a fresh epoch, ' + info.stamp +
+        ', and <b>keeps its own right link</b> (→ ' + (info.next === NIL ? 'end' : '#' + info.next) + ') for anyone who is still on the way to it.',
+        { hl: { pages: mk(p, 'deleted') }, code: 'unlink', log: { html: '#' + p + ' unlinked, stamp ' + info.stamp, state: 'deleted' } });
+    } else if (type === 'recycle') {
+      var text = 'Recycle: the horizon is ' + H + '. ';
+      if (info.freed.length) text += 'Freed ' + info.freed.map(function (id) { return '#' + id; }).join(', ') + ' (stamp ≤ horizon: no open snapshot is older than the unlink). ';
+      if (info.waiting.length) {
+        text += info.waiting.map(function (id) { return '#' + id; }).join(', ') + ' must wait: stamp &gt; ' + H + ', so a reader with an older snapshot may still hold the handle.';
+      }
+      if (!info.freed.length && !info.waiting.length) text += 'No deleted pages.';
+      step(text, { code: 'recycle', question: info.question, log: 'recycled ' + info.freed.length + ', waiting ' + info.waiting.length });
+    }
+  }
+  function opVacuum(options) {
+    var H = C.horizon(db);
+    step('Vacuum walks the leaf chain once. Its rule for entries: remove those whose version has <code>xmax ≤ ' + H + '</code> (the horizon).', { code: 'vacuum', log: 'vacuum, horizon ' + H });
+    return C.vacuum(db, options, vacuumEvent);
+  }
+  function doVacuum() {
+    act('Vacuum.', function () {
+      if (db.root === NIL) { steps.pop(); message('The index is empty: nothing to vacuum.'); return; }
+      steps.pop();
+      opVacuum();
+    });
+  }
+
+  function opRecycle(question) {
+    var freed = C.recycle(db, C.horizon(db));
+    vacuumEvent('recycle', { freed: freed, waiting: C.deletedQueue(db), question: question });
+  }
+  function opUnsafe() {
+    var waiting = C.deletedQueue(db);
+    if (db.scan && !db.scan.done && waiting.indexOf(db.scan.next) >= 0) db.scan.betrayed = db.scan.next;
+    var freed = C.recycle(db, Infinity);
+    step('<b>The bug, on purpose.</b> ' + freed.map(function (id) { return '#' + id; }).join(', ') + ' go to the free list although the horizon (' + C.horizon(db) +
+      ') has not reached their stamp. A reader that still holds one of these handles has not been asked.',
+      { code: 'recycle', log: { html: 'recycled ' + freed.length + ' ignoring snapshots', state: 'deleted' } });
+  }
+  function doUnsafe() {
+    act('Recycle anyway.', function () {
+      if (!C.deletedQueue(db).length) { steps.pop(); message('No deleted page is waiting. Delete rows, run Vacuum while a snapshot or a paused scan is open, then try again.'); return; }
+      opUnsafe();
+    });
+  }
+
+  /* ---------------------------------------------------------- scenarios */
+  var EVERYTHING = { deletePages: false };
+  function index(name) { return db.names.indexOf(name); }
+  function fullScan(name) {
+    var c = C.seek(db, db.open[index(name)], 0, 1e9), before = BTViz.clone(db.reads);
+    var out = C.scanAll(db, c);
+    step('A scan under ' + name + ' reads every leaf and returns ' + k(out.join(' ')) + '. Heap visits: ' + (db.reads.heapFetches - before.heapFetches) +
+      ', entries skipped thanks to a hint: ' + (db.reads.hintSkips - before.hintSkips) + ', hints set: ' + (db.reads.hintsSet - before.hintsSet) + '.',
+      { code: 'readPage', log: 'scan under ' + name + ': hints set ' + (db.reads.hintsSet - before.hintsSet) });
+  }
+  function buildDeletedRange() {
+    for (var i = 10; i <= 120; i += 10) C.put(db, i, i * 10);
+    C.openSnapshot(db); db.names.push('R');
+    for (i = 30; i <= 80; i += 10) C.del(db, i);
+  }
+
+  var SCENARIOS = {
+    hints: function () {
+      step('Scenario 1. An empty database. Three rows are inserted by transactions 1, 2 and 3.', {});
+      [10, 20, 30].forEach(function (key) { opPut(key, key * 10); });
+      opOpen('A');
+      opPut(20, 201);
+      opDelete(30);
+      opOpen('B');
+      fullScan('B');
+      opClose(index('A'));
+      fullScan('B');
+      fullScan('B');
+      opPut(25, 250);
+      opPut(27, 270, { prompt: 'Leaf #1 is full and one of its entries carries a hint (!). What does the insert do?',
+                       choices: ['Split the leaf', 'Remove the hinted entry; no split'], answer: 1,
+                       explain: 'A hinted entry is known to be dead to everyone, so it can simply be dropped.' });
+      opClose(index('B'));
+      [251, 252, 253].forEach(function (v) { opPut(25, v); });
+      opOpen('C');
+      [254, 255].forEach(function (v) { opPut(25, v); });
+      step('Five updates of one row: three were absorbed by bottom-up deletion while no snapshot was open; with snapshot C open the old versions are needed and the leaf had to split.', {});
+    },
+    pages: function () {
+      buildDeletedRange();
+      step('Scenario 2. Rows 10 … 120 were inserted (transactions 1 … 12), snapshot R = 12 was opened, then rows 30 … 80 were deleted (13 … 18). The index is unchanged: six entries point at versions that R still sees.', {});
+      opVacuum(EVERYTHING);
+      opClose(index('R'));
+      opVacuum(EVERYTHING);
+      step('(For this walk-through vacuum was told to leave empty pages alone.) Three leaves are empty. Next: a scan starts, pauses, and page #1 is deleted under it, one phase at a time.', {});
+      opOpen('S');
+      opScanStart(db.open[index('S')], 'S');
+      opScanPage();
+      var target = db.scan.next;
+      C.markHalfDead(db, target);
+      vacuumEvent('half-dead', { page: target });
+      C.unlinkHalfDead(db, C.leftSibling(db, target), target);
+      vacuumEvent('unlink', { page: target, stamp: C.page(db, target).stamp, next: C.page(db, target).next });
+      opRecycle({ prompt: 'Nothing in the tree or the chain points at #1 any more. Snapshot S = 18 is open; the page was stamped 19. May it be reused now?',
+                  choices: ['Yes: no pointer to it is left', 'No: a reader older than the stamp may hold its handle'], answer: 1,
+                  explain: 'The paused scan read "next = #1" before the unlink. Its snapshot (18) is older than the stamp (19).' });
+      opScanPage({ prompt: 'The scan resumes and follows its saved link to #1, which is now deleted. What happens?',
+                   choices: ['It sees an empty page and stops', 'It follows the right link that #1 kept', 'It fails'], answer: 1,
+                   explain: 'A deleted page keeps its own right link exactly for this.' });
+      while (!db.scan.done) opScanPage();
+      opClose(index('S'));
+      opRecycle();
+      opPut(11, 110);
+      opPut(12, 120);
+      opVacuum();
+    },
+    early: function () {
+      buildDeletedRange();
+      db.open.splice(index('R'), 1); db.names.splice(index('R'), 1);
+      C.vacuum(db, EVERYTHING);
+      step('Scenario 3. The same tree as in scenario 2: rows 30 … 80 are gone and three leaves are empty.', {});
+      opOpen('S');
+      opScanStart(db.open[index('S')], 'S');
+      opScanPage();
+      var target = db.scan.next;
+      C.markHalfDead(db, target);
+      vacuumEvent('half-dead', { page: target });
+      C.unlinkHalfDead(db, C.leftSibling(db, target), target);
+      vacuumEvent('unlink', { page: target, stamp: C.page(db, target).stamp, next: C.page(db, target).next });
+      opUnsafe();
+      opPut(111, 1110);
+      opPut(112, 1120);
+      while (!db.scan.done) opScanPage();
+      step('The scan returned 10, 20 and 120. Rows 90, 100 and 110 exist and were visible to its snapshot, but it never saw leaves #5 and #8, and nothing reported an error. The tree itself is perfectly valid.', {});
+    }
+  };
+
+  function buildScenario(name) {
+    db = C.create(4);
+    db.names = [];
+    steps = [];
+    SCENARIOS[name]();
+    return db;
+  }
+  function playScenario(name, play) {
+    message('');
+    buildScenario(name);
+    commit(play);
+  }
+
+  /* --------------------------------------------------------- self-tests */
+  // The last dump of sections 3, 5 and 6 of expected_output.txt.
+  var end = buildScenario('hints');
+  BTViz.selfTest('hints: tree', C.dump(end),
+    'now=12 horizon=10 | height 2, 7 entries, 4 pages\n' +
+    '  level 0: #2[20.3 25.4]\n' +
+    '  leaves : #0(10:1- 20:2-4!) -> #1(20:4- 25:10-11) -> #3(25:11-12 25:12- 27:7-)\n');
+  BTViz.selfTest('hints: counts', [end.stats.leafSplits, end.stats.splitsAvoided, end.stats.simple, end.stats.bottomUp].join(' '), '2 4 1 3');
+  end = buildScenario('pages');
+  BTViz.selfTest('pages: tree', C.dump(end),
+    'now=22 horizon=22 | height 3, 8 entries, 8 pages\n' +
+    '  level 0: #7[70.6]\n' +
+    '  level 1: #2[12.7 30.2] #6[110.10]\n' +
+    '  leaves : #0(10:1- 11:20-) -> #1(12:21- 20:2-) -> #3() -> #5(90:9- 100:10-) -> #8(110:11- 120:12-)\n' +
+    '  free   : #4\n');
+  BTViz.selfTest('pages: scan', end.scan.out.map(function (r) { return r.key; }).join(' '), '10 20 90 100 110 120');
+  end = buildScenario('early');
+  BTViz.selfTest('early: tree', C.dump(end),
+    'now=21 horizon=21 | height 3, 8 entries, 9 pages\n' +
+    '  level 0: #7[70.6]\n' +
+    '  level 1: #2[30.2] #6[90.8 110.10 112.7]\n' +
+    '  leaves : #0(10:1- 20:2-) -> #3() -> #4() -> #5(90:9- 100:10-) -> #8(110:11- 111:20-) -> #1(112:21- 120:12-)\n');
+  BTViz.selfTest('early: scan', end.scan.out.map(function (r) { return r.key; }).join(' '), '10 20 120');
+  ['hints', 'pages', 'early'].forEach(function (name) {
+    BTViz.selfTest(name + ': valid', C.validate(buildScenario(name)).join('; '), '');
+  });
+
+  playScenario('hints', false);
+})();
+</script>
+</body>
+</html>

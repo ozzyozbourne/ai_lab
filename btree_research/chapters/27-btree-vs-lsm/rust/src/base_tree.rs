@@ -96,7 +96,11 @@ impl BPlusTree {
     /// The operation in progress looks at node `id`: one block read, unless
     /// this operation already holds the block.
     pub(crate) fn touch(&mut self, id: NodeId) {
-        let kind = if self.nodes.get(id).is_leaf() { BlockKind::Data } else { BlockKind::Index };
+        let kind = if self.nodes.get(id).is_leaf() {
+            BlockKind::Data
+        } else {
+            BlockKind::Index
+        };
         self.dev.pin(id.index(), kind);
     }
 
@@ -108,7 +112,11 @@ impl BPlusTree {
 
     /// Allocates a node (the budget was checked by `put`) and its block.
     pub(crate) fn alloc_node(&mut self, n: Node) -> NodeId {
-        let kind = if n.is_leaf() { BlockKind::Data } else { BlockKind::Index };
+        let kind = if n.is_leaf() {
+            BlockKind::Data
+        } else {
+            BlockKind::Index
+        };
         let id = self.nodes.alloc_reserved(n);
         self.dev.pin_new(id.index(), kind);
         id

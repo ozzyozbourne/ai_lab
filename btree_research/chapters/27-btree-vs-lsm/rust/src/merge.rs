@@ -60,7 +60,11 @@ impl<'a> Merger<'a> {
     pub fn new(geo: Geometry) -> Merger<'a> {
         Merger {
             geo,
-            sources: [Source::Run { slots: &[], pos: 0, loaded: None }; MAX_SOURCES],
+            sources: [Source::Run {
+                slots: &[],
+                pos: 0,
+                loaded: None,
+            }; MAX_SOURCES],
             count: 0,
             heap: [0; MAX_SOURCES],
             heap_len: 0,
@@ -70,7 +74,14 @@ impl<'a> Merger<'a> {
 
     /// Adds a run, positioned at slot `from`. Add inputs NEWEST FIRST.
     pub fn add_run(&mut self, dev: &mut Device, run: &'a Run, from: usize) {
-        self.push_source(dev, Source::Run { slots: &run.slots, pos: from, loaded: None });
+        self.push_source(
+            dev,
+            Source::Run {
+                slots: &run.slots,
+                pos: from,
+                loaded: None,
+            },
+        );
     }
 
     /// Adds the memtable, positioned at `node` (from `Memtable::seek`).
@@ -122,7 +133,10 @@ impl<'a> Merger<'a> {
     }
 
     fn key_of(&self, s: u8) -> u64 {
-        self.sources[s as usize].peek().expect("inputs in the heap have a slot").key
+        self.sources[s as usize]
+            .peek()
+            .expect("inputs in the heap have a slot")
+            .key
     }
 
     /// (key, rank) order: smaller key first; for equal keys the newer input.
@@ -210,18 +224,35 @@ mod tests {
 
     #[test]
     fn three_runs_ascending_output_newest_version_wins_tombstones_pass_through() {
-        let geo = Geometry { block_entries: 2, index_fanout: 2 };
+        let geo = Geometry {
+            block_entries: 2,
+            index_fanout: 2,
+        };
         let mut dev = Device::new();
         let newest = build_run(&mut dev, geo, &[(3, Some(31)), (7, None)]);
-        let middle = build_run(&mut dev, geo, &[(1, Some(12)), (3, Some(32)), (9, Some(92))]);
-        let oldest = build_run(&mut dev, geo, &[(3, Some(33)), (5, Some(53)), (7, Some(73))]);
+        let middle = build_run(
+            &mut dev,
+            geo,
+            &[(1, Some(12)), (3, Some(32)), (9, Some(92))],
+        );
+        let oldest = build_run(
+            &mut dev,
+            geo,
+            &[(3, Some(33)), (5, Some(53)), (7, Some(73))],
+        );
 
         let before = dev.counters;
         let mut m = Merger::new(geo);
         m.add_run(&mut dev, &newest, 0);
         m.add_run(&mut dev, &middle, 0);
         m.add_run(&mut dev, &oldest, 0);
-        let expected = [(1, Some(12)), (3, Some(31)), (5, Some(53)), (7, None), (9, Some(92))];
+        let expected = [
+            (1, Some(12)),
+            (3, Some(31)),
+            (5, Some(53)),
+            (7, None),
+            (9, Some(92)),
+        ];
         for (key, value) in expected {
             assert_eq!(m.next(&mut dev), Some(Slot { key, value }));
         }
@@ -234,7 +265,10 @@ mod tests {
 
     #[test]
     fn a_merge_that_stops_early_reads_only_the_blocks_it_entered() {
-        let geo = Geometry { block_entries: 2, index_fanout: 2 };
+        let geo = Geometry {
+            block_entries: 2,
+            index_fanout: 2,
+        };
         let mut dev = Device::new();
         let slots: Vec<(u64, Option<u64>)> = (0..20).map(|i| (i * 10, Some(i))).collect();
         let run = build_run(&mut dev, geo, &slots);

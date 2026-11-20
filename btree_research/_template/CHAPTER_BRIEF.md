@@ -116,3 +116,8 @@ that copies your code must know.
   "this is atomic / this is better" statement in `solutions.md` must come from code you
   actually ran against the chapter's own tests; otherwise word it as an expectation and
   say it was not measured.
+- Layout defect found in review: the drawing, its caption and the step controls must be
+  visible together on one 1280x800 screen and adjacent on a phone. Do not put a tall
+  side column or scoreboard between the picture and its controls. Measure it with
+  Playwright (bounding boxes), do not eyeball it.
+- Escape all user-typed text before it reaches captions, logs or quiz text (innerHTML).

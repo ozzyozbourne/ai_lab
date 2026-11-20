@@ -83,8 +83,14 @@ fn trace(w: &mut dyn Write) -> io::Result<()> {
 
     writeln!(w, "== 1. One trace, two structures ==")?;
     writeln!(w, "B+tree: order M = 4, so 3 entries per leaf block.")?;
-    writeln!(w, "LSM: 3 slots per data block, memtable of 4 keys, level 0 holds 2 runs, growth 2.")?;
-    writeln!(w, "r = blocks read, w = blocks written by that one operation.\n")?;
+    writeln!(
+        w,
+        "LSM: 3 slots per data block, memtable of 4 keys, level 0 holds 2 runs, growth 2."
+    )?;
+    writeln!(
+        w,
+        "r = blocks read, w = blocks written by that one operation.\n"
+    )?;
 
     for op in TRACE_OPS {
         let t0 = tree.dev.counters;
@@ -138,14 +144,26 @@ fn trace(w: &mut dyn Write) -> io::Result<()> {
         )?;
         // What the counters mean, from the structures' own statistics.
         let notes = [
-            (tree.stats.leaf_splits > ts.leaf_splits, " btree: leaf split."),
-            (tree.stats.internal_splits > ts.internal_splits, " btree: internal split."),
+            (
+                tree.stats.leaf_splits > ts.leaf_splits,
+                " btree: leaf split.",
+            ),
+            (
+                tree.stats.internal_splits > ts.internal_splits,
+                " btree: internal split.",
+            ),
             (tree.height > th && th > 0, " btree: new root."),
             (tree.stats.borrows > ts.borrows, " btree: borrow."),
             (tree.stats.merges > ts.merges, " btree: merge."),
             (lsm.stats.flushes > ls.flushes, " lsm: flush."),
-            (lsm.stats.l0_compactions > ls.l0_compactions, " lsm: compact level 0 into level 1."),
-            (lsm.stats.level_merges > ls.level_merges, " lsm: merge a level down."),
+            (
+                lsm.stats.l0_compactions > ls.l0_compactions,
+                " lsm: compact level 0 into level 1.",
+            ),
+            (
+                lsm.stats.level_merges > ls.level_merges,
+                " lsm: merge a level down.",
+            ),
         ];
         for (happened, note) in notes {
             if happened {
@@ -158,7 +176,11 @@ fn trace(w: &mut dyn Write) -> io::Result<()> {
     lsm.validate().expect("valid lsm");
 
     writeln!(w, "\n== 2. Where the data ended up ==")?;
-    writeln!(w, "B+tree: height {}, {} blocks", tree.height, tree.dev.live)?;
+    writeln!(
+        w,
+        "B+tree: height {}, {} blocks",
+        tree.height, tree.dev.live
+    )?;
     dump_tree(w, &tree)?;
     writeln!(
         w,
@@ -203,13 +225,22 @@ fn dump_depth(w: &mut dyn Write, tree: &BPlusTree, id: NodeId, depth: usize) -> 
         return Ok(());
     }
     let keys: Vec<String> = n.key_slice().iter().map(u64::to_string).collect();
-    if n.is_leaf() { write!(w, " ({})", keys.join(" ")) } else { write!(w, " [{}]", keys.join(" ")) }
+    if n.is_leaf() {
+        write!(w, " ({})", keys.join(" "))
+    } else {
+        write!(w, " [{}]", keys.join(" "))
+    }
 }
 
 fn dump_lsm(w: &mut dyn Write, lsm: &Lsm) -> io::Result<()> {
     write!(w, "  memtable:")?;
     for slot in lsm.mem.iter_from(lsm.mem.first()) {
-        write!(w, " {}{}", if slot.value.is_none() { "~" } else { "" }, slot.key)?;
+        write!(
+            w,
+            " {}{}",
+            if slot.value.is_none() { "~" } else { "" },
+            slot.key
+        )?;
     }
     write!(w, "\n  level 0 (oldest first):")?;
     for run in &lsm.l0 {
@@ -256,7 +287,12 @@ fn row_count(w: &mut dyn Write, label: &str, a: u64, b: u64) -> io::Result<()> {
 }
 
 fn row_ratio(w: &mut dyn Write, label: &str, a: (u64, u64), b: (u64, u64)) -> io::Result<()> {
-    writeln!(w, "{label:<42}{:>10}{:>10}", ratio(a.0, a.1), ratio(b.0, b.1))
+    writeln!(
+        w,
+        "{label:<42}{:>10}{:>10}",
+        ratio(a.0, a.1),
+        ratio(b.0, b.1)
+    )
 }
 
 fn compare(w: &mut dyn Write, wl: &Workload, section: usize) -> io::Result<()> {
@@ -287,9 +323,19 @@ fn compare(w: &mut dyn Write, wl: &Workload, section: usize) -> io::Result<()> {
 
     writeln!(w, "{:<42}{:>10}{:>10}", "", "B+tree", "LSM")?;
     let (bw, lw) = (b.writes.io.total_writes(), l.writes.io.total_writes());
-    row_count(w, "write operations (put + delete)", b.writes.ops, l.writes.ops)?;
+    row_count(
+        w,
+        "write operations (put + delete)",
+        b.writes.ops,
+        l.writes.ops,
+    )?;
     row_count(w, "  blocks written", bw, lw)?;
-    row_ratio(w, "  blocks written per write", (bw, b.writes.ops), (lw, l.writes.ops))?;
+    row_ratio(
+        w,
+        "  blocks written per write",
+        (bw, b.writes.ops),
+        (lw, l.writes.ops),
+    )?;
     row_ratio(
         w,
         "  WRITE AMPLIFICATION (slots per entry)",
@@ -302,7 +348,12 @@ fn compare(w: &mut dyn Write, wl: &Workload, section: usize) -> io::Result<()> {
         (b.writes.io.total_reads(), b.writes.ops),
         (l.writes.io.total_reads(), l.writes.ops),
     )?;
-    row_count(w, "  most blocks written by one write", b.writes.max_writes, l.writes.max_writes)?;
+    row_count(
+        w,
+        "  most blocks written by one write",
+        b.writes.max_writes,
+        l.writes.max_writes,
+    )?;
     row_count(w, "point lookups (get)", b.gets.ops, l.gets.ops)?;
     row_ratio(
         w,
@@ -331,10 +382,25 @@ fn compare(w: &mut dyn Write, wl: &Workload, section: usize) -> io::Result<()> {
     )?;
     let packed_blocks = (r.live_keys as u64).div_ceil(per_block);
     row_count(w, "blocks on the device at the end", b.blocks, l.blocks)?;
-    row_count(w, "  blocks if every live key were packed", packed_blocks, packed_blocks)?;
-    row_ratio(w, "  SPACE AMPLIFICATION (at the end)", (b.blocks, packed_blocks), (l.blocks, packed_blocks))?;
+    row_count(
+        w,
+        "  blocks if every live key were packed",
+        packed_blocks,
+        packed_blocks,
+    )?;
+    row_ratio(
+        w,
+        "  SPACE AMPLIFICATION (at the end)",
+        (b.blocks, packed_blocks),
+        (l.blocks, packed_blocks),
+    )?;
     row_count(w, "  most blocks at any moment", b.peak, l.peak)?;
-    row_ratio(w, "  space amplification (at the peak)", (b.peak, packed_blocks), (l.peak, packed_blocks))?;
+    row_ratio(
+        w,
+        "  space amplification (at the peak)",
+        (b.peak, packed_blocks),
+        (l.peak, packed_blocks),
+    )?;
 
     let s = r.lsm_stats;
     writeln!(
@@ -356,14 +422,20 @@ fn compare(w: &mut dyn Write, wl: &Workload, section: usize) -> io::Result<()> {
 
 fn growth_sweep(w: &mut dyn Write) -> io::Result<()> {
     writeln!(w, "\n== 6. The growth factor is the tuning knob ==")?;
-    writeln!(w, "LSM only, insert-heavy workload again, everything else unchanged.\n")?;
+    writeln!(
+        w,
+        "LSM only, insert-heavy workload again, everything else unchanged.\n"
+    )?;
     writeln!(
         w,
         "{:<8}{:>8}{:>16}{:>16}{:>16}{:>14}",
         "growth", "levels", "write amp", "blocks per get", "blocks per scan", "peak blocks"
     )?;
     for growth in [2, 4, 8, 16] {
-        let cfg = lsm::Config { growth, ..bench::BENCH_LSM };
+        let cfg = lsm::Config {
+            growth,
+            ..bench::BENCH_LSM
+        };
         let r = bench::run_workload(&bench::WORKLOADS[0], bench::BENCH_ORDER, cfg);
         let l = &r.lsm;
         writeln!(
@@ -371,7 +443,10 @@ fn growth_sweep(w: &mut dyn Write) -> io::Result<()> {
             "{:<8}{:>8}{:>16}{:>16}{:>16}{:>14}",
             growth,
             r.lsm_levels,
-            ratio(l.writes.io.total_writes() * cfg.block_entries as u64, l.writes.ops),
+            ratio(
+                l.writes.io.total_writes() * cfg.block_entries as u64,
+                l.writes.ops
+            ),
             ratio(l.gets.io.total_reads(), l.gets.ops),
             ratio(l.scans.io.total_reads(), l.scans.ops),
             l.peak
@@ -386,6 +461,9 @@ mod tests {
     fn run_prints_exactly_expected_output_txt() {
         let mut out = Vec::new();
         super::run(&mut out).unwrap();
-        assert_eq!(String::from_utf8(out).unwrap(), include_str!("../../expected_output.txt"));
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            include_str!("../../expected_output.txt")
+        );
     }
 }

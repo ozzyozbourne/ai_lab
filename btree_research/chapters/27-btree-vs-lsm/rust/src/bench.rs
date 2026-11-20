@@ -71,7 +71,11 @@ pub struct Report {
 }
 
 fn same_entries(got: &[Entry], want: &[ops::Entry]) -> bool {
-    got.len() == want.len() && got.iter().zip(want).all(|(g, w)| g.key == w.key && g.value == w.value)
+    got.len() == want.len()
+        && got
+            .iter()
+            .zip(want)
+            .all(|(g, w)| g.key == w.key && g.value == w.value)
 }
 
 /// No budgets are set by the harness, so writes cannot fail.
@@ -89,10 +93,17 @@ pub fn run_workload(wl: &Workload, order: usize, cfg: lsm::Config) -> Report {
         seed: wl.seed.wrapping_add(1),
         count: wl.preload,
         key_space: wl.key_space,
-        weights: Weights { put: 1, delete: 0, get: 0, range: 0 },
+        weights: Weights {
+            put: 1,
+            delete: 0,
+            get: 0,
+            range: 0,
+        },
     });
     for op in load {
-        let Op::Put { key, value } = op else { unreachable!("put-only stream") };
+        let Op::Put { key, value } = op else {
+            unreachable!("put-only stream")
+        };
         tree.put(key, value).expect(NO_BUDGET);
         lsm.put(key, value).expect(NO_BUDGET);
         oracle.put(key, value);
@@ -185,7 +196,12 @@ pub const WORKLOADS: [Workload; 3] = [
         preload: 0,
         count: 12_000,
         key_space: 1_000_000,
-        weights: Weights { put: 90, delete: 0, get: 8, range: 2 },
+        weights: Weights {
+            put: 90,
+            delete: 0,
+            get: 8,
+            range: 2,
+        },
         scan_span: 2_000,
     },
     Workload {
@@ -194,7 +210,12 @@ pub const WORKLOADS: [Workload; 3] = [
         preload: 8_000,
         count: 12_000,
         key_space: 12_000,
-        weights: Weights { put: 5, delete: 0, get: 80, range: 15 },
+        weights: Weights {
+            put: 5,
+            delete: 0,
+            get: 80,
+            range: 15,
+        },
         scan_span: 40,
     },
     Workload {
@@ -203,7 +224,12 @@ pub const WORKLOADS: [Workload; 3] = [
         preload: 4_000,
         count: 12_000,
         key_space: 4_000,
-        weights: Weights { put: 70, delete: 15, get: 10, range: 5 },
+        weights: Weights {
+            put: 70,
+            delete: 15,
+            get: 10,
+            range: 5,
+        },
         scan_span: 32,
     },
 ];

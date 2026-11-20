@@ -10,7 +10,7 @@
 .c11-rows { overflow-x: auto; scrollbar-width: thin; padding: 2px 0 6px; }
 .c11-rows-inner { min-width: min-content; display: flex; flex-direction: column; gap: 4px; }
 .c11-row {
-  display: grid; grid-template-columns: 9.5rem auto; align-items: center; gap: 2px 10px; padding: 4px 8px;
+  display: grid; grid-template-columns: max(9.5rem, var(--c11-meta, 0px)) auto; align-items: center; gap: 2px 10px; padding: 4px 8px;
   border-radius: 6px; background: var(--s-bg, var(--bt-surface)); box-shadow: inset 3px 0 0 var(--s, var(--bt-border));
 }
 .c11-row.r-pending .c11-meta { color: var(--bt-muted); }
@@ -144,8 +144,8 @@ byte order of each encoding with the numeric order.</p>
         box.checked = true;
         fixRow.appendChild(el('label.bt-field', box, f[1]));
       });
-    var nameIn = el('input.bt-input', { type: 'text', 'aria-label': 'Name', placeholder: 'name (\\x00 = a byte)', maxlength: 40 });
-    var scoreIn = el('input.bt-input', { type: 'text', inputmode: 'numeric', 'aria-label': 'Score (empty = NULL)', placeholder: 'score or empty' });
+    var nameIn = el('input.bt-input.is-wide', { type: 'text', 'aria-label': 'Name', placeholder: 'name or \\xNN', maxlength: 40 });
+    var scoreIn = el('input.bt-input.is-wide', { type: 'text', inputmode: 'numeric', 'aria-label': 'Score (empty = NULL)', placeholder: 'score or empty' });
     var err = el('span.c11-error', { role: 'alert' });
     var addBtn = el('button.bt-btn.bt-primary', { type: 'button', id: 'c11-add', onclick: addRow }, 'Add row');
     var rowRow = el('div.c11-toolrow', el('span.c11-tl', 'Your row:'), nameIn, scoreIn, addBtn,
@@ -188,6 +188,11 @@ byte order of each encoding with the numeric order.</p>
         inner.appendChild(node);
         rowEls[r] = node;
       });
+      // A long name (ten escaped bytes are 40 characters) widens the label column of every row, so the bytes stay aligned.
+      inner.style.removeProperty('--c11-meta');
+      var metaWidth = 0;
+      inner.querySelectorAll('.c11-meta').forEach(function (m) { metaWidth = Math.max(metaWidth, m.scrollWidth); });
+      inner.style.setProperty('--c11-meta', metaWidth + 'px');
       // FLIP: rows that changed position slide from where they were.
       var dur = BTViz.motion.duration();
       if (dur > 0) Object.keys(rowEls).forEach(function (r) {

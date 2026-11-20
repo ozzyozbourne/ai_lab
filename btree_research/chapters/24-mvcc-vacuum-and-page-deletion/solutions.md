@@ -37,9 +37,11 @@ Change in `index.zig`:
 leaf.state = .{ .deleted = store.now };   // was: store.tick()
 ```
 
-Result of `zig build test` (measured): 4 tests fail. Two fail only because numbers in
-their expected text moved (the dump test of page deletion, and the comparison with
-`expected_output.txt`). The two that matter:
+Result of `zig build test` (measured): 5 of the 27 tests fail. Three fail for
+bookkeeping reasons: two compare text in which the numbers moved (the dump test of
+page deletion and the comparison with `expected_output.txt`), and the model test
+fails in `validate`, which insists that stamps in the deleted queue are strictly
+ascending (two pages unlinked by one VACUUM now share a stamp). The two that matter:
 
 - "a scan about to step onto a page that is then deleted moves right safely" fails at
   `expectEqual(0, report.pages_recycled)`: `expected 0, found 2`.
@@ -57,13 +59,16 @@ Making it safe again: free only when the stamp is strictly below the horizon.
 if (leaf.state.deleted >= horizon) break;  // was: > horizon
 ```
 
-Result (measured): the recycling assertions above hold again, but other tests now
-fail, and they show what was lost:
+Result (measured): the two recycling assertions above pass again (the scan test now
+gets past them and stops later, at `expect(s < stamp)`, which is no longer true). But
+7 tests fail in total, and the new failures show what was lost:
 
 - "vacuum removes exactly what the oldest snapshot cannot see" fails at
   `expectEqual(report.pages_unlinked, report.pages_recycled)`: `expected 3, found 0`.
 - "a deletion interrupted after phase 1 ..." fails at
   `expectEqual(2, report.pages_recycled)`: `expected 2, found 0`.
+- "the leftmost leaf can be deleted ..." fails where it expects the old head page
+  to be free already.
 
 With no snapshot open the horizon equals `now`, which equals the stamp, so a VACUUM
 can no longer recycle the pages it has just unlinked. They wait until some later

@@ -175,12 +175,17 @@ test "model: a real file, closed and opened again" {
 }
 
 test "injected I/O failures: an error, no leaked pin, and a tree that is intact or poisoned" {
-    const shape: Shape = .{ .frames = 3, .key_space = 600, .max_key = 32, .max_value = 200, .ops = 0, .reopen_every = 1 };
+    const shapes = [2]Shape{
+        .{ .frames = 3, .key_space = 600, .max_key = 32, .max_value = 200, .ops = 0, .reopen_every = 1 },
+        // Large cells: most puts split, so failures often land inside one.
+        .{ .frames = 3, .key_space = 5000, .max_key = 200, .max_value = 1000, .ops = 0, .reopen_every = 1 },
+    };
     var clean_failures: usize = 0;
     var poisoned_failures: usize = 0;
     for ([_]bool{ false, true }) |fail_reads| {
         var countdown: u64 = 0;
         while (countdown < 150) : (countdown += 1) {
+            const shape = shapes[countdown % 2];
             var mem: MemStorage = .init(testing.allocator);
             defer mem.deinit();
             var model: Model = .init(testing.allocator);
@@ -284,6 +289,7 @@ test "allocation failure in put: OutOfMemory, no leaked pin, intact or poisoned"
                 try testing.expect(failing.has_induced_failure);
                 try testing.expectEqual(0, pool.pinnedFrames());
                 induced += 1;
+                if (tree.poisoned) std.debug.print("poisoned at {d}\n", .{fail_index});
                 failing.fail_index = std.math.maxInt(usize); // memory is back
                 if (!tree.poisoned) {
                     try expectSameContent(&tree, &model);

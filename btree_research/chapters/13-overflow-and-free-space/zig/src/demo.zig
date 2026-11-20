@@ -1,12 +1,13 @@
 //! demo.zig: the fixed, deterministic scenario printed by `zig build run`.
 //!
-//! Part 1  24 keys with values of 324 to 1020 bytes in a real file, through
-//!         a 3-frame buffer pool. The visualization replays exactly this
-//!         part and checks its tree and its counters.
-//! Part 2  a seeded workload of variable-length keys and values on an
-//!         in-memory storage, with a reopen in the middle.
-//! Part 3  integer keys: big-endian bytes make memcmp order numeric order.
-//! Part 4  not crash-safe: the same split, stopped after every page write.
+//! Part 1  a dozen operations on a real file: a value spills into an
+//!         overflow chain, pages are freed and reused, a leaf empties and
+//!         the root collapses. The visualization replays exactly this part.
+//! Part 2  a seeded workload of puts and deletes with values of every size
+//!         class, with a reopen in the middle, compared with the oracle.
+//! Part 3  the file stops growing under a steady insert/delete load.
+//! Part 4  where a value is assembled: stack buffer first, heap if larger.
+//! Part 5  not crash-safe: a freed page is reused at once.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -21,56 +22,90 @@ const DiskBTree = btree.DiskBTree;
 const workload = @import("workload.zig");
 const SplitMix64 = @import("prng.zig").SplitMix64;
 
-pub const db_name = "ch12_demo.db";
+pub const db_name = "ch13_demo.db";
 
-/// The keys of parts 1 and 4, in insertion order. The first twelve are the
-/// guide's canonical example.
-pub const scenario_keys = [_]u8{ 10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15, 8, 22, 28, 14, 2, 27, 18, 9, 23, 11, 29, 4 };
+/// One step of part 1: `len` null deletes the key, otherwise the key gets a
+/// value of `len` bytes.
+pub const Step = struct { key: u8, len: ?usize, show: bool = false };
+
+pub const scenario = [_]Step{
+    .{ .key = 10, .len = 700 },
+    .{ .key = 20, .len = 700 },
+    .{ .key = 30, .len = 700 },
+    .{ .key = 40, .len = 700 },
+    .{ .key = 50, .len = 700 },
+    .{ .key = 25, .len = 9000, .show = true }, // spills, and splits the root leaf
+    .{ .key = 60, .len = 3000 },
+    .{ .key = 25, .len = 100, .show = true }, // large -> small: the chain is freed
+    .{ .key = 35, .len = 5000, .show = true }, // reuses a freed page
+    .{ .key = 40, .len = null },
+    .{ .key = 50, .len = null },
+    .{ .key = 60, .len = null },
+    .{ .key = 35, .len = null, .show = true }, // the right leaf empties; the root collapses
+    .{ .key = 70, .len = 14000, .show = true }, // needs four pages; three are free
+};
 
 /// Key `n` as two decimal digits, so that byte order is numeric order.
-fn scenarioKey(n: u8, buf: *[2]u8) []const u8 {
+pub fn scenarioKey(n: u8, buf: *[2]u8) []const u8 {
     buf.* = .{ '0' + n / 10, '0' + n % 10 };
     return buf;
 }
 
-/// The value of key `n`: 300 + 24 * n copies of one letter. Small keys have
-/// small values, so the leaves on the left hold more cells than the leaves
-/// on the right.
-fn scenarioValue(n: u8, buf: *[btree.max_value_len]u8) []const u8 {
-    const len = 300 + 24 * @as(usize, n);
-    @memset(buf[0..len], 'a' + n % 26);
-    return buf[0..len];
-}
-
-fn scenarioPut(tree: *DiskBTree, n: u8) !void {
+/// Apply one step. The value is `len` copies of one letter.
+pub fn applyStep(tree: *DiskBTree, gpa: Allocator, step: Step) !void {
     var key_buf: [2]u8 = undefined;
-    var value_buf: [btree.max_value_len]u8 = undefined;
-    try tree.put(scenarioKey(n, &key_buf), scenarioValue(n, &value_buf));
+    const key = scenarioKey(step.key, &key_buf);
+    const len = step.len orelse {
+        _ = try tree.delete(key);
+        return;
+    };
+    const value = try gpa.alloc(u8, len);
+    defer gpa.free(value);
+    @memset(value, 'a' + step.key % 26);
+    try tree.put(key, value);
 }
 
 pub fn run(w: *Io.Writer, gpa: Allocator, io: Io, dir: Io.Dir) !void {
-    try w.writeAll("Chapter 12: a disk-backed B+tree\n");
+    try w.writeAll("Chapter 13: overflow chains and free space\n");
     // Remove the demo file on every path out of here, errors included.
     defer dir.deleteFile(io, db_name) catch {};
     try part1(w, gpa, io, dir);
     try part2(w, gpa);
     try part3(w, gpa);
     try part4(w, gpa);
+    try part5(w, gpa);
+}
+
+/// One letter per page: M metapage, I interior, L leaf, O overflow, T free-
+/// list trunk, F free.
+fn printPageMap(w: *Io.Writer, tree: *DiskBTree, gpa: Allocator) !void {
+    const roles = try tree.pageMap(gpa);
+    defer gpa.free(roles);
+    try w.writeAll("page map:");
+    for (roles) |role| try w.print(" {c}", .{role.letter()});
+    try w.writeAll("\n");
 }
 
 fn printCounters(w: *Io.Writer, tree: *DiskBTree) !void {
     const pool = tree.pool;
-    try w.print("tree:  {d} keys, {d} pages, height {d}; splits: {d} leaf, {d} interior, {d} root\n", .{
-        tree.key_count,         pool.pager.pageCount(),     try tree.height(),
-        tree.stats.leaf_splits, tree.stats.interior_splits, tree.stats.root_splits,
+    const s = tree.stats;
+    try w.print("tree:  {d} keys, {d} pages, height {d}; splits: {d} leaf, {d} interior, {d} root; root collapses: {d}\n", .{
+        tree.key_count, pool.pager.pageCount(), try tree.height(), s.leaf_splits, s.interior_splits, s.root_splits, s.root_collapses,
+    });
+    try w.print("space: {d} overflow pages written, {d} tree pages freed, {d} pages freed in all, {d} allocations reused a page, {d} pages free now\n", .{
+        s.overflow_pages_written, s.tree_pages_freed, s.pages_freed, s.pages_reused, tree.free_count,
     });
     try w.print("pool:  {d} hits, {d} misses, {d} evictions, {d} write-backs\n", .{ pool.stats.hits, pool.stats.misses, pool.stats.evictions, pool.stats.writebacks });
     try w.print("pager: {d} reads, {d} writes, {d} allocations, {d} syncs\n", .{ pool.pager.stats.reads, pool.pager.stats.writes, pool.pager.stats.allocations, pool.pager.stats.syncs });
 }
 
 fn part1(w: *Io.Writer, gpa: Allocator, io: Io, dir: Io.Dir) !void {
-    try w.writeAll("\n== Part 1: a tree of pages in a real file (3-frame pool) ==\n");
-    try w.print("a page offers {d} bytes to cells; a key may have {d} bytes, a value {d}\n", .{ btree.page_capacity, btree.max_key_len, btree.max_value_len });
+    try w.writeAll("\n== Part 1: large values, freed pages and their reuse, in a real file (3-frame pool) ==\n");
+    try w.print("a page offers {d} bytes to cells; a leaf cell keeps at most X = {d} value bytes, a spilled value at least M = {d}\n", .{ btree.page_capacity, btree.max_local, btree.min_local });
+    try w.print("an overflow page holds {d} value bytes; a trunk page lists up to {d} free pages; a value may have {d} bytes\n", .{ btree.overflow_payload, btree.trunk_capacity, btree.max_value_len });
+    try w.writeAll("value bytes -> in the leaf + overflow pages:");
+    for ([_]usize{ 100, 1088, 1089, 3000, 5000, 9000, 14000 }) |total| try w.print("  {d} -> {d}+{d}p", .{ total, btree.localLen(total), btree.overflowPages(total) });
+    try w.writeAll("\n");
     {
         var file: FileStorage = try .create(io, dir, db_name);
         defer file.close();
@@ -82,20 +117,22 @@ fn part1(w: *Io.Writer, gpa: Allocator, io: Io, dir: Io.Dir) !void {
         try w.print("created {s}: {d} pages (page 0 = metapage, page {d} = root)\n", .{ db_name, pager.pageCount(), tree.root });
 
         var key_buf: [2]u8 = undefined;
-        for (scenario_keys, 1..) |n, i| {
-            const before = tree.stats;
-            try scenarioPut(&tree, n);
-            const leaf_split = tree.stats.leaf_splits != before.leaf_splits;
-            if (!leaf_split) continue;
-            const grew = tree.stats.root_splits != before.root_splits;
-            try w.print("put #{d} key {s} ({d} bytes) splits a leaf{s}: {d} pages\n", .{
-                i,                                            scenarioKey(n, &key_buf), btree.cellCost(2, 300 + 24 * @as(usize, n)),
-                if (grew) " and moves the root down" else "", pager.pageCount(),
+        for (scenario, 1..) |step, i| {
+            const pages_before = pager.pageCount();
+            const reused_before = tree.stats.pages_reused;
+            const freed_before = tree.stats.pages_freed;
+            try applyStep(&tree, gpa, step);
+            const key = scenarioKey(step.key, &key_buf);
+            if (step.len) |len| {
+                try w.print("#{d} put {s} = {d} bytes ({d} in the leaf + {d} overflow pages)", .{ i, key, len, btree.localLen(len), btree.overflowPages(len) });
+            } else try w.print("#{d} delete {s}", .{ i, key });
+            try w.print(": {d} pages freed, {d} reused, file grew by {d}\n", .{
+                tree.stats.pages_freed - freed_before, tree.stats.pages_reused - reused_before, pager.pageCount() - pages_before,
             });
-            if (grew) try tree.dump(w);
+            if (!step.show) continue;
+            try tree.dump(w);
+            try printPageMap(w, &tree, gpa);
         }
-        try w.writeAll("after 24 puts:\n");
-        try tree.dump(w);
         try tree.validate();
         try printCounters(w, &tree);
         try tree.flush();
@@ -109,27 +146,54 @@ fn part1(w: *Io.Writer, gpa: Allocator, io: Io, dir: Io.Dir) !void {
     var tree: DiskBTree = try .open(gpa, &pool);
     defer tree.deinit();
     try tree.validate();
-    try w.print("reopened: root = page {d}, {d} keys, height {d}, validate ok\n", .{ tree.root, tree.key_count, try tree.height() });
+    try w.print("reopened: root = page {d}, {d} keys, height {d}, {d} free pages, validate ok\n", .{ tree.root, tree.key_count, try tree.height(), tree.free_count });
 
-    const value = (try tree.get(gpa, "17")).?;
+    const value = (try tree.get(gpa, "70")).?;
     defer gpa.free(value);
-    try w.print("get 17 -> {d} bytes of '{c}'\n", .{ value.len, value[0] });
-    try w.print("get 13 -> {s}\n", .{if (try tree.get(gpa, "13")) |_| "found?!" else "not found"});
-    try w.writeAll("range [10, 20) ->");
-    var it = try tree.range("10", "20");
-    while (try it.next()) |item| try w.print(" {s}:{d}", .{ item.key, item.value.len });
+    try w.print("get 70 -> {d} bytes, all '{c}': {}\n", .{ value.len, value[0], std.mem.allEqual(u8, value, 'a' + 70 % 26) });
+    try w.print("get 35 -> {s}\n", .{if (try tree.get(gpa, "35")) |_| "found?!" else "not found"});
+    try w.writeAll("range [10, 99) ->");
+    var it = try tree.range("10", "99");
+    defer it.deinit();
+    while (try it.next()) |item| try w.print(" {s}:{d}{s}", .{ item.key, item.value.len, if (it.valueOnHeap()) "(heap)" else "" });
     try w.writeAll("\n");
 }
 
+/// One random operation of parts 2 to 4, applied to tree and oracle: a put
+/// of a mixed-size value, or (`deletes` times in 10) a delete.
+fn mixedOp(tree: *DiskBTree, model: *workload.Model, rng: *SplitMix64, key_space: u64, deletes: u64) !void {
+    var key_buf: [workload.max_key_len]u8 = undefined;
+    var value_buf: [workload.max_value_len]u8 = undefined;
+    const key = workload.keyFor(rng.below(key_space), 32, &key_buf);
+    if (rng.below(10) < deletes) {
+        const deleted = try tree.delete(key);
+        std.debug.assert(deleted == model.delete(key));
+    } else {
+        const value = workload.mixedValue(rng, 20000, &value_buf);
+        try tree.put(key, value);
+        try model.put(key, value);
+    }
+}
+
+fn sameAsOracle(tree: *DiskBTree, model: *const workload.Model) !bool {
+    var it = try tree.range("", null);
+    defer it.deinit();
+    var count: usize = 0;
+    while (try it.next()) |item| : (count += 1) {
+        if (count == model.len()) return false;
+        const expected = model.entries.items[count];
+        if (!std.mem.eql(u8, item.key, expected.key) or !std.mem.eql(u8, item.value, expected.value)) return false;
+    }
+    return count == model.len();
+}
+
 fn part2(w: *Io.Writer, gpa: Allocator) !void {
-    try w.writeAll("\n== Part 2: 4000 random puts, keys of 1 to 64 bytes, values of 0 to 300 bytes (8-frame pool) ==\n");
+    try w.writeAll("\n== Part 2: 4000 random operations, 3 puts to 1 delete, values of 0 to 20000 bytes (8-frame pool) ==\n");
     var mem: MemStorage = .init(gpa);
     defer mem.deinit();
     var model: workload.Model = .init(gpa);
     defer model.deinit();
-    var rng = SplitMix64.init(12);
-    var key_buf: [workload.max_key_len]u8 = undefined;
-    var value_buf: [workload.max_value_len]u8 = undefined;
+    var rng = SplitMix64.init(13);
 
     for (0..2) |half| {
         var pager: Pager = try .init(mem.storage());
@@ -137,146 +201,172 @@ fn part2(w: *Io.Writer, gpa: Allocator) !void {
         defer pool.deinit();
         var tree: DiskBTree = if (half == 0) try .create(gpa, &pool) else try .open(gpa, &pool);
         defer tree.deinit();
-        for (0..2000) |_| {
-            const key = workload.keyFor(rng.below(3000), 64, &key_buf);
-            const value = workload.randomValue(&rng, 300, &value_buf);
-            try tree.put(key, value);
-            try model.put(key, value);
-        }
+        for (0..2000) |_| try mixedOp(&tree, &model, &rng, 600, 3);
         try tree.validate();
-        try w.print("{s}\n", .{if (half == 0) "first 2000 puts:" else "reopened, 2000 more puts:"});
+        try w.print("{s}\n", .{if (half == 0) "first 2000 operations:" else "reopened, 2000 more operations:"});
         try printCounters(w, &tree);
         try tree.flush();
         if (half == 0) continue;
 
-        // Compare everything with the oracle: one full scan.
-        var it = try tree.range("", null);
-        var same = true;
-        var count: usize = 0;
-        while (try it.next()) |item| : (count += 1) {
-            const expected = model.entries.items[count];
-            same = same and std.mem.eql(u8, item.key, expected.key) and std.mem.eql(u8, item.value, expected.value);
-        }
-        try w.print("full scan: {d} entries, oracle has {d}, identical: {}\n", .{ count, model.len(), same and count == model.len() });
+        const roles = try tree.pageMap(gpa);
+        defer gpa.free(roles);
+        var counts: [7]usize = @splat(0);
+        for (roles) |role| counts[@intFromEnum(role)] += 1;
+        try w.print("page roles: {d} metapage, {d} interior, {d} leaf, {d} overflow, {d} trunk, {d} free\n", .{ counts[1], counts[2], counts[3], counts[4], counts[5], counts[6] });
+        try w.print("full scan: oracle has {d} entries, identical: {}\n", .{ model.len(), try sameAsOracle(&tree, &model) });
     }
 }
 
-fn part3(w: *Io.Writer, gpa: Allocator) !void {
-    try w.writeAll("\n== Part 3: integer keys as big-endian bytes (chapter 11) ==\n");
+/// Part 3 and its test: `rounds` rounds of 500 operations, half puts and
+/// half deletes over 200 keys. Returns the page count after each round.
+pub fn steadyState(gpa: Allocator, rounds: usize, pages: []u32, stats: *DiskBTree.Stats) !void {
     var mem: MemStorage = .init(gpa);
     defer mem.deinit();
+    var model: workload.Model = .init(gpa);
+    defer model.deinit();
     var pager: Pager = try .init(mem.storage());
     var pool: BufferPool = try .init(gpa, &pager, 8);
     defer pool.deinit();
     var tree: DiskBTree = try .create(gpa, &pool);
     defer tree.deinit();
-
-    // 1 .. 1000 in a shuffled order; the value is the number as text.
-    var numbers: [1000]u64 = undefined;
-    for (&numbers, 1..) |*n, i| n.* = i;
     var rng = SplitMix64.init(3);
-    rng.shuffle(&numbers);
-    var key: [8]u8 = undefined;
-    var text: [20]u8 = undefined;
-    for (numbers) |n| {
-        std.mem.writeInt(u64, &key, n, .big);
-        try tree.put(&key, try std.fmt.bufPrint(&text, "{d}", .{n}));
+    for (0..rounds) |round| {
+        for (0..500) |_| try mixedOp(&tree, &model, &rng, 200, 5);
+        try tree.validate();
+        pages[round] = pager.pageCount();
     }
-    try tree.validate();
-    try w.print("1000 keys, {d} pages, height {d}\n", .{ pager.pageCount(), try tree.height() });
-
-    var lo: [8]u8 = undefined;
-    var hi: [8]u8 = undefined;
-    std.mem.writeInt(u64, &lo, 254, .big);
-    std.mem.writeInt(u64, &hi, 259, .big);
-    try w.writeAll("range [254, 259) ->");
-    var it = try tree.range(&lo, &hi);
-    while (try it.next()) |item| try w.print(" {s}", .{item.value});
-    try w.writeAll("\n(255 = 00..00ff and 256 = 00..0100: adjacent as bytes only because the high byte comes first)\n");
+    std.debug.assert(try sameAsOracle(&tree, &model));
+    stats.* = tree.stats;
 }
 
-// ---- Part 4 -------------------------------------------------------------------
+fn part3(w: *Io.Writer, gpa: Allocator) !void {
+    try w.writeAll("\n== Part 3: the file stops growing: 12 rounds of 250 puts + 250 deletes over 200 keys ==\n");
+    var pages: [12]u32 = undefined;
+    var stats: DiskBTree.Stats = undefined;
+    try steadyState(gpa, pages.len, &pages, &stats);
+    try w.writeAll("pages in the file after each round:");
+    for (pages) |n| try w.print(" {d}", .{n});
+    try w.print("\n{d} pages were freed and {d} allocations reused one; without a free list the file would have {d} pages\n", .{ stats.pages_freed, stats.pages_reused, pages[pages.len - 1] + stats.pages_reused });
+}
 
-/// What is left in the storage when a split is cut short.
+fn part4(w: *Io.Writer, gpa: Allocator) !void {
+    try w.writeAll("\n== Part 4: assembling values: a 1088-byte stack buffer first, the heap only if the value is larger ==\n");
+    var mem: MemStorage = .init(gpa);
+    defer mem.deinit();
+    var model: workload.Model = .init(gpa);
+    defer model.deinit();
+    var pager: Pager = try .init(mem.storage());
+    var pool: BufferPool = try .init(gpa, &pager, 8);
+    defer pool.deinit();
+    var tree: DiskBTree = try .create(gpa, &pool);
+    defer tree.deinit();
+    var rng = SplitMix64.init(4);
+    for (0..1500) |_| try mixedOp(&tree, &model, &rng, 500, 2);
+
+    // `get` allocates the value with whatever allocator it is given. This
+    // one tries a buffer in this stack frame and falls back to `gpa`.
+    var on_stack: usize = 0;
+    var on_heap: usize = 0;
+    var wrong: usize = 0;
+    for (model.entries.items) |entry| {
+        var stack_buf: [btree.max_local]u8 = undefined;
+        var chain: std.heap.BufferFirstAllocator = .init(&stack_buf, gpa);
+        const allocator = chain.allocator();
+        const value = (try tree.get(allocator, entry.key)).?;
+        defer allocator.free(value);
+        if (!std.mem.eql(u8, value, entry.value)) wrong += 1;
+        if (value.len == 0 or chain.fixed_buffer_allocator.ownsPtr(value.ptr)) on_stack += 1 else on_heap += 1;
+    }
+    try w.print("{d} gets: {d} values assembled in the stack buffer, {d} on the heap, {d} wrong\n", .{ model.len(), on_stack, on_heap, wrong });
+
+    // The range iterator carries the same kind of chain inside itself.
+    var it = try tree.range("", null);
+    defer it.deinit();
+    var inline_values: usize = 0;
+    var heap_values: usize = 0;
+    while (try it.next()) |_| {
+        if (it.valueOnHeap()) heap_values += 1 else inline_values += 1;
+    }
+    try w.print("full scan: {d} values in the iterator's inline buffer, {d} on the heap\n", .{ inline_values, heap_values });
+}
+
+// ---- Part 5 -------------------------------------------------------------------
+
+/// What is in the storage after a crash in the middle of "delete one large
+/// value, put another".
 pub const CrashOutcome = struct {
-    /// The put and the flush both finished: there was no crash.
+    /// Both operations and the flush finished: there was no crash.
     completed: bool = false,
-    open_error: ?anyerror = null,
     validate_error: ?anyerror = null,
-    old_keys_readable: usize = 0,
-    new_key_readable: bool = false,
+    old: Found = .missing,
+    new: Found = .missing,
+
+    pub const Found = enum { missing, intact, wrong_bytes, unreadable };
 };
 
-/// The index into `scenario_keys` of the put that causes the second leaf
-/// split (the first one that has to update an existing parent).
-pub const crash_put = 11;
+pub const crash_value_len = 5000;
 
-/// Build the scenario tree up to (not including) `crash_put` and flush it.
-/// Then let only `writes_allowed` more page writes reach the storage while
-/// the next put splits a leaf and the tree is flushed. Finally forget
+fn look(tree: *DiskBTree, gpa: Allocator, key: []const u8, letter: u8) CrashOutcome.Found {
+    const value = (tree.get(gpa, key) catch return .unreadable) orelse return .missing;
+    defer gpa.free(value);
+    return if (value.len == crash_value_len and std.mem.allEqual(u8, value, letter)) .intact else .wrong_bytes;
+}
+
+/// Store "old" = 5000 x 'o' (916 bytes in the leaf, one overflow page) and
+/// flush. Then let only `writes_allowed` more page writes reach the storage
+/// while "old" is deleted, "new" = 5000 x 'n' is put (its overflow page is
+/// the one "old" just gave back) and the tree is flushed. Finally forget
 /// everything in memory, as a crash does, reopen and look.
-pub fn crashDuringSplit(gpa: Allocator, writes_allowed: u64) !CrashOutcome {
+pub fn crashDuringReuse(gpa: Allocator, writes_allowed: u64) !CrashOutcome {
     var mem: MemStorage = .init(gpa);
     defer mem.deinit();
     var outcome: CrashOutcome = .{};
+    const old_value: [crash_value_len]u8 = @splat('o');
+    const new_value: [crash_value_len]u8 = @splat('n');
     {
         var pager: Pager = try .init(mem.storage());
-        var pool: BufferPool = try .init(gpa, &pager, 8);
+        var pool: BufferPool = try .init(gpa, &pager, 2);
         defer pool.deinit(); // no flush: dirty pages in memory are lost
         var tree: DiskBTree = try .create(gpa, &pool);
         defer tree.deinit();
-        for (scenario_keys[0..crash_put]) |n| try scenarioPut(&tree, n);
+        try tree.put("old", &old_value);
         try tree.flush();
 
         mem.writes_before_failure = writes_allowed;
-        const splits_before = tree.stats.leaf_splits;
-        if (scenarioPut(&tree, scenario_keys[crash_put])) |_| {
-            std.debug.assert(tree.stats.leaf_splits == splits_before + 1);
-            if (tree.flush()) |_| {
-                outcome.completed = true;
-            } else |_| {}
-        } else |_| {}
+        const done = blk: {
+            _ = tree.delete("old") catch break :blk false;
+            tree.put("new", &new_value) catch break :blk false;
+            std.debug.assert(tree.stats.pages_reused == 1 and pager.pageCount() == 3);
+            tree.flush() catch break :blk false;
+            break :blk true;
+        };
+        outcome.completed = done;
         mem.writes_before_failure = null;
     }
 
     var pager: Pager = try .init(mem.storage());
     var pool: BufferPool = try .init(gpa, &pager, 8);
     defer pool.deinit();
-    var tree = DiskBTree.open(gpa, &pool) catch |err| {
-        outcome.open_error = err;
-        return outcome;
-    };
+    var tree: DiskBTree = try .open(gpa, &pool);
     defer tree.deinit();
     tree.validate() catch |err| {
         outcome.validate_error = err;
     };
-    var key_buf: [2]u8 = undefined;
-    for (scenario_keys[0 .. crash_put + 1], 0..) |n, i| {
-        // A lookup that runs into a broken page counts as "not readable".
-        const found = tree.get(gpa, scenarioKey(n, &key_buf)) catch null;
-        if (found) |value| {
-            gpa.free(value);
-            if (i == crash_put) outcome.new_key_readable = true else outcome.old_keys_readable += 1;
-        }
-    }
+    outcome.old = look(&tree, gpa, "old", 'o');
+    outcome.new = look(&tree, gpa, "new", 'n');
     return outcome;
 }
 
-fn part4(w: *Io.Writer, gpa: Allocator) !void {
-    try w.writeAll("\n== Part 4: not crash-safe: one split, stopped after every page write ==\n");
-    var key_buf: [2]u8 = undefined;
-    try w.print("{d} keys are on disk; put {s} splits a leaf, then flush; the storage fails after N writes\n", .{ crash_put, scenarioKey(scenario_keys[crash_put], &key_buf) });
+fn part5(w: *Io.Writer, gpa: Allocator) !void {
+    try w.writeAll("\n== Part 5: not crash-safe: a freed page is reused at once ==\n");
+    try w.writeAll("\"old\" (5000 x 'o', one overflow page) is on disk; delete it, put \"new\" (5000 x 'n') into the same page, flush; the storage fails after N writes\n");
     var writes: u64 = 0;
     while (true) : (writes += 1) {
-        const o = try crashDuringSplit(gpa, writes);
+        const o = try crashDuringReuse(gpa, writes);
         try w.print("N = {d}: ", .{writes});
         if (o.completed) try w.writeAll("no crash, all writes done; ");
-        if (o.open_error) |err| {
-            try w.print("open fails with error.{t}\n", .{err});
-            continue;
-        }
         if (o.validate_error) |err| try w.print("validate fails with error.{t}", .{err}) else try w.writeAll("validate ok");
-        try w.print("; {d} of {d} old keys readable; new key {s}\n", .{ o.old_keys_readable, crash_put, if (o.new_key_readable) "readable" else "missing" });
+        try w.print("; old: {t}; new: {t}\n", .{ o.old, o.new });
         if (o.completed) break;
     }
 }

@@ -1,12 +1,12 @@
-//! Chapter 12: a disk-backed B+tree.
+//! Chapter 13: overflow chains and free space.
 //!
 //!   base_storage.zig       Storage interface, FileStorage, MemStorage   (chapter 09)
 //!   base_pager.zig         Pager: a storage as an array of 4096-byte pages (chapter 09)
 //!   base_buffer_pool.zig   BufferPool: pinned frames, dirty flags, CLOCK   (chapter 09)
 //!   base_slotted_page.zig  SlottedPage: variable-length cells in one page  (chapter 10)
-//!   disk_btree.zig         DiskBTree: this chapter
-//!   workload.zig           seeded keys and values, the oracle
-//!   tests.zig              model tests, fault injection, the torn split
+//!   disk_btree.zig         DiskBTree (chapter 12) + overflow chains, delete, free list
+//!   workload.zig           seeded keys and values of every size class, the oracle
+//!   tests.zig              model tests, fault injection, damaged files
 //!   demo.zig               the fixed scenario printed by `zig build run`
 const std = @import("std");
 const Io = std.Io;

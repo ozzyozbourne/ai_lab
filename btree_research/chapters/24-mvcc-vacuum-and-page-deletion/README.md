@@ -58,7 +58,10 @@ moment".
 **Versions referenced from inside the index (PostgreSQL).** The table holds every row
 version; each version has an address (a TID). An index entry is `(key, TID)`. The
 index does not know `xmin` or `xmax`: a reader follows the TID and the table decides
-visibility. So an update adds an index entry, a delete removes none, and the index
+visibility. An update adds an index entry for the new version. A delete cannot remove
+the entry of the old one: a snapshot taken before the delete still sees that version
+and has to find it through the index. The entry is needed until the version is dead
+to everyone, and no transaction is there to remove it at that moment. So the index
 fills up with entries that point at dead versions. Somebody has to remove them later,
 and the B-tree has to cope with pages that slowly become empty. This is the design
 the chapter's code models.
@@ -68,10 +71,8 @@ all. Recent versions live in an in-memory ordered map next to it, and a cursor m
 the two: it looks at the next visible key from the map and the next key from the
 B-tree and returns the smaller; on a tie the in-memory version wins, which is how an
 update or a delete marker hides the row stored in the tree. Only a checkpoint writes
-to the B-tree, with ordinary inserts and deletes. The tree never contains a dead
-entry, so it needs none of the machinery below. The price is paid elsewhere: every
-read is a two-way merge, the versions need their own garbage collection, and the
-checkpoint has to replay them.
+to the B-tree, so the tree never contains a dead entry and needs none of the
+machinery below.
 
 The first keeps the read path a plain index scan and pays with garbage inside the
 tree; the second keeps the tree clean and pays with a second structure in front of
@@ -94,18 +95,34 @@ In the first design, dead entries are removed by whoever is cheapest:
 VACUUM can leave a leaf completely empty, and many half-empty. Chapter 05 would
 merge them. PostgreSQL never merges non-empty pages, for a reason that only appears
 with concurrent readers: a scan sits *between* pages and remembers only "the next
-page is P". If items moved across a page boundary, a scan going the other way could
-miss them. So items move right (splits) or disappear; nothing else.
+page is P". Suppose a forward scan has read page A and is paused before B, and a
+merge now moves B's items left into A. The scan goes on with B and never returns
+them. So items move right (splits) or disappear; nothing else.
 
-An empty page has no items to move, so it can be removed, in three steps that are
-each safe on their own:
+An empty page has no items to move, so it can be removed. The deletion has two
+phases, and the page is reused in a third step:
 
-1. **Half-dead.** Remove the parent's downlink. The page's key range is given to its
-   right sibling. No search from the root can reach the page any more.
-2. **Unlink.** Make the left sibling's right link skip the page, and stamp the page
-   with the current epoch. The page keeps its own right link.
-3. **Recycle.** Much later, when no snapshot older than the stamp is open, put the
-   page on the free list.
+1. **Half-dead** (phase 1). Remove the parent's downlink. The page's key range is
+   given to its right sibling. No search from the root can reach the page any more.
+2. **Unlink** (phase 2). Make the left sibling's right link skip the page, and stamp
+   the page with a new epoch: a tick of the counter taken after the unlink. The page
+   keeps its own right link.
+3. **Recycle.** Much later, when the horizon has reached the stamp (no snapshot
+   older than the stamp is open), put the page on the free list.
+
+Why two phases and not one? They change different pages: the parent, then the left
+sibling. This chapter's single-threaded model could do both at once, but a real
+system locks each group of pages separately and logs each phase as its own record
+(`N/README:247-259`, `:279-282`, `:688-692`; `N/` is explained under "In real
+databases"). So the state in between must be a tree that searches and scans survive,
+and one that a crash may leave behind for a later VACUUM to finish. PostgreSQL calls
+it "a similar state as during a page split: the page has no downlink pointing to it,
+but it's still linked to its siblings" (`N/README:257-259`).
+
+Why the downlink first? Once it is gone, no new descent arrives at the page, while
+the chain still carries every scan across it. The other order would leave a page
+that the parent still routes to but that no scan passes: an insert sent there would
+add an entry that scans never return.
 
 Step 3 is delayed because of the scan that read "next page is P" just before step 2.
 It will still arrive at P. If P is a tombstone with an intact right link, the scan
@@ -165,24 +182,12 @@ still in the chain.
 `#1.next` to `#3`, and goes on to return 90, 100, 110, 120. Close S: the horizon is
 19, and `#1` goes to the free list. The next split takes it.
 
-`#3` is also empty but is the rightmost child of `#2`. Deleting it would hand its key
-range to `#4`, which hangs under a different parent, so the separator in the root
-would have to change. It is left alone.
-
 ## Code walk-through
 
-Both languages have the same files, names, tests and output.
-
-| File (Zig / Rust) | Content |
-| --- | --- |
-| `base_arena` | copied from chapter 07: handles, slot array, free list |
-| `base_node` | chapter 07's node, changed: `(key, tid)` entries, hint bits, right link, `PageState` |
-| `base_search` | chapter 07's binary searches |
-| `store` | `Version`, the counter, open snapshots, `visible`, `horizon`, `deadToAll` |
-| `index` | the tree: insert, `makeRoom`, `markHalfDead`, `unlinkHalfDead`, `recycle` |
-| `db` | `Db.put / delete / get / vacuum` and the `Cursor` |
-| `validate`, `dump` | invariants as code; text rendering |
-| `tests`, `fuzz` | fixed scenarios; random interleavings of paused scans, writers, VACUUM and the three steps of page deletion, checked against an oracle |
+Both languages have the same files, names, tests and output: chapter 07's arena, node
+and search (`base_*`), plus `store`, `index`, `db`, `validate`, `dump`, `tests` and
+`fuzz` (random interleavings of paused scans, writers, VACUUM and the three steps of
+page deletion, checked against an oracle).
 
 ### Zig
 
@@ -207,9 +212,7 @@ entry and then frees the version, in that order (see Pitfalls).
 `Cursor` is the reader: a snapshot, bounds, a buffer of rows and `next_leaf`, the
 handle of the page to read when the buffer is empty. `readPage` walks right over
 pages that are not `live`, reads one leaf completely, copies out the visible rows,
-sets hints on entries that are dead to all, and saves the page's right link. The
-tests run writers and VACUUM between two `next` calls; `fuzz.zig` does it at random,
-with many paused scans, and calls the three steps of page deletion one by one.
+sets hints on entries that are dead to all, and saves the page's right link.
 
 `Index.markHalfDead` is phase 1. It finds the parent slot by walking the internal
 pages (an empty leaf has no key to search for), refuses the rightmost child, then:
@@ -220,7 +223,7 @@ parent.internalRemoveAt(link.slot);
 leaf.kind.leaf.state = .half_dead;
 ```
 
-`Index.unlinkHalfDead` is phase 2. The stamp is `store.tick()`, a *new* number taken
+`Index.unlinkHalfDead` is phase 2. The stamp is `store.tick()`, a *new* epoch taken
 after the unlink, so that "snapshot < stamp" means exactly "taken before the unlink".
 Deleted pages are threaded onto an intrusive FIFO (`next_deleted`), so nothing is
 allocated. `Index.recycle(horizon)` frees from the head while `stamp <= horizon`.
@@ -248,11 +251,9 @@ The port is line for line where the borrow checker allows it. The differences:
 - **Allocation failure.** Zig tests `put` with a `FailingAllocator` at every
   allocation index. Rust's `Vec` aborts instead of failing, so the arenas carry a
   budget and `put` returns `Err(OutOfNodes)`.
-- **Two tests more.** A Zig test cannot catch a panic, a Rust test can
-  (`#[should_panic]`): a user key above 32 bits is refused (an unconditional `@panic`
-  in Zig), and a cursor is refused once its snapshot is closed.
-- **Errors.** `error.DanglingLink` is a unit struct `DanglingLink`; `Violation` is an
-  enum; the open snapshots are a `Vec` with the same limit of 16.
+- **Panics and errors.** Rust has two tests more (`#[should_panic]`, which Zig cannot
+  express): an oversized key and a cursor whose snapshot was closed.
+  `error.DanglingLink` is a unit struct.
 
 ### What the programs print
 

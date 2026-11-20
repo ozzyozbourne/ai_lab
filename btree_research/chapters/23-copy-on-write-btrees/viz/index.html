@@ -16,6 +16,13 @@
   .c23-list b { color: var(--bt-text); }
   .c23-status { font-size: .85rem; color: var(--bt-muted); margin: 0 0 6px; }
   .c23-status b { color: var(--bt-text); }
+  /* The picture, its caption and the step controls are one column; the state panels sit beside it
+     (below it on a phone), so they never come between the picture and its controls. */
+  .c23-main { min-width: 0; display: flex; flex-direction: column; }
+  .c23-hint { font-size: .78rem; color: var(--bt-muted); margin: 4px 0 0; }
+  .c23-hint[hidden] { display: none; }
+  /* Page id labels sit where edges from a second parent arrive: a halo in the stage colour keeps them readable. */
+  .bt-node-label { paint-order: stroke; stroke: var(--bt-surface-2); stroke-width: 5px; stroke-linejoin: round; }
   #code { margin-top: 14px; }
   .c23-points li { margin: .35em 0; }
   .bt-selftest { white-space: normal; border-radius: 10px; }
@@ -25,7 +32,7 @@
 
 <p class="bt-lead">A copy-on-write B+tree never overwrites a page that a committed root can reach. A write copies the
 path from the root to the leaf, and a commit is one small write that makes the new root the current one. Old roots stay
-readable for as long as someone holds them.</p>
+readable for as long as someone holds them, and the previous root always does: it is the fallback after a crash.</p>
 
 <div id="fig"></div>
 <div id="code"></div>
@@ -35,14 +42,18 @@ readable for as long as someone holds them.</p>
   <li><strong>Path copying.</strong> Step through a put. One page per level is copied, top down; the new root points at
     the copies and, for everything else, at the <em>same pages</em> as the old root. Tick <em>Predict</em> to be asked
     how many pages a put copies.</li>
-  <li><strong>Two roots, shared subtrees.</strong> Take a snapshot, then put a key. Both roots stay on screen: the
-    pages under both are drawn once, with an edge from each root.</li>
-  <li><strong>The root flip.</strong> Watch the meta page on the right during a commit. Commits alternate between the
+  <li><strong>Two roots, shared subtrees.</strong> The picture always holds at least two roots once two commits exist:
+    <em>current</em> and <em>fallback</em> (the root the other meta slot names). The pages under both are drawn once,
+    with an edge from each root. A snapshot adds a third.</li>
+  <li><strong>The root flip.</strong> Watch the meta page during a commit. Commits alternate between the
     two slots, so the slot of the newest commit is never the one being written. <em>Tear the last commit</em> shows why.</li>
-  <li><strong>Pending, then free.</strong> Pages replaced while a snapshot is held go to the pending list and keep
-    their place in the store. Release the snapshot and they move to the free list; the next put reuses their page ids
-    instead of growing the store.</li>
-  <li><strong>The oldest reader decides.</strong> Hold two snapshots, commit a few times, and release the newer one
+  <li><strong>Pending, then free.</strong> The pages a commit replaces go to the pending list and keep their place in
+    the store. They move to the free list one commit later, when the slot of the root that reached them has been
+    overwritten, or later still if a snapshot is in the way. Every caption says which root holds which pending page.</li>
+  <li><strong>Why one commit later.</strong> <em>Crash a put + lose newest slot</em> stops a transaction after its page
+    writes and makes the newest meta slot unreadable. The restart lands on the older slot, and its tree is whole
+    because the pages it needs were still pending.</li>
+  <li><strong>The oldest kept root decides.</strong> Hold two snapshots, commit a few times, and release the newer one
     first: nothing is freed.</li>
   <li><strong>No leaf chain.</strong> A leaf split here creates a page that only its parent points at. The README
     explains why sibling links cannot survive path copying.</li>
@@ -93,14 +104,24 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
     el('span.bt-toolbar-sep'),
     btn('btn-snapshot', 'Take snapshot', takeSnapshot),
     btn('btn-tear', 'Tear the last commit', tear),
+    btn('btn-fault', 'Crash a put + lose newest slot', function () { write('put', 'fault'); }),
     el('span.bt-toolbar-sep'),
     btn('btn-tour', 'Guided tour', function () { tour(true); }),
     btn('btn-build', 'Canonical build', function () { canonicalBuild(true); }),
     btn('btn-clear', 'Clear', function () { reset(); idle('The database is empty: transaction 0 committed an empty tree into meta slot 0. Put a key, or start the guided tour.'); }));
 
+  // One column for the picture, its caption and the step controls (see .c23-main).
+  var mainCol = el('div.c23-main');
+  fig.stage.parentNode.insertBefore(mainCol, fig.stage);
+  mainCol.append(fig.stage, fig.caption, fig.controls);
+
   var status = el('p.c23-status');
   fig.stage.appendChild(status);
-  var view = new BTViz.TreeView(fig.stage, { minHeight: 300, ariaLabel: 'The trees of every live root, sharing pages' });
+  var narrow = window.matchMedia('(max-width: 820px)').matches;
+  var view = new BTViz.TreeView(fig.stage, { minHeight: narrow ? 200 : 250, maxHeight: narrow ? 300 : 330, minScale: narrow ? 0.4 : 0.6,
+    ariaLabel: 'The trees of every kept root, sharing pages' });
+  var hint = el('p.c23-hint', { hidden: true }, 'The picture is wider than its frame: drag it sideways, or use + and − to zoom.');
+  fig.stage.appendChild(hint);
 
   function panel(title) {
     var body = el('div.bt-panel-body');
@@ -109,7 +130,7 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
   }
   var metaBody = panel('Meta page: two slots');
   var metaRows = el('div.c23-rows');
-  metaBody.append(metaRows, el('p.c23-muted', 'A reader takes the valid slot with the higher transaction id.'));
+  metaBody.append(metaRows, el('p.c23-muted', 'A reader takes the valid slot with the higher transaction id. The other valid slot is the fallback: its tree is kept whole too.'));
   var snapBody = panel('Snapshots (pinned roots)');
   var snapRows = el('div.c23-rows');
   snapBody.appendChild(snapRows);
@@ -163,6 +184,8 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
       Object.keys(s.states).forEach(function (id) { nodes[id] = s.states[id]; });
       Object.keys(h.nodes || {}).forEach(function (id) { nodes[id] = h.nodes[id]; });
       view.render(s.forest, { nodes: nodes, keys: h.keys || {} });
+      var sc = view.scroller;
+      hint.hidden = !(sc && sc.scrollWidth > sc.clientWidth + 4);
       renderStatus(s);
       renderMeta(s);
       renderSnaps(s);
@@ -181,20 +204,20 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
   function renderMeta(s) {
     metaRows.textContent = '';
     s.meta.forEach(function (m, i) {
-      var isCur = m.valid && m.txn === s.cur.txn;
+      var isCur = m.valid && m.txn === s.cur.txn, isPrev = m.valid && s.prev && m.txn === s.prev.txn && !isCur;
       metaRows.appendChild(el('div.c23-row',
         el('span', 'slot ' + i),
         m.never ? el('span.bt-chip.s-free', 'never written')
           : el('span.bt-chip' + (m.valid ? (isCur ? '.s-found' : '') : '.s-deleted'),
               'txn ' + m.txn + ' → ' + (m.root === null ? 'empty' : 'root #' + m.root)),
         m.never ? null : el('span', { title: 'CRC-32 stored in the slot' }, 'crc ' + m.crc + (m.valid ? ' ✓' : ' ✗ torn')),
-        isCur ? el('span', '← current') : null));
+        isCur ? el('span', '← current') : isPrev ? el('span', '← fallback') : null));
     });
   }
   function renderSnaps(s) {
     snapRows.textContent = '';
     if (!s.snaps.length) {
-      snapRows.appendChild(el('p.c23-muted', 'None. Without a snapshot, pages replaced by a commit are free as soon as it is done.'));
+      snapRows.appendChild(el('p.c23-muted', 'None. Without a snapshot, the pages a commit replaces wait only for the fallback root: they are free one commit later.'));
       return;
     }
     s.snaps.forEach(function (sn) {
@@ -210,7 +233,7 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
       label: s.slots.length + ' page' + (s.slots.length === 1 ? '' : 's') + (s.slots.length > s.stored ? ' (' + (s.slots.length - s.stored) + ' not yet in the store)' : ''),
       slots: s.slots.map(function (state, i) {
         return { state: state, label: '#' + i,
-          title: 'page ' + i + ': ' + ({ used: 'live, reachable from the current root', compare: 'pending: only an old root reaches it', free: 'free: may be written', dirty: 'reserved by the open transaction' })[state] };
+          title: 'page ' + i + ': ' + ({ used: 'written, not free and not pending', compare: 'pending: freed by a commit, not yet reusable', free: 'free: may be written', dirty: 'reserved by the open transaction' })[state] };
       })
     }] });
     void free;
@@ -255,7 +278,9 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
   }
 
   /* ------------------------------------------------------------ actions */
-  function write(kind, abort) {
+  /** `mode`: false = commit, true = abort, 'fault' = crash the commit and lose the newest meta slot. */
+  function write(kind, mode) {
+    var abort = mode === true, fault = mode === 'fault';
     // Typed input is used exactly as typed or not at all: nothing is rounded or clamped silently.
     var raw = key.value.trim(), unreadable = !!(key.validity && key.validity.badInput), picked = raw === '' && !unreadable;
     var v = picked ? null : Number(raw);
@@ -278,7 +303,13 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
         refuse('Nothing was done: the store has grown to ' + db.slots.length + ' pages because held snapshots keep replaced pages pending. Release a snapshot to free pages (this limit exists only on this page).');
         return null;
       }
-      var steps = db.opWrite(kind, v, abort);
+      if (fault && !db.canTear()) {
+        refuse(db.cur.txn === 0
+          ? 'Nothing was done: no transaction has committed yet, so there is no newest slot to lose. Put a key first.'
+          : 'Nothing was done: only one meta slot is readable right now. Losing it as well would leave no committed tree to restart from; that is a third fault, and two slots do not survive it. Commit something first.');
+        return null;
+      }
+      var steps = fault ? db.opDoubleFault(v) : db.opWrite(kind, v, abort);
       if (picked) steps[0].caption = 'No key was typed, so ' + k(v) + ' was picked' + (kind === 'delete' ? ' from the tree' : ' at random') + '. ' + steps[0].caption;
       return steps;
     });
@@ -320,7 +351,7 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
   /** The canonical keys, one transaction each; one step per commit. */
   function canonicalBuild(play) {
     reset();
-    var ops = [[{ type: 'idle', caption: 'An empty database. The canonical keys of chapters 03 to 08 are put one transaction at a time. No snapshot is held, so each commit frees the pages it replaced and the next one reuses them.', state: db.picture(null), highlight: {} }]];
+    var ops = [[{ type: 'idle', caption: 'An empty database. The canonical keys of chapters 03 to 08 are put one transaction at a time. No snapshot is held, so the pages a commit replaces are kept for one more commit (the fallback root still reaches them) and reused after that.', state: db.picture(null), highlight: {} }]];
     var cps = [db.save()];
     CANONICAL.forEach(function (v) {
       var before = db.slots.length, steps = db.opWrite('put', v, false), flip = steps.filter(function (s) { return s.type === 'commit-flip'; })[0];
@@ -328,7 +359,8 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
       ops.push([{ type: 'built', log: 'put ' + v + ' → txn ' + t + ', root #' + db.cur.root,
         caption: 'put ' + k(v, 'inserted') + ' committed as transaction ' + t + '. New root: <b>#' + db.cur.root + '</b>. ' +
           (db.slots.length > before ? 'The store grew to ' + db.slots.length + ' pages. ' : 'The store did not grow: the new pages reused freed page ids. ') +
-          'Free list: ' + (db.free.length ? db.free.map(function (id) { return '#' + id; }).join(' ') : 'empty') + '.',
+          'Free list: ' + (db.free.length ? db.free.map(function (id) { return '#' + id; }).join(' ') : 'empty') + '. ' +
+          (db.pending.length ? 'Pending, for the fallback root (txn ' + db.prev.txn + '): ' + db.pending.map(function (p) { return '#' + p.page; }).join(' ') + '.' : 'Nothing is pending.'),
         state: end.state, highlight: { nodes: flip ? flip.highlight.nodes : {}, keys: { ['*:' + v]: 'inserted' } } }]);
       cps.push(db.save());
     });
@@ -340,8 +372,9 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
     canonicalBuild(null);
     log.clear();
     var ops = [[{ type: 'idle', log: 'canonical tree (12 commits)',
-      caption: 'The canonical tree after 12 one-key transactions, exactly as the chapter\'s program builds it: root <b>#9</b>, 8 pages in a store of 10. ' +
-        'The tour takes a snapshot, changes the tree three times, releases the snapshot and writes once more.',
+      caption: 'The canonical tree after 12 one-key transactions, exactly as the chapter\'s program builds it: root <b>#' + db.cur.root + '</b>, ' +
+        Object.keys(db.reachable(db.cur.root)).length + ' pages in a store of ' + db.slots.length + '. The second root is the fallback, transaction ' + db.prev.txn +
+        ': the tree before the last put, which meta slot ' + (db.prev.txn % 2) + ' still names. The tour takes a snapshot, changes the tree three times, releases the snapshot and writes once more.',
       state: db.picture(null), highlight: {} }]];
     var cps = [db.save()];
     var run = function (fn) { ops.push(fn()); cps.push(db.save()); };
@@ -366,32 +399,41 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
     var del = function (d, v) { var x = d.begin(); d.txnDelete(x, v); return d.commit(x); };
     CANONICAL.forEach(function (v) { put(t, v); });
     BTViz.selfTest('build', t.dump() + t.storeLine(),
-      'txn 12: root #9, height 3, 12 keys\n  level 0: #9[15]\n  level 1: #4[6 10] #8[20]\n  leaves : #3(1 3 5) #6(6 7) #0(10 12) | #7(15 17) #1(20 25 30)\n' +
-      'store: 10 pages | free: #5 #2 | pending: -');
+      'txn 12: root #11, height 3, 12 keys\n  level 0: #11[15]\n  level 1: #7[6 10] #10[20]\n  leaves : #5(1 3 5) #8(6 7) #0(10 12) | #9(15 17) #3(20 25 30)\n' +
+      'store: 12 pages | free: #6 #2 | pending: #4(txn 12) #1(txn 12)');
     var snap = t.snapshot();
     put(t, 13);
     BTViz.selfTest('path copy', t.dump() + t.storeLine() + '\n' + t.dump(snap.root, snap.id, snap.height, snap.count),
-      'txn 13: root #2, height 3, 13 keys\n  level 0: #2[15]\n  level 1: #5[6 10] #8[20]\n  leaves : #3(1 3 5) #6(6 7) #10(10 12 13) | #7(15 17) #1(20 25 30)\n' +
-      'store: 11 pages | free: - | pending: #9(txn 13) #4(txn 13) #0(txn 13)\n' +
-      'txn 12: root #9, height 3, 12 keys\n  level 0: #9[15]\n  level 1: #4[6 10] #8[20]\n  leaves : #3(1 3 5) #6(6 7) #0(10 12) | #7(15 17) #1(20 25 30)\n');
+      'txn 13: root #2, height 3, 13 keys\n  level 0: #2[15]\n  level 1: #6[6 10] #10[20]\n  leaves : #5(1 3 5) #8(6 7) #12(10 12 13) | #9(15 17) #3(20 25 30)\n' +
+      'store: 13 pages | free: #4 #1 | pending: #11(txn 13) #7(txn 13) #0(txn 13)\n' +
+      'txn 12: root #11, height 3, 12 keys\n  level 0: #11[15]\n  level 1: #7[6 10] #10[20]\n  leaves : #5(1 3 5) #8(6 7) #0(10 12) | #9(15 17) #3(20 25 30)\n');
     BTViz.selfTest('ranges', t.range(6, 20, snap.root).join(' ') + ' / ' + t.range(6, 20).join(' '), '6 7 10 12 15 17 / 6 7 10 12 13 15 17');
     del(t, 6); var d7 = del(t, 7);
     BTViz.selfTest('borrow', d7.copied + ' ' + d7.fresh + ' ' + t.storeLine(),
-      '4 4 store: 18 pages | free: - | pending: #9(txn 13) #4(txn 13) #0(txn 13) #2(txn 14) #5(txn 14) #6(txn 14) #11(txn 15) #12(txn 15) #13(txn 15) #3(txn 15)');
-    t.release(12);
+      '4 4 store: 18 pages | free: - | pending: #11(txn 13) #7(txn 13) #0(txn 13) #2(txn 14) #6(txn 14) #8(txn 14) #1(txn 15) #4(txn 15) #13(txn 15) #5(txn 15)');
+    var rel = t.release(12).length + ' ' + t.storeLine();
+    BTViz.selfTest('release', rel, '6 store: 18 pages | free: #11 #7 #0 #2 #6 #8 | pending: #1(txn 15) #4(txn 15) #13(txn 15) #5(txn 15)');
     put(t, 8);
     var afterTour = t.dump() + t.storeLine();
     BTViz.selfTest('reuse', afterTour,
-      'txn 16: root #3, height 3, 12 keys\n  level 0: #3[15]\n  level 1: #13[5 10] #8[20]\n  leaves : #17(1 3) #12(5 8) #10(10 12 13) | #7(15 17) #1(20 25 30)\n' +
-      'store: 18 pages | free: #9 #4 #0 #2 #5 #6 #11 #14 #15 #16 | pending: -');
+      'txn 16: root #8, height 3, 12 keys\n  level 0: #8[15]\n  level 1: #6[5 10] #10[20]\n  leaves : #17(1 3) #2(5 8) #12(10 12 13) | #9(15 17) #3(20 25 30)\n' +
+      'store: 18 pages | free: #11 #7 #0 #1 #4 #13 #5 | pending: #14(txn 16) #15(txn 16) #16(txn 16)');
     var x = t.begin(); [26, 27, 28].forEach(function (v) { t.txnPut(x, v, v * 100); }); t.abort(x);
     var afterAbort = t.dump() + t.storeLine();
     x = t.begin(); [26, 27, 28].forEach(function (v) { t.txnPut(x, v, v * 100); }); t.commit(x);
-    BTViz.selfTest('abort+txn', (afterAbort === afterTour) + '\n' + t.dump(),
-      'true\ntxn 17: root #16, height 3, 15 keys\n  level 0: #16[15]\n  level 1: #13[5 10] #15[20 26 28]\n  leaves : #17(1 3) #12(5 8) #10(10 12 13) | #7(15 17) #14(20 25) #11(26 27) #6(28 30)\n');
-    BTViz.selfTest('meta crc', Ch23.hex8(t.meta[0].crc) + ' ' + Ch23.hex8(t.meta[1].crc), 'e2548d94 db104496');
-    t.meta[1].valid = false; t.reopen();
-    BTViz.selfTest('restart', t.cur.txn + ' ' + t.storeLine(), '16 store: 18 pages | free: #0 #2 #4 #5 #6 #9 #11 #14 #15 #16 | pending: -');
+    var tree17 = 'txn 17: root #5, height 3, 15 keys\n  level 0: #5[15]\n  level 1: #6[5 10] #13[20 26 28]\n  leaves : #17(1 3) #2(5 8) #12(10 12 13) | #9(15 17) #4(20 25) #1(26 27) #0(28 30)\n';
+    BTViz.selfTest('abort+txn', (afterAbort === afterTour) + '\n' + t.dump(), 'true\n' + tree17);
+    BTViz.selfTest('meta crc', Ch23.hex8(t.meta[0].crc) + ' ' + Ch23.hex8(t.meta[1].crc), 'd02616ec 105c3fac');
+    // Section 6 (a): the meta write of txn 18 is torn in slot 0; the restart stays on txn 17.
+    t.meta[0].valid = false; t.reopen();
+    BTViz.selfTest('torn meta', t.cur.txn + ' ' + t.storeLine(), '17 store: 18 pages | free: #3 #7 #8 #10 #11 #14 #15 #16 | pending: -');
+    put(t, 9);
+    // Section 6 (b): txn 19 writes its pages and crashes; the slot of txn 18 is unreadable.
+    x = t.begin(); t.txnPut(x, 4, 400);
+    var wrote = t.writePages(x).length;
+    t.meta[0].valid = false; t.reopen();
+    BTViz.selfTest('two faults', wrote + ' ' + t.dump() + t.storeLine() + ' ' + t.validate().length,
+      '3 ' + tree17 + 'store: 18 pages | free: #3 #7 #8 #10 #11 #14 #15 #16 | pending: - 0');
 
     // Seeded fuzz of the model itself: snapshots must keep reading what they saw.
     var r = BTViz.rng(2323), f = new Cow(4), ref = {}, held = [], bad = 0, i;
@@ -409,7 +451,8 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
       }
     }
     while (held.length) f.release(held.pop().s.id);
-    BTViz.selfTest('model fuzz', bad + ' ' + f.validate().length + ' ' + f.pending.length, '0 0 0');
+    // With no reader left, only the pages the newest commit replaced are still pending (for the fallback).
+    BTViz.selfTest('model fuzz', bad + ' ' + f.validate().length + ' ' + f.pending.filter(function (p) { return p.by !== f.cur.txn; }).length, '0 0 0');
   })();
 
   /* ---------------------------------------------------------------- go */
@@ -417,8 +460,8 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
   (function () {
     var s = db, text = s.dump() + s.storeLine();
     BTViz.selfTest('tour end', text,
-      'txn 16: root #3, height 3, 12 keys\n  level 0: #3[15]\n  level 1: #13[5 10] #8[20]\n  leaves : #17(1 3) #12(5 8) #10(10 12 13) | #7(15 17) #1(20 25 30)\n' +
-      'store: 18 pages | free: #9 #4 #0 #2 #5 #6 #11 #14 #15 #16 | pending: -');
+      'txn 16: root #8, height 3, 12 keys\n  level 0: #8[15]\n  level 1: #6[5 10] #10[20]\n  leaves : #17(1 3) #2(5 8) #12(10 12 13) | #9(15 17) #3(20 25 30)\n' +
+      'store: 18 pages | free: #11 #7 #0 #1 #4 #13 #5 | pending: #14(txn 16) #15(txn 16) #16(txn 16)');
   })();
 })();
 </script>

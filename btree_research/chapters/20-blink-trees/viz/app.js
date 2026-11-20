@@ -40,6 +40,11 @@
   var status = el('p.c20-status', { role: 'status', 'aria-live': 'polite' });
   var lanesBox = el('div.c20-lanes');
   fig.stage.append(status, lanesBox);
+  // Keep the picture, its caption and the step controls next to each other.
+  // The toolkit puts caption and controls below the whole figure body, which
+  // here means below the two lanes and (on a phone) below the log as well:
+  // pressing "Step forward" then changes a tree that has scrolled off screen.
+  view.root.after(fig.caption, fig.controls);
   var lanes = new BTViz.Lanes(lanesBox, { onAdvance: advance });
   var log = new BTViz.Log(fig.side, { title: 'What happened' });
 

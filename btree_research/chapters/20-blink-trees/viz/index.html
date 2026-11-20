@@ -13,6 +13,10 @@
   .c20-status { margin: 0; font-size: .84rem; color: var(--bt-muted); min-height: 1.3em; }
   .c20-status.is-error { color: var(--bt-key-deleted); }
   .c20-lanes { margin-top: 10px; }
+  /* Caption and step controls are moved into the stage, right under the tree (app.js). The stage has its own
+     side padding, so theirs is removed. */
+  .bt-stage > .bt-caption, .bt-stage > .bt-controls-slot > .bt-controls { padding-left: 0; padding-right: 0; }
+  .bt-stage > .bt-controls-slot { margin-top: 0; }
   #code { margin-top: 14px; }
   .c20-points li { margin: .35em 0; }
   .bt-selftest { white-space: normal; border-radius: 10px; }   /* names must wrap on a phone */

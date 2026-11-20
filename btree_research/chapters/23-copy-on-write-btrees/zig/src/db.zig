@@ -74,8 +74,8 @@ pub const Db = struct {
     store: PageStore = .{},
     current: Meta,
     /// The committed root one commit back, as recorded in the other meta
-    /// slot. null when that slot holds nothing usable (a new database, or
-    /// after a restart that found it unreadable). `reclaim` treats it like a
+    /// slot. null when that slot holds nothing (a new database, or after a
+    /// restart that could not use it and scrubbed it). `reclaim` treats it like a
     /// snapshot that nobody can release early.
     previous: ?Meta = null,
     /// Fault injection for the tests and the demo: when set, the next commit
@@ -240,10 +240,21 @@ pub const Db = struct {
     ///   3. if the other slot holds an older commit with a complete tree, it
     ///      stays the fallback: the pages only it reaches go back on the
     ///      pending list;
-    ///   4. every page neither root reaches is free.
+    ///   4. otherwise the other slot is SCRUBBED (overwritten with zeroes)
+    ///      before anything else changes: see below;
+    ///   5. every page neither root reaches is free.
     ///
     /// (A real engine stores the free list in the file instead of scanning;
     /// see the README.) On error nothing has been changed.
+    ///
+    /// Why step 4. Step 5 gives away the pages of every tree this restart
+    /// did not keep. If the slot of such a tree were left as it is and read
+    /// correctly at a LATER restart (the read error was transient), it would
+    /// win again by transaction id and name a tree whose pages are gone or,
+    /// worse, rewritten by a transaction that reused its id. A slot that a
+    /// restart has decided against must never be chosen again, so it is
+    /// overwritten first. After `reopen` each slot holds `current`, holds
+    /// `previous`, or is all zeroes.
     ///
     /// `error.NoValidMeta`: neither slot has a valid checksum.
     /// `error.CorruptTree`: the chosen slot has a valid checksum but its tree
@@ -253,7 +264,8 @@ pub const Db = struct {
     /// forged slot), and it is reported instead of guessed around.
     pub fn reopen(self: *Db, gpa: Allocator) ReopenError!void {
         assert(!self.writer_active);
-        const slots = &self.store.meta_slots;
+        const seen = self.store.readMeta(); // what this restart is able to read
+        const slots = &seen;
         const m = Meta.pick(slots) orelse return error.NoValidMeta;
         if (m.page_count > self.store.pageCount()) return error.CorruptTree;
         const n: usize = m.page_count;
@@ -276,7 +288,15 @@ pub const Db = struct {
         }
         try self.pending.ensureTotalCapacity(gpa, only_previous);
 
-        // Nothing can fail from here on.
+        // Nothing can fail from here on. The scrub is the first write: until
+        // it is done no page has been given away, so a crash in the middle
+        // of it leaves every tree as it was.
+        if (previous == null) {
+            for (&self.store.meta_slots, slots) |*slot, *read_back| {
+                const kept = if (Meta.decode(read_back)) |d| std.meta.eql(d, m) else false;
+                if (!kept) slot.* = @splat(0);
+            }
+        }
         self.current = m;
         self.previous = previous;
         self.crash_after = null;

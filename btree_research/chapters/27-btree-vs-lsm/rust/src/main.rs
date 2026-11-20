@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use ch27_btree_vs_lsm::bench::{self, Workload};
 use ch27_btree_vs_lsm::device::Kind;
 use ch27_btree_vs_lsm::run::Run;
-use ch27_btree_vs_lsm::{BPlusTree, Lsm, NodeId, lsm};
+use ch27_btree_vs_lsm::{BPlusTree, Lsm, NodeId, filter, lsm};
 
 fn main() -> io::Result<()> {
     let mut out = io::BufWriter::new(io::stdout().lock());
@@ -313,21 +313,46 @@ fn limits(w: &mut dyn Write, memtable_entries: usize) -> io::Result<()> {
     )?;
     writeln!(
         w,
-        "    device when it returns. An LSM write is in RAM only until the next flush: up to {memtable_entries}"
+        "    device when it returns. An LSM write is in RAM only until the next flush: a crash"
     )?;
     writeln!(
         w,
-        "    writes are lost in a crash. The \"+ 1 log block\" row is computed, not run: it adds"
+        "    loses the writes to up to {memtable_entries} keys. The \"+ 1 log block\" row is computed, not run:"
     )?;
     writeln!(
         w,
-        "    one block per LSM write, the price of the same promise without group commit."
+        "    it adds one block per LSM write, the price of the same promise without group commit."
     )?;
     writeln!(
         w,
         "  * A B+tree with a log and a buffer pool writes a hot page once for many updates,"
     )?;
-    writeln!(w, "    so its write column is an upper bound.")
+    writeln!(w, "    so its write column is an upper bound.")?;
+    writeln!(
+        w,
+        "  * The \"with bloom filters\" rows are run, not computed: the same operations on a"
+    )?;
+    writeln!(
+        w,
+        "    second LSM-tree whose runs each have a filter in RAM. Real LSM engines commonly"
+    )?;
+    writeln!(
+        w,
+        "    rely on such filters. A filter costs no block, only that memory; it helps point"
+    )?;
+    writeln!(
+        w,
+        "    lookups, mostly those for absent keys, and no scan."
+    )?;
+    writeln!(
+        w,
+        "  * A block is a block. One appended in sequence (flush, compaction) counts the same"
+    )?;
+    writeln!(
+        w,
+        "    as one written at a position chosen by the key (B+tree). On a real device the two"
+    )?;
+    writeln!(w, "    can cost differently; that is not modelled.")
 }
 
 fn packed_blocks(keys: u64, per_block: u64) -> u64 {
@@ -416,6 +441,12 @@ fn compare(w: &mut dyn Write, wl: &Workload, section: usize) -> io::Result<()> {
         l.writes.max_writes,
     )?;
     row_count(w, "point lookups (get)", b.gets.ops, l.gets.ops)?;
+    row_count(
+        w,
+        "  of those, for a key that is absent",
+        r.get_misses,
+        r.get_misses,
+    )?;
     row_ratio(
         w,
         "  READ AMPLIFICATION (blocks per get)",
@@ -433,6 +464,26 @@ fn compare(w: &mut dyn Write, wl: &Workload, section: usize) -> io::Result<()> {
         "    data blocks per get",
         (b.gets.io.reads[data], b.gets.ops),
         (l.gets.io.reads[data], l.gets.ops),
+    )?;
+    // The B+tree column repeats: a filter is of no use to a tree with one path.
+    let f = &r.filter_gets;
+    row_ratio(
+        w,
+        "  READ AMPLIFICATION with bloom filters",
+        (b.gets.io.total_reads(), b.gets.ops),
+        (f.io.total_reads(), f.ops),
+    )?;
+    row_ratio(
+        w,
+        "    index blocks per get",
+        (b.gets.io.reads[index], b.gets.ops),
+        (f.io.reads[index], f.ops),
+    )?;
+    row_ratio(
+        w,
+        "    data blocks per get",
+        (b.gets.io.reads[data], b.gets.ops),
+        (f.io.reads[data], f.ops),
     )?;
     row_count(w, "short scans", b.scans.ops, l.scans.ops)?;
     row_ratio(
@@ -501,6 +552,27 @@ fn compare(w: &mut dyn Write, wl: &Workload, section: usize) -> io::Result<()> {
         "LSM lookups: {} runs probed, {} of those without finding the key, {} runs skipped by min/max.",
         s.runs_probed, s.probes_wasted, s.runs_skipped
     )?;
+    // With filters a wasted probe is a false positive. The rate is taken
+    // over the questions whose true answer was "not in this run".
+    let fs = r.filter_stats;
+    writeln!(
+        w,
+        "  with bloom filters ({} bits per slot, {} hash functions): {} runs probed, {} of those without",
+        bench::BENCH_FILTER_BITS,
+        filter::HASH_COUNT,
+        fs.runs_probed,
+        fs.probes_wasted
+    )?;
+    writeln!(
+        w,
+        "  finding the key, {} runs ruled out by a filter. False-positive rate {}%. The filters",
+        fs.filter_negatives,
+        ratio(
+            fs.probes_wasted * 100,
+            fs.probes_wasted + fs.filter_negatives
+        )
+    )?;
+    writeln!(w, "  hold {} bits of RAM at the end.", r.filter_bits)?;
     limits(w, cfg.memtable_entries)
 }
 
@@ -512,12 +584,16 @@ fn growth_sweep(w: &mut dyn Write) -> io::Result<()> {
     )?;
     writeln!(
         w,
-        "rule and the same limits as above (no cache, no log, not durable until a flush).\n"
+        "rule and the same limits as above (no cache, no log, not durable until a flush)."
     )?;
     writeln!(
         w,
-        "{:<8}{:>8}{:>16}{:>16}{:>16}{:>14}",
-        "growth", "levels", "write amp", "blocks per get", "blocks per scan", "peak blocks"
+        "\"with filters\" is blocks per get with a bloom filter per run, as in the tables above.\n"
+    )?;
+    writeln!(
+        w,
+        "{:<8}{:>8}{:>12}{:>17}{:>15}{:>18}",
+        "growth", "levels", "write amp", "blocks per get", "with filters", "blocks per scan"
     )?;
     for growth in [2, 4, 8, 16] {
         let cfg = lsm::Config {
@@ -528,7 +604,7 @@ fn growth_sweep(w: &mut dyn Write) -> io::Result<()> {
         let l = &r.lsm;
         writeln!(
             w,
-            "{:<8}{:>8}{:>16}{:>16}{:>16}{:>14}",
+            "{:<8}{:>8}{:>12}{:>17}{:>15}{:>18}",
             growth,
             r.lsm_levels,
             ratio(
@@ -536,8 +612,8 @@ fn growth_sweep(w: &mut dyn Write) -> io::Result<()> {
                 l.writes.ops
             ),
             ratio(l.gets.io.total_reads(), l.gets.ops),
-            ratio(l.scans.io.total_reads(), l.scans.ops),
-            l.peak
+            ratio(r.filter_gets.io.total_reads(), r.filter_gets.ops),
+            ratio(l.scans.io.total_reads(), l.scans.ops)
         )?;
     }
     Ok(())

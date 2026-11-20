@@ -40,6 +40,11 @@ pub const PageStore = struct {
     /// (releasing pages must not be able to fail).
     free: std.ArrayList(PageId) = .empty,
     meta_slots: meta.Slots = @splat(@splat(0)),
+    /// Fault injection for the tests: while set, meta slot i cannot be read
+    /// (a restart sees garbage in its place). The bytes are still on the
+    /// "disk" and a write still reaches them, so this is the kind of read
+    /// error that may be gone at the next restart.
+    meta_read_fault: [2]bool = @splat(false),
 
     pub fn deinit(self: *PageStore, gpa: Allocator) void {
         self.slots.deinit(gpa);
@@ -53,6 +58,15 @@ pub const PageStore = struct {
 
     pub fn isLive(self: *const PageStore, id: PageId) bool {
         return id != .nil and id.index() < self.slots.items.len and self.slots.items[id.index()].state == .live;
+    }
+
+    /// The two meta slots as a restart reads them.
+    pub fn readMeta(self: *const PageStore) meta.Slots {
+        var seen = self.meta_slots;
+        for (&seen, self.meta_read_fault) |*slot, fault| {
+            if (fault) slot.* = @splat(0xFF); // fails its checksum
+        }
+        return seen;
     }
 
     /// A committed page. Readers get a const pointer: nothing may change it.

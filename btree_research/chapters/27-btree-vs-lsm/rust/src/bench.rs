@@ -2,6 +2,11 @@
 //! the LSM-tree and to the oracle, with the device counters of each structure
 //! read before and after every single operation.
 //!
+//! The LSM-tree runs twice, side by side: once as configured, and once with
+//! a Bloom filter per run (`BENCH_FILTER_BITS`). The filter changes no write
+//! and no scan, only what a point lookup reads, so the second tree
+//! contributes the "with filters" read numbers and nothing else.
+//!
 //! Only counts come out of here. No timings: block counts are what the
 //! structure decides; how long a block takes is the hardware's business.
 
@@ -81,6 +86,14 @@ pub struct Report {
     pub lsm_l0_runs: usize,
     pub lsm_slots: usize,
     pub lsm_stats: lsm::Stats,
+    /// Gets whose answer was "no such key". Without filters these are the
+    /// expensive ones for an LSM-tree, so the tables say how many there were.
+    pub get_misses: u64,
+    /// The same gets on the LSM-tree with a filter per run.
+    pub filter_gets: Tally,
+    pub filter_stats: lsm::Stats,
+    /// RAM the filters hold at the end, in bits.
+    pub filter_bits: usize,
 }
 
 fn same_entries(got: &[Entry], want: &[ops::Entry]) -> bool {
@@ -97,6 +110,10 @@ const NO_BUDGET: &str = "no budget set";
 pub fn run_workload(wl: &Workload, order: usize, cfg: lsm::Config) -> Report {
     let mut tree = BPlusTree::new(order);
     let mut lsm = Lsm::new(cfg);
+    let mut filtered = Lsm::new(lsm::Config {
+        filter_bits_per_key: BENCH_FILTER_BITS,
+        ..cfg
+    });
     let mut oracle = Oracle::new();
     let mut tree_out = Vec::new();
     let mut lsm_out = Vec::new();
@@ -119,11 +136,13 @@ pub fn run_workload(wl: &Workload, order: usize, cfg: lsm::Config) -> Report {
         };
         tree.put(key, value).expect(NO_BUDGET);
         lsm.put(key, value).expect(NO_BUDGET);
+        filtered.put(key, value).expect(NO_BUDGET);
         oracle.put(key, value);
     }
     tree.dev.peak = tree.dev.live;
     lsm.dev.peak = lsm.dev.live;
     lsm.stats = lsm::Stats::default();
+    filtered.stats = lsm::Stats::default();
 
     let mut report = Report::default();
     report.btree.note_peak(tree.dev.peak, oracle.len());
@@ -144,6 +163,7 @@ pub fn run_workload(wl: &Workload, order: usize, cfg: lsm::Config) -> Report {
                     report.mismatches += 1;
                 }
                 lsm.put(key, value).expect(NO_BUDGET);
+                filtered.put(key, value).expect(NO_BUDGET);
                 (&mut report.btree.writes, &mut report.lsm.writes)
             }
             Op::Delete { key } => {
@@ -152,6 +172,7 @@ pub fn run_workload(wl: &Workload, order: usize, cfg: lsm::Config) -> Report {
                     report.mismatches += 1;
                 }
                 lsm.delete(key).expect(NO_BUDGET);
+                filtered.delete(key).expect(NO_BUDGET);
                 (&mut report.btree.writes, &mut report.lsm.writes)
             }
             Op::Get { key } => {
@@ -162,6 +183,16 @@ pub fn run_workload(wl: &Workload, order: usize, cfg: lsm::Config) -> Report {
                 if lsm.get(key) != want {
                     report.mismatches += 1;
                 }
+                if want.is_none() {
+                    report.get_misses += 1;
+                }
+                let f0 = filtered.dev.counters;
+                if filtered.get(key) != want {
+                    report.mismatches += 1;
+                }
+                report
+                    .filter_gets
+                    .record(filtered.dev.counters.since(&f0));
                 (&mut report.btree.gets, &mut report.lsm.gets)
             }
             Op::Range { lo, hi } => {
@@ -192,6 +223,9 @@ pub fn run_workload(wl: &Workload, order: usize, cfg: lsm::Config) -> Report {
 
     tree.validate().expect("valid tree");
     lsm.validate().expect("valid lsm");
+    filtered.validate().expect("valid lsm with filters");
+    report.filter_stats = filtered.stats;
+    report.filter_bits = filtered.filter_bits();
     report.live_keys = oracle.len();
     report.btree.blocks = tree.dev.live;
     report.btree_height = tree.height;
@@ -261,3 +295,7 @@ pub const BENCH_LSM: lsm::Config = lsm::Config {
     growth: 4,
     filter_bits_per_key: 0,
 };
+/// Filter size of the "with filters" rows: 10 bits per slot and
+/// `filter::HASH_COUNT` = 7 hash functions, a common textbook setting with a
+/// false-positive rate near 1%.
+pub const BENCH_FILTER_BITS: usize = 10;

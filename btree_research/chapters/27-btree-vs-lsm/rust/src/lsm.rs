@@ -25,6 +25,7 @@
 //!      it cannot break this.
 //!   5. The device's block count is exactly the blocks of all runs.
 //!   6. (When no maintenance is pending) no level is over its limit.
+//!   7. A run's filter, if it has one, says "maybe" for every key of the run.
 //!
 //! Not an invariant but a space rule: a compaction whose output becomes the
 //! deepest level drops tombstones, because nothing older is left to hide.
@@ -57,6 +58,10 @@ pub struct Config {
     pub l0_runs: usize,
     /// Each level may hold `growth` times as many slots as the one above.
     pub growth: usize,
+    /// Bits of Bloom filter per slot of every run, in RAM (filter.rs).
+    /// 0, the default: no filters, a lookup probes every run whose key range
+    /// covers the key.
+    pub filter_bits_per_key: usize,
 }
 
 impl Default for Config {
@@ -77,6 +82,7 @@ impl Config {
         Geometry {
             block_entries: self.block_entries,
             index_fanout: self.index_fanout,
+            filter_bits_per_key: self.filter_bits_per_key,
         }
     }
 }
@@ -91,9 +97,12 @@ pub struct Stats {
     /// and tombstones that reached the deepest level.
     pub versions_dropped: u64,
     pub tombstones_dropped: u64,
-    /// Point lookups, per run: skipped thanks to the min/max check, probed
-    /// (index path + 1 data block), and probed without finding the key.
+    /// Point lookups, per run: skipped thanks to the min/max check, ruled
+    /// out by the run's filter (both in RAM, no I/O), probed (index path +
+    /// 1 data block), and probed without finding the key. With filters a
+    /// wasted probe is a false positive of the filter.
     pub runs_skipped: u64,
+    pub filter_negatives: u64,
     pub runs_probed: u64,
     pub probes_wasted: u64,
 }
@@ -107,6 +116,7 @@ pub enum Violation {
     TooManyL0Runs,
     LevelOverLimit,
     DeviceAccounting,
+    FilterLostKey,
 }
 
 impl std::fmt::Display for Violation {
@@ -315,8 +325,9 @@ impl Lsm {
     // ------------------------------------------------------------- reads
 
     /// Point lookup: newest place first, stop at the first place that knows
-    /// the key (invariant 4). Each run that the min/max check cannot rule out
-    /// costs its index path, root first, and one data block.
+    /// the key (invariant 4). Each run that neither the min/max check nor
+    /// the run's filter can rule out costs its index path, root first, and
+    /// one data block.
     pub fn get(&mut self, key: u64) -> Option<u64> {
         let mut result = self.mem.get(key);
         let geo = self.cfg.geometry();
@@ -371,6 +382,15 @@ impl Lsm {
             .sum()
     }
 
+    /// Bits of RAM held by the filters of all runs.
+    pub fn filter_bits(&self) -> usize {
+        self.l0
+            .iter()
+            .chain(self.levels.iter().flatten())
+            .map(|run| run.filter.bits())
+            .sum()
+    }
+
     pub fn validate(&self) -> Result<(), Violation> {
         self.validate_structure()?;
         // 6. Limits hold whenever maintenance is not pending.
@@ -380,7 +400,7 @@ impl Lsm {
         Ok(())
     }
 
-    /// Invariants 1 to 5: these hold even after a write failed half-way.
+    /// Invariants 1 to 5 and 7: these hold even after a write failed half-way.
     pub fn validate_structure(&self) -> Result<(), Violation> {
         if self.mem.count() > self.cfg.memtable_entries {
             return Err(Violation::MemtableOverfull);
@@ -391,7 +411,7 @@ impl Lsm {
         let geo = self.cfg.geometry();
         let mut blocks = 0;
         for run in self.l0.iter().chain(self.levels.iter().flatten()) {
-            check_run(run)?;
+            check_run(run, self.cfg.filter_bits_per_key)?;
             blocks += geo.blocks(run.len());
         }
         if blocks as u64 != self.dev.live {
@@ -406,20 +426,25 @@ fn probe(dev: &mut Device, stats: &mut Stats, geo: Geometry, run: &Run, key: u64
         stats.runs_skipped += 1; // decided in RAM, no I/O
         return Lookup::Absent;
     }
+    if !run.filter.may_contain(key) {
+        stats.filter_negatives += 1; // decided in RAM as well
+        return Lookup::Absent;
+    }
     // Root to data block, one block per level: the rule the B+tree's
     // `find_leaf` is charged by.
     dev.read(Kind::Index, geo.index_height(run.len()) as u64);
     dev.read(Kind::Data, 1);
     stats.runs_probed += 1;
     let result = run.find(key);
-    // A bloom filter per run exists to make this case rare.
+    // Without filters this is the common case for an absent key. With
+    // them it is a false positive of the filter.
     if result == Lookup::Absent {
         stats.probes_wasted += 1;
     }
     result
 }
 
-fn check_run(run: &Run) -> Result<(), Violation> {
+fn check_run(run: &Run, filter_bits_per_key: usize) -> Result<(), Violation> {
     let (Some(first), Some(last)) = (run.slots.first(), run.slots.last()) else {
         return Err(Violation::RunEmpty);
     };
@@ -428,6 +453,12 @@ fn check_run(run: &Run) -> Result<(), Violation> {
     }
     if run.min_key != first.key || run.max_key != last.key {
         return Err(Violation::RunBoundsWrong);
+    }
+    // 7. A filter may answer "maybe" too often, never "no" for a key it holds.
+    if run.filter.bits() != run.len() * filter_bits_per_key
+        || !run.slots.iter().all(|s| run.filter.may_contain(s.key))
+    {
+        return Err(Violation::FilterLostKey);
     }
     Ok(())
 }

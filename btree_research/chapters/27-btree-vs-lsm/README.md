@@ -79,14 +79,13 @@ put 3       | btree r=3 w=4 | lsm r= 6 w= 7 | btree: leaf split. lsm: flush. lsm
 ```
 
 LSM column: the first four puts cost nothing. `put 12` finds the memtable
-full, so the four keys `5 6 10 20` are flushed first: two data blocks (`5 6
-10` and `20`) and one index block, three writes. Then 12 goes into the empty
-memtable. `put 3` triggers the second flush (`7 12 17 30`, three more writes).
-Level 0 now holds two runs, its limit, so they are compacted: all six blocks
-are read, and the eight keys are written as the level-1 run, three data blocks
-and one index block. That one operation read 6 and wrote 3 + 4 = 7 blocks.
-Eight earlier writes had cost nothing; this is their bill. Until their flush,
-those writes existed only in RAM.
+full, so the keys `5 6 10 20` are flushed first: two data blocks (`5 6 10` and
+`20`) and one index block, three writes. `put 3` triggers the second flush
+(`7 12 17 30`). Level 0 now holds two runs, its limit, so they are compacted:
+all six blocks are read, and the eight keys are written as the level-1 run,
+three data blocks and one index block. That one operation read 6 and wrote
+3 + 4 = 7 blocks. Eight earlier writes had cost nothing; this is their bill,
+and until their flush those writes existed only in RAM.
 
 B+tree column: every put reads the path to its leaf and writes at least that
 leaf before it returns. `put 3` splits a leaf and dirties four blocks: both
@@ -175,22 +174,12 @@ The ratios, rounded to two decimals:
 ### Zig
 
 `base_*.zig` is the B+tree of chapter 07. Every change is marked `ch27:`.
-The tree gets a `dev: Device` field and four hooks:
-
-```zig
-pub fn touch(self: *BPlusTree, id: NodeId) void {
-    const kind: device.Kind = if (self.nodes.get(id).isLeaf()) .data else .index;
-    self.dev.pin(id.index(), kind);
-}
-pub fn dirty(self: *BPlusTree, id: NodeId) void {
-    self.dev.markDirty(id.index());
-}
-```
-
-`touch` is called wherever the algorithms look at a node, `dirty` wherever they
-change one, and `allocNode` / `freeNode` replace the arena calls. Each
-operation ends with `dev.endOp()`, which writes each dirty block once. `get`
-takes `*BPlusTree`, not `*const`, because a read changes the counters.
+The tree gets a `dev: Device` field and four hooks: `touch(id)` is called
+wherever the algorithms look at a node (one block read, `index` for an
+internal node, `data` for a leaf), `dirty(id)` wherever they change one, and
+`allocNode` / `freeNode` replace the arena calls. Each operation ends with
+`dev.endOp()`, which writes each dirty block once. `get` takes `*BPlusTree`,
+not `*const`, because a read changes the counters.
 
 `memtable.zig` is a skip list (textbook) whose nodes come from an arena; see
 "Allocator notes". A tombstone is a node with `value == null`.
@@ -276,18 +265,13 @@ most blocks on the device at any moment         1107      1367
   live keys at that moment                     10770      9556
   data blocks if those were packed               718       638
   SPACE AMPLIFICATION (at the peak)             1.54      2.14
-...
-Limits of these numbers (ratios are rounded to two decimals):
-  * No cache. Each operation reads every block it looks at from the device, index
-    levels included, in both structures. "data blocks per get" is what is left if
-    every index block of either structure is held in RAM.
-  * No write-ahead log, and so NOT the same durability. A B+tree write is on the
-    device when it returns. An LSM write is in RAM only until the next flush: up to 60
-    writes are lost in a crash. The "+ 1 log block" row is computed, not run: it adds
-    one block per LSM write, the price of the same promise without group commit.
-  * A B+tree with a log and a buffer pool writes a hot page once for many updates,
-    so its write column is an upper bound.
 ```
+
+The program prints the limits under every table. In short: **no cache** for
+either structure; **no log**, so a B+tree write is on the device when it
+returns and an LSM write is not until the next flush (up to 60 writes lost in
+a crash); the "+ 1 log block" row is computed, not run; the B+tree's write
+column is an upper bound for a tree with a log and a buffer pool.
 
 Reading it:
 
@@ -377,13 +361,11 @@ B-tree (see `research/tigerbeetle.md`, section 0).
 - *Growth factor and levels.* The defaults are 7 levels and growth factor 8
   (`tigerbeetle/src/config.zig:162-163`). The comment on the constant states
   the trade-off measured above: a higher growth factor "increases write
-  amplification ... but decreases read amplification", and 8 is chosen "rather
-  than the more typical growth factor of 10"
-  (`tigerbeetle/src/constants.zig:611-615`). Level i may hold
-  `growth_factor^(i+1)` tables (`tigerbeetle/src/lsm/tree.zig:656-661`), and
-  the limits are asserted with their reasons: growth factor at most 16, "Limit
-  excessive write amplification", and at most 10 levels, "Limit excessive read
-  amplification" (`tigerbeetle/src/lsm/tree.zig:641-644`).
+  amplification ... but decreases read amplification"
+  (`tigerbeetle/src/constants.zig:611-615`). The limits are asserted with
+  their reasons: growth factor at most 16, "Limit excessive write
+  amplification", and at most 10 levels, "Limit excessive read amplification"
+  (`tigerbeetle/src/lsm/tree.zig:641-644`).
 - *Tables, not whole levels.* A level is a set of tables; a table is one index
   block plus value blocks (`tigerbeetle/src/lsm/table.zig:41-44`). A run in
   this chapter is a whole level, so its index needs several levels. A
@@ -391,15 +373,12 @@ B-tree (see `research/tigerbeetle.md`, section 0).
   overlapping tables from level B
   (`tigerbeetle/src/lsm/compaction.zig:55-61`). Merging a whole level at once,
   as here, is simpler and produces the 1115-block spike.
-- *Compaction pacing.* Compaction is scheduled by commit number, in "bars" of
-  `lsm_compaction_ops` beats (32 by default,
-  `tigerbeetle/src/config.zig:164`), with the invariant "At the end of every
+- *Pacing.* Compaction is scheduled by commit number in "bars" of 32 beats by
+  default (`tigerbeetle/src/config.zig:164`), so that "At the end of every
   beat, there is space in mutable table for the next beat"
-  (`tigerbeetle/docs/internals/lsm.md:44-61`). The work is spread over the
-  operations instead of landing on one.
-- *Move table.* If the chosen table overlaps nothing in the next level, only
-  its metadata changes (`tigerbeetle/docs/internals/lsm.md:111-120`). This
-  chapter's LSM-tree has no such shortcut.
+  (`tigerbeetle/docs/internals/lsm.md:61`): the work is spread over the
+  operations. A table that overlaps nothing in the next level is moved by
+  changing metadata only (`tigerbeetle/docs/internals/lsm.md:111-120`).
 - *Lookups and scans.* A lookup finds at most one table per level
   (`tigerbeetle/src/lsm/manifest.zig:428-432`). The research notes found no
   bloom filter in `src/lsm/`, only a TODO
@@ -455,9 +434,8 @@ table is a fixed array of 128 entries.
 - **Searching in the wrong order.** Newer data must always be found first:
   memtable, level 0 from newest to oldest, then deeper levels. Merging two
   runs that are not adjacent in age breaks this.
-- **Freeing inputs before the output is complete.** A crash or an allocation
-  failure in between would lose data. Build the new run, install it, then
-  free the old ones. The price is space for both at once.
+- **Freeing inputs before the output is complete.** Build the new run,
+  install it, then free the old ones. The price is space for both at once.
 - **Comparing unlike things**: a cached B-tree with an uncached LSM-tree, a
   run index held in RAM with tree nodes read from the device, or a durable
   write with one that is still only in RAM.

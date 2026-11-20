@@ -33,6 +33,9 @@
   --bt-lock-shared: #2259c4;     --bt-lock-shared-bg: #e4edfc;
   --bt-lock-exclusive: #bd2d38;  --bt-lock-exclusive-bg: #fbdfe1;
   --bt-free: #768191;            --bt-free-bg: #eff1f4;
+  /* --bt-free-bg is almost the same colour as --bt-key-bg in the light theme (kept: pages rely on it).
+     New pages should paint free / unused space with --bt-unused-bg (or the .s-unused state) instead. */
+  --bt-unused-bg: #fdf6d8;
 
   --bt-font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --bt-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
@@ -69,6 +72,7 @@
     --bt-lock-shared: #74aaff;     --bt-lock-shared-bg: #1c3154;
     --bt-lock-exclusive: #f27982;  --bt-lock-exclusive-bg: #4b1f25;
     --bt-free: #6c7889;            --bt-free-bg: #1e252f;
+    --bt-unused-bg: #3b3520;
     --bt-shadow: 0 1px 2px rgba(0, 0, 0, .4);
   }
 }
@@ -99,6 +103,7 @@
   --bt-lock-shared: #74aaff;     --bt-lock-shared-bg: #1c3154;
   --bt-lock-exclusive: #f27982;  --bt-lock-exclusive-bg: #4b1f25;
   --bt-free: #6c7889;            --bt-free-bg: #1e252f;
+  --bt-unused-bg: #3b3520;
   --bt-shadow: 0 1px 2px rgba(0, 0, 0, .4);
 }
 
@@ -116,6 +121,7 @@
 .s-lock-shared    { --s: var(--bt-lock-shared);    --s-bg: var(--bt-lock-shared-bg); }
 .s-lock-exclusive { --s: var(--bt-lock-exclusive); --s-bg: var(--bt-lock-exclusive-bg); }
 .s-free           { --s: var(--bt-free);           --s-bg: var(--bt-free-bg); }
+.s-unused         { --s: var(--bt-free);           --s-bg: var(--bt-unused-bg); }   /* free space, clearly unlike a key cell */
 .s-pointer        { --s: var(--bt-pointer);        --s-bg: var(--bt-pointer-bg); }
 .s-dim            { opacity: .38; }
 
@@ -247,6 +253,10 @@ body.bt-page, .bt-page {
   .bt-figure-body.has-side { grid-template-columns: minmax(0, 1fr); }
   .bt-side { border-left: 0; border-top: 1px solid var(--bt-border); }
 }
+/* figure({side: true, controlsUnderStage: true}): stage, caption and controls share the first column,
+   so the controls stay next to the picture and the side panel follows them on narrow screens. */
+.bt-figure-main { min-width: 0; display: flex; flex-direction: column; }
+.bt-figure-main > .bt-controls-slot { min-width: 0; }
 .bt-caption {
   min-height: 4.4em; padding: 10px 14px; border-top: 1px solid var(--bt-border);
   font-size: .95rem; line-height: 1.5;
@@ -344,7 +354,11 @@ body.bt-page, .bt-page {
 }
 .bt-node[class*="s-"] .bt-node-box { stroke-width: 2.25; }
 .bt-node.is-clickable { cursor: pointer; }
-.bt-node-label { font: 10.5px var(--bt-font); fill: var(--bt-muted); }
+.bt-node-label {
+  font: 10.5px var(--bt-font); fill: var(--bt-muted);
+  /* halo in the tree background colour, so an edge passing behind the label does not strike it through */
+  paint-order: stroke; stroke: var(--bt-bg); stroke-width: 3px; stroke-linejoin: round;
+}
 .bt-node-note  { font: 10.5px var(--bt-font); fill: var(--bt-muted); text-anchor: middle; }
 .bt-node-empty { font: italic 11px var(--bt-font); fill: var(--bt-muted); text-anchor: middle; dominant-baseline: central; }
 .bt-node-dirty { fill: var(--bt-page-dirty); stroke: var(--bt-bg); stroke-width: 1.5; }
@@ -428,7 +442,8 @@ body.bt-page, .bt-page {
   transition: transform var(--bt-dur) cubic-bezier(.4, 0, .2, 1), opacity var(--bt-dur),
               background-color .2s, box-shadow .2s;
 }
-.bt-pb[class*="s-"] { box-shadow: inset 0 0 0 1px var(--s); }
+/* State classes only: [class*="s-"] would also match "is-first" / "is-alt". */
+.bt-pb:is([class^="s-"], [class*=" s-"]) { box-shadow: inset 0 0 0 1px var(--s); }
 .bt-pb.r-slot { background: var(--s-bg, var(--bt-pointer-bg)); }
 .bt-pb.r-slot.is-first, .bt-pb.r-cell.is-first { box-shadow: inset 2px 0 0 var(--s, var(--bt-node)), inset 0 0 0 .5px var(--s, var(--bt-node)); }
 .bt-pb.r-cell.is-alt:not([class*="s-"]) { background: var(--bt-surface); }
@@ -478,6 +493,21 @@ body.bt-page, .bt-page {
   tab-size: 4;
 }
 .bt-code code { display: block; min-width: max-content; font: inherit; background: none; padding: 0; }
+/* Sideways-scroll hint: a soft shadow on whichever edge hides more code (paint only, no layout change). */
+.bt-code {
+  background-image:
+    linear-gradient(to right, var(--bt-surface) 35%, transparent), linear-gradient(to left, var(--bt-surface) 35%, transparent),
+    linear-gradient(to right, color-mix(in srgb, var(--bt-text) 30%, transparent), transparent),
+    linear-gradient(to left, color-mix(in srgb, var(--bt-text) 30%, transparent), transparent);
+  background-position: left center, right center, left center, right center;
+  background-size: 36px 100%, 36px 100%, 12px 100%, 12px 100%;
+  background-repeat: no-repeat;
+  background-attachment: local, local, scroll, scroll;
+}
+/* codePanel(…, {wrap: true}): soft-wrap long lines; continuation lines hang past the line numbers. */
+.bt-code.is-wrap code { min-width: 0; }
+.bt-code.is-wrap .bt-line { white-space: pre-wrap; overflow-wrap: anywhere; padding-left: 4.4ch; text-indent: -4.4ch; }
+.bt-code.is-wrap .bt-line::before { text-indent: 0; }
 .bt-line { display: block; padding: 0 12px 0 0; border-left: 3px solid transparent; white-space: pre; }
 .bt-line::before {
   content: attr(data-n); display: inline-block; width: 3.2ch; margin-right: 1.2ch; text-align: right;

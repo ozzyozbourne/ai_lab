@@ -361,7 +361,7 @@ pub const Wal = struct {
     ///
     /// Running it twice, or crashing inside it and running it again, gives
     /// the same main file: step 3 only copies images.
-    pub fn recover(self: *Wal) (Error || Allocator.Error)!Recovery {
+    pub fn recover(self: *Wal) Error!Recovery {
         // Every image read from the log lives in this arena and dies with it
         // when recovery is over: one free for the lot.
         var arena_state: std.heap.ArenaAllocator = .init(self.gpa);
@@ -395,19 +395,25 @@ pub const Wal = struct {
             if (std.mem.readInt(u64, head[0..8], .little) != lsn) break;
             if (!(kind == kind_page and payload_len == page_size) and !(kind == kind_commit and payload_len == 0)) break;
             var image: ?*Page = null;
-            var sum = crc.crc32Update(crc.crc32(&std.mem.toBytes(std.mem.nativeToLittle(u32, chain))), head[0..20]);
             if (kind == kind_page) {
                 image = try arena.create(Page);
                 if (!try reader.read(pos + record_header_len, image.?)) break;
-                sum = crc.crc32Update(sum, image.?);
             }
+            const payload: []const u8 = if (image) |img| img else &.{};
+            const sum = recordCrc(chain, head[0..20], payload);
             if (sum != std.mem.readInt(u32, head[20..24], .little)) break; // the chain is broken here
 
             if (image) |img| {
                 try open_op.append(arena, .{ .id = arg, .image = img });
             } else {
                 if (arg != open_op.items.len) break;
-                for (open_op.items) |e| try committed.put(arena, e.id, e.image);
+                // The newest image of a page wins. An older one is simply
+                // forgotten: the arena frees it with everything else.
+                for (open_op.items) |e| {
+                    const i = committed.lowerBound(e.id);
+                    const items = committed.entries.items;
+                    if (i < items.len and items[i].id == e.id) items[i].image = e.image else try committed.entries.insert(arena, i, e);
+                }
                 open_op.clearRetainingCapacity();
                 report.committed_ops += 1;
             }
@@ -528,12 +534,17 @@ pub fn encodeRecord(rec: []u8, lsn: u64, kind: u32, arg: u32, prev_crc: u32) u32
     std.mem.writeInt(u32, rec[8..12], kind, .little);
     std.mem.writeInt(u32, rec[12..16], arg, .little);
     std.mem.writeInt(u32, rec[16..20], @intCast(rec.len - record_header_len), .little);
-    var prev: [4]u8 = undefined;
-    std.mem.writeInt(u32, &prev, prev_crc, .little);
-    var sum = crc.crc32Update(crc.crc32(&prev), rec[0..20]);
-    sum = crc.crc32Update(sum, rec[record_header_len..]);
+    const sum = recordCrc(prev_crc, rec[0..20], rec[record_header_len..]);
     std.mem.writeInt(u32, rec[20..24], sum, .little);
     return sum;
+}
+
+/// One link of the checksum chain: CRC-32 over the previous record's CRC
+/// (4 bytes, little-endian), the first 20 header bytes, and the payload.
+pub fn recordCrc(prev_crc: u32, head: *const [20]u8, payload: []const u8) u32 {
+    var prev: [4]u8 = undefined;
+    std.mem.writeInt(u32, &prev, prev_crc, .little);
+    return crc.crc32Update(crc.crc32Update(crc.crc32(&prev), head), payload);
 }
 
 pub fn encodeHeader(page: *Page, generation: u64, first_lsn: u64) u32 {

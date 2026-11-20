@@ -95,7 +95,7 @@ test "PageFile: the pager of chapter 12 runs on the SimDisk of chapter 21" {
     try pager.readPage(id, &out);
     try testing.expectEqualSlices(u8, &page, &out);
     try testing.expectEqual(page_size, try file.storage().size());
-    try testing.expectEqual(1, disk.pendingCount() - 1); // allocation + write, both unsynced
+    try testing.expectEqual(2, disk.pendingCount()); // the allocation and the write, both unsynced
     try pager.sync();
     try testing.expectEqual(0, disk.pendingCount());
 }

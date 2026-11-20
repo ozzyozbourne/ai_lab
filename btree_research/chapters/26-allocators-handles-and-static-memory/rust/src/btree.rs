@@ -792,4 +792,57 @@ I0.1 [10]
         assert_eq!(tree.get(k), None);
         assert_eq!(tree.leaves.slab_count, 4);
     }
+
+    // The scenario of the "Static memory" mode in viz/index.html, pinned here and in the
+    // Zig twin so that the page's JS model can be checked against real programs.
+    #[test]
+    fn static_picture_ascending_keys_until_the_pool_is_dry() {
+        let mut tree: BTree<4, 3, 4> = BTree::new(false);
+        tree.leaves.reserve(3).unwrap();
+        tree.interiors.reserve(2).unwrap();
+        tree.leaves.freeze();
+        tree.interiors.freeze();
+
+        let mut k = 1;
+        while tree.put(k, k).is_ok() {
+            k += 1;
+        }
+        // Key 25 would fit into leaf L2.3, but top-down insertion must first split the
+        // full interior node I1.3 on the way, and the interior pool has no slot left.
+        assert_eq!((k, tree.count, tree.height), (25, 24, 4));
+        assert_eq!(tree.leaves.grow_failures, 0);
+        assert_eq!(tree.interiors.grow_failures, 1);
+        assert_eq!(tree.leaves.free_slots() + tree.interiors.free_slots(), 0);
+        tree.validate().unwrap();
+        let expected = "\
+I1.1 [8]
+  I0.1 [4]
+    I0.0 [2]
+      L0.0 [1]
+      L0.1 [3]
+    I0.2 [6]
+      L0.2 [5]
+      L0.3 [7]
+  I1.2 [12 16]
+    I0.3 [10]
+      L1.0 [9]
+      L1.1 [11]
+    I1.0 [14]
+      L1.2 [13]
+      L1.3 [15]
+    I1.3 [18 20 22]
+      L2.0 [17]
+      L2.1 [19]
+      L2.2 [21]
+      L2.3 [23 24]
+";
+        assert_eq!(tree.dump(), expected);
+        // Deleting gives slots back to the pool (never to the allocator): 5 and 7 merge
+        // into one leaf, their parent into its sibling, and the insert fits again.
+        assert!(tree.delete(7));
+        assert_eq!(tree.leaves.slab_count, 3);
+        assert!(tree.leaves.free_slots() + tree.interiors.free_slots() > 0);
+        tree.put(25, 25).unwrap();
+        tree.validate().unwrap();
+    }
 }

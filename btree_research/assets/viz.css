@@ -503,6 +503,8 @@ body.bt-page, .bt-page {
   border: 1px dashed var(--bt-border); border-radius: var(--bt-radius); font-size: .8rem; color: var(--bt-muted);
 }
 .bt-selftests-title { font-weight: 650; letter-spacing: .05em; text-transform: uppercase; font-size: .72rem; margin-right: 4px; }
+/* Long test names wrap inside the badge instead of overflowing a phone-width page (full name is in its title). */
+.bt-selftest { white-space: normal; overflow-wrap: anywhere; min-width: 0; max-width: 100%; border-radius: 12px; }
 .bt-selftest-diff { flex: 1 1 100%; }
 .bt-selftest-diff pre { max-height: 240px; padding: 8px 12px; border: 1px solid var(--bt-border); border-radius: 6px; }
 
@@ -604,6 +606,7 @@ body.bt-page, .bt-page {
 .bt-graph-node path.is-cross { fill: none; stroke: var(--s, var(--bt-accent)); stroke-width: 2.5; stroke-linecap: round; }
 .bt-graph-node text { font: 600 10.5px var(--bt-mono); fill: var(--bt-text); paint-order: stroke; stroke: var(--bt-bg); stroke-width: 3px; }
 .bt-graph-node.is-clickable { cursor: pointer; }
+.bt-graph-svg.is-clickable { cursor: crosshair; }
 .bt-graph-region { fill: var(--s-bg, transparent); stroke: var(--s, var(--bt-border)); stroke-width: 1; stroke-dasharray: 3 3; fill-opacity: .55; }
 
 /* ---------- 16. Motion + small screens ------------------------------------ */

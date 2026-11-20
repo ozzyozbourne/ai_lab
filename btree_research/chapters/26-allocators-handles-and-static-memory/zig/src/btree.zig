@@ -607,3 +607,58 @@ test "frozen: after reserve the tree runs without touching the allocator" {
     static.thaw();
     tree.deinit();
 }
+
+// The scenario of the "Static memory" mode in viz/index.html, pinned here and in the
+// Rust twin so that the page's JS model can be checked against real programs.
+test "static picture: 3 + 2 slabs of 4 slots, ascending keys until the pool is dry" {
+    var static: StaticAllocator = .init(testing.allocator);
+    var tree: BTree(4, 4) = .init(static.allocator(), false);
+    try tree.leaves.reserve(3);
+    try tree.interiors.reserve(2);
+    static.freeze();
+
+    var k: u64 = 1;
+    while (tree.put(k, k)) |_| k += 1 else |err| try testing.expectEqual(error.OutOfMemory, err);
+    // Key 25 would fit into leaf L2.3, but top-down insertion must first split the
+    // full interior node I1.3 on the way, and the interior pool has no slot left.
+    try testing.expectEqual(25, k);
+    try testing.expectEqual(24, tree.count);
+    try testing.expectEqual(4, tree.height);
+    try testing.expectEqual(0, tree.leaves.grow_failures);
+    try testing.expectEqual(1, tree.interiors.grow_failures);
+    try testing.expectEqual(0, tree.leaves.freeSlots() + tree.interiors.freeSlots());
+    try tree.validate();
+    try expectDump(&tree,
+        \\I1.1 [8]
+        \\  I0.1 [4]
+        \\    I0.0 [2]
+        \\      L0.0 [1]
+        \\      L0.1 [3]
+        \\    I0.2 [6]
+        \\      L0.2 [5]
+        \\      L0.3 [7]
+        \\  I1.2 [12 16]
+        \\    I0.3 [10]
+        \\      L1.0 [9]
+        \\      L1.1 [11]
+        \\    I1.0 [14]
+        \\      L1.2 [13]
+        \\      L1.3 [15]
+        \\    I1.3 [18 20 22]
+        \\      L2.0 [17]
+        \\      L2.1 [19]
+        \\      L2.2 [21]
+        \\      L2.3 [23 24]
+        \\
+    );
+    // Deleting gives slots back to the pool (never to the allocator): 5 and 7 merge
+    // into one leaf, their parent into its sibling, and the insert fits again.
+    try testing.expect(tree.delete(7));
+    try testing.expectEqual(3, tree.leaves.slab_count);
+    try testing.expect(tree.leaves.freeSlots() + tree.interiors.freeSlots() > 0);
+    try tree.put(25, 25);
+    try tree.validate();
+
+    static.thaw();
+    tree.deinit();
+}

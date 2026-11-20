@@ -79,6 +79,8 @@ pub const Result = struct {
     acked: u32,
     /// Page writes the machine accepted before the (first) crash.
     writes: u64,
+    /// Syncs the machine completed before the (first) crash.
+    syncs: u64 = 0,
     /// With the log: what the final recovery found.
     recovery: Recovery = .{},
     /// Tree statistics at the end of the run phase (meaningful if no crash).
@@ -159,9 +161,30 @@ fn classify(gpa: Allocator, tree: *DiskBTree, w: Workload, acked: u32) Allocator
 /// never: the whole workload runs). `second` = if set, the power fails again
 /// after that many writes of the recovery, and recovery runs a second time.
 pub fn runWithLog(gpa: Allocator, w: Workload, n: ?u64, second: ?u64, mode: CrashMode, options: db_mod.Options) Error!Result {
+    return runCut(gpa, w, if (n) |limit| .{ .after_write = limit } else .never, second, .{ .main = mode, .log = mode }, options);
+}
+
+/// Where the power fails.
+pub const Cut = union(enum) {
+    never,
+    /// After this many page writes (both files together).
+    after_write: u64,
+    /// At the k-th sync (k >= 1): it completes, but its caller gets an error.
+    at_sync: u64,
+};
+
+/// What the power cut does to the unsynced writes of each file.
+pub const Fates = struct { main: CrashMode, log: CrashMode };
+
+/// `runWithLog` with every choice spelled out.
+pub fn runCut(gpa: Allocator, w: Workload, cut: Cut, second: ?u64, fates: Fates, options: db_mod.Options) Error!Result {
     var machine: Machine = .init(gpa, w.seed);
     defer machine.deinit();
-    if (n) |limit| machine.powerOffAfterWrites(limit);
+    switch (cut) {
+        .never => {},
+        .after_write => |limit| machine.powerOffAfterWrites(limit),
+        .at_sync => |k| machine.powerOffAtSync(k),
+    }
 
     var result: Result = .{ .outcome = .open_failed, .acked = 0, .writes = 0 };
     var key_buf: [btree.max_key_len]u8 = undefined;
@@ -183,7 +206,8 @@ pub fn runWithLog(gpa: Allocator, w: Workload, n: ?u64, second: ?u64, mode: Cras
         result.wal_stats = db.wal.stats;
     }
     result.writes = machine.writes;
-    machine.crash(mode);
+    result.syncs = machine.syncs;
+    machine.crashEach(fates.main, fates.log);
 
     if (second) |limit| {
         // Crash during recovery: recovery must be restartable.
@@ -194,7 +218,7 @@ pub fn runWithLog(gpa: Allocator, w: Workload, n: ?u64, second: ?u64, mode: Cras
             if (!machine.isPoweredOff()) return err;
         }
         result.second_crash_hit = machine.isPoweredOff();
-        machine.crash(mode);
+        machine.crashEach(fates.main, fates.log);
     }
 
     const db = Db.open(gpa, machine.mainStorage(), machine.logStorage(), options) catch |err| {

@@ -13,8 +13,13 @@
 //!
 //! An error from `put` means "outcome unknown", not "not stored": the power
 //! may have failed after the commit record became durable but before `put`
-//! could return. After any error the handle must be closed and the database
-//! reopened; recovery then decides.
+//! could return. After such an error the handle must be closed and the
+//! database reopened; recovery then decides. The handle enforces this: once
+//! `put`, `putBatch` or `checkpoint` has failed after it started to change
+//! something, every later call returns `error.ReopenRequired`. Without that,
+//! the pages a failed operation left in memory would be committed by the
+//! next successful one. The one error that leaves the handle usable is a key
+//! or value that is too long: it is found before anything is touched.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const page_storage = @import("base_page_storage.zig");
@@ -45,8 +50,15 @@ pub const Db = struct {
     tree: DiskBTree,
     /// What recovery found when this handle was opened.
     recovery: wal_mod.Recovery,
+    /// Set when an operation failed half-way: the buffer pool and the log
+    /// layer may hold pages of an operation that never committed.
+    failed: bool,
 
-    pub const Error = DiskBTree.Error || Wal.Error;
+    pub const Error = DiskBTree.Error || Wal.Error || error{
+        /// An earlier operation on this handle failed. Close it and open
+        /// the database again; recovery decides what was stored.
+        ReopenRequired,
+    };
 
     /// The struct holds pointers into itself (pager -> wal, pool -> pager,
     /// tree -> pool), so it lives on the heap and never moves.
@@ -55,6 +67,7 @@ pub const Db = struct {
         errdefer gpa.destroy(self);
         self.gpa = gpa;
         self.options = options;
+        self.failed = false;
         self.wal = try .init(gpa, main, log, .{ .max_commit_pages = options.max_commit_pages });
         errdefer self.wal.deinit();
         self.recovery = try self.wal.recover();
@@ -79,13 +92,22 @@ pub const Db = struct {
 
     /// Insert or overwrite one key. Atomic and durable at return.
     pub fn put(self: *Db, key: []const u8, value: []const u8) Error!void {
-        try self.tree.put(key, value);
-        try self.commit();
+        return self.putBatch(&.{.{ .key = key, .value = value }});
     }
 
     /// Insert or overwrite several keys as one operation with one commit
     /// record: after a crash either all of them are there or none.
     pub fn putBatch(self: *Db, pairs: []const KeyValue) Error!void {
+        if (self.failed) return error.ReopenRequired;
+        // Refuse a pair the tree would refuse BEFORE the first one is
+        // applied: the tree has no undo, so a batch that stops in the middle
+        // cannot be taken back.
+        for (pairs) |kv| {
+            if (kv.key.len > btree.max_key_len) return error.KeyTooLarge;
+            if (kv.value.len > btree.max_value_len) return error.ValueTooLarge;
+        }
+        // From here on an error leaves uncommitted pages behind.
+        errdefer self.failed = true;
         for (pairs) |kv| try self.tree.put(kv.key, kv.value);
         try self.commit();
     }
@@ -100,19 +122,24 @@ pub const Db = struct {
     }
 
     pub fn checkpoint(self: *Db) Error!void {
+        if (self.failed) return error.ReopenRequired;
+        errdefer self.failed = true;
         try self.wal.checkpoint();
     }
 
     /// Caller frees the returned value with `allocator`.
     pub fn get(self: *Db, allocator: Allocator, key: []const u8) Error!?[]u8 {
+        if (self.failed) return error.ReopenRequired; // it would show uncommitted pages
         return self.tree.get(allocator, key);
     }
 
     pub fn range(self: *Db, lo: []const u8, hi: ?[]const u8) Error!DiskBTree.RangeIterator {
+        if (self.failed) return error.ReopenRequired;
         return self.tree.range(lo, hi);
     }
 
     pub fn validate(self: *Db) (Error || DiskBTree.ValidateError)!void {
+        if (self.failed) return error.ReopenRequired;
         return self.tree.validate();
     }
 };

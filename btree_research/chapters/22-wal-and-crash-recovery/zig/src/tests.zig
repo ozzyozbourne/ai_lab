@@ -12,8 +12,10 @@ const btree = @import("base_disk_btree.zig");
 const wal_mod = @import("wal.zig");
 const db_mod = @import("db.zig");
 const Db = db_mod.Db;
+const DiskBTree = btree.DiskBTree;
 const crash = @import("crash.zig");
 const demo = @import("demo.zig");
+const crc = @import("crc32.zig");
 
 /// `n` copies of one byte, as a compile-time constant.
 fn rep(comptime c: u8, comptime n: usize) *const [n]u8 {
@@ -75,6 +77,79 @@ test "long crash loop (only with -Dlong=true)" {
     try expectAllExact(loop);
 }
 
+test "the two files fare differently in the power cut: still the before or the after state" {
+    // Nothing ties the fate of the log's unsynced writes to that of the main
+    // file's. The first pair is the write-ahead rule seen from outside: the
+    // main file keeps every write and the log loses every unsynced one, so
+    // a page that reached the main file before its log record was durable
+    // would stay there with nothing to explain it.
+    const wl = crash.small;
+    const always = [_]crash.Fates{ .{ .main = .keep, .log = .drop }, .{ .main = .drop, .log = .keep } };
+    // Two more pairs with torn pages, taking turns to keep the test short.
+    const in_turn = [_]crash.Fates{ .{ .main = .tear, .log = .random }, .{ .main = .random, .log = .tear } };
+    const clean = try crash.runWithLog(testing.allocator, wl, null, null, .drop, .{});
+    var tally: crash.Tally = .{};
+    var n: u64 = 0;
+    while (n <= clean.writes) : (n += 1) {
+        for (always ++ .{in_turn[n % 2]}) |fates| {
+            const r = try crash.runCut(testing.allocator, wl, .{ .after_write = n }, null, fates, .{});
+            tally.add(r.outcome);
+        }
+    }
+    try testing.expectEqual(3 * (clean.writes + 1), tally.runs);
+    try testing.expectEqual(tally.runs, tally.exact());
+    try testing.expect(tally.before > 0 and tally.after > 0);
+}
+
+test "a sync that completes but reports the power cut: the put failed and is stored" {
+    // "After write N" never stops the machine between a sync and its
+    // return. Here it stops exactly there, at every sync of the workload.
+    const wl = crash.small;
+    const options: db_mod.Options = .{ .frames = 2, .checkpoint_every = 3 };
+    const clean = try crash.runWithLog(testing.allocator, wl, null, null, .drop, options);
+    try testing.expect(clean.syncs > wl.puts); // commits, and the two syncs of each checkpoint
+    for (crash.modes) |mode| {
+        var tally: crash.Tally = .{};
+        var k: u64 = 1;
+        while (k <= clean.syncs) : (k += 1) {
+            const r = try crash.runCut(testing.allocator, wl, .{ .at_sync = k }, null, .{ .main = mode, .log = mode }, options);
+            try testing.expectEqual(k, r.syncs);
+            tally.add(r.outcome);
+        }
+        try testing.expectEqual(tally.runs, tally.exact());
+        // Syncs 1 and 2 belong to `open` (the first log header, the commit
+        // that creates the tree). Every later one is part of a put: the log
+        // sync of its commit, or a sync of the checkpoint behind it. The
+        // commit record is durable in all of them, so the put that returned
+        // an error is in the database: "outcome unknown" is not "not stored".
+        try testing.expectEqual(2, tally.before);
+        try testing.expectEqual(clean.syncs - 2, tally.after);
+    }
+}
+
+test "a second power cut during recovery, in the modes the demo leaves out" {
+    // The demo prints this loop for `keep` and `random`. `tear` is the mode
+    // in which recovery finds a main-file page that its own first attempt
+    // tore, and must simply write it again.
+    const wl = crash.small;
+    const options: db_mod.Options = .{ .frames = 3 };
+    const clean = try crash.runWithLog(testing.allocator, wl, null, null, .drop, options);
+    var runs: u32 = 0;
+    var n: u64 = 2;
+    while (n <= clean.writes) : (n += 11) {
+        for ([_]crash.CrashMode{ .drop, .tear }) |mode| {
+            var m: u64 = 0;
+            while (true) : (m += 1) {
+                const r = try crash.runWithLog(testing.allocator, wl, n, m, mode, options);
+                if (!r.second_crash_hit) break; // recovery finished before write m
+                try testing.expect(r.outcome == .before or r.outcome == .after);
+                runs += 1;
+            }
+        }
+    }
+    try testing.expect(runs > 50);
+}
+
 test "a batch commits all of its puts or none, at every crash point" {
     const pairs = [_]db_mod.KeyValue{
         .{ .key = "b1", .value = rep('x', 900) }, .{ .key = "b2", .value = rep('y', 900) }, .{ .key = "b3", .value = rep('z', 900) },
@@ -114,6 +189,86 @@ test "a batch commits all of its puts or none, at every crash point" {
     }
     try testing.expect(none > 0 and all > 0);
     try testing.expect(n >= 6); // the batch split leaves: several log pages
+}
+
+test "a batch with a pair the tree would refuse is refused whole, and the handle stays usable" {
+    var machine: Machine = .init(testing.allocator, 1);
+    defer machine.deinit();
+    {
+        const db = try openDb(&machine, .{});
+        defer db.close();
+        try db.put("a", "1");
+        // The bad pair is the second of three. Nothing of the batch may be
+        // applied, not even to the pages in memory.
+        try testing.expectError(error.KeyTooLarge, db.putBatch(&.{
+            .{ .key = "b1", .value = "x" },
+            .{ .key = rep('k', btree.max_key_len + 1), .value = "y" },
+            .{ .key = "b3", .value = "z" },
+        }));
+        try testing.expectError(error.ValueTooLarge, db.putBatch(&.{
+            .{ .key = "b1", .value = "x" },
+            .{ .key = "b2", .value = rep('v', btree.max_value_len + 1) },
+        }));
+        try testing.expectError(error.KeyTooLarge, db.put(rep('k', btree.max_key_len + 1), "y"));
+        try expectValue(db, "b1", null);
+        // Nothing was touched, so this is not a failed handle...
+        try testing.expect(!db.failed);
+        try db.put("c", "3");
+    }
+    machine.crash(.drop);
+    const db = try openDb(&machine, .{});
+    defer db.close();
+    // ... and the put that followed did not commit half of the batch.
+    try expectValue(db, "b1", null);
+    try expectValue(db, "b3", null);
+    try expectValue(db, "c", "3");
+}
+
+test "a batch that fails after its first put: the handle refuses everything until it is reopened" {
+    var machine: Machine = .init(testing.allocator, 1);
+    defer machine.deinit();
+    {
+        // Five keys of 1000 bytes: an interior root (page 1) and two leaves
+        // (pages 2 and 3), all of them checkpointed into the main file.
+        const db = try openDb(&machine, .{});
+        defer db.close();
+        for ("abcde") |c| try db.put(&.{c}, rep('1', 1000));
+        try db.checkpoint();
+        try testing.expectEqual(4, machine.main.size());
+    }
+    // Damage the right leaf in the main file. Its checksum will not verify.
+    var page: Page = undefined;
+    try machine.mainStorage().readPage(3, &page);
+    page[2000] ^= 1;
+    try machine.mainStorage().writePage(3, &page);
+    try machine.mainStorage().sync();
+    {
+        const db = try openDb(&machine, .{});
+        defer db.close();
+        try expectValue(db, "a", rep('1', 1000)); // the left leaf is fine
+        try testing.expectError(error.StorageFailure, db.get(testing.allocator, "e"));
+        try testing.expect(!db.failed); // a failed read changes nothing
+
+        // "a2" goes into the left leaf; "e2" needs the damaged one.
+        try testing.expectError(error.StorageFailure, db.putBatch(&.{ .{ .key = "a2", .value = "x" }, .{ .key = "e2", .value = "y" } }));
+        // "a2" now sits in a dirty page of the buffer pool. Without the
+        // `failed` flag the next put would log that page and commit half of
+        // the batch, and a `get` would already show it.
+        try testing.expect(db.failed);
+        try testing.expectError(error.ReopenRequired, db.put("b2", "z"));
+        try testing.expectError(error.ReopenRequired, db.putBatch(&.{.{ .key = "b2", .value = "z" }}));
+        try testing.expectError(error.ReopenRequired, db.get(testing.allocator, "a2"));
+        try testing.expectError(error.ReopenRequired, db.range("", null));
+        try testing.expectError(error.ReopenRequired, db.validate());
+        try testing.expectError(error.ReopenRequired, db.checkpoint());
+    }
+    machine.crash(.keep);
+    const db = try openDb(&machine, .{});
+    defer db.close();
+    try testing.expectEqual(0, db.recovery.valid_records); // the failed batch never reached the log
+    try expectValue(db, "a2", null);
+    try expectValue(db, "b2", null);
+    try expectValue(db, "a", rep('1', 1000));
 }
 
 // ---- the write-ahead rule ------------------------------------------------------
@@ -279,6 +434,312 @@ test "a damaged page in the main file is detected by its checksum" {
     try testing.expectEqual(1, db.wal.stats.checksum_failures);
 }
 
+// ---- forged logs -------------------------------------------------------------------
+
+/// Copy `out.len` bytes of the log file, starting at byte `offset`.
+fn readLog(machine: *Machine, offset: u64, out: []u8) !void {
+    var page: Page = undefined;
+    var done: usize = 0;
+    while (done < out.len) {
+        const at = offset + done;
+        const in_page: usize = @intCast(at % page_size);
+        try machine.logStorage().readPage(at / page_size, &page);
+        const n = @min(out.len - done, page_size - in_page);
+        @memcpy(out[done..][0..n], page[in_page..][0..n]);
+        done += n;
+    }
+}
+
+/// Overwrite bytes of the log file, starting at byte `offset`, and sync.
+/// Everything else in the file stays as it is.
+fn writeLog(machine: *Machine, offset: u64, bytes: []const u8) !void {
+    var page: Page = undefined;
+    var done: usize = 0;
+    while (done < bytes.len) {
+        const at = offset + done;
+        const in_page: usize = @intCast(at % page_size);
+        page = @splat(0);
+        if (at / page_size < machine.log.size()) try machine.logStorage().readPage(at / page_size, &page);
+        const n = @min(bytes.len - done, page_size - in_page);
+        @memcpy(page[in_page..][0..n], bytes[done..][0..n]);
+        try machine.logStorage().writePage(at / page_size, &page);
+        done += n;
+    }
+    try machine.logStorage().sync();
+}
+
+/// Writes a log by hand, from the format table at the top of wal.zig and
+/// from nothing else: it calls no function of wal.zig. So these tests also
+/// pin the format, and they can write logs the real writer never would.
+const Forge = struct {
+    bytes: std.ArrayList(u8) = .empty,
+    chain: u32 = 0,
+
+    fn deinit(self: *Forge) void {
+        self.bytes.deinit(testing.allocator);
+    }
+
+    /// Start over with a header page.
+    fn header(self: *Forge, generation: u64, first_lsn: u64) !void {
+        var page: Page = @splat(0);
+        @memcpy(page[0..8], "WAL22\x00\x00\x00");
+        std.mem.writeInt(u32, page[8..12], 1, .little);
+        std.mem.writeInt(u32, page[12..16], 4096, .little);
+        std.mem.writeInt(u64, page[16..24], generation, .little);
+        std.mem.writeInt(u64, page[24..32], first_lsn, .little);
+        self.chain = crc.crc32(page[0..32]);
+        std.mem.writeInt(u32, page[32..36], self.chain, .little);
+        self.bytes.clearRetainingCapacity();
+        try self.bytes.appendSlice(testing.allocator, &page);
+    }
+
+    /// Append one record, chained from the one before it.
+    fn record(self: *Forge, lsn: u64, kind: u32, arg: u32, payload: []const u8) !void {
+        var head: [24]u8 = undefined;
+        std.mem.writeInt(u64, head[0..8], lsn, .little);
+        std.mem.writeInt(u32, head[8..12], kind, .little);
+        std.mem.writeInt(u32, head[12..16], arg, .little);
+        std.mem.writeInt(u32, head[16..20], @intCast(payload.len), .little);
+        var prev: [4]u8 = undefined;
+        std.mem.writeInt(u32, &prev, self.chain, .little);
+        self.chain = crc.crc32Update(crc.crc32Update(crc.crc32(&prev), head[0..20]), payload);
+        std.mem.writeInt(u32, head[20..24], self.chain, .little);
+        try self.bytes.appendSlice(testing.allocator, &head);
+        try self.bytes.appendSlice(testing.allocator, payload);
+    }
+
+    /// One operation: page 0 and page 1, then the commit record.
+    fn operation(self: *Forge, first_lsn: u64, images: *const [2]Page) !void {
+        try self.record(first_lsn, 1, 0, &images[0]);
+        try self.record(first_lsn + 1, 1, 1, &images[1]);
+        try self.record(first_lsn + 2, 2, 2, "");
+    }
+
+    /// Put the forged bytes at the front of the machine's log file.
+    fn install(self: *const Forge, machine: *Machine) !void {
+        try writeLog(machine, 0, self.bytes.items);
+    }
+};
+
+const image_record_len = wal_mod.record_header_len + page_size;
+/// Bytes of one operation of 2 page images.
+const operation_len = 2 * image_record_len + wal_mod.record_header_len;
+
+/// A machine whose main file holds "a" and whose log holds two committed
+/// operations, put "b" and put "c": the raw material of the forgeries.
+const Forgery = struct {
+    machine: Machine,
+    generation: u64 = 0,
+    /// LSN of the first record in the log.
+    lsn: u64 = 0,
+    /// Pages 0 and 1 (metapage and root leaf) as put "b" and put "c" logged them.
+    b: [2]Page = undefined,
+    c: [2]Page = undefined,
+    /// The log file as the real writer left it: the header and 6 records.
+    original: [page_size + 2 * operation_len]u8 = undefined,
+
+    /// In place: the machine must not move once a storage points at it.
+    fn init(self: *Forgery) !void {
+        self.* = .{ .machine = .init(testing.allocator, 1) };
+        errdefer self.machine.deinit();
+        {
+            const db = try openDb(&self.machine, .{ .checkpoint_every = 0 });
+            defer db.close();
+            try db.put("a", "1");
+            try db.checkpoint();
+            try db.put("b", "2");
+            try db.put("c", "3");
+        }
+        try readLog(&self.machine, 0, &self.original);
+        self.generation = std.mem.readInt(u64, self.original[16..24], .little);
+        self.lsn = std.mem.readInt(u64, self.original[24..32], .little);
+        // Generation 1 held the creation and "a": records 1 to 6.
+        try testing.expectEqual(2, self.generation);
+        try testing.expectEqual(7, self.lsn);
+        const records = self.original[page_size..];
+        self.b[0] = records[wal_mod.record_header_len..][0..page_size].*;
+        self.b[1] = records[image_record_len + wal_mod.record_header_len ..][0..page_size].*;
+        self.c[0] = records[operation_len + wal_mod.record_header_len ..][0..page_size].*;
+        self.c[1] = records[operation_len + image_record_len + wal_mod.record_header_len ..][0..page_size].*;
+    }
+
+    fn deinit(self: *Forgery) void {
+        self.machine.deinit();
+    }
+
+    /// Open the database and compare what recovery found and which of the
+    /// keys "b" and "c" exist afterwards. "a" must always be there.
+    fn expectRecovery(self: *Forgery, valid_records: u32, committed_ops: u32, has_b: bool, has_c: bool) !void {
+        const db = try openDb(&self.machine, .{});
+        defer db.close();
+        try testing.expectEqual(valid_records, db.recovery.valid_records);
+        try testing.expectEqual(committed_ops, db.recovery.committed_ops);
+        try db.validate();
+        try expectValue(db, "a", "1");
+        try expectValue(db, "b", if (has_b) "2" else null);
+        try expectValue(db, "c", if (has_c) "3" else null);
+    }
+};
+
+test "forged log: written by hand from the format table, it equals the real log byte for byte" {
+    var fx: Forgery = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var forge: Forge = .{};
+    defer forge.deinit();
+    try forge.header(fx.generation, fx.lsn);
+    try forge.operation(fx.lsn, &fx.b);
+    try forge.operation(fx.lsn + 3, &fx.c);
+    try testing.expectEqualSlices(u8, &fx.original, forge.bytes.items);
+    try forge.install(&fx.machine);
+    try fx.expectRecovery(6, 2, true, true);
+}
+
+test "forged log: a record with the wrong LSN ends the scan although its checksum chains" {
+    {
+        // A gap: the second operation carries LSNs 11 to 13 instead of 10 to 12.
+        var fx: Forgery = undefined;
+        try fx.init();
+        defer fx.deinit();
+        var forge: Forge = .{};
+        defer forge.deinit();
+        try forge.header(fx.generation, fx.lsn);
+        try forge.operation(fx.lsn, &fx.b);
+        try forge.operation(fx.lsn + 4, &fx.c);
+        try forge.install(&fx.machine);
+        try fx.expectRecovery(3, 1, true, false);
+    }
+    {
+        // The very first record is one too low for what the header announces.
+        var fx: Forgery = undefined;
+        try fx.init();
+        defer fx.deinit();
+        var forge: Forge = .{};
+        defer forge.deinit();
+        try forge.header(fx.generation, fx.lsn);
+        try forge.operation(fx.lsn - 1, &fx.b);
+        try forge.install(&fx.machine);
+        try fx.expectRecovery(0, 0, false, false);
+    }
+}
+
+test "forged log: stale records with exactly the expected LSNs are rejected, they chain from another header" {
+    var fx: Forgery = undefined;
+    try fx.init();
+    defer fx.deinit();
+    var forge: Forge = .{};
+    defer forge.deinit();
+    // An older generation that happens to use the LSNs the new one will use.
+    // (The real writer never reuses an LSN; the chain must not depend on it.)
+    try forge.header(fx.generation - 1, fx.lsn);
+    try forge.operation(fx.lsn, &fx.b);
+    try forge.operation(fx.lsn + 3, &fx.c);
+    try forge.install(&fx.machine);
+    // The new generation overwrites the header and the first operation with
+    // the same LSNs and the same page images. Behind them lies the old "c":
+    // right position, right LSNs, a checksum that is good for the old chain.
+    try forge.header(fx.generation, fx.lsn);
+    try forge.operation(fx.lsn, &fx.b);
+    try forge.install(&fx.machine);
+    try fx.expectRecovery(3, 1, true, false);
+}
+
+test "a commit record with a damaged checksum commits nothing" {
+    var fx: Forgery = undefined;
+    try fx.init();
+    defer fx.deinit();
+    // One bit in the CRC field (bytes 20..24) of the commit record of "c".
+    var byte = [1]u8{fx.original[page_size + 2 * operation_len - 4]};
+    byte[0] ^= 0x01;
+    try writeLog(&fx.machine, page_size + 2 * operation_len - 4, &byte);
+    {
+        const db = try openDb(&fx.machine, .{});
+        defer db.close();
+        try testing.expectEqual(2, db.recovery.uncommitted_records); // the two images of "c"
+    }
+    // (That open has already recovered: the log is empty now.)
+    try fx.expectRecovery(0, 0, true, false);
+}
+
+test "a commit record that counts the wrong number of page records: LogCorrupt" {
+    // No power cut produces this: the checksum is right, so the writer wrote
+    // it. Recovery refuses to guess which pages belong to the operation.
+    for ([_]u32{ 1, 3 }) |count| {
+        var fx: Forgery = undefined;
+        try fx.init();
+        defer fx.deinit();
+        var forge: Forge = .{};
+        defer forge.deinit();
+        try forge.header(fx.generation, fx.lsn);
+        try forge.record(fx.lsn, 1, 0, &fx.b[0]);
+        try forge.record(fx.lsn + 1, 1, 1, &fx.b[1]);
+        try forge.record(fx.lsn + 2, 2, count, "");
+        try forge.install(&fx.machine);
+        const writes = fx.machine.writes;
+        try testing.expectError(error.LogCorrupt, openDb(&fx.machine, .{}));
+        try testing.expectEqual(writes, fx.machine.writes); // nothing was replayed, nothing reset
+    }
+}
+
+test "a damaged log header is LogCorrupt, not an empty log; bytes behind sector 0 do not matter" {
+    {
+        var fx: Forgery = undefined;
+        try fx.init();
+        defer fx.deinit();
+        // One bit of the generation. Treating this as "no log" would open the
+        // database without "b" and "c", both acknowledged.
+        try writeLog(&fx.machine, 16, &.{fx.original[16] ^ 0x01});
+        try testing.expectError(error.LogCorrupt, openDb(&fx.machine, .{}));
+    }
+    {
+        var fx: Forgery = undefined;
+        try fx.init();
+        defer fx.deinit();
+        // The header page is rewritten in place at every reset. Only its
+        // first sector carries anything; a tear further back is harmless.
+        try writeLog(&fx.machine, page_storage.sector_size, &@as([page_size - page_storage.sector_size]u8, @splat(0xAB)));
+        try fx.expectRecovery(6, 2, true, true);
+    }
+}
+
+test "recovery leaves an empty log of the next generation, and LSNs go on behind every valid record" {
+    var machine: Machine = .init(testing.allocator, 1);
+    defer machine.deinit();
+    try threeCommits(&machine); // generation 1, LSNs 1 to 12
+    // Zero the commit record of "c" (LSN 12): records 10 and 11 stay valid.
+    const zeros: [wal_mod.record_header_len]u8 = @splat(0);
+    try writeLog(&machine, wal_mod.log_start + 4 * operation_len - zeros.len, &zeros);
+    {
+        const db = try openDb(&machine, .{ .checkpoint_every = 0 });
+        defer db.close();
+        try testing.expectEqual(1, db.recovery.generation);
+        try testing.expectEqual(11, db.recovery.valid_records);
+        // What is on disk now, not what the handle believes:
+        var header: [36]u8 = undefined;
+        try readLog(&machine, 0, &header);
+        try testing.expectEqual(2, std.mem.readInt(u64, header[16..24], .little)); // generation
+        try testing.expectEqual(12, std.mem.readInt(u64, header[24..32], .little)); // first LSN
+        var scanner: wal_mod.LogScanner = try .init(machine.logStorage());
+        var image: Page = undefined;
+        try testing.expectEqual(null, try scanner.next(&image)); // the old records no longer chain
+        try db.put("d", "4");
+    }
+    // LSNs 10 and 11 were handed out to records that never committed. They
+    // are not handed out again: the new records start at 12.
+    var scanner: wal_mod.LogScanner = try .init(machine.logStorage());
+    var image: Page = undefined;
+    for ([_]u64{ 12, 13, 14 }) |lsn| try testing.expectEqual(lsn, (try scanner.next(&image)).?.lsn);
+    try testing.expectEqual(null, try scanner.next(&image));
+
+    const db = try openDb(&machine, .{});
+    defer db.close();
+    try testing.expectEqual(2, db.recovery.generation);
+    try testing.expectEqual(1, db.recovery.committed_ops);
+    try expectValue(db, "b", "2");
+    try expectValue(db, "c", null);
+    try expectValue(db, "d", "4");
+}
+
 // ---- memory ------------------------------------------------------------------------
 
 test "the record buffer is a hard limit: CommitTooLarge" {
@@ -295,6 +756,10 @@ test "the record buffer is a hard limit: CommitTooLarge" {
         try db.put("d", rep('4', 1000));
         try testing.expectError(error.StorageFailure, db.put("e", rep('5', 1000))); // the root splits
         try testing.expectEqual(error.CommitTooLarge, db.wal.last_error.?);
+        // The pages of the split stay in memory, and nothing can take them
+        // back: this handle is finished, also for a put that would fit.
+        try testing.expectError(error.ReopenRequired, db.put("a", "small"));
+        try testing.expectError(error.ReopenRequired, db.checkpoint());
     }
     machine.crash(.keep);
     const db = try openDb(&machine, .{});
@@ -316,7 +781,12 @@ test "allocation failure at any point leaves a recoverable database and leaks no
             defer db.close();
             for (demo.scenario_keys) |k| {
                 const key = [2]u8{ '0' + k / 10, '0' + k % 10 };
-                db.put(&key, rep('v', 700)) catch break :run;
+                db.put(&key, rep('v', 700)) catch {
+                    // Memory is back at once (one refusal only), but the
+                    // handle does not carry on with what the failure left.
+                    try testing.expectError(error.ReopenRequired, db.put(&key, rep('v', 700)));
+                    break :run;
+                };
                 acked += 1;
             }
         }

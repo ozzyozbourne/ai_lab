@@ -7,9 +7,15 @@
 //!   powerOffAfterWrites(n)   n more page writes succeed, counted over BOTH
 //!                            files; after that every call on either file
 //!                            fails with error.PowerLoss
+//!   powerOffAtSync(k)        the k-th sync from now completes, and the
+//!                            power fails before the caller hears of it: the
+//!                            call returns error.PowerLoss although the data
+//!                            is durable
 //!   crash(mode)              each file decides the fate of its unsynced
 //!                            writes (drop, keep, tear, random), then the
 //!                            power is back on
+//!   crashEach(main, log)     the same with one mode per file: nothing makes
+//!                            two files fare alike in a power cut
 //!
 //! `mainStorage()` and `logStorage()` hand out chapter 21's `Storage`
 //! interface, so everything written against it (the checksummed pages, the
@@ -44,6 +50,11 @@ pub const Machine = struct {
     /// Page writes accepted so far, on both files together. This is the
     /// clock of the crash loop: "crash after write number N".
     writes: u64 = 0,
+    /// null = no sync is cut. n = the n-th sync from now is the last thing
+    /// the machine does.
+    syncs_left: ?u64 = null,
+    /// Syncs completed so far, on both files together.
+    syncs: u64 = 0,
     tracing: bool = false,
     trace: std.ArrayList(Event) = .empty,
 
@@ -85,11 +96,23 @@ pub const Machine = struct {
         return self.main.isPoweredOff();
     }
 
+    /// `k` >= 1. The k-th sync from now makes its file durable, then the
+    /// power fails: the caller gets an error for something that happened.
+    pub fn powerOffAtSync(self: *Machine, k: u64) void {
+        std.debug.assert(k >= 1);
+        self.syncs_left = k;
+    }
+
     /// Power cut and reboot of both files.
     pub fn crash(self: *Machine, mode: CrashMode) void {
-        _ = self.main.crash(mode);
-        _ = self.log.crash(mode);
+        self.crashEach(mode, mode);
+    }
+
+    pub fn crashEach(self: *Machine, main_mode: CrashMode, log_mode: CrashMode) void {
+        _ = self.main.crash(main_mode);
+        _ = self.log.crash(log_mode);
         self.writes_left = null;
+        self.syncs_left = null;
     }
 
     fn cutPower(self: *Machine) void {
@@ -132,6 +155,14 @@ pub const Machine = struct {
                 const m: *Machine = @ptrCast(@alignCast(ptr));
                 try m.disk(file).sync();
                 try m.record(.{ .file = file, .kind = .sync });
+                m.syncs += 1;
+                if (m.syncs_left) |*left| {
+                    left.* -= 1;
+                    if (left.* == 0) {
+                        m.cutPower();
+                        return error.PowerLoss;
+                    }
+                }
             }
 
             fn size(ptr: *anyopaque) u64 {
@@ -167,6 +198,33 @@ test "one power switch for two files" {
     try log.readPage(0, &out); // synced before the power cut: still there
     try testing.expectEqualSlices(u8, &page, &out);
     try testing.expectEqual(0, main.size()); // never synced: gone
+}
+
+test "a sync that completes and still reports a power loss; one crash mode per file" {
+    var m: Machine = .init(testing.allocator, 1);
+    defer m.deinit();
+    const main = m.mainStorage();
+    const log = m.logStorage();
+    const page: Page = @splat('x');
+
+    m.powerOffAtSync(2);
+    try log.writePage(0, &page);
+    try log.sync();
+    try log.writePage(1, &page);
+    try main.writePage(0, &page);
+    try testing.expectError(error.PowerLoss, log.sync()); // the second sync: durable, but who knows
+    try testing.expect(m.isPoweredOff());
+    try testing.expectEqual(2, m.syncs);
+
+    m.crashEach(.keep, .drop);
+    try testing.expectEqual(2, log.size()); // both log pages were synced
+    try testing.expectEqual(1, main.size()); // unsynced, and kept by the crash
+    try log.writePage(2, &page);
+    try main.writePage(1, &page);
+    m.powerOffAfterWrites(0);
+    m.crashEach(.drop, .keep);
+    try testing.expectEqual(3, log.size());
+    try testing.expectEqual(1, main.size());
 }
 
 test "the trace lists writes and syncs in order" {

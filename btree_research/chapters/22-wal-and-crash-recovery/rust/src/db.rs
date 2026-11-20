@@ -15,14 +15,19 @@
 //!
 //! An error from `put` means "outcome unknown", not "not stored": the power
 //! may have failed after the commit record became durable but before `put`
-//! could return. After any error the handle must be dropped and the database
-//! reopened; recovery then decides.
+//! could return. After such an error the handle must be dropped and the
+//! database reopened; recovery then decides. The handle enforces this: once
+//! `put`, `put_batch` or `checkpoint` has failed after it started to change
+//! something, every later call returns `DbError::ReopenRequired`. Without
+//! that, the pages a failed operation left in memory would be committed by
+//! the next successful one. The one error that leaves the handle usable is a
+//! key or value that is too long: it is found before anything is touched.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::base_buffer_pool::BufferPool;
-use crate::base_disk_btree::{DiskBTree, RangeIterator, TreeError};
+use crate::base_disk_btree::{DiskBTree, MAX_KEY_LEN, MAX_VALUE_LEN, RangeIterator, TreeError};
 use crate::base_page_storage::Storage as PageStorage;
 use crate::base_pager::Pager;
 use crate::wal::{self, Recovery, Wal, WalError, WalStorage};
@@ -51,6 +56,9 @@ impl Default for Options {
 pub enum DbError {
     Tree(TreeError),
     Wal(WalError),
+    /// An earlier operation on this handle failed. Drop it and open the
+    /// database again; recovery decides what was stored.
+    ReopenRequired,
 }
 
 impl From<TreeError> for DbError {
@@ -74,6 +82,9 @@ pub struct Db {
     pub tree: DiskBTree,
     /// What recovery found when this handle was opened.
     pub recovery: Recovery,
+    /// Set when an operation failed half-way: the buffer pool and the log
+    /// layer may hold pages of an operation that never committed.
+    failed: bool,
 }
 
 impl Db {
@@ -101,25 +112,40 @@ impl Db {
             wal,
             tree,
             recovery,
+            failed: false,
         })
     }
 
     /// Insert or overwrite one key. Atomic and durable at return.
     pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), DbError> {
-        self.tree.put(key, value)?;
-        self.commit()
+        self.put_batch(&[(key, value)])
     }
 
     /// Insert or overwrite several keys as one operation with one commit
     /// record: after a crash either all of them are there or none.
     pub fn put_batch(&mut self, pairs: &[(&[u8], &[u8])]) -> Result<(), DbError> {
+        self.check_usable()?;
+        // Refuse a pair the tree would refuse BEFORE the first one is
+        // applied: the tree has no undo, so a batch that stops in the middle
+        // cannot be taken back.
+        for (key, value) in pairs {
+            if key.len() > MAX_KEY_LEN {
+                return Err(TreeError::KeyTooLarge.into());
+            }
+            if value.len() > MAX_VALUE_LEN {
+                return Err(TreeError::ValueTooLarge.into());
+            }
+        }
+        // From here on an error leaves uncommitted pages behind.
+        let result = self.apply_and_commit(pairs);
+        self.failed = result.is_err();
+        result
+    }
+
+    fn apply_and_commit(&mut self, pairs: &[(&[u8], &[u8])]) -> Result<(), DbError> {
         for (key, value) in pairs {
             self.tree.put(key, value)?;
         }
-        self.commit()
-    }
-
-    fn commit(&mut self) -> Result<(), DbError> {
         // flush = write the metapage and every dirty page, then sync. The
         // writes land in the Wal's pending table; the sync is `Wal::commit`.
         self.tree.flush()?;
@@ -132,18 +158,31 @@ impl Db {
     }
 
     pub fn checkpoint(&mut self) -> Result<(), DbError> {
-        Ok(self.wal.borrow_mut().checkpoint()?)
+        self.check_usable()?;
+        let result = self.wal.borrow_mut().checkpoint();
+        self.failed = result.is_err();
+        Ok(result?)
+    }
+
+    fn check_usable(&self) -> Result<(), DbError> {
+        if self.failed {
+            return Err(DbError::ReopenRequired);
+        }
+        Ok(())
     }
 
     pub fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, DbError> {
+        self.check_usable()?; // it would show uncommitted pages
         Ok(self.tree.get(key)?)
     }
 
     pub fn range(&mut self, lo: &[u8], hi: Option<&[u8]>) -> Result<RangeIterator<'_>, DbError> {
+        self.check_usable()?;
         Ok(self.tree.range(lo, hi)?)
     }
 
     pub fn validate(&mut self) -> Result<(), DbError> {
+        self.check_usable()?;
         Ok(self.tree.validate()?)
     }
 

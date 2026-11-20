@@ -368,100 +368,46 @@ pub const Wal = struct {
         defer arena_state.deinit();
         const arena = arena_state.allocator();
 
-        var report: Recovery = .{};
-        var reader: LogReader = .{ .log = self.log };
-        var header: Page = undefined;
-        if (try reader.read(0, &header)) {
-            if (decodeHeader(&header)) |h| {
-                self.generation = h.generation;
-                self.next_lsn = h.first_lsn;
-                self.chain = h.crc;
-            } else if (!std.mem.allEqual(u8, &header, 0)) return error.LogCorrupt;
-        }
-        report.generation = self.generation;
-
+        var scanner: LogScanner = try .init(self.log);
+        var report: Recovery = .{ .generation = scanner.generation };
         var committed: PageTable = .{};
         var open_op: std.ArrayList(PageTable.Entry) = .empty; // records since the last commit
-        var pos: u64 = log_start;
-        var chain = self.chain;
-        var lsn = self.next_lsn;
-        while (self.generation != 0) {
-            var head: [record_header_len]u8 = undefined;
-            if (!try reader.read(pos, &head)) break; // end of the file
-            const kind = std.mem.readInt(u32, head[8..12], .little);
-            const arg = std.mem.readInt(u32, head[12..16], .little);
-            const payload_len = std.mem.readInt(u32, head[16..20], .little);
-            // Cheap plausibility checks before trusting the length field.
-            if (std.mem.readInt(u64, head[0..8], .little) != lsn) break;
-            if (!(kind == kind_page and payload_len == page_size) and !(kind == kind_commit and payload_len == 0)) break;
-            var image: ?*Page = null;
-            if (kind == kind_page) {
-                image = try arena.create(Page);
-                if (!try reader.read(pos + record_header_len, image.?)) break;
-            }
-            const payload: []const u8 = if (image) |img| img else &.{};
-            const sum = recordCrc(chain, head[0..20], payload);
-            if (sum != std.mem.readInt(u32, head[20..24], .little)) break; // the chain is broken here
-
-            if (image) |img| {
-                try open_op.append(arena, .{ .id = arg, .image = img });
-            } else {
-                if (arg != open_op.items.len) break;
-                // The newest image of a page wins. An older one is simply
-                // forgotten: the arena frees it with everything else.
-                for (open_op.items) |e| {
-                    const i = committed.lowerBound(e.id);
-                    const items = committed.entries.items;
-                    if (i < items.len and items[i].id == e.id) items[i].image = e.image else try committed.entries.insert(arena, i, e);
-                }
-                open_op.clearRetainingCapacity();
-                report.committed_ops += 1;
-            }
+        var spare: ?*Page = null;
+        while (true) {
+            const image = spare orelse try arena.create(Page);
+            spare = image;
+            const rec = try scanner.next(image) orelse break;
             report.valid_records += 1;
-            chain = sum;
-            lsn += 1;
-            pos += record_header_len + payload_len;
+            if (rec.kind == kind_page) {
+                try open_op.append(arena, .{ .id = rec.arg, .image = image });
+                spare = null; // the image is in use; the next record gets a new one
+                continue;
+            }
+            // A commit record says how many page records it closes; with an
+            // intact chain the count cannot be wrong unless the writer was.
+            if (rec.arg != open_op.items.len) return error.LogCorrupt;
+            // The newest image of a page wins; an older one
+            // is simply forgotten: the arena frees it with everything else.
+            for (open_op.items) |e| {
+                const i = committed.lowerBound(e.id);
+                const items = committed.entries.items;
+                if (i < items.len and items[i].id == e.id) items[i].image = e.image else try committed.entries.insert(arena, i, e);
+            }
+            open_op.clearRetainingCapacity();
+            report.committed_ops += 1;
         }
         report.uncommitted_records = @intCast(open_op.items.len);
         report.pages_replayed = @intCast(committed.len());
 
         // Redo, then checkpoint. `next_lsn` moves past every record that was
         // valid, committed or not, so no LSN is ever handed out twice.
-        self.next_lsn = lsn;
+        self.generation = scanner.generation;
+        self.next_lsn = scanner.lsn;
         try self.writeToMain(&committed);
         try self.resetLog();
         self.broken = false;
         return report;
     }
-
-    /// Reads byte ranges of the page-addressed log file through a one-page cache.
-    const LogReader = struct {
-        log: PageStorage,
-        cached: ?u64 = null,
-        page: Page = undefined,
-
-        /// false = the range reaches past the end of the log file.
-        fn read(self: *LogReader, pos: u64, out: []u8) PageStorage.Error!bool {
-            var done: usize = 0;
-            while (done < out.len) {
-                const at = pos + done;
-                const page_no = at / page_size;
-                if (self.cached != page_no) {
-                    self.cached = null;
-                    self.log.readPage(page_no, &self.page) catch |err| switch (err) {
-                        error.OutOfBounds => return false,
-                        else => return err,
-                    };
-                    self.cached = page_no;
-                }
-                const offset: usize = @intCast(at % page_size);
-                const n = @min(out.len - done, page_size - offset);
-                @memcpy(out[done..][0..n], self.page[offset..][0..n]);
-                done += n;
-            }
-            return true;
-        }
-    };
 
     // ---- the storage interface the pager sees ------------------------------------
 
@@ -522,6 +468,87 @@ pub const Wal = struct {
     fn vtSync(ptr: *anyopaque) ByteStorage.Error!void {
         const self: *Wal = @ptrCast(@alignCast(ptr));
         self.commit() catch |err| return self.fail(err);
+    }
+};
+
+// ---- reading the log -----------------------------------------------------------
+
+/// Walks the valid prefix of the log: `next` returns one record after the
+/// other and null as soon as the checksum chain ends. Used by recovery, and
+/// by anything that wants to look at a log (the demo prints one).
+pub const LogScanner = struct {
+    log: PageStorage,
+    /// 0 = the file has no header: there is no log.
+    generation: u64 = 0,
+    /// The LSN the next record must carry.
+    lsn: u64 = 1,
+    /// The CRC the next record must chain from.
+    chain: u32 = 0,
+    /// Byte offset of the next record.
+    pos: u64 = log_start,
+    cached: ?u64 = null,
+    page: Page = undefined,
+
+    pub const Record = struct { lsn: u64, kind: u32, arg: u32, crc: u32, offset: u64 };
+
+    pub fn init(log: PageStorage) Wal.Error!LogScanner {
+        var self: LogScanner = .{ .log = log };
+        var header: Page = undefined;
+        if (try self.read(0, &header)) {
+            if (decodeHeader(&header)) |h| {
+                self.generation = h.generation;
+                self.lsn = h.first_lsn;
+                self.chain = h.crc;
+            } else if (!std.mem.allEqual(u8, &header, 0)) return error.LogCorrupt;
+        }
+        return self;
+    }
+
+    /// The next valid record, or null at the end of the chain. For a page
+    /// record its image is copied to `image`.
+    pub fn next(self: *LogScanner, image: *Page) Wal.Error!?Record {
+        if (self.generation == 0) return null;
+        var head: [record_header_len]u8 = undefined;
+        if (!try self.read(self.pos, &head)) return null; // end of the file
+        const kind = std.mem.readInt(u32, head[8..12], .little);
+        const payload_len = std.mem.readInt(u32, head[16..20], .little);
+        // Cheap plausibility checks before trusting the length field. A
+        // record with the wrong LSN is stale even if its bytes are intact.
+        if (std.mem.readInt(u64, head[0..8], .little) != self.lsn) return null;
+        const is_page = kind == kind_page and payload_len == page_size;
+        if (!is_page and !(kind == kind_commit and payload_len == 0)) return null;
+        if (is_page and !try self.read(self.pos + record_header_len, image)) return null;
+        const payload: []const u8 = if (is_page) image else &.{};
+        const sum = recordCrc(self.chain, head[0..20], payload);
+        if (sum != std.mem.readInt(u32, head[20..24], .little)) return null; // the chain breaks here
+        const rec: Record = .{ .lsn = self.lsn, .kind = kind, .arg = std.mem.readInt(u32, head[12..16], .little), .crc = sum, .offset = self.pos };
+        self.chain = sum;
+        self.lsn += 1;
+        self.pos += record_header_len + payload_len;
+        return rec;
+    }
+
+    /// Copy a byte range of the page-addressed log file, through a one-page
+    /// cache. false = the range reaches past the end of the file.
+    fn read(self: *LogScanner, pos: u64, out: []u8) PageStorage.Error!bool {
+        var done: usize = 0;
+        while (done < out.len) {
+            const at = pos + done;
+            const page_no = at / page_size;
+            if (self.cached != page_no) {
+                self.cached = null;
+                self.log.readPage(page_no, &self.page) catch |err| switch (err) {
+                    error.OutOfBounds => return false,
+                    else => return err,
+                };
+                self.cached = page_no;
+            }
+            const offset: usize = @intCast(at % page_size);
+            const n = @min(out.len - done, page_size - offset);
+            @memcpy(out[done..][0..n], self.page[offset..][0..n]);
+            done += n;
+        }
+        return true;
     }
 };
 

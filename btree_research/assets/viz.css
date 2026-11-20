@@ -35,7 +35,7 @@
   --bt-free: #768191;            --bt-free-bg: #eff1f4;
   /* --bt-free-bg is almost the same colour as --bt-key-bg in the light theme (kept: pages rely on it).
      New pages should paint free / unused space with --bt-unused-bg (or the .s-unused state) instead. */
-  --bt-unused-bg: #fdf6d8;
+  --bt-unused-bg: #d3d9e2;
 
   --bt-font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --bt-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
@@ -72,7 +72,7 @@
     --bt-lock-shared: #74aaff;     --bt-lock-shared-bg: #1c3154;
     --bt-lock-exclusive: #f27982;  --bt-lock-exclusive-bg: #4b1f25;
     --bt-free: #6c7889;            --bt-free-bg: #1e252f;
-    --bt-unused-bg: #3b3520;
+    --bt-unused-bg: #0d1116;
     --bt-shadow: 0 1px 2px rgba(0, 0, 0, .4);
   }
 }
@@ -103,7 +103,7 @@
   --bt-lock-shared: #74aaff;     --bt-lock-shared-bg: #1c3154;
   --bt-lock-exclusive: #f27982;  --bt-lock-exclusive-bg: #4b1f25;
   --bt-free: #6c7889;            --bt-free-bg: #1e252f;
-  --bt-unused-bg: #3b3520;
+  --bt-unused-bg: #0d1116;
   --bt-shadow: 0 1px 2px rgba(0, 0, 0, .4);
 }
 

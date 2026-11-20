@@ -169,6 +169,15 @@ is the program counter, the path and the carry are the local variables, and thei
     var col = { box: box, view: new BTViz.TreeView(view, { minHeight: 150, maxHeight: 210, ariaLabel: title + ' tree' }), log: log, show: show, keep: false, resting: false };
     return col;
   }
+  /* Scroll a tree's box sideways so that the middle of the given pages is in
+   * the middle of the box (TreeView.scrollToNode centres one page only). */
+  function centreOn(view, ids) {
+    var L = view.layout, lo = Infinity, hi = -Infinity;
+    ids.forEach(function (id) { var n = L && L.nodes.get(id); if (n) { lo = Math.min(lo, n.x); hi = Math.max(hi, n.x + n.w); } });
+    if (lo > hi) return;
+    var sc = view.scroller, s = view.scale, off = Math.max(0, (sc.scrollWidth - view.W * s) / 2);
+    sc.scrollLeft = Math.max(0, (lo + hi) / 2 * s + off - sc.clientWidth / 2);
+  }
   function applyResting() {
     [colPg, colTu].forEach(function (c) {
       var folded = narrow.matches && c.resting && !c.keep;
@@ -210,10 +219,7 @@ is the program counter, the path and the carry are the local variables, and thei
     applyResting();
     // Keep the page the step is about inside the tree's box.
     var acting = step.engine === 'pg' ? colPg : step.engine === 'turso' ? colTu : null;
-    if (acting) {
-      var hl = L[step.engine].highlight, target = hl.cursor ? hl.cursor.node : Object.keys(hl.nodes || {})[0];
-      if (target) acting.view.scrollToNode(target);
-    }
+    if (acting) centreOn(acting.view, Object.keys(L[step.engine].highlight.nodes || {}));
     colPg.log.innerHTML = '<b>WAL so far:</b> ' + (L.pg.wal.length ? L.pg.wal.map(esc).join(' · ') : 'nothing yet') +
       '<br><b>Dirty buffers:</b> ' + (L.pg.dirty.length ? L.pg.dirty.map(function (d) { return d === 0 ? 'metapage' : 'blk ' + d; }).join(', ') : 'none');
     colTu.log.innerHTML = '<b>WAL so far:</b> ' + (L.turso.last === 6 ? L.turso.wal.map(esc).join(' · ') : 'nothing (pages are logged at commit)') +

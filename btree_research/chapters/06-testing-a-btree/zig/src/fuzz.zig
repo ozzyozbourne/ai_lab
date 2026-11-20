@@ -33,6 +33,19 @@ const FaultAllocator = @import("fault_alloc.zig").FaultAllocator;
 
 /// Set by `zig build test -Dtrace=true` / `zig build run -Dtrace=true`.
 pub const trace = @import("build_options").trace;
+/// The seed `hunt` is replaying right now. Only the trace lines read it.
+threadlocal var trace_seed: ?u64 = null;
+
+/// One line on stderr, written BEFORE the step runs: if the tree aborts
+/// inside the step, this is the last line and it names the case.
+///   trace: seed 72, M=4, bug none, step 5 of 512: put 6 = 1
+fn traceStep(order: usize, bug: []const u8, index: usize, total: usize, step: Step) void {
+    if (trace_seed) |seed| {
+        std.debug.print("trace: seed {d}, M={d}, bug {s}, step {d} of {d}: {f}\n", .{ seed, order, bug, index + 1, total, step });
+    } else {
+        std.debug.print("trace: no seed (steps given directly), M={d}, bug {s}, step {d} of {d}: {f}\n", .{ order, bug, index + 1, total, step });
+    }
+}
 
 /// One operation, plus an optional injected fault: "the `fault`-th node
 /// allocation of this put fails" (0 = the first). Only puts allocate.
@@ -305,11 +318,8 @@ pub fn replay(comptime Tree: type, gpa: Allocator, steps: []const Step, checks: 
     var failure: ?Failure = null;
     var done: usize = 0;
     var local: Totals = .{ .cases = 1 };
-    if (trace) std.debug.print("trace: replay of {d} steps, M={d}, bug {t}\n", .{ steps.len, Tree.order, Tree.bug });
     for (steps, 0..) |step, i| {
-        // Before the step, not after: if the tree aborts inside it, this
-        // line is the last thing on stderr.
-        if (trace) std.debug.print("trace:   step {d}: {f}\n", .{ i + 1, step });
+        if (trace) traceStep(Tree.order, @tagName(Tree.bug), i, steps.len, step);
         var diag: validation.Diagnostic = .{};
         const last = i + 1 == steps.len;
         const verdict = try applyAndCheck(Tree, &tree, tree_gpa, &fault, &oracle, gpa, step, checks, last or (i + 1) % checks.sweep_every == 0, &diag);
@@ -441,7 +451,8 @@ pub fn hunt(comptime Tree: type, gpa: Allocator, first_seed: u64, seeds: u64, ch
         const case = swarm(seed);
         const steps = try generate(gpa, case);
         defer gpa.free(steps);
-        if (trace) std.debug.print("trace: seed {d}\n", .{seed});
+        trace_seed = seed;
+        defer trace_seed = null;
         if (try replay(Tree, gpa, steps, checks, totals)) |failure| return .{ .case = case, .failure = failure };
     }
     return null;

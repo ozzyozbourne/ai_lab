@@ -1,10 +1,10 @@
 //! Demo program of chapter 19. Its stdout is exactly ../expected_output.txt
 //! (checked by the test at the bottom) and is identical to the Rust program's.
 //!
-//! Sections 3, 4 and 6 start threads, and still print the same text on every
-//! run: sections 3 and 4 because the second thread only runs while the first
-//! is frozen by the test hook, section 6 because it prints only facts that
-//! do not depend on the interleaving.
+//! Sections 3, 4, 6 and 7 start threads, and still print the same text on
+//! every run: sections 3, 4 and 7 because the other threads only run while
+//! the first is frozen by the test hook, section 6 because it prints only
+//! facts that do not depend on the interleaving.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -32,6 +32,7 @@ pub fn run(gpa: Allocator, io: Io, w: *Writer) !void {
     try rootDemo(gpa, io, w);
     try outOfNodesDemo(gpa, io, w);
     try stressDemo(gpa, io, w);
+    try convoyDemo(gpa, io, w);
 }
 
 fn canonicalTree(gpa: Allocator, io: Io, protocol: Protocol) !Tree {
@@ -262,6 +263,37 @@ fn stressDemo(gpa: Allocator, io: Io, w: *Writer) !void {
             });
         }
     }
+}
+
+/// Four threads. A waiting thread keeps the latches it already has, so a
+/// thread can be stopped by one that is itself only waiting.
+fn convoyDemo(gpa: Allocator, io: Io, w: *Writer) !void {
+    try w.writeAll("\n== 7. Latch coupling, four threads: A = put 26 is frozen as in section 3; then B, C, D start, one after the other ==\n");
+    var tree = try canonicalTree(gpa, io, .latch_coupling);
+    defer tree.deinit(gpa);
+    const others = [_]Scenario.Other{
+        .{ .op = .{ .get = 17 }, .note = "under #6" },
+        .{ .op = .{ .get = 12 }, .note = "under #2" },
+        .{ .op = .{ .put = 11 }, .note = "under #2" },
+    };
+    var ops: [others.len]probe.OpSpec = undefined;
+    for (others, &ops) |other, *op| op.* = other.op;
+    var outcomes: [others.len]probe.Outcome = undefined;
+    try probe.convoy(&tree, io, .{ .put = 26 }, .{ .point = .at_leaf }, &ops, &outcomes);
+    for (others, outcomes, "BCD") |other, outcome, name| {
+        var label_buf: [32]u8 = undefined;
+        const label = try std.fmt.bufPrint(&label_buf, "{t} {d} ({s})", .{ other.op, opKey(other.op), other.note });
+        try w.print("  {c} = {s:<18}", .{ name, label });
+        switch (outcome) {
+            .completed => try w.writeAll(" finishes\n"),
+            .blocked => |node| try w.print(" waits at #{d}\n", .{node.index()}),
+        }
+    }
+    try w.writeAll("D needs nothing that A holds. It waits for the shared latch B keeps on the root #7 while B itself waits at #6.\n");
+    try tree.validate();
+    try w.print("after A is released: get 26 = {?d}, get 11 = {?d}, valid=yes, latches still held: {s}\n", .{
+        tree.get(io, 26), tree.get(io, 11), if (tree.nothingLocked(io)) "none" else "SOME",
+    });
 }
 
 test "run prints exactly expected_output.txt" {

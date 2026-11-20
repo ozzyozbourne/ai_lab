@@ -34,11 +34,36 @@ use crate::base_validate::{ValidateError, Violation};
 use crate::coverage::Coverage;
 use crate::ops::{Config, Entry, Op, OpStream, Oracle, Weights};
 use crate::prng::SplitMix64;
+use std::cell::Cell;
 use std::fmt;
 use std::io::{self, Write};
 
 /// Set by `cargo test --features trace` / `cargo run --features trace`.
 pub const TRACE: bool = cfg!(feature = "trace");
+
+thread_local! {
+    /// The seed `hunt` is replaying right now. Only the trace lines read it.
+    static TRACE_SEED: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
+/// One line on stderr, written BEFORE the step runs: if the tree panics
+/// inside the step, this is the last line and it names the case.
+///
+/// ```text
+/// trace: seed 72, M=4, bug none, step 5 of 512: put 6 = 1
+/// ```
+fn trace_step(subject: Subject, index: usize, total: usize, step: Step) {
+    let seed = match TRACE_SEED.get() {
+        Some(seed) => format!("seed {seed}"),
+        None => "no seed (steps given directly)".to_string(),
+    };
+    eprintln!(
+        "trace: {seed}, M={}, bug {}, step {} of {total}: {step}",
+        subject.order,
+        subject.bug.name(),
+        index + 1
+    );
+}
 
 /// One operation, plus an optional injected fault: "the `fault`-th node
 /// allocation of this put fails" (0 = the first). Only puts allocate nodes.
@@ -461,19 +486,9 @@ fn run(
     let mut tree = BTree::with_bug(subject.order, subject.bug);
     let mut oracle = Oracle::new();
     let mut failure = None;
-    if TRACE {
-        eprintln!(
-            "trace: replay of {} steps, M={}, bug {}",
-            steps.len(),
-            subject.order,
-            subject.bug.name()
-        );
-    }
     for (i, &step) in steps.iter().enumerate() {
-        // Before the step, not after: if the tree panics inside it, this
-        // line is the last thing on stderr.
         if TRACE {
-            eprintln!("trace:   step {}: {step}", i + 1);
+            trace_step(subject, i, steps.len(), step);
         }
         let sweep = i + 1 == steps.len() || (i + 1) % checks.sweep_every == 0;
         let verdict = apply_and_check(&mut tree, &mut oracle, step, checks, sweep, local);
@@ -613,10 +628,10 @@ pub fn hunt(
     for seed in first_seed..first_seed + seeds {
         let case = swarm(seed);
         let steps = generate(case);
-        if TRACE {
-            eprintln!("trace: seed {seed}");
-        }
-        if let Some(failure) = replay(subject, &steps, checks, totals.as_deref_mut()) {
+        TRACE_SEED.set(Some(seed));
+        let failure = replay(subject, &steps, checks, totals.as_deref_mut());
+        TRACE_SEED.set(None);
+        if let Some(failure) = failure {
             return Some(Found { case, failure });
         }
     }

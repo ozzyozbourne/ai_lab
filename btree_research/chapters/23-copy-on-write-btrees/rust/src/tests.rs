@@ -635,17 +635,6 @@ fn a_long_life_of_crashes_damaged_slots_and_restarts_never_shows_a_mixed_tree() 
         let restart = match result {
             Ok(_) => {
                 db.crash_after = None; // the commit was shorter than the fuse
-                if db.current.txn_id != before {
-                    if is_put {
-                        oracle.put(key, step);
-                    } else {
-                        oracle.delete(key);
-                    }
-                    let t = db.current.txn_id as usize;
-                    assert!(t <= content.len());
-                    content.truncate(t);
-                    content.push(oracle_all(&oracle));
-                }
                 rng.below(25) == 0 // sometimes the power just goes
             }
             Err(e) => {
@@ -653,6 +642,21 @@ fn a_long_life_of_crashes_damaged_slots_and_restarts_never_shows_a_mixed_tree() 
                 true
             }
         };
+        if result.is_err() || db.current.txn_id != before {
+            // Record what transaction before + 1 wrote, also when it crashed:
+            // a crash just before the last meta byte leaves a complete slot
+            // when that byte equals the one it replaces, and then the
+            // restart rightly finds the transaction committed.
+            if is_put {
+                oracle.put(key, step);
+            } else {
+                oracle.delete(key);
+            }
+            let t = before as usize + 1;
+            assert!(t <= content.len());
+            content.truncate(t);
+            content.push(oracle_all(&oracle));
+        }
 
         if restart {
             // One slot may rot, as long as the other one is readable.

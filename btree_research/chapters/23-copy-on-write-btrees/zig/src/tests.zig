@@ -611,23 +611,28 @@ test "a long life of crashes, damaged slots and restarts never shows a mixed tre
         var restart = false;
         if (result) |_| {
             db.crash_after = null; // the commit was shorter than the fuse
-            if (db.current.txn_id != before) {
-                if (is_put) _ = try oracle.put(gpa, key, step) else _ = oracle.delete(key);
-                const t = db.current.txn_id;
-                const copy = try gpa.dupe(ops.Entry, oracle.entries.items);
-                if (t < content.items.len) {
-                    gpa.free(content.items[t]);
-                    content.items[t] = copy;
-                } else {
-                    errdefer gpa.free(copy);
-                    try testing.expectEqual(content.items.len, t);
-                    try content.append(gpa, copy);
-                }
-            }
             restart = rnd.uintLessThan(u8, 25) == 0; // sometimes the power just goes
         } else |e| {
             try testing.expectEqual(error.Crashed, e);
             restart = true;
+        }
+        const crashed = if (result) |_| false else |_| true;
+        if (crashed or db.current.txn_id != before) {
+            // Record what transaction before + 1 wrote, also when it crashed:
+            // a crash just before the last meta byte leaves a complete slot
+            // when that byte equals the one it replaces, and then the
+            // restart rightly finds the transaction committed.
+            if (is_put) _ = try oracle.put(gpa, key, step) else _ = oracle.delete(key);
+            const t = before + 1;
+            const copy = try gpa.dupe(ops.Entry, oracle.entries.items);
+            if (t < content.items.len) {
+                gpa.free(content.items[t]);
+                content.items[t] = copy;
+            } else {
+                errdefer gpa.free(copy);
+                try testing.expectEqual(content.items.len, t);
+                try content.append(gpa, copy);
+            }
         }
 
         if (restart) {

@@ -3,8 +3,8 @@
 //!   1. single-threaded: every protocol against the oracle and against the
 //!      other protocols; a full node table;
 //!   2. the test hook on ONE thread: which latches an operation holds;
-//!   3. the test hook with TWO threads (probe.zig): one operation frozen, the
-//!      other one run, no sleeps;
+//!   3. the test hook with TWO OR MORE threads (probe.zig): one operation
+//!      frozen, the others run one at a time, no sleeps;
 //!   4. bounded stress with up to 4 threads, then validate and oracle.
 const std = @import("std");
 const builtin = @import("builtin");
@@ -242,6 +242,10 @@ test "latch coupling: the safe-node rule decides which latches a put keeps" {
     var spy: LatchSpy = .{ .tree = &tree };
     _ = try tree.putHooked(io, 11, valueOf(11), &spy.hook());
     try testing.expectEqualSlices(u32, &.{1}, spy.at_leaf[0..spy.at_leaf_len]);
+    // A writer couples too: it held #7 while it latched #2, and #2 while it
+    // latched #1. Looking at a child and releasing the parent BEFORE the
+    // child is latched would show up here as 1.
+    try testing.expectEqual(2, spy.max_held);
 
     // Leaf #3 is full, its parent #6 has room: the split stops at #6, so #6
     // stays latched and the root does not.
@@ -356,6 +360,63 @@ test "probe: what a frozen writer allows" {
     });
 }
 
+test "probe: mid-descent, the parent is still latched when the child has just been latched" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+    const io = testing.io;
+    var tree = try canonicalTree(.latch_coupling);
+    defer tree.deinit(testing.allocator);
+    // Writer: put 26 has just latched #6. It has not looked at #6 yet, so it
+    // still holds the root, and even a reader bound for #2 waits there.
+    const after_6: probe.Pause = .{ .point = .latched, .node = .fromIndex(6) };
+    try testing.expectEqual(waitsAt(7), try probe.probe(&tree, io, .{ .put = 26 }, after_6, .{ .get = 12 }));
+    // Reader: get 12 has just latched leaf #1 and still holds #2 shared. A
+    // put under #2 waits at #2; a reader passes; the root is free again.
+    const after_1: probe.Pause = .{ .point = .latched, .node = .fromIndex(1) };
+    try testing.expectEqual(waitsAt(2), try probe.probe(&tree, io, .{ .get = 12 }, after_1, .{ .put = 7 }));
+    try testing.expectEqual(done, try probe.probe(&tree, io, .{ .get = 12 }, after_1, .{ .get = 7 }));
+    try testing.expectEqual(done, try probe.probe(&tree, io, .{ .get = 12 }, after_1, .{ .put = 16 }));
+    try tree.validate();
+    try testing.expect(tree.nothingLocked(io));
+}
+
+test "convoy: a reader that waits keeps the root, and a writer bound elsewhere waits behind it" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+    const io = testing.io;
+    var tree = try canonicalTree(.latch_coupling);
+    defer tree.deinit(testing.allocator);
+    // A = put 26 is frozen holding #6 and #3 (exclusive). With two threads,
+    // `put 11` finishes next to it (see "what a frozen writer allows").
+    var outcomes: [3]probe.Outcome = undefined;
+    try probe.convoy(&tree, io, .{ .put = 26 }, .{ .point = .at_leaf }, &.{
+        .{ .get = 17 }, // B: waits at #6, HOLDING #7 shared
+        .{ .get = 12 }, // C: shares #7 with B and gets through
+        .{ .put = 11 }, // D: needs #7 exclusive; B is in its way, not A
+    }, &outcomes);
+    try testing.expectEqualSlices(probe.Outcome, &.{ waitsAt(6), done, waitsAt(7) }, &outcomes);
+    try tree.validate();
+    try testing.expect(tree.nothingLocked(io));
+    for ([_]u64{ 26, 11 }) |key| try testing.expectEqual(valueOf(key), tree.get(io, key));
+}
+
+test "convoy: one reader stalled on a leaf closes the tree for writers, three waits deep" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+    const io = testing.io;
+    var tree = try canonicalTree(.latch_coupling);
+    defer tree.deinit(testing.allocator);
+    // A = get 25 is frozen on leaf #3 with one SHARED latch.
+    var outcomes: [4]probe.Outcome = undefined;
+    try probe.convoy(&tree, io, .{ .get = 25 }, .{ .point = .at_leaf }, &.{
+        .{ .put = 26 }, // waits at #3 for A, holding #6 exclusive
+        .{ .get = 17 }, // waits at #6 for the put, holding #7 shared
+        .{ .get = 12 }, // shares #7 and gets through
+        .{ .put = 11 }, // waits at #7 for the get 17
+    }, &outcomes);
+    try testing.expectEqualSlices(probe.Outcome, &.{ waitsAt(3), waitsAt(6), done, waitsAt(7) }, &outcomes);
+    try tree.validate();
+    try testing.expect(tree.nothingLocked(io));
+    for ([_]u64{ 26, 11 }) |key| try testing.expectEqual(valueOf(key), tree.get(io, key));
+}
+
 test "probe reports a pause point that is never reached" {
     if (builtin.single_threaded) return error.SkipZigTest;
     var tree = try canonicalTree(.global_mutex);
@@ -395,6 +456,78 @@ test "latch coupling: a reader that latched a replaced root starts again" {
     try testing.expectEqual(2000, try reader.result);
     try testing.expectEqual(1, tree.stats.root_restarts.load(.monotonic));
     try testing.expect(tree.nothingLocked(io));
+}
+
+test "latch coupling: a writer that latched a replaced root starts again" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+    const io = testing.io;
+    var tree: Tree = try .init(testing.allocator, 4, .latch_coupling, 16);
+    defer tree.deinit(testing.allocator);
+    for ([_]u64{ 10, 20, 5 }) |key| _ = try tree.put(io, key, valueOf(key));
+
+    // The writer has read "root = #0" and holds nothing.
+    var writer: probe.Actor = .{ .tree = &tree, .io = io, .op = .{ .put = 30 }, .pause = .{ .point = .root_loaded } };
+    try writer.spawn();
+    writer.waitSettled();
+    {
+        errdefer {
+            writer.release();
+            writer.join();
+        }
+        try testing.expect(writer.frozen);
+        // The root splits: #0 keeps (5 6); (10 20) move to the new leaf #1.
+        _ = try tree.put(io, 6, valueOf(6));
+        try testing.expectEqual(2, tree.root.load(.acquire).index());
+    }
+    writer.release();
+    writer.join();
+    try testing.expectEqual(null, try writer.result);
+    try testing.expectEqual(1, tree.stats.root_restarts.load(.monotonic));
+    try tree.validate();
+    // Without the second look the writer would put 30 into #0, the LEFT
+    // leaf, to the left of separator 10: no search would ever find it.
+    try testing.expectEqual(3000, tree.get(io, 30));
+    try expectDump(&tree,
+        \\height 2, 5 keys, 3 nodes
+        \\  level 0: #2[10]
+        \\  leaves : #0(5 6) -> #1(10 20 30)
+        \\
+    );
+    try testing.expect(tree.nothingLocked(io));
+}
+
+test "a new root is complete before it is published, and published before its latch is needed" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+    const io = testing.io;
+    for (lib.protocols) |protocol| {
+        var tree: Tree = try .init(testing.allocator, 4, protocol, 16);
+        defer tree.deinit(testing.allocator);
+        for ([_]u64{ 10, 20, 5 }) |key| _ = try tree.put(io, key, valueOf(key));
+
+        // put 6 splits the root leaf #0 and is frozen with the new root #2
+        // built but not yet published.
+        var writer: probe.Actor = .{ .tree = &tree, .io = io, .op = .{ .put = 6 }, .pause = .{ .point = .root_built } };
+        try writer.spawn();
+        writer.waitSettled();
+        const frozen = writer.frozen;
+        // Read while the writer is frozen. (The writer's thread wrote these
+        // fields before it set `settled`, so reading them here is no race.)
+        const published = tree.root.load(.acquire);
+        const new_root = tree.table.node(.fromIndex(2)).*;
+        writer.release();
+        writer.join();
+
+        try testing.expect(frozen);
+        try testing.expectEqual(0, published.index()); // still the old root
+        try testing.expect(!new_root.isLeaf()); //        and #2 is finished:
+        try testing.expectEqualSlices(u64, &.{10}, new_root.keySlice());
+        try testing.expectEqual(0, new_root.kind.internal.children[0].index());
+        try testing.expectEqual(1, new_root.kind.internal.children[1].index());
+        try testing.expectEqual(null, try writer.result);
+        try testing.expectEqual(2, tree.root.load(.acquire).index());
+        try tree.validate();
+        try testing.expect(tree.nothingLocked(io));
+    }
 }
 
 // ------------------------------------------------------------------ 4. stress

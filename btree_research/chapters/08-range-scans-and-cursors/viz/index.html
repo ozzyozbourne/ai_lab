@@ -14,7 +14,7 @@
   .c8-cur dt { color: var(--bt-muted); }
   .c8-cur dd { margin: 0; font-family: var(--bt-mono); overflow-wrap: anywhere; }
   .c8-frames { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font: .8rem/1.5 var(--bt-mono); }
-  .c8-frames li { border: 2px solid var(--c8-path); background: var(--c8-path-bg); color: var(--bt-text); border-radius: 6px; padding: 1px 8px; }
+  .c8-frames li { border: 1px solid var(--c8-path); background: var(--c8-path-bg); color: var(--bt-text); border-radius: 6px; padding: 1px 8px; }
   .c8-frames li.is-none { border-style: dashed; border-color: var(--bt-border); background: none; color: var(--bt-muted); }
   .c8-stale { color: var(--bt-key-deleted); font-weight: 600; }
   .c8-fresh { color: var(--bt-key-found); font-weight: 600; }
@@ -226,8 +226,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
         ul.appendChild(el('li', 'frame ' + i + ': node #' + f.h + ', child ' + f.ci + (i === c.frames.length - 1 ? '  ← top' : '')));
       });
       box.appendChild(ul);
-      box.appendChild(el('p.c8-note', s.stale ? 'These frames were computed for an older tree: they are not trusted, and the path is not drawn.' :
-        'Root first. The top frame is the parent of the current leaf. Each frame is one filled node in the picture, with the thick edge into its child.'));
+      box.appendChild(el('p.c8-note', s.stale ? 'These frames were computed for an older tree: they are not trusted.' : 'Root first. A frame is one filled node in the tree and the thick edge below it.'));
     } else {
       box.appendChild(el('p.c8-note', 'A leaf handle and an index: two words. No path is kept.'));
     }

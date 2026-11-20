@@ -457,8 +457,12 @@ impl InsertOp {
     /// the per-call buffer, remembering only its length. The state now holds
     /// an "index into a buffer", the shape a dangling reference takes in
     /// safe Rust.
+    ///
+    /// (A separator that IS the new key stays where it is. In Zig that
+    /// separator is a slice of the operation's own key, not of the scratch
+    /// buffer, and survives; the two programs must break at the same insert.)
     fn stash(&mut self, mut carry: Carry) -> Carry {
-        if self.options.scratch == Scratch::StepBuffer {
+        if self.options.scratch == Scratch::StepBuffer && carry.sep != self.key {
             self.sep_len = carry.sep.len();
             if self.step_buf.len() < self.sep_len {
                 self.step_buf.resize(self.sep_len, 0);
@@ -470,7 +474,7 @@ impl InsertOp {
     }
 
     fn unstash(&self, carry: &mut Carry) {
-        if self.options.scratch == Scratch::StepBuffer {
+        if self.options.scratch == Scratch::StepBuffer && carry.sep.is_empty() {
             carry.sep = self.step_buf[..self.sep_len].to_vec();
         }
     }

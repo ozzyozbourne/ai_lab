@@ -121,3 +121,8 @@ that copies your code must know.
   side column or scoreboard between the picture and its controls. Measure it with
   Playwright (bounding boxes), do not eyeball it.
 - Escape all user-typed text before it reaches captions, logs or quiz text (innerHTML).
+
+Disk space is limited and shared: before you finish, delete all build output (target,
+.zig-cache, zig-out) and screenshots from your own scratch directory, keeping only small
+source and script files that a later agent may need. Never delete anything outside your
+own scratch directory and your chapter.

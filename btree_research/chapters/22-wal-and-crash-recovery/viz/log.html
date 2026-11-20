@@ -37,15 +37,17 @@ recovery decide. Text and code: <a href="../README.md">chapter README</a>; next 
 <h2>1. Cut the power anywhere, then recover</h2>
 <p>The top row is every storage call of <code>put 15</code> and of the checkpoint after it, in order (part 2
 of the chapter's program). The red marker is the power cut: calls to its left completed, calls to its right
-never happened. Drag it, use the slider, or focus it and press <kbd>←</kbd> <kbd>→</kbd>. Then step through
-recovery with the controls under the picture.</p>
+never happened. Drag it, use the slider, or focus it and press <kbd>←</kbd> <kbd>→</kbd>. Choose what becomes
+of the writes that were not synced yet: all on disk, all lost, or each one torn. Then step through recovery
+with the controls under the picture. Two things to look for: a <em>torn</em> record (mode "torn", cut after
+call 1 to 5), and a <em>stale</em> one whose bytes are intact (cut after call 13).</p>
 <div id="fig-log"></div>
 
 <h2>2. The code that does it</h2>
 <div id="fig-code"></div>
 
 <h2>3. Does the picture match the code?</h2>
-<p>For a power cut after each of the ten page writes, in both crash modes, the model's recovery (state,
+<p>For a power cut after each of the ten page writes, in all three crash modes, the model's recovery (state,
 number of valid records, commit found) is compared with part 2 of the output of <code>zig build run</code>
 and <code>cargo run</code>.</p>
 <div class="bt-selftests" role="status" aria-label="Model self-tests"><span class="bt-selftests-title">Self-tests</span></div>
@@ -82,19 +84,28 @@ and <code>cargo run</code>.</p>
   var range = el('input.ch22-range', { type: 'range', min: 0, max: CALLS.length, step: 1, value: crashAt, 'aria-label': 'Power fails after this many storage calls' });
   var rangeOut = el('span', { 'aria-hidden': 'true' });
   var modeSel = el('select.bt-select', { 'aria-label': 'Fate of unsynced writes' },
-    el('option', { value: 'keep' }, 'reached the disk (keep)'), el('option', { value: 'drop' }, 'are lost (drop)'));
+    el('option', { value: 'keep' }, 'reached the disk (keep)'), el('option', { value: 'drop' }, 'are lost (drop)'),
+    el('option', { value: 'tear' }, 'are torn (tear)'));
   fig.toolbar.append(el('label.bt-field', 'power fails after call', range, rangeOut), el('label.bt-field', 'unsynced writes', modeSel));
   range.addEventListener('input', function () { setCrash(+range.value); });
   modeSel.addEventListener('change', function () { mode = modeSel.value; rebuild(); });
 
   /* ---- the picture ---- */
-  var timeline = new BTViz.Timeline(fig.stage, { cellW: 84, crashLabel: 'power cut', ariaLabel: 'Storage calls in order', onCrash: setCrash });
+  var CELL_W = 84;
+  var timeline = new BTViz.Timeline(fig.stage, { cellW: CELL_W, crashLabel: 'power cut', ariaLabel: 'Storage calls in order', onCrash: setCrash });
   var logRow = el('div.ch22-row'), mainRow = el('div.ch22-row');
   fig.stage.appendChild(el('div.ch22-files',
     el('div.ch22-file', el('h3', 'log file after the power cut'), logRow),
     el('div.ch22-file', el('h3', 'main file (pages changed by put 15)'), mainRow)));
   var verdictBox = el('div.ch22-verdict', { role: 'status' });
   fig.stage.appendChild(verdictBox);
+
+  /** Bring the power-cut marker into the visible part of the row: a phone shows only four calls. */
+  function showMarker() {
+    var box = timeline.root, x = crashAt * CELL_W;
+    if (box.scrollWidth <= box.clientWidth) return;
+    if (x < box.scrollLeft + 24 || x > box.scrollLeft + box.clientWidth - 24) box.scrollLeft = Math.max(0, x - box.clientWidth / 2);
+  }
 
   function setCrash(n) {
     n = Math.max(0, Math.min(CALLS.length, n | 0));
@@ -119,7 +130,10 @@ and <code>cargo run</code>.</p>
     push('<b>The power fails after ' + crashAt + ' of ' + CALLS.length + ' calls.</b> ' +
       (issuedUnsynced === 0 ? 'Every write issued so far had been synced.' :
         issuedUnsynced + ' write' + (issuedUnsynced > 1 ? 's were' : ' was') + ' issued but not synced; in this run ' +
-        (lost ? 'they are lost.' : 'the operating system had already written them out, so they are on disk.')) +
+        (lost ? 'they are lost.' :
+         mode === 'tear' ? 'each is torn: the disk wrote some of the page\'s eight 512-byte sectors and not the others.' +
+           (s.tornHeader ? ' The log header lives in the first sector of its page, and that sector was not among those written: the old header is still there.' : '') :
+         'the operating system had already written them out, so they are on disk.')) +
       ' Below: what the two files hold now. Step forward to run recovery.');
 
     push('Recovery opens the log and reads its header: generation ' + r.generation + '. ' +
@@ -142,7 +156,9 @@ and <code>cargo run</code>.</p>
     if (r.committed) {
       M.MAIN_PAGES.forEach(function (p, i) {
         st.replayed = i + 1;
-        push('Redo: write the logged image of page ' + p + ' to the main file' + (s.main[p] ? ' (it was already there; writing it again changes nothing)' : '') + '.', 'main' + p);
+        push('Redo: write the logged image of page ' + p + ' to the main file' +
+          (s.main[p] ? ' (it was already there; writing it again changes nothing)' :
+           s.tornMain[p] ? ' (the torn page is overwritten whole; what it held does not matter)' : '') + '.', 'main' + p);
       });
       st.synced = true;
       push('Sync the main file. All four pages are now the versions from the log, whatever the interrupted run had or had not written.', 'mainsync');
@@ -187,10 +203,12 @@ and <code>cargo run</code>.</p>
         else if (c.kind === 'sync') { state = 'durable'; sub = 'done'; }
         else if (i < syncedUpTo[c.file]) { state = 'durable'; sub = 'synced'; }
         else if (mode === 'keep') { state = 'pending'; sub = 'kept'; }
+        else if (mode === 'tear') { state = 'pending'; sub = 'torn'; }
         else { state = 'lost'; sub = 'lost'; }
         return { label: callLabel(c), state: state, sub: sub, title: (i + 1) + '. ' + callLabel(c) + ': ' + sub };
       })
     });
+    showMarker();
 
     // Log file: header + the five records.
     logRow.textContent = '';
@@ -198,27 +216,33 @@ and <code>cargo run</code>.</p>
     logRow.appendChild(el('div', { class: 'ch22-box s-found' + (st.now === 'header' ? ' is-now' : '') }, el('b', 'header'), el('span', 'generation ' + gen)));
     RECORDS.forEach(function (rec, k) {
       var onDisk = M.recordPages(rec).every(function (p) { return s.log[p]; });
+      var torn = M.recordPages(rec).some(function (p) { return s.tornLog[p]; });
       var cls = 'ch22-box', note;
-      if (st.reset || s.header) { cls += ' is-absent'; note = 'stale: old generation'; }
+      if (st.reset || s.header) { cls += ' is-absent'; note = 'intact, but stale'; }
       else if (k < st.scanned) { cls += ' s-found'; note = 'valid'; }
       else if (st.broken && k === r.brokenAt) { cls += ' s-deleted'; note = 'chain breaks'; }
       else if (st.broken) { cls += ' is-absent'; note = 'not trusted'; }
-      else { cls += onDisk ? ' s-compare' : ' is-absent'; note = onDisk ? 'on disk, unread' : 'incomplete'; }
+      else { cls += onDisk ? ' s-compare' : ' is-absent'; note = onDisk ? 'on disk, unread' : torn ? 'torn' : 'incomplete'; }
       if (st.now === 'rec' + k) cls += ' is-now';
       logRow.appendChild(el('div', { class: cls }, el('b', 'LSN ' + rec.lsn), el('span', rec.commit ? 'COMMIT' : 'page ' + rec.page), el('span', note)));
     });
+    // The file is reused, never erased: behind the new records lie the old ones.
+    logRow.appendChild(el('div', { class: 'ch22-box is-absent', title: 'Log pages 6 to 27 still hold records of generation 1 (LSN 1 to 38). The scan never gets that far: the chain ends before them.' },
+      el('b', 'pages 6–27'), el('span', 'generation 1'), el('span', 'old, never erased')));
 
     // Main file: the four pages the operation changed.
     mainRow.textContent = '';
     M.MAIN_PAGES.forEach(function (p, i) {
-      var fresh = s.main[p] || i < st.replayed;
-      var cls = 'ch22-box' + (fresh ? ' s-found' : '') + (st.now === 'main' + p ? ' is-now' : '');
-      mainRow.appendChild(el('div', { class: cls }, el('b', 'page ' + p), el('span', fresh ? 'new' : p === 4 ? 'not in the file' : 'old')));
+      var fresh = s.main[p] || i < st.replayed, torn = !fresh && s.tornMain[p];
+      var cls = 'ch22-box' + (fresh ? ' s-found' : torn ? ' s-deleted' : '') + (st.now === 'main' + p ? ' is-now' : '');
+      mainRow.appendChild(el('div', { class: cls }, el('b', 'page ' + p), el('span', fresh ? 'new' : torn ? 'torn' : p === 4 ? 'not in the file' : 'old')));
     });
 
     var done = st.reset, fresh = M.MAIN_PAGES.filter(function (p, i) { return s.main[p] || i < st.replayed; }).length;
+    var tornNow = M.MAIN_PAGES.filter(function (p, i) { return s.tornMain[p] && i >= st.replayed; }).length;
     var text, ok = true;
     if (done) text = 'After recovery: ' + (r.state === 'after' ? 'the new tree, 12 keys (the put is committed)' : 'the old tree, 11 keys (the put never happened)') + '.';
+    else if (tornNow > 0) { ok = false; text = 'Main file right now: ' + tornNow + ' torn page' + (tornNow > 1 ? 's' : '') + ' (the page checksum fails) among ' + fresh + ' new and ' + (M.MAIN_PAGES.length - fresh - tornNow) + ' old: a broken tree. The log still has the commit; recovery will finish the job.'; }
     else if (fresh === 0) text = 'Main file right now: the old tree, untouched.';
     else if (fresh === M.MAIN_PAGES.length) text = 'Main file right now: all four new pages.';
     else { ok = false; text = 'Main file right now: ' + fresh + ' new page' + (fresh > 1 ? 's' : '') + ' and ' + (M.MAIN_PAGES.length - fresh) + ' old: a broken tree, as on page 1. The log still has the commit; recovery will finish the job.'; }
@@ -240,7 +264,7 @@ and <code>cargo run</code>.</p>
 
   /* ---- self-tests against part 2 of the program output ---- */
   var rows = M.crashRows(2);
-  ['drop', 'keep'].forEach(function (m) {
+  ['drop', 'keep', 'tear'].forEach(function (m) {
     var got = [], want = [];
     for (var n = 0; n <= 10; n++) {
       var r = M.recover(M.crashState(M.callsForWrites(n), m));
@@ -251,7 +275,7 @@ and <code>cargo run</code>.</p>
   });
   // Recovery never leaves a mix, at any call and in either mode.
   var mixed = 0;
-  for (var c = 0; c <= CALLS.length; c++) ['drop', 'keep'].forEach(function (m) { if (M.recover(M.crashState(c, m)).state === 'mixed') mixed++; });
+  for (var c = 0; c <= CALLS.length; c++) ['drop', 'keep', 'tear'].forEach(function (m) { if (M.recover(M.crashState(c, m)).state === 'mixed') mixed++; });
   BTViz.selfTest('no mixed state', mixed, 0);
 })();
 </script>

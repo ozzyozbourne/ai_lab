@@ -104,7 +104,7 @@ and reopens the file; so does the model behind this page. Pick a cell to load it
   M.WRITES.forEach(function (w, i) {
     var box = el('input', { type: 'checkbox', 'aria-label': 'write ' + (i + 1) + ' reached the disk' });
     box.checked = true;
-    box.addEventListener('change', function () { kept[i] = box.checked; draw(); });
+    box.addEventListener('change', function () { kept[i] = box.checked; keptChanged(); });
     boxes.push(box);
     checks.appendChild(el('label', box, 'write ' + (i + 1)));
   });
@@ -114,7 +114,16 @@ and reopens the file; so does the model behind this page. Pick a cell to load it
 
   function setKept(mask) {
     for (var i = 0; i < N; i++) { kept[i] = !!(mask & (1 << i)); boxes[i].checked = kept[i]; }
+    keptChanged();
+  }
+
+  /** The ticks changed: redraw, and keep the prediction quiz in step with the picture. */
+  function keptChanged() {
+    var asking = !!fig.caption.querySelector('.bt-quiz');
+    var answered = fig.caption.querySelector('.bt-quiz-verdict');
+    if (answered) answered.remove(); // it explained a state that is no longer shown
     draw();
+    if (asking) { stepper.go(stepper.index); stepper.next(); } // ask again, about the new state
   }
 
   /** The writes that are on disk at the displayed step. */
@@ -135,12 +144,35 @@ and reopens the file; so does the model behind this page. Pick a cell to load it
     });
   });
   steps.push({ issued: N, synced: true, lines: [9], caption: '<b>sync.</b> Only now are all five writes guaranteed to be on disk, and the file holds the new tree. Everything between the first write and this sync was a window in which a power cut leaves a broken file. Page 2 closes that window.' });
-  steps[3].question = {
-    prompt: 'Writes 1, 2 and 3 are on disk: the zero page, the metapage and the parent. The power fails. What does a reopen find?',
-    choices: ['The old tree with 11 keys', 'The new tree with 12 keys', 'A tree that fails validation'],
-    answer: 2,
-    explain: 'The parent already says "keys from 12 on are in page 4", but page 2 still holds 12 and 17 and page 4 is all zeroes. The program reports <code>KeyOutOfBounds</code>.'
-  };
+  // The prediction question for "after write 3". It is built when it is asked,
+  // from the ticks as they are then: the reader may have unticked a write, and
+  // the question, the accepted answer and the explanation must follow the
+  // state the figure is about to show.
+  var SHORT = ['the zero page', 'the metapage', 'the parent'];
+  function listWrites(ids) {
+    var parts = ids.map(function (i) { return (i + 1) + ' (' + SHORT[i] + ')'; });
+    return (ids.length === 1 ? 'write ' : 'writes ') + (parts.length < 3 ? parts.join(' and ') : parts[0] + ', ' + parts[1] + ' and ' + parts[2]);
+  }
+  function questionAfterWrite3() {
+    var onDisk = [], lost = [];
+    for (var i = 0; i < 3; i++) (kept[i] ? onDisk : lost).push(i);
+    var v = M.check(M.diskFor(currentMask(steps[3])));
+    var prompt = 'Writes 1, 2 and 3 are issued, none is synced. ' +
+      (lost.length === 0 ? 'All three reached the disk: the zero page, the metapage and the parent.' :
+       onDisk.length === 0 ? 'None of them reached the disk.' :
+       'On disk: ' + listWrites(onDisk) + '. Lost: ' + listWrites(lost) + '.') +
+      ' The power fails. What does a reopen find?';
+    var explain = v.state === 'before' ? 'Nothing reached the disk, so the file is exactly what the last sync left: the old tree.' :
+      v.state === 'after' ? 'Everything the new tree needs is on disk.' :
+      'The program reports <code>' + BTViz.esc(v.err) + '</code>: ' + EXPLAIN[v.err](v);
+    return {
+      prompt: prompt,
+      choices: ['The old tree with 11 keys', 'The new tree with 12 keys', 'A tree that fails validation', 'A file that cannot be opened'],
+      answer: v.state === 'before' ? 0 : v.state === 'after' ? 1 : v.state === 'open' ? 3 : 2,
+      explain: explain
+    };
+  }
+  Object.defineProperty(steps[3], 'question', { enumerable: true, get: questionAfterWrite3 });
 
   var current = steps[0]; // the step on screen
   var cells = []; // figure 2's buttons, filled in below

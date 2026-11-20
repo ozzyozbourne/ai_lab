@@ -103,6 +103,8 @@ pub struct RunResult {
     pub acked: u32,
     /// Page writes the machine accepted before the (first) crash.
     pub writes: u64,
+    /// Syncs the machine completed before the (first) crash.
+    pub syncs: u64,
     /// With the log: what the final recovery found.
     pub recovery: Recovery,
     /// Tree statistics at the end of the run phase (meaningful if no crash).
@@ -119,6 +121,7 @@ impl RunResult {
             outcome: Outcome::OpenFailed,
             acked: 0,
             writes: 0,
+            syncs: 0,
             recovery: Recovery::default(),
             stats: TreeStats::default(),
             wal_stats: WalStats::default(),
@@ -249,9 +252,44 @@ pub fn run_with_log(
     mode: CrashMode,
     options: Options,
 ) -> Result<RunResult, CrashError> {
+    let cut = n.map_or(Cut::Never, Cut::AfterWrite);
+    let fates = Fates {
+        main: mode,
+        log: mode,
+    };
+    run_cut(w, cut, second, fates, options)
+}
+
+/// Where the power fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cut {
+    Never,
+    /// After this many page writes (both files together).
+    AfterWrite(u64),
+    /// At the k-th sync (k >= 1): it completes, but its caller gets an error.
+    AtSync(u64),
+}
+
+/// What the power cut does to the unsynced writes of each file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fates {
+    pub main: CrashMode,
+    pub log: CrashMode,
+}
+
+/// `run_with_log` with every choice spelled out.
+pub fn run_cut(
+    w: &Workload,
+    cut: Cut,
+    second: Option<u64>,
+    fates: Fates,
+    options: Options,
+) -> Result<RunResult, CrashError> {
     let machine = Machine::new(w.seed);
-    if let Some(limit) = n {
-        machine.borrow_mut().power_off_after_writes(limit);
+    match cut {
+        Cut::Never => {}
+        Cut::AfterWrite(limit) => machine.borrow_mut().power_off_after_writes(limit),
+        Cut::AtSync(k) => machine.borrow_mut().power_off_at_sync(k),
     }
     let powered_off = || machine.borrow().is_powered_off();
 
@@ -275,7 +313,8 @@ pub fn run_with_log(
         Err(_) => {}
     }
     result.writes = machine.borrow().writes;
-    machine.borrow_mut().crash(mode);
+    result.syncs = machine.borrow().syncs;
+    machine.borrow_mut().crash_each(fates.main, fates.log);
 
     if let Some(limit) = second {
         // Crash during recovery: recovery must be restartable.
@@ -286,7 +325,7 @@ pub fn run_with_log(
             return Err(err.into());
         }
         result.second_crash_hit = powered_off();
-        machine.borrow_mut().crash(mode);
+        machine.borrow_mut().crash_each(fates.main, fates.log);
     }
 
     let Ok(mut db) = open_db(&machine, options) else {

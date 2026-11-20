@@ -66,6 +66,11 @@ healthy. Two devices deal with both:
 - The header contains a **generation** number that goes up at every reset. An old record
   has a good CRC of its own, but it chains from the old header, so it is rejected.
 
+Only the CRC is essential: nothing else notices a torn record. Against old records there
+is a third device, and it would be enough alone: LSNs are never reused, so an old record
+always carries a smaller LSN than the one its position calls for. The chain and the
+generation are belt and braces. The tests forge logs that defeat one device at a time.
+
 ## A worked example by hand
 
 The scenario is chapter 12's: eleven keys are stored, key 15 is put next and splits the
@@ -148,10 +153,10 @@ New in this chapter (Zig file names; the Rust files have the same names with `.r
 
 | File | What it is |
 |---|---|
-| `machine.zig` | `Machine`: two `SimDisk`s (main file, log file) with one power switch and a write counter |
+| `machine.zig` | `Machine`: two `SimDisk`s (main file, log file) with one power switch, a write counter and a sync counter |
 | `adapter.zig` | `PageFile`: chapter 12's storage interface served by chapter 21's |
 | `wal.zig` | `Wal`: log format, commit, checkpoint, recovery; `LogScanner` |
-| `db.zig` | `Db`: recovery on open, then the tree; `put`, `putBatch` |
+| `db.zig` | `Db`: recovery on open, then the tree; `put`, `putBatch`; refuses further use after a failed operation |
 | `crash.zig` | the crash loop, with the log and without |
 
 ### Two storage interfaces, one adapter
@@ -246,7 +251,11 @@ already at or beyond it. Postgres does exactly this; see below.
   allocators); Rust uses `BTreeMap<PageId, Box<Page>>`.
 - Zig merges error sets; Rust wraps them in `DbError::{Tree, Wal}`. Both flatten errors
   to `StorageFailure` at the storage interface; `Wal.last_error` keeps the real cause.
-- Rust has no failing allocator in std, so the allocation-failure test exists only in Zig.
+- Rust has no failing allocator in std. The twin of Zig's "allocation failure at any
+  point" test is a budget that returns an error: a storage wrapper refuses one page write
+  with `OutOfMemory`, the first, then the second, and so on. Zig's second test, which
+  refuses single requests of the tree's scratch arena, has no twin: safe Rust cannot fail
+  a `Vec` allocation.
 - `Cargo.toml` sets `opt-level = 2` for the dev and test profiles: unoptimised, the
   crash loop's checksumming makes `cargo run` several times slower. Overflow checks and
   debug assertions stay on.
@@ -282,6 +291,12 @@ a second power cut during recovery (every 5th N, after each recovery write, keep
 The 14 runs in the last column of the control experiment are the worst outcome of all: a
 tree that passes `validate` but has lost a key whose put had returned success.
 
+The tests add three loops that the table does not show. The two files get different
+crash modes (the main file keeps every unsynced write while the log loses its own, and
+the other way round). The power fails at a sync instead of after a write: the sync
+completes, but its caller gets an error. And a second cut hits recovery in the modes
+`drop` and `tear`. Every run ends in the before or the after state.
+
 A larger loop (120 puts) runs with `zig build test -Dlong=true` or
 `cargo test --features long`.
 
@@ -304,7 +319,7 @@ for the newest frame of a page before falling back to the database file
 (`turso/core/storage/wal.rs:3684`, `pager.rs:3610`). Summary: `research/turso.md`,
 section 14.
 
-**Postgres: logical records, page LSNs, and two records per split.** Postgres states the
+**Postgres: per-page delta records, page LSNs, and two records per split.** Postgres states the
 write-ahead rule in the page header documentation: the LSN enforces "thou shalt write
 xlog before data", and "A dirty buffer cannot be dumped to disk until xlog has been
 flushed at least as far as the page's LSN" (`postgres/src/include/storage/bufpage.h:152-154`). Its buffer manager
@@ -369,7 +384,7 @@ without the log: 129 page writes in place, no second copy, and Part 3's failures
   sync (group commit; textbook, not verified in the sources here). `putBatch` shows the
   single-writer version: several puts, one commit record.
 - One commit is limited to `max_commit_pages` images (default 32), the size of the record
-  buffer. A larger operation fails with `CommitTooLarge`.
+  buffer. A larger operation fails with `CommitTooLarge`, and the handle must be reopened.
 
 ## Allocator notes
 
@@ -392,7 +407,11 @@ without the log: 129 page writes in place, no second copy, and Part 3's failures
   log, so nothing after the commit point can fail for lack of memory.
 - Tests use `std.testing.allocator`. The test "allocation failure at any point leaves a
   recoverable database and leaks nothing" fails every allocation of `Db.open` and of
-  twelve puts in turn, and then reopens the files with a working allocator.
+  twelve puts in turn, and then reopens the files with a working allocator. The tree's
+  scratch arena hides most of the tree's own requests from that allocator, so a second
+  test (chapter 12's, on top of the log) refuses each scratch request of three splitting
+  puts in turn. A put that fails half-way through a split leaves nothing behind after a
+  reopen: none of its pages was committed.
 
 ## Pitfalls
 
@@ -400,10 +419,20 @@ without the log: 129 page writes in place, no second copy, and Part 3's failures
   record is durable but before `put` returns, the caller sees an error and the key is
   there after recovery. That is why the oracle allows "after" for the put in flight. The
   only promises are: a put that returned success is never lost, and a put is never half
-  applied.
+  applied. The test "a sync that completes but reports the power cut" stops the machine
+  at exactly that point, for every sync of the workload.
+- **After an error, reopen.** The tree has no undo. A `put` or `putBatch` that fails
+  after its first page change leaves that change in the buffer pool, and the next commit
+  on the same handle would make it durable: half a batch, committed by an unrelated put.
+  So `Db` remembers the failure, and every later call returns `ReopenRequired`. Close
+  the handle and open the database again; recovery restores the last committed state.
+  One error is harmless: a key or value that is too long is refused before anything is
+  touched, for a whole batch at once, and the handle stays usable.
 - **Syncing in the wrong order.** Resetting the log before the main file is synced loses
   committed pages; writing main-file pages before the log is synced leaves a torn tree
-  with nothing to repair it. The test "write-ahead rule" checks the order on a trace.
+  with nothing to repair it. The test "write-ahead rule" checks the order on a trace;
+  the crash loop that lets the main file keep its writes while the log loses its own
+  checks the result.
 - **The chain cuts both ways.** A damaged record in the middle of the log hides every
   committed operation behind it (test "recovery stops at the first record whose checksum
   chain breaks"). A power cut only damages the unsynced tail; a failing disk can do this.

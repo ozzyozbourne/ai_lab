@@ -150,20 +150,31 @@ window.CH22 = (function () {
   /**
    * The two files after the power fails once `calls` storage calls have
    * completed. mode 'drop': unsynced writes are lost; 'keep': they all
-   * reached the disk.
-   * -> { log: {page: true}, header: bool (new generation), main: {page: true} = new image on disk }
+   * reached the disk; 'tear': each reached the disk in part (some of its
+   * eight 512-byte sectors, never all and never none).
+   *
+   * A torn page is not usable: every record with bytes on a torn log page
+   * fails its checksum, and a torn main page fails its page checksum. One
+   * case depends on WHICH sectors were written: the log header lives in
+   * sector 0 of its page. In the program's run (seed 22) the torn header
+   * write did not include that sector, so the old header survives; the model
+   * does the same. Either way the tree comes out the same.
+   * -> { log: {page: true}, header: bool (new generation), main: {page: true} = new image on disk,
+   *      tornLog: {page: true}, tornMain: {page: true}, tornHeader: bool }
    */
   function crashState(calls, mode) {
-    var durable = { log: {}, main: {} }, pending = { log: [], main: [] };
+    var durable = { log: {}, main: {} }, pending = { log: [], main: [] }, torn = { log: {}, main: {} };
     for (var i = 0; i < calls; i++) {
       var c = CALLS[i];
       if (c.kind === 'write') pending[c.file].push(c.page);
       else { pending[c.file].forEach(function (p) { durable[c.file][p] = true; }); pending[c.file] = []; }
     }
     if (mode === 'keep') ['log', 'main'].forEach(function (f) { pending[f].forEach(function (p) { durable[f][p] = true; }); });
-    var header = !!durable.log[0];
+    if (mode === 'tear') ['log', 'main'].forEach(function (f) { pending[f].forEach(function (p) { torn[f][p] = true; }); });
+    var header = !!durable.log[0], tornHeader = !!torn.log[0];
     delete durable.log[0];
-    return { log: durable.log, header: header, main: durable.main };
+    delete torn.log[0];
+    return { log: durable.log, header: header, main: durable.main, tornLog: torn.log, tornMain: torn.main, tornHeader: tornHeader };
   }
 
   /**
@@ -178,7 +189,9 @@ window.CH22 = (function () {
         var missing = recordPages(RECORDS[i]).filter(function (p) { return !s.log[p]; });
         if (missing.length) {
           r.brokenAt = i;
-          r.why = 'log page ' + missing[0] + ' never reached the disk';
+          r.why = s.tornLog[missing[0]] ?
+            'log page ' + missing[0] + ' is torn: some of its sectors hold the new bytes and some do not, so the checksum computed over the record does not match the one stored in it' :
+            'log page ' + missing[0] + ' never reached the disk';
           break;
         }
         r.valid++;
@@ -186,7 +199,7 @@ window.CH22 = (function () {
       r.committed = r.valid === RECORDS.length;
     } else {
       r.brokenAt = 0;
-      r.why = 'it chains from the old header, not from this one';
+      r.why = 'its bytes are intact and a moment ago it was a valid record, but its checksum chains from the old header, and the new header announces LSN ' + (RECORDS[RECORDS.length - 1].lsn + 1) + ' as its first record';
     }
     if (r.committed) r.replay = MAIN_PAGES.slice();
     var fresh = MAIN_PAGES.filter(function (p) { return r.committed || s.main[p]; }).length;

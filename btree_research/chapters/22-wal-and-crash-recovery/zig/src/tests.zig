@@ -802,6 +802,143 @@ test "allocation failure at any point leaves a recoverable database and leaks no
     try testing.expect(fail_index > 20); // many distinct failure points were exercised
 }
 
+/// One put that splits, described by the split counters after it and by what
+/// the tree asks its scratch arena for (chapter 12's test of the same name).
+const OomCase = struct {
+    leaf_splits: u64,
+    interior_splits: u64,
+    root_splits: u64,
+    /// Scratch requests of that put, in order.
+    requests: usize,
+    /// The first request that comes after a page change. A failure from
+    /// there on leaves a half-split tree; an earlier one leaves it intact.
+    first_poisoned: usize,
+};
+
+/// Put key number `i` of the descending series: every put goes to the
+/// leftmost leaf, and the largest cells allowed fill pages quickly.
+fn oomKey(i: usize, key: *[btree.max_key_len]u8) void {
+    key.* = @splat('k');
+    _ = std.fmt.bufPrint(key[0..4], "{d:0>4}", .{9999 - i}) catch unreachable;
+}
+
+test "allocation failure at every scratch request of a put that splits: nothing of it survives a reopen" {
+    // The test above fails the allocator behind the whole database, but the
+    // tree's scratch arena hides most of the tree's requests from it: an
+    // arena asks for memory only when its buffer is too small. Chapter 12
+    // makes every request visible, and this is that test on top of the log:
+    //
+    //   - the handle gets a new tree object whose arena has no buffer yet;
+    //   - the test fills the arena's first buffer to the last byte;
+    //   - the buffer comes from a FixedBufferAllocator, which can grow its
+    //     last allocation in place, so the arena grows its buffer by exactly
+    //     the bytes of each request: one `resize` call per request.
+    //
+    // `resize_fail_index = i` refuses request i, `fail_index = 1` refuses the
+    // new buffer the arena asks for after that. A put that fails after a
+    // page change leaves a half-split tree in the buffer pool (chapter 12
+    // calls the handle poisoned). With the log underneath that costs
+    // nothing: no page of it was committed, so a reopen finds the tree as it
+    // was before the put.
+    const cases = [_]OomCase{
+        // The first split: the root leaf moves down, then splits.
+        .{ .leaf_splits = 1, .interior_splits = 0, .root_splits = 1, .requests = 4, .first_poisoned = 0 },
+        // A leaf that is not the rightmost child splits, its parent has room.
+        .{ .leaf_splits = 2, .interior_splits = 0, .root_splits = 1, .requests = 5, .first_poisoned = 4 },
+        // The root is a full interior page: leaf split, root moves down, interior split.
+        .{ .leaf_splits = 16, .interior_splits = 1, .root_splits = 2, .requests = 7, .first_poisoned = 4 },
+    };
+    const value: [btree.max_value_len]u8 = @splat('v');
+    var key: [btree.max_key_len]u8 = undefined;
+    var reached: usize = 0;
+
+    for (cases) |case| {
+        // How many puts until the split in question? `puts` counts it.
+        var puts: usize = 0;
+        {
+            var machine: Machine = .init(testing.allocator, 1);
+            defer machine.deinit();
+            const db = try openDb(&machine, .{ .frames = 4 });
+            defer db.close();
+            while (db.tree.stats.leaf_splits != case.leaf_splits) : (puts += 1) {
+                oomKey(puts, &key);
+                try db.put(&key, &value);
+            }
+            try testing.expectEqual(case.interior_splits, db.tree.stats.interior_splits);
+            try testing.expectEqual(case.root_splits, db.tree.stats.root_splits);
+        }
+
+        // Do that last put again and again, refusing request 0, 1, 2, ...
+        // The last run refuses nothing and counts the requests.
+        for (0..case.requests + 1) |fail_at| {
+            var machine: Machine = .init(testing.allocator, 1);
+            defer machine.deinit();
+            {
+                const db = try openDb(&machine, .{ .frames = 4 });
+                defer db.close();
+                for (0..puts - 1) |i| {
+                    oomKey(i, &key);
+                    try db.put(&key, &value);
+                }
+            }
+            oomKey(puts - 1, &key);
+            const writes_before = machine.writes;
+            {
+                const db = try openDb(&machine, .{ .frames = 4 }); // recovery replays the puts
+                defer db.close();
+                var scratch_bytes: [64 * 1024]u8 align(16) = undefined;
+                var fixed: std.heap.FixedBufferAllocator = .init(&scratch_bytes);
+                var failing: testing.FailingAllocator = .init(fixed.allocator(), .{});
+                db.tree.deinit();
+                db.tree = try DiskBTree.open(failing.allocator(), &db.pool);
+                _ = try db.tree.arena.allocator().alloc(u8, 1);
+                _ = try db.tree.arena.allocator().alloc(u8, db.tree.arena.queryCapacity() - 1);
+                try testing.expectEqual(1, failing.alloc_index); // the arena's one buffer, now full
+                try testing.expectEqual(0, failing.resize_index);
+                failing.fail_index = 1;
+                failing.resize_fail_index = fail_at;
+                const writes_recovered = machine.writes;
+
+                if (fail_at == case.requests) {
+                    // Nothing refused: the put makes exactly the requests
+                    // counted above, so the earlier runs reached all of them.
+                    try db.put(&key, &value);
+                    try testing.expectEqual(case.requests, failing.resize_index);
+                    try testing.expect(!failing.has_induced_failure);
+                    try db.validate();
+                    try expectValue(db, &key, &value);
+                    continue;
+                }
+
+                try testing.expectError(error.OutOfMemory, db.put(&key, &value));
+                try testing.expectEqual(fail_at, failing.resize_index); // the requests before it were served
+                try testing.expectEqual(0, db.pool.pinnedFrames());
+                try testing.expectEqual(fail_at >= case.first_poisoned, db.tree.poisoned);
+                reached += 1;
+                failing.fail_index = std.math.maxInt(usize); // memory is back
+                failing.resize_fail_index = std.math.maxInt(usize);
+                // Half-split or not, the handle is finished ...
+                try testing.expectError(error.ReopenRequired, db.put(&key, &value));
+                try testing.expectError(error.ReopenRequired, db.get(testing.allocator, &key));
+                // ... and the failed put wrote to neither file.
+                try testing.expectEqual(writes_recovered, machine.writes);
+            }
+            try testing.expect(machine.writes > writes_before); // (recovery itself did write)
+            machine.crash(.keep);
+            const db = try openDb(&machine, .{ .frames = 4 });
+            defer db.close();
+            try testing.expectEqual(0, db.recovery.valid_records);
+            try db.validate();
+            try testing.expectEqual(puts - 1, db.tree.key_count);
+            try expectValue(db, &key, null);
+            try db.put(&key, &value); // and now it works
+            try db.validate();
+            try expectValue(db, &key, &value);
+        }
+    }
+    try testing.expectEqual(4 + 5 + 7, reached);
+}
+
 test "PageTable keeps images sorted by page id and replaces in place" {
     var table: wal_mod.PageTable = .{};
     defer table.deinit(testing.allocator);

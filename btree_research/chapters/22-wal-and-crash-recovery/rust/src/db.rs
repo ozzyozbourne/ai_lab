@@ -186,6 +186,11 @@ impl Db {
         Ok(self.tree.validate()?)
     }
 
+    /// Did an operation fail half-way? Then only a reopen helps.
+    pub fn is_failed(&self) -> bool {
+        self.failed
+    }
+
     /// A look at the log layer: counters, generation, the last flattened error.
     pub fn wal(&self) -> std::cell::Ref<'_, Wal> {
         self.wal.borrow()

@@ -8,9 +8,15 @@
 //! power_off_after_writes(n)  n more page writes succeed, counted over BOTH
 //!                            files; after that every call on either file
 //!                            fails with PowerLoss
+//! power_off_at_sync(k)       the k-th sync from now completes, and the
+//!                            power fails before the caller hears of it: the
+//!                            call returns PowerLoss although the data is
+//!                            durable
 //! crash(mode)                each file decides the fate of its unsynced
 //!                            writes (drop, keep, tear, random), then the
 //!                            power is back on
+//! crash_each(main, log)      the same with one mode per file: nothing makes
+//!                            two files fare alike in a power cut
 //! ```
 //!
 //! `main_storage()` and `log_storage()` hand out chapter 21's `Storage`
@@ -67,6 +73,11 @@ pub struct Machine {
     /// Page writes accepted so far, on both files together. This is the
     /// clock of the crash loop: "crash after write number N".
     pub writes: u64,
+    /// None = no sync is cut. Some(n) = the n-th sync from now is the last
+    /// thing the machine does.
+    syncs_left: Option<u64>,
+    /// Syncs completed so far, on both files together.
+    pub syncs: u64,
     pub tracing: bool,
     pub trace: Vec<Event>,
 }
@@ -83,6 +94,8 @@ impl Machine {
             log: SimDisk::new(seed ^ 0x9E37_79B9_7F4A_7C15),
             writes_left: None,
             writes: 0,
+            syncs_left: None,
+            syncs: 0,
             tracing: false,
             trace: Vec::new(),
         }))
@@ -106,11 +119,23 @@ impl Machine {
         self.main.is_powered_off()
     }
 
+    /// `k` >= 1. The k-th sync from now makes its file durable, then the
+    /// power fails: the caller gets an error for something that happened.
+    pub fn power_off_at_sync(&mut self, k: u64) {
+        assert!(k >= 1);
+        self.syncs_left = Some(k);
+    }
+
     /// Power cut and reboot of both files.
     pub fn crash(&mut self, mode: CrashMode) {
-        self.main.crash(mode);
-        self.log.crash(mode);
+        self.crash_each(mode, mode);
+    }
+
+    pub fn crash_each(&mut self, main_mode: CrashMode, log_mode: CrashMode) {
+        self.main.crash(main_mode);
+        self.log.crash(log_mode);
         self.writes_left = None;
+        self.syncs_left = None;
     }
 
     fn cut_power(&mut self) {
@@ -179,6 +204,14 @@ impl Storage for Port {
                 page_no: 0,
             });
         }
+        m.syncs += 1;
+        if let Some(left) = &mut m.syncs_left {
+            *left -= 1;
+            if *left == 0 {
+                m.cut_power();
+                return Err(StorageError::PowerLoss);
+            }
+        }
         Ok(())
     }
 
@@ -218,6 +251,34 @@ mod tests {
         log.read_page(0, &mut out).unwrap(); // synced before the power cut: still there
         assert_eq!(out, page);
         assert_eq!(main.size(), 0); // never synced: gone
+    }
+
+    #[test]
+    fn a_sync_that_completes_and_still_reports_a_power_loss_one_crash_mode_per_file() {
+        let m = Machine::new(1);
+        let mut main = main_storage(&m);
+        let mut log = log_storage(&m);
+        let page = [b'x'; PAGE_SIZE];
+
+        m.borrow_mut().power_off_at_sync(2);
+        log.write_page(0, &page).unwrap();
+        log.sync().unwrap();
+        log.write_page(1, &page).unwrap();
+        main.write_page(0, &page).unwrap();
+        // The second sync: durable, but who knows.
+        assert_eq!(log.sync(), Err(StorageError::PowerLoss));
+        assert!(m.borrow().is_powered_off());
+        assert_eq!(m.borrow().syncs, 2);
+
+        m.borrow_mut().crash_each(CrashMode::Keep, CrashMode::Drop);
+        assert_eq!(log.size(), 2); // both log pages were synced
+        assert_eq!(main.size(), 1); // unsynced, and kept by the crash
+        log.write_page(2, &page).unwrap();
+        main.write_page(1, &page).unwrap();
+        m.borrow_mut().power_off_after_writes(0);
+        m.borrow_mut().crash_each(CrashMode::Drop, CrashMode::Keep);
+        assert_eq!(log.size(), 3);
+        assert_eq!(main.size(), 1);
     }
 
     #[test]

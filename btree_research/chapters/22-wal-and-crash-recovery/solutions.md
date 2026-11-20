@@ -70,9 +70,11 @@ Discarding `Wal.pending` is not enough, because uncommitted changes live in thre
    `page_count` must shrink back so that pages allocated by the rolled-back puts are
    handed out again.
 
-The simplest correct implementation is the one the chapter already uses after an error:
-drop the pool and the tree handle and open them again on the same `Wal` (after clearing
-`pending`). No recovery is needed, since nothing uncommitted ever reached a file. Turso
+The simplest correct implementation is close to what the chapter demands after an error
+(`ReopenRequired`: close the handle, open the database again). A rollback can be cheaper
+than that reopen: drop the pool and the tree handle and open them again on the same
+`Wal`, after clearing `pending`. No recovery is needed, since nothing uncommitted ever
+reached a file. Turso
 does the equivalent: "uncommitted cached pages are discarded and cursors invalidated"
 (`research/turso.md`, section 14).
 

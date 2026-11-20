@@ -105,13 +105,14 @@ keep such a tree balanced while keys come and go. That is the subject of chapter
 
 Before accepting a tree, try the obvious cheap fix for the sorted array: cut it into
 page-sized chunks and keep a small **directory** with one slot per chunk (the first key
-of the chunk and where the chunk is). A lookup searches the directory, then one chunk.
+of the chunk and where the chunk is, 16 bytes). A lookup searches the directory, then
+one chunk.
 An insert shifts entries inside one chunk only.
 
 It works until you look at the directory. It is a sorted array with one slot per chunk,
 and when a chunk fills up and splits, a slot is inserted into it, shifting everything
 behind. The cost of a change is again proportional to the size of a flat array, now
-divided by 256. For a billion keys the directory has 3.9 million slots and fills 7,630
+divided by 256. For a billion keys the directory has 3.9 million slots and fills 15,259
 pages by itself.
 
 The repair is the same trick again: cut the directory into chunks and put a directory
@@ -241,6 +242,9 @@ Same files, names and tests in snake_case; `cargo run` prints the same bytes.
   pointers, so it needs no stack and no extra memory. Rust's automatically generated
   drop for `Option<Box<Node>>` is recursive and would overflow the stack, so `Bst`
   implements `Drop` with an explicit `Vec` of pending nodes.
+- **Walking a deep tree.** `range`, `height` and `validate` keep their pending nodes in
+  a list on the heap, not on the call stack. In Zig the caller passes the allocator
+  for that list, so `tree.height(allocator)` can fail; in Rust it is a `Vec`.
 - **`range` on the array** returns a slice that points into the map. In Zig the comment
   says it is invalidated by the next `put`; in Rust the borrow checker refuses to
   compile a `put` while the slice is alive.
@@ -277,7 +281,8 @@ variant as "a stunted B-tree one-level deep" (`tigerbeetle/src/lsm/tree_fuzz.zig
 The O(nodes) cost is visible in the source: every insert adds to all later prefix counts
 in a loop over the rest of the directory (`segmented_array.zig:671-673`), and a split
 shifts the pointer array (`segmented_array.zig:422-430`). TigerBeetle uses it for
-in-memory metadata of bounded size, where that is fine.
+in-memory metadata of bounded size (the tables of one LSM level,
+`tigerbeetle/src/lsm/manifest_level.zig:27-52`), where that is fine.
 
 **Page sizes and fan-out.**
 
@@ -351,9 +356,11 @@ so leaks fail the test run.
   reads for 100,000 entries, not 17.
 - **Forgetting the worst case of the BST.** Sorted input is common in practice
   (timestamps, auto-increment ids), and it is the worst input for an unbalanced tree.
-- **Recursion on unbalanced trees.** A recursive `deinit`, `height` or `validate` on a
-  20,000-node chain needs 20,000 stack frames. The code here loops along single-child
-  chains; the tests include such a chain.
+- **Recursion on unbalanced trees.** A recursive `deinit`, `range`, `height` or
+  `validate` on a 20,000-node chain needs 20,000 stack frames. Looping along
+  single-child chains is not enough: nearly sorted input (2, 1, 4, 3, ...) gives a tree
+  just as deep that forks at every level. The code here uses no recursion; the tests
+  walk both shapes.
 - **`for (1..len)` in Zig when `len` is 0.** The range `1..0` is an integer overflow,
   not an empty loop. `validate` uses a `while` loop for this reason.
 - **Reading "height" differently.** Some texts count edges, so a single node has height
@@ -364,9 +371,11 @@ so leaks fail the test run.
 1. (easy) By hand: insert the canonical keys into a BST in ascending order and draw the
    result. Then find an insert order of the same twelve keys that gives the smallest
    possible height. What is that height?
-2. (easy) Use the height calculator. A Postgres-like leaf entry for an integer key takes
-   20 bytes on an 8192-byte page with 8152 usable bytes. What order does that give, and
-   how many levels are needed for 10^6, 10^9 and 10^12 keys in the best and worst case?
+2. (easy) A Postgres-like leaf entry for an integer key takes 20 bytes on an 8192-byte
+   page with 8152 usable bytes. What order does that give, and how many levels are
+   needed for 10^6, 10^9 and 10^12 keys in the best and worst case? Check with the
+   height calculator of the visualization (that order is on its slider) or call
+   `minHeight` and `maxHeight` from a test.
 3. (medium) Add `rangeTraced` to `SortedArrayMap` and `Bst`: return the number of page
    reads for a range query. How many pages does each touch for 1,000 consecutive keys
    out of 100,000?

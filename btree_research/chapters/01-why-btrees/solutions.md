@@ -49,9 +49,12 @@ node has ceil(408 / 2) = 204 children and the root has 2: a tree of height 4 the
 at least 2 * 204^3 - 1, about 17 million keys, so a million keys cannot be 4 levels
 deep.
 
-The gap between best and worst case is at most one level here. Every node except the
-root is at least half full, so the worst case can only add a level or two, never
-multiply the height.
+The gap between best and worst case is at most one level here, and that is typical for
+wide nodes: every node except the root is at least half full, so the worst-case height
+is about log base M/2 of n instead of log base M of n, a factor of
+log(M) / log(M/2). For M = 408 that factor is 1.13. It is not a law for every M: for
+M = 4 the factor is 2, and the program's own table (section 5) shows 20 levels in the
+best case and 39 in the worst for 10^12 keys.
 
 ## 3. Page reads for a range query
 
@@ -114,10 +117,15 @@ exactly what a B-tree does.
 
 Prediction: the page-read columns do not change at all, because the search visits the
 same nodes in the same order; only the work inside each node changes. The comparison
-columns drop sharply. A node with 170 separators needs about log2(171), roughly 8,
-comparisons instead of an average of about 85, so with 3 levels the average should fall
-from 160.45 to somewhere near 3 * 8 = 24, close to the 17.68 of the plain binary search
-(these two figures are estimates, not program output).
+columns drop sharply. A full node with 170 keys needs about log2(171), roughly 8,
+comparisons instead of an average of about 85. The three levels are not equally full,
+though: for 100,000 keys the root of the stand-in tree has only 3 separators, the
+middle level 146 per node, and the leaves 170 keys. That gives about 2 + 8 + 8
+comparisons plus one equality check per node, so the average should fall from 160.45
+to about 20, close to the 17.68 of the plain binary search. (Measured with the
+visualization's JavaScript model, `viz/model.js`, on the same 1,000 lookups: 19.51 on
+average, 21 at most, page reads unchanged at 2.99. This is not output of the Zig or
+Rust program.)
 
 The change, in `wide.zig`: an interior node's separators are not contiguous in the
 slice (child `i` sits between separator `i - 1` and separator `i`), so compute the index

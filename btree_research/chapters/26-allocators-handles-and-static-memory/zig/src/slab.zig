@@ -99,7 +99,14 @@ pub fn SlabPool(comptime T: type, comptime slots_per_slab: u16) type {
 
         /// Create slabs until at least `count` exist (the "allocate everything in init"
         /// half of static allocation).
+        ///
+        /// The directory is sized ONCE, exactly, before the first slab is created.
+        /// Growing it append by append would reallocate, and a reallocation frees the
+        /// old buffer: under a `StaticAllocator` the first `free` ends the init phase,
+        /// so the next slab would be refused while the program is still starting up.
+        /// For the same reason call `reserve` once per pool, with the final count.
         pub fn reserve(pool: *Pool, count: u32) Allocator.Error!void {
+            if (count > pool.slabs.capacity) try pool.slabs.ensureTotalCapacityPrecise(pool.backing, count);
             while (pool.slab_count < count) _ = try pool.addSlab();
         }
 
@@ -403,6 +410,40 @@ test "static policy: reserve, then no growth and no release" {
     try expectMap(&pool, "0[..] 1[..]"); // nothing was given back
     try testing.expectEqual(allocations, failing.allocations);
     try testing.expectEqual(0, failing.deallocations);
+}
+
+// Regression: `reserve` used to grow the slab directory one append at a time. Every
+// growth frees the old directory, and a wrapper that treats a free as "start-up is
+// over" (StaticAllocator, TigerBeetle's original) then refused slab number 17.
+test "reserve never frees, so it works under a StaticAllocator" {
+    const StaticAllocator = @import("static_allocator.zig").StaticAllocator;
+    var failing: testing.FailingAllocator = .init(testing.allocator, .{});
+    var static: StaticAllocator = .init(failing.allocator());
+    var pool: SlabPool(u64, 4) = .init(static.allocator(), .{ .release_empty = false });
+    try pool.reserve(400);
+    try testing.expectEqual(StaticAllocator.State.init, static.state);
+    try testing.expectEqual(0, static.refused);
+    try testing.expectEqual(0, failing.deallocations);
+    try testing.expectEqual(401, failing.allocations); // 400 slabs + one directory
+    try testing.expectEqual(400, pool.slab_count);
+
+    static.freeze();
+    for (0..1600) |_| _ = try pool.create(); // every reserved slot is usable
+    try testing.expectError(error.OutOfMemory, pool.create());
+    static.thaw();
+    pool.deinit();
+    try testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+}
+
+test "reserve under allocation failure leaks nothing" {
+    const Scenario = struct {
+        fn run(gpa: Allocator) !void {
+            var pool: SlabPool(u64, 2) = .init(gpa, .{ .release_empty = false });
+            defer pool.deinit();
+            try pool.reserve(5);
+        }
+    };
+    try testing.checkAllAllocationFailures(testing.allocator, Scenario.run, .{});
 }
 
 test "create under allocation failure leaks nothing" {

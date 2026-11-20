@@ -103,8 +103,15 @@ impl<T: Copy, const S: usize> SlabPool<T, S> {
         }
     }
 
-    /// Create slabs until at least `count` exist.
+    /// Create slabs until at least `count` exist. The directory is sized once, exactly,
+    /// before the first slab: growing it push by push would reallocate, which is a
+    /// free, and start-up code under a freeze-after-init policy must not free (see
+    /// `reserve` in zig/src/slab.zig, where a `StaticAllocator` enforces it).
     pub fn reserve(&mut self, count: u32) -> Result<(), OutOfNodes> {
+        let wanted = count as usize;
+        if wanted > self.slabs.capacity() {
+            self.slabs.reserve_exact(wanted - self.slabs.len());
+        }
         while self.slab_count < count {
             self.add_slab()?;
         }
@@ -380,6 +387,33 @@ mod tests {
             pool.destroy(h);
         }
         assert_eq!(pool.map(), "0[..] 1[..]"); // nothing was given back
+    }
+
+    // Twin of the Zig regression test: `reserve` sizes the directory once, so the 400
+    // slabs are created without a single directory reallocation.
+    #[test]
+    fn reserve_never_reallocates_the_directory() {
+        let mut pool: SlabPool<u64, 4> = SlabPool::new(0, false, 0);
+        pool.budget = 400;
+        pool.reserve(400).unwrap();
+        assert_eq!((pool.slab_count, pool.budget), (400, 0));
+        assert_eq!(pool.slabs.capacity(), 400); // exact: nothing was grown by doubling
+        pool.freeze();
+        for _ in 0..1600 {
+            pool.create().unwrap(); // every reserved slot is usable
+        }
+        assert_eq!(pool.create(), Err(OutOfNodes));
+        assert_eq!(pool.grow_failures, 1);
+    }
+
+    #[test]
+    fn reserve_under_every_budget() {
+        for budget in 0..5 {
+            let mut pool: SlabPool<u64, 2> = SlabPool::new(0, false, 0);
+            pool.budget = budget;
+            assert_eq!(pool.reserve(5), Err(OutOfNodes));
+            assert_eq!(pool.slab_count, budget); // what was created stays usable
+        }
     }
 
     #[test]

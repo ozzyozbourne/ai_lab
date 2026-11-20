@@ -14,6 +14,10 @@
 //! Several of these trees still answer every `get` correctly. That is the
 //! reason `validate` exists: a test that only looks at query results cannot
 //! see such damage until a later insert or delete trips over it.
+//!
+//! A broken tree can still be inspected and dropped: `render` and `shape`
+//! walk the `children` vectors as they are (a test below runs them on all
+//! ten). Only `get` is not safe on case 7.
 
 use crate::arena::OutOfNodes;
 use crate::base_node::NodeId;
@@ -260,15 +264,50 @@ mod tests {
         key_on_wrong_side(&mut a).unwrap();
         assert_eq!(a.validate(), Err(ValidateError::KeyOutsideParentBounds));
 
-        // A disordered first leaf and an erased last child pointer. This
-        // walk compares the number of children before it descends, so it
-        // reports MissingChild. The Zig twin looks at child slot 3 only
-        // after children 0 to 2 and reports KeysOutOfOrder for the same tree.
+        // A disordered first leaf and an erased last child pointer. The
+        // walk compares the number of children of a node with its number
+        // of keys before it descends into the first child, so the root's
+        // defect wins although the leaf is further left. (The Zig twin
+        // checks all child slots first as well, and agrees.)
         let mut b = HandTree::new(4);
         canonical(&mut b).unwrap();
         let first = leaf_at(&b, 0);
         b.arena[first].keys.swap(0, 1);
         erase_child(&mut b).unwrap();
         assert_eq!(b.validate(), Err(ValidateError::MissingChild));
+    }
+
+    #[test]
+    fn every_broken_tree_can_be_printed_measured_validated_and_dropped() {
+        // What `render` prints for each broken tree. Two lines differ from
+        // the Zig twin, because a Rust node has no key count that also
+        // limits its children: the root of case 5 keeps its four children
+        // (Zig: a walk sees 1 child for 0 keys), and `shape` of case 8
+        // counts the extra child of leaf [7] (6 nodes; Zig: 5).
+        let rendered = [
+            "[6 10 20]\n[1 3 5] [7] [12 17 15] [25 30]\n",
+            "[6 10 20]\n[1 3 5] [11] [12 15 17] [25 30]\n",
+            "[6 10 20]\n[1 3 5] [7] [12 15 17 18] [25 30]\n",
+            "[6 10 20]\n[1 3 5] [] [12 15 17] [25 30]\n",
+            "[]\n[1 3 5] [7] [12 15 17] [25 30]\n",
+            // The height is measured along the leftmost path, so level 3 is not printed.
+            "[6 10 20]\n[1 3 5] [7] [15] [25 30]\n",
+            "[6 10 20]\n[1 3 5] [7] [12 15 17]\n",
+            "[6 10 20]\n[1 3 5] [7] [12 15 17] [25 30]\n",
+            "[6 10 20]\n[1 3] [7] [12 15 17] [25 30]\n",
+            "[6 10 20]\n[1 3 5] [7] [12 15 17] [25 30]\n",
+        ];
+        let nodes = [5, 5, 5, 5, 5, 7, 4, 6, 5, 5];
+        for ((case, text), nodes) in CASES.iter().zip(rendered).zip(nodes) {
+            let mut t = HandTree::new(4);
+            canonical(&mut t).unwrap();
+            (case.apply)(&mut t).unwrap();
+            let mut out = Vec::new();
+            t.render(&mut out, "").unwrap(); // must not panic, whatever the damage
+            assert_eq!(String::from_utf8(out).unwrap(), text, "{}", case.what);
+            assert_eq!(t.shape().nodes, nodes, "{}", case.what);
+            assert_eq!(t.validate(), Err(case.expect), "{}", case.what);
+            // `t` is dropped here: the arena frees every node, reachable or not.
+        }
     }
 }

@@ -25,8 +25,10 @@ const Alignment = std.mem.Alignment;
 pub const BumpAllocator = struct {
     /// Where chunks come from, and where they go back to in `deinit`.
     child: Allocator,
-    /// Newest chunk first. Only the newest chunk is bumped; what is left
-    /// over in an older chunk stays unused.
+    /// All chunks. Only the first one, the head, is bumped; what is left
+    /// over in a chunk behind it stays unused. A new ordinary chunk becomes
+    /// the head; a chunk made for one oversized object goes behind the head
+    /// (see `alloc`).
     chunks: ?*Chunk = null,
     stats: Stats = .{},
 
@@ -91,15 +93,26 @@ pub const BumpAllocator = struct {
                 return ptr;
             }
         }
-        // The newest chunk is full (or there is none): start another one,
-        // large enough for the header, alignment padding and the object.
+        // The head chunk cannot hold the object (or there is no chunk yet):
+        // request another one, large enough for the header, alignment
+        // padding and the object.
         const overhead = @sizeOf(Chunk) + alignment.toByteUnits();
         const needed = std.math.add(usize, len, overhead) catch return null;
         const size = @max(min_chunk_size, needed);
         const raw = self.child.rawAlloc(size, .of(Chunk), ret_addr) orelse return null;
         const chunk: *Chunk = @ptrCast(@alignCast(raw));
         chunk.* = .{ .next = self.chunks, .size = size, .used = @sizeOf(Chunk) };
-        self.chunks = chunk;
+        if (needed > min_chunk_size and self.chunks != null) {
+            // A chunk sized for this one object is full from birth. As the
+            // head it would make the very next small allocation open yet
+            // another chunk and abandon the room left in the current head.
+            // So it goes BEHIND the head, which keeps being bumped.
+            const head = self.chunks.?;
+            chunk.next = head.next;
+            head.next = chunk;
+        } else {
+            self.chunks = chunk;
+        }
         self.stats.chunks += 1;
         self.stats.allocations += 1;
         return bump(chunk, len, alignment).?;
@@ -175,6 +188,28 @@ test "a full chunk is followed by a new one; a huge request gets its own chunk" 
     const huge = try a.alloc(u64, 10_000);
     @memset(huge, 0xAB); // all 80000 bytes are really ours
     try testing.expectEqual(3, bump_state.stats.chunks);
+}
+
+test "an oversized object does not abandon the room left in the current chunk" {
+    // Regression: the oversized chunk became the head, so each small
+    // allocation after a big one opened a fresh 4096-byte chunk: 100 chunks
+    // for this loop instead of 51.
+    var bump_state: BumpAllocator = .init(testing.allocator);
+    defer bump_state.deinit();
+    const a = bump_state.allocator();
+    var previous: ?*u64 = null;
+    for (0..50) |i| {
+        const big = try a.alloc(u8, 5000);
+        @memset(big, 0xCD);
+        const small = try a.create(u64);
+        small.* = i;
+        // The small objects stay neighbours in the one ordinary chunk.
+        if (previous) |p| try testing.expectEqual(@intFromPtr(p) + 8, @intFromPtr(small));
+        previous = small;
+    }
+    try testing.expectEqual(51, bump_state.stats.chunks); // 50 oversized + 1 ordinary
+    try testing.expectEqual(100, bump_state.stats.allocations);
+    try testing.expectEqual(49, previous.?.*); // nothing was overwritten
 }
 
 test "the most recent allocation can grow in place, so ArrayList works" {

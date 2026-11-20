@@ -233,6 +233,24 @@ mod tests {
     }
 
     #[test]
+    fn every_u64_is_a_legal_key_the_largest_ones_can_be_stored_and_found() {
+        // Regression: value_of multiplied with `*`, which panics above
+        // u64::MAX / 10 in a debug build.
+        let max = u64::MAX;
+        let mut t = HandTree::new(4);
+        let low = t.leaf(&[0, max / 10]).unwrap();
+        let high = t.leaf(&[max - 1, max]).unwrap();
+        t.root = Some(t.interior(&[max / 10 + 1], &[low, high]).unwrap());
+        assert_eq!(t.validate(), Ok(()));
+        assert_eq!(t.get(max / 10), Some(max / 10 * 10)); // the last key whose value does not wrap
+        assert_eq!(t.get(max / 10 + 1), Some(value_of(max / 10 + 1)));
+        assert_eq!(t.get(max - 1), Some(value_of(max - 1)));
+        assert_eq!(t.get(max), Some(value_of(max)));
+        assert_eq!(value_of(max), max - 9); // (2^64 - 1) * 10 mod 2^64
+        assert_eq!(t.get(max - 2), None);
+    }
+
+    #[test]
     fn arena_nodes_are_neighbours_ids_in_creation_order() {
         let mut t = HandTree::new(4);
         canonical(&mut t).unwrap();

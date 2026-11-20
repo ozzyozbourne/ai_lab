@@ -193,10 +193,10 @@ for every key from 0 to 8, so every position below, between, on and above the el
 is tried. It returns the smallest input where a candidate disagrees with the linear
 scan. Two deliberately wrong versions show it working: the "closed interval" bug fails
 on `[1]` with key 2, the "return as soon as equal" bug on `[1, 1]` with key 1. (A third
-wrong version, the mixed convention of pitfall 2, has its own test because it does not
-terminate.) A seeded
-test compares against `std.sort` on random arrays, and the node is model-tested against
-the oracle from `common/` with 20 000 operations.
+wrong version, the mixed convention of pitfall 2, has its own test, because it can spin
+forever or read out of bounds.) A seeded test compares against `std.sort` on random
+arrays, and the node is model-tested against the oracle from `common/` with 20 000
+operations.
 
 ### Rust (`rust/src/`)
 

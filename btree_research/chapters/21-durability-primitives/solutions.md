@@ -114,25 +114,131 @@ pair is inconsistent. Atomicity of single pages does not compose.
 Fix: make the *decision* a single atomic event.
 
 ```
-slot area:  [image of page X] [image of page Y] [commit page: "X, Y, 2 images", sealed]
+slot area:  [image of X] [image of Y] [commit page: checksum of image X, checksum of image Y]
 
 update2(X, Y):
-  1. write both images to the slot area, write the commit page, sync
+  1. write both images and the commit page to the slot area, sync   <- the commit point
   2. write both home pages, sync
-  3. (optional) clear the commit page, sync
 
 recover():
-  commit page ok and both slot images ok  -> copy both images home (redo)
-  otherwise                               -> do nothing; no home page was touched
+  commit page ok, both slot images ok, and each image's
+  stored checksum equals the one in the commit page     -> copy both images home, sync (redo)
+  otherwise                                             -> do nothing
 ```
 
-The commit page is one page, so it is either complete or not (its checksum says which);
-it must also name the images it covers and, to be strict, carry their checksums, so that
-a commit page left over from an earlier update cannot validate newer, torn images.
-Before the commit page is durable no home page has been written, so the state is (old,
-old). After it, recovery can always finish the job, so the state becomes (new, new).
+The commit page is one page, so after a crash it is either complete or not (its own
+checksum says which). Until it is durable no home page has been written, so the state is
+(old, old). Once it is durable, recovery can always finish the job, so the state becomes
+(new, new). Recovery must run after every crash, before the next `update2`.
+
+The last condition of `recover` is the part that is easy to leave out, and without it the
+protocol is not atomic. After a completed `update2(A, a)` the slot area holds the intact
+images A and a and a valid commit page. Now `update2(B, b)` writes image B, the power
+fails, and the OS happened to have flushed that one write (fate 2, "kept"). The slot
+area holds B, a and the old commit page: three pages that each pass their own checksum.
+A recovery that only asks "is the commit page ok, are both images ok?" copies (B, a)
+home. That is the mixed state again, this time produced by the recovery code. A torn
+image is not the danger here, its own checksum rejects it. The danger is an image that
+is *intact and from another update*, which is the lost write of exercise 4, and the cure
+is the same: the expected checksum must live outside the page it describes. (A sequence
+number stored in all three pages would also do.)
+
+```zig
+// Slot area: pages 0 and 1 hold the images of X and Y, page 2 the commit
+// page. Homes: pages 3 and 4.
+const slot_x = 0;
+const slot_y = 1;
+const commit_no = 2;
+const home_x = 3;
+const home_y = 4;
+
+fn update2(s: Storage, x: *Page, y: *Page) Storage.Error!void {
+    page_mod.seal(x, slot_x);
+    page_mod.seal(y, slot_y);
+    var commit: Page = @splat(0);
+    @memcpy(commit[0..6], "commit");
+    // Bind the commit page to exactly these two images.
+    std.mem.writeInt(u32, commit[8..12], page_mod.storedChecksum(x), .little);
+    std.mem.writeInt(u32, commit[12..16], page_mod.storedChecksum(y), .little);
+    page_mod.seal(&commit, commit_no);
+    try s.writePage(slot_x, x);
+    try s.writePage(slot_y, y);
+    try s.writePage(commit_no, &commit);
+    try s.sync(); // the commit point: no home page is touched before this
+    page_mod.seal(x, home_x);
+    page_mod.seal(y, home_y);
+    try s.writePage(home_x, x);
+    try s.writePage(home_y, y);
+    try s.sync();
+}
+
+fn recover2(s: Storage) Storage.Error!void {
+    var commit: Page = undefined;
+    var x: Page = undefined;
+    var y: Page = undefined;
+    if (try page_mod.readChecked(s, commit_no, &commit) != .ok) return;
+    if (try page_mod.readChecked(s, slot_x, &x) != .ok) return;
+    if (try page_mod.readChecked(s, slot_y, &y) != .ok) return;
+    // An image can be intact and still belong to an earlier update.
+    if (page_mod.storedChecksum(&x) != std.mem.readInt(u32, commit[8..12], .little)) return;
+    if (page_mod.storedChecksum(&y) != std.mem.readInt(u32, commit[12..16], .little)) return;
+    page_mod.seal(&x, home_x);
+    page_mod.seal(&y, home_y);
+    try s.writePage(home_x, &x);
+    try s.writePage(home_y, &y);
+    try s.sync();
+}
+
+test "update2: crash at every write, every mode: both old or both new" {
+    for ([_]CrashMode{ .drop, .keep, .tear, .random }) |mode| {
+        for (0..6) |crash_after| { // update2 issues 5 writes: stop after 0..5
+            for (0..300) |seed| {
+                var disk: SimDisk = .init(testing.allocator, seed);
+                defer disk.deinit();
+                const s = disk.storage();
+                var x: Page = @splat('A');
+                var y: Page = @splat('a');
+                try update2(s, &x, &y); // (A, a) is durable
+                disk.powerOffAfterWrites(crash_after);
+                x = @splat('B');
+                y = @splat('b');
+                try testing.expectError(error.PowerLoss, update2(s, &x, &y));
+                _ = disk.crash(mode);
+                try recover2(s);
+
+                try testing.expectEqual(page_mod.Check.ok, try page_mod.readChecked(s, home_x, &x));
+                try testing.expectEqual(page_mod.Check.ok, try page_mod.readChecked(s, home_y, &y));
+                const old = x[0] == 'A' and y[0] == 'a';
+                const new = x[0] == 'B' and y[0] == 'b';
+                try testing.expect(old or new);
+                // 4 accepted writes mean the first sync passed: the update must win.
+                if (crash_after >= 4) try testing.expect(new);
+            }
+        }
+    }
+}
+```
+
+Paste this below the tests of `doublewrite.zig` and it runs as it stands: 7200 simulated
+power cuts on the chapter's `SimDisk`, every crash point in each of the four crash modes,
+and every one ends in (A, a) or (B, b). Delete the two lines under "An image can be
+intact" and the same test fails: counting instead of asserting gives 300 mixed pairs out
+of 1800 runs in `.keep` mode (every run that stops after one write, the scenario above)
+and 217 of 1800 in `.random`. `.drop` and `.tear` give none, because nothing new arrives
+intact. A second test, not printed here, was run on the same code: 300 seeds of 50
+consecutive updates each, with a power cut after a random number of writes in a random
+mode and with recovery itself interrupted up to three times, checking the pair of home
+pages against an oracle after every step. It passes with the binding.
+
+Two caveats. A 32-bit checksum is a weak binding: a stale image whose checksum happens to
+collide (one chance in 2^32) would be accepted, so a real log uses a wider checksum or a
+sequence number. And `recover2` rewrites both home pages on every restart, even when they
+are already current; that is harmless, only wasteful.
 
 That is a write-ahead log with full-page images, a commit record and redo, limited to
 one transaction at a time. Chapter 22 removes the limit: the slot area becomes an
-append-only log, the "which version" question is answered by LSNs, and clearing the
-commit page becomes a checkpoint.
+append-only log, and each record is bound to the one before it for the same reason the
+commit page here is bound to its images (Turso seeds every frame's checksum with the
+previous frame's, see "Whole-page log frames" in the README). The "which version"
+question is answered by LSNs, and the point at which old log can be discarded is a
+checkpoint.

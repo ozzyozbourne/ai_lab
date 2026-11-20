@@ -121,6 +121,31 @@ fn delete_walks_through_borrow_merge_and_root_shrink() {
 }
 
 #[test]
+fn an_underfull_middle_leaf_merges_with_its_left_sibling() {
+    // The README's delete rule: borrow left, borrow right, merge left, merge
+    // right. Bring #0, #4 and #1 (the three children of #2) down to one key
+    // each; deleting 6 then leaves #4, the middle one, with nothing to borrow.
+    let mut tree = build_canonical();
+    for k in [3, 5, 12, 7] {
+        assert_eq!(tree.delete(k), Some(k * 100));
+    }
+    assert_eq!(tree.stats.borrows + tree.stats.merges, 0);
+    assert_eq!(tree.delete(6), Some(600));
+    tree.validate().unwrap();
+    assert_eq!(tree.stats.borrows, 0);
+    assert_eq!(tree.stats.merges, 1);
+    // #4 was emptied into its LEFT sibling #0 and freed; separator 6 is gone.
+    assert_eq!(
+        dump_string(&tree),
+        "height 3, 7 keys, 7 nodes\n\
+         \x20 level 0: #7[15]\n\
+         \x20 level 1: #2[10] #6[20]\n\
+         \x20 leaves : #0(1) <-> #1(10) <-> #5(15 17) <-> #3(20 25 30)\n"
+    );
+    assert!(!tree.nodes.is_live(NodeId::from_index(4)));
+}
+
+#[test]
 fn deleting_everything_frees_every_node_and_the_tree_can_be_refilled() {
     let mut tree = build_canonical();
     for k in CANONICAL {

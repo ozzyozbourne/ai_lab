@@ -34,11 +34,11 @@
 .cl-cell.is-free { color: var(--bt-muted); background: var(--bt-free-bg); }
 .cl-cell.is-out { opacity: .38; }
 .cl-line.is-dim { opacity: .4; }
-/* 16-byte entries: the hatched stub stands for the 8 bytes of child and flags behind each key. */
+/* 16-byte entries: the grey stub stands for the 8 bytes of child and flags behind each key. */
 .cl-wide .cl-cell { position: relative; padding-right: 11px; }
 .cl-rest {
   position: absolute; top: 0; right: 0; bottom: 0; width: 9px; border-left: 1px solid var(--bt-border); border-radius: 0 3px 3px 0;
-  background: repeating-linear-gradient(135deg, var(--bt-border) 0 1.5px, var(--bt-free-bg) 1.5px 4px);
+  background: var(--bt-border);
 }
 /* More than 16 lines: tighter rows, so that picture, caption and controls still share one screen. */
 .cl-dense { gap: 6px 10px; }

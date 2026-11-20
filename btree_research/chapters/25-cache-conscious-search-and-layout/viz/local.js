@@ -359,7 +359,7 @@
    *           cellState: {i: 'compare'|'found'|'seen'}, read: [lines], hinted: [lines],
    *           dim: [lines], next: line | null, fresh: line | null, window: [lo, hi] | null })
    *
-   *  `rest` draws a hatched stub in every cell: the bytes of a 16-byte entry
+   *  `rest` draws a grey stub in every cell: the bytes of a 16-byte entry
    *  that are not the key. `dim` fades lines the search can no longer reach
    *  and `next` badges the line it goes to (block tree).
    */

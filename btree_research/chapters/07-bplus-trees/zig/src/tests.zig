@@ -128,6 +128,30 @@ test "delete walks through borrow, merge and root shrink" {
     , &tree);
 }
 
+test "an underfull middle leaf merges with its left sibling" {
+    // The README's delete rule: borrow left, borrow right, merge left, merge
+    // right. Bring #0, #4 and #1 (the three children of #2) down to one key
+    // each; deleting 6 then leaves #4, the middle one, with nothing to borrow.
+    const gpa = testing.allocator;
+    var tree = try buildCanonical(gpa);
+    defer tree.deinit(gpa);
+    for ([_]u64{ 3, 5, 12, 7 }) |k| try testing.expectEqual(k * 100, tree.delete(k));
+    try testing.expectEqual(0, tree.stats.borrows + tree.stats.merges);
+    try testing.expectEqual(600, tree.delete(6));
+    try tree.validate();
+    try testing.expectEqual(0, tree.stats.borrows);
+    try testing.expectEqual(1, tree.stats.merges);
+    // #4 was emptied into its LEFT sibling #0 and freed; separator 6 is gone.
+    try expectDump(
+        \\height 3, 7 keys, 7 nodes
+        \\  level 0: #7[15]
+        \\  level 1: #2[10] #6[20]
+        \\  leaves : #0(1) <-> #1(10) <-> #5(15 17) <-> #3(20 25 30)
+        \\
+    , &tree);
+    try testing.expect(!tree.nodes.isLive(NodeId.fromIndex(4)));
+}
+
 test "deleting everything frees every node, and the tree can be refilled" {
     const gpa = testing.allocator;
     var tree = try buildCanonical(gpa);

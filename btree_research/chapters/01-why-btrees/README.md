@@ -68,7 +68,7 @@ Two things go wrong:
 
 1. Every step of a lookup follows a pointer to a node that can be anywhere. In our cost
    model each node visit is a page read, and a BST only discards half of the keys per
-   node, so even a perfectly balanced one needs about log2(n) page reads: 17 for 100,000
+   node, so even a balanced one needs about log2(n) page reads: 17 for 100,000
    keys, where the sorted array needed 9.
 2. Nothing keeps the tree balanced. Insert keys in ascending order and each new node
    hangs to the right of the previous one. The "tree" is a linked list, and a lookup
@@ -126,7 +126,7 @@ The guide's canonical keys, inserted in this order: 10, 20, 5, 6, 12, 30, 7, 17,
 1, 15.
 
 **Sorted array.** After all twelve puts: `1 3 5 6 7 10 12 15 17 20 25 30`. Count the
-entries that had to move. 10 and 20 arrive in order (0 moves). 5 goes in front of two
+moves. 10 and 20 arrive in order (0 moves). 5 goes in front of two
 entries (2). 6 goes in front of 10 and 20 (2). 12 moves one entry, 30 none, 7 four, 17
 two, 3 eight, 25 one, 1 ten, 15 four. Total: 34 moves for 12 puts, and the average
 grows with the size of the array.
@@ -154,7 +154,8 @@ Height 5. `get(17)` visits 10, 20, 12, 17: four nodes, four page reads. Feed the
 keys in ascending order and every node has only a right child: height 12, and
 `get(30)` visits all twelve.
 
-**Wide nodes, M = 4** (at most 3 keys per node), laid over the sorted keys:
+**Wide nodes, M = 4** (at most 3 keys per node), laid over the sorted keys (it need not
+be the tree that inserting them one by one builds, chapter 04):
 
 ```
                  [ 6 | 12 | 20 ]
@@ -163,7 +164,7 @@ keys in ascending order and every node has only a right child: height 12, and
 ```
 
 `get(17)`: read the root, compare with 6, 12 and 20, follow the third pointer, read
-that leaf, compare with 15 and 17. Two page reads. Note that this lookup made 5
+that leaf, compare with 15 and 17. Two page reads. This lookup made 5
 comparisons, more than the BST's 4, and still wins: the comparisons happen inside pages
 that are already in memory.
 
@@ -265,12 +266,11 @@ lookup Milvus uses a `std::map` (a pointer-based balanced tree) in growing segme
 sealed ones. The sealed variant makes the trade explicit: `insert` after `seal()`
 throws "could not insert after seal", and `seal()` is one `sort` call
 (`milvus/internal/core/src/segcore/InsertRecord.h:717-730`). These are candidates 2 and
-1 of this chapter, each used where it is strong. A B-tree is the structure that does not
-need to choose.
+1, each used where it is strong. A B-tree does not need to choose.
 
 **A one-level structure in production code, with the cost written down.** TigerBeetle's
 `SegmentedArray` is an array of pointers to fixed-capacity nodes plus an array of prefix
-counts: exactly the "chunks plus a directory" of this chapter
+counts: the "chunks plus a directory" of this chapter
 (`tigerbeetle/src/lsm/segmented_array.zig:14-19`). Its own fuzzer describes the sorted
 variant as "a stunted B-tree one-level deep" (`tigerbeetle/src/lsm/tree_fuzz.zig:681-683`).
 The O(nodes) cost is visible in the source: every insert adds to all later prefix counts
@@ -295,7 +295,7 @@ Derived, not measured (arithmetic from the page formats in `research/postgres.md
 section 11 and `research/turso.md` section 6): a Postgres leaf page holds about 366 to
 407 single-integer index entries and an internal page 284 to 407 downlinks (child
 pointers, each stored with a separator), so three
-levels cover tens of millions of rows and four levels cover billions. A Turso table
+levels cover tens of millions of rows and four cover billions. A Turso table
 interior page with 4096 bytes has a fan-out between about 272 and 584 depending on
 rowid size (a rowid is a table's integer row number, stored in 1 to 9 bytes; chapter
 11). Turso refuses trees deeper than 20 levels as corrupt, and its comment
@@ -332,7 +332,7 @@ asks the operating system for fresh pages on every allocation. For 32-byte nodes
 is wasteful and slow (`ZIG_CHEATSHEET.md` says never to do it per node). Here it is
 used on purpose, for twelve nodes: it makes the cost model literally true.
 `Bst.pagesOnPath` looks at the real addresses of the nodes on a search path, and the
-program prints that `get(17)` visits 4 nodes on 4 distinct pages of memory. The test
+program prints that `get(17)` visits 4 nodes on 4 distinct pages. The test
 `page_allocator puts every node on its own page` builds the same tree in a
 page-aligned `FixedBufferAllocator` buffer, and there the whole path is on 1 page.
 

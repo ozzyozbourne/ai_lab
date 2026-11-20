@@ -383,7 +383,7 @@
     opts = opts || {};
     var checkValidate = opts.validate !== false, checkModel = opts.model !== false, sweepEvery = 16;
     var tree = new Tree(order, bug), oracle = new Oracle(), frames = opts.record ? [] : null;
-    var failure = null, injected = 0, maxHeight = 0;
+    var failure = null, injected = 0, maxHeight = 0, maxKeys = 0, done = 0;
     for (var i = 0; i < steps.length && !failure; i++) {
       var st = steps[i], treeAnswer, oracleAnswer, ok = true, verdict = null, oom = false;
       if (st.kind === 'put') {
@@ -432,9 +432,10 @@
           live: tree.live, reachable: tree.shape().nodes, len: tree.len, failure: failure
         });
       }
-      if (!failure) maxHeight = Math.max(maxHeight, tree.shape().height);
+      done = i + 1;
+      if (!failure) { var sh = tree.shape(); maxHeight = Math.max(maxHeight, sh.height); maxKeys = Math.max(maxKeys, sh.keys); }
     }
-    return { failure: failure, frames: frames, injected: injected, maxHeight: maxHeight };
+    return { failure: failure, frames: frames, injected: injected, maxHeight: maxHeight, maxKeys: maxKeys, steps: done };
   }
 
   var stepCache = {};

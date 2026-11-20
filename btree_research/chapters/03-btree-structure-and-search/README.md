@@ -68,7 +68,6 @@ The table is textbook material (the books are not among the sources in `db_study
 - CLRS can only describe even M (M = 2t). Bayer and McCreight can only describe odd M
   (M = 2k + 1). Knuth's M covers both.
 - The default of this guide, M = 4, is t = 2 in CLRS and has no k.
-- Always check which definition a text uses before comparing numbers.
 - CLRS counts height in edges (a single leaf has height 0). This guide counts levels (a
   single leaf has height 1), as `shape.height` in the code does.
 
@@ -172,12 +171,12 @@ keys and 4 children (5); all leaves are on level 2 (6).
 (the lower bound of chapter 02). That is 20, at index 2. It is not 17, and the node is
 not a leaf, so go to child 2. Why child 2? Two keys of the root (6 and 10) are smaller
 than 17, so 17 can only be in the range between 10 and 20. In the leaf `[12 15 17]` the
-lower bound is index 2, and the key there is 17. Found, after reading 2 nodes.
+lower bound is index 2, and the key there is 17. Found after 2 nodes.
 
 **Search for 8.** Root: the lower bound is 10 at index 1, not equal, go to child 1. Leaf
 `[7]`: the lower bound is index 1, past the end. A leaf has no children, so 8 is absent.
 
-**Search for 10.** Root: the lower bound is 10 itself. Found after reading 1 node.
+**Search for 10.** Root: the lower bound is 10 itself. Found after 1 node.
 
 **In-order traversal.** Visit child 0, key 0, child 1, key 1, ..., last child:
 `[1 3 5]`, 6, `[7]`, 10, `[12 15 17]`, 20, `[25 30]`. The keys come out sorted, and that

@@ -274,6 +274,19 @@ mod tests {
     }
 
     #[test]
+    fn a_serial_type_may_not_run_out_of_the_header_into_the_bodies() {
+        // header_len = 1, but the type varint `81 01` needs two bytes. Its second
+        // byte is the first body byte. Read across the boundary it would say
+        // "text of 126 bytes", and 126 body bytes do follow, so only the bound
+        // `types_end` stops the cursor from inventing a column.
+        let mut b = [0u8; 129];
+        b[..3].copy_from_slice(&[1, 0x81, 0x01]);
+        let mut cursor = RecordCursor::new(&b).unwrap();
+        assert_eq!(cursor.next_column(), Err(RecordError::Truncated));
+        assert_eq!(validate_record(&b), Err(RecordError::Truncated));
+    }
+
+    #[test]
     fn records_keep_float_bits_equal_under_the_comparator_different_as_bytes() {
         // A key normalises -0.0 and NaN so that equal values are equal bytes. A
         // record must read back exactly, so it does not: never memcmp records.

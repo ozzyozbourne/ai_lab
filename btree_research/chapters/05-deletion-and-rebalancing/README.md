@@ -178,8 +178,8 @@ minimum, so they merge with the separator (now 2):
 ```
 
 Delete 7: `[8]` is underfull, the left sibling has four keys, so 6 moves down and 5
-moves up: `[5 9]` over `[1 2 4] [6 8] [10 11 12 13]`. (Not in the program output; the
-tests and the visualization at order 5 show it.)
+moves up: `[5 9]` over `[1 2 4] [6 8] [10 11 12 13]`. (Both steps are a test; try them
+in the visualization at order 5.)
 
 ## Code walk-through
 
@@ -222,10 +222,9 @@ node pool: created=650 destroyed=650 live=0 peak=217 reused=433
 ```
 
 In the tree printout one line is one level; ` | ` separates nodes with different
-parents. Two things to read off the last lines: after everything is deleted, merges
-equal splits and root shrinks equal root splits (every node that a split created was
-removed by a merge), and 650 nodes were created over the run although at most 217 were
-alive at once.
+parents. In the last lines, merges equal splits and root shrinks equal root splits
+(every node a split created was removed by a merge), and 650 nodes were created
+although at most 217 were alive at once.
 
 ### Zig
 
@@ -245,9 +244,9 @@ column says which other files a file imports:
 | `tests_insert.zig` | whole-tree tests that never call `delete` | btree, pool |
 | `tests_delete.zig`, `scenario.zig` | the delete tests; the printed scenario | everything |
 
-Deletion is recursive, because the repair happens in the parent after the child has
-been changed, which is exactly what "code after the recursive call" does. Condensed
-from `delete.zig` (comments and the counter update removed):
+Deletion is recursive: the repair happens in the parent after the child has changed,
+which is what code after a recursive call does. Condensed from `delete.zig` (comments
+and the counter update removed):
 
 ```zig
 fn removeFrom(comptime Tree: type, tree: *Tree, gpa: Allocator, node: *Tree.NodeT, key: u64) ?u64 {
@@ -302,25 +301,24 @@ differences:
 - **Order at run time.** Zig's `Node(M)` holds `[M]u64` arrays sized at compile time.
   Stable Rust rejects `[u64; M - 1]` for a const generic `M` ("generic parameters may
   not be used in const operations"), so `BTree::new(order)` stores the order and a node
-  holds three `Vec`s. Shifting entries is `Vec::insert` / `Vec::remove` instead of
-  hand-written loops, and a split is `split_off`.
+  holds three `Vec`s. Shifting entries is `Vec::insert` / `Vec::remove`; a split is
+  `split_off`.
 - **Indices instead of pointers.** Nodes live in a `Slab` and refer to each other by
-  `NodeId(u32)`. A borrow needs the parent, the child and the sibling mutable at the
-  same time; with indices the code takes a value out of one node, then touches the
-  next, and the borrow checker is satisfied without `unsafe` or `Rc<RefCell<_>>`.
+  `NodeId(u32)`. A borrow changes parent, child and sibling; with indices the code
+  takes a value out of one node, then touches the next, and needs neither `unsafe` nor
+  `Rc<RefCell<_>>`.
 - **`free` returns the node by value.** A merge frees the right node first and appends
   (copies) its entries to the left node; the right node's buffers are then dropped.
 - **Read-only code does not know the slab.** `search.rs`, `validate.rs` and `stats.rs`
   take any `Nodes` (a type with `nodes[id]`): the slab, or a plain `Vec<Node>`.
 - **No `deinit`.** Dropping the tree drops the slab and every node in it. In Zig the
-  tree walks all nodes and returns each one, and the test allocator checks that none
-  was missed.
+  tree walks all nodes and returns each one.
 - **Failure model.** A failed allocation aborts a Rust process, so the slab itself
   refuses and `put` returns `Err(OutOfNodes)`. `budget` limits the number of live
   nodes. `fail_after = Some(n)` lets n more allocations succeed and then fails, like
   `fail_index` of Zig's `FailingAllocator`; only this one can fail the second
-  allocation of one `put` in a tree of any size. The reserve-then-commit structure is
-  identical; the `errdefer` that returns reserved nodes is an explicit loop.
+  allocation of one `put` in a tree of any size. Reserve-then-commit is identical; the
+  `errdefer` that returns reserved nodes is an explicit loop.
 - **Use-after-free and double free** are panics in the slab (`slab[id]` on a freed
   slot, `free` twice), tested with `#[should_panic]`. In Zig the same bugs are caught
   by `std.testing.allocator` when nodes are allocated one by one (see below).
@@ -361,7 +359,7 @@ written. What they do instead:
 (`segmented_array.zig:579-637`) looks at the node and its right neighbour: if both fit
 into one node they are merged and the empty node goes back to the node pool; otherwise,
 if the left one is below half, elements move from the right until both hold half of the
-total. There are no separator keys to fix, because the structure has a single level.
+total. The structure has one level, so there are no separators to fix.
 
 **PostgreSQL: no merging.** nbtree never merges or rebalances partly full pages. Its
 README states: "We consider deleting an entire page from the btree only when it's
@@ -376,9 +374,9 @@ VACUUM, and the tree never gets shorter. Chapter 24 covers that.
 `milvus/internal/streamingcoord/server/broadcaster/schema.go:90`); its delete code is
 not in the checkout and was not inspected.
 
-The pattern: strict "at least half full" is a textbook guarantee. Engines that store
-variable-size records count bytes, repair late or never, and accept emptier pages in
-exchange for less work and simpler concurrency.
+The pattern: strict "at least half full" is a textbook guarantee. Engines with
+variable-size records count bytes, repair late or never, and accept emptier pages for
+less work and simpler concurrency.
 
 ## Allocator notes
 
@@ -388,10 +386,10 @@ textbook case for a **pool**: fixed-size slots and a free list.
 
 The tree is generic over a pool type, `BTree(M, PoolFn)`, and every pool has the same
 members: `empty`, `create(gpa)`, `destroy(gpa, node)`, `deinit(gpa)`, `usage`. The
-backing allocator is passed to each call; nothing stores one. A pool written in another
-file works too (`tests_insert.zig` has a bump allocator). It must keep `usage` current
-with `usage.onCreate()` and `usage.onDestroy()`; a pool that cannot free a single node
-only counts in `destroy`.
+backing allocator is passed to each call; nothing stores one. A pool from another file
+works too (`tests_insert.zig` has a bump allocator) if it keeps `usage` current with
+`usage.onCreate()` and `usage.onDestroy()`; a pool that cannot free a single node only
+counts in `destroy`.
 
 | Pool | How it works | Use it for |
 |------|--------------|-----------|
@@ -419,15 +417,15 @@ or root shrink that unlinks it.
   `SafeAllocator`: it fails a test on a leaked allocation and aborts on a double free.
   With a pool it only sees chunks, so a node that a merge forgot to return is invisible
   to it: the test "SafeAllocator sees a node that DirectNodes forgot, but not one a
-  pool forgot" shows exactly one reported leak for two forgotten nodes. That is why the
-  tests use `DirectNodes` (every node is its own allocation), why each pool counts
-  `created` and `destroyed`, and why `validate` compares the pool's live count with the
-  number of nodes reachable from the root.
+  pool forgot" shows one reported leak for two forgotten nodes. That is why the tests
+  use `DirectNodes` (every node is its own allocation), why each pool counts `created`
+  and `destroyed`, and why `validate` compares the pool's live count with the number
+  of nodes reachable from the root.
 - A double `destroy` on `FreeListPool` links a slot to itself: every later `create`
   returns that same node, and no counter looks wrong (test "FreeListPool does not notice
-  a double destroy"). The same bug under `DirectNodes` with the test allocator aborts at
-  the second `destroy` with `panic: double free of [addr: ..., len: 16 ...]`. An abort
-  cannot be part of the test suite, so try it by hand.
+  a double destroy"). Under `DirectNodes` with the test allocator the second `destroy`
+  aborts with `panic: double free of [addr: ..., len: 16 ...]`; an abort cannot be in
+  the test suite, so try it by hand.
 - A pool never shrinks. After part 5 the tree is empty, but the chunks for 217 nodes
   stay allocated until `deinit`.
 
@@ -447,9 +445,8 @@ heap allocations, so the slab is not the full pool of the Zig version.
 - **Leaving the separator in the parent on a merge.** The parent then has as many keys
   as children (`MissingChild` again). `validate` returns only the first broken
   invariant it meets, top down, so test for "an error", not for one name.
-- **Repairing in the wrong place.** The underfull node cannot fix itself: it has no
-  access to its siblings. Check the child after the recursive call returns, in the
-  parent.
+- **Repairing in the wrong place.** The underfull node cannot reach its siblings.
+  Check the child in the parent, after the recursive call returns.
 - **Taking the predecessor without repairing its path.** `removeMax` must call
   `fixUnderflow` at every level it passes, not only at the leaf.
 - **Treating the root like other nodes.** The root may have a single key. It is

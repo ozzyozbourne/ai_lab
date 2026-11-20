@@ -239,9 +239,26 @@ test "corrupt records are rejected, never trusted" {
     }
     buf[rec.len] = 0;
     try testing.expectError(error.Corrupt, validateRecord(buf[0 .. rec.len + 1])); // trailing byte
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    try testing.expectError(error.Corrupt, decodeRecord(arena_state.allocator(), buf[0 .. rec.len + 1]));
     try testing.expectError(error.Truncated, validateRecord(&.{ 1, 200 })); // serial type varint cut off
     try testing.expectError(error.Truncated, validateRecord(&.{ 1, 9, 'a' })); // text of 6 bytes, 1 present
     try testing.expectError(error.Truncated, validateRecord(&.{9})); // header longer than the record
+}
+
+test "a serial type may not run out of the header into the bodies" {
+    // header_len = 1, but the type varint `81 01` needs two bytes. Its second
+    // byte is the first body byte. Read across the boundary it would say
+    // "text of 126 bytes", and 126 body bytes do follow, so only the bound
+    // `types_end` stops the cursor from inventing a column.
+    var b: [129]u8 = @splat(0);
+    b[0] = 1;
+    b[1] = 0x81;
+    b[2] = 0x01;
+    var cursor: RecordCursor = try .init(&b);
+    try testing.expectError(error.Truncated, cursor.next());
+    try testing.expectError(error.Truncated, validateRecord(&b));
 }
 
 test "records keep float bits: equal under the comparator, different as bytes" {

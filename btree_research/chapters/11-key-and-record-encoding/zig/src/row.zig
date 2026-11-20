@@ -238,6 +238,7 @@ test "validateKey and decodeKey reject malformed keys" {
     }
     buf[key.len] = 0;
     try testing.expectError(error.TrailingBytes, validateKey(buf[0 .. key.len + 1], &people));
+    try testing.expectError(error.TrailingBytes, decodeKey(arena_state.allocator(), buf[0 .. key.len + 1], &people));
 
     // A float column holding the bit pattern of -0.0 (never produced by encodeF64).
     const floats = [_]Column{.{ .type = .float }};

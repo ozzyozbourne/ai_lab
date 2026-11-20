@@ -56,6 +56,8 @@
    colours cells that hold a value, so the state class is put on the slot outline itself. */
 .a28-hash .bt-aslot[class*="s-"] { border: 1.75px solid var(--s); background: var(--s-bg); }
 .a28-links { margin-top: 2em; }
+/* A long option label must not make the toolbar wider than a phone screen. */
+#fig-cmp .bt-field, #fig-cmp .bt-select { max-width: 100%; min-width: 0; }
 </style>
 </head>
 <body>
@@ -355,11 +357,11 @@ Next: <a href="../../29-zone-maps-and-vector-indexes/viz/index.html">29 Zone map
 
   var QUERIES = {
     // e2 and d1 both have home slot 6, which b2 (home 5, itself displaced) occupies.
-    pushed: { label: 'Point lookup: e2 (present, two slots from home)', kind: 'point', key: 'e2' },
-    miss: { label: 'Point lookup: d1 (absent)', kind: 'point', key: 'd1' },
-    home: { label: 'Point lookup: c3 (present, in its home slot)', kind: 'point', key: 'c3' },
-    range: { label: 'Range: b2 ≤ key < c7', kind: 'range', lo: 'b2', hi: 'c7', words: 'keys in [b2, c7)' },
-    prefix: { label: 'Prefix: keys starting with c', kind: 'range', lo: 'c', hi: 'd', words: 'keys starting with c, which is the range [c, d)' }
+    pushed: { label: 'Lookup e2: present, 2 collisions', ask: 'point lookup of e2, which is present', kind: 'point', key: 'e2' },
+    miss: { label: 'Lookup d1: absent, 4 collisions', ask: 'point lookup of d1, which is absent', kind: 'point', key: 'd1' },
+    home: { label: 'Lookup c3: present, at home', ask: 'point lookup of c3, which is present', kind: 'point', key: 'c3' },
+    range: { label: 'Range: b2 ≤ key < c7', ask: 'range: b2 ≤ key < c7', kind: 'range', lo: 'b2', hi: 'c7', words: 'keys in [b2, c7)' },
+    prefix: { label: 'Prefix: keys starting with c', ask: 'prefix: keys starting with c', kind: 'range', lo: 'c', hi: 'd', words: 'keys starting with c, which is the range [c, d)' }
   };
 
   function cmpSteps(q) {
@@ -379,7 +381,7 @@ Next: <a href="../../29-zone-maps-and-vector-indexes/viz/index.html">29 Zone map
       });
       return lb.index;
     }
-    push('Question: ' + q.label.toLowerCase() + '. First the sorted array, then the hash table. Counters show how many cells each one reads.');
+    push('Question: ' + q.ask + '. First the sorted array, then the hash table. Counters show how many cells each one reads.');
     if (q.kind === 'point') {
       var i = bsearch(q.key, 'key');
       var hitS = i < sortedVals.length && sortedVals[i] === q.key;

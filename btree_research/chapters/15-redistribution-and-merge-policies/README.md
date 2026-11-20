@@ -221,6 +221,17 @@ Same names in snake case, same tests, same output. The differences:
   names are limited to 32 characters. The executable and the Cargo package carry the
   full name.
 
+### The workloads (`zig/src/experiments.zig`, `rust/src/experiments.rs`)
+
+Sections 3 and 4 of the output come from this file; exercises 3 and 4 change it.
+`sizeOf(key)` (`size_of` in Rust) gives every key its cell size, 40 to 200 bytes, from
+a generator seeded with the key itself, so a key has the same size in every run and
+under every policy. The keys are 1 to 20,000. "Random order" is those keys shuffled
+with seed 15, and the same shuffle builds the tree for section 4. "Delete 90%" takes
+the first 18,000 keys of a second shuffle (seed 16), or the keys 1 to 18,000 for the
+queue. A "toggle" draws a key from 1 to 20,000 (seed 17), deletes it if it is in the
+tree and puts it back otherwise.
+
 ### What the programs print
 
 Both programs print exactly this (`expected_output.txt`; a test in each language
@@ -319,6 +330,13 @@ Columns: `pages` and `fill` describe the leaves at the end. `balances` counts ru
 the routine that changed something, `writes` the leaf pages it rewrote, `moved` the
 cells that changed page, and `to old` those that landed on a page that existed before
 the operation. The one leaf write that any put or delete needs is not counted.
+
+In section 4 the counters start after the tree has been built. In the two delete
+tables they therefore cover deletes only, and `moved` equals `to old`: a delete never
+creates a page. The churn table also counts the work of its puts (15,094 of the 40,000
+toggles are puts, 24,906 are deletes). In its last row five of those puts split a
+page, so 83 cells landed on new pages (`moved` 14382, `to old` 14299) and the tree
+ends 304 - 5 = 299 pages smaller.
 
 Reading section 3:
 

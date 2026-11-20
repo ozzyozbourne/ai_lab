@@ -55,16 +55,17 @@ Chapter text: <a href="../README.md">README</a>. First page: <a href="index.html
     { token: 'key-deleted', label: 'being freed' }, { token: 'merge', label: 'buddies merging' }] });
 
   var heapEl = el('div.c26-heap', { role: 'img', 'aria-label': 'The heap as a row of blocks in address order' });
-  var listsEl = el('div.c26-lists'), statsEl = el('div.c26-stats'), liveEl = el('div.c26-live');
+  var listsEl = el('div.c26-lists'), statsEl = el('div.c26-stats'), liveEl = el('div.c26-live'), liveTitle = el('div.c26-sub');
   fig.stage.append(heapEl,
     el('div.c26-ruler', el('span', '0'), el('span', '256'), el('span', '512'), el('span', '768'), el('span', '1024')),
-    el('div.c26-sub', 'Live allocations (click one to free it)'), liveEl,
+    liveTitle, liveEl,
     el('div.c26-sub', 'Free lists, one per block size'), listsEl, statsEl);
   var log = new BTViz.Log(fig.side, { title: 'Events' });
 
   var heap, nextName;
   function render(step, i) {
     var s = step.state;
+    shown = i;
     heapEl.textContent = '';
     s.blocks.forEach(function (b) {
       var state = b.state || (b.free ? null : 'pointer');
@@ -84,6 +85,7 @@ Chapter text: <a href="../README.md">README</a>. First page: <a href="index.html
       el('span', 'free ', el('b', String(s.stats.free))), el('span', 'largest free block ', el('b', String(s.stats.largest))));
     // The free buttons act on the model's CURRENT state, so they are only live on the last step.
     var last = i === current.length - 1;
+    liveTitle.textContent = last ? 'Live allocations (click one to free it)' : 'Live allocations (they can be freed on the last step)';
     liveEl.textContent = '';
     var used = s.blocks.filter(function (b) { return !b.free && b.name; });
     if (!used.length) liveEl.appendChild(el('span', { style: { color: 'var(--bt-muted)', fontSize: '.82rem' } }, 'none'));
@@ -98,12 +100,15 @@ Chapter text: <a href="../README.md">README</a>. First page: <a href="index.html
 
   // The log keeps the events of earlier operations and adds the current timeline's
   // events up to the step being shown.
-  var prior = [], current = [];
+  var prior = [], current = [], shown = 0;
   function syncLog(i) {
     log.clear();
     prior.concat(current.slice(0, i + 1)).forEach(function (s) { if (s.log) log.add(s.log.html || s.log, s.log.state); });
   }
   function show(steps, play) {
+    // An operation always acts on the model's final state. If the reader was still
+    // on an earlier step of the previous timeline, say that it was run to its end.
+    if (current.length && shown < current.length - 1 && steps.length) steps[0].caption = '<i>The previous operation was run to its end first.</i> ' + steps[0].caption;
     prior = prior.concat(current.filter(function (s) { return s.log; })).slice(-40);
     current = steps;
     stepper.setSteps(steps, { play: !!play });
@@ -111,12 +116,19 @@ Chapter text: <a href="../README.md">README</a>. First page: <a href="index.html
   // A block name is consumed only by an allocation that succeeds, so names stay a, b, c, ...
   function peekName() { return String.fromCharCode(97 + nextName % 26) + (nextName >= 26 ? Math.floor(nextName / 26) : ''); }
   function name() { var n = peekName(); nextName++; return n; }
+  // The picture always starts from the model's real state: an empty heap, so that
+  // Alloc acts on what the reader sees.
   function reset() {
     heap = new Ch26.Buddy(10, 6); nextName = 0; prior = []; current = [];
-    // The fixed scenario of the programs (section 5 of expected_output.txt), as one timeline.
-    var steps = heap.idle('An empty heap is one free block of 1024 bytes. Step forward to replay the chapter program: allocate a = 100, b = 60, c = 200 bytes. Then free blocks by clicking them, or type a size.');
+    show(heap.idle('An empty heap is one free block of 1024 bytes. Type a size and press <b>Alloc</b>, or press <b>Chapter example</b> to replay the chapter program: allocate a = 100, b = 60, c = 200 bytes. A live allocation is freed by clicking it.'));
+  }
+  // The fixed scenario of the programs (section 5 of expected_output.txt), played as one timeline.
+  function example() {
+    heap = new Ch26.Buddy(10, 6); nextName = 0; prior = []; current = [];
+    var steps = [];
     [100, 60, 200].forEach(function (len) { steps = steps.concat(heap.alloc(len, name())); });
-    show(steps);
+    steps[0].caption = 'The chapter program, on an empty heap. ' + steps[0].caption;
+    show(steps, true);
   }
   function fragment() {
     heap = new Ch26.Buddy(10, 6); nextName = 0; prior = []; current = [];
@@ -147,6 +159,7 @@ Chapter text: <a href="../README.md">README</a>. First page: <a href="index.html
     el('label.bt-field', 'bytes', input),
     el('button.bt-btn.bt-primary#alloc', { type: 'button', onclick: alloc }, 'Alloc'),
     el('span.bt-toolbar-sep'),
+    el('button.bt-btn#example', { type: 'button', title: 'Empty heap, then allocate a = 100, b = 60, c = 200 bytes', onclick: example }, 'Chapter example'),
     el('button.bt-btn#fragment', { type: 'button', onclick: fragment }, 'Fragment'),
     el('button.bt-btn#reset', { type: 'button', onclick: reset }, 'Reset'));
   input.addEventListener('keydown', function (e) { if (e.key === 'Enter') alloc(); });

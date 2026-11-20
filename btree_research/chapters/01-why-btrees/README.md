@@ -16,9 +16,9 @@ Visualization: [viz/index.html](viz/index.html).
   change, and why adding levels fixes that.
 
 Prerequisites: you can read simple code with arrays and pointers, and you know what
-binary search does. No knowledge of B-trees is assumed. This chapter does not build a
-B-tree. It explains what problem the B-tree solves, so that the rules in chapters 03 to 05
-look like answers instead of arbitrary definitions.
+binary search does. No knowledge of B-trees is assumed. This chapter builds no B-tree.
+It explains the problem the B-tree solves, so that the rules in chapters 03 to 05 look
+like answers instead of arbitrary definitions.
 
 ## The idea in plain words
 
@@ -110,17 +110,16 @@ of the chunk and where the chunk is, 16 bytes). A lookup searches the directory,
 one chunk.
 An insert shifts entries inside one chunk only.
 
-It works until you look at the directory. It is a sorted array with one slot per chunk,
-and when a chunk fills up and splits, a slot is inserted into it, shifting everything
-behind. The cost of a change is again proportional to the size of a flat array, now
+It works until you look at the directory: a sorted array with one slot per chunk. When
+a chunk fills up and splits, a slot is inserted into it, shifting everything behind. The cost of a change is again proportional to the size of a flat array, now
 divided by 256. For a billion keys the directory has 3.9 million slots and fills 15,259
 pages.
 
 The repair is the same trick again: cut the directory into chunks and put a directory
 on top of it. Repeat until the top directory fits in one page. Now you have built a
 tree, each level a couple of hundred times smaller than the one below (256 times with
-these 16-byte slots; 171 for the nodes of candidate 3, which also keep a value next to
-every key), and a change touches a few pages per level in the worst case (chapter 04 shows exactly which) instead of a number
+these 16-byte slots, 171 for candidate 3's nodes, which also hold values), and a change
+touches a few pages per level in the worst case (chapter 04 shows exactly which) instead of a number
 of pages that grows with n. That is why height exists: a one-level structure costs
 O(number of pages) per change, a tree costs O(height).
 
@@ -188,14 +187,12 @@ heights: BST 39, wide nodes 3; the sorted array spans 391 pages
 BST, 2000 keys in ascending order: height 2000, get(largest) reads 2000 pages
 ```
 
-Only half of the 1,000 lookups ask for a key that is known to exist. The other half ask
-for a random number, which is rarely a key, so 541 hits are the expected result and not
-459 failures; a miss costs a page read like a hit does.
+Half of the 1,000 lookups ask for an existing key, the other half for a random number
+that is rarely a key: 541 hits are what to expect, not 459 failures.
 
-The wide-node row makes about nine times as many comparisons as the
-sorted array (this code scans the separators one by one; chapter 02 replaces the scan
-with a binary search) and a third of the page reads. That row is the cost model in one
-line.
+The wide-node row makes about nine times as many comparisons as the sorted array (this
+code scans the separators one by one; chapter 02 replaces the scan with a binary
+search) and a third of the page reads. That row is the cost model in one line.
 
 ### Zig (`zig/src/`)
 
@@ -220,11 +217,11 @@ line.
   compare it with `expected_output.txt`.
 
 Both maps are checked against the oracle from `common/` (`ops.zig`) with a seeded
-stream of 5,000 operations; `validate` runs after every operation.
+stream of 5,000 operations, running `validate` after each.
 
 ### Rust (`rust/src/`)
 
-Same files, names and tests in snake_case; `cargo run` prints the same bytes.
+Same files, names and tests in snake_case; the same output.
 
 ### Differences worth noticing
 
@@ -296,22 +293,22 @@ in-memory metadata of bounded size
 | Postgres | block | 8 kB default (1 to 32 kB at build time) | yes, one B-tree node | `postgres/meson_options.txt:5-8` |
 | Turso (SQLite format) | page | 4096 default, 512 to 65536 | yes, one B-tree node | `turso/core/storage/sqlite3_ondisk.rs:104-107` |
 | DuckDB | block | 262,144 bytes default | no: unit of column storage, DuckDB has no B-tree | `duckdb/src/include/duckdb/storage/storage_info.hpp:30` |
-| TigerBeetle | block | 512 KiB | no: block of an LSM table (a sorted, immutable run of keys, chapter 27), TigerBeetle has no B-tree | `tigerbeetle/src/config.zig:161` |
+| TigerBeetle | block | 512 KiB | no: block of an LSM table (a sorted run of keys, chapter 27), TigerBeetle has no B-tree | `tigerbeetle/src/config.zig:161` |
 
-The last two rows are a warning: a big "block size" does not mean wide B-tree nodes.
-Those engines scan or merge whole blocks.
+The last two rows are a warning: a big "block size" does not mean wide B-tree nodes;
+those engines scan or merge whole blocks.
 
 Derived, not measured (arithmetic from the page formats in `research/postgres.md`
 section 11 and `research/turso.md` section 6): a Postgres leaf page holds about 366 to
 407 single-integer index entries and an internal page 284 to 407 downlinks (child
 pointers, each stored with a separator), so three
 levels cover tens of millions of rows and four levels cover billions. A Turso table
-interior page with 4096 bytes has a fan-out between about 272 and 584, depending on how
-many bytes its keys take (they are rowids, the integer row numbers of a table, stored
-in a variable-length encoding; chapter 11). Turso refuses trees deeper than 20 levels as corrupt, and its comment
+interior page with 4096 bytes has a fan-out between about 272 and 584 depending on
+rowid size (a rowid is a table's integer row number, stored in 1 to 9 bytes; chapter
+11). Turso refuses trees deeper than 20 levels as corrupt, and its comment
 derives that bound from 2^31 pages and a minimum fan-out of 2 at the root and 3
 elsewhere (`turso/core/storage/btree.rs:150-157`). Its overflow thresholds (the entry
-size above which part of an entry is moved off the page, chapter 10) are chosen to
+size above which part of an entry moves off the page, chapter 13) are chosen to
 "give a minimum fanout of 4 for index b-trees" (`turso/core/storage/btree.rs:10804`).
 
 Real nodes are not full. Postgres cites the classic estimate that "the steady-state
@@ -321,8 +318,7 @@ calculator prints a best and a worst case; chapter 04 measures the fill.
 
 ## Allocator notes
 
-This chapter's row in the plan names two allocators, and each one makes a point about
-the structure it is used for.
+The chapter uses two allocators, and each makes a point about its structure.
 
 **`FixedBufferAllocator` on a stack buffer, for the sorted array.** A sorted array is a
 single contiguous block, which is exactly what a bump allocator over a fixed buffer
@@ -349,9 +345,9 @@ program prints that `get(17)` visits 4 nodes on 4 distinct pages of memory. The 
 page-aligned `FixedBufferAllocator` buffer, and there the whole path is on 1 page.
 
 So the allocator decides how many pages a pointer-based tree touches. A B-tree stops
-depending on the allocator by making the node itself page-sized.
+depending on it by making the node itself page-sized.
 
-Everything else uses `init.gpa` or `std.testing.allocator`, so leaks fail the test run.
+Everything else uses `init.gpa` or `std.testing.allocator`, so leaks fail the tests.
 
 ## Pitfalls
 
@@ -361,8 +357,8 @@ Everything else uses `init.gpa` or `std.testing.allocator`, so leaks fail the te
 - **"Binary search is one page read per probe."** Only at the start. Once the search
   interval fits in a page, further probes are free. That is why the array needs 9 page
   reads for 100,000 entries, not 17.
-- **Forgetting the worst case of the BST.** Sorted input is common in practice
-  (timestamps, auto-increment ids), and it is the worst input for an unbalanced tree.
+- **Forgetting the worst case of the BST.** Sorted input is common (timestamps,
+  auto-increment ids) and is the worst input for an unbalanced tree.
 - **Recursion on unbalanced trees.** A recursive `deinit`, `range`, `height` or
   `validate` on a 20,000-node chain needs 20,000 stack frames, and nearly sorted input
   (2, 1, 4, 3, ...) gives a tree just as deep that forks at every level. The code here

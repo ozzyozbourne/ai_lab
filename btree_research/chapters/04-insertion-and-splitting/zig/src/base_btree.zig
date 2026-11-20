@@ -54,16 +54,24 @@ pub fn BTree(comptime M: usize, comptime PoolFn: fn (type) type) type {
         pub const empty: Self = .{};
 
         /// Returns every node to the pool, then releases the pool itself.
+        /// Teardown is total: it also works on a tree that `validate` has
+        /// just rejected (a missing child is skipped; nodes that are no
+        /// longer reachable are not an error here), so a test can write
+        /// `defer tree.deinit(gpa)` and still assert on the error. Finding
+        /// a leaked node is the job of `validate` (NodeCountMismatch) and,
+        /// with `DirectNodes`, of the leak-checking test allocator; with a
+        /// pooling pool `pool.deinit` frees the leaked node's memory as well.
         pub fn deinit(self: *Self, gpa: Allocator) void {
             if (self.root) |root| self.destroySubtree(gpa, root);
-            std.debug.assert(self.pool.usage.live() == 0); // every node went back to the pool
             self.pool.deinit(gpa);
             self.* = undefined;
         }
 
         fn destroySubtree(self: *Self, gpa: Allocator, node: *NodeT) void {
             if (!node.leaf) {
-                for (node.children[0 .. node.len + 1]) |child| self.destroySubtree(gpa, child.?);
+                for (node.children[0 .. node.len + 1]) |child| {
+                    if (child) |c| self.destroySubtree(gpa, c);
+                }
             }
             self.pool.destroy(gpa, node);
         }

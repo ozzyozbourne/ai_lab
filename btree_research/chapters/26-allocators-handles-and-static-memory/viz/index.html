@@ -79,8 +79,9 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
     'split', { token: 'merge', label: 'merge / borrow, nodes in the vacuum victim' },
     { token: 'lock-exclusive', label: 'allocator frozen (static)' }] });
 
-  // minScale 0.5: the 56-node limit of this page still fits the stage without scrolling.
-  var view = new BTViz.TreeView(fig.stage, { minHeight: 250, minScale: 0.5, ariaLabel: 'B-tree; the label above each node is its handle' });
+  // The toolkit's default minimum scale (0.7) keeps the handle labels readable. A tree
+  // wider than the stage scrolls inside it, and the view scrolls the node in focus into sight.
+  var view = new BTViz.TreeView(fig.stage, { minHeight: 250, ariaLabel: 'B-tree; the label above each node is its handle' });
   var policyEl = el('div.c26-policy', { role: 'status', 'aria-label': 'Memory policy and allocator state' });
   fig.stage.appendChild(policyEl);
   var leafTitle = el('div.c26-pool-title'), intTitle = el('div.c26-pool-title');
@@ -131,6 +132,7 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
     mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
     onStep: function (step, i) {
       var s = step.state;
+      shown = i;
       view.render(s.tree, step.highlight);
       leafTitle.textContent = 'Leaf pool (class 0, 56-byte slots): ' + s.stats.leafMap;
       intTitle.textContent = 'Interior pool (class 1, 72-byte slots): ' + s.stats.intMap;
@@ -144,12 +146,15 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
 
   // The log keeps the events of earlier operations and adds the current timeline's
   // events up to the step being shown.
-  var prior = [], current = [];
+  var prior = [], current = [], shown = 0;
   function syncLog(i) {
     log.clear();
     prior.concat(current.slice(0, i + 1)).forEach(function (s) { if (s.log) log.add(s.log.html || s.log, s.log.state); });
   }
   function show(steps, play) {
+    // An operation always acts on the model's final state. If the reader was still
+    // on an earlier step of the previous timeline, say that it was run to its end.
+    if (current.length && shown < current.length - 1 && steps.length) steps[0].caption = '<i>The previous operation was run to its end first.</i> ' + steps[0].caption;
     prior = prior.concat(current.filter(function (s) { return s.log; })).slice(-40);
     current = steps;
     stepper.setSteps(steps, { play: !!play });
@@ -170,13 +175,16 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
   }
   // Insert ascending keys silently while they fit, then show the one that is refused.
   function fill() {
-    var k = 1, probe;
+    var k = 1, probe, added = 0;
     for (;;) {
       while (tree.has(k)) k++;
       probe = tree.put(k);
       if (probe.result === 'oom') break;
+      added++;
     }
-    probe[0].caption = 'Ascending keys were inserted until one did not fit: ' + tree.count + ' keys are in, and now comes ' + BTViz.k(k, 'inserted') + '. ' + probe[0].caption;
+    probe[0].caption = (added ? 'Ascending keys were inserted until one did not fit: ' + added + ' went in, ' + tree.count + ' keys are in the tree, and now comes '
+                              : 'The pool is already dry, so no key was added: ' + tree.count + ' keys are in the tree, and the next ascending key is ') +
+      BTViz.k(k, 'inserted') + '. ' + probe[0].caption;
     show(probe, true);
   }
   function modeButtons() {
@@ -225,7 +233,8 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
     if (guard()) run(readKey(function () { return rand.int(1, 99); }, 'a random one is used'), function (v) { return tree.put(v); });
   }
   function del() {
-    run(readKey(function () { var ks = tree.keys(); return ks.length ? rand.pick(ks) : 1; }, 'a random key of the tree is deleted'), function (v) { return tree.delete(v); });
+    if (!input.value.trim() && !tree.count) { show(tree.idle('No key was typed and the tree is empty: there is nothing to delete.')); return; }
+    run(readKey(function () { return rand.pick(tree.keys()); }, 'a random key of the tree is deleted'), function (v) { return tree.delete(v); });
   }
   fig.toolbar.append(
     input,

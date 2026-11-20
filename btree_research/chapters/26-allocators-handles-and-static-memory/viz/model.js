@@ -227,6 +227,8 @@
   function pl(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
   function kk(v, s) { return '<b class="bt-k' + (s ? ' s-' + s : '') + '">' + v + '</b>'; }
   function hh(h) { return '<code>' + hName(h) + '</code>'; }
+  // Said when the slab for a split is refused above the leaf level (static policy).
+  var ABOVE_LEAF = ' The insert fails here, <i>before</i> it reaches a leaf: top-down insertion must split this full node on the way down, whether or not the leaf below has room.';
 
   T.run = function (fn) {
     this.rec = [];
@@ -306,7 +308,7 @@
     var t = this.t, leftH = this.node(parent).kids[i], left = this.node(leftH);
     // Allocate the sibling BEFORE touching a key: if this fails, nothing is half-done.
     var rightH = this.allocStep(!leftH.c, 'Child ' + hh(leftH) + ' is full (' + this.K + ' keys), so it is split before the search enters it.',
-      leftH.c ? ' The insert fails here, <i>before</i> it reaches a leaf: top-down insertion must split this full node on the way down, whether or not the leaf below has room.' : '');
+      leftH.c ? ABOVE_LEAF : '');
     if (!rightH) return false;
     var right = this.node(rightH), p = this.node(parent);
     var median = left.keys[t - 1];
@@ -343,7 +345,7 @@
       }
       if (this.node(this.root).keys.length === this.K) {
         var oldRoot = this.root;
-        var newRoot = this.allocStep(false, 'The root ' + hh(this.root) + ' is full: the tree grows by one level.');
+        var newRoot = this.allocStep(false, 'The root ' + hh(this.root) + ' is full: the tree grows by one level.', oldRoot.c ? ABOVE_LEAF : '');
         if (!newRoot) return this.oomStep(key);
         this.node(newRoot).kids = [this.root];
         this.root = newRoot; this.height++;

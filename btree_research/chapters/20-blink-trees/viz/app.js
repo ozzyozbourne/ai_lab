@@ -127,6 +127,12 @@
     stepper.setSteps(history, { play: !!play && history.length > 1 });
   }
 
+  /** Show the step just appended, animating from the one before it. */
+  function showLast() {
+    stepper.setSteps(history, { index: history.length - 2, instant: true });
+    stepper.next();
+  }
+
   /* -------------------------------------------------------------- lanes */
   function drawLanes(S) {
     var r = S.reader, w = S.writer, rb = BLink.blocked(S, 'R');
@@ -162,7 +168,7 @@
     history.push(mkStep(S, BLink.advance(S, who)));
     untouched = null;
     say('');
-    stepper.setSteps(history, { index: history.length - 1 });
+    showLast();
   }
 
   /* ------------------------------------------------------ Search / Insert */
@@ -187,7 +193,7 @@
     history.push(mkStep(S, { caption: caption(S), log: logText }));
     untouched = null;
     say('');
-    stepper.setSteps(history, { index: history.length - 1 });
+    showLast();
   }
   function search() {
     var k = readKey();

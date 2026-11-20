@@ -47,8 +47,8 @@ obey these rules. In this guide M is the maximum number of children.
 6. **Balance.** All leaves are at the same depth.
 
 This is the plain B-tree: every key is stored exactly once, in a leaf or in an interior
-node, together with its value. The B+tree, which keeps all values in the leaves, is
-[chapter 07](../07-bplus-trees/README.md).
+node, with its value. Keys are unique, so the bounds in rule 2 are strict. The B+tree,
+which keeps all values in the leaves, is [chapter 07](../07-bplus-trees/README.md).
 
 Rules 1 and 2 make search possible. Rules 3 and 4 say how wide a node is. Rules 4 and 6
 together make the tree short, which is the whole point (see the height bound below).
@@ -71,8 +71,7 @@ Things to remember:
 - CLRS can only describe even M (M = 2t). Bayer and McCreight can only describe odd M
   (M = 2k + 1). Knuth's M covers both.
 - The default of this guide, M = 4, is t = 2 in CLRS and has no k.
-- "A B-tree of order 5" in a Bayer-and-McCreight text has up to 11 children. Always check
-  which definition a text uses before comparing numbers.
+- Always check which definition a text uses before comparing numbers.
 - CLRS counts height in edges (a single leaf has height 0). This guide counts levels (a
   single leaf has height 1), as `shape.height` in the code does.
 
@@ -113,8 +112,7 @@ encoding:
 
 So the number of black nodes on a path is the height of the 2-3-4 tree, and a path is at
 most twice as long as another. `redblack.zig` / `redblack.rs` do the conversion and check
-both rules. A red-black tree is what you get when a 2-3-4 tree has to live in memory with
-one key per allocation; a B-tree is what you get when a node should fill a disk page.
+both rules.
 
 ### The height bound
 
@@ -190,11 +188,6 @@ plain B-tree a search can end in an interior node.
 `[1 3 5]`, 6, `[7]`, 10, `[12 15 17]`, 20, `[25 30]`. The keys come out sorted, and that
 is rule 2 at work.
 
-**The 2-3-4 tree as a red-black tree.** The root `[6 10 20]` becomes black 10 with red
-children 6 and 20. `[1 3 5]` becomes black 3 with red 1 and 5, `[7]` becomes black 7,
-`[12 15 17]` becomes black 15 with red 12 and 17, `[25 30]` becomes black 30 with red
-left child 25. Every path passes 2 black nodes; the longest has 4 nodes, the shortest 3.
-
 ## Code walk-through
 
 Both programs print the same text (`expected_output.txt`); a test in each language
@@ -262,15 +255,14 @@ compared with it. After the walk, the number of keys met is compared with `tree.
 and the number of nodes reached with the number of nodes created. It returns the first
 violation as an error.
 
-Checking only "each child key is on the correct side of its parent key" would not be
-enough. A key deep in the tree must respect the separators of all its ancestors, which
-is why the bounds are passed down.
+Comparing a child only with its parent would not be enough: a key must respect the
+separators of all its ancestors, which is why the bounds are passed down.
 
 **Broken trees** (`broken.zig`). Each case changes one thing in the canonical tree.
 Part 4 of the output shows what `validate` says and how many of the 12 keys `get` still
-finds. Three cases still answer every lookup correctly (an overfull node, leaves at
-different depths, an unreachable node), and case 2 hides a key that is physically in
-the tree. Query tests alone would not find these.
+finds. Four cases still answer every lookup correctly (an overfull node, leaves at
+different depths, a leaf with a child pointer, an unreachable node), and case 2 hides a
+key that is physically in the tree. Query tests alone would not find these.
 
 **Oracle test** (`tree.zig`, "seeded model test"). An oracle is a second implementation
 that is too simple to be wrong. Here it is one `bool` per possible key, filled from the
@@ -295,7 +287,6 @@ The files have the same names and the tests the same names, with these differenc
 - **Missing child.** In Zig a missing child is a null pointer in the array. In Rust it
   is a `children` vector that is too short. For a tree with two defects this changes
   which one `validate` reports (see Pitfalls).
-- **Visitors.** `in_order` takes a closure; Zig takes any value with a `visit` method.
 
 ### Output
 
@@ -371,10 +362,9 @@ red-black tree: 12 nodes, 2 black nodes on every path (B-tree height 2), paths o
   M=8: height=4 (bounds 4..5) nodes=93 fill=93% validate ok, 2000 of 2000 lookups agree
 ```
 
-In part 5, "the sparsest tree with 3 levels" has 7 keys and "the fullest tree with 2
-levels" has 15: more keys, fewer levels. Part 7 uses `fromSorted`, which always produces
-the shortest tree, so the heights sit on the lower bound. Trees grown by insertion
-(chapter 04) land between the bounds.
+In part 5 the sparsest tree with 3 levels has 7 keys and the fullest tree with 2 levels
+has 15. Part 7 uses `fromSorted`, which always produces the shortest tree; trees grown
+by insertion (chapter 04) land between the bounds.
 
 ## In real databases
 
@@ -398,8 +388,6 @@ the shortest tree, so the heights sit on the lower bound. Trees grown by inserti
   page as underfull when more than two thirds of its usable bytes are free
   (`turso/core/storage/btree.rs:3429-3430`, `:10836-10848`). The role of rule 4, a lower
   limit on fill that keeps the tree short, is the same; the unit is bytes.
-- **Not B-trees.** DuckDB, TigerBeetle and FAISS have no B-tree (see PLAN.md); nothing
-  in this chapter describes them.
 
 ## Allocator notes
 
@@ -425,36 +413,33 @@ where nodes live:
 | `BumpAllocator` | next to each other in a chunk | `bump.deinit()`: one free per chunk, no walk |
 | `std.heap.ArenaAllocator` | the same | `arena.deinit()`, or `arena.reset(.retain_capacity)` to reuse the memory |
 
-The test "the same builder on three allocators" runs all three and gets the same tree.
-Parts 1 to 3 of `zig build run` use the bump allocator; the rest uses one arena.
+A test runs all three and gets the same tree. Parts 1 to 3 of `zig build run` use the
+bump allocator; the rest uses one arena.
 
-**Then `std.heap.ArenaAllocator`.** It is the same idea from the standard library, with
-more care: it also takes back the most recent allocation, it can keep its memory across
-a `reset`, and its `Allocator` is thread-safe when the child allocator is (see the
-comment at the top of `lib/std/heap/ArenaAllocator.zig`). Use it; the hand-written one
-is there to show that there is no magic.
+**Then `std.heap.ArenaAllocator`.** The same idea from the standard library, with more
+care: it takes back the most recent allocation, keeps its memory across a `reset`, and
+is thread-safe when its child allocator is (comment at the top of
+`lib/std/heap/ArenaAllocator.zig`). Use it; the hand-written one shows there is no magic.
 
 **Why this fits.**
 
-- *No walk at teardown.* Freeing node by node means visiting every node, which for a
-  tree on disk-sized pages means touching all of it just to throw it away.
+- *No walk at teardown.* Freeing node by node means visiting every node just to throw
+  it away.
 - *A broken or half-built tree can still be freed.* `deinit` follows child pointers, so
   it needs a valid tree. The ten broken trees cannot be freed that way, and neither can
-  a build that failed half-way: there is no root yet. With an arena both are one call.
-  `checkAllAllocationFailures` fails every allocation of a build in turn and finds no
-  leak.
-- *Neighbours in memory.* Nodes created one after the other are adjacent (a test checks
-  the addresses; a `Node(4)` is 120 bytes on the 64-bit target used here), with no
-  per-node header between them.
+  a build that failed half-way: there is no root yet. With an arena both are one call
+  (`checkAllAllocationFailures` fails every allocation of a build in turn; no leak).
+- *Neighbours in memory.* Nodes created one after the other are adjacent, with no
+  header between them (a test checks the addresses; a `Node(4)` is 120 bytes on the
+  64-bit target used here).
 
 **What would go wrong with a different choice.**
 
 - A bump allocator or arena in a tree that deletes: every merged node stays allocated
   until the tree dies. Memory use only grows. Chapter 05 uses a free list for that
   reason.
-- A general-purpose allocator here: correct, but one bookkeeping entry per node, and the
-  walk at teardown. In tests it is still the right choice once, because
-  `std.testing.allocator` reports every node that was forgotten.
+- A general-purpose allocator here: correct, but it tracks every node and needs the
+  walk at teardown. Tests use it once: `std.testing.allocator` reports a forgotten node.
 - Forgetting the lifetime: after `bump.deinit()` every node pointer dangles. The tree
   must not outlive its allocator. Zig does not check this; Rust's ownership does.
 
@@ -466,21 +451,15 @@ are freed one by one when the arena is dropped. The Zig node is one flat block.
 
 - **"Order" without a definition.** Order 4 here is t = 2 in CLRS. Always say which
   parameter you mean (see the table).
-- **Checking a child only against its parent.** A key must lie inside the range given by
-  all its ancestors. `validate` passes (lo, hi) down for that reason.
-- **Using `<=` for the bounds.** Keys are unique, so a key equal to a separator is a
-  duplicate. The bounds are strict.
 - **Assuming a search ends in a leaf.** In a plain B-tree it can end in any node. Code
   that scans "all leaves" misses the keys stored in interior nodes; an in-order
   traversal must emit a key between two children.
-- **Trusting lookups as a test.** Three of the ten broken trees answer every `get`
+- **Trusting lookups as a test.** Four of the ten broken trees answer every `get`
   correctly. Run `validate` after every operation in tests.
 - **Reading meaning into which error `validate` returns.** It returns the first
   violation its walk meets. For a tree with two defects the Zig and Rust versions can
   name different ones (a test in `broken.zig` / `broken.rs` shows a case). Any error
   means the tree is broken; fix, re-run.
-- **Height in edges or in levels.** CLRS's bound is h <= log_t((n + 1) / 2) with h in
-  edges; ours has "1 +" because we count levels.
 - **Keeping node pointers after the arena is gone.** See Allocator notes.
 
 ## Exercises

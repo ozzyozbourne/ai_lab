@@ -29,8 +29,8 @@ too large to scan. Keys and values are `u64` throughout Part I.
 
 A database does not read storage one byte at a time. It reads fixed-size blocks called
 **pages**: 4096 bytes by default in SQLite and Turso, 8192 in Postgres. Reading a page
-that is not in memory yet means going to the storage device, which is far more expensive
-than anything the CPU does with the page afterwards (textbook; this guide quotes no
+that is not in memory yet means going to the storage device, far more expensive than
+anything the CPU does with the page afterwards (textbook; this guide quotes no
 timings). Comparing two keys that are already in memory is close to free.
 
 So we use this cost model for the whole guide:
@@ -52,8 +52,7 @@ middle entry, discard the half that cannot contain the key, repeat.
 Reads are good, though less good than the comparison count suggests. For 100,000 entries
 a search needs about 17 probes. The array spans 391 pages, and the first probes are far
 apart, so each lands on a different page. Only when the remaining interval fits in one
-page (after about log2(391), roughly 9 probes) do the page reads stop. Binary search
-halves the problem with every page it reads.
+page (after about log2(391), roughly 9 probes) do the page reads stop.
 
 Writes are the real problem. To insert a key, every entry with a larger key moves one
 slot to the right. A new smallest key among 100,000 entries moves all of them and
@@ -83,8 +82,8 @@ children per node means about log2(n) levels.
 The fix for the first point: put many keys in each node. A page is read as a whole
 anyway, so fill it. If a node holds M-1 keys in sorted order, they cut the key space
 into M ranges, and the node stores one child pointer for each range. In that role the
-keys are called **separators**. Reading one node now
-divides the remaining keys by M instead of by 2.
+keys are called **separators**. Reading one node now divides the remaining keys by M
+instead of by 2.
 
 - **Order** M is the maximum number of children of a node (Knuth's definition, used
   throughout this guide). A node holds at most M-1 keys.
@@ -97,14 +96,13 @@ With 16-byte entries and 8-byte child pointers, a 4096-byte page fits 170 entrie
 about log171(n): 3 levels for 100,000 keys, 5 for a billion.
 
 Inside a node, the keys are a small sorted array. Shifting them on insert is cheap
-because it happens inside one page. A B-tree is therefore both of the earlier candidates
-at once: sorted arrays inside the nodes, pointers between the nodes. What remains is to
-keep such a tree balanced while keys come and go. That is the subject of chapters 03 to
-05.
+because it happens inside one page. A B-tree is therefore both earlier candidates
+at once: sorted arrays inside the nodes, pointers between the nodes. What remains is
+keeping such a tree balanced while keys come and go: chapters 03 to 05.
 
 ### Why height at all: the one-level trap
 
-Before accepting a tree, try the obvious cheap fix for the sorted array: cut it into
+Before accepting a tree, try the cheap fix for the sorted array: cut it into
 page-sized chunks and keep a small **directory** with one slot per chunk (the first key
 of the chunk and where the chunk is, 16 bytes). A lookup searches the directory, then
 one chunk.
@@ -117,8 +115,8 @@ pages.
 
 The repair is the same trick again: cut the directory into chunks and put a directory
 on top of it. Repeat until the top directory fits in one page. Now you have built a
-tree, each level a couple of hundred times smaller than the one below (256 times with
-these 16-byte slots, 171 for candidate 3's nodes, which also hold values), and a change
+tree, each level a couple of hundred times smaller than the one below (256 with these
+16-byte slots, 171 for candidate 3's nodes, which also hold values), and a change
 touches a few pages per level in the worst case (chapter 04 shows exactly which) instead of a number
 of pages that grows with n. That is why height exists: a one-level structure costs
 O(number of pages) per change, a tree costs O(height).
@@ -209,8 +207,8 @@ search) and a third of the page reads. That row is the cost model in one line.
   case for the root, and allocates only when it has found the empty link.
 - `wide.zig`: `getTraced(sorted, m, key, trace)` searches a sorted slice the way a
   balanced, evenly filled tree of order `m` laid over it would, and counts one page read per
-  node. It builds no nodes. It is a stand-in for the real tree of chapter 03, good
-  enough to measure lookups.
+  node. It builds no nodes: a stand-in for the real tree of chapter 03, good enough to
+  measure lookups.
 - `height.zig`: `minHeight(n, m)` (every node full), `maxHeight(n, m)` (every node as
   empty as B-tree rules allow, proved in chapter 03) and `orderForPage`.
 - `main.zig`: the scenario, written to a `*std.Io.Writer` so a test can capture it and
@@ -238,7 +236,7 @@ Same files, names and tests in snake_case; the same output.
 - **Deleting a BST node with two children.** Zig copies the successor's entry into the
   node and unlinks the successor. Rust re-links the successor node itself
   (`detach_min`), because moving a `Box` is easier than holding two mutable references
-  into one tree. The resulting tree has the same shape.
+  into one tree. Both give the same shape.
 - **Freeing a deep tree.** A degenerate BST is as deep as it is large. Zig's `deinit`
   threads the nodes still to be freed through their own `right` pointers, so it needs
   no stack and no extra memory. Rust's generated drop for `Option<Box<Node>>` is
@@ -349,9 +347,8 @@ Everything else uses `init.gpa` or `std.testing.allocator`, so leaks fail the te
 - **Counting comparisons.** Big-O classes hide the difference between a comparison and
   a page read. Sorted array, balanced BST and B-tree are all O(log n) per lookup. In
   page reads they are about log2(n / 256), log2(n) and log171(n).
-- **"Binary search is one page read per probe."** Only at the start. Once the search
-  interval fits in a page, further probes are free. That is why the array needs 9 page
-  reads for 100,000 entries, not 17.
+- **"Binary search is one page read per probe."** Only until the search interval fits
+  in a page; later probes are free. Hence 9 page reads for 100,000 entries, not 17.
 - **Forgetting the worst case of the BST.** Sorted input is common (timestamps,
   auto-increment ids) and is the worst input for an unbalanced tree.
 - **Recursion on unbalanced trees.** A recursive `deinit`, `range`, `height` or
@@ -359,7 +356,7 @@ Everything else uses `init.gpa` or `std.testing.allocator`, so leaks fail the te
   (2, 1, 4, 3, ...) gives a tree just as deep that forks at every level. This code
   does not recurse; the tests walk both shapes.
 - **`for (1..len)` in Zig when `len` is 0.** The range `1..0` is an integer overflow,
-  not an empty loop. `validate` uses a `while` loop for this reason.
+  not an empty loop, so `validate` uses a `while` loop.
 - **Reading "height" differently.** Some texts count edges, so a single node has height
   0. This guide counts nodes, because that is the number of page reads.
 
@@ -388,5 +385,5 @@ Solutions: [solutions.md](solutions.md).
 
 - Visualization: [viz/index.html](viz/index.html) races the three structures.
 - Previous: [guide index](../../README.md) ([landing page](../../index.html)).
-- Next: [02 Searching a sorted node](../02-searching-a-sorted-node/README.md), where the
-  search inside one node gets the attention it deserves.
+- Next: [02 Searching a sorted node](../02-searching-a-sorted-node/README.md): the
+  search inside one node.

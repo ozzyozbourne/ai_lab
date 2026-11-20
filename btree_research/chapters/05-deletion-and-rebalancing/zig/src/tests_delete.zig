@@ -112,6 +112,26 @@ test "delete: an underflow travels up through interior nodes" {
     try testing.expectEqual(1, tree.counters.root_shrinks);
 }
 
+test "delete: order 5, a node underflows while it still holds a key" {
+    // With M = 4 the minimum is one key, so an underfull node is always
+    // empty. With M = 5 the minimum is two: a node with ONE key is underfull.
+    const gpa = testing.allocator;
+    var tree: BTree(5, pool.DirectNodes) = .empty;
+    defer tree.deinit(gpa);
+    for (1..14) |key| _ = try tree.put(gpa, key, key * 10);
+    try expectTree(&tree, "[3 6 9]\n[1 2] [4 5] [7 8] [10 11 12 13]\n");
+    // Interior key: predecessor 2 moves up and leaves [1]. Its only sibling
+    // [4 5] is at the minimum: merge [1] + 2 + [4 5].
+    try testing.expectEqual(30, tree.delete(gpa, 3));
+    try expectTree(&tree, "[6 9]\n[1 2 4 5] [7 8] [10 11 12 13]\n");
+    try testing.expectEqual(1, tree.counters.predecessor_swaps);
+    try testing.expectEqual(1, tree.counters.merges);
+    // [8] is left with one key; the left sibling has four and lends one.
+    try testing.expectEqual(70, tree.delete(gpa, 7));
+    try expectTree(&tree, "[5 9]\n[1 2 4] [6 8] [10 11 12 13]\n");
+    try testing.expectEqual(1, tree.counters.borrows_left);
+}
+
 fn modelTest(comptime M: usize, comptime PoolFn: fn (type) type, seed: u64) !void {
     const gpa = testing.allocator;
     var tree: BTree(M, PoolFn) = .empty;

@@ -90,6 +90,7 @@ mod tests {
         // Exercise 2: 100 keys at M = 5.
         assert_eq!(min_height(5, 100), 3);
         assert_eq!(max_height(5, 100), 4);
+        assert_eq!(min_keys(5, 5), 161);
     }
 
     #[test]

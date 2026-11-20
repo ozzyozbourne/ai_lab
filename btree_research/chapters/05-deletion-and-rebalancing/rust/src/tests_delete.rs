@@ -106,6 +106,27 @@ fn delete_an_underflow_travels_up_through_interior_nodes() {
     assert_eq!(tree.counters.root_shrinks, 1);
 }
 
+#[test]
+fn delete_order_5_a_node_underflows_while_it_still_holds_a_key() {
+    // With M = 4 the minimum is one key, so an underfull node is always
+    // empty. With M = 5 the minimum is two: a node with ONE key is underfull.
+    let mut tree = BTree::new(5);
+    for key in 1..=13 {
+        tree.put(key, key * 10).unwrap();
+    }
+    expect_tree(&tree, "[3 6 9]\n[1 2] [4 5] [7 8] [10 11 12 13]\n");
+    // Interior key: predecessor 2 moves up and leaves [1]. Its only sibling
+    // [4 5] is at the minimum: merge [1] + 2 + [4 5].
+    assert_eq!(tree.delete(3), Some(30));
+    expect_tree(&tree, "[6 9]\n[1 2 4 5] [7 8] [10 11 12 13]\n");
+    assert_eq!(tree.counters.predecessor_swaps, 1);
+    assert_eq!(tree.counters.merges, 1);
+    // [8] is left with one key; the left sibling has four and lends one.
+    assert_eq!(tree.delete(7), Some(70));
+    expect_tree(&tree, "[5 9]\n[1 2 4] [6 8] [10 11 12 13]\n");
+    assert_eq!(tree.counters.borrows_left, 1);
+}
+
 fn model_test(order: usize, seed: u64) {
     let mut tree = BTree::new(order);
     let mut oracle = Oracle::new();

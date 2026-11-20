@@ -76,6 +76,7 @@ test "height bounds: the README's worked example" {
     // Exercise 2: 100 keys at M = 5.
     try std.testing.expectEqual(3, minHeight(5, 100));
     try std.testing.expectEqual(4, maxHeight(5, 100));
+    try std.testing.expectEqual(161, minKeys(5, 5));
 }
 
 test "the two bounds are consistent, and huge inputs saturate instead of overflowing" {

@@ -20,10 +20,9 @@ writes, page checksums). The code of both is copied into this chapter unchanged.
 
 Chapter 12 ends with an uncomfortable demo. A leaf split changes four pages: the left
 leaf, the new right leaf, their parent and the metapage. `flush` hands them to the file
-one after the other and then calls sync. If the power fails after two of the four, the
-file contains a parent that points to a leaf that was never written. That tree never
-existed in memory. No ordering of the four writes fixes this, because every prefix of
-every ordering except "none" and "all" is a state the tree was never in.
+one after the other and then syncs. If the power fails after two of the four, the file
+contains a parent that points to a leaf that was never written. No ordering of the
+writes fixes this: every prefix except "none" and "all" is a tree that never existed.
 
 The fix is to stop treating the main file as the place where changes first land.
 
@@ -53,8 +52,7 @@ Some vocabulary:
 - **Redo is idempotent**: writing the same page image twice gives the same page. So a
   crash during a checkpoint, or during recovery itself, is harmless. Run recovery again.
 - **Physical redo with full page images**: the record contains the whole 4096-byte page.
-  It is the simplest kind of log record, and the most expensive. The section "What this
-  design costs" is honest about that.
+  The simplest kind of record, and the most expensive (see "What this design costs").
 
 ### How does recovery know where the log ends?
 
@@ -184,13 +182,12 @@ DiskBTree -> BufferPool -> Pager -> Wal -+-> log file   (appended, synced at com
   not yet checkpointed), then the main file, whose page checksum is verified.
 
 This answers the buffer-pool question. Chapter 12's pool evicts dirty pages in the middle
-of an operation, and without a log such a write-back goes straight into the main file.
-There are two cures: forbid eviction of dirty pages until commit (and size the pool for
-the largest operation), or route eviction through the log. This chapter routes it: an
-evicted page arrives at `Wal.write` and waits in `pending` like any other. The pool can
-stay at 2 frames, and the central test runs with exactly that. The test "eviction goes
-through the log" checks that after 36 puts with a 2-frame pool and no checkpoint the main
-file has not received a single write.
+of an operation. Either eviction of dirty pages is forbidden until commit (and the pool
+sized for the largest operation), or it is routed through the log. This chapter routes
+it: an evicted page arrives at `Wal.write` and waits in `pending` like any other, so the
+pool can stay at 2 frames, and the central test runs with exactly that. The test
+"eviction goes through the log" checks that 36 puts with a 2-frame pool and no checkpoint
+do not write the main file once.
 
 ### Commit
 
@@ -210,11 +207,10 @@ try self.log.sync();   // the commit point
 ```
 
 The image is sealed with its page checksum before it is logged, so checkpoint and
-recovery can copy log images to the main file byte for byte. `appendToLog` has one
-subtlety: the log file is page-addressed but records are not page-sized, so the first
-write of a commit rewrites the last, partly filled log page. That is safe under the
-sector model of chapter 21: the bytes of earlier records are rewritten with identical
-contents, so a torn sector there is the same before and after.
+recovery copy log images to the main file byte for byte. The log file is page-addressed
+but records are not page-sized, so `appendToLog` usually rewrites the last, partly
+filled log page first. Under chapter 21's sector model that is safe: the bytes of
+earlier records are rewritten unchanged, so a torn sector there is the same either way.
 
 After the sync the images move from `pending` to `index`. Pages are always processed in
 page-id order (the tables are sorted), which is what makes the Zig and Rust programs
@@ -248,16 +244,15 @@ this; see below.
   which owns a `Box<dyn Storage>`. The `Db` needs a second handle to the log for
   checkpoints, so the `Wal` lives in an `Rc<RefCell<Wal>>` and the pager holds a
   `WalStorage` wrapper. The same goes for the `Machine` shared by its two storage ports.
-- Zig's `PageTable` is a hand-written sorted array because images come from different
-  allocators (general-purpose in normal running, an arena during recovery). Rust uses
-  `BTreeMap<PageId, Box<Page>>`.
+- Zig's `PageTable` is a hand-written sorted array (its images come from two different
+  allocators); Rust uses `BTreeMap<PageId, Box<Page>>`.
 - Zig merges error sets (`Db.Error = DiskBTree.Error || Wal.Error`); Rust wraps them in
   `DbError::{Tree, Wal}`. Both lose information at the storage interface, which only
   knows `StorageFailure`; `Wal.last_error` keeps the real cause.
 - Rust has no failing allocator in std, so the allocation-failure test exists only in Zig.
-- `Cargo.toml` sets `opt-level = 2` for the dev and test profiles. The crash loop
-  checksums every page of hundreds of replayed runs; unoptimised it is several times
-  slower. Overflow checks and debug assertions stay on.
+- `Cargo.toml` sets `opt-level = 2` for the dev and test profiles: unoptimised, the
+  crash loop's checksumming makes `cargo run` several times slower. Overflow checks and
+  debug assertions stay on.
 
 ### The crash loop
 
@@ -330,10 +325,10 @@ two, the left page carries the flag `BTP_INCOMPLETE_SPLIT`: set by the split
 and its redo (`nbtinsert.c:1317`, `_bt_clear_incomplete_split` at `nbtxlog.c:136-155`).
 A crash between the records leaves a valid B-link tree (chapter 20): searches reach the
 right half through the right link, and the next writer that passes finishes the split.
-The nbtree README puts it as "A single WAL entry is effectively an atomic action"
+The nbtree README says "A single WAL entry is effectively an atomic action"
 (`postgres/src/backend/access/nbtree/README:625-626`); a split is two such actions with a
-well-defined state between them. This chapter instead makes the whole put one atomic
-action, which is simpler and only possible because there is one writer.
+well-defined state between them. This chapter makes the whole put one atomic action,
+which is simpler and only possible because there is one writer.
 
 Postgres records are mostly deltas, so redo consults the page LSN: if the page's LSN is
 already at or past the record's, the block is skipped
@@ -344,13 +339,11 @@ torn page, so the first change to a page after a checkpoint logs a full image of
 middle of the page (`xloginsert.c:738-743`). Summary in `research/postgres.md`, section 10.
 
 **TigerBeetle: the testing style.** TigerBeetle has no B-tree, but its deterministic
-simulator is the model for the crash loop: the whole system runs against simulated
-storage, faults are injected from a seed, and "Because our simulator is deterministic
-based on a _seed_ number and the Git commit, we can perfectly reproduce any bugs
-discovered in testing" (`tigerbeetle/docs/internals/vopr.md:6-8`; assertions as the
-detector: `vopr.md:56`). See
-`research/tigerbeetle.md`, section 10.4. Our loop is far smaller: one process, no
-network, and the fault schedule is exhaustive over N instead of random.
+simulator is the model for the crash loop: "Because our simulator is deterministic based
+on a _seed_ number and the Git commit, we can perfectly reproduce any bugs discovered in
+testing" (`tigerbeetle/docs/internals/vopr.md:6-8`; see `research/tigerbeetle.md`,
+section 10.4). Our loop is far smaller: one process, no network, and a fault schedule
+that is exhaustive over N instead of random.
 
 ### What this design costs, and how real systems pay less
 
@@ -373,37 +366,32 @@ without the log: 129 page writes in place, no second copy, and Part 3's failures
   the whole leaf and the whole metapage. Postgres logs a delta unless it is the first
   change after a checkpoint (source above). Logging only the changed byte ranges, or
   compressing images, are textbook refinements not shown here.
-- **Every page is written twice**, once to the log and once to the main file. Rare
-  checkpoints soften this: with a checkpoint every 16 commits the main file receives 24
-  page writes instead of 106, because a page changed by several commits is copied once.
-- **The log grows until a checkpoint**, and recovery time grows with it ("largest log").
+- **Every page is written twice**, to the log and to the main file. Rare checkpoints
+  soften this: with one every 16 commits the main file receives 24 page writes instead
+  of 106, because a page changed by several commits is copied once. The price is a log
+  that grows until the checkpoint ("largest log"), and a longer recovery.
 - **One sync per put.** Real systems batch several transactions' commit records into one
   sync (group commit; textbook, not verified in the sources here). `putBatch` shows the
   single-writer version: several puts, one commit record.
-- **The committed images are kept in memory** (`index`) until the checkpoint. SQLite and
-  Turso keep only frame numbers and re-read the log (source above).
 - One commit is limited to `max_commit_pages` images (default 32), the size of the record
   buffer. A larger operation fails with `CommitTooLarge`.
 
 ## Allocator notes
 
 - **`FixedBufferAllocator` for assembling log records** (`Wal.commit`). The `Wal`
-  allocates one slab at `init`. Each commit wraps it in a fresh `FixedBufferAllocator`
+  allocates one slab at `init`; each commit wraps it in a fresh `FixedBufferAllocator`
   and allocates the records one by one. A bump allocator hands out adjacent memory, so
-  the used prefix of the slab *is* the byte run to append; "reset" costs nothing because
-  the allocator is a local variable that is simply forgotten. Running out is not an
-  accident but the documented size limit, reported as `CommitTooLarge` and pinned by a
-  test. A general-purpose allocator here would allocate and free about 4 KiB per record
-  at every commit, could fail in the middle of a commit for lack of memory, and would not
-  give contiguous records. Lifetime: the slab lives as long as the `Wal`; its contents
-  are meaningless after `commit` returns.
+  the used prefix of the slab *is* the byte run to append, and "reset" is free. Running
+  out is the documented size limit (`CommitTooLarge`, pinned by a test). A
+  general-purpose allocator would allocate and free 4 KiB per record, could fail in the
+  middle of a commit, and would not give contiguous records. The slab lives as long as
+  the `Wal`; its contents mean nothing after `commit` returns.
 - **An arena for recovery** (`Wal.recover`). Recovery reads an unknown number of page
-  images and discards most pointers along the way (an older image of a page is replaced
-  by a newer one). All of them come from one `ArenaAllocator` that is destroyed by a
-  single `defer` when `recover` returns, on success and on every error path. Freeing
-  images individually would need bookkeeping for exactly the images that were replaced.
-  The arena must not outlive recovery: the log can be large, and nothing read during
-  recovery is needed afterwards because recovery ends with a checkpoint.
+  images and drops pointers along the way (a newer image of a page replaces an older
+  one). All come from one `ArenaAllocator`, destroyed by a single `defer` on success and
+  on every error path. Freeing images one by one would need bookkeeping for exactly the
+  replaced ones. Nothing read during recovery is needed afterwards, because recovery
+  ends with a checkpoint.
 - **General-purpose allocator** for `pending` and `index`: their images are created and
   destroyed one at a time over the life of the database. `commit` reserves the `index`
   capacity it needs *before* writing to the log, so that nothing after the commit point
@@ -419,20 +407,15 @@ without the log: 129 page writes in place, no second copy, and Part 3's failures
   there after recovery. That is why the oracle allows "after" for the put in flight. The
   only promises are: a put that returned success is never lost, and a put is never half
   applied.
-- **Syncing in the wrong order.** If the checkpoint reset the log before syncing the main
-  file, a crash in between would lose committed pages. If a commit wrote main-file pages
-  before syncing the log, a crash would leave a torn tree with nothing to repair it.
-  The test "write-ahead rule" checks the order on a trace of every storage call.
+- **Syncing in the wrong order.** Resetting the log before the main file is synced loses
+  committed pages; writing main-file pages before the log is synced leaves a torn tree
+  with nothing to repair it. The test "write-ahead rule" checks the order on a trace.
 - **Trusting a record because its own checksum is good.** After a reset the file is full
-  of valid-looking old records. Only the chain from the current header makes a record
-  current. The test "records of an earlier generation are stale" shows 9 old records in
-  the file and 3 accepted.
-- **The chain cuts both ways.** A damaged record in the middle of the log also hides
-  every committed operation behind it (test "recovery stops at the first record whose
-  checksum chain breaks"). A power cut cannot cause that, since it only damages the
-  unsynced tail; a failing disk can. This log detects it and loses the later operations.
-- **Checksums in the main file do not make it crash-safe.** They only detect a torn
-  page; the full image in the log is what repairs it.
+  of valid-looking old records; only the chain from the current header makes a record
+  current (test "records of an earlier generation are stale": 9 old records, 3 accepted).
+- **The chain cuts both ways.** A damaged record in the middle of the log hides every
+  committed operation behind it (test "recovery stops at the first record whose checksum
+  chain breaks"). A power cut only damages the unsynced tail; a failing disk can do this.
 - **This fault model is limited.** Sector-atomic writes, sync that really syncs, no
   bit rot, one writer. Recovery is exactly as trustworthy as those assumptions.
 

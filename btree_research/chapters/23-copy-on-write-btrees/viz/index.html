@@ -345,7 +345,7 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
       if (!db.canTear()) {
         refuse(db.cur.txn === 0
           ? 'Nothing was done: no transaction has committed yet, so there is no commit to tear. Put a key first.'
-          : 'Nothing was done: the other meta slot is already invalid (it was torn before and no commit has rewritten it). A commit only ever writes one slot, so both cannot be torn by one crash. Commit something first.');
+          : 'Nothing was done: only one meta slot holds a commit right now (the last restart could not use the other one and zeroed it, and no commit has rewritten it). A commit only ever writes one slot, so both cannot be torn by one crash. Commit something first.');
         return null;
       }
       return db.opTear();

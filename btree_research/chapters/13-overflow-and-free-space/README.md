@@ -17,10 +17,8 @@ Chapter 05 explained deletion with borrowing and merging in memory; this chapter
 ## The idea in plain words
 
 Chapter 12's tree had three gaps: a value could be at most 1024 bytes, nothing could be
-deleted, and the file only grew. All three are about the same thing: pages that belong to the
-file but not to the tree.
-
-**From now on every page of the file has exactly one role.**
+deleted, and the file only grew. All three are about pages that belong to the file but not to
+the tree. **From now on every page of the file has exactly one role.**
 
 | Role | What it is | How it is reached |
 |---|---|---|
@@ -81,19 +79,18 @@ index entries (see "In real databases").
 cell goes does the page leave the tree:
 
 1. the left sibling's link is changed to skip it,
-2. the parent loses the pointer to it and one separator (no key moves: the neighbour simply
-   inherits an empty key range),
+2. the parent loses the pointer to it and one separator (no key moves: the neighbour inherits
+   an empty key range),
 3. a parent that had no other child goes the same way, and so on up,
 4. the removed pages are put on the free list,
 5. if the root is left with one child and no key, the child's content is copied into the root
-   page and the child is freed. This is chapter 12's `pushRootDown` backwards: the tree loses
-   a level and the root is still page 1.
+   page and the child is freed: chapter 12's `pushRootDown` backwards. The tree loses a level
+   and the root is still page 1.
 
-Pages that are merely nearly empty stay. There is no borrowing and no merging, so a leaf can
-hold a single small cell. That wastes space under some workloads (chapter 15 measures merge
-policies), and it is what Postgres does, for a reason that will matter from chapter 19 on:
-moving cells between existing pages is what scans and concurrent readers cannot tolerate.
-Removing a page that is already empty moves nothing.
+Pages that are merely nearly empty stay: no borrowing, no merging. That wastes space under
+some workloads (chapter 15 measures merge policies), and it is what Postgres does, for a
+reason that matters from chapter 19 on: moving cells between existing pages is what scans and
+concurrent readers cannot tolerate. Removing a page that is already empty moves nothing.
 
 ### The free list
 
@@ -105,12 +102,12 @@ A trunk page is `next trunk id | count | up to 1021 page ids`. This is SQLite's 
 - **allocate()**: no trunk: grow the file. A trunk that lists ids: take the last one. A trunk
   that lists nothing: hand out the trunk page itself and move the head to the next trunk.
 
-Why not the simplest thing, a linked list threaded through the free pages themselves? Because
-then freeing a page means writing it (its "next" field) and reusing a page means reading it
-first. With trunks, freeing 1000 overflow pages dirties one page, the trunk; the freed pages
-are not touched. The price is the trunk format and one more case in allocation.
+The simpler design is a linked list threaded through the free pages themselves. Then freeing
+a page means writing it (its "next" field) and reusing one means reading it first. With
+trunks, freeing 1000 overflow pages dirties one page, the trunk, and the freed pages are not
+touched. The price is one more page format and one more case in allocation.
 
-The file never shrinks. A page that is free stays in the file until something reuses it.
+The file never shrinks: a free page stays in the file until something reuses it.
 
 ### Two ordering rules
 

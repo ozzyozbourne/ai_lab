@@ -107,6 +107,10 @@ const Shape = struct {
     /// rest are two gets, a range scan and a flush, in that order.
     puts: u64 = 4,
     deletes: u64 = 2,
+    /// Every `sweep_every` operations, delete `sweep_len` neighbouring keys:
+    /// random deletes alone almost never empty a whole leaf.
+    sweep_every: usize = 0,
+    sweep_len: usize = 0,
 };
 
 /// One random operation against tree and model. Returns the tree's error;
@@ -135,10 +139,24 @@ fn randomOp(tree: *DiskBTree, model: *Model, rng: *SplitMix64, shape: Shape) !vo
     }
 }
 
+/// Delete up to `count` keys that follow each other in key order, starting
+/// at a random one.
+fn sweep(tree: *DiskBTree, model: *Model, rng: *SplitMix64, count: usize) !void {
+    if (model.len() == 0) return;
+    const from: usize = @intCast(rng.below(model.len()));
+    for (0..@min(count, model.len() - from)) |_| {
+        // The model's arena keeps the key bytes alive after its delete.
+        const key = model.entries.items[from].key;
+        try testing.expect(try tree.delete(key));
+        try testing.expect(model.delete(key));
+    }
+}
+
 /// A reopen starts a new handle with new counters; keep a running sum.
 fn addStats(total: *DiskBTree.Stats, s: DiskBTree.Stats) void {
     total.interior_splits += s.interior_splits;
     total.tree_pages_freed += s.tree_pages_freed;
+    total.interior_pages_freed += s.interior_pages_freed;
     total.pages_freed += s.pages_freed;
     total.pages_reused += s.pages_reused;
     total.overflow_pages_written += s.overflow_pages_written;
@@ -156,6 +174,7 @@ fn runModel(storage: Storage, seed: u64, shape: Shape) !DiskBTree.Stats {
     for (1..shape.ops + 1) |i| {
         try randomOp(&db.tree, &model, &rng, shape);
         try testing.expectEqual(0, db.pool.pinnedFrames());
+        if (shape.sweep_every != 0 and i % shape.sweep_every == 0) try sweep(&db.tree, &model, &rng, shape.sweep_len);
         if (i % 250 == 0) try expectSameContent(&db.tree, &model);
         if (i % shape.reopen_every == 0) {
             addStats(&total, db.tree.stats);
@@ -178,18 +197,18 @@ test "model: memory storage, tiny pools, values of every size, deletes, reopen m
         .{ .frames = 2, .key_space = 200, .max_key = 40, .max_value = 9000, .ops = 2500, .reopen_every = 900 },
         // The largest values allowed (16 overflow pages) and the longest keys.
         .{ .frames = 4, .key_space = 60, .max_key = btree.max_key_len, .max_value = btree.max_value_len, .ops = 700, .reopen_every = 300 },
-        // Long keys, tiny values, as many deletes as puts: interior pages
-        // split, leaves empty out, and interior pages are freed with them.
-        .{ .frames = 16, .key_space = 1500, .max_key = btree.max_key_len, .max_value = 8, .mixed = false, .ops = 9000, .reopen_every = 4000, .puts = 3, .deletes = 3 },
+        // Long keys, tiny values, three levels: interior pages split, and
+        // the sweeps empty whole leaves and the interior pages above them.
+        .{ .frames = 16, .key_space = 6000, .max_key = btree.max_key_len, .max_value = 8, .mixed = false, .ops = 9000, .reopen_every = 4000, .puts = 5, .deletes = 1, .sweep_every = 2900, .sweep_len = 1500 },
     };
     for (shapes, 1..) |shape, seed| {
         var mem: MemStorage = .init(testing.allocator);
         defer mem.deinit();
         const stats = try runModel(mem.storage(), seed, shape);
-        std.debug.print("{any}\n", .{stats});
         try testing.expect(stats.pages_freed > 0 and stats.pages_reused > 0);
         if (shape.mixed) try testing.expect(stats.overflow_pages_written > 100);
-        if (!shape.mixed) try testing.expect(stats.tree_pages_freed > 20 and stats.interior_splits > 0);
+        if (!shape.mixed) try testing.expect(stats.tree_pages_freed > 20 and stats.interior_pages_freed > 0 and stats.interior_splits > 0);
+        std.debug.print("{any}\n", .{stats});
     }
 }
 
@@ -294,6 +313,7 @@ test "delete everything: an empty root leaf, every other page free, and nothing 
         try testing.expectEqual(1, counts[@intFromEnum(Role.leaf)]);
         try testing.expectEqual(0, counts[@intFromEnum(Role.interior)]);
         try testing.expectEqual(2, db.tree.stats.root_collapses);
+        try testing.expect(db.tree.stats.interior_pages_freed > 10);
         try db.reopen(mem.storage(), 8);
     }
 }

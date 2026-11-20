@@ -385,6 +385,8 @@ pub const DiskBTree = struct {
         root_collapses: u64 = 0,
         /// Leaves and interior pages removed from the tree by `delete`.
         tree_pages_freed: u64 = 0,
+        /// How many of those were interior pages.
+        interior_pages_freed: u64 = 0,
         /// Pages handed to the free list (tree pages and overflow pages).
         pages_freed: u64 = 0,
         /// Allocations served from the free list instead of growing the file.
@@ -1068,6 +1070,7 @@ pub const DiskBTree = struct {
         }
         for (doomed.items) |id| try self.freePage(id);
         self.stats.tree_pages_freed += doomed.items.len;
+        self.stats.interior_pages_freed += doomed.items.len - 1;
         try self.collapseRoot();
     }
 
@@ -1121,6 +1124,7 @@ pub const DiskBTree = struct {
             self.changed = true;
             try self.freePage(child_id);
             self.stats.tree_pages_freed += 1;
+            self.stats.interior_pages_freed += @intFromBool(SlottedPage.open(root.buf).kind() == kind_interior);
             self.stats.root_collapses += 1;
         }
     }

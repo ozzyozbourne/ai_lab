@@ -24,6 +24,7 @@ const search = @import("base_search.zig");
 const insert = @import("base_insert.zig");
 const delete_ = @import("base_delete.zig");
 const validate_ = @import("base_validate.zig");
+const device = @import("device.zig"); // ch27
 
 pub const NodeId = arena.NodeId;
 pub const Node = node.Node;
@@ -51,6 +52,9 @@ pub const BPlusTree = struct {
     /// Number of entries.
     count: usize = 0,
     stats: Stats = .{},
+    /// ch27: the counted block device this tree "lives on". Every node is one
+    /// block: internal nodes are index blocks, leaves are data blocks.
+    dev: device.Device = .{},
 
     /// Does not allocate; the first `put` creates the root leaf.
     pub fn init(order: usize) BPlusTree {
@@ -76,20 +80,53 @@ pub const BPlusTree = struct {
         return self.count;
     }
 
-    pub fn get(self: *const BPlusTree, key: u64) ?u64 {
+    /// ch27: takes `*BPlusTree` (not `*const`) because a read changes the
+    /// device counters. Real buffer pools also write on a read: pin counts,
+    /// usage bits.
+    pub fn get(self: *BPlusTree, key: u64) ?u64 {
+        defer self.dev.endOp();
         return search.get(self, key);
     }
 
     /// Inserts or overwrites. Returns the previous value if the key existed.
     /// On `error.OutOfMemory` the tree is unchanged.
     pub fn put(self: *BPlusTree, gpa: Allocator, key: u64, value: u64) Allocator.Error!?u64 {
+        defer self.dev.endOp(); // ch27: write back every dirty node
         return insert.put(self, gpa, key, value);
     }
 
     /// Removes a key. Returns its value, or null if it was absent.
     /// Never allocates, so it cannot fail.
     pub fn delete(self: *BPlusTree, key: u64) ?u64 {
+        defer self.dev.endOp(); // ch27
         return delete_.delete(self, key);
+    }
+
+    // ------------------------------------------------ ch27: device hooks
+
+    /// The operation in progress looks at node `id`: one block read, unless
+    /// this operation already holds the block.
+    pub fn touch(self: *BPlusTree, id: NodeId) void {
+        const kind: device.Kind = if (self.nodes.get(id).isLeaf()) .data else .index;
+        self.dev.pin(id.index(), kind);
+    }
+
+    /// The operation in progress changed node `id`: one block write at the
+    /// end of the operation.
+    pub fn dirty(self: *BPlusTree, id: NodeId) void {
+        self.dev.markDirty(id.index());
+    }
+
+    /// Allocates a node (capacity was reserved by `put`) and its block.
+    pub fn allocNode(self: *BPlusTree, n: Node) NodeId {
+        const id = self.nodes.allocAssumeCapacity(n);
+        self.dev.pinNew(id.index(), if (n.isLeaf()) .data else .index);
+        return id;
+    }
+
+    pub fn freeNode(self: *BPlusTree, id: NodeId) void {
+        self.dev.release(id.index());
+        self.nodes.free(id);
     }
 
     /// Checks every invariant listed at the top of this file.

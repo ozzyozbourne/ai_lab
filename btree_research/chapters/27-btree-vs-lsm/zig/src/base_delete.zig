@@ -37,25 +37,27 @@ pub fn delete(tree: *BPlusTree, key: u64) ?u64 {
             // the only way a B-tree gets shorter, again for all paths at once.
             .internal => |*in| tree.root = in.children[0],
         }
-        tree.nodes.free(old_root);
+        tree.freeNode(old_root);
         tree.height -= 1;
     }
     return removed;
 }
 
 fn deleteFrom(tree: *BPlusTree, id: NodeId, key: u64) ?u64 {
+    tree.touch(id); // ch27: read the node
     const n = tree.nodes.ptr(id);
     switch (n.kind) {
         .leaf => {
             const i = search.lowerBound(n.keySlice(), key);
             if (i == n.len or n.keys[i] != key) return null;
+            tree.dirty(id); // ch27
             return n.leafRemoveAt(i).value;
         },
         .internal => |*in| {
             const i = search.childIndex(n.keySlice(), key);
             const child_id = in.children[i];
             const removed = deleteFrom(tree, child_id, key) orelse return null;
-            if (tree.nodes.get(child_id).len < tree.minKeys()) rebalance(tree, n, i);
+            if (tree.nodes.get(child_id).len < tree.minKeys()) rebalance(tree, id, n, i);
             return removed;
         },
     }
@@ -68,12 +70,21 @@ fn deleteFrom(tree: *BPlusTree, id: NodeId, key: u64) ?u64 {
 ///   4. merge with the right sibling    may now be underfull itself)
 /// A merge is only chosen when both siblings are at the minimum, which is
 /// exactly when the two nodes are guaranteed to fit into one.
-fn rebalance(tree: *BPlusTree, parent: *Node, i: usize) void {
+///
+/// ch27: takes the parent's handle as well, and every sibling whose key
+/// count is examined is a block read (`touch`). Every branch changes the
+/// parent, so it is marked dirty once here.
+fn rebalance(tree: *BPlusTree, parent_id: NodeId, parent: *Node, i: usize) void {
     const children = &parent.kind.internal.children;
     const min = tree.minKeys();
+    tree.dirty(parent_id);
+    if (i > 0) tree.touch(children[i - 1]);
     if (i > 0 and tree.nodes.get(children[i - 1]).len > min) {
         borrowFromLeft(tree, parent, i);
-    } else if (i < parent.len and tree.nodes.get(children[i + 1]).len > min) {
+        return;
+    }
+    if (i < parent.len) tree.touch(children[i + 1]);
+    if (i < parent.len and tree.nodes.get(children[i + 1]).len > min) {
         borrowFromRight(tree, parent, i);
     } else if (i > 0) {
         merge(tree, parent, i - 1);
@@ -88,6 +99,8 @@ fn borrowFromLeft(tree: *BPlusTree, parent: *Node, i: usize) void {
     const children = &parent.kind.internal.children;
     const left = tree.nodes.ptr(children[i - 1]);
     const child = tree.nodes.ptr(children[i]);
+    tree.dirty(children[i - 1]); // ch27: both siblings change
+    tree.dirty(children[i]);
     switch (child.kind) {
         .leaf => {
             // The entry moves sideways; the parent gets a fresh COPY of the
@@ -119,6 +132,8 @@ fn borrowFromRight(tree: *BPlusTree, parent: *Node, i: usize) void {
     const children = &parent.kind.internal.children;
     const child = tree.nodes.ptr(children[i]);
     const right = tree.nodes.ptr(children[i + 1]);
+    tree.dirty(children[i]); // ch27: both siblings change
+    tree.dirty(children[i + 1]);
     switch (child.kind) {
         .leaf => {
             const e = right.leafRemoveAt(0);
@@ -149,6 +164,7 @@ fn merge(tree: *BPlusTree, parent: *Node, li: usize) void {
     const right_id = children[li + 1];
     const left = tree.nodes.ptr(left_id);
     const right = tree.nodes.ptr(right_id);
+    tree.dirty(left_id); // ch27: the survivor is rewritten, the other is freed
     switch (left.kind) {
         .leaf => |*leaf| {
             // The separator between two leaves was only a copy: drop it.
@@ -159,6 +175,8 @@ fn merge(tree: *BPlusTree, parent: *Node, li: usize) void {
             // Unlink `right` from the chain (invariant 6).
             leaf.next = rl.next;
             if (rl.next != .nil) {
+                tree.touch(rl.next); // ch27: back link in a third leaf
+                tree.dirty(rl.next);
                 tree.nodes.ptr(rl.next).kind.leaf.prev = left_id;
             } else {
                 tree.last_leaf = left_id;
@@ -176,6 +194,6 @@ fn merge(tree: *BPlusTree, parent: *Node, li: usize) void {
     }
     assert(left.len <= tree.maxKeys());
     parent.internalRemoveAt(li);
-    tree.nodes.free(right_id);
+    tree.freeNode(right_id);
     tree.stats.merges += 1;
 }

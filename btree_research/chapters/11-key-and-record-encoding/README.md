@@ -178,9 +178,10 @@ their header comments list the API. Chapter 12 copies them.
 the high bit on every byte but the last. `decode` rejects three kinds of bad
 input: `Truncated`, `Overflow` (more than 64 bits) and `NonCanonical` (a
 trailing zero group such as `80 00`). The last one is an invariant worth
-having: one value, one encoding, so equal rows are equal bytes. `zigzag`
-interleaves negative and positive numbers so that -1 costs one byte rather
-than ten.
+having: one integer, one encoding, so decoding and re-encoding a varint
+gives the same bytes. (It does not make whole records canonical; see the
+pitfall "Equal values, different bytes".) `zigzag` interleaves negative and
+positive numbers so that -1 costs one byte rather than ten.
 
 **Fixed-width keys.** `encodeU64` is `writeInt(.., .big)`. `encodeI64` XORs
 the sign bit first. `encodeF64` normalises `-0.0` to `+0.0` and every NaN to
@@ -201,11 +202,18 @@ tag: that is what makes NULLS FIRST / LAST independent of ASC / DESC.
 **The oracle.** `row.compareRows` never looks at bytes. It encodes the rules
 directly: NULL equals NULL, NULL against a value is decided by `nulls_first`
 alone, value against value is reversed by `desc`. `model.checkPairs` then
-draws random rows from a nasty little alphabet (`00 01 02 a b ff`, integer
-extremes, infinities, NaN, both zeros) and requires, for each pair, that
-`std.mem.order` on the keys, `compareRecords` on the records and
-`compareRows` on the values give the same answer, and that both encodings
-validate and round trip.
+draws random rows for one fixed schema from a small alphabet
+(`00 01 02 a b ff`, integer extremes, infinities, NaN, both zeros) and
+requires, for each pair, that `std.mem.order` on the keys, `compareRecords`
+on the records and `compareRows` on the values give the same answer, and
+that both encodings validate and round trip. That is the run printed in
+section 8. The tests go further: `checkRandomSchemas` draws a new schema
+for every pair (any type with any options), adds `fd fe ff` (the bytes that
+become tag, escape and terminator once a DESC column is inverted), strings
+of up to 24 bytes and floats at every edge of the format (subnormals, NaN
+payloads, neighbours of 1.0), and cuts every key and record at every
+position. `keycodec` and `varint` carry the same kind of tests inside the
+file, with their own small oracle, so the tests move with the files.
 
 **`validate`.** `validateKey` walks a key with the schema and checks that it
 ends exactly after the last column and that float columns hold canonical
@@ -275,9 +283,10 @@ throughout (`storage-format.md:36`); this guide uses little-endian for page
 fields and big-endian only inside keys, where it is required.
 
 **Byte-comparable: DuckDB.** ART keys are built by `Radix::EncodeData`:
-unsigned integers are byte-swapped to big-endian, signed ones additionally
-get `FlipSign` on the first byte
-(`duckdb/src/include/duckdb/common/radix.hpp:45-47`, `:165-172`), floats
+unsigned integers are byte-swapped to big-endian (`BSwapIfLE`,
+`duckdb/src/include/duckdb/common/radix.hpp:200-213`), signed ones
+additionally get `FlipSign` on the first byte (`radix.hpp:45-47`,
+`:165-172`), floats
 are mapped by `EncodeFloat` (`radix.hpp:49-78`). Strings escape bytes `00`
 and `01` with `01` and end with `00`
 (`duckdb/src/execution/index/art/art_key.cpp:20-49`): the scheme
@@ -285,8 +294,8 @@ and `01` with `01` and end with `00`
 (`art_key.cpp:146-152`). Two differences from this chapter: DuckDB's float
 encoding special-cases infinities and NaN to fixed patterns instead of
 relying on their bit patterns, and NULLs are not encoded at all: a NULL
-produces an empty key that is not inserted
-(`duckdb/src/execution/index/art/art.cpp:362-370`). The tag byte and DESC by
+produces an empty key (`duckdb/src/execution/index/art/art.cpp:362-370`)
+and the insert loop skips empty keys (`art.cpp:635-637`). The tag byte and DESC by
 inversion in this chapter are textbook techniques, not taken from these
 sources.
 
@@ -344,14 +353,22 @@ the bytes live.
   `leb128(256) = 80 02`. A length prefix has the same problem: `"b"` would
   sort before `"aa"`.
 - **Equal values, different bytes.** `-0.0` and `0.0`, NaNs with different
-  payloads, non-canonical varints. Normalise on encode, reject on decode.
-  The flip side: the sign of zero and NaN payloads do not survive.
+  payloads, non-canonical varints. In a key, normalise on encode and reject
+  on decode; the flip side is that the sign of zero and NaN payloads do not
+  survive. A record here does the opposite on purpose: it stores the raw
+  float bits so that a row reads back exactly, which means two records can
+  be equal under `compareRecords` and still differ as bytes (`0.0` and
+  `-0.0`; tested in `record.zig`). Never compare records with `memcmp`,
+  not even for equality.
 - **Forgetting that keys are not self-describing.** Decoding `01 80 ..` needs
   to know whether the column is an int or a float, ASC or DESC. If the
   schema changes, old keys do not.
 - **Inverting the tag for DESC.** Then NULLS LAST silently becomes NULLS
   FIRST on descending columns. Decide which behaviour you want and test all
-  four combinations.
+  four combinations. Here `nulls_first` defaults to false for ASC and for
+  DESC. Postgres differs: a bare `DESC` means NULLS FIRST
+  (`postgres/doc/src/sgml/ref/create_index.sgml:319-333`), so a layer that
+  mirrors Postgres has to set the flag itself.
 - **Prefix scans on DESC strings.** Inverted, the terminator is `ff`, so a
   string sorts after its extensions. That is correct, but the bounds of a
   prefix scan must then be built from the inverted bytes too.

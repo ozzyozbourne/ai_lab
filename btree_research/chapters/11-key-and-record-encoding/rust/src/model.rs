@@ -337,10 +337,18 @@ mod tests {
 
     /// Mostly up to 4 bytes (ties and prefixes are common), one in four up to 24.
     fn wide_text(rng: &mut SplitMix64) -> Vec<u8> {
-        let n = if rng.chance(1, 4) { rng.below(WIDE_MAX_TEXT as u64 + 1) } else { rng.below(5) };
+        let n = if rng.chance(1, 4) {
+            rng.below(WIDE_MAX_TEXT as u64 + 1)
+        } else {
+            rng.below(5)
+        };
         let mut text = Vec::new();
         for _ in 0..n {
-            let c = if rng.chance(1, 4) { rng.next_u64() as u8 } else { WIDE_ALPHABET[rng.below(WIDE_ALPHABET.len() as u64) as usize] };
+            let c = if rng.chance(1, 4) {
+                rng.next_u64() as u8
+            } else {
+                WIDE_ALPHABET[rng.below(WIDE_ALPHABET.len() as u64) as usize]
+            };
             text.push(c);
         }
         text

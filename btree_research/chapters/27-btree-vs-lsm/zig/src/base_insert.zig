@@ -49,7 +49,7 @@ pub fn put(tree: *BPlusTree, gpa: Allocator, key: u64, value: u64) Allocator.Err
     try tree.nodes.reserve(gpa, tree.height + 1);
 
     if (tree.root == .nil) {
-        const id = tree.nodes.allocAssumeCapacity(Node.initLeaf());
+        const id = tree.allocNode(Node.initLeaf());
         tree.root = id;
         tree.first_leaf = id;
         tree.last_leaf = id;
@@ -66,7 +66,7 @@ pub fn put(tree: *BPlusTree, gpa: Allocator, key: u64, value: u64) Allocator.Err
             var new_root = Node.initInternal();
             new_root.kind.internal.children[0] = tree.root;
             new_root.internalInsertAt(0, s.separator, s.right);
-            tree.root = tree.nodes.allocAssumeCapacity(new_root);
+            tree.root = tree.allocNode(new_root);
             tree.height += 1;
         },
     }
@@ -75,6 +75,7 @@ pub fn put(tree: *BPlusTree, gpa: Allocator, key: u64, value: u64) Allocator.Err
 }
 
 fn insertInto(tree: *BPlusTree, id: NodeId, key: u64, value: u64) Result {
+    tree.touch(id); // ch27: read the node
     const n = tree.nodes.ptr(id);
     switch (n.kind) {
         .leaf => |*leaf| {
@@ -82,11 +83,13 @@ fn insertInto(tree: *BPlusTree, id: NodeId, key: u64, value: u64) Result {
             if (i < n.len and n.keys[i] == key) {
                 const old = leaf.values[i];
                 leaf.values[i] = value;
+                tree.dirty(id); // ch27: an overwrite still rewrites the leaf
                 return .{ .replaced = old };
             }
             // Insert first, split afterwards: the arrays have one spare slot
             // (node.key_capacity), so the leaf may briefly hold M keys.
             n.leafInsertAt(i, key, value);
+            tree.dirty(id); // ch27
             if (n.len <= tree.maxKeys()) return .inserted;
             return .{ .split = splitLeaf(tree, id) };
         },
@@ -99,6 +102,7 @@ fn insertInto(tree: *BPlusTree, id: NodeId, key: u64, value: u64) Result {
                     // Child i became two nodes: i (left half, same handle)
                     // and s.right. Slot the separator in between them.
                     n.internalInsertAt(i, s.separator, s.right);
+                    tree.dirty(id); // ch27: the parent of a split is rewritten too
                     if (n.len <= tree.maxKeys()) return .inserted;
                     return .{ .split = splitInternal(tree, id) };
                 },
@@ -111,7 +115,7 @@ fn insertInto(tree: *BPlusTree, id: NodeId, key: u64, value: u64) Result {
 /// The left half keeps the old handle, so the parent's child pointer and the
 /// left neighbour's `next` link stay correct without being touched.
 fn splitLeaf(tree: *BPlusTree, left_id: NodeId) Split {
-    const right_id = tree.nodes.allocAssumeCapacity(Node.initLeaf());
+    const right_id = tree.allocNode(Node.initLeaf());
     const left = tree.nodes.ptr(left_id);
     const right = tree.nodes.ptr(right_id);
 
@@ -131,6 +135,10 @@ fn splitLeaf(tree: *BPlusTree, left_id: NodeId) Split {
     right.kind.leaf.next = old_next;
     left.kind.leaf.next = right_id;
     if (old_next != .nil) {
+        // ch27: the back link lives in ANOTHER leaf, so a leaf split reads
+        // and rewrites a third data block that the insert never visited.
+        tree.touch(old_next);
+        tree.dirty(old_next);
         tree.nodes.ptr(old_next).kind.leaf.prev = right_id;
     } else {
         tree.last_leaf = right_id; // we split the rightmost leaf
@@ -143,7 +151,7 @@ fn splitLeaf(tree: *BPlusTree, left_id: NodeId) Split {
 
 /// Splits an internal node holding M separators and M+1 children.
 fn splitInternal(tree: *BPlusTree, left_id: NodeId) Split {
-    const right_id = tree.nodes.allocAssumeCapacity(Node.initInternal());
+    const right_id = tree.allocNode(Node.initInternal());
     const left = tree.nodes.ptr(left_id);
     const right = tree.nodes.ptr(right_id);
 

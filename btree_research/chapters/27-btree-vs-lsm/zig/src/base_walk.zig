@@ -15,22 +15,27 @@ const NodeId = @import("base_arena.zig").NodeId;
 const Entry = @import("base_node.zig").Entry;
 const search = @import("base_search.zig");
 
+///
+/// ch27: the walker counts block reads. `seek` pays for the descent (one read
+/// per level) and every step to the next leaf pays one data block. `first`
+/// is used only by tests and dumps and is not charged.
 pub const LeafWalker = struct {
-    tree: *const BPlusTree,
+    tree: *BPlusTree,
     /// Current leaf, `.nil` when the walk is finished.
     leaf: NodeId,
     /// Next entry to return inside `leaf`.
     index: usize,
 
     /// Starts at the smallest key.
-    pub fn first(tree: *const BPlusTree) LeafWalker {
+    pub fn first(tree: *BPlusTree) LeafWalker {
         return .{ .tree = tree, .leaf = tree.first_leaf, .index = 0 };
     }
 
     /// Starts at the first entry with key >= `key`: one root-to-leaf descent,
     /// then a binary search in the leaf.
-    pub fn seek(tree: *const BPlusTree, key: u64) LeafWalker {
+    pub fn seek(tree: *BPlusTree, key: u64) LeafWalker {
         const leaf = search.findLeaf(tree, key);
+        tree.dev.endOp(); // ch27: the descent is over; nothing was dirtied
         if (leaf == .nil) return .{ .tree = tree, .leaf = .nil, .index = 0 };
         // The index may equal the leaf's length (every key in this leaf is
         // smaller). `next` then steps to the following leaf by itself.
@@ -48,6 +53,7 @@ pub const LeafWalker = struct {
             // End of this leaf: follow the sibling link. No parent needed.
             self.leaf = n.kind.leaf.next;
             self.index = 0;
+            if (self.leaf != .nil) self.tree.dev.read(.data, 1); // ch27
         }
         return null;
     }

@@ -42,10 +42,12 @@ pub fn childIndex(separators: []const u64, key: u64) usize {
 
 /// The leaf whose key range contains `key` (whether or not the key is in it).
 /// `.nil` only for an empty tree.
-pub fn findLeaf(tree: *const BPlusTree, key: u64) NodeId {
+/// ch27: every node on the way down is one block read (`touch`).
+pub fn findLeaf(tree: *BPlusTree, key: u64) NodeId {
     var id = tree.root;
     if (id == .nil) return .nil;
     while (true) {
+        tree.touch(id);
         const n = tree.nodes.get(id);
         switch (n.kind) {
             .leaf => return id,
@@ -54,7 +56,7 @@ pub fn findLeaf(tree: *const BPlusTree, key: u64) NodeId {
     }
 }
 
-pub fn get(tree: *const BPlusTree, key: u64) ?u64 {
+pub fn get(tree: *BPlusTree, key: u64) ?u64 {
     const id = findLeaf(tree, key);
     if (id == .nil) return null;
     const leaf = tree.nodes.get(id);

@@ -30,6 +30,9 @@ pub const Violation = error{
     WrongCount,
     /// Live arena slots that the tree does not reach, or a corrupt free list.
     ArenaLeak,
+    /// ch27: the device's block count is not the number of live nodes, or an
+    /// operation left blocks pinned.
+    DeviceAccounting,
 };
 
 const Walk = struct {
@@ -56,6 +59,8 @@ pub fn validate(tree: *const BPlusTree) Violation!void {
         // Every live slot must be reachable from the root: nothing leaked.
         if (walk.nodes != tree.nodes.liveCount()) return error.ArenaLeak;
     }
+    // ch27: one block per node, and no operation is in progress.
+    if (tree.dev.live != tree.nodes.liveCount() or tree.dev.pin_count != 0) return error.DeviceAccounting;
     // live + free must account for every slot ever created.
     const free = tree.nodes.freeCount() orelse return error.ArenaLeak;
     if (free + tree.nodes.liveCount() != tree.nodes.slotCount()) return error.ArenaLeak;

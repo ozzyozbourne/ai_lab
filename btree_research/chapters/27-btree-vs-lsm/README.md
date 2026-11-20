@@ -85,13 +85,12 @@ put 3       | btree r=3 w=4 | lsm r= 6 w= 7 | btree: leaf split. lsm: flush. lsm
 ```
 
 LSM column: the first four puts cost nothing. `put 12` finds the memtable
-full, so the keys `5 6 10 20` are flushed first: two data blocks (`5 6 10` and
-`20`) and one index block, three writes. `put 3` triggers the second flush
-(`7 12 17 30`). Level 0 now holds two runs, its limit, so they are compacted:
-all six blocks are read, and the eight keys are written as the level-1 run,
-three data blocks and one index block. That one operation read 6 and wrote
-3 + 4 = 7 blocks. Eight earlier writes had cost nothing; this is their bill,
-and until their flush those writes existed only in RAM.
+full, so `5 6 10 20` is flushed first: two data blocks and one index block.
+`put 3` triggers the second flush (`7 12 17 30`). Level 0 now holds two runs,
+its limit, so they are compacted: all six blocks are read, and the eight keys
+are written as the level-1 run, three data blocks and one index block. That
+one operation read 6 and wrote 3 + 4 = 7 blocks. Eight earlier writes had
+cost nothing; this is their bill, and until then they existed only in RAM.
 
 B+tree column: every put reads the path to its leaf and writes at least that
 leaf before it returns. `put 3` splits a leaf and dirties four blocks: both
@@ -111,24 +110,23 @@ get 15      | btree r=3 w=0 | lsm r= 3 w= 0 | = none
 scan [5,14) | btree r=6 w=0 | lsm r= 6 w= 0 | = 5 6 7 10 11 12 13
 ```
 
-`get 15` is free for the LSM-tree because 15 is still in the memtable.
-`get 12` reads the index block and one data block of the level-1 run. `get 13`
-costs the same two blocks and finds nothing: 13 lies inside the key range of
-that run, so they are read in vain. `delete 15` writes a tombstone without
-looking for the key; the 3 writes on its line are the flush of `1 3 15 25`,
-which the delete found full. The last compaction merges
-`(1 3 15 25)`, `(11 13 ~15 20')` and level 1; it drops the old 15, the old 20
-and, because nothing lies below level 1, the tombstone itself:
+`get 15` is free for the LSM-tree: 15 is still in the memtable. `get 12` reads
+the index block and one data block of the level-1 run. `get 13` reads the
+same two blocks in vain: 13 lies inside that run's key range but is not in
+it. `delete 15` writes a tombstone without looking for the key; the 3 writes
+on its line are the flush of `1 3 15 25`, which the delete found full. The
+last compaction merges `(1 3 15 25)`, `(11 13 ~15 20')` and level 1; it drops
+the old 15, the old 20 and, because nothing lies below level 1, the tombstone
+itself:
 
 ```
 lsm compaction dropped 2 stale version(s) and 1 tombstone(s)
 ```
 
-The new level-1 run has 13 slots in 5 data blocks. One index block holds 4
-first-keys, so it needs 2 index blocks and a root block above those: 8 blocks,
-and the compaction wrote 3 + 8 = 11. From now on a lookup in that run reads 3
-blocks (root, index, data), which is what the last `get 15` pays. A run is a
-small static tree, and it grows taller as it grows.
+The new level-1 run has 13 slots in 5 data blocks. An index block holds 4
+first-keys, so it needs 2 index blocks and a root above them: 8 blocks. A
+lookup in that run now reads 3 blocks (root, index, data), which is what the
+last `get 15` pays. A run is a small static tree, and it grows taller.
 
 ## The counting model, and what it leaves out
 
@@ -139,47 +137,42 @@ blocks allocated. Only counts are printed, never timings.
 One rule for both structures:
 
 - **Every block an operation looks at is read, and every block it changed is
-  written before it returns**, once at most per operation.
-- **That includes every index block**, of the B+tree and of every run. A scan
-  or a compaction reads each index block it passes under once.
+  written before it returns**, once at most per operation. That includes
+  every index block, of the B+tree and of every run.
 - **Same block size.** A data block holds M - 1 entries and an index block M
   first-keys, like a leaf and an internal node.
 - **Free, in RAM, for both:** the B+tree's root handle; the LSM-tree's
-  memtable and, per run, its smallest key, largest key and the address of
-  its root block (the root block itself is on the device and is read by
-  every probe).
+  memtable and, per run, its smallest key, its largest key and the address of
+  its root block. The root block itself is on the device; every probe reads
+  it.
 
-What this leaves out. Read every number below with these five limits:
+Read every number below with these five limits:
 
 1. **No cache.** Real engines keep the upper levels of a B+tree, and the
-   index blocks of runs, in a buffer pool (chapter 09). The tables split
-   *index* from *data* blocks: "data blocks per get" is the cost if every
-   index block of either structure were cached.
+   index blocks of runs, in a buffer pool (chapter 09). The row "data blocks
+   per get" is the cost if every index block of either structure were cached.
 2. **No write-ahead log, and so not the same durability.** A B+tree `put` is
    on the device when it returns. An LSM `put` is in RAM only until the next
-   flush: in the benchmark configuration a crash loses the acknowledged
-   writes to up to 60 keys (overwrites of a key the memtable already holds do
-   not fill it, so that can be any number of writes). Part of the LSM-tree's
-   low write cost is that weaker promise. The row "+ 1 log block per LSM
-   write" equalises it in the crudest way, as if each write appended to a log
-   and wrote the log's last block at once (no group commit). It is computed
-   from the counts, not run.
+   flush: a crash loses the acknowledged writes to up to 60 keys in the
+   benchmark configuration. Part of the LSM-tree's low write cost is that
+   weaker promise. The row "+ 1 log block per LSM write" equalises it in the
+   crudest way, as if each write wrote the last block of a log at once (no
+   group commit). It is computed from the counts, not run.
 3. **The B+tree's writes are an upper bound.** With a log and a buffer pool
-   (chapter 21; textbook, not modelled) a B+tree postpones page writes too: a
-   hot page changed many times is written once per checkpoint.
+   (chapter 21; textbook, not modelled) a hot page changed many times is
+   written once per checkpoint.
 4. **Bloom filters only in separate rows.** Without a filter, a lookup probes
-   every run whose key range covers the key, and a lookup for an absent key
-   probes all of them. LSM engines commonly keep a **Bloom filter** per run
-   in RAM that answers "certainly not here" for most absent keys (textbook;
-   Milvus keeps one per segment, TigerBeetle has none: see "In real
-   databases"). Leaving it out would decide the read comparison, so every
-   read number is printed twice: without filters, and "with bloom filters",
-   measured on a second LSM-tree whose runs each have one (10 bits of RAM
-   per slot, 7 hash functions). The filter rows leave out that RAM.
-5. **A block is a block.** A block appended in sequence by a flush or a
-   compaction counts the same as a block written at a position chosen by the
-   key. On real devices the two can cost differently, which is one of the
-   textbook arguments for LSM-trees. Also simplified: whole levels are merged
+   every run whose key range covers the key. Real LSM-trees rely on a **Bloom
+   filter** per run, kept in RAM, that answers "certainly not here" for most
+   absent keys (textbook; Milvus keeps one per segment and TigerBeetle none,
+   see "In real databases"). That one feature decides the read comparison,
+   so read amplification is printed twice: without filters, and measured on a
+   second LSM-tree with a filter per run (10 bits of RAM per slot, 7 hash
+   functions). The filter rows do not count that RAM.
+5. **A block is a block.** One appended in sequence by a flush or a
+   compaction counts the same as one written at a position chosen by the
+   key. On real devices the two can cost differently; that is a textbook
+   argument for LSM-trees and is not modelled. Also, whole levels are merged
    in one operation.
 
 ## Code walk-through
@@ -247,11 +240,10 @@ The Rust crate has the same files, names, tests and output. The differences:
 
 Three seeded workloads run on a B+tree of order 16 and an LSM-tree with
 15-slot blocks, a memtable of 60 keys, 4 runs in level 0 and growth factor 4.
-A second LSM-tree with a Bloom filter per run gets the same operations; it
-writes the same blocks and differs only in what its gets read. These are the
-headline rows of the insert-heavy table (90% puts of mostly new keys); the
-rows left out here, and the limits the program prints under every table, are
-in `expected_output.txt`:
+A second LSM-tree with filters gets the same operations; it writes the same
+blocks and differs only in what its gets read. The headline rows of the
+insert-heavy table (90% puts of mostly new keys) follow; the other rows and
+the limits printed under every table are in `expected_output.txt`.
 
 ```
                                               B+tree       LSM
@@ -268,49 +260,43 @@ point lookups (get)                              947       947
   SPACE AMPLIFICATION (at the peak)             1.54      2.14
 ```
 
-Limits 1 to 5 above apply to every row. Reading it:
+Limits 1 to 5 apply. Reading it:
 
-- **Writes.** The LSM-tree writes 8.39 slots per entry against 19.45, all of
-  it in flushes and compactions. With one log block per write it is at 23.39,
-  above the B+tree; real engines land in between (limits 2 and 3).
+- **Writes.** 8.39 slots per entry against 19.45, all in flushes and
+  compactions. With one log block per write the LSM-tree is at 23.39, above
+  the B+tree; real engines land in between (limits 2 and 3).
 - **The spike.** The largest single write cost the B+tree 8 blocks and the
   LSM-tree 1115, because this model merges a whole level in one operation.
 - **Space.** The B+tree's leaves are partly empty (1.54). The LSM-tree's runs
-  are packed (1.07 at the end), but a compaction needs its inputs and its
-  output at once: at its peak the device held 1367 blocks for 9556 live keys,
-  2.14 times their packed size.
+  are packed (1.07), but a compaction holds its inputs and its output at
+  once: 2.14 at the peak. In the update-heavy workload it ends at 1.35 and
+  peaks at 2.50; compaction dropped 7409 stale versions and 1401 tombstones.
 - **Scans.** The LSM-tree merges every overlapping run: 9.97 blocks against
   4.92. A filter cannot help a scan.
 
-**Point lookups** need all three workloads side by side, because the result
-depends on the filter and on how many lookups ask for a key that does not
-exist (blocks per get, nothing cached):
+**Point lookups** depend on the filter and on how many gets ask for a key
+that does not exist. All three workloads, blocks per get, nothing cached:
 
-| Workload | Gets for an absent key | B+tree | LSM, no filter | LSM, bloom filters | False positives |
+| Workload | Gets for an absent key | B+tree | LSM, no filter | LSM, bloom filters | False-positive rate |
 |---|---|---|---|---|---|
 | insert-heavy | 941 of 947 (99%) | 3.81 | 9.42 | 0.10 | 0.81% |
 | read-heavy | 4686 of 9588 (49%) | 4.00 | 10.96 | 1.86 | 0.94% |
 | update-heavy | 290 of 1186 (24%) | 4.00 | 7.52 | 2.32 | 1.08% |
 
 - **Without filters** the LSM-tree reads 1.9 to 2.7 times as many blocks as
-  the B+tree. Each run it probes is a tree of its own, and an absent key is
-  looked for in every run whose key range covers it. The insert-heavy
-  workload prints `3322 runs probed, 3316 of those without finding the key`.
-- **With filters** the result reverses in all three workloads. An absent key
-  costs nothing unless a filter gives a false positive (27 probes are left
-  of those 3316), and a present key costs one run's index path plus one data
-  block, where the B+tree always pays its full height.
-- **Neither column is "the" answer.** The first leaves out a feature that
-  real LSM-trees rely on. The second leaves out its price: 10 bits of RAM per
-  slot (107550 bits at the end of this workload), and the work of building a
-  filter in every flush and compaction. The B+tree gets no RAM here at all:
-  with every index block cached it reads 1.00 block per get (limit 1). The
-  fewer of your lookups miss, the less a filter saves.
+  the B+tree. Each run is a tree of its own, and an absent key is looked for
+  in every run whose key range covers it: `3322 runs probed, 3316 of those
+  without finding the key` in the insert-heavy workload.
+- **With filters** the result reverses in all three. An absent key costs
+  nothing unless a filter gives a false positive (27 of those 3316 probes
+  remain), and a present key costs one run's index path plus one data block.
+- **Neither column is "the" answer.** The first leaves out a feature real
+  LSM-trees rely on. The second leaves out its price, 10 bits of RAM per slot
+  (107550 bits here), while the B+tree gets no RAM at all: with its index
+  blocks cached it would read 1.00 block per get. And the fewer lookups
+  miss, the less a filter saves.
 
-The update-heavy workload (overwrites and deletes over 4000 keys) shows the
-other side of space: the LSM-tree ends at 1.35 and peaks at 2.50, and
-compaction dropped 7409 stale versions and 1401 tombstones along the way. All
-three workloads report 0 answers that differ from the oracle.
+All three workloads report 0 answers that differ from the oracle.
 
 The last table varies the growth factor (LSM-tree only; same rule, same
 limits):
@@ -325,33 +311,28 @@ growth    levels   write amp   blocks per get   with filters   blocks per scan
 
 A larger growth factor means fewer levels to search and more rewriting inside
 each level. With filters the lookup column no longer shows it: nearly every
-get of this workload is for an absent key, and what is left (0.09 to 0.13) is
-a few dozen false positives, too few to compare. The scans still pay for
-every level.
+get here is for an absent key, and 0.09 to 0.13 is a few dozen false
+positives, too few to compare. Scans still pay for every level.
 
 ## When to choose which
 
-By these counts, and within the five limits:
+By these counts, within the five limits:
 
 - **An LSM-tree fits** when writes dominate: 8.39 slots written per entry
-  against 19.45, and all of them appended in sequence, which the count does
-  not reward (limit 5). It also stores data at rest more compactly (1.07
-  against 1.54). The cost is RAM for filters if point lookups matter, free
-  device space for compaction (2.14 at the peak) and compaction work that
-  must be paced.
+  against 19.45, all appended in sequence, which the count does not reward
+  (limit 5). Data at rest is more compact (1.07 against 1.54). The price is
+  RAM for filters if point lookups matter, spare device space for compaction
+  (2.14 at the peak) and compaction work that must be paced.
 - **A B+tree fits** when reads dominate, above all short scans (4.92 blocks
-  against 9.97, and no filter helps); when every write should cost about the
-  same (8 blocks at worst against 1115); when a write must be durable as it
-  returns without a separate log; and when the device has no room to spare
+  against 9.97; no filter helps), when every write should cost about the same
+  (8 blocks at worst against 1115), and when the device has no room to spare
   (its peak is its end size).
 - **What narrows the gaps.** A log narrows the write gap from both sides
-  (limits 2 and 3). A cache lowers the read cost of both; TigerBeetle's
-  authors accept more read amplification for that reason, since it "can be
-  optimized more easily (with caching)"
-  (`tigerbeetle/src/constants.zig:613-614`). A filter removes most of the
-  LSM-tree's cost for point lookups and none for scans.
+  (limits 2 and 3). A cache lowers the read cost of both: TigerBeetle's
+  comment on its growth factor says read amplification "can be optimized
+  more easily (with caching)" (`tigerbeetle/src/constants.zig:613-614`).
 
-These are block counts from one small model, not measurements of any engine.
+These are block counts from one small model, not measurements of an engine.
 Trust the direction of each row more than its size.
 
 ## B-epsilon trees: the midpoint
@@ -438,9 +419,7 @@ per new key, and then all nodes die together at the flush. `Memtable` owns a
 `std.heap.ArenaAllocator`; `put` allocates the node and its tower from it and
 `reset` calls `arena.reset(.retain_capacity)`, so the next memtable reuses the
 same memory (a test checks that the capacity does not grow). A failed `put`
-needs no cleanup: a half-made node stays in the arena as dead bytes until the
-next reset. With a general-purpose allocator every node would need its own
-`free`, and a flush would have to walk the list to release it.
+needs no cleanup: a half-made node is dead bytes until the next reset.
 
 **Merge: fixed buffers.** The `Merger` keeps its cursors and its heap in
 arrays of `max_sources = 32` entries inside the struct (a comptime assertion
@@ -451,12 +430,11 @@ allocator while it runs.
 **Runs: everything reserved up front.** `Builder.init` makes the only
 allocations of a flush or compaction: the slots, sized for the sum of the
 inputs, and the filter's bits if one is asked for (`errdefer` frees the slots
-when the second fails). So compaction is all-or-nothing: if a reservation
-fails, nothing has been read or written. `Filter.seal` later hands back the
-surplus with `resize`, which may refuse but cannot fail. The tests use
-`checkAllAllocationFailures` and a `FailingAllocator`, with and without
-filters, to check that a failed write changes no answer and that the next
-write finishes the interrupted maintenance.
+when the second fails). If a reservation fails, nothing has been read or
+written. `Filter.seal` later hands back the surplus with `resize`, which may
+refuse but cannot fail. The tests use `checkAllAllocationFailures` and a
+`FailingAllocator`, with and without filters, to check that a failed write
+changes no answer and that the next write finishes the interrupted work.
 
 **B+tree.** Unchanged from chapter 07. The device adds no allocation; its pin
 table is a fixed array of 128 entries.

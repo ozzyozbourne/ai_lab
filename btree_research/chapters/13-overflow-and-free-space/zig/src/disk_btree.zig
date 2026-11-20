@@ -346,14 +346,14 @@ pub const Role = enum(u8) {
 
     /// One letter per role, for page maps.
     pub fn letter(self: Role) u8 {
-        return "?MILOTF"[@intFromEnum(self)];
+        return "?MILOTF"[@backingInt(self)];
     }
 
     fn family(self: Role) u8 {
         return switch (self) {
             .interior, .leaf => 1,
             .trunk, .free => 2,
-            else => @intFromEnum(self) + 3,
+            else => @backingInt(self) + 3,
         };
     }
 };

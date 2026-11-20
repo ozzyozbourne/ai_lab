@@ -25,6 +25,24 @@ N = 3: drop: before | keep: invalid (KeyOutOfBounds) | tear: invalid (Unreachabl
 N = 4: drop: before | keep: invalid (BadPage) | tear: invalid (BadPage)
 N = 5: drop: before | keep: after | tear: invalid (BadPage)
 (before = the 11 old keys, valid tree; after = all 12 keys, valid tree)
+any subset of the 5 writes may be what reached the disk (digit i = write i; 1 = on disk, 0 = lost):
+  00000 before                      10000 invalid (UnreachablePage)
+  01000 open fails (Corrupt)        11000 invalid (UnreachablePage)
+  00100 invalid (KeyOutOfBounds)    10100 invalid (KeyOutOfBounds)
+  01100 open fails (Corrupt)        11100 invalid (KeyOutOfBounds)
+  00010 invalid (LeafChainBroken)   10010 invalid (LeafChainBroken)
+  01010 open fails (Corrupt)        11010 invalid (LeafChainBroken)
+  00110 invalid (BadPage)           10110 invalid (BadPage)
+  01110 open fails (Corrupt)        11110 invalid (BadPage)
+  00001 invalid (UnreachablePage)   10001 invalid (UnreachablePage)
+  01001 invalid (UnreachablePage)   11001 invalid (UnreachablePage)
+  00101 invalid (KeyOutOfBounds)    10101 invalid (KeyOutOfBounds)
+  01101 invalid (KeyOutOfBounds)    11101 invalid (KeyOutOfBounds)
+  00011 invalid (LeafChainBroken)   10011 invalid (LeafChainBroken)
+  01011 invalid (LeafChainBroken)   11011 invalid (LeafChainBroken)
+  00111 invalid (KeyCountMismatch)  10111 invalid (KeyCountMismatch)
+  01111 after                       11111 after
+of the 32 subsets: 1 before, 2 after, 4 cannot be opened, 25 invalid, 0 valid with wrong contents
 
 == Part 2: the same split through the write-ahead log ==
 11 keys are in the main file (checkpointed); the log is empty, generation 2

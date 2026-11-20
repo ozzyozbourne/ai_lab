@@ -90,7 +90,7 @@ fn countRoles(tree: *DiskBTree) ![7]usize {
     const roles = try tree.pageMap(testing.allocator);
     defer testing.allocator.free(roles);
     var counts: [7]usize = @splat(0);
-    for (roles) |role| counts[@intFromEnum(role)] += 1;
+    for (roles) |role| counts[@backingInt(role)] += 1;
     return counts;
 }
 
@@ -309,8 +309,8 @@ test "delete everything: an empty root leaf, every other page free, and nothing 
         try testing.expectEqual(pages, db.pager.pageCount());
         try testing.expectEqual(pages - 2, db.tree.free_count); // all but the metapage and the root
         const counts = try countRoles(&db.tree);
-        try testing.expectEqual(1, counts[@intFromEnum(Role.leaf)]);
-        try testing.expectEqual(0, counts[@intFromEnum(Role.interior)]);
+        try testing.expectEqual(1, counts[@backingInt(Role.leaf)]);
+        try testing.expectEqual(0, counts[@backingInt(Role.interior)]);
         try testing.expectEqual(2, db.tree.stats.root_collapses);
         try testing.expect(db.tree.stats.interior_pages_freed > 10);
         try db.reopen(mem.storage(), 8);
@@ -336,8 +336,8 @@ test "more free pages than one trunk lists: a second trunk, and both are used up
     try db.tree.validate();
     try testing.expect(db.tree.free_count > btree.trunk_capacity + 1);
     var counts = try countRoles(&db.tree);
-    try testing.expectEqual(2, counts[@intFromEnum(Role.trunk)]);
-    try testing.expectEqual(db.tree.free_count - 2, counts[@intFromEnum(Role.free)]);
+    try testing.expectEqual(2, counts[@backingInt(Role.trunk)]);
+    try testing.expectEqual(db.tree.free_count - 2, counts[@backingInt(Role.free)]);
 
     try db.reopen(mem.storage(), 4);
     for (0..80) |i| try db.tree.put(try std.fmt.bufPrint(&key, "{d:0>3}", .{i}), value);
@@ -345,7 +345,7 @@ test "more free pages than one trunk lists: a second trunk, and both are used up
     try testing.expectEqual(pages, db.pager.pageCount());
     try testing.expectEqual(0, db.tree.free_count);
     counts = try countRoles(&db.tree);
-    try testing.expectEqual(0, counts[@intFromEnum(Role.trunk)]);
+    try testing.expectEqual(0, counts[@backingInt(Role.trunk)]);
     try expectValue(&db.tree, "079", value);
 }
 
@@ -354,10 +354,10 @@ test "localLen: SQLite's rule, with this chapter's numbers" {
     try testing.expectEqual(544, btree.min_local);
     const cases = [_][3]usize{
         // value bytes, bytes in the leaf, overflow pages
-        .{ 0, 0, 0 },           .{ 1088, 1088, 0 },      .{ 1089, 544, 1 },
-        .{ 3000, 544, 1 },      .{ 4628, 544, 1 },       .{ 4629, 545, 1 },
-        .{ 5000, 916, 1 },      .{ 5172, 1088, 1 },      .{ 5173, 544, 2 },
-        .{ 9000, 832, 2 },      .{ 14000, 544, 4 },      .{ 65536, 544, 16 },
+        .{ 0, 0, 0 },      .{ 1088, 1088, 0 }, .{ 1089, 544, 1 },
+        .{ 3000, 544, 1 }, .{ 4628, 544, 1 },  .{ 4629, 545, 1 },
+        .{ 5000, 916, 1 }, .{ 5172, 1088, 1 }, .{ 5173, 544, 2 },
+        .{ 9000, 832, 2 }, .{ 14000, 544, 4 }, .{ 65536, 544, 16 },
     };
     for (cases) |case| {
         try testing.expectEqual(case[1], btree.localLen(case[0]));
@@ -400,7 +400,7 @@ test "overwrites that change the size class free the old chain and keep the tree
         chain_pages += btree.overflowPages(size);
         // Exactly the pages of the current value are in use.
         const counts = try countRoles(&db.tree);
-        try testing.expectEqual(btree.overflowPages(size), counts[@intFromEnum(Role.overflow)]);
+        try testing.expectEqual(btree.overflowPages(size), counts[@backingInt(Role.overflow)]);
         try testing.expectEqual(db.pager.pageCount() - 2 - btree.overflowPages(size), db.tree.free_count);
     }
     try testing.expectEqual(chain_pages, db.tree.stats.overflow_pages_written);
@@ -744,15 +744,31 @@ fn putU32(bytes: *[4]u8, value: u32) void {
 
 test "validate detects each kind of damage" {
     const Damage = enum {
-        link, bounds, count, orphan, twice, zeroed, emptied, depth, // chapter 12's
-        cell, chain_long, chain_short, chain_kind, chain_shared, free_and_used, free_count, trunk_kind, trunk_loop, leaked,
+        link,
+        bounds,
+        count,
+        orphan,
+        twice,
+        zeroed,
+        emptied,
+        depth, // chapter 12's
+        cell,
+        chain_long,
+        chain_short,
+        chain_kind,
+        chain_shared,
+        free_and_used,
+        free_count,
+        trunk_kind,
+        trunk_loop,
+        leaked,
     };
     const expected = [_]anyerror{
-        error.LeafChainBroken,     error.KeyOutOfBounds,      error.KeyCountMismatch,    error.UnreachablePage,
-        error.PageReachedTwice,    error.BadPage,             error.EmptyPage,           error.UnevenDepth,
-        error.BadCell,             error.OverflowChainBroken, error.OverflowChainBroken, error.OverflowChainBroken,
-        error.PageReachedTwice,    error.PageInTwoRoles,      error.FreeListBroken,      error.FreeListBroken,
-        error.PageReachedTwice,    error.UnreachablePage,
+        error.LeafChainBroken,  error.KeyOutOfBounds,      error.KeyCountMismatch,    error.UnreachablePage,
+        error.PageReachedTwice, error.BadPage,             error.EmptyPage,           error.UnevenDepth,
+        error.BadCell,          error.OverflowChainBroken, error.OverflowChainBroken, error.OverflowChainBroken,
+        error.PageReachedTwice, error.PageInTwoRoles,      error.FreeListBroken,      error.FreeListBroken,
+        error.PageReachedTwice, error.UnreachablePage,
     };
     // A value field for a 3000-byte value whose chain starts at page 6.
     var field_3000: [4 + 544 + 4]u8 = @splat('x');

@@ -213,7 +213,7 @@ fn part2(w: *Io.Writer, gpa: Allocator) !void {
         const roles = try tree.pageMap(gpa);
         defer gpa.free(roles);
         var counts: [7]usize = @splat(0);
-        for (roles) |role| counts[@intFromEnum(role)] += 1;
+        for (roles) |role| counts[@backingInt(role)] += 1;
         try w.print("page roles: {d} metapage, {d} interior, {d} leaf, {d} overflow, {d} trunk, {d} free\n", .{ counts[1], counts[2], counts[3], counts[4], counts[5], counts[6] });
         try w.print("full scan: oracle has {d} entries, identical: {}\n", .{ model.len(), try sameAsOracle(&tree, &model) });
     }

@@ -180,7 +180,7 @@ written in JavaScript only; none of the guide's code bases contains one.</p>
       frames.push(f);
     }
     if (op.kind === 'get') {
-      var before = node.snapshot(), r = node.get(op.key), hi = { keys: {}, msgs: {}, leaf: {} }, cap;
+      var r = node.get(op.key), hi = { keys: {}, msgs: {}, leaf: {} }, cap;
       if (r.from === 'buffer') {
         hi.msgs[r.seq] = 'found';
         cap = 'The node is read on the way down anyway, so its buffer is searched first. The newest message for ' + k(op.key) + ' is a ' +
@@ -192,7 +192,7 @@ written in JavaScript only; none of the guide's code bases contains one.</p>
         cap = 'No message for ' + k(op.key) + ' is waiting in the buffer, so leaf ' + (r.child + 1) + ' has the truth: 1 block read. The key ' +
               (r.present ? '<b>exists</b>.' : 'is <b>not there</b>.') + ' Same cost as in a B+tree.';
       }
-      frames.push({ caption: title + cap, state: before.counters === undefined ? before : node.snapshot(), hi: hi, save: saveIndex, final: true, opName: name,
+      frames.push({ caption: title + cap, state: node.snapshot(), hi: hi, save: saveIndex, final: true, opName: name,
                     log: { html: name + ' — ' + (r.present ? 'present' : 'absent') + ' (from the ' + r.from + ')', state: r.from === 'leaf' ? 'active' : undefined } });
       return frames;
     }

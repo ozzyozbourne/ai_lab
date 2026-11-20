@@ -1,0 +1,12 @@
+.{
+    .name = .ch11_key_and_record_encoding,
+    .version = "0.0.0",
+    .fingerprint = 0xe60d10fb6d2847d3,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radix trees and hash indexes</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+/* Chapter-local styles for the ART drawing and the node-layout inspector (tokens only). */
+.a28-tree { overflow-x: auto; max-width: 100%; text-align: center; padding: 2px 0 6px; scrollbar-width: thin; }
+.a28-tree.more-left { border-left: 3px solid var(--bt-border); }
+.a28-tree.more-right { border-right: 3px solid var(--bt-border); }
+.a28-scrollhint { font-size: .8rem; color: var(--bt-muted); text-align: center; margin: 0 0 4px; }
+.a28-svg { display: inline-block; vertical-align: top; font-family: var(--bt-mono); }
+.a28-svg text { fill: var(--bt-text); font-size: 13px; }
+.a28-svg .a28-empty, .a28-svg .a28-label, .a28-svg .a28-note { fill: var(--bt-muted); font-family: var(--bt-font); font-size: 11px; }
+.a28-svg .a28-byte.is-hex { font-size: 10px; fill: var(--bt-muted); }
+.a28-box { fill: var(--s-bg, var(--bt-node-bg)); stroke: var(--s, var(--bt-node)); stroke-width: 1.5; transition: fill .25s, stroke .25s; }
+.a28-node[class*="s-"] > .a28-box { stroke-width: 2.5; }
+.a28-prefix > .a28-box { stroke-dasharray: 5 3; }
+.a28-cell { fill: var(--s-bg, var(--bt-key-bg)); stroke: var(--s, transparent); stroke-width: 2; }
+.a28-node .a28-cell:not([class*="s-"]) { --s: transparent; --s-bg: var(--bt-key-bg); }
+.a28-cell.is-free { fill: var(--bt-free-bg); stroke: var(--bt-free); stroke-width: 1; stroke-dasharray: 2 2; }
+.a28-leaf rect { fill: var(--bt-surface-2); stroke: var(--bt-border); }
+.a28-leaf text { font-size: 12px; fill: var(--bt-muted); }
+.a28-edge { fill: none; stroke: var(--s, var(--bt-pointer)); stroke-width: 1.4; }
+.a28-edge[class*="s-"] { stroke-width: 2.4; }
+@media (prefers-reduced-motion: no-preference) {
+  .a28-node.is-new { animation: a28-pop .45s ease-out; }
+  @keyframes a28-pop { from { opacity: 0; } to { opacity: 1; } }
+}
+.a28-keyrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.a28-keyrow > .a28-keylabel { color: var(--bt-muted); font-size: .85rem; }
+.a28-keyrow .bt-array { flex: 1 1 200px; min-width: 0; }
+.a28-stats { display: flex; gap: 6px; flex-wrap: wrap; }
+.a28-insp .a28-hint { margin: .5em 0; font-size: .88rem; color: var(--bt-muted); }
+.a28-ladder { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.a28-arrow { color: var(--bt-muted); }
+.a28-pairs { display: flex; flex-wrap: wrap; gap: 3px; }
+.a28-pair { display: inline-flex; flex-direction: column; gap: 3px; }
+.a28-rowlabels span { height: 26px; display: flex; align-items: center; font-size: .78rem; color: var(--bt-muted); padding-right: 6px; font-family: var(--bt-mono); }
+.a28-c {
+  display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box;
+  width: 30px; height: 26px; border-radius: 4px; font-family: var(--bt-mono); font-size: 12px;
+  background: var(--s-bg, var(--bt-key-bg)); border: 1.5px solid var(--s, transparent); color: var(--bt-text);
+}
+.a28-c.is-child { background: var(--s-bg, var(--bt-pointer-bg)); }
+.a28-c.is-free, .a28-c.is-blank { background: var(--s-bg, var(--bt-free-bg)); border: 1px dashed var(--s, var(--bt-border)); }
+.a28-grid { display: grid; grid-template-columns: repeat(16, minmax(0, 20px)); gap: 1px; margin: 4px 0 8px; }
+.a28-grid .a28-c { width: auto; height: 17px; font-size: 9px; border-radius: 2px; border-width: 1px; }
+.a28-grid .a28-c[class*="s-"] { border-width: 2px; }
+.a28-gridlabel { font-size: .8rem; color: var(--bt-muted); margin-top: 8px; }
+.a28-cmp-title { font-size: .85rem; color: var(--bt-muted); margin: 0 0 2px; }
+.a28-cmp-title b { color: var(--bt-text); }
+/* Figure 2: an EMPTY hash slot that a lookup or scan has read. The toolkit's ArrayView only
+   colours cells that hold a value, so the state class is put on the slot outline itself. */
+.a28-hash .bt-aslot[class*="s-"] { border: 1.75px solid var(--s); background: var(--s-bg); }
+.a28-links { margin-top: 2em; }
+/* A long option label must not make the toolbar wider than a phone screen. */
+#fig-cmp .bt-field, #fig-cmp .bt-select { max-width: 100%; min-width: 0; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">A radix tree does not compare keys. It uses the key's bytes, one after another, as
+directions. The <em>adaptive</em> radix tree keeps that cheap: a node starts with room for 4 children
+and is copied into a larger layout (16, 48, 256) only when it fills up, and a run of bytes without any
+branching is stored once, as a prefix. Step through the inserts below and watch both mechanisms.</p>
+
+<div id="fig-art"></div>
+
+<h2>What each index can answer</h2>
+<p>The same nine keys in a sorted array (which stands for a B-tree leaf level) and in a hash table with
+linear probing. A key's hash picks its <em>home slot</em>. When another key already lives there (a
+<em>collision</em>), the key goes into the next free slot, and a lookup has to walk the same way: the
+first two questions show such a walk, the third a key that sits at home. Pick a question and compare
+how many cells each structure reads. The hash table has no answer to anything that involves order,
+short of reading every slot. The radix tree above answers all four kinds of question, in byte order
+(try <em>Ordered scan</em>). What a B-tree still has over the radix tree does not show in a picture
+this small: its nodes are disk pages that hold whole keys, in order, next to their values (see the
+chapter's last comparison).</p>
+
+<div id="fig-cmp"></div>
+
+<p class="a28-links">Read the chapter: <a href="../README.md">28. Radix trees and hash indexes</a>.
+Previous visualization: <a href="../../27-btree-vs-lsm/viz/index.html">27 B-tree vs LSM</a>.
+Next: <a href="../../29-zone-maps-and-vector-indexes/viz/index.html">29 Zone maps and vector indexes</a>.</p>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="local.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, A = ART28;
+
+  BTViz.page({
+    title: 'Radix trees and hash indexes', chapter: 28,
+    prev: { href: '../../27-btree-vs-lsm/viz/index.html', title: '27 B-tree vs LSM' },
+    next: { href: '../../29-zone-maps-and-vector-indexes/viz/index.html', title: '29 Zone maps and vector indexes' }
+  });
+
+  /* ====================================================================
+   * Figure 1: the adaptive radix tree
+   * ================================================================== */
+  var fig = BTViz.figure('#fig-art', {
+    title: 'Adaptive radix tree: insert, search, scan', side: true,
+    legend: [{ token: 'node-active', label: 'node on the path' }, { token: 'key-compare', label: 'byte being looked up' },
+      { token: 'key-found', label: 'match / found' }, { token: 'key-inserted', label: 'newly added' },
+      { token: 'split', label: 'prefix split / node grown' }, { token: 'key-deleted', label: 'mismatch / not found' },
+      { token: 'free', label: 'unused slot' }]
+  });
+
+  var WORDS = ['romane', 'romanus', 'romulus', 'rubens', 'ruber', 'rubicon', 'rubicundus'];
+  var model, rawMode = false, nextValue = 1;
+
+  var keyLabel = el('span.a28-keylabel', 'key bytes');
+  var keyRow = el('div.a28-keyrow', keyLabel);
+  fig.stage.appendChild(keyRow);
+  var keyView = new BTViz.ArrayView(keyRow);
+  var stats = el('div.a28-stats');
+  fig.stage.appendChild(stats);
+  var artView = new A.ArtView(fig.stage);
+  var inspector = new A.Inspector(fig.stage);
+  var codeHost = el('div');
+  fig.side.appendChild(codeHost);
+  var log = new BTViz.Log(fig.side, { title: 'Events' });
+  var code = null, codeName = null;
+
+  function showCode(name) {
+    if (codeName === name) return;
+    codeName = name;
+    codeHost.textContent = '';
+    code = BTViz.codePanel(codeHost, name, { title: { insert: 'insertAt (abridged)', lookup: 'lookup', scan: 'Iterator.next (abridged)' }[name], maxHeight: 300 });
+  }
+  /** 1-based line numbers of the first lines containing each needle. */
+  function linesOf(name, lang, needles) {
+    var src = window.CHAPTER_CODE[name][lang].replace(/^\n+|\s+$/g, '').split('\n'), out = [];
+    needles.forEach(function (nd) {
+      for (var i = 0; i < src.length; i++) if (src[i].indexOf(nd) >= 0) { out.push(i + 1); break; }
+    });
+    return out;
+  }
+  var LINES = {
+    insert: {
+      start: [['fn insertAt'], ['fn insert_at']],
+      chain: [['.none =>'], ['Ref::None =>']],
+      'prefix-match': [['p.child = try self.insertAt'], ['let child = self.insert_at(p.child']],
+      mismatch: [['if (stored != key'], ['if stored != key']],
+      split: [['if (stored != key'], ['if stored != key']],
+      descend: [['if (childOf(ref, byte))', 'setChild(ref'], ['if let Some(child) = self.child_of', 'let new_child']],
+      'no-child': [['const chain = try'], ['let chain = self.new_chain(&key[depth + 1']],
+      grow: [['const node = if (isFull'], ['let node = if self.is_full']],
+      'add-child': [['addChild(node'], ['self.add_child(node']],
+      overwrite: [['old.* = v', 'return .{ .leaf'], ['*old = Some(v)', 'Ok(Ref::Leaf']]
+    },
+    lookup: {
+      start: [['var ref = self.root'], ['let mut r = self.root']],
+      'prefix-match': [['depth += p.len'], ['depth += p.len']],
+      'prefix-miss': [['startsWith'], ['starts_with']],
+      descend: [['childOf(ref, key[depth])'], ['Some(child) => r = child']],
+      'no-child': [['childOf(ref, key[depth])'], ['None => return']],
+      found: [['.leaf =>'], ['Ref::Leaf(v) =>']],
+      'not-found': [['.leaf =>'], ['Ref::Leaf(v) =>']]
+    },
+    scan: {
+      visit: [['if (try self.descend(bc.child))'], ['if let Some(v) = self.descend(child)']],
+      start: [['if (self.pending != .none)'], ['if self.pending != Ref::None']]
+    }
+  };
+
+  function onStep(step) {
+    var s = step.state, key = s.key || [];
+    // Key strip: consumed bytes, the byte under the cursor, bytes still to come.
+    var states = {}, done = s.depth >= key.length;
+    key.forEach(function (b, i) {
+      if (done) states[i] = s.keyState === 'compare' ? 'active' : s.keyState;
+      else if (i < s.depth) states[i] = 'active';
+      else if (i === s.depth) states[i] = s.keyState;
+    });
+    keyRow.style.display = key.length ? '' : 'none';
+    keyView.render({ values: key.map(A.cellText), ids: key.map(function (b, i) { return 'k' + i; }), states: states,
+      pointers: key.length && s.depth >= 0 && !done ? { depth: s.depth } : {} });
+    stats.textContent = '';
+    stats.appendChild(el('span.bt-chip', 'keys: ' + s.len));
+    stats.appendChild(el('span.bt-chip', 'prefix splits: ' + s.splits));
+    stats.appendChild(el('span.bt-chip', 'grown: ' + s.grows[0] + ' × 4→16, ' + s.grows[1] + ' × 16→48, ' + s.grows[2] + ' × 48→256'));
+    stats.appendChild(el('span.bt-chip', rawMode ? 'keys are raw bytes' : 'keys are strings + \\x00 terminator'));
+    artView.render(s);
+    inspector.render(s.root, s.focus, s.insp);
+    log.sync(stepper.steps, step.index);
+    var kind = step.kind || 'insert';
+    showCode(kind);
+    var map = (LINES[kind] || {})[step.type];
+    code.highlight(map ? { zig: linesOf(kind, 'zig', map[0]), rust: linesOf(kind, 'rust', map[1]) } : []);
+  }
+
+  var stepper = new BTViz.Stepper({ mount: fig.controls, caption: fig.caption, root: fig.root, steps: [], onStep: onStep, predict: false, interval: 1500 });
+
+  function tag(steps, kind) { steps.forEach(function (st) { st.kind = kind; }); return steps; }
+  function keyBytes(text) { return rawMode ? A.utf8(text) : A.encodeStr(text); }
+
+  function presetWords() {
+    model = new A.Art(); rawMode = false; nextValue = 1;
+    var all = [];
+    WORDS.forEach(function (w) { all = all.concat(model.put(A.encodeStr(w), nextValue++, true)); });
+    return tag(all, 'insert');
+  }
+  /** The scenario of section 2 of the programs: 256 keys 'k', b in SplitMix64(28) order. */
+  function growBytes() {
+    var bytes = [];
+    for (var i = 0; i < 256; i++) bytes.push(i);
+    A.splitmix(28).shuffle(bytes);
+    return bytes;
+  }
+  function presetGrow() {
+    model = new A.Art(); rawMode = true; nextValue = 1;
+    var bytes = growBytes(), all = [], shown = { 1: 1, 2: 1, 3: 1, 5: 1, 17: 1, 49: 1 };
+    var skipped = 0;
+    bytes.forEach(function (b, i) {
+      var n = i + 1;
+      if (shown[n]) {
+        if (skipped) { all.push(note(skipped + (skipped === 1 ? ' more key was' : ' more keys were') + ' inserted without stopping. The node now has ' + (n - 1) + ' children: it is full.')); skipped = 0; }
+        all = all.concat(model.put([0x6b, b], nextValue++, true));
+      } else { model.put([0x6b, b], nextValue++, false); skipped++; }
+    });
+    all.push(note('All 256 two-byte keys are in. The node256 has one slot per possible byte and can never overflow. ' +
+      'One node went through all four layouts; three smaller nodes were freed and returned to their pools.'));
+    return tag(all, 'insert');
+  }
+  function note(caption) {
+    model.rec = []; model.op = { key: [] };
+    var focus = null;
+    (function find(r) { if (!r || r.t === 'leaf') return; if (A.isInner(r)) { focus = r.id; return; } find(r.child); })(model.root);
+    model._step('note', caption, { focus: focus, hold: 2 });
+    var st = model.rec[0];
+    model.rec = null; model.op = null;
+    return st;
+  }
+
+  var input = el('input.bt-input', { type: 'text', 'aria-label': 'Key', placeholder: 'key', maxlength: 16, value: 'roman', style: { width: '8.5em' } });
+  function readKey() {
+    var text = input.value;
+    if (!text.length) { stepper.pause(); fig.caption.textContent = 'Type a key first (1 to 16 characters).'; return null; }
+    return text;
+  }
+  /**
+   * Make `model` the tree that is drawn right now, so that the controls never act on a
+   * state the reader cannot see. A preset records all its inserts up front and `model` is
+   * then the tree after the LAST one, while the reader may be looking at any earlier step.
+   * Returns a sentence for the next caption when steps of the shown trace were dropped.
+   *
+   * One exception: an insert the reader asked for and that is still playing is finished,
+   * not dropped. Typing a second key while the first is still being animated must not
+   * lose the first.
+   */
+  function syncModel() {
+    var steps = stepper.steps, i = stepper.index;
+    if (!steps.changesTree || i < 0 || i === steps.length - 1) return '';   // the model is what is drawn
+    if (steps.userInsert && stepper.playing) return '';
+    model = A.Art.fromState(stepper.state(i));
+    nextValue = model.maxValue + 1;
+    return 'This uses the tree as drawn at step ' + (i + 1) + ' of ' + steps.length + '; the later steps of the previous animation are not applied. ';
+  }
+  /** Show a new timeline. `changesTree` marks timelines whose steps show different trees. */
+  function show(steps, kind, note, flags) {
+    tag(steps, kind);
+    if (note && steps.length) steps[0].caption = note + steps[0].caption;
+    steps.changesTree = !!(flags && flags.changesTree);
+    steps.userInsert = !!(flags && flags.userInsert);
+    stepper.setSteps(steps, { play: !flags || flags.play !== false });
+  }
+  function doInsert() {
+    var text = readKey();
+    if (text === null) return;
+    var note = syncModel();
+    try {
+      show(model.put(keyBytes(text), nextValue, true), 'insert', note, { changesTree: true, userInsert: true });
+      nextValue++;
+    } catch (e) {
+      model.rec = null; model.op = null;
+      stepper.pause();
+      // The model now equals the drawn tree; show exactly that tree with the message.
+      rejected(note + 'Rejected (<code>error.PrefixKey</code>): ' + BTViz.k(A.showBytes(keyBytes(text))) + ' is a prefix of a stored key, or a stored key is a prefix of it. ' +
+        'This preset uses raw bytes without a terminator; the tree has no place for a value in the middle of a path. The tree is unchanged.');
+    }
+  }
+  /** A one-step timeline: the current tree plus a message (HTML; typed text must be escaped by the caller). */
+  function rejected(html) {
+    model.rec = []; model.op = { key: [] };
+    model._step('note', html, {});
+    var st = model.rec; model.rec = null; model.op = null;
+    show(st, 'insert', '', { play: false });
+  }
+  function doSearch() {
+    var text = readKey();
+    if (text === null) return;
+    var note = syncModel();
+    show(model.lookup(keyBytes(text), true), 'lookup', note);
+  }
+  function doScan() {
+    var note = syncModel();
+    if (model.len > 40) {
+      rejected(note + 'The scan animation is limited to 40 keys and this tree holds ' + model.len + '. Choose "Reset to empty" or the words preset first, or step back to a smaller tree.');
+      return;
+    }
+    show(model.scanSteps(), 'scan', note);
+  }
+  var preset = el('select.bt-select', { 'aria-label': 'Preset' },
+    el('option', { value: 'words' }, 'Preset: romane, romanus, romulus, …'),
+    el('option', { value: 'grow' }, 'Preset: one node, four layouts'),
+    el('option', { value: 'empty' }, 'Reset to empty'));
+  function loadPreset() {
+    var v = preset.value;
+    if (v === 'words') show(presetWords(), 'insert', '', { changesTree: true, play: false });
+    else if (v === 'grow') show(presetGrow(), 'insert', '', { changesTree: true, play: false });
+    else {
+      model = new A.Art(); rawMode = false; nextValue = 1;
+      model.rec = []; model.op = { key: [] };
+      model._step('note', 'Empty tree. Type a key and press Insert. Try keys that share a beginning (tea, team, ten) and keys that do not.', {});
+      var st = model.rec; model.rec = null; model.op = null;
+      show(st, 'insert', '', { play: false });
+    }
+  }
+  preset.addEventListener('change', loadPreset);
+  input.addEventListener('keydown', function (e) { if (e.key === 'Enter') doInsert(); });
+  fig.toolbar.append(
+    el('label.bt-field', 'Key', input),
+    el('button.bt-btn.bt-primary', { type: 'button', onclick: doInsert }, 'Insert'),
+    el('button.bt-btn', { type: 'button', onclick: doSearch }, 'Search'),
+    el('button.bt-btn', { type: 'button', onclick: doScan }, 'Ordered scan'),
+    el('span.bt-toolbar-sep'),
+    preset,
+    el('button.bt-btn', { type: 'button', onclick: loadPreset, title: 'Run the selected preset again from the start' }, 'Replay preset'));
+  loadPreset();
+
+  /* ====================================================================
+   * Figure 2: sorted array vs hash table
+   * ================================================================== */
+  var fig2 = BTViz.figure('#fig-cmp', {
+    title: 'Same keys, two structures: point, range and prefix questions',
+    legend: [{ token: 'key-compare', label: 'cell read' }, { token: 'key-found', label: 'part of the answer' }, { token: 'key-deleted', label: 'read, not part of the answer (key or empty slot)' }]
+  });
+  var KEYS = ['a1', 'b2', 'b5', 'c1', 'c3', 'c7', 'd4', 'e2', 'f9'];
+  var sorted = new A.SortedIndex(), hash = new A.HashIndex();
+  ['c3', 'a1', 'f9', 'b5', 'c7', 'd4', 'b2', 'e2', 'c1'].forEach(function (k, i) { sorted.put(A.utf8(k), i + 1); hash.put(A.utf8(k), i + 1); });
+  var sortedVals = sorted.entries.map(function (e) { return A.fmtBytes(e.key); });
+  var hashVals = hash.slots.map(function (s) { return s ? A.fmtBytes(s.key) : null; });
+  var hashIds = hash.slots.map(function (s, i) { return 'slot' + i; });
+
+  var t1 = el('p.a28-cmp-title'), t2 = el('p.a28-cmp-title');
+  fig2.stage.appendChild(t1);
+  var sv = new BTViz.ArrayView(fig2.stage);
+  fig2.stage.appendChild(t2);
+  var hv = new BTViz.ArrayView(fig2.stage);
+  hv.root.classList.add('a28-hash');
+
+  var QUERIES = {
+    // e2 and d1 both have home slot 6, which b2 (home 5, itself displaced) occupies.
+    pushed: { label: 'Lookup e2: present, 2 collisions', ask: 'point lookup of e2, which is present', kind: 'point', key: 'e2' },
+    miss: { label: 'Lookup d1: absent, 4 collisions', ask: 'point lookup of d1, which is absent', kind: 'point', key: 'd1' },
+    home: { label: 'Lookup c3: present, at home', ask: 'point lookup of c3, which is present', kind: 'point', key: 'c3' },
+    range: { label: 'Range: b2 ≤ key < c7', ask: 'range: b2 ≤ key < c7', kind: 'range', lo: 'b2', hi: 'c7', words: 'keys in [b2, c7)' },
+    prefix: { label: 'Prefix: keys starting with c', ask: 'prefix: keys starting with c', kind: 'range', lo: 'c', hi: 'd', words: 'keys starting with c, which is the range [c, d)' }
+  };
+
+  function cmpSteps(q) {
+    var steps = [], sCount = 0, hCount = 0, sStates = {}, hStates = {}, sPtr = {}, hPtr = {};
+    function push(caption) {
+      steps.push({ caption: caption, state: { s: BTViz.clone(sStates), h: BTViz.clone(hStates), sp: BTViz.clone(sPtr), hp: BTViz.clone(hPtr), sc: sCount, hc: hCount } });
+    }
+    function bsearch(keyText, what) {
+      var trace = [], lb = sorted.lowerBound(A.utf8(keyText), trace);
+      trace.forEach(function (t) {
+        sCount++;
+        sStates[t.mid] = 'compare';
+        sPtr = { lo: t.lo, mid: t.mid, hi: t.hi };
+        push('Sorted array, binary search for ' + what + ' ' + BTViz.k(keyText) + ': compare with ' + BTViz.k(sortedVals[t.mid], 'compare') +
+          ' in the middle of [' + t.lo + ', ' + t.hi + '). Each comparison halves the candidates.');
+        sStates[t.mid] = 'deleted';
+      });
+      return lb.index;
+    }
+    push('Question: ' + q.ask + '. First the sorted array, then the hash table. Counters show how many cells each one reads.');
+    if (q.kind === 'point') {
+      var i = bsearch(q.key, 'key');
+      var hitS = i < sortedVals.length && sortedVals[i] === q.key;
+      sPtr = {};
+      if (hitS) sStates[i] = 'found';
+      push(hitS ? 'Sorted array: found ' + BTViz.k(q.key, 'found') + ' at index ' + i + ' after ' + sCount + ' comparisons (about log2 of ' + sortedVals.length + ' keys).'
+        : 'Sorted array: the search ends at index ' + i + ', where ' + BTViz.k(q.key) + ' would be inserted. It is absent, after ' + sCount + ' comparisons.');
+      var lk = hash.lookup(A.utf8(q.key));
+      var kq = BTViz.k(q.key);
+      lk.path.forEach(function (slot, n) {
+        hCount++;
+        var last = n === lk.path.length - 1, there = hashVals[slot];
+        hStates[slot] = last && lk.value !== null ? 'found' : 'compare';
+        hPtr = { probe: slot };
+        push((n === 0 ? 'Hash table: hash(' + kq + ') mod 16 = ' + slot + ', the home slot of ' + kq + '. ' : 'Hash table, linear probing: the next slot is ' + slot + '. ') +
+          (there === null ? 'It is empty. An insert of ' + kq + ' would have walked exactly this way and used this slot, so the key cannot be further along: it is absent.'
+            : last ? (n === 0 ? 'The key is right there.' : 'Found, ' + n + ' slot' + (n === 1 ? '' : 's') + ' away from home.')
+            : n === 0 ? 'Another key, ' + BTViz.k(there, 'deleted') + ', lives there: a collision. Try the next slot.'
+            : 'It holds ' + BTViz.k(there, 'deleted') + ', not the key either: keep going.'));
+        if (!(last && lk.value !== null)) hStates[slot] = 'deleted';
+      });
+      hPtr = {};
+      push('Point lookup: ' + sCount + ' cells read in the sorted array, ' + hCount + ' in the hash table. ' +
+        (hCount === 1 ? 'No collision on the way: one slot is the best case, and the common one. '
+          : 'Collisions made this lookup walk ' + hCount + ' slots, ' + (hCount > sCount ? 'more than' : hCount === sCount ? 'as many as' : 'still fewer than') + ' the binary search read here. ') +
+        'How far a hash lookup walks depends on how full the table is (9 of 16 slots here), not on how many keys it holds; ' +
+        'the binary search grows with the logarithm of the number of keys. The chapter’s programs keep their table at most 70% full and count 1702 probes for 896 lookups.');
+    } else {
+      var a = bsearch(q.lo, 'lower bound'), b = bsearch(q.hi, 'upper bound'), res = [], j;
+      sPtr = { from: a, to: b };
+      for (j = a; j < b; j++) { sStates[j] = 'found'; res.push(sortedVals[j]); }
+      push('Sorted array: the answer is the slice [' + a + ', ' + b + ') between the two bounds: ' + res.map(function (k) { return BTViz.k(k, 'found'); }).join(' ') +
+        '. It is contiguous and already in order. Cost: ' + sCount + ' comparisons plus the ' + res.length + ' results.');
+      var found = [];
+      for (var block = 0; block < 4; block++) {
+        for (j = block * 4; j < block * 4 + 4; j++) {
+          hCount++;
+          var v = hashVals[j], inside = v !== null && v >= q.lo && v < q.hi;
+          hStates[j] = inside ? 'found' : 'deleted';
+          if (inside) found.push(v);
+        }
+        hPtr = { scan: block * 4 + 3 };
+        push('Hash table: neighbouring keys are scattered on purpose, so there is nowhere to start. Read slots ' + (block * 4) + ' to ' + (block * 4 + 3) + ' and keep what falls in the range' +
+          (found.length ? ': so far ' + found.map(function (k) { return BTViz.k(k, 'found'); }).join(' ') : '') + '.');
+      }
+      hPtr = {};
+      push('Hash table: all ' + hCount + ' slots read for ' + found.length + ' results, which come out as ' + found.join(', ') + ' (slot order) and still have to be sorted. ' +
+        'The sorted array read ' + sCount + ' cells to find the slice. For ' + q.words + ', an ordered structure pays for what it returns; a hash index pays for everything it stores.');
+    }
+    return steps;
+  }
+
+  var stepper2 = new BTViz.Stepper({
+    mount: fig2.controls, caption: fig2.caption, root: fig2.root, steps: [], interval: 1500,
+    onStep: function (step) {
+      var s = step.state;
+      t1.innerHTML = '<b>Sorted array</b> (stands for a B-tree): cells read <b>' + s.sc + '</b>';
+      t2.innerHTML = '<b>Hash table</b>, 16 slots, linear probing: cells read <b>' + s.hc + '</b>';
+      sv.render({ values: sortedVals, states: s.s, pointers: s.sp });
+      hv.render({ values: hashVals, ids: hashIds, states: s.h, pointers: s.hp });
+      // Empty slots that were read (see the .a28-hash rule in the style block).
+      hv.slots.forEach(function (slotEl, i) {
+        slotEl.className = 'bt-aslot' + (hashVals[i] === null && s.h[i] ? ' s-' + s.h[i] : '');
+      });
+    }
+  });
+  var qsel = el('select.bt-select', { 'aria-label': 'Question' });
+  Object.keys(QUERIES).forEach(function (id) { qsel.appendChild(el('option', { value: id }, QUERIES[id].label)); });
+  function runQuery(play) { stepper2.setSteps(cmpSteps(QUERIES[qsel.value]), { play: !!play }); }
+  qsel.addEventListener('change', function () { runQuery(true); });
+  fig2.toolbar.append(el('label.bt-field', 'Question', qsel), el('button.bt-btn.bt-primary', { type: 'button', onclick: function () { runQuery(true); } }, 'Run'));
+  runQuery(false);
+
+  /* ====================================================================
+   * Self-tests: the JS models reproduce expected_output.txt
+   * ================================================================== */
+  var EXPECT_DUMP = [
+    'prefix "r" -> node4 [2]',
+    "  'o' -> prefix \"m\" -> node4 [2]",
+    "    'a' -> prefix \"n\" -> node4 [2]",
+    "      'e' -> prefix \"\\x00\" -> leaf 1",
+    "      'u' -> prefix \"s\\x00\" -> leaf 2",
+    "    'u' -> prefix \"lus\\x00\" -> leaf 3",
+    "  'u' -> prefix \"b\" -> node4 [2]",
+    "    'e' -> node4 [2]",
+    "      'n' -> prefix \"s\\x00\" -> leaf 4",
+    "      'r' -> prefix \"\\x00\" -> leaf 5",
+    "    'i' -> prefix \"c\" -> node4 [2]",
+    "      'o' -> prefix \"n\\x00\" -> leaf 6",
+    "      'u' -> prefix \"ndus\\x00\" -> leaf 7",
+    ''
+  ].join('\n');
+
+  // The controls work on the tree of the displayed step (Art.fromState), not on the end of the
+  // trace: the state recorded when the third word is done must be the tree of three words.
+  (function () {
+    var rec = new A.Art(), all = [], three = new A.Art(), done = 0, at = -1;
+    WORDS.forEach(function (w, i) { all = all.concat(rec.put(A.encodeStr(w), i + 1, true)); });
+    all.forEach(function (st, i) { if (st.type === 'done' && ++done === 3) at = i; });
+    WORDS.slice(0, 3).forEach(function (w, i) { three.put(A.encodeStr(w), i + 1, false); });
+    var got = A.Art.fromState(all[at].state);
+    BTViz.selfTest('tree as drawn at a step', got.dump() + got.len + ' keys, next value ' + (got.maxValue + 1), three.dump() + '3 keys, next value 4');
+  })();
+
+  // The chip "keys: N" counts the leaves of the tree that is drawn, at every step.
+  (function () {
+    var rec = new A.Art(), bad = [];
+    WORDS.forEach(function (w, i) {
+      rec.put(A.encodeStr(w), i + 1, true).forEach(function (st, j) {
+        var drawn = A.Art.fromState(st.state).len;
+        if (st.state.len !== drawn) bad.push('word ' + (i + 1) + ' step ' + (j + 1) + ': chip ' + st.state.len + ', drawn ' + drawn);
+      });
+    });
+    BTViz.selfTest('keys chip = leaves drawn', bad.join('\n') || 'ok', 'ok');
+  })();
+
+  // Figure 2 must keep showing a real probe walk: e2 and d1 start in a slot taken by another key.
+  BTViz.selfTest('figure 2: probe walks',
+    ['e2', 'd1', 'c3'].map(function (k) { var r = hash.lookup(A.utf8(k)); return k + ' ' + r.path.join(',') + ' ' + (r.value !== null); }).join('\n'),
+    'e2 6,7,8 true\nd1 6,7,8,9,10 false\nc3 3 true');
+
+  var t = new A.Art();
+  WORDS.forEach(function (w, i) { t.put(A.encodeStr(w), i + 1, false); });
+  BTViz.selfTest('section 1: tree after 7 words', t.dump(), EXPECT_DUMP);
+  BTViz.selfTest('section 1: census', t.censusLine() + '\nprefix splits: ' + t.prefixSplits,
+    'nodes: prefix=12 node4=6 node16=0 node48=0 node256=0; leaves=7; longest path=7 nodes\nprefix splits: 6');
+  BTViz.selfTest('section 1: keys in order',
+    t.entries().map(function (e) { return A.fmtBytes(e.key.slice(0, -1)); }).join(' '),
+    'romane romanus romulus rubens ruber rubicon rubicundus');
+
+  // Section 2: when does the node change layout, and for which byte?
+  var g = new A.Art(), rows = [], lastKind = null;
+  growBytes().forEach(function (b, i) {
+    g.put([0x6b, b], i + 1, false);
+    var c = g.census(), kind = c.n256 ? 'node256' : c.n48 ? 'node48' : c.n16 ? 'node16' : c.n4 ? 'node4' : '(none)';
+    // The byte is only part of the program's output when a full node was copied into a larger one.
+    var grew = lastKind !== null && lastKind !== '(none)';
+    if (kind !== lastKind) rows.push((i + 1) + ' ' + kind + ' ' + c.slotsUsed + '/' + c.slotsAllocated + (grew ? ' 0x' + (b < 16 ? '0' : '') + b.toString(16) : ''));
+    lastKind = kind;
+  });
+  BTViz.selfTest('section 2: four layouts', rows.join('\n') + '\n' + g.grows.join(','),
+    '1 (none) 0/0\n2 node4 2/4\n5 node16 5/16 0x88\n17 node48 17/48 0xca\n49 node256 49/256 0x82\n1,1,1');
+
+  // Section 3: 1000 dense and 1000 sparse 8-byte keys.
+  function be8(v) { var out = []; v = BigInt(v); for (var s = 56n; s >= 0n; s -= 8n) out.push(Number((v >> s) & 0xffn)); return out; }
+  var rng3 = A.splitmix(2828), line3 = [];
+  [0, 1].forEach(function (which) {
+    var tr = new A.Art(), stored = [], steps = 0, i;
+    for (i = 0; i < 1000; i++) { stored.push(which === 0 ? be8(i) : be8(rng3.nextU64())); tr.put(stored[i], i, false); }
+    stored.forEach(function (k) { steps += tr.lookup(k).steps; });
+    var c = tr.census();
+    line3.push([c.prefix, c.n4, c.n16, c.n48, c.n256, c.slotsUsed + '/' + c.slotsAllocated, c.maxPath, steps].join(' '));
+  });
+  BTViz.selfTest('section 3: dense and sparse', line3.join('\n'), '1 1 0 0 4 1004/1028 3 3000\n1001 166 82 0 1 1248/2232 4 3004');
+
+  // Section 4: 600 puts into all three indexes, then 596 hits + 300 misses.
+  var tenants = ['ant', 'bee', 'cat', 'dog', 'eel', 'fox'], rng4 = A.splitmix(4);
+  var s4 = new A.SortedIndex(), a4 = new A.Art(), h4 = new A.HashIndex(), stepSum = [0, 0, 0];
+  function pad4(n) { return ('0000' + n).slice(-4); }
+  for (var i4 = 0; i4 < 600; i4++) {
+    var tn = tenants[rng4.below(6)], id = rng4.below(10000), k4 = A.encodeStr(tn + '/' + pad4(id));
+    s4.put(k4, i4); a4.put(k4, i4, false); h4.put(k4, i4);
+  }
+  function tally(k) { stepSum[0] += s4.lookup(k).steps; stepSum[1] += a4.lookup(k).steps; stepSum[2] += h4.lookup(k).steps; }
+  s4.entries.forEach(function (e) { tally(e.key); });
+  for (var m4 = 0; m4 < 300; m4++) { var tm = tenants[rng4.below(6)]; tally(A.encodeStr(tm + '/' + rng4.range(10000, 100000))); }
+  var firstHash = h4.slots.filter(function (s) { return s; }).slice(0, 4).map(function (s) { return A.fmtBytes(s.key.slice(0, -1)); });
+  BTViz.selfTest('section 4: three indexes',
+    s4.entries.length + ' keys, capacity ' + h4.slots.length + '\nsteps ' + stepSum.join(' ') + '\n' + a4.censusLine() + '\n' + firstHash.join(' '),
+    '596 keys, capacity 1024\nsteps 9219 4823 1702\nnodes: prefix=620 node4=178 node16=59 node48=0 node256=0; leaves=596; longest path=7 nodes\nbee/0557 cat/6589 cat/8700 dog/4053');
+})();
+</script>
+</body>
+</html>

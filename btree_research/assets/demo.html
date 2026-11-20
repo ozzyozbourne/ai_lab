@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BTViz toolkit demo</title>
+<link rel="stylesheet" href="viz.css">
+</head>
+<body>
+
+<p class="bt-lead">Every component of the shared toolkit on one page. Chapter authors: this file is also a
+working example — view source next to <a href="README.md">README.md</a>.</p>
+
+<h2>1. Interactive B-tree / B+tree</h2>
+<p>Type a key and press <kbd>Enter</kbd> or a button. Every frame comes from the real model
+(<code>BTViz.models.BTree</code> / <code>BPlusTree</code>), so you can step backwards, scrub and change speed.
+Tick <em>Predict</em> to be asked before a leaf overflows.</p>
+<div id="fig-tree"></div>
+
+<h2>2. Slotted page (<code>PageView</code>)</h2>
+<p>Slots grow forward from the header, cells grow backward from the end of the page.</p>
+<div id="fig-page"></div>
+
+<h2>3. Binary search (<code>ArrayView</code> + code panel)</h2>
+<div id="fig-array"></div>
+
+<h2>4. TreeView extras: copy-on-write DAG, page ids, high keys, right links, latches</h2>
+<div id="fig-dag"></div>
+<div id="fig-binary"></div>
+
+<h2>5. Swim lanes (<code>Lanes</code>): you choose who steps next</h2>
+<div id="fig-lanes"></div>
+
+<h2>6. Log timeline with a crash scrubber (<code>Timeline</code>)</h2>
+<div id="fig-timeline"></div>
+
+<h2>7. Buffer pool (<code>FrameGrid</code>), allocator slots (<code>MemoryMap</code>), bytes (<code>HexGrid</code>)</h2>
+<div id="fig-frames"></div>
+<div id="fig-mem"></div>
+
+<h2>8. Charts (<code>Chart</code>) and point graphs (<code>GraphView</code>)</h2>
+<div id="fig-chart"></div>
+<div id="fig-graph"></div>
+
+<script>
+/* In a chapter this lives in viz/code.js, loaded with a classic <script src="code.js"> tag. */
+window.CHAPTER_CODE = {
+  lowerBound: {
+    zig: `
+fn lowerBound(keys: []const u32, target: u32) usize {
+    var lo: usize = 0;
+    var hi: usize = keys.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (keys[mid] < target) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}`,
+    rust: `
+fn lower_bound(keys: &[u32], target: u32) -> usize {
+    let mut lo = 0;
+    let mut hi = keys.len();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if keys[mid] < target {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo // first index with keys[i] >= target
+}`
+  }
+};
+</script>
+<script src="viz.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el;
+  BTViz.page({ title: 'Toolkit demo', chapter: 'assets', index: '../index.html', prev: null, next: null });
+
+  /* ------------------------------------------------------------------ 1. tree */
+  (function () {
+    var fig = BTViz.figure('#fig-tree', {
+      title: 'Insert, delete and search', side: true,
+      legend: ['node-active', 'key-compare', 'key-found', 'key-inserted', 'key-deleted', 'split', 'merge']
+    });
+    var kind = el('select.bt-select#sel-kind', { 'aria-label': 'Tree kind' }, el('option', { value: 'btree' }, 'B-tree'), el('option', { value: 'bplus' }, 'B+tree'));
+    var order = el('select.bt-select#sel-order', { 'aria-label': 'Order (max children)' });
+    [3, 4, 5, 6, 8].forEach(function (m) { order.appendChild(el('option', { value: m, selected: m === 4 }, 'order ' + m)); });
+    var key = el('input.bt-input#key', { type: 'number', inputmode: 'numeric', placeholder: 'key', 'aria-label': 'Key', min: 0, max: 999 });
+    var btn = function (id, text, fn, primary) { return el('button.bt-btn' + (primary ? '.bt-primary' : '') + '#' + id, { type: 'button', onclick: fn }, text); };
+    fig.toolbar.append(kind, order, el('span.bt-toolbar-sep'), key,
+      btn('btn-insert', 'Insert', function () { run('insert'); }, true), btn('btn-delete', 'Delete', function () { run('delete'); }),
+      btn('btn-search', 'Search', function () { run('search'); }), el('span.bt-toolbar-sep'),
+      btn('btn-random', 'Random fill', fill), btn('btn-clear', 'Clear', reset));
+
+    var view = new BTViz.TreeView(fig.stage, { minHeight: 250, ariaLabel: 'B-tree' });
+    var log = new BTViz.Log(fig.side, { title: 'Operations' });
+    var rand = BTViz.rng(7), tree, opNo = 0;
+    var stepper = new BTViz.Stepper({
+      mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
+      onStep: function (step) { view.render(step.state, step.highlight); }
+    });
+
+    function reset() {
+      tree = BTViz.models[kind.value === 'bplus' ? 'BPlusTree' : 'BTree'](+order.value);
+      log.clear();
+      var lim = tree.limits();
+      stepper.setSteps([{ caption: 'Empty ' + (tree.kind === 'bplus' ? 'B+tree' : 'B-tree') + ' of order ' + tree.order + ': at most ' + lim.maxChildren +
+        ' children and ' + lim.maxKeys + ' keys per node, at least ' + lim.minLeafKeys + ' key' + (lim.minLeafKeys > 1 ? 's' : '') + ' per non-root leaf. Insert something.', state: tree.snapshot(), highlight: {} }]);
+    }
+    function run(op) {
+      var v = key.value === '' ? rand.int(1, 99) : +key.value;
+      if (!isFinite(v)) return;
+      var steps = tree[op](v);
+      steps.forEach(function (s, i) {                       // predict-the-next-step question
+        if (s.type !== 'insert-leaf' || !steps[i + 1]) return;
+        s.question = {
+          prompt: 'The key is about to go into this leaf. Will the leaf still fit afterwards?',
+          choices: ['Yes — nothing more to do', 'No — it overflows and must split'],
+          answer: steps[i + 1].type === 'overflow' ? 1 : 0,
+          explain: 'A node of order ' + tree.order + ' holds at most ' + tree.limits().maxKeys + ' keys.'
+        };
+      });
+      log.add(op + ' ' + v + (steps.ok ? '' : ' — no change'), op === 'insert' ? 'inserted' : op === 'delete' ? 'deleted' : 'found');
+      steps.slice(1).forEach(function (s) { if (s.log) log.add('&nbsp;&nbsp;' + (s.log.html || s.log), s.log.state); });
+      stepper.setSteps(steps, { play: true });
+      key.value = '';
+      key.focus({ preventScroll: true });
+      opNo++;
+    }
+    function fill() {
+      var n = 14, have = tree.keys();
+      BTViz.rng(opNo + 11).sample(60, 1, 99).filter(function (v) { return have.indexOf(v) < 0; }).slice(0, n).forEach(function (v) { tree.insert(v, { steps: false }); });
+      opNo++;
+      log.add('random fill: +' + n + ' keys', 'inserted');
+      stepper.setSteps([{ caption: 'Inserted ' + n + ' random keys: ' + tree.size + ' keys in ' + tree.nodeCount() + ' nodes, height ' + tree.height() + '.', state: tree.snapshot(), highlight: {} }]);
+    }
+    key.addEventListener('keydown', function (e) { if (e.key === 'Enter') run('insert'); });
+    kind.addEventListener('change', reset);
+    order.addEventListener('change', reset);
+    reset();
+    [20, 40, 10, 30, 50].forEach(function (v) { tree.insert(v, { steps: false }); });
+    stepper.setSteps(tree.insert(35));
+  })();
+
+  /* ------------------------------------------------------------------ 2. page */
+  (function () {
+    var fig = BTViz.figure('#fig-page', { title: 'A 128-byte slotted page', legend: ['key-inserted', 'key-deleted', 'pointer', 'free'] });
+    var pv = new BTViz.PageView(fig.stage, { cols: 16 });
+    var page, rand = BTViz.rng(3);
+    var stepper = new BTViz.Stepper({ mount: fig.controls, caption: fig.caption, root: fig.root, onStep: function (s) { pv.render(s.state, s.highlight); } });
+    function show(steps) { stepper.setSteps(steps, { play: true }); }
+    function reset() {
+      page = BTViz.models.SlottedPage({ size: 128 });
+      [[30, 12], [10, 9], [50, 14], [20, 7]].forEach(function (r) { page.insert(r[0], r[1], null, { steps: false }); });
+      stepper.setSteps([{ caption: 'Four records. The slot array (after the 8-byte header) is sorted by key; the cells were written back-to-front in arrival order: 30, 10, 50, 20.', state: page.snapshot(), highlight: { pointers: 'all' } }]);
+    }
+    fig.toolbar.append(
+      el('button.bt-btn.bt-primary#pg-insert', { type: 'button', onclick: function () { var key; do key = rand.int(1, 99); while (page.keys().indexOf(key) >= 0); show(page.insert(key, rand.int(6, 16))); } }, 'Insert record'),
+      el('button.bt-btn#pg-delete', { type: 'button', onclick: function () { var ks = page.keys(); if (ks.length) show(page.delete(rand.pick(ks))); } }, 'Delete one'),
+      el('button.bt-btn#pg-defrag', { type: 'button', onclick: function () { show(page.defragment()); } }, 'Defragment'),
+      el('button.bt-btn#pg-reset', { type: 'button', onclick: reset }, 'Reset'));
+    reset();
+  })();
+
+  /* ------------------------------------------------------------------ 3. array + code */
+  (function () {
+    var fig = BTViz.figure('#fig-array', { title: 'Lower-bound binary search inside one node', side: true, legend: ['key-compare', 'key-found'] });
+    var values = [3, 8, 12, 17, 21, 26, 30, 34, 41, 47, 52, 58, 63];
+    var target = el('input.bt-input#bs-target', { type: 'number', value: 41, 'aria-label': 'Search target' });
+    var av = new BTViz.ArrayView(fig.stage, { ariaLabel: 'Sorted keys' });
+    var code = BTViz.codePanel(fig.side, 'lowerBound', { title: 'lower bound' });
+    var LINES = { init: [2, 3], mid: [4, 5], less: [6, 7], greater: [8, 9], done: 12 };
+    var stepper = new BTViz.Stepper({
+      mount: fig.controls, caption: fig.caption, root: fig.root,
+      onStep: function (s) { av.render(s.state); code.highlight(LINES[s.phase]); }
+    });
+    var go = function (play) { stepper.setSteps(BTViz.steps.binarySearch(values, +target.value), { play: play }); };
+    fig.toolbar.append(el('label.bt-field', 'target', target), el('button.bt-btn.bt-primary#bs-go', { type: 'button', onclick: function () { go(true); } }, 'Search'));
+    target.addEventListener('keydown', function (e) { if (e.key === 'Enter') go(true); });
+    go(false);
+  })();
+
+  /* ------------------------------------------------------------------ 4. DAG + B-link decorations */
+  (function () {
+    var fig = BTViz.figure('#fig-dag', { title: 'Path copying: two roots share untouched subtrees', legend: ['key-inserted', 'page-dirty', 'lock-shared', 'lock-exclusive', 'pointer'] });
+    var view = new BTViz.TreeView(fig.stage, { minHeight: 230, ariaLabel: 'Copy-on-write B+tree' });
+    var leaf = function (id, keys, next, high, meta) { return { id: id, keys: keys, leaf: true, children: [], right: next, highKey: high, meta: meta }; };
+    var A = leaf('p2', [5, 9], 'p3', 20, { label: 'page 2' }), B = leaf('p3', [20, 25], 'p4', 40, { label: 'page 3' }), C = leaf('p4', [40, 48], null, null, { label: 'page 4' });
+    var v1 = { id: 'p1', keys: [20, 40], children: [A, B, C], meta: { label: 'page 1 · root v1' } };
+    var B2 = leaf('p6', [20, 25, 31], null, 40, { label: 'page 6 (copy of 3)', dirty: true });
+    var v2 = { id: 'p5', keys: [20, 40], children: [{ ref: 'p2' }, B2, { ref: 'p4' }], meta: { label: 'page 5 · root v2', dirty: true } };
+    var withLocks = function (n, lock) { var c = BTViz.clone(n); c.meta.lock = lock; return c; };
+    var v1s = withLocks(v1, ['S', 'S']);
+    var v2x = withLocks(v2, 'X'); v2x.children[1].meta.lock = ['X', 'T3:S?'];
+    new BTViz.Stepper({
+      mount: fig.controls, caption: fig.caption, root: fig.root,
+      steps: [
+        { caption: 'Version 1: a B+tree with <code>meta.label</code> page ids, dashed high-key cells and dashed right-link arrows (as in a B-link tree).', state: v1, highlight: {} },
+        { caption: 'Two readers hold shared latches on the root (<code>meta.lock: [\'S\', \'S\']</code>).', state: v1s, highlight: {} },
+        { caption: 'A writer inserts ' + BTViz.k(31, 'inserted') + ' without overwriting anything: it copies the leaf and the root. The new root (page 5) <em>shares</em> pages 2 and 4 with the old one — pass an array of roots and <code>{ref: id}</code> children.',
+          state: [v1s, v2x], highlight: { keys: { 'p6:31': 'inserted' }, nodes: { p5: 'dirty', p6: 'dirty' }, edges: { 'p5>p2': 'active', 'p5>p4': 'active' } } },
+        { caption: 'Readers of version 1 finish; pages 1 and 3 are no longer reachable and can be freed.', state: [v2], highlight: {} }
+      ],
+      onStep: function (s) { view.render(s.state, s.highlight); }
+    });
+  })();
+
+  /* ------------------------------------------------------------------ 4b. binary tree: left / right only children */
+  (function () {
+    var fig = BTViz.figure('#fig-binary', { title: 'Binary search tree: an only child keeps its side (binary: true, or a per-child side hint)' });
+    var view = new BTViz.TreeView(fig.stage, { minHeight: 200, binary: true, ariaLabel: 'Binary search tree' });
+    var n = function (key, l, r) { return { id: 'b' + key, keys: [key], children: l || r ? [l || null, r || null] : [] }; };
+    // children are [left, right]; null marks the missing one
+    view.render(n(8, n(3, null, n(6, n(4))), n(10, null, n(14, n(13)))));
+    fig.caption.innerHTML = 'With <code>binary: true</code> children are <code>[left, right]</code> and <code>null</code> marks a missing child. ' +
+      'Without the option, write <code>children: [{id, keys, side: \'right\'}]</code>.';
+  })();
+
+  /* ------------------------------------------------------------------ 5. lanes */
+  (function () {
+    var fig = BTViz.figure('#fig-lanes', { title: 'Two threads, one latch' });
+    var script = {
+      T1: [['latch S on root', 'lock-shared'], ['read leaf', null], ['unlatch root', null]],
+      T2: [['latch X on root', 'lock-exclusive'], ['split root', 'split'], ['unlatch root', null]]
+    };
+    var pc, holder, lanes = new BTViz.Lanes(fig.stage, { onAdvance: advance });
+    function blocked(id) { var other = id === 'T1' ? 'T2' : 'T1'; return pc[id] === 0 && holder === other; }
+    function advance(id) {
+      if (pc[id] === 0) holder = id;
+      if (pc[id] === 2) holder = null;
+      pc[id]++;
+      draw(id);
+    }
+    function draw(last) {
+      lanes.render({
+        next: last === 'T1' ? 'T2' : 'T1',
+        lanes: ['T1', 'T2'].map(function (id) {
+          var done = pc[id] >= 3, bl = !done && blocked(id);
+          return {
+            id: id, label: id === 'T1' ? 'T1 · reader' : 'T2 · writer', state: done ? 'done' : bl ? 'blocked' : 'running', canStep: !done && !bl,
+            status: done ? 'finished' : bl ? 'waiting for the root latch' : 'next: ' + script[id][pc[id]][0],
+            events: script[id].slice(0, pc[id]).map(function (e) { return { text: e[0], state: e[1] }; })
+          };
+        })
+      });
+      fig.caption.innerHTML = pc.T1 + pc.T2 === 6 ? 'Both threads are done. Reset and try the other interleaving.'
+        : 'Press a <b>Step</b> button to choose which thread runs next. A thread that needs a latch held by the other one is blocked.';
+    }
+    function reset() { pc = { T1: 0, T2: 0 }; holder = null; draw('T2'); }
+    fig.toolbar.append(el('button.bt-btn#lanes-reset', { type: 'button', onclick: reset }, 'Reset'));
+    reset();
+  })();
+
+  /* ------------------------------------------------------------------ 6. timeline */
+  (function () {
+    var fig = BTViz.figure('#fig-timeline', { title: 'Drag the crash marker (or focus it and use ←/→)', legend: [{ token: 'key-found', label: 'durable' }, { token: 'key-compare', label: 'pending (in memory)' }, { token: 'key-deleted', label: 'lost' }] });
+    var recs = ['begin T1', 'insert 31', 'split p3', 'new p6', 'update p1', 'commit T1', 'begin T2', 'delete 9'];
+    var flushed = 6;
+    var tl = new BTViz.Timeline(fig.stage, { onCrash: draw });
+    function draw(crash) {
+      tl.render({ crash: crash, records: recs.map(function (label, i) { return { label: label, state: i >= crash ? 'lost' : i < flushed ? 'durable' : 'pending' }; }) });
+      fig.caption.innerHTML = 'Crash after record ' + crash + ' of ' + recs.length + '. ' + (crash >= 6 ? 'T1 committed before the crash, so recovery replays its split.' : 'T1 never committed: recovery discards its ' + Math.min(crash, 5) + ' record(s).');
+    }
+    draw(8);
+  })();
+
+  /* ------------------------------------------------------------------ 7. frames, memory, hex */
+  (function () {
+    var fig = BTViz.figure('#fig-frames', { title: 'Clock eviction', legend: ['page-dirty', 'node-active', 'free'] });
+    var fg = new BTViz.FrameGrid(fig.stage);
+    var frames = [{ page: 7, pin: 1, ref: 1 }, { page: 3, pin: 0, ref: 1, dirty: true }, { page: 12, pin: 0, ref: 0 }, { page: 5, pin: 0, ref: 1 }, { page: 9, pin: 2, ref: 1 }, { page: null }];
+    var steps = [{ caption: 'Six frames; page 21 must be loaded and frame 5 is free… but suppose it were not. The clock hand starts at frame 0.', state: { frames: frames, hand: 0 } }];
+    var hand = 0, f = BTViz.clone(frames);
+    f[5] = { page: 14, pin: 0, ref: 1 };
+    for (var guard = 0; guard < 12; guard++) {
+      var cur = f[hand], cap;
+      f = BTViz.clone(f);
+      cur = f[hand];
+      if (cur.pin > 0) cap = 'Frame ' + hand + ' is pinned (pin ' + cur.pin + '): skip it.';
+      else if (cur.ref) { cur.ref = 0; cap = 'Frame ' + hand + ' was used recently: clear its reference bit and give it a second chance.'; }
+      else { cap = 'Frame ' + hand + ' is unpinned with ref 0: evict page ' + cur.page + ' and load page 21 here.'; f[hand] = { page: 21, pin: 1, ref: 1, state: 'active' }; steps.push({ caption: cap, state: { frames: f, hand: hand } }); break; }
+      steps.push({ caption: cap, state: { frames: f, hand: hand } });
+      hand = (hand + 1) % f.length;
+    }
+    new BTViz.Stepper({ mount: fig.controls, caption: fig.caption, root: fig.root, steps: steps, onStep: function (s) { fg.render(s.state); } });
+
+    var fig2 = BTViz.figure('#fig-mem', { title: 'Pool slots and raw bytes', legend: [{ token: 'pointer', label: 'allocated' }, { token: 'node-active', label: 'handle in use' }, 'free'] });
+    var r = BTViz.rng(4), slots = [];
+    for (var i = 0; i < 40; i++) slots.push(r() < 0.55 ? { state: i % 9 === 0 ? 'handle' : 'used', label: i } : 'free');
+    new BTViz.MemoryMap(fig2.stage).render({ slabs: [{ label: 'slab 0 · 40 × 64-byte nodes', slots: slots }] });
+    var bytes = [];
+    for (i = 0; i < 48; i++) bytes.push(i < 8 ? [0x0d, 0, 0, 0, 3, 0, 0x26, 0][i] : i < 14 ? [0x2a, 0, 0x26, 0, 0x2e, 0][i - 8] : i >= 38 ? r.int(0, 255) : 0);
+    new BTViz.HexGrid(fig2.stage, { cols: 16 }).render({
+      bytes: bytes,
+      ranges: [{ from: 0, len: 1, state: 'active', label: 'page type' }, { from: 4, len: 2, state: 'compare', label: 'cell count' }, { from: 8, len: 6, state: 'pointer', label: 'cell pointers' }, { from: 38, len: 10, state: 'inserted', label: 'cell content' }]
+    });
+  })();
+
+  /* ------------------------------------------------------------------ 8. chart + graph */
+  (function () {
+    var fig = BTViz.figure('#fig-chart', { title: 'Leaf fill after 300 inserts, and live counters' });
+    var seq = BTViz.models.BPlusTree(8), rnd = BTViz.models.BPlusTree(8), r = BTViz.rng(1);
+    var keys = r.sample(300, 1, 100000);
+    function hist(t) {
+      var h = [0, 0, 0, 0, 0, 0, 0, 0];
+      (function walk(n) { if (n.leaf) h[n.keys.length]++; else n.children.forEach(walk); })(t.root);
+      return h.slice(3);
+    }
+    keys.forEach(function (key, i) { rnd.insert(key, { steps: false }); seq.insert(i, { steps: false }); });
+    new BTViz.Chart(fig.stage, { type: 'bar', xLabel: 'keys per leaf (max 7)', yLabel: 'leaves', height: 200 })
+      .render({ labels: [3, 4, 5, 6, 7], series: [{ name: 'sequential inserts', values: hist(seq) }, { name: 'random inserts', values: hist(rnd) }] });
+    var line = new BTViz.Chart(fig.stage, { type: 'line', xLabel: 'inserts', yLabel: 'count', height: 190 });
+    var live = BTViz.models.BTree(4), n = 0;
+    function grow(count) { for (var i = 0; i < count; i++) { live.insert(r.int(1, 1e6), { steps: false }); n++; if (n % 5 === 0) line.push({ nodes: live.nodeCount(), 'height × 10': live.height() * 10 }, n); } }
+    fig.toolbar.append(el('button.bt-btn#chart-more', { type: 'button', onclick: function () { grow(50); } }, 'Insert 50 more'));
+    grow(100);
+
+    var fig2 = BTViz.figure('#fig-graph', { title: 'Greedy descent towards a query point', legend: [{ token: 'node-active', label: 'visited' }, { token: 'key-found', label: 'nearest' }, { token: 'key-compare', label: 'candidate' }] });
+    var clicked = BTViz.el('span.bt-chip', 'click the plane');
+    fig2.toolbar.append(clicked);
+    var gv = new BTViz.GraphView(fig2.stage, { height: 280,
+      onPlaneClick: function (x, y) { clicked.textContent = 'onPlaneClick(' + x.toFixed(1) + ', ' + y.toFixed(1) + ')'; } });
+    var g = BTViz.rng(12), nodes = [], edges = [], i, j;
+    for (i = 0; i < 26; i++) nodes.push({ id: 'v' + i, x: g() * 100, y: g() * 60 });
+    var d = function (a, b) { return Math.hypot(a.x - b.x, a.y - b.y); };
+    nodes.forEach(function (a) {
+      nodes.filter(function (b) { return b !== a; }).sort(function (p, q) { return d(a, p) - d(a, q); }).slice(0, 3)
+        .forEach(function (b) { if (!edges.some(function (e) { return e.from === b.id && e.to === a.id; })) edges.push({ from: a.id, to: b.id }); });
+    });
+    var q = { id: 'q', x: 82, y: 14, label: 'query', shape: 'cross' };
+    var cur = nodes[0], steps = [], visited = {}, path = {};
+    nodes.forEach(function (n2) { if (n2.x < cur.x) cur = n2; });
+    for (i = 0; i < 20; i++) {
+      visited[cur.id] = 'active';
+      var nb = edges.filter(function (e) { return e.from === cur.id || e.to === cur.id; }).map(function (e) { return nodes.filter(function (n2) { return n2.id === (e.from === cur.id ? e.to : e.from); })[0]; });
+      var hl = { nodes: BTViz.clone(visited), edges: BTViz.clone(path) };
+      nb.forEach(function (n2) { if (!hl.nodes[n2.id]) hl.nodes[n2.id] = 'compare'; });
+      var best = nb.slice().sort(function (a, b) { return d(a, q) - d(b, q); })[0];
+      var stop = !best || d(best, q) >= d(cur, q);
+      if (stop) hl.nodes[cur.id] = 'found';
+      steps.push({ caption: stop ? 'No neighbour is closer to the query than ' + cur.id + ': stop. This is the greedy answer.' : 'At ' + cur.id + ': look at its ' + nb.length + ' neighbours and move to the one closest to the query (' + best.id + ').', state: hl });
+      if (stop) break;
+      path[cur.id + '>' + best.id] = 'active';
+      cur = best;
+    }
+    new BTViz.Stepper({ mount: fig2.controls, caption: fig2.caption, root: fig2.root, steps: steps, onStep: function (s) { gv.render({ nodes: nodes.concat([q]), edges: edges }, s.state); } });
+  })();
+
+  /* ------------------------------------------------------------------ self-tests */
+  var t = BTViz.models.BTree(4).insertMany([10, 20, 30, 40, 50, 60, 70]);
+  BTViz.selfTest('BTree(4) in-order keys', t.keys().join(' '), '10 20 30 40 50 60 70\n');
+  BTViz.selfTest('BTree(4) shape', t.snapshot().keys, [30, 60]);
+  BTViz.selfTest('B+tree(4) leaves', (function () { var out = [], n = BTViz.models.BPlusTree(4).insertMany([1, 2, 3, 4, 5]).root; while (!n.leaf) n = n.children[0]; for (; n; n = n.next) out.push(n.keys); return out; })(), [[1, 2], [3, 4, 5]]);
+  BTViz.selfTest('B+tree(5, {convention: \'guide\'}): the left leaf keeps the lower half and the separator is a copy of the first key of the right leaf',
+    (function () { var s = BTViz.models.BPlusTree(5, { convention: 'guide' }).insertMany([1, 2, 3, 4, 5]).snapshot(); return [s.keys, s.children.map(function (c) { return c.keys; })]; })(),
+    [[3], [[1, 2], [3, 4, 5]]]);
+})();
+</script>
+</body>
+</html>

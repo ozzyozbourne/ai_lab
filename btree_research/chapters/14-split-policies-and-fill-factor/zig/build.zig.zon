@@ -1,0 +1,12 @@
+.{
+    .name = .ch14_split_policies, // zon names are capped at 32 characters
+    .version = "0.0.0",
+    .fingerprint = 0x5eff55655fb35c10,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

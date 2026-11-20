@@ -1,0 +1,12 @@
+.{
+    .name = .ch09_pages_and_the_buffer_pool,
+    .version = "0.0.0",
+    .fingerprint = 0x5b31cdf3c35d9e51,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

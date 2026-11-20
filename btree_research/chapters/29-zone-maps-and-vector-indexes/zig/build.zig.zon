@@ -1,0 +1,12 @@
+.{
+    .name = .ch29_zone_maps_vector_indexes, // full slug is 33 chars; zon names stop at 32
+    .version = "0.0.0",
+    .fingerprint = 0x5bb7126a0def63b4,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

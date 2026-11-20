@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 15 — Redistribution and merge policies</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+</head>
+<body>
+
+<p class="bt-lead">A page is too full or too empty. Instead of looking at that page alone, pool its cells with
+the neighbours, cut the pool into pages again, and write the pages back. Depending on how many pages come out,
+the same routine is a split, a redistribution or a merge. Chapter text: <a href="../README.md">README.md</a>.
+Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</p>
+
+<div id="fig"></div>
+
+<h2>What to try</h2>
+<ul>
+  <li>Press play. The figure starts with the fixed scenario of the chapter's programs: an append, a split shared
+    between siblings, a redistribution that needs no new page, and a merge.</li>
+  <li>Set <em>siblings</em> to 1. The scenario is run again with that setting, up to the operation you were
+    looking at. Every overflow now creates a page, and the pages end up emptier. That is the plain split of
+    chapter 14.</li>
+  <li><em>Put</em>, <em>Delete</em> and <em>Append</em> work on the tree that is on screen. Step to any point of the
+    scenario and carry on from there with your own keys; the steps after that point are dropped.</li>
+  <li>Switch the append fast path off and put keys in ascending order (leave the key box empty and use
+    <em>Append</em>). Watch how much work balancing does to arrive at a worse result.</li>
+  <li>Go to the last step of the scenario, choose <em>merge: at empty</em> and delete keys. No cell ever changes
+    page. Then try <em>below 1/2</em>.</li>
+  <li>Tick <em>Predict</em> to be asked how many pages will come out before the cut is shown.</li>
+</ul>
+<p>A cell is drawn as wide as its byte size; a page holds 100 bytes. The parent holds divider cells
+(“keys ≤ 35 live in p0”) and one right-most pointer.</p>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="local.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, k = BTViz.k;
+  BTViz.page({
+    title: 'Redistribution and merge policies', chapter: 15,
+    prev: { href: '../../14-split-policies-and-fill-factor/viz/index.html', title: '14. Split policies and fill factor' },
+    next: { href: '../../16-bulk-loading/viz/index.html', title: '16. Bulk loading' }
+  });
+
+  var fig = BTViz.figure('#fig', {
+    title: 'One routine: flatten the siblings, cut again, write back', side: true,
+    legend: [
+      { token: 'key-inserted', label: 'new cell / new page' },
+      { token: 'node-active', label: 'siblings being balanced' },
+      { token: 'key-compare', label: 'cell that even-out looks at' },
+      { token: 'split', label: 'cut / cell that changed page' },
+      { token: 'key-deleted', label: 'over capacity' },
+      { token: 'merge', label: 'emptier than the policy allows' },
+      { token: 'free', label: 'page on the free list' }
+    ]
+  });
+
+  /* The toolkit puts the caption and the step controls under the whole figure body, and the
+   * side column is taller than a screen. Here they go under the drawing, in its column
+   * (and the legend of the drawing's colours with them), so that the pages, the sentence
+   * about them and the step buttons are on screen together. On a narrow screen the side
+   * panels then follow the controls instead of separating them from the drawing. */
+  var main = el('div.c15-main');
+  fig.stage.parentNode.insertBefore(main, fig.stage);
+  main.append(fig.stage, fig.caption, fig.controls, fig.legend);
+
+  /* ---------------------------------------------------------------- toolbar */
+  var key = el('input.bt-input#key', { type: 'number', inputmode: 'numeric', placeholder: 'key', 'aria-label': 'Key (1 to 999)', min: 1, max: 999 });
+  var size = el('input.bt-input#size', { type: 'number', inputmode: 'numeric', placeholder: 'bytes', 'aria-label': 'Cell size in bytes (1 to 33)', min: 1, max: 33 });
+  var btn = function (id, text, fn, primary, title) {
+    return el('button.bt-btn' + (primary ? '.bt-primary' : '') + '#' + id, { type: 'button', onclick: fn, title: title || null }, text);
+  };
+  var siblings = el('select.bt-select#siblings', { 'aria-label': 'Siblings balanced on overflow' },
+    el('option', { value: 1 }, '1 (split alone)'), el('option', { value: 2 }, '2 (B*)'), el('option', { value: 3, selected: true }, '3 (Turso)'));
+  var quick = el('input#quick', { type: 'checkbox', checked: true });
+  var merge = el('select.bt-select#merge', { 'aria-label': 'Merge policy on delete' },
+    el('option', { value: 'never' }, 'never'), el('option', { value: 'at_empty' }, 'at empty (Postgres)'),
+    el('option', { value: 'below_third', selected: true }, 'below 1/3 (Turso)'), el('option', { value: 'below_half' }, 'below 1/2 (textbook)'));
+  fig.toolbar.append(key, size,
+    btn('btn-put', 'Put', function () { run('put'); }, true), btn('btn-delete', 'Delete', function () { run('delete'); }),
+    btn('btn-append', 'Append', function () { run('append'); }, false, 'Put a key larger than every key in the tree'),
+    el('span.bt-toolbar-sep'),
+    el('label.bt-field', 'siblings', siblings), el('label.bt-field', quick, 'append fast path'), el('label.bt-field', 'merge', merge),
+    el('span.bt-toolbar-sep'),
+    btn('btn-scenario', 'Replay scenario', function () { scenario(true); }), btn('btn-reset', 'Clear', reset));
+  [siblings, quick, merge].forEach(function (c) { c.addEventListener('change', applyConfig); });
+  [key, size].forEach(function (c) { c.addEventListener('keydown', function (e) { if (e.key === 'Enter') run('put'); }); });
+
+  /* ------------------------------------------------------------ views + side */
+  var view = new Ch15.SiblingView(fig.stage);
+  var code = BTViz.codePanel(fig.side, 'balance', { title: 'balance (abridged)', maxHeight: 190 });
+  var statsBody = el('div.bt-panel-body.c15-stats');
+  fig.side.appendChild(el('div.bt-panel', el('div.bt-panel-title', 'Structural work so far'), statsBody));
+  var log = new BTViz.Log(fig.side, { title: 'Operations in this animation', max: 60 });
+
+  function lineOf(lang, marker, from) {
+    var lines = String(window.CHAPTER_CODE.balance[lang]).replace(/^\n+|\s+$/g, '').split('\n');
+    for (var i = from || 0; i < lines.length; i++) if (lines[i].indexOf(marker) >= 0) return i + 1;
+    return 1;
+  }
+  function span(markers) {      // {zig: [from, to], rust: [from, to]} → inclusive line ranges
+    var out = {};
+    ['zig', 'rust'].forEach(function (lang) {
+      var m = markers[lang] || markers.both, a = lineOf(lang, m[0]);
+      out[lang] = [[a, m[1] ? lineOf(lang, m[1], a - 1) : a]];
+    });
+    return out;
+  }
+  var LINES = {
+    pick: span({ both: ['// 1. pick', 'let start = '], zig: ['// 1. pick', 'const start = '] }),
+    flatten: span({ zig: ['// 2. flatten', '};'], rust: ['// 2. flatten', 'flat.push(cell)'] }),
+    pack: span({ zig: ['packLeft(sa'], rust: ['pack_left(sizes'] }),
+    move: span({ both: ['ends[k - 1] -= 1;', 'right_used += c;'] }),
+    stop: span({ zig: ['right_used + c > left_used - c) break'], rust: ['right_used + c > left_used - c { break'] }),
+    keep: span({ zig: ['while (ends[k - 1] > left_start + 1)'], rust: ['while ends[k - 1] > left_start + 1'] }),
+    noop: span({ both: ['// nothing to do'] }),
+    commit: span({ zig: ['// 5. commit', 'replaceRangeAssumeCapacity'], rust: ['// 5. commit', 'self.dividers.splice'] }),
+    quick: span({ zig: ['fn quickAppend', 'self.rightmost = new_id'], rust: ['fn quick_append', 'self.rightmost = new_id'] })
+  };
+
+  var stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, predict: false, interval: 1500,
+    onStep: function (step) {
+      view.render(step.state);
+      log.sync(stepper.steps, step.index);
+      code.highlight(step.lines || []);
+      var s = step.state.tree.stats;
+      statsBody.textContent = '';
+      [['balance runs', s.balances], ['append fast paths', s.quickAppends], ['pages allocated', s.allocated], ['pages freed', s.freed],
+        ['leaf pages rewritten', s.leafWrites], ['cells that changed page', s.moved], ['… onto an existing page', s.movedToOld]
+      ].forEach(function (r) { statsBody.append(el('span', r[0]), el('b', String(r[1]))); });
+    }
+  });
+
+  /* ------------------------------------------------- trace events → steps */
+  var POLICY_TEXT = {
+    never: 'Policy “never”: nothing else happens, however empty the page gets.',
+    at_empty: 'Policy “at empty”: a page is only unlinked when its last cell is gone.',
+    below_third: 'Policy “below 1/3”: rebalance when more than 2/3 of the page is free.',
+    below_half: 'Policy “below 1/2”: rebalance when less than half the page is used.'
+  };
+  function pagesText(sizes, ends) {
+    var out = [], first = 0;
+    ends.forEach(function (end) { var t = 0; for (var i = first; i < end; i++) t += sizes[i]; out.push(t); first = end; });
+    return out.join(' | ');
+  }
+  function mark(ids, state, into) { into = into || {}; ids.forEach(function (id) { into[id] = state; }); return into; }
+  function count(n, one, many) { return n + ' ' + (n === 1 ? one : many || one + 's'); }
+  function listText(parts) { return parts.length < 2 ? parts.join('') : parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1]; }
+  function total(sizes) { return sizes.reduce(function (a, b) { return a + b; }, 0); }
+  function kindOf(oldCnt, newCnt) { return newCnt > oldCnt ? 'a split' : newCnt < oldCnt ? 'a merge' : 'a redistribution'; }
+  function pageOf(snap, id) { return snap.children.filter(function (c) { return c.id === id; })[0]; }
+  /* Every sentence below is built from the event and the snapshot taken with it, never from
+   * what the fixed scenario happens to do, so it stays true for any keys, sizes and policies. */
+  function routeText(ev) {
+    var div = ev.tree.dividers, to = '<b>p' + ev.page + '</b>. ';
+    if (!div.length) return 'The parent has no divider yet, so every key goes to its only child, ' + to;
+    if (ev.child < div.length) return 'In the parent, the first divider that is ≥ the key is ' + div[ev.child].key + ', which points to ' + to;
+    return 'No divider in the parent is ≥ the key (the largest is ' + div[div.length - 1].key + '), so it goes to the right-most child, ' + to;
+  }
+  function packQuestion(sizes, ends, cnt, cap) {
+    /* One choice per possible outcome, 1 … cnt + 1 pages (a balance adds at most one page),
+     * and in any case up to what the model computed: the answer is always among the choices. */
+    var opts = [];
+    for (var n = 1; n <= Math.max(cnt + 1, ends.length); n++) opts.push(n);
+    return {
+      prompt: total(sizes) + ' bytes of cells from ' + count(cnt, 'page') + ', ' + cap + ' bytes per page. How many pages will the cut need?',
+      choices: opts.map(function (n) { return n + ' — ' + kindOf(cnt, n); }),
+      values: opts, answer: opts.indexOf(ends.length),
+      explain: 'Packing left gives ' + pagesText(sizes, ends) + '.'
+    };
+  }
+  /* Closing caption of the scenario: what the events did and what the tree looks like now. */
+  function scenarioSummary(events, snap, cfg) {
+    var n = { quick: 0, 'a split': 0, 'a redistribution': 0, 'a merge': 0, empty: 0 };
+    events.forEach(function (ev) {
+      if (ev.type === 'quick') n.quick++;
+      else if (ev.type === 'commit') n[kindOf(ev.oldCnt, ev.newCnt)]++;
+      else if (ev.type === 'remove-empty') n.empty++;
+    });
+    var did = [];
+    if (n.quick) did.push(count(n.quick, 'append on the fast path', 'appends on the fast path'));
+    if (n['a split']) did.push(count(n['a split'], 'split'));
+    if (n['a redistribution']) did.push(count(n['a redistribution'], 'redistribution'));
+    if (n['a merge']) did.push(count(n['a merge'], 'merge'));
+    if (n.empty) did.push(count(n.empty, 'empty page unlinked', 'empty pages unlinked'));
+    var used = snap.children.map(function (c) { return c.used; });
+    var isDefault = cfg.insertSiblings === 3 && cfg.quickAppend && cfg.merge === 'below_third';
+    return {
+      leaves: used.length, counts: n,
+      text: 'End of the scenario: ' + count(used.length, 'leaf', 'leaves') + ' holding ' + listText(used.map(String)) + ' bytes, after ' +
+        (did.length ? listText(did) : 'no structural change') + '. ' +
+        (isDefault ? 'These are the settings of the chapter’s programs, and this is the tree they print.'
+          : 'The chapter’s programs run it with siblings = 3, the fast path on and merge below 1/3; you chose something else, so compare.') +
+        ' Now try your own keys, or change the policies and replay.'
+    };
+  }
+
+  function toSteps(events) {
+    var steps = [], picked = [];
+    events.forEach(function (ev, idx) {
+      var st = { tree: ev.tree }, cap = ev.tree.capacity, cap1 = '', lines = null, question = null, logLine = null;
+      var sizes = ev.strip ? ev.strip.flat.map(function (c) { return c.size; }) : null;
+      switch (ev.type) {
+        case 'insert':
+          st.cells = mark([ev.key], 'inserted');
+          st.pages = mark([ev.page], ev.overfull ? 'deleted' : 'active');
+          cap1 = (ev.existing ? 'Overwrite ' : 'Put ') + k(ev.key, 'inserted') + ' (' + ev.size + ' bytes). ' + routeText(ev) +
+            (ev.overfull ? 'The page is now over capacity. That is allowed for a moment (“overfull is represented, not prevented”), but it must be repaired before <code>put</code> returns.'
+              : 'It fits, so nothing else happens.');
+          logLine = { html: 'put ' + ev.key + ':' + ev.size + ' → p' + ev.page, state: 'inserted' };
+          break;
+        case 'quick':
+          st.cells = mark([ev.key], 'inserted');
+          st.pages = mark([ev.newPage], 'inserted', mark([ev.oldPage], 'found'));
+          lines = LINES.quick;
+          var oldUsed = pageOf(ev.tree, ev.oldPage).used;
+          cap1 = '<b>Append fast path.</b> The cell that did not fit is the last cell of the right-most leaf, so this is probably an append. It gets a fresh page p' + ev.newPage +
+            ' to itself; p' + ev.oldPage + ' stays as full as it was before the put (' + oldUsed + '/' + cap + ' bytes' + (oldUsed === cap ? ', 100% full' : '') +
+            ') and no existing cell moves. The parent gets one new divider.';
+          logLine = { html: '&nbsp;&nbsp;fast path: new page p' + ev.newPage, state: 'found' };
+          break;
+        case 'pick':
+          picked = ev.ids;
+          st.pages = mark(ev.ids, 'active', {});
+          st.pages[ev.page] = ev.why === 'overflow' ? 'deleted' : 'merge';
+          lines = LINES.pick;
+          cap1 = '<b>1. Pick siblings.</b> p' + ev.page + ' is ' + (ev.why === 'overflow' ? 'overfull' : 'emptier than the policy allows') + '. Take it together with its neighbours, at most ' +
+            ev.window + ' pages: ' + ev.ids.map(function (id) { return '<b>p' + id + '</b>'; }).join(', ') + '.' +
+            (ev.ids.length > 1 ? '' : ev.window === 1 ? ' With one page this is the plain split of chapter 14.' : ' It is the only leaf, so there is no neighbour to share with.');
+          break;
+        case 'flatten':
+          st.strip = ev.strip;
+          st.pages = mark(picked, 'active');
+          lines = LINES.flatten;
+          cap1 = '<b>2. Flatten.</b> Copy every cell of the siblings into one scratch array, in key order: ' + count(sizes.length, 'cell') + ', ' +
+            total(sizes) + ' bytes. Page boundaries no longer matter; the dashed lines show where they were. Dividers stay in the parent: they are routing information, not data.';
+          break;
+        case 'pack':
+          st.strip = ev.strip;
+          st.pages = mark(picked, 'active');
+          lines = LINES.pack;
+          cap1 = '<b>3a. Pack left.</b> Fill each page from the left as far as it goes: ' + pagesText(sizes, ev.strip.ends) + '. This is the smallest number of pages the cells can fit in: <b>' +
+            ev.strip.ends.length + '</b>' + (ev.strip.ends.length > 1 ? ', but the last one gets only what is left over (' + total(sizes.slice(ev.strip.ends[ev.strip.ends.length - 2])) + ' bytes).' : '.');
+          question = packQuestion(sizes, ev.strip.ends, ev.cnt, cap);
+          break;
+        case 'even-move':
+          st.strip = ev.strip;
+          st.pages = mark(picked, 'active');
+          st.cells = mark([ev.strip.flat[ev.info.cell].key], 'compare');
+          lines = LINES.move;
+          cap1 = '<b>3b. Even out</b>, boundary ' + ev.info.k + ' (from the right). Moving ' + k(ev.strip.flat[ev.info.cell].key, 'compare') + ' (' + ev.info.c + ' bytes) to the right gives ' +
+            ev.info.left + ' | ' + ev.info.right + '. The right page is not bigger than the left, so the cell moves.';
+          break;
+        case 'even-stop':
+          st.strip = ev.strip;
+          st.pages = mark(picked, 'active');
+          st.cells = mark([ev.strip.flat[ev.info.cell].key], 'compare');
+          lines = LINES.stop;
+          cap1 = '<b>3b. Even out</b>, boundary ' + ev.info.k + '. Moving ' + k(ev.strip.flat[ev.info.cell].key, 'compare') + ' (' + ev.info.c + ' bytes) would give ' +
+            (ev.info.left - ev.info.c) + ' | ' + (ev.info.right + ev.info.c) + ': the right page would be the bigger one. Stop here; ' + ev.info.left + ' | ' + ev.info.right + ' is good enough.';
+          break;
+        case 'even-keep':
+          st.strip = ev.strip;
+          st.pages = mark(picked, 'active');
+          lines = LINES.keep;
+          cap1 = '<b>3b. Even out</b>, boundary ' + ev.info.k + '. The left page is down to one cell, and a page always keeps at least one. Stop.';
+          break;
+        case 'noop':
+          st.pages = mark(ev.ids, 'active');
+          lines = LINES.noop;
+          cap1 = 'The cut lands exactly where the pages already end. Nothing is written: the siblings cannot be arranged any better, and being underfull is allowed.';
+          logLine = { html: '&nbsp;&nbsp;balance: nothing to do', state: null };
+          break;
+        case 'commit':
+          st.pages = mark(ev.fresh, 'inserted', mark(ev.ids, 'active'));
+          st.cells = mark(Object.keys(ev.movedKeys), 'split');
+          lines = LINES.commit;
+          var kind = kindOf(ev.oldCnt, ev.newCnt);
+          cap1 = '<b>4. Write back:</b> ' + count(ev.oldCnt, 'page') + ' in, ' + ev.newCnt + ' out — <b>' + kind + '</b>. ' +
+            (ev.fresh.length ? 'New page ' + ev.fresh.map(function (id) { return 'p' + id; }).join(', ') + ' allocated. ' : '') +
+            (ev.gone.length ? 'p' + ev.gone.join(', p') + ' goes to the free list. ' : '') +
+            ev.moved + ' cell' + (ev.moved === 1 ? '' : 's') + ' changed page' + (ev.movedToOld ? ', ' + ev.movedToOld + ' of them onto a page that already existed (Postgres never allows that)' : '') +
+            '. ' + (ev.newCnt > 1 ? 'Each page except the last gets a new divider: the largest key it now holds.' : 'The one page that is left takes over the key range of all the siblings it replaces.');
+          logLine = { html: '&nbsp;&nbsp;balance: ' + ev.oldCnt + ' in, ' + ev.newCnt + ' out (' + kind.replace(/^a /, '') + ')', state: ev.newCnt > ev.oldCnt ? 'split' : ev.newCnt < ev.oldCnt ? 'merge' : 'active' };
+          break;
+        case 'delete':
+          st.pages = mark([ev.page], ev.wants ? 'merge' : 'active');
+          cap1 = 'Delete ' + k(ev.key, 'deleted') + ' from p' + ev.page + ': ' + ev.used + '/' + cap + ' bytes left. ' +
+            (ev.lone ? 'It is the only leaf, so there is nobody to merge with.'
+              : POLICY_TEXT[ev.policy] + (ev.wants ? ' That is the case now.' : ev.policy === 'never' ? '' : ev.used === 0 && ev.policy === 'at_empty' ? ' The page is empty.' : ' Not the case: done.'));
+          logLine = { html: 'delete ' + ev.key + ' → p' + ev.page, state: 'deleted' };
+          break;
+        case 'remove-empty':
+          cap1 = 'p' + ev.page + ' is empty and is unlinked. ' + (ev.toRight
+            ? 'Removing its divider hands its key range to the page on its right; no key on any other page changes and no cell moves.'
+            : 'It was the right-most page, so the last divider is dropped and its left neighbour becomes right-most. (Postgres never deletes the right-most page of a level.)');
+          logLine = { html: '&nbsp;&nbsp;p' + ev.page + ' freed (empty)', state: 'merge' };
+          break;
+      }
+      var step = { caption: cap1, state: st, lines: lines, log: logLine };
+      if (question && idx > 0) step.question = question;
+      steps.push(step);
+    });
+    return steps;
+  }
+
+  /* --------------------------------------------------------------- driving */
+  /* `tree` is the model after the last step of the loaded timeline. `loaded` says what
+   * the timeline is: the fixed scenario, or the reader's own operation. Every step that ends
+   * an operation carries opEnd, so the tree it shows is a consistent one to carry on from. */
+  var tree, loaded = 'own', rand = BTViz.rng(15);
+  var SIBLING_TEXT = { 1: 'siblings = 1', 2: 'siblings = 2', 3: 'siblings = 3' };
+  var MERGE_TEXT = { never: 'merge never', at_empty: 'merge at empty', below_third: 'merge below 1/3', below_half: 'merge below 1/2' };
+  function chosenConfig() { return { capacity: 100, insertSiblings: +siblings.value, quickAppend: quick.checked, merge: merge.value }; }
+  function configText(c) { return SIBLING_TEXT[c.insertSiblings] + ', append fast path ' + (c.quickAppend ? 'on' : 'off') + ', ' + MERGE_TEXT[c.merge]; }
+  function idleOf(t, text) { return { caption: text, state: { tree: t.snapshot() }, opEnd: true }; }
+  function keysOf(t) {
+    var out = [];
+    t.snapshot().children.forEach(function (c) { c.cells.forEach(function (x) { out.push(x.key); }); });
+    return out;
+  }
+  /* One operation on `t`, as steps; null if the model refused it (and changed nothing). */
+  function traced(t, op, v, sz) {
+    t.trace = [];
+    var ok = op === 'put' ? t.put(v, sz) : t.delete(v), events = t.trace;
+    t.trace = null;
+    if (!ok) return null;
+    var steps = toSteps(events);
+    steps[steps.length - 1].opEnd = true;
+    return { steps: steps, events: events };
+  }
+  function reset() {
+    tree = new Ch15.PageTree(chosenConfig());
+    loaded = 'own';
+    stepper.setSteps([idleOf(tree, 'An empty tree is one empty leaf. Put some cells: type a key and a size (1 to 33 bytes), or leave both empty for random values.')]);
+  }
+  /* The tree the reader is looking at, as a model to run the next operation on. A step in
+   * the middle of an operation shows a tree that is not valid on its own (a page may be
+   * overfull, or its cells may be in the scratch array), so that operation is finished first. */
+  function displayedTree() {
+    var steps = stepper.steps, at = stepper.index, end = at;
+    while (end < steps.length - 1 && !steps[end].opEnd) end++;
+    return { tree: Ch15.PageTree.restore(steps[end].state.tree, chosenConfig()), finished: end > at, dropped: end < steps.length - 1 };
+  }
+  /* A typed value: null if the box is empty, the number if it is a whole number written in
+   * digits, NaN for anything else (12.7, 1e2, -3). Nothing is rounded or clamped. */
+  function typed(input) {
+    var raw = input.value.trim();
+    if (raw === '') return input.validity && input.validity.badInput ? NaN : null;
+    return /^\d+$/.test(raw) ? +raw : NaN;
+  }
+  function refuse(html) { stepper.pause(); fig.caption.innerHTML = html + ' Nothing was changed.'; }
+  function run(op) {
+    var v = typed(key), sz = typed(size);
+    if (op === 'append' && v !== null) { refuse('<b>Append</b> picks the key itself, a little larger than the largest key in the tree. Empty the key box, or use <b>Put</b> for a key of your own.'); return; }
+    if (v !== null && !(v >= 1 && v <= 999)) { refuse('A key must be a whole number from 1 to 999, typed in digits.'); return; }
+    if (op !== 'delete' && sz !== null && !(sz >= 1 && sz <= 33)) {
+      refuse('A cell must be a whole number of bytes from 1 to 33: at most a third of a page, so that every page can hold several cells.');
+      return;
+    }
+    var base = displayedTree(), t = base.tree, have = keysOf(t);
+    if (op === 'append') {
+      v = (have.length ? Math.max.apply(null, have) : 0) + rand.int(1, 4);
+      if (v > 999) { refuse('The largest key in the tree is ' + k(Math.max.apply(null, have)) + ' and keys end at 999, so there is no room to append.'); return; }
+      op = 'put';
+    }
+    if (op === 'delete') {
+      if (v === null) {
+        if (!have.length) { refuse('The tree on screen is empty, so there is no key to delete.'); return; }
+        v = rand.pick(have);
+      }
+    } else {
+      if (v === null) v = rand.int(1, 99);
+      if (sz === null) sz = rand.int(15, 30);
+    }
+    var before = idleOf(t, ''), did = traced(t, op, v, sz);
+    if (!did) { refuse(op === 'put' ? 'The model refused the cell.' : 'Key ' + k(v) + ' is not in the tree on screen.'); return; }
+    before.caption = (op === 'put' ? 'Next: put ' + k(v, 'inserted') + ' with ' + sz + ' bytes' : 'Next: delete ' + k(v, 'deleted')) + ', with ' + configText(t.cfg) + '.' +
+      (base.finished ? ' The operation that was on screen was finished first; this is the tree after it.' : '') +
+      (base.dropped ? ' The steps that came after it were dropped.' : '');
+    tree = t;
+    loaded = 'own';
+    stepper.setSteps([before].concat(did.steps), { play: true });
+    key.value = size.value = '';
+  }
+  /* The programs' fixed operations under any configuration: {tree, steps, events, summary}.
+   * Every operation ends on an opEnd step, and so do the opening and the closing step, so
+   * the number of opEnd steps is the same for every configuration. */
+  function buildScenario(cfg) {
+    var t = new Ch15.PageTree(cfg), events = [];
+    var steps = [idleOf(t, 'The fixed scenario of the chapter’s programs (section 2 of their output), run with the settings chosen above: ' + configText(t.cfg) +
+      '. Press play, or step with → and ←.')];
+    Ch15.SCENARIO.forEach(function (part) {
+      (part.puts || []).map(function (c) { return traced(t, 'put', c[0], c[1]); })
+        .concat((part.deletes || []).map(function (d) { return traced(t, 'delete', d); }))
+        .forEach(function (did) { events = events.concat(did.events); steps = steps.concat(did.steps); });
+    });
+    var summary = scenarioSummary(events, t.snapshot(), t.cfg);
+    steps.push(idleOf(t, summary.text));
+    return { tree: t, steps: steps, events: events, summary: summary };
+  }
+  function opEnds(steps) {
+    var out = [];
+    steps.forEach(function (st, i) { if (st.opEnd) out.push(i); });
+    return out;
+  }
+  function scenario(play) {
+    var built = buildScenario(chosenConfig());
+    tree = built.tree;
+    loaded = 'scenario';
+    stepper.setSteps(built.steps, { play: !!play });
+    return tree;
+  }
+  /* A policy was changed. The reader's own operations pick the new settings up when they
+   * run (their "Next:" caption names them). The scenario's steps were computed with the old
+   * settings, so it is run again, and shown after the same number of finished operations as
+   * before: at the end if the reader was at the end, else before the operation on screen. */
+  function applyConfig() {
+    if (loaded !== 'scenario') return;
+    var before = opEnds(stepper.steps), at = stepper.index, done = 0;
+    while (done + 1 < before.length && before[done + 1] <= at) done++;
+    var built = buildScenario(chosenConfig()), after = opEnds(built.steps);
+    tree = built.tree;
+    stepper.setSteps(built.steps, { index: after[done], instant: true });
+    if (done > 0) {
+      fig.caption.insertBefore(el('p.c15-note', 'Settings changed to ' + configText(tree.cfg) + '. The scenario was run again with them; this is ' +
+        (done === after.length - 1 ? 'its end.' : 'the tree after its first ' + count(Math.min(done, after.length - 2), 'operation') + '.')), fig.caption.firstChild);
+    }
+  }
+
+  /* Self-check of the captions: replay the scenario under all 24 policy combinations, plus
+   * a delete that merges three leaves into one, and compare what the captions and the
+   * Predict answers say with the model's own state. Returns 'ok' or the first mismatch. */
+  function checkCaptions() {
+    var bad = [], runs = [], OPS = 0;
+    Ch15.SCENARIO.forEach(function (part) { OPS += (part.puts || []).length + (part.deletes || []).length; });
+    [1, 2, 3].forEach(function (sib) {
+      [true, false].forEach(function (q) {
+        ['never', 'at_empty', 'below_third', 'below_half'].forEach(function (m) {
+          var cfg = { capacity: 100, insertSiblings: sib, quickAppend: q, merge: m }, b = buildScenario(cfg);
+          if (opEnds(b.steps).length !== OPS + 2) bad.push(sib + '/' + q + '/' + m + ': ' + opEnds(b.steps).length + ' operation ends');
+          runs.push({ name: sib + '/' + q + '/' + m, tree: b.tree, events: b.events, steps: b.steps.slice(1, -1), summary: b.summary });
+        });
+      });
+    });
+    var t = new Ch15.PageTree({ capacity: 100, merge: 'never' }), i;
+    for (i = 1; i <= 13; i++) t.put(i, 25);
+    [2, 3, 4, 6, 7, 8, 10, 11, 12].forEach(function (d) { t.delete(d); });
+    t.cfg.merge = 'below_third';
+    var last = traced(t, 'delete', 13);
+    runs.push({ name: '3 into 1', tree: t, events: last.events, steps: last.steps, summary: null, wantPages: 1 });
+
+    runs.forEach(function (run) {
+      var fail = function (what) { bad.push(run.name + ': ' + what); };
+      var plain = function (step) { return step.caption.replace(/<[^>]+>/g, ''); };
+      run.events.forEach(function (ev, j) {
+        var step = run.steps[j], text = plain(step), q = step.question;
+        if (ev.type === 'pack') {
+          if (!q || q.answer < 0 || q.values[q.answer] !== ev.strip.ends.length || parseInt(q.choices[q.answer], 10) !== ev.strip.ends.length) fail('predict answer is not ' + ev.strip.ends.length);
+          if (q && run.wantPages && q.values[q.answer] !== run.wantPages) fail('expected ' + run.wantPages + ' page');
+        } else if (ev.type === 'insert') {
+          var right = ev.tree.dividers.length > 0 && ev.page === ev.tree.rightmost;
+          if (right !== /right-most child/.test(text) || text.indexOf('p' + ev.page + '.') < 0) fail('routing caption of put ' + ev.key);
+        } else if (ev.type === 'quick') {
+          var old = pageOf(ev.tree, ev.oldPage);
+          if (text.indexOf('(' + old.used + '/100 bytes') < 0 || (old.used === 100) !== /100% full/.test(text)) fail('fast-path caption for p' + ev.oldPage);
+        }
+      });
+      if (run.summary) {
+        var dump = run.tree.dump().split('\n').slice(1, -1), s = run.summary, st = run.tree.stats;
+        var want = dump.map(function (line) { return String(parseInt(line.split('/')[0].replace(/^\s*p\d+/, ''), 10)); });
+        if (s.text.indexOf(count(dump.length, 'leaf', 'leaves') + ' holding ' + listText(want) + ' bytes') < 0) fail('closing caption, leaves');
+        if (s.counts.quick !== st.quickAppends || s.counts['a split'] + s.counts['a redistribution'] + s.counts['a merge'] !== st.balances ||
+          s.counts['a split'] + s.counts.quick !== st.allocated || s.counts['a merge'] + s.counts.empty > st.freed) fail('closing caption, counts');
+      }
+    });
+    return bad.length ? bad.join('\n') : 'ok';
+  }
+
+  /* Self-check of Put / Delete / Append: they run on a model rebuilt from the step on screen.
+   * For every step that ends an operation, under all 24 policy combinations, the rebuilt
+   * model must be the model that executed exactly the operations up to that step: same
+   * pages, same free list, same counters, and the same answer to one more put and delete. */
+  function checkDisplayed() {
+    var bad = [], ops = [];
+    Ch15.SCENARIO.forEach(function (part) {
+      (part.puts || []).forEach(function (c) { ops.push(function (t) { t.put(c[0], c[1]); }); });
+      (part.deletes || []).forEach(function (d) { ops.push(function (t) { t.delete(d); }); });
+    });
+    var text = function (t) { return t.dump() + t.statsLine() + ' free=' + t.freeIds.join(',') + ' count=' + t.count + ' pages=' + t.pages.length; };
+    [1, 2, 3].forEach(function (sib) {
+      [true, false].forEach(function (q) {
+        ['never', 'at_empty', 'below_third', 'below_half'].forEach(function (m) {
+          var cfg = { capacity: 100, insertSiblings: sib, quickAppend: q, merge: m }, steps = buildScenario(cfg).steps;
+          var want = new Ch15.PageTree(cfg);
+          opEnds(steps).slice(0, -1).forEach(function (at, n) {
+            if (n > 0) ops[n - 1](want);
+            var got = Ch15.PageTree.restore(steps[at].state.tree, cfg), name = sib + '/' + q + '/' + m + ' after ' + n + ' operations: ';
+            if (text(got) !== text(want)) { bad.push(name + 'rebuilt tree differs'); return; }
+            var twin = Ch15.PageTree.restore(want.snapshot(), cfg);
+            got.put(33, 33); twin.put(33, 33); got.delete(10); twin.delete(10);
+            if (text(got) !== text(twin)) bad.push(name + 'next operation differs');
+          });
+        });
+      });
+    });
+    return bad.length ? bad.join('\n') : 'ok';
+  }
+
+  /* --------------------------------------------- self-tests against the programs */
+  BTViz.selfTest('scenario: dumps + counters', Ch15.reportScenario(), window.CH15_EXPECTED.scenario);
+  var shown = scenario(false);
+  var lines = window.CH15_EXPECTED.scenario.split('\n');
+  var at = lines.lastIndexOf('parent: (p0, 30) right=p1');
+  BTViz.selfTest('animation: final state', shown.dump(), lines.slice(at, at + 3).join('\n'));
+  BTViz.selfTest('captions follow the model', checkCaptions(), 'ok');
+  BTViz.selfTest('buttons act on the tree on screen', checkDisplayed(), 'ok');
+  window.CH15_FIG = { stepper: stepper, view: view, tree: function () { return tree; }, loaded: function () { return loaded; },
+    checkCaptions: checkCaptions, checkDisplayed: checkDisplayed, typed: typed };
+})();
+</script>
+</body>
+</html>

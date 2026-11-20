@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 27 — B-tree vs LSM-tree</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  /* Chapter-local layout only; every colour comes from the toolkit's tokens. */
+  .c27-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .c27-card { border: 1px solid var(--bt-border); border-radius: 8px; padding: 6px 10px; background: var(--bt-surface-2); min-width: 0; }
+  .c27-card h3 { margin: 0 0 2px; font-size: .86rem; }
+  .c27-card p { margin: 0; font: .8rem/1.5 var(--bt-mono); color: var(--bt-muted); overflow-wrap: anywhere; }
+  .c27-card b { color: var(--bt-text); font-variant-numeric: tabular-nums; }
+  .c27-box + .c27-box { border-top: 1px dashed var(--bt-border); padding-top: 10px; }
+  .c27-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; font-size: .9rem; margin-bottom: 4px; }
+  .c27-head span { color: var(--bt-muted); font-size: .8rem; }
+  .c27-row { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; align-items: start; padding: 6px 0; }
+  .c27-row + .c27-row { border-top: 1px solid var(--bt-border); }
+  .c27-label { font-size: .8rem; line-height: 1.3; }
+  .c27-label small { display: block; color: var(--bt-muted); font-size: .72rem; }
+  .c27-runs { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+  .c27-run { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; border: 1.5px dashed var(--bt-border); border-radius: 8px; min-width: 0; }
+  .c27-blk { display: inline-flex; gap: 3px; align-items: center; padding: 3px 4px; border-radius: 6px;
+             border: 1.5px solid var(--s, var(--bt-border)); background: var(--s-bg, var(--bt-surface)); }
+  .c27-blk.is-index { font: .68rem/1.2 var(--bt-mono); color: var(--bt-muted); padding: 3px 5px; }
+  .c27-key { font: .78rem/1.2 var(--bt-mono); padding: 1px 4px; border-radius: 4px; min-width: 1.5em; text-align: center;
+             border: 1px solid var(--s, transparent); background: var(--s-bg, transparent); color: var(--bt-text); }
+  .c27-key.is-tomb { text-decoration: line-through; }
+  .c27-key.is-empty { color: var(--bt-muted); border: 1px dashed var(--bt-border); }
+  .c27-none { color: var(--bt-muted); font-size: .8rem; }
+  .c27-err { color: var(--bt-key-deleted); font-size: .84rem; min-height: 1.2em; flex-basis: 100%; }
+  .c27-points li { margin: .35em 0; }
+  #code { margin-top: 14px; }
+  @media (max-width: 520px) {
+    .c27-row { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+    .c27-label small { display: inline; margin-left: 6px; }
+  }
+  /* Phone: the toolkit stacks the side column (chart, log) between the picture
+     and its caption. Locally, put the caption and the step controls directly
+     under the picture and the side column after them. */
+  @media (max-width: 820px) {
+    #fig .bt-figure { display: flex; flex-direction: column; }
+    #fig .bt-figure-body { display: contents; }
+    #fig .bt-side { order: 1; }
+    #fig .bt-legend { order: 2; }
+  }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">One stream of operations goes into a B+tree and into an LSM-tree. Both live on the same kind of
+block device, which does nothing but count: blocks read, blocks written, blocks in use. Watch who pays, and when.</p>
+
+<div id="fig"></div>
+<div id="code"></div>
+
+<h2>What to look for</h2>
+<ul class="c27-points">
+  <li><strong>Writes.</strong> Every put into the B+tree reads the path and rewrites at least one whole leaf block.
+    The LSM-tree puts the key into the memtable and touches no block at all, until the memtable is full. Then one
+    flush writes all its keys together.</li>
+  <li><strong>The bill arrives later.</strong> Press <em>Chapter trace</em> and step to <em>put 3</em> and
+    <em>put 14</em>: level 0 is full, and a compaction reads and rewrites every block of level 0 and level 1 in one
+    operation. The bars on the right show the totals; the spike is in the single step.</li>
+  <li><strong>Reads.</strong> A get on the B+tree costs one block per level, hit or miss. The LSM-tree asks the
+    memtable, then each run from newest to oldest. A run is a small static tree: a run whose key range covers the key
+    costs one block per index level plus one data block (2 or 3 blocks here), even if the key is not in it. Tick
+    <em>Predict</em> to guess the cost of each get.</li>
+  <li><strong>Deletes and overwrites.</strong> <em>delete 15</em> writes a tombstone (struck through) without looking
+    for the key. The old value and the tombstone both stay on the device until a compaction meets them.</li>
+  <li><strong>The three amplifications.</strong> The last line of each card (<em>amp</em>) gives the chapter's ratios for the
+    operations completed so far: <em>write</em> = entry slots written per put or delete (a block has 3 slots),
+    <em>read</em> = blocks read per get, <em>space</em> = blocks in use divided by the blocks the live keys would fill
+    if packed. A dash means there is nothing to divide by yet.</li>
+  <li><strong>Growth factor.</strong> A larger growth factor makes each level hold more before it is merged down:
+    fewer levels to search, more rewriting per level. To see it, press <em>12 random writes</em> a dozen times with
+    growth 2, then again with growth 4, and compare the levels. In so short a run the amplification lines can go
+    either way; section 6 of the programs' output shows the trade over 12000 operations.</li>
+  <li><strong>What the counters leave out.</strong> Nothing is cached: both structures pay for every block they look
+    at, index blocks included, on every operation. There is no write-ahead log either, so the two do <em>not</em>
+    promise the same thing: a B+tree put is on the device when it returns, while an LSM put sits in the memtable, in
+    RAM only, until the next flush. A log that made every LSM put durable at once would add about one block write per
+    put. There is no bloom filter either: with one per run, most of the probes that find nothing here would cost no
+    block. The README puts numbers on all three.</li>
+</ul>
+<p>Text and code: <a href="../README.md">chapter 27 README</a>. Second page:
+<a href="bepsilon.html">a buffered (B-epsilon) node</a>, the design between the two. The counts shown here are
+checked against the output of the chapter's Zig and Rust programs (self-tests below).</p>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="local.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, k = BTViz.k;
+  BTViz.page({
+    title: 'B-tree vs LSM-tree', chapter: 27,
+    prev: { href: '../../26-allocators-handles-and-static-memory/viz/index.html', title: 'Chapter 26: allocators, handles and static memory' },
+    next: { href: 'bepsilon.html', title: 'Page 2: a buffered (B-epsilon) node' }
+  });
+
+  var fig = BTViz.figure('#fig', {
+    title: 'The same operations on a B+tree and on an LSM-tree', side: true,
+    legend: [{ token: 'node-active', label: 'block read' }, { token: 'page-dirty', label: 'block written' },
+             { token: 'key-inserted', label: 'key written' }, { token: 'key-found', label: 'key found' },
+             { token: 'key-deleted', label: 'tombstone / deleted' }]
+  });
+  fig.legend.appendChild(el('span.bt-legend-item', el('span.c27-key.is-empty', '·'), 'free memtable slot'));
+
+  /* ------------------------------------------------------------ toolbar */
+  var KEY_MIN = 0, KEY_MAX = 999, SCAN_SPAN = 10;
+  var keyInput = el('input.bt-input#key', { type: 'number', inputmode: 'numeric', placeholder: 'key', min: KEY_MIN, max: KEY_MAX, step: 1,
+                                            'aria-label': 'Key (whole number, 0 to 999)' });
+  var growthSel = el('select.bt-select#growth', { 'aria-label': 'LSM growth factor' });
+  [2, 3, 4].forEach(function (g) { growthSel.appendChild(el('option', { value: g, selected: g === 2 }, 'growth ' + g)); });
+  var memSel = el('select.bt-select#memtable', { 'aria-label': 'Memtable size in keys' });
+  [2, 4, 6].forEach(function (m) { memSel.appendChild(el('option', { value: m, selected: m === 4 }, 'memtable ' + m)); });
+  var err = el('span.c27-err#err', { role: 'status', 'aria-live': 'polite' });
+  function btn(id, text, fn, primary) {
+    return el('button.bt-btn' + (primary ? '.bt-primary' : '') + '#' + id, { type: 'button', onclick: fn }, text);
+  }
+  fig.toolbar.append(keyInput,
+    btn('btn-put', 'Put', function () { userOp('put'); }, true),
+    btn('btn-delete', 'Delete', function () { userOp('delete'); }),
+    btn('btn-get', 'Get', function () { userOp('get'); }),
+    btn('btn-scan', 'Scan ' + SCAN_SPAN, function () { userOp('scan'); }),
+    el('span.bt-toolbar-sep'),
+    btn('btn-trace', 'Chapter trace', function () { reset(); runOps(Ch27.TRACE.slice()); }),
+    btn('btn-random', '12 random writes', randomWrites),
+    btn('btn-reset', 'Reset', function () { reset(); }),
+    el('span.bt-toolbar-sep'), growthSel, memSel, err);
+  growthSel.addEventListener('change', function () { reset(); });
+  memSel.addEventListener('change', function () { reset(); });
+  keyInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') userOp('put'); });
+
+  /* -------------------------------------------------------------- stage */
+  var cardBt = el('p'), cardLsm = el('p');
+  fig.stage.appendChild(el('div.c27-cards',
+    el('div.c27-card', el('h3', 'B+tree · order 4'), cardBt),
+    el('div.c27-card', el('h3', 'LSM-tree · 3 slots per block'), cardLsm)));
+  var boxTree = el('div.c27-box', el('div.c27-head', el('strong', 'B+tree'),
+    el('span', 'every node is one block; changed in place')));
+  var boxLsm = el('div.c27-box', el('div.c27-head', el('strong', 'LSM-tree'),
+    el('span', 'memtable in RAM; runs on the device are never changed, only merged')));
+  fig.stage.append(boxTree, boxLsm);
+  // minScale: on a phone the tree of the chapter trace (six leaves) must fit
+  // the box without the reader having to find the zoom buttons.
+  var treeView = new BTViz.TreeView(boxTree, { minHeight: 170, minScale: 0.5, ariaLabel: 'B+tree' });
+  var lsmEl = el('div.c27-lsm', { 'aria-label': 'LSM-tree: memtable and levels' });
+  boxLsm.appendChild(lsmEl);
+
+  var chartPanel = el('div.bt-panel', el('div.bt-panel-title', 'Totals so far (blocks)'));
+  var chartBody = el('div.bt-panel-body');
+  chartPanel.appendChild(chartBody);
+  fig.side.appendChild(chartPanel);
+  var chart = new BTViz.Chart(chartBody, { type: 'bar', height: 170, legend: true });
+  var log = new BTViz.Log(fig.side, { title: 'Operations (r = read, w = written)' });
+
+  var TITLES = { write: 'put / delete — where the I/O happens', compact: 'compaction — k-way merge into the next level',
+                 read: 'get — newest place first' };
+  var panels = {};
+  Object.keys(TITLES).forEach(function (sn) {
+    panels[sn] = BTViz.codePanel('#code', sn, { title: TITLES[sn], maxHeight: 320 });
+    panels[sn].root.hidden = sn !== 'write';
+  });
+
+  /* ------------------------------------------------------ LSM rendering */
+  function keyChip(slot, state) {
+    var c = el('span.c27-key' + (slot.value === null ? '.is-tomb' : ''), String(slot.key));
+    var st = state || (slot.value === null ? 'deleted' : null);
+    if (st) c.classList.add('s-' + st);
+    if (slot.value === null) c.title = 'tombstone: key ' + slot.key + ' is deleted';
+    return c;
+  }
+  function renderRun(run, cfg, hi) {
+    hi = hi || {};
+    var box = el('div.c27-run' + (hi.state === 'dim' ? '.s-dim' : ''), { title: 'run: keys ' + run.min + ' .. ' + run.max });
+    var data = Math.ceil(run.slots.length / cfg.blockEntries);
+    var whole = hi.state === 'active' || hi.state === 'dirty';
+    // The index is a small static tree: level 1 over the data blocks, more
+    // levels above it until one root block is left. Drawn root first.
+    var levels = [], n = data;
+    do { n = Math.ceil(n / cfg.indexFanout); levels.push(n); } while (n > 1);
+    for (var lv = levels.length; lv >= 1; lv--) {
+      var span = Math.pow(cfg.indexFanout, lv);            // data blocks under one block of this level
+      for (var x = 0; x < levels[lv - 1]; x++) {
+        var ib = el('span.c27-blk.is-index', levels.length === 1 ? 'index' : lv === levels.length ? 'index root' : 'index');
+        ib.title = 'index block, level ' + lv + ' of ' + levels.length + ': first keys of the ' + (lv === 1 ? 'data' : 'index') + ' blocks below it';
+        if (whole && (!hi.blocks || (x >= Math.floor(hi.blocks[0] / span) && x <= Math.floor(hi.blocks[1] / span)))) ib.classList.add('s-' + hi.state);
+        box.appendChild(ib);
+      }
+    }
+    for (var j = 0; j < data; j++) {
+      var blk = el('span.c27-blk');
+      if (whole && (!hi.blocks || (j >= hi.blocks[0] && j <= hi.blocks[1]))) blk.classList.add('s-' + hi.state);
+      run.slots.slice(j * cfg.blockEntries, (j + 1) * cfg.blockEntries).forEach(function (s) {
+        blk.appendChild(keyChip(s, hi.keys && hi.keys[s.key]));
+      });
+      box.appendChild(blk);
+    }
+    return box;
+  }
+  function row(label, small, content) {
+    return el('div.c27-row', el('div.c27-label', label, el('small', small)), content);
+  }
+  function renderLsm(s, hi) {
+    hi = hi || {};
+    lsmEl.textContent = '';
+    var mem = el('div.c27-runs');
+    var cells = el('span.c27-blk' + (hi.memState ? '.s-' + hi.memState : ''));
+    s.mem.forEach(function (slot) { cells.appendChild(keyChip(slot, hi.mem && hi.mem[slot.key])); });
+    for (var i = s.mem.length; i < s.cfg.memtableEntries; i++) cells.appendChild(el('span.c27-key.is-empty', '·'));
+    mem.appendChild(cells);
+    lsmEl.appendChild(row('memtable', 'RAM · ' + s.mem.length + ' of ' + s.cfg.memtableEntries + ' keys', mem));
+    var l0 = el('div.c27-runs');
+    s.l0.forEach(function (run) { l0.appendChild(renderRun(run, s.cfg, hi.runs && hi.runs[run.id])); });
+    if (!s.l0.length) l0.appendChild(el('span.c27-none', 'no run'));
+    lsmEl.appendChild(row('level 0', s.l0.length + ' of ' + s.cfg.l0Runs + ' runs · oldest first', l0));
+    s.levels.forEach(function (run, n) {
+      var box = el('div.c27-runs');
+      if (run) box.appendChild(renderRun(run, s.cfg, hi.runs && hi.runs[run.id]));
+      else box.appendChild(el('span.c27-none', 'no run'));
+      lsmEl.appendChild(row('level ' + (n + 1), (run ? run.slots.length : 0) + ' slots · limit ' + s.limits[n], box));
+    });
+  }
+
+  /* ------------------------------------------------------------- frames */
+  function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
+  function leafHolding(model, key) {
+    var found = null;
+    (function walk(n) {
+      if (!n || found) return;
+      if (n.leaf) { if (n.keys.indexOf(key) >= 0) found = n.id; return; }
+      (n.children || []).forEach(walk);
+    })(model);
+    return found;
+  }
+  function nodesHi(ids, state) {
+    var h = {};
+    ids.forEach(function (id) { h['b' + id] = state; });
+    return h;
+  }
+  function treeHeight(model) { var h = 0; for (var n = model; n; n = n.children && n.children[0]) h++; return h; }
+
+  /** Turns one operation report of Ch27.Pair into frames. */
+  function framesFor(rep, saveIndex) {
+    var op = rep.op, frames = [], d = rep.delta;
+    var title = '<b>' + BTViz.esc(rep.name) + '</b> · ';
+    var ctr = { bt: { r: rep.before.bt.r, w: rep.before.bt.w, blocks: rep.before.bt.blocks, opR: 0, opW: 0 },
+                lsm: { r: rep.before.lsm.r, w: rep.before.lsm.w, blocks: rep.before.lsm.blocks, opR: 0, opW: 0 } };
+    var tree = rep.treeBefore, treeHi = {}, lsm = rep.lsmBefore, lsmHi = {};
+    function push(caption, snippet, extra) {
+      var f = { caption: caption, snippet: snippet, save: saveIndex, final: false,
+                state: { tree: tree, treeHi: treeHi, lsm: lsm, lsmHi: lsmHi, ctr: Ch27.clone(ctr), opName: rep.name, amps: rep.ampsBefore } };
+      for (var p in (extra || {})) f[p] = extra[p];
+      frames.push(f);
+      return f;
+    }
+    var h = treeHeight(rep.treeBefore), extraReads = d.bt.r - h;
+    var write = op.kind === 'put' || op.kind === 'delete';
+
+    /* ---- B+tree: what it read */
+    ctr.bt.r = rep.after.bt.r; ctr.bt.opR = d.bt.r;
+    treeHi = { nodes: nodesHi(rep.treeLog.read, 'active') };
+    var cap;
+    if (h === 0) cap = 'The B+tree is empty: there is nothing to read.';
+    else {
+      cap = 'The B+tree walks from the root to the leaf for ' + k(op.key) + ': ' + plural(h, 'block') + ' read, one per level.';
+      if (extraReads > 0 && op.kind === 'scan') cap += ' Then it follows the leaf chain: ' + plural(extraReads, 'more leaf block') + '.';
+      else if (extraReads > 0 && op.kind === 'put') cap += ' The leaf will split, and the leaf to its right stores a back link that must change: 1 more block read.';
+      else if (extraReads > 0) cap += ' The leaf ends up too empty, so it looks at ' + plural(extraReads, 'more block') + ' (siblings, and a neighbour whose back link changes).';
+    }
+    if (op.kind === 'get') {
+      var leaf = leafHolding(rep.treeBefore, op.key);
+      if (leaf) treeHi.keys = {}, treeHi.keys[leaf + ':' + op.key] = 'found';
+      cap += rep.value === null ? ' Key ' + k(op.key) + ' is not there.' : ' Found: value ' + rep.value + '.';
+    }
+    if (op.kind === 'scan') {
+      treeHi.keys = {};
+      rep.keys.forEach(function (key) { var lf = leafHolding(rep.treeBefore, key); if (lf) treeHi.keys[lf + ':' + key] = 'found'; });
+      cap += ' Result: ' + (rep.keys.length ? rep.keys.map(function (x) { return k(x, 'found'); }).join(' ') : 'no keys') + '.';
+    }
+    push(title + cap, write ? 'write' : 'read');
+
+    /* ---- B+tree: what it wrote */
+    if (write) {
+      tree = rep.treeAfter;
+      ctr.bt.w = rep.after.bt.w; ctr.bt.opW = d.bt.w; ctr.bt.blocks = rep.after.bt.blocks;
+      treeHi = { nodes: nodesHi(rep.treeLog.written, 'dirty') };
+      if (op.kind === 'put') { treeHi.keys = {}; treeHi.keys['*:' + op.key] = 'inserted'; }
+      var btNotes = rep.notes.filter(function (n) { return n.indexOf('btree') === 0; })
+        .map(function (n) { return n.replace('btree: ', '').replace('.', ''); });
+      if (d.bt.w === 0) cap = 'Key ' + k(op.key) + ' is not in the B+tree: nothing changes and nothing is written.';
+      else {
+        cap = 'The B+tree writes back every block it changed: ' + plural(d.bt.w, 'block') + '.';
+        if (btNotes.length) cap += ' What happened: ' + btNotes.join(', ') + '.';
+        else if (op.kind === 'put' && rep.old !== null) cap += ' The key existed; its value was overwritten in place, and the whole leaf block is written again.';
+        else cap += ' One changed entry, one whole leaf block.';
+      }
+      push(title + cap, 'write');
+    }
+
+    /* ---- LSM */
+    if (write) {
+      rep.phases.forEach(function (ph) {
+        lsm = ph.lsm; lsmHi = { runs: {} };
+        if (ph.name === 'flush') {
+          ctr.lsm = { r: ph.counters.r, w: ph.counters.w, blocks: ph.counters.blocks, opR: ph.counters.r - rep.before.lsm.r, opW: ph.counters.w - rep.before.lsm.w };
+          lsmHi.runs[ph.run] = { state: 'dirty' };
+          push(title + 'The memtable is full. <b>Flush</b>: its keys are already sorted, so they are written out as a new run in level 0: ' +
+               plural(ph.blocks, 'block') + ' written (data blocks plus the index above them), none read. This is the first device I/O for ' +
+               plural(ph.writes, 'earlier write') + (ph.writes > ph.keys
+                 ? ' to ' + plural(ph.keys, 'key') + ': the memtable absorbed ' + plural(ph.writes - ph.keys, 'overwrite') + ' of a key it already held'
+                 : '') +
+               '. Until now those writes existed in RAM only.', 'write');
+        } else if (ph.name === 'compact-read') {
+          ctr.lsm.r += ph.blocks; ctr.lsm.opR += ph.blocks;
+          ph.inputs.forEach(function (id) { lsmHi.runs[id] = { state: 'active' }; });
+          var why = ph.from === 0 ? 'Level 0 holds ' + plural(lsm.l0.length, 'run') + ', its limit.'
+                                  : 'Level ' + ph.from + ' holds more slots than its limit of ' + lsm.limits[ph.from - 1] + '.';
+          push(title + why + ' <b>Compaction</b>: merge ' + (ph.from === 0 ? 'all of level 0' : 'level ' + ph.from) + ' with the run of level ' + (ph.from + 1) +
+               (ph.inputs.length > (ph.from === 0 ? lsm.l0.length : 1) ? '' : ' (which is empty)') +
+               '. Every block of every input is read once: ' + plural(ph.blocks, 'block') + '.', 'compact');
+        } else {
+          ctr.lsm = { r: ph.counters.r, w: ph.counters.w, blocks: ph.counters.blocks, opR: ph.counters.r - rep.before.lsm.r, opW: ph.counters.w - rep.before.lsm.w };
+          if (ph.output !== null) lsmHi.runs[ph.output] = { state: 'dirty' };
+          var c2 = 'The merge keeps the newest version of each key. ';
+          c2 += ph.output === null ? 'Nothing survived, so level ' + (ph.from + 1) + ' is empty.'
+                                   : plural(ph.kept, 'slot') + ' become the new run of level ' + (ph.from + 1) + ': ' + plural(ph.blocks, 'block') + ' written.';
+          if (ph.shadowed || ph.tombstones) {
+            c2 += ' Left behind: ' + plural(ph.shadowed, 'older version') + ' and ' + plural(ph.tombstones, 'tombstone') +
+                  (ph.tombstones ? ' (nothing older lies below, so the tombstones have nothing left to hide).' : '.');
+          }
+          c2 += ' The ' + plural(ph.freed, 'input block') + ' are free again.';
+          push(title + c2, 'compact');
+        }
+      });
+      lsm = rep.lsmAfter; lsmHi = { mem: {} };
+      lsmHi.mem[op.key] = op.kind === 'put' ? 'inserted' : 'deleted';
+      ctr.lsm = { r: rep.after.lsm.r, w: rep.after.lsm.w, blocks: rep.after.lsm.blocks, opR: d.lsm.r, opW: d.lsm.w };
+      cap = op.kind === 'put'
+        ? 'The LSM-tree puts ' + k(op.key, 'inserted') + ' into the memtable, in RAM. That step reads and writes no block, and it does not check whether the key already exists.'
+        : 'The LSM-tree writes a <b>tombstone</b> for ' + k(op.key, 'deleted') + ' into the memtable. It does not look for the key: that would cost reads. The tombstone hides any older value below it.';
+      cap += ' This operation in total: B+tree ' + d.bt.r + ' read, ' + d.bt.w + ' written; LSM-tree ' + d.lsm.r + ' read, ' + d.lsm.w + ' written.';
+      push(title + cap, 'write');
+    } else {
+      lsmHi = { runs: {}, mem: {} };
+      ctr.lsm = { r: rep.after.lsm.r, w: rep.after.lsm.w, blocks: rep.after.lsm.blocks, opR: d.lsm.r, opW: d.lsm.w };
+      var parts = [];
+      rep.trail.forEach(function (t) {
+        if (t.where === 'memtable') {
+          if (op.kind === 'get') {
+            lsmHi.memState = 'active';
+            if (t.result !== 'absent') lsmHi.mem[op.key] = t.result === 'hit' ? 'found' : 'deleted';
+            parts.push('memtable (RAM, free): ' + (t.result === 'absent' ? 'not there' : t.result === 'hit' ? '<b>found</b>' : '<b>tombstone, so the key is deleted</b>'));
+          }
+          return;
+        }
+        if (t.result === 'skipped') {
+          lsmHi.runs[t.run] = { state: 'dim' };
+          parts.push(t.where + ' run: its key range does not cover the ' + (op.kind === 'get' ? 'key' : 'range') + ', skipped for free');
+        } else if (op.kind === 'get') {
+          lsmHi.runs[t.run] = { state: 'active', blocks: [t.block, t.block], keys: {} };
+          if (t.result !== 'wasted') lsmHi.runs[t.run].keys[op.key] = t.result === 'hit' ? 'found' : 'deleted';
+          parts.push(t.where + ' run: key range covers it, read ' + plural(t.index, 'index block') + ' + 1 data block: ' +
+            (t.result === 'wasted' ? 'not there (' + (t.index + 1) + ' reads wasted)' : t.result === 'hit' ? '<b>found</b>' : '<b>tombstone, so the key is deleted</b>'));
+        } else {
+          lsmHi.runs[t.run] = { state: 'active', blocks: [t.first, t.last], keys: {} };
+          rep.keys.forEach(function (key) { lsmHi.runs[t.run].keys[key] = 'found'; });
+          parts.push(t.where + ' run: ' + plural(t.blocks, 'block') + ' read');
+        }
+      });
+      if (op.kind === 'get') {
+        cap = 'The LSM-tree looks in the newest place first and stops at the first place that knows the key. ' + parts.join('; ') + '. ' +
+              'Total: ' + plural(d.lsm.r, 'block') + ' read (B+tree: ' + d.bt.r + ').';
+      } else {
+        lsmHi.memState = 'active';
+        rep.keys.forEach(function (key) { lsmHi.mem[key] = 'found'; });
+        cap = 'A scan cannot stop early: the next key in order may be in any place. The LSM-tree merges the memtable with every run whose key range overlaps [' +
+              op.key + ', ' + op.hi + '). ' + (parts.length ? parts.join('; ') + '. ' : 'No run overlaps. ') +
+              'Total: ' + plural(d.lsm.r, 'block') + ' read (B+tree: ' + d.bt.r + '). Same result.';
+      }
+      var extra = {};
+      if (op.kind === 'get' && d.lsm.r <= 6) {
+        var choices = [0, 2, 3, 4, 5, 6].filter(function (c) { return c === d.lsm.r || c === 0 || Math.abs(c - d.lsm.r) <= 2; });
+        extra.question = { prompt: 'How many blocks does the LSM-tree read for ' + rep.name + '?', choices: choices.map(String), answer: choices.indexOf(d.lsm.r),
+                           explain: 'Each run it has to probe costs one block per index level of that run (1 for a small run, 2 once it has more than ' +
+                                    lsm.cfg.indexFanout + ' data blocks) + 1 data block; the memtable and runs ruled out by their key range cost nothing.' };
+      }
+      push(title + cap, 'read', extra);
+    }
+    var last = frames[frames.length - 1];
+    last.final = true;
+    last.state.amps = rep.ampsAfter;   // the ratios count completed operations only
+    last.log = { html: BTViz.esc(rep.name) + ' — B+tree r' + d.bt.r + ' w' + d.bt.w + ' · LSM r' + d.lsm.r + ' w' + d.lsm.w +
+                 (rep.notes.length ? ' <span style="color:var(--bt-muted)">(' + BTViz.esc(rep.notes.join(' ').replace(/\.$/, '')) + ')</span>' : ''),
+                 state: d.lsm.w > 0 ? 'dirty' : undefined };
+    return frames;
+  }
+
+  /* ------------------------------------------------------------ session */
+  // saves[i] is the state after the first i operations of this session, and
+  // names[i] the name of operation i. Every frame carries the index of the
+  // save it leads to.
+  var model, saves, names, stepper;
+  function options() {
+    return { order: 4, memtableEntries: +memSel.value, l0Runs: 2, growth: +growthSel.value };
+  }
+  function idleFrame(caption, saveIndex) {
+    var c = model.counters();
+    return { caption: caption, snippet: 'write', save: saveIndex, final: true, idle: true,
+             state: { tree: model.tree.snapshot(), treeHi: {}, lsm: model.lsm.snapshot(), lsmHi: {},
+                      ctr: { bt: { r: c.bt.r, w: c.bt.w, blocks: c.bt.blocks, opR: 0, opW: 0 }, lsm: { r: c.lsm.r, w: c.lsm.w, blocks: c.lsm.blocks, opR: 0, opW: 0 } },
+                      opName: null, amps: model.amps() } };
+  }
+  function render(step) {
+    var s = step.state;
+    treeView.render(s.tree, s.treeHi);
+    renderLsm(s.lsm, s.lsmHi);
+    function card(c, a) {
+      return (s.opName ? BTViz.esc(s.opName) + ': <b>' + c.opR + '</b> read, <b>' + c.opW + '</b> written<br>' : 'no operation in progress<br>') +
+             'total <b>' + c.r + '</b> read, <b>' + c.w + '</b> written, <b>' + c.blocks + '</b> in use<br>' +
+             '<span title="amplification, for the operations completed so far">amp:</span> write <b>' + a.write + '</b>, read <b>' + a.read + '</b>, space <b>' + a.space + '</b>';
+    }
+    cardBt.innerHTML = card(s.ctr.bt, s.amps.bt);
+    cardLsm.innerHTML = card(s.ctr.lsm, s.amps.lsm);
+    chart.render({ labels: ['read', 'written', 'in use'],
+                   series: [{ name: 'B+tree', values: [s.ctr.bt.r, s.ctr.bt.w, s.ctr.bt.blocks] },
+                            { name: 'LSM-tree', values: [s.ctr.lsm.r, s.ctr.lsm.w, s.ctr.lsm.blocks] }] });
+    Object.keys(panels).forEach(function (sn) { panels[sn].root.hidden = sn !== step.snippet; });
+  }
+  stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, steps: [], predict: false, interval: 2200,
+    onStep: function (step, i) { render(step); log.sync(stepper ? stepper.steps : [], i); }
+  });
+  function reset() {
+    model = new Ch27.Pair(options());
+    saves = [model.save()];
+    names = [null];
+    err.textContent = '';
+    stepper.setSteps([idleFrame('Both structures are empty. Type a key and press <b>Put</b>, or press <b>Chapter trace</b> to replay the ' +
+      Ch27.TRACE.length + ' operations of the chapter’s programs. The LSM-tree has a memtable of ' + model.opts.memtableEntries +
+      ' keys, 2 runs in level 0 and growth factor ' + model.opts.growth + '.', 0)]);
+  }
+  /**
+   * Operations already asked for whose last frame the reader has not reached.
+   * A frame with `save: n` belongs to operation n; its last frame is `final`.
+   */
+  function unfinished() {
+    var cur = stepper.steps[stepper.index];
+    var from = cur ? (cur.final ? cur.save + 1 : cur.save) : 1;
+    return names.slice(Math.max(from, 1));
+  }
+  function listNames(list) {
+    var shown = list.slice(0, 4).map(function (n) { return '<b>' + BTViz.esc(n) + '</b>'; }).join(', ');
+    return shown + (list.length > 4 ? ' and ' + (list.length - 4) + ' more' : '');
+  }
+  /**
+   * NOTHING THE READER ASKED FOR IS EVER DROPPED. New operations are appended
+   * to the end of the timeline, after every operation asked for before, and
+   * the old frames stay where they are (step back to watch them). If the
+   * reader had not reached the end, a frame says which operations were
+   * completed first and shows the state after them, so the picture does not
+   * jump without an explanation.
+   */
+  function runOps(ops) {
+    var steps = stepper.steps.slice(), pending = unfinished();
+    model = Ch27.Pair.restore(saves[saves.length - 1]);
+    if (pending.length) {
+      steps.push(idleFrame((pending.length === 1 ? listNames(pending) + ' was completed first'
+                                                 : 'The ' + pending.length + ' operations still waiting (' + listNames(pending) + ') were completed first') +
+                           ': nothing is dropped. This is the state after ' + (pending.length === 1 ? 'it' : 'them') +
+                           '; step back to watch what you skipped. The new operation starts from here.', saves.length - 1));
+    }
+    var start = steps.length;
+    ops.forEach(function (op) {
+      var rep = model.apply(op);
+      saves.push(model.save());
+      names.push(rep.name);
+      steps = steps.concat(framesFor(rep, saves.length - 1));
+      if (!rep.ok) console.error('chapter 27: the two structures disagree on ' + rep.name);
+    });
+    stepper.setSteps(steps, { play: true, index: pending.length ? start - 1 : start });
+  }
+  function readKey() {
+    var raw = keyInput.value.trim();
+    if (raw === '' || !/^\d+$/.test(raw) || +raw < KEY_MIN || +raw > KEY_MAX) {
+      err.textContent = 'Type a whole number from ' + KEY_MIN + ' to ' + KEY_MAX + ' as the key' + (raw === '' ? '.' : ' (got “' + raw + '”).');
+      keyInput.focus();
+      return null;
+    }
+    err.textContent = '';
+    return +raw;
+  }
+  /** The state a new operation will be applied to: after everything asked for so far. */
+  function currentModel() {
+    return Ch27.Pair.restore(saves[saves.length - 1]);
+  }
+  function userOp(kind) {
+    var key = readKey();
+    if (key === null) return;
+    var op = { kind: kind, key: key };
+    if (kind === 'put') { var live = currentModel().live; op.value = key in live ? live[key] + 1 : key * 100; }
+    if (kind === 'scan') op.hi = key + SCAN_SPAN;
+    runOps([op]);
+    keyInput.value = '';
+  }
+  // Wide enough that level 1 overflows with every growth factor on offer
+  // (its limit is memtable x 2 x growth, 48 slots at most), so that the
+  // growth select changes the picture and not only the totals.
+  var RANDOM_KEY_MAX = 150;
+  var rand = BTViz.rng(27);
+  function randomWrites() {
+    var live = Ch27.clone(currentModel().live), ops = [];
+    for (var i = 0; i < 12; i++) {
+      var keys = Object.keys(live).map(Number);
+      if (keys.length > 3 && rand.int(0, 4) === 0) {
+        var gone = rand.pick(keys);
+        ops.push({ kind: 'delete', key: gone }); delete live[gone];
+      } else {
+        var key = rand.int(1, RANDOM_KEY_MAX);
+        var value = key in live ? live[key] + 1 : key * 100;
+        ops.push({ kind: 'put', key: key, value: value }); live[key] = value;
+      }
+    }
+    err.textContent = '';
+    runOps(ops);
+  }
+  reset();
+
+  /* --------------------------------------------------------- self-tests */
+  // Sections 1 and 2 of ../expected_output.txt (the output of both programs).
+  var EXPECT_TRACE = [
+    'put 10      | btree r=0 w=1 | lsm r= 0 w= 0 |',
+    'put 20      | btree r=1 w=1 | lsm r= 0 w= 0 |',
+    'put 5       | btree r=1 w=1 | lsm r= 0 w= 0 |',
+    'put 6       | btree r=1 w=3 | lsm r= 0 w= 0 | btree: leaf split. btree: new root.',
+    'put 12      | btree r=2 w=1 | lsm r= 0 w= 3 | lsm: flush.',
+    'put 30      | btree r=2 w=3 | lsm r= 0 w= 0 | btree: leaf split.',
+    'put 7       | btree r=2 w=1 | lsm r= 0 w= 0 |',
+    'put 17      | btree r=2 w=1 | lsm r= 0 w= 0 |',
+    'put 3       | btree r=3 w=4 | lsm r= 6 w= 7 | btree: leaf split. lsm: flush. lsm: compact level 0 into level 1.',
+    'put 25      | btree r=2 w=1 | lsm r= 0 w= 0 |',
+    'put 1       | btree r=2 w=1 | lsm r= 0 w= 0 |',
+    'put 15      | btree r=3 w=6 | lsm r= 0 w= 0 | btree: leaf split. btree: internal split. btree: new root.',
+    'get 15      | btree r=3 w=0 | lsm r= 0 w= 0 | = 1500',
+    'get 12      | btree r=3 w=0 | lsm r= 2 w= 0 | = 1200',
+    'get 13      | btree r=3 w=0 | lsm r= 2 w= 0 | = none',
+    'delete 15   | btree r=3 w=1 | lsm r= 0 w= 3 | lsm: flush.',
+    'put 20      | btree r=3 w=1 | lsm r= 0 w= 0 |',
+    'put 11      | btree r=3 w=1 | lsm r= 0 w= 0 |',
+    'put 13      | btree r=4 w=4 | lsm r= 0 w= 0 | btree: leaf split.',
+    'put 14      | btree r=3 w=1 | lsm r=10 w=11 | lsm: flush. lsm: compact level 0 into level 1.',
+    'get 15      | btree r=3 w=0 | lsm r= 3 w= 0 | = none',
+    'get 20      | btree r=3 w=0 | lsm r= 3 w= 0 | = 2001',
+    'scan [5,14) | btree r=6 w=0 | lsm r= 6 w= 0 | = 5 6 7 10 11 12 13'
+  ].join('\n');
+  var EXPECT_DUMP = [
+    'B+tree: height 3, 9 blocks',
+    '  level 1: [15]',
+    '  level 2: [6 10 12] [20]',
+    '  level 3: (1 3 5) (6 7) (10 11) (12 13 14) (17) (20 25 30)',
+    'LSM: 8 blocks on the device holding 13 slots, 1 key(s) in the memtable',
+    '  memtable: 14',
+    '  level 0 (oldest first): -',
+    '  level 1: (1 3 5 6 7 10 11 12 13 17 20 25 30)',
+    'totals: btree reads=58 writes=32 | lsm reads=32 writes=24',
+    'lsm compaction dropped 2 stale version(s) and 1 tombstone(s)'
+  ].join('\n');
+  var check = new Ch27.Pair(Ch27.TRACE_OPTS), agree = true;
+  var lines = Ch27.TRACE.map(function (op) { var r = check.apply(op); agree = agree && r.ok; return r.line; });
+  BTViz.selfTest('trace rows', lines.join('\n'), EXPECT_TRACE);
+  BTViz.selfTest('final state', check.dumpText(), EXPECT_DUMP);
+  BTViz.selfTest('same answers', agree, true);
+  // By hand from the output above: 17 puts and deletes, 5 gets, 14 live keys
+  // (5 packed blocks of 3). B+tree: 32 x 3 / 17, (3+3+3+3+3) / 5, 9 / 5.
+  // LSM-tree: 24 x 3 / 17, (0+2+2+3+3) / 5, 8 / 5.
+  var amps = check.amps();
+  BTViz.selfTest('trace amplifications',
+    [amps.bt.write, amps.bt.read, amps.bt.space, amps.lsm.write, amps.lsm.read, amps.lsm.space].join(' '),
+    '5.65 3.00 1.80 4.24 2.00 1.60');
+})();
+</script>
+</body>
+</html>

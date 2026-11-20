@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>B-tree structure and search</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  /* Chapter-local styles: tokens only, no hard-coded colours. */
+  .textform { margin: 0; font-family: var(--bt-mono); font-size: .82rem; line-height: 1.5;
+              white-space: pre-wrap; overflow-wrap: anywhere; color: var(--bt-text); min-height: 1.5em; }
+  .facts { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .msg { font-size: .88rem; color: var(--bt-key-deleted); min-height: 1.3em; margin: 0 0 4px; }
+  .rules { display: grid; gap: 4px; }
+  .rule { display: grid; grid-template-columns: 1.4em 1fr; gap: 4px; align-items: start; font-size: .84rem; line-height: 1.35;
+          padding: 4px 6px; border-radius: 6px; background: var(--s-bg, transparent);
+          box-shadow: inset 3px 0 0 var(--s, var(--bt-border)); }
+  .rule-mark { font-weight: 700; color: var(--s, var(--bt-muted)); text-align: center; }
+  .rule code { font-size: .76rem; }
+  /* Red-black colours. "Black" is drawn as a heavy outline so that it reads
+     the same in the light and the dark theme. */
+  .s-rbred   { --s: var(--bt-key-deleted); --s-bg: var(--bt-key-deleted-bg); }
+  .s-rbblack { --s: var(--bt-text); }
+  .bt-node.s-rbblack .bt-node-box { stroke-width: 3.25; }
+  .wide-input { width: 15em; max-width: 100%; }
+  /* Long option texts must not widen the page on a phone. */
+  .bt-field { max-width: 100%; min-width: 0; }
+  .bt-field .bt-select { min-width: 0; max-width: 100%; flex: 1 1 auto; text-overflow: ellipsis; }
+  #v-case { width: 17em; }
+  /* The tree, its caption and the step buttons belong together. The toolkit
+     stacks stage and side panels first and puts caption and controls under
+     both, so a tall side column (or, on a phone, every side panel) ends up
+     between the picture and its buttons. Both layouts below take the stage
+     and the side column out of their wrapper and place the parts directly. */
+  .bt-figure-body.has-side { display: contents; }
+  /* Wide: caption and controls sit under the tree in the left column; the
+     side column runs next to all three. Legend and `.below` span the card. */
+  @media (min-width: 821px) {
+    .bt-figure { display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, 330px);
+                 grid-template-rows: auto auto auto auto auto 1fr auto auto; }
+    .bt-figure-title { grid-area: 1 / 1 / 2 / -1; }
+    .bt-toolbar { grid-area: 2 / 1 / 3 / -1; }
+    .bt-stage { grid-area: 3 / 1; }
+    .bt-caption { grid-area: 4 / 1; }
+    .bt-controls-slot { grid-area: 5 / 1; }
+    .bt-side { grid-area: 3 / 2 / 7 / 3; }
+    .bt-legend { grid-area: 7 / 1 / 8 / -1; border-top: 1px solid var(--bt-border); }
+    .below { grid-area: 8 / 1 / 9 / -1; }
+  }
+  /* Narrow: picture, caption, controls, legend, and only then the panels. */
+  @media (max-width: 820px) {
+    .bt-figure { display: flex; flex-direction: column; }
+    .bt-stage { order: 1; }
+    .bt-caption { order: 2; }
+    .bt-controls-slot { order: 3; }
+    .bt-legend { order: 4; }
+    .bt-side { order: 5; }
+    .below { order: 6; }
+  }
+  /* Figure 2: the long code panel sits under everything else, at every width. */
+  .below { padding: 12px 14px; border-top: 1px solid var(--bt-border); background: var(--bt-bg);
+           border-radius: 0 0 var(--bt-radius) var(--bt-radius); }
+  .facts { min-height: 1.9em; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">A B-tree keeps a few sorted keys in every node and all leaves on one level.
+Watch a search read one node per level, let the invariant checker find what is wrong with a damaged tree,
+and unfold a 2-3-4 tree into the red-black tree it is equivalent to.</p>
+
+<p>This page belongs to <a href="../README.md">Chapter 03: B-tree structure and search</a>.
+All trees have order M: a node has at most M children and M&nbsp;&minus;&nbsp;1 keys, and every node except the root
+has at least &lceil;M/2&rceil;&nbsp;&minus;&nbsp;1 keys. Levels are counted from the top: the root is on level 1, its children are on level 2,
+and the height of a tree is its number of levels. The first tree is the guide's canonical example:
+the tree that inserting 10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15 produces at M&nbsp;=&nbsp;4.
+Every frame is computed by a JavaScript model that follows the chapter's Zig and Rust code; the badges at the
+bottom of the page compare it with the programs' output.</p>
+
+<h2>1. Search and in-order traversal</h2>
+<div id="fig-search"></div>
+
+<h2>2. The invariant checker on broken trees</h2>
+<p>Each choice damages the canonical tree in one way. <code>validate</code> walks the tree from the root, hands every child
+the range its keys must lie in, and stops at the first violation. Compare its verdict with the number of keys that
+<code>get</code> still finds: several kinds of damage are invisible to lookups. The verdict appears in the first panel
+beside the tree on the last step; the code of the checks is at the bottom of the figure. (The code counts <code>depth</code> from 0
+at the root, so a node's level is its depth plus 1.) The last two choices are trees of order 5, where a node below the root
+needs at least 2 keys: at order 4 the minimum is 1, so there the rule can only catch an empty node.</p>
+<div id="fig-validate"></div>
+
+<h2>3. A 2-3-4 tree is a red-black tree</h2>
+<p>A B-tree of order 4 is also called a 2-3-4 tree (every interior node has 2, 3 or 4 children). Split each node into
+one black binary node and up to two red ones and you get a red-black tree with the same keys.</p>
+<div id="fig-rb"></div>
+
+<h2>What to look for</h2>
+<div class="bt-table-wrap">
+<table class="bt-table">
+<thead><tr><th>Figure</th><th>Try this</th><th>Notice</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>Search 10, then 17, then 8.</td><td>10 is found in the root after one node; 17 and 8 need two. No search reads more nodes than the tree has levels.</td></tr>
+<tr><td>1</td><td>Choose the sparsest and the fullest tree.</td><td>7 keys can need three levels, while 15 keys can fit in two. The height bound of the chapter describes exactly this spread.</td></tr>
+<tr><td>2</td><td>Play cases 2 and 6.</td><td>In case 2 the key 11 is stored but can never be found; the count &ldquo;11 of the 12 original keys&rdquo; is missing 7, which 11 overwrote. In case 6 every lookup still works; only <code>validate</code> sees the damage.</td></tr>
+<tr><td>2</td><td>Replace key 15 by 16, then by 17, then by 21.</td><td>16 keeps the tree valid and <code>get</code> finds every key that is stored in it. 17 breaks the order inside the leaf. 21 breaks the range given by the parent, and <code>get</code> finds only 10 of the 12 stored keys: 21 sits in the wrong subtree, and 17 is hidden behind it in a leaf that is no longer sorted.</td></tr>
+<tr><td>2</td><td>Play the two trees of order 5.</td><td>In the second one, leaf <code>[15]</code> has 1 key. An order 5 node below the root needs &lceil;5/2&rceil;&nbsp;&minus;&nbsp;1&nbsp;=&nbsp;2, so <code>validate</code> returns <code>NodeUnderfull</code>, although every lookup still works.</td></tr>
+<tr><td>3</td><td>Step through the conversion, then count black nodes from the root to any missing child.</td><td>The count is the same on every path and equals the height of the 2-3-4 tree. A red node is never below a red node.</td></tr>
+</tbody>
+</table>
+</div>
+
+<script src="code.js"></script>
+<script src="model.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, k = BTViz.k, M3 = window.Ch03;
+
+  BTViz.page({
+    title: 'B-tree structure and search', chapter: 3,
+    prev: { href: '../../02-searching-a-sorted-node/viz/index.html', title: 'Searching a sorted node' },
+    next: { href: '../../04-insertion-and-splitting/viz/index.html', title: 'Insertion and splitting' }
+  });
+
+  function button(id, text, fn, primary) {
+    return el('button.bt-btn' + (primary ? '.bt-primary' : '') + '#' + id, { type: 'button', onclick: fn }, text);
+  }
+  function panel(title, body) {
+    return el('div.bt-panel', el('div.bt-panel-title', title), el('div.bt-panel-body', body));
+  }
+  function chips(host, items) {
+    host.replaceChildren.apply(host, items.map(function (t) { return el('span.bt-chip', t); }));
+  }
+  /* A whole number from 0 to 999, or null. The programs use u64 keys; the
+   * page keeps them short so that they fit into the drawing. */
+  function parseKey(text) { return /^\d{1,3}$/.test(text.trim()) ? +text.trim() : null; }
+
+  /* =================================================== figure 1: search */
+  (function () {
+    var fig = BTViz.figure('#fig-search', {
+      title: 'get(key): one node per level', side: true,
+      legend: ['node-active', 'key-compare', 'key-found', { token: 'pointer', label: 'child pointer', line: true }]
+    });
+    var PRESETS = {
+      canonical: { label: 'Canonical tree (M = 4)', build: M3.canonical },
+      sparsest: { label: 'Sparsest tree with 3 levels (M = 4)', build: M3.sparsest },
+      fullest: { label: 'Fullest tree with 2 levels (M = 4)', build: M3.fullest },
+      random: { label: '30 random keys, choose the order', build: function () {
+        var keys = BTViz.rng(seed).sample(30, 1, 99).sort(function (a, b) { return a - b; });
+        return new M3.HandTree(+orderSel.value).fromSorted(keys);
+      } }
+    };
+    var seed = 3, tree = null, mode = 'get';
+    var presetSel = el('select.bt-select#s-preset', { 'aria-label': 'Tree' });
+    Object.keys(PRESETS).forEach(function (id) { presetSel.appendChild(el('option', { value: id }, PRESETS[id].label)); });
+    var orderSel = el('select.bt-select#s-order', { 'aria-label': 'Order M of the random tree' });
+    [3, 4, 5, 6].forEach(function (m) { orderSel.appendChild(el('option', { value: m, selected: m === 4 }, 'order ' + m)); });
+    var keyInput = el('input.bt-input#s-key', { type: 'text', inputmode: 'numeric', placeholder: 'key', 'aria-label': 'Key to search for', size: 5 });
+    fig.toolbar.append(
+      el('label.bt-field', 'Tree ', presetSel), orderSel, el('span.bt-toolbar-sep'),
+      keyInput, button('s-search', 'Search', fromInput, true), el('span.bt-toolbar-sep'),
+      button('s-inorder', 'Traverse in order', traverse), button('s-script', 'Play the program’s five lookups', script));
+
+    var msg = el('p.msg#s-msg', { role: 'status' });
+    var facts = el('div.facts#s-facts');
+    var textPre = el('pre.textform#s-text');
+    fig.stage.append(msg, facts); // nothing between the tree and its caption
+    var view = new BTViz.TreeView(fig.stage, { minHeight: 230, ariaLabel: 'B-tree being searched' });
+    fig.side.append(panel('As the programs print it', textPre));
+    var codeGet = BTViz.codePanel(fig.side, 'get', { title: 'get (base_search)' });
+    var codeIn = BTViz.codePanel(fig.side, 'inorder', { title: 'inOrder (base_search)' });
+
+    var stepper = new BTViz.Stepper({
+      mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
+      onStep: function (step) {
+        view.render(step.state, step.highlight);
+        var s = M3.shape(tree.root, tree.M);
+        var items = ['order ' + tree.M, 'height ' + s.height, 'nodes ' + s.nodes, 'keys ' + s.keys];
+        if (mode === 'get' && step.nodesRead !== undefined) items.push('nodes read: ' + step.nodesRead + ' of ' + s.height + ' levels');
+        chips(facts, items);
+        textPre.textContent = step.printed || '';
+        codeGet.root.style.display = mode === 'get' ? '' : 'none';
+        codeIn.root.style.display = mode === 'get' ? 'none' : '';
+        (mode === 'get' ? codeGet : codeIn).highlight(step.lines || []);
+      }
+    });
+
+    /* Search steps for one key, with the predict question and the printed line. */
+    function lookup(key, printedBefore) {
+      var steps = M3.searchSteps(tree, key, k);
+      steps.forEach(function (s, i) {
+        s.printed = printedBefore;
+        if (s.type === 'descend') {
+          var node = null, prev = steps[i - 1];
+          (function find(n) { if (!n || node) return; if (n.id === prev.highlight.cursor.node) node = n; else (n.children || []).forEach(find); })(tree.root);
+          var choices = node.children.map(function (c, ci) { return 'child ' + ci + ': ' + M3.fmtKeys(c.keys); });
+          s.question = { prompt: 'Which child does the search for ' + key + ' follow from ' + M3.fmtKeys(node.keys) + '?', choices: choices,
+            answer: M3.lowerBound(node.keys, key), explain: 'The child index is the number of keys in the node that are smaller than ' + key + '.' };
+        }
+      });
+      steps[steps.length - 1].printed = printedBefore + steps.line + '\n';
+      return steps;
+    }
+    function intro(text) {
+      mode = 'get';
+      stepper.pause();
+      var s = M3.shape(tree.root, tree.M);
+      stepper.setSteps([{ type: 'intro', state: tree.model(), highlight: {}, printed: M3.renderText(tree.root),
+        caption: text + ' It has ' + s.keys + ' keys in ' + s.nodes + ' nodes on ' + s.height + ' levels. Type a key from 0 to 999 and press Search, or traverse it in order.' }]);
+    }
+    /* newKeys: draw other random keys. Changing only the order keeps the
+     * keys, so that the same 30 keys can be compared at order 3 and 6. */
+    function rebuild(newKeys) {
+      msg.textContent = '';
+      if (newKeys && presetSel.value === 'random') seed++;
+      tree = PRESETS[presetSel.value].build();
+      orderSel.style.display = presetSel.value === 'random' ? '' : 'none'; // the fixed trees are all order 4
+      intro(presetSel.value === 'random' ? 'A tree of order ' + tree.M + ' with 30 random keys, laid out with as few levels as possible. Change the order to see the same keys in wider or narrower nodes.' : PRESETS[presetSel.value].label.replace(/ \(M = 4\)/, '') + ', order 4.');
+    }
+    function fromInput() {
+      var key = parseKey(keyInput.value);
+      if (key === null) {
+        msg.textContent = keyInput.value.trim() === '' ? 'Type a key first: a whole number from 0 to 999.' : '“' + keyInput.value.trim() + '” is not a key this page accepts. Use a whole number from 0 to 999.';
+        keyInput.focus({ preventScroll: true });
+        return;
+      }
+      msg.textContent = '';
+      mode = 'get';
+      stepper.pause();
+      stepper.setSteps(lookup(key, ''), { play: true });
+    }
+    function traverse() {
+      msg.textContent = '';
+      mode = 'inorder';
+      stepper.pause();
+      var steps = M3.inOrderSteps(tree, k);
+      steps.forEach(function (s) { s.printed = s.out.join(' '); });
+      stepper.setSteps(steps, { play: true });
+    }
+    function script() {
+      msg.textContent = '';
+      presetSel.value = 'canonical';
+      tree = M3.canonical();
+      orderSel.style.display = 'none';
+      mode = 'get';
+      stepper.pause();
+      var all = [], printed = '';
+      [10, 17, 1, 8, 31].forEach(function (key) {
+        var steps = lookup(key, printed);
+        printed = steps[steps.length - 1].printed;
+        all = all.concat(steps);
+      });
+      stepper.setSteps(all, { play: true });
+    }
+    presetSel.addEventListener('change', function () { rebuild(true); });
+    orderSel.addEventListener('change', function () { rebuild(false); });
+    keyInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') fromInput(); });
+    rebuild(true);
+  })();
+
+  /* ================================================= figure 2: validate */
+  (function () {
+    var fig = BTViz.figure('#fig-validate', {
+      title: 'validate(): the invariants as code', side: true,
+      legend: [{ token: 'node-active', label: 'node being checked' }, { token: 'key-found', label: 'node passed' }, { token: 'key-deleted', label: 'violation' }]
+    });
+    var caseSel = el('select.bt-select#v-case', { 'aria-label': 'Damage' });
+    caseSel.appendChild(el('option', { value: 'intact' }, 'intact canonical tree'));
+    M3.CASES.forEach(function (c, i) { caseSel.appendChild(el('option', { value: i }, (i + 1) + '. ' + c.what)); });
+    /* Two trees of order 5 (not in the programs' output; tested in tree.zig / tree.rs). */
+    var ORDER5 = {
+      m5ok: { label: 'order 5: every node below the root has 2 to 4 keys', what: 'order 5, leaves [2 5] [12 15 17] [25 30 35 40]', thin: false },
+      m5thin: { label: 'order 5: leaf [15] has 1 key', what: 'order 5, leaf [15] has 1 key (legal at order 4)', thin: true }
+    };
+    Object.keys(ORDER5).forEach(function (id) { caseSel.appendChild(el('option', { value: id }, ORDER5[id].label)); });
+    /* Shown while the tree on screen is the reader's own replacement, so
+     * that the select always names the tree that is drawn. */
+    caseSel.appendChild(el('option', { value: 'own' }, 'your replacement (fields on the right)'));
+    var keySel = el('select.bt-select#v-key', { 'aria-label': 'Key to replace' });
+    M3.CANONICAL_KEYS.slice().sort(function (a, b) { return a - b; }).forEach(function (key) {
+      keySel.appendChild(el('option', { value: key, selected: key === 15 }, 'key ' + key));
+    });
+    var toInput = el('input.bt-input#v-to', { type: 'text', inputmode: 'numeric', placeholder: 'new', 'aria-label': 'New key value', size: 5 });
+    fig.toolbar.append(el('label.bt-field', 'Damage ', caseSel), el('span.bt-toolbar-sep'),
+      el('label.bt-field', 'or replace ', keySel), el('label.bt-field', 'by ', toInput), button('v-apply', 'Check', own, true));
+
+    var msg = el('p.msg#v-msg', { role: 'status' });
+    fig.stage.append(msg);
+    var view = new BTViz.TreeView(fig.stage, { minHeight: 230, ariaLabel: 'Tree being validated' });
+    var textPre = el('pre.textform#v-text');
+    var textPanel = panel('As the programs print it', textPre);
+    var rulesBox = el('div.rules#v-rules');
+    fig.side.append(textPanel, panel('Invariants', rulesBox));
+    /* The code is long. In the stage it pushed the caption and the step
+     * buttons off the screen, so it goes below them. */
+    var below = el('div.below');
+    fig.root.appendChild(below);
+    var code = BTViz.codePanel(below, 'validate', { title: 'The checks, condensed from base_validate', maxHeight: 300 });
+
+    function showRules(step, last, error) {
+      rulesBox.replaceChildren.apply(rulesBox, M3.RULES.map(function (r) {
+        var state = '', mark = '·', note = 'being checked';
+        if (step.type === 'intro') { note = 'not checked yet'; }
+        else if (last && !error) { state = 's-found'; mark = '✓'; note = 'holds'; }
+        else if (last && r.errors.indexOf(error) >= 0) { state = 's-deleted'; mark = '✗'; note = 'violated'; }
+        else if (last) { note = 'not decided: validate stopped at the first violation'; }
+        return el('div', { class: 'rule ' + state, title: note },
+          el('span.rule-mark', { 'aria-label': note }, mark),
+          el('span', r.text + ' ', el('code', r.errors.join(' / '))));
+      }));
+    }
+    var stepper = new BTViz.Stepper({
+      mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
+      onStep: function (step, i) {
+        view.render(step.state, step.highlight);
+        var steps = stepper ? stepper.steps : [step], last = i === steps.length - 1 && step.type !== 'intro';
+        showRules(step, last, steps.error);
+        code.highlight(step.lines || []);
+        textPanel.firstChild.textContent = steps.panelTitle;
+        textPre.textContent = step.what + '\n    ' + (last ? steps.verdict : 'validate: … (step to the end)');
+      }
+    });
+
+    /* Timeline for one damaged tree: an intro frame, then the walk. */
+    /* `own`: a tree the programs do not print (a key replaced by the reader,
+     * or one of the order 5 trees). "x of the 12 original keys" would count
+     * keys this tree may not hold, so count the keys it does hold. */
+    function show(tree, what, searchable, play, own) { // own: panel title for a tree the programs do not print
+      msg.textContent = '';
+      var walk = M3.validateSteps(tree, k);
+      var intro = { type: 'intro', state: tree.model(), highlight: {}, lines: [],
+        caption: 'The tree to check: <b>' + BTViz.esc(what) + '</b>. validate starts at the root with no bounds and narrows them on the way down.' };
+      var steps = [intro].concat(walk);
+      steps.error = walk.error;
+      steps.panelTitle = own || 'As the programs print it';
+      steps.verdict = 'validate: ' + (walk.error || 'ok') + (searchable === false ? '; get not tried (it could follow the erased pointer)' :
+        own ? '; ' + M3.storedText(tree) : '; get finds ' + M3.keysFound(tree) + ' of the 12 original keys');
+      steps.forEach(function (s) { s.what = what; });
+      /* Always six choices in one fixed order; which distractors appear
+       * depends on the tree, not on the answer. */
+      var answer = walk.error || 'ok', salt = 0;
+      for (var ci = 0; ci < what.length; ci++) salt += what.charCodeAt(ci);
+      var names = M3.predictChoices(answer, salt);
+      steps[steps.length - 1].question = { prompt: 'What will validate report for this tree?', choices: names, answer: names.indexOf(answer),
+        explain: 'validate reports the first violation it meets on its walk, or ok.' };
+      stepper.pause();
+      stepper.setSteps(steps, { play: !!play });
+    }
+    var shown = 'intact'; // the entry of the select whose tree is on screen
+    function preset(play) {
+      if (caseSel.value === 'own') return own();
+      shown = caseSel.value;
+      if (caseSel.value === 'intact') return show(M3.canonical(), 'intact canonical tree', true, play);
+      if (ORDER5[caseSel.value]) return show(M3.order5(ORDER5[caseSel.value].thin), ORDER5[caseSel.value].what, true, play, 'Verdict for this tree');
+      var c = M3.CASES[+caseSel.value], t = M3.canonical();
+      c.apply(t);
+      show(t, c.what, c.searchable, play);
+    }
+    function own() {
+      var to = parseKey(toInput.value), from = +keySel.value;
+      if (to === null) {
+        msg.textContent = toInput.value.trim() === '' ? 'Type the new key first: a whole number from 0 to 999.' : '“' + toInput.value.trim() + '” is not a key this page accepts. Use a whole number from 0 to 999.';
+        toInput.focus({ preventScroll: true });
+        caseSel.value = shown; // nothing new is drawn: keep naming the tree on screen
+        return;
+      }
+      var t = M3.canonical();
+      M3.preorder(t.root).forEach(function (n) { var i = n.keys.indexOf(from); if (i >= 0) n.keys[i] = to; });
+      caseSel.value = shown = 'own';
+      show(t, 'key ' + from + ' replaced by ' + to + (to === from ? ' (no change)' : ''), true, true, 'Verdict for your tree');
+    }
+    caseSel.addEventListener('change', function () { preset(true); });
+    toInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') own(); });
+    preset(false);
+  })();
+
+  /* ================================================ figure 3: red-black */
+  (function () {
+    var fig = BTViz.figure('#fig-rb', {
+      title: 'The same keys, drawn two ways', side: true,
+      legend: [{ token: 'text', label: 'black node (heavy outline)' }, { token: 'key-deleted', label: 'red node and red link' }, { token: 'node', label: '2-3-4 node not yet converted' }]
+    });
+    var PRESETS = {
+      canonical: { label: 'Canonical tree', build: M3.canonical },
+      sparsest: { label: 'Sparsest tree with 3 levels', build: M3.sparsest },
+      fullest: { label: 'Fullest tree with 2 levels', build: M3.fullest }
+    };
+    var presetSel = el('select.bt-select#r-preset', { 'aria-label': '2-3-4 tree' });
+    Object.keys(PRESETS).forEach(function (id) { presetSel.appendChild(el('option', { value: id }, PRESETS[id].label)); });
+    presetSel.appendChild(el('option', { value: 'own' }, 'Your keys'));
+    var keysInput = el('input.bt-input.wide-input#r-keys', { type: 'text', placeholder: 'your keys, e.g. 4 8 15 16 23 42', 'aria-label': 'Your keys, separated by spaces or commas' });
+    var toggle = button('r-toggle', 'Show as red-black tree', function () {
+      stepper.pause();
+      if (stepper.index < stepper.steps.length - 1) stepper.end(); else stepper.restart();
+    }, true);
+    fig.toolbar.append(el('label.bt-field', 'Tree ', presetSel), keysInput, button('r-build', 'Build', own), el('span.bt-toolbar-sep'), toggle);
+
+    var msg = el('p.msg#r-msg', { role: 'status' });
+    var facts = el('div.facts#r-facts');
+    fig.stage.append(msg, facts); // nothing between the tree and its caption
+    var view = new BTViz.TreeView(fig.stage, { minHeight: 290, ariaLabel: '2-3-4 tree and its red-black form' });
+    var textPre = el('pre.textform#r-text');
+    fig.side.append(panel('As the programs print it', textPre));
+    var code = BTViz.codePanel(fig.side, 'redblack', { title: 'One 2-3-4 node becomes … (redblack)' });
+
+    function colours(model) {
+      var h = { nodes: {}, keys: {}, edges: {} };
+      (function walk(n) {
+        if (!n) return;
+        if (n.color) {
+          h.nodes[n.id] = 'rb' + n.color;
+          if (n.color === 'red') { h.keys[n.id + ':' + n.keys[0]] = 'rbred'; h.edges[n.id] = 'rbred'; }
+        }
+        (n.children || []).forEach(walk);
+      })(model);
+      return h;
+    }
+    var tree = null, summary = null;
+    var stepper = new BTViz.Stepper({
+      mount: fig.controls, caption: fig.caption, root: fig.root, interval: 1500,
+      onStep: function (step, i) {
+        view.render(step.state, step.highlight);
+        code.highlight(step.lines || []);
+        textPre.textContent = step.printed;
+        var last = stepper ? i === stepper.steps.length - 1 : false;
+        toggle.textContent = last ? 'Show as 2-3-4 tree' : 'Show as red-black tree';
+        chips(facts, ['2-3-4 tree: ' + M3.plural(M3.heightOf(tree.root), 'level'), 'black nodes on every path: ' + summary.blackHeight,
+          'shortest path: ' + M3.plural(summary.shortest, 'node'), 'longest path: ' + M3.plural(summary.longest, 'node')]);
+      }
+    });
+    function build(t, about, play) {
+      msg.textContent = '';
+      tree = t;
+      var rb = M3.redBlack(tree.root);
+      summary = M3.rbCheck(rb);
+      var order = M3.preorder(tree.root), expanded = {}, steps = [], printed = '';
+      function frame(caption, lines) {
+        var m = M3.hybrid(tree.root, expanded);
+        steps.push({ caption: caption, state: m, highlight: colours(m), lines: lines || [], printed: printed });
+      }
+      frame(about + ' Every node has 1, 2 or 3 keys, and all leaves are on level ' + M3.heightOf(tree.root) + '. Step forward to convert it node by node.');
+      order.forEach(function (n) {
+        expanded[n.id] = true;
+        printed += '  ' + M3.fmtKeys(n.keys) + ' -> ' + M3.describe(n.keys) + '\n';
+        var kk = n.keys, text = '<b>' + M3.fmtKeys(kk) + '</b> has ' + kk.length + (kk.length === 1 ? ' key' : ' keys') + '. ';
+        /* A leaf has no subtrees: its child positions stay empty. */
+        if (kk.length === 1) text += 'It becomes one black node, ' + k(kk[0]) + (n.leaf ? '. It is a leaf, so both child positions below it stay empty.' : ', with the same two subtrees below it.');
+        else if (kk.length === 2) text += 'The larger key ' + k(kk[1]) + ' becomes a black node and ' + k(kk[0]) + ' its red left child. The red link means: these two keys shared one 2-3-4 node.' + (n.leaf ? ' It is a leaf, so the three child positions stay empty.' : '');
+        else text += 'The middle key ' + k(kk[1]) + ' becomes a black node; ' + k(kk[0]) + ' and ' + k(kk[2]) + ' become its red children. ' +
+          (n.leaf ? 'It is a leaf, so the four child positions below the red nodes stay empty.' : 'The four subtrees hang below the red nodes in the same order.');
+        frame(text, window.CHAPTER_RB_LINES[kk.length]);
+      });
+      printed += M3.redBlackSummary(tree); // the complete last line of part 6
+      frame('This is a red-black tree. A red node is never the child of a red node, because one 2-3-4 node holds at most three keys: one black, two red.');
+      frame('Every path from the root to a missing child passes ' + summary.blackHeight + ' black ' + (summary.blackHeight === 1 ? 'node' : 'nodes') +
+        ': one per level of the 2-3-4 tree, whose leaves are all on the same level. Red nodes add at most one extra step per black node, so the longest path (' +
+        M3.plural(summary.longest, 'node') + ') is at most twice the shortest (' + summary.shortest + ').');
+      stepper.pause();
+      stepper.setSteps(steps, { play: !!play });
+    }
+    function fromPreset(play) {
+      if (presetSel.value === 'own') return own();
+      var p = PRESETS[presetSel.value];
+      build(p.build(), p.label + ' as a 2-3-4 tree (a B-tree of order 4).', play);
+    }
+    function own() {
+      var tokens = keysInput.value.trim().split(/[\s,]+/).filter(function (t) { return t !== ''; });
+      var keys = [], bad = null, seen = {};
+      tokens.forEach(function (t) {
+        var key = parseKey(t);
+        if (key === null) bad = bad || '“' + t + '” is not a whole number from 0 to 999.';
+        else if (seen[key]) bad = bad || 'Key ' + key + ' appears twice; a key is stored once.';
+        else { seen[key] = true; keys.push(key); }
+      });
+      if (!tokens.length) bad = 'Type 1 to 24 keys first, separated by spaces or commas.';
+      else if (!bad && keys.length > 24) bad = 'That is ' + keys.length + ' keys; this figure draws at most 24.';
+      if (bad) { msg.textContent = bad; keysInput.focus({ preventScroll: true }); return; }
+      keys.sort(function (a, b) { return a - b; });
+      presetSel.value = 'own';
+      build(new M3.HandTree(4).fromSorted(keys), 'Your ' + keys.length + (keys.length === 1 ? ' key' : ' keys') +
+        ' as a 2-3-4 tree with as few levels as possible (inserting them one by one, chapter 04, can give a different shape).', false);
+    }
+    presetSel.addEventListener('change', function () {
+      if (presetSel.value === 'own' && keysInput.value.trim() === '') { msg.textContent = 'Type 1 to 24 keys, then press Build.'; keysInput.focus({ preventScroll: true }); return; }
+      fromPreset(false);
+    });
+    keysInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') own(); });
+    fromPreset(false);
+  })();
+
+  /* ============================================================ self-tests
+   * Recompute every part of the program output with the JavaScript model. */
+  (function () {
+    var parts = window.CHAPTER_EXPECTED.split(/\n(?=== \d)/);
+    function body(n) { return parts[n - 1].split('\n').slice(1).join('\n'); }
+    function lines(n, re) { return parts[n - 1].split('\n').filter(function (l) { return re.test(l); }).join('\n') + '\n'; }
+    var t = M3.canonical();
+    BTViz.selfTest('1 canonical tree', M3.renderText(t.root, '  ') + M3.shapeText(M3.shape(t.root, 4)) + '\nvalidate: ' + (M3.validateName(t) || 'ok') + '\n',
+      body(1).split('\n').slice(0, 4).join('\n') + '\n');
+    BTViz.selfTest('2 five lookups', [10, 17, 1, 8, 31].map(function (key) { return M3.searchSteps(t, key).line; }).join('\n') + '\n', body(2));
+    BTViz.selfTest('3 in-order', M3.inOrderKeys(t.root).join(' ') + '\n', body(3));
+    BTViz.selfTest('4 ten broken trees', M3.brokenText(), body(4));
+    BTViz.selfTest('5 height bounds', M3.renderText(M3.sparsest().root, '  ') + M3.renderText(M3.fullest().root, '  ') + M3.heightsText(),
+      lines(5, /^  \[/) + lines(5, /^  n=/));
+    BTViz.selfTest('6 red-black', M3.redBlackText(t), body(6));
+    BTViz.selfTest('7 oracle check', M3.oracleText(), parts[6]);
+  })();
+})();
+</script>
+</body>
+</html>

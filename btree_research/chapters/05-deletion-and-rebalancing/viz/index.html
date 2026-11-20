@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deletion and rebalancing</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  /* Chapter-local styles: tokens only, no hard-coded colours. */
+  .keybar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .keybar-label { font-size: .86rem; color: var(--bt-muted); margin-right: 2px; }
+  .keybar .bt-btn { min-width: 2.4em; padding-left: .5em; padding-right: .5em; font-family: var(--bt-mono); }
+  .textform { margin: 0; font-family: var(--bt-mono); font-size: .84rem; line-height: 1.5;
+              white-space: pre; overflow-x: auto; color: var(--bt-text); }
+  .facts { display: flex; flex-wrap: wrap; gap: 6px; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">Deleting a key can leave a node with too few keys. Watch the three repairs
+(borrow from a sibling, merge with a sibling, shrink at the root) and try to predict which one comes next.</p>
+
+<p>This page belongs to <a href="../README.md">Chapter 05: Deletion and rebalancing</a>.
+The tree below is a B-tree of order M: every node holds at most M&nbsp;&minus;&nbsp;1 keys and,
+except the root, at least &lceil;M/2&rceil;&nbsp;&minus;&nbsp;1. Click a key button (or type a key from 0 to 999) to delete it.
+The key buttons always show the keys of the tree drawn below them. Every delete or insert, by button, by the key field or with Enter,
+is applied to the tree on screen, so all of them wait until the animation has reached its last step.
+Every frame is produced by a real JavaScript B-tree that follows the same rules as the chapter's Zig and Rust code:
+try the left sibling first, then the right one, otherwise merge.</p>
+
+<h2>Delete a key</h2>
+<div id="fig"></div>
+
+<h2>What to look for</h2>
+<div class="bt-table-wrap">
+<table class="bt-table">
+<thead><tr><th>Situation</th><th>Repair</th></tr></thead>
+<tbody>
+<tr><td>The key is in a leaf that keeps enough keys</td><td>None.</td></tr>
+<tr><td>The key is in an interior node</td><td>Overwrite it with its predecessor (largest key of the left subtree), then delete that key from its leaf. The parent keeps all its keys.</td></tr>
+<tr><td>A node is one key short and a direct sibling has a spare key</td><td>Borrow: the separator moves down, the sibling's nearest key moves up. The parent keeps all its keys, so the repair stops here.</td></tr>
+<tr><td>A node is one key short and no direct sibling has a spare key</td><td>Merge: node + separator + sibling become one node. The parent loses a key, so it may be one key short now.</td></tr>
+<tr><td>The root has no keys left</td><td>Its only child becomes the root: the tree is one level shorter.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Suggested experiments: play both scripted scenarios (they are parts 2 and 3 of the program output);
+switch to order 3, where every non-root node has exactly one or two keys and almost every delete needs a repair;
+then order 6, where repairs become rare. With "Keys 1 to 13" at order 5, delete 3 and then 7:
+a node with one key is already one key short (the README's last hand example). Tick <em>Predict</em> to be asked before each repair.</p>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, k = BTViz.k;
+
+  BTViz.page({
+    title: 'Deletion and rebalancing', chapter: 5,
+    prev: { href: '../../04-insertion-and-splitting/viz/index.html', title: 'Insertion and splitting' },
+    next: { href: '../../06-testing-a-btree/viz/index.html', title: 'Testing a B-tree' }
+  });
+
+  /* ---------------------------------------------------------------- scenarios
+   * The same constants as zig/src/scenario.zig and rust/src/scenario.rs. */
+  var CANONICAL = [10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15];
+  var CASE_DELETES = [3, 7, 6, 20, 10, 12, 15, 17, 30, 25];
+  var TALL_COUNT = 13;
+  var TALL_DELETES = [9, 13, 10, 1, 2, 3];
+  var PRESETS = {
+    canonical: { label: 'Canonical tree (12 keys)', keys: function () { return CANONICAL.slice(); }, script: CASE_DELETES, part: 'part 2',
+                 about: 'The guide’s canonical tree: 10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15 inserted in that order.' },
+    tall: { label: 'Keys 1 to 13 (three levels at order 4)', keys: function () { var a = []; for (var i = 1; i <= TALL_COUNT; i++) a.push(i); return a; }, script: TALL_DELETES, part: 'part 3',
+            // The sentence depends on the order: at order 5 or 6 the same keys give only two levels.
+            about: function (t) {
+              var h = t.height();
+              return 'Keys 1 to 13 inserted in ascending order. With order ' + t.order + ' this tree has ' + h + ' levels' +
+                (h >= 3 ? ', so an underflow can travel up through an interior node.' : '. Choose order 3 or 4 to see an underflow travel up through an interior node.');
+            } },
+    random: { label: 'Random (24 keys)', keys: function () { return BTViz.rng(randomSeed).sample(24, 1, 99); }, script: null,
+              about: '24 random keys between 1 and 99.' }
+  };
+  var randomSeed = 5;
+
+  /* ------------------------------------------------- text form of a snapshot
+   * Same format as the programs: one line per level, ' | ' between families. */
+  function renderText(state, indent) {
+    indent = indent || '';
+    if (!state || !state.keys || (!state.keys.length && !(state.children || []).length)) return indent + '(empty)\n';
+    var height = 0, n;
+    for (n = state; n; n = n.children && n.children[0]) height++;
+    var out = '';
+    for (var level = 0; level < height; level++) {
+      var line = '', first = true;
+      (function walk(node, remaining) {
+        if (remaining === 0) { line += '[' + node.keys.join(' ') + ']'; return; }
+        node.children.forEach(function (child, i) {
+          if (remaining === 1) { if (i > 0) line += ' '; else if (!first) line += ' | '; first = false; }
+          walk(child, remaining - 1);
+        });
+      })(state, level);
+      out += indent + line + '\n';
+    }
+    return out;
+  }
+
+  /* The line the programs print for one delete, derived from the step types. */
+  function summarize(key, steps) {
+    var count = {};
+    steps.forEach(function (s) { count[s.type] = (count[s.type] || 0) + 1; });
+    var line = 'delete ' + key + ':';
+    if (!steps.ok) return line + ' not found';
+    line += count['found-internal'] ? ' interior key, replaced by its predecessor;' : ' leaf key;';
+    var parts = [];
+    // In the order they happen: merges first, then at most one borrow, then the root.
+    [['merge', 'merge'], ['borrow-left', 'borrow from left'], ['borrow-right', 'borrow from right'], ['root-shrink', 'root shrink']]
+      .forEach(function (p) { if (count[p[0]]) parts.push((count[p[0]] > 1 ? count[p[0]] + ' x ' : '') + p[1]); });
+    return line + ' ' + (parts.length ? parts.join(', ') : 'no underflow');
+  }
+
+  /* ------------------------------------------------------------------ figure */
+  var fig = BTViz.figure('#fig', {
+    title: 'Delete from a B-tree: borrow, merge, shrink', side: true,
+    legend: ['node-active', 'key-compare', 'key-found', 'key-deleted', 'key-inserted', 'split', 'merge']
+  });
+
+  var presetSel = el('select.bt-select#preset', { 'aria-label': 'Starting tree' });
+  Object.keys(PRESETS).forEach(function (id) { presetSel.appendChild(el('option', { value: id }, PRESETS[id].label)); });
+  var orderSel = el('select.bt-select#order', { 'aria-label': 'Order M (maximum number of children)' });
+  [3, 4, 5, 6].forEach(function (m) { orderSel.appendChild(el('option', { value: m, selected: m === 4 }, 'order ' + m)); });
+  var keyInput = el('input.bt-input#key', { type: 'number', inputmode: 'numeric', placeholder: 'key', 'aria-label': 'Key', min: 0, max: 999 });
+  function button(id, text, fn, primary) {
+    return el('button.bt-btn' + (primary ? '.bt-primary' : '') + '#' + id, { type: 'button', onclick: fn }, text);
+  }
+  var scriptBtn = button('btn-script', 'Play scripted deletes (order 4)', playScript);
+  var deleteBtn = button('btn-delete', 'Delete', function () { fromInput('delete'); }, true);
+  var insertBtn = button('btn-insert', 'Insert', function () { fromInput('insert'); });
+  fig.toolbar.append(
+    el('label.bt-field', 'Start from ', presetSel), orderSel, el('span.bt-toolbar-sep'),
+    keyInput, deleteBtn, insertBtn,
+    el('span.bt-toolbar-sep'), scriptBtn, button('btn-reset', 'Reset', reset));
+
+  var keyBar = el('div.keybar', { role: 'group', 'aria-label': 'Keys in the tree: press one to delete it' });
+  var facts = el('div.facts');
+  fig.stage.append(keyBar);
+  var view = new BTViz.TreeView(fig.stage, { minHeight: 250, ariaLabel: 'B-tree' });
+  fig.stage.append(facts);
+  var code = BTViz.codePanel(fig.stage, 'delete', { title: 'The delete algorithm (condensed from delete.zig / delete.rs)', maxHeight: 330 });
+
+  var textPre = el('pre.textform#textform');
+  fig.side.append(el('div.bt-panel', el('div.bt-panel-title', 'As the programs print it'), el('div.bt-panel-body', textPre)));
+  var log = new BTViz.Log(fig.side, { title: 'Events so far' });
+
+  var tree = null;
+  var stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, predict: false, // false = show the Predict checkbox, unticked
+    onStep: function (step, i) {
+      view.render(step.state, step.highlight);
+      // Only what has happened up to this step, so Predict mode is not spoiled.
+      log.sync(stepper ? stepper.steps : [], i);
+      code.highlight(window.CHAPTER_LINES[step.type] || []);
+      textPre.textContent = (step.summary ? step.summary + '\n' : '') + renderText(step.state, step.summary ? '  ' : '');
+      showFacts(step.state);
+      // The key bar shows the tree on screen, not the model's final state. A
+      // new delete or insert always starts from the final state, so every
+      // control that starts one (key buttons, Delete, Insert, Enter) works
+      // only on the last step, where the two are the same.
+      var live = !stepper || i === stepper.steps.length - 1;
+      deleteBtn.disabled = insertBtn.disabled = !live;
+      showKeyBar(step.state, live);
+    }
+  });
+
+  /* True when the tree on screen is the model's tree: the last step is shown. */
+  function isLive() {
+    return stepper.index === stepper.steps.length - 1;
+  }
+
+  function isEmptyTree(state) {
+    return !state || !state.keys || (!state.keys.length && !(state.children || []).length);
+  }
+
+  /* Keys of a snapshot in ascending order (in-order walk). */
+  function keysOf(state) {
+    var out = [];
+    (function walk(node) {
+      var kids = node.children || [];
+      for (var i = 0; i <= node.keys.length; i++) {
+        if (kids[i]) walk(kids[i]);
+        if (i < node.keys.length) out.push(node.keys[i]);
+      }
+    })(state);
+    return out;
+  }
+
+  function showFacts(state) {
+    // Every node of the snapshot counts, also one that is empty for a moment
+    // in the middle of a repair. Only a root without keys and without
+    // children is the empty tree (the programs then have no node at all).
+    var nodes = 0, keys = 0, height = 0, n;
+    if (!isEmptyTree(state)) {
+      for (n = state; n; n = n.children && n.children[0]) height++;
+      (function walk(node) { nodes++; keys += node.keys.length; (node.children || []).forEach(walk); })(state);
+    }
+    var lim = tree.limits();
+    facts.replaceChildren(
+      el('span.bt-chip', 'height ' + height), el('span.bt-chip', 'nodes ' + nodes), el('span.bt-chip', 'keys ' + keys),
+      el('span.bt-chip', 'per node: ' + lim.minLeafKeys + ' to ' + lim.maxKeys + ' keys'));
+  }
+
+  function showKeyBar(state, live) {
+    var keys = isEmptyTree(state) ? [] : keysOf(state);
+    keyBar.replaceChildren(el('span.keybar-label#keybar-label', { role: 'status' },
+      !live ? (keys.length ? 'Keys at this step (go to the last step to delete or insert a key):' : 'No keys at this step (go to the last step to insert one).') :
+      keys.length ? 'Delete:' : 'The tree is empty. Insert a key or press Reset.'));
+    keys.forEach(function (key) {
+      keyBar.appendChild(el('button.bt-btn', { type: 'button', disabled: !live, 'aria-label': 'Delete key ' + key,
+        onclick: function () { run('delete', key); } }, String(key)));
+    });
+  }
+
+  /* The model names nodes n1, n2, ... in its event log. The reader cannot see
+   * those names, so show the node's keys instead, as they were just before
+   * the step (after a merge one of the two nodes is gone). */
+  function nodeText(id, states) {
+    for (var s = 0; s < states.length; s++) {
+      var hit = null;
+      (function walk(node) { if (!node || hit) return; if (node.id === id) hit = node; else (node.children || []).forEach(walk); })(states[s]);
+      if (hit) return '[' + hit.keys.join(' ') + ']';
+    }
+    return id;
+  }
+  function readable(text, states) {
+    return text.replace(/\bn\d+\b/g, function (id) { return nodeText(id, states); });
+  }
+
+  /* Decorate the model's steps: code lines come from step.type in onStep; here we
+   * add the predict question and the program-style summary on the last step. */
+  function decorate(op, key, steps) {
+    var lim = tree.limits();
+    steps.forEach(function (s, i) {
+      var prev = steps[i - 1];
+      // The chapter's words: "interior" node; and a first or last child has
+      // only one sibling, so "neither" would be wrong.
+      s.caption = s.caption.replace(/internal node/g, 'interior node').replace('Neither sibling can spare a key', 'No sibling can spare a key');
+      var states = prev ? [prev.state, s.state] : [s.state];
+      if (typeof s.log === 'string') s.log = readable(s.log, states);
+      else if (s.log && s.log.html) s.log = { html: readable(s.log.html, states), state: s.log.state };
+      if (prev && prev.type === 'underflow' && /^(borrow-left|borrow-right|merge)$/.test(s.type)) {
+        s.question = {
+          prompt: 'This node has too few keys. How will its parent repair it?',
+          choices: ['Borrow from the left sibling', 'Borrow from the right sibling', 'Merge with a sibling'],
+          answer: { 'borrow-left': 0, 'borrow-right': 1, 'merge': 2 }[s.type],
+          explain: 'A direct sibling can lend only if it has more than ' + lim.minLeafKeys + ' key' + (lim.minLeafKeys > 1 ? 's' : '') +
+            '. The left sibling is asked first, then the right one. If neither can lend, the nodes merge.'
+        };
+      }
+      if (s.type === 'merge') s.hold = 2;
+      // A borrow between interior nodes also moves one child. The model's
+      // caption only names the two keys, so name the child as well.
+      if (prev && prev.type === 'underflow' && (s.type === 'borrow-left' || s.type === 'borrow-right')) s.caption += movedChildText(prev, s);
+      // The model keeps an empty leaf as the root of an empty tree and calls
+      // that height 1; the programs (and the chips above) have no node at all.
+      if (s.type === 'done' && isEmptyTree(s.state)) s.caption = s.caption.replace(/0 keys, height \d+\.$/, 'The tree is empty: 0 keys, height 0.');
+    });
+    if (op === 'delete') steps[steps.length - 1].summary = summarize(key, steps);
+    return steps;
+  }
+
+  /* For a borrow step: which child changed parent, or '' between leaves.
+   * `under` is the step that announced the underflow; it highlights the
+   * underfull node. After the borrow that node's first (borrow from the
+   * left) or last (from the right) child is the one that moved, and the
+   * parent's separator between the two siblings is the key that went up. */
+  function movedChildText(under, step) {
+    var id = Object.keys((under.highlight && under.highlight.nodes) || {})[0];
+    var fromLeft = step.type === 'borrow-left', node = null, parent = null, at = -1;
+    (function walk(n) {
+      (n.children || []).forEach(function (c, i) { if (c.id === id) { node = c; parent = n; at = i; } else walk(c); });
+    })(step.state);
+    if (!node || !(node.children || []).length) return '';
+    var moved = fromLeft ? node.children[0] : node.children[node.children.length - 1];
+    var down = fromLeft ? node.keys[0] : node.keys[node.keys.length - 1];
+    var up = parent.keys[fromLeft ? at - 1 : at];
+    return ' The sibling\'s ' + (fromLeft ? 'last' : 'first') + ' child, [' + moved.keys.join(' ') + '], changes parent with it: its keys lie between ' +
+      k(Math.min(up, down)) + ' and ' + k(Math.max(up, down)) + '.';
+  }
+
+  function run(op, key) {
+    // Never start from a tree the reader is not looking at.
+    if (!isLive()) return;
+    stepper.pause();
+    var steps = decorate(op, key, tree[op](key));
+    stepper.setSteps(steps, { play: true });
+  }
+
+  /* One still frame of the current (final) tree with a message. */
+  function say(caption) {
+    stepper.pause();
+    stepper.setSteps([{ type: 'intro', state: tree.snapshot(), highlight: {}, caption: caption }]);
+  }
+
+  function fromInput(op) {
+    if (!isLive()) {
+      // Enter in the key field on an earlier step: the model's tree is the
+      // one of the LAST step. Change nothing, keep what was typed, say why.
+      var label = keyBar.querySelector('.keybar-label');
+      if (label) label.textContent = 'Not yet: this is step ' + (stepper.index + 1) + ' of ' + stepper.steps.length +
+        '. Go to the last step (End), then ' + op + ' the key.';
+      return;
+    }
+    var text = keyInput.value.trim();
+    // An empty value is also what a number input reports for text it cannot parse.
+    if (text === '' && keyInput.validity && !keyInput.validity.badInput) { keyInput.focus({ preventScroll: true }); return; }
+    keyInput.value = '';
+    // The programs use u64 keys; this page keeps them small so they fit in a node.
+    if (!/^\d{1,3}$/.test(text)) { say('Not a key this page accepts. Type a whole number from 0 to 999.'); return; }
+    run(op, +text);
+  }
+
+  function build() {
+    var preset = PRESETS[presetSel.value];
+    tree = BTViz.models.BTree(+orderSel.value);
+    preset.keys().forEach(function (key) { tree.insert(key, { steps: false }); });
+    scriptBtn.disabled = !preset.script;
+    return preset;
+  }
+
+  function reset() {
+    stepper.pause();
+    var preset = build();
+    var lim = tree.limits();
+    stepper.setSteps([{
+      type: 'intro', state: tree.snapshot(), highlight: {},
+      caption: (typeof preset.about === 'function' ? preset.about(tree) : preset.about) + ' Order ' + tree.order + ': every node holds at most ' + lim.maxKeys + ' keys and, except the root, at least ' +
+        lim.minLeafKeys + '. Press a key button above the tree to delete that key' + (preset.script ? ', or play the scripted deletes.' : '.')
+    }]);
+  }
+
+  /* All scripted deletes of the chapter program as one timeline (order 4). */
+  function playScript() {
+    var preset = PRESETS[presetSel.value];
+    if (!preset.script) return;
+    var before = orderSel.value;
+    orderSel.value = '4';
+    build();
+    var all = [];
+    // The script is the program's scenario, which is fixed to order 4. Say so
+    // when that changes the tree the reader was looking at.
+    if (before !== '4') all.push({ type: 'intro', state: tree.snapshot(), highlight: {},
+      caption: 'The scripted deletes are ' + preset.part + ' of the program output, which uses order 4. The order was changed from ' + before +
+        ' to 4 and the tree was built again: this is the tree the script starts from.' });
+    preset.script.forEach(function (key) {
+      var steps = decorate('delete', key, tree.delete(key));
+      all = all.concat(steps);
+    });
+    stepper.setSteps(all, { play: true });
+  }
+
+  presetSel.addEventListener('change', function () { if (presetSel.value === 'random') randomSeed++; reset(); });
+  orderSel.addEventListener('change', reset);
+  keyInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') fromInput('delete'); });
+  reset();
+
+  /* ------------------------------------------------------------- self-tests
+   * Replay parts 1 to 3 of the chapter program with the JavaScript model and
+   * compare with the text the Zig and Rust programs printed (code.js). */
+  (function () {
+    var expected = window.CHAPTER_EXPECTED;
+    var t = BTViz.models.BTree(4);
+    CANONICAL.forEach(function (key) { t.insert(key, { steps: false }); });
+    BTViz.selfTest('part 1: canonical tree', renderText(t.snapshot()), expected.canonical);
+    var out = '';
+    CASE_DELETES.forEach(function (key) { out += summarize(key, t.delete(key)) + '\n' + renderText(t.snapshot(), '  '); });
+    BTViz.selfTest('part 2: one case at a time', out, expected.part2);
+
+    var u = BTViz.models.BTree(4);
+    for (var key = 1; key <= TALL_COUNT; key++) u.insert(key, { steps: false });
+    out = renderText(u.snapshot(), '  ');
+    TALL_DELETES.forEach(function (key) { out += summarize(key, u.delete(key)) + '\n' + renderText(u.snapshot(), '  '); });
+    BTViz.selfTest('part 3: an underflow that travels up', out, expected.part3);
+    BTViz.selfTest('model invariants hold', t.validate().concat(u.validate()), []);
+  })();
+})();
+</script>
+</body>
+</html>

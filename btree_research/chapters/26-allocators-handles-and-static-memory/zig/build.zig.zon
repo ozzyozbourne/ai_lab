@@ -1,0 +1,12 @@
+.{
+    .name = .ch26_allocators_handles,
+    .version = "0.0.0",
+    .fingerprint = 0xccbcd7f20c818394,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

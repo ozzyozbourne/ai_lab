@@ -1,0 +1,12 @@
+.{
+    .name = .btree_template,
+    .version = "0.0.0",
+    .fingerprint = 0x47d080399abf9e29, // required; `zig build` suggests a value if missing
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

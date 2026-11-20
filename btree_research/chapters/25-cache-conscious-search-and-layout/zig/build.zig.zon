@@ -1,0 +1,12 @@
+.{
+    .name = .ch25_cache_conscious_search, // zon names are capped at 32 characters; the executable keeps the full name
+    .version = "0.0.0",
+    .fingerprint = 0x7a3f6d503cb9798a,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

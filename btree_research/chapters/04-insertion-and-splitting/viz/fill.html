@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How full do the nodes get?</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  /* Chapter-local styles: tokens only, no hard-coded colours. */
+  .strip-block { margin: 4px 0 12px; }
+  .strip-title { font-size: .86rem; color: var(--bt-muted); margin: 0 0 3px; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+  .strip-title b { color: var(--bt-text); }
+  .strip { display: block; width: 100%; height: 72px; background: var(--bt-surface-2);
+           border: 1px solid var(--bt-border); border-radius: 6px; }
+  .strip .guide { stroke: var(--bt-text); stroke-width: 1.5; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; opacity: .75; }
+  .strip .asc { fill: var(--bt-node-active); }
+  .strip .rnd { fill: var(--bt-split); }
+  .strip-note { font-size: .8rem; color: var(--bt-muted); margin: 2px 0 0; }
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .charts > div { min-width: 0; }
+  .chart-title { font-size: .86rem; color: var(--bt-muted); margin: 0 0 2px; }
+  @media (max-width: 760px) { .charts { grid-template-columns: 1fr; } }
+  .seed-note { font-size: .86rem; color: var(--bt-muted); margin: 0 0 6px; }
+  .seed-note:empty { display: none; }
+  .measured { margin: 0; font-family: var(--bt-mono); font-size: .78rem; line-height: 1.45; white-space: pre; overflow-x: auto; color: var(--bt-text); }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">A split leaves two half-full nodes behind. Whether they fill up again depends on where the next keys land.
+Insert the same keys in ascending order and in random order, and compare how full the nodes end up.</p>
+
+<p>This is the second page of <a href="../README.md">Chapter 04: Insertion and splitting</a>; the first one,
+<a href="index.html">Insert a key</a>, shows a single insert step by step. Here two trees of order M receive the same N keys
+(0 to N&nbsp;&minus;&nbsp;1), one tree in ascending order and one in a shuffled order. Fill means: keys stored, divided by the key slots of all nodes.
+The shuffle is the SplitMix64 shuffle of the chapter's programs, so seed 4 gives the same sequence as their output.</p>
+
+<h2>Ascending against random keys</h2>
+<div id="fig"></div>
+
+<h2>What the programs measured</h2>
+<p>The same experiment with 100000 keys, printed by <code>zig build run</code> and <code>cargo run</code> (parts 4 and 5 of the output).
+The checks at the bottom of this page rebuild four of these rows with the JavaScript model.</p>
+<div class="bt-panel"><div class="bt-panel-body"><pre class="measured" id="measured"></pre></div></div>
+<p>Two reference numbers, both textbook and not derived here: a tree whose nodes are all at the legal minimum is about 50% full;
+under random inserts the expected fill approaches ln&nbsp;2&nbsp;&asymp;&nbsp;69.3% as the order grows (Yao, 1978).</p>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="local.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, k = BTViz.k;
+
+  BTViz.page({
+    title: 'How full do the nodes get?', chapter: 4,
+    prev: { href: '../../03-btree-structure-and-search/viz/index.html', title: 'B-tree structure and search' },
+    next: { href: '../../05-deletion-and-rebalancing/viz/index.html', title: 'Deletion and rebalancing' }
+  });
+
+  var E = window.CHAPTER_EXPECTED;
+  document.getElementById('measured').textContent = E.part4 + '\n' + E.part5;
+
+  var CHECKPOINTS = 40, MAX_COLUMNS = 300;
+  var fig = BTViz.figure('#fig', {
+    title: 'Node fill while the tree grows',
+    legend: [{ token: 'node-active', label: 'tree fed ascending keys' }, { token: 'split', label: 'tree fed random keys' }]
+  });
+
+  function select(id, label, values, chosen, text) {
+    var s = el('select.bt-select#' + id, { 'aria-label': label });
+    values.forEach(function (v) { s.appendChild(el('option', { value: v, selected: v === chosen }, text ? text(v) : String(v))); });
+    return s;
+  }
+  var orderSel = select('order', 'Order M', [4, 8, 16, 32, 64], 8);
+  var countSel = select('count', 'Number of keys N', [200, 1000, 5000, 20000], 1000);
+  var variantSel = select('variant', 'Insert algorithm', ['bottom-up', 'top-down'], 'bottom-up',
+    function (v) { return v === 'top-down' ? 'top-down split (textbook)' : 'bottom-up split'; });
+  var seedInput = el('input.bt-input#seed', { type: 'number', inputmode: 'numeric', value: 4, min: 0, max: 9999, 'aria-label': 'Seed of the shuffle (0 to 9999)' });
+  var runBtn = el('button.bt-btn.bt-primary#btn-run', { type: 'button', onclick: function () { rebuild(true); } }, 'Rebuild and play');
+  fig.toolbar.append(el('label.bt-field', 'order M ', orderSel), el('label.bt-field', 'keys N ', countSel), variantSel,
+    el('label.bt-field', 'seed ', seedInput), runBtn);
+
+  /* Stays on screen until the seed field is edited again: a corrected seed
+   * must not go unnoticed behind an animation that has already started. */
+  var seedNote = el('p.seed-note#seed-note', { role: 'status' });
+  fig.stage.append(seedNote);
+
+  /* One strip per tree: the leaves from left to right, bar height = fill. */
+  function Strip(cls, title) {
+    this.cls = cls;
+    this.head = el('p.strip-title');
+    this.svg = el('svg.strip', { preserveAspectRatio: 'none', role: 'img', 'aria-label': title + ': fill of every leaf, in key order' });
+    this.note = el('p.strip-note');
+    this.title = title;
+    fig.stage.append(el('div.strip-block', this.head, this.svg, this.note));
+  }
+  Strip.prototype.render = function (s) {
+    var leaves = s.leafFill, group = Math.max(1, Math.ceil(leaves.length / MAX_COLUMNS));
+    var cols = [], i, j;
+    for (i = 0; i < leaves.length; i += group) {
+      var sum = 0, n = 0;
+      for (j = i; j < Math.min(leaves.length, i + group); j++) { sum += leaves[j]; n++; }
+      cols.push(sum / n);
+    }
+    var width = Math.max(cols.length, 1), gap = cols.length <= 150 ? 0.15 : 0;
+    this.svg.setAttribute('viewBox', '0 0 ' + width + ' 100');
+    var kids = cols.map(function (f, x) {
+      return el('rect', { class: this.cls, x: x + gap / 2, y: 100 - f * 100, width: 1 - gap, height: f * 100 });
+    }, this);
+    kids.push(el('line.guide', { x1: 0, x2: width, y1: 50, y2: 50 }));
+    this.svg.replaceChildren.apply(this.svg, kids);
+    this.head.replaceChildren(el('b', this.title),
+      el('span', s.keys + ' keys'), el('span', nodesText(s.nodes) + ' (' + s.leaves + (s.leaves === 1 ? ' leaf)' : ' leaves)')), el('span', 'height ' + s.height),
+      el('span', 'splits ' + s.splits), el('span', 'fill ', el('b', percent(s))));
+    this.note.textContent = !leaves.length ? 'No leaves yet.' :
+      'Each bar is ' + (group === 1 ? 'one leaf' : 'the average of ' + group + ' neighbouring leaves') + ', smallest keys on the left. Full height = a full leaf; the dashed line is 50%.';
+  };
+  function nodesText(n) { return n + (n === 1 ? ' node' : ' nodes'); }
+  function percent(s) { return Math.floor(s.fillPermille / 10) + '.' + (s.fillPermille % 10) + '%'; }
+
+  var ascStrip = new Strip('asc', 'Ascending keys');
+  var rndStrip = new Strip('rnd', 'Random keys');
+  var charts = el('div.charts');
+  var histHost = el('div', el('p.chart-title', 'Histogram: how many nodes are how full (all nodes, leaves and interior)'));
+  var lineHost = el('div', el('p.chart-title', 'Average fill while the keys arrive'));
+  charts.append(histHost, lineHost);
+  fig.stage.append(charts);
+  var BUCKETS = ['≤10', '20', '30', '40', '50', '60', '70', '80', '90', '100'];
+  var hist = new BTViz.Chart(histHost, { type: 'bar', height: 200, xLabel: 'node fill (%), upper end of each 10% band', yLabel: 'nodes', legend: true });
+  var line = new BTViz.Chart(lineHost, { type: 'line', height: 200, xLabel: 'keys inserted', yLabel: 'fill (%)', yMax: 100, legend: true, maxPoints: CHECKPOINTS + 1 });
+
+  var stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, interval: 450, predict: false,
+    onStep: function (step, i) {
+      var st = step.state;
+      ascStrip.render(st.asc);
+      rndStrip.render(st.rnd);
+      hist.render({ labels: BUCKETS, series: [
+        { name: 'ascending', token: 'node-active', values: st.asc.buckets }, { name: 'random', token: 'split', values: st.rnd.buckets }] });
+      // The line chart shows the run up to this step.
+      var upTo = stepper ? stepper.steps.slice(0, i + 1) : [step];
+      line.render({ labels: upTo.map(function (s) { return s.state.n; }), series: [
+        { name: 'ascending', token: 'node-active', values: upTo.map(function (s) { return s.state.asc.fillPermille / 10; }) },
+        { name: 'random', token: 'split', values: upTo.map(function (s) { return s.state.rnd.fillPermille / 10; }) },
+        { name: 'ln 2 = 69.3% (textbook)', token: 'key-found', values: upTo.map(function () { return 69.3; }) }] });
+    }
+  });
+
+  /* The fill the programs printed for this order, key order and variant, or null. */
+  function programFill(order, keyOrder, variant) {
+    var re = new RegExp('^ *' + order + '  ' + keyOrder + ' +' + variant + ' .*? (\\d+\\.\\d)%', 'm');
+    var m = re.exec(variant === 'top-down' ? E.part5 : E.part4);
+    return m ? m[1] + '%' : null;
+  }
+
+  function readSeed() {
+    var text = seedInput.value.trim();
+    return /^\d{1,4}$/.test(text) ? +text : null;
+  }
+
+  function rebuild(play) {
+    stepper.pause();
+    var order = +orderSel.value, n = +countSel.value, variant = variantSel.value, seed = readSeed();
+    if (seed === null) {
+      var typed = seedInput.value.trim();   // '' is also what a number input reports for text it cannot parse
+      seed = 4; seedInput.value = '4';
+      seedNote.textContent = 'The seed must be a whole number from 0 to 9999. ' + (typed === '' ? 'What was typed' : '"' + typed + '"') +
+        ' was not accepted, and the seed was set back to 4.';
+    }
+    var keys = { asc: Ch04.fillKeys(n, 'ascending', 0), rnd: Ch04.fillKeys(n, 'random', seed) };
+    var trees = { asc: Ch04.Tree(order, variant), rnd: Ch04.Tree(order, variant) };
+    var steps = [], done = 0;
+    var maxKeys = order - 1;
+    // What one split leaves in the left half: bottom-up splits M keys, top-down M - 1.
+    var leftKeeps = variant === 'bottom-up' ? Math.floor(order / 2) : order / 2 - 1;
+    var leftPct = Math.round(leftKeeps * 100 / maxKeys);
+    for (var c = 0; c <= CHECKPOINTS; c++) {
+      var target = Math.round(n * c / CHECKPOINTS);
+      for (; done < target; done++) {
+        trees.asc.insert(keys.asc[done], { steps: false });
+        trees.rnd.insert(keys.rnd[done], { steps: false });
+      }
+      steps.push({ state: { n: done, asc: trees.asc.stats(), rnd: trees.rnd.stats() } });
+    }
+    var last = steps[CHECKPOINTS].state, A = percent(last.asc), R = percent(last.rnd);
+    var fuller = last.asc.fillPermille > last.rnd.fillPermille ? 0 : last.asc.fillPermille < last.rnd.fillPermille ? 1 : 2;
+    steps.forEach(function (s, c) {
+      var st = s.state, head = 'After ' + k(st.n) + ' of ' + n + ' keys: ascending ' + k(percent(st.asc), 'active') + ' full in ' + nodesText(st.asc.nodes) + ', random ' +
+        k(percent(st.rnd), 'split') + ' full in ' + nodesText(st.rnd.nodes) + '. ';
+      if (c === 0) {
+        s.caption = 'Two empty trees of order ' + order + ' (at most ' + maxKeys + ' keys per node), ' + variant + ' splitting. Both will receive the keys 0 to ' + (n - 1) +
+          ': the upper tree in ascending order, the lower one shuffled with seed ' + seed + '. Press play.';
+      } else if (c === CHECKPOINTS) {
+        var pa = programFill(order, 'ascending', variant), pr = programFill(order, 'random', variant);
+        s.caption = 'All ' + n + ' keys are in. Ascending: ' + k(A, 'active') + ' full after ' + last.asc.splits + ' splits. Random: ' + k(R, 'split') + ' full after ' + last.rnd.splits + ' splits. ' +
+          (fuller === 0 ? 'Here the ascending tree is the fuller one: with order ' + order + ' a split leaves ' + leftKeeps + ' of ' + maxKeys + ' slots used on the left, which is more than random keys reach on average. ' :
+            fuller === 1 ? 'The random tree is the fuller one: its half-full nodes kept receiving keys, the left halves of the ascending tree never did. ' : 'Both trees are equally full. ') +
+          (pa && pr ? 'The programs measured ' + pa + ' and ' + pr + ' for 100000 keys with this order.' : '');
+      } else if (st.asc.splits === 0 || st.rnd.splits === 0) {
+        // The explanations below describe what splits leave behind; they are
+        // not true of a tree that has not split yet.
+        var one = st.asc.splits === 0 && st.rnd.splits === 0;
+        s.caption = head + (one ? 'Nothing has split yet: each tree is still a single leaf, the root, which takes keys until it holds ' + maxKeys +
+          '. Up to that point the order of arrival makes no difference to the fill.' :
+          'Only one of the two trees has split so far, so there is not much to compare yet.');
+      } else if (c % 3 === 1) {
+        s.caption = head + 'Ascending keys always land in the rightmost leaf. When it splits, the left half keeps ' + leftKeeps + ' of ' + maxKeys +
+          ' slots (' + leftPct + '%) and is never touched again: the upper strip is flat at that height.';
+      } else if (c % 3 === 2) {
+        s.caption = head + 'Random keys land anywhere, so a node that was halved by a split keeps receiving keys until it is full and splits again. ' +
+          'At any moment the nodes are spread between just split and almost full: the lower strip is ragged, the histogram is wide.';
+      } else {
+        s.caption = head + 'Fewer nodes for the same keys means fuller nodes. Each split added one node, so the tree with fewer splits is the fuller one: ' +
+          st.asc.splits + ' splits ascending, ' + st.rnd.splits + ' random.';
+      }
+    });
+    steps[1].question = {
+      prompt: 'Both trees get the same ' + n + ' keys, order ' + order + ', ' + variant + ' splitting. Which one will end up with fuller nodes?',
+      choices: ['The one fed ascending keys', 'The one fed random keys', 'Both equally full'], answer: fuller,
+      explain: 'Final fill: ascending ' + A + ', random ' + R + '. An ascending split leaves ' + leftKeeps + ' of ' + maxKeys + ' slots used forever (' + leftPct +
+        '%); random inserts settle near 69% for large orders (textbook) and a little lower for small ones.'
+    };
+    stepper.setSteps(steps, { play: !!play });
+  }
+
+  [orderSel, countSel, variantSel].forEach(function (s) { s.addEventListener('change', function () { rebuild(false); }); });
+  seedInput.addEventListener('change', function () { rebuild(false); });
+  seedInput.addEventListener('input', function () { seedNote.textContent = ''; });
+  seedInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); rebuild(true); } });
+  rebuild(false);
+
+  /* ------------------------------------------------------------- self-tests
+   * Rebuild rows of the programs' tables (100000 keys, seed 4) with the
+   * JavaScript model and compare the printed line, character for character. */
+  (function () {
+    var printed = (E.part4 + E.part5).split('\n');
+    function check(order, keyOrder, variant) {
+      var keys = Ch04.fillKeys(100000, keyOrder, 4), tree = Ch04.Tree(order, variant), most = 0;
+      keys.forEach(function (key) { var before = tree.splits; tree.insert(key, { steps: false }); most = Math.max(most, tree.splits - before); });
+      var row = Ch04.tableRow(order, keyOrder, variant, tree, keys.length, most);
+      BTViz.selfTest('M=' + order + ' ' + keyOrder + ' ' + variant, printed.indexOf(row) >= 0 ? row : 'not printed: ' + row, row);
+      return tree.validate();
+    }
+    var errors = check(4, 'ascending', 'bottom-up').concat(check(64, 'random', 'bottom-up'), check(16, 'random', 'top-down'), check(64, 'ascending', 'top-down'));
+    BTViz.selfTest('invariants hold', errors, []);
+  })();
+})();
+</script>
+</body>
+</html>

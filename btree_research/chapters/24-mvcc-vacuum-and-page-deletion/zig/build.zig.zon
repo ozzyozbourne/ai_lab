@@ -1,0 +1,12 @@
+.{
+    .name = .ch24_mvcc_vacuum,
+    .version = "0.0.0",
+    .fingerprint = 0x5fd9463f5f1a14d5,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

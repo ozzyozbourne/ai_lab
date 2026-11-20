@@ -1,0 +1,214 @@
+== 1. One trace, two structures ==
+B+tree: order M = 4, so 3 entries per leaf block.
+LSM: 3 slots per data block, memtable of 4 keys, level 0 holds 2 runs, growth 2.
+r = blocks read, w = blocks written by that one operation. Every block counts, index
+blocks too; nothing is cached; there is no log (the limits are listed under section 3).
+
+put 10      | btree r=0 w=1 | lsm r= 0 w= 0 |
+put 20      | btree r=1 w=1 | lsm r= 0 w= 0 |
+put 5       | btree r=1 w=1 | lsm r= 0 w= 0 |
+put 6       | btree r=1 w=3 | lsm r= 0 w= 0 | btree: leaf split. btree: new root.
+put 12      | btree r=2 w=1 | lsm r= 0 w= 3 | lsm: flush.
+put 30      | btree r=2 w=3 | lsm r= 0 w= 0 | btree: leaf split.
+put 7       | btree r=2 w=1 | lsm r= 0 w= 0 |
+put 17      | btree r=2 w=1 | lsm r= 0 w= 0 |
+put 3       | btree r=3 w=4 | lsm r= 6 w= 7 | btree: leaf split. lsm: flush. lsm: compact level 0 into level 1.
+put 25      | btree r=2 w=1 | lsm r= 0 w= 0 |
+put 1       | btree r=2 w=1 | lsm r= 0 w= 0 |
+put 15      | btree r=3 w=6 | lsm r= 0 w= 0 | btree: leaf split. btree: internal split. btree: new root.
+get 15      | btree r=3 w=0 | lsm r= 0 w= 0 | = 1500
+get 12      | btree r=3 w=0 | lsm r= 2 w= 0 | = 1200
+get 13      | btree r=3 w=0 | lsm r= 2 w= 0 | = none
+delete 15   | btree r=3 w=1 | lsm r= 0 w= 3 | lsm: flush.
+put 20      | btree r=3 w=1 | lsm r= 0 w= 0 |
+put 11      | btree r=3 w=1 | lsm r= 0 w= 0 |
+put 13      | btree r=4 w=4 | lsm r= 0 w= 0 | btree: leaf split.
+put 14      | btree r=3 w=1 | lsm r=10 w=11 | lsm: flush. lsm: compact level 0 into level 1.
+get 15      | btree r=3 w=0 | lsm r= 3 w= 0 | = none
+get 20      | btree r=3 w=0 | lsm r= 3 w= 0 | = 2001
+scan [5,14) | btree r=6 w=0 | lsm r= 6 w= 0 | = 5 6 7 10 11 12 13
+
+== 2. Where the data ended up ==
+B+tree: height 3, 9 blocks
+  level 1: [15]
+  level 2: [6 10 12] [20]
+  level 3: (1 3 5) (6 7) (10 11) (12 13 14) (17) (20 25 30)
+LSM: 8 blocks on the device holding 13 slots, 1 key(s) in the memtable
+  memtable: 14
+  level 0 (oldest first): -
+  level 1: (1 3 5 6 7 10 11 12 13 17 20 25 30)
+totals: btree reads=58 writes=32 | lsm reads=32 writes=24
+lsm compaction dropped 2 stale version(s) and 1 tombstone(s)
+
+== 3. Workload: insert-heavy ==
+seed 271, preload 0 puts, then 12000 operations over 1000000 keys; put/delete/get/scan = 90/0/8/2
+live keys at the end: 10772; answers that differ from the oracle: 0
+
+                                              B+tree       LSM
+write operations (put + delete)                10824     10824
+  blocks written                               14032      6053
+  blocks written per write                      1.30      0.56
+  WRITE AMPLIFICATION (slots per entry)        19.45      8.39
+    same, + 1 log block per LSM write          19.45     23.39
+  blocks read per write                         3.90      0.49
+  most blocks written by one write                 8      1115
+point lookups (get)                              947       947
+  of those, for a key that is absent             941       941
+  READ AMPLIFICATION (blocks per get)           3.81      9.42
+    index blocks per get                        2.81      5.91
+    data blocks per get                         1.00      3.51
+  READ AMPLIFICATION with bloom filters         3.81      0.10
+    index blocks per get                        2.81      0.06
+    data blocks per get                         1.00      0.03
+short scans                                      229       229
+  entries returned per scan                    11.09     11.09
+  blocks read per scan                          4.92      9.97
+blocks on the device at the end                 1107       767
+  data blocks if the live keys were packed       719       719
+  SPACE AMPLIFICATION (at the end)              1.54      1.07
+most blocks on the device at any moment         1107      1367
+  live keys at that moment                     10770      9556
+  data blocks if those were packed               718       638
+  SPACE AMPLIFICATION (at the peak)             1.54      2.14
+B+tree: height 4. LSM: 3 level(s) below level 0, 0 run(s) in level 0, 10755 slots on the device.
+LSM maintenance: 180 flushes, 45 level-0 compactions, 11 level merges; dropped 45 stale versions, 0 tombstones.
+LSM lookups: 3322 runs probed, 3316 of those without finding the key, 53 runs skipped by min/max.
+  with bloom filters (10 bits per slot, 7 hash functions): 33 runs probed, 27 of those without
+  finding the key, 3289 runs ruled out by a filter. False-positive rate 0.81%. The filters
+  hold 107550 bits of RAM at the end.
+Limits of these numbers (ratios are rounded to two decimals):
+  * No cache. Each operation reads every block it looks at from the device, index
+    levels included, in both structures. "data blocks per get" is what is left if
+    every index block of either structure is held in RAM.
+  * No write-ahead log, and so NOT the same durability. A B+tree write is on the
+    device when it returns. An LSM write is in RAM only until the next flush: a crash
+    loses the writes to up to 60 keys. The "+ 1 log block" row is computed, not run:
+    it adds one block per LSM write, the price of the same promise without group commit.
+  * A B+tree with a log and a buffer pool writes a hot page once for many updates,
+    so its write column is an upper bound.
+  * The "with bloom filters" rows are run, not computed: the same operations on a
+    second LSM-tree whose runs each have a filter in RAM. Real LSM engines commonly
+    rely on such filters. A filter costs no block, only that memory; it helps point
+    lookups, mostly those for absent keys, and no scan.
+  * A block is a block. One appended in sequence (flush, compaction) counts the same
+    as one written at a position chosen by the key (B+tree). On a real device the two
+    can cost differently; that is not modelled.
+
+== 4. Workload: read-heavy ==
+seed 272, preload 8000 puts, then 12000 operations over 12000 keys; put/delete/get/scan = 5/0/80/15
+live keys at the end: 6140; answers that differ from the oracle: 0
+
+                                              B+tree       LSM
+write operations (put + delete)                  563       563
+  blocks written                                 642       422
+  blocks written per write                      1.14      0.75
+  WRITE AMPLIFICATION (slots per entry)        17.10     11.24
+    same, + 1 log block per LSM write          17.10     26.24
+  blocks read per write                         4.04      0.71
+  most blocks written by one write                 6       310
+point lookups (get)                             9588      9588
+  of those, for a key that is absent            4686      4686
+  READ AMPLIFICATION (blocks per get)           4.00     10.96
+    index blocks per get                        3.00      7.06
+    data blocks per get                         1.00      3.89
+  READ AMPLIFICATION with bloom filters         4.00      1.86
+    index blocks per get                        3.00      1.32
+    data blocks per get                         1.00      0.54
+short scans                                     1849      1849
+  entries returned per scan                    19.67     19.67
+  blocks read per scan                          5.89     13.88
+blocks on the device at the end                  634       517
+  data blocks if the live keys were packed       410       410
+  SPACE AMPLIFICATION (at the end)              1.55      1.26
+most blocks on the device at any moment          634       746
+  live keys at that moment                      6132      6068
+  data blocks if those were packed               409       405
+  SPACE AMPLIFICATION (at the peak)             1.55      1.84
+B+tree: height 4. LSM: 3 level(s) below level 0, 2 run(s) in level 0, 7197 slots on the device.
+LSM maintenance: 10 flushes, 2 level-0 compactions, 1 level merges; dropped 237 stale versions, 0 tombstones.
+LSM lookups: 37328 runs probed, 32452 of those without finding the key, 405 runs skipped by min/max.
+  with bloom filters (10 bits per slot, 7 hash functions): 5182 runs probed, 306 of those without
+  finding the key, 32146 runs ruled out by a filter. False-positive rate 0.94%. The filters
+  hold 71970 bits of RAM at the end.
+Limits of these numbers (ratios are rounded to two decimals):
+  * No cache. Each operation reads every block it looks at from the device, index
+    levels included, in both structures. "data blocks per get" is what is left if
+    every index block of either structure is held in RAM.
+  * No write-ahead log, and so NOT the same durability. A B+tree write is on the
+    device when it returns. An LSM write is in RAM only until the next flush: a crash
+    loses the writes to up to 60 keys. The "+ 1 log block" row is computed, not run:
+    it adds one block per LSM write, the price of the same promise without group commit.
+  * A B+tree with a log and a buffer pool writes a hot page once for many updates,
+    so its write column is an upper bound.
+  * The "with bloom filters" rows are run, not computed: the same operations on a
+    second LSM-tree whose runs each have a filter in RAM. Real LSM engines commonly
+    rely on such filters. A filter costs no block, only that memory; it helps point
+    lookups, mostly those for absent keys, and no scan.
+  * A block is a block. One appended in sequence (flush, compaction) counts the same
+    as one written at a position chosen by the key (B+tree). On a real device the two
+    can cost differently; that is not modelled.
+
+== 5. Workload: update-heavy ==
+seed 273, preload 4000 puts, then 12000 operations over 4000 keys; put/delete/get/scan = 70/15/10/5
+live keys at the end: 3253; answers that differ from the oracle: 0
+
+                                              B+tree       LSM
+write operations (put + delete)                10210     10210
+  blocks written                               10234      4575
+  blocks written per write                      1.00      0.45
+  WRITE AMPLIFICATION (slots per entry)        15.04      6.72
+    same, + 1 log block per LSM write          15.04     21.72
+  blocks read per write                         4.02      0.44
+  most blocks written by one write                 6       311
+point lookups (get)                             1186      1186
+  of those, for a key that is absent             290       290
+  READ AMPLIFICATION (blocks per get)           4.00      7.52
+    index blocks per get                        3.00      4.48
+    data blocks per get                         1.00      3.04
+  READ AMPLIFICATION with bloom filters         4.00      2.32
+    index blocks per get                        3.00      1.53
+    data blocks per get                         1.00      0.80
+short scans                                      604       604
+  entries returned per scan                    24.05     24.05
+  blocks read per scan                          6.41     10.09
+blocks on the device at the end                  362       293
+  data blocks if the live keys were packed       217       217
+  SPACE AMPLIFICATION (at the end)              1.67      1.35
+most blocks on the device at any moment          363       534
+  live keys at that moment                      3211      3209
+  data blocks if those were packed               215       214
+  SPACE AMPLIFICATION (at the peak)             1.69      2.50
+B+tree: height 4. LSM: 2 level(s) below level 0, 3 run(s) in level 0, 4063 slots on the device.
+LSM maintenance: 169 flushes, 42 level-0 compactions, 8 level merges; dropped 7409 stale versions, 1401 tombstones.
+LSM lookups: 3609 runs probed, 2693 of those without finding the key, 58 runs skipped by min/max.
+  with bloom filters (10 bits per slot, 7 hash functions): 945 runs probed, 29 of those without
+  finding the key, 2664 runs ruled out by a filter. False-positive rate 1.08%. The filters
+  hold 40630 bits of RAM at the end.
+Limits of these numbers (ratios are rounded to two decimals):
+  * No cache. Each operation reads every block it looks at from the device, index
+    levels included, in both structures. "data blocks per get" is what is left if
+    every index block of either structure is held in RAM.
+  * No write-ahead log, and so NOT the same durability. A B+tree write is on the
+    device when it returns. An LSM write is in RAM only until the next flush: a crash
+    loses the writes to up to 60 keys. The "+ 1 log block" row is computed, not run:
+    it adds one block per LSM write, the price of the same promise without group commit.
+  * A B+tree with a log and a buffer pool writes a hot page once for many updates,
+    so its write column is an upper bound.
+  * The "with bloom filters" rows are run, not computed: the same operations on a
+    second LSM-tree whose runs each have a filter in RAM. Real LSM engines commonly
+    rely on such filters. A filter costs no block, only that memory; it helps point
+    lookups, mostly those for absent keys, and no scan.
+  * A block is a block. One appended in sequence (flush, compaction) counts the same
+    as one written at a position chosen by the key (B+tree). On a real device the two
+    can cost differently; that is not modelled.
+
+== 6. The growth factor is the tuning knob ==
+LSM only, insert-heavy workload again, everything else unchanged: the same counting
+rule and the same limits as above (no cache, no log, not durable until a flush).
+"with filters" is blocks per get with a bloom filter per run, as in the tables above.
+
+growth    levels   write amp   blocks per get   with filters   blocks per scan
+2              5        8.11            10.80           0.13             11.48
+4              3        8.39             9.42           0.10              9.97
+8              2        9.80             8.57           0.12              9.15
+16             2       11.28             8.20           0.09              8.76

@@ -1,0 +1,85 @@
+Chapter 13: overflow chains and free space
+
+== Part 1: large values, freed pages and their reuse, in a real file (3-frame pool) ==
+a page offers 4076 bytes to cells; a leaf cell keeps at most X = 1088 value bytes, a spilled value at least M = 544
+an overflow page holds 4084 value bytes; a trunk page lists up to 1021 free pages; a value may have 65536 bytes
+value bytes -> in the leaf + overflow pages:  100 -> 100+0p  1088 -> 1088+0p  1089 -> 544+1p  3000 -> 544+1p  5000 -> 916+1p  9000 -> 832+2p  14000 -> 544+4p
+created ch13_demo.db: 2 pages (page 0 = metapage, page 1 = root)
+#1 put 10 = 700 bytes (700 in the leaf + 0 overflow pages): 0 pages freed, 0 reused, file grew by 0
+#2 put 20 = 700 bytes (700 in the leaf + 0 overflow pages): 0 pages freed, 0 reused, file grew by 0
+#3 put 30 = 700 bytes (700 in the leaf + 0 overflow pages): 0 pages freed, 0 reused, file grew by 0
+#4 put 40 = 700 bytes (700 in the leaf + 0 overflow pages): 0 pages freed, 0 reused, file grew by 0
+#5 put 50 = 700 bytes (700 in the leaf + 0 overflow pages): 0 pages freed, 0 reused, file grew by 0
+#6 put 25 = 9000 bytes (832 in the leaf + 2 overflow pages): 0 pages freed, 0 reused, file grew by 4
+page 1  interior  1 keys  12/4076 bytes  | (4) 30 (5)
+  page 4  leaf      3 keys  2272/4076 bytes  next 5  | 10:700 20:700 25:9000=832+[2 3]
+  page 5  leaf      3 keys  2136/4076 bytes  next -  | 30:700 40:700 50:700
+free list: 0 pages
+page map: M I O O L L
+#7 put 60 = 3000 bytes (544 in the leaf + 1 overflow pages): 0 pages freed, 0 reused, file grew by 1
+#8 put 25 = 100 bytes (100 in the leaf + 0 overflow pages): 2 pages freed, 0 reused, file grew by 0
+page 1  interior  1 keys  12/4076 bytes  | (4) 30 (5)
+  page 4  leaf      3 keys  1536/4076 bytes  next 5  | 10:700 20:700 25:100
+  page 5  leaf      4 keys  2696/4076 bytes  next -  | 30:700 40:700 50:700 60:3000=544+[6]
+free list: 2 pages | trunk 2: 3
+page map: M I T F L L O
+#9 put 35 = 5000 bytes (916 in the leaf + 1 overflow pages): 0 pages freed, 1 reused, file grew by 0
+page 1  interior  1 keys  12/4076 bytes  | (4) 30 (5)
+  page 4  leaf      3 keys  1536/4076 bytes  next 5  | 10:700 20:700 25:100
+  page 5  leaf      5 keys  3628/4076 bytes  next -  | 30:700 35:5000=916+[3] 40:700 50:700 60:3000=544+[6]
+free list: 1 pages | trunk 2:
+page map: M I T O L L O
+#10 delete 60: 1 pages freed, 0 reused, file grew by 0
+#11 delete 35: 1 pages freed, 0 reused, file grew by 0
+#12 delete 40: 0 pages freed, 0 reused, file grew by 0
+#13 delete 50: 0 pages freed, 0 reused, file grew by 0
+#14 delete 30: 2 pages freed, 0 reused, file grew by 0
+page 1  leaf      3 keys  1536/4076 bytes  next -  | 10:700 20:700 25:100
+free list: 5 pages | trunk 2: 6 3 5 4
+page map: M L T F F F F
+#15 put 70 = 14000 bytes (544 in the leaf + 4 overflow pages): 0 pages freed, 4 reused, file grew by 0
+page 1  leaf      4 keys  2096/4076 bytes  next -  | 10:700 20:700 25:100 70:14000=544+[4 5 3 6]
+free list: 1 pages | trunk 2:
+page map: M L T O O O O
+#16 put 80 = 3000 bytes (544 in the leaf + 1 overflow pages): 0 pages freed, 1 reused, file grew by 0
+page 1  leaf      5 keys  2656/4076 bytes  next -  | 10:700 20:700 25:100 70:14000=544+[4 5 3 6] 80:3000=544+[2]
+free list: 0 pages
+page map: M L O O O O O
+tree:  5 keys, 7 pages, height 1; splits: 1 leaf, 0 interior, 1 root; root collapses: 1
+space: 9 overflow pages written, 2 tree pages freed, 6 pages freed in all, 6 allocations reused a page, 0 pages free now
+pool:  72 hits, 78 misses, 82 evictions, 27 write-backs
+pager: 78 reads, 29 writes, 7 allocations, 1 syncs
+flushed: file size = 28672 bytes
+reopened: root = page 1, 5 keys, height 1, 0 free pages, validate ok
+get 70 -> 14000 bytes, all 's': true
+get 35 -> not found
+range [20, 99) -> 20:700 25:100 70:14000(heap) 80:3000(heap)
+
+== Part 2: 4000 random operations, 3 puts to 1 delete, values of 0 to 20000 bytes (8-frame pool) ==
+first 2000 operations:
+tree:  367 keys, 377 pages, height 2; splits: 81 leaf, 0 interior, 1 root; root collapses: 0
+space: 976 overflow pages written, 2 tree pages freed, 722 pages freed in all, 683 allocations reused a page, 39 pages free now
+pool:  7287 hits, 3318 misses, 3687 evictions, 2726 write-backs
+pager: 3318 reads, 2728 writes, 377 allocations, 1 syncs
+reopened, 2000 more operations:
+tree:  417 keys, 392 pages, height 2; splits: 18 leaf, 0 interior, 0 root; root collapses: 0
+space: 924 overflow pages written, 1 tree pages freed, 907 pages freed in all, 927 allocations reused a page, 19 pages free now
+pool:  7513 hits, 3998 misses, 4005 evictions, 2872 write-backs
+pager: 3998 reads, 2872 writes, 15 allocations, 0 syncs
+page roles: 1 metapage, 1 interior, 97 leaf, 274 overflow, 1 trunk, 18 free
+full scan: oracle has 417 entries, identical: true
+
+== Part 3: the file stops growing: 12 rounds of 500 operations, half puts and half deletes, over 200 keys ==
+pages in the file after each round: 94 99 105 105 112 112 138 138 138 138 138 138
+1910 pages were freed and 1855 allocations reused one; without a free list the file would have 1993 pages
+
+== Part 4: assembling values: a 1088-byte stack buffer first, the heap only if the value is larger ==
+383 gets: 240 values assembled in the stack buffer, 143 on the heap, 0 wrong
+full scan: 240 values in the iterator's inline buffer, 143 on the heap
+
+== Part 5: not crash-safe: a freed page is reused at once ==
+"old" (5000 x 'o', one overflow page) is on disk; delete it, put "new" (5000 x 'n') into the same page, flush; the storage fails after N writes
+N = 0: validate ok; old: intact; new: missing
+N = 1: validate ok; old: intact; new: missing
+N = 2: validate ok; old: missing; new: WRONG VALUE (starts with 'n', ends with 'o')
+N = 3: no crash, all writes done; validate ok; old: missing; new: intact

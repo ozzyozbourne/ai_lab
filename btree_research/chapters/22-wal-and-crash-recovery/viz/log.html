@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 22 — The log timeline and recovery</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  .ch22-files { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 10px; }
+  @media (max-width: 720px) { .ch22-files { grid-template-columns: minmax(0, 1fr); } }
+  .ch22-file { border: 1px solid var(--bt-border); border-radius: 8px; padding: 7px 8px; min-width: 0; }
+  .ch22-file h3 { margin: 0 0 6px; font-size: .8rem; font-weight: 650; color: var(--bt-muted); }
+  .ch22-row { display: flex; flex-wrap: wrap; gap: 5px; }
+  .ch22-box {
+    flex: 1 1 74px; min-width: 74px; padding: 4px 6px; border-radius: 6px; font: .76rem/1.3 var(--bt-mono);
+    background: var(--s-bg, var(--bt-key-bg)); box-shadow: inset 0 0 0 1.5px var(--s, var(--bt-border));
+  }
+  .ch22-box b { display: block; }
+  .ch22-box span { display: block; font: .7rem var(--bt-font); color: var(--bt-muted); }
+  .ch22-box.is-now { box-shadow: inset 0 0 0 3px var(--bt-accent); }
+  .ch22-box.is-absent { opacity: .5; }
+  .ch22-verdict {
+    padding: 7px 10px; border-radius: 6px; font-size: .9rem;
+    background: var(--s-bg, var(--bt-surface-2)); box-shadow: inset 3px 0 0 var(--s, var(--bt-border));
+  }
+  .ch22-range { width: min(240px, 46vw); }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">Page 2 of 2. The same split as on <a href="index.html">page 1</a>, now through the
+write-ahead log: the four changed pages are first appended to the log as full images, followed by a commit
+record, and synced. Only then are they copied to the main file. Drag the crash marker to any point and watch
+recovery decide. Text and code: <a href="../README.md">chapter README</a>; next chapter:
+<a href="../../23-copy-on-write-btrees/viz/index.html">copy-on-write B-trees</a>.</p>
+
+<h2>1. Cut the power anywhere, then recover</h2>
+<p>The top row is every storage call of <code>put 15</code> and of the checkpoint after it, in order (part 2
+of the chapter's program). The red marker is the power cut: calls to its left completed, calls to its right
+never happened. Drag it, use the slider, or focus it and press <kbd>←</kbd> <kbd>→</kbd>. Choose what becomes
+of the writes that were not synced yet: all on disk, all lost, or each one torn. Then step through recovery
+with the controls under the picture. Two things to look for: a <em>torn</em> record (mode "torn", cut after
+call 1 to 5), and a <em>stale</em> one whose bytes are intact (cut after call 13).</p>
+<div id="fig-log"></div>
+
+<h2>2. The code that does it</h2>
+<div id="fig-code"></div>
+
+<h2>3. Does the picture match the code?</h2>
+<p>For a power cut after each of the ten page writes, in all three crash modes, the model's recovery (state,
+number of valid records, commit found) is compared with part 2 of the output of <code>zig build run</code>
+and <code>cargo run</code>.</p>
+<div class="bt-selftests" role="status" aria-label="Model self-tests"><span class="bt-selftests-title">Self-tests</span></div>
+
+<script src="code.js"></script>
+<script src="expected.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="model.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, M = window.CH22, CALLS = M.CALLS, RECORDS = M.RECORDS;
+
+  BTViz.page({
+    title: 'The log timeline and recovery', chapter: 22,
+    prev: { href: 'index.html', title: 'Chapter 22, page 1: a split torn without a log' },
+    next: { href: '../../23-copy-on-write-btrees/viz/index.html', title: 'Chapter 23: copy-on-write B-trees' },
+    index: '../../../index.html'
+  });
+
+  var fig = BTViz.figure('#fig-log', {
+    title: 'put 15 through the log, a power cut, and recovery',
+    legend: [
+      { token: 'key-found', label: 'durable / valid record / new page image' },
+      { token: 'key-compare', label: 'issued but not synced' },
+      { token: 'key-deleted', label: 'lost, or the chain breaks here' },
+      { token: 'node-active', label: 'being read or written by recovery' },
+      { token: 'node', label: 'old page version' }
+    ]
+  });
+
+  /* ---- controls: crash point and crash mode ---- */
+  var crashAt = 5, mode = 'keep';
+  var range = el('input.ch22-range', { type: 'range', min: 0, max: CALLS.length, step: 1, value: crashAt, 'aria-label': 'Power fails after this many storage calls' });
+  var rangeOut = el('span', { 'aria-hidden': 'true' });
+  var modeSel = el('select.bt-select', { 'aria-label': 'Fate of unsynced writes' },
+    el('option', { value: 'keep' }, 'reached the disk (keep)'), el('option', { value: 'drop' }, 'are lost (drop)'),
+    el('option', { value: 'tear' }, 'are torn (tear)'));
+  fig.toolbar.append(el('label.bt-field', 'power fails after call', range, rangeOut), el('label.bt-field', 'unsynced writes', modeSel));
+  range.addEventListener('input', function () { setCrash(+range.value); });
+  modeSel.addEventListener('change', function () { mode = modeSel.value; rebuild(); });
+
+  /* ---- the picture ---- */
+  var CELL_W = 84;
+  var timeline = new BTViz.Timeline(fig.stage, { cellW: CELL_W, crashLabel: 'power cut', ariaLabel: 'Storage calls in order', onCrash: setCrash });
+  var logRow = el('div.ch22-row'), mainRow = el('div.ch22-row');
+  fig.stage.appendChild(el('div.ch22-files',
+    el('div.ch22-file', el('h3', 'log file after the power cut'), logRow),
+    el('div.ch22-file', el('h3', 'main file (pages changed by put 15)'), mainRow)));
+  var verdictBox = el('div.ch22-verdict', { role: 'status' });
+  fig.stage.appendChild(verdictBox);
+
+  /**
+   * Bring the power-cut marker into the visible part of the row: a phone shows
+   * only four calls. Not while the reader drags the marker: it is under the
+   * finger then, and scrolling the row would move it away from there.
+   */
+  var dragging = false, markerEl = timeline.root.querySelector('.bt-tl-crash');
+  markerEl.addEventListener('pointerdown', function () { dragging = true; });
+  ['pointerup', 'pointercancel'].forEach(function (type) { markerEl.addEventListener(type, function () { dragging = false; showMarker(); }); });
+  function showMarker() {
+    var box = timeline.root, x = crashAt * CELL_W;
+    if (dragging || box.scrollWidth <= box.clientWidth) return;
+    if (x < box.scrollLeft + 24 || x > box.scrollLeft + box.clientWidth - 24) box.scrollLeft = Math.max(0, x - box.clientWidth / 2);
+  }
+
+  function setCrash(n) {
+    n = Math.max(0, Math.min(CALLS.length, n | 0));
+    if (n === crashAt) return;
+    crashAt = n;
+    rebuild();
+  }
+
+  function callLabel(c) { return c.kind === 'sync' ? 'sync ' + c.file : c.file + ' page ' + c.page; }
+
+  /** Recovery as a list of steps for the current crash point and mode. */
+  function recoverySteps() {
+    var s = M.crashState(crashAt, mode), r = M.recover(s), steps = [];
+    // What recovery has learned / done so far; each step is a full snapshot.
+    var st = { scanned: 0, broken: false, replayed: 0, synced: false, reset: false, now: null };
+    function push(caption, now) { st.now = now || null; steps.push({ caption: caption, state: BTViz.clone(st) }); }
+
+    var lost = 0, issuedUnsynced = 0, pend = { log: 0, main: 0 };
+    for (var i = 0; i < crashAt; i++) { if (CALLS[i].kind === 'write') pend[CALLS[i].file]++; else pend[CALLS[i].file] = 0; }
+    issuedUnsynced = pend.log + pend.main;
+    lost = mode === 'drop' ? issuedUnsynced : 0;
+    push('<b>The power fails after ' + crashAt + ' of ' + CALLS.length + ' calls.</b> ' +
+      (issuedUnsynced === 0 ? 'Every write issued so far had been synced.' :
+        issuedUnsynced + ' write' + (issuedUnsynced > 1 ? 's were' : ' was') + ' issued but not synced; in this run ' +
+        (lost ? 'they are lost.' :
+         mode === 'tear' ? 'each is torn: the disk wrote some of the page\'s eight 512-byte sectors and not the others.' +
+           (s.tornHeader ? ' The log header lives in the first sector of its page, and that sector was not among those written: the old header is still there.' : '') :
+         'the operating system had already written them out, so they are on disk.')) +
+      ' Below: what the two files hold now. Step forward to run recovery.');
+
+    push('Recovery opens the log and reads its header: generation ' + r.generation + '. ' +
+      (s.header ? 'That is a <em>new</em> header: the checkpoint finished copying the pages and had started a new, empty log.' :
+        'The records of this generation follow, and each record\'s checksum covers the checksum of the record before it.'), 'header');
+
+    for (var k = 0; k < RECORDS.length; k++) {
+      var rec = RECORDS[k], what = rec.commit ? 'the commit record for ' + rec.commit + ' pages' : 'the image of page ' + rec.page;
+      if (k === r.brokenAt) {
+        st.broken = true;
+        push('LSN ' + rec.lsn + ' (' + what + ', log bytes ' + rec.from + '..' + rec.to + ') does not verify: ' + r.why +
+          '. <b>The scan stops here.</b> Nothing behind a broken link can be trusted, whatever its bytes look like.', 'rec' + k);
+        break;
+      }
+      st.scanned = k + 1;
+      push('LSN ' + rec.lsn + ': ' + what + '. Its checksum chains from the ' + (k === 0 ? 'header' : 'record before it') + ': valid.' +
+        (rec.commit ? ' <b>A commit record: the four page images before it are one committed operation.</b>' : ' It is kept in memory until a commit record shows up.'), 'rec' + k);
+    }
+
+    if (r.committed) {
+      push('Before it touches the main file, recovery syncs the log. Reading a record back does not prove that it is durable ' +
+        '(an earlier sync may have failed while the power stayed on), and the write-ahead rule holds for recovery too: ' +
+        'no page goes to the main file before its log record is durable.');
+      M.MAIN_PAGES.forEach(function (p, i) {
+        st.replayed = i + 1;
+        push('Redo: write the logged image of page ' + p + ' to the main file' +
+          (s.main[p] ? ' (it was already there; writing it again changes nothing)' :
+           s.tornMain[p] ? ' (the torn page is overwritten whole; what it held does not matter)' : '') + '.', 'main' + p);
+      });
+      st.synced = true;
+      push('Sync the main file. All four pages are now the versions from the log, whatever the interrupted run had or had not written.', 'mainsync');
+    } else if (!s.header) {
+      push(r.valid === 0 ? 'No valid record at all: <code>put 15</code> never got as far as the log. Nothing to redo.' :
+        r.valid + ' valid page record' + (r.valid > 1 ? 's' : '') + ' but <b>no commit record</b>: the operation was still being logged when the power failed. Its records are ignored. The main file was never touched, because main-file writes wait for the log sync.');
+    } else {
+      push('No record chains from the new header, so there is nothing to redo. The main file already holds all four pages: the checkpoint synced it <em>before</em> it reset the log.');
+    }
+    st.reset = true;
+    push('Recovery ends with a checkpoint: a new log header (generation ' + (r.generation + 1) + '), synced. The log is empty again. <b>The tree is the ' +
+      (r.state === 'after' ? 'new one: all 12 keys' : 'old one: 11 keys') + ', and it validates.</b> Never a mix.', 'header');
+    steps.result = r;
+    steps.crash = s;
+    return steps;
+  }
+
+  var steps = recoverySteps();
+  var stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, steps: steps, interval: 2200,
+    onStep: function (step) { draw(step.state); }
+  });
+
+  function rebuild() {
+    steps = recoverySteps();
+    stepper.setSteps(steps, { index: 0 });
+  }
+
+  function draw(st) {
+    var s = steps.crash, r = steps.result;
+    range.value = crashAt;
+    rangeOut.textContent = crashAt + ' / ' + CALLS.length;
+
+    // Timeline: completed calls are durable or (if unsynced) pending/lost; later calls never happened.
+    var syncedUpTo = { log: -1, main: -1 };
+    for (var i = 0; i < crashAt; i++) if (CALLS[i].kind === 'sync') syncedUpTo[CALLS[i].file] = i;
+    timeline.render({
+      crash: crashAt,
+      records: CALLS.map(function (c, i) {
+        var state, sub;
+        if (i >= crashAt) { state = 'dim'; sub = 'never ran'; }
+        else if (c.kind === 'sync') { state = 'durable'; sub = 'done'; }
+        else if (i < syncedUpTo[c.file]) { state = 'durable'; sub = 'synced'; }
+        else if (mode === 'keep') { state = 'pending'; sub = 'kept'; }
+        else if (mode === 'tear') { state = 'pending'; sub = 'torn'; }
+        else { state = 'lost'; sub = 'lost'; }
+        return { label: callLabel(c), state: state, sub: sub, title: (i + 1) + '. ' + callLabel(c) + ': ' + sub };
+      })
+    });
+    showMarker();
+
+    // Log file: header + the five records.
+    logRow.textContent = '';
+    var gen = st.reset ? r.generation + 1 : r.generation;
+    var logSynced = syncedUpTo.log >= 0; // the commit's "sync log" completed before the cut
+    logRow.appendChild(el('div', { class: 'ch22-box s-found' + (st.now === 'header' ? ' is-now' : '') }, el('b', 'header'), el('span', 'generation ' + gen)));
+    RECORDS.forEach(function (rec, k) {
+      var onDisk = M.recordPages(rec).every(function (p) { return s.log[p]; });
+      var torn = M.recordPages(rec).some(function (p) { return s.tornLog[p]; });
+      var cls = 'ch22-box', note;
+      if (st.reset || s.header) { cls += ' is-absent'; note = 'intact, but stale'; }
+      else if (k < st.scanned) { cls += ' s-found'; note = 'valid'; }
+      else if (st.broken && k === r.brokenAt) { cls += ' s-deleted'; note = 'chain breaks'; }
+      else if (st.broken) { cls += ' is-absent'; note = 'not trusted'; }
+      // Yellow only while the record's pages are on disk WITHOUT a sync (mode keep).
+      else if (onDisk) { cls += logSynced ? ' s-found' : ' s-compare'; note = logSynced ? 'durable, unread' : 'on disk, unread'; }
+      else { cls += ' is-absent'; note = torn ? 'torn' : 'incomplete'; }
+      if (st.now === 'rec' + k) cls += ' is-now';
+      logRow.appendChild(el('div', { class: cls }, el('b', 'LSN ' + rec.lsn), el('span', rec.commit ? 'COMMIT' : 'page ' + rec.page), el('span', note)));
+    });
+    // The file is reused, never erased: behind the new records lie the old ones.
+    // Before this put, generation 1's records (LSN 1 to 38) filled log pages 1 to 27.
+    var firstOld = 1;
+    for (var lp = 1; lp <= 5; lp++) if (s.log[lp] || s.tornLog[lp]) firstOld = lp + 1;
+    logRow.appendChild(el('div', { class: 'ch22-box is-absent', title: 'Log pages ' + firstOld + ' to 27 still hold bytes of generation 1 (its records LSN 1 to 38). They are never erased, only overwritten; the scan does not accept them: wrong LSN, and a checksum that does not chain.' },
+      el('b', 'pages ' + firstOld + '–27'), el('span', 'generation 1'), el('span', 'old, never erased')));
+
+    // Main file: the four pages the operation changed.
+    mainRow.textContent = '';
+    M.MAIN_PAGES.forEach(function (p, i) {
+      var fresh = s.main[p] || i < st.replayed, torn = !fresh && s.tornMain[p];
+      var cls = 'ch22-box' + (fresh ? ' s-found' : torn ? ' s-deleted' : '') + (st.now === 'main' + p ? ' is-now' : '');
+      mainRow.appendChild(el('div', { class: cls }, el('b', 'page ' + p), el('span', fresh ? 'new' : torn ? 'torn' : p === 4 ? 'not in the file' : 'old')));
+    });
+
+    var done = st.reset, fresh = M.MAIN_PAGES.filter(function (p, i) { return s.main[p] || i < st.replayed; }).length;
+    var tornNow = M.MAIN_PAGES.filter(function (p, i) { return s.tornMain[p] && i >= st.replayed; }).length;
+    var text, ok = true;
+    if (done) text = 'After recovery: ' + (r.state === 'after' ? 'the new tree, 12 keys (the put is committed)' : 'the old tree, 11 keys (the put never happened)') + '.';
+    else if (tornNow > 0) { ok = false; text = 'Main file right now: ' + tornNow + ' torn page' + (tornNow > 1 ? 's' : '') + ' (written in part: such a page normally fails its checksum) among ' + fresh + ' new and ' + (M.MAIN_PAGES.length - fresh - tornNow) + ' old: a broken tree. The log still has the commit; recovery will finish the job.'; }
+    else if (fresh === 0) text = 'Main file right now: the old tree, untouched.';
+    else if (fresh === M.MAIN_PAGES.length) text = 'Main file right now: all four new pages.';
+    else { ok = false; text = 'Main file right now: ' + fresh + ' new page' + (fresh > 1 ? 's' : '') + ' and ' + (M.MAIN_PAGES.length - fresh) + ' old: a broken tree, as on page 1. The log still has the commit; recovery will finish the job.'; }
+    verdictBox.className = 'ch22-verdict ' + (ok ? 's-found' : 's-deleted');
+    verdictBox.textContent = text;
+  }
+
+  draw(stepper.state(stepper.index));
+
+  /* ---- code ---- */
+  var codeFig = BTViz.figure('#fig-code', { title: 'Commit and recovery (shortened)' });
+  var pick = el('select.bt-select', { 'aria-label': 'Function shown' }, el('option', { value: 'commit' }, 'commit'), el('option', { value: 'recover' }, 'recover'));
+  codeFig.toolbar.append(el('label.bt-field', 'show', pick));
+  var holder = el('div');
+  codeFig.stage.appendChild(holder);
+  function showCode() { holder.textContent = ''; BTViz.codePanel(holder, pick.value, { title: pick.value, wrap: true }); }
+  pick.addEventListener('change', showCode);
+  showCode();
+
+  /* ---- self-tests against part 2 of the program output ---- */
+  var rows = M.crashRows(2);
+  ['drop', 'keep', 'tear'].forEach(function (m) {
+    var got = [], want = [];
+    for (var n = 0; n <= 10; n++) {
+      var r = M.recover(M.crashState(M.callsForWrites(n), m));
+      got.push('N=' + n + ' ' + r.state + ' [' + r.valid + ' records, ' + (r.committed ? 1 : 0) + ' commit]');
+      want.push('N=' + n + ' ' + (rows[n] ? rows[n][m] : '?'));
+    }
+    BTViz.selfTest(m + ', N = 0..10', got.join('\n'), want.join('\n'));
+  });
+  // Recovery never leaves a mix, at any call and in either mode.
+  var mixed = 0;
+  for (var c = 0; c <= CALLS.length; c++) ['drop', 'keep', 'tear'].forEach(function (m) { if (M.recover(M.crashState(c, m)).state === 'mixed') mixed++; });
+  BTViz.selfTest('no mixed state', mixed, 0);
+})();
+</script>
+</body>
+</html>

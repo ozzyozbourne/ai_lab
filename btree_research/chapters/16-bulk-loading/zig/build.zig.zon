@@ -1,0 +1,12 @@
+.{
+    .name = .ch16_bulk_loading,
+    .version = "0.0.0",
+    .fingerprint = 0xb38b89812656656d,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

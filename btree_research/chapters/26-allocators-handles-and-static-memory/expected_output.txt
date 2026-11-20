@@ -1,0 +1,65 @@
+== 1. bitmap slab, 32-bit handles ==
+create x6:      0[####] 1[##..]
+last handle:    L1.1 = 0x00000101 (4 bytes)
+destroy 2:      0[#.#.] 1[##..]
+create:         L0.1 (lowest hole first)
+empty slab 1:   0[###.] 1[released] (given back: slab 0 has room)
+empty slab 0:   0[....] 1[released] (kept: the only free space)
+
+== 2. B-tree on two slab pools (M = 4, 4 slots per slab) ==
+put 10 20 5 6 12 30 7 17 3 25 1 15
+I0.1 [10]
+  I0.0 [6]
+    L0.0 [1 3 5]
+    L0.3 [7]
+  I0.2 [20]
+    L0.1 [12 15 17]
+    L0.2 [25 30]
+leaf slabs:     0[####]
+interior slabs: 0[###.]
+node sizes:     leaf 56 bytes, interior 72 bytes
+get 17 = 170, get 18 = null
+range [6, 20) = 6 7 10 12 15 17
+
+== 3. holes and vacuum ==
+put 31..60:     42 keys, height 5
+leaf slabs:     0[####] 1[####] 2[####] 3[####] 4[###.]
+interior slabs: 0[####] 1[####] 2[####] 3[####]
+delete all but multiples of 5: 12 keys, height 3
+leaf slabs:     0[##..] 1[#.#.] 2[released] 3[#.#.] 4[released]
+interior slabs: 0[##..] 1[#...] 2[...#] 3[released]
+vacuum pass 1:  moved 3 node(s)
+leaf slabs:     0[####] 1[#.#.] 2[released] 3[released] 4[released]
+interior slabs: 0[###.] 1[#...] 2[released] 3[released]
+vacuum pass 2:  moved 1 node(s)
+leaf slabs:     0[####] 1[#.#.] 2[released] 3[released] 4[released]
+interior slabs: 0[####] 1[released] 2[released] 3[released]
+I0.1 [20 40]
+  I0.0 [10]
+    L0.0 [5]
+    L0.1 [15]
+  I0.3 [30]
+    L1.0 [25]
+    L1.2 [35]
+  I0.2 [50]
+    L0.2 [45]
+    L0.3 [55 60]
+validate: ok
+
+== 4. static memory: reserve, freeze, run ==
+reserved:       3 leaf slabs, 2 interior slabs of 32 slots; frozen
+5000 ops:       61 keys, 24 leaves + 17 interior nodes live, failed puts 0
+slabs now:      3 leaf, 2 interior (unchanged)
+fill:           put 1099 failed with OutOfMemory at 160 keys
+pool refusals:  1; tree still valid, get 1099 = null
+free slots:     22 leaf, 1 interior
+
+== 5. buddy allocator (1024-byte heap, 64-byte minimum block) ==
+alloc a = 100:  [128 used][128 free][256 free][512 free]
+alloc b =  60:  [128 used][64 used][64 free][256 free][512 free]
+alloc c = 200:  [128 used][64 used][64 free][256 used][512 free]
+requested 360 bytes, granted 448: 88 lost to rounding
+free 576 bytes, largest block 512; alloc 600 -> OutOfMemory
+free a:         [128 free][64 used][64 free][256 used][512 free]
+free b:         [256 free][256 used][512 free]
+free c:         [1024 free]

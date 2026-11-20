@@ -1,0 +1,12 @@
+.{
+    .name = .ch03_btree_structure_and_search,
+    .version = "0.0.0",
+    .fingerprint = 0x3e29b107ef05af87,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

@@ -1,0 +1,48 @@
+Chapter 01: why B-trees
+Cost model: count page reads (4096-byte pages, 256 entries each), not comparisons.
+
+== 1. Hand example: 12 keys ==
+insert order: 10 20 5 6 12 30 7 17 3 25 1 15
+sorted array: 1 3 5 6 7 10 12 15 17 20 25 30
+  entries shifted by the 12 puts: 34
+  get(17): 5 comparisons, 1 page read
+BST, same insert order: height 5
+  get(17): 4 comparisons, 4 page reads
+BST, ascending insert order: height 12
+  get(30): 12 comparisons, 12 page reads
+wide nodes, M = 4 (at most 3 keys per node): height 2
+  get(17): 5 comparisons, 2 page reads
+
+== 2. Where the bytes live ==
+sorted array in a 256-byte stack buffer: 16 entries fit, put #17 fails, len stays 16
+  12 entries are 192 contiguous bytes: less than one page
+BST with one page per node: 12 nodes; get(17) visits 4 nodes on 4 distinct pages of memory
+
+== 3. Race: 100000 keys, 1000 lookups ==
+lookups that found their key: 541
+                               comparisons      page reads
+structure                      avg      max     avg      max
+sorted array, 256 per page      17.68       18     8.52        9
+BST, random insert order        21.69       36    21.69       36
+wide nodes, M = 171            160.45      308     2.99        3
+heights: BST 39, wide nodes 3; the sorted array spans 391 pages
+BST, 2000 keys in ascending order: height 2000, get(largest) reads 2000 pages
+
+== 4. The price of one flat array: a single put into 100000 keys ==
+sorted array, new key larger than every key  :      0 entries shifted,   1 pages rewritten
+sorted array, new key in the middle          :  50000 entries shifted, 196 pages rewritten
+sorted array, new key smaller than every key : 100000 entries shifted, 391 pages rewritten
+BST, any new key: 1 node written, 1 pointer changed (after the page reads to find the place)
+one level of chunks plus a directory (16 bytes per chunk: first key and location):
+          keys       chunks  directory pages
+          1000            4                1
+       1000000         3907               16
+    1000000000      3906250            15259
+ 1000000000000   3906250000         15258790
+
+== 5. Height calculator: page reads per lookup ==
+          keys   binary best   M = 4 best   worst   M = 171 best   worst
+          1000            10            5       9              2       2
+       1000000            20           10      19              3       3
+    1000000000            30           15      29              5       5
+ 1000000000000            40           20      39              6       7

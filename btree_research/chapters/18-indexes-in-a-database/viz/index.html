@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 18 — Indexes in a database</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+/* Chapter-local pieces. Colours are the toolkit's tokens only. */
+.c18-controls { margin: 14px 0; }
+.c18-controls .bt-toolbar { border: 0; padding: 4px 0; }
+.c18-controls .bt-field { white-space: normal; }
+.c18-controls .bt-input { width: 4.6em; }
+.c18-controls .bt-select { max-width: 100%; min-width: 0; }
+.c18-rowlabel { flex: 0 0 100%; font-size: .74rem; letter-spacing: .06em; text-transform: uppercase; color: var(--bt-muted); }
+.c18-status { min-height: 1.5em; margin-top: 4px; font-size: .9rem; color: var(--bt-muted); }
+.c18-status.is-error { color: var(--bt-text); padding: 4px 8px; border-radius: 6px; background: var(--bt-key-deleted-bg); box-shadow: inset 3px 0 0 var(--bt-key-deleted); }
+.c18-pane[hidden], .c18-controls [hidden] { display: none !important; }
+.c18-pane-title { font-size: .8rem; color: var(--bt-muted); margin-bottom: 4px; }
+.c18-pane-title b { color: var(--bt-text); }
+/* Layout budget: the panes, the cost line, the caption and the step controls of one figure must fit
+   one 1280x800 screen (measured with Playwright). So: compact trees with the zoom buttons laid over
+   their empty top right corner, and a heap pane and a result list that scroll inside themselves. */
+.c18-pane .bt-tree-tools { position: absolute; top: 5px; right: 5px; margin: 0; opacity: .9; }
+.c18-heap { display: flex; flex-direction: column; gap: 6px; max-height: 190px; overflow-y: auto; scrollbar-width: thin; padding: 2px; }
+.c18-page { display: flex; align-items: stretch; gap: 6px; }
+.c18-page-label { flex: 0 0 3.6em; align-self: center; font-size: .78rem; color: var(--bt-muted); }
+.c18-slot {
+  flex: 1 1 0; min-width: 0; padding: 4px 6px; border-radius: 6px; font: .76rem/1.35 var(--bt-mono); color: var(--bt-text);
+  background: var(--s-bg, var(--bt-surface-2)); box-shadow: inset 0 0 0 1.5px var(--s, var(--bt-border)); overflow-wrap: anywhere;
+}
+.c18-slot span { display: block; }
+.c18-slot .c18-tid { color: var(--bt-muted); }
+@media (min-width: 760px) {              /* wide: one line per slot, three pages before the pane scrolls */
+  .c18-heap { max-height: 108px; }
+  .c18-results { max-height: 58px; }
+  .c18-slot { white-space: nowrap; overflow: hidden; }
+  .c18-slot span { display: inline; }
+}
+.c18-slot.is-empty { background: none; box-shadow: none; border: 1.5px dashed var(--bt-border); color: var(--bt-muted); }
+.c18-counters, .c18-results { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: .84rem; color: var(--bt-muted); }
+.c18-results { max-height: 88px; overflow-y: auto; scrollbar-width: thin; }
+.bt-stage > .c18-results { margin-top: 6px; }
+.c18-counters .bt-chip b { font-family: var(--bt-mono); }
+.c18-results .bt-chip { white-space: normal; border-radius: 8px; }
+.c18-code { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 12px; }
+.c18-code > * { min-width: 0; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">A B+tree maps a key to a value. A database table needs more: rows have several columns, and you want
+to find them by more than one of them. This page runs the same query on the same table stored in two ways: the rows
+<b>inside</b> the primary tree (clustered, as Turso and SQLite do), or the rows in a <b>heap</b> with every index pointing
+at an address (as Postgres does). Watch what an index entry points at, and what it costs to follow it.
+Text: <a href="../README.md">chapter 18</a>.</p>
+
+<div class="bt-panel c18-controls">
+  <div class="bt-panel-title">One table, <code>orders(id, customer, day, amount)</code>, index <code>by_customer_day(customer, day)</code>, every tree of order 4</div>
+  <div class="bt-panel-body">
+    <div class="bt-toolbar" id="query-bar"></div>
+    <div class="bt-toolbar" id="insert-bar"></div>
+    <div class="c18-status" id="status" role="status" aria-live="polite"></div>
+  </div>
+</div>
+
+<div id="fig-clustered"></div>
+<div id="fig-heap"></div>
+<div id="fig-compare"></div>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="local.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, M = Ch18, L = M.LIMITS;
+
+  BTViz.page({
+    title: 'Indexes in a database', chapter: 18,
+    prev: { href: '../../17-key-compression-and-deduplication/viz/index.html', title: 'Key compression and deduplication' },
+    next: { href: '../../19-latching-and-lock-coupling/viz/index.html', title: 'Latching and lock coupling' }
+  });
+
+  /* ------------------------------------------------------------ the model */
+  var tables = { clustered: M.demoTable('clustered'), heap: M.demoTable('heap') };
+
+  /* -------------------------------------------------------------- figures */
+  function chip(label, value) { return el('span.bt-chip', {}, label + ' ', el('b', { text: String(value) })); }
+
+  // Compact tree geometry: a tree of height 3 is 196 px tall, so two of them, the cost line, the
+  // caption and the controls fit one 1280x800 screen. A taller tree (possible after many inserts)
+  // scrolls inside its pane; the TreeView keeps the highlighted node in view.
+  var TREE = { cellH: 28, vGap: 26, maxHeight: 200 };
+
+  function Fig(target, layout, title) {
+    var self = this, heap = layout === 'heap';
+    this.layout = layout;
+    this.fig = BTViz.figure(target, {
+      title: title,
+      legend: [{ token: 'node-active', label: 'node being read' }, { token: 'key-found', label: 'matching entry / row read' },
+               { token: 'key-compare', label: 'entry read, not in the answer' }, { token: 'key-inserted', label: 'just inserted' },
+               { token: 'key-deleted', label: 'conflict' }, { token: 'pointer', label: 'locator (in captions)' }]
+    });
+    var stage = this.fig.stage;
+    this.indexPane = el('div.c18-pane', {},
+      el('div.c18-pane-title', { html: '<b>Secondary index by_customer_day.</b> An entry reads customer·day·locator; the locator is ' + (heap ? 'a TID (page,slot).' : 'a row id, #id.') }));
+    this.indexView = new BTViz.TreeView(this.indexPane, { cellH: TREE.cellH, vGap: TREE.vGap, maxHeight: TREE.maxHeight, ariaLabel: 'by_customer_day index, ' + layout });
+    this.primaryPane = el('div.c18-pane', {},
+      el('div.c18-pane-title', { html: heap ? '<b>Primary key index.</b> Just another index: an entry reads id·TID. No rows in here.'
+                                            : '<b>Primary tree.</b> Keyed by id; each leaf entry <i>is</i> a row (only the id is drawn).' }));
+    this.primaryView = new BTViz.TreeView(this.primaryPane, { cellH: TREE.cellH, vGap: TREE.vGap, maxHeight: TREE.maxHeight, ariaLabel: heap ? 'primary key index' : 'primary tree with the rows' });
+    stage.append(this.indexPane, this.primaryPane);
+    if (heap) {
+      this.heapEl = el('div.c18-heap', { role: 'img', 'aria-label': 'heap pages' });
+      stage.append(el('div.c18-pane', {},
+        el('div.c18-pane-title', { html: '<b>Heap.</b> Rows in arrival order, ' + M.SLOTS + ' slots per page, never moved. A TID (page,slot) is a row\'s address.' }), this.heapEl));
+    }
+    this.counters = el('div.c18-counters', { 'aria-label': 'cost so far' });
+    this.results = el('div.c18-results');
+    stage.append(this.counters, this.results);
+    this.stepper = new BTViz.Stepper({
+      mount: this.fig.controls, caption: this.fig.caption, root: this.fig.root, steps: [], predict: false,   // false = show the Predict checkbox, unticked
+      onStep: function (step) { self.render(step); }
+    });
+  }
+
+  Fig.prototype.render = function (step) {
+    var s = step.state, h = step.highlight || {}, show = this.show, c = s.counters;
+    // Unhide before rendering: a TreeView measures its container.
+    this.indexPane.hidden = !show.index;
+    this.primaryPane.hidden = !show.primary;
+    if (show.index) this.indexView.render(s.snap.index, h.index || {});
+    if (show.primary) this.primaryView.render(s.snap.primary, h.primary || {});
+    if (this.heapEl) this.renderHeap(s.snap.heap, h.heap || {});
+    this.counters.replaceChildren(el('span', { text: 'Cost so far:' }), chip('descents', c.descents), chip('tree nodes', c.nodes),
+      chip('index entries', c.entries), chip('row fetches', c.fetches), chip('heap reads', c.heapReads),
+      el('span.bt-chip.s-active', {}, 'page reads ', el('b', { text: String(M.pages(c)) })));
+    this.results.replaceChildren(el('span', { text: s.results.length ? 'Result so far:' : 'Result so far: nothing yet' }));
+    var results = this.results;
+    s.results.forEach(function (r) {
+      results.appendChild(el('span.bt-chip.s-found', { text: r.id !== undefined ? M.rowText(r) : r.counted !== undefined ? 'counted ' + r.counted
+        : 'day ' + r.day + '  (entry locator ' + r.loc + ', not followed)' }));
+    });
+    results.scrollTop = results.scrollHeight;          // the newest result stays visible
+    var fetching = /^row fetch/.test(step.log || '');
+    if (fetching) fetchCode.highlight(this.layout === 'clustered' ? [[5, 10]] : [[11, 15]]);
+    else if (lastFetchFig === this) fetchCode.highlight([]);
+    if (fetching) lastFetchFig = this;
+  };
+
+  Fig.prototype.renderHeap = function (heap, hl) {
+    var pages = [], i, p, target = null;
+    for (i = 0; i < Math.max(heap.length, 1); i += M.SLOTS) {
+      p = el('div.c18-page', {}, el('span.c18-page-label', { text: 'page ' + i / M.SLOTS }));
+      for (var j = i; j < i + M.SLOTS; j++) {
+        var slot = heap[j];
+        if (!slot) { p.appendChild(el('div.c18-slot.is-empty', {}, el('span.c18-tid', { text: M.tidText(j) + ' ' }), el('span', { text: 'free' }))); continue; }
+        var cell = el('div.c18-slot' + (hl[j] ? '.s-' + hl[j] : ''), {},
+          el('span.c18-tid', { text: slot.text + ' ' }), el('span', { text: 'id ' + slot.row.id + ' ' }), el('span', { text: 'c' + slot.row.customer + ' d' + slot.row.day }));
+        if (hl[j]) target = p;
+        p.appendChild(cell);
+      }
+      pages.push(p);
+    }
+    var box = this.heapEl;
+    box.replaceChildren.apply(box, pages);
+    // The pane scrolls inside itself; bring the page being read into view (never scrolls the window).
+    if (target) {
+      var top = target.offsetTop - box.offsetTop, bottom = top + target.offsetHeight;
+      if (top < box.scrollTop) box.scrollTop = top - 2;
+      else if (bottom > box.scrollTop + box.clientHeight) box.scrollTop = bottom - box.clientHeight + 2;
+    }
+  };
+
+  Fig.prototype.play = function (steps, show) {
+    this.show = show;
+    this.stepper.setSteps(steps, { index: 0 });
+  };
+
+  /* --------------------------------------------------- comparison + code */
+  var cmp = BTViz.figure('#fig-compare', { title: 'The same request, both layouts: final cost' });
+  var cmpBody = el('tbody');
+  cmp.stage.append(
+    el('p', { id: 'cmp-what', style: { margin: '0 0 8px' } }),
+    el('div.bt-table-wrap', {}, el('table.bt-table', {},
+      el('thead', {}, el('tr', {}, el('th', { text: 'layout' }), el('th.num', { text: 'page reads' }), el('th.num', { text: 'descents' }),
+        el('th.num', { text: 'tree nodes' }), el('th.num', { text: 'row fetches' }), el('th.num', { text: 'heap reads' }))), cmpBody)),   // page reads first: it must be on screen on a phone
+    el('p', { style: { color: 'var(--bt-muted)', fontSize: '.86rem' },
+      text: 'Page reads = tree nodes + heap reads, with no cache at all. A buffer pool (chapter 09) keeps the upper tree levels in memory, so real clustered lookups are cheaper than this count, and several rows on one heap page cost one read. ' +
+        'This page leaves out the code column and its unique index by_code, so an INSERT here costs 3 descents where the chapter\'s programs count 5: theirs also probe by_code for a duplicate and write its entry. That probe is the search the heap figure shows as the primary-key check of an insert.' }));
+  var codeWrap = el('div.c18-code');
+  cmp.stage.append(codeWrap);
+  var lastFetchFig = null;
+  var fetchCode = BTViz.codePanel(codeWrap, 'fetch', { title: 'fetch(): the one function that differs', maxHeight: 330 });
+  BTViz.codePanel(codeWrap, 'scan', { title: 'the two scans, identical for both layouts', maxHeight: 330 });
+
+  function compare(what, a, b) {
+    document.getElementById('cmp-what').textContent = what;
+    cmpBody.replaceChildren.apply(cmpBody, [['clustered', a], ['heap + index', b]].map(function (r) {
+      var c = r[1];
+      return el('tr', {}, el('td', { text: r[0] }), el('td.num', {}, el('b', { text: String(M.pages(c)) })), el('td.num', { text: String(c.descents) }),
+        el('td.num', { text: String(c.nodes) }), el('td.num', { text: String(c.fetches) }), el('td.num', { text: String(c.heapReads) }));
+    }));
+  }
+
+  var figC = new Fig('#fig-clustered', 'clustered', 'Clustered (index-organized): the row lives in the primary tree');
+  var figH = new Fig('#fig-heap', 'heap', 'Heap + index: the row lives in the heap, every index stores its TID');
+
+  /* ------------------------------------------------------------- controls */
+  var status = document.getElementById('status');
+  function say(text, error) { status.textContent = text; status.classList.toggle('is-error', !!error); }
+
+  function numInput(label, value, max) {
+    var input = el('input.bt-input', { type: 'text', inputmode: 'numeric', value: String(value), 'aria-label': label, autocomplete: 'off' });
+    input.c18 = { label: label, max: max };
+    return input;
+  }
+  function field(label, input) { return el('label.bt-field', {}, label, input); }
+  // The whole number typed into `input`, or null (after reporting why). Nothing is rounded or clamped.
+  function read(input, min) {
+    var text = input.value.trim(), info = input.c18;
+    if (!/^[0-9]+$/.test(text) || +text < min || +text > info.max) {
+      say(info.label + ' must be a whole number from ' + min + ' to ' + info.max + '; got "' + (text === '' ? '(empty)' : text.slice(0, 20)) + '". Nothing was done.', true);
+      input.focus();
+      return null;
+    }
+    return +text;
+  }
+
+  var kind = el('select.bt-select', { 'aria-label': 'Query' },
+    el('option', { value: 'fetch', text: 'SELECT * WHERE customer = ? (fetch the rows)' }),
+    el('option', { value: 'covering', text: 'SELECT day WHERE customer = ? (index-only)' }),
+    el('option', { value: 'id', text: 'SELECT * WHERE id = ?' }),
+    el('option', { value: 'day', text: 'SELECT count(*) WHERE day = ? (not a prefix of the index)' }));
+  var qCustomer = numInput('Customer', 7, L.customer), qFrom = numInput('First day', 0, L.day), qTo = numInput('Last day', L.day, L.day), qId = numInput('Id', 17, L.id), qDay = numInput('Day', 12, L.day);
+  var fCustomer = field('customer', qCustomer), fFrom = field('day from', qFrom), fTo = field('to', qTo), fId = field('id', qId), fDay = field('day', qDay);
+  var runBtn = el('button.bt-btn.bt-primary', { type: 'button', onclick: runQuery }, 'Run on both');
+  document.getElementById('query-bar').append(el('span.c18-rowlabel', { text: 'Query' }), field('', kind), fCustomer, fFrom, fTo, fId, fDay, runBtn);
+  function syncFields() {
+    var byId = kind.value === 'id', byDay = kind.value === 'day';
+    fCustomer.hidden = fFrom.hidden = fTo.hidden = byId || byDay; fId.hidden = !byId; fDay.hidden = !byDay;
+  }
+  kind.addEventListener('change', syncFields);
+  syncFields();
+
+  var iId = numInput('New id', 40, L.id), iCustomer = numInput('New customer', 7, L.customer), iDay = numInput('New day', 12, L.day), iAmount = numInput('New amount', 10, 999);
+  document.getElementById('insert-bar').append(el('span.c18-rowlabel', { text: 'Insert a row' }), field('id', iId), field('customer', iCustomer), field('day', iDay),
+    field('amount', iAmount), el('button.bt-btn', { type: 'button', onclick: insertRow }, 'Insert into both'),
+    el('span.bt-toolbar-sep'), el('button.bt-btn', { type: 'button', onclick: reset }, 'Reset to 12 rows'));
+  [qCustomer, qFrom, qTo, qId, qDay].forEach(function (i) { i.addEventListener('keydown', function (e) { if (e.key === 'Enter') runQuery(); }); });
+  [iId, iCustomer, iDay, iAmount].forEach(function (i) { i.addEventListener('keydown', function (e) { if (e.key === 'Enter') insertRow(); }); });
+
+  function runQuery() {
+    var a, b, what, show;
+    if (kind.value === 'id') {
+      var id = read(qId, 1); if (id === null) return;
+      a = tables.clustered.queryId(id); b = tables.heap.queryId(id);
+      show = { index: false, primary: true };
+    } else if (kind.value === 'day') {
+      var day = read(qDay, 0); if (day === null) return;
+      a = tables.clustered.queryDay(day); b = tables.heap.queryDay(day);
+      show = { index: true, primary: false };
+    } else {
+      var c = read(qCustomer, 0); if (c === null) return;
+      var from = read(qFrom, 0); if (from === null) return;
+      var to = read(qTo, 0); if (to === null) return;
+      if (from > to) { say('The first day (' + from + ') is after the last day (' + to + '): that range is empty. Nothing was run.', true); qFrom.focus(); return; }
+      a = tables.clustered.queryCustomer(c, from, to, kind.value); b = tables.heap.queryCustomer(c, from, to, kind.value);
+      show = { index: true, primary: kind.value === 'fetch' };
+    }
+    what = a.what;                               // worded by the model, so heading and captions agree
+    figC.play(a, show); figH.play(b, { index: show.index, primary: kind.value === 'id' });
+    compare(what + ' — ' + (kind.value === 'day' ? 'count ' + a.found : a.found + ' row' + (a.found === 1 ? '' : 's')), a.counters, b.counters);
+    say('Ready: ' + what + '. Press play or step in each figure; ' + tables.clustered.rows + ' rows in the table.');
+  }
+
+  function insertRow() {
+    var id = read(iId, 1); if (id === null) return;
+    var c = read(iCustomer, 0); if (c === null) return;
+    var d = read(iDay, 0); if (d === null) return;
+    var amount = read(iAmount, 0); if (amount === null) return;
+    if (tables.clustered.rows >= L.rows && !tables.clustered.hasId(id)) {
+      say('The picture stays readable up to ' + L.rows + ' rows. Reset to start again. Nothing was inserted.', true); return;
+    }
+    var row = { id: id, customer: c, day: d, amount: amount };
+    var a = tables.clustered.insertSteps(row), b = tables.heap.insertSteps(row);
+    figC.play(a, { index: true, primary: true }); figH.play(b, { index: true, primary: true });
+    compare('INSERT id ' + id + (a.ok ? '' : ' — rejected, duplicate primary key'), a.counters, b.counters);
+    // Both figures start at step 1, like a query: the first thing to watch is the check that runs
+    // before any write (the page's only uniqueness check). The last step shows the new table.
+    say(a.ok ? 'UNIQUE check passed: id ' + id + ' is new, and the row is now in both layouts (' + tables.clustered.rows + ' rows). Step or play each figure: first the check, then the writes.'
+             : 'UNIQUE check failed: id ' + id + ' already exists. Both layouts rejected the row and are unchanged. Step or play each figure to watch the check find it.', !a.ok);
+  }
+
+  function reset() {
+    tables = { clustered: M.demoTable('clustered'), heap: M.demoTable('heap') };
+    runQuery();
+  }
+
+  runQuery();
+
+  /* ----------------------------------------------------------- self-tests
+   * The model must reproduce what the chapter's programs print
+   * (expected_output.txt, sections 1 to 5), and the captions must explain it. */
+  var tc = M.demoTable('clustered'), th = M.demoTable('heap');
+  BTViz.selfTest('clustered index', M.leavesText(tc, 'index'),
+    '(3,4,#3) (3,4,#20) | (3,9,#30) (3,28,#1) | (7,3,#12) (7,12,#5) | (7,12,#10) (7,17,#25) (7,21,#7) | (9,2,#6) (9,2,#15) (9,15,#17)');
+  BTViz.selfTest('clustered rows', M.leavesText(tc, 'primary'), '1 3 5 | 6 7 | 10 12 | 15 17 | 20 25 30');
+  BTViz.selfTest('heap index', M.leavesText(th, 'index'),
+    '(3,4,(0,2)) (3,4,(2,1)) | (3,9,(1,2)) (3,28,(2,3)) | (7,3,(1,1)) (7,12,(0,1)) | (7,12,(0,3)) (7,17,(2,2)) (7,21,(1,3)) | (9,2,(0,4)) (9,2,(2,4)) (9,15,(1,4))');
+  BTViz.selfTest('heap pk index', M.leavesText(th, 'primary'),
+    '(1,(2,3)) (3,(2,1)) (5,(0,3)) | (6,(0,4)) (7,(1,3)) | (10,(0,1)) (12,(1,1)) | (15,(2,4)) (17,(1,4)) | (20,(0,2)) (25,(2,2)) (30,(1,2))');
+  BTViz.selfTest('id 17 costs', M.costText(tc.queryId(17).counters) + ' / ' + M.costText(th.queryId(17).counters),
+    'descents=1 tree nodes=3 index entries=0 row fetches=0 heap reads=0 -> 3 page reads / descents=1 tree nodes=3 index entries=1 row fetches=1 heap reads=1 -> 4 page reads');
+  BTViz.selfTest('fetch costs', M.costText(tc.queryCustomer(7, 0, 99, 'fetch').counters) + ' / ' + M.costText(th.queryCustomer(7, 0, 99, 'fetch').counters),
+    'descents=6 tree nodes=21 index entries=5 row fetches=5 heap reads=0 -> 21 page reads / descents=1 tree nodes=6 index entries=5 row fetches=5 heap reads=5 -> 11 page reads');
+  BTViz.selfTest('covering costs', M.costText(tc.queryCustomer(7, 0, 99, 'covering').counters) + ' / ' + M.costText(th.queryCustomer(7, 0, 99, 'covering').counters),
+    'descents=1 tree nodes=6 index entries=5 row fetches=0 heap reads=0 -> 6 page reads / descents=1 tree nodes=6 index entries=5 row fetches=0 heap reads=0 -> 6 page reads');
+  BTViz.selfTest('range costs', M.costText(tc.queryCustomer(7, 10, 20, 'fetch').counters) + ' / ' + M.costText(th.queryCustomer(7, 10, 20, 'fetch').counters),
+    'descents=4 tree nodes=13 index entries=3 row fetches=3 heap reads=0 -> 13 page reads / descents=1 tree nodes=4 index entries=3 row fetches=3 heap reads=3 -> 7 page reads');
+  BTViz.selfTest('fetch order', tc.queryCustomer(7, 0, 99, 'fetch').results.map(function (r) { return r.id; }).join(' ') + ' / ' +
+    th.queryCustomer(7, 0, 99, 'fetch').results.map(function (r) { return r.id; }).join(' '), '12 5 10 25 7 / 12 10 5 25 7');
+  // Section 5 of the output: WHERE day = 12 reads the whole index.
+  BTViz.selfTest('day = 12 costs', tc.queryDay(12).found + ': ' + M.costText(tc.queryDay(12).counters) + ' / ' + th.queryDay(12).found + ': ' + M.costText(th.queryDay(12).counters),
+    '2: descents=1 tree nodes=7 index entries=12 row fetches=0 heap reads=0 -> 7 page reads / 2: descents=1 tree nodes=7 index entries=12 row fetches=0 heap reads=0 -> 7 page reads');
+  // Regression (review G2): an insert is charged with the tree heights BEFORE it, as putNew does.
+  // Ids 100..118, customer = id % 3 == 0 ? 7 : id % 10, day = id % 100, on the 12 demo rows. The
+  // expected numbers are the Zig library's: tree nodes of the primary-key check plus the heights
+  // of the primary tree and of by_customer_day before each insert (ids 117 and 118 follow a
+  // growth of both trees; the page used to show the taller height one insert early).
+  function insertNodes(t) {
+    var out = [];
+    for (var id = 100; id <= 118; id++) out.push(t.insertSteps({ id: id, customer: id % 3 === 0 ? 7 : id % 10, day: id % 100, amount: 1 }).counters.nodes);
+    return out.join(' ');
+  }
+  BTViz.selfTest('insert costs', insertNodes(tc) + ' / ' + insertNodes(th),
+    '9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 11 11 / 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 11 11');
+  // Regression (review G3): the search key is a noun phrase inside the descent captions.
+  BTViz.selfTest('caption grammar', String(M.demoTable('heap').insertSteps({ id: 40, customer: 7, day: 12, amount: 10 }).some(function (s) { return /conflict with the separators/.test(s.caption); })), 'false');
+  // Regression (review round 2, G4): a prefix seek that lands one leaf early says so, once. Customer 7
+  // and heap id 6 are separator copies (first entry of the next leaf); heap id 17 is mid-leaf; a new
+  // id 40 is past the last leaf, which has no next leaf to hop to.
+  function count(steps, re) { return steps.filter(function (s) { return re.test(s.caption); }).length; }
+  var early = /smaller than the seek key: nothing there/, fresh = M.demoTable('heap');
+  BTViz.selfTest('leaf early', [count(M.demoTable('clustered').queryCustomer(7, 0, 99, 'fetch'), early), count(fresh.queryId(6), early), count(fresh.queryId(17), early),
+    count(fresh.insertSteps({ id: 40, customer: 7, day: 12, amount: 10 }), /it is the last leaf: nothing matches/)].join(' '), '1 1 0 1');
+  // Regression (review round 2, G1): the heap's primary-key check is named as the UNIQUE check, on the
+  // first step of an accepted insert and on the rejection of a repeated one (id 40 is now taken).
+  BTViz.selfTest('unique captions', count(M.demoTable('heap').insertSteps({ id: 40, customer: 7, day: 12, amount: 10 }).slice(0, 1), /UNIQUE/) + ' ' +
+    count(fresh.insertSteps({ id: 40, customer: 7, day: 12, amount: 10 }), /rejected.*UNIQUE check/), '1 1');
+})();
+</script>
+</body>
+</html>

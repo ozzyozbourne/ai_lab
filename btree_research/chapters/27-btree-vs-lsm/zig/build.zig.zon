@@ -1,0 +1,12 @@
+.{
+    .name = .ch27_btree_vs_lsm,
+    .version = "0.0.0",
+    .fingerprint = 0x82f5e80513d4fe76,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

@@ -1,0 +1,111 @@
+== 1. Versions and snapshots (order M = 4: at most 3 entries per leaf) ==
+put 10=100: xid 1
+put 20=200: xid 2
+put 30=300: xid 3
+open snapshot A = 3
+put 20=201: xid 4, ends the version holding 200; page full: leaf split
+delete 30: xid 5, sets xmax on the version holding 300; index untouched
+open snapshot B = 5
+  now=5 horizon=3 | height 2, 4 entries, 3 pages
+  level 0: #2[20.3]
+  leaves : #0(10:1- 20:2-4) -> #1(20:4- 30:3-5)
+get 20: under A = 200, under B = 201
+get 30: under A = 300, under B = null
+
+== 2. A scan leaves hints, but only for versions dead to everyone ==
+scan under B=5: 10=100 20=201 | heap fetches 4, skipped by hint 0, hints set 0
+close snapshot A: horizon is now 5
+scan under B=5: 10=100 20=201 | heap fetches 4, skipped by hint 0, hints set 2
+  now=5 horizon=5 | height 2, 4 entries, 3 pages
+  level 0: #2[20.3]
+  leaves : #0(10:1- 20:2-4!) -> #1(20:4- 30:3-5!)
+scan under B=5: 10=100 20=201 | heap fetches 2, skipped by hint 2, hints set 0
+
+== 3. A full leaf: garbage first, split last ==
+put 25=250: xid 6
+put 27=270: xid 7; page full: simple deletion removed 1
+  now=7 horizon=5 | height 2, 5 entries, 3 pages
+  level 0: #2[20.3]
+  leaves : #0(10:1- 20:2-4!) -> #1(20:4- 25:6- 27:7-)
+close snapshot B: horizon is now 7
+put 25=251: xid 8, ends the version holding 250; page full: bottom-up deletion removed 1
+put 25=252: xid 9, ends the version holding 251; page full: bottom-up deletion removed 1
+put 25=253: xid 10, ends the version holding 252; page full: bottom-up deletion removed 1
+  now=10 horizon=10 | height 2, 5 entries, 3 pages
+  level 0: #2[20.3]
+  leaves : #0(10:1- 20:2-4!) -> #1(20:4- 25:10- 27:7-)
+open snapshot C = 10
+put 25=254: xid 11, ends the version holding 253; page full: leaf split
+put 25=255: xid 12, ends the version holding 254
+  now=12 horizon=10 | height 2, 7 entries, 4 pages
+  level 0: #2[20.3 25.4]
+  leaves : #0(10:1- 20:2-4!) -> #1(20:4- 25:10-11) -> #3(25:11-12 25:12- 27:7-)
+totals: leaf splits 2, splits avoided 4, simple deletion 1, bottom-up deletion 3
+
+== 4. VACUUM removes only what the oldest snapshot cannot see ==
+put 10..120 (xid 1..12), open snapshot R = 12, delete 30..80 (xid 13..18)
+  now=18 horizon=12 | height 3, 12 entries, 9 pages
+  level 0: #7[70.6]
+  level 1: #2[30.2 50.4] #6[90.8 110.10]
+  leaves : #0(10:1- 20:2-) -> #1(30:3-13 40:4-14) -> #3(50:5-15 60:6-16) -> #4(70:7-17 80:8-18) -> #5(90:9- 100:10-) -> #8(110:11- 120:12-)
+vacuum (horizon 12): entries removed 0, pages unlinked 0, recycled 0, waiting 0
+scan under R=12: 10=100 20=200 30=300 40=400 50=500 60=600 70=700 80=800 90=900 100=1000 110=1100 120=1200 | heap fetches 12, skipped by hint 0, hints set 0
+close snapshot R: horizon is now 18
+vacuum (horizon 18): entries removed 6, pages unlinked 0, recycled 0, waiting 0
+  now=18 horizon=18 | height 3, 6 entries, 9 pages
+  level 0: #7[70.6]
+  level 1: #2[30.2 50.4] #6[90.8 110.10]
+  leaves : #0(10:1- 20:2-) -> #1() -> #3() -> #4() -> #5(90:9- 100:10-) -> #8(110:11- 120:12-)
+
+== 5. Deleting an empty leaf: half-dead, unlinked, recycled ==
+open snapshot S = 18; a scan under S returns: 10 20 and pauses; the next page it will read is #1
+phase 1, mark #1 half-dead: done
+  now=18 horizon=18 | height 3, 6 entries, 9 pages
+  level 0: #7[70.6]
+  level 1: #2[30.2] #6[90.8 110.10]
+  leaves : #0(10:1- 20:2-) -> #1(half-dead) -> #3() -> #4() -> #5(90:9- 100:10-) -> #8(110:11- 120:12-)
+phase 2, unlink #1: stamped with epoch 19
+  now=19 horizon=18 | height 3, 6 entries, 9 pages
+  level 0: #7[70.6]
+  level 1: #2[30.2] #6[90.8 110.10]
+  leaves : #0(10:1- 20:2-) -> #3() -> #4() -> #5(90:9- 100:10-) -> #8(110:11- 120:12-)
+  deleted: #1@19->#3
+recycle (horizon 18): pages freed 0
+the scan resumes: 90 100 110 120 | moved right past 1 deleted page
+close snapshot S; recycle (horizon 19): pages freed 1
+  now=19 horizon=19 | height 3, 6 entries, 8 pages
+  level 0: #7[70.6]
+  level 1: #2[30.2] #6[90.8 110.10]
+  leaves : #0(10:1- 20:2-) -> #3() -> #4() -> #5(90:9- 100:10-) -> #8(110:11- 120:12-)
+  free   : #1
+put 11=110: xid 20
+put 12=120: xid 21; page full: leaf split into a recycled page
+  now=21 horizon=21 | height 3, 8 entries, 9 pages
+  level 0: #7[70.6]
+  level 1: #2[12.7 30.2] #6[90.8 110.10]
+  leaves : #0(10:1- 11:20-) -> #1(12:21- 20:2-) -> #3() -> #4() -> #5(90:9- 100:10-) -> #8(110:11- 120:12-)
+mark #3 (the rightmost child of its parent) half-dead: refused
+vacuum (horizon 21): entries removed 0, pages unlinked 1, recycled 1, waiting 0
+  now=22 horizon=22 | height 3, 8 entries, 8 pages
+  level 0: #7[70.6]
+  level 1: #2[12.7 30.2] #6[110.10]
+  leaves : #0(10:1- 11:20-) -> #1(12:21- 20:2-) -> #3() -> #5(90:9- 100:10-) -> #8(110:11- 120:12-)
+  free   : #4
+
+== 6. Recycling too early breaks a scan ==
+same tree as in section 5; the scan returns: 10 20 and pauses before #1
+#1 is deleted with stamp 19; snapshot S = 18 is older, but we recycle anyway (pages freed 1)
+the scan resumes at once: error.DanglingLink (the page is on the free list)
+put 111=1110: xid 20
+put 112=1120: xid 21; page full: leaf split into a recycled page
+  now=21 horizon=18 | height 3, 8 entries, 9 pages
+  level 0: #7[70.6]
+  level 1: #2[30.2] #6[90.8 110.10 112.7]
+  leaves : #0(10:1- 20:2-) -> #3() -> #4() -> #5(90:9- 100:10-) -> #8(110:11- 111:20-) -> #1(112:21- 120:12-)
+the scan resumes after the split: 120 <- 90, 100 and 110 are missing, and nothing reports an error
+
+== 7. Model run: 20000 random operations, long snapshots, different collectors ==
+M=4  all collectors        | rows 278 entries 278 pages 423 slots 439 | splits 1109 avoided 688 | removed: simple 396 bottom-up 488 vacuum 6761 | pages unlinked 693 recycled 693 reused 677 | mismatches 0
+M=4  no bottom-up          | rows 278 entries 278 pages 433 slots 452 | splits 1207 avoided 317 | removed: simple 384 bottom-up 0 vacuum 7261 | pages unlinked 781 recycled 781 reused 762 | mismatches 0
+M=4  hints only, no vacuum | rows 278 entries 1126 pages 755 slots 755 | splits 748 avoided 3411 | removed: simple 6797 bottom-up 0 vacuum 0 | pages unlinked 0 recycled 0 reused 0 | mismatches 0
+M=16 all collectors        | rows 278 entries 278 pages 60 slots 61 | splits 58 avoided 66 | removed: simple 157 bottom-up 105 vacuum 7383 | pages unlinked 1 recycled 1 reused 0 | mismatches 0

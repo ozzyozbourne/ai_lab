@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 29 — IVF probing</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+</head>
+<body>
+
+<div id="subnav"></div>
+
+<p class="bt-lead">An IVF index is a two-level tree: a root of centroids and one flat list of vectors per centroid.
+The root has no order, so routing is a nearest-centroid scan, and the true neighbours of a query can lie in a list
+that the scan ranked second. <code>nprobe</code> is how many lists you are willing to read.</p>
+
+<h2>1. One query, list by list</h2>
+<p>240 points in 8 lists. Diamonds are the centroids, numbered by list; a dashed cell holds every position that is nearer to its centroid than to any other.
+Click anywhere on the large picture to place a query, or pick one of the 24 queries the chapter's programs run. Then change
+<code>nprobe</code> and compare with the exact answer. The second picture is a zoom on the query's neighbourhood: that
+is where you can see which neighbour was missed and that it lies just across a cell boundary.</p>
+<div id="fig-probe"></div>
+
+<h2>2. Where the cells come from: k-means</h2>
+<p>Training alternates two steps until nothing changes: assign every point to its nearest centroid, then move every
+centroid to the mean of its points. Start with 8 random data points as centroids and step through.</p>
+<div id="fig-train"></div>
+
+<h2>What to take away</h2>
+<ul>
+<li><strong>Routing is a search.</strong> A B-tree picks a child by binary search over sorted separators. Here the
+query is compared with all 8 centroids, because centroids have no order.</li>
+<li><strong>One child is not enough.</strong> A B-tree key falls in exactly one child. A query near a cell boundary has
+neighbours on both sides, so the index reads <code>nprobe</code> lists and the answer is still only probably right.</li>
+<li><strong>Recall is measured, not proved.</strong> The only way to know what was missed is to compare with a brute-force
+scan of all 240 points. With <code>nprobe = 8</code> the index <em>is</em> that scan.</li>
+</ul>
+<p>Read the chapter: <a href="../README.md">README.md</a>. Previous page: <a href="index.html">zone-map pruning</a>.
+Next page: <a href="hnsw.html">greedy graph descent</a>.</p>
+
+<script src="../../../assets/viz.js"></script>
+<script src="model.js"></script>
+<script src="local.js"></script>
+<script src="code.js"></script>
+<script src="expected.js"></script>
+<script src="ivf.js"></script>
+</body>
+</html>

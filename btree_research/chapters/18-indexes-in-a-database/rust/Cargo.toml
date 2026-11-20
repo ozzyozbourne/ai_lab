@@ -1,0 +1,15 @@
+[package]
+name = "ch18_indexes_in_a_database"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.86" # slice::get_disjoint_mut
+publish = false
+
+# std only: no external dependencies.
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 14 — Split policies and fill factor</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+/* Chapter-local views (viz/local.js). Colours are the toolkit's tokens only. */
+/* Long <select> labels must shrink on a phone instead of widening the page. */
+.bt-toolbar .bt-field { max-width: 100%; min-width: 0; }
+.bt-toolbar .bt-field .bt-select { min-width: 0; max-width: 100%; flex: 0 1 auto; text-overflow: ellipsis; }
+.c14-strip { margin: 4px 0 12px; }
+.c14-strip-title { font-size: .86rem; color: var(--bt-muted); margin-bottom: 4px; }
+.c14-cells { position: relative; display: flex; height: 58px; border: 1.5px solid var(--bt-node); border-radius: 6px; background: var(--bt-surface); }
+.c14-cell {
+  min-width: 0; overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  border-right: 1px solid var(--bt-border); background: var(--s-bg, var(--bt-key-bg)); color: var(--bt-text);
+  font: .74rem/1.25 var(--bt-mono); box-shadow: inset 0 -3px 0 var(--s, transparent);
+}
+.c14-cell:first-child { border-radius: 4px 0 0 4px; }
+.c14-cell.is-alt:not([class*="s-"]) { background: var(--bt-surface); }
+.c14-cell b { font-size: .86rem; }
+.c14-tid, .c14-size { color: var(--bt-muted); font-size: .68rem; }
+.c14-free {
+  min-width: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; border-radius: 0 4px 4px 0;
+  color: var(--bt-muted); font: .7rem/1 var(--bt-mono);
+  background: repeating-linear-gradient(45deg, var(--bt-free-bg), var(--bt-free-bg) 5px, var(--bt-surface) 5px, var(--bt-surface) 10px);
+}
+.c14-free span { background: var(--bt-surface); padding: 2px 4px; border-radius: 3px; white-space: nowrap; }
+/* Where a real page ends on the imaginary one. Two ticks outside the strip, not a line
+   across it: the boundary usually falls inside a cell and would cross its label. */
+.c14-cap {
+  position: absolute; top: -8px; bottom: -8px; width: 2px; margin-left: -1px; pointer-events: none;
+  background: linear-gradient(to bottom, var(--bt-key-deleted) 0 7px, transparent 7px calc(100% - 7px), var(--bt-key-deleted) calc(100% - 7px) 100%);
+}
+.c14-cap-label { font: .7rem/1.5 var(--bt-mono); color: var(--bt-key-deleted); white-space: nowrap; text-align: right; box-sizing: border-box; padding-right: 4px; }
+.c14-gaps { position: relative; height: 26px; margin-top: 3px; }
+.c14-gap {
+  position: absolute; top: 0; transform: translateX(-50%); min-width: 20px; height: 20px; padding: 0 3px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center; font: 700 .72rem/1 var(--bt-mono); color: var(--bt-text);
+  background: var(--s-bg, var(--bt-surface-2)); box-shadow: inset 0 0 0 1.5px var(--s, var(--bt-border));
+}
+.c14-gap::before { content: ""; position: absolute; left: 50%; top: -6px; height: 6px; border-left: 1.5px solid var(--s, var(--bt-border)); }
+.c14-gap.is-illegal { opacity: .45; text-decoration: line-through; }
+.c14-result { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; }
+.c14-sep { grid-column: 1 / -1; text-align: center; }
+@media (max-width: 640px) { .c14-result { grid-template-columns: 1fr; } }
+.c14-tablenote { display: none; font-size: .78rem; color: var(--bt-muted); margin-top: 4px; }
+/* Phone: the candidate table must fit without scrolling sideways. Tighter cells, the
+   byte unit moves from every cell into one note under the table. */
+@media (max-width: 640px) {
+  .c14-cands th, .c14-cands td { padding: 5px 6px; }
+  .c14-cands th { letter-spacing: 0; }
+  .c14-cands .c14-unit { display: none; }
+  .c14-tablenote { display: block; }
+}
+/* An author `display` rule beats the `hidden` attribute, so say it again: no table, no note. */
+.c14-tablenote[hidden] { display: none; }
+/* The code panel of figure 1 gets a wider column and slightly smaller type than the
+   toolkit default, so that the wrapped lines of viz/code.js fit without scrolling
+   sideways on a desktop. */
+@media (min-width: 821px) { #fig-split .bt-figure-body.has-side { grid-template-columns: minmax(0, 1fr) minmax(250px, 470px); } }
+#fig-split .bt-code { font-size: 11.5px; }
+/* Section 3 on a phone: short column headers (the long ones are in the sentence above
+   the table) and tighter cells, so that all six columns fit without scrolling sideways. */
+.c14-short { display: none; }
+@media (max-width: 640px) {
+  .c14-measured { font-size: .8rem; }
+  .c14-measured th, .c14-measured td { padding: 5px 3px; }
+  .c14-measured td { white-space: nowrap; }
+  .c14-measured th { letter-spacing: 0; white-space: normal; vertical-align: bottom; }
+  .c14-measured .c14-long { display: none; }
+  .c14-measured .c14-short { display: inline; }
+}
+.c14-newcell { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: .86rem; color: var(--bt-muted); margin-bottom: 8px; }
+
+.c14-rowhead { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 10px 0 5px; font-size: .86rem; color: var(--bt-muted); }
+.c14-rowhead b { color: var(--bt-text); font-variant-numeric: tabular-nums; }
+.c14-pages { display: flex; flex-wrap: wrap; gap: 3px; min-height: 50px; }
+.c14-pg {
+  position: relative; flex: none; width: 15px; height: 46px; border: 1px solid var(--s, var(--bt-node)); border-radius: 3px;
+  background: var(--bt-surface); overflow: hidden;
+}
+.c14-pg i { position: absolute; left: 0; right: 0; bottom: 0; background: var(--s, var(--bt-node-active)); }
+.c14-pages.is-dense { gap: 2px; }
+.c14-pages.is-dense .c14-pg { width: 7px; height: 34px; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">A page is full and one more cell must go in. Somewhere between two of its cells the page has to be
+cut in two. This page lets you watch where four different policies make that cut, and what the choice does to an
+index after a few hundred inserts. It accompanies <a href="../README.md">chapter 14 of the guide</a>; the code that
+it mirrors is in <code>zig/src/split.zig</code> and <code>rust/src/split.rs</code>.</p>
+
+<h2>1. One split, step by step</h2>
+<p>Each box is a cell, as wide as the bytes it occupies; the number in bold is its key, <code>#n</code> is the row id
+that tells equal keys apart. Pick a page, say where it sits in the tree, pick a policy, and step through the decision.
+Tick <em>Predict</em> to be asked for the cut before it is shown.</p>
+<div id="fig-split"></div>
+
+<h2>2. The same inserts under two policies</h2>
+<p>Both rows receive exactly the same cells in the same order; only the split policy differs. Every gauge is one
+4096-byte leaf page in key order, filled to the height of its content. A step is one insert that made a page split.</p>
+<div id="fig-run"></div>
+
+<h2>3. What the programs measured</h2>
+<p>The chapter's Zig and Rust programs run the four workloads with 20 000 inserts each and print this (it is part of
+<a href="../expected_output.txt">expected_output.txt</a>). “Separators with a row id” counts the cuts that fell inside
+a run of equal keys: the parent then has to store the row id as well as the key.</p>
+<div class="bt-table-wrap" id="tbl-experiment"></div>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="model.js"></script>
+<script src="local.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, k = BTViz.k, M = SplitModel;
+  BTViz.page({
+    title: 'Split policies and fill factor', chapter: 14,
+    prev: { href: '../../13-overflow-and-free-space/viz/index.html', title: 'Chapter 13: overflow and free space' },
+    next: { href: '../../15-redistribution-and-merge-policies/viz/index.html', title: 'Chapter 15: redistribution and merge policies' }
+  });
+
+  function select(id, label, options, value) {
+    var s = el('select.bt-select#' + id, { 'aria-label': label });
+    options.forEach(function (o) { s.appendChild(el('option', { value: o[0], selected: o[0] === value }, o[1])); });
+    return s;
+  }
+  var POLICY_OPTIONS = [['half', 'half (50:50)'], ['fill', 'fill factor on every split'], ['rightmost', 'fill factor on rightmost page'], ['adaptive', 'adaptive (duplicate aware)']];
+  var FF_OPTIONS = [['50', '50%'], ['70', '70%'], ['90', '90%'], ['100', '100%']];
+  function policyOf(kind, ff) { return { kind: kind, ff: +ff }; }
+  function cellText(c) { return '(' + c.key + ',' + c.tid + ')'; }
+  function pct(bytes, capacity) { return Math.round(bytes * 100 / capacity) + '%'; }
+
+  /* ================================================================== 1. one split */
+  (function () {
+    var PRESETS = {
+      hand: { label: 'README example: a run of 20s in the middle', capacity: M.HAND.capacity, newIndex: M.HAND.newIndex, items: M.HAND.items },
+      nudge: {
+        label: 'a different key one small step from the middle', capacity: 100, newIndex: 6,
+        items: [[10, 1, 24], [20, 1, 14], [20, 2, 14], [20, 3, 4], [30, 1, 18], [40, 1, 16], [50, 1, 16]]
+      },
+      single: {
+        label: 'one key fills the whole page', capacity: 100, newIndex: 8,
+        items: [[7, 1, 12], [7, 2, 12], [7, 3, 12], [7, 4, 12], [7, 5, 12], [7, 6, 12], [7, 7, 12], [7, 8, 12], [7, 9, 12]]
+      },
+      distinct: {
+        label: 'all keys different, sizes vary', capacity: 100, newIndex: 3,
+        items: [[11, 1, 22], [14, 1, 9], [19, 1, 17], [23, 1, 13], [26, 1, 12], [31, 1, 25], [38, 1, 8]]
+      }
+    };
+    Object.keys(PRESETS).forEach(function (name) {
+      var p = PRESETS[name];
+      p.items = p.items.map(function (c) { return Array.isArray(c) ? { key: c[0], tid: c[1], size: c[2] } : c; });
+    });
+
+    var fig = BTViz.figure('#fig-split', {
+      title: 'Where to cut one overfull page', side: true,
+      legend: [{ token: 'key-inserted', label: 'new cell' }, { token: 'node-active', label: 'best space balance' },
+        { token: 'key-compare', label: 'close enough (interval)' }, { token: 'split', label: 'chosen cut' }, { token: 'free', label: 'free space' }]
+    });
+    var selPreset = select('sp-preset', 'Page', Object.keys(PRESETS).map(function (n) { return [n, PRESETS[n].label]; }), 'hand');
+    var selPos = select('sp-pos', 'Position of the page', [['inner', 'inner page, next page has larger keys'], ['rightmost', 'rightmost page'], ['continues', 'inner page, next page continues the last key']], 'inner');
+    var selPolicy = select('sp-policy', 'Split policy', POLICY_OPTIONS, 'adaptive');
+    var selFF = select('sp-ff', 'Fill factor', FF_OPTIONS, '90');
+    fig.toolbar.append(el('label.bt-field', 'page', selPreset), el('label.bt-field', 'position', selPos),
+      el('label.bt-field', 'policy', selPolicy), el('label.bt-field', 'fill factor', selFF));
+
+    var newCell = el('div.c14-newcell');
+    var stripHost = el('div');
+    var tableHost = el('div.bt-table-wrap');
+    var tableNote = el('div.c14-tablenote', 'left and right are in bytes');
+    fig.stage.append(newCell, stripHost, tableHost, tableNote);
+    var code = BTViz.codePanel(fig.side, 'chooseSplit', { title: 'chooseSplit (condensed)', maxHeight: 480 });
+    var LINES = window.CHAPTER_CODE_LINES;
+
+    function unit() { return el('span.c14-unit', 'B'); }   // hidden on phones, see the style block
+    function draw(s) {
+      stripHost.textContent = '';
+      newCell.textContent = '';
+      if (s.pending) newCell.append('incoming cell:', el('span.bt-chip.s-inserted', cellText(s.pending) + ' · ' + s.pending.size + ' bytes'), s.note || '');
+      else if (s.note) newCell.append(s.note);
+      if (s.result) {
+        var grid = el('div.c14-result');
+        stripHost.appendChild(grid);
+        grid.appendChild(el('div.c14-sep', el('span.bt-chip.s-split', s.result.sep)));
+        var l = el('div'), r = el('div');
+        grid.append(l, r);
+        new C14.CellStrip(l).render(s.result.left);
+        new C14.CellStrip(r).render(s.result.right);
+      } else new C14.CellStrip(stripHost).render(s.strip);
+      tableHost.textContent = '';
+      tableNote.hidden = !s.rows;
+      if (s.rows) {
+        var head = ['cut', 'left', 'right', s.deltaLabel || 'delta', 'separator'];
+        var t = el('table.bt-table.c14-cands', el('thead', el('tr', head.map(function (h, i) { return el('th', { class: i > 0 && i < 4 ? 'num' : null }, h); }))));
+        var body = el('tbody');
+        s.rows.forEach(function (row) {
+          body.appendChild(el('tr', { class: row.state ? 's-' + row.state : null, style: row.legal ? null : { opacity: 0.5 } },
+            el('td.num', String(row.s)), el('td.num', String(row.left), unit()), el('td.num', String(row.right), unit()),
+            el('td.num', row.legal ? (row.delta === null ? '' : String(row.delta)) : 'too big'), el('td', { style: { whiteSpace: 'nowrap' } }, row.sep)));
+        });
+        t.appendChild(body);
+        tableHost.appendChild(t);
+      }
+      code.highlight(LINES[s.phase]);
+    }
+    var stepper = new BTViz.Stepper({ mount: fig.controls, caption: fig.caption, root: fig.root, interval: 2600, predict: false, onStep: function (step) { draw(step.state); } });
+
+    function build() {
+      var p = PRESETS[selPreset.value], policy = policyOf(selPolicy.value, selFF.value);
+      var items = p.items, cap = p.capacity, ni = p.newIndex, neu = items[ni];
+      var lastKey = items[items.length - 1].key;
+      var upperKey = selPos.value === 'rightmost' ? null : selPos.value === 'continues' ? lastKey : lastKey + 10;
+      var old = items.filter(function (c, i) { return i !== ni; });
+      var oldBytes = old.reduce(function (a, c) { return a + c.size; }, 0);
+      var choice = M.chooseSplit(items, ni, { capacity: cap, upperKey: upperKey }, policy);
+      var tr = choice.trace, name = M.policyLabel(policy);
+      var legal = {};
+      M.candidates(items, cap).forEach(function (c) { legal[c.firstRight] = c; });
+      var where = upperKey === null ? 'the rightmost page of its level' : upperKey === lastKey
+        ? 'an inner page, and the next page starts with more cells of key ' + k(lastKey) : 'an inner page; the next page starts with key ' + k(upperKey);
+
+      function sepText(s) {
+        var a = items[s - 1], b = items[s];
+        return a.key !== b.key ? '(' + b.key + ') 8B' : cellText(b) + ' 16B';
+      }
+      /* Table rows in page order. `fill` selects the delta column, `states` colours rows. */
+      function rows(fill, withDelta, states) {
+        var out = [], left = 0, total = oldBytes + neu.size;
+        for (var s = 1; s < items.length; s++) {
+          left += items[s - 1].size;
+          var c = legal[s];
+          out.push({ s: s, left: left, right: total - left, legal: !!c, delta: c && withDelta ? M.deltaOf(c, cap, fill) : null, sep: sepText(s), state: states && states[s] });
+        }
+        return out;
+      }
+      function gapStates(states) {
+        var g = {};
+        for (var s = 1; s < items.length; s++) g[s] = legal[s] ? (states && states[s]) || null : 'free';
+        return g;
+      }
+      function imaginary(states) {
+        return {
+          title: 'the imaginary page: ' + (oldBytes + neu.size) + ' bytes, with the new cell in place', capacity: cap, ariaLabel: 'Imaginary page',
+          items: items.map(function (c, i) { return { key: c.key, tid: c.tid, size: c.size, state: i === ni ? 'inserted' : null }; }),
+          gaps: gapStates(states)
+        };
+      }
+      var deltaLabel = function (fill) { return fill === null ? 'delta 50:50' : 'delta ' + fill + ':' + (100 - fill); };
+      var steps = [], nLegal = Object.keys(legal).length, best = tr.order[0];
+      var push = function (phase, caption, state, extra) {
+        state.phase = phase;
+        var st = { caption: caption, state: state };
+        for (var key in (extra || {})) st[key] = extra[key];
+        steps.push(st);
+      };
+
+      push('start', 'This page can hold ' + cap + ' bytes and holds ' + oldBytes + '. It is ' + where + '. A new cell ' + k(cellText(neu), 'inserted') + ' of ' + neu.size +
+        ' bytes belongs at position ' + ni + ', but ' + oldBytes + ' + ' + neu.size + ' = ' + (oldBytes + neu.size) + ' bytes do not fit. The page must be split in two.',
+        { pending: neu, strip: { title: 'the page before the insert', capacity: cap, items: old, gaps: null } });
+
+      push('candidates', 'Picture the new cell already in its sorted place. Every gap between two cells is a place to cut: cells left of the gap stay, cells right of it move to a new page, ' +
+        'and the first cell on the right tells the parent where the new page begins. A cut is only legal if both sides fit in ' + cap + ' bytes: ' + nLegal + ' of ' + (items.length - 1) + ' gaps are. The last column is what the parent would have to store: the bare key (8 bytes) if the cells on either side of the cut have different keys, key and row id (16 bytes) if the cut falls inside a run of equal keys.',
+        { strip: imaginary(null), rows: rows(null, false, null), deltaLabel: 'delta' });
+
+      var firstFill = policy.kind === 'adaptive' ? M.targetFill(policy, upperKey === null) : tr.fill;
+      var st1 = {};
+      st1[best] = 'active';
+      var targetCaption = firstFill === null
+        ? 'The space target of ' + k(name) + (policy.kind === 'half' ? '' : ' on a page that is not the rightmost') + ' is equal free space on both sides: ' +
+          'delta = |left free − right free|, smaller is better. The best balance is the cut before index ' + k(best, 'active') + '.'
+        : 'The space target of ' + k(name) + (policy.kind === 'fill' ? '' : ' on the rightmost page') + ' is a left page that stays ' + firstFill + '% full: ' +
+          'delta = |' + firstFill + ' × left free − ' + (100 - firstFill) + ' × right free|, smaller is better. The best is the cut before index ' + k(best, 'active') + '.';
+      if (policy.kind !== 'adaptive') {
+        push('target', targetCaption, { strip: imaginary(st1), rows: rows(firstFill, true, st1), deltaLabel: deltaLabel(firstFill) });
+      } else {
+        push('target', targetCaption + ' The adaptive policy does not stop here.', { strip: imaginary(st1), rows: rows(firstFill, true, st1), deltaLabel: deltaLabel(firstFill) });
+        var st2 = {};
+        tr.defaultInterval.forEach(function (s) { st2[s] = 'compare'; });
+        st2[best] = 'active';
+        push('interval', 'How far from the best balance may the cut move? By 5% of what was on the page: ' + oldBytes + ' / 20 = ' + tr.tolerance + ' bytes on either side. ' +
+          (tr.defaultInterval.length === 1 ? 'No other cut is that close, so the interval holds only the cut before ' + k(best, 'active') + '.'
+            : tr.defaultInterval.length + ' cuts are that close: before ' + tr.defaultInterval.map(function (s) { return k(s, s === best ? 'active' : 'compare'); }).join(', ') + '.'),
+          { strip: imaginary(st2), rows: rows(firstFill, true, st2), deltaLabel: deltaLabel(firstFill) });
+        var st3 = {};
+        if (best !== choice.firstRight) st3[best] = 'active';
+        st3[choice.firstRight] = 'split';
+        if (tr.reason === 'default-distinct') {
+          tr.defaultInterval.forEach(function (s) { if (!st3[s]) st3[s] = 'compare'; });
+          push('default-distinct', choice.firstRight === best
+            ? 'The best-balanced cut already lies between two different keys, so its separator is a bare key. Nothing to improve.'
+            : 'Inside the interval, the cut before ' + k(choice.firstRight, 'split') + ' lies between two different keys. It is a little less balanced than the cut before ' + k(best, 'active') +
+              ', but its separator is a bare key and no run of equal keys is torn apart. Take it.',
+            { strip: imaginary(st3), rows: rows(firstFill, true, st3), deltaLabel: deltaLabel(firstFill) });
+        } else if (tr.reason === 'many-duplicates') {
+          push('many-duplicates', 'Every cut in the interval falls inside a run of equal keys. But the page holds more than one key, so somewhere a run ends. Strategy “many duplicates”: look at <em>all</em> legal cuts and take the best-balanced one between two different keys, however lopsided: before ' +
+            k(choice.firstRight, 'split') + '.',
+            { strip: imaginary(st3), rows: rows(firstFill, true, st3), deltaLabel: deltaLabel(firstFill) });
+        } else if (tr.reason === 'single-value') {
+          // The candidates are re-sorted with the 96:4 target, so the 50:50
+          // optimum is no longer "best" by the column this step shows.
+          var stSingle = {};
+          stSingle[choice.firstRight] = 'split';
+          push('single-value', 'The whole page is one key, so every cut tears the run. ' + (upperKey === null ? 'This is the rightmost page' : 'The next page starts with a different key') +
+            ', so this page is the <em>end</em> of the run, and new cells of this key (with higher row ids) will keep arriving here. Strategy “single value”: an append in disguise, so leave the left page ' +
+            M.SINGLE_VALUE_FILL + '% full. The cuts are ranked again with that target (the delta column now shows ' + deltaLabel(M.SINGLE_VALUE_FILL) +
+            ', and the earlier best balance no longer counts); the smallest delta is the cut before ' + k(choice.firstRight, 'split') + '.',
+            { strip: imaginary(stSingle), rows: rows(M.SINGLE_VALUE_FILL, true, stSingle), deltaLabel: deltaLabel(M.SINGLE_VALUE_FILL) });
+        } else {
+          push('run-continues', 'The whole page is one key, and the next page continues the same run. This insert landed in the middle of the run, not at its end, so there is no reason to expect more cells on one side than the other. Keep the balanced cut before ' +
+            k(choice.firstRight, 'split') + '.',
+            { strip: imaginary(st3), rows: rows(firstFill, true, st3), deltaLabel: deltaLabel(firstFill) });
+        }
+      }
+
+      var fr = choice.firstRight, sep = choice.penalty === 1 ? '(' + items[fr].key + ')' : cellText(items[fr]);
+      var half = M.chooseSplit(items, ni, { capacity: cap, upperKey: upperKey }, { kind: 'half', ff: 90 });
+      var mark = function (c, i) { return { key: c.key, tid: c.tid, size: c.size, state: i === ni ? 'inserted' : null }; };
+      var cands = Object.keys(legal).map(Number);
+      push('result', k(name) + ' cuts before index ' + k(fr, 'split') + ': the left page keeps ' + choice.left + ' bytes (' + pct(choice.left, cap) + ' full), the new right page gets ' + choice.right +
+        ' bytes (' + pct(choice.right, cap) + '). The parent stores the separator ' + k(sep, 'split') + ', ' + (8 * choice.penalty) + ' bytes' +
+        (choice.penalty === 2 ? ': the cut fell inside a run of equal keys, so the key alone cannot say where the right page begins and the row id has to be kept too.' : ': the bare key is enough, because the last cell on the left has a different key.') +
+        (policy.kind !== 'half' && half.firstRight !== fr ? ' Plain 50:50 would have cut before ' + k(half.firstRight) + ' (' + half.left + ' | ' + half.right + ' bytes, ' + (8 * half.penalty) + '-byte separator).' : ''),
+        {
+          note: 'two real pages again, each drawn at its full width of ' + cap + ' bytes',
+          result: {
+            sep: 'separator in the parent: ' + sep + ' · ' + (8 * choice.penalty) + ' bytes',
+            left: { title: 'left page (stays in place): ' + choice.left + 'B', capacity: cap, items: items.slice(0, fr).map(mark), gaps: null, ariaLabel: 'Left page' },
+            right: { title: 'right page (new): ' + choice.right + 'B', capacity: cap, items: items.slice(fr).map(function (c, i) { return mark(c, i + fr); }), gaps: null, ariaLabel: 'Right page' }
+          }
+        },
+        null);
+      // Predict mode asks before the first step that gives the cut away.
+      steps[policy.kind === 'adaptive' ? 4 : 2].question = {
+        prompt: 'Before which index will ' + k(name) + ' cut? (left bytes | right bytes)',
+        choices: cands.map(function (s) { return s + ' (' + legal[s].left + ' | ' + legal[s].right + ')'; }),
+        answer: cands.indexOf(fr),
+        explain: 'Strategy: ' + choice.strategy.replace('_', ' ') + '.'
+      };
+      stepper.setSteps(steps);
+    }
+    [selPreset, selPos, selPolicy, selFF].forEach(function (s) { s.addEventListener('change', build); });
+    build();
+  })();
+
+  /* ================================================================== 2. two policies */
+  (function () {
+    var HINTS = {
+      ascending: 'Keys only grow, so every insert lands on the last page. A 50:50 cut leaves a half-empty page behind that nothing will ever fill.',
+      random: 'Keys arrive in random order, so every page is equally likely to receive the next cell. A lopsided cut is then a bad bet almost every time.',
+      'dup-groups': 'About 8 cells per key. Page counts are similar; look at the separators: a cut inside a run of equal keys costs 16 bytes in the parent instead of 8.',
+      'dup-heavy': 'A handful of keys, each filling several pages. Every key is its own little append stream.'
+    };
+    var fig = BTViz.figure('#fig-run', {
+      title: 'One workload, two split policies',
+      legend: [{ token: 'node-active', label: 'page (height = fill)' }, { token: 'split', label: 'just split' }, { token: 'merge', label: 'under 25% full' }]
+    });
+    var selW = select('run-workload', 'Workload', [['ascending', 'ascending keys'], ['random', 'random keys'], ['dup-groups', 'duplicates: short runs'], ['dup-heavy', 'duplicates: few keys']], 'ascending');
+    var selA = select('run-a', 'Policy A', POLICY_OPTIONS, 'half');
+    var selB = select('run-b', 'Policy B', POLICY_OPTIONS, 'rightmost');
+    var selFF = select('run-ff', 'Fill factor', FF_OPTIONS, '90');
+    var selN = select('run-n', 'Number of inserts', [['300', '300'], ['1000', '1000'], ['3000', '3000']], '300');
+    var seed = el('input.bt-input#run-seed', { type: 'number', min: 0, max: 999999, value: 14, 'aria-label': 'Seed', style: { width: '5.5em' } });
+    fig.toolbar.append(el('label.bt-field', 'workload', selW), el('label.bt-field', 'A', selA), el('label.bt-field', 'B', selB),
+      el('label.bt-field', 'fill factor', selFF), el('label.bt-field', 'inserts', selN), el('label.bt-field', 'seed', seed),
+      el('button.bt-btn.bt-primary#run-play', { type: 'button', onclick: function () { stepper.restart(); stepper.play(); } }, 'Replay'));
+
+    var headA = el('div.c14-rowhead'), headB = el('div.c14-rowhead');
+    fig.stage.appendChild(headA);
+    var rowA = new C14.PageRow(fig.stage);
+    fig.stage.appendChild(headB);
+    var rowB = new C14.PageRow(fig.stage);
+    var chart = new BTViz.Chart(fig.stage, { type: 'bar', height: 190, xLabel: 'page fill (%)', yLabel: 'pages', legend: true });
+    var BUCKETS = ['0-9', '10-19', '20-29', '30-39', '40-49', '50-59', '60-69', '70-79', '80-89', '90-100'];
+
+    function head(host, tag, s) {
+      host.textContent = '';
+      host.append(el('span.bt-chip.s-' + (tag === 'A' ? 'active' : 'split'), tag + ' · ' + s.name),
+        el('span', el('b', String(s.pages)), ' pages'), el('span', 'average fill ', el('b', (s.avg / 10).toFixed(1) + '%')),
+        el('span', el('b', String(s.splits)), ' splits'), el('span', el('b', String(s.tidSeps)), ' separators with a row id'));
+    }
+    var stepper = new BTViz.Stepper({
+      mount: fig.controls, caption: fig.caption, root: fig.root, interval: 420,
+      onStep: function (step) {
+        var s = step.state;
+        head(headA, 'A', s.a);
+        head(headB, 'B', s.b);
+        var dense = Math.max(s.a.used.length, s.b.used.length) > 80;   // same scale in both rows
+        rowA.render({ used: s.a.used, capacity: M.PAGE_CAPACITY, marks: s.a.marks, dense: dense });
+        rowB.render({ used: s.b.used, capacity: M.PAGE_CAPACITY, marks: s.b.marks, dense: dense });
+        chart.render({ labels: BUCKETS, series: [{ name: 'A · ' + s.a.name, values: s.a.hist, token: 'node-active' }, { name: 'B · ' + s.b.name, values: s.b.hist, token: 'split' }] });
+      }
+    });
+
+    function snap(tree, name, split) {
+      var f = tree.fill(), marks = {};
+      if (split) { marks[tree.lastSplit.d] = 'split'; marks[tree.lastSplit.d + 1] = 'split'; }
+      return { name: name, used: tree.usedList(), marks: marks, pages: f.pages, avg: f.avgPermille, splits: tree.stats.splits, tidSeps: f.tidSeps, hist: f.histogram };
+    }
+    function describe(tag, tree, split) {
+      if (!split) return tag + ': the cell fit, no split.';
+      var c = tree.lastSplit.choice;
+      return tag + ': page ' + (tree.lastSplit.d + 1) + ' was full and was cut ' + k(pct(c.left, M.PAGE_CAPACITY) + ' | ' + pct(c.right, M.PAGE_CAPACITY), 'split') +
+        (c.strategy !== 'default' ? ' (strategy “' + c.strategy.replace('_', ' ') + '”)' : '') + (c.penalty === 2 ? ', inside a run of equal keys.' : '.');
+    }
+    function build() {
+      // Clamp the seed to the field's range and show the value actually used.
+      var n = +selN.value, sd = Math.min(999999, Math.max(0, Math.floor(+seed.value || 0)));
+      if (seed.value !== String(sd)) seed.value = String(sd);
+      var pa = policyOf(selA.value, selFF.value), pb = policyOf(selB.value, selFF.value);
+      var na = M.policyLabel(pa), nb = M.policyLabel(pb);
+      var ta = new M.Tree(M.PAGE_CAPACITY, pa), tb = new M.Tree(M.PAGE_CAPACITY, pb);
+      var ops = M.workloadOps(selW.value, n, sd);
+      var steps = [{
+        caption: 'Two empty trees with one empty leaf page each. Both will receive the same ' + n + ' cells of 40 to 120 bytes. ' + HINTS[selW.value] + ' Press play.',
+        state: { a: snap(ta, na, false), b: snap(tb, nb, false) }
+      }];
+      ops.forEach(function (op, i) {
+        var sa = ta.put(op.key, op.tid, op.size), sb = tb.put(op.key, op.tid, op.size);
+        if (!sa && !sb) return;
+        steps.push({
+          caption: 'Insert ' + (i + 1) + ' of ' + n + ', key ' + k(op.key, 'inserted') + ' (' + op.size + ' bytes). ' + describe('A', ta, sa) + ' ' + describe('B', tb, sb),
+          state: { a: snap(ta, na, sa), b: snap(tb, nb, sb) }
+        });
+      });
+      var fa = ta.fill(), fb = tb.fill();
+      var verdict = fa.pages === fb.pages ? 'Both need ' + fa.pages + ' pages'
+        : (fa.pages < fb.pages ? 'A' : 'B') + ' needs ' + Math.abs(fa.pages - fb.pages) + ' fewer pages (' + Math.min(fa.pages, fb.pages) + ' against ' + Math.max(fa.pages, fb.pages) + ')';
+      steps.push({
+        caption: 'All ' + n + ' cells are in, the same ' + fa.usedBytes + ' bytes in both trees. ' + verdict + '; average fill ' + (fa.avgPermille / 10).toFixed(1) + '% (A) and ' +
+          (fb.avgPermille / 10).toFixed(1) + '% (B); separators that had to keep a row id: ' + fa.tidSeps + ' (A) and ' + fb.tidSeps + ' (B). ' + HINTS[selW.value],
+        state: { a: snap(ta, na, false), b: snap(tb, nb, false) }
+      });
+      stepper.setSteps(steps, { index: steps.length - 1 });
+    }
+    [selW, selA, selB, selFF, selN].forEach(function (s) { s.addEventListener('change', build); });
+    seed.addEventListener('change', build);
+    build();
+  })();
+
+  /* ================================================================== 3. measured table */
+  (function () {
+    var rows = window.CHAPTER_EXPECTED.experiment;
+    // Two labels per column head; the style block shows the short one on phones.
+    function th(cls, long, short) { return el(cls, el('span.c14-long', long), el('span.c14-short', short || long)); }
+    var t = el('table.bt-table.c14-measured', el('thead', el('tr', th('th', 'workload'), th('th', 'policy'), th('th.num', 'pages'), th('th.num', 'average fill', 'avg fill'),
+      th('th.num', 'separators with a row id', 'seps with row id'), th('th.num', 'separator bytes', 'sep bytes'))));
+    var body = el('tbody');
+    rows.forEach(function (r, i) {
+      body.appendChild(el('tr',
+        el('td', i % 4 === 0 ? r[0] : ''), el('td', r[1]), el('td.num', String(r[2])), el('td.num', r[3] + '%'), el('td.num', String(r[4])), el('td.num', String(r[5]))));
+    });
+    t.appendChild(body);
+    document.getElementById('tbl-experiment').appendChild(t);
+  })();
+
+  /* ================================================================== self-tests */
+  BTViz.selfTest('hand example: 8 split choices',
+    M.handChoicesText(40) + M.handChoicesText(null), window.CHAPTER_EXPECTED.handInner.trim() + '\n' + window.CHAPTER_EXPECTED.handRightmost.replace(/^\n/, ''));
+  BTViz.selfTest('fixed scenario: 16 runs, bytes per page', M.scenarioText(300, 14), window.CHAPTER_EXPECTED.scenario);
+})();
+</script>
+</body>
+</html>

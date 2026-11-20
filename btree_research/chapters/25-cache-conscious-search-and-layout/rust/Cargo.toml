@@ -1,0 +1,17 @@
+[package]
+name = "ch25_cache_conscious_search_and_layout"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# std only: no external dependencies.
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid" # even the cache-line alignment is done in safe code: see layout.rs
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+debug = true

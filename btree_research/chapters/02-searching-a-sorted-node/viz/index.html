@@ -1,0 +1,793 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 2: Searching a sorted node</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  /* Chapter-local layout only; every colour comes from the toolkit's tokens. */
+  .c02-inv { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; min-height: 1.9em; }
+  .c02-inv .bt-chip { white-space: normal; text-align: center; }
+  .c02-keys { width: 19rem; max-width: 100%; }
+  .c02-num { width: 5.2rem; }
+  /* One line under a toolbar saying which typed value was not used as typed. */
+  .c02-note { flex: 1 0 100%; margin: 0; color: var(--bt-muted); font-size: .9rem; }
+  .c02-note[hidden] { display: none; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">A B-tree node is a small sorted array, and every tree operation starts by searching it.
+The search does not answer "is the key here?". It answers "<strong>how many keys are smaller?</strong>",
+which is an index from 0 to <em>n</em> that always exists: the place where the key is, or where it would
+be inserted. Text and code: <a href="../README.md">chapter 02 README</a>.</p>
+
+<h2>1. Lower bound and upper bound, one comparison at a time</h2>
+<p>The loop keeps one promise: everything left of <code>lo</code> is known to be too small, everything from
+<code>hi</code> on is known to be large enough. The notation <code>keys[a..b]</code> means the keys at indices
+<em>a</em>, <em>a</em>+1, … up to but <strong>not including</strong> <em>b</em> (a <em>half-open</em> range), so
+<code>keys[0..0]</code> is empty and <code>keys[0..7]</code> stops at index 6. Faded keys are ruled out; each step looks at one key
+(<code>mid</code>) and moves one of the two markers. Type your own keys and key (a change is applied when you
+press Enter or leave the field), switch to upper bound, or tick <em>Predict</em> to be asked which marker moves
+before each decision. <em>Empty</em> shows the smallest case: a node with no key still has an answer.</p>
+<div id="fig-bound"></div>
+
+<h2>2. Ranges: inclusive and exclusive ends</h2>
+<p>Each end of a key range becomes one bound call, and the result is a half-open index range
+<code>[start, end)</code>. Change the brackets and watch which bound is used. Try an end that equals a
+stored key, and a range like <code>(7, 7)</code>.</p>
+<div id="fig-range"></div>
+
+<h2>3. Galloping: when the answer is near a known position</h2>
+<p>If the answer is at or after a cursor and probably close to it, look at the key under the cursor first
+(it may already be the answer), then jump 1, 2, 4, 8, … positions until a
+probe is large enough, and binary search between the last two probes. The counters compare it with a
+binary search over the whole array. <em>Next probe</em> continues from the answer with a larger key, the
+way a sorted batch of lookups does, until the cursor reaches the end. Galloping never looks left of the
+cursor: put the cursor past the answer (from index 40, key 10) to see what it returns then.</p>
+<div id="fig-gallop"></div>
+
+<script src="../../../assets/viz.js"></script>
+<script src="code.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, k = BTViz.k;
+  var T = {};   // step builders of the figures, exposed to the self-tests at the end of the page
+
+  BTViz.page({
+    title: 'Searching a sorted node', chapter: 2,
+    prev: { href: '../../01-why-btrees/viz/index.html', title: 'Chapter 1: Why B-trees' },
+    next: { href: '../../03-btree-structure-and-search/viz/index.html', title: 'Chapter 3: B-tree structure and search' },
+    index: '../../../index.html'
+  });
+
+  /* ====================================================================
+   * The model: the same algorithms as zig/src/search.zig and trace.zig.
+   * Pure functions over arrays of numbers; no DOM.
+   * ================================================================== */
+
+  /** One record per loop iteration, exactly like trace.zig's Step. */
+  function traceBound(keys, key, mode) {
+    var steps = [], lo = 0, hi = keys.length;
+    while (lo < hi) {
+      var mid = lo + Math.floor((hi - lo) / 2);
+      var goRight = mode === 'lower' ? keys[mid] < key : keys[mid] <= key;
+      steps.push({ lo: lo, hi: hi, mid: mid, probe: keys[mid], goRight: goRight });
+      if (goRight) lo = mid + 1; else hi = mid;
+    }
+    return { steps: steps, index: lo };
+  }
+  function lowerBound(keys, key) { return traceBound(keys, key, 'lower').index; }
+  function upperBound(keys, key) { return traceBound(keys, key, 'upper').index; }
+  function search(keys, key) {
+    var index = lowerBound(keys, key);
+    return { found: index < keys.length && keys[index] === key, index: index };
+  }
+  /** lo / hi: {kind: 'unbounded' | 'included' | 'excluded', k}. Returns {start, end, rawEnd}. */
+  function rangeSpan(keys, lo, hi) {
+    var start = lo.kind === 'unbounded' ? 0 : lo.kind === 'included' ? lowerBound(keys, lo.k) : upperBound(keys, lo.k);
+    var end = hi.kind === 'unbounded' ? keys.length : hi.kind === 'included' ? upperBound(keys, hi.k) : lowerBound(keys, hi.k);
+    return { start: start, end: Math.max(start, end), rawEnd: end };
+  }
+  /** gallopLowerBound with every comparison recorded as an event. */
+  function gallopTrace(keys, from, key) {
+    var n = keys.length, ev = [], comparisons = 0;
+    if (from === n) return { index: from, comparisons: 0, early: true, events: [{ t: 'at-end' }] };
+    comparisons++;
+    if (keys[from] >= key) return { index: from, comparisons: 1, early: true, events: [{ t: 'first', hit: true }] };
+    ev.push({ t: 'first', hit: false });
+    var below = from, step = 1, hi = n, ranOff = true;
+    while (step < n - below) {
+      var probe = below + step;
+      comparisons++;
+      if (keys[probe] >= key) {
+        ev.push({ t: 'probe', below: below, step: step, probe: probe, hit: true });
+        hi = probe; ranOff = false;
+        break;
+      }
+      ev.push({ t: 'probe', below: below, step: step, probe: probe, hit: false });
+      below = probe; step *= 2;
+    }
+    if (ranOff) ev.push({ t: 'ran-off', below: below, step: step });
+    var first = below + 1;
+    var inner = traceBound(keys.slice(first, hi), key, 'lower');
+    ev.push({ t: 'bracket', below: below, first: first, hi: hi, inner: inner });
+    return { index: first + inner.index, comparisons: comparisons + inner.steps.length, early: false, events: ev };
+  }
+
+  /* ====================================================================
+   * Self-test: rebuild expected_output.txt with the model above.
+   * ================================================================== */
+  function buildReport() {
+    var NODE = [1, 3, 5, 6, 7, 10, 12, 15, 17, 20, 25, 30], DUP = [3, 7, 7, 7, 12, 15, 15, 20];
+    var out = [];
+    var r = function (v, w) { return String(v).padStart(w); };
+    var l = function (v, w) { return String(v).padEnd(w); };
+    var yn = function (b) { return b ? 'yes' : 'no'; };
+    out.push('chapter 02: searching a sorted node', '');
+    out.push('[1] one node: the canonical keys of chapters 03-08, sorted');
+    out.push('index:' + NODE.map(function (_, i) { return ' ' + r(i, 3); }).join(''));
+    out.push('key:  ' + NODE.map(function (v) { return ' ' + r(v, 3); }).join(''), '');
+    out.push('[2] search(key) -> {found, index}: where the key is, or where it would be inserted', 'key  found  index');
+    [0, 1, 12, 13, 30, 31].forEach(function (key) {
+      var s = search(NODE, key);
+      out.push(r(key, 3) + '  ' + l(yn(s.found), 5) + '  ' + r(s.index, 5));
+    });
+    var trace = function (key, mode) {
+      var t = traceBound(NODE, key, mode), op = mode === 'lower' ? '< ' : '<=';
+      out.push('step  lo  hi  mid  keys[mid]  decision');
+      t.steps.forEach(function (s, i) {
+        out.push(r(i + 1, 4) + '  ' + r(s.lo, 2) + '  ' + r(s.hi, 2) + '  ' + r(s.mid, 3) + '  ' + r(s.probe, 9) + '  ' +
+          s.probe + ' ' + op + ' ' + key + (s.goRight ? ' is true:  lo = mid + 1 = ' + (s.mid + 1) : ' is false: hi = mid = ' + s.mid));
+      });
+      out.push('result: ' + t.index + ' after ' + t.steps.length + ' comparisons');
+    };
+    out.push('', '[3] trace of lowerBound(13); invariant: keys[0..lo] < 13 <= keys[hi..]');
+    trace(13, 'lower');
+    out.push('trace of upperBound(12); invariant: keys[0..lo] <= 12 < keys[hi..]');
+    trace(12, 'upper');
+    out.push('', '[4] duplicates: lower bound, upper bound, count = upper - lower', 'keys: ' + DUP.join(' '), 'key  lower  upper  count');
+    [2, 3, 7, 8, 15, 20, 21].forEach(function (key) {
+      var a = lowerBound(DUP, key), b = upperBound(DUP, key);
+      out.push(r(key, 3) + '  ' + r(a, 5) + '  ' + r(b, 5) + '  ' + r(b - a, 5));
+    });
+    out.push('', '[5] range bounds on the node of [1]: key range -> index range [start, end)');
+    var inc = function (v) { return { kind: 'included', k: v }; }, exc = function (v) { return { kind: 'excluded', k: v }; }, unb = { kind: 'unbounded' };
+    [['[5, 17]', inc(5), inc(17)], ['(5, 17]', exc(5), inc(17)], ['[5, 17)', inc(5), exc(17)], ['(5, 17)', exc(5), exc(17)],
+      ['[4, 16]', inc(4), inc(16)], ['(4, 16)', exc(4), exc(16)], ['[8, 9]', inc(8), inc(9)], ['(7, 7)', exc(7), exc(7)],
+      ['(20, +inf)', exc(20), unb], ['(-inf, 5)', unb, exc(5)]].forEach(function (c) {
+      var s = rangeSpan(NODE, c[1], c[2]), ks = NODE.slice(s.start, s.end);
+      out.push(l(c[0], 10) + ' -> [' + r(s.start, 2) + ', ' + r(s.end, 2) + ')  ' + ks.length + ' keys:' + ks.map(function (v) { return ' ' + v; }).join(''));
+    });
+    out.push('', "[6] neighbours (bound minus one; 'none' instead of index -1)", 'key  last <  last <=');
+    var opt = function (i) { return i === 0 ? '    none' : '  ' + r(i - 1, 6); };
+    [0, 1, 12, 13, 31].forEach(function (key) { out.push(r(key, 3) + opt(lowerBound(NODE, key)) + opt(upperBound(NODE, key))); });
+
+    // Section 7 needs the programs' PRNG: SplitMix64 on 64-bit integers (BigInt here).
+    out.push('', '[7] sorted batch of probes against 4096 sorted keys (seed 2): comparisons', 'probes  binary from 0  gallop from cursor');
+    var M = (1n << 64n) - 1n, state = 2n;
+    var below = function (n) {
+      state = (state + 0x9E3779B97F4A7C15n) & M;
+      var z = state;
+      z = ((z ^ (z >> 30n)) * 0xBF58476D1CE4E5B9n) & M;
+      z = ((z ^ (z >> 27n)) * 0x94D049BB133111EBn) & M;
+      z ^= z >> 31n;
+      return Number((z * BigInt(n)) >> 64n);
+    };
+    var keys = [], prev = 0;
+    for (var i = 0; i < 4096; i++) { prev += below(16); keys.push(prev); }
+    var top = keys[keys.length - 1] + 1;
+    [4, 64, 1024, 4096].forEach(function (m) {
+      var probes = [];
+      for (var j = 0; j < m; j++) probes.push(below(top));
+      probes.sort(function (a, b) { return a - b; });
+      var bin = 0, gal = 0, cursor = 0;
+      probes.forEach(function (p) {
+        bin += traceBound(keys, p, 'lower').steps.length;
+        var g = gallopTrace(keys, cursor, p);
+        gal += g.comparisons; cursor = g.index;
+      });
+      out.push(r(m, 6) + '  ' + r(bin, 13) + '  ' + r(gal, 18));
+    });
+
+    // Section 8: a capacity-4 node driven by search results.
+    out.push('', '[8] a node of capacity 4 driven by search results');
+    var nk = [], nv = [], CAP = 4;
+    var put = function (key, value) {
+      var s = search(nk, key);
+      if (s.found) { var old = nv[s.index]; nv[s.index] = value; return { what: 'overwritten; ', old: old }; }
+      if (nk.length === CAP) return { what: 'NodeFull;    ', old: null };
+      nk.splice(s.index, 0, key); nv.splice(s.index, 0, value);
+      return { what: 'inserted;    ', old: null };
+    };
+    var get = function (key) { var s = search(nk, key); return s.found ? nv[s.index] : null; };
+    var del = function (key) { var s = search(nk, key); if (!s.found) return null; nk.splice(s.index, 1); return nv.splice(s.index, 1)[0]; };
+    [10, 20, 5, 6, 12, 20].forEach(function (key) {
+      var s = search(nk, key), p = put(key, key * 100 + 1);
+      out.push('put ' + r(key, 2) + ': search -> found=' + l(yn(s.found), 3) + ' index=' + s.index + '; ' + p.what + 'keys: ' + nk.join(' '));
+    });
+    out.push('get 6 -> ' + get(6) + ', get 7 -> ' + get(7));
+    out.push('delete 6 -> ' + del(6) + '; keys: ' + nk.join(' '));
+    out.push('put 12 -> ' + put(12, 1201).old + '; keys: ' + nk.join(' '));
+    out.push('validate: ok');
+    return out.join('\n') + '\n';
+  }
+
+  /* ====================================================================
+   * Shared helpers for the three figures
+   * ================================================================== */
+
+  var MAX_KEY = 9999;
+  /** Text -> keys. A token is a key only if it is a whole number from 0 to MAX_KEY; anything else
+   *  ("-5", "1.5", "100000") is rejected and reported, never "repaired" into a different number.
+   *  At most `max` keys are kept, in typing order, then sorted. */
+  function parseKeys(text, max) {
+    var keys = [], rejected = [];
+    String(text).split(/[\s,;]+/).forEach(function (tok) {
+      if (!tok) return;
+      if (/^\d+$/.test(tok) && Number(tok) <= MAX_KEY) keys.push(Number(tok)); else rejected.push(tok);
+    });
+    var extra = Math.max(0, keys.length - max);
+    keys = keys.slice(0, max);
+    keys.sort(function (a, b) { return a - b; });
+    return { keys: keys, rejected: rejected, extra: extra };
+  }
+  /** Text of a number field -> {value, changed}: the whole number in [0, max] that is actually used. */
+  function cleanInt(text, fallback, max) {
+    var t = String(text).trim(), v = t === '' ? NaN : Number(t);
+    if (isNaN(v)) return { value: fallback, changed: true, empty: true };
+    var c = Math.max(0, Math.min(max, Math.floor(v)));
+    return { value: c, changed: c !== v, empty: false };
+  }
+  /** Read a number field, write the value that is used back into it, and explain any change in `notes`. */
+  function readInt(input, fallback, max, label, notes) {
+    var typed = input.value, c = cleanInt(typed, fallback, max);
+    if (c.changed) {
+      notes.push(c.empty ? 'The ' + label + ' was empty or not a number: using ' + c.value + '.'
+        : 'The ' + label + ' must be a whole number from 0 to ' + max + ': ' + typed.trim() + ' was changed to ' + c.value + '.');
+    }
+    if (input.value !== String(c.value)) input.value = c.value;
+    return c.value;
+  }
+  var noteLine = function () { return el('p.c02-note', { role: 'status', hidden: '' }); };
+  function showNotes(host, notes) {
+    host.textContent = notes.join(' ');
+    host.hidden = !notes.length;
+  }
+  var STALE = 'The picture still shows the previous input: press Enter or leave the field to apply the change.';
+  /** Keeps a figure and its text / number fields in step. The figure's `go` calls `unchanged()` before
+   *  it reads the fields and `commit(notes, was)` after it has written the used values back; `notes`
+   *  holds one list of notes per field.
+   *  - Enter applies and plays; leaving an edited field (`change`) applies without playing;
+   *  - while an edit is not applied yet (typing, the spin arrows of a number field) the note line says so;
+   *  - a note belongs to its field and stays until that field is edited again. Typing a bad value and
+   *    clicking Search applies twice (change, then click): the second run reads the corrected field and
+   *    has nothing to say about it, and must not wipe what the first one reported. */
+  function fieldSync(inputs, note) {
+    var applied = inputs.map(function () { return null; }), last = inputs.map(function () { return []; });
+    var unchanged = function () { return inputs.map(function (inp, i) { return !inp.disabled && inp.value === applied[i]; }); };
+    var show = function () { showNotes(note, [].concat.apply([], last)); };
+    return {
+      unchanged: unchanged,
+      commit: function (notes, was) {
+        inputs.forEach(function (inp, i) {
+          applied[i] = inp.value;
+          if (!(was[i] && !notes[i].length)) last[i] = notes[i];
+        });
+        show();
+      },
+      watch: function (go) {
+        inputs.forEach(function (inp) {
+          inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') go(true); });
+          inp.addEventListener('change', function () { if (unchanged().indexOf(false) >= 0) go(false); });
+          inp.addEventListener('input', function () { if (unchanged().indexOf(false) >= 0) showNotes(note, [STALE]); else show(); });
+        });
+      }
+    };
+  }
+  function chipRow(host, chips) {
+    host.textContent = '';
+    chips.forEach(function (c) { host.appendChild(el('span', { class: 'bt-chip' + (c.state ? ' s-' + c.state : ''), html: c.html })); });
+  }
+  var dimSwatch = function () {
+    return el('span.bt-legend-item', el('span.bt-swatch', { style: { opacity: '.38' } }), 'ruled out');
+  };
+  var num = function (cls, value, label) {
+    return el('input.bt-input.' + cls, { type: 'number', inputmode: 'numeric', min: 0, max: MAX_KEY, value: value, 'aria-label': label });
+  };
+
+  /* ====================================================================
+   * Figure 1: lower / upper bound
+   * ================================================================== */
+  (function () {
+    var PRESETS = { canonical: [1, 3, 5, 6, 7, 10, 12, 15, 17, 20, 25, 30], duplicates: [3, 7, 7, 7, 12, 15, 15, 20], empty: [] };
+    var fig = BTViz.figure('#fig-bound', {
+      title: 'Binary search as a shrinking region of unknown keys', side: true,
+      legend: [{ token: 'key', label: 'still unknown' }, { token: 'key-compare', label: 'being compared (mid)' },
+        { token: 'key-found', label: 'found / result' }, { token: 'node-active', label: 'equal to the key (upper bound)' },
+        { token: 'key-inserted', label: 'inserted key' }]
+    });
+    fig.legend.appendChild(dimSwatch());
+
+    var keysIn = el('input.bt-input.c02-keys#b-keys', { type: 'text', value: PRESETS.canonical.join(' '), 'aria-label': 'Sorted keys (they are sorted for you; leave empty for an empty node)', placeholder: 'empty node', spellcheck: 'false' });
+    var keyIn = num('c02-num#b-key', 13, 'Key to search for');
+    var modeIn = el('select.bt-select#b-mode', { 'aria-label': 'Which bound' },
+      el('option', { value: 'lower' }, 'lower bound (first ≥ key)'), el('option', { value: 'upper' }, 'upper bound (first > key)'));
+    var seed = 1;
+    var preset = function (name, label) {
+      return el('button.bt-btn', { type: 'button', id: 'b-' + name, onclick: function () {
+        var ks;
+        if (name === 'random') {
+          var rnd = BTViz.rng(seed++), v = rnd.int(0, 5);
+          ks = [];
+          for (var i = 0; i < 12; i++) { ks.push(v); v += rnd.int(0, 6); }
+          keyIn.value = ks[rnd.int(0, 11)] + rnd.int(0, 1);
+        } else ks = PRESETS[name];
+        keysIn.value = ks.join(' ');
+        go(false);
+      } }, label);
+    };
+    fig.toolbar.append(
+      el('label.bt-field', 'keys', keysIn), el('label.bt-field', 'key', keyIn), modeIn,
+      el('button.bt-btn.bt-primary#b-go', { type: 'button', onclick: function () { go(true); } }, 'Search'),
+      el('span.bt-toolbar-sep'), preset('canonical', 'Canonical'), preset('duplicates', 'Duplicates'), preset('random', 'Random'), preset('empty', 'Empty'));
+    var note = noteLine();
+    fig.toolbar.appendChild(note);
+
+    var av = new BTViz.ArrayView(fig.stage, { ariaLabel: 'Sorted keys of the node' });
+    var inv = el('div.c02-inv', { 'aria-label': 'What is known so far' });
+    fig.stage.appendChild(inv);
+    var codeLower = el('div'), codeUpper = el('div');
+    fig.stage.append(codeLower, codeUpper);
+    var panels = {
+      lower: BTViz.codePanel(codeLower, 'lowerBound', { title: 'lowerBound' }),
+      upper: BTViz.codePanel(codeUpper, 'upperBound', { title: 'upperBound' })
+    };
+    var log = new BTViz.Log(fig.side, { title: 'Comparisons', empty: 'No comparison yet.' });
+
+    function buildSteps(keys, key, mode) {
+      var n = keys.length, lower = mode === 'lower';
+      var op = lower ? '&lt;' : '≤', nop = lower ? '≥' : '&gt;';
+      var t = traceBound(keys, key, mode), steps = [];
+      var K = k(key);
+      var invChips = function (lo, hi) {
+        return [
+          { html: lo === 0 ? 'left of lo: nothing yet' : 'keys[0..' + lo + '] ' + op + ' ' + key },
+          { html: lo === hi ? 'unknown: nothing' : 'unknown: keys[' + lo + '..' + hi + '] (' + (hi - lo) + ')', state: 'active' },
+          { html: hi === n ? 'from hi on: nothing yet' : 'keys[' + hi + '..' + n + '] ' + nop + ' ' + key }
+        ];
+      };
+      var snap = function (lo, hi, mid, states) {
+        var p = { lo: lo, hi: hi };
+        if (mid !== null) p.mid = mid;
+        // capacity n + 1 in every frame: the slot one past the end is where hi starts (index n is a
+        // legal answer), and it is the room the insertion step moves keys into.
+        return { values: keys, states: states || {}, pointers: p, range: [lo, hi], capacity: n + 1 };
+      };
+      steps.push({
+        caption: 'Looking for the <strong>' + (lower ? 'first key ≥ ' : 'first key &gt; ') + K + '</strong> ' +
+          (n === 0
+            ? 'in an <strong>empty node</strong>. The answer still exists: it is an index from 0 to 0, so <code>lo = 0</code> and <code>hi = 0</code>. ' +
+              'There is no unknown key, so the loop will not run even once and no key is read.'
+            : 'among ' + n + ' sorted key' + (n === 1 ? '' : 's') + '. ' +
+              'The answer is an index from 0 to ' + n + ', so <code>lo = 0</code> and <code>hi = ' + n + '</code> (one past the last key). ' +
+              'Nothing has been compared yet: every key is unknown.'),
+        state: snap(0, n, null), inv: invChips(0, n), lines: [2, 3]
+      });
+      t.steps.forEach(function (s, i) {
+        var st = {}; st[s.mid] = 'compare';
+        steps.push({
+          caption: 'Step ' + (i + 1) + '. ' + (s.hi - s.lo) + ' unknown key' + (s.hi - s.lo === 1 ? '' : 's') + ' in <code>keys[' + s.lo + '..' + s.hi + ']</code>. ' +
+            'Look at the middle one: <code>mid = ' + s.lo + ' + (' + s.hi + ' − ' + s.lo + ') / 2 = ' + s.mid + '</code>, ' +
+            '<code>keys[' + s.mid + ']</code> = ' + k(s.probe, 'compare') + '. One comparison will rule out ' +
+            'either it and everything left of it, or everything right of it.',
+          state: snap(s.lo, s.hi, s.mid, st), inv: invChips(s.lo, s.hi), lines: [5]
+        });
+        var nlo = s.goRight ? s.mid + 1 : s.lo, nhi = s.goRight ? s.hi : s.mid;
+        var test = k(s.probe, 'compare') + ' ' + op + ' ' + K;
+        steps.push({
+          caption: s.goRight
+            ? test + ' is <strong>true</strong>. The keys are sorted, so <code>keys[' + s.mid + ']</code> and everything left of it is ' +
+              (lower ? 'smaller than ' : 'at most ') + K + ': the answer is right of <code>mid</code>. <code>lo = mid + 1 = ' + nlo + '</code>.'
+            : test + ' is <strong>false</strong>, so <code>keys[' + s.mid + ']</code> is ' + (lower ? 'at least ' : 'greater than ') + K +
+              '. It may be the answer itself, so it stays reachable: <code>hi = mid = ' + nhi + '</code> (not <code>mid − 1</code>). ' +
+              'Everything right of it is ruled out.',
+          state: snap(nlo, nhi, null), inv: invChips(nlo, nhi), lines: s.goRight ? [6, 7] : [6, 8, 9],
+          log: '<code>keys[' + s.mid + ']</code> = ' + s.probe + ' ' + op + ' ' + key + '? ' + (s.goRight ? 'yes → lo = ' + nlo : 'no → hi = ' + nhi),
+          logState: 'compare',
+          question: {
+            prompt: '<code>keys[' + s.mid + ']</code> = ' + k(s.probe, 'compare') + ' and the key is ' + K + '. The test is <code>keys[mid] ' + op + ' key</code>. Which marker moves?',
+            choices: ['<code>lo = mid + 1</code> = ' + (s.mid + 1), '<code>hi = mid</code> = ' + s.mid],
+            answer: s.goRight ? 0 : 1   // no `explain`: the step's own caption follows and says why
+          }
+        });
+      });
+      var r = t.index, cmp = t.steps.length, fst = {}, cap;
+      var cmpText = cmp + ' comparison' + (cmp === 1 ? '' : 's');
+      if (lower) {
+        var found = r < n && keys[r] === key;
+        if (found) {
+          fst[r] = 'found';
+          cap = '<code>lo == hi == ' + r + '</code>: nothing is unknown. <code>keys[' + r + ']</code> = ' + k(key, 'found') +
+            ', so the key is <strong>found at index ' + r + '</strong> (the first one, if there are duplicates) after ' + cmpText +
+            '. <code>search</code> returns <code>{found: true, index: ' + r + '}</code>.';
+        } else {
+          if (r < n) fst[r] = 'found';
+          cap = '<code>lo == hi == ' + r + '</code>: nothing is unknown, after ' + cmpText + '. ' +
+            (r < n ? '<code>keys[' + r + ']</code> = ' + k(keys[r], 'found') + ' is the first key ≥ ' + K + ', but it is not ' + K
+              : (n === 0 ? 'There is no key at all' : 'Every key is smaller than ' + K) + ', so the answer is ' + n + ', one past the end (never read <code>keys[' + n + ']</code>)') +
+            '. <code>search</code> returns <code>{found: false, index: ' + r + '}</code>: ' + K + ' is absent and ' + r + ' is its <strong>insertion index</strong>.';
+        }
+        steps.push({ caption: cap, state: snap(r, r, null, fst), inv: invChips(r, r), lines: [12], hold: 1.6,
+          log: 'result ' + r + (found ? ' (found)' : ' (insertion index)'), logState: found ? 'found' : 'inserted' });
+        if (!found) {
+          var vals = keys.slice(0, r).concat([key], keys.slice(r)), ids = keys.map(function (v, i) { return 'k' + i; });
+          ids.splice(r, 0, 'new');
+          var ist = {}; ist[r] = 'inserted';
+          steps.push({
+            caption: 'Why the index matters: writing ' + k(key, 'inserted') + ' at index ' + r +
+              (n - r === 0
+                ? (n === 0
+                  ? ', the first slot of the empty node, gives a sorted node of one key and <strong>nothing has to move</strong>. ' +
+                    'In a node that has keys, <code>put</code> first moves the keys from the insertion index on one slot to the right. '
+                  : ', one past the last key, keeps the node sorted and <strong>nothing has to move</strong>: the key is appended at the end. ' +
+                    'For any smaller index <code>put</code> first moves the keys from that index on one slot to the right. ')
+                : ' and moving the ' + (n - r) + ' key' + (n - r === 1 ? '' : 's') +
+                  ' from there one slot to the right keeps the node sorted without sorting anything. This is how <code>put</code> works. ') +
+              '(If the node is full there is no room' + (n - r === 0 ? '' : ' to move') + ': chapter 04 splits it.)',
+            state: { values: vals, ids: ids, states: ist, pointers: { index: r }, capacity: n + 1 }, inv: [], lines: [12], hold: 1.6
+          });
+        }
+      } else {
+        // Two different things are marked here: the copies of the key (indices [a, r)) and the
+        // RESULT of upperBound, index r, the first key greater than the key. Only r is green.
+        var a = lowerBound(keys, key), cnt = r - a;
+        for (var j = a; j < r; j++) fst[j] = 'active';
+        if (r < n) fst[r] = 'found';
+        cap = (n === 0 ? 'The node is empty, so the loop did not run. ' : '') + '<code>lo == hi == ' + r + '</code> after ' + cmpText + ': ' + (r === 0 ? 'no' : r) + ' key' + (r === 1 ? ' is' : 's are') + ' ≤ ' + K + ', and ' +
+          (r < n ? 'the first key greater than it is <code>keys[' + r + ']</code> = ' + k(keys[r], 'found') + '. That index, <strong>' + r + '</strong>, is the result'
+            : 'no key is greater, so the result is <strong>' + n + '</strong>, one past the end') + '. ' +
+          'The lower bound of ' + K + ' is ' + a + ', so the copies of ' + K + ' are at indices <code>[' + a + ', ' + r + ')</code>: <strong>' +
+          cnt + '</strong> of them' + (cnt ? ' (marked ' + k(key, 'active') + ', just left of the result).' : '. With no copy present, both bounds are the insertion index.');
+        steps.push({ caption: cap, state: { values: keys, states: fst, pointers: { lo: r, hi: r }, range: [a, Math.min(n, r + 1)], capacity: n + 1 },
+          inv: invChips(r, r), lines: [12], hold: 1.6, log: 'result ' + r + ' (' + cnt + ' equal)', logState: 'found' });
+      }
+      return steps;
+    }
+
+    var ids = function (state) { return state.ids ? state : Object.assign({}, state, { ids: state.values.map(function (v, i) { return 'k' + i; }) }); };
+    var mode = 'lower', sync = fieldSync([keysIn, keyIn], note);
+    var stepper = new BTViz.Stepper({
+      mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
+      onStep: function (s, i, info) {
+        av.render(ids(s.state));
+        chipRow(inv, s.inv || []);
+        panels[mode].highlight(s.lines);
+        log.sync(info.stepper.steps, i);
+      }
+    });
+    function go(play) {
+      var was = sync.unchanged(), parsed = parseKeys(keysIn.value, 24), keys = parsed.keys, notes = [], keyNotes = [];
+      if (parsed.rejected.length) {
+        notes.push('Ignored ' + parsed.rejected.slice(0, 6).join(', ') + (parsed.rejected.length > 6 ? ', …' : '') +
+          ': keys are whole numbers from 0 to ' + MAX_KEY + '.');
+      }
+      if (parsed.extra) notes.push('Only the first 24 keys are used (' + parsed.extra + ' dropped).');
+      // An empty field is the empty node, a legal input. Only a field whose every token was rejected
+      // falls back to the canonical keys, so that a typing mistake does not look like an empty node.
+      if (!keys.length && parsed.rejected.length) { keys = PRESETS.canonical.slice(); notes.push('No usable key was typed: using the canonical keys.'); }
+      keysIn.value = keys.join(' ');
+      var key = readInt(keyIn, 0, MAX_KEY, 'key', keyNotes);
+      sync.commit([notes, keyNotes], was);
+      mode = modeIn.value;
+      codeLower.style.display = mode === 'lower' ? '' : 'none';
+      codeUpper.style.display = mode === 'upper' ? '' : 'none';
+      stepper.setSteps(buildSteps(keys, key, mode), { play: play, instant: true });
+    }
+    sync.watch(go);
+    modeIn.addEventListener('change', function () { go(false); });
+    go(false);
+    T.boundSteps = buildSteps;
+  })();
+
+  /* ====================================================================
+   * Figure 2: ranges with inclusive / exclusive ends
+   * ================================================================== */
+  (function () {
+    var SETS = { canonical: [1, 3, 5, 6, 7, 10, 12, 15, 17, 20, 25, 30], duplicates: [3, 7, 7, 7, 12, 15, 15, 20] };
+    var fig = BTViz.figure('#fig-range', {
+      title: 'A key range becomes a half-open index range',
+      legend: [{ token: 'key-compare', label: 'keys equal to a range end' }, { token: 'key-found', label: 'in the range' }]
+    });
+    fig.legend.appendChild(dimSwatch());
+    var setIn = el('select.bt-select#r-set', { 'aria-label': 'Node' }, el('option', { value: 'canonical' }, 'canonical keys'), el('option', { value: 'duplicates' }, 'with duplicates'));
+    var loKind = el('select.bt-select#r-lokind', { 'aria-label': 'Start of range' },
+      el('option', { value: 'included' }, '[  key ≥'), el('option', { value: 'excluded' }, '(  key >'), el('option', { value: 'unbounded' }, 'no lower limit'));
+    var hiKind = el('select.bt-select#r-hikind', { 'aria-label': 'End of range' },
+      el('option', { value: 'included' }, ']  key ≤'), el('option', { value: 'excluded' }, ')  key <'), el('option', { value: 'unbounded' }, 'no upper limit'));
+    var loIn = num('c02-num#r-lo', 5, 'Lower limit'), hiIn = num('c02-num#r-hi', 17, 'Upper limit');
+    fig.toolbar.append(setIn, el('span.bt-toolbar-sep'), loKind, loIn, el('span.bt-toolbar-sep'), hiKind, hiIn,
+      el('button.bt-btn.bt-primary#r-go', { type: 'button', onclick: function () { go(true); } }, 'Show'));
+    var note = noteLine();
+    fig.toolbar.appendChild(note);
+    var av = new BTViz.ArrayView(fig.stage, { ariaLabel: 'Sorted keys of the node' });
+    var chips = el('div.c02-inv');
+    fig.stage.appendChild(chips);
+    var code = BTViz.codePanel(fig.stage, 'rangeSpan', { title: 'rangeSpan' });
+
+    function buildSteps(keys, lo, hi) {
+      var n = keys.length, s = rangeSpan(keys, lo, hi), steps = [];
+      var text = (lo.kind === 'unbounded' ? '(−∞' : (lo.kind === 'included' ? '[' : '(') + lo.k) + ', ' +
+        (hi.kind === 'unbounded' ? '+∞)' : hi.k + (hi.kind === 'included' ? ']' : ')'));
+      var eq = function (v) { var st = {}; keys.forEach(function (x, i) { if (x === v) st[i] = 'compare'; }); return st; };
+      var base = function (ptrs, states, range) { return { values: keys, ids: keys.map(function (v, i) { return 'k' + i; }), states: states, pointers: ptrs, range: range, capacity: n }; };
+      steps.push({ caption: 'Key range <strong>' + text + '</strong>. Each end is translated on its own; no key is compared against both ends.',
+        state: base({}, {}, null), chips: [{ html: 'key range ' + text }], lines: [1] });
+      var capS, lineS;
+      if (lo.kind === 'unbounded') { capS = 'No lower limit: the range starts at index <code>0</code>.'; lineS = 3; }
+      else if (lo.kind === 'included') { capS = 'Start "key ≥ ' + k(lo.k) + '": the first index whose key is ≥ ' + lo.k + ' is <code>lowerBound(' + lo.k + ') = ' + s.start + '</code>. Keys equal to ' + lo.k + ' are inside the range.'; lineS = 4; }
+      else { capS = 'Start "key &gt; ' + k(lo.k) + '": keys equal to ' + lo.k + ' must be skipped, so the start is the first key &gt; ' + lo.k + ': <code>upperBound(' + lo.k + ') = ' + s.start + '</code>.'; lineS = 5; }
+      steps.push({ caption: capS, state: base({ start: s.start }, lo.kind === 'unbounded' ? {} : eq(lo.k), [s.start, n]),
+        chips: [{ html: 'start = ' + s.start, state: 'active' }], lines: [2, lineS] });
+      var capE, lineE;
+      if (hi.kind === 'unbounded') { capE = 'No upper limit: the range ends at <code>keys.len = ' + n + '</code>, one past the last key.'; lineE = 8; }
+      else if (hi.kind === 'included') { capE = 'End "key ≤ ' + k(hi.k) + '": the end index is exclusive, so it must step <em>past</em> the keys equal to ' + hi.k + ': <code>upperBound(' + hi.k + ') = ' + s.rawEnd + '</code>.'; lineE = 9; }
+      else { capE = 'End "key &lt; ' + k(hi.k) + '": the range stops before the first key ≥ ' + hi.k + ': <code>lowerBound(' + hi.k + ') = ' + s.rawEnd + '</code>.'; lineE = 10; }
+      steps.push({ caption: capE, state: base({ start: s.start, end: s.rawEnd }, hi.kind === 'unbounded' ? {} : eq(hi.k), [Math.min(s.start, s.rawEnd), Math.max(s.start, s.rawEnd)]),
+        chips: [{ html: 'start = ' + s.start }, { html: 'end = ' + s.rawEnd, state: 'active' }], lines: [7, lineE] });
+      var inSt = {};
+      for (var i = s.start; i < s.end; i++) inSt[i] = 'found';
+      var cnt = s.end - s.start;
+      steps.push({
+        caption: (s.rawEnd < s.start
+          ? 'The ends crossed: <code>end = ' + s.rawEnd + '</code> is left of <code>start = ' + s.start + '</code>, because no key can satisfy ' + text +
+            '. <code>end − start</code> would underflow, so the end is clamped to the start: an empty range.'
+          : 'Index range <code>[' + s.start + ', ' + s.end + ')</code>: <strong>' + cnt + ' key' + (cnt === 1 ? '' : 's') + '</strong>' +
+            (cnt ? ', one contiguous slice of the node. ' : '. The range is empty but still has a position: where such keys would be. ') +
+            'The count is <code>end − start</code>; no key was touched except by the two binary searches.'),
+        state: base({ start: s.start, end: s.end }, inSt, [s.start, s.end]),
+        chips: [{ html: text + ' → [' + s.start + ', ' + s.end + ')', state: 'found' }, { html: cnt + ' key' + (cnt === 1 ? '' : 's') }], lines: [12], hold: 1.6
+      });
+      return steps;
+    }
+    var sync = fieldSync([loIn, hiIn], note);
+    var stepper = new BTViz.Stepper({
+      mount: fig.controls, caption: fig.caption, root: fig.root,
+      onStep: function (s) { av.render(s.state); chipRow(chips, s.chips || []); code.highlight(s.lines); }
+    });
+    function go(play) {
+      // An unbounded end has no limit: its (disabled) field is not read, so it is not rewritten either.
+      var bound = function (kindSel, input, label, notes) {
+        return kindSel.value === 'unbounded' ? { kind: 'unbounded' } : { kind: kindSel.value, k: readInt(input, 0, MAX_KEY, label, notes) };
+      };
+      loIn.disabled = loKind.value === 'unbounded';
+      hiIn.disabled = hiKind.value === 'unbounded';
+      var loNotes = [], hiNotes = [], was = sync.unchanged();
+      var lo = bound(loKind, loIn, 'lower limit', loNotes), hi = bound(hiKind, hiIn, 'upper limit', hiNotes);
+      sync.commit([loNotes, hiNotes], was);
+      stepper.setSteps(buildSteps(SETS[setIn.value], lo, hi), { play: play, instant: true });
+      if (!play) stepper.end();
+    }
+    [setIn, loKind, hiKind].forEach(function (s) { s.addEventListener('change', function () { go(false); }); });
+    sync.watch(go);
+    go(false);
+  })();
+
+  /* ====================================================================
+   * Figure 3: galloping
+   * ================================================================== */
+  (function () {
+    var rnd = BTViz.rng(202), KEYS = [], v = 2;
+    for (var i = 0; i < 64; i++) { KEYS.push(v); v += rnd.int(1, 3); }
+    var n = KEYS.length;
+    var fig = BTViz.figure('#fig-gallop', {
+      title: 'Galloping (exponential) search from a cursor',
+      legend: [{ token: 'key-compare', label: 'probe' }, { token: 'key-found', label: 'result' }]
+    });
+    fig.legend.appendChild(dimSwatch());
+    var fromIn = num('c02-num#g-from', 3, 'Cursor index to start from'), keyIn = num('c02-num#g-key', KEYS[6], 'Key to search for');
+    fromIn.max = n;
+    // "Next probe" models a sorted batch: continue from the answer with a larger key. Once the
+    // answer is n (one past the end) the batch is over, every later key gets the same answer, so
+    // the button is disabled (see go) until Reset or an edited field starts something new.
+    var nextBtn = el('button.bt-btn#g-next', { type: 'button', title: 'Continue from the answer with a larger key', onclick: function () {
+      var from = readInt(fromIn, 0, n, 'from index', []), key = readInt(keyIn, 0, MAX_KEY, 'key', []);
+      var g = gallopTrace(KEYS, from, key);
+      if (g.index < n) {
+        fromIn.value = g.index;
+        keyIn.value = Math.min(MAX_KEY, key + rnd.int(1, 7));
+      }
+      go(true);
+    } }, 'Next probe →');
+    fig.toolbar.append(el('label.bt-field', 'from index', fromIn), el('label.bt-field', 'key', keyIn),
+      el('button.bt-btn.bt-primary#g-go', { type: 'button', onclick: function () { go(true); } }, 'Search'), nextBtn,
+      el('button.bt-btn#g-reset', { type: 'button', onclick: function () { fromIn.value = 0; keyIn.value = KEYS[2]; go(false); } }, 'Reset'));
+    var note = noteLine();
+    fig.toolbar.appendChild(note);
+    var av = new BTViz.ArrayView(fig.stage, { ariaLabel: 'Sorted keys', cellW: 34 });
+    var chips = el('div.c02-inv');
+    fig.stage.appendChild(chips);
+    var code = BTViz.codePanel(fig.stage, 'gallopLowerBound', { title: 'gallopLowerBound' });
+
+    function buildSteps(from, key) {
+      var g = gallopTrace(KEYS, from, key), steps = [], K = k(key), used = 0;
+      var binary = traceBound(KEYS, key, 'lower').steps.length;
+      // gallopLowerBound returns max(from, lowerBound): it is the first key >= key AT OR AFTER the
+      // cursor. If the cursor is already past the first key >= key (`past`), that is a different
+      // index from the plain lower bound, and the captions must not call it "the first key >= key".
+      var global = lowerBound(KEYS, key), past = global < from;
+      var leftNote = 'the first key ≥ ' + K + ' in the whole array is <code>keys[' + global + ']</code> = ' + k(KEYS[global]) +
+        ', left of the cursor, and galloping never looks left';
+      var idsArr = KEYS.map(function (x, i) { return 'k' + i; });
+      var snap = function (ptrs, states, range) { return { values: KEYS, ids: idsArr, states: states, pointers: ptrs, range: range, capacity: n }; };
+      var counters = function () { return [{ html: 'galloping: ' + used + ' comparison' + (used === 1 ? '' : 's'), state: 'active' }, { html: 'binary search over all ' + n + ' keys: ' + binary + (past ? ' (answers index ' + global + ')' : '') }]; };
+      var one = function (i, s) { var o = {}; o[i] = s; return o; };
+      // `line`: the code line that returns. 2 when the function returns on its first line (cursor at
+      // the end, or the cursor itself is large enough), 16 after the bracket's binary search.
+      var finish = function (line) {
+        var idx = g.index, exact = idx < n && KEYS[idx] === key, dist = idx - from;
+        var verdict = past ? 'The two counters are not comparable here: binary search over the whole array answers index ' + global + ', a different question.'
+          : used < binary ? 'Galloping was cheaper because the answer is only ' + dist + ' position' + (dist === 1 ? '' : 's') + ' from the cursor.'
+          : used === binary ? 'A tie with plain binary search.'
+          : 'Galloping was <strong>more expensive</strong>: the answer is ' + dist + ' positions away, and reaching it costs about 2·log₂ of that distance. It only pays off when answers are close.';
+        var what = idx === n ? (past ? ' (one past the end: nothing is at or after the cursor)' : ' (one past the end: every key is smaller)')
+          : ' (' + k(KEYS[idx], 'found') + (exact ? ', equal to the key)' : past ? ', the first key ≥ ' + key + ' at or after the cursor)' : ', the first key ≥ ' + key + ')');
+        steps.push({
+          caption: 'Result: index <strong>' + idx + '</strong>' + what + '. ' + verdict +
+            (idx === n ? ' The cursor is now at the end, so a sorted batch of probes is finished: every later key would get the same answer. <em>Reset</em> starts a new batch.' : ''),
+          state: snap({ from: from, result: idx }, idx < n ? one(idx, 'found') : {}, [idx, Math.min(n, idx + 1)]), chips: counters(), lines: [line], hold: 1.6
+        });
+      };
+      g.events.forEach(function (e) {
+        if (e.t === 'at-end') {
+          steps.push({ caption: 'The cursor is already one past the last key, so nothing is at or after it: the answer is ' + n + ' with no comparison at all.' +
+              (past ? ' (Keys ≥ ' + K + ' do exist: ' + leftNote + '.)' : ''),
+            state: snap({ from: from }, {}, [n, n]), chips: counters(), lines: [2] });
+          finish(2);
+        } else if (e.t === 'first') {
+          used = 1;
+          steps.push({
+            caption: (past
+              ? 'Galloping answers only "the first key ≥ ' + K + ' <em>at or after</em> the cursor", index ' + from + '; the caller is expected to know the answer is not left of it. ' +
+                'Here the cursor is already past it: ' + leftNote + '. It looks at the cursor itself: <code>keys[' + from + ']</code> = ' + k(KEYS[from], 'compare') +
+                ' ≥ ' + K + ', so it returns the cursor.'
+              : 'The answer is known to be at or after the cursor, index ' + from + '. First look at the cursor itself: <code>keys[' + from + ']</code> = ' + k(KEYS[from], 'compare') +
+                (e.hit ? ' ≥ ' + K + ', so the cursor is the answer.' : ' &lt; ' + K + ', so the answer is further right. This key becomes <code>below</code>: a position known to be too small.')),
+            state: snap({ from: from }, one(from, 'compare'), [from, n]), chips: counters(), lines: e.hit ? [2] : [2, 3]
+          });
+          if (e.hit) finish(2);
+        } else if (e.t === 'probe') {
+          used++;
+          steps.push({
+            caption: 'Jump <code>step = ' + e.step + '</code> ahead of <code>below</code>: probe index ' + e.below + ' + ' + e.step + ' = ' + e.probe + ', <code>keys[' + e.probe + ']</code> = ' + k(KEYS[e.probe], 'compare') + '. ' +
+              (e.hit ? 'It is ≥ ' + K + ': the jump went past the answer (or landed on it). Stop galloping; the answer is in <code>(' + e.below + ', ' + e.probe + ']</code>.'
+                : 'Still &lt; ' + K + ': move <code>below</code> here and <strong>double the step</strong> to ' + (e.step * 2) + '. Doubling is what keeps the number of jumps logarithmic in the distance.'),
+            state: snap({ below: e.below, probe: e.probe }, one(e.probe, 'compare'), e.hit ? [e.below + 1, e.probe + 1] : [e.below + 1, n]), chips: counters(), lines: e.hit ? [7, 8, 9, 10] : [7, 8, 12, 13]
+          });
+        } else if (e.t === 'ran-off') {
+          steps.push({
+            caption: 'The next jump (<code>step = ' + e.step + '</code>) would land past the end of the array, so galloping stops without a comparison. The answer is somewhere in <code>(' + e.below + ', ' + n + ']</code>.',
+            state: snap({ below: e.below }, {}, [e.below + 1, n]), chips: counters(), lines: [6]
+          });
+        } else if (e.t === 'bracket') {
+          var size = e.hi - e.first;
+          steps.push({
+            caption: 'Bracket found: <code>keys[' + e.below + ']</code> is too small and index ' + e.hi + ' is ' + (e.hi === n ? 'the end' : 'large enough') + ', so the answer is the lower bound of ' + K +
+              ' within the ' + size + ' key' + (size === 1 ? '' : 's') + ' of <code>keys[' + e.first + '..' + e.hi + ']</code>, plus ' + e.first + '. ' +
+              (size ? 'An ordinary binary search finishes the job on this small slice.' : 'The slice is empty, so no further comparison is needed.'),
+            state: snap({ lo: e.first, hi: e.hi }, {}, [e.first, e.hi]), chips: counters(), lines: [15, 16]
+          });
+          e.inner.steps.forEach(function (s) {
+            used++;
+            var mid = e.first + s.mid, nlo = e.first + (s.goRight ? s.mid + 1 : s.lo), nhi = e.first + (s.goRight ? s.hi : s.mid);
+            steps.push({
+              caption: 'Binary search inside the bracket: <code>keys[' + mid + ']</code> = ' + k(s.probe, 'compare') + ' &lt; ' + K + ' is ' +
+                (s.goRight ? 'true, so <code>lo = ' + nlo + '</code>.' : 'false, so <code>hi = ' + nhi + '</code>.'),
+              state: snap({ lo: nlo, hi: nhi, mid: mid }, one(mid, 'compare'), [nlo, nhi]), chips: counters(), lines: [16]
+            });
+          });
+          finish(16);
+        }
+      });
+      return steps;
+    }
+    var sync = fieldSync([fromIn, keyIn], note);
+    var stepper = new BTViz.Stepper({
+      mount: fig.controls, caption: fig.caption, root: fig.root,
+      onStep: function (s) { av.render(s.state); chipRow(chips, s.chips || []); code.highlight(s.lines); }
+    });
+    function go(play) {
+      var fromNotes = [], keyNotes = [], was = sync.unchanged();
+      var from = readInt(fromIn, 0, n, 'from index', fromNotes), key = readInt(keyIn, 0, MAX_KEY, 'key', keyNotes);
+      sync.commit([fromNotes, keyNotes], was);
+      nextBtn.disabled = gallopTrace(KEYS, from, key).index === n;   // the batch is finished
+      stepper.setSteps(buildSteps(from, key), { play: play, instant: true });
+    }
+    sync.watch(go);
+    // A new question was typed: Next probe is usable again (go disables it again if the batch is over).
+    [fromIn, keyIn].forEach(function (inp) { inp.addEventListener('input', function () { nextBtn.disabled = false; }); });
+    go(false);
+    T.gallopKeys = KEYS;
+    T.gallopSteps = buildSteps;
+  })();
+
+  /* ====================================================================
+   * Self-tests (badges at the end of the page)
+   * ================================================================== */
+  BTViz.selfTest('model prints expected_output.txt', buildReport(), window.CHAPTER_EXPECTED_OUTPUT);
+  (function () {
+    // Exhaustive check of the JS model against a linear scan, like the Zig and Rust tests.
+    var A = [1, 3, 5, 7], bad = 0, arrays = 0;
+    for (var n = 0; n <= 6; n++) {
+      for (var code = 0; code < Math.pow(4, n); code++) {
+        var keys = [], rest = code, sorted = true;
+        for (var i = 0; i < n; i++) { keys.push(A[rest % 4]); rest = Math.floor(rest / 4); }
+        for (i = 1; i < n; i++) if (keys[i - 1] > keys[i]) sorted = false;
+        if (!sorted) continue;
+        arrays++;
+        for (var key = 0; key <= 8; key++) {
+          var lin = keys.findIndex(function (x) { return x >= key; }), linU = keys.findIndex(function (x) { return x > key; });
+          if (lin < 0) lin = n;
+          if (linU < 0) linU = n;
+          if (lowerBound(keys, key) !== lin || upperBound(keys, key) !== linU) bad++;
+          for (var from = 0; from <= n; from++) if (gallopTrace(keys, from, key).index !== Math.max(from, lin)) bad++;
+        }
+      }
+    }
+    BTViz.selfTest('bounds and gallop match linear scan', { arrays: arrays, mismatches: bad }, { arrays: 210, mismatches: 0 });
+  })();
+  (function () {
+    // Regression checks for odd input and for the edge cases of the figures (review rounds 1 and 2).
+    var many = [];
+    for (var i = 0; i < 40; i++) many.push(i);
+    var ints = ['-3', '1e3', '', '100000', '2.7', '13'].map(function (t) { return cleanInt(t, 0, MAX_KEY).value; });
+    var last = function (steps) { return steps[steps.length - 1]; };
+    var KEYS = T.gallopKeys, n = KEYS.length;
+    var past = T.gallopSteps(40, 10), atEnd = T.gallopSteps(n, 5), far = T.gallopSteps(0, MAX_KEY), normal = T.gallopSteps(3, KEYS[6]);
+    var has = function (step, text) { return step.caption.indexOf(text) >= 0; };
+    BTViz.selfTest('odd input and edge cases', {
+      negative: parseKeys('-5 -3 2', 24), decimal: parseKeys('1.5 2.5', 24).keys, tooBig: parseKeys('100000, 7', 24).keys,
+      many: [parseKeys(many.join(' '), 24).keys.length, parseKeys(many.join(' '), 24).extra], ints: ints,
+      // gallop: early return highlights line 2; a cursor past the answer is not called "the first key >= key"
+      earlyLine: [last(past).lines, last(atEnd).lines, last(T.gallopSteps(0, 1)).lines], normalLine: last(normal).lines,
+      pastSaysSo: has(last(past), 'at or after the cursor') && has(last(past), 'not comparable') && !has(last(past), 'cheaper'),
+      atEndSaysSo: has(last(atEnd), 'nothing is at or after the cursor') && !has(last(atEnd), 'every key is smaller'),
+      farEnd: has(last(far), 'every key is smaller') && has(last(far), 'batch of probes is finished'),
+      // upper bound: the result index is 'found', the copies of the key are 'active'
+      upper: last(T.boundSteps([3, 7, 7, 7, 12, 15, 15, 20], 7, 'upper')).state.states,
+      // the empty node is a legal input: no comparison, result 0, then the insertion step
+      emptyKeys: [parseKeys('', 24), parseKeys(' , ', 24).keys.length],
+      empty: ['lower', 'upper'].map(function (m) { var st = T.boundSteps([], 9, m); return [st.length, has(st[0], 'empty node'), st[st.length - 1].state.values]; }),
+      // wording: "1 sorted key", and an append moves nothing (never "the 0 keys")
+      // notes: a second apply that reads the corrected fields must not erase the first one's notes,
+      // and a note goes away when its own field is edited and applied again
+      notes: (function () {
+        var a = { value: '-5 2' }, b = { value: '13' }, host = {}, sync = fieldSync([a, b], host), seen = [];
+        var apply = function (aNotes, bNotes) { var was = sync.unchanged(); sync.commit([aNotes, bNotes], was); seen.push(host.textContent); };
+        a.value = '2'; apply(['Ignored -5.'], []);      // leaving the keys field
+        b.value = '-4'; seen.push(sync.unchanged());    // typing in the key field: not applied yet
+        b.value = '0'; apply([], ['-4 was changed to 0.']);   // leaving the key field
+        apply([], []);                                  // the click on Search
+        a.value = '2 4'; apply([], []);                 // keys edited again, nothing to report
+        return seen;
+      })(),
+      wording: (function () {
+        var one = T.boundSteps([5], 9, 'lower'), mid = T.boundSteps([5, 9], 7, 'lower'), all = one.concat(mid, T.boundSteps([], 9, 'lower'));
+        return [has(one[0], 'among 1 sorted key.'), has(last(one), 'nothing has to move'), has(last(mid), 'moving the 1 key from there'),
+          all.some(function (s) { return /\b[01] (sorted )?keys\b/.test(s.caption.replace(/<[^>]+>/g, '')); })];
+      })()
+    }, {
+      negative: { keys: [2], rejected: ['-5', '-3'], extra: 0 }, decimal: [], tooBig: [7], many: [24, 16], ints: [0, 1000, 0, 9999, 2, 13],
+      earlyLine: [[2], [2], [2]], normalLine: [16], pastSaysSo: true, atEndSaysSo: true, farEnd: true,
+      upper: { 1: 'active', 2: 'active', 3: 'active', 4: 'found' },
+      emptyKeys: [{ keys: [], rejected: [], extra: 0 }, 0], empty: [[3, true, [9]], [2, true, []]],
+      notes: ['Ignored -5.', [true, false], 'Ignored -5. -4 was changed to 0.', 'Ignored -5. -4 was changed to 0.', '-4 was changed to 0.'],
+      wording: [true, true, true, false]
+    });
+  })();
+})();
+</script>
+</body>
+</html>

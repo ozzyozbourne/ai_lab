@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 17 — Key compression and deduplication</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+/* Chapter-local views (viz/local.js). Colours are the toolkit's tokens only. */
+.bt-toolbar .bt-field { max-width: 100%; min-width: 0; }
+.bt-toolbar .bt-field .bt-select { min-width: 0; max-width: 100%; flex: 0 1 auto; text-overflow: ellipsis; }
+.bt-toolbar .bt-input.c17-wide { width: 9.5em; }
+.bt-toolbar .bt-input.c17-narrow { width: 4.2em; }
+.c17-check { cursor: pointer; }
+.c17-check input { accent-color: var(--bt-accent); width: 16px; height: 16px; }
+
+/* the byte comparison */
+.c17-bytes { overflow-x: auto; padding: 4px 0 8px; }
+.c17-row { display: flex; align-items: center; gap: 3px; margin: 5px 0; min-width: max-content; }
+.c17-rowlabel { flex: none; width: 7.2em; font-size: .8rem; color: var(--bt-muted); }
+.c17-byte {
+  flex: none; width: 26px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border-radius: 5px;
+  font: 600 .95rem/1 var(--bt-mono); color: var(--bt-text);
+  background: var(--s-bg, var(--bt-key-bg)); box-shadow: inset 0 0 0 1.5px var(--s, var(--bt-border));
+}
+.c17-byte.c17-tid { width: auto; min-width: 40px; padding: 0 6px; margin-left: 8px; font-size: .8rem; }
+.c17-byte.is-none { background: none; box-shadow: none; color: var(--bt-muted); }
+.c17-byte.c17-tid.is-none { font-weight: 400; }
+.c17-byte.is-cut { text-decoration: line-through; }
+.c17-seprow { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--bt-border); }
+.c17-pending { color: var(--bt-muted); font: 1rem/30px var(--bt-mono); }
+.c17-sizes { display: flex; flex-wrap: wrap; gap: 6px 10px; font-size: .86rem; color: var(--bt-muted); min-height: 1.8em; }
+.c17-sizes .bt-chip { white-space: normal; border-radius: 8px; }
+
+/* the tree of page cards */
+.c17-tree { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; overscroll-behavior: contain; }
+.c17-level, .c17-level-label { flex: none; }
+.c17-level-label { font-size: .72rem; letter-spacing: .06em; text-transform: uppercase; color: var(--bt-muted); margin-top: 6px; }
+.c17-level { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+.c17-page {
+  flex: 1 1 250px; min-width: 0; max-width: 100%; padding: 8px 10px; border-radius: 8px; color: var(--bt-text);
+  background: var(--s-bg, var(--bt-surface)); box-shadow: inset 0 0 0 1.5px var(--s, var(--bt-border));
+}
+.c17-level:first-of-type .c17-page { flex-grow: 1; }
+.c17-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-size: .86rem; }
+.c17-kind { color: var(--bt-muted); }
+.c17-used { margin-left: auto; font: .76rem/1.4 var(--bt-mono); color: var(--bt-muted); }
+.c17-page.is-over .c17-used { color: var(--bt-text); font-weight: 700; }
+.c17-meter { height: 5px; margin: 5px 0 6px; border-radius: 3px; background: var(--bt-surface-2); overflow: hidden; box-shadow: inset 0 0 0 1px var(--bt-border); }
+.c17-meter span { display: block; height: 100%; background: var(--s, var(--bt-node-active)); }
+.c17-fences { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 6px; font: .74rem/1.5 var(--bt-mono); color: var(--bt-muted); margin-bottom: 6px; }
+.c17-fence { padding: 0 6px; border-radius: 4px; color: var(--bt-text); background: var(--s-bg, transparent); border: 1.5px dashed var(--s, var(--bt-border)); }
+.c17-body { display: flex; flex-wrap: wrap; gap: 4px; }
+.c17-body .bt-chip { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 6px; font-size: .8rem; }
+/* Keys are typed by the reader and may contain spaces: never collapse them. */
+.c17-fence, .bt-figure .bt-k { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* a highlighted page must not tint its own chips and fences */
+.c17-page .bt-chip:not([class*="s-"]), .c17-page .c17-fence:not([class*="s-"]) { --s: initial; --s-bg: initial; }
+.c17-key { font-weight: 600; }
+.c17-tids { color: var(--bt-muted); }
+.c17-posting { box-shadow: inset 0 0 0 1.5px var(--s, var(--bt-merge)); }
+.c17-posting .c17-tids { color: var(--bt-text); }
+.c17-sep { font-weight: 700; }
+.c17-empty, .c17-right { font-size: .76rem; color: var(--bt-muted); }
+.c17-right { margin-top: 6px; font-family: var(--bt-mono); }
+.c17-note { font-size: .86rem; color: var(--bt-muted); margin: 8px 0 0; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">An internal page only has to answer "which child?". So the separator it stores does not have to
+be a key: it can be the shortest byte string that still tells the two halves of a split apart. And when the same
+key occurs many times, a leaf can store it once with a list of row addresses. This page shows both, on the same
+page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">chapter 17</a>.</p>
+
+<div id="fig-sep"></div>
+<div id="fig-tree"></div>
+<div id="fig-table"></div>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="model.js"></script>
+<script src="local.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, M = Ch17Model, q = function (s) { return '<b class="bt-k">' + M.esc(s) + '</b>'; };
+
+  // Figures 1 and 2 have a side column (event log, code). Beside the drawing
+  // on a wide screen; on a narrow one the toolkit stacks it between the
+  // drawing and its caption, which separates the picture from the sentence
+  // that explains it. So below the toolkit's 820 px breakpoint the column is
+  // moved after the step controls.
+  var narrow = window.matchMedia('(max-width: 820px)');
+  function sideBelowControlsOnPhones(f) {
+    var body = f.stage.parentNode;
+    function place() {
+      if (narrow.matches) f.root.insertBefore(f.side, f.legend); else body.appendChild(f.side);
+    }
+    place();
+    narrow.addEventListener('change', place);
+  }
+
+  BTViz.page({
+    title: 'Key compression and deduplication', chapter: 17,
+    prev: { href: '../../16-bulk-loading/viz/index.html', title: 'Bulk loading' },
+    next: { href: '../../18-indexes-in-a-database/viz/index.html', title: 'Indexes in a database' }
+  });
+
+  function asciiOk(s) { return /^[ -~]*$/.test(s); }
+  var ASCII_ONLY = 'Please use printable ASCII characters only, so that comparing characters is comparing bytes.';
+  var TID_RULE = 'A TID is a whole number from 0 to ' + M.MAX_TID + ' (2<sup>48</sup> &minus; 1): a row address, stored in 6 bytes.';
+  // The TID typed into `input`, or null when it is not one. Nothing is
+  // rounded, clamped or defaulted: a bad value is reported, not repaired.
+  // (A number input reports '' for text it cannot parse, hence validity.)
+  function readTid(input) {
+    var text = input.value.trim();
+    if (!/^[0-9]+$/.test(text) || (input.validity && input.validity.badInput)) return null;
+    var tid = Number(text);
+    return M.validTid(tid) ? tid : null;
+  }
+  // What the reader typed, for a caption: escaped, shortened, never empty.
+  function typed(input) {
+    var text = input.value.trim();
+    if (!text) return 'empty or not a number';
+    return q(text.length > 24 ? text.slice(0, 24) + '…' : text);
+  }
+
+  /* ====================================================================
+   * Figure 1: the separator at a split
+   * ================================================================== */
+  var f1 = BTViz.figure('#fig-sep', {
+    title: '1. A leaf splits between two tuples: what goes to the parent?', side: true,
+    legend: [{ token: 'key-found', label: 'equal byte (common prefix)' }, { token: 'key-compare', label: 'the byte that decides' },
+             { token: 'key-inserted', label: 'kept in the separator' }, { token: 'key-deleted', label: 'truncated away (reads as −∞)' }]
+  });
+  var sepView = new Ch17View.SepView(f1.stage);
+  var sizes = el('div.c17-sizes');
+  f1.stage.appendChild(sizes);
+  var code1 = BTViz.codePanel(f1.side, 'separator', { title: 'separator()' });
+  sideBelowControlsOnPhones(f1);
+
+  var presets = [
+    ['blackberry', 3, 'blueberry', 6], ['banana', 11, 'cherry', 1], ['grape', 9, 'grapefruit', 26],
+    ['date', 23, 'dates', 40], ['cherry', 12, 'cherry', 17], ['user/000412/order/000977', 5, 'user/000413/order/000002', 8]
+  ];
+  var presetSel = el('select.bt-select', { 'aria-label': 'Example pair' }, presets.map(function (p, i) {
+    return el('option', { value: i }, p[0] + ' | ' + p[2]);
+  }));
+  var lKey = el('input.bt-input.c17-wide', { type: 'text', value: presets[0][0], 'aria-label': 'Key of the last tuple on the left', maxlength: 28 });
+  var lTid = el('input.bt-input.c17-narrow', { type: 'number', min: 0, max: M.MAX_TID, step: 1, value: presets[0][1], 'aria-label': 'TID of the last tuple on the left' });
+  var rKey = el('input.bt-input.c17-wide', { type: 'text', value: presets[0][2], 'aria-label': 'Key of the first tuple on the right', maxlength: 28 });
+  var rTid = el('input.bt-input.c17-narrow', { type: 'number', min: 0, max: M.MAX_TID, step: 1, value: presets[0][3], 'aria-label': 'TID of the first tuple on the right' });
+  var cutBtn = el('button.bt-btn.bt-primary', { type: 'button', onclick: function () { runSep(true); } }, 'Cut here');
+  f1.toolbar.append(
+    el('label.bt-field', 'Example ', presetSel), el('span.bt-toolbar-sep'),
+    el('label.bt-field', 'Left ', lKey, lTid), el('label.bt-field', 'Right ', rKey, rTid), cutBtn);
+
+  // The quiz of figure 1. The choices are LENGTHS: the common prefix, the
+  // separator the model computed, the whole right key. Equal lengths are
+  // offered once ("date" | "dates": the separator IS the whole right key), and
+  // the right answer is the position of the model's length, not of a label.
+  function sepQuestion(common, sepLen, rightLen) {
+    var lens = [common, sepLen, rightLen].filter(function (len, j, all) { return all.indexOf(len) === j; });
+    return {
+      prompt: 'The keys agree on ' + common + ' byte' + (common === 1 ? '' : 's') + '. How long is the shortest separator?',
+      choices: lens.map(function (len) { return len + (len === 1 ? ' byte' : ' bytes') + (len === rightLen ? ' (the whole right key)' : ''); }),
+      answer: lens.indexOf(sepLen),
+      explain: 'The common prefix alone is not above the left key; one more byte of the right key is.'
+    };
+  }
+
+  function sepSteps(left, right) {
+    var steps = [], base = { left: left, right: right, upto: 0, decisive: null, sep: null };
+    function push(caption, patch, lines, extra) {
+      var state = BTViz.clone(base);
+      for (var k in patch) state[k] = patch[k];
+      var step = { caption: caption, state: state, lines: lines };
+      for (var e in (extra || {})) step[e] = extra[e];
+      steps.push(step);
+    }
+    if (left.tid === null || right.tid === null) {
+      // Nothing to compare: show the keys with a "?" where the TID is unusable.
+      var bad = left.tid === null ? lTid : rTid, side = left.tid === null ? 'left' : 'right';
+      base.left = { key: left.key, tid: left.tid === null ? '?' : left.tid };
+      base.right = { key: right.key, tid: right.tid === null ? '?' : right.tid };
+      push('The TID on the ' + side + ' (' + typed(bad) + ') cannot be used. ' + TID_RULE + ' Change it and press Cut here.', {}, null);
+      return steps;
+    }
+    var lt = q(M.sepText(left, '')), rt = q(M.sepText(right, ''));
+    if (!asciiOk(left.key) || !asciiOk(right.key)) {
+      push(ASCII_ONLY, {}, null);
+      return steps;
+    }
+    if (M.compareTuple(left.key, left.tid, right.key, right.tid) >= 0) {
+      push('The left tuple ' + lt + ' must sort before the right tuple ' + rt + ' (key bytes first, then TID). Swap them or change one.', {}, null);
+      return steps;
+    }
+    push('The leaf is cut between ' + lt + ' and ' + rt + '. The parent needs a separator S with left &lt; S &le; right. ' +
+      'Any such S routes correctly, so look for the shortest one: compare the keys byte by byte.', {}, { zig: 1, rust: [1, 2] });
+    var n = M.commonPrefixLen(left.key, right.key);
+    for (var i = 0; i < n; i++) {
+      push('Byte ' + i + ': \'' + M.esc(left.key[i]) + '\' on both sides. Equal bytes cannot tell the halves apart, but the separator needs them to get this far. Keep going.',
+        { upto: i + 1 }, { zig: 3, rust: 4 });
+    }
+    var sep = M.separator(true, { key: left.key, tids: [left.tid] }, { key: right.key, tids: [right.tid] });
+    var full = M.separator(false, { key: left.key, tids: [left.tid] }, { key: right.key, tids: [right.tid] });
+    if (sep.tid === null) {
+      var how = n < left.key.length
+        ? 'Byte ' + n + ': \'' + M.esc(left.key[n]) + '\' &lt; \'' + M.esc(right.key[n]) + '\'. This is the first difference.'
+        : 'Byte ' + n + ': the left key has ended, the right key goes on with \'' + M.esc(right.key[n]) + '\'. A prefix sorts first, so this byte is enough.';
+      push(how + ' Keep this one byte of the right key and stop.', { upto: n + 1, decisive: n }, { zig: 4, rust: [5, 6] },
+        { question: sepQuestion(n, sep.key.length, right.key.length) });
+      push('Separator: ' + q(M.sepText(sep, '')) + '. Everything after it, the rest of the key and the TID, is cut. Cut bytes read as minus infinity, so ' +
+        q(M.sepText(sep, '')) + ' is above ' + lt + ' and below ' + rt + '. As a pivot it costs ' + M.pivotSize(sep) + ' bytes; the full last-left tuple ' +
+        q(M.sepText(full, '')) + ' would cost ' + M.pivotSize(full) + '.',
+        { upto: n + 1, decisive: n, sep: sep }, { zig: 4, rust: [5, 6] }, { sizes: [sep, full] });
+    } else {
+      push('All ' + n + ' bytes are equal: the two tuples have the same key. No byte can separate them. Only the row address (TID) can.',
+        { upto: n }, { zig: 7, rust: 10 });
+      push('Separator: ' + q(M.sepText(sep, '')) + ', the last-left tuple in full. Nothing is saved (' + M.pivotSize(sep) +
+        ' bytes as a pivot). This is why the TID is part of the key: without it a run of duplicates could not be split at all.',
+        { upto: n, sep: sep }, { zig: 7, rust: 10 }, { sizes: [sep, full] });
+    }
+    return steps;
+  }
+
+  var stepper1 = new BTViz.Stepper({
+    mount: f1.controls, caption: f1.caption, root: f1.root, steps: [], predict: false,
+    onStep: function (step) {
+      sepView.render(step.state);
+      code1.highlight(step.lines || []);
+      sizes.textContent = '';
+      if (step.sizes) {
+        sizes.append(
+          el('span.bt-chip.s-inserted', 'truncated pivot: slot 2 + length 2 + key ' + step.sizes[0].key.length + (step.sizes[0].tid !== null ? ' + TID 6' : '') + ' + child 4 = ' + M.pivotSize(step.sizes[0]) + ' B'),
+          el('span.bt-chip', 'full pivot: 2 + 2 + ' + step.sizes[1].key.length + ' + 6 + 4 = ' + M.pivotSize(step.sizes[1]) + ' B'));
+      }
+    }
+  });
+  function runSep(play) {
+    stepper1.setSteps(sepSteps({ key: lKey.value, tid: readTid(lTid) }, { key: rKey.value, tid: readTid(rTid) }), { play: !!play });
+  }
+  presetSel.addEventListener('change', function () {
+    var p = presets[+presetSel.value];
+    lKey.value = p[0]; lTid.value = p[1]; rKey.value = p[2]; rTid.value = p[3];
+    runSep(true);
+  });
+  [lKey, lTid, rKey, rTid].forEach(function (inp) {
+    inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') runSep(true); });
+  });
+  runSep(false);
+
+  /* ====================================================================
+   * Figure 2: the tree
+   * ================================================================== */
+  var f2 = BTViz.figure('#fig-tree', {
+    title: '2. Puts and lookups on byte-sized pages', side: true,
+    legend: [{ token: 'node-active', label: 'page being read or written' }, { token: 'key-found', label: 'separator below the tuple / match' },
+             { token: 'key-compare', label: 'separator not below the tuple / cells around the cut' }, { token: 'key-inserted', label: 'new cell, separator or fence' },
+             { token: 'split', label: 'page that overflows or has just split' }, { token: 'merge', label: 'posting list (one key, many TIDs)' },
+             { token: 'pointer', label: 'child pointer' }]
+  });
+  var cards = new Ch17View.TreeCards(f2.stage);
+  // With small pages the tree has a dozen cards and is taller than a screen.
+  // Beside the side column (wide layout) the drawing is therefore limited to
+  // the height that leaves its caption and step controls on the same screen;
+  // a taller tree scrolls inside the drawing and follows the highlighted
+  // pages. On a phone the tree is as tall as it needs and the page scrolls.
+  var NOTE_ROOM = 44; // the "scroll inside the drawing" line under a limited tree
+  function fitTree() {
+    var scrolled = cards.root.scrollTop;
+    cards.setMaxHeight(null); // measure the tree at its natural height
+    if (narrow.matches) return;
+    var pad = f2.stage.offsetHeight - cards.root.offsetHeight; // the stage's own padding
+    var room = window.innerHeight - (f2.caption.offsetHeight + f2.controls.offsetHeight + pad + 12);
+    if (cards.root.offsetHeight <= room) return;
+    cards.setMaxHeight(Math.max(220, room - NOTE_ROOM));
+    cards.root.scrollTop = scrolled; // measuring reset it
+    cards.reveal();
+  }
+  var log = new BTViz.Log(f2.side, { title: 'Events' });
+  // Lit up while a search descends: each descent step names the lines that decide.
+  var code2 = BTViz.codePanel(f2.side, 'compare', { title: 'order and routing', maxHeight: 260 });
+  sideBelowControlsOnPhones(f2);
+
+  var cfg = { pageSize: M.SCENARIO_PAGE_SIZE, truncate: true, dedup: true };
+  var tree = new M.Tree(cfg), history = [];
+
+  var keyIn = el('input.bt-input.c17-wide', { type: 'text', value: 'cherry', 'aria-label': 'Key', maxlength: 27 });
+  var tidIn = el('input.bt-input.c17-narrow', { type: 'number', min: 0, max: M.MAX_TID, step: 1, value: 40, 'aria-label': 'TID (row address)' });
+  var putBtn = el('button.bt-btn.bt-primary', { type: 'button', onclick: doPut }, 'Put');
+  var getBtn = el('button.bt-btn', { type: 'button', onclick: doGet }, 'Get');
+  var truncBox = el('input', { type: 'checkbox', checked: true });
+  var dedupBox = el('input', { type: 'checkbox', checked: true });
+  var sizeSel = el('select.bt-select', { 'aria-label': 'Page size' }, [128, 192, 256].map(function (s) {
+    return el('option', { value: s, selected: s === cfg.pageSize }, s + ' bytes');
+  }));
+  var replayBtn = el('button.bt-btn', { type: 'button', onclick: function () { replayScenario(true); } }, 'Replay the 39 puts');
+  var clearBtn = el('button.bt-btn', { type: 'button', onclick: clearTree }, 'Empty tree');
+  f2.toolbar.append(
+    el('label.bt-field', 'Key ', keyIn), el('label.bt-field', 'TID ', tidIn), putBtn, getBtn, el('span.bt-toolbar-sep'),
+    el('label.bt-field.c17-check', truncBox, ' truncate separators'), el('label.bt-field.c17-check', dedupBox, ' deduplicate'),
+    el('label.bt-field', 'Page ', sizeSel), el('span.bt-toolbar-sep'), replayBtn, clearBtn);
+
+  var stepper2 = new BTViz.Stepper({
+    mount: f2.controls, caption: f2.caption, root: f2.root, steps: [], predict: false, interval: 1500,
+    onStep: function (step, i) {
+      cards.render(step.state, step.highlight);
+      fitTree(); // the tree may have grown or shrunk
+      code2.highlight(step.lines || []);
+      log.sync(stepper2 ? stepper2.steps : [step], i);
+      renderTable(step.puts);
+    }
+  });
+
+  // The caption changes height with its text (and with a quiz), so refit then.
+  if (window.ResizeObserver) {
+    var fitWatch = new ResizeObserver(fitTree);
+    fitWatch.observe(f2.caption);
+    fitWatch.observe(f2.controls);
+  }
+  window.addEventListener('resize', fitTree);
+  narrow.addEventListener('change', fitTree);
+  fitTree();
+
+  // `tree` is the END state of the timeline in the stepper (the replay, or
+  // the reader's last put). A control must act on the tree the reader is
+  // looking at, so before Put, Get or a configuration change the model is
+  // rolled back to the displayed step. Every step carries `puts`: how many of
+  // the puts in `history` its drawing contains (a put shown half-way, with its
+  // page over-full, counts and is completed; the descent before it does not).
+  function syncToDisplayed() {
+    var step = stepper2.steps[stepper2.index];
+    if (!step || step.puts === history.length) return;
+    var keep = history.slice(0, step.puts);
+    tree = new M.Tree(cfg);
+    keep.forEach(function (h) { tree.put(h[0], h[1]); });
+    history = keep;
+  }
+
+  function nextTid() {
+    var max = 0;
+    history.forEach(function (h) { if (h[1] > max) max = h[1]; });
+    tidIn.value = Math.min(max + 1, M.MAX_TID);
+  }
+  function still(caption, logLine) {
+    return [{ caption: caption, state: tree.snapshot(), highlight: {}, log: logLine }];
+  }
+  function show(steps, play) {
+    steps.forEach(function (step) { if (step.puts === undefined) step.puts = history.length; });
+    stepper2.setSteps(steps, { play: !!play });
+  }
+
+  function doPut() {
+    syncToDisplayed();
+    var key = keyIn.value, tid = readTid(tidIn);
+    if (!asciiOk(key)) { show(still(ASCII_ONLY + ' Nothing was inserted.', 'put: bad key')); return; }
+    if (tid === null) { show(still('The TID (' + typed(tidIn) + ') cannot be used. ' + TID_RULE + ' Nothing was inserted.', 'put: bad TID')); return; }
+    var steps = tree.put(key, tid, { verbose: true });
+    if (steps.ok) {
+      // The descent is drawn on the tree without the new tuple.
+      steps.forEach(function (step) { if (step.before) step.puts = history.length; });
+      history.push([key, tid]);
+    }
+    nextTid();
+    show(steps, true);
+  }
+  function doGet() {
+    syncToDisplayed();
+    var key = keyIn.value;
+    if (!asciiOk(key)) { show(still(ASCII_ONLY + ' Nothing was looked up.', 'get: bad key')); return; }
+    show(tree.getSteps(key), true);
+  }
+  function clearTree() {
+    tree = new M.Tree(cfg);
+    history = [];
+    nextTid();
+    show(still('An empty tree: one leaf that is also the root. Its fences are minus and plus infinity. Type a key and a TID and press Put.', 'empty tree'));
+  }
+  // Rebuild the current history under a changed configuration.
+  function rebuild() {
+    syncToDisplayed();
+    cfg = { pageSize: +sizeSel.value, truncate: truncBox.checked, dedup: dedupBox.checked };
+    var fresh = new M.Tree(cfg), kept = [];
+    history.forEach(function (h) { if (fresh.put(h[0], h[1]).ok) kept.push(h); });
+    var dropped = history.length - kept.length;
+    tree = fresh;
+    history = kept;
+    keyIn.maxLength = tree.maxKeyLen();
+    show(still('The same ' + history.length + ' puts, rebuilt with ' + cfg.pageSize + '-byte pages, truncation ' + (cfg.truncate ? 'on' : 'off') +
+      ', deduplication ' + (cfg.dedup ? 'on' : 'off') + '.' + (dropped ? ' ' + dropped + ' put' + (dropped === 1 ? ' was' : 's were') +
+      ' dropped: the key is longer than ' + tree.maxKeyLen() + ' bytes, the limit for this page size.' : '') +
+      ' Compare the separators in the root and the cells in the leaves, and see the table below.', 'rebuilt: ' + M.configName(cfg)));
+  }
+  [truncBox, dedupBox, sizeSel].forEach(function (c) { c.addEventListener('change', rebuild); });
+  [keyIn, tidIn].forEach(function (inp) { inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') doPut(); }); });
+
+  // The fixed scenario of the Zig / Rust programs as one timeline.
+  function replayScenario(play) {
+    tree = new M.Tree(cfg);
+    history = [];
+    var steps = still('The fixed scenario of the chapter\'s programs: an index on a fruit column, ' + M.SCENARIO.length +
+      ' rows. Press play, or step. Watch for three things: a full leaf folding equal keys into a posting list, a leaf splitting with a short separator, and a TID landing inside a posting list.',
+      'start');
+    steps[0].puts = 0;
+    M.SCENARIO.forEach(function (p) {
+      var s = tree.put(p[0], p[1]);
+      history.push(p); // every scenario put is new and fits (the self-tests below depend on it)
+      s.forEach(function (step) { step.puts = history.length; });
+      steps = steps.concat(s);
+    });
+    nextTid();
+    show(steps, play);
+    return steps;
+  }
+
+  /* ====================================================================
+   * Figure 3: before and after
+   * ================================================================== */
+  var f3 = BTViz.figure('#fig-table', { title: '3. The same puts under each configuration' });
+  var tableHost = el('div.bt-table-wrap');
+  f3.stage.append(tableHost, el('p.c17-note',
+    'Fanout = children per internal page. Separator bytes = key bytes kept in a separator, plus 6 when it needs a TID. ' +
+    'Bytes per entry = bytes in use on all pages divided by the number of (key, TID) entries. ' +
+    'The table counts the puts that figure 2 shows at this moment, and the highlighted row is its configuration. With a few dozen tuples the differences are small; ' +
+    'the chapter text has the same table for 20,000 keys, where truncation removes a whole level. ' +
+    'Not shown on this page: delete. In the programs it removes one TID from its cell (a posting list shrinks) and never merges pages, so a split is permanent.'));
+  // `puts`: how many of the puts in `history` the displayed step includes.
+  function renderTable(puts) {
+    if (!tableHost) return; // the stepper renders once before this figure exists
+    var shown = history.slice(0, puts);
+    var rows = [[false, false], [true, false], [false, true], [true, true]].map(function (c) {
+      var t = new M.Tree({ pageSize: cfg.pageSize, truncate: c[0], dedup: c[1] });
+      shown.forEach(function (h) { t.put(h[0], h[1]); });
+      var s = t.stats(), current = c[0] === cfg.truncate && c[1] === cfg.dedup;
+      return el('tr', { class: current ? 's-active' : null },
+        el('td', M.configName(t.cfg)), el('td.num', s.height), el('td.num', s.leafPages), el('td.num', s.internalPages),
+        el('td.num', M.tenths(s.children, s.internalPages)), el('td.num', M.tenths(s.sepBytes, s.seps)),
+        el('td.num', s.postingCells), el('td.num', M.tenths(s.usedBytes, s.entries)));
+    });
+    tableHost.textContent = '';
+    tableHost.appendChild(el('table.bt-table',
+      el('thead', el('tr', ['configuration', 'height', 'leaves', 'internal', 'fanout', 'separator bytes', 'posting lists', 'bytes per entry'].map(function (h, i) {
+        return el('th', { class: i ? 'num' : null }, h);
+      }))),
+      el('tbody', rows)));
+  }
+
+  /* ====================================================================
+   * Self-tests: the JS model must print what the Zig and Rust programs print
+   * (copied from ../expected_output.txt).
+   * ================================================================== */
+  replayScenario(false);
+
+  var EXPECTED_DUMP = [
+    'page 2 internal low=-inf high=+inf used=46/256',
+    '  separators: "apr" "c" "cr"',
+    '  page 0 leaf low=-inf high="apr" used=150/256',
+    '    apple@1 apple@[2,4,7,10,13] apple@15 apple@[16,19,22,25,28] apple@[31,35]',
+    '  page 4 leaf low="apr" high="c" used=131/256',
+    '    apricot@18 avocado@32 banana@11 blackberry@3 blackcurrant@29 blueberry@6',
+    '  page 1 leaf low="c" high="cr" used=148/256',
+    '    cherry@[1,8,9,12] cherry@17 cherry@[21,24,27,30] cherry@[33,36] coconut@37',
+    '  page 3 leaf low="cr" high=+inf used=130/256',
+    '    cranberry@20 date@23 elderberry@14 fig@5 grape@9 grapefruit@26 guava@34'
+  ].join('\n');
+  var EXPECTED_ROWS = [
+    '  neither                2       4         1     4.0       11.7         21.3            3             0',
+    '  truncate               2       4         1     4.0        4.7         19.7            3             0',
+    '  dedup                  2       4         1     4.0       12.7         18.0            3             4',
+    '  truncate + dedup       2       4         1     4.0        2.0         15.5            3             3'
+  ].join('\n');
+  var EXPECTED_SEPARATORS = [
+    '  "banana"@11        "blackberry"@3     "banana"@11        "bl"',
+    '  "blackberry"@3     "blueberry"@6      "blackberry"@3     "blu"',
+    '  "grape"@9          "grapefruit"@26    "grape"@9          "grapef"',
+    '  "date"@23          "dates"@40         "date"@23          "dates"',
+    '  "cherry"@12        "cherry"@17        "cherry"@12        "cherry"@12'
+  ].join('\n');
+
+  BTViz.selfTest('scenario tree', tree.dump(), EXPECTED_DUMP);
+  BTViz.selfTest('scenario invariants', tree.validate(), []);
+  BTViz.selfTest('four configurations', [[false, false], [true, false], [false, true], [true, true]].map(function (c) {
+    var t = new M.Tree({ pageSize: M.SCENARIO_PAGE_SIZE, truncate: c[0], dedup: c[1] });
+    M.SCENARIO.forEach(function (p) { t.put(p[0], p[1]); });
+    return t.statsRow();
+  }).join('\n'), EXPECTED_ROWS);
+  BTViz.selfTest('separator table', [['banana', 11, 'blackberry', 3], ['blackberry', 3, 'blueberry', 6], ['grape', 9, 'grapefruit', 26],
+    ['date', 23, 'dates', 40], ['cherry', 12, 'cherry', 17]].map(function (p) {
+    var l = { key: p[0], tids: [p[1]] }, r = { key: p[2], tids: [p[3]] };
+    return '  ' + M.pad(M.sepText({ key: l.key, tid: p[1] }, ''), 17, true) + '  ' + M.pad(M.sepText({ key: r.key, tid: p[3] }, ''), 17, true) + '  ' +
+      M.pad(M.sepText(M.separator(false, l, r), ''), 17, true) + '  ' + M.sepText(M.separator(true, l, r), '');
+  }).join('\n'), EXPECTED_SEPARATORS);
+  BTViz.selfTest('get through truncated separators', [tree.get('apple').join(','), tree.get('cherry').join(','), tree.get('c').join(','), tree.get('coconut').join(',')],
+    ['1,2,4,7,10,13,15,16,19,22,25,28,31,35', '1,8,9,12,17,21,24,27,30,33,36', '', '37']);
+})();
+</script>
+</body>
+</html>

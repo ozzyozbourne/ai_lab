@@ -1,0 +1,12 @@
+.{
+    .name = .ch15_redistribution_and_merge, // zon names are limited to 32 characters
+    .version = "0.0.0",
+    .fingerprint = 0xf7e2f7d6a5408ba3,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

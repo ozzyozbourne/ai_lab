@@ -1,0 +1,12 @@
+.{
+    .name = .ch01_why_btrees,
+    .version = "0.0.0",
+    .fingerprint = 0xdac99b9a39a6b72c,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

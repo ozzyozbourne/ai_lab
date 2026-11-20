@@ -1,0 +1,336 @@
+//! A sorted run: the immutable, on-device half of an LSM-tree.
+//!
+//! A run is a sorted sequence of slots cut into DATA BLOCKS of
+//! `block_entries` slots, plus an INDEX over them: level 1 holds the first
+//! key of every data block (`index_fanout` of them per index block), level 2
+//! the first key of every level-1 block, and so on up to a single root
+//! block. That is a static, bulk-loaded, 100% full B+tree that is never
+//! updated in place.
+//!
+//! What is on the device and what is in RAM:
+//!   device  data blocks and EVERY index block, root included. They are
+//!           counted when read or written, by the rule the B+tree's nodes
+//!           are counted by: nothing is cached between operations.
+//!   RAM     the "manifest": per run its smallest and largest key and where
+//!           its root block is. A few words per run, so not counted (the
+//!           B+tree's root handle and height are not counted either).
+//!           Optionally also a Bloom filter over the run's keys (filter.rs):
+//!           `bits_per_key` bits of RAM per slot, reported by the program.
+//! A point lookup into a run therefore costs one index block per index level
+//! plus one data block: the height of the run's static tree.
+//!
+//! The model keeps a run's slots in one `Vec`; block j is simply
+//! `slots[j * block_entries ..][..block_entries]`.
+
+use crate::device::{Device, Kind};
+use crate::filter::Filter;
+use crate::memtable::{Lookup, OutOfMemory};
+
+/// One entry of a run or of the memtable. `value == None` is a tombstone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Slot {
+    pub key: u64,
+    pub value: Option<u64>,
+}
+
+/// How slots map to blocks. Shared by every run of one LSM-tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Geometry {
+    /// Slots per data block. The chapter sets this to M - 1, the capacity of
+    /// a B+tree leaf of order M, so both structures have the same block size.
+    pub block_entries: usize,
+    /// First-keys per index block. Set to M, the fan-out of an internal node.
+    pub index_fanout: usize,
+    /// Bits of Bloom filter per slot, kept in RAM. 0: runs have no filter.
+    pub filter_bits_per_key: usize,
+}
+
+impl Geometry {
+    pub fn data_blocks(&self, slots: usize) -> usize {
+        slots.div_ceil(self.block_entries)
+    }
+
+    /// Index levels above the data blocks: at least 1, and as many as it
+    /// takes to end in a single root block.
+    pub fn index_height(&self, slots: usize) -> usize {
+        let mut n = self.data_blocks(slots);
+        let mut height = 0;
+        loop {
+            n = n.div_ceil(self.index_fanout);
+            height += 1;
+            if n <= 1 {
+                return height;
+            }
+        }
+    }
+
+    /// Index blocks of all levels together.
+    pub fn index_blocks(&self, slots: usize) -> usize {
+        let mut n = self.data_blocks(slots);
+        let mut total = 0;
+        loop {
+            n = n.div_ceil(self.index_fanout);
+            total += n;
+            if n <= 1 {
+                return total;
+            }
+        }
+    }
+
+    pub fn blocks(&self, slots: usize) -> usize {
+        self.data_blocks(slots) + self.index_blocks(slots)
+    }
+}
+
+/// Largest `block_entries` a builder's block buffer can hold.
+pub const MAX_BLOCK_ENTRIES: usize = 64;
+
+#[derive(Debug)]
+pub struct Run {
+    /// Strictly ascending keys; never empty; never modified after `finish`.
+    /// (Public so that the tests can corrupt a run and watch `validate`.)
+    pub slots: Vec<Slot>,
+    /// Manifest metadata, kept in RAM: lets a lookup skip the whole run
+    /// without touching the device.
+    pub min_key: u64,
+    pub max_key: u64,
+    /// Also in RAM: answers "certainly not in this run" for most absent
+    /// keys. Empty (always "maybe") when the geometry asks for no filter.
+    pub filter: Filter,
+}
+
+impl Run {
+    #[allow(clippy::len_without_is_empty)] // a run is never empty
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    pub fn may_contain(&self, key: u64) -> bool {
+        self.min_key <= key && key <= self.max_key
+    }
+
+    /// Does the run have any key in [lo, hi)?  (As far as min/max can tell.)
+    pub fn overlaps(&self, lo: u64, hi: u64) -> bool {
+        lo < hi && self.min_key < hi && lo <= self.max_key
+    }
+
+    /// Index of the first slot with key >= `key`.
+    pub fn lower_bound(&self, key: u64) -> usize {
+        self.slots.partition_point(|s| s.key < key)
+    }
+
+    /// Looks the key up, assuming the caller already paid for the blocks.
+    pub fn find(&self, key: u64) -> Lookup {
+        match self.slots.get(self.lower_bound(key)) {
+            Some(slot) if slot.key == key => match slot.value {
+                Some(v) => Lookup::Value(v),
+                None => Lookup::Tombstone,
+            },
+            _ => Lookup::Absent,
+        }
+    }
+}
+
+/// Writes a run from slots that arrive in ascending key order.
+///
+/// The builder owns ONE block-sized buffer. Slots collect there and leave for
+/// the device a whole block at a time; that buffer is all the memory a flush
+/// or a compaction needs on its output side, however large the run gets.
+#[derive(Debug)]
+pub struct Builder {
+    geo: Geometry,
+    slots: Vec<Slot>,
+    filter: Filter,
+    block: [Slot; MAX_BLOCK_ENTRIES],
+    block_len: usize,
+}
+
+impl Builder {
+    /// `max_slots` is an upper bound on what will be appended (the sum of the
+    /// inputs). The slots and the filter's bits are reserved here and nowhere
+    /// else, so a merge that got this far cannot fail half-way through.
+    /// `budget` is how many slots may still be reserved; it stands in for the
+    /// allocator that can say no in the Zig version.
+    pub fn new(geo: Geometry, max_slots: usize, budget: usize) -> Result<Builder, OutOfMemory> {
+        assert!((1..=MAX_BLOCK_ENTRIES).contains(&geo.block_entries));
+        assert!(geo.index_fanout >= 2);
+        if max_slots > budget {
+            return Err(OutOfMemory);
+        }
+        Ok(Builder {
+            geo,
+            slots: Vec::with_capacity(max_slots),
+            filter: Filter::with_capacity(max_slots, geo.filter_bits_per_key),
+            block: [Slot {
+                key: 0,
+                value: None,
+            }; MAX_BLOCK_ENTRIES],
+            block_len: 0,
+        })
+    }
+
+    pub fn append(&mut self, dev: &mut Device, slot: Slot) {
+        self.block[self.block_len] = slot;
+        self.block_len += 1;
+        if self.block_len == self.geo.block_entries {
+            self.write_block(dev);
+        }
+    }
+
+    fn write_block(&mut self, dev: &mut Device) {
+        if let Some(last) = self.slots.last() {
+            // Invariant: a run is strictly ascending across block borders too.
+            assert!(last.key < self.block[0].key);
+        }
+        self.slots.extend_from_slice(&self.block[..self.block_len]);
+        self.block_len = 0;
+        dev.alloc_blocks(1);
+        dev.write(Kind::Data, 1);
+    }
+
+    /// Writes the last partial block and every index level. Returns `None` if
+    /// nothing was appended: there is no empty run.
+    pub fn finish(mut self, dev: &mut Device) -> Option<Run> {
+        if self.block_len > 0 {
+            self.write_block(dev);
+        }
+        let (min_key, max_key) = (self.slots.first()?.key, self.slots.last()?.key);
+        let index_blocks = self.geo.index_blocks(self.slots.len()) as u64;
+        dev.alloc_blocks(index_blocks);
+        dev.write(Kind::Index, index_blocks);
+        // The filter is built in RAM from the keys just written: no block.
+        // Tombstones are added too; a lookup must find them.
+        self.filter
+            .seal(self.slots.len(), self.geo.filter_bits_per_key);
+        for slot in &self.slots {
+            self.filter.add(slot.key);
+        }
+        Some(Run {
+            slots: self.slots,
+            min_key,
+            max_key,
+            filter: self.filter,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn geometry_slots_to_blocks() {
+        let g = Geometry {
+            block_entries: 3,
+            index_fanout: 4,
+            filter_bits_per_key: 0,
+        };
+        assert_eq!(g.data_blocks(1), 1);
+        assert_eq!(g.data_blocks(3), 1);
+        assert_eq!(g.data_blocks(4), 2);
+        assert_eq!(g.index_blocks(12), 1); // 4 data blocks: one index block
+        assert_eq!(g.index_height(12), 1);
+        // 5 data blocks need two index blocks, and those need a root above them.
+        assert_eq!(g.index_blocks(13), 3);
+        assert_eq!(g.index_height(13), 2);
+        assert_eq!(g.blocks(13), 8);
+        // 17 data blocks: 5 + 2 + 1 index blocks in three levels.
+        assert_eq!(g.index_blocks(49), 8);
+        assert_eq!(g.index_height(49), 3);
+        assert_eq!(g.index_blocks(0), 0);
+    }
+
+    #[test]
+    fn builder_writes_whole_blocks_then_the_index_and_the_run_answers_lookups() {
+        let g = Geometry {
+            block_entries: 3,
+            index_fanout: 4,
+            filter_bits_per_key: 0,
+        };
+        let mut dev = Device::new();
+        let mut b = Builder::new(g, 10, usize::MAX).unwrap();
+        for k in [2, 4, 6, 8, 10, 12, 14] {
+            b.append(
+                &mut dev,
+                Slot {
+                    key: k,
+                    value: (k != 8).then_some(k * 10),
+                },
+            );
+        }
+        // Two full blocks are on the device already, the seventh slot is buffered.
+        assert_eq!(dev.counters.total_writes(), 2);
+        let run = b.finish(&mut dev).unwrap();
+        assert_eq!(dev.counters.writes, [1, 3]); // 1 index, 3 data
+        assert_eq!(dev.live, 4);
+        assert_eq!((run.min_key, run.max_key), (2, 14));
+
+        assert_eq!(run.find(6), Lookup::Value(60));
+        assert_eq!(run.find(8), Lookup::Tombstone);
+        assert_eq!(run.find(7), Lookup::Absent);
+        assert!(!run.may_contain(1) && !run.may_contain(15) && run.may_contain(7));
+        assert!(run.overlaps(14, 20) && !run.overlaps(15, 20) && !run.overlaps(0, 2));
+        assert_eq!(run.lower_bound(7), 3);
+    }
+
+    #[test]
+    fn a_builder_with_nothing_appended_produces_no_run() {
+        let mut dev = Device::new();
+        let b = Builder::new(
+            Geometry {
+                block_entries: 3,
+                index_fanout: 4,
+                filter_bits_per_key: 0,
+            },
+            5,
+            usize::MAX,
+        )
+        .unwrap();
+        assert!(b.finish(&mut dev).is_none());
+        assert_eq!(dev.live, 0);
+    }
+
+    #[test]
+    fn builder_with_a_filter_built_at_finish_in_ram_sized_by_the_slots_written() {
+        let g = Geometry {
+            block_entries: 3,
+            index_fanout: 4,
+            filter_bits_per_key: 10,
+        };
+        let mut dev = Device::new();
+        let mut b = Builder::new(g, 40, usize::MAX).unwrap(); // reserved for 40, 7 arrive
+        for k in [2, 4, 6, 8, 10, 12, 14] {
+            b.append(
+                &mut dev,
+                Slot {
+                    key: k,
+                    value: (k != 8).then_some(k * 10),
+                },
+            );
+        }
+        let run = b.finish(&mut dev).unwrap();
+        // The same blocks as without a filter: it is not on the device.
+        assert_eq!(dev.counters.writes, [1, 3]);
+        assert_eq!(dev.live, 4);
+        assert_eq!(run.filter.bits(), 70);
+        assert!(
+            [2, 4, 6, 8, 10, 12, 14]
+                .iter()
+                .all(|&k| run.filter.may_contain(k))
+        );
+
+        let empty = Builder::new(g, 5, usize::MAX).unwrap();
+        assert!(empty.finish(&mut dev).is_none());
+    }
+
+    #[test]
+    fn a_builder_over_budget_is_refused_before_anything_is_written() {
+        let g = Geometry {
+            block_entries: 3,
+            index_fanout: 4,
+            filter_bits_per_key: 0,
+        };
+        assert_eq!(Builder::new(g, 5, 4).err(), Some(OutOfMemory));
+        assert!(Builder::new(g, 5, 5).is_ok());
+    }
+}

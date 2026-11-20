@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 20 — B-link trees</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  /* Chapter-local layout only; every colour comes from the toolkit's tokens. */
+  /* The right half of an unfinished split has no downlink: its edge is not drawn (see local.js). */
+  .bt-edge-g.s-nolink { display: none; }
+  .c20-check { display: inline-flex; align-items: center; gap: 6px; font-size: .86rem; }
+  .c20-status { margin: 0; font-size: .84rem; color: var(--bt-muted); min-height: 1.3em; }
+  .c20-status.is-error { color: var(--bt-key-deleted); }
+  .c20-lanes { margin-top: 10px; }
+  /* Caption and step controls are moved into the stage, right under the tree (app.js). The stage has its own
+     side padding, so theirs is removed. */
+  .bt-stage > .bt-caption, .bt-stage > .bt-controls-slot > .bt-controls { padding-left: 0; padding-right: 0; }
+  .bt-stage > .bt-controls-slot { margin-top: 0; }
+  #code { margin-top: 14px; }
+  .c20-points li { margin: .35em 0; }
+  .bt-selftest { white-space: normal; border-radius: 10px; }   /* names must wrap on a phone */
+</style>
+</head>
+<body>
+
+<p class="bt-lead">A reader is on its way to a leaf when a writer splits that leaf. You decide which thread takes the
+next step. Watch the high key and the dashed right link save the reader, then switch right links off and watch the
+same key go missing.</p>
+
+<div id="fig"></div>
+<div id="code"></div>
+
+<h2>What to look for</h2>
+<ul class="c20-points">
+  <li><strong>One latch at a time.</strong> After every reader step the reader holds nothing, only the number of the
+    node it wants next. That gap is where a split can happen. The <code>S</code> and <code>X</code> badges show who
+    holds which latch right now.</li>
+  <li><strong>The high key detects the split.</strong> The dashed cell at the right end of a node is its high key:
+    every key in the node is below it. A search key at or above the high key means "my keys moved": follow the dashed
+    right link.</li>
+  <li><strong>A split is two steps.</strong> After step 1 the new node hangs beside its sibling with no line from the
+    parent. Step 2 draws that line (the downlink) and clears the flag. Between the two steps the tree is already
+    correct.</li>
+  <li><strong>Writer dies after step 1.</strong> Choose the second scenario: the flag stays, readers still find
+    everything by moving right, and the next writer that touches the node finishes the split before its own work.</li>
+  <li><strong>Without right links.</strong> Untick <em>Reader follows right links</em> and replay. The reader lands on
+    the node it was sent to, does not find the key, and reports "not found" for a key that is in the tree.</li>
+</ul>
+<p>Text and code: <a href="../README.md">chapter 20 README</a>. The model that draws this page is checked against the
+output of the chapter's Zig and Rust programs (self-tests below).</p>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="model.js"></script>
+<script src="local.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

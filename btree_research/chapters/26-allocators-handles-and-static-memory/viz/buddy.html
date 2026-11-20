@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The buddy allocator</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  /* Chapter-local layout only; every colour comes from the toolkit tokens. */
+  .c26-heap { display: flex; gap: 2px; height: 58px; }
+  .c26-block { flex: 1 1 0; min-width: 0; border-radius: 4px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    font: 600 .7rem/1.25 var(--bt-mono); color: var(--bt-text); overflow: hidden;
+    background: var(--s-bg, var(--bt-key-bg)); box-shadow: inset 0 0 0 1.5px var(--s, var(--bt-node)); }
+  .c26-block.is-free { box-shadow: inset 0 0 0 1px var(--bt-border); background-image: repeating-linear-gradient(135deg, transparent 0 4px, var(--bt-border) 4px 5px); }
+  .c26-block.is-free[class*="s-"] { box-shadow: inset 0 0 0 1.5px var(--s); }
+  .c26-block small { font-weight: 400; color: var(--bt-muted); font-size: .64rem; }
+  .c26-ruler { display: flex; justify-content: space-between; font: .66rem var(--bt-mono); color: var(--bt-muted); margin-top: 3px; }
+  .c26-sub { font-size: .8rem; font-weight: 650; margin: 14px 0 6px; }
+  .c26-lists { display: grid; grid-template-columns: max-content 1fr; gap: 4px 10px; font-size: .8rem; align-items: center; }
+  .c26-lists .name { color: var(--bt-muted); font-family: var(--bt-mono); }
+  .c26-chips { display: flex; flex-wrap: wrap; gap: 4px; min-height: 1.5em; }
+  .c26-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: .82rem; color: var(--bt-muted); margin-top: 12px; }
+  .c26-stats b { color: var(--bt-text); font-family: var(--bt-mono); }
+  .c26-live { display: flex; flex-wrap: wrap; gap: 6px; min-height: 2em; align-items: center; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">A <b>buddy allocator</b> serves power-of-two block sizes from one region. A request is rounded up;
+a larger block is halved until the piece fits; on free, a block merges with its other half (its <b>buddy</b>) whenever
+that half is free too. In this chapter it sits <i>under</i> the slab pools and hands them their slabs.
+Chapter text: <a href="../README.md">README</a>. First page: <a href="index.html">slabs and handles</a>.</p>
+
+<div id="fig"></div>
+
+<h2>In code</h2>
+<div id="fig-code"></div>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="model.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el;
+  BTViz.page({
+    title: 'The buddy allocator', chapter: 26,
+    prev: { href: 'index.html', title: 'Slabs and handles' },
+    next: '../../27-btree-vs-lsm/viz/index.html'
+  });
+
+  var fig = BTViz.figure('#fig', { title: '1024-byte heap, 64-byte minimum block', side: true, legend: [
+    { token: 'pointer', label: 'allocated block' }, 'free', { token: 'key-compare', label: 'block being split / the buddy checked' },
+    { token: 'split', label: 'new free half' }, { token: 'key-inserted', label: 'just allocated' },
+    { token: 'key-deleted', label: 'being freed' }, { token: 'merge', label: 'buddies merging' }] });
+
+  var heapEl = el('div.c26-heap', { role: 'img', 'aria-label': 'The heap as a row of blocks in address order' });
+  var listsEl = el('div.c26-lists'), statsEl = el('div.c26-stats'), liveEl = el('div.c26-live'), liveTitle = el('div.c26-sub');
+  fig.stage.append(heapEl,
+    el('div.c26-ruler', el('span', '0'), el('span', '256'), el('span', '512'), el('span', '768'), el('span', '1024')),
+    liveTitle, liveEl,
+    el('div.c26-sub', 'Free lists, one per block size'), listsEl, statsEl);
+  var log = new BTViz.Log(fig.side, { title: 'Events' });
+
+  var heap, nextName;
+  function render(step, i) {
+    var s = step.state;
+    shown = i;
+    heapEl.textContent = '';
+    s.blocks.forEach(function (b) {
+      var state = b.state || (b.free ? null : 'pointer');
+      heapEl.appendChild(el('div', { class: 'c26-block' + (b.free ? ' is-free' : '') + (state && state !== 'free' ? ' s-' + state : ''), style: { flexGrow: String(b.size) },
+        title: b.size + ' bytes at offset ' + b.block * 64 + (b.free ? ', free' : ', used' + (b.name ? ' by ' + b.name + ' (' + b.len + ' requested)' : '')) },
+        b.name ? el('span', b.name) : null, el('small', String(b.size))));
+    });
+    listsEl.textContent = '';
+    s.lists.slice().reverse().forEach(function (l) {
+      listsEl.append(el('span.name', l.size + ' B'),
+        el('div.c26-chips', l.blocks.length ? l.blocks.map(function (b) { return el('span.bt-chip', '@' + b * 64); }) : el('span.c26-note', { style: { color: 'var(--bt-muted)' } }, 'empty')));
+    });
+    statsEl.textContent = '';
+    statsEl.append(
+      el('span', 'requested ', el('b', String(s.stats.requested))), el('span', 'granted ', el('b', String(s.stats.granted))),
+      el('span', 'lost to rounding ', el('b', String(s.stats.granted - s.stats.requested))),
+      el('span', 'free ', el('b', String(s.stats.free))), el('span', 'largest free block ', el('b', String(s.stats.largest))));
+    // The free buttons act on the model's CURRENT state, so they are only live on the last step.
+    var last = i === current.length - 1;
+    liveTitle.textContent = last ? 'Live allocations (click one to free it)' : 'Live allocations (they can be freed on the last step)';
+    liveEl.textContent = '';
+    var used = s.blocks.filter(function (b) { return !b.free && b.name; });
+    if (!used.length) liveEl.appendChild(el('span', { style: { color: 'var(--bt-muted)', fontSize: '.82rem' } }, 'none'));
+    used.forEach(function (b) {
+      var btn = el('button.bt-btn', { type: 'button', 'data-block': b.block, title: 'free ' + b.name, onclick: function () { show(heap.free(b.block), true); } }, 'free ' + b.name + ' (' + b.len + ')');
+      btn.disabled = !last;
+      liveEl.appendChild(btn);
+    });
+    syncLog(i);
+  }
+  var stepper = new BTViz.Stepper({ mount: fig.controls, caption: fig.caption, root: fig.root, predict: false, onStep: render });
+
+  // The log keeps the events of earlier operations and adds the current timeline's
+  // events up to the step being shown.
+  var prior = [], current = [], shown = 0;
+  function syncLog(i) {
+    log.clear();
+    prior.concat(current.slice(0, i + 1)).forEach(function (s) { if (s.log) log.add(s.log.html || s.log, s.log.state); });
+  }
+  function show(steps, play) {
+    // An operation always acts on the model's final state. If the reader was still
+    // on an earlier step of the previous timeline, say that it was run to its end.
+    if (current.length && shown < current.length - 1 && steps.length) steps[0].caption = '<i>The previous operation was run to its end first.</i> ' + steps[0].caption;
+    prior = prior.concat(current.filter(function (s) { return s.log; })).slice(-40);
+    current = steps;
+    stepper.setSteps(steps, { play: !!play });
+  }
+  // A block name is consumed only by an allocation that succeeds, so names stay a, b, c, ...
+  function peekName() { return String.fromCharCode(97 + nextName % 26) + (nextName >= 26 ? Math.floor(nextName / 26) : ''); }
+  function name() { var n = peekName(); nextName++; return n; }
+  // The picture always starts from the model's real state: an empty heap, so that
+  // Alloc acts on what the reader sees.
+  function reset() {
+    heap = new Ch26.Buddy(10, 6); nextName = 0; prior = []; current = [];
+    show(heap.idle('An empty heap is one free block of 1024 bytes. Type a size and press <b>Alloc</b>, or press <b>Chapter example</b> to replay the chapter program: allocate a = 100, b = 60, c = 200 bytes. A live allocation is freed by clicking it.'));
+  }
+  // The fixed scenario of the programs (section 5 of expected_output.txt), played as one timeline.
+  function example() {
+    heap = new Ch26.Buddy(10, 6); nextName = 0; prior = []; current = [];
+    var steps = [];
+    [100, 60, 200].forEach(function (len) { steps = steps.concat(heap.alloc(len, name())); });
+    steps[0].caption = 'The chapter program, on an empty heap. ' + steps[0].caption;
+    show(steps, true);
+  }
+  function fragment() {
+    heap = new Ch26.Buddy(10, 6); nextName = 0; prior = []; current = [];
+    var blocks = [];
+    for (var i = 0; i < 16; i++) blocks.push(heap.alloc(64, name()).result);
+    for (i = 0; i < 16; i += 2) heap.free(blocks[i]);
+    show(heap.idle('Sixteen 64-byte blocks were allocated and every other one freed. 512 bytes are free, but no two free blocks are buddies, so the largest request that can succeed is 64 bytes. Try <b>Alloc 128</b>: it fails. That is external fragmentation. Free one of the remaining blocks and watch two neighbours merge.'));
+  }
+
+  var input = el('input.bt-input#size', { type: 'text', inputmode: 'numeric', value: 128, 'aria-label': 'Request size in bytes, a whole number from 1 to 2000', style: { width: '6em' } });
+  function alloc() {
+    var raw = input.value.trim(), n = Number(raw), note = '';
+    if (raw === '' || !isFinite(n) || n < 1) {
+      // Nothing sensible to round to: say so and allocate nothing.
+      show(heap.idle((raw === '' ? 'No size was typed' : '“' + BTViz.esc(raw) + '” is not a size that can be requested') +
+        '. Type a whole number of bytes from 1 to 2000 (the heap has 1024). Nothing was allocated.'));
+      return;
+    }
+    var len = Math.min(2000, Math.floor(n));
+    if (len !== n) note = 'You typed ' + BTViz.esc(raw) + '; this page takes whole numbers up to 2000, so ' + len + ' is requested. ';
+    var steps = heap.alloc(len, peekName());
+    if (steps.result !== null) nextName++;
+    steps[0].caption = note + steps[0].caption;
+    if (note && steps.length > 1) steps[steps.length - 1].caption += ' <i>(' + note.trim() + ')</i>';
+    show(steps, true);
+  }
+  fig.toolbar.append(
+    el('label.bt-field', 'bytes', input),
+    el('button.bt-btn.bt-primary#alloc', { type: 'button', onclick: alloc }, 'Alloc'),
+    el('span.bt-toolbar-sep'),
+    el('button.bt-btn#example', { type: 'button', title: 'Empty heap, then allocate a = 100, b = 60, c = 200 bytes', onclick: example }, 'Chapter example'),
+    el('button.bt-btn#fragment', { type: 'button', onclick: fragment }, 'Fragment'),
+    el('button.bt-btn#reset', { type: 'button', onclick: reset }, 'Reset'));
+  input.addEventListener('keydown', function (e) { if (e.key === 'Enter') alloc(); });
+  reset();
+
+  var cf = BTViz.figure('#fig-code', { title: 'Free: merge upwards while the buddy is free and whole' });
+  BTViz.codePanel(cf.stage, 'buddy', { title: 'freeBlock', maxHeight: 360 }).highlight({ zig: [[7, 9]], rust: [[7, 11]] });
+
+  /* ---- self-tests. First: on load the picture and the model are the same empty heap. */
+  BTViz.selfTest('on load: the picture is the model', heap.map() + ' | step ' + (shown + 1) + ' of ' + current.length, '[1024 free] | step 1 of 1');
+  /* The JS model must reproduce section 5 of expected_output.txt. */
+  var b = new Ch26.Buddy(10, 6), maps = [];
+  var ids = [['a', 100], ['b', 60], ['c', 200]].map(function (r) { var blk = b.alloc(r[1], r[0]).result; maps.push(b.map()); return blk; });
+  BTViz.selfTest('section 5: allocations', maps.join('\n'),
+    '[128 used][128 free][256 free][512 free]\n[128 used][64 used][64 free][256 free][512 free]\n[128 used][64 used][64 free][256 used][512 free]');
+  BTViz.selfTest('section 5: accounting', [b.requested, b.granted, b.freeBytes(), b.largestFree(), b.alloc(600, 'x').result].map(String).join(' '), '360 448 576 512 null');
+  maps = ids.map(function (blk) { b.free(blk); return b.map(); });
+  BTViz.selfTest('section 5: frees', maps.join('\n'), '[128 free][64 used][64 free][256 used][512 free]\n[256 free][256 used][512 free]\n[1024 free]');
+})();
+</script>
+</body>
+</html>

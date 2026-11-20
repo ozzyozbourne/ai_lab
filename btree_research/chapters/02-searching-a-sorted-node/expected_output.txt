@@ -1,0 +1,79 @@
+chapter 02: searching a sorted node
+
+[1] one node: the canonical keys of chapters 03-08, sorted
+index:   0   1   2   3   4   5   6   7   8   9  10  11
+key:     1   3   5   6   7  10  12  15  17  20  25  30
+
+[2] search(key) -> {found, index}: where the key is, or where it would be inserted
+key  found  index
+  0  no         0
+  1  yes        0
+ 12  yes        6
+ 13  no         7
+ 30  yes       11
+ 31  no        12
+
+[3] trace of lowerBound(13); invariant: keys[0..lo] < 13 <= keys[hi..]
+step  lo  hi  mid  keys[mid]  decision
+   1   0  12    6         12  12 <  13 is true:  lo = mid + 1 = 7
+   2   7  12    9         20  20 <  13 is false: hi = mid = 9
+   3   7   9    8         17  17 <  13 is false: hi = mid = 8
+   4   7   8    7         15  15 <  13 is false: hi = mid = 7
+result: 7 after 4 comparisons
+trace of upperBound(12); invariant: keys[0..lo] <= 12 < keys[hi..]
+step  lo  hi  mid  keys[mid]  decision
+   1   0  12    6         12  12 <= 12 is true:  lo = mid + 1 = 7
+   2   7  12    9         20  20 <= 12 is false: hi = mid = 9
+   3   7   9    8         17  17 <= 12 is false: hi = mid = 8
+   4   7   8    7         15  15 <= 12 is false: hi = mid = 7
+result: 7 after 4 comparisons
+
+[4] duplicates: lower bound, upper bound, count = upper - lower
+keys: 3 7 7 7 12 15 15 20
+key  lower  upper  count
+  2      0      0      0
+  3      0      1      1
+  7      1      4      3
+  8      4      4      0
+ 15      5      7      2
+ 20      7      8      1
+ 21      8      8      0
+
+[5] range bounds on the node of [1]: key range -> index range [start, end)
+[5, 17]    -> [ 2,  9)  7 keys: 5 6 7 10 12 15 17
+(5, 17]    -> [ 3,  9)  6 keys: 6 7 10 12 15 17
+[5, 17)    -> [ 2,  8)  6 keys: 5 6 7 10 12 15
+(5, 17)    -> [ 3,  8)  5 keys: 6 7 10 12 15
+[4, 16]    -> [ 2,  8)  6 keys: 5 6 7 10 12 15
+(4, 16)    -> [ 2,  8)  6 keys: 5 6 7 10 12 15
+[8, 9]     -> [ 5,  5)  0 keys:
+(7, 7)     -> [ 5,  5)  0 keys:
+(20, +inf) -> [10, 12)  2 keys: 25 30
+(-inf, 5)  -> [ 0,  2)  2 keys: 1 3
+
+[6] neighbours (bound minus one; 'none' instead of index -1)
+key  last <  last <=
+  0    none    none
+  1    none       0
+ 12       5       6
+ 13       6       6
+ 31      11      11
+
+[7] sorted batch of probes against 4096 sorted keys (seed 2): comparisons
+probes  binary from 0  gallop from cursor
+     4             48                  75
+    64            768                 732
+  1024          12291                4495
+  4096          49154                8822
+
+[8] a node of capacity 4 driven by search results
+put 10: search -> found=no  index=0; inserted;    keys: 10
+put 20: search -> found=no  index=1; inserted;    keys: 10 20
+put  5: search -> found=no  index=0; inserted;    keys: 5 10 20
+put  6: search -> found=no  index=1; inserted;    keys: 5 6 10 20
+put 12: search -> found=no  index=3; NodeFull;    keys: 5 6 10 20
+put 20: search -> found=yes index=3; overwritten; keys: 5 6 10 20
+get 6 -> 601, get 7 -> null
+delete 6 -> 601; keys: 5 10 20
+put 12 -> null; keys: 5 10 12 20
+validate: ok

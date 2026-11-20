@@ -1,0 +1,681 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 8 — Range scans and cursors</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  /* Chapter-local layout only; every colour comes from the toolkit's tokens. */
+  .c8-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font: .8rem/1.7 var(--bt-mono); color: var(--bt-muted); margin-top: 8px; min-height: 1.9em; }
+  .c8-strip .bt-chip { font-size: .8rem; }
+  .c8-cur { font-size: .84rem; line-height: 1.5; }
+  .c8-cur dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0; }
+  .c8-cur dt { color: var(--bt-muted); }
+  .c8-cur dd { margin: 0; font-family: var(--bt-mono); overflow-wrap: anywhere; }
+  .c8-frames { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font: .8rem/1.5 var(--bt-mono); }
+  .c8-frames li { border: 1px solid var(--c8-path); background: var(--c8-path-bg); color: var(--bt-text); border-radius: 6px; padding: 1px 8px; }
+  .c8-frames li.is-none { border-style: dashed; border-color: var(--bt-border); background: none; color: var(--bt-muted); }
+  .c8-stale { color: var(--bt-key-deleted); font-weight: 600; }
+  .c8-fresh { color: var(--bt-key-found); font-weight: 600; }
+  .c8-note { font-size: .82rem; color: var(--bt-muted); margin: 6px 0 0; }
+  .c8-code { margin: 14px 0 28px; }
+  .c8-points li { margin: .35em 0; }
+  .c8-num { width: 5.2em; }
+  .bt-selftest { white-space: normal; border-radius: 10px; }   /* long names must wrap on a phone */
+  /* The stack cursor's path, the picture of the second design: every node that has a frame is filled,
+     and the edge into the child that frame took is drawn thick, in one colour that nothing else on this
+     page uses. The colour is borrowed from a toolkit token this chapter has no other use for (pages
+     and their dirty state start in chapter 09), so both themes are covered by the toolkit. The frame
+     list in the cursor panel uses the same colour: one list item per filled internal node. */
+  :root { --c8-path: var(--bt-page-dirty); --c8-path-bg: var(--bt-page-dirty-bg); }
+  .s-path { --s: var(--c8-path); --s-bg: var(--c8-path-bg); }
+  .bt-node.s-path .bt-node-box { stroke-width: 2.75; }
+  .bt-edge-g.s-path .bt-edge { stroke-width: 4; }
+  .bt-key.s-path rect { stroke: transparent; }   /* the tint fills the node; the node's border carries the line */
+  .c8-zoom { display: none; }
+  .c8-zoom.is-on { display: block; }
+  /* Node handles ("#6") sit where the edge from the parent arrives; a halo in the stage colour keeps
+     them readable, because captions and stack frames refer to nodes by these handles. */
+  .bt-tree-svg .bt-node-label { paint-order: stroke; stroke: var(--bt-bg); stroke-width: 4px; stroke-linejoin: round; }
+  /* Narrow screens: the toolkit stacks the side column between the picture and its caption. Here the
+     picture, the caption and the step controls stay together and the cursor panel and log follow. */
+  @media (max-width: 820px) {
+    .bt-figure { display: flex; flex-direction: column; }
+    .bt-figure > .bt-figure-body.has-side { display: contents; }
+    .bt-figure .bt-side { order: 1; }
+  }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">A range scan is one seek, then steps, then a stop test. This page shows the two ways a cursor can take
+those steps (along the leaf links, or along a remembered root-to-leaf path) and what a cursor has to do when the tree
+changes between two of its steps.</p>
+
+<div id="fig-scan"></div>
+<div id="code-scan" class="c8-code"></div>
+
+<div id="fig-change"></div>
+<div id="code-change" class="c8-code"></div>
+
+<h2>What to look for</h2>
+<ul class="c8-points">
+  <li><strong>One seek, one test.</strong> In the first figure the kind of the near bound only picks the seek
+    (<code>[</code> gives ≥, <code>(</code> gives &gt;); afterwards every key is tested against the far bound only.
+    Try <code>(6, 17]</code> and <code>[6, 17)</code>, then the same ranges backward.</li>
+  <li><strong>Crossing a leaf boundary.</strong> The leaf-link cursor makes one move. The stack cursor goes up to the
+    parent and down again, and from <b class="bt-k">12</b> to <b class="bt-k">15</b> in the canonical tree it has to pop a
+    frame and go through the root: four moves. The counter <em>node visits</em> adds them up.</li>
+  <li><strong>The stack is the position.</strong> With the stack design the path drawn into the tree (filled nodes, and
+    a thick edge into the child each of them took) and the frame list in the cursor panel are the same thing, and they
+    are the whole cursor. Nothing in the leaves points sideways for it.</li>
+  <li><strong>A stale position.</strong> In the second figure run the scenario, then switch the mode to
+    <em>trust the old position</em> and run it again: the same <code>next</code> returns <b class="bt-k">12</b> twice.</li>
+  <li><strong>Deleting under the cursor.</strong> Seek to a key, delete that key, then press Next and Prev: the saved key
+    still tells the cursor where to continue, although no entry has it any more.</li>
+</ul>
+<p>Text and code: <a href="../README.md">chapter 08 README</a>. The trees, positions, paths and node-visit counts shown
+here are checked against the output of the chapter's Zig and Rust programs (self-tests below).</p>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="base_local.js"></script>
+<script src="local.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, k = BTViz.k, NIL = Ch08.NIL;
+  BTViz.page({
+    title: 'Range scans and cursors', chapter: 8,
+    prev: { href: '../../07-bplus-trees/viz/index.html', title: 'Chapter 7: B+trees' },
+    next: { href: '../../09-pages-and-the-buffer-pool/viz/index.html', title: 'Chapter 9: pages and the buffer pool' }
+  });
+
+  var KEY_MIN = 0, KEY_MAX = 999;
+  var DESIGN = { link: 'leaf-link cursor', stack: 'stack cursor' };
+  function mk(key, value) { var o = {}; o[key] = value; return o; }
+  function btn(text, fn, primary) { return el('button.bt-btn' + (primary ? '.bt-primary' : ''), { type: 'button', onclick: fn }, text); }
+  function select(label, options, value) {
+    var s = el('select.bt-select', { 'aria-label': label });
+    options.forEach(function (o) { s.appendChild(el('option', { value: o[0], selected: o[0] === value }, o[1])); });
+    return s;
+  }
+  function numInput(label, value) {
+    return el('input.bt-input.c8-num', { type: 'number', inputmode: 'numeric', 'aria-label': label + ' (whole number, ' + KEY_MIN + ' to ' + KEY_MAX + ')',
+      min: KEY_MIN, max: KEY_MAX, step: 1, value: value === undefined ? '' : value, placeholder: 'key' });
+  }
+  /** Typed input is used exactly as typed or not at all. Returns {ok, value} or {ok: false, why}. */
+  function readKey(input, what) {
+    var a = /^[aeiou]/.test(what) ? 'an ' : 'a ';
+    var raw = input.value.trim(), unreadable = !!(input.validity && input.validity.badInput);
+    var v = Number(raw);
+    if (unreadable || raw === '' || !Number.isInteger(v) || v < KEY_MIN || v > KEY_MAX) {
+      return { ok: false, why: 'Nothing was done: ' + (raw === '' && !unreadable ? 'no ' + what + ' was typed' :
+        (unreadable ? 'that input' : '<b>' + BTViz.esc(raw) + '</b>') + ' is not ' + a + what + ' this page accepts') +
+        '. Keys are whole numbers from ' + KEY_MIN + ' to ' + KEY_MAX + '.' };
+    }
+    return { ok: true, value: v };
+  }
+
+  /* ---------------------------------------------------------- code panels */
+  function makeCode(target, names, titles) {
+    var parts = {}, panels = {};
+    names.forEach(function (sn) {
+      parts[sn] = {};
+      Object.keys(window.CHAPTER_PARTS[sn]).forEach(function (part) {
+        var spec = {};
+        ['zig', 'rust'].forEach(function (lang) {
+          var src = String(window.CHAPTER_CODE[sn][lang]).replace(/^\n+|\s+$/g, '').split('\n');
+          var want = window.CHAPTER_PARTS[sn][part][lang];
+          var a = src.findIndex(function (l) { return l.indexOf(want[0]) >= 0; });
+          var b = src.findIndex(function (l, i) { return i >= a && l.indexOf(want[1]) >= 0; });
+          spec[lang] = [[a + 1, b + 1]];
+        });
+        parts[sn][part] = spec;
+      });
+      panels[sn] = BTViz.codePanel(target, sn, { title: titles[sn], maxHeight: 330 });
+      panels[sn].root.hidden = sn !== names[0];
+    });
+    return function show(snippet, part) {
+      if (!snippet || !panels[snippet]) { names.forEach(function (sn) { panels[sn].highlight([]); }); return; }
+      names.forEach(function (sn) { panels[sn].root.hidden = sn !== snippet; });
+      panels[snippet].highlight(parts[snippet][part] || []);
+    };
+  }
+  var TITLES = {
+    scan: 'scan — one seek, then steps, then the far-bound test',
+    seek: 'seek — the bound picks the seek, the seek picks the binary search',
+    linkStep: 'leaf-link cursor — to the next leaf',
+    stackStep: 'stack cursor — to the next leaf: pop, step, push',
+    reseek: 'cursor.next — save key and re-seek'
+  };
+
+  /* ------------------------------------------------ shared step building */
+
+  /**
+   * One step = what is drawn: the tree, the highlight, the cursor panel. `ev` is an event from the
+   * model ({type, caption, hl with HANDLES}); handles are turned into TreeView ids here.
+   * `pill` is where the cursor marker sits ({leaf, label} or null).
+   */
+  function makeStep(tree, cur, ev, extra) {
+    var b = tree.base, snap = b.snapshot(), hl = { nodes: {}, keys: {}, edges: {}, links: {} };
+    var live = function (h) { return h !== NIL && b.slots[h] && b.slots[h].used; };
+    snap.stale.forEach(function (id) { hl.keys[id] = 'dim'; });                 // stale separators (chapter 07)
+    (extra.found || []).forEach(function (key) { var h = b.findLeaf(key); if (h !== NIL && b.get(key) !== null) hl.keys[b.id(h) + ':' + key] = 'found'; });
+    var path = cur && cur.design === 'stack' && !(extra.stale) ? markPath(b, cur, hl) : [];
+    var e = ev.hl || {};
+    Object.keys(e.nodes || {}).forEach(function (h) { if (live(+h)) hl.nodes[b.id(+h)] = e.nodes[h]; });
+    Object.keys(e.edges || {}).forEach(function (h) { if (live(+h)) hl.edges[b.id(+h)] = e.edges[h]; });
+    Object.keys(e.links || {}).forEach(function (h) { if (live(+h)) hl.links[b.id(+h)] = e.links[h]; });
+    (e.keys || []).forEach(function (t) { if (live(t[0])) hl.keys[b.id(t[0]) + ':' + t[1]] = t[2]; });
+    // The key cells cover most of a node, so in a path node they take the tint too, unless they already
+    // say something. A path node the event is visiting right now shows the event's colour instead.
+    path.forEach(function (h) {
+      if (hl.nodes[b.id(h)] !== 'path') return;
+      b.node(h).keys.forEach(function (key) { var id = b.id(h) + ':' + key; if (!hl.keys[id]) hl.keys[id] = 'path'; });
+    });
+    if (extra.pill && live(extra.pill.leaf)) hl.cursor = { node: b.id(extra.pill.leaf), label: extra.pill.label };
+    return {
+      type: ev.type, caption: ev.caption, highlight: hl, code: ev.code, log: extra.log || null, question: extra.question,
+      state: {
+        tree: snap.tree, version: tree.version, count: snap.count, height: snap.height,
+        cursor: cur ? cur.toJSON() : null, stale: !!extra.stale, positionText: extra.positionText,
+        result: (extra.result || []).slice(), model: extra.model || null, dup: extra.dup || null
+      }
+    };
+  }
+  /**
+   * Draws a stack cursor's position: each frame (node, child taken) fills its node and marks the edge
+   * into that child, and the leaf is filled when the frames lead to it (while the cursor is between two
+   * leaves they do not). Event highlights are applied afterwards, so the node being visited right now
+   * keeps its own colour. Returns the handles of the nodes on the path.
+   */
+  function markPath(b, cur, hl) {
+    var live = function (h) { return h !== NIL && h !== undefined && b.slots[h] && b.slots[h].used; };
+    var reached = cur.frames.length ? NIL : b.root;      // the node the frames lead to
+    var path = [], fill = function (h) { hl.nodes[b.id(h)] = 'path'; path.push(h); };
+    cur.frames.forEach(function (f) {
+      reached = NIL;
+      if (!live(f.h) || b.node(f.h).leaf) return;
+      fill(f.h);
+      var child = b.node(f.h).children[f.ci];
+      if (!live(child)) return;
+      hl.edges[b.id(child)] = 'path';
+      reached = child;
+    });
+    if (cur.state === 'on' && live(cur.leaf) && reached === cur.leaf) fill(cur.leaf);
+    return path;
+  }
+  /** Where the cursor says it is, in words. */
+  function positionText(tree, cur) {
+    if (cur.state === 'before') return 'before the first entry';
+    if (cur.state === 'after') return 'after the last entry';
+    return 'leaf #' + cur.leaf + ', index ' + cur.index;
+  }
+  function renderCursorPanel(box, s) {
+    box.textContent = '';
+    var c = s.cursor;
+    if (!c) { box.appendChild(el('p.c8-note', 'No cursor yet.')); return; }
+    var dl = el('dl');
+    var row = function (name, value) { dl.append(el('dt', name), value instanceof Node ? el('dd', value) : el('dd', String(value))); };
+    row('design', DESIGN[c.design]);
+    row('saved key', c.state === 'on' ? String(c.key) : '(none)');
+    row('position', s.positionText);
+    if (s.version !== undefined && c.state === 'on') {
+      row('valid for', el('span', 'tree version ' + c.version + ' ', el('span' + (s.stale ? '.c8-stale' : '.c8-fresh'), s.stale ? '(stale: tree is at ' + s.version + ')' : '(current)')));
+    }
+    row('node visits', c.stats.visits + ' · seeks ' + c.stats.seeks + ' · re-seeks ' + c.stats.reseeks);
+    box.appendChild(dl);
+    if (c.design === 'stack') {
+      var ul = el('ul.c8-frames', { 'aria-label': 'Path stack, root first' });
+      if (!c.frames.length) ul.appendChild(el('li.is-none', 'path stack: empty'));
+      c.frames.forEach(function (f, i) {
+        ul.appendChild(el('li', 'frame ' + i + ': node #' + f.h + ', child ' + f.ci + (i === c.frames.length - 1 ? '  ← top' : '')));
+      });
+      box.appendChild(ul);
+      box.appendChild(el('p.c8-note', s.stale ? 'These frames were computed for an older tree: they are not trusted.' : 'Root first. A frame is one filled node in the tree and the thick edge below it.'));
+    } else {
+      box.appendChild(el('p.c8-note', 'A leaf handle and an index: two words. No path is kept.'));
+    }
+  }
+  /**
+   * On a narrow screen the whole tree is fitted into the stage, which makes the keys small. The hint
+   * appears only while the picture is drawn below 70 % (the toolkit's normal lower limit).
+   */
+  function zoomHint(stage, view) {
+    var hint = el('p.c8-note.c8-zoom', 'Keys too small on this screen? The + button under the tree enlarges it; drag the picture sideways to move it, and "fit" brings the whole tree back.');
+    stage.appendChild(hint);
+    var update = function () { hint.classList.toggle('is-on', view.scale < 0.7); };
+    stage.addEventListener('click', update);            // the zoom buttons are inside the stage
+    return update;
+  }
+  function renderStrip(box, label, keys, dup) {
+    box.textContent = '';
+    box.append(label);
+    if (!keys.length) { box.append(' nothing yet'); return; }
+    keys.forEach(function (key, i) {
+      box.append(el('span.bt-chip.s-' + (dup !== null && dup === i ? 'deleted' : 'found'), String(key)));
+    });
+  }
+
+  /* ============================================================ figure 1 */
+  (function scanFigure() {
+    var fig = BTViz.figure('#fig-scan', {
+      title: 'A range scan with either cursor', side: true,
+      legend: ['node-active', 'key-compare', { token: 'key-found', label: 'returned by the scan' }, { token: 'page-dirty', label: 'stack cursor\'s path: node with a frame, edge taken' }]
+    });
+    var loKind = select('Lower bound kind', [['unbounded', '(−∞  none'], ['included', '[  included'], ['excluded', '(  excluded']], 'included');
+    var hiKind = select('Upper bound kind', [['unbounded', '+∞)  none'], ['included', ']  included'], ['excluded', ')  excluded']], 'excluded');
+    var loKey = numInput('Lower bound', 6), hiKey = numInput('Upper bound', 17);
+    var direction = select('Direction', [['forward', 'forward'], ['backward', 'backward']], 'forward');
+    var design = select('Cursor design', [['link', 'leaf-link cursor'], ['stack', 'stack cursor']], 'link');
+    var order = select('Order M (maximum children per node)', [[3, 'order 3'], [4, 'order 4'], [5, 'order 5']], 4);
+    fig.toolbar.append(
+      el('label.bt-field', 'from', loKind, loKey), el('label.bt-field', 'to', hiKind, hiKey),
+      direction, design, btn('Scan', function () { run(true); }, true),
+      el('span.bt-toolbar-sep'), order,
+      btn('Canonical keys', function () { build(Ch08.CANONICAL, 'the canonical keys'); }),
+      btn('Random keys', randomKeys));
+
+    var view = new BTViz.TreeView(fig.stage, { minHeight: 230, minScale: 0.45, ariaLabel: 'B+tree being scanned' });
+    var strip = el('div.c8-strip', { 'aria-label': 'Keys returned so far' });
+    fig.stage.appendChild(strip);
+    var hint = zoomHint(fig.stage, view);
+    var panel = el('div.bt-panel', el('div.bt-panel-title', 'The cursor'));
+    var body = el('div.bt-panel-body.c8-cur');
+    panel.appendChild(body);
+    fig.side.appendChild(panel);
+    var log = new BTViz.Log(fig.side, { title: 'Moves' });
+    var showCode = makeCode('#code-scan', ['scan', 'seek', 'linkStep', 'stackStep'], TITLES);
+
+    var tree = Ch08.Tree.build(4, Ch08.CANONICAL), fills = 0;
+    var stepper = new BTViz.Stepper({
+      mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
+      onStep: function (step, i) {
+        view.render(step.state.tree, step.highlight);
+        hint();
+        renderCursorPanel(body, step.state);
+        renderStrip(strip, 'returned:', step.state.result, null);
+        showCode(step.code, step.type);
+        log.sync(stepper ? stepper.steps : [], i);
+      }
+    });
+    function sync() { loKey.disabled = loKind.value === 'unbounded'; hiKey.disabled = hiKind.value === 'unbounded'; }
+    loKind.addEventListener('change', sync); hiKind.addEventListener('change', sync);
+
+    function idle(caption) {
+      stepper.setSteps([makeStep(tree, null, { type: 'idle', caption: caption }, {})]);
+    }
+    function readBound(kind, input, what) {
+      if (kind.value === 'unbounded') return { ok: true, bound: Ch08.UNBOUNDED };
+      var r = readKey(input, what);
+      return r.ok ? { ok: true, bound: kind.value === 'included' ? Ch08.included(r.value) : Ch08.excluded(r.value) } : r;
+    }
+    function run(play) {
+      var lo = readBound(loKind, loKey, 'lower bound'), hi = readBound(hiKind, hiKey, 'upper bound');
+      if (!lo.ok || !hi.ok) { idle((lo.ok ? hi : lo).why + ' The tree is unchanged and no scan was started.'); return; }
+      var steps = [], pill = null, asked = false, d = design.value, dir = direction.value, fwd = dir === 'forward';
+      var restLeaf = NIL;          // the leaf the cursor last rested in (landed in, or returned a key from)
+      var res = Ch08.scan(tree, d, lo.bound, hi.bound, dir, function (ev, cur, keys) {
+        var moving = { descend: 1, jump: 1, land: 1, link: 1, up: 1, pop: 1, down: 1, start: 1 }[ev.type];
+        // The marker is the cursor itself, so it shows the key the cursor is on (the same key the panel
+        // shows), also when that key fails the far bound and is not returned. While the cursor is between
+        // two entries the marker waits on the entry it left.
+        if (ev.type === 'end') pill = null;
+        else if (!moving) pill = cur.state === 'on' ? { leaf: cur.leaf, label: cur.key } : null;
+        if (ev.type === 'land' || ev.type === 'return') restLeaf = cur.leaf;
+        var extra = { found: keys, result: keys, pill: pill, positionText: moving ? 'moving (see the caption)' : positionText(tree, cur) };
+        if (ev.type === 'start') extra.log = 'scan ' + Ch08.rangeLabel(lo.bound, hi.bound) + ' ' + dir + ', ' + d;
+        if (ev.type === 'return') extra.log = { html: '&nbsp;&nbsp;return ' + keys[keys.length - 1], state: 'found' };
+        if (ev.type === 'link') extra.log = '&nbsp;&nbsp;follow a sibling link';
+        if (ev.type === 'up') extra.log = '&nbsp;&nbsp;up to the parent, step sideways';
+        if (ev.type === 'pop') extra.log = '&nbsp;&nbsp;pop a frame';
+        if (ev.type === 'stop') extra.log = '&nbsp;&nbsp;stop';
+        if (!asked && (ev.type === 'link' || ev.type === 'up' || ev.type === 'pop')) {
+          asked = true;
+          // Built from the model: during the seek nothing has been returned yet, and a backward scan
+          // leaves a leaf through its first entry. There may be no neighbouring leaf at all.
+          var here = tree.base.name(restLeaf), toward = fwd ? 'next' : 'previous';
+          extra.question = {
+            prompt: (cur.state !== 'on'
+              ? 'The seek came down into leaf ' + here + ', but no key there qualifies. Nothing has been returned yet: the first entry of this scan, if there is one, is in the ' + toward + ' leaf.'
+              : 'The cursor has returned ' + keys[keys.length - 1] + ', the ' + (fwd ? 'last' : 'first') + ' entry of leaf ' + here + ', and steps on.') +
+              ' How does the ' + DESIGN[d] + ' get from here to the ' + toward + ' leaf, if there is one?',
+            choices: ['It follows the sibling link stored in the leaf', 'It goes back up to the parent it remembered and comes down again', 'It descends again from the root, searching for the last key'],
+            answer: d === 'link' ? 0 : 1,
+            explain: d === 'link' ? 'A leaf-link cursor keeps only (leaf, index); the leaf itself knows its neighbours.' : 'A stack cursor never reads sibling links. Its frames say which child it took in each ancestor, so "the next child" is one step sideways in the parent.'
+          };
+        }
+        steps.push(makeStep(tree, cur, ev, extra));
+      });
+      var other = d === 'link' ? 'stack' : 'link';
+      var alt = Ch08.scan(tree, other, lo.bound, hi.bound, dir, null);
+      var n = res.keys.length;
+      steps.push(makeStep(tree, res.cursor, { type: 'done', code: 'scan', caption:
+        'Done. ' + Ch08.rangeLabel(lo.bound, hi.bound) + ' ' + dir + ' returned ' + n + (n === 1 ? ' key' : ' keys') +
+        (n ? ': ' + res.keys.map(function (v) { return k(v, 'found'); }).join(' ') : ' (an empty or inverted range needs no special case: the first candidate already fails the far-bound test, or there is none)') +
+        '. The ' + DESIGN[d] + ' moved between nodes ' + res.cursor.stats.visits + ' times; the ' + DESIGN[other] + ' needs ' + alt.cursor.stats.visits +
+        ' for the same scan and returns the same keys.' +
+        (res.cursor.state === 'on' ? ' The cursor still rests on ' + k(res.cursor.key, 'compare') + ' at leaf #' + res.cursor.leaf + ', index ' + res.cursor.index +
+          ': the first key outside the range, which was read and tested but not returned.' : '') }, { found: res.keys, result: res.keys, pill: pill, positionText: positionText(tree, res.cursor),
+        log: { html: '&nbsp;&nbsp;' + n + ' keys, ' + res.cursor.stats.visits + ' node visits (' + other + ': ' + alt.cursor.stats.visits + ')', state: 'found' } }));
+      stepper.setSteps(steps, play ? { play: true } : { index: 0 });
+    }
+    function build(keys, what) {
+      tree = Ch08.Tree.build(+order.value, keys);
+      log.clear();
+      idle('A B+tree of order ' + order.value + ' with ' + what + ' (' + tree.base.count + ' keys, height ' + tree.base.height +
+        '). The arrows between leaves are the <code>next</code> links; every leaf also has a <code>prev</code> link. Choose bounds, a direction and a cursor design, then press Scan.');
+    }
+    function randomKeys() {
+      build(BTViz.rng(31 + fills++).sample(16, 1, 60), '16 random keys');
+    }
+    order.addEventListener('change', function () { build(Ch08.CANONICAL, 'the canonical keys'); });
+    [loKey, hiKey].forEach(function (inp) { inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') run(true); }); });
+    sync();
+    build(Ch08.CANONICAL, 'the canonical keys');
+    // The tree this figure shows is the one the programs print in section 1.
+    BTViz.selfTest('page tree = output §1', '== 1. The tree: canonical keys, order M = 4 ==\n' + Ch07.dump(tree.base), window.CHAPTER_EXPECTED.s1);
+    window.__c8scan = { stepper: stepper, run: run };
+  })();
+
+  /* ============================================================ figure 2 */
+  (function changeFigure() {
+    var fig = BTViz.figure('#fig-change', {
+      title: 'The tree changes under the cursor', side: true,
+      legend: ['node-active', 'key-compare', { token: 'key-found', label: 'returned by the cursor' }, 'key-inserted',
+        { token: 'key-deleted', label: 'deleted, or returned wrongly' }, 'split', 'merge', { token: 'page-dirty', label: 'stack cursor\'s path: node with a frame, edge taken' }]
+    });
+    var design = select('Cursor design', [['link', 'leaf-link cursor'], ['stack', 'stack cursor']], 'link');
+    var mode = select('What the cursor does after a change', [['safe', 're-seek by saved key (correct)'], ['naive', 'trust the old position (naive)']], 'safe');
+    var key = numInput('Key');
+    fig.toolbar.append(design, mode, el('span.bt-toolbar-sep'), key,
+      btn('Seek ≥ key', function () { cursorOp('seek'); }), btn('Next', function () { cursorOp('next'); }, true), btn('Prev', function () { cursorOp('prev'); }),
+      el('span.bt-toolbar-sep'),
+      btn('Insert key', function () { treeOp('insert'); }), btn('Delete key', function () { treeOp('delete'); }),
+      el('span.bt-toolbar-sep'),
+      btn('Scenario: split under the cursor', function () { scenario(true); }), btn('Reset', reset));
+
+    var view = new BTViz.TreeView(fig.stage, { minHeight: 230, minScale: 0.45, ariaLabel: 'B+tree with a cursor on it' });
+    var strip = el('div.c8-strip', { 'aria-label': 'Keys the cursor returned since its last seek' });
+    fig.stage.appendChild(strip);
+    var hint = zoomHint(fig.stage, view);
+    var panel = el('div.bt-panel', el('div.bt-panel-title', 'The cursor'));
+    var body = el('div.bt-panel-body.c8-cur');
+    panel.appendChild(body);
+    fig.side.appendChild(panel);
+    var log = new BTViz.Log(fig.side, { title: 'Operations' });
+    var showCode = makeCode('#code-change', ['reseek', 'seek', 'linkStep', 'stackStep'], TITLES);
+
+    // The model. `history` = keys returned since the last seek; `dup` = index of a wrong answer in it.
+    var tree, cur, history, dup;
+    var stepper = new BTViz.Stepper({
+      mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
+      onStep: function (step, i) {
+        view.render(step.state.tree, step.highlight);
+        hint();
+        renderCursorPanel(body, step.state);
+        renderStrip(strip, 'returned since the last seek:', step.state.result, step.state.dup);
+        showCode(step.code, step.type);
+        log.sync(stepper ? stepper.steps : [], i);
+      }
+    });
+
+    function fresh() {
+      tree = Ch08.Tree.build(4, Ch08.CANONICAL);
+      cur = new Ch08.Cursor(design.value);
+      cur.naive = mode.value === 'naive';
+      history = []; dup = null;
+    }
+    /** The pill: on the cursor's leaf; a stale cursor shows its saved key with a question mark. */
+    function pill() {
+      if (cur.state !== 'on') return null;
+      return { leaf: cur.leaf, label: cur.isStale(tree) ? cur.key + ' ?' : cur.key };
+    }
+    /** Everything a step needs besides the event; `settled` steps carry the model for later actions. */
+    function extra(more) {
+      var x = { found: cur.state === 'on' && !cur.isStale(tree) ? [cur.key] : [], result: history, dup: dup, pill: pill(),
+        stale: cur.isStale(tree), positionText: positionText(tree, cur) + (cur.isStale(tree) ? (cur.naive ? ' (never re-checked)' : ' (as it was)') : ''),
+        model: { tree: tree.toJSON(), cursor: cur.toJSON(), history: history.slice(), dup: dup } };
+      Object.keys(more || {}).forEach(function (p) { x[p] = more[p]; });
+      return x;
+    }
+    function idleStep(caption, more) { var st = makeStep(tree, cur, { type: 'idle', caption: caption }, extra(more)); st.settled = true; return st; }
+
+    /**
+     * Controls act on what is on screen. Every step carries the model as it was drawn; an operation
+     * that is shown half-way (a split in progress, a descent in progress) is first completed by
+     * jumping to its last step, because a half-done operation is not a state anything can start from.
+     */
+    function adopt() {
+      var i = stepper.index, steps = stepper.steps, note = '', j = i;
+      while (j < steps.length - 1 && !steps[j].settled) j++;
+      if (j !== i) {
+        stepper.go(j, { instant: true });
+        note = 'The operation that was on screen half-way was finished first. ';
+      }
+      var m = stepper.state(stepper.index).model;
+      tree = Ch08.Tree.fromJSON(m.tree);
+      cur = Ch08.Cursor.fromJSON(m.cursor);
+      history = m.history.slice(); dup = m.dup;
+      // The selects are the reader's current choice, whatever the adopted step was built with.
+      cur.naive = mode.value === 'naive';
+      return note;
+    }
+    /** Marks the steps of one operation: only after its last step is the model in a state to act on. */
+    function seal(steps) {
+      steps.forEach(function (st, i) { st.settled = i === steps.length - 1; });
+      return steps;
+    }
+    function show(steps, note, play) {
+      if (note) steps[0].caption = note + steps[0].caption;
+      stepper.setSteps(steps, play ? { play: true } : { index: steps.length - 1 });
+    }
+
+    /* ---- cursor operations ---- */
+    function cursorSteps(op, target, question) {
+      var steps = [], b = tree.base, fwd = op !== 'prev';
+      var rec = function (ev) { steps.push(makeStep(tree, cur, ev, extra({ pill: null, found: [], positionText: 'moving (see the caption)' }))); };
+      var wasStale = cur.isStale(tree), old = { key: cur.key, leaf: cur.leaf, index: cur.index, state: cur.state };
+      var name = op === 'seek' ? 'seek(≥ ' + target + ')' : op + '()';
+      var correct = null;          // what a correct cursor returns, from the keys themselves
+      if (op !== 'seek' && cur.state === 'on') {
+        var all = tree.keys();
+        var later = all.filter(function (v) { return fwd ? v > old.key : v < old.key; });
+        correct = later.length ? (fwd ? later[0] : later[later.length - 1]) : null;
+      }
+      if (op === 'seek') {
+        history = []; dup = null;
+        steps.push(makeStep(tree, cur, { type: 'start', code: 'seek', caption: 'Seek to the first key ≥ ' + k(target) + ': a normal descent from the root. A seek never depends on where the cursor was before.',
+          hl: b.root === NIL ? {} : { nodes: mk(b.root, 'active') } }, extra({ pill: null, found: [], log: name })));
+      } else if (wasStale && cur.naive) {
+        if (!cur.positionReadable(tree) || !framesReadable()) {
+          steps.push(idleStep('The naive cursor wants to continue from its old position, leaf #' + old.leaf + ', index ' + old.index +
+            ', but ' + (b.slots[old.leaf] && b.slots[old.leaf].used ? 'that node no longer has such an entry or such a path above it' : 'that node was freed') +
+            '. Reading it would be a use-after-free: a panic in a safe Zig build and in Rust, garbage otherwise. Nothing is returned. ' +
+            'Switch the mode back to re-seek, or seek again.', { log: { html: name + ': dangling position', state: 'deleted' } }));
+          return seal(steps);
+        }
+        var held = b.node(old.leaf).keys[old.index];
+        steps.push(makeStep(tree, cur, { type: 'fresh', code: 'reseek', caption: 'The tree has changed since this cursor computed its position, but this naive cursor does not check. It trusts leaf #' + old.leaf + ', index ' + old.index +
+          ', which ' + (held === old.key ? 'happens to hold ' + k(held, 'compare') + ' still' : 'now holds ' + k(held, 'compare') + ' instead of ' + k(old.key)) + ', and steps from there.',
+          hl: { nodes: mk(old.leaf, 'active'), keys: [[old.leaf, held, 'compare']] } }, extra({ log: name + ' (naive)' })));
+      }
+      cur.rec = rec;
+      var got = op === 'seek' ? cur.seek(tree, { kind: 'ge', key: target }) : cur.step(tree, fwd ? 'forward' : 'backward');
+      cur.rec = null;
+      if (got !== null) history.push(got);
+      var text, moreExtra = { log: { html: name + ' → ' + (got === null ? 'none' : got), state: 'found' } };
+      if (got === null) {
+        text = name + ' returns nothing: the cursor is now ' + positionText(tree, cur) + '.' + (op !== 'seek' && cur.state !== 'on' ? ' From here ' + (fwd ? 'Prev' : 'Next') + ' comes back into the tree.' : '');
+      } else {
+        text = name + ' returns ' + k(got, 'found') + '. The cursor is on it at leaf #' + cur.leaf + ', index ' + cur.index +
+          (cur.design === 'stack' ? ', path ' + (cur.pathLabel() || '(the root is a leaf)') : '') + '.';
+        if (wasStale && !cur.naive && op !== 'seek') text += ' The re-seek cost one descent; the position is valid for tree version ' + tree.version + ' again.';
+      }
+      if (op !== 'seek' && cur.naive && wasStale) {
+        if (got !== correct) {
+          dup = got === null ? null : history.length - 1;
+          text = text.replace('s-found', 's-deleted') + ' <b>Wrong.</b> The entry ' + (fwd ? 'after ' : 'before ') + k(old.key) + ' is ' + (correct === null ? 'nothing' : k(correct, 'found')) + '. ' +
+            (got !== null && (fwd ? got <= old.key : got >= old.key) ? 'The scan has gone backwards or returned an entry twice' : 'The scan has skipped or invented an entry') +
+            ', because (leaf, index) meant something else before the change.';
+          moreExtra.log = { html: name + ' → ' + (got === null ? 'none' : got) + ' (wrong)', state: 'deleted' };
+        } else {
+          text += ' Right this time, by luck: the change did not move the entries this step looked at.';
+        }
+      }
+      var last = makeStep(tree, cur, { type: 'on', code: 'reseek', caption: text, hl: got === null ? {} : { nodes: mk(cur.leaf, 'active') } }, extra(moreExtra));
+      if (dup !== null && got !== null && dup === history.length - 1) last.highlight.keys[tree.base.id(cur.leaf) + ':' + got] = 'deleted';
+      steps.push(last);
+      if (question) steps[0].question = question;
+      return seal(steps);
+    }
+    /** A naive stack cursor also needs its frames to name live internal nodes with those children. */
+    function framesReadable() {
+      return cur.design !== 'stack' || cur.frames.every(function (f) {
+        var s = tree.base.slots[f.h];
+        return s && s.used && !s.node.leaf && f.ci < s.node.children.length;
+      });
+    }
+    function cursorOp(op) {
+      var target = null;
+      if (op === 'seek') {
+        var r = readKey(key, 'key');
+        if (!r.ok) { var n0 = adopt(); show([idleStep(n0 + r.why + ' The tree and the cursor are unchanged.')], '', false); return; }
+        target = r.value;
+      }
+      var note = adopt();
+      show(cursorSteps(op, target, null), note, true);
+    }
+
+    /* ---- tree operations ---- */
+    var SKIP = { start: 1, descend: 1, done: 1 };
+    function treeSteps(op, v) {
+      var b = tree.base, before = tree.version, was = cur.toJSON();
+      var raw = op === 'insert' ? tree.put(v, v * 100) : tree.delete(v);
+      var after = tree.version, steps = [];
+      // The chapter 07 model recorded full snapshots while it worked; show the structural steps.
+      raw.forEach(function (s, i) {
+        if (SKIP[s.type]) return;
+        var hl = { nodes: s.highlight.nodes || {}, keys: {}, edges: s.highlight.edges || {}, links: s.highlight.links || {} };
+        (s.state.stale || []).forEach(function (id) { hl.keys[id] = 'dim'; });
+        Object.keys(s.highlight.keys || {}).forEach(function (id) { hl.keys[id] = s.highlight.keys[id]; });
+        var at = was.state === 'on' ? findLeafId(s.state.tree, was.leaf) : null;
+        if (at) hl.cursor = { node: at, label: was.key };
+        steps.push({ type: 'tree-' + s.type, caption: (op === 'insert' ? 'Insert ' : 'Delete ') + k(v) + '. ' + s.caption, highlight: hl, code: null,
+          log: i === 0 || !steps.length ? (op === 'insert' ? 'put ' : 'delete ') + v : null,
+          state: { tree: s.state.tree, version: before, count: s.state.count, height: s.state.height, cursor: was, stale: false,
+            positionText: positionText(tree, cur), result: history.slice(), model: null, dup: dup } });
+      });
+      var text;
+      if (!raw.ok) {
+        text = (op === 'insert' ? k(v) + ' was already in the tree, so <code>put</code> only overwrote its value' : k(v) + ' is not in the tree, so nothing was deleted') +
+          '. Nothing moved: the tree version stays ' + after + ' and every cursor position is still valid.';
+      } else {
+        text = (op === 'insert' ? 'Inserted ' : 'Deleted ') + k(v, op === 'insert' ? 'inserted' : 'deleted') + ': the tree version goes from ' + before + ' to ' + after + '. ';
+        if (cur.state !== 'on') text += 'The cursor is ' + positionText(tree, cur) + ' and holds no position that could go stale.';
+        else {
+          var nowHolds = cur.positionReadable(tree) ? b.node(cur.leaf).keys[cur.index] : null;
+          text += 'The cursor does not notice anything yet. Its saved position, leaf #' + cur.leaf + ', index ' + cur.index + ', was computed for version ' + cur.version + ' and ' +
+            (nowHolds === null ? 'no longer exists (the leaf was freed or is shorter now)' : nowHolds === cur.key ? 'happens to hold ' + k(cur.key) + ' still' : 'now holds ' + k(nowHolds, 'compare') + ' instead of ' + k(cur.key)) +
+            '. Its saved key ' + k(cur.key) + (b.get(cur.key) === null ? ' is not even in the tree any more, but it still says where to continue' : ' is still right') + '. Press Next or Prev.';
+        }
+      }
+      steps.push(makeStep(tree, cur, { type: 'idle', caption: text, hl: op === 'insert' && raw.ok ? { keys: [[b.findLeaf(v), v, 'inserted']] } : {} },
+        extra(steps.length ? {} : { log: (op === 'insert' ? 'put ' : 'delete ') + v })));
+      return seal(steps);
+    }
+    /** Id of the leaf drawn with handle `h` in a snapshot taken while an operation was running. */
+    function findLeafId(node, h) {
+      if (!node) return null;
+      if (!node.children || !node.children.length) return node.meta && node.meta.label === '#' + h ? node.id : null;
+      for (var i = 0; i < node.children.length; i++) { var id = findLeafId(node.children[i], h); if (id) return id; }
+      return null;
+    }
+    function treeOp(op) {
+      var r = readKey(key, 'key');
+      var note = adopt();
+      if (!r.ok) { show([idleStep(note + r.why + ' The tree and the cursor are unchanged.')], '', false); return; }
+      show(treeSteps(op, r.value), note, true);
+      key.value = '';
+    }
+
+    /* ---- the fixed scenario of the programs, section 6 ---- */
+    function scenario(play) {
+      fresh();
+      log.clear();
+      var steps = [idleStep('The canonical tree and a new ' + DESIGN[cur.design] + (cur.naive ? ' in <b>naive</b> mode: it never checks whether the tree changed' : ', which re-seeks by key after a change') +
+        '. The scenario: seek ≥ ' + k(10) + ', next, then insert ' + k(11) + ' ' + k(13) + ' ' + k(14) + ' so that the cursor\'s leaf splits, then next again.', { log: 'scenario' })];
+      var add = function (more) { steps = steps.concat(more); };
+      add(cursorSteps('seek', 10, null));
+      add(cursorSteps('next', null, null));
+      var was = { key: cur.key, leaf: cur.leaf, index: cur.index }, splitsBefore = tree.base.stats.leafSplits;
+      [11, 13, 14].forEach(function (v) { add(treeSteps('insert', v)); });
+      add(cursorSteps('next', null, scenarioQuestion(was, tree.base.stats.leafSplits > splitsBefore)));
+      stepper.setSteps(steps, play ? { play: true } : { index: 0 });
+    }
+    /**
+     * The question before the scenario's last next(), computed from the model: what both kinds of
+     * cursor would return is found by running copies of this cursor, not written down by hand.
+     */
+    function scenarioQuestion(was, didSplit) {
+      var b = tree.base, pos = 'leaf #' + was.leaf + ', index ' + was.index;
+      var run = function (naive) { var c = Ch08.Cursor.fromJSON(cur.toJSON()); c.naive = naive; return c.step(tree, 'forward'); };
+      var right = run(false), wrong = run(true), after = tree.keys().filter(function (v) { return v > right; })[0];
+      var say = function (v) { return v === null || v === undefined ? 'nothing' : v === was.key ? v + ', a second time' : String(v); };
+      var choices = [];
+      [wrong, right, after].forEach(function (v) { if (choices.indexOf(say(v)) < 0) choices.push(say(v)); });
+      var holds = b.slots[was.leaf] && b.slots[was.leaf].used ? b.node(was.leaf).keys : [];
+      return {
+        prompt: 'The cursor returned ' + was.key + ' from ' + pos + '. Since then 11, 13 and 14 were inserted' + (didSplit ? ' and that leaf split' : '') +
+          '. What does this cursor\'s next() return now?',
+        choices: choices,
+        answer: choices.indexOf(say(cur.naive ? wrong : right)),
+        explain: cur.naive
+          ? 'Leaf #' + was.leaf + ' is now (' + holds.join(' ') + '), so index ' + was.index + ' ' + (holds[was.index] === undefined ? 'is past its end' : 'holds ' + holds[was.index]) +
+            '. The naive cursor steps on from that old position and returns ' + (wrong === was.key ? wrong + ' a second time' : say(wrong)) + '; the entry after ' + was.key + ' is ' + say(right) + '.'
+          : 'The cursor sees that the tree version changed, drops (' + pos + ') and seeks the first key greater than its saved key ' + was.key + '.'
+      };
+    }
+    function reset() {
+      fresh();
+      log.clear();
+      stepper.setSteps([idleStep('The canonical tree, version ' + tree.version + ' (one per insert so far), and a new ' + DESIGN[cur.design] +
+        ' that is before the first entry. Type a key and seek, step with Next and Prev, and insert or delete keys in between. Or run the scenario.')]);
+    }
+    design.addEventListener('change', function () {
+      var note = adopt();
+      cur = new Ch08.Cursor(design.value);
+      cur.naive = mode.value === 'naive';
+      history = []; dup = null;
+      show([idleStep(note + 'A new ' + DESIGN[cur.design] + ' on the tree as shown. It is before the first entry; the old cursor is gone.')], '', false);
+    });
+    mode.addEventListener('change', function () {
+      var note = adopt();
+      show([idleStep(note + (cur.naive
+        ? 'Naive mode: from now on this cursor skips the version check and trusts its saved (leaf, index) whatever happened to the tree.'
+        : 'Correct mode: before every step the cursor compares the tree version with the one it saw, and re-seeks by its saved key if they differ.'))], '', false);
+    });
+    key.addEventListener('keydown', function (e) { if (e.key === 'Enter') cursorOp('seek'); });
+
+    /* ---- self-tests: the JS model reproduces the programs' output ---- */
+    var S = Ch08.scenarioText(), E = window.CHAPTER_EXPECTED;
+    BTViz.selfTest('model = output §2', S.s2, E.s2);
+    BTViz.selfTest('model = output §3', S.s3, E.s3);
+    BTViz.selfTest('model = output §4', S.s4, E.s4);
+    BTViz.selfTest('model = output §6', S.s6, E.s6);
+    // The state the scenario on this page ends in is the tree and position the programs print.
+    scenario(false);
+    var end = stepper.state(stepper.steps.length - 1).model;
+    var endTree = Ch08.Tree.fromJSON(end.tree);
+    BTViz.selfTest('page scenario = output §6',
+      Ch07.dump(endTree.base) + 'next -> ' + end.cursor.key + ', now at #' + end.cursor.leaf + '[' + end.cursor.index + ']',
+      E.s6.slice(E.s6.indexOf('height 3, 15 keys'), E.s6.indexOf('  the old position')) + 'next -> 13, now at #8[1]');
+    reset();
+    window.__c8change = { stepper: stepper };
+  })();
+})();
+</script>
+</body>
+</html>

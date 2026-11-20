@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 19 — Latching and lock coupling</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  /* Chapter-local pieces, painted with the toolkit's tokens only. */
+  .ch19-glock {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    padding: 6px 10px; margin-bottom: 8px; font-size: .88rem;
+    border: 1px solid var(--bt-border); border-radius: 8px; background: var(--bt-surface-2); color: var(--bt-text);
+  }
+  .ch19-free { color: var(--bt-muted); }
+  .ch19-error { color: var(--bt-key-deleted); font-weight: 650; }
+  /* The experiment list has long labels: let it shrink instead of widening the page. */
+  .ch19-wide { display: flex; flex: 1 1 16em; min-width: 0; max-width: 100%; }
+  .ch19-wide select { flex: 1 1 auto; min-width: 0; width: 100%; max-width: 34em; }
+  /* Slightly tighter lanes in the guided figure, so that the picture, the lanes, the
+     caption and the step controls fit on one 1280x800 screen together. */
+  #fig-guided .bt-lanes { gap: 6px; }
+  #fig-guided .bt-lane { padding: 5px 10px; }
+  #fig-guided .bt-lane-track { padding-top: 4px; }
+  .ch19-lanes-box { min-width: 0; padding: 10px 14px 12px; border-top: 1px solid var(--bt-border); }
+  @media (min-width: 821px) {
+    .ch19-lanes-box { padding: 0 14px 8px; border-top: 0; }
+    .bt-figure-main > .bt-caption, .bt-figure-main > .bt-controls-slot { order: 1; }
+  }
+  /* On a wide screen the caption shares the left column with the picture (the code or
+     the log is beside them), so it wraps earlier: take the height back from paddings. */
+  @media (min-width: 821px) {
+    .bt-figure .bt-figure-title { padding-block: 6px; }
+    .bt-figure .bt-toolbar { padding-block: 5px; }
+    .bt-figure .bt-stage { padding-block: 8px; }
+    .bt-figure .bt-stage > * + * { margin-top: 6px; }
+    .bt-figure .ch19-glock { margin-bottom: 0; padding-block: 4px; }
+    .bt-figure .bt-caption { padding-block: 6px; }
+    .bt-figure .bt-controls { padding-block: 6px; }
+  }
+  /* Four lanes (the convoy experiment): two by two where there is room. */
+  @media (min-width: 720px) {
+    .ch19-many .bt-lanes { display: grid; grid-template-columns: 1fr 1fr; }
+    .ch19-many .bt-lane { min-width: 0; }
+  }
+  /* T1 while the experiment holds it back. */
+  .s-frozen { --s: var(--bt-text); }
+  /* Lift the latch badges so that the key cells do not cover their lower half. */
+  .bt-node-lock rect, .bt-node-lock text { transform: translateY(-5px); }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">Two threads use one B+tree. What may the second thread do while the first is in the middle of an
+operation? That depends on what the first one has locked. This page runs the same two operations under
+four protocols: one <em>mutex</em> for the whole tree, one <em>reader-writer lock</em> for the whole tree,
+a latch per node with <em>latch coupling</em>, and <em>optimistic</em> descent with version counters.
+Text and code: <a href="../README.md">chapter README</a>.</p>
+
+<h2>1. One operation frozen, the other one runs</h2>
+<p>These are the experiments of sections 3, 4 and 7 of <code>zig build run</code> / <code>cargo run</code>.
+Thread T1 starts and is stopped in the middle, still holding its locks; then thread T2 runs.
+The last experiment in the list has four threads: it shows a <em>convoy</em>, a thread that waits for
+one that is itself only waiting.
+A badge on a node names the thread and the mode: <b>S</b> shared (several readers), <b>X</b> exclusive
+(one writer); a dashed badge ending in <b>?</b> is a thread waiting for that latch.
+Change the protocol and watch the same experiment end differently. Press <kbd>Space</kbd> to play,
+<kbd>→</kbd> to step, or tick <em>Predict</em> to be asked first.</p>
+<div id="fig-guided"></div>
+
+<h2>2. Your turn: you are the scheduler</h2>
+<p>Pick an operation for each thread and press Start. Each press of a <b>Step</b> button lets that thread
+take exactly one step, so you choose the interleaving. A thread that needs a latch held by the other one
+cannot step until it is released. Things to try with latch coupling: <code>put 26</code> against
+<code>get 17</code> (stop the writer after it has latched #6); two <code>put</code>s into different
+leaves; then the same under the reader-writer lock. With the optimistic protocol, let a reader note a
+version, run a writer through the same leaf, and watch the reader start again.</p>
+<p><b>The wrong answer that coupling prevents.</b> The last protocol in the list, <em>no coupling (broken)</em>,
+is latch coupling with the reader's two steps swapped: it releases the parent first and latches the child
+afterwards. Choose it, set T1 to <code>get 30</code> and T2 to <code>put 26</code>, and press Start. Step T1
+until it has released #6 and holds nothing. Then step T2 to the end: leaf #3 splits and 30 moves
+to the new leaf #8. Now finish T1. It reports that 30 is not in the tree.</p>
+<div id="fig-sandbox"></div>
+<p>The sandbox tree lives in a node table of 24 nodes, like the fixed table of the programs. After enough
+splits a <code>put</code> ends with <b>OutOfNodes</b> and changes nothing; <em>Reset tree</em> starts over.</p>
+<p>The model grants a shared latch whenever no writer holds the node. Real reader-writer locks often make
+new readers queue behind a waiting writer so that writers are not starved; the order of who gets in is
+then different, the set of latches each protocol needs is the same. In the convoy experiment above that
+makes things worse: once T4 waits for the root, a fifth thread that only wants to read would queue behind
+it as well.</p>
+
+<h2>3. Does the picture match the code?</h2>
+<p>The JavaScript model behind this page is a port of the chapter's Zig and Rust code. It rebuilds the
+canonical tree under each protocol, repeats every frozen-operation experiment, the replaced-root
+experiment, the full-node-table experiment and the four-thread convoy, and compares the text with
+<code>expected_output.txt</code> (sections 1, 3, 4, 5 and 7). The optimistic protocol is not in the programs and so has no such check.</p>
+<div id="selftests" class="bt-selftests" role="status" aria-label="Model self-tests"><span class="bt-selftests-title">Self-tests</span></div>
+<details>
+  <summary>Output of the programs (all seven sections)</summary>
+  <pre class="bt-code" id="program-output" tabindex="0"></pre>
+</details>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="local.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

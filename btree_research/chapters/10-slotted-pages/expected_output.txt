@@ -1,0 +1,67 @@
+== Part 1: one page, step by step ==
+init
+  cells=0 content_start=4096 gap=4080 free_blocks=[] frag=0 free=4080
+  slots: (none)
+put mango=yellow (15-byte cell)
+  cells=1 content_start=4081 gap=4063 free_blocks=[] frag=0 free=4063
+  slots: mango@4081
+put apple=red (12-byte cell)
+  cells=2 content_start=4069 gap=4049 free_blocks=[] frag=0 free=4049
+  slots: apple@4069 mango@4081
+put kiwi=green (13-byte cell)
+  cells=3 content_start=4056 gap=4034 free_blocks=[] frag=0 free=4034
+  slots: apple@4069 kiwi@4056 mango@4081
+put cherry=dark red (18-byte cell)
+  cells=4 content_start=4038 gap=4014 free_blocks=[] frag=0 free=4014
+  slots: apple@4069 cherry@4038 kiwi@4056 mango@4081
+put fig=purple (13-byte cell)
+  cells=5 content_start=4025 gap=3999 free_blocks=[] frag=0 free=3999
+  slots: apple@4069 cherry@4038 fig@4025 kiwi@4056 mango@4081
+delete kiwi
+  cells=4 content_start=4025 gap=4001 free_blocks=[4056+13] frag=0 free=4014
+  slots: apple@4069 cherry@4038 fig@4025 mango@4081
+delete apple
+  cells=3 content_start=4025 gap=4003 free_blocks=[4056+25] frag=0 free=4028
+  slots: cherry@4038 fig@4025 mango@4081
+put banana=yellow (16-byte cell)
+  cells=4 content_start=4025 gap=4001 free_blocks=[4056+9] frag=0 free=4010
+  slots: banana@4065 cherry@4038 fig@4025 mango@4081
+put pea=g (8-byte cell)
+  cells=5 content_start=4025 gap=3999 free_blocks=[] frag=1 free=4000
+  slots: banana@4065 cherry@4038 fig@4025 mango@4081 pea@4056
+delete fig
+  cells=4 content_start=4038 gap=4014 free_blocks=[] frag=1 free=4015
+  slots: banana@4065 cherry@4038 mango@4081 pea@4056
+delete mango
+  cells=3 content_start=4038 gap=4016 free_blocks=[4081+15] frag=1 free=4032
+  slots: banana@4065 cherry@4038 pea@4056
+compact
+  cells=3 content_start=4054 gap=4032 free_blocks=[] frag=0 free=4032
+  slots: banana@4080 cherry@4062 pea@4054
+header and slot array:
+00000000  03 00 d6 0f 00 00 00 00  00 00 00 00 00 00 00 00  |................|
+00000010  f0 0f de 0f d6 0f 00 00  00 00 00 00 00 00 00 00  |................|
+content area:
+00000fd0  00 00 00 00 00 00 03 00  01 00 70 65 61 67 06 00  |..........peag..|
+00000fe0  08 00 63 68 65 72 72 79  64 61 72 6b 20 72 65 64  |..cherrydark red|
+00000ff0  06 00 06 00 62 61 6e 61  6e 61 79 65 6c 6c 6f 77  |....bananayellow|
+
+== Part 2: fragmentation and automatic compaction ==
+fill with 104-byte cells until the next one does not fit
+  cells=38 content_start=144 gap=52 free_blocks=0 (0 bytes, largest 0) frag=0 free=52
+delete every other cell
+  cells=19 content_start=144 gap=90 free_blocks=19 (1976 bytes, largest 104) frag=0 free=2066
+put big (507-byte cell): no free block and no gap is large enough, so the page compacts first
+  cells=20 content_start=1613 gap=1557 free_blocks=0 (0 bytes, largest 0) frag=0 free=1557
+put huge (2008-byte cell): PageFull, page unchanged
+  cells=20 content_start=1613 gap=1557 free_blocks=0 (0 bytes, largest 0) frag=0 free=1557
+
+== Part 3: 3000 random operations on one page ==
+seed=10 count=3000 key_space=300
+put: 1202 (475 refused with PageFull)
+delete: 600 (235 found)
+get: 885 (327 found)
+range: 313 (12768 cells visited)
+most free blocks at once: 16, most fragment bytes at once: 27
+  cells=128 content_start=279 gap=7 free_blocks=1 (4 bytes, largest 4) frag=0 free=11
+fnv1a64 of the page: 3b3ad4029bd5294a

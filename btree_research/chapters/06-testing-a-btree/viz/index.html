@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Testing a B-tree</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  /* Chapter-local styles: tokens only, no hard-coded colours. */
+  .fz { display: grid; grid-template-columns: minmax(210px, 270px) minmax(0, 1fr); gap: 12px; align-items: start; }
+  .fz-col { display: grid; gap: 10px; min-width: 0; }
+  .fz-ops { margin: 0; padding: 0; list-style: none; max-height: 430px; overflow-y: auto;
+            font: .8rem/1.5 var(--bt-mono); }
+  .fz-ops li { display: flex; gap: 8px; padding: 1px 8px; white-space: nowrap; }
+  .fz-ops li .n { color: var(--bt-muted); min-width: 2.6em; text-align: right; flex: none; }
+  .fz-ops li.is-done { color: var(--bt-muted); }
+  .fz-ops li[class*="s-"] { background: var(--s-bg); box-shadow: inset 3px 0 0 var(--s); color: var(--bt-text); }
+  /* Two lines of chips at most, then the row scrolls: the contents must not
+     push the caption and the step controls off a 1280x800 screen. */
+  .fz-row { display: flex; flex-wrap: wrap; gap: 4px; max-height: 58px; overflow-y: auto; align-items: center; }
+  /* The verdicts are never clipped: they wrap, and a long one may break. */
+  .fz-checks { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .fz-checks .bt-chip { white-space: normal; overflow-wrap: anywhere; }
+  .fz-row-label { font-size: .8rem; color: var(--bt-muted); margin: 0 0 3px; }
+  /* Oracle and tree contents side by side: they are compared chip by chip,
+     and one row of height is saved for the caption and the controls. */
+  .fz-contents { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px 14px; margin-top: 8px; }
+  .fz-status { font-size: .88rem; margin: 0 0 8px; }
+  .fz-status code { white-space: normal; }
+  .fz-msg { color: var(--bt-key-deleted); font-size: .86rem; min-height: 1.3em; margin: 4px 0 0; }
+  .fz-empty { color: var(--bt-muted); font-size: .84rem; }
+  @media (max-width: 760px) {
+    .fz { grid-template-columns: minmax(0, 1fr); }
+    .fz-ops { max-height: 150px; }
+    .fz-contents { grid-template-columns: minmax(0, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">A fuzzer feeds the same random operations to a B-tree and to a sorted list that is
+obviously correct, and stops at the first step where the two disagree or the tree breaks one of its own rules.
+Pick a broken tree and watch it get caught, then shrink the failing run to a few steps.</p>
+
+<p>This page belongs to <a href="../README.md">Chapter 06: Testing a B-tree</a>.
+The operation stream is on the left; the tree under test and the oracle are on the right.
+After every step the page runs the three checks of the chapter's fuzzer: is the answer the same, does
+<code>validate()</code> pass, and (every 16 steps and at the end) is a full scan of the tree equal to the oracle.
+A fourth chip counts how many of the chapter's 21 coverage points (kinds of split, borrow, merge and so on) the run has reached so far.
+Everything is computed in your browser by a JavaScript port of the chapter's Zig and Rust code: the same seeds give the same
+operations, the same failing step and the same reproducer that <code>zig build run</code> prints.</p>
+
+<h2>Fuzzer replay</h2>
+<div id="fig"></div>
+
+<h2>The three broken trees</h2>
+<div class="bt-table-wrap">
+<table class="bt-table">
+<thead><tr><th>Variant</th><th>The one-line change</th><th>What it does</th><th>Which check sees it</th></tr></thead>
+<tbody>
+<tr><td><code>split_wrong_value</code></td><td>insert: a split sends the median key up with its left neighbour's value</td>
+    <td>The shape stays perfect; one key has the wrong value.</td><td>Only the comparison with the oracle. <code>validate()</code> is silent.</td></tr>
+<tr><td><code>merge_leaks_node</code></td><td>delete: a merge never returns the emptied node to the pool</td>
+    <td>Every answer stays right; one node is allocated but unreachable.</td><td>Only <code>validate()</code>: the pool counts one more live node than the tree can reach.</td></tr>
+<tr><td><code>borrow_forgets_child</code></td><td>delete: a borrow between interior nodes moves the key but not the child</td>
+    <td>An interior node has a key more than it has children for; a whole subtree is lost.</td><td><code>validate()</code>: <code>MissingChild</code>. Needs a tree of height 3, so fewer seeds reach it.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Suggested experiments: for each variant, press <em>Shortest failing run</em>, step to the end, then press <em>Minimise</em> and
+step through the reproducer by hand. Tick <em>Predict</em> to be asked which check will catch the bug before the failing step is shown. Replay seed 3 (four possible keys) and seed 28 (64 keys) on the correct tree
+to see how different two swarm cases are. Each seed also decides where in the 64-bit key space its keys lie: from 0 (seed 36),
+around 2<sup>32</sup> (seed 5), spread over the whole range (seed 1) or just below 2<sup>64</sup> (seed 7). The shape of the tree does not depend on that,
+but a tree that compared only the low 32 bits of a key would pass every test on small keys. Large keys are written compactly:
+27·2<sup>58</sup> is 27 times 2<sup>58</sup>, 2<sup>64</sup>−38 is 38 below 2<sup>64</sup>. Replay a seed that does not catch the third variant (seed 3 is one) to see
+a broken tree pass a test that never builds a third level: the caption of its last step lists the coverage points the run never reached.
+A green run has only tested the branches it went through.</p>
+
+<h2>The loop behind the picture</h2>
+<div id="fig-code"></div>
+
+<script src="code.js"></script>
+<script src="local.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, k = BTViz.k, esc = BTViz.esc, F = window.Fuzz06;
+  var ORDER = 4, SEEDS = 200;
+
+  BTViz.page({
+    title: 'Testing a B-tree', chapter: 6,
+    prev: { href: '../../05-deletion-and-rebalancing/viz/index.html', title: 'Deletion and rebalancing' },
+    next: { href: '../../07-bplus-trees/viz/index.html', title: 'B+trees' }
+  });
+
+  /* ------------------------------------------------------------------ figure */
+  var fig = BTViz.figure('#fig', {
+    title: 'Operations go to the tree and to the oracle; the first difference stops the run',
+    legend: [{ token: 'node-active', label: 'current step' }, { token: 'key-inserted', label: 'key written by this step' },
+             { token: 'key-found', label: 'check passed' }, { token: 'key-deleted', label: 'divergence / lost node' },
+             { token: 'key-compare', label: 'allocation failure injected, put retried' }]
+  });
+
+  var bugSelect = el('select.bt-select', { 'aria-label': 'Tree under test' },
+    el('option', { value: 'split_wrong_value' }, 'bug: split_wrong_value'),
+    el('option', { value: 'merge_leaks_node' }, 'bug: merge_leaks_node'),
+    el('option', { value: 'borrow_forgets_child' }, 'bug: borrow_forgets_child'),
+    el('option', { value: 'none' }, 'correct tree'));
+  var shortestBtn = el('button.bt-btn.bt-primary', { type: 'button' }, 'Shortest failing run');
+  var seedInput = el('input.bt-input', { type: 'text', inputmode: 'numeric', value: '1', size: 4,
+                                         'aria-label': 'Seed, 1 to ' + SEEDS, style: { width: '4.5em' } });
+  var seedBtn = el('button.bt-btn', { type: 'button' }, 'Replay seed');
+  var minBtn = el('button.bt-btn', { type: 'button' }, 'Minimise');
+  fig.toolbar.append(
+    el('label.bt-field', {}, 'Tree ', bugSelect), shortestBtn,
+    el('span.bt-toolbar-sep'),
+    el('label.bt-field', {}, 'Seed (1 to ' + SEEDS + ') ', seedInput), seedBtn,
+    el('span.bt-toolbar-sep'), minBtn);
+
+  var status = el('p.fz-status');
+  var msg = el('p.fz-msg', { role: 'alert' });
+  var opsList = el('ol.fz-ops', { 'aria-label': 'Operation stream' });
+  var opsPanel = el('div.bt-panel', {}, el('div.bt-panel-title', {}, 'Operation stream'), opsList);
+  var treeBody = el('div.bt-panel-body');
+  var treeTitle = el('div.bt-panel-title');
+  var checks = el('div.fz-checks');
+  var oracleRow = el('div.fz-row'), scanRow = el('div.fz-row');
+  var right = el('div.fz-col', {},
+    el('div.bt-panel', {}, treeTitle, treeBody),
+    el('div.bt-panel', {}, el('div.bt-panel-title', {}, 'Checks after this step, and the contents (key = value)'),
+      el('div.bt-panel-body', {}, checks,
+        el('div.fz-contents', {},
+          el('div', {}, el('div.fz-row-label', {}, 'Oracle (a sorted list)'), oracleRow),
+          el('div', {}, el('div.fz-row-label', {}, 'Tree (full in-order scan)'), scanRow)))));
+  fig.stage.append(status, el('div.fz', {}, el('div.fz-col', {}, opsPanel), right), msg);
+  var view = new BTViz.TreeView(treeBody, { minHeight: 190, maxHeight: 330, minScale: 0.55, ariaLabel: 'B-tree under test' });
+
+  /* ------------------------------------------------------------- formatting */
+  function val(v) {           // 64-bit random values are shown by their last four digits
+    if (v === null || v === undefined) return 'none';
+    var s = String(v);
+    return s.length <= 5 ? s : '…' + s.slice(-4);
+  }
+  /* Keys are indices inside the model (local.js); `name` turns one into
+     the key it stands for, written compactly (27·2⁵⁸, 2⁶⁴−38). */
+  var name = String;
+  function opHtml(st) {
+    if (st.kind === 'put') return 'put ' + name(st.key) + ' = ' + val(st.value);
+    if (st.kind === 'range') return 'range [' + name(st.lo) + ', ' + name(st.hi) + ')';
+    return st.kind + ' ' + name(st.key);
+  }
+  function namedTree(node) {
+    if (!node) return node;
+    if (Array.isArray(node)) return node.map(namedTree);
+    var copy = Object.assign({}, node);
+    copy.keys = node.keys.map(name);
+    copy.children = node.children.map(namedTree);
+    return copy;
+  }
+  function answerText(st, a) {
+    if (st.kind === 'range') {
+      if (!a.length) return 'no entries';
+      var shown = a.slice(0, 3).map(function (e) { return name(e[0]) + ' = ' + val(e[1]); }).join(', ');
+      return '[' + shown + (a.length > 3 ? ', … ' + a.length + ' entries' : '') + ']';
+    }
+    if (st.kind === 'put') return a === null ? 'new key' : 'replaced ' + val(a);
+    if (st.kind === 'delete') return a === null ? 'not present' : 'removed ' + val(a);
+    return a === null ? 'not present' : val(a);
+  }
+  function chip(text, state) { return el('span.bt-chip' + (state ? '.s-' + state : ''), {}, text); }
+
+  /* --------------------------------------------------------------- timeline */
+  var current = null;   // {bug, label, steps, result, minimised}
+
+  function explain(fr, bug) {
+    var f = fr.failure;
+    if (f.kind === 'wrong_result') {
+      return 'The tree answered <b>' + esc(answerText(fr.step, fr.treeAnswer)) + '</b>, the oracle <b>' +
+        esc(answerText(fr.step, fr.oracleAnswer)) + '</b>. Every node still has a legal shape, so <code>validate()</code> ' +
+        'could not have seen this: only the comparison of answers does.';
+    }
+    if (f.kind === 'wrong_contents') {
+      return 'The full scan of the tree no longer equals the oracle (compare the two rows below). ' +
+        'No single answer was wrong yet; the periodic sweep found the damage first.';
+    }
+    if (f.kind === 'oom_changed_tree') return 'A put that failed with out-of-memory left a trace in the tree.';
+    if (f.error === 'NodeCountMismatch') {
+      return '<code>validate()</code> reports <b>NodeCountMismatch</b>: the pool has ' + fr.live + ' live nodes, but only ' +
+        fr.reachable + ' can be reached from the root. Every answer is still correct, so the oracle comparison alone would never notice this leak.';
+    }
+    return '<code>validate()</code> reports <b>' + esc(f.error) + '</b>' +
+      (f.firstKey === null ? '' : ' at depth ' + f.depth + ', in the node that starts with key ' + k(name(f.firstKey), 'deleted')) +
+      (bug === 'borrow_forgets_child' ? ': the borrow moved a key into that node but left the child behind. The subtree drawn apart, marked unreachable, is lost.' : '.');
+  }
+
+  function buildTimeline(bug, steps) {
+    var res = F.replay(ORDER, bug, steps, { record: true });
+    var total = steps.length;
+    var list = [{
+      caption: 'Before the first step: the tree is empty and so is the oracle. Press play or step forward.',
+      state: { frame: null }, log: null
+    }];
+    res.frames.forEach(function (fr) {
+      var head = 'Step ' + (fr.index + 1) + ' of ' + total + ': <b>' + esc(opHtml(fr.step)) + '</b>. ';
+      var body;
+      if (fr.failure) {
+        body = '<b>Divergence.</b> ' + explain(fr, bug);
+      } else {
+        body = 'Tree and oracle both say <b>' + esc(answerText(fr.step, fr.oracleAnswer)) + '</b>.';
+        if (fr.oom) {
+          body = (fr.oom === 1 ? 'An allocation failure was injected: the put returned out-of-memory, the tree was checked to be unchanged, and the put was repeated. '
+            : fr.oom + ' allocation failures were injected, one per attempt and each one node later in the reservation: every time the put returned out-of-memory, ' +
+              'handed back the nodes it had reserved, and the tree was checked to be unchanged. Then the put went through. ') + body;
+        }
+        if (fr.events.length) body += ' Inside the tree: ' + esc(fr.events.join(', ')) + '.';
+        body += fr.swept ? ' <code>validate()</code> passes and the full scan equals the oracle.' : ' <code>validate()</code> passes.';
+        if (fr.index + 1 === total) {
+          var missing = F.POINTS.filter(function (point) { return !res.cov[point]; });
+          body += ' <b>End of the run: no difference found.</b> ' + (missing.length
+            ? 'But it reached only ' + fr.reached + ' of the ' + F.POINTS.length + ' coverage points, so it says nothing about: ' + esc(missing.join(', ')) + '.'
+            : 'It reached all ' + F.POINTS.length + ' coverage points.');
+        }
+      }
+      var entry = { caption: head + body, state: { frame: fr }, hold: fr.failure ? 3 : 1 };
+      if (fr.failure && fr.failure.kind !== 'oom_changed_tree') {
+        entry.question = {
+          prompt: 'The next step, ' + opHtml(fr.step) + ', exposes the bug. Which check notices first?',
+          choices: ['The step’s answer differs from the oracle’s', 'validate() reports a broken invariant', 'The full scan differs from the oracle'],
+          answer: fr.failure.kind === 'wrong_result' ? 0 : fr.failure.kind === 'invariant' ? 1 : 2,
+          explain: 'The checks run in this order after every step: answer, validate(), then (every 16 steps and at the end) the full scan.'
+        };
+      }
+      list.push(entry);
+    });
+    return { steps: list, result: res };
+  }
+
+  function show(bug, label, steps, minimised) {
+    name = F.keyNamer(steps, false);
+    var tl = buildTimeline(bug, steps);
+    current = { bug: bug, label: label, steps: steps, result: tl.result, minimised: !!minimised };
+    opsList.replaceChildren.apply(opsList, steps.map(function (st, i) {
+      return el('li', {}, el('span.n', {}, String(i + 1)), el('span', {}, opHtml(st) + (st.fault ? '  ⚠ faults' : '')));
+    }));
+    var f = tl.result.failure;
+    status.innerHTML = esc(label) + ' &rarr; ' + (f
+      ? '<b>fails at step ' + (f.step + 1) + ' of ' + steps.length + '</b>: ' + esc(F.failureText(f, name))
+      : '<b>passes all ' + steps.length + ' steps</b>' + (bug === 'none' ? '' : ' (this run never reaches the bug)'));
+    treeTitle.textContent = 'B-tree under test: order ' + ORDER + ', ' + (bug === 'none' ? 'correct' : 'bug ' + bug);
+    minBtn.disabled = !f || current.minimised;
+    shortestBtn.disabled = bug === 'none';
+    stepper.setSteps(tl.steps, { index: 0 });
+  }
+
+  function render(step) {
+    var fr = step.state.frame, bug = current.bug;
+    // operation list
+    var idx = fr ? fr.index : -1, items = opsList.children;
+    for (var i = 0; i < items.length; i++) {
+      items[i].className = i < idx ? 'is-done' : i === idx ? (fr.failure ? 's-deleted' : fr.oom ? 's-compare' : 's-active') : '';
+    }
+    if (idx >= 0) {
+      var li = items[idx];
+      var top = li.offsetTop - opsList.offsetTop;
+      if (top < opsList.scrollTop || top + li.offsetHeight > opsList.scrollTop + opsList.clientHeight) {
+        opsList.scrollTop = Math.max(0, top - opsList.clientHeight / 2);
+      }
+    } else opsList.scrollTop = 0;
+
+    // tree
+    var hl = { nodes: {}, keys: {} };
+    if (fr) {
+      if (fr.step.kind === 'put') hl.keys['*:' + name(fr.step.key)] = 'inserted';
+      if (fr.step.kind === 'get' && fr.treeAnswer !== null) hl.keys['*:' + name(fr.step.key)] = 'found';
+      if (fr.failure && fr.failure.node) hl.nodes['n' + fr.failure.node] = 'deleted';
+    }
+    view.render(fr ? namedTree(fr.tree) : null, hl);
+
+    // checks
+    checks.replaceChildren();
+    if (!fr) {
+      checks.append(el('span.fz-empty', {}, 'Nothing has run yet.'));
+    } else {
+      var f = fr.failure;
+      checks.append(chip('answer: tree ' + answerText(fr.step, fr.treeAnswer) + ' / oracle ' + answerText(fr.step, fr.oracleAnswer),
+                         fr.answerOk ? 'found' : 'deleted'));
+      if (f && f.kind === 'wrong_result') {
+        checks.append(chip('validate(): not reached', null));
+      } else {
+        checks.append(chip('validate(): ' + (f && f.kind === 'invariant' ? f.error : 'ok'), f && f.kind === 'invariant' ? 'deleted' : 'found'));
+        checks.append(chip('nodes: pool ' + fr.live + ' / reachable ' + fr.reachable, fr.live === fr.reachable ? 'found' : 'deleted'));
+      }
+      if (f && f.kind === 'wrong_contents') checks.append(chip('full scan: differs', 'deleted'));
+      else if (fr.swept) checks.append(chip('full scan: equal', 'found'));
+      else if (!f) checks.append(chip('full scan: next at step ' + (Math.floor((fr.index + 1) / 16) + 1) * 16 + ' or the end', null));
+      checks.append(chip('coverage so far: ' + fr.reached + ' of ' + F.POINTS.length + ' points', null));
+    }
+
+    // contents
+    function fill(row, entries, other) {
+      row.replaceChildren();
+      if (entries === null) { row.append(el('span.fz-empty', {}, 'Not scanned: the tree is malformed.')); return; }
+      if (!entries.length) { row.append(el('span.fz-empty', {}, '(empty)')); return; }
+      var theirs = new Map(other || []);
+      entries.forEach(function (e) {
+        var same = !other || (theirs.has(e[0]) && theirs.get(e[0]) === e[1]);
+        row.append(chip(name(e[0]) + ' = ' + val(e[1]), same ? null : 'deleted'));
+      });
+    }
+    fill(oracleRow, fr ? fr.oracleEntries : [], null);
+    fill(scanRow, fr ? fr.treeEntries : [], fr ? fr.oracleEntries : null);
+  }
+
+  var stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, steps: [], interval: 900, predict: false,
+    onStep: function (step) { render(step); }
+  });
+
+  /* --------------------------------------------------------------- controls */
+  var censusCache = {};
+  function census(bug) { return censusCache[bug] || (censusCache[bug] = F.huntShortest(ORDER, bug, 1, SEEDS)); }
+
+  var lastSeed = 1;   // the last seed that was accepted and shown
+  function showShortest() {
+    var bug = bugSelect.value;
+    msg.textContent = '';
+    if (bug === 'none') {
+      // The correct tree has no "shortest failing run": replay the seed in
+      // the box. If the box holds something else, do not leave the previous
+      // (broken) run on screen under the new selection: fall back and say so.
+      var typed = seedInput.value.trim();
+      var seed = readSeed();
+      if (seed === null) {
+        seed = lastSeed;
+        seedInput.value = String(seed);
+        showSeed();
+        msg.textContent = '"' + typed + '" is not a seed from 1 to ' + SEEDS + ', so seed ' + seed + ' (the last one shown) is replayed on the correct tree.';
+      } else showSeed();
+      return;
+    }
+    var c = census(bug);
+    seedInput.value = String(c.shortest.seed);
+    lastSeed = c.shortest.seed;
+    show(bug, 'Caught by ' + c.failingSeeds + ' of ' + SEEDS + ' seeds; shortest failing run: ' + F.describeCase(F.swarm(c.shortest.seed)),
+         F.stepsOf(c.shortest.seed), false);
+  }
+
+  function readSeed() {
+    var text = seedInput.value.trim();
+    if (!/^[0-9]+$/.test(text)) { msg.textContent = 'The seed must be a whole number from 1 to ' + SEEDS + ' (you typed "' + text + '").'; return null; }
+    var seed = Number(text);
+    if (seed < 1 || seed > SEEDS) { msg.textContent = 'The seed must be between 1 and ' + SEEDS + ' (you typed ' + text + ').'; return null; }
+    return seed;
+  }
+  function showSeed() {
+    var seed = readSeed();
+    if (seed === null) return;
+    msg.textContent = '';
+    lastSeed = seed;
+    show(bugSelect.value, F.describeCase(F.swarm(seed)), F.stepsOf(seed), false);
+  }
+  function minimiseCurrent() {
+    var f = current.result.failure;
+    if (!f || current.minimised) return;
+    msg.textContent = '';
+    var before = current.steps.length;
+    var m = F.minimize(ORDER, current.bug, current.steps, f);
+    show(current.bug, 'Minimised: ' + before + ' steps shrunk to ' + m.steps.length + ' in ' + m.replays +
+         ' replays. Length after the cut at the failing step, then after each removal that still failed the same way: ' + m.lengths.join(' → ') +
+         '. Keys renamed 1, 2, 3, …; the n-th put writes n', m.steps, true);
+  }
+
+  shortestBtn.addEventListener('click', showShortest);
+  seedBtn.addEventListener('click', showSeed);
+  seedInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') showSeed(); });
+  minBtn.addEventListener('click', minimiseCurrent);
+  bugSelect.addEventListener('change', showShortest);
+
+  showShortest();
+
+  /* ------------------------------------------------------------- code panel */
+  var figCode = BTViz.figure('#fig-code', { title: 'One replay, and the minimiser that calls it again and again', side: true });
+  BTViz.codePanel(figCode.stage, 'replay', { title: 'replay: apply, compare, validate' });
+  BTViz.codePanel(figCode.side, 'minimize', { title: 'minimize: delete blocks of steps while it still fails' });
+  figCode.caption.innerHTML = 'Condensed from <code>fuzz.zig</code> / <code>fuzz.rs</code> and <code>minimize.zig</code> / <code>minimize.rs</code>. ' +
+    'Each row of the operation stream above is one pass through the loop on the left.';
+
+  /* -------------------------------------------------------------- self-test
+   * Recompute parts 1, 3 and 4 of the program output with the JavaScript port. */
+  var part1 = ['== 1. One seed is one test case =='];
+  [1, 2, 3].forEach(function (seed) {
+    var r = F.replay(ORDER, 'none', F.stepsOf(seed));
+    part1.push(F.describeCase(F.swarm(seed)));
+    part1.push('  M=4: ' + r.steps + ' steps replayed, ' + r.injected + ' allocation failures injected, max height ' +
+               r.maxHeight + ', max keys ' + r.maxKeys + ': ' + (r.failure ? 'FAILED' : 'ok'));
+  });
+  BTViz.selfTest('part 1', part1.join('\n'), window.CHAPTER_EXPECTED.part1);
+
+  var sweep = [], fixed = [];
+  for (var seed = 1; seed <= 150; seed++) { sweep.push(F.swarm(seed)); fixed.push(F.fixedMix(seed)); }
+  BTViz.selfTest('part 3', ['== 3. A fixed mix against the swarm (M = 4, seeds 1..150) ==',
+    F.reach(ORDER, 'fixed mix', fixed), F.reach(ORDER, 'swarm    ', sweep)].join('\n'), window.CHAPTER_EXPECTED.part3);
+
+  var part4 = ['== 4. Three broken trees (M = 4, swarm seeds 1..' + SEEDS + ') =='];
+  F.BUGS.forEach(function (bug) {
+    var c = census(bug), found = c.shortest, steps = F.stepsOf(found.seed);
+    part4.push('bug ' + bug);
+    part4.push('  caught by ' + c.failingSeeds + ' of ' + SEEDS + ' seeds; shortest failing run: seed ' + found.seed +
+               ', step ' + (found.failure.step + 1) + ' of ' + steps.length);
+    part4.push('  ' + F.failureText(found.failure, F.keyNamer(steps, true)));
+    if (found.failure.kind === 'invariant') {
+      var silent = found.failure.error === 'NodeCountMismatch' && !F.replay(ORDER, bug, steps, { validate: false }).failure;
+      part4.push('  with the oracle comparison alone: ' + (silent ? 'not caught' : 'not tried (the tree is malformed)'));
+    } else {
+      part4.push('  with validate alone: ' + (F.replay(ORDER, bug, steps, { model: false }).failure ? 'caught' : 'not caught'));
+    }
+    var m = F.minimize(ORDER, bug, steps, found.failure);
+    part4.push('  minimised to ' + m.steps.length + ' steps in ' + m.replays + ' replays:');
+    var exact = F.keyNamer(m.steps, true);
+    m.steps.forEach(function (st) { part4.push('    ' + F.stepText(st, exact)); });
+    part4.push('    -> ' + F.failureText(m.failure, exact));
+  });
+  BTViz.selfTest('part 4', part4.join('\n'), window.CHAPTER_EXPECTED.part4);
+})();
+</script>
+</body>
+</html>

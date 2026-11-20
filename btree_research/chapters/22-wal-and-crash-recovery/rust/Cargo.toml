@@ -1,0 +1,28 @@
+[package]
+name = "ch22_wal_and_crash_recovery"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# std only: no external dependencies.
+[dependencies]
+
+[features]
+# `cargo test --features long` also runs the long crash loop (120 puts).
+long = []
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# The crash loop replays the workload hundreds of times and checksums every
+# page it touches. Unoptimised, `cargo run` and `cargo test` take several
+# times longer; a little optimisation keeps them in seconds. Overflow checks
+# and debug assertions stay on.
+[profile.dev]
+opt-level = 2
+
+[profile.test]
+opt-level = 2

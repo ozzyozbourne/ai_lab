@@ -47,11 +47,9 @@ still needs one node per byte. The **adaptive** radix tree fixes both:
 
 A **hash index** goes further in the same direction. It runs the whole key through a hash
 function and uses the result as a position in an array of slots: the key's *home slot*.
-Two keys can have the same home slot. That is a *collision*. *Open addressing* keeps
-both keys in the array, and *linear probing* is the simplest rule for where the second
-one goes: the next slot, then the one after, until a slot is empty. A lookup walks the
-same *probe sequence* and stops at the key or at the first empty slot. In a table that
-is not too full that walk is one or two slots long, whatever the key length and however
+Two keys can have the same home slot. That is a *collision*, and the second key then
+goes into the next free slot (*linear probing*, worked through below). In a table that
+is not too full a lookup reads one or two slots, whatever the key length and however
 many keys there are. The price is that the hash function scatters neighbouring keys on
 purpose. The index can answer "is this exact key here?" and nothing else.
 
@@ -126,7 +124,9 @@ put fox    .    .    .    .    .    .   ant  fox   6 is taken: next slot
 put emu   emu   .    .    .    .    .   ant  fox   6 and 7 are taken: wrap around to 0
 ```
 
-`get emu` reads slots 6, 7 and 0: three probes. `get bee` starts at 7 and finds `fox`,
+Keeping collided keys in the slot array itself is *open addressing*; the walk from the
+home slot is the *probe sequence*. `get emu` reads slots 6, 7 and 0: three probes.
+`get bee` starts at 7 and finds `fox`,
 which is in its way although their home slots differ. It goes on to `emu` in slot 0 and
 then to slot 1, which is empty. An insert of `bee` would have taken the same walk and
 used that slot, so `bee` is absent. Two things follow:
@@ -183,21 +183,19 @@ are empty.
 **Failure atomicity.** Every path allocates first and modifies last. `insertAt` builds
 the new chain, then grows the node, and only then links the chain in; `errdefer` frees
 the chain if growing fails. The test "allocation failure at every point leaves the tree
-unchanged" fails each allocation index in turn and compares the census of the tree
-before and after the failed `put`.
+unchanged" fails each allocation index in turn.
 
 **Iteration** (`Iterator`). There are no sibling links between leaves, so the iterator
 keeps a stack with one frame per inner node on the current path: the node and the next
 byte value to try. `nextChild(ref, from)`, the first child with a byte greater than or
-equal to `from`, is the only layout-specific operation it needs. The current key is
-rebuilt in a byte buffer as the iterator moves. `seek(lo)` positions the iterator on
-the first key greater than or equal to `lo`. At each prefix it decides whether the
-whole subtree is smaller than `lo` (skip it), greater (take all of it) or still
-undecided (continue down).
+equal to `from`, is the only layout-specific operation it needs. `seek(lo)` positions
+the iterator on the first key greater than or equal to `lo`: at each prefix it decides
+whether the whole subtree is smaller than `lo` (skip it), greater (take all of it) or
+still undecided (continue down).
 
-**`validate`** checks sorted bytes in small nodes, a consistent `index` in Node48, child
-counts, that the number of leaves equals `len`, and that the nodes reachable from the
-root are exactly the nodes the pools consider live.
+**`validate`** checks node invariants (sorted bytes, the Node48 `index`, counts), that
+the number of leaves equals `len`, and that the nodes reachable from the root are
+exactly the nodes the pools consider live.
 
 **Hash index.** `probe` is the walk of the hand example: from `hash & (capacity - 1)` to
 the key or to the first empty slot. `put` doubles the table before the load factor
@@ -222,8 +220,8 @@ The same functions with snake_case names, and the same tests. Differences:
   `encodeStr`, the oracle and the ART iterator have no twin.
 - **The iterator lends.** `Iter::next` returns an `Entry` whose key borrows the
   iterator's own buffer, which `std::iter::Iterator` cannot express, so it is an
-  inherent method. In exchange the borrow checker enforces what Zig only documents:
-  the tree cannot be modified while an iterator exists.
+  inherent method. The borrow checker enforces what Zig only documents: the tree
+  cannot be modified while an iterator exists.
 
 ### What the programs print
 
@@ -251,11 +249,6 @@ point lookups (596 hits, 300 misses)
   art             596   4823  node visited
   hash index      596   1702  slot probed
 ...
-prefix "cat/"
-  sorted array  113 entries in key order (a slice between two binary searches)
-  art           113 entries in key order (seek, then iterate); same as sorted: true
-  hash index    113 entries after inspecting all 1024 slots; in key order: false; same as sorted after sorting: true
-
 first 4 keys
   sorted array  ant/0273 ant/0310 ant/0334 ant/0348
   art           ant/0273 ant/0310 ant/0334 ant/0348
@@ -273,7 +266,8 @@ a whole-key comparison, a node visit and a slot probe have different costs. What
 output does show is the shape. The hash index needs about two probes per lookup (1702
 for 896 lookups, in a table that is 58% full). Its first four keys in slot order belong
 to three different tenants, which is the scattering at work, and it has to inspect all
-1024 slots to answer a question about 113 neighbouring keys.
+1024 slots for the 113 keys that start with `cat/` (in the lines left out), which the
+sorted array finds as a slice between two binary searches.
 
 The sorted array and the ART have identical rows in the last table. That does not make
 the ART a B-tree with fewer steps: the table only asks which questions can be answered.
@@ -293,18 +287,17 @@ follows its design:
   (checked with a search of the source). The original ART paper describes a SIMD
   comparison for Node16 (textbook, not verified here).
 - Growing replaces the node and overwrites the parent's reference, which is passed by
-  reference (`duckdb/src/execution/index/art/base_node.cpp:61-76`). The type for a given
-  child count is chosen in `node.cpp:375-384`.
+  reference (`duckdb/src/execution/index/art/base_node.cpp:61-76`).
 - Shrinking uses thresholds below the smaller capacity, so a node on a boundary does not
   flip on every insert and delete: Node256 shrinks at 36 or fewer children
   (`node256.hpp:25`), Node48 below 12 (`node48.hpp:29`), Node16 below 4
   (`base_node.cpp:142-153`). Exercise 5 adds delete.
-- A prefix is a separate node type holding up to `prefix_count` bytes, one count byte and
-  one child (`prefix.hpp:18-29`). `prefix_count` is computed from the key type
-  (`art.cpp:1258-1287`); for one 8-byte integer column the formula gives 7, which is why
-  `prefix_cap` is 7 here. Longer runs chain several prefix nodes (`prefix.cpp:57-69`).
-- A leaf is a row id stored inside the node pointer (`leaf.cpp:16-21`).
-- Strings are escaped and terminated exactly as in `keys.zig`
+- A prefix is a separate node type holding up to `prefix_count` bytes, a count byte and
+  one child (`prefix.hpp:18-29`). `prefix_count` depends on the key type
+  (`art.cpp:1258-1287`); for one 8-byte integer column it is 7, hence `prefix_cap` = 7
+  here. Longer runs chain several prefix nodes (`prefix.cpp:57-69`).
+- A leaf is a row id stored inside the node pointer (`leaf.cpp:16-21`). Strings are
+  escaped and terminated as in `keys.zig`
   (`duckdb/src/execution/index/art/art_key.cpp:20-49`).
 - Lookup walks prefixes and inner nodes without full-key comparisons
   (`art_operator.hpp:25-61`). The iterator keeps a stack of nodes and bytes
@@ -340,8 +333,8 @@ engine; the ART column is DuckDB's.
 | A scan yields | keys with their values, in order | row ids in byte order; the rows are fetched one by one | nothing in order |
 | Keys must have | a comparison function | a byte-comparable encoding (chapter 11) | equality and a hash |
 
-So the ART is not a B-tree with fewer steps. Its nodes are small and scattered, and
-every level is a jump to a different place. That suits memory and not disk, where a
+Its nodes are small and scattered, so every level of an ART is a jump to a different
+place. That suits memory and not disk, where a
 B-tree reads one page and finds many neighbouring keys in it. DuckDB writes its ART to
 disk as whole allocator buffers at a checkpoint (`art.cpp:1197-1218`), not as a tree of
 pages. Long keys make the tree deep: the 596 `cat/0042` keys above already need paths
@@ -383,24 +376,19 @@ The hash index owns one slot array, the sorted index an `ArrayList`, and each a 
 every key; both use the general-purpose allocator directly. Iterators take their own
 allocator for the stack and the key buffer.
 
-Rust: `Slab<T>` (`Vec<T>` plus a `Vec<u32>` free list) per node type, with a node budget
-standing in for allocation failure.
+Rust: one `Slab<T>` per node type, with a node budget standing in for allocation failure.
 
 ## Pitfalls
 
 - **A key that is a prefix of another key.** Values live only at the end of a path. If
   `ab` and `abc` were both keys, the value of `ab` would need a home in the middle of
   the path to `abc`. The cure is an encoding in which no key is a prefix of another:
-  fixed-width integers, or strings with a terminator. Otherwise `put` returns
-  `error.PrefixKey` and leaves the tree unchanged.
-- **Escaping the terminator.** If a string may contain `0x00`, a terminator alone is
-  ambiguous. Escaping `0x00` and `0x01` with a leading `0x01` keeps the encoding
-  prefix-free and order-preserving.
+  fixed-width integers, or strings with a `0x00` terminator (with `0x00` and `0x01`
+  inside the string escaped by a leading `0x01`, so the terminator stays unambiguous).
+  Otherwise `put` returns `error.PrefixKey` and leaves the tree unchanged.
 - **Byte order is the only order.** Little-endian integers, signed integers without a
   flipped sign bit, or case-insensitive text iterate in the wrong order. The encoding
   is wrong, not the tree.
-- **Unsorted bytes in Node4 or Node16.** Lookup still works, iteration silently returns
-  keys out of order. `validate` checks it.
 - **Recursion depth follows key length.** `insertAt`, `census`, `validate` and `dump`
   recurse once per node, and a path can have one node per key byte. Long keys overflowed
   the stack (at 20,000 bytes in Rust, at some hundreds of thousands in Zig), so `put`

@@ -48,8 +48,8 @@ zig build-obj -O ReleaseFast one_arithmetic.zig -fno-emit-bin -femit-asm=one_ari
 zig build-obj -O ReleaseFast one_hinted.zig     -fno-emit-bin -femit-asm=one_hinted.s
 ```
 
-The function body is under the label `one_branch.h_branch:` (the exported name is an
-alias at the end of the file). Debug directives make it hard to read; this strips them:
+The function body is under the label `one_branch.h_branch:` (the exported name is only
+an alias for it: `grep -n '^h_.* = ' one_branch.s`). Debug directives make it hard to read; this strips them:
 
 ```
 grep -vE '^\s*\.(loc|file|cfi|p2align)|^\.Ltmp' one_branch.s
@@ -104,7 +104,7 @@ one `vpcmpnleuq`) and around `Eytzinger.lowerBound` (Zig: `cmp`, `setb`, `lea` i
 loop).
 
 **The trap: all three in one file.** Put the three Zig wrappers in one file and compile
-it the same way. The end of the assembly then reads:
+it the same way. `grep '^h_.* = ' all.s` then prints:
 
 ```
 h_hinted = all.h_branch
@@ -216,6 +216,11 @@ We ran this version against the linear scan for every array length from 0 to 699
 every needle: it agrees. It still reads `rank9` exactly once per lookup, so the line
 counts of the chapter do not change; what goes away is the select in the loop. We did
 not measure whether that is faster.
+
+Reading the side array once is the point. The tempting simpler search looks `rank` up
+on every level whose rank is below 8. At n = 4095 that read 7.31 lines per lookup
+instead of 4.91 (measured by changing the code; not in the program output): the side
+array costs almost as many lines as the keys.
 
 This is how the tree would look with child ids instead of ranks: nine child ids per node
 is the natural shape of a node with eight keys, which is the "M - 1 keys, M children"

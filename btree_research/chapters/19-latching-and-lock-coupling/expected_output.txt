@@ -54,3 +54,10 @@ disjoint keys    latch coupling keys=2972 expected=2972 first-time puts=2972 los
 overlapping keys global mutex   keys=2983 expected=2983 first-time puts=2983 lost=0 failed=0 mismatches=0 valid=yes
 overlapping keys global rwlock  keys=2983 expected=2983 first-time puts=2983 lost=0 failed=0 mismatches=0 valid=yes
 overlapping keys latch coupling keys=2983 expected=2983 first-time puts=2983 lost=0 failed=0 mismatches=0 valid=yes
+
+== 7. Latch coupling, four threads: A = put 26 is frozen as in section 3; then B, C, D start, one after the other ==
+  B = get 17 (under #6)  waits at #6
+  C = get 12 (under #2)  finishes
+  D = put 11 (under #2)  waits at #7
+D needs nothing that A holds. It waits for the shared latch B keeps on the root #7 while B itself waits at #6.
+after A is released: get 26 = 2600, get 11 = 1100, valid=yes, latches still held: none

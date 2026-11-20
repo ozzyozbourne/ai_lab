@@ -13,7 +13,7 @@
 
 Prerequisites: [chapter 02](../02-searching-a-sorted-node/README.md) (lower bound) and
 [chapter 03](../03-btree-structure-and-search/README.md) (node layout, invariants, search,
-`validate`). The node type, `get` and `validate` used here are the ones from chapter 03.
+`validate`).
 
 Two new terms: a node with M - 1 keys, the most it may keep, is **full**. A node with
 M keys is **overfull**: that state is not allowed to last. All examples use order M = 4,
@@ -65,8 +65,7 @@ and the new root), so a tree never took more splits than it has non-root nodes. 
 non-root node keeps at least m = ceil(M/2) - 1 keys, so a tree with N keys has at most
 (N - 1) / m of them, and it took fewer than N / m splits to build. Spread over the N
 inserts, that is less than one split per m inserts. This is the **amortised** split
-cost: for M = 64 it is at most one split per 31 inserts, however unlucky a single insert
-may be.
+cost: for M = 64 it is at most one split per 31 inserts.
 
 ## A worked example by hand
 
@@ -197,8 +196,8 @@ pub fn put(comptime Tree: type, tree: *Tree, gpa: Allocator, key: u64, value: u6
 }
 ```
 
-`insertEntry(i, k, v)` opens a gap at index `i` and writes the key and value there.
-`insertChild(i, c)` does the same for a child pointer. It is called first, while the
+`insertEntry(i, k, v)` opens a gap at index `i` for a key and its value.
+`insertChild(i, c)` does the same for a child pointer and is called first, while the
 node still has `len + 1` children.
 
 Three decisions are worth noticing.
@@ -279,8 +278,6 @@ One pass, no path, no walk back up. The costs:
 3. **`Err(OutOfNodes)` instead of `error.OutOfMemory`.** Rust aborts when the global
    allocator fails, so the slab models the failure itself (see "Allocator notes").
 
-Names, tests and output match the Zig version.
-
 ### Output of `zig build run` and `cargo run`
 
 Part 1 prints the worked example above, one tree per put, including the last step
@@ -340,18 +337,16 @@ How to read it:
   57.1%, 50.8%, 50.1%. "Ascending inserts give 50%" is the large-M statement.
 - **Random keys.** Half-empty nodes keep receiving keys. Among the even orders the
   measured fill rises from 64.2% (M = 4) to about 69 to 70% (M = 32 to 128). The odd
-  orders are not on that curve: the full table has 66.9% for M = 3 and 67.4% for M = 5.
-  One difference between them: an odd order splits into two equal halves, an even order
-  leaves the right half one key smaller. The textbook result (Yao, 1978; not derived
-  here) is that the expected fill approaches ln 2 = 69.3% as the order grows. The row
-  for M = 256 shows 74.1%: with only 529 nodes for 100000 keys this tree is too small
-  for the limit to apply. At this size the fill swings by several points with the seed
-  and with the number of keys (try it on the visualization's second page).
+  orders 3 and 5 are not on that curve (66.9% and 67.4% in the full table): they split
+  into two equal halves, an even order leaves the right half one key smaller. The
+  textbook result (Yao, 1978; not derived here) is that the expected fill approaches
+  ln 2 = 69.3% as the order grows. The row for M = 256 shows 74.1%: with only 529 nodes
+  for 100000 keys this tree is too small for the limit to apply. At this size the fill
+  swings by several points with the seed and with the number of keys.
 - **Random is not always fuller.** At M = 4 the ascending tree (66.6%) is fuller than
   the random one (64.2%).
 - **Amortised cost.** "per 1000 puts" falls roughly in proportion to 1 / M, while "most
-  in one put" stays near the height. At M = 64 a random insert splits a node 22.7 times
-  in 1000 puts, and no put split more than 2 nodes.
+  in one put" stays near the height.
 
 Part 5 runs top-down against bottom-up. Top-down is worst for small M and ascending
 keys: at M = 4 every node ends at one key of three (33.3%, 99974 splits, against 66.6%
@@ -394,13 +389,11 @@ and 4.4, [`research/turso.md`](../../research/turso.md) sections 8 and 9).
   siblings, which may put a new divider into the parent and overflow it in turn.
 - A root that overflows is handled by `balance_root` (`btree.rs:5410`): the root's
   content is copied into a new child page (`btree.rs:5452-5466`) and the root page
-  itself stays in place, so its page number never changes. Chapter 12 uses that trick.
+  itself stays in place, so its page number never changes.
 
 The differences from this chapter's tree: fullness is measured in bytes, not keys; the
 split point is chosen (chapter 14); and Turso balances across siblings instead of always
 cutting one node in two (chapter 15).
-
-Top-down splitting was not found in any of these sources; it is textbook material here.
 
 ## Allocator notes
 
@@ -408,8 +401,7 @@ Top-down splitting was not found in any of these sources; it is textbook materia
 type and size, and nodes are created one at a time by splits. `MemoryPool(T)` is built
 for that: it hands out fixed-size slots from an internal arena, keeps destroyed slots on
 a free list and reuses them first. `base_pool.zig` wraps it as `StdPool` and adds the
-counters the tree checks (`created`, `destroyed`, `peak`). The demonstrations and
-measurements use it.
+counters the tree checks (`created`, `destroyed`, `peak`).
 
 - *Lifetime:* the pool is a field of the tree. `tree.deinit(gpa)` returns every node to
   the pool and then calls `pool.deinit(gpa)`, which frees the arena in one go. The
@@ -446,8 +438,8 @@ heap allocations, which the Zig pool does not have.
 ## Pitfalls
 
 - **Splitting at the wrong index.** With M keys, `mid = M / 2` gives halves of M / 2 and
-  M - 1 - M / 2. Using `(M - 1) / 2` is also legal for bottom-up, but cutting a node of
-  M - 1 keys (a full node, before the insert) is only legal for even M.
+  M - 1 - M / 2. Cutting a node of M - 1 keys (a full node, before the insert) is only
+  legal for even M.
 - **Forgetting the children.** In an interior split the children right of the median
   move with their keys (worked example, key 2). Losing or duplicating one pointer breaks
   the tree in a way only `validate` notices.
@@ -459,15 +451,15 @@ heap allocations, which the Zig pool does not have.
   change the tree.
 - **Treating an overwrite as an insert.** `put` of an existing key must not change `len`
   and must not split anything in the bottom-up version. The top-down version in this
-  chapter does split full nodes on its way to an existing key; a test documents it.
+  chapter does split full nodes on its way to an existing key.
 
 ## Exercises
 
 1. (easy) Insert 1, 2, ..., 13 in this order into an empty tree with M = 4, bottom-up,
-   by hand. Which puts split a node? Draw the root and its children just before and
-   after it splits at 13, and check your tree against part 3 of the program output.
-   Then continue with 14, 15, ...: which key is the first to split an interior node
-   that is not the root, and where does its median go?
+   by hand. Which puts split a node? Draw the root and its children before and after
+   it splits at 13 (part 3 of the program output has the result). Then continue with
+   14, 15, ...: which key first splits an interior node that is not the root, and where
+   does its median go?
 2. (easy) The table shows 50.0% fill for ascending keys at M = 3 and M = 5 but 66.6% at
    M = 4. Derive all three numbers from the split point.
 3. (medium) Prove that building a tree of N keys takes fewer than N / (ceil(M/2) - 1)

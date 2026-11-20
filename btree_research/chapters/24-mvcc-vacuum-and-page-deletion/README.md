@@ -176,6 +176,7 @@ Both languages have the same files, names, tests and output.
 | `index` | the tree: insert, `makeRoom`, `markHalfDead`, `unlinkHalfDead`, `recycle` |
 | `db` | `Db.put / delete / get / vacuum` and the `Cursor` |
 | `validate`, `dump` | invariants as code; text rendering |
+| `tests`, `fuzz` | fixed scenarios; random interleavings of paused scans, writers, VACUUM and the three steps of page deletion, checked against an oracle |
 
 ### Zig
 
@@ -440,5 +441,5 @@ Solutions: [solutions.md](solutions.md).
 - Previous: [23. Copy-on-write B-trees](../23-copy-on-write-btrees/README.md)
 - Next: [25. Cache-conscious search and layout](../25-cache-conscious-search-and-layout/README.md)
 - Visualization: [viz/index.html](viz/index.html) (dead entries accumulating, hints,
-  the vacuum sweep, and a page going from live to half-dead to deleted to free while
-  a paused scan holds its handle)
+  the vacuum sweep, and a page drawn as it goes from live to half-dead to deleted to
+  free while a paused scan holds its handle)

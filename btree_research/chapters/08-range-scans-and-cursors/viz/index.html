@@ -32,7 +32,7 @@
   .s-path { --s: var(--c8-path); --s-bg: var(--c8-path-bg); }
   .bt-node.s-path .bt-node-box { stroke-width: 2.75; }
   .bt-edge-g.s-path .bt-edge { stroke-width: 4; }
-  .bt-edge-g.s-path .bt-edge-dot { r: 3.4px; }
+  .bt-key.s-path rect { stroke: transparent; }   /* the tint fills the node; the node's border carries the line */
   .c8-zoom { display: none; }
   .c8-zoom.is-on { display: block; }
   /* Node handles ("#6") sit where the edge from the parent arrives; a halo in the stage colour keeps
@@ -188,16 +188,21 @@ here are checked against the output of the chapter's Zig and Rust programs (self
   function markPath(b, cur, hl) {
     var live = function (h) { return h !== NIL && h !== undefined && b.slots[h] && b.slots[h].used; };
     var reached = cur.frames.length ? NIL : b.root;      // the node the frames lead to
+    // The key cells cover most of a node, so they take the tint too, unless they already say something.
+    var fill = function (h) {
+      hl.nodes[b.id(h)] = 'path';
+      b.node(h).keys.forEach(function (key) { var id = b.id(h) + ':' + key; if (!hl.keys[id]) hl.keys[id] = 'path'; });
+    };
     cur.frames.forEach(function (f) {
       reached = NIL;
       if (!live(f.h) || b.node(f.h).leaf) return;
-      hl.nodes[b.id(f.h)] = 'path';
+      fill(f.h);
       var child = b.node(f.h).children[f.ci];
       if (!live(child)) return;
       hl.edges[b.id(child)] = 'path';
       reached = child;
     });
-    if (cur.state === 'on' && live(cur.leaf) && reached === cur.leaf) hl.nodes[b.id(cur.leaf)] = 'path';
+    if (cur.state === 'on' && live(cur.leaf) && reached === cur.leaf) fill(cur.leaf);
   }
   /** Where the cursor says it is, in words. */
   function positionText(tree, cur) {

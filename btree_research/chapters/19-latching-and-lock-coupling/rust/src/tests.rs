@@ -11,12 +11,12 @@ use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use std::thread;
 
+use crate::base_node::Kind;
 use crate::dump::{dump_to_string, entries};
 use crate::ops::{Config, Op, OpStream, Oracle, Weights};
 use crate::prng::SplitMix64;
 use crate::probe::{self, Actor, OpSpec, Outcome, Pause, ProbeError, value_of};
 use crate::stress;
-use crate::base_node::Kind;
 use crate::{CANONICAL, Event, NodeId, OutOfNodes, PROTOCOLS, Point, Protocol, Tree};
 
 fn canonical_tree(protocol: Protocol) -> Tree {

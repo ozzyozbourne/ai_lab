@@ -62,8 +62,8 @@ operations, the same failing step and the same reproducer that <code>zig build r
 </div>
 <p>Suggested experiments: for each variant, press <em>Shortest failing run</em>, step to the end, then press <em>Minimise</em> and
 step through the reproducer by hand. Tick <em>Predict</em> to be asked which check will catch the bug before the failing step is shown. Replay seed 3 (four possible keys) and seed 28 (64 keys) on the correct tree
-to see how different two swarm cases are. Each seed also decides where in the 64-bit key space its keys lie: from 0 (seed 4),
-around 2<sup>32</sup> (seed 13), spread over the whole range (seed 1) or just below 2<sup>64</sup> (seed 5). The shape of the tree does not depend on that,
+to see how different two swarm cases are. Each seed also decides where in the 64-bit key space its keys lie: from 0 (seed 36),
+around 2<sup>32</sup> (seed 5), spread over the whole range (seed 1) or just below 2<sup>64</sup> (seed 7). The shape of the tree does not depend on that,
 but a tree that compared only the low 32 bits of a key would pass every test on small keys. Large keys are written compactly:
 27·2<sup>58</sup> is 27 times 2<sup>58</sup>, 2<sup>64</sup>−38 is 38 below 2<sup>64</sup>. Replay a seed that does not catch the third variant (seed 3 is one) to see
 a broken tree pass a test that never builds a third level.</p>

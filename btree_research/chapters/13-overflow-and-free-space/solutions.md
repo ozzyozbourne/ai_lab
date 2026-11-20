@@ -113,14 +113,15 @@ What it costs: one page read per lookup through that page, and one page of the f
 fan-out. Postgres leaves the same shape behind (the README quotes the rule: the rightmost
 child goes only if it is the only child, and then the parent goes with it).
 
-What removing them would take (not implemented, so this is a design, not a result): when
-`removeLeaf` leaves a parent with zero keys, replace the grandparent's pointer to the parent
-by a pointer to the parent's only child and free the parent. The separators in the
-grandparent stay correct, because the child covers the key range the parent covered. But the
-child would then be one level higher than its cousins, which breaks T4 (all leaves at the
-same depth), unless the child is itself an interior page whose own children... and so on:
-the splice is only legal at the root, where it lowers every leaf together. That is why only
-the root collapses, and why real systems either rebalance (chapter 15) or live with it.
+What removing them would take (not implemented, so this is a design, not a result). The
+obvious splice does not work: replace the grandparent's pointer to the keyless page by a
+pointer to its only child and free the page. The separators in the grandparent would stay
+correct, but the child's subtree would be one level higher than its cousins, which breaks T4
+(all leaves at the same depth). The splice is only legal at the root, where it lowers every
+leaf together, and that is `collapseRoot`. Below the root, the single child has to be handed
+to a neighbouring interior page, with the grandparent's separator pulled down between the two
+groups of children. That is a merge: it moves entries between existing pages, which is exactly
+what "free at empty" avoids. Chapter 15 is about that trade.
 
 ## 5. Delaying reuse until after the flush
 

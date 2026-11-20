@@ -152,10 +152,9 @@ pub fn split_without_log(
         if let Err(err) = tree
             .put(&scenario_key(last), &scenario_value(last))
             .and_then(|()| tree.flush())
+            && !machine.borrow().is_powered_off()
         {
-            if !machine.borrow().is_powered_off() {
-                return Err(err.into());
-            }
+            return Err(err.into());
         }
         outcome.writes = machine.borrow().writes - base;
         if let Some(w) = out.as_mut() {
@@ -234,10 +233,10 @@ pub fn split_with_log(
                     )?;
                     print_log(*w, &machine)?;
                 }
-                if let Err(err) = db.checkpoint() {
-                    if !powered_off() {
-                        return Err(crash::CrashError::Db(err).into());
-                    }
+                if let Err(err) = db.checkpoint()
+                    && !powered_off()
+                {
+                    return Err(crash::CrashError::Db(err).into());
                 }
             }
             Err(err) if !powered_off() => return Err(crash::CrashError::Db(err).into()),

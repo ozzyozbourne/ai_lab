@@ -69,7 +69,7 @@ pager: 3998 reads, 2872 writes, 15 allocations, 0 syncs
 page roles: 1 metapage, 1 interior, 97 leaf, 274 overflow, 1 trunk, 18 free
 full scan: oracle has 417 entries, identical: true
 
-== Part 3: the file stops growing: 12 rounds of 250 puts + 250 deletes over 200 keys ==
+== Part 3: the file stops growing: 12 rounds of 500 operations, half puts and half deletes, over 200 keys ==
 pages in the file after each round: 94 99 105 105 112 112 138 138 138 138 138 138
 1910 pages were freed and 1855 allocations reused one; without a free list the file would have 1993 pages
 

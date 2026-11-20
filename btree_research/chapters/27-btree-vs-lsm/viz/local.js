@@ -532,8 +532,30 @@
     this.lsm = new Lsm({ blockEntries: opts.order - 1, indexFanout: opts.order,
                          memtableEntries: opts.memtableEntries, l0Runs: opts.l0Runs, growth: opts.growth });
     this.live = {};     // oracle: key -> value
+    // What the three amplifications are made of: write operations, gets, and
+    // the blocks each structure read for the gets.
+    this.tally = { writes: 0, gets: 0, getReads: { bt: 0, lsm: 0 } };
   }
   var P = Pair.prototype;
+  /** num / den rounded half up to two decimals, like the programs' `ratio`; "–" without data. */
+  function ratio2(num, den) {
+    if (!den) return '–';
+    var h = Math.floor((num * 200 + den) / (den * 2));
+    return Math.floor(h / 100) + '.' + (h % 100 < 10 ? '0' : '') + (h % 100);
+  }
+  /**
+   * The chapter's three ratios for everything done so far, by the README's
+   * definitions: slots written per entry written, blocks read per get, blocks
+   * in use / data blocks the live keys would fill if packed.
+   */
+  P.amps = function () {
+    var c = this.counters(), t = this.tally, slots = this.opts.order - 1;
+    var packed = Math.ceil(Object.keys(this.live).length / slots);
+    function side(name) {
+      return { write: ratio2(c[name].w * slots, t.writes), read: ratio2(t.getReads[name], t.gets), space: ratio2(c[name].blocks, packed) };
+    }
+    return { bt: side('bt'), lsm: side('lsm') };
+  };
   P.counters = function () {
     var t = this.tree.dev, l = this.lsm.dev;
     return { bt: { r: t.totalReads(), w: t.totalWrites(), blocks: t.live },
@@ -549,6 +571,7 @@
     var tree = this.tree, lsm = this.lsm, self = this;
     var t0 = this.counters(), ts = clone(tree.stats), th = tree.height, ls = clone(lsm.stats);
     var rep = { op: op, treeBefore: tree.snapshot(), lsmBefore: lsm.snapshot(), phases: [], answer: '', ok: true };
+    rep.ampsBefore = this.amps();
     tree.dev.takeLog();
     lsm.onPhase = function (name, info) {
       info.name = name; info.lsm = lsm.snapshot(); info.counters = self.counters().lsm;
@@ -584,6 +607,9 @@
     var t1 = this.counters();
     rep.before = t0; rep.after = t1;
     rep.delta = { bt: { r: t1.bt.r - t0.bt.r, w: t1.bt.w - t0.bt.w }, lsm: { r: t1.lsm.r - t0.lsm.r, w: t1.lsm.w - t0.lsm.w } };
+    if (op.kind === 'put' || op.kind === 'delete') this.tally.writes++;
+    if (op.kind === 'get') { this.tally.gets++; this.tally.getReads.bt += rep.delta.bt.r; this.tally.getReads.lsm += rep.delta.lsm.r; }
+    rep.ampsAfter = this.amps();
     var notes = [];
     if (tree.stats.leafSplits > ts.leafSplits) notes.push('btree: leaf split.');
     if (tree.stats.internalSplits > ts.internalSplits) notes.push('btree: internal split.');
@@ -617,7 +643,8 @@
   };
   P.save = function () {
     return clone({ opts: this.opts, tree: this.tree, lsm: { cfg: this.lsm.cfg, dev: this.lsm.dev, mem: this.lsm.mem, l0: this.lsm.l0,
-                   levels: this.lsm.levels, nextRun: this.lsm.nextRun, stats: this.lsm.stats, memWrites: this.lsm.memWrites }, live: this.live });
+                   levels: this.lsm.levels, nextRun: this.lsm.nextRun, stats: this.lsm.stats, memWrites: this.lsm.memWrites }, live: this.live,
+                   tally: this.tally });
   };
   Pair.restore = function (saved) {
     var s = clone(saved), p = new Pair(s.opts), k;
@@ -626,6 +653,7 @@
     for (k in s.lsm) if (k !== 'dev') p.lsm[k] = s.lsm[k];
     for (k in s.lsm.dev) p.lsm.dev[k] = s.lsm.dev[k];
     p.live = s.live;
+    p.tally = s.tally;
     return p;
   };
 

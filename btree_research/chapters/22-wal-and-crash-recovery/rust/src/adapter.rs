@@ -33,7 +33,7 @@ use crate::base_storage::{Error, Storage as ByteStorage};
 /// The page number of a whole-page request, or None if the request is not
 /// one whole page at a page boundary (the pager never issues such a request).
 pub fn whole_page(offset: u64, len: usize) -> Option<u64> {
-    if len != PAGE_SIZE || offset % PAGE_SIZE as u64 != 0 {
+    if len != PAGE_SIZE || !offset.is_multiple_of(PAGE_SIZE as u64) {
         return None;
     }
     Some(offset / PAGE_SIZE as u64)

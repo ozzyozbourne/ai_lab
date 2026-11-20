@@ -69,8 +69,13 @@ block device, which does nothing but count: blocks read, blocks written, blocks 
     <em>Predict</em> to guess the cost of each get.</li>
   <li><strong>Deletes and overwrites.</strong> <em>delete 15</em> writes a tombstone (struck through) without looking
     for the key. The old value and the tombstone both stay on the device until a compaction meets them.</li>
+  <li><strong>The three amplifications.</strong> The last line of each card gives the chapter's ratios for the
+    operations completed so far: <em>write</em> = entry slots written per put or delete (a block has 3 slots),
+    <em>read</em> = blocks read per get, <em>space</em> = blocks in use divided by the blocks the live keys would fill
+    if packed. A dash means there is nothing to divide by yet.</li>
   <li><strong>Growth factor.</strong> A larger growth factor makes each level hold more before it is merged down:
-    fewer levels to search, more rewriting per level.</li>
+    fewer levels to search, more rewriting per level. To see it, press <em>12 random writes</em> a dozen times with
+    growth 2, then again with growth 4, and compare the levels and the amplification lines.</li>
   <li><strong>What the counters leave out.</strong> Nothing is cached: both structures pay for every block they look
     at, index blocks included, on every operation. There is no write-ahead log either, so the two do <em>not</em>
     promise the same thing: a B+tree put is on the device when it returns, while an LSM put sits in the memtable, in
@@ -246,7 +251,7 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     var tree = rep.treeBefore, treeHi = {}, lsm = rep.lsmBefore, lsmHi = {};
     function push(caption, snippet, extra) {
       var f = { caption: caption, snippet: snippet, save: saveIndex, final: false,
-                state: { tree: tree, treeHi: treeHi, lsm: lsm, lsmHi: lsmHi, ctr: Ch27.clone(ctr), opName: rep.name } };
+                state: { tree: tree, treeHi: treeHi, lsm: lsm, lsmHi: lsmHi, ctr: Ch27.clone(ctr), opName: rep.name, amps: rep.ampsBefore } };
       for (var p in (extra || {})) f[p] = extra[p];
       frames.push(f);
       return f;
@@ -386,6 +391,7 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     }
     var last = frames[frames.length - 1];
     last.final = true;
+    last.state.amps = rep.ampsAfter;   // the ratios count completed operations only
     last.log = { html: BTViz.esc(rep.name) + ' — B+tree r' + d.bt.r + ' w' + d.bt.w + ' · LSM r' + d.lsm.r + ' w' + d.lsm.w +
                  (rep.notes.length ? ' <span style="color:var(--bt-muted)">(' + BTViz.esc(rep.notes.join(' ').replace(/\.$/, '')) + ')</span>' : ''),
                  state: d.lsm.w > 0 ? 'dirty' : undefined };
@@ -405,18 +411,19 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     return { caption: caption, snippet: 'write', save: saveIndex, final: true, idle: true,
              state: { tree: model.tree.snapshot(), treeHi: {}, lsm: model.lsm.snapshot(), lsmHi: {},
                       ctr: { bt: { r: c.bt.r, w: c.bt.w, blocks: c.bt.blocks, opR: 0, opW: 0 }, lsm: { r: c.lsm.r, w: c.lsm.w, blocks: c.lsm.blocks, opR: 0, opW: 0 } },
-                      opName: null } };
+                      opName: null, amps: model.amps() } };
   }
   function render(step) {
     var s = step.state;
     treeView.render(s.tree, s.treeHi);
     renderLsm(s.lsm, s.lsmHi);
-    function card(c) {
+    function card(c, a) {
       return (s.opName ? BTViz.esc(s.opName) + ': <b>' + c.opR + '</b> read, <b>' + c.opW + '</b> written<br>' : 'no operation in progress<br>') +
-             'total <b>' + c.r + '</b> read, <b>' + c.w + '</b> written, <b>' + c.blocks + '</b> in use';
+             'total <b>' + c.r + '</b> read, <b>' + c.w + '</b> written, <b>' + c.blocks + '</b> in use<br>' +
+             'amplification: write <b>' + a.write + '</b>, read <b>' + a.read + '</b>, space <b>' + a.space + '</b>';
     }
-    cardBt.innerHTML = card(s.ctr.bt);
-    cardLsm.innerHTML = card(s.ctr.lsm);
+    cardBt.innerHTML = card(s.ctr.bt, s.amps.bt);
+    cardLsm.innerHTML = card(s.ctr.lsm, s.amps.lsm);
     chart.render({ labels: ['read', 'written', 'in use'],
                    series: [{ name: 'B+tree', values: [s.ctr.bt.r, s.ctr.bt.w, s.ctr.bt.blocks] },
                             { name: 'LSM-tree', values: [s.ctr.lsm.r, s.ctr.lsm.w, s.ctr.lsm.blocks] }] });
@@ -498,6 +505,10 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     runOps([op]);
     keyInput.value = '';
   }
+  // Wide enough that level 1 overflows with every growth factor on offer
+  // (its limit is memtable x 2 x growth, 48 slots at most), so that the
+  // growth select changes the picture and not only the totals.
+  var RANDOM_KEY_MAX = 150;
   var rand = BTViz.rng(27);
   function randomWrites() {
     var live = Ch27.clone(currentModel().live), ops = [];
@@ -507,7 +518,7 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
         var gone = rand.pick(keys);
         ops.push({ kind: 'delete', key: gone }); delete live[gone];
       } else {
-        var key = rand.int(1, 60);
+        var key = rand.int(1, RANDOM_KEY_MAX);
         var value = key in live ? live[key] + 1 : key * 100;
         ops.push({ kind: 'put', key: key, value: value }); live[key] = value;
       }
@@ -561,6 +572,13 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
   BTViz.selfTest('trace rows', lines.join('\n'), EXPECT_TRACE);
   BTViz.selfTest('final state', check.dumpText(), EXPECT_DUMP);
   BTViz.selfTest('same answers', agree, true);
+  // By hand from the output above: 17 puts and deletes, 5 gets, 14 live keys
+  // (5 packed blocks of 3). B+tree: 32 x 3 / 17, (3+3+3+3+3) / 5, 9 / 5.
+  // LSM-tree: 24 x 3 / 17, (0+2+2+3+3) / 5, 8 / 5.
+  var amps = check.amps();
+  BTViz.selfTest('trace amplifications',
+    [amps.bt.write, amps.bt.read, amps.bt.space, amps.lsm.write, amps.lsm.read, amps.lsm.space].join(' '),
+    '5.65 3.00 1.80 4.24 2.00 1.60');
 })();
 </script>
 </body>

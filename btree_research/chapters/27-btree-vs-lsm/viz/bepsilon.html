@@ -71,7 +71,13 @@ written in JavaScript only; none of the guide's code bases contains one.</p>
   <li><strong>The epsilon knob.</strong> A node has a fixed size. The more of it is buffer, the bigger the batches and
     the fewer pivots fit, so the tree gets taller. All pivots and no buffer is a B-tree; change the buffer size
     above and compare the I/O per message. With a buffer of 2 a batch is often a single message, and the extra node
-    write makes it <em>worse</em> than a B+tree.</li>
+    write makes it <em>worse</em> than a B+tree. <strong>This page shows only half of the trade:</strong> it keeps
+    3 pivots and 4 leaves whatever the buffer size, so a bigger buffer only ever helps here. In a node of fixed
+    size it would leave room for fewer pivots, and every lookup and flush would have more levels to cross.</li>
+  <li><strong>What the counters leave out.</strong> The node, buffer included, counts as held in RAM for both
+    columns: neither pays a read for it, and it is written only at a flush. So a buffered message is lost in a
+    crash until its flush, while the B+tree column has each key on the device at once. As on page 1, the two do not
+    promise the same thing, and there is no log and no cache.</li>
 </ul>
 <p>Text: <a href="../README.md">chapter 27 README</a>, section "B-epsilon trees". Back to
 <a href="index.html">page 1: B+tree and LSM-tree side by side</a>.</p>
@@ -104,7 +110,7 @@ written in JavaScript only; none of the guide's code bases contains one.</p>
   var keyInput = el('input.bt-input#key', { type: 'number', inputmode: 'numeric', placeholder: 'key', min: KEY_MIN, max: KEY_MAX, step: 1,
                                             'aria-label': 'Key (whole number, 0 to 99)' });
   var capSel = el('select.bt-select#capacity', { 'aria-label': 'Buffer size in messages' });
-  [2, 4, 8].forEach(function (c) { capSel.appendChild(el('option', { value: c, selected: c === 4 }, 'buffer ' + c)); });
+  [2, 4, 8, 16].forEach(function (c) { capSel.appendChild(el('option', { value: c, selected: c === 4 }, 'buffer ' + c)); });
   var err = el('span.be-err#err', { role: 'status', 'aria-live': 'polite' });
   function btn(id, text, fn, primary) {
     return el('button.bt-btn' + (primary ? '.bt-primary' : '') + '#' + id, { type: 'button', onclick: fn }, text);
@@ -132,7 +138,7 @@ written in JavaScript only; none of the guide's code bases contains one.</p>
 
   function ratio(num, den) {
     if (!den) return '–';
-    var h = Math.floor(num * 100 / den);
+    var h = Math.floor((num * 200 + den) / (den * 2));   // rounded half up, like the chapter's programs
     return Math.floor(h / 100) + '.' + (h % 100 < 10 ? '0' : '') + (h % 100);
   }
   function msgText(m) { return (m.kind === 'put' ? '+' : '−') + m.key; }
@@ -328,7 +334,7 @@ written in JavaScript only; none of the guide's code bases contains one.</p>
   // so the model is checked against a plain set instead.
   (function () {
     var r = BTViz.rng(5), ok = true, costs = {};
-    [2, 4, 8].forEach(function (capacity) {
+    [2, 4, 8, 16].forEach(function (capacity) {
       var n = new Ch27.BufferedNode({ pivots: PIVOTS, capacity: capacity, keys: START_KEYS }), oracle = {};
       START_KEYS.forEach(function (key) { oracle[key] = true; });
       for (var i = 0; i < 600; i++) {
@@ -344,7 +350,7 @@ written in JavaScript only; none of the guide's code bases contains one.</p>
       costs[capacity] = (n.counters.leafReads + n.counters.leafWrites + n.counters.nodeWrites) / n.counters.messages;
     });
     BTViz.selfTest('model = set', ok, true);
-    BTViz.selfTest('bigger buffer, less I/O', costs[2] > 2 && costs[2] > costs[4] && costs[4] > costs[8] && costs[8] < 2, true);
+    BTViz.selfTest('bigger buffer, less I/O', costs[2] > 2 && costs[2] > costs[4] && costs[4] > costs[8] && costs[8] > costs[16] && costs[8] < 2, true);
   })();
 })();
 </script>

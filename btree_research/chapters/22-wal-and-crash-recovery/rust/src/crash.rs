@@ -280,10 +280,10 @@ pub fn run_with_log(
     if let Some(limit) = second {
         // Crash during recovery: recovery must be restartable.
         machine.borrow_mut().power_off_after_writes(limit);
-        if let Err(err) = open_db(&machine, options) {
-            if !powered_off() {
-                return Err(err.into());
-            }
+        if let Err(err) = open_db(&machine, options)
+            && !powered_off()
+        {
+            return Err(err.into());
         }
         result.second_crash_hit = powered_off();
         machine.borrow_mut().crash(mode);

@@ -52,13 +52,21 @@ thread_local! {
 /// ```text
 /// trace: seed 72, M=4, bug none, step 5 of 512: put 6 = 1
 /// ```
+///
+/// Written to the stderr handle directly, not with `eprintln!`: the test
+/// harness captures `eprintln!` into a heap buffer, and that buffer growing
+/// in the middle of a replay would look like a leak to the counting
+/// allocator. A direct write is unbuffered and allocates nothing (and shows
+/// up without `--nocapture`).
 fn trace_step(subject: Subject, index: usize, total: usize, step: Step) {
-    let seed = match TRACE_SEED.get() {
-        Some(seed) => format!("seed {seed}"),
-        None => "no seed (steps given directly)".to_string(),
+    let mut err = io::stderr().lock();
+    let _ = match TRACE_SEED.get() {
+        Some(seed) => write!(err, "trace: seed {seed}"),
+        None => write!(err, "trace: no seed (steps given directly)"),
     };
-    eprintln!(
-        "trace: {seed}, M={}, bug {}, step {} of {total}: {step}",
+    let _ = writeln!(
+        err,
+        ", M={}, bug {}, step {} of {total}: {step}",
         subject.order,
         subject.bug.name(),
         index + 1

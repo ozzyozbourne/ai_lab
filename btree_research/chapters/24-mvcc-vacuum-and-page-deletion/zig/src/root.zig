@@ -9,6 +9,7 @@
 //!   db.zig           Db (put / delete / get / vacuum) and the snapshot Cursor
 //!   validate.zig     every invariant as code
 //!   dump.zig         text rendering
+//!   tests.zig        fixed scenarios;  fuzz.zig  random interleavings of scans and page deletion
 const std = @import("std");
 
 pub const arena = @import("base_arena.zig");
@@ -39,4 +40,5 @@ test {
     _ = store;
     _ = ops;
     _ = @import("tests.zig");
+    _ = @import("fuzz.zig");
 }

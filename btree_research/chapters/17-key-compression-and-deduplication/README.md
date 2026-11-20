@@ -45,10 +45,9 @@ that needs no special code: a string that is a prefix of another already sorts b
 ### The row address is part of the key
 
 A secondary index maps a key to the address of a table row. Postgres calls that address a
-TID (block number and slot, 6 bytes). If two rows have the key `apple`, the index holds two
-entries. Which one is first? If the answer is "any order", a split in the middle of a run of
-equal keys has no usable separator, and deleting the entry of one particular row means
-scanning the whole run.
+TID (block number and slot, 6 bytes). If two rows have the key `apple`, which entry is
+first? If the answer is "any order", a split inside a run of equal keys has no usable
+separator, and deleting the entry of one particular row means scanning the whole run.
 
 The fix is to treat the TID as the last column of the key. The tuple is `(key, tid)`, every
 tuple is unique, and a run of duplicates is simply sorted by TID. A separator may then need
@@ -56,9 +55,8 @@ a TID as well: between `(cherry, 12)` and `(cherry, 17)` no byte of the key diff
 nothing can be truncated and the separator is `(cherry, 12)`. A truncated TID is, again,
 minus infinity.
 
-This chapter uses one comparison everywhere, `compareTuple`: key bytes first, then TID,
-with a missing TID below every real one. One routing rule follows from it and holds for
-every page:
+One comparison is used everywhere, `compareTuple`: key bytes first, then TID, with a
+missing TID below every real one. One routing rule follows and holds for every page:
 
     low fence  <  every tuple on the page  <=  high fence
 
@@ -114,11 +112,11 @@ several cuts near the middle and prefers the shortest separator.
 **Routing.** The parent now contains `... "blu" ...`. Look up `blackberry`: the search tuple
 is `(blackberry, 0)`. Why 0? It is the smallest TID, so `(key, 0)` is at or below every
 stored tuple with that key and the search lands where the run of that key begins. Compare
-the key bytes with `blu`: `bla < blu`, so the tuple is below the separator and goes left. Look up `blueberry`: `blu` is a prefix of `blueberry`, a prefix
-sorts first, so the separator is below the tuple and the search goes right. Look up `blu`
-itself (not in the index): the key bytes are equal, the separator has no TID, the search
-tuple has TID 0, minus infinity is below 0, so it goes right, where `blu` would be if it
-existed.
+the key bytes with `blu`: `bla < blu`, so the tuple is below the separator and goes left.
+Look up `blueberry`: `blu` is a prefix of `blueberry`, a prefix sorts first, so the
+separator is below the tuple and the search goes right. Look up `blu` itself (not in the
+index): the key bytes are equal, the separator has no TID, minus infinity is below TID 0,
+so it goes right, where `blu` would be if it existed.
 
 **Equal keys.** A page holds only `cherry` tuples and splits between `cherry@12` and
 `cherry@17`. The keys are equal, so the separator is `"cherry"@12`. A later lookup of
@@ -131,10 +129,9 @@ other cells, and is full. Five plain cells cost 5 × 15 = 75 bytes. One posting 
 goes ahead without a split.
 
 **A TID inside a posting list.** The leaf holds `cherry@[1,8,12,17]` and `(cherry, 9)`
-arrives. It belongs between 8 and 12. Growing the list would change its size; instead 9
-takes its place in the list and the list's largest TID is pushed out: `cherry@[1,8,9,12]`
-followed by a new plain cell `cherry@17`. Whatever the case, an insert adds exactly one
-plain cell to the page.
+arrives. It belongs between 8 and 12. Instead of growing the list, 9 takes its place in it
+and the list's largest TID is pushed out: `cherry@[1,8,9,12]` followed by a new plain cell
+`cherry@17`. Whatever the case, an insert adds exactly one plain cell to the page.
 
 ## Code walk-through
 
@@ -172,7 +169,7 @@ entries or separators and children. `usedBytes` adds up what they would cost in 
 page.
 
 Search: `childIndex` returns the number of separators strictly below the tuple, by binary
-search. It does not know whether separators are truncated. `range(lo, hi)` descends with
+search; it does not know whether they are truncated. `range(lo, hi)` descends with
 `(lo, 0)` and iterates along the leaf chain; `get(key)` collects TIDs while the key matches.
 
 `put(key, tid)` rejects a key longer than `maxKeyLen` (`error.KeyTooLarge`) and a TID above
@@ -180,19 +177,16 @@ search. It does not know whether separators are truncated. `range(lo, hi)` desce
 
 1. `findLeaf` descends and records the path. `locate` finds the tuple's slot in the leaf:
    `found`, `insert_at` (a new plain cell) or `inside` (within a posting list's TID range).
-2. Fast path: if one more plain cell fits, allocate its bytes in the page's arena and
-   insert. For `inside`, `swapIntoPosting` first exchanges the new TID for the list's
-   largest one.
+2. Fast path: if one more plain cell fits, insert it. For `inside`, `swapIntoPosting` first
+   exchanges the new TID for the list's largest one.
 3. Slow path (`putSlow`): flatten the page's cells plus the new one into scratch memory.
    If deduplication is on, `dedupPass` merges neighbouring cells with equal keys up to the
    posting size limit. If the result fits, the page is rebuilt and the put is done.
 4. Otherwise `chooseLeafSplit` picks the cut: among cuts that leave both halves between 40%
-   and 60% of the bytes, the one with the shortest separator. Two new leaves are built; the
-   separator becomes the high fence of the left one, the low fence of the right one, and a
-   pivot in the parent.
+   and 60% of the bytes, the one with the shortest separator. The separator becomes the
+   high fence of the left leaf, the low fence of the right one, and a pivot in the parent.
 5. If the parent overflows, it splits too. The separator that moves up is **not** truncated
-   again: it must remain byte-identical to the fences below it, or `validate`'s fence check
-   (and any search relying on the fences) would break.
+   again: it must stay byte-identical to the fences below it.
 
 All new pages are collected in a `Txn` and installed together by `commit`, so a put either
 happens completely or not at all.
@@ -287,8 +281,7 @@ which equal the rows above them). How to read it:
   shorter fences shift which page splits when (exercise 4 separates the two effects).
 - **C.** Hierarchical keys share long prefixes. Truncation still cuts the suffix
   (`/order/NNNNNN`), but every separator keeps `user/00...`: 10.3 bytes where A needs 2.4.
-  Removing a shared *prefix* is a different technique. The deduplication rows differ a
-  little because C is not free of duplicates: 20000 random draws from 2000 × 10000
+  The deduplication rows differ a little because 20000 random draws from 2000 × 10000
   (user, order) pairs repeat a few keys, enough for 8 and 7 passes to avoid a split.
 
 ### Prefix compression (textbook, not implemented)
@@ -311,9 +304,8 @@ which only shortens separators.
 - Suffix truncation: `_bt_truncate`, `nbtutils.c:692` onwards; called for leaf splits at
   `nbtinsert.c:1657-1682`. Prose in `README:823-902`. Postgres truncates whole columns
   only, not bytes inside a string; the README says byte-level truncation "would be
-  straightforward" to add through operator class support (`README:851-856`). This chapter's
-  keys are single byte strings, so byte-level truncation is the only kind there is. It is
-  the textbook form, not what Postgres does to a `text` column.
+  straightforward" to add (`README:851-856`). This chapter's keys are single byte strings,
+  so its byte-level truncation is the textbook form, not what Postgres does to `text`.
 - Equal keys: when nothing can be truncated, the pivot gets the last-left tuple's TID
   (`nbtutils.c:771-778`), as here. The key size limit reserves room for that TID:
   `BTMaxItemSize`, `src/include/access/nbtree.h:165-173`.
@@ -339,9 +331,8 @@ which only shortens separators.
 **DuckDB, as a contrast.** DuckDB has no B-tree. Its ART index compresses *paths* instead of
 separators: a run of key bytes with no branching is stored in a `PREFIX` node
 (`src/include/duckdb/execution/index/art/prefix.hpp:18-29`,
-`src/execution/index/art/prefix.cpp:57-69`). Both techniques exploit shared prefixes; the
-B-tree shortens what it stores in internal pages, the radix tree skips levels. Chapter 28
-covers ART.
+`src/execution/index/art/prefix.cpp:57-69`). The B-tree shortens what it stores in internal
+pages, the radix tree skips levels. Chapter 28 covers ART.
 
 **Turso, TigerBeetle, Milvus, FAISS.** Nothing found in the research notes on separator
 truncation or posting lists in a B-tree for these; not claimed.
@@ -381,7 +372,8 @@ posting-list swaps).
 ## Pitfalls
 
 - **Truncating in internal splits.** A separator that moves up must stay identical to the
-  fences below it. Truncate only when a *leaf* splits.
+  fences below it (`validate` and any search relying on them would break). Truncate only
+  when a *leaf* splits.
 - **Comparing a truncated separator on the key alone.** The lookup key `c` and the
   separator `c` have equal bytes, but the tuples `(c, anything)` live to the right. The TID
   (minus infinity in the separator) decides.

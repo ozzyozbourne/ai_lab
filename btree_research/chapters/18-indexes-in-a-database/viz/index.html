@@ -33,12 +33,13 @@
 .c18-slot .c18-tid { color: var(--bt-muted); }
 @media (min-width: 760px) {              /* wide: one line per slot, three pages before the pane scrolls */
   .c18-heap { max-height: 108px; }
+  .c18-results { max-height: 58px; }
   .c18-slot { white-space: nowrap; overflow: hidden; }
   .c18-slot span { display: inline; }
 }
 .c18-slot.is-empty { background: none; box-shadow: none; border: 1.5px dashed var(--bt-border); color: var(--bt-muted); }
 .c18-counters, .c18-results { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: .84rem; color: var(--bt-muted); }
-.c18-results { max-height: 58px; overflow-y: auto; scrollbar-width: thin; }
+.c18-results { max-height: 88px; overflow-y: auto; scrollbar-width: thin; }
 .bt-stage > .c18-results { margin-top: 6px; }
 .c18-counters .bt-chip b { font-family: var(--bt-mono); }
 .c18-results .bt-chip { white-space: normal; border-radius: 8px; }

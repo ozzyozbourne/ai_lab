@@ -54,11 +54,11 @@ pub const Workload = struct {
     pub fn op(self: Workload, i: u32, key_buf: *[btree.max_key_len]u8, value_buf: *[btree.max_value_len]u8) Op {
         var rng = SplitMix64.init(self.seed *% 0x9E3779B97F4A7C15 +% i);
         const n: usize = @intCast(rng.below(self.key_space));
-        // "k" + three digits, padded with one letter to 200..256 bytes.
-        const key_len = 200 + (n * 7) % 57;
+        // "k" + three digits, padded with one letter to 240..256 bytes.
+        const key_len = 240 + (n * 7) % 17;
         @memset(key_buf[0..key_len], 'a' + @as(u8, @intCast(n % 26)));
         key_buf[0..4].* = .{ 'k', '0' + @as(u8, @intCast(n / 100 % 10)), '0' + @as(u8, @intCast(n / 10 % 10)), '0' + @as(u8, @intCast(n % 10)) };
-        const value_len: usize = @intCast(300 + rng.below(700));
+        const value_len: usize = @intCast(700 + rng.below(324));
         @memset(value_buf[0..value_len], 'A' + @as(u8, @intCast(i % 26)));
         return .{ .key = key_buf[0..key_len], .value = value_buf[0..value_len] };
     }

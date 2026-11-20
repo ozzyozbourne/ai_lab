@@ -338,7 +338,7 @@ pub fn crashDuringReuse(gpa: Allocator, writes_allowed: u64) !CrashOutcome {
     const new_value: [crash_value_len]u8 = @splat('n');
     {
         var pager: Pager = try .init(mem.storage());
-        var pool: BufferPool = try .init(gpa, &pager, 2);
+        var pool: BufferPool = try .init(gpa, &pager, 8);
         defer pool.deinit(); // no flush: dirty pages in memory are lost
         var tree: DiskBTree = try .create(gpa, &pool);
         defer tree.deinit();

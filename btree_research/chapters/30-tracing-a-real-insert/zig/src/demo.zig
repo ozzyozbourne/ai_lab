@@ -194,7 +194,7 @@ fn part2(w: *Io.Writer, gpa: Allocator) !void {
         try s.run();
         try rig.tree.validate();
         try rig.tree.flush();
-        try w.print("resumable insert{s}:\n", .{if (pressure) ", every unpinned page dropped before every transition" else ""});
+        try w.print("resumable insert{s}:\n", .{if (pressure) ", every unpinned page dropped between transitions" else ""});
         try printSuspensions(w, &s);
         try w.print("  pages read by the disk: {d}; file identical to the blocking one: {}\n", .{
             rig.pager.stats.reads, std.mem.eql(u8, rig.mem.bytes.items, blocking.mem.bytes.items),
@@ -255,8 +255,9 @@ fn part4(w: *Io.Writer, gpa: Allocator) !void {
     defer rig.deinit();
     for (scenario_keys) |n| try rig.putScenario(n);
 
-    var value_buf: [btree.max_value_len]u8 = undefined;
-    var op: InsertOp = try .init(gpa, &rig.tree, "16", scenarioValue(16, &value_buf), .{});
+    // A value large enough that the leaf holding 12 .. 18 must split.
+    const value: [1000]u8 = @splat('q');
+    var op: InsertOp = try .init(gpa, &rig.tree, "16", &value, .{});
     defer op.deinit();
     // Step until the leaf has been split but the parent does not know yet.
     var last: resumable.Step = try op.step();

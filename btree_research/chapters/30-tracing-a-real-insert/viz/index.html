@@ -166,12 +166,12 @@ is the program counter, the path and the carry are the local variables, and thei
     colTu.box.classList.toggle('is-acting', step.engine === 'turso');
     colPg.log.innerHTML = '<b>WAL so far:</b> ' + (L.pg.wal.length ? L.pg.wal.map(esc).join(' · ') : 'nothing yet') +
       '<br><b>Dirty buffers:</b> ' + (L.pg.dirty.length ? L.pg.dirty.map(function (d) { return d === 0 ? 'metapage' : 'blk ' + d; }).join(', ') : 'none');
-    colTu.log.innerHTML = '<b>WAL so far:</b> ' + (step.stage === 6 && step.engine === 'turso' || (L.turso.last === 6) ? L.turso.wal.map(esc).join(' · ') : 'nothing (pages are logged at commit)') +
+    colTu.log.innerHTML = '<b>WAL so far:</b> ' + (L.turso.last === 6 ? L.turso.wal.map(esc).join(' · ') : 'nothing (pages are logged at commit)') +
       '<br><b>Dirty pages:</b> ' + (L.turso.dirty.length ? L.turso.dirty.map(function (d) { return 'page ' + d; }).join(', ') : 'none');
     var reached = Math.max(L.pg.last, L.turso.last);
     stageChips.forEach(function (chip, n) {
       var s = n + 1;
-      chip.className = 'bt-chip' + (step.stage === s ? ' s-active is-now' : s < reached || (s <= reached && step.stage !== s) ? ' s-found' : '');
+      chip.className = 'bt-chip' + (step.stage === s ? ' s-active is-now' : s <= reached ? ' s-found' : '');
     });
     var done = i === total - 1 && i > 0;
     function lane(id, label, c) {

@@ -8,9 +8,8 @@
   counting blocks instead of timing anything.
 - Why a B+tree pays for a write at once and an LSM-tree pays later, in bulk,
   and what that does to reads and to space.
-- What the growth factor of an LSM-tree trades, and what a Bloom filter per
-  run does to its lookups.
-- When each structure is the better choice.
+- What the growth factor trades, what a Bloom filter per run does to
+  lookups, and when each structure is the better choice.
 - Where B-epsilon (buffered) trees sit between the two designs.
 
 Prerequisites: chapter 07 (the B+tree whose code is reused here) and chapter 09
@@ -20,8 +19,8 @@ bulk-loaded tree. Chapter 26 explains the arena used by the memtable.
 ## The idea in plain words
 
 A B+tree keeps one sorted copy of the data and changes it in place. To insert
-a key it finds the one leaf where the key belongs, changes it, and writes that
-whole block back. One small change costs one block write, at a position on the
+a key it finds the leaf where the key belongs, changes it, and writes that
+whole block back: one block write per small change, at a position on the
 device decided by the key.
 
 An LSM-tree refuses to change anything in place.
@@ -37,9 +36,9 @@ An LSM-tree refuses to change anything in place.
 4. A **delete** cannot remove a key from an immutable run. It writes a
    **tombstone**: an entry that says "this key is gone". A tombstone hides
    every older version of the key below it.
-5. A **point lookup** searches the newest place first (memtable, then level 0
+5. A **point lookup** searches the newest place first (memtable, level 0
    from the newest run to the oldest, then level 1, 2, ...) and stops at the
-   first place that knows the key, whether it finds a value or a tombstone.
+   first place that knows the key, as a value or as a tombstone.
 6. A **range scan** cannot stop early. The next key in order may be in any
    place, so it merges all of them.
 
@@ -217,9 +216,8 @@ fn maintain(self: *Lsm, gpa: Allocator) Allocator.Error!void {
 
 `compact` decides whether tombstones may be dropped (`deepestLevel() <= from +
 1`: nothing older lies below the output), merges, and only then frees the
-inputs. `put` returns nothing, unlike the B+tree's: finding the old value
-would cost a read, and not reading is the point. `get` asks each run's
-min/max keys, then its filter, and only then reads blocks (`probe`).
+inputs. `get` asks each run's min/max keys, then its filter, and only then
+reads blocks (`probe`).
 
 ### Rust
 
@@ -255,9 +253,7 @@ which come next; all rows and the printed limits are in
 Limits 1 to 5 apply to every row; "When to choose which" below reads them.
 
 **Point lookups** depend on the filter and on how many gets ask for a key
-that does not exist. From the rows `of those, for a key that is absent`,
-`READ AMPLIFICATION (blocks per get)` and `READ AMPLIFICATION with bloom
-filters` of the three tables:
+that does not exist. Blocks per get, from the three tables:
 
 | Workload | Gets for an absent key | B+tree | LSM, no filter | LSM, bloom filters | False-positive rate |
 |---|---|---|---|---|---|
@@ -293,7 +289,7 @@ growth    levels   write amp   blocks per get   with filters   blocks per scan
 A larger growth factor means fewer levels to search and more rewriting inside
 each level. With filters the lookup column no longer shows it: nearly every
 get here is for an absent key, and 0.09 to 0.13 is a few dozen false
-positives, too few to compare. Scans still pay for every level.
+positives. Scans still pay for every level.
 
 ## When to choose which
 
@@ -323,9 +319,9 @@ Trust the direction of each row more than its size.
 ## B-epsilon trees: the midpoint
 
 Textbook material (usually credited to Brodal and Fagerberg, the name to
-Bender and others; quoted from memory, the papers were not opened). It is in
-none of the guide's code bases and has no Zig or Rust code here; the second
-visualization page has a small JavaScript model.
+Bender and others; from memory, the papers were not opened). None of the
+guide's code bases has one and there is no Zig or Rust code here, only a
+small JavaScript model on the second visualization page.
 
 A B-epsilon tree is a B-tree in which every internal node also holds a
 **buffer** of pending changes, called messages. An insert or delete becomes a
@@ -342,8 +338,8 @@ batches are large, the fan-out is small and the tree is taller. Textbook
 bounds: an insert costs about (log_B N) / (epsilon * B^(1 - epsilon)) block
 transfers amortised, and a lookup about (log_B N) / epsilon.
 
-It is a midpoint: it batches writes like an LSM-tree and keeps one path per
-lookup like a B-tree.
+So it batches writes like an LSM-tree and keeps one path per lookup like a
+B-tree.
 
 The page's model is one node with four leaves and a buffer of 2, 4, 8 or 16.
 Two limits: the buffer is in RAM, so a buffered message is lost in a crash
@@ -356,9 +352,8 @@ buffer and not the taller tree that pays for it.
 **TigerBeetle** stores all its state in a forest of LSM-trees and has no
 B-tree (see `research/tigerbeetle.md`, section 0).
 
-- *Why an LSM.* The architecture document says it is "particularly good at
-  writes and TigerBeetle's workload is write-heavy"
-  (`tigerbeetle/docs/ARCHITECTURE.md:384-387`).
+- *Why an LSM.* It is "particularly good at writes and TigerBeetle's workload
+  is write-heavy" (`tigerbeetle/docs/ARCHITECTURE.md:384-387`).
 - *Growth factor and levels.* The defaults are 7 levels and growth factor 8
   (`tigerbeetle/src/config.zig:162-163`). The comment on the constant states
   the trade-off measured above: a higher growth factor "increases write
@@ -438,9 +433,9 @@ table is a fixed array of 128 entries.
 
 ## Exercises
 
-1. (Easy) After the trace of section 1, how many blocks do `get 3`, `get 14`,
-   `get 30` and `get 31` read on each structure? Decide from the dump in
-   section 2 of the output before you check.
+1. (Easy) After the trace, how many blocks do `get 3`, `get 14`, `get 30` and
+   `get 31` read on each structure? Decide from the dump in section 2 of the
+   output.
 2. (Easy) From the printed tables: with every index block cached, how many
    times as many blocks per `get` does the LSM-tree read as the B+tree in
    each workload? Compare with the uncached ratio.

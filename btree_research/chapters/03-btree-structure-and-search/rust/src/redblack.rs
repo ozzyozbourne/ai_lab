@@ -16,12 +16,16 @@
 //! left-to-right order. (For two keys the red one could also go to the
 //! right; we always put it on the left, the "left-leaning" choice.)
 //!
-//! The red-black rules follow from the B-tree rules:
+//! A red-black tree is a binary search tree (one key and at most two
+//! children per node) with one colour per node, kept balanced by three
+//! rules. Each of them follows from a B-tree rule:
+//!   * the root is black             (the top of the root's B-tree node)
 //!   * a red node has no red child   (a B-tree node has at most 3 keys)
 //!   * every path from the root down to a missing child passes the same
-//!     number of black nodes         (all B-tree leaves are at one depth)
+//!     number of black nodes         (all B-tree leaves are on one level)
 //!
-//! `check` verifies both, so a broken conversion would be caught.
+//! `check` verifies all three and the order of the keys, so a broken
+//! conversion would be caught.
 //!
 //! Like the B-tree, the red-black tree lives in a typed arena: a
 //! `Vec<RbNode>` with `u32` indices instead of pointers.
@@ -116,7 +120,7 @@ impl RbTree {
         id: RbId,
         lo: Option<u64>,
         hi: Option<u64>,
-        depth: usize,
+        level: usize,
         s: &mut Summary,
     ) -> Result<usize, RbError> {
         let node = &self.nodes[id as usize];
@@ -134,11 +138,11 @@ impl RbTree {
                 if node.color == Color::Red && self.nodes[c as usize].color == Color::Red {
                     return Err(RbError::RedHasRedChild);
                 }
-                black[side] = self.walk(c, child_lo, child_hi, depth + 1, s)?;
+                black[side] = self.walk(c, child_lo, child_hi, level + 1, s)?;
             } else {
                 // A path ends here.
-                s.shortest_path = s.shortest_path.min(depth);
-                s.longest_path = s.longest_path.max(depth);
+                s.shortest_path = s.shortest_path.min(level);
+                s.longest_path = s.longest_path.max(level);
             }
         }
         if black[0] != black[1] {

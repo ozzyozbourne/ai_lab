@@ -14,11 +14,15 @@
 //! left-to-right order. (For two keys the red one could also go to the
 //! right; we always put it on the left, the "left-leaning" choice.)
 //!
-//! The red-black rules follow from the B-tree rules:
+//! A red-black tree is a binary search tree (one key and at most two
+//! children per node) with one colour per node, kept balanced by three
+//! rules. Each of them follows from a B-tree rule:
+//!   * the root is black             (the top of the root's B-tree node)
 //!   * a red node has no red child   (a B-tree node has at most 3 keys)
 //!   * every path from the root down to a missing child passes the same
-//!     number of black nodes         (all B-tree leaves are at one depth)
-//! `check` verifies both, so a broken conversion would be caught.
+//!     number of black nodes         (all B-tree leaves are on one level)
+//! `check` verifies all three and the order of the keys, so a broken
+//! conversion would be caught.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Node = @import("base_node.zig").Node(4);
@@ -79,7 +83,7 @@ pub fn check(root: ?*const RbNode) Error!Summary {
 }
 
 /// Returns the number of black nodes from `node` down to a missing child.
-fn walk(node: *const RbNode, lo: ?u64, hi: ?u64, depth: usize, s: *Summary) Error!usize {
+fn walk(node: *const RbNode, lo: ?u64, hi: ?u64, level: usize, s: *Summary) Error!usize {
     s.nodes += 1;
     if (lo) |l| if (node.key <= l) return error.KeysOutOfOrder;
     if (hi) |h| if (node.key >= h) return error.KeysOutOfOrder;
@@ -87,11 +91,11 @@ fn walk(node: *const RbNode, lo: ?u64, hi: ?u64, depth: usize, s: *Summary) Erro
     for ([_]?*const RbNode{ node.left, node.right }, 0..) |child, side| {
         if (child) |c| {
             if (node.color == .red and c.color == .red) return error.RedHasRedChild;
-            black[side] = try walk(c, if (side == 0) lo else node.key, if (side == 0) node.key else hi, depth + 1, s);
+            black[side] = try walk(c, if (side == 0) lo else node.key, if (side == 0) node.key else hi, level + 1, s);
         } else {
             black[side] = 0; // a path ends here
-            s.shortest_path = @min(s.shortest_path, depth);
-            s.longest_path = @max(s.longest_path, depth);
+            s.shortest_path = @min(s.shortest_path, level);
+            s.longest_path = @max(s.longest_path, level);
         }
     }
     if (black[0] != black[1]) return error.BlackHeightDiffers;

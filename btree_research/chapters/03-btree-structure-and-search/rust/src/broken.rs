@@ -146,7 +146,7 @@ fn empty_root(t: &mut HandTree) -> Result<(), OutOfNodes> {
 
 fn deeper_leaves(t: &mut HandTree) -> Result<(), OutOfNodes> {
     // Same 12 keys, still sorted, every node within its size limits: only
-    // the depth of two leaves changes.
+    // the level of two leaves changes.
     let low = t.leaf(&[12])?;
     let high = t.leaf(&[17])?;
     t.len -= 2; // 12 and 17 were counted before

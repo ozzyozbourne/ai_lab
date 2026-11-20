@@ -79,7 +79,7 @@ fn emptyRoot(t: *Tree, _: Allocator) Allocator.Error!void {
 
 fn deeperLeaves(t: *Tree, gpa: Allocator) Allocator.Error!void {
     // Same 12 keys, still sorted, every node within its size limits: only
-    // the depth of two leaves changes.
+    // the level of two leaves changes.
     const low = try t.leaf(gpa, &.{12});
     const high = try t.leaf(gpa, &.{17});
     t.len -= 2; // 12 and 17 were counted before

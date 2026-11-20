@@ -194,8 +194,20 @@
   ].join('\n');
   /* From expected_output.txt, Part 4. */
   window.EXPECTED_PART4 = 'insert 16 has split a leaf into pages 4 and 8 and waits for page 1 in state insert_separator';
+  /* Not program output (the programs have no toy pages): the calls of the
+   * JS model for the climbing split of figure 2, 2-frame pool. The same
+   * state sequence, without the waits, is what resumable.zig runs through
+   * when a root that is an interior page splits. */
+  window.EXPECTED_CASCADE = [
+    'call 1: descend -> Io(page 1)',
+    'call 2: descend, descend -> Io(page 3)',
+    'call 3: descend, leaf_put, split_leaf, insert_separator -> Io(page 1)',
+    'call 4: insert_separator, push_root_interior, split_interior, insert_separator -> Io(page 1)',
+    'call 5: insert_separator -> Done',
+    'under pressure suspended in: descend, leaf_put, split_leaf, insert_separator, push_root_interior, split_interior'
+  ].join('\n');
   /* Not program output: pins the behaviour of the two schematic models of figure 1. */
   window.EXPECTED_LANES_27 =
-    '1 · S-lock 3 → 1 / 1 · X-lock leaf 1 / 2 · unique: ok / 3 · leaf 1 is full / 4 · split point: 3 | 2 / 4 · SPLIT → new blk 5 / 5 · INSERT_UPPER blk 3 / 6 · commit: flush 2 WAL records\n' +
+    '1 · S-lock 3 → 1 / 1 · X-lock leaf 1 / 2 · unique: ok / 3 · leaf 1 is full / 4 · split point: 3 | 2 / 4 · SPLIT_L → new blk 5 / 5 · INSERT_UPPER blk 3 / 6 · commit: flush 2 WAL records\n' +
     '1 · push 2 → 4 / 1 · leaf 4 on the stack / 2 · unique: ok / 3 · overflow cell on 4 / 4 · siblings 3, 4, 5 / 4 · 3 pages → 3 / 5 · dividers 27, 45 → page 2 / 6 · commit: 4 page frames';
 })();

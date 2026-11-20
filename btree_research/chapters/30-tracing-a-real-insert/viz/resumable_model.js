@@ -132,20 +132,23 @@
         }
         this.parent = top;
         this.state = this.path.length === 0 ? 'push_root_interior' : 'split_interior';
-        this.note = 'Parent page ' + top.id + ' has no room for the separator. Nothing was changed. Next state: <code>' + this.state + '</code>.';
+        this.note = 'Parent page ' + top.id + ' has no room for the separator. Nothing was changed, but the path entry is popped and kept in <code>parent</code>: the split climbs. Next state: <code>' + this.state + '</code>.';
         return 'again';
       case 'push_root_interior':
         if (this.need(t.root)) return { io: t.root };
         this.parent = { id: t.pushRootDown(), index: this.parent.index };
         this.path.push({ id: t.root, index: 0 });
         this.state = 'split_interior';
-        this.note = 'The full parent is the root: its content moves to the new page ' + this.parent.id + '.';
+        this.note = 'The full parent is the root, and the root never changes its page id: its content moves to the new page ' + this.parent.id + ', page ' + t.root +
+          ' becomes an interior page with one child, and the tree is one level taller. <code>parent</code> now names page ' + this.parent.id + ', and the root is appended to <code>path</code> so that the next separator has somewhere to go.';
         return 'again';
       case 'split_interior':
         if (this.need(this.parent.id)) return { io: this.parent.id };
         this.carry = t.splitInterior(this.parent, this.carry);
         this.state = 'insert_separator';
-        this.note = 'Interior page ' + this.carry.left + ' is split; ' + kb(this.carry.sep, 'split') + ' moves up. <code>carry</code> is replaced.';
+        this.note = 'Interior page ' + this.carry.left + ' is split around the separator; the right half is the new page ' + this.carry.right + ' and ' + kb(this.carry.sep, 'split') +
+          ' moves up. <code>carry</code> is replaced by <code>{sep: "' + this.carry.sep + '", left: ' + this.carry.left + ', right: ' + this.carry.right +
+          '}</code> and the state goes <em>back</em> to <code>insert_separator</code>, one level higher. This loop is why <code>carry</code>, <code>parent</code> and <code>path</code> live in the operation: any of its turns may be a different call.';
         return 'again';
     }
     throw new Error('stepped after the end');
@@ -164,6 +167,7 @@
         state: { tree: tree.snapshot(), frames: tree.frameModel(),
           op: { state: op.state, cur: op.cur, path: op.path.map(function (p) { return 'page ' + p.id + ' · child ' + p.index; }),
             carry: op.carry ? 'sep "' + op.carry.sep + '", left ' + op.carry.left + ', right ' + op.carry.right : null,
+            parent: op.parent ? 'page ' + op.parent.id + ' · child ' + op.parent.index : null,
             waiting: op.waiting, key: key, vlen: vlen, live: op.state !== 'done' },
           calls: JSON.parse(JSON.stringify(calls)), running: kind === 'transition' || kind === 'call' || kind === 'yield' || kind === 'again',
           reads: tree.pool.pager.reads - readsBefore }
@@ -214,11 +218,35 @@
     return { steps: steps, calls: calls, lines: lines, op: op };
   }
 
-  /* The scenario tree of the programs' Part 1 / Part 4. */
-  function scenarioTree(frames, count) {
-    var tree = new Tree({ pageSize: 4096, frames: frames });
-    CH12.SCENARIO.slice(0, count).forEach(function (n) { tree.put(CH12.scenarioKey(n), CH12.scenarioValueLen(n, 4096), false); });
+  /* The scenario tree of the programs' Part 1 / Part 4 (4096-byte pages), or,
+   * with pageSize 128, the first `count` puts of chapter 12's toy scenario. */
+  function scenarioTree(frames, count, pageSize) {
+    pageSize = pageSize || 4096;
+    var tree = new Tree({ pageSize: pageSize, frames: frames });
+    CH12.scenarioFor(pageSize).slice(0, count).forEach(function (n) { tree.put(CH12.scenarioKey(n), CH12.scenarioValueLen(n, pageSize), false); });
     return tree;
+  }
+
+  /* The climbing split. The programs reach `push_root_interior` and
+   * `split_interior` only after hundreds of puts (Part 2), too many pages to
+   * draw. On chapter 12's 128-byte toy pages (not a real format, this page
+   * only) put number 26 of the toy scenario, key 16, does it with 12 pages:
+   * the leaf splits, the root (an interior page) is full, its content moves
+   * down, and that page splits. */
+  var CASCADE = { pageSize: 128, count: 25, key: 16 };
+  function cascadeTree(frames) { return scenarioTree(frames, CASCADE.count, CASCADE.pageSize); }
+  /* What the page's self-test pins: the calls with a 2-frame pool, the states
+   * that suspended when every unpinned page is dropped between transitions,
+   * and that the resulting tree is the one the blocking put builds. */
+  function replayCascade() {
+    var key = CH12.scenarioKey(CASCADE.key), vlen = CH12.scenarioValueLen(CASCADE.key, CASCADE.pageSize);
+    var tree = cascadeTree(2), t = traceInsert(tree, key, vlen, {});
+    var blocking = cascadeTree(2);
+    blocking.put(key, vlen, false);
+    var pressed = traceInsert(cascadeTree(2), key, vlen, { pressure: true });
+    var suspended = STATES.filter(function (st) { return pressed.op.suspended[st]; });
+    return { text: t.lines.join('\n') + '\nunder pressure suspended in: ' + suspended.join(', '),
+      same: tree.dump() === blocking.dump() && tree.counters() === blocking.counters(), valid: tree.validate() };
   }
 
   /* What demo.zig / demo.rs print in Part 1 (the call lines and the dumps). */
@@ -248,6 +276,7 @@
   }
 
   var api = { InsertOp: InsertOp, traceInsert: traceInsert, scenarioTree: scenarioTree, replayPart1: replayPart1, replayPart4: replayPart4,
+    CASCADE: CASCADE, cascadeTree: cascadeTree, replayCascade: replayCascade,
     evictUnpinned: evictUnpinned, STATES: STATES, WHAT: WHAT };
   root.CH30 = root.CH30 || {};
   for (var name in api) root.CH30[name] = api[name];

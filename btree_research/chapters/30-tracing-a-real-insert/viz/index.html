@@ -72,7 +72,12 @@ of steps are the models'. The order of the steps, the function names and the WAL
 <p>This is the chapter's own code: the disk B+tree of chapter 12 with its <code>put</code> rewritten as an object
 that is called again and again. It never waits for the disk. When a page is missing it returns
 <code>Io(page)</code>; when called again it continues from the state it recorded. The pool has few frames on
-purpose, so that pages are missing often.</p>
+purpose, so that pages are missing often. Between them the five inserts of the list reach all seven states: the
+first is the only one that enters <code>push_root_leaf</code>, and the last is the one in which the split climbs
+(<code>insert_separator</code>, <code>push_root_interior</code>, <code>split_interior</code>, and
+<code>insert_separator</code> again). That last tree uses the 128-byte toy pages of chapter 12's page, which are not
+a real format: with 4096-byte pages a full root has hundreds of children. Tick "drop unpinned pages" to make every
+state wait for its page.</p>
 <div id="fig-op"></div>
 
 <h2>3. What that looks like in code</h2>
@@ -265,7 +270,8 @@ is the program counter, the path and the carry are the local variables, and thei
     { label: '07 into a root that is a full leaf (6 keys)', count: 6, key: 7, vlen: null },
     { label: '15 into a two-level tree (11 keys)', count: 11, key: 15, vlen: null },
     { label: '16 with a 1000-byte value (24 keys)', count: 24, key: 16, vlen: 1000 },
-    { label: '13: it simply fits (24 keys)', count: 24, key: 13, vlen: null }
+    { label: '13: it simply fits (24 keys)', count: 24, key: 13, vlen: null },
+    { label: '16 on toy pages: the split climbs through a full root (25 keys)', count: CH30.CASCADE.count, key: CH30.CASCADE.key, vlen: null, pageSize: CH30.CASCADE.pageSize }
   ];
   var scenSel = el('select.bt-select', { 'aria-label': 'Scenario' }, SCENARIOS.map(function (s, i) { return el('option', { value: i }, s.label); }));
   var frameSel = el('select.bt-select', { 'aria-label': 'Buffer pool frames' }, [2, 3, 8].map(function (n) { return el('option', { value: n }, n + ' frames'); }));
@@ -316,6 +322,7 @@ is the program counter, the path and the carry are the local variables, and thei
       row('cur', gone ? 'freed' : 'page ' + op.cur, gone),
       row('path', gone ? 'freed' : op.path.length ? op.path.join('; ') : '(empty)', gone),
       row('carry', gone ? 'freed' : op.carry || '(none yet)', gone),
+      row('parent', gone ? 'freed' : op.parent || '(not splitting a parent)', gone),
       row('waiting for', op.waiting === null ? '(nothing)' : 'page ' + op.waiting),
       row('local variables', s.running ? 'alive: a call is running' : 'none: no call is running', !s.running)));
     callsBody.textContent = '';
@@ -335,8 +342,9 @@ is the program counter, the path and the carry are the local variables, and thei
   });
   function rebuild(play) {
     var sc = SCENARIOS[+scenSel.value];
-    var tree = CH30.scenarioTree(+frameSel.value, sc.count);
-    var vlen = sc.vlen === null ? CH12.scenarioValueLen(sc.key, 4096) : sc.vlen;
+    var pageSize = sc.pageSize || 4096;
+    var tree = CH30.scenarioTree(+frameSel.value, sc.count, pageSize);
+    var vlen = sc.vlen === null ? CH12.scenarioValueLen(sc.key, pageSize) : sc.vlen;
     var t = CH30.traceInsert(tree, CH12.scenarioKey(sc.key), vlen, { pressure: pressureBox.checked, impatient: impatientBox.checked });
     stepper2.setSteps(t.steps, { play: !!play });
   }
@@ -374,6 +382,21 @@ is the program counter, the path and the carry are the local variables, and thei
   BTViz.selfTest('part 1 calls', p1.text, window.EXPECTED_PART1);
   BTViz.selfTest('part 1 validate', p1.valid, null);
   BTViz.selfTest('part 4', CH30.replayPart4(), window.EXPECTED_PART4);
+  // The climbing split on toy pages: the calls, and the same tree as the blocking put.
+  var casc = CH30.replayCascade();
+  BTViz.selfTest('climbing split: calls', casc.text, window.EXPECTED_CASCADE);
+  BTViz.selfTest('climbing split: same tree as the blocking put', casc.same + ', validate ' + casc.valid, 'true, validate null');
+  // Figure 2 can show every state: each one is entered by some scenario of the list.
+  (function () {
+    var seen = {};
+    SCENARIOS.forEach(function (sc) {
+      var pageSize = sc.pageSize || 4096;
+      var t = CH30.traceInsert(CH30.scenarioTree(2, sc.count, pageSize), CH12.scenarioKey(sc.key),
+        sc.vlen === null ? CH12.scenarioValueLen(sc.key, pageSize) : sc.vlen, { pressure: true });
+      t.calls.forEach(function (c) { c.states.forEach(function (st) { seen[st] = true; }); });
+    });
+    BTViz.selfTest('figure 2 reaches every state', CH30.STATES.filter(function (st) { return seen[st]; }).join(' '), CH30.STATES.join(' '));
+  })();
 })();
 </script>
 </body>

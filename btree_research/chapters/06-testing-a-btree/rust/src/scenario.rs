@@ -142,10 +142,11 @@ pub fn run(w: &mut dyn Write) -> Result<(), Box<dyn Error>> {
 fn print_case(w: &mut dyn Write, case: Case) -> std::io::Result<()> {
     write!(
         w,
-        "seed {}: {} ops on {} keys, put:delete:get:range = {}:{}:{}:{}, ",
+        "seed {}: {} ops on {} keys {}, put:delete:get:range = {}:{}:{}:{}, ",
         case.seed,
         case.count,
         case.key_space,
+        case.key_layout.describe(),
         case.weights.put,
         case.weights.delete,
         case.weights.get,
@@ -271,6 +272,7 @@ pub fn fault_sweep(order: usize, count: u64) -> FaultSweep {
         let mut n = 0;
         loop {
             let usage_before = tree.pool.usage;
+            let slots_before = tree.pool.live_slots();
             tree.pool.fail_after = Some(n);
             let outcome = tree.put(key, key * 10);
             tree.pool.fail_after = None;
@@ -282,6 +284,7 @@ pub fn fault_sweep(order: usize, count: u64) -> FaultSweep {
             let same = tree.len as u64 == key - 1
                 && tree.get(key).is_none()
                 && tree.pool.usage == usage_before
+                && tree.pool.live_slots() == slots_before
                 && tree.validate().is_ok();
             if !same {
                 result.unchanged = false;

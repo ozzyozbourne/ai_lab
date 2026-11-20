@@ -1,6 +1,6 @@
 // Copied from chapters/05-deletion-and-rebalancing/rust/src/insert.rs
-// Changes for chapter 06: coverage points instead of counters, and one fault
-// seam (search for "SEAM") that only a broken variant takes.
+// Changes for chapter 06: coverage points instead of counters, and fault
+// seams (search for "SEAM") that only a broken variant takes.
 //! SECTION 4: insert with bottom-up splitting (explained in chapter 04).
 //!
 //! `put` works in three phases:
@@ -86,10 +86,18 @@ pub fn put(tree: &mut BTree, key: u64, value: u64) -> Result<Option<u64>, OutOfN
                 // forget that we took it: `usage` (created, destroyed, peak)
                 // counts nodes of the tree, and these never became part of it.
                 let reserved = spare.len();
-                for id in spare {
+                // SEAMS rollback_leaks_node / rollback_keeps_usage (test-only, see `Bug`).
+                let hand_back = if tree.bug == Bug::RollbackLeaksNode {
+                    reserved.saturating_sub(1)
+                } else {
+                    reserved
+                };
+                for id in spare.into_iter().take(hand_back) {
                     tree.pool.free(id);
                 }
-                tree.pool.usage = usage_before;
+                if tree.bug != Bug::RollbackKeepsUsage {
+                    tree.pool.usage = usage_before;
+                }
                 tree.coverage.hit(if reserved > 0 {
                     Point::PutOomRollback
                 } else {

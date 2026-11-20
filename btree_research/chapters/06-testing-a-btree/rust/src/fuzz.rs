@@ -20,6 +20,13 @@
 //!
 //! `replay` takes a [`Subject`]: which order, which bug. The same harness
 //! tests the correct tree at every order and each broken variant.
+//!
+//! A bug that corrupts the tree ends as a `Failure` with a step number. A bug
+//! that trips an assert or an index check inside the tree PANICS before any
+//! check runs, and the panic message does not know the seed. For that case
+//! there is a trace mode: `cargo test --features trace` prints the seed and
+//! every step to stderr BEFORE it runs, so the last lines before the panic
+//! name the case (README, "When the tree crashes instead").
 
 use crate::alloc_count;
 use crate::base_btree::{BTree, Bug};
@@ -30,12 +37,88 @@ use crate::prng::SplitMix64;
 use std::fmt;
 use std::io::{self, Write};
 
+/// Set by `cargo test --features trace` / `cargo run --features trace`.
+pub const TRACE: bool = cfg!(feature = "trace");
+
 /// One operation, plus an optional injected fault: "the `fault`-th node
 /// allocation of this put fails" (0 = the first). Only puts allocate nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Step {
     pub op: Op,
     pub fault: Option<u8>,
+}
+
+/// `put 7 = 70`, `delete 7`, `get 7`, `range [3, 9)`.
+impl fmt::Display for Step {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.op {
+            Op::Put { key, value } => write!(f, "put {key} = {value}")?,
+            Op::Delete { key } => write!(f, "delete {key}")?,
+            Op::Get { key } => write!(f, "get {key}")?,
+            Op::Range { lo, hi } => write!(f, "range [{lo}, {hi})")?,
+        }
+        if let Some(n) = self.fault {
+            write!(f, " (node allocation {n} fails first)")?;
+        }
+        Ok(())
+    }
+}
+
+/// Where in the 64-bit key space the keys of a case lie. The operation
+/// stream draws a small index k in `0..key_space`; the layout turns it into
+/// the key. All four are strictly increasing in k, so the SHAPE of the tree
+/// is the same whichever is chosen; what changes is the numbers the tree has
+/// to compare. A tree that truncates a key to 32 bits, or compares keys as
+/// signed, passes every test on small keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyLayout {
+    /// k: the keys 0, 1, 2, ... (easy to read in a failure report).
+    Dense,
+    /// 2^32 - key_space/2 + k: consecutive keys on both sides of 2^32.
+    Around2Pow32,
+    /// k * (2^64 / key_space): evenly over the whole range. Every key has
+    /// the same low 32 bits (zero) and half of them have the top bit set.
+    Spread,
+    /// 2^64 - 1 - key_space + k: the last keys below `u64::MAX`. The key
+    /// `u64::MAX` itself is left out because `range` is half-open: no
+    /// `lo..hi` can contain it (base_search.rs).
+    Top,
+}
+
+impl KeyLayout {
+    pub const ALL: [KeyLayout; 4] = [
+        KeyLayout::Dense,
+        KeyLayout::Around2Pow32,
+        KeyLayout::Spread,
+        KeyLayout::Top,
+    ];
+
+    /// The key for index `k`. `k == key_space` is allowed: a range's
+    /// exclusive upper bound is one past the largest index.
+    pub fn key(self, key_space: u64, k: u64) -> u64 {
+        debug_assert!(k <= key_space);
+        match self {
+            KeyLayout::Dense => k,
+            KeyLayout::Around2Pow32 => (1 << 32) - key_space / 2 + k,
+            // key_space is a power of two (see `swarm`), so the stride is
+            // exact. k == key_space would be 2^64: saturate, which names
+            // the same set of keys because no key equals `u64::MAX`.
+            KeyLayout::Spread => k
+                .checked_mul((1 << 63) / key_space * 2)
+                .unwrap_or(u64::MAX),
+            KeyLayout::Top => u64::MAX - key_space + k,
+        }
+    }
+
+    /// For the case description printed by `run`.
+    pub fn describe(self) -> &'static str {
+        match self {
+            KeyLayout::Dense => "from 0",
+            KeyLayout::Around2Pow32 => "around 2^32",
+            KeyLayout::Spread => "spread over u64",
+            KeyLayout::Top => "below 2^64",
+        }
+    }
 }
 
 /// Everything that defines one fuzz run. `seed` is all a bug report needs
@@ -45,8 +128,10 @@ pub struct Case {
     pub seed: u64,
     /// Number of generated operations (the drain comes on top).
     pub count: u64,
-    /// Keys are drawn from [0, key_space).
+    /// Number of distinct keys. Always a power of two.
     pub key_space: u64,
+    /// Which `key_space` keys: see [`KeyLayout`].
+    pub key_layout: KeyLayout,
     pub weights: Weights,
     /// A put gets an injected allocation failure with probability
     /// 1 / fault_one_in; 0 = never.
@@ -62,8 +147,9 @@ pub struct Case {
 /// Swarm testing: instead of one "reasonable" configuration, every seed
 /// draws its own. Some runs never delete (trees grow tall), some have four
 /// possible keys (overwrite, delete-missing and the empty tree all the
-/// time), some fail a quarter of their allocations. A fixed mix reaches the
-/// same few shapes over and over; the swarm reaches the corners.
+/// time), some fail a quarter of their allocations, some use keys next to
+/// 2^64. A fixed mix reaches the same few shapes over and over; the swarm
+/// reaches the corners.
 ///
 /// The draw order below is part of the contract: the Zig twin makes the
 /// same draws in the same order.
@@ -93,10 +179,12 @@ pub fn swarm(seed: u64) -> Case {
     let drain = prng.chance(1, 2);
     let stream_seed = prng.next_u64();
     let aux_seed = prng.next_u64();
+    let key_layout = KeyLayout::ALL[prng.below(4) as usize];
     Case {
         seed,
         count,
         key_space,
+        key_layout,
         weights: Weights {
             put,
             delete,
@@ -111,13 +199,14 @@ pub fn swarm(seed: u64) -> Case {
 }
 
 /// The opposite of a swarm: the same mix for every seed (common/ default
-/// weights 4:2:3:1, 64 keys, no faults, no drain). Used to show what a
-/// fixed configuration never reaches.
+/// weights 4:2:3:1, 64 small keys, no faults, no drain). Used to show what
+/// a fixed configuration never reaches.
 pub fn fixed_mix(seed: u64) -> Case {
     Case {
         seed,
         count: 256,
         key_space: 64,
+        key_layout: KeyLayout::Dense,
         weights: Weights::default(),
         fault_one_in: 0,
         drain: false,
@@ -138,7 +227,21 @@ pub fn generate(case: Case) -> Vec<Step> {
         key_space: case.key_space,
         weights: case.weights,
     });
-    for op in stream {
+    for index_op in stream {
+        // The stream speaks in key indices; the layout says which keys.
+        let at = |k| case.key_layout.key(case.key_space, k);
+        let op = match index_op {
+            Op::Put { key, value } => Op::Put {
+                key: at(key),
+                value,
+            },
+            Op::Delete { key } => Op::Delete { key: at(key) },
+            Op::Get { key } => Op::Get { key: at(key) },
+            Op::Range { lo, hi } => Op::Range {
+                lo: at(lo),
+                hi: at(hi),
+            },
+        };
         let mut step = Step { op, fault: None };
         match op {
             Op::Put { key, value } => {
@@ -185,7 +288,8 @@ impl Subject {
 /// tests switch one off to show what the other one cannot see.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Checks {
-    /// `tree.validate()` after every step: structure and node accounting.
+    /// `tree.validate()` after every step: structure and node accounting
+    /// (including: a failed put leaves `pool.usage` as it was).
     pub validate: bool,
     /// Compare every answer with the oracle, and the full contents every
     /// `sweep_every` steps and after the last one.
@@ -211,9 +315,15 @@ pub enum Kind {
     WrongResult,
     /// Key count or a full in-order scan differs from the oracle.
     WrongContents,
-    /// A put failed with `OutOfNodes` and left a trace in the tree.
+    /// A put failed with `OutOfNodes` and left a trace: in the contents, in
+    /// the structure, in the slab's counters (`pool.usage`) or as a slab
+    /// slot that is still occupied (a reserved node that was not handed back).
     OomChangedTree,
-    /// Heap allocations still live after the tree was dropped.
+    /// Heap allocations still live after the tree was dropped. This check
+    /// can only see memory that escaped the tree's ownership altogether
+    /// (`mem::forget`, a reference cycle). It can NOT see a lost node: every
+    /// slot lives in the slab's `Vec`, which is dropped whole. Lost nodes
+    /// are found by `BTree::validate`, which counts occupied slots.
     Leak,
 }
 
@@ -259,7 +369,9 @@ impl fmt::Display for Failure {
             Kind::WrongContents => {
                 f.write_str("wrong contents (full scan differs from the oracle)")
             }
-            Kind::OomChangedTree => f.write_str("a failed put changed the tree"),
+            Kind::OomChangedTree => {
+                f.write_str("a failed put changed the tree or its node accounting")
+            }
             Kind::Leak => f.write_str("leak (nodes still allocated after deinit)"),
         }
     }
@@ -310,7 +422,7 @@ pub struct Totals {
 /// that failed validation cannot be trusted to free itself. Here dropping
 /// the slab frees every node, reachable or not, so nothing special is
 /// needed. The counting global allocator then confirms that the whole run
-/// gave back everything it took.
+/// gave back everything it took (see `Kind::Leak` for what that can show).
 pub fn replay(
     subject: Subject,
     steps: &[Step],
@@ -351,7 +463,20 @@ fn run(
     let mut tree = BTree::with_bug(subject.order, subject.bug);
     let mut oracle = Oracle::new();
     let mut failure = None;
+    if TRACE {
+        eprintln!(
+            "trace: replay of {} steps, M={}, bug {}",
+            steps.len(),
+            subject.order,
+            subject.bug.name()
+        );
+    }
     for (i, &step) in steps.iter().enumerate() {
+        // Before the step, not after: if the tree panics inside it, this
+        // line is the last thing on stderr.
+        if TRACE {
+            eprintln!("trace:   step {}: {step}", i + 1);
+        }
         let sweep = i + 1 == steps.len() || (i + 1) % checks.sweep_every == 0;
         let verdict = apply_and_check(&mut tree, &mut oracle, step, checks, sweep, local);
         local.steps = i as u64 + 1;
@@ -382,6 +507,7 @@ fn apply_and_check(
             // Fault injection: let the n-th node allocation of this put
             // fail. If the put needed that many nodes it returns
             // `OutOfNodes`, and the promise is "nothing happened".
+            let usage_before = tree.pool.usage;
             tree.pool.fail_after = step.fault.map(u64::from);
             let first_try = tree.put(key, value);
             tree.pool.fail_after = None;
@@ -389,10 +515,18 @@ fn apply_and_check(
                 Ok(got) => got,
                 Err(_) => {
                     local.injected_faults += 1;
+                    // Structure first (a `get` on a malformed tree may
+                    // panic), then the contents, then the slab's counters:
+                    // "exactly as before the call" includes `pool.usage`.
+                    // `validate` also counts the occupied slab slots, so a
+                    // reserved node that was not handed back is caught here.
+                    if checks.validate && tree.validate().is_err() {
+                        return Err(Kind::OomChangedTree.into());
+                    }
                     if tree.len != oracle.len() || tree.get(key) != oracle.get(key) {
                         return Err(Kind::OomChangedTree.into());
                     }
-                    if checks.validate && tree.validate().is_err() {
+                    if checks.validate && tree.pool.usage != usage_before {
                         return Err(Kind::OomChangedTree.into());
                     }
                     // The operation still has to happen: try again, unharmed.
@@ -481,6 +615,9 @@ pub fn hunt(
     for seed in first_seed..first_seed + seeds {
         let case = swarm(seed);
         let steps = generate(case);
+        if TRACE {
+            eprintln!("trace: seed {seed}");
+        }
         if let Some(failure) = replay(subject, &steps, checks, totals.as_deref_mut()) {
             return Some(Found { case, failure });
         }
@@ -519,17 +656,7 @@ pub fn hunt_shortest(subject: Subject, first_seed: u64, seeds: u64, checks: Chec
 /// One step per line: `put 7 = 70`, `delete 7`, `get 7`, `range [3, 9)`.
 pub fn write_steps(w: &mut dyn Write, steps: &[Step], indent: &str) -> io::Result<()> {
     for step in steps {
-        write!(w, "{indent}")?;
-        match step.op {
-            Op::Put { key, value } => write!(w, "put {key} = {value}")?,
-            Op::Delete { key } => write!(w, "delete {key}")?,
-            Op::Get { key } => write!(w, "get {key}")?,
-            Op::Range { lo, hi } => write!(w, "range [{lo}, {hi})")?,
-        }
-        if let Some(n) = step.fault {
-            write!(w, " (node allocation {n} fails first)")?;
-        }
-        writeln!(w)?;
+        writeln!(w, "{indent}{step}")?;
     }
     Ok(())
 }

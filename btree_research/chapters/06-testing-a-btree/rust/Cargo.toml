@@ -7,6 +7,12 @@ publish = false
 # std only: no external dependencies.
 [dependencies]
 
+[features]
+# `cargo test --features trace`: the fuzzer prints seed and step to stderr
+# before every operation, so a run that PANICS inside the tree still names
+# its case.
+trace = []
+
 [lints.rust]
 # "deny", not "forbid": src/alloc_count.rs is this guide's declared exception
 # (a #[global_allocator] cannot be written without `unsafe`) and opts out

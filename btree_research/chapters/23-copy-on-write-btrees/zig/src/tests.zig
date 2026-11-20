@@ -606,7 +606,8 @@ test "a long life of crashes, damaged slots and restarts never shows a mixed tre
         const key = rnd.uintLessThan(u64, 40);
         const is_put = rnd.uintLessThan(u8, 5) < 3;
         const before = db.current.txn_id;
-        if (rnd.uintLessThan(u8, 6) == 0) db.crash_after = rnd.uintLessThan(usize, 44);
+        // Half of the crashes hit the page writes, half the meta write.
+        if (rnd.uintLessThan(u8, 6) == 0) db.crash_after = rnd.uintLessThan(usize, if (rnd.boolean()) 4 else 44);
         const result = if (is_put) db.put(gpa, key, step) else db.delete(gpa, key);
         var restart = false;
         if (result) |_| {

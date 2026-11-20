@@ -51,7 +51,8 @@
 .cl-code { padding: 12px 14px; border-top: 1px solid var(--bt-border); background: var(--bt-bg); min-width: 0; }
 .cl-probe { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; min-height: 0 !important; }
 .cl-counters { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 8px; }
-.cl-counters .bt-chip b { font-family: var(--bt-mono); margin-left: .35em; }
+/* Fixed-width values: a counter that gains a digit must not re-wrap the row and push the picture down. */
+.cl-counters .bt-chip b { font-family: var(--bt-mono); margin-left: .35em; display: inline-block; min-width: 3ch; text-align: right; }
 .cl-mini { display: flex; flex-wrap: wrap; gap: 2px; max-width: 420px; min-width: 120px; }
 .cl-mini i { width: 9px; height: 9px; border-radius: 2px; border: 1px solid var(--bt-border); background: var(--bt-surface); }
 .cl-mini i.is-read { background: var(--bt-node-active); border-color: var(--bt-node-active); }

@@ -1,6 +1,7 @@
 // Copied from chapters/05-deletion-and-rebalancing/rust/src/btree.rs
 // Changes for chapter 06: the `bug` field (`BTree::with_bug`), `Counters`
-// replaced by `Coverage`, `validate` returns a `Violation` (what and where).
+// replaced by `Coverage`, `validate` returns a `Violation` (what and where)
+// and also compares the slab's occupied slots with the reachable nodes.
 //! The complete in-memory B-tree of chapter 05, as the system under test.
 //!
 //! ```text
@@ -41,6 +42,13 @@ pub enum Bug {
     MergeLeaksNode,
     /// delete: a borrow between interior nodes moves the key but not the child.
     BorrowForgetsChild,
+    // The next two are not part of the chapter's story. They break the
+    // rollback of a failed `put`, and exist so that tests.rs can show that
+    // the HARNESS notices (a check nobody has seen fail is not a check).
+    /// insert: a failed put hands back one reserved node too few.
+    RollbackLeaksNode,
+    /// insert: a failed put does not restore `pool.usage`.
+    RollbackKeepsUsage,
 }
 
 impl Bug {
@@ -51,6 +59,8 @@ impl Bug {
             Bug::SplitWrongValue => "split_wrong_value",
             Bug::MergeLeaksNode => "merge_leaks_node",
             Bug::BorrowForgetsChild => "borrow_forgets_child",
+            Bug::RollbackLeaksNode => "rollback_leaks_node",
+            Bug::RollbackKeepsUsage => "rollback_keeps_usage",
         }
     }
 }
@@ -125,11 +135,16 @@ impl BTree {
         base_search::range(&self.pool, self.root, lo, hi, &mut visit);
     }
 
-    /// Checks every structural invariant, the key count, and that the pool's
-    /// live-node counter matches the nodes reachable from the root.
+    /// Checks every structural invariant, the key count, and that no node
+    /// was lost: the nodes reachable from the root must equal BOTH counts the
+    /// slab keeps. `usage.live()` is the bookkeeping `put` and `delete`
+    /// maintain; `live_slots()` is what the slab really holds. They differ
+    /// when a failed `put` restores `usage` without freeing every slot it
+    /// reserved.
     pub fn validate(&self) -> Result<(), Violation> {
         base_validate::validate(&self.pool, self.order, self.root, self.len)?;
-        if self.shape().nodes as u64 != self.pool.usage.live() {
+        let reachable = self.shape().nodes;
+        if reachable as u64 != self.pool.usage.live() || reachable != self.pool.live_slots() {
             return Err(Violation::whole_tree(ValidateError::NodeCountMismatch));
         }
         Ok(())

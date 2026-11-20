@@ -18,8 +18,10 @@
   /* Two lines of chips at most, then the row scrolls: the contents must not
      push the caption and the step controls off a 1280x800 screen. */
   .fz-row { display: flex; flex-wrap: wrap; gap: 4px; max-height: 58px; overflow-y: auto; align-items: center; }
-  .fz-row-label { font-size: .8rem; color: var(--bt-muted); margin: 6px 0 3px; }
-  .fz-row-label:first-child { margin-top: 0; }
+  .fz-row-label { font-size: .8rem; color: var(--bt-muted); margin: 0 0 3px; }
+  /* Oracle and tree contents side by side: they are compared chip by chip,
+     and one row of height is saved for the caption and the controls. */
+  .fz-contents { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px 14px; margin-top: 8px; }
   .fz-status { font-size: .88rem; margin: 0 0 8px; }
   .fz-status code { white-space: normal; }
   .fz-msg { color: var(--bt-key-deleted); font-size: .86rem; min-height: 1.3em; margin: 4px 0 0; }
@@ -27,6 +29,7 @@
   @media (max-width: 760px) {
     .fz { grid-template-columns: minmax(0, 1fr); }
     .fz-ops { max-height: 150px; }
+    .fz-contents { grid-template-columns: minmax(0, 1fr); }
   }
 </style>
 </head>
@@ -120,11 +123,11 @@ a broken tree pass a test that never builds a third level.</p>
   var oracleRow = el('div.fz-row'), scanRow = el('div.fz-row');
   var right = el('div.fz-col', {},
     el('div.bt-panel', {}, treeTitle, treeBody),
-    el('div.bt-panel', {}, el('div.bt-panel-title', {}, 'Checks after this step'), el('div.bt-panel-body', {}, checks)),
-    el('div.bt-panel', {}, el('div.bt-panel-title', {}, 'Contents: key = value'),
-      el('div.bt-panel-body', {},
-        el('div.fz-row-label', {}, 'Oracle (a sorted list)'), oracleRow,
-        el('div.fz-row-label', {}, 'Tree (full in-order scan)'), scanRow)));
+    el('div.bt-panel', {}, el('div.bt-panel-title', {}, 'Checks after this step, and the contents (key = value)'),
+      el('div.bt-panel-body', {}, checks,
+        el('div.fz-contents', {},
+          el('div', {}, el('div.fz-row-label', {}, 'Oracle (a sorted list)'), oracleRow),
+          el('div', {}, el('div.fz-row-label', {}, 'Tree (full in-order scan)'), scanRow)))));
   fig.stage.append(status, el('div.fz', {}, el('div.fz-col', {}, opsPanel), right), msg);
   var view = new BTViz.TreeView(treeBody, { minHeight: 190, maxHeight: 330, ariaLabel: 'B-tree under test' });
 

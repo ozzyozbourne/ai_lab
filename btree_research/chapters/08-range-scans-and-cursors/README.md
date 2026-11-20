@@ -52,8 +52,11 @@ both sides. In a sorted array `keys`, `lowerBound(k)` is the number of keys
 
 | Scan | Near bound unbounded | included `k` | excluded `k` | Far-bound test |
 |------|----------------------|--------------|--------------|----------------|
-| forward | first entry | `ge k` | `gt k` | `key <= hi` or `key < hi` |
-| backward | last entry | `le k` | `lt k` | `key >= lo` or `key > lo` |
+| forward | first entry | `ge k` | `gt k` | `key <= hi`, `key < hi`, or none |
+| backward | last entry | `le k` | `lt k` | `key >= lo`, `key > lo`, or none |
+
+The far bound has the same three kinds: included, excluded, or unbounded,
+in which case there is no test and the scan runs to the end of the tree.
 
 A forward seek can land one past the last entry of a leaf; the answer is
 then the first entry of the next leaf. A backward seek can land before index
@@ -88,7 +91,8 @@ from the root down, a frame `(node, which child I took)`, then the leaf and
 an index. To leave a leaf going right, look at the top frame. If that node
 has a child further right, move the frame to it and descend along the left
 edge, pushing frames. Otherwise pop the frame and ask the node above. An
-empty stack means the scan is past the last leaf.
+empty stack means the scan is past the last leaf. Going left is the mirror
+image: a child further left, then down along the right edge.
 
 Both designs return exactly the same entries. They differ in cost and in
 what they demand from the tree:
@@ -269,7 +273,9 @@ The structure is the same. The differences:
 - **The stack is a `Vec<Frame>`** with capacity `MAX_DEPTH`. `with_buffer` /
   `into_buffer` hand the allocation from one scan to the next, and
   `collect_into(&tree, &mut out)` reuses a result vector: the Rust form of
-  resetting an arena while keeping its capacity.
+  resetting an arena while keeping its capacity. `Clone` is written by hand,
+  because a derived clone of a `Vec` keeps only as much capacity as it has
+  elements.
 - **Failure model.** A `Vec` aborts when memory runs out, so there is no test
   for a failing cursor allocation. The insert path uses chapter 07's node
   budget: `Tree::with_node_budget(4, 8)` makes `put` return
@@ -376,7 +382,9 @@ Things to notice:
   five deletes, five re-seeks, all twelve keys returned once.
 - Section 7: per order, 1974 range scans and 17465 cursor steps are compared
   with the oracle. Both designs re-seek equally often, because the rule is
-  shared code. The node-visit columns are counts of moves between in-memory
+  shared code. `version` is one counter for the whole tree, so an insert or
+  delete anywhere makes every cursor that is on an entry re-seek at its next
+  step, however far it is from the change. The node-visit columns are counts of moves between in-memory
   nodes, not timings, and say nothing about the write-side cost of
   maintaining links.
 
@@ -466,18 +474,20 @@ room for those. Both live exactly as long as one scan, which is what an
 - **What allocates.** `StackPosition.init(scratch)` (32 frames) and
   `Scan.collect(gpa)` (the result slice). No other cursor or scan function
   takes an allocator, so `seek`, `next` and `prev` cannot fail.
-- **Reuse.** The demo and the model run call `arena.reset(.retain_capacity)`
-  after each scan. A test counts requests to the backing allocator: after
-  the first scan, 100 further scans make none.
+- **Reuse.** The model run calls `arena.reset(.retain_capacity)` after each
+  scan; the demo resets between the parts of its output. A test counts
+  requests to the backing allocator: after the first scan, 100 further scans
+  make none.
 - **Allocation failure.** `StackPosition.init` on a failing allocator returns
   `error.OutOfMemory`. `collect` runs under
   `std.testing.checkAllAllocationFailures`, with and without an arena. A
   failing `put` is tested to leave `version` and both cursors untouched.
 - **What would go wrong with others.** A general-purpose allocator needs a
-  matching `free` for frames and results on every exit path. Growing the
-  frame stack on demand would make `next` fallible, because a re-seek after
-  the tree grew taller might need a deeper stack; allocating the proven
-  maximum once avoids that.
+  matching free on every exit path: `StackPosition.deinit(gpa)` for the
+  frames (a test runs a stack cursor this way under `std.testing.allocator`)
+  and `gpa.free` for the results. Growing the frame stack on demand would
+  make `next` fallible, because a re-seek after the tree grew taller might
+  need a deeper stack; allocating the proven maximum once avoids that.
 - **The trap.** Resetting the arena while a stack cursor is still in use
   leaves it with a dangling slice. Turso embeds a fixed array in the cursor
   instead, at the price of a larger cursor.
@@ -498,9 +508,9 @@ capacities stay the same across 100 scans.
   crash, only a wrong answer.
 - **Inserting ahead of your own scan.** A forward scan that inserts `key + 1`
   for every key it returns never ends: each insert creates (or overwrites)
-  the entry just ahead of the cursor, and that entry is returned next. This is known as the Halloween problem
-  (textbook). The re-seek rule makes the behaviour well defined; it does not
-  make it finite.
+  the entry just ahead of the cursor, and that entry is returned next. This
+  is known as the Halloween problem (textbook). The re-seek rule makes the
+  behaviour well defined; it does not make it finite.
 - **Expecting a snapshot.** A re-seeking cursor sees the tree as it is now.
   Frozen views are chapters 23 and 24.
 - **Resetting the scratch arena under a live stack cursor.** See above.
@@ -533,5 +543,5 @@ Solutions are in [solutions.md](solutions.md).
 - Previous: [chapter 07, B+trees](../07-bplus-trees/README.md)
 - Next: [chapter 09, pages and the buffer pool](../09-pages-and-the-buffer-pool/README.md)
 - Visualization: [viz/index.html](viz/index.html) (a range scan with either
-  cursor design; a cursor surviving a split, and what happens without the
-  re-seek)
+  cursor design, the stack cursor's path drawn into the tree; a cursor
+  surviving a split, and what happens without the re-seek)

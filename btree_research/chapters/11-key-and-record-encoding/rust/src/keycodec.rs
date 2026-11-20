@@ -592,4 +592,530 @@ mod tests {
         assert_eq!(KeyReader::new(&[TAG_NULL_LAST]).take_i64(nulls_first), Err(KeyError::BadTag));
         assert_eq!(KeyReader::new(&[TAG_VALUE, 1, 2, 3]).take_u64(ASC), Err(KeyError::Truncated));
     }
+
+    // ---- property tests ------------------------------------------------------
+    //
+    // Everything below uses only this file, so the tests travel with it when it
+    // is copied. Each test compares the encoder with `test_order`, an oracle
+    // that looks at values and never at bytes.
+
+    /// SplitMix64, for tests only: deterministic, the same in the Zig twin.
+    struct TestRng(u64);
+
+    impl TestRng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+
+        /// Integer in [0, n).
+        fn below(&mut self, n: usize) -> usize {
+            ((u128::from(self.next()) * n as u128) >> 64) as usize
+        }
+
+        fn opts(&mut self) -> ColumnOpts {
+            let desc = self.below(2) == 1;
+            let nulls_first = self.below(2) == 1;
+            ColumnOpts { desc, nulls_first }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum TestKind {
+        U64,
+        I64,
+        F64,
+        Bytes,
+    }
+
+    const TEST_KINDS: [TestKind; 4] = [TestKind::U64, TestKind::I64, TestKind::F64, TestKind::Bytes];
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum TestValue {
+        Null,
+        U64(u64),
+        I64(i64),
+        F64(f64),
+        Bytes(Vec<u8>),
+    }
+
+    const TEST_MAX_COLS: usize = 5;
+    /// Longest random byte string. Its encoding is at most 2 * 40 + 1 bytes.
+    const TEST_MAX_BYTES: usize = 40;
+    const TEST_MAX_KEY: usize = TEST_MAX_COLS * (2 * TEST_MAX_BYTES + 2);
+
+    /// Float order the encoding promises: -0 equals +0, every NaN equals every
+    /// other NaN and is greater than all numbers.
+    fn test_order_f64(a: f64, b: f64) -> Ordering {
+        a.partial_cmp(&b).unwrap_or_else(|| a.is_nan().cmp(&b.is_nan()))
+    }
+
+    /// The logical order of two values of one column.
+    fn test_order(a: &TestValue, b: &TestValue, opts: ColumnOpts) -> Ordering {
+        let null_vs_value = if opts.nulls_first { Ordering::Less } else { Ordering::Greater };
+        let asc = match (a, b) {
+            (TestValue::Null, TestValue::Null) => return Ordering::Equal,
+            (TestValue::Null, _) => return null_vs_value,
+            (_, TestValue::Null) => return null_vs_value.reverse(),
+            (TestValue::U64(x), TestValue::U64(y)) => x.cmp(y),
+            (TestValue::I64(x), TestValue::I64(y)) => x.cmp(y),
+            (TestValue::F64(x), TestValue::F64(y)) => test_order_f64(*x, *y),
+            (TestValue::Bytes(x), TestValue::Bytes(y)) => x.cmp(y), // plain lexicographic order
+            _ => unreachable!("both values belong to the same column"),
+        };
+        if opts.desc { asc.reverse() } else { asc }
+    }
+
+    fn test_put(w: &mut KeyWriter<'_>, v: &TestValue, opts: ColumnOpts) -> Result<(), KeyError> {
+        match v {
+            TestValue::Null => w.put_null(opts),
+            TestValue::U64(x) => w.put_u64(*x, opts),
+            TestValue::I64(x) => w.put_i64(*x, opts),
+            TestValue::F64(x) => w.put_f64(*x, opts),
+            TestValue::Bytes(x) => w.put_bytes(x, opts),
+        }
+    }
+
+    /// Reads one column of `kind`.
+    fn test_take(r: &mut KeyReader<'_>, kind: TestKind, opts: ColumnOpts) -> Result<TestValue, KeyError> {
+        Ok(match kind {
+            TestKind::U64 => r.take_u64(opts)?.map_or(TestValue::Null, TestValue::U64),
+            TestKind::I64 => r.take_i64(opts)?.map_or(TestValue::Null, TestValue::I64),
+            TestKind::F64 => r.take_f64(opts)?.map_or(TestValue::Null, TestValue::F64),
+            TestKind::Bytes => {
+                let mut out = [0u8; TEST_MAX_KEY];
+                match r.take_bytes(&mut out, opts)? {
+                    None => TestValue::Null,
+                    Some(n) => TestValue::Bytes(out[..n].to_vec()),
+                }
+            }
+        })
+    }
+
+    /// Why `test_read_all` refused a key.
+    #[derive(Debug, PartialEq, Eq)]
+    enum ReadAllError {
+        Key(KeyError),
+        TrailingBytes,
+    }
+
+    /// Reads a whole key without storing anything (byte strings are skipped).
+    fn test_read_all(key: &[u8], kinds: &[TestKind], opts: &[ColumnOpts]) -> Result<(), ReadAllError> {
+        let mut r = KeyReader::new(key);
+        for (&kind, &o) in kinds.iter().zip(opts) {
+            match kind {
+                TestKind::U64 => r.take_u64(o).map(drop),
+                TestKind::I64 => r.take_i64(o).map(drop),
+                TestKind::F64 => r.take_f64(o).map(drop),
+                TestKind::Bytes => r.skip_bytes(o).map(drop),
+            }
+            .map_err(ReadAllError::Key)?;
+        }
+        if r.done() { Ok(()) } else { Err(ReadAllError::TrailingBytes) }
+    }
+
+    /// Bit patterns at every edge of the f64 format: both zeros, the smallest and
+    /// largest subnormals, the smallest normal, the largest finite, infinities,
+    /// signalling and quiet NaNs with and without payload, neighbours of 1.0, 2^53.
+    const TEST_F64_BITS: [u64; 28] = [
+        0x0000000000000000,
+        0x8000000000000000,
+        0x0000000000000001,
+        0x8000000000000001,
+        0x000fffffffffffff,
+        0x800fffffffffffff,
+        0x0010000000000000,
+        0x8010000000000000,
+        0x7fefffffffffffff,
+        0xffefffffffffffff,
+        0x7ff0000000000000,
+        0xfff0000000000000,
+        0x7ff0000000000001,
+        0xfff0000000000001,
+        0x7ff8000000000000,
+        0xfff8000000000000,
+        0x7fffffffffffffff,
+        0xffffffffffffffff,
+        0x3ff0000000000000,
+        0xbff0000000000000,
+        0x3ff0000000000001,
+        0xbff0000000000001,
+        0x3fefffffffffffff,
+        0xbfefffffffffffff,
+        0x4340000000000000,
+        0xc340000000000000,
+        0x7ff4000000000000,
+        0xfff000000000beef,
+    ];
+
+    /// Integers around every place where a byte of the encoding rolls over.
+    const TEST_I64: [i64; 20] = [
+        i64::MIN,
+        i64::MIN + 1,
+        -0x1_0000_0001,
+        -0x8000_0000,
+        -257,
+        -256,
+        -255,
+        -129,
+        -128,
+        -1,
+        0,
+        1,
+        127,
+        128,
+        255,
+        256,
+        0x7fff_ffff,
+        0x1_0000_0000,
+        i64::MAX - 1,
+        i64::MAX,
+    ];
+
+    /// The data bytes that collide with the framing: 00 terminator, 01 escape and
+    /// value tag, 02 NULLS LAST tag, and fd fe ff, which become 02 01 00 when a
+    /// DESC column is inverted.
+    const TEST_ALPHABET: [u8; 7] = [0x00, 0x01, 0x02, 0xfd, 0xfe, 0xff, b'a'];
+
+    fn test_random_f64(rng: &mut TestRng) -> f64 {
+        let special = TEST_F64_BITS[rng.below(TEST_F64_BITS.len())];
+        match rng.below(4) {
+            0 => f64::from_bits(special),
+            1 => f64::from_bits(rng.next()), // any bit pattern, NaNs included
+            2 => f64::from_bits(special.wrapping_add(rng.below(5) as u64).wrapping_sub(2)), // within 2 ulp of a special
+            _ => (rng.below(9) as i64 - 4) as f64 / 2.0, // many ties
+        }
+    }
+
+    fn test_random_i64(rng: &mut TestRng) -> i64 {
+        match rng.below(4) {
+            0 => TEST_I64[rng.below(TEST_I64.len())],
+            1 => rng.next() as i64,
+            2 => 1i64 << rng.below(63),
+            _ => rng.below(7) as i64 - 3, // many ties
+        }
+    }
+
+    /// Mostly short strings (so that ties and prefixes are common), sometimes up
+    /// to `TEST_MAX_BYTES`; bytes from the nasty alphabet or from all 256 values.
+    fn test_random_bytes(rng: &mut TestRng) -> Vec<u8> {
+        let n = if rng.below(4) == 0 { rng.below(TEST_MAX_BYTES + 1) } else { rng.below(5) };
+        (0..n)
+            .map(|_| if rng.below(4) == 0 { rng.next() as u8 } else { TEST_ALPHABET[rng.below(TEST_ALPHABET.len())] })
+            .collect()
+    }
+
+    fn test_random_value(rng: &mut TestRng, kind: TestKind) -> TestValue {
+        if rng.below(7) == 0 {
+            return TestValue::Null;
+        }
+        match kind {
+            TestKind::U64 => TestValue::U64(test_random_i64(rng) as u64),
+            TestKind::I64 => TestValue::I64(test_random_i64(rng)),
+            TestKind::F64 => TestValue::F64(test_random_f64(rng)),
+            TestKind::Bytes => TestValue::Bytes(test_random_bytes(rng)),
+        }
+    }
+
+    /// Encodes `row` into a fresh `Vec`; also returns the key length after each column.
+    fn test_encode(row: &[TestValue], opts: &[ColumnOpts]) -> (Vec<u8>, Vec<usize>) {
+        let mut buf = [0u8; TEST_MAX_KEY + 1];
+        let mut w = KeyWriter::new(&mut buf);
+        let mut ends = Vec::new();
+        for (v, &o) in row.iter().zip(opts) {
+            test_put(&mut w, v, o).unwrap();
+            ends.push(w.len());
+        }
+        (w.written().to_vec(), ends)
+    }
+
+    #[test]
+    fn f64_byte_order_is_the_total_order_on_every_special_pattern_and_on_random_bits() {
+        for &x in &TEST_F64_BITS {
+            for &y in &TEST_F64_BITS {
+                let (a, b) = (f64::from_bits(x), f64::from_bits(y));
+                assert_eq!(encode_f64(a).cmp(&encode_f64(b)), test_order_f64(a, b), "{x:016x} {y:016x}");
+            }
+        }
+        let mut rng = TestRng(1);
+        for _ in 0..20_000 {
+            let a = test_random_f64(&mut rng);
+            let b = test_random_f64(&mut rng);
+            let ea = encode_f64(a);
+            assert_eq!(ea.cmp(&encode_f64(b)), test_order_f64(a, b));
+            // Decoding gives an equal value, and encoding that gives the same key.
+            let back = decode_f64(ea);
+            assert_eq!(test_order_f64(a, back), Ordering::Equal);
+            assert_eq!(encode_f64(back), ea);
+            // Apart from -0.0 and NaN the round trip is exact to the bit.
+            if !a.is_nan() && a.to_bits() != SIGN_BIT {
+                assert_eq!(back.to_bits(), a.to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn i64_and_u64_byte_order_is_numeric_order_on_extremes_and_on_random_values() {
+        for &a in &TEST_I64 {
+            for &b in &TEST_I64 {
+                assert_eq!(encode_i64(a).cmp(&encode_i64(b)), a.cmp(&b));
+            }
+        }
+        let mut rng = TestRng(2);
+        for _ in 0..20_000 {
+            let a = test_random_i64(&mut rng);
+            let b = test_random_i64(&mut rng);
+            assert_eq!(encode_i64(a).cmp(&encode_i64(b)), a.cmp(&b));
+            assert_eq!(decode_i64(encode_i64(a)), a);
+            // The same bits read as unsigned: no sign flip, a different order.
+            let (ua, ub) = (a as u64, b as u64);
+            assert_eq!(encode_u64(ua).cmp(&encode_u64(ub)), ua.cmp(&ub));
+            assert_eq!(decode_u64(encode_u64(ua)), ua);
+        }
+    }
+
+    /// Every string over `letters` of length 0 to `max_len`, shortest first.
+    fn test_all_strings(letters: &[u8], max_len: usize) -> Vec<Vec<u8>> {
+        let mut all = vec![Vec::new()];
+        let mut start = 0;
+        for _ in 0..max_len {
+            let end = all.len();
+            for i in start..end {
+                for &c in letters {
+                    let mut s = all[i].clone();
+                    s.push(c);
+                    all.push(s);
+                }
+            }
+            start = end;
+        }
+        all
+    }
+
+    #[test]
+    fn bytes_every_string_of_up_to_3_framing_bytes_asc_and_desc() {
+        // 00 01 02 are terminator, escape and a tag; fe ff are what turns into
+        // escape and terminator once a DESC column is inverted.
+        let strings = test_all_strings(&[0x00, 0x01, 0x02, 0xfe, 0xff], 3);
+        assert_eq!(strings.len(), 1 + 5 + 25 + 125);
+        for desc in [false, true] {
+            let opts = ColumnOpts { desc, nulls_first: false };
+            let mut keys = Vec::new();
+            for s in &strings {
+                let value = TestValue::Bytes(s.clone());
+                let (key, _) = test_encode(std::slice::from_ref(&value), &[opts]);
+                assert_eq!(key.len(), 1 + encoded_bytes_len(s));
+                let mut r = KeyReader::new(&key);
+                assert_eq!(test_take(&mut r, TestKind::Bytes, opts), Ok(value));
+                assert!(r.done());
+                keys.push(key);
+            }
+            for (a, ka) in strings.iter().zip(&keys) {
+                for (b, kb) in strings.iter().zip(&keys) {
+                    let logical = if desc { b.cmp(a) } else { a.cmp(b) };
+                    assert_eq!(ka.cmp(kb), logical, "{a:02x?} {b:02x?} desc={desc}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn composite_bytes_bytes_all_short_framing_strings_and_null_all_16_option_combinations() {
+        // Column 1 of one row is often a prefix of column 1 of the other while
+        // column 2 pulls the other way: only correct framing gets these right.
+        let mut values = vec![TestValue::Null];
+        values.extend(test_all_strings(&[0x00, 0x01, 0xfe, 0xff], 2).into_iter().map(TestValue::Bytes));
+        let count = values.len();
+        assert_eq!(count, 1 + 1 + 4 + 16);
+        for combo in 0..16 {
+            let o1 = ColumnOpts {
+                desc: combo & 1 != 0,
+                nulls_first: combo & 2 != 0,
+            };
+            let o2 = ColumnOpts {
+                desc: combo & 4 != 0,
+                nulls_first: combo & 8 != 0,
+            };
+            let mut keys = Vec::new();
+            for row in 0..count * count {
+                let mut buf = [0u8; 12]; // 2 * (tag + 4 escaped bytes + terminator)
+                let mut w = KeyWriter::new(&mut buf);
+                test_put(&mut w, &values[row / count], o1).unwrap();
+                test_put(&mut w, &values[row % count], o2).unwrap();
+                let n = w.len();
+                keys.push((buf, n));
+            }
+            for a in 0..count * count {
+                for b in 0..count * count {
+                    let logical = test_order(&values[a / count], &values[b / count], o1)
+                        .then_with(|| test_order(&values[a % count], &values[b % count], o2));
+                    let (ka, kb) = (&keys[a].0[..keys[a].1], &keys[b].0[..keys[b].1]);
+                    assert_eq!(ka.cmp(kb), logical, "options {combo}, rows {a} and {b}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn random_schemas_key_order_is_logical_order_round_trip_every_truncation_rejected() {
+        let mut rng = TestRng(0x5eed);
+        let mut seen = [0u32; 3];
+        for _ in 0..4000 {
+            // A random schema: 1 to 5 columns of any kind with any options.
+            let ncol = 1 + rng.below(TEST_MAX_COLS);
+            let mut kinds = Vec::new();
+            let mut opts = Vec::new();
+            for _ in 0..ncol {
+                kinds.push(TEST_KINDS[rng.below(4)]);
+                opts.push(rng.opts());
+            }
+            // Two random rows ...
+            let mut rows: [Vec<TestValue>; 2] = [Vec::new(), Vec::new()];
+            for row in &mut rows {
+                for &kind in &kinds {
+                    row.push(test_random_value(&mut rng, kind));
+                }
+            }
+            // ... that share a prefix of columns, so later columns and ties matter ...
+            let shared = rng.below(ncol + 1);
+            let (first, second) = rows.split_at_mut(1);
+            second[0][..shared].clone_from_slice(&first[0][..shared]);
+            // ... and where one string is often a prefix of the other, or one byte longer.
+            let pc = rng.below(ncol);
+            if let TestValue::Bytes(s) = &first[0][pc] {
+                if rng.below(2) == 0 {
+                    let mut t = s[..rng.below(s.len() + 1)].to_vec();
+                    if t.len() < TEST_MAX_BYTES && rng.below(2) == 0 {
+                        t.push(TEST_ALPHABET[rng.below(TEST_ALPHABET.len())]);
+                    }
+                    second[0][pc] = TestValue::Bytes(t);
+                }
+            }
+
+            let mut logical = Ordering::Equal;
+            for c in 0..ncol {
+                logical = test_order(&rows[0][c], &rows[1][c], opts[c]);
+                if logical != Ordering::Equal {
+                    break;
+                }
+            }
+            seen[logical as usize + 1] += 1;
+
+            let mut keys = Vec::new();
+            for row in &rows {
+                let (key, ends) = test_encode(row, &opts);
+
+                // Round trip: equal values come back, and they encode to the same bytes.
+                let mut reader = KeyReader::new(&key);
+                let mut back = Vec::new();
+                for c in 0..ncol {
+                    let peeked = if kinds[c] == TestKind::Bytes { reader.bytes_len(opts[c]).unwrap() } else { None };
+                    let v = test_take(&mut reader, kinds[c], opts[c]).unwrap();
+                    assert_eq!(test_order(&row[c], &v, opts[c]), Ordering::Equal);
+                    if let TestValue::Bytes(s) = &v {
+                        assert_eq!(peeked, Some(s.len()));
+                    }
+                    assert_eq!(reader.position(), ends[c]);
+                    back.push(v);
+                }
+                assert!(reader.done());
+                assert_eq!(test_encode(&back, &opts).0, key);
+
+                for cut in 0..key.len() {
+                    // A key cut anywhere is Truncated, never garbage and never a crash.
+                    assert_eq!(
+                        test_read_all(&key[..cut], &kinds, &opts),
+                        Err(ReadAllError::Key(KeyError::Truncated))
+                    );
+                    // A buffer of `cut` bytes holds the columns that fit completely
+                    // and not one byte of the column that does not.
+                    let mut small_buf = [0u8; TEST_MAX_KEY];
+                    let mut small = KeyWriter::new(&mut small_buf[..cut]);
+                    let mut fitted = 0;
+                    for c in 0..ncol {
+                        if test_put(&mut small, &row[c], opts[c]).is_err() {
+                            break;
+                        }
+                        fitted = ends[c];
+                    }
+                    assert!(fitted < key.len());
+                    assert_eq!(small.len(), fitted);
+                    assert_eq!(small.written(), &key[..fitted]);
+                }
+                // One byte too many is noticed as well.
+                let mut longer = key.clone();
+                longer.push(TAG_VALUE);
+                assert_eq!(test_read_all(&longer, &kinds, &opts), Err(ReadAllError::TrailingBytes));
+                keys.push(key);
+            }
+
+            assert_eq!(keys[0].cmp(&keys[1]), logical, "{kinds:?} {opts:?}\n  {:?}\n  {:?}", rows[0], rows[1]);
+        }
+        // All three outcomes must be common, or the test proves little.
+        assert!(seen.iter().all(|&n| n > 500), "{seen:?}");
+    }
+
+    #[test]
+    fn decoder_fuzz_damaged_keys_and_random_bytes_never_crash_the_reader_and_what_it_accepts_is_canonical() {
+        const BIAS: [u8; 9] = [0x00, 0x01, 0x02, 0x03, 0x7f, 0x80, 0xfd, 0xfe, 0xff];
+        let mut rng = TestRng(99);
+        let (mut accepted, mut rejected) = (0, 0);
+        'input: for _ in 0..50_000 {
+            let ncol = 1 + rng.below(3);
+            let mut kinds = Vec::new();
+            let mut opts = Vec::new();
+            for _ in 0..ncol {
+                kinds.push(TEST_KINDS[rng.below(4)]);
+                opts.push(rng.opts());
+            }
+
+            // The input: random bytes, or a valid key with one byte overwritten
+            // (which is how most corruption looks, and gets much deeper into the
+            // reader than noise does).
+            let input: Vec<u8> = if rng.below(3) == 0 {
+                (0..rng.below(21)).map(|_| rng.next() as u8).collect()
+            } else {
+                let row: Vec<TestValue> = kinds.iter().map(|&kind| test_random_value(&mut rng, kind)).collect();
+                let mut key = test_encode(&row, &opts).0;
+                let at = rng.below(key.len());
+                key[at] = if rng.below(4) == 0 { rng.next() as u8 } else { BIAS[rng.below(BIAS.len())] };
+                key
+            };
+
+            let mut reader = KeyReader::new(&input);
+            let mut back = Vec::new();
+            let mut canonical = true;
+            for c in 0..ncol {
+                let before = reader.position();
+                let Ok(v) = test_take(&mut reader, kinds[c], opts[c]) else {
+                    assert_eq!(reader.position(), before); // an error never moves the cursor
+                    rejected += 1;
+                    continue 'input;
+                };
+                // The reader takes any 8 bytes as an f64. The two families that
+                // encode_f64 never writes (-0.0, NaNs other than the canonical one)
+                // are for the layer above to reject.
+                if let TestValue::F64(x) = v {
+                    if x.to_bits() == SIGN_BIT || (x.is_nan() && x.to_bits() != CANONICAL_NAN) {
+                        canonical = false;
+                    }
+                }
+                back.push(v);
+            }
+            if !reader.done() {
+                rejected += 1;
+                continue;
+            }
+            accepted += 1;
+            // Accepted and canonical means: these are exactly the bytes the
+            // writer produces for the decoded values. No second spelling exists.
+            if canonical {
+                assert_eq!(test_encode(&back, &opts).0, input);
+            }
+        }
+        assert!(accepted > 5000 && rejected > 5000, "{accepted} {rejected}");
+    }
 }

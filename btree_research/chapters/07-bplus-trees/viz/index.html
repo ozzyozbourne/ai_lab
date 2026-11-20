@@ -69,7 +69,8 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
 
   var order = el('select.bt-select#order', { 'aria-label': 'Order M (maximum children per node)' });
   [3, 4, 5, 6].forEach(function (m) { order.appendChild(el('option', { value: m, selected: m === 4 }, 'order ' + m)); });
-  var key = el('input.bt-input#key', { type: 'number', inputmode: 'numeric', placeholder: 'key', 'aria-label': 'Key', min: 0, max: 999 });
+  var KEY_MIN = 0, KEY_MAX = 999;
+  var key = el('input.bt-input#key', { type: 'number', inputmode: 'numeric', placeholder: 'key', 'aria-label': 'Key (whole number, 0 to 999)', min: KEY_MIN, max: KEY_MAX, step: 1 });
   var btn = function (id, text, fn, primary) {
     return el('button.bt-btn' + (primary ? '.bt-primary' : '') + '#' + id, { type: 'button', onclick: fn }, text);
   };
@@ -142,7 +143,8 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     b = new Ch07.BPlus(+order.value);
     log.clear();
   }
-  function both() { return { a: a.snapshot(), b: b.snapshot(), an: a.nodeCount(), ah: a.size ? a.height() : 0, asize: a.size }; }
+  // An empty B-tree model still has a root object; report it as 0 nodes, as the B+tree side does.
+  function both() { return { a: a.snapshot(), b: b.snapshot(), an: a.size ? a.nodeCount() : 0, ah: a.size ? a.height() : 0, asize: a.size }; }
 
   /* ------------------------------------------------------------- render */
   var stepper = new BTViz.Stepper({
@@ -163,8 +165,24 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
       renderArena(s.b, hb.arena || {});
       showCode(step.lines);
       log.sync(stepper ? stepper.steps : [], i);
+      if (step.centre) centreViews();
     }
   });
+
+  /**
+   * A tree wider than its stage scrolls inside the view (the toolkit never shrinks it below 0.7x, so
+   * keys stay readable) and the toolkit scrolls to the highlighted node of each step. A step without
+   * a highlight would open at the far left with the root out of sight, so show the middle instead.
+   */
+  function centreViews() {
+    [viewA, viewB].forEach(function (view) {
+      var sc = view.scroller;
+      if (sc && sc.scrollWidth > sc.clientWidth + 1) sc.scrollLeft = (sc.scrollWidth - sc.clientWidth) / 2;
+    });
+  }
+  function overflows() {
+    return [viewA, viewB].some(function (view) { return view.scroller && view.scroller.scrollWidth > view.scroller.clientWidth + 1; });
+  }
 
   function renderChain(sb, hl) {
     chainEl.textContent = '';
@@ -222,32 +240,64 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
   }
   function mk(key, value) { var o = {}; o[key] = value; return o; }
   function countKeys(n) { var c = n.keys.length; (n.children || []).forEach(function (ch) { c += countKeys(ch); }); return c; }
-  function countNodes(n) { var c = 1; (n.children || []).forEach(function (ch) { c += countNodes(ch); }); return c; }
+  function countNodes(n) {
+    if (!n || (!n.keys.length && !(n.children || []).length)) return 0;      // the empty tree has no node
+    var c = 1; (n.children || []).forEach(function (ch) { c += countNodes(ch); }); return c;
+  }
+  /** Nodes a classic B-tree lookup reads in snapshot `n`, and whether it finds the key. */
+  function btreeLookup(n, v) {
+    var read = 0;
+    while (n && n.keys.length) {
+      read++;
+      if (n.keys.indexOf(v) >= 0) return { read: read, found: true, leaf: !(n.children && n.children.length) };
+      if (!n.children || !n.children.length) break;
+      var i = 0;
+      while (i < n.keys.length && v > n.keys[i]) i++;
+      n = n.children[i];
+    }
+    return { read: read, found: false };
+  }
+  function nodes(n) { return n + ' node' + (n === 1 ? '' : 's'); }
   function heightOf(n) { var h = 1; while (n.children && n.children.length) { n = n.children[0]; h++; } return n.keys.length || h > 1 ? h : 0; }
 
   function summary(op, v, sa, sb, s) {
     var copies = b.separators().filter(function (x) { return !x.stale; }).length;
     var stale = b.separators().filter(function (x) { return x.stale; });
-    var text = op === 'search'
-      ? 'Search ' + k(v) + ': the B-tree looked at ' + (visited(sa, 'compare') + (sa.found ? 1 : 0)) + ' node(s) and stops as soon as it sees the key' +
-        '; the B+tree always walks all ' + s.b.height + ' level(s) to a leaf. '
-      : (op === 'insert' ? 'After insert ' : 'After delete ') + k(v) + ': ';
+    var text;
+    if (op === 'search') {
+      var look = btreeLookup(s.a, v), h = s.b.height;
+      if (!s.asize) return 'Search ' + k(v) + ': both trees are empty, so there is no node to read and the key is not found.';
+      text = 'Search ' + k(v) + ': ' + (look.found
+        ? 'found in both trees. The B-tree read ' + nodes(look.read) + ' and stopped at the first node that holds the key, ' +
+          (look.leaf ? 'here a leaf' : 'here an internal node') + '. The B+tree read ' + nodes(h) + ': a lookup always goes down all ' + h + ' level' + (h === 1 ? '' : 's') + ' to a leaf. '
+        : 'in neither tree. A search can only say "not found" in a leaf, so both went all the way down: the B-tree read ' + nodes(look.read) + ', the B+tree ' + nodes(h) + '. ');
+    } else {
+      text = (op === 'insert' ? 'After insert ' : 'After delete ') + k(v) + ': ';
+    }
     text += 'B-tree: ' + s.asize + ' keys in ' + s.an + ' node(s), height ' + s.ah + '. B+tree: ' + s.b.count + ' keys in ' + s.b.nodes + ' node(s), height ' + s.b.height;
     text += s.b.height > 1 ? ', with ' + (copies + stale.length) + ' separator(s) on top of the entries' : '';
     text += stale.length ? ' (' + stale.map(function (x) { return k(x.key); }).join(', ') + ' stale: dimmed).' : '.';
     return text;
   }
-  function visited(steps, type) { return steps.filter(function (s) { return s.type === type; }).length; }
 
   function showIdle(caption) {
-    stepper.setSteps([{ caption: caption, state: both(), focus: null }]);
+    stepper.setSteps([{ caption: caption, state: both(), focus: null, centre: true }]);
   }
 
   /* ------------------------------------------------------------ actions */
   function run(op) {
-    var v = key.value === '' ? rand.int(1, 99) : Math.floor(+key.value);
-    if (!isFinite(v) || v < 0) return;
-    stepper.setSteps(opSteps(op, v, false), { play: true });
+    // Typed input is used exactly as typed or not at all: nothing is rounded or clamped silently.
+    var raw = key.value.trim(), unreadable = !!(key.validity && key.validity.badInput), picked = raw === '' && !unreadable;
+    var v = picked ? rand.int(1, 99) : Number(raw);
+    if (!picked && (unreadable || !Number.isInteger(v) || v < KEY_MIN || v > KEY_MAX)) {
+      showIdle('Nothing was done: ' + (unreadable ? 'that input' : '<b>' + raw.replace(/[&<>]/g, '') + '</b>') + ' is not a key this page accepts. ' +
+        'Keys are whole numbers from ' + KEY_MIN + ' to ' + KEY_MAX + '. Both trees are unchanged.');
+      key.focus({ preventScroll: true });
+      return;
+    }
+    var steps = opSteps(op, v, false);
+    if (picked) steps[0].caption = 'No key was typed, so ' + k(v) + ' was picked at random. ' + steps[0].caption;
+    stepper.setSteps(steps, { play: true });
     key.value = '';
     key.focus({ preventScroll: true });
   }
@@ -279,7 +329,10 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
       a.insert(v, { steps: false }); b.put(v, v * 100, { steps: false }); n++;
     });
     log.clear();
-    showIdle('Inserted ' + n + ' random keys into both trees. ' + summary('insert', '…', [], [], both()).replace(/^After insert .*?: /, ''));
+    var filled = 'Inserted ' + n + ' random keys into both trees. ' + summary('insert', '…', [], [], both()).replace(/^After insert .*?: /, '');
+    showIdle(filled);
+    // Only known after the trees are drawn: say that a tree no longer fits, and how to move around in it.
+    if (overflows()) showIdle(filled + ' A tree is now wider than its frame: scroll or drag sideways inside it. During an operation the view follows the active node.');
   }
   key.addEventListener('keydown', function (e) { if (e.key === 'Enter') run('insert'); });
   order.addEventListener('change', function () {

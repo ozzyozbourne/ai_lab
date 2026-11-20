@@ -390,7 +390,7 @@
         this.counters.dedupPasses++;
         rec.push({ caption: label + ': the deduplication pass folds equal keys into posting lists: ' + before + ' cells become ' + merged.length +
             ', and the page shrinks to ' + bytes + ' bytes. The tuple fits; no split.',
-          state: this.snapshot(), highlight: hl, log: label + ': dedup pass, ' + before + ' -> ' + merged.length + ' cells' });
+          state: this.snapshot(), highlight: hl, log: label + ': dedup pass, ' + before + ' -&gt; ' + merged.length + ' cells' });
         return rec;
       }
       rec.push({ caption: label + ': the deduplication pass ' + (merged.length < before ? 'turns ' + before + ' cells into ' + merged.length + ', but ' + bytes + ' bytes is still too much.'

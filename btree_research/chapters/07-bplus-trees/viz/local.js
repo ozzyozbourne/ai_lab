@@ -256,8 +256,8 @@
           { nodes: mk(leftH, 'split'), keys: [[leftH, left.keys[mid], 'split']] }, { lines: { snippet: 'splitInternal', part: 'divide' } });
         question = {
           prompt: 'The internal node splits around ' + kfmt(left.keys[mid], 'split') + '. Is that separator copied or moved?',
-          choices: ['Copied: it stays in one half as well', 'Moved: it goes up and is in neither half'],
-          answer: 1,
+          choices: ['Moved: it goes up and is in neither half', 'Copied: it stays in one half as well'],
+          answer: 0,
           explain: 'Internal split = push-up, exactly as in a classic B-tree. One separator per boundary is enough.'
         };
         right = newInternal();
@@ -396,7 +396,7 @@
       } else {
         a.keys = a.keys.concat([sep], b.keys);
         a.children = a.children.concat(b.children);
-        text = 'Neither sibling can spare a separator, so internal node ' + this.name(bH) + ' is merged into ' + this.name(aH) + '. The separator ' + kfmt(sep, 'merge') + ' between them is real routing information: it is <em>pulled down</em> into the merged node. ' + this.name(bH) + ' is';
+        text = 'Neither sibling can spare a separator, so internal node ' + this.name(bH) + ' is merged into ' + this.name(aH) + '. The separator ' + kfmt(sep, 'merge') + ' between them is real routing information: it is <em>pulled down</em> into the merged node. ' + this.name(bH) + ' is freed';
         hl.keys.push([aH, sep, 'merge']);
       }
       parent.keys.splice(li, 1);

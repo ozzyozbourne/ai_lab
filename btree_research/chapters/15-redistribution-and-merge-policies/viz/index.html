@@ -232,7 +232,7 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
           st.pages = mark(picked, 'active');
           lines = LINES.pack;
           cap1 = '<b>3a. Pack left.</b> Fill each page from the left as far as it goes: ' + pagesText(sizes, ev.strip.ends) + '. This is the smallest number of pages the cells can fit in: <b>' +
-            ev.strip.ends.length + '</b>' + (ev.strip.ends.length > 1 ? ', but the last one gets only the leftovers.' : '.');
+            ev.strip.ends.length + '</b>' + (ev.strip.ends.length > 1 ? ', but the last one gets only what is left over (' + total(sizes.slice(ev.strip.ends[ev.strip.ends.length - 2])) + ' bytes).' : '.');
           question = packQuestion(sizes, ev.strip.ends, ev.cnt, cap);
           break;
         case 'even-move':
@@ -272,7 +272,7 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
             (ev.fresh.length ? 'New page ' + ev.fresh.map(function (id) { return 'p' + id; }).join(', ') + ' allocated. ' : '') +
             (ev.gone.length ? 'p' + ev.gone.join(', p') + ' goes to the free list. ' : '') +
             ev.moved + ' cell' + (ev.moved === 1 ? '' : 's') + ' changed page' + (ev.movedToOld ? ', ' + ev.movedToOld + ' of them onto a page that already existed (Postgres never allows that)' : '') +
-            '. Each page except the last gets a new divider: the largest key it now holds.';
+            '. ' + (ev.newCnt > 1 ? 'Each page except the last gets a new divider: the largest key it now holds.' : 'The one page that is left takes over the key range of all the siblings it replaces.');
           logLine = { html: '&nbsp;&nbsp;balance: ' + ev.oldCnt + ' in, ' + ev.newCnt + ' out (' + kind.replace(/^a /, '') + ')', state: ev.newCnt > ev.oldCnt ? 'split' : ev.newCnt < ev.oldCnt ? 'merge' : 'active' };
           break;
         case 'delete':
@@ -298,16 +298,16 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
 
   /* --------------------------------------------------------------- driving */
   var tree, opNo = 0, rand = BTViz.rng(15);
-  function newTree() {
-    tree = new Ch15.PageTree({ capacity: 100 });
-    applyConfig();
-  }
+  function chosenConfig() { return { capacity: 100, insertSiblings: +siblings.value, quickAppend: quick.checked, merge: merge.value }; }
+  function newTree() { tree = new Ch15.PageTree(chosenConfig()); }
   function applyConfig() {
-    tree.cfg.insertSiblings = +siblings.value;
-    tree.cfg.quickAppend = quick.checked;
-    tree.cfg.merge = merge.value;
+    var c = chosenConfig();
+    tree.cfg.insertSiblings = c.insertSiblings;
+    tree.cfg.quickAppend = c.quickAppend;
+    tree.cfg.merge = c.merge;
   }
-  function idle(text) { return { caption: text, state: { tree: tree.snapshot() } }; }
+  function idleOf(t, text) { return { caption: text, state: { tree: t.snapshot() } }; }
+  function idle(text) { return idleOf(tree, text); }
   function allKeys() {
     var out = [];
     tree.snapshot().children.forEach(function (c) { c.cells.forEach(function (x) { out.push(x.key); }); });
@@ -341,19 +341,76 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
     key.value = size.value = '';
     opNo++;
   }
-  function scenario(play) {
-    newTree();
-    var steps = [idle('The fixed scenario of the chapter’s programs (section 2 of their output), with the settings chosen above. Press play, or step with → and ←.')];
+  /* The programs' fixed operations under any configuration: {tree, steps, events, summary}. */
+  function buildScenario(cfg) {
+    var t = new Ch15.PageTree(cfg), events = [];
+    var steps = [idleOf(t, 'The fixed scenario of the chapter’s programs (section 2 of their output), with the settings chosen above. Press play, or step with → and ←.')];
     Ch15.SCENARIO.forEach(function (part) {
-      tree.trace = [];
-      (part.puts || []).forEach(function (c) { tree.put(c[0], c[1]); });
-      (part.deletes || []).forEach(function (d) { tree.delete(d); });
-      steps = steps.concat(toSteps(tree.trace));
-      tree.trace = null;
+      t.trace = [];
+      (part.puts || []).forEach(function (c) { t.put(c[0], c[1]); });
+      (part.deletes || []).forEach(function (d) { t.delete(d); });
+      events = events.concat(t.trace);
+      steps = steps.concat(toSteps(t.trace));
+      t.trace = null;
     });
-    steps.push(idle('End of the scenario: two leaves, 95 and 90 bytes, after one append, one split, two redistributions and one merge. Now try your own keys, or change the policies and replay.'));
-    stepper.setSteps(steps, { play: !!play });
+    var summary = scenarioSummary(events, t.snapshot(), t.cfg);
+    steps.push(idleOf(t, summary.text));
+    return { tree: t, steps: steps, events: events, summary: summary };
+  }
+  function scenario(play) {
+    var built = buildScenario(chosenConfig());
+    tree = built.tree;
+    stepper.setSteps(built.steps, { play: !!play });
     return tree;
+  }
+
+  /* Self-check of the captions: replay the scenario under all 24 policy combinations, plus
+   * a delete that merges three leaves into one, and compare what the captions and the
+   * Predict answers say with the model's own state. Returns 'ok' or the first mismatch. */
+  function checkCaptions() {
+    var bad = [], runs = [];
+    [1, 2, 3].forEach(function (sib) {
+      [true, false].forEach(function (q) {
+        ['never', 'at_empty', 'below_third', 'below_half'].forEach(function (m) {
+          var cfg = { capacity: 100, insertSiblings: sib, quickAppend: q, merge: m }, b = buildScenario(cfg);
+          runs.push({ name: sib + '/' + q + '/' + m, tree: b.tree, events: b.events, steps: b.steps.slice(1, -1), summary: b.summary });
+        });
+      });
+    });
+    var t = new Ch15.PageTree({ capacity: 100, merge: 'never' }), i;
+    for (i = 1; i <= 13; i++) t.put(i, 25);
+    [2, 3, 4, 6, 7, 8, 10, 11, 12].forEach(function (d) { t.delete(d); });
+    t.cfg.merge = 'below_third';
+    t.trace = [];
+    t.delete(13);
+    runs.push({ name: '3 into 1', tree: t, events: t.trace, steps: toSteps(t.trace), summary: null, wantPages: 1 });
+    t.trace = null;
+
+    runs.forEach(function (run) {
+      var fail = function (what) { bad.push(run.name + ': ' + what); };
+      var plain = function (step) { return step.caption.replace(/<[^>]+>/g, ''); };
+      run.events.forEach(function (ev, j) {
+        var step = run.steps[j], text = plain(step), q = step.question;
+        if (ev.type === 'pack') {
+          if (!q || q.answer < 0 || q.values[q.answer] !== ev.strip.ends.length || parseInt(q.choices[q.answer], 10) !== ev.strip.ends.length) fail('predict answer is not ' + ev.strip.ends.length);
+          if (q && run.wantPages && q.values[q.answer] !== run.wantPages) fail('expected ' + run.wantPages + ' page');
+        } else if (ev.type === 'insert') {
+          var right = ev.tree.dividers.length > 0 && ev.page === ev.tree.rightmost;
+          if (right !== /right-most child/.test(text) || text.indexOf('p' + ev.page + '.') < 0) fail('routing caption of put ' + ev.key);
+        } else if (ev.type === 'quick') {
+          var old = pageOf(ev.tree, ev.oldPage);
+          if (text.indexOf('(' + old.used + '/100 bytes') < 0 || (old.used === 100) !== /100% full/.test(text)) fail('fast-path caption for p' + ev.oldPage);
+        }
+      });
+      if (run.summary) {
+        var dump = run.tree.dump().split('\n').slice(1, -1), s = run.summary, st = run.tree.stats;
+        var want = dump.map(function (line) { return String(parseInt(line.split('/')[0].replace(/^\s*p\d+/, ''), 10)); });
+        if (s.text.indexOf(count(dump.length, 'leaf', 'leaves') + ' holding ' + listText(want) + ' bytes') < 0) fail('closing caption, leaves');
+        if (s.counts.quick !== st.quickAppends || s.counts['a split'] + s.counts['a redistribution'] + s.counts['a merge'] !== st.balances ||
+          s.counts['a split'] + s.counts.quick !== st.allocated || s.counts['a merge'] + s.counts.empty > st.freed) fail('closing caption, counts');
+      }
+    });
+    return bad.length ? bad.join('\n') : 'ok';
   }
 
   /* --------------------------------------------- self-tests against the programs */
@@ -362,7 +419,8 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
   var lines = window.CH15_EXPECTED.scenario.split('\n');
   var at = lines.lastIndexOf('parent: (p0, 30) right=p1');
   BTViz.selfTest('animation: final state', shown.dump(), lines.slice(at, at + 3).join('\n'));
-  window.CH15_FIG = { stepper: stepper, view: view, tree: function () { return tree; } };
+  BTViz.selfTest('captions follow the model', checkCaptions(), 'ok');
+  window.CH15_FIG = { stepper: stepper, view: view, tree: function () { return tree; }, checkCaptions: checkCaptions };
 })();
 </script>
 </body>

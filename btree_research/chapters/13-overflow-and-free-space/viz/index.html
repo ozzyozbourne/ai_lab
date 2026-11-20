@@ -148,6 +148,30 @@ every page ends up on the free list.</p>
     pageMaps.push(scenarioModel.pageMap().replace(/ /g, ''));
   });
 
+  // "Predict" mode: five places where the reader can guess before the step is shown.
+  function ask(op, logText, question) {
+    var from = opStart[op - 1], to = op < SCENARIO.length ? opStart[op] : stepsA.length;
+    for (var i = from; i < to; i++) {
+      if (stepsA[i].log && stepsA[i].log.indexOf(logText) === 0) { stepsA[i].question = question; return; }
+    }
+    throw new Error('no step for question: ' + logText);
+  }
+  ask(6, 'page 2', { prompt: 'Put 25 with 9000 bytes. A leaf keeps at most X = 1088 and at least M = 544 bytes of a spilled value; an overflow page holds 4084. How many bytes stay in the leaf?',
+    choices: ['1088, as many as allowed', '832, what is left after two full pages', '544, the minimum'], answer: 1,
+    explain: 'K = 544 + (9000 − 544) mod 4084 = 832, and 832 ≤ X, so the leaf takes the remainder and both overflow pages are full.' });
+  ask(8, 'free page 2', { prompt: 'Key 25 now has a 100-byte value. Pages 2 and 3 held its old value, and the free list is empty. What happens to page 2?',
+    choices: ['The file is cut shorter', 'It becomes the first trunk page of the free list', 'It is filled with zeroes and forgotten'], answer: 1,
+    explain: 'A freed page is never given back to the file system here. With no trunk to list it, it becomes a trunk itself.' });
+  ask(9, 'page 3', { prompt: 'Put 35 with 5000 bytes needs one overflow page. The free list is trunk page 2, which lists page 3. Which page does the value get?',
+    choices: ['Page 7: the file grows', 'Page 3: the id the trunk lists', 'Page 2: the trunk itself'], answer: 1,
+    explain: 'Listed ids go first. The trunk page itself is handed out only when it lists nothing.' });
+  ask(14, 'leaf 5 is empty', { prompt: 'Key 30 is the last cell of leaf page 5. What does the tree do with the page?',
+    choices: ['Nothing: an empty leaf stays in the tree', 'It moves cells over from leaf 4 so that both are half full', 'It unlinks the leaf and frees the page'], answer: 2,
+    explain: '"Free at empty": a page leaves the tree when its last cell goes, and not before. Nothing is ever moved between pages.' });
+  ask(16, 'page 2', { prompt: 'Put 80 with 3000 bytes needs one overflow page. The free list is trunk page 2, which lists nothing. Which page does the value get?',
+    choices: ['Page 7: the file grows', 'Page 2: the trunk itself', 'None: an empty trunk means an empty free list'], answer: 1,
+    explain: 'A trunk is a free page too. When it lists nothing it is handed out, and the free list is empty afterwards.' });
+
   var jump = el('select.bt-select#jump', { 'aria-label': 'Jump to operation' });
   SCENARIO.forEach(function (op, i) {
     jump.appendChild(el('option', { value: i }, (i + 1) + '. ' + (op[1] === null ? 'delete ' + op[0] : 'put ' + op[0] + ' = ' + op[1] + ' B')));
@@ -156,7 +180,7 @@ every page ends up on the free list.</p>
     el('button.bt-btn', { type: 'button', onclick: function () { stepperA.pause(); stepperA.go(opStart[+jump.value]); } }, 'Go'));
 
   var stepperA = new BTViz.Stepper({
-    mount: figA.controls, caption: figA.caption, root: figA.root, steps: stepsA, interval: 2400,
+    mount: figA.controls, caption: figA.caption, root: figA.root, steps: stepsA, interval: 2400, predict: true,
     onStep: function (step, i) {
       var t = Ch13View.treeModel(step.state, step.highlight);
       statusA.innerHTML = statusHtml(step.state);
@@ -169,7 +193,7 @@ every page ends up on the free list.</p>
   /* ============================ 2. the calculator ========================== */
 
   var figB = BTViz.figure('#fig-calc', { title: 'Local bytes and overflow pages for a value of P bytes', side: true, controlsUnderStage: true,
-    legend: [{ token: 'node', label: 'bytes in the leaf cell' }, { token: 'split', label: 'overflow page' }, { token: 'free', label: 'unused part of the last page' }] });
+    legend: [{ token: 'node', label: 'the leaf cell' }, { token: 'split', label: 'overflow page (the bar shows how full it is)' }] });
   var calcIn = el('input.bt-input#calc-in', { type: 'number', min: 0, max: Ch13.MAX_VALUE_LEN, step: 1, value: 9000, 'aria-label': 'Value size in bytes' });
   figB.toolbar.append(el('label.bt-field', 'value bytes P', calcIn));
   [100, 1088, 1089, 3000, 5000, 5172, 5173, 14000, 65536].forEach(function (p) {
@@ -179,7 +203,7 @@ every page ends up on the free list.</p>
   var calcFormula = el('div.ch13-formula');
   var calcBoxes = el('div.ch13-calc');
   figB.stage.append(calcHint, calcFormula, calcBoxes);
-  BTViz.codePanel(figB.side, 'localLen', { title: 'disk_btree: localLen', maxHeight: 330 });
+  BTViz.codePanel(figB.side, 'localLen', { title: 'disk_btree: localLen', maxHeight: 360, wrap: true });
 
   /** A whole number in [lo, hi] typed into `input`, or null (and a message in `hint`). */
   function readInt(input, lo, hi, what, hint) {
@@ -215,7 +239,8 @@ every page ends up on the free list.</p>
     for (var i = 0; i < shown; i++) {
       var last = i === pages - 1, n = last ? tail - (pages - 1) * U : U;
       if (!last && i === shown - 1) { calcBoxes.appendChild(el('div.ch13-calc-box.s-split', el('b', '… ' + (pages - shown + 1) + ' more'), 'full pages')); break; }
-      calcBoxes.appendChild(el('div.ch13-calc-box.s-split', el('b', 'overflow ' + (i + 1)), n + ' B' + (n < U ? ' of ' + U : ' (full)')));
+      calcBoxes.appendChild(el('div.ch13-calc-box.s-split', el('b', 'overflow ' + (i + 1)), n + ' B' + (n < U ? ' of ' + U : ' (full)'),
+        el('div.ch13-meter', el('span', { style: { width: Math.round(100 * n / U) + '%' } }))));
     }
   }
   calcIn.addEventListener('input', calc);
@@ -243,7 +268,7 @@ every page ends up on the free list.</p>
   var freeC = el('p.ch13-freelist');
   figC.stage.appendChild(freeC);
   var logC = new BTViz.Log(figC.side, { title: 'What happened', empty: 'Nothing yet.' });
-  BTViz.codePanel(figC.side, 'freeList', { title: 'disk_btree: the free list', maxHeight: 250 });
+  BTViz.codePanel(figC.side, 'freeList', { title: 'disk_btree: the free list', maxHeight: 250, wrap: true });
 
   var own, rng;
   var stepperC = new BTViz.Stepper({

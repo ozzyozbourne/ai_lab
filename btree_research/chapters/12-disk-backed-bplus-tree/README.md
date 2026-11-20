@@ -29,8 +29,8 @@ Two more decisions follow from "the tree lives in a file".
 **The file needs a fixed starting point.** Page 0 is the *metapage*: a magic number, a format
 version, the root's page id and two counters.
 
-**The root stays where it is.** When the root is full, this tree does not create a new root
-above it. It copies the root's content into a new page, and rewrites the root page in place as
+**The root stays where it is.** When the root is full, this tree does not create a new root.
+It copies the root's content into a new page, and rewrites the root page in place as
 an interior page with that new page as its only child. Then the new page splits like any other
 page. The height grows by one and the root is still page 1. Everything that knows where the
 root is (the metapage, and in a real database the catalog and every open cursor) stays correct.
@@ -49,13 +49,13 @@ Does each half fit in a page? Only if no single cell is too large. Let `C` be th
 (4076) and `m` the largest cost a cell may have. The page overflowed, so the costs add up to `T`
 with `C < T <= C + m`. Without its last cell the left half is below `T/2` (otherwise the cut
 would have come one cell earlier), and that last cell costs at most `m`, so the left half is
-below `T/2 + m <= C/2 + 3m/2`. That is at most `C` exactly when `m <= C/3`. The right half is at most
-`T/2`. So the rule is: **every cell must cost at most a third of a page.** This chapter allows
-keys up to 256 bytes and values up to 1024 bytes (a quarter of a page), which makes the largest
-leaf cell 1286 bytes, below 4076 / 3 = 1358. A `comptime` assertion checks it.
+below `T/2 + m <= C/2 + 3m/2`. That is at most `C` exactly when `m <= C/3`. The right half
+is at most `T/2`. So the rule is: **every cell must cost at most a third of a page.** This
+chapter allows keys up to 256 bytes and values up to 1024 bytes (a quarter of a page), which
+makes the largest leaf cell 1286 bytes, below 4076 / 3 = 1358. A `comptime` assertion checks it.
 
 "Half full" becomes a byte notion too. After a split each half holds roughly half of the bytes,
-give or take one cell. It may hold two cells or two hundred.
+give or take one cell.
 
 ### Why chapter 04's top-down splitting does not carry over
 
@@ -91,7 +91,7 @@ page 1  interior  1 keys  12/4076 bytes  | (2) 20 (3)
   page 3  leaf      2 keys  1816/4076 bytes  next -  | 20:780 30:1020
 ```
 
-After all 24 puts (the full output is in `expected_output.txt`):
+After all 24 puts:
 
 ```
 page 1  interior  5 keys  60/4076 bytes  | (2) 08 (7) 12 (4) 20 (3) 25 (6) 28 (5)
@@ -154,7 +154,7 @@ step either happens or does not. The steps together are not atomic; see "Not cra
 **Pins.** No function returns with a pin it took, and at most two pages are pinned at once.
 `BufferPool.deinit` asserts that no pin is left, so every error path has an `errdefer` unpin.
 The tests check that by failing reads and writes at 150 successive positions of a workload
-and, in Zig, every scratch allocation of puts that split a leaf, an interior page and the root.
+and, in Zig, every scratch allocation of three puts that split.
 
 **`get`, `range`.** `get` copies the value with an allocator the caller passes, because the
 page may be evicted the moment it is unpinned. `range(lo, hi)` returns an iterator that
@@ -166,7 +166,7 @@ file.
 
 ### Rust (`rust/src/disk_btree.rs`) and the differences
 
-Same structure, names, tests and output. The differences that matter:
+Same structure, names and output. The differences:
 
 - **Ownership.** Zig's tree borrows a `*BufferPool`; the Rust tree owns its `BufferPool`
   (which owns the pager and the storage) and lends it out with `pool()` / `pool_mut()`.
@@ -186,7 +186,7 @@ Same structure, names, tests and output. The differences that matter:
 
 ## Not crash-safe yet
 
-A split changes two pages (the two halves), then a third (the parent), and a root split a
+A split changes two pages, then a third (the parent), and a root split a
 fourth. The file receives pages one write at a time. There is no moment at which all of them
 change together, so a crash between two writes leaves a file that is neither the old tree nor
 the new one. Two things make this worse than it sounds:
@@ -227,8 +227,8 @@ From then on `put`, `get`, `range` and `flush` (and `close`, which flushes) retu
 honest but not a repair. `validate`, `height` and `dump` still work, so that the damage can
 be looked at.
 
-Chapter 21 adds the tools (checksums in the reserved 4 bytes, what `fsync` promises) and
-chapter 22 puts a write-ahead log in front of this tree so that a split is all or nothing.
+Chapter 21 adds checksums and what `fsync` promises; chapter 22 puts a write-ahead log in
+front of this tree so that a split is all or nothing.
 
 ## In real databases
 
@@ -280,8 +280,7 @@ The alternatives: a general-purpose allocator needs a matching `free` on every e
 next to the `unpin`s; a `FixedBufferAllocator` must be sized for the largest `validate`; an
 arena that is never reset grows with every put.
 
-`get` is the one place that uses a caller-supplied allocator: the returned value must outlive
-the operation, so it cannot come from the arena.
+`get` alone takes the caller's allocator: its result must outlive the operation.
 
 Rust has the same split with other tools: nodes are the pool's boxed frames; the path stack is
 a `Vec` owned by the tree and cleared per operation (its capacity is the retained arena); the

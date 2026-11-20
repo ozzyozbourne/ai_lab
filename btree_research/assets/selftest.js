@@ -201,6 +201,12 @@ for (const seed of [1, 2, 3, 4]) {
     ok(mid(B.nodes.get('r')) > mid(B.nodes.get('p')) && mid(B.nodes.get('rl')) < mid(B.nodes.get('r')) && B.order.length === 3 && B.edges.length === 2, 'binary: true places [null, right] and [left, null]');
     B.order.forEach(n => ok(n.x >= 0 && n.x + n.w <= B.width, 'binary layout exceeds canvas'));
   }
+  // Stepper (headless): restart() forgets answered predict questions, like setSteps()
+  {
+    const st = new BTViz.Stepper({ steps: [{ state: 0 }, { state: 1, question: { prompt: '?', choices: ['a'], answer: 0 } }, { state: 2 }] });
+    st.go(2); st._answered[1] = true; st.restart();
+    ok(st.index === 0 && Object.keys(st._answered).length === 0, 'Stepper.restart() clears the answered set');
+  }
   ok(BTViz.selfTest('selftest-internal', { b: 1, a: [1, 2] }, { a: [1, 2], b: 1 }) === true && BTViz.selfTest.results.length === 1, 'selfTest structural equality');
 }
 

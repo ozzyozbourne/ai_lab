@@ -117,14 +117,23 @@ Header with chapter badge + title, Prev / Index / Next links, theme toggle; wrap
 `{href, title}`; `null` renders a disabled placeholder. `index` defaults to `../../../index.html`.
 `chapter` is a number (`4` → "Chapter 4") or any string.
 
-**`BTViz.figure(target, {title, side, legend})`** → `{root, toolbar, stage, side, caption, controls, legend}`
+**`BTViz.figure(target, {title, side, controlsUnderStage, legend})`** → `{root, toolbar, stage, side, caption, controls, legend, main}`
 One card. Put views in `stage`, form controls in `toolbar` (hidden while empty), `Log`/`codePanel`
 in `side` (only with `side: true`; it drops below the stage on narrow screens), and hand
 `controls`/`caption`/`root` to a Stepper. A page may hold any number of figures.
 
 ```js
-var fig = BTViz.figure('#fig', { title: 'Search', side: true, legend: ['key-compare', 'key-found'] });
+var fig = BTViz.figure('#fig', { title: 'Search', side: true, controlsUnderStage: true, legend: ['key-compare', 'key-found'] });
 ```
+
+**`controlsUnderStage: true` — recommended for every new page that uses `side: true`.** By default
+(kept so finished pages do not move) the caption and the step controls span the whole card *below*
+stage and side panel: with a tall side panel they end up far from the picture on desktop, and on a
+phone the side panel sits between the picture and its caption. With the option, stage, caption and
+controls form one column (`fig.main`, class `.bt-figure-main`) beside the side panel, and on narrow
+screens the order is picture → caption → controls → side panel. It has no effect without `side`.
+Do not combine it with the older per-chapter CSS workarounds (`.bt-figure-body { display: contents }`
+plus `order`); it replaces them.
 
 **`BTViz.legend(target, items)`** — items are token names (`'split'`) or `{token, label, line}`.
 
@@ -158,6 +167,9 @@ var stepper = new BTViz.Stepper({
 | `play()` `pause()` `toggle()` `setSpeed(x)` | playback (0.25× … 4×) |
 | `state(i)` | cached snapshot of step `i` |
 | `index`, `steps`, `playing` | read-only properties |
+
+`restart()` (button, <kbd>Home</kbd>) also forgets which predict questions were answered, so they are
+asked again on the next run through; `setSteps` does the same.
 
 Controls: restart, step back, play/pause, step forward, scrubber, "step i / n", speed slider.
 Dragging the scrubber pauses playback and jumps straight to the chosen step.
@@ -218,13 +230,21 @@ Animation between successive `render()` calls: nodes are matched by `id` (move /
 by value (a promoted key slides up into the parent, a B+tree separator copy grows out of its source),
 new nodes emerge from the node their first key came from. First render is instant.
 
-Options: `minHeight`, `maxHeight`, `zoom: 'fit' | number`, `minScale` (0.7 — fit never shrinks below
+Options: `minHeight`, `maxHeight`, `followY`, `zoom: 'fit' | number`, `minScale` (0.7 — fit never shrinks below
 it; wider trees scroll inside the view), `toolbar` (zoom buttons), `onNodeClick(id, node)`,
 `ariaLabel`, `binary` (false; see *Binary trees* above), and geometry `cellH`, `minCellW`, `charW`,
 `hGap`, `vGap`.
 Methods: `render(model, highlight)`, `highlight(h)` (states only, no re-layout), `setZoom(z)`,
-`nodeEl(id)`, `destroy()`. Pan: drag, touch-scroll or scrollbars; zoom: buttons, pinch, or
+`scrollToNode(id[, {smooth}])`, `centerOnRoot([{smooth}])`, `nodeEl(id)`, `destroy()`. Pan: drag, touch-scroll or scrollbars; zoom: buttons, pinch, or
 <kbd>Ctrl</kbd>+wheel. The view scrolls itself to keep highlighted nodes visible.
+**Tall trees.** `maxHeight: 420` caps the view's height; a taller tree then scrolls vertically
+*inside* the view (drag, wheel, touch, scrollbar) instead of stretching the page. Automatic
+scrolling to highlighted nodes is horizontal only unless you also pass `followY: true` (opt-in).
+`view.scrollToNode(id)` centres a node in the view on both axes and `view.centerOnRoot()` returns to
+the top with the root centred; both scroll only the view, never the page, and return the view.
+Node `meta.label`s are drawn with a halo in the view's background colour (`--bt-bg`) so an incoming
+edge cannot strike them through, and latch badges (`meta.lock`) are drawn in a layer above the key
+cells (`view.gLocks`, one `<g data-node="id">` per node), not inside the node's `<g>`.
 `BTViz.TreeView.layout(model[, opts])` is the pure layout function (`{nodes: Map, order, edges, width, height}`);
 `opts` takes the geometry options and `binary`.
 
@@ -283,7 +303,13 @@ var code = BTViz.codePanel(fig.side, { zig: '…', rust: '…' }, { title: 'sear
 code.highlight([3, 4]);                       // same lines in both tabs
 code.highlight({ zig: [3, [5, 7]], rust: 4 });  // per language; [a, b] = inclusive range
 code.setTab('rust');
+var code = BTViz.codePanel(fig.side, 'search', { wrap: true });   // soft-wrap long lines
 ```
+
+Long lines: by default a line never wraps and the panel scrolls sideways (a side panel shows only
+about 33 characters at once); a soft shadow on the left/right edge marks that more code is hidden
+there. `wrap: true` (default off) soft-wraps instead, with continuation lines indented past the line
+numbers — use it for side-panel code whose lines are longer than ~35 characters, or keep lines short.
 
 Common indentation and leading/trailing blank lines are stripped; line numbers start at 1.
 Built-in tinting for `zig`, `rust`, `js`, `c` (keywords, types, numbers, strings, `//` comments,
@@ -344,6 +370,9 @@ var line = new BTViz.Chart(fig.stage, { type: 'line', xLabel: 'inserts', yLabel:
 line.push({ splits: 3, merges: 1 }, 100);     // one point per series; label optional
 ```
 Options: `height`, `yMax`, `maxPoints`, `legend: true`; series may set `token` (a colour token name).
+X labels look after themselves: bar-chart labels that would touch or overlap are slanted (the plot
+gives up a little height; the SVG keeps its size), line-chart labels are thinned out, and a last
+label that would run past the right edge is right-aligned to it. Labels that fit are drawn as before.
 
 **`BTViz.GraphView`** — 2D points and edges in your own coordinate units.
 
@@ -457,12 +486,20 @@ themes. Base tokens: `--bt-bg`, `--bt-surface`, `--bt-surface-2`, `--bt-text`, `
 | `dirty` | `page-dirty` | page modified in memory |
 | `lock-shared`, `lock-exclusive` | same | latch / lock modes |
 | `free` | `free` | free space, empty frame (hatched) |
+| `unused` | `free` + `unused-bg` | free space that must look clearly different from a key cell |
 | `pointer` | `pointer` | child pointers, slot entries |
 | `dim` | — | de-emphasise |
 
 The same state names work in every view (tree nodes and keys, array cells, page bytes, lanes,
 records, frames, slots, hex ranges, graph nodes), in `.bt-chip`, `.bt-table tr`, `.bt-k`, and in
 your own elements: add class `s-compare` and paint with `var(--s)` / `var(--s-bg)`.
+
+**Free space vs. key cells.** `--bt-free-bg` and `--bt-key-bg` are almost the same colour in the light
+theme (`#eff1f4` vs `#edf0f4`), so a plain `--bt-free-bg` fill next to resting keys cannot be told
+apart; existing pages rely on both values, so neither will change. For new pages use
+`--bt-unused-bg` (light `#d3d9e2`, dark `#0d1116`; a neutral that is visibly darker than a key cell
+in both themes and is not one of the state hues), directly or through the `s-unused` state class,
+or hatch the area (`.bt-swatch.is-hatch` style) rather than relying on `--bt-free-bg` alone.
 
 Other reusable classes: `.bt-panel` + `.bt-panel-title` + `.bt-panel-body`, `.bt-chip`,
 `.bt-lock.is-shared|.is-exclusive`, `.bt-table` inside `.bt-table-wrap`, `.bt-lead`, `kbd`, `code`.
@@ -496,4 +533,9 @@ Other reusable classes: `.bt-panel` + `.bt-panel-title` + `.bt-panel-body`, `.bt
 - In a DAG a shared child is positioned under its *first* parent only.
 - The syntax tinting is line-based: no multi-line comments or Zig `\\` strings.
 - `PageView` and `HexGrid` render one element per byte; keep them small.
+- CSS selectors of the form `[class*="s-"]` also match `is-…` classes (`is-first`, `is-clickable`).
+  `.bt-pb` is fixed; the same pattern on `.bt-node`, `.bt-acell`, `.bt-edge-g`, `.bt-link`, `.bt-table tr`,
+  `.bt-log-line` and `.bt-graph-*` is left alone because finished pages were reviewed with it (for example
+  clickable tree nodes get the thicker "state" outline, and the `.bt-pb.r-cell.is-alt` shading never applies).
+  In your own CSS write `:is([class^="s-"], [class*=" s-"])`.
 - `Chart` is intentionally tiny: non-negative values, linear axis from 0, no tooltips beyond `<title>`.

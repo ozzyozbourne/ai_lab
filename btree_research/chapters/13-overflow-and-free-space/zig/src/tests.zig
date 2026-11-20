@@ -135,6 +135,15 @@ fn randomOp(tree: *DiskBTree, model: *Model, rng: *SplitMix64, shape: Shape) !vo
     }
 }
 
+/// A reopen starts a new handle with new counters; keep a running sum.
+fn addStats(total: *DiskBTree.Stats, s: DiskBTree.Stats) void {
+    total.interior_splits += s.interior_splits;
+    total.tree_pages_freed += s.tree_pages_freed;
+    total.pages_freed += s.pages_freed;
+    total.pages_reused += s.pages_reused;
+    total.overflow_pages_written += s.overflow_pages_written;
+}
+
 fn runModel(storage: Storage, seed: u64, shape: Shape) !DiskBTree.Stats {
     var model: Model = .init(testing.allocator);
     defer model.deinit();
@@ -149,14 +158,14 @@ fn runModel(storage: Storage, seed: u64, shape: Shape) !DiskBTree.Stats {
         try testing.expectEqual(0, db.pool.pinnedFrames());
         if (i % 250 == 0) try expectSameContent(&db.tree, &model);
         if (i % shape.reopen_every == 0) {
-            inline for (std.meta.fields(DiskBTree.Stats)) |f| @field(total, f.name) += @field(db.tree.stats, f.name);
+            addStats(&total, db.tree.stats);
             try db.reopen(storage, shape.frames);
         }
     }
     try expectSameContent(&db.tree, &model);
     try db.pool.validate();
     try testing.expectEqual(1, db.tree.root); // the root never moved
-    inline for (std.meta.fields(DiskBTree.Stats)) |f| @field(total, f.name) += @field(db.tree.stats, f.name);
+    addStats(&total, db.tree.stats);
     return total;
 }
 
@@ -166,7 +175,7 @@ test "model: memory storage, tiny pools, values of every size, deletes, reopen m
         .{ .frames = 3, .key_space = 300, .max_key = 24, .max_value = 20000, .ops = 3000, .reopen_every = 1100 },
         // 2 frames is the minimum: a split, and a chain being written, pin two pages.
         .{ .frames = 2, .key_space = 200, .max_key = 40, .max_value = 9000, .ops = 2500, .reopen_every = 900 },
-        // The largest values allowed (17 pages each) and the longest keys.
+        // The largest values allowed (16 overflow pages) and the longest keys.
         .{ .frames = 4, .key_space = 60, .max_key = btree.max_key_len, .max_value = btree.max_value_len, .ops = 700, .reopen_every = 300 },
         // Long keys, tiny values, as many deletes as puts: interior pages
         // split, leaves empty out, and interior pages are freed with them.
@@ -263,7 +272,8 @@ test "delete everything: an empty root leaf, every other page free, and nothing 
         try db.tree.validate();
         try testing.expectEqual(3, try db.tree.height());
         const pages = db.pager.pageCount();
-        if (round == 1) try testing.expectEqual(0, db.pager.stats.allocations - pages); // every page came from the free list
+        // Second round: every page came from the free list.
+        try testing.expectEqual(if (round == 0) pages else 0, db.pager.stats.allocations);
 
         // Delete in another order than the keys were inserted.
         for (0..n) |i| {
@@ -281,9 +291,9 @@ test "delete everything: an empty root leaf, every other page free, and nothing 
         const counts = try countRoles(&db.tree);
         try testing.expectEqual(1, counts[@intFromEnum(Role.leaf)]);
         try testing.expectEqual(0, counts[@intFromEnum(Role.interior)]);
+        try testing.expectEqual(2, db.tree.stats.root_collapses);
         try db.reopen(mem.storage(), 8);
     }
-    try testing.expect(db.tree.stats.root_collapses > 0);
 }
 
 test "more free pages than one trunk lists: a second trunk, and both are used up again" {
@@ -326,7 +336,7 @@ test "localLen: SQLite's rule, with this chapter's numbers" {
         .{ 0, 0, 0 },           .{ 1088, 1088, 0 },      .{ 1089, 544, 1 },
         .{ 3000, 544, 1 },      .{ 4628, 544, 1 },       .{ 4629, 545, 1 },
         .{ 5000, 916, 1 },      .{ 5172, 1088, 1 },      .{ 5173, 544, 2 },
-        .{ 9000, 832, 2 },      .{ 14000, 544, 4 },      .{ 65536, 736, 16 },
+        .{ 9000, 832, 2 },      .{ 14000, 544, 4 },      .{ 65536, 544, 16 },
     };
     for (cases) |case| {
         try testing.expectEqual(case[1], btree.localLen(case[0]));
@@ -414,7 +424,7 @@ test "values are assembled where the caller says: stack buffer first, heap if la
     var fixed: std.heap.FixedBufferAllocator = .init(&none);
     try testing.expectError(error.OutOfMemory, db.tree.get(fixed.allocator(), "big"));
     try testing.expectEqual(0, db.pool.pinnedFrames());
-    // A buffer for the leaf part only: the chain is never read.
+    // 7000 bytes of fixed buffer: the same value without any heap.
     var some: [7000]u8 = undefined;
     fixed = .init(&some);
     const whole = (try db.tree.get(fixed.allocator(), "big")).?;

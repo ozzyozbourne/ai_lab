@@ -17,11 +17,11 @@
 
   /* role -> toolkit state (colour) and the word printed on the page */
   var ROLE = {
-    meta:     { state: 'dim',     word: 'metapage' },
+    meta:     { state: '',        word: 'metapage' },
     interior: { state: '',        word: 'interior' },
     leaf:     { state: '',        word: 'leaf' },
     overflow: { state: 'split',   word: 'overflow' },
-    trunk:    { state: 'pointer', word: 'trunk' },
+    trunk:    { state: 'compare', word: 'trunk' },
     free:     { state: 'free',    word: 'free' }
   };
   var BADGE = { inserted: 'written', deleted: 'freed', active: 'read', split: 'split' };
@@ -177,7 +177,8 @@
         : p.role === 'leaf' ? 'leaf with ' + p.cells.length + ' cells'
         : p.role === 'interior' ? 'interior page (the root)'
         : p.role === 'meta' ? 'metapage' : 'free page';
-      return { state: p.role === 'free' ? 'free' : (ROLE[p.role].state || 'found'), label: id, title: 'page ' + id + ': ' + what };
+      // 'node' is not a state class, so tree pages get the resting look.
+      return { state: p.role === 'free' ? 'free' : (ROLE[p.role].state || 'node'), label: id, title: 'page ' + id + ': ' + what };
     });
   }
 

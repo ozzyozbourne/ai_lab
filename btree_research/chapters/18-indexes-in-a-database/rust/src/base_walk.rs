@@ -11,10 +11,10 @@
 //! it borrows the tree, the compiler rejects a `put` or `delete` while a
 //! walker is alive (in Zig that rule is only a comment).
 
-use crate::arena::NodeId;
-use crate::node::Entry;
-use crate::search::lower_bound;
-use crate::tree::BPlusTree;
+use crate::base_arena::NodeId;
+use crate::base_node::Entry;
+use crate::base_search::lower_bound;
+use crate::base_tree::BPlusTree;
 
 pub struct LeafWalker<'a> {
     tree: &'a BPlusTree,

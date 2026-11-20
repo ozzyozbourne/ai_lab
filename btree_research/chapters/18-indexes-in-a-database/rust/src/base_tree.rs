@@ -15,8 +15,8 @@
 //!   6. The leaves form a doubly linked list in key order from `first_leaf`
 //!      to `last_leaf`.
 
-use crate::arena::{Arena, NodeId};
-use crate::node::{MAX_ORDER, Node};
+use crate::base_arena::{Arena, NodeId};
+use crate::base_node::{MAX_ORDER, Node};
 
 /// Counters of structural changes. Counts only; used by the demo program to
 /// say what an operation did, and by tests to prove a path was exercised.

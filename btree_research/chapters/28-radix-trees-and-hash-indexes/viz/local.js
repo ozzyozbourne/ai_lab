@@ -1,7 +1,11 @@
 /*
  * Chapter 28 local helpers (the shared toolkit has no radix-tree model or view).
  *
- *   ART28.Art         JS twin of zig/src/art.zig: same node layouts, same insert, same dump
+ *   ART28.Art         JS twin of zig/src/art.zig: same node layouts, same insert, same dump.
+ *                     Its walks are recursive, like the Zig ones; the page limits a typed key
+ *                     to 16 characters, far below art.zig's max_key_len of 512 bytes.
+ *                     Everything that reaches an HTML sink (captions, log lines) is escaped
+ *                     here: kb() / kc() for captions, esc(fmtBytes(...)) for the log.
  *   ART28.ArtView     SVG drawing of that tree
  *   ART28.Inspector   the physical layout of one inner node (keys[], index[256], children[])
  *   ART28.HashIndex, ART28.SortedIndex, ART28.splitmix, ART28.fnv1a
@@ -169,6 +173,29 @@
     return bigger;
   };
 
+  /**
+   * A model whose tree is exactly the tree of a recorded step state. The page uses it so that
+   * Insert / Search / Ordered scan work on the tree that is drawn, wherever the reader has
+   * stepped to, and not on the tree at the end of the recorded trace.
+   * `maxValue` is the largest stored value (0 for an empty tree).
+   */
+  Art.fromState = function (state) {
+    var t = new Art(), maxId = 0;
+    t.root = clone(state.root || null);
+    t.grows = state.grows.slice();
+    t.prefixSplits = state.splits;
+    t.maxValue = 0;
+    (function walk(ref) {
+      if (!ref) return;
+      if (ref.t === 'leaf') { t.len++; t.maxValue = Math.max(t.maxValue, ref.v); return; }
+      maxId = Math.max(maxId, +ref.id.slice(1));        // ids are 'p12' / 'n7'
+      if (ref.t === 'prefix') walk(ref.child);
+      else eachChild(ref, function (b, c) { walk(c); });
+    })(t.root);
+    t.nextId = maxId + 1;                               // new nodes must not collide with drawn ones
+    return t;
+  };
+
   /* Recording. A step's state is everything the page draws. */
   Art.prototype._step = function (type, caption, d) {
     if (!this.rec) return;
@@ -216,7 +243,7 @@
     this.rec = record ? [] : null;
     this.op = { key: key, text: text === undefined ? fmtBytes(key) : text };
     this._step('start', 'Insert ' + kb(key) + ' = ' + value + '. The key is ' + key.length +
-      ' bytes; the tree will consume them left to right, starting at the root.', { depth: 0, log: 'put ' + fmtBytes(key) });
+      ' bytes; the tree will consume them left to right, starting at the root.', { depth: 0, log: 'put ' + esc(fmtBytes(key)) });
 
     function insertAt(ref, depth) {
       var i;
@@ -238,8 +265,10 @@
           if (ref.bytes[i] !== key[depth + i]) return splitPrefix(ref, i, depth + i);
         }
         var m = {}; m[ref.id] = 'active';
-        self._step('prefix-match', 'Prefix node ' + kb(ref.bytes) + ': the next ' + ref.bytes.length + ' key byte' +
-          (ref.bytes.length > 1 ? 's are' : ' is') + ' the same, so all of them are skipped in one step. This is path compression.',
+        // A 1-byte prefix compresses nothing; only say "path compression" when bytes are really skipped together.
+        self._step('prefix-match', 'Prefix node ' + kb(ref.bytes) + ': ' + (ref.bytes.length > 1
+          ? 'the next ' + ref.bytes.length + ' key bytes are the same, so all of them are skipped in one step. This is path compression.'
+          : 'the next key byte matches the prefix, so the walk continues below it.'),
           { depth: depth + ref.bytes.length, nodes: m });
         ref.child = insertAt(ref.child, depth + ref.bytes.length);
         if (ref.child.t === 'leaf' && old.v !== null) {
@@ -296,7 +325,7 @@
       self._step('add-child', 'Add a child for byte ' + kc(byte, 'inserted') + ' (' + childCount(node) + ' of ' + CAP[node.t] + ' slots used now)' +
         (node.t === 'n4' || node.t === 'n16' ? ', keeping <code>keys[]</code> sorted so that iteration stays in order' : '') + '. ' +
         (key.length - depth - 1 > 0 ? 'The remaining ' + (key.length - depth - 1) + ' key byte' + (key.length - depth - 1 > 1 ? 's go' : ' goes') + ' into a prefix chain below it.' : 'No key bytes remain, so the child is the value itself.'),
-        { root: tmp2, depth: key.length, keyState: 'inserted', nodes: am, cells: ac, focus: node.id, insp: ai, log: 'add child ' + fmtBytes([byte]) });
+        { root: tmp2, depth: key.length, keyState: 'inserted', nodes: am, cells: ac, focus: node.id, insp: ai, log: 'add child ' + esc(fmtBytes([byte])) });
       return node;
     }
 
@@ -374,7 +403,7 @@
     var ref = this.root, depth = 0, nodes = 0, value = null, why = '';
     this.rec = record ? [] : null;
     this.op = { key: key };
-    this._step('start', 'Search ' + kb(key) + ': walk from the root, one node per step.', { depth: 0, log: 'get ' + fmtBytes(key) });
+    this._step('start', 'Search ' + kb(key) + ': walk from the root, one node per step.', { depth: 0, log: 'get ' + esc(fmtBytes(key)) });
     for (;;) {
       var nm = {}, cm = {};
       if (!ref) { why = 'The tree is empty.'; break; }
@@ -392,7 +421,7 @@
           why = 'x';
           break;
         }
-        this._step('prefix-match', 'Prefix node ' + kb(ref.bytes) + ' equals the next ' + ref.bytes.length + ' key byte' + (ref.bytes.length > 1 ? 's' : '') + ': skip them.',
+        this._step('prefix-match', 'Prefix node ' + kb(ref.bytes) + ' equals the next ' + (ref.bytes.length > 1 ? ref.bytes.length + ' key bytes: skip them.' : 'key byte: skip it.'),
           { depth: depth + ref.bytes.length, nodes: nm });
         depth += ref.bytes.length;
         ref = ref.child;
@@ -448,7 +477,7 @@
         var nm = {};
         trail.forEach(function (id) { nm[id] = 'active'; });
         self._step('visit', 'Key ' + n + ': ' + kb(path, 'found') + ' = ' + ref.v + '. The key is not stored anywhere in one piece; it is rebuilt from the bytes along the highlighted path.',
-          { depth: path.length, keyState: 'found', nodes: nm, log: fmtBytes(path) });
+          { depth: path.length, keyState: 'found', nodes: nm, log: esc(fmtBytes(path)) });
       } else if (ref.t === 'prefix') walk(ref.child, path.concat(ref.bytes), trail.concat([ref.id]));
       else eachChild(ref, function (b, c) { walk(c, path.concat([b]), trail.concat([ref.id])); });
     })(this.root, [], []);
@@ -583,18 +612,36 @@
   function ArtView(target) {
     this.svg = el('svg', { class: 'a28-svg', role: 'img', 'aria-label': 'Adaptive radix tree' });
     this.scroller = el('div.a28-tree', { tabindex: 0 }, this.svg);
-    (typeof target === 'string' ? document.querySelector(target) : target).appendChild(this.scroller);
+    // Phones draw no scrollbar, so say in words when part of the tree is outside the view.
+    this.hint = el('div.a28-scrollhint', { 'aria-live': 'off' });
+    var host = typeof target === 'string' ? document.querySelector(target) : target;
+    host.appendChild(this.scroller);
+    host.appendChild(this.hint);
     this.seen = {};
     this.W = 0;
     var self = this;
     window.addEventListener('resize', function () { self._fit(); });
+    this.scroller.addEventListener('scroll', function () { self._hint(); });
   }
   ArtView.prototype._fit = function () {
     if (!this.W) return;
     var avail = this.scroller.clientWidth || this.W;
+    // Below 0.75 the byte labels become unreadable; a wider tree scrolls sideways instead.
     var s = Math.max(0.75, Math.min(1, avail / this.W));
     this.svg.setAttribute('width', Math.floor(this.W * s));
     this.svg.setAttribute('height', Math.floor(this.H * s));
+    this._hint();
+  };
+  /** Tell the reader on which side the tree continues beyond the visible part. */
+  ArtView.prototype._hint = function () {
+    var sc = this.scroller, over = sc.scrollWidth - sc.clientWidth;
+    var left = over > 1 && sc.scrollLeft > 1, right = over > 1 && sc.scrollLeft < over - 1;
+    sc.classList.toggle('more-left', left);
+    sc.classList.toggle('more-right', right);
+    this.hint.style.display = left || right ? '' : 'none';
+    this.hint.textContent = left && right ? '← the tree continues on both sides: scroll sideways →'
+      : left ? '← more of the tree to the left: scroll sideways'
+      : right ? 'more of the tree to the right: scroll sideways →' : '';
   };
 
   function measure(ref) {
@@ -712,6 +759,7 @@
       var a = act.getBoundingClientRect(), b = this.scroller.getBoundingClientRect();
       if (a.left < b.left + 8 || a.right > b.right - 8) this.scroller.scrollLeft += a.left - b.left - (b.width - a.width) / 2;
     }
+    this._hint();
   };
 
   /* ------------------------------------------- Inspector (node layout) */

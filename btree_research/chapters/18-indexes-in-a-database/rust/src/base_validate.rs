@@ -6,9 +6,9 @@
 //! The checker trusts nothing it reads from a node: a child handle is tested
 //! with `is_live` before it is followed.
 
-use crate::arena::NodeId;
-use crate::node::Kind;
-use crate::tree::BPlusTree;
+use crate::base_arena::NodeId;
+use crate::base_node::Kind;
+use crate::base_tree::BPlusTree;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Violation {

@@ -136,17 +136,67 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
     return out.join(' | ');
   }
   function mark(ids, state, into) { into = into || {}; ids.forEach(function (id) { into[id] = state; }); return into; }
+  function count(n, one, many) { return n + ' ' + (n === 1 ? one : many || one + 's'); }
+  function listText(parts) { return parts.length < 2 ? parts.join('') : parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1]; }
+  function total(sizes) { return sizes.reduce(function (a, b) { return a + b; }, 0); }
+  function kindOf(oldCnt, newCnt) { return newCnt > oldCnt ? 'a split' : newCnt < oldCnt ? 'a merge' : 'a redistribution'; }
+  function pageOf(snap, id) { return snap.children.filter(function (c) { return c.id === id; })[0]; }
+  /* Every sentence below is built from the event and the snapshot taken with it, never from
+   * what the fixed scenario happens to do, so it stays true for any keys, sizes and policies. */
+  function routeText(ev) {
+    var div = ev.tree.dividers, to = '<b>p' + ev.page + '</b>. ';
+    if (!div.length) return 'The parent has no divider yet, so every key goes to its only child, ' + to;
+    if (ev.child < div.length) return 'In the parent, the first divider that is ≥ the key is ' + div[ev.child].key + ', which points to ' + to;
+    return 'No divider in the parent is ≥ the key (the largest is ' + div[div.length - 1].key + '), so it goes to the right-most child, ' + to;
+  }
+  function packQuestion(sizes, ends, cnt, cap) {
+    /* One choice per possible outcome, 1 … cnt + 1 pages (a balance adds at most one page),
+     * and in any case up to what the model computed: the answer is always among the choices. */
+    var opts = [];
+    for (var n = 1; n <= Math.max(cnt + 1, ends.length); n++) opts.push(n);
+    return {
+      prompt: total(sizes) + ' bytes of cells from ' + count(cnt, 'page') + ', ' + cap + ' bytes per page. How many pages will the cut need?',
+      choices: opts.map(function (n) { return n + ' — ' + kindOf(cnt, n); }),
+      values: opts, answer: opts.indexOf(ends.length),
+      explain: 'Packing left gives ' + pagesText(sizes, ends) + '.'
+    };
+  }
+  /* Closing caption of the scenario: what the events did and what the tree looks like now. */
+  function scenarioSummary(events, snap, cfg) {
+    var n = { quick: 0, 'a split': 0, 'a redistribution': 0, 'a merge': 0, empty: 0 };
+    events.forEach(function (ev) {
+      if (ev.type === 'quick') n.quick++;
+      else if (ev.type === 'commit') n[kindOf(ev.oldCnt, ev.newCnt)]++;
+      else if (ev.type === 'remove-empty') n.empty++;
+    });
+    var did = [];
+    if (n.quick) did.push(count(n.quick, 'append on the fast path', 'appends on the fast path'));
+    if (n['a split']) did.push(count(n['a split'], 'split'));
+    if (n['a redistribution']) did.push(count(n['a redistribution'], 'redistribution'));
+    if (n['a merge']) did.push(count(n['a merge'], 'merge'));
+    if (n.empty) did.push(count(n.empty, 'empty page unlinked', 'empty pages unlinked'));
+    var used = snap.children.map(function (c) { return c.used; });
+    var isDefault = cfg.insertSiblings === 3 && cfg.quickAppend && cfg.merge === 'below_third';
+    return {
+      leaves: used.length, counts: n,
+      text: 'End of the scenario: ' + count(used.length, 'leaf', 'leaves') + ' holding ' + listText(used.map(String)) + ' bytes, after ' +
+        (did.length ? listText(did) : 'no structural change') + '. ' +
+        (isDefault ? 'These are the settings of the chapter’s programs, and this is the tree they print.'
+          : 'The chapter’s programs run it with siblings = 3, the fast path on and merge below 1/3; you chose something else, so compare.') +
+        ' Now try your own keys, or change the policies and replay.'
+    };
+  }
 
   function toSteps(events) {
-    var steps = [], cap = 100, picked = [];
+    var steps = [], picked = [];
     events.forEach(function (ev, idx) {
-      var st = { tree: ev.tree }, cap1 = '', lines = null, question = null, logLine = null;
+      var st = { tree: ev.tree }, cap = ev.tree.capacity, cap1 = '', lines = null, question = null, logLine = null;
       var sizes = ev.strip ? ev.strip.flat.map(function (c) { return c.size; }) : null;
       switch (ev.type) {
         case 'insert':
           st.cells = mark([ev.key], 'inserted');
           st.pages = mark([ev.page], ev.overfull ? 'deleted' : 'active');
-          cap1 = (ev.existing ? 'Overwrite ' : 'Put ') + k(ev.key, 'inserted') + ' (' + ev.size + ' bytes). The parent routes it to the first divider that is ≥ the key: <b>p' + ev.page + '</b>. ' +
+          cap1 = (ev.existing ? 'Overwrite ' : 'Put ') + k(ev.key, 'inserted') + ' (' + ev.size + ' bytes). ' + routeText(ev) +
             (ev.overfull ? 'The page is now over capacity. That is allowed for a moment (“overfull is represented, not prevented”), but it must be repaired before <code>put</code> returns.'
               : 'It fits, so nothing else happens.');
           logLine = { html: 'put ' + ev.key + ':' + ev.size + ' → p' + ev.page, state: 'inserted' };
@@ -155,8 +205,10 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
           st.cells = mark([ev.key], 'inserted');
           st.pages = mark([ev.newPage], 'inserted', mark([ev.oldPage], 'found'));
           lines = LINES.quick;
+          var oldUsed = pageOf(ev.tree, ev.oldPage).used;
           cap1 = '<b>Append fast path.</b> The cell that did not fit is the last cell of the right-most leaf, so this is probably an append. It gets a fresh page p' + ev.newPage +
-            ' to itself; p' + ev.oldPage + ' stays 100% full and no existing cell moves. The parent gets one new divider.';
+            ' to itself; p' + ev.oldPage + ' stays as full as it was before the put (' + oldUsed + '/' + cap + ' bytes' + (oldUsed === cap ? ', 100% full' : '') +
+            ') and no existing cell moves. The parent gets one new divider.';
           logLine = { html: '&nbsp;&nbsp;fast path: new page p' + ev.newPage, state: 'found' };
           break;
         case 'pick':
@@ -166,14 +218,14 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
           lines = LINES.pick;
           cap1 = '<b>1. Pick siblings.</b> p' + ev.page + ' is ' + (ev.why === 'overflow' ? 'overfull' : 'emptier than the policy allows') + '. Take it together with its neighbours, at most ' +
             ev.window + ' pages: ' + ev.ids.map(function (id) { return '<b>p' + id + '</b>'; }).join(', ') + '.' +
-            (ev.ids.length === 1 ? ' With one page this is the plain split of chapter 14.' : '');
+            (ev.ids.length > 1 ? '' : ev.window === 1 ? ' With one page this is the plain split of chapter 14.' : ' It is the only leaf, so there is no neighbour to share with.');
           break;
         case 'flatten':
           st.strip = ev.strip;
           st.pages = mark(picked, 'active');
           lines = LINES.flatten;
-          cap1 = '<b>2. Flatten.</b> Copy every cell of the siblings into one scratch array, in key order: ' + sizes.length + ' cells, ' +
-            sizes.reduce(function (a, b) { return a + b; }, 0) + ' bytes. Page boundaries no longer matter; the dashed lines show where they were. Dividers stay in the parent: they are routing information, not data.';
+          cap1 = '<b>2. Flatten.</b> Copy every cell of the siblings into one scratch array, in key order: ' + count(sizes.length, 'cell') + ', ' +
+            total(sizes) + ' bytes. Page boundaries no longer matter; the dashed lines show where they were. Dividers stay in the parent: they are routing information, not data.';
           break;
         case 'pack':
           st.strip = ev.strip;
@@ -181,13 +233,7 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
           lines = LINES.pack;
           cap1 = '<b>3a. Pack left.</b> Fill each page from the left as far as it goes: ' + pagesText(sizes, ev.strip.ends) + '. This is the smallest number of pages the cells can fit in: <b>' +
             ev.strip.ends.length + '</b>' + (ev.strip.ends.length > 1 ? ', but the last one gets only the leftovers.' : '.');
-          var opts = [ev.cnt - 1, ev.cnt, ev.cnt + 1].filter(function (n) { return n >= 1; });
-          question = {
-            prompt: sizes.reduce(function (a, b) { return a + b; }, 0) + ' bytes of cells from ' + ev.cnt + ' page' + (ev.cnt > 1 ? 's' : '') + ', 100 bytes per page. How many pages will the cut need?',
-            choices: opts.map(function (n) { return n + (n < ev.cnt ? ' — a merge' : n === ev.cnt ? ' — a redistribution' : ' — a split'); }),
-            answer: Math.max(0, opts.indexOf(ev.strip.ends.length)),
-            explain: 'Packing left gives ' + pagesText(sizes, ev.strip.ends) + '.'
-          };
+          question = packQuestion(sizes, ev.strip.ends, ev.cnt, cap);
           break;
         case 'even-move':
           st.strip = ev.strip;
@@ -221,8 +267,8 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
           st.pages = mark(ev.fresh, 'inserted', mark(ev.ids, 'active'));
           st.cells = mark(Object.keys(ev.movedKeys), 'split');
           lines = LINES.commit;
-          var kind = ev.newCnt > ev.oldCnt ? 'a split' : ev.newCnt < ev.oldCnt ? 'a merge' : 'a redistribution';
-          cap1 = '<b>4. Write back:</b> ' + ev.oldCnt + ' page' + (ev.oldCnt > 1 ? 's' : '') + ' in, ' + ev.newCnt + ' out — <b>' + kind + '</b>. ' +
+          var kind = kindOf(ev.oldCnt, ev.newCnt);
+          cap1 = '<b>4. Write back:</b> ' + count(ev.oldCnt, 'page') + ' in, ' + ev.newCnt + ' out — <b>' + kind + '</b>. ' +
             (ev.fresh.length ? 'New page ' + ev.fresh.map(function (id) { return 'p' + id; }).join(', ') + ' allocated. ' : '') +
             (ev.gone.length ? 'p' + ev.gone.join(', p') + ' goes to the free list. ' : '') +
             ev.moved + ' cell' + (ev.moved === 1 ? '' : 's') + ' changed page' + (ev.movedToOld ? ', ' + ev.movedToOld + ' of them onto a page that already existed (Postgres never allows that)' : '') +

@@ -302,8 +302,9 @@ states the problem: "A page write in process during an operating system crash mi
 only partially written to disk. During recovery, the row changes stored in WAL are not
 enough to recover" (`postgres/src/backend/utils/misc/guc_parameters.dat:1133-1135`).
 A record that describes only the change (a *delta*, such as "insert this tuple") can
-only be replayed onto an intact page; a full image can be replayed onto anything. Compared with the double write: the image is
-written once per page per checkpoint cycle instead of on every update, and it shares the
+only be replayed onto an intact page; a full image can be replayed onto anything.
+Compared with the double write: the image is written once per page per checkpoint cycle
+instead of on every update, and it shares the
 log's sequential write and its fsync. Chapter 22 builds a log made only of such images.
 
 **Whole-page log frames (Turso).** Turso's WAL, in the SQLite format, logs every changed

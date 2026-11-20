@@ -14,8 +14,8 @@
 
 use std::io::{self, Write};
 
-use crate::arena::NodeId;
-use crate::tree::BPlusTree;
+use crate::base_arena::NodeId;
+use crate::base_tree::BPlusTree;
 
 pub fn dump(tree: &BPlusTree, w: &mut dyn Write) -> io::Result<()> {
     writeln!(

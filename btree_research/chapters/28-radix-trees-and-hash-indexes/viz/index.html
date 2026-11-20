@@ -8,6 +8,9 @@
 <style>
 /* Chapter-local styles for the ART drawing and the node-layout inspector (tokens only). */
 .a28-tree { overflow-x: auto; max-width: 100%; text-align: center; padding: 2px 0 6px; scrollbar-width: thin; }
+.a28-tree.more-left { border-left: 3px solid var(--bt-border); }
+.a28-tree.more-right { border-right: 3px solid var(--bt-border); }
+.a28-scrollhint { font-size: .8rem; color: var(--bt-muted); text-align: center; margin: 0 0 4px; }
 .a28-svg { display: inline-block; vertical-align: top; font-family: var(--bt-mono); }
 .a28-svg text { fill: var(--bt-text); font-size: 13px; }
 .a28-svg .a28-empty, .a28-svg .a28-label, .a28-svg .a28-note { fill: var(--bt-muted); font-family: var(--bt-font); font-size: 11px; }
@@ -207,7 +210,7 @@ Next: <a href="../../29-zone-maps-and-vector-indexes/viz/index.html">29 Zone map
     bytes.forEach(function (b, i) {
       var n = i + 1;
       if (shown[n]) {
-        if (skipped) { all.push(note(skipped + ' more keys were inserted without stopping. The node now has ' + (n - 1) + ' children: it is full.')); skipped = 0; }
+        if (skipped) { all.push(note(skipped + (skipped === 1 ? ' more key was' : ' more keys were') + ' inserted without stopping. The node now has ' + (n - 1) + ' children: it is full.')); skipped = 0; }
         all = all.concat(model.put([0x6b, b], nextValue++, true));
       } else { model.put([0x6b, b], nextValue++, false); skipped++; }
     });
@@ -231,31 +234,67 @@ Next: <a href="../../29-zone-maps-and-vector-indexes/viz/index.html">29 Zone map
     if (!text.length) { fig.caption.textContent = 'Type a key first (1 to 16 characters).'; return null; }
     return text;
   }
+  /**
+   * Make `model` the tree that is drawn right now, so that the controls never act on a
+   * state the reader cannot see. A preset records all its inserts up front and `model` is
+   * then the tree after the LAST one, while the reader may be looking at any earlier step.
+   * Returns a sentence for the next caption when steps of the shown trace were dropped.
+   *
+   * One exception: an insert the reader asked for and that is still playing is finished,
+   * not dropped. Typing a second key while the first is still being animated must not
+   * lose the first.
+   */
+  function syncModel() {
+    var steps = stepper.steps, i = stepper.index;
+    if (!steps.changesTree || i < 0 || i === steps.length - 1) return '';   // the model is what is drawn
+    if (steps.userInsert && stepper.playing) return '';
+    model = A.Art.fromState(stepper.state(i));
+    nextValue = model.maxValue + 1;
+    return 'This uses the tree as drawn at step ' + (i + 1) + ' of ' + steps.length + '; the later steps of the previous animation are not applied. ';
+  }
+  /** Show a new timeline. `changesTree` marks timelines whose steps show different trees. */
+  function show(steps, kind, note, flags) {
+    tag(steps, kind);
+    if (note && steps.length) steps[0].caption = note + steps[0].caption;
+    steps.changesTree = !!(flags && flags.changesTree);
+    steps.userInsert = !!(flags && flags.userInsert);
+    stepper.setSteps(steps, { play: !flags || flags.play !== false });
+  }
   function doInsert() {
     var text = readKey();
     if (text === null) return;
+    var note = syncModel();
     try {
-      stepper.setSteps(tag(model.put(keyBytes(text), nextValue, true), 'insert'), { play: true });
+      show(model.put(keyBytes(text), nextValue, true), 'insert', note, { changesTree: true, userInsert: true });
       nextValue++;
     } catch (e) {
       model.rec = null; model.op = null;
       stepper.pause();
-      fig.caption.innerHTML = 'Rejected (<code>error.PrefixKey</code>): ' + BTViz.k(text) + ' is a prefix of a stored key, or a stored key is a prefix of it. ' +
-        'This preset uses raw bytes without a terminator; the tree has no place for a value in the middle of a path. The tree is unchanged.';
+      // The model now equals the drawn tree; show exactly that tree with the message.
+      rejected('Rejected (<code>error.PrefixKey</code>): ' + BTViz.k(A.fmtBytes(keyBytes(text))) + ' is a prefix of a stored key, or a stored key is a prefix of it. ' +
+        'This preset uses raw bytes without a terminator; the tree has no place for a value in the middle of a path. The tree is unchanged.');
     }
+  }
+  /** A one-step timeline: the current tree plus a message (HTML; typed text must be escaped by the caller). */
+  function rejected(html) {
+    model.rec = []; model.op = { key: [] };
+    model._step('note', html, {});
+    var st = model.rec; model.rec = null; model.op = null;
+    show(st, 'insert', '', { play: false });
   }
   function doSearch() {
     var text = readKey();
     if (text === null) return;
-    stepper.setSteps(tag(model.lookup(keyBytes(text), true), 'lookup'), { play: true });
+    var note = syncModel();
+    show(model.lookup(keyBytes(text), true), 'lookup', note);
   }
   function doScan() {
+    var note = syncModel();
     if (model.len > 40) {
-      stepper.pause();
-      fig.caption.textContent = 'The scan animation is limited to 40 keys; choose "Reset to empty" or the words preset first.';
+      rejected('The scan animation is limited to 40 keys and this tree holds ' + model.len + '. Choose "Reset to empty" or the words preset first, or step back to a smaller tree.');
       return;
     }
-    stepper.setSteps(tag(model.scanSteps(), 'scan'), { play: true });
+    show(model.scanSteps(), 'scan', note);
   }
   var preset = el('select.bt-select', { 'aria-label': 'Preset' },
     el('option', { value: 'words' }, 'Preset: romane, romanus, romulus, …'),
@@ -263,14 +302,14 @@ Next: <a href="../../29-zone-maps-and-vector-indexes/viz/index.html">29 Zone map
     el('option', { value: 'empty' }, 'Reset to empty'));
   function loadPreset() {
     var v = preset.value;
-    if (v === 'words') stepper.setSteps(presetWords(), { play: false });
-    else if (v === 'grow') stepper.setSteps(presetGrow(), { play: false });
+    if (v === 'words') show(presetWords(), 'insert', '', { changesTree: true, play: false });
+    else if (v === 'grow') show(presetGrow(), 'insert', '', { changesTree: true, play: false });
     else {
       model = new A.Art(); rawMode = false; nextValue = 1;
       model.rec = []; model.op = { key: [] };
       model._step('note', 'Empty tree. Type a key and press Insert. Try keys that share a beginning (tea, team, ten) and keys that do not.', {});
       var st = model.rec; model.rec = null; model.op = null;
-      stepper.setSteps(tag(st, 'insert'), {});
+      show(st, 'insert', '', { play: false });
     }
   }
   preset.addEventListener('change', loadPreset);
@@ -412,6 +451,17 @@ Next: <a href="../../29-zone-maps-and-vector-indexes/viz/index.html">29 Zone map
     "      'u' -> prefix \"ndus\\x00\" -> leaf 7",
     ''
   ].join('\n');
+
+  // The controls work on the tree of the displayed step (Art.fromState), not on the end of the
+  // trace: the state recorded when the third word is done must be the tree of three words.
+  (function () {
+    var rec = new A.Art(), all = [], three = new A.Art(), done = 0, at = -1;
+    WORDS.forEach(function (w, i) { all = all.concat(rec.put(A.encodeStr(w), i + 1, true)); });
+    all.forEach(function (st, i) { if (st.type === 'done' && ++done === 3) at = i; });
+    WORDS.slice(0, 3).forEach(function (w, i) { three.put(A.encodeStr(w), i + 1, false); });
+    var got = A.Art.fromState(all[at].state);
+    BTViz.selfTest('tree as drawn at a step', got.dump() + got.len + ' keys, next value ' + (got.maxValue + 1), three.dump() + '3 keys, next value 4');
+  })();
 
   var t = new A.Art();
   WORDS.forEach(function (w, i) { t.put(A.encodeStr(w), i + 1, false); });

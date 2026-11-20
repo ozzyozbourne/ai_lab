@@ -8,7 +8,7 @@
 //! Nothing in this file knows about the tree or the arena except the type
 //! `NodeId`; every function works on one node.
 
-use crate::arena::NodeId;
+use crate::base_arena::NodeId;
 
 /// Largest order a tree may be created with. The order itself (M = maximum
 /// number of children) is a runtime field of the tree so that tests and the

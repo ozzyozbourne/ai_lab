@@ -4,13 +4,13 @@
 //! proof that `validate` catches corruption.
 //! (arena.rs, node.rs and search.rs carry their own unit tests.)
 
-use crate::arena::{NodeId, OutOfNodes};
-use crate::dump;
-use crate::node::Node;
-use crate::ops::{Config, Op, OpStream, Oracle, Weights};
-use crate::tree::BPlusTree;
-use crate::validate::Violation;
-use crate::walk::LeafWalker;
+use crate::base_arena::{NodeId, OutOfNodes};
+use crate::base_dump as dump;
+use crate::base_node::Node;
+use crate::base_ops::{Config, Op, OpStream, Oracle, Weights};
+use crate::base_tree::BPlusTree;
+use crate::base_validate::Violation;
+use crate::base_walk::LeafWalker;
 
 const CANONICAL: [u64; 12] = [10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15];
 

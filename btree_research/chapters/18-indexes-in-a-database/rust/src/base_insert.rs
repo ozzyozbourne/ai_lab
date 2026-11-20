@@ -12,10 +12,10 @@
 //!                             is in neither half, exactly as in a classic
 //!                             B-tree. A separator is needed once per boundary.
 
-use crate::arena::{NodeId, OutOfNodes};
-use crate::node::{Kind, Node};
-use crate::search::{child_index, lower_bound};
-use crate::tree::BPlusTree;
+use crate::base_arena::{NodeId, OutOfNodes};
+use crate::base_node::{Kind, Node};
+use crate::base_search::{child_index, lower_bound};
+use crate::base_tree::BPlusTree;
 
 /// What a child reports to its parent after an insert below it.
 struct Split {

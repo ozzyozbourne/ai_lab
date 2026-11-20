@@ -4,9 +4,9 @@
 //! In a B+tree EVERY lookup ends in a leaf, even if the key equals a separator
 //! on the way down: the separator is only a copy, the value is in the leaf.
 
-use crate::arena::NodeId;
-use crate::node::Kind;
-use crate::tree::BPlusTree;
+use crate::base_arena::NodeId;
+use crate::base_node::Kind;
+use crate::base_tree::BPlusTree;
 
 /// Index of the first key >= `key` (= keys.len() if there is none).
 /// In a leaf this is where `key` is, or where it would be inserted.

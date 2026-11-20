@@ -684,7 +684,10 @@ impl<'a> SlottedPage<'a> {
         }
 
         // Every content byte is a cell, a free block, or a counted fragment.
-        let unclaimed = owner[content_start..usable].iter().filter(|&&o| o == 0).count();
+        let unclaimed = owner[content_start..usable]
+            .iter()
+            .filter(|&&o| o == 0)
+            .count();
         if unclaimed != self.buf[OFF_FRAG_BYTES] as usize || unclaimed > MAX_FRAG_BYTES {
             return Err(ValidateError::FragmentMismatch);
         }
@@ -1053,7 +1056,10 @@ mod tests {
         page.compact();
         page.validate().unwrap();
         assert_eq!(page.kind(), 7);
-        assert_eq!(page.user_area(), &[0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]);
+        assert_eq!(
+            page.user_area(),
+            &[0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]
+        );
         assert_eq!(page.reserved_size(), 0); // the user area is next to it
     }
 
@@ -1208,9 +1214,14 @@ mod tests {
         // formatted with init_reserved(buf, 4): after plain init, storing
         // those 4 bytes destroys the end of the first cell.
         let mut buf = [0u8; PAGE_SIZE];
-        SlottedPage::init(&mut buf).put(b"mango", b"yellow").unwrap();
+        SlottedPage::init(&mut buf)
+            .put(b"mango", b"yellow")
+            .unwrap();
         buf[PAGE_SIZE - 4..].fill(0xCC); // what sealing the page would do
-        assert_ne!(SlottedPage::open(&mut buf).get(b"mango"), Some(&b"yellow"[..]));
+        assert_ne!(
+            SlottedPage::open(&mut buf).get(b"mango"),
+            Some(&b"yellow"[..])
+        );
 
         SlottedPage::init_reserved(&mut buf, 4)
             .put(b"mango", b"yellow")

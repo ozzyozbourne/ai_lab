@@ -90,6 +90,23 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
   });
 
   function asciiOk(s) { return /^[ -~]*$/.test(s); }
+  var ASCII_ONLY = 'Please use printable ASCII characters only, so that comparing characters is comparing bytes.';
+  var TID_RULE = 'A TID is a whole number from 0 to ' + M.MAX_TID + ' (2<sup>48</sup> &minus; 1): a row address, stored in 6 bytes.';
+  // The TID typed into `input`, or null when it is not one. Nothing is
+  // rounded, clamped or defaulted: a bad value is reported, not repaired.
+  // (A number input reports '' for text it cannot parse, hence validity.)
+  function readTid(input) {
+    var text = input.value.trim();
+    if (!/^[0-9]+$/.test(text) || (input.validity && input.validity.badInput)) return null;
+    var tid = Number(text);
+    return M.validTid(tid) ? tid : null;
+  }
+  // What the reader typed, for a caption: escaped, shortened, never empty.
+  function typed(input) {
+    var text = input.value.trim();
+    if (!text) return 'empty or not a number';
+    return q(text.length > 24 ? text.slice(0, 24) + '…' : text);
+  }
 
   /* ====================================================================
    * Figure 1: the separator at a split
@@ -112,9 +129,9 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
     return el('option', { value: i }, p[0] + ' | ' + p[2]);
   }));
   var lKey = el('input.bt-input.c17-wide', { type: 'text', value: presets[0][0], 'aria-label': 'Key of the last tuple on the left', maxlength: 28 });
-  var lTid = el('input.bt-input.c17-narrow', { type: 'number', min: 0, value: presets[0][1], 'aria-label': 'TID of the last tuple on the left' });
+  var lTid = el('input.bt-input.c17-narrow', { type: 'number', min: 0, max: M.MAX_TID, step: 1, value: presets[0][1], 'aria-label': 'TID of the last tuple on the left' });
   var rKey = el('input.bt-input.c17-wide', { type: 'text', value: presets[0][2], 'aria-label': 'Key of the first tuple on the right', maxlength: 28 });
-  var rTid = el('input.bt-input.c17-narrow', { type: 'number', min: 0, value: presets[0][3], 'aria-label': 'TID of the first tuple on the right' });
+  var rTid = el('input.bt-input.c17-narrow', { type: 'number', min: 0, max: M.MAX_TID, step: 1, value: presets[0][3], 'aria-label': 'TID of the first tuple on the right' });
   var cutBtn = el('button.bt-btn.bt-primary', { type: 'button', onclick: function () { runSep(true); } }, 'Cut here');
   f1.toolbar.append(
     el('label.bt-field', 'Example ', presetSel), el('span.bt-toolbar-sep'),
@@ -129,9 +146,17 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
       for (var e in (extra || {})) step[e] = extra[e];
       steps.push(step);
     }
+    if (left.tid === null || right.tid === null) {
+      // Nothing to compare: show the keys with a "?" where the TID is unusable.
+      var bad = left.tid === null ? lTid : rTid, side = left.tid === null ? 'left' : 'right';
+      base.left = { key: left.key, tid: left.tid === null ? '?' : left.tid };
+      base.right = { key: right.key, tid: right.tid === null ? '?' : right.tid };
+      push('The TID on the ' + side + ' (' + typed(bad) + ') cannot be used. ' + TID_RULE + ' Change it and press Cut here.', {}, null);
+      return steps;
+    }
     var lt = q(M.sepText(left, '')), rt = q(M.sepText(right, ''));
     if (!asciiOk(left.key) || !asciiOk(right.key)) {
-      push('Please use printable ASCII characters only, so that comparing characters is comparing bytes.', {}, null);
+      push(ASCII_ONLY, {}, null);
       return steps;
     }
     if (M.compareTuple(left.key, left.tid, right.key, right.tid) >= 0) {
@@ -183,7 +208,7 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
     }
   });
   function runSep(play) {
-    stepper1.setSteps(sepSteps({ key: lKey.value, tid: +lTid.value || 0 }, { key: rKey.value, tid: +rTid.value || 0 }), { play: !!play });
+    stepper1.setSteps(sepSteps({ key: lKey.value, tid: readTid(lTid) }, { key: rKey.value, tid: readTid(rTid) }), { play: !!play });
   }
   presetSel.addEventListener('change', function () {
     var p = presets[+presetSel.value];
@@ -207,14 +232,14 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
   });
   var cards = new Ch17View.TreeCards(f2.stage);
   var log = new BTViz.Log(f2.side, { title: 'Events' });
+  // Lit up while a search descends: each descent step names the lines that decide.
   var code2 = BTViz.codePanel(f2.side, 'compare', { title: 'order and routing', maxHeight: 260 });
-  void code2;
 
   var cfg = { pageSize: M.SCENARIO_PAGE_SIZE, truncate: true, dedup: true };
   var tree = new M.Tree(cfg), history = [];
 
   var keyIn = el('input.bt-input.c17-wide', { type: 'text', value: 'cherry', 'aria-label': 'Key', maxlength: 27 });
-  var tidIn = el('input.bt-input.c17-narrow', { type: 'number', min: 0, value: 40, 'aria-label': 'TID (row address)' });
+  var tidIn = el('input.bt-input.c17-narrow', { type: 'number', min: 0, max: M.MAX_TID, step: 1, value: 40, 'aria-label': 'TID (row address)' });
   var putBtn = el('button.bt-btn.bt-primary', { type: 'button', onclick: doPut }, 'Put');
   var getBtn = el('button.bt-btn', { type: 'button', onclick: doGet }, 'Get');
   var truncBox = el('input', { type: 'checkbox', checked: true });
@@ -231,13 +256,17 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
 
   var stepper2 = new BTViz.Stepper({
     mount: f2.controls, caption: f2.caption, root: f2.root, steps: [], predict: false, interval: 1500,
-    onStep: function (step, i) { cards.render(step.state, step.highlight); log.sync(stepper2 ? stepper2.steps : [step], i); }
+    onStep: function (step, i) {
+      cards.render(step.state, step.highlight);
+      code2.highlight(step.lines || []);
+      log.sync(stepper2 ? stepper2.steps : [step], i);
+    }
   });
 
   function nextTid() {
     var max = 0;
     history.forEach(function (h) { if (h[1] > max) max = h[1]; });
-    tidIn.value = max + 1;
+    tidIn.value = Math.min(max + 1, M.MAX_TID);
   }
   function still(caption, logLine) {
     return [{ caption: caption, state: tree.snapshot(), highlight: {}, log: logLine }];
@@ -248,8 +277,9 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
   }
 
   function doPut() {
-    var key = keyIn.value, tid = Math.max(0, Math.floor(+tidIn.value || 0));
-    if (!asciiOk(key)) { show(still('Please use printable ASCII characters only, so that comparing characters is comparing bytes.', 'bad key')); return; }
+    var key = keyIn.value, tid = readTid(tidIn);
+    if (!asciiOk(key)) { show(still(ASCII_ONLY + ' Nothing was inserted.', 'put: bad key')); return; }
+    if (tid === null) { show(still('The TID (' + typed(tidIn) + ') cannot be used. ' + TID_RULE + ' Nothing was inserted.', 'put: bad TID')); return; }
     var steps = tree.put(key, tid, { verbose: true });
     if (steps.ok) history.push([key, tid]);
     nextTid();
@@ -257,7 +287,7 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
   }
   function doGet() {
     var key = keyIn.value;
-    if (!asciiOk(key)) return;
+    if (!asciiOk(key)) { show(still(ASCII_ONLY + ' Nothing was looked up.', 'get: bad key')); return; }
     show(tree.getSteps(key), true);
   }
   function clearTree() {
@@ -309,7 +339,8 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
     'Fanout = children per internal page. Separator bytes = key bytes kept in a separator, plus 6 when it needs a TID. ' +
     'Bytes per entry = bytes in use on all pages divided by the number of (key, TID) entries. ' +
     'The highlighted row is the configuration shown in figure 2. With a few dozen tuples the differences are small; ' +
-    'the chapter text has the same table for 20,000 keys, where truncation removes a whole level.'));
+    'the chapter text has the same table for 20,000 keys, where truncation removes a whole level. ' +
+    'Not shown on this page: delete. In the programs it removes one TID from its cell (a posting list shrinks) and never merges pages, so a split is permanent.'));
   function renderTable() {
     var rows = [[false, false], [true, false], [false, true], [true, true]].map(function (c) {
       var t = new M.Tree({ pageSize: cfg.pageSize, truncate: c[0], dedup: c[1] });

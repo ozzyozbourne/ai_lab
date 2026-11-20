@@ -8,10 +8,10 @@
 //! still a correct signpost ("everything to my right is >= me"), it just no
 //! longer names a key that exists. `validate` accepts that on purpose.
 
-use crate::arena::NodeId;
-use crate::node::Kind;
-use crate::search::{child_index, lower_bound};
-use crate::tree::BPlusTree;
+use crate::base_arena::NodeId;
+use crate::base_node::Kind;
+use crate::base_search::{child_index, lower_bound};
+use crate::base_tree::BPlusTree;
 
 impl BPlusTree {
     /// Removes a key. Returns its value, or `None` if it was absent.

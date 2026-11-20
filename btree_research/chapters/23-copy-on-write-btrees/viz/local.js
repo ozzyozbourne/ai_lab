@@ -337,6 +337,8 @@
     this.snaps.splice(i, 1);
     return this.reclaim();
   };
+  /** A torn commit can only be shown while the other slot holds a valid older commit. */
+  Cow.prototype.canTear = function () { return this.meta[0].valid && this.meta[1].valid; };
   Cow.prototype.pick = function () {
     var a = this.meta[0].valid ? this.meta[0] : null, b = this.meta[1].valid ? this.meta[1] : null;
     if (!a) return b;
@@ -480,12 +482,11 @@
           '. The copy is private to transaction ' + t.id + '; whoever pointed at ' + pg(d.old) + ' in this transaction now points at ' + pg(d.id) +
           ', which is why the parent had to be copied first.';
         lines = { snippet: 'touch', part: 'copy' };
-        if (t.copied === 1) {
+        if (t.copied === 1 && t.height > 1) {
           question = { prompt: 'The tree has ' + plural(t.height, 'level') + '. How many committed pages will this transaction copy before it can make its change (not counting a borrow from a sibling)?',
             choices: ['1: only the leaf', t.height + ': one per level', 'all ' + Object.keys(this.reachable(this.cur.root)).length + ' pages of the tree'],
-            answer: t.height === 1 ? 0 : 1,
+            answer: 1,
             explain: 'One per level, from the root down to the leaf. A child that moves to a new page id forces its parent to change, and a parent that must change is copied too. Everything off the path is shared.' };
-          if (t.height === 1) question.choices.splice(1, 1);
         }
         break;
       case 'first-leaf':
@@ -669,7 +670,9 @@
       this.meta[slot].crc = (this.meta[slot].crc ^ 0xFF00) >>> 0;
       this.note('<b>Crash during the root flip.</b> Suppose the write of meta slot ' + slot + ' for transaction ' + lost + ' was torn: the stored checksum no longer matches the bytes. ' +
         'The other slot was not touched by this commit.', { log: 'meta slot ' + slot + ' torn' });
-      var before = this.cur.root;
+      var before = this.cur.root, keep = this.pick().pages;
+      // The lost tree can only be drawn if the restart does not cut its pages off the store.
+      if (!Object.keys(this.reachable(before)).every(function (id) { return +id < keep; })) before = this.pick().root;
       this.reopen();
       this.note('<b>Restart.</b> The reader takes the valid slot with the higher id: transaction ' + this.cur.txn + '. Its tree is complete, because transaction ' + lost +
         ' wrote only into pages that this root could not reach. All of transaction ' + lost + ' is gone, and none of it is half there. (Snapshots are in-memory handles; a restart forgets them.)',

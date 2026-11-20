@@ -15,7 +15,8 @@
   .c24-mark { color: var(--bt-node-active); font-weight: 700; }
   .c24-msg { font-size: .85rem; min-height: 1.3em; margin: 4px 0 0; color: var(--bt-key-deleted); }
   .c24-versions { max-height: 260px; overflow: auto; }
-  .c24-versions table { font-size: .78rem; }
+  .c24-versions table { font-size: .78rem; width: 100%; }
+  .c24-versions th, .c24-versions td { padding: 3px 6px; white-space: nowrap; }
   .c24-note { font-size: .82rem; color: var(--bt-muted); margin: 6px 0 0; }
   #code { margin-top: 14px; }
   .c24-points li { margin: .35em 0; }
@@ -170,7 +171,6 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
           return text;
         });
         if (liveNext[id] !== undefined) node.next = pid(liveNext[id]);
-        if (!n.keys.length) node.meta.note = 'empty';
       } else {
         node.keys = n.keys.map(function (ik) { return C.userKey(ik) + '.' + C.tidOf(ik); });
         node.children = n.children.map(build);
@@ -237,20 +237,20 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     var body = el('tbody');
     d.versions.slots.forEach(function (v, tid) {
       var st, what;
-      if (v.free !== undefined) { st = 'free'; what = 'free slot'; v = { key: '', value: '', xmin: '', xmax: '' }; }
+      if (v.free !== undefined) { st = 'free'; what = 'free'; v = { key: '·', value: '·', xmin: '·', xmax: '·' }; }
       else if (v.xmax === 0) { st = null; what = 'current'; }
-      else if (C.deadToAll(d, tid)) { st = 'deleted'; what = 'dead to all'; }
-      else { st = 'compare'; what = 'old, still seen'; }
+      else if (C.deadToAll(d, tid)) { st = 'deleted'; what = 'dead'; }
+      else { st = 'compare'; what = 'old'; }
       if (hl[tid]) st = hl[tid];
       body.appendChild(el('tr' + (st ? '.s-' + st : ''),
-        el('td', String(tid)), el('td', String(v.key)), el('td', String(v.value)), el('td', String(v.xmin)),
+        el('td', String(tid)), el('td', String(v.key)), el('td', String(v.xmin)),
         el('td', v.xmax === 0 ? '–' : String(v.xmax)), el('td', what)));
     });
     versionsBody.textContent = '';
     if (!d.versions.slots.length) { versionsBody.append(el('p.c24-note', 'No row versions yet.')); return; }
     versionsBody.append(el('div.bt-table-wrap.c24-versions', el('table.bt-table',
-      el('thead', el('tr', el('th', 'tid'), el('th', 'key'), el('th', 'value'), el('th', 'xmin'), el('th', 'xmax'), el('th', 'state'))), body)),
-      el('p.c24-note', 'An index entry holds (key, tid). xmin and xmax are only here.'));
+      el('thead', el('tr', el('th', 'tid'), el('th', 'key'), el('th', 'xmin'), el('th', 'xmax'), el('th', 'state'))), body)),
+      el('p.c24-note', 'An index entry holds (key, tid); xmin and xmax are only here. old = ended, but an open snapshot still sees it; dead = no snapshot can.'));
   }
 
   var stepper = new BTViz.Stepper({

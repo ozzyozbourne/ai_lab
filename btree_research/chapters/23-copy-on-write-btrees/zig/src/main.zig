@@ -26,7 +26,7 @@ pub fn run(gpa: Allocator, w: *Writer) !void {
     try w.writeAll("== 1. Build: canonical keys, M = 4, one transaction per put ==\n");
     for (canonical) |key| {
         var txn = db.begin(gpa);
-        errdefer txn.abort();
+        defer txn.abort();
         _ = try txn.put(key, key * 100);
         try w.print("put {d:<2}", .{key});
         try printCommit(w, try txn.commit(gpa), &db);
@@ -40,7 +40,7 @@ pub fn run(gpa: Allocator, w: *Writer) !void {
     try w.print("snapshot taken at txn {d} (root #{d})\n", .{ snap.id, snap.root.index() });
     {
         var txn = db.begin(gpa);
-        errdefer txn.abort();
+        defer txn.abort();
         _ = try txn.put(13, 1300);
         try w.writeAll("put 13");
         try printCommit(w, try txn.commit(gpa), &db);
@@ -67,7 +67,7 @@ pub fn run(gpa: Allocator, w: *Writer) !void {
     try w.writeAll("\n== 4. Freed pages wait for the snapshot ==\n");
     for ([_]u64{ 6, 7 }) |key| {
         var txn = db.begin(gpa);
-        errdefer txn.abort();
+        defer txn.abort();
         _ = try txn.delete(key);
         try w.print("delete {d}", .{key});
         try printCommit(w, try txn.commit(gpa), &db);
@@ -81,7 +81,7 @@ pub fn run(gpa: Allocator, w: *Writer) !void {
     try printStore(w, &db);
     {
         var txn = db.begin(gpa);
-        errdefer txn.abort();
+        defer txn.abort();
         _ = try txn.put(8, 800);
         try w.writeAll("put 8 ");
         try printCommit(w, try txn.commit(gpa), &db);
@@ -93,7 +93,7 @@ pub fn run(gpa: Allocator, w: *Writer) !void {
     try w.writeAll("\n== 5. A transaction with several writes; abort ==\n");
     for ([_]bool{ false, true }) |do_commit| {
         var txn = db.begin(gpa);
-        errdefer txn.abort();
+        defer txn.abort();
         for ([_]u64{ 26, 27, 28 }) |key| {
             _ = try txn.put(key, key * 100);
             try w.print("  put {d}: {d} dirty pages, {d} copied so far\n", .{ key, txn.dirty.count(), txn.info.copied });

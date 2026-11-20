@@ -51,7 +51,7 @@ pub fn chargeDescent(counters: *Counters, tree: *const BPlusTree) void {
 }
 
 /// Forward scan of the keys in a closed range: one descent to the first key
-/// >= range.lo, then the leaf chain until a key > range.hi. It never goes
+/// that is not below range.lo, then the leaf chain until a key is above range.hi. It never goes
 /// back up the tree, and it never looks at a row: it returns index KEYS, and
 /// the caller decides whether those are enough (a covering scan) or whether
 /// each one must be followed to its row.

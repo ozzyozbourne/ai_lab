@@ -188,7 +188,7 @@ pub const Db = struct {
     /// One-operation transactions. Returns the previous value, if any.
     pub fn put(self: *Db, gpa: Allocator, key: u64, value: u64) !?u64 {
         var txn = self.begin(gpa);
-        errdefer txn.abort();
+        defer txn.abort(); // no-op after a successful commit
         const old = try txn.put(key, value);
         _ = try txn.commit(gpa);
         return old;
@@ -196,7 +196,7 @@ pub const Db = struct {
 
     pub fn delete(self: *Db, gpa: Allocator, key: u64) !?u64 {
         var txn = self.begin(gpa);
-        errdefer txn.abort();
+        defer txn.abort(); // no-op after a successful commit
         const old = try txn.delete(key);
         _ = try txn.commit(gpa);
         return old;

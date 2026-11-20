@@ -1,7 +1,7 @@
 // Copied from chapters/05-deletion-and-rebalancing/zig/src/delete.zig
 // Changes for chapter 06: coverage points instead of counters, and two fault
 // seams (search for "SEAM") that are only compiled into a broken variant.
-//! SECTION 5: delete with borrow, merge and root shrink (THIS chapter).
+//! SECTION 5: delete with borrow, merge and root shrink (explained in chapter 05).
 //!
 //! Removing a key can leave a node with fewer than `min_keys` keys
 //! (an *underflow*). The repair is always done by the PARENT of the underfull
@@ -36,6 +36,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const node_mod = @import("base_node.zig");
 const search = @import("base_search.zig");
+const Bug = @import("base_btree.zig").Bug;
 
 /// `Tree` is a `BTreeWith(M, PoolFn, bug)` from base_btree.zig; this function
 /// uses its `root`, `len`, `pool` and `coverage` fields. Returns the removed value,
@@ -113,14 +114,15 @@ pub fn fixUnderflow(comptime Tree: type, tree: *Tree, gpa: Allocator, parent: *T
     const child = parent.children[i].?;
     if (child.len >= N.min_keys) return;
     std.debug.assert(child.len == N.min_keys - 1); // one delete removes one key
+    const at_leaf = child.leaf; // read now: a merge may free `child`
 
     // A sibling can lend a key only if it stays legal afterwards.
     if (i > 0 and parent.children[i - 1].?.len > N.min_keys) {
         borrowFromLeft(N, parent, i, Tree.bug);
-        tree.coverage.hit(if (child.leaf) .borrow_left_leaf else .borrow_left_interior);
+        tree.coverage.hit(if (at_leaf) .borrow_left_leaf else .borrow_left_interior);
     } else if (i < parent.len and parent.children[i + 1].?.len > N.min_keys) {
         borrowFromRight(N, parent, i, Tree.bug);
-        tree.coverage.hit(if (child.leaf) .borrow_right_leaf else .borrow_right_interior);
+        tree.coverage.hit(if (at_leaf) .borrow_right_leaf else .borrow_right_interior);
     } else {
         // No sibling can spare a key. Merge with the left sibling if there is
         // one, otherwise with the right one. `at` is the separator between them.
@@ -130,7 +132,7 @@ pub fn fixUnderflow(comptime Tree: type, tree: *Tree, gpa: Allocator, parent: *T
         // The tree still answers every question correctly; only the pool's
         // live counter (checked by `BTree.validate`) knows.
         if (Tree.bug != .merge_leaks_node) tree.pool.destroy(gpa, emptied);
-        tree.coverage.hit(if (child.leaf) .merge_leaf else .merge_interior);
+        tree.coverage.hit(if (at_leaf) .merge_leaf else .merge_interior);
         if (i == 0) tree.coverage.hit(.merge_first_child);
     }
 }
@@ -145,7 +147,7 @@ pub fn fixUnderflow(comptime Tree: type, tree: *Tree, gpa: Allocator, parent: *T
 /// sideways directly: S lies between the two nodes in key order, so skipping
 /// it would break the ordering invariant. In interior nodes the left
 /// sibling's last child (keys between L and S) changes parent as well.
-pub fn borrowFromLeft(comptime N: type, parent: *N, i: usize, comptime bug: anytype) void {
+pub fn borrowFromLeft(comptime N: type, parent: *N, i: usize, comptime bug: Bug) void {
     const child = parent.children[i].?;
     const left = parent.children[i - 1].?;
     const sep = i - 1;
@@ -163,7 +165,7 @@ pub fn borrowFromLeft(comptime N: type, parent: *N, i: usize, comptime bug: anyt
 /// Mirror image: the separator moves down to the END of the child, the right
 /// sibling's SMALLEST entry moves up, and the right sibling's first child
 /// moves over.
-pub fn borrowFromRight(comptime N: type, parent: *N, i: usize, comptime bug: anytype) void {
+pub fn borrowFromRight(comptime N: type, parent: *N, i: usize, comptime bug: Bug) void {
     const child = parent.children[i].?;
     const right = parent.children[i + 1].?;
     const sep = i;

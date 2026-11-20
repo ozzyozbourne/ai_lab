@@ -43,11 +43,10 @@ grow toward each other:
 - A **slot** is a 2-byte offset that says where one cell starts. Slots sit right after the
   header and are kept **in key order**.
 
-- The **reserved tail** is optional: the last `reserved` bytes of the buffer belong to
-  whoever stores the page, and the page never reads or writes them. The number sits in
-  one header byte, so a page read back from disk knows that its content area ends at
-  `usable = 4096 - reserved`. It is 0 in every example of this chapter; chapter 22 asks
-  for 4 bytes and keeps the page checksum of chapter 21 there.
+- The **reserved tail** is optional: the page never touches the last `reserved` bytes of
+  the buffer, and its content area ends at `usable = 4096 - reserved`. The number is kept
+  in a header byte. It is 0 in this chapter's examples; chapter 22 reserves 4 bytes for
+  the page checksum of chapter 21.
 
 Slot `i` is at a computable position (`16 + 2*i`), so binary search works: probe a slot,
 follow it to the cell, compare keys. Inserting in the middle moves only the 2-byte slots
@@ -221,10 +220,9 @@ Both implementations have the same four files:
 ### Zig
 
 `SlottedPage` is a struct with one field, `buf: *[page_size]u8`. It owns nothing. `init`
-formats a buffer, `open` wraps one that is already formatted (for example a frame of the
-buffer pool from chapter 09). `initReserved(buf, n)` formats a page whose content area
-ends `n` bytes early; it stores `n` in the header, so `open` takes no extra argument and
-every bound in the file is `usableSize()` instead of 4096. The layout is a block of named constants under a diagram
+formats a buffer; `initReserved(buf, n)` does the same with a reserved tail of `n` bytes
+and stores `n` in the header; `open` wraps a buffer that is already formatted (a frame of
+chapter 09's buffer pool, say). The layout is a block of named constants under a diagram
 comment at the top of the file, and every access goes through two helpers, `rd16` and
 `wr16`. The file never casts the buffer to a struct, so alignment and the host's byte
 order cannot leak into the file format.
@@ -272,25 +270,23 @@ was (a test compares against a snapshot).
    list; otherwise it is unlinked and the 0 to 3 leftover bytes are added to `frag_bytes`.
 2. Otherwise use the gap: lower `content_start` by `size`.
 3. If the gap is too small for cell plus slot, `compact()` first. After compaction the gap
-   equals `freeBytes()`, and the caller already checked that this is enough.
+   equals `freeBytes()`, which the caller already checked.
 
-`freeSpace(offset, size)` is the reverse. It walks the free list to find the blocks on both
-sides of the freed range and merges with either one if they touch **or are at most 3 bytes
-apart**. A range of 1 to 3 bytes between two free ranges cannot be a live cell (a cell is
-at least 4 bytes), so it must be a sliver, and merging takes it back out of `frag_bytes`.
-If the merged range starts at `content_start`, no block is written at all:
-`content_start` moves up and the bytes are gap.
+`freeSpace(offset, size)` is the reverse. It finds the free blocks on both sides of the
+freed range and merges with either one if they touch **or are at most 3 bytes apart**:
+such a range cannot be a live cell (a cell is at least 4 bytes), so it is a sliver, and
+merging takes it back out of `frag_bytes`. If the merged range starts at `content_start`,
+no block is written: `content_start` moves up and the bytes are gap.
 
 `compact` copies the content area to a 4 KiB scratch array on the stack and rewrites the
-cells from the page end in slot order, reading cell lengths from the copy.
+cells from the end of the content area in slot order, reading cell lengths from the copy.
 
 `validate` paints every byte of the content area into a 4 KiB map on the stack as "cell"
 or "free block", fails if anything is painted twice, and requires that the number of
 unpainted bytes equals `frag_bytes`. It also checks that the free list is ascending and
-merged, and that slot order is strict key order. Unit tests damage a good page in twelve
-ways (a cell or free block reaching into the reserved tail and a free list that loops
-among them) and expect the matching error each time. `validate` is the only method that
-is safe on arbitrary bytes; the others trust the page.
+merged, that nothing reaches into the reserved tail, and that slot order is strict key
+order. Unit tests damage a good page in twelve ways and expect the matching error each
+time. `validate` is the only method that is safe on arbitrary bytes.
 
 ### Rust
 
@@ -314,12 +310,13 @@ equivalent). `PageError` and `ValidateError` are plain enums implementing
 - **Free list for dumps.** Zig's `freeBlocks(out: []FreeBlock)` fills a caller-provided
   buffer; Rust's `free_blocks()` returns a `Vec`. It is the only place in the Rust file
   that allocates, and it is used only by tests and the demo.
-- **Test counts.** Zig runs 32 tests, Rust 29. Two Zig tests have no Rust twin: both put
-  the *oracle* of the model test under allocation failure. The Rust oracle is a `Vec`,
-  which cannot report a failed allocation, and the page allocates in neither language.
-  The third is Zig's `test` block in `root.zig` that pulls the other files in.
-- **The page images are the same bytes.** A test in each language pins the same hashes of
-  the final page for pages with a reserved tail of 0, 4 and 32 bytes.
+- **Test counts.** Zig runs 32 tests, Rust 29. Two Zig tests put the model test's *oracle*
+  under allocation failure; the Rust oracle is a `Vec`, which cannot report one (the page
+  allocates in neither language). The third is the `test` block in `root.zig` that
+  references the other files.
+
+Both languages pin the same hashes of the final page image for reserved tails of 0, 4 and
+32 bytes, so the two implementations write the same bytes.
 
 Run it:
 
@@ -338,17 +335,15 @@ source of its free-space design.
 
 - A B-tree page is a header (8 bytes for a leaf, 12 for an interior page), an array of
   2-byte cell pointers sorted by key, the unallocated gap, and the cell content area
-  growing from the end of the page. The header holds the same bookkeeping fields we use:
-  first freeblock, cell count, content area start, fragmented free bytes
+  growing from the end of the page. The header has the fields we use: first freeblock,
+  cell count, content area start, fragmented free bytes
   (`turso/core/storage/btree.rs:100-148`, `turso/core/storage/sqlite3_ondisk.rs:82-87`).
 - Freeblocks are a chain in ascending offset order; each hole stores `next` and `size` in
   its own first 4 bytes. `find_free_slot` is first fit, shrinks a block from its tail, and
-  turns a remainder under 4 bytes into fragment bytes unless the page already has more
-  than 57 of them (`btree.rs:9288-9383`, the test at `:9335-9340`). Our
-  `max_frag_bytes = 60` is the same upper bound with a different test: Turso refuses a
-  whole-block allocation once the page has more than 57 fragment bytes, even if nothing
-  would be left over; we refuse only if the sum would pass 60, so an exact fit is still
-  taken.
+  turns a remainder under 4 bytes into fragment bytes (`btree.rs:9288-9383`). The bound
+  of 60 fragment bytes is our `max_frag_bytes`, but the test differs: Turso will not use
+  up a block once the page has more than 57 (`:9335-9340`), even for an exact fit; we
+  compare the sum with 60.
 - `free_cell_range` merges a freed range with the next and previous freeblock, absorbing a
   gap of 1 to 3 bytes and subtracting it from the fragment count, and extends the
   unallocated region instead of creating a freeblock when the range starts at the content
@@ -361,13 +356,11 @@ source of its free-space design.
   check's coverage checker over cell and freeblock ranges (`btree.rs:8913`) play the role
   of our `validate`.
 
-- Reserved space: every page may end with bytes the B-tree does not use. The count is a
-  `u8` in the database header, "usually 0" (`sqlite3_ondisk.rs:321-322`); usable size is
-  page size minus that (`:369-371`), and an empty page's content pointer is "the page size
-  minus the bytes of reserved space" (`btree.rs:128-133`). Turso's optional page checksum
-  lives there: 8 bytes at the end of each 4096-byte page (`turso/core/storage/checksum.rs:4-6`,
-  `:36-48`). Our reserved tail is this idea, with the count stored per page instead of
-  once per file.
+- Every page may end with reserved bytes that the B-tree does not use: a `u8` in the
+  database header, "usually 0" (`sqlite3_ondisk.rs:321-322`, usable size at `:369-371`).
+  Turso's optional page checksum is 8 bytes stored there
+  (`turso/core/storage/checksum.rs:4-6`, `:36-48`). Our reserved tail is the same idea
+  with the count stored per page.
 
 Differences from our page: integers are big-endian; a cell is self-describing through
 varints (chapter 11) instead of two fixed length fields; a 2- or 3-byte cell is padded to
@@ -419,15 +412,14 @@ The featured allocator is the one **inside the page**: `allocSpace(size) -> offs
 `freeSpace(offset, size)`, a first-fit free-list allocator with coalescing whose heap is
 the content area. It cannot be exposed as a `std.mem.Allocator`, for four reasons:
 
-1. **Cells move.** `std.mem.Allocator.alloc` returns a pointer that must stay valid until
-   `free`. Compaction relocates every cell. A compacting allocator needs a level of
-   indirection that the caller goes through on every access, and that indirection is the
-   slot array. The stable name of a record is its slot index (or its key), never its
-   address.
-2. **The heap itself moves.** The page is copied to disk, read back into a different
-   buffer-pool frame, and evicted. An address inside it means nothing after that; an
-   offset from the start of the page still does. This is why `first_free`, the free block
-   `next` links and the slots are all 16-bit offsets.
+1. **Cells move.** `Allocator.alloc` returns a pointer that must stay valid until `free`;
+   compaction relocates every cell. A compacting allocator needs a level of indirection
+   on every access, and that is the slot array: the stable name of a record is its slot
+   index or its key, never its address.
+2. **The heap itself moves.** The page is written to disk and read back into a different
+   buffer-pool frame. An address inside it means nothing after that; an offset from the
+   start of the page still does, which is why `first_free`, the `next` links and the
+   slots are 16-bit offsets.
 3. **Free needs context the interface does not give.** `Allocator.free(memory)` receives
    only the slice. Our `freeSpace` also has to remove the slot, and deleting the last cell
    resets the whole page.
@@ -457,15 +449,15 @@ borrow checker turns reason 1 from a comment into a compile error.
   search again (chapter 08's cursors did the same).
 - **Key order is byte order.** `"10"` sorts before `"9"`, and `"a"` before `"ab"`
   (chapter 11 fixes this with order-preserving encodings).
-- **Delete does not erase.** The slot goes away; the key and value bytes stay on the page
-  (a free block overwrites only their first 4 bytes) until a new cell or a compaction
-  covers them. So two pages holding the same records are usually not the same bytes, and
-  an emptied page equals a fresh one only in its header.
+- **Delete does not erase.** The key and value bytes stay on the page (a free block
+  overwrites only their first 4) until a new cell or a compaction covers them. Pages with
+  the same records are therefore not always the same bytes, and an emptied page equals a
+  fresh one only in its header.
 - **A checksum in the last bytes needs a reserved tail.** After plain `init` the first
-  cell ends at byte 4095. Format with `initReserved(buf, 4)` if anything else will be
-  stored at the end of the buffer; it cannot be added to a page that already has cells.
+  cell ends at byte 4095. Use `initReserved(buf, 4)`; a tail cannot be added once the
+  page has cells.
 - **`open` checks nothing.** On a damaged page `stats` can follow a free list forever.
-  A page that comes from disk must pass a checksum or `validate` first (chapters 12, 22).
+  Verify a checksum or call `validate` on pages read from disk.
 - **Nothing here is crash-safe.** An insert touches the cell, the slot array and the
   header; a page written halfway is corrupt (chapters 21 and 22).
 
@@ -499,6 +491,5 @@ Solutions: [solutions.md](solutions.md).
   the key and value bytes inside a cell look like.
 - Chapter 12 copies `slotted_page.zig` / `slotted_page.rs` as its node format; chapter 13
   handles values too large for one page (`CellTooLarge` here).
-- Chapter 21 puts a CRC-32 in the last 4 bytes of every page; chapter 22 uses it under
-  the tree of chapter 12, on pages formatted with a reserved tail of 4.
+- Chapter 22 formats its pages with a reserved tail of 4 bytes for chapter 21's CRC-32.
 - Visualization: [viz/index.html](viz/index.html).

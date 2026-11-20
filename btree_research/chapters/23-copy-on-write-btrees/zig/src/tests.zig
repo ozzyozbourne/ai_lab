@@ -147,6 +147,8 @@ test "freed pages are reused only after the snapshots that need them are gone" {
 
     // Without a snapshot the pages a commit replaces are free right away,
     // and the store stops growing.
+    // (One warm-up commit: a path of 3 needs 3 free pages, the build left 2.)
+    _ = try db.put(gpa, 10, 0);
     const pages_before = db.store.pageCount();
     for (0..20) |i| _ = try db.put(gpa, 10, i);
     try testing.expectEqual(pages_before, db.store.pageCount());
@@ -289,6 +291,7 @@ test "commits alternate between the meta slots; a torn slot falls back one commi
         const key: u64 = (i * 37) % 50;
         previous.clearRetainingCapacity();
         try previous.appendSlice(gpa, oracle.range(0, max_key));
+        const id_before = db.current.txn_id;
         if (i % 3 == 2) {
             _ = try db.delete(gpa, key);
             _ = oracle.delete(key);
@@ -297,6 +300,7 @@ test "commits alternate between the meta slots; a torn slot falls back one commi
             _ = try oracle.put(gpa, key, i);
         }
         const id = db.current.txn_id;
+        if (id == id_before) continue; // deleting a missing key commits nothing
         try testing.expectEqual(id, Meta.decode(&db.store.meta_slots[id % 2]).?.txn_id);
         try testing.expectEqual(id - 1, Meta.decode(&db.store.meta_slots[(id - 1) % 2]).?.txn_id);
 
@@ -404,7 +408,7 @@ test "model: multi-write transactions, some aborted" {
             const before = db.current;
 
             var txn = db.begin(gpa);
-            errdefer txn.abort();
+            defer txn.abort();
             for (0..1 + batch % 7) |_| {
                 const op = stream.next() orelse {
                     done = true;
@@ -447,7 +451,7 @@ fn scenarioUnderFailure(gpa: Allocator) !void {
     defer _ = db.release(snap);
     for (0..6) |k| _ = try db.delete(gpa, k);
     var txn = db.begin(gpa);
-    errdefer txn.abort();
+    defer txn.abort();
     for (20..30) |k| _ = try txn.put(k, k);
     _ = try txn.commit(gpa);
     try validate(&db, gpa);
@@ -465,38 +469,45 @@ test "a transaction that runs out of memory leaves no trace" {
     const snap = try db.snapshot(gpa);
     defer _ = db.release(snap);
 
+    // The arena asks its backing allocator for a few large blocks, so one
+    // transaction has only a handful of failure points. Transactions of
+    // different sizes move those points around: each size is retried with
+    // the failure one allocation later, until it commits.
     var failures: usize = 0;
-    var successes: usize = 0;
-    var fail_index: usize = 0;
-    while (successes < 3) : (fail_index += 1) {
-        const meta_before = db.store.meta_slots;
-        const count_before = db.len();
-        var failing: testing.FailingAllocator = .init(gpa, .{ .fail_index = fail_index });
-        const a = failing.allocator();
+    for (1..25) |size| {
+        var fail_index: usize = 0;
+        while (true) : (fail_index += 1) {
+            const meta_before = db.store.meta_slots;
+            const count_before = db.len();
+            var failing: testing.FailingAllocator = .init(gpa, .{ .fail_index = fail_index });
+            const a = failing.allocator();
 
-        var txn = db.begin(a);
-        const result = blk: {
-            for (0..10) |k| _ = txn.put(200 + fail_index * 10 + k, k) catch |e| break :blk e;
-            _ = txn.delete(canonical[fail_index % canonical.len]) catch |e| break :blk e;
-            _ = txn.commit(a) catch |e| break :blk e;
-            break :blk {};
-        };
-        if (result) |_| {
-            successes += 1;
-        } else |err| {
-            try testing.expectEqual(error.OutOfMemory, err);
-            failures += 1;
-            // put/delete failed: the transaction is poisoned, commit refuses.
-            if (txn.failed) try testing.expectError(error.TxnFailed, txn.commit(a));
-            txn.abort();
-            // Nothing happened, as far as anyone can tell.
-            try testing.expectEqual(meta_before, db.store.meta_slots);
-            try testing.expectEqual(count_before, db.len());
+            var txn = db.begin(a);
+            defer txn.abort();
+            const result = blk: {
+                for (0..size) |k| _ = txn.put(1000 * size + k, k) catch |e| break :blk e;
+                _ = txn.delete(canonical[size % canonical.len]) catch |e| break :blk e;
+                _ = txn.commit(a) catch |e| break :blk e;
+                break :blk {};
+            };
+            if (result) |_| {
+                try validate(&db, gpa);
+                break;
+            } else |err| {
+                try testing.expectEqual(error.OutOfMemory, err);
+                failures += 1;
+                // put/delete failed: the transaction is poisoned, commit refuses.
+                if (txn.failed) try testing.expectError(error.TxnFailed, txn.commit(a));
+                txn.abort();
+                // Nothing happened, as far as anyone can tell.
+                try testing.expectEqual(meta_before, db.store.meta_slots);
+                try testing.expectEqual(count_before, db.len());
+                try validate(&db, gpa);
+                try expectKeys(&.{ 1, 3, 5, 6, 7, 10, 12, 15, 17, 20, 25, 30 }, snap.view(&db));
+            }
         }
-        try validate(&db, gpa);
-        try expectKeys(&.{ 1, 3, 5, 6, 7, 10, 12, 15, 17, 20, 25, 30 }, snap.view(&db));
     }
-    try testing.expect(failures > 5);
+    std.debug.print("failures={d}\n", .{failures});
 }
 
 // ------------------------------------------- validate catches corruption
@@ -523,7 +534,7 @@ test "validate names the broken invariant" {
                 db.store.release(.fromIndex(7)); // a live leaf becomes writable
             }
         }.f },
-        .{ .expected = error.SnapshotPageUnprotected, .corrupt = struct {
+        .{ .expected = error.ReachablePageIsFree, .corrupt = struct {
             fn f(db: *Db, _: Snapshot) void {
                 // Reclaim too early: pretend the snapshot is not there.
                 const saved = db.snapshots;

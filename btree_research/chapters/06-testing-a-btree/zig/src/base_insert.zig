@@ -22,6 +22,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const node_mod = @import("base_node.zig");
 const search = @import("base_search.zig");
+const Bug = @import("base_btree.zig").Bug;
 
 /// A tree of order 3 with 2^64 keys is at most 64 levels high (chapter 03).
 pub const max_height = 64;
@@ -124,7 +125,7 @@ pub fn put(comptime Tree: type, tree: *Tree, gpa: Allocator, key: u64, value: u6
 /// lower half, `right` (uninitialised) receives the upper half, and the
 /// median entry is returned for the parent. With `mid = M / 2`:
 /// left keeps mid keys, right gets M - 1 - mid keys; both are >= min_keys.
-fn splitNode(comptime N: type, left: *N, right: *N, comptime bug: anytype) node_mod.Entry {
+fn splitNode(comptime N: type, left: *N, right: *N, comptime bug: Bug) node_mod.Entry {
     const total = left.len; // == M
     const mid = total / 2;
     right.* = .{ .leaf = left.leaf };

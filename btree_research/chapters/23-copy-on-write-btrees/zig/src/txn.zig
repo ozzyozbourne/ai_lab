@@ -65,7 +65,10 @@ pub const WriteTxn = struct {
     /// Next page id past the end of the store (the "file" grows at commit).
     next_new: usize,
     info: CommitInfo = .{},
+    /// Set when `put` / `delete` returned an error; only `abort` is allowed then.
     failed: bool = false,
+    /// False after `commit` or `abort`.
+    open: bool = true,
 
     pub fn init(db: *Db, gpa: Allocator) WriteTxn {
         const m = db.current;
@@ -157,7 +160,7 @@ pub const WriteTxn = struct {
 
     /// Insert or overwrite. Returns the previous value, if any.
     pub fn put(self: *WriteTxn, key: u64, value: u64) Allocator.Error!?u64 {
-        assert(!self.failed);
+        assert(self.open and !self.failed);
         errdefer self.failed = true;
         if (self.root == .nil) {
             const leaf = try self.allocPage(Node.initLeaf());
@@ -256,7 +259,7 @@ pub const WriteTxn = struct {
 
     /// Removes `key`. Returns its value, or null if it was not there.
     pub fn delete(self: *WriteTxn, key: u64) Allocator.Error!?u64 {
-        assert(!self.failed);
+        assert(self.open and !self.failed);
         errdefer self.failed = true;
         // Look before you copy: a miss must not copy a path for nothing.
         if (self.get(key) == null) return null;
@@ -418,6 +421,7 @@ pub const WriteTxn = struct {
     /// On error nothing has been published and the transaction is still
     /// open; the caller aborts it (or, for OutOfMemory, may try again).
     pub fn commit(self: *WriteTxn, gpa: Allocator) CommitError!CommitInfo {
+        assert(self.open);
         if (self.failed) return error.TxnFailed;
         const db = self.db;
         if (self.dirty.count() == 0 and self.freed.items.len == 0) {
@@ -470,7 +474,12 @@ pub const WriteTxn = struct {
 
     /// Throws the transaction away. No page of the store was written, so the
     /// committed tree and every snapshot are exactly as before.
+    ///
+    /// Does nothing if the transaction is already closed, so the usual shape
+    /// is `var txn = db.begin(gpa); defer txn.abort();` followed by a
+    /// `commit` on the success path.
     pub fn abort(self: *WriteTxn) void {
+        if (!self.open) return;
         self.returnPageIds();
         self.db.stats.aborts += 1;
         self.close();
@@ -489,6 +498,6 @@ pub const WriteTxn = struct {
     fn close(self: *WriteTxn) void {
         self.db.writer_active = false;
         self.arena.deinit(); // every page copy, the map and the lists: gone
-        self.* = undefined;
+        self.open = false;
     }
 };

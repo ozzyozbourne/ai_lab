@@ -16,7 +16,9 @@
   border: 1px solid var(--bt-border); background: var(--bt-surface); color: var(--bt-text);
 }
 .ix-jump a:hover, .ix-viz:hover { border-color: var(--bt-accent); color: var(--bt-accent); }
-.ix-read { background: var(--bt-accent); border-color: var(--bt-accent); color: var(--bt-on-accent); font-weight: 600; }
+.bt-page a.ix-read, .bt-page a.ix-read:visited { background: var(--bt-accent); border-color: var(--bt-accent); color: var(--bt-on-accent); font-weight: 600; }
+.bt-page a.ix-viz, .bt-page .ix-jump a { color: var(--bt-text); }
+.bt-page a.ix-viz:hover, .bt-page .ix-jump a:hover { color: var(--bt-accent); }
 .ix-read:hover { filter: brightness(1.08); }
 .ix-play {
   flex: none; width: 0; height: 0; border-style: solid; border-width: 5px 0 5px 8px;

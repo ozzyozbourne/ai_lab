@@ -89,7 +89,7 @@ test "btree: get costs exactly `height` reads, hit or miss; scans add one per ex
     try testing.expectEqual([2]u64{ 4, 2 }, d.reads); // 2 internal + 1 leaf, twice
     try testing.expectEqual(0, d.totalWrites());
 
-    // Leaves: (1 3) (5 6) (7 10) (12 15) (17 20) (25 30).
+    // Leaves: (1 3 5) (6 7) (10 12) (15 17) (20 25 30).
     var out: std.ArrayList(Entry) = .empty;
     defer out.deinit(gpa);
     before = tree.dev.counters;
@@ -97,7 +97,7 @@ test "btree: get costs exactly `height` reads, hit or miss; scans add one per ex
     d = tree.dev.counters.since(before);
     try testing.expectEqual(5, out.items.len); // 6 7 10 12 15
     try testing.expectEqual(6, out.items[0].key);
-    try testing.expectEqual(3 + 3, d.totalReads()); // descent + three more leaves
+    try testing.expectEqual(3 + 2, d.totalReads()); // descent to (6 7), then (10 12) and (15 17)
     try tree.validate();
 }
 
@@ -234,17 +234,22 @@ test "lsm: a scan merges every overlapping run and pays for each" {
     try lsm.validate();
 }
 
-test "lsm: deleting everything eventually gives the space back" {
+test "lsm: deleting costs space first and gives it back only through compaction" {
     const gpa = testing.allocator;
     var lsm: Lsm = .init(gpa, tiny);
     defer lsm.deinit(gpa);
     for (0..64) |k| try lsm.put(gpa, k, k);
     const full = lsm.dev.live;
-    // Deleting first COSTS space: tombstones are data.
     for (0..64) |k| try lsm.delete(gpa, k);
     for (0..64) |k| try testing.expectEqual(null, lsm.get(k));
-    try testing.expect(lsm.stats.tombstones_dropped > 0);
-    std.debug.print("full={d} live={d} peak={d} slots={d}\n", .{full, lsm.dev.live, lsm.dev.peak, lsm.slotsOnDevice()});
+    // No live key is left, yet the device is as full as before: tombstones
+    // are data, and some of them still sit above the values they hide.
+    try testing.expect(lsm.dev.live >= full);
+    try testing.expect(lsm.dev.peak > 2 * full);
+    // Later writes push the tombstones down until they meet the bottom.
+    for (100..164) |k| try lsm.put(gpa, k, k);
+    try testing.expectEqual(64, lsm.stats.tombstones_dropped);
+    try testing.expectEqual(64, lsm.slotsOnDevice() + lsm.mem.count);
     try lsm.validate();
 }
 
@@ -385,8 +390,8 @@ test "btree: a put that runs out of memory changes neither the tree nor the devi
     var tree: BPlusTree = .init(3);
     defer tree.deinit(gpa);
     var failures: usize = 0;
-    for (0..64) |i| {
-        const key: u64 = (i * 37) % 64;
+    for (0..500) |i| {
+        const key: u64 = (i * 37) % 503;
         // Make the next allocation fail, whenever it comes.
         failing.fail_index = failing.alloc_index;
         const counters = tree.dev.counters;
@@ -405,7 +410,7 @@ test "btree: a put that runs out of memory changes neither the tree nor the devi
         }
         try tree.validate();
     }
-    std.debug.print("failures={d}\n", .{failures});
+    try testing.expect(failures >= 3);
 }
 
 test "lsm: a write that runs out of memory changes no answer, and the retry finishes the job" {

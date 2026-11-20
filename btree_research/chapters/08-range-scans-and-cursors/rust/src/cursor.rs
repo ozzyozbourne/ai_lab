@@ -6,8 +6,8 @@
 //!   * a PHYSICAL position: where the entry is right now. This is the part
 //!     that differs between the two designs of this chapter
 //!     (`link_cursor.rs`: leaf handle + index, moves along sibling links;
-//!      `stack_cursor.rs`: root-to-leaf path, moves by climbing and
-//!      descending). It is only valid for the tree version it was computed in.
+//!     `stack_cursor.rs`: root-to-leaf path, moves by climbing and
+//!     descending). It is only valid for the tree version it was computed in.
 //!   * a LOGICAL position: the KEY of the entry the cursor is on. A key is
 //!     the only thing that still means something after a split, a merge, or
 //!     the reuse of a freed node handle.

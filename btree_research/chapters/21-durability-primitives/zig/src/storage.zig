@@ -24,8 +24,12 @@
 //!                                  hole) reads as zeroes
 //!               page_no >= size(): error.OutOfBounds, `out` untouched
 //!   writePage   page_no >= the implementation's `max_pages`:
-//!               error.OutOfBounds. Any failed write leaves size() and every
-//!               page as they were.
+//!               error.OutOfBounds. A write refused with OutOfBounds,
+//!               OutOfMemory or PowerLoss leaves size() and every page as
+//!               they were. error.InputOutput (FileStorage only: the
+//!               operating system reported a failure) is different: part of
+//!               the page may have reached the file, so treat that page as
+//!               torn.
 //!   PowerLoss   comes before every other check: on a powered-off SimDisk
 //!               readPage, writePage and sync return it whatever the page
 //!               number. (size() still answers, with the last value.)

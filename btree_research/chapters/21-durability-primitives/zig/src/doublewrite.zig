@@ -2,8 +2,9 @@
 //!
 //! A checksum tells us a page is torn; it cannot give the bytes back. The
 //! double-write idea (textbook; the best-known user is InnoDB's doublewrite
-//! buffer, not one of the code bases studied in this guide) is: never have
-//! only one copy in flight.
+//! buffer, not one of the code bases studied in this guide) is: keep two
+//! copies, and never have both of them in flight (written but not yet synced)
+//! at the same time.
 //!
 //!     update(i, page):
 //!       1. write the new image to slot i      then sync
@@ -23,6 +24,11 @@
 //! After recovery every home page is the old or the new version, never a mix:
 //! a single-page write has become atomic. The price is two writes and two
 //! syncs per update.
+//!
+//! `recover` cannot see which copy is newer; "slot ok -> home := slot" is
+//! right only because `update` always writes the slot first. It is correct
+//! for pages written through `update` and for nothing else: write a home
+//! page directly and the next `recover` puts the slot's older image back.
 //!
 //! Layout, kept deliberately trivial: logical page i has its slot at page i
 //! and its home at page `slots + i`. Each copy is sealed for its own address.

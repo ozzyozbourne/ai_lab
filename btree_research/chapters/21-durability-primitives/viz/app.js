@@ -71,7 +71,7 @@
     disk = new M.SimDisk(2121);
     labels = { 0: 'slot', 1: 'home' };
     var dw = new M.DoubleWrite(disk, 1);
-    push('<b>Experiment 4: double write.</b> A fresh disk with the same seed. The logical page now has two locations: a <em>slot</em> (page 0) and its <em>home</em> (page 1). Rule: never have only one copy in flight.');
+    push('<b>Experiment 4: double write.</b> A fresh disk with the same seed. The logical page now has two locations: a <em>slot</em> (page 0) and its <em>home</em> (page 1). Rule: the two copies are never both in flight (written but not yet synced) at the same time.');
     dw.update(0, M.filled('A'));
     push('<code>update(A)</code> ran to completion: write slot, sync, write home, sync. Both copies hold A, each sealed for its own address. Cost: 2 writes and 2 syncs instead of 1 and 1.',
       [[30, 35]], { touched: { 0: true, 1: true } });

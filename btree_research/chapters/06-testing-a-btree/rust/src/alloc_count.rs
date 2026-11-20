@@ -163,8 +163,9 @@ mod tests {
     fn another_thread_has_its_own_counters() {
         let before = stats();
         std::thread::spawn(|| {
+            let start = stats();
             let v = vec![1u8; 4096];
-            assert!(stats().live_bytes >= v.len() as i64);
+            assert_eq!(stats().live_bytes - start.live_bytes, v.len() as i64);
         })
         .join()
         .unwrap();

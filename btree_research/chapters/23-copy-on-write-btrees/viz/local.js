@@ -443,11 +443,11 @@
       var isCur = s.id === cur.txn;
       curPinned = curPinned || isCur;
       if (s.root === null) return;
-      forest.push(build(s.root, false, (isCur ? 'current, ' : '') + 'snapshot of txn ' + s.id + (s.refs > 1 ? ' ×' + s.refs : '')));
+      forest.push(build(s.root, false, (isCur ? 'current, ' : '') + 'snap ' + s.id + (s.refs > 1 ? ' ×' + s.refs : '')));
     });
-    if (!curPinned && cur.root !== null) forest.push(build(cur.root, false, 'current (txn ' + cur.txn + ')'));
+    if (!curPinned && cur.root !== null) forest.push(build(cur.root, false, 'current'));
     var txnRoot = t ? (t.moved[t.root] !== undefined ? t.moved[t.root] : t.root) : null;
-    if (t && txnRoot !== null && (t.dirty[txnRoot] || txnRoot !== cur.root)) forest.push(build(txnRoot, true, 'txn ' + t.id + ', not committed'));
+    if (t && txnRoot !== null && (t.dirty[txnRoot] || txnRoot !== cur.root)) forest.push(build(txnRoot, true, 'txn ' + t.id + ' open'));
 
     var reserved = {};
     if (t) Object.keys(t.dirty).forEach(function (id) { reserved[id] = true; });
@@ -469,7 +469,7 @@
   /* ---------------------------------------------------------- recording steps */
   Cow.prototype.rec = function (type, t, d) {
     if (!this.steps) return;
-    var self = this, pic = this.picture(t, d.oldRoot !== undefined ? { extra: { root: d.oldRoot, label: 'old root' } } : d.extra ? { extra: d.extra } : null);
+    var self = this, pic = this.picture(t, d.oldRoot !== undefined ? { extra: { root: d.oldRoot, label: 'old' } } : d.extra ? { extra: d.extra } : null);
     var hl = { nodes: {}, keys: {} }, cap = '', log = null, lines = null, question = null;
     var at = function (id) { return pic.ofPage[id]; };
     var mark = function (id, state) { if (at(id)) hl.nodes[at(id)] = state; };
@@ -641,7 +641,7 @@
         return;
       }
       var isCur = id === this.cur.txn, older = this.snaps[0].id < id ? this.snaps[0].id : null;
-      var extra = isCur ? null : { root: s.root, label: 'released snapshot of txn ' + id };
+      var extra = isCur ? null : { root: s.root, label: 'released' };
       var own = this.reachable(s.root);
       var released = this.release(id), mark = {}, stay = [];
       released.forEach(function (p) { mark[p] = 'deleted'; });
@@ -676,7 +676,7 @@
       this.reopen();
       this.note('<b>Restart.</b> The reader takes the valid slot with the higher id: transaction ' + this.cur.txn + '. Its tree is complete, because transaction ' + lost +
         ' wrote only into pages that this root could not reach. All of transaction ' + lost + ' is gone, and none of it is half there. (Snapshots are in-memory handles; a restart forgets them.)',
-        { extra: before !== this.cur.root ? { root: before, label: 'lost commit (txn ' + lost + ')' } : null, log: 'restart → txn ' + this.cur.txn });
+        { extra: before !== this.cur.root ? { root: before, label: 'lost' } : null, log: 'restart → txn ' + this.cur.txn });
       this.note('The free list was rebuilt as "every page the chosen root cannot reach". ' + this.summary());
     });
   };

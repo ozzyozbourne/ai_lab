@@ -82,7 +82,8 @@ children per node means about log2(n) levels.
 
 The fix for the first point: put many keys in each node. A page is read as a whole
 anyway, so fill it. If a node holds M-1 keys in sorted order, they cut the key space
-into M ranges, and the node stores one child pointer for each range. Reading one node now
+into M ranges, and the node stores one child pointer for each range. In that role the
+keys are called **separators**. Reading one node now
 divides the remaining keys by M instead of by 2.
 
 - **Order** M is the maximum number of children of a node (Knuth's definition, used
@@ -117,8 +118,9 @@ pages.
 
 The repair is the same trick again: cut the directory into chunks and put a directory
 on top of it. Repeat until the top directory fits in one page. Now you have built a
-tree, each level 171 times smaller than the one below, and a change touches a few
-pages per level in the worst case (chapter 04 shows exactly which) instead of a number
+tree, each level a couple of hundred times smaller than the one below (256 times with
+these 16-byte slots; 171 for the nodes of candidate 3, which also keep a value next to
+every key), and a change touches a few pages per level in the worst case (chapter 04 shows exactly which) instead of a number
 of pages that grows with n. That is why height exists: a one-level structure costs
 O(number of pages) per change, a tree costs O(height).
 
@@ -185,6 +187,10 @@ wide nodes, M = 171            160.45      308     2.99        3
 heights: BST 39, wide nodes 3; the sorted array spans 391 pages
 BST, 2000 keys in ascending order: height 2000, get(largest) reads 2000 pages
 ```
+
+Only half of the 1,000 lookups ask for a key that is known to exist. The other half ask
+for a random number, which is rarely a key, so 541 hits are the expected result and not
+459 failures; a miss costs a page read like a hit does.
 
 The wide-node row makes about nine times as many comparisons as the
 sorted array (this code scans the separators one by one; chapter 02 replaces the scan
@@ -290,19 +296,22 @@ in-memory metadata of bounded size
 | Postgres | block | 8 kB default (1 to 32 kB at build time) | yes, one B-tree node | `postgres/meson_options.txt:5-8` |
 | Turso (SQLite format) | page | 4096 default, 512 to 65536 | yes, one B-tree node | `turso/core/storage/sqlite3_ondisk.rs:104-107` |
 | DuckDB | block | 262,144 bytes default | no: unit of column storage, DuckDB has no B-tree | `duckdb/src/include/duckdb/storage/storage_info.hpp:30` |
-| TigerBeetle | block | 512 KiB | no: block of an LSM table, TigerBeetle has no B-tree | `tigerbeetle/src/config.zig:161` |
+| TigerBeetle | block | 512 KiB | no: block of an LSM table (a sorted, immutable run of keys, chapter 27), TigerBeetle has no B-tree | `tigerbeetle/src/config.zig:161` |
 
 The last two rows are a warning: a big "block size" does not mean wide B-tree nodes.
 Those engines scan or merge whole blocks.
 
 Derived, not measured (arithmetic from the page formats in `research/postgres.md`
 section 11 and `research/turso.md` section 6): a Postgres leaf page holds about 366 to
-407 single-integer index entries and an internal page 284 to 407 downlinks, so three
+407 single-integer index entries and an internal page 284 to 407 downlinks (child
+pointers, each stored with a separator), so three
 levels cover tens of millions of rows and four levels cover billions. A Turso table
-interior page with 4096 bytes has a fan-out between about 272 and 584 depending on
-rowid size. Turso refuses trees deeper than 20 levels as corrupt, and its comment
+interior page with 4096 bytes has a fan-out between about 272 and 584, depending on how
+many bytes its keys take (they are rowids, the integer row numbers of a table, stored
+in a variable-length encoding; chapter 11). Turso refuses trees deeper than 20 levels as corrupt, and its comment
 derives that bound from 2^31 pages and a minimum fan-out of 2 at the root and 3
-elsewhere (`turso/core/storage/btree.rs:150-157`). Its overflow thresholds are chosen to
+elsewhere (`turso/core/storage/btree.rs:150-157`). Its overflow thresholds (the entry
+size above which part of an entry is moved off the page, chapter 10) are chosen to
 "give a minimum fanout of 4 for index b-trees" (`turso/core/storage/btree.rs:10804`).
 
 Real nodes are not full. Postgres cites the classic estimate that "the steady-state

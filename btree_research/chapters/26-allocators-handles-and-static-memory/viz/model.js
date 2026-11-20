@@ -255,14 +255,14 @@
         leafSlabs * S + ' leaf slots and ' + intSlabs * S + ' interior slots.',
         { type: 'reserve', hold: 2, log: { html: 'reserve ' + intSlabs + ' interior slabs', state: 'inserted' } });
       this.phase = 'static'; this.leaves.budget = 0; this.interiors.budget = 0;
-      this.step('<code>freeze()</code>: init &rarr; <b>static</b>. From here on the backing allocator refuses every request, so the footprint of ' + (leafSlabs + intSlabs) +
+      this.step('<code>freeze()</code>: init &rarr; <b>static</b>. From here on the <code>StaticAllocator</code> wrapper refuses every request before it reaches the backing allocator, so the footprint of ' + (leafSlabs + intSlabs) +
         ' slabs can neither grow nor shrink, and a hidden allocation anywhere in the code would be caught. Inserts now only flip bits in these slabs. Press <b>Put</b>, or <b>Fill</b> to insert keys until the pool is dry.',
         { type: 'freeze', hold: 2, log: { html: 'freeze: init → static', state: 'lock-exclusive' } });
     });
   };
 
   /* ---- allocation with a step (and a predict question) */
-  T.allocStep = function (leaf, why) {
+  T.allocStep = function (leaf, why, whenRefused) {
     var pool = leaf ? this.leaves : this.interiors, guess = pool.peek();
     var wrong = [];
     pool.slabs.forEach(function (slab, id) {
@@ -273,11 +273,11 @@
     if (!h) {
       // Only reachable under the static policy: the pool may not grow any more.
       var fail = this.step(why + ' Allocate ' + (leaf ? 'a leaf' : 'an interior node') + ': all ' + pool.slabCount * pool.S + ' slots of the ' + (leaf ? 'leaf' : 'interior') +
-        ' pool are in use, so <code>create</code> asks the backing allocator for one more slab. The allocator is frozen (state <b>static</b>) and <b>refuses</b>: <code>create</code> returns OutOfMemory.',
+        ' pool are in use, so <code>create</code> asks for one more slab. The <code>StaticAllocator</code> wrapper is frozen (state <b>static</b>) and <b>refuses</b>: <code>create</code> returns OutOfMemory.' + (whenRefused || ''),
         { type: 'refused', log: { html: 'create ' + (leaf ? 'leaf' : 'interior') + ': refused (frozen)', state: 'deleted' } });
       if (fail) fail.question = { prompt: 'A new ' + (leaf ? 'leaf' : 'interior node') + ' is needed, and the allocator was frozen after init. What does <code>create</code> return?',
         choices: ['a slot in a new slab', 'OutOfMemory: the pool is full and may not grow'], answer: 1,
-        explain: 'After freeze() the backing allocator refuses every request, so the memory footprint cannot change.' };
+        explain: 'After freeze() the StaticAllocator wrapper refuses every request, so the memory footprint cannot change.' };
       return null;
     }
     var grew = pool.lastGrew;
@@ -305,7 +305,8 @@
   T.splitChild = function (parent, i) {
     var t = this.t, leftH = this.node(parent).kids[i], left = this.node(leftH);
     // Allocate the sibling BEFORE touching a key: if this fails, nothing is half-done.
-    var rightH = this.allocStep(!leftH.c, 'Child ' + hh(leftH) + ' is full (' + this.K + ' keys), so it is split before the search enters it.');
+    var rightH = this.allocStep(!leftH.c, 'Child ' + hh(leftH) + ' is full (' + this.K + ' keys), so it is split before the search enters it.',
+      leftH.c ? ' The insert fails here, <i>before</i> it reaches a leaf: top-down insertion must split this full node on the way down, whether or not the leaf below has room.' : '');
     if (!rightH) return false;
     var right = this.node(rightH), p = this.node(parent);
     var median = left.keys[t - 1];
@@ -324,20 +325,22 @@
   /** The last step of a put that ran out of memory. Result of the operation: 'oom'. */
   T.oomStep = function (key) {
     this.step('<b>OutOfMemory</b>: ' + kk(key) + ' was not inserted. Nothing is half-done, because every split allocates its new node before it moves a key: the tree is valid and holds the same ' +
-      pl(this.count, 'key', 'keys') + '. The footprint is still ' + this.leaves.slabCount + ' leaf and ' + this.interiors.slabCount + ' interior slabs. Delete a key to free a slot, or press Reset.',
+      pl(this.count, 'key', 'keys') + '. The footprint is still ' + this.leaves.slabCount + ' leaf and ' + this.interiors.slabCount + ' interior slabs. Delete keys until two nodes merge (only a merge frees a slot), or press Reset.',
       { type: 'oom', log: { html: 'put ' + key + ': OutOfMemory', state: 'deleted' } });
     return 'oom';
   };
   T.put = function (key) {
     return this.run(function () {
       if (!this.root) {
-        var first = this.allocStep(true, 'The tree is empty.');
+        this.step('Insert ' + kk(key, 'inserted') + '. The tree is empty, so it needs its first node: a leaf that is also the root.', { type: 'start' });
+        var first = this.allocStep(true, 'The first node.');
         if (!first) return this.oomStep(key);
         this.root = first;
         this.height = 1;
+      } else {
+        this.step('Insert ' + kk(key, 'inserted') + '. Top-down insertion: every full node on the path is split <i>before</i> it is entered, so each allocation happens before anything is changed.',
+          { type: 'start', nodes: mark(this.root, 'active'), cursor: { node: this.node(this.root).uid, label: key } });
       }
-      this.step('Insert ' + kk(key, 'inserted') + '. Top-down insertion: every full node on the path is split <i>before</i> it is entered, so each allocation happens before anything is changed.',
-        { type: 'start', nodes: mark(this.root, 'active'), cursor: { node: this.node(this.root).uid, label: key } });
       if (this.node(this.root).keys.length === this.K) {
         var oldRoot = this.root;
         var newRoot = this.allocStep(false, 'The root ' + hh(this.root) + ' is full: the tree grows by one level.');
@@ -453,20 +456,23 @@
       this.merge(h, i);
       return this.deleteFrom(target, key);
     }
-    var c = i, kids = n.kids;
-    if (this.node(kids[c]).keys.length === t - 1) {
+    var c = i, kids = n.kids, repaired = this.node(kids[c]).keys.length === t - 1;
+    if (repaired) {
       if (c > 0 && this.node(kids[c - 1]).keys.length >= t) this.borrowLeft(h, c);
       else if (c < n.keys.length && this.node(kids[c + 1]).keys.length >= t) this.borrowRight(h, c);
       else if (c < n.keys.length) this.merge(h, c);
       else { this.merge(h, c - 1); c -= 1; }
     }
     var next = this.node(h).kids[c];
-    this.step('Descend from ' + hh(h) + ' into ' + hh(next) + ', which now holds at least ' + t + ' keys or is about to be searched as a leaf.', { type: 'descend', nodes: mark(next, 'active'), cursor: { node: this.node(next).uid, label: key }, focus: next, slots: slotMark(next, 'active') });
+    var have = this.node(next).keys.length;
+    this.step('Descend from ' + hh(h) + ' into ' + (next.c ? '' : 'leaf ') + hh(next) + '. ' +
+      (repaired ? 'After that repair it holds ' + pl(have, 'key', 'keys') : 'It already holds ' + pl(have, 'key', 'keys')) +
+      ', and a node entered by a delete needs at least ' + t + ' so that it can lose one.', { type: 'descend', nodes: mark(next, 'active'), cursor: { node: this.node(next).uid, label: key }, focus: next, slots: slotMark(next, 'active') });
     return this.deleteFrom(next, key);
   };
   T.delete = function (key) {
     return this.run(function () {
-      if (!this.root) { this.step('The tree is empty.', { type: 'not-found' }); return false; }
+      if (!this.root) { this.step('The tree is empty: there is no ' + kk(key) + ' to delete.', { type: 'not-found' }); return false; }
       this.step('Delete ' + kk(key, 'deleted') + '. Top-down deletion: before entering a child, make sure it has a key to spare (borrow or merge). Deleting never allocates.',
         { type: 'start', nodes: mark(this.root, 'active'), cursor: { node: this.node(this.root).uid, label: key } });
       var removed = this.deleteFrom(this.root, key);
@@ -589,8 +595,9 @@
       var j = k;
       while (j <= this.maxOrder && !this.lists[j].length) j++;
       if (j > this.maxOrder) {
-        this.step('No free block of ' + this.size(k) + ' bytes or larger exists. ' + this.freeBytes() + ' bytes are free in total, but the largest free block is ' + this.largestFree() +
-          ' bytes: <b>OutOfMemory</b>' + (this.freeBytes() >= this.size(k) ? ' through external fragmentation.' : '.'), null, { log: { html: 'alloc ' + len + ': OutOfMemory', state: 'deleted' } });
+        this.step(this.freeBytes() === 0 ? 'The heap is full: every block is in use and 0 bytes are free. <b>OutOfMemory</b>.'
+          : 'No free block of ' + this.size(k) + ' bytes or larger exists. ' + this.freeBytes() + ' bytes are free in total, but the largest free block is ' + this.largestFree() +
+            ' bytes: <b>OutOfMemory</b>' + (this.freeBytes() >= this.size(k) ? ' through external fragmentation.' : '.'), null, { log: { html: 'alloc ' + len + ': OutOfMemory', state: 'deleted' } });
         return null;
       }
       var block = this.lists[j][0];

@@ -308,7 +308,7 @@ fn faults_the_sweep_also_checks_that_the_tree_is_unchanged_and_usable() {
 }
 
 #[test]
-fn counting_allocator_delete_asks_for_no_node_but_does_touch_the_heap() {
+fn counting_allocator_delete_asks_for_no_node_and_gives_memory_back() {
     let mut tree = BTree::new(4);
     for key in 1..=40 {
         tree.put(key, key).unwrap();
@@ -323,13 +323,12 @@ fn counting_allocator_delete_asks_for_no_node_but_does_touch_the_heap() {
     // The slab was never asked for a node ...
     assert_eq!(tree.pool.usage.created, created);
     assert_eq!(tree.pool.usage.live(), 0);
-    // ... and every freed node dropped its Vec buffers.
+    // ... but the heap was busy: every freed node dropped its Vec buffers.
+    // (In Zig, delete makes no allocator call at all. Here a merge appends
+    // to the left node's Vecs, which is allowed to reallocate; whether it
+    // does depends on Vec's growth policy, so it is not asserted.)
     assert!(after.frees > before.frees);
-    // Difference from Zig, where delete makes no allocator call at all: a
-    // merge appends to the left node's Vecs, which may have to grow.
-    let grew =
-        (after.allocations - before.allocations) + (after.reallocations - before.reallocations);
-    assert!(grew > 0);
+    assert!(after.live_bytes < before.live_bytes);
 }
 
 #[test]

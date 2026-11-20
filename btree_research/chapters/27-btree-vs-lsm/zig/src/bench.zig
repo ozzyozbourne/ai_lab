@@ -40,6 +40,16 @@ pub const Side = struct {
     /// Blocks allocated at the end, and the most at any moment.
     blocks: u64 = 0,
     peak: u64 = 0,
+    /// Live keys when the operation that set `peak` returned. Space
+    /// amplification at the peak divides by THIS, not by the final count:
+    /// the peak usually happens earlier, when fewer keys were live.
+    peak_live_keys: u64 = 0,
+
+    fn notePeak(self: *Side, dev_peak: u64, live_keys: usize) void {
+        if (dev_peak <= self.peak) return;
+        self.peak = dev_peak;
+        self.peak_live_keys = live_keys;
+    }
 };
 
 pub const Workload = struct {
@@ -105,6 +115,8 @@ pub fn runWorkload(gpa: Allocator, wl: Workload, order: usize, cfg: lsm_.Config)
     lsm.stats = .{};
 
     var report: Report = .{};
+    report.btree.notePeak(tree.dev.peak, oracle.len());
+    report.lsm.notePeak(lsm.dev.peak, oracle.len());
     var stream = ops.OpStream.init(.{ .seed = wl.seed, .count = wl.count, .key_space = wl.key_space, .weights = wl.weights });
     while (stream.next()) |op| {
         const t0 = tree.dev.counters;
@@ -152,16 +164,16 @@ pub fn runWorkload(gpa: Allocator, wl: Workload, order: usize, cfg: lsm_.Config)
         }
         tree_tally.record(tree.dev.counters.since(t0));
         lsm_tally.record(lsm.dev.counters.since(l0));
+        report.btree.notePeak(tree.dev.peak, oracle.len());
+        report.lsm.notePeak(lsm.dev.peak, oracle.len());
     }
 
     try tree.validate();
     try lsm.validate();
     report.live_keys = oracle.len();
     report.btree.blocks = tree.dev.live;
-    report.btree.peak = tree.dev.peak;
     report.btree_height = tree.height;
     report.lsm.blocks = lsm.dev.live;
-    report.lsm.peak = lsm.dev.peak;
     report.lsm_levels = lsm.deepestLevel();
     report.lsm_l0_runs = lsm.l0_len;
     report.lsm_slots = lsm.slotsOnDevice();

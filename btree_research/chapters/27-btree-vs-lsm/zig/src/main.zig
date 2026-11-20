@@ -63,7 +63,8 @@ fn trace(gpa: Allocator, w: *Writer) !void {
     try w.writeAll("== 1. One trace, two structures ==\n");
     try w.writeAll("B+tree: order M = 4, so 3 entries per leaf block.\n");
     try w.writeAll("LSM: 3 slots per data block, memtable of 4 keys, level 0 holds 2 runs, growth 2.\n");
-    try w.writeAll("r = blocks read, w = blocks written by that one operation.\n\n");
+    try w.writeAll("r = blocks read, w = blocks written by that one operation. Every block counts, index\n");
+    try w.writeAll("blocks too; nothing is cached; there is no log (the limits are listed under section 3).\n\n");
 
     for (trace_ops) |op| {
         const t0 = tree.dev.counters;
@@ -192,12 +193,28 @@ fn dumpRun(w: *Writer, r: *const lib.run.Run) !void {
 
 // ------------------------------------------------- 3 to 5. workloads
 
-/// `num / den` with two decimals, by integer arithmetic only (truncated),
-/// so that Zig and Rust print the same digits. "-" when there is no data.
+/// `num / den` rounded to two decimals (half up), by integer arithmetic
+/// only, so that Zig and Rust print the same digits. "-" when there is no
+/// data.
 fn ratio(buf: []u8, num: u64, den: u64) []const u8 {
     if (den == 0) return "-";
-    const hundredths = num * 100 / den;
+    const hundredths = (num * 200 + den) / (den * 2);
     return std.fmt.bufPrint(buf, "{d}.{d:0>2}", .{ hundredths / 100, hundredths % 100 }) catch unreachable;
+}
+
+/// What the tables leave out. Printed under every table, because a ratio
+/// without its limits is the easiest thing in this chapter to misread.
+fn limits(w: *Writer, memtable_entries: usize) !void {
+    try w.writeAll("Limits of these numbers (ratios are rounded to two decimals):\n");
+    try w.writeAll("  * No cache. Each operation reads every block it looks at from the device, index\n");
+    try w.writeAll("    levels included, in both structures. \"data blocks per get\" is what is left if\n");
+    try w.writeAll("    every index block of either structure is held in RAM.\n");
+    try w.writeAll("  * No write-ahead log, and so NOT the same durability. A B+tree write is on the\n");
+    try w.print("    device when it returns. An LSM write is in RAM only until the next flush: up to {d}\n", .{memtable_entries});
+    try w.writeAll("    writes are lost in a crash. The \"+ 1 log block\" row is computed, not run: it adds\n");
+    try w.writeAll("    one block per LSM write, the price of the same promise without group commit.\n");
+    try w.writeAll("  * A B+tree with a log and a buffer pool writes a hot page once for many updates,\n");
+    try w.writeAll("    so its write column is an upper bound.\n");
 }
 
 fn rowCount(w: *Writer, label: []const u8, a: u64, b: u64) !void {
@@ -210,12 +227,17 @@ fn rowRatio(w: *Writer, label: []const u8, a_num: u64, a_den: u64, b_num: u64, b
     try w.print("{s:<42}{s:>10}{s:>10}\n", .{ label, ratio(&a_buf, a_num, a_den), ratio(&b_buf, b_num, b_den) });
 }
 
+fn packedBlocks(keys: u64, per_block: u64) u64 {
+    return (keys + per_block - 1) / per_block;
+}
+
 fn compare(gpa: Allocator, w: *Writer, wl: bench.Workload, section: usize) !void {
     const cfg = bench.bench_lsm;
     const r = try bench.runWorkload(gpa, wl, bench.bench_order, cfg);
     const b = &r.btree;
     const l = &r.lsm;
     const index = @intFromEnum(lib.device.Kind.index);
+    const data = @intFromEnum(lib.device.Kind.data);
     const per_block: u64 = cfg.block_entries;
 
     try w.print("\n== {d}. Workload: {s} ==\n", .{ section, wl.name });
@@ -230,20 +252,30 @@ fn compare(gpa: Allocator, w: *Writer, wl: bench.Workload, section: usize) !void
     try rowCount(w, "  blocks written", b.writes.io.totalWrites(), l.writes.io.totalWrites());
     try rowRatio(w, "  blocks written per write", b.writes.io.totalWrites(), b.writes.ops, l.writes.io.totalWrites(), l.writes.ops);
     try rowRatio(w, "  WRITE AMPLIFICATION (slots per entry)", b.writes.io.totalWrites() * per_block, b.writes.ops, l.writes.io.totalWrites() * per_block, l.writes.ops);
+    // Equal durability, computed: the B+tree already has it, the LSM would
+    // append to a log and write the log's last block on every operation.
+    try rowRatio(w, "    same, + 1 log block per LSM write", b.writes.io.totalWrites() * per_block, b.writes.ops, (l.writes.io.totalWrites() + l.writes.ops) * per_block, l.writes.ops);
     try rowRatio(w, "  blocks read per write", b.writes.io.totalReads(), b.writes.ops, l.writes.io.totalReads(), l.writes.ops);
     try rowCount(w, "  most blocks written by one write", b.writes.max_writes, l.writes.max_writes);
     try rowCount(w, "point lookups (get)", b.gets.ops, l.gets.ops);
     try rowRatio(w, "  READ AMPLIFICATION (blocks per get)", b.gets.io.totalReads(), b.gets.ops, l.gets.io.totalReads(), l.gets.ops);
-    try rowRatio(w, "    of which index blocks", b.gets.io.reads[index], b.gets.ops, l.gets.io.reads[index], l.gets.ops);
+    try rowRatio(w, "    index blocks per get", b.gets.io.reads[index], b.gets.ops, l.gets.io.reads[index], l.gets.ops);
+    try rowRatio(w, "    data blocks per get", b.gets.io.reads[data], b.gets.ops, l.gets.io.reads[data], l.gets.ops);
     try rowCount(w, "short scans", b.scans.ops, l.scans.ops);
     try rowRatio(w, "  entries returned per scan", b.scans.entries, b.scans.ops, l.scans.entries, l.scans.ops);
     try rowRatio(w, "  blocks read per scan", b.scans.io.totalReads(), b.scans.ops, l.scans.io.totalReads(), l.scans.ops);
-    const packed_blocks = (r.live_keys + per_block - 1) / per_block;
+    // Space amplification = blocks on the device / data blocks that the keys
+    // live AT THAT MOMENT would fill if packed with no index and no slack.
+    const packed_end = packedBlocks(r.live_keys, per_block);
     try rowCount(w, "blocks on the device at the end", b.blocks, l.blocks);
-    try rowCount(w, "  blocks if every live key were packed", packed_blocks, packed_blocks);
-    try rowRatio(w, "  SPACE AMPLIFICATION (at the end)", b.blocks, packed_blocks, l.blocks, packed_blocks);
-    try rowCount(w, "  most blocks at any moment", b.peak, l.peak);
-    try rowRatio(w, "  space amplification (at the peak)", b.peak, packed_blocks, l.peak, packed_blocks);
+    try rowCount(w, "  data blocks if the live keys were packed", packed_end, packed_end);
+    try rowRatio(w, "  SPACE AMPLIFICATION (at the end)", b.blocks, packed_end, l.blocks, packed_end);
+    const b_packed_peak = packedBlocks(b.peak_live_keys, per_block);
+    const l_packed_peak = packedBlocks(l.peak_live_keys, per_block);
+    try rowCount(w, "most blocks on the device at any moment", b.peak, l.peak);
+    try rowCount(w, "  live keys at that moment", b.peak_live_keys, l.peak_live_keys);
+    try rowCount(w, "  data blocks if those were packed", b_packed_peak, l_packed_peak);
+    try rowRatio(w, "  SPACE AMPLIFICATION (at the peak)", b.peak, b_packed_peak, l.peak, l_packed_peak);
 
     const s = r.lsm_stats;
     try w.print("B+tree: height {d}. LSM: {d} level(s) below level 0, {d} run(s) in level 0, {d} slots on the device.\n", .{
@@ -255,12 +287,14 @@ fn compare(gpa: Allocator, w: *Writer, wl: bench.Workload, section: usize) !void
     try w.print("LSM lookups: {d} runs probed, {d} of those without finding the key, {d} runs skipped by min/max.\n", .{
         s.runs_probed, s.probes_wasted, s.runs_skipped,
     });
+    try limits(w, cfg.memtable_entries);
 }
 
 fn growthSweep(gpa: Allocator, w: *Writer) !void {
     try w.writeAll("\n== 6. The growth factor is the tuning knob ==\n");
-    try w.writeAll("LSM only, insert-heavy workload again, everything else unchanged.\n\n");
-    try w.print("{s:<8}{s:>8}{s:>16}{s:>16}{s:>16}{s:>14}\n", .{ "growth", "levels", "write amp", "blocks per get", "blocks per scan", "peak blocks" });
+    try w.writeAll("LSM only, insert-heavy workload again, everything else unchanged: the same counting\n");
+    try w.writeAll("rule and the same limits as above (no cache, no log, not durable until a flush).\n\n");
+    try w.print("{s:<8}{s:>8}{s:>16}{s:>16}{s:>16}{s:>16}\n", .{ "growth", "levels", "write amp", "blocks per get", "blocks per scan", "peak space amp" });
     for ([_]usize{ 2, 4, 8, 16 }) |growth| {
         var cfg = bench.bench_lsm;
         cfg.growth = growth;
@@ -269,13 +303,14 @@ fn growthSweep(gpa: Allocator, w: *Writer) !void {
         var b1: [32]u8 = undefined;
         var b2: [32]u8 = undefined;
         var b3: [32]u8 = undefined;
-        try w.print("{d:<8}{d:>8}{s:>16}{s:>16}{s:>16}{d:>14}\n", .{
+        var b4: [32]u8 = undefined;
+        try w.print("{d:<8}{d:>8}{s:>16}{s:>16}{s:>16}{s:>16}\n", .{
             growth,
             r.lsm_levels,
             ratio(&b1, l.writes.io.totalWrites() * cfg.block_entries, l.writes.ops),
             ratio(&b2, l.gets.io.totalReads(), l.gets.ops),
             ratio(&b3, l.scans.io.totalReads(), l.scans.ops),
-            l.peak,
+            ratio(&b4, l.peak, packedBlocks(l.peak_live_keys, cfg.block_entries)),
         });
     }
 }

@@ -248,8 +248,8 @@ fn modelRun(gpa: Allocator, w: *Writer) !void {
         try lib.validate(&db, gpa);
         const s = db.stats;
         try w.print("M={d:<2} keys={d} height={d} commits={d} | pages: store={d} copied={d} reused={d} fresh={d} released={d} peak pending={d} | snapshot checks={d} mismatches={d}\n", .{
-            order,          db.len(),       db.current.height, s.commits,   pages_at_end,
-            s.pages_copied, s.pages_reused, s.pages_fresh,     s.pages_released, peak_pending,
+            order,             db.len(),       db.current.height, s.commits,        pages_at_end,
+            s.pages_copied,    s.pages_reused, s.pages_fresh,     s.pages_released, peak_pending,
             snapshots_checked, mismatches,
         });
     }

@@ -83,7 +83,8 @@ fn a_put_copies_exactly_the_root_to_leaf_path_and_shares_the_rest() {
 
     let old = reachable(&db, snap.view(&db));
     let new = reachable(&db, db.view());
-    let count = |f: fn(bool, bool) -> bool| old.iter().zip(&new).filter(|&(&o, &n)| f(o, n)).count();
+    let count =
+        |f: fn(bool, bool) -> bool| old.iter().zip(&new).filter(|&(&o, &n)| f(o, n)).count();
     assert_eq!(count(|o, n| o && n), 5); // 8 pages minus the path of 3
     assert_eq!(count(|o, n| o && !n), 3);
     assert_eq!(count(|o, n| n && !o), 3);
@@ -291,7 +292,11 @@ fn commits_alternate_between_the_meta_slots_a_torn_slot_falls_back_one_commit() 
         if id == id_before {
             continue; // deleting a missing key commits nothing
         }
-        let slot = |txn: u64| Meta::decode(&db.store.meta_slots[(txn % 2) as usize]).unwrap().txn_id;
+        let slot = |txn: u64| {
+            Meta::decode(&db.store.meta_slots[(txn % 2) as usize])
+                .unwrap()
+                .txn_id
+        };
         assert_eq!(slot(id), id);
         assert_eq!(slot(id - 1), id - 1);
 
@@ -340,7 +345,9 @@ fn model_with_snapshots(order: usize, seed: u64, count: u64, key_space: u64) {
 
     for (i, op) in OpStream::new(config(seed, count, key_space)).enumerate() {
         match op {
-            Op::Put { key, value } => assert_eq!(db.put(key, value).unwrap(), oracle.put(key, value)),
+            Op::Put { key, value } => {
+                assert_eq!(db.put(key, value).unwrap(), oracle.put(key, value))
+            }
             Op::Delete { key } => assert_eq!(db.delete(key).unwrap(), oracle.delete(key)),
             Op::Get { key } => assert_eq!(db.get(key), oracle.get(key)),
             Op::Range { lo, hi } => assert_eq!(entries(db.view(), lo, hi), oracle.range(lo, hi)),
@@ -402,14 +409,21 @@ fn model_multi_write_transactions_some_aborted() {
                     break;
                 };
                 match op {
-                    Op::Put { key, value } => assert_eq!(txn.put(key, value).unwrap(), oracle.put(key, value)),
+                    Op::Put { key, value } => {
+                        assert_eq!(txn.put(key, value).unwrap(), oracle.put(key, value))
+                    }
                     Op::Delete { key } => assert_eq!(txn.delete(key).unwrap(), oracle.delete(key)),
                     Op::Get { key } => assert_eq!(txn.get(key), oracle.get(key)),
-                    Op::Range { lo, hi } => assert_eq!(entries(txn.view(), lo, hi), oracle.range(lo, hi)),
+                    Op::Range { lo, hi } => {
+                        assert_eq!(entries(txn.view(), lo, hi), oracle.range(lo, hi))
+                    }
                 }
             }
             // Until commit, the outside world sees the old tree.
-            assert_eq!(entries(txn.committed().view(), 0, MAX_KEY), saved.range(0, MAX_KEY));
+            assert_eq!(
+                entries(txn.committed().view(), 0, MAX_KEY),
+                saved.range(0, MAX_KEY)
+            );
             if batch % 5 == 4 {
                 txn.abort();
                 oracle = saved;

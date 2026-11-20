@@ -522,73 +522,103 @@ test "validate names the broken invariant" {
     // `put 13` as txn 13. Pages #0 #4 #9 are pending (old path), #2 #5 #10
     // are the new path, #1 #3 #6 #7 #8 are shared by both roots.
     const cases = [_]Case{
-        .{ .expected = error.LivePageModified, .corrupt = struct {
-            fn f(db: *Db, _: Snapshot) void {
-                // "Someone" rewrote a shared page in place as transaction 13:
-                // legal for the current root, a lie to the snapshot of 12.
-                db.store.slots.items[6].written_by = 13;
-            }
-        }.f },
-        .{ .expected = error.ReachablePageIsFree, .corrupt = struct {
-            fn f(db: *Db, _: Snapshot) void {
-                db.store.release(.fromIndex(7)); // a live leaf becomes writable
-            }
-        }.f },
-        .{ .expected = error.ReachablePageIsFree, .corrupt = struct {
-            fn f(db: *Db, _: Snapshot) void {
-                // Reclaim too early: pretend the snapshot is not there.
-                const saved = db.snapshots;
-                db.snapshots = .empty;
-                _ = db.reclaim();
-                db.snapshots = saved;
-            }
-        }.f },
-        .{ .expected = error.SnapshotPageUnprotected, .corrupt = struct {
-            fn f(db: *Db, _: Snapshot) void {
-                db.pending.items[0].freed_by = 12; // "freed by 12" would be releasable
-                db.pending.items[1].freed_by = 12;
-                db.pending.items[2].freed_by = 12;
-            }
-        }.f },
-        .{ .expected = error.FreeListCorrupt, .corrupt = struct {
-            fn f(db: *Db, _: Snapshot) void {
-                db.store.free.appendAssumeCapacity(.fromIndex(1)); // listed but live
-            }
-        }.f },
-        .{ .expected = error.PendingCorrupt, .corrupt = struct {
-            fn f(db: *Db, _: Snapshot) void {
-                db.pending.items[0].page = .fromIndex(10); // a page of the current tree
-            }
-        }.f },
-        .{ .expected = error.PageLeak, .corrupt = struct {
-            fn f(db: *Db, _: Snapshot) void {
-                _ = db.pending.pop(); // forgotten: neither reachable, pending nor free
-                db.snapshots.items.len = 0;
-            }
-        }.f },
-        .{ .expected = error.PageReachedTwice, .corrupt = struct {
-            fn f(db: *Db, _: Snapshot) void {
-                // The sibling-link disease: one leaf under two parents.
-                const root = &db.store.slots.items[db.current.root.index()].node;
-                const left = &db.store.slots.items[root.kind.internal.children[0].index()].node;
-                left.kind.internal.children[1] = left.kind.internal.children[0];
-            }
-        }.f },
-        .{ .expected = error.KeyOutOfBounds, .corrupt = struct {
-            fn f(db: *Db, _: Snapshot) void {
-                db.store.slots.items[10].node.keys[2] = 99; // leaf (10 12 13) under [6 10 | 15)
-            }
-        }.f },
+        .{
+            .expected = error.LivePageModified,
+            .corrupt = struct {
+                fn f(db: *Db, _: Snapshot) void {
+                    // "Someone" rewrote a shared page in place as transaction 13:
+                    // legal for the current root, a lie to the snapshot of 12.
+                    db.store.slots.items[6].written_by = 13;
+                }
+            }.f,
+        },
+        .{
+            .expected = error.ReachablePageIsFree,
+            .corrupt = struct {
+                fn f(db: *Db, _: Snapshot) void {
+                    db.store.release(.fromIndex(7)); // a live leaf becomes writable
+                }
+            }.f,
+        },
+        .{
+            .expected = error.ReachablePageIsFree,
+            .corrupt = struct {
+                fn f(db: *Db, _: Snapshot) void {
+                    // Reclaim too early: pretend the snapshot is not there.
+                    const saved = db.snapshots;
+                    db.snapshots = .empty;
+                    _ = db.reclaim();
+                    db.snapshots = saved;
+                }
+            }.f,
+        },
+        .{
+            .expected = error.SnapshotPageUnprotected,
+            .corrupt = struct {
+                fn f(db: *Db, _: Snapshot) void {
+                    db.pending.items[0].freed_by = 12; // "freed by 12" would be releasable
+                    db.pending.items[1].freed_by = 12;
+                    db.pending.items[2].freed_by = 12;
+                }
+            }.f,
+        },
+        .{
+            .expected = error.FreeListCorrupt,
+            .corrupt = struct {
+                fn f(db: *Db, _: Snapshot) void {
+                    db.store.free.appendAssumeCapacity(.fromIndex(1)); // listed but live
+                }
+            }.f,
+        },
+        .{
+            .expected = error.PendingCorrupt,
+            .corrupt = struct {
+                fn f(db: *Db, _: Snapshot) void {
+                    db.pending.items[0].page = .fromIndex(10); // a page of the current tree
+                }
+            }.f,
+        },
+        .{
+            .expected = error.PageLeak,
+            .corrupt = struct {
+                fn f(db: *Db, _: Snapshot) void {
+                    _ = db.pending.pop(); // forgotten: neither reachable, pending nor free
+                    db.snapshots.items.len = 0;
+                }
+            }.f,
+        },
+        .{
+            .expected = error.PageReachedTwice,
+            .corrupt = struct {
+                fn f(db: *Db, _: Snapshot) void {
+                    // The sibling-link disease: one leaf under two parents.
+                    const root = &db.store.slots.items[db.current.root.index()].node;
+                    const left = &db.store.slots.items[root.kind.internal.children[0].index()].node;
+                    left.kind.internal.children[1] = left.kind.internal.children[0];
+                }
+            }.f,
+        },
+        .{
+            .expected = error.KeyOutOfBounds,
+            .corrupt = struct {
+                fn f(db: *Db, _: Snapshot) void {
+                    db.store.slots.items[10].node.keys[2] = 99; // leaf (10 12 13) under [6 10 | 15)
+                }
+            }.f,
+        },
         .{ .expected = error.WrongCount, .corrupt = struct {
             fn f(db: *Db, _: Snapshot) void {
                 db.snapshots.items[0].snap.count += 1;
             }
         }.f },
-        .{ .expected = error.BadMeta, .corrupt = struct {
-            fn f(db: *Db, _: Snapshot) void {
-                db.store.meta_slots[1][3] ^= 0x40; // newest slot torn: current is no longer the winner
-            }
-        }.f },
+        .{
+            .expected = error.BadMeta,
+            .corrupt = struct {
+                fn f(db: *Db, _: Snapshot) void {
+                    db.store.meta_slots[1][3] ^= 0x40; // newest slot torn: current is no longer the winner
+                }
+            }.f,
+        },
         .{ .expected = error.DanglingChild, .corrupt = struct {
             fn f(db: *Db, _: Snapshot) void {
                 db.store.slots.items[db.current.root.index()].node.kind.internal.children[1] = .fromIndex(500);

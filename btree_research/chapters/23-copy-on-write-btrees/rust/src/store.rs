@@ -57,7 +57,9 @@ impl PageStore {
     }
 
     pub fn is_live(&self, id: PageId) -> bool {
-        !id.is_nil() && id.index() < self.slots.len() && self.slots[id.index()].state == SlotState::Live
+        !id.is_nil()
+            && id.index() < self.slots.len()
+            && self.slots[id.index()].state == SlotState::Live
     }
 
     /// A committed page. Readers get a shared reference: nothing may change it.

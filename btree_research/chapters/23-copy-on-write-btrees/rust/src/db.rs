@@ -220,7 +220,11 @@ impl Db {
     pub fn reclaim(&mut self) -> usize {
         let oldest = self.snapshots.first().map_or(u64::MAX, |s| s.snap.id);
         // `pending` is ascending by freed_by, so the releasable entries are a prefix.
-        let n = self.pending.iter().take_while(|p| p.freed_by <= oldest).count();
+        let n = self
+            .pending
+            .iter()
+            .take_while(|p| p.freed_by <= oldest)
+            .count();
         for p in self.pending.drain(..n) {
             self.store.release(p.page);
         }

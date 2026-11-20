@@ -269,8 +269,16 @@ fn out_of_nodes_demo(w: &mut dyn Write) -> io::Result<()> {
                     key,
                     used,
                     tree.table.count(),
-                    if before == dump_to_string(&tree) { "yes" } else { "NO" },
-                    if tree.nothing_locked() { "none" } else { "SOME" }
+                    if before == dump_to_string(&tree) {
+                        "yes"
+                    } else {
+                        "NO"
+                    },
+                    if tree.nothing_locked() {
+                        "none"
+                    } else {
+                        "SOME"
+                    }
                 )?;
                 break;
             }
@@ -298,7 +306,11 @@ fn stress_demo(w: &mut dyn Write) -> io::Result<()> {
             writeln!(
                 w,
                 "{} {:<14} keys={} expected={} first-time puts={} lost={} failed={} mismatches={} valid={}",
-                if overlapping { "overlapping keys" } else { "disjoint keys   " },
+                if overlapping {
+                    "overlapping keys"
+                } else {
+                    "disjoint keys   "
+                },
                 protocol_name(protocol),
                 r.keys,
                 r.expected_keys,

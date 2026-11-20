@@ -41,7 +41,13 @@ pub fn dump(view: View<'_>, txn_id: u64, w: &mut dyn Write) -> io::Result<()> {
 }
 
 /// Prints the nodes that are `levels_down` levels below `id`.
-fn print_level(view: View<'_>, id: PageId, levels_down: usize, first_group: &mut bool, w: &mut dyn Write) -> io::Result<()> {
+fn print_level(
+    view: View<'_>,
+    id: PageId,
+    levels_down: usize,
+    first_group: &mut bool,
+    w: &mut dyn Write,
+) -> io::Result<()> {
     if levels_down == 0 {
         write!(w, " ")?;
         return print_node(view, id, w);

@@ -166,7 +166,13 @@ impl Checker<'_> {
     /// Checks the subtree rooted at `id`. `lo` (inclusive) and `hi`
     /// (exclusive) are the bounds inherited from the separators above;
     /// `None` means unbounded.
-    fn check_node(&mut self, id: PageId, depth: usize, lo: Option<u64>, hi: Option<u64>) -> Result<(), Violation> {
+    fn check_node(
+        &mut self,
+        id: PageId,
+        depth: usize,
+        lo: Option<u64>,
+        hi: Option<u64>,
+    ) -> Result<(), Violation> {
         let db = self.db;
         if id.is_nil() || id.index() >= self.class.len() {
             return Err(Violation::DanglingChild);

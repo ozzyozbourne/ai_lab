@@ -158,7 +158,11 @@ impl<'db> WriteTxn<'db> {
     fn alloc_page(&mut self, content: Node) -> Result<PageId, TxnError> {
         // The check that can fail comes first, so that a failure leaves the
         // free list and the dirty map consistent.
-        if self.db.page_budget.is_some_and(|budget| self.pages.len() >= budget) {
+        if self
+            .db
+            .page_budget
+            .is_some_and(|budget| self.pages.len() >= budget)
+        {
             return Err(TxnError::OutOfPages);
         }
         let id = if let Some(reusable) = self.db.store.free.pop() {
@@ -253,7 +257,12 @@ impl<'db> WriteTxn<'db> {
     }
 
     /// Returns where the visited page lives NOW (its copy) and what happened.
-    fn insert_into(&mut self, id: PageId, key: u64, value: u64) -> Result<(PageId, Outcome), TxnError> {
+    fn insert_into(
+        &mut self,
+        id: PageId,
+        key: u64,
+        value: u64,
+    ) -> Result<(PageId, Outcome), TxnError> {
         // Copy on the way DOWN: by the time we change anything, this page is
         // private.
         let id = self.touch(id)?;
@@ -558,7 +567,10 @@ impl<'db> WriteTxn<'db> {
 
         // Phase 4: the replaced pages are unreachable from the new root, but
         // older snapshots may still reach them: pending, not free.
-        let freed = self.freed.iter().map(|&page| PendingFree { freed_by: id, page });
+        let freed = self
+            .freed
+            .iter()
+            .map(|&page| PendingFree { freed_by: id, page });
         self.db.pending.extend(freed);
         let mut info = self.info;
         info.txn_id = id;

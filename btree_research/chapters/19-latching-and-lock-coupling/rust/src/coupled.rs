@@ -2,7 +2,7 @@
 //!
 //! The rule for moving from a node to its child, for readers and writers:
 //!
-//!     latch the CHILD first, release the PARENT afterwards.
+//! > latch the CHILD first, release the PARENT afterwards.
 //!
 //! For a moment the thread holds both, like a crab that puts one claw down
 //! before lifting the other. The moment matters: with the parent latched,

@@ -26,7 +26,10 @@ fn opt(v: Option<u64>) -> String {
 fn run(w: &mut dyn Write) -> io::Result<()> {
     let mut db = Db::new(4);
 
-    writeln!(w, "== 1. Build: canonical keys, M = 4, one transaction per put ==")?;
+    writeln!(
+        w,
+        "== 1. Build: canonical keys, M = 4, one transaction per put =="
+    )?;
     for key in CANONICAL {
         let mut txn = db.begin();
         txn.put(key, key * 100).expect(NO_BUDGET);
@@ -38,9 +41,17 @@ fn run(w: &mut dyn Write) -> io::Result<()> {
     print_store(w, &db)?;
     db.validate().expect("valid");
 
-    writeln!(w, "\n== 2. Path copying: a snapshot keeps the old root alive ==")?;
+    writeln!(
+        w,
+        "\n== 2. Path copying: a snapshot keeps the old root alive =="
+    )?;
     let snap = db.snapshot();
-    writeln!(w, "snapshot taken at txn {} (root #{})", snap.id, snap.root.index())?;
+    writeln!(
+        w,
+        "snapshot taken at txn {} (root #{})",
+        snap.id,
+        snap.root.index()
+    )?;
     {
         let mut txn = db.begin();
         txn.put(13, 1300).expect(NO_BUDGET);
@@ -56,9 +67,22 @@ fn run(w: &mut dyn Write) -> io::Result<()> {
     print_store(w, &db)?;
     db.validate().expect("valid");
 
-    writeln!(w, "\n== 3. Two readers, two answers; range without sibling links ==")?;
-    writeln!(w, "snapshot: get 13 = {}, {} keys", opt(snap.view(&db).get(13)), snap.count)?;
-    writeln!(w, "current : get 13 = {}, {} keys", opt(db.get(13)), db.len())?;
+    writeln!(
+        w,
+        "\n== 3. Two readers, two answers; range without sibling links =="
+    )?;
+    writeln!(
+        w,
+        "snapshot: get 13 = {}, {} keys",
+        opt(snap.view(&db).get(13)),
+        snap.count
+    )?;
+    writeln!(
+        w,
+        "current : get 13 = {}, {} keys",
+        opt(db.get(13)),
+        db.len()
+    )?;
     write!(w, "snapshot range [6, 20):")?;
     for e in snap.view(&db).range(6, 20) {
         write!(w, " {}", e.key)?;
@@ -78,10 +102,20 @@ fn run(w: &mut dyn Write) -> io::Result<()> {
         print_commit(w, info, &db)?;
     }
     print_store(w, &db)?;
-    writeln!(w, "snapshot still sees {} keys, get 6 = {}", snap.count, opt(snap.view(&db).get(6)))?;
+    writeln!(
+        w,
+        "snapshot still sees {} keys, get 6 = {}",
+        snap.count,
+        opt(snap.view(&db).get(6))
+    )?;
     db.validate().expect("valid");
     let second = db.retain(snap); // a second reader of the same root
-    writeln!(w, "two handles on txn {}; release the first : {} pages released", snap.id, db.release(snap))?;
+    writeln!(
+        w,
+        "two handles on txn {}; release the first : {} pages released",
+        snap.id,
+        db.release(snap)
+    )?;
     writeln!(
         w,
         "                       release the second: {} pages move from pending to the free list",
@@ -104,7 +138,12 @@ fn run(w: &mut dyn Write) -> io::Result<()> {
         let mut txn = db.begin();
         for key in [26, 27, 28] {
             txn.put(key, key * 100).expect(NO_BUDGET);
-            writeln!(w, "  put {key}: {} dirty pages, {} copied so far", txn.dirty_count(), txn.info().copied)?;
+            writeln!(
+                w,
+                "  put {key}: {} dirty pages, {} copied so far",
+                txn.dirty_count(),
+                txn.info().copied
+            )?;
         }
         writeln!(
             w,
@@ -139,7 +178,11 @@ fn run(w: &mut dyn Write) -> io::Result<()> {
     print_meta(w, &db)?;
     db.reopen().expect("one slot is intact");
     dump::dump(db.view(), db.current.txn_id, w)?;
-    writeln!(w, "get 27 = {} (the torn commit is gone, the one before it is intact)", opt(db.get(27)))?;
+    writeln!(
+        w,
+        "get 27 = {} (the torn commit is gone, the one before it is intact)",
+        opt(db.get(27))
+    )?;
     print_store(w, &db)?;
     db.validate().expect("valid");
 
@@ -185,7 +228,11 @@ fn print_sharing(w: &mut dyn Write, db: &Db, snap: Snapshot) -> io::Result<()> {
     let mut new = vec![false; n];
     dump::mark_reachable(snap.view(db), &mut old);
     dump::mark_reachable(db.view(), &mut new);
-    let labels = ["shared by both roots:", "only the old root   :", "only the new root   :"];
+    let labels = [
+        "shared by both roots:",
+        "only the old root   :",
+        "only the new root   :",
+    ];
     for (which, label) in labels.iter().enumerate() {
         write!(w, "{label}")?;
         for i in 0..n {
@@ -217,7 +264,11 @@ fn print_meta(w: &mut dyn Write, db: &Db) -> io::Result<()> {
                 m.page_count,
                 Meta::checksum(slot)
             )?,
-            None => write!(w, "stored crc {:08x} does not match  INVALID", Meta::checksum(slot))?,
+            None => write!(
+                w,
+                "stored crc {:08x} does not match  INVALID",
+                Meta::checksum(slot)
+            )?,
         }
         writeln!(w)?;
     }
@@ -233,7 +284,10 @@ struct Held {
 /// Seeded model run: one transaction per write, snapshots taken along the
 /// way and compared against saved copies of the oracle.
 fn model_run(w: &mut dyn Write) -> io::Result<()> {
-    writeln!(w, "\n== 7. Model run: 3000 operations, snapshots against saved oracle copies ==")?;
+    writeln!(
+        w,
+        "\n== 7. Model run: 3000 operations, snapshots against saved oracle copies =="
+    )?;
     for order in [4, 5, 8] {
         let mut db = Db::new(order);
         let mut oracle = Oracle::new();
@@ -330,6 +384,9 @@ mod tests {
     fn run_prints_exactly_expected_output_txt() {
         let mut out = Vec::new();
         super::run(&mut out).unwrap();
-        assert_eq!(String::from_utf8(out).unwrap(), include_str!("../../expected_output.txt"));
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            include_str!("../../expected_output.txt")
+        );
     }
 }

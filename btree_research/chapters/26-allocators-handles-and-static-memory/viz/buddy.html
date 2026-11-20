@@ -108,7 +108,9 @@ Chapter text: <a href="../README.md">README</a>. First page: <a href="index.html
     current = steps;
     stepper.setSteps(steps, { play: !!play });
   }
-  function name() { var n = String.fromCharCode(97 + nextName % 26) + (nextName >= 26 ? Math.floor(nextName / 26) : ''); nextName++; return n; }
+  // A block name is consumed only by an allocation that succeeds, so names stay a, b, c, ...
+  function peekName() { return String.fromCharCode(97 + nextName % 26) + (nextName >= 26 ? Math.floor(nextName / 26) : ''); }
+  function name() { var n = peekName(); nextName++; return n; }
   function reset() {
     heap = new Ch26.Buddy(10, 6); nextName = 0; prior = []; current = [];
     // The fixed scenario of the programs (section 5 of expected_output.txt), as one timeline.
@@ -124,10 +126,21 @@ Chapter text: <a href="../README.md">README</a>. First page: <a href="index.html
     show(heap.idle('Sixteen 64-byte blocks were allocated and every other one freed. 512 bytes are free, but no two free blocks are buddies, so the largest request that can succeed is 64 bytes. Try <b>Alloc 128</b>: it fails. That is external fragmentation. Free one of the remaining blocks and watch two neighbours merge.'));
   }
 
-  var input = el('input.bt-input#size', { type: 'number', min: 1, max: 2000, value: 128, 'aria-label': 'Request size in bytes', style: { width: '6em' } });
+  var input = el('input.bt-input#size', { type: 'text', inputmode: 'numeric', value: 128, 'aria-label': 'Request size in bytes, a whole number from 1 to 2000', style: { width: '6em' } });
   function alloc() {
-    var len = Math.max(1, Math.min(2000, Math.floor(+input.value || 1)));
-    show(heap.alloc(len, name()), true);
+    var raw = input.value.trim(), n = Number(raw), note = '';
+    if (raw === '' || !isFinite(n) || n < 1) {
+      // Nothing sensible to round to: say so and allocate nothing.
+      show(heap.idle((raw === '' ? 'No size was typed' : '“' + BTViz.esc(raw) + '” is not a size that can be requested') +
+        '. Type a whole number of bytes from 1 to 2000 (the heap has 1024). Nothing was allocated.'));
+      return;
+    }
+    var len = Math.min(2000, Math.floor(n));
+    if (len !== n) note = 'You typed ' + BTViz.esc(raw) + '; this page takes whole numbers up to 2000, so ' + len + ' is requested. ';
+    var steps = heap.alloc(len, peekName());
+    if (steps.result !== null) nextName++;
+    steps[0].caption = note + steps[0].caption;
+    show(steps, true);
   }
   fig.toolbar.append(
     el('label.bt-field', 'bytes', input),

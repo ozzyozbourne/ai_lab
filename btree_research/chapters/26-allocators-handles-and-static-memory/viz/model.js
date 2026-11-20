@@ -176,11 +176,12 @@
   /** All keys in ascending order. */
   T.keys = function () {
     var self = this, out = [];
-    (function walk(h) {
+    function walk(h) {
       var n = self.node(h);
       n.keys.forEach(function (k, i) { if (h.c) walk(n.kids[i]); out.push(k); });
       if (h.c) walk(n.kids[n.keys.length]);
-    })(this.root || { c: 0, slab: -1, slot: 0 });
+    }
+    if (this.root) walk(this.root);
     return out;
   };
   T.has = function (key) { return this.keys().indexOf(key) >= 0; };

@@ -115,5 +115,62 @@ pub fn free_block(&mut self, start: u32) {
     }
     self.push_free(block, k);
 }`
+  },
+  freeze: {
+    zig: `
+// Start-up: take everything the tree will ever need, then freeze.
+var static: StaticAllocator = .init(heap.allocator());
+var fixed: btree.BTree(4, 32) = .init(static.allocator(), false);
+try fixed.leaves.reserve(3);
+try fixed.interiors.reserve(2);
+static.freeze();                  // init -> static
+
+// StaticAllocator: the policy in front of the parent's rawAlloc.
+fn alloc(ctx: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {
+    const self: *StaticAllocator = @ptrCast(@alignCast(ctx));
+    if (self.state != .init) {
+        self.refused += 1;
+        return null;              // the caller sees error.OutOfMemory
+    }
+    return self.parent.rawAlloc(len, alignment, ret_addr);
+}
+
+// SlabPool: the directory is sized once, because growing it would free the
+// old one, and the first free ends the init phase.
+pub fn reserve(pool: *Pool, count: u32) Allocator.Error!void {
+    if (count > pool.slabs.capacity) try pool.slabs.ensureTotalCapacityPrecise(pool.backing, count);
+    while (pool.slab_count < count) _ = try pool.addSlab();
+}`,
+    rust: `
+// Start-up: take everything the tree will ever need, then freeze.
+let mut fixed: BTree<4, 3, 32> = BTree::new(false);
+fixed.leaves.reserve(3).expect("init may allocate");
+fixed.interiors.reserve(2).expect("init may allocate");
+fixed.leaves.freeze();
+fixed.interiors.freeze();
+
+// No allocator interface in stable Rust: the freeze is a property of the pool.
+pub fn freeze(&mut self) {
+    self.budget = 0;              // slabs that may still be created
+}
+
+fn add_slab(&mut self) -> Result<usize, OutOfNodes> {
+    if self.budget == 0 {
+        return Err(OutOfNodes);   // create() counts it in grow_failures
+    }
+    self.budget -= 1;
+    // ... build the bitmap and the slots, store the slab in the directory
+}
+
+pub fn reserve(&mut self, count: u32) -> Result<(), OutOfNodes> {
+    let wanted = count as usize;
+    if wanted > self.slabs.capacity() {
+        self.slabs.reserve_exact(wanted - self.slabs.len());
+    }
+    while self.slab_count < count {
+        self.add_slab()?;
+    }
+    Ok(())
+}`
   }
 };

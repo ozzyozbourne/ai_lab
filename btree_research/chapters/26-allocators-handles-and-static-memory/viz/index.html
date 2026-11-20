@@ -246,7 +246,7 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
   cf.stage.appendChild(grid);
   BTViz.codePanel(grid, 'create', { title: 'SlabPool.create', maxHeight: 330 }).highlight({ zig: [[3, 5], [10, 11]], rust: [[3, 9], [11, 13]] });
   BTViz.codePanel(grid, 'relocate', { title: 'vacuum: relocate + one handle rewrite', maxHeight: 330 }).highlight({ zig: [[3, 5], 14], rust: [[3, 6], [16, 17]] });
-  BTViz.codePanel(grid, 'freeze', { title: 'static memory: reserve, then freeze', maxHeight: 330 }).highlight(FREEZE_LINES);
+  BTViz.codePanel(grid, 'freeze', { title: 'static memory: reserve, then freeze', maxHeight: 330 }).highlight({ zig: [[4, 6], [11, 14]], rust: [[3, 6], [10, 10], [14, 16]] });
 
   /* ---- self-tests: the JS model must reproduce expected_output.txt */
   var t = new Ch26.Tree(4, 4);

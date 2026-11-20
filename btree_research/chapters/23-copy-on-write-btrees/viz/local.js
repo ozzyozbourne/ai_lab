@@ -653,7 +653,7 @@
           gone = {};
           d.released.forEach(function (p) { gone[p.by] = true; });
           cap += 'No kept root is older than transaction ' + Object.keys(gone).join(', ') + ' any more, so the ' + plural(d.released.length, 'page') + ' ' +
-            (d.released.length === 1 ? 'it' : 'they') + ' freed (' + pgs(d.released.map(function (p) { return p.page; })) + ') ' + (d.released.length === 1 ? 'moves' : 'move') + ' to the <b>free list</b>. ';
+            (Object.keys(gone).length === 1 ? 'it' : 'they') + ' freed (' + pgs(d.released.map(function (p) { return p.page; })) + ') ' + (d.released.length === 1 ? 'moves' : 'move') + ' to the <b>free list</b>. ';
         }
         if (this.pending.length) cap += 'Pending, and why. ' + this.pendingReasons();
         if (d.freed.length) {

@@ -18,6 +18,9 @@
   /* Two lines of chips at most, then the row scrolls: the contents must not
      push the caption and the step controls off a 1280x800 screen. */
   .fz-row { display: flex; flex-wrap: wrap; gap: 4px; max-height: 58px; overflow-y: auto; align-items: center; }
+  /* The verdicts are never clipped: they wrap, and a long one may break. */
+  .fz-checks { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .fz-checks .bt-chip { white-space: normal; overflow-wrap: anywhere; }
   .fz-row-label { font-size: .8rem; color: var(--bt-muted); margin: 0 0 3px; }
   /* Oracle and tree contents side by side: they are compared chip by chip,
      and one row of height is saved for the caption and the controls. */
@@ -119,7 +122,7 @@ a broken tree pass a test that never builds a third level.</p>
   var opsPanel = el('div.bt-panel', {}, el('div.bt-panel-title', {}, 'Operation stream'), opsList);
   var treeBody = el('div.bt-panel-body');
   var treeTitle = el('div.bt-panel-title');
-  var checks = el('div.fz-row');
+  var checks = el('div.fz-checks');
   var oracleRow = el('div.fz-row'), scanRow = el('div.fz-row');
   var right = el('div.fz-col', {},
     el('div.bt-panel', {}, treeTitle, treeBody),

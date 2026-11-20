@@ -30,7 +30,7 @@ pub const SENTINEL: u64 = u64::MAX;
 
 /// Eight keys that are guaranteed to start on a 64-byte boundary.
 ///
-/// Zig asks the allocator: `gpa.alignedAlloc(u64, .@"64", n)`. Safe Rust has
+/// Zig asks the allocator: `gpa.alignedAlloc(u64, .fromByteUnits(64), n)`. Safe Rust has
 /// no aligned `Vec<u64>`, but alignment is a property of a TYPE, so we make
 /// the cache line a type and let `Vec<Line>` do the rest. No unsafe needed.
 #[repr(align(64))]

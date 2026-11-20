@@ -167,7 +167,6 @@ pub fn run(gpa: Allocator, io: Io, config: Config) !Report {
         for (w.keys) |key| _ = try oracle.put(gpa, key, valueOf(key));
     }
 
-    std.debug.print("DBG {any}\n", .{tree.stats()});
     report.keys = tree.len();
     report.expected_keys = oracle.len();
     if (report.keys != report.expected_keys) report.mismatches += 1;

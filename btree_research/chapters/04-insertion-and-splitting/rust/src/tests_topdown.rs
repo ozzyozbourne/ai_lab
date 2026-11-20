@@ -1,0 +1,202 @@
+//! Tests of the top-down insert, always next to the bottom-up one: both must
+//! give valid trees that hold the same keys. The shapes may differ.
+
+use crate::base_btree::BTree;
+use crate::base_pool::OutOfNodes;
+use crate::base_tests_insert::{BUILD_COUNT, CANONICAL_KEYS, build_key, expect_tree};
+use crate::ops::{Config, Entry, Op, OpStream, Oracle, Weights};
+use crate::topdown;
+
+fn put_all(tree: &mut BTree, keys: &[u64]) {
+    for &key in keys {
+        topdown::put(tree, key, key * 10).unwrap();
+    }
+}
+
+#[test]
+fn top_down_put_the_canonical_example_step_by_step() {
+    let mut tree = BTree::new(4);
+    put_all(&mut tree, &[10, 20, 5]);
+    expect_tree(&tree, "[5 10 20]\n");
+    // The root is full, so it is split BEFORE 6 is placed: 1 + median + 1.
+    put_all(&mut tree, &[6]);
+    expect_tree(&tree, "[10]\n[5 6] [20]\n");
+    put_all(&mut tree, &[12, 30, 7, 17, 3]);
+    // Up to here the tree is the one bottom-up builds.
+    expect_tree(&tree, "[6 10 20]\n[3 5] [7] [12 17] [30]\n");
+    // 25 belongs in the leaf [30], which has room. Bottom-up would just put
+    // it there. Top-down meets a full root first and splits it anyway.
+    put_all(&mut tree, &[25]);
+    expect_tree(&tree, "[10]\n[6] [20]\n[3 5] [7] | [12 17] [25 30]\n");
+    put_all(&mut tree, &[1, 15]);
+    expect_tree(&tree, "[10]\n[6] [20]\n[1 3 5] [7] | [12 15 17] [25 30]\n");
+    assert_eq!(tree.counters.splits, 4);
+    assert_eq!(tree.counters.root_splits, 2);
+    for key in CANONICAL_KEYS {
+        assert_eq!(tree.get(key), Some(key * 10));
+    }
+}
+
+#[test]
+fn top_down_overwrite_returns_the_old_value_also_when_the_key_is_the_median_that_moves_up() {
+    let mut tree = BTree::new(4);
+    put_all(&mut tree, &[10, 20, 5, 6, 7]);
+    expect_tree(&tree, "[10]\n[5 6 7] [20]\n");
+    // The leaf [5 6 7] is full, so it is split on the way down; its median 6
+    // moves into the root, and 6 is the key being written.
+    assert_eq!(topdown::put(&mut tree, 6, 61), Ok(Some(60)));
+    expect_tree(&tree, "[6 10]\n[5] [7] [20]\n"); // an overwrite that changed the shape
+    assert_eq!(tree.get(6), Some(61));
+    assert_eq!(tree.len, 5);
+    assert_eq!(topdown::put(&mut tree, 20, 201), Ok(Some(200))); // found in a leaf
+    assert_eq!(topdown::put(&mut tree, 10, 101), Ok(Some(100))); // found in the root
+}
+
+#[test]
+fn why_top_down_needs_an_even_m_the_arithmetic() {
+    // A full node has M - 1 keys; without its median, M - 2 are left for two
+    // halves that each need min_keys = ceil(M/2) - 1.
+    let min_keys = |m: usize| m.div_ceil(2) - 1;
+    for m in [4, 6, 8, 64] {
+        assert!((m - 2) / 2 >= min_keys(m));
+    }
+    for m in [3, 5, 7, 63] {
+        assert!((m - 2) / 2 < min_keys(m));
+    }
+    // Bottom-up splits M keys (the new one included): M - 1 to share, enough for every M.
+    for m in [3, 4, 5, 6, 7, 8] {
+        assert!((m - 1) / 2 >= min_keys(m));
+    }
+}
+
+#[test]
+#[should_panic(expected = "even order")]
+fn top_down_put_on_an_odd_order_panics() {
+    // Zig rejects this at compile time; here the order is a run-time value.
+    let mut tree = BTree::new(5);
+    let _ = topdown::put(&mut tree, 1, 1);
+}
+
+/// The same operation stream goes into a bottom-up tree, a top-down tree and
+/// the oracle. Every answer must agree and both trees must stay valid.
+fn model_test_both_variants(order: usize, seed: u64) {
+    let mut bottom = BTree::new(order);
+    let mut top = BTree::new(order);
+    let mut oracle = Oracle::new();
+    let weights = Weights {
+        put: 5,
+        delete: 0,
+        get: 2,
+        range: 1,
+    };
+    for op in OpStream::new(Config {
+        seed,
+        count: 1500,
+        key_space: 400,
+        weights,
+    }) {
+        match op {
+            Op::Put { key, value } => {
+                let want = oracle.put(key, value);
+                assert_eq!(bottom.put(key, value), Ok(want));
+                assert_eq!(topdown::put(&mut top, key, value), Ok(want));
+            }
+            Op::Delete { .. } => unreachable!("weight 0"),
+            Op::Get { key } => {
+                assert_eq!(bottom.get(key), oracle.get(key));
+                assert_eq!(top.get(key), oracle.get(key));
+            }
+            Op::Range { lo, hi } => {
+                let (mut a, mut b) = (Vec::new(), Vec::new());
+                bottom.range(lo, hi, |key, value| a.push(Entry { key, value }));
+                top.range(lo, hi, |key, value| b.push(Entry { key, value }));
+                assert_eq!(a, oracle.range(lo, hi));
+                assert_eq!(b, oracle.range(lo, hi));
+            }
+        }
+        assert_eq!(top.len, oracle.len());
+        assert_eq!(bottom.validate(), Ok(()));
+        assert_eq!(top.validate(), Ok(())); // every invariant, after every operation
+    }
+    // Same keys and values, in the same order, in both trees.
+    let (mut all_bottom, mut all_top) = (Vec::new(), Vec::new());
+    bottom.in_order(|key, value| all_bottom.push(Entry { key, value }));
+    top.in_order(|key, value| all_top.push(Entry { key, value }));
+    assert_eq!(all_bottom, oracle.range(0, 400));
+    assert_eq!(all_top, oracle.range(0, 400));
+    // Splitting early can make the top-down tree taller, never shorter.
+    assert!(top.shape().height >= bottom.shape().height);
+}
+
+#[test]
+fn model_test_bottom_up_and_top_down_hold_the_same_keys_every_even_order_from_4_to_12() {
+    // Same seeds as the Zig test's first pool (the slab is the only pool here).
+    for order in [4, 6, 8, 10, 12] {
+        model_test_both_variants(order, order as u64);
+    }
+}
+
+#[test]
+fn top_down_put_under_allocation_failure_valid_tree_same_keys_the_finished_splits_stay() {
+    let mut tree = BTree::new(4);
+    for key in 1..13 {
+        tree.put(key, key).unwrap();
+    }
+    expect_tree(&tree, "[3 6 9]\n[1 2] [4 5] [7 8] [10 11 12]\n");
+
+    // The root split needs two nodes. If the second is missing, the first is
+    // handed back and nothing has changed, counters included.
+    let usage = tree.pool.usage;
+    tree.pool.fail_after = Some(1);
+    assert_eq!(topdown::put(&mut tree, 13, 13), Err(OutOfNodes));
+    assert_eq!(tree.pool.usage, usage);
+    assert_eq!(tree.counters.splits, 3);
+    expect_tree(&tree, "[3 6 9]\n[1 2] [4 5] [7 8] [10 11 12]\n");
+
+    // Now the root split succeeds and the leaf split below it fails. The
+    // root split is not undone: the tree is valid and holds the same 12
+    // keys, one level taller.
+    tree.pool.fail_after = Some(2);
+    assert_eq!(topdown::put(&mut tree, 13, 13), Err(OutOfNodes));
+    expect_tree(&tree, "[6]\n[3] [9]\n[1 2] [4 5] | [7 8] [10 11 12]\n");
+    assert_eq!(tree.len, 12);
+    assert_eq!(tree.get(13), None);
+    assert_eq!(tree.pool.usage.created, usage.created + 2); // real nodes of the tree
+
+    tree.pool.fail_after = None;
+    assert_eq!(topdown::put(&mut tree, 13, 13), Ok(None));
+    expect_tree(&tree, "[6]\n[3] [9 11]\n[1 2] [4 5] | [7 8] [10] [12 13]\n");
+}
+
+/// Build the 80-key tree top-down with allocation number `fail_at` failing
+/// (and all later ones). The put that hits it must leave a valid tree with
+/// exactly the keys inserted so far. Returns whether the failure was hit.
+fn top_down_build(fail_at: Option<u64>) -> bool {
+    let mut tree = BTree::new(4);
+    tree.pool.fail_after = fail_at;
+    for i in 0..BUILD_COUNT {
+        if topdown::put(&mut tree, build_key(i), i) == Err(OutOfNodes) {
+            assert_eq!(tree.len as u64, i);
+            assert_eq!(tree.get(build_key(i)), None);
+            for j in 0..i {
+                assert_eq!(tree.get(build_key(j)), Some(j));
+            }
+            assert_eq!(tree.validate(), Ok(()));
+            return true;
+        }
+    }
+    assert_eq!(tree.validate(), Ok(()));
+    false
+}
+
+#[test]
+fn top_down_every_allocation_in_a_build_may_fail_the_tree_stays_valid() {
+    // The Rust mirror of Zig's checkAllAllocationFailures: fail allocation
+    // 0, 1, 2, ... until the build gets through without reaching it.
+    let mut fail_at = 0;
+    while top_down_build(Some(fail_at)) {
+        fail_at += 1;
+    }
+    assert!(fail_at >= 2);
+    assert!(!top_down_build(None));
+}

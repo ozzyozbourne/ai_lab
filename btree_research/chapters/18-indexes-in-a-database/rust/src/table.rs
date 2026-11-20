@@ -220,10 +220,20 @@ impl Table {
         let code_key = row::column_key(u32::from(row.code), locator);
         let mut done = 0;
         let result = (|| {
-            Self::put_new(&self.counters, &mut self.primary, primary_key, primary_value)?;
+            Self::put_new(
+                &self.counters,
+                &mut self.primary,
+                primary_key,
+                primary_value,
+            )?;
             done = 1;
             // 3. One entry per secondary index, each ending in the locator.
-            Self::put_new(&self.counters, &mut self.by_customer_day, customer_day_key, 0)?;
+            Self::put_new(
+                &self.counters,
+                &mut self.by_customer_day,
+                customer_day_key,
+                0,
+            )?;
             done = 2;
             Self::put_new(&self.counters, &mut self.by_code, code_key, 0)
         })();

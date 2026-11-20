@@ -8,7 +8,9 @@ use crate::base_node::NodeId;
 use crate::base_pool::{OutOfNodes, Slab};
 use crate::base_stats::Shape;
 use crate::base_validate::ValidateError;
-use crate::{base_insert as insert, base_search as search, base_stats as stats, base_validate as validate};
+use crate::{
+    base_insert as insert, base_search as search, base_stats as stats, base_validate as validate,
+};
 use std::io::{self, Write};
 
 /// How often each structural change happened since the tree was created.

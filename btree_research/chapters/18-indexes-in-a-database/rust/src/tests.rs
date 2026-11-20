@@ -152,12 +152,21 @@ fn unique_constraint_and_primary_key_reject_duplicates_and_change_nothing() {
         let pages_before = table.heap.page_count();
 
         let before = table.counters.get();
-        assert_eq!(table.insert(r(40, 3, 1, 10, 129)), Err(InsertError::DuplicateCode));
+        assert_eq!(
+            table.insert(r(40, 3, 1, 10, 129)),
+            Err(InsertError::DuplicateCode)
+        );
         // Rejected after two descents (id check, code check), before any write.
         assert_eq!(table.counters.get().minus(before).descents, 2);
-        assert_eq!(table.insert(r(12, 3, 1, 10, 500)), Err(InsertError::DuplicatePrimaryKey));
+        assert_eq!(
+            table.insert(r(12, 3, 1, 10, 500)),
+            Err(InsertError::DuplicatePrimaryKey)
+        );
         // The id is checked first, so a row that violates both reports the id.
-        assert_eq!(table.insert(r(12, 3, 1, 10, 129)), Err(InsertError::DuplicatePrimaryKey));
+        assert_eq!(
+            table.insert(r(12, 3, 1, 10, 129)),
+            Err(InsertError::DuplicatePrimaryKey)
+        );
 
         assert_eq!(table.rows, 12);
         assert_eq!(table.heap.page_count(), pages_before);
@@ -283,7 +292,11 @@ fn model_test(layout: Layout, order: usize, seed: u64, ops: usize) {
                 let d1 = rng.below(20) as u16;
                 let d2 = rng.below(20) as u16;
                 let lo = d1.min(d2);
-                let hi = if rng.chance(1, 3) { u16::MAX } else { d1.max(d2) };
+                let hi = if rng.chance(1, 3) {
+                    u16::MAX
+                } else {
+                    d1.max(d2)
+                };
                 let expected = oracle.select(layout, customer, lo, hi);
                 let range = row::customer_days_range(customer, lo, hi);
                 table.fetch_scan(&mut rows, range);

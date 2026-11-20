@@ -433,8 +433,10 @@ pub const WriteTxn = struct {
         }
 
         // Phase 1: everything that can fail. No state has changed yet.
-        try db.store.grow(gpa, self.next_new);
+        // (`grow` comes last: it is the one that changes the store, and it
+        // does so only after its own reservations succeeded.)
         try db.pending.ensureUnusedCapacity(gpa, self.freed.items.len);
+        try db.store.grow(gpa, self.next_new);
 
         // Phase 2: write the new pages. Each goes to a FREE slot, so a crash
         // (or a reader) in the middle of this loop still sees the old tree

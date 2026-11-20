@@ -3,8 +3,8 @@
 //! declared `pub` here.
 
 use crate::base_btree::BTree;
-use crate::ops::{Config, Entry, Op, OpStream, Oracle, Weights};
 use crate::base_pool::OutOfNodes;
+use crate::ops::{Config, Entry, Op, OpStream, Oracle, Weights};
 
 /// The guide's canonical insertion order (chapters 03 to 08), M = 4.
 pub const CANONICAL_KEYS: [u64; 12] = [10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15];

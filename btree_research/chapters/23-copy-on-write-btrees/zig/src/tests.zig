@@ -507,7 +507,7 @@ test "a transaction that runs out of memory leaves no trace" {
             }
         }
     }
-    std.debug.print("failures={d}\n", .{failures});
+    try testing.expect(failures > 40);
 }
 
 // ------------------------------------------- validate catches corruption

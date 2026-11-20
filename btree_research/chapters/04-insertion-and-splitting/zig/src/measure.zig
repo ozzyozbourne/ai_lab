@@ -18,7 +18,7 @@ const SplitMix64 = @import("prng.zig").SplitMix64;
 pub const KeyOrder = enum { ascending, random };
 pub const Variant = enum { bottom_up, top_down };
 
-pub const Result = struct {
+pub const Measured = struct {
     /// Number of puts (all keys are distinct, so also the number of keys).
     puts: usize,
     shape: stats.Shape,
@@ -28,13 +28,13 @@ pub const Result = struct {
     most_splits_in_one_put: u64,
 
     /// Average node fill in tenths of a percent: keys / (nodes * (M - 1)).
-    pub fn fillPermille(self: Result) usize {
+    pub fn fillPermille(self: Measured) usize {
         return if (self.shape.capacity == 0) 0 else self.shape.keys * 1000 / self.shape.capacity;
     }
 
     /// Splits per 1000 puts, in tenths (so 345 means 34.5 splits per 1000 puts).
     /// This is the amortised structural cost of one insert.
-    pub fn splitsPer1000Tenths(self: Result) usize {
+    pub fn splitsPer1000Tenths(self: Measured) usize {
         return if (self.puts == 0) 0 else @intCast(self.splits * 10_000 / self.puts);
     }
 };
@@ -50,7 +50,7 @@ pub fn fillKeys(keys: []u64, order: KeyOrder, seed: u64) void {
 
 /// Insert `keys` (distinct) into an empty tree of order M and report its
 /// shape and split counts. Nodes come from `std.heap.MemoryPool` (StdPool).
-pub fn build(comptime M: usize, comptime variant: Variant, gpa: Allocator, keys: []const u64) !Result {
+pub fn build(comptime M: usize, comptime variant: Variant, gpa: Allocator, keys: []const u64) !Measured {
     const Tree = BTree(M, pool.StdPool);
     var tree: Tree = .empty;
     defer tree.deinit(gpa);

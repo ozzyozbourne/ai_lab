@@ -157,7 +157,7 @@ fn printTableHeader(w: *std.Io.Writer) !void {
     try w.writeAll("   M  keys       variant    height   nodes    fill  splits  per 1000 puts  most in one put\n");
 }
 
-fn printRow(w: *std.Io.Writer, comptime M: usize, order: []const u8, variant: []const u8, r: measure.Result) !void {
+fn printRow(w: *std.Io.Writer, comptime M: usize, order: []const u8, variant: []const u8, r: measure.Measured) !void {
     const fill = r.fillPermille();
     const rate = r.splitsPer1000Tenths();
     try w.print("{d:>4}  {s:<9}  {s:<9}  {d:>6}  {d:>6}  {d:>3}.{d}%  {d:>6}  {d:>11}.{d}  {d:>15}\n", .{

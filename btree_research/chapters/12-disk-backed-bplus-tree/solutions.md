@@ -20,13 +20,13 @@ Run: the build fails. In Zig the `comptime` block in `disk_btree.zig` reaches
 it was not rebuilt with the changed constant for this answer.)
 
 The step that would break: "the left half is below `T/2 + m`, which is at most `C`". With
-`m = 4 + 256 + 2000 + 2 = 2262` and `C = 4076`, a page could hold one such cell and get a
-second: `T = 4524`, the cut goes after the first cell, both halves fit. But take cells of
-1900, 300 and then a new one of 2262 sorted last: no prefix rule can help if two cells of
-2262 and one of 1900 must be placed, because any two of them exceed 4076 only barely or not
-at all, and the general bound `C/2 + 3m/2 = 5431` is above `C`. The code's `insertAt(...)
-catch unreachable` in `writeLeaf` would then be reachable. The rule `m <= C/3` is what makes
-it unreachable for every input, not just for lucky ones.
+`m = 4 + 256 + 2000 + 2 = 2262` that bound is `C/2 + 3m/2 = 5431`, above `C = 4076`. A
+concrete case (arithmetic, not run): a leaf holds cells of 2262 and 1700 bytes (3962 in
+total) and a new cell of 2262 bytes sorts between them. The costs in key order are 2262, 2262,
+1700, so `T = 6224` and half is 3112. The shortest prefix with at least 3112 bytes is the
+first two cells, 4524 bytes, which does not fit in a page. `writeLeaf`'s
+`insertAt(...) catch unreachable` would be reached. (A cleverer cut, 2262 | 3962, exists
+here; the point of `m <= C/3` is that the simple rule is then right for every input.)
 
 ## 3. Part 4 with a 3-frame pool
 

@@ -459,7 +459,7 @@
    * A box is keyed by its page id, so a page visibly travels: leaf row, deleted row, free row, and
    * back into the tree when a split reuses it. layout() is pure; Picture animates between layouts.
    */
-  var GEO = { cellH: 28, vGap: 40, hGap: 16, padX: 14, padTop: 28, charW: 7.3, cellPad: 12, minCell: 30, rowGap: 34, minScale: 0.5 };
+  var GEO = { cellH: 28, vGap: 40, hGap: 16, padX: 14, padTop: 28, charW: 7.3, cellPad: 12, minCell: 30, rowGap: 34, minScale: 0.75 };
   var INNER = { 'empty': 46, 'half-dead': 66, 'free': 44 };   // box widths when there are no cells
 
   function layout(db) {

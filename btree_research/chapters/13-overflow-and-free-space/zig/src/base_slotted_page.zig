@@ -1,3 +1,4 @@
+// Copied from chapters/12-disk-backed-bplus-tree/zig/src/base_slotted_page.zig (chapter 13 uses it unchanged), which has it from:
 // Copied from chapters/10-slotted-pages/zig/src/slotted_page.zig; unchanged.
 //! Chapter 10: a slotted page.
 //!

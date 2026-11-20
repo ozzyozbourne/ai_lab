@@ -1,3 +1,4 @@
+// Copied from chapters/12-disk-backed-bplus-tree/rust/src/base_storage.rs (chapter 13 uses it unchanged), which has it from:
 // Copied from chapters/09-pages-and-the-buffer-pool/rust/src/storage.rs; behaviour unchanged (only the
 // crate:: paths were renamed to the base_* modules of this chapter).
 //! storage.rs: the "disk" underneath the pager, as a small trait.

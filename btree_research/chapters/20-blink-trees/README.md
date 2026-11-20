@@ -135,7 +135,7 @@ and trimmed.
 | `base_handle`, `base_node`, `base_search` | `NodeId`, keys and children of one node, `lowerBound` / `childIndex` |
 | `blink` | `BLinkTree`: the node table, `Page` (node + level + high key + right link + flag), latch helpers |
 | `search` | `Descent`: one node per `step`; `lookup` with or without right links |
-| `insert` | `put`, `moveRight`, `halfSplit` (step 1), `insertParent` (step 2), `finishSplit` |
+| `insert` | `put`, `putFrom` (test hook), `moveRight`, `halfSplit` (step 1), `insertParent` (step 2), `finishSplit` |
 | `validate`, `dump` | invariants as code; text rendering |
 | `stress` | bounded multi-threaded workload |
 | `tests` | deterministic tests first, then the model test and the stress tests |

@@ -1,65 +1,96 @@
-//! disk_btree.zig: a B+tree whose nodes are slotted pages in a file.
+// Copied from chapters/12-disk-backed-bplus-tree/zig/src/disk_btree.zig and extended:
+// overflow chains, `delete` with free-at-empty, the on-disk free list, a
+// wider `validate`. The split code (pushRootDown, splitLeaf, insertSeparator,
+// splitInterior, splitPoint) is chapter 12's, with `pool.newPage()` replaced
+// by `allocPage()`.
+//! disk_btree.zig: a B+tree of slotted pages with large values and a free list.
 //!
 //! Layers (each one only talks to the one below):
 //!
-//!   DiskBTree      this file: keys, splits, the tree shape
+//!   DiskBTree      this file: keys, splits, overflow chains, the free list
 //!   SlottedPage    base_slotted_page.zig: cells inside one 4096-byte page
 //!   BufferPool     base_buffer_pool.zig: page id -> pinned frame in memory
 //!   Pager          base_pager.zig: page id -> byte offset in the storage
 //!   Storage        base_storage.zig: a file, or memory with fault injection
 //!
-//! File layout
-//! ===========
+//! Every page of the file has exactly ONE of these roles
+//! =====================================================
 //!
-//!   page 0   metapage (see `Meta`)
-//!   page 1   the root, for the whole life of the file
-//!   page 2+  leaves and interior pages, in order of allocation
+//!   metapage   page 0 (see `Meta`)
+//!   tree page  a leaf or an interior page reachable from the root (page 1)
+//!   overflow   one link of the chain that holds the tail of ONE large value
+//!   trunk      a page of the free list: an array of free page ids
+//!   free       a page listed in a trunk; its content means nothing
 //!
-//! Every tree page is a slotted page formatted with a 4-byte reserved tail
-//! (bytes 4092..4095 stay zero; chapters 21 and 22 put a page checksum there).
-//! The slotted page's caller-owned header bytes hold what makes it a node:
+//! Byte 7 of every formatted page says what it was last formatted as (the
+//! slotted page's `kind` byte; overflow and trunk pages keep theirs at the
+//! same offset), and the last 4 bytes of every page stay zero, reserved for
+//! the checksum of chapters 21 and 22.
 //!
-//!   kind        1 = leaf, 2 = interior
-//!   user area   bytes 0..4: one page id (u32, little-endian), the "link"
-//!                 leaf:      the right sibling, or invalid_page_id for none
-//!                 interior:  the rightmost child
+//!   tree page (kind 1 = leaf, 2 = interior): a slotted page, as in chapter 12
+//!     user area bytes 0..4: the link (leaf: right sibling; interior:
+//!     rightmost child). Interior cell i is (K_i -> child with keys < K_i).
 //!
-//!   leaf cell      key -> value
-//!   interior cell  key -> child page id (4 bytes). Cell i is (K_i, C_i):
-//!                  C_i holds the keys k with K_(i-1) <= k < K_i, and the
-//!                  rightmost child (the link) holds the keys >= K_(n-1).
+//!   leaf cell: key -> value field
+//!       0   u32  total length of the value, P
+//!       4   the first localLen(P) bytes of the value
+//!       ..  u32  first overflow page    (only if P > max_local)
 //!
-//! So a key equal to a separator lives to the RIGHT of it, the convention of
-//! chapter 07, and an interior page with n cells has n + 1 children.
+//!   overflow page (kind 3)
+//!       0   u32  next overflow page, invalid_page_id = last
+//!       7   u8   kind
+//!       8   payload, `overflow_payload` = 4084 bytes; every page of a chain
+//!           is full except possibly the last
+//!
+//!   trunk page (kind 4)
+//!       0   u32  next trunk page, invalid_page_id = last
+//!       4   u16  n, the number of ids that follow
+//!       7   u8   kind
+//!       8   n * u32 free page ids, at most `trunk_capacity` = 1021
 //!
 //! Invariants (checked by `validate`)
-//!   T1  every page is a well-formed slotted page of a known kind
-//!   T2  keys are strictly ascending inside a page (the slotted page's rule)
+//!   T1  every tree page is a well-formed slotted page of a known kind
+//!   T2  keys are strictly ascending inside a page
 //!   T3  every key of a subtree lies inside the bounds its ancestors'
 //!       separators give it: lower bound inclusive, upper bound exclusive
 //!   T4  all leaves are at the same depth
 //!   T5  following the links from the leftmost leaf visits every leaf once,
 //!       in key order, and ends with invalid_page_id
-//!   T6  every page of the file except page 0 is reached exactly once
-//!   T7  only the root may be an empty leaf; an interior page has >= 1 key
+//!   T6  every page has exactly one role: none is unreachable, none is
+//!       reached twice, none has two roles
+//!   T7  no empty page: only the root may be a leaf without cells, and the
+//!       root is never an interior page without keys (a non-root interior
+//!       page may have no key, but it always has one child)
 //!   T8  the number of keys in the leaves equals `key_count`
+//!   T9  every value field is well formed, and its overflow chain has
+//!       exactly overflowPages(P) pages of kind 3
+//!   T10 the free list is a chain of trunk pages listing `free_count` pages
+//!
+//! Two ordering rules keep a FAILED operation from doing worse than leaking
+//! pages: a pointer is written only after the page it points to is complete
+//! (the chain before the leaf cell), and a page is freed only after the last
+//! pointer to it is gone (the parent before the child, the leaf cell before
+//! the chain). They do nothing for a CRASH: see the end of this comment.
 //!
 //! Pins. No pin outlives the function that took it, and at most TWO pages are
-//! pinned at any moment (the two halves of a split, or the root and the page
-//! its content moves to). The pool therefore needs only 2 frames to work.
-//! The path from the root is remembered as page ids, not as pinned pages.
+//! pinned at any moment, so a 2-frame pool still works: the two halves of a
+//! split, a leaf and one page of a chain, two consecutive pages of a chain
+//! being written, the root and its only child. The free list never needs a
+//! third pin: a trunk is unpinned before the page it handed out is fetched.
 //!
-//! Memory. The tree allocates nothing per node: nodes live in the pool's
-//! frame slab. Each operation gets scratch memory (the path stack, the copy
-//! of a page being split, cell lists) from one ArenaAllocator that is reset
-//! when the operation returns.
+//! Memory. Nodes live in the pool's frame slab. Each operation gets scratch
+//! memory from one ArenaAllocator that is reset when the operation returns.
+//! A value that is read is assembled in memory of the CALLER's choosing
+//! (`get` takes an allocator); the range iterator uses a buffer-first chain:
+//! its own inline buffer for values that were stored in the leaf, the heap
+//! only for values that had an overflow chain.
 //!
-//! NOT crash-safe, and not error-atomic. A split changes two or three pages
-//! and the file only ever receives them one at a time. If `put` fails after
-//! its first page change (I/O error, out of memory), the tree in memory is
-//! half-split: the handle marks itself poisoned and refuses further work.
-//! If the process dies between the page writes, the file is half-split.
-//! Chapters 21 and 22 repair this with checksums and a write-ahead log.
+//! NOT crash-safe, and not error-atomic. An operation changes several pages
+//! and the file receives them one at a time. If `put` or `delete` fails after
+//! its first page change (I/O error, out of memory), the handle marks itself
+//! poisoned and refuses further work. Worse than in chapter 12: a freed page
+//! is REUSED AT ONCE, so after a crash an old leaf cell on disk can point at
+//! pages that already hold another value. Chapter 22 fixes this with a log.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;

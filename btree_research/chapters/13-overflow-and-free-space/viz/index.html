@@ -97,7 +97,7 @@ every page ends up on the free list.</p>
 <script>
 (function () {
   'use strict';
-  var el = BTViz.el, esc = BTViz.esc;
+  var el = BTViz.el;
 
   BTViz.page({
     title: 'Overflow and free space', chapter: 13,
@@ -356,7 +356,6 @@ every page ends up on the free list.</p>
     [100, 1088, 1089, 3000, 5000, 9000, 14000].map(function (p) { return p + ' -> ' + Ch13.localLen(p) + '+' + Ch13.overflowPages(p) + 'p'; }).join('  '),
     '100 -> 100+0p  1088 -> 1088+0p  1089 -> 544+1p  3000 -> 544+1p  5000 -> 916+1p  9000 -> 832+2p  14000 -> 544+4p');
   BTViz.selfTest('model valid', scenarioModel.validate().join('; '), '');
-  void esc;
 })();
 </script>
 </body>

@@ -69,18 +69,20 @@ block device, which does nothing but count: blocks read, blocks written, blocks 
     <em>Predict</em> to guess the cost of each get.</li>
   <li><strong>Deletes and overwrites.</strong> <em>delete 15</em> writes a tombstone (struck through) without looking
     for the key. The old value and the tombstone both stay on the device until a compaction meets them.</li>
-  <li><strong>The three amplifications.</strong> The last line of each card gives the chapter's ratios for the
+  <li><strong>The three amplifications.</strong> The last line of each card (<em>amp</em>) gives the chapter's ratios for the
     operations completed so far: <em>write</em> = entry slots written per put or delete (a block has 3 slots),
     <em>read</em> = blocks read per get, <em>space</em> = blocks in use divided by the blocks the live keys would fill
     if packed. A dash means there is nothing to divide by yet.</li>
   <li><strong>Growth factor.</strong> A larger growth factor makes each level hold more before it is merged down:
     fewer levels to search, more rewriting per level. To see it, press <em>12 random writes</em> a dozen times with
-    growth 2, then again with growth 4, and compare the levels and the amplification lines.</li>
+    growth 2, then again with growth 4, and compare the levels. In so short a run the amplification lines can go
+    either way; section 6 of the programs' output shows the trade over 12000 operations.</li>
   <li><strong>What the counters leave out.</strong> Nothing is cached: both structures pay for every block they look
     at, index blocks included, on every operation. There is no write-ahead log either, so the two do <em>not</em>
     promise the same thing: a B+tree put is on the device when it returns, while an LSM put sits in the memtable, in
     RAM only, until the next flush. A log that made every LSM put durable at once would add about one block write per
-    put. The README puts numbers on both.</li>
+    put. There is no bloom filter either: with one per run, most of the probes that find nothing here would cost no
+    block. The README puts numbers on all three.</li>
 </ul>
 <p>Text and code: <a href="../README.md">chapter 27 README</a>. Second page:
 <a href="bepsilon.html">a buffered (B-epsilon) node</a>, the design between the two. The counts shown here are
@@ -420,7 +422,7 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     function card(c, a) {
       return (s.opName ? BTViz.esc(s.opName) + ': <b>' + c.opR + '</b> read, <b>' + c.opW + '</b> written<br>' : 'no operation in progress<br>') +
              'total <b>' + c.r + '</b> read, <b>' + c.w + '</b> written, <b>' + c.blocks + '</b> in use<br>' +
-             'amplification: write <b>' + a.write + '</b>, read <b>' + a.read + '</b>, space <b>' + a.space + '</b>';
+             '<span title="amplification, for the operations completed so far">amp:</span> write <b>' + a.write + '</b>, read <b>' + a.read + '</b>, space <b>' + a.space + '</b>';
     }
     cardBt.innerHTML = card(s.ctr.bt, s.amps.bt);
     cardLsm.innerHTML = card(s.ctr.lsm, s.amps.lsm);

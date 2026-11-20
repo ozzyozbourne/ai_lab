@@ -59,9 +59,9 @@ decides where to go, releases the latch, and only then latches the next node.
 ### A split in two steps
 
 A split has to change two nodes on the child level and one on the parent
-level. With lock coupling the writer keeps the parent latched on its way down,
-in case the child has to split. The B-link structure allows the split to be
-cut in two:
+level. With lock coupling a writer cannot let go of the parent until it knows
+that the child will not split. The B-link structure allows the split to be cut
+in two:
 
 1. **Step 1**, under the latch of the full node only: create the right
    sibling, move the upper half into it, give it the old high key and the old
@@ -285,7 +285,9 @@ The tests are ordered from deterministic to concurrent.
 
 ### Output
 
-Both programs print exactly this (`expected_output.txt`):
+Both programs print exactly [expected_output.txt](expected_output.txt), and a
+test in each language checks it. Sections 1 to 6, with the second half of
+section 5 left out:
 
 ```
 == 1. Build: canonical keys, order M = 4; every node has a high key and a right link ==
@@ -328,15 +330,7 @@ with right links: get 30
   writer: put 28 splits that leaf, both steps (half splits +1, incomplete 0)
   reader: visits #8(26 27), 30 >= high key 28, follows the right link to #9
   reader: visits #9(28 30), finds 30 = 3000
-without right links: get 32
-  reader: visits #7[15], follows the downlink to #6
-  reader: visits #6[20 26 28], follows the downlink to #9
-  writer: put 31 splits that leaf, both steps (half splits +2, incomplete 0)
-  reader: visits #9(28 30), does not find 32  <- MISSED
-height 3, 17 keys, 12 nodes
-  level 2: #7[15 28]
-  level 1: #2[6 10]<15 -> #6[20 26]<28 -> #11[31]
-  level 0: #0(1 3 5)<6 -> #4(6 7)<10 -> #1(10 12)<15 -> #5(15 17)<20 -> #3(20 25)<26 -> #8(26 27)<28 -> #9(28 30)<31 -> #10(31 32)
+  ...
 
 == 6. A root split is the same two steps ==
 put 4, stopped after step 1: the root has a right sibling and there is no new root yet
@@ -347,20 +341,12 @@ put 5 finishes it: step 2 of a root split builds the new root
 height 2, 5 keys, 3 nodes
   level 1: #2[3]
   level 0: #0(1 2)<3 -> #1(3 4 5)
-
-== 7. Model run: 20000 puts and gets, a seeded coin abandons splits after step 1 ==
-M=3  keys=1993 height=9 nodes=2313 | half splits=2304 completed=2303 (by a later writer=385) still incomplete=1 | gets wrong=0, wrong without right links=103
-M=4  keys=1993 height=7 nodes=1269 | half splits=1262 completed=1262 (by a later writer=246) still incomplete=0 | gets wrong=0, wrong without right links=49
-M=16 keys=1993 height=4 nodes=208 | half splits=204 completed=204 (by a later writer=44) still incomplete=0 | gets wrong=0, wrong without right links=6
-
-== 8. Stress: 4 threads, 4000 seeded puts each, every put followed by 3 gets ==
-normal splits: keys=5188 expected=5188 lost reads=0 failed puts=0 mismatches=0 validate=ok incomplete splits=0
-every split abandoned after step 1: keys=5188 expected=5188 lost reads=0 failed puts=0 mismatches=0 validate=ok
 ```
 
-In section 5 the second `put` reports two half splits: the leaf split filled
-its parent #6, which split in turn. Section 7 shows how rarely the broken
-search is wrong in a single-threaded run, and that it is wrong all the same.
+The rest of section 5 is the same race without right links: the reader misses
+a key. Section 7 prints one line of counters per order for a seeded model run
+of 20000 operations (the search without right links is wrong 103, 49 and 6
+times for M = 3, 4, 16), and section 8 one line per stress run.
 
 ## In real databases
 
@@ -392,9 +378,18 @@ tree. Everything below was read in the Postgres source
   downlink from the left page's high key (`:2206-2212`), re-finds the parent
   with `_bt_getstackbuf`, which matches on the child's block number and moves
   right (`:2348-2453`), and inserts next to the left child's entry
-  (`:2246-2249`). The flag is cleared in the same critical section
-  (`:1316-1328`), and the child stays locked until then
-  (`nbtree/README:666-672`).
+  (`:2246-2249`). Lehman and Yao match on the separator key and must hold
+  three locks at that point (`nbtree/README:139-156`). The flag is cleared in
+  the same critical section (`:1316-1328`).
+- **Locks across the two steps.** As in this chapter, the left page stays
+  write-locked from the split until its downlink is in the parent
+  (`nbtree/nbtinsert.c:1236-1252`, `:2114-2120`, `nbtree/README:666-672`).
+  Child before parent is a safe order: locking the next page before releasing
+  the current one "is safe when moving right or up, but not when moving left
+  or down" (`nbtree/README:106-110`). Unlike this chapter, Postgres also keeps
+  the new right page locked until it has locked the parent (`:2225-2238`).
+  Here nothing latches the new node across the steps: the only pointer to it
+  is in the latched left node.
 - **Incomplete splits.** A crash or an error between the two actions leaves a
   page without a downlink; searches still work (`nbtree/README:642-650`).
   Missing downlinks are created by later insertions, not by searches, to keep
@@ -405,17 +400,10 @@ tree. Everything below was read in the Postgres source
 - **Root split.** Lehman and Yao do not describe it; Postgres splits the root
   like any page and then builds a new root (`nbtree/README:112-123`,
   `_bt_newlevel`, `nbtree/nbtinsert.c:2489-2655`).
-- **Lock order.** Locking the next page before releasing the current one "is
-  safe when moving right or up, but not when moving left or down"
-  (`nbtree/README:106-110`). Postgres avoids the three-lock case of the paper
-  by matching on block numbers (`nbtree/README:139-156`).
 
-What Postgres has and this chapter leaves out: each of the two steps is one
-WAL record, which is where "atomic" really comes from on disk (chapter 22);
-pages can be deleted, which adds half-dead pages and a rule for when a page
-may be reused (chapter 24); `_bt_finish_split` also locks the right sibling
-(`nbtree/nbtinsert.c:2283-2284`); and an inserter stepping right on the leaf
-level does couple locks, for the sake of unique checks
+Left out here: each step is one WAL record, which is where "atomic" comes
+from on disk (chapter 22); page deletion (chapter 24); and the lock coupling
+of an inserter that steps right on the leaf level, needed for unique checks
 (`nbtree/nbtinsert.c:1026-1031`).
 
 ## Allocator notes
@@ -441,12 +429,8 @@ key log and its list of missed reads. The arena is created before the thread
 starts, used only by that thread, and freed by the main thread after the join
 and after the logs were merged into the oracle. One arena per thread means the
 hot loop of one thread never touches allocator state that another thread is
-using, and a thread's memory goes away in one call. In Zig 0.17.1 the arena's
-`allocator()` is documented as thread-safe when its child is, but `deinit` and
-`reset` are not (`lib/std/heap/ArenaAllocator.zig`), so a shared arena would
-compile and would add contention plus a rule about who may reset it. The
-backing allocator must be thread-safe; `std.testing.allocator` and `init.gpa`
-are.
+using, and a thread's memory goes away in one call. A shared arena would
+compile and would add contention plus a rule about who may reset it.
 
 **Rust.** The table is `Box<[RwLock<Page>]>`: a boxed slice has no `push`, so
 "never grows" is visible in the type. The capacity plays the role of chapter
@@ -466,8 +450,10 @@ owns two `Vec`s and returns them through `join`; dropping them is the arena.
   must change together. Exercise 3 shows what `validate` says otherwise.
 - **Walking past a flagged node as a writer.** The node to its right has no
   downlink. If it splits, step 2 cannot find a parent entry. Exercise 4.
-- **Finding the parent by key or by trusting the stack.** The remembered node
-  is a hint. Search for the child's handle and move right.
+- **Trusting the stack.** The remembered node is a hint: search from it and
+  move right. (Lehman and Yao search for the separator key, which is also
+  correct in this tree; Postgres and this chapter search for the child's
+  handle, `nbtree/README:139-156`.)
 - **Moving keys left, or reusing a node's handle for other keys.** Every
   argument in this chapter rests on "keys only move right into a new node".
 - **Validating from the root only.** A node without a downlink is invisible

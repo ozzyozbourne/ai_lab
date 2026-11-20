@@ -71,9 +71,15 @@
 //! NOT crash-safe, and not error-atomic. A split changes two or three pages
 //! and the file only ever receives them one at a time. If `put` fails after
 //! its first page change (I/O error), the tree in memory is half-split: the
-//! handle marks itself poisoned and refuses further work. If the process
-//! dies between the page writes, the file is half-split. Chapters 21 and 22
-//! repair this with checksums and a write-ahead log.
+//! handle marks itself poisoned. From then on `put`, `get`, `range` and
+//! `flush` (and so `close`) return `TreePoisoned`, so nothing is read through
+//! the broken tree and nothing more of it is written. `validate`, `height`
+//! and `dump` do not check the flag: they are how the damage is looked at.
+//! (Difference from Zig: there a `RangeIterator` made before the failing
+//! `put` could still be advanced; here the borrow checker forbids keeping
+//! one across a `put`.) If the process dies between the page writes, the
+//! file is half-split. Chapters 21 and 22 repair this with checksums and a
+//! write-ahead log.
 
 use std::fmt;
 
@@ -336,7 +342,9 @@ pub struct DiskBTree {
     path: Vec<PathEntry>,
     pub(crate) root: PageId,
     pub(crate) key_count: u64,
-    /// Set when a `put` failed between two page changes of a split.
+    /// Set when a `put` failed between two page changes of a split. Checked
+    /// by `put`, `get`, `range` and `flush`; not by `validate`, `height` or
+    /// `dump`.
     pub(crate) poisoned: bool,
     pub stats: Stats,
 }

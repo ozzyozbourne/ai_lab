@@ -783,6 +783,76 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
   [10, 11, 12].forEach(doPut);
   BTViz.selfTest('fast clicks kept', stepper.state(stepper.steps.length - 1).versions.live + ' rows; ' + (/run to its end first/.test(stepper.steps[0].caption) ? 'said so' : 'silent'), '3 rows; said so');
 
+  /*
+   * No sequence of presses may leave state behind that the page does not show. The controls are
+   * pressed here exactly as a click presses them (the handlers of the buttons), with no time in
+   * between, so every press but the first of a run arrives while the previous one is being played.
+   */
+  function last() { return stepper.state(stepper.steps.length - 1); }
+  function snaps(d) { return d.names.map(function (n, i) { return n + '=' + d.open[i]; }).join(' ') || 'none'; }
+  function returned(d) { return d.scan.out.map(function (r) { return r.key; }).join(' '); }
+  resetAll();
+  [10, 20, 30, 40, 50].forEach(doPut);
+  scanStart(); scanStart();                               // a double-click
+  BTViz.selfTest('scan: double-click', snaps(last()), 'scan=5');
+  while (!last().scan.done) scanNext();
+  BTViz.selfTest('scan: ends, closes', returned(last()) + '; open ' + snaps(last()), '10 20 30 40 50; open none');
+  scanStart(); stepper.go(0); scanStart();                // start, step back while it plays, start
+  BTViz.selfTest('scan: start, back, start', snaps(last()), 'scan=5');
+  stepper.pause(); stepper.go(0); scanStart();            // the same, stepping back after it has played
+  BTViz.selfTest('scan: back when paused', snaps(last()), 'scan=5');
+
+  // The "Break it" recipe, but reading before a split has reused the page: the scan ends with an error.
+  resetAll();
+  [10, 20, 30, 40, 50, 60, 70, 80, 90].forEach(doPut);
+  [30, 40, 50, 60].forEach(doDelete);
+  scanStart(); scanNext(); doVacuum(); doUnsafe(); scanNext();
+  BTViz.selfTest('dangling: scan ends', last().scan.error + '; ' + returned(last()) + '; open ' + snaps(last()), 'DanglingLink; 10 20; open none');
+
+  // Taking over a scenario's paused scan by hand: when it ends, its snapshot S goes with it.
+  playScenario('pages', false);
+  stepper.go(firstStep(function (st) { return /^<b>Phase 2/.test(st.caption); }));
+  while (!last().scan || !last().scan.done) scanNext();
+  BTViz.selfTest('scenario scan by hand', returned(last()) + '; open ' + snaps(last()), '10 20 90 100 110 120; open none');
+
+  /** What must hold in every state the reader can continue from; [] when fine. */
+  function hidden(d) {
+    var bad = C.validate(d), paused = !!(d.scan && !d.scan.done);
+    var mine = d.names.filter(function (n) { return n === 'scan'; }).length;
+    if (d.names.length !== d.open.length) bad.push('snapshots and their names differ');
+    if (paused && d.open[d.names.indexOf(d.scan.name)] !== d.scan.snapshot) bad.push('a paused scan without its snapshot');
+    if (mine !== (paused && d.scan.name === 'scan' ? 1 : 0)) bad.push(mine + ' scan snapshot(s) open, scan ' + (paused ? 'paused' : 'not running'));
+    if (C.horizon(d) > d.now) bad.push('horizon ahead of the counter');
+    return bad;
+  }
+  /** `presses` random presses (a quarter of them double), steps back and forth and pauses mixed in. */
+  function monkey(seed, presses, start) {
+    var r = BTViz.rng(seed), bad = [];
+    function aKey() { return r.int(1, 12) * 5; }
+    var controls = [
+      function () { var key = aKey(); return function () { doPut(key); }; },
+      function () { var key = aKey(); return function () { doDelete(key); }; },
+      function () { return doOpen; }, function () { return doClose; },
+      function () { return scanStart; }, function () { return scanNext; },
+      function () { return doVacuum; }, function () { return doUnsafe; }
+    ];
+    start(r);
+    for (var i = 0; i < presses && !bad.length; i++) {
+      var what = r.int(0, 9);
+      if (what === 8) stepper.go(r.int(0, stepper.steps.length - 1));     // may well be while it plays
+      else if (what === 9) stepper.pause();
+      else { var press = controls[what](); press(); if (r() < 0.25) press(); }
+      stepper.steps.forEach(function (st, j) {
+        if (st.resume === j) hidden(st.state).forEach(function (m) { bad.push('seed ' + seed + ', press ' + i + ', step ' + j + ': ' + m); });
+      });
+    }
+    return bad.join('; ');
+  }
+  BTViz.selfTest('monkey: from empty', [1, 2, 3].map(function (seed) { return monkey(seed, 150, resetAll); }).join(''), '');
+  BTViz.selfTest('monkey: in scenarios', ['hints', 'pages', 'early'].map(function (name, n) {
+    return monkey(10 + n, 100, function (r) { playScenario(name, false); stepper.go(r.int(0, stepper.steps.length - 1)); });
+  }).join(''), '');
+
   playScenario('hints', false);
 })();
 </script>

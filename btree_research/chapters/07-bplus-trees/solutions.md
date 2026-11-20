@@ -155,16 +155,17 @@ not at `put 15`). 9 and 23 are in no leaf: they are stale from the moment
 they are created, so the stricter check of exercise 4 already fails after the
 fourth insert.
 
-Tests, measured by running both test suites with the change: 21 of 26 Zig
-tests and 20 of 25 Rust tests still pass. Everything that checks behaviour
+Tests, measured by running both test suites with the change: 21 of 27 Zig
+tests and 20 of 26 Rust tests still pass. Everything that checks behaviour
 passes: the model tests against the oracle, the chain tests, the
-allocation-failure tests and the corruption test. The same five tests fail in
-both languages, and all five compare an exact picture of the canonical tree:
+allocation-failure tests and the corruption test. The same six tests fail in
+both languages, and all six compare an exact picture of the canonical tree:
 
 - the canonical shape test (root 17 instead of 15, see above);
 - the copy-up test (it asks for 15 in the root);
 - "a separator may outlive its key" (it also asks for 15 in the root);
 - the delete walk-through (3 borrows instead of 4, and another final shape);
+- the middle-leaf merge test (it starts from the canonical shape as well);
 - the comparison of the program output with `expected_output.txt`.
 
 This is the idea behind suffix truncation in chapter 17: with string keys the

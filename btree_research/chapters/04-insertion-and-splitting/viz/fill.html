@@ -112,7 +112,7 @@ under random inserts the expected fill approaches ln&nbsp;2&nbsp;&asymp;&nbsp;69
     kids.push(el('line.guide', { x1: 0, x2: width, y1: 50, y2: 50 }));
     this.svg.replaceChildren.apply(this.svg, kids);
     this.head.replaceChildren(el('b', this.title),
-      el('span', s.keys + ' keys'), el('span', s.nodes + ' nodes (' + s.leaves + ' leaves)'), el('span', 'height ' + s.height),
+      el('span', s.keys + ' keys'), el('span', nodesText(s.nodes) + ' (' + s.leaves + (s.leaves === 1 ? ' leaf)' : ' leaves)')), el('span', 'height ' + s.height),
       el('span', 'splits ' + s.splits), el('span', 'fill ', el('b', percent(s))));
     this.note.textContent = !leaves.length ? 'No leaves yet.' :
       'Each bar is ' + (group === 1 ? 'one leaf' : 'the average of ' + group + ' neighbouring leaves') + ', smallest keys on the left. Full height = a full leaf; the dashed line is 50%.';

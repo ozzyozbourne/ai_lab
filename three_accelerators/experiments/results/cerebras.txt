@@ -1,0 +1,23 @@
+== 1. y = A.x on one PE (WSE-3), f32, N x N
+   N=16 run 1: SUCCESS!
+   N=16 run 1: Min cycles ( 0 ,  0 ):  325
+   N=16 run 1: Max cycles ( 0 ,  0 ):  325
+   N=16 run 2: SUCCESS!
+   N=16 run 2: Min cycles ( 0 ,  0 ):  325
+   N=16 run 2: Max cycles ( 0 ,  0 ):  325
+   N=100 run 1: SUCCESS!
+   N=100 run 1: Min cycles ( 0 ,  0 ):  10154
+   N=100 run 1: Max cycles ( 0 ,  0 ):  10154
+   N=100 run 2: SUCCESS!
+   N=100 run 2: Min cycles ( 0 ,  0 ):  10154
+   N=100 run 2: Max cycles ( 0 ,  0 ):  10154
+== 2. Data tasks fired by arriving wavelets (course program 02, N = 100 values)
+   run 1: tasks fired: 100  stats: [  26.137941 3302.5337      9.614744   -9.883508]  expected: [  26.13794  3302.5327  
+   run 1: SUCCESS!
+   run 1: whole-run simulated cycles = 7025
+   run 2: tasks fired: 100  stats: [  26.137941 3302.5337      9.614744   -9.883508]  expected: [  26.13794  3302.5327  
+   run 2: SUCCESS!
+   run 2: whole-run simulated cycles = 7062
+   run 3: tasks fired: 100  stats: [  26.137941 3302.5337      9.614744   -9.883508]  expected: [  26.13794  3302.5327  
+   run 3: SUCCESS!
+   run 3: whole-run simulated cycles = 7024

@@ -1,9 +1,8 @@
 # 26. Allocators, handles and static memory
 
-A B-tree is mostly a memory-management problem with a search algorithm on top. This
-chapter builds the three allocators an index engine ends up writing for itself, puts a
-B-tree on top of them, and then walks through every allocator Zig's standard library
-ships, with one tested example each.
+This chapter builds the three allocators an index engine ends up writing for itself,
+puts a B-tree on top of them, and then walks through every allocator Zig's standard
+library ships, with a tested example each.
 
 ## What you will learn
 
@@ -70,8 +69,8 @@ The last handle of the first line is slab 1, slot 1, class 0: `(0 << 31) | (1 <<
 
 Now delete the two items of slab 1. It is empty and slab 0 still has a free slot, so
 slab 1 goes back to the backing allocator. Delete the rest: slab 0 is empty too, but it
-is the *only* free space left, so it stays. Otherwise a workload that hovers around a
-slab boundary would allocate and free a slab on every other operation.
+is the *only* free space left, so it stays; otherwise a workload at a slab boundary
+would allocate and free a slab on every other operation.
 
 Vacuum on three sparse slabs (the letters are node names):
 
@@ -148,10 +147,9 @@ handle used on the interior pool stops the program in a safe build. `destroy` se
 bit and applies the "release unless it is the last free space" rule. With
 `release_empty = false` the pool never returns memory: that is the static policy.
 
-The pool also offers `allocator()`, a real `std.mem.Allocator` whose `alloc` serves any
-request that fits one slot. Look at its `free`: it receives a pointer, so it must find
-the slab by address, and it could never relocate anything. The interface works, but it
-gives up what handles were for.
+The pool also offers `allocator()`, a real `std.mem.Allocator` for requests that fit
+one slot. Its `free` receives a pointer, so it must find the slab by address and could
+never relocate anything: the interface gives up what handles were for.
 
 **`btree.zig`.** `Interior` is `{ head: Leaf, children: [M]Handle }`, so `head(h)`
 returns the keys and values of either kind and the class bit picks the pool. The tree
@@ -175,9 +173,13 @@ be live, and the number of reachable nodes must equal the number of live slots, 
 leaked or double-freed node fails `validate` whatever the backing allocator is.
 
 **`static_allocator.zig`.** A wrapper is four functions that forward to the parent's
-`rawAlloc`, `rawResize`, `rawRemap` and `rawFree`. This one adds a state: `init`
-passes everything, `static` refuses everything, `deinit` passes only `free`. Section 4
-of the program stacks all of it in one fixed buffer:
+`rawAlloc`, `rawResize`, `rawRemap` and `rawFree`. This one adds a state. `init`
+passes everything, but the first `free` ends it (state `deinit`). `static` refuses
+`alloc`, `resize` and `remap`; a `free` there is counted as a bug and still performed.
+`deinit` passes only `free`. Because a free ends `init`, nothing may grow by
+reallocation during start-up: `SlabPool.reserve` sizes its slab directory once,
+exactly, before it creates the first slab. Section 4 of the program stacks all of it
+in one fixed buffer:
 
 ```
 64 KiB buffer -> BuddyAllocator -> StaticAllocator -> two SlabPools -> BTree
@@ -209,30 +211,26 @@ Same structure, same names, same tests, same output.
 
 ### Differences
 
-- **No allocator interface.** `std::alloc::Allocator` is unstable, so nothing here
-  implements one. The pool is an ordinary owning container; "the backing allocator
-  may fail" becomes a `budget` of slabs that may still be created, `freeze()` sets it
-  to zero, and the error is `OutOfNodes`. There is no `StaticAllocator`: the freeze is
-  a property of the pool. The buddy allocator returns byte **offsets** into a `Vec<u8>`
-  it owns, which is the handle idea applied to bytes.
+- **No allocator interface.** `std::alloc::Allocator` is unstable. The pool is an
+  ordinary owning container; "the backing allocator may fail" becomes a `budget` of
+  slabs that may still be created, `freeze()` sets it to zero, and the error is
+  `OutOfNodes`. There is no `StaticAllocator`: the freeze is a property of the pool.
+  The buddy allocator returns byte **offsets** into a `Vec<u8>` it owns.
 - **Handles are what the borrow checker wants.** Zig's `splitChild` holds pointers to
-  parent, left and right at once. In Rust that is three `&mut` into one pool. The port
-  copies a 56-byte node out, edits it and writes it back; all safe code,
-  `unsafe_code = "forbid"`.
-- **Array sizes.** Zig computes `[M - 1]u64` in the type. Stable Rust cannot, so the
-  tree takes `K` as a second const parameter and checks `K + 1 == M` in a `const`
-  block.
-- **Stale handles.** Zig catches them with `assert` (a panic in safe builds, nothing in
-  `ReleaseFast`). Rust always panics with `stale handle L0.0`, and a test expects it.
-- **Leak checks.** Zig tests use `std.testing.allocator`. Rust has `Drop`; the
-  equivalent check is `validate`, which compares live slots with reachable nodes.
-- **Failure injection.** `checkAllAllocationFailures` becomes a loop over every
-  budget.
+  parent, left and right at once: three `&mut` into one pool in Rust. The port copies
+  a 56-byte node out, edits it and writes it back; `unsafe_code = "forbid"`.
+- **Array sizes.** Zig computes `[M - 1]u64` in the type. Stable Rust takes `K` as a
+  second const parameter and checks `K + 1 == M` in a `const` block.
+- **Stale handles and double frees.** Zig catches them with `assert` (nothing in
+  `ReleaseFast`). Rust always panics, and tests expect the panics.
+- **Leak checks and failure injection.** Zig uses `std.testing.allocator` and
+  `checkAllAllocationFailures`. Rust has `Drop`, `validate` (live slots against
+  reachable nodes) and a loop over every budget.
 
 ## In real databases
 
 **DuckDB `FixedSizeAllocator`** (ART nodes; DuckDB has no B-tree). Each ART owns nine
-allocators, one per node type (`duckdb/src/include/duckdb/execution/index/art/art.hpp:50`).
+allocators, one per node type (`duckdb/src/include/duckdb/execution/index/art/art.hpp:49`).
 A buffer is a bitmask followed by segments, and the constructor works out how many
 segments fit when each 64-bit mask word is followed by up to 64 segments
 (`duckdb/src/execution/index/fixed_size_allocator.cpp:13-54`). `New` allocates from a
@@ -243,7 +241,7 @@ the lowest set bit with a six-step binary reduction
 A set bit means free. `Free` keeps an empty buffer when it is the only one with free
 space (`fixed_size_allocator.cpp:121-128`), the rule copied here. A pointer is 64 bits:
 a 32-bit buffer id, a 24-bit offset and 8 bits of metadata that carry the node type
-(`duckdb/src/include/duckdb/execution/index/index_pointer.hpp:19-24`); the 32-bit
+and a gate-status bit (`duckdb/src/include/duckdb/execution/index/index_pointer.hpp:19-24`); the 32-bit
 handle of this chapter is a smaller cousin (23 + 8 + 1 bits). Dereferencing looks the
 buffer up in a map and computes `offset * segment_size + bitmask_offset`
 (`duckdb/src/include/duckdb/execution/index/fixed_size_allocator.hpp:50-54`).
@@ -252,7 +250,8 @@ buffer up in a map and computes `offset * segment_size + bitmask_offset`
 are at least 10% of the allocator's in-memory size (`fixed_size_allocator.hpp:31`,
 `fixed_size_allocator.cpp:195-258`) and selects the emptiest buffers. `VacuumPointer`
 allocates a new segment and `memcpy`s the node (`:269-283`); the tree walk rewrites the
-pointer in the parent (`duckdb/src/execution/index/art/art.cpp:1326-1343`). This
+pointer in the parent and restores its type and gate status
+(`duckdb/src/execution/index/art/art.cpp:1326-1343`). This
 chapter's version takes one victim per pool per pass and uses the simpler threshold
 "one whole slab can be saved".
 
@@ -266,6 +265,7 @@ in `init`. `release_empty = false` plus `reserve` is that policy on this chapter
 three states, `:58-62` for `alloc`). The replica flips it after start-up
 (`tigerbeetle/src/vsr/replica.zig:739`) and again before shutdown (`:1472`). The
 original asserts; this chapter's version refuses and counts so that a test can watch.
+Both end `init` at the first `free` ("Once you start freeing, you don't stop", `:76-82`).
 TigerBeetle's documentation separates this from "an arena with a limit": every object
 type has an explicit upper bound, so the pools are sized never to run out
 (`tigerbeetle/docs/ARCHITECTURE.md:203-206`). Section 4 of the demo, which fills the
@@ -274,9 +274,8 @@ pool until it fails, shows the arena-with-a-limit behaviour on purpose.
 **Buddy allocation** is textbook material (Knuth, TAOCP volume 1, section 2.5). None
 of the six code bases studied here uses one for its index.
 
-**Postgres and Turso** do not appear above because their B-tree nodes are disk pages:
-the "allocator" is the page free list and the buffer pool of chapter 09. A page number
-is a handle in exactly the sense of this chapter.
+**Postgres and Turso** B-tree nodes are disk pages: the "allocator" is the page free
+list and the buffer pool of chapter 09, and a page number is a handle in this sense.
 
 ## Allocator notes
 
@@ -290,8 +289,8 @@ choices: a general-purpose allocator per node works but pays a header and a size
 lookup per node and can never compact; an `ArenaAllocator` cannot give back the nodes
 that deletes free; `page_allocator` per node is a system call per insert.
 
-**The tour** (`zig/src/tour.zig`, one test per row; "free one item" means the memory
-becomes reusable before the allocator is torn down):
+**The tour** (`zig/src/tour.zig`, at least one test per row; "free one item" means the
+memory becomes reusable before the allocator is torn down):
 
 | Allocator | What it is | Cost model | Free one item? | Thread safety | Use in a B-tree engine |
 |---|---|---|---|---|---|
@@ -299,26 +298,34 @@ becomes reusable before the allocator is torn down):
 | `ArenaAllocator` | Bump allocation in chunks from a child allocator | Pointer bump; `deinit` or `reset` frees all at once | No (only the latest allocation) | Yes if the child is | Bulk-loaded read-only tree; per-query scratch |
 | `FixedBufferAllocator` | Bump allocation in a caller buffer | Pointer bump, no system calls, `OutOfMemory` when full | No (only the latest allocation) | No; `threadSafeAllocator()` is | Bounded scratch for one split or merge |
 | `BufferFirstAllocator` | A fixed buffer first, a fallback allocator after | Bump while the buffer lasts, then the fallback's cost | Fallback items yes; buffer items as above | No | Copying search keys: short ones never touch the heap |
-| `page_allocator` | One `mmap` per allocation, `munmap` per free | A system call each way; page granularity | Yes | Yes | Backing memory for the buffer pool or an arena, taken once |
+| `page_allocator` (`PageAllocator.map`, `unmap`) | One `mmap` per allocation, `munmap` per free | A system call each way; page granularity | Yes | Yes | Backing memory for the buffer pool or an arena, taken once |
 | `smp_allocator` (`SmpAllocator`) | General purpose, per-thread free lists in power-of-two classes; large requests mapped directly | Fast paths without contention | Yes | Yes (needs a multi-threaded build) | The general allocator of a release build |
 | `SafeAllocator` | The checking general-purpose allocator (`init.gpa` in debug) | Slow; footer per allocation; does not reuse memory when its backing allocator does not | Yes | Yes | Debug builds; finding leaks and use-after-free in node code |
 | `DebugAllocator` | Its deprecated predecessor | Slow, bucketed | Yes | Yes by default (`thread_safe` option) | Nowhere new; shown because old code uses it |
 | `MemoryPool(T)` | One item type, free list through freed items, memory from an internal arena | O(1) create and destroy, no header | Yes, to the pool | No | Nodes of a pointer-based tree (chapters 04, 05) |
 | `memory_pool.Extra(T, .{ .growable = false })` | The same, all memory taken in `initCapacity` | O(1); `create` fails when empty | Yes, to the pool | No | Fixed set of buffer-pool frames |
-| `brk_allocator` (`BrkAllocator`) | Grows the program break; size-class free lists | Fast, no locks | Yes | Single-threaded builds only | A single-threaded or WebAssembly build |
+| `memory_pool.Aligned(T, alignment)` | The same pool, items over-aligned | As `MemoryPool` | Yes, to the pool | No | Nodes on cache-line boundaries (chapter 25) |
+| `brk_allocator` (`BrkAllocator`); `wasm_allocator` (`WasmAllocator`) is an alias of it in 0.17.1 | Grows the program break; size-class free lists | Fast, no locks | Yes | Single-threaded builds only | A single-threaded or WebAssembly build |
 | `c_allocator` | libc `malloc` and `free` | Whatever the libc does | Yes | As the libc's `malloc` | Engine embedded in a C program, sharing its heap |
-| `std.testing.FailingAllocator` | Wrapper that fails allocation number N and counts | Child cost plus counters | Via the child | No | Aim an `OutOfMemory` at one step of an insert |
-| `Allocator.failing` | Fails every request | Free | Nothing to free | Yes (no state) | Prove a path (lookup, delete) never allocates |
-| `checkAllAllocationFailures` | Runs a function once per allocation, failing that one | (allocations + 1) runs | n/a | n/a | Exhaustive `OutOfMemory` test of every insert path |
+| `std.testing.FailingAllocator` | Wrapper that lets N allocations succeed, then fails every later one; counts | Child cost plus counters | Via the child | No | Aim an `OutOfMemory` at one step of an insert |
+| `Allocator.failing`, `std.testing.failing_allocator` | Fails every request | Free | Nothing to free | Yes (no state) | Prove a path (lookup, delete) never allocates |
+| `checkAllAllocationFailures` | Runs a function once per allocation, failing from that one on | (allocations + 1) runs | n/a | n/a | Exhaustive `OutOfMemory` test of every insert path |
+| `std.mem.ValidationAllocator` (`validationWrap`) | Wrapper that asserts the interface contract: no zero-length request, returned pointers aligned | Child cost plus asserts | Via the child | As the child | Around an allocator you wrote yourself (here: the buddy heap) |
+
+The list was checked against the 0.17.1 sources: the nine files of `lib/std/heap/`, the
+instances in `lib/std/heap.zig`, `std.testing`, and the two allocators that live in
+`std.mem`. One is not run: `std.os.uefi.pool_allocator` exists only on UEFI firmware.
+`main` receives two ready-made ones in `std.process.Init`: `init.gpa` (a
+`SafeAllocator` in debug and safe builds) and `init.arena`.
 
 Two rows need a special build, which is why `build.zig` has three test steps. In the
 default build the two tests report "skipped":
 
 | Step | Extra flag | Result on this machine |
 |---|---|---|
-| `zig build test` | none | 43 passed, 2 skipped (`brk_allocator`, `c_allocator`) |
-| `zig build test-single-threaded` | `single_threaded = true` | 43 passed, 2 skipped (`smp_allocator`, `c_allocator`) |
-| `zig build test-libc` | `link_libc = true` | 44 passed, 1 skipped (`brk_allocator`) |
+| `zig build test` | none | 51 passed, 2 skipped (`brk_allocator`, `c_allocator`) |
+| `zig build test-single-threaded` | `single_threaded = true` | 51 passed, 2 skipped (`smp_allocator`, `c_allocator`) |
+| `zig build test-libc` | `link_libc = true` | 52 passed, 1 skipped (`brk_allocator`) |
 
 **The Rust side** (`rust/src/idioms.rs`):
 
@@ -343,6 +350,10 @@ default build the two tests report "skipped":
   gap at 4 more bytes per handle.
 - **Slab sizes and waste.** One live node keeps a whole slab alive. Large slabs cost
   memory for small trees; small slabs cost directory entries and allocator calls.
+- **Growing during start-up under a `StaticAllocator`.** The first `free` ends `init`,
+  and a list that grows frees its old buffer: the next allocation is refused although
+  the program is still starting up. Reserve final sizes (`initCapacity`,
+  `ensureTotalCapacityPrecise`), and call `SlabPool.reserve` once per pool.
 - **"Static" is not "arena with a cap".** Freezing the allocator proves that memory
   does not grow. It does not prove that the reserved amount is enough; that needs an
   upper bound for every structure, computed before start-up.

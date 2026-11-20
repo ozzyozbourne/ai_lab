@@ -16,6 +16,9 @@
 .c1-lane-name { font-weight: 650; margin-right: auto; }
 .c1-lane-body { padding: 10px; min-width: 0; }
 .c1-stats { display: flex; flex-wrap: wrap; gap: 6px; }
+.c1-score { margin: 0 0 8px; line-height: 1.55; }
+.c1-score b { font-family: var(--bt-mono); }
+.c1-note { margin: 8px 0 0; font-size: .88rem; color: var(--bt-muted); line-height: 1.5; }
 
 /* PageStrip: a sorted array cut into pages */
 .c1-strip { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -64,12 +67,14 @@ calculator, and the price of an insert. Text and code: <a href="../README.md">ch
 <p>The same keys are stored three ways. Every structure lives on pages of the same size: a page of the sorted
 array holds a few keys, a binary-search-tree node is a page with one key, a wide node is a page full of keys.
 Each step is <b>one page read</b> for every structure that is still searching. Comparisons inside a page that
-has already been read are free.</p>
+has already been read are free. One lookup among 40 keys is a small sample, so below the three lanes the figure
+also counts <b>every</b> key, and then repeats the count on key sets up to a thousand times larger.</p>
 <div id="fig-race"></div>
 
 <h2>2. Fan-out and height</h2>
 <p>A node with M children divides the remaining keys by M. Move the sliders and watch how few levels a wide
-tree needs, and how little it matters whether the nodes are full or only half full.</p>
+tree needs. Also compare full nodes with half-full ones: for wide nodes the difference is at most one level, for
+tiny nodes it is nearly a factor of two.</p>
 <div id="fig-calc"></div>
 
 <h2>3. The price of a put into one flat array</h2>
@@ -121,7 +126,53 @@ they sit on is rewritten.</p>
     var laneA = lane('Sorted array'), laneB = lane('Binary search tree'), laneW = lane('Wide nodes (the B-tree idea)');
     var strip = new C1.PageStrip(laneA.body, { ariaLabel: 'Sorted array on pages' });
     var bstView = new C1.BstView(laneB.body, { ariaLabel: 'Binary search tree', maxHeight: 300 });
-    var treeView = new BTViz.TreeView(laneW.body, { minHeight: 150, maxHeight: 260, ariaLabel: 'Tree of wide nodes' });
+    // Four levels (2 keys per page) need about 330 px; a lower limit hides the leaf where the search ends.
+    var treeView = new BTViz.TreeView(laneW.body, { minHeight: 150, maxHeight: 360, ariaLabel: 'Tree of wide nodes' });
+
+    // Below the lanes: the same race for every key of the set, and for larger sets.
+    var laneS = lane('Every key, not just one');
+    var scoreSet = el('p.c1-score', { 'aria-live': 'polite' }), scoreScale = el('p.c1-score');
+    laneS.body.append(scoreSet, scoreScale);
+    var scaleChart = new BTViz.Chart(laneS.body, { type: 'bar', height: 230, title: 'Average page reads per lookup by number of keys',
+      xLabel: 'keys in the index (random keys, every key looked up once)', yLabel: 'average page reads per lookup' });
+    var scaleNote = el('p.c1-note');
+    laneS.body.appendChild(scaleNote);
+    var scaleCache = {}, scaleTimer = null;
+    function fix2(v) { return v.toFixed(2); }
+    function fmtInt(v) { return v.toLocaleString('en-US'); }
+
+    /** The scoreboard for the key set that is drawn above. */
+    function showSetStats(st, ascending) {
+      laneS.stats.textContent = '';
+      laneS.stats.append(chip(st.n + ' lookups'), chip('wide nodes fewest: ' + st.fewest, 'found'), chip('tie: ' + st.tied), chip('more: ' + st.more, st.more ? 'deleted' : ''));
+      scoreSet.innerHTML = 'All ' + st.n + ' keys drawn above, each looked up once. Average page reads: sorted array <b>' + fix2(st.array.avg) +
+        '</b>, binary search tree <b>' + fix2(st.bst.avg) + '</b>' + (ascending ? ' (fed in ascending order)' : '') + ', wide nodes <b>' + fix2(st.wide.avg) +
+        '</b>. The wide nodes read strictly the fewest pages for ' + plural(st.fewest, 'key') + ', tie with the better of the other two for ' + st.tied +
+        ' and read more for ' + st.more + '. Worst single lookup: ' + st.array.max + ', ' + st.bst.max + ' and ' + st.wide.max + ' page reads.';
+    }
+    /** The chart: the same count on larger key sets. Takes a moment, so it runs after the page has painted. */
+    function showScale(perPage) {
+      clearTimeout(scaleTimer);
+      if (!scaleCache[perPage]) {
+        scoreScale.textContent = 'Measuring larger key sets…';
+        scaleTimer = setTimeout(function () { scaleCache[perPage] = C1.scaleRace(perPage); showScale(perPage); }, 30);
+        return;
+      }
+      var rows = scaleCache[perPage], last = rows[rows.length - 1], first = rows[0];
+      scaleChart.render({ labels: rows.map(function (r) { return fmtInt(r.n); }), series: [
+        { name: 'sorted array, ' + perPage + ' keys per page', values: rows.map(function (r) { return +fix2(r.array.avg); }), token: 'merge' },
+        { name: 'binary search tree, random insert order', values: rows.map(function (r) { return +fix2(r.bst.avg); }), token: 'split' },
+        { name: 'wide nodes, M = ' + (perPage + 1), values: rows.map(function (r) { return +fix2(r.wide.avg); }), token: 'node-active' }] });
+      scoreScale.innerHTML = 'The same count on larger sets of random keys, with ' + perPage + ' keys per page. From ' + fmtInt(first.n) + ' to ' + fmtInt(last.n) +
+        ' keys the wide nodes go from <b>' + fix2(first.wide.avg) + '</b> to <b>' + fix2(last.wide.avg) + '</b> page reads per lookup, the sorted array from <b>' +
+        fix2(first.array.avg) + '</b> to <b>' + fix2(last.array.avg) + '</b> and the binary search tree from <b>' + fix2(first.bst.avg) + '</b> to <b>' + fix2(last.bst.avg) +
+        '</b>. Among ' + fmtInt(last.n) + ' keys the wide nodes read strictly the fewest pages for ' + fmtInt(last.fewest) + ' of them.';
+      scaleNote.textContent = 'These numbers are counted by this page\'s model (the same search code as the lanes above), not timed. The gap widens with the keys per page: ' +
+        'move the slider. With real 4096-byte pages a node holds 170 keys, and the chapter\'s programs measure 8.52, 21.69 and 2.99 page reads for 100,000 keys ' +
+        '(the third self-test at the bottom of this page reproduces that table).';
+      root.dispatchEvent(new CustomEvent('c1-scale-ready', { detail: { perPage: perPage } }));
+    }
+    var root = fig.root;
 
     var rand = BTViz.rng(11), seed = 5, cur = null;
     function keySet() {
@@ -139,10 +190,10 @@ they sit on is rewritten.</p>
       var arrival = keySet(), sorted = arrival.slice().sort(function (a, b) { return a - b; });
       var perPage = +per.value, m = perPage + 1;
       perOut.textContent = perPage + ' (M = ' + m + ')';
-      var t = target.value === '' ? NaN : +target.value;
-      if (!isFinite(t)) { t = selKeys.value === 'canonical' ? 17 : sorted[26]; target.value = t; }
       var bst = C1.bstFrom(selOrder.value === 'ascending' ? sorted : arrival);
       var wide = C1.wideBuild(sorted, m);
+      var t = target.value === '' ? NaN : +target.value;
+      if (!isFinite(t)) { t = selKeys.value === 'canonical' ? 17 : typicalKey(sorted, perPage, bst, wide); target.value = t; }
       var a = C1.arraySearch(sorted, perPage, t), b = bst.search(t), w = C1.wideSearch(wide, t);
       // One array event per page read: the probe that touches a new page plus the free probes after it.
       var events = [];
@@ -160,11 +211,23 @@ they sit on is rewritten.</p>
         steps.push({ caption: '<b>Page read ' + i + '.</b> ' + arrayCaption(i) + ' ' + bstCaption(i) + ' ' + wideCaption(i), state: { t: i, done: false } });
       }
       var best = Math.min.apply(null, reads), winners = names.filter(function (_, j) { return reads[j] === best; });
+      // Say only what this lookup shows: a strict win, a tie for first place, or a loss.
+      var verdict, others = ['the sorted array', 'the binary search tree'], cmp = [a.comparisons, b.path.length];
+      if (reads[2] < Math.min(reads[0], reads[1])) {
+        var fewerCmp = others.filter(function (_, j) { return cmp[j] < w.comparisons; });
+        verdict = 'The wide nodes read the fewest pages' + (fewerCmp.length
+          ? ', although ' + fewerCmp.join(' and ') + ' made fewer comparisons: comparisons inside a page that is already in memory are free. That trade is the whole point of a B-tree. '
+          : '. ');
+      } else if (reads[2] === best) {
+        verdict = 'On this key the wide nodes only tie with ' + others.filter(function (_, j) { return reads[j] === best; }).join(' and ') +
+          '. Among ' + sorted.length + ' keys a single lookup cannot always separate the structures; the scoreboard below counts every key. ';
+      } else {
+        verdict = 'On this key ' + others.filter(function (_, j) { return reads[j] === best; }).join(' and ') + ' needed fewer page reads than the wide nodes. ' +
+          'That happens for a few keys that sit near the top of the binary tree or on a page the binary search probes early; the scoreboard below counts every key. ';
+      }
       steps.push({
         caption: '<b>Result.</b> Page reads: sorted array ' + reads[0] + ', binary search tree ' + reads[1] + ', wide nodes ' + reads[2] +
-          '. Comparisons: ' + a.comparisons + ', ' + b.path.length + ', ' + w.comparisons + '. ' +
-          (w.comparisons > Math.min(a.comparisons, b.path.length) && reads[2] === best
-            ? 'The wide nodes made the most comparisons and still read the fewest pages: that trade is the whole point of a B-tree. ' : '') +
+          '. Comparisons: ' + a.comparisons + ', ' + b.path.length + ', ' + w.comparisons + '. ' + verdict +
           'Try another key, more keys per page, or feed the binary tree in ascending order.',
         state: { t: total, done: true }
       });
@@ -175,6 +238,23 @@ they sit on is rewritten.</p>
         explain: 'Page reads: sorted array ' + reads[0] + ', binary search tree ' + reads[1] + ', wide nodes ' + reads[2] + '.'
       };
       stepper.setSteps(steps, { play: !!play });
+      showSetStats(C1.raceStats(arrival, perPage, selOrder.value === 'ascending' ? sorted : arrival), selOrder.value === 'ascending');
+      showScale(perPage);
+    }
+
+    /**
+     * The key shown when the reader has not chosen one: a key whose three page-read counts are
+     * the most common combination in this key set, so the first race is a typical one.
+     */
+    function typicalKey(sorted, perPage, bst, wide) {
+      var groups = {}, bestSig = null;
+      sorted.forEach(function (key) {
+        var sig = [C1.arraySearch(sorted, perPage, key).pages.length, bst.search(key).path.length, C1.wideSearch(wide, key).path.length].join('/');
+        (groups[sig] = groups[sig] || []).push(key);
+        if (bestSig === null || groups[sig].length > groups[bestSig].length) bestSig = sig;
+      });
+      var g = groups[bestSig];
+      return g[Math.floor(g.length / 2)];
     }
 
     function arrayCaption(i) {
@@ -270,7 +350,7 @@ they sit on is rewritten.</p>
   /* ============================================================ 2. calculator */
   (function () {
     var fig = BTViz.figure('#fig-calc', { title: 'Height calculator', side: true });
-    var ORDERS = [2, 3, 4, 8, 16, 32, 64, 128, 171, 256, 512, 1024];
+    var ORDERS = [2, 3, 4, 8, 16, 32, 64, 128, 171, 256, 408, 512, 1024];
     var nOut = el('output'), mOut = el('output');
     var nIn = el('input#calc-n', { type: 'range', min: 3, max: 12, step: 1, value: 9, 'aria-label': 'Number of keys (power of ten)' });
     var mIn = el('input#calc-m', { type: 'range', min: 0, max: ORDERS.length - 1, step: 1, value: 8, 'aria-label': 'Order M (maximum children per node)' });
@@ -281,11 +361,18 @@ they sit on is rewritten.</p>
     var chart = new BTViz.Chart(fig.stage, { type: 'bar', height: 210, xLabel: 'order M (children per node)', yLabel: 'page reads per lookup' });
     BTViz.codePanel(fig.side, 'minHeight', { title: 'height.zig / height.rs' });
     var fmt = function (v) { return v.toLocaleString('en-US'); };
+    // Exact up to 12 digits, then rounded with a unit, so the table stays narrow enough for a phone.
+    var short = function (v) {
+      if (v < 1e12) return fmt(v);
+      var units = [[1e30, ' nonillion'], [1e27, ' octillion'], [1e24, ' septillion'], [1e21, ' sextillion'], [1e18, ' quintillion'], [1e15, ' quadrillion'], [1e12, ' trillion']];
+      for (var i = 0; i < units.length; i++) if (v >= units[i][0]) return '≈ ' + (v / units[i][0]).toFixed(1) + units[i][1];
+      return fmt(v);
+    };
 
     function update() {
       var n = Math.pow(10, +nIn.value), m = ORDERS[+mIn.value];
       nOut.textContent = fmt(n) + ' (10^' + nIn.value + ')';
-      mOut.textContent = 'M = ' + m + (m === 171 ? ' (a 4096-byte page of 16-byte entries)' : m === 2 ? ' (a binary tree)' : '');
+      mOut.textContent = 'M = ' + m + (m === 171 ? ' (a 4096-byte page of 16-byte entries)' : m === 408 ? ' (the Postgres-like page of exercise 2)' : m === 2 ? ' (a binary tree)' : '');
       var best = C1.minHeight(n, m), worst = m >= 3 ? C1.maxHeight(n, m) : null, binary = C1.minHeight(n, 2);
       var arrayReads = Math.max(1, Math.ceil(Math.log2(n / 256)));
       answer.innerHTML = 'One lookup among ' + fmt(n) + ' keys reads <b class="c1-big">' + best + '</b> ' + (best === 1 ? 'page' : 'pages') +
@@ -293,11 +380,13 @@ they sit on is rewritten.</p>
           : ' and <b class="c1-big">' + worst + '</b> when every node is as empty as a B-tree allows (half full).') +
         ' A perfectly balanced binary tree reads ' + binary + '; a binary search over one sorted array on 256-entry pages reads about ' + arrayReads + '.';
 
-      var rows = [el('tr', el('th', 'Level'), el('th.num', 'Nodes on it, at most'), el('th.num', 'Keys in a full tree this tall'), el('th', 'Enough?'))];
+      // Short headers and cells: at 390 px all four columns must fit without scrolling sideways.
+      var rows = [el('tr', el('th', 'Level'), el('th.num', { title: 'Nodes on this level, at most' }, 'Nodes'),
+        el('th.num', { title: 'Keys in a full tree with this many levels' }, 'Keys if full'), el('th', { title: 'Do ' + fmt(n) + ' keys fit?' }, 'Fits?'))];
       for (var level = 1; level <= best; level++) {
         var cap = Math.pow(m, level) - 1, enough = cap >= n;
-        rows.push(el('tr', { class: enough ? 's-found' : null }, el('td', level === 1 ? '1 (root)' : String(level)), el('td.num', fmt(Math.pow(m, level - 1))),
-          el('td.num', fmt(cap)), el('td', enough ? 'yes: ' + fmt(n) + ' keys fit' : 'no')));
+        rows.push(el('tr', { class: enough ? 's-found' : null }, el('td', String(level)), el('td.num', short(Math.pow(m, level - 1))),
+          el('td.num', short(cap)), el('td', enough ? 'yes' : 'no')));
       }
       tableHost.textContent = '';
       tableHost.appendChild(el('table.bt-table', el('tbody', rows)));
@@ -306,8 +395,14 @@ they sit on is rewritten.</p>
       chart.render({ labels: labels, series: [
         { name: 'every node full', values: labels.map(function (o) { return C1.minHeight(n, o); }), token: 'node-active' },
         { name: 'every node half full', values: labels.map(function (o) { return C1.maxHeight(n, o); }), token: 'split' }] });
+      // Compare full and half-full honestly: the gap depends on M (computed from the bars, not asserted).
+      var wideGap = 0, tiny = labels[0];
+      labels.forEach(function (o) { if (o >= 128) wideGap = Math.max(wideGap, C1.maxHeight(n, o) - C1.minHeight(n, o)); });
       fig.caption.innerHTML = 'Each level multiplies the capacity by M = ' + m + ', so the height grows with the logarithm of the number of keys to base M. ' +
-        'The chart shows the page reads for ' + fmt(n) + ' keys at every order from 3 to 1024: going from M = 3 to M = 64 removes most levels, and half-full nodes cost at most a level or two.';
+        'The chart shows the page reads for ' + fmt(n) + ' keys at every order from 3 to 1024: going from M = 3 to M = 64 removes most levels. ' +
+        'Half-full nodes multiply the height by about log(M) / log(M / 2). For wide nodes that is close to 1: at M = 128 and above the half-full tree is ' +
+        (wideGap === 0 ? 'no taller here' : 'at most ' + plural(wideGap, 'level') + ' taller here') + '. For tiny nodes it is not: at M = ' + tiny + ' the bars read ' +
+        C1.minHeight(n, tiny) + ' and ' + C1.maxHeight(n, tiny) + ', and at M = 4 the factor approaches 2.';
     }
     nIn.addEventListener('input', update);
     mIn.addEventListener('input', update);

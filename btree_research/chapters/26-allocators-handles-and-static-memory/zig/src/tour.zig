@@ -287,8 +287,8 @@ test "Allocator.failing: prove a path never allocates" {
 }
 
 // 15. std.testing.checkAllAllocationFailures: runs a function once to count its
-// allocations, then once per allocation with exactly that one failing, and checks each
-// time that it returns OutOfMemory and leaks nothing. Use: every insert path.
+// allocations, then once per allocation with that one (and any later one) failing, and
+// checks each time that it returns OutOfMemory and leaks nothing. Use: every insert path.
 fn buildTree(gpa: Allocator, key_count: u64) !void {
     var tree: BTree(4, 4) = .init(gpa, true);
     defer tree.deinit();

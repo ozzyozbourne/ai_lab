@@ -218,7 +218,7 @@
     var step = t.pending;
     this.changed = [];
     this.insertedKey = null;
-    var caption = step.run();
+    var caption = step.run();      // may rename the step after its outcome (relabel)
     t.events.push({ text: step.text, state: step.chip || null });
     fetch(t);
     return { tid: tid, text: step.text, caption: caption, mark: step.mark || null, kind: t.op.kind };
@@ -276,6 +276,13 @@
     return s;
   }
 
+  /** The step that did the insert is named after what actually happened. */
+  function relabel(step, t, where) {
+    if (t.result === 'OutOfNodes') { step.text = 'OutOfNodes' + where; step.chip = 'deleted'; }
+    else if (t.result === 'overwrote') { step.text = 'overwrite' + where; step.chip = null; }
+    return step;
+  }
+
   function program(sim, t) {
     if (sim.protocol === 'mutex' || sim.protocol === 'rwlock') return globalProgram(sim, t);
     if (sim.protocol === 'coupling') return t.op.kind === 'get' ? coupledGet(sim, t) : coupledPut(sim, t);
@@ -303,12 +310,15 @@
         }
       };
     } else {
-      yield {
+      var work = {
         text: 'descend, insert', atLeaf: true, mark: 'work',
         run: function () {
-          return describeInsert(sim, t, tree.put(key), key) + ' Under the tree-wide lock this needs no latch.';
+          var caption = describeInsert(sim, t, tree.put(key), key) + ' Under the tree-wide lock this needs no latch.';
+          relabel(work, t, '');
+          return caption;
         }
       };
+      yield work;
     }
     yield {
       text: 'unlock tree', mark: 'unlock',
@@ -421,10 +431,15 @@
       };
       id = child;
     }
-    yield {
+    var ins = {
       text: 'insert in #' + id, chip: 'inserted', atLeaf: true, mark: 'putInsert',
-      run: function () { return describeInsert(sim, t, tree.insertAtLeaf(held, topIsRoot, key), key); }
+      run: function () {
+        var caption = describeInsert(sim, t, tree.insertAtLeaf(held, topIsRoot, key), key);
+        relabel(ins, t, ' in #' + id);
+        return caption;
+      }
     };
+    yield ins;
     yield {
       text: 'unlatch ' + held.map(function (h) { return '#' + h; }).join(' '), mark: 'putRelease',
       run: function () {
@@ -549,10 +564,15 @@
       };
       if (state === 'restart') continue;
       if (state === 'fallback') { yield* coupledPut(sim, t); return; }
-      yield {
+      var ins = {
         text: 'insert in #' + cur.id, chip: 'inserted', mark: 'optWrite',
-        run: function () { return describeInsert(sim, t, tree.insertAtLeaf([cur.id], false, key), key); }
+        run: function () {
+          var caption = describeInsert(sim, t, tree.insertAtLeaf([cur.id], false, key), key);
+          relabel(ins, t, ' in #' + cur.id);
+          return caption;
+        }
       };
+      yield ins;
       yield {
         text: 'unlatch #' + cur.id, mark: 'optWrite',
         run: function () {
@@ -618,13 +638,18 @@
   };
 
   /**
-   * The experiment of probe.zig / probe.rs: run A up to `freeze` ('atLeaf' or
-   * 'afterRootLoad'), then B until it finishes or has to wait, then A to the
-   * end, then B to the end. Returns {outcome, trace: [{tid, caption, view, note}]}.
+   * The experiment of probe.zig / probe.rs (`convoy`): run T1 up to `freeze`
+   * ('atLeaf' or 'afterRootLoad'); then start the other operations one at a
+   * time, each until it finishes or has to wait; then let everybody finish.
+   * Returns {outcomes: ['finishes' | 'waits' | 'waits at #n', …] (one per follower),
+   *   trace: [{tid, caption, mark, view}], frozenAt, stops: [trace index where
+   *   follower i stopped], sim, initial}.
    */
-  Sim.probe = function (tree, protocol, aOp, bOp, freeze) {
-    var sim = new Sim(tree, protocol, { T1: aOp, T2: bOp });
-    var trace = [], outcome = 'finishes', a = sim.threads.T1, b = sim.threads.T2, initial = sim.view();
+  Sim.convoy = function (tree, protocol, aOp, others, freeze) {
+    var ops = { T1: aOp };
+    others.forEach(function (op, i) { ops['T' + (i + 2)] = op; });
+    var sim = new Sim(tree, protocol, ops);
+    var trace = [], outcomes = [], stops = [], initial = sim.view();
     function run(tid, until) {
       var t = sim.threads[tid];
       while (!t.done && sim.canStep(tid) && !(until && until(t))) {
@@ -634,16 +659,23 @@
     }
     run('T1', function (t) { return !!t.pending[freeze]; });
     var frozenAt = trace.length;
-    run('T2');
-    if (!b.done) {
-      var need = b.pending.need;
-      outcome = need.node === 'G' ? 'waits' : 'waits at #' + need.node;
-    }
-    var bStoppedAt = trace.length;
-    run('T1');
-    run('T2');
-    if (!a.done || !b.done) throw new Error('probe did not finish');
-    return { outcome: outcome, trace: trace, frozenAt: frozenAt, bStoppedAt: bStoppedAt, sim: sim, initial: initial };
+    others.forEach(function (op, i) {
+      var tid = 'T' + (i + 2), b = sim.threads[tid];
+      run(tid);
+      if (b.done) outcomes.push('finishes');
+      else outcomes.push(b.pending.need.node === 'G' ? 'waits' : 'waits at #' + b.pending.need.node);
+      stops.push(trace.length);
+    });
+    // T1 is released. Whoever can run, runs; a release may unblock the next one.
+    for (var pass = 0; pass <= sim.order.length && !sim.allDone(); pass++) sim.order.forEach(function (tid) { run(tid); });
+    if (!sim.allDone()) throw new Error('convoy did not finish');
+    return { outcomes: outcomes, trace: trace, frozenAt: frozenAt, stops: stops, sim: sim, initial: initial };
+  };
+
+  /** Two threads: {outcome, trace, frozenAt, bStoppedAt, sim, initial}. */
+  Sim.probe = function (tree, protocol, aOp, bOp, freeze) {
+    var c = Sim.convoy(tree, protocol, aOp, [bOp], freeze);
+    return { outcome: c.outcomes[0], trace: c.trace, frozenAt: c.frozenAt, bStoppedAt: c.stops[0], sim: c.sim, initial: c.initial };
   };
 
   window.Ch19 = { Tree: Tree, Sim: Sim, ORDER: ORDER, MAX_KEYS: MAX_KEYS, CANONICAL: [10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15] };

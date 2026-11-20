@@ -1,15 +1,21 @@
 //! A sorted run: the immutable, on-device half of an LSM-tree.
 //!
 //! A run is a sorted sequence of slots cut into DATA BLOCKS of
-//! `block_entries` slots, plus INDEX BLOCKS that hold the first key of each
-//! data block (`index_fanout` of them per index block). That is a static,
-//! bulk-loaded, 100% full B+tree that is never updated in place.
+//! `block_entries` slots, plus an INDEX over them: level 1 holds the first
+//! key of every data block (`index_fanout` of them per index block), level 2
+//! the first key of every level-1 block, and so on up to a single root
+//! block. That is a static, bulk-loaded, 100% full B+tree that is never
+//! updated in place.
 //!
 //! What is on the device and what is in RAM:
-//!   device  data blocks and index blocks (counted when read or written)
-//!   RAM     the "manifest": per run its smallest and largest key, and which
-//!           index block covers which key range. Tiny, so not counted.
-//! A point lookup into a run therefore costs 1 index block + 1 data block.
+//!   device  data blocks and EVERY index block, root included. They are
+//!           counted when read or written, by the rule the B+tree's nodes
+//!           are counted by: nothing is cached between operations.
+//!   RAM     the "manifest": per run its smallest and largest key and where
+//!           its root block is. A few words per run, so not counted (the
+//!           B+tree's root handle and height are not counted either).
+//! A point lookup into a run therefore costs one index block per index level
+//! plus one data block: the height of the run's static tree.
 //!
 //! The model keeps a run's slots in one `Vec`; block j is simply
 //! `slots[j * block_entries ..][..block_entries]`.
@@ -39,8 +45,31 @@ impl Geometry {
         slots.div_ceil(self.block_entries)
     }
 
+    /// Index levels above the data blocks: at least 1, and as many as it
+    /// takes to end in a single root block.
+    pub fn index_height(&self, slots: usize) -> usize {
+        let mut n = self.data_blocks(slots);
+        let mut height = 0;
+        loop {
+            n = n.div_ceil(self.index_fanout);
+            height += 1;
+            if n <= 1 {
+                return height;
+            }
+        }
+    }
+
+    /// Index blocks of all levels together.
     pub fn index_blocks(&self, slots: usize) -> usize {
-        self.data_blocks(slots).div_ceil(self.index_fanout)
+        let mut n = self.data_blocks(slots);
+        let mut total = 0;
+        loop {
+            n = n.div_ceil(self.index_fanout);
+            total += n;
+            if n <= 1 {
+                return total;
+            }
+        }
     }
 
     pub fn blocks(&self, slots: usize) -> usize {

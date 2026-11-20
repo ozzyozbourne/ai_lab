@@ -15,7 +15,10 @@
 //!     once, however often the code touches it: that is the `pin` table.
 //!   * Sequential work that streams over many blocks (a scan walking the leaf
 //!     chain, a compaction) uses `read` / `write` directly.
-//!   * There is no write-ahead log in the model, for either structure.
+//!   * There is no write-ahead log in the model. That is NOT neutral: the
+//!     B+tree's rule above makes every write durable when it returns, while an
+//!     LSM write sits in the memtable until the next flush. The demo prints
+//!     this limit under every table, and a row with a log block per LSM write.
 
 /// What a block holds. The B+tree's internal nodes and the LSM's index blocks
 /// are `Index`; B+tree leaves and LSM data blocks are `Data`.

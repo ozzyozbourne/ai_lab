@@ -16,8 +16,7 @@ Prerequisites: [chapter 01](../01-why-btrees/README.md) (why wide nodes: count n
 not comparisons) and [chapter 02](../02-searching-a-sorted-node/README.md) (lower bound
 inside one sorted node).
 
-This chapter has no insert and no delete. Trees are built by hand, node by node, so that
-the structure can be studied on its own. Insertion is
+This chapter has no insert and no delete: trees are built by hand. Insertion is
 [chapter 04](../04-insertion-and-splitting/README.md), deletion is
 [chapter 05](../05-deletion-and-rebalancing/README.md).
 
@@ -55,8 +54,7 @@ together make the tree short, which is the whole point (see the height bound bel
 
 ### Order: one tree, three vocabularies
 
-Textbooks do not agree on the parameter. The tree is the same; only the number that
-names it differs.
+Textbooks do not agree on the parameter. The tree is the same; only its name differs.
 
 | Source | Parameter | Keys per node (non-root) | Children per interior node (non-root) | Our M |
 |---|---|---|---|---|
@@ -65,8 +63,7 @@ names it differs.
 | Bayer and McCreight (1972) | **k** = minimum keys | k to 2k | k + 1 to 2k + 1 | 2k + 1 |
 | Real storage engines | page size in **bytes** | as many as fit; "underfull" is a share of the page | follows from the bytes | varies per page |
 
-The table is textbook material; none of these books is among the sources in `db_study/`.
-Things to remember:
+The table is textbook material (the books are not among the sources in `db_study/`).
 
 - CLRS can only describe even M (M = 2t). Bayer and McCreight can only describe odd M
   (M = 2k + 1). Knuth's M covers both.
@@ -86,8 +83,7 @@ Things to remember:
 ### 2-3-4 trees and red-black trees
 
 With M = 4 a node has 1, 2 or 3 keys, so an interior node has 2, 3 or 4 children. Such a
-tree is called a **2-3-4 tree**. It is the smallest B-tree in which a full node can be
-split in the middle with one key left over, and it is small enough to draw.
+tree is called a **2-3-4 tree**.
 
 Every 2-3-4 tree is a red-black tree in disguise. Draw each node as a small binary tree:
 one black node on top, the other keys as red children.
@@ -153,9 +149,9 @@ n <= (M - 1)(1 + M + ... + M^(h-1)) = M^h - 1.
   2 and 3 and h <= 3. Lower bound: 256^2 = 65536 < 1000001 <= 256^3, so h >= 3. The
   height is exactly 3.
 
-Both results are printed by the programs (part 5 below) and asserted in a test. The
-proof uses every rule except 1 and 2. Drop rule 4 or rule 6 and the bound is gone, which
-is why `validate` checks them even though a lookup never notices when they are broken.
+Both results are printed by the programs (part 5 below) and asserted in a test. Drop
+rule 4 or rule 6 and the bound is gone, which is why `validate` checks them even though
+a lookup never notices when they are broken.
 
 ## A worked example by hand
 
@@ -168,9 +164,9 @@ directly:
     [1 3 5]  [7]  [12 15 17]  [25 30]
 ```
 
-Check the rules: each node is sorted (1). The leaf `[7]` lies between 6 and 10, the
-leaf `[12 15 17]` between 10 and 20 (2). No node has more than 3 keys (3) or fewer than
-1 (4). The root has 3 keys and 4 children (5). All leaves are on level 2 (6).
+Check the rules: every node is sorted (1); `[7]` lies between 6 and 10 and
+`[12 15 17]` between 10 and 20 (2); every node has 1 to 3 keys (3, 4); the root has 3
+keys and 4 children (5); all leaves are on level 2 (6).
 
 **Search for 17.** In the root, find the first key that is not smaller than 17
 (the lower bound of chapter 02). That is 20, at index 2. It is not 17, and the node is
@@ -181,8 +177,7 @@ lower bound is index 2, and the key there is 17. Found, after reading 2 nodes.
 **Search for 8.** Root: the lower bound is 10 at index 1, not equal, go to child 1. Leaf
 `[7]`: the lower bound is index 1, past the end. A leaf has no children, so 8 is absent.
 
-**Search for 10.** Root: the lower bound is 10 itself. Found after reading 1 node. In a
-plain B-tree a search can end in an interior node.
+**Search for 10.** Root: the lower bound is 10 itself. Found after reading 1 node.
 
 **In-order traversal.** Visit child 0, key 0, child 1, key 1, ..., last child:
 `[1 3 5]`, 6, `[7]`, 10, `[12 15 17]`, 20, `[25 30]`. The keys come out sorted, and that
@@ -190,8 +185,8 @@ is rule 2 at work.
 
 ## Code walk-through
 
-Both programs print the same text (`expected_output.txt`); a test in each language
-compares. Run them with `zig build run` and `cargo run`.
+Both programs print `expected_output.txt` (`zig build run`, `cargo run`); a test in
+each language compares.
 
 ### Zig (`zig/src/`)
 
@@ -222,11 +217,10 @@ const d = try t.leaf(gpa, &.{ 25, 30 });
 t.root = try t.interior(gpa, &.{ 6, 10, 20 }, &.{ a, b, c, d });
 ```
 
-`leaf` and `interior` check nothing about the six rules. The same builder makes valid
+`leaf` and `interior` check nothing about the six rules: the same builder makes valid
 trees and broken ones, and `validate` is the only judge. `fromSorted` builds a valid tree
-of minimal height from sorted keys by dealing them out top-down; it exists so that tests
-can check big trees (bulk loading done properly is
-[chapter 16](../16-bulk-loading/README.md)).
+of minimal height from sorted keys, so that tests can check big trees (bulk loading done
+properly is [chapter 16](../16-bulk-loading/README.md)).
 
 **Search** (`base_search.zig`). The whole algorithm:
 
@@ -242,9 +236,9 @@ pub fn get(comptime M: usize, root: ?*const Node(M), key: u64) ?u64 {
 }
 ```
 
-One call of `lowerBound` answers two questions: where the key would be in this node,
-and which child to follow if it is not here. The loop runs once per level, so a search
-reads at most h nodes and makes about log2(M) comparisons in each. `inOrder` is the
+One `lowerBound` call says where the key would be in this node and which child to
+follow if it is not here. The loop runs once per level: a search reads at most h nodes
+and makes about log2(M) comparisons in each. `inOrder` is the
 recursive walk "child i, then key i".
 
 **Validate** (`base_validate.zig`). `check(node, lo, hi, is_root, depth)` receives the
@@ -284,9 +278,8 @@ The files have the same names and the tests the same names, with these differenc
 - **Out of memory.** Rust aborts when the global allocator fails, so the arena has a
   node budget and `alloc` returns `Err(OutOfNodes)`. Zig tests real allocation failure
   with `std.testing.checkAllAllocationFailures`.
-- **Missing child.** In Zig a missing child is a null pointer in the array. In Rust it
-  is a `children` vector that is too short. For a tree with two defects this changes
-  which one `validate` reports (see Pitfalls).
+- **Missing child.** A null pointer in Zig, a too-short `children` vector in Rust. For a
+  tree with two defects this changes which one `validate` reports (see Pitfalls).
 
 ### Output
 
@@ -362,18 +355,17 @@ red-black tree: 12 nodes, 2 black nodes on every path (B-tree height 2), paths o
   M=8: height=4 (bounds 4..5) nodes=93 fill=93% validate ok, 2000 of 2000 lookups agree
 ```
 
-In part 5 the sparsest tree with 3 levels has 7 keys and the fullest tree with 2 levels
-has 15. Part 7 uses `fromSorted`, which always produces the shortest tree; trees grown
-by insertion (chapter 04) land between the bounds.
+Part 7 uses `fromSorted`, which always produces the shortest tree; trees grown by
+insertion (chapter 04) land between the bounds.
 
 ## In real databases
 
 - **A 2-3-4 tree in production code.** Milvus uses the Go library `google/btree` in two
-  small in-memory places, both created with degree 2: `btree.New(2)` in
+  small in-memory places, both with degree 2: `btree.New(2)` in
   `milvus/internal/kv/mem/mem_kv.go:51-55` and `btree.NewG(2, ...)` in
   `milvus/internal/streamingcoord/server/broadcaster/schema.go:90`. That degree 2 means
-  1 to 3 items per node (CLRS t = 2, our M = 4) is the library's documented behaviour;
-  the library source is not in the checkout, so this is **unverified** here.
+  1 to 3 items per node (CLRS t = 2, our M = 4) is **unverified**: the library source
+  is not in the checkout.
 - **Keys in interior nodes.** Turso's index B-tree is a plain B-tree like the one in
   this chapter. An interior cell carries a full payload, not just a routing key
   (`IndexInteriorCell`, `turso/core/storage/sqlite3_ondisk.rs:828-835`), and a forward
@@ -386,8 +378,7 @@ by insertion (chapter 04) land between the bounds.
   only hard rule is that three items must fit on a page, so one item is limited to a
   third of the page (`postgres/src/include/access/nbtree.h:155-173`). Turso treats a
   page as underfull when more than two thirds of its usable bytes are free
-  (`turso/core/storage/btree.rs:3429-3430`, `:10836-10848`). The role of rule 4, a lower
-  limit on fill that keeps the tree short, is the same; the unit is bytes.
+  (`turso/core/storage/btree.rs:3429-3430`, `:10836-10848`). Rule 4 in bytes.
 
 ## Allocator notes
 
@@ -440,17 +431,15 @@ is thread-safe when its child allocator is (comment at the top of
   reason.
 - A general-purpose allocator here: correct, but it tracks every node and needs the
   walk at teardown. Tests use it once: `std.testing.allocator` reports a forgotten node.
-- Forgetting the lifetime: after `bump.deinit()` every node pointer dangles. The tree
-  must not outlive its allocator. Zig does not check this; Rust's ownership does.
+- Forgetting the lifetime: after `bump.deinit()` every node pointer dangles. Zig does
+  not check this; Rust's ownership does.
 
-**Rust.** `Arena` is a `Vec<Node>` plus a budget. Dropping it frees all nodes. It is not
-a single deallocation, though: each Rust node owns three small `Vec`s of its own, which
-are freed one by one when the arena is dropped. The Zig node is one flat block.
+**Rust.** `Arena` is a `Vec<Node>` plus a budget; dropping it frees all nodes. It is not
+a single deallocation, though: each Rust node owns three small `Vec`s, freed one by one
+when the arena is dropped. The Zig node is one flat block.
 
 ## Pitfalls
 
-- **"Order" without a definition.** Order 4 here is t = 2 in CLRS. Always say which
-  parameter you mean (see the table).
 - **Assuming a search ends in a leaf.** In a plain B-tree it can end in any node. Code
   that scans "all leaves" misses the keys stored in interior nodes; an in-order
   traversal must emit a key between two children.
@@ -458,9 +447,7 @@ are freed one by one when the arena is dropped. The Zig node is one flat block.
   correctly. Run `validate` after every operation in tests.
 - **Reading meaning into which error `validate` returns.** It returns the first
   violation its walk meets. For a tree with two defects the Zig and Rust versions can
-  name different ones (a test in `broken.zig` / `broken.rs` shows a case). Any error
-  means the tree is broken; fix, re-run.
-- **Keeping node pointers after the arena is gone.** See Allocator notes.
+  name different ones (a test in `broken.zig` / `broken.rs` shows a case).
 
 ## Exercises
 

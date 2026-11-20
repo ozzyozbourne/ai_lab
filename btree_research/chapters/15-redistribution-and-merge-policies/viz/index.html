@@ -60,13 +60,13 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
   });
 
   /* The toolkit puts the caption and the step controls under the whole figure body, and the
-   * side column is taller than a screen. Here they go under the drawing, in its column, so
-   * that the pages, the sentence about them and the step buttons are on screen together. On
-   * a narrow screen the side panels then follow the controls instead of separating them
-   * from the drawing. */
+   * side column is taller than a screen. Here they go under the drawing, in its column
+   * (and the legend of the drawing's colours with them), so that the pages, the sentence
+   * about them and the step buttons are on screen together. On a narrow screen the side
+   * panels then follow the controls instead of separating them from the drawing. */
   var main = el('div.c15-main');
   fig.stage.parentNode.insertBefore(main, fig.stage);
-  main.append(fig.stage, fig.caption, fig.controls);
+  main.append(fig.stage, fig.caption, fig.controls, fig.legend);
 
   /* ---------------------------------------------------------------- toolbar */
   var key = el('input.bt-input#key', { type: 'number', inputmode: 'numeric', placeholder: 'key', 'aria-label': 'Key (1 to 999)', min: 1, max: 999 });

@@ -231,7 +231,7 @@ nothing prefetches.</p>
       age();
       counters.steps++;
       if (e.how !== 'again') { counters.lines++; read.push(e.line); }
-      if (e.how === 'cold') counters.cold++;
+      if (e.how === 'cold' || e.how === 'late') counters.cold++;
       var fresh = e.how === 'again' ? null : e.line;
 
       if (e.kind === 'block') {

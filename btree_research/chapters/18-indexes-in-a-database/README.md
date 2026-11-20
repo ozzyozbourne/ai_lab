@@ -132,12 +132,10 @@ clustered: ids 12 5 10 25 7, amounts 120 75 250 125 35
 heap     : ids 12 10 5 25 7, amounts 120 250 75 125 35
   cost: descents=1 tree nodes=6 index entries=5 row fetches=5 heap reads=5 -> 11 page reads
 
-== 4. Covering (index-only) scan: SELECT day WHERE customer = 7 ==
-clustered: days 3 12 12 17 21, locators in the entries #12 #5 #10 #25 #7
-  cost: descents=1 tree nodes=6 index entries=5 row fetches=0 heap reads=0 -> 6 page reads
-heap     : days 3 12 12 17 21, locators in the entries (1,1) (0,1) (0,3) (2,2) (1,3)
-  cost: descents=1 tree nodes=6 index entries=5 row fetches=0 heap reads=0 -> 6 page reads
 ```
+
+The covering query `SELECT day WHERE customer = 7` (section 4 of the output) costs 6 page
+reads in both layouts: the index part only.
 
 "Page reads" is tree nodes plus heap reads, as if nothing were cached. That is a count of
 the work, not a prediction of disk I/O: a buffer pool
@@ -154,8 +152,6 @@ clustered  2000 x WHERE id = ?                  2000      2000        6000      
 heap       2000 x WHERE id = ?                  2000      2000        6186         2000        2000        8186
 clustered  50 x SELECT * WHERE customer = ?     2000      2050        6346         2000           0        6346
 heap       50 x SELECT * WHERE customer = ?     2000        50         346         2000        2000        2346
-clustered  50 x SELECT day WHERE customer = ?   2000        50         346            0           0         346
-heap       50 x SELECT day WHERE customer = ?   2000        50         346            0           0         346
 clustered  1 x SELECT count(*) WHERE day = 180     2         1         186            0           0         186
 heap       1 x SELECT count(*) WHERE day = 180     2         1         186            0           0         186
 ```
@@ -192,8 +188,8 @@ pub fn customerDaysRange(customer: u16, day_lo: u16, day_hi: u16) KeyRange {
 `KeyRange` is a closed interval. A half-open one would need the key after the last key of
 customer 65535, which does not fit in a `u64`.
 
-The clustered layout also has to put a row into a `u64` value. The four `u16` columns fill
-it exactly (`packRow`). A real engine stores a variable-length record there.
+The clustered layout packs the four `u16` columns of a row into the `u64` value
+(`packRow`). A real engine stores a variable-length record there.
 
 ### The counting cursor
 
@@ -262,9 +258,8 @@ heap is append-only, and a slot once handed out is not taken back.
 values plus its locator, and nothing else says where they are. Section 7 of the output
 shows it: 4 descents in both layouts, plus one heap read in the heap layout.
 
-`validate` checks the three trees, then that all of them have one entry per row, that
-every index entry leads to a live row with the same column values, and that ids and codes
-are unique.
+`validate` checks the three trees, that each has one entry per row, and that every index
+entry leads to a live row with the same column values.
 
 ### The heap
 
@@ -294,12 +289,10 @@ The Rust crate has the same files, names, tests and output. The differences:
 
 ### Tests
 
-Both languages: the cost claims above as assertions; prefix scans including empty ones;
-duplicate id and duplicate code; a model test of both layouts against a plain list of rows
-(orders M = 3, 4, 16; inserts with both kinds of duplicates, deletes, lookups, scans, with
-the exact result order checked); insert under allocation failure at every failure point,
-checking that the row is in all trees or in none; and two corruptions that `validate` must
-report. The base tree's own tests from chapter 07 run as well.
+Both languages assert the cost claims above, run a seeded model test of both layouts
+against a plain list of rows (M = 3, 4, 16, exact result order checked), fail an insert at
+every possible point and check that the row is in all trees or in none, and show two
+corruptions that `validate` reports. The chapter 07 tests of the base tree run as well.
 
 ## In real databases
 
@@ -349,8 +342,8 @@ report. The base tree's own tests from chapter 07 run as well.
 - Index-only scans are also conditional for that reason. For each TID the heap access
   method checks the visibility map; only if the page is all-visible is the heap skipped,
   otherwise the row is fetched after all
-  (`postgres/src/backend/access/heap/heapam_indexscan.c:355-375`). A plain index scan
-  always calls `heapam_index_heap_fetch` (`heapam_indexscan.c:351-355`). In this chapter
+  (`postgres/src/backend/access/heap/heapam_indexscan.c:358-375`). A plain index scan
+  always calls `heapam_index_heap_fetch` (`heapam_indexscan.c:350-355`). In this chapter
   an index-only scan never touches the heap, because there are no row versions.
 - `INCLUDE` columns are extra payload in leaf tuples that is not part of the search key;
   they are dropped from pivot tuples (`nbtree/README:834-838`). Exercise 3 builds a small
@@ -390,8 +383,6 @@ Plan row: "Arena per query; pool for rows".
   Pages are allocated one at a time, never move and are all released by `pool.deinit`.
   An `ArrayList(Row)` would also work for TIDs, since a TID is an index and not a
   pointer, but it copies every row each time it grows, which a heap file never does.
-- **Trees.** Each `BPlusTree` keeps its nodes in the chapter 07 index arena, backed by the
-  general-purpose allocator handed to `insert`.
 - **Failure.** `heap.append` reserves the slot in the page list before it takes a page
   from the pool, so a failure leaves the heap unchanged. The table-level test runs 40
   inserts with the allocator failing at every possible point and validates the table after
@@ -413,13 +404,10 @@ Plan row: "Arena per query; pool for rows".
   case by continuing the unique check onto the right sibling (`nbtinsert.c:732-760`).
 - **Column order in a composite index is not symmetric.** (customer, day) answers
   `customer = ?` and not `day = ?`.
-- **A covering scan is only as good as the key.** `SELECT amount WHERE customer = 7`
-  needs the row, since `amount` is not in the key.
 - **Delete needs the old row.** Forgetting to remove an index entry leaves an entry whose
   locator leads nowhere, or, worse, to a different row once ids or slots are reused.
 - **Partial inserts.** Without the rollback a failed insert leaves a row that one index
   can find and another cannot.
-- **The counts are not I/O.** See the note under the worked example.
 
 ## Exercises
 

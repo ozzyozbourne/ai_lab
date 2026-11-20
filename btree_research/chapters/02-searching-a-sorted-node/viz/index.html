@@ -446,7 +446,7 @@ cursor: put the cursor past the answer (from index 40, key 10) to see what it re
         var a = lowerBound(keys, key), cnt = r - a;
         for (var j = a; j < r; j++) fst[j] = 'active';
         if (r < n) fst[r] = 'found';
-        cap = '<code>lo == hi == ' + r + '</code> after ' + cmpText + ': ' + r + ' key' + (r === 1 ? ' is' : 's are') + ' ≤ ' + K + ', and ' +
+        cap = (n === 0 ? 'The node is empty, so the loop did not run. ' : '') + '<code>lo == hi == ' + r + '</code> after ' + cmpText + ': ' + (r === 0 ? 'no' : r) + ' key' + (r === 1 ? ' is' : 's are') + ' ≤ ' + K + ', and ' +
           (r < n ? 'the first key greater than it is <code>keys[' + r + ']</code> = ' + k(keys[r], 'found') + '. That index, <strong>' + r + '</strong>, is the result'
             : 'no key is greater, so the result is <strong>' + n + '</strong>, one past the end') + '. ' +
           'The lower bound of ' + K + ' is ' + a + ', so the copies of ' + K + ' are at indices <code>[' + a + ', ' + r + ')</code>: <strong>' +
@@ -761,6 +761,18 @@ cursor: put the cursor past the answer (from index 40, key 10) to see what it re
       emptyKeys: [parseKeys('', 24), parseKeys(' , ', 24).keys.length],
       empty: ['lower', 'upper'].map(function (m) { var st = T.boundSteps([], 9, m); return [st.length, has(st[0], 'empty node'), st[st.length - 1].state.values]; }),
       // wording: "1 sorted key", and an append moves nothing (never "the 0 keys")
+      // notes: a second apply that reads the corrected fields must not erase the first one's notes,
+      // and a note goes away when its own field is edited and applied again
+      notes: (function () {
+        var a = { value: '-5 2' }, b = { value: '13' }, host = {}, sync = fieldSync([a, b], host), seen = [];
+        var apply = function (aNotes, bNotes) { var was = sync.unchanged(); sync.commit([aNotes, bNotes], was); seen.push(host.textContent); };
+        a.value = '2'; apply(['Ignored -5.'], []);      // leaving the keys field
+        b.value = '-4'; seen.push(sync.unchanged());    // typing in the key field: not applied yet
+        b.value = '0'; apply([], ['-4 was changed to 0.']);   // leaving the key field
+        apply([], []);                                  // the click on Search
+        a.value = '2 4'; apply([], []);                 // keys edited again, nothing to report
+        return seen;
+      })(),
       wording: (function () {
         var one = T.boundSteps([5], 9, 'lower'), mid = T.boundSteps([5, 9], 7, 'lower'), all = one.concat(mid, T.boundSteps([], 9, 'lower'));
         return [has(one[0], 'among 1 sorted key.'), has(last(one), 'nothing has to move'), has(last(mid), 'moving the 1 key from there'),
@@ -771,6 +783,7 @@ cursor: put the cursor past the answer (from index 40, key 10) to see what it re
       earlyLine: [[2], [2], [2]], normalLine: [16], pastSaysSo: true, atEndSaysSo: true, farEnd: true,
       upper: { 1: 'active', 2: 'active', 3: 'active', 4: 'found' },
       emptyKeys: [{ keys: [], rejected: [], extra: 0 }, 0], empty: [[3, true, [9]], [2, true, []]],
+      notes: ['Ignored -5.', [true, false], 'Ignored -5. -4 was changed to 0.', 'Ignored -5. -4 was changed to 0.', '-4 was changed to 0.'],
       wording: [true, true, true, false]
     });
   })();

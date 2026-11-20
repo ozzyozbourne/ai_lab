@@ -142,11 +142,10 @@ needle 70 -> index 6
 `cmps` counts key comparisons, `steps` counts compare instructions (a vector compare of
 eight keys is one step), `lines` counts distinct cache lines in both arrays.
 
-The first three searches return the sorted position directly and read no second array.
-That is not a free lunch: a real index wants a payload (a child id, a row id), and a
-sorted array keeps it in a second array as well. Eytzinger and the block tree would
-store the payload where `rank` is. So for a payload lookup add one line to the first
-three rows; the `lines` column is then the cost of all five.
+The first three searches return the sorted position itself and read no second array. A
+real index wants a payload (a child id, a row id), which a sorted array also keeps in a
+second array, and which the two layouts would store where `rank` is. So for a payload
+lookup add one line to the first three rows.
 
 ### What the counts say at larger sizes
 
@@ -178,11 +177,10 @@ three rows; the `lines` column is then the cost of all five.
 - **The block tree touches the fewest lines**: about 4 of keys and one of `rank`, 4.91 in
   total against 9 to 11, because each key line narrows the search by a factor of 9
   instead of 2. This is chapter 01's fanout argument at cache-line scale.
-- **A side array is not free.** Up to 16 keys the two layouts read *more* lines than the
-  plain sorted array, because of the `rank` line. And it matters where the side read
-  happens: a variant of the block tree that looked `rank` up on every level, instead of
-  once at the end, read 7.31 lines per lookup in this same run (3.39 lines of `rank`
-  instead of 1.00; measured by changing the code, not part of the output).
+- **A side array is not free.** At 15 keys both layouts read more lines than the sorted
+  array, because of the `rank` line. And it matters where the read happens: a block tree
+  that looked `rank` up on every level instead of once at the end read 7.31 lines per
+  lookup in this same run (measured by changing the code; not part of the output).
 
 ```
 == 4. Prefetch coverage, n = 4095, per lookup ==
@@ -214,11 +212,11 @@ flags}` entries the keys spread over 64 lines; as a separate column, over 32. Th
 *search* saves one line per lookup, because only its last few probes are close together.
 
 `get` is the search, one equality check, and for a hit the read of the child. In the
-array of structs the child sits next to the key that was just compared. In the struct of
-arrays it is in another column, which is another line: 0.51 lines per lookup here,
-because 518 of the 1000 needles were found. So for point lookups that fetch the child,
-struct of arrays wins by half a line, not by a whole one. Anything that reads many keys
-(a vector scan, a range scan, a merge) saves the full factor of two.
+array of structs the child sits next to the key just compared. In the struct of arrays
+it is in another column, which is another line: 0.51 per lookup here, because 518 of the
+1000 needles were found. So a point lookup that fetches the child gains half a line, not
+a whole one. Anything that reads many keys (a vector scan, a range scan, a merge) saves
+the full factor of two.
 
 ## Code walk-through
 
@@ -234,10 +232,10 @@ lines of each array in a fixed bitmap and counts. `NoTrace` has empty methods. T
 is written once and instantiated with both, so the counted code and the fast code cannot
 diverge.
 
-The model's one assumption is that each array starts on a line boundary. The scenario
-makes that true for every array of keys it searches (see Allocator notes). For the two
-node types it is only an assumption: their containers align to 8 bytes, and a node that
-starts in the middle of a line can touch one line more than the table says.
+The model assumes that each array starts on a line boundary. The scenario makes that
+true for every key array it searches (see Allocator notes). For the two node types it is
+only an assumption: their containers align to 8 bytes, and a node that starts in the
+middle of a line can touch one line more than the table says.
 
 Zig passes `tracer: anytype` (duck typing at compile time); Rust names the contract as
 `trait Tracer`. Both produce one specialised copy per tracer type.
@@ -269,16 +267,15 @@ assembly (Zig 0.17.1 `zig build-obj -O ReleaseFast` and rustc 1.97.0 `rustc -O`,
 LLVM, on an x86-64 Linux machine; the exact commands are in the solution to exercise 2).
 What we saw: the `.arithmetic` spelling, which looks the most branch-free, was a
 conditional *jump* in both languages. The plain `if` was also a jump in both. The
-`.hinted` spelling was a conditional move (`cmov`) in both. This is an observation about
-those two compilers and that one context, not a rule: other versions, targets and
-inlining contexts can differ, and we did not read the code of the loops as inlined into
-the `--bench` binaries.
+`.hinted` spelling was a conditional move (`cmov`) in both. This describes those two
+compilers and that one context, not a rule: other versions, targets and inlining
+contexts can differ, and we did not read the loops as inlined into the `--bench` binary.
 
 One file per function matters. With all three in one file, both compilers merged the
-`.hinted` function into the `.branch` function, because the two bodies differ only in
-the hint, and what was left was the jump. The lesson is to say what you know (this
-branch is unpredictable) rather than to disguise the branch, and then to look at the
-code that actually ships (exercise 2).
+`.hinted` function into the `.branch` function (their bodies differ only in the hint),
+and what was left was the jump. The lesson is to say what you know (this branch is
+unpredictable) rather than to disguise the branch, and then to look at the code that
+actually ships (exercise 2).
 
 `rank8` counts the keys of one 8-key block that are smaller than the needle:
 
@@ -411,8 +408,7 @@ their key arrays with `gpa.alignedAlloc(u64, .fromByteUnits(64), n)`. The result
 `[]align(64) u64`: the alignment is part of the type, `lowerBoundVector` demands it in
 its signature, and `gpa.free` reads it from the slice. The arrays live as long as the
 index. The scenario's classic and halving searches run on `padded[0..n]`, a view of the
-same aligned memory, so that the model's assumption holds for them too. (An earlier
-version searched a plain `gpa.alloc(u64, n)`, which started 16 bytes into a line.)
+same aligned memory, so the model's assumption holds for them too.
 
 What goes wrong with an ordinary `gpa.alloc(u64, n)`: nothing visible. Results are the
 same. But the array may start in the middle of a line. Then every 8-key block straddles

@@ -19,11 +19,15 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
 <ul>
   <li>Press play. The figure starts with the fixed scenario of the chapter's programs: an append, a split shared
     between siblings, a redistribution that needs no new page, and a merge.</li>
-  <li>Set <em>siblings</em> to 1 and replay the scenario. Every overflow now creates a page, and the pages end up
-    emptier. That is the plain split of chapter 14.</li>
+  <li>Set <em>siblings</em> to 1. The scenario is run again with that setting, up to the operation you were
+    looking at. Every overflow now creates a page, and the pages end up emptier. That is the plain split of
+    chapter 14.</li>
+  <li><em>Put</em>, <em>Delete</em> and <em>Append</em> work on the tree that is on screen. Step to any point of the
+    scenario and carry on from there with your own keys; the steps after that point are dropped.</li>
   <li>Switch the append fast path off and put keys in ascending order (leave the key box empty and use
     <em>Append</em>). Watch how much work balancing does to arrive at a worse result.</li>
-  <li>Choose <em>merge: at empty</em> and delete keys. No cell ever changes page. Then try <em>below 1/2</em>.</li>
+  <li>Go to the last step of the scenario, choose <em>merge: at empty</em> and delete keys. No cell ever changes
+    page. Then try <em>below 1/2</em>.</li>
   <li>Tick <em>Predict</em> to be asked how many pages will come out before the cut is shown.</li>
 </ul>
 <p>A cell is drawn as wide as its byte size; a page holds 100 bytes. The parent holds divider cells
@@ -55,6 +59,15 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
     ]
   });
 
+  /* The toolkit puts the caption and the step controls under the whole figure body, and the
+   * side column is taller than a screen. Here they go under the drawing, in its column, so
+   * that the pages, the sentence about them and the step buttons are on screen together. On
+   * a narrow screen the side panels then follow the controls instead of separating them
+   * from the drawing. */
+  var main = el('div.c15-main');
+  fig.stage.parentNode.insertBefore(main, fig.stage);
+  main.append(fig.stage, fig.caption, fig.controls);
+
   /* ---------------------------------------------------------------- toolbar */
   var key = el('input.bt-input#key', { type: 'number', inputmode: 'numeric', placeholder: 'key', 'aria-label': 'Key (1 to 999)', min: 1, max: 999 });
   var size = el('input.bt-input#size', { type: 'number', inputmode: 'numeric', placeholder: 'bytes', 'aria-label': 'Cell size in bytes (1 to 33)', min: 1, max: 33 });
@@ -79,7 +92,7 @@ Second page: <a href="policies.html">the policies compared on 20,000 keys</a>.</
 
   /* ------------------------------------------------------------ views + side */
   var view = new Ch15.SiblingView(fig.stage);
-  var code = BTViz.codePanel(fig.side, 'balance', { title: 'balance (abridged)', maxHeight: 300 });
+  var code = BTViz.codePanel(fig.side, 'balance', { title: 'balance (abridged)', maxHeight: 190 });
   var statsBody = el('div.bt-panel-body.c15-stats');
   fig.side.appendChild(el('div.bt-panel', el('div.bt-panel-title', 'Structural work so far'), statsBody));
   var log = new BTViz.Log(fig.side, { title: 'Operations in this animation', max: 60 });

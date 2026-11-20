@@ -104,7 +104,12 @@ impl HandTree {
         Ok(())
     }
 
-    fn build_subtree(&mut self, keys: &[u64], h: usize, is_root: bool) -> Result<NodeId, OutOfNodes> {
+    fn build_subtree(
+        &mut self,
+        keys: &[u64],
+        h: usize,
+        is_root: bool,
+    ) -> Result<NodeId, OutOfNodes> {
         if h == 1 {
             return self.leaf(keys);
         }
@@ -230,7 +235,10 @@ mod tests {
         canonical(&mut t).unwrap();
         // Leaves were created first, left to right, the root last.
         let root = t.root.unwrap();
-        assert_eq!(t.arena[root].children, [NodeId(0), NodeId(1), NodeId(2), NodeId(3)]);
+        assert_eq!(
+            t.arena[root].children,
+            [NodeId(0), NodeId(1), NodeId(2), NodeId(3)]
+        );
         assert_eq!(root, NodeId(4));
         assert_eq!(t.arena.len(), 5);
     }

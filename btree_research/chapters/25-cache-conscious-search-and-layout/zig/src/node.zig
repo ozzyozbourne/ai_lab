@@ -6,8 +6,19 @@
 //! only reads keys, so in SoA every line it loads is 100% keys, while in AoS
 //! half of every line is child ids the search never looks at.
 //!
+//! The other side of the trade: once the search has found its entry, AoS has
+//! the child on the line it just read, while SoA must read the child column,
+//! which is one more line. `get` reports both reads to the tracer, so the
+//! counts show the saving and its price.
+//!
 //! Zig's `std.MultiArrayList(Entry)` IS the SoA transformation: you declare
 //! the struct once and the container stores one column per field.
+//!
+//! Alignment caveat: `MultiArrayList` and `ArrayList` align their buffers to
+//! 8 bytes, not to a cache line, and `MultiArrayList` places the child column
+//! directly behind the key column in one buffer. The tracer's counts describe
+//! a node whose key array and child column each start on a line boundary.
+//! A node that starts in the middle of a line can touch one line more.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const trace = @import("trace.zig");
@@ -21,7 +32,7 @@ pub const Entry = struct {
 };
 
 pub const aos_layout: trace.Layout = .{ .stride = @sizeOf(Entry), .offset = @offsetOf(Entry, "key") };
-pub const soa_layout: trace.Layout = .{ .stride = @sizeOf(u64) };
+pub const soa_layout: trace.Layout = .keys;
 
 pub const PutError = error{NodeFull};
 pub const ValidateError = error{Corrupt};
@@ -61,11 +72,21 @@ pub const SoaNode = struct {
         self.list.insertAssumeCapacity(i, .{ .key = key, .child = child });
     }
 
-    /// The search touches only the key column; the child column is read once,
-    /// at the very end, for the single entry that matched.
+    /// The search part of `get`: reads the key column and nothing else.
+    pub fn lowerBound(self: *const SoaNode, key: u64, tracer: anytype) usize {
+        return search.lowerBoundHalving(.hinted, false, self.keys(), key, tracer);
+    }
+
+    /// The search touches only the key column. Then come two more reads, and
+    /// the tracer hears about both: the equality check on key `i` (usually on
+    /// a line the search already read) and, for a hit, the child column,
+    /// which is a different array and so always a line of its own.
     pub fn get(self: *const SoaNode, key: u64, tracer: anytype) ?u32 {
-        const i = search.lowerBoundHalving(.hinted, false, self.keys(), key, tracer);
-        if (i == self.list.len or self.keys()[i] != key) return null;
+        const i = self.lowerBound(key, tracer);
+        if (i == self.list.len) return null;
+        tracer.cmp(i);
+        if (self.keys()[i] != key) return null;
+        tracer.side(i);
         return self.list.items(.child)[i];
     }
 
@@ -123,9 +144,15 @@ pub const AosNode = struct {
         self.entries.insertAssumeCapacity(i, .{ .key = key, .child = child });
     }
 
+    /// Same two extra reads as `SoaNode.get`, but here the second one is
+    /// free: the child is in the 16-byte entry whose key the equality check
+    /// just read, and (in a line-aligned array) a 16-byte entry never
+    /// straddles two lines. So there is no `tracer.side` call.
     pub fn get(self: *const AosNode, key: u64, tracer: anytype) ?u32 {
         const i = self.lowerBound(key, tracer);
-        if (i == self.entries.items.len or self.entries.items[i].key != key) return null;
+        if (i == self.entries.items.len) return null;
+        tracer.cmp(i);
+        if (self.entries.items[i].key != key) return null;
         return self.entries.items[i].child;
     }
 
@@ -188,8 +215,24 @@ test "model test: SoA and AoS nodes behave like a sorted oracle and compare the 
             try testing.expectEqual(want, aos.get(key, &ta));
             // Same probes, same comparison count; only the lines differ.
             try testing.expectEqualSlices(u32, ts.probeSlice(), ta.probeSlice());
-            try testing.expectEqual(search.halvingComparisons(count), ts.comparisons);
-            try testing.expect(ts.linesRead() <= ta.linesRead());
+            try testing.expectEqual(ts.comparisons, ta.comparisons);
+            // The search, plus the equality check unless the needle is above
+            // every key.
+            const searched = search.halvingComparisons(count);
+            try testing.expect(ts.comparisons == searched or ts.comparisons == searched + 1);
+            try testing.expect(ts.keyLines() <= ta.keyLines());
+            // Regression (review round 1, G1): the child column is a read
+            // too. SoA pays one side line for every hit, AoS never does.
+            try testing.expectEqual(@as(u32, @intFromBool(want != null)), ts.sideLines());
+            try testing.expectEqual(0, ta.sideLines());
+            try testing.expectEqual(ts.keyLines() + ts.sideLines(), ts.linesRead());
+            // The search alone reads only keys, in both layouts.
+            var ss: Trace = .init(soa_layout);
+            var sa: Trace = .init(aos_layout);
+            try testing.expectEqual(soa.lowerBound(key, &ss), aos.lowerBound(key, &sa));
+            try testing.expectEqual(searched, ss.comparisons);
+            try testing.expectEqual(0, ss.sideLines() + sa.sideLines());
+            try testing.expect(ss.linesRead() <= sa.linesRead());
         }
     }
     try testing.expectEqual(capacity, soa.list.len); // the node did fill up

@@ -1,0 +1,127 @@
+== 1. One trace, two structures ==
+B+tree: order M = 4, so 3 entries per leaf block.
+LSM: 3 slots per data block, memtable of 4 keys, level 0 holds 2 runs, growth 2.
+r = blocks read, w = blocks written by that one operation.
+
+put 10      | btree r=0 w=1 | lsm r= 0 w= 0 |
+put 20      | btree r=1 w=1 | lsm r= 0 w= 0 |
+put 5       | btree r=1 w=1 | lsm r= 0 w= 0 |
+put 6       | btree r=1 w=3 | lsm r= 0 w= 0 | btree: leaf split. btree: new root.
+put 12      | btree r=2 w=1 | lsm r= 0 w= 3 | lsm: flush.
+put 30      | btree r=2 w=3 | lsm r= 0 w= 0 | btree: leaf split.
+put 7       | btree r=2 w=1 | lsm r= 0 w= 0 |
+put 17      | btree r=2 w=1 | lsm r= 0 w= 0 |
+put 3       | btree r=3 w=4 | lsm r= 6 w= 7 | btree: leaf split. lsm: flush. lsm: compact level 0 into level 1.
+put 25      | btree r=2 w=1 | lsm r= 0 w= 0 |
+put 1       | btree r=2 w=1 | lsm r= 0 w= 0 |
+put 15      | btree r=3 w=6 | lsm r= 0 w= 0 | btree: leaf split. btree: internal split. btree: new root.
+get 15      | btree r=3 w=0 | lsm r= 0 w= 0 | = 1500
+get 12      | btree r=3 w=0 | lsm r= 2 w= 0 | = 1200
+get 13      | btree r=3 w=0 | lsm r= 2 w= 0 | = none
+delete 15   | btree r=3 w=1 | lsm r= 0 w= 3 | lsm: flush.
+put 20      | btree r=3 w=1 | lsm r= 0 w= 0 |
+put 11      | btree r=3 w=1 | lsm r= 0 w= 0 |
+put 13      | btree r=4 w=4 | lsm r= 0 w= 0 | btree: leaf split.
+put 14      | btree r=3 w=1 | lsm r=10 w=10 | lsm: flush. lsm: compact level 0 into level 1.
+get 15      | btree r=3 w=0 | lsm r= 2 w= 0 | = none
+get 20      | btree r=3 w=0 | lsm r= 2 w= 0 | = 2001
+scan [5,14) | btree r=6 w=0 | lsm r= 5 w= 0 | = 5 6 7 10 11 12 13
+
+== 2. Where the data ended up ==
+B+tree: height 3, 9 blocks
+  level 1: [15]
+  level 2: [6 10 12] [20]
+  level 3: (1 3 5) (6 7) (10 11) (12 13 14) (17) (20 25 30)
+LSM: 7 blocks on the device holding 13 slots, 1 key(s) in the memtable
+  memtable: 14
+  level 0 (oldest first): -
+  level 1: (1 3 5 6 7 10 11 12 13 17 20 25 30)
+totals: btree reads=58 writes=32 | lsm reads=29 writes=23
+lsm compaction dropped 2 stale version(s) and 1 tombstone(s)
+
+== 3. Workload: insert-heavy ==
+seed 271, preload 0 puts, then 12000 operations over 1000000 keys; put/delete/get/scan = 90/0/8/2
+live keys at the end: 10772; answers that differ from the oracle: 0
+
+                                              B+tree       LSM
+write operations (put + delete)                10824     10824
+  blocks written                               14032      5997
+  blocks written per write                      1.29      0.55
+  WRITE AMPLIFICATION (slots per entry)        19.44      8.31
+  blocks read per write                         3.89      0.48
+  most blocks written by one write                 8      1107
+point lookups (get)                              947       947
+  READ AMPLIFICATION (blocks per get)           3.80      7.01
+    of which index blocks                       2.80      3.50
+short scans                                      229       229
+  entries returned per scan                    11.09     11.09
+  blocks read per scan                          4.92      7.59
+blocks on the device at the end                 1107       762
+  blocks if every live key were packed           719       719
+  SPACE AMPLIFICATION (at the end)              1.53      1.05
+  most blocks at any moment                     1107      1357
+  space amplification (at the peak)             1.53      1.88
+B+tree: height 4. LSM: 3 level(s) below level 0, 0 run(s) in level 0, 10755 slots on the device.
+LSM maintenance: 180 flushes, 45 level-0 compactions, 11 level merges; dropped 45 stale versions, 0 tombstones.
+LSM lookups: 3322 runs probed, 3316 of those without finding the key, 53 runs skipped by min/max.
+
+== 4. Workload: read-heavy ==
+seed 272, preload 8000 puts, then 12000 operations over 12000 keys; put/delete/get/scan = 5/0/80/15
+live keys at the end: 6140; answers that differ from the oracle: 0
+
+                                              B+tree       LSM
+write operations (put + delete)                  563       563
+  blocks written                                 642       419
+  blocks written per write                      1.14      0.74
+  WRITE AMPLIFICATION (slots per entry)        17.10     11.16
+  blocks read per write                         4.04      0.69
+  most blocks written by one write                 6       308
+point lookups (get)                             9588      9588
+  READ AMPLIFICATION (blocks per get)           4.00      7.78
+    of which index blocks                       3.00      3.89
+short scans                                     1849      1849
+  entries returned per scan                    19.66     19.66
+  blocks read per scan                          5.89     10.12
+blocks on the device at the end                  634       513
+  blocks if every live key were packed           410       410
+  SPACE AMPLIFICATION (at the end)              1.54      1.25
+  most blocks at any moment                      634       740
+  space amplification (at the peak)             1.54      1.80
+B+tree: height 4. LSM: 3 level(s) below level 0, 2 run(s) in level 0, 7197 slots on the device.
+LSM maintenance: 10 flushes, 2 level-0 compactions, 1 level merges; dropped 237 stale versions, 0 tombstones.
+LSM lookups: 37328 runs probed, 32452 of those without finding the key, 405 runs skipped by min/max.
+
+== 5. Workload: update-heavy ==
+seed 273, preload 4000 puts, then 12000 operations over 4000 keys; put/delete/get/scan = 70/15/10/5
+live keys at the end: 3253; answers that differ from the oracle: 0
+
+                                              B+tree       LSM
+write operations (put + delete)                10210     10210
+  blocks written                               10234      4533
+  blocks written per write                      1.00      0.44
+  WRITE AMPLIFICATION (slots per entry)        15.03      6.65
+  blocks read per write                         4.01      0.43
+  most blocks written by one write                 6       309
+point lookups (get)                             1186      1186
+  READ AMPLIFICATION (blocks per get)           4.00      6.08
+    of which index blocks                       3.00      3.04
+short scans                                      604       604
+  entries returned per scan                    24.05     24.05
+  blocks read per scan                          6.41      8.48
+blocks on the device at the end                  362       291
+  blocks if every live key were packed           217       217
+  SPACE AMPLIFICATION (at the end)              1.66      1.34
+  most blocks at any moment                      363       531
+  space amplification (at the peak)             1.67      2.44
+B+tree: height 4. LSM: 2 level(s) below level 0, 3 run(s) in level 0, 4063 slots on the device.
+LSM maintenance: 169 flushes, 42 level-0 compactions, 8 level merges; dropped 7409 stale versions, 1401 tombstones.
+LSM lookups: 3609 runs probed, 2693 of those without finding the key, 58 runs skipped by min/max.
+
+== 6. The growth factor is the tuning knob ==
+LSM only, insert-heavy workload again, everything else unchanged.
+
+growth    levels       write amp  blocks per get blocks per scan   peak blocks
+2              5            8.02            8.09            8.79           818
+4              3            8.31            7.01            7.59          1357
+8              2            9.72            6.37            7.00          1525
+16             2           11.20            6.07            6.70          1154

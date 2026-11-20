@@ -235,13 +235,17 @@ every page ends up on the free list.</p>
         : 'The remainder is too large for the leaf, so the leaf keeps the minimum, <b>' + M + '</b> bytes (more cells fit beside it), and the last of the <b>' + pages + '</b> overflow page' + (pages > 1 ? 's' : '') + ' holds ' + (tail - (pages - 1) * U) + ' of ' + U + ' bytes.';
     }
     calcBoxes.appendChild(el('div.ch13-calc-box', el('b', 'leaf cell'), local + ' B' + (pages ? ' + page id' : '')));
-    var shown = Math.min(pages, 6);
-    for (var i = 0; i < shown; i++) {
+    // Every page but the last is full. Draw up to six boxes: the first ones,
+    // one box standing for the full pages left out, and always the last page.
+    function pageBox(i) {
       var last = i === pages - 1, n = last ? tail - (pages - 1) * U : U;
-      if (!last && i === shown - 1) { calcBoxes.appendChild(el('div.ch13-calc-box.s-split', el('b', '… ' + (pages - shown + 1) + ' more'), 'full pages')); break; }
       calcBoxes.appendChild(el('div.ch13-calc-box.s-split', el('b', 'overflow ' + (i + 1)), n + ' B' + (n < U ? ' of ' + U : ' (full)'),
         el('div.ch13-meter', el('span', { style: { width: Math.round(100 * n / U) + '%' } }))));
     }
+    var lead = pages <= 6 ? pages - 1 : 4;
+    for (var i = 0; i < lead; i++) pageBox(i);
+    if (pages > 6) calcBoxes.appendChild(el('div.ch13-calc-box.s-split', el('b', '… ' + (pages - 1 - lead) + ' more'), 'full pages'));
+    if (pages > 0) pageBox(pages - 1);
   }
   calcIn.addEventListener('input', calc);
   calc();

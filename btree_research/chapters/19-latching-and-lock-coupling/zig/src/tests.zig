@@ -483,8 +483,7 @@ test "latch coupling: a writer that latched a replaced root starts again" {
     writer.join();
     try testing.expectEqual(null, try writer.result);
     try testing.expectEqual(1, tree.stats.root_restarts.load(.monotonic));
-    // First of all: a latch left on the old root would make the `get` below
-    // wait forever instead of failing.
+    // The restart must not leave its latch on the old root.
     try testing.expect(tree.nothingLocked(io));
     try tree.validate();
     // Without the second look the writer would put 30 into #0, the LEFT

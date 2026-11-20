@@ -74,7 +74,7 @@ The table is textbook material (the books are not among the sources in `db_study
 > **History.** Rudolf Bayer and Edward McCreight described the B-tree at Boeing in 1970
 > and published it in 1972 ("Organization and Maintenance of Large Ordered Indexes").
 > They never said what the B stands for. Knuth's volume 3 (1973) introduced "order M"
-> as the maximum number of children. In the same year, 1972, Bayer described "symmetric
+> as the maximum number of children. Also in 1972, Bayer described "symmetric
 > binary B-trees": a binary encoding of the B-tree with 2, 3 or 4 children per node.
 > Guibas and Sedgewick (1978) drew the same structure with red and black links, which is
 > the name that stuck. (Textbook history, not verified against the papers here.)
@@ -100,6 +100,7 @@ same left-to-right order. (With two keys the red node could also go to the right
 code always puts it on the left.) The red-black rules are the B-tree rules in this
 encoding:
 
+- The root is black, because the top of the root's 2-3-4 node is its black node.
 - A red node has no red child, because a 2-3-4 node has at most three keys: one black,
   two red.
 - Every path from the root to a missing child passes the same number of black nodes,
@@ -107,7 +108,7 @@ encoding:
 
 So the number of black nodes on a path is the height of the 2-3-4 tree, and a path is at
 most twice as long as another. `redblack.zig` / `redblack.rs` do the conversion and check
-both rules.
+the three rules, plus the order of the keys as in any binary search tree.
 
 ### The height bound
 
@@ -242,7 +243,8 @@ recursive walk "child i, then key i".
 
 **Validate** (`base_validate.zig`). `check(node, lo, hi, is_root, depth)` receives the
 open interval (lo, hi) that the node's keys must lie in. It checks the node's size, its
-order and the interval, then calls itself for child i with the interval narrowed to
+order and the interval, then that all its child slots are filled (and no others), and
+only then calls itself for child i with the interval narrowed to
 (keys[i-1], keys[i]). The first leaf sets the expected depth; every later leaf is
 compared with it. After the walk, the number of keys met is compared with `tree.len`,
 and the number of nodes reached with the number of nodes created. It returns the first
@@ -256,6 +258,11 @@ Part 4 of the output shows what `validate` says and how many of the 12 keys `get
 finds. Four cases still answer every lookup correctly (an overfull node, leaves at
 different depths, a leaf with a child pointer, an unreachable node), and case 2 hides a
 key that is physically in the tree. Query tests alone would not find these.
+
+A tree that `validate` has rejected can still be looked at and thrown away: `render`,
+`shape` and `deinit` skip a missing child instead of aborting, and a test runs all three
+on each of the ten trees. Only `get` is not safe on case 7, which is why part 4 does
+not try it there.
 
 **Oracle test** (`tree.zig`, "seeded model test"). An oracle is a second implementation
 that is too simple to be wrong. Here it is one `bool` per possible key, filled from the
@@ -277,8 +284,11 @@ The files have the same names and the tests the same names, with these differenc
 - **Out of memory.** Rust aborts when the global allocator fails, so the arena has a
   node budget and `alloc` returns `Err(OutOfNodes)`. Zig tests real allocation failure
   with `std.testing.checkAllAllocationFailures`.
-- **Missing child.** A null pointer in Zig, a too-short `children` vector in Rust. For a
-  tree with two defects this changes which one `validate` reports (see Pitfalls).
+- **Missing child.** A null pointer in Zig, a too-short `children` vector in Rust. Both
+  versions of `validate` name the same first error for the same tree. Printing a broken
+  tree can differ: in Zig the key count also says how many children a walk follows, in
+  Rust the `children` vector keeps its own length (the root of case 5 prints one child
+  in Zig and four in Rust).
 
 ### Output
 
@@ -387,7 +397,9 @@ before the tree does. So the allocator never needs to take a single node back, a
 
 **First by hand: `BumpAllocator`** (`bump.zig`). It owns a chunk of memory and a cursor.
 To allocate: round the cursor up to the alignment, return that address, advance the
-cursor. When the chunk is full it asks its child allocator for another chunk. `free`
+cursor. When the chunk is full it asks its child allocator for another chunk; what was
+left in the old chunk stays unused. An object too big for an ordinary chunk gets a chunk
+of its own, and the current chunk stays in use. `free`
 does nothing. `deinit` gives every chunk back. It implements the four functions of
 `std.mem.Allocator` (`alloc`, `resize`, `remap`, `free`), so any code that takes an
 `Allocator` runs on it; a test appends 1000 items to an `ArrayList` on it.
@@ -399,7 +411,7 @@ where nodes live:
 
 | Allocator passed in | Where nodes live | Teardown |
 |---|---|---|
-| `std.testing.allocator` | one tracked allocation each | `tree.deinit(gpa)` walks the tree and destroys node by node |
+| `std.testing.allocator` | one tracked allocation each | `tree.deinit(gpa)` walks the tree and destroys every node it reaches |
 | `BumpAllocator` | next to each other in a chunk | `bump.deinit()`: one free per chunk, no walk |
 | `std.heap.ArenaAllocator` | the same | `arena.deinit()`, or `arena.reset(.retain_capacity)` to reuse the memory |
 
@@ -416,9 +428,12 @@ is thread-safe when its child allocator is (comment at the top of
 - *No walk at teardown.* Freeing node by node means visiting every node just to throw
   it away.
 - *A broken or half-built tree can still be freed.* `deinit` follows child pointers, so
-  it needs a valid tree. The ten broken trees cannot be freed that way, and neither can
-  a build that failed half-way: there is no root yet. With an arena both are one call
-  (`checkAllAllocationFailures` fails every allocation of a build in turn; no leak).
+  it frees only what can be reached from the root. That is everything for seven of the
+  ten broken trees. The other three keep nodes the walk cannot reach (the zeroed root
+  of case 5 hides three leaves, cases 7 and 10 one node each), and a build that failed
+  half-way has no root at all. With node-by-node allocation those nodes leak; with an
+  arena all of it is one call (a test counts what the walk frees for each broken tree;
+  `checkAllAllocationFailures` fails every allocation of a build in turn; no leak).
 - *Neighbours in memory.* Nodes created one after the other are adjacent, with no
   header between them (a test checks the addresses; a `Node(4)` is 120 bytes on the
   64-bit target used here).
@@ -445,8 +460,10 @@ when the arena is dropped. The Zig node is one flat block.
 - **Trusting lookups as a test.** Four of the ten broken trees answer every `get`
   correctly. Run `validate` after every operation in tests.
 - **Reading meaning into which error `validate` returns.** It returns the first
-  violation its walk meets. For a tree with two defects the Zig and Rust versions can
-  name different ones (a test in `broken.zig` / `broken.rs` shows a case).
+  violation its walk meets, and a tree with two defects gets only one name. The order
+  of the walk decides: a node's own keys, then its child slots, then the subtrees from
+  left to right (a test in `broken.zig` / `broken.rs` shows two cases). Fix what is
+  named, then validate again.
 
 ## Exercises
 
@@ -457,8 +474,9 @@ when the arena is dropped. The Zig node is one flat block.
    5 levels?
 3. (medium) Take the canonical tree and apply two corruptions at once: leaf `[7]`
    becomes `[11]`, and leaf `[12 15 17]` becomes `[12 17 15]`. Which error does
-   `validate` return, and why? Then find a pair of corruptions for which the Zig and the
-   Rust `validate` return different errors, and explain the difference from the code.
+   `validate` return, and why? Then a different pair: leaf `[1 3 5]` becomes `[3 1 5]`,
+   and the root's last child pointer is erased. The disordered leaf is the leftmost node
+   below the root. Is it reported? Explain the answer from the code of `check`.
 4. (medium) The conversion puts the red node of a two-key node on the left. How many
    different red-black trees represent the canonical tree if the red node may go on
    either side? Give a formula for any 2-3-4 tree. Why does a three-key node offer no

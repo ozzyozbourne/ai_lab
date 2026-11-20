@@ -50,20 +50,24 @@ returns `KeyOutsideParentBounds`. The walk is depth-first, left to right. It che
 root, then leaf `[1 3 5]`, then leaf `[11]` with the bounds (6, 10). 11 is not below 10,
 so the walk stops there. It never reaches the third leaf. Both languages agree.
 
-**A pair on which Zig and Rust differ.** Swap the first two keys of leaf `[1 3 5]`
-(giving `[3 1 5]`) and erase the root's last child pointer.
+**Leaf `[1 3 5]` becomes `[3 1 5]` and the root's last child pointer is erased.**
+`validate` returns `MissingChild`, not `KeysOutOfOrder`, although the disordered leaf is
+the leftmost node below the root. `check` works on one node in this order: its size, its
+keys (order and bounds), then all of its child slots, and only after that the subtrees.
 
-- Zig returns `KeysOutOfOrder`. Its `check` loops over the child slots of the root and
-  looks at slot 3 only after it has returned from children 0, 1 and 2. The disordered
-  leaf is child 0, so it is met first.
-- Rust returns `MissingChild`. A missing child is a `children` vector that is too
-  short, and `check` compares `children.len()` with `len() + 1` before it descends into
-  any child.
+- Zig: a first loop over `node.children` returns `MissingChild` for an empty slot among
+  the first `len + 1` (and `UnexpectedChild` for a filled slot behind them). The second
+  loop, which descends, is never reached.
+- Rust: a missing child is a `children` vector that is too short, and `check` compares
+  `children.len()` with `len() + 1` before it descends into any child.
 
-Neither is wrong: the tree is broken, and `validate` promises only to name a violation
-that exists. Both cases are the test "two defects: validate reports the one its walk
-meets first" in `broken.zig` and `two_defects_validate_reports_the_one_its_walk_meets_first`
-in `broken.rs`.
+So the root's defect is found while the walk is still in the root, and both languages
+name the same error. `validate` promises only to name a violation that exists; which
+one comes first follows from the order of the walk.
+
+Both cases are the test "two defects: validate reports the one its walk meets first" in
+`broken.zig` and `two_defects_validate_reports_the_one_its_walk_meets_first` in
+`broken.rs`.
 
 ## 4. How many red-black trees for one 2-3-4 tree
 

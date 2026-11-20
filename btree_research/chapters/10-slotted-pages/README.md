@@ -45,8 +45,7 @@ grow toward each other:
   the buffer, and its content area ends at `usable = 4096 - reserved`. It is 0 in this
   chapter's examples; chapter 22 reserves 4 bytes for the page checksum of chapter 21.
 
-The 16-byte header holds everything else the page knows about itself (integers are
-little-endian):
+The 16-byte header (little-endian integers):
 
 | Offset | Size | Field | Meaning |
 |--------|------|-------|---------|
@@ -57,8 +56,6 @@ little-endian):
 | 7 | 1 | `kind` | the caller's: chapter 12 stores leaf or interior here |
 | 8 | 1 | `reserved` | size of the reserved tail |
 | 9 | 7 | user area | the caller's: chapter 12 stores a page number here |
-
-Free blocks and fragments are explained below.
 
 Slot `i` is at a computable position (`16 + 2*i`), so binary search works: probe a slot,
 follow it to the cell, compare keys. Inserting in the middle moves only the 2-byte slots
@@ -188,8 +185,8 @@ In the final hexdump, `03 00` is the cell count, `d6 0f` is `content_start` 0x0f
 and the slots `f0 0f`, `de 0f`, `d6 0f` are 4080, 4062, 4054. At 0xfd6 the cell
 `03 00 01 00 "pea" "g"` begins: key length 3, value length 1.
 
-Part 2 shows why the distinction between "free" and "fits" matters, and Part 3 runs the
-shared random operation stream against one page:
+Part 2 shows why "free" and "fits" differ, and Part 3 runs the shared random operation
+stream against one page:
 
 ```
 == Part 2: fragmentation and automatic compaction ==
@@ -275,11 +272,11 @@ against a snapshot).
 `allocSpace` is the allocation policy:
 
 1. If the gap still has 2 bytes for the new slot, try the free list (`takeFromFreeBlock`,
-   first fit). A block with 4 or more bytes to spare gives up its tail and stays in the
-   list; otherwise it is unlinked and the 0 to 3 leftover bytes are added to `frag_bytes`.
+   first fit). A block with 4 or more bytes to spare gives up its tail; otherwise it is
+   unlinked and its 0 to 3 leftover bytes are added to `frag_bytes`.
 2. Otherwise use the gap: lower `content_start` by `size`.
-3. If the gap is too small for cell plus slot, `compact()` first. After compaction the gap
-   equals `freeBytes()`, which the caller already checked.
+3. If the gap is too small for cell plus slot, `compact()` first; the gap then equals
+   `freeBytes()`, which the caller already checked.
 
 `freeSpace(offset, size)` is the reverse. It merges the freed range with the free block
 on either side if they touch **or are at most 3 bytes apart**: bytes in between cannot be
@@ -291,10 +288,10 @@ written: `content_start` moves up and the bytes are gap.
 from the end of the content area in slot order, reading cell lengths from the copy.
 
 `validate` paints every byte of the content area into a 4 KiB map on the stack as "cell"
-or "free block", fails if anything is painted twice, and requires that the number of
-unpainted bytes equals `frag_bytes`. It also checks that the free list is ascending and
-merged, that nothing reaches into the reserved tail, and that slots are in strict key
-order. It is the only method that is safe on arbitrary bytes.
+or "free block", fails if a byte is painted twice, and requires the unpainted bytes to
+number `frag_bytes`. It also checks that the free list is ascending and merged, that
+nothing reaches into the reserved tail, and that keys are strictly ascending. It is the
+only method that is safe on arbitrary bytes.
 
 ### Rust
 
@@ -306,19 +303,17 @@ and output match the Zig version (`insert_at` for `insertAt`, and so on). Reads 
 ### Differences that matter
 
 - **Stale slices.** In Zig, `page.value(1)` returns a `[]const u8` into the buffer, and
-  nothing stops you from using it after `compact()` moved the cell. The Zig test "a slice
-  into the page does not survive compaction" shows the address changing. In Rust the same
-  program does not compile: `value(&self)` borrows the page, and `compact(&mut self)` needs
-  it exclusively. The Rust test has to remember an offset instead of a slice.
+  nothing stops you from using it after `compact()` moved the cell (test "a slice into the
+  page does not survive compaction"). In Rust the same program does not compile:
+  `value(&self)` borrows the page, and `compact(&mut self)` needs it exclusively. The Rust
+  test remembers an offset instead.
 - **Aliasing arguments.** `put(k, v)` may compact, so `k` and `v` must not point into the
-  page being changed. Zig checks this with an assert on the pointer ranges
-  (`assertOutside`). Rust needs no check: a `&[u8]` into the page cannot exist while
-  `&mut self` does.
+  page. Zig asserts this on the pointer ranges (`assertOutside`). Rust needs no check: a
+  `&[u8]` into the page cannot exist while `&mut self` does.
 - **Free list for dumps.** Zig's `freeBlocks(out: []FreeBlock)` fills a caller-provided
   buffer; Rust's `free_blocks()` returns a `Vec`, the only allocation in the Rust file.
-- **Test counts.** Zig runs 32 tests and Rust 29: two Zig tests put the model test's
-  oracle under allocation failure, which Rust's `Vec` cannot report, and one is the
-  `test` block in `root.zig`.
+- **Test counts.** Zig runs 32 tests, Rust 29: two Zig tests put the oracle under
+  allocation failure, which Rust's `Vec` cannot report; one is the block in `root.zig`.
 
 Run it:
 
@@ -361,8 +356,8 @@ varints (chapter 11) instead of two fixed length fields; a 2- or 3-byte cell is 
 4 bytes (`btree.rs:10522-10524`); and defragmentation has a fast path for one or two
 freeblocks (`btree.rs:9976-10098`).
 
-**Postgres** uses the same two-regions picture for every page, heap and index
-(`postgres/src/include/storage/bufpage.h:24-78`), with different details:
+**Postgres** uses the same two regions for every page, heap and index
+(`postgres/src/include/storage/bufpage.h:24-78`):
 
 | | This chapter | Turso | Postgres |
 |---|---|---|---|
@@ -382,9 +377,8 @@ freeblocks (`btree.rs:9976-10098`).
   data below the deleted tuple up by its size and adjusts every line pointer that pointed
   below it (`bufpage.c:1063-1160`). No free list and no fragments, at the price of a
   `memmove` and a pass over all line pointers per delete.
-- nbtree stores sibling links, level and flags in the special space
-  (`BTPageOpaqueData`, `postgres/src/include/access/nbtree.h:63-70`; chapter 20). Our
-  `kind` byte and 7-byte user area are the hook chapter 12 uses for the same purpose.
+- nbtree keeps sibling links, level and flags in the special space (`BTPageOpaqueData`,
+  `postgres/src/include/access/nbtree.h:63-70`), as chapter 12 uses `kind` and the user area.
 
 DuckDB, TigerBeetle, Milvus and FAISS are not sources for this chapter.
 
@@ -430,8 +424,8 @@ borrow checker turns reason 1 into a compile error.
   copy: a moved cell may have landed on the header of one not yet moved.
 - **Slot indexes are stable across compaction, not across insert and delete.** Long-lived
   references use the key and search again (chapter 08's cursors did the same).
-- **Key order is byte order.** `"10"` sorts before `"9"`, and `"a"` before `"ab"`
-  (chapter 11 fixes this with order-preserving encodings).
+- **Key order is byte order.** `"10"` sorts before `"9"` (chapter 11 fixes this with
+  order-preserving encodings).
 - **Delete does not erase.** The key and value bytes stay on the page (a free block
   overwrites only their first 4) until a new cell or a compaction covers them, so pages
   with the same records are not always the same bytes.

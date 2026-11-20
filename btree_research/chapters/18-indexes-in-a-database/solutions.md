@@ -72,17 +72,38 @@ pivot tuples for that reason (`nbtree/README:834-838`).
 
 ## 4. `updateDay`, in place and to a new slot
 
-Not implemented in the repository and not run; descents are counted from the code paths
+Not implemented in the repository. The in-place variant below was run in a temporary copy
+of the Zig library (5 updates on the 12-row table per layout, `validate` after each, and a
+`FailingAllocator`); the new-slot variant was not run and is counted from the code paths
 of `delete` and `insert`.
 
 In place, `day` is in the key of `by_customer_day` only:
 
-- Clustered: read the row (1 descent), remove the old index entry (1), insert the new one
-  (1), overwrite the row in the primary tree (1). 4 descents. `by_code` is untouched.
-- Heap: probe the primary key index (1 descent), read the heap slot (1 heap read), remove
-  and insert the `by_customer_day` entry (2), overwrite the slot in place. 3 descents and
-  one heap read. The primary key index and `by_code` are untouched because the TID did not
-  change.
+- Clustered: read the row (1 descent), insert the new index entry (1), overwrite the row
+  in the primary tree (1), remove the old index entry (1). 4 descents (**measured**: 20
+  for 5 updates). `by_code` is untouched.
+- Heap: probe the primary key index (1 descent), read the heap slot (1 heap read), insert
+  the new and remove the old `by_customer_day` entry (2), overwrite the slot in place.
+  3 descents and one heap read (**measured**: 15 and 5 for 5 updates). The primary key
+  index and `by_code` are untouched because the TID did not change.
+
+The order of the steps matters. Everything that can fail goes first, the step that cannot
+fail goes last:
+
+1. Insert the new entry (customer, new day, locator). It can return `OutOfMemory`; if it
+   does, nothing has changed yet. (If the day is unchanged the two keys are equal: return
+   early.)
+2. Clustered only: overwrite the row. This chapter's `put` reserves nodes before it
+   descends, so even an overwrite can return `OutOfMemory`
+   (`base_insert.zig`, comment at the top of `put`). On that error delete the entry of
+   step 1 again; `delete` never allocates.
+3. Remove the old entry. It cannot fail.
+
+"Remove the old entry, then insert the new one" is the wrong order: if the insert fails,
+the row has no `by_customer_day` entry at all, which is the partial write the README's
+Pitfalls section warns about. In the temporary copy the injected failure hit step 2 once
+(clustered) and `validate` passed afterwards; in the first version of the test, which
+did not undo step 1, the same failure left the table inconsistent.
 
 If the changed row is written to a new heap slot, its TID changes, and the TID is part of
 *every* index key in the heap layout. The primary key entry (id, TID) and the `by_code`
@@ -139,5 +160,5 @@ of leaf pages: roughly when `2 * distinct * height` is less than the leaf count.
 condition is reasoning from the two formulas, and the table above shows two cases on the
 losing side of it; a winning case was not measured. A real implementation also avoids
 the first of the two descents per value when the next customer is on the same leaf
-(Postgres' skip arrays, `nbtree/nbtpreprocesskeys.c:110-127`, are considerably more
+(Postgres' skip arrays, `nbtree/nbtpreprocesskeys.c:130-137`, are considerably more
 refined than this loop).

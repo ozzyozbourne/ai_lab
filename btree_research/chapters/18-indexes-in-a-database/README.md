@@ -354,7 +354,7 @@ corruptions that `validate` reports. The chapter 07 tests of the base tree run a
   clustered table storage in the heap access method.
 - Skip scan: this Postgres version can answer a predicate on a non-leading column by
   generating a "skip array" on the leading column
-  (`nbtree/nbtpreprocesskeys.c:110-127`). Exercise 5 measures the idea on this chapter's
+  (`nbtree/nbtpreprocesskeys.c:130-137`). Exercise 5 measures the idea on this chapter's
   table.
 
 ### Textbook, not verified in these sources

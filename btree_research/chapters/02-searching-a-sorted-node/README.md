@@ -153,11 +153,14 @@ bounds are not 0.
 ### Galloping
 
 Binary search always starts with the whole array. If you already know the answer is at
-or after some position `from`, and probably close to it, you can do better: probe
-`from + 1`, `from + 3`, `from + 7`, ... (the step doubles each time) until a probe is
-`>= key`, then binary search between the last two probes. If the answer is `d` positions
-away this costs about `2 * log2(d)` comparisons, however long the array is. The typical
-use is a sorted batch of lookups: each search starts where the previous one ended.
+or after some position `from`, and probably close to it, you can do better. First look
+at `keys[from]` itself: if it is already `>= key`, the answer is `from`, after one
+comparison. Otherwise probe `from + 1`, `from + 3`, `from + 7`, ... (the step doubles
+each time) until a probe is `>= key`, then binary search between the last two probes. If
+the answer is `d` positions away this costs about `2 * log2(d)` comparisons, however
+long the array is. The typical use is a sorted batch of lookups: each search starts
+where the previous one ended, and the first comparison is what makes a lookup that lands
+on the same position cost one comparison instead of a whole search.
 
 ## Code walk-through
 
@@ -189,7 +192,9 @@ The tests are the second half of the lesson. `firstCounterexample` enumerates **
 for every key from 0 to 8, so every position below, between, on and above the elements
 is tried. It returns the smallest input where a candidate disagrees with the linear
 scan. Two deliberately wrong versions show it working: the "closed interval" bug fails
-on `[1]` with key 2, the "return as soon as equal" bug on `[1, 1]` with key 1. A seeded
+on `[1]` with key 2, the "return as soon as equal" bug on `[1, 1]` with key 1. (A third
+wrong version, the mixed convention of pitfall 2, has its own test because it does not
+terminate.) A seeded
 test compares against `std.sort` on random arrays, and the node is model-tested against
 the oracle from `common/` with 20 000 operations.
 
@@ -324,8 +329,9 @@ exists.
   `std.testing.allocator` per array pays for bookkeeping the test does not need; it is
   used only where a test needs a real heap: as the *backing* buffer of one
   `FixedBufferAllocator` (so a leak still fails the test), for the oracle of the node
-  model test, and for the output buffer of `main`'s test. An `ArenaAllocator` allocates from the heap and grows without limit.
-  `page_allocator` rounds every small array up to a page.
+  model test, and for the output buffer of `main`'s test. An `ArenaAllocator` allocates
+  from the heap and grows without limit. `page_allocator` rounds every small array up to
+  a page.
 - **A trap that was hit while writing this chapter.** A `[N]u8` buffer has alignment 1.
   Allocating `u64`s from it may first skip up to 7 bytes, so a buffer sized for exactly
   `n` keys can fail. The buffers are declared `align(@alignOf(u64))`.
@@ -342,9 +348,8 @@ rest, and a buffer that is too small gives `None` (mapped to
 2. **Mixing interval conventions.** `hi = len - 1` with a `lo < hi` loop can never
    return `len`; `lo <= hi` with `hi = mid` either never terminates (keys `1`, key 0:
    `lo = hi = mid = 0` forever) or reads one past the end (keys `1`, key 2 reads
-   `keys[1]`); a test shows both. Choose half-open (this
-   chapter, Postgres) or closed with a remembered candidate (Turso) and derive every
-   line from it.
+   `keys[1]`); a test shows both. Choose half-open (this chapter, Postgres) or closed
+   with a remembered candidate (Turso) and derive every line from it.
 3. **`hi - 1` on unsigned indices.** The closed form computes `mid - 1`, which underflows
    at 0 for unsigned types. Turso's `min_cell_idx` and `max_cell_idx` are signed
    (`isize`, `btree.rs:614-615`), so `max` can become -1. The half-open form never

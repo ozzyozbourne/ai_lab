@@ -467,6 +467,26 @@ mod tests {
     }
 
     #[test]
+    fn a_fill_factor_is_a_percentage_only_0_to_100_is_valid() {
+        assert!(Policy::Half.is_valid());
+        for ff in [0, 50, 100] {
+            assert!(Policy::Fill(ff).is_valid());
+            assert!(Policy::Rightmost(ff).is_valid());
+            assert!(Policy::Adaptive(ff).is_valid());
+        }
+        for ff in [101, 150, 255] {
+            assert!(!Policy::Fill(ff).is_valid());
+            assert!(!Policy::Rightmost(ff).is_valid());
+            assert!(!Policy::Adaptive(ff).is_valid());
+        }
+        // The two ends of the range are ordinary targets. 100: the left page
+        // should keep no free space, so the fullest legal left page wins.
+        // 0: the left page should be empty, so the emptiest one wins.
+        assert_eq!(hand_choice(Policy::Fill(100), Some(40)).first_right, 6);
+        assert_eq!(hand_choice(Policy::Fill(0), Some(40)).first_right, 1);
+    }
+
+    #[test]
     fn choose_split_reuses_the_scratch_buffer() {
         // The Rust counterpart of Zig's "OutOfMemory from the scratch
         // allocator" test: there is no fallible allocation to inject a

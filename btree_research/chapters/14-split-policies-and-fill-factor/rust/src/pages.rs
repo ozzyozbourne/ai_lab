@@ -133,10 +133,13 @@ pub struct Tree {
 impl Tree {
     /// `capacity` must be at least 4 bytes: below that `max_cell_size` is 0,
     /// so no cell could ever be stored, and a capacity of 0 would make every
-    /// fill percentage a division by zero. Passing less is a programming
-    /// error (asserted), not a runtime condition.
+    /// fill percentage a division by zero. The policy's fill factor must be
+    /// a percentage, 0..=100 (`Policy::is_valid`). Passing anything else is a
+    /// programming error (asserted here, where the mistake is made, and not
+    /// at the first split), not a runtime condition.
     pub fn new(capacity: u32, policy: Policy) -> Tree {
         assert!(capacity >= MIN_CAPACITY, "capacity must be at least 4");
+        assert!(policy.is_valid(), "a fill factor is a percentage, 0..=100");
         Tree {
             capacity,
             policy,
@@ -499,6 +502,48 @@ mod tests {
             assert_eq!(f.used_bytes, 9);
             assert_eq!(f.histogram.iter().sum::<u32>(), f.pages);
         }
+    }
+
+    #[test]
+    fn fill_factors_0_and_100_the_ends_of_the_legal_range_split_like_any_other() {
+        let ends = [
+            Policy::Fill(0),
+            Policy::Fill(100),
+            Policy::Rightmost(0),
+            Policy::Rightmost(100),
+            Policy::Adaptive(0),
+            Policy::Adaptive(100),
+        ];
+        for policy in ends {
+            assert!(policy.is_valid());
+            let mut tree = Tree::new(100, policy);
+            for i in 0..200 {
+                assert_eq!(tree.put(i % 7, i, 20), Ok(true));
+            }
+            tree.validate().unwrap();
+            assert_eq!(tree.len, 200);
+            assert!(tree.stats.splits > 0);
+        }
+        // Ascending keys, 5 cells of 20 bytes per page. Fill factor 100 leaves
+        // every page but the last one completely full; fill factor 0 leaves one
+        // cell behind on every split.
+        let mut full = Tree::new(100, Policy::Rightmost(100));
+        let mut empty = Tree::new(100, Policy::Rightmost(0));
+        for i in 0..100 {
+            full.put(i, i, 20).unwrap();
+            empty.put(i, i, 20).unwrap();
+        }
+        assert_eq!(full.fill().pages, 20);
+        assert_eq!(empty.fill().pages, 96);
+    }
+
+    // Zig cannot catch a failed assert inside a test, so this one exists only
+    // here: a fill factor above 100 is refused when the tree is created, not
+    // by an integer overflow at the first split.
+    #[test]
+    #[should_panic(expected = "a fill factor is a percentage")]
+    fn a_fill_factor_above_100_is_refused_when_the_tree_is_created() {
+        let _ = Tree::new(100, Policy::Fill(150));
     }
 
     // Seeded model test: random puts, deletes, gets and ranges against a hash

@@ -48,8 +48,8 @@ smaller than or equal to a page is atomic and nothing larger is.
 You do not control which fate a write gets. You control one thing: after `fsync`
 returns, every earlier write is in fate 2. So the rules of the game are:
 
-- Until `fsync`, assume any subset of your writes may vanish, and any one of them may be
-  half done.
+- Until `fsync`, assume any subset of your writes may vanish, and any of them, several
+  at once, may be half done.
 - A torn page is garbage that looks like a page. You need a **checksum** to notice.
 - Noticing is not enough. The old version was overwritten and the new version is
   incomplete, so the page is lost unless **another complete copy** exists somewhere.
@@ -188,14 +188,19 @@ against both and compares every answer):
   by writing page 2 into an empty store) reads as zeroes. Reading at or beyond `size()`
   is `error.OutOfBounds`.
 - A write to a page number at or beyond the implementation's `max_pages` is
-  `error.OutOfBounds`, and a failed write changes nothing.
+  `error.OutOfBounds`. A write refused with `OutOfBounds`, `OutOfMemory` or `PowerLoss`
+  changes nothing. `error.InputOutput`, which only the real file can return, is
+  different: part of the page may have reached the file, so treat that page as torn.
 - On a powered-off `SimDisk`, `error.PowerLoss` comes before every other check.
 
-**The simulator.** `SimDisk` keeps the two states of the plain-words section apart:
+**The simulator.** `SimDisk` keeps the two states of the plain-words section apart, in
+two of its fields:
 
 ```zig
-durable: std.ArrayList(u8),      // the platter: whole pages
-pending: std.ArrayList(Pending), // unsynced writes, oldest first
+/// The platter: a whole number of pages.
+durable: std.ArrayList(u8) = .empty,
+/// Unsynced writes, oldest first.
+pending: std.ArrayList(Pending) = .empty,
 ```
 
 - `writePage` copies the page and appends it to `pending`. `durable` is untouched.
@@ -209,12 +214,14 @@ pending: std.ArrayList(Pending), // unsynced writes, oldest first
   old). `.random` picks one of the three fates per write. All draws come from the
   SplitMix64 seeded in `init`, so a failure is reproduced by its seed.
 
-The heart of it is `apply`, which copies only the sectors selected by the mask:
+The heart of it is the loop in `apply`, which copies only the sectors selected by the
+mask; a sector whose bit is 0 keeps its old bytes:
 
 ```zig
 for (0..sectors_per_page) |s| {
-    if (mask & (@as(u8, 1) << @intCast(s)) == 0) continue;   // this sector stays old
-    @memcpy(dst[s * sector_size ..][0..sector_size], w.data[s * sector_size ..][0..sector_size]);
+    if (mask & (@as(u8, 1) << @intCast(s)) == 0) continue;
+    const at = s * sector_size;
+    @memcpy(dst[at..][0..sector_size], w.data[at..][0..sector_size]);
 }
 ```
 
@@ -236,7 +243,15 @@ first `sync` says why it cannot be skipped. `recover` reads slot and home for ea
 logical page and applies the rule "slot ok: copy it home; otherwise keep home". If both
 copies are damaged it returns `error.Unrecoverable` rather than hand back garbage. The
 test "crash at every write, every mode" runs 480 crashes and requires a clean old or new
-version every time; another test crashes *recovery itself* and recovers again.
+version every time; another test crashes *recovery itself* and recovers again; a seeded
+model test runs 40 updates over three logical pages per seed, with crashes in every mode
+and interrupted recoveries, and compares all three pages with an oracle after each step.
+
+One limit to remember: `recover` cannot see which of two intact copies is newer. It
+assumes the slot is, which is true only because `update` writes the slot first. So
+`recover` is correct for pages written through `update` and for nothing else; a home
+page written directly is replaced by the slot's older image at the next recovery (there
+is a test for this too, and the sandbox in the visualization lets you do it).
 
 ### Rust
 
@@ -275,15 +290,19 @@ they are enabled the checksum is verified as a page is read (`PageIsVerified`,
 `if (DataChecksumsNeedVerify())` at `:118`).
 
 **Full-page images (Postgres).** Postgres does not double-write. Its second copy lives
-in the write-ahead log: the first time a page is modified after a checkpoint, the WAL
-record carries a complete image of the page (`needs_backup = (page_lsn <= RedoRecPtr)`,
+in the write-ahead log (WAL): a file to which a description of every change, a *WAL
+record*, is appended and synced before the changed page itself is written. Chapter 22
+builds one. A *checkpoint* is the moment at which all pages changed so far have been
+written to their homes and synced, so that the log before that point is no longer needed.
+The first time a page is modified after a checkpoint, the WAL record carries a complete
+image of the page (`needs_backup = (page_lsn <= RedoRecPtr)`,
 `postgres/src/backend/access/transam/xloginsert.c:698`; described in
 `postgres/src/backend/access/transam/README:562-578`). The setting's own description
 states the problem: "A page write in process during an operating system crash might be
 only partially written to disk. During recovery, the row changes stored in WAL are not
 enough to recover" (`postgres/src/backend/utils/misc/guc_parameters.dat:1133-1135`).
-A delta record ("insert this tuple") can only be replayed onto an intact page; a full
-image can be replayed onto anything. Compared with the double write: the image is
+A record that describes only the change (a *delta*, such as "insert this tuple") can
+only be replayed onto an intact page; a full image can be replayed onto anything. Compared with the double write: the image is
 written once per page per checkpoint cycle instead of on every update, and it shares the
 log's sequential write and its fsync. Chapter 22 builds a log made only of such images.
 
@@ -341,8 +360,9 @@ returned by `durablePage` is only valid until the next `writePage`, `sync` or `c
 reserving would buy nothing there: the Rust version grows the image when a write lands.)
 
 **`FixedBufferAllocator` for sector buffers.** `DoubleWrite.recover` needs exactly two
-page buffers, aligned to a sector (real direct I/O requires sector-aligned buffers; the
-simulator does not, but the habit is cheap). It takes them from a caller-supplied
+page buffers, aligned to a sector (direct I/O, meaning writes that bypass the OS cache
+and go straight to the device, requires sector-aligned buffers; the simulator does not,
+but the habit is cheap). It takes them from a caller-supplied
 allocator, and every caller passes a `FixedBufferAllocator` over
 `DoubleWrite.scratch_bytes` of stack. Recovery runs when the system is at its most
 fragile; a fixed buffer means its memory need is known at compile time and it cannot
@@ -364,7 +384,8 @@ to free in bulk.
 - **Trusting a page's own checksum too much.** It cannot detect a *lost* write: the old
   page is intact and verifies. Mixing in the page number catches misplacement, not
   staleness. That needs the expected checksum or a version stored elsewhere
-  (TigerBeetle's parent pointers, or an LSN as in chapter 22).
+  (TigerBeetle's parent pointers, or an LSN, a position in the log used as a page
+  version, as in chapter 22).
 - **A torn write that verifies.** If a write changes few sectors, a tear can produce
   exactly the old or the new page. That is not a missed error: the page really is one of
   the two versions.

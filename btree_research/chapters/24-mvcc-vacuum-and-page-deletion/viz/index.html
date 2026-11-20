@@ -100,7 +100,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     btn('btn-unsafe', 'Recycle anyway', doUnsafe),
     el('span.bt-toolbar-sep'),
     scenario, btn('btn-play', 'Play scenario', function () { playScenario(scenario.value, true); }),
-    btn('btn-reset', 'Empty', function () { message(''); db = C.create(4); steps = []; step('Empty database. Put a few keys, or play a scenario.', {}); commit(false); }));
+    btn('btn-reset', 'Empty', function () { message(''); db = C.create(4); db.names = []; steps = []; step('Empty database. Put a few keys, or play a scenario.', {}); commit(false); }));
   var msg = el('p.c24-msg', { role: 'status', 'aria-live': 'polite' });
   fig.toolbar.after(msg);
   function message(text) { msg.textContent = text; }
@@ -259,7 +259,10 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
       var d = s.state, hl = s.hl || {}, keys = {}, nodes = {};
       var model = treeModel(d, keys);
       Object.keys(hl.keys || {}).forEach(function (id) { keys[id] = hl.keys[id]; });
-      Object.keys(hl.pages || {}).forEach(function (id) { if (C.isLive(d.pages, +id)) nodes[pid(id)] = hl.pages[id]; });
+      Object.keys(hl.pages || {}).forEach(function (id) {
+        // Only pages that are drawn in the tree; half-dead and deleted ones are in the strips below it.
+        if (C.isLive(d.pages, +id) && (!C.page(d, +id).leaf || C.page(d, +id).state === 'live')) nodes[pid(id)] = hl.pages[id];
+      });
       var h = { nodes: nodes, keys: keys };
       if (d.scan && !d.scan.done && C.isLive(d.pages, d.scan.next) && C.page(d, d.scan.next).state === 'live') {
         h.cursor = { node: pid(d.scan.next), label: 'scan reads next' };
@@ -295,6 +298,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     steps = [];
     step(title, {});
     fn();
+    if (!steps.length) return;            // the action was refused: leave the picture alone
     commit(steps.length > 1);
   }
 
@@ -310,9 +314,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
   key.addEventListener('keydown', function (e) { if (e.key === 'Enter') withKey(doPut); });
 
   function pg(id) { var o = {}; o[id] = 'active'; return o; }
-  function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : (word === 'entry' ? '' : 's')).replace(/^$/, '') ; }
   function entries(n) { return n === 1 ? '1 entry' : n + ' entries'; }
-  function pages(n) { return n === 1 ? '1 page' : n + ' pages'; }
 
   /* -------------------------------------------------------- operations */
   function opPut(keyValue, value, question) {
@@ -391,9 +393,10 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
   }
   function doClose() {
     act('Close the oldest snapshot.', function () {
-      // The paused scan keeps its own snapshot; closing it would abandon the scan.
-      var best = -1;
-      db.open.forEach(function (s, i) { if (db.names[i] !== 'scan' && (best < 0 || s < db.open[best])) best = i; });
+      // A paused scan needs its snapshot: that one entry is not offered for closing.
+      var keep = -1, best = -1;
+      if (db.scan && !db.scan.done) keep = index('scan') >= 0 ? index('scan') : db.open.indexOf(db.scan.snapshot);
+      db.open.forEach(function (s, i) { if (i !== keep && (best < 0 || s < db.open[best])) best = i; });
       if (best < 0) {
         steps.pop();
         message(db.open.length ? 'The only open snapshot belongs to the paused scan; let the scan finish to close it.' : 'No snapshot is open.');
@@ -643,7 +646,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
   BTViz.selfTest('pages: scan', end.scan.out.map(function (r) { return r.key; }).join(' '), '10 20 90 100 110 120');
   end = buildScenario('early');
   BTViz.selfTest('early: tree', C.dump(end),
-    'now=21 horizon=21 | height 3, 8 entries, 9 pages\n' +
+    'now=21 horizon=18 | height 3, 8 entries, 9 pages\n' +
     '  level 0: #7[70.6]\n' +
     '  level 1: #2[30.2] #6[90.8 110.10 112.7]\n' +
     '  leaves : #0(10:1- 20:2-) -> #3() -> #4() -> #5(90:9- 100:10-) -> #8(110:11- 111:20-) -> #1(112:21- 120:12-)\n');

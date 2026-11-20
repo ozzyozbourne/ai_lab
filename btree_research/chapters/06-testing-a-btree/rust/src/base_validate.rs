@@ -176,7 +176,8 @@ mod tests {
     use crate::base_node::Node;
 
     /// Only the error kind, for the table of cases below.
-    fn kind(nodes: &[Node], order: usize, root: NodeId, len: usize) -> Result<(), ValidateError> {
+    #[allow(clippy::ptr_arg)] // `Nodes` is implemented for Vec<Node>
+    fn kind(nodes: &Vec<Node>, order: usize, root: NodeId, len: usize) -> Result<(), ValidateError> {
         validate(nodes, order, Some(root), len).map_err(|v| v.error)
     }
 

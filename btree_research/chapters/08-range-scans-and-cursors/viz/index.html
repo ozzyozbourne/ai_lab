@@ -360,7 +360,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
       Object.keys(more || {}).forEach(function (p) { x[p] = more[p]; });
       return x;
     }
-    function idleStep(caption, more) { return makeStep(tree, cur, { type: 'idle', caption: caption }, extra(more)); }
+    function idleStep(caption, more) { var st = makeStep(tree, cur, { type: 'idle', caption: caption }, extra(more)); st.settled = true; return st; }
 
     /**
      * Controls act on what is on screen. Every step carries the model as it was drawn; an operation
@@ -368,9 +368,10 @@ here are checked against the output of the chapter's Zig and Rust programs (self
      * jumping to its last step, because a half-done operation is not a state anything can start from.
      */
     function adopt() {
-      var i = stepper.index, steps = stepper.steps, note = '';
-      if (steps[i] && steps[i].opEnd !== undefined && steps[i].opEnd !== i) {
-        stepper.go(steps[i].opEnd);
+      var i = stepper.index, steps = stepper.steps, note = '', j = i;
+      while (j < steps.length - 1 && !steps[j].settled) j++;
+      if (j !== i) {
+        stepper.go(j, { instant: true });
         note = 'The operation that was on screen half-way was finished first. ';
       }
       var m = stepper.state(stepper.index).model;
@@ -381,9 +382,9 @@ here are checked against the output of the chapter's Zig and Rust programs (self
       cur.naive = mode.value === 'naive';
       return note;
     }
-    /** Marks steps[from..] as one operation: all of them end at the last one. */
-    function seal(steps, from) {
-      for (var i = from; i < steps.length; i++) steps[i].opEnd = steps.length - 1;
+    /** Marks the steps of one operation: only after its last step is the model in a state to act on. */
+    function seal(steps) {
+      steps.forEach(function (st, i) { st.settled = i === steps.length - 1; });
       return steps;
     }
     function show(steps, note, play) {
@@ -413,17 +414,15 @@ here are checked against the output of the chapter's Zig and Rust programs (self
             ', but ' + (b.slots[old.leaf] && b.slots[old.leaf].used ? 'that node no longer has such an entry or such a path above it' : 'that node was freed') +
             '. Reading it would be a use-after-free: a panic in a safe Zig build and in Rust, garbage otherwise. Nothing is returned. ' +
             'Switch the mode back to re-seek, or seek again.', { log: { html: name + ': dangling position', state: 'deleted' } }));
-          return seal(steps, 0);
+          return seal(steps);
         }
         steps.push(makeStep(tree, cur, { type: 'fresh', code: 'reseek', caption: 'The tree has changed, but this naive cursor does not check. It trusts leaf #' + old.leaf + ', index ' + old.index +
           ', which now holds ' + k(b.node(old.leaf).keys[old.index], 'compare') + ' instead of ' + k(old.key) + ', and steps from there.',
           hl: { nodes: mk(old.leaf, 'active'), keys: [[old.leaf, b.node(old.leaf).keys[old.index], 'compare']] } }, extra({ log: name + ' (naive)' })));
       }
-      if (steps.length === 0) steps.push(null);              // placeholder for the first event, see below
       cur.rec = rec;
       var got = op === 'seek' ? cur.seek(tree, { kind: 'ge', key: target }) : cur.step(tree, fwd ? 'forward' : 'backward');
       cur.rec = null;
-      if (steps[0] === null) steps.shift();
       if (got !== null) history.push(got);
       var text, moreExtra = { log: { html: name + ' → ' + (got === null ? 'none' : got), state: 'found' } };
       if (got === null) {
@@ -448,7 +447,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
       if (dup !== null && got !== null && dup === history.length - 1) last.highlight.keys[tree.base.id(cur.leaf) + ':' + got] = 'deleted';
       steps.push(last);
       if (question) steps[0].question = question;
-      return seal(steps, 0);
+      return seal(steps);
     }
     /** A naive stack cursor also needs its frames to name live internal nodes with those children. */
     function framesReadable() {
@@ -471,7 +470,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
     /* ---- tree operations ---- */
     var SKIP = { start: 1, descend: 1, done: 1 };
     function treeSteps(op, v) {
-      var b = tree.base, before = tree.version, was = cur.toJSON(), oldHolds = cur.state === 'on' && cur.positionReadable(tree) ? b.node(cur.leaf).keys[cur.index] : null;
+      var b = tree.base, before = tree.version, was = cur.toJSON();
       var raw = op === 'insert' ? tree.put(v, v * 100) : tree.delete(v);
       var after = tree.version, steps = [];
       // The chapter 07 model recorded full snapshots while it worked; show the structural steps.
@@ -480,6 +479,8 @@ here are checked against the output of the chapter's Zig and Rust programs (self
         var hl = { nodes: s.highlight.nodes || {}, keys: {}, edges: s.highlight.edges || {}, links: s.highlight.links || {} };
         (s.state.stale || []).forEach(function (id) { hl.keys[id] = 'dim'; });
         Object.keys(s.highlight.keys || {}).forEach(function (id) { hl.keys[id] = s.highlight.keys[id]; });
+        var at = was.state === 'on' ? findLeafId(s.state.tree, was.leaf) : null;
+        if (at) hl.cursor = { node: at, label: was.key };
         steps.push({ type: 'tree-' + s.type, caption: (op === 'insert' ? 'Insert ' : 'Delete ') + k(v) + '. ' + s.caption, highlight: hl, code: null,
           log: i === 0 || !steps.length ? (op === 'insert' ? 'put ' : 'delete ') + v : null,
           state: { tree: s.state.tree, version: before, count: s.state.count, height: s.state.height, cursor: was, stale: false,
@@ -501,8 +502,14 @@ here are checked against the output of the chapter's Zig and Rust programs (self
       }
       steps.push(makeStep(tree, cur, { type: 'idle', caption: text, hl: op === 'insert' && raw.ok ? { keys: [[b.findLeaf(v), v, 'inserted']] } : {} },
         extra(steps.length ? {} : { log: (op === 'insert' ? 'put ' : 'delete ') + v })));
-      void oldHolds;
-      return seal(steps, 0);
+      return seal(steps);
+    }
+    /** Id of the leaf drawn with handle `h` in a snapshot taken while an operation was running. */
+    function findLeafId(node, h) {
+      if (!node) return null;
+      if (!node.children || !node.children.length) return node.meta && node.meta.label === '#' + h ? node.id : null;
+      for (var i = 0; i < node.children.length; i++) { var id = findLeafId(node.children[i], h); if (id) return id; }
+      return null;
     }
     function treeOp(op) {
       var r = readKey(key, 'key');
@@ -564,7 +571,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
     var endTree = Ch08.Tree.fromJSON(end.tree);
     BTViz.selfTest('page scenario = output §6',
       Ch07.dump(endTree.base) + 'next -> ' + end.cursor.key + ', now at #' + end.cursor.leaf + '[' + end.cursor.index + ']',
-      E.s6.slice(E.s6.indexOf('height 3, 15 keys'), E.s6.indexOf('  the old position')).replace(/\n {2}/g, '\n').replace(/^ {2}/, '') + 'next -> 13, now at #8[1]');
+      E.s6.slice(E.s6.indexOf('height 3, 15 keys'), E.s6.indexOf('  the old position')) + 'next -> 13, now at #8[1]');
     reset();
     window.__c8change = { stepper: stepper };
   })();

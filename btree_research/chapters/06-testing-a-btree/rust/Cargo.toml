@@ -1,0 +1,17 @@
+[package]
+name = "ch06_testing_a_btree"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# std only: no external dependencies.
+[dependencies]
+
+[lints.rust]
+# "deny", not "forbid": src/alloc_count.rs is this guide's declared exception
+# (a #[global_allocator] cannot be written without `unsafe`) and opts out
+# locally with #[allow(unsafe_code)]. Everything else stays safe.
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

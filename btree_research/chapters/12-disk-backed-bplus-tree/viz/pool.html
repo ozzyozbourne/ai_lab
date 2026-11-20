@@ -39,13 +39,11 @@ Text of the chapter: <a href="../README.md">README.md</a>. First page:
 <h2>The buffer pool during an insert that splits</h2>
 <p>The figure starts where part 4 of the chapter's programs starts: the first 11 scenario keys are in the tree
 and the tree has been flushed, so every frame is clean. <strong>Put next scenario key</strong> inserts key 15,
-which splits leaf page 2. Step through it and watch three things. At most <em>two</em> pages are ever pinned
-at once. With the 2 frames chosen here, the pool must evict the left half of the split (page 2, dirty) to fetch
-the parent, so half of the split is written to the file before the parent has changed. And after the put the
-other changed pages are only dirty in memory; <strong>Flush</strong> then writes them one by one.
-With 3 or more frames the put writes nothing but the new zero-filled page: with 3 the first dirty page is
-evicted at the start of the flush, with 8 never. A new operation always starts from the state after the
-operation you are looking at has finished.</p>
+which splits leaf page 2. Watch three things. At most <em>two</em> pages are pinned at once. With the 2 frames
+chosen here, the pool must evict the dirty left half (page 2) to fetch the parent, so half of the split reaches
+the file before the parent has changed. The other changed pages stay dirty in memory until
+<strong>Flush</strong> writes them one by one. With 3 or more frames the put writes only the new zero-filled
+page. A new operation always starts from the state after the operation you are looking at has finished.</p>
 <div id="fig-pool"></div>
 
 <script src="../../../assets/viz.js"></script>

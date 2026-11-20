@@ -60,7 +60,9 @@ struct OracleVersion {
 fn visible(oracle: &[OracleVersion], snapshot: u64, lo: u64, hi: u64) -> Vec<(u64, u64)> {
     let mut out: Vec<(u64, u64)> = oracle
         .iter()
-        .filter(|v| v.key >= lo && v.key < hi && v.xmin <= snapshot && (v.xmax == 0 || v.xmax > snapshot))
+        .filter(|v| {
+            v.key >= lo && v.key < hi && v.xmin <= snapshot && (v.xmax == 0 || v.xmax > snapshot)
+        })
         .map(|v| (v.key, v.value))
         .collect();
     out.sort(); // one visible version per key: keys are unique
@@ -116,7 +118,12 @@ fn run(o: &Options, coverage: &mut Coverage) -> Result<(), Failure> {
     let mut snaps: Vec<Snap> = Vec::new();
 
     for step in 0..o.steps {
-        let fail = |what: String| Failure::Other(format!("fuzz: seed {} order {} step {step}: {what}", o.seed, o.order));
+        let fail = |what: String| {
+            Failure::Other(format!(
+                "fuzz: seed {} order {} step {step}: {what}",
+                o.seed, o.order
+            ))
+        };
         let r = rng.below(100);
         if r < 30 {
             // put
@@ -126,11 +133,20 @@ fn run(o: &Options, coverage: &mut Coverage) -> Result<(), Failure> {
             if old != end_current(&mut oracle, key, db.store.now) {
                 return Err(fail(format!("put {key} replaced {old:?}")));
             }
-            oracle.push(OracleVersion { key, value, xmin: db.store.now, xmax: 0 });
+            oracle.push(OracleVersion {
+                key,
+                value,
+                xmin: db.store.now,
+                xmax: 0,
+            });
         } else if r < 50 {
             // delete one row, or a whole range (that is what empties pages)
             let first = rng.below(o.key_space);
-            let n = if rng.below(4) == 0 { rng.below(o.key_space / 2 + 1) } else { 1 };
+            let n = if rng.below(4) == 0 {
+                rng.below(o.key_space / 2 + 1)
+            } else {
+                1
+            };
             for key in first..(first + n).min(o.key_space) {
                 let old = db.delete(key);
                 if old != end_current(&mut oracle, key, db.store.now) {
@@ -140,7 +156,10 @@ fn run(o: &Options, coverage: &mut Coverage) -> Result<(), Failure> {
         } else if r < 58 {
             // open a snapshot
             if snaps.len() < MAX_SNAPSHOTS {
-                snaps.push(Snap { snapshot: db.store.open_snapshot().unwrap(), cursors: Vec::new() });
+                snaps.push(Snap {
+                    snapshot: db.store.open_snapshot().unwrap(),
+                    cursors: Vec::new(),
+                });
             }
         } else if r < 64 {
             // close one, with the scans that ran under it
@@ -151,19 +170,26 @@ fn run(o: &Options, coverage: &mut Coverage) -> Result<(), Failure> {
         } else if r < 72 {
             // start a scan and leave it paused before its first row
             if !snaps.is_empty() {
-                let s = &mut snaps[rng.pick(snaps.len())];
+                let which = rng.pick(snaps.len());
+                let s = &mut snaps[which];
                 let (mut lo, mut hi) = (0, EVERYTHING);
                 if rng.below(2) != 0 {
                     lo = rng.below(o.key_space);
                     hi = lo + rng.below(o.key_space);
                 }
                 let expected = visible(&oracle, s.snapshot, lo, hi);
-                s.cursors.push(Paused { cursor: Cursor::seek(&db, s.snapshot, lo, hi), expected, pos: 0, done: false });
+                s.cursors.push(Paused {
+                    cursor: Cursor::seek(&db, s.snapshot, lo, hi),
+                    expected,
+                    pos: 0,
+                    done: false,
+                });
             }
         } else if r < 85 {
             // advance a paused scan by 1 to 5 rows
             if !snaps.is_empty() {
-                let s = &mut snaps[rng.pick(snaps.len())];
+                let which = rng.pick(snaps.len());
+                let s = &mut snaps[which];
                 if !s.cursors.is_empty() {
                     let which = rng.pick(s.cursors.len());
                     let p = &mut s.cursors[which];
@@ -172,10 +198,15 @@ fn run(o: &Options, coverage: &mut Coverage) -> Result<(), Failure> {
                         if p.done {
                             break;
                         }
-                        let got = p.cursor.next(&mut db).map_err(|e| fail(format!("paused scan: {e:?}")))?;
+                        let got = p
+                            .cursor
+                            .next(&mut db)
+                            .map_err(|e| fail(format!("paused scan: {e:?}")))?;
                         let want = p.expected.get(p.pos).copied();
                         if got.map(|row| (row.key, row.value)) != want {
-                            return Err(fail(format!("paused scan returned {got:?}, its snapshot has {want:?} next")));
+                            return Err(fail(format!(
+                                "paused scan returned {got:?}, its snapshot has {want:?} next"
+                            )));
                         }
                         match got {
                             Some(_) => p.pos += 1,
@@ -186,7 +217,9 @@ fn run(o: &Options, coverage: &mut Coverage) -> Result<(), Failure> {
             }
         } else if r < 90 {
             // VACUUM, one time in three without page deletion
-            db.vacuum(VacuumOptions { delete_pages: rng.below(3) != 0 });
+            db.vacuum(VacuumOptions {
+                delete_pages: rng.below(3) != 0,
+            });
         } else if r < 94 {
             // phase 1 alone, on any leaf (most are refused: not empty, rightmost ...)
             let leaves = chain_leaves(&db, false);
@@ -211,7 +244,10 @@ fn run(o: &Options, coverage: &mut Coverage) -> Result<(), Failure> {
         db.validate().map_err(|e| fail(format!("{e:?}")))?;
         // The recycling rule as a check: no paused scan holds a freed handle.
         for p in snaps.iter().flat_map(|s| &s.cursors) {
-            if !p.done && !p.cursor.next_leaf.is_nil() && !db.index.nodes.is_live(p.cursor.next_leaf) {
+            if !p.done
+                && !p.cursor.next_leaf.is_nil()
+                && !db.index.nodes.is_live(p.cursor.next_leaf)
+            {
                 return Err(Failure::PausedScanPageRecycled);
             }
         }
@@ -220,22 +256,35 @@ fn run(o: &Options, coverage: &mut Coverage) -> Result<(), Failure> {
                 let want = visible(&oracle, s.snapshot, 0, EVERYTHING);
                 let mut cursor = Cursor::seek(&db, s.snapshot, 0, EVERYTHING);
                 let mut got = Vec::new();
-                while let Some(row) = cursor.next(&mut db).map_err(|e| fail(format!("fresh scan: {e:?}")))? {
+                while let Some(row) = cursor
+                    .next(&mut db)
+                    .map_err(|e| fail(format!("fresh scan: {e:?}")))?
+                {
                     got.push((row.key, row.value));
                 }
                 if got != want {
-                    return Err(fail(format!("snapshot {} sees {got:?}, expected {want:?}", s.snapshot)));
+                    return Err(fail(format!(
+                        "snapshot {} sees {got:?}, expected {want:?}",
+                        s.snapshot
+                    )));
                 }
                 if rng.below(4) == 0 {
                     let key = rng.below(o.key_space);
-                    let value = visible(&oracle, s.snapshot, key, key + 1).first().map(|pair| pair.1);
-                    if db.get(s.snapshot, key).map_err(|e| fail(format!("get: {e:?}")))? != value {
+                    let value = visible(&oracle, s.snapshot, key, key + 1)
+                        .first()
+                        .map(|pair| pair.1);
+                    if db
+                        .get(s.snapshot, key)
+                        .map_err(|e| fail(format!("get: {e:?}")))?
+                        != value
+                    {
                         return Err(fail(format!("get {key} under snapshot {}", s.snapshot)));
                     }
                 }
             }
             // scans set hint bits: those must not lie either
-            db.validate().map_err(|e| fail(format!("after scans: {e:?}")))?;
+            db.validate()
+                .map_err(|e| fail(format!("after scans: {e:?}")))?;
         }
     }
 
@@ -309,7 +358,15 @@ fn fuzz_the_same_fuzzer_catches_recycling_that_ignores_the_horizon() {
     let mut caught = 0;
     let mut coverage = Coverage::default();
     for seed in 1..13u64 {
-        let options = Options { seed, order: 4, steps: 800, key_space: 60, check_every_step: false, bottom_up: true, cheat: true };
+        let options = Options {
+            seed,
+            order: 4,
+            steps: 800,
+            key_space: 60,
+            check_every_step: false,
+            bottom_up: true,
+            cheat: true,
+        };
         if let Err(failure) = run(&options, &mut coverage) {
             // Always the first symptom: the handle is freed before any scan can trip over it.
             assert_eq!(failure, Failure::PausedScanPageRecycled);

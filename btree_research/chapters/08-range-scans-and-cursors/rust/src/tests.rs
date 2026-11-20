@@ -213,12 +213,36 @@ fn u64_extremes_stored_in_the_tree_0_1_max_1_and_max_under_every_bound_kind() {
                             .collect();
 
                         let forward = Direction::Forward;
-                        expect_extreme_scan(LinkPosition::new(), &tree, (lo, hi), forward, &expected);
-                        expect_extreme_scan(StackPosition::new(), &tree, (lo, hi), forward, &expected);
+                        expect_extreme_scan(
+                            LinkPosition::new(),
+                            &tree,
+                            (lo, hi),
+                            forward,
+                            &expected,
+                        );
+                        expect_extreme_scan(
+                            StackPosition::new(),
+                            &tree,
+                            (lo, hi),
+                            forward,
+                            &expected,
+                        );
                         expected.reverse();
                         let backward = Direction::Backward;
-                        expect_extreme_scan(LinkPosition::new(), &tree, (lo, hi), backward, &expected);
-                        expect_extreme_scan(StackPosition::new(), &tree, (lo, hi), backward, &expected);
+                        expect_extreme_scan(
+                            LinkPosition::new(),
+                            &tree,
+                            (lo, hi),
+                            backward,
+                            &expected,
+                        );
+                        expect_extreme_scan(
+                            StackPosition::new(),
+                            &tree,
+                            (lo, hi),
+                            backward,
+                            &expected,
+                        );
                         checked += 1;
                     }
                 }

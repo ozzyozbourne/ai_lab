@@ -353,7 +353,12 @@
         n.leaf = false; n.keys = [15]; n.children = [low, high];
       } },
     { what: "the root's last child pointer is erased", expect: 'MissingChild', searchable: false,
-      apply: function (t) { t.root.children[3] = null; t.root.meta = { note: 'child 3: pointer erased' }; } },
+      apply: function (t) {
+        var lost = t.root.children[3]; // still allocated, but out of reach: drawn as a second root
+        lost.meta = { note: 'nothing points here any more' };
+        t.orphans.push(lost);
+        t.root.children[3] = null; t.root.meta = { note: 'child 3: pointer erased' };
+      } },
     { what: 'leaf [7] gets a child pointer', expect: 'UnexpectedChild',
       apply: function (t) { leafAt(t, 1).children = [{ ref: leafAt(t, 0).id }]; leafAt(t, 1).meta = { note: 'leaf with a child pointer' }; } },
     { what: 'key 5 vanishes from leaf [1 3 5], the tree still claims 12 keys', expect: 'WrongKeyCount',

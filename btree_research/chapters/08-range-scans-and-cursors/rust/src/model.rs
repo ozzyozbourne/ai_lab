@@ -117,7 +117,8 @@ pub fn run(config: Config) -> Report {
             }
         }
         // One step of the long-lived cursors, whatever just happened.
-        let all = all_entries(&oracle);
+        let all_owned = all_entries(&oracle);
+        let all = all_owned.as_slice();
         let action = rng.below(8);
         let expected: Option<ops::Entry>;
         let got_link: Option<Entry>;

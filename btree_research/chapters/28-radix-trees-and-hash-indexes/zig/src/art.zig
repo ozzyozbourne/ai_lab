@@ -26,6 +26,16 @@ pub const Lookup = keys.Lookup;
 /// for a single 8-byte integer key (art.cpp:1258-1287).
 pub const prefix_cap = 7;
 
+/// Longest key `put` accepts, in bytes. The limit exists because of how this
+/// teaching version walks the tree: `insertAt`, `census`, `validate` and
+/// `dump` recurse once per node, and a path has at most one node per key
+/// byte. So the key length bounds the recursion depth, and with it the stack
+/// those walks need (512 levels fit comfortably in the default stacks of
+/// both languages, see the test "the longest keys"). Without a limit a key
+/// of some tens of thousands of bytes overflows the stack. `lookup` and the
+/// iterator are loops and would not need the limit.
+pub const max_key_len = 512;
+
 /// A reference to a subtree. Leaves are inlined: `.leaf` carries the value.
 pub const Ref = union(enum) {
     none,
@@ -292,7 +302,7 @@ pub const ValidateError = error{
     PoolMismatch,
 };
 
-pub const PutError = error{ OutOfMemory, EmptyKey, PrefixKey };
+pub const PutError = error{ OutOfMemory, EmptyKey, KeyTooLong, PrefixKey };
 
 pub const Art = struct {
     gpa: Allocator,
@@ -352,6 +362,8 @@ pub const Art = struct {
     /// On any error the tree is exactly as it was before the call.
     pub fn put(self: *Art, key: []const u8, value: u64) PutError!?u64 {
         if (key.len == 0) return error.EmptyKey;
+        // Bounds the recursion depth of insertAt and of the inspection walks.
+        if (key.len > max_key_len) return error.KeyTooLong;
         var old: ?u64 = null;
         self.root = try self.insertAt(self.root, key, 0, value, &old);
         if (old == null) self.len += 1;
@@ -363,6 +375,7 @@ pub const Art = struct {
     /// that grew or a prefix that was split has a new identity. This is how a
     /// structural change stays local: the parent only swaps one reference
     /// (compare DuckDB passing `NodePtr &node_ptr`, base_node.cpp:61-76).
+    /// One recursion level per node on the path, at most `max_key_len` levels.
     fn insertAt(self: *Art, ref: Ref, key: []const u8, depth: usize, value: u64, old: *?u64) PutError!Ref {
         switch (ref) {
             // Only the empty root: the whole key becomes one prefix chain.
@@ -644,6 +657,11 @@ pub const Art = struct {
 /// key from the bytes along that path (DuckDB: iterator.cpp:312-348).
 ///
 /// The tree must not change while an iterator is in use.
+///
+/// `next` and `seek` grow the stack and the key buffer and can therefore
+/// return `error.OutOfMemory`. After that error the position is unspecified
+/// (the path was only partly recorded): call `seek` again before the next
+/// `next`. `seek` starts from scratch, so the iterator itself stays usable.
 pub const Iterator = struct {
     gpa: Allocator,
     tree: *const Art,
@@ -891,12 +909,65 @@ test "one node grows through all four layouts" {
 test "a freed node is reused by its pool" {
     var tree: Art = .init(testing.allocator);
     defer tree.deinit();
-    for (0..5) |i| _ = try tree.put(&.{ 'a', @intCast(i) }, i); // Node4 -> Node16, Node4 freed
+    for (0..4) |i| _ = try tree.put(&.{ 'a', @intCast(i) }, i);
+    // The address of the Node4 that the fifth key is about to outgrow.
+    const freed_address = @intFromPtr(tree.root.prefix.child.n4);
+    _ = try tree.put(&.{ 'a', 4 }, 4); // Node4 -> Node16, Node4 freed
+    try testing.expectEqual(0, tree.pools.live[@backingInt(Kind.node4)]);
     const freed_created = tree.pools.created[@backingInt(Kind.node4)];
     _ = try tree.put(&.{ 'b', 0 }, 9); // needs a Node4 for the new branch at byte 0
     try testing.expectEqual(freed_created + 1, tree.pools.created[@backingInt(Kind.node4)]);
     try testing.expectEqual(1, tree.pools.live[@backingInt(Kind.node4)]);
+    // The counters above would also move if the pool never reused anything.
+    // The address shows it: the new Node4 is the very block that was freed.
+    try testing.expectEqual(freed_address, @intFromPtr(tree.root.n4));
     try tree.validate();
+}
+
+test "the longest keys: recursion depth is bounded by max_key_len" {
+    const gpa = testing.allocator;
+    var tree: Art = .init(gpa);
+    defer tree.deinit();
+    var buf: [max_key_len + 1]u8 = @splat('a');
+
+    // One byte too long: refused before anything is touched.
+    try testing.expectError(error.KeyTooLong, tree.put(&buf, 1));
+    try testing.expectEqual(0, tree.len);
+    try tree.validate();
+    try expectDump(&tree, "(empty)\n");
+
+    // The deepest tree the limit allows: keys "b", "ab", "aab", ... up to
+    // max_key_len bytes. Every byte position branches, so the path to the
+    // longest key has one Node4 per byte and every recursive walk goes
+    // max_key_len levels deep.
+    for (0..max_key_len) |i| {
+        buf[i] = 'b';
+        try testing.expectEqual(null, try tree.put(buf[0 .. i + 1], i));
+        buf[i] = 'a';
+    }
+    // And the longest unbranched key: a chain of 73 prefix nodes.
+    @memset(buf[0..max_key_len], 'c');
+    try testing.expectEqual(null, try tree.put(buf[0..max_key_len], 7));
+    try testing.expectEqual(7, try tree.put(buf[0..max_key_len], 8)); // overwrite walks the chain
+
+    try tree.validate();
+    const c = tree.census();
+    try testing.expectEqual(max_key_len - 1, c.nodes[@backingInt(Kind.node4)]);
+    try testing.expectEqual(max_key_len, c.max_path);
+    try testing.expectEqual(max_key_len + 1, c.leaves);
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    try tree.dump(&aw.writer);
+    try testing.expect(std.mem.endsWith(u8, aw.written(), "\" -> leaf 8\n"));
+
+    @memset(buf[0..max_key_len], 'a');
+    buf[max_key_len - 1] = 'b';
+    try testing.expectEqual(max_key_len - 1, tree.get(buf[0..max_key_len]));
+    var it = tree.iterator(gpa);
+    defer it.deinit();
+    var n: usize = 0;
+    while (try it.next()) |_| n += 1;
+    try testing.expectEqual(max_key_len + 1, n);
 }
 
 test "iterator returns keys in byte order and seek is a lower bound" {
@@ -934,6 +1005,39 @@ test "iterator returns keys in byte order and seek is a lower bound" {
             try testing.expectEqual(null, got);
         }
     }
+}
+
+test "iterator: after OutOfMemory a new seek gives the right answer" {
+    const gpa = testing.allocator;
+    var tree: Art = .init(gpa);
+    defer tree.deinit();
+    const words = [_][]const u8{ "romulus!", "romane!", "rubens!", "romanus!", "ruber!", "rubicon!", "rubicundus!" };
+    for (words, 0..) |word, i| _ = try tree.put(word, i);
+
+    var fail_index: usize = 0;
+    var failures: usize = 0;
+    while (true) : (fail_index += 1) {
+        var failing: testing.FailingAllocator = .init(gpa, .{ .fail_index = fail_index });
+        var it = tree.iterator(failing.allocator());
+        defer it.deinit();
+        // Seek, then read to the end; every allocation from `fail_index` on fails.
+        var failed = false;
+        if (it.seek("rubf")) |_| {
+            while (it.next() catch blk: {
+                failed = true;
+                break :blk null;
+            }) |_| {}
+        } else |_| failed = true;
+        if (!failed) break; // ran past the last allocation
+        failures += 1;
+        // With memory available again the same iterator works from a new seek.
+        it.gpa = gpa;
+        try it.seek("rubf");
+        try testing.expectEqualStrings("rubicon!", (try it.next()).?.key);
+        try testing.expectEqualStrings("rubicundus!", (try it.next()).?.key);
+        try testing.expectEqual(null, try it.next());
+    }
+    try testing.expect(failures >= 2); // failures hit both the stack and the key buffer
 }
 
 /// Collect the values of all keys in [lo, hi) through the iterator.

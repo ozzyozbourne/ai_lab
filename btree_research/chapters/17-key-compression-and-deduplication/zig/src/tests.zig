@@ -66,6 +66,13 @@ test "empty tree, duplicates rejected, key size limit" {
     const long: [28]u8 = @splat('x');
     try testing.expectError(error.KeyTooLarge, tree.put(&long, 1));
     try testing.expect(try tree.put(long[0..27], 1));
+    // A TID is charged 6 bytes everywhere, so it has to fit in 6 bytes.
+    try testing.expectEqual(281474976710655, t.max_tid);
+    try testing.expect(try tree.put("apple", t.max_tid));
+    try testing.expectError(error.TidTooLarge, tree.put("apple", t.max_tid + 1));
+    try testing.expectError(error.TidTooLarge, tree.put("pear", std.math.maxInt(u64)));
+    try testing.expect(!tree.contains("pear", std.math.maxInt(u64)));
+    try testing.expect(tree.delete("apple", t.max_tid));
     try testing.expect(tree.contains("apple", 2));
     try testing.expect(!tree.contains("apple", 3));
     try testing.expect(tree.delete("apple", 1));
@@ -224,6 +231,175 @@ test "model test against a sorted-array oracle, all four configurations" {
             try modelRun(.{ .page_size = 256, .truncate = truncate, .dedup = dedup }, 1717, 6000);
         }
     }
+}
+
+/// An oracle entry of the adversarial test: the key bytes inline, and a TID.
+const Adv = struct {
+    buf: [32]u8 = undefined,
+    len: usize = 0,
+    tid: t.Tid = 0,
+
+    fn key(e: *const Adv) []const u8 {
+        return e.buf[0..e.len];
+    }
+    fn lessThan(ctx: Adv, x: Adv) bool {
+        return t.compareTuple(x.key(), x.tid, ctx.key(), ctx.tid) == .lt;
+    }
+};
+
+/// A key built to stress truncated separators: the empty key, runs of one
+/// byte of every length up to the limit (each a prefix of the next), a long
+/// shared prefix with a short differing tail, or random bytes.
+fn advKey(rng: *SplitMix64, max_len: usize, alphabet: []const u8) Adv {
+    var e: Adv = .{};
+    const shape = rng.below(10);
+    if (shape == 0) return e; // the empty key
+    e.len = @intCast(rng.below(max_len + 1)); // maxKeyLen itself included
+    for (e.buf[0..e.len]) |*b| b.* = if (shape <= 7) alphabet[0] else alphabet[@intCast(rng.below(alphabet.len))];
+    if (shape >= 5 and shape <= 7) {
+        const tail: usize = @min(@as(usize, @intCast(rng.below(3))), e.len);
+        for (0..tail) |i| e.buf[e.len - 1 - i] = alphabet[@intCast(rng.below(alphabet.len))];
+    }
+    return e;
+}
+
+/// TIDs at both ends of the legal range, a tiny range (many duplicates of
+/// one key, across page boundaries), and a wider one.
+fn advTid(rng: *SplitMix64) t.Tid {
+    return switch (rng.below(8)) {
+        0 => 0,
+        1 => t.max_tid,
+        2 => t.max_tid - rng.below(3),
+        3 => rng.below(4),
+        else => rng.below(300),
+    };
+}
+
+const AdvTotals = struct { entries: usize = 0, pages: usize = 0 };
+
+fn adversarialRun(cfg: t.Config, alphabet: []const u8, seed: u64, ops: usize, totals: *AdvTotals) !void {
+    const gpa = testing.allocator;
+    var tree = try Tree.init(gpa, cfg);
+    defer tree.deinit();
+    var oracle: std.ArrayList(Adv) = .empty; // sorted in tuple order
+    defer oracle.deinit(gpa);
+    var rng = SplitMix64.init(seed);
+    const max_len = tree.maxKeyLen();
+    try testing.expect(max_len <= 32);
+
+    for (0..ops) |n| {
+        var e = advKey(&rng, max_len, alphabet);
+        e.tid = advTid(&rng);
+        const at = std.sort.partitionPoint(Adv, oracle.items, e, Adv.lessThan);
+        const present = at < oracle.items.len and
+            t.compareTuple(oracle.items[at].key(), oracle.items[at].tid, e.key(), e.tid) == .eq;
+        switch (rng.below(12)) {
+            0...6 => {
+                try testing.expectEqual(!present, try tree.put(e.key(), e.tid));
+                if (!present) try oracle.insert(gpa, at, e);
+            },
+            7...8 => {
+                try testing.expectEqual(present, tree.delete(e.key(), e.tid));
+                if (present) _ = oracle.orderedRemove(at);
+            },
+            9 => try testing.expectEqual(present, tree.contains(e.key(), e.tid)),
+            10 => {
+                // get: every TID of the key, in order.
+                const tids = try tree.get(gpa, e.key());
+                defer gpa.free(tids);
+                var first = e;
+                first.tid = 0;
+                var i = std.sort.partitionPoint(Adv, oracle.items, first, Adv.lessThan);
+                for (tids) |got| {
+                    try testing.expect(i < oracle.items.len);
+                    try testing.expectEqualSlices(u8, e.key(), oracle.items[i].key());
+                    try testing.expectEqual(oracle.items[i].tid, got);
+                    i += 1;
+                }
+                try testing.expect(i == oracle.items.len or !std.mem.eql(u8, oracle.items[i].key(), e.key()));
+            },
+            else => {
+                // range with both bounds: lo <= key < hi.
+                const hi = advKey(&rng, max_len, alphabet);
+                var it = tree.range(e.key(), hi.key());
+                for (oracle.items) |want| {
+                    if (std.mem.order(u8, want.key(), e.key()) == .lt) continue;
+                    if (std.mem.order(u8, want.key(), hi.key()) != .lt) continue;
+                    const got = it.next() orelse return error.TestUnexpectedResult;
+                    try testing.expectEqualSlices(u8, want.key(), got.key);
+                    try testing.expectEqual(want.tid, got.tid);
+                }
+                try testing.expectEqual(null, it.next());
+            },
+        }
+        try testing.expectEqual(oracle.items.len, tree.count);
+        if (n % 97 == 0) try tree.validate();
+    }
+    try tree.validate();
+    totals.entries += tree.count;
+    totals.pages += tree.pages.items.len;
+
+    // Full scan equals the oracle, and every tuple is found again.
+    var it = tree.range("", null);
+    for (oracle.items) |want| {
+        const got = it.next().?;
+        try testing.expectEqualSlices(u8, want.key(), got.key);
+        try testing.expectEqual(want.tid, got.tid);
+        try testing.expect(tree.contains(want.key(), want.tid));
+    }
+    try testing.expectEqual(null, it.next());
+
+    // Delete everything, last tuple first: leaves empty out, nothing merges.
+    var i = oracle.items.len;
+    while (i > 0) : (i -= 1) try testing.expect(tree.delete(oracle.items[i - 1].key(), oracle.items[i - 1].tid));
+    try tree.validate();
+    try testing.expectEqual(0, tree.count);
+    var rest = tree.range("", null);
+    try testing.expectEqual(null, rest.next());
+}
+
+test "adversarial model test: empty key, prefixes of prefixes, bytes 0x00 and 0xff, extreme TIDs" {
+    const alphabets = [_][]const u8{ &.{ 0x00, 0xff }, "ab", &.{0x00}, &.{ 0x00, 'a', 0xff } };
+    var totals: AdvTotals = .{};
+    for ([_]usize{ 128, 129, 200, 256 }) |page_size| {
+        for (alphabets, 0..) |alphabet, a| {
+            for ([_]bool{ false, true }) |truncate| {
+                for ([_]bool{ false, true }) |dedup| {
+                    const cfg: t.Config = .{ .page_size = page_size, .truncate = truncate, .dedup = dedup };
+                    try adversarialRun(cfg, alphabet, 1700 + page_size * 4 + a, 1500, &totals);
+                }
+            }
+        }
+    }
+    // The Rust test asserts the same two numbers: both languages drew the
+    // same operations and built trees with the same number of pages.
+    try testing.expectEqual(35404, totals.entries);
+    try testing.expectEqual(7823, totals.pages);
+}
+
+test "validate checks the sibling chain of every level, not only the leaves" {
+    var tree = try Tree.init(testing.allocator, .{ .page_size = 128, .dedup = false });
+    defer tree.deinit();
+    var buf: [16]u8 = undefined;
+    for (0..400) |i| _ = try tree.put(modelKey(&buf, (i * 13) % 40), i);
+    try tree.validate();
+    try testing.expect(tree.stats().height >= 3);
+    // Cut the chain once at the leaf level and once above it.
+    var cut_leaf = false;
+    var cut_internal = false;
+    for (tree.pages.items, 0..) |*p, id| {
+        const right = p.right orelse continue;
+        if (id == tree.root) continue;
+        if (if (p.is_leaf) cut_leaf else cut_internal) continue;
+        p.right = null;
+        try testing.expectError(error.Corrupt, tree.validate());
+        p.right = @intCast(id); // a link that points at the wrong page
+        try testing.expectError(error.Corrupt, tree.validate());
+        p.right = right;
+        try tree.validate();
+        if (p.is_leaf) cut_leaf = true else cut_internal = true;
+    }
+    try testing.expect(cut_leaf and cut_internal);
 }
 
 fn buildSmall(gpa: std.mem.Allocator) !void {

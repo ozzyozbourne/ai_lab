@@ -921,7 +921,10 @@ mod tests {
             tree.put(k, 25).unwrap();
         }
         assert_eq!(tree.stats.balances, 0);
-        assert_eq!(dump(&tree), "parent: (p0, 4) (p1, 8) right=p2\n  p0 100/100: 1:25 2:25 3:25 4:25\n  p1 100/100: 5:25 6:25 7:25 8:25\n  p2  25/100: 9:25\n");
+        assert_eq!(
+            dump(&tree),
+            "parent: (p0, 4) (p1, 8) right=p2\n  p0 100/100: 1:25 2:25 3:25 4:25\n  p1 100/100: 5:25 6:25 7:25 8:25\n  p2  25/100: 9:25\n"
+        );
         assert_eq!(tree.put(10, 25).and(tree.put(11, 25)).and(tree.put(12, 25)), Ok(()));
         assert_eq!(tree.put(13, 25), Err(PutError::OutOfPages)); // the budget is used up
         for k in 10..13 {

@@ -142,10 +142,10 @@ test "model: a reserved tail of 4 or 32 bytes is never touched; Zig and Rust bui
     var hash: u64 = 0;
     var cov = try runModelReserved(testing.allocator, .{ .seed = 10, .count = 20_000, .key_space = 300 }, 4, &hash);
     try testing.expect(cov.page_full > 0 and cov.saw_fragments > 0 and cov.compactions > 0);
-    try testing.expectEqual(0x1111111111111111, hash);
+    try testing.expectEqual(0xeb85adf9ab8de35f, hash);
     cov = try runModelReserved(testing.allocator, .{ .seed = 10, .count = 20_000, .key_space = 300 }, 32, &hash);
     try testing.expect(cov.page_full > 0 and cov.saw_fragments > 0 and cov.compactions > 0);
-    try testing.expectEqual(0x2222222222222222, hash);
+    try testing.expectEqual(0x35c30344813275d9, hash);
     // reserved = 0 through the same function is the page of the first test.
     _ = try runModelReserved(testing.allocator, .{ .seed = 10, .count = 3000, .key_space = 300 }, 0, &hash);
     try testing.expectEqual(0x3b3ad4029bd5294a, hash); // the last line of expected_output.txt

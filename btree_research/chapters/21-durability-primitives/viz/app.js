@@ -219,7 +219,7 @@
       // If recovery completed the update in progress, the next write is a new version.
       if (!r.unrecoverable && versionAt(1) === letter()) letterIx++;
       var msg = r.unrecoverable ? '<b>Unrecoverable:</b> slot and home are both damaged. This can only happen when both copies were in flight at once, i.e. the sync between the two writes was skipped.'
-        : r.restored ? 'Recover: the slot verifies and home does not, so home was rebuilt from the slot and synced.'
+        : r.restored ? 'Recover: the slot verifies and home does not (it is torn, or was never written), so home was rebuilt from the slot and synced.'
         : slotOlder ? '<b>Recover undid a durable write.</b> Both copies verify and differ, so the rule "slot ok: home := slot" ran. But the slot held the <em>older</em> version ' + slotV +
           ': you wrote ' + homeV + ' to home without writing the slot first, and recovery has replaced it with ' + slotV + '. Recovery cannot see which copy is newer; it is only correct when every update goes slot first.'
         : r.rolled_forward ? 'Recover: both copies verify and differ. Every update writes the slot first, so the slot is the newer one: the update had stopped between its two steps and is now finished (home := slot).'

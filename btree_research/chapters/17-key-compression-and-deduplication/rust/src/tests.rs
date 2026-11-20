@@ -76,6 +76,13 @@ fn empty_tree_duplicates_rejected_key_size_limit() {
     let long = [b'x'; 28];
     assert_eq!(tree.put(&long, 1), Err(Error::KeyTooLarge));
     assert_eq!(tree.put(&long[..27], 1), Ok(true));
+    // A TID is charged 6 bytes everywhere, so it has to fit in 6 bytes.
+    assert_eq!(MAX_TID, 281474976710655);
+    assert_eq!(tree.put(b"apple", MAX_TID), Ok(true));
+    assert_eq!(tree.put(b"apple", MAX_TID + 1), Err(Error::TidTooLarge));
+    assert_eq!(tree.put(b"pear", u64::MAX), Err(Error::TidTooLarge));
+    assert!(!tree.contains(b"pear", u64::MAX));
+    assert!(tree.delete(b"apple", MAX_TID));
     assert!(tree.contains(b"apple", 2));
     assert!(!tree.contains(b"apple", 3));
     assert!(tree.delete(b"apple", 1));
@@ -211,6 +218,149 @@ fn model_test_against_an_ordered_set_oracle_all_four_configurations() {
             model_run(config(256, truncate, dedup), 1717, 6000);
         }
     }
+}
+
+/// A key built to stress truncated separators: the empty key, runs of one
+/// byte of every length up to the limit (each a prefix of the next), a long
+/// shared prefix with a short differing tail, or random bytes.
+fn adv_key(rng: &mut SplitMix64, max_len: usize, alphabet: &[u8]) -> Vec<u8> {
+    let shape = rng.below(10);
+    if shape == 0 {
+        return Vec::new(); // the empty key
+    }
+    let len = rng.below(max_len as u64 + 1) as usize; // max_key_len itself included
+    let pick = |rng: &mut SplitMix64| alphabet[rng.below(alphabet.len() as u64) as usize];
+    let mut key: Vec<u8> = (0..len).map(|_| if shape <= 7 { alphabet[0] } else { pick(rng) }).collect();
+    if (5..=7).contains(&shape) {
+        let tail = (rng.below(3) as usize).min(len);
+        for i in 0..tail {
+            key[len - 1 - i] = pick(rng);
+        }
+    }
+    key
+}
+
+/// TIDs at both ends of the legal range, a tiny range (many duplicates of
+/// one key, across page boundaries), and a wider one.
+fn adv_tid(rng: &mut SplitMix64) -> Tid {
+    match rng.below(8) {
+        0 => 0,
+        1 => MAX_TID,
+        2 => MAX_TID - rng.below(3),
+        3 => rng.below(4),
+        _ => rng.below(300),
+    }
+}
+
+/// Returns (entries, pages) of the finished tree.
+fn adversarial_run(cfg: Config, alphabet: &[u8], seed: u64, ops: usize) -> (usize, usize) {
+    let mut tree = Tree::new(cfg);
+    // Tuples of (key, TID) order exactly like compare_tuple.
+    let mut oracle: BTreeSet<(Vec<u8>, Tid)> = BTreeSet::new();
+    let mut rng = SplitMix64::new(seed);
+    let max_len = tree.max_key_len();
+    assert!(max_len <= 32);
+
+    for n in 0..ops {
+        let key = adv_key(&mut rng, max_len, alphabet);
+        let tid = adv_tid(&mut rng);
+        let entry = (key.clone(), tid);
+        let present = oracle.contains(&entry);
+        match rng.below(12) {
+            0..=6 => {
+                assert_eq!(tree.put(&key, tid), Ok(!present));
+                oracle.insert(entry);
+            }
+            7..=8 => {
+                assert_eq!(tree.delete(&key, tid), present);
+                oracle.remove(&entry);
+            }
+            9 => assert_eq!(tree.contains(&key, tid), present),
+            10 => {
+                // get: every TID of the key, in order.
+                let want: Vec<Tid> = oracle.range((key.clone(), 0)..=(key.clone(), MAX_TID)).map(|e| e.1).collect();
+                assert_eq!(tree.get(&key), want);
+            }
+            _ => {
+                // range with both bounds: lo <= key < hi.
+                let hi = adv_key(&mut rng, max_len, alphabet);
+                let got: Vec<(Vec<u8>, Tid)> = tree.range(&key, Some(&hi)).map(|(k, t)| (k.to_vec(), t)).collect();
+                let want: Vec<(Vec<u8>, Tid)> = oracle.iter().filter(|e| e.0 >= key && e.0 < hi).cloned().collect();
+                assert_eq!(got, want);
+            }
+        }
+        assert_eq!(tree.count, oracle.len());
+        if n % 97 == 0 {
+            tree.validate().unwrap();
+        }
+    }
+    tree.validate().unwrap();
+    let totals = (tree.count, tree.pages.len());
+
+    // Full scan equals the oracle, and every tuple is found again.
+    let scan: Vec<(Vec<u8>, Tid)> = tree.range(b"", None).map(|(k, t)| (k.to_vec(), t)).collect();
+    assert_eq!(scan, oracle.iter().cloned().collect::<Vec<_>>());
+    assert!(oracle.iter().all(|(key, tid)| tree.contains(key, *tid)));
+
+    // Delete everything, last tuple first: leaves empty out, nothing merges.
+    for (key, tid) in oracle.iter().rev() {
+        assert!(tree.delete(key, *tid));
+    }
+    tree.validate().unwrap();
+    assert_eq!(tree.count, 0);
+    assert_eq!(tree.range(b"", None).count(), 0);
+    totals
+}
+
+#[test]
+fn adversarial_model_test_empty_key_prefixes_of_prefixes_bytes_0x00_and_0xff_extreme_tids() {
+    let alphabets: [&[u8]; 4] = [&[0x00, 0xff], b"ab", &[0x00], &[0x00, b'a', 0xff]];
+    let (mut entries, mut pages) = (0, 0);
+    for page_size in [128, 129, 200, 256] {
+        for (a, alphabet) in alphabets.iter().enumerate() {
+            for truncate in [false, true] {
+                for dedup in [false, true] {
+                    let seed = (1700 + page_size * 4 + a) as u64;
+                    let (e, p) = adversarial_run(config(page_size, truncate, dedup), alphabet, seed, 1500);
+                    entries += e;
+                    pages += p;
+                }
+            }
+        }
+    }
+    // The Zig test asserts the same two numbers: both languages drew the
+    // same operations and built trees with the same number of pages.
+    assert_eq!((entries, pages), (35404, 7823));
+}
+
+#[test]
+fn validate_checks_the_sibling_chain_of_every_level_not_only_the_leaves() {
+    let mut tree = Tree::new(config(128, true, false));
+    for i in 0..400u64 {
+        tree.put(&model_key((i * 13) % 40), i).unwrap();
+    }
+    tree.validate().unwrap();
+    assert!(tree.stats().height >= 3);
+    // Cut the chain once at the leaf level and once above it.
+    let (mut cut_leaf, mut cut_internal) = (false, false);
+    for id in 0..tree.pages.len() {
+        let (right, is_leaf) = (tree.pages[id].right, tree.pages[id].is_leaf);
+        if right.is_none() || id as PageId == tree.root || if is_leaf { cut_leaf } else { cut_internal } {
+            continue;
+        }
+        tree.pages[id].right = None;
+        assert!(tree.validate().is_err());
+        tree.pages[id].right = Some(id as PageId); // a link that points at the wrong page
+        assert!(tree.validate().is_err());
+        tree.pages[id].right = right;
+        tree.validate().unwrap();
+        if is_leaf {
+            cut_leaf = true;
+        } else {
+            cut_internal = true;
+        }
+    }
+    assert!(cut_leaf && cut_internal);
 }
 
 fn build_small(max_pages: usize) -> Result<Tree, Error> {

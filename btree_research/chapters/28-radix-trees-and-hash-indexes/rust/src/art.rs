@@ -26,6 +26,16 @@ use std::fmt::Write;
 /// for a single 8-byte integer key (art.cpp:1258-1287).
 pub const PREFIX_CAP: usize = 7;
 
+/// Longest key `put` accepts, in bytes. The limit exists because of how this
+/// teaching version walks the tree: `insert_at`, `census`, `validate` and
+/// `dump` recurse once per node, and a path has at most one node per key
+/// byte. So the key length bounds the recursion depth, and with it the stack
+/// those walks need (512 levels fit comfortably in the default stacks of
+/// both languages, see the test `the_longest_keys`). Without a limit a key
+/// of some tens of thousands of bytes overflows the stack. `lookup` and the
+/// iterator are loops and would not need the limit.
+pub const MAX_KEY_LEN: usize = 512;
+
 /// A reference to a subtree. Leaves are inlined: `Leaf` carries the value.
 /// The `u32` is an index into the slab of that node type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,6 +228,8 @@ pub enum ArtError {
     /// The node budget is exhausted (the twin of Zig's `error.OutOfMemory`).
     OutOfNodes,
     EmptyKey,
+    /// The key is longer than `MAX_KEY_LEN`.
+    KeyTooLong,
     PrefixKey,
 }
 
@@ -226,6 +238,7 @@ impl std::fmt::Display for ArtError {
         f.write_str(match self {
             ArtError::OutOfNodes => "node budget exhausted",
             ArtError::EmptyKey => "empty key",
+            ArtError::KeyTooLong => "key is longer than MAX_KEY_LEN",
             ArtError::PrefixKey => "key is a prefix of a stored key, or the other way round",
         })
     }
@@ -341,6 +354,10 @@ impl Art {
         if key.is_empty() {
             return Err(ArtError::EmptyKey);
         }
+        // Bounds the recursion depth of insert_at and of the inspection walks.
+        if key.len() > MAX_KEY_LEN {
+            return Err(ArtError::KeyTooLong);
+        }
         let mut old = None;
         self.root = self.insert_at(self.root, key, 0, value, &mut old)?;
         if old.is_none() {
@@ -354,6 +371,7 @@ impl Art {
     /// that grew or a prefix that was split has a new identity. This is how a
     /// structural change stays local: the parent only swaps one reference
     /// (compare DuckDB passing `NodePtr &node_ptr`, base_node.cpp:61-76).
+    /// One recursion level per node on the path, at most `MAX_KEY_LEN` levels.
     fn insert_at(&mut self, r: Ref, key: &[u8], depth: usize, value: u64, old: &mut Option<u64>) -> Result<Ref, ArtError> {
         match r {
             // Only the empty root: the whole key becomes one prefix chain.
@@ -1105,6 +1123,49 @@ mod tests {
         assert_eq!(tree.pool_live()[Kind::Node4 as usize], 1);
         assert_eq!(tree.pools.n4.items.len(), 1); // the same slot, not a second one
         tree.validate().unwrap();
+    }
+
+    #[test]
+    fn the_longest_keys_recursion_depth_is_bounded_by_max_key_len() {
+        let mut tree = Art::new();
+        let mut buf = [b'a'; MAX_KEY_LEN + 1];
+
+        // One byte too long: refused before anything is touched.
+        assert_eq!(tree.put(&buf, 1), Err(ArtError::KeyTooLong));
+        assert_eq!(tree.len(), 0);
+        tree.validate().unwrap();
+        assert_eq!(tree.dump(), "(empty)\n");
+
+        // The deepest tree the limit allows: keys "b", "ab", "aab", ... up to
+        // MAX_KEY_LEN bytes. Every byte position branches, so the path to the
+        // longest key has one Node4 per byte and every recursive walk goes
+        // MAX_KEY_LEN levels deep.
+        for i in 0..MAX_KEY_LEN {
+            buf[i] = b'b';
+            assert_eq!(tree.put(&buf[..=i], i as u64), Ok(None));
+            buf[i] = b'a';
+        }
+        // And the longest unbranched key: a chain of 73 prefix nodes.
+        buf[..MAX_KEY_LEN].fill(b'c');
+        assert_eq!(tree.put(&buf[..MAX_KEY_LEN], 7), Ok(None));
+        assert_eq!(tree.put(&buf[..MAX_KEY_LEN], 8), Ok(Some(7))); // overwrite walks the chain
+
+        tree.validate().unwrap();
+        let c = tree.census();
+        assert_eq!(c.nodes[Kind::Node4 as usize], MAX_KEY_LEN - 1);
+        assert_eq!(c.max_path, MAX_KEY_LEN);
+        assert_eq!(c.leaves, MAX_KEY_LEN + 1);
+        assert!(tree.dump().ends_with("\" -> leaf 8\n"));
+
+        buf[..MAX_KEY_LEN].fill(b'a');
+        buf[MAX_KEY_LEN - 1] = b'b';
+        assert_eq!(tree.get(&buf[..MAX_KEY_LEN]), Some(MAX_KEY_LEN as u64 - 1));
+        let mut it = tree.iterator();
+        let mut n = 0;
+        while it.next().is_some() {
+            n += 1;
+        }
+        assert_eq!(n, MAX_KEY_LEN + 1);
     }
 
     #[test]

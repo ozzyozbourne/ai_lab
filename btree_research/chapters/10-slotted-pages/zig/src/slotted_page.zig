@@ -1012,7 +1012,7 @@ test "reserved tail: the content area ends before it and no operation touches it
         try testing.expectEqual(usable, page.usableSize());
         try testing.expectEqual(usable, page.stats().content_start);
         try testing.expectEqual(usable - header_size, page.freeBytes());
-        try testing.expectEqual(max_cell_size - r, page.maxCellSize());
+        try testing.expectEqual(usable - header_size - slot_size, page.maxCellSize());
 
         // The first cell ends exactly where the tail begins.
         try page.put("mango", "yellow");

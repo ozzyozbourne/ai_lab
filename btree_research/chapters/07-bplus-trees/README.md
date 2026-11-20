@@ -69,6 +69,43 @@ An internal split is the same as in a classic B-tree: the middle key moves up
 and is in neither half. A separator only needs to exist once per boundary, so
 there is no reason to keep a copy below.
 
+### The rules, for working by hand
+
+Order M: a node holds at most M - 1 keys and, except the root, at least
+ceil(M/2) - 1.
+
+**Insert.** Walk down: in an internal node follow child number *i*, where *i*
+is the number of separators less than or equal to the key. Put the entry into
+the leaf in key order. A node that now holds M keys splits: the first
+floor(M/2) keys stay and the rest go to a new node on its right. From a leaf,
+the new node's first key is copied up. From an internal node, the key at
+position floor(M/2) moves up and only the keys after it go to the new node. A
+root that splits gets a new root above it.
+
+**Delete.** Remove the entry from its leaf and leave the separators alone. If
+the leaf now has fewer keys than the minimum, repair it with the first of
+these steps that applies. Only siblings under the same parent count.
+
+1. The left sibling has more than the minimum: borrow its last entry.
+2. The right sibling has more than the minimum: borrow its first entry.
+3. There is a left sibling: merge with it.
+4. Otherwise the node is the leftmost child: merge with the right sibling.
+
+So the left sibling is always tried first, for borrowing and for merging. A
+borrow between leaves rewrites the separator between the two as a copy of the
+right one's first key. A merge empties the right node of the pair into the
+left one and frees the right one. The parent loses the separator between
+them: between leaves it is dropped, between internal nodes it is pulled down
+into the merged node. If the parent is now below the minimum, the same four
+steps repair it one level up; a borrow between internal nodes is the rotation
+through the parent from chapter 05. A root left with no separator is replaced
+by its only child.
+
+**Handles** are given out in allocation order: `#0`, `#1`, and so on. The
+left half of a split keeps its handle, the new right node gets the next one,
+and a new root is allocated after the split below it. Once nodes have been
+freed, the handle freed last is reused first.
+
 ### Duplicate keys and tie-breakers
 
 The tree in this chapter keeps the rule from Part I: keys are unique and `put`
@@ -86,7 +123,8 @@ overwrites. Real indexes often need many rows with the same key (an index on
    equal keys" stops being enough to find a specific entry.
 
 Section 6 of the demo program implements the first option by packing
-(user key, row id) into one `u64`.
+(user key, row id) into one `u64`, 32 bits each. Larger values would collide,
+so the demo asserts that both parts fit.
 
 ### Handles instead of pointers
 
@@ -159,9 +197,18 @@ entries.
 still says 15, and a later search for 16 still goes right and arrives in the
 correct leaf. Delete 17: leaf `#5` is now empty. Its right sibling
 `#3(20 25 30)` can spare a key, so 20 moves over and the separator between
-them becomes a copy of the sibling's new first key, 25. The program output
-below continues through a leaf merge, an internal rotation, an internal merge
-and the loss of a level.
+them becomes a copy of the sibling's new first key, 25 (step 2 of the rules;
+`#5` is a leftmost child, so step 1 does not apply). The program output below
+continues through a leaf merge, an internal rotation, an internal merge and
+the loss of a level.
+
+**A merge in the middle.** Start again from the final tree and delete 3, 5,
+12 and 7. No leaf goes below the minimum, but the three children of `#2` are
+now at it: `#0(1)`, `#4(6)`, `#1(10)`. Delete 6: `#4` is empty. Neither
+sibling can spare a key, so steps 1 and 2 fail, and `#4` has a left sibling,
+so step 3 merges it with `#0`. `#4` is the right node of that pair: it is
+freed, and separator 6 is dropped. `#2[10]` is left over `#0(1) <-> #1(10)`.
+A test in both languages checks this case.
 
 ## Code walk-through
 
@@ -207,20 +254,19 @@ need no update. `splitLeaf` returns `right.keys[0]` without removing it
 
 **Delete** (`delete.zig`). There is no "delete from an internal node" case.
 `deleteFrom` removes the entry from its leaf; on the way back up each parent
-checks whether its child fell below the minimum and calls `rebalance`:
-borrow from the left sibling, else borrow from the right, else merge. A leaf
-borrow moves one entry sideways and overwrites the separator with a copy of
-the right node's new first key. An internal borrow is the rotation from
-chapter 05. A leaf merge *drops* the separator (it was a copy); an internal
-merge *pulls it down* (it is real routing information for the children being
-joined). Merging is always right into left, so `first_leaf` never changes
-after the first insert. Delete never allocates.
+checks whether its child fell below the minimum and calls `rebalance`, which
+is the four steps of the delete rule above as one `if` chain. A leaf merge
+*drops* the separator because it was a copy; an internal merge *pulls it
+down* because it is real routing information for the children being joined.
+Merging is always right into left, so `first_leaf` never changes after the
+first insert. Delete never allocates.
 
 **Validate** (`validate.zig`). One recursive pass checks key order, key
 bounds from the separators, node sizes, leaf depth, and that the leaves in
 tree order are exactly the leaves in chain order, with matching `prev` links.
 It also checks the arena: every live slot is reachable and the free list
-accounts for the rest.
+accounts for the rest. A node's length is checked before it is used to slice
+the node's arrays, so a corrupt length is reported, not followed.
 
 ### Rust
 

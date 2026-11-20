@@ -6,6 +6,9 @@
  * Every mutating function takes an optional `emit(type, info)` callback and calls it right after
  * each change worth showing; the page turns those calls into steps.
  *
+ * The second half is the drawing (Ch24.Picture): the tree, the leaf chain with half-dead pages in
+ * it, the deleted pages and the free list, which the toolkit's TreeView cannot show (see there).
+ *
  * Classic script: defines window.Ch24.
  */
 (function () {
@@ -440,12 +443,300 @@
     return errors;
   }
 
+  /* ------------------------------------------------------------------------------- the picture */
+  /*
+   * The toolkit's TreeView draws a tree: every box hangs under a parent. This chapter needs boxes
+   * that do NOT: a half-dead leaf (still in the leaf chain, no downlink), a deleted leaf (in
+   * neither, but with its own right link) and a free slot. So the chapter draws its own picture,
+   * with the toolkit's CSS classes and colour tokens:
+   *
+   *   internal levels     the tree, edges = downlinks
+   *   leaf row            the leaf chain exactly as the right links give it; a half-dead page
+   *                       keeps its place between its neighbours and has no edge from above
+   *   deleted row         unlinked pages with their stamp; a dashed arrow is the right link each kept
+   *   free row            the free list, head first
+   *
+   * A box is keyed by its page id, so a page visibly travels: leaf row, deleted row, free row, and
+   * back into the tree when a split reuses it. layout() is pure; Picture animates between layouts.
+   */
+  var GEO = { cellH: 28, vGap: 40, hGap: 16, padX: 14, padTop: 28, charW: 7.3, cellPad: 12, minCell: 30, rowGap: 38, minScale: 0.5 };
+  var INNER = { 'empty': 46, 'half-dead': 66, 'free': 44 };   // box widths when there are no cells
+
+  function layout(db) {
+    var g = GEO, boxes = {}, order = [], edges = [], links = [];
+    function box(id, kind, texts, inner) {
+      var cw = texts.map(function (t) { return Math.max(g.minCell, Math.round(t.length * g.charW) + g.cellPad); });
+      var w = cw.reduce(function (a, b) { return a + b; }, 0) || INNER[inner] || Math.round(inner.length * 6.2) + 14;
+      var b = { id: id, kind: kind, texts: texts, cw: cw, w: w, inner: texts.length ? '' : inner, x: 0, y: 0, sw: w, kids: [], real: [] };
+      boxes[id] = b;
+      order.push(b);
+      return b;
+    }
+    var ch = chain(db);
+    var leafY = g.padTop + (Math.max(db.height, 1) - 1) * (g.cellH + g.vGap);
+    // A half-dead leaf has no parent, but it has a place: just left of the next live leaf.
+    var before = {}, pending = [];
+    ch.forEach(function (id) {
+      if (page(db, id).state === 'half-dead') pending.push(id);
+      else { before[id] = pending; pending = []; }
+    });
+    function leafBox(id) {
+      var n = page(db, id), b;
+      if (n.state === 'half-dead') b = box(id, 'half-dead', [], 'half-dead');
+      else b = box(id, 'leaf', n.keys.map(function (_, i) { return entryText(db, n, i); }), 'empty');
+      b.y = leafY;
+      return b;
+    }
+    function measure(id, depth) {
+      var n = page(db, id);
+      if (n.leaf) return leafBox(id);
+      var b = box(id, 'internal', n.keys.map(function (k) { return userKey(k) + '.' + tidOf(k); }), '');
+      b.y = g.padTop + (depth - 1) * (g.cellH + g.vGap);
+      n.children.forEach(function (c, slot) {
+        (page(db, c).leaf && before[c] || []).forEach(function (h) { b.kids.push(leafBox(h)); });
+        var cb = measure(c, depth + 1);
+        b.kids.push(cb);
+        b.real.push(cb);
+        edges.push({ from: id, to: c, slot: slot, slots: n.children.length });
+      });
+      b.cw2 = b.kids.reduce(function (a, k) { return a + k.sw; }, 0) + g.hGap * (b.kids.length - 1);
+      b.sw = Math.max(b.w, b.cw2);
+      return b;
+    }
+    function place(b, left) {
+      if (!b.kids.length) { b.x = left + (b.sw - b.w) / 2; return; }
+      var cl = left + (b.sw - b.cw2) / 2;
+      b.kids.forEach(function (k) { place(k, cl); cl += k.sw + g.hGap; });
+      var a = b.real[0], z = b.real[b.real.length - 1];
+      b.x = Math.min(Math.max((a.x + a.w / 2 + z.x + z.w / 2) / 2 - b.w / 2, left), left + b.sw - b.w);
+    }
+    var right = g.padX;
+    if (db.root !== NIL) {
+      var rootBox = measure(db.root, 1);
+      place(rootBox, g.padX);
+      right = g.padX + rootBox.sw;
+    }
+    ch.forEach(function (id) { if (page(db, id).next !== NIL) links.push({ from: id, to: page(db, id).next, kind: 'chain' }); });
+
+    // Deleted pages: below the chain, just left of the page their kept right link leads to.
+    var ghostY = leafY + g.cellH + g.rowGap, freeY = ghostY + g.cellH + g.rowGap;
+    var ghosts = deletedQueue(db).map(function (id) {
+      var p = page(db, id), hops = 0, t = p.next;
+      while (t !== NIL && isLive(db.pages, t) && page(db, t).leaf && page(db, t).state === 'deleted') { t = page(db, t).next; hops++; }
+      var b = box(id, 'deleted', [], 'stamp ' + p.stamp);
+      b.y = ghostY;
+      b.anchor = t !== NIL && boxes[t] && boxes[t].y === leafY ? boxes[t].x : right + g.hGap + b.w;
+      b.hops = hops;
+      links.push({ from: id, to: p.next, kind: 'kept' });
+      return b;
+    });
+    ghosts.sort(function (a, b) { return a.anchor - b.anchor || b.hops - a.hops; });
+    var limit = Infinity, minX = g.padX;
+    for (var i = ghosts.length - 1; i >= 0; i--) {
+      ghosts[i].x = Math.min(ghosts[i].anchor - 6, limit) - ghosts[i].w;
+      limit = ghosts[i].x - g.hGap;
+      minX = Math.min(minX, ghosts[i].x);
+    }
+    if (minX < g.padX) order.forEach(function (b) { b.x += g.padX - minX; });
+    var x = g.padX;
+    freeList(db.pages).forEach(function (id) {
+      var b = box(id, 'free', [], 'free');
+      b.x = x; b.y = freeY;
+      x += b.w + 10;
+    });
+    var W = 430;
+    order.forEach(function (b) { W = Math.max(W, b.x + b.w + g.padX + (b.kind === 'deleted' ? 40 : 0)); });
+    return { boxes: boxes, order: order, edges: edges, links: links, leafY: leafY, ghostY: ghostY, freeY: freeY,
+             W: Math.ceil(W), H: freeY + g.cellH + 10, ghosts: ghosts.length, free: order.length && order.filter(function (b) { return b.kind === 'free'; }).length };
+  }
+
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  function sv(tag, attrs) {
+    var e = document.createElementNS(SVG_NS, tag);
+    for (var a in (attrs || {})) e.setAttribute(a, attrs[a]);
+    for (var i = 2; i < arguments.length; i++) e.appendChild(typeof arguments[i] === 'string' ? document.createTextNode(arguments[i]) : arguments[i]);
+    return e;
+  }
+  var picUid = 0;
+
+  /** new Ch24.Picture(target).render(db, {pages: {id: state}, keys: {'p3:20:2-4': state}, scan: {page, stale}}, duration) */
+  function Picture(target) {
+    var self = this;
+    this.uid = 'c24p' + (++picUid);
+    this.cur = {};                         // page id -> {x, y, o}: where each box is drawn right now
+    this.els = {};
+    this.gEdges = sv('g'); this.gLinks = sv('g'); this.gTitles = sv('g'); this.gNodes = sv('g'); this.gOver = sv('g');
+    function marker(id, cls) {
+      return sv('marker', { id: self.uid + id, viewBox: '0 0 8 8', refX: 7, refY: 4, markerWidth: 7, markerHeight: 7, orient: 'auto' },
+        sv('path', { d: 'M0 .8L7.2 4L0 7.2z', 'class': cls }));
+    }
+    this.svg = sv('svg', { 'class': 'c24-svg', role: 'img' }, sv('defs', {}, marker('a', 'bt-arrowhead'), marker('k', 'c24-arrow-kept')),
+      this.gEdges, this.gLinks, this.gTitles, this.gNodes, this.gOver);
+    this.root = document.createElement('div');
+    this.root.className = 'c24-pic';
+    this.root.tabIndex = 0;
+    this.root.setAttribute('role', 'group');
+    this.root.setAttribute('aria-label', 'The index, the deleted pages and the free list (scrollable)');
+    this.root.appendChild(this.svg);
+    target.appendChild(this.root);
+    this.W = 430; this.H = 200;
+    if (typeof ResizeObserver !== 'undefined') new ResizeObserver(function () { self._fit(); }).observe(this.root);
+  }
+  /** The whole picture is scaled to fit the width; below GEO.minScale it scrolls instead. */
+  Picture.prototype._fit = function () {
+    var avail = this.root.clientWidth || this.W;
+    this.scale = Math.min(1, Math.max(GEO.minScale, avail / this.W));
+    this.svg.setAttribute('viewBox', '0 0 ' + this.W + ' ' + this.H);
+    this.svg.setAttribute('width', Math.floor(this.W * this.scale));
+    this.svg.setAttribute('height', Math.floor(this.H * this.scale));
+  };
+
+  Picture.prototype.render = function (db, hl, duration) {
+    hl = hl || {};
+    var self = this, g = GEO, L = layout(db), pages = hl.pages || {}, keys = hl.keys || {};
+    this.L = L;
+    this.W = L.W; this.H = L.H;
+    this._fit();
+
+    // --- boxes: one <g> per page id, content rebuilt, position animated
+    var seen = {};
+    L.order.forEach(function (b) {
+      seen[b.id] = true;
+      var it = self.els[b.id];
+      if (!it) {
+        it = self.els[b.id] = { g: sv('g') };
+        self.gNodes.appendChild(it.g);
+      }
+      var state = pages[b.id] || (b.kind === 'half-dead' ? 'merge' : b.kind === 'deleted' ? 'deleted' : b.kind === 'free' ? 'free' : '');
+      it.g.setAttribute('class', 'bt-node c24-page is-' + b.kind + (state ? ' s-' + state : ''));
+      it.g.setAttribute('data-page', b.id);
+      it.g.setAttribute('data-kind', b.kind);
+      it.g.textContent = '';
+      it.g.appendChild(sv('rect', { 'class': 'bt-node-box', rx: 7, ry: 7, width: b.w, height: g.cellH }));
+      it.g.appendChild(sv('text', { 'class': 'bt-node-label', x: 1, y: -5 }, '#' + b.id));
+      if (b.inner) it.g.appendChild(sv('text', { 'class': 'c24-inner', x: b.w / 2, y: g.cellH / 2 }, b.inner));
+      var cx = 0;
+      b.texts.forEach(function (t, i) {
+        var st = keys['p' + b.id + ':' + t];
+        it.g.appendChild(sv('g', { 'class': 'bt-key' + (st ? ' s-' + st : ''), transform: 'translate(' + cx + ',0)' },
+          sv('rect', { x: 2, y: 2, rx: 5, ry: 5, width: b.cw[i] - 4, height: g.cellH - 4 }),
+          sv('text', { x: b.cw[i] / 2, y: g.cellH / 2 + 0.5 }, t)));
+        cx += b.cw[i];
+      });
+      it.from = self.cur[b.id] || { x: b.x, y: b.y, o: 0 };
+      it.to = { x: b.x, y: b.y, o: 1 };
+    });
+    Object.keys(this.els).forEach(function (id) {
+      if (seen[id]) return;
+      self.gNodes.removeChild(self.els[id].g);
+      delete self.els[id];
+      delete self.cur[id];
+    });
+
+    // --- arrows and row titles are rebuilt; their geometry follows the boxes frame by frame
+    this.gEdges.textContent = ''; this.gLinks.textContent = ''; this.gTitles.textContent = ''; this.gOver.textContent = '';
+    var paths = [];
+    L.edges.forEach(function (e) {
+      var path = sv('path', { 'class': 'bt-edge' }), dot = sv('circle', { 'class': 'bt-edge-dot', r: 2.3 });
+      self.gEdges.appendChild(path); self.gEdges.appendChild(dot);
+      var p = L.boxes[e.from], acc = 0;
+      for (var i = 0; i < e.slot; i++) acc += p.cw[i] || 0;
+      var ax = e.slot === 0 ? Math.min(7, p.w / 2) : e.slot === e.slots - 1 ? p.w - Math.min(7, p.w / 2) : acc;
+      paths.push(function (at) {
+        var a = at(e.from), c = at(e.to), sx = a.x + ax, sy = a.y + g.cellH, ex = c.x + L.boxes[e.to].w / 2, ey = c.y, dy = (ey - sy) / 2;
+        path.setAttribute('d', 'M' + sx + ' ' + sy + 'C' + sx + ' ' + (sy + dy) + ' ' + ex + ' ' + (ey - dy) + ' ' + ex + ' ' + ey);
+        dot.setAttribute('cx', sx); dot.setAttribute('cy', sy);
+        path.style.opacity = dot.style.opacity = Math.min(a.o, c.o);
+      });
+    });
+    L.links.forEach(function (l) {
+      var kept = l.kind === 'kept';
+      var path = sv('path', { 'class': kept ? 'c24-kept' : 'bt-link', 'marker-end': 'url(#' + self.uid + (kept ? 'k' : 'a') + ')', 'data-link': l.from + '>' + l.to });
+      self.gLinks.appendChild(path);
+      var label = null;
+      if (kept && !L.boxes[l.to]) { label = sv('text', { 'class': 'c24-rowtitle' }, l.to === NIL ? 'end' : '#' + l.to + '?'); self.gLinks.appendChild(label); }
+      paths.push(function (at) {
+        var a = at(l.from), sx = a.x + L.boxes[l.from].w, sy = a.y + g.cellH / 2, t = L.boxes[l.to] ? at(l.to) : null, d;
+        if (!t) {                                         // the link leads nowhere drawable: the end of the chain
+          d = 'M' + sx + ' ' + sy + 'H' + (sx + 14);
+          label.setAttribute('x', sx + 18); label.setAttribute('y', sy + 3.5);
+        } else if (Math.abs(t.y - a.y) < 1) {
+          d = 'M' + sx + ' ' + sy + 'H' + (t.x - 1.5);
+        } else {                                          // from the deleted row up into the chain
+          var ex = t.x + Math.min(12, L.boxes[l.to].w / 2), ey = t.y + g.cellH + 2.5;
+          d = 'M' + sx + ' ' + sy + 'C' + ex + ' ' + sy + ' ' + ex + ' ' + sy + ' ' + ex + ' ' + ey;
+        }
+        path.setAttribute('d', d);
+        path.style.opacity = Math.min(a.o, t ? t.o : 1);
+      });
+    });
+    this.gTitles.appendChild(sv('text', { 'class': 'c24-rowtitle', x: g.padX, y: L.ghostY - 24 },
+      'deleted pages (unlinked and stamped, right link kept), waiting for the horizon' + (L.ghosts ? '' : ': none')));
+    this.gTitles.appendChild(sv('text', { 'class': 'c24-rowtitle', x: g.padX, y: L.freeY - 24 },
+      'free list (the next split takes the leftmost)' + (L.free ? '' : ': empty')));
+    if (db.root === NIL) this.gTitles.appendChild(sv('text', { 'class': 'c24-inner', x: L.W / 2, y: g.padTop + g.cellH / 2 }, 'the index is empty'));
+
+    // --- the paused scan's saved handle: a pill over whatever box that id names today
+    var scan = hl.scan && L.boxes[hl.scan.page] ? hl.scan : null;
+    if (scan) {
+      var text = scan.stale ? 'scan: stale handle' : 'scan reads next', pw = Math.round(text.length * 5.6) + 14;
+      var pill = sv('g', { 'class': 'c24-pill' + (scan.stale ? ' is-stale' : ''), 'data-scan': scan.page },
+        sv('rect', { x: 0, y: -8, width: pw, height: 16, rx: 8, ry: 8 }), sv('path', { d: 'M6 7.5h8l-4 5z' }), sv('text', { x: pw / 2, y: 0.5 }, text));
+      this.gOver.appendChild(pill);
+      paths.push(function (at) {
+        var a = at(scan.page);
+        pill.setAttribute('transform', 'translate(' + (a.x + 22) + ',' + (a.y - 13) + ')');
+      });
+    }
+    this.svg.setAttribute('aria-label', describe(db));
+
+    // --- animate
+    if (this._raf) cancelAnimationFrame(this._raf);
+    var t0 = null;
+    function frame(now) {
+      if (t0 === null) t0 = now;
+      var t = duration > 0 ? Math.min(1, (now - t0) / duration) : 1, e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      L.order.forEach(function (b) {
+        var it = self.els[b.id], c = self.cur[b.id] = { x: it.from.x + (it.to.x - it.from.x) * e, y: it.from.y + (it.to.y - it.from.y) * e, o: it.from.o + (it.to.o - it.from.o) * e };
+        it.g.setAttribute('transform', 'translate(' + c.x.toFixed(2) + ',' + c.y.toFixed(2) + ')');
+        it.g.style.opacity = c.o >= 1 ? '' : c.o.toFixed(3);
+      });
+      paths.forEach(function (fn) { fn(function (id) { return self.cur[id]; }); });
+      self._raf = t < 1 ? requestAnimationFrame(frame) : 0;
+    }
+    if (duration > 0 && typeof requestAnimationFrame === 'function') { frame(performance.now()); } else { duration = 0; frame(0); }
+    this._reveal(Object.keys(pages).concat(scan ? [scan.page] : []), duration);
+    return this;
+  };
+
+  /** On a narrow screen: scroll sideways so that the boxes this step is about are in view. */
+  Picture.prototype._reveal = function (ids, duration) {
+    var sc = this.root, L = this.L, lo = Infinity, hi = -Infinity, s = this.scale;
+    if (sc.scrollWidth <= sc.clientWidth + 1) return;
+    ids.forEach(function (id) { var b = L.boxes[id]; if (b) { lo = Math.min(lo, b.x); hi = Math.max(hi, b.x + b.w); } });
+    if (lo === Infinity) return;
+    lo = lo * s - 20; hi = hi * s + 20;
+    var left = sc.scrollLeft, target = left;
+    if (hi - lo > sc.clientWidth || lo < left) target = lo;
+    else if (hi > left + sc.clientWidth) target = hi - sc.clientWidth;
+    if (target !== left) sc.scrollTo({ left: target, behavior: duration > 0 ? 'smooth' : 'auto' });
+  };
+
+  /** The picture in words (aria-label of the drawing; also what the page's tests read). */
+  function describe(db) {
+    var ch = chain(db).map(function (id) { return '#' + id + (page(db, id).state === 'half-dead' ? ' half-dead' : ''); });
+    var dq = deletedQueue(db).map(function (id) { var p = page(db, id); return '#' + id + ' stamp ' + p.stamp + ' right link ' + (p.next === NIL ? 'end' : '#' + p.next); });
+    var fl = freeList(db.pages).map(function (id) { return '#' + id; });
+    return 'Leaf chain: ' + (ch.join(' → ') || 'empty') + '. Deleted, waiting: ' + (dq.join(', ') || 'none') + '. Free list: ' + (fl.join(' ') || 'empty') + '.';
+  }
+
   window.Ch24 = {
     NIL: NIL, create: create, pack: pack, userKey: userKey, tidOf: tidOf,
     openSnapshot: openSnapshot, closeSnapshot: closeSnapshot, horizon: horizon, visible: visible, deadToAll: deadToAll,
     put: put, del: del, seek: seek, readPage: readPage, scanAll: scanAll, vacuum: vacuum,
     markHalfDead: markHalfDead, unlinkHalfDead: unlinkHalfDead, leftSibling: leftSibling, recycle: recycle,
     chain: chain, deletedQueue: deletedQueue, freeList: freeList, isLive: isLive, page: page,
-    entryText: entryText, dump: dump, validate: validate
+    entryText: entryText, dump: dump, validate: validate,
+    layout: layout, describe: describe, Picture: Picture
   };
 })();

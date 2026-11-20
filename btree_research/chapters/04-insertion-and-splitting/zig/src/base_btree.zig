@@ -1,19 +1,20 @@
+// Copied from chapters/05-deletion-and-rebalancing/zig/src/btree.zig; fixes go there first
 //! The complete in-memory B-tree: this file only ties the sections together.
 //!
 //!   file          content                              needs
-//!   node.zig      the node type (chapter 03)           -
-//!   search.zig    get, inOrder, range (chapter 03)     node
-//!   validate.zig  the invariants as code               node
-//!   stats.zig     shape, fill, text rendering          node
-//!   pool.zig      where nodes come from and go back to -
-//!   insert.zig    put, split (chapter 04)              node, search
+//!   base_node.zig      the node type (chapter 03)           -
+//!   base_search.zig    get, inOrder, range (chapter 03)     node
+//!   base_validate.zig  the invariants as code               node
+//!   base_stats.zig     shape, fill, text rendering          node
+//!   base_pool.zig      where nodes come from and go back to -
+//!   base_insert.zig    put, split (chapter 04)              node, search
 //!   delete.zig    delete, borrow, merge, root shrink   node, search
 //!
 //! Copying a part of the tree into another chapter:
 //!   search only       node, search, validate, stats (trees built by hand,
 //!                     or this file without `put`, `delete` and `Counters`)
 //!   search + insert   the above + pool, insert, this file without `delete`
-//!                     and the delete counters; tests_insert.zig
+//!                     and the delete counters; base_tests_insert.zig
 //!   everything        all of the above + delete.zig, tests_delete.zig
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -26,7 +27,7 @@ const stats = @import("base_stats.zig");
 
 /// How often each structural change happened since the tree was created.
 pub const Counters = struct {
-    // Written by insert.zig.
+    // Written by base_insert.zig.
     /// Node splits, including root splits.
     splits: u64 = 0,
     /// Splits of the root: each one made the tree one level taller.
@@ -47,7 +48,7 @@ pub const Counters = struct {
 
 /// A B-tree of order `M` (at most M children, at most M - 1 keys per node)
 /// mapping u64 keys to u64 values, with nodes from `PoolFn(Node(M))`
-/// (see pool.zig: `DirectNodes`, `FreeListPool` or `StdPool`).
+/// (see base_pool.zig: `DirectNodes`, `FreeListPool` or `StdPool`).
 ///
 ///     var tree: BTree(4, FreeListPool) = .empty;
 ///     defer tree.deinit(gpa);
@@ -106,7 +107,7 @@ pub fn BTree(comptime M: usize, comptime PoolFn: fn (type) type) type {
         }
 
         /// `visitor.visit(key, value)` for every entry with lo <= key < hi, ascending.
-        /// (Half-open, so the key maxInt(u64) is out of reach: see search.zig.)
+        /// (Half-open, so the key maxInt(u64) is out of reach: see base_search.zig.)
         pub fn range(self: *const Self, lo: u64, hi: u64, visitor: anytype) void {
             search.range(M, self.root, lo, hi, visitor);
         }

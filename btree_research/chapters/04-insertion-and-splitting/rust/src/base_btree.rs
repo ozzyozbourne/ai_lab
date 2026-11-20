@@ -1,3 +1,4 @@
+// Copied from chapters/05-deletion-and-rebalancing/rust/src/btree.rs; fixes go there first
 //! The complete in-memory B-tree: this file only ties the sections together.
 
 use crate::base_node::NodeId;
@@ -10,7 +11,7 @@ use std::io::{self, Write};
 /// How often each structural change happened since the tree was created.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Counters {
-    // Written by insert.rs.
+    // Written by base_insert.rs.
     /// Node splits, including root splits.
     pub splits: u64,
     /// Splits of the root: each one made the tree one level taller.
@@ -86,7 +87,7 @@ impl BTree {
     }
 
     /// `visit(key, value)` for every entry with lo <= key < hi, ascending.
-    /// (Half-open, so the key `u64::MAX` is out of reach: see search.rs.)
+    /// (Half-open, so the key `u64::MAX` is out of reach: see base_search.rs.)
     pub fn range(&self, lo: u64, hi: u64, mut visit: impl FnMut(u64, u64)) {
         search::range(&self.pool, self.root, lo, hi, &mut visit);
     }

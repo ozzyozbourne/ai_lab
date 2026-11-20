@@ -1,3 +1,4 @@
+// Copied from chapters/05-deletion-and-rebalancing/zig/src/node.zig; fixes go there first
 //! SECTION 1: the node type.
 //!
 //! A B-tree of order M (Knuth: M = maximum number of children) is made of
@@ -13,7 +14,7 @@
 //! An insert may therefore put the new key into a full node first and split
 //! it afterwards ("overflow, then split"), which keeps the split code free of
 //! special cases. A node with `len == M` only exists for an instant inside
-//! `insert.zig`; `validate` rejects it.
+//! `base_insert.zig`; `validate` rejects it.
 const std = @import("std");
 
 pub const Entry = struct { key: u64, value: u64 };

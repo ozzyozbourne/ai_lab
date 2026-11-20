@@ -1,3 +1,4 @@
+// Copied from chapters/05-deletion-and-rebalancing/rust/src/node.rs; fixes go there first
 //! SECTION 1: the node type.
 //!
 //! A B-tree of order M (Knuth: M = maximum number of children) is made of
@@ -14,20 +15,20 @@
 //! Stable Rust cannot compute an array length from a const generic
 //! (`[u64; M - 1]` is rejected), so here the order is a run-time field of the
 //! tree and a node holds three `Vec`s. A node may briefly hold M keys inside
-//! `insert.rs` ("overflow, then split"); `validate` rejects that state.
+//! `base_insert.rs` ("overflow, then split"); `validate` rejects that state.
 
 use std::ops::{Index, IndexMut};
 
-/// Handle of a node: an index into the slab (pool.rs), not a pointer.
+/// Handle of a node: an index into the slab (base_pool.rs), not a pointer.
 /// Indices are `Copy`, stay valid when the slab's `Vec` reallocates, and let
 /// the tree hold "pointers" to parent, child and sibling at the same time
 /// without fighting the borrow checker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub u32);
 
-/// Read access to nodes by id. This is all that search.rs, validate.rs and
-/// stats.rs ask of the place where the nodes live, so they work with the
-/// slab of pool.rs and equally with a plain `Vec<Node>` (a *typed arena*:
+/// Read access to nodes by id. This is all that base_search.rs, base_validate.rs and
+/// base_stats.rs ask of the place where the nodes live, so they work with the
+/// slab of base_pool.rs and equally with a plain `Vec<Node>` (a *typed arena*:
 /// nodes are pushed and never freed, which is what chapter 03 uses).
 pub trait Nodes: Index<NodeId, Output = Node> {}
 impl<T: Index<NodeId, Output = Node> + ?Sized> Nodes for T {}

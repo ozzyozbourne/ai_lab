@@ -1,3 +1,4 @@
+// Copied from chapters/05-deletion-and-rebalancing/rust/src/insert.rs; fixes go there first
 //! SECTION 4: insert with bottom-up splitting (explained in chapter 04).
 //!
 //! `put` works in three phases:
@@ -10,12 +11,12 @@
 //!
 //! Reserving first means a failed allocation leaves the tree exactly as it
 //! was (see `put_under_allocation_failure_leaves_the_tree_unchanged` in
-//! tests_insert.rs). The slab's `usage` counters are put back as well, so a
+//! base_tests_insert.rs). The slab's `usage` counters are put back as well, so a
 //! failed `put` cannot be seen from the tree at all. The one trace it can
 //! leave is inside the slab: a slot that was pushed for a reservation and
 //! returned stays on the free list.
 //!
-//! This file needs node.rs, search.rs (`lower_bound`) and the slab, nothing
+//! This file needs base_node.rs, base_search.rs (`lower_bound`) and the slab, nothing
 //! from delete.rs.
 
 use crate::base_btree::BTree;

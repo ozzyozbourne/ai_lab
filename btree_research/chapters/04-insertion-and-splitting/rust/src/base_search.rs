@@ -1,8 +1,9 @@
+// Copied from chapters/05-deletion-and-rebalancing/rust/src/search.rs; fixes go there first
 //! SECTION 3: search and ordered traversal (explained in chapter 03).
 //!
 //! Nothing here allocates or modifies the tree. This file needs only
-//! node.rs: the nodes are reached through the [`Nodes`] trait, so they may
-//! live in the slab of pool.rs or in a plain `Vec<Node>`.
+//! base_node.rs: the nodes are reached through the [`Nodes`] trait, so they may
+//! live in the slab of base_pool.rs or in a plain `Vec<Node>`.
 
 use crate::base_node::{NodeId, Nodes};
 

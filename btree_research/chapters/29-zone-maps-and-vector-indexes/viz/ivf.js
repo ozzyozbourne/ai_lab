@@ -61,7 +61,11 @@
   var gvZoom = new BTViz.GraphView(zoomCell, { height: 320, r: 6, pad: 14, ariaLabel: 'Zoom on the neighbourhood of the query' });
   var ranking = el('div');
   fig.side.appendChild(el('div.bt-panel', el('div.bt-panel-title', 'Centroid ranking for this query'), el('div.bt-panel-body', ranking)));
-  var code = C.wrapCode(BTViz.codePanel(fig.side, 'search', { title: 'Ivf.search', maxHeight: 460 }));
+  // The code goes under the pictures, not into the side column: its lines are up to 90 characters long
+  // and the side column shows about 33, which hid the half of each line that says what is done.
+  var codeHost = el('div.c29-codebelow');
+  fig.stage.appendChild(codeHost);
+  var code = BTViz.codePanel(codeHost, 'search', { title: 'Ivf.search' });
 
   var query = S.queries[12].slice(), rng = BTViz.rng(29), search, truth;
   var stepper = new BTViz.Stepper({

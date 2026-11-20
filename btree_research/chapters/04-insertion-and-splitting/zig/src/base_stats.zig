@@ -1,5 +1,6 @@
+// Copied from chapters/05-deletion-and-rebalancing/zig/src/stats.zig; fixes go there first
 //! SECTION 6b: shape statistics and a text rendering of the tree.
-//! This file needs only node.zig.
+//! This file needs only base_node.zig.
 const std = @import("std");
 const Node = @import("base_node.zig").Node;
 

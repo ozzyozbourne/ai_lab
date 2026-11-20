@@ -1,5 +1,6 @@
+// Copied from chapters/05-deletion-and-rebalancing/rust/src/stats.rs; fixes go there first
 //! SECTION 6b: shape statistics and a text rendering of the tree.
-//! This file needs only node.rs.
+//! This file needs only base_node.rs.
 
 use crate::base_node::{NodeId, Nodes, max_keys};
 use std::io::{self, Write};

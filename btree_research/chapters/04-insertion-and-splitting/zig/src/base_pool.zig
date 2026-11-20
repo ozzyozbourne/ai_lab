@@ -1,3 +1,4 @@
+// Copied from chapters/05-deletion-and-rebalancing/zig/src/pool.zig; fixes go there first
 //! SECTION 2: node allocation.
 //!
 //! The tree never calls an allocator directly. It asks a *node pool* for a
@@ -21,8 +22,8 @@
 //!     arena) still counts in `destroy` and otherwise does nothing; its
 //!     memory is released in `deinit`.
 //!
-//! tests_insert.zig has such an outside pool ("a pool written outside
-//! pool.zig satisfies the contract").
+//! base_tests_insert.zig has such an outside pool ("a pool written outside
+//! base_pool.zig satisfies the contract").
 //!
 //! The backing allocator `gpa` is passed to every call (Zig's "unmanaged"
 //! style): the pool stores no allocator, and the caller can see exactly where
@@ -45,7 +46,7 @@ const Allocator = std.mem.Allocator;
 /// (`live() == number of nodes reachable from the root`) even when the
 /// backing allocator cannot see individual nodes.
 ///
-/// `put` restores `usage` when it fails (insert.zig), so the counters always
+/// `put` restores `usage` when it fails (base_insert.zig), so the counters always
 /// describe nodes that were part of the tree, never returned reservations.
 pub const Usage = struct {
     created: u64 = 0,

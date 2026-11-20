@@ -1,3 +1,4 @@
+// Copied from chapters/05-deletion-and-rebalancing/zig/src/insert.zig; fixes go there first
 //! SECTION 4: insert with bottom-up splitting (explained in chapter 04).
 //!
 //! `put` works in three phases:
@@ -7,13 +8,13 @@
 //!   3. COMMIT: insert into the leaf, then split upwards along the path while
 //!      a node is overfull. Nothing in this phase can fail.
 //! Reserving first means an allocation failure leaves the tree exactly as it
-//! was (see "put under allocation failure" in tests_insert.zig). The pool's
+//! was (see "put under allocation failure" in base_tests_insert.zig). The pool's
 //! `usage` counters are put back as well, so a failed `put` cannot be seen
 //! from the tree at all. The one trace it can leave is inside the pool: a
 //! slot that was carved for a reservation and returned stays on the pool's
 //! free list.
 //!
-//! This file needs node.zig and search.zig (`lowerBound`), nothing from
+//! This file needs base_node.zig and base_search.zig (`lowerBound`), nothing from
 //! delete.zig.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -23,7 +24,7 @@ const search = @import("base_search.zig");
 /// A tree of order 3 with 2^64 keys is at most 64 levels high (chapter 03).
 pub const max_height = 64;
 
-/// `Tree` is a `BTree(M, PoolFn)` from btree.zig; this function uses its
+/// `Tree` is a `BTree(M, PoolFn)` from base_btree.zig; this function uses its
 /// `root`, `len`, `pool` and `counters` fields (`splits`, `root_splits`).
 /// Returns the previous value if the key was already present (overwrite).
 /// On error.OutOfMemory the tree, its counters and `pool.usage` are unchanged.

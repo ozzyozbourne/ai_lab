@@ -16,6 +16,8 @@
  *       the side column is about 33 characters wide, so the end of a long line
  *       (here: the three outcomes) was out of sight. Wrap long lines with a
  *       hanging indent instead of scrolling sideways
+ *   Ch29.wideSide(fig)                on wide screens, a side column wide enough
+ *       for 50 characters of code
  *
  * Colours come from the toolkit's state classes (s-found, s-compare, ...).
  */
@@ -50,8 +52,10 @@
     '@media (min-width: 1040px) { .c29-probe { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); align-items: start; } }',
     '.c29-probe .c29-layer-title { min-height: 2.6em; }',
     '.c29-wrap .bt-code code { min-width: 0; }',
-    '.c29-wrap .bt-line { white-space: pre-wrap; overflow-wrap: anywhere; padding-left: calc(4.4ch + var(--c29-hang, 4ch)); text-indent: calc(-4.4ch - var(--c29-hang, 4ch)); }',
+    '.c29-wrap .bt-line { white-space: pre-wrap; overflow-wrap: break-word; padding-left: calc(4.4ch + var(--c29-hang, 4ch)); text-indent: calc(-4.4ch - var(--c29-hang, 4ch)); }',
     '.c29-wrap .bt-line::before { text-indent: 0; }',
+    '@media (min-width: 1100px) { .bt-figure.c29-wide-side > .bt-figure-body.has-side { grid-template-columns: minmax(0, 1fr) 460px; } }',
+    '.c29-codebelow { width: 100%; margin-top: 10px; }',
     '.c29-status { flex: 1 1 100%; margin: 0; font-size: .86rem; color: var(--bt-muted); }',
     '.c29-status:empty { display: none; }',
     // Narrow screens: the toolkit stacks stage, side panels, caption, controls. Dissolve the body
@@ -165,6 +169,7 @@
     host.appendChild(el('div.bt-table-wrap', el('table.bt-table.c29-kv', tb)));
   }
 
+  function wideSide(fig) { fig.root.classList.add('c29-wide-side'); }
   function sideLast(fig) { fig.root.classList.add('c29-side-last'); }
 
   /**
@@ -187,4 +192,5 @@
   Ch29.kv = kv;
   Ch29.sideLast = sideLast;
   Ch29.wrapCode = wrapCode;
+  Ch29.wideSide = wideSide;
 })();

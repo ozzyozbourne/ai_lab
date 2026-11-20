@@ -61,6 +61,7 @@
     onStep: function (step) { draw(step.state.done, step.state.final); }
   });
   C.sideLast(fig);
+  C.wideSide(fig); // room for one arm of checkZone per three lines without wrapping
 
   /** The constant actually used: whatever was typed, rounded and clamped to 0..2299 (empty or junk counts as 0). */
   function clampC(raw) { return Math.min(2299, Math.max(0, Math.round(+raw || 0))); }

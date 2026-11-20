@@ -1,3 +1,4 @@
+// Copied from chapters/05-deletion-and-rebalancing/rust/src/pool.rs; fixes go there first
 //! SECTION 2: node allocation.
 //!
 //! The tree never creates nodes on its own. It asks the *slab* for a slot and
@@ -18,12 +19,12 @@
 //!
 //! What the slab recycles is the SLOT (and with it the `NodeId`). It is not
 //! the full pool of the Zig version: a Rust node owns up to three `Vec`
-//! buffers on the heap (node.rs), which are allocated by a split and
+//! buffers on the heap (base_node.rs), which are allocated by a split and
 //! released by a merge through the global allocator as before.
 //!
 //! Without `free`, `free_head`, the failure switches and `usage`, a slab is a
 //! `Vec<Node>` that is only pushed to: the *typed arena* of chapter 03.
-//! search.rs, validate.rs and stats.rs accept either (node.rs, `Nodes`).
+//! base_search.rs, base_validate.rs and base_stats.rs accept either (base_node.rs, `Nodes`).
 //!
 //! Rust aborts the process when the global allocator fails, so "out of
 //! memory" is modelled by the slab itself, with two switches:
@@ -83,7 +84,7 @@ pub struct Slab {
     pub budget: Option<u64>,
     /// `None`: never. `Some(n)`: n more allocations succeed, then all fail.
     pub fail_after: Option<u64>,
-    /// `put` restores these when it fails (insert.rs), so they always
+    /// `put` restores these when it fails (base_insert.rs), so they always
     /// describe nodes that were part of the tree, never returned reservations.
     pub usage: Usage,
 }

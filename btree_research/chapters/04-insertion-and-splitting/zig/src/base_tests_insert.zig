@@ -1,3 +1,4 @@
+// Copied from chapters/05-deletion-and-rebalancing/zig/src/tests_insert.zig; fixes go there first
 //! Tests of the tree that need only search and insert (chapters 03 and 04):
 //! nothing in this file calls `delete`. The delete tests are in
 //! tests_delete.zig, which reuses the helpers declared `pub` here.
@@ -114,8 +115,8 @@ test "validate reports a leaked node" {
     }
 }
 
-/// A node pool defined OUTSIDE pool.zig, to show what the contract in
-/// pool.zig asks for. It is the simplest pool there is, a bump allocator
+/// A node pool defined OUTSIDE base_pool.zig, to show what the contract in
+/// base_pool.zig asks for. It is the simplest pool there is, a bump allocator
 /// over a fixed array: `create` takes the next unused slot, `destroy` cannot
 /// give a slot back and only counts. (Chapter 03 writes a real one.)
 fn BumpPool(comptime T: type) type {
@@ -148,7 +149,7 @@ fn BumpPool(comptime T: type) type {
     };
 }
 
-test "a pool written outside pool.zig satisfies the contract" {
+test "a pool written outside base_pool.zig satisfies the contract" {
     const gpa = testing.failing_allocator; // proves the tree asks only the pool
     var tree: BTree(4, BumpPool) = .empty;
     defer tree.deinit(gpa);
@@ -221,7 +222,7 @@ test "put under allocation failure leaves the tree unchanged" {
     try expectTree(&tree, "[3 6]\n[0 1 2] [4 5] [7 8 9]\n");
 
     // A cascade needs several nodes; fail the LAST one. The earlier
-    // reservations must be handed back (the errdefer in insert.zig).
+    // reservations must be handed back (the errdefer in base_insert.zig).
     failing.fail_index = std.math.maxInt(usize);
     for ([_]u64{ 10, 11, 12 }) |key| _ = try tree.put(gpa, key, key);
     try expectTree(&tree, "[3 6 9]\n[0 1 2] [4 5] [7 8] [10 11 12]\n");

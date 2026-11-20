@@ -1,3 +1,4 @@
+// Copied from chapters/05-deletion-and-rebalancing/rust/src/tests_insert.rs; fixes go there first
 //! Tests of the tree that need only search and insert (chapters 03 and 04):
 //! nothing in this file calls `delete`. The delete tests are in
 //! tests_delete.rs, which reuses the helpers declared `pub` here.

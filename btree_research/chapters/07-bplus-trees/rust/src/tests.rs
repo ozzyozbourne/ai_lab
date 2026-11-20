@@ -309,7 +309,14 @@ fn validate_names_the_broken_invariant() {
             t.nodes.get_mut(t.last_leaf).len = 0;
         }),
         (Violation::NodeOverfull, |t| {
-            t.nodes.get_mut(t.last_leaf).leaf_insert_at(3, 40, 0);
+            // Append keys larger than any other until the leaf holds one too
+            // many. Appending at `len` works however full the leaf is, so the
+            // case does not depend on the exact shape.
+            let max_keys = t.max_keys();
+            let leaf = t.nodes.get_mut(t.last_leaf);
+            while leaf.len <= max_keys {
+                leaf.leaf_insert_at(leaf.len, 40 + leaf.len as u64, 0);
+            }
         }),
         (Violation::BrokenLeafChain, |t| {
             t.nodes.get_mut(t.last_leaf).leaf_mut().prev = t.first_leaf;

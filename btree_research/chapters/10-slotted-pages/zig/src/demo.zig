@@ -196,7 +196,7 @@ fn dumpRows(w: *Io.Writer, buf: *const [sp.page_size]u8, start: usize, end: usiz
 }
 
 /// FNV-1a, 64 bit: a five-line hash, enough to compare two page images.
-fn fnv1a64(bytes: []const u8) u64 {
+pub fn fnv1a64(bytes: []const u8) u64 {
     var h: u64 = 0xcbf29ce484222325;
     for (bytes) |b| {
         h ^= b;

@@ -89,8 +89,6 @@ pub const max_frag_bytes = 60;
 /// (header + one slot + cell). An upper bound for every page; the exact
 /// limit of one page is `maxCellSize()`.
 pub const max_cell_size = page_size - header_size - slot_size;
-/// The reserved tail is described by one header byte.
-pub const max_reserved = 255;
 
 pub const Error = error{
     /// Not enough free bytes on this page. The page is unchanged.
@@ -976,6 +974,137 @@ test "validate detects each kind of corruption" {
     page.wr16(header_size, page.rd16(header_size + slot_size));
     page.wr16(header_size + slot_size, s0);
     try testing.expectError(error.KeysOutOfOrder, page.validate());
+    buf = good;
+    try page.validate();
+}
+
+test "delete does not erase: an emptied page has init's header, not init's bytes" {
+    var fresh: [page_size]u8 = undefined;
+    var buf: [page_size]u8 = undefined;
+    _ = SlottedPage.init(&fresh);
+    const page = SlottedPage.init(&buf);
+    try page.put("secret-key", "secret-value");
+    try testing.expect(page.delete("secret-key"));
+    try page.validate();
+    // Every header field is back to what `init` wrote...
+    try testing.expectEqualSlices(u8, fresh[0..header_size], buf[0..header_size]);
+    // ...but the cell's bytes are still on the page, in what is now gap.
+    try testing.expect(!std.mem.eql(u8, &fresh, &buf));
+    try testing.expectEqualStrings("secret-keysecret-value", buf[page_size - 22 ..]);
+    // Two pages with the same records are therefore not always the same bytes.
+}
+
+test "reserved tail: the content area ends before it and no operation touches it" {
+    for ([_]u8{ 4, 32, 255 }) |r| {
+        var buf: [page_size]u8 = undefined;
+        const page = SlottedPage.initReserved(&buf, r);
+        const usable = page_size - @as(usize, r);
+        // The caller owns the tail from now on; fill it with a pattern.
+        try testing.expectEqual(@as(usize, r), page.reservedArea().len);
+        @memset(page.reservedArea(), 0xA5);
+        const Tail = struct {
+            fn intact(p: SlottedPage) !void {
+                try p.validate();
+                for (p.reservedArea()) |b| try testing.expectEqual(0xA5, b);
+            }
+        };
+
+        try testing.expectEqual(usable, page.usableSize());
+        try testing.expectEqual(usable, page.stats().content_start);
+        try testing.expectEqual(usable - header_size, page.freeBytes());
+        try testing.expectEqual(max_cell_size - r, page.maxCellSize());
+
+        // The first cell ends exactly where the tail begins.
+        try page.put("mango", "yellow");
+        try testing.expectEqual(usable - 15, page.cellOffset(0));
+        try Tail.intact(page);
+        // Deleting the last cell resets content_start to `usable`, not 4096.
+        try testing.expect(page.delete("mango"));
+        try testing.expectEqual(usable, page.stats().content_start);
+        try Tail.intact(page);
+
+        // The largest cell is smaller by `r`; it fills the page to the byte.
+        const big: [max_cell_size]u8 = @splat('v');
+        const max_value = page.maxCellSize() - cell_header_size - 1;
+        try testing.expectError(error.CellTooLarge, page.put("k", big[0 .. max_value + 1]));
+        try page.put("k", big[0..max_value]);
+        try testing.expectEqual(0, page.freeBytes());
+        try testing.expectError(error.PageFull, page.put("l", ""));
+        try testing.expectError(error.CellTooLarge, page.put("k", big[0 .. max_value + 1])); // replace path
+        try Tail.intact(page);
+        try testing.expect(page.delete("k"));
+
+        // Free blocks, a fragment, merging and compaction next to the tail.
+        for ([_][]const u8{ "a", "b", "c", "d" }) |k| try page.put(k, "12345");
+        try testing.expectEqual(usable - 10, page.cellOffset(0));
+        try testing.expect(page.delete("a")); // free block that ends at `usable`
+        var blocks: [2]FreeBlock = undefined;
+        try testing.expectEqualSlices(FreeBlock, &.{.{ .offset = usable - 10, .size = 10 }}, page.freeBlocks(&blocks));
+        try Tail.intact(page);
+        try page.put("e", "1234"); // 9 of the 10 bytes: 1 fragment byte
+        try testing.expectEqual(1, page.stats().frag_bytes);
+        try Tail.intact(page);
+        try testing.expect(page.delete("c"));
+        page.compact();
+        try testing.expectEqual(usable - 10, page.cellOffset(0)); // b is last now
+        try Tail.intact(page);
+
+        // "Write to disk, read back": the reopened page knows its own size.
+        var copy: [page_size]u8 = buf;
+        const reopened = SlottedPage.open(&copy);
+        try testing.expectEqual(usable, reopened.usableSize());
+        try Tail.intact(reopened);
+        try testing.expectEqualStrings("1234", reopened.get("e").?);
+    }
+}
+
+test "reserved tail: without it the first cell occupies the last bytes of the buffer" {
+    // Why a page that will carry a checksum in its last 4 bytes must be
+    // formatted with initReserved(buf, 4): after plain init, storing those
+    // 4 bytes destroys the end of the first cell.
+    var buf: [page_size]u8 = undefined;
+    const plain = SlottedPage.init(&buf);
+    try plain.put("mango", "yellow");
+    @memset(buf[page_size - 4 ..], 0xCC); // what sealing the page would do
+    try testing.expect(!std.mem.eql(u8, "yellow", plain.get("mango").?));
+
+    const page = SlottedPage.initReserved(&buf, 4);
+    try page.put("mango", "yellow");
+    @memset(buf[page_size - 4 ..], 0xCC);
+    try testing.expectEqualStrings("yellow", page.get("mango").?);
+    try page.validate();
+}
+
+test "validate: nothing may reach into the reserved tail, and a looping free list is caught" {
+    var buf: [page_size]u8 = undefined;
+    const page = SlottedPage.initReserved(&buf, 4);
+    for ([_][]const u8{ "a", "b", "c", "d" }) |k| try page.put(k, "12345");
+    try testing.expect(page.delete("b")); // free block at 4072, size 10
+    try page.validate();
+    const good: [page_size]u8 = buf;
+    const a_off = page.cellOffset(0); // 4082: a's cell ends at 4092
+
+    // the last cell claims one byte of the tail
+    page.wr16(a_off + 2, 6);
+    try testing.expectError(error.SlotOutOfRange, page.validate());
+    buf = good;
+    // a free block that runs into the tail (it also covers a's cell, which
+    // the bound check must report first)
+    page.wr16(4072 + 2, 21);
+    try testing.expectError(error.FreeListCorrupt, page.validate());
+    buf = good;
+    // content_start inside the tail
+    page.wr16(off_content_start, page_size - 2);
+    try testing.expectError(error.BadHeader, page.validate());
+    buf = good;
+    // a reserved byte that changed on disk moves the end of the content area
+    buf[off_reserved] = 8;
+    try testing.expectError(error.SlotOutOfRange, page.validate());
+    buf = good;
+    // A free block whose `next` points back at itself: `stats` would never
+    // return on this page; validate must (the list has to ascend).
+    page.wr16(4072, 4072);
+    try testing.expectError(error.FreeListCorrupt, page.validate());
     buf = good;
     try page.validate();
 }

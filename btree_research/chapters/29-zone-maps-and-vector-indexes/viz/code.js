@@ -1,8 +1,11 @@
 /*
  * Chapter 29 — source snippets for the code panels (inlined: no fetch under
  * file://) and the programs' expected output for the self-tests.
- * Snippets are abridged from zig/src and rust/src; line numbers match between
- * the two languages so one highlight works in both tabs.
+ * Snippets are abridged from zig/src and rust/src. In `search` the line numbers
+ * match between the two languages. In `checkZone` each Zig arm, one line in
+ * zonemap.zig, is broken over three (true for all rows / for some row / for
+ * none) so that the three outcomes are in view in the narrow side panel;
+ * zone.js highlights per language.
  */
 window.CHAPTER_CODE = {
   checkZone: {
@@ -11,12 +14,24 @@ window.CHAPTER_CODE = {
       '    const inside = zone.min <= c and c <= zone.max;',
       '    const single = zone.min == c and zone.max == c; // every row equals c',
       '    return switch (op) {',
-      '        .eq => if (single) .always_true else if (inside) .maybe else .always_false,',
-      '        .ne => if (!inside) .always_true else if (single) .always_false else .maybe,',
-      '        .ge => if (zone.min >= c) .always_true else if (zone.max >= c) .maybe else .always_false,',
-      '        .gt => if (zone.min > c) .always_true else if (zone.max > c) .maybe else .always_false,',
-      '        .le => if (zone.max <= c) .always_true else if (zone.min <= c) .maybe else .always_false,',
-      '        .lt => if (zone.max < c) .always_true else if (zone.min < c) .maybe else .always_false,',
+      '        .eq => if (single) .always_true',
+      '            else if (inside) .maybe',
+      '            else .always_false,',
+      '        .ne => if (!inside) .always_true',
+      '            else if (single) .always_false',
+      '            else .maybe,',
+      '        .ge => if (zone.min >= c) .always_true',
+      '            else if (zone.max >= c) .maybe',
+      '            else .always_false,',
+      '        .gt => if (zone.min > c) .always_true',
+      '            else if (zone.max > c) .maybe',
+      '            else .always_false,',
+      '        .le => if (zone.max <= c) .always_true',
+      '            else if (zone.min <= c) .maybe',
+      '            else .always_false,',
+      '        .lt => if (zone.max < c) .always_true',
+      '            else if (zone.min < c) .maybe',
+      '            else .always_false,',
       '    };',
       '}',
       '// between lo and hi = andPrune(checkZone(.ge, lo), checkZone(.le, hi))'

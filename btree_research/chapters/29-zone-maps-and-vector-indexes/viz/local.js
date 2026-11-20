@@ -12,8 +12,10 @@
  *   Ch29.sideLast(fig)                on narrow screens, put the figure's side
  *       panels below the caption and step controls, so the text that narrates
  *       the picture stays next to the picture
- *   Ch29.fixScrub(stepper)            work-around for a toolkit quirk: a click
- *       on the step slider during auto-play only paused (see the function)
+ *   Ch29.wrapCode(codePanel)          the toolkit's code panel never wraps, and
+ *       the side column is about 33 characters wide, so the end of a long line
+ *       (here: the three outcomes) was out of sight. Wrap long lines with a
+ *       hanging indent instead of scrolling sideways
  *
  * Colours come from the toolkit's state classes (s-found, s-compare, ...).
  */
@@ -47,6 +49,11 @@
     '.c29-probe { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); width: 100%; }',
     '@media (min-width: 1040px) { .c29-probe { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); align-items: start; } }',
     '.c29-probe .c29-layer-title { min-height: 2.6em; }',
+    '.c29-wrap .bt-code code { min-width: 0; }',
+    '.c29-wrap .bt-line { white-space: pre-wrap; overflow-wrap: anywhere; padding-left: calc(4.4ch + var(--c29-hang, 4ch)); text-indent: calc(-4.4ch - var(--c29-hang, 4ch)); }',
+    '.c29-wrap .bt-line::before { text-indent: 0; }',
+    '.c29-status { flex: 1 1 100%; margin: 0; font-size: .86rem; color: var(--bt-muted); }',
+    '.c29-status:empty { display: none; }',
     // Narrow screens: the toolkit stacks stage, side panels, caption, controls. Dissolve the body
     // wrapper so the side panels can be ordered after the caption and the controls.
     '@media (max-width: 820px) {',
@@ -161,21 +168,17 @@
   function sideLast(fig) { fig.root.classList.add('c29-side-last'); }
 
   /**
-   * Toolkit quirk (assets/viz.js, Stepper._build): the step slider's handler calls pause() before it
-   * reads the slider, and pause() writes the current step back into the slider when the stepper was
-   * playing. So the first click on the slider during auto-play only paused. This chapter auto-plays
-   * after most interactions, so remember the value the reader asked for (capture phase, before the
-   * toolkit's handler) and go there afterwards if the toolkit did not. A no-op once the toolkit is fixed.
+   * Wrap the lines of a BTViz.codePanel. Each line keeps its number and its own indentation; what
+   * does not fit continues four columns further in (the gutter is 4.4ch wide in the toolkit's CSS).
    */
-  function fixScrub(stepper) {
-    var scrub = stepper.ui && stepper.ui.scrub, host = stepper.ui && stepper.ui.root, wanted = null;
-    if (!scrub || !host) return;
-    host.addEventListener('input', function (e) { if (e.target === scrub) wanted = +scrub.value; }, true);
-    host.addEventListener('input', function (e) {
-      if (e.target !== scrub || wanted === null) return;
-      if (stepper.index !== wanted) stepper.go(wanted, { instant: true });
-      wanted = null;
+  function wrapCode(panel) {
+    panel.root.classList.add('c29-wrap');
+    panel.langs.forEach(function (lang) {
+      panel.lines[lang].forEach(function (span) {
+        span.style.setProperty('--c29-hang', (/^ */.exec(span.textContent)[0].length + 4) + 'ch');
+      });
     });
+    return panel;
   }
 
   Ch29.RangeBars = RangeBars;
@@ -183,5 +186,5 @@
   Ch29.planeClick = planeClick;
   Ch29.kv = kv;
   Ch29.sideLast = sideLast;
-  Ch29.fixScrub = fixScrub;
+  Ch29.wrapCode = wrapCode;
 })();

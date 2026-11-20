@@ -28,7 +28,10 @@
   [1, 2, 4, 8].forEach(function (e) { efSel.appendChild(el('option', { value: e }, 'ef = ' + e)); });
   var randBtn = el('button.bt-btn#random', { type: 'button' }, 'Random query');
   var failBtn = el('button.bt-btn#fail', { type: 'button' }, 'Find a query this ef gets wrong');
-  fig.toolbar.append(efSel, randBtn, failBtn);
+  // Answers of the buttons that are not about a step of the search go here, not into the step caption
+  // (auto-play would overwrite them, and they would disagree with the picture).
+  var status = el('p.c29-status', { role: 'status' });
+  fig.toolbar.append(efSel, randBtn, failBtn, status);
 
   var wrap = el('div.c29-layers');
   fig.stage.appendChild(wrap);
@@ -41,7 +44,7 @@
   }
   var stats = el('div');
   fig.side.appendChild(el('div.bt-panel', el('div.bt-panel-title', 'This search'), el('div.bt-panel-body', stats)));
-  BTViz.codePanel(fig.side, 'descent', { title: 'Descent (FAISS and pseudocode)', active: 'pseudo' });
+  C.wrapCode(BTViz.codePanel(fig.side, 'descent', { title: 'Descent (FAISS and pseudocode)', active: 'pseudo', maxHeight: 460 }));
 
   var edgesOf = G.layers.map(function (layer) {
     var out = [];
@@ -55,7 +58,6 @@
     onStep: function (step) { draw(step.state); }
   });
   C.sideLast(fig);
-  C.fixScrub(stepper);
 
   function draw(st) {
     for (var lv = 0; lv <= G.maxLevel; lv++) {
@@ -82,6 +84,7 @@
 
   function rebuild(play) {
     var ef = +efSel.value;
+    status.textContent = '';
     run = C.layeredSearch(G, query, ef);
     // Persistent highlights per layer; each step takes a snapshot and may add transient marks.
     var keep = G.layers.map(function () { return { nodes: {}, edges: {}, labels: {} }; });
@@ -166,7 +169,10 @@
       var q = [rng.int(20, O.width - 20), rng.int(20, O.height - 20)], r = C.layeredSearch(G, q, ef);
       if (r.result.id !== r.truth.id) { setQuery(q[0], q[1], true); return; }
     }
-    fig.caption.innerHTML = 'No failing query found for ef = ' + ef + ' in 3000 random tries. On this small graph that many candidates reach everything.';
+    // Nothing to show: keep the search on screen as it is, stop it moving, and say so next to the button.
+    stepper.pause();
+    status.textContent = 'No query found that ef = ' + ef + ' gets wrong: 3000 random queries all returned the true nearest point. ' +
+      'The search shown is unchanged. Choose a smaller ef to see a miss.';
   });
   views.forEach(function (v) { C.planeClick(v, A0, A1, function (x, y) { setQuery(x, y, true); }); });
   rebuild(false);

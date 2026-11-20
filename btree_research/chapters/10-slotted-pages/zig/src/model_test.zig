@@ -10,6 +10,7 @@ const testing = std.testing;
 const sp = @import("slotted_page.zig");
 const ops = @import("ops.zig");
 const workload = @import("workload.zig");
+const demo = @import("demo.zig");
 const SlottedPage = sp.SlottedPage;
 
 const Coverage = struct {
@@ -21,8 +22,22 @@ const Coverage = struct {
 };
 
 fn runModel(allocator: std.mem.Allocator, config: ops.Config) !Coverage {
+    return runModelReserved(allocator, config, 0, null);
+}
+
+/// The tail pattern is written once, right after `initReserved`; the page
+/// must leave it alone through every operation.
+const tail_pattern = 0xA5;
+
+/// `image_hash`, if given, receives the FNV-1a hash of the final page image
+/// (reserved tail included).
+fn runModelReserved(allocator: std.mem.Allocator, config: ops.Config, reserved: u8, image_hash: ?*u64) !Coverage {
     var buf: [sp.page_size]u8 = undefined;
-    const page = SlottedPage.init(&buf);
+    const page = SlottedPage.initReserved(&buf, reserved);
+    @memset(page.reservedArea(), tail_pattern);
+    defer if (image_hash) |h| {
+        h.* = demo.fnv1a64(&buf);
+    };
     var oracle: ops.Oracle = .{};
     defer oracle.deinit(allocator);
     var cov: Coverage = .{};
@@ -81,6 +96,7 @@ fn runModel(allocator: std.mem.Allocator, config: ops.Config) !Coverage {
             },
         }
         try page.validate();
+        for (page.reservedArea()) |b| try testing.expectEqual(tail_pattern, b);
         try testing.expectEqual(oracle.len(), page.count());
         const s = page.stats();
         cov.saw_free_blocks += @intFromBool(s.free_block_count > 0);
@@ -116,6 +132,23 @@ test "model: delete-heavy, the page empties again and again" {
         .key_space = 16,
         .weights = .{ .put = 2, .delete = 4, .get = 1, .range = 1 },
     });
+}
+
+test "model: a reserved tail of 4 or 32 bytes is never touched; Zig and Rust build the same image" {
+    // Same stream as the first test, on a page that ends 4 (a CRC-32) or 32
+    // bytes early. The page is still mostly full, so every path runs next
+    // to the tail. The hashes are pinned in both languages: equal constants
+    // mean byte-identical pages, tail pattern included.
+    var hash: u64 = 0;
+    var cov = try runModelReserved(testing.allocator, .{ .seed = 10, .count = 20_000, .key_space = 300 }, 4, &hash);
+    try testing.expect(cov.page_full > 0 and cov.saw_fragments > 0 and cov.compactions > 0);
+    try testing.expectEqual(0x1111111111111111, hash);
+    cov = try runModelReserved(testing.allocator, .{ .seed = 10, .count = 20_000, .key_space = 300 }, 32, &hash);
+    try testing.expect(cov.page_full > 0 and cov.saw_fragments > 0 and cov.compactions > 0);
+    try testing.expectEqual(0x2222222222222222, hash);
+    // reserved = 0 through the same function is the page of the first test.
+    _ = try runModelReserved(testing.allocator, .{ .seed = 10, .count = 3000, .key_space = 300 }, 0, &hash);
+    try testing.expectEqual(0x3b3ad4029bd5294a, hash); // the last line of expected_output.txt
 }
 
 test "model: the oracle's allocation failure leaves nothing leaked" {

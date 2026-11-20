@@ -22,7 +22,17 @@
     { token: 'node-active', label: 'values the filter accepts' },
     { token: 'node', label: 'dashed: not tested yet' }
   ];
-  var CODE_LINE = { eq: 5, ne: 6, ge: 7, gt: 8, le: 9, lt: 10 };
+  // Lines of the snippets in code.js. Zig: three lines per arm (all rows / some row / no row); Rust: one.
+  var ARM = ['eq', 'ne', 'ge', 'gt', 'le', 'lt'];
+  function armLines(op) { var i = ARM.indexOf(op); return { zig: [[5 + 3 * i, 7 + 3 * i]], rust: [5 + i] }; }
+  function codeLines(f) {
+    if (f.op !== 'between') return armLines(f.op);
+    var ge = armLines('ge'), le = armLines('le');
+    return { zig: ge.zig.concat(le.zig, [25]), rust: ge.rust.concat(le.rust, [13]) };
+  }
+  // "Predict" mode: the three possible answers, in the order of CHOICE_OF.
+  var CHOICES = ['always false: skip the chunk', 'always true: count all its rows', 'maybe: compare every row'];
+  var CHOICE_OF = { always_false: 0, always_true: 1, maybe: 2 };
 
   /* ------------------------------------------------------------ controls */
   var fig = BTViz.figure('#fig-scan', { title: 'Scan with a zone map', side: true, legend: LEGEND });
@@ -43,15 +53,14 @@
   var bars = new C.RangeBars(fig.stage, { rowH: 22 });
   var counters = el('div');
   fig.side.appendChild(el('div.bt-panel', el('div.bt-panel-title', 'Counters'), el('div.bt-panel-body', counters)));
-  var code = BTViz.codePanel(fig.side, 'checkZone', { title: 'The three-way test' });
+  var code = C.wrapCode(BTViz.codePanel(fig.side, 'checkZone', { title: 'The three-way test', maxHeight: 560 }));
 
   var zm, filter, result;
   var stepper = new BTViz.Stepper({
-    mount: fig.controls, caption: fig.caption, root: fig.root, interval: 700,
+    mount: fig.controls, caption: fig.caption, root: fig.root, interval: 700, predict: false,
     onStep: function (step) { draw(step.state.done, step.state.final); }
   });
   C.sideLast(fig);
-  C.fixScrub(stepper);
 
   /** The constant actually used: whatever was typed, rounded and clamped to 0..2299 (empty or junk counts as 0). */
   function clampC(raw) { return Math.min(2299, Math.max(0, Math.round(+raw || 0))); }
@@ -100,7 +109,7 @@
       ['rows compared', t.rows + ' / ' + zm.values.length],
       ['matches so far', t.matches]
     ]);
-    code.highlight(filter.op === 'between' ? [7, 9, 13] : [CODE_LINE[filter.op]]);
+    code.highlight(codeLines(filter));
   }
 
   function plural(n, noun) { return n + ' ' + noun + (n === 1 ? '' : 's'); }
@@ -111,7 +120,8 @@
     var text = C.filterText(filter), n = zm.zones.length, steps = [];
     steps.push({
       caption: '<b>' + n + ' chunks of ' + zm.chunkSize + ' rows</b>, layout <b>' + layoutSel.value + '</b>, filter <b>' + BTViz.esc(text) +
-        '</b>. The scan visits the chunks in storage order and tests each chunk\'s (min, max) first. Press play.',
+        '</b>. The scan visits the chunks in storage order and tests each chunk\'s (min, max) first. Press play, ' +
+        'or tick <b>Predict</b> to give each chunk\'s verdict yourself before it is shown.',
       state: { done: 0 }
     });
     zm.zones.forEach(function (z, i) {
@@ -121,7 +131,12 @@
           'Read and compare all ' + z.count + ' rows: ' + ch.matches + (ch.matches === 1 ? ' matches' : ' match') + (ch.matches === 0 ? ' (the summary could not rule the chunk out, but nothing was there).' : '.');
       steps.push({
         caption: '<span class="bt-chip s-' + v.state + '">chunk ' + i + ': ' + v.text + '</span> ' + BTViz.esc(C.explain(filter, z)) + '. ' + what,
-        state: { done: i + 1 }
+        state: { done: i + 1 },
+        // Asked only when the reader ticks "Predict": the same question exercise 1 asks on paper.
+        question: {
+          prompt: '<b>Chunk ' + i + '</b> holds values from <b>' + z.min + '</b> to <b>' + z.max + '</b>. What can its summary say about <b>' + BTViz.esc(text) + '</b>?',
+          choices: CHOICES, answer: CHOICE_OF[ch.verdict]
+        }
       });
     });
     var saved = zm.values.length - result.rowsCompared;

@@ -2,72 +2,107 @@
  * comments, the interval bookkeeping and most fields of the returned Choice are left out
  * so that both fit next to the figure; the panel title says "condensed"). Every name
  * that appears here exists in the sources.
+ * The panel is narrow (about 50 characters next to the figure, about 44 on a phone), so
+ * long statements are wrapped more often than in the sources, and each strategy's
+ * condition is split so that the part that tells the strategies apart starts a line.
  * Loaded with a classic script tag: no fetch under file://. */
 window.CHAPTER_CODE = {
   chooseSplit: {
     zig: `
-pub fn chooseSplit(scratch: Allocator, items: []const Cell, new_index: usize,
-                   page: PageInfo, policy: Policy) !Choice {
-    const cands = try candidates(scratch, items, page.capacity);
+pub fn chooseSplit(scratch: Allocator,
+    items: []const Cell, new_index: usize,
+    page: PageInfo, policy: Policy) !Choice {
+    const cands = try candidates(scratch, items,
+        page.capacity);
     const leftmost = cands[0];
     const rightmost = cands[cands.len - 1];
 
     const fill: ?u8 = switch (policy) {
         .half => null,
         .fill => |ff| ff,
-        .rightmost, .adaptive => |ff| if (page.isRightmost()) ff else null,
+        .rightmost, .adaptive => |ff|
+            if (page.isRightmost()) ff else null,
     };
     deltaSort(cands, page.capacity, fill);
 
     var pick: usize = 0;
     var strategy: Strategy = .default;
     if (policy == .adaptive) {
-        const old_bytes = leftmost.left_bytes + leftmost.right_bytes - items[new_index].size;
-        const interval = defaultInterval(cands, old_bytes / 20);
-        if (firstDistinct(items, cands[0..interval])) |i| {
+        const old_bytes = leftmost.left_bytes
+            + leftmost.right_bytes
+            - items[new_index].size;
+        const interval = defaultInterval(
+            cands, old_bytes / 20);
+        if (firstDistinct(items,
+            cands[0..interval])) |i|
+        {
             pick = i;
-        } else if (items[leftmost.first_right - 1].key != items[rightmost.first_right].key) {
+        } else if (
+            items[leftmost.first_right - 1].key
+            != items[rightmost.first_right].key)
+        {
             strategy = .many_duplicates;
             pick = firstDistinct(items, cands).?;
-        } else if (page.isRightmost() or page.upper_key.? != items[new_index].key) {
+        } else if (page.isRightmost() or
+            page.upper_key.? != items[new_index].key)
+        {
             strategy = .single_value;
-            deltaSort(cands, page.capacity, single_value_fill);
+            deltaSort(cands, page.capacity,
+                single_value_fill);
         }
     }
-    const c = cands[pick]; // the result also carries byte counts, penalty and interval
-    return .{ .first_right = c.first_right, .strategy = strategy };
+    const c = cands[pick]; // the real result also
+    // carries byte counts, penalty and interval
+    return .{ .first_right = c.first_right,
+        .strategy = strategy };
 }`,
     rust: `
-pub fn choose_split(cands: &mut Vec<Candidate>, items: &[Cell], new_index: usize,
-                    page: PageInfo, policy: Policy) -> Choice {
-    candidates(cands, items, page.capacity);
+pub fn choose_split(cands: &mut Vec<Candidate>,
+    items: &[Cell], new_index: usize,
+    page: PageInfo, policy: Policy) -> Choice {
+    candidates(cands, items,
+        page.capacity);
     let leftmost = cands[0];
     let rightmost = cands[cands.len() - 1];
 
     let fill = match policy {
         Policy::Half => None,
         Policy::Fill(ff) => Some(ff),
-        Policy::Rightmost(ff) | Policy::Adaptive(ff) => page.is_rightmost().then_some(ff),
+        Policy::Rightmost(ff) | Policy::Adaptive(ff) =>
+            page.is_rightmost().then_some(ff),
     };
     delta_sort(cands, page.capacity, fill);
 
     let mut pick = 0;
     let mut strategy = Strategy::Default;
     if matches!(policy, Policy::Adaptive(_)) {
-        let old_bytes = leftmost.left_bytes + leftmost.right_bytes - u32::from(items[new_index].size);
-        let interval = default_interval(cands, old_bytes / 20) as usize;
-        if let Some(i) = first_distinct(items, &cands[..interval]) {
+        let old_bytes = leftmost.left_bytes
+            + leftmost.right_bytes
+            - u32::from(items[new_index].size);
+        let interval = default_interval(
+            cands, old_bytes / 20) as usize;
+        if let Some(i) = first_distinct(items,
+            &cands[..interval])
+        {
             pick = i;
-        } else if items[leftmost.first_right as usize - 1].key != items[rightmost.first_right as usize].key {
+        } else if
+            items[leftmost.first_right as usize - 1].key
+            != items[rightmost.first_right as usize].key
+        {
             strategy = Strategy::ManyDuplicates;
             pick = first_distinct(items, cands).unwrap();
-        } else if page.upper_key != Some(items[new_index].key) {
+        } else if page.upper_key
+            != Some(items[new_index].key)
+        {
             strategy = Strategy::SingleValue;
-            delta_sort(cands, page.capacity, Some(SINGLE_VALUE_FILL));
+            delta_sort(cands, page.capacity,
+                Some(SINGLE_VALUE_FILL));
         }
     }
-    let c = cands[pick]; // the result also carries byte counts, penalty and interval
-    Choice { first_right: c.first_right, strategy }
+    let c = cands[pick]; // the real result also
+    // carries byte counts, penalty and interval
+    Choice { first_right: c.first_right,
+        strategy }
 }`
   }
 };
@@ -75,16 +110,15 @@ pub fn choose_split(cands: &mut Vec<Candidate>, items: &[Cell], new_index: usize
 /* Lines of the snippets above (identical numbering in both languages) for each
  * phase of the step-by-step figure. [a, b] is an inclusive range. */
 window.CHAPTER_CODE_LINES = {
-  start: [1, 2],
-  candidates: 3,
-  target: [[7, 12]],
-  space: [14, 30],
-  interval: [17, 18],
-  'default-distinct': [19, 20],
-  'many-duplicates': [[21, 23]],
-  'single-value': [[24, 26]],
-  'run-continues': [24, 27],
-  result: [29, 30]
+  start: [[1, 3]],
+  candidates: [[4, 5]],
+  target: [[9, 15]],
+  interval: [[20, 24]],
+  'default-distinct': [[25, 28]],
+  'many-duplicates': [[29, 34]],
+  'single-value': [[35, 40]],
+  'run-continues': [[35, 37], 41],
+  result: [[43, 46]]
 };
 
 /* Copied from ../expected_output.txt (the output of `zig build run` and `cargo run`).

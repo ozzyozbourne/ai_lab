@@ -31,11 +31,14 @@ pub const Cell = struct { key: u64, size: u32 };
 /// One cell of the parent: "keys <= `key` live under page `child`".
 pub const Divider = struct { child: u32, key: u64 };
 
-/// Balancing 3 siblings never needs more than 5 output pages (the same bound
-/// as MAX_NEW_SIBLING_PAGES_AFTER_BALANCE, turso/core/storage/btree.rs:163).
-/// Here it follows from `put` refusing cells larger than a third of a page:
-/// every page that `packLeft` closes is then more than 2/3 full, and three
-/// pages plus one cell cannot fill five of those.
+/// Room for the output pages of one `balance` call. 5 is Turso's constant
+/// (MAX_NEW_SIBLING_PAGES_AFTER_BALANCE, turso/core/storage/btree.rs:163) and
+/// is more than this model can ever use: `balance` asserts the tighter bound
+/// "at most one page more than went in", so at most 4. Why: before the `put`
+/// the cells sat on `cnt` pages, and the one page that got a cell of at most
+/// a third of a page can always be cut in two (left part + cell, or cell +
+/// right part, fits; if neither did, the two parts alone would exceed a
+/// page). `packLeft` uses the fewest pages any cut can, so it finds that.
 pub const max_out_pages = 5;
 
 /// What `delete` does when a page gets emptier.
@@ -254,7 +257,7 @@ pub const Tree = struct {
     /// the tree is exactly as it was before the call.
     pub fn put(self: *Tree, key: u64, size: u32) PutError!void {
         // A third of a page at most, so that every page can hold several
-        // cells and three siblings plus one cell fit in five pages.
+        // cells and an overflow never needs more than one extra page.
         if (size == 0 or size > self.cfg.capacity / 3) return error.CellTooLarge;
         const ci = self.findChild(key);
         const page = &self.pages.items[self.childAt(ci)];
@@ -302,7 +305,8 @@ pub const Tree = struct {
 
     /// Append fast path (Turso `balance_quick`, btree.rs:3526-3600): do not
     /// look at any sibling, do not move any existing cell. The new cell gets
-    /// a fresh right-most leaf to itself and the old leaf stays 100% full.
+    /// a fresh right-most leaf to itself and the old leaf stays exactly as
+    /// full as it was before the put (100% when all cells have one size).
     fn quickAppend(self: *Tree) Allocator.Error!void {
         const old_id = self.rightmost;
         const new_id = try self.allocPage();
@@ -328,6 +332,10 @@ pub const Tree = struct {
     /// Remove `key`. Returns whether it was present. Never fails: repairing
     /// an underfull page is optional, so if the repair runs out of memory
     /// the tree is simply left as it is (still valid, a little emptier).
+    /// Nothing is reported and nothing retries: the page stays below the
+    /// policy's threshold until a later delete balances it or a neighbour.
+    /// That is acceptable only because nothing else in this model depends on
+    /// the merge having happened.
     pub fn delete(self: *Tree, key: u64) bool {
         const ci = self.findChild(key);
         const page = &self.pages.items[self.childAt(ci)];
@@ -420,7 +428,8 @@ pub const Tree = struct {
         const ends = try packLeft(sa, sizes, cap);
         evenOut(sizes, ends);
         const new_cnt = ends.len;
-        std.debug.assert(new_cnt <= max_out_pages);
+        // A balance adds at most one page (see `max_out_pages`).
+        std.debug.assert(new_cnt <= cnt + 1 and new_cnt <= max_out_pages);
         if (std.mem.eql(u32, ends, old_ends[0..cnt])) return; // already as good as it gets
 
         // 4. Reserve everything the commit needs: extra pages, room in each
@@ -816,5 +825,61 @@ test "a failed put leaves the tree exactly as it was; a failed merge is skipped"
     try testing.expect(tree.delete(66));
     try testing.expectEqual(balances + 1, tree.stats.balances);
     try testing.expectEqual(1, tree.childCount());
+    try tree.validate();
+}
+
+test "a failed rebalance that leaves an empty page still unlinks it" {
+    // The one case where skipping the optional repair would break an
+    // invariant: the page has no cell left. `removeEmpty` needs no memory.
+    var failing: testing.FailingAllocator = .init(testing.allocator, .{});
+    var tree: Tree = try .init(failing.allocator(), .{ .capacity = 100, .merge = .below_third });
+    defer tree.deinit();
+    // Appends only: three leaves built by the fast path, so `balance` has
+    // never run and the scratch arena owns no buffer it could reuse.
+    for (1..10) |k| try tree.put(k, 25);
+    try testing.expectEqual(0, tree.stats.balances);
+    try expectDump(&tree,
+        \\parent: (p0, 4) (p1, 8) right=p2
+        \\  p0 100/100: 1:25 2:25 3:25 4:25
+        \\  p1 100/100: 5:25 6:25 7:25 8:25
+        \\  p2  25/100: 9:25
+        \\
+    );
+    const stats_before = tree.stats;
+    failing.fail_index = failing.alloc_index; // no memory from here on
+
+    // Empty the middle leaf. From 25 bytes down the policy asks for a
+    // balance, which cannot even flatten the siblings.
+    for (5..9) |k| try testing.expect(tree.delete(k));
+    try tree.validate();
+    // Its divider is gone, so its key range now belongs to p2 on its right.
+    try expectDump(&tree,
+        \\parent: (p0, 4) right=p2
+        \\  p0 100/100: 1:25 2:25 3:25 4:25
+        \\  p2  25/100: 9:25
+        \\
+    );
+    // The right-most leaf gives its range to the left instead.
+    try testing.expect(tree.delete(9));
+    try tree.validate();
+    try expectDump(&tree,
+        \\parent: right=p0
+        \\  p0 100/100: 1:25 2:25 3:25 4:25
+        \\
+    );
+    // No balance was counted and no cell moved; two pages were unlinked.
+    var expected = stats_before;
+    expected.pages_freed += 2;
+    expected.parent_writes += 2;
+    try testing.expectEqual(expected, tree.stats);
+    try testing.expectEqual(4, tree.count);
+    try testing.expectEqual(null, tree.get(7));
+    try testing.expectEqual(25, tree.get(4).?);
+
+    // With memory back the freed pages are reused.
+    failing.fail_index = std.math.maxInt(usize);
+    for (5..10) |k| try tree.put(k, 25);
+    try testing.expectEqual(3, tree.childCount());
+    try testing.expectEqual(3, tree.pages.items.len);
     try tree.validate();
 }

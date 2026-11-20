@@ -55,6 +55,23 @@
   .c14-cands .c14-unit { display: none; }
   .c14-tablenote { display: block; }
 }
+/* An author `display` rule beats the `hidden` attribute, so say it again: no table, no note. */
+.c14-tablenote[hidden] { display: none; }
+/* The code panel of figure 1 gets a wider column and slightly smaller type than the
+   toolkit default, so that the wrapped lines of viz/code.js fit without scrolling
+   sideways on a desktop. */
+@media (min-width: 821px) { #fig-split .bt-figure-body.has-side { grid-template-columns: minmax(0, 1fr) minmax(250px, 450px); } }
+#fig-split .bt-code { font-size: 11.5px; }
+/* Section 3 on a phone: short column headers (the long ones are in the sentence above
+   the table) and tighter cells, so that all six columns fit without scrolling sideways. */
+.c14-short { display: none; }
+@media (max-width: 640px) {
+  .c14-measured { font-size: .8rem; }
+  .c14-measured th, .c14-measured td { padding: 5px 4px; }
+  .c14-measured th { letter-spacing: 0; white-space: normal; vertical-align: bottom; }
+  .c14-measured .c14-long { display: none; }
+  .c14-measured .c14-short { display: inline; }
+}
 .c14-newcell { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: .86rem; color: var(--bt-muted); margin-bottom: 8px; }
 
 .c14-rowhead { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 10px 0 5px; font-size: .86rem; color: var(--bt-muted); }
@@ -157,7 +174,7 @@ a run of equal keys: the parent then has to store the row id as well as the key.
     var tableHost = el('div.bt-table-wrap');
     var tableNote = el('div.c14-tablenote', 'left and right are in bytes');
     fig.stage.append(newCell, stripHost, tableHost, tableNote);
-    var code = BTViz.codePanel(fig.side, 'chooseSplit', { title: 'chooseSplit (condensed)', maxHeight: 440 });
+    var code = BTViz.codePanel(fig.side, 'chooseSplit', { title: 'chooseSplit (condensed)', maxHeight: 480 });
     var LINES = window.CHAPTER_CODE_LINES;
 
     function unit() { return el('span.c14-unit', 'B'); }   // hidden on phones, see the style block
@@ -428,8 +445,10 @@ a run of equal keys: the parent then has to store the row id as well as the key.
   /* ================================================================== 3. measured table */
   (function () {
     var rows = window.CHAPTER_EXPECTED.experiment;
-    var t = el('table.bt-table', el('thead', el('tr', el('th', 'workload'), el('th', 'policy'), el('th.num', 'pages'), el('th.num', 'average fill'),
-      el('th.num', 'separators with a row id'), el('th.num', 'separator bytes'))));
+    // Two labels per column head; the style block shows the short one on phones.
+    function th(cls, long, short) { return el(cls, el('span.c14-long', long), el('span.c14-short', short || long)); }
+    var t = el('table.bt-table.c14-measured', el('thead', el('tr', th('th', 'workload'), th('th', 'policy'), th('th.num', 'pages'), th('th.num', 'average fill', 'avg fill'),
+      th('th.num', 'separators with a row id', 'seps with row id'), th('th.num', 'separator bytes', 'sep bytes'))));
     var body = el('tbody');
     rows.forEach(function (r, i) {
       body.appendChild(el('tr',

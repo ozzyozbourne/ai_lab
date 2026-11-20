@@ -341,11 +341,18 @@ test "validate names the broken invariant" {
                 t.nodes.ptr(t.last_leaf).len = 0;
             }
         }.f },
-        .{ .expected = error.NodeOverfull, .corrupt = struct {
-            fn f(t: *BPlusTree, _: Allocator) V!void {
-                t.nodes.ptr(t.last_leaf).leafInsertAt(3, 40, 0);
-            }
-        }.f },
+        .{
+            .expected = error.NodeOverfull,
+            .corrupt = struct {
+                fn f(t: *BPlusTree, _: Allocator) V!void {
+                    // Append keys larger than any other until the leaf holds
+                    // one too many. Appending at `len` works however full the
+                    // leaf is, so the case does not depend on the exact shape.
+                    const leaf = t.nodes.ptr(t.last_leaf);
+                    while (leaf.len <= t.maxKeys()) leaf.leafInsertAt(leaf.len, 40 + leaf.len, 0);
+                }
+            }.f,
+        },
         .{ .expected = error.BrokenLeafChain, .corrupt = struct {
             fn f(t: *BPlusTree, _: Allocator) V!void {
                 t.nodes.ptr(t.last_leaf).kind.leaf.prev = t.first_leaf;

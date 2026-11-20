@@ -42,11 +42,14 @@ pub struct Divider {
     pub key: u64,
 }
 
-/// Balancing 3 siblings never needs more than 5 output pages (the same bound
-/// as MAX_NEW_SIBLING_PAGES_AFTER_BALANCE, turso/core/storage/btree.rs:163).
-/// Here it follows from `put` refusing cells larger than a third of a page:
-/// every page that `pack_left` closes is then more than 2/3 full, and three
-/// pages plus one cell cannot fill five of those.
+/// Room for the output pages of one `balance` call. 5 is Turso's constant
+/// (MAX_NEW_SIBLING_PAGES_AFTER_BALANCE, turso/core/storage/btree.rs:163) and
+/// is more than this model can ever use: `balance` asserts the tighter bound
+/// "at most one page more than went in", so at most 4. Why: before the `put`
+/// the cells sat on `cnt` pages, and the one page that got a cell of at most
+/// a third of a page can always be cut in two (left part + cell, or cell +
+/// right part, fits; if neither did, the two parts alone would exceed a
+/// page). `pack_left` uses the fewest pages any cut can, so it finds that.
 pub const MAX_OUT_PAGES: usize = 5;
 
 /// What `delete` does when a page gets emptier.
@@ -285,7 +288,7 @@ impl Tree {
     /// the tree is exactly as it was before the call.
     pub fn put(&mut self, key: u64, size: u32) -> Result<(), PutError> {
         // A third of a page at most, so that every page can hold several
-        // cells and three siblings plus one cell fit in five pages.
+        // cells and an overflow never needs more than one extra page.
         if size == 0 || size > self.cfg.capacity / 3 {
             return Err(PutError::CellTooLarge);
         }
@@ -338,7 +341,8 @@ impl Tree {
 
     /// Append fast path (Turso `balance_quick`, btree.rs:3526-3600): do not
     /// look at any sibling, do not move any existing cell. The new cell gets
-    /// a fresh right-most leaf to itself and the old leaf stays 100% full.
+    /// a fresh right-most leaf to itself and the old leaf stays exactly as
+    /// full as it was before the put (100% when all cells have one size).
     fn quick_append(&mut self) -> Result<(), PutError> {
         let old_id = self.rightmost;
         let new_id = self.alloc_page()?;
@@ -363,6 +367,11 @@ impl Tree {
     /// Remove `key`. Returns whether it was present. Never fails: repairing
     /// an underfull page is optional, so if the repair cannot be done the
     /// tree is simply left as it is (still valid, a little emptier).
+    /// Nothing is reported and nothing retries: the page stays below the
+    /// policy's threshold until a later delete balances it or a neighbour.
+    /// That is acceptable only because nothing else in this model depends on
+    /// the merge having happened. (Here the repair cannot actually fail, see
+    /// the last test; in the Zig twin it can, when scratch memory runs out.)
     pub fn delete(&mut self, key: u64) -> bool {
         let ci = self.find_child(key);
         let id = self.child_at(ci) as usize;
@@ -465,7 +474,8 @@ impl Tree {
         pack_left(sizes, self.cfg.capacity, ends);
         even_out(sizes, ends);
         let new_cnt = ends.len();
-        debug_assert!(new_cnt <= MAX_OUT_PAGES);
+        // A balance adds at most one page (see `MAX_OUT_PAGES`).
+        debug_assert!(new_cnt <= cnt + 1 && new_cnt <= MAX_OUT_PAGES);
         if ends[..] == old_ends[..cnt] {
             return Ok(()); // already as good as it gets
         }
@@ -895,6 +905,45 @@ mod tests {
         }
         assert_eq!(tree.stats.balances, balances + 1);
         assert_eq!(tree.child_count(), 1);
+        tree.validate().unwrap();
+    }
+
+    /// Twin of the Zig test "a failed rebalance that leaves an empty page
+    /// still unlinks it". There the scratch allocation fails; the closest
+    /// thing here is a page budget with nothing to spare, and it shows the
+    /// difference: an underflow repair needs no new page, so it goes ahead.
+    /// What both must guarantee is the same: no empty page stays linked.
+    #[test]
+    fn a_delete_that_empties_a_page_never_leaves_it_linked_even_with_no_page_to_spare() {
+        let mut tree = Tree::new(Config { max_pages: 3, ..cfg100() });
+        // Appends only: three leaves built by the fast path, no balance yet.
+        for k in 1..10 {
+            tree.put(k, 25).unwrap();
+        }
+        assert_eq!(tree.stats.balances, 0);
+        assert_eq!(dump(&tree), "parent: (p0, 4) (p1, 8) right=p2\n  p0 100/100: 1:25 2:25 3:25 4:25\n  p1 100/100: 5:25 6:25 7:25 8:25\n  p2  25/100: 9:25\n");
+        assert_eq!(tree.put(10, 25).and(tree.put(11, 25)).and(tree.put(12, 25)), Ok(()));
+        assert_eq!(tree.put(13, 25), Err(PutError::OutOfPages)); // the budget is used up
+        for k in 10..13 {
+            assert!(tree.delete(k));
+        }
+
+        // Empty the middle leaf, then the right-most one.
+        for k in 5..10 {
+            assert!(tree.delete(k));
+            tree.validate().unwrap(); // includes: no empty page while there are siblings
+        }
+        assert_eq!(dump(&tree), "parent: right=p0\n  p0 100/100: 1:25 2:25 3:25 4:25\n");
+        assert_eq!(tree.stats.pages_freed, 2);
+        assert_eq!(tree.count, 4);
+        assert_eq!(tree.get(7), None);
+        assert_eq!(tree.get(4), Some(25));
+
+        // The freed pages are reused, so the budget of 3 is enough again.
+        for k in 5..10 {
+            tree.put(k, 25).unwrap();
+        }
+        assert_eq!(tree.child_count(), 3);
         tree.validate().unwrap();
     }
 }

@@ -61,7 +61,7 @@
   var gvZoom = new BTViz.GraphView(zoomCell, { height: 320, r: 6, pad: 14, ariaLabel: 'Zoom on the neighbourhood of the query' });
   var ranking = el('div');
   fig.side.appendChild(el('div.bt-panel', el('div.bt-panel-title', 'Centroid ranking for this query'), el('div.bt-panel-body', ranking)));
-  var code = BTViz.codePanel(fig.side, 'search', { title: 'Ivf.search' });
+  var code = C.wrapCode(BTViz.codePanel(fig.side, 'search', { title: 'Ivf.search', maxHeight: 460 }));
 
   var query = S.queries[12].slice(), rng = BTViz.rng(29), search, truth;
   var stepper = new BTViz.Stepper({
@@ -69,7 +69,6 @@
     onStep: function (step) { drawProbe(step.state); code.highlight(step.lines || []); }
   });
   C.sideLast(fig);
-  C.fixScrub(stepper);
 
   /** Half-width of the zoom window: wide enough for all k true neighbours, with room around them. */
   function zoomHalf() {
@@ -228,7 +227,6 @@
       });
     }
   });
-  C.fixScrub(trainStepper);
 
   /* ----------------------------------------------------------- self-test */
   var exp = window.CH29_EXPECTED;

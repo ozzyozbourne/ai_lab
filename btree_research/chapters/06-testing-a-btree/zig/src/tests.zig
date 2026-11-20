@@ -34,7 +34,7 @@ test "swarm: the seeds really differ in the dimensions that matter" {
     var tiny_keys = false;
     var with_faults = false;
     var without_drain = false;
-    var layouts = [_]bool{false} ** 4;
+    var layouts: [4]bool = @splat(false);
     for (1..scenario.sweep_seeds + 1) |seed| {
         const c = fuzz.swarm(seed);
         try testing.expect(c.weights.put > 0);
@@ -46,7 +46,7 @@ test "swarm: the seeds really differ in the dimensions that matter" {
         without_drain = without_drain or !c.drain;
     }
     try testing.expect(no_delete and tiny_keys and with_faults and without_drain);
-    try testing.expectEqual([_]bool{true} ** 4, layouts);
+    try testing.expectEqual(@as([4]bool, @splat(true)), layouts);
 }
 
 test "key layouts: pinned keys, strictly increasing, never maxInt" {

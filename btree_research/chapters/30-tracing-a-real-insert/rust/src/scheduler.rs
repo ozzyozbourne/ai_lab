@@ -275,7 +275,11 @@ impl<'a> Scheduler<'a> {
 
     fn retire(&mut self, i: usize, err: Option<TreeError>) {
         let slot = &mut self.slots[i];
-        slot.status = if err.is_none() { Status::Done } else { Status::Failed };
+        slot.status = if err.is_none() {
+            Status::Done
+        } else {
+            Status::Failed
+        };
         slot.err = err;
         match &slot.op {
             Op::Get(_) => self.readers_in_flight -= 1,
@@ -286,7 +290,11 @@ impl<'a> Scheduler<'a> {
                 }
             }
         }
-        let kind = if err.is_none() { EventKind::Done } else { EventKind::Failed };
+        let kind = if err.is_none() {
+            EventKind::Done
+        } else {
+            EventKind::Failed
+        };
         self.note(kind, i, INVALID_PAGE_ID);
     }
 

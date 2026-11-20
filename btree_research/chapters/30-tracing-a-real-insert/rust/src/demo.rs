@@ -91,7 +91,12 @@ fn trace_insert(w: &mut dyn Write, rig: &mut Rig, n: u8) -> DemoResult {
     let (key, value) = (scenario_key(n), scenario_value(n));
     rig.tree.pool_mut().evict_unpinned()?; // start cold: nothing is in memory
     let mut op = InsertOp::new(&rig.tree, &key, &value, Options::default())?;
-    writeln!(w, "insert {} ({}-byte value), nothing cached:", text(&key), value.len())?;
+    writeln!(
+        w,
+        "insert {} ({}-byte value), nothing cached:",
+        text(&key),
+        value.len()
+    )?;
 
     let reads_before = rig.reads();
     let mut disk_reads = 0;
@@ -180,7 +185,9 @@ fn part2(w: &mut dyn Write) -> DemoResult {
     let mut rng = SplitMix64::new(30);
     for _ in 0..PART2_PUTS {
         let key = workload::key_for(rng.below(3000), 64);
-        blocking.tree.put(&key, &workload::random_value(&mut rng, 300))?;
+        blocking
+            .tree
+            .put(&key, &workload::random_value(&mut rng, 300))?;
     }
     blocking.tree.flush()?;
     let height = blocking.tree.height()?;
@@ -280,7 +287,10 @@ fn part3(w: &mut dyn Write) -> DemoResult {
 // ---- Part 4 -------------------------------------------------------------------
 
 fn part4(w: &mut dyn Write) -> DemoResult {
-    writeln!(w, "\n== Part 4: why the writer runs alone (2-frame pool) ==")?;
+    writeln!(
+        w,
+        "\n== Part 4: why the writer runs alone (2-frame pool) =="
+    )?;
     let mut rig = Rig::create(2)?;
     for n in SCENARIO_KEYS {
         rig.put_scenario(n)?;
@@ -290,7 +300,9 @@ fn part4(w: &mut dyn Write) -> DemoResult {
     // Step until the leaf has been split but the parent does not know yet.
     let mut last = op.step(&mut rig.tree)?;
     while op.kind() != StateKind::InsertSeparator {
-        let Step::Io(id) = last else { unreachable!("the insert splits") };
+        let Step::Io(id) = last else {
+            unreachable!("the insert splits")
+        };
         rig.supply(id)?;
         last = op.step(&mut rig.tree)?;
     }
@@ -362,8 +374,16 @@ fn part5(w: &mut dyn Write) -> DemoResult {
     )?;
     let cases = [
         (2, Scratch::OpOwned, "owned by the operation, 2-frame pool"),
-        (64, Scratch::StepBuffer, "buffer reused per call, 64-frame pool"),
-        (2, Scratch::StepBuffer, "buffer reused per call, 2-frame pool"),
+        (
+            64,
+            Scratch::StepBuffer,
+            "buffer reused per call, 64-frame pool",
+        ),
+        (
+            2,
+            Scratch::StepBuffer,
+            "buffer reused per call, 2-frame pool",
+        ),
     ];
     for (frames, scratch, label) in cases {
         match ascending_until_broken(frames, scratch, 30)? {

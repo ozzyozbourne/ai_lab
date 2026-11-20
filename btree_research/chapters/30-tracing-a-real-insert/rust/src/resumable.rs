@@ -67,19 +67,33 @@ pub enum Step {
 #[derive(Debug)]
 pub enum State {
     /// Walking down: look at `page`, an interior page or the leaf.
-    Descend { page: PageId },
+    Descend {
+        page: PageId,
+    },
     /// Put the cell into `leaf`, if it fits.
-    LeafPut { leaf: PageId },
+    LeafPut {
+        leaf: PageId,
+    },
     /// The full leaf is the root: move the root's content one level down.
     PushRootLeaf,
     /// Split `leaf` around the new cell.
-    SplitLeaf { leaf: PageId },
+    SplitLeaf {
+        leaf: PageId,
+    },
     /// Give `carry` to the parent on top of the path.
-    InsertSeparator { carry: Carry },
+    InsertSeparator {
+        carry: Carry,
+    },
     /// The full parent is the root: move its content one level down.
-    PushRootInterior { parent: PathEntry, carry: Carry },
+    PushRootInterior {
+        parent: PathEntry,
+        carry: Carry,
+    },
     /// Split interior page `parent` around the separator of `carry`.
-    SplitInterior { parent: PathEntry, carry: Carry },
+    SplitInterior {
+        parent: PathEntry,
+        carry: Carry,
+    },
     Done,
     Failed,
 }
@@ -402,7 +416,9 @@ impl InsertOp {
                 // simply moves into that state.
                 let carry = tree.split_leaf(leaf, &self.key, &self.value)?;
                 self.changed = true;
-                self.state = State::InsertSeparator { carry: self.stash(carry) };
+                self.state = State::InsertSeparator {
+                    carry: self.stash(carry),
+                };
                 Ok(Advance::Again)
             }
             State::InsertSeparator { mut carry } => {
@@ -446,7 +462,9 @@ impl InsertOp {
                 }
                 self.unstash(&mut carry);
                 let up = tree.split_interior(parent, &carry)?;
-                self.state = State::InsertSeparator { carry: self.stash(up) };
+                self.state = State::InsertSeparator {
+                    carry: self.stash(up),
+                };
                 Ok(Advance::Again)
             }
             State::Done | State::Failed => unreachable!("stepped after the end"),

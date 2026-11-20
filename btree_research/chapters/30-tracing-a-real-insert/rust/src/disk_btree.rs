@@ -1,8 +1,8 @@
 // Copied from chapters/12-disk-backed-bplus-tree/rust/src/disk_btree.rs. Changes for chapter 30, none of
 // which alters what `put` does or which bytes reach the file: the steps of `put` (pin_node,
-// push_root_down, split_leaf, insert_separator, split_interior), the types they exchange (PathEntry,
-// Carry) and the tree's bookkeeping fields are `pub(crate)`, so that resumable.rs can run the steps
-// one by one.
+// push_root_down, split_leaf, insert_separator, split_interior) and the tree's bookkeeping fields are
+// `pub(crate)`, and the types the steps exchange (PathEntry, Carry) are `pub` and `Debug`, so that
+// resumable.rs can run the steps one by one and keep their results in its state enum.
 //! disk_btree.rs: a B+tree whose nodes are slotted pages in a file.
 //!
 //! Layers (each one only talks to the one below):
@@ -313,18 +313,18 @@ pub struct Stats {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct PathEntry {
-    pub(crate) id: PageId,
-    pub(crate) index: usize,
+pub struct PathEntry {
+    pub id: PageId,
+    pub index: usize,
 }
 
 /// What a split hands to the level above: `left` kept the keys below `sep`,
 /// the new page `right` got the keys from `sep` on.
 #[derive(Debug)]
-pub(crate) struct Carry {
-    pub(crate) sep: Vec<u8>,
-    pub(crate) left: PageId,
-    pub(crate) right: PageId,
+pub struct Carry {
+    pub sep: Vec<u8>,
+    pub left: PageId,
+    pub right: PageId,
 }
 
 pub struct DiskBTree {

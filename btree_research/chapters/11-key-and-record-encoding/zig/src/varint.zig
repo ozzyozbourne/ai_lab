@@ -234,6 +234,117 @@ test "sqlite varint known encodings, round trip, corrupt 9-byte form" {
     try testing.expectError(error.NonCanonical, sqliteDecode(&small_in_nine));
 }
 
+/// SplitMix64, for tests only: deterministic, the same in the Rust twin.
+const TestRng = struct {
+    state: u64,
+
+    fn next(self: *TestRng) u64 {
+        self.state +%= 0x9E3779B97F4A7C15;
+        var z = self.state;
+        z = (z ^ (z >> 30)) *% 0xBF58476D1CE4E5B9;
+        z = (z ^ (z >> 27)) *% 0x94D049BB133111EB;
+        return z ^ (z >> 31);
+    }
+
+    /// Integer in [0, n).
+    fn below(self: *TestRng, n: u64) u64 {
+        return @intCast((@as(u128, self.next()) * n) >> 64);
+    }
+};
+
+test "both formats: every value below 2^17 round trips, and lengths never shrink" {
+    var buf: [max_len]u8 = undefined;
+    var prev_len: usize = 1;
+    for (0..1 << 17) |i| {
+        const v: u64 = i;
+        const n = try encode(&buf, v);
+        try testing.expectEqual(Decoded{ .value = v, .len = n }, try decode(buf[0..n]));
+        try testing.expect(n >= prev_len);
+        prev_len = n;
+        // Below 2^56 the two formats always have the same length.
+        const m = try sqliteEncode(&buf, v);
+        try testing.expectEqual(n, m);
+        try testing.expectEqual(Decoded{ .value = v, .len = m }, try sqliteDecode(buf[0..m]));
+    }
+}
+
+test "both formats: random values of every width, every truncation, trailing bytes ignored" {
+    var rng: TestRng = .{ .state = 3 };
+    for (0..20_000) |_| {
+        // Shifting by 0..63 makes every encoded length equally likely.
+        const v = rng.next() >> @intCast(rng.below(64));
+        const junk: u8 = @truncate(rng.next());
+
+        var buf: [max_len + 1]u8 = undefined;
+        const n = try encode(&buf, v);
+        try testing.expectEqual(encodedLen(v), n);
+        buf[n] = junk; // whatever follows a varint is not part of it
+        try testing.expectEqual(Decoded{ .value = v, .len = n }, try decode(buf[0 .. n + 1]));
+        for (0..n) |cut| {
+            try testing.expectError(error.Truncated, decode(buf[0..cut]));
+            var small: [max_len]u8 = @splat(0xaa);
+            try testing.expectError(error.NoSpaceLeft, encode(small[0..cut], v));
+            try testing.expectEqual(@as([max_len]u8, @splat(0xaa)), small); // nothing was written
+        }
+
+        var sbuf: [sqlite_max_len + 1]u8 = undefined;
+        const m = try sqliteEncode(&sbuf, v);
+        try testing.expectEqual(sqliteLen(v), m);
+        sbuf[m] = junk;
+        try testing.expectEqual(Decoded{ .value = v, .len = m }, try sqliteDecode(sbuf[0 .. m + 1]));
+        for (0..m) |cut| {
+            try testing.expectError(error.Truncated, sqliteDecode(sbuf[0..cut]));
+            try testing.expectError(error.NoSpaceLeft, sqliteEncode(sbuf[0..cut], v));
+        }
+
+        // zigzag is a bijection between i64 and u64.
+        const signed: i64 = @bitCast(v);
+        try testing.expectEqual(signed, unzigzag(zigzag(signed)));
+        try testing.expectEqual(v, zigzag(unzigzag(v)));
+        // ... that keeps short what is close to zero: |x| < 2^k fits k + 1 bits.
+        if (signed != std.math.minInt(i64)) {
+            try testing.expect(zigzag(signed) <= 2 * @abs(signed));
+        }
+    }
+}
+
+test "decoder fuzz: random bytes never crash, and what leb128 accepts is canonical" {
+    const bias = [_]u8{ 0x00, 0x01, 0x7f, 0x80, 0x81, 0xff };
+    var rng: TestRng = .{ .state = 4 };
+    var accepted: u32 = 0;
+    var rejected: u32 = 0;
+    for (0..50_000) |_| {
+        var buf: [12]u8 = undefined;
+        const n: usize = @intCast(rng.below(buf.len + 1));
+        for (buf[0..n]) |*c| {
+            c.* = if (rng.below(4) == 0) @truncate(rng.next()) else bias[@intCast(rng.below(bias.len))];
+        }
+        if (decode(buf[0..n])) |d| {
+            accepted += 1;
+            // One value, one encoding: encoding the result gives the input back.
+            var again: [max_len]u8 = undefined;
+            const m = try encode(&again, d.value);
+            try testing.expectEqualSlices(u8, buf[0..d.len], again[0..m]);
+        } else |_| {
+            rejected += 1;
+        }
+        // The SQLite format makes the weaker promise: it never reads past the
+        // input, and never reports a value that would have needed more bytes.
+        if (sqliteDecode(buf[0..n])) |d| {
+            try testing.expect(d.len <= n);
+            try testing.expect(sqliteLen(d.value) <= d.len);
+        } else |_| {}
+    }
+    try testing.expect(accepted > 5000 and rejected > 5000);
+}
+
+test "sqlite varint accepts padded short forms, as SQLite does" {
+    // `80 05` is 5 with a redundant leading group. LEB128's `decode` rejects
+    // the equivalent (`85 00`); the SQLite format has no such rule.
+    try testing.expectEqual(Decoded{ .value = 5, .len = 2 }, try sqliteDecode(&.{ 0x80, 0x05 }));
+    try testing.expectError(error.NonCanonical, decode(&.{ 0x85, 0x00 }));
+}
+
 test "varints are NOT order-preserving" {
     var a: [max_len]u8 = undefined;
     var b: [max_len]u8 = undefined;

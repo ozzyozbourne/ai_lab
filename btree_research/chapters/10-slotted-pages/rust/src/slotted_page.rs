@@ -11,21 +11,29 @@
 //! ==============
 //!
 //! ```text
-//!   offset 0                                                        4096
-//!   +--------+---------------+--------------------+-------------------+
-//!   | header | slot array -> |   gap (unused)     | <- cell content   |
-//!   +--------+---------------+--------------------+-------------------+
-//!   0        16              16 + 2*cell_count    content_start
+//!   offset 0                                               usable     4096
+//!   +--------+---------------+--------------+----------------+----------+
+//!   | header | slot array -> | gap (unused) | <- cell content| reserved |
+//!   +--------+---------------+--------------+----------------+----------+
+//!   0        16              16 + 2*cell_count   content_start
+//!
+//!   usable = 4096 - reserved. `reserved` is 0 unless the page was formatted
+//!   with `init_reserved`; then the last `reserved` bytes of the buffer belong
+//!   to the caller (chapter 22 keeps a 4-byte page checksum there) and this
+//!   file never reads or writes them after `init`.
 //!
 //!   header (16 bytes)
 //!     0  u16  cell_count      number of cells = number of slots
 //!     2  u16  content_start   offset of the lowest byte of the content area
-//!                             (4096 when the page is empty)
+//!                             (`usable` when the page is empty)
 //!     4  u16  first_free      offset of the first free block, 0 = none
 //!     6  u8   frag_bytes      free bytes lost in slivers of 1 to 3 bytes
 //!     7  u8   kind            caller-defined tag (never read by this file)
-//!     8  [8]  user area       caller-defined (never read by this file);
-//!                             chapter 12 keeps sibling / child page ids here
+//!     8  u8   reserved        size of the reserved tail; written by `init`,
+//!                             never changed, so a page read back from disk
+//!                             knows where its content area ends
+//!     9  [7]  user area       caller-defined (never read by this file);
+//!                             chapter 12 keeps a sibling / child page id here
 //!
 //!   slot i (2 bytes, at 16 + 2*i)
 //!     u16 offset of cell i. Slots are ordered by key; cells are not.
@@ -64,8 +72,9 @@ const OFF_CONTENT_START: usize = 2;
 const OFF_FIRST_FREE: usize = 4;
 const OFF_FRAG_BYTES: usize = 6;
 const OFF_KIND: usize = 7;
-pub const OFF_USER_AREA: usize = 8;
-pub const USER_AREA_SIZE: usize = 8;
+const OFF_RESERVED: usize = 8;
+pub const OFF_USER_AREA: usize = 9;
+pub const USER_AREA_SIZE: usize = 7;
 pub const HEADER_SIZE: usize = 16;
 
 /// One slot: the u16 offset of a cell.
@@ -76,10 +85,13 @@ pub const CELL_HEADER_SIZE: usize = 4;
 /// than its 4-byte header, every freed cell can hold a free block header.
 pub const FREE_BLOCK_HEADER_SIZE: usize = 4;
 /// Upper bound for `frag_bytes`. Above it the allocator refuses to create
-/// more slivers and uses the gap (or compacts) instead. Same idea and same
-/// number as SQLite's limit of 60 fragmented bytes.
+/// more slivers and uses the gap (or compacts) instead. Same bound as SQLite's
+/// limit of 60 fragmented bytes; the test is slightly different (SQLite will
+/// not use up a block once the page has more than 57, we compare the sum).
 pub const MAX_FRAG_BYTES: usize = 60;
-/// The largest cell that fits in an empty page (header + one slot + cell).
+/// The largest cell that fits in an empty page without a reserved tail
+/// (header + one slot + cell). An upper bound for every page; the exact
+/// limit of one page is `max_cell_size()`.
 pub const MAX_CELL_SIZE: usize = PAGE_SIZE - HEADER_SIZE - SLOT_SIZE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,16 +171,56 @@ impl<'a> SlottedPage<'a> {
 
     /// Format `buf` as an empty page (zeroes all 4096 bytes) and wrap it.
     pub fn init(buf: &'a mut [u8; PAGE_SIZE]) -> Self {
+        Self::init_reserved(buf, 0)
+    }
+
+    /// Like `init`, but the last `reserved_bytes` bytes of the buffer are
+    /// left to the caller: the content area ends at `4096 - reserved_bytes`.
+    /// The buffer is zeroed once, here; afterwards no method reads or writes
+    /// the reserved tail. The number is stored in the header, so `open`
+    /// needs no argument.
+    pub fn init_reserved(buf: &'a mut [u8; PAGE_SIZE], reserved_bytes: u8) -> Self {
         buf.fill(0);
         let mut page = SlottedPage { buf };
-        page.wr16(OFF_CONTENT_START, PAGE_SIZE);
+        page.buf[OFF_RESERVED] = reserved_bytes;
+        page.wr16(OFF_CONTENT_START, page.usable_size());
         page
     }
 
     /// Wrap a buffer that already holds a formatted page (for example one
-    /// read from disk). Nothing is checked; call `validate` if in doubt.
+    /// read from disk). Nothing is checked, and the other methods trust the
+    /// page: on a damaged one they can panic or follow a free list that
+    /// never ends. A page that comes from disk must pass a checksum or
+    /// `validate` (which is safe on any bytes) before it is used.
     pub fn open(buf: &'a mut [u8; PAGE_SIZE]) -> Self {
         SlottedPage { buf }
+    }
+
+    // ---- the reserved tail ------------------------------------------------
+
+    /// Size of the reserved tail in bytes (0 for a page made by `init`).
+    pub fn reserved_size(&self) -> usize {
+        self.buf[OFF_RESERVED] as usize
+    }
+
+    /// Where the content area ends: `PAGE_SIZE - reserved_size()`.
+    pub fn usable_size(&self) -> usize {
+        PAGE_SIZE - self.reserved_size()
+    }
+
+    /// The reserved tail itself, `buf[usable_size()..]`: the caller's bytes.
+    pub fn reserved_area(&self) -> &[u8] {
+        &self.buf[self.usable_size()..]
+    }
+
+    pub fn reserved_area_mut(&mut self) -> &mut [u8] {
+        let usable = self.usable_size();
+        &mut self.buf[usable..]
+    }
+
+    /// The largest cell that fits in this page when it is empty.
+    pub fn max_cell_size(&self) -> usize {
+        self.usable_size() - HEADER_SIZE - SLOT_SIZE
     }
 
     /// The raw page image (what would be written to disk).
@@ -245,7 +297,7 @@ impl<'a> SlottedPage<'a> {
         }
         // Different size: the old cell and its slot are given back first, so
         // the new cell needs `new_size` bytes out of `free + old_size`.
-        if new_size > MAX_CELL_SIZE {
+        if new_size > self.max_cell_size() {
             return Err(PageError::CellTooLarge);
         }
         if new_size > self.free_bytes() + old_size {
@@ -278,7 +330,7 @@ impl<'a> SlottedPage<'a> {
         debug_assert!(index == n || k < self.key(index));
 
         let size = cell_size(k.len(), v.len());
-        if size > MAX_CELL_SIZE {
+        if size > self.max_cell_size() {
             return Err(PageError::CellTooLarge);
         }
         if size + SLOT_SIZE > self.free_bytes() {
@@ -322,7 +374,8 @@ impl<'a> SlottedPage<'a> {
         if n == 1 {
             // Last cell gone: everything is gap again. This also recovers
             // slivers that no neighbouring free block could absorb.
-            self.wr16(OFF_CONTENT_START, PAGE_SIZE);
+            // The cell's bytes are not erased (see `compact`).
+            self.wr16(OFF_CONTENT_START, self.usable_size());
             self.wr16(OFF_FIRST_FREE, 0);
             self.buf[OFF_FRAG_BYTES] = 0;
         } else {
@@ -336,10 +389,13 @@ impl<'a> SlottedPage<'a> {
     /// in one piece.
     pub fn compact(&mut self) {
         // Cells would overwrite each other if moved in place in slot order,
-        // so read them from a copy of the page. 4 KiB of stack.
-        let scratch: [u8; PAGE_SIZE] = *self.buf;
+        // so read them from a copy of the content area. 4 KiB of stack.
+        let mut scratch = [0u8; PAGE_SIZE];
+        let old_start = self.rd16(OFF_CONTENT_START);
+        let usable = self.usable_size();
+        scratch[old_start..usable].copy_from_slice(&self.buf[old_start..usable]);
 
-        let mut top = PAGE_SIZE;
+        let mut top = usable;
         for i in 0..self.count() {
             let off = self.slot(i);
             // Lengths come from the copy: the live cell header at `off` may
@@ -351,7 +407,10 @@ impl<'a> SlottedPage<'a> {
             self.buf[top..top + size].copy_from_slice(&scratch[off..off + size]);
             self.wr16(HEADER_SIZE + i * SLOT_SIZE, top);
         }
-        // Zero the new gap so that deleted data does not linger on disk.
+        // Zero the new gap. This keeps dumps readable; it is not an erase
+        // guarantee. `delete_at` leaves the bytes of a deleted cell where
+        // they are (a free block overwrites only its first 4), and they stay
+        // on the page until a compaction or a new cell happens to cover them.
         let slots_end = HEADER_SIZE + self.count() * SLOT_SIZE;
         self.buf[slots_end..top].fill(0);
         self.wr16(OFF_CONTENT_START, top);
@@ -427,7 +486,8 @@ impl<'a> SlottedPage<'a> {
         self.buf[OFF_KIND] = k;
     }
 
-    /// Eight header bytes this file never interprets.
+    /// Seven header bytes this file never interprets. A caller that needs
+    /// more per-page state asks for a reserved tail (`init_reserved`).
     pub fn user_area(&self) -> &[u8; USER_AREA_SIZE] {
         self.buf[OFF_USER_AREA..OFF_USER_AREA + USER_AREA_SIZE]
             .try_into()
@@ -573,7 +633,10 @@ impl<'a> SlottedPage<'a> {
         let n = self.count();
         let slots_end = HEADER_SIZE + n * SLOT_SIZE;
         let content_start = self.rd16(OFF_CONTENT_START);
-        if slots_end > content_start || content_start > PAGE_SIZE {
+        // Nothing below may reach into the reserved tail: every upper bound
+        // is `usable`, not `PAGE_SIZE`.
+        let usable = self.usable_size();
+        if slots_end > content_start || content_start > usable {
             return Err(ValidateError::BadHeader);
         }
 
@@ -582,11 +645,11 @@ impl<'a> SlottedPage<'a> {
         // Cells: inside the content area, not overlapping.
         for i in 0..n {
             let off = self.slot(i);
-            if off < content_start || off + CELL_HEADER_SIZE > PAGE_SIZE {
+            if off < content_start || off + CELL_HEADER_SIZE > usable {
                 return Err(ValidateError::SlotOutOfRange);
             }
             let end = off + self.cell_size_at(off);
-            if end > PAGE_SIZE {
+            if end > usable {
                 return Err(ValidateError::SlotOutOfRange);
             }
             for o in &mut owner[off..end] {
@@ -603,11 +666,11 @@ impl<'a> SlottedPage<'a> {
         let mut min_start = content_start + FREE_BLOCK_HEADER_SIZE;
         let mut block = self.rd16(OFF_FIRST_FREE);
         while block != 0 {
-            if block < min_start || block + FREE_BLOCK_HEADER_SIZE > PAGE_SIZE {
+            if block < min_start || block + FREE_BLOCK_HEADER_SIZE > usable {
                 return Err(ValidateError::FreeListCorrupt);
             }
             let size = self.rd16(block + 2);
-            if size < FREE_BLOCK_HEADER_SIZE || block + size > PAGE_SIZE {
+            if size < FREE_BLOCK_HEADER_SIZE || block + size > usable {
                 return Err(ValidateError::FreeListCorrupt);
             }
             for o in &mut owner[block..block + size] {
@@ -621,7 +684,7 @@ impl<'a> SlottedPage<'a> {
         }
 
         // Every content byte is a cell, a free block, or a counted fragment.
-        let unclaimed = owner[content_start..].iter().filter(|&&o| o == 0).count();
+        let unclaimed = owner[content_start..usable].iter().filter(|&&o| o == 0).count();
         if unclaimed != self.buf[OFF_FRAG_BYTES] as usize || unclaimed > MAX_FRAG_BYTES {
             return Err(ValidateError::FragmentMismatch);
         }
@@ -681,6 +744,7 @@ mod tests {
     fn layout_constants() {
         assert_eq!(HEADER_SIZE, 16);
         assert_eq!(MAX_CELL_SIZE, 4078);
+        assert_eq!(OFF_USER_AREA + USER_AREA_SIZE, HEADER_SIZE);
         assert_eq!(cell_size("mango".len(), "yellow".len()), 15);
     }
 
@@ -982,14 +1046,15 @@ mod tests {
         let mut buf = [0u8; PAGE_SIZE];
         let mut page = SlottedPage::init(&mut buf);
         page.set_kind(7);
-        *page.user_area_mut() = 0x1122334455667788u64.to_le_bytes();
+        *page.user_area_mut() = [0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11];
         page.put(b"a", b"1").unwrap();
         page.put(b"b", b"2").unwrap();
         assert!(page.delete(b"a"));
         page.compact();
         page.validate().unwrap();
         assert_eq!(page.kind(), 7);
-        assert_eq!(u64::from_le_bytes(*page.user_area()), 0x1122334455667788);
+        assert_eq!(page.user_area(), &[0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]);
+        assert_eq!(page.reserved_size(), 0); // the user area is next to it
     }
 
     #[test]
@@ -1051,6 +1116,147 @@ mod tests {
             p.wr16(HEADER_SIZE + SLOT_SIZE, s0);
         });
         assert_eq!(r, Err(ValidateError::KeysOutOfOrder));
+        assert_eq!(corrupt(&|_| {}), Ok(()));
+    }
+
+    #[test]
+    fn delete_does_not_erase_an_emptied_page_has_inits_header_not_inits_bytes() {
+        let mut fresh = [0xAAu8; PAGE_SIZE];
+        SlottedPage::init(&mut fresh);
+        let mut buf = [0u8; PAGE_SIZE];
+        let mut page = SlottedPage::init(&mut buf);
+        page.put(b"secret-key", b"secret-value").unwrap();
+        assert!(page.delete(b"secret-key"));
+        page.validate().unwrap();
+        // Every header field is back to what `init` wrote...
+        assert_eq!(buf[..HEADER_SIZE], fresh[..HEADER_SIZE]);
+        // ...but the cell's bytes are still on the page, in what is now gap.
+        assert_ne!(buf, fresh);
+        assert_eq!(&buf[PAGE_SIZE - 22..], b"secret-keysecret-value");
+        // Two pages with the same records are therefore not always the same bytes.
+    }
+
+    fn tail_intact(page: &SlottedPage) {
+        page.validate().unwrap();
+        assert!(page.reserved_area().iter().all(|&b| b == 0xA5));
+    }
+
+    #[test]
+    fn reserved_tail_the_content_area_ends_before_it_and_no_operation_touches_it() {
+        for r in [4u8, 32, 255] {
+            let mut buf = [0u8; PAGE_SIZE];
+            let mut page = SlottedPage::init_reserved(&mut buf, r);
+            let usable = PAGE_SIZE - r as usize;
+            // The caller owns the tail from now on; fill it with a pattern.
+            assert_eq!(page.reserved_area().len(), r as usize);
+            page.reserved_area_mut().fill(0xA5);
+
+            assert_eq!(page.usable_size(), usable);
+            assert_eq!(page.stats().content_start, usable);
+            assert_eq!(page.free_bytes(), usable - HEADER_SIZE);
+            assert_eq!(page.max_cell_size(), usable - HEADER_SIZE - SLOT_SIZE);
+
+            // The first cell ends exactly where the tail begins.
+            page.put(b"mango", b"yellow").unwrap();
+            assert_eq!(page.cell_offset(0), usable - 15);
+            tail_intact(&page);
+            // Deleting the last cell resets content_start to `usable`, not 4096.
+            assert!(page.delete(b"mango"));
+            assert_eq!(page.stats().content_start, usable);
+            tail_intact(&page);
+
+            // The largest cell is smaller by `r`; it fills the page to the byte.
+            let big = [b'v'; MAX_CELL_SIZE];
+            let max_value = page.max_cell_size() - CELL_HEADER_SIZE - 1;
+            let too_large = Err(PageError::CellTooLarge);
+            assert_eq!(page.put(b"k", &big[..max_value + 1]), too_large);
+            page.put(b"k", &big[..max_value]).unwrap();
+            assert_eq!(page.free_bytes(), 0);
+            assert_eq!(page.put(b"l", b""), Err(PageError::PageFull));
+            assert_eq!(page.put(b"k", &big[..max_value + 1]), too_large); // replace path
+            tail_intact(&page);
+            assert!(page.delete(b"k"));
+
+            // Free blocks, a fragment, merging and compaction next to the tail.
+            for k in ["a", "b", "c", "d"] {
+                page.put(k.as_bytes(), b"12345").unwrap();
+            }
+            assert_eq!(page.cell_offset(0), usable - 10);
+            assert!(page.delete(b"a")); // free block that ends at `usable`
+            assert_eq!(page.free_blocks(), [fb(usable - 10, 10)]);
+            tail_intact(&page);
+            page.put(b"e", b"1234").unwrap(); // 9 of the 10 bytes: 1 fragment byte
+            assert_eq!(page.stats().frag_bytes, 1);
+            tail_intact(&page);
+            assert!(page.delete(b"c"));
+            page.compact();
+            assert_eq!(page.cell_offset(0), usable - 10); // b is last now
+            tail_intact(&page);
+
+            // "Write to disk, read back": the reopened page knows its own size.
+            let mut copy = buf;
+            let reopened = SlottedPage::open(&mut copy);
+            assert_eq!(reopened.usable_size(), usable);
+            tail_intact(&reopened);
+            assert_eq!(reopened.get(b"e"), Some(&b"1234"[..]));
+        }
+    }
+
+    #[test]
+    fn reserved_tail_without_it_the_first_cell_occupies_the_last_bytes_of_the_buffer() {
+        // Why a page that will carry a checksum in its last 4 bytes must be
+        // formatted with init_reserved(buf, 4): after plain init, storing
+        // those 4 bytes destroys the end of the first cell.
+        let mut buf = [0u8; PAGE_SIZE];
+        SlottedPage::init(&mut buf).put(b"mango", b"yellow").unwrap();
+        buf[PAGE_SIZE - 4..].fill(0xCC); // what sealing the page would do
+        assert_ne!(SlottedPage::open(&mut buf).get(b"mango"), Some(&b"yellow"[..]));
+
+        SlottedPage::init_reserved(&mut buf, 4)
+            .put(b"mango", b"yellow")
+            .unwrap();
+        buf[PAGE_SIZE - 4..].fill(0xCC);
+        let page = SlottedPage::open(&mut buf);
+        assert_eq!(page.get(b"mango"), Some(&b"yellow"[..]));
+        page.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_nothing_may_reach_into_the_reserved_tail_and_a_looping_free_list_is_caught() {
+        let mut good = [0u8; PAGE_SIZE];
+        let a_off = {
+            let mut page = SlottedPage::init_reserved(&mut good, 4);
+            for k in ["a", "b", "c", "d"] {
+                page.put(k.as_bytes(), b"12345").unwrap();
+            }
+            assert!(page.delete(b"b")); // free block at 4072, size 10
+            page.validate().unwrap();
+            page.cell_offset(0) // 4082: a's cell ends at 4092
+        };
+        let corrupt = |damage: &dyn Fn(&mut SlottedPage)| {
+            let mut buf = good;
+            let mut page = SlottedPage::open(&mut buf);
+            damage(&mut page);
+            page.validate()
+        };
+
+        // the last cell claims one byte of the tail
+        let r = corrupt(&|p| p.wr16(a_off + 2, 6));
+        assert_eq!(r, Err(ValidateError::SlotOutOfRange));
+        // a free block that runs into the tail (it also covers a's cell,
+        // which the bound check must report first)
+        let r = corrupt(&|p| p.wr16(4072 + 2, 21));
+        assert_eq!(r, Err(ValidateError::FreeListCorrupt));
+        // content_start inside the tail
+        let r = corrupt(&|p| p.wr16(OFF_CONTENT_START, PAGE_SIZE - 2));
+        assert_eq!(r, Err(ValidateError::BadHeader));
+        // a reserved byte that changed on disk moves the end of the content area
+        let r = corrupt(&|p| p.buf[OFF_RESERVED] = 8);
+        assert_eq!(r, Err(ValidateError::SlotOutOfRange));
+        // A free block whose `next` points back at itself: `stats` would
+        // never return on this page; validate must (the list has to ascend).
+        let r = corrupt(&|p| p.wr16(4072, 4072));
+        assert_eq!(r, Err(ValidateError::FreeListCorrupt));
         assert_eq!(corrupt(&|_| {}), Ok(()));
     }
 }

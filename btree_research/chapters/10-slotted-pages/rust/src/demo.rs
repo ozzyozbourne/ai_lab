@@ -268,7 +268,7 @@ fn dump_rows(
 }
 
 /// FNV-1a, 64 bit: a five-line hash, enough to compare two page images.
-fn fnv1a64(bytes: &[u8]) -> u64 {
+pub fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for &b in bytes {
         h ^= u64::from(b);

@@ -11,6 +11,10 @@
   'use strict';
 
   var HEADER = 8, SLOT = 2, LEN = 2, TID = 6, CHILD = 4, COUNT = 2;
+  // The largest TID that fits in the 6 bytes charged for one (max_tid in the
+  // Zig and Rust programs). Well below 2^53, so a JS number holds it exactly.
+  var MAX_TID = Math.pow(2, 48) - 1;
+  function validTid(tid) { return typeof tid === 'number' && Math.floor(tid) === tid && tid >= 0 && tid <= MAX_TID; }
 
   /* ---- order --------------------------------------------------------- */
 
@@ -224,8 +228,14 @@
     return { root: this.root, pageSize: this.cfg.pageSize, pages: pages };
   };
 
+  // Captions, log lines and quiz texts are all rendered as HTML by the
+  // toolkit, and keys are typed by the reader: every key that goes into one of
+  // them passes through esc() (or q(), which calls it). dump() and statsRow()
+  // are plain text for the self-tests and stay unescaped.
   function q(s) { return '<b class="bt-k">' + esc(s) + '</b>'; }
-  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
   function tupleText(key, tid) { return '(' + key + ', ' + tid + ')'; }
 
   // Why separator s is below / not below the tuple (key, tid), in words.
@@ -242,7 +252,20 @@
       (s.key[n] < key[n] ? '&lt;' : '&gt;') + ' \'' + esc(key[n]) + '\'';
   }
 
-  // One step per internal page on the way down.
+  // Which lines of the "order and routing" panel (viz/code.js, snippet
+  // `compare`) decide at this page: the separators next to the chosen child.
+  function routingLines(page, i, key) {
+    var decided = 'bytes';
+    [page.seps[i - 1], page.seps[i]].forEach(function (s) {
+      if (s && s.key === key) decided = s.tid === null ? 'cut' : 'tid';
+    });
+    // Zig: 2-3 key bytes decide, 4 a truncated TID is minus infinity, 5-6 two
+    // real TIDs; 16 is the binary search step. Rust: line 3 does all of it.
+    var zig = decided === 'bytes' ? [[2, 3], 16] : decided === 'cut' ? [4, 16] : [[4, 6], 16];
+    return { zig: zig, rust: [3, [8, 10]] };
+  }
+
+  // One step per internal page on the way down. `label` is already escaped.
   Tree.prototype.descendSteps = function (key, tid, rec, label) {
     var id = this.root;
     while (!this.pages[id].leaf) {
@@ -254,7 +277,7 @@
       rec.push({
         caption: label + ': page ' + id + ' has ' + i + ' separator' + (i === 1 ? '' : 's') + ' below ' + q(tupleText(key, tid)) +
           ', so follow child ' + i + ' (page ' + page.children[i] + '). ' + parts.join('; ') + '.',
-        state: this.snapshot(), highlight: hl, log: label + ': page ' + id + ' -> child ' + i
+        state: this.snapshot(), highlight: hl, lines: routingLines(page, i, key), log: label + ': page ' + id + ' -&gt; child ' + i
       });
       id = page.children[i];
     }
@@ -262,7 +285,7 @@
   };
 
   Tree.prototype.getSteps = function (key) {
-    var rec = [], label = 'get ' + key;
+    var rec = [], label = esc('get ' + key);
     var id = this.descendSteps(key, 0, rec, label), tids = this.get(key), hl = { pages: {}, cells: {} };
     // Highlight every cell with this key along the leaf chain.
     var pid = id, any = false;
@@ -279,7 +302,7 @@
     rec.push({
       caption: label + ': ' + (any ? 'the leaf scan collects TIDs [' + tids.join(', ') + '] in order, following the leaf chain while the key matches.'
         : 'no cell has this key. The search still ended on the only page that could hold it.'),
-      state: this.snapshot(), highlight: hl, log: label + ' -> [' + tids.join(',') + ']'
+      state: this.snapshot(), highlight: hl, log: label + ' -&gt; [' + tids.join(',') + ']'
     });
     rec.result = tids;
     return rec;
@@ -288,11 +311,17 @@
   /* ---- put ----------------------------------------------------------- */
 
   // opts.verbose: also record the descent. Returns the array of steps;
-  // steps.ok is false when the tuple was already present or the key too long.
+  // steps.ok is false when the tuple was already present, the key too long or
+  // the TID not a whole number in 0 .. MAX_TID.
   Tree.prototype.put = function (key, tid, opts) {
     opts = opts || {};
-    var rec = [], self = this, label = 'put ' + key + '@' + tid;
+    var rec = [], self = this, label = esc('put ' + key + '@' + tid);
     rec.ok = false;
+    if (!validTid(tid)) {
+      rec.push({ caption: label + ': a TID is a whole number from 0 to ' + MAX_TID + ' (2<sup>48</sup> &minus; 1): it has to fit in the 6 bytes every cell is charged for it. Nothing was inserted.',
+        state: this.snapshot(), highlight: {}, log: label + ': TID out of range' });
+      return rec;
+    }
     if (key.length > this.maxKeyLen()) {
       rec.push({ caption: label + ': the key is longer than ' + this.maxKeyLen() + ' bytes, the limit for this page size (a pivot with a TID must fit in one sixth of a page).',
         state: this.snapshot(), highlight: {}, log: label + ': key too large' });
@@ -386,13 +415,13 @@
     var splitStep = {
       caption: label + ': cut between ' + q(cellText(items[cut - 1])) + ' and ' + q(cellText(items[cut])) + '. ' + explain +
         (others.length ? ' Other cuts near the middle would give ' + others.map(q).join(', ') + '.' : ''),
-      state: this.snapshot(over), highlight: hl, log: label + ': split page ' + leafId + ', separator ' + sepText(sep, '')
+      state: this.snapshot(over), highlight: hl, log: label + ': split page ' + leafId + ', separator ' + esc(sepText(sep, ''))
     };
     if (this.cfg.truncate && sep.tid === null) {
       var choices = [sepText(full, ''), '"' + items[cut].key + '"', sepText(sep, '')].filter(function (c, i, a) { return a.indexOf(c) === i; });
       splitStep.question = {
-        prompt: 'The leaf splits between ' + cellText(items[cut - 1]) + ' and ' + cellText(items[cut]) + '. Which separator goes to the parent?',
-        choices: choices, answer: choices.indexOf(sepText(sep, '')),
+        prompt: 'The leaf splits between ' + q(cellText(items[cut - 1])) + ' and ' + q(cellText(items[cut])) + '. Which separator goes to the parent?',
+        choices: choices.map(esc), answer: choices.indexOf(sepText(sep, '')),
         explain: 'The shortest string above the left key and not above the right key: the common prefix plus one byte.'
       };
     }
@@ -462,7 +491,7 @@
   /* ---- validate, stats, dump ------------------------------------------ */
 
   Tree.prototype.validate = function () {
-    var errors = [], self = this, st = { depth: null, prev: null, entries: 0 };
+    var errors = [], self = this, st = { depth: null, prevAt: [], entries: 0 };
     function same(a, b) { return (!a && !b) || (a && b && compareTuple(a.key, a.tid, b.key, b.tid) === 0); }
     function aboveLow(low, key, tid) { return !low || compareTuple(low.key, low.tid, key, tid) < 0; }
     function belowHigh(high, key, tid, inclusive) {
@@ -474,13 +503,15 @@
       var p = self.pages[id];
       if (!same(p.low, low) || !same(p.high, high)) errors.push('page ' + id + ': fence differs from the parent separator');
       if (usedBytes(p) > self.cfg.pageSize) errors.push('page ' + id + ': overflow');
+      // One sibling chain per level: the pages of a level are met left to right.
+      if (st.prevAt[depth] !== undefined && self.pages[st.prevAt[depth]].right !== id) errors.push('page ' + id + ': sibling chain');
+      st.prevAt[depth] = id;
       if (p.leaf) {
         if (st.depth === null) st.depth = depth; else if (st.depth !== depth) errors.push('leaf depth');
-        if (st.prev !== null && self.pages[st.prev].right !== id) errors.push('leaf chain');
-        st.prev = id;
         p.cells.forEach(function (c, i) {
           for (var t = 1; t < c.tids.length; t++) if (c.tids[t - 1] >= c.tids[t]) errors.push('posting order');
           if (leafCellSize(c.key.length, c.tids.length) > self.maxCell()) errors.push('cell too large');
+          if (!c.tids.every(validTid)) errors.push('TID out of range');
           if (i > 0) {
             var pc = p.cells[i - 1];
             if (compareTuple(pc.key, pc.tids[pc.tids.length - 1], c.key, c.tids[0]) >= 0) errors.push('page ' + id + ': cell order');
@@ -498,7 +529,7 @@
         check(child, i === 0 ? low : p.seps[i - 1], i === p.seps.length ? high : p.seps[i], depth + 1);
       });
     })(this.root, null, null, 0);
-    if (st.prev !== null && this.pages[st.prev].right !== null) errors.push('last leaf has a right link');
+    st.prevAt.forEach(function (last) { if (self.pages[last].right !== null) errors.push('page ' + last + ': the last page of a level has a right link'); });
     if (st.entries !== this.count) errors.push('entry count');
     return errors;
   };
@@ -560,7 +591,7 @@
   ];
 
   var api = {
-    Tree: Tree, SCENARIO: SCENARIO, SCENARIO_PAGE_SIZE: 256,
+    Tree: Tree, SCENARIO: SCENARIO, SCENARIO_PAGE_SIZE: 256, MAX_TID: MAX_TID, validTid: validTid,
     compareTuple: compareTuple, commonPrefixLen: commonPrefixLen, separator: separator,
     sepSize: sepSize, pivotSize: pivotSize, leafCellSize: leafCellSize, usedBytes: usedBytes,
     sepText: sepText, cellText: cellText, tenths: tenths, pad: pad, configName: configName, esc: esc

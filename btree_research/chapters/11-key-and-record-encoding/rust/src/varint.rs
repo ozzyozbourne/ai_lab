@@ -257,6 +257,117 @@ mod tests {
         assert_eq!(sqlite_decode(&small_in_nine), Err(VarintError::NonCanonical));
     }
 
+    /// SplitMix64, for tests only: deterministic, the same in the Zig twin.
+    struct TestRng(u64);
+
+    impl TestRng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+
+        /// Integer in [0, n).
+        fn below(&mut self, n: u64) -> u64 {
+            ((u128::from(self.next()) * u128::from(n)) >> 64) as u64
+        }
+    }
+
+    #[test]
+    fn both_formats_every_value_below_2_17_round_trips_and_lengths_never_shrink() {
+        let mut buf = [0u8; MAX_LEN];
+        let mut prev_len = 1;
+        for v in 0..1u64 << 17 {
+            let n = encode(&mut buf, v).unwrap();
+            assert_eq!(decode(&buf[..n]), Ok((v, n)));
+            assert!(n >= prev_len);
+            prev_len = n;
+            // Below 2^56 the two formats always have the same length.
+            let m = sqlite_encode(&mut buf, v).unwrap();
+            assert_eq!(m, n);
+            assert_eq!(sqlite_decode(&buf[..m]), Ok((v, m)));
+        }
+    }
+
+    #[test]
+    fn both_formats_random_values_of_every_width_every_truncation_trailing_bytes_ignored() {
+        let mut rng = TestRng(3);
+        for _ in 0..20_000 {
+            // Shifting by 0..63 makes every encoded length equally likely.
+            let v = rng.next() >> rng.below(64);
+            let junk = rng.next() as u8;
+
+            let mut buf = [0u8; MAX_LEN + 1];
+            let n = encode(&mut buf, v).unwrap();
+            assert_eq!(n, encoded_len(v));
+            buf[n] = junk; // whatever follows a varint is not part of it
+            assert_eq!(decode(&buf[..n + 1]), Ok((v, n)));
+            for cut in 0..n {
+                assert_eq!(decode(&buf[..cut]), Err(VarintError::Truncated));
+                let mut small = [0xaau8; MAX_LEN];
+                assert_eq!(encode(&mut small[..cut], v), Err(VarintError::NoSpaceLeft));
+                assert_eq!(small, [0xaa; MAX_LEN]); // nothing was written
+            }
+
+            let mut sbuf = [0u8; SQLITE_MAX_LEN + 1];
+            let m = sqlite_encode(&mut sbuf, v).unwrap();
+            assert_eq!(m, sqlite_len(v));
+            sbuf[m] = junk;
+            assert_eq!(sqlite_decode(&sbuf[..m + 1]), Ok((v, m)));
+            for cut in 0..m {
+                assert_eq!(sqlite_decode(&sbuf[..cut]), Err(VarintError::Truncated));
+                assert_eq!(sqlite_encode(&mut sbuf[..cut], v), Err(VarintError::NoSpaceLeft));
+            }
+
+            // zigzag is a bijection between i64 and u64.
+            let signed = v as i64;
+            assert_eq!(unzigzag(zigzag(signed)), signed);
+            assert_eq!(zigzag(unzigzag(v)), v);
+            // ... that keeps short what is close to zero: |x| < 2^k fits k + 1 bits.
+            if signed != i64::MIN {
+                assert!(zigzag(signed) <= 2 * signed.unsigned_abs());
+            }
+        }
+    }
+
+    #[test]
+    fn decoder_fuzz_random_bytes_never_crash_and_what_leb128_accepts_is_canonical() {
+        const BIAS: [u8; 6] = [0x00, 0x01, 0x7f, 0x80, 0x81, 0xff];
+        let mut rng = TestRng(4);
+        let (mut accepted, mut rejected) = (0, 0);
+        for _ in 0..50_000 {
+            let mut buf = [0u8; 12];
+            let n = rng.below(buf.len() as u64 + 1) as usize;
+            for c in &mut buf[..n] {
+                *c = if rng.below(4) == 0 { rng.next() as u8 } else { BIAS[rng.below(BIAS.len() as u64) as usize] };
+            }
+            if let Ok((value, len)) = decode(&buf[..n]) {
+                accepted += 1;
+                // One value, one encoding: encoding the result gives the input back.
+                assert_eq!(enc(value), &buf[..len]);
+            } else {
+                rejected += 1;
+            }
+            // The SQLite format makes the weaker promise: it never reads past the
+            // input, and never reports a value that would have needed more bytes.
+            if let Ok((value, len)) = sqlite_decode(&buf[..n]) {
+                assert!(len <= n);
+                assert!(sqlite_len(value) <= len);
+            }
+        }
+        assert!(accepted > 5000 && rejected > 5000);
+    }
+
+    #[test]
+    fn sqlite_varint_accepts_padded_short_forms_as_sqlite_does() {
+        // `80 05` is 5 with a redundant leading group. LEB128's `decode` rejects
+        // the equivalent (`85 00`); the SQLite format has no such rule.
+        assert_eq!(sqlite_decode(&[0x80, 0x05]), Ok((5, 2)));
+        assert_eq!(decode(&[0x85, 0x00]), Err(VarintError::NonCanonical));
+    }
+
     #[test]
     fn varints_are_not_order_preserving() {
         // 129 < 256, but 81 01 > 80 02 as byte strings.

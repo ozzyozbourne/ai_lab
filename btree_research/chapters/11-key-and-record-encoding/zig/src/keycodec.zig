@@ -937,6 +937,5 @@ test "decoder fuzz: damaged keys and random bytes never crash the reader, and wh
         // writer produces for the decoded values. No second spelling exists.
         if (canonical) try testing.expectEqualSlices(u8, buf[0..n], again.written());
     }
-    std.debug.print("ACC {d} REJ {d}\n", .{ accepted, rejected });
     try testing.expect(accepted > 5000 and rejected > 5000);
 }

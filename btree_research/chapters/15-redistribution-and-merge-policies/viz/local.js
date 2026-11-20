@@ -171,7 +171,7 @@
     if (existing) page.cells[pos].size = size;
     else { page.cells.splice(pos, 0, { key: key, size: size }); this.count++; }
     page.used = page.used - oldSize + size;
-    this._ev('insert', { key: key, size: size, page: id, existing: existing, overfull: page.used > cap });
+    this._ev('insert', { key: key, size: size, page: id, child: ci, existing: existing, overfull: page.used > cap });
     if (page.used <= cap) return true;
     var appended = !existing && pos === page.cells.length - 1;
     if (this.cfg.quickAppend && appended && ci === this.childCount() - 1) this._quickAppend();
@@ -430,7 +430,7 @@
     '.c15-page-box { position: absolute; left: 0; top: 18px; height: 40px; border-radius: 6px; border: 1.5px solid var(--s, var(--bt-node)); background: var(--s-bg, var(--bt-free-bg)); transition: border-color var(--bt-dur), background-color var(--bt-dur); }',
     '.c15-page-over { position: absolute; top: 18px; height: 40px; border-radius: 0 6px 6px 0; border: 1.5px dashed var(--bt-key-deleted); border-left: 0; background: var(--bt-key-deleted-bg); opacity: 0; transition: opacity var(--bt-dur); }',
     '.c15-page.is-over .c15-page-over { opacity: 1; }',
-    '.c15-strip-label { position: absolute; left: 0; font: .76rem/16px var(--bt-mono); color: var(--bt-muted); white-space: nowrap; transition: opacity var(--bt-dur); }',
+    '.c15-strip-label { position: absolute; left: 0; right: 0; font: .76rem/16px var(--bt-mono); color: var(--bt-muted); transition: opacity var(--bt-dur); }',
     '.c15-strip-box { position: absolute; left: 0; right: 0; height: 48px; border-radius: 6px; border: 1.5px dashed var(--bt-border); background: var(--bt-surface-2); transition: opacity var(--bt-dur); }',
     '.c15-cut { position: absolute; width: 0; height: 56px; border-left: 2.5px solid var(--bt-split); transition: transform var(--bt-dur), opacity var(--bt-dur); }',
     '.c15-cut.is-old { border-left: 2px dashed var(--bt-muted); }',
@@ -545,14 +545,24 @@
 
     /* scratch strip */
     var stripY = pagesH + 22, cutEls = this.cuts, sumEls = this.sums, nCuts = 0, nSums = 0;
+    var total = 0, gapPx = 10, ends = strip ? strip.ends : [];
+    if (strip) {
+      /* The label may wrap on a narrow screen. Measure its longest wording and keep that
+       * much room for as long as the strip is shown, so the strip does not jump when the
+       * wording changes from one step to the next. */
+      strip.flat.forEach(function (c) { total += c.size; });
+      var labelHead = 'scratch: ' + strip.flat.length + ' cell' + (strip.flat.length === 1 ? '' : 's') + ', ' + total + ' bytes';
+      var labelOld = ' (dashed: old page boundaries)', labelNew = ' → ' + ends.length + ' page' + (ends.length > 1 ? 's' : '');
+      this.stripLabel.textContent = labelHead + (labelOld.length > labelNew.length ? labelOld : labelNew);
+      var labelH = Math.max(16, this.stripLabel.offsetHeight);
+      this.stripLabel.textContent = labelHead + (strip.old ? labelOld : labelNew);
+      stripY += labelH - 16;
+      this.stripLabel.style.top = stripY - 10 - labelH + 'px';
+    }
     this.stripBox.style.top = stripY - 8 + 'px';
-    this.stripLabel.style.top = stripY - 26 + 'px';
     this.stripBox.style.opacity = this.stripLabel.style.opacity = strip ? 1 : 0;
     if (strip) {
-      var total = 0, gapPx = 10, ends = strip.ends;
-      strip.flat.forEach(function (c) { total += c.size; });
       var sScale = Math.min(scale, (W - 12 - gapPx * (ends.length - 1)) / Math.max(1, total));
-      this.stripLabel.textContent = 'scratch: ' + strip.flat.length + ' cells, ' + total + ' bytes' + (strip.old ? ' (dashed: old page boundaries)' : ' → ' + ends.length + ' page' + (ends.length > 1 ? 's' : ''));
       var x = 6, page = 0, segStart = x, segBytes = 0;
       var cut = function (cls) {
         var c = cutEls[nCuts] || (cutEls[nCuts] = self.canvas.appendChild(el('div.c15-cut')));

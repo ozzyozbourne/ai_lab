@@ -86,7 +86,7 @@ pub const Stats = struct {
     versions_dropped: u64 = 0,
     tombstones_dropped: u64 = 0,
     /// Point lookups, per run: skipped thanks to the min/max check, probed
-    /// (2 block reads), and probed without finding the key.
+    /// (index path + 1 data block), and probed without finding the key.
     runs_skipped: u64 = 0,
     runs_probed: u64 = 0,
     probes_wasted: u64 = 0,
@@ -280,7 +280,7 @@ pub const Lsm = struct {
 
     /// Point lookup: newest place first, stop at the first place that knows
     /// the key (invariant 4). Each run that the min/max check cannot rule out
-    /// costs one index block and one data block.
+    /// costs its index path, root first, and one data block.
     pub fn get(self: *Lsm, key: u64) ?u64 {
         var result = self.mem.get(key);
         var i = self.l0_len;
@@ -303,7 +303,9 @@ pub const Lsm = struct {
             self.stats.runs_skipped += 1; // decided in RAM, no I/O
             return .absent;
         }
-        self.dev.read(.index, 1);
+        // Root to data block, one block per level: the rule the B+tree's
+        // `findLeaf` is charged by.
+        self.dev.read(.index, self.cfg.geometry().indexHeight(run.len()));
         self.dev.read(.data, 1);
         self.stats.runs_probed += 1;
         const result = run.find(key);

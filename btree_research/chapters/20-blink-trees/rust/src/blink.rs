@@ -275,6 +275,19 @@ impl BLinkTree {
         crate::insert::put(self, key, value)
     }
 
+    /// TEST HOOK: `put` that starts its descent at `start` (the leftmost node
+    /// of a level, i.e. a former root) and can be paused on its leaf. See
+    /// `insert::put_from`.
+    pub fn put_from(
+        &self,
+        start: NodeId,
+        key: u64,
+        value: u64,
+        pause: Option<Pause<'_>>,
+    ) -> Result<Option<u64>, OutOfNodes> {
+        crate::insert::put_from(self, start, key, value, pause)
+    }
+
     /// Checks every invariant. Meaningful only while no other thread
     /// modifies the tree.
     pub fn validate(&self) -> Result<(), Violation> {

@@ -28,5 +28,6 @@ mod tests;
 
 pub use base_handle::{NodeId, OutOfNodes};
 pub use blink::{BLinkTree, Page, Stats};
+pub use insert::Pause;
 pub use search::{Descent, Lookup, Mode, Step};
 pub use validate::Violation;

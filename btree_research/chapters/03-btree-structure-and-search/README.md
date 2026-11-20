@@ -6,7 +6,7 @@
 - The word "order" and why three textbooks use three different numbers for the same tree.
 - What a 2-3-4 tree is, and why it is the same thing as a red-black tree.
 - Why a B-tree with n keys cannot be tall: the height bound, with its proof.
-- How `get` walks from the root to a leaf, and how an in-order traversal lists all keys.
+- How `get` walks down from the root, and how an in-order traversal lists all keys.
 - A first look at `validate`, which turns the invariants into code, and at testing
   against an oracle ([chapter 06](../06-testing-a-btree/README.md) goes deep).
 - A bump allocator written by hand, then `std.heap.ArenaAllocator`.
@@ -123,9 +123,9 @@ code always puts it on the left.) The three rules are the B-tree rules in this e
 - Every path from the root to a missing child passes the same number of black nodes,
   because every black node is one 2-3-4 node and all 2-3-4 leaves are on one level.
 
-So the number of black nodes on a path is the height of the 2-3-4 tree, and a path is at
-most twice as long as another. `redblack.zig` / `redblack.rs` do the conversion and check
-the three rules, plus the order of the keys as in any binary search tree.
+So the number of black nodes on a path is the height of the 2-3-4 tree, and no path is
+more than twice as long as another. `redblack.zig` / `redblack.rs` convert and check the
+three rules, plus the key order.
 
 ### The height bound
 
@@ -195,7 +195,7 @@ only be between 10 and 20. In the leaf `[12 15 17]` the lower bound is index 2, 
 key there is 17. Found after 2 nodes.
 
 **Search for 8.** Root: the lower bound is 10 at index 1, not equal, go to child 1. Leaf
-`[7]`: the lower bound is index 1, past the end. A leaf has no children, so 8 is absent.
+`[7]`: the lower bound is index 1, past the end. A leaf has no children: 8 is absent.
 
 **Search for 10.** Root: the lower bound is 10 itself. Found after 1 node.
 
@@ -319,8 +319,7 @@ The files have the same names and the tests the same names, with these differenc
 - **No allocator parameter, no `deinit`, no `bump.rs`.** The tree owns its arena, which
   is the bump allocator; dropping the tree frees every node.
 - **Out of memory.** Rust aborts when the global allocator fails, so the arena has a
-  node budget and `alloc` returns `Err(OutOfNodes)`. Zig tests real allocation failure
-  with `std.testing.checkAllAllocationFailures`.
+  node budget and `alloc` returns `Err(OutOfNodes)`. Zig tests real allocation failure.
 - **Missing child.** A null pointer in Zig, a too-short `children` vector in Rust.
   `validate` names the same first error in both. Printing a broken tree can differ: a
   Zig walk follows key count + 1 children, a Rust walk the `children` vector (the root
@@ -411,18 +410,18 @@ tree; trees grown by insertion (chapter 04) land between the bounds.
   `milvus/internal/kv/mem/mem_kv.go:51-55` and `btree.NewG(2, ...)` in
   `milvus/internal/streamingcoord/server/broadcaster/schema.go:90`. That degree 2 means
   CLRS t = 2, our M = 4, is **unverified**: the library source is not in the checkout.
-- **Keys in interior nodes.** Turso's index B-tree is a plain B-tree like the one in
-  this chapter. An interior cell carries a full payload, not just a routing key
+- **Keys in interior nodes.** Turso's index B-tree is a plain B-tree like this
+  chapter's. An interior cell carries a full payload, not just a routing key
   (`IndexInteriorCell`, `turso/core/storage/sqlite3_ondisk.rs:828-835`), and a forward
-  scan that comes back up from a child must stop on that cell before entering the next
-  child (`turso/core/storage/btree.rs:1875-1879`). That is our in-order traversal:
-  child, key, child. Turso's table B-tree is a B+tree instead (chapter 07).
-- **Order in bytes.** Real pages hold variable-size entries, so there is no M. Postgres
-  says so directly: "there is not a fixed maximum number of keys per page; we just stuff
-  in as many as will fit" (`postgres/src/backend/access/nbtree/README:158-164`). Its
-  only hard rule is that three items must fit on a page, so one item is limited to a
-  third of the page (`postgres/src/include/access/nbtree.h:155-173`). Turso treats a
-  page as underfull when more than two thirds of its usable bytes are free
+  scan coming back up from a child must stop on that cell before entering the next
+  child (`turso/core/storage/btree.rs:1875-1879`): our in-order traversal. Turso's
+  table B-tree is a B+tree instead (chapter 07).
+- **Order in bytes.** Real pages hold variable-size entries, so there is no M. Postgres:
+  "there is not a fixed maximum number of keys per page; we just stuff in as many as
+  will fit" (`postgres/src/backend/access/nbtree/README:158-164`). Its only hard rule
+  is that three items must fit on a page
+  (`postgres/src/include/access/nbtree.h:155-173`). Turso treats a page as underfull
+  when more than two thirds of its usable bytes are free
   (`turso/core/storage/btree.rs:3429-3430`, `:10836-10848`). Rule 4 in bytes.
 
 ## Allocator notes
@@ -432,10 +431,10 @@ before the tree does. "Free everything at once" is all the freeing there is.
 
 **First by hand: `BumpAllocator`** (`bump.zig`). It owns a chunk of memory and a cursor.
 To allocate: round the cursor up to the alignment, return that address, advance the
-cursor. A full chunk is followed by a new one from the child allocator. An object too
-big for an ordinary chunk gets a chunk of its own, and the current chunk stays in use.
-`free` does nothing; `deinit` gives every chunk back. It implements the four functions
-of `std.mem.Allocator` (`alloc`, `resize`, `remap`, `free`), so any code that takes an
+cursor. A full chunk is followed by a new one from the child allocator; an oversized
+object gets a chunk of its own while the current chunk stays in use. `free` does
+nothing; `deinit` gives every chunk back. It implements the four functions of
+`std.mem.Allocator` (`alloc`, `resize`, `remap`, `free`), so any code that takes an
 `Allocator` runs on it (a test fills an `ArrayList`).
 
 **Used as the node pool.** `DirectNodes` (`base_pool.zig`, the pool contract that
@@ -488,8 +487,8 @@ block.
 - **Assuming a search ends in a leaf.** In a plain B-tree it can end in any node. Code
   that scans "all leaves" misses the keys stored in interior nodes; an in-order
   traversal must emit a key between two children.
-- **Trusting lookups as a test.** Four of the ten broken trees answer every `get`
-  correctly. Run `validate` after every operation in tests.
+- **Trusting lookups as a test.** Four of the ten broken trees still return every
+  original key. Run `validate` after every operation in tests.
 - **Reading meaning into which error `validate` returns.** A tree with two defects
   gets one name: the first violation the walk meets (a node's keys, then its child
   slots, then the subtrees from left to right). Fix what is named, then validate again.
@@ -519,9 +518,9 @@ block.
    different red-black trees represent the canonical tree if the red node may go on
    either side? Give a formula for any 2-3-4 tree. Why does a three-key node offer no
    choice?
-5. (harder) Write `successor(root, key)`: the smallest key that is strictly greater
-   than `key`, or null. Use one walk from the root to a leaf, no allocation and no
-   parent pointers. Which variable has to survive from the upper levels, and why?
+5. (harder) Write `successor(root, key)`: the smallest key strictly greater than `key`,
+   or null. One walk from the root to a leaf, no allocation, no parent pointers. Which
+   variable has to survive from the upper levels, and why?
 
 Solutions: [solutions.md](solutions.md).
 

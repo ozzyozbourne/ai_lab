@@ -243,10 +243,12 @@ here are checked against the output of the chapter's Zig and Rust programs (self
    * On a narrow screen the whole tree is fitted into the stage, which makes the keys small. The hint
    * appears only while the picture is drawn below 70 % (the toolkit's normal lower limit).
    */
-  function zoomHint(stage) {
+  function zoomHint(stage, view) {
     var hint = el('p.c8-note.c8-zoom', 'Keys too small on this screen? The + button under the tree enlarges it; drag the picture sideways to move it, and "fit" brings the whole tree back.');
     stage.appendChild(hint);
-    return function (view) { hint.classList.toggle('is-on', view.scale < 0.7); };
+    var update = function () { hint.classList.toggle('is-on', view.scale < 0.7); };
+    stage.addEventListener('click', update);            // the zoom buttons are inside the stage
+    return update;
   }
   function renderStrip(box, label, keys, dup) {
     box.textContent = '';
@@ -279,7 +281,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
     var view = new BTViz.TreeView(fig.stage, { minHeight: 230, minScale: 0.45, ariaLabel: 'B+tree being scanned' });
     var strip = el('div.c8-strip', { 'aria-label': 'Keys returned so far' });
     fig.stage.appendChild(strip);
-    var hint = zoomHint(fig.stage);
+    var hint = zoomHint(fig.stage, view);
     var panel = el('div.bt-panel', el('div.bt-panel-title', 'The cursor'));
     var body = el('div.bt-panel-body.c8-cur');
     panel.appendChild(body);
@@ -292,7 +294,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
       mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
       onStep: function (step, i) {
         view.render(step.state.tree, step.highlight);
-        hint(view);
+        hint();
         renderCursorPanel(body, step.state);
         renderStrip(strip, 'returned:', step.state.result, null);
         showCode(step.code, step.type);
@@ -398,7 +400,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
     var view = new BTViz.TreeView(fig.stage, { minHeight: 230, minScale: 0.45, ariaLabel: 'B+tree with a cursor on it' });
     var strip = el('div.c8-strip', { 'aria-label': 'Keys the cursor returned since its last seek' });
     fig.stage.appendChild(strip);
-    var hint = zoomHint(fig.stage);
+    var hint = zoomHint(fig.stage, view);
     var panel = el('div.bt-panel', el('div.bt-panel-title', 'The cursor'));
     var body = el('div.bt-panel-body.c8-cur');
     panel.appendChild(body);
@@ -412,7 +414,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
       mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
       onStep: function (step, i) {
         view.render(step.state.tree, step.highlight);
-        hint(view);
+        hint();
         renderCursorPanel(body, step.state);
         renderStrip(strip, 'returned since the last seek:', step.state.result, step.state.dup);
         showCode(step.code, step.type);

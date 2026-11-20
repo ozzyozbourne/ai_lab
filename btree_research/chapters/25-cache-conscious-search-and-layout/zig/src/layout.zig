@@ -35,7 +35,7 @@ pub const AlignedKeys = []align(trace.line_bytes) u64;
 /// Copies `sorted` into a line-aligned array padded with sentinels to a
 /// multiple of 8 keys, ready for `search.lowerBoundVector`.
 ///
-/// Why aligned: `alignedAlloc(u64, .@"64", n)` guarantees that key 0 starts a
+/// Why aligned: `alignedAlloc(u64, .fromByteUnits(64), n)` guarantees that key 0 starts a
 /// cache line, so every 8-key block is exactly one line. With the natural
 /// 8-byte alignment a block could straddle two lines and every vector load
 /// would touch twice the memory.

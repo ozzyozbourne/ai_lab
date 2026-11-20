@@ -20,8 +20,12 @@
 //! Latches held by a writer:
 //!   going down   one at a time, like a reader (shared, exclusive on the leaf);
 //!   going up     the child stays latched until its downlink is in the parent,
-//!                so child + parent, plus one more level while it finishes
-//!                somebody else's split of that parent.
+//!                so child + parent. If that parent is flagged, the writer
+//!                first finishes the parent's split, which needs the
+//!                grandparent, and if that one is flagged too, the node above
+//!                it: one latch per level, bottom-up, for as long as each
+//!                level's parent turns out to be flagged. The bound is the
+//!                height of the tree, not a constant. LATCH_COUNTS
 //! The order is always child before parent and never left-and-right at once;
 //! the `meta` mutex comes last. With one global order there is no deadlock.
 //!
@@ -86,13 +90,44 @@ fn latch(tree: &BLinkTree, id: NodeId, exclusive: bool) -> Latch<'_> {
     }
 }
 
+/// TEST HOOK for `put_from`: a callback that runs while ONE writer stands
+/// still on its leaf. `abandon_splits` stops a split between its two steps;
+/// this stops a writer between its way down and its way up, which is the
+/// only moment at which its remembered parents can go stale.
+///
+/// It is called once, when the writer has found its leaf: the node with the
+/// given id is latched exclusively (by the paused writer), its flag is
+/// clear, and nothing has been inserted yet. No other latch is held. The
+/// callback may run whole operations on the tree, as other threads would in
+/// this gap. It must not touch the latched leaf: a `put` or `get` of a key
+/// in that leaf's range would wait for the paused writer forever. That is
+/// also why the leaf's page is passed in: the callback cannot latch it.
+pub type Pause<'p> = &'p mut dyn FnMut(&BLinkTree, NodeId, &Page);
+
 pub(crate) fn put(tree: &BLinkTree, key: u64, value: u64) -> Result<Option<u64>, OutOfNodes> {
+    put_from(tree, tree.root_id(), key, value, None)
+}
+
+/// `put` with the two things a test must control to reach a stale writer
+/// without threads:
+///
+///   `start`  the node the descent begins at, as if the writer had loaded
+///            the root pointer at some earlier time. It must be the leftmost
+///            node of a level (`level_head`): each of them was the root once.
+///   `pause`  see `Pause`.
+pub(crate) fn put_from(
+    tree: &BLinkTree,
+    start: NodeId,
+    key: u64,
+    value: u64,
+    pause: Option<Pause<'_>>,
+) -> Result<Option<u64>, OutOfNodes> {
     let mut stack = Stack {
         at: [NodeId::NIL; MAX_LEVELS],
     };
 
     // ---- Descend to the leaf whose key range contains `key`. -------------
-    let mut id = tree.root_id();
+    let mut id = start;
     let mut held = latch(tree, id, false);
     let mut leaf = loop {
         if held.level == 0 && !held.is_exclusive() {
@@ -123,6 +158,13 @@ pub(crate) fn put(tree: &BLinkTree, key: u64, value: u64) -> Result<Option<u64>,
         id = child;
         held = latch(tree, id, child_is_leaf);
     };
+
+    // TEST HOOK: the writer knows its leaf and its (hinted) parents, and
+    // the rest of the world moves on. Everything in `stack` may be out of
+    // date when the callback returns; `insert_parent` must cope.
+    if let Some(at_leaf) = pause {
+        at_leaf(tree, id, &leaf);
+    }
 
     // ---- Insert into the leaf (exclusively latched, flag clear). ----------
     let i = lower_bound(leaf.node.key_slice(), key);
@@ -295,7 +337,8 @@ fn insert_parent(
     let mut parent_id = stack.at[level + 1];
     if parent_id.is_nil() {
         // We did not come through a node of level+1: `left` was the root
-        // when we started. Is it still?
+        // when we started (or we started below the root, see `put_from`).
+        // Is it still the root?
         let mut meta = tree.meta();
         if tree.root_id() == left_id {
             // Root split: build a new root above the two halves. This is

@@ -30,6 +30,8 @@ const Source = union(enum) {
     run: struct {
         slots: []const Slot,
         pos: usize,
+        /// Index levels of the run (`Geometry.indexHeight`).
+        index_height: usize,
         /// Data block the cursor has paid for, if any.
         loaded: ?usize = null,
     },
@@ -61,7 +63,11 @@ pub const Merger = struct {
 
     /// Adds a run, positioned at slot `from`. Add inputs NEWEST FIRST.
     pub fn addRun(self: *Merger, dev: *Device, run: *const Run, from: usize) void {
-        self.sources[self.count] = .{ .run = .{ .slots = run.slots.items, .pos = from } };
+        self.sources[self.count] = .{ .run = .{
+            .slots = run.slots.items,
+            .pos = from,
+            .index_height = self.geo.indexHeight(run.len()),
+        } };
         self.pushSource(dev);
     }
 
@@ -83,8 +89,11 @@ pub const Merger = struct {
     }
 
     /// Charges the device for the block under the cursor of input `s`, if the
-    /// cursor has just entered it: one data block, plus one index block
-    /// whenever the data block is the first one that index block describes.
+    /// cursor has just entered it: one data block, plus, on every index
+    /// level, the index block above it unless the cursor was already under
+    /// that one. The first block of a stream therefore costs the whole path
+    /// from the run's root, exactly like a point lookup, and a stream that
+    /// reads a whole run reads each of its index blocks once.
     fn load(self: *Merger, dev: *Device, s: u8) void {
         switch (self.sources[s]) {
             .mem => {},
@@ -92,8 +101,11 @@ pub const Merger = struct {
                 if (r.pos >= r.slots.len) return;
                 const block = r.pos / self.geo.block_entries;
                 if (r.loaded == block) return;
-                const fan = self.geo.index_fanout;
-                if (r.loaded == null or r.loaded.? / fan != block / fan) dev.read(.index, 1);
+                var span = self.geo.index_fanout; // data blocks under one index block
+                for (0..r.index_height) |_| {
+                    if (r.loaded == null or r.loaded.? / span != block / span) dev.read(.index, 1);
+                    span *= self.geo.index_fanout;
+                }
                 dev.read(.data, 1);
                 r.loaded = block;
             },

@@ -315,6 +315,8 @@ left; here the direction depends on which side is already private.
 writes (one per page, then one per byte of the meta slot, so that a slot can
 be torn) and returns `error.Crashed`. The store is then what a disk would
 hold after a power failure; the next call is `reopen`.
+`PageStore.meta_read_fault` is the other injected fault: a meta slot that a
+restart cannot read although its bytes are intact.
 
 A transaction that changed nothing skips all of it: no new root, no new id.
 
@@ -336,6 +338,9 @@ while (n < items.len and items[n].freed_by <= oldest) : (n += 1) {
     self.store.release(items[n].page);
 }
 ```
+
+`previous` is the root in the other meta slot: a snapshot that nobody can
+release early.
 
 `reopen` simulates a restart from what a file would hold: the two meta slots
 and the pages. It picks a slot and checks its tree **while walking it**
@@ -492,12 +497,12 @@ Things to notice. In section 1 `released` lags one commit behind `freed`:
 from `put 5` on each commit releases exactly what the previous one freed, and
 when no page splits the store stops growing (`reused 2 fresh 0`). In section
 4 `delete 7` shows `copied 4`, the borrow, and releasing the snapshot frees
-6 of 10 pages: the other 4 wait for transaction 16. Section 6 restarts twice: after a torn
-meta write, and after the double fault of "When may a page be reused?", where
-the restart lands on transaction 17 with its tree whole because the pages 18
-replaced (`#5 #6 #2`) were still pending. Section 7 shows what snapshots
-cost: with three snapshots held 100 operations apart, a tree of 124 keys
-sits in a store of 973 pages (M = 4).
+6 of 10 pages: the other 4 wait for transaction 16. Section 6 restarts
+twice: after a torn meta write, and after the double fault of "When may a
+page be reused?", where the restart lands on transaction 17 with its tree
+whole because the pages 18 replaced (`#5 #6 #2`) were still pending. Section
+7 shows what snapshots cost: with three snapshots held 100 operations apart,
+a tree of 124 keys sits in a store of 973 pages (M = 4).
 
 ## In real databases
 
@@ -516,10 +521,10 @@ syncs the data blocks first, then writes the *other* header and syncs again
 (`single_file_block_manager.cpp:1423-1424`, `:1443-1450`). A block that the
 last checkpoint used is not reused directly: "we cannot directly re-use it",
 it goes to `modified_blocks` "indicating it will be re-usable after the next
-checkpoint" (`single_file_block_manager.cpp:1023-1028`).
-That is this chapter's metapage and pending list, per checkpoint instead of
-per transaction, and the same shape as part 2 of the reuse rule: freed in
-one checkpoint, reusable after the next. Both headers are read through
+checkpoint" (`single_file_block_manager.cpp:1023-1028`). That is this
+chapter's metapage and pending list, per checkpoint instead of per
+transaction, and the same shape as part 2 of the reuse rule: freed in one
+checkpoint, reusable after the next. Both headers are read through
 `ReadAndChecksum` (`:714-719`); what DuckDB does when one of them fails its
 checksum was not traced (unverified).
 
@@ -529,17 +534,17 @@ documentation describes the grid as "a purely functional, persistent (in both
 senses), garbage collected data structure which is updated atomically by
 swapping the pointer to the root node"
 (`tigerbeetle/docs/internals/data_file.md:36-46`). A pointer to a block
-carries the block's checksum (see "The fault model"). A
-released block stays allocated: "free it when the next checkpoint becomes
-durable. This ensures that it will not be overwritten during the current
-checkpoint — the block may still be needed if we crash and recover from the
-current checkpoint" (`tigerbeetle/src/vsr/free_set.zig:509-533`). That is
-the argument of this chapter's rule in one sentence: a freed block belongs
-to a state a restart can still land on. The root is the
-superblock, with a checksum, a `sequence` counter and the checksum of its
-predecessor (`tigerbeetle/src/vsr/superblock.zig:53-79`). It is written as
-four copies and the latest one with at least two copies wins, because a
-superblock that stores its own checksum can be hidden by a misdirected read
+carries the block's checksum (see "The fault model"). A released block stays
+allocated: "free it when the next checkpoint becomes durable. This ensures
+that it will not be overwritten during the current checkpoint — the block
+may still be needed if we crash and recover from the current checkpoint"
+(`tigerbeetle/src/vsr/free_set.zig:509-533`). That is the argument of this
+chapter's rule in one sentence: a freed block belongs to a state a restart
+can still land on. The root is the superblock, with a checksum, a `sequence`
+counter and the checksum of its predecessor
+(`tigerbeetle/src/vsr/superblock.zig:53-79`). It is written as four copies
+and the latest one with at least two copies wins, because a superblock that
+stores its own checksum can be hidden by a misdirected read
 (`tigerbeetle/docs/internals/data_file.md:74-80`). A pointer that carries the
 child's checksum makes in-place update impossible: changing a child changes
 its checksum, hence the parent. Path copying is then not a choice.

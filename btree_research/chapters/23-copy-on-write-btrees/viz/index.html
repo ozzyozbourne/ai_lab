@@ -54,7 +54,8 @@ readable for as long as someone holds them, and the previous root always does: i
     overwritten, or later still if a snapshot is in the way. Every caption says which root holds which pending page.</li>
   <li><strong>Why one commit later.</strong> <em>Crash a put + lose newest slot</em> stops a transaction after its page
     writes and makes the newest meta slot unreadable. The restart lands on the older slot, and its tree is whole
-    because the pages it needs were still pending.</li>
+    because the pages it needs were still pending. It then zeroes the slot it could not read, before freeing anything:
+    a slot that came back at a later restart would name pages that are gone.</li>
   <li><strong>The oldest kept root decides.</strong> Hold two snapshots, commit a few times, and release the newer one
     first: nothing is freed.</li>
   <li><strong>No leaf chain.</strong> A leaf split here creates a page that only its parent points at. The README

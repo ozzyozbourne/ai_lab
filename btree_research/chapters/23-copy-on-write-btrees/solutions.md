@@ -78,10 +78,11 @@ pub fn reclaim(self: *Db) usize {
 ```
 
 Measured with this change applied to a scratch copy of the Zig project
-(`zig build test --summary all`: 33 of 35 tests pass):
+(`zig build test --summary all`: 36 of 38 tests pass):
 
-- Both model tests, the metapage test, all four restart tests (crash at every
-  write, damaged slots, the long random run, forged slots), the
+- Both model tests, the metapage test, all seven restart tests (crash at
+  every write, damaged slots, the long random run, the campaign with
+  intermittent read errors, the two scrub tests, forged slots), the
   allocation-failure tests and all fourteen corruption cases of `validate`
   still pass, without changing `validate`. The precise rule is as safe
   across restarts as the coarse one, because it still never releases a page
@@ -113,7 +114,7 @@ live; that was not measured here.
 
 Measured on a scratch copy of the Zig project with the line
 `if (self.previous) |p| oldest = @min(oldest, p.txn_id);` deleted:
-18 of 35 tests fail.
+20 of 38 tests fail.
 
 - Most of them fail in `validate` with `error.ReachablePageIsFree`: the walk
   of the previous root (invariant 10) reaches a page that is on the free

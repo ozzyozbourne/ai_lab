@@ -29,10 +29,10 @@ try self.storage.writePage(self.homePage(i), page);
 try self.storage.sync();
 ```
 
-Five tests fail. Two are bookkeeping (the demo output and the "2 syncs" count in "update
+Six tests fail. Two are bookkeeping (the demo output and the "2 syncs" count in "update
 then read"). "recover on a fresh store whose first update was cut short" fails for the
 same reason as the first one below (`.drop`, `crash_after = 2`: it expects the new
-version and finds a blank page). The other two are the real damage:
+version and finds a blank page). The other three are the real damage:
 
 - "crash at every write, every mode" fails first in `.drop` mode with `crash_after = 2`:
   it expects B and finds A. With the first sync in place, two accepted writes meant the
@@ -44,6 +44,8 @@ version and finds a blank page). The other two are the real damage:
   slot is corrupt, home is corrupt, and the old version A that home used to hold has been
   partly overwritten. No complete copy of either version is left. (The first test would
   hit the same error once it reached `.tear`.)
+- "seeded oracle over three pages" fails with the same `error.Unrecoverable`, reached by
+  its own random sequence of updates and power cuts.
 
 The first sync is what guarantees that at most one of the two copies is ever in flight.
 

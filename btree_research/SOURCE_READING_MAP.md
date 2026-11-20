@@ -93,7 +93,7 @@ every structural step as its own WAL record. All nbtree files are in
      re-finds the parent; `:2270` `_bt_finish_split`; `:2490` `_bt_newlevel` builds a new
      root. ch 20.
 6. **`N/nbtsplitloc.c`** (1185 lines). Where to cut a full page.
-   - `:22-27` the three strategies (`SPLIT_DEFAULT`, `SPLIT_MANY_DUPLICATES`,
+   - `:20-26` the three strategies (`SPLIT_DEFAULT`, `SPLIT_MANY_DUPLICATES`,
      `SPLIT_SINGLE_VALUE`).
    - `:130` `_bt_findsplitloc`: builds the candidate list over the imaginary page;
      rightmost-page fill factor at `:284-287`.
@@ -199,9 +199,9 @@ is listed by region.
    - `:5410` `balance_root`: push the root's content into a new child so the root keeps
      its page number. ch 12.
 7. **`btree.rs`, region: delete** (`:7041-7410`).
-   - `:7041` `delete`: the `DeleteState` machine: find the cell, replace an interior
-     cell by its predecessor from a leaf, drop the cell, balance, then restore the
-     cursor by key. `:10852` `drop_cell`, `:9797` `free_cell_range` (put the bytes on the
+   - `:7041` `delete`: the `DeleteState` machine (`:204`): find the cell, clear its
+     overflow pages, replace an interior cell with one taken from a leaf
+     (`InteriorNodeReplacement`), balance if needed, then restore the cursor by key. `:10852` `drop_cell`, `:9797` `free_cell_range` (put the bytes on the
      freeblock chain or count them as fragments), `:10125` `defragment_page`. ch 05,
      ch 10, ch 15.
 8. **`btree.rs`, region: overflow** (`:1617`, `:5499`, `:10609-10850`).
@@ -210,8 +210,8 @@ is listed by region.
      `:1617` `process_overflow_read` (follow the chain); `:5499` `clear_overflow_pages`
      (free it). ch 13.
 9. **`core/storage/pager.rs`, freelist and page access** (7430 lines).
-   - `:3672` `read_page` (through the cache, else the WAL, else the file); `:3919`
-     `add_dirty`. ch 09.
+   - `:3672` `read_page` (cache hit as the fast path, otherwise a read that may
+     yield); `:3919` `add_dirty`. ch 09.
    - `:5588` `free_page` and `:5853` `allocate_page`: the freelist of trunk and leaf
      pages (states at `:1809` `AllocatePageState`, `:1846` `FreePageState`). ch 13.
    - `:2922` `btree_create`; `:3311` `begin_read_tx`, `:3357` `begin_write_tx`; `:5053`
@@ -257,7 +257,8 @@ fuzzing style are all reusable in a B-tree engine.
      (`:151`). ch 06, ch 26.
 2. **`src/lsm/binary_search.zig`** (859 lines).
    - `:9-11` `Config` (mode, prefetch); `:33` `binary_search_values_upsert_index`: the
-     lower bound, in a branchless form with optional prefetch; `:174`
+     halving search for a lower or upper bound, with an `.unpredictable` branch hint
+     (`:109-112`) and prefetch of the next probes (`:59-96`); `:174`
      `binary_search_values`; `:230` and `:300` the range variants; `:561` onward the
      exhaustive and random tests. ch 02, ch 25.
 3. **`src/lsm/node_pool.zig`** (247 lines).
@@ -283,13 +284,14 @@ fuzzing style are all reusable in a B-tree engine.
 6. **`src/lsm/manifest_level.zig`** (1597 lines) and `src/lsm/manifest.zig`.
    - `manifest_level.zig:16` `ManifestLevelType`; `:27-40` `Keys` and `Tables`, two
      sorted segmented arrays; `:208` `insert_table`, `:283` `remove_table`.
-   - `manifest.zig:400` `lookup`: at most one table per level below level 0. ch 27.
+   - `manifest.zig:400` `lookup`: tables within a level are disjoint, so a point lookup
+     meets at most one table per level. ch 27.
 7. **`src/lsm/compaction.zig`** (2378 lines).
    - `:1-30` the overview comment (move or merge; when a tombstone may be dropped);
      `:58-61` input table bound from the growth factor; `:288` `CompactionType`; `:565`
      `half_bar_commence`; `:1547` `merge` (`:1572` `merge_immutable`, `:1640`
      `merge_disk`). The merge itself is `src/lsm/k_way_merge.zig:209`. The memtable is
-     `src/lsm/table_memory.zig:42`. `src/constants.zig:606-611` explains the growth
+     `src/lsm/table_memory.zig:42`. `src/constants.zig:610-616` explains the growth
      factor of 8. ch 27.
 8. **`src/lsm/tree_fuzz.zig`** (961 lines).
    - `:66-85` `FuzzOp` (compact, put, remove, get, scan); `:100` `EnvironmentType` (a

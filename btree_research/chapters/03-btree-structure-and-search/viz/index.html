@@ -27,6 +27,24 @@
   .bt-field { max-width: 100%; min-width: 0; }
   .bt-field .bt-select { min-width: 0; max-width: 100%; flex: 1 1 auto; text-overflow: ellipsis; }
   #v-case { width: 17em; }
+  /* The tree, its caption and the step buttons belong together. On a narrow
+     screen the toolkit stacks stage, side panels, caption, controls, which
+     puts the panels between the picture and its buttons. Reorder: picture,
+     caption, controls, legend, and only then the panels. */
+  @media (max-width: 820px) {
+    .bt-figure { display: flex; flex-direction: column; }
+    .bt-figure-body { display: contents; }
+    .bt-stage { order: 1; }
+    .bt-caption { order: 2; }
+    .bt-controls-slot { order: 3; }
+    .bt-legend { order: 4; }
+    .bt-side { order: 5; }
+    .below { order: 6; }
+  }
+  /* Figure 2: the long code panel sits under the controls, at every width. */
+  .below { padding: 12px 14px; border-top: 1px solid var(--bt-border); background: var(--bt-bg);
+           border-radius: 0 0 var(--bt-radius) var(--bt-radius); }
+  .facts { min-height: 1.9em; }
 </style>
 </head>
 <body>
@@ -48,7 +66,8 @@ bottom of the page compare it with the programs' output.</p>
 <h2>2. The invariant checker on broken trees</h2>
 <p>Each choice damages the canonical tree in one way. <code>validate</code> walks the tree from the root, hands every child
 the range its keys must lie in, and stops at the first violation. Compare its verdict with the number of keys that
-<code>get</code> still finds: several kinds of damage are invisible to lookups.</p>
+<code>get</code> still finds: several kinds of damage are invisible to lookups. The verdict appears in the panel
+next to the tree on the last step; the code of the checks is below the step buttons.</p>
 <div id="fig-validate"></div>
 
 <h2>3. A 2-3-4 tree is a red-black tree</h2>
@@ -64,7 +83,7 @@ one black binary node and up to two red ones and you get a red-black tree with t
 <tr><td>1</td><td>Search 10, then 17, then 8.</td><td>10 is found in the root after one node; 17 and 8 need two. No search reads more nodes than the tree has levels.</td></tr>
 <tr><td>1</td><td>Choose the sparsest and the fullest tree.</td><td>7 keys can need three levels, while 15 keys can fit in two. The height bound of the chapter describes exactly this spread.</td></tr>
 <tr><td>2</td><td>Play cases 2 and 6.</td><td>In case 2 the key 11 is stored but can never be found. In case 6 every lookup still works; only <code>validate</code> sees the damage.</td></tr>
-<tr><td>2</td><td>Replace key 15 by 16, then by 17, then by 21.</td><td>16 keeps the tree valid, 17 breaks the order inside the leaf, 21 breaks the range given by the parent.</td></tr>
+<tr><td>2</td><td>Replace key 15 by 16, then by 17, then by 21.</td><td>16 keeps the tree valid and <code>get</code> finds every key that is stored in it; 17 breaks the order inside the leaf; 21 breaks the range given by the parent, and <code>get</code> can no longer find the 21 that is stored.</td></tr>
 <tr><td>3</td><td>Step through the conversion, then count black nodes from the root to any missing child.</td><td>The count is the same on every path and equals the height of the 2-3-4 tree. A red node is never below a red node.</td></tr>
 </tbody>
 </table>
@@ -126,9 +145,9 @@ one black binary node and up to two red ones and you get a red-black tree with t
     var msg = el('p.msg#s-msg', { role: 'status' });
     var facts = el('div.facts#s-facts');
     var textPre = el('pre.textform#s-text');
-    fig.stage.append(msg);
+    fig.stage.append(msg, facts); // nothing between the tree and its caption
     var view = new BTViz.TreeView(fig.stage, { minHeight: 230, ariaLabel: 'B-tree being searched' });
-    fig.stage.append(facts, panel('As the programs print it', textPre));
+    fig.side.append(panel('As the programs print it', textPre));
     var codeGet = BTViz.codePanel(fig.side, 'get', { title: 'get (base_search)' });
     var codeIn = BTViz.codePanel(fig.side, 'inorder', { title: 'inOrder (base_search)' });
 
@@ -239,10 +258,14 @@ one black binary node and up to two red ones and you get a red-black tree with t
     fig.stage.append(msg);
     var view = new BTViz.TreeView(fig.stage, { minHeight: 230, ariaLabel: 'Tree being validated' });
     var textPre = el('pre.textform#v-text');
-    fig.stage.append(panel('As the programs print it', textPre));
-    var code = BTViz.codePanel(fig.stage, 'validate', { title: 'The checks, condensed from base_validate', maxHeight: 300 });
+    var textPanel = panel('As the programs print it', textPre);
     var rulesBox = el('div.rules#v-rules');
-    fig.side.append(panel('Invariants', rulesBox));
+    fig.side.append(textPanel, panel('Invariants', rulesBox));
+    /* The code is long. In the stage it pushed the caption and the step
+     * buttons off the screen, so it goes below them. */
+    var below = el('div.below');
+    fig.root.appendChild(below);
+    var code = BTViz.codePanel(below, 'validate', { title: 'The checks, condensed from base_validate', maxHeight: 300 });
 
     function showRules(step, last, error) {
       rulesBox.replaceChildren.apply(rulesBox, M3.RULES.map(function (r) {
@@ -263,19 +286,26 @@ one black binary node and up to two red ones and you get a red-black tree with t
         var steps = stepper ? stepper.steps : [step], last = i === steps.length - 1 && step.type !== 'intro';
         showRules(step, last, steps.error);
         code.highlight(step.lines || []);
-        textPre.textContent = step.what + (last ? '\n    ' + steps.verdict : '');
+        textPanel.firstChild.textContent = steps.panelTitle;
+        textPre.textContent = step.what + '\n    ' + (last ? steps.verdict : 'validate: … (step to the end)');
       }
     });
 
     /* Timeline for one damaged tree: an intro frame, then the walk. */
-    function show(tree, what, searchable, play) {
+    /* `own`: the reader replaced a key. The programs have no such line, and
+     * "x of 12 keys" would count the 12 canonical keys, one of which is no
+     * longer in the tree. So count the keys this tree holds. */
+    function show(tree, what, searchable, play, own) {
       msg.textContent = '';
       var walk = M3.validateSteps(tree, k);
       var intro = { type: 'intro', state: tree.model(), highlight: {}, lines: [],
         caption: 'The tree to check: <b>' + BTViz.esc(what) + '</b>. validate starts at the root with no bounds and narrows them on the way down.' };
       var steps = [intro].concat(walk);
       steps.error = walk.error;
-      steps.verdict = 'validate: ' + (walk.error || 'ok') + (searchable === false ? '; get not tried (it could follow the erased pointer)' : '; get finds ' + M3.keysFound(tree) + ' of 12 keys');
+      var mine = M3.storedFound(tree);
+      steps.panelTitle = own ? 'Verdict for your tree' : 'As the programs print it';
+      steps.verdict = 'validate: ' + (walk.error || 'ok') + (searchable === false ? '; get not tried (it could follow the erased pointer)' :
+        own ? '; get finds ' + mine.found + ' of the ' + M3.plural(mine.stored, 'key') + ' stored in this tree' : '; get finds ' + M3.keysFound(tree) + ' of 12 keys');
       steps.forEach(function (s) { s.what = what; });
       var names = ['ok', 'KeysOutOfOrder', 'KeyOutsideParentBounds', 'NodeUnderfull', 'LeavesAtDifferentDepths', 'WrongKeyCount'];
       var answer = walk.error || 'ok';
@@ -301,7 +331,7 @@ one black binary node and up to two red ones and you get a red-black tree with t
       var t = M3.canonical();
       M3.preorder(t.root).forEach(function (n) { var i = n.keys.indexOf(from); if (i >= 0) n.keys[i] = to; });
       caseSel.value = 'intact';
-      show(t, 'key ' + from + ' replaced by ' + to + (to === from ? ' (no change)' : ''), true, true);
+      show(t, 'key ' + from + ' replaced by ' + to + (to === from ? ' (no change)' : ''), true, true, true);
     }
     caseSel.addEventListener('change', function () { preset(true); });
     toInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') own(); });
@@ -331,9 +361,8 @@ one black binary node and up to two red ones and you get a red-black tree with t
 
     var msg = el('p.msg#r-msg', { role: 'status' });
     var facts = el('div.facts#r-facts');
-    fig.stage.append(msg);
+    fig.stage.append(msg, facts); // nothing between the tree and its caption
     var view = new BTViz.TreeView(fig.stage, { minHeight: 290, ariaLabel: '2-3-4 tree and its red-black form' });
-    fig.stage.append(facts);
     var textPre = el('pre.textform#r-text');
     fig.side.append(panel('As the programs print it', textPre));
     var code = BTViz.codePanel(fig.side, 'redblack', { title: 'One 2-3-4 node becomes … (redblack)' });
@@ -359,8 +388,8 @@ one black binary node and up to two red ones and you get a red-black tree with t
         textPre.textContent = step.printed;
         var last = stepper ? i === stepper.steps.length - 1 : false;
         toggle.textContent = last ? 'Show as 2-3-4 tree' : 'Show as red-black tree';
-        chips(facts, ['2-3-4 tree: ' + M3.heightOf(tree.root) + ' levels', 'black nodes on every path: ' + summary.blackHeight,
-          'shortest path: ' + summary.shortest + ' nodes', 'longest path: ' + summary.longest + ' nodes']);
+        chips(facts, ['2-3-4 tree: ' + M3.plural(M3.heightOf(tree.root), 'level'), 'black nodes on every path: ' + summary.blackHeight,
+          'shortest path: ' + M3.plural(summary.shortest, 'node'), 'longest path: ' + M3.plural(summary.longest, 'node')]);
       }
     });
     function build(t, about, play) {
@@ -387,7 +416,7 @@ one black binary node and up to two red ones and you get a red-black tree with t
       frame('This is a red-black tree. A red node is never the child of a red node, because one 2-3-4 node holds at most three keys: one black, two red.');
       frame('Every path from the root to a missing child passes ' + summary.blackHeight + ' black ' + (summary.blackHeight === 1 ? 'node' : 'nodes') +
         ': one per level of the 2-3-4 tree, whose leaves are all at the same depth. Red nodes add at most one extra step per black node, so the longest path (' +
-        summary.longest + ' nodes) is at most twice the shortest (' + summary.shortest + ').');
+        M3.plural(summary.longest, 'node') + ') is at most twice the shortest (' + summary.shortest + ').');
       stepper.pause();
       stepper.setSteps(steps, { play: !!play });
     }

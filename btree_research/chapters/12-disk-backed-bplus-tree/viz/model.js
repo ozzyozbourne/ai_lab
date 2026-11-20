@@ -215,7 +215,7 @@
       } else {
         text = 'It has no separator yet, only its rightmost child: page ' + child + '.';
       }
-      this.step('descend', 'Page ' + id + ' is an interior page. ' + text, hl, 'put');
+      this.step('descend', 'Page ' + id + ' is an interior page. ' + text, hl, 'put', 'page ' + id + ' → child page ' + child);
       this.why = 'the child id is known, so page ' + id + ' is unpinned before the child is fetched';
       this.pool.unpin(id, false);
       if (path) path.push({ id: id, index: index });
@@ -248,13 +248,15 @@
       if (r.found) leaf.cells[r.index] = cell; else leaf.cells.splice(r.index, 0, cell);
       hl.keys['p' + leafId + ':' + key] = 'inserted';
       this.step('fit', 'Leaf page ' + leafId + ' has ' + free + ' free bytes' + (r.found ? ' (plus ' + freed + ' from the cell being replaced)' : '') +
-        ' and the cell needs ' + need + ': it fits. One page changed, in memory only; the file is not touched until the page is evicted or flushed.', hl, 'put');
+        ' and the cell needs ' + need + ': it fits. One page changed, in memory only; the file is not touched until the page is evicted or flushed.', hl, 'put',
+        'leaf ' + leafId + ': fits (' + free + ' free, needs ' + need + ')');
       this.why = 'the leaf was modified: unpin it as dirty';
       this.pool.unpin(leafId, true);
     } else {
       hl.nodes['p' + leafId] = 'split';
       this.step('full', 'Leaf page ' + leafId + ' has only ' + free + ' free bytes and the cell needs ' + need + '. The page is full, with ' +
-        leaf.cells.length + ' cells in it: full is a number of bytes, not a number of keys. It must split.', hl, 'put');
+        leaf.cells.length + ' cells in it: full is a number of bytes, not a number of keys. It must split.', hl, 'put',
+        'leaf ' + leafId + ' is full (' + free + ' free, needs ' + need + ')');
       this.why = 'nothing was changed yet: unpin the leaf as clean';
       this.pool.unpin(leafId, false);
       this.splitAndInsert(path, leafId, cell);
@@ -300,7 +302,7 @@
     this.step('root-down', 'The full page is the root, and the root must stay page ' + this.root + ' (the metapage and every reader find the tree there). ' +
       'So the root does not split: its content is copied to the new page ' + child + ', and page ' + this.root +
       ' becomes an interior page with no key and page ' + child + ' as its only child. The tree is one level taller; now page ' + child + ' splits like any other page.',
-      hl, 'pushRootDown');
+      hl, 'pushRootDown', 'root moved down: page ' + this.root + ' → new page ' + child);
     this.why = 'both pages changed: unpin them as dirty';
     this.pool.unpin(child, true);
     this.pool.unpin(this.root, true);
@@ -332,7 +334,7 @@
     this.step('split-leaf', 'The ' + cells.length + ' cells (the old ones and the new one) cost ' + total + ' bytes together. The left half is the shortest prefix with at least half of the bytes: ' +
       k + ' cells (' + this.used(id) + ' bytes) stay on page ' + id + ', ' + (cells.length - k) + ' cells (' + this.used(right) + ' bytes) go to the new page ' + right +
       '. The leaf chain now runs ' + id + ' → ' + right + '. No parent knows page ' + right + ' yet: if the process died here, a search from the root would never reach its keys.',
-      hl, 'splitLeaf');
+      hl, 'splitLeaf', 'leaf ' + id + ' split by bytes: ' + k + ' + ' + (cells.length - k) + ' cells, new page ' + right);
     this.why = 'both halves were written in memory: unpin them as dirty';
     this.pool.unpin(right, true);
     this.pool.unpin(id, true);
@@ -349,7 +351,8 @@
     if (need > free) {
       hl.nodes['p' + parent.id] = 'split';
       this.step('parent-full', 'Parent page ' + parent.id + ' has only ' + free + ' free bytes; the separator cell for ' + kb(carry.sep, 'split') + ' needs ' + need +
-        ' (4 + ' + carry.sep.length + ' key + 4 child id + 2 slot). The parent must split too.', hl, 'insertSeparator');
+        ' (4 + ' + carry.sep.length + ' key + 4 child id + 2 slot). The parent must split too.', hl, 'insertSeparator',
+        'parent ' + parent.id + ' is full (' + free + ' free, needs ' + need + ')');
       this.why = 'the parent is unchanged: unpin it as clean';
       this.pool.unpin(parent.id, false);
       return false;
@@ -363,7 +366,7 @@
     this.step('separator', 'The split is recorded in parent page ' + parent.id + ': the cell (' + kb(carry.sep, 'split') + ' → page ' + carry.left +
       ') is inserted, and the pointer after it now leads to page ' + carry.right + '. ' +
       (this.pages[carry.right].leaf ? 'The separator is a copy of the first key of page ' + carry.right + '; the key itself stays in the leaf.' : 'The separator moved up out of the split page.'),
-      hl, 'insertSeparator');
+      hl, 'insertSeparator', 'separator ' + esc(carry.sep) + ' into page ' + parent.id);
     this.why = 'the parent changed: unpin it as dirty';
     this.pool.unpin(parent.id, true);
     return true;
@@ -393,7 +396,8 @@
     hl.nodes['p' + right] = 'split';
     this.step('split-interior', 'Interior page ' + id + ' splits around the new separator, again by bytes: ' + k + ' cells stay on page ' + id + ', ' +
       (entries.length - k - 1) + ' go to the new page ' + right + ', and the middle key ' + kb(entries[k].k, 'split') +
-      ' moves up to the parent. It is moved, not copied: an interior key is only a signpost, and the middle one is needed in neither half.', hl, 'splitInterior');
+      ' moves up to the parent. It is moved, not copied: an interior key is only a signpost, and the middle one is needed in neither half.', hl, 'splitInterior',
+      'interior ' + id + ' split, ' + esc(entries[k].k) + ' moves up, new page ' + right);
     this.why = 'both halves were written in memory: unpin them as dirty';
     this.pool.unpin(right, true);
     this.pool.unpin(id, true);
@@ -536,10 +540,11 @@
       cells: ids.map(function (id) { return self.pages[id].cells.length; }) };
   };
 
-  Tree.prototype.step = function (type, caption, highlight, code) {
+  /* `short` is the one-line version of the caption for the log. */
+  Tree.prototype.step = function (type, caption, highlight, code, short) {
     if (!this.steps) return;
     this.mark = highlight || {};
-    this.steps.push(this.makeStep(type, caption, highlight || {}, code, type === 'start' || type === 'done' ? null : caption));
+    this.steps.push(this.makeStep(type, caption, highlight || {}, code, short || null));
   };
 
   Tree.prototype.makeStep = function (type, caption, highlight, code, log) {

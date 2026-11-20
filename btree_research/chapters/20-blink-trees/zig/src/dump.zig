@@ -2,12 +2,12 @@
 //!
 //!     height 2, 7 keys, 5 nodes
 //!       level 1: #2[10 20]
-//!       level 0: #0(5 6)<10 -> #1(10 12)<20* -> #4(20 25) no downlink<30 -> #3(30 40)
+//!       level 0: #0(5 6)<10 -> #1(10 12)<20 {incomplete} -> #4(20 25)<30 {no downlink} -> #3(30 40)
 //!
 //! `#n` is a node handle, `[..]` an internal node (separators), `(..)` a leaf
 //! (keys). `<k` is the node's high key (keys in the node are below k); the
-//! rightmost node of a level has none. `->` is a right link. `*` marks
-//! INCOMPLETE_SPLIT; the node after it is tagged `no downlink`.
+//! rightmost node of a level has none. `->` is a right link. `{incomplete}`
+//! marks INCOMPLETE_SPLIT; the node after it is tagged `{no downlink}`.
 //!
 //! Every level is printed by following right links from its leftmost node,
 //! because that is the only way to see a node whose downlink is missing.
@@ -30,9 +30,9 @@ pub fn dump(tree: *const BLinkTree, w: *Writer) Writer.Error!void {
             const p = tree.page(id);
             try w.writeByte(' ');
             try printNode(tree, id, w);
-            if (left_is_incomplete) try w.writeAll(" no downlink");
             if (p.high_key) |hk| try w.print("<{d}", .{hk});
-            if (p.incomplete_split) try w.writeByte('*');
+            if (p.incomplete_split) try w.writeAll(" {incomplete}");
+            if (left_is_incomplete) try w.writeAll(" {no downlink}");
             if (p.right != .nil) try w.writeAll(" ->");
             left_is_incomplete = p.incomplete_split;
             id = p.right;

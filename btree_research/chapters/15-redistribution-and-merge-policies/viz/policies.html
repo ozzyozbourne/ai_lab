@@ -76,7 +76,7 @@ costs in pages and in churn. Back to <a href="index.html">the step-by-step figur
     churn: { label: 'Churn: toggle random keys', word: 'toggles', short: ['never', 'at empty', 'below 1/3', 'below 1/2'],
       intro: 'The tree was built by random inserts (balance 3). Now a random key is deleted if present and inserted if absent, over and over.',
       end: function (r, first) {
-        return 'By the end about half the keys are present. “Never” still has ' + fmt(r[0].pages) + ' of its ' + fmt(first[0].pages) + ' pages, ' + pct(r[0]) + ' full on average. Below 1/3 ends with ' +
+        return 'By the end about half the keys are present. “Never” ends with ' + fmt(r[0].pages) + ' pages (it started with ' + fmt(first[0].pages) + '), ' + pct(r[0]) + ' full on average. Below 1/3 ends with ' +
           fmt(r[2].pages) + ' pages at ' + pct(r[2]) + ' after ' + fmt(r[2].balances) + ' balance runs, below 1/2 with ' + fmt(r[3].pages) + ' pages at ' + pct(r[3]) + ' after ' + fmt(r[3].balances) + '.';
       } }
   };

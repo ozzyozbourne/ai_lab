@@ -1,7 +1,7 @@
 .{
     .name = .ch23_copy_on_write_btrees,
     .version = "0.0.0",
-    .fingerprint = 0x0,
+    .fingerprint = 0xa93fe80720b3a181,
     .minimum_zig_version = "0.17.1",
     .dependencies = .{},
     .paths = .{

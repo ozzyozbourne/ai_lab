@@ -221,9 +221,12 @@ fn changeDemo(gpa: Allocator, arena: Allocator, w: *Writer, tree: *Tree) !void {
         stack.next(tree).?.key, pathLabel(&buf, &stack.pos), stack.pos.leaf.index(), stack.pos.index,
     });
 
-    try w.writeAll("delete 13 (the entry under both cursors), 14, 15, 17: leaves merge\n  ");
+    const before = tree.base.stats;
     for ([_]u64{ 13, 14, 15, 17 }) |key| _ = tree.delete(key);
     try tree.validate();
+    try w.print("delete 13 (the entry under both cursors), 14, 15, 17: {d} borrow, {d} merges\n  ", .{
+        tree.base.stats.borrows - before.borrows, tree.base.stats.merges - before.merges,
+    });
     try lib.dump.dump(&tree.base, w);
     try w.writeAll("  link  entry -> ");
     try printOptionalKey(w, link.entry(tree));
@@ -237,12 +240,14 @@ fn changeDemo(gpa: Allocator, arena: Allocator, w: *Writer, tree: *Tree) !void {
     try printOptionalKey(w, stack.prev(tree));
     try w.writeAll(", next -> ");
     try printOptionalKey(w, stack.next(tree));
-    try w.print("\n  put 12 again with a new value (an overwrite moves nothing): link entry -> ", .{});
-    _ = try tree.put(gpa, 12, 1212);
+    // An overwrite moves nothing, so it does not invalidate the position.
+    const on_12 = link.seek(tree, .{ .ge = 12 }).?;
     const reseeks_before = link.stats.reseeks;
-    _ = link.seek(tree, .{ .ge = 12 });
-    _ = try tree.put(gpa, 12, 1200);
-    try w.print("{d}={d}, re-seeks caused: {d}\n", .{ link.entry(tree).?.key, link.entry(tree).?.value, link.stats.reseeks - reseeks_before });
+    _ = try tree.put(gpa, 12, 1212);
+    const after = link.entry(tree).?;
+    try w.print("\n  link on {d}={d}; put 12=1212 (overwrite); entry -> {d}={d}, re-seeks caused: {d}\n", .{
+        on_12.key, on_12.value, after.key, after.value, link.stats.reseeks - reseeks_before,
+    });
     try w.print("  re-seeks so far: link {d}, stack {d}\n", .{ link.stats.reseeks, stack.stats.reseeks });
 }
 

@@ -100,13 +100,13 @@ pub const Tree = struct {
     /// The tree-wide lock of `global_rwlock`.
     rwlock: Io.RwLock = .init,
 
-    /// Allocates the whole node table (`capacity` nodes) and creates the root
+    /// Allocates the whole node table (`node_count` nodes) and creates the root
     /// as an empty leaf, so that no operation has to handle "no root yet".
-    pub fn init(gpa: Allocator, order: usize, protocol: Protocol, capacity: u32) Allocator.Error!Tree {
+    pub fn init(gpa: Allocator, order: usize, protocol: Protocol, node_count: u32) Allocator.Error!Tree {
         assert(order >= 3 and order <= base_node.max_order);
-        assert(capacity >= 1);
-        var table: table_.NodeTable = try .init(gpa, capacity);
-        const root = table.reserve(1) catch unreachable; // capacity >= 1
+        assert(node_count >= 1);
+        var table: table_.NodeTable = try .init(gpa, node_count);
+        const root = table.reserve(1) catch unreachable; // node_count >= 1
         table.node(root).* = Node.initLeaf();
         return .{ .order = order, .protocol = protocol, .table = table, .root = .init(root) };
     }

@@ -36,8 +36,8 @@ pub const NodeTable = struct {
     used: std.atomic.Value(u32) = .init(0),
 
     /// The only allocation the tree ever makes.
-    pub fn init(gpa: Allocator, capacity: u32) Allocator.Error!NodeTable {
-        const slots = try gpa.alloc(Slot, capacity);
+    pub fn init(gpa: Allocator, node_count: u32) Allocator.Error!NodeTable {
+        const slots = try gpa.alloc(Slot, node_count);
         for (slots) |*slot| slot.* = .{};
         return .{ .slots = slots };
     }

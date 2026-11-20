@@ -27,6 +27,7 @@ pub const Stats = index.Stats;
 pub const Db = @import("db.zig").Db;
 pub const Cursor = @import("db.zig").Cursor;
 pub const Row = @import("db.zig").Row;
+pub const VacuumOptions = @import("db.zig").VacuumOptions;
 pub const VacuumReport = @import("db.zig").VacuumReport;
 pub const Violation = @import("validate.zig").Violation;
 

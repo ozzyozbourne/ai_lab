@@ -1,0 +1,5 @@
+{
+  "release": "v1",
+  "capability_floor": 0.4,
+  "notes": "Wilson lower bound (n = capability tasks) that any candidate must reach; set just under the shipped v1's lower bound of 0.422"
+}

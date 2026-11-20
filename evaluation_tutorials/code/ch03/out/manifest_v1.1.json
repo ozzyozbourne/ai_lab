@@ -1,0 +1,41 @@
+{
+ "changelog": "added faq-0003, bill-0003; retired faq-0002 (policy changed 2026-04-01)",
+ "file": "golden_v1.1.jsonl",
+ "file_sha256": "596f69d2cee8620f5a0361de075575948e3f3c332bb44655c2560a508520b168",
+ "n_active": 7,
+ "records": {
+  "bill-0001": {
+   "sha256": "b4be36495cb6dbd7ad8144c6c8d266777f50632ca5d5704400d3eb7d3a4cda64",
+   "status": "active"
+  },
+  "bill-0002": {
+   "sha256": "05ed32a884e3f79fb4fd00403bafea6faf5c811fb9783cc2b92030b8e2722e38",
+   "status": "active"
+  },
+  "bill-0003": {
+   "sha256": "ae1501419dbf89f4889d8db2138bc6801d0b1e4bf02cf7a724ed7e0a07a240f3",
+   "status": "active"
+  },
+  "faq-0001": {
+   "sha256": "b911d15495707d7db9e2ffece639f3cf4475edfc830fc3762171a4767f635afe",
+   "status": "active"
+  },
+  "faq-0002": {
+   "sha256": "e60215b00b6865a80547166a7b4daade040e034975a64c26cac396210b99c31c",
+   "status": "retired"
+  },
+  "faq-0003": {
+   "sha256": "c5593ef219e09828498c21d6dc231c1261738dcce2ebe2c544eef78caa4afba8",
+   "status": "active"
+  },
+  "legal-0001": {
+   "sha256": "9fd16f79322d05963d760b5cfda15ce208181ed1799f0d5577e37e163a70da87",
+   "status": "active"
+  },
+  "legal-0002": {
+   "sha256": "98b87e4d6ca7cbddfae065cb1e8d57db06c5948233f4ad130d3c57e126ba5206",
+   "status": "active"
+  }
+ },
+ "version": "v1.1"
+}

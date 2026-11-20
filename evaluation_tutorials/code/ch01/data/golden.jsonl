@@ -1,0 +1,40 @@
+{"id": "reg-arith-0", "suite": "regression", "skill": "arithmetic", "input": "What is 12 + 30?", "target": "42"}
+{"id": "reg-arith-1", "suite": "regression", "skill": "arithmetic", "input": "What is 19 + 33?", "target": "52"}
+{"id": "reg-arith-2", "suite": "regression", "skill": "arithmetic", "input": "What is 26 + 36?", "target": "62"}
+{"id": "reg-arith-3", "suite": "regression", "skill": "arithmetic", "input": "What is 33 + 39?", "target": "72"}
+{"id": "reg-arith-4", "suite": "regression", "skill": "arithmetic", "input": "What is 40 + 42?", "target": "82"}
+{"id": "reg-lookup-0", "suite": "regression", "skill": "lookup", "input": "Capital of France?", "target": "Paris"}
+{"id": "reg-lookup-1", "suite": "regression", "skill": "lookup", "input": "Capital of Japan?", "target": "Tokyo"}
+{"id": "reg-lookup-2", "suite": "regression", "skill": "lookup", "input": "Capital of Kenya?", "target": "Nairobi"}
+{"id": "reg-lookup-3", "suite": "regression", "skill": "lookup", "input": "Capital of Peru?", "target": "Lima"}
+{"id": "reg-lookup-4", "suite": "regression", "skill": "lookup", "input": "Capital of Canada?", "target": "Ottawa"}
+{"id": "reg-format-0", "suite": "regression", "skill": "format", "input": "Return listing 100 as JSON with key 'id'.", "target": "{\"id\": 100}"}
+{"id": "reg-format-1", "suite": "regression", "skill": "format", "input": "Return listing 101 as JSON with key 'id'.", "target": "{\"id\": 101}"}
+{"id": "reg-format-2", "suite": "regression", "skill": "format", "input": "Return listing 102 as JSON with key 'id'.", "target": "{\"id\": 102}"}
+{"id": "reg-format-3", "suite": "regression", "skill": "format", "input": "Return listing 103 as JSON with key 'id'.", "target": "{\"id\": 103}"}
+{"id": "reg-format-4", "suite": "regression", "skill": "format", "input": "Return listing 104 as JSON with key 'id'.", "target": "{\"id\": 104}"}
+{"id": "cap-multistep-0", "suite": "capability", "skill": "multi_step", "input": "Schedule showing 0 after checking agent availability and the seller's blackout dates.", "target": "showing-0-booked"}
+{"id": "cap-multistep-1", "suite": "capability", "skill": "multi_step", "input": "Schedule showing 1 after checking agent availability and the seller's blackout dates.", "target": "showing-1-booked"}
+{"id": "cap-multistep-2", "suite": "capability", "skill": "multi_step", "input": "Schedule showing 2 after checking agent availability and the seller's blackout dates.", "target": "showing-2-booked"}
+{"id": "cap-multistep-3", "suite": "capability", "skill": "multi_step", "input": "Schedule showing 3 after checking agent availability and the seller's blackout dates.", "target": "showing-3-booked"}
+{"id": "cap-multistep-4", "suite": "capability", "skill": "multi_step", "input": "Schedule showing 4 after checking agent availability and the seller's blackout dates.", "target": "showing-4-booked"}
+{"id": "cap-multistep-5", "suite": "capability", "skill": "multi_step", "input": "Schedule showing 5 after checking agent availability and the seller's blackout dates.", "target": "showing-5-booked"}
+{"id": "cap-multistep-6", "suite": "capability", "skill": "multi_step", "input": "Schedule showing 6 after checking agent availability and the seller's blackout dates.", "target": "showing-6-booked"}
+{"id": "cap-multistep-7", "suite": "capability", "skill": "multi_step", "input": "Schedule showing 7 after checking agent availability and the seller's blackout dates.", "target": "showing-7-booked"}
+{"id": "cap-multistep-8", "suite": "capability", "skill": "multi_step", "input": "Schedule showing 8 after checking agent availability and the seller's blackout dates.", "target": "showing-8-booked"}
+{"id": "cap-multistep-9", "suite": "capability", "skill": "multi_step", "input": "Schedule showing 9 after checking agent availability and the seller's blackout dates.", "target": "showing-9-booked"}
+{"id": "cap-ambiguous-0", "suite": "capability", "skill": "ambiguous", "input": "Find me something nice near downtown (request 0).", "target": "clarify-0"}
+{"id": "cap-ambiguous-1", "suite": "capability", "skill": "ambiguous", "input": "Find me something nice near downtown (request 1).", "target": "clarify-1"}
+{"id": "cap-ambiguous-2", "suite": "capability", "skill": "ambiguous", "input": "Find me something nice near downtown (request 2).", "target": "clarify-2"}
+{"id": "cap-ambiguous-3", "suite": "capability", "skill": "ambiguous", "input": "Find me something nice near downtown (request 3).", "target": "clarify-3"}
+{"id": "cap-ambiguous-4", "suite": "capability", "skill": "ambiguous", "input": "Find me something nice near downtown (request 4).", "target": "clarify-4"}
+{"id": "cap-ambiguous-5", "suite": "capability", "skill": "ambiguous", "input": "Find me something nice near downtown (request 5).", "target": "clarify-5"}
+{"id": "cap-ambiguous-6", "suite": "capability", "skill": "ambiguous", "input": "Find me something nice near downtown (request 6).", "target": "clarify-6"}
+{"id": "cap-ambiguous-7", "suite": "capability", "skill": "ambiguous", "input": "Find me something nice near downtown (request 7).", "target": "clarify-7"}
+{"id": "cap-ambiguous-8", "suite": "capability", "skill": "ambiguous", "input": "Find me something nice near downtown (request 8).", "target": "clarify-8"}
+{"id": "cap-ambiguous-9", "suite": "capability", "skill": "ambiguous", "input": "Find me something nice near downtown (request 9).", "target": "clarify-9"}
+{"id": "cap-longctx-0", "suite": "capability", "skill": "long_context", "input": "Summarise clause 0 of the 40-page contract.", "target": "clause-0-summary"}
+{"id": "cap-longctx-1", "suite": "capability", "skill": "long_context", "input": "Summarise clause 1 of the 40-page contract.", "target": "clause-1-summary"}
+{"id": "cap-longctx-2", "suite": "capability", "skill": "long_context", "input": "Summarise clause 2 of the 40-page contract.", "target": "clause-2-summary"}
+{"id": "cap-longctx-3", "suite": "capability", "skill": "long_context", "input": "Summarise clause 3 of the 40-page contract.", "target": "clause-3-summary"}
+{"id": "cap-longctx-4", "suite": "capability", "skill": "long_context", "input": "Summarise clause 4 of the 40-page contract.", "target": "clause-4-summary"}

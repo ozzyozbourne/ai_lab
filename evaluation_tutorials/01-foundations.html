@@ -1,0 +1,1535 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1. Why Evals: Foundations, Taxonomy and Eval-Driven Development · Evaluations for AI</title>
+<meta name="description" content="What an eval is, the shared vocabulary of the book (task, trial, grader, transcript, outcome, harness), a taxonomy of evals, graders, metrics, uncertainty, validity, and the eval-driven development loop.">
+<link rel="stylesheet" href="assets/book.css">
+<style>
+  /* Chapter 1 only: wide figures scroll horizontally on phones instead of shrinking their labels */
+  @media (max-width: 640px) {
+    figure.ch01-wide { overflow-x: auto; max-width: 100%; }
+    figure.ch01-wide svg { min-width: 560px; }
+  }
+</style>
+<script defer src="assets/book.js"></script>
+</head>
+<body>
+<main>
+  <p class="kicker">Chapter 1</p>
+  <h1>Why Evals: Foundations, Taxonomy and Eval-Driven Development</h1>
+  <p class="lede">In January 2026 Anthropic's engineering team summed up what happens to agent teams that ship without evaluations:
+  &ldquo;it&rsquo;s easy to get stuck in reactive loops&mdash;catching issues only in production, where fixing one failure creates others&rdquo;<a class="cite" href="#src-1">[1]</a>.
+  Two years earlier Hamel Husain had described the same trap from the inside. Rechat&rsquo;s real-estate assistant, Lucy, improved quickly with prompt
+  engineering, then plateaued: fixing one failure mode surfaced others, &ldquo;resembling a game of whack-a-mole&rdquo;, there was no visibility
+  &ldquo;beyond vibe checks&rdquo;, and the prompts grew into long, unwieldy lists of edge cases<a class="cite" href="#src-2">[2]</a>. The way out, in both accounts,
+  was the same: a systematic evaluation practice. This chapter gives you the vocabulary, the mental map and the habits that the other nine chapters build on.</p>
+  <p class="chapter-meta"><span>Reading time: about 70 minutes</span><span>Code: <code>code/ch01/</code></span><span>Prerequisites: Python, basic probability</span></p>
+
+  <div class="objectives">
+    <p class="obj-title">You will learn</p>
+    <ul>
+      <li>Name the parts of any eval (task, trial, grader, transcript, outcome, eval harness, agent harness, suite) and build a working harness in about 180 lines of Python.</li>
+      <li>Place any eval on seven taxonomy axes and say which kind of eval a given decision needs.</li>
+      <li>Choose between code-based, model-based and human graders, and explain why a judge with 95% agreement can be worthless.</li>
+      <li>Show that the answer parser is part of the metric, and tell pass@k (&ldquo;can it ever&rdquo;) apart from pass^k (&ldquo;does it always&rdquo;).</li>
+      <li>Put an honest interval on a score, and explain why 3% defects on 200 samples cannot certify a 5% limit.</li>
+      <li>Recognise threats to validity: construct validity, label errors, saturation, contamination and Goodhart&rsquo;s law (the winner&rsquo;s curse).</li>
+      <li>Run the eval-driven development loop: error analysis, a failure taxonomy, targeted evals, a CI gate, and production monitoring that feeds back new tasks.</li>
+    </ul>
+  </div>
+
+  <h2 id="why"><span class="sec-num">1.1</span>Why evals?</h2>
+  <p>Anthropic&rsquo;s definition is a good place to start because it is short: an <span class="term">evaluation</span> (&ldquo;eval&rdquo;) is &ldquo;a test for an
+  AI system: give an AI an input, then apply grading logic to its output to measure success&rdquo;<a class="cite" href="#src-1">[1]</a>. Everything else in this
+  book elaborates one of the three parts of that sentence: <em>which inputs</em> (the task distribution, Chapter 3), <em>which system</em> (a model alone,
+  or a model inside a harness with tools and retrieval, Chapters 6 and 7), and <em>which grading logic and aggregation</em> (Chapters 2, 4 and 5).</p>
+
+  <h3 id="why-nondeterminism">Traditional tests are not enough</h3>
+  <p>A unit test checks a deterministic function: <code>sort([3,1,2]) == [1,2,3]</code> holds or it does not, today and tomorrow. An LLM system
+  breaks both assumptions. Its output is a sample from a distribution, and the space of acceptable outputs is usually huge (there are many correct
+  summaries of a contract), so equality checks are often the wrong instrument. OpenAI&rsquo;s guide makes this the core motivation for
+  evals<a class="cite" href="#src-3">[3]</a>. The consequences run through the whole book:</p>
+  <ul>
+    <li>Because outputs vary, one run proves little. You run several <span class="term">trials</span> per task and report a rate with an
+    uncertainty, not a single pass/fail (sections <a href="#anatomy">1.2</a> and <a href="#estimate">1.6</a>).</li>
+    <li>Because acceptable outputs vary, you need graders that tolerate valid variation without accepting invalid output, and those graders
+    can themselves be wrong (sections <a href="#graders">1.4</a> and <a href="#metrics">1.5</a>).</li>
+    <li>Because agents act over many turns, &ldquo;mistakes can propagate and compound&rdquo;<a class="cite" href="#src-1">[1]</a>, so you grade the end state of the
+    world, not just the last message.</li>
+  </ul>
+  <p>Setting the temperature to 0 does not remove the first problem on a served API, and agents add nondeterministic tools, web pages and
+  environments on top.</p>
+  <aside class="warn" data-title="Temperature 0 is not determinism">
+    <p>He and colleagues at Thinking Machines trace run-to-run variation at temperature 0 to inference kernels that are not <em>batch-invariant</em>:
+    the numerics depend on which other requests share the batch, so your output depends on other users&rsquo; traffic<a class="cite" href="#src-51">[51]</a>. Silent
+    updates behind undated aliases add more drift. In practice:
+    pin dated model snapshot IDs rather than aliases, record the decoding parameters, and run repeated trials and report the variance anyway.
+    <a href="05-statistics.html#nondeterminism">Section 5.10</a> treats nondeterminism and reproducibility in depth.</p>
+  </aside>
+
+  <h3 id="why-loop">The improvement loop</h3>
+  <p>Husain&rsquo;s central claim is blunt: unsuccessful AI products &ldquo;almost always share a common root cause: a failure to create robust evaluation
+  systems&rdquo;<a class="cite" href="#src-2">[2]</a>. The argument is about iteration speed. Improving an AI product means cycling through three activities: evaluate
+  quality, debug the failures, change the system. Without evals, the first step is a human skimming a few outputs: slow, inconsistent and blind
+  to regressions nobody looked at. Anthropic describes the breaking point: users say the agent &ldquo;feels worse&rdquo;, the team is &ldquo;flying
+  blind&rdquo;, and debugging becomes &ldquo;wait for complaints, reproduce manually, fix the bug, and hope nothing else regressed&rdquo;<a class="cite" href="#src-1">[1]</a>.</p>
+  <p>A <span class="term">vibe check</span>, an informal look at a few outputs, is &ldquo;useful, but not enough&rdquo;<a class="cite" href="#src-2">[2]</a>: it shows
+  what to measure, but it is not repeatable, not comparable across versions and has no error bars.</p>
+
+  <h3 id="why-uses">Four uses of evals</h3>
+  <p>Evals serve four communities whose needs overlap but are not identical. Keeping them apart avoids a common confusion: a benchmark designed
+  for science is rarely the right tool for a product decision, and vice versa.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Use</th><th>Typical question</th><th>Typical eval</th><th>What matters most</th></tr></thead>
+      <tbody>
+        <tr><td>Product decisions</td><td>&ldquo;Can we ship prompt v7? Is the cheaper model good enough for our users?&rdquo;</td><td>Task-specific suites built from your own traces; CI regression gates; A/B tests</td><td>Representativeness of <em>your</em> traffic; speed; cost</td></tr>
+        <tr><td>Science</td><td>&ldquo;Is model A better at reasoning than model B? Did method X help?&rdquo;</td><td>Public benchmarks (MMLU, GPQA, SWE-bench), held-out test sets</td><td>Construct validity, comparability, statistics, contamination control<a class="cite" href="#src-4">[4]</a><a class="cite" href="#src-5">[5]</a></td></tr>
+        <tr><td>Safety and governance</td><td>&ldquo;Has this model crossed a dangerous-capability threshold? Will it misuse its abilities?&rdquo;</td><td>Dangerous-capability and alignment (propensity) evaluations<a class="cite" href="#src-6">[6]</a></td><td>Elicitation strength, conservative thresholds, audit trail (Chapter 8)</td></tr>
+        <tr><td>Training signal (RL / post-training)</td><td>&ldquo;Is checkpoint 3k better than 2k? What reward should this rollout get?&rdquo;</td><td>Graders and verifiers inside RL environments (RLVR, unit-test rewards, rubric/judge rewards); checkpoint-selection evals</td><td>Robustness to optimisation pressure, hackability, grader speed and cost (<a href="07-rl-environments.html#rlvr">Chapter 7</a>)</td></tr>
+      </tbody>
+      <caption>Table 1.1. The four uses of evals. The same mechanics (tasks, graders, statistics) serve all four; what changes is the cost of being wrong.</caption>
+    </table>
+  </div>
+
+  <h3 id="why-cost">The cost of having none</h3>
+  <p>The Rechat story is the canonical cost: progress stopped, and the prompt became a pile of patches<a class="cite" href="#src-2">[2]</a>. Without a fixed task
+  set you cannot tell a regression from noise, evaluate a new model release in an afternoon, or hand a failure to a teammate as a reproducible test.
+  Anthropic notes that the value of evals &ldquo;compounds over the lifecycle of an agent&rdquo;: a team with a suite adopts a new frontier model in
+  days<a class="cite" href="#src-1">[1]</a>. Husain and Shankar report that 60&ndash;80% of development time in their projects went to error analysis and
+  evaluation<a class="cite" href="#src-7">[7]</a>.</p>
+
+  <h3 id="why-limits">What evals cannot do</h3>
+  <p>An eval score is evidence for a claim, and only for the claim it was designed to support. Three limits recur:</p>
+  <ul>
+    <li><b>Validity.</b> A score can be precise and still measure the wrong thing (construct validity, section <a href="#validity">1.7</a>).</li>
+    <li><b>Grader error.</b> The eval can be wrong rather than the model. Anthropic reports that Claude Opus 4.5 initially scored 42% on
+    CORE-Bench until a researcher found rigid grading (it penalised &ldquo;96.12&rdquo; when expecting &ldquo;96.124991&hellip;&rdquo;), ambiguous task
+    specifications and stochastic tasks that could not be reproduced; after fixes and a less constrained scaffold the score was 95%<a class="cite" href="#src-1">[1]</a>.</li>
+    <li><b>Coverage.</b> An offline eval only covers the inputs you thought of. Real users find others, which is why
+    <a href="#online">online evaluation</a> exists. Barnett et al., reporting on three RAG case studies, conclude that &ldquo;validation of a RAG
+    system is only feasible during operation&rdquo;<a class="cite" href="#src-8">[8]</a>.</li>
+  </ul>
+  <aside class="note" data-title="A useful mental model">
+    <p>Think of an eval as a <em>measurement instrument</em>: does it read the right quantity (validity), how much does the reading jump around
+    (reliability), and was it calibrated against a reference (judge validation)? Wallach et al. frame generative-AI evaluation as a social-science
+    measurement problem<a class="cite" href="#src-9">[9]</a>.</p>
+  </aside>
+
+  <h2 id="anatomy"><span class="sec-num">1.2</span>Anatomy of an eval</h2>
+  <p>This book uses the vocabulary of Anthropic&rsquo;s agent-evals guide throughout<a class="cite" href="#src-1">[1]</a>. It maps cleanly onto Inspect
+  (<code>Sample</code>, <code>solver</code>, <code>scorer</code>, <code>epochs</code>)<a class="cite" href="#src-10">[10]</a> and lm-evaluation-harness
+  (docs, <code>doc_to_target</code>, <code>metric_list</code>, <code>filter_list</code>)<a class="cite" href="#src-11">[11]</a>.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Term</th><th>Definition (after Anthropic, Jan 2026)</th><th>In Inspect</th><th>In our <code>mini_harness.py</code></th></tr></thead>
+      <tbody>
+        <tr><td><span class="term">Task</span></td><td>A single test with defined inputs and success criteria (also: problem, test case).</td><td><code>Sample(input, target)</code></td><td><code>Task</code> dataclass</td></tr>
+        <tr><td><span class="term">Trial</span></td><td>One attempt at a task. Outputs vary, so you run several.</td><td>one epoch of a sample</td><td><code>Trial</code> dataclass</td></tr>
+        <tr><td><span class="term">Grader</span></td><td>Logic that scores some aspect of performance. A task can have several graders, each with several checks.</td><td><code>scorer</code></td><td><code>exact_match</code>, <code>regex_number</code>, <code>contains_all</code></td></tr>
+        <tr><td><span class="term">Transcript</span></td><td>The complete record of a trial: outputs, tool calls, reasoning, intermediate results (also: trace, trajectory).</td><td><code>.eval</code> log</td><td>one JSONL line per trial</td></tr>
+        <tr><td><span class="term">Outcome</span></td><td>The final state of the environment after the trial, e.g. whether a reservation exists in the database.</td><td>sandbox state checked by a scorer</td><td>(the output string; no environment)</td></tr>
+        <tr><td><span class="term">Eval harness</span></td><td>Infrastructure that runs evals end to end: provides instructions and tools, runs tasks concurrently, records steps, grades and aggregates.</td><td><code>inspect eval</code></td><td><code>run_eval</code> + <code>summarize</code></td></tr>
+        <tr><td><span class="term">Agent harness</span> (scaffold)</td><td>The system that lets a model act as an agent: processes inputs, orchestrates tool calls, returns results.</td><td><code>solver</code> / <code>react()</code></td><td><code>MockModel.generate</code></td></tr>
+        <tr><td><span class="term">Eval suite</span></td><td>A collection of tasks designed to measure specific capabilities or behaviours, with a shared goal.</td><td>a set of <code>@task</code>s</td><td>the list from <code>build_tasks()</code></td></tr>
+      </tbody>
+      <caption>Table 1.2. The shared vocabulary of the book.</caption>
+    </table>
+  </div>
+  <p>Two distinctions in this table deserve emphasis because they cause most real-world confusion.</p>
+  <p><b>Transcript vs outcome.</b> &ldquo;A flight-booking agent might say &lsquo;Your flight has been booked&rsquo; at the end of the transcript, but the
+  outcome is whether a reservation exists in the environment&rsquo;s SQL database&rdquo;<a class="cite" href="#src-1">[1]</a>. What the agent <em>says</em> it did is a claim;
+  the outcome is the fact. &tau;-bench is built on this idea: it grades a customer-service agent by comparing the final database state with an
+  annotated goal state<a class="cite" href="#src-12">[12]</a>. When you can check the outcome, check the outcome.</p>
+  <p><b>Eval harness vs agent harness, and the unit under test.</b> The eval harness is the measuring apparatus; the agent harness is part of the thing
+  being measured. &ldquo;When we evaluate &lsquo;an agent,&rsquo; we&rsquo;re evaluating the harness and the model working together&rdquo;<a class="cite" href="#src-1">[1]</a>.
+  The same model in two scaffolds can score very differently (the CORE-Bench jump from 42% to 95% came partly from a less constrained scaffold).
+  So the <span class="term">unit under test</span> of an agent eval is <em>model + harness + tools + prompt</em>, and every report should name all of them
+  (Kapoor et al.&rsquo;s model-vs-system distinction, section <a href="#taxonomy-suites">1.3</a><a class="cite" href="#src-13">[13]</a>).</p>
+
+  <figure class="diagram ch01-wide" id="fig-1-1">
+    <svg viewBox="0 0 760 330" role="img" aria-labelledby="fig-1-1-t">
+      <title id="fig-1-1-t">Anatomy of an eval: tasks flow through the system under test to transcripts and outcomes, then graders, scores and an aggregate with a confidence interval, all inside the eval harness</title>
+      <defs><marker id="fig-1-1-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-muted"/></marker></defs>
+      <rect x="6" y="6" width="748" height="318" rx="12" class="f-box" stroke-dasharray="6 4"/>
+      <text x="20" y="28" class="title">Eval harness</text>
+      <text x="130" y="28" class="small">loads tasks, runs n isolated trials each, logs transcripts, grades, aggregates</text>
+      <rect x="20" y="70" width="120" height="96" rx="8" class="tint-1"/>
+      <text x="80" y="96" text-anchor="middle" class="title">Task</text>
+      <text x="80" y="116" text-anchor="middle" class="small">input</text>
+      <text x="80" y="132" text-anchor="middle" class="small">success criteria</text>
+      <text x="80" y="148" text-anchor="middle" class="small">metadata</text>
+      <rect x="170" y="50" width="200" height="136" rx="10" class="tint-2" stroke-dasharray="5 3"/>
+      <text x="270" y="70" text-anchor="middle" class="small">unit under test</text>
+      <rect x="185" y="80" width="170" height="40" rx="6" class="f-box"/>
+      <text x="270" y="105" text-anchor="middle">Model</text>
+      <rect x="185" y="130" width="170" height="44" rx="6" class="f-box"/>
+      <text x="270" y="149" text-anchor="middle">Agent harness</text>
+      <text x="270" y="166" text-anchor="middle" class="small">prompt, tools, loop</text>
+      <rect x="400" y="50" width="150" height="58" rx="8" class="tint-3"/>
+      <text x="475" y="75" text-anchor="middle">Transcript</text>
+      <text x="475" y="94" text-anchor="middle" class="small">messages, tool calls</text>
+      <rect x="400" y="128" width="150" height="58" rx="8" class="tint-3"/>
+      <text x="475" y="153" text-anchor="middle">Outcome</text>
+      <text x="475" y="172" text-anchor="middle" class="small">final environment state</text>
+      <rect x="580" y="70" width="160" height="96" rx="8" class="tint-4"/>
+      <text x="660" y="96" text-anchor="middle" class="title">Graders</text>
+      <text x="660" y="116" text-anchor="middle" class="small">code-based</text>
+      <text x="660" y="132" text-anchor="middle" class="small">model-based</text>
+      <text x="660" y="148" text-anchor="middle" class="small">human</text>
+      <path d="M140 118 H168" class="s-muted" stroke-width="2" marker-end="url(#fig-1-1-arr)"/>
+      <path d="M370 100 L398 80" class="s-muted" stroke-width="2" marker-end="url(#fig-1-1-arr)"/>
+      <path d="M370 140 L398 156" class="s-muted" stroke-width="2" marker-end="url(#fig-1-1-arr)"/>
+      <path d="M550 80 L578 100" class="s-muted" stroke-width="2" marker-end="url(#fig-1-1-arr)"/>
+      <path d="M550 156 L578 136" class="s-muted" stroke-width="2" marker-end="url(#fig-1-1-arr)"/>
+      <rect x="400" y="232" width="150" height="64" rx="8" class="tint-5"/>
+      <text x="475" y="258" text-anchor="middle">Scores per trial</text>
+      <text x="475" y="278" text-anchor="middle" class="small">pass/fail, partial credit</text>
+      <rect x="170" y="232" width="200" height="64" rx="8" class="tint-1"/>
+      <text x="270" y="258" text-anchor="middle">Aggregate &#177; CI</text>
+      <text x="270" y="278" text-anchor="middle" class="small">accuracy, pass@k, pass^k, cost</text>
+      <path d="M660 166 V264 H552" class="s-muted" stroke-width="2" marker-end="url(#fig-1-1-arr)"/>
+      <path d="M400 264 H372" class="s-muted" stroke-width="2" marker-end="url(#fig-1-1-arr)"/>
+      <path d="M80 166 V264 H168" class="s-muted" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#fig-1-1-arr)"/>
+      <text x="30" y="290" class="small">repeat for n trials</text>
+      <text x="30" y="304" class="small">per task</text>
+    </svg>
+    <figcaption><b>Figure 1.1.</b> Anatomy of an eval. The dashed inner box is the unit under test: for an agent it is the model <em>and</em> its harness.
+    Graders read the transcript, the outcome, or both. The outer eval harness runs many isolated trials per task and turns per-trial scores into an aggregate with an uncertainty.</figcaption>
+  </figure>
+
+  <h3 id="anatomy-code">A harness in 180 lines</h3>
+  <p><code>code/ch01/mini_harness.py</code> is the smallest harness that has every part, in the standard library only. The &ldquo;model&rdquo; is a
+  seeded mock that answers correctly with a per-task probability, which stands in for task difficulty.</p>
+  <p><b>Lines 26&ndash;52: records.</b> <code>Task</code> is frozen because a task edited silently between runs makes two scores incomparable.
+  <code>Trial.passed</code> combines graders the simplest way (all must pass), and <code>status</code> separates infrastructure failures from model failures.</p>
+<pre data-file="code/ch01/mini_harness.py (lines 26&ndash;88; full file in the repo)"><code class="language-python">@dataclass(frozen=True)
+class Task:                      # one test: input + success criteria
+    id: str
+    input: str
+    target: str | list[str]
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass
+class Grade:                     # one grader's verdict on one trial
+    grader: str
+    passed: bool
+    detail: str = ""
+
+
+@dataclass
+class Trial:                     # one attempt at a task, with its transcript
+    task_id: str
+    trial: int
+    output: str
+    grades: list[Grade]
+    status: str = "ok"           # "ok" or "error": did the INFRASTRUCTURE work?
+    error: str = ""
+
+    @property
+    def passed(self) -&gt; bool:    # combine graders: every grader must pass
+        return self.status == "ok" and all(g.passed for g in self.grades)
+
+
+class MockModel:
+    """Seeded stand-in for an LLM: answers correctly with a per-task probability."""
+
+    def __init__(self, seed: int = 0, error_rate: float = 0.0):
+        self.rng = random.Random(seed)
+        self.err_rng = random.Random(seed + 1)          # separate stream: errors leave answers unchanged
+        self.error_rate = error_rate
+
+    def generate(self, task: Task) -&gt; str:
+        p_correct = task.metadata["p_correct"]          # per-task difficulty
+        good = task.target if isinstance(task.target, str) else ", ".join(task.target)
+        if self.rng.random() &lt; p_correct:
+            out = self.rng.choice([f"The answer is {good}.", f"{good}", f"Sure! {good}"])
+        else:
+            out = self.rng.choice(["I am not sure.", "The answer is 41.", "Paris, maybe Lyon"])
+        if self.err_rng.random() &lt; self.error_rate:     # mock provider timeout / 5xx
+            raise TimeoutError("mock API timeout")
+        return out
+
+
+def exact_match(task: Task, out: str) -&gt; Grade:
+    ok = out.strip().lower() == str(task.target).strip().lower()
+    return Grade("exact_match", ok)
+
+
+def regex_number(task: Task, out: str) -&gt; Grade:
+    nums = re.findall(r"-?\d+(?:\.\d+)?", out.replace(",", ""))
+    ok = bool(nums) and float(nums[-1]) == float(task.target)   # last number wins
+    return Grade("regex_number", ok, nums[-1] if nums else "no number")
+
+
+def contains_all(task: Task, out: str) -&gt; Grade:
+    missing = [t for t in task.target if t.lower() not in out.lower()]
+    return Grade("contains_all", not missing, f"missing={missing}")</code></pre>
+  <p><b>Lines 55&ndash;88: mock and graders.</b> The mock phrases correct answers three ways, as real models do, and its optional
+  <code>error_rate</code> draws from a separate seeded stream so that turning errors on changes no answer. The three graders are three different
+  <em>definitions of correct</em>; the output shows the consequence.</p>
+<pre data-file="code/ch01/mini_harness.py (lines 91&ndash;132; full file in the repo)"><code class="language-python">def run_eval(tasks: list[Task], graders: dict[str, list[Callable]], model: MockModel,
+             n_trials: int, log_path: pathlib.Path) -&gt; list[Trial]:
+    trials: list[Trial] = []
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w") as log:
+        for task in tasks:
+            for k in range(n_trials):                  # repeated trials: outputs vary
+                try:
+                    out = model.generate(task)
+                    grades = [g(task, out) for g in graders[task.metadata["kind"]]]
+                    trial = Trial(task.id, k, out, grades)
+                except Exception as e:                 # infrastructure failed, not the model
+                    trial = Trial(task.id, k, "", [], status="error", error=f"{type(e).__name__}: {e}")
+                trials.append(trial)
+                log.write(json.dumps({**asdict(trial), "passed": trial.passed}) + "\n")
+    return trials
+
+
+# Two-sided 95% t quantiles by degrees of freedom; the standard library has no t quantile function.
+T95 = {4: 2.776, 9: 2.262, 11: 2.201, 19: 2.093, 29: 2.045}
+
+
+def summarize(trials: list[Trial]) -&gt; dict:
+    by_task: dict[str, list[int]] = {}
+    ok_by_task: dict[str, list[int]] = {}
+    for t in trials:
+        by_task.setdefault(t.task_id, []).append(int(t.passed))       # errors count as fails
+        if t.status == "ok":
+            ok_by_task.setdefault(t.task_id, []).append(int(t.passed))
+    task_means = [sum(v) / len(v) for v in by_task.values()]
+    n = len(task_means)                                # the unit of sampling is the TASK
+    mean = sum(task_means) / n
+    var = sum((m - mean) ** 2 for m in task_means) / (n - 1)
+    se = math.sqrt(var / n)
+    naive_se = math.sqrt(mean * (1 - mean) / len(trials))   # pretends trials are independent
+    t_crit = T95.get(n - 1, 1.96)                      # z fallback: only valid for large n
+    excl = [sum(v) / len(v) for v in ok_by_task.values()]
+    return {"n_tasks": n, "n_trials": len(trials), "accuracy": mean, "se": se,
+            "ci95_t": (mean - t_crit * se, mean + t_crit * se),
+            "ci95_z": (mean - 1.96 * se, mean + 1.96 * se), "naive_se": naive_se,
+            "error_rate": sum(t.status == "error" for t in trials) / len(trials),
+            "acc_excl_errors": sum(excl) / len(excl)}</code></pre>
+  <p><b>Lines 91&ndash;106: the run loop.</b> Each trial is graded and written as one JSON line to <code>out/transcripts.jsonl</code>, the
+  transcript store you open when a number looks odd. Exceptions become <code>status="error"</code> trials instead of aborting the run. A real agent
+  harness would also start each trial from a clean environment, because shared state causes correlated failures or inflated scores<a class="cite" href="#src-1">[1]</a>.</p>
+  <p><b>Lines 109&ndash;132: aggregation</b>, the key design decision. Trials are averaged <em>within</em> each task, and the mean and SE are taken
+  <em>across tasks</em>: the task is the unit of sampling, and five trials of one task are not five independent pieces of evidence. The naive SE over
+  all 60 trials is computed for contrast. The interval uses a hard-coded <i>t</i> quantile (2.201 for 11 df) because the standard library has none.</p>
+  <p><b>Lines 135&ndash;142: the run record.</b> <code>write_run_meta</code> writes <code>out/run_meta.json</code> with the seed, <code>n_trials</code>,
+  grader names, a SHA-256 hash of the task list and a timestamp; the hash catches a silently edited task.</p>
+  <p class="run-cmd">Run it: <code>python3 code/ch01/mini_harness.py</code></p>
+<pre class="output"><code>tasks=12  trials=60  accuracy=0.467
+task-level SE=0.116  95% CI (t, 11 df)=[0.211, 0.723]  z-based=[0.239, 0.695] (too narrow)
+naive SE treating 60 trials as independent = 0.064 (too small)
+grader kind   mean p_correct  observed pass
+number                 0.598          0.700
+exact                  0.445          0.200
+all                    0.295          0.300
+first transcript line: {"task_id": "add-0", "trial": 0, "output": "The answer is 42.", "grades": [{"grader": "regex_number", "passed" ...
+run_meta.json written: seed=7 n_trials=5 task_sha256=4a3088cd0341...
+with 10% infra errors: error rate=0.117  accuracy (errors=fail)=0.417  accuracy (errors excluded)=0.471</code></pre>
+  <p>Four lessons sit in that output.</p>
+  <ol>
+    <li><b>The interval is wide.</b> Twelve tasks give a 95% interval from 21% to 72%, so &ldquo;46.7%&rdquo; versus a colleague&rsquo;s &ldquo;55%&rdquo;
+    means nothing. The <i>z</i> interval [0.239, 0.695] is too narrow at this <i>n</i> (Bowyer et al.<a class="cite" href="#src-33">[33]</a>; section
+    <a href="#estimate">1.6</a>, <a href="05-statistics.html#error-bars">Chapter 5</a>).</li>
+    <li><b>The naive SE is too small</b> by almost half (0.064 vs 0.116), because repeated trials of one task are not independent: the clustering
+    problem of <a href="05-statistics.html#clustered">Chapter 5</a>.</li>
+    <li><b>The grader dominates some results.</b> Exact-match tasks are answered correctly 44.5% of the time but only 20% of trials pass, because
+    &ldquo;The answer is Paris.&rdquo; is not &ldquo;Paris&rdquo;. The number tasks&rsquo; 0.70 vs 0.598 is sampling noise; the exact-match gap is a grader
+    defect that would persist with a million trials.</li>
+    <li><b>The error policy moves the headline.</b> With 10% of calls failing (7 of 60 trials), counting errors as failures gives 0.417 and
+    excluding them 0.471.</li>
+  </ol>
+  <p>Separate &ldquo;the model failed&rdquo; from &ldquo;the infrastructure failed&rdquo; (timeout, rate limit, crashed sandbox), and state the policy
+  for the second: retry, count as failure, or exclude.
+  Excluding errors can flatter a model that triggers more of them, for example one whose long outputs hit timeouts on exactly the hard tasks, so
+  report the error rate next to the score whatever you choose. Inspect implements this choice with <code>Task(fail_on_error=...)</code> and
+  sample-level retries<a class="cite" href="#src-10">[10]</a>; Chapter 9 compares how harnesses handle it (<a href="09-tooling-production.html#inspect">9.4</a>).</p>
+  <aside class="warn" data-title="Pitfall: blaming the model for the grader">
+    <p>Whenever a pass rate looks surprisingly low, read a sample of failing transcripts before you change the system. Anthropic&rsquo;s advice is
+    direct: &ldquo;You won&rsquo;t know if your graders are working well unless you read the transcripts and grades from many trials&rdquo;<a class="cite" href="#src-1">[1]</a>.
+    A 0% pass rate over many trials (their example is 0% pass@100) &ldquo;is most often a signal of a broken task, not an incapable agent&rdquo;.</p>
+  </aside>
+
+  <aside class="tip" data-title="Reproducibility record">
+    <p>Store this with every eval run, so that two numbers can be compared months later<a class="cite" href="#src-27">[27]</a>:</p>
+    <ul>
+      <li>model snapshot ID (dated, not an alias) and provider or serving stack;</li>
+      <li>decoding parameters: temperature, top_p, max tokens, stop sequences, and for reasoning models the reasoning effort or thinking-token budget;</li>
+      <li>prompt and agent-harness version (a commit hash);</li>
+      <li>agent limits: max turns, per-trial timeout, tool-call and token or cost budgets;</li>
+      <li>tool set and sandbox policy: which tools are enabled, internet on/off, git history sealed or not (section <a href="#validity-leaky">1.7</a> shows this alone moved a SWE-bench Pro score by 14 points<a class="cite" href="#src-50">[50]</a>);</li>
+      <li>dataset version or content hash;</li>
+      <li>grader versions, and for LLM judges the judge model and prompt;</li>
+      <li>seeds and <code>n_trials</code>;</li>
+      <li>date of the run;</li>
+      <li>error and retry policy, and the observed error rate;</li>
+      <li>tokens and cost per task (see <a href="06-agent-evals.html#cost">Ch 6.7</a>).</li>
+    </ul>
+    <p><code>mini_harness.py</code> writes a minimal version of this record to <code>out/run_meta.json</code>.</p>
+  </aside>
+
+  <h3 id="anatomy-frameworks">The same anatomy in real frameworks</h3>
+  <p>Production frameworks add concurrency, sandboxes and log viewers to the same skeleton. In Inspect an eval is literally
+  <code>Task(dataset, solver, scorer)</code><a class="cite" href="#src-10">[10]</a>:</p>
+<pre data-file="UKGovernmentBEIS/inspect_ai: docs/index.qmd (quoted; needs inspect_ai installed and a model API key)"><code class="language-python">from inspect_ai import Task, task
+from inspect_ai.dataset import FieldSpec, hf_dataset
+from inspect_ai.scorer import model_graded_qa
+from inspect_ai.solver import generate
+
+@task
+def simpleqa():
+    return Task(
+        dataset=hf_dataset("codelion/SimpleQA-Verified", split="train",
+            sample_fields=FieldSpec(input="problem", target="answer")),
+        solver=generate(),
+        scorer=model_graded_qa(),
+    )</code></pre>
+  <p class="code-caption">The dataset supplies tasks, the solver is the (trivial) agent harness, the scorer is a model-based grader. Built-in
+  scorers declare their aggregation, e.g. <code>@scorer(metrics=[accuracy(), stderr()])</code>, and <code>stderr</code> accepts a
+  <code>cluster=</code> metadata key for clustered standard errors<a class="cite" href="#src-10">[10]</a>. Repeated trials are <code>epochs</code>.</p>
+  <p>Anthropic&rsquo;s own documentation shows the minimal code-based grader, which is exactly our <code>exact_match</code><a class="cite" href="#src-14">[14]</a>:</p>
+<pre data-file="Anthropic Claude docs: Define success criteria and build evaluations (quoted)"><code class="language-python">def evaluate_exact_match(model_output, correct_answer):
+    return model_output.strip().lower() == correct_answer.lower()</code></pre>
+  <p>Once you know the eight words in Table 1.2, every framework reads as a variation on a theme; Chapter 9 compares them
+  (<a href="09-tooling-production.html#harness">9.2</a>, <a href="09-tooling-production.html#inspect">9.4</a>).</p>
+
+  <h2 id="taxonomy"><span class="sec-num">1.3</span>A taxonomy of evals</h2>
+  <p>&ldquo;We have evals&rdquo; can mean a quarterly benchmark run, a pytest file checking JSON validity, or a judge scoring 1% of traffic: different
+  instruments for different decisions. Use the taxonomy as a checklist: which cells must your decision cover?</p>
+
+  <h3 id="taxonomy-what">Axis 1: what is measured</h3>
+  <ul>
+    <li><b>Capability</b>: what the system <em>can</em> do when asked. MMLU, GPQA and SWE-bench are capability evals.</li>
+    <li><b>Alignment / propensity</b>: what the system <em>tends</em> to do when it could do otherwise. Shevlane et al. separate
+    &ldquo;dangerous capability evaluations&rdquo; from &ldquo;alignment evaluations&rdquo;, which measure a model&rsquo;s propensity to apply its
+    capabilities for harm<a class="cite" href="#src-6">[6]</a>.</li>
+    <li><b>Safety</b>: harm and misuse risk. Weidinger et al. argue that capability testing alone is not enough and add two further layers,
+    <em>human interaction</em> and <em>systemic impact</em><a class="cite" href="#src-15">[15]</a>. Chapter 8 covers safety evals.</li>
+    <li><b>Non-functional properties</b>: cost, latency, calibration, robustness, fairness, efficiency. HELM made the case for multi-metric
+    evaluation by measuring seven metrics (accuracy, calibration, robustness, fairness, bias, toxicity, efficiency) across its core
+    scenarios<a class="cite" href="#src-16">[16]</a>. For agents, Kapoor et al. argue that accuracy-only leaderboards produce needlessly costly agents, and that cost must be
+    reported and optimised jointly with accuracy<a class="cite" href="#src-13">[13]</a>.</li>
+  </ul>
+
+  <h3 id="taxonomy-when">Axes 2&ndash;4: when, how stable, and against what</h3>
+  <p><b>Offline vs online.</b> <span class="term">Offline evals</span> run on fixed datasets before deployment (CI suites, benchmarks).
+  <span class="term">Online evals</span> run on production traffic: judges on sampled traces, A/B tests, user feedback. The Husain&ndash;Shankar FAQ
+  draws the line: CI evals &ldquo;protect against known regressions before deployment&rdquo;, while online monitoring finds failures in production and
+  estimates how often they occur<a class="cite" href="#src-7">[7]</a>.</p>
+  <p><b>Static vs dynamic.</b> A <span class="term">static benchmark</span> is a fixed test set (MMLU, GSM8K); it eventually saturates and leaks into
+  training data. A <span class="term">dynamic benchmark</span> keeps changing: Dynabench collects adversarial examples with humans and models in
+  the loop<a class="cite" href="#src-17">[17]</a>; LiveBench releases frequently updated questions with objective answers to limit contamination<a class="cite" href="#src-18">[18]</a>;
+  Chatbot Arena collects live crowdsourced pairwise votes<a class="cite" href="#src-19">[19]</a>; GSM-Symbolic generates variants of GSM8K questions from templates and finds
+  notable variance across instantiations of the same question<a class="cite" href="#src-20">[20]</a>.</p>
+  <p><b>Reference-based vs reference-free.</b> A reference-based grader compares with a gold answer (exact match, unit tests); a reference-free one
+  checks properties such as faithfulness, format or a rubric. Reference-free evals &ldquo;can be used as guardrails too&rdquo;<a class="cite" href="#src-21">[21]</a>,
+  since they need nothing unavailable at inference time.</p>
+
+  <h3 id="taxonomy-suites">Axes 5&ndash;7: purpose, granularity and scope</h3>
+  <p><b>Unit vs regression vs capability suites.</b> Husain&rsquo;s &ldquo;Level 1&rdquo; evals are unit tests: assertions in the pytest style,
+  such as &ldquo;no UUIDs leak into the output&rdquo;, cheap enough to run on every code change<a class="cite" href="#src-2">[2]</a>. Anthropic distinguishes two kinds of
+  larger suites<a class="cite" href="#src-1">[1]</a>. <span class="term">Capability evals</span> ask &ldquo;What can this agent do well?&rdquo; and &ldquo;should start at a
+  low pass rate&rdquo;, giving teams &ldquo;a hill to climb&rdquo;. <span class="term">Regression evals</span> ask &ldquo;Does the agent still handle all
+  the tasks it used to?&rdquo; and &ldquo;should have a nearly 100% pass rate&rdquo;. Capability tasks that reach high pass rates
+  <span class="term">graduate</span> into the regression suite: tasks that measured &ldquo;Can we do this at all?&rdquo; then measure &ldquo;Can we still do
+  this reliably?&rdquo;</p>
+  <p><b>Eval as reward or selection signal.</b> In RL post-training a grader becomes the reward (unit-test verifier, answer checker, rubric judge),
+  and checkpoint-selection evals pick which snapshot to keep. The grader must then be cheap enough to run millions of times and robust to a policy
+  searching for its blind spots (section <a href="#validity-goodhart">1.7</a>, <a href="07-rl-environments.html#rlvr">Chapter 7</a>).</p>
+  <p><b>Outcome vs process grading.</b> Grade the end state or grade the path? Anthropic found that checking that agents followed very specific
+  steps (a fixed sequence of tool calls) is &ldquo;too rigid and results in overly brittle tests, as agents regularly find valid approaches that eval
+  designers didn&rsquo;t anticipate&rdquo;, so &ldquo;it&rsquo;s often better to grade what the agent produced, not the path it took&rdquo;<a class="cite" href="#src-1">[1]</a>.
+  Process checks remain valuable for <em>diagnosis</em>: OpenAI&rsquo;s guide lists tool selection, argument precision and (for multi-agent
+  systems) handoff accuracy as step-level checks<a class="cite" href="#src-3">[3]</a>, and section <a href="#edd">1.8</a> builds a transition-failure matrix.</p>
+  <p><b>Model eval vs system eval.</b> A <span class="term">model eval</span> holds the harness fixed and varies the model; a
+  <span class="term">system eval</span> tests the whole product on its own distribution to make a deployment decision. Kapoor et al. argue the two have
+  been conflated, so model benchmarks that ignore cost reward needlessly expensive agents no developer would deploy<a class="cite" href="#src-13">[13]</a>.</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Axis</th><th>Poles</th><th>Example</th><th>You need it when&hellip;</th></tr></thead>
+      <tbody>
+        <tr><td>What is measured</td><td>capability / alignment / safety / non-functional</td><td>SWE-bench; propensity evals; HarmBench; cost per task</td><td>always more than one: a capable but slow, costly or unsafe system is not shippable</td></tr>
+        <tr><td>When it runs</td><td>offline / online</td><td>CI suite / judge on 1% of traffic</td><td>offline before every change; online once real users arrive</td></tr>
+        <tr><td>Stability</td><td>static / dynamic</td><td>MMLU / LiveBench, Arena</td><td>static for regression tracking; dynamic when contamination or saturation threatens</td></tr>
+        <tr><td>Reference</td><td>reference-based / reference-free</td><td>exact match, unit tests / faithfulness, format checks</td><td>reference-free for production traffic, which has no gold answers</td></tr>
+        <tr><td>Purpose of suite</td><td>unit / regression / capability; reward or selection signal</td><td>&ldquo;no UUID leaks&rdquo; / ~100% suite / hill-climbing suite; RLVR verifier, checkpoint picker</td><td>the first three at different cadences; the last whenever an optimiser consumes the score</td></tr>
+        <tr><td>What is graded</td><td>outcome / process</td><td>DB state matches goal / tool-call sequence</td><td>outcome for the score; process for diagnosis</td></tr>
+        <tr><td>Scope</td><td>model / system</td><td>public benchmark / your product&rsquo;s golden set</td><td>model evals to shortlist; system evals to decide</td></tr>
+      </tbody>
+      <caption>Table 1.3. Seven axes for classifying any eval.</caption>
+    </table>
+  </div>
+
+  <figure class="diagram ch01-wide" id="fig-1-2">
+    <svg viewBox="0 0 790 400" role="img" aria-labelledby="fig-1-2-t">
+      <title id="fig-1-2-t">Taxonomy grid placing fourteen well-known evals by scope (model to system) and by stability (static offline to dynamic online), coloured by what they measure</title>
+      <rect x="70" y="20" width="600" height="320" rx="6" class="f-box"/>
+      <path d="M370 20 V340 M70 180 H670" class="s-muted" stroke-dasharray="4 4"/>
+      <text x="220" y="372" text-anchor="middle" class="small">model eval (vary the model, fixed harness)</text>
+      <text x="520" y="372" text-anchor="middle" class="small">system / application eval (your product)</text>
+      <text x="370" y="392" text-anchor="middle" class="title">scope &#8594;</text>
+      <text x="22" y="100" text-anchor="middle" class="small" transform="rotate(-90 22 100)">dynamic / online</text>
+      <text x="22" y="262" text-anchor="middle" class="small" transform="rotate(-90 22 262)">static / offline</text>
+      <g>
+        <circle cx="110" cy="300" r="7" class="f-1"/><text x="122" y="304">MMLU</text>
+        <circle cx="110" cy="265" r="7" class="f-1"/><text x="122" y="269">GPQA, HLE</text>
+        <circle cx="230" cy="300" r="7" class="f-1"/><text x="242" y="304">GSM8K</text>
+        <circle cx="250" cy="225" r="7" class="f-1"/><text x="262" y="229">SWE-bench Verified</text>
+        <circle cx="140" cy="215" r="7" class="f-4"/><text x="152" y="219">HarmBench</text>
+        <circle cx="390" cy="210" r="7" class="f-1"/><text x="402" y="214">&#964;-bench (simulated user)</text>
+        <circle cx="395" cy="300" r="7" class="f-2"/><text x="407" y="304">CI regression suite (golden set)</text>
+        <circle cx="395" cy="260" r="7" class="f-3"/><text x="407" y="264">unit assertions (no UUID leak)</text>
+        <circle cx="110" cy="60" r="7" class="f-5"/><text x="122" y="64">Chatbot Arena (human pairwise)</text>
+        <circle cx="110" cy="120" r="7" class="f-1"/><text x="122" y="124">LiveBench</text>
+        <circle cx="230" cy="150" r="7" class="f-1"/><text x="242" y="154">Dynabench</text>
+        <circle cx="395" cy="60" r="7" class="f-3"/><text x="407" y="64">RAGAS faithfulness on prod traces</text>
+        <circle cx="395" cy="110" r="7" class="f-5"/><text x="407" y="114">A/B test on retention</text>
+        <circle cx="395" cy="150" r="7" class="f-6"/><text x="407" y="154">latency / cost SLO monitor</text>
+      </g>
+      <g>
+        <circle cx="690" cy="40" r="6" class="f-1"/><text x="700" y="44" class="small">capability</text>
+        <circle cx="690" cy="62" r="6" class="f-2"/><text x="700" y="66" class="small">regression</text>
+        <circle cx="690" cy="84" r="6" class="f-3"/><text x="700" y="88" class="small">quality</text>
+        <circle cx="690" cy="106" r="6" class="f-4"/><text x="700" y="110" class="small">safety</text>
+        <circle cx="690" cy="128" r="6" class="f-5"/><text x="700" y="132" class="small">preference</text>
+        <circle cx="690" cy="150" r="6" class="f-6"/><text x="700" y="154" class="small">non-funct.</text>
+      </g>
+    </svg>
+    <figcaption><b>Figure 1.2.</b> Fourteen evals placed on two of the seven axes, coloured by what they measure. Public benchmarks crowd the
+    lower-left (static model evals); a product needs the right-hand column, offline <em>and</em> online. Positions are qualitative.
+    &tau;-bench sits on the boundary: it is a public benchmark, but it evaluates a complete agent system against a simulated user.</figcaption>
+  </figure>
+
+  <h2 id="graders"><span class="sec-num">1.4</span>Graders</h2>
+  <p>The grader is where most evals go wrong, usually invisibly until you read transcripts. Anthropic and OpenAI use the same three families<a class="cite" href="#src-1">[1]</a><a class="cite" href="#src-3">[3]</a>.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Grader</th><th>Methods</th><th>Strengths</th><th>Weaknesses</th></tr></thead>
+      <tbody>
+        <tr><td><b>Code-based</b></td><td>string match (exact, regex, fuzzy); binary tests (fail-to-pass, pass-to-pass); static analysis; outcome verification; tool-call checks; transcript statistics</td><td>fast, cheap, objective, reproducible, easy to debug</td><td>brittle to valid variation; lacks nuance; limited for subjective tasks</td></tr>
+        <tr><td><b>Model-based</b></td><td>rubric scoring; natural-language assertions; pairwise comparison; reference-based judging; multi-judge consensus</td><td>flexible, scalable, captures nuance, handles open-ended and free-form output</td><td>non-deterministic; costlier than code; must be calibrated against human graders</td></tr>
+        <tr><td><b>Human</b></td><td>expert review; crowdsourcing; spot-check sampling; A/B tests; inter-annotator agreement</td><td>gold-standard quality; matches expert user judgment; used to calibrate model graders</td><td>expensive, slow, needs access to experts at scale; humans disagree too</td></tr>
+      </tbody>
+      <caption>Table 1.4. The three grader families, summarising the comparison tables in Anthropic&rsquo;s agent-evals guide<a class="cite" href="#src-1">[1]</a>.</caption>
+    </table>
+  </div>
+  <p>Practitioners agree on the order: code wherever code can check the criterion, a model grader only for what code cannot catch, and humans to
+  define quality and validate the model graders<a class="cite" href="#src-2">[2]</a><a class="cite" href="#src-1">[1]</a>.
+  Anthropic&rsquo;s docs add a practical rule for model graders: use a different model to grade than the one that produced the output<a class="cite" href="#src-14">[14]</a>.</p>
+
+  <h3 id="graders-combining">Combining graders and partial credit</h3>
+  <p>A task often has several graders (tests, static analysis, a rubric judge). Anthropic lists three ways to combine them<a class="cite" href="#src-1">[1]</a>:</p>
+  <ul>
+    <li><b>Binary</b>: all graders must pass. Simple and strict; our <code>Trial.passed</code> does this.</li>
+    <li><b>Weighted</b>: combined grader scores must reach a threshold. Allows trade-offs, but the weights are a policy choice you must defend.</li>
+    <li><b>Hybrid</b>: some graders are gates (tests must pass), others contribute to a weighted quality score.</li>
+  </ul>
+  <p>For multi-step tasks, build in <span class="term">partial credit</span>. In Anthropic&rsquo;s example, &ldquo;a support agent that correctly identifies
+  the problem and verifies the customer but fails to process a refund is meaningfully better than one that fails immediately&rdquo;<a class="cite" href="#src-1">[1]</a>.
+  Report the fraction of sub-outcomes achieved next to the binary pass rate: &ldquo;how far does it get?&rdquo; and &ldquo;how often does it finish?&rdquo;
+  are different questions.</p>
+  <aside class="tip" data-title="Write the reference solution first">
+    <p>For every task, create a known-good output that passes all graders. It proves the task is solvable and that the graders are configured
+    correctly<a class="cite" href="#src-1">[1]</a>. A good task is one where &ldquo;two domain experts would independently reach the same pass/fail verdict&rdquo;; if they
+    would not, the task specification needs work before the model does.</p>
+  </aside>
+
+  <h3 id="graders-judge-preview">Preview: the always-pass judge</h3>
+  <p>An <span class="term">LLM judge</span> is itself a classifier, so validate it like one against human labels. Raw agreement misleads when
+  classes are imbalanced, as they are in any decent product. A judge that says PASS to everything, on a set humans marked 95% PASS and 5% FAIL,
+  agrees 95% of the time and has never caught a failure.</p>
+  <p>Report chance-corrected agreement and per-class rates instead, with FAIL as the positive class, since catching failures is the judge&rsquo;s job:</p>
+  <div class="formula">
+    TPR = <span class="frac"><span>TP</span><span>TP + FN</span></span>, &nbsp; TNR = <span class="frac"><span>TN</span><span>TN + FP</span></span>, &nbsp;
+    &kappa; = <span class="frac"><span>p<sub>o</sub> &minus; p<sub>e</sub></span><span>1 &minus; p<sub>e</sub></span></span>
+    <span class="eq-num">(1.1)</span>
+    <span class="where">where p<sub>o</sub> is the observed agreement and p<sub>e</sub> = P<sub>human</sub>(FAIL)&middot;P<sub>judge</sub>(FAIL) + P<sub>human</sub>(PASS)&middot;P<sub>judge</sub>(PASS) is the agreement expected by chance from the two marginal rates. &kappa; is Cohen&rsquo;s kappa.</span>
+  </div>
+  <div class="worked">
+    <p>Always-PASS judge on 190 PASS / 10 FAIL: p<sub>o</sub> = 190/200 = 0.95. The judge says PASS with probability 1, so
+    p<sub>e</sub> = 0.05&middot;0 + 0.95&middot;1 = 0.95, and &kappa; = (0.95 &minus; 0.95)/(1 &minus; 0.95) = 0. TPR = 0/10 = 0.</p>
+    <p>A realistic judge that catches 8 of the 10 failures and wrongly flags 19 of the 190 passes: p<sub>o</sub> = (8 + 171)/200 = 0.895,
+    p<sub>e</sub> = 0.05&middot;0.135 + 0.95&middot;0.865 = 0.8285, &kappa; = 0.0665/0.1715 = 0.388, TPR = 0.80, TNR = 0.90. Its <em>raw agreement is lower</em>
+    than the always-PASS judge, yet it is the only one of the two that does any work.</p>
+    <p>Dossier example: 100 items, 20 human FAILs, TP = 15, FN = 5, FP = 10, TN = 70 gives p<sub>o</sub> = 0.85, p<sub>e</sub> = 0.2&middot;0.25 + 0.8&middot;0.75 = 0.65 and
+    &kappa; = 0.571. All three are reproduced by <code>code/ch01/judge_always_pass.py</code>.</p>
+  </div>
+<pre data-file="code/ch01/judge_always_pass.py (lines 33&ndash;51; full file in the repo)"><code class="language-python">def confusion(human: list[str], judge: list[str]) -&gt; tuple[int, int, int, int]:
+    tp = sum(h == "FAIL" and j == "FAIL" for h, j in zip(human, judge))
+    fn = sum(h == "FAIL" and j == "PASS" for h, j in zip(human, judge))
+    fp = sum(h == "PASS" and j == "FAIL" for h, j in zip(human, judge))
+    tn = sum(h == "PASS" and j == "PASS" for h, j in zip(human, judge))
+    return tp, fn, fp, tn
+
+
+def agreement(human: list[str], judge: list[str]) -&gt; Agreement:
+    tp, fn, fp, tn = confusion(human, judge)
+    n = tp + fn + fp + tn
+    p_o = (tp + tn) / n
+    # chance agreement: both say FAIL by chance + both say PASS by chance
+    p_e = ((tp + fn) / n) * ((tp + fp) / n) + ((fp + tn) / n) * ((fn + tn) / n)
+    kappa = 0.0 if p_e == 1 else (p_o - p_e) / (1 - p_e)
+    tpr = tp / (tp + fn) if tp + fn else float("nan")
+    tnr = tn / (tn + fp) if tn + fp else float("nan")
+    prec = tp / (tp + fp) if tp + fp else float("nan")
+    return Agreement(n, p_o, kappa, tpr, tnr, prec)</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch01/judge_always_pass.py</code></p>
+<pre class="output"><code>judge                           n agreement   kappa TPR(fail)     TNR prec(fail)
+always-PASS (95/5 set)        200     0.950   0.000     0.000   1.000        nan
+realistic (95/5 set)          200     0.895   0.388     0.800   0.900      0.296
+worked example (80/20 set)    100     0.850   0.571     0.750   0.875      0.600
+
+realistic judge, 95% Wilson CIs: TPR 8/10 -> [0.490, 0.943], TNR 171/190 -> [0.849, 0.935]
+With 10 FAILs the TPR interval runs from about 0.49 to 0.94: validate on 50-100+ FAILs.
+
+The always-PASS judge has the HIGHEST raw agreement and is useless: it never catches a failure.</code></pre>
+  <p>Husain therefore recommends precision and recall (or TPR and TNR) over raw agreement<a class="cite" href="#src-2">[2]</a><a class="cite" href="#src-22">[22]</a>, and Yan
+  recommends prioritising recall on the fail class. Yan reads &kappa; of 0.4&ndash;0.6 as substantial and notes that humans often agree only at
+  0.2&ndash;0.3<a class="cite" href="#src-23">[23]</a>; on the stricter Landis and Koch bands, 0.21&ndash;0.40 is &ldquo;fair&rdquo; and 0.41&ndash;0.60 &ldquo;moderate&rdquo;<a class="cite" href="#src-52">[52]</a>,
+  so the realistic judge&rsquo;s 0.388 is &ldquo;fair&rdquo;. Say which scale you use.</p>
+  <p><b>The validation set is itself a small sample.</b> With 10 human FAILs, TPR = 0.80 has a 95% Wilson interval of [0.49, 0.94]: this judge
+  might miss half of all failures. Yan advises 50&ndash;100 fail cases, because &ldquo;a dataset with hundreds of labels but only five failures
+  isn&rsquo;t useful&rdquo;<a class="cite" href="#src-23">[23]</a>. Enrichment changes the base rate, so on an enriched set report TPR and TNR, which do not depend on
+  prevalence. And note the precision column: on a 95/5 set the realistic judge flags 27 items, only 8 of them real (0.30).</p>
+  <p>Known judge biases include position bias (with ChatGPT as judge, Vicuna-13B beat ChatGPT on 66 of 80 queries just by reordering the
+  answers<a class="cite" href="#src-24">[24]</a>), verbosity and self-enhancement<a class="cite" href="#src-25">[25]</a>. Chapter 4 covers judge design, bias probes, agreement
+  statistics and correcting judge-estimated rates (<a href="04-llm-judges-human-eval.html#agreement">4.3</a>,
+  <a href="04-llm-judges-human-eval.html#biases">4.6</a>, <a href="04-llm-judges-human-eval.html#ppi">4.11</a>).</p>
+
+  <h2 id="metrics"><span class="sec-num">1.5</span>Metrics in one page</h2>
+  <p>Chapter 2 is devoted to metrics. Here we need only three ideas, because they shape every later chapter.</p>
+  <p><b>Accuracy</b> is the fraction of tasks (or trials) graded as passing. It is the right headline number only when the tasks are a sensible
+  sample of what you care about and the classes are not wildly imbalanced.</p>
+  <p><b>Precision and recall on the failure class.</b> When the eval is a <em>detector</em> (judge, guardrail, toxicity filter), the interesting class
+  is the rare one. Recall (TPR) asks &ldquo;of the real problems, how many did we catch?&rdquo;; precision asks &ldquo;of the flagged items, how many were
+  real?&rdquo;. A detector with 99% accuracy on a 1% failure class can have zero recall. Yan recommends precision, recall, ROC-AUC and PR-AUC over a single
+  accuracy for classification-style LLM tasks<a class="cite" href="#src-26">[26]</a>.</p>
+  <p><b>The parser is part of the metric.</b> Before any grader runs, something extracts the &ldquo;answer&rdquo; from free-form text. That extraction
+  step is a measurement decision, and different harnesses make it differently. Biderman et al., drawing on three years of maintaining
+  lm-evaluation-harness, document how prompt format, few-shot count and answer extraction change scores<a class="cite" href="#src-27">[27]</a>. Here is the real GSM8K task
+  definition from lm-evaluation-harness; it reports <em>two</em> scores from the same generations:</p>
+<pre data-file="EleutherAI/lm-evaluation-harness: abridged from lm_eval/tasks/gsm8k/gsm8k.yaml (main, accessed Nov 2026)"><code class="language-yaml">task: gsm8k
+dataset_path: openai/gsm8k
+dataset_name: main
+output_type: generate_until
+test_split: test
+doc_to_text: "Question: {{question}}\nAnswer:"
+doc_to_target: "{{answer}}"
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    ignore_case: true
+    regexes_to_ignore: [",", "\\$", "(?s).*#### ", "\\.$"]
+generation_kwargs: {until: ["Question:", "&lt;/s&gt;", "&lt;|im_end|&gt;"], do_sample: false, temperature: 0.0}
+num_fewshot: 5
+filter_list:
+  - name: "strict-match"
+    filter:
+      - function: "regex"
+        regex_pattern: "#### (\\-?[0-9\\.\\,]+)"
+      - function: "take_first"
+  - name: "flexible-extract"
+    filter:
+      - {function: "regex", group_select: -1, regex_pattern: "(-?[$0-9.,]{2,})|(-?[0-9]+)"}
+      - function: "take_first"</code></pre>
+  <p class="code-caption">Abridged: the upstream file also sets <code>higher_is_better</code>, <code>ignore_punctuation</code>, <code>repeats</code>
+  and <code>metadata: {version: 3.0}</code>.</p>
+  <p>The stop sequences in <code>until</code> are part of the extraction pipeline: a model that never emits &ldquo;Question:&rdquo; may invent and solve a
+  new problem, and <code>flexible-extract</code> (last number, <code>group_select: -1</code>) then scores the hallucinated continuation
+  (<a href="#pitfall-parser">parser pitfall</a>).</p>
+  <p><code>strict-match</code> requires <code>#### &lt;number&gt;</code>; <code>flexible-extract</code> takes the last number-like string; both share
+  the same normalisation. <code>code/ch01/extraction.py</code> re-implements both on 16 mocked outputs, each also labelled by a human:</p>
+<pre data-file="code/ch01/extraction.py (lines 15&ndash;17; full file in the repo)"><code class="language-python">STRICT = r"#### (\-?[0-9\.\,]+)"                    # gsm8k.yaml, filter "strict-match"
+FLEXIBLE = r"(-?[$0-9.,]{2,})|(-?[0-9]+)"         # gsm8k.yaml, filter "flexible-extract"
+IGNORE = [",", r"\$", r"(?s).*#### ", r"\.$"]      # metric_list.exact_match.regexes_to_ignore</code></pre>
+<pre data-file="code/ch01/extraction.py (lines 47&ndash;65; full file in the repo)"><code class="language-python">def regex_filter(resp: str, pattern: str, group_select: int = 0) -&gt; str:
+    """Mirror of lm-eval's RegexFilter: findall, pick a match, take first non-empty group."""
+    matches = re.findall(pattern, resp)
+    if not matches:
+        return "[invalid]"
+    m = matches[group_select]
+    if isinstance(m, tuple):
+        m = [g for g in m if g][0]
+    return m.strip()
+
+
+def normalise(s: str) -&gt; str:
+    for rx in IGNORE:                                  # applied to prediction AND reference
+        s = re.sub(rx, "", s)
+    return s.lower().strip()                           # ignore_case: true
+
+
+def exact_match(pred: str, target: str) -&gt; bool:
+    return normalise(pred) == normalise(target)</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch01/extraction.py</code></p>
+<pre class="output"><code> #  model output (escaped)                            strict  flexible  human
+ 1  40 + 2 = 42 apples.\n#### 42                         42+       42+    yes
+ 2  3 * $400 = $1,200.\n#### 1,200                    1,200+    1,200+    yes
+ 3  The answer is $42.                                 none-     $42.+    yes
+ 4  **42**                                             none-       42+    yes
+ 5  42.0                                               none-     42.0-    yes
+ 6  #### 42.0                                          42.0-     42.0-    yes
+ 7  The answer is 42. Check: 6 * 7 = 42 and 50 - 8     none-       8.-    yes
+ 8  #### 42\nExplanation: we used 3 steps.               42+        3-    yes
+ 9  I think it is 41.\n#### 41                           41-       41-     no
+10  Answer: 7                                          none-        7+    yes
+11  #### -5                                              -5+       -5+    yes
+12  It drops to −5 degrees, so the answer is −5.       none-       5.-    yes
+13  The total is 1,200 dollars.\n####1200              none-     1200+    yes
+14  So x = 18 and the answer is 18                     none-       18+    yes
+15  #### 18                                              18+       18+    yes
+16  Final answer: 17. (Earlier I wrote 18 by mista     none-       18+     no
+
+accuracy  strict-match=0.312  flexible-extract=0.625  human-judged=0.875  (n=16)
+flexible-extract vs human: false positives [16], false negatives [5, 6, 7, 8, 12]
+Same outputs, three different 'accuracies': the parser is part of the measurement.</code></pre>
+  <p>The same sixteen outputs score 31%, 62% or 88%. <b>Strict</b> fails every correct answer without the delimiter, even <code>####1200</code>
+  (row 13): it measures &ldquo;correct <em>and</em> formatted&rdquo;. <b>Flexible</b> grabs numbers from text after the answer (rows 7, 8), fails on a
+  Unicode minus (row 12) and awards a false positive (row 16). <b>Neither</b> treats <code>42.0</code> as <code>42</code> (rows 5, 6), since exact match
+  compares strings.</p>
+  <p>The gap between strict and flexible therefore measures format-following, not mathematics. Report which extraction you used, and when comparing
+  your number with a paper&rsquo;s, check that you used the same one.</p>
+
+  <aside class="note" data-title="Sidebar: pass@k vs pass^k in three numbers">
+    <p>When you run <i>n</i> trials of a task and <i>c</i> pass, two summaries answer opposite questions. <b>pass@k</b> asks &ldquo;if I draw <i>k</i> attempts,
+    does <em>at least one</em> pass?&rdquo; (useful when a verifier can pick the good one, as with unit tests). <b>pass^k</b> asks &ldquo;do <em>all k</em>
+    attempts pass?&rdquo; (what a customer talking to your agent <i>k</i> times experiences). Their unbiased estimators are<a class="cite" href="#src-28">[28]</a><a class="cite" href="#src-12">[12]</a>:</p>
+    <div class="formula">
+      pass@k = 1 &minus; <span class="frac"><span>C(n &minus; c, k)</span><span>C(n, k)</span></span>, &nbsp;&nbsp;
+      pass^k = <span class="frac"><span>C(c, k)</span><span>C(n, k)</span></span>
+      <span class="eq-num">(1.2)</span>
+    </div>
+    <p>With <i>n</i> = 10 and <i>c</i> = 3: pass@3 = 1 &minus; 35/120 = <b>0.708</b> while pass^3 = 1/120 = <b>0.008</b>. The same agent is &ldquo;71% likely to
+    get it within three tries&rdquo; and &ldquo;less than 1% likely to get it right three times in a row&rdquo;. Anthropic&rsquo;s example: a 75% per-trial
+    success rate gives (0.75)<sup>3</sup> &asymp; 42% for three consecutive passes<a class="cite" href="#src-1">[1]</a>. The &tau;-bench paper introduced pass^k to expose
+    exactly this gap and reported gpt-4o below 25% on pass^8 in its retail domain<a class="cite" href="#src-12">[12]</a>. Reproduced by <code>code/ch01/passk_preview.py</code>:</p>
+<pre class="output"><code>one task, n=10 trials, c=3 passed (per-trial rate 0.30)
+  k   pass@k   pass^k  naive (c/n)^k
+  1    0.300   0.3000         0.3000
+  2    0.533   0.0667         0.0900
+  3    0.708   0.0083         0.0270
+  5    0.917   0.0000         0.0024
+ 10    1.000   0.0000         0.0000
+
+Anthropic's example: 75% per-trial success, 3 trials all pass = 0.422</code></pre>
+    <p>Note that the naive plug-in (<i>c</i>/<i>n</i>)<sup><i>k</i></sup> = 0.027 is more than three times the unbiased 0.008 at <i>k</i> = 3.
+    Derivations and the bias of plug-in estimators are in <a href="02-benchmarks-metrics.html#pass-at-k">Chapter 2.5</a>; reliability and
+    agent comparisons with pass^k are in <a href="05-statistics.html#pass-hat-k">Chapter 5.9</a> and <a href="06-agent-evals.html#reliability">Chapter 6.6</a>.</p>
+  </aside>
+  <p>The two reference implementations are short enough to quote<a class="cite" href="#src-29">[29]</a><a class="cite" href="#src-30">[30]</a>:</p>
+<pre data-file="openai/human-eval: human_eval/evaluation.py (quoted)"><code class="language-python">def estimator(n: int, c: int, k: int) -&gt; float:
+    """
+    Calculates 1 - comb(n - c, k) / comb(n, k).
+    """
+    if n - c &lt; k:
+        return 1.0
+    return 1.0 - np.prod(1.0 - k / np.arange(n - c + 1, n + 1))</code></pre>
+<pre data-file="sierra-research/tau-bench: tau_bench/run.py, display_metrics (quoted)"><code class="language-python">for k in range(1, num_trials + 1):
+    sum_task_pass_hat_k = 0
+    for c in c_per_task_id.values():
+        sum_task_pass_hat_k += comb(c, k) / comb(num_trials, k)
+    pass_hat_ks[k] = sum_task_pass_hat_k / len(c_per_task_id)</code></pre>
+
+  <h2 id="estimate"><span class="sec-num">1.6</span>An eval score is an estimate</h2>
+  <p>Your eval set is a sample: a few hundred draws from the universe of tasks your system will face, each trial one draw from its output
+  distribution. Miller (Anthropic) treats eval questions as drawn from a &ldquo;super-population&rdquo; and reports the score with a standard
+  error<a class="cite" href="#src-31">[31]</a><a class="cite" href="#src-32">[32]</a>. This section previews two day-one tools; <a href="05-statistics.html">Chapter 5</a> is the full treatment.</p>
+
+  <h3 id="estimate-se">Standard error and the normal interval</h3>
+  <p>For per-item scores <i>s</i><sub>1</sub>, &hellip;, <i>s</i><sub>n</sub> with mean <span class="math">s&#772;</span>, the standard error of the
+  mean and the central-limit-theorem (CLT, or Wald) interval are:</p>
+  <div class="formula">
+    SE = <span class="frac"><span>sd(s)</span><span>&radic;n</span></span>, &nbsp;&nbsp; 95% CI = s&#772; &plusmn; 1.96 &middot; SE,
+    &nbsp;&nbsp; for 0/1 scores: SE = &radic;(p&#770;(1 &minus; p&#770;)/n)
+    <span class="eq-num">(1.3)</span>
+  </div>
+  <div class="worked">
+    <p>A model scores 78% on 200 items. SE = &radic;(0.78 &middot; 0.22 / 200) = 0.0293, so the 95% interval is 78 &plusmn; 5.7 points, i.e.
+    [72.3%, 83.7%]. A second model scoring 80% on the same items is <em>not</em> shown to be better by these numbers alone.
+    (Pairing, which compares the two models item by item, narrows the comparison considerably; see <a href="05-statistics.html#paired">Chapter 5.5</a>.)
+    Reproduced by <code>code/ch01/wilson_defects.py</code>.</p>
+  </div>
+
+  <h3 id="estimate-wilson">Small samples and rates near 0 or 1: Wilson</h3>
+  <p>The normal interval misbehaves when <i>n</i> is small or <span class="math">p&#770;</span> is near 0 or 1: it can extend below 0 and under-covers.
+  Bowyer, Aitchison and Ivanova argue that CLT error bars dramatically underestimate uncertainty below a few hundred datapoints and recommend Wilson
+  or Bayesian intervals<a class="cite" href="#src-33">[33]</a>. The <span class="term">Wilson score interval</span> with <i>z</i> = 1.96 is:</p>
+  <div class="formula">
+    centre = <span class="frac"><span>p&#770; + z&sup2;/2n</span><span>1 + z&sup2;/n</span></span>, &nbsp;&nbsp;
+    half-width = <span class="frac"><span>z &middot; &radic;( p&#770;(1 &minus; p&#770;)/n + z&sup2;/4n&sup2; )</span><span>1 + z&sup2;/n</span></span>
+    <span class="eq-num">(1.4)</span>
+  </div>
+  <p>Here is the case that makes the point memorable, from Eugene Yan&rsquo;s &ldquo;Product Evals in Three Simple Steps&rdquo;<a class="cite" href="#src-23">[23]</a>.
+  A requirement says the defect rate must be at most 5%. You label 200 outputs and find 6 defects, a 3% rate. Can you sign off?</p>
+  <div class="worked">
+    <p>Normal interval: 3% &plusmn; 1.96&middot;&radic;(0.03&middot;0.97/200) = 3% &plusmn; 2.4 points = [0.6%, 5.4%].
+    Wilson interval: [1.4%, 6.4%]. Both upper bounds exceed 5%. <b>The data are consistent with a true defect rate above the limit, so 200
+    samples cannot certify it.</b> The margin shrinks with &radic;n, so halving it needs four times the data; Wilson&rsquo;s upper bound first drops
+    below 5% between 400 (5.17%) and 800 (4.43%) samples.</p>
+  </div>
+<pre data-file="code/ch01/wilson_defects.py (lines 18&ndash;32; full file in the repo)"><code class="language-python">def normal_ci(p: float, n: int) -&gt; tuple[float, float]:
+    half = Z * math.sqrt(p * (1 - p) / n)
+    return p - half, p + half
+
+
+def wilson_ci(p: float, n: int) -&gt; tuple[float, float]:
+    denom = 1 + Z**2 / n
+    centre = (p + Z**2 / (2 * n)) / denom
+    half = Z * math.sqrt(p * (1 - p) / n + Z**2 / (4 * n**2)) / denom
+    return centre - half, centre + half
+
+
+def n_for_difference(var_d: float, delta: float) -&gt; float:
+    """Items needed to detect a mean difference delta (alpha=0.05 two-sided, power 0.8)."""
+    return (Z + Z_POWER) ** 2 * var_d / delta**2</code></pre>
+
+  <h3 id="estimate-power">How many items do I need?</h3>
+  <p>The reverse question, &ldquo;how big must the eval be to detect a difference I care about?&rdquo;, is a power calculation. For a two-sided test
+  at &alpha; = 0.05 with 80% power, the number of items needed to detect a mean difference &delta; is approximately:</p>
+  <div class="formula">
+    n &asymp; <span class="frac"><span>(z<sub>0.975</sub> + z<sub>0.8</sub>)&sup2; &middot; Var(d)</span><span>&delta;&sup2;</span></span> = <span class="frac"><span>(1.96 + 0.84)&sup2; &middot; Var(d)</span><span>&delta;&sup2;</span></span>
+    <span class="eq-num">(1.5)</span>
+    <span class="where">where d<sub>i</sub> = s<sub>A,i</sub> &minus; s<sub>B,i</sub> is the per-item score difference. Paired: Var(d) = Var<sub>A</sub> + Var<sub>B</sub> &minus; 2&rho;&middot;SD<sub>A</sub>&middot;SD<sub>B</sub>. Unpaired: drop the covariance term.</span>
+  </div>
+  <div class="worked">
+    <p>Assumptions (as in the chapter&rsquo;s research dossier, following Miller&rsquo;s framework<a class="cite" href="#src-31">[31]</a>): per-item Bernoulli scores with the
+    variances of a model at 80% (Var<sub>A</sub> = 0.16) and one at 75% (Var<sub>B</sub> = 0.1875), a correlation &rho; = 0.5 between the two models&rsquo;
+    item scores (Anthropic reports &rho; between about 0.3 and 0.7 for frontier models on popular evals<a class="cite" href="#src-32">[32]</a>), and a target difference
+    &delta; = 3 points. Then Var(d) = 0.3475 &minus; 2&middot;0.5&middot;0.4&middot;0.433 = 0.1743, and n &asymp; 7.84 &middot; 0.1743 / 0.0009 &asymp; <b>1,518
+    paired items</b>; without pairing, n &asymp; 7.84 &middot; 0.3475 / 0.0009 &asymp; <b>3,027</b>.</p>
+  </div>
+  <p class="run-cmd">Run it: <code>python3 code/ch01/wilson_defects.py</code></p>
+<pre class="output"><code>accuracy 78% on n=200: SE=0.0293, normal 95% CI [72.3%, 83.7%]
+
+defect rate 3% on n=200, requirement &lt;= 5%
+  normal (Wald) 95% CI [0.6%, 5.4%]   upper bound above limit? True
+  Wilson        95% CI [1.4%, 6.4%]   upper bound above limit? True
+  n=400   normal margin = +/-1.67 pp, Wilson upper = 5.17%
+  n=800   normal margin = +/-1.18 pp, Wilson upper = 4.43%
+  n=1600  normal margin = +/-0.84 pp, Wilson upper = 3.96%
+
+Var(d) paired = 0.1743, unpaired = 0.3475
+items to detect a 3-point gap: paired ~1,518, unpaired ~3,027</code></pre>
+  <p>The upshot: many teams run 50&ndash;200 tasks and celebrate 2-point gains. A few hundred tasks detect large effects, which is fine early on, when
+  &ldquo;small sample sizes suffice&rdquo;<a class="cite" href="#src-1">[1]</a>, but small gaps between mature systems need thousands of items, pairing, repeated
+  trials, or all three. Chapter 5 covers clustered errors (<a href="05-statistics.html#clustered">5.3</a>), variance reduction
+  (<a href="05-statistics.html#variance-reduction">5.4</a>), paired tests (<a href="05-statistics.html#paired">5.5</a>) and power
+  (<a href="05-statistics.html#power">5.6</a>). AI2&rsquo;s &ldquo;Signal and Noise&rdquo; work adds a benchmark-level view: a benchmark is useful for small-scale
+  decisions only if its <em>signal</em> (spread between genuinely better and worse models) is large relative to its <em>noise</em> (variability between
+  nearby checkpoints)<a class="cite" href="#src-34">[34]</a>.</p>
+  <aside class="warn" data-title="Pitfall: no error bars">
+    <p>BetterBench assessed 24 AI benchmarks against 46 best practices and found that most do not report statistical significance<a class="cite" href="#src-4">[4]</a>.
+    Bean et al.&rsquo;s review of 445 LLM benchmarks found that only 16.0% used uncertainty estimates or statistical tests to compare results<a class="cite" href="#src-5">[5]</a>. Do better than the field: every number you report
+    gets an interval, and every comparison is paired when the items are shared.</p>
+  </aside>
+
+  <h2 id="validity"><span class="sec-num">1.7</span>Validity: are you measuring what matters?</h2>
+  <p>Error bars tell you how much a score would move if you re-ran the eval. They say nothing about whether the eval measures the right thing. A
+  thermometer can be precise to 0.01&deg; and still be measuring the radiator instead of the room.</p>
+
+  <h3 id="validity-construct">Construct validity</h3>
+  <p>Bean et al. (42 authors, NeurIPS 2025 Datasets and Benchmarks) reviewed 445 LLM benchmarks with 29 expert reviewers. They define
+  <span class="term">construct validity</span> as the degree to which a benchmark score provides evidence for claims about the target phenomenon, and
+  they distil eight recommendations and an operational checklist<a class="cite" href="#src-5">[5]</a>. Their review finds that 78.2% of articles defined the
+  phenomenon they measure, and of those definitions 47.8% were contested (phenomena such as &ldquo;reasoning&rdquo; with many possible definitions);
+  38.2% of benchmarks drew items from human exams or other pre-existing sources, and 42.6% reused data from existing benchmarks; 27.0% used
+  convenience sampling as part of their sampling strategy (another 12.3% relied on it exclusively); only 16.0% used statistical tests (see
+  the &ldquo;no error bars&rdquo; pitfall in <a href="#estimate-power">1.6</a>); and only 53.4% presented evidence for construct validity<a class="cite" href="#src-5">[5]</a>. The eight recommendations
+  map onto this book as follows:</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Bean et al. recommendation (section)</th><th>Where this book treats it</th></tr></thead>
+      <tbody>
+        <tr><td>3.1 Define the phenomenon</td><td>1.7, <a href="02-benchmarks-metrics.html#score-stack">Chapter 2</a></td></tr>
+        <tr><td>3.2 Measure the phenomenon and only the phenomenon</td><td><a href="02-benchmarks-metrics.html#prompt-sensitivity">Chapter 2</a></td></tr>
+        <tr><td>3.3 Construct a representative dataset for the task</td><td><a href="03-datasets-contamination.html#sampling">Chapter 3</a></td></tr>
+        <tr><td>3.4 Acknowledge limitations of reusing datasets</td><td><a href="03-datasets-contamination.html#why-data">Chapter 3</a></td></tr>
+        <tr><td>3.5 Prepare for contamination</td><td><a href="03-datasets-contamination.html#contamination">Chapter 3</a></td></tr>
+        <tr><td>3.6 Use statistical methods to compare models</td><td>1.6, <a href="05-statistics.html#paired">Chapter 5</a></td></tr>
+        <tr><td>3.7 Conduct an error analysis</td><td>1.8, <a href="03-datasets-contamination.html#taxonomy">3.3</a>, Chapter 4</td></tr>
+        <tr><td>3.8 Justify construct validity</td><td>1.7</td></tr>
+      </tbody>
+      <caption>Table 1.5. The eight recommendations of Bean et al. (section numbers as in the paper) and where the book covers them.</caption>
+    </table>
+  </div>
+  <p>Two older lines of work set this up:</p>
+  <ul>
+    <li>Raji et al. argue that benchmarks presented as &ldquo;general&rdquo; measures of progress cannot support that claim; the title,
+    &ldquo;AI and the Everything in the Whole Wide World Benchmark&rdquo;, is the argument<a class="cite" href="#src-35">[35]</a>.</li>
+    <li>Wallach et al. import the measurement framework of the social sciences: a background concept (&ldquo;helpfulness&rdquo;) is made into a
+    systematised concept (a precise definition), operationalised as a measurement instrument (the eval), and applied to produce instance-level
+    measurements. Validity has to be argued at every step<a class="cite" href="#src-9">[9]</a>.</li>
+  </ul>
+  <p>For a product team: write down the claim the eval must support (&ldquo;the assistant books showings correctly for our agents&rsquo; real
+  requests&rdquo;) and check that tasks, graders and aggregation support exactly that. Synthetic, cleanly phrased tasks support a weaker claim than real traces.</p>
+
+  <h3 id="validity-quality">Benchmark quality checklists</h3>
+  <p>Two checklists are worth keeping open when you build or adopt a benchmark:</p>
+  <ul>
+    <li><b>BetterBench</b> (Reuel et al., NeurIPS 2024): 46 best practices across the full benchmark lifecycle, a minimum checklist, and scores for 24 benchmarks; most were hard to replicate and did not report statistical
+    significance<a class="cite" href="#src-4">[4]</a>.</li>
+    <li><b>The Agentic Benchmark Checklist (ABC)</b> (Zhu et al., 2025) targets agent benchmarks. It documents that SWE-bench Verified uses
+    insufficient test cases and that &tau;-bench counts empty responses as successes, flaws that can mis-estimate performance by up to 100% in
+    relative terms; applying ABC to CVE-Bench cut its overestimation by 33%<a class="cite" href="#src-36">[36]</a>.</li>
+  </ul>
+
+  <h3 id="validity-labels">Label errors and curation</h3>
+  <p>A benchmark&rsquo;s answer key has errors, and they cap what you can measure. Gema et al. (&ldquo;Are We Done with MMLU?&rdquo;) estimate that
+  6.49% of MMLU questions contain errors, with 57% of the analysed Virology questions affected, and release a re-annotated subset, MMLU-Redux<a class="cite" href="#src-37">[37]</a>.
+  When frontier models differ by a point on a benchmark whose labels are 6% wrong, the ranking partly measures agreement with the errors.
+  SWE-bench Verified is the agent-era response: OpenAI had 93 developers screen 1,699 samples (three labels each, most severe kept), leaving 500 problems that
+  real engineers confirmed are solvable<a class="cite" href="#src-38">[38]</a>
+  <span class="note-verify">(partially verified: the OpenAI post returned 403; facts from search snippets of openai.com and swebench.com)</span>.
+  Even so, ABC found its tests insufficient for some tasks<a class="cite" href="#src-36">[36]</a>. Curation reduces label noise; it does not remove the need to read failures.</p>
+
+  <h3 id="validity-saturation">Saturation and contamination</h3>
+  <p>An eval at 100% &ldquo;tracks regressions but provides no signal for improvement&rdquo;<a class="cite" href="#src-1">[1]</a>. Public benchmarks saturate: with
+  frontier models above 90% on MMLU, the Humanity&rsquo;s Last Exam team built 2,500 expert-written questions as a harder successor<a class="cite" href="#src-39">[39]</a>.
+  SWE-bench Verified went from 30% to &gt;80% during 2025<a class="cite" href="#src-1">[1]</a>. Near the ceiling, large gains show up as small increases: Qodo
+  was initially unimpressed by Opus 4.5 because its one-shot evals missed gains on longer tasks, and built a new agentic eval<a class="cite" href="#src-1">[1]</a>;
+  <a href="02-benchmarks-metrics.html#breakage">Chapter 2</a> covers the benchmark lifecycle and difficulty-aware metrics. A second threat
+  is <span class="term">contamination</span>: test items leak into training data, inflating scores without any gain in the underlying ability<a class="cite" href="#src-40">[40]</a>.
+  Dynamic benchmarks such as LiveBench and template-based variants such as GSM-Symbolic are partial defences<a class="cite" href="#src-18">[18]</a><a class="cite" href="#src-20">[20]</a>;
+  Chapter 3 covers detection and prevention (<a href="03-datasets-contamination.html#contamination">3.9</a>&ndash;<a href="03-datasets-contamination.html#prevention">3.12</a>).</p>
+
+  <h3 id="validity-leaky">Answer-reachable environments: when agents look up the answer</h3>
+  <p>Agent benchmarks add a threat that static benchmarks do not have. Contamination means the answer is in the <em>training data</em>; in a
+  <span class="term">leaky environment</span> the answer can be <em>reached at eval time</em> from inside the environment: a repository whose git
+  history contains the fix commit, an open internet connection, a mounted copy of the benchmark. An agent rewarded for passing tests will find
+  that route. Cursor audited SWE-bench Pro trajectories with an agent and found that 63% of successful Opus 4.8 Max resolutions retrieved the fix
+  (from git history or the web) rather than deriving it. Sealing git history and restricting internet access dropped Opus 4.8 Max from 87.1% to
+  73.0% (&minus;14.1 points) and Cursor&rsquo;s own Composer 2.5 from 74.7% to 54.0%<a class="cite" href="#src-50">[50]</a>. HAL&rsquo;s LLM-aided log inspection
+  found a related behaviour: agents searching for the benchmark on HuggingFace instead of solving the task<a class="cite" href="#src-49">[49]</a>.</p>
+  <p>Two defences work together. <b>Seal the environment</b>: strip git objects newer than the task&rsquo;s base commit and allow only the network
+  access the task needs. <b>Audit transcripts for answer lookup</b>, as Cursor did: flag trials that fetched the fix, the upstream patch or the
+  benchmark, whatever the tests say. A score that drops sharply when sealed was partly measuring retrieval
+  (<a href="07-rl-environments.html#env-qa">7.6</a>).</p>
+
+  <h3 id="validity-awareness">Evaluation awareness and sandbagging</h3>
+  <p>A final threat comes from the system under test itself. <span class="term">Evaluation awareness</span> means the model infers that it is
+  being tested and behaves differently from how it would in deployment. <span class="term">Sandbagging</span> is strategic underperformance on an
+  evaluation, for example hiding a dangerous capability. Cursor puts the point bluntly: &ldquo;As models become more aware of when they are being
+  evaluated, they may change their behavior in subtler ways that are not fixed by sealing git history or restricting internet access.&rdquo; They
+  frame this as part of a broader problem, building evals that &ldquo;retain construct validity even when the model infers that it is being
+  evaluated&rdquo;<a class="cite" href="#src-50">[50]</a>.</p>
+  <p>One practical defence is realistic task framing: build tasks from real traces rather than exam-style prompts. Then compare behaviour on the
+  same tasks with and without test-like cues. If the score or the behaviour moves when only the framing changes, the eval is partly measuring the
+  model&rsquo;s guess about its situation. Chapter 8 treats both problems in depth: sandbagging and elicitation checks in
+  <a href="08-safety-redteaming.html#eval-integrity-sandbagging">8.11</a>, and evaluation awareness in
+  <a href="08-safety-redteaming.html#eval-integrity-awareness">8.11</a>.</p>
+
+  <h3 id="validity-goodhart">Goodhart&rsquo;s law and the winner&rsquo;s curse</h3>
+  <p>&ldquo;When a measure becomes a target, it ceases to be a good measure.&rdquo; Manheim and Garrabrant distinguish four mechanisms:
+  regressional, extremal, causal and adversarial Goodhart<a class="cite" href="#src-41">[41]</a>. The <em>regressional</em> variant is the one every eval builder meets first,
+  and it needs no bad intent at all: if you select the best of many noisy scores, the winner&rsquo;s score is biased upward, because it was selected
+  partly for its luck.</p>
+  <p>The Leaderboard Illusion (Singh et al., 2025) documents this at scale on Chatbot Arena. Undisclosed private testing let providers try many
+  variants and publish only the best; the paper reports Meta testing 27 private variants before the Llama 4 release, and data-access asymmetries
+  in which Google and OpenAI received an estimated 19.2% and 20.4% of all Arena data. Training on Arena-style data produced relative gains of up to
+  112% on the Arena distribution<a class="cite" href="#src-42">[42]</a>. Kapoor et al. identify the same mechanism in agent benchmarks: holdout sets are often
+  inadequate or missing, so agents overfit and take shortcuts<a class="cite" href="#src-13">[13]</a>.</p>
+  <p><code>code/ch01/goodhart_holdout.py</code> shows the regressional version in miniature. There are 200 candidate &ldquo;prompt configurations&rdquo;
+  whose true accuracies are almost identical (drawn from a normal distribution with mean 0.70 and SD 0.02). We tune on a 30-item dev set, try the
+  first <i>K</i> configs, keep the one with the best dev score, and then score the winner on a 2,000-item held-out test set. The whole experiment is
+  repeated 400 times.</p>
+<pre data-file="code/ch01/goodhart_holdout.py (lines 24&ndash;34; full file in the repo)"><code class="language-python">def one_run(rng: np.random.Generator) -&gt; dict:
+    p_true = np.clip(rng.normal(0.70, 0.02, size=N_CONFIGS), 0, 1)
+    dev = rng.binomial(N_DEV, p_true) / N_DEV
+    test = rng.binomial(N_TEST, p_true) / N_TEST
+    out = {}
+    for k in KS:
+        j = int(np.argmax(dev[:k]))              # winner among the first k configs tried
+        out[k] = (dev[j], test[j], p_true[j])
+    out["oracle"] = float(p_true.max())
+    return out</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch01/goodhart_holdout.py</code></p>
+<pre class="output"><code>dev items=30, test items=2000, configs=200, repetitions=400
+configs tried  winner dev  winner test  winner true p  optimism
+            1       0.701        0.699          0.699    +0.002
+            2       0.749        0.702          0.703    +0.047
+            5       0.799        0.705          0.705    +0.094
+           10       0.829        0.707          0.707    +0.122
+           20       0.851        0.709          0.709    +0.143
+           50       0.879        0.711          0.711    +0.168
+          100       0.896        0.712          0.712    +0.183
+          200       0.912        0.712          0.711    +0.201
+
+best TRUE accuracy among all 200 configs (oracle) = 0.755
+The selected config's dev score climbs with every extra config tried; its test score
+barely moves. The gap is selection bias (winner's curse), not skill.</code></pre>
+
+  <figure class="diagram" id="fig-1-3">
+    <svg viewBox="0 0 720 330" role="img" aria-labelledby="fig-1-3-t">
+      <title id="fig-1-3-t">Dev and test accuracy of the selected configuration as the number of configurations tried grows from 1 to 200: dev rises from 0.70 to 0.91, test stays near 0.71</title>
+      <path d="M90 30 V270 H630" class="s-ink" stroke-width="1.2"/>
+      <path d="M90 230 H630 M90 190 H630 M90 150 H630 M90 110 H630 M90 70 H630" class="s-muted" stroke-width="0.5" stroke-dasharray="3 4"/>
+      <text x="82" y="274" text-anchor="end" class="small">0.65</text><text x="82" y="234" text-anchor="end" class="small">0.70</text>
+      <text x="82" y="194" text-anchor="end" class="small">0.75</text><text x="82" y="154" text-anchor="end" class="small">0.80</text>
+      <text x="82" y="114" text-anchor="end" class="small">0.85</text><text x="82" y="74" text-anchor="end" class="small">0.90</text>
+      <text x="82" y="34" text-anchor="end" class="small">0.95</text>
+      <text x="90" y="290" text-anchor="middle" class="small">1</text><text x="160.6" y="290" text-anchor="middle" class="small">2</text>
+      <text x="254" y="290" text-anchor="middle" class="small">5</text><text x="324.7" y="290" text-anchor="middle" class="small">10</text>
+      <text x="395.3" y="290" text-anchor="middle" class="small">20</text><text x="488.7" y="290" text-anchor="middle" class="small">50</text>
+      <text x="559.4" y="290" text-anchor="middle" class="small">100</text><text x="630" y="290" text-anchor="middle" class="small">200</text>
+      <text x="360" y="316" text-anchor="middle">configurations tried, K (log scale)</text>
+      <text x="24" y="150" text-anchor="middle" transform="rotate(-90 24 150)">accuracy of selected config</text>
+      <path d="M90 186 H630" class="s-3" stroke-width="1.5" stroke-dasharray="6 4"/>
+      <text x="400" y="202" class="small">best true accuracy among the 200 configs (0.755)</text>
+      <polyline points="90.0,229.2 160.6,190.8 254.0,150.8 324.7,126.8 395.3,109.2 488.7,86.8 559.4,73.2 630.0,60.4" class="s-1" stroke-width="2.5"/>
+      <polyline points="90.0,230.8 160.6,228.4 254.0,226.0 324.7,224.4 395.3,222.8 488.7,221.2 559.4,220.4 630.0,220.4" class="s-2" stroke-width="2.5"/>
+      <g class="f-1"><circle cx="90" cy="229.2" r="3.5"/><circle cx="160.6" cy="190.8" r="3.5"/><circle cx="254" cy="150.8" r="3.5"/><circle cx="324.7" cy="126.8" r="3.5"/><circle cx="395.3" cy="109.2" r="3.5"/><circle cx="488.7" cy="86.8" r="3.5"/><circle cx="559.4" cy="73.2" r="3.5"/><circle cx="630" cy="60.4" r="3.5"/></g>
+      <g class="f-2"><circle cx="90" cy="230.8" r="3.5"/><circle cx="160.6" cy="228.4" r="3.5"/><circle cx="254" cy="226" r="3.5"/><circle cx="324.7" cy="224.4" r="3.5"/><circle cx="395.3" cy="222.8" r="3.5"/><circle cx="488.7" cy="221.2" r="3.5"/><circle cx="559.4" cy="220.4" r="3.5"/><circle cx="630" cy="220.4" r="3.5"/></g>
+      <text x="600" y="50" text-anchor="end" class="title">dev (30 items): 0.912</text>
+      <text x="600" y="246" text-anchor="end" class="title">held-out test: 0.712</text>
+      <path d="M645 62 V218" class="s-muted" stroke-width="1.5"/>
+      <text x="650" y="140" class="small">+0.20</text>
+      <text x="650" y="154" class="small">optimism</text>
+    </svg>
+    <figcaption><b>Figure 1.3.</b> The winner&rsquo;s curse, from <code>goodhart_holdout.py</code> (averages over 400 repetitions). The dev score of the selected
+    configuration climbs from 0.70 to 0.91 as more configurations are tried; its held-out score barely moves (0.70 to 0.71) and never reaches even the best true
+    accuracy available (dashed line, 0.755), because a 30-item dev set cannot tell the configurations apart. The vertical gap is pure selection bias.</figcaption>
+  </figure>
+  <p>The dev score of whatever you selected is not an estimate of its performance; only an untouched held-out set is. The bias grows with the
+  number of things tried (prompts, seeds, checkpoints, private Arena variants), so that number belongs in any honest report. And with a dev set this
+  small, tuning mostly selects noise: the winner&rsquo;s true accuracy (0.711 at K = 200) is one point above a random pick, though a 0.755 config
+  existed. A bigger dev set, not more search, is the cure.</p>
+  <p><b>When the grader becomes a reward.</b> In RL post-training the policy is optimised <em>directly</em> against the grader, so the extremal and
+  adversarial variants dominate<a class="cite" href="#src-41">[41]</a>: the policy seeks the grader&rsquo;s blind spots (special-cased tests, a judge that rewards
+  confident tone, a reachable answer). This <span class="term">reward hacking</span> means a grader good enough for offline reporting can be inadequate
+  as a reward (<a href="07-rl-environments.html#reward-hacking">7.5</a>).</p>
+  <aside class="danger" data-title="Never tune on the test set">
+    <p>Every time you change something in response to the held-out score, the held-out set becomes a dev set. Keep an untouched test split,
+    rotate it once it has driven decisions, and count the configurations you tried. The same holds for judge prompts: Husain recommends
+    train/dev/test splits<a class="cite" href="#src-22">[22]</a>, Yan a 75/25 dev/test split<a class="cite" href="#src-23">[23]</a>.</p>
+  </aside>
+
+  <h2 id="edd"><span class="sec-num">1.8</span>Eval-driven development</h2>
+  <p>The previous sections described evals as instruments. This one is about the <em>practice</em> of building them, which practitioners call
+  <span class="term">eval-driven development</span> (EDD). The sources agree on a loop: look at data, name the failure modes, write targeted evals for
+  them, change the system, gate changes in CI, monitor production, and feed new failures back into the dataset<a class="cite" href="#src-7">[7]</a><a class="cite" href="#src-3">[3]</a><a class="cite" href="#src-1">[1]</a>.</p>
+  <aside class="note" data-title="Two meanings of &ldquo;eval-driven development&rdquo;">
+    <p>OpenAI&rsquo;s guide recommends &ldquo;adopt eval-driven development&rdquo;: evaluate early and often<a class="cite" href="#src-3">[3]</a>. Husain and Shankar answer
+    &ldquo;Generally no&rdquo; to the same phrase, because they read it as writing evaluators <em>before</em> features: &ldquo;write evaluators for errors you
+    discover, not errors you imagine&rdquo;, except for known hard constraints<a class="cite" href="#src-7">[7]</a>. The disagreement is about the word. Here EDD means the
+    loop in Figure 1.4, which <em>starts</em> with error analysis; define a provisional objective, look at data, and revise both.</p>
+  </aside>
+
+  <figure class="diagram" id="fig-1-4">
+    <svg viewBox="0 0 720 400" role="img" aria-labelledby="fig-1-4-t">
+      <title id="fig-1-4-t">The eval-driven development flywheel: traces, error analysis, failure taxonomy, evals, change, CI gate, deploy, monitoring, and back to traces</title>
+      <defs><marker id="fig-1-4-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-muted"/></marker></defs>
+      <circle cx="360" cy="200" r="140" class="s-muted" stroke-width="1.5" stroke-dasharray="5 5"/>
+      <text x="360" y="192" text-anchor="middle" class="title">the eval set</text>
+      <text x="360" y="210" text-anchor="middle" class="title">grows with the product</text>
+      <text x="360" y="230" text-anchor="middle" class="small">production failures become tasks</text>
+      <rect x="295" y="38" width="130" height="44" rx="8" class="tint-1"/><text x="360" y="58" text-anchor="middle">1. Traces</text><text x="360" y="74" text-anchor="middle" class="small">real + synthetic</text>
+      <rect x="455" y="88" width="150" height="44" rx="8" class="tint-1"/><text x="530" y="108" text-anchor="middle">2. Error analysis</text><text x="530" y="124" text-anchor="middle" class="small">open coding, 100+ traces</text>
+      <rect x="500" y="178" width="150" height="44" rx="8" class="tint-2"/><text x="575" y="198" text-anchor="middle">3. Failure taxonomy</text><text x="575" y="214" text-anchor="middle" class="small">axial coding + counts</text>
+      <rect x="455" y="268" width="150" height="44" rx="8" class="tint-2"/><text x="530" y="288" text-anchor="middle">4. Targeted evals</text><text x="530" y="304" text-anchor="middle" class="small">assertions, then judges</text>
+      <rect x="295" y="318" width="130" height="44" rx="8" class="tint-3"/><text x="360" y="338" text-anchor="middle">5. Change system</text><text x="360" y="354" text-anchor="middle" class="small">prompt, model, tools</text>
+      <rect x="115" y="268" width="150" height="44" rx="8" class="tint-3"/><text x="190" y="288" text-anchor="middle">6. CI gate</text><text x="190" y="304" text-anchor="middle" class="small">regression + capability</text>
+      <rect x="70" y="178" width="150" height="44" rx="8" class="tint-4"/><text x="145" y="198" text-anchor="middle">7. Deploy</text><text x="145" y="214" text-anchor="middle" class="small">canary, A/B</text>
+      <rect x="115" y="88" width="150" height="44" rx="8" class="tint-4"/><text x="190" y="108" text-anchor="middle">8. Monitor</text><text x="190" y="124" text-anchor="middle" class="small">online evals, feedback</text>
+      <path d="M425 66 L470 86" class="s-muted" stroke-width="2" marker-end="url(#fig-1-4-arr)"/>
+      <path d="M560 132 L570 176" class="s-muted" stroke-width="2" marker-end="url(#fig-1-4-arr)"/>
+      <path d="M570 222 L560 266" class="s-muted" stroke-width="2" marker-end="url(#fig-1-4-arr)"/>
+      <path d="M470 312 L427 334" class="s-muted" stroke-width="2" marker-end="url(#fig-1-4-arr)"/>
+      <path d="M295 334 L252 314" class="s-muted" stroke-width="2" marker-end="url(#fig-1-4-arr)"/>
+      <path d="M160 268 L150 224" class="s-muted" stroke-width="2" marker-end="url(#fig-1-4-arr)"/>
+      <path d="M150 178 L160 134" class="s-muted" stroke-width="2" marker-end="url(#fig-1-4-arr)"/>
+      <path d="M250 88 L293 66" class="s-muted" stroke-width="2" marker-end="url(#fig-1-4-arr)"/>
+    </svg>
+    <figcaption><b>Figure 1.4.</b> The eval-driven development flywheel. Each turn starts from real traces, and every failure found in production
+    (step 8) becomes a candidate task for the next turn. Steps 2&ndash;4 are the part teams most often skip.</figcaption>
+  </figure>
+
+  <h3 id="edd-criteria">Step 0: define success</h3>
+  <p>Anthropic&rsquo;s documentation asks for success criteria that are <em>specific, measurable, achievable and relevant</em>, and gives a
+  sentiment-analysis example of what that looks like: an F1 of at least 0.85 on a held-out test set of 10,000 diverse posts, 99.5% of outputs
+  non-toxic, and 95% of responses under 200 ms<a class="cite" href="#src-14">[14]</a>. Note the three dimensions (quality, safety, latency), each with a threshold and a
+  test set. OpenAI&rsquo;s guide frames the process as define the objective, collect a dataset, define metrics, run and compare, and evaluate
+  continuously<a class="cite" href="#src-3">[3]</a>. Take the form, not the metrics: a criterion is a metric, a threshold and a held-out set. Generic scores such as
+  ROUGE-L or coherence track task-specific quality poorly<a class="cite" href="#src-26">[26]</a><a class="cite" href="#src-7">[7]</a>; replace them with task-specific, usually binary,
+  evaluators found through error analysis (<a href="02-benchmarks-metrics.html#text-metrics">2.3</a>), and treat the first criteria as a draft.</p>
+  <aside class="note" data-title="As of November 2026">
+    <p>OpenAI&rsquo;s evaluation best-practices page notes that its hosted Evals platform is being retired: read-only from 31 October 2026 and shut
+    down on 30 November 2026<a class="cite" href="#src-3">[3]</a> (page accessed 20 November 2026), ten days after this book&rsquo;s date. The guidance itself is
+    platform-independent; the <code>openai/evals</code> repository remains a historical reference and dataset source. Chapter 9 surveys alternative
+    tooling (<a href="09-tooling-production.html#map">9.1</a>).</p>
+  </aside>
+
+  <h3 id="edd-error-analysis">Error analysis: open coding, axial coding, counting</h3>
+  <p>Husain and Shankar call error analysis &ldquo;the most important activity in evals&rdquo;<a class="cite" href="#src-7">[7]</a>. The method is borrowed from qualitative
+  research:</p>
+  <ol>
+    <li><b>Collect representative traces.</b> Real production traces if you have them; otherwise synthetic inputs built systematically along
+    <em>dimensions</em> (for example features &times; scenarios &times; personas), not ad-hoc prompts<a class="cite" href="#src-7">[7]</a><a class="cite" href="#src-22">[22]</a>.</li>
+    <li><b>Open coding.</b> A domain expert reads each trace and writes a free-text note about what went wrong, focusing on the <em>first</em>
+    failure, because upstream errors cause downstream ones. Annotate at least 30 traces yourself before letting an AI assistant propose labels<a class="cite" href="#src-7">[7]</a>.</li>
+    <li><b>Axial coding.</b> Group the notes into a small taxonomy of failure modes and count each one. An LLM can propose a first-pass grouping, but
+    &ldquo;always review and refine the clusters yourself&rdquo;<a class="cite" href="#src-7">[7]</a>.</li>
+    <li><b>Iterate to saturation.</b> Keep reading until new traces stop revealing new failure modes (&ldquo;theoretical saturation&rdquo;). The FAQ
+    recommends reviewing at least 100 traces<a class="cite" href="#src-7">[7]</a>.</li>
+  </ol>
+  <p>The FAQ recommends a single domain expert, a &ldquo;benevolent dictator&rdquo;, as final arbiter rather than a committee<a class="cite" href="#src-7">[7]</a>. And
+  Husain&rsquo;s first rule from Rechat applies throughout: &ldquo;Remove ALL friction from looking at data&rdquo;, with a trace viewer built for your data<a class="cite" href="#src-2">[2]</a>.</p>
+  <p><code>code/ch01/error_analysis.py</code> mocks steps 1&ndash;2 for a four-stage real-estate assistant (parse &rarr; retrieve &rarr; tool_call &rarr;
+  answer): 40 traces, each with its first failing stage and a reviewer note. A keyword codebook stands in for axial coding, <code>Counter</code> gives a
+  Pareto table, and a <span class="term">transition-failure matrix</span> (rows: last stage that succeeded; columns: first that failed) shows where
+  the pipeline breaks, which the FAQ recommends for tool-using conversations &ldquo;to find hotspots of errors&rdquo;<a class="cite" href="#src-7">[7]</a>.</p>
+<pre data-file="code/ch01/error_analysis.py (lines 69&ndash;95; full file in the repo)"><code class="language-python">def axial_code(note: str) -&gt; str:
+    low = note.lower()
+    for category, keys in CODEBOOK.items():
+        if any(k in low for k in keys):
+            return category
+    return "UNCLASSIFIED"
+
+
+def pareto(categories: list[str]) -&gt; list[tuple[str, int, float, float]]:
+    counts = Counter(categories).most_common()
+    total, cum, rows = sum(c for _, c in counts), 0, []
+    for cat, c in counts:
+        cum += c
+        rows.append((cat, c, c / total, cum / total))
+    return rows
+
+
+def transition_matrix(traces: list[Trace]) -&gt; dict[tuple[str, str], int]:
+    """Rows: last stage that succeeded. Columns: first stage that failed (Husain &amp; Shankar FAQ)."""
+    m: Counter = Counter()
+    for t in traces:
+        if t.failed_at is None:
+            continue
+        i = t.path.index(t.failed_at)
+        last_ok = t.path[i - 1] if i &gt; 0 else "START"
+        m[(last_ok, t.failed_at)] += 1
+    return dict(m)</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch01/error_analysis.py</code></p>
+<pre class="output"><code>traces reviewed: 40, failing: 34
+
+sample open codes:
+  trace  0: tool call missing required argument agent_id
+  trace  1: called create_showing with the wrong date format
+  trace  2: invented a pool that is not in the listing
+  trace  3: tool call missing required argument agent_id
+
+failure category     count   share  cumulative
+retrieval miss          10     29%         29%
+wrong tool args          8     24%         53%
+hallucination            6     18%         71%
+ignored constraint       5     15%         85%
+format / leak            3      9%         94%
+UNCLASSIFIED             2      6%        100%
+
+unclassified notes -&gt; add a category or rewrite the codebook: ['asked the user the same question twice', 'replied in Spanish to an English user']
+
+transition-failure matrix (row = last OK stage, column = first failed stage)
+               parse  retrieve tool_call    answer
+START              5         .         .         .
+parse              .        10         2         .
+retrieve           .         .         6         .
+tool_call          .         .         .        11</code></pre>
+  <p>Three categories cover 71% of failures, so the first evals and fixes go there, not to whatever annoyed someone in a demo. The two unclassified
+  notes earn a category if they recur: the taxonomy is a living document. The matrix localises: ten failures start at retrieval after a good parse,
+  eleven at the answer after a good tool call, and two traces skipped retrieval altogether, a routing problem worth its own eval.</p>
+
+  <h3 id="edd-evaluators">From failure modes to evaluators</h3>
+  <p>Each important failure mode gets its own evaluator, and each evaluator gives a <b>binary pass/fail</b> verdict. The FAQ&rsquo;s argument against 1&ndash;5
+  Likert scales is practical: the difference between adjacent points is subjective and inconsistent across annotators, detecting differences needs larger
+  samples, and annotators default to the middle value; to track gradual progress, break the quality into several binary checks (&ldquo;4 out of 5
+  expected facts included&rdquo;)<a class="cite" href="#src-7">[7]</a>. Yan names the opposite anti-pattern the &ldquo;God Evaluator&rdquo;: one prompt asked to grade five to ten
+  dimensions at once<a class="cite" href="#src-23">[23]</a>. One evaluator per dimension is easier to validate, debug and act on.</p>
+  <p>Choose the cheapest evaluator that can catch the failure. The FAQ&rsquo;s cost hierarchy: assertions and reference-based checks are cheap to
+  build and maintain, while an LLM judge &ldquo;requires 100+ labeled examples, ongoing weekly maintenance, and coordination between developers, PMs,
+  and domain experts&rdquo;<a class="cite" href="#src-7">[7]</a>. Many failures are preferences you never told the model about, which a one-line prompt change removes.
+  Research backs assertions first: SPADE synthesises assertion functions from a pipeline&rsquo;s prompt-edit history, cutting the number of
+  assertions by 14% and false failures by 21% versus simpler baselines<a class="cite" href="#src-43">[43]</a>; its NLP ancestor CheckList helped users find about three times
+  as many bugs<a class="cite" href="#src-44">[44]</a>.</p>
+  <p>For the failure modes that need a judge, Husain&rsquo;s <span class="term">critique shadowing</span> process builds one that matches the expert:
+  the principal domain expert gives pass/fail verdicts with written critiques on a structured dataset; you fix obvious system errors; then you iterate
+  the judge prompt, using the critiques as few-shot examples, until it agrees with the expert on held-out data. In the Honeycomb case the judge reached
+  more than 90% agreement in three iterations<a class="cite" href="#src-22">[22]</a>. Chapter 4.5 covers this in detail (<a href="04-llm-judges-human-eval.html#rubrics">4.5</a>).</p>
+
+  <h3 id="edd-drift">Criteria drift</h3>
+  <p>Shankar et al. studied people building LLM-assisted evaluators with their EvalGen tool and found a chicken-and-egg problem they call
+  <span class="term">criteria drift</span>: users need criteria to grade outputs, but grading outputs is how they discover their criteria, and some
+  criteria only emerge after seeing outputs<a class="cite" href="#src-45">[45]</a>. This is why the rubric cannot be fixed in advance, why the success criteria in Step 0 are a
+  draft, and why the loop in Figure 1.4 is a loop.</p>
+
+  <h3 id="edd-suites">Start small; capability vs regression; graduation</h3>
+  <p>&ldquo;We see teams delay building evals because they think they need hundreds of tasks. In reality, 20&ndash;50 simple tasks drawn from real failures
+  is a great start&rdquo;<a class="cite" href="#src-1">[1]</a>. Early changes have large effects, so small sets detect them; the set grows as differences shrink
+  (section <a href="#estimate">1.6</a>). Build <em>balanced</em> sets that test when a behaviour should and should not occur (&ldquo;One-sided evals create
+  one-sided optimization&rdquo;), and isolate trials<a class="cite" href="#src-1">[1]</a>.</p>
+  <p>Keep separate suites with separate gates. A <b>regression suite</b> sits near 100% and any failure blocks a merge. A <b>capability suite</b> is
+  gated statistically: is the candidate credibly at least as good as required? When capability tasks are reliably solved, they <b>graduate</b> into the regression suite. <code>code/ch01/regression_gate.py</code> implements
+  this with a JSONL golden set (15 regression and 25 capability tasks), four mock releases, and a two-part rule: every regression task must pass every
+  one of its 3 trials, and the 95% Wilson lower bound of capability accuracy must be at least the floor stored in <code>data/baseline.json</code>
+  (0.40, set just below the shipped v1&rsquo;s lower bound of 0.422).</p>
+<pre data-file="code/ch01/regression_gate.py (lines 59&ndash;74; full file in the repo)"><code class="language-python">def run_gate(version: str, tasks: list[dict], floor: float) -&gt; GateResult:
+    per_task: dict[str, float] = {}
+    for t in tasks:
+        k = TRIALS[t["suite"]]
+        per_task[t["id"]] = sum(mock_system(version, t, i) == t["target"] for i in range(k)) / k
+    reg_fail = [t["id"] for t in tasks if t["suite"] == "regression" and per_task[t["id"]] &lt; 1.0]
+    cap = [per_task[t["id"]] for t in tasks if t["suite"] == "capability"]
+    acc = sum(cap) / len(cap)
+    lower = wilson_lower(acc, len(cap))
+    return GateResult(version, not reg_fail and lower &gt;= floor, reg_fail, acc, lower, per_task)
+
+
+def graduate(tasks: list[dict], results: list[GateResult]) -&gt; list[str]:
+    """Capability tasks solved on EVERY trial by every listed release move to the regression suite."""
+    return [t["id"] for t in tasks if t["suite"] == "capability"
+            and all(r.per_task[t["id"]] == 1.0 for r in results)]</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch01/regression_gate.py</code> (or the pytest version: <code>python3 -m pytest code/ch01/test_regression_gate.py</code>)</p>
+<pre class="output"><code>golden set: 15 regression + 25 capability tasks; capability floor = 0.4
+version  verdict   cap acc  95% lower  regression failures
+v1       PASS        0.616      0.422  -
+v2       PASS        0.736      0.541  -
+v3       FAIL        0.728      0.532  reg-format-0, reg-format-1, reg-format-2, reg-format-3
+v4       FAIL        0.472      0.293  -
+
+capability tasks v2 solved on 5/5 trials -&gt; graduate to regression: ['cap-multistep-1', 'cap-multistep-3', 'cap-multistep-5', 'cap-multistep-6', 'cap-multistep-7', 'cap-ambiguous-0', 'cap-longctx-0']
+wrote code/ch01/out/golden_next.jsonl (the next release's golden set)</code></pre>
+  <ul>
+    <li><b>v2</b> improves capability (0.736, lower bound 0.541) and keeps every regression task: it ships.</li>
+    <li><b>v3</b> has the <em>best</em> capability numbers of any candidate but broke JSON formatting on four of five format tasks. The regression
+    gate blocks it, and the per-task list tells the developer exactly where to look. A single aggregate score would have hidden this.</li>
+    <li><b>v4</b> passes every regression task but its capability lower bound (0.293) is below the floor: blocked.</li>
+    <li>Seven capability tasks v2 solved on 5 of 5 trials graduate into the next golden set. In practice, require consistency across several
+    releases first, and replace graduated tasks with harder ones.</li>
+  </ul>
+  <aside class="warn" data-title="Pitfall: the Wilson bound here is deliberately conservative">
+    <p>The gate computes the interval with <i>n</i> = 25 capability <em>tasks</em> rather than 125 trials, because trials of the same task are correlated
+    (recall the naive SE in section <a href="#anatomy-code">1.2</a>). That is the safe direction for a merge gate, but it is not a substitute for proper
+    clustered standard errors and paired comparisons against the baseline, which Chapter 5 develops and Chapter 9.9 wires into CI
+    (<a href="09-tooling-production.html#ci">9.9</a>).</p>
+  </aside>
+  <p>In a real stack the same gate is usually a few lines of configuration. promptfoo expresses assertions declaratively<a class="cite" href="#src-46">[46]</a>; DeepEval
+  wraps them in pytest<a class="cite" href="#src-47">[47]</a>:</p>
+<pre data-file="promptfoo/promptfoo: examples/getting-started/promptfooconfig.yaml (quoted; header comments omitted)"><code class="language-yaml">prompts:
+  - 'Convert the following English text to {{language}}: {{input}}'
+
+providers:
+  - openai:gpt-6-sol
+  - openai:gpt-6-luna
+
+tests:
+  - vars:
+      language: French
+      input: Hello world
+    assert:
+      - type: contains
+        value: 'Bonjour le monde'
+  - vars:
+      language: Spanish
+      input: Where is the library?
+    assert:
+      - type: icontains
+        value: 'D&oacute;nde est&aacute; la biblioteca'</code></pre>
+<pre data-file="confident-ai/deepeval: README (quoted; needs deepeval installed and a judge model API key)"><code class="language-python">from deepeval import assert_test
+from deepeval.metrics import GEval
+from deepeval.test_case import LLMTestCase, SingleTurnParams
+
+def test_case():
+    correctness_metric = GEval(name="Correctness",
+        criteria="Determine if the 'actual output' is correct based on the 'expected output'.",
+        evaluation_params=[SingleTurnParams.ACTUAL_OUTPUT, SingleTurnParams.EXPECTED_OUTPUT],
+        threshold=0.5)
+    test_case = LLMTestCase(input="What if these shoes don't fit?",
+        actual_output="You have 30 days to get a full refund at no extra cost.",
+        expected_output="We offer a 30-day full refund at no extra costs.")
+    assert_test(test_case, [correctness_metric])</code></pre>
+  <aside class="note" data-title="As of November 2026">
+    <p>promptfoo&rsquo;s README describes the project as now part of OpenAI, still MIT-licensed, with evals running locally<a class="cite" href="#src-46">[46]</a>. The DeepEval
+    <code>GEval</code> metric above is itself an LLM judge (named after the G-Eval method), so it inherits every validation requirement from section
+    <a href="#graders">1.4</a>.</p>
+  </aside>
+
+  <h2 id="online"><span class="sec-num">1.9</span>From offline to online</h2>
+  <p>Offline evals test the inputs you anticipated; production delivers the rest, under real cost constraints and with drift. Anthropic borrows the
+  <span class="term">Swiss Cheese Model</span> from safety engineering: &ldquo;no single evaluation layer catches every issue. With multiple methods combined,
+  failures that slip through one layer are caught by another&rdquo;<a class="cite" href="#src-1">[1]</a>.</p>
+
+  <figure class="diagram ch01-wide" id="fig-1-5">
+    <svg viewBox="0 0 760 330" role="img" aria-labelledby="fig-1-5-t">
+      <title id="fig-1-5-t">Swiss cheese model of eval layers: six layers from assertions to user feedback, each with holes; different failure types pass through some layers and are stopped by others</title>
+      <defs><marker id="fig-1-5-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-muted"/></marker></defs>
+      <g>
+        <rect x="120" y="40" width="34" height="230" rx="6" class="tint-1"/>
+        <rect x="220" y="40" width="34" height="230" rx="6" class="tint-2"/>
+        <rect x="320" y="40" width="34" height="230" rx="6" class="tint-3"/>
+        <rect x="420" y="40" width="34" height="230" rx="6" class="tint-4"/>
+        <rect x="520" y="40" width="34" height="230" rx="6" class="tint-5"/>
+        <rect x="620" y="40" width="34" height="230" rx="6" class="tint-1"/>
+      </g>
+      <g class="f-bg">
+        <ellipse cx="137" cy="140" rx="9" ry="13"/><ellipse cx="137" cy="185" rx="9" ry="13"/><ellipse cx="137" cy="230" rx="9" ry="13"/><ellipse cx="137" cy="60" rx="9" ry="13"/>
+        <ellipse cx="237" cy="95" rx="9" ry="13"/><ellipse cx="237" cy="185" rx="9" ry="13"/><ellipse cx="237" cy="230" rx="9" ry="13"/>
+        <ellipse cx="337" cy="95" rx="9" ry="13"/><ellipse cx="337" cy="140" rx="9" ry="13"/><ellipse cx="337" cy="230" rx="9" ry="13"/>
+        <ellipse cx="437" cy="95" rx="9" ry="13"/><ellipse cx="437" cy="140" rx="9" ry="13"/><ellipse cx="437" cy="185" rx="9" ry="13"/>
+        <ellipse cx="537" cy="95" rx="9" ry="13"/><ellipse cx="537" cy="140" rx="9" ry="13"/><ellipse cx="537" cy="230" rx="9" ry="13"/>
+        <ellipse cx="637" cy="185" rx="9" ry="13"/><ellipse cx="637" cy="60" rx="9" ry="13"/>
+      </g>
+      <text x="137" y="30" text-anchor="middle" class="small">assertions</text>
+      <text x="237" y="30" text-anchor="middle" class="small">CI suites</text>
+      <text x="337" y="30" text-anchor="middle" class="small">human review</text>
+      <text x="437" y="30" text-anchor="middle" class="small">online judges</text>
+      <text x="537" y="30" text-anchor="middle" class="small">A/B tests</text>
+      <text x="637" y="30" text-anchor="middle" class="small">user feedback</text>
+      <text x="10" y="58" class="small">failure type</text>
+      <text x="10" y="99" class="small">UUID leak</text>
+      <text x="10" y="144" class="small">tool-arg bug</text>
+      <text x="10" y="189" class="small">tone issue</text>
+      <text x="10" y="234" class="small">new query</text>
+      <path d="M88 95 H118" class="s-1" stroke-width="2.5" marker-end="url(#fig-1-5-arr)"/>
+      <path d="M88 140 H218" class="s-2" stroke-width="2.5" marker-end="url(#fig-1-5-arr)"/>
+      <path d="M88 185 H318" class="s-3" stroke-width="2.5" marker-end="url(#fig-1-5-arr)"/>
+      <path d="M88 230 H418" class="s-4" stroke-width="2.5" marker-end="url(#fig-1-5-arr)"/>
+      <text x="137" y="300" text-anchor="middle" class="small">regex, schema</text>
+      <text x="237" y="300" text-anchor="middle" class="small">golden set gate</text>
+      <text x="337" y="300" text-anchor="middle" class="small">read transcripts</text>
+      <text x="437" y="300" text-anchor="middle" class="small">sampled traces</text>
+      <text x="537" y="300" text-anchor="middle" class="small">causal KPI effect</text>
+      <text x="637" y="300" text-anchor="middle" class="small">thumbs, reports</text>
+      <text x="380" y="322" text-anchor="middle" class="small">offline (pre-deploy) &#8592; &#8594; online (post-deploy)</text>
+    </svg>
+    <figcaption><b>Figure 1.5.</b> The Swiss Cheese Model of evaluation layers. Each arrow is a failure type; it passes through the holes of earlier
+    layers and is stopped by the first solid layer it meets. A leaked UUID is caught by a regex; a regression in tool arguments by the CI golden set;
+    a subtle tone problem by humans reading transcripts; a new kind of query that appeared after launch only by online judges on sampled traffic.
+    Holes are illustrative: every layer misses something, which is why you need several.</figcaption>
+  </figure>
+
+  <p>Husain&rsquo;s three levels map onto the stack with rising cost and falling cadence: unit tests on every change, human and model evaluation
+  on a schedule, A/B tests after significant product changes<a class="cite" href="#src-2">[2]</a>.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Layer</th><th>Catches</th><th>Blind spots</th><th>Book chapter</th></tr></thead>
+      <tbody>
+        <tr><td>Assertions / unit evals</td><td>format, schema, leaks, forbidden content</td><td>anything semantic</td><td>1.8, 9.6</td></tr>
+        <tr><td>CI regression + capability suites</td><td>regressions on known cases; progress on hard cases</td><td>inputs nobody wrote down</td><td>1.8, 9.9</td></tr>
+        <tr><td>Human transcript review</td><td>subtle quality problems, grader bugs, new failure modes</td><td>slow; small samples</td><td>1.8, 4.2</td></tr>
+        <tr><td>Online judges on sampled traces</td><td>failure rates on live traffic, drift</td><td>no gold labels; judge error must be corrected</td><td>9.13, 4.13</td></tr>
+        <tr><td>A/B tests</td><td>causal effect on user and business metrics</td><td>needs traffic and time; says little about <em>why</em></td><td>9.15</td></tr>
+        <tr><td>User feedback</td><td>problems you did not anticipate, with real examples</td><td>&ldquo;sparse and self-selected&rdquo;, skews toward severe issues<a class="cite" href="#src-1">[1]</a></td><td>9.14</td></tr>
+      </tbody>
+      <caption>Table 1.6. Evaluation layers and what each one misses.</caption>
+    </table>
+  </div>
+  <p>GitHub&rsquo;s account of building a custom Copilot completion model is a good worked example of the layering: offline execution-based benchmarks,
+  then pre-production LLM-judge and language-expert evaluations, then production A/B tests, with the online metric itself refined from acceptance rate
+  to accepted-and-retained characters<a class="cite" href="#src-48">[48]</a>. The feedback path closes the loop: &ldquo;log everything&rdquo; and mine logs for new
+  eval cases<a class="cite" href="#src-3">[3]</a>, so every diagnosed production failure ends as a golden-set task (step 8 of Figure 1.4 feeding step 1). Chapter 9 covers online evaluation, A/B testing and drift in detail
+  (<a href="09-tooling-production.html#online">9.13</a>&ndash;<a href="09-tooling-production.html#drift">9.18</a>).</p>
+
+  <h2 id="checklist"><span class="sec-num">1.10</span>Pitfalls checklist and a map of the book</h2>
+  <p>The same mistakes recur across practitioner write-ups and benchmark audits. Use this table as a review checklist for any eval you build or
+  inherit; the last column says where the book treats the fix in depth.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Pitfall</th><th>Symptom</th><th>Fix</th><th>Chapter</th></tr></thead>
+      <tbody>
+        <tr><td>Vibe checks only</td><td>&ldquo;It feels better&rdquo;; regressions found by users</td><td>A fixed task set run on every change<a class="cite" href="#src-3">[3]</a><a class="cite" href="#src-2">[2]</a></td><td>1.8, 9.9</td></tr>
+        <tr><td>Generic metrics</td><td>&ldquo;Helpfulness 4.2&rdquo; moves while users complain</td><td>Task-specific evaluators from error analysis; avoid off-the-shelf helpfulness/coherence scores and ROUGE/BERTScore for LLM outputs<a class="cite" href="#src-7">[7]</a><a class="cite" href="#src-26">[26]</a></td><td>1.8, 2.3</td></tr>
+        <tr><td>Unvalidated judges</td><td>High agreement, failures still ship</td><td>Validate against expert labels on held-out data; report TPR/TNR or &kappa;; probe position and verbosity bias<a class="cite" href="#src-22">[22]</a><a class="cite" href="#src-25">[25]</a></td><td>1.4, 4</td></tr>
+        <tr><td>God evaluator</td><td>One prompt grades 5&ndash;10 dimensions; scores are mush</td><td>One evaluator per dimension<a class="cite" href="#src-23">[23]</a></td><td>1.8, 4.5</td></tr>
+        <tr><td>Likert scales</td><td>Everything is a 3; small changes undetectable</td><td>Binary pass/fail, or pairwise with order swapping and ties<a class="cite" href="#src-7">[7]</a><a class="cite" href="#src-21">[21]</a></td><td>1.8, 4.5</td></tr>
+        <tr><td>No error bars</td><td>Celebrating 2-point gains on 100 items</td><td>CI on every number; paired comparisons; power analysis; clustered SEs<a class="cite" href="#src-31">[31]</a><a class="cite" href="#src-33">[33]</a></td><td>1.6, 5</td></tr>
+        <tr id="pitfall-parser"><td>Parser sensitivity</td><td>Your number differs from the paper&rsquo;s</td><td>Report extraction rules; inspect logged samples; compare like with like<a class="cite" href="#src-27">[27]</a></td><td>1.5, 2.10</td></tr>
+        <tr><td>Broken tasks and graders</td><td>0% pass rates; correct answers marked wrong; empty answers marked right</td><td>Reference solutions; read failing transcripts; ABC checklist<a class="cite" href="#src-1">[1]</a><a class="cite" href="#src-36">[36]</a></td><td>1.4, 6.11, 7.6</td></tr>
+        <tr><td>One-sided evals</td><td>Agent over-triggers a behaviour (searches for everything)</td><td>Balanced sets: should-do and should-not-do cases<a class="cite" href="#src-1">[1]</a></td><td>1.8, 8.6</td></tr>
+        <tr><td>Leaky environment</td><td>Score drops when internet or git history is removed; transcripts show lookups of fix commits or answers</td><td>Seal the environment; audit transcripts for answer lookup<a class="cite" href="#src-50">[50]</a></td><td>1.7, 6, 7</td></tr>
+        <tr><td>Eval awareness / sandbagging</td><td>Behaviour changes when the task looks like a test; capability lower under eval than with stronger elicitation</td><td>Realistic framing; compare with/without eval cues; elicitation checks<a class="cite" href="#src-50">[50]</a></td><td>1.7, <a href="08-safety-redteaming.html#eval-integrity">8.11</a></td></tr>
+        <tr><td>Shared state between trials</td><td>Correlated failures; inflated scores from leftover files or caches</td><td>Isolate each trial in a clean environment<a class="cite" href="#src-1">[1]</a></td><td>6.9, 7.6</td></tr>
+        <tr><td>Overfitting and Goodhart</td><td>Dev scores far above production; leaderboard rank not reproduced</td><td>Untouched held-out sets; count configurations tried; dynamic or private test sets<a class="cite" href="#src-13">[13]</a><a class="cite" href="#src-42">[42]</a></td><td>1.7, 3, 5.7</td></tr>
+        <tr><td>Ignoring cost and latency</td><td>The &ldquo;best&rdquo; agent costs ten times more per task</td><td>Report cost with accuracy; Pareto frontiers<a class="cite" href="#src-13">[13]</a><a class="cite" href="#src-49">[49]</a></td><td>6.7, 9.17</td></tr>
+        <tr><td>Saturation</td><td>Everything scores 95&ndash;100%; no signal</td><td>Graduate to regression; add harder tasks; retire saturated benchmarks<a class="cite" href="#src-1">[1]</a><a class="cite" href="#src-39">[39]</a></td><td>1.8, 2.11</td></tr>
+        <tr><td>Contamination</td><td>Score far above performance on fresh or rephrased items; public-benchmark score not reproduced on private data</td><td>Private or dynamically refreshed held-out sets, canary strings, perturbed variants (e.g. GSM-Symbolic), contamination checks<a class="cite" href="#src-40">[40]</a><a class="cite" href="#src-18">[18]</a><a class="cite" href="#src-20">[20]</a></td><td>1.7, <a href="03-datasets-contamination.html#contamination">3.9</a>&ndash;3.12</td></tr>
+      </tbody>
+      <caption>Table 1.7. Sixteen recurring pitfalls, their symptoms, fixes and where the book treats them.</caption>
+    </table>
+  </div>
+
+  <h3 id="checklist-recommendations">Ten recommendations</h3>
+  <p>Distilled from the sources in this chapter, in roughly the order you will need them:</p>
+  <ol>
+    <li><b>Start now and small</b>: 20&ndash;50 tasks drawn from real failures<a class="cite" href="#src-1">[1]</a>; read at least 100 traces yourself<a class="cite" href="#src-7">[7]</a>.</li>
+    <li><b>Error analysis first</b>: open coding, axial coding, counts; write evals for failures you found, not failures you imagined<a class="cite" href="#src-7">[7]</a>.</li>
+    <li><b>Assertions before judges</b>: code-based checks wherever possible; LLM judges only for what code cannot catch, each validated against expert
+    labels on a held-out split, reporting TPR/TNR or &kappa;.</li>
+    <li><b>Binary, one dimension per evaluator</b>; for pairwise judgments, swap the order and allow ties<a class="cite" href="#src-21">[21]</a><a class="cite" href="#src-23">[23]</a>.</li>
+    <li><b>Separate suites</b>: capability (a hill to climb), regression (near 100%, gating CI) and online monitoring; graduate saturated capability tasks.</li>
+    <li><b>Error bars on every number</b>: paired comparisons, clustered SEs, power analysis, multiple trials and pass^k where consistency matters<a class="cite" href="#src-31">[31]</a>.</li>
+    <li><b>Design tasks defensively</b>: balanced positive and negative cases, isolated trials, outcome grading, reference solutions, guards against shortcuts.</li>
+    <li><b>Track cost and latency</b> alongside quality<a class="cite" href="#src-13">[13]</a>.</li>
+    <li><b>Make looking at data frictionless</b>: a trace viewer built for your data<a class="cite" href="#src-2">[2]</a>.</li>
+    <li><b>Treat evals like code</b>: owned, versioned, reviewed and maintained, with domain experts contributing tasks.</li>
+  </ol>
+
+  <h3 id="checklist-map">Map of the rest of the book</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Chapter</th><th>Question it answers</th><th>Builds on (this chapter)</th></tr></thead>
+      <tbody>
+        <tr><td><a href="02-benchmarks-metrics.html">2. Benchmarks and Metrics</a></td><td>How is a benchmark score computed, and what can go wrong between output and number?</td><td>1.5 metrics, pass@k sidebar</td></tr>
+        <tr><td><a href="03-datasets-contamination.html">3. Datasets and Contamination</a></td><td>What should the score be computed <em>on</em>, and has the model seen it already?</td><td>1.7 validity, 1.8 error analysis</td></tr>
+        <tr><td><a href="04-llm-judges-human-eval.html">4. LLM Judges and Human Evaluation</a></td><td>Who grades open-ended output, and how do we know the grader is right?</td><td>1.4 graders, always-pass judge</td></tr>
+        <tr><td><a href="05-statistics.html">5. Statistics and Rigor</a></td><td>How sure are we, and is the difference real?</td><td>1.6 estimates, 1.2 task-level SE</td></tr>
+        <tr><td><a href="06-agent-evals.html">6. Evaluating AI Agents</a></td><td>How do we grade multi-turn, tool-using systems reliably and at reasonable cost?</td><td>1.2 outcome vs transcript, harnesses</td></tr>
+        <tr><td><a href="07-rl-environments.html">7. RL Environments</a></td><td>When an eval becomes a reward, how do we stop the policy hacking it?</td><td>1.7 Goodhart, 1.4 graders</td></tr>
+        <tr><td><a href="08-safety-redteaming.html">8. Safety and Red-Teaming</a></td><td>How do we measure harm, misuse and dangerous capabilities?</td><td>1.1 safety use, 1.3 alignment axis</td></tr>
+        <tr><td><a href="09-tooling-production.html">9. Tooling and Production</a></td><td>Which tools, and how do we run evals in CI and on live traffic?</td><td>1.8 CI gate, 1.9 online layers</td></tr>
+        <tr><td><a href="10-capstone.html">10. Capstone</a></td><td>What does an end-to-end suite for an agent and its RL environment look like?</td><td>everything</td></tr>
+      </tbody>
+      <caption>Table 1.8. How the remaining chapters extend this one. Reading shortcuts: agent builders 1 &rarr; 5 &rarr; 6 &rarr; 9 &rarr; 10; RL and post-training 1 &rarr; 2 &rarr; 5 &rarr; 7 &rarr; 6 &rarr; 10.</caption>
+    </table>
+  </div>
+
+  <h2 id="exercises">Exercises</h2>
+  <aside class="exercise" data-title="Exercise 1.1: add a grader to the mini harness">
+    <p>Add a grader <code>normalized_match</code> to <code>mini_harness.py</code> that lowercases, strips punctuation and accepts the target as a whole word
+    anywhere in the output. Use it for the <code>"exact"</code> tasks. How do the exact-kind pass rate and the overall accuracy change? Can your grader
+    now be fooled? Try an output like &ldquo;Paris, maybe Lyon&rdquo;.</p>
+    <details><summary>Solution</summary>
+      <p><code>words = re.findall(r"[a-z]+", out.lower()); ok = str(task.target).lower() in words</code>. The exact-kind pass rate rises from
+      0.200 to 0.600 and overall accuracy from 0.467 to 0.600, now <em>above</em> the mean <code>p_correct</code> of 0.445. Part of the gain is real
+      (sentence-phrased answers pass) and part is spurious: three &ldquo;Paris, maybe Lyon&rdquo; trials now pass. Tolerance traded false negatives
+      for false positives; reject multi-candidate outputs or use a validated judge. Update the asserts.</p>
+    </details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 1.2: make the extraction gap disappear">
+    <p>In <code>extraction.py</code>, change the prompt contract instead of the parser: rewrite the mocked outputs as a model that always follows
+    &ldquo;end your answer with <code>#### &lt;number&gt;</code>&rdquo; would (keep each answer&rsquo;s numeric value). Then add a numeric comparison so that
+    <code>42.0</code> equals <code>42</code>. What are the three accuracies now, and what does the remaining gap to the human column measure?</p>
+    <details><summary>Solution</summary>
+      <p>With clean <code>#### n</code> endings, strict and flexible agree; adding <code>float(a) == float(b)</code> fixes rows 5 and 6. Both reach
+      14/16 = 0.875, the human column: the remaining two items are genuinely wrong. Format-following is something you either <em>measure</em>
+      (strict) or <em>remove from the measurement</em> (enforce format, parse leniently); decide which and say so.</p>
+    </details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 1.3: compute kappa by hand">
+    <p>A judge is validated on 120 human-labelled outputs, 30 of which the human marked FAIL. The judge calls 36 items FAIL, of which 24 are human FAILs.
+    Compute raw agreement, Cohen&rsquo;s &kappa;, TPR and TNR (FAIL = positive). Check your answer by calling <code>agreement()</code> from
+    <code>judge_always_pass.py</code> on synthetic label lists.</p>
+    <details><summary>Solution</summary>
+      <p>TP = 24, FN = 6, FP = 12, TN = 78. p<sub>o</sub> = 102/120 = 0.85; p<sub>e</sub> = 0.25&middot;0.30 + 0.75&middot;0.70 = 0.60;
+      &kappa; = 0.25/0.40 = 0.625; TPR = 24/30 = 0.80; TNR = 78/90 = 0.867. <code>agreement(["FAIL"]*30 + ["PASS"]*90, ["FAIL"]*24 + ["PASS"]*6 + ["FAIL"]*12 + ["PASS"]*78)</code>
+      returns the same values.</p>
+    </details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 1.4: classify five evals">
+    <p>Place each on the seven axes of Table 1.3: (a) HumanEval; (b) &tau;-bench retail; (c) a regex that blocks outputs containing a UUID;
+    (d) an LLM judge scoring faithfulness on 2% of production RAG answers; (e) Chatbot Arena.</p>
+    <details><summary>Solution</summary>
+      <p>(a) Capability; offline; static; reference-based (unit tests); capability suite, near-saturated; outcome; model eval.
+      (b) Capability/reliability; offline; static tasks, dynamic simulated user; reference-based (goal DB state); capability; outcome; system eval.
+      (c) Safety (privacy); offline in CI and online as a guardrail; static; reference-free; unit; outcome; system.
+      (d) Quality; online; dynamic; reference-free; monitoring; outcome; system eval, with a judge that needs validation.
+      (e) Preference/capability; online, dynamic; reference-free pairwise votes; neither regression nor unit; outcome; mostly model eval, with the Goodhart risks of 1.7.</p>
+    </details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 1.5: how many samples to certify 5%?">
+    <p>Using <code>wilson_ci</code> from <code>wilson_defects.py</code>, find the smallest <i>n</i> at which an observed 3% defect rate gives a Wilson upper bound
+    below 5%. Then repeat for an observed rate of 4%. What does this tell you about certifying a system that is close to its limit?</p>
+    <details><summary>Solution</summary>
+      <p><code>for n in range(200, 5000): if wilson_ci(0.03, n)[1] &lt; 0.05: print(n); break</code> finds <i>n</i> = 457 (the script&rsquo;s table
+      brackets it between 400 and 800); for 4% it finds <i>n</i> = 1,825. The required sample grows roughly as 1/(limit &minus; rate)&sup2;, so a system
+      near its limit cannot be certified cheaply: improve it or relax the claim.</p>
+    </details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 1.6: the winner's curse and dev-set size">
+    <p>In <code>goodhart_holdout.py</code>, set <code>N_DEV = 300</code> and rerun. How do the K = 200 dev score, test score and optimism change?
+    What happens to the true accuracy of the selected config, and why?</p>
+    <details><summary>Solution</summary>
+      <p>Dev noise shrinks by &radic;10: at K = 200 the winner&rsquo;s dev score falls from 0.912 to 0.788 and optimism from +0.201 to +0.056, while its
+      true accuracy rises from 0.711 to 0.732 (oracle 0.755). Bigger dev sets cut the bias and pick better configs; more search on a small dev set only
+      adds bias. (Update the asserts.)</p>
+    </details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 1.7: break and fix the regression gate">
+    <p>Add a release <code>v5</code> to <code>SYSTEMS</code> in <code>regression_gate.py</code> that equals v2 except <code>"lookup": 0.97</code>. Run the gate
+    a few times with different seeds in <code>mock_system</code> (e.g. prefix the seed string). How often is v5 blocked? Is a 3%-per-trial lookup
+    failure something a 15-task, 3-trial regression suite reliably catches?</p>
+    <details><summary>Solution</summary>
+      <p>15 independent draws all pass with probability 0.97<sup>15</sup> = 0.633, so the gate blocks v5 only about 37% of the time. Rare regressions
+      need more tasks and trials, or online monitoring: the CI layer of the Swiss cheese has a hole for them.</p>
+    </details>
+  </aside>
+
+  <aside class="takeaways"><ul>
+    <li>An eval is a test for an AI system: tasks, trials, graders, transcripts and outcomes, run by an eval harness; for agents the unit under test is model + harness.</li>
+    <li>Grade outcomes, not claims; read transcripts before trusting any surprising number, because graders fail as often as models do.</li>
+    <li>Classify every eval on the seven axes; a product needs offline and online, capability and regression, quality and cost.</li>
+    <li>Validate judges with TPR/TNR or &kappa;, never raw agreement: the always-PASS judge scores 95% agreement and &kappa; = 0.</li>
+    <li>The answer parser is part of the metric: the same 16 outputs score 31%, 62% or 88%.</li>
+    <li>Every score is an estimate: 3% defects on 200 samples cannot certify a 5% limit, and detecting a 3-point gap needs about 1,500 paired items.</li>
+    <li>Selecting the best of many configs on a small dev set inflates its score (0.91 dev vs 0.71 test in our simulation); keep a held-out set.</li>
+    <li>Eval-driven development starts with error analysis: read 100+ traces, build a failure taxonomy, write one binary evaluator per failure mode, gate CI, monitor production, feed failures back.</li>
+  </ul></aside>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="sources">
+    <li id="src-1">Mikaela Grace, Jeremy Hadfield, Rodrigo Olivares, Jiri De Jonghe (Anthropic), &ldquo;Demystifying evals for AI agents&rdquo;, Anthropic Engineering blog, 9 January 2026. <a href="https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents">anthropic.com/engineering/demystifying-evals-for-ai-agents</a></li>
+    <li id="src-2">Hamel Husain, &ldquo;Your AI Product Needs Evals&rdquo;, blog post, 29 March 2024. <a href="https://hamel.dev/blog/posts/evals/">hamel.dev/blog/posts/evals</a></li>
+    <li id="src-3">OpenAI, &ldquo;Evaluation best practices&rdquo;, OpenAI API documentation (accessed November 2026). <a href="https://developers.openai.com/api/docs/guides/evaluation-best-practices">developers.openai.com/api/docs/guides/evaluation-best-practices</a> (accessed 20 November 2026; the page states the hosted Evals platform becomes read-only on 31 October 2026 and shuts down on 30 November 2026).</li>
+    <li id="src-4">Anka Reuel, Amelia Hardy, Chandler Smith, Max Lamparth, Malcolm Hardy, Mykel J. Kochenderfer, &ldquo;BetterBench: Assessing AI Benchmarks, Uncovering Issues, and Establishing Best Practices&rdquo;, NeurIPS 2024 Datasets and Benchmarks, arXiv:2411.12990, November 2024. <a href="https://arxiv.org/abs/2411.12990">arxiv.org/abs/2411.12990</a></li>
+    <li id="src-5">Andrew M. Bean et al. (42 authors), &ldquo;Measuring what Matters: Construct Validity in Large Language Model Benchmarks&rdquo;, NeurIPS 2025 Datasets and Benchmarks, arXiv:2511.04703, November 2025. <a href="https://arxiv.org/abs/2511.04703">arxiv.org/abs/2511.04703</a>; statistics checked against the full text at <a href="https://arxiv.org/html/2511.04703">arxiv.org/html/2511.04703</a> (accessed 20 November 2026).</li>
+    <li id="src-6">Toby Shevlane et al., &ldquo;Model evaluation for extreme risks&rdquo;, arXiv:2305.15324, May 2023. <a href="https://arxiv.org/abs/2305.15324">arxiv.org/abs/2305.15324</a></li>
+    <li id="src-7">Hamel Husain and Shreya Shankar, &ldquo;AI Evals: Everything You Need to Know&rdquo; (evals FAQ), hamel.dev; the page shows &ldquo;Published September 18, 2026&rdquo;, the FAQ first appeared in 2025 and is updated continuously. <a href="https://hamel.dev/blog/posts/evals-faq/">hamel.dev/blog/posts/evals-faq</a> <span class="note-verify">(partially verified: original publication date)</span></li>
+    <li id="src-8">Scott Barnett et al., &ldquo;Seven Failure Points When Engineering a Retrieval Augmented Generation System&rdquo;, arXiv:2401.05856, January 2024. <a href="https://arxiv.org/abs/2401.05856">arxiv.org/abs/2401.05856</a></li>
+    <li id="src-9">Hanna Wallach et al., &ldquo;Position: Evaluating Generative AI Systems Is a Social Science Measurement Challenge&rdquo;, arXiv:2502.00561, February 2025. <a href="https://arxiv.org/abs/2502.00561">arxiv.org/abs/2502.00561</a></li>
+    <li id="src-10">UK AI Security Institute, <code>UKGovernmentBEIS/inspect_ai</code> (Inspect), MIT licence, ~3,293 stars as of 2026-11-20; quoted from <code>docs/index.qmd</code> and <code>src/inspect_ai/scorer/</code>. <a href="https://github.com/UKGovernmentBEIS/inspect_ai">github.com/UKGovernmentBEIS/inspect_ai</a></li>
+    <li id="src-11">EleutherAI, <code>EleutherAI/lm-evaluation-harness</code>, MIT licence, ~14,504 stars as of 2026-11-20; quoted from <code>lm_eval/tasks/gsm8k/gsm8k.yaml</code>. <a href="https://github.com/EleutherAI/lm-evaluation-harness">github.com/EleutherAI/lm-evaluation-harness</a></li>
+    <li id="src-12">Shunyu Yao, Noah Shinn, Pedram Razavi, Karthik Narasimhan, &ldquo;&tau;-bench: A Benchmark for Tool-Agent-User Interaction in Real-World Domains&rdquo;, arXiv:2406.12045, June 2024. <a href="https://arxiv.org/abs/2406.12045">arxiv.org/abs/2406.12045</a></li>
+    <li id="src-13">Sayash Kapoor, Benedikt Stroebl, Zachary S. Siegel, Nitya Nadgir, Arvind Narayanan, &ldquo;AI Agents That Matter&rdquo;, arXiv:2407.01502, July 2024. <a href="https://arxiv.org/abs/2407.01502">arxiv.org/abs/2407.01502</a></li>
+    <li id="src-14">Anthropic, &ldquo;Define success criteria and build evaluations&rdquo;, Claude documentation (accessed November 2026). <a href="https://platform.claude.com/docs/en/test-and-evaluate/develop-tests">platform.claude.com/docs/en/test-and-evaluate/develop-tests</a></li>
+    <li id="src-15">Laura Weidinger et al., &ldquo;Sociotechnical Safety Evaluation of Generative AI Systems&rdquo;, arXiv:2310.11986, October 2023. <a href="https://arxiv.org/abs/2310.11986">arxiv.org/abs/2310.11986</a></li>
+    <li id="src-16">Percy Liang et al., &ldquo;Holistic Evaluation of Language Models&rdquo; (HELM), TMLR, arXiv:2211.09110, November 2022. <a href="https://arxiv.org/abs/2211.09110">arxiv.org/abs/2211.09110</a></li>
+    <li id="src-17">Douwe Kiela et al., &ldquo;Dynabench: Rethinking Benchmarking in NLP&rdquo;, NAACL 2021, arXiv:2104.14337, April 2021. <a href="https://arxiv.org/abs/2104.14337">arxiv.org/abs/2104.14337</a></li>
+    <li id="src-18">Colin White et al., &ldquo;LiveBench: A Challenging, Contamination-Limited LLM Benchmark&rdquo;, arXiv:2406.19314, June 2024. <a href="https://arxiv.org/abs/2406.19314">arxiv.org/abs/2406.19314</a></li>
+    <li id="src-19">Wei-Lin Chiang et al., &ldquo;Chatbot Arena: An Open Platform for Evaluating LLMs by Human Preference&rdquo;, arXiv:2403.04132, March 2024. <a href="https://arxiv.org/abs/2403.04132">arxiv.org/abs/2403.04132</a></li>
+    <li id="src-20">Iman Mirzadeh et al., &ldquo;GSM-Symbolic: Understanding the Limitations of Mathematical Reasoning in Large Language Models&rdquo;, arXiv:2410.05229, October 2024. <a href="https://arxiv.org/abs/2410.05229">arxiv.org/abs/2410.05229</a></li>
+    <li id="src-21">Eugene Yan, Bryan Bischof, Charles Frye, Hamel Husain, Jason Liu, Shreya Shankar, &ldquo;What We&rsquo;ve Learned From A Year of Building with LLMs&rdquo;, 8 June 2024. <a href="https://applied-llms.org/">applied-llms.org</a></li>
+    <li id="src-22">Hamel Husain, &ldquo;Using LLM-as-a-Judge For Evaluation: A Complete Guide&rdquo; (critique shadowing), blog post, 29 October 2024, updated 2026. <a href="https://hamel.dev/blog/posts/llm-judge/">hamel.dev/blog/posts/llm-judge</a></li>
+    <li id="src-23">Eugene Yan, &ldquo;Product Evals in Three Simple Steps&rdquo;, blog post, 23 November 2025. <a href="https://eugeneyan.com/writing/product-evals/">eugeneyan.com/writing/product-evals</a></li>
+    <li id="src-24">Peiyi Wang et al., &ldquo;Large Language Models are not Fair Evaluators&rdquo;, arXiv:2305.17926, May 2023. <a href="https://arxiv.org/abs/2305.17926">arxiv.org/abs/2305.17926</a></li>
+    <li id="src-25">Lianmin Zheng et al., &ldquo;Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena&rdquo;, arXiv:2306.05685, June 2023. <a href="https://arxiv.org/abs/2306.05685">arxiv.org/abs/2306.05685</a></li>
+    <li id="src-26">Eugene Yan, &ldquo;Task-Specific LLM Evals that Do &amp; Don&rsquo;t Work&rdquo;, blog post, 31 March 2024. <a href="https://eugeneyan.com/writing/evals/">eugeneyan.com/writing/evals</a></li>
+    <li id="src-27">Stella Biderman et al., &ldquo;Lessons from the Trenches on Reproducible Evaluation of Language Models&rdquo;, arXiv:2405.14782, May 2024. <a href="https://arxiv.org/abs/2405.14782">arxiv.org/abs/2405.14782</a></li>
+    <li id="src-28">Mark Chen, Jerry Tworek, et al., &ldquo;Evaluating Large Language Models Trained on Code&rdquo;, arXiv:2107.03374, July 2021. <a href="https://arxiv.org/abs/2107.03374">arxiv.org/abs/2107.03374</a></li>
+    <li id="src-29"><code>openai/human-eval</code>, ~3,431 stars as of 2026-11-20; quoted from <code>human_eval/evaluation.py</code>. <a href="https://github.com/openai/human-eval">github.com/openai/human-eval</a></li>
+    <li id="src-30"><code>sierra-research/tau-bench</code>, ~1,514 stars as of 2026-11-20 (last push March 2026); quoted from <code>tau_bench/run.py</code>. <a href="https://github.com/sierra-research/tau-bench">github.com/sierra-research/tau-bench</a></li>
+    <li id="src-31">Evan Miller, &ldquo;Adding Error Bars to Evals: A Statistical Approach to Language Model Evaluations&rdquo;, arXiv:2411.00640, November 2024. <a href="https://arxiv.org/abs/2411.00640">arxiv.org/abs/2411.00640</a></li>
+    <li id="src-32">Anthropic, &ldquo;A statistical approach to model evaluations&rdquo;, Anthropic research blog, 19 November 2024. <a href="https://www.anthropic.com/research/statistical-approach-to-model-evals">anthropic.com/research/statistical-approach-to-model-evals</a></li>
+    <li id="src-33">Sam Bowyer, Laurence Aitchison, Desi R. Ivanova, &ldquo;Position: Don&rsquo;t Use the CLT in LLM Evals With Fewer Than a Few Hundred Datapoints&rdquo;, arXiv:2503.01747, March 2025. <a href="https://arxiv.org/abs/2503.01747">arxiv.org/abs/2503.01747</a></li>
+    <li id="src-34">David Heineman et al., &ldquo;Signal and Noise: A Framework for Reducing Uncertainty in Language Model Evaluation&rdquo;, arXiv:2508.13144, August 2025. <a href="https://arxiv.org/abs/2508.13144">arxiv.org/abs/2508.13144</a></li>
+    <li id="src-35">Inioluwa Deborah Raji, Emily M. Bender, Amandalynne Paullada, Emily Denton, Alex Hanna, &ldquo;AI and the Everything in the Whole Wide World Benchmark&rdquo;, NeurIPS 2021 Datasets and Benchmarks, arXiv:2111.15366, November 2021. <a href="https://arxiv.org/abs/2111.15366">arxiv.org/abs/2111.15366</a></li>
+    <li id="src-36">Yuxuan Zhu et al., &ldquo;Establishing Best Practices for Building Rigorous Agentic Benchmarks&rdquo; (Agentic Benchmark Checklist), arXiv:2507.02825, July 2025. <a href="https://arxiv.org/abs/2507.02825">arxiv.org/abs/2507.02825</a></li>
+    <li id="src-37">Aryo Pradipta Gema et al., &ldquo;Are We Done with MMLU?&rdquo; (MMLU-Redux), arXiv:2406.04127, June 2024. <a href="https://arxiv.org/abs/2406.04127">arxiv.org/abs/2406.04127</a></li>
+    <li id="src-38">OpenAI, &ldquo;Introducing SWE-bench Verified&rdquo;, 13 August 2024. <a href="https://openai.com/index/introducing-swe-bench-verified/">openai.com/index/introducing-swe-bench-verified</a> <span class="note-verify">(partially verified: the page returned 403; facts from search snippets of openai.com and swebench.com)</span></li>
+    <li id="src-39">Long Phan et al., &ldquo;Humanity&rsquo;s Last Exam&rdquo;, arXiv:2501.14249, January 2025. <a href="https://arxiv.org/abs/2501.14249">arxiv.org/abs/2501.14249</a></li>
+    <li id="src-40">Cheng Xu et al., &ldquo;Benchmark Data Contamination of Large Language Models: A Survey&rdquo;, arXiv:2406.04244, June 2024. <a href="https://arxiv.org/abs/2406.04244">arxiv.org/abs/2406.04244</a></li>
+    <li id="src-41">David Manheim and Scott Garrabrant, &ldquo;Categorizing Variants of Goodhart&rsquo;s Law&rdquo;, arXiv:1803.04585, March 2018. <a href="https://arxiv.org/abs/1803.04585">arxiv.org/abs/1803.04585</a></li>
+    <li id="src-42">Shivalika Singh et al., &ldquo;The Leaderboard Illusion&rdquo;, arXiv:2504.20879, April 2025. <a href="https://arxiv.org/abs/2504.20879">arxiv.org/abs/2504.20879</a></li>
+    <li id="src-43">Shreya Shankar et al., &ldquo;SPADE: Synthesizing Data Quality Assertions for Large Language Model Pipelines&rdquo;, arXiv:2401.03038, January 2024. <a href="https://arxiv.org/abs/2401.03038">arxiv.org/abs/2401.03038</a></li>
+    <li id="src-44">Marco Tulio Ribeiro, Tongshuang Wu, Carlos Guestrin, Sameer Singh, &ldquo;Beyond Accuracy: Behavioral Testing of NLP Models with CheckList&rdquo;, ACL 2020, arXiv:2005.04118, May 2020. <a href="https://arxiv.org/abs/2005.04118">arxiv.org/abs/2005.04118</a></li>
+    <li id="src-45">Shreya Shankar, J.D. Zamfirescu-Pereira, Bj&ouml;rn Hartmann, Aditya G. Parameswaran, Ian Arawjo, &ldquo;Who Validates the Validators? Aligning LLM-Assisted Evaluation of LLM Outputs with Human Preferences&rdquo; (EvalGen), UIST 2024, arXiv:2404.12272, April 2024. <a href="https://arxiv.org/abs/2404.12272">arxiv.org/abs/2404.12272</a></li>
+    <li id="src-46"><code>promptfoo/promptfoo</code>, MIT licence, ~27,474 stars as of 2026-11-20; README states the project is now part of OpenAI; quoted from <code>examples/getting-started/promptfooconfig.yaml</code>. <a href="https://github.com/promptfoo/promptfoo">github.com/promptfoo/promptfoo</a></li>
+    <li id="src-47"><code>confident-ai/deepeval</code>, Apache-2.0, ~19,569 stars as of 2026-11-20; quoted from the README. <a href="https://github.com/confident-ai/deepeval">github.com/confident-ai/deepeval</a></li>
+    <li id="src-48">GitHub, &ldquo;The road to better completions: Building a faster, smarter GitHub Copilot with a new custom model&rdquo;, GitHub blog, 2025. <a href="https://github.blog/ai-and-ml/github-copilot/the-road-to-better-completions-building-a-faster-smarter-github-copilot-with-a-new-custom-model/">github.blog/ai-and-ml/github-copilot/the-road-to-better-completions&hellip;</a></li>
+    <li id="src-49">Sayash Kapoor et al., &ldquo;Holistic Agent Leaderboard: The Missing Infrastructure for AI Agent Evaluation&rdquo; (HAL), arXiv:2510.11977, October 2025. <a href="https://arxiv.org/abs/2510.11977">arxiv.org/abs/2510.11977</a></li>
+    <li id="src-50">Naman Jain (Cursor), &ldquo;Reward hacking is swamping model intelligence gains&rdquo;, Cursor blog, 25 June 2026. <a href="https://cursor.com/blog/reward-hacking-coding-benchmarks">cursor.com/blog/reward-hacking-coding-benchmarks</a></li>
+    <li id="src-51">Horace He and Thinking Machines Lab, &ldquo;Defeating Nondeterminism in LLM Inference&rdquo;, Thinking Machines blog (Connectionism), 10 September 2025. <a href="https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/">thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference</a></li>
+    <li id="src-52">J. Richard Landis and Gary G. Koch, &ldquo;The Measurement of Observer Agreement for Categorical Data&rdquo;, <i>Biometrics</i> 33(1):159&ndash;174, 1977. <a href="https://doi.org/10.2307/2529310">doi.org/10.2307/2529310</a></li>
+  </ol>
+</main>
+</body>
+</html>

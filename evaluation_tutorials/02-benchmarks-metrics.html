@@ -1,0 +1,1754 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2. Benchmarks and Metrics for LLMs · Evaluations for AI</title>
+<meta name="description" content="How a benchmark number is actually produced, from dataset and prompt to scoring rule, aggregation and error bars, with every common LLM metric computed by hand.">
+<link rel="stylesheet" href="assets/book.css">
+<script defer src="assets/book.js"></script>
+</head>
+<body>
+<main>
+  <p class="kicker">Chapter 2</p>
+  <h1>Benchmarks and Metrics for LLMs</h1>
+  <p class="lede">Ask &ldquo;what is this model&rsquo;s MMLU score?&rdquo; and the honest answer is &ldquo;under which protocol?&rdquo;.
+  Changing only meaning-preserving details of prompt formatting (separators, casing, spacing) moved one open model&rsquo;s few-shot
+  accuracy by up to 76 points in one study<a class="cite" href="#src-1">[1]</a>, and changing the order of answer choices or the rule used to pick an answer moved models
+  up to 8 places on a leaderboard<a class="cite" href="#src-2">[2]</a>. A benchmark score is the output of a measurement pipeline, not a property of the model. This chapter takes a reported number apart into its layers, computes every
+  common metric by hand, and ends with a protocol card that lets someone else reproduce the number.</p>
+  <p class="chapter-meta"><span>Reading time: about 75 minutes</span><span>Code: <code>code/ch02/</code></span><span>Prerequisites: Chapter 1</span></p>
+
+  <div class="objectives">
+    <p class="obj-title">You will learn</p>
+    <ul>
+      <li>Decompose a benchmark score into dataset, elicitation, scoring, aggregation and uncertainty, and say what can change at each layer.</li>
+      <li>Navigate the 2018&ndash;2026 benchmark landscape: what each major benchmark measures, how it is scored, and whether it still discriminates.</li>
+      <li>Compute EM, token F1, BLEU, ROUGE-L, BERTScore, <code>acc</code>, <code>acc_norm</code>, mutual-information accuracy, perplexity and bits-per-byte by hand, and know when each misleads.</li>
+      <li>Derive the unbiased pass@k estimator, implement its stable form, explain why the plug-in is biased low, and tell greedy pass@1, avg@n and maj@k apart.</li>
+      <li>Measure calibration (ECE, MCE, Brier, reliability diagrams) and abstention (SimpleQA grading, confidence-target penalties), and fix over-confidence with temperature scaling.</li>
+      <li>Turn pairwise votes into ratings with Elo and Bradley&ndash;Terry, add bootstrap intervals and style control, and read a leaderboard critically.</li>
+      <li>Report a benchmark result with a full protocol card: harness version, template, shots, decoding, extraction, n, confidence interval and prompt range.</li>
+    </ul>
+  </div>
+
+  <!-- ===================== 2.1 ===================== -->
+  <h2 id="score-stack"><span class="sec-num">2.1</span>What a benchmark score really is</h2>
+  <p>A <span class="term">benchmark</span> is a fixed set of items, each an input plus a reference answer or a checker that decides
+  whether an output is acceptable. That is the part people name in a table header (&ldquo;MMLU&rdquo;, &ldquo;HumanEval&rdquo;). The number in the cell
+  is produced by four more layers that usually go unnamed, and each can move it by more than the gap between the models being compared. The maintainers of
+  EleutherAI&rsquo;s widely used harness list the ways evaluation setups silently differ between papers and recommend reporting the full setup and sharing code<a class="cite" href="#src-3">[3]</a>.</p>
+
+  <p>It helps to write the score as a composition of functions. For a model <i>M</i> and an item set <i>D</i> = {(<i>x</i><sub>i</sub>, <i>y</i><sub>i</sub>)}:</p>
+  <div class="formula">
+    score(<i>M</i>, <i>D</i>) = Aggregate<sub><i>i</i> &isin; <i>D</i></sub> [ Score( Extract( <i>M</i>( Prompt(<i>x</i><sub>i</sub>) ) ), <i>y</i><sub>i</sub> ) ] &nbsp;&plusmn;&nbsp; uncertainty
+    <span class="eq-num">(2.1)</span>
+    <span class="where">where Prompt is the template plus few-shot examples, <i>M</i>(&middot;) includes decoding settings, Extract is the answer parser,
+    Score is the per-item metric and Aggregate is the mean (or pass@k, or a rating model) over items.</span>
+  </div>
+  <p>The five layers of this <span class="term">score stack</span> are:</p>
+  <ol>
+    <li><b>Dataset.</b> Which items, split and version. MMLU is not one thing: there is the original 57-subject test set<a class="cite" href="#src-4">[4]</a>, a
+    re-annotated subset with corrected labels (MMLU-Redux)<a class="cite" href="#src-5">[5]</a> and a harder ten-option successor (MMLU-Pro)<a class="cite" href="#src-6">[6]</a>.</li>
+    <li><b>Elicitation.</b> Prompt template, few-shot examples, whether the model reasons step by step
+    (<span class="term">chain-of-thought</span>, CoT), system prompt, decoding (greedy or sampled, temperature, maximum length, number of samples),
+    and the choice between scoring log-probabilities and generating text.</li>
+    <li><b>Scoring.</b> The per-item rule: exact match after normalisation, token F1, n-gram overlap, unit tests, the most likely choice, or a judge.
+    Answer extraction (the regex that pulls &ldquo;42&rdquo; out of a paragraph) belongs here too.</li>
+    <li><b>Aggregation.</b> Mean over items, macro or micro over subjects, pass@k over samples, chance-normalised, or a rating model over pairwise preferences.</li>
+    <li><b>Uncertainty.</b> Standard error from a finite item sample, variance from sampled decoding, clustering of related items,
+    and the harder-to-quantify effects of label noise and contamination.</li>
+  </ol>
+
+  <figure class="diagram" id="fig-2-1">
+    <svg viewBox="0 0 680 330" role="img" aria-labelledby="fig-2-1-t">
+      <title id="fig-2-1-t">The five-layer score stack, from dataset to uncertainty, with what can change at each layer</title>
+      <defs><marker id="fig-2-1-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-muted"/></marker></defs>
+      <text x="20" y="22" class="title">Layer</text><text x="250" y="22" class="title">What can change (and silently move the score)</text>
+      <rect x="20" y="34" width="200" height="46" rx="8" class="tint-1"/><text x="120" y="62" text-anchor="middle">1. Dataset</text>
+      <text x="250" y="54" class="small">version, split, subset (Diamond, Redux, Verified), fixed labels,</text>
+      <text x="250" y="70" class="small">items leaked into training data (contamination)</text>
+      <rect x="20" y="96" width="200" height="46" rx="8" class="tint-2"/><text x="120" y="124" text-anchor="middle">2. Elicitation</text>
+      <text x="250" y="116" class="small">template, separators, k-shot, CoT or direct, system prompt,</text>
+      <text x="250" y="132" class="small">greedy vs temperature, n samples, log-prob vs generation</text>
+      <rect x="20" y="158" width="200" height="46" rx="8" class="tint-3"/><text x="120" y="186" text-anchor="middle">3. Scoring</text>
+      <text x="250" y="178" class="small">normalisation, extraction regex, acc vs acc_norm, BLEU config,</text>
+      <text x="250" y="194" class="small">unit tests, judge model and rubric</text>
+      <rect x="20" y="220" width="200" height="46" rx="8" class="tint-4"/><text x="120" y="248" text-anchor="middle">4. Aggregation</text>
+      <text x="250" y="240" class="small">macro vs micro, chance normalisation, pass@k estimator,</text>
+      <text x="250" y="256" class="small">Elo vs Bradley&#8211;Terry, style control</text>
+      <rect x="20" y="282" width="200" height="40" rx="8" class="tint-5"/><text x="120" y="307" text-anchor="middle">5. Uncertainty</text>
+      <text x="250" y="300" class="small">SE from n items, sampling variance, clustering, label noise ceiling</text>
+      <path d="M120 80 V94" class="s-muted" stroke-width="2" marker-end="url(#fig-2-1-arr)"/>
+      <path d="M120 142 V156" class="s-muted" stroke-width="2" marker-end="url(#fig-2-1-arr)"/>
+      <path d="M120 204 V218" class="s-muted" stroke-width="2" marker-end="url(#fig-2-1-arr)"/>
+      <path d="M120 266 V280" class="s-muted" stroke-width="2" marker-end="url(#fig-2-1-arr)"/>
+      <text x="660" y="316" text-anchor="end" class="small">reported: &#8220;MMLU = 71.3&#8221;</text>
+    </svg>
+    <figcaption><b>Figure 2.1.</b> The score stack. A table cell usually names only layer 1; layers 2&ndash;5 are where most
+    cross-paper disagreements come from. Every section of this chapter zooms into one layer.</figcaption>
+  </figure>
+
+  <p>Two consequences recur through the book. First, <b>a score is only comparable to another computed with the same stack</b>: 5-shot log-likelihood and zero-shot CoT numbers do not mix.
+  Second, <b>each layer is a design decision that should follow from what you want to measure</b>. For user-facing behaviour, generative zero-shot CoT is closer
+  to reality, which is why OpenAI&rsquo;s reference implementations use it<a class="cite" href="#src-7">[7]</a>; for a cheap, low-variance signal while pre-training a 1B model,
+  log-likelihood scoring on a cloze formulation is better<a class="cite" href="#src-8">[8]</a>.</p>
+
+
+  <!-- ===================== 2.2 ===================== -->
+  <h2 id="landscape"><span class="sec-num">2.2</span>A tour of the benchmark landscape, 2018&ndash;2026</h2>
+  <p>The field has gone through recognisable eras, and each era&rsquo;s benchmarks were designed to resist something. The <b>accuracy era</b> (2018&ndash;2021)
+  built static multiple-choice or short-answer sets: ARC<a class="cite" href="#src-9">[9]</a>, HellaSwag<a class="cite" href="#src-10">[10]</a>, MMLU<a class="cite" href="#src-4">[4]</a>, GSM8K<a class="cite" href="#src-11">[11]</a>, MATH<a class="cite" href="#src-12">[12]</a> and HumanEval<a class="cite" href="#src-13">[13]</a>. The <b>holistic era</b> (2022)
+  built suites: BIG-bench with 204 tasks<a class="cite" href="#src-14">[14]</a> and HELM&rsquo;s scenarios &times; metrics grid<a class="cite" href="#src-15">[15]</a>. The <b>preference era</b> (2023&ndash;2024) scored open-ended chat by human or LLM preference: Chatbot Arena<a class="cite" href="#src-16">[16]</a>,
+  MT-Bench<a class="cite" href="#src-17">[17]</a>, Arena-Hard<a class="cite" href="#src-18">[18]</a>, length-controlled AlpacaEval<a class="cite" href="#src-19">[19]</a>. The <b>frontier-difficulty era</b>
+  (2024&ndash;2026) moved to fresh, private or expert-curated items: GPQA<a class="cite" href="#src-20">[20]</a>, MMLU-Pro<a class="cite" href="#src-6">[6]</a>, LiveCodeBench<a class="cite" href="#src-21">[21]</a>,
+  FrontierMath<a class="cite" href="#src-22">[22]</a>, Humanity&rsquo;s Last Exam<a class="cite" href="#src-23">[23]</a>, ARC-AGI-2<a class="cite" href="#src-24">[24]</a>, MathArena<a class="cite" href="#src-25">[25]</a> and the interactive ARC-AGI-3<a class="cite" href="#src-26">[26]</a>.</p>
+
+  <p>Table 2.1 is a field guide. &ldquo;Status&rdquo; is a qualitative reading: &ldquo;near ceiling&rdquo; means frontier models score close to the
+  label-noise ceiling, so the benchmark no longer separates them; &ldquo;active&rdquo; means it still does as of November 2026.
+  &ldquo;Contamination resistance&rdquo; describes the design, not a guarantee.</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Benchmark (year)</th><th>Skill</th><th>Format</th><th class="num">Size</th><th>Metric</th><th>Status (Nov 2026)</th><th>Contamination resistance</th></tr></thead>
+      <tbody>
+        <tr><td>ARC (2018)<a class="cite" href="#src-9">[9]</a></td><td>Grade-school science</td><td>4-way MC</td><td class="num">7,787</td><td><code>acc_norm</code> (log-prob)</td><td>Near ceiling</td><td>Low: public; Challenge set filtered against retrieval baselines</td></tr>
+        <tr><td>HellaSwag (2019)<a class="cite" href="#src-10">[10]</a></td><td>Commonsense completion</td><td>4-way MC</td><td class="num">~10k val</td><td><code>acc_norm</code></td><td>Near ceiling (humans &gt;95%, 2019 models &lt;48%)</td><td>Low: built by adversarial filtering against 2019 models</td></tr>
+        <tr><td>MMLU (2020)<a class="cite" href="#src-4">[4]</a></td><td>Knowledge, 57 subjects</td><td>4-way MC</td><td class="num">~14k test</td><td>acc (log-prob or generative)</td><td>Near ceiling (&gt;90%)<a class="cite" href="#src-23">[23]</a>; ~6.5% label errors<a class="cite" href="#src-5">[5]</a></td><td>Low: public since 2020</td></tr>
+        <tr><td>MMLU-Redux (2024)<a class="cite" href="#src-5">[5]</a></td><td>Same, corrected labels</td><td>4-way MC</td><td class="num">5,700</td><td>acc</td><td>Diagnostic</td><td>Low</td></tr>
+        <tr><td>MMLU-Pro (2024)<a class="cite" href="#src-6">[6]</a></td><td>Harder knowledge + reasoning</td><td>10-way MC</td><td class="num">~12k</td><td>acc, CoT</td><td>Aging</td><td>Low&ndash;medium; less prompt-sensitive (2% vs 4&ndash;5%)</td></tr>
+        <tr><td>GPQA (2023)<a class="cite" href="#src-20">[20]</a></td><td>Graduate science, &ldquo;Google-proof&rdquo;</td><td>4-way MC</td><td class="num">448 (Diamond 198)</td><td>acc</td><td>Near ceiling (Diamond): frontier models &gt;90%, e.g. 94.3%<a class="cite" href="#src-27">[27]</a><a class="cite" href="#src-28">[28]</a>; remaining errors increasingly label noise</td><td>Medium: expert-written; experts 65&ndash;74%, non-experts with web 34%</td></tr>
+        <tr><td>BIG-bench (2022) / BBH<a class="cite" href="#src-14">[14]</a><a class="cite" href="#src-29">[29]</a></td><td>204 diverse tasks / 23 hard ones</td><td>Mixed</td><td class="num">204 tasks</td><td>Task-specific; EM for BBH</td><td>BBH near ceiling with CoT</td><td>Low (canary string in data)</td></tr>
+        <tr><td>HELM (2022)<a class="cite" href="#src-15">[15]</a></td><td>Holistic suite</td><td>Scenarios &times; metrics</td><td class="num">many</td><td>7 metrics incl. calibration, robustness</td><td>Active framework</td><td>Depends on scenario</td></tr>
+        <tr><td>IFEval (2023)<a class="cite" href="#src-30">[30]</a></td><td>Verifiable instruction following</td><td>Generative + checkers</td><td class="num">~500 prompts</td><td>Prompt- and instruction-level acc, strict and loose (Section 2.3)</td><td>Aging</td><td>Medium: programmatic checks</td></tr>
+        <tr><td>GSM8K (2021)<a class="cite" href="#src-11">[11]</a></td><td>Grade-school math</td><td>Generative, <code>#### n</code></td><td class="num">8.5k (1,319 test)</td><td>EM after extraction</td><td>Near ceiling</td><td>Low; GSM1k twin shows drops up to 8%<a class="cite" href="#src-31">[31]</a></td></tr>
+        <tr><td>GSM-Symbolic (2024)<a class="cite" href="#src-32">[32]</a></td><td>Robustness of the same</td><td>Templated variants</td><td class="num">templates</td><td>EM, variance across instances</td><td>Diagnostic</td><td>High: regenerate numbers and names</td></tr>
+        <tr><td>MATH (2021)<a class="cite" href="#src-12">[12]</a></td><td>Competition math</td><td>Generative LaTeX</td><td class="num">12,500</td><td>EM after <code>is_equiv</code> normalisation</td><td>Near ceiling for reasoning models</td><td>Low</td></tr>
+        <tr><td>AIME via MathArena (2025)<a class="cite" href="#src-25">[25]</a></td><td>Fresh competition math</td><td>Integer answer; proofs</td><td class="num">~30 per contest</td><td>acc averaged over samples</td><td>Active</td><td>High: evaluated on competitions held after release</td></tr>
+        <tr><td>FrontierMath (2024)<a class="cite" href="#src-22">[22]</a></td><td>Research-level math</td><td>Auto-verifiable answer</td><td class="num">hundreds</td><td>acc</td><td>Active (&lt;2% at release)</td><td>High: unpublished</td></tr>
+        <tr><td>Humanity&rsquo;s Last Exam (2025)<a class="cite" href="#src-23">[23]</a></td><td>Expert frontier knowledge</td><td>MC + short answer, multimodal</td><td class="num">2,500</td><td>acc + calibration error</td><td>Active; label-quality concerns (bio/chem audit, 2025)<a class="cite" href="#src-33">[33]</a></td><td>Medium&ndash;high: held-out private set</td></tr>
+        <tr><td>ARC-AGI-1 (2019) / -2 (2025)<a class="cite" href="#src-34">[34]</a><a class="cite" href="#src-24">[24]</a></td><td>Fluid abstraction</td><td>Grid in &rarr; grid out</td><td class="num">hundreds</td><td>Exact grid match</td><td>-1 aging, -2 active</td><td>High: private evaluation set</td></tr>
+        <tr><td>ARC-AGI-3 (2026)<a class="cite" href="#src-26">[26]</a><a class="cite" href="#src-35">[35]</a></td><td>Interactive skill acquisition</td><td>Turn-based game environments, no instructions</td><td class="num">&mdash;</td><td>Action efficiency relative to humans (RHAE)</td><td>Active; frontier &lt;1% at launch (March 2026)</td><td>High: private evaluation set; see <a href="06-agent-evals.html">Chapter 6</a></td></tr>
+        <tr><td>HumanEval (2021)<a class="cite" href="#src-13">[13]</a></td><td>Python functions</td><td>Generative + unit tests</td><td class="num">164</td><td>pass@k</td><td>Near ceiling</td><td>Low</td></tr>
+        <tr><td>MBPP (2021)<a class="cite" href="#src-36">[36]</a></td><td>Entry-level Python</td><td>Generative + tests</td><td class="num">974</td><td>pass@k</td><td>Near ceiling</td><td>Low</td></tr>
+        <tr><td>HumanEval+ / MBPP+ (2023)<a class="cite" href="#src-37">[37]</a></td><td>Same problems, stronger tests</td><td>Generative + 80&times; more tests</td><td class="num">164 (HumanEval+)</td><td>pass@k</td><td>Diagnostic: pass@k falls up to 19.3&ndash;28.9%</td><td>Low</td></tr>
+        <tr><td>LiveCodeBench (2024)<a class="cite" href="#src-21">[21]</a></td><td>Competitive programming</td><td>Generative + tests, dated</td><td class="num">growing</td><td>pass@1</td><td>Active</td><td>High: filter problems released after the model cutoff</td></tr>
+        <tr><td>TruthfulQA (2021)<a class="cite" href="#src-38">[38]</a></td><td>Imitative falsehoods</td><td>Generative / MC</td><td class="num">817</td><td>% truthful (judge) / MC acc</td><td>Aging</td><td>Low</td></tr>
+        <tr><td>SimpleQA (2024)<a class="cite" href="#src-39">[39]</a></td><td>Short-form factuality</td><td>Short answer</td><td class="num">4,326</td><td>correct / incorrect / not attempted, F</td><td>Active</td><td>Medium: adversarial to GPT-4</td></tr>
+        <tr><td>SimpleQA Verified (2025)<a class="cite" href="#src-40">[40]</a></td><td>Same, cleaned</td><td>Short answer</td><td class="num">1,000</td><td>F-score</td><td>Active</td><td>Medium: filtered from the 4,326 to fix noisy labels, topical bias and redundancy</td></tr>
+        <tr><td>Chatbot Arena / LMArena (2023&ndash;)<a class="cite" href="#src-16">[16]</a></td><td>Open-ended chat preference</td><td>Pairwise human votes</td><td class="num">live</td><td>Bradley&ndash;Terry rating + CI</td><td>Active</td><td>High (fresh prompts) but gameable<a class="cite" href="#src-41">[41]</a></td></tr>
+        <tr><td>MT-Bench (2023)<a class="cite" href="#src-17">[17]</a></td><td>Multi-turn chat</td><td>LLM judge, 1&ndash;10</td><td class="num">80</td><td>Mean judge score</td><td>Near ceiling</td><td>Low</td></tr>
+        <tr><td>Arena-Hard (2024) / v2.0 (2025)<a class="cite" href="#src-18">[18]</a><a class="cite" href="#src-87">[87]</a></td><td>Hard chat prompts</td><td>LLM judge vs baseline</td><td class="num">500 (v0.1); 500 hard + 250 creative writing (v2.0)</td><td>Win rate vs baseline (style-controlled in v2.0)</td><td>Aging</td><td>Medium: curated from fresh Arena data</td></tr>
+        <tr><td>AlpacaEval LC (2024)<a class="cite" href="#src-19">[19]</a></td><td>Instruction following</td><td>LLM judge vs baseline</td><td class="num">805</td><td>Length-controlled win rate</td><td>Aging</td><td>Low</td></tr>
+        <tr><td>MGSM (2022)<a class="cite" href="#src-42">[42]</a></td><td>Multilingual math</td><td>GSM8K translated into 10 languages</td><td class="num">250 per language</td><td>EM after extraction</td><td>Aging</td><td>Low: public</td></tr>
+        <tr><td>Global-MMLU (2024)<a class="cite" href="#src-43">[43]</a></td><td>Multilingual knowledge</td><td>MMLU in 42 languages; culturally sensitive vs agnostic subsets</td><td class="num">42 languages</td><td>acc</td><td>Active</td><td>Low: derived from MMLU</td></tr>
+        <tr><td>RULER (2024)<a class="cite" href="#src-44">[44]</a></td><td>Long-context use beyond needle-in-a-haystack</td><td>Synthetic retrieval, multi-hop tracing, aggregation</td><td class="num">13 tasks, configurable length</td><td>acc per context length</td><td>Active</td><td>High: synthetic, regenerable</td></tr>
+        <tr><td>MMMU (2023)<a class="cite" href="#src-45">[45]</a></td><td>College-level multimodal reasoning</td><td>Image + text questions, 30 subjects</td><td class="num">11.5k</td><td>acc</td><td>Aging</td><td>Low: public</td></tr>
+        <tr><td>BFCL (2024&ndash;)<a class="cite" href="#src-46">[46]</a></td><td>Function calling</td><td>Generated tool calls, single- and multi-turn</td><td class="num">many categories</td><td>AST match + executable checks</td><td>Active (v4)</td><td>Medium: periodically updated</td></tr>
+      </tbody>
+      <caption>Table 2.1. A field guide to the benchmarks you will meet most often. Sizes marked &ldquo;~&rdquo; are approximate; the GPQA Diamond size (198) is common
+      usage rather than a number in the paper&rsquo;s abstract. Status is the author&rsquo;s qualitative reading as of November 2026. Agentic benchmarks (SWE-bench Verified,
+      &tau;-bench, Terminal-Bench, BrowseComp) are covered in <a href="06-agent-evals.html">Chapter 6</a>; safety and dangerous-capability benchmarks in <a href="08-safety-redteaming.html">Chapter 8</a>.</caption>
+    </table>
+  </div>
+
+  <h3 id="landscape-saturation">Saturation is the normal life cycle</h3>
+  <p>Every accuracy-era benchmark is now near its ceiling for frontier models. A study of 60 benchmarks found nearly half saturated, with saturation growing with
+  benchmark age, and expert curation (more than keeping test data private) associated with a long useful life<a class="cite" href="#src-47">[47]</a>. Epoch&rsquo;s &ldquo;Rosetta Stone&rdquo; work draws the
+  consequence: to track progress over a decade you must stitch short-lived benchmarks onto a common latent scale<a class="cite" href="#src-48">[48]</a>, the same idea as the item-response models in <a href="05-statistics.html#irt">Section 5.12</a>.</p>
+
+  <p>So <b>a benchmark has a useful operating range</b>. Near chance, differences are noise; near the label-noise ceiling, they are noise plus label errors.
+  HellaSwag was filtered so that 2019 models scored under 48% while humans scored over 95%<a class="cite" href="#src-10">[10]</a>: squarely in range then, far outside it now. Choose
+  benchmarks whose range brackets the models you are comparing.</p>
+
+  <figure class="diagram" id="fig-2-2">
+    <svg viewBox="0 0 680 300" role="img" aria-labelledby="fig-2-2-t">
+      <title id="fig-2-2-t">Qualitative timeline of benchmark release years and current status</title>
+      <path d="M40 250 H668" class="s-muted" stroke-width="1.5"/>
+      <g class="small">
+        <text x="60" y="268" text-anchor="middle" class="small">2018</text><text x="135" y="268" text-anchor="middle" class="small">2019</text>
+        <text x="210" y="268" text-anchor="middle" class="small">2020</text><text x="285" y="268" text-anchor="middle" class="small">2021</text>
+        <text x="360" y="268" text-anchor="middle" class="small">2022</text><text x="435" y="268" text-anchor="middle" class="small">2023</text>
+        <text x="510" y="268" text-anchor="middle" class="small">2024</text><text x="585" y="268" text-anchor="middle" class="small">2025</text><text x="650" y="268" text-anchor="middle" class="small">2026</text>
+      </g>
+      <!-- near ceiling: f-muted circles; aging: f-3; active: f-2 -->
+      <circle cx="60" cy="230" r="6" class="f-muted"/><text x="60" y="216" text-anchor="middle" class="small">ARC</text>
+      <circle cx="135" cy="230" r="6" class="f-muted"/><text x="135" y="216" text-anchor="middle" class="small">HellaSwag</text>
+      <circle cx="135" cy="190" r="6" class="f-3"/><text x="135" y="176" text-anchor="middle" class="small">ARC-AGI-1</text>
+      <circle cx="210" cy="230" r="6" class="f-muted"/><text x="210" y="216" text-anchor="middle" class="small">MMLU</text>
+      <circle cx="285" cy="230" r="6" class="f-muted"/><text x="285" y="216" text-anchor="middle" class="small">GSM8K</text>
+      <circle cx="285" cy="190" r="6" class="f-muted"/><text x="285" y="176" text-anchor="middle" class="small">MATH</text>
+      <circle cx="285" cy="150" r="6" class="f-muted"/><text x="285" y="136" text-anchor="middle" class="small">HumanEval, MBPP</text>
+      <circle cx="285" cy="110" r="6" class="f-3"/><text x="285" y="96" text-anchor="middle" class="small">TruthfulQA</text>
+      <circle cx="360" cy="230" r="6" class="f-muted"/><text x="360" y="216" text-anchor="middle" class="small">BIG-bench / BBH</text>
+      <circle cx="360" cy="190" r="6" class="f-2"/><text x="360" y="176" text-anchor="middle" class="small">HELM (framework)</text>
+      <circle cx="435" cy="230" r="6" class="f-muted"/><text x="435" y="216" text-anchor="middle" class="small">GPQA</text>
+      <circle cx="435" cy="190" r="6" class="f-3"/><text x="435" y="176" text-anchor="middle" class="small">IFEval</text>
+      <circle cx="435" cy="150" r="6" class="f-muted"/><text x="435" y="136" text-anchor="middle" class="small">MT-Bench</text>
+      <circle cx="435" cy="110" r="6" class="f-2"/><text x="435" y="96" text-anchor="middle" class="small">Chatbot Arena</text>
+      <circle cx="510" cy="230" r="6" class="f-3"/><text x="510" y="216" text-anchor="middle" class="small">MMLU-Pro</text>
+      <circle cx="510" cy="190" r="6" class="f-2"/><text x="510" y="176" text-anchor="middle" class="small">LiveCodeBench</text>
+      <circle cx="510" cy="150" r="6" class="f-2"/><text x="510" y="136" text-anchor="middle" class="small">FrontierMath</text>
+      <circle cx="510" cy="110" r="6" class="f-2"/><text x="510" y="96" text-anchor="middle" class="small">SimpleQA</text>
+      <circle cx="510" cy="70" r="6" class="f-3"/><text x="510" y="56" text-anchor="middle" class="small">Arena-Hard, AlpacaEval LC</text>
+      <circle cx="585" cy="230" r="6" class="f-2"/><text x="585" y="216" text-anchor="middle" class="small">HLE</text>
+      <circle cx="585" cy="190" r="6" class="f-2"/><text x="585" y="176" text-anchor="middle" class="small">ARC-AGI-2</text>
+      <circle cx="585" cy="150" r="6" class="f-2"/><text x="585" y="136" text-anchor="middle" class="small">MathArena</text>
+      <circle cx="650" cy="230" r="6" class="f-2"/><text x="668" y="216" text-anchor="end" class="small">ARC-AGI-3</text>
+      <circle cx="60" cy="30" r="6" class="f-muted"/><text x="72" y="34" class="small">near ceiling for frontier models</text>
+      <circle cx="270" cy="30" r="6" class="f-3"/><text x="282" y="34" class="small">aging</text>
+      <circle cx="350" cy="30" r="6" class="f-2"/><text x="362" y="34" class="small">active / fresh / private</text>
+    </svg>
+    <figcaption><b>Figure 2.2.</b> Release year and qualitative status as of November 2026 (colour; vertical position only separates labels). Nearly everything released before 2022
+    is near its ceiling, and GPQA has joined it<a class="cite" href="#src-47">[47]</a>; what still separates frontier models is fresh (MathArena, LiveCodeBench) or partly private (HLE, ARC-AGI-2, FrontierMath,
+    and ARC-AGI-3, where every frontier model scored below 1% at launch<a class="cite" href="#src-35">[35]</a>; see <a href="06-agent-evals.html">Chapter 6</a>).</figcaption>
+  </figure>
+
+  <aside class="tip"><p>Before a comparison, check that the expected score is inside the operating range, whether a cleaned or fresh variant exists (MMLU-Redux,
+  SimpleQA Verified, HumanEval+, LiveCodeBench after the cutoff), and whether there are enough items (Section 2.9).</p></aside>
+
+  <!-- ===================== 2.3 ===================== -->
+  <h2 id="text-metrics"><span class="sec-num">2.3</span>Scoring generated text</h2>
+  <p>Suppose the model writes free text and the benchmark has a reference answer. How similar is &ldquo;The cat sat on the mat.&rdquo; to
+  &ldquo;A cat was sitting on the mat&rdquo;? Every answer is a <span class="term">reference-based metric</span>, on a spectrum from string identity to
+  semantic similarity. They are still harness defaults, and their failure modes show up as silent score shifts.</p>
+
+  <h3 id="text-em">Normalisation and exact match</h3>
+  <p><span class="term">Exact match</span> (EM) is 1 if the prediction equals the reference. Raw equality is too strict
+  (&ldquo;Paris.&rdquo; &ne; &ldquo;paris&rdquo;), so every EM metric comes with a <span class="term">normalisation function</span> that is part of the metric.
+  The most copied is the official SQuAD v1.1 script, reproduced in Hugging Face&rsquo;s <code>evaluate</code><a class="cite" href="#src-49">[49]</a>:</p>
+<pre data-file="huggingface/evaluate: metrics/squad/compute_score.py"><code class="language-python">def normalize_answer(s):
+    """Lower text and remove punctuation, articles and extra whitespace."""
+
+    def remove_articles(text):
+        return re.sub(r"\b(a|an|the)\b", " ", text)
+
+    def white_space_fix(text):
+        return " ".join(text.split())
+
+    def remove_punc(text):
+        exclude = set(string.punctuation)
+        return "".join(ch for ch in text if ch not in exclude)
+
+    def lower(text):
+        return text.lower()
+
+    return white_space_fix(remove_articles(remove_punc(lower(s))))
+
+
+def f1_score(prediction, ground_truth):
+    prediction_tokens = normalize_answer(prediction).split()
+    ground_truth_tokens = normalize_answer(ground_truth).split()
+    common = Counter(prediction_tokens) &amp; Counter(ground_truth_tokens)
+    num_same = sum(common.values())
+    if num_same == 0:
+        return 0
+    precision = 1.0 * num_same / len(prediction_tokens)
+    recall = 1.0 * num_same / len(ground_truth_tokens)
+    f1 = (2 * precision * recall) / (precision + recall)
+    return f1</code></pre>
+  <p>From the inside out: lowercase, strip punctuation, delete <i>a</i>, <i>an</i>, <i>the</i>, collapse whitespace; with several references, take the maximum.
+  It does <i>not</i> handle numbers (&ldquo;1,200&rdquo; vs &ldquo;1200&rdquo;), units, synonyms or word order, so numeric benchmarks add their own extraction (Section 2.10),
+  and MATH ships a LaTeX-aware checker, <code>is_equiv</code><a class="cite" href="#src-12">[12]</a>.</p>
+
+  <h3 id="text-f1">Token F1</h3>
+  <p><span class="term">Token F1</span> gives partial credit. Treat the normalised prediction and reference as bags (multisets) of tokens, and compute
+  precision and recall of the overlap:</p>
+  <div class="formula">
+    P = <span class="frac"><span>|pred &cap; gold|</span><span>|pred|</span></span>, &nbsp;
+    R = <span class="frac"><span>|pred &cap; gold|</span><span>|gold|</span></span>, &nbsp;
+    F1 = <span class="frac"><span>2PR</span><span>P + R</span></span>
+    <span class="eq-num">(2.2)</span>
+    <span class="where">where &cap; is the multiset intersection (<code>Counter &amp; Counter</code>): a token that appears twice in both counts twice.</span>
+  </div>
+  <div class="worked">
+    <p>pred = &ldquo;The cat sat on the mat.&rdquo; normalises to [cat, sat, on, mat]; gold = &ldquo;A cat was sitting on the mat&rdquo; normalises to
+    [cat, was, sitting, on, mat]. The overlap is {cat, on, mat}, 3 tokens. P = 3/4 = 0.75, R = 3/5 = 0.60, F1 = 2(0.75)(0.60)/1.35 = <b>0.667</b>,
+    while EM = 0. Reproduced by <code>code/ch02/text_metrics.py</code>.</p>
+  </div>
+
+  <h3 id="text-bleu">BLEU: clipped n-gram precision with a brevity penalty</h3>
+  <p>BLEU, designed for machine translation in 2002<a class="cite" href="#src-50">[50]</a>, asks what fraction of the candidate&rsquo;s n-grams (n = 1 to 4) appear
+  in the reference. <b>Clipping</b> credits a candidate n-gram at most as often as it occurs in the reference, so &ldquo;the the the the&rdquo; does not get perfect
+  unigram precision against &ldquo;the cat&rdquo;. A <b>brevity penalty</b> stops very short outputs from winning on precision.</p>
+  <div class="formula">
+    BLEU = BP &middot; exp( &Sigma;<sub>n=1</sub><sup>4</sup> w<sub>n</sub> log p<sub>n</sub> ), &nbsp;&nbsp;
+    BP = 1 if <i>c</i> &gt; <i>r</i>, else exp(1 &minus; <i>r</i>/<i>c</i>)
+    <span class="eq-num">(2.3)</span>
+    <span class="where">where p<sub>n</sub> is the clipped n-gram precision, w<sub>n</sub> = 1/4, <i>c</i> is the candidate length and <i>r</i> the reference length.
+    At corpus level, numerators, denominators and lengths are summed over all sentences <i>before</i> the geometric mean.</span>
+  </div>
+  <p>Because the n-gram precisions enter through a geometric mean, a single zero kills the score. That gives the classic trap:</p>
+  <div class="worked">
+    <p>Candidate &ldquo;the cat is sitting on the mat&rdquo; (7 tokens), reference &ldquo;the cat sat on the mat&rdquo; (6 tokens).
+    Unigrams: <i>the</i> &times;2 (clipped to 2), <i>cat</i>, <i>on</i>, <i>mat</i> match, <i>is</i> and <i>sitting</i> do not: p<sub>1</sub> = 5/7.
+    Bigrams: <i>the cat</i>, <i>on the</i>, <i>the mat</i>: p<sub>2</sub> = 3/6. Trigrams: only <i>on the mat</i>: p<sub>3</sub> = 1/5.
+    4-grams: none of the four match: p<sub>4</sub> = 0/4. The candidate is longer, so BP = 1. Sentence BLEU = <b>0</b>.</p>
+    <p>Now ROUGE-L for the same pair. The longest common subsequence is &ldquo;the cat on the mat&rdquo;, 5 tokens. P<sub>lcs</sub> = 5/7 = 0.714,
+    R<sub>lcs</sub> = 5/6 = 0.833, F = <b>0.769</b>. Two standard metrics, one sentence pair, scores of 0 and 0.769.
+    A near-copy (&ldquo;the cat sat on the red mat today&rdquo; vs &ldquo;the cat sat on the mat today&rdquo;) has p = 7/8, 5/7, 3/6, 2/5 and BLEU = <b>0.595</b>.
+    All three numbers are asserted by <code>code/ch02/text_metrics.py</code>.</p>
+  </div>
+  <p>Sentence-level BLEU therefore needs <span class="term">smoothing</span> (small added counts so a zero precision does not collapse the product); BLEU was meant
+  for corpus level, where some sentence almost always contributes a 4-gram match. &ldquo;BLEU&rdquo; is also a family: tokenisation, casing, smoothing and reference
+  count are parameters, and Post showed common configurations differ by up to 1.8 BLEU, more than many published improvements. His sacreBLEU prints a
+  <span class="term">signature</span> recording every parameter<a class="cite" href="#src-51">[51]</a>.</p>
+
+  <h3 id="text-rouge">ROUGE-N and ROUGE-L</h3>
+  <p>ROUGE, designed for summarisation<a class="cite" href="#src-52">[52]</a>, worries about the opposite failure, missing content: ROUGE-N is n-gram <i>recall</i> against
+  the reference, and ROUGE-L uses the longest common subsequence (LCS), which rewards in-order overlap without contiguity:</p>
+  <div class="formula">
+    R<sub>lcs</sub> = <span class="frac"><span>LCS(cand, ref)</span><span>|ref|</span></span>, &nbsp;
+    P<sub>lcs</sub> = <span class="frac"><span>LCS(cand, ref)</span><span>|cand|</span></span>, &nbsp;
+    F<sub>lcs</sub> = <span class="frac"><span>2 P<sub>lcs</sub> R<sub>lcs</sub></span><span>P<sub>lcs</sub> + R<sub>lcs</sub></span></span>
+    <span class="eq-num">(2.4)</span>
+    <span class="where">The original paper uses a &beta;-weighted F; most libraries report the balanced F1 shown here.</span>
+  </div>
+
+  <h3 id="text-bertscore">BERTScore: soft matching in embedding space</h3>
+  <p>n-gram metrics cannot know that &ldquo;sat&rdquo; and &ldquo;sitting&rdquo; are close. BERTScore<a class="cite" href="#src-53">[53]</a> embeds every token with a contextual
+  encoder and greedily matches each token to its most similar counterpart:</p>
+  <div class="formula">
+    R<sub>BERT</sub> = <span class="frac"><span>1</span><span>|x|</span></span> &Sigma;<sub>x<sub>i</sub> &isin; x</sub> max<sub>x&#770;<sub>j</sub> &isin; x&#770;</sub> x<sub>i</sub><sup>&#8868;</sup> x&#770;<sub>j</sub>, &nbsp;
+    P<sub>BERT</sub> = <span class="frac"><span>1</span><span>|x&#770;|</span></span> &Sigma;<sub>x&#770;<sub>j</sub> &isin; x&#770;</sub> max<sub>x<sub>i</sub> &isin; x</sub> x<sub>i</sub><sup>&#8868;</sup> x&#770;<sub>j</sub>, &nbsp;
+    F<sub>BERT</sub> = <span class="frac"><span>2PR</span><span>P + R</span></span>
+    <span class="eq-num">(2.5)</span>
+    <span class="where">where x is the reference, x&#770; the candidate, and the token vectors are unit-normalised so the dot product is the cosine.</span>
+  </div>
+  <p>Scores depend on the encoder, layer, idf weighting and baseline rescaling, so the <code>bert_score</code> package prints a hash of its configuration<a class="cite" href="#src-53">[53]</a>.
+  Our script uses hand-made vectors with cos(sat, sitting) = 0.9 and cos(mat, rug) = 0.8.</p>
+
+<pre data-file="code/ch02/text_metrics.py"><code class="language-python">def ngrams(tokens: list[str], n: int) -&gt; Counter:
+    return Counter(tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1))
+
+
+def clipped_counts(cand: list[str], ref: list[str], n: int) -&gt; tuple[int, int]:
+    c, r = ngrams(cand, n), ngrams(ref, n)
+    matched = sum(min(cnt, r[g]) for g, cnt in c.items())   # clipping
+    return matched, max(sum(c.values()), 0)
+
+
+def bleu(pairs: list[tuple[str, str]], max_n: int = 4, smooth: bool = False) -&gt; tuple[float, list[float], float]:
+    """Corpus BLEU over (candidate, reference) pairs; one pair = sentence BLEU.
+    smooth=True adds one to numerator and denominator for n &gt; 1 (a simple add-one smoothing)."""
+    match = [0] * max_n
+    total = [0] * max_n
+    c_len = r_len = 0
+    for cand, ref in pairs:
+        ct, rt = cand.split(), ref.split()
+        c_len, r_len = c_len + len(ct), r_len + len(rt)
+        for n in range(1, max_n + 1):
+            m, t = clipped_counts(ct, rt, n)
+            match[n - 1] += m
+            total[n - 1] += t
+    precisions = []
+    for n in range(max_n):
+        m, t = match[n], total[n]
+        if smooth and n &gt; 0:
+            m, t = m + 1, t + 1
+        precisions.append(m / t if t else 0.0)
+    bp = 1.0 if c_len &gt; r_len else math.exp(1 - r_len / c_len)
+    if min(precisions) == 0:
+        return 0.0, precisions, bp
+    return bp * math.exp(sum(math.log(p) for p in precisions) / max_n), precisions, bp
+
+
+# ---------- ROUGE (Lin 2004) ----------
+def rouge_n(cand: str, ref: str, n: int = 1) -&gt; tuple[float, float, float]:
+    m, t_c = clipped_counts(cand.split(), ref.split(), n)
+    t_r = sum(ngrams(ref.split(), n).values())
+    p, r = m / t_c, m / t_r
+    return p, r, (2 * p * r / (p + r) if p + r else 0.0)
+
+
+def lcs_len(a: list[str], b: list[str]) -&gt; int:
+    dp = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
+    for i, x in enumerate(a, 1):
+        for j, y in enumerate(b, 1):
+            dp[i][j] = dp[i - 1][j - 1] + 1 if x == y else max(dp[i - 1][j], dp[i][j - 1])
+    return dp[-1][-1]
+
+
+def rouge_l(cand: str, ref: str) -&gt; tuple[int, float, float, float]:
+    c, r = cand.split(), ref.split()
+    lcs = lcs_len(c, r)
+    p, rec = lcs / len(c), lcs / len(r)
+    return lcs, p, rec, 2 * p * rec / (p + rec)
+</code></pre>
+  <p class="code-caption">Excerpt: BLEU and ROUGE. The full file (with EM/F1 and the toy BERTScore) is <code>code/ch02/text_metrics.py</code>.</p>
+  <p class="run-cmd">Run it: <code>python3 code/ch02/text_metrics.py</code></p>
+<pre class="output"><code>== EM and token F1 (SQuAD normalisation) ==
+normalised pred: 'cat sat on mat'
+normalised gold: 'cat was sitting on mat'
+EM = 0   F1 = 0.667
+
+== BLEU vs ROUGE on one pair ==
+candidate: 'the cat is sitting on the mat'
+reference: 'the cat sat on the mat'
+clipped precisions p1..p4 = 0.714 0.500 0.200 0.000  BP = 1.000
+sentence BLEU (no smoothing)  = 0.000
+sentence BLEU (add-one, n&gt;1)  = 0.406
+ROUGE-1  P=0.714 R=0.833 F=0.769
+ROUGE-L  LCS=5  P=0.714 R=0.833 F=0.769
+
+near-copy 'the cat sat on the red mat today': p = 0.875 0.714 0.500 0.400  BLEU = 0.595
+corpus BLEU over both pairs (counts pooled before the geometric mean) = 0.447
+
+== Toy BERTScore (greedy cosine matching) ==
+cos(sat, sitting) = 0.90
+the cat is sitting on the mat    BERTScore F=0.956  ROUGE-L F=0.769  BLEU(smoothed)=0.406
+the dog ran on the rug           BERTScore F=0.738  ROUGE-L F=0.500  BLEU(smoothed)=0.302
+the cat sat on the rug           BERTScore F=0.967  ROUGE-L F=0.833  BLEU(smoothed)=0.803</code></pre>
+  <p>Add-one smoothing lifts the &ldquo;is sitting&rdquo; sentence from 0 to 0.406, a choice nobody reports; corpus BLEU over both pairs is 0.447, not the mean of
+  0 and 0.595, because it pools counts; and the toy BERTScore ranks the paraphrases far above &ldquo;the dog ran on the rug&rdquo;.</p>
+
+  <h3 id="text-learned">chrF and learned metrics</h3>
+  <p><span class="term">chrF</span> is the F-score over character n-grams with &beta; = 2 (recall weighted twice as much as precision); chrF++ adds word bigrams, and sacreBLEU implements both with signatures<a class="cite" href="#src-54">[54]</a>.
+  <span class="term">COMET</span><a class="cite" href="#src-55">[55]</a> and <span class="term">BLEURT</span><a class="cite" href="#src-56">[56]</a> are neural regressors trained to predict human quality judgements
+  (COMET also reads the source sentence). The WMT22 metrics shared task, subtitled &ldquo;Stop Using BLEU&rdquo;, found neural metrics better correlated with humans and more robust<a class="cite" href="#src-57">[57]</a>.
+  They fail like learned models: under domain shift, on error types they barely penalise (a wrong number or name), and across checkpoints, so name
+  the exact one (for example <code>Unbabel/wmt22-comet-da</code>).</p>
+
+  <aside class="warn" data-title="Pitfall: n-gram metrics on LLM output"><p>BLEU and ROUGE reward surface overlap with one reference. LLM answers are
+  long, varied and often correct in words the reference never used, so n-gram metrics mostly measure <i>similarity to the reference author&rsquo;s style</i>. Use them
+  for constrained outputs and as cheap regression alarms; for open-ended output use a task-specific checker, a validated judge (<a href="04-llm-judges-human-eval.html">Chapter 4</a>) or humans.</p></aside>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Metric</th><th>Rewards</th><th>Blind to</th><th>Typical use</th><th>Must report</th></tr></thead>
+      <tbody>
+        <tr><td>EM (normalised)</td><td>Identical short answers</td><td>Any paraphrase, number formats</td><td>Short QA, extracted final answers</td><td>Normalisation + extraction code</td></tr>
+        <tr><td>Token F1</td><td>Partial word overlap</td><td>Word order, synonyms</td><td>Extractive QA (SQuAD)</td><td>Normalisation, max over references</td></tr>
+        <tr><td>BLEU</td><td>Precise n-gram overlap, length</td><td>Synonyms; sentence-level zeros</td><td>MT at corpus level</td><td>sacreBLEU signature</td></tr>
+        <tr><td>ROUGE-1 / ROUGE-L</td><td>Recall of reference content, in order</td><td>Synonyms, factual errors</td><td>Summarisation</td><td>Variant, tokeniser, stemming</td></tr>
+        <tr><td>BERTScore</td><td>Semantic similarity</td><td>Negation, factual swaps that keep topic</td><td>Paraphrase-tolerant similarity</td><td>Model, layer, idf, rescaling hash</td></tr>
+        <tr><td>chrF / chrF++</td><td>Character n-gram overlap, recall-weighted</td><td>Meaning beyond surface form</td><td>MT, morphologically rich languages</td><td>sacreBLEU signature</td></tr>
+        <tr><td>COMET / BLEURT</td><td>Learned prediction of human judgements</td><td>Out-of-domain text; some error types</td><td>MT and generation quality</td><td>Metric checkpoint and version</td></tr>
+      </tbody>
+      <caption>Table 2.2. Reference-based text metrics at a glance.</caption>
+    </table>
+  </div>
+
+  <h3 id="text-ifeval">Verifiable instructions: IFEval&rsquo;s four numbers</h3>
+  <p>IFEval<a class="cite" href="#src-30">[30]</a> needs no reference: each of its ~500 prompts carries one or more verifiable instructions (&ldquo;fewer than 100 words&rdquo;,
+  &ldquo;wrap the answer in JSON&rdquo;) checked by code. <span class="term">Prompt-level accuracy</span> is the share of prompts whose instructions are <i>all</i> followed;
+  <span class="term">instruction-level accuracy</span> is the share of individual instructions followed. <b>Strict</b> checks the raw response; <b>loose</b> also tries it with
+  markdown <code>*</code> removed and with the first and/or last line dropped (forgiving &ldquo;Sure, here it is:&rdquo;), and passes if any variant does.</p>
+  <div class="worked"><p>Three prompts, two instructions each. Strict results [&#10003;,&#10003;], [&#10003;,&#10007;], [&#10007;,&#10007;]: prompt-level 1/3 = 0.333, instruction-level 3/6 = 0.500.
+  Response 2, &ldquo;**Yes**, the meeting moved&hellip;&rdquo;, fails &ldquo;start with Yes&rdquo; only because of the markdown, which loose removes: 2/3 and 4/6. Asserted by <code>code/ch02/text_metrics.py</code>.</p></div>
+<pre data-file="code/ch02/text_metrics.py"><code class="language-python">def loose_variants(resp: str) -&gt; list[str]:
+    """IFEval 'loose' check: also try the response with markdown '*' removed and/or its first
+    and/or last line dropped; an instruction counts as followed if ANY non-empty variant passes."""
+    lines = resp.split("\n")
+    bases = [resp, "\n".join(lines[1:]), "\n".join(lines[:-1]), "\n".join(lines[1:-1])]
+    return [v for b in bases for v in (b, b.replace("*", "")) if v.strip()]
+
+
+def ifeval_scores(mock, loose: bool) -&gt; tuple[float, float, list[list[bool]]]:
+    results = [[any(chk(v) for v in (loose_variants(resp) if loose else [resp])) for _, chk in instrs]
+               for resp, instrs in mock]
+    prompt_level = float(np.mean([all(r) for r in results]))
+    instruction_level = float(np.mean([x for r in results for x in r]))
+    return prompt_level, instruction_level, results</code></pre>
+<pre class="output"><code>== IFEval-style scoring: 3 prompts x 2 verifiable instructions ==
+strict per-instruction [[True, True], [True, False], [False, False]]  prompt-level 0.333  instruction-level 0.500
+loose  per-instruction [[True, True], [True, True], [False, False]]  prompt-level 0.667  instruction-level 0.667</code></pre>
+
+  <!-- ===================== 2.4 ===================== -->
+  <h2 id="logprob"><span class="sec-num">2.4</span>Scoring with probabilities</h2>
+  <p>For multiple-choice benchmarks there is a second way to get an answer, with no generation or parsing: ask the model how likely each option is and pick
+  the most likely. This <span class="term">log-likelihood scoring</span> is lm-evaluation-harness&rsquo;s default for ARC, HellaSwag and MMLU-style tasks<a class="cite" href="#src-58">[58]</a>. It is cheap,
+  deterministic and works on base models that cannot follow instructions, but it has biases that the normalisation variants exist to fix.</p>
+
+  <h3 id="logprob-rules">acc, acc_norm, acc_bytes and mutual information</h3>
+  <p>For each choice <i>c</i><sub>j</sub>, the harness sums the log-probabilities of its tokens as a continuation of the prompt:
+  &#8467;<sub>j</sub> = &Sigma;<sub>t</sub> log p(c<sub>j,t</sub> | prompt, c<sub>j,&lt;t</sub>). Every extra token adds a negative number, so long options are penalised
+  for being long. The decision rules correct for that differently:</p>
+  <div class="formula">
+    acc: argmax<sub>j</sub> &#8467;<sub>j</sub> &nbsp;&nbsp;
+    acc_norm: argmax<sub>j</sub> &#8467;<sub>j</sub> / chars(c<sub>j</sub>) &nbsp;&nbsp;
+    acc_bytes: argmax<sub>j</sub> &#8467;<sub>j</sub> / bytes(c<sub>j</sub>) &nbsp;&nbsp;
+    acc_mutual_info: argmax<sub>j</sub> [ &#8467;<sub>j</sub> &minus; &#8467;<sub>j</sub><sup>uncond</sup> ]
+    <span class="eq-num">(2.6)</span>
+    <span class="where">where &#8467;<sub>j</sub><sup>uncond</sup> is the log-likelihood of the choice with an empty context (how likely the string is a priori). A fifth variant,
+    per-token normalisation &#8467;<sub>j</sub> / tokens(c<sub>j</sub>), is used by OLMES<a class="cite" href="#src-59">[59]</a>; unlike per-byte it depends on the tokenizer.</span>
+  </div>
+  <p>Here is the real code, from the <code>multiple_choice</code> branch of <code>process_results</code> in lm-evaluation-harness:</p>
+<pre data-file="EleutherAI/lm-evaluation-harness: lm_eval/api/task.py (excerpt, dedented)"><code class="language-python">completion_len = np.array([float(len(i)) for i in choices])
+byte_length = np.array([float(len(i.encode("utf-8"))) for i in choices])
+...
+pred = np.argmax(lls)
+pred_norm = np.argmax(lls / completion_len)
+pred_byte = np.argmax(lls / byte_length)
+...
+if "acc_mutual_info" in use_metric:
+    lls_mutual_info = [
+        ll_c - ll_u
+        for ll_c, ll_u in zip(lls, lls_unconditional, strict=True)
+    ]
+    acc_mutual_info = 1.0 if np.argmax(lls_mutual_info) == gold else 0.0</code></pre>
+  <p>Mutual information asks not &ldquo;which option is most probable here?&rdquo; but &ldquo;which option did the context make <i>more</i> probable?&rdquo;, removing the
+  advantage of generic strings such as &ldquo;the air&rdquo; at the cost of a second forward pass. Figure 2.3 shows one item where three rules pick three different answers.</p>
+
+  <figure class="diagram" id="fig-2-3">
+    <svg viewBox="0 0 680 280" role="img" aria-labelledby="fig-2-3-t">
+      <title id="fig-2-3-t">One four-choice item scored by acc, acc_norm and mutual information; each rule picks a different option</title>
+      <text x="20" y="22" class="title">&#8220;Which gas do plants absorb for photosynthesis?&#8221;  gold = B</text>
+      <text x="20" y="52" class="small">option</text>
+      <text x="250" y="52" text-anchor="middle" class="small">acc: &#8467; (higher wins)</text>
+      <text x="420" y="52" text-anchor="middle" class="small">acc_norm: &#8467; / chars</text>
+      <text x="590" y="52" text-anchor="middle" class="small">MI: &#8467; &#8722; &#8467;_uncond</text>
+      <text x="20" y="85">A oxygen</text><text x="20" y="135">B carbon dioxide</text><text x="20" y="185">C nitrogen gas from soil</text><text x="20" y="235">D the air</text>
+      <!-- acc panel: scale ll in [-5,0] -> width 0..120 from x=190; bar length = (ll+5)*24 -->
+      <rect x="190" y="70" width="72" height="22" class="f-2"/><text x="268" y="86" class="mono">&#8722;2.0</text>
+      <rect x="190" y="120" width="40.8" height="22" class="f-muted"/><text x="236" y="136" class="mono">&#8722;3.3</text>
+      <rect x="190" y="170" width="12" height="22" class="f-muted"/><text x="208" y="186" class="mono">&#8722;4.5</text>
+      <rect x="190" y="220" width="62.4" height="22" class="f-muted"/><text x="258" y="236" class="mono">&#8722;2.4</text>
+      <!-- acc_norm panel: scale in [-0.4,0] -> width = (v+0.4)*300 from x=360 -->
+      <rect x="360" y="70" width="20.1" height="22" class="f-muted"/><text x="386" y="86" class="mono">&#8722;0.333</text>
+      <rect x="360" y="120" width="49.2" height="22" class="f-muted"/><text x="415" y="136" class="mono">&#8722;0.236</text>
+      <rect x="360" y="170" width="58.5" height="22" class="f-3"/><text x="424" y="186" class="mono">&#8722;0.205</text>
+      <rect x="360" y="220" width="17.1" height="22" class="f-muted"/><text x="383" y="236" class="mono">&#8722;0.343</text>
+      <!-- MI panel: scale in [-1.5,3] -> width = (v+1.5)*25 from x=530 -->
+      <rect x="530" y="70" width="25" height="22" class="f-muted"/><text x="561" y="86" class="mono">&#8722;0.5</text>
+      <rect x="530" y="120" width="105" height="22" class="f-1"/><text x="641" y="136" class="mono">2.7</text>
+      <rect x="530" y="170" width="75" height="22" class="f-muted"/><text x="611" y="186" class="mono">1.5</text>
+      <rect x="530" y="220" width="7.5" height="22" class="f-muted"/><text x="543" y="236" class="mono">&#8722;1.2</text>
+      <text x="250" y="270" text-anchor="middle" class="small">picks A (short, wrong)</text>
+      <text x="420" y="270" text-anchor="middle" class="small">picks C (long, wrong)</text>
+      <text x="590" y="270" text-anchor="middle" class="small">picks B (correct)</text>
+    </svg>
+    <figcaption><b>Figure 2.3.</b> Same log-likelihoods, three rules, three answers: raw <code>acc</code> favours the shortest option, per-character normalisation the long distractor,
+    and mutual information discounts options likely a priori. Values from <code>code/ch02/mock_mc_eval.py</code>; within each panel, longer bar = preferred.</figcaption>
+  </figure>
+
+  <h3 id="logprob-cloze-vs-letter">Cloze versus letter formulation</h3>
+  <p>A second, independent choice is <i>what</i> string to score. In the <span class="term">cloze formulation</span> (CF) the prompt ends with
+  &ldquo;Answer:&rdquo; and each option&rsquo;s full text is scored. In the <span class="term">multiple-choice formulation</span> (MCF) the options are listed as A&ndash;D
+  and only the letter is scored: closer to instruction-tuned use and free of the length problem, but small base models often cannot do it, and it adds a letter bias. Madaan et al. found cloze MMLU has far lower seed variance and a more monotone learning curve during 7B-scale pre-training<a class="cite" href="#src-8">[8]</a>; Alzahrani et al.
+  found that changing the answer-selection method, choice order or symbols moves models up to 8 ranks<a class="cite" href="#src-2">[2]</a>.</p>
+  <p>A more radical answer is to drop the options. Chandak, Goel, Prabhu et al. show that multiple-choice questions from popular benchmarks can often be answered
+  <i>without seeing the question</i>, from the choices alone<a class="cite" href="#src-89">[89]</a>. Their alternative, <span class="term">answer matching</span>, gives the model the question without options,
+  takes a free-form answer, and has an LLM compare it with the reference. On human-graded MMLU-Pro and GPQA-Diamond, answer matching with recent models, even small ones, reaches
+  agreement in the range of inter-annotator agreement, while MC scoring and reference-free LLM-as-judge align poorly with humans, and several model rankings change. The grader then needs
+  the validation described in <a href="04-llm-judges-human-eval.html">Chapter 4</a>; a cheap shortcut check for any MC benchmark is a <i>choices-only</i> baseline with the question removed.</p>
+  <p>OLMES, AI2&rsquo;s open evaluation standard, turns these findings into rules<a class="cite" href="#src-59">[59]</a>. It evaluates every model in both CF and MCF and reports the better,
+  because MCF ability appears only at larger scale or after more training. It also fixes, per task,
+  the normalisation (none, per-character, per-token or PMI, the mutual-information rule), the prompt format and a curated 5-shot set.
+  <a href="09-tooling-production.html">Chapter 9</a> uses it as a tool.</p>
+  <p>The letter prior has a clean fix: present each item with the options rotated and average each option&rsquo;s score over its positions. A constant preference
+  for &ldquo;A&rdquo; then adds the same amount to every option and cancels.</p>
+
+<pre data-file="code/ch02/mock_mc_eval.py"><code class="language-python">def letter_eval(rng: np.random.Generator, n: int, prior: np.ndarray) -&gt; tuple[float, float]:
+    """Letter (MCF) scoring: log p(letter) = knowledge signal for the content + a position prior.
+    Returns (accuracy in the original order, accuracy after averaging over 4 cyclic rotations)."""
+    plain = debiased = 0
+    for _ in range(n):
+        gold = int(rng.integers(4))
+        content_score = rng.normal(0, 1.0, size=4)
+        content_score[gold] += 1.0                         # the model weakly knows the answer
+        logits = content_score + prior                     # position j shows content j
+        plain += int(np.argmax(logits) == gold)
+        # rotate contents through positions; average each content's score over all positions
+        avg = np.zeros(4)
+        for shift in range(4):
+            pos_of_content = (np.arange(4) + shift) % 4
+            avg += content_score + prior[pos_of_content]
+        debiased += int(np.argmax(avg / 4) == gold)
+    return plain / n, debiased / n
+</code></pre>
+  <p class="code-caption">Excerpt: letter scoring with a position prior, and the cyclic-permutation fix. The full file also contains the cloze mock and the Figure 2.3 item.</p>
+  <p class="run-cmd">Run it: <code>python3 code/ch02/mock_mc_eval.py</code></p>
+<pre class="output"><code>Figure 2.3 item: 'Which gas do plants absorb for photosynthesis?'  gold = B
+opt text                        ll chars  ll/char  ll_unc    MI
+A   oxygen                    -2.0     6   -0.333    -1.5  -0.5
+B   carbon dioxide            -3.3    14   -0.236    -6.0   2.7
+C   nitrogen gas from soil    -4.5    22   -0.205    -6.0   1.5
+D   the air                   -2.4     7   -0.343    -1.2  -1.2
+picked: {'acc': 'A', 'acc_norm': 'C', 'acc_bytes': 'C', 'acc_mutual_info': 'B'}
+
+400 mock cloze items, same log-probs, four decision rules:
+  acc              0.415
+  acc_norm         0.555
+  acc_bytes        0.555
+  acc_mutual_info  0.532
+
+Letter (A-D) scoring, 2000 items, gold position uniform:
+  no prior   original order acc = 0.557   permutation-averaged acc = 0.557
+  likes 'A'  original order acc = 0.497   permutation-averaged acc = 0.557
+
+token probs [0.5, 0.25, 0.125, 0.5]: mean log p = -1.2130, PPL = 3.364
+same tokens as 9 bytes: bits-per-byte = 0.778</code></pre>
+  <p>On identical mock outputs, the decision rule alone swings accuracy by 14 points (0.415 to 0.555); a preference for &ldquo;A&rdquo; costs 6 points in letter scoring,
+  and averaging over four rotations recovers exactly the unbiased accuracy.</p>
+
+  <aside class="warn" data-title="Pitfall: acc and acc_norm are different benchmarks"><p>Leaderboards pick one per task (HellaSwag and ARC conventionally use <code>acc_norm</code>), so one paper&rsquo;s <code>acc</code> and another&rsquo;s
+  <code>acc_norm</code> are different measurements. Name the rule whenever you report a log-likelihood MC number.</p></aside>
+
+  <h3 id="logprob-ppl">Perplexity and bits-per-byte</h3>
+  <p>For language modelling itself, the metric is how surprised the model is by held-out text. <span class="term">Perplexity</span> is the
+  exponentiated mean negative log-likelihood per token:</p>
+  <div class="formula">
+    PPL = exp( &minus;<span class="frac"><span>1</span><span>T</span></span> &Sigma;<sub>t=1</sub><sup>T</sup> log p(x<sub>t</sub> | x<sub>&lt;t</sub>) ), &nbsp;&nbsp;
+    BPB = <span class="frac"><span>&minus;&Sigma;<sub>t</sub> log p(x<sub>t</sub> | x<sub>&lt;t</sub>)</span><span>B &middot; ln 2</span></span>
+    <span class="eq-num">(2.7)</span>
+    <span class="where">where T is the number of tokens and B the number of UTF-8 bytes of the same text.</span>
+  </div>
+  <div class="worked">
+    <p>Four tokens with probabilities 0.5, 0.25, 0.125, 0.5 have log-probabilities &minus;0.693, &minus;1.386, &minus;2.079, &minus;0.693; the mean is &minus;1.2130,
+    so PPL = e<sup>1.2130</sup> = <b>3.364</b>: the model is, on average, as uncertain as a uniform choice among about 3.4 tokens. If those four tokens spell 9 bytes,
+    BPB = 4.852 / (9 &times; 0.693) = 0.778. Reproduced by <code>code/ch02/mock_mc_eval.py</code>.</p>
+  </div>
+  <p>Token perplexity depends on the tokenizer (bigger tokens mean fewer, harder predictions), so models with different vocabularies cannot be compared on it;
+  bits-per-byte divides by a tokenizer-independent length and can be. lm-evaluation-harness implements these as one-line aggregations<a class="cite" href="#src-58">[58]</a>:</p>
+<pre data-file="EleutherAI/lm-evaluation-harness: lm_eval/api/metrics.py (excerpt)"><code class="language-python">@register_aggregation("perplexity")
+def perplexity(items):
+    return math.exp(-mean(items))
+
+
+@register_aggregation("weighted_perplexity")
+def weighted_perplexity(items):
+    return math.exp(-weighted_mean(items))
+
+
+@register_aggregation("bits_per_byte")
+def bits_per_byte(items):
+    return -weighted_mean(items) / math.log(2)</code></pre>
+  <p>Continuous metrics come back in Section 2.9: because they do not threshold, they are often a much less noisy signal of progress than accuracy.</p>
+
+  <!-- ===================== 2.5 ===================== -->
+  <h2 id="pass-at-k"><span class="sec-num">2.5</span>Scoring with execution: pass@k</h2>
+  <p>For code there is a much better grader than string similarity: run the program. HumanEval, introduced with Codex in 2021, has
+  164 hand-written Python problems, each a signature and docstring plus hidden unit tests (about 7.7 per problem); a completion is correct if it
+  passes all of them<a class="cite" href="#src-13">[13]</a>. This <span class="term">functional correctness</span> generalises to any domain with an automatic checker:
+  verifiable math answers, SQL, an agent&rsquo;s final environment state. With sampled models, the probability that at least one of <i>k</i> samples is correct is <span class="term">pass@k</span>. Its estimator is derived here.</p>
+
+  <h3 id="pass-at-k-derivation">Deriving the unbiased estimator</h3>
+  <p>Fix one problem. Let <i>p</i> be the model&rsquo;s true per-sample success probability on it. If samples are independent, the true pass@k for the problem is</p>
+  <div class="formula">
+    pass@k(<i>p</i>) = 1 &minus; (1 &minus; <i>p</i>)<sup><i>k</i></sup>
+    <span class="eq-num">(2.8)</span>
+    <span class="where">the probability that not all <i>k</i> samples fail.</span>
+  </div>
+  <p>We do not know <i>p</i>. Drawing exactly <i>k</i> samples and recording whether any passes is unbiased but very noisy (one Bernoulli draw per problem).
+  The Codex paper instead draws <i>n</i> &ge; <i>k</i> samples (<i>n</i> = 200, <i>k</i> &le; 100), counts the <i>c</i> that pass, and asks: if I picked <i>k</i> of the
+  <i>n</i> uniformly <i>without replacement</i>, what is the probability that at least one is correct?<a class="cite" href="#src-13">[13]</a> The complement is that all <i>k</i> picks are among the <i>n</i> &minus; <i>c</i> failures.
+  There are C(<i>n</i> &minus; <i>c</i>, <i>k</i>) ways to choose <i>k</i> failures and C(<i>n</i>, <i>k</i>) ways to choose any <i>k</i>, so</p>
+  <div class="formula">
+    pass@k&#770; = 1 &minus; <span class="frac"><span>C(<i>n</i> &minus; <i>c</i>, <i>k</i>)</span><span>C(<i>n</i>, <i>k</i>)</span></span>,
+    &nbsp;&nbsp; pass@k = E<sub>problems</sub> [ pass@k&#770; ]
+    <span class="eq-num">(2.9)</span>
+    <span class="where">with pass@k&#770; = 1 whenever <i>n</i> &minus; <i>c</i> &lt; <i>k</i> (you cannot pick <i>k</i> failures).</span>
+  </div>
+  <p><b>Why it is unbiased.</b> Treat the <i>n</i> samples as an ordered i.i.d. sequence. &ldquo;The first <i>k</i> all fail&rdquo; has probability (1 &minus; <i>p</i>)<sup><i>k</i></sup>.
+  Conditional on <i>c</i>, every arrangement of the successes is equally likely, so the conditional probability that the first <i>k</i> all fail is exactly
+  C(<i>n</i> &minus; <i>c</i>, <i>k</i>)/C(<i>n</i>, <i>k</i>). Averaging over <i>c</i> gives back (1 &minus; <i>p</i>)<sup><i>k</i></sup>, so the estimator is unbiased per problem for every
+  <i>p</i>, and its mean over problems is unbiased for the benchmark. It is the Rao&ndash;Blackwellised naive estimator: same expectation, lower variance, because it averages over every way of choosing <i>k</i> of the <i>n</i>.</p>
+
+  <h3 id="pass-at-k-stable">The numerically stable product form</h3>
+  <p>C(200, 100) is about 9 &times; 10<sup>58</sup>, and for larger <i>n</i> the ratio overflows floating point. Cancelling terms gives a product that never gets large:</p>
+  <div class="formula">
+    <span class="frac"><span>C(<i>n</i> &minus; <i>c</i>, <i>k</i>)</span><span>C(<i>n</i>, <i>k</i>)</span></span>
+    = &prod;<sub><i>i</i> = <i>n</i>&minus;<i>c</i>+1</sub><sup><i>n</i></sup> ( 1 &minus; <span class="frac"><span><i>k</i></span><span><i>i</i></span></span> )
+    <span class="eq-num">(2.10)</span>
+  </div>
+  <p>This is exactly what the reference implementation does<a class="cite" href="#src-60">[60]</a>:</p>
+<pre data-file="openai/human-eval: human_eval/evaluation.py (excerpt)"><code class="language-python">def estimate_pass_at_k(
+    num_samples: Union[int, List[int], np.ndarray],
+    num_correct: Union[List[int], np.ndarray],
+    k: int
+) -&gt; np.ndarray:
+    """
+    Estimates pass@k of each problem and returns them in an array.
+    """
+
+    def estimator(n: int, c: int, k: int) -&gt; float:
+        """
+        Calculates 1 - comb(n - c, k) / comb(n, k).
+        """
+        if n - c &lt; k:
+            return 1.0
+        return 1.0 - np.prod(1.0 - k / np.arange(n - c + 1, n + 1))</code></pre>
+
+  <div class="worked">
+    <p><b>n = 10, c = 3.</b> pass@1 = 1 &minus; C(7,1)/C(10,1) = 1 &minus; 7/10 = 0.300 (pass@1 is always just <i>c</i>/<i>n</i>).
+    pass@5 = 1 &minus; C(7,5)/C(10,5) = 1 &minus; 21/252 = <b>0.9167</b>. Product form: (1 &minus; 5/8)(1 &minus; 5/9)(1 &minus; 5/10) = 0.375 &times; 0.444 &times; 0.5 = 0.0833, so 1 &minus; 0.0833 = 0.9167.</p>
+    <p><b>n = 200, c = 10.</b> pass@1 = 0.050, pass@10 = 0.4085, pass@100 = 0.9992. Reproduced by <code>code/ch02/pass_at_k.py</code>.</p>
+  </div>
+
+  <h3 id="pass-at-k-bias">Why the plug-in estimator is biased low</h3>
+  <p>A tempting shortcut plugs <i>p&#770;</i> = <i>c</i>/<i>n</i> into Equation 2.8: 1 &minus; (1 &minus; <i>c</i>/<i>n</i>)<sup><i>k</i></sup>. Because
+  <i>f</i>(<i>p</i>) = 1 &minus; (1 &minus; <i>p</i>)<sup><i>k</i></sup> is concave for <i>k</i> &gt; 1, Jensen&rsquo;s inequality gives E[<i>f</i>(<i>p&#770;</i>)] &le; <i>f</i>(<i>p</i>): the plug-in is biased low.
+  Intuitively it resamples <i>with</i> replacement, so the same failure can be drawn twice.</p>
+  <div class="worked">
+    <p>Take <i>p</i> = 0.1, <i>n</i> = 10, <i>k</i> = 5. The truth is 1 &minus; 0.9<sup>5</sup> = <b>0.4095</b>. Averaging each estimator over the exact
+    Binomial(10, 0.1) distribution of <i>c</i>: the unbiased estimator&rsquo;s expectation is 0.4095, the plug-in&rsquo;s is <b>0.3485</b>, six points low.
+    Computed exactly (not by simulation) in <code>code/ch02/pass_at_k.py</code>.</p>
+  </div>
+
+<pre data-file="code/ch02/pass_at_k.py"><code class="language-python">def pass_at_k_comb(n: int, c: int, k: int) -&gt; float:
+    """1 - C(n-c, k) / C(n, k): P(at least one of k draws without replacement passes)."""
+    if n - c &lt; k:
+        return 1.0
+    return 1.0 - math.comb(n - c, k) / math.comb(n, k)
+
+
+def pass_at_k_prod(n: int, c: int, k: int) -&gt; float:
+    """Product form used by openai/human-eval; never forms huge binomial coefficients."""
+    if n - c &lt; k:
+        return 1.0
+    return 1.0 - float(np.prod(1.0 - k / np.arange(n - c + 1, n + 1)))
+
+
+def plug_in(n: int, c: int, k: int) -&gt; float:
+    """Biased: treats p_hat = c/n as the truth and samples WITH replacement."""
+    return 1.0 - (1.0 - c / n) ** k
+
+
+def binom_pmf(n: int, c: int, p: float) -&gt; float:
+    return math.comb(n, c) * p ** c * (1 - p) ** (n - c)
+
+
+def expectation(estimator, n: int, k: int, p: float) -&gt; float:
+    """Exact E[estimator] when c ~ Binomial(n, p)."""
+    return sum(binom_pmf(n, c, p) * estimator(n, c, k) for c in range(n + 1))
+</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch02/pass_at_k.py</code></p>
+<pre class="output"><code>== Worked examples ==
+n=10   c=3   k=1    pass@k = 0.3000   (product form 0.3000)
+n=10   c=3   k=5    pass@k = 0.9167   (product form 0.9167)
+n=200  c=10  k=1    pass@k = 0.0500   (product form 0.0500)
+n=200  c=10  k=10   pass@k = 0.4085   (product form 0.4085)
+n=200  c=10  k=100  pass@k = 0.9992   (product form 0.9992)
+
+== Bias: exact expectation over c ~ Binomial(n=10, p=0.1), k=5 ==
+true pass@5         = 0.4095
+E[unbiased]         = 0.4095
+E[plug-in]          = 0.3485   (bias -0.0610)
+
+== Simulation: 164 problems, per-problem p ~ Beta(0.3, 0.7), n = 20 samples each ==
+  k    true  unbiased  plug-in  naive-k
+  1   0.280     0.279    0.279    0.274
+  2   0.384     0.383    0.378    0.329
+  3   0.443     0.440    0.431    0.390
+  5   0.513     0.504    0.491    0.518
+ 10   0.597     0.580    0.556    0.555
+ 15   0.642     0.623    0.587    0.628
+ 20   0.671     0.652    0.606    0.683
+
+== Variance: naive k-sample estimate vs unbiased from n=20, k=5, 2000 repeats, one problem p=0.2 ==
+truth 0.6723 | naive mean 0.6820 sd 0.466 | unbiased mean 0.6745 sd 0.193</code></pre>
+  <p>The bias grows with <i>k</i>: on 164 mock problems with <i>n</i> = 20, the plug-in is 1.3 points low at <i>k</i> = 5 and 4.6 points low at <i>k</i> = 20 (both estimators differ a little
+  from &ldquo;true&rdquo; because of ordinary sampling noise; Chapter 5 adds error bars). The last block shows why <i>n</i> &gt; <i>k</i> pays: for one problem with <i>p</i> = 0.2,
+  the naive 5-sample estimate has standard deviation 0.466, the unbiased estimate from 20 samples 0.193.</p>
+
+  <figure class="diagram" id="fig-2-4">
+    <svg viewBox="0 0 680 300" role="img" aria-labelledby="fig-2-4-t">
+      <title id="fig-2-4-t">pass@k versus k for the true value, the unbiased estimator and the plug-in estimator</title>
+      <path d="M70 250 H610" class="s-muted" stroke-width="1"/>
+      <path d="M70 250 V50" class="s-muted" stroke-width="1"/>
+      <text x="70.0" y="266" text-anchor="middle" class="small">1</text>
+      <text x="183.7" y="266" text-anchor="middle" class="small">5</text>
+      <text x="325.8" y="266" text-anchor="middle" class="small">10</text>
+      <text x="467.9" y="266" text-anchor="middle" class="small">15</text>
+      <text x="610.0" y="266" text-anchor="middle" class="small">20</text>
+      <text x="64" y="231.8" text-anchor="end" class="small">0.3</text>
+      <path d="M70 227.8 H610" class="s-muted" stroke-width="0.4" stroke-dasharray="2 4"/>
+      <text x="64" y="187.3" text-anchor="end" class="small">0.4</text>
+      <path d="M70 183.3 H610" class="s-muted" stroke-width="0.4" stroke-dasharray="2 4"/>
+      <text x="64" y="142.9" text-anchor="end" class="small">0.5</text>
+      <path d="M70 138.9 H610" class="s-muted" stroke-width="0.4" stroke-dasharray="2 4"/>
+      <text x="64" y="98.4" text-anchor="end" class="small">0.6</text>
+      <path d="M70 94.4 H610" class="s-muted" stroke-width="0.4" stroke-dasharray="2 4"/>
+      <text x="64" y="54.0" text-anchor="end" class="small">0.7</text>
+      <path d="M70 50.0 H610" class="s-muted" stroke-width="0.4" stroke-dasharray="2 4"/>
+      <text x="340.0" y="284" text-anchor="middle" class="small">k (samples allowed)</text>
+      <text x="14" y="150.0" text-anchor="middle" class="small" transform="rotate(-90 14 150.0)">pass@k</text>
+      <polyline points="70.0,236.7 98.4,190.4 126.8,164.2 183.7,133.1 325.8,95.8 467.9,75.8 610.0,62.9" class="s-muted" stroke-width="2" stroke-dasharray="4 3"/><circle cx="70.0" cy="236.7" r="3" class="f-muted"/><circle cx="98.4" cy="190.4" r="3" class="f-muted"/><circle cx="126.8" cy="164.2" r="3" class="f-muted"/><circle cx="183.7" cy="133.1" r="3" class="f-muted"/><circle cx="325.8" cy="95.8" r="3" class="f-muted"/><circle cx="467.9" cy="75.8" r="3" class="f-muted"/><circle cx="610.0" cy="62.9" r="3" class="f-muted"/>
+      <polyline points="70.0,237.1 98.4,190.9 126.8,165.6 183.7,137.1 325.8,103.3 467.9,84.2 610.0,71.3" class="s-1" stroke-width="2"/><circle cx="70.0" cy="237.1" r="3" class="f-1"/><circle cx="98.4" cy="190.9" r="3" class="f-1"/><circle cx="126.8" cy="165.6" r="3" class="f-1"/><circle cx="183.7" cy="137.1" r="3" class="f-1"/><circle cx="325.8" cy="103.3" r="3" class="f-1"/><circle cx="467.9" cy="84.2" r="3" class="f-1"/><circle cx="610.0" cy="71.3" r="3" class="f-1"/>
+      <polyline points="70.0,237.1 98.4,193.1 126.8,169.6 183.7,142.9 325.8,114.0 467.9,100.2 610.0,91.8" class="s-3" stroke-width="2"/><circle cx="70.0" cy="237.1" r="3" class="f-3"/><circle cx="98.4" cy="193.1" r="3" class="f-3"/><circle cx="126.8" cy="169.6" r="3" class="f-3"/><circle cx="183.7" cy="142.9" r="3" class="f-3"/><circle cx="325.8" cy="114.0" r="3" class="f-3"/><circle cx="467.9" cy="100.2" r="3" class="f-3"/><circle cx="610.0" cy="91.8" r="3" class="f-3"/>
+      <path d="M90 30 H115" class="s-muted" stroke-width="2" stroke-dasharray="4 3"/><text x="122" y="34" class="small">true (from simulator&#8217;s p)</text>
+      <path d="M290 30 H315" class="s-1" stroke-width="2"/><text x="322" y="34" class="small">unbiased, Eq. 2.9</text>
+      <path d="M450 30 H475" class="s-3" stroke-width="2"/><text x="482" y="34" class="small">plug-in 1&#8722;(1&#8722;c/n)^k</text>
+      <text x="606.0" y="107.8" text-anchor="end" class="small">plug-in 0.606 vs 0.652</text>
+    </svg>
+    <figcaption><b>Figure 2.4.</b> pass@k against k for 164 mock problems with n = 20 samples each (values from <code>code/ch02/pass_at_k.py</code>). The plug-in
+    estimator falls increasingly below the unbiased one as k approaches n; at k = 1 they coincide because both equal c/n.</figcaption>
+  </figure>
+
+  <h3 id="pass-at-k-practice">Temperature, coverage and the verifier problem</h3>
+  <p><b>Temperature depends on k.</b> The Codex paper found the best temperature was T* = 0.2 for pass@1 and T* = 0.8 for pass@100<a class="cite" href="#src-13">[13]</a>: one likely program
+  versus many diverse attempts. Report the temperature per <i>k</i>; tuning it on the test set is mildly optimistic.</p>
+  <p><b>Coverage.</b> At large <i>k</i>, pass@k is often called <span class="term">coverage</span>, the fraction of problems solved by at least one sample; &ldquo;Large Language Monkeys&rdquo;
+  found it often grows log-linearly with the number of samples over four orders of magnitude<a class="cite" href="#src-61">[61]</a>. It measures what is <i>reachable</i>.</p>
+  <p><b>pass@k needs a verifier to be realised.</b> pass@100 = 0.9 does not mean users get a correct answer 90% of the time; it means a correct sample usually exists, and
+  something must pick it out: tests runnable at inference time, a proof checker or a learned verifier. GSM8K was introduced to study learned verifiers that rerank samples<a class="cite" href="#src-11">[11]</a>;
+  without an oracle, majority voting and reward-model reranking plateau well below coverage<a class="cite" href="#src-61">[61]</a>. Report pass@1 for anything user-facing, pass@k as potential.</p>
+  <p><b>Weak tests inflate pass@k.</b> EvalPlus extended HumanEval&rsquo;s tests 80&times; with LLM- and mutation-generated inputs (HumanEval+, and MBPP+ for MBPP);
+  across 26 LLMs pass@k fell by up to 19.3&ndash;28.9%, and rankings changed: WizardCoder-CodeLlama and Phind-CodeLlama beat ChatGPT on HumanEval+ but not on HumanEval<a class="cite" href="#src-37">[37]</a>.
+  Read the drop as the test suite&rsquo;s false-positive rate. Our buggy <code>mean()</code> passes three base tests and crashes on an added empty list. Once such a checker becomes an RL reward,
+  the policy is paid to find its holes: <a href="07-rl-environments.html#reward-hacking">reward hacking</a>, Chapter 7.</p>
+  <p><b>The opposite question.</b> For an agent serving many users you often care whether it succeeds <i>every</i> time. That metric,
+  pass^k, estimated as C(<i>c</i>, <i>k</i>)/C(<i>n</i>, <i>k</i>), falls with <i>k</i>: with <i>n</i> = 10 and <i>c</i> = 3, pass^1 = 0.300
+  but pass^2 = 3/45 = 0.067. See <a href="05-statistics.html#pass-hat-k">Chapter 5</a> and <a href="06-agent-evals.html">Chapter 6</a>.</p>
+
+  <h3 id="pass-at-k-reasoning">pass@1, avg@n, maj@k and best-of-N</h3>
+  <p>Reasoning-model reports use several &ldquo;pass@1&rdquo;s and voting metrics that are easy to conflate (Table 2.3). DeepSeek-R1, for example, reports pass@1 as the mean over
+  <i>k</i> samples per question (<i>k</i> from 4 to 64 depending on the benchmark) at temperature 0.6 and top-p 0.95, alongside cons@64<a class="cite" href="#src-62">[62]</a>, and MathArena averages over 4 runs<a class="cite" href="#src-25">[25]</a>.
+  <b>Greedy pass@1 and avg@n pass@1 are not comparable</b>: our mock&rsquo;s greedy decode scores 0.60 while the same model&rsquo;s mean over 8 samples is 0.40.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Metric</th><th>Definition</th><th>Oracle needed to select?</th><th class="num">Mock value</th></tr></thead>
+      <tbody>
+        <tr><td>greedy pass@1</td><td>One T = 0 sample per problem, graded</td><td>No</td><td class="num">0.60</td></tr>
+        <tr><td>avg@n (pass@1 at T)</td><td>Mean correctness of <i>n</i> samples at T &gt; 0 = <i>c</i>/<i>n</i> = Eq. 2.9 with <i>k</i> = 1</td><td>No</td><td class="num">0.40</td></tr>
+        <tr><td>maj@k / cons@k</td><td>Grade once the most frequent extracted answer among <i>k</i> samples</td><td>No; not a coverage metric</td><td class="num">0.60 (k = 8)</td></tr>
+        <tr><td>best-of-N</td><td>A reward model or verifier picks one of <i>N</i> samples</td><td>No (learned selector)</td><td class="num">&le; pass@N</td></tr>
+        <tr><td>pass@k</td><td>At least one of <i>k</i> samples correct (Eq. 2.9)</td><td>Yes: an upper bound on the rows above</td><td class="num">0.77 (k = 4), 0.80 (k = 8)</td></tr>
+      </tbody>
+      <caption>Table 2.3. Single-answer and multi-sample metrics. Mock values from <code>code/ch02/pass_at_k.py</code> (5 problems, greedy answer plus 8 samples); maj@k &le; pass@k always.</caption>
+    </table>
+  </div>
+<pre data-file="code/ch02/pass_at_k.py"><code class="language-python">def majority(answers: list) -&gt; object:
+    """Most frequent extracted answer; unextractable samples (None) do not vote."""
+    votes = Counter(a for a in answers if a is not None)
+    return votes.most_common(1)[0][0] if votes else None
+
+
+def reasoning_metrics(mock, k: int) -&gt; dict[str, float]:
+    greedy = float(np.mean([g == gold for gold, g, _ in mock]))
+    n = len(mock[0][2])
+    cs = [sum(a == gold for a in s) for gold, _, s in mock]
+    return {
+        "greedy pass@1": greedy,
+        f"avg@{n} (= unbiased pass@1, c/n)": float(np.mean([c / n for c in cs])),
+        f"maj@{n} (cons@{n})": float(np.mean([majority(s) == gold for gold, _, s in mock])),
+        f"pass@{k} (unbiased, n={n})": float(np.mean([pass_at_k_comb(n, c, k) for c in cs])),
+        f"pass@{n}": float(np.mean([c &gt; 0 for c in cs])),
+        "truncation rate": float(np.mean([a is None for _, _, s in mock for a in s])),
+    }</code></pre>
+  <p class="code-caption">Excerpt. The same file holds the mock (<code>None</code> marks a sample that hit <code>max_tokens</code> and is scored wrong), the weak-test check and an exact temperature sweep.</p>
+<pre class="output"><code>== pass@1 vs avg@n vs maj@k: 5 problems, greedy answer + 8 samples at T &gt; 0 ==
+greedy pass@1                      0.6000
+avg@8 (= unbiased pass@1, c/n)     0.4000
+maj@8 (cons@8)                     0.6000
+pass@4 (unbiased, n=8)             0.7686
+pass@8                             0.8000
+truncation rate                    0.1000
+
+== Weak tests: a buggy mean() that crashes on [] ==
+passes 3 base tests: True   passes base + edge case []: False
+
+== Best temperature depends on k: 15 problems, exact pass@k on a temperature grid ==
+T          0.1   0.2   0.3   0.4   0.5   0.6   0.7   0.8   0.9   1.0   1.1   1.2   1.3   1.4   1.5
+pass@1   0.403 0.375 0.345 0.316 0.288 0.260 0.235 0.210 0.182 0.150 0.115 0.084 0.058 0.040 0.028
+pass@20  0.460 0.471 0.488 0.505 0.523 0.541 0.558 0.571 0.576 0.568 0.544 0.504 0.453 0.394 0.333
+pass@100 0.472 0.512 0.553 0.592 0.632 0.671 0.708 0.741 0.764 0.774 0.768 0.749 0.719 0.681 0.639
+best T (argmax over the full 0.1-step grid): pass@1 -&gt; 0.1, pass@20 -&gt; 0.9, pass@100 -&gt; 1.0</code></pre>
+  <p>A 10% truncation rate is invisible in the headline unless reported, and it moves with the thinking budget and <code>max_tokens</code>; the temperature sweep reproduces
+  the Codex pattern: over the full 0.1-step grid the best T is 0.1 for pass@1, 0.9 for pass@20 and 1.0 for pass@100. Large-<i>k</i> pass@k is also the evidence in the debate over whether RL with verifiable rewards widens reasoning or only sharpens it (Yue et al.<a class="cite" href="#src-63">[63]</a>;
+  <a href="07-rl-environments.html#llm-policy-metrics">Chapter 7</a>); <a href="05-statistics.html#pass-hat-k">Chapter 5</a> covers Bayesian alternatives such as Bayes@N.</p>
+  
+  <aside class="tip" data-title="In a framework"><p>Inspect runs several <i>epochs</i> per sample and offers <code>pass_at_{k}</code> and <code>pass_k_{k}</code> reducers<a class="cite" href="#src-64">[64]</a>;
+  <code>human-eval</code>&rsquo;s <code>estimate_pass_at_k</code> is the reference. You must still report <i>n</i>, the temperature and the test-suite version.</p></aside>
+
+  <aside class="warn" data-title="Pitfall: pass@k from k samples"><p>&ldquo;pass@10&rdquo; from exactly 10 samples is unbiased but noisy; from <i>n</i> samples via the plug-in
+  it is biased low. Draw <i>n</i> &ge; 2<i>k</i> and use Equation 2.9. Numbers with different <i>n</i>, temperatures or test suites are not directly comparable.</p></aside>
+
+  <!-- ===================== 2.6 ===================== -->
+  <h2 id="calibration"><span class="sec-num">2.6</span>Calibration and abstention</h2>
+  <p>A model that is right 70% of the time is more useful if you know <i>which</i> 70%. <span class="term">Calibration</span> asks whether stated or implied
+  confidence matches empirical accuracy: among answers given with 80% confidence, are 80% correct? HELM made calibration a core metric<a class="cite" href="#src-15">[15]</a>, and HLE reports frontier models poorly calibrated on it<a class="cite" href="#src-23">[23]</a>. Guo et al. showed that modern
+  deep networks are systematically over-confident and popularised the standard metric and fix<a class="cite" href="#src-65">[65]</a>.</p>
+
+  <h3 id="calibration-ece">ECE, MCE and the Brier score</h3>
+  <p>Group predictions into <i>M</i> confidence bins <i>B</i><sub>m</sub>. In each bin compare mean confidence with accuracy. The <span class="term">expected calibration
+  error</span> is the weighted average gap; the <span class="term">maximum calibration error</span> is the worst bin:</p>
+  <div class="formula">
+    ECE = &Sigma;<sub>m=1</sub><sup>M</sup> <span class="frac"><span>|B<sub>m</sub>|</span><span>N</span></span> &middot; | acc(B<sub>m</sub>) &minus; conf(B<sub>m</sub>) |,
+    &nbsp;&nbsp; MCE = max<sub>m</sub> | acc(B<sub>m</sub>) &minus; conf(B<sub>m</sub>) |,
+    &nbsp;&nbsp; Brier = <span class="frac"><span>1</span><span>N</span></span> &Sigma;<sub>i</sub> (p<sub>i</sub> &minus; y<sub>i</sub>)<sup>2</sup>
+    <span class="eq-num">(2.11)</span>
+    <span class="where">where y<sub>i</sub> &isin; {0, 1} is correctness and p<sub>i</sub> the confidence. For K classes the Brier score sums squared errors over all classes;
+    lm-evaluation-harness computes it over the softmax of the choice log-likelihoods.</span>
+  </div>
+  <div class="worked">
+    <p>Ten predictions, five equal-width bins:</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Bin</th><th class="num">n</th><th class="num">Mean conf</th><th class="num">Accuracy</th><th class="num">(n/N)&middot;|gap|</th></tr></thead>
+      <tbody>
+        <tr><td>(0, 0.2]</td><td class="num">1</td><td class="num">0.200</td><td class="num">0.000</td><td class="num">0.020</td></tr>
+        <tr><td>(0.2, 0.4]</td><td class="num">2</td><td class="num">0.275</td><td class="num">0.500</td><td class="num">0.045</td></tr>
+        <tr><td>(0.4, 0.6]</td><td class="num">2</td><td class="num">0.575</td><td class="num">0.000</td><td class="num">0.115</td></tr>
+        <tr><td>(0.6, 0.8]</td><td class="num">2</td><td class="num">0.725</td><td class="num">1.000</td><td class="num">0.055</td></tr>
+        <tr><td>(0.8, 1.0]</td><td class="num">3</td><td class="num">0.900</td><td class="num">0.667</td><td class="num">0.070</td></tr>
+      </tbody>
+      <caption>Table 2.4. The worked ECE example.</caption>
+    </table></div>
+    <p>ECE = 0.020 + 0.045 + 0.115 + 0.055 + 0.070 = <b>0.305</b>; MCE = 0.575 (the middle bin). Reproduced by <code>code/ch02/calibration.py</code>.</p>
+  </div>
+  <p>ECE is easy to compute and easy to fool. It depends on the number and kind of bins (equal width or equal mass: 0.305 vs 0.295 here); with few points per bin
+  it is biased upward; and always predicting the base rate gives ECE = 0 while being useless. The Brier score has no bins and rewards calibration and sharpness, so report both.</p>
+  <h3 id="calibration-hle">HLE&rsquo;s calibration error</h3>
+  <p>Humanity&rsquo;s Last Exam reports a different binned statistic. Its system prompt asks the model to end with
+  &ldquo;Confidence: {your confidence score between 0% and 100% for your answer}&rdquo;, so the confidence is <a href="#calibration-verbalised">verbalised</a>, not a token probability; the
+  judge extracts it (and puts 100 if none is given)<a class="cite" href="#src-90">[90]</a>. Predictions are sorted by stated confidence and cut into <i>equal-mass</i> bins of &beta; items
+  (&beta; = 100 in HLE, the final bin absorbing the remainder), and the error is a root-mean-square rather than a mean absolute gap:</p>
+  <div class="formula">
+    RMS-CE = &radic;( &Sigma;<sub>m</sub> <span class="frac"><span>|B<sub>m</sub>|</span><span>N</span></span> &middot; ( acc(B<sub>m</sub>) &minus; conf(B<sub>m</sub>) )<sup>2</sup> )
+    <span class="eq-num">(2.11a)</span>
+    <span class="where">with B<sub>m</sub> consecutive blocks of &beta; predictions in confidence order.</span>
+  </div>
+<pre data-file="centerforaisafety/hle: hle_eval/run_judge_results.py (lines 97-122 and 151)"><code class="language-python">def calib_err(confidence, correct, p='2', beta=100): 
+    # beta is target bin size
+    idxs = np.argsort(confidence)
+    confidence = confidence[idxs]
+    correct = correct[idxs]
+    bins = [[i * beta, (i + 1) * beta] for i in range(len(confidence) // beta)]
+    bins[-1] = [bins[-1][0], len(confidence)]
+
+    cerr = 0
+    total_examples = len(confidence)
+    for i in range(len(bins) - 1):
+        bin_confidence = confidence[bins[i][0]:bins[i][1]]
+        bin_correct = correct[bins[i][0]:bins[i][1]]
+        num_examples_in_bin = len(bin_confidence)
+
+        if num_examples_in_bin &gt; 0:
+            difference = np.abs(np.nanmean(bin_confidence) - np.nanmean(bin_correct))
+
+            if p == '2':
+                cerr += num_examples_in_bin / total_examples * np.square(difference)
+            elif p == '1':
+                cerr += num_examples_in_bin / total_examples * difference
+            elif p == 'infty' or p == 'infinity' or p == 'max':
+                cerr = np.maximum(cerr, difference)
+            else:
+                assert False, "p must be '1', '2', or 'infty'"
+...
+    calibration_error = 100 * round(calib_err(confidence, correct, p='2', beta=100), 2)</code></pre>
+  <p>Two details are easy to miss. The loop <code>for i in range(len(bins) - 1)</code> never visits the last bin, which after sorting is the <i>highest-confidence</i> block
+  (the remainder included), although its items still count in <code>total_examples</code>; and the value is rounded to two decimals <i>before</i> being multiplied by 100, so HLE calibration errors
+  move in whole points. <code>rms_calibration_error()</code> in <code>code/ch02/calibration.py</code> reproduces the function: on the ten-prediction example with &beta; = 2 it gives 0.2525 with the
+  last bin skipped (reported as 25) and 0.3160 with every bin counted, a gap entirely due to the over-confident top bin (0.90 and 0.95, one of two correct). Compare HLE numbers only
+  with other HLE numbers computed by the same code.</p>
+
+  <h3 id="calibration-temperature">Reliability diagrams and temperature scaling</h3>
+  <p>A <span class="term">reliability diagram</span> plots accuracy against mean confidence per bin; over-confidence shows as points below the diagonal.
+  <span class="term">Temperature scaling</span><a class="cite" href="#src-65">[65]</a> divides all logits by one scalar <i>T</i> fitted on held-out data by minimising negative log-likelihood.
+  It never changes the argmax, so accuracy is unchanged.</p>
+<pre data-file="code/ch02/calibration.py"><code class="language-python">def bins_equal_width(conf: np.ndarray, m: int) -&gt; list[np.ndarray]:
+    edges = np.linspace(0, 1, m + 1)
+    # right-closed bins (lo, hi]; confidence 0 goes in the first bin
+    idx = np.clip(np.searchsorted(edges, conf, side="left") - 1, 0, m - 1)
+    return [np.where(idx == b)[0] for b in range(m)]
+
+
+def bins_equal_mass(conf: np.ndarray, m: int) -&gt; list[np.ndarray]:
+    order = np.argsort(conf, kind="stable")
+    return [chunk for chunk in np.array_split(order, m)]
+
+
+def calibration_table(conf, correct, bins):
+    rows = []
+    for b in bins:
+        if len(b) == 0:
+            continue
+        rows.append((len(b), float(conf[b].mean()), float(correct[b].mean())))
+    return rows
+
+
+def ece_mce(conf, correct, bins) -&gt; tuple[float, float]:
+    n = len(conf)
+    rows = calibration_table(conf, correct, bins)
+    gaps = [abs(acc - c) for _, c, acc in rows]
+    return sum(cnt / n * g for (cnt, _, _), g in zip(rows, gaps)), max(gaps)
+</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch02/calibration.py</code></p>
+<pre class="output"><code>== Worked example: 10 predictions, 5 equal-width bins ==
+bin         n    conf     acc  |gap|*n/N
+(0.0,0.2]  1   0.200   0.000      0.020
+(0.2,0.4]  2   0.275   0.500      0.045
+(0.4,0.6]  2   0.575   0.000      0.115
+(0.6,0.8]  2   0.725   1.000      0.055
+(0.8,1.0]  3   0.900   0.667      0.070
+ECE (equal-width, M=5) = 0.305   MCE = 0.575
+ECE (equal-mass,  M=5) = 0.295
+Brier score            = 0.244
+RMS calibration error, equal-mass bins of beta=2: HLE loop (last bin skipped) = 0.2525   all bins = 0.3160
+HLE reports 100 * round(err, 2) = 25
+
+== Over-confident mock classifier (4 classes), then temperature scaling ==
+T = 1 (raw)          acc=0.620  mean conf=0.827  ECE=0.208  MCE=0.313  Brier(4-class)=0.567  NLL=1.211
+   reliability bins (conf, acc, n): (0.30,0.00,1)  (0.37,0.29,17)  (0.46,0.39,83)  (0.55,0.39,208)  (0.65,0.47,184)  (0.75,0.45,245)  (0.86,0.54,299)  (0.97,0.79,963)
+T = 2.30 (fitted)    acc=0.620  mean conf=0.645  ECE=0.026  MCE=0.079  Brier(4-class)=0.497  NLL=0.910
+   reliability bins (conf, acc, n): (0.28,0.20,5)  (0.36,0.34,128)  (0.45,0.40,391)  (0.55,0.52,358)  (0.65,0.62,342)  (0.75,0.75,315)  (0.85,0.83,256)  (0.94,0.92,205)
+
+== SimpleQA-style grading: correct / incorrect / not attempted (100 questions) ==
+always answers         correct=0.450  not_attempted=0.00  acc|attempted=0.450  F=0.450
+abstains when unsure   correct=0.400  not_attempted=0.25  acc|attempted=0.533  F=0.457</code></pre>
+  <figure class="diagram" id="fig-2-5">
+    <svg viewBox="0 0 680 320" role="img" aria-labelledby="fig-2-5-t">
+      <title id="fig-2-5-t">Reliability diagram before and after temperature scaling</title>
+      <path d="M70 270 H310" class="s-muted" stroke-width="1"/>
+      <path d="M70 270 V30" class="s-muted" stroke-width="1"/>
+      <text x="70.0" y="286" text-anchor="middle" class="small">0.0</text>
+      <text x="190.0" y="286" text-anchor="middle" class="small">0.5</text>
+      <text x="310.0" y="286" text-anchor="middle" class="small">1.0</text>
+      <text x="64" y="154.0" text-anchor="end" class="small">0.5</text>
+      <path d="M70 150.0 H310" class="s-muted" stroke-width="0.4" stroke-dasharray="2 4"/>
+      <text x="64" y="34.0" text-anchor="end" class="small">1.0</text>
+      <path d="M70 30.0 H310" class="s-muted" stroke-width="0.4" stroke-dasharray="2 4"/>
+      <text x="190.0" y="304" text-anchor="middle" class="small">mean confidence in bin</text>
+      <text x="14" y="150.0" text-anchor="middle" class="small" transform="rotate(-90 14 150.0)">accuracy in bin</text>
+      <path d="M70 270 L310 30" class="s-muted" stroke-width="1" stroke-dasharray="3 3"/>
+      <polyline points="158.8,200.4 180.4,176.4 202.0,176.4 226.0,157.2 250.0,162.0 276.4,140.4 302.8,80.4" class="s-3" stroke-width="2"/><circle cx="158.8" cy="200.4" r="3" class="f-3"/><circle cx="180.4" cy="176.4" r="3" class="f-3"/><circle cx="202.0" cy="176.4" r="3" class="f-3"/><circle cx="226.0" cy="157.2" r="3" class="f-3"/><circle cx="250.0" cy="162.0" r="3" class="f-3"/><circle cx="276.4" cy="140.4" r="3" class="f-3"/><circle cx="302.8" cy="80.4" r="3" class="f-3"/>
+      <text x="80" y="42" class="small">raw, T = 1: below the diagonal</text>
+      <path d="M400 270 H640" class="s-muted" stroke-width="1"/>
+      <path d="M400 270 V30" class="s-muted" stroke-width="1"/>
+      <text x="400.0" y="286" text-anchor="middle" class="small">0.0</text>
+      <text x="520.0" y="286" text-anchor="middle" class="small">0.5</text>
+      <text x="640.0" y="286" text-anchor="middle" class="small">1.0</text>
+      <text x="520.0" y="304" text-anchor="middle" class="small">mean confidence in bin</text>
+      <text x="14" y="150.0" text-anchor="middle" class="small" transform="rotate(-90 14 150.0)"></text>
+      <path d="M400 270 L640 30" class="s-muted" stroke-width="1" stroke-dasharray="3 3"/>
+      <polyline points="467.2,222.0 486.4,188.4 508.0,174.0 532.0,145.2 556.0,121.2 580.0,90.0 604.0,70.8 625.6,49.2" class="s-1" stroke-width="2"/><circle cx="467.2" cy="222.0" r="3" class="f-1"/><circle cx="486.4" cy="188.4" r="3" class="f-1"/><circle cx="508.0" cy="174.0" r="3" class="f-1"/><circle cx="532.0" cy="145.2" r="3" class="f-1"/><circle cx="556.0" cy="121.2" r="3" class="f-1"/><circle cx="580.0" cy="90.0" r="3" class="f-1"/><circle cx="604.0" cy="70.8" r="3" class="f-1"/><circle cx="625.6" cy="49.2" r="3" class="f-1"/>
+      <text x="410" y="42" class="small">after temperature scaling, T = 2.30</text>
+    </svg>
+    <figcaption><b>Figure 2.5.</b> Reliability diagrams for the mock 4-class model (10 equal-width bins, bins under 5 points omitted; <code>code/ch02/calibration.py</code>). Left: raw,
+    over-confident (ECE 0.208). Right: after one fitted temperature (ECE 0.026), with no prediction changed.</figcaption>
+  </figure>
+  <p>Fitted on a validation half, <i>T</i> = 2.30 cuts the mock&rsquo;s test ECE from 0.208 to 0.026.
+  For LLMs, &ldquo;confidence&rdquo; can mean several things that behave differently. <b>Token or letter probabilities</b>: larger pre-trained models are reasonably calibrated
+  on multiple-choice questions in the right format<a class="cite" href="#src-66">[66]</a>, and the GPT-4 report shows the pre-trained model well calibrated on MMLU, with post-training reducing calibration<a class="cite" href="#src-67">[67]</a>.
+  <b>Self-evaluation</b>: asking the model for P(True) that its own proposed answer is correct works and improves with scale<a class="cite" href="#src-66">[66]</a>. <b id="calibration-verbalised">Verbalised confidence</b>
+  (&ldquo;I am 80% sure&rdquo;): for RLHF-tuned models it is often better calibrated than token probabilities, cutting ECE by a relative 50% in one study<a class="cite" href="#src-68">[68]</a>.
+  Say which one you measured.</p>
+
+  <h3 id="calibration-abstention">Abstention: SimpleQA&rsquo;s three-way grading</h3>
+  <p>Calibration&rsquo;s behavioural cousin is declining to answer when unsure. SimpleQA, short fact-seeking questions collected adversarially against GPT-4, grades every
+  response <b>correct</b>, <b>incorrect</b> or <b>not attempted</b><a class="cite" href="#src-39">[39]</a>, so &ldquo;I don&rsquo;t know&rdquo; is not lumped with hallucination. The reference code<a class="cite" href="#src-7">[7]</a> computes</p>
+<pre data-file="openai/simple-evals: simpleqa_eval.py (excerpt)"><code class="language-python">aggregate_metrics["is_given_attempted"] = aggregate_metrics["is_correct"] + aggregate_metrics["is_incorrect"]
+# Calculate accuracy_given_attempted
+aggregate_metrics["accuracy_given_attempted"] = (
+    aggregate_metrics["is_correct"]
+    / aggregate_metrics["is_given_attempted"]
+    if aggregate_metrics["is_given_attempted"] &gt; 0
+    else 0
+)</code></pre>
+  <p>and the F-score is the harmonic mean of overall accuracy and accuracy-given-attempted. A model that always answers (45 correct, 55 wrong) gets F = 0.450; one that abstains
+  on 25 (40 correct, 35 wrong) gets 0.457. Report all three counts, not only F.</p>
+
+  <h3 id="calibration-penalty">Scoring that rewards abstention</h3>
+  <p>Under 0/1 grading, guessing always beats abstaining. Kalai et al. argue that this is a main reason hallucinations persist, and propose stating a confidence target <i>t</i>
+  in the instructions: +1 for a correct answer, &minus;<i>t</i>/(1 &minus; <i>t</i>) for a wrong one, 0 for &ldquo;I don&rsquo;t know&rdquo;<a class="cite" href="#src-69">[69]</a>. Answering then pays only
+  when the model&rsquo;s probability of being right exceeds <i>t</i>, and <i>t</i> = 0 is ordinary accuracy.</p>
+  <div class="worked"><p>Score = (#correct &minus; <i>t</i>/(1 &minus; <i>t</i>)&middot;#wrong)/N. At <i>t</i> = 0: 0.45 vs 0.40, the guesser wins. At <i>t</i> = 0.75 the penalty is 3:
+  (45 &minus; 165)/100 = <b>&minus;1.20</b> vs (40 &minus; 105)/100 = <b>&minus;0.65</b>, the abstainer wins. Asserted by <code>code/ch02/calibration.py</code>:</p></div>
+<pre class="output"><code>== Scoring that rewards abstention: +1 / -t/(1-t) / 0 ==
+t = 0.0   penalty 0   always answers +0.45   abstains when unsure +0.40
+t = 0.5   penalty 1   always answers -0.10   abstains when unsure +0.05
+t = 0.75  penalty 3   always answers -1.20   abstains when unsure -0.65</code></pre>
+
+  <!-- ===================== 2.7 ===================== -->
+  <h2 id="preferences"><span class="sec-num">2.7</span>Ranking from preferences</h2>
+  <p>Open-ended chat has no reference and no unit test. The workaround that came to dominate public leaderboards: show a person (or an LLM judge) two anonymous
+  responses and ask which is better. Chatbot Arena fitted a statistical model to over 240,000 crowdsourced votes at the time of its paper<a class="cite" href="#src-16">[16]</a>; MT-Bench and Arena-Hard
+  use an LLM judge instead<a class="cite" href="#src-17">[17]</a><a class="cite" href="#src-18">[18]</a>. How votes become numbers is a metric choice with consequences.</p>
+
+  <h3 id="preferences-elo">Online Elo</h3>
+  <p>Elo, borrowed from chess, keeps a rating <i>R</i> per model and updates it after every battle:</p>
+  <div class="formula">
+    E<sub>A</sub> = <span class="frac"><span>1</span><span>1 + 10<sup>(R<sub>B</sub> &minus; R<sub>A</sub>)/400</sup></span></span>,
+    &nbsp;&nbsp; R<sub>A</sub> &larr; R<sub>A</sub> + K (S<sub>A</sub> &minus; E<sub>A</sub>), &nbsp; R<sub>B</sub> &larr; R<sub>B</sub> &minus; K (S<sub>A</sub> &minus; E<sub>A</sub>)
+    <span class="eq-num">(2.12)</span>
+    <span class="where">where S<sub>A</sub> = 1 if A wins, 0 if it loses, 0.5 for a tie, and K is the step size.</span>
+  </div>
+  <div class="worked"><p>R<sub>A</sub> = 1200, R<sub>B</sub> = 1000: E<sub>A</sub> = 1/(1 + 10<sup>&minus;0.5</sup>) = 0.760. If A wins with K = 4, R<sub>A</sub> rises by 4 &times; 0.240 = 0.961 points.</p></div>
+  <p>FastChat&rsquo;s implementation uses exactly these constants: K = 4, base 10, scale 400, initial rating 1000<a class="cite" href="#src-70">[70]</a>:</p>
+<pre data-file="lm-sys/FastChat: fastchat/serve/monitor/rating_systems.py (excerpt)"><code class="language-python">def compute_elo(df, k=4.0, base=10.0, init_rating=1000.0, scale=400.0):
+    matchups, outcomes, models = preprocess_for_elo(df)
+    alpha = math.log(base) / scale
+    ratings = np.full(shape=(len(models),), fill_value=init_rating)
+    for (model_a_idx, model_b_idx), outcome in zip(matchups, outcomes):
+        prob = 1.0 / (1.0 + math.exp(alpha * (ratings[model_b_idx] - ratings[model_a_idx])))
+        update = k * (outcome - prob)
+        ratings[model_a_idx] += update
+        ratings[model_b_idx] -= update
+    return {model: ratings[idx] for idx, model in enumerate(models)}</code></pre>
+  <p>Online Elo deliberately weights recent games because players&rsquo; skill changes. A released checkpoint does not change, so for LLMs the order-dependence is pure
+  noise: the same battles in another order give different ratings.</p>
+
+  <h3 id="preferences-bt">Bradley&ndash;Terry by maximum likelihood</h3>
+  <p>The <span class="term">Bradley&ndash;Terry</span> (BT) model assumes each model has a fixed strength &beta; and that</p>
+  <div class="formula">
+    P(A beats B) = &sigma;(&beta;<sub>A</sub> &minus; &beta;<sub>B</sub>) = <span class="frac"><span>1</span><span>1 + e<sup>&minus;(&beta;<sub>A</sub> &minus; &beta;<sub>B</sub>)</sup></span></span>
+    <span class="eq-num">(2.13)</span>
+    <span class="where">Fit all &beta; at once by maximising the log-likelihood of every observed battle: a logistic regression whose design row has +1 for model A and &minus;1 for model B.
+    Ratings on the Elo scale are R = (400 / ln 10)&middot;&beta; + constant, so a 400-point gap means 10:1 odds.</span>
+  </div>
+  <p>Because the likelihood is a sum over battles, the fit is <b>independent of order</b>, uses every battle equally, and yields confidence intervals by
+  resampling battles, refitting and taking percentiles. Chatbot Arena moved from online Elo to BT for these reasons<a class="cite" href="#src-16">[16]</a>. FastChat minimises a weighted
+  cross-entropy with L-BFGS, counting a draw as half a win and half a loss, then maps to the Elo scale and anchors a reference model<a class="cite" href="#src-70">[70]</a>:</p>
+<pre data-file="lm-sys/FastChat: fastchat/serve/monitor/rating_systems.py (excerpt)"><code class="language-python">def bt_loss_and_grad(ratings, matchups, outcomes, weights, alpha=1.0):
+    matchup_ratings = ratings[matchups]
+    logits = alpha * (matchup_ratings[:, 0] - matchup_ratings[:, 1])
+    probs = expit(logits)
+    # this form naturally counts a draw as half a win and half a loss
+    loss = -(
+        (np.log(probs) * outcomes + np.log(1.0 - probs) * (1.0 - outcomes)) * weights
+    ).sum()
+    ...
+
+def scale_and_offset(
+    ratings,
+    models,
+    scale=400,
+    init_rating=1000,
+    baseline_model="mixtral-8x7b-instruct-v0.1",
+    baseline_rating=1114,
+):
+    """convert ratings from the natural scale to the Elo rating scale with an anchored baseline"""
+    scaled_ratings = (ratings * scale) + init_rating
+    if baseline_model in models:
+        baseline_idx = models.index(baseline_model)
+        scaled_ratings += baseline_rating - scaled_ratings[..., [baseline_idx]]
+    return scaled_ratings</code></pre>
+  <p>FastChat fits with <code>alpha = log(base)</code> = ln 10, so its scale is a plain 400; fitting in natural-log units, as we do, needs 400/ln 10 &asymp; 173.7. Only rating
+  <i>differences</i> are identified, so the anchor is arbitrary.</p>
+
+  <h3 id="preferences-style">Style control and length control</h3>
+  <p>Human and LLM raters both prefer longer, more formatted answers, somewhat independently of content, so a plain BT fit credits verbosity as strength.
+  <span class="term">Style control</span> adds style covariates, P = &sigma;(X<sup>&#8868;</sup>&beta; + Z<sup>&#8868;</sup>&gamma;), where Z holds normalised differences (a &minus; b)/(a + b) in
+  length, markdown headers, bold elements and list items. LMSYS fitted 0.249 for length versus 0.031, 0.024 and 0.019 for lists, headers and bold, and ranks moved
+  substantially: one model fell from 6th to 18th, another rose from 16th to 10th<a class="cite" href="#src-71">[71]</a>. Length-controlled AlpacaEval fits a GLM with a length-difference term to
+  judge win rates and reports the win rate at zero length difference, raising Spearman correlation with Chatbot Arena from 0.94 to 0.98<a class="cite" href="#src-19">[19]</a>.
+  LMArena has packaged BT and style-aware BT as an open-source library, Arena-Rank<a class="cite" href="#src-72">[72]</a>.</p>
+  <aside class="note" data-title="As of November 2026"><p>On 16 May 2025 LMArena made style control the <i>default</i> for its text and vision leaderboards, adjusting the offset so the
+  style-controlled board sits on the same rating scale as the non-style-controlled one; on 23 July 2025 it added frequency-based re-weighting of battles<a class="cite" href="#src-86">[86]</a>.
+  Arena ratings from before and after these dates come from different rating models, so record the rating model (plain BT, style-controlled, re-weighted) and the
+  leaderboard snapshot date with any Arena number. The same applies to Arena-Hard-Auto: v2.0 (23 April 2025) replaced v0.1&rsquo;s prompts and its GPT-4-Turbo judge<a class="cite" href="#src-18">[18]</a>
+  with 500 fresh hard prompts plus 250 creative-writing queries judged by GPT-4.1 or Gemini-2.5. Its README names Hard Prompt + Style Control + Gemini-2.5 judge as the official
+  configuration and anchors <code>o3-mini-2025-01-31</code> at 50% in the hard-prompt tables<a class="cite" href="#src-87">[87]</a>, so v0.1 and v2.0 win rates are not comparable.</p></aside>
+
+<pre data-file="code/ch02/arena_ratings.py"><code class="language-python">def fit_bt(a, b, y, z=None, iters=50, ridge=1e-6) -&gt; tuple[np.ndarray, float]:
+    """Bradley-Terry by Newton's method on the logistic log-likelihood.
+    Design row: +1 for model a, -1 for model b, and optionally the style covariate z.
+    Model 0 is pinned to 0 for identifiability (we re-anchor afterwards)."""
+    m = len(MODELS)
+    n = len(y)
+    X = np.zeros((n, m - 1 + (z is not None)))
+    for col in range(1, m):
+        X[:, col - 1] = (a == col).astype(float) - (b == col).astype(float)
+    if z is not None:
+        X[:, -1] = z
+    w = np.zeros(X.shape[1])
+    for _ in range(iters):
+        p = 1 / (1 + np.exp(-X @ w))
+        grad = X.T @ (y - p) - ridge * w
+        H = (X * (p * (1 - p))[:, None]).T @ X + ridge * np.eye(len(w))
+        step = np.linalg.solve(H, grad)
+        w += step
+        if np.max(np.abs(step)) &lt; 1e-10:
+            break
+    beta = np.concatenate([[0.0], w[: m - 1]])
+    gamma = float(w[-1]) if z is not None else 0.0
+    return beta, gamma
+
+
+def to_elo(beta: np.ndarray, centre: float = 1000.0) -&gt; np.ndarray:
+    """Elo scale: 400/ln(10) per natural-log unit. Only differences are identified, so we centre the
+    ratings on a mean of 1000 (FastChat instead pins one baseline model, whose bootstrap CI is then
+    degenerate). Online Elo with init 1000 is zero-sum, so its mean is 1000 too."""
+    r = beta * SCALE
+    return r - r.mean() + centre
+</code></pre>
+  <p class="code-caption">Excerpt: Bradley&ndash;Terry by Newton&rsquo;s method (<code>y</code> may be 0, 0.5 or 1), with an optional style covariate. The full file simulates battles with ties, runs FastChat-style Elo in two orders and bootstraps CIs.</p>
+  <p class="run-cmd">Run it: <code>python3 code/ch02/arena_ratings.py</code></p>
+<pre class="output"><code>8000 simulated battles (23.1% ties); verbose model's answers are ~2.5x longer; ratings centred on mean 1000
+
+model       true  Elo ord1  Elo ord2      BT         95% CI  BT+style         95% CI  rank BT -&gt; BT+style
+alpha       1093      1032      1060    1073    [1065,1085]      1078    [1068,1087]  1 -&gt; 1
+bravo       1049      1027      1004    1027    [1019,1037]      1042    [1032,1054]  3 -&gt; 2
+verbose     1006      1063      1090    1069    [1059,1079]       992     [973,1012]  2 -&gt; 4
+delta        997       995       996     995     [987,1005]      1005     [996,1015]  4 -&gt; 3
+echo         954       990       936     939      [929,946]       959      [948,970]  5 -&gt; 5
+foxtrot      902       893       915     898      [887,907]       925      [911,936]  6 -&gt; 6
+
+max |Elo ord1 - Elo ord2| = 54.7 points (same battles, different order)
+fitted length coefficient gamma = 1.18 (true 1.2)
+
+ties as 0.5: alpha - foxtrot = 175 points | ties dropped: 218 points | true 191
+per-model (ties dropped) - (ties as 0.5): alpha +19  bravo +6  verbose +16  delta -1  echo -16  foxtrot -24</code></pre>
+  <p><b>Online Elo</b> with K = 4 is compressed and order-dependent: reordering the same battles moves one model by 55 points.
+  <b>Plain BT</b> recovers the gaps except for <code>verbose</code>, placed 2nd at 1069 because simulated voters like long answers. <b>BT with a length covariate</b> recovers &gamma; = 1.18 (true 1.2) and drops <code>verbose</code> to 4th at 992, near its true 1006.
+  We centre ratings on a mean of 1000 instead of pinning one model, so every model gets a real interval; an anchored baseline&rsquo;s interval has zero width.</p>
+  <p><b>Ties.</b> 23.1% of simulated battles are ties, more often between close models. Counting a tie as <i>y</i> = 0.5 in the likelihood, as FastChat does, pulls every pair toward 50:50:
+  the alpha&ndash;foxtrot spread is 175 points with ties as 0.5 and 218 with ties dropped. Neither is &ldquo;right&rdquo; when ties come from a process outside BT;
+  the Rao&ndash;Kupper<a class="cite" href="#src-73">[73]</a> and Davidson<a class="cite" href="#src-74">[74]</a> models add an explicit tie parameter. Report which treatment you used.</p>
+
+  <aside class="danger" data-title="The Leaderboard Illusion"><p>A rating model is only as good as its battles. A 2025 audit of Chatbot Arena found that undisclosed private testing let
+  some providers test many variants and publish the best (27 private Llama-4 variants before release), and that data access was asymmetric: Google and OpenAI received an estimated
+  19.2% and 20.4% of arena data, 83 open-weight models together 29.7%<a class="cite" href="#src-41">[41]</a>. The maximum of many noisy ratings is biased upward.
+  Read preference leaderboards with style control, intervals and an eye on how many variants each provider submitted.</p></aside>
+
+  <!-- ===================== 2.8 ===================== -->
+  <h2 id="aggregation"><span class="sec-num">2.8</span>Aggregating across tasks</h2>
+  <p>An &ldquo;average score&rdquo; across a suite hides three choices: how to weight subtasks, how to put tasks with different chance levels on one scale,
+  and whether averaging different metrics is meaningful at all.</p>
+
+  <h3 id="aggregation-macro-micro">Macro versus micro averages</h3>
+  <p>A <span class="term">micro average</span> pools items (each counts once); a <span class="term">macro average</span> averages per-subject accuracies (each subject counts once).
+  MMLU&rsquo;s subjects range from about a hundred to over a thousand test items, so the two can disagree: in our script model X wins on macro (0.750 vs 0.703) and Y on micro
+  (0.610 vs 0.593), because Y is better on the one large subject. They answer different questions (&ldquo;typical subject&rdquo; vs &ldquo;typical item&rdquo;); say which you report.</p>
+
+  <h3 id="aggregation-chance">Chance normalisation</h3>
+  <p>Guessing scores 25% on 4-way MC, 10% on MMLU-Pro and 0% on generative math, so raw averages reward easy-to-guess tasks. Open LLM Leaderboard v2 rescales each task
+  so that chance is 0 and perfect is 100<a class="cite" href="#src-75">[75]</a>:</p>
+  <div class="formula">
+    norm = <span class="frac"><span>raw &minus; lower</span><span>1 &minus; lower</span></span> &times; 100, clipped below at 0
+    <span class="eq-num">(2.14)</span>
+    <span class="where">where lower = 1/(number of choices) for MC tasks and 0 for generative tasks such as MATH and IFEval.</span>
+  </div>
+  <div class="worked"><p>GPQA (4 choices, lower = 0.25), raw 0.60: (0.60 &minus; 0.25)/0.75 &times; 100 = <b>46.67</b>. MuSR is normalised per subtask, then averaged:
+  murder mysteries (2 choices) raw 0.7 &rarr; 40.00, object placement (5 choices) raw 0.4 &rarr; 25.00, team allocation (3 choices) raw 0.6 &rarr; 40.00; mean <b>35.00</b>.
+  Both are the documentation&rsquo;s own examples<a class="cite" href="#src-75">[75]</a> and are asserted by <code>code/ch02/normalize_scores.py</code>.</p></div>
+<pre data-file="code/ch02/normalize_scores.py"><code class="language-python">def normalize(raw: float, n_choices: int | None) -&gt; float:
+    """(raw - lower) / (1 - lower) * 100, clipped at 0. Generative tasks use lower = 0."""
+    lower = 0.0 if n_choices is None else 1.0 / n_choices
+    if raw &lt; lower:
+        return 0.0
+    return (raw - lower) / (1 - lower) * 100</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch02/normalize_scores.py</code></p>
+<pre class="output"><code>== Chance normalisation ==
+GPQA (4 choices) raw 0.60 -&gt; 46.67
+MuSR murder mysteries  (2 choices) raw 0.7 -&gt; 40.00
+MuSR object placement  (5 choices) raw 0.4 -&gt; 25.00
+MuSR team allocation   (3 choices) raw 0.6 -&gt; 40.00
+MuSR average of normalised subtasks = 35.00
+MMLU-Pro (10 choices) raw 0.40 -&gt; 33.33   vs 4-choice raw 0.40 -&gt; 20.00
+Below chance: 4-choice raw 0.22 -&gt; 0.00 (clipped)
+Generative (MATH) raw 0.30 -&gt; 30.00
+
+== Macro vs micro averaging over subjects ==
+model X: per-subject 0.50 0.80 0.85 0.85 | macro 0.750 | micro 0.593
+model Y: per-subject 0.56 0.70 0.75 0.80 | macro 0.703 | micro 0.610
+macro winner: X | micro winner: Y
+
+== One average, two very different models (HELM-style multi-metric) ==
+model P: accuracy=0.82  calibration (1-ECE)=0.70  robustness=0.60  | mean=0.707
+model Q: accuracy=0.74  calibration (1-ECE)=0.92  robustness=0.46  | mean=0.707</code></pre>
+  <p>The same raw 0.40 is worth 33.33 on a 10-choice task but 20.00 on a 4-choice one.</p>
+
+  <h3 id="aggregation-multi-metric">Why averages hide trade-offs</h3>
+  <p>HELM&rsquo;s central argument is that a model should be described by a vector of metrics (accuracy, calibration, robustness, fairness, bias, toxicity, efficiency) under
+  standardised conditions, not one number<a class="cite" href="#src-15">[15]</a>. In the output, P and Q have identical means (0.707), but P is more accurate and robust while Q is far better
+  calibrated. Report the vector and let the reader weight it.</p>
+
+  <!-- ===================== 2.9 ===================== -->
+  <h2 id="noise"><span class="sec-num">2.9</span>Error bars, signal and noise (preview)</h2>
+  <p>Every number in this chapter is an estimate from a finite sample of items, and often of generations. This section previews the statistics;
+  <a href="05-statistics.html">Chapter 5</a> treats them in full.</p>
+
+  <h3 id="noise-error-bars">Error bars in two paragraphs</h3>
+  <p>Miller frames a benchmark as a sample from a super-population of questions that could have been written<a class="cite" href="#src-76">[76]</a>.
+  For a mean of binary scores, SE = &radic;(<i>p&#770;</i>(1 &minus; <i>p&#770;</i>)/N) and a 95% interval is <i>p&#770;</i> &plusmn; 1.96 SE: at 80% on 1,000 items, [77.5, 82.5];
+  on a 198-item set at 50%, about &plusmn;7 points, wider than many reported &ldquo;wins&rdquo;.</p>
+  <p>Two corrections matter. Items that share a passage or template are not independent, and Anthropic reports clustered SEs over three times the naive ones on popular evals<a class="cite" href="#src-77">[77]</a>.
+  And two models on the <i>same</i> items should be compared by the <i>paired</i> difference, whose variance subtracts their covariance; with the 0.3&ndash;0.7 correlations seen between
+  frontier models, pairing shrinks the SE substantially<a class="cite" href="#src-76">[76]</a>.</p>
+
+  <h3 id="noise-snr">Signal-to-noise: discrete versus continuous metrics</h3>
+  <p>During development the question is whether a benchmark reliably tells <i>similar</i> models apart. Heineman et al. define <span class="term">signal</span> as the relative
+  dispersion of scores across models at similar compute (max gap over mean), <span class="term">noise</span> as the relative standard deviation of one model&rsquo;s score over its final
+  checkpoints, and SNR as their ratio. Across 465 models and 30 benchmarks, SNR predicted whether small-scale experiments rank models like large-scale ones, and three interventions raised it:
+  dropping noisy subtasks, averaging checkpoints, and switching from accuracy to a continuous metric such as bits-per-byte<a class="cite" href="#src-78">[78]</a>.
+  Choosing items with item response theory, or adaptively (&ldquo;fluid benchmarking&rdquo;), can also raise signal-to-noise and extend a benchmark&rsquo;s useful life; see <a href="05-statistics.html#irt">Section 5.12</a>.</p>
+<pre data-file="code/ch02/saturation_and_noise.py"><code class="language-python">def checkpoint_scores(rng, ability: float, difficulty: np.ndarray, n_ckpt: int):
+    """Scores of the last n_ckpt checkpoints of one training run.
+    Each checkpoint jitters the ability a little (training-step noise); accuracy also has
+    Bernoulli sampling noise, while the continuous metric (mean NLL of the gold answer) does not."""
+    acc, nll = [], []
+    for _ in range(n_ckpt):
+        a = ability + rng.normal(0, 0.05)
+        p = sigmoid(a - difficulty)                       # P(gold answer ranked first)
+        acc.append(float(np.mean(rng.random(len(p)) &lt; p)))
+        nll.append(float(np.mean(-np.log(p))))           # lower is better
+    return np.array(acc), np.array(nll)
+
+
+def snr(finals: np.ndarray, ckpts: list[np.ndarray]) -&gt; tuple[float, float, float]:
+    signal = (finals.max() - finals.min()) / abs(finals.mean())          # relative dispersion
+    noise = float(np.mean([c.std(ddof=1) / abs(c.mean()) for c in ckpts]))  # relative std over checkpoints
+    return signal, noise, signal / noise
+
+
+def pairwise_accuracy(ckpts: list[np.ndarray], abilities: np.ndarray, higher_better: bool, rng, trials=2000):
+    """Fraction of (pair, random checkpoint) draws where the metric orders the two models correctly."""
+    pairs = list(itertools.combinations(range(len(abilities)), 2))
+    ok = 0
+    for _ in range(trials):
+        i, j = pairs[rng.integers(len(pairs))]
+        si, sj = ckpts[i][rng.integers(len(ckpts[i]))], ckpts[j][rng.integers(len(ckpts[j]))]
+        if not higher_better:
+            si, sj = -si, -sj
+        ok += int((si &gt; sj) == (abilities[i] &gt; abilities[j]))
+    return ok / trials</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch02/saturation_and_noise.py</code></p>
+<pre class="output"><code>== Signal and noise, 5 models x 10 final checkpoints, 300 items ==
+metric                      signal   noise    SNR  pairs ordered right
+accuracy (0/1 per item)      0.158   0.048    3.3                0.698
+gold-answer NLL (cont.)      0.149   0.024    6.2                0.864
+
+== The emergence mirage: one smooth skill, two metrics ==
+ log10 N  per-token acc  exact match (p^L)  EM measured, 500 items
+     7.0          0.231              0.000                   0.000
+     7.5          0.343              0.000                   0.000
+     8.0          0.475              0.001                   0.000
+     8.5          0.611              0.007                   0.010
+     9.0          0.731              0.044                   0.030
+     9.5          0.825              0.146                   0.140
+    10.0          0.891              0.315                   0.326
+    10.5          0.934              0.505                   0.490
+    11.0          0.961              0.671                   0.678
+    11.5          0.977              0.793                   0.800
+    12.0          0.987              0.874                   0.884
+exact match (p^L) stays below 0.01 up to log10 N = 8.5, while per-token accuracy climbs 0.23 -&gt; 0.61 over the same range</code></pre>
+  <p>For five close mock models, accuracy and the continuous metric (gold-answer NLL) have similar signal, but thresholding adds Bernoulli noise, halving accuracy&rsquo;s SNR (3.3 vs 6.2);
+  with one random checkpoint per model, accuracy orders a pair correctly 70% of the time, the continuous metric 86%.</p>
+
+  <h3 id="noise-mirage">The emergence mirage</h3>
+  <p>The same distinction explains many &ldquo;emergent&rdquo; abilities. Schaeffer et al. showed that much apparent emergence comes from the metric: exact match on a
+  multi-token answer is a sharply nonlinear function of per-token accuracy<a class="cite" href="#src-79">[79]</a>. With L tokens each right with probability <i>p</i>, exact match is roughly <i>p</i><sup>L</sup>;
+  with L = 10, raising <i>p</i> from 0.23 to 0.61 keeps <i>p</i><sup>L</sup> below 0.01 (the measured 500-item EM reaches 0.010 at the top of that range), and a few more steps take it past 0.3 (Figure 2.6).</p>
+  <figure class="diagram" id="fig-2-6">
+    <svg viewBox="0 0 680 300" role="img" aria-labelledby="fig-2-6-t">
+      <title id="fig-2-6-t">The emergence mirage: smooth per-token accuracy versus a sudden-looking exact-match curve</title>
+      <path d="M70 250 H630" class="s-muted" stroke-width="1"/>
+      <path d="M70 250 V50" class="s-muted" stroke-width="1"/>
+      <text x="70.0" y="266" text-anchor="middle" class="small">1e7</text>
+      <text x="182.0" y="266" text-anchor="middle" class="small">1e8</text>
+      <text x="294.0" y="266" text-anchor="middle" class="small">1e9</text>
+      <text x="406.0" y="266" text-anchor="middle" class="small">1e10</text>
+      <text x="518.0" y="266" text-anchor="middle" class="small">1e11</text>
+      <text x="630.0" y="266" text-anchor="middle" class="small">1e12</text>
+      <text x="64" y="254.0" text-anchor="end" class="small">0.0</text>
+      <path d="M70 250.0 H630" class="s-muted" stroke-width="0.4" stroke-dasharray="2 4"/>
+      <text x="64" y="154.0" text-anchor="end" class="small">0.5</text>
+      <path d="M70 150.0 H630" class="s-muted" stroke-width="0.4" stroke-dasharray="2 4"/>
+      <text x="64" y="54.0" text-anchor="end" class="small">1.0</text>
+      <path d="M70 50.0 H630" class="s-muted" stroke-width="0.4" stroke-dasharray="2 4"/>
+      <text x="350.0" y="284" text-anchor="middle" class="small">model scale (parameters, log axis)</text>
+      <text x="14" y="150.0" text-anchor="middle" class="small" transform="rotate(-90 14 150.0)">score</text>
+      <polyline points="70.0,203.8 126.0,181.4 182.0,155.0 238.0,127.8 294.0,103.8 350.0,85.0 406.0,71.8 462.0,63.2 518.0,57.8 574.0,54.6 630.0,52.6" class="s-2" stroke-width="2"/><circle cx="70.0" cy="203.8" r="3" class="f-2"/><circle cx="126.0" cy="181.4" r="3" class="f-2"/><circle cx="182.0" cy="155.0" r="3" class="f-2"/><circle cx="238.0" cy="127.8" r="3" class="f-2"/><circle cx="294.0" cy="103.8" r="3" class="f-2"/><circle cx="350.0" cy="85.0" r="3" class="f-2"/><circle cx="406.0" cy="71.8" r="3" class="f-2"/><circle cx="462.0" cy="63.2" r="3" class="f-2"/><circle cx="518.0" cy="57.8" r="3" class="f-2"/><circle cx="574.0" cy="54.6" r="3" class="f-2"/><circle cx="630.0" cy="52.6" r="3" class="f-2"/>
+      <polyline points="70.0,250.0 126.0,250.0 182.0,249.8 238.0,248.6 294.0,241.2 350.0,220.8 406.0,187.0 462.0,149.0 518.0,115.8 574.0,91.4 630.0,75.2" class="s-3" stroke-width="2"/><circle cx="70.0" cy="250.0" r="3" class="f-3"/><circle cx="126.0" cy="250.0" r="3" class="f-3"/><circle cx="182.0" cy="249.8" r="3" class="f-3"/><circle cx="238.0" cy="248.6" r="3" class="f-3"/><circle cx="294.0" cy="241.2" r="3" class="f-3"/><circle cx="350.0" cy="220.8" r="3" class="f-3"/><circle cx="406.0" cy="187.0" r="3" class="f-3"/><circle cx="462.0" cy="149.0" r="3" class="f-3"/><circle cx="518.0" cy="115.8" r="3" class="f-3"/><circle cx="574.0" cy="91.4" r="3" class="f-3"/><circle cx="630.0" cy="75.2" r="3" class="f-3"/>
+      <rect x="70.0" y="50.0" width="168.0" height="200" class="f-muted" opacity="0.08"/>
+      <text x="154.0" y="64.0" text-anchor="middle" class="small">p^L &lt; 0.01 here</text>
+      <path d="M90 24 H115" class="s-2" stroke-width="2"/><text x="122" y="28" class="small">per-token accuracy p</text>
+      <path d="M290 24 H315" class="s-3" stroke-width="2"/><text x="322" y="28" class="small">exact match on a 10-token answer (&#8776; p^10)</text>
+    </svg>
+    <figcaption><b>Figure 2.6.</b> One smooth underlying skill, two metrics (values from <code>code/ch02/saturation_and_noise.py</code>). Per-token accuracy rises steadily
+    from 0.23 to 0.99; exact match on a 10-token answer (p<sup>10</sup>) stays below 0.01 across the shaded region (the 500-item measurement is at or below 0.01) and then appears to &#8220;emerge&#8221;. The jump is a property of the metric<a class="cite" href="#src-79">[79]</a>.</figcaption>
+  </figure>
+  <aside class="tip"><p>For training-time decisions, prefer continuous metrics and high-SNR benchmarks, then confirm on the discrete, user-facing metric. In final reports, give the
+  discrete metric with an error bar, plus the continuous one if you claim a trend.</p></aside>
+
+  <!-- ===================== 2.10 ===================== -->
+  <h2 id="prompt-sensitivity"><span class="sec-num">2.10</span>Prompt sensitivity and protocol choices</h2>
+  <p>Elicitation is where the largest unreported variation lives. Sclar et al.&rsquo;s FormatSpread samples meaning-preserving variations of a prompt format (separators,
+  casing, spacing, option labels) and evaluates each. With LLaMA-2-13B few-shot, best and worst formats differed by up to 76 accuracy points; the sensitivity persisted with scale, shots and instruction tuning; and the best format differed between models<a class="cite" href="#src-1">[1]</a>. They recommend reporting a <i>range</i> over formats.
+  MMLU-Pro found the same at smaller scale: across 24 prompt styles, MMLU scores varied by 4&ndash;5%, MMLU-Pro&rsquo;s by about 2%<a class="cite" href="#src-6">[6]</a>.</p>
+
+  <h3 id="prompt-sensitivity-sources">The main sources of protocol variance</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Choice</th><th>Options</th><th>What the evidence says</th></tr></thead>
+      <tbody>
+        <tr><td>Format / template</td><td>Separators, casing, spacing, labels</td><td>Up to 76-point spread; best format not shared across models<a class="cite" href="#src-1">[1]</a></td></tr>
+        <tr><td>Option order and symbols</td><td>A/B/C/D vs (1)/(2); shuffled order</td><td>Leaderboard ranks move up to 8 places<a class="cite" href="#src-2">[2]</a></td></tr>
+        <tr><td>Scoring method</td><td>Cloze, letter, generative, free-form + answer matching</td><td>Same; hybrid scoring recommended<a class="cite" href="#src-2">[2]</a>; cloze lowers variance for small models<a class="cite" href="#src-8">[8]</a>; OLMES reports the better of CF and MCF per model<a class="cite" href="#src-59">[59]</a>; MC items often answerable without the question, answer matching agrees better with humans<a class="cite" href="#src-89">[89]</a></td></tr>
+        <tr><td>Few-shot count and format</td><td>0, 1, 5, 25 shots; which examples</td><td>Sensitivity persists as shots increase<a class="cite" href="#src-1">[1]</a></td></tr>
+        <tr><td>CoT vs direct</td><td>&ldquo;Think step by step&rdquo; or not</td><td>CoT helps on MMLU-Pro but not on MMLU<a class="cite" href="#src-6">[6]</a>; BBH was chosen to show CoT gains<a class="cite" href="#src-29">[29]</a></td></tr>
+        <tr><td>Answer extraction</td><td>Strict delimiter, last number, symbolic equivalence (Math-Verify), LLM grader</td><td>Same outputs, different scores (below)<a class="cite" href="#src-3">[3]</a>; the grader alone moves MATH from 0.080 to 0.133<a class="cite" href="#src-88">[88]</a></td></tr>
+        <tr><td>Chat template / system prompt</td><td>Raw prompt vs chat template applied; system prompt text (lm-eval <code>--apply_chat_template</code>, <code>--system_instruction</code>)</td><td>Changes the input distribution for instruct models; see <a href="09-tooling-production.html">Chapter 9</a></td></tr>
+        <tr><td>Reasoning effort / thinking budget, <code>max_tokens</code></td><td>Thinking on/off, effort level, token cap</td><td>Truncation rate is invisible unless reported (10% in the <a href="#pass-at-k-reasoning">2.5 demo</a>) and moves with the budget; multi-sample protocols state the budget and sampling settings<a class="cite" href="#src-62">[62]</a><a class="cite" href="#src-25">[25]</a></td></tr>
+        <tr><td>Decoding</td><td>Greedy vs temperature, top-p, max tokens</td><td>Changes both mean and variance; see Chapter 5</td></tr>
+      </tbody>
+      <caption>Table 2.5. Elicitation and scoring choices that a reported score depends on.</caption>
+    </table>
+  </div>
+
+  <h3 id="prompt-sensitivity-demo">A FormatSpread-style experiment</h3>
+<pre data-file="code/ch02/prompt_format_spread.py"><code class="language-python">FIELD_CASE = ["Question/Answer", "QUESTION/ANSWER", "question/answer"]
+OPTION_STYLE = ["A)", "(A)", "A."]
+
+
+def formats() -&gt; list[str]:
+    combos = list(itertools.product(SEPARATORS, FIELD_CASE, OPTION_STYLE))   # 36 combos
+    rng = np.random.default_rng(0)
+    pick = sorted(rng.choice(len(combos), size=20, replace=False))
+    return [f"{case.split('/')[0]}{sep}{{q}} {opt} ... {case.split('/')[1]}{sep}" for sep, case, opt in
+            (combos[i] for i in pick)]
+
+
+def format_effect(model: str, fmt: str, scale: float) -&gt; float:
+    """Deterministic pseudo-random effect of a format on a model (stable across runs and machines)."""
+    h = int(hashlib.sha256(f"{model}|{fmt}".encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
+    return scale * (h - 0.5) * 2          # uniform in [-scale, +scale]
+
+
+def evaluate(model: str, base: float, scale: float, fmt: str, n_items: int, seed: int) -&gt; float:
+    p = float(np.clip(base + format_effect(model, fmt, scale), 0.01, 0.99))
+    rng = np.random.default_rng(seed)
+    return float(np.mean(rng.random(n_items) &lt; p))
+</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch02/prompt_format_spread.py</code></p>
+<pre class="output"><code>20 formats x 2 mock models, 1000 items each
+
+ #  format template                              model-1 model-2  winner
+ 0  'Question: {q} A) ... Answer: '                0.625   0.527  1
+ 1  'Question: {q} (A) ... Answer: '               0.717   0.574  1
+ 2  'QUESTION: {q} (A) ... ANSWER: '               0.623   0.536  1
+ 3  'QUESTION: {q} A. ... ANSWER: '                0.558   0.538  1
+ 4  'question: {q} A) ... answer: '                0.615   0.542  1
+ 5  'Question - {q} A) ... Answer - '              0.775   0.568  1
+ 6  'Question - {q} A. ... Answer - '              0.745   0.522  1
+ 7  'QUESTION - {q} A. ... ANSWER - '              0.601   0.581  1
+ 8  'question - {q} A. ... answer - '              0.724   0.627  1
+ 9  'Question:\n{q} A) ... Answer:\n'              0.608   0.565  1
+10  'Question:\n{q} (A) ... Answer:\n'             0.721   0.634  1
+11  'Question:\n{q} A. ... Answer:\n'              0.770   0.619  1
+12  'QUESTION:\n{q} A) ... ANSWER:\n'              0.463   0.555  2
+13  'QUESTION:\n{q} A. ... ANSWER:\n'              0.457   0.619  2
+14  'question:\n{q} (A) ... answer:\n'             0.545   0.603  2
+15  'Question :: {q} (A) ... Answer :: '           0.778   0.516  1
+16  'QUESTION :: {q} A) ... ANSWER :: '            0.680   0.608  1
+17  'QUESTION :: {q} (A) ... ANSWER :: '           0.489   0.557  2
+18  'question :: {q} A) ... answer :: '            0.715   0.600  1
+19  'question :: {q} A. ... answer :: '            0.622   0.581  1
+
+model-1: min 0.457  max 0.778  mean 0.642  spread 0.321
+model-2: min 0.516  max 0.634  mean 0.574  spread 0.118
+model-1 wins on 16/20 formats
+
+== Same outputs, different extractors (GSM8K gold = 1200; MC gold = B) ==
+'She has $1,200 left. #### 1,200'          strict=1200     flexible=1200    
+'The answer is 1200.'                      strict=None     flexible=1200    
+'#### 1200.00'                             strict=1200.00  flexible=1200.00 
+'1,200 dollars, since 3 x 400 = 1200'      strict=None     flexible=1200    
+'Step 1: 3 x 400 = 1200. Answer: 1200'     strict=None     flexible=1200    
+'I think 1100'                             strict=None     flexible=1100    
+strict-match accuracy 1/6   flexible-extract accuracy 4/6
+simple-evals MC regex on 'Reasoning... Answer: B'   -&gt; B
+simple-evals MC regex on 'answer:$B$'               -&gt; B
+simple-evals MC regex on 'The answer is (B).'       -&gt; None
+simple-evals MC regex on 'Answer: b'                -&gt; B</code></pre>
+  <p>Model-1 is better on average (0.642 vs 0.574) but far more format-sensitive (spread 0.321 vs 0.118), and model-2 wins on 4 of 20 formats: a paper using format 13 would report model-2
+  ahead by 16 points, one using format 15 model-1 ahead by 26. Only the range tells the reader what is going on.</p>
+
+  <h3 id="prompt-sensitivity-extraction">Answer extraction is part of the metric</h3>
+  <p>For generative benchmarks the extraction regex is as much part of the metric as the reference. GSM8K&rsquo;s solutions end in <code>#### &lt;number&gt;</code>, which the original
+  repository extracts with <code>#### (\-?[0-9\.\,]+)</code>, stripping commas<a class="cite" href="#src-80">[80]</a>. lm-evaluation-harness reports two numbers from the same generations: strict
+  (requires the delimiter) and flexible (last number in the text)<a class="cite" href="#src-58">[58]</a>:</p>
+<pre data-file="EleutherAI/lm-evaluation-harness: lm_eval/tasks/gsm8k/gsm8k.yaml (excerpt)"><code class="language-yaml">task: gsm8k
+dataset_path: openai/gsm8k
+dataset_name: main
+output_type: generate_until
+doc_to_text: "Question: {{question}}\nAnswer:"
+doc_to_target: "{{answer}}" #" {{answer.split('### ')[-1].rstrip()}}"
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+    ignore_case: true
+    ignore_punctuation: false
+    regexes_to_ignore:
+      - ","
+      - "\\$"
+      - "(?s).*#### "
+      - "\\.$"
+generation_kwargs:
+  until:
+    - "Question:"
+    - "&lt;/s&gt;"
+    - "&lt;|im_end|&gt;"
+  do_sample: false
+  temperature: 0.0
+repeats: 1
+num_fewshot: 5
+filter_list:
+  - name: "strict-match"
+    filter:
+      - function: "regex"
+        regex_pattern: "#### (\\-?[0-9\\.\\,]+)"
+      - function: "take_first"
+  - name: "flexible-extract"
+    filter:
+      - function: "regex"
+        group_select: -1
+        regex_pattern: "(-?[$0-9.,]{2,})|(-?[0-9]+)"
+      - function: "take_first"
+metadata:
+  version: 3.0</code></pre>
+  <p>The stop sequences in <code>until</code> decide where generation is cut, and therefore what the flexible &ldquo;last number&rdquo; extractor sees: a model that kept writing an invented
+  next &ldquo;Question:&rdquo; would otherwise feed that question&rsquo;s numbers to the extractor. The task version (3.0) belongs on the protocol card, because the harness bumps it when prompts or filters change.</p>
+  <p>OpenAI&rsquo;s simple-evals instead asks for a final line <code>Answer: $LETTER</code> in a zero-shot CoT prompt and parses it with a case-insensitive regex<a class="cite" href="#src-7">[7]</a>:</p>
+<pre data-file="openai/simple-evals: common.py (excerpt)"><code class="language-python">QUERY_TEMPLATE_MULTICHOICE = """
+Answer the following multiple choice question. The last line of your response should be of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCD. Think step by step before answering.
+...
+ANSWER_PATTERN_MULTICHOICE = r"(?i)Answer[ \t]*:[ \t]*\$?([A-D])\$?"</code></pre>
+  <aside class="note" data-title="As of November 2026"><p><code>openai/simple-evals</code> has carried a deprecation notice since July 2025 (no updates for new models; it still hosts
+  HealthBench, BrowseComp and SimpleQA). Its code remains a clear reference for how the prompts and regexes were defined<a class="cite" href="#src-7">[7]</a>.</p></aside>
+  <p>On six outputs, strict-match scores 1/6 and flexible-extract 4/6. Two failures are silent: &ldquo;#### 1200.00&rdquo; fails both (decimals are not canonicalised), and the simple-evals
+  regex misses &ldquo;The answer is (B).&rdquo;. <b>The strict&ndash;flexible gap measures format-following, not arithmetic.</b> Log the extraction-failure rate separately from the error rate.</p>
+  <p>For answers that are mathematical objects rather than integers, string matching is not enough, and benchmarks use <span class="term">symbolic-equivalence graders</span>. MATH&rsquo;s
+  own <code>is_equiv</code> normalises LaTeX strings; Hugging Face&rsquo;s <b>Math-Verify</b> goes further: it extracts LaTeX or plain expressions, parses them with an ANTLR4 grammar into SymPy,
+  and checks mathematical equivalence, so <code>verify(parse("${1,3} \cup {2,4}$"), parse("${1,2,3,4}$"))</code> returns <code>True</code>. Argument order matters (gold first), as the
+  README warns. Its README compares graders on identical model outputs on MATH (as of November 2026): lm-evaluation-harness 0.0802, Qwen&rsquo;s grader 0.1288, Math-Verify 0.1328<a class="cite" href="#src-88">[88]</a>,
+  a relative change of about 65% from the grader alone. At the far end is an <span class="term">LLM grader</span>: an LLM given the reference answer decides whether the response matches it.
+  It is the most flexible checker and the one that most needs validating against humans (<a href="04-llm-judges-human-eval.html">Chapter 4</a>). Whatever you use, the equivalence
+  checker and its version go on the protocol card.</p>
+
+  <aside class="tip" data-title="In a framework"><p>The real harness (<code>lm_eval --tasks gsm8k --log_samples</code>) reports <code>exact_match,strict-match</code> and
+  <code>exact_match,flexible-extract</code> separately; compare them before quoting either. <a href="09-tooling-production.html">Chapter 9</a> covers running it.</p></aside>
+
+  <!-- ===================== 2.11 ===================== -->
+  <h2 id="breakage"><span class="sec-num">2.11</span>When benchmarks break</h2>
+  <p>Even a perfectly specified protocol measures the wrong thing when the dataset fails. Four failure modes account for most broken benchmarks.</p>
+
+  <h3 id="breakage-contamination">Contamination</h3>
+  <p>A public test set eventually appears in someone&rsquo;s training data, verbatim or reworded. GSM1k, a fresh set matched to GSM8K, found drops of up to 8% for some model
+  families, correlated with how likely the model was to generate GSM8K examples (r&sup2; = 0.36)<a class="cite" href="#src-31">[31]</a>. n-gram overlap filtering misses
+  paraphrased and translated copies, and a 13B model fine-tuned on rephrased test items reached GPT-4-level scores<a class="cite" href="#src-81">[81]</a>; GSM-Symbolic shows drops when only numbers change<a class="cite" href="#src-32">[32]</a>. Structural mitigations are fresh or dated items: LiveCodeBench after a model&rsquo;s cutoff<a class="cite" href="#src-21">[21]</a>, LiveBench&rsquo;s regular refreshes<a class="cite" href="#src-82">[82]</a>, MathArena&rsquo;s post-release
+  competitions<a class="cite" href="#src-25">[25]</a>, and unpublished FrontierMath and HLE items<a class="cite" href="#src-22">[22]</a><a class="cite" href="#src-23">[23]</a>. Detection and prevention are the subject of <a href="03-datasets-contamination.html">Chapter 3</a>.</p>
+<pre data-file="code/ch02/contamination_demo.py"><code class="language-python">def ngrams(text: str, n: int = 13) -&gt; set[tuple[str, ...]]:
+    t = text.lower().replace("?", " ").replace(".", " ").split()
+    return {tuple(t[i:i + n]) for i in range(len(t) - n + 1)}
+
+
+def flagged(test_q: str, corpus_index: set, n: int = 13, threshold: float = 0.5) -&gt; bool:
+    g = ngrams(test_q, n)
+    return bool(g) and len(g &amp; corpus_index) / len(g) &gt;= threshold
+
+
+class Memoriser:
+    """Answers perfectly anything it has seen (verbatim or paraphrased), else is right 35% of the time."""
+
+    def __init__(self, seen_answers: dict[str, int], rng: random.Random):
+        self.seen, self.rng = seen_answers, rng
+
+    def answer(self, q: str, true: int) -&gt; int:
+        if q in self.seen:
+            return self.seen[q]
+        return true if self.rng.random() &lt; 0.35 else true + 1</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch02/contamination_demo.py</code></p>
+<pre class="output"><code>== 13-gram overlap detector (flag if &gt;= 50% of a test item's 13-grams are in the corpus) ==
+verbatim leaks flagged    40/40
+paraphrased leaks flagged 0/40
+clean items flagged       1/120
+
+== Memoriser scores ==
+public test set               0.655
+after n-gram decontamination  0.509   (159 items kept; paraphrased leaks survive)
+fresh twin set                0.310
+
+== Label noise sets a ceiling ==
+6.49% of gold labels wrong -&gt; a model that is always right scores 0.935</code></pre>
+  <p>The detector flags all 40 verbatim leaks and none of the 40 paraphrases. The memoriser scores 0.655 on the public set
+  and still 0.509 after decontamination; only the fresh twin set reveals its real 0.310. This is the GSM1k design in miniature.</p>
+
+  <h3 id="breakage-labels">Label noise</h3>
+  <p>Benchmarks contain mistakes. MMLU-Redux estimated that 6.49% of MMLU&rsquo;s questions contain errors (57% of the analysed Virology questions), and rankings changed on
+  corrected labels<a class="cite" href="#src-5">[5]</a>. Vendrow et al. found label errors pervasive and proposed cleaned &ldquo;platinum&rdquo; versions<a class="cite" href="#src-83">[83]</a>. GPQA&rsquo;s experts scored 65%, or 74% after
+  discounting mistakes they recognised in retrospect<a class="cite" href="#src-20">[20]</a>. At the frontier, FutureHouse audited HLE&rsquo;s 321 text-only chemistry and biology questions with a literature-search
+  agent plus expert review and judged about 29% (&plusmn;3.7 points) of reference answers wrong or contradicted by peer-reviewed literature<a class="cite" href="#src-33">[33]</a>. The audit&rsquo;s method is itself contested,
+  and HLE&rsquo;s authors point to the questions&rsquo; difficulty, but Epoch AI&rsquo;s benchmark review rates HLE &ldquo;Flawed&rdquo;<a class="cite" href="#src-84">[84]</a>. The mechanism is general: adversarial filtering keeps only
+  items frontier models get wrong, and a mislabelled item is one every correct model gets &ldquo;wrong&rdquo;, so the filter enriches for label errors.</p>
+  <p>Label noise sets a ceiling (with 6.49% wrong labels a perfect model scores about 0.935, as our script prints), so gaps near the top may be about which wrong labels models agree with,
+  and it hides real failures behind spurious ones. Audit a random sample of items, and the items every strong model gets &ldquo;wrong&rdquo;, before trusting the top of any leaderboard.</p>
+
+  <h3 id="breakage-saturation">Saturation and gaming</h3>
+  <p>Saturation (Section 2.2) and gaming are two sides of Goodhart&rsquo;s law. Once a benchmark is a target, developers tune toward it: private variant testing on the Arena<a class="cite" href="#src-41">[41]</a>,
+  the best of many prompt formats<a class="cite" href="#src-1">[1]</a>, the most flattering temperature. Dynamic benchmarks that keep collecting items with humans and models in the loop are one older answer<a class="cite" href="#src-85">[85]</a>;
+  expert curation appears to matter more than secrecy for longevity<a class="cite" href="#src-47">[47]</a>.</p>
+
+  <!-- ===================== 2.12 ===================== -->
+  <h2 id="reporting"><span class="sec-num">2.12</span>Reporting a benchmark result responsibly</h2>
+  <p>A score is defined by its whole stack, so write the stack down. The lm-evaluation-harness team recommends reporting the full setup and sharing code and outputs<a class="cite" href="#src-3">[3]</a>; FormatSpread,
+  ranges over formats<a class="cite" href="#src-1">[1]</a>; Miller, standard errors and paired comparisons<a class="cite" href="#src-76">[76]</a>. Together they give a <span class="term">protocol card</span> for every headline number
+  (Table 2.6).</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Field</th><th>What to record</th><th>Example</th></tr></thead>
+      <tbody>
+        <tr><td>Benchmark + version</td><td>Dataset name, subset, split, revision or hash, number of items</td><td>GSM8K test, <code>openai/gsm8k</code> main, n = 1,319</td></tr>
+        <tr><td>Harness</td><td>Tool, version and commit; task config file</td><td>lm-evaluation-harness vX.Y, commit <code>abc1234</code>, <code>gsm8k.yaml</code> task version 3.0</td></tr>
+        <tr><td>Model</td><td>Exact checkpoint or API model id and date; quantisation</td><td><code>org/model-7b</code> revision <code>r2</code>, bf16</td></tr>
+        <tr><td>Template</td><td>Prompt template, system prompt, chat template applied or not</td><td><code>Question: {q}\nAnswer:</code>, chat template off</td></tr>
+        <tr><td>Shots</td><td>Number and source of few-shot examples, fixed or sampled, seed</td><td>5-shot from train split, fixed seed 1234</td></tr>
+        <tr><td>CoT</td><td>Direct or chain-of-thought</td><td>CoT via few-shot rationales</td></tr>
+        <tr><td>Reasoning budget</td><td>Thinking budget or effort setting; <code>max_tokens</code></td><td>No thinking mode; <code>max_tokens</code> 256</td></tr>
+        <tr><td>Decoding</td><td>Greedy or temperature/top-p, stop sequences, n samples</td><td>Greedy, stop at &ldquo;Question:&rdquo;</td></tr>
+        <tr><td>pass@1 definition</td><td>Greedy, or mean of <i>n</i> samples at temperature T (avg@n); maj@k if voting</td><td>Greedy (one sample)</td></tr>
+        <tr><td>Truncation rate</td><td>Share of samples that hit <code>max_tokens</code>, scored as wrong</td><td>0.8% truncated, scored wrong</td></tr>
+        <tr><td>Scoring + extraction</td><td>Metric, normalisation, extraction regex, equivalence checker + version (or LLM grader + prompt), failure handling</td><td>EM, strict-match and flexible-extract both reported; extraction-failure rate 3.1%</td></tr>
+        <tr><td>Shortcut check</td><td>For MC benchmarks: choices-only baseline (question removed)</td><td>Choices-only accuracy 31% vs 25% chance</td></tr>
+        <tr><td>Preference ratings</td><td>Rating model (plain BT / style-controlled, re-weighting), leaderboard snapshot date, judge and benchmark version</td><td>n/a here; e.g. Arena text, style control default, snapshot 2026-11-01; Arena-Hard v2.0, Gemini-2.5 judge</td></tr>
+        <tr><td>Aggregation</td><td>Micro/macro, chance normalisation, pass@k estimator and <i>n</i></td><td>Micro mean</td></tr>
+        <tr><td>Test suite version</td><td>For execution-graded tasks: base or extended tests</td><td>n/a here; e.g. HumanEval+ rather than HumanEval</td></tr>
+        <tr><td>Uncertainty</td><td>SE or 95% CI; clustered or paired; seeds</td><td>62.4 &plusmn; 2.6 (95% CI, CLT); paired difference vs baseline +3.1 &plusmn; 1.9</td></tr>
+        <tr><td>Prompt range</td><td>Min / median / max over a set of plausible formats</td><td>Over 8 formats: 58.9 / 62.0 / 64.7</td></tr>
+        <tr><td>Contamination statement</td><td>Checks performed and results; training-cutoff vs item dates</td><td>13-gram overlap vs training corpus: 0.4% flagged, excluded; GSM1k-style twin not run</td></tr>
+      </tbody>
+      <caption>Table 2.6. A protocol card. The example values are illustrative, not results for a real model.</caption>
+    </table>
+  </div>
+  <aside class="tip"><p>Store the protocol card as JSON next to the raw per-item outputs and generate the results table from it, so &ldquo;which template did the March run use?&rdquo; is a
+  file lookup. <a href="09-tooling-production.html">Chapter 9</a> shows frameworks that log this automatically.</p></aside>
+
+  <!-- ===================== Exercises ===================== -->
+  <h2 id="exercises">Exercises</h2>
+  <aside class="exercise" data-title="Exercise 2.1: BLEU versus ROUGE by hand"><p>By hand, compute p<sub>1</sub>&hellip;p<sub>4</sub>, BP and sentence BLEU for
+  &ldquo;the cat sat on the mat&rdquo; against the reference &ldquo;the cat is sitting on the mat&rdquo; (the worked pair, roles swapped). Check with <code>bleu</code> and <code>rouge_l</code>
+  in <code>code/ch02/text_metrics.py</code>.</p>
+    <details><summary>Solution</summary><p>p<sub>1</sub> = 5/6, p<sub>2</sub> = 3/5, p<sub>3</sub> = 1/4, p<sub>4</sub> = 0/3, so BLEU = 0 again, now with BP = exp(1 &minus; 7/6) = 0.846.
+    ROUGE-L: LCS is still 5, P = 5/6, R = 5/7, F = 0.769; the F-measure is symmetric.</p></details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 2.2: Bias of the plug-in estimator"><p>With <code>expectation()</code> from <code>code/ch02/pass_at_k.py</code>, compute the plug-in&rsquo;s bias
+  for <i>p</i> = 0.1, <i>k</i> = 5 and <i>n</i> = 10, 20, 50, 200. How does it scale with <i>n</i>?</p>
+    <details><summary>Solution</summary><p><code>for n in (10, 20, 50, 200): print(n, expectation(plug_in, n, 5, 0.1) - (1 - 0.9**5))</code> gives &minus;0.061, &minus;0.032, &minus;0.013, &minus;0.003:
+    roughly 1/<i>n</i>, the variance of <i>c</i>/<i>n</i> times the curvature of 1 &minus; (1 &minus; <i>p</i>)<sup><i>k</i></sup>. The unbiased estimator has zero bias at every <i>n</i>, so choose <i>n</i> for variance, not bias.</p></details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 2.3: ECE depends on the bins"><p>Recompute the worked ECE with M = 2, 5, 10 and 20 equal-width bins (edit the <code>bins_equal_width</code> call in
+  <code>code/ch02/calibration.py</code>). Why does ECE grow with M on ten points?</p>
+    <details><summary>Solution</summary><p>0.155, 0.305, 0.355, 0.415. Fewer points per bin make per-bin accuracy noisier, and absolute gaps cannot cancel within a bin; at M = 20 each bin holds at most one point
+    and ECE equals the mean |y<sub>i</sub> &minus; p<sub>i</sub>| = 0.415. Report the bin scheme and N, and the Brier score.</p></details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 2.4: When does style control matter?"><p>In <code>code/ch02/arena_ratings.py</code>, set <code>GAMMA_TRUE = 0.0</code> and rerun, then 2.5
+  (comment out the final asserts, which encode the default). What happens to <code>verbose</code> and to the fitted &gamma;?</p>
+    <details><summary>Solution</summary><p>At &gamma; = 0 the two fits agree within about 10 points, the fitted &gamma; is 0.14 (noise), and <code>verbose</code> lands 3rd or 4th, its true neighbourhood
+    (true rating 9 points above <code>delta</code>). At &gamma; = 2.5 plain BT puts <code>verbose</code> first at 1138, while the style-controlled fit puts it 4th at 989, near its true 1006, with
+    &gamma; = 2.32 (ties shrink the estimate a little). Style control costs little when there is no style effect.</p></details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 2.5: Make the extractor fair"><p>Modify <code>clean()</code> in <code>code/ch02/prompt_format_spread.py</code> so that &ldquo;#### 1200.00&rdquo; scores as
+  correct without making &ldquo;I think 1100&rdquo; correct. What new failure could the change introduce?</p>
+    <details><summary>Solution</summary><p>Compare numerically (<code>float(x) == float(gold)</code> inside a <code>try</code>), or strip a trailing <code>.0+</code>: strict-match becomes 2/6, flexible 5/6. Numeric parsing can
+    over-accept where the format is part of the answer (decimal places, units), so the extractor change must be versioned and put on the protocol card.</p></details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 2.6: Greedy or sampled?"><p>In <code>code/ch02/pass_at_k.py</code>, change problem 2&rsquo;s greedy answer in <code>MOCK</code> from 9 to 7. Which of
+  greedy pass@1, avg@8, maj@8 and pass@8 change, and what does that say about reporting &ldquo;pass@1&rdquo; without its definition?</p>
+    <details><summary>Solution</summary><p>Only greedy pass@1 moves (0.60 &rarr; 0.80); avg@8 stays 0.40, maj@8 0.60 and pass@8 0.80. The same model now has a &ldquo;pass@1&rdquo; of 0.80 or 0.40 depending on the definition,
+    so the protocol card must say which (update the script&rsquo;s assert).</p></details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 2.7: How big a benchmark do you need?"><p>Two models score 62% and 66% on 200 items. Are the 95% intervals (Section 2.9) disjoint? How many items give &plusmn;2 points?</p>
+    <details><summary>Solution</summary><p>SE = &radic;(0.62 &times; 0.38 / 200) = 0.034, so 62 &plusmn; 6.7 and 66 &plusmn; 6.6: heavy overlap. &plusmn;2 points at 64% needs 1.96&sup2; &times; 0.64 &times; 0.36 / 0.02&sup2; &asymp; 2,213 items.
+    Separate intervals are conservative; the paired SE of the difference is smaller (<a href="05-statistics.html">Chapter 5</a>).</p></details>
+  </aside>
+
+  <aside class="takeaways"><ul>
+    <li>A benchmark score is the output of a five-layer stack (dataset, elicitation, scoring, aggregation, uncertainty); two numbers are comparable only if the whole stack matches.</li>
+    <li>Normalisation and extraction are part of the metric: the same outputs scored 1/6 or 4/6 under GSM8K&rsquo;s strict and flexible extractors.</li>
+    <li>n-gram metrics can disagree completely (BLEU = 0, ROUGE-L = 0.769); use them for constrained outputs, and name the checkpoint of any learned metric.</li>
+    <li>Log-likelihood MC scoring depends on the decision rule (acc, acc_norm, MI) and the formulation (cloze vs letter); name both.</li>
+    <li>Estimate pass@k with the unbiased estimator from <i>n</i> &gt; <i>k</i> samples; say whether pass@1 is greedy or avg@n; remember that pass@k needs a verifier and that weak tests inflate it.</li>
+    <li>Report calibration (ECE with its binning, plus Brier) and abstention (three counts, or a confidence-target penalty), not just accuracy.</li>
+    <li>Use Bradley&ndash;Terry with bootstrap intervals, a stated tie treatment and style control; online Elo is order-dependent, and leaderboards can be gamed.</li>
+    <li>Prompt format alone can swing scores by tens of points; report a range, an error bar and a protocol card with every headline number.</li>
+  </ul></aside>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="sources">
+    <li id="src-1">Melanie Sclar, Yejin Choi, Yulia Tsvetkov, Alane Suhr, &ldquo;Quantifying Language Models&rsquo; Sensitivity to Spurious Features in Prompt Design or: How I learned to start worrying about prompt formatting (FormatSpread)&rdquo;, arXiv:2310.11324, October 2023. <a href="https://arxiv.org/abs/2310.11324">arxiv.org/abs/2310.11324</a></li>
+    <li id="src-2">Norah Alzahrani et al., &ldquo;When Benchmarks are Targets: Revealing the Sensitivity of Large Language Model Leaderboards&rdquo;, arXiv:2402.01781, February 2024. <a href="https://arxiv.org/abs/2402.01781">arxiv.org/abs/2402.01781</a></li>
+    <li id="src-3">Stella Biderman et al., &ldquo;Lessons from the Trenches on Reproducible Evaluation of Language Models&rdquo;, arXiv:2405.14782, May 2024. <a href="https://arxiv.org/abs/2405.14782">arxiv.org/abs/2405.14782</a></li>
+    <li id="src-4">Dan Hendrycks et al., &ldquo;Measuring Massive Multitask Language Understanding&rdquo;, arXiv:2009.03300, September 2020. <a href="https://arxiv.org/abs/2009.03300">arxiv.org/abs/2009.03300</a></li>
+    <li id="src-5">Aryo Pradipta Gema et al., &ldquo;Are We Done with MMLU?&rdquo;, arXiv:2406.04127, June 2024. <a href="https://arxiv.org/abs/2406.04127">arxiv.org/abs/2406.04127</a></li>
+    <li id="src-6">Yubo Wang et al., &ldquo;MMLU-Pro: A More Robust and Challenging Multi-Task Language Understanding Benchmark&rdquo;, arXiv:2406.01574, June 2024. <a href="https://arxiv.org/abs/2406.01574">arxiv.org/abs/2406.01574</a></li>
+    <li id="src-7"><code>openai/simple-evals</code>, <code>common.py</code>, <code>simpleqa_eval.py</code> (4,710 stars as of 2026-11-20; deprecated for new models since July 2025). <span class="note-verify">(code quoted verbatim)</span> <a href="https://github.com/openai/simple-evals">github.com/openai/simple-evals</a></li>
+    <li id="src-8">Lovish Madaan et al. (Meta), &ldquo;Quantifying Variance in Evaluation Benchmarks&rdquo;, arXiv:2406.10229, June 2024. <a href="https://arxiv.org/abs/2406.10229">arxiv.org/abs/2406.10229</a></li>
+    <li id="src-9">Peter Clark et al., &ldquo;Think you have Solved Question Answering? Try ARC, the AI2 Reasoning Challenge&rdquo;, arXiv:1803.05457, March 2018. <a href="https://arxiv.org/abs/1803.05457">arxiv.org/abs/1803.05457</a></li>
+    <li id="src-10">Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, Yejin Choi, &ldquo;HellaSwag: Can a Machine Really Finish Your Sentence?&rdquo;, arXiv:1905.07830, May 2019. <a href="https://arxiv.org/abs/1905.07830">arxiv.org/abs/1905.07830</a></li>
+    <li id="src-11">Karl Cobbe et al., &ldquo;Training Verifiers to Solve Math Word Problems (GSM8K)&rdquo;, arXiv:2110.14168, October 2021. <a href="https://arxiv.org/abs/2110.14168">arxiv.org/abs/2110.14168</a></li>
+    <li id="src-12">Dan Hendrycks et al., &ldquo;Measuring Mathematical Problem Solving With the MATH Dataset&rdquo;, arXiv:2103.03874, March 2021. <a href="https://arxiv.org/abs/2103.03874">arxiv.org/abs/2103.03874</a></li>
+    <li id="src-13">Mark Chen et al., &ldquo;Evaluating Large Language Models Trained on Code (Codex / HumanEval)&rdquo;, arXiv:2107.03374, July 2021. <a href="https://arxiv.org/abs/2107.03374">arxiv.org/abs/2107.03374</a></li>
+    <li id="src-14">Aarohi Srivastava et al., &ldquo;Beyond the Imitation Game: Quantifying and extrapolating the capabilities of language models (BIG-bench)&rdquo;, arXiv:2206.04615, June 2022. <a href="https://arxiv.org/abs/2206.04615">arxiv.org/abs/2206.04615</a></li>
+    <li id="src-15">Percy Liang et al., &ldquo;Holistic Evaluation of Language Models (HELM)&rdquo;, arXiv:2211.09110, November 2022. Repo <code>stanford-crfm/helm</code>. <a href="https://arxiv.org/abs/2211.09110">arxiv.org/abs/2211.09110</a></li>
+    <li id="src-16">Wei-Lin Chiang et al., &ldquo;Chatbot Arena: An Open Platform for Evaluating LLMs by Human Preference&rdquo;, arXiv:2403.04132, March 2024. <a href="https://arxiv.org/abs/2403.04132">arxiv.org/abs/2403.04132</a></li>
+    <li id="src-17">Lianmin Zheng et al., &ldquo;Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena&rdquo;, arXiv:2306.05685, June 2023. <a href="https://arxiv.org/abs/2306.05685">arxiv.org/abs/2306.05685</a></li>
+    <li id="src-18">Tianle Li et al., &ldquo;From Crowdsourced Data to High-Quality Benchmarks: Arena-Hard and BenchBuilder Pipeline&rdquo;, arXiv:2406.11939, June 2024. <a href="https://arxiv.org/abs/2406.11939">arxiv.org/abs/2406.11939</a></li>
+    <li id="src-19">Yann Dubois, Bal&aacute;zs Galambosi, Percy Liang, Tatsunori B. Hashimoto, &ldquo;Length-Controlled AlpacaEval: A Simple Way to Debias Automatic Evaluators&rdquo;, arXiv:2404.04475, April 2024. Repo <code>tatsu-lab/alpaca_eval</code>. <a href="https://arxiv.org/abs/2404.04475">arxiv.org/abs/2404.04475</a></li>
+    <li id="src-20">David Rein et al., &ldquo;GPQA: A Graduate-Level Google-Proof Q&amp;A Benchmark&rdquo;, arXiv:2311.12022, November 2023. <span class="note-verify">(partially verified: the Diamond subset size of 198 is common usage, not stated in the abstract)</span> <a href="https://arxiv.org/abs/2311.12022">arxiv.org/abs/2311.12022</a></li>
+    <li id="src-21">Naman Jain et al., &ldquo;LiveCodeBench: Holistic and Contamination Free Evaluation of Large Language Models for Code&rdquo;, arXiv:2403.07974, March 2024. <a href="https://arxiv.org/abs/2403.07974">arxiv.org/abs/2403.07974</a></li>
+    <li id="src-22">Elliot Glazer et al. (Epoch AI), &ldquo;FrontierMath: A Benchmark for Evaluating Advanced Mathematical Reasoning in AI&rdquo;, arXiv:2411.04872, November 2024. <a href="https://arxiv.org/abs/2411.04872">arxiv.org/abs/2411.04872</a></li>
+    <li id="src-23">Long Phan et al., &ldquo;Humanity&rsquo;s Last Exam&rdquo;, arXiv:2501.14249, January 2025. Repo <code>centerforaisafety/hle</code>. <a href="https://arxiv.org/abs/2501.14249">arxiv.org/abs/2501.14249</a></li>
+    <li id="src-24">Fran&ccedil;ois Chollet, Mike Knoop, Gregory Kamradt, et al., &ldquo;ARC-AGI-2: A New Challenge for Frontier AI Reasoning Systems&rdquo;, arXiv:2505.11831, May 2025. <a href="https://arxiv.org/abs/2505.11831">arxiv.org/abs/2505.11831</a></li>
+    <li id="src-25">Mislav Balunovi&#263;, Jasper Dekoninck, Ivo Petrov, et al., &ldquo;MathArena: Evaluating LLMs on Uncontaminated Math Competitions&rdquo;, arXiv:2505.23281, May 2025. <a href="https://arxiv.org/abs/2505.23281">arxiv.org/abs/2505.23281</a></li>
+    <li id="src-26">ARC Prize Foundation, &ldquo;ARC-AGI-3&rdquo;, benchmark page (interactive reasoning benchmark; 100% means beating every game as efficiently as humans), accessed November 2026. <a href="https://arcprize.org/arc-agi/3">arcprize.org/arc-agi/3</a></li>
+    <li id="src-27">Google DeepMind, &ldquo;Gemini 3.1 Pro&rdquo; model card, 19 February 2026 (GPQA Diamond, no tools: 94.3%). <a href="https://deepmind.google/models/model-cards/gemini-3-1-pro/">deepmind.google/models/model-cards/gemini-3-1-pro</a></li>
+    <li id="src-28">Vals AI, &ldquo;GPQA Diamond Leaderboard and Methodology&rdquo;, accessed November 2026. <a href="https://www.vals.ai/benchmarks/gpqa">vals.ai/benchmarks/gpqa</a></li>
+    <li id="src-29">Mirac Suzgun, Nathan Scales, Nathanael Sch&auml;rli, et al., &ldquo;Challenging BIG-Bench Tasks and Whether Chain-of-Thought Can Solve Them&rdquo;, arXiv:2210.09261, October 2022. <a href="https://arxiv.org/abs/2210.09261">arxiv.org/abs/2210.09261</a></li>
+    <li id="src-30">Jeffrey Zhou et al., &ldquo;Instruction-Following Evaluation for Large Language Models (IFEval)&rdquo;, arXiv:2311.07911, November 2023. <a href="https://arxiv.org/abs/2311.07911">arxiv.org/abs/2311.07911</a></li>
+    <li id="src-31">Hugh Zhang et al., &ldquo;A Careful Examination of Large Language Model Performance on Grade School Arithmetic (GSM1k)&rdquo;, arXiv:2405.00332, May 2024. <a href="https://arxiv.org/abs/2405.00332">arxiv.org/abs/2405.00332</a></li>
+    <li id="src-32">Iman Mirzadeh et al., &ldquo;GSM-Symbolic: Understanding the Limitations of Mathematical Reasoning in Large Language Models&rdquo;, arXiv:2410.05229, October 2024. <a href="https://arxiv.org/abs/2410.05229">arxiv.org/abs/2410.05229</a></li>
+    <li id="src-33">FutureHouse, &ldquo;About 30% of Humanity&rsquo;s Last Exam Answers are Wrong&rdquo;, research post, July 2025 (audit of 321 text-only chemistry and biology questions; corrected subset at <a href="https://huggingface.co/datasets/futurehouse/hle-gold-bio-chem">huggingface.co/datasets/futurehouse/hle-gold-bio-chem</a>). <a href="https://www.futurehouse.org/research/hle-exam">futurehouse.org/research/hle-exam</a></li>
+    <li id="src-34">Fran&ccedil;ois Chollet, &ldquo;On the Measure of Intelligence (ARC-AGI-1)&rdquo;, arXiv:1911.01547, November 2019. <a href="https://arxiv.org/abs/1911.01547">arxiv.org/abs/1911.01547</a></li>
+    <li id="src-35">Maximilian Schreiner, &ldquo;ARC-AGI-3 offers $2M to any AI that matches untrained humans, yet every frontier model scores below 1%&rdquo;, The Decoder, 26 March 2026 (launch scores: Gemini 3.1 Pro Preview 0.37%, GPT-5.4 0.26%, Claude Opus 4.6 0.25%; RHAE metric). <a href="https://the-decoder.com/arc-agi-3-offers-2m-to-any-ai-that-matches-untrained-humans-yet-every-frontier-model-scores-below-1/">the-decoder.com/arc-agi-3-offers-2m&hellip;</a></li>
+    <li id="src-36">Jacob Austin et al., &ldquo;Program Synthesis with Large Language Models (MBPP)&rdquo;, arXiv:2108.07732, August 2021. <a href="https://arxiv.org/abs/2108.07732">arxiv.org/abs/2108.07732</a></li>
+    <li id="src-37">Jiawei Liu, Chunqiu Steven Xia, Yuyao Wang, Lingming Zhang, &ldquo;Is Your Code Generated by ChatGPT Really Correct? Rigorous Evaluation of Large Language Models for Code Generation (EvalPlus)&rdquo;, NeurIPS 2023, arXiv:2305.01210, May 2023. Repo <code>evalplus/evalplus</code>. <a href="https://arxiv.org/abs/2305.01210">arxiv.org/abs/2305.01210</a>, <a href="https://github.com/evalplus/evalplus">github.com/evalplus/evalplus</a></li>
+    <li id="src-38">Stephanie Lin, Jacob Hilton, Owain Evans, &ldquo;TruthfulQA: Measuring How Models Mimic Human Falsehoods&rdquo;, arXiv:2109.07958, September 2021. <a href="https://arxiv.org/abs/2109.07958">arxiv.org/abs/2109.07958</a></li>
+    <li id="src-39">Jason Wei et al. (OpenAI), &ldquo;Measuring short-form factuality in large language models (SimpleQA)&rdquo;, arXiv:2411.04368, November 2024. <a href="https://arxiv.org/abs/2411.04368">arxiv.org/abs/2411.04368</a></li>
+    <li id="src-40">Lukas Haas, Gal Yona, Giovanni D&rsquo;Antonio, et al., &ldquo;SimpleQA Verified: A Reliable Factuality Benchmark to Measure Parametric Knowledge&rdquo;, arXiv:2509.07968, September 2025. <a href="https://arxiv.org/abs/2509.07968">arxiv.org/abs/2509.07968</a></li>
+    <li id="src-41">Shivalika Singh et al., &ldquo;The Leaderboard Illusion&rdquo;, arXiv:2504.20879, April 2025. <a href="https://arxiv.org/abs/2504.20879">arxiv.org/abs/2504.20879</a></li>
+    <li id="src-42">Freda Shi et al., &ldquo;Language Models are Multilingual Chain-of-Thought Reasoners (MGSM)&rdquo;, arXiv:2210.03057, October 2022. <a href="https://arxiv.org/abs/2210.03057">arxiv.org/abs/2210.03057</a></li>
+    <li id="src-43">Shivalika Singh, Angelika Romanou, Cl&eacute;mentine Fourrier, et al., &ldquo;Global MMLU: Understanding and Addressing Cultural and Linguistic Biases in Multilingual Evaluation&rdquo;, arXiv:2412.03304, December 2024. <a href="https://arxiv.org/abs/2412.03304">arxiv.org/abs/2412.03304</a></li>
+    <li id="src-44">Cheng-Ping Hsieh et al. (NVIDIA), &ldquo;RULER: What&rsquo;s the Real Context Size of Your Long-Context Language Models?&rdquo;, arXiv:2404.06654, April 2024. <a href="https://arxiv.org/abs/2404.06654">arxiv.org/abs/2404.06654</a></li>
+    <li id="src-45">Xiang Yue et al., &ldquo;MMMU: A Massive Multi-discipline Multimodal Understanding and Reasoning Benchmark for Expert AGI&rdquo;, arXiv:2311.16502, November 2023. <a href="https://arxiv.org/abs/2311.16502">arxiv.org/abs/2311.16502</a></li>
+    <li id="src-46">Gorilla LLM team (UC Berkeley), &ldquo;Berkeley Function Calling Leaderboard (BFCL) V4&rdquo;, accessed November 2026. <a href="https://gorilla.cs.berkeley.edu/leaderboard.html">gorilla.cs.berkeley.edu/leaderboard.html</a></li>
+    <li id="src-47">Mubashara Akhtar et al., &ldquo;When AI Benchmarks Plateau: A Systematic Study of Benchmark Saturation&rdquo;, arXiv:2602.16763, February 2026. <a href="https://arxiv.org/abs/2602.16763">arxiv.org/abs/2602.16763</a></li>
+    <li id="src-48">Anson Ho et al. (Epoch AI), &ldquo;A Rosetta Stone for AI Benchmarks&rdquo;, arXiv:2512.00193, November 2025. <a href="https://arxiv.org/abs/2512.00193">arxiv.org/abs/2512.00193</a></li>
+    <li id="src-49"><code>huggingface/evaluate</code>, <code>metrics/squad/compute_score.py</code> (the official SQuAD v1.1 evaluation script). <span class="note-verify">(code quoted verbatim)</span> <a href="https://github.com/huggingface/evaluate">github.com/huggingface/evaluate</a></li>
+    <li id="src-50">Kishore Papineni, Salim Roukos, Todd Ward, Wei-Jing Zhu, &ldquo;BLEU: a Method for Automatic Evaluation of Machine Translation&rdquo;, ACL 2002. <a href="https://aclanthology.org/P02-1040/">aclanthology.org/P02-1040</a></li>
+    <li id="src-51">Matt Post, &ldquo;A Call for Clarity in Reporting BLEU Scores&rdquo;, arXiv:1804.08771, April 2018. Repo <code>mjpost/sacrebleu</code>. <a href="https://arxiv.org/abs/1804.08771">arxiv.org/abs/1804.08771</a></li>
+    <li id="src-52">Chin-Yew Lin, &ldquo;ROUGE: A Package for Automatic Evaluation of Summaries&rdquo;, ACL Workshop on Text Summarization Branches Out, 2004. <a href="https://aclanthology.org/W04-1013/">aclanthology.org/W04-1013</a></li>
+    <li id="src-53">Tianyi Zhang, Varsha Kishore, Felix Wu, Kilian Q. Weinberger, Yoav Artzi, &ldquo;BERTScore: Evaluating Text Generation with BERT&rdquo;, arXiv:1904.09675, April 2019. Repo <code>Tiiiger/bert_score</code>. <a href="https://arxiv.org/abs/1904.09675">arxiv.org/abs/1904.09675</a></li>
+    <li id="src-54">Maja Popovi&#263;, &ldquo;chrF: character n-gram F-score for automatic MT evaluation&rdquo;, WMT 2015. <a href="https://aclanthology.org/W15-3049/">aclanthology.org/W15-3049</a></li>
+    <li id="src-55">Ricardo Rei, Craig Stewart, Ana C. Farinha, Alon Lavie, &ldquo;COMET: A Neural Framework for MT Evaluation&rdquo;, EMNLP 2020, arXiv:2009.09025. <a href="https://arxiv.org/abs/2009.09025">arxiv.org/abs/2009.09025</a></li>
+    <li id="src-56">Thibault Sellam, Dipanjan Das, Ankur P. Parikh, &ldquo;BLEURT: Learning Robust Metrics for Text Generation&rdquo;, ACL 2020, arXiv:2004.04696. <a href="https://arxiv.org/abs/2004.04696">arxiv.org/abs/2004.04696</a></li>
+    <li id="src-57">Markus Freitag et al., &ldquo;Results of WMT22 Metrics Shared Task: Stop Using BLEU &ndash; Neural Metrics Are Better and More Robust&rdquo;, WMT 2022. <a href="https://aclanthology.org/2022.wmt-1.2/">aclanthology.org/2022.wmt-1.2</a></li>
+    <li id="src-58"><code>EleutherAI/lm-evaluation-harness</code>, <code>lm_eval/api/task.py</code>, <code>lm_eval/api/metrics.py</code>, <code>lm_eval/tasks/gsm8k/gsm8k.yaml</code> (main branch, November 2026; 14,504 stars as of 2026-11-20). <span class="note-verify">(code quoted verbatim; task.py excerpt dedented; gsm8k.yaml as an excerpt omitting the tag and split lines)</span> <a href="https://github.com/EleutherAI/lm-evaluation-harness">github.com/EleutherAI/lm-evaluation-harness</a></li>
+    <li id="src-59">Yuling Gu et al. (AI2), &ldquo;OLMES: A Standard for Language Model Evaluations&rdquo;, arXiv:2406.08446, June 2024. <a href="https://arxiv.org/abs/2406.08446">arxiv.org/abs/2406.08446</a></li>
+    <li id="src-60"><code>openai/human-eval</code>, <code>human_eval/evaluation.py</code> (3,431 stars as of 2026-11-20). <span class="note-verify">(code quoted verbatim)</span> <a href="https://github.com/openai/human-eval">github.com/openai/human-eval</a></li>
+    <li id="src-61">Bradley Brown et al., &ldquo;Large Language Monkeys: Scaling Inference Compute with Repeated Sampling&rdquo;, arXiv:2407.21787, July 2024. <a href="https://arxiv.org/abs/2407.21787">arxiv.org/abs/2407.21787</a></li>
+    <li id="src-62">DeepSeek-AI (Daya Guo et al.), &ldquo;DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning&rdquo;, arXiv:2501.12948, January 2025 (evaluation setup: pass@1 averaged over k samples at temperature 0.6, top-p 0.95; cons@64). <a href="https://arxiv.org/abs/2501.12948">arxiv.org/abs/2501.12948</a></li>
+    <li id="src-63">Yang Yue et al., &ldquo;Does Reinforcement Learning Really Incentivize Reasoning Capacity in LLMs Beyond the Base Model?&rdquo;, arXiv:2504.13837, April 2025. <a href="https://arxiv.org/abs/2504.13837">arxiv.org/abs/2504.13837</a></li>
+    <li id="src-64"><code>UKGovernmentBEIS/inspect_ai</code>, Inspect evaluation framework, scorers, <code>stderr(cluster=...)</code> metric and <code>pass_at_{k}</code> epoch reducers (3,293 stars as of 2026-11-20). <a href="https://github.com/UKGovernmentBEIS/inspect_ai">github.com/UKGovernmentBEIS/inspect_ai</a></li>
+    <li id="src-65">Chuan Guo, Geoff Pleiss, Yu Sun, Kilian Q. Weinberger, &ldquo;On Calibration of Modern Neural Networks&rdquo;, arXiv:1706.04599, June 2017. <a href="https://arxiv.org/abs/1706.04599">arxiv.org/abs/1706.04599</a></li>
+    <li id="src-66">Saurav Kadavath et al., &ldquo;Language Models (Mostly) Know What They Know&rdquo;, arXiv:2207.05221, July 2022. <a href="https://arxiv.org/abs/2207.05221">arxiv.org/abs/2207.05221</a></li>
+    <li id="src-67">OpenAI, &ldquo;GPT-4 Technical Report&rdquo;, arXiv:2303.08774, March 2023 (Figure 8: calibration of the pre-trained and post-trained model on MMLU). <a href="https://arxiv.org/abs/2303.08774">arxiv.org/abs/2303.08774</a></li>
+    <li id="src-68">Katherine Tian et al., &ldquo;Just Ask for Calibration: Strategies for Eliciting Calibrated Confidence Scores from Language Models Fine-Tuned with Human Feedback&rdquo;, arXiv:2305.14975, May 2023. <a href="https://arxiv.org/abs/2305.14975">arxiv.org/abs/2305.14975</a></li>
+    <li id="src-69">Adam Tauman Kalai, Ofir Nachum, Santosh S. Vempala, Edwin Zhang, &ldquo;Why Language Models Hallucinate&rdquo;, arXiv:2509.04664, September 2025. <a href="https://arxiv.org/abs/2509.04664">arxiv.org/abs/2509.04664</a></li>
+    <li id="src-70"><code>lm-sys/FastChat</code>, <code>fastchat/serve/monitor/rating_systems.py</code> (39,549 stars as of 2026-11-20). <span class="note-verify">(code quoted verbatim)</span> <a href="https://github.com/lm-sys/FastChat">github.com/lm-sys/FastChat</a></li>
+    <li id="src-71">Tianle Li, Anastasios Angelopoulos, Wei-Lin Chiang, &ldquo;Does style matter? Disentangling style and substance in Chatbot Arena&rdquo;, LMSYS blog, August 2024. <a href="https://lmsys.org/blog/2024-08-28-style-control/">lmsys.org/blog/2024-08-28-style-control</a></li>
+    <li id="src-72">LMArena, &ldquo;Arena-Rank&rdquo; (PyPI package <code>arena-rank</code> 0.1.1, &ldquo;Ranking methodology powering the LMArena leaderboard&rdquo;; repository <code>lmarena/arena-rank</code>), accessed November 2026. <a href="https://arena.ai/blog/arena-rank">arena.ai/blog/arena-rank</a> (news.lmarena.ai/arena-rank now redirects there), <a href="https://github.com/lmarena/arena-rank">github.com/lmarena/arena-rank</a>, <a href="https://pypi.org/project/arena-rank/">pypi.org/project/arena-rank</a></li>
+    <li id="src-73">P. V. Rao, L. L. Kupper, &ldquo;Ties in Paired-Comparison Experiments: A Generalization of the Bradley-Terry Model&rdquo;, Journal of the American Statistical Association 62(317), March 1967. <a href="https://doi.org/10.1080/01621459.1967.10482901">doi.org/10.1080/01621459.1967.10482901</a></li>
+    <li id="src-74">Roger R. Davidson, &ldquo;On Extending the Bradley-Terry Model to Accommodate Ties in Paired Comparison Experiments&rdquo;, Journal of the American Statistical Association 65(329), March 1970. <a href="https://doi.org/10.1080/01621459.1970.10481082">doi.org/10.1080/01621459.1970.10481082</a></li>
+    <li id="src-75">Hugging Face, &ldquo;Open LLM Leaderboard v2: Scores Normalization&rdquo;, documentation, 2024. <a href="https://huggingface.co/docs/leaderboards/open_llm_leaderboard/normalization">huggingface.co/docs/leaderboards/open_llm_leaderboard/normalization</a></li>
+    <li id="src-76">Evan Miller (Anthropic), &ldquo;Adding Error Bars to Evals: A Statistical Approach to Language Model Evaluations&rdquo;, arXiv:2411.00640, November 2024. <a href="https://arxiv.org/abs/2411.00640">arxiv.org/abs/2411.00640</a></li>
+    <li id="src-77">Anthropic, &ldquo;A statistical approach to model evaluations&rdquo;, research blog, November 2024. <a href="https://www.anthropic.com/research/statistical-approach-to-model-evals">anthropic.com/research/statistical-approach-to-model-evals</a></li>
+    <li id="src-78">David Heineman et al. (AI2), &ldquo;Signal and Noise: A Framework for Reducing Uncertainty in Language Model Evaluation&rdquo;, arXiv:2508.13144, August 2025. <a href="https://arxiv.org/abs/2508.13144">arxiv.org/abs/2508.13144</a></li>
+    <li id="src-79">Rylan Schaeffer, Brando Miranda, Sanmi Koyejo, &ldquo;Are Emergent Abilities of Large Language Models a Mirage?&rdquo;, arXiv:2304.15004, April 2023. <a href="https://arxiv.org/abs/2304.15004">arxiv.org/abs/2304.15004</a></li>
+    <li id="src-80"><code>openai/grade-school-math</code>, <code>grade_school_math/dataset.py</code> (answer regex). <span class="note-verify">(code quoted verbatim)</span> <a href="https://github.com/openai/grade-school-math">github.com/openai/grade-school-math</a></li>
+    <li id="src-81">Shuo Yang, Wei-Lin Chiang, Lianmin Zheng, Joseph E. Gonzalez, Ion Stoica, &ldquo;Rethinking Benchmark and Contamination for Language Models with Rephrased Samples&rdquo;, arXiv:2311.04850, November 2023. <a href="https://arxiv.org/abs/2311.04850">arxiv.org/abs/2311.04850</a></li>
+    <li id="src-82">Colin White et al., &ldquo;LiveBench: A Challenging, Contamination-Limited LLM Benchmark&rdquo;, arXiv:2406.19314, June 2024. <a href="https://arxiv.org/abs/2406.19314">arxiv.org/abs/2406.19314</a></li>
+    <li id="src-83">Joshua Vendrow, Edward Vendrow, Sara Beery, Aleksander Madry, &ldquo;Do Large Language Model Benchmarks Test Reliability?&rdquo;, arXiv:2502.03461, February 2025. <a href="https://arxiv.org/abs/2502.03461">arxiv.org/abs/2502.03461</a></li>
+    <li id="src-84">Epoch AI, &ldquo;Humanity&rsquo;s Last Exam: Benchmark review&rdquo;, accessed November 2026. <a href="https://epoch.ai/benchmarks/hle/review">epoch.ai/benchmarks/hle/review</a></li>
+    <li id="src-85">Douwe Kiela et al., &ldquo;Dynabench: Rethinking Benchmarking in NLP&rdquo;, arXiv:2104.14337, April 2021. <a href="https://arxiv.org/abs/2104.14337">arxiv.org/abs/2104.14337</a></li>
+    <li id="src-86">LMArena, <code>lmarena-ai/leaderboard-dataset</code> dataset card (methodology changes: style control default from 16 May 2025; frequency-based re-weighting from 23 July 2025), accessed November 2026. <a href="https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset">huggingface.co/datasets/lmarena-ai/leaderboard-dataset</a></li>
+    <li id="src-87">LMArena, <code>lmarena/arena-hard-auto</code> README (Arena-Hard-v2.0, 23 April 2025: 500 hard prompts + 250 creative-writing queries; GPT-4.1 and Gemini-2.5 judges; official configuration Hard Prompt + Style Control + Gemini-2.5 judge), accessed November 2026. <a href="https://github.com/lmarena/arena-hard-auto">github.com/lmarena/arena-hard-auto</a></li>
+    <li id="src-88">Hugging Face, <code>huggingface/Math-Verify</code> README (MATH grader comparison: Harness 0.0802, Qwen 0.1288, Math-Verify 0.1328; <code>parse</code>/<code>verify</code> usage), accessed November 2026. <a href="https://github.com/huggingface/Math-Verify">github.com/huggingface/Math-Verify</a></li>
+    <li id="src-89">Nikhil Chandak, Shashwat Goel, Ameya Prabhu, Moritz Hardt, Jonas Geiping, &ldquo;Answer Matching Outperforms Multiple Choice for Language Model Evaluation&rdquo;, arXiv:2507.02856, July 2025. Code <code>nikhilchandak/answer-matching</code>. <a href="https://arxiv.org/abs/2507.02856">arxiv.org/abs/2507.02856</a>, <a href="https://github.com/nikhilchandak/answer-matching">github.com/nikhilchandak/answer-matching</a></li>
+    <li id="src-90"><code>centerforaisafety/hle</code>, <code>hle_eval/run_judge_results.py</code> (<code>calib_err</code>, reporting line) and <code>hle_eval/run_model_predictions.py</code> (system prompt), main branch, accessed November 2026. <span class="note-verify">(code quoted verbatim)</span> <a href="https://github.com/centerforaisafety/hle/blob/main/hle_eval/run_judge_results.py">github.com/centerforaisafety/hle/blob/main/hle_eval/run_judge_results.py</a></li>
+  </ol>
+</main>
+</body>
+</html>

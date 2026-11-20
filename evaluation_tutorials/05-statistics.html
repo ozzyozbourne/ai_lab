@@ -1,0 +1,1691 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5. Statistics and Rigor in Evals · Evaluations for AI</title>
+<meta name="description" content="How to put a correct error bar on every eval number, compare models with paired tests, size an eval with power analysis, handle clusters, repeated samples, nondeterminism, pass^k, multiple comparisons, IRT-based efficient evaluation, RL aggregate statistics, PPI and hierarchical Bayesian models, and report results so others can check them.">
+<link rel="stylesheet" href="assets/book.css">
+<script defer src="assets/book.js"></script>
+</head>
+<body>
+<main>
+  <p class="kicker">Chapter 5</p>
+  <h1>Statistics and Rigor in Evals</h1>
+  <p class="lede">In 2025 a group at T&uuml;bingen and Cambridge re-ran a batch of celebrated &ldquo;RL makes small models reason&rdquo; results under
+  one controlled protocol. Changing nothing but the random seed moved AIME&rsquo;24 Pass@1 by 5 to 15 points; running the same model on a
+  different GPU cluster moved it by up to 8 points; and many of the reported gains shrank or vanished under the rigorous protocol<a class="cite" href="#src-1">[1]</a>.
+  Even &ldquo;deterministic&rdquo; settings are not: with temperature 0 and a fixed seed, five LLMs varied by up to 15% in accuracy across
+  ten identical runs<a class="cite" href="#src-2">[2]</a>. A benchmark score is a measurement with noise in it, and a leaderboard gap of two points is often smaller
+  than that noise. This chapter teaches you to put a correct error bar on every number, compare two models properly, decide how big
+  an eval must be <em>before</em> you run it, and report results so that a sceptical reader can check them.</p>
+  <p class="chapter-meta"><span>Reading time: about 110 minutes</span><span>Code: <code>code/ch05/</code></span><span>Prerequisites: Chapters 1 and 2; basic probability (mean, variance, binomial)</span></p>
+
+  <div class="objectives">
+    <p class="obj-title">You will learn</p>
+    <ul>
+      <li>Explain why an eval score is an estimate of a super-population mean, and split its variance into question sampling, model sampling, judge noise and infrastructure noise with the law of total variance.</li>
+      <li>Compute a standard error and a 95% interval for one model, and know when to replace the CLT interval with Wilson, Clopper&ndash;Pearson or a Beta posterior.</li>
+      <li>Handle clustered questions and repeated samples correctly (clustered SE, cluster bootstrap, per-question means) and reduce variance without changing what you measure.</li>
+      <li>Compare two models with paired differences, McNemar&rsquo;s test, a permutation test and the paired bootstrap, and size an eval with a power and MDE calculation.</li>
+      <li>Report pass@k, pass^k and Bayes@N correctly for stochastic agents, and diagnose nondeterminism from seeds, batching and hardware.</li>
+      <li>Judge benchmark quality with signal-to-noise and decision accuracy, use IRT to evaluate on fewer items, and aggregate RL results with IQM and stratified bootstrap CIs.</li>
+      <li>Fill in a reporting checklist and a results table that let others recompute your statistics.</li>
+    </ul>
+  </div>
+
+  <h2 id="estimate"><span class="sec-num">5.1</span>Why an eval score is an estimate</h2>
+  <p>Suppose your model gets 124 of the 200 questions in an internal reasoning benchmark right. Nobody cares about those particular 200 questions: a different 200 testing the same skill would
+  have given a different score. What we want is how the model does on the whole space of questions the benchmark represents. Evan Miller&rsquo;s paper &ldquo;Adding Error Bars to Evals&rdquo; (and Anthropic&rsquo;s companion blog post) makes this the starting
+  point: treat the questions in a benchmark as a random sample from an unseen <span class="term">super-population</span> of questions,
+  and treat the benchmark score as an <span class="term">estimate</span> of the super-population mean<a class="cite" href="#src-3">[3]</a><a class="cite" href="#src-4">[4]</a>.</p>
+  <p>The rest of the chapter asks: <em>if I repeated this measurement, how much would the number move?</em></p>
+
+  <h3 id="estimate-sources">Four sources of variance</h3>
+  <p>For a modern LLM or agent eval, at least four independent things vary between one run of the eval and another:</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Source</th><th>What varies</th><th>What shrinks it</th><th>Where in this chapter</th></tr></thead>
+      <tbody>
+        <tr><td><b>Question sampling</b> (data noise)</td><td>Which questions ended up in the benchmark</td><td>More or better-chosen questions; IRT item selection</td><td>5.2, 5.3, 5.6, 5.12</td></tr>
+        <tr><td><b>Model sampling</b> (prediction noise)</td><td>Which answer the model samples for a given question (temperature, seed)</td><td>K samples per question; token probabilities; continuous metrics</td><td>5.4, 5.9, 5.10</td></tr>
+        <tr><td><b>Judge noise</b></td><td>Which verdict a stochastic LLM judge or human rater gives the same answer</td><td>Validated judges, several judge samples, PPI with human labels</td><td>5.14, Chapter 4</td></tr>
+        <tr><td><b>Infrastructure nondeterminism</b></td><td>Batch size, kernels, GPU type, inference library, harness version, container CPU/RAM limits, timeouts</td><td>Pinning the stack; batch-invariant kernels; reporting mean &plusmn; sd over seeds</td><td>5.10</td></tr>
+      </tbody>
+      <caption>Table 5.1. The four variance sources this chapter keeps returning to. Training noise (the seed of a training run) is a fifth when you compare training recipes rather than finished models; 5.11 and 5.13 cover it.</caption>
+    </table>
+  </div>
+  <p><em>Setup</em> noise (prompt template, few-shot examples, answer parser) is partly systematic: a new template can move every score in one direction.
+  Single-prompt results are brittle<a class="cite" href="#src-5">[5]</a>, so fix the prompt as part of the eval&rsquo;s definition and report it, or sample prompts as an extra
+  random factor (PromptEval, 5.12).</p>
+
+  <h3 id="estimate-total-variance">The law of total variance</h3>
+  <p>The tool that organises these sources is the <span class="term">law of total variance</span>. Let <i>s</i> be the score of a single
+  attempt at a randomly drawn question <i>q</i>. Then</p>
+  <div class="formula">
+    Var(<i>s</i>) = E<sub><i>q</i></sub>[ Var(<i>s</i> | <i>q</i>) ] + Var<sub><i>q</i></sub>( E[<i>s</i> | <i>q</i>] )
+    <span class="eq-num">(5.1)</span>
+    <span class="where">The first term is the average <em>within-question</em> variance (prediction noise: how much the score of one question changes between
+    attempts). The second is the <em>between-question</em> variance (data noise: how much questions differ in their expected score).</span>
+  </div>
+  <p>For a binary score, write <i>p<sub>i</sub></i> = E[<i>s</i> | <i>q<sub>i</sub></i>] for the model&rsquo;s true probability of solving question <i>i</i>.
+  The within term is E[<i>p<sub>i</sub></i>(1 &minus; <i>p<sub>i</sub></i>)] and the between term is Var(<i>p<sub>i</sub></i>). Their sum is
+  <span class="math">&mu;(1 &minus; &mu;)</span>. The terms shrink with different levers: K answers per question divide the within term by K; only more questions shrink
+  the between term. Sida Wang found that for paired model comparisons prediction noise usually exceeds data noise, making resampling a cheap source of power<a class="cite" href="#src-6">[6]</a>.</p>
+
+  <figure class="diagram" id="fig-5-1">
+    <svg viewBox="0 0 680 300" role="img" aria-labelledby="fig-5-1-t">
+      <title id="fig-5-1-t">Variance decomposition of an eval score: four sources feed the observed score, and the law of total variance splits it into within- and between-question terms</title>
+      <defs><marker id="fig-5-1-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-muted"/></marker></defs>
+      <rect x="10" y="20" width="190" height="52" rx="8" class="tint-1"/>
+      <text x="105" y="42" text-anchor="middle">Question sampling</text><text x="105" y="60" text-anchor="middle" class="small">which q&#8321;&#8230;q&#8345; you drew</text>
+      <rect x="10" y="86" width="190" height="52" rx="8" class="tint-2"/>
+      <text x="105" y="108" text-anchor="middle">Model sampling</text><text x="105" y="126" text-anchor="middle" class="small">temperature, seed</text>
+      <rect x="10" y="152" width="190" height="52" rx="8" class="tint-3"/>
+      <text x="105" y="174" text-anchor="middle">Judge noise</text><text x="105" y="192" text-anchor="middle" class="small">stochastic grader</text>
+      <rect x="10" y="218" width="190" height="52" rx="8" class="tint-4"/>
+      <text x="105" y="240" text-anchor="middle">Infrastructure</text><text x="105" y="258" text-anchor="middle" class="small">batching, GPU, library</text>
+      <rect x="260" y="110" width="150" height="70" rx="10" class="f-box s-ink" stroke-width="1.5"/>
+      <text x="335" y="140" text-anchor="middle" class="title">Observed score</text><text x="335" y="160" text-anchor="middle" class="small">s&#772; = estimate of &#956;</text>
+      <path d="M200 46 C 235 46, 230 125, 258 130" class="s-muted" fill="none" stroke-width="2" marker-end="url(#fig-5-1-arr)"/>
+      <path d="M200 112 C 230 112, 235 138, 258 140" class="s-muted" fill="none" stroke-width="2" marker-end="url(#fig-5-1-arr)"/>
+      <path d="M200 178 C 230 178, 235 152, 258 150" class="s-muted" fill="none" stroke-width="2" marker-end="url(#fig-5-1-arr)"/>
+      <path d="M200 244 C 235 244, 230 165, 258 160" class="s-muted" fill="none" stroke-width="2" marker-end="url(#fig-5-1-arr)"/>
+      <rect x="460" y="40" width="210" height="80" rx="8" class="tint-2"/>
+      <text x="565" y="64" text-anchor="middle">Within-question</text>
+      <text x="565" y="84" text-anchor="middle" class="mono small">E[Var(s|q)] = E[p(1&#8722;p)]</text>
+      <text x="565" y="104" text-anchor="middle" class="small">shrinks with K samples / q</text>
+      <rect x="460" y="170" width="210" height="80" rx="8" class="tint-1"/>
+      <text x="565" y="194" text-anchor="middle">Between-question</text>
+      <text x="565" y="214" text-anchor="middle" class="mono small">Var(E[s|q]) = Var(p)</text>
+      <text x="565" y="234" text-anchor="middle" class="small">shrinks only with more q</text>
+      <path d="M410 135 L458 85" class="s-muted" stroke-width="2" marker-end="url(#fig-5-1-arr)"/>
+      <path d="M410 155 L458 205" class="s-muted" stroke-width="2" marker-end="url(#fig-5-1-arr)"/>
+      <text x="335" y="290" text-anchor="middle" class="small">Var(s) = E[Var(s|q)] + Var(E[s|q])   (law of total variance)</text>
+    </svg>
+    <figcaption><b>Figure 5.1.</b> Four sources of noise feed every eval score. Model sampling, judge noise and infrastructure nondeterminism all act
+    <em>within</em> a question; question sampling acts <em>between</em> questions. The two terms of Equation 5.1 respond to different fixes.</figcaption>
+  </figure>
+
+  <aside class="note" data-title="What the interval does not cover"><p>A confidence interval captures the noise from <em>sampling</em>: which questions,
+  which model samples. It says nothing about whether the benchmark measures the right construct, whether its labels are wrong, or whether the model saw
+  the test during training. The super-population is an idealisation. Label errors and
+  contamination (Chapter 3) bias the estimate, and no statistics here remove that bias.</p></aside>
+
+  <h2 id="error-bars"><span class="sec-num">5.2</span>Error bars for one model</h2>
+  <p>Start with the simplest case: one model, <i>n</i> questions drawn independently, one attempt per question, score <i>s<sub>i</sub></i> per
+  question. The eval score is the sample mean <span class="math">s&#772;</span>.</p>
+
+  <h3 id="error-bars-clt">The CLT standard error</h3>
+  <p>By the central limit theorem, for large <i>n</i> the sample mean is approximately normal around the true mean &mu;, with standard deviation
+  equal to the <span class="term">standard error</span> (SE):</p>
+  <div class="formula">
+    SE<sub>CLT</sub> = <span class="frac"><span>&radic;( <span class="frac"><span>1</span><span><i>n</i> &minus; 1</span></span> &Sigma;<sub><i>i</i></sub> (<i>s<sub>i</sub></i> &minus; s&#772;)&sup2; )</span><span>&radic;<i>n</i></span></span>,
+    &nbsp;&nbsp; and for binary scores &nbsp; SE = &radic;( s&#772;(1 &minus; s&#772;) / <i>n</i> )
+    <span class="eq-num">(5.2)</span>
+    <span class="where">The 95% interval is s&#772; &plusmn; 1.96 &middot; SE. These are the formulas in Miller (2024), Section 2<a class="cite" href="#src-3">[3]</a>; Inspect&rsquo;s
+    <code>stderr()</code> computes exactly <code>np.std(values, ddof=1) / np.sqrt(n)</code><a class="cite" href="#src-7">[7]</a>.</span>
+  </div>
+  <div class="worked">
+    <p><b>Worked example.</b> 124 of 200 correct: s&#772; = 0.62, SE = &radic;(0.62 &times; 0.38 / 200) = 0.0343, and the 95% CI is
+    0.62 &plusmn; 1.96 &times; 0.0343 = [0.553, 0.687]. That is <b>&plusmn;6.7 points</b>. A second model at 66% on the same benchmark is well inside that
+    band, so on these numbers alone you cannot call it better (5.5 shows how pairing changes this).</p>
+    <p><b>AIME-sized benchmark.</b> 12 of 30 correct: SE = 0.0894, &plusmn;17.5 points; one question is 3.3 points<a class="cite" href="#src-1">[1]</a>. Both reproduced by
+    <code>code/ch05/error_bars.py</code>.</p>
+  </div>
+  <p>The SE is largest at 50% accuracy and scales as 1/&radic;<i>n</i>: halving the error bar takes four times the questions. At <i>n</i> = 1,000 and 50% the
+  95% half-width is still &plusmn;3.1 points.</p>
+
+  <h3 id="error-bars-small-n">When the CLT fails</h3>
+  <p>With small <i>n</i>, or accuracy near 0 or 1, the normal approximation is poor: the &ldquo;Wald&rdquo;
+  interval s&#772; &plusmn; 1.96 SE can extend outside [0, 1], collapse to zero width when every answer is right or wrong, and cover the true value less
+  often than the advertised 95%. Bowyer, Aitchison and Ivanova argue that CLT intervals should not be used for LLM evals with fewer than a few hundred data
+  points; in their simulations nominal 95% CLT intervals reach only about 92.5% coverage even at <i>N</i> = 100<a class="cite" href="#src-8">[8]</a>. AIME has 30 problems, many agentic suites a
+  few dozen tasks, and slices of larger benchmarks are often tiny.</p>
+  <p>Three alternatives are standard:</p>
+  <div class="formula">
+    Wilson: &nbsp; centre = <span class="frac"><span>p&#770; + z&sup2;/2<i>n</i></span><span>1 + z&sup2;/<i>n</i></span></span>, &nbsp;
+    half-width = <span class="frac"><span>z &radic;( p&#770;(1 &minus; p&#770;)/<i>n</i> + z&sup2;/4<i>n</i>&sup2; )</span><span>1 + z&sup2;/<i>n</i></span></span>
+    <span class="eq-num">(5.3)</span>
+    <span class="where">Wilson inverts the score test: it is the set of &mu; for which the observed p&#770; is not surprising. It is asymmetric, never leaves [0, 1], and
+    has close to nominal coverage on average.</span>
+  </div>
+  <ul>
+    <li><b>Clopper&ndash;Pearson</b> (&ldquo;exact&rdquo;) inverts two one-sided binomial tests. The lower bound for <i>k</i> successes is the 2.5% quantile of
+    Beta(<i>k</i>, <i>n</i> &minus; <i>k</i> + 1) and the upper bound the 97.5% quantile of Beta(<i>k</i> + 1, <i>n</i> &minus; <i>k</i>). It guarantees at least 95%
+    coverage for every &mu;, so it is conservative (wider than necessary).</li>
+    <li><b>Beta posterior.</b> With a uniform prior on &mu;, the posterior after <i>k</i> of <i>n</i> is Beta(1 + <i>k</i>, 1 + <i>n</i> &minus; <i>k</i>);
+    report its 2.5% and 97.5% quantiles as a 95% credible interval. Bowyer et al. recommend Wilson or this Beta&ndash;Bernoulli interval for a single model
+    with IID questions<a class="cite" href="#src-8">[8]</a>.</li>
+  </ul>
+  <p>None of these needs SciPy. For integer parameters the Beta CDF equals a binomial tail, P(Beta(<i>a</i>, <i>b</i>) &le; <i>x</i>) = P(Binomial(<i>a</i> + <i>b</i>
+  &minus; 1, <i>x</i>) &ge; <i>a</i>), so a quantile is a bisection on a sum of binomial probabilities. The chapter&rsquo;s shared helper file does exactly that:</p>
+<pre data-file="code/ch05/_common.py"><code class="language-python">def binom_cdf(k: int, n: int, p: float) -&gt; float:
+    """P(X &lt;= k) for X ~ Binomial(n, p), summed in log space for stability."""
+    if k &lt; 0:
+        return 0.0
+    if k &gt;= n:
+        return 1.0
+    if p &lt;= 0.0:
+        return 1.0
+    if p &gt;= 1.0:
+        return 0.0
+    lp, lq = math.log(p), math.log1p(-p)
+    total = 0.0
+    for i in range(k + 1):
+        total += math.exp(math.lgamma(n + 1) - math.lgamma(i + 1) - math.lgamma(n - i + 1) + i * lp + (n - i) * lq)
+    return min(1.0, total)
+
+
+def beta_cdf_int(x: float, a: int, b: int) -&gt; float:
+    """CDF of Beta(a, b) for integer a, b &gt;= 1, via the binomial identity
+    P(Beta(a, b) &lt;= x) = P(Binomial(a + b - 1, x) &gt;= a)."""
+    return 1.0 - binom_cdf(a - 1, a + b - 1, x)
+
+
+def beta_ppf_int(q: float, a: int, b: int) -&gt; float:
+    """Quantile of Beta(a, b) for integer parameters, by bisection."""
+    return _bisect(lambda x: beta_cdf_int(x, a, b) - q, 0.0, 1.0)
+
+
+def wilson(k: int, n: int, z: float = 1.959964) -&gt; tuple[float, float]:
+    """Wilson score interval."""
+    p = k / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def clopper_pearson(k: int, n: int, alpha: float = 0.05) -&gt; tuple[float, float]:
+    """Exact (Clopper-Pearson) interval: invert the two one-sided binomial tests."""
+    lo = 0.0 if k == 0 else beta_ppf_int(alpha / 2, k, n - k + 1)
+    hi = 1.0 if k == n else beta_ppf_int(1 - alpha / 2, k + 1, n - k)
+    return lo, hi
+
+
+def beta_posterior(k: int, n: int, alpha: float = 0.05) -&gt; tuple[float, float]:
+    """Equal-tailed credible interval of the Beta(1 + k, 1 + n - k) posterior (uniform prior)."""
+    return beta_ppf_int(alpha / 2, 1 + k, 1 + n - k), beta_ppf_int(1 - alpha / 2, 1 + k, 1 + n - k)
+</code></pre>
+  <p class="code-caption">Excerpt; the full file also has <code>norm_cdf</code>, <code>norm_ppf</code> (bisection on <code>math.erf</code>), <code>wald</code> and the exact McNemar helper.</p>
+
+  <h3 id="error-bars-coverage">Measuring coverage exactly</h3>
+  <p>&ldquo;Coverage&rdquo; is a property you can compute, not a slogan. For a true accuracy &mu; and sample size <i>n</i>, the number correct is
+  Binomial(<i>n</i>, &mu;), so the probability that an interval method covers &mu; is &Sigma;<sub><i>k</i></sub> P(<i>k</i>) &middot; 1[&mu; &isin; CI(<i>k</i>)]: a
+  finite sum, no simulation needed. <code>error_bars.py</code> evaluates it for all four methods, at two fixed accuracies and averaged over &mu;
+  uniform on [0.05, 0.95], then checks one cell by Monte Carlo:</p>
+<pre data-file="code/ch05/error_bars.py"><code class="language-python">def exact_coverage(n: int, ps: np.ndarray) -&gt; dict[str, float]:
+    """Average over ps of P(interval contains p), summing exactly over k ~ Binomial(n, p)."""
+    ints = all_intervals(n)
+    k = np.arange(n + 1)
+    lc = np.array([math.lgamma(n + 1) - math.lgamma(t + 1) - math.lgamma(n - t + 1) for t in k])
+    res = {}
+    for name, (lo, hi) in ints.items():
+        covs = []
+        for p in ps:
+            pmf = np.exp(lc + k * math.log(p) + (n - k) * math.log1p(-p))
+            covs.append(float(pmf[(lo &lt;= p) &amp; (p &lt;= hi)].sum()))
+        res[name] = float(np.mean(covs))
+    return res
+</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch05/error_bars.py</code> (about 25 s; the output below omits the non-binary block shown later in this section)</p>
+<pre class="output"><code>Worked examples (95% intervals)
+  124/200: mean=0.620 SE=0.0343 CI=[0.553, 0.687] half-width=6.7 pts
+  12/30  : mean=0.400 SE=0.0894 half-width=17.5 pts; one question = 3.3 pts
+  3/10: Wald=[0.016, 0.584]  Wilson=[0.108, 0.603]  Clopper-Pearson=[0.067, 0.652]  Beta posterior=[0.109, 0.610]
+  0/10: Wald=[0.000, 0.000]  Wilson=[0.000, 0.278]  Clopper-Pearson=[0.000, 0.308]  Beta posterior=[0.002, 0.285]
+  124/200: Wald=[0.553, 0.687]  Wilson=[0.551, 0.684]  Clopper-Pearson=[0.549, 0.688]  Beta posterior=[0.551, 0.684]
+
+Exact coverage of nominal 95% intervals
+  true accuracy p = 0.65
+        n           Wald (CLT)               Wilson      Clopper-Pearson  Beta(1,1) posterior
+       30                91.1%                94.7%                96.4%                94.7%
+      100                94.0%                95.4%                95.4%                95.4%
+      300                94.7%                95.4%                95.4%                95.4%
+     1000                94.9%                95.0%                95.3%                95.0%
+  true accuracy p = 0.90
+        n           Wald (CLT)               Wilson      Clopper-Pearson  Beta(1,1) posterior
+       30                80.9%                97.4%                99.2%                97.4%
+      100                93.2%                93.6%                95.6%                93.6%
+      300                93.8%                95.7%                96.6%                95.7%
+     1000                95.3%                94.9%                95.5%                94.9%
+  true accuracy p ~ U(0.05, 0.95)
+        n           Wald (CLT)               Wilson      Clopper-Pearson  Beta(1,1) posterior
+       30                91.6%                95.1%                97.2%                95.2%
+      100                93.8%                95.0%                96.4%                95.0%
+      300                94.6%                95.0%                95.8%                95.0%
+     1000                94.9%                94.9%                95.4%                94.9%
+
+Monte Carlo (10,000 runs, n=30, p=0.90): Wald 80.5% (exact 80.9%), Wilson 97.3% (exact 97.4%)</code></pre>
+  <p>The Wald interval under-covers at small <i>n</i>, badly near the edges: at &mu; = 0.90 and <i>n</i> = 30 one in five &ldquo;95%&rdquo; intervals misses (80.9%).
+  Wilson and the Beta posterior sit close to nominal from <i>n</i> = 30 up; Clopper&ndash;Pearson never drops below 95% and pays for it in width. Our averaged Wald
+  coverage at <i>n</i> = 100 (93.8%) is near Bowyer et al.&rsquo;s 92.5%<a class="cite" href="#src-8">[8]</a>. By <i>n</i> = 1,000 all four agree.</p>
+
+  <figure class="diagram" id="fig-5-2">
+    <svg viewBox="0 0 640 300" role="img" aria-labelledby="fig-5-2-t">
+      <title id="fig-5-2-t">Coverage of nominal 95% intervals versus n, averaged over true accuracy 0.05 to 0.95</title>
+      <line x1="80" y1="260" x2="600" y2="260" class="s-ink" stroke-width="1"/>
+      <line x1="80" y1="60" x2="80" y2="260" class="s-ink" stroke-width="1"/>
+      <line x1="80" y1="135" x2="600" y2="135" class="s-muted" stroke-width="1" stroke-dasharray="5 4"/>
+      <text x="606" y="139" class="small">95%</text>
+      <text x="72" y="264" text-anchor="end" class="small">90%</text><text x="72" y="214" text-anchor="end" class="small">92%</text>
+      <text x="72" y="164" text-anchor="end" class="small">94%</text><text x="72" y="114" text-anchor="end" class="small">96%</text><text x="72" y="64" text-anchor="end" class="small">98%</text>
+      <text x="100" y="280" text-anchor="middle" class="small">n = 30</text><text x="250" y="280" text-anchor="middle" class="small">100</text>
+      <text x="400" y="280" text-anchor="middle" class="small">300</text><text x="550" y="280" text-anchor="middle" class="small">1000</text>
+      <polyline points="100,220 250,165 400,145 550,137.5" fill="none" class="s-1" stroke-width="2.5"/>
+      <polyline points="100,132.5 250,135 400,135 550,137.5" fill="none" class="s-2" stroke-width="2.5"/>
+      <polyline points="100,80 250,100 400,115 550,125" fill="none" class="s-3" stroke-width="2.5"/>
+      <polyline points="100,130 250,135 400,135 550,137.5" fill="none" class="s-4" stroke-width="2" stroke-dasharray="6 4"/>
+      <circle cx="100" cy="220" r="4" class="f-1"/><circle cx="250" cy="165" r="4" class="f-1"/><circle cx="400" cy="145" r="4" class="f-1"/><circle cx="550" cy="137.5" r="4" class="f-1"/>
+      <circle cx="100" cy="80" r="4" class="f-3"/><circle cx="250" cy="100" r="4" class="f-3"/><circle cx="400" cy="115" r="4" class="f-3"/><circle cx="550" cy="125" r="4" class="f-3"/>
+      <text x="110" y="236" class="small">Wald (CLT) 91.6%</text>
+      <text x="110" y="76" class="small">Clopper&#8211;Pearson 97.2%</text>
+      <text x="420" y="160" class="small">Wald 94.6%</text>
+      <text x="300" y="126" class="small">Wilson and Beta posterior (dashed) &#8776; 95%</text>
+      <text x="340" y="22" text-anchor="middle" class="small">at &#956; = 0.90, n = 30 the Wald interval covers only 80.9% (off the chart)</text>
+      <text x="20" y="160" class="small" transform="rotate(-90 20 160)">coverage</text>
+    </svg>
+    <figcaption><b>Figure 5.2.</b> Exact coverage of four nominal-95% intervals as <i>n</i> grows (log-spaced axis), averaged over true accuracy uniform on
+    [0.05, 0.95]. Values from <code>error_bars.py</code>. The CLT interval under-covers at small <i>n</i>; Wilson and the Beta posterior sit on the target;
+    Clopper&ndash;Pearson is conservative. All converge by <i>n</i> = 1,000.</figcaption>
+  </figure>
+
+  <aside class="tip" data-title="What to use, in one line"><p>For a binary metric: <b>Wilson</b> (or the Beta posterior) when <i>n</i> is below a few hundred or accuracy is
+  near 0 or 1; the CLT is fine above that. Say which one you used. Inspect ships a <code>ci_wilson()</code> metric, as of November 2026<a class="cite" href="#src-7">[7]</a>.</p></aside>
+
+  <h3 id="error-bars-nonbinary">Small n with non-binary scores</h3>
+  <p>Rubric scores and partial-credit rewards have no Wilson interval. The last block of <code>error_bars.py</code> measures coverage for a skewed continuous score and a
+  skewed 1&ndash;10 rubric (most mass on 9&ndash;10, a tail down to 1), using hardcoded <i>t</i> quantiles (2.093 for 19 df, 2.045 for 29 df):</p>
+<pre class="output"><code>Non-binary scores: coverage of nominal 95% intervals for the mean (10,000 runs, B = 1,000)
+  score              n  z (CLT)  t, n-1 df  percentile     BCa
+  Beta(5,2) score   20    93.1%      94.6%       92.6%   93.1%
+  Beta(5,2) score   30    94.3%      95.1%       93.8%   93.9%
+  1-10 rubric       20    89.8%      91.3%       91.0%   93.0%
+  1-10 rubric       30    92.2%      93.1%       93.0%   95.0%</code></pre>
+  <p>The <i>z</i> and percentile intervals under-cover; <i>t</i> fixes the mildly skewed case and BCa does best on the rubric.
+  At small <i>n</i>, use a <i>t</i> interval with <i>n</i> &minus; 1 df (the default <code>method="t"</code> of Inspect&rsquo;s <code>ci()</code><a class="cite" href="#src-7">[7]</a>)
+  or BCa, and say which.</p>
+
+  <h2 id="clustered"><span class="sec-num">5.3</span>Clustered data</h2>
+  <p>The formulas above assume independent scores. Reading-comprehension benchmarks ask several questions per passage; SWE-bench draws many tasks from a few
+  repositories; agentic suites generate several tasks per environment; K answers to one question form a cluster. Scores within a cluster are positively
+  correlated, so the naive SE is too small. Miller makes ignoring clustering one of his central warnings, and Anthropic lists clustered SEs
+  as the second of its five recommendations<a class="cite" href="#src-3">[3]</a><a class="cite" href="#src-4">[4]</a>.</p>
+
+  <h3 id="clustered-formula">The clustered standard error</h3>
+  <p>With clusters <i>c</i> = 1..C and scores <i>s<sub>i,c</sub></i>, the clustered SE adds the within-cluster cross-products to the naive variance:</p>
+  <div class="formula">
+    SE<sub>clustered</sub> = ( SE<sub>CLT</sub>&sup2; + <span class="frac"><span>1</span><span><i>n</i>&sup2;</span></span> &Sigma;<sub><i>c</i></sub> &Sigma;<sub><i>i</i></sub> &Sigma;<sub><i>j</i>&ne;<i>i</i></sub> (<i>s<sub>i,c</sub></i> &minus; s&#772;)(<i>s<sub>j,c</sub></i> &minus; s&#772;) )<sup>1/2</sup>
+    &asymp; <span class="frac"><span>1</span><span><i>n</i></span></span> &radic;( &Sigma;<sub><i>c</i></sub> ( &Sigma;<sub><i>i</i>&isin;<i>c</i></sub> (<i>s<sub>i,c</sub></i> &minus; s&#772;) )&sup2; )
+    <span class="eq-num">(5.4)</span>
+    <span class="where">The second form sums the deviations inside each cluster first, then squares. Positive correlation inside clusters makes the squared sums
+    large, so the SE grows. Inspect multiplies the variance by C/(C &minus; 1), a finite-cluster correction that matters when there are few clusters.</span>
+  </div>
+  <p>The survey statistician&rsquo;s <span class="term">design effect</span> is a useful mental model: with clusters of size <i>m</i> and intra-cluster correlation ICC, the
+  variance grows by 1 + (<i>m</i> &minus; 1)&middot;ICC (ten questions per passage at ICC 0.2: &times;2.8). Measure it per eval; there is no universal multiplier.</p>
+  <p>Here is Inspect&rsquo;s implementation, quoted from the current source. It cites Appendix A of Miller&rsquo;s paper:</p>
+<pre data-file="UKGovernmentBEIS/inspect_ai: src/inspect_ai/scorer/_metrics/std.py"><code class="language-python">def _clustered_stderr(partition: list[list[float]]) -&gt; float:
+    """Clustered standard error of the mean over a cluster partition.
+
+    For details, see Appendix A of https://arxiv.org/pdf/2411.00640.
+    The version here uses a finite cluster correction (unlike the paper)
+    """
+    import numpy as np
+
+    cluster_count = len(partition)
+
+    # The finite-cluster correction divides by (cluster_count - 1), so
+    # mirror the non-clustered path's n &lt; 2 guard and return 0 rather
+    # than NaN/inf when there is only a single cluster.
+    if cluster_count &lt; 2:
+        return 0.0
+
+    cluster_arrays = [np.asarray(group, dtype=float) for group in partition]
+    values = np.concatenate(cluster_arrays)
+    mean = float(np.mean(values))
+
+    # sum_i sum_j (s_i - mean)(s_j - mean) over a cluster is the square
+    # of that cluster's deviation sum. Computing the identity directly
+    # avoids materialising a k-by-k outer product for every cluster.
+    clustered_variance = 0.0
+    for cluster_data in cluster_arrays:
+        clustered_variance += ((cluster_data - mean).sum()) ** 2
+
+    # Multiply by C / (C - 1) to unbias the variance estimate
+    standard_error = np.sqrt(
+        clustered_variance * cluster_count / (cluster_count - 1)
+    ) / len(values)
+
+    return cast(float, standard_error)</code></pre>
+  <p class="code-caption">Quoted verbatim from the main branch on 2026-11-20<a class="cite" href="#src-7">[7]</a>. Requires <code>inspect_ai</code>; not run by this book.</p>
+  <p>In a task you ask for it by naming a metadata field. The Inspect documentation&rsquo;s own example clusters GPQA by category:</p>
+<pre data-file="UKGovernmentBEIS/inspect_ai: docs/metrics.qmd"><code class="language-python">@task
+def gpqa():
+    return Task(
+        dataset=read_gpqa_dataset("gpqa_main.csv"),
+        solver=[
+            system_message(SYSTEM_MESSAGE),
+            multiple_choice(),
+        ],
+        scorer=choice(),
+        metrics=[accuracy(), stderr(cluster="category")]
+    )</code></pre>
+  <p class="code-caption">Requires <code>inspect_ai</code>. <code>ci(method="bootstrap", cluster=...)</code> gives a cluster-bootstrap interval instead (as of November 2026)<a class="cite" href="#src-7">[7]</a>.</p>
+
+  <h3 id="clustered-demo">A simulation: passages with shared difficulty</h3>
+  <p><code>clustered.py</code> builds a benchmark of 50 passages with 4 questions each. Each passage&rsquo;s difficulty is drawn from {0.2, 0.5, 0.9}, and all four of
+  its questions are answered correctly with that probability. It computes the naive SE, Miller&rsquo;s clustered SE, Inspect&rsquo;s version, and a
+  <span class="term">cluster bootstrap</span> that resamples whole passages, then repeats the experiment 2,000 times to measure how often each 95% interval covers
+  the true super-population mean (0.5333).</p>
+<pre data-file="code/ch05/clustered.py"><code class="language-python">def naive_se(s: np.ndarray) -&gt; float:
+    return float(np.std(s, ddof=1) / np.sqrt(len(s)))
+
+
+def clustered_se(s: np.ndarray, cid: np.ndarray, finite_correction: bool) -&gt; float:
+    """(1/n) * sqrt( sum_c (sum_{i in c} (s_i - mean))^2 ), optionally times sqrt(C/(C-1))."""
+    mean = s.mean()
+    clusters = np.unique(cid)
+    v = sum(((s[cid == c] - mean).sum()) ** 2 for c in clusters)
+    if finite_correction:
+        v *= len(clusters) / (len(clusters) - 1)
+    return float(np.sqrt(v) / len(s))
+
+
+def cluster_bootstrap_se(s: np.ndarray, cid: np.ndarray, rng: np.random.Generator, b: int = 2000) -&gt; float:
+    """Resample whole passages with replacement and recompute the mean."""
+    sums = np.bincount(cid, weights=s)
+    sizes = np.bincount(cid)
+    idx = rng.integers(0, len(sums), size=(b, len(sums)))
+    means = sums[idx].sum(axis=1) / sizes[idx].sum(axis=1)
+    return float(means.std(ddof=1))
+</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch05/clustered.py</code></p>
+<pre class="output"><code>One benchmark draw: 50 passages x 4 questions, mean = 0.515
+  naive SE (iid)                 = 0.0354
+  clustered SE (Miller App. A)   = 0.0497   ratio 1.40x
+  clustered SE (Inspect, C/(C-1))= 0.0502   ratio 1.42x
+  cluster bootstrap SE (B=2000)  = 0.0499   ratio 1.41x
+  theory: ICC = 0.330, design effect = 1.99, SE inflation = sqrt(deff) = 1.41x
+
+Coverage of nominal 95% CIs over 2000 benchmark draws (true mean 0.5333):
+  naive                 83.5%
+  clustered (Inspect)   94.1%
+  median clustered/naive SE ratio = 1.41x</code></pre>
+  <div class="worked">
+    <p>In our simulation the clustered SE is <b>1.40&times;</b> the naive one, as theory predicts: ICC = 0.0822/0.2489 = 0.330, design effect 1 + 3 &times; 0.330 = 1.99,
+    &radic;1.99 = 1.41. The naive interval covers 83.5%, the clustered one 94.1%; the three corrections agree.</p>
+  </div>
+  <aside class="warn" data-title="Pitfall: clustering you did not notice"><p>Tasks generated from one template, episodes sharing a simulated persona, conversations scored per
+  turn, K rollouts per task. Write the cluster id into each sample&rsquo;s metadata when you build the dataset (Chapter 3); you cannot recover it from the scores.</p></aside>
+  <p>With fewer than about 20 clusters the clustered SE is itself noisy: use the C/(C &minus; 1) correction, a <i>t</i> distribution with C &minus; 1 df, or the
+  hierarchical model of 5.15. When the clusters are the K samples of one question, average within each question first (next section).</p>
+
+  <h2 id="variance-reduction"><span class="sec-num">5.4</span>Reducing variance without changing the question</h2>
+  <p>Once you know which term of Equation 5.1 dominates, you can shrink it. Miller&rsquo;s third recommendation is to reduce the within-question variance, often
+  the cheap term<a class="cite" href="#src-3">[3]</a><a class="cite" href="#src-4">[4]</a>.</p>
+
+  <h3 id="variance-reduction-k">Resampling K answers per question</h3>
+  <p>If every question is answered K times and you score each question by the mean of its K attempts, the within-question variance of that question
+  falls from <i>p<sub>i</sub></i>(1 &minus; <i>p<sub>i</sub></i>) to <i>p<sub>i</sub></i>(1 &minus; <i>p<sub>i</sub></i>)/K. The between-question term is untouched.
+  So the variance of the benchmark mean is</p>
+  <div class="formula">
+    Var(s&#772;) = <span class="frac"><span>1</span><span><i>n</i></span></span> ( Var(<i>p</i>) + <span class="frac"><span>E[<i>p</i>(1 &minus; <i>p</i>)]</span><span>K</span></span> )
+    <span class="eq-num">(5.5)</span>
+    <span class="where">As K &rarr; &infin; the SE approaches a floor of &radic;(Var(<i>p</i>)/<i>n</i>) set entirely by the number of questions.</span>
+  </div>
+  <p>The right SE is the ordinary SE over the <i>n</i> per-question means (equivalently, a clustered SE with questions as clusters). Pooling all K&middot;<i>n</i>
+  attempts into one list treats repeat attempts as new questions.</p>
+  <p><code>resample_k.py</code> draws solve rates from a U-shaped Beta(0.6, 0.4), so both variance terms are 0.12, and builds 4,000 fresh 200-question benchmarks per K:</p>
+<pre data-file="code/ch05/resample_k.py"><code class="language-python">def theory() -&gt; tuple[float, float]:
+    mean = A / (A + B)
+    var_between = A * B / ((A + B) ** 2 * (A + B + 1))
+    within = mean * (1 - mean) - var_between  # E[p(1-p)] = mu(1-mu) - Var(p)
+    return var_between, within
+
+
+# inside main(), for each benchmark draw:
+#   x = rng.random((N, k)) &lt; p[:, None]          # K attempts per question
+#   qmean = x.mean(axis=1)                         # per-question means
+#   se_q = qmean.std(ddof=1) / np.sqrt(N)          # correct
+#   se_pool = x.ravel().std(ddof=1) / np.sqrt(N*k) # WRONG: pretends K*n independent</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch05/resample_k.py</code></p>
+<pre class="output"><code>Law of total variance for one sampled answer (p_i ~ Beta(0.6,0.4)):
+  Var(p_i) between questions = 0.1200   E[p_i(1-p_i)] within = 0.1200   total = 0.2400
+
+SE of the benchmark mean, n = 200 questions, 4000 fresh benchmarks per row
+    K   true SE    theory   per-question-mean SE   pooled K*n SE   95% cov pooled
+    1    0.0350    0.0346                 0.0346          0.0346            94.7%
+    4    0.0274    0.0274                 0.0274          0.0173            78.9%
+   16    0.0252    0.0252                 0.0252          0.0086            48.5%
+  p_i    0.0245    0.0245  (score = probability of the right answer; no sampling noise)
+
+K=1 -&gt; K=16 cuts the SE from 0.0350 to 0.0252; the floor set by n is 0.0245.
+Only more (or better) questions move the floor: n=800 would give 0.0122.</code></pre>
+  <p>The per-question-mean SE tracks the truth at every K; the pooled SE at K = 16 reports 0.0086, a third of the truth, and covers 48.5%. Returns
+  diminish because the between term does not move.</p>
+
+  <h3 id="variance-reduction-probs">Token probabilities and continuous metrics</h3>
+  <p>If the answer is a single token (a multiple-choice letter, a yes/no), you can skip sampling entirely and score each question by the model&rsquo;s probability
+  of the correct token, <i>p<sub>i</sub></i>. This removes the within-question term exactly: Var(s&#772;) = Var(<i>p</i>)/<i>n</i><a class="cite" href="#src-3">[3]</a>, the floor of 0.0245 in the
+  script&rsquo;s last row, from one forward pass. More generally, continuous metrics such as reference log-probability
+  or bits-per-byte carry more signal per item than 0/1 accuracy, especially early in training<a class="cite" href="#src-9">[9]</a><a class="cite" href="#src-10">[10]</a>; 5.11
+  quantifies this.</p>
+
+  <h3 id="variance-reduction-other">Other levers, and one to avoid</h3>
+  <ul>
+    <li><b>Checkpoint averaging.</b> When the eval tracks a training run, averaging the scores of the last few checkpoints reduces training noise.
+    Heineman et al. report it raises decision accuracy on their benchmarks<a class="cite" href="#src-10">[10]</a>.</li>
+    <li><b>Better questions, not more.</b> Removing near-duplicate or broken items and choosing informative ones (IRT, 5.12) shrinks the between term per item.</li>
+    <li><b>Do not lower the temperature to reduce noise.</b> Miller argues that changing sampling parameters changes the quantity being measured and can move variance
+    into the conditional means rather than remove it<a class="cite" href="#src-3">[3]</a>. Hochlehnert et al. found temperature 0 vs 1 moved AIME scores by up to about 15 points and top-p by
+    up to about 8<a class="cite" href="#src-1">[1]</a>. Use each model&rsquo;s intended decoding parameters, report them, and resample instead.</li>
+  </ul>
+  <p>In Inspect, <code>Task(..., epochs=Epochs(5, "mean"))</code> runs each sample five times and reduces per sample before computing metrics: the per-question-mean design<a class="cite" href="#src-7">[7]</a>.</p>
+
+  <h2 id="paired"><span class="sec-num">5.5</span>Comparing two models</h2>
+  <p>Most evals ask whether a new model, prompt or checkpoint beats the old one. The efficient answer uses the fact that both answered <em>the same questions</em>.</p>
+
+  <h3 id="paired-formula">Paired differences and the correlation term</h3>
+  <p>For each question compute <i>d<sub>i</sub></i> = <i>s<sub>A,i</sub></i> &minus; <i>s<sub>B,i</sub></i> and treat the <i>d<sub>i</sub></i> as your data:</p>
+  <div class="formula">
+    SE<sub>paired</sub> = <span class="frac"><span>sd(<i>d</i>)</span><span>&radic;<i>n</i></span></span>
+    = &radic;( SE<sub>A</sub>&sup2; + SE<sub>B</sub>&sup2; &minus; 2 &middot; SE<sub>A</sub> &middot; SE<sub>B</sub> &middot; Corr(<i>s<sub>A</sub></i>, <i>s<sub>B</sub></i>) )
+    <span class="eq-num">(5.6)</span>
+    <span class="where">The unpaired SE of the difference is &radic;(SE<sub>A</sub>&sup2; + SE<sub>B</sub>&sup2;), which is Equation 5.6 with the correlation set to zero.</span>
+  </div>
+  <p>Models agree about which questions are hard, so the correlation term usually removes a large share of the variance<a class="cite" href="#src-3">[3]</a>; measure and report it.
+  At &rho; = 0.5 the paired SE is 71% of the unpaired one; at 0.8, 45% (Figure 5.3).</p>
+
+  <h3 id="paired-tests">Three tests for the same question</h3>
+  <ul>
+    <li><b>McNemar&rsquo;s test</b> for binary outcomes. Only the discordant questions carry information about the difference: let <i>b</i> be the number A gets
+    right and B wrong, and <i>c</i> the reverse. Under &ldquo;no difference&rdquo;, <i>b</i> ~ Binomial(<i>b</i> + <i>c</i>, 0.5). Use that exact binomial test
+    (or &chi;&sup2; = (|<i>b</i> &minus; <i>c</i>| &minus; 1)&sup2;/(<i>b</i> + <i>c</i>) for large counts).</li>
+    <li><b>Paired permutation (sign-flip) test.</b> Under the null, the sign of each <i>d<sub>i</sub></i> is arbitrary. Flip signs at random many times, recompute
+    the mean, and report the share of flips at least as extreme as the observed mean. It works for any score, not just binary.</li>
+    <li><b>Paired bootstrap.</b> Resample question indices with replacement, recompute the mean difference with the same indices for both models, and take the
+    2.5% and 97.5% percentiles. This is the classic MT significance test of Koehn (2004), studied further by Berg-Kirkpatrick et al.<a class="cite" href="#src-11">[11]</a><a class="cite" href="#src-12">[12]</a> It also
+    works for non-additive metrics such as corpus BLEU or F1, where you recompute the metric on each resample.</li>
+  </ul>
+  <p>Dror et al. give a decision tree for choosing a test<a class="cite" href="#src-13">[13]</a>; for a mean metric on a few hundred questions, the paired <i>z</i>-test, permutation
+  test and paired bootstrap agree.</p>
+
+  <h3 id="paired-demo">Worked example</h3>
+  <p><code>paired.py</code> simulates 500 questions with a shared easiness &theta;<sub><i>i</i></sub> ~ N(0, 3&sup2;); model A answers correctly with probability
+  &sigma;(&theta;<sub><i>i</i></sub> + 0.3) and model B with &sigma;(&theta;<sub><i>i</i></sub>). Then it runs every analysis on the same data:</p>
+<pre data-file="code/ch05/paired.py"><code class="language-python">    d = a - b
+    se_unpaired = math.sqrt(se_a**2 + se_b**2)
+    se_paired = d.std(ddof=1) / math.sqrt(N)
+    se_identity = math.sqrt(se_a**2 + se_b**2 - 2 * se_a * se_b * rho)
+
+    # McNemar: only discordant pairs matter
+    n10 = int(((a == 1) &amp; (b == 0)).sum())
+    n01 = int(((a == 0) &amp; (b == 1)).sum())
+    p_exact = binom_two_sided_p(n10, n10 + n01)
+
+    # Paired permutation (sign flip)
+    signs = prng.choice([-1.0, 1.0], size=(20_000, N))
+    null = (signs * d).mean(axis=1)
+    p_perm = float((np.abs(null) &gt;= abs(d.mean())).mean())
+
+    # Paired bootstrap
+    idx = brng.integers(0, N, size=(10_000, N))
+    boots = d[idx].mean(axis=1)
+    lo, hi = np.percentile(boots, [2.5, 97.5])</code></pre>
+  <p class="code-caption">Excerpt from <code>main()</code>; full file: <code>code/ch05/paired.py</code>.</p>
+  <p class="run-cmd">Run it: <code>python3 code/ch05/paired.py</code></p>
+<pre class="output"><code>n = 500 questions. A = 0.548 (SE 0.0223), B = 0.494 (SE 0.0224), corr(sA, sB) = 0.624
+difference = +5.4 pts (expected difference on these questions = +3.3 pts)
+  unpaired SE of difference = 0.0316  -&gt; z = 1.71, p = 0.087
+  paired SE of difference   = 0.0194  -&gt; z = 2.79, p = 0.0053
+  identity sqrt(SEa^2+SEb^2-2 rho SEa SEb) = 0.0194
+  95% CI A = [0.504, 0.592], B = [0.450, 0.538] -&gt; overlap: True
+McNemar: A-only right = 61, B-only right = 34, exact p = 0.0073, chi2(cc) = 7.12
+Sign-flip permutation test (20,000 flips): p = 0.0073
+Paired bootstrap 95% CI for the difference: [+1.6, +9.2] pts
+
+Figure 5.3 data: SE of the difference vs correlation (Var = 0.25 per model, n = 500)
+   rho   unpaired   paired   ratio
+   0.0     0.0316   0.0316    1.00
+   0.2     0.0316   0.0283    0.89
+   0.4     0.0316   0.0245    0.77
+   0.5     0.0316   0.0224    0.71
+   0.6     0.0316   0.0200    0.63
+   0.8     0.0316   0.0141    0.45
+   0.9     0.0316   0.0100    0.32</code></pre>
+  <div class="worked">
+    <p>Unpaired, the 5.4-point lead has <i>p</i> = 0.087 and the two intervals overlap. Paired (&rho; = 0.624), the SE drops from 0.0316 to 0.0194 and <i>p</i> = 0.0053;
+    McNemar, the sign-flip test and the paired bootstrap ([+1.6, +9.2]) agree. (The expected gap on these questions is 3.3 points; this draw is a lucky one.)</p>
+  </div>
+  <aside class="warn" data-title="Pitfall: overlapping intervals are not a test"><p>&ldquo;The confidence intervals overlap, so the models are not significantly different&rdquo;
+  is wrong twice over: independent intervals can overlap while the difference is significant (the SE of a difference is
+  &radic;2 times one SE, not twice it), and for paired data the overlap rule ignores the correlation. Always compute the interval of the
+  <em>difference</em>, paired by question.</p></aside>
+
+  <figure class="diagram" id="fig-5-3">
+    <svg viewBox="0 0 640 300" role="img" aria-labelledby="fig-5-3-t">
+      <title id="fig-5-3-t">Standard error of a difference between two models, unpaired versus paired, as the correlation between their per-question scores grows</title>
+      <line x1="80" y1="250" x2="580" y2="250" class="s-ink" stroke-width="1"/>
+      <line x1="80" y1="40" x2="80" y2="250" class="s-ink" stroke-width="1"/>
+      <text x="72" y="254" text-anchor="end" class="small">0</text><text x="72" y="197" text-anchor="end" class="small">0.01</text>
+      <text x="72" y="140" text-anchor="end" class="small">0.02</text><text x="72" y="83" text-anchor="end" class="small">0.03</text>
+      <text x="80" y="270" text-anchor="middle" class="small">0</text><text x="176" y="270" text-anchor="middle" class="small">0.2</text>
+      <text x="272" y="270" text-anchor="middle" class="small">0.4</text><text x="368" y="270" text-anchor="middle" class="small">0.6</text>
+      <text x="464" y="270" text-anchor="middle" class="small">0.8</text><text x="560" y="270" text-anchor="middle" class="small">1.0</text>
+      <text x="330" y="292" text-anchor="middle" class="small">correlation &#961; between models&#8217; per-question scores</text>
+      <polyline points="80,69.4 512,69.4" fill="none" class="s-1" stroke-width="2.5"/>
+      <polyline points="80,69.4 176,88.3 272,110 320,122 368,135.7 464,169.4 512,192.9" fill="none" class="s-2" stroke-width="2.5"/>
+      <circle cx="379.5" cy="139.1" r="5" class="f-3"/>
+      <text x="390" y="134" class="small">paired.py: &#961; = 0.624, SE 0.0194</text>
+      <text x="300" y="60" class="small">unpaired 0.0316</text>
+      <text x="200" y="125" class="small">paired</text>
+      <text x="470" y="205" class="small">45% at &#961; = 0.8</text>
+      <text x="20" y="150" class="small" transform="rotate(-90 20 150)">SE of difference</text>
+    </svg>
+    <figcaption><b>Figure 5.3.</b> SE of the difference between two models at 50% accuracy on 500 questions. The unpaired SE ignores correlation; the paired SE
+    falls as &radic;(1 &minus; &rho;). Curve values from the last table printed by <code>paired.py</code>; the dot is the simulated pair of models above.</figcaption>
+  </figure>
+
+  <h3 id="paired-clustered">Paired, clustered and resampled together</h3>
+  <p>Agent comparisons often combine all three complications: SWE-bench-style tasks grouped by repository, K trials per task, and two agents run on the same tasks.
+  The rule is <b>reduce over K first, difference second, cluster third</b>. Compute each agent&rsquo;s per-task mean over its K trials, take
+  <i>d<sub>i</sub></i> = mean<sub><i>k</i></sub> A<sub><i>i</i></sub> &minus; mean<sub><i>k</i></sub> B<sub><i>i</i></sub>, and give mean(<i>d</i>) the clustered SE of Equation 5.4 over
+  repositories, &radic;(C/(C &minus; 1) &middot; &Sigma;<sub><i>c</i></sub> (&Sigma;<sub><i>i</i>&isin;<i>c</i></sub> (<i>d<sub>i</sub></i> &minus; d&#772;))&sup2;) / <i>n</i>, which is the
+  same computation as Inspect&rsquo;s clustered stderr applied to the <i>d<sub>i</sub></i><a class="cite" href="#src-3">[3]</a><a class="cite" href="#src-7">[7]</a>. A cluster bootstrap that resamples
+  repositories and applies the same indices to both agents is the nonparametric equivalent. <code>paired_clustered()</code> in <code>paired.py</code> simulates 40 repos &times; 5 tasks
+  with K = 4, shared repo and task difficulty on the logit, an agent effect of +0.3 that varies by repository (sd 0.8):</p>
+<pre class="output"><code>Paired + clustered + K trials: 40 repos x 5 tasks, K = 4, 2,000 simulated evals
+  true difference (super-population) = +5.07 pts
+  method                        mean SE  95% coverage
+  naive unpaired                 0.0341         97.1%
+  paired, per-task means         0.0232         87.0%
+  paired + clustered by repo     0.0301         94.7%</code></pre>
+  <p>Pairing alone under-covers (87.0%) because relative strengths are shared within a repository; clustering restores 94.7%.</p>
+
+  <h2 id="power"><span class="sec-num">5.6</span>Power analysis and sample size</h2>
+  <p>Before running an eval, ask whether it <em>can</em> detect the effect you care about. An underpowered eval&rsquo;s &ldquo;no significant difference&rdquo; is read as
+  &ldquo;no difference&rdquo;, and its occasional significant result overstates the effect (the winner&rsquo;s curse). Card et al. found many NLP comparisons underpowered; a typical 2,000-sentence MT test
+  set has only about 75% power to detect a 1-BLEU difference<a class="cite" href="#src-14">[14]</a>.</p>
+
+  <h3 id="power-formula">Miller&rsquo;s sample-size formula</h3>
+  <p>For a two-sided test at level &alpha; with power 1 &minus; &beta; to detect a true difference &delta;, Miller gives<a class="cite" href="#src-3">[3]</a>:</p>
+  <div class="formula">
+    <i>n</i> = (z<sub>&alpha;/2</sub> + z<sub>&beta;</sub>)&sup2; &middot; <span class="frac"><span>&omega;&sup2; + &sigma;<sub>A</sub>&sup2;/K<sub>A</sub> + &sigma;<sub>B</sub>&sup2;/K<sub>B</sub></span><span>&delta;&sup2;</span></span>,
+    &nbsp;&nbsp;&nbsp; &delta;<sub>MDE</sub> = (z<sub>&alpha;/2</sub> + z<sub>&beta;</sub>) &middot; &radic;( (&omega;&sup2; + &sigma;<sub>A</sub>&sup2;/K<sub>A</sub> + &sigma;<sub>B</sub>&sup2;/K<sub>B</sub>) / <i>n</i> )
+    <span class="eq-num">(5.7)</span>
+    <span class="where">&omega;&sup2; = Var(<i>x<sub>A</sub></i>) + Var(<i>x<sub>B</sub></i>) &minus; 2 Cov(<i>x<sub>A</sub></i>, <i>x<sub>B</sub></i>) is the between-question variance of the
+    paired difference of the models&rsquo; question-level means <i>x</i>; &sigma;&sup2; is each model&rsquo;s within-question variance and K its number of samples per question.
+    For &alpha; = 0.05 and 80% power, z<sub>&alpha;/2</sub> = 1.960 and z<sub>&beta;</sub> = 0.8416. The second expression is the
+    <span class="term">minimum detectable effect</span> (MDE) for a given <i>n</i>.</span>
+  </div>
+  <div class="worked">
+    <p><b>Worked example.</b> Detect a 3-point gain (&delta; = 0.03) at accuracy near 50%, so each model&rsquo;s score variance is 0.25, with one greedy sample per
+    question (&sigma;&sup2; = 0):</p>
+    <ul>
+      <li>Uncorrelated models: &omega;&sup2; = 0.25 + 0.25 = 0.50, <i>n</i> = 2.8016&sup2; &times; 0.50 / 0.0009 = <b>4,361</b> questions.</li>
+      <li>&rho; = 0.5: &omega;&sup2; = 0.25, <i>n</i> = <b>2,181</b>.</li>
+      <li>&rho; = 0.8: &omega;&sup2; = 0.10, <i>n</i> = <b>873</b>.</li>
+    </ul>
+    <p>Miller&rsquo;s own worked example assumes &omega;&sup2; = 1/9 (from his uniform-difficulty setup; at 50% accuracy this corresponds to &rho; &asymp; 0.78) and
+    &sigma;&sup2; = 0, giving 2.8016&sup2; &times; (1/9) / 0.03&sup2; &asymp; 969 questions, hence his rule of thumb that new evals should contain at least 1,000
+    questions<a class="cite" href="#src-3">[3]</a>. Reproduced by <code>code/ch05/power.py</code>.</p>
+  </div>
+<pre data-file="code/ch05/power.py"><code class="language-python">def n_required(delta: float, omega2: float, sa2: float = 0.0, sb2: float = 0.0, ka: int = 1, kb: int = 1) -&gt; int:
+    """Miller: n = (z_{a/2} + z_b)^2 (omega^2 + sA^2/KA + sB^2/KB) / delta^2, rounded up."""
+    return math.ceil((Z_A + Z_B) ** 2 * (omega2 + sa2 / ka + sb2 / kb) / delta**2)
+
+
+def mde(n: int, omega2: float, sa2: float = 0.0, sb2: float = 0.0, ka: int = 1, kb: int = 1) -&gt; float:
+    return (Z_A + Z_B) * math.sqrt((omega2 + sa2 / ka + sb2 / kb) / n)
+
+
+def correlated_pairs(rng: np.random.Generator, n: int, pa: float, pb: float, rho: float) -&gt; tuple[np.ndarray, np.ndarray]:
+    """Binary score pairs with given means and Pearson correlation (via the 2x2 joint table)."""
+    cov = rho * math.sqrt(pa * (1 - pa) * pb * (1 - pb))
+    p11 = pa * pb + cov
+    p10, p01 = pa - p11, pb - p11
+    u = rng.random(n)
+    a = (u &lt; p11 + p10).astype(float)
+    b = ((u &lt; p11) | ((u &gt;= p11 + p10) &amp; (u &lt; p11 + p10 + p01))).astype(float)
+    return a, b
+</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch05/power.py</code></p>
+<pre class="output"><code>z_(alpha/2) = 1.9600, z_beta = 0.8416
+Questions needed for a 3-point gain at 80% power (accuracy ~50%, Var = 0.25 per model, K = 1, sigma^2 = 0):
+  rho = 0.0: omega^2 = 0.50 -&gt; n = 4,361
+  rho = 0.5: omega^2 = 0.25 -&gt; n = 2,181
+  rho = 0.8: omega^2 = 0.10 -&gt; n = 873
+  Miller's example (omega^2 = 1/9, sigma^2 = 0): n = 969
+
+Monte Carlo check (4,000 simulated evals each, true gain 3 points, paired z-test at alpha = 0.05):
+  n =  4361, rho = 0.0, paired   test: power = 79.5%
+  n =   873, rho = 0.8, paired   test: power = 80.8%
+  n =   873, rho = 0.8, unpaired test: power = 6.8%
+
+MDE (points, 80% power, alpha 0.05). Var(x) = 0.10 between, sigma^2 = 0.15 within, per model
+      n  rho=0.0,K=1   rho=0.0,K=4   rho=0.0,K=16  rho=0.5,K=1   rho=0.5,K=4   rho=0.5,K=16  rho=0.8,K=1   rho=0.8,K=4   rho=0.8,K=16
+    100           19.8           14.7           13.1           17.7           11.7            9.7           16.3            9.5            6.8
+    300           11.4            8.5            7.6           10.2            6.8            5.6            9.4            5.5            3.9
+   1000            6.3            4.6            4.1            5.6            3.7            3.1            5.2            3.0            2.1
+   3000            3.6            2.7            2.4            3.2            2.1            1.8            3.0            1.7            1.2
+
+Figure 5.4 data: MDE (points) vs n, K = 1, sigma^2 = 0, Var = 0.25 per model
+  n =    50: rho=0.0:  28.0  rho=0.5:  19.8  rho=0.8:  12.5
+  n =   100: rho=0.0:  19.8  rho=0.5:  14.0  rho=0.8:   8.9
+  n =   200: rho=0.0:  14.0  rho=0.5:   9.9  rho=0.8:   6.3
+  n =   500: rho=0.0:   8.9  rho=0.5:   6.3  rho=0.8:   4.0
+  n =  1000: rho=0.0:   6.3  rho=0.5:   4.4  rho=0.8:   2.8
+  n =  2000: rho=0.0:   4.4  rho=0.5:   3.1  rho=0.8:   2.0
+  n =  5000: rho=0.0:   2.8  rho=0.5:   2.0  rho=0.8:   1.3
+  n = 10000: rho=0.0:   2.0  rho=0.5:   1.4  rho=0.8:   0.9</code></pre>
+  <p>Check a power formula by simulation: the paired test reaches 79.5% and 80.8% power as promised. An <em>unpaired</em> test on the same correlated data has only 6.8% power: its SE (0.0239) overstates the true SE of the difference (about 0.0107).</p>
+
+  <h3 id="power-mde">An MDE table</h3>
+  <p>The middle block, as a table: the smallest gain each design can see.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th class="num">n</th><th class="num">&rho;=0, K=1</th><th class="num">&rho;=0, K=16</th><th class="num">&rho;=0.5, K=1</th><th class="num">&rho;=0.5, K=4</th><th class="num">&rho;=0.8, K=1</th><th class="num">&rho;=0.8, K=4</th><th class="num">&rho;=0.8, K=16</th></tr></thead>
+      <tbody>
+        <tr><td class="num">100</td><td class="num">19.8</td><td class="num">13.1</td><td class="num">17.7</td><td class="num">11.7</td><td class="num">16.3</td><td class="num">9.5</td><td class="num">6.8</td></tr>
+        <tr><td class="num">300</td><td class="num">11.4</td><td class="num">7.6</td><td class="num">10.2</td><td class="num">6.8</td><td class="num">9.4</td><td class="num">5.5</td><td class="num">3.9</td></tr>
+        <tr><td class="num">1,000</td><td class="num">6.3</td><td class="num">4.1</td><td class="num">5.6</td><td class="num">3.7</td><td class="num">5.2</td><td class="num">3.0</td><td class="num">2.1</td></tr>
+        <tr><td class="num">3,000</td><td class="num">3.6</td><td class="num">2.4</td><td class="num">3.2</td><td class="num">2.1</td><td class="num">3.0</td><td class="num">1.7</td><td class="num">1.2</td></tr>
+      </tbody>
+      <caption>Table 5.2. Minimum detectable effect in accuracy points (80% power, &alpha; = 0.05, two-sided) from <code>power.py</code>. Var(x) = 0.10 between and
+      &sigma;&sup2; = 0.15 within per model; &rho; is the correlation of the two models&rsquo; question-level means.</caption>
+    </table>
+  </div>
+  <p>On 300 questions, &rho; = 0 and K = 1 can only see an 11-point gain; pairing at &rho; = 0.8 with K = 16 sees 3.9 points without a new question.
+  Quadrupling <i>n</i> halves the MDE (Figure 5.4, K = 1, no within variance).</p>
+
+  <figure class="diagram" id="fig-5-4">
+    <svg viewBox="0 0 640 310" role="img" aria-labelledby="fig-5-4-t">
+      <title id="fig-5-4-t">Minimum detectable effect versus number of questions for three correlations between models</title>
+      <line x1="80" y1="270" x2="580" y2="270" class="s-ink" stroke-width="1"/>
+      <line x1="80" y1="30" x2="80" y2="270" class="s-ink" stroke-width="1"/>
+      <text x="72" y="274" text-anchor="end" class="small">0</text><text x="72" y="194" text-anchor="end" class="small">10</text>
+      <text x="72" y="114" text-anchor="end" class="small">20</text><text x="72" y="34" text-anchor="end" class="small">30</text>
+      <text x="80" y="288" text-anchor="middle" class="small">50</text><text x="142.8" y="288" text-anchor="middle" class="small">100</text>
+      <text x="288.6" y="288" text-anchor="middle" class="small">500</text><text x="351.4" y="288" text-anchor="middle" class="small">1k</text>
+      <text x="497.2" y="288" text-anchor="middle" class="small">5k</text><text x="560" y="288" text-anchor="middle" class="small">10k</text>
+      <text x="330" y="306" text-anchor="middle" class="small">questions n (log scale)</text>
+      <line x1="80" y1="246" x2="580" y2="246" class="s-muted" stroke-width="1" stroke-dasharray="5 4"/>
+      <text x="584" y="250" class="small">3 pts</text>
+      <polyline points="80,46 142.8,111.6 205.6,158 288.6,198.8 351.4,219.6 414.2,234.8 497.2,247.6 560,254" fill="none" class="s-1" stroke-width="2.5"/>
+      <polyline points="80,111.6 142.8,158 205.6,190.8 288.6,219.6 351.4,234.8 414.2,245.2 497.2,254 560,258.8" fill="none" class="s-2" stroke-width="2.5"/>
+      <polyline points="80,170 142.8,198.8 205.6,219.6 288.6,238 351.4,247.6 414.2,254 497.2,259.6 560,262.8" fill="none" class="s-3" stroke-width="2.5"/>
+      <text x="150" y="100" class="small">&#961; = 0</text>
+      <text x="215" y="182" class="small">&#961; = 0.5</text>
+      <text x="100" y="196" class="small">&#961; = 0.8</text>
+      <text x="20" y="160" class="small" transform="rotate(-90 20 160)">MDE (points)</text>
+    </svg>
+    <figcaption><b>Figure 5.4.</b> MDE at 80% power versus benchmark size for three model correlations (accuracy near 50%, one sample per question).
+    Values from the last block of <code>power.py</code>.</figcaption>
+  </figure>
+  <aside class="tip" data-title="Power for RL seeds and agent tasks"><p>The same formula sizes the number of training seeds (treat each seed as a &ldquo;question&rdquo;
+  and use the between-seed variance), and Colas et al. give an RL-specific treatment of how many random seeds a comparison needs<a class="cite" href="#src-15">[15]</a>. For agent suites with
+  few, expensive tasks, the K term is often the cheapest lever: more trials per task.</p></aside>
+
+  <h2 id="multiple-comparisons"><span class="sec-num">5.7</span>Multiple comparisons and leaderboards</h2>
+  <p>Run one test at &alpha; = 0.05 and you accept a 5% chance of a false positive. Run 20 &mdash; one per benchmark in a model card, or one per subtask &mdash;
+  with no true difference anywhere, and the chance of at least one &ldquo;significant&rdquo; result is 1 &minus; 0.95<sup>20</sup> = <b>0.64</b>. Two families of
+  correction exist:</p>
+  <ul>
+    <li><b>Family-wise error rate (FWER)</b>: control P(any false positive). <span class="term">Bonferroni</span> tests each of <i>m</i> hypotheses at &alpha;/<i>m</i>
+    (0.0025 for 20). <span class="term">Holm</span>&rsquo;s step-down version sorts the <i>p</i>-values and compares the <i>i</i>-th smallest with &alpha;/(<i>m</i> &minus;
+    <i>i</i> + 1), stopping at the first failure; it controls the same error rate and is uniformly more powerful.</li>
+    <li><b>False discovery rate (FDR)</b>: control the expected <em>share</em> of false positives among the rejections. <span class="term">Benjamini&ndash;Hochberg</span>
+    (BH) finds the largest <i>i</i> with <i>p</i><sub>(<i>i</i>)</sub> &le; <i>i</i>&middot;<i>q</i>/<i>m</i> and rejects the <i>i</i> smallest. It suits screening many
+    model pairs or subtasks, where a few false leads are acceptable.</li>
+  </ul>
+<pre data-file="code/ch05/multiple_comparisons.py"><code class="language-python">def holm(p: np.ndarray, alpha: float = ALPHA) -&gt; np.ndarray:
+    """Step-down: compare the i-th smallest p (i = 0..m-1) with alpha / (m - i); stop at first failure."""
+    m = len(p)
+    order = np.argsort(p)
+    reject = np.zeros(m, dtype=bool)
+    for i, j in enumerate(order):
+        if p[j] &lt;= alpha / (m - i):
+            reject[j] = True
+        else:
+            break
+    return reject
+
+
+def benjamini_hochberg(p: np.ndarray, q: float = ALPHA) -&gt; np.ndarray:
+    """Step-up: find the largest i with p_(i) &lt;= i q / m and reject p_(1..i)."""
+    m = len(p)
+    order = np.argsort(p)
+    thresh = q * np.arange(1, m + 1) / m
+    below = np.nonzero(p[order] &lt;= thresh)[0]
+    reject = np.zeros(m, dtype=bool)
+    if len(below):
+        reject[order[: below[-1] + 1]] = True
+    return reject
+</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch05/multiple_comparisons.py</code></p>
+<pre class="output"><code>Analytic: P(&gt;=1 false positive among 20 null tests) = 1 - 0.95^20 = 0.6415; Bonferroni threshold = 0.0025
+
+Scenario 1: 20 benchmarks, all null, 10,000 simulated studies
+  none        family-wise error rate =  64.9%
+  Bonferroni  family-wise error rate =   4.9%
+  Holm        family-wise error rate =   4.9%
+  BH (FDR)    family-wise error rate =   5.1%
+
+Scenario 2: 20 benchmarks, 5 with a real effect (z shift 3.0), 10,000 studies
+  method        power    FWER     FDR
+  none          85.3%   54.3%   13.2%
+  Bonferroni    49.2%    3.7%    1.2%
+  Holm          50.6%    4.2%    1.3%
+  BH (FDR)      65.3%   15.5%    3.8%
+
+Scenario 3: rank ranges for 8 models (score, SE); rank = 1 + #models significantly better
+  marginal 95%               z=1.96: 1-3  1-3  1-3  4-5  4-5  6-7  6-7  8-8
+  simultaneous (28 pairs)    z=3.12: 1-3  1-5  1-5  2-5  2-6  5-7  6-7  8-8</code></pre>
+  <p>Every correction brings the 64.9% family-wise error to about 5%. With 5 real effects, BH finds 65.3% of them at 3.8% FDR but a 15.5% chance of some false
+  positive; Holm is strictly better than Bonferroni. Choose the error you care about before looking.</p>
+
+  <h3 id="multiple-comparisons-ranks">Simultaneous intervals for rankings</h3>
+  <p>&ldquo;Model 3 is ranked third&rdquo; is a statement about many pairwise differences at once. Chatbot Arena builds simultaneous intervals for its Bradley&ndash;Terry
+  scores from a sandwich-robust covariance and gives each model a rank range: 1 plus the number of models whose lower bound exceeds its upper bound<a class="cite" href="#src-16">[16]</a>.
+  In Scenario 3 (Bonferroni over 28 pairs), the second model&rsquo;s range widens from 1&ndash;3 to 1&ndash;5.</p>
+  <aside class="warn" data-title="Pitfall: the benchmark lottery and selection on the test set"><p>The worst multiple-comparisons problems are the ones nobody counts.
+  Dehghani et al. show that which benchmarks and aggregation a paper chooses can decide which method looks state of the art<a class="cite" href="#src-17">[17]</a>. Trying ten prompts,
+  five checkpoints or three seeds and reporting the best on the test set is a hidden multiple comparison with a built-in upward bias; Hochlehnert et al. found
+  this kind of selection among the reasons published reasoning gains shrank under re-evaluation<a class="cite" href="#src-1">[1]</a>. The fixes are procedural: pre-register the primary
+  metric, select on a dev split, and report every configuration you tried.</p>
+  <p>The same bias shows up on public leaderboards: Singh et al. found that Chatbot Arena providers privately tested many variants and published only the best<a class="cite" href="#src-56">[56]</a>
+  (see Chapter 2&rsquo;s <a href="02-benchmarks-metrics.html#preferences-style">Leaderboard Illusion aside</a>). If N variants have equal true skill and scores with standard error &sigma;,
+  the published maximum is inflated by about &sigma; &times; E[max of N standard normals]: about 1.16 SE for N = 5 and 1.54 SE for N = 10.</p></aside>
+
+  <h3 id="optional-stopping">Stopping rules: peeking at offline evals</h3>
+  <p>Adding seeds, epochs or questions until <i>p</i> &lt; 0.05, or re-checking a running eval after every batch, is a multiple comparison over time. Scenario 4 of
+  <code>multiple_comparisons.py</code> simulates 20,000 null comparisons in which each seed adds a paired difference drawn from N(0, 1), computes
+  <i>z<sub>k</sub></i> = &Sigma;<i>d</i>/&radic;<i>k</i> after every seed up to 30, and stops at the first |<i>z</i>| &gt; 1.96:</p>
+<pre class="output"><code>Scenario 4: optional stopping, no true difference, 20,000 simulated studies, up to 30 seeds
+  test after every seed, stop at first |z| &gt; 1.96:   false-positive rate =  28.3%
+  same, but first look at seed 5:                   false-positive rate =  21.4%
+  one test at the pre-registered K = 30:            false-positive rate =   5.0%
+  every look, Bonferroni over 30 looks (z = 3.14):  false-positive rate =   1.4%</code></pre>
+  <p>Peeking turns a 5% test into a 28% one. There are two fixes. (1) Fix <i>n</i>, K and the seed count in advance from the power analysis of 5.6, and test once.
+  (2) If you must monitor, use a method that is valid under monitoring: Bonferroni over a fixed number of looks (&alpha;/L, conservative, as the last line shows), or an
+  anytime-valid <span class="term">confidence sequence</span>, which holds simultaneously at every sample size<a class="cite" href="#src-18">[18]</a><a class="cite" href="#src-19">[19]</a>. Hsu and Shekhar
+  build confidence sequences for a new LLM&rsquo;s accuracy on a fixed question set and choose which questions to query next so the sequence shrinks quickly<a class="cite" href="#src-20">[20]</a>. Chapter 9 covers the same trap for online A/B tests
+  (<a href="09-tooling-production.html#ab-testing">Section 9.15</a>).</p>
+
+  <h2 id="bootstrap"><span class="sec-num">5.8</span>The bootstrap toolbox</h2>
+  <p>Many eval statistics are not means: medians, F1, corpus BLEU, Bradley&ndash;Terry ratings, the IQM of 5.13. The <span class="term">bootstrap</span> handles them all: resample the <i>n</i> items with replacement B times,
+  recompute the statistic on each resample, and use the spread of the B replicates.</p>
+
+  <h3 id="bootstrap-intervals">Percentile, basic and BCa intervals</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Interval</th><th>Definition (&theta;&#770; = statistic on the data, <i>q</i> = replicate quantiles)</th><th>When to use</th></tr></thead>
+      <tbody>
+        <tr><td>Percentile</td><td>[<i>q</i><sub>2.5%</sub>, <i>q</i><sub>97.5%</sub>]</td><td>Default; fine when the replicate distribution is roughly symmetric</td></tr>
+        <tr><td>Basic (pivot)</td><td>[2&theta;&#770; &minus; <i>q</i><sub>97.5%</sub>, 2&theta;&#770; &minus; <i>q</i><sub>2.5%</sub>]</td><td>Corrects a shift between &theta;&#770; and the replicates; can misbehave for skewed or bounded statistics</td></tr>
+        <tr><td>BCa</td><td>Percentiles at adjusted levels &Phi;(<i>z</i><sub>0</sub> + (<i>z</i><sub>0</sub> + <i>z</i><sub>&alpha;</sub>)/(1 &minus; <i>a</i>(<i>z</i><sub>0</sub> + <i>z</i><sub>&alpha;</sub>))), with bias <i>z</i><sub>0</sub> and acceleration <i>a</i> from the jackknife</td><td>Skewed statistics, small-to-medium <i>n</i>; second-order accurate</td></tr>
+      </tbody>
+      <caption>Table 5.3. Three bootstrap intervals. rliable&rsquo;s <code>get_interval_estimates</code> offers percentile, basic, bc and bca methods<a class="cite" href="#src-21">[21]</a>.</caption>
+    </table>
+  </div>
+<pre data-file="code/ch05/bootstrap_toolbox.py"><code class="language-python">def intervals(x: np.ndarray, stat, rng: np.random.Generator, b: int = 10_000, alpha: float = 0.05) -&gt; dict[str, tuple[float, float]]:
+    theta = stat(x)
+    t = boot_stats(x, stat, rng, b)
+    lo_q, hi_q = np.quantile(t, [alpha / 2, 1 - alpha / 2])
+    out = {"percentile": (lo_q, hi_q), "basic": (2 * theta - hi_q, 2 * theta - lo_q)}
+    # BCa: bias correction z0 from the share of replicates below theta, acceleration from the jackknife
+    z0 = norm_ppf(min(max((t &lt; theta).mean(), 1e-6), 1 - 1e-6))
+    jack = np.array([stat(np.delete(x, i)) for i in range(len(x))])
+    dj = jack.mean() - jack
+    acc = (dj**3).sum() / (6 * ((dj**2).sum()) ** 1.5 + 1e-300)
+    qs = []
+    for z in (norm_ppf(alpha / 2), norm_ppf(1 - alpha / 2)):
+        qs.append(norm_cdf(z0 + (z0 + z) / (1 - acc * (z0 + z))))
+    out["BCa"] = tuple(np.quantile(t, qs))
+    return out
+</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch05/bootstrap_toolbox.py</code></p>
+<pre class="output"><code>(1) Skewed metric, n = 40: mean = 0.647, median = 0.440, B = 10,000
+  mean   percentile=[0.492, 0.811]  basic=[0.483, 0.802]  BCa=[0.503, 0.831]
+  median percentile=[0.272, 0.812]  basic=[0.068, 0.608]  BCa=[0.269, 0.783]
+
+(2) Coverage for a mean of n = 30 binary scores (p = 0.85), 2,000 simulated evals, B = 2,000
+  percentile bootstrap: 93.1%   Wilson: 96.0%
+
+(3) Stratified bootstrap over subtasks of very different size (400, 60 and 3 items)
+  macro accuracy = 0.537; stratified-bootstrap SE = 0.0951 (0 undefined replicates)
+  unstratified: 5.2% of replicates drop the 3-item subtask entirely; SE over the rest = 0.1048
+
+(4) Seeding and replicate count
+  unseeded simple-evals-style bootstrap_std, three calls all different: True
+  seeded (seed 0), three calls: 0.01622, 0.01622, 0.01622
+  analytic SE (ddof=1) = 0.01626; without Bessel = 0.01622
+  B =    200: 2.5% quantile = 0.6566 +/- 0.0032 (Monte Carlo sd over 200 seeds)
+  B =   1000: 2.5% quantile = 0.6560 +/- 0.0014 (Monte Carlo sd over 200 seeds)
+  B =  10000: 2.5% quantile = 0.6558 +/- 0.0005 (Monte Carlo sd over 200 seeds)</code></pre>
+  <p>For the median of a skewed metric (part 1) the basic interval mirrors the upper tail downward, to 0.068; BCa corrects bias and skew. Part (2) is the weak spot: at <i>n</i> = 30 the percentile bootstrap covers 93.1% against Wilson&rsquo;s 96.0%, under-covering like the CLT<a class="cite" href="#src-8">[8]</a>.
+  Use the bootstrap for statistics without a formula, not to rescue tiny samples.</p>
+
+  <h3 id="bootstrap-variants">Resampling the right unit</h3>
+  <p>Resample independent units, matching the design:</p>
+  <ul>
+    <li><b>Paired:</b> resample question indices once and apply them to both models (5.5).</li>
+    <li><b>Cluster:</b> resample whole clusters (passages, repositories, environments) with their questions (5.3); Inspect&rsquo;s <code>ci(method="bootstrap", cluster=...)</code>.</li>
+    <li><b>Stratified:</b> resample within each stratum (subtask, or task in multi-task RL) separately, so every replicate keeps the design&rsquo;s strata and sizes.
+    rliable&rsquo;s <code>StratifiedBootstrap</code> resamples runs within each task<a class="cite" href="#src-21">[21]</a><a class="cite" href="#src-22">[22]</a>. Part (3) of the script shows why: with a 3-item subtask, 5.2% of
+    unstratified replicates contain none of its items, so a macro-average is undefined for them; the stratified bootstrap never has that problem.</li>
+  </ul>
+
+  <h3 id="bootstrap-seeding">Seeding and replicate counts</h3>
+  <p>lm-evaluation-harness seeds each chunk of replicates deterministically and documents its own bias:</p>
+<pre data-file="EleutherAI/lm-evaluation-harness: lm_eval/api/metrics.py"><code class="language-python">def mean_stderr(arr):
+    return sample_stddev(arr) / math.sqrt(len(arr))
+
+# ... inside _bootstrap_internal_no_mp(f, xs, iters):
+    # A single loop replaces the multiprocessing pool.
+    for i in tqdm(range(iters // chunk_size)):
+        rnd = random.Random(i)
+        for _ in range(chunk_size):
+            res.append(f(rnd.choices(xs, k=len(xs))))
+
+# ... inside bootstrap_stderr(f, xs, iters):
+        # this gives a biased estimate of the stderr (i.e w/ the mean, it gives something
+        # equivalent to stderr calculated without Bessel's correction in the stddev.
+        # Unfortunately, I haven't been able to figure out what the right correction is
+        # to make the bootstrap unbiased - i considered multiplying by sqrt(n/(n-1)) but
+        # that would be ad-hoc and I can't prove that that would actually be an unbiased estimator)
+        # Thankfully, shouldn't matter because our samples are pretty big usually anyways</code></pre>
+  <p class="code-caption">Quoted verbatim (three excerpts) from the main branch<a class="cite" href="#src-23">[23]</a>. The number of replicates is set by <code>--bootstrap_iters</code>. Requires <code>lm_eval</code>.</p>
+  <p>openai/simple-evals computes its bootstrap standard deviation in one line, with the global NumPy random state and no seed:</p>
+<pre data-file="openai/simple-evals: common.py"><code class="language-python">    elif stat == "bootstrap_std":
+        return np.std(
+            [np.mean(np.random.choice(values, len(values))) for _ in range(1000)]
+        )</code></pre>
+  <p class="code-caption">Quoted verbatim<a class="cite" href="#src-24">[24]</a>. Simple-evals has been deprecated since July 2025; the code is still a useful example.</p>
+  <p>Part (4) reproduces both: the unseeded version returns a different number on every call, and the seeded SE (0.01622) equals the analytic SE without Bessel&rsquo;s
+  correction, as the lm-eval comment says. An interval endpoint wobbles by &plusmn;0.0032 at B = 200 and &plusmn;0.0005 at B = 10,000: use at least 1,000 replicates for
+  an SE and 10,000 for endpoints reported to three decimals (rliable&rsquo;s examples use 50,000<a class="cite" href="#src-21">[21]</a>).</p>
+  <aside class="danger" data-title="Always seed the bootstrap"><p>An unseeded bootstrap makes your CI, and any regression test on it, change on every run. Pass an explicit <code>np.random.default_rng(seed)</code> into every resampling function and record the seed.</p></aside>
+
+  <h2 id="pass-hat-k"><span class="sec-num">5.9</span>Stochastic agents: pass@k, pass^k and Bayes@N</h2>
+  <p>Two questions about a stochastic agent have different answers: <em>can</em> it solve the task given several tries, and <em>will</em> it solve it every time? Chapter 2 derived the first metric in full
+  (<a href="02-benchmarks-metrics.html#pass-at-k">Section 2.5</a>) and Chapter 6 applies both to agent benchmarks
+  (<a href="06-agent-evals.html#reliability">Section 6.6</a>). This section is about their statistics.</p>
+
+  <h3 id="pass-hat-k-estimators">Two unbiased estimators</h3>
+  <p>Run each task <i>n</i> times and count <i>c</i> successes. With per-task success probability <i>p</i>:</p>
+  <div class="formula">
+    pass@k = E<sub>task</sub>[ 1 &minus; (1 &minus; <i>p</i>)<sup>k</sup> ], &nbsp; estimated per task by 1 &minus; <span class="frac"><span>C(<i>n</i> &minus; <i>c</i>, k)</span><span>C(<i>n</i>, k)</span></span>
+    <span class="eq-num">(5.8)</span>
+  </div>
+  <div class="formula">
+    pass^k = E<sub>task</sub>[ <i>p</i><sup>k</sup> ], &nbsp; estimated per task by <span class="frac"><span>C(<i>c</i>, k)</span><span>C(<i>n</i>, k)</span></span>
+    <span class="eq-num">(5.9)</span>
+    <span class="where">pass@k (Chen et al. 2021) is the chance that at least one of k attempts succeeds; pass^k (Yao et al. 2024, &tau;-bench) is the chance that all k
+    succeed<a class="cite" href="#src-25">[25]</a><a class="cite" href="#src-26">[26]</a>. Both estimators are unbiased because they count, among all size-k subsets of the <i>n</i> trials, the share with at least one success or
+    with only successes. Both are averaged over tasks.</span>
+  </div>
+  <p>The reference implementations are short. HumanEval uses a numerically stable product instead of large binomial coefficients, and &tau;-bench computes pass^k with
+  <code>math.comb</code>:</p>
+<pre data-file="openai/human-eval: human_eval/evaluation.py"><code class="language-python">    def estimator(n: int, c: int, k: int) -&gt; float:
+        """
+        Calculates 1 - comb(n - c, k) / comb(n, k).
+        """
+        if n - c &lt; k:
+            return 1.0
+        return 1.0 - np.prod(1.0 - k / np.arange(n - c + 1, n + 1))</code></pre>
+<pre data-file="sierra-research/tau-bench: tau_bench/run.py"><code class="language-python">    pass_hat_ks: dict[int, float] = {}
+    for k in range(1, num_trials + 1):
+        sum_task_pass_hat_k = 0
+        for c in c_per_task_id.values():
+            sum_task_pass_hat_k += comb(c, k) / comb(num_trials, k)
+        pass_hat_ks[k] = sum_task_pass_hat_k / len(c_per_task_id)</code></pre>
+  <p class="code-caption">Both quoted verbatim from the current repositories<a class="cite" href="#src-27">[27]</a><a class="cite" href="#src-28">[28]</a>. In &tau;-bench, gpt-4o&rsquo;s retail pass^1 is about 61% but its pass^8 is below 25%<a class="cite" href="#src-26">[26]</a>.</p>
+
+  <h3 id="pass-hat-k-jensen">Why pass^k is not (pass@1)<sup>k</sup></h3>
+  <p>pass^k averages <i>p<sub>i</sub></i><sup>k</sup>, so it depends on the whole distribution of per-task success rates. By Jensen&rsquo;s inequality
+  mean(<i>p<sub>i</sub></i><sup>k</sup>) &ge; (mean <i>p</i>)<sup>k</sup>, with equality only when all tasks are equally hard, so equal pass@1 can hide very different reliability. Take ten tasks: <b>Agent A</b> succeeds 60% of the time on every task;
+  <b>Agent B</b> always solves six tasks and never solves the other four. Both have pass@1 = 0.6.</p>
+<pre data-file="code/ch05/passk.py"><code class="language-python">def pass_at_k(n: int, c: int, k: int) -&gt; float:
+    """Unbiased pass@k (Chen et al. 2021), numerically stable product form from openai/human-eval."""
+    if n - c &lt; k:
+        return 1.0
+    return float(1.0 - np.prod(1.0 - k / np.arange(n - c + 1, n + 1)))
+
+
+def pass_hat_k(n: int, c: int, k: int) -&gt; float:
+    """Unbiased pass^k (Yao et al. 2024): probability that k draws without replacement are all successes."""
+    return comb(c, k) / comb(n, k)
+</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch05/passk.py</code></p>
+<pre class="output"><code>Single task, n=10, c=3: pass@5 = 0.917, pass^2 = 0.0667 (naive (c/n)^2 = 0.09), pass^5 = 0
+  Monte Carlo (subsets of the 10 trials): pass@5 = 0.915, pass^2 = 0.0671
+
+Population values, 10 tasks (pass^k = mean_i p_i^k, pass@k = mean_i 1-(1-p_i)^k)
+   k   pass^k A   pass^k B   pass@k A   pass@k B
+   1      0.600      0.600      0.600      0.600
+   2      0.360      0.600      0.840      0.600
+   4      0.130      0.600      0.974      0.600
+   8      0.017      0.600      0.999      0.600
+  16      0.000      0.600      1.000      0.600
+  (mean p)^4 = 0.130 for both agents; mean(p_i^4) = 0.130 (A) vs 0.600 (B)
+
+Estimating pass^4 from n = 8 trials per task, 20,000 simulated evals of a 10-task suite
+  Agent A: truth 0.1296  unbiased mean 0.1297  naive (c/n)^k mean 0.1951
+  Agent B: truth 0.6000  unbiased mean 0.6000  naive (c/n)^k mean 0.6000
+
+Bayes@N (uniform Beta(1,1) prior per task), Agent A with n = 8 trials per task
+  successes per task = [6, 5, 5, 5, 3, 4, 6, 6, 4, 4]  avg@8 = 0.600
+  posterior mean = 0.580, 95% credible interval for suite mean = [0.489, 0.670]
+
+Figure 5.5 data (k, pass@k A, pass@k B, pass^k A, pass^k B)
+   1  0.600  0.600  0.600  0.600
+   2  0.840  0.600  0.360  0.600
+   3  0.936  0.600  0.216  0.600
+   4  0.974  0.600  0.130  0.600
+   6  0.996  0.600  0.047  0.600
+   8  0.999  0.600  0.017  0.600
+  12  1.000  0.600  0.002  0.600
+  16  1.000  0.600  0.000  0.600</code></pre>
+  <div class="worked">
+    <p><b>Single task, <i>n</i> = 10, <i>c</i> = 3.</b> pass@5 = 1 &minus; 21/252 = 0.917; pass^2 = 3/45 = 0.0667 (the plug-in 0.09 is biased upward);
+    pass^5 = 0. Monte Carlo agrees.</p>
+    <p><b>Agent A vs Agent B.</b> At k = 8, A has pass^8 = 0.017 and pass@8 = 0.999; B has 0.600 for both. A suits best-of-8 search with a verifier; B suits a
+    customer, because what it can do it does every time.</p>
+  </div>
+  <p>With 8 trials per task the plug-in (<i>c</i>/<i>n</i>)<sup>4</sup> overestimates Agent A&rsquo;s pass^4 by 50% (0.1951 vs 0.1296). Use the unbiased combinatorial estimator and report <i>n</i> per task: k must not exceed <i>n</i>, and estimates with k close to <i>n</i> are noisy.</p>
+
+  <h3 id="pass-hat-k-ci">An interval for pass^k</h3>
+  <p>The per-task estimates <i>h<sub>i</sub></i> = C(<i>c<sub>i</sub></i>, k)/C(<i>n</i>, k) are independent across tasks, so SE(pass^k) = sd(<i>h<sub>i</sub></i>)/&radic;T, and a
+  bootstrap over tasks (recomputing the per-task estimator on each resample) gives the same width. The last block of <code>passk.py</code> uses 50 mock tasks with
+  <i>p<sub>i</sub></i> ~ Beta(3, 2):</p>
+<pre class="output"><code>Uncertainty of pass^4: T = 50 tasks, p_i ~ Beta(3,2) (mean 0.6), true pass^4 = 0.214
+  floor as n -&gt; infinity (between-task variance only): CI width 0.118
+    n  estimate  task SE  CI width  task boot  nested boot  mean width  coverage
+    4     0.200   0.0571     0.224      0.220        0.260       0.228     92.9%
+    8     0.231   0.0435     0.170      0.168        0.201       0.166     93.5%
+   16     0.177   0.0335     0.131      0.126        0.148       0.140     91.8%</code></pre>
+  <p>The average 95% width falls from 0.228 at <i>n</i> = 4 trials to 0.140 at <i>n</i> = 16, toward the floor of 0.118 that only more tasks can lower. Coverage is 92&ndash;94% because pass^4 is skewed at T = 50; BCa (5.8) helps.</p>
+
+  <figure class="diagram" id="fig-5-5">
+    <svg viewBox="0 0 640 300" role="img" aria-labelledby="fig-5-5-t">
+      <title id="fig-5-5-t">pass@k and pass^k versus k for Agent A (60 percent on every task) and Agent B (always solves 6 of 10 tasks)</title>
+      <line x1="80" y1="250" x2="580" y2="250" class="s-ink" stroke-width="1"/>
+      <line x1="80" y1="40" x2="80" y2="250" class="s-ink" stroke-width="1"/>
+      <text x="72" y="254" text-anchor="end" class="small">0</text><text x="72" y="154" text-anchor="end" class="small">0.5</text><text x="72" y="54" text-anchor="end" class="small">1.0</text>
+      <text x="80" y="268" text-anchor="middle" class="small">1</text><text x="176" y="268" text-anchor="middle" class="small">4</text>
+      <text x="304" y="268" text-anchor="middle" class="small">8</text><text x="432" y="268" text-anchor="middle" class="small">12</text><text x="560" y="268" text-anchor="middle" class="small">16</text>
+      <text x="320" y="288" text-anchor="middle" class="small">k (attempts)</text>
+      <polyline points="80,130 112,82 144,62.8 176,55.2 240,50.8 304,50.2 432,50 560,50" fill="none" class="s-1" stroke-width="2.5"/>
+      <polyline points="80,130 112,178 144,206.8 176,224 240,240.6 304,246.6 432,249.6 560,250" fill="none" class="s-1" stroke-width="2.5" stroke-dasharray="6 4"/>
+      <polyline points="80,130 560,130" fill="none" class="s-2" stroke-width="2.5"/>
+      <text x="330" y="44" class="small">Agent A pass@k &#8594; 1</text>
+      <text x="330" y="124" class="small">Agent B: pass@k = pass^k = 0.6</text>
+      <text x="200" y="226" class="small">Agent A pass^k (dashed) &#8594; 0</text>
+      <text x="20" y="150" class="small" transform="rotate(-90 20 150)">probability</text>
+    </svg>
+    <figcaption><b>Figure 5.5.</b> Same pass@1, opposite behaviour. Agent A&rsquo;s pass@k climbs to 1 while its pass^k collapses; Agent B&rsquo;s curves are flat at 0.6.
+    Values from the last block of <code>passk.py</code>. pass@k rewards diversity across attempts, pass^k rewards consistency; report both, or the per-task
+    success-rate distribution that generates them.</figcaption>
+  </figure>
+
+  <h3 id="pass-hat-k-bayes">Bayes@N: a posterior instead of a point estimate</h3>
+  <p>Hariri et al. replace pass@k at small <i>N</i> with a posterior over each task&rsquo;s success probability (Dirichlet, or Beta for binary outcomes), reported as a posterior
+  mean with a credible interval. Under a uniform prior it ranks models like avg@N, and on AIME and HMMT it gives more stable rankings than pass@k; code in
+  <code>mohsenhariri/scorio</code><a class="cite" href="#src-29">[29]</a>. <code>passk.py</code> does the binary version: per-task Beta(<i>c</i> + 1, <i>n</i> &minus; <i>c</i> + 1) posteriors, sampled jointly,
+  give [0.489, 0.670] for Agent A&rsquo;s suite mean.</p>
+  <aside class="tip" data-title="Which number to put in the headline"><p>For a user-facing agent: pass^k at a k matching realistic retries (often k = 1 and k = 4 or 8), with
+  its interval and <i>n</i> per task. For a model used inside a search or verifier loop: pass@k. For tracking a training run: avg@N (equivalently the Bayes@N posterior
+  mean), because it is the lowest-variance of the three.</p></aside>
+
+  <h2 id="nondeterminism"><span class="sec-num">5.10</span>Nondeterminism and reproducibility</h2>
+  <p>With questions, model and decoding fixed, numbers still move: by design (sampling) and by accident (the serving stack).</p>
+
+  <h3 id="nondeterminism-sources">Where the noise comes from</h3>
+  <ul>
+    <li><b>Sampling seeds.</b> At temperature &gt; 0 each run is a different draw. Hochlehnert et al. measured standard deviations of 5&ndash;15 points in AIME&rsquo;24 Pass@1 across seeds, and found the variance of the mean stabilises around
+    K &asymp; 30 seeds on AIME-sized sets<a class="cite" href="#src-1">[1]</a>.</li>
+    <li><b>&ldquo;Deterministic&rdquo; decoding is not deterministic.</b> Atil et al. ran five LLMs at temperature 0 with fixed seeds, ten runs each over eight
+    tasks, and saw accuracy vary by up to 15% across runs, with a gap of up to 70% between best-possible accuracy (a question counts as right if any of the 10 runs got it right) and worst-possible accuracy (right only if every run did)<a class="cite" href="#src-2">[2]</a>; <code>seeds_nondeterminism.py</code> prints the same pair for its mock (&ldquo;best-possible (right in any run) 0.516 vs worst-possible (right in all runs) 0.494&rdquo;). They
+    define two agreement metrics: <span class="term">TARr@N</span>, the share of questions where all N raw output strings are identical, and
+    <span class="term">TARa@N</span>, the share where all N parsed answers agree. Their code is published as llm-stability<a class="cite" href="#src-30">[30]</a>.</li>
+    <li><b>Batch invariance.</b> Thinking Machines Lab argue that the main cause of temperature-0 nondeterminism in served LLMs is that kernels are not
+    <em>batch invariant</em>: a request&rsquo;s numerics depend on how many other requests share its batch, which depends on server load. They released batch-invariant kernels (<code>batch_invariant_ops</code>) that give bitwise
+    reproducible vLLM inference at some speed cost<a class="cite" href="#src-31">[31]</a>. Their demonstration: 1000 temperature-0 completions from Qwen3-235B-A22B-Instruct-2507 gave
+    80 unique outputs, identical for the first 102 tokens and diverging at token 103; with batch-invariant kernels all 1000 were identical. As of November 2026 you can
+    switch this on in the engine instead of installing the separate repo: vLLM has a built-in batch-invariant mode (<code>export VLLM_BATCH_INVARIANT=1</code>; beta, and it may
+    cost throughput)<a class="cite" href="#src-54">[54]</a>, and SGLang has a <code>--enable-deterministic-inference</code> flag built on batch-invariant operations<a class="cite" href="#src-55">[55]</a>.</li>
+    <li><b>Hardware and software drift.</b> In the Sober Look study, running the same model on five compute clusters moved AIME&rsquo;24 Pass@1 by up to 8 points for
+    OpenRS-1.5B and 6 for DeepSeek-R1-Distill-7B. Even with <code>torch.use_deterministic_algorithms(True)</code>, fixed CUDA seeds and cuDNN benchmarking disabled,
+    OpenThinker2-7B scored 53.0 &plusmn; 4.6 on A100 versus 57.1 &plusmn; 5.2 on H100. Switching evaluation framework usually moved scores by 1&ndash;2 points but moved
+    S1.1-7B by 4.5 (22.2 with lighteval vs 17.7 with evalchemy)<a class="cite" href="#src-1">[1]</a>. If the baseline ran last month on a different stack, part of your
+    &ldquo;improvement&rdquo; is the stack.</li>
+    <li><b>Sandbox resources (agent evals).</b> Anthropic found that on Terminal-Bench 2.0, moving from strict per-task CPU/RAM limits to uncapped resources raised
+    scores by 6 points (<i>p</i> &lt; 0.01), similar to the gaps between top models. Under strict limits, 5.8% of tasks failed from infrastructure or pod errors; a 3&times;
+    headroom ceiling cut that to about 2.1% without a significant score change (<i>p</i> = 0.40)<a class="cite" href="#src-53">[53]</a>. Count infra errors as their own outcome,
+    report the infra error rate, and state whether such tasks were retried or excluded. Chapter 9 makes the same point about recording container limits
+    (<a href="09-tooling-production.html#verifiers">Section 9.5</a>).</li>
+  </ul>
+
+  <h3 id="nondeterminism-demo">A mock of batch-dependent numerics</h3>
+  <p><code>seeds_nondeterminism.py</code> mocks the mechanism: greedy multiple-choice decoding whose logits get a tiny batch-size-dependent perturbation (sd 0.02),
+  ten runs at different batch sizes, the same runs with batch-invariant numerics, and a temperature-1 model on 30 problems:</p>
+<pre data-file="code/ch05/seeds_nondeterminism.py"><code class="language-python">def greedy_run(logits: np.ndarray, batch_size: int, batch_invariant: bool) -&gt; list[str]:
+    """Argmax decode. Non-invariant kernels add a perturbation that depends on the batch size."""
+    if batch_invariant:
+        pert = np.zeros_like(logits)
+    else:
+        pert = np.random.default_rng(batch_size).normal(0, 0.02, size=logits.shape)
+    choice = np.argmax(logits + pert, axis=1)
+    # raw text also varies in formatting on near ties (e.g. trailing whitespace from a different token path)
+    margin = np.sort(logits + pert, axis=1)[:, -1] - np.sort(logits + pert, axis=1)[:, -2]
+    fmt_rng = np.random.default_rng(0 if batch_invariant else batch_size + 1000)
+    tail = np.where((margin &lt; 0.15) &amp; (fmt_rng.random(len(choice)) &lt; 0.5), " ", "")
+    return [f"Answer: {'ABCD'[c]}{t}" for c, t in zip(choice, tail)]
+
+
+def tar(outputs: list[list[str]]) -&gt; float:
+    """Total agreement rate: fraction of questions where all N runs give the identical value."""
+    return float(np.mean([len(set(col)) == 1 for col in zip(*outputs)]))
+</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch05/seeds_nondeterminism.py</code></p>
+<pre class="output"><code>(1) Greedy decoding, 10 runs at different batch sizes, n = 500
+    accuracy per run: 0.512 0.504 0.504 0.506 0.508 0.500 0.508 0.506 0.510 0.500
+    min 0.500  max 0.512  spread 1.2 pts
+    best-possible (right in any run) 0.516 vs worst-possible (right in all runs) 0.494
+    TARr@10 (raw strings) = 0.848   TARa@10 (parsed answers) = 0.958
+(2) Batch-invariant kernels: TARr@10 = 1.000
+(3) Sampled decoding, n = 30 problems (one problem = 3.3 pts), 600 seeds
+    per-seed accuracy: mean 48.7, sd 6.1 pts, range 33.3-63.3
+    mean over K= 1 seeds: theoretical sd  6.3 pts, observed sd across blocks  6.1
+    mean over K= 4 seeds: theoretical sd  3.2 pts, observed sd across blocks  2.8
+    mean over K=10 seeds: theoretical sd  2.0 pts, observed sd across blocks  1.9
+    mean over K=30 seeds: theoretical sd  1.2 pts, observed sd across blocks  0.8
+    report: 48.3 +/- 7.2 (mean +/- sd over 10 seeds)</code></pre>
+  <p>All ten &ldquo;temperature 0&rdquo; runs differ (0.500 to 0.512); TARa (95.8%) exceeds TARr (84.8%), and batch-invariant numerics give
+  TARr@10 = 1. With sampling, the per-seed sd on 30 problems is 6.1 points and shrinks as 1/&radic;K.</p>
+  <aside class="note" data-title="Seed spread is not the whole error bar"><p>The sd across seeds measures prediction noise on <em>these</em> 30 problems, not question-sampling
+  noise (a binomial SE of about 9 points here). Report both: mean &plusmn; sd over seeds for reproducibility, and the SE over problems (on per-problem means, 5.4) for generalisation.</p></aside>
+  <aside class="tip" data-title="Pin the stack"><p>Record and fix: model revision or API snapshot, inference engine and version, GPU type, tensor-parallel degree, batch
+  size or server concurrency, batch-invariant/deterministic mode on or off, dtype, decoding parameters, container CPU/RAM limits and timeouts, harness version and commit, prompt template, and the parser. Re-run the baseline on the same stack as the
+  candidate rather than comparing with a number from last quarter. Biderman et al. give a longer list of lm-eval-harness lessons on exactly this<a class="cite" href="#src-32">[32]</a>.</p></aside>
+
+  <h2 id="snr"><span class="sec-num">5.11</span>Benchmark quality: signal, noise and decision accuracy</h2>
+  <p>How often does a <em>benchmark</em> that picks between two small-scale recipes pick the one that wins at scale? Heineman et al. at AI2 frame this with two quantities<a class="cite" href="#src-10">[10]</a>:</p>
+  <div class="formula">
+    signal = <span class="frac"><span>max<sub><i>j</i>,<i>k</i></sub> |<i>m<sub>j</sub></i> &minus; <i>m<sub>k</sub></i>|</span><span>m&#772;</span></span>, &nbsp;&nbsp;
+    noise = <span class="frac"><span>sd(final checkpoints of one model)</span><span>mean</span></span>, &nbsp;&nbsp;
+    SNR = signal / noise
+    <span class="eq-num">(5.10)</span>
+    <span class="where">Signal is the relative spread of scores across models trained with similar compute; noise is the relative standard deviation of a single model&rsquo;s
+    last few checkpoints. <span class="term">Decision accuracy</span> is the share of model pairs whose small-scale ranking matches their large-scale ranking.</span>
+  </div>
+  <p>Across 465 models and 30 benchmarks they find that SNR correlates with decision accuracy (R = 0.791) while signal or noise alone barely does, and three
+  interventions raise SNR: filtering out low-SNR subtasks (MMLU decision accuracy +2.6%), averaging checkpoints (+2.4%), and using bits-per-byte instead of
+  accuracy (decision accuracy improved on 90% of benchmarks)<a class="cite" href="#src-10">[10]</a>. Madaan et al. add seed standard deviation and <span class="term">monotonicity</span>
+  (Kendall correlation of score with training step); MMLU in cloze format has monotonicity 0.95 against 0.09 for standard MMLU early in training<a class="cite" href="#src-9">[9]</a>.</p>
+<pre data-file="code/ch05/snr.py"><code class="language-python">def evaluate(n_items: int, metric: str, seed: int, reps: int = 200) -&gt; tuple[float, float, float, float]:
+    rng = np.random.default_rng(seed)
+    true_skill = np.linspace(-0.3, 0.3, N_MODELS)          # large-scale ranking = this order
+    b = rng.normal(0.0, 1.5, size=n_items)                 # a fixed benchmark
+    sig, noi, da = [], [], []
+    for _ in range(reps):
+        # final checkpoints jitter around the model's skill (training noise)
+        ck = true_skill[:, None] + rng.normal(0, 0.04, size=(N_MODELS, N_CKPT))
+        sc = np.stack([scores(rng, ck[:, t], b, metric) for t in range(N_CKPT)], axis=1)
+        m = sc.mean(axis=1)
+        sig.append((m.max() - m.min()) / m.mean())
+        noi.append(np.mean(sc.std(axis=1, ddof=1) / sc.mean(axis=1)))
+        last = sc[:, -1]
+        agree = [np.sign(last[i] - last[j]) == np.sign(true_skill[i] - true_skill[j])
+                 for i, j in itertools.combinations(range(N_MODELS), 2)]
+        da.append(np.mean(agree))
+    s, n_ = float(np.mean(sig)), float(np.mean(noi))
+    return s, n_, s / n_, float(np.mean(da))
+</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch05/snr.py</code></p>
+<pre class="output"><code>benchmark               signal   noise    SNR  decision acc
+accuracy, n=30           0.288  0.1296    2.2         0.597
+accuracy, n=100          0.259  0.0842    3.1         0.705
+accuracy, n=300          0.234  0.0503    4.7         0.813
+accuracy, n=1000         0.220  0.0286    7.7         0.899
+accuracy, n=3000         0.211  0.0194   10.9         0.938
+continuous, n=30         0.195  0.0123   15.9         0.967
+continuous, n=100        0.222  0.0138   16.0         0.968
+continuous, n=300        0.221  0.0138   16.0         0.967
+continuous, n=1000       0.214  0.0135   15.9         0.968
+continuous, n=3000       0.210  0.0133   15.8         0.968
+
+correlation across the 10 configurations: corr(log SNR, DA) = 0.977; corr(signal, DA) = -0.954
+monotonicity over 20 checkpoints (n=300): accuracy tau = 0.58, continuous tau = 1.00</code></pre>
+  <p>In this twelve-model mock, decision accuracy tracks SNR (correlation of log SNR with DA 0.977), and the continuous metric reaches 0.97 at any size. Signal alone
+  correlates <em>negatively</em> (&minus;0.954): sampling noise inflates the spread on tiny benchmarks. Use the ratio.</p>
+  <aside class="tip" data-title="Choosing benchmarks for training ablations"><p>Measure a benchmark&rsquo;s checkpoint noise and its spread across comparable models before using
+  it at small scale. Prefer continuous metrics and cloze formats, average final checkpoints, drop low-SNR subtasks. Code: <code>allenai/signal-and-noise</code><a class="cite" href="#src-10">[10]</a>.</p></aside>
+
+  <h2 id="irt"><span class="sec-num">5.12</span>Psychometrics: IRT and efficient evaluation</h2>
+  <p>Questions are not interchangeable: some are trivial, some mislabelled, some sharply separate strong from weak models. <span class="term">Item response theory</span> (IRT) from educational testing models this. The
+  two-parameter logistic (2PL) model says</p>
+  <div class="formula">
+    P(model <i>l</i> answers item <i>i</i> correctly) = &sigma;( <i>a<sub>i</sub></i> (&theta;<sub><i>l</i></sub> &minus; <i>b<sub>i</sub></i>) )
+    <span class="eq-num">(5.11)</span>
+    <span class="where">&theta;<sub><i>l</i></sub> is the model&rsquo;s ability, <i>b<sub>i</sub></i> the item&rsquo;s difficulty (the ability at which P = 0.5) and <i>a<sub>i</sub></i>
+    its discrimination (the slope there). tinyBenchmarks uses a multidimensional version, <i>p<sub>il</sub></i> = 1/(1 + exp(&minus;&alpha;<sub><i>i</i></sub><sup>T</sup>&theta;<sub><i>l</i></sub> + &beta;<sub><i>i</i></sub>))<a class="cite" href="#src-33">[33]</a>.</span>
+  </div>
+
+  <figure class="diagram" id="fig-5-6">
+    <svg viewBox="0 0 640 300" role="img" aria-labelledby="fig-5-6-t">
+      <title id="fig-5-6-t">Item characteristic curves of three items under the 2PL model</title>
+      <line x1="80" y1="250" x2="580" y2="250" class="s-ink" stroke-width="1"/>
+      <line x1="80" y1="40" x2="80" y2="250" class="s-ink" stroke-width="1"/>
+      <line x1="80" y1="150" x2="560" y2="150" class="s-muted" stroke-width="1" stroke-dasharray="4 4"/>
+      <text x="72" y="254" text-anchor="end" class="small">0</text><text x="72" y="154" text-anchor="end" class="small">0.5</text><text x="72" y="54" text-anchor="end" class="small">1</text>
+      <text x="80" y="268" text-anchor="middle" class="small">&#8722;3</text><text x="240" y="268" text-anchor="middle" class="small">&#8722;1</text>
+      <text x="320" y="268" text-anchor="middle" class="small">0</text><text x="400" y="268" text-anchor="middle" class="small">1</text><text x="560" y="268" text-anchor="middle" class="small">3</text>
+      <text x="320" y="288" text-anchor="middle" class="small">model ability &#952;</text>
+      <polyline points="80,196.2 100,191.2 120,185.8 140,180.3 160,174.5 180,168.5 200,162.4 220,156.2 240,150.0 260,143.8 280,137.6 300,131.5 320,125.5 340,119.7 360,114.2 380,108.8 400,103.8 420,99.0 440,94.5 460,90.4 480,86.5 500,82.9 520,79.6 540,76.6 560,73.8" fill="none" class="s-1" stroke-width="2.5"/>
+      <polyline points="80,247.8 100,246.8 120,245.4 140,243.4 160,240.5 180,236.5 200,230.9 220,223.4 240,213.5 260,201.0 280,185.8 300,168.5 320,150.0 340,131.5 360,114.2 380,99.0 400,86.5 420,76.6 440,69.1 460,63.5 480,59.5 500,56.6 520,54.6 540,53.2 560,52.2" fill="none" class="s-2" stroke-width="2.5"/>
+      <polyline points="80,250.0 100,250.0 120,250.0 140,250.0 160,250.0 180,250.0 200,250.0 220,249.9 240,249.9 260,249.8 280,249.5 300,249.0 320,247.8 340,245.4 360,240.5 380,230.9 400,213.5 420,185.8 440,150.0 460,114.2 480,86.5 500,69.1 520,59.5 540,54.6 560,52.2" fill="none" class="s-3" stroke-width="2.5"/>
+      <text x="96" y="208" class="small">easy, flat: a=0.5, b=&#8722;1</text>
+      <text x="336" y="164" class="small">medium: a=1.5, b=0</text>
+      <text x="452" y="200" class="small">hard, sharp:</text><text x="452" y="214" class="small">a=3, b=1.5</text>
+      <text x="20" y="150" class="small" transform="rotate(-90 20 150)">P(correct)</text>
+    </svg>
+    <figcaption><b>Figure 5.6.</b> Item characteristic curves from Equation 5.11 (values printed by <code>irt_tiny.py</code>). The flat item barely distinguishes
+    models; the sharp item separates models just below &theta; = 1.5 from those just above it and says nothing about weaker ones. Efficient evaluation picks
+    items whose curves are steep where the models you care about sit.</figcaption>
+  </figure>
+
+  <h3 id="irt-methods">Methods that evaluate on fewer items</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Method</th><th>Idea</th><th>Reported result</th></tr></thead>
+      <tbody>
+        <tr><td>Anchor Points (Vivek et al. 2023)</td><td>Model confidence is correlated across examples; pick a few representative &ldquo;anchor&rdquo; items</td><td>1&ndash;30 anchors rank 87 model&ndash;prompt pairs better than uniform sampling<a class="cite" href="#src-34">[34]</a></td></tr>
+        <tr><td>tinyBenchmarks (Maia Polo et al. 2024)</td><td>Anchor items by k-means over correctness vectors or IRT embeddings; IRT, p-IRT and gp-IRT estimators</td><td>About 100 curated items estimate MMLU accuracy within about 2% average error<a class="cite" href="#src-33">[33]</a></td></tr>
+        <tr><td>metabench (Kipnis et al. 2024)</td><td>IRT fitted on responses of more than 5,000 LLMs across six Open-LLM-Leaderboard benchmarks (28,632 items)</td><td>Under 3% of the items; reconstructs scores with 1.24% RMSE per benchmark and 0.58% for the total<a class="cite" href="#src-35">[35]</a></td></tr>
+        <tr><td>Fluid Benchmarking (Hofmann et al. 2025)</td><td>Computerised adaptive testing: choose the next item by the current ability estimate</td><td>Higher validity and lower variance than random subsets with 50&times; fewer MMLU items<a class="cite" href="#src-36">[36]</a></td></tr>
+        <tr><td>PromptEval (Maia Polo et al. 2024)</td><td>IRT-style model across prompt templates as well as items</td><td>Estimates the distribution of performance over 100 templates for about the budget of two single-prompt evaluations, enabling medians and quantiles over prompts<a class="cite" href="#src-37">[37]</a></td></tr>
+        <tr><td>IRT leaderboards (Rodriguez et al. 2021)</td><td>Estimate difficulty and discriminability per item on a leaderboard</td><td>Flags items that are likely mislabelled and ranks more reliably<a class="cite" href="#src-38">[38]</a></td></tr>
+      </tbody>
+      <caption>Table 5.4. IRT-based and related efficient-evaluation methods, with the results reported in each paper.</caption>
+    </table>
+  </div>
+
+  <h3 id="irt-demo">A 2PL fit and 50-item estimates in numpy</h3>
+  <p><code>irt_tiny.py</code> generates responses of 200 &ldquo;training&rdquo; mock models to 1,000 items from a 2PL model with sharp items (median discrimination
+  3.3). It fits <i>a</i>, <i>b</i> and &theta; by joint maximum likelihood, then estimates the full 1,000-item accuracy of 100 new models from only 50 items, four ways:</p>
+<pre data-file="code/ch05/irt_tiny.py"><code class="language-python">def fit_2pl(y: np.ndarray, iters: int = 1500, lr: float = 0.05) -&gt; tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Joint MLE of theta (models), a (discrimination), b (difficulty) by gradient ascent."""
+    n_m, n_i = y.shape
+    theta = np.zeros(n_m)
+    a = np.ones(n_i)
+    b = -np.log(y.mean(axis=0).clip(0.02, 0.98) / (1 - y.mean(axis=0).clip(0.02, 0.98)))
+    for _ in range(iters):
+        r = y - sigmoid(a[None, :] * (theta[:, None] - b[None, :]))
+        g_theta = (r * a[None, :]).sum(axis=1) / n_i
+        g_a = (r * (theta[:, None] - b[None, :])).sum(axis=0) / n_m
+        g_b = -(r * a[None, :]).sum(axis=0) / n_m
+        theta += lr * 20 * g_theta
+        a = np.clip(a + lr * g_a * 5, 0.05, 6.0)
+        b += lr * g_b * 5
+        mu, sd = theta.mean(), theta.std()
+        theta = (theta - mu) / sd            # fix the scale: theta ~ (0, 1)
+        b = (b - mu) / sd
+        a = a * sd
+    return theta, a, b
+
+
+def fit_theta(resp: np.ndarray, a: np.ndarray, b: np.ndarray, iters: int = 200) -&gt; float:
+    """MAP ability for one model given fixed items (N(0,1) prior keeps all-correct finite)."""
+    t = 0.0
+    for _ in range(iters):
+        p = sigmoid(a * (t - b))
+        grad = (a * (resp - p)).sum() - t
+        hess = -(a * a * p * (1 - p)).sum() - 1.0
+        t -= grad / hess
+    return t
+</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch05/irt_tiny.py</code> (about 7 s)</p>
+<pre class="output"><code>2PL fit on 200 models x 1000 items: corr(a_hat, a) = 0.809, corr(b_hat, b) = 0.988, corr(theta_hat, theta) = 0.998
+
+Estimating full 1000-item accuracy of 100 new models from 50 items (mean abs error, points):
+  random 50 items                     4.55
+  50 k-means anchors (weighted)       3.45
+  IRT ability fit on random 50        3.09
+  IRT ability fit on the anchors      2.56
+
+Figure 5.6: item characteristic curves P(correct | theta) for three illustrative items
+  theta:  -3.0  -2.0  -1.0   0.0   1.0   2.0   3.0
+  easy, flat (a=0.5, b=-1.0)   0.27  0.38  0.50  0.62  0.73  0.82  0.88
+  medium (a=1.5, b=0.0)        0.01  0.05  0.18  0.50  0.82  0.95  0.99
+  hard, sharp (a=3.0, b=1.5)   0.00  0.00  0.00  0.01  0.18  0.82  0.99</code></pre>
+  <p>Fifty weighted k-means anchors cut the error of a random 50-item subset from 4.55 to 3.45 points; fitting ability on the anchors and predicting all 1,000 items
+  gets 2.56, tinyBenchmarks&rsquo; logic in miniature. With flat items (median discrimination 1) the anchors were <em>worse</em> than random: they rely on responses being
+  strongly correlated across items.</p>
+
+  <h3 id="irt-debate">The open debate: does IRT reduce variance?</h3>
+  <p>The efficiency results are for scoring a finished model cheaply. For training-time decisions, Madaan et al. found that IRT-selected subsets <em>increased</em> seed
+  variance: ARC-C seed standard deviation rose from 0.80 to 1.80 and HellaSwag from
+  0.21 to 2.06<a class="cite" href="#src-9">[9]</a>. Fluid Benchmarking reports the opposite direction, lower variance, for its adaptive selection<a class="cite" href="#src-36">[36]</a>. A fixed subset of discriminative items amplifies checkpoint jitter, while adaptive testing re-targets items to each
+  model. As of November 2026: use IRT subsets to score final models on a budget, and check seed variance before using them to track training.</p>
+
+  <h2 id="rl-stats"><span class="sec-num">5.13</span>Statistics for RL</h2>
+  <p>RL has every problem in this chapter, made worse by expense: papers report 3 to 10 runs per task, and task scores span orders of magnitude. Agarwal et al.
+  showed how badly point estimates mislead there<a class="cite" href="#src-22">[22]</a>: for one Atari 100k algorithm, going from 5 to 100 runs shifted the median by +0.03, about 36% of its claimed
+  improvement. Earlier work had shown that seeds, codebases and hyperparameters change RL conclusions<a class="cite" href="#src-39">[39]</a>, and Colas et al. compared the
+  false-positive rates of common tests on non-normal RL returns<a class="cite" href="#src-40">[40]</a>. Chapter 7 applies them to RL environments
+  (<a href="07-rl-environments.html#few-runs">Section 7.8</a>).</p>
+
+  <h3 id="rl-stats-metrics">The rliable metrics</h3>
+  <ul>
+    <li><b>Interquartile mean (IQM)</b>: the mean of the middle 50% of all run &times; task scores. Robust like the median, but uses half the data, so its CI is tighter.</li>
+    <li><b>Optimality gap</b>: &gamma; &minus; mean(min(score, &gamma;)), the average shortfall from a target score &gamma; (often 1 = human-normalised). Scores above the target
+    earn no credit, so one superhuman task cannot hide failures elsewhere.</li>
+    <li><b>Probability of improvement</b>: for each task, P(X &gt; Y) for a random run of algorithm X against a random run of Y, estimated by the Mann&ndash;Whitney U
+    statistic divided by the number of run pairs, then averaged over tasks.</li>
+    <li><b>Performance profiles</b>: the share of runs whose normalised score exceeds &tau;, as a function of &tau; (a survival curve), with CI bands.</li>
+    <li><b>Stratified bootstrap CIs</b> for all of the above: resample runs within each task.</li>
+  </ul>
+  <p>The reference implementations are compact:</p>
+<pre data-file="google-research/rliable: rliable/metrics.py"><code class="language-python">def aggregate_iqm(scores: np.ndarray):
+  """Computes the interquartile mean across runs and tasks.
+  ...
+  """
+  return scipy.stats.trim_mean(scores, proportiontocut=0.25, axis=None)
+
+
+def aggregate_optimality_gap(scores: np.ndarray, gamma=1):
+  """Computes optimality gap across all runs and tasks.
+  ...
+  """
+  return gamma - np.mean(np.minimum(scores, gamma))
+
+
+def probability_of_improvement(scores_x: np.ndarray, scores_y: np.ndarray):
+  """Overall Probability of imporvement of algorithm `X` over `Y`.
+  ...
+  """
+  num_tasks = scores_x.shape[1]
+  task_improvement_probabilities = []
+  num_runs_x, num_runs_y = scores_x.shape[0], scores_y.shape[0]
+  for task in range(num_tasks):
+    if np.array_equal(scores_x[:, task], scores_y[:, task]):
+      task_improvement_prob = 0.5
+    else:
+      task_improvement_prob, _ = scipy.stats.mannwhitneyu(
+          scores_x[:, task], scores_y[:, task], alternative='greater')
+      task_improvement_prob /= (num_runs_x * num_runs_y)
+    task_improvement_probabilities.append(task_improvement_prob)
+  return np.mean(task_improvement_probabilities)</code></pre>
+  <p class="code-caption">Quoted verbatim with docstrings shortened (&ldquo;...&rdquo;)<a class="cite" href="#src-21">[21]</a>. Scores have shape <code>(num_runs, num_tasks)</code>. Requires <code>rliable</code> and SciPy.</p>
+  <aside class="note" data-title="As of November 2026"><p><code>google-research/rliable</code> is archived (last push 2024-08-12). It still installs and works, but it will not
+  receive fixes; the functions are short enough to re-implement, which is what <code>rl_aggregates.py</code> does without SciPy.</p></aside>
+<pre data-file="code/ch05/rl_aggregates.py"><code class="language-python">def trim_mean(x: np.ndarray, cut: float = 0.25) -&gt; float:
+    """Same convention as scipy.stats.trim_mean: drop int(cut * n) values from each end."""
+    s = np.sort(np.ravel(x))
+    g = int(cut * len(s))
+    return float(s[g: len(s) - g].mean())
+
+
+def optimality_gap(scores: np.ndarray, gamma: float = 1.0) -&gt; float:
+    return float(gamma - np.mean(np.minimum(scores, gamma)))
+
+
+def mann_whitney_u(x: np.ndarray, y: np.ndarray) -&gt; float:
+    """U = #{(i, j): x_i &gt; y_j} + 0.5 #{ties}."""
+    d = x[:, None] - y[None, :]
+    return float((d &gt; 0).sum() + 0.5 * (d == 0).sum())
+
+
+def prob_improvement(sx: np.ndarray, sy: np.ndarray) -&gt; float:
+    """P(X &gt; Y) per task from the U statistic, averaged over tasks (scores are runs x tasks)."""
+    return float(np.mean([mann_whitney_u(sx[:, t], sy[:, t]) / (sx.shape[0] * sy.shape[0]) for t in range(sx.shape[1])]))
+
+
+def stratified_bootstrap(scores: np.ndarray, stat, rng: np.random.Generator, reps: int = 2000) -&gt; tuple[float, float]:
+    """Resample runs independently within each task (column), recompute the aggregate."""
+    r, t = scores.shape
+    out = np.empty(reps)
+    for b in range(reps):
+        idx = rng.integers(0, r, size=(r, t))
+        out[b] = stat(np.take_along_axis(scores, idx, axis=0))
+    return float(np.quantile(out, 0.025)), float(np.quantile(out, 0.975))
+</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch05/rl_aggregates.py</code></p>
+<pre class="output"><code>Worked example: mean = 1.430, median = 0.375, IQM = 0.367
+Ground truth (20,000 runs): IQM A = 0.664, IQM B = 0.532, P(A &gt; B) = 0.601
+
+3 runs x 12 tasks, 95% stratified-bootstrap CIs (2,000 reps)
+  mean            A = 1.190 [0.968, 1.434]   B = 0.952 [0.647, 1.303]
+  median          A = 0.834 [0.537, 0.882]   B = 0.517 [0.342, 0.696]
+  IQM             A = 0.724 [0.616, 0.869]   B = 0.504 [0.398, 0.619]
+  optimality gap  A = 0.364 [0.314, 0.412]   B = 0.481 [0.417, 0.537]
+  P(A &gt; B) = 0.685
+  performance profile, fraction of runs with score &gt; tau: tau=0.25: A 0.83 / B 0.61  tau=0.5: A 0.61 / B 0.50  tau=1.0: A 0.28 / B 0.17  tau=2.0: A 0.17 / B 0.08
+
+10 runs x 12 tasks, 95% stratified-bootstrap CIs (2,000 reps)
+  mean            A = 1.019 [0.877, 1.178]   B = 0.951 [0.802, 1.101]
+  median          A = 0.544 [0.467, 0.648]   B = 0.480 [0.418, 0.604]
+  IQM             A = 0.600 [0.528, 0.686]   B = 0.554 [0.486, 0.638]
+  optimality gap  A = 0.418 [0.382, 0.454]   B = 0.446 [0.408, 0.481]
+  P(A &gt; B) = 0.568
+  performance profile, fraction of runs with score &gt; tau: tau=0.25: A 0.78 / B 0.74  tau=0.5: A 0.54 / B 0.49  tau=1.0: A 0.29 / B 0.28  tau=2.0: A 0.12 / B 0.10
+
+Wobble of point estimates across 2,000 repeated studies of algorithm A (sd of the estimate)
+   3 runs: median-of-tasks sd = 0.1218   IQM sd = 0.0884
+  10 runs: median-of-tasks sd = 0.0789   IQM sd = 0.0480</code></pre>
+  <div class="worked">
+    <p><b>IQM worked example.</b> Scores [0, 0.1, 0.2, 0.3, 0.35, 0.4, 0.45, 0.5, 3.0, 9.0]: the mean is 1.43, dominated by two outlier tasks; the median is 0.375;
+    the IQM drops the two lowest and two highest values and averages the remaining six, 2.2/6 = 0.367 (the same convention as <code>scipy.stats.trim_mean</code>).</p>
+    <p><b>Two algorithms, 12 tasks.</b> A is truly 25% better (IQM 0.664 vs 0.532). The 3-run study exaggerates the gap, the 10-run study understates it; only the
+    intervals say so. Across repeated studies the IQM&rsquo;s sd is 27&ndash;39% smaller than the median&rsquo;s.</p>
+  </div>
+  <p>Agarwal et al. recommend intervals over dichotomous tests and released per-run scores<a class="cite" href="#src-22">[22]</a>; Jordan et al. and Patterson et al.
+  cover cross-environment aggregation and experiment design<a class="cite" href="#src-41">[41]</a><a class="cite" href="#src-42">[42]</a>.</p>
+
+  <h3 id="rl-stats-llm">Mapping to LLM RL and agent environments</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Classic deep RL</th><th>LLM post-training / agent RL</th><th>Statistic to use</th></tr></thead>
+      <tbody>
+        <tr><td>Task (an Atari game)</td><td>An environment or task family (a repo, a tool domain, a math source)</td><td>Stratify the bootstrap by it</td></tr>
+        <tr><td>Run (a training seed)</td><td>A training run of the policy; or, at eval time, a rollout seed</td><td>IQM over runs &times; tasks; 10+ runs where affordable</td></tr>
+        <tr><td>Normalised score</td><td>Success rate, reward, or pass@1 per environment</td><td>Optimality gap against &gamma; = 1 (all tasks solved)</td></tr>
+        <tr><td>Learning curve</td><td>Eval score per checkpoint</td><td>Checkpoint averaging; SNR (5.11) before choosing an eval</td></tr>
+        <tr><td>&ldquo;Algorithm X beats Y&rdquo;</td><td>&ldquo;Recipe X beats Y&rdquo;</td><td>Probability of improvement with a stratified-bootstrap CI</td></tr>
+      </tbody>
+      <caption>Table 5.5. Translating rliable-style reporting to LLM RL and RL environments.</caption>
+    </table>
+  </div>
+
+  <h2 id="ppi-stats"><span class="sec-num">5.14</span>Mixing judge and human labels</h2>
+  <p>LLM judges are cheap and biased; human labels are expensive and closer to unbiased. Chapter 4 treats PPI in detail (<a href="04-llm-judges-human-eval.html#ppi">Section 4.11</a>); here are the statistics.</p>
+  <p><b>The judge as a variance source.</b> A stochastic judge adds within-item noise exactly like model sampling in Equation 5.1: re-judging each answer
+  K<sub>j</sub> times and averaging divides that term by K<sub>j</sub>. It does nothing for the judge&rsquo;s <em>bias</em>. With TPR and TNR measured on a
+  human-labelled calibration set (<a href="04-llm-judges-human-eval.html#agreement">Section 4.3</a>), the judged pass rate is
+  q = TPR&middot;&theta; + (1 &minus; TNR)(1 &minus; &theta;), which is pulled toward the judge&rsquo;s error rates: upward when the true accuracy &theta; is low, downward when it is high<a class="cite" href="#src-43">[43]</a>.
+  Inverting it gives the <span class="term">Rogan&ndash;Gladen</span> correction from epidemiology<a class="cite" href="#src-44">[44]</a>:</p>
+  <div class="formula">
+    &theta;&#770; = <span class="frac"><span>q&#770; + TNR &minus; 1</span><span>TPR + TNR &minus; 1</span></span>, clipped to [0, 1]
+    <span class="eq-num">(5.12)</span>
+    <span class="where">It needs TPR + TNR &gt; 1 (a judge better than chance). For a CI, bootstrap the judged set and the calibration set together and recompute
+    &theta;&#770;; Lee et al. derive the analytic interval and how to split labels between the two sets<a class="cite" href="#src-43">[43]</a>.</span>
+  </div>
+<pre data-file="code/ch05/ppi_stats.py"><code class="language-python">def rogan_gladen(q: np.ndarray, tpr: np.ndarray, tnr: np.ndarray) -&gt; np.ndarray:
+    """Correct a judged pass rate q for judge error rates (needs TPR + TNR &gt; 1); clip to [0, 1]."""
+    return np.clip((q + tnr - 1.0) / (tpr + tnr - 1.0), 0.0, 1.0)</code></pre>
+  <p><b>Prediction-powered inference.</b> You have <i>N</i> items scored only by the judge <i>f</i>, and <i>n</i> items scored by both the judge and a human (<i>Y</i>). The PPI estimate of the mean quality is</p>
+  <div class="formula">
+    &theta;&#770;<sub>PPI</sub> = <span class="frac"><span>1</span><span><i>N</i></span></span> &Sigma;<sub><i>j</i></sub> <i>f</i>(X&#771;<sub><i>j</i></sub>) &minus;
+    <span class="frac"><span>1</span><span><i>n</i></span></span> &Sigma;<sub><i>i</i></sub> ( <i>f</i>(<i>X<sub>i</sub></i>) &minus; <i>Y<sub>i</sub></i> ),
+    &nbsp;&nbsp; Var(&theta;&#770;<sub>PPI</sub>) &asymp; <span class="frac"><span>&sigma;<sub><i>f</i></sub>&sup2;</span><span><i>N</i></span></span> + <span class="frac"><span>&sigma;<sub><i>f</i>&minus;<i>Y</i></sub>&sup2;</span><span><i>n</i></span></span>
+    <span class="eq-num">(5.13)</span>
+    <span class="where">The second term, the <span class="term">rectifier</span>, estimates the judge&rsquo;s bias on the human-labelled items and subtracts it. The estimate is unbiased
+    however biased the judge is; it is tighter than human-only when the judge&rsquo;s errors are small (small &sigma;<sub><i>f</i>&minus;<i>Y</i></sub>)<a class="cite" href="#src-45">[45]</a>.</span>
+  </div>
+  <p>Boyeau et al. report effective human sample sizes up to 50% larger with GPT-4 judges<a class="cite" href="#src-46">[46]</a>; the library is <code>aangelopoulos/ppi_py</code><a class="cite" href="#src-45">[45]</a>.
+  <code>ppi_stats.py</code> uses a judge that passes 40% of true failures, 5,000 judged items and 200 human-labelled ones.</p>
+<pre data-file="code/ch05/ppi_stats.py"><code class="language-python">def estimates(rng: np.random.Generator, flip: float) -&gt; dict[str, tuple[float, float]]:
+    _, f_u = draw(rng, N_UNLAB, flip)
+    y_l, f_l = draw(rng, N_LAB, flip)
+    judge = (f_u.mean(), 1.96 * f_u.std(ddof=1) / math.sqrt(N_UNLAB))
+    human = (y_l.mean(), 1.96 * y_l.std(ddof=1) / math.sqrt(N_LAB))
+    rect = f_l - y_l
+    ppi_mean = f_u.mean() - rect.mean()
+    ppi_half = 1.96 * math.sqrt(f_u.var(ddof=1) / N_UNLAB + rect.var(ddof=1) / N_LAB)
+    return {"judge only": judge, "human only": human, "PPI": (ppi_mean, ppi_half)}
+</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch05/ppi_stats.py</code></p>
+<pre class="output"><code>True pass rate 0.70; 5000 judged items, 200 with human labels (judge flip rate 5%)
+  judge only  0.787 +/- 0.011
+  human only  0.665 +/- 0.066
+  PPI         0.662 +/- 0.047
+
+Coverage of the 95% intervals over 2000 replications:
+  judge only    0.0%   mean half-width 0.011
+  human only   94.2%   mean half-width 0.064
+  PPI          95.3%   mean half-width 0.055
+
+PPI half-width relative to human-only as the judge gets noisier:
+  judge flip rate 0.00: PPI / human-only width = 0.72
+  judge flip rate 0.05: PPI / human-only width = 0.86
+  judge flip rate 0.15: PPI / human-only width = 1.08
+  judge flip rate 0.30: PPI / human-only width = 1.29
+
+Rogan-Gladen correction with TPR/TNR from the 200 human labels (flip rate 5%):
+  one draw: 0.719  95% bootstrap CI [0.637, 0.779]
+  coverage over 1000 replications 94.1%, mean half-width 0.095
+
+Power-tuned PPI++ (lambda estimated from the data) vs plain PPI (lambda = 1), relative to human-only:
+  flip 0.05: mean lambda* 0.65; width ratio PPI 0.86, PPI++ 0.80; PPI++ coverage 92.5%
+  flip 0.15: mean lambda* 0.43; width ratio PPI 1.07, PPI++ 0.90; PPI++ coverage 94.8%
+  flip 0.30: mean lambda* 0.21; width ratio PPI 1.29, PPI++ 0.97; PPI++ coverage 93.1%</code></pre>
+  <p>The judge-only interval is narrow and wrong (centred at 0.787, 0% coverage). PPI covers 95.3% with a half-width of 0.055 against human-only&rsquo;s 0.064, worth
+  roughly 35% more human labels, but with a judge that flips 15% of verdicts it is <em>wider</em> than humans alone. This is plain PPI (&lambda; = 1). Power-tuned PPI++ estimates
+  &lambda;* = Cov(Y, f) / ((1 + n/N) Var f) from the data, and <code>ppi_py</code> does this by default with <code>lam=None</code>. For a weak judge &lambda;* shrinks toward 0, so
+  the interval falls back toward human-only and is never meaningfully wider: in the last output block the width ratio at flip rates 0.15 and 0.30 is 0.90 and 0.97,
+  against 1.07 and 1.29 for plain PPI (see <a href="04-llm-judges-human-eval.html#ppi">Section 4.11</a>). Rogan&ndash;Gladen also removes the bias (94.1%
+  coverage) but is wider here (0.095), because dividing by TPR + TNR &minus; 1 amplifies the noise in the estimated error rates. Its advantage is that it needs only
+  TPR and TNR, and Lee et al. show their corrected estimator stays unbiased when the calibration set&rsquo;s mix differs from the test set&rsquo;s<a class="cite" href="#src-43">[43]</a>.</p>
+
+  <h2 id="bayes"><span class="sec-num">5.15</span>Hierarchical Bayesian evaluation</h2>
+  <p>Agentic evals are often small and nested: a few task families, a handful of tasks each. Per-family accuracies are too noisy; one pooled number hides differences. A <span class="term">hierarchical</span> model sits in between: family rates come from a shared population distribution learned from all families, so
+  small families are shrunk toward the population mean and large ones keep their own estimate.
+  UK AISI&rsquo;s HiBayES framework applies multilevel Bayesian GLMs to exactly this setting (responses within items within categories within models, and fewer than
+  20 data points per eval), with a package at <code>UKGovernmentBEIS/hibayes</code><a class="cite" href="#src-47">[47]</a><a class="cite" href="#src-48">[48]</a>; Bowyer et al. recommend a hierarchical Beta&ndash;Binomial
+  model for clustered questions<a class="cite" href="#src-8">[8]</a>.</p>
+  <div class="formula">
+    &theta;<sub><i>j</i></sub> ~ Beta(&mu;&kappa;, (1 &minus; &mu;)&kappa;), &nbsp;&nbsp; <i>k<sub>j</sub></i> ~ Binomial(<i>n<sub>j</sub></i>, &theta;<sub><i>j</i></sub>), &nbsp;&nbsp;
+    &mu; ~ Uniform(0, 1), &nbsp; log &kappa; ~ Uniform
+    <span class="eq-num">(5.14)</span>
+    <span class="where">&mu; is the population mean success rate and &kappa; the concentration (large &kappa; = families are similar, strong pooling). Integrating out &theta;<sub><i>j</i></sub>
+    gives a beta-binomial likelihood B(&mu;&kappa; + <i>k<sub>j</sub></i>, (1 &minus; &mu;)&kappa; + <i>n<sub>j</sub></i> &minus; <i>k<sub>j</sub></i>) / B(&mu;&kappa;, (1 &minus; &mu;)&kappa;)
+    per family, so the posterior over (&mu;, &kappa;) can be computed exactly on a grid; given (&mu;, &kappa;), each &theta;<sub><i>j</i></sub> has a conjugate Beta posterior.</span>
+  </div>
+<pre data-file="code/ch05/hierarchical.py"><code class="language-python">def grid_posterior(k: np.ndarray, n: np.ndarray) -&gt; np.ndarray:
+    """Posterior over (mu, kappa) on the grid, from the product of beta-binomial likelihoods."""
+    a = MU[:, None] * KAPPA[None, :]
+    b = (1 - MU[:, None]) * KAPPA[None, :]
+    logp = np.zeros_like(a)
+    for kj, nj in zip(k, n):
+        logp += log_beta(a + kj, b + nj - kj) - log_beta(a, b)   # binomial coefficient is constant
+    logp -= logp.max()
+    post = np.exp(logp)
+    return post / post.sum()   # uniform prior on mu, log-uniform on kappa (grid is log-spaced)
+
+
+def sample(post: np.ndarray, k: np.ndarray, n: np.ndarray, rng: np.random.Generator, draws: int = 20_000):
+    flat = rng.choice(post.size, size=draws, p=post.ravel())
+    mi, ki = np.unravel_index(flat, post.shape)
+    mu, kappa = MU[mi], KAPPA[ki]
+    theta = rng.beta(mu[:, None] * kappa[:, None] + k[None, :], (1 - mu[:, None]) * kappa[:, None] + (n - k)[None, :])
+    return mu, kappa, theta
+</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/ch05/hierarchical.py</code></p>
+<pre class="output"><code>Agent A: 27/51 successes overall (complete pooling = 0.529)
+  population mean mu: posterior mean 0.524, 95% CrI [0.375, 0.670]; kappa median 69.5
+  family       k/n  no pooling    partial pooling (95% CrI)
+  web        7/12         0.58       0.54 [0.37, 0.72]
+  shell      6/10         0.60       0.54 [0.36, 0.73]
+  sql        4/8          0.50       0.52 [0.32, 0.70]
+  email      3/6          0.50       0.52 [0.31, 0.71]
+  calendar   3/5          0.60       0.54 [0.34, 0.75]
+  files      1/4          0.25       0.49 [0.22, 0.69]
+  search     3/3          1.00       0.57 [0.37, 0.87]
+  code       0/3          0.00       0.47 [0.15, 0.67]
+Agent B: 34/51 successes overall (complete pooling = 0.667)
+  population mean mu: posterior mean 0.654, 95% CrI [0.510, 0.785]; kappa median 92.9
+  family       k/n  no pooling    partial pooling (95% CrI)
+  web        9/12         0.75       0.67 [0.51, 0.83]
+  shell      7/10         0.70       0.66 [0.49, 0.82]
+  sql        5/8          0.62       0.65 [0.47, 0.81]
+  email      4/6          0.67       0.66 [0.47, 0.82]
+  calendar   3/5          0.60       0.65 [0.45, 0.81]
+  files      2/4          0.50       0.64 [0.43, 0.81]
+  search     3/3          1.00       0.68 [0.49, 0.88]
+  code       1/3          0.33       0.63 [0.40, 0.80]
+
+P(mu_B &gt; mu_A) = 0.896; posterior mean difference = +13.0 pts, 95% CrI [-7.5, +33.0]</code></pre>
+  <p>Agent A&rsquo;s 3/3 &ldquo;search&rdquo; and 0/3 &ldquo;code&rdquo; become 0.57 and 0.47 with wide intervals, because all eight families look similar (&kappa; &asymp; 70);
+  large families barely move. P(&mu;<sub>B</sub> &gt; &mu;<sub>A</sub>) = 0.896 is suggestive, not conclusive. A paired hierarchical model would be tighter.</p>
+  <aside class="tip" data-title="When to reach for a hierarchical model"><p>Nested structure with little data per cell: per-family agent results, per-language slices,
+  per-environment RL success. For one large benchmark it adds little over Wilson. A grid works for two hyperparameters; otherwise use HiBayES.</p></aside>
+
+  <h2 id="reporting"><span class="sec-num">5.16</span>Reporting checklist and template</h2>
+  <p>The checklist consolidates Miller&rsquo;s and Anthropic&rsquo;s recommendations, the Sober Look practices, lm-eval&rsquo;s lessons, rliable and the reproducibility
+  checklists of Dodge et al., Reimers and Gurevych, and Bouthillier et al.<a class="cite" href="#src-3">[3]</a><a class="cite" href="#src-4">[4]</a><a class="cite" href="#src-1">[1]</a><a class="cite" href="#src-32">[32]</a><a class="cite" href="#src-22">[22]</a><a class="cite" href="#src-49">[49]</a><a class="cite" href="#src-50">[50]</a><a class="cite" href="#src-51">[51]</a></p>
+  <ol>
+    <li><b>Sizes.</b> Report <i>n</i> (questions or tasks), the number of clusters, K (samples per question), the number of seeds or training runs, and the decoding parameters.</li>
+    <li><b>Uncertainty on every number.</b> Mean &plusmn; SE or a 95% interval; clustered SE when items are grouped; Wilson or a Bayesian interval when <i>n</i> is below a few hundred. Name the method.</li>
+    <li><b>Paired comparisons.</b> Report the per-question paired difference, its SE or interval (clustered when tasks are grouped, on per-task means when K &gt; 1), and the correlation between the models; not two separate intervals.</li>
+    <li><b>Power and stopping rule up front.</b> State the MDE of the design, or the power for the effect you care about, before running. Stopping rule declared before running (fixed <i>n</i>/K/seeds, or a sequential method named).</li>
+    <li><b>Lower-variance metrics where valid.</b> Token probabilities or continuous metrics; average over K samples; checkpoint averaging for training curves.</li>
+    <li><b>Agent reliability.</b> pass^k alongside pass@1 and pass@k, with <i>n</i> trials per task.</li>
+    <li><b>RL aggregates.</b> 10+ runs where possible; IQM and optimality gap with stratified-bootstrap CIs; performance profiles; per-run scores released.</li>
+    <li><b>Multiplicity.</b> A pre-declared primary metric, or Holm/BH corrections over the family of tests; all configurations tried, not just the best.</li>
+    <li><b>The stack.</b> Container or environment (including container CPU/RAM limits and timeouts, and the infra error rate), inference engine and version, GPU type, harness commit, prompt template, parser; seeds for everything, including the bootstrap.</li>
+    <li><b>Raw data.</b> Release prompts, per-item outputs and per-item scores so others can recompute every statistic.</li>
+  </ol>
+  <p>A copy-paste results table. Numbers below are illustrative, assembled from this chapter&rsquo;s scripts (the paired comparison from <code>paired.py</code>):</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Model</th><th class="num">n (clusters)</th><th class="num">K</th><th class="num">Seeds</th><th class="num">Mean</th><th class="num">SE</th><th>95% CI (method)</th><th>&Delta; vs baseline (paired)</th><th>p / posterior</th></tr></thead>
+      <tbody>
+        <tr><td>Baseline B</td><td class="num">500 (500)</td><td class="num">1</td><td class="num">1</td><td class="num">0.494</td><td class="num">0.0224</td><td>[0.450, 0.538] (CLT)</td><td>&mdash;</td><td>&mdash;</td></tr>
+        <tr><td>Candidate A</td><td class="num">500 (500)</td><td class="num">1</td><td class="num">1</td><td class="num">0.548</td><td class="num">0.0223</td><td>[0.504, 0.592] (CLT)</td><td>+5.4 pts, SE 1.9, [+1.6, +9.2] (paired bootstrap), &rho; = 0.62</td><td>McNemar exact p = 0.0073</td></tr>
+      </tbody>
+      <caption>Table 5.6. Template for a results table. Add columns for clustered SE, pass^k or IQM as the eval requires, and a footnote with decoding parameters, stack and seeds.</caption>
+    </table>
+  </div>
+  <p>The same table as a Markdown snippet you can paste into a report or a pull request:</p>
+<pre><code class="language-markdown">| Model | n (clusters) | K | Seeds | Mean | SE | 95% CI (method) | Delta vs baseline (paired) | p / posterior |
+|---|---|---|---|---|---|---|---|---|
+| Baseline B | 500 (500) | 1 | 1 | 0.494 | 0.0224 | [0.450, 0.538] (CLT) | - | - |
+| Candidate A | 500 (500) | 1 | 1 | 0.548 | 0.0223 | [0.504, 0.592] (CLT) | +5.4 pts, SE 1.9, [+1.6, +9.2] (paired bootstrap), rho = 0.62 | McNemar exact p = 0.0073 |
+
+Decoding: temperature 0.7, top-p 1.0, max 2,048 tokens. Stack: &lt;engine&gt; &lt;version&gt;, &lt;GPU&gt;, harness &lt;commit&gt;.
+MDE of this design at 80% power: &lt;x&gt; pts. Bootstrap: 10,000 replicates, seed 1.</code></pre>
+  <aside class="note" data-title="Where these tools live in the rest of the book"><p>Chapter 6 applies pass^k, clustered SEs and hierarchical models to agents;
+  Chapter 7 the RL aggregates; Chapter 9 turns the paired test and MDE into a CI gate; Chapter 10 fills in this table. Libraries worth knowing beyond those quoted here: <code>deep-significance</code> for Almost Stochastic Order, bootstrap and
+  permutation tests with Bonferroni correction<a class="cite" href="#src-52">[52]</a>, and <code>eval-arena</code> for paired all-pairs noise analysis<a class="cite" href="#src-6">[6]</a>.</p></aside>
+
+  <h2 id="exercises"><span class="sec-num">5.17</span>Exercises</h2>
+  <aside class="exercise" data-title="Exercise 5.1"><p>A colleague reports 27/30 on AIME-style problems as &ldquo;90.0% &plusmn; 10.7&rdquo; (Wald). Using the helpers in
+  <code>code/ch05/_common.py</code>, compute the Wilson, Clopper&ndash;Pearson and Beta-posterior intervals. Then change the coverage setting in
+  <code>error_bars.py</code> to &mu; = 0.95 and report the Wald coverage at <i>n</i> = 30 and 100. What would you tell your colleague?</p>
+    <details><summary>Solution</summary><p>Unclipped, Wald gives [0.793, 1.007], which crosses 1; <code>_common.wald</code> clips it to [0.793, 1.000], hiding the problem. Wilson gives [0.744, 0.965], Clopper&ndash;Pearson [0.735, 0.979] and the Beta posterior
+    [0.742, 0.964]. At &mu; = 0.95 the exact Wald coverage is 78.2% at <i>n</i> = 30 (it collapses to [1, 1] whenever all 30 are right, probability 0.95<sup>30</sup> &asymp; 0.21)
+    and 87.7% at <i>n</i> = 100; Wilson gives 93.9% and 96.6%. Report Wilson and say &ldquo;n = 30&rdquo;.</p></details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 5.2"><p>In <code>clustered.py</code>, change <code>Q_PER</code> from 4 to 10 (keeping 50 passages). Predict the SE inflation from the design
+  effect before running, then check the script&rsquo;s ratio and the naive coverage. (Comment out the final asserts first.)</p>
+    <details><summary>Solution</summary><p>Design effect 1 + 9 &times; 0.330 = 3.97, predicted inflation &radic;3.97 &asymp; 1.99. The script prints a median ratio of 2.00&times;,
+    naive coverage 67.3% and clustered 93.9%. The 500 questions are worth about 126 independent ones.</p></details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 5.3"><p>Your benchmark has 400 questions, two models near 70% accuracy, measured correlation &rho; = 0.6, one greedy sample each. What gain can you detect
+  with 80% power? How many questions would you need for a 2-point gain? Use <code>mde</code> and <code>n_required</code> from <code>power.py</code>.</p>
+    <details><summary>Solution</summary><p>Per-model variance 0.7 &times; 0.3 = 0.21, so &omega;&sup2; = 0.21 + 0.21 &minus; 2 &times; 0.6 &times; 0.21 = 0.168. MDE = 2.8016 &times;
+    &radic;(0.168/400) = 0.0574, about 5.7 points. For &delta; = 0.02: <i>n</i> = 2.8016&sup2; &times; 0.168 / 0.0004 &asymp; 3,297.</p></details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 5.4"><p>In <code>paired.py</code>, replace the shared easiness sd of 3.0 with 0.5 (models agree much less). Rerun (comment out the asserts first). What happens to &rho;, to the paired SE,
+  and to the size of the difference? Explain using Equation 5.6.</p>
+    <details><summary>Solution</summary><p>The correlation falls to 0.052. The paired SE (0.0304) is now close to the unpaired SE (0.0313), so pairing stops helping.
+    Equation 5.6 explains why: the reduction term 2&middot;SE<sub>A</sub>&middot;SE<sub>B</sub>&middot;&rho; vanishes as &rho; &rarr; 0.</p></details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 5.5"><p>Using <code>pass_hat_k</code> from <code>passk.py</code>, design an Agent C with the same pass@1 = 0.6 over 10 tasks whose pass^4 lies between Agent A&rsquo;s and
+  Agent B&rsquo;s. Then: with only <i>n</i> = 4 trials per task, which values of k can you estimate, and why is pass^4 from 4 trials a poor estimate?</p>
+    <details><summary>Solution</summary><p>One option: 5 tasks at <i>p</i> = 0.9 and 5 at <i>p</i> = 0.3 (mean 0.6). pass^4 = (5 &times; 0.6561 + 5 &times; 0.0081)/10 = 0.332, between 0.130 and 0.600.
+    With <i>n</i> = 4 you can estimate k = 1..4, but pass^4 per task is then a single Bernoulli draw (all four succeed or not): unbiased but noisy. On the
+    50-task mock of <code>passk.py</code> its 95% interval is 0.228 wide at <i>n</i> = 4 and 0.140 at <i>n</i> = 16. Run more trials than the largest k you report.</p></details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 5.6"><p>In <code>rl_aggregates.py</code>, change the 10-run study&rsquo;s seeds (for example <code>default_rng(runs + 1)</code> and <code>default_rng(101 + runs)</code>)
+  a few times. How often do the IQM 95% intervals of A and B fail to overlap? What does that say about a single 10-run study?</p>
+    <details><summary>Solution</summary><p>In 20 reseeded studies we ran (seeds 10+s and 110+s), the IQM gap ranged from 0.073 to 0.232 around the true 0.13, the intervals
+    failed to overlap in only 9 of 20, and P(A &gt; B) ranged from 0.55 to 0.69. Decide on the interval of the <em>difference</em> (or of the probability of improvement), not on overlap.</p></details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 5.7"><p>Your team evaluates 6 model variants on 12 benchmarks and wants to claim which variant improves on the baseline on which benchmark. How many tests is
+  that? Which correction would you use, and why? Then run <code>multiple_comparisons.py</code> with <code>M = 60</code> and compare Holm and BH power.</p>
+    <details><summary>Solution</summary><p>72 tests (60 if one variant is the baseline). Holm for model-card claims; BH for screening.
+    With <code>M = 60</code> (asserts commented out), Holm&rsquo;s power falls from 50.6% to 36.9% and BH&rsquo;s from 65.3% to 48.8% (FDR 4.6%); uncorrected testing has a
+    95.3% chance of a false claim.</p></details>
+  </aside>
+  <aside class="exercise" data-title="Exercise 5.8"><p>In <code>ppi_stats.py</code>, raise the number of human labels from 200 to 1,000. How does the ratio of PPI to human-only interval width change at
+  judge flip rate 0.05? (Comment out the asserts.) Explain with Equation 5.13.</p>
+    <details><summary>Solution</summary><p>The ratio rises from 0.86 to 0.93 (0.72 to 0.80 for a perfect judge). Both <i>n</i>-terms shrink as 1/<i>n</i>, so the fixed judge term &sigma;<sub><i>f</i></sub>&sup2;/<i>N</i> becomes a larger share. Power-tuned PPI++ would keep the ratio at or below about 1.</p></details>
+  </aside>
+
+  <aside class="takeaways"><ul>
+    <li>An eval score is an estimate of a super-population mean; its variance splits into within-question (sampling, judge, infrastructure) and between-question parts, and they respond to different fixes.</li>
+    <li>124/200 is 62% &plusmn; 6.7 points; 12/30 is &plusmn;17.5. Use Wilson or a Beta posterior below a few hundred items, and clustered SEs whenever questions share a passage, repo or environment.</li>
+    <li>Compare models with paired differences on the same questions; overlapping intervals are not a test. Pairing at &rho; = 0.8 cuts the questions needed for a 3-point gain from 4,361 to 873.</li>
+    <li>Run a power or MDE calculation before the eval; most few-hundred-item benchmarks cannot see 1&ndash;3 point gains.</li>
+    <li>Reduce variance with K samples per question (SE on per-question means, never pooled K&middot;n), token probabilities and continuous metrics, not by lowering the temperature.</li>
+    <li>For agents report pass^k with the unbiased combinatorial estimator next to pass@1 and pass@k; equal pass@1 can hide opposite reliability.</li>
+    <li>Temperature 0 is not deterministic; pin and report the stack (including sandbox limits), run the baseline on the same stack, and report mean &plusmn; sd over seeds as well as the CI over questions.</li>
+    <li>For RL and multi-task results use IQM, optimality gap and probability of improvement with stratified-bootstrap CIs; seed every bootstrap and correct for multiple comparisons.</li>
+  </ul></aside>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="sources">
+    <li id="src-1">Andreas Hochlehnert, Hardik Bhatnagar, Vishaal Udandarao, Samuel Albanie, Ameya Prabhu, Matthias Bethge, &ldquo;A Sober Look at Progress in Language Model Reasoning: Pitfalls and Paths to Reproducibility&rdquo;, arXiv:2504.07086, April 2025. <a href="https://arxiv.org/abs/2504.07086">arxiv.org/abs/2504.07086</a></li>
+    <li id="src-2">Berk Atil, Sarp Aykent, Alexa Chittams, et al., &ldquo;Non-Determinism of &lsquo;Deterministic&rsquo; LLM Settings&rdquo;, arXiv:2408.04667, August 2024. <a href="https://arxiv.org/abs/2408.04667">arxiv.org/abs/2408.04667</a></li>
+    <li id="src-3">Evan Miller, &ldquo;Adding Error Bars to Evals: A Statistical Approach to Language Model Evaluations&rdquo;, arXiv:2411.00640, November 2024. <a href="https://arxiv.org/abs/2411.00640">arxiv.org/abs/2411.00640</a></li>
+    <li id="src-4">Anthropic, &ldquo;A statistical approach to model evaluations&rdquo;, research blog post, 19 November 2024. <a href="https://www.anthropic.com/research/statistical-approach-to-model-evals">anthropic.com/research/statistical-approach-to-model-evals</a></li>
+    <li id="src-5">Moran Mizrahi, Guy Kaplan, Dan Malkin, Rotem Dror, Dafna Shahaf, Gabriel Stanovsky, &ldquo;State of What Art? A Call for Multi-Prompt LLM Evaluation&rdquo;, arXiv:2401.00595, TACL 2024. <a href="https://arxiv.org/abs/2401.00595">arxiv.org/abs/2401.00595</a></li>
+    <li id="src-6">Sida I. Wang, &ldquo;Measuring all the noises of LLM Evals&rdquo;, arXiv:2512.21326, December 2025. <a href="https://arxiv.org/abs/2512.21326">arxiv.org/abs/2512.21326</a>; code: all-the-noises/eval-arena <a href="https://github.com/all-the-noises/eval-arena">github.com/all-the-noises/eval-arena</a> <span class="note-verify">(partially verified: abstract read; per-benchmark ratios from search summaries are not used here)</span></li>
+    <li id="src-7">UKGovernmentBEIS/inspect_ai (3,293 stars as of 2026-11-20), <code>src/inspect_ai/scorer/_metrics/std.py</code> and <code>docs/metrics.qmd</code>. <a href="https://github.com/UKGovernmentBEIS/inspect_ai">github.com/UKGovernmentBEIS/inspect_ai</a> <span class="note-verify">(code quoted verbatim from the main branch, 2026-11-20)</span></li>
+    <li id="src-8">Sam Bowyer, Laurence Aitchison, Desi R. Ivanova, &ldquo;Position: Don&rsquo;t Use the CLT in LLM Evals With Fewer Than a Few Hundred Datapoints&rdquo;, arXiv:2503.01747, ICML 2025. <a href="https://arxiv.org/abs/2503.01747">arxiv.org/abs/2503.01747</a>; library sambowyer/bayes_evals (25 stars as of 2026-11-20) <a href="https://github.com/sambowyer/bayes_evals">github.com/sambowyer/bayes_evals</a></li>
+    <li id="src-9">Lovish Madaan, Aaditya K. Singh, Rylan Schaeffer, et al., &ldquo;Quantifying Variance in Evaluation Benchmarks&rdquo;, arXiv:2406.10229, June 2024. <a href="https://arxiv.org/abs/2406.10229">arxiv.org/abs/2406.10229</a></li>
+    <li id="src-10">David Heineman, Valentin Hofmann, Ian Magnusson, et al., &ldquo;Signal and Noise: A Framework for Reducing Uncertainty in Language Model Evaluation&rdquo;, arXiv:2508.13144, August 2025. <a href="https://arxiv.org/abs/2508.13144">arxiv.org/abs/2508.13144</a>; code allenai/signal-and-noise <a href="https://github.com/allenai/signal-and-noise">github.com/allenai/signal-and-noise</a></li>
+    <li id="src-11">Philipp Koehn, &ldquo;Statistical Significance Tests for Machine Translation Evaluation&rdquo;, EMNLP 2004. <a href="https://aclanthology.org/W04-3250/">aclanthology.org/W04-3250</a> <span class="note-verify">(partially verified: title and URL)</span></li>
+    <li id="src-12">Taylor Berg-Kirkpatrick, David Burkett, Dan Klein, &ldquo;An Empirical Investigation of Statistical Significance in NLP&rdquo;, EMNLP 2012. <a href="https://aclanthology.org/D12-1091/">aclanthology.org/D12-1091</a> <span class="note-verify">(partially verified: title and URL)</span></li>
+    <li id="src-13">Rotem Dror, Gili Baumer, Segev Shlomov, Roi Reichart, &ldquo;The Hitchhiker&rsquo;s Guide to Testing Statistical Significance in Natural Language Processing&rdquo;, ACL 2018. <a href="https://aclanthology.org/P18-1128/">aclanthology.org/P18-1128</a> <span class="note-verify">(partially verified: title, venue and URL)</span></li>
+    <li id="src-14">Dallas Card, Peter Henderson, Urvashi Khandelwal, Robin Jia, Kyle Mahowald, Dan Jurafsky, &ldquo;With Little Power Comes Great Responsibility&rdquo;, arXiv:2010.06595, EMNLP 2020. <a href="https://arxiv.org/abs/2010.06595">arxiv.org/abs/2010.06595</a></li>
+    <li id="src-15">C&eacute;dric Colas, Olivier Sigaud, Pierre-Yves Oudeyer, &ldquo;How Many Random Seeds? Statistical Power Analysis in Deep Reinforcement Learning Experiments&rdquo;, arXiv:1806.08295, 2018. <a href="https://arxiv.org/abs/1806.08295">arxiv.org/abs/1806.08295</a></li>
+    <li id="src-16">Wei-Lin Chiang, Lianmin Zheng, Ying Sheng, et al., &ldquo;Chatbot Arena: An Open Platform for Evaluating LLMs by Human Preference&rdquo;, arXiv:2403.04132, March 2024. <a href="https://arxiv.org/abs/2403.04132">arxiv.org/abs/2403.04132</a></li>
+    <li id="src-17">Mostafa Dehghani, Yi Tay, Alexey A. Gritsenko, et al., &ldquo;The Benchmark Lottery&rdquo;, arXiv:2107.07002, July 2021. <a href="https://arxiv.org/abs/2107.07002">arxiv.org/abs/2107.07002</a></li>
+    <li id="src-18">Steven R. Howard, Aaditya Ramdas, Jon McAuliffe, Jasjeet Sekhon, &ldquo;Time-uniform, nonparametric, nonasymptotic confidence sequences&rdquo;, arXiv:1810.08240, October 2018 (Annals of Statistics 2021). <a href="https://arxiv.org/abs/1810.08240">arxiv.org/abs/1810.08240</a></li>
+    <li id="src-19">Ian Waudby-Smith, Aaditya Ramdas, &ldquo;Estimating means of bounded random variables by betting&rdquo;, arXiv:2010.09686, October 2020. <a href="https://arxiv.org/abs/2010.09686">arxiv.org/abs/2010.09686</a></li>
+    <li id="src-20">Chia-Yu Hsu, Shubhanshu Shekhar, &ldquo;Efficient Sequential Evaluation of Large Language Models&rdquo;, arXiv:2607.17409, July 2026. <a href="https://arxiv.org/abs/2607.17409">arxiv.org/abs/2607.17409</a> <span class="note-verify">(partially verified: title, authors and abstract via the arXiv API)</span></li>
+    <li id="src-21">google-research/rliable (876 stars; last push 2024-08-12; archived as of November 2026), <code>rliable/metrics.py</code>. <a href="https://github.com/google-research/rliable">github.com/google-research/rliable</a> <span class="note-verify">(code quoted verbatim)</span></li>
+    <li id="src-22">Rishabh Agarwal, Max Schwarzer, Pablo Samuel Castro, Aaron Courville, Marc G. Bellemare, &ldquo;Deep Reinforcement Learning at the Edge of the Statistical Precipice&rdquo;, arXiv:2108.13264, NeurIPS 2021. <a href="https://arxiv.org/abs/2108.13264">arxiv.org/abs/2108.13264</a></li>
+    <li id="src-23">EleutherAI/lm-evaluation-harness (14,504 stars as of 2026-11-20), <code>lm_eval/api/metrics.py</code>. <a href="https://github.com/EleutherAI/lm-evaluation-harness">github.com/EleutherAI/lm-evaluation-harness</a> <span class="note-verify">(code quoted verbatim)</span></li>
+    <li id="src-24">openai/simple-evals (4,710 stars as of 2026-11-20; deprecated since July 2025, code still readable), <code>common.py</code>. <a href="https://github.com/openai/simple-evals">github.com/openai/simple-evals</a></li>
+    <li id="src-25">Mark Chen, Jerry Tworek, Heewoo Jun, et al., &ldquo;Evaluating Large Language Models Trained on Code&rdquo;, arXiv:2107.03374, July 2021. <a href="https://arxiv.org/abs/2107.03374">arxiv.org/abs/2107.03374</a></li>
+    <li id="src-26">Shunyu Yao, Noah Shinn, Pedram Razavi, Karthik Narasimhan, &ldquo;&tau;-bench: A Benchmark for Tool-Agent-User Interaction in Real-World Domains&rdquo;, arXiv:2406.12045, June 2024. <a href="https://arxiv.org/abs/2406.12045">arxiv.org/abs/2406.12045</a></li>
+    <li id="src-27">openai/human-eval (3,431 stars as of 2026-11-20), <code>human_eval/evaluation.py</code>. <a href="https://github.com/openai/human-eval">github.com/openai/human-eval</a> <span class="note-verify">(code quoted verbatim)</span></li>
+    <li id="src-28">sierra-research/tau-bench (1,514 stars as of 2026-11-20), <code>tau_bench/run.py</code>; successor sierra-research/tau2-bench (2,487 stars). <a href="https://github.com/sierra-research/tau-bench">github.com/sierra-research/tau-bench</a> <span class="note-verify">(code quoted verbatim)</span></li>
+    <li id="src-29">Mohsen Hariri, Amirhossein Samandar, Michael Hinczewski, Vipin Chaudhary, &ldquo;Don&rsquo;t Pass@k: A Bayesian Framework for Large Language Model Evaluation&rdquo;, arXiv:2510.04265, ICLR 2026. <a href="https://arxiv.org/abs/2510.04265">arxiv.org/abs/2510.04265</a>; code mohsenhariri/scorio <a href="https://github.com/mohsenhariri/scorio">github.com/mohsenhariri/scorio</a></li>
+    <li id="src-30">Comcast/llm-stability, code for Atil et al. (the paper names breckbaldwin/llm-stability). <a href="https://github.com/Comcast/llm-stability">github.com/Comcast/llm-stability</a> <span class="note-verify">(partially verified: location inferred from GitHub search)</span></li>
+    <li id="src-31">Horace He and Thinking Machines Lab, &ldquo;Defeating Nondeterminism in LLM Inference&rdquo;, Connectionism blog, September 2025. <a href="https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/">thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference</a>; kernels: thinking-machines-lab/batch_invariant_ops (1,092 stars as of 2026-11-20) <a href="https://github.com/thinking-machines-lab/batch_invariant_ops">github.com/thinking-machines-lab/batch_invariant_ops</a> <span class="note-verify">(verified 2026-11-20)</span></li>
+    <li id="src-32">Stella Biderman, Hailey Schoelkopf, Lintang Sutawika, et al., &ldquo;Lessons from the Trenches on Reproducible Evaluation of Language Models&rdquo;, arXiv:2405.14782, May 2024. <a href="https://arxiv.org/abs/2405.14782">arxiv.org/abs/2405.14782</a></li>
+    <li id="src-33">Felipe Maia Polo, Lucas Weber, Leshem Choshen, Yuekai Sun, Gongjun Xu, Mikhail Yurochkin, &ldquo;tinyBenchmarks: evaluating LLMs with fewer examples&rdquo;, arXiv:2402.14992, ICML 2024. <a href="https://arxiv.org/abs/2402.14992">arxiv.org/abs/2402.14992</a>; code felipemaiapolo/tinyBenchmarks <a href="https://github.com/felipemaiapolo/tinyBenchmarks">github.com/felipemaiapolo/tinyBenchmarks</a></li>
+    <li id="src-34">Rajan Vivek, Kawin Ethayarajh, Diyi Yang, Douwe Kiela, &ldquo;Anchor Points: Benchmarking Models with Much Fewer Examples&rdquo;, arXiv:2309.08638, September 2023. <a href="https://arxiv.org/abs/2309.08638">arxiv.org/abs/2309.08638</a></li>
+    <li id="src-35">Alex Kipnis, Konstantinos Voudouris, Luca M. Schulze Buschoff, Eric Schulz, &ldquo;metabench &mdash; A Sparse Benchmark of Reasoning and Knowledge in Large Language Models&rdquo;, arXiv:2407.12844, July 2024. <a href="https://arxiv.org/abs/2407.12844">arxiv.org/abs/2407.12844</a></li>
+    <li id="src-36">Valentin Hofmann, David Heineman, Ian Magnusson, et al., &ldquo;Fluid Language Model Benchmarking&rdquo;, arXiv:2509.11106, September 2025. <a href="https://arxiv.org/abs/2509.11106">arxiv.org/abs/2509.11106</a>; code allenai/fluid-benchmarking <a href="https://github.com/allenai/fluid-benchmarking">github.com/allenai/fluid-benchmarking</a></li>
+    <li id="src-37">Felipe Maia Polo, Ronald Xu, Lucas Weber, et al., &ldquo;Efficient multi-prompt evaluation of LLMs&rdquo; (PromptEval), arXiv:2405.17202, May 2024. <a href="https://arxiv.org/abs/2405.17202">arxiv.org/abs/2405.17202</a></li>
+    <li id="src-38">Pedro Rodriguez, Joe Barrow, Alexander Miserlis Hoyle, John P. Lalor, Robin Jia, Jordan Boyd-Graber, &ldquo;Evaluation Examples are not Equally Informative: How should that change NLP Leaderboards?&rdquo;, ACL 2021. <a href="https://aclanthology.org/2021.acl-long.346/">aclanthology.org/2021.acl-long.346</a> <span class="note-verify">(partially verified: title and URL)</span></li>
+    <li id="src-39">Peter Henderson, Riashat Islam, Philip Bachman, Joelle Pineau, Doina Precup, David Meger, &ldquo;Deep Reinforcement Learning that Matters&rdquo;, arXiv:1709.06560, AAAI 2018. <a href="https://arxiv.org/abs/1709.06560">arxiv.org/abs/1709.06560</a></li>
+    <li id="src-40">C&eacute;dric Colas, Olivier Sigaud, Pierre-Yves Oudeyer, &ldquo;A Hitchhiker&rsquo;s Guide to Statistical Comparisons of Reinforcement Learning Algorithms&rdquo;, arXiv:1904.06979, 2019. <a href="https://arxiv.org/abs/1904.06979">arxiv.org/abs/1904.06979</a></li>
+    <li id="src-41">Scott M. Jordan, Yash Chandak, Daniel Cohen, Mengxue Zhang, Philip S. Thomas, &ldquo;Evaluating the Performance of Reinforcement Learning Algorithms&rdquo;, arXiv:2006.16958, ICML 2020. <a href="https://arxiv.org/abs/2006.16958">arxiv.org/abs/2006.16958</a></li>
+    <li id="src-42">Andrew Patterson, Samuel Neumann, Martha White, Adam White, &ldquo;Empirical Design in Reinforcement Learning&rdquo;, arXiv:2304.01315, April 2023. <a href="https://arxiv.org/abs/2304.01315">arxiv.org/abs/2304.01315</a></li>
+    <li id="src-43">Chungpa Lee, Thomas Zeng, Jongwon Jeong, Jy-yong Sohn, Kangwook Lee, &ldquo;How to Correctly Report LLM-as-a-Judge Evaluations&rdquo;, arXiv:2511.21140, November 2025. <a href="https://arxiv.org/abs/2511.21140">arxiv.org/abs/2511.21140</a>; code UW-Madison-Lee-Lab/LLM-judge-reporting (87 stars as of 2026-11-20) <a href="https://github.com/UW-Madison-Lee-Lab/LLM-judge-reporting">github.com/UW-Madison-Lee-Lab/LLM-judge-reporting</a> <span class="note-verify">(partially verified: abstract read via the arXiv API)</span></li>
+    <li id="src-44">Walter J. Rogan, Beth Gladen, &ldquo;Estimating prevalence from the results of a screening test&rdquo;, American Journal of Epidemiology 107(1):71&ndash;76, January 1978. <a href="https://doi.org/10.1093/oxfordjournals.aje.a112510">doi.org/10.1093/oxfordjournals.aje.a112510</a></li>
+    <li id="src-45">Anastasios N. Angelopoulos, Stephen Bates, Clara Fannjiang, Michael I. Jordan, Tijana Zrnic, &ldquo;Prediction-Powered Inference&rdquo;, arXiv:2301.09633, Science 2023. <a href="https://arxiv.org/abs/2301.09633">arxiv.org/abs/2301.09633</a>; library aangelopoulos/ppi_py (310 stars as of 2026-11-20) <a href="https://github.com/aangelopoulos/ppi_py">github.com/aangelopoulos/ppi_py</a></li>
+    <li id="src-46">Pierre Boyeau, Anastasios N. Angelopoulos, Nir Yosef, Jitendra Malik, Michael I. Jordan, &ldquo;AutoEval Done Right: Using Synthetic Data for Model Evaluation&rdquo;, arXiv:2403.07008, March 2024. <a href="https://arxiv.org/abs/2403.07008">arxiv.org/abs/2403.07008</a></li>
+    <li id="src-47">Lennart Luettgau, Harry Coppock, Magda Dubois, Christopher Summerfield, Cozmin Ududec, &ldquo;HiBayES: A Hierarchical Bayesian Modeling Framework for AI Evaluation Statistics&rdquo;, arXiv:2505.05602, May 2025. <a href="https://arxiv.org/abs/2505.05602">arxiv.org/abs/2505.05602</a>; package UKGovernmentBEIS/hibayes (60 stars as of 2026-11-20) <a href="https://github.com/UKGovernmentBEIS/hibayes">github.com/UKGovernmentBEIS/hibayes</a></li>
+    <li id="src-48">UK AI Security Institute, &ldquo;HiBayES: improving LLM evaluation with hierarchical Bayesian modelling&rdquo;, blog post, 2025. <a href="https://www.aisi.gov.uk/blog/hibayes-improving-llm-evaluation-with-hierarchical-bayesian-modelling">aisi.gov.uk/blog/hibayes-improving-llm-evaluation-with-hierarchical-bayesian-modelling</a> <span class="note-verify">(partially verified: found in search, not opened)</span></li>
+    <li id="src-49">Jesse Dodge, Suchin Gururangan, Dallas Card, Roy Schwartz, Noah A. Smith, &ldquo;Show Your Work: Improved Reporting of Experimental Results&rdquo;, arXiv:1909.03004, EMNLP 2019. <a href="https://arxiv.org/abs/1909.03004">arxiv.org/abs/1909.03004</a></li>
+    <li id="src-50">Nils Reimers, Iryna Gurevych, &ldquo;Reporting Score Distributions Makes a Difference: Performance Study of LSTM-networks for Sequence Tagging&rdquo;, arXiv:1707.09861, 2017. <a href="https://arxiv.org/abs/1707.09861">arxiv.org/abs/1707.09861</a></li>
+    <li id="src-51">Xavier Bouthillier, Pierre Delaunay, Mirko Bronzi, et al., &ldquo;Accounting for Variance in Machine Learning Benchmarks&rdquo;, arXiv:2103.03098, MLSys 2021. <a href="https://arxiv.org/abs/2103.03098">arxiv.org/abs/2103.03098</a></li>
+    <li id="src-52">Dennis Ulmer, Christian Hardmeier, Jes Frellsen, &ldquo;deep-significance: Easy and Meaningful Statistical Significance Testing in the Age of Neural Networks&rdquo;, arXiv:2204.06815, 2022. <a href="https://arxiv.org/abs/2204.06815">arxiv.org/abs/2204.06815</a>; library Kaleidophon/deep-significance (343 stars as of 2026-11-20) <a href="https://github.com/Kaleidophon/deep-significance">github.com/Kaleidophon/deep-significance</a></li>
+    <li id="src-53">Anthropic, &ldquo;Quantifying infrastructure noise in agentic coding evals&rdquo;, Engineering blog, February 2026. <a href="https://www.anthropic.com/engineering/infrastructure-noise">anthropic.com/engineering/infrastructure-noise</a> <span class="note-verify">(verified 2026-11-20)</span></li>
+    <li id="src-54">vLLM documentation, &ldquo;Batch Invariance&rdquo; (beta feature, <code>VLLM_BATCH_INVARIANT=1</code>). <a href="https://docs.vllm.ai/en/latest/features/batch_invariance/">docs.vllm.ai/en/latest/features/batch_invariance</a> <span class="note-verify">(verified 2026-11-20)</span></li>
+    <li id="src-55">SGLang documentation, &ldquo;Deterministic Inference&rdquo; (<code>--enable-deterministic-inference</code>). <a href="https://docs.sglang.ai/advanced_features/deterministic_inference.html">docs.sglang.ai/advanced_features/deterministic_inference.html</a> <span class="note-verify">(verified 2026-11-20)</span></li>
+    <li id="src-56">Shivalika Singh, Yiyang Nan, Alex Wang, et al., &ldquo;The Leaderboard Illusion&rdquo;, arXiv:2504.20879, April 2025. <a href="https://arxiv.org/abs/2504.20879">arxiv.org/abs/2504.20879</a></li>
+  </ol>
+</main>
+</body>
+</html>

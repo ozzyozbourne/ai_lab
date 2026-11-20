@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evaluations for AI: LLMs, Agents and RL Environments</title>
+<meta name="description" content="A ten-chapter HTML book on evaluating LLMs, AI agents and RL environments, with runnable offline Python examples.">
+<link rel="stylesheet" href="assets/book.css">
+<script defer src="assets/book.js"></script>
+</head>
+<body data-nav="off">
+<main class="cover">
+  <p class="kicker">A hands-on book &middot; November 2026 edition</p>
+  <h1>Evaluations for AI: LLMs, Agents and RL Environments</h1>
+  <p class="lede">An eval score is a measurement, and most of the published ones are worse measurements than they look:
+  the parser changes the number, the judge prefers the longer answer, the agent edits the test file, and a two-point gain sits
+  inside the error bar. This book teaches you to build evals that you can trust, for chat models, for tool-using agents, and for
+  the RL environments that now train both. Every idea comes with the formula, a worked number, real code from the tools people
+  use, and a small Python program you can run offline.</p>
+
+  <h2 id="contents">Contents</h2>
+
+  <p class="part-label">Part I &middot; Foundations</p>
+  <ol class="book-toc">
+    <li><a class="card" href="01-foundations.html"><span class="num">01</span><span class="t">Why Evals: Foundations, Taxonomy and Eval-Driven Development</span>
+      <span class="b">What an eval is (task, trial, grader, transcript, harness), the axes every eval sits on, a ~180-line stdlib harness, and the eval-driven development loop.</span></a></li>
+    <li><a class="card" href="02-benchmarks-metrics.html"><span class="num">02</span><span class="t">Benchmarks and Metrics for LLMs</span>
+      <span class="b">The benchmark landscape from MMLU to HLE, and every scoring rule underneath it: exact match, F1, BLEU/ROUGE, log-prob scoring, pass@k, calibration, Elo and Bradley-Terry.</span></a></li>
+    <li><a class="card" href="03-datasets-contamination.html"><span class="num">03</span><span class="t">Building Eval Datasets and Fighting Contamination</span>
+      <span class="b">Golden sets from real traces, sampling, labelling guides and agreement, synthetic generation, and detecting and preventing test-set contamination.</span></a></li>
+  </ol>
+
+  <p class="part-label">Part II &middot; Measuring well</p>
+  <ol class="book-toc">
+    <li><a class="card" href="04-llm-judges-human-eval.html"><span class="num">04</span><span class="t">LLM-as-a-Judge and Human Evaluation</span>
+      <span class="b">Judge protocols and prompts, biases you can measure, validating judges against humans, juries, reward models, and statistically valid judge-assisted estimates.</span></a></li>
+    <li><a class="card" href="05-statistics.html"><span class="num">05</span><span class="t">Statistics and Rigor in Evals</span>
+      <span class="b">Error bars, clustered and paired comparisons, power analysis, multiple comparisons, the bootstrap, nondeterminism, IRT and signal-to-noise.</span></a></li>
+  </ol>
+
+  <p class="part-label">Part III &middot; Agents, environments and safety</p>
+  <ol class="book-toc">
+    <li><a class="card" href="06-agent-evals.html"><span class="num">06</span><span class="t">Evaluating AI Agents</span>
+      <span class="b">Coding, tool-use, web and computer-use agents: outcome and trajectory grading, user simulators, pass^k, cost frontiers, time horizons, harnesses and how agent benchmarks break.</span></a></li>
+    <li><a class="card" href="07-rl-environments.html"><span class="num">07</span><span class="t">RL Environments: Rewards, Verifiers and Reward Hacking</span>
+      <span class="b">Environments as evals and as reward sources: the Gym contract, LLM-era environments, RLVR verifiers, reward hacking, environment QA and evaluating trained policies.</span></a></li>
+    <li><a class="card" href="08-safety-redteaming.html"><span class="num">08</span><span class="t">Safety Evals, Red-Teaming and Dangerous Capabilities</span>
+      <span class="b">Refusal and harm judges, attack success rates under budgets, over-refusal, prompt injection, dangerous-capability and alignment evals, sandbagging, eval awareness and frontier safety policies.</span></a></li>
+  </ol>
+
+  <p class="part-label">Part IV &middot; Practice</p>
+  <ol class="book-toc">
+    <li><a class="card" href="09-tooling-production.html"><span class="num">09</span><span class="t">Tooling, Production, RAG and Online Evaluation</span>
+      <span class="b">The harness landscape (lm-eval, Inspect, Harbor, verifiers, promptfoo and more), CI regression gates, RAG and hallucination metrics, online judges, A/B tests, SLOs and drift.</span></a></li>
+    <li><a class="card" href="10-capstone.html"><span class="num">10</span><span class="t">Capstone: An End-to-End Eval Suite for an Agent and Its RL Environment</span>
+      <span class="b">Build, validate and report a complete eval suite for a tool-using agent and the RL environment that trains it, from error analysis to a CI gate and a results card.</span></a></li>
+  </ol>
+
+  <p class="part-label">Back matter</p>
+  <ol class="book-toc">
+    <li><a class="card" href="references.html"><span class="num">R</span><span class="t">References</span>
+      <span class="b">Every source cited in the book, grouped by topic, with links to papers, repositories and articles.</span></a></li>
+  </ol>
+
+  <h2 id="who">Who this book is for</h2>
+  <p>You are a strong software engineer or ML practitioner who has shipped something with an LLM in it, or trained a model, and you
+  now need to answer &ldquo;is it better?&rdquo; with evidence. You do not need a statistics degree: Chapter 5 builds everything from
+  the standard error up. You do need to be comfortable reading Python.</p>
+
+  <h2 id="how-to-read">How to read this book</h2>
+  <ul>
+    <li><b>In order, the first time.</b> Chapters 1&ndash;5 are the toolkit (vocabulary, metrics, datasets, judges, statistics).
+    Chapters 6&ndash;8 apply it to agents, RL environments and safety. Chapter 9 is the tooling and production layer, and Chapter 10 puts
+    everything together in one project.</li>
+    <li><b>Shortcut for agent builders:</b> 1 &rarr; 5 (sections on error bars and pass^k) &rarr; 6 &rarr; 9 &rarr; 10.</li>
+    <li><b>Shortcut for RL and post-training people:</b> 1 &rarr; 2 (pass@k) &rarr; 5 &rarr; 7 &rarr; 6 &rarr; 10.</li>
+    <li><b>Callouts</b> mark notes, tips, pitfalls and facts that change quickly (&ldquo;As of November 2026&rdquo;).</li>
+    <li><b>Numbers.</b> Every worked number is reproduced by a script in <code>code/</code>. Numbers from papers are cited inline.</li>
+  </ul>
+
+  <h2 id="how-to-run">How to run the code</h2>
+  <p>Each chapter has a folder <code>code/chNN/</code> of small, self-contained Python 3 programs. They use only the standard library
+  and NumPy, need no API keys and no network: models, judges, agents and users are mocked with seeded random generators, so every run
+  prints the same numbers as the book.</p>
+<pre><code class="language-bash">python3 -m pip install numpy          # the only dependency
+python3 code/ch01/mini_harness.py     # run one example
+python3 code/run_all.py               # run every example in the book</code></pre>
+  <p>Open <code>index.html</code> directly from disk; nothing is loaded from the network. Press <kbd>t</kbd> on any chapter to toggle the
+  table of contents.</p>
+</main>
+</body>
+</html>

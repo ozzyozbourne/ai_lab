@@ -1,0 +1,30 @@
+{
+  "description": "Support-bot regression tests in a promptfoo-like shape (JSON instead of YAML)",
+  "prompts": {
+    "v1": "You are a support bot. {{question}}",
+    "v2": "You are a support bot. Be brief. When asked for JSON, return only raw JSON. {{question}}"
+  },
+  "providers": ["mock:small", "mock:large"],
+  "tests": [
+    {"description": "refund window",
+     "vars": {"question": "How long do I have to return shoes?"},
+     "assert": [{"type": "icontains", "value": "30 days"},
+                {"type": "not-icontains", "value": "as an ai"}]},
+    {"description": "extract JSON",
+     "vars": {"question": "Return JSON with name and age for: 'Ada Lovelace, 36'."},
+     "assert": [{"type": "is-json"},
+                {"type": "python", "value": "json.loads(output)['age'] == 36"}]},
+    {"description": "order id format",
+     "vars": {"question": "What is the order id for my last purchase?"},
+     "assert": [{"type": "regex", "value": "ORD-\\d{6}"}]},
+    {"description": "greeting is short",
+     "vars": {"question": "Say hello to the customer."},
+     "assert": [{"type": "contains", "value": "Hello"},
+                {"type": "python", "value": "len(output) < 60"}]},
+    {"description": "cheap and fast",
+     "vars": {"question": "What are your opening hours?"},
+     "assert": [{"type": "icontains", "value": "9"},
+                {"type": "cost", "threshold": 0.0005},
+                {"type": "latency", "threshold": 800}]}
+  ]
+}

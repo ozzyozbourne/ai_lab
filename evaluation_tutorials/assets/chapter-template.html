@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- CONVENTION: title is "N. Chapter title · Evaluations for AI". The file name must match the manifest in assets/book.js. -->
+<title>N. Chapter Title · Evaluations for AI</title>
+<meta name="description" content="One sentence describing the chapter.">
+<!-- CONVENTION: chapter files live in the book root, so assets are referenced as assets/... . No other CSS/JS, no CDN, no web fonts. -->
+<link rel="stylesheet" href="assets/book.css">
+<script defer src="assets/book.js"></script>
+</head>
+<body>
+<main>
+  <!-- ===== Chapter head ===== -->
+  <p class="kicker">Chapter N</p>
+  <h1>Chapter Title</h1>
+  <p class="lede">Two to four sentences that open with a concrete hook (a real incident, a surprising number with a citation),
+  then say what the reader will be able to do by the end. Citations look like this<a class="cite" href="#src-1">[1]</a>.</p>
+  <p class="chapter-meta"><span>Reading time: about 45 minutes</span><span>Code: <code>code/chNN/</code></span><span>Prerequisites: Chapters 1 and 5</span></p>
+
+  <div class="objectives">
+    <p class="obj-title">You will learn</p>
+    <ul>
+      <li>An outcome phrased as a skill, e.g. &ldquo;compute pass@k without bias and explain why the plug-in estimator is biased&rdquo;.</li>
+      <li>Four to seven bullets in total.</li>
+    </ul>
+  </div>
+
+  <!-- ===== Sections =====
+       CONVENTION: every h2 and h3 has a unique, short, kebab-case id. The sidebar TOC is generated from them.
+       Number sections in the text as "N.1", "N.2" via a .sec-num span so cross-references are stable. -->
+  <h2 id="anatomy"><span class="sec-num">N.1</span>A section title</h2>
+  <p>Body prose. Define a term the first time it appears with <span class="term">term</span> and keep using exactly that word.
+  Inline code looks like <code>pass_at_k(n, c, k)</code>. Keyboard keys: <kbd>Ctrl</kbd>+<kbd>C</kbd>.</p>
+
+  <h3 id="anatomy-formula">A subsection with a formula</h3>
+  <p>Formulas are plain HTML (no MathJax). Use <code>&lt;sub&gt;</code>, <code>&lt;sup&gt;</code>, Unicode symbols
+  (&sigma; &mu; &Sigma; &radic; &le; &ge; &asymp; &times; &middot; &minus;) and the <code>.frac</code> helper. Inline math uses
+  <span class="math">p&#770;</span> in a <code>.math</code> span.</p>
+  <div class="formula">
+    pass@k = 1 &minus; <span class="frac"><span>C(n &minus; c, k)</span><span>C(n, k)</span></span>
+    <span class="eq-num">(N.1)</span>
+    <span class="where">where <i>n</i> is the number of samples drawn per problem, <i>c</i> the number that pass, and <i>k</i> &le; <i>n</i>.</span>
+  </div>
+
+  <div class="worked">
+    <p>With <i>n</i> = 10 samples and <i>c</i> = 3 correct: pass@3 = 1 &minus; C(7,3)/C(10,3) = 1 &minus; 35/120 = 0.708.
+    Every number in a worked example must be reproduced by a script in <code>code/chNN/</code>; say which one.</p>
+  </div>
+
+  <h3 id="anatomy-code">A subsection with runnable code</h3>
+  <p>Every code block that is a real file carries <code>data-file</code> with its path relative to the book root.
+  Escape <code>&lt;</code>, <code>&gt;</code> and <code>&amp;</code> inside code. Keep listings under about 80 lines; show the key part and
+  say the full file is in the repo.</p>
+<pre data-file="code/chNN/example.py"><code class="language-python">"""Unbiased pass@k (Chen et al., 2021)."""
+import math
+
+
+def pass_at_k(n: int, c: int, k: int) -> float:
+    """Probability that at least one of k samples (drawn without replacement from n) passes."""
+    if n - c &lt; k:
+        return 1.0
+    return 1.0 - math.comb(n - c, k) / math.comb(n, k)
+
+
+if __name__ == "__main__":
+    print(f"pass@3 = {pass_at_k(10, 3, 3):.3f}")  # 0.708
+</code></pre>
+  <p class="run-cmd">Run it: <code>python3 code/chNN/example.py</code></p>
+<pre class="output"><code>pass@3 = 0.708</code></pre>
+  <p>Shell commands use <code>language-bash</code>, configs <code>language-yaml</code> or <code>language-json</code>:</p>
+<pre><code class="language-bash"># run every example for this chapter
+for f in code/chNN/*.py; do python3 "$f"; done</code></pre>
+<pre data-file="promptfooconfig.yaml (quoted from promptfoo, examples/getting-started)"><code class="language-yaml">prompts:
+  - "Translate to {{language}}: {{input}}"
+tests:
+  - vars:
+      language: French
+    assert:
+      - type: icontains
+        value: bonjour</code></pre>
+  <p class="code-caption">Code quoted from a real repository names the repo and file in <code>data-file</code> and is copied verbatim from the dossier.</p>
+
+  <!-- ===== Callouts ===== -->
+  <aside class="note"><p>A neutral aside: context, definitions, history.</p></aside>
+  <aside class="tip"><p>Practical advice the reader can act on.</p></aside>
+  <aside class="warn" data-title="Pitfall: the always-pass judge"><p>A common mistake, with the concrete failure it causes.
+  Use <code>data-title</code> to name it.</p></aside>
+  <aside class="danger"><p>Something that silently corrupts results or causes harm.</p></aside>
+  <aside class="note" data-title="As of November 2026"><p>Use this title for facts that change: tool versions, repo moves, policy versions.</p></aside>
+
+  <!-- ===== Figures: hand-written inline SVG, themed via classes from book.css ===== -->
+  <h2 id="figures"><span class="sec-num">N.2</span>Figures and tables</h2>
+  <figure class="diagram" id="fig-N-1">
+    <svg viewBox="0 0 640 150" role="img" aria-labelledby="fig-N-1-t">
+      <title id="fig-N-1-t">The eval loop: task to trial to grader to score</title>
+      <defs><marker id="arrN1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-muted"/></marker></defs>
+      <rect x="10" y="45" width="130" height="60" rx="8" class="tint-1"/><text x="75" y="80" text-anchor="middle">Task</text>
+      <rect x="180" y="45" width="130" height="60" rx="8" class="tint-2"/><text x="245" y="80" text-anchor="middle">Trial</text>
+      <rect x="350" y="45" width="130" height="60" rx="8" class="tint-3"/><text x="415" y="80" text-anchor="middle">Grader</text>
+      <rect x="520" y="45" width="110" height="60" rx="8" class="tint-4"/><text x="575" y="80" text-anchor="middle">Score &#177; CI</text>
+      <path d="M140 75 H178" class="s-muted" stroke-width="2" marker-end="url(#arrN1)"/>
+      <path d="M310 75 H348" class="s-muted" stroke-width="2" marker-end="url(#arrN1)"/>
+      <path d="M480 75 H518" class="s-muted" stroke-width="2" marker-end="url(#arrN1)"/>
+      <text x="245" y="125" text-anchor="middle" class="small">model + harness produce a transcript</text>
+    </svg>
+    <figcaption><b>Figure N.1.</b> Every diagram is inline SVG with a <code>viewBox</code>, a <code>&lt;title&gt;</code>, and colours only from
+    the classes <code>f-*</code>, <code>s-*</code>, <code>tint-*</code> so it works in light and dark mode. Marker ids must be unique per page.</figcaption>
+  </figure>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Grader type</th><th>Strengths</th><th>Weaknesses</th><th class="num">Cost / item</th></tr></thead>
+      <tbody>
+        <tr><td>Code-based</td><td>Fast, deterministic, cheap</td><td>Brittle to valid variation</td><td class="num">~$0</td></tr>
+        <tr><td>Model-based</td><td>Handles open-ended output</td><td>Biased; must be validated</td><td class="num">$0.001&ndash;0.05</td></tr>
+        <tr><td>Human</td><td>Gold standard for taste</td><td>Slow, expensive, noisy too</td><td class="num">$0.5&ndash;20</td></tr>
+      </tbody>
+      <caption>Table N.1. Tables always sit inside <code>.table-wrap</code> so they scroll on phones.</caption>
+    </table>
+  </div>
+
+  <!-- ===== Exercises ===== -->
+  <aside class="exercise" data-title="Exercise N.1"><p>A question that requires running or modifying a chapter script.</p>
+    <details><summary>Solution</summary><p>A worked answer, with the number the script prints.</p></details>
+  </aside>
+
+  <aside class="takeaways"><ul>
+    <li>Five to eight one-line takeaways at the end of the chapter.</li>
+  </ul></aside>
+
+  <!-- ===== Sources: numbered in order of first citation; ids src-1, src-2, ... ===== -->
+  <h2 id="sources">Sources</h2>
+  <ol class="sources">
+    <li id="src-1">Mark Chen, Jerry Tworek, et al., &ldquo;Evaluating Large Language Models Trained on Code&rdquo;, arXiv:2107.03374, July 2021.
+      <a href="https://arxiv.org/abs/2107.03374">arxiv.org/abs/2107.03374</a></li>
+    <li id="src-2">openai/human-eval, <code>human_eval/evaluation.py</code>. <a href="https://github.com/openai/human-eval">github.com/openai/human-eval</a>
+      <span class="note-verify">(code quoted verbatim)</span></li>
+  </ol>
+</main>
+</body>
+</html>

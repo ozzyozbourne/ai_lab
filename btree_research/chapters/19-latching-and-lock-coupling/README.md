@@ -297,14 +297,30 @@ callback tries to latch every node and notes the ones that fail.
    its seed, so the final *set* of keys is the same in every run even though
    the tree's shape is not.
 
-A stress test proves little by passing. As a check, three bugs were put into a
-scratch copy of the Zig code, one at a time, and the tests run three times
-each. Removing the second look at the root id failed the deterministic root
-test and the stress test in all three runs. Releasing the parent *before*
-latching the child (no coupling) failed the deterministic "at most two
-latches" test every time, but the stress test in only one run of three.
-Ignoring the safe node rule tripped an assertion in the single-threaded tests.
-The deterministic tests are the ones to rely on.
+A stress test proves little by passing. As a check, sixteen bugs were put
+into a scratch copy, one at a time, and the test binary was run ten times per
+bug, in Zig and in Rust. (Two of the sixteen read a node without its latch
+and cannot be written in safe Rust.)
+
+- **Fourteen (Rust: twelve) fail a deterministic test in every run.** Among
+  them: no second look at the root id, for readers only or for writers only;
+  releasing the parent before latching the child, in the reader or in the
+  writer; a safe node rule that is too generous or too strict; publishing
+  the new root before it is filled in; `reserve` as load-then-store.
+- **The stress tests alone are a coin toss.** In the same runs they noticed
+  release-before-latch in the reader 4 times of 10 (Rust: 5), in the writer
+  9 (Rust: 3), the reader-only root bug 6 (Rust: 5), the non-atomic
+  `reserve` 7 (Rust: 3), and the early publish never. The first version of
+  this chapter had no hook test for four of these bugs, and whole runs of its
+  suite passed with the bug in place: 1, 4, 5 and 12 times of 12 (Zig).
+- **Two bugs leak a latch** (a restart that does not unlatch; a `put` that
+  never unlatches). The first fails both root tests and then hangs in the
+  stress test. The second hangs in the first test. Nothing fails; the run
+  just never ends.
+
+So today none of the sixteen depends on luck. That is a statement about
+these sixteen bugs, not about all bugs: each deterministic test exists
+because somebody thought of the interleaving it replays.
 
 ### Output
 

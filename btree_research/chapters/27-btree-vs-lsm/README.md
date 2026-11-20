@@ -27,8 +27,8 @@ An LSM-tree refuses to change anything in place.
 
 1. A write goes into the **memtable**, a sorted structure in RAM. Nothing is
    read from the device and nothing is written to it.
-2. When the memtable is full it is **flushed**: written out once, in key order,
-   as an immutable **sorted run**. The memtable starts again empty.
+2. A full memtable is **flushed**: written out once, in key order, as an
+   immutable **sorted run**. The memtable starts again empty.
 3. Runs pile up, so they are organised in **levels**. Level 0 collects flushed
    runs; each deeper level holds one larger run. A full level is merged into
    the next one: **compaction**. Each level may hold `growth` times as much
@@ -62,11 +62,11 @@ in batches.
 
 ## A worked example by hand
 
-Both programs start with this trace. The B+tree has order M = 4, so a leaf
-block holds 3 entries. The LSM-tree uses data blocks of 3 slots too, index
-blocks of 4 first-keys, a memtable of 4 keys, 2 runs in level 0 and growth
-factor 2. `r` and `w` are the blocks one operation read and wrote. Every block
-counts, index blocks included; the next section says what is left out.
+Both programs start with this trace. The B+tree has order M = 4: 3 entries
+per leaf block. The LSM-tree has data blocks of 3 slots, index blocks of 4
+first-keys, a memtable of 4 keys, 2 runs in level 0 and growth factor 2. `r`
+and `w` are the blocks one operation read and wrote, index blocks included;
+the next section says what is left out.
 
 ```
 put 10      | btree r=0 w=1 | lsm r= 0 w= 0 |
@@ -104,7 +104,6 @@ delete 15   | btree r=3 w=1 | lsm r= 0 w= 3 | lsm: flush.
 ...
 put 14      | btree r=3 w=1 | lsm r=10 w=11 | lsm: flush. lsm: compact level 0 into level 1.
 get 15      | btree r=3 w=0 | lsm r= 3 w= 0 | = none
-scan [5,14) | btree r=6 w=0 | lsm r= 6 w= 0 | = 5 6 7 10 11 12 13
 ```
 
 `get 15` is free for the LSM-tree: 15 is still in the memtable. `get 12` reads
@@ -147,7 +146,7 @@ Read every number below with these five limits:
 
 1. **No cache.** Real engines keep the upper levels of a B+tree, and the
    index blocks of runs, in a buffer pool (chapter 09). The row "data blocks
-   per get" is the cost if every index block of either structure were cached.
+   per get" is the cost with every index block of either structure cached.
 2. **No write-ahead log, and so not the same durability.** A B+tree `put` is
    on the device when it returns. An LSM `put` is in RAM only until the next
    flush: a crash loses the acknowledged writes to up to 60 keys in the
@@ -302,9 +301,9 @@ By these counts, within the five limits:
   is more compact too: packed runs (1.07) against partly empty leaves (1.54).
 - **Its price** is RAM for filters if point lookups matter, and spare device
   space: a compaction holds its inputs and its output at once (2.14 at the
-  peak). Overwrites and deletes add to it. The update-heavy workload ends at
-  1.35 and peaks at 2.50, and compaction dropped 7409 stale versions and 1401
-  tombstones on the way.
+  peak). Overwrites and deletes add to it: the update-heavy workload ends at
+  1.35 and peaks at 2.50, with 7409 stale versions and 1401 tombstones
+  dropped on the way.
 - **A B+tree fits when reads dominate**, above all short scans: 4.92 blocks
   against 9.97, because the LSM-tree merges every overlapping run and no
   filter helps. It also fits when every write should cost about the same
@@ -367,12 +366,11 @@ B-tree (see `research/tigerbeetle.md`, section 0).
   block plus value blocks (`tigerbeetle/src/lsm/table.zig:41-44`). A
   compaction takes one table from level A and at most `lsm_growth_factor`
   overlapping tables from level B
-  (`tigerbeetle/src/lsm/compaction.zig:55-61`). Merging a whole level at once,
-  as here, is simpler and produces the 1115-block spike.
-- *Pacing.* Compaction is spread over "bars" of 32 beats by default
-  (`tigerbeetle/src/config.zig:164`), so that "At the end of every beat,
-  there is space in mutable table for the next beat"
-  (`tigerbeetle/docs/internals/lsm.md:61`).
+  (`tigerbeetle/src/lsm/compaction.zig:55-61`), and the work is spread over
+  "bars" of 32 beats by default (`tigerbeetle/src/config.zig:164`) so that
+  "At the end of every beat, there is space in mutable table for the next
+  beat" (`tigerbeetle/docs/internals/lsm.md:61`). Merging a whole level at
+  once, as here, is simpler and produces the 1115-block spike.
 - *Lookups and scans.* A lookup finds at most one table per level
   (`tigerbeetle/src/lsm/manifest.zig:428-432`). The research notes found no
   bloom filter in `src/lsm/`, only a TODO
@@ -414,8 +412,7 @@ but cannot fail. The tests inject failures (`checkAllAllocationFailures`,
 `FailingAllocator`), with and without filters: a failed write changes no
 answer, and the next write finishes the interrupted work.
 
-**B+tree.** Unchanged from chapter 07. The device adds no allocation; its pin
-table is a fixed array of 128 entries.
+**B+tree.** As in chapter 07. The device's pin table is a fixed array.
 
 ## Pitfalls
 

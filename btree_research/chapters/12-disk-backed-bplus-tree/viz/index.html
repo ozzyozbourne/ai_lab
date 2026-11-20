@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 12 — A disk-backed B+tree</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+/* On a narrow screen keep the caption and the step buttons right under the
+ * drawing they describe; the log and the code come after them. */
+@media (max-width: 820px) {
+  #fig-tree .bt-figure { display: flex; flex-direction: column; }
+  #fig-tree .bt-figure-body { display: contents; }
+  #fig-tree .bt-stage { order: 1; }
+  #fig-tree .bt-caption { order: 2; }
+  #fig-tree .bt-controls-slot { order: 3; }
+  #fig-tree .bt-legend { order: 4; }
+  #fig-tree .bt-side { order: 5; }
+}
+.ch12-hint { font-size: .88rem; color: var(--bt-muted); margin: 0 0 8px; min-height: 1.3em; }
+.ch12-hint.is-error { color: var(--bt-key-deleted); font-weight: 600; }
+.ch12-label { font-size: .82rem; color: var(--bt-muted); margin: 10px 0 4px; }
+.ch12-why { color: var(--bt-muted); }
+#key-in { width: 7.5em; }
+#val-in { width: 6em; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">The B+tree of chapter 07, with one change: a node is a 4096-byte page in a file, and a
+"pointer" is a page number. Put keys into it and watch pages fill up, split and get linked.
+Text of the chapter: <a href="../README.md">README.md</a>. Second page:
+<a href="pool.html">the buffer pool during an insert that splits</a>.</p>
+
+<h2>1. A tree of pages</h2>
+<p>Every box is one page of the file, labelled with its page id and with how many of its
+bytes are in use. Page 0 is the metapage and is not drawn; page 1 is the root and stays the root.
+A page is full when its <em>bytes</em> run out, so a leaf with a few large values splits as early as a leaf
+with many small ones. The figure starts with an empty tree. <strong>Put next scenario key</strong> replays, one
+key at a time, the 24 puts that the chapter's Zig and Rust programs print (key <em>n</em> carries a value of
+300 + 24·<em>n</em> bytes); or type your own key and value size. A new put always starts from the tree as it is
+after the put you are looking at has finished. Tick <em>Predict</em> to be asked whether the cell fits.</p>
+<div id="fig-tree"></div>
+
+<h2>2. Page 0: where the tree starts</h2>
+<p>The first 32 bytes of the metapage as <code>flush</code> would write them for the tree drawn above.
+The root page id never changes, however often the root splits; only the two counters move.</p>
+<div id="fig-meta"></div>
+
+<script src="../../../assets/viz.js"></script>
+<script src="code.js"></script>
+<script src="model.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el;
+
+  BTViz.page({
+    title: 'A disk-backed B+tree', chapter: 12,
+    prev: { href: '../../11-key-and-record-encoding/viz/index.html', title: 'Chapter 11: key and record encoding' },
+    next: { href: '../../13-overflow-and-free-space/viz/index.html', title: 'Chapter 13: overflow and free space' },
+    index: '../../../index.html'
+  });
+
+  var MAX_PAGES = 40;      // keeps the drawing legible
+  var MAX_KEY_CHARS = 8;   // limit of this page, not of the format
+
+  var fig = BTViz.figure('#fig-tree', {
+    title: 'put: descend, fit or split, tell the parent', side: true,
+    legend: [
+      { token: 'node-active', label: 'page being read or changed' },
+      { token: 'key-compare', label: 'separator compared' },
+      { token: 'key-inserted', label: 'new cell' },
+      { token: 'split', label: 'full page, its halves, the separator' },
+      { token: 'page-dirty', label: 'dot: dirty in the buffer pool' }
+    ]
+  });
+
+  var sizeSel = el('select.bt-select#size-sel', { 'aria-label': 'Page size' },
+    el('option', { value: 4096 }, '4096-byte pages (the real format)'),
+    el('option', { value: 512 }, '512-byte toy pages (interior splits)'));
+  var keyIn = el('input.bt-input#key-in', { type: 'text', maxlength: 12, 'aria-label': 'Key', placeholder: 'key', autocomplete: 'off' });
+  var valIn = el('input.bt-input#val-in', { type: 'text', inputmode: 'numeric', 'aria-label': 'Value size in bytes', placeholder: 'bytes', autocomplete: 'off' });
+  var putBtn = el('button.bt-btn.bt-primary#btn-put', { type: 'button', onclick: putTyped }, 'Put');
+  var nextBtn = el('button.bt-btn#btn-next', { type: 'button', onclick: putNext }, 'Put next scenario key');
+  var restBtn = el('button.bt-btn#btn-rest', { type: 'button', onclick: runRest }, 'Run the rest');
+  var resetBtn = el('button.bt-btn#btn-reset', { type: 'button', onclick: function () { reset(); } }, 'Reset');
+  fig.toolbar.append(el('label.bt-field', 'key', keyIn), el('label.bt-field', 'value bytes', valIn), putBtn,
+    el('span.bt-toolbar-sep'), nextBtn, restBtn, el('span.bt-toolbar-sep'), sizeSel, resetBtn);
+
+  var hint = el('p.ch12-hint#hint', { role: 'status' });
+  fig.stage.appendChild(hint);
+  var view = new BTViz.TreeView(fig.stage, { minHeight: 230, ariaLabel: 'The tree, one box per page' });
+  fig.stage.appendChild(el('div.ch12-label#fill-label', 'Bytes in use per page (the full height is one page).'));
+  var chart = new BTViz.Chart(fig.stage, { type: 'bar', height: 170, yMax: 4076, yLabel: 'bytes used', xLabel: 'page id' });
+
+  var log = new BTViz.Log(fig.side, { title: 'What happened', empty: 'Nothing yet.' });
+  var panels = {};
+  ['put', 'pushRootDown', 'splitLeaf', 'insertSeparator', 'splitInterior'].forEach(function (name) {
+    panels[name] = BTViz.codePanel(fig.side, name, { title: 'disk_btree: ' + name, maxHeight: 230 });
+    panels[name].root.hidden = name !== 'put';
+  });
+
+  var metaFig = BTViz.figure('#fig-meta', { title: 'Metapage, bytes 0 to 31', legend: [
+    { token: 'pointer', label: 'magic, version, page size: fixed' },
+    { token: 'node-active', label: 'root page id' },
+    { token: 'key-compare', label: 'page count and key count as of the last flush' }] });
+  var hex = new BTViz.HexGrid(metaFig.stage, { cols: 16 });
+  var metaNote = el('p.ch12-hint#meta-note');
+  metaFig.stage.appendChild(metaNote);
+
+  var tree, scenarioAt, history;
+
+  function le(value, bytes) {
+    var out = [];
+    for (var i = 0; i < bytes; i++) { out.push(value % 256); value = Math.floor(value / 256); }
+    return out;
+  }
+  function renderMeta(pages, keys) {
+    var bytes = [0x42, 0x54, 0x52, 0x45, 0x45, 0x31, 0x32, 0x00]
+      .concat(le(1, 4), le(tree.pageSize, 4), le(tree.root, 4), le(pages, 4), le(keys, 8));
+    hex.render({ bytes: bytes, ranges: [
+      { from: 0, len: 8, state: 'pointer', label: 'magic "BTREE12"' },
+      { from: 8, len: 4, state: 'pointer', label: 'version 1' },
+      { from: 12, len: 4, state: 'pointer', label: 'page size ' + tree.pageSize },
+      { from: 16, len: 4, state: 'active', label: 'root = page ' + tree.root },
+      { from: 20, len: 4, state: 'compare', label: pages + ' pages' },
+      { from: 24, len: 8, state: 'compare', label: keys + ' keys' }] });
+    metaNote.textContent = 'Little-endian integers. The rest of page 0 is zero; its last 4 bytes are reserved for a checksum, as on every page.';
+  }
+
+  var stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, predict: true, interval: 1700,
+    onStep: function (step, index) {
+      view.render(step.state, step.highlight);
+      chart.render({ labels: step.fill.labels, series: [{ name: 'bytes used', token: 'split', values: step.fill.values }] });
+      log.sync(history.concat(stepper.steps.slice(0, index + 1)), history.length + index);
+      Object.keys(panels).forEach(function (name) { panels[name].root.hidden = name !== (step.code || 'put'); });
+      renderMeta(step.counters.pages, step.keys);
+    }
+  });
+
+  function say(text, isError) {
+    hint.textContent = text || '';
+    hint.classList.toggle('is-error', !!isError);
+  }
+
+  function restingStep(caption) {
+    var s = tree.makeStep('rest', caption, {}, 'put', null);
+    s.keys = tree.keyCount;
+    return s;
+  }
+
+  function updateButtons() {
+    var left = CH12.SCENARIO.length - scenarioAt;
+    nextBtn.disabled = restBtn.disabled = left === 0;
+    nextBtn.textContent = left === 0 ? 'Scenario finished (24 of 24)' :
+      'Put next scenario key: ' + CH12.scenarioKey(CH12.SCENARIO[scenarioAt]) + ' (' + (scenarioAt + 1) + ' of 24)';
+    keyIn.placeholder = 'key';
+    valIn.placeholder = '0 to ' + tree.maxValue;
+  }
+
+  function reset(quiet) {
+    tree = new CH12.Tree({ pageSize: +sizeSel.value, frames: 3 });
+    scenarioAt = 0;
+    history = [];
+    chart.opts.yMax = tree.capacity;
+    document.getElementById('fill-label').textContent = 'Bytes in use per page (the full height is one page: ' + tree.capacity + ' bytes).';
+    stepper.setSteps([restingStep('An empty tree: page 0 is the metapage, page 1 is the root, and the root is an empty leaf. ' +
+      'A page offers ' + tree.capacity + ' bytes to cells (' + tree.pageSize + ' minus a 16-byte header and 4 reserved bytes).')]);
+    updateButtons();
+    if (!quiet) say('');
+  }
+
+  /* Run one put on the model and show its steps. */
+  function play(key, vlen) {
+    if (tree.pool.pageCount >= MAX_PAGES) {
+      say('This drawing stops at ' + MAX_PAGES + ' pages. Press Reset to start again.', true);
+      return false;
+    }
+    // Steps of earlier puts stay in the log.
+    stepper.steps.forEach(function (s) { history.push({ log: s.log }); });
+    var before = tree.keyCount;
+    var steps = tree.put(key, vlen, true);
+    steps.forEach(function (s, i) { s.keys = i === steps.length - 1 ? tree.keyCount : before; });
+    steps[0].log = { html: '<b>put ' + CH12.esc(key) + '</b> (' + vlen + ' value bytes)', state: 'inserted' };
+    // Predict: does it fit?
+    steps.forEach(function (s, i) {
+      if (s.type !== 'fit' && s.type !== 'full') return;
+      var leaf = Object.keys(s.highlight.nodes)[0].slice(1);
+      s.question = {
+        prompt: 'The cell costs ' + (4 + key.length + vlen + 2) + ' bytes. Look at the bytes in use on leaf page ' + leaf + ' (shown under the box before this step). Does the cell fit?',
+        choices: ['It fits', 'The leaf must split'], answer: s.type === 'fit' ? 0 : 1,
+        explain: s.type === 'fit' ? 'There is room: one page changes.' : 'Not enough free bytes: the leaf splits.'
+      };
+    });
+    stepper.setSteps(steps, { play: true });
+    updateButtons();
+    return true;
+  }
+
+  function putTyped() {
+    var key = keyIn.value, raw = valIn.value.trim();
+    if (key === '') return say('Type a key first (1 to ' + MAX_KEY_CHARS + ' printable characters).', true);
+    if (!/^[\x21-\x7e]+$/.test(key)) return say('Keys on this page are printable ASCII without spaces, so that byte order is what you see.', true);
+    if (key.length > MAX_KEY_CHARS) return say('This page limits keys to ' + MAX_KEY_CHARS + ' characters to keep the drawing legible (the format allows ' + tree.maxKey + ' bytes).', true);
+    if (!/^\d+$/.test(raw)) return say('The value size must be a whole number of bytes from 0 to ' + tree.maxValue + ' ("' + raw + '" is not).', true);
+    var vlen = parseInt(raw, 10);
+    if (vlen > tree.maxValue) return say('A value may have at most ' + tree.maxValue + ' bytes here (a quarter of the page): put would return ValueTooLarge. Chapter 13 adds overflow pages for larger values.', true);
+    if (play(key, vlen)) {
+      say('put ' + key + ' with ' + vlen + ' value bytes.');
+      keyIn.value = '';
+    }
+  }
+
+  function putNext() {
+    if (scenarioAt >= CH12.SCENARIO.length) return;
+    var n = CH12.SCENARIO[scenarioAt];
+    if (play(CH12.scenarioKey(n), CH12.scenarioValueLen(n, tree.pageSize))) {
+      scenarioAt++;
+      updateButtons();
+      say('Scenario put ' + scenarioAt + ' of 24.');
+    }
+  }
+
+  function runRest() {
+    var done = 0;
+    stepper.steps.forEach(function (s) { history.push({ log: s.log }); });
+    while (scenarioAt < CH12.SCENARIO.length && tree.pool.pageCount < MAX_PAGES) {
+      var n = CH12.SCENARIO[scenarioAt++];
+      tree.put(CH12.scenarioKey(n), CH12.scenarioValueLen(n, tree.pageSize), false);
+      history.push({ log: { html: '<b>put ' + CH12.scenarioKey(n) + '</b> (' + CH12.scenarioValueLen(n, tree.pageSize) + ' value bytes)', state: 'inserted' } });
+      done++;
+    }
+    stepper.setSteps([restingStep('The remaining ' + done + ' scenario puts were applied without animation: ' + tree.keyCount + ' keys in ' +
+      tree.pool.pageCount + ' pages, ' + tree.stats.leaf + ' leaf splits, ' + tree.stats.interior + ' interior splits, the root moved down ' + tree.stats.root + ' time(s). ' +
+      'Compare the bars: the leaves on the left hold more cells than the leaves on the right, but about the same number of bytes.')]);
+    updateButtons();
+    say(done + ' puts applied.');
+  }
+
+  sizeSel.addEventListener('change', function () { reset(); say('Page size changed: the tree was reset.'); });
+  [keyIn, valIn].forEach(function (input) {
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.stopPropagation(); putTyped(); } });
+  });
+
+  reset(true);
+  valIn.value = '700';
+
+  /* The JS model must reproduce what the chapter's programs print for part 1. */
+  var EXPECTED_FIRST = [
+    'page 1  interior  1 keys  12/4076 bytes  | (2) 20 (3)',
+    '  page 2  leaf      5 keys  2500/4076 bytes  next 3  | 05:420 06:444 07:468 10:540 12:588',
+    '  page 3  leaf      2 keys  1816/4076 bytes  next -  | 20:780 30:1020'].join('\n');
+  var EXPECTED_DUMP = [
+    'page 1  interior  5 keys  60/4076 bytes  | (2) 08 (7) 12 (4) 20 (3) 25 (6) 28 (5)',
+    '  page 2  leaf      7 keys  2828/4076 bytes  next 7  | 01:324 02:348 03:372 04:396 05:420 06:444 07:468',
+    '  page 7  leaf      4 keys  2144/4076 bytes  next 4  | 08:492 09:516 10:540 11:564',
+    '  page 4  leaf      5 keys  3364/4076 bytes  next 3  | 12:588 14:636 15:660 17:708 18:732',
+    '  page 3  leaf      3 keys  2484/4076 bytes  next 6  | 20:780 22:828 23:852',
+    '  page 6  leaf      2 keys  1864/4076 bytes  next 5  | 25:900 27:948',
+    '  page 5  leaf      3 keys  3012/4076 bytes  next -  | 28:972 29:996 30:1020'].join('\n');
+  var EXPECTED_COUNTERS = [
+    'tree:  24 keys, 8 pages, height 2; splits: 5 leaf, 0 interior, 1 root',
+    'pool:  69 hits, 27 misses, 32 evictions, 19 write-backs',
+    'pager: 27 reads, 21 writes, 8 allocations, 1 syncs'].join('\n');
+  var replay = CH12.replayPart1();
+  BTViz.selfTest('first split', replay.firstSplitDump, EXPECTED_FIRST);
+  BTViz.selfTest('tree after 24 puts', replay.dump, EXPECTED_DUMP);
+  BTViz.selfTest('counters', replay.counters, EXPECTED_COUNTERS);
+  BTViz.selfTest('validate', replay.valid, null);
+})();
+</script>
+</body>
+</html>

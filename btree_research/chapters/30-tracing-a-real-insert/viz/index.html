@@ -29,8 +29,8 @@
 .ch30-refs { font-size: .8rem; color: var(--bt-muted); margin-top: 6px; overflow-wrap: anywhere; }
 .ch30-refs code { font-size: .76rem; }
 .ch30-hint { font-size: .88rem; color: var(--bt-muted); margin: 0 0 8px; min-height: 1.3em; }
-#fig-op .bt-select { max-width: 100%; }
-#fig-op .bt-field { max-width: 100%; min-width: 0; }
+/* The scenario labels are long; on a phone the select must not widen the page. */
+#fig-op .bt-select { max-width: calc(100vw - 120px); }
 .ch30-note { font-size: .9rem; color: var(--bt-muted); }
 .ch30-refs details { display: inline; }
 .ch30-refs summary { cursor: pointer; display: inline-block; padding: 4px 0; }

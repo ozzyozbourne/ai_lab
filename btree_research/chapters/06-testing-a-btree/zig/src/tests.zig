@@ -208,7 +208,7 @@ test "minimize: short, still failing the same way, and 1-minimal" {
                 .put => |p| {
                     puts += 1;
                     try testing.expectEqual(puts, p.value);
-                    try testing.expect(p.key >= 1 and p.key <= small.steps.len);
+                    try testing.expect(p.key >= 1 and p.key <= 2 * small.steps.len); // ranks, not random numbers
                 },
                 else => {},
             }

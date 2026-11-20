@@ -162,7 +162,12 @@ pub const Recovery = struct {
 pub const Stats = struct {
     commits: u64 = 0,
     page_records: u64 = 0,
+    /// Bytes of records appended to the log, over all generations.
     log_bytes: u64 = 0,
+    /// The longest the record area of the log ever was, in bytes.
+    max_log_bytes: u64 = 0,
+    /// The most page images one commit carried.
+    largest_commit: u64 = 0,
     log_page_writes: u64 = 0,
     log_syncs: u64 = 0,
     checkpoints: u64 = 0,
@@ -280,12 +285,14 @@ pub const Wal = struct {
             }
         }
         self.stats.page_records += self.pending.len();
+        self.stats.largest_commit = @max(self.stats.largest_commit, self.pending.len());
         self.pending.entries.clearRetainingCapacity();
         self.chain = chain;
         self.next_lsn = lsn;
         self.commits_in_log += 1;
         self.stats.commits += 1;
         self.stats.log_bytes += run.len;
+        self.stats.max_log_bytes = @max(self.stats.max_log_bytes, self.tail - log_start);
         self.broken = false;
     }
 

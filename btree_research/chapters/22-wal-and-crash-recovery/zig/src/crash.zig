@@ -35,13 +35,15 @@ const DiskBTree = btree.DiskBTree;
 const Model = @import("base_workload.zig").Model;
 const db_mod = @import("db.zig");
 const Db = db_mod.Db;
-const Recovery = @import("wal.zig").Recovery;
+const wal_mod = @import("wal.zig");
+const Recovery = wal_mod.Recovery;
 
 pub const modes = [_]CrashMode{ .drop, .keep, .tear, .random };
 
-/// A fixed, seeded list of puts. Long keys and large values, so that a few
-/// dozen puts already split leaves, split an interior page and grow the tree
-/// to three levels (a leaf holds about 3 cells, an interior page about 15).
+/// A fixed, seeded list of puts. Keys of 240 to 256 bytes and values of 700
+/// to 1023 bytes, so that a few dozen puts already split leaves, split an
+/// interior page and grow the tree to three levels (a leaf holds 3 such
+/// cells, an interior page 15 separators).
 pub const Workload = struct {
     seed: u64,
     puts: u32,
@@ -65,9 +67,9 @@ pub const Workload = struct {
 };
 
 /// The default workload of the tests and of the demo.
-pub const small: Workload = .{ .seed = 22, .puts = 40, .key_space = 36 };
+pub const small: Workload = .{ .seed = 4, .puts = 36, .key_space = 60 };
 /// A longer one, used when the build flag `-Dlong=true` is given.
-pub const long: Workload = .{ .seed = 2222, .puts = 120, .key_space = 100 };
+pub const long: Workload = .{ .seed = 2222, .puts = 120, .key_space = 150 };
 
 pub const Outcome = enum { before, after, open_failed, invalid, wrong_contents };
 
@@ -81,6 +83,8 @@ pub const Result = struct {
     recovery: Recovery = .{},
     /// Tree statistics at the end of the run phase (meaningful if no crash).
     stats: DiskBTree.Stats = .{},
+    /// With the log: its counters at the end of the run phase.
+    wal_stats: wal_mod.Stats = .{},
     /// With a second crash: did the power fail during the first recovery?
     second_crash_hit: bool = false,
 };
@@ -128,7 +132,7 @@ fn applyOps(model: *Model, w: Workload, from: u32, to: u32) Allocator.Error!void
 
 /// One full scan of the tree against the oracle. A read error counts as a
 /// difference.
-fn sameContents(tree: *DiskBTree, model: *const Model) bool {
+pub fn sameContents(tree: *DiskBTree, model: *const Model) bool {
     var it = tree.range("", null) catch return false;
     var count: usize = 0;
     while (it.next() catch return false) |item| : (count += 1) {
@@ -178,6 +182,7 @@ pub fn runWithLog(gpa: Allocator, w: Workload, n: ?u64, second: ?u64, mode: Cras
             };
         }
         result.stats = db.tree.stats;
+        result.wal_stats = db.wal.stats;
     }
     result.writes = machine.writes;
     machine.crash(mode);
@@ -213,14 +218,14 @@ pub fn runWithLog(gpa: Allocator, w: Workload, n: ?u64, second: ?u64, mode: Cras
 }
 
 /// A chapter 12 tree directly on a page storage: no log, no checksums.
-const Plain = struct {
+pub const Plain = struct {
     file: PageFile,
     pager: Pager,
     pool: BufferPool,
     tree: DiskBTree,
 
     /// Initialise in place: the parts point at each other.
-    fn open(self: *Plain, gpa: Allocator, machine: *Machine) DiskBTree.Error!void {
+    pub fn open(self: *Plain, gpa: Allocator, machine: *Machine) DiskBTree.Error!void {
         self.file = .{ .inner = machine.mainStorage() };
         self.pager = try .init(self.file.storage());
         self.pool = try .init(gpa, &self.pager, 8);
@@ -228,7 +233,7 @@ const Plain = struct {
         self.tree = if (self.pager.pageCount() == 0) try .create(gpa, &self.pool) else try .open(gpa, &self.pool);
     }
 
-    fn close(self: *Plain) void {
+    pub fn close(self: *Plain) void {
         self.tree.deinit();
         self.pool.deinit();
     }

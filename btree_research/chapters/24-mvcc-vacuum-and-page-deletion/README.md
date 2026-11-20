@@ -115,7 +115,7 @@ record (`postgres/src/backend/access/nbtree/README:247-259`, `:279-282`,
 and one that a crash may leave behind for the next VACUUM to finish.
 
 Why the downlink first? Once it is gone, no new descent arrives at the page, while
-the chain still carries every scan across it (`README:255-259`). The other order
+the chain still carries every scan across it (`nbtree/README:255-259`). The other order
 would leave a page that the parent still routes to but that no scan passes: an
 insert sent there would add an entry that scans never return.
 
@@ -186,8 +186,8 @@ page deletion, checked against an oracle).
 
 ### Zig
 
-`store.zig` is the primer as code: `Version.visible`, `Store.horizon` (a minimum
-over a small array) and `Store.deadToAll` (`xmax != 0 and xmax <= horizon()`).
+`store.zig` is the primer as code: `Version.visible`, `Store.horizon` and
+`Store.deadToAll` (`xmax != 0 and xmax <= horizon()`).
 
 An index key is `(user key, tid)` packed into one `u64` (`base_node.pack`), the
 tie-breaker idea of chapter 07, so that the many versions of one row are distinct
@@ -237,12 +237,9 @@ The port is line for line where the borrow checker allows it. The differences:
   arena's `pair_mut` to hold two pages at once.
 - **The cursor does not borrow the `Db`.** `Cursor::next(&mut self, db: &mut Db)`
   takes the database on every call. A cursor holding `&Db` would make the compiler
-  reject every interleaving this chapter is about: "no writers while a reader
-  exists" is the guarantee a database cannot afford. The page handle in the cursor
-  is the unchecked reference that replaces the borrow, and the recycling rule is the
+  reject every interleaving this chapter is about. The page handle in the cursor is
+  the unchecked reference that replaces the borrow, and the recycling rule is the
   lifetime rule the database must enforce itself.
-- **`get` takes `&mut self`** in Rust and `*Db` in Zig, for the same reason: a read
-  may set hint bits.
 - **Allocation failure.** Rust's `Vec` aborts instead of failing, so the arenas
   carry a budget and `put` returns `Err(OutOfNodes)`.
 - **Panics and errors.** Rust has two tests more (`#[should_panic]`, which Zig cannot
@@ -406,8 +403,7 @@ chapter needs.
   deletion, VACUUM removes nothing, deleted pages wait.
 - **Expecting VACUUM to shrink the tree.** It never merges non-empty pages and never
   lowers the height. An empty page that is the rightmost child of its parent stays:
-  its key range would pass to a page under another parent, and a separator higher up
-  would have to change (`N/README:268-275`).
+  its key range would pass to a page under another parent (`N/README:270-277`).
 
 ## Exercises
 
@@ -431,6 +427,6 @@ Solutions: [solutions.md](solutions.md).
 
 - Previous: [23. Copy-on-write B-trees](../23-copy-on-write-btrees/README.md)
 - Next: [25. Cache-conscious search and layout](../25-cache-conscious-search-and-layout/README.md)
-- Visualization: [viz/index.html](viz/index.html) (dead entries accumulating, hints,
-  the vacuum sweep, and a page drawn as it goes from live to half-dead to deleted to
-  free while a paused scan holds its handle)
+- Visualization: [viz/index.html](viz/index.html) (dead entries, hints, the vacuum
+  sweep, and one page going from live to half-dead to deleted to free under a paused
+  scan)

@@ -1,8 +1,10 @@
 # Chapter 20: solutions
 
 Every outcome quoted here was produced by running the chapter's Zig tests
-(`zig build test`) against a scratch copy with the described change, unless
-the text says "expected" or "not run".
+(`zig build test --summary all`, 32 tests) against a scratch copy with the
+described change, unless the text says "expected" or "not run". Where a
+threaded test is involved the change was run eight times, and the text says
+what varied.
 
 ## 1. Which keys are missed without right links?
 
@@ -22,10 +24,13 @@ a split makes old, committed keys disappear, not only the new one.
 
 ## 2. `key > high_key` instead of `key >= high_key`
 
-Run with only that change, 8 of the 27 tests fail: the output test, "paused
-between step 1 and step 2" (`expected 2600, found null`), the paused root
-split, the paused internal node, the full node table, the model test and both
-stress tests.
+Run with only that change, 8 or 9 of the 32 tests fail. Eight fail in every
+run: the output test, "paused between step 1 and step 2"
+(`expected 2600, found null`), the paused root split, the paused internal
+node, the full node table, both model tests and the stress test with
+abandoned splits. The ninth is the stress test with normal splits. It needs a
+reader to arrive between the two steps of another thread's split, so it
+depends on the interleaving: it failed in 7 of 8 runs.
 
 The first failure explains all of them. In the paused state #3 has high key
 26, and 26 itself lives in #8. A search for 26 computes `26 > 26`, which is
@@ -74,19 +79,28 @@ them. In Postgres both are part of one critical section and one WAL record
 
 Change `if (page.incomplete_split)` in `moveRight` to `if (false and ...)`.
 
-Three tests fail on an assertion and three abort. The assertion failures are
-the direct effect: in "an insert that meets the flag finishes the split
-before its own work", `incompleteSplits()` is still 1 after `put 27`.
+Three tests fail on an assertion and five abort (the same eight in 8 of 8
+runs). The assertion failures are the direct effect: in "an insert that meets
+the flag finishes the split before its own work", `incompleteSplits()` is
+still 1 after `put 27`.
 
-The aborts are the consequence. The demo program, the model test and the
-abandoned-splits stress test stop with
+The aborts are the consequence. The demo program and both model tests stop
+with
 
 ```
 panic: B-link tree: downlink of a split node not found
 ```
 
-A writer moved right from a flagged node into its sibling, which has no
-downlink, filled it and split it. Step 2 of that split looked for the parent
+"Two paused writers ..." stops on a check inside its own callback: the root
+never becomes half split, because `put 31` walked past the flagged leaf
+instead of finishing its split. The stress test with abandoned splits aborted
+on the assertion `!left.incomplete_split` in `halfSplit` in all eight runs: a
+writer was sent to a flagged leaf, did not finish it, filled it and split it
+again. With threads, which of the two failures comes first depends on the
+interleaving.
+
+In the panic case a writer moved right from a flagged node into its sibling,
+which has no downlink, filled it and split it. Step 2 of that split looked for the parent
 entry of a node that has none, walked the parent level to its end and found
 nothing. This is the failure the Postgres README describes: "if the page
 without a downlink gets split again, the insertion algorithm will fail to

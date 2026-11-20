@@ -68,26 +68,40 @@ pub fn rangeTraced(self: *const SortedArrayMap, lo: u64, hi: u64, trace: *cost.T
         trace.comparisons += 1;
     }
     // The walk reads every page from the one holding `start` to the one holding `end - 1`.
-    // `Trace.seen` has only 64 slots, so count this run directly instead of calling touch().
+    // The binary search has already read some of them: its last probes land at or just
+    // above `start`, often on the following pages too. A page counts once, so count only
+    // the walked pages the search has not seen. `Trace.seen` has only 64 slots, so they
+    // are counted without being stored; do not call touch() on this trace afterwards.
     if (start < end) {
-        const first_page = start / cost.entries_per_page;
+        const searched = trace.seen[0..trace.page_reads];
+        var page = start / cost.entries_per_page;
         const last_page = (end - 1) / cost.entries_per_page;
-        trace.page_reads += last_page - first_page; // first_page was already read by the search
+        while (page <= last_page) : (page += 1) {
+            if (std.mem.indexOfScalar(u64, searched, page) == null) trace.page_reads += 1;
+        }
     }
     return self.entries[start..end];
 }
 ```
 
-For 1,000 consecutive keys out of 100,000: at most 9 page reads to find the start, and
-1,000 entries span 4 or 5 pages (1000 / 256 = 3.9, plus one if the range starts in the
-middle of a page), the first of which the search has already read. About 13 page reads
-in total. This sketch is not part of the tested code.
+The tempting shortcut `trace.page_reads += last_page - first_page` ("the search has
+already read the first page") counts too much: it gives 11 to 13 pages where the
+distinct count is 9 to 13.
+
+Measured with this function in a scratch copy of the Zig code (it is not part of the
+chapter's tested code), over all 99,001 ranges of 1,000 consecutive keys out of 100,000,
+and checked against a brute-force set of the pages touched: the search alone reads 8 or
+9 pages, the 1,000 entries span 4 or 5 pages (1000 / 256 = 3.9, plus one if the range
+starts in the middle of a page), and together they touch 9 to 13 different pages, 10.95
+on average. 11 is the most common count.
 
 BST. An in-order walk visits every node in the range, plus the nodes on the path to the
 first one. With one page per node that is at least 1,000 page reads. In `range`, add
-one page read for every node the inner loop looks at.
+one page read for every node the inner loop looks at. Measured the same way on the tree
+of the race (100,000 keys in random insert order), for 14,143 ranges of 1,000
+consecutive keys: 1,008 to 1,037 nodes, 1,021 on average.
 
-The sorted array wins by two orders of magnitude, because neighbouring keys are stored
+The sorted array wins by a factor of about 90, because neighbouring keys are stored
 next to each other. This is the reason chapter 07 moves all values into the leaves and
 chains the leaves together: it gives a tree the range behaviour of an array.
 
@@ -120,12 +134,17 @@ same nodes in the same order; only the work inside each node changes. The compar
 columns drop sharply. A full node with 170 keys needs about log2(171), roughly 8,
 comparisons instead of an average of about 85. The three levels are not equally full,
 though: for 100,000 keys the root of the stand-in tree has only 3 separators, the
-middle level 146 per node, and the leaves 170 keys. That gives about 2 + 8 + 8
+middle level 146 per node, and the leaves 169 or 170 keys. That gives about 2 + 8 + 8
 comparisons plus one equality check per node, so the average should fall from 160.45
-to about 20, close to the 17.68 of the plain binary search. (Measured with the
-visualization's JavaScript model, `viz/model.js`, on the same 1,000 lookups: 19.51 on
-average, 21 at most, page reads unchanged at 2.99. This is not output of the Zig or
-Rust program.)
+to about 20, close to the 17.68 of the plain binary search.
+
+Checked by making the change in a scratch copy of the Zig program: the race row becomes
+
+```
+wide nodes, M = 171             19.51       21     2.99        3
+```
+
+so the page reads are unchanged and the comparisons fall by a factor of eight.
 
 The change, in `wide.zig`: an interior node's separators are not contiguous in the
 slice (child `i` sits between separator `i - 1` and separator `i`), so compute the index
@@ -141,8 +160,23 @@ fn separatorIndex(lo: usize, base: usize, extra: usize, j: usize) usize {
 ```
 
 and binary search over `j` for the first separator whose key is not smaller than the
-target. The existing test `finds every key and nothing else, for many sizes and orders`
-checks the result, including that the deepest lookup still equals `minHeight(n, m)`.
+target, followed by one equality check; do the same in the leaf. The existing test
+`finds every key and nothing else, for many sizes and orders` checks the result,
+including that the deepest lookup still equals `minHeight(n, m)`.
+
+Expect two red tests after the change, 36 of 38 passing. Both pin comparison counts of
+the linear scan, and no page-read figure changes anywhere:
+
+- `a node gets only as many children as it needs` expects 1 comparison for a key found
+  in a one-separator root; the binary search needs 2 (one to place the key, one to
+  check for equality).
+- `run prints exactly expected_output.txt` fails on the race row above and on the last
+  line of the hand example, which becomes `get(17): 6 comparisons, 2 page reads`. In a
+  node of three keys a binary search plus equality check can cost more than a scan; the
+  README's worked example keeps describing the scan.
+
+Update those expectations if you keep the change; the Rust port has the same two tests
+(`a_node_gets_only_as_many_children_as_it_needs`, `run_prints_exactly_expected_output_txt`).
 
 What this shows: a B-tree does not reduce the number of comparisons compared with one
 big binary search. It does the same comparisons in a different order, arranged so that

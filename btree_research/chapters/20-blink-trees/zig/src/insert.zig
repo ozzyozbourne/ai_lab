@@ -64,7 +64,7 @@ pub fn put(tree: *BLinkTree, io: Io, key: u64, value: u64) PutError!?u64 {
             // We reached a leaf with a shared latch (only happens when the
             // root is a leaf). There is no upgrade: release, then take the
             // exclusive latch. Whatever happened in between is handled by
-            // moveRight below. Postgres: nbtsearch.c:191-201.
+            // moveRight below. Postgres: nbtsearch.c:190-199.
             tree.unlockShared(io, id);
             _ = tree.lockExclusive(io, id);
             exclusive = true;
@@ -137,7 +137,7 @@ fn unlatch(tree: *BLinkTree, io: Io, id: NodeId, exclusive: bool) void {
 }
 
 /// The writer's version of "move right" (Postgres: _bt_moveright with
-/// forupdate, nbtsearch.c:243-331).
+/// forupdate, nbtsearch.c:243-324).
 ///
 /// `start` is latched in the given mode. Returns the node on the same level
 /// whose key range contains `key`, latched in the same mode, with its

@@ -99,7 +99,7 @@ pub(crate) fn put(tree: &BLinkTree, key: u64, value: u64) -> Result<Option<u64>,
             // We reached a leaf with a shared latch (only happens when the
             // root is a leaf). There is no upgrade: release, then take the
             // exclusive latch. Whatever happened in between is handled by
-            // move_right below. Postgres: nbtsearch.c:191-201.
+            // move_right below. Postgres: nbtsearch.c:190-199.
             drop(held);
             held = latch(tree, id, true);
         }
@@ -156,7 +156,7 @@ pub(crate) fn put(tree: &BLinkTree, key: u64, value: u64) -> Result<Option<u64>,
 }
 
 /// The writer's version of "move right" (Postgres: _bt_moveright with
-/// forupdate, nbtsearch.c:243-331).
+/// forupdate, nbtsearch.c:243-324).
 ///
 /// `held` is the latch on `start`. Returns the node on the same level whose
 /// key range contains `key`, latched in the same mode, with its

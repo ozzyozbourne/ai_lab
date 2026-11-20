@@ -73,9 +73,8 @@ repairs it the same way. This is the mirror image of a split pushing a key up.
 
 **Root shrink.** The root has no minimum. When a merge takes the root's last key, the
 root is left with zero keys and one child. That child becomes the new root and the tree
-is one level shorter. Because the tree loses the level at the top, all leaves get one
-step closer to the root together, and promise 3 holds. A B-tree grows and shrinks only
-at the root.
+is one level shorter. All leaves get one step closer to the root together, so promise
+3 holds. A B-tree grows and shrinks only at the root.
 
 Cost: one walk down and at most one repair per level on the way back: O(height) nodes.
 
@@ -160,8 +159,8 @@ is empty, and the tree shrinks from three levels to two:
 ```
 
 **Underfull is not the same as empty.** With M = 4 the minimum is one key, so every
-underfull node above was empty. With M = 5 the minimum is two. Keys 1 to 13 in
-ascending order with M = 5:
+underfull node above was empty. With M = 5 the minimum is two. Keys 1 to 13 inserted
+in order:
 
 ```
             [3 6 9]
@@ -169,8 +168,8 @@ ascending order with M = 5:
 ```
 
 Delete 3, an interior key. Its predecessor 2 moves up and leaves `[1]`: one key where
-two are required. `[1]` is the first child, and its only sibling `[4 5]` is at the
-minimum, so they merge with the separator (now 2):
+two are required. Its only sibling `[4 5]` is at the minimum, so they merge with the
+separator (now 2):
 
 ```
             [6 9]
@@ -280,10 +279,10 @@ parent.values[sep] = up.value;
 ```
 
 `mergeChildren` removes the separator and the right child pointer from the parent,
-appends separator and right node to the left node, and returns the right node so the
-caller can give it back to the pool. `delete` itself handles the root: if the root has
-no keys after the recursion, its first child (or nothing, for a leaf) becomes the root
-and the old root is freed.
+appends separator and right node to the left node, and returns the right node for the
+caller to give back to the pool. `delete` itself handles the root: if it has no keys
+after the recursion, its first child (or nothing, for a leaf) becomes the root and the
+old root is freed.
 
 Deletion never allocates and cannot fail. Insertion can, so `put` first reserves every
 node the split chain will need (one per node in the unbroken run of full nodes from
@@ -307,8 +306,8 @@ differences:
   `NodeId(u32)`. A borrow changes parent, child and sibling; with indices the code
   takes a value out of one node, then touches the next, and needs neither `unsafe` nor
   `Rc<RefCell<_>>`.
-- **`free` returns the node by value.** A merge frees the right node first and appends
-  (copies) its entries to the left node; the right node's buffers are then dropped.
+- **`free` returns the node by value.** A merge frees the right node first, then
+  appends its entries to the left node.
 - **Read-only code does not know the slab.** `search.rs`, `validate.rs` and `stats.rs`
   take any `Nodes` (a type with `nodes[id]`): the slab, or a plain `Vec<Node>`.
 - **No `deinit`.** Dropping the tree drops the slab and every node in it. In Zig the
@@ -319,16 +318,16 @@ differences:
   `fail_index` of Zig's `FailingAllocator`; only this one can fail the second
   allocation of one `put` in a tree of any size. Reserve-then-commit is identical; the
   `errdefer` that returns reserved nodes is an explicit loop.
-- **Use-after-free and double free** are panics in the slab (`slab[id]` on a freed
-  slot, `free` twice), tested with `#[should_panic]`. In Zig the same bugs are caught
-  by `std.testing.allocator` when nodes are allocated one by one (see below).
+- **Use-after-free and double free** are panics in the slab, tested with
+  `#[should_panic]`. In Zig `std.testing.allocator` catches them when nodes are
+  allocated one by one (see below).
 
 ## In real databases
 
 The algorithm above is the textbook one (Bayer and McCreight's, in the bottom-up form;
-CLRS describes a top-down variant that refills nodes on the way down so that no repair
-is needed on the way up). None of the engines studied for this guide implements it as
-written. What they do instead:
+CLRS describes a top-down variant that refills nodes on the way down, so no repair is
+needed on the way up). None of the engines studied for this guide implements it as
+written.
 
 **Turso (SQLite format): one balance routine, byte thresholds.**
 - An index-tree delete of an interior cell replaces it with the predecessor from a
@@ -348,9 +347,9 @@ written. What they do instead:
   between them, and redistributes them over as many pages as needed, up to 5
   (`btree.rs:162-163`). Fewer pages out than in is a merge, the same number is a
   borrow, more is a split. Chapter 15 builds this.
-- Root shrink exists under the name "balance-shallower": when the root has no cells
-  left and its only child fits, the child is copied into the root page
-  (`btree.rs:4833-4838`). The root page number never changes.
+- Root shrink is called "balance-shallower": when the root has no cells left and its
+  only child fits, the child is copied into the root page (`btree.rs:4833-4838`). The
+  root page number never changes.
 
 **TigerBeetle: merge or borrow, one level.** TigerBeetle has no B-tree, but its
 `SegmentedArray` is an array of fixed-capacity nodes with the same half-full rule
@@ -363,9 +362,8 @@ total. The structure has one level, so there are no separators to fix.
 
 **PostgreSQL: no merging.** nbtree never merges or rebalances partly full pages. Its
 README states: "We consider deleting an entire page from the btree only when it's
-become completely empty of items. (Merging partly-full pages would allow better space
-reuse, but it seems impractical to move existing data items left or right to make this
-happen --- a scan moving in the opposite direction might miss the items if so.)"
+become completely empty of items", because moving items left or right could make "a
+scan moving in the opposite direction" miss them
 (`postgres/src/backend/access/nbtree/README:235-239`). Empty pages are removed later by
 VACUUM, and the tree never gets shorter. Chapter 24 covers that.
 
@@ -426,13 +424,13 @@ or root shrink that unlinks it.
   a double destroy"). Under `DirectNodes` with the test allocator the second `destroy`
   aborts with `panic: double free of [addr: ..., len: 16 ...]`; an abort cannot be in
   the test suite, so try it by hand.
-- A pool never shrinks. After part 5 the tree is empty, but the chunks for 217 nodes
-  stay allocated until `deinit`.
+- A pool never shrinks: after part 5 the chunks for 217 nodes stay allocated until
+  `deinit`.
 
 Rust has one structure in this role: `Slab`, a `Vec` of slots with a free list of
-indices. It detects double free and use-after-free itself, and counts live nodes for
-`validate`. It recycles node slots (ids) only: a node's three vectors are still separate
-heap allocations, so the slab is not the full pool of the Zig version.
+indices. It detects double free and use-after-free itself and counts live nodes for
+`validate`. It recycles only slots (ids): a node's three vectors remain separate heap
+allocations.
 
 ## Pitfalls
 
@@ -453,6 +451,7 @@ heap allocations, so the slab is not the full pool of the Zig version.
   replaced only when it has none.
 - **Not freeing the merged-away node**, or freeing it twice. The first is invisible
   without a leak check or a live counter.
+- **Reading "underfull" as "empty".** True only for M = 3 and 4.
 - **Testing only with large nodes.** With M = 4, part 4 of the output needs 646 borrows
   and 442 merges in 20000 operations; with M = 64 the workload of exercise 4 merges 56
   times in 200000 operations. Small orders find bugs (chapter 06).

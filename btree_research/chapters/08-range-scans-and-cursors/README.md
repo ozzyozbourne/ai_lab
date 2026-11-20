@@ -19,10 +19,9 @@ into `base_*` files; everything new is built on top of it.
 
 ## The idea in plain words
 
-A sorted index is useful mostly because of what comes *after* a lookup. "All
-orders from March" or "the 20 rows after this one" are answered by finding
-one position and then walking in key order. That walk is a **range scan**,
-and the thing that does the walking is a **cursor**.
+A sorted index earns its keep after the lookup: "all orders from March" is
+one position found and then a walk in key order. The walk is a **range
+scan**; the thing that walks is a **cursor**.
 
 ### A range scan is three things
 
@@ -32,10 +31,10 @@ and the thing that does the walking is a **cursor**.
 3. **Stop** at the first entry that is outside the far end of the range.
 
 A forward scan seeks to the lower bound and tests each key against the upper
-bound. A backward scan is the mirror image: it seeks to the *upper* bound,
-steps to the previous entry, and tests against the lower bound. Only the far
-bound is tested per key. The near bound is settled by the seek and stays
-settled, because every step moves away from it.
+bound. A backward scan seeks to the *upper* bound, steps to the previous
+entry, and tests against the lower bound. Only the far bound is tested per
+key; the near bound is settled by the seek, because every step moves away
+from it.
 
 ### The bounds matrix
 
@@ -57,30 +56,27 @@ both sides. In a sorted array `keys`, `lowerBound(k)` is the number of keys
 | forward | first entry | `ge k` | `gt k` | `key <= hi` or `key < hi` |
 | backward | last entry | `le k` | `lt k` | `key >= lo` or `key > lo` |
 
-Two things can happen at the edge of a leaf. A forward seek can land one
-past the last entry of the leaf; the answer is then the first entry of the
-next leaf. A backward seek can land before index 0; the answer is the last
-entry of the previous leaf. So even a seek may need one "step to the
-neighbouring leaf", which is the operation the two cursor designs do
-differently.
+A forward seek can land one past the last entry of a leaf; the answer is
+then the first entry of the next leaf. A backward seek can land before index
+0; the answer is the last entry of the previous leaf. So even a seek may
+need a "step to the neighbouring leaf", the operation the two cursor designs
+do differently.
 
-It is tempting to turn an excluded bound into an included one: `> k` is
-`>= k + 1`. Do not. It overflows when `k` is the largest key, and for keys
-that are byte strings there is no cheap "next key" at all. Letting the kind
-of the bound choose between the two binary searches has no special cases.
-An empty or inverted range needs no special case either: the first candidate
-fails the far-bound test, or there is no candidate.
+Do not turn an excluded bound into an included one (`> k` as `>= k + 1`). It
+overflows when `k` is the largest key, and byte-string keys have no cheap
+"next key". Letting the kind of the bound choose the binary search has no
+special cases. An empty or inverted range needs none either: the first
+candidate fails the far-bound test, or there is no candidate.
 
 ### Prefix scan as a range
 
 Chapter 07 stored duplicates as composite keys, `(user key << 32) | row id`.
-"All rows of user key 7" means "all keys whose top 32 bits are 7". Those keys
-are contiguous, so this is the range from the first key with the prefix
-(included) to the first key of the *next* prefix (excluded):
-`[7 << 32, 8 << 32)`. The one trap: the largest prefix has no next prefix
-(`0xFFFFFFFF + 1` does not fit), so its upper bound is unbounded. For byte
-strings the rule is the same: increment the last byte that is not `0xFF` and
-cut the string there; if every byte is `0xFF`, there is no upper bound.
+"All rows of user key 7" is "all keys whose top 32 bits are 7", and those
+keys are contiguous: the range `[7 << 32, 8 << 32)`, from the first key with
+the prefix to the first key of the *next* prefix. The trap: the largest
+prefix has no next prefix (`0xFFFFFFFF + 1` does not fit), so its upper
+bound is unbounded. For byte strings: increment the last byte that is not
+`0xFF` and cut the string there; if there is none, no upper bound.
 
 ### Two cursor designs
 
@@ -105,20 +101,17 @@ what they demand from the tree:
 | Needs sibling links in the tree | yes | no |
 | Cost paid by insert and delete | 4 link updates per leaf split, 2 per merge | none |
 
-The last row is why real engines choose differently. Sibling links make
+The last row is why real engines choose differently: sibling links make
 scans cheap and splits more expensive, and on disk a split must also write
-the neighbour's page. A tree whose nodes are never modified in place
-(chapter 23) cannot keep sibling links at all.
+the neighbour's page.
 
 ### When the tree changes under the cursor
 
-A cursor often outlives one call: a query returns a row, the caller does
-something, and asks for the next row. If that something is an insert or a
-delete in the same tree, the cursor's position may no longer mean what it
-meant. Entries shift inside a leaf, a split moves half of them to a new
-node, a merge frees a node, and a freed handle is reused for an unrelated
-node. A stale `(leaf, index)` then points at a different entry, or at no
-entry.
+A cursor often outlives one call: a query returns a row, the caller inserts
+or deletes in the same tree, then asks for the next row. Meanwhile entries
+shift inside a leaf, a split moves half of them to a new node, a merge frees
+a node, and a freed handle is reused for an unrelated node. A stale
+`(leaf, index)` then points at a different entry, or at none.
 
 One thing survives all of that: the **key** of the entry the cursor was on.
 "The first key greater than 12" has a definite answer in any tree. So the
@@ -130,14 +123,12 @@ rule:
 > by the saved key.
 
 To detect the change, the tree here carries a counter, `version`, that goes
-up on every insert and delete. The cursor stores the version it saw. This
-rule is independent of the cursor design, and in the code it is written once
-for both.
+up on every insert and delete, and the cursor stores the version it saw. The
+rule does not depend on the cursor design; the code has it once for both.
 
-The result is a precise guarantee. A scan returns every entry that was in
-the range for the whole scan exactly once and in order. An entry inserted or
-deleted during the scan is returned if and only if the scan had not passed
-its key yet.
+The guarantee: a scan returns every entry that was in the range for the
+whole scan exactly once and in order. An entry inserted or deleted during
+the scan is returned if and only if the scan had not passed its key yet.
 
 ## A worked example by hand
 
@@ -156,11 +147,10 @@ separator goes right: child 1, leaf `#4`. `lowerBound(6)` in `(6 7)` is 0.
 Return 6, 7. Next leaf `#1`: return 10, 12. Next leaf `#5`: return 15; then
 17 fails `key < 17`, stop. Result: 6 7 10 12 15.
 
-**Scan `(6, 17]` backward.** The upper bound is included, so seek `le 17`. At
-`#7`, 17 >= 15: child 1. At `#6`, 17 < 20: child 0, leaf `#5`.
-`upperBound(17)` in `(15 17)` is 2, so the cursor lands on index 1. Return
-17, 15, then 12, 10 from `#1`, then 7 from `#4`; then 6 fails `key > 6`,
-stop. Result: 17 15 12 10 7.
+**Scan `(6, 17]` backward.** Seek `le 17`: at `#7` child 1, at `#6` child 0,
+leaf `#5`. `upperBound(17)` in `(15 17)` is 2, so the cursor lands on index
+1. Return 17, 15, then 12, 10, then 7; 6 fails `key > 6`. Result:
+17 15 12 10 7.
 
 **The same forward steps with the stack cursor.** After the seek the stack
 is `(#7, child 0) (#2, child 1)` and the leaf is `#4`.
@@ -186,8 +176,8 @@ leaves : #0(1 3 5) <-> #4(6 7) <-> #1(10 11) <-> #8(12 13 14) <-> #5(15 17) <-> 
 The old position, leaf `#1` index 1, now holds 11. A cursor that trusted it
 would step to "index 2", find the leaf exhausted, follow the link to `#8`
 and return 12 a second time. The real cursor sees that the version changed
-(12 inserts before, 15 now), drops the position and seeks `gt 12`: it lands
-on 13 at `#8`, index 1.
+(12 before, 15 now), drops the position and seeks `gt 12`: it lands on 13 at
+`#8`, index 1.
 
 ## Code walk-through
 
@@ -207,26 +197,24 @@ Both languages have the same files, names, tests and output.
 
 ### Zig
 
-**Tree** (`tree.zig`). `Tree` wraps the base `BPlusTree` and adds one field.
-`put` increments `version` only if a new entry was created and `delete` only
-if one was removed. An overwrite moves nothing, so a cursor standing on that
-entry stays valid and simply reads the new value. If `put` fails with
-`error.OutOfMemory`, the base tree is unchanged and so is `version`.
+**Tree** (`tree.zig`). `Tree` wraps the base `BPlusTree` and adds `version`.
+`put` increments it only if a new entry was created, `delete` only if one
+was removed. An overwrite moves nothing, so a cursor on that entry stays
+valid and reads the new value. A `put` that fails with `error.OutOfMemory`
+changes neither the tree nor `version`.
 
 **Bounds** (`bounds.zig`). `Bound` is `union(enum) { unbounded, included:
-u64, excluded: u64 }`. `contains(lo, hi, key)` is the definition of a range
-and is what the tests compare every scan against. `prefixRange(prefix,
-bits)` returns the two bounds described above.
+u64, excluded: u64 }`. `contains(lo, hi, key)` is the definition of a range;
+the tests compare every scan against it.
 
 **Cursor** (`cursor.zig`). `landing(keys, target)` is the first table of this
-chapter as a `switch`: it returns `.forward = i` (the answer is entry `i`, or
-the first entry of the next leaf if `i` is the leaf's length) or
-`.backward = n` (the answer is entry `n-1`, or the last entry of the previous
-leaf if `n` is 0). `Cursor(comptime Position: type)` holds the logical state
-`before_first`, `after_last` or `on: key`, the version it saw, and counters.
-Its invariant is stated in the source: if the state is `on(k)` and the
-versions match, the position is on the entry with key `k`; otherwise the
-position is garbage and must not be read. `next` is short:
+chapter as a `switch`. It returns `.forward = i` (entry `i`, or the first
+entry of the next leaf if `i` is the leaf's length) or `.backward = n`
+(entry `n-1`, or the last entry of the previous leaf if `n` is 0).
+`Cursor(comptime Position: type)` holds the state `before_first`,
+`after_last` or `on: key`, the version it saw, and counters. Its invariant:
+if the state is `on(k)` and the versions match, the position is on the entry
+with key `k`; otherwise the position is garbage. `next` is short:
 
 ```zig
 .on => |key| {
@@ -237,28 +225,27 @@ position is garbage and must not be read. `next` is short:
     if (self.pos.next(&tree.base, &self.stats)) |found| { ... }
 ```
 
-`prev` is the mirror image with `.lt`. `entry` re-seeks with `.ge` and
-returns null if the key is gone; the cursor then stays "on" that key, so a
-later `next` or `prev` continues from the gap.
+`prev` mirrors it with `.lt`. `entry` re-seeks with `.ge` and returns null if
+the key is gone; the cursor stays "on" that key, so a later `next` or `prev`
+continues from the gap.
 
 **Link cursor** (`link_cursor.zig`). `settleForward(start)` returns entry
-`start` of the current leaf or follows `next` once (a loop, in case a leaf is
-empty). `settleBackward(count)` does the same with `prev`. Seeking to the
-first or last entry uses `tree.first_leaf` and `tree.last_leaf` and needs no
-descent.
+`start` of the current leaf or follows `next`; `settleBackward(count)` does
+the same with `prev`. Seeking to the first or last entry uses
+`tree.first_leaf` / `tree.last_leaf` without a descent.
 
 **Stack cursor** (`stack_cursor.zig`). `descend` pushes a frame per internal
-node. `stepLeaf` is the pop / step / push loop from the plain-words section.
-The frames live in a slice of `max_depth = 32` entries allocated once in
-`StackPosition.init`; the comment derives the bound from the 32-bit handles.
-Nothing in this file reads `prev`, `next`, `first_leaf` or `last_leaf`. A
-test cuts every leaf link and clears both chain ends: the stack cursor still
-returns every scan correctly, and the link cursor cannot leave its leaf.
+node; `stepLeaf` is the pop / step / push loop. The frames live in a slice
+of `max_depth = 32` entries allocated once in `StackPosition.init` (the
+bound follows from 32-bit handles). Nothing here reads `prev`, `next`,
+`first_leaf` or `last_leaf`: a test cuts every leaf link, after which the
+stack cursor still answers every scan and the link cursor cannot leave its
+leaf.
 
-**Scan** (`scan.zig`). `Scan(C)` stores the tree pointer, a cursor, the two
+**Scan** (`scan.zig`). `Scan(C)` stores the tree pointer, a cursor, the
 bounds and a direction. `next` seeks on the first call, steps afterwards,
-and tests the far bound. `collect(gpa)` materialises the rest of the scan
-into a slice. `tree.range(lo, hi)` and `tree.rangeBackward(lo, hi)` return a
+and tests the far bound. `collect(gpa)` materialises the rest into a slice.
+`tree.range(lo, hi)` and `tree.rangeBackward(lo, hi)` return a
 `Scan(LinkCursor)`.
 
 ### Rust
@@ -276,23 +263,20 @@ The structure is the same. The differences:
   otherwise. Rust names the interface: `trait Position`, and `Cursor<P:
   Position>`.
 - **Cursors do not borrow the tree.** Every cursor method takes `&Tree`. A
-  cursor holding `&Tree` could not exist across a `put`, because `put` needs
-  `&mut Tree`; and existing across changes is the purpose of this chapter.
-  Zig cursors take the tree per call too, to keep the two versions alike.
-- **Two scan types.** `Scan<P>` borrows nothing: `scan.next(&tree)` can be
-  interleaved with `tree.delete(..)`. `ScanIter<'a, P>` (returned by
-  `tree.range`) borrows the tree and implements `Iterator`; while it is
-  alive the compiler rejects every change to the tree. In Zig one `Scan`
-  type covers both uses, and nothing stops a caller from misusing a raw
-  position.
-- **The stack is a `Vec`.** `StackPosition` owns a `Vec<Frame>` with capacity
-  `MAX_DEPTH`. `with_buffer` / `into_buffer` hand that allocation from one
-  scan to the next, and `collect_into(&tree, &mut out)` reuses a result
-  vector. That is the Rust form of resetting an arena while keeping its
-  capacity.
+  cursor holding `&Tree` could not exist across a `put`, which needs
+  `&mut Tree`. Zig cursors take the tree per call too, to keep the versions
+  alike.
+- **Two scan types.** `Scan<P>` borrows nothing, so `scan.next(&tree)` can be
+  interleaved with `tree.delete(..)`. `ScanIter<'a, P>` (from `tree.range`)
+  borrows the tree and implements `Iterator`; while it lives the compiler
+  rejects every change to the tree. Zig has one `Scan` type for both uses.
+- **The stack is a `Vec<Frame>`** with capacity `MAX_DEPTH`. `with_buffer` /
+  `into_buffer` hand the allocation from one scan to the next, and
+  `collect_into(&tree, &mut out)` reuses a result vector: the Rust form of
+  resetting an arena while keeping its capacity.
 - **Failure model.** A `Vec` aborts when memory runs out, so there is no test
-  for a failing cursor allocation. The insert path is covered by the node
-  budget of chapter 07: `Tree::with_node_budget(4, 8)` makes `put` return
+  for a failing cursor allocation. The insert path uses chapter 07's node
+  budget: `Tree::with_node_budget(4, 8)` makes `put` return
   `Err(OutOfNodes)`, and the test checks that `version` did not move.
 
 ### Output
@@ -386,23 +370,19 @@ M=16 keys=324 height=3 scans=1974 cursor steps=17465 re-seeks=4166 | node visits
 
 Things to notice:
 
-- Section 2: the nine lines differ only at the two bound keys, 6 and 17.
 - Section 4: `#7.0 #2.1` means "in node #7 the path goes down child 0, in
-  node #2 child 1". The stack changes whenever the leaf changes. For
-  `[5, 20]` the link cursor makes 7 moves (3 for the descent, 4 leaf hops)
-  and the stack cursor 13 (3 for the descent, then 2, 2, 4 and 2 for the
-  four leaf boundaries). For the full scan the link cursor starts at
-  `first_leaf` without a descent: 1 + 4 moves.
-- Section 6 is the worked example, followed by deletes under the cursor
-  (`entry` reports that the entry is gone, `next` and `prev` continue from
-  its key), an overwrite (no re-seek), and a scan that deletes every even
-  key it returns: five deletes, five re-seeks, all twelve keys returned once.
-- Section 7: the model run compares 1974 range scans and 17465 cursor steps
-  per order with the oracle. Both designs re-seek equally often, because the
-  rule is shared code. The node-visit columns show the price of having no
-  sibling links; it shrinks as nodes get wider, because fewer steps cross a
-  leaf boundary. These are counts of moves between in-memory nodes, not
-  timings, and say nothing about the write-side cost of maintaining links.
+  node #2 child 1". For `[5, 20]` the link cursor makes 7 moves (3 for the
+  descent, 4 leaf hops) and the stack cursor 13 (3, then 2, 2, 4 and 2 for
+  the four leaf boundaries). The full scan starts at `first_leaf` without a
+  descent: 1 + 4 moves.
+- Section 6 is the worked example, then deletes under the cursor, an
+  overwrite (no re-seek), and a scan that deletes every even key it returns:
+  five deletes, five re-seeks, all twelve keys returned once.
+- Section 7: per order, 1974 range scans and 17465 cursor steps are compared
+  with the oracle. Both designs re-seek equally often, because the rule is
+  shared code. The node-visit columns are counts of moves between in-memory
+  nodes, not timings, and say nothing about the write-side cost of
+  maintaining links.
 
 ## In real databases
 
@@ -428,11 +408,10 @@ gets `nextkey = false`, for `>` it gets `nextkey = true`
 (`nbtsearch.c:1486-1502`). With no usable bound the scan starts at the
 leftmost or rightmost page (`_bt_endpoint`, `nbtsearch.c:2211`).
 
-Backward scans are harder in Postgres than here, because other backends may
-split the left sibling while the scan is moving to it. The README gives the
-move-left algorithm: follow the left link, and if that page's right link
-does not point back to the page you came from, move right until one does
-(`README:330-345`). Chapter 20 returns to this.
+Backward scans are harder in Postgres, because another backend may split the
+left sibling while the scan moves to it; the README's move-left algorithm
+follows the left link and then moves right until a page's right link points
+back to the page it came from (`README:330-345`). Chapter 20 returns to this.
 
 **Turso (SQLite format): a page stack.** There are no sibling links on disk
 (chapter 07), so the cursor holds the path: `struct PageStack` with an array
@@ -451,105 +430,89 @@ non-existent location/cell. This can happen after balancing operations"
 (`btree.rs:6521-6531`); `restore_context` seeks to the saved key again
 (`btree.rs:6562-6620`). If the saved row is gone, the seek lands on the next
 greater one and `skip_advance` makes the following `next()` return it rather
-than step past it; the comment says this mirrors SQLite's
-`CURSOR_SKIPNEXT` (`btree.rs:6603-6611`). After a delete that rebalanced,
-the same flag keeps a delete loop from skipping a row (`btree.rs:7411-7417`).
-Our `Cursor` gets the same effect by re-seeking with `gt` on the saved key.
-Turso saves explicitly, when it knows a change is coming; our version
-counter detects the change afterwards. The counter is this chapter's
-simplification, not something taken from either engine.
+than step past it, mirroring SQLite's `CURSOR_SKIPNEXT` according to the
+comment (`btree.rs:6603-6611`). Our `Cursor` gets the same effect by
+re-seeking with `gt`. Turso saves explicitly when it knows a change is
+coming; our version counter detects the change afterwards. The counter is
+this chapter's simplification, not taken from either engine.
 
 **DuckDB: the ART iterator.** DuckDB has no B-tree. Its ART index has no
-sibling links either, and its iterator is a stack cursor over a radix tree:
-`Next` increments the byte at the top of the stack, asks the node for the
-next child, pops when the node is exhausted, and descends to the minimum of
-the new child (`duckdb/src/execution/index/art/iterator.cpp:329-345`).
-Chapter 28 covers ART.
+sibling links, and its iterator is a stack cursor over a radix tree: `Next`
+increments the byte at the top of the stack, asks the node for the next
+child, pops when the node is exhausted, and descends to the minimum of the
+new child (`duckdb/src/execution/index/art/iterator.cpp:329-345`). See
+chapter 28.
 
 **Milvus: the same bounds table on a sorted array.** The sorted scalar index
-handles inclusive and exclusive bounds exactly as `landing` does: `lo_inc ?
-lower_bound : upper_bound` for the start and `hi_inc ? upper_bound :
-lower_bound` for the end
-(`milvus/internal/core/src/index/scalar/sort/SortedIndexReader.cpp:637-642`).
-Its `PrefixRange` computes the successor of a string prefix by incrementing
-the last byte that is not the maximum and truncating, and falls back to "the
-end" when there is none (`SortedIndexReader.cpp:364-379`). Milvus's in-memory
-key-value store does a prefix scan the other way, as "seek to the prefix,
-iterate, stop at the first key without the prefix"
-(`milvus/internal/kv/mem/mem_kv.go:297-307`). Both forms return the same
-keys; the range form has the advantage that the stop test is the ordinary
-far-bound test.
+picks `lo_inc ? lower_bound : upper_bound` for the start and `hi_inc ?
+upper_bound : lower_bound` for the end
+(`milvus/internal/core/src/index/scalar/sort/SortedIndexReader.cpp:637-642`),
+which is `landing`. Its `PrefixRange` computes the successor of a string
+prefix by incrementing the last byte that is not the maximum, and falls back
+to "the end" when there is none (`SortedIndexReader.cpp:364-379`). Milvus's
+in-memory key-value store does a prefix scan as "seek to the prefix, iterate,
+stop at the first key without it"
+(`milvus/internal/kv/mem/mem_kv.go:297-307`).
 
 **Sidebar: skip scan.** An index on `(x, y)` is sorted by `x` first, so
-`WHERE y = 4` is not one range. Postgres can still use the index by treating
-the query as one small range per distinct `x`: "Prior to Postgres 18, a qual
-like "WHERE y = 4" always resulted in a full scan. This qual now becomes
-"WHERE x = ANY('{every possible x value}') and y = 4"", with the caveat that
-it "behaves like a full scan when there's many distinct "x" values"
-(`postgres/src/backend/access/nbtree/nbtpreprocesskeys.c:130-137`). In the
-terms of this chapter: a sequence of seeks, each followed by a short scan,
-where the next seek key is derived from the last key seen. Not implemented
-here.
+`WHERE y = 4` is not one range. Postgres can treat it as one small range per
+distinct `x`: "Prior to Postgres 18, a qual like "WHERE y = 4" always
+resulted in a full scan. This qual now becomes "WHERE x = ANY('{every
+possible x value}') and y = 4"", though it "behaves like a full scan when
+there's many distinct "x" values"
+(`postgres/src/backend/access/nbtree/nbtpreprocesskeys.c:130-137`). In this
+chapter's terms: a sequence of seeks, each followed by a short scan. Not
+implemented here.
 
-Textbook, not verified in these sources: the name "Halloween problem" for a
-scan that sees its own inserts (see Pitfalls).
+Textbook, not verified in these sources: the name "Halloween problem" (see
+Pitfalls).
 
 ## Allocator notes
 
-Iteration does not allocate. A link cursor is two words on the caller's
-stack. A stack cursor needs room for its frames, and a caller who wants the
-results as a slice needs room for them. Both have the lifetime of one scan,
-which is what an **arena** is for.
+Iteration does not allocate. A link cursor is two words. A stack cursor needs
+room for its frames, and a caller who wants the results as a slice needs
+room for those. Both live exactly as long as one scan, which is what an
+**arena** is for.
 
 - **Why an arena.** Everything a scan allocates is freed together when the
-  scan is over, and nothing is freed earlier. An `ArenaAllocator` turns that
-  into one `reset` and needs no bookkeeping per object.
-- **Which allocator backs it.** Any allocator; the tests use
-  `std.testing.allocator`. `StackPosition.init(scratch)` allocates the frame
-  slice (32 frames) and `Scan.collect(gpa)` the result slice. No other
-  function of the cursor or scan code takes an allocator, so nothing else
-  can fail with `OutOfMemory`; `seek`, `next` and `prev` return plain
-  optionals.
-- **Lifetime and reuse.** The demo and the model run call
-  `arena.reset(.retain_capacity)` after each scan. A test wraps the backing
-  allocator in a counter and shows that after the first scan, 100 further
-  scans request nothing from it.
+  scan is over. `ArenaAllocator` makes that one `reset`.
+- **What allocates.** `StackPosition.init(scratch)` (32 frames) and
+  `Scan.collect(gpa)` (the result slice). No other cursor or scan function
+  takes an allocator, so `seek`, `next` and `prev` cannot fail.
+- **Reuse.** The demo and the model run call `arena.reset(.retain_capacity)`
+  after each scan. A test counts requests to the backing allocator: after
+  the first scan, 100 further scans make none.
 - **Allocation failure.** `StackPosition.init` on a failing allocator returns
-  `error.OutOfMemory`. `collect` is run under
-  `std.testing.checkAllAllocationFailures`, with and without an arena, to
-  show that it frees its partial result. A failing `put` is tested to leave
-  `version` and both cursors untouched.
-- **What would go wrong with others.** With a general-purpose allocator every
-  scan would need a matching `free` for the frames and for the results on
-  every exit path. With a `FixedBufferAllocator` the frames would fit, but
-  `collect` would fail on large results. Growing the frame stack on demand
-  would make `next` fallible, because a re-seek after the tree grew taller
-  might need a deeper stack; allocating the proven maximum once avoids that.
-- **The trap.** A stack cursor's frames belong to the arena. Resetting the
-  arena while the cursor is still in use leaves it with a dangling slice.
-  Turso avoids the question by embedding a fixed array in the cursor; that
-  is the obvious alternative, at the price of a larger cursor.
+  `error.OutOfMemory`. `collect` runs under
+  `std.testing.checkAllAllocationFailures`, with and without an arena. A
+  failing `put` is tested to leave `version` and both cursors untouched.
+- **What would go wrong with others.** A general-purpose allocator needs a
+  matching `free` for frames and results on every exit path. Growing the
+  frame stack on demand would make `next` fallible, because a re-seek after
+  the tree grew taller might need a deeper stack; allocating the proven
+  maximum once avoids that.
+- **The trap.** Resetting the arena while a stack cursor is still in use
+  leaves it with a dangling slice. Turso embeds a fixed array in the cursor
+  instead, at the price of a larger cursor.
 
-Rust: `Vec<Frame>` with reserved capacity, passed from scan to scan with
-`with_buffer` / `into_buffer`, and `Vec::clear` on the result vector. A test
-checks that addresses and capacities stay the same across 100 scans.
+Rust: `Vec<Frame>` with reserved capacity, passed from scan to scan, and
+`Vec::clear` on the result vector. A test checks that addresses and
+capacities stay the same across 100 scans.
 
 ## Pitfalls
 
 - **Rewriting `> k` as `>= k + 1`.** Overflows at the largest key and is
   impossible for strings. Choose the binary search by the kind of the bound.
 - **Testing the wrong bound.** A backward scan seeks with the upper bound and
-  stops on the lower bound. Testing both bounds per key hides the mistake
-  until a seek is wrong.
+  stops on the lower bound.
 - **Forgetting that a seek can land outside the leaf.** `gt 12` in leaf
   `(10 12)` is index 2: the answer is in the next leaf. `lt 6` reaches leaf
   `(6 7)` because 6 is a separator, and the answer is in the previous leaf.
 - **Using a position after the tree changed.** The worked example returns 12
   twice. After a merge the leaf may have been freed and its handle reused,
   which in this arena is not even a crash, only a wrong answer.
-- **Comparing versions of different trees.** A version is only meaningful for
-  the tree the cursor was positioned in; passing another tree to `next` is a
-  bug that the version check does not catch.
+- **Passing a different tree.** A version only means something for the tree
+  the cursor was positioned in; the check does not catch a mix-up.
 - **Inserting ahead of your own scan.** A forward scan that inserts `key + 1`
   for every key it returns never ends: each insert lands just ahead of the
   cursor and is returned next. This is known as the Halloween problem

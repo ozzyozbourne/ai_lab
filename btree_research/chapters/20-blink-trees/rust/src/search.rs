@@ -80,7 +80,7 @@ impl Descent {
 
         // Move right. The node may have split since we were given its
         // handle; if so, the keys we want moved into a new right sibling.
-        // Postgres: _bt_moveright, nbtsearch.c:320-325.
+        // Postgres: _bt_moveright, nbtsearch.c:309-313.
         if self.mode == Mode::FollowRightLinks && page.is_beyond(self.key) {
             self.next = page.right;
             self.moves_right += 1;

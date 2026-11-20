@@ -315,6 +315,116 @@ mod tests {
     }
 
     #[test]
+    fn seeded_oracle_over_three_pages_with_crashes_and_interrupted_recoveries() {
+        // Model test: 200 seeds x 40 updates of a random logical page. Every
+        // update may lose power after 0, 1 or 2 writes, in a random crash
+        // mode, and recovery itself may be cut up to three times. After every
+        // step all three logical pages must equal the oracle: a crash while
+        // page i is being updated never disturbs page j.
+        use crate::prng::SplitMix64;
+        const MODES: [CrashMode; 4] = [
+            CrashMode::Drop,
+            CrashMode::Keep,
+            CrashMode::Tear,
+            CrashMode::Random,
+        ];
+        let mut scratch = [payload_of(0); DoubleWrite::SCRATCH_PAGES];
+        let (mut crashes, mut interrupted) = (0u32, 0u32);
+        for seed in 0..200u64 {
+            let mut disk = SimDisk::new(seed);
+            let mut rng = SplitMix64::new(seed + 1000);
+            let mut oracle: [Option<u8>; 3] = [None; 3]; // None = never written
+            for step in 0..40u8 {
+                let i = rng.below(3);
+                let version = 1 + step;
+                let mut page = payload_of(version);
+                let cut = rng.below(4); // 3 = the power stays on
+                if cut < 3 {
+                    disk.power_off_after_writes(cut);
+                }
+                match DoubleWrite::new(&mut disk, 3).update(i, &mut page) {
+                    Ok(()) => {
+                        assert_eq!(cut, 3);
+                        oracle[i as usize] = Some(version);
+                    }
+                    Err(err) => {
+                        assert_eq!(err, StorageError::PowerLoss);
+                        disk.crash(MODES[rng.below(4) as usize]);
+                        crashes += 1;
+                        let mut tries = 0;
+                        loop {
+                            if tries < 3 && rng.below(2) == 0 {
+                                disk.power_off_after_writes(rng.below(3));
+                            }
+                            match DoubleWrite::new(&mut disk, 3).recover(&mut scratch) {
+                                Ok(_) => break,
+                                Err(e) => {
+                                    assert_eq!(e, RecoverError::Storage(StorageError::PowerLoss));
+                                    disk.crash(MODES[rng.below(4) as usize]);
+                                    interrupted += 1;
+                                }
+                            }
+                            tries += 1;
+                        }
+                        // A recovery that needed fewer writes than its budget
+                        // leaves the power cut armed; disarm it.
+                        disk.power_off_after_writes(u64::MAX);
+                        // Page i is the new version or still the old one, and
+                        // it is the new one whenever the first sync had passed.
+                        let mut out = payload_of(0);
+                        let check = DoubleWrite::new(&mut disk, 3).read(i, &mut out);
+                        if check == Ok(Check::Ok) && out[0] == version {
+                            oracle[i as usize] = Some(version);
+                        } else {
+                            assert!(cut < 2);
+                        }
+                    }
+                }
+                for (j, want) in oracle.iter().enumerate() {
+                    match want {
+                        Some(v) => assert_eq!(version_of(&mut disk, 3, j as u64), *v),
+                        None => {
+                            let mut out = payload_of(0);
+                            let check = DoubleWrite::new(&mut disk, 3).read(j as u64, &mut out);
+                            assert_eq!(check, Ok(Check::Blank));
+                        }
+                    }
+                }
+                disk.validate().unwrap();
+            }
+        }
+        assert!(crashes > 1000 && interrupted > 100); // the faults really happened
+    }
+
+    #[test]
+    fn recover_trusts_the_protocol_a_home_page_written_directly_is_rolled_back() {
+        // Not a feature: this pins down the limit stated at the top of the
+        // file. `recover` cannot tell which copy is newer, it assumes the
+        // slot is.
+        let mut disk = SimDisk::new(1);
+        let mut page = payload_of(b'A');
+        DoubleWrite::new(&mut disk, 1).update(0, &mut page).unwrap();
+        page = payload_of(b'B');
+        page::seal(&mut page, 1); // home of logical page 0
+        disk.write_page(1, &page).unwrap(); // bypasses the slot
+        disk.sync().unwrap();
+        assert_eq!(version_of(&mut disk, 1, 0), b'B');
+
+        let mut scratch = [payload_of(0); DoubleWrite::SCRATCH_PAGES];
+        let report = DoubleWrite::new(&mut disk, 1)
+            .recover(&mut scratch)
+            .unwrap();
+        assert_eq!(
+            report,
+            RecoverReport {
+                rolled_forward: 1,
+                ..Default::default()
+            }
+        );
+        assert_eq!(version_of(&mut disk, 1, 0), b'A'); // the durable B is gone
+    }
+
+    #[test]
     fn recover_reports_out_of_memory_when_the_scratch_buffer_is_too_small() {
         let mut disk = SimDisk::new(1);
         let mut small = [payload_of(0); 1]; // room for one page, not two

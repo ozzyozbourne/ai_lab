@@ -262,6 +262,93 @@ test "DoubleWrite: recovery interrupted by a second crash still converges" {
     }
 }
 
+test "DoubleWrite: seeded oracle over three pages, with crashes and interrupted recoveries" {
+    // Model test: 200 seeds x 40 updates of a random logical page. Every
+    // update may lose power after 0, 1 or 2 writes, in a random crash mode,
+    // and recovery itself may be cut up to three times. After every step all
+    // three logical pages must equal the oracle: a crash while page i is being
+    // updated never disturbs page j.
+    const SplitMix64 = @import("prng.zig").SplitMix64;
+    const modes = [_]CrashMode{ .drop, .keep, .tear, .random };
+    var buf: [DoubleWrite.scratch_bytes]u8 = undefined;
+    var crashes: u32 = 0;
+    var interrupted: u32 = 0;
+    for (0..200) |seed| {
+        var disk: SimDisk = .init(testing.allocator, seed);
+        defer disk.deinit();
+        const dw: DoubleWrite = .{ .storage = disk.storage(), .slots = 3 };
+        var rng: SplitMix64 = .init(seed + 1000);
+        var oracle: [3]?u8 = @splat(null); // null = never written
+        for (0..40) |step| {
+            const i: usize = @intCast(rng.below(3));
+            const version: u8 = @intCast(1 + step);
+            var page = payloadOf(version);
+            const cut = rng.below(4); // 3 = the power stays on
+            if (cut < 3) disk.powerOffAfterWrites(cut);
+            if (dw.update(i, &page)) |_| {
+                try testing.expectEqual(3, cut);
+                oracle[i] = version;
+            } else |err| {
+                try testing.expectEqual(error.PowerLoss, err);
+                _ = disk.crash(modes[@intCast(rng.below(4))]);
+                crashes += 1;
+                var tries: u32 = 0;
+                while (true) : (tries += 1) {
+                    if (tries < 3 and rng.below(2) == 0) disk.powerOffAfterWrites(rng.below(3));
+                    var fba: std.heap.FixedBufferAllocator = .init(&buf);
+                    if (dw.recover(fba.allocator())) |_| break else |e| {
+                        try testing.expectEqual(error.PowerLoss, e);
+                        _ = disk.crash(modes[@intCast(rng.below(4))]);
+                        interrupted += 1;
+                    }
+                }
+                // A recovery that needed fewer writes than its budget leaves
+                // the power cut armed; disarm it.
+                disk.powerOffAfterWrites(std.math.maxInt(u64));
+                // Page i is the new version or still the old one, and it is
+                // the new one whenever the first sync had passed.
+                var out: Page = undefined;
+                if (try dw.read(i, &out) == .ok and out[0] == version) {
+                    oracle[i] = version;
+                } else {
+                    try testing.expect(cut < 2);
+                }
+            }
+            for (oracle, 0..) |want, j| {
+                if (want) |v| {
+                    try testing.expectEqual(v, try versionOf(dw, j));
+                } else {
+                    var out: Page = undefined;
+                    try testing.expectEqual(page_mod.Check.blank, try dw.read(j, &out));
+                }
+            }
+            try disk.validate();
+        }
+    }
+    try testing.expect(crashes > 1000 and interrupted > 100); // the faults really happened
+}
+
+test "DoubleWrite: recover trusts the protocol, a home page written directly is rolled back" {
+    // Not a feature: this pins down the limit stated at the top of the file.
+    // `recover` cannot tell which copy is newer, it assumes the slot is.
+    var disk: SimDisk = .init(testing.allocator, 1);
+    defer disk.deinit();
+    const dw: DoubleWrite = .{ .storage = disk.storage(), .slots = 1 };
+    var page = payloadOf('A');
+    try dw.update(0, &page);
+    page = payloadOf('B');
+    page_mod.seal(&page, dw.homePage(0));
+    try disk.writePage(dw.homePage(0), &page); // bypasses the slot
+    try disk.sync();
+    try testing.expectEqual('B', try versionOf(dw, 0));
+
+    var buf: [DoubleWrite.scratch_bytes]u8 = undefined;
+    var fba: std.heap.FixedBufferAllocator = .init(&buf);
+    const report = try dw.recover(fba.allocator());
+    try testing.expectEqual(RecoverReport{ .rolled_forward = 1 }, report);
+    try testing.expectEqual('A', try versionOf(dw, 0)); // the durable B is gone
+}
+
 test "DoubleWrite: recover reports OutOfMemory when the scratch buffer is too small" {
     var disk: SimDisk = .init(testing.allocator, 1);
     defer disk.deinit();

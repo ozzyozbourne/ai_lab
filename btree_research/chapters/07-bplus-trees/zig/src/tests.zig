@@ -353,6 +353,16 @@ test "validate names the broken invariant" {
                 }
             }.f,
         },
+        .{
+            .expected = error.NodeOverfull,
+            .corrupt = struct {
+                fn f(t: *BPlusTree, _: Allocator) V!void {
+                    // A length beyond the node's arrays: the checker must
+                    // report it before it slices the keys, not crash on it.
+                    t.nodes.ptr(t.last_leaf).len = node.key_capacity + 1;
+                }
+            }.f,
+        },
         .{ .expected = error.BrokenLeafChain, .corrupt = struct {
             fn f(t: *BPlusTree, _: Allocator) V!void {
                 t.nodes.ptr(t.last_leaf).kind.leaf.prev = t.first_leaf;

@@ -296,7 +296,7 @@ fn a_put_that_runs_out_of_nodes_leaves_the_tree_exactly_as_it_was() {
 #[test]
 fn validate_names_the_broken_invariant() {
     type Corrupt = fn(&mut BPlusTree);
-    let cases: [(Violation, Corrupt); 10] = [
+    let cases: [(Violation, Corrupt); 11] = [
         (Violation::KeysNotSorted, |t| {
             t.nodes.get_mut(t.first_leaf).keys.swap(0, 1);
         }),
@@ -317,6 +317,11 @@ fn validate_names_the_broken_invariant() {
             while leaf.len <= max_keys {
                 leaf.leaf_insert_at(leaf.len, 40 + leaf.len as u64, 0);
             }
+        }),
+        (Violation::NodeOverfull, |t| {
+            // A length beyond the node's arrays: the checker must report it
+            // before it slices the keys, not panic on it.
+            t.nodes.get_mut(t.last_leaf).len = KEY_CAPACITY + 1;
         }),
         (Violation::BrokenLeafChain, |t| {
             t.nodes.get_mut(t.last_leaf).leaf_mut().prev = t.first_leaf;

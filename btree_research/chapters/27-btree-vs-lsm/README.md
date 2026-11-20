@@ -110,7 +110,7 @@ scan [5,14) | btree r=6 w=0 | lsm r= 5 w= 0 | = 5 6 7 10 11 12 13
 costs two blocks and finds nothing: 13 lies inside the key range of the level-1
 run, so its index block and one data block are read in vain. `delete 15`
 writes a tombstone without looking for the key. The last compaction merges
-`(1 3 15 25)`, `(~15 11 13 20')` and level 1; it drops the old 15, the old 20
+`(1 3 15 25)`, `(11 13 ~15 20')` and level 1; it drops the old 15, the old 20
 and, because nothing lies below level 1, the tombstone itself:
 
 ```
@@ -272,7 +272,7 @@ Reading it:
   and a min/max check cannot tell that a key inside the range is missing. A
   **bloom filter** per run answers "certainly not here" from a few bits per key
   in RAM and removes most of these probes. This chapter's code has none.
-- **Space.** The B+tree's leaves are about two thirds full here (1.53). The
+- **Space.** The B+tree uses about two thirds of its space here (1.53): leaves are partly empty. The
   LSM-tree's runs are packed (1.05), but during its largest compaction it
   needed 1.88 times the packed size.
 
@@ -343,7 +343,7 @@ B-tree (see `research/tigerbeetle.md`, section 0).
   the trade-off measured above: a higher growth factor "increases write
   amplification ... but decreases read amplification", and 8 is chosen "rather
   than the more typical growth factor of 10"
-  (`tigerbeetle/src/constants.zig:610-615`). Level i may hold
+  (`tigerbeetle/src/constants.zig:611-615`). Level i may hold
   `growth_factor^(i+1)` tables (`tigerbeetle/src/lsm/tree.zig:656-661`), and
   the limits are asserted with their reasons: growth factor at most 16, "Limit
   excessive write amplification", and at most 10 levels, "Limit excessive read
@@ -361,7 +361,7 @@ B-tree (see `research/tigerbeetle.md`, section 0).
   a bar compacts even levels and the second half odd levels
   (`tigerbeetle/docs/internals/lsm.md:44-52`). The stated invariant is "At the
   end of every beat, there is space in mutable table for the next beat"
-  (`tigerbeetle/docs/internals/lsm.md:60`). The work is spread over the
+  (`tigerbeetle/docs/internals/lsm.md:61`). The work is spread over the
   operations instead of landing on one.
 - *Move table.* If the chosen table overlaps nothing in the next level, only
   its metadata changes, so sorted inserts should "approach that of an

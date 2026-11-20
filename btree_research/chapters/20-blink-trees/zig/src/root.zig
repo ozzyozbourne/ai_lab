@@ -27,6 +27,7 @@ pub const BLinkTree = blink.BLinkTree;
 pub const Page = blink.Page;
 pub const Stats = blink.Stats;
 pub const PutError = blink.PutError;
+pub const Pause = blink.Pause;
 pub const Descent = search.Descent;
 pub const Violation = @import("validate.zig").Violation;
 

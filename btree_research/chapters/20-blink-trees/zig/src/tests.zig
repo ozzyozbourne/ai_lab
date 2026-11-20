@@ -1,10 +1,13 @@
 //! Tests of the B-link tree. Deterministic first: the interesting states of
-//! a concurrent split are reached WITHOUT threads, through two hooks:
+//! a concurrent split are reached WITHOUT threads, through three hooks:
 //!
 //!   * `setAbandonSplits(true)` makes a writer stop between step 1 and step 2
 //!     of a split, leaving the state a crashed or failed writer leaves;
 //!   * `Descent.step` runs a search one node at a time, so a test can put a
-//!     complete split between "read the parent" and "visit the child".
+//!     complete split between "read the parent" and "visit the child";
+//!   * `putFrom` starts a writer at a former root and can pause it on its
+//!     leaf (`Pause`), so a test can split, half-split or outgrow the
+//!     parents that writer remembers before it climbs back up.
 //!
 //! Only the last tests use threads, and they assert nothing about timing.
 const std = @import("std");
@@ -297,6 +300,265 @@ test "a full node table: put fails cleanly, or leaves a legal incomplete split" 
     }
     try testing.expect(saw_clean_failure);
     try testing.expect(saw_incomplete);
+}
+
+// ---------------------------------------------------------------------
+// Stale WRITERS. A reader goes stale between two nodes; a writer goes stale
+// between its way down and its way up: the parents it remembers may have
+// split, been left half split, or stopped being the top of the tree. The
+// second hook, `putFrom` with a `Pause`, stops one writer on its leaf and
+// lets the test run other writers in that gap. Still one thread, no sleeps.
+// ---------------------------------------------------------------------
+
+/// Order 3 (two keys per node): a root with three FULL leaves, so that one
+/// more key anywhere splits a leaf and the next split splits the root.
+fn buildThreeFullLeaves(io: Io) !BLinkTree {
+    var tree = try BLinkTree.init(testing.allocator, 3, 16);
+    errdefer tree.deinit(testing.allocator);
+    for ([_]u64{ 10, 20, 30, 40, 15, 25 }) |key| _ = try tree.put(io, key, key * 100);
+    try expectDump(&tree,
+        \\height 2, 6 keys, 4 nodes
+        \\  level 1: #2[20 30]
+        \\  level 0: #0(10 15)<20 -> #1(20 25)<30 -> #3(30 40)
+        \\
+    );
+    return tree;
+}
+
+/// A put made by "another writer" while one writer is paused. A callback
+/// cannot return an error, and none is possible with these table sizes.
+fn otherPut(tree: *BLinkTree, io: Io, key: u64) void {
+    _ = tree.put(io, key, key * 100) catch @panic("unexpected OutOfNodes in a paused-writer test");
+}
+
+test "a paused writer whose parent split meanwhile re-finds the downlink by moving right" {
+    const io = testing.io;
+    var tree = try buildThreeFullLeaves(io);
+    defer tree.deinit(testing.allocator);
+
+    const Others = struct {
+        fn run(_: ?*anyopaque, t: *BLinkTree, io_: Io, leaf_id: NodeId, leaf: *const blink.Page) void {
+            // The paused writer holds exactly its leaf, exclusively.
+            std.debug.assert(leaf_id == id(3) and leaf.node.len == 2 and !t.slots[3].latch.tryLock(io_));
+            // Another writer splits leaf #0. Its downlink overflows #2, the
+            // node the paused writer remembers as "my parent" and as "the
+            // root". #2 splits; the downlink to #3 moves into the new #5.
+            otherPut(t, io_, 12);
+        }
+    };
+    // put 32 goes down #2 -> #3 and is paused there. #3 is full: it will split.
+    try testing.expectEqual(null, try tree.putFrom(io, tree.rootId(), 32, 3200, .{ .at_leaf = Others.run }));
+
+    // Step 2 for #3 started at the remembered #2, did not find #3 among its
+    // children, moved right to #5 and inserted (32, #7) there.
+    try tree.validate();
+    try expectDump(&tree,
+        \\height 3, 8 keys, 8 nodes
+        \\  level 2: #6[20]
+        \\  level 1: #2[12]<20 -> #5[30 32]
+        \\  level 0: #0(10)<12 -> #4(12 15)<20 -> #1(20 25)<30 -> #3(30)<32 -> #7(32 40)
+        \\
+    );
+    try testing.expectEqual(0, tree.incompleteSplits());
+    try expectAllFound(&tree, io, &.{ 10, 12, 15, 20, 25, 30, 32, 40 });
+    try expectNoLatchHeld(&tree, io);
+}
+
+test "two paused writers, a half-split parent and a grown root: finish first, then find the parent level" {
+    const io = testing.io;
+    var tree = try buildThreeFullLeaves(io);
+    defer tree.deinit(testing.allocator);
+
+    // Three writers. The first is paused on leaf #0, the second on leaf #1,
+    // and the third runs to the end while both stand still.
+    const Third = struct {
+        fn run(_: ?*anyopaque, t: *BLinkTree, io_: Io, _: NodeId, _: *const blink.Page) void {
+            t.setAbandonSplits(true);
+            otherPut(t, io_, 35); // leaf #3 splits, step 1 only: #3 -> #4
+            // 31 is routed to the flagged #3. Finishing that split puts a
+            // third key into the root #2, which splits, step 1 only.
+            otherPut(t, io_, 31);
+            t.setAbandonSplits(false);
+            // #2 is still the root, is flagged, and has a right sibling #5
+            // that nothing points down to.
+            std.debug.assert(t.rootId() == id(2) and t.page(id(2)).incomplete_split);
+            std.debug.assert(t.page(id(2)).right == id(5) and t.incompleteSplits() == 1);
+        }
+    };
+    const Second = struct {
+        fn run(_: ?*anyopaque, t: *BLinkTree, io_: Io, _: NodeId, _: *const blink.Page) void {
+            // put 22: paused on #1 while the third writer runs. Afterwards
+            // #1 splits. Its remembered parent #2 is flagged: the split of
+            // #2 is finished first (that builds the new root #6), and only
+            // then does #2 receive the downlink (22, #7).
+            _ = t.putFrom(io_, t.rootId(), 22, 2200, .{ .at_leaf = Third.run }) catch @panic("OutOfNodes");
+            std.debug.assert(t.rootId() == id(6) and t.incompleteSplits() == 0);
+            std.debug.assert(t.stats().finished_later == 2); // #3 by the third writer, #2 by the second
+        }
+    };
+    // put 12: paused on #0. When it started, #2 was the root, so it remembers
+    // no node above #2.
+    try testing.expectEqual(null, try tree.putFrom(io, tree.rootId(), 12, 1200, .{ .at_leaf = Second.run }));
+
+    // After the pause #0 splits. Its downlink is the third key for #2, so #2
+    // splits again, and step 2 of THAT split has no remembered parent. #2 is
+    // not the root any more: the parent level is found through level_head.
+    try tree.validate();
+    try expectDump(&tree,
+        \\height 3, 10 keys, 10 nodes
+        \\  level 2: #6[20 30]
+        \\  level 1: #2[12]<20 -> #9[22]<30 -> #5[35]
+        \\  level 0: #0(10)<12 -> #8(12 15)<20 -> #1(20)<22 -> #7(22 25)<30 -> #3(30 31)<35 -> #4(35 40)
+        \\
+    );
+    try testing.expectEqual(0, tree.incompleteSplits());
+    try expectAllFound(&tree, io, &.{ 10, 12, 15, 20, 22, 25, 30, 31, 35, 40 });
+    try expectNoLatchHeld(&tree, io);
+}
+
+test "a writer that starts at an old root: moves right, then finds the parent level through level_head" {
+    const io = testing.io;
+    var tree = try BLinkTree.init(testing.allocator, 4, 8);
+    defer tree.deinit(testing.allocator);
+    for ([_]u64{ 1, 2, 3 }) |key| _ = try tree.put(io, key, key * 100);
+
+    // A writer loads the root pointer: #0, a leaf. Before it latches
+    // anything, two other puts split #0 and build the root #2.
+    const old_root = tree.rootId();
+    for ([_]u64{ 4, 5 }) |key| _ = try tree.put(io, key, key * 100);
+    try testing.expectEqual(id(2), tree.rootId());
+    try testing.expectEqual(id(0), tree.level_head[0]);
+
+    // The writer continues from #0: move right to #1(3 4 5), which is full.
+    // It splits. The writer came through no node of level 1 and #1 is not
+    // the root, so step 2 starts at level_head[1]. It must NOT build a root.
+    const before = tree.stats().moves_right;
+    try testing.expectEqual(null, try tree.putFrom(io, old_root, 6, 600, null));
+    try testing.expectEqual(1, tree.stats().moves_right - before);
+    try tree.validate();
+    try expectDump(&tree,
+        \\height 2, 6 keys, 4 nodes
+        \\  level 1: #2[3 5]
+        \\  level 0: #0(1 2)<3 -> #1(3 4)<5 -> #3(5 6)
+        \\
+    );
+    try expectAllFound(&tree, io, &.{ 1, 2, 3, 4, 5, 6 });
+    try expectNoLatchHeld(&tree, io);
+}
+
+test "moving right on an INTERNAL level: a stale reader and a stale writer" {
+    const io = testing.io;
+    var tree = try buildCanonical(io, 32);
+    defer tree.deinit(testing.allocator);
+    // #6 = [20 26 28] is full, and so is its last leaf #9(28 30 32).
+    for ([_]u64{ 26, 27, 28, 32 }) |key| _ = try tree.put(io, key, key * 100);
+
+    // The reader reads the root and is told "#6". It holds nothing.
+    var reader = Descent.begin(&tree, 32, .follow_right_links);
+    try testing.expectEqual(id(6), reader.step(&tree, io).descended.to);
+    // put 31 splits leaf #9, and that splits #6 into #6[20 26]<28 -> #11[31].
+    _ = try tree.put(io, 31, 3100);
+    try expectDump(&tree,
+        \\height 3, 17 keys, 12 nodes
+        \\  level 2: #7[15 28]
+        \\  level 1: #2[6 10]<15 -> #6[20 26]<28 -> #11[31]
+        \\  level 0: #0(1 3 5)<6 -> #4(6 7)<10 -> #1(10 12)<15 -> #5(15 17)<20 -> #3(20 25)<26 -> #8(26 27)<28 -> #9(28 30)<31 -> #10(31 32)
+        \\
+    );
+    // The reader's next node is the INTERNAL node #6, and 32 >= 28.
+    const moved = reader.step(&tree, io).moved_right;
+    try testing.expectEqual(id(6), moved.from);
+    try testing.expectEqual(1, tree.page(moved.from).level);
+    try testing.expectEqual(id(11), moved.to);
+    try testing.expectEqual(id(10), reader.step(&tree, io).descended.to);
+    try testing.expectEqual(3200, reader.step(&tree, io).done.value);
+    try testing.expectEqual(1, reader.moves_right);
+
+    // A writer that loaded the root pointer when #2 was the root (it is the
+    // leftmost node of level 1): two hops on level 1, none on the leaves.
+    // Without the internal hops it would still arrive, by descending from
+    // #2 into leaf #1 and walking five leaves to the right: moving right on
+    // the leaf level is what makes the search correct, moving right on the
+    // internal levels is what keeps the walk short.
+    try testing.expectEqual(id(2), tree.level_head[1]);
+    const before = tree.stats().moves_right;
+    try testing.expectEqual(null, try tree.putFrom(io, id(2), 33, 3300, null));
+    try testing.expectEqual(2, tree.stats().moves_right - before);
+    try testing.expectEqual(3300, tree.get(io, 33));
+    try tree.validate();
+}
+
+/// State of the seeded test below, handed to the callback as `context`.
+const PausedModel = struct {
+    const key_space = 300;
+    rng: SplitMix64,
+    present: [key_space]bool = @splat(false),
+    /// Puts the other writers make during the next pause.
+    others: usize = 0,
+    hook_runs: usize = 0,
+
+    fn value(key: u64) u64 {
+        return key * 100 + 1;
+    }
+
+    fn put(self: *PausedModel, tree: *BLinkTree, io: Io, key: u64) void {
+        _ = tree.put(io, key, value(key)) catch @panic("unexpected OutOfNodes in a paused-writer test");
+        self.present[key] = true;
+    }
+
+    fn atLeaf(context: ?*anyopaque, tree: *BLinkTree, io: Io, leaf_id: NodeId, leaf: *const blink.Page) void {
+        const self: *PausedModel = @ptrCast(@alignCast(context.?));
+        self.hook_runs += 1;
+        // The key range of the latched leaf: its lower bound is the high key
+        // of its left neighbour, found by walking the leaf level.
+        var low: u64 = 0;
+        var at = tree.level_head[0];
+        while (at != leaf_id) : (at = tree.page(at).right) low = tree.page(at).high_key.?;
+        const high = leaf.high_key orelse std.math.maxInt(u64);
+        for (0..self.others) |_| {
+            const key = self.rng.below(key_space);
+            if (key >= low and key < high) continue; // would wait for the paused writer
+            tree.setAbandonSplits(self.rng.chance(1, 2));
+            self.put(tree, io, key);
+        }
+        tree.setAbandonSplits(false);
+    }
+};
+
+test "model test with paused writers: stale parents, flagged parents, old roots, seeded" {
+    const io = testing.io;
+    var level_head_starts: usize = 0;
+    for ([_]usize{ 3, 4, 5 }) |order| {
+        for (1..41) |seed| {
+            var tree = try BLinkTree.init(testing.allocator, order, 1024);
+            defer tree.deinit(testing.allocator);
+            var model: PausedModel = .{ .rng = SplitMix64.init(seed * 977 + order) };
+            for (0..model.rng.below(40)) |_| {
+                tree.setAbandonSplits(model.rng.chance(1, 3));
+                model.put(&tree, io, model.rng.below(PausedModel.key_space));
+            }
+            tree.setAbandonSplits(false);
+            for (0..25) |_| {
+                const key = model.rng.below(PausedModel.key_space);
+                // Start at the root, or at any node that was the root once.
+                const level = model.rng.below(tree.height);
+                if (level + 1 < tree.height) level_head_starts += 1;
+                model.others = model.rng.below(25);
+                _ = try tree.putFrom(io, tree.level_head[level], key, PausedModel.value(key), .{
+                    .context = &model,
+                    .at_leaf = PausedModel.atLeaf,
+                });
+                model.present[key] = true;
+                try tree.validate();
+                for (model.present, 0..) |present, k| {
+                    try testing.expectEqual(@as(?u64, if (present) PausedModel.value(k) else null), tree.get(io, k));
+                }
+                try expectNoLatchHeld(&tree, io);
+            }
+            try testing.expectEqual(25, model.hook_runs);
+        }
+    }
+    try testing.expect(level_head_starts > 0);
 }
 
 fn initPutDeinit(gpa: std.mem.Allocator, io: Io) !void {

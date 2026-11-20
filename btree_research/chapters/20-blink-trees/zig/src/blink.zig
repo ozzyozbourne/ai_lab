@@ -89,6 +89,9 @@ pub const Stats = struct {
 
 const Counter = std.atomic.Value(u64);
 
+/// Test hook of `putFrom`: see insert.zig.
+pub const Pause = insert.Pause;
+
 pub const PutError = error{
     /// The preallocated node table is full. The tree content is unchanged.
     OutOfNodes,

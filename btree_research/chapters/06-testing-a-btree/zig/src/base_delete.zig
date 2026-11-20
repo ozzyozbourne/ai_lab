@@ -1,4 +1,6 @@
 // Copied from chapters/05-deletion-and-rebalancing/zig/src/delete.zig
+// Changes for chapter 06: coverage points instead of counters, and two fault
+// seams (search for "SEAM") that are only compiled into a broken variant.
 //! SECTION 5: delete with borrow, merge and root shrink (THIS chapter).
 //!
 //! Removing a key can leave a node with fewer than `min_keys` keys
@@ -26,23 +28,25 @@
 //!
 //! Delete never allocates: it only ever returns nodes to the pool.
 //!
-//! This file needs node.zig and search.zig (`lowerBound`), nothing from
-//! insert.zig. The four steps (`fixUnderflow`, `borrowFromLeft`,
-//! `borrowFromRight`, `mergeChildren`) are `pub`: chapter 06 builds
-//! deliberately broken variants of delete and can reuse the steps it does
-//! not break. Each classic bug is one line here: do not destroy `emptied`;
-//! do not move the child in a borrow; leave the separator in the parent.
+//! This file needs base_node.zig and base_search.zig (`lowerBound`), nothing
+//! from base_insert.zig. Two classic delete bugs are one line each here: do
+//! not destroy `emptied` (merge_leaks_node); do not move the child in a
+//! borrow (borrow_forgets_child).
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const node_mod = @import("node.zig");
-const search = @import("search.zig");
+const node_mod = @import("base_node.zig");
+const search = @import("base_search.zig");
 
-/// `Tree` is a `BTree(M, PoolFn)` from btree.zig; this function uses its
-/// `root`, `len`, `pool` and `counters` fields. Returns the removed value,
+/// `Tree` is a `BTreeWith(M, PoolFn, bug)` from base_btree.zig; this function
+/// uses its `root`, `len`, `pool` and `coverage` fields. Returns the removed value,
 /// or null if the key was not present (the tree is then unchanged).
 pub fn delete(comptime Tree: type, tree: *Tree, gpa: Allocator, key: u64) ?u64 {
-    const root = tree.root orelse return null;
-    const removed = removeFrom(Tree, tree, gpa, root, key) orelse return null;
+    const removed = removed: {
+        if (tree.root) |root| if (removeFrom(Tree, tree, gpa, root, key)) |value| break :removed value;
+        tree.coverage.hit(.delete_missing);
+        return null;
+    };
+    const root = tree.root.?;
     tree.len -= 1;
     if (root.len == 0) {
         // Root shrink. Either the last key of the tree was deleted (leaf
@@ -52,7 +56,7 @@ pub fn delete(comptime Tree: type, tree: *Tree, gpa: Allocator, key: u64) ?u64 {
         // "all leaves at the same depth" still holds.
         tree.root = if (root.leaf) null else root.children[0];
         tree.pool.destroy(gpa, root);
-        if (tree.root != null) tree.counters.root_shrinks += 1;
+        tree.coverage.hit(if (tree.root != null) .root_shrink else .tree_emptied);
     }
     return removed;
 }
@@ -64,7 +68,9 @@ fn removeFrom(comptime Tree: type, tree: *Tree, gpa: Allocator, node: *Tree.Node
     if (node.leaf) {
         // Case 1: the key is in a leaf. Just take it out; if the leaf is now
         // too small, our caller (the parent) repairs it.
-        return if (found) node.removeEntry(i).value else null;
+        if (!found) return null;
+        tree.coverage.hit(.delete_leaf_key);
+        return node.removeEntry(i).value;
     }
 
     if (found) {
@@ -78,7 +84,7 @@ fn removeFrom(comptime Tree: type, tree: *Tree, gpa: Allocator, node: *Tree.Node
         const predecessor = removeMax(Tree, tree, gpa, node.children[i].?);
         node.keys[i] = predecessor.key;
         node.values[i] = predecessor.value;
-        tree.counters.predecessor_swaps += 1;
+        tree.coverage.hit(.delete_interior_key);
         fixUnderflow(Tree, tree, gpa, node, i);
         return removed;
     }
@@ -110,18 +116,22 @@ pub fn fixUnderflow(comptime Tree: type, tree: *Tree, gpa: Allocator, parent: *T
 
     // A sibling can lend a key only if it stays legal afterwards.
     if (i > 0 and parent.children[i - 1].?.len > N.min_keys) {
-        borrowFromLeft(N, parent, i);
-        tree.counters.borrows_left += 1;
+        borrowFromLeft(N, parent, i, Tree.bug);
+        tree.coverage.hit(if (child.leaf) .borrow_left_leaf else .borrow_left_interior);
     } else if (i < parent.len and parent.children[i + 1].?.len > N.min_keys) {
-        borrowFromRight(N, parent, i);
-        tree.counters.borrows_right += 1;
+        borrowFromRight(N, parent, i, Tree.bug);
+        tree.coverage.hit(if (child.leaf) .borrow_right_leaf else .borrow_right_interior);
     } else {
         // No sibling can spare a key. Merge with the left sibling if there is
         // one, otherwise with the right one. `at` is the separator between them.
         const at = if (i > 0) i - 1 else i;
         const emptied = mergeChildren(N, parent, at);
-        tree.pool.destroy(gpa, emptied);
-        tree.counters.merges += 1;
+        // SEAM merge_leaks_node: the node is unlinked but never given back.
+        // The tree still answers every question correctly; only the pool's
+        // live counter (checked by `BTree.validate`) knows.
+        if (Tree.bug != .merge_leaks_node) tree.pool.destroy(gpa, emptied);
+        tree.coverage.hit(if (child.leaf) .merge_leaf else .merge_interior);
+        if (i == 0) tree.coverage.hit(.merge_first_child);
     }
 }
 
@@ -135,11 +145,14 @@ pub fn fixUnderflow(comptime Tree: type, tree: *Tree, gpa: Allocator, parent: *T
 /// sideways directly: S lies between the two nodes in key order, so skipping
 /// it would break the ordering invariant. In interior nodes the left
 /// sibling's last child (keys between L and S) changes parent as well.
-pub fn borrowFromLeft(comptime N: type, parent: *N, i: usize) void {
+pub fn borrowFromLeft(comptime N: type, parent: *N, i: usize, comptime bug: anytype) void {
     const child = parent.children[i].?;
     const left = parent.children[i - 1].?;
     const sep = i - 1;
-    if (!child.leaf) child.insertChild(0, left.children[left.len].?);
+    // SEAM borrow_forgets_child: the key rotates, the child pointer stays
+    // behind (and is then dropped by `removeChild` below). Leaves have no
+    // children, so the bug needs a tree of height 3 to show.
+    if (!child.leaf and bug != .borrow_forgets_child) child.insertChild(0, left.children[left.len].?);
     child.insertEntry(0, parent.keys[sep], parent.values[sep]);
     const up = left.removeEntry(left.len - 1);
     if (!left.leaf) _ = left.removeChild(left.len + 1);
@@ -150,11 +163,11 @@ pub fn borrowFromLeft(comptime N: type, parent: *N, i: usize) void {
 /// Mirror image: the separator moves down to the END of the child, the right
 /// sibling's SMALLEST entry moves up, and the right sibling's first child
 /// moves over.
-pub fn borrowFromRight(comptime N: type, parent: *N, i: usize) void {
+pub fn borrowFromRight(comptime N: type, parent: *N, i: usize, comptime bug: anytype) void {
     const child = parent.children[i].?;
     const right = parent.children[i + 1].?;
     const sep = i;
-    if (!child.leaf) child.insertChild(child.len + 1, right.children[0].?);
+    if (!child.leaf and bug != .borrow_forgets_child) child.insertChild(child.len + 1, right.children[0].?); // SEAM
     child.insertEntry(child.len, parent.keys[sep], parent.values[sep]);
     const up = right.removeEntry(0);
     if (!right.leaf) _ = right.removeChild(0);

@@ -4,8 +4,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Library module: src/root.zig and everything it imports (the B+tree).
-    const mod = b.addModule("ch07_bplus_trees", .{
+    // Library module: src/root.zig and everything it imports (both structures).
+    const mod = b.addModule("ch27_btree_vs_lsm", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -14,13 +14,13 @@ pub fn build(b: *std.Build) void {
     // Executable: src/main.zig, the demo program whose stdout is
     // ../expected_output.txt.
     const exe = b.addExecutable(.{
-        .name = "ch07_bplus_trees",
+        .name = "ch27_btree_vs_lsm",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "ch07_bplus_trees", .module = mod },
+                .{ .name = "ch27_btree_vs_lsm", .module = mod },
             },
         }),
     });

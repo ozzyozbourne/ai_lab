@@ -1,7 +1,6 @@
 // Copied from chapters/05-deletion-and-rebalancing/rust/src/tests_insert.rs; fixes go there first
-//! Tests of the tree that need only search and insert (chapters 03 and 04):
-//! nothing in this file calls `delete`. The delete tests are in
-//! tests_delete.rs, which reuses the helpers declared `pub` here.
+//! Tests of search and bottom-up insert. tests_topdown.rs reuses the helpers
+//! declared `pub` here.
 
 use crate::base_btree::BTree;
 use crate::ops::{Config, Entry, Op, OpStream, Oracle, Weights};
@@ -88,8 +87,7 @@ fn the_extreme_keys_0_and_u64_max_are_ordinary_keys() {
 
 #[test]
 fn validate_reports_a_leaked_node() {
-    // Simulate the classic merge bug "unlink the node but forget to free it":
-    // one node is live in the pool that the root cannot reach. A slab never
+    // Simulate a node the tree lost track of: one node is live in the pool that the root cannot reach. A slab never
     // leaks to the operating system, so the live-node counter is the only
     // witness. (In Zig the leak checker of std.testing.allocator also sees
     // it, but only when every node is an allocation of its own.)

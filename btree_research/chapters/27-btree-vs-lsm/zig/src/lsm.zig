@@ -23,9 +23,11 @@
 //!      oldest, then level 1, 2, ... A reader that searches in this order may
 //!      stop at the first hit. Compaction only ever merges ADJACENT ages, so
 //!      it cannot break this.
-//!   5. The deepest level holds no tombstone (there is nothing left to hide).
-//!   6. The device's block count is exactly the blocks of all runs.
-//!   7. (When no maintenance is pending) no level is over its limit.
+//!   5. The device's block count is exactly the blocks of all runs.
+//!   6. (When no maintenance is pending) no level is over its limit.
+//!
+//! Not an invariant but a space rule: a compaction whose output becomes the
+//! deepest level drops tombstones, because nothing older is left to hide.
 //!
 //! Simplification, stated loudly: a compaction here merges a WHOLE level in
 //! one go. Real engines cut each level into many tables and merge one table
@@ -97,7 +99,6 @@ pub const Violation = error{
     RunBoundsWrong,
     TooManyL0Runs,
     LevelOverLimit,
-    TombstoneInDeepestLevel,
     DeviceAccounting,
 };
 
@@ -212,7 +213,7 @@ pub const Lsm = struct {
         const target = &self.levels[from]; // level from + 1
         // Tombstones can be dropped only if no older data lies below the
         // output: otherwise a dropped tombstone would let a deleted key
-        // "come back" from a deeper level (invariant 5).
+        // "come back" from a deeper level.
         const drop_tombstones = self.deepestLevel() <= from + 1;
 
         // Inputs, newest first (invariant 4).
@@ -351,11 +352,11 @@ pub const Lsm = struct {
 
     pub fn validate(self: *const Lsm) Violation!void {
         try self.validateStructure();
-        // 7. Limits hold whenever maintenance is not pending.
+        // 6. Limits hold whenever maintenance is not pending.
         if (self.pendingCompaction() != null) return error.LevelOverLimit;
     }
 
-    /// Invariants 1 to 6: these hold even after a write failed half-way.
+    /// Invariants 1 to 5: these hold even after a write failed half-way.
     pub fn validateStructure(self: *const Lsm) Violation!void {
         if (self.mem.count > self.cfg.memtable_entries) return error.MemtableOverfull;
         if (self.l0_len > self.cfg.l0_runs) return error.TooManyL0Runs;
@@ -365,16 +366,10 @@ pub const Lsm = struct {
             try checkRun(run);
             blocks += geo.blocks(run.len());
         }
-        const deepest = self.deepestLevel();
-        for (&self.levels, 1..) |*level, n| {
+        for (&self.levels) |*level| {
             const run = if (level.*) |*r| r else continue;
             try checkRun(run);
             blocks += geo.blocks(run.len());
-            if (n == deepest) {
-                for (run.slots.items) |slot| {
-                    if (slot.value == null) return error.TombstoneInDeepestLevel;
-                }
-            }
         }
         if (blocks != self.dev.live) return error.DeviceAccounting;
     }

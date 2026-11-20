@@ -137,8 +137,9 @@ test "bottom-up deletion absorbs version churn unless a snapshot needs the versi
     try testing.expectEqual(0, db.index.stats.leaf_splits);
     try testing.expectEqual(1, db.index.nodes.liveCount());
     try testing.expect(db.index.stats.bottom_up_deleted > 0);
-    // Version slots are reused too: the store never held more than 3 at once.
-    try testing.expectEqual(3, db.store.versions.slotCount());
+    // Version slots are reused too: a full page (3) plus the version being
+    // added is the most the store ever held.
+    try testing.expectEqual(4, db.store.versions.slotCount());
 
     const pin = try db.store.openSnapshot();
     for (50..60) |i| _ = try db.put(gpa, 7, i);

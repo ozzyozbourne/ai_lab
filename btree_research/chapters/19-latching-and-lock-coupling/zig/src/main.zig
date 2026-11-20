@@ -111,7 +111,7 @@ const Scenario = struct {
 
 const scenarios = [_]Scenario{
     .{
-        .title = "A = get 12, frozen at leaf #1 (shared)",
+        .title = "A = get 12 (latch coupling holds: #1 shared)",
         .frozen = .{ .get = 12 },
         .others = &.{
             .{ .op = .{ .get = 25 }, .note = "other leaf" },
@@ -121,7 +121,7 @@ const scenarios = [_]Scenario{
         },
     },
     .{
-        .title = "A = put 11, frozen at leaf #1 (exclusive; the leaf has room, ancestors released)",
+        .title = "A = put 11 (latch coupling holds: #1 exclusive; leaf #1 has room)",
         .frozen = .{ .put = 11 },
         .others = &.{
             .{ .op = .{ .get = 25 }, .note = "other leaf" },
@@ -130,7 +130,7 @@ const scenarios = [_]Scenario{
         },
     },
     .{
-        .title = "A = put 26, frozen at leaf #3 (full; its parent #6 has room: #6 and #3 stay latched)",
+        .title = "A = put 26 (latch coupling holds: #6, #3 exclusive; leaf #3 is full, its parent #6 has room)",
         .frozen = .{ .put = 26 },
         .others = &.{
             .{ .op = .{ .get = 12 }, .note = "under #2" },
@@ -140,7 +140,7 @@ const scenarios = [_]Scenario{
     },
     .{
         .setup = &.{ 8, 9 },
-        .title = "after put 8, put 9: A = put 2, frozen at leaf #0 (full; its parent #2 is full too: #7, #2 and #0 stay latched)",
+        .title = "after put 8, put 9: A = put 2 (latch coupling holds: #7, #2, #0 exclusive; leaf #0 and its parent #2 are full)",
         .frozen = .{ .put = 2 },
         .others = &.{
             .{ .op = .{ .get = 25 }, .note = "under #6" },
@@ -149,7 +149,7 @@ const scenarios = [_]Scenario{
 };
 
 fn probeDemo(gpa: Allocator, io: Io, w: *Writer) !void {
-    try w.writeAll("\n== 3. While A is frozen holding its locks, does B finish? (canonical tree) ==\n");
+    try w.writeAll("\n== 3. A is frozen at the end of its descent, holding its locks. Does B finish? (canonical tree) ==\n");
     for (scenarios) |s| {
         try w.print("{s}\n", .{s.title});
         try w.print("  {s:<22}", .{"B"});

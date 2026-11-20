@@ -255,7 +255,8 @@
     var wrong = outOfPlace(order, logical);
     var ok = wrong.length === 0;
     var off = Object.keys(WHAT_BREAKS).filter(function (f) { return !fixes[f]; });
-    var why = off.map(function (f) { return WHAT_BREAKS[f]; }).join(' ');
+    var why = (off.length > 1 ? 'With several fixes off the effects mix; on its own, each one does this. ' : '') +
+      off.map(function (f) { return WHAT_BREAKS[f]; }).join(' ');
     steps.push({
       caption: ok
         ? 'Sorted with ' + comparisons + ' comparisons that looked at ' + examined + ' byte positions. The result is exactly the ' +

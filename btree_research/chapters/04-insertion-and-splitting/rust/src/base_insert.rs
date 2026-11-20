@@ -1,5 +1,5 @@
 // Copied from chapters/05-deletion-and-rebalancing/rust/src/insert.rs; fixes go there first
-//! SECTION 4: insert with bottom-up splitting (explained in chapter 04).
+//! Insert with bottom-up splitting: the subject of this chapter.
 //!
 //! `put` works in three phases:
 //!
@@ -16,8 +16,7 @@
 //! leave is inside the slab: a slot that was pushed for a reservation and
 //! returned stays on the free list.
 //!
-//! This file needs base_node.rs, base_search.rs (`lower_bound`) and the slab, nothing
-//! from delete.rs.
+//! This file needs base_node.rs, base_search.rs (`lower_bound`) and the slab.
 
 use crate::base_btree::BTree;
 use crate::base_node::{Entry, Node, NodeId, max_keys, min_keys};

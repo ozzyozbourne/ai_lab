@@ -1,0 +1,56 @@
+== 1. One tree, three protocols: canonical keys, order M = 4 ==
+global mutex:
+  height 3, 12 keys, 8 nodes
+  level 0: #7[15]
+  level 1: #2[6 10] #6[20]
+  leaves : #0(1 3 5) -> #4(6 7) -> #1(10 12) -> #5(15 17) -> #3(20 25 30)
+global rwlock: same tree: yes
+latch coupling: same tree: yes
+
+== 2. Model run: 20000 single-threaded operations (put, get) against the oracle ==
+global mutex   keys=500 height=6 nodes=323 leaf splits=212 internal splits=105 mismatches=0
+global rwlock  keys=500 height=6 nodes=323 leaf splits=212 internal splits=105 mismatches=0
+latch coupling keys=500 height=6 nodes=323 leaf splits=212 internal splits=105 mismatches=0
+
+== 3. A is frozen at the end of its descent, holding its locks. Does B finish? (canonical tree) ==
+A = get 12 (latch coupling holds: #1 shared)
+  B                      global mutex    global rwlock   latch coupling
+  get 25 (other leaf)    waits           finishes        finishes
+  get 10 (same leaf)     waits           finishes        finishes
+  put 16 (other leaf)    waits           waits           finishes
+  put 11 (same leaf)     waits           waits           waits at #1
+A = put 11 (latch coupling holds: #1 exclusive; leaf #1 has room)
+  B                      global mutex    global rwlock   latch coupling
+  get 25 (other leaf)    waits           waits           finishes
+  get 12 (same leaf)     waits           waits           waits at #1
+  put 16 (other leaf)    waits           waits           finishes
+A = put 26 (latch coupling holds: #6, #3 exclusive; leaf #3 is full, its parent #6 has room)
+  B                      global mutex    global rwlock   latch coupling
+  get 12 (under #2)      waits           waits           finishes
+  put 11 (under #2)      waits           waits           finishes
+  get 17 (under #6)      waits           waits           waits at #6
+after put 8, put 9: A = put 2 (latch coupling holds: #7, #2, #0 exclusive; leaf #0 and its parent #2 are full)
+  B                      global mutex    global rwlock   latch coupling
+  get 25 (under #6)      waits           waits           waits at #7
+
+== 4. Latch coupling: the root is replaced under a reader ==
+before: height 1, 3 keys, 1 nodes
+  leaves : #0(5 10 20)
+reader of 20 has read root = #0 and holds no latch yet; now put 6 splits the root
+after:  height 2, 4 keys, 3 nodes
+  level 0: #2[10]
+  leaves : #0(5 6) -> #1(10 20)
+reader latched #0, saw root = #2, restarted 1 time(s): get 20 = 2000
+
+== 5. A node table of 7: put 15 needs 3 new nodes (leaf, internal, root) ==
+global mutex   put 15: OutOfNodes; nodes used 5 -> 5 of 7; tree unchanged: yes; locks still held: none
+global rwlock  put 15: OutOfNodes; nodes used 5 -> 5 of 7; tree unchanged: yes; locks still held: none
+latch coupling put 15: OutOfNodes; nodes used 5 -> 5 of 7; tree unchanged: yes; locks still held: none
+
+== 6. Stress: 4 threads x 5000 operations, then validate and compare with the oracle ==
+disjoint keys    global mutex   keys=2972 expected=2972 first-time puts=2972 lost=0 failed=0 mismatches=0 valid=yes
+disjoint keys    global rwlock  keys=2972 expected=2972 first-time puts=2972 lost=0 failed=0 mismatches=0 valid=yes
+disjoint keys    latch coupling keys=2972 expected=2972 first-time puts=2972 lost=0 failed=0 mismatches=0 valid=yes
+overlapping keys global mutex   keys=2983 expected=2983 first-time puts=2983 lost=0 failed=0 mismatches=0 valid=yes
+overlapping keys global rwlock  keys=2983 expected=2983 first-time puts=2983 lost=0 failed=0 mismatches=0 valid=yes
+overlapping keys latch coupling keys=2983 expected=2983 first-time puts=2983 lost=0 failed=0 mismatches=0 valid=yes

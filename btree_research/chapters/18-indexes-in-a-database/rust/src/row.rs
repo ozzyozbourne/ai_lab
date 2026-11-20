@@ -1,5 +1,6 @@
 //! The one table of this chapter and the keys of its indexes.
 //!
+//! ```text
 //!     CREATE TABLE orders (
 //!         id       INTEGER PRIMARY KEY,   -- u32
 //!         customer INTEGER,               -- u16
@@ -8,13 +9,16 @@
 //!         code     INTEGER UNIQUE         -- u16
 //!     );
 //!     CREATE INDEX by_customer_day ON orders (customer, day);
+//! ```
 //!
 //! The B+tree copied from chapter 07 maps one u64 to one u64. That is enough
 //! for a whole table engine if every key is a COMPOSITE packed into 64 bits:
 //!
+//! ```text
 //!     by_customer_day key:  customer:16 | day:16 | locator:32
 //!     by_code key:          0:16        | code:16 | locator:32
 //!     heap primary key:     id:32                 | locator:32
+//! ```
 //!
 //! Putting the first column in the most significant bits makes the integer
 //! order equal to the column-by-column (lexicographic) order, which is all a

@@ -102,6 +102,17 @@ pub const BPlusTree = struct {
         return delete_.delete(self, key);
     }
 
+    /// ch27: appends every entry with lo <= key < hi to `out`, ascending.
+    /// One descent, then the leaf chain: height + (leaves crossed) reads.
+    pub fn range(self: *BPlusTree, gpa: Allocator, lo: u64, hi: u64, out: *std.ArrayList(node.Entry)) Allocator.Error!void {
+        if (lo >= hi) return;
+        var walker = @import("base_walk.zig").LeafWalker.seek(self, lo);
+        while (walker.next()) |e| {
+            if (e.key >= hi) break;
+            try out.append(gpa, e);
+        }
+    }
+
     // ------------------------------------------------ ch27: device hooks
 
     /// The operation in progress looks at node `id`: one block read, unless

@@ -1,5 +1,5 @@
 [package]
-name = "ch05_deletion_and_rebalancing"
+name = "ch04_insertion_and_splitting"
 version = "0.1.0"
 edition = "2024"
 publish = false

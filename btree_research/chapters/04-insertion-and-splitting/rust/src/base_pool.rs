@@ -1,5 +1,5 @@
 // Copied from chapters/05-deletion-and-rebalancing/rust/src/pool.rs; fixes go there first
-//! SECTION 2: node allocation.
+//! Node allocation.
 //!
 //! The tree never creates nodes on its own. It asks the *slab* for a slot and
 //! gives slots back to it:
@@ -11,16 +11,16 @@
 //! usage                          (counters)
 //! ```
 //!
-//! The Zig twin has three allocators behind this interface (one allocation
-//! per node, a hand-written free-list pool, `std.heap.MemoryPool`). The Rust
-//! idiom for all three is one structure: a `Vec` of slots plus a free list of
-//! *indices*. A freed slot stores the index of the next free slot, exactly
-//! like the intrusive free list in Zig stores a pointer in the freed node.
+//! The Zig twin has two allocators behind this interface (one allocation
+//! per node, and `std.heap.MemoryPool`). The Rust idiom for both is one
+//! structure: a `Vec` of slots plus a free list of *indices*. A freed slot
+//! stores the index of the next free slot, exactly like the free list of
+//! `MemoryPool` stores a pointer in the freed node.
 //!
 //! What the slab recycles is the SLOT (and with it the `NodeId`). It is not
 //! the full pool of the Zig version: a Rust node owns up to three `Vec`
-//! buffers on the heap (base_node.rs), which are allocated by a split and
-//! released by a merge through the global allocator as before.
+//! buffers on the heap (base_node.rs), which are allocated by a split
+//! through the global allocator as before.
 //!
 //! Without `free`, `free_head`, the failure switches and `usage`, a slab is a
 //! `Vec<Node>` that is only pushed to: the *typed arena* of chapter 03.
@@ -131,8 +131,8 @@ impl Slab {
     }
 
     /// Returns the slot to the free list and hands the node back by value,
-    /// so the caller decides what happens to its keys and children (a merge
-    /// appends them to the left sibling). The node's own buffers are dropped
+    /// so the caller decides what happens to its keys and children (chapter
+    /// 05: a merge appends them to the left sibling). The node's own buffers are dropped
     /// with it: only the slot is recycled.
     pub fn free(&mut self, id: NodeId) -> Node {
         let next_free = self.free_head;

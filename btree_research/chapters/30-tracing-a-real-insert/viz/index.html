@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 30 — Tracing a real insert</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+/* On a narrow screen keep the caption and the step buttons right under the
+ * drawing they describe; side panels come after them. */
+@media (max-width: 820px) {
+  #fig-op .bt-figure { display: flex; flex-direction: column; }
+  #fig-op .bt-figure-body { display: contents; }
+  #fig-op .bt-stage { order: 1; }
+  #fig-op .bt-caption { order: 2; }
+  #fig-op .bt-controls-slot { order: 3; }
+  #fig-op .bt-legend { order: 4; }
+  #fig-op .bt-side { order: 5; }
+  .ch30-pair { grid-template-columns: 1fr !important; }
+}
+.bt-tree-svg .bt-node-label, .bt-tree-svg .bt-node-note {
+  paint-order: stroke; stroke: var(--bt-bg); stroke-width: 4px; stroke-linejoin: round;
+}
+.ch30-stages { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; padding: 0; list-style: none; }
+.ch30-stages li { margin: 0; }
+.ch30-stages .bt-chip { font-size: .8rem; }
+.ch30-stages .is-now { outline: 2px solid var(--bt-accent); outline-offset: 1px; font-weight: 700; }
+.ch30-stages .is-skipped { opacity: .5; text-decoration: line-through; }
+.ch30-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.ch30-col { min-width: 0; border: 1px solid var(--bt-border); border-radius: 8px; padding: 6px 8px; background: var(--bt-surface); }
+.ch30-col.is-acting { border-color: var(--bt-node-active); box-shadow: inset 0 0 0 1px var(--bt-node-active); }
+.ch30-col h3 { margin: 0 0 2px; font-size: .9rem; display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.ch30-col h3 small { font-weight: 400; color: var(--bt-muted); font-size: .78rem; }
+.ch30-log { font-size: .78rem; color: var(--bt-muted); min-height: 2.6em; margin: 4px 0 0; overflow-wrap: anywhere; }
+.ch30-log b { color: var(--bt-text); font-weight: 600; }
+.ch30-refs { font-size: .8rem; color: var(--bt-muted); margin-top: 6px; overflow-wrap: anywhere; }
+.ch30-refs code { font-size: .76rem; }
+.ch30-hint { font-size: .88rem; color: var(--bt-muted); margin: 0 0 8px; min-height: 1.3em; }
+.ch30-hint.is-error { color: var(--bt-key-deleted); font-weight: 600; }
+#key-in { width: 5.5em; }
+.ch30-lanes { margin-top: 8px; }
+.ch30-lanes .bt-lane { padding-top: 4px; padding-bottom: 4px; }
+.ch30-states { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 8px; }
+.ch30-states .bt-chip { font-family: var(--bt-mono); font-size: .76rem; }
+.ch30-states .is-now { outline: 2px solid var(--bt-accent); outline-offset: 1px; font-weight: 700; }
+.ch30-op { width: 100%; border-collapse: collapse; font-size: .84rem; }
+.ch30-op th { text-align: left; font-weight: 600; color: var(--bt-muted); padding: 3px 8px 3px 0; vertical-align: top; white-space: nowrap; }
+.ch30-op td { padding: 3px 0; font-family: var(--bt-mono); font-size: .8rem; overflow-wrap: anywhere; }
+.ch30-op .is-gone { color: var(--bt-muted); font-style: italic; font-family: var(--bt-font); }
+.ch30-calls { margin: 0; padding: 0; list-style: none; font-family: var(--bt-mono); font-size: .76rem; }
+.ch30-calls li { padding: 2px 0; border-top: 1px dashed var(--bt-border); overflow-wrap: anywhere; }
+.ch30-calls li:first-child { border-top: 0; }
+.ch30-frames-label { font-size: .82rem; color: var(--bt-muted); margin: 8px 0 4px; }
+.ch30-check { display: inline-flex; align-items: center; gap: 5px; font-size: .86rem; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">Every earlier chapter taught one piece. This page puts the pieces in the order in which a real
+<code>INSERT</code> meets them, in two engines at once, and then shows why the production code that does it is
+written as a state machine.</p>
+
+<h2>1. One insert, two engines, six stages</h2>
+<p>Both trees below hold the same keys. A page holds at most four entries here (real pages fill up by bytes), so a few
+inserts are enough to see everything. Type a key from 1 to 99, or use a suggestion: <b>27</b> makes PostgreSQL split
+a leaf while Turso only shuffles cells between neighbours; then <b>22</b> makes PostgreSQL's split climb to a new
+root; then <b>60</b> makes Turso allocate a page. A key that is already there stops at stage 2.</p>
+<div id="fig-lanes"></div>
+
+<h2>2. The same insert when every page read may suspend it</h2>
+<p>This is the chapter's own code: the disk B+tree of chapter 12 with its <code>put</code> rewritten as an object
+that is called again and again. It never waits for the disk. When a page is missing it returns
+<code>Io(page)</code>; when called again it continues from the state it recorded. The pool has few frames on
+purpose, so that pages are missing often.</p>
+<div id="fig-op"></div>
+
+<h2>3. What that looks like in code</h2>
+<p>The arm of the current state of figure 2 is highlighted. Every arm has the same shape: ask for the page, do one
+all-or-nothing step, record the next state.</p>
+<div id="fig-code"></div>
+
+<h2>What to take away</h2>
+<ul>
+<li><strong>The stages are the same.</strong> Find the leaf, check uniqueness, make room, restructure, tell the
+parent, make it durable. Any B-tree engine has these six.</li>
+<li><strong>The answers differ because the concurrency differs.</strong> PostgreSQL lets many writers into the tree,
+so it needs high keys, right links and a flag for the moment between "split" and "parent knows". Turso admits one
+writer, so it needs none of them and can afford to rewrite three siblings at once.</li>
+<li><strong>The log differs for the same reason.</strong> PostgreSQL logs each small step as it happens (so each step
+is recoverable alone); Turso logs whole pages at commit (so the transaction is all or nothing).</li>
+<li><strong>A resumable operation is the blocking code with its stack moved into an object.</strong> The state enum
+is the program counter, the path and the carry are the local variables, and their memory must outlive every call.</li>
+</ul>
+<p>Read the chapter: <a href="../README.md">README.md</a>. Guide index: <a href="../../../index.html">index.html</a>.</p>
+
+<script src="../../../assets/viz.js"></script>
+<script src="code.js"></script>
+<script src="base_model.js"></script>
+<script src="lanes_model.js"></script>
+<script src="resumable_model.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, esc = BTViz.esc;
+  BTViz.page({
+    title: 'Tracing a real insert', chapter: 30,
+    prev: { href: '../../29-zone-maps-and-vector-indexes/viz/index.html', title: 'Zone maps and vector indexes' },
+    next: null, index: '../../../index.html'
+  });
+
+  // ============================ figure 1: the swim lanes ========================
+
+  var CHAPTERS = {
+    2: ['02-searching-a-sorted-node', 'searching a node'], 3: ['03-btree-structure-and-search', 'search'],
+    4: ['04-insertion-and-splitting', 'splitting'], 7: ['07-bplus-trees', 'B+trees, duplicates'],
+    8: ['08-range-scans-and-cursors', 'cursors'], 9: ['09-pages-and-the-buffer-pool', 'buffer pool'],
+    10: ['10-slotted-pages', 'slotted pages'], 12: ['12-disk-backed-bplus-tree', 'stable root'],
+    14: ['14-split-policies-and-fill-factor', 'split point'], 15: ['15-redistribution-and-merge-policies', 'sibling balance'],
+    17: ['17-key-compression-and-deduplication', 'truncation, dedup'], 18: ['18-indexes-in-a-database', 'unique checks'],
+    19: ['19-latching-and-lock-coupling', 'latching'], 20: ['20-blink-trees', 'B-link'],
+    21: ['21-durability-primitives', 'fsync, checksums'], 22: ['22-wal-and-crash-recovery', 'WAL'],
+    24: ['24-mvcc-vacuum-and-page-deletion', 'dead entries']
+  };
+  var STAGE_CHAPTERS = { 1: [3, 2, 9, 8, 19, 20], 2: [18, 7], 3: [10, 17, 24], 4: [4, 14, 15, 17, 12, 20], 5: [4, 20, 12], 6: [21, 22] };
+  function chapterLink(n) {
+    return '<a href="../../' + CHAPTERS[n][0] + '/README.md" title="Chapter ' + n + '">ch. ' + n + ' ' + CHAPTERS[n][1] + '</a>';
+  }
+
+  var fig = BTViz.figure('#fig-lanes', { title: 'The same INSERT in PostgreSQL nbtree and in Turso',
+    legend: ['node-active', 'key-compare', 'key-inserted', 'split', 'merge', 'page-dirty', 'lock-shared', 'lock-exclusive', 'key-found', 'key-deleted'] });
+
+  var keyIn = el('input.bt-input#key-in', { type: 'text', inputmode: 'numeric', 'aria-label': 'Key to insert (1 to 99)', placeholder: '1–99' });
+  var goBtn = el('button.bt-btn.bt-primary', { type: 'button', onclick: function () { insertTyped(); } }, 'Insert into both');
+  var quick = [27, 22, 60].map(function (n) {
+    return el('button.bt-btn', { type: 'button', 'data-key': n, onclick: function () { keyIn.value = n; insertTyped(); } }, String(n));
+  });
+  var resetBtn = el('button.bt-btn', { type: 'button', onclick: function () { reset(); } }, 'Reset trees');
+  fig.toolbar.append(el('label.bt-field', 'Key ', keyIn), goBtn, el('span.bt-toolbar-sep'), el('span', { style: { fontSize: '.86rem' } }, 'Try:'), quick[0], quick[1], quick[2], el('span.bt-toolbar-sep'), resetBtn);
+
+  var hint = el('p.ch30-hint', { 'aria-live': 'polite' });
+  var stageList = el('ol.ch30-stages', { 'aria-label': 'The six stages' });
+  var stageChips = CH30.STAGES.map(function (s) {
+    var chip = el('span.bt-chip', s.n + ' ' + s.name);
+    stageList.appendChild(el('li', chip));
+    return chip;
+  });
+  function column(title, sub) {
+    var view = el('div');
+    var log = el('p.ch30-log');
+    var box = el('div.ch30-col', el('h3', title, el('small', sub)), view, log);
+    return { box: box, view: new BTViz.TreeView(view, { minHeight: 150, maxHeight: 210, ariaLabel: title + ' tree' }), log: log };
+  }
+  var colPg = column('PostgreSQL nbtree', 'B-link B+tree: high keys (dashed), right links, many writers');
+  var colTu = column('Turso (SQLite format)', 'index B-tree: keys in interior pages too, no links, one writer');
+  var lanesBox = el('div.ch30-lanes');
+  fig.stage.append(hint, stageList, el('div.ch30-pair', colPg.box, colTu.box), lanesBox);
+  var lanes = new BTViz.Lanes(lanesBox, {});
+
+  var pair, savedBefore, stepper, currentKey = null;
+
+  function renderLanes(step, i, total) {
+    var L = step.lanes;
+    colPg.view.render(L.pg.state, L.pg.highlight);
+    colTu.view.render(L.turso.state, L.turso.highlight);
+    colPg.box.classList.toggle('is-acting', step.engine === 'pg');
+    colTu.box.classList.toggle('is-acting', step.engine === 'turso');
+    colPg.log.innerHTML = '<b>WAL so far:</b> ' + (L.pg.wal.length ? L.pg.wal.map(esc).join(' · ') : 'nothing yet') +
+      '<br><b>Dirty buffers:</b> ' + (L.pg.dirty.length ? L.pg.dirty.map(function (d) { return d === 0 ? 'metapage' : 'blk ' + d; }).join(', ') : 'none');
+    colTu.log.innerHTML = '<b>WAL so far:</b> ' + (step.stage === 6 && step.engine === 'turso' || (L.turso.last === 6) ? L.turso.wal.map(esc).join(' · ') : 'nothing (pages are logged at commit)') +
+      '<br><b>Dirty pages:</b> ' + (L.turso.dirty.length ? L.turso.dirty.map(function (d) { return 'page ' + d; }).join(', ') : 'none');
+    var reached = Math.max(L.pg.last, L.turso.last);
+    stageChips.forEach(function (chip, n) {
+      var s = n + 1;
+      chip.className = 'bt-chip' + (step.stage === s ? ' s-active is-now' : s < reached || (s <= reached && step.stage !== s) ? ' s-found' : '');
+    });
+    var done = i === total - 1 && i > 0;
+    function lane(id, label, c) {
+      var acting = step.engine === id;
+      var aborted = done && c.last === 2;
+      return { id: id, label: label, state: aborted ? 'aborted' : done ? 'done' : acting ? 'running' : undefined,
+        events: c.events, canStep: false };
+    }
+    lanes.render({ lanes: [lane('pg', 'PostgreSQL', L.pg), lane('turso', 'Turso', L.turso)] });
+  }
+
+  function decorate(steps) {
+    steps.forEach(function (s) {
+      if (!s.stage) return;
+      s.caption += '<div class="ch30-refs">Stage ' + s.stage + ' is taught in ' + STAGE_CHAPTERS[s.stage].map(chapterLink).join(', ') + '.' +
+        (s.refs.length ? '<br>Source: ' + s.refs.map(function (r) { return '<code>' + esc(r) + '</code>'; }).join(' ') : '') + '</div>';
+    });
+    return steps;
+  }
+
+  function setHint(text, isError) {
+    hint.textContent = text;
+    hint.classList.toggle('is-error', !!isError);
+  }
+  function atEdge() { return !stepper || stepper.index === 0 || stepper.index === stepper.steps.length - 1; }
+  function syncButtons() {
+    var ok = atEdge();
+    goBtn.disabled = !ok;
+    quick.forEach(function (b) { b.disabled = !ok; });
+    if (!ok) setHint('Insert of ' + currentKey + ' in progress: step to the end (or back to the start) before inserting another key.');
+    else if (stepper && stepper.index === 0) setHint('Showing the trees before the insert of ' + currentKey + '. Step forward, or insert a different key into these trees.');
+    else if (stepper) setHint('Insert of ' + currentKey + ' finished. Insert another key into the trees you see.');
+  }
+
+  function start(key, play) {
+    // The model holds the END state of the timeline. If the reader is looking
+    // at the first step (the trees BEFORE the last insert), go back to that.
+    if (stepper && stepper.index === 0 && stepper.steps.length > 1) pair.restore(savedBefore);
+    savedBefore = pair.save();
+    currentKey = key;
+    var steps = decorate(pair.insert(key));
+    stepper.setSteps(steps, { play: !!play });
+    syncButtons();
+  }
+
+  function insertTyped() {
+    var raw = keyIn.value.trim();
+    if (!atEdge()) return;
+    if (!/^\d+$/.test(raw) || +raw < 1 || +raw > 99) {
+      setHint('"' + raw.slice(0, 20) + '" is not a whole number from 1 to 99. Nothing was inserted.', true);
+      return;
+    }
+    start(+raw, true);
+    keyIn.value = '';
+  }
+  keyIn.addEventListener('keydown', function (e) { if (e.key === 'Enter') insertTyped(); });
+
+  stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, steps: [], interval: 2600,
+    onStep: function (step, i, info) { renderLanes(step, i, info.stepper.steps.length); syncButtons(); }
+  });
+
+  function reset() {
+    pair = new CH30.Pair();
+    savedBefore = null;
+    stepper.setSteps([], {});
+    start(27, false);
+  }
+  reset();
+
+  // ====================== figure 2: the resumable insert ========================
+
+  var fig2 = BTViz.figure('#fig-op', { title: 'A resumable insert: called again and again until it is done', side: true,
+    legend: ['node-active', 'key-compare', 'key-found', 'key-inserted', 'split', 'page-dirty', 'free'] });
+
+  var SCENARIOS = [
+    { label: '07 into a root that is a full leaf (6 keys)', count: 6, key: 7, vlen: null },
+    { label: '15 into a two-level tree (11 keys)', count: 11, key: 15, vlen: null },
+    { label: '16 with a 1000-byte value (24 keys)', count: 24, key: 16, vlen: 1000 },
+    { label: '13: it simply fits (24 keys)', count: 24, key: 13, vlen: null }
+  ];
+  var scenSel = el('select.bt-select', { 'aria-label': 'Scenario' }, SCENARIOS.map(function (s, i) { return el('option', { value: i }, s.label); }));
+  var frameSel = el('select.bt-select', { 'aria-label': 'Buffer pool frames' }, [2, 3, 8].map(function (n) { return el('option', { value: n }, n + ' frames'); }));
+  var pressureBox = el('input', { type: 'checkbox', id: 'pressure' });
+  var impatientBox = el('input', { type: 'checkbox', id: 'impatient' });
+  fig2.toolbar.append(el('label.bt-field', 'Insert ', scenSel), el('label.bt-field', 'Pool ', frameSel),
+    el('label.ch30-check', pressureBox, 'drop unpinned pages between states'),
+    el('label.ch30-check', impatientBox, 'caller calls again too early'));
+
+  var stateStrip = el('div.ch30-states', { 'aria-label': 'States of the insert' });
+  var stateChips = {};
+  CH30.STATES.concat(['done']).forEach(function (s) {
+    stateChips[s] = el('span.bt-chip', { title: CH30.WHAT[s] || 'finished' }, s);
+    stateStrip.appendChild(stateChips[s]);
+  });
+  var treeBox = el('div');
+  var framesLabel = el('p.ch30-frames-label');
+  var framesBox = el('div');
+  fig2.stage.append(stateStrip, treeBox, framesLabel, framesBox);
+  var opTree = new BTViz.TreeView(treeBox, { minHeight: 170, maxHeight: 230, ariaLabel: 'The disk B+tree' });
+  var frameGrid = new BTViz.FrameGrid(framesBox);
+
+  var opBody = el('div.bt-panel-body');
+  var callsBody = el('div.bt-panel-body');
+  fig2.side.append(el('div.bt-panel', el('div.bt-panel-title', 'The operation object (survives between calls)'), opBody),
+    el('div.bt-panel', el('div.bt-panel-title', 'Calls of step() so far'), callsBody));
+
+  var codeFig = BTViz.figure('#fig-code', { title: 'One arm of the state machine, Zig and Rust' });
+  var code = BTViz.codePanel(codeFig.stage, 'advance', { title: 'advance(): one transition', maxHeight: 420 });
+
+  function row(name, value, gone) {
+    return el('tr', el('th', name), el('td', { class: gone ? 'is-gone' : null }, value));
+  }
+  function renderOp(step) {
+    var s = step.state, op = s.op;
+    opTree.render(s.tree, step.highlight);
+    frameGrid.render(s.frames);
+    framesLabel.textContent = 'Buffer pool (' + s.frames.frames.length + ' frames). Pages read by the disk so far: ' + s.reads + '.';
+    CH30.STATES.concat(['done']).forEach(function (name) {
+      var now = op.state === name;
+      stateChips[name].className = 'bt-chip' + (now ? (step.kind === 'yield' || step.kind === 'again' || step.kind === 'disk' ? ' s-compare is-now' : name === 'done' ? ' s-found is-now' : ' s-active is-now') : '');
+    });
+    opBody.textContent = '';
+    var gone = !op.live;
+    opBody.appendChild(el('table.ch30-op',
+      row('state', op.state),
+      row('key, value', gone ? 'freed with the arena' : '"' + op.key + '", ' + op.vlen + ' bytes (copies, in the arena)', gone),
+      row('cur', gone ? 'freed' : 'page ' + op.cur, gone),
+      row('path', gone ? 'freed' : op.path.length ? op.path.join('; ') : '(empty)', gone),
+      row('carry', gone ? 'freed' : op.carry || '(none yet)', gone),
+      row('waiting for', op.waiting === null ? '(nothing)' : 'page ' + op.waiting),
+      row('local variables', s.running ? 'alive: a call is running' : 'none: no call is running', !s.running)));
+    callsBody.textContent = '';
+    var list = el('ol.ch30-calls');
+    s.calls.forEach(function (c) {
+      list.appendChild(el('li', 'call ' + c.n + ': ' + c.states.join(', ') + (c.end ? ' → ' + c.end : ' …')));
+    });
+    if (!s.calls.length) list.appendChild(el('li', 'none yet'));
+    callsBody.appendChild(list);
+    var lines = window.CHAPTER_CODE_LINES[op.state];
+    code.highlight(lines || []);
+  }
+
+  var stepper2 = new BTViz.Stepper({
+    mount: fig2.controls, caption: fig2.caption, root: fig2.root, steps: [], interval: 2400,
+    onStep: function (step) { renderOp(step); }
+  });
+  function rebuild(play) {
+    var sc = SCENARIOS[+scenSel.value];
+    var tree = CH30.scenarioTree(+frameSel.value, sc.count);
+    var vlen = sc.vlen === null ? CH12.scenarioValueLen(sc.key, 4096) : sc.vlen;
+    var t = CH30.traceInsert(tree, CH12.scenarioKey(sc.key), vlen, { pressure: pressureBox.checked, impatient: impatientBox.checked });
+    stepper2.setSteps(t.steps, { play: !!play });
+  }
+  [scenSel, frameSel, pressureBox, impatientBox].forEach(function (c) { c.addEventListener('change', function () { rebuild(false); }); });
+  rebuild(false);
+
+  // ============================== self-tests ====================================
+
+  // The lanes: both models keep the same keys as a plain set, through 300 inserts.
+  (function () {
+    var rng = BTViz.rng(30), verdict = 'ok';
+    for (var round = 0; round < 5 && verdict === 'ok'; round++) {
+      var p = new CH30.Pair(), want = {};
+      CH30.START_KEYS.forEach(function (key) { want[key] = true; });
+      for (var i = 0; i < 60; i++) {
+        var key = rng.int(1, 99);
+        var steps = p.insert(key);
+        if (steps.ok === !!want[key]) verdict = 'duplicate handling for ' + key;
+        want[key] = true;
+        var sorted = Object.keys(want).map(Number).sort(function (a, b) { return a - b; }).join(',');
+        if (p.pg.keys().join(',') !== sorted || p.turso.keys().join(',') !== sorted) verdict = 'keys differ after ' + key;
+        var e = p.pg.validate() || p.turso.validate();
+        if (e) verdict = e;
+      }
+    }
+    BTViz.selfTest('lanes: 300 inserts', verdict, 'ok');
+    var first = new CH30.Pair().insert(27);
+    function chips(engine) {
+      return first.filter(function (s) { return s.engine === engine; }).map(function (s) { var ev = s.lanes[engine].events; return ev[ev.length - 1].text; }).join(' / ');
+    }
+    BTViz.selfTest('lanes: insert 27', chips('pg') + '\n' + chips('turso'), window.EXPECTED_LANES_27);
+  })();
+  // The resumable insert: the JS model makes the calls the programs print.
+  var p1 = CH30.replayPart1();
+  BTViz.selfTest('part 1 calls', p1.text, window.EXPECTED_PART1);
+  BTViz.selfTest('part 1 validate', p1.valid, null);
+  BTViz.selfTest('part 4', CH30.replayPart4(), window.EXPECTED_PART4);
+})();
+</script>
+</body>
+</html>

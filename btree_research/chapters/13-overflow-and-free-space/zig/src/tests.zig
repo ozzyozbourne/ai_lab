@@ -1230,20 +1230,20 @@ fn poke(file: []const u8, layout: Layout, frames: u32) !Poked {
 }
 
 /// One field of one page, overwritten.
-const Damage = struct {
+const FieldDamage = struct {
     name: []const u8,
     page: u32,
     offset: usize,
     bytes: [8]u8 = @splat(0),
     len: usize,
 
-    fn int(comptime T: type, name: []const u8, page: u32, offset: usize, value: T) Damage {
-        var d: Damage = .{ .name = name, .page = page, .offset = offset, .len = @sizeOf(T) };
+    fn int(comptime T: type, name: []const u8, page: u32, offset: usize, value: T) FieldDamage {
+        var d: FieldDamage = .{ .name = name, .page = page, .offset = offset, .len = @sizeOf(T) };
         std.mem.writeInt(T, d.bytes[0..@sizeOf(T)], value, .little);
         return d;
     }
 
-    fn apply(d: Damage, file: []u8) void {
+    fn apply(d: FieldDamage, file: []u8) void {
         @memcpy(file[@as(usize, d.page) * page_size + d.offset ..][0..d.len], d.bytes[0..d.len]);
     }
 };
@@ -1251,9 +1251,9 @@ const Damage = struct {
 /// Every count, length and page id that the tree reads from a page, each
 /// with the values that could send a careless reader out of the page, out
 /// of the file, or round in a circle.
-fn damageList(list: *std.ArrayList(Damage), file: []u8, layout: Layout) !void {
+fn damageList(list: *std.ArrayList(FieldDamage), file: []u8, layout: Layout) !void {
     const gpa = testing.allocator;
-    const int = Damage.int;
+    const int = FieldDamage.int;
     const outside = layout.pages + 7;
     const leaf = Layout.page(file, layout.leaf);
     const cell = leaf.cellOffset(layout.slot);
@@ -1311,7 +1311,7 @@ test "damage to every count, length and page id of a page: an error, never a cra
     var file: std.ArrayList(u8) = .empty;
     defer file.deinit(testing.allocator);
     const layout = try buildDamageFile(&file);
-    var list: std.ArrayList(Damage) = .empty;
+    var list: std.ArrayList(FieldDamage) = .empty;
     defer list.deinit(testing.allocator);
     try damageList(&list, file.items, layout);
     const sound = try testing.allocator.dupe(u8, file.items);
@@ -1328,10 +1328,10 @@ test "damage to every count, length and page id of a page: an error, never a cra
         if (std.mem.eql(u8, file.items, sound)) continue; // the value it had
         for ([_]u32{ 2, 5 }) |frames| {
             const seen = try poke(file.items, layout, frames);
-            if (seen.opened and seen.valid) unnoticed += 1;
+            if (seen.opened and seen.valid) {unnoticed += 1; std.debug.print("UNNOTICED {s} {any}\n", .{damage.name, damage.bytes});}
         }
     }
-    try testing.expectEqual(230, list.items.len);
+    try testing.expectEqual(240, list.items.len);
     // `open` or `validate` reports every one of them.
     try testing.expectEqual(0, unnoticed);
 }

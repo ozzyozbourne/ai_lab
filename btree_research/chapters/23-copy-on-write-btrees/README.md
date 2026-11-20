@@ -69,7 +69,7 @@ rule below has to guarantee.
 ### Snapshots
 
 The old root does not stop working when a new one is committed. As long as
-nobody overwrites its pages, a reader holding "root #9" keeps seeing the tree
+nobody overwrites its pages, a reader holding "root #11" keeps seeing the tree
 exactly as it was. That handle is a **snapshot**. Taking one copies nothing;
 it only registers the root so that its pages are left alone. In this chapter
 snapshots are refcounted: two readers of the same root share one entry, and
@@ -126,10 +126,10 @@ becomes reusable only after the *next* checkpoint is durable.
 ### Why the leaf chain has to go
 
 Chapter 07 linked every leaf to its neighbours so that a range scan could walk
-sideways. Try to keep that under path copying. Leaf `#0` is copied to `#10`.
-Its left neighbour `#6` has a `next` link that says `#0`. For the new tree
-that link must say `#10`, so `#6` has to change, so `#6` must be copied, say
-to `#11`. Now the `next` link of *its* left neighbour is wrong. Chapter 07's
+sideways. Try to keep that under path copying. Leaf `#0` is copied to `#12`.
+Its left neighbour `#8` has a `next` link that says `#0`. For the new tree
+that link must say `#12`, so `#8` has to change, so `#8` must be copied, say
+to `#13`. Now the `next` link of *its* left neighbour is wrong. Chapter 07's
 leaves also have a `prev` link, so the right neighbour of `#0`, whose `prev`
 says `#0`, has to be copied for the same reason, and then *its* right
 neighbour. The copying runs along the whole chain in both directions, and

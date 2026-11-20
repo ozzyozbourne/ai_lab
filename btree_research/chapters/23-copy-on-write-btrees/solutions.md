@@ -12,36 +12,42 @@ Start (transaction 13, snapshot of 12 held):
 ```
 txn 13: root #2, height 3, 13 keys
   level 0: #2[15]
-  level 1: #5[6 10] #8[20]
-  leaves : #3(1 3 5) #6(6 7) #10(10 12 13) | #7(15 17) #1(20 25 30)
-store: 11 pages | free: - | pending: #9(txn 13) #4(txn 13) #0(txn 13)
+  level 1: #6[6 10] #10[20]
+  leaves : #5(1 3 5) #8(6 7) #12(10 12 13) | #9(15 17) #3(20 25 30)
+store: 13 pages | free: #4 #1 | pending: #11(txn 13) #7(txn 13) #0(txn 13)
 ```
 
-30 is in leaf `#1`, reached through `#2` and `#8`. The free list is empty, so
-the three copies get new page ids in top-down order: `#2 -> #11`,
-`#8 -> #12`, `#1 -> #13`. The leaf keeps two keys, which is above the minimum
-of one, so nothing is borrowed or merged. Result, printed by a test that runs
-exactly these steps (`copied=3 fresh=3 freed=3`, 14 pages):
+30 is in leaf `#3`, reached through `#2` and `#10`. The copies are made top
+down and the free list is a stack, so `#2 -> #1`, `#10 -> #4`, and the leaf
+gets a new page: `#3 -> #13`. The leaf keeps two keys, which is above the
+minimum of one, so nothing is borrowed or merged. Result, printed by a test
+that runs exactly these steps (`copied 3 reused 2 fresh 1 | freed 3 released
+0`, 14 pages):
 
 ```
-txn 14: root #11, height 3, 12 keys
-  level 0: #11[15]
-  level 1: #5[6 10] #12[20]
-  leaves : #3(1 3 5) #6(6 7) #10(10 12 13) | #7(15 17) #13(20 25)
-pending: #9(txn 13) #4(txn 13) #0(txn 13) #2(txn 14) #8(txn 14) #1(txn 14)
+txn 14: root #1, height 3, 12 keys
+  level 0: #1[15]
+  level 1: #6[6 10] #4[20]
+  leaves : #5(1 3 5) #8(6 7) #12(10 12 13) | #9(15 17) #13(20 25)
+free: - | pending: #11(txn 13) #7(txn 13) #0(txn 13) #2(txn 14) #10(txn 14) #3(txn 14)
 ```
 
-Two things to notice. `#5` and `#10`, which transaction 13 created, are now
-shared by roots 13 (no longer held by anyone) and 14. And `#2`, created by 13
-and freed by 14, is pending although the only snapshot (of 12) cannot reach
-it: that is the imprecision exercise 2 removes.
+Three things to notice. `#6` and `#12`, which transaction 13 created, are now
+shared by roots 13 and 14. `released 0`: the pages freed by 13 would have
+been released by this commit (slot 0, which named 12, was overwritten), but
+the snapshot of 12 still holds them. And `#2`, created by 13 and freed by 14,
+is pending for a good reason at this moment: slot 1 names transaction 13.
+After the next commit no kept root reaches it, and it stays pending only
+because the snapshot of 12 is older than 14: that is the imprecision
+exercise 2 removes.
 
 ## 2. Precise reclamation
 
 Each slot already records the transaction that wrote it (`written_by`), which
-is the page's birth. The rule becomes "release unless some snapshot S has
-`born <= S < freed_by`", and the releasable entries are no longer a prefix of
-the pending list:
+is the page's birth. A root R reaches a page exactly when `born <= R <
+freed_by`. The rule becomes "release unless some kept root (a snapshot or
+`previous`) is in that range", and the releasable entries are no longer a
+prefix of the pending list:
 
 ```zig
 pub fn reclaim(self: *Db) usize {
@@ -53,6 +59,9 @@ pub fn reclaim(self: *Db) usize {
         var needed = false;
         for (self.snapshots.items) |s| {
             if (born <= s.snap.id and s.snap.id < p.freed_by) needed = true;
+        }
+        if (self.previous) |prev| {
+            if (born <= prev.txn_id and prev.txn_id < p.freed_by) needed = true;
         }
         if (needed) {
             items[kept] = p;
@@ -68,51 +77,74 @@ pub fn reclaim(self: *Db) usize {
 }
 ```
 
-Measured with this change applied to a scratch copy of the Zig project:
+Measured with this change applied to a scratch copy of the Zig project
+(`zig build test --summary all`: 33 of 35 tests pass):
 
-- Both model tests, the metapage test, the allocation-failure tests and all
-  twelve corruption cases of `validate` still pass, without changing
-  `validate`.
-- Two tests fail, both because they assert the coarse rule. In "the oldest
-  snapshot holds back every later free" releasing the younger snapshot now
-  frees 3 pages instead of 0 (and the older one the remaining 3). In "freed
-  pages are reused only after the snapshots that need them are gone" 3 pages
-  are pending after 20 commits instead of 60: only the first commit after the
-  snapshot replaces pages the snapshot can reach.
+- Both model tests, the metapage test, all four restart tests (crash at every
+  write, damaged slots, the long random run, forged slots), the
+  allocation-failure tests and all fourteen corruption cases of `validate`
+  still pass, without changing `validate`. The precise rule is as safe
+  across restarts as the coarse one, because it still never releases a page
+  that `previous` reaches.
+- Two tests fail. "freed pages are reused only after the snapshots that need
+  them are gone" asserts the coarse rule: 6 pages are pending after 20
+  commits under a snapshot instead of 60 (the 3 the snapshot reaches and the
+  3 of the newest commit). And "run prints exactly expected_output.txt"
+  fails because the demo's output changes: in section 4 `delete 7` shows
+  `released 2`, releasing the snapshot frees 4 pages instead of 6, the page
+  ids differ from there on, and section 7 prints the smaller stores below.
 - The demo's model run (section 7; three snapshots held, 100 operations
   apart) with the coarse and the precise rule:
 
   | M | store pages, coarse | store pages, precise | peak pending, coarse | peak pending, precise |
   | --- | --- | --- | --- | --- |
-  | 4 | 973 | 350 | 858 | 229 |
-  | 5 | 772 | 237 | 703 | 164 |
-  | 8 | 562 | 145 | 522 | 103 |
+  | 4 | 973 | 354 | 858 | 234 |
+  | 5 | 772 | 240 | 703 | 167 |
+  | 8 | 562 | 147 | 522 | 106 |
 
   Mismatches stay at 0 in all three runs.
 
-The cost is that `reclaim` is now a loop over pending pages times snapshots
+The cost is that `reclaim` is now a loop over pending pages times kept roots
 instead of a prefix scan, and it needs the birth transaction of every pending
 page. Whether that is worth it in a real engine depends on how long readers
 live; that was not measured here.
 
-## 3. Why the fallback is safe
+## 3. The rule without its second half
 
-The test is "commits alternate between the meta slots; a torn slot falls back
-one commit". After every fourth commit it flips a bit in the slot that commit
-wrote, calls `reopen`, and requires that the database is at the previous
-transaction id, that `validate` passes, and that a full range scan equals the
-oracle's content from before the commit. No snapshot is held in that test, so
-every commit immediately frees the pages it replaced and the next commit
-reuses them. The test passes in both languages.
+Measured on a scratch copy of the Zig project with the line
+`if (self.previous) |p| oldest = @min(oldest, p.txn_id);` deleted:
+18 of 35 tests fail.
 
-Why: let the torn commit be T. T wrote only into slots that were free when T
-started. A slot is free at that point only if the root of T-1 cannot reach it
-(pages freed by T-1 were reachable from T-2, not from T-1). So the tree of
-T-1 is untouched by T. The pages that T itself freed are reachable from T-1,
-and they are still intact because nothing ran after T. If the rule were
-wrong, say if T could reuse pages it freed itself, the range scan after the
-fallback would differ from the saved oracle copy or `validate` would report a
-bound or count violation.
+- Most of them fail in `validate` with `error.ReachablePageIsFree`: the walk
+  of the previous root (invariant 10) reaches a page that is on the free
+  list. That happens after the very first commit that replaces a page, so
+  every test that validates a database with two or more commits reports it.
+  This is the purpose of putting the invariant into `validate`: the bug shows
+  without any crash.
+- The tests that count pages fail on their numbers (for example "a put
+  copies exactly the root-to-leaf path": `expected 2, found 0` released).
+- "newest slot unreadable while the next commit is in flight" fails with
+  `error.CorruptTree` from `reopen`. That is the smallest history:
+
+  ```zig
+  var db = try buildCanonical(gpa);          // 12 commits; slots: 0 = txn 12, 1 = txn 11
+  db.crash_after = 3;                        // txn 13 writes its 3 pages ...
+  _ = db.put(gpa, 13, 1300) catch {};        // ... and loses power before its meta write
+  db.store.meta_slots[0][3] ^= 1;            // the slot of txn 12 is unreadable
+  try db.reopen(gpa);                        // only txn 11 is left
+  ```
+
+  Without the line, transaction 13 took its page ids from pages that
+  transaction 12 had freed, and the tree of transaction 11 still used them.
+  The walk from 11's root meets a page whose `written_by` is 13 and stops.
+  One crash is not enough to show this, and neither is one unreadable slot
+  at rest: it takes both, with a commit in flight. That is why the first
+  version of this chapter passed millions of single-fault cases with the
+  bug in place.
+
+Before `reopen` checked the tree it walked, the same history did not return
+an error at all. It indexed past the end of the store (the stale root named a
+store of 7 pages and reached page 10) and panicked.
 
 ## 4. Checksummed child pointers
 
@@ -152,9 +184,14 @@ Not implemented; an outline of the constraints.
   list. A workable order is to reserve the pages for the new list first, then
   serialise the list with those pages already removed.
 - Pending entries need their `freed_by` tag in the file. Snapshots are
-  in-memory, so after a restart every pending entry of a transaction up to
-  the recovered one is releasable; entries written by a lost commit are never
-  seen, because the recovered meta slot points at the older list.
+  in-memory, so after a restart the pending entries of older transactions
+  are releasable. The entries of the recovered transaction itself are not, as
+  long as the other meta slot is readable: its root still reaches those
+  pages. Entries written by a lost commit are never seen, because the
+  recovered meta slot points at the older list.
+- The list pages of the previous version must stay unwritten for one more
+  commit as well, for the same reason as tree pages: the fallback slot
+  points at them.
 
 LMDB is usually described as keeping exactly such a list in a second B-tree
 keyed by transaction id; that is from memory and unverified.

@@ -31,6 +31,9 @@
 .ch30-hint { font-size: .88rem; color: var(--bt-muted); margin: 0 0 8px; min-height: 1.3em; }
 /* The scenario labels are long; on a phone the select must not widen the page. */
 #fig-op .bt-select { max-width: calc(100vw - 120px); }
+.ch30-show { font-size: .74rem; padding: 2px 8px; min-height: 0; margin-left: auto; }
+.ch30-col.is-folded .ch30-view, .ch30-col.is-folded .ch30-log { display: none; }
+.ch30-col.is-folded { opacity: .8; }
 .ch30-note { font-size: .9rem; color: var(--bt-muted); }
 .ch30-refs details { display: inline; }
 .ch30-refs summary { cursor: pointer; display: inline-block; padding: 4px 0; }
@@ -157,11 +160,25 @@ is the program counter, the path and the carry are the local variables, and thei
     return chip;
   });
   function column(title, sub) {
-    var view = el('div');
+    var view = el('div.ch30-view');
     var log = el('p.ch30-log');
-    var box = el('div.ch30-col', el('h3', title, el('small', sub)), view, log);
-    return { box: box, view: new BTViz.TreeView(view, { minHeight: 150, maxHeight: 210, ariaLabel: title + ' tree' }), log: log };
+    // Narrow screens only (see renderLanes): the tree of the engine that is
+    // not acting in this step is folded away, and this button brings it back.
+    var show = el('button.bt-btn.ch30-show', { type: 'button', onclick: function () { col.keep = !col.keep; applyResting(); } }, 'show its tree');
+    var box = el('div.ch30-col', el('h3', title, el('small', sub), show), view, log);
+    var col = { box: box, view: new BTViz.TreeView(view, { minHeight: 150, maxHeight: 210, ariaLabel: title + ' tree' }), log: log, show: show, keep: false, resting: false };
+    return col;
   }
+  function applyResting() {
+    [colPg, colTu].forEach(function (c) {
+      var folded = narrow.matches && c.resting && !c.keep;
+      c.box.classList.toggle('is-folded', folded);
+      c.show.hidden = !(narrow.matches && c.resting);
+      c.show.textContent = c.keep ? 'fold its tree' : 'show its tree';
+      c.show.setAttribute('aria-expanded', folded ? 'false' : 'true');
+    });
+  }
+  var narrow = window.matchMedia('(max-width: 820px)');
   var colPg = column('PostgreSQL nbtree', 'B-link B+tree: high keys (dashed), right links, many writers');
   var colTu = column('Turso (SQLite format)', 'index B-tree: keys in interior pages too, no links, one write transaction (WAL mode)');
   var lanesBox = el('div.ch30-lanes');
@@ -169,10 +186,10 @@ is the program counter, the path and the carry are the local variables, and thei
   var lanes = new BTViz.Lanes(lanesBox, {});
   // The trees, their caption and the step buttons belong together. On a
   // narrow screen the lanes (a log of what was done) go below the buttons.
-  var narrow = window.matchMedia('(max-width: 820px)');
   function placeLanes() {
     lanesBox.classList.toggle('is-below', narrow.matches);
     if (narrow.matches) fig.legend.parentNode.insertBefore(lanesBox, fig.legend); else fig.stage.appendChild(lanesBox);
+    applyResting();
   }
   narrow.addEventListener('change', placeLanes);
   placeLanes();
@@ -185,6 +202,18 @@ is the program counter, the path and the carry are the local variables, and thei
     colTu.view.render(L.turso.state, L.turso.highlight);
     colPg.box.classList.toggle('is-acting', step.engine === 'pg');
     colTu.box.classList.toggle('is-acting', step.engine === 'turso');
+    // On a narrow screen the two trees are stacked. The tree of the engine
+    // that is not acting is folded, so that the acting tree, the caption and
+    // the step buttons are on one screen. Before and after the insert both show.
+    colPg.resting = step.engine === 'turso';
+    colTu.resting = step.engine === 'pg';
+    applyResting();
+    // Keep the page the step is about inside the tree's box.
+    var acting = step.engine === 'pg' ? colPg : step.engine === 'turso' ? colTu : null;
+    if (acting) {
+      var hl = L[step.engine].highlight, target = hl.cursor ? hl.cursor.node : Object.keys(hl.nodes || {})[0];
+      if (target) acting.view.scrollToNode(target);
+    }
     colPg.log.innerHTML = '<b>WAL so far:</b> ' + (L.pg.wal.length ? L.pg.wal.map(esc).join(' · ') : 'nothing yet') +
       '<br><b>Dirty buffers:</b> ' + (L.pg.dirty.length ? L.pg.dirty.map(function (d) { return d === 0 ? 'metapage' : 'blk ' + d; }).join(', ') : 'none');
     colTu.log.innerHTML = '<b>WAL so far:</b> ' + (L.turso.last === 6 ? L.turso.wal.map(esc).join(' · ') : 'nothing (pages are logged at commit)') +

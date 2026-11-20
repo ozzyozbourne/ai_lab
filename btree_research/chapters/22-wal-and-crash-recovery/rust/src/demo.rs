@@ -12,7 +12,6 @@
 use std::io::Write;
 
 use crate::base_disk_btree::{DiskBTree, TreeError};
-use crate::base_page_storage::Storage as _;
 use crate::base_workload::Model;
 use crate::crash::{self, CrashMode, Loop, Outcome};
 use crate::db::{Db, DbError, Options};

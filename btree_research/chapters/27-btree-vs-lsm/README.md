@@ -129,8 +129,8 @@ last `get 15` pays. A run is a small static tree, and it grows taller.
 ## The counting model, and what it leaves out
 
 Both structures live on a **counted block device** (`device.zig`,
-`device.rs`). It holds no bytes. It counts blocks read, blocks written and
-blocks allocated. Only counts are printed, never timings.
+`device.rs`). It holds no bytes; it counts blocks read, written and
+allocated. Only counts are printed, never timings.
 
 One rule for both structures:
 
@@ -161,12 +161,12 @@ Read every number below with these five limits:
    written once per checkpoint.
 4. **Bloom filters only in separate rows.** Without a filter, a lookup probes
    every run whose key range covers the key. Real LSM-trees rely on a **Bloom
-   filter** per run, kept in RAM, that answers "certainly not here" for most
-   absent keys (textbook; Milvus keeps one per segment and TigerBeetle none,
-   see "In real databases"). That one feature decides the read comparison,
-   so read amplification is printed twice: without filters, and measured on a
-   second LSM-tree with a filter per run (10 bits of RAM per slot, 7 hash
-   functions). The filter rows do not count that RAM.
+   filter** per run, in RAM, that answers "certainly not here" for most
+   absent keys (textbook; Milvus keeps one per segment, TigerBeetle none).
+   That one feature decides the read comparison, so read amplification is
+   printed twice: without filters, and measured on a second LSM-tree with a
+   filter per run (10 bits of RAM per slot, 7 hash functions). The filter
+   rows do not count that RAM.
 5. **A block is a block.** One appended in sequence by a flush or a
    compaction counts the same as one written at a position chosen by the
    key. On real devices the two can cost differently; that is a textbook
@@ -177,12 +177,11 @@ Read every number below with these five limits:
 
 ### Zig
 
-`base_*.zig` is the B+tree of chapter 07. Every change is marked `ch27:`.
-The tree gets a `dev: Device` field and four hooks: `touch(id)` is called
-wherever the algorithms look at a node (one block read, `index` for an
-internal node, `data` for a leaf), `dirty(id)` wherever they change one, and
-`allocNode` / `freeNode` replace the arena calls. Each operation ends with
-`dev.endOp()`, which writes each dirty block once.
+`base_*.zig` is the B+tree of chapter 07; every change is marked `ch27:`.
+The tree gets a `dev: Device` field and hooks: `touch(id)` wherever the
+algorithms look at a node (one block read), `dirty(id)` wherever they change
+one. Each operation ends with `dev.endOp()`, which writes each dirty block
+once.
 
 `memtable.zig` is a skip list (textbook) whose nodes come from an arena; see
 "Allocator notes". A tombstone is a node with `value == null`.
@@ -253,19 +252,7 @@ which come next; all rows and the printed limits are in
   SPACE AMPLIFICATION (at the peak)             1.54      2.14
 ```
 
-Limits 1 to 5 apply. Reading it:
-
-- **Writes.** 8.39 slots per entry against 19.45, all in flushes and
-  compactions. With one log block per write the LSM-tree is at 23.39, above
-  the B+tree; real engines land in between (limits 2 and 3).
-- **The spike.** The largest single write cost the B+tree 8 blocks and the
-  LSM-tree 1115, because this model merges a whole level in one operation.
-- **Space.** The B+tree's leaves are partly empty (1.54). The LSM-tree's runs
-  are packed (1.07), but a compaction holds its inputs and its output at
-  once: 2.14 at the peak. In the update-heavy workload it ends at 1.35 and
-  peaks at 2.50; compaction dropped 7409 stale versions and 1401 tombstones.
-- **Scans.** The LSM-tree merges every overlapping run: 9.97 blocks against
-  4.92. A filter cannot help a scan.
+Limits 1 to 5 apply to every row; "When to choose which" below reads them.
 
 **Point lookups** depend on the filter and on how many gets ask for a key
 that does not exist. From the rows `of those, for a key that is absent`,
@@ -313,18 +300,24 @@ positives, too few to compare. Scans still pay for every level.
 
 By these counts, within the five limits:
 
-- **An LSM-tree fits** when writes dominate: 8.39 slots written per entry
-  against 19.45, all appended in sequence, which the count does not reward
-  (limit 5). Data at rest is more compact (1.07 against 1.54). The price is
-  RAM for filters if point lookups matter, spare device space for compaction
-  (2.14 at the peak) and compaction work that must be paced.
-- **A B+tree fits** when reads dominate, above all short scans (4.92 blocks
-  against 9.97; no filter helps), when every write should cost about the same
-  (8 blocks at worst against 1115), and when the device has no room to spare
-  (its peak is its end size).
-- **What narrows the gaps.** A log narrows the write gap from both sides
-  (limits 2 and 3). A cache lowers the read cost of both, and a filter the
-  LSM-tree's point lookups; TigerBeetle counts on the cache (see below).
+- **An LSM-tree fits when writes dominate.** It writes 8.39 slots per entry
+  against 19.45, all in flushes and compactions, appended in sequence, which
+  the count does not reward (limit 5). Part of that gap is the missing log:
+  with one log block per write it is at 23.39, and real engines land in
+  between (limits 2 and 3). Data at rest is more compact too: packed runs
+  (1.07) against partly empty leaves (1.54).
+- **Its price** is RAM for filters if point lookups matter, and spare device
+  space: a compaction holds its inputs and its output at once (2.14 at the
+  peak). Overwrites and deletes add to it. The update-heavy workload ends at
+  1.35 and peaks at 2.50, and compaction dropped 7409 stale versions and 1401
+  tombstones on the way.
+- **A B+tree fits when reads dominate**, above all short scans: 4.92 blocks
+  against 9.97, because the LSM-tree merges every overlapping run and no
+  filter helps. It also fits when every write should cost about the same
+  (8 blocks at worst against 1115; pacing spreads the LSM-tree's work but
+  does not remove it) and when the device has no room to spare.
+- **A cache narrows the read gap for both**, and TigerBeetle counts on it
+  (see below).
 
 These are block counts from one small model, not measurements of an engine.
 Trust the direction of each row more than its size.
@@ -383,11 +376,10 @@ B-tree (see `research/tigerbeetle.md`, section 0).
   overlapping tables from level B
   (`tigerbeetle/src/lsm/compaction.zig:55-61`). Merging a whole level at once,
   as here, is simpler and produces the 1115-block spike.
-- *Pacing.* Compaction is scheduled by commit number in "bars" of 32 beats by
-  default (`tigerbeetle/src/config.zig:164`), so that "At the end of every
-  beat, there is space in mutable table for the next beat"
-  (`tigerbeetle/docs/internals/lsm.md:61`): the work is spread over the
-  operations.
+- *Pacing.* Compaction is spread over "bars" of 32 beats by default
+  (`tigerbeetle/src/config.zig:164`), so that "At the end of every beat,
+  there is space in mutable table for the next beat"
+  (`tigerbeetle/docs/internals/lsm.md:61`).
 - *Lookups and scans.* A lookup finds at most one table per level
   (`tigerbeetle/src/lsm/manifest.zig:428-432`). The research notes found no
   bloom filter in `src/lsm/`, only a TODO
@@ -422,12 +414,12 @@ it runs.
 
 **Runs: everything reserved up front.** `Builder.init` makes the only
 allocations of a flush or compaction: the slots, sized for the sum of the
-inputs, and the filter's bits if one is asked for (`errdefer` frees the slots
-when the second fails). If a reservation fails, nothing has been read or
-written. `Filter.seal` later hands back the surplus with `resize`, which may
-refuse but cannot fail. The tests use `checkAllAllocationFailures` and a
-`FailingAllocator`, with and without filters, to check that a failed write
-changes no answer and that the next write finishes the interrupted work.
+inputs, and the filter's bits (`errdefer` frees the slots when the second
+fails). If a reservation fails, nothing has been read or written.
+`Filter.seal` later hands back the surplus with `resize`, which may refuse
+but cannot fail. The tests inject failures (`checkAllAllocationFailures`,
+`FailingAllocator`), with and without filters: a failed write changes no
+answer, and the next write finishes the interrupted work.
 
 **B+tree.** Unchanged from chapter 07. The device adds no allocation; its pin
 table is a fixed array of 128 entries.

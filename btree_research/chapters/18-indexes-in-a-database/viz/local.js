@@ -9,8 +9,9 @@
  * the self-tests in index.html compare its leaves and its counters with
  * expected_output.txt.
  *
- * Differences from the programs, all stated on the page: no `code` column and
- * no delete; customer and day are limited to 0..99 and ids to 1..999 so that
+ * Differences from the programs, stated on the page (note under the comparison
+ * table) and in the README: no `code` column, so an insert makes 3 descents
+ * instead of 5, and no delete; customer and day are limited to 0..99 and ids to 1..999 so that
  * a composite key fits a JavaScript number:
  *     by_customer_day key = (customer * 100 + day) * 1000 + locator
  *     heap primary key    = id * 1000 + TID

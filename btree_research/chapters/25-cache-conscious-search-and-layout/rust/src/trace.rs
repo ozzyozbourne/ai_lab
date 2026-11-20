@@ -231,6 +231,11 @@ impl Tracer for Trace {
 
     fn prefetch(&mut self, index: usize) {
         self.prefetches += 1;
+        // Indexing would panic anyway; this names the limit that was exceeded.
+        assert!(
+            self.pending_len < MAX_PENDING,
+            "trace: more than MAX_PENDING hints between two comparisons"
+        );
         self.pending[self.pending_len] = self.layout.line_of(index);
         self.pending_len += 1;
     }
@@ -317,6 +322,37 @@ mod tests {
         assert_eq!(t.uncovered, 1);
         assert_eq!(t.prefetches, 3);
         assert_eq!(t.key_lines(), 3);
+    }
+
+    // Regression (review round 2, G-R2-9): the Zig twin guarded `pending` with
+    // an assert only. The buffer must take exactly `MAX_PENDING` hints between
+    // two comparisons, and be empty again after the comparison.
+    #[test]
+    fn trace_max_pending_hints_between_two_comparisons_fit_and_all_get_lead_time() {
+        let mut t = Trace::new(Layout::KEYS);
+        for round in 0..3 {
+            for i in 0..MAX_PENDING {
+                t.prefetch(8 * (1 + round * MAX_PENDING + i));
+            }
+            assert_eq!(t.pending_len, MAX_PENDING);
+            t.cmp(0); // lead time for all of them; the buffer is free again
+            assert_eq!(t.pending_len, 0);
+        }
+        for i in 0..3 * MAX_PENDING {
+            t.cmp(8 * (1 + i)); // every one of these lines was hinted in time
+        }
+        assert_eq!(t.uncovered, 1); // only line 0
+        assert_eq!(t.prefetches as usize, 3 * MAX_PENDING);
+        assert_eq!(t.key_lines() as usize, 3 * MAX_PENDING + 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "more than MAX_PENDING hints")]
+    fn trace_one_hint_too_many_between_two_comparisons_panics() {
+        let mut t = Trace::new(Layout::KEYS);
+        for i in 0..=MAX_PENDING {
+            t.prefetch(8 * i);
+        }
     }
 
     // Regression (review round 1, G1): reads of the rank / child array were

@@ -94,7 +94,10 @@ const Options = struct {
 
 const max_snapshots = 8;
 
-fn run(o: Options) !void {
+/// Proof that the runs went where the danger is, summed over all of them.
+const Coverage = struct { pages_recycled: usize = 0, pages_reused: usize = 0, moved_right: usize = 0 };
+
+fn run(o: Options, coverage: *Coverage) !void {
     const gpa = testing.allocator;
     var rng: Rng = .init(o.seed);
     var db: Db = .init(o.order);
@@ -230,6 +233,9 @@ fn run(o: Options) !void {
     try testing.expectEqual(0, db.store.versions.liveCount());
     try testing.expectEqual(0, report.pages_waiting);
     try db.validate();
+    coverage.pages_recycled += db.index.stats.pages_recycled;
+    coverage.pages_reused += db.index.stats.pages_reused;
+    coverage.moved_right += db.reads.moved_right;
 }
 
 /// Ends the current version of `key` in the oracle; returns its value.
@@ -258,6 +264,7 @@ const orders = [_]usize{ 3, 4, 5, 8, 16 };
 const key_spaces = [_]u64{ 6, 20, 60, 200 };
 
 test "fuzz: paused scans survive writers, vacuum and page deletion in any interleaving" {
+    var coverage: Coverage = .{};
     for (1..9) |seed| {
         for (orders) |order| {
             try run(.{
@@ -267,20 +274,24 @@ test "fuzz: paused scans survive writers, vacuum and page deletion in any interl
                 .key_space = key_spaces[seed % 4],
                 .check_every_step = seed % 2 == 0,
                 .bottom_up = seed % 3 != 0,
-            });
+            }, &coverage);
         }
     }
+    // Pages were freed and handed to later splits, and scans did land on dead pages.
+    try testing.expect(coverage.pages_recycled > 100);
+    try testing.expect(coverage.pages_reused > 100);
+    try testing.expect(coverage.moved_right > 100);
 }
 
 test "fuzz: the same fuzzer catches recycling that ignores the horizon" {
     var caught: usize = 0;
+    var coverage: Coverage = .{};
     for (1..13) |seed| {
-        run(.{ .seed = seed, .order = 4, .steps = 800, .key_space = 60, .check_every_step = false, .bottom_up = true, .cheat = true }) catch |err| {
+        run(.{ .seed = seed, .order = 4, .steps = 800, .key_space = 60, .check_every_step = false, .bottom_up = true, .cheat = true }, &coverage) catch |err| {
             // Always the first symptom: the handle is freed before any scan can trip over it.
             try testing.expectEqual(error.PausedScanPageRecycled, err);
             caught += 1;
         };
     }
-    try testing.expectEqual(CAUGHT, caught);
+    try testing.expectEqual(5, caught); // of 12 seeds; the Rust test finds the same five
 }
-const CAUGHT = 0; // of 12 seeds; the Rust test finds the same number

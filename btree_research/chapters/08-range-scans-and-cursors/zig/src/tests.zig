@@ -143,6 +143,92 @@ test "tree.range and tree.rangeBackward on the README examples" {
     try testing.expectEqual(null, inverted.next());
 }
 
+/// Keys and probes for the two ends of the key space.
+const max_u64 = std.math.maxInt(u64);
+const extreme_keys = [_]u64{ 0, 1, 2, 500, 1 << 40, max_u64 - 2, max_u64 - 1, max_u64 };
+const extreme_probes = [_]u64{ 0, 1, 2, 3, 500, max_u64 - 3, max_u64 - 2, max_u64 - 1, max_u64 };
+
+/// A tree that really stores 0 and maxInt(u64), inserted from both ends
+/// inward. The value is `~key` (`key * 100` would overflow).
+fn buildExtremes(gpa: Allocator, order: usize) !Tree {
+    var tree: Tree = .init(order);
+    errdefer tree.deinit(gpa);
+    for ([_]u64{ max_u64, 0, max_u64 - 1, 1, 500, max_u64 - 2, 2, 1 << 40 }) |k| _ = try tree.put(gpa, k, ~k);
+    try tree.validate();
+    return tree;
+}
+
+/// One scan over the tree of `buildExtremes`, compared with `expected`.
+fn expectExtremeScan(comptime C: type, arena: Allocator, tree: *const Tree, lo: Bound, hi: Bound, direction: Direction, expected: []const u64) !void {
+    const cursor: C = if (C == LinkCursor) .init(.{}) else .init(try StackPosition.init(arena));
+    var it: Scan(C) = .init(tree, cursor, lo, hi, direction);
+    for (expected) |k| try testing.expectEqual(Entry{ .key = k, .value = ~k }, it.next());
+    try testing.expectEqual(null, it.next());
+    try testing.expectEqual(null, it.next());
+}
+
+test "u64 extremes stored in the tree: 0, 1, max-1 and max under every bound kind" {
+    const gpa = testing.allocator;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    for ([_]usize{ 3, 4, 16 }) |order| {
+        var tree = try buildExtremes(gpa, order);
+        defer tree.deinit(gpa);
+
+        var checked: usize = 0;
+        for (0..3) |lo_kind| for (0..3) |hi_kind| for (extreme_probes) |lo_key| for (extreme_probes) |hi_key| {
+            _ = arena_state.reset(.retain_capacity);
+            const lo = makeBound(lo_kind, lo_key);
+            const hi = makeBound(hi_kind, hi_key);
+            var expected: std.ArrayList(u64) = .empty;
+            for (extreme_keys) |k| if (bounds.contains(lo, hi, k)) try expected.append(arena, k);
+
+            try expectExtremeScan(LinkCursor, arena, &tree, lo, hi, .forward, expected.items);
+            try expectExtremeScan(StackCursor, arena, &tree, lo, hi, .forward, expected.items);
+            std.mem.reverse(u64, expected.items);
+            try expectExtremeScan(LinkCursor, arena, &tree, lo, hi, .backward, expected.items);
+            try expectExtremeScan(StackCursor, arena, &tree, lo, hi, .backward, expected.items);
+            checked += 1;
+        };
+        try testing.expectEqual(9 * extreme_probes.len * extreme_probes.len, checked);
+
+        // Seeks at the two ends: "greater than the largest u64" and "less
+        // than 0" have no answer, and must not wrap around to find one.
+        var pair = try Pair.init(gpa);
+        defer pair.deinit();
+        try testing.expectEqual(null, try pair.seek(&tree, .{ .gt = max_u64 }));
+        try testing.expectEqual(State.after_last, pair.link.state);
+        try testing.expectEqual(max_u64, try pair.seek(&tree, .{ .ge = max_u64 }));
+        try testing.expectEqual(max_u64, try pair.seek(&tree, .{ .le = max_u64 }));
+        try testing.expectEqual(max_u64 - 1, try pair.seek(&tree, .{ .lt = max_u64 }));
+        try testing.expectEqual(max_u64, try pair.next(&tree));
+        try testing.expectEqual(null, try pair.next(&tree));
+        try testing.expectEqual(max_u64, try pair.prev(&tree));
+
+        try testing.expectEqual(null, try pair.seek(&tree, .{ .lt = 0 }));
+        try testing.expectEqual(State.before_first, pair.stack.state);
+        try testing.expectEqual(0, try pair.seek(&tree, .{ .le = 0 }));
+        try testing.expectEqual(0, try pair.seek(&tree, .{ .ge = 0 }));
+        try testing.expectEqual(1, try pair.seek(&tree, .{ .gt = 0 }));
+        try testing.expectEqual(0, try pair.prev(&tree));
+        try testing.expectEqual(null, try pair.prev(&tree));
+        try testing.expectEqual(0, try pair.next(&tree));
+
+        // Delete the entry under the cursor at each end: the saved key still
+        // says where to continue.
+        try testing.expectEqual(max_u64, try pair.seek(&tree, .last));
+        try testing.expectEqual(~@as(u64, max_u64), tree.delete(max_u64));
+        try testing.expectEqual(null, try pair.entry(&tree));
+        try testing.expectEqual(max_u64 - 1, try pair.prev(&tree));
+        try testing.expectEqual(0, try pair.seek(&tree, .first));
+        try testing.expectEqual(~@as(u64, 0), tree.delete(0));
+        try testing.expectEqual(1, try pair.next(&tree));
+        try tree.validate();
+    }
+}
+
 test "seek: ge, gt, le, lt on present keys, gaps, separators and both ends" {
     const gpa = testing.allocator;
     var tree = try buildCanonical(gpa);
@@ -453,6 +539,37 @@ test "insert while scanning: keys behind the cursor are not seen, keys ahead are
     try testing.expectEqual(null, it.next());
 }
 
+test "a cursor past the end stays there; a cursor on the last entry sees later inserts" {
+    const gpa = testing.allocator;
+    var tree = try buildCanonical(gpa);
+    defer tree.deinit(gpa);
+    var on_last = try Pair.init(gpa);
+    defer on_last.deinit();
+    var past_end = try Pair.init(gpa);
+    defer past_end.deinit();
+
+    try testing.expectEqual(30, try on_last.seek(&tree, .last));
+    try testing.expectEqual(30, try past_end.seek(&tree, .last));
+    try testing.expectEqual(null, try past_end.next(&tree)); // now after_last: no saved key
+    _ = try tree.put(gpa, 40, 4000);
+    // "On 30" continues with the first key > 30. "After the last entry" is
+    // a position of its own, and an entry appended later is in front of it.
+    try testing.expectEqual(40, try on_last.next(&tree));
+    try testing.expectEqual(null, try past_end.next(&tree));
+    try testing.expectEqual(State.after_last, past_end.link.state);
+    try testing.expectEqual(40, try past_end.prev(&tree));
+
+    // The mirror image at the front.
+    try testing.expectEqual(1, try on_last.seek(&tree, .first));
+    try testing.expectEqual(1, try past_end.seek(&tree, .first));
+    try testing.expectEqual(null, try past_end.prev(&tree));
+    _ = try tree.put(gpa, 0, 0);
+    try testing.expectEqual(0, try on_last.prev(&tree));
+    try testing.expectEqual(null, try past_end.prev(&tree));
+    try testing.expectEqual(State.before_first, past_end.stack.state);
+    try testing.expectEqual(0, try past_end.next(&tree));
+}
+
 test "handles are reused: the tree is emptied and refilled under a cursor" {
     const gpa = testing.allocator;
     var tree = try buildCanonical(gpa);
@@ -502,12 +619,14 @@ test "scratch arena: after the first scan, later scans allocate nothing from the
     }
     try testing.expectEqual(allocations, counting.allocations);
 
-    // Stepping itself never allocates: a failing allocator is never asked.
-    var failing: testing.FailingAllocator = .init(gpa, .{ .fail_index = 0 });
-    _ = failing.allocator();
+    // Stepping itself cannot allocate, and no assertion is needed to know it:
+    // `Scan.next`, `Cursor.next` and `Cursor.prev` take no allocator, and in
+    // Zig a function without an allocator has nothing to allocate with.
     var link = tree.range(.unbounded, .unbounded);
-    while (link.next()) |_| {}
-    try testing.expectEqual(0, failing.allocations);
+    var steps: usize = 0;
+    while (link.next()) |_| steps += 1;
+    try testing.expectEqual(sorted.len, steps);
+    try testing.expectEqual(allocations, counting.allocations);
 }
 
 /// One whole scan through an arena on top of `gpa`; used with
@@ -572,7 +691,7 @@ test "allocation failure in put: tree, version and cursors are unchanged" {
 
 test "model: random operations with cursors stepping in between, against the oracle" {
     const gpa = testing.allocator;
-    for ([_]usize{ 3, 4, 5, 16 }) |order| {
+    for ([_]usize{ 3, 4, 5, 6, 7, 8, 16 }) |order| {
         for ([_]u64{ 1, 2, 3 }) |seed| {
             const r = try model.run(gpa, .{ .order = order, .seed = seed, .count = 6000, .key_space = 200 });
             try testing.expectEqual(0, r.mismatches);
@@ -585,4 +704,18 @@ test "model: random operations with cursors stepping in between, against the ora
     // A tiny key space empties the tree again and again.
     const small = try model.run(gpa, .{ .order = 3, .seed = 9, .count = 6000, .key_space = 8 });
     try testing.expectEqual(0, small.mismatches);
+}
+
+test "model: the expected side sees every oracle entry, including the key maxInt(u64)" {
+    const gpa = testing.allocator;
+    var oracle: @import("ops.zig").Oracle = .{};
+    defer oracle.deinit(gpa);
+    for ([_]u64{ max_u64, 0, 7 }) |k| _ = try oracle.put(gpa, k, k);
+    // The half-open range of the oracle cannot name the last key ...
+    try testing.expectEqual(2, oracle.range(0, max_u64).len);
+    // ... so the model reads the whole entry slice instead.
+    const all = model.allEntries(&oracle);
+    try testing.expectEqual(3, all.len);
+    try testing.expectEqual(0, all[0].key);
+    try testing.expectEqual(max_u64, all[2].key);
 }

@@ -187,7 +187,8 @@ Text: <a href="../README.md">chapter 18</a>.</p>
       el('thead', {}, el('tr', {}, el('th', { text: 'layout' }), el('th.num', { text: 'page reads' }), el('th.num', { text: 'descents' }),
         el('th.num', { text: 'tree nodes' }), el('th.num', { text: 'row fetches' }), el('th.num', { text: 'heap reads' }))), cmpBody)),   // page reads first: it must be on screen on a phone
     el('p', { style: { color: 'var(--bt-muted)', fontSize: '.86rem' },
-      text: 'Page reads = tree nodes + heap reads, with no cache at all. A buffer pool (chapter 09) keeps the upper tree levels in memory, so real clustered lookups are cheaper than this count, and several rows on one heap page cost one read.' }));
+      text: 'Page reads = tree nodes + heap reads, with no cache at all. A buffer pool (chapter 09) keeps the upper tree levels in memory, so real clustered lookups are cheaper than this count, and several rows on one heap page cost one read. ' +
+        'This page leaves out the code column and its unique index by_code, so an INSERT here costs 3 descents where the chapter\'s programs count 5: theirs also probe by_code for a duplicate and write its entry.' }));
   var codeWrap = el('div.c18-code');
   cmp.stage.append(codeWrap);
   var lastFetchFig = null;

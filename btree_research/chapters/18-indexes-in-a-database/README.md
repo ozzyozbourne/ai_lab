@@ -435,4 +435,6 @@ Solutions: [`solutions.md`](solutions.md).
 - Previous: [chapter 17, key compression and deduplication](../17-key-compression-and-deduplication/README.md)
 - Next: [chapter 19, latching and lock coupling](../19-latching-and-lock-coupling/README.md)
 - Visualization: [`viz/index.html`](viz/index.html) runs one query on both layouts, step
-  by step, with the same counters. Its table has no `code` column and no delete.
+  by step, with the same counters, including `SELECT count(*) WHERE day = ?`, the
+  non-prefix predicate of section 5. Its table has no `code` column and no delete, so an
+  insert there costs 3 descents, not the 5 of section 6.

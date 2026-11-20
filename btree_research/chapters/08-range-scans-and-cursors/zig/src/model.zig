@@ -37,7 +37,13 @@ pub const Report = struct {
     mismatches: usize = 0,
 };
 
-const max_key = std.math.maxInt(u64);
+/// Every entry of the oracle, in key order. Not `oracle.range(0, maxInt(u64))`:
+/// that range is half open (lo <= key < hi), so an entry with the key
+/// maxInt(u64) would be missing from the expected side and a cursor that
+/// lost it would go unnoticed.
+pub fn allEntries(oracle: *const ops.Oracle) []const ops.Entry {
+    return oracle.entries.items;
+}
 
 pub fn run(gpa: Allocator, config: Config) !Report {
     var tree: Tree = .init(config.order);
@@ -83,7 +89,7 @@ pub fn run(gpa: Allocator, config: Config) !Report {
             },
         }
         // One step of the long-lived cursors, whatever just happened.
-        const all = oracle.range(0, max_key);
+        const all = allEntries(&oracle);
         const action = rng.below(8);
         var expected: ?ops.Entry = null;
         var got_link: ?Entry = null;
@@ -152,7 +158,7 @@ fn checkScan(arena: Allocator, tree: *const Tree, oracle: *const ops.Oracle, lo:
 
     var mismatches: usize = 0;
     var n: usize = 0;
-    const all = oracle.range(0, max_key);
+    const all = allEntries(oracle);
     for (0..all.len) |i| {
         const e = if (direction == .forward) all[i] else all[all.len - 1 - i];
         if (!bounds.contains(lo, hi, e.key)) continue;

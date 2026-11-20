@@ -144,7 +144,10 @@ pub const Trace = struct {
     /// A prefetch hint for the line holding key `index`.
     pub fn prefetch(self: *Trace, index: usize) void {
         self.prefetches += 1;
-        std.debug.assert(self.pending_len < max_pending);
+        // A real check, not an assert, for the same reason as in
+        // `LineSet.insert`: in ReleaseFast an assert is assumed true and a
+        // fifth hint would be written past the end of `pending`.
+        if (self.pending_len == max_pending) @panic("trace: more than max_pending hints between two comparisons");
         self.pending[self.pending_len] = @intCast(self.layout.lineOf(index));
         self.pending_len += 1;
     }
@@ -250,6 +253,23 @@ test "Trace: a hint with no comparison in between does not cover the read" {
     try std.testing.expectEqual(1, t.uncovered);
     try std.testing.expectEqual(3, t.prefetches);
     try std.testing.expectEqual(3, t.keyLines());
+}
+
+// Regression (review round 2, G-R2-9): the bound on `pending` was only an
+// assert. The buffer must take exactly `max_pending` hints between two
+// comparisons, and be empty again after the comparison.
+test "Trace: max_pending hints between two comparisons fit, and all get lead time" {
+    var t: Trace = .init(.keys);
+    for (0..3) |round| {
+        for (0..max_pending) |i| t.prefetch(8 * (1 + round * max_pending + i));
+        try std.testing.expectEqual(max_pending, t.pending_len);
+        t.cmp(0); // lead time for all of them; the buffer is free again
+        try std.testing.expectEqual(0, t.pending_len);
+    }
+    for (0..3 * max_pending) |i| t.cmp(8 * (1 + i)); // every one of these lines was hinted in time
+    try std.testing.expectEqual(1, t.uncovered); // only line 0
+    try std.testing.expectEqual(3 * max_pending, t.prefetches);
+    try std.testing.expectEqual(3 * max_pending + 1, t.keyLines());
 }
 
 // Regression (review round 1, G1): reads of the rank / child array were

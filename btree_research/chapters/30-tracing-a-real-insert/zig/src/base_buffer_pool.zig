@@ -1,5 +1,8 @@
+// Copied from chapters/12-disk-backed-bplus-tree/zig/src/base_buffer_pool.zig, which has it from:
 // Copied from chapters/09-pages-and-the-buffer-pool/zig/src/buffer_pool.zig; behaviour unchanged (only the
 // @import paths were renamed to the base_* files of this chapter).
+// One addition for chapter 30: `evictUnpinned` / `evict_unpinned`, which the tests use to empty the
+// pool between two steps of a resumable operation.
 //! buffer_pool.zig: a fixed number of in-memory page frames in front of a Pager.
 //!
 //! The tree code never reads the file itself. It asks the pool for a page id
@@ -298,6 +301,22 @@ pub const BufferPool = struct {
     pub fn flushAll(self: *BufferPool) Error!void {
         for (0..self.frames.len) |f| try self.flushFrame(@intCast(f));
         try self.pager.sync();
+    }
+
+    /// (Chapter 30.) Write back and drop every page that is not pinned, as if
+    /// memory pressure had pushed them all out. Returns how many were dropped.
+    pub fn evictUnpinned(self: *BufferPool) Error!u32 {
+        var dropped: u32 = 0;
+        for (self.frames, 0..) |*frame, f| {
+            if (frame.page_id == invalid_page_id or frame.pin_count > 0) continue;
+            try self.flushFrame(@intCast(f));
+            const removed = self.page_table.remove(frame.page_id);
+            assert(removed);
+            frame.* = .{};
+            self.stats.evictions += 1;
+            dropped += 1;
+        }
+        return dropped;
     }
 
     /// Which frame holds page `id` right now, if any (for tests and displays).

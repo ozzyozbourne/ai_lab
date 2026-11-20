@@ -1,3 +1,4 @@
+// Copied from chapters/12-disk-backed-bplus-tree/rust/src/base_slotted_page.rs, which has it from:
 // Copied from chapters/10-slotted-pages/rust/src/slotted_page.rs; unchanged.
 //! Chapter 10: a slotted page.
 //!

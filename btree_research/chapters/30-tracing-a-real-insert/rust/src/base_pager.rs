@@ -1,3 +1,4 @@
+// Copied from chapters/12-disk-backed-bplus-tree/rust/src/base_pager.rs, which has it from:
 // Copied from chapters/09-pages-and-the-buffer-pool/rust/src/pager.rs; behaviour unchanged (only the
 // crate:: paths were renamed to the base_* modules of this chapter).
 //! pager.rs: a file seen as an array of fixed-size pages.

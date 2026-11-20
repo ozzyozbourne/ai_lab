@@ -1,3 +1,4 @@
+// Copied from chapters/12-disk-backed-bplus-tree/rust/src/workload.rs; unchanged.
 //! workload.rs: seeded byte-string keys and values, and the oracle the tree
 //! is compared with. The Zig twin draws the same random numbers, so both
 //! languages run the same operations and print the same counters.

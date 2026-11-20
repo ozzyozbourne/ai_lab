@@ -1,4 +1,5 @@
 // Copied from common/zig/prng.zig; do not edit here
+// (taken over with the rest of chapters/12-disk-backed-bplus-tree/zig/src)
 //! SplitMix64: a tiny, fast, deterministic pseudo-random number generator.
 //!
 //! Source of truth: common/zig/prng.zig (twin: common/rust/prng.rs).

@@ -1,3 +1,4 @@
+// Copied from chapters/12-disk-backed-bplus-tree/zig/src/base_storage.zig, which has it from:
 // Copied from chapters/09-pages-and-the-buffer-pool/zig/src/storage.zig; behaviour unchanged (only the
 // @import paths were renamed to the base_* files of this chapter).
 //! storage.zig: the "disk" underneath the pager, as a small interface.

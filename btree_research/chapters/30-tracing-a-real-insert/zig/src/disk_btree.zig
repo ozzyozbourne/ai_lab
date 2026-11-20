@@ -1,3 +1,9 @@
+// Copied from chapters/12-disk-backed-bplus-tree/zig/src/disk_btree.zig. Changes for chapter 30, none of
+// which alters what `put` does or which bytes reach the file:
+//   * the steps of `put` (pinNode, pushRootDown, splitLeaf, insertSeparator, splitInterior) and the
+//     types they exchange (PathEntry, Carry) are `pub`, so that resumable.zig can call them one by one;
+//   * splitLeaf, insertSeparator and splitInterior take their scratch allocator as a parameter instead
+//     of using the tree's arena: a resumable operation brings its own arena, which must outlive the call.
 //! disk_btree.zig: a B+tree whose nodes are slotted pages in a file.
 //!
 //! Layers (each one only talks to the one below):
@@ -237,10 +243,10 @@ pub const DiskBTree = struct {
         KeyCountMismatch, // T8
     };
 
-    const PathEntry = struct { id: PageId, index: usize };
+    pub const PathEntry = struct { id: PageId, index: usize };
     /// What a split hands to the level above: `left` kept the keys below
     /// `sep`, the new page `right` got the keys from `sep` on.
-    const Carry = struct { sep: []const u8, left: PageId, right: PageId };
+    pub const Carry = struct { sep: []const u8, left: PageId, right: PageId };
     const Cell = struct { key: []const u8, value: []const u8 };
     const Entry = struct { key: []const u8, child: PageId };
 
@@ -341,7 +347,7 @@ pub const DiskBTree = struct {
     /// Fetch and pin page `id` as a tree node. A page that is not a node of
     /// this tree (for example a page of zeroes that a crash left behind) is
     /// reported as `Corrupt` and not pinned.
-    fn pinNode(self: *DiskBTree, id: PageId) Error!SlottedPage {
+    pub fn pinNode(self: *DiskBTree, id: PageId) Error!SlottedPage {
         if (id == meta_page_id or id >= self.pool.pager.pageCount()) return error.Corrupt;
         const page = SlottedPage.open(try self.pool.fetchPage(id));
         const known = page.kind() == kind_leaf or page.kind() == kind_interior;
@@ -401,19 +407,19 @@ pub const DiskBTree = struct {
             changed = true;
             try path.append(scratch, .{ .id = self.root, .index = 0 });
         }
-        var carry = try self.splitLeaf(id, key, value);
+        var carry = try self.splitLeaf(scratch, id, key, value);
         changed = true;
 
         while (true) {
             var parent = path.pop().?;
-            if (try self.insertSeparator(parent, carry)) return;
+            if (try self.insertSeparator(scratch, parent, carry)) return;
             if (path.items.len == 0) {
                 // The full parent is the root: same move, one level up. The
                 // child index stays valid because the cells moved unchanged.
                 parent.id = try self.pushRootDown();
                 try path.append(scratch, .{ .id = self.root, .index = 0 });
             }
-            carry = try self.splitInterior(parent, carry);
+            carry = try self.splitInterior(scratch, parent, carry);
         }
     }
 
@@ -422,7 +428,7 @@ pub const DiskBTree = struct {
     /// with no key and that new page as its only (rightmost) child. Returns
     /// the new page, which the caller then splits like any other page.
     /// Fails before changing anything.
-    fn pushRootDown(self: *DiskBTree) Error!PageId {
+    pub fn pushRootDown(self: *DiskBTree) Error!PageId {
         const root = try self.pool.fetchPage(self.root);
         errdefer self.pool.unpin(self.root, false);
         const child = try self.pool.newPage();
@@ -442,8 +448,7 @@ pub const DiskBTree = struct {
     /// `id`, so the leaf that pointed at it still does; the right half goes
     /// to a new page and is linked in after it. Fails before changing
     /// anything.
-    fn splitLeaf(self: *DiskBTree, id: PageId, key: []const u8, value: []const u8) Error!Carry {
-        const scratch = self.arena.allocator();
+    pub fn splitLeaf(self: *DiskBTree, scratch: Allocator, id: PageId, key: []const u8, value: []const u8) Error!Carry {
         const left_buf = try self.pool.fetchPage(id);
         errdefer self.pool.unpin(id, false);
 
@@ -484,7 +489,7 @@ pub const DiskBTree = struct {
     /// `carry.left`, there are now `left`, the separator and `right`.
     /// Returns false, with the parent untouched, if the separator does not
     /// fit.
-    fn insertSeparator(self: *DiskBTree, parent: PathEntry, carry: Carry) Error!bool {
+    pub fn insertSeparator(self: *DiskBTree, scratch: Allocator, parent: PathEntry, carry: Carry) Error!bool {
         const page = try self.pinNode(parent.id);
         errdefer self.pool.unpin(parent.id, false);
         if (page.kind() != kind_interior or parent.index > page.count()) return error.Corrupt;
@@ -499,7 +504,7 @@ pub const DiskBTree = struct {
         } else {
             // (same-size overwrite: happens in place and cannot fail; the
             // key is copied because `put` takes no slice of its own page)
-            const old_key = try self.arena.allocator().dupe(u8, page.key(parent.index));
+            const old_key = try scratch.dupe(u8, page.key(parent.index));
             page.put(old_key, &childBytes(carry.right)) catch unreachable;
         }
         // ...and the new cell (sep -> left) goes in front of it.
@@ -512,8 +517,7 @@ pub const DiskBTree = struct {
     /// `carry` at `parent.index`. Unlike in a leaf, the middle key MOVES up:
     /// it separates the two halves and is needed in neither. Fails before
     /// changing anything.
-    fn splitInterior(self: *DiskBTree, parent: PathEntry, carry: Carry) Error!Carry {
-        const scratch = self.arena.allocator();
+    pub fn splitInterior(self: *DiskBTree, scratch: Allocator, parent: PathEntry, carry: Carry) Error!Carry {
         const id = parent.id;
         const left_buf = try self.pool.fetchPage(id);
         errdefer self.pool.unpin(id, false);

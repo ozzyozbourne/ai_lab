@@ -1,3 +1,4 @@
+// Copied from chapters/12-disk-backed-bplus-tree/zig/src/base_pager.zig, which has it from:
 // Copied from chapters/09-pages-and-the-buffer-pool/zig/src/pager.zig; behaviour unchanged (only the
 // @import paths were renamed to the base_* files of this chapter).
 //! pager.zig: a file seen as an array of fixed-size pages.

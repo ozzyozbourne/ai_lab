@@ -407,15 +407,28 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     db.open.splice(index, 1);
     db.names.splice(index, 1);
     var after = C.horizon(db);
-    step('Snapshot ' + name + ' is closed. ' + (after > before
-      ? 'The horizon moves from ' + before + ' to ' + after + ': versions with <code>xmax ≤ ' + after + '</code> are now dead to everyone. Nothing in the index knows that yet.'
-      : 'The horizon stays at ' + after + '.'), { code: 'visible', log: 'close ' + name + ', horizon ' + after });
+    var text = 'Snapshot ' + name + ' is closed. ';
+    if (after > before) {
+      // What was waiting for exactly this move: deleted pages whose stamp it reached, versions it made dead.
+      var ready = C.deletedQueue(db).filter(function (id) { var st = C.page(db, id).stamp; return st > before && st <= after; });
+      var died = db.versions.slots.filter(function (v) { return v.free === undefined && v.xmax > before && v.xmax <= after; }).length;
+      text += 'The horizon moves from ' + before + ' to ' + after + '.';
+      if (ready.length) {
+        text += ' It has reached the stamp of ' + ready.map(function (id) { return '#' + id + ' (' + C.page(db, id).stamp + ')'; }).join(', ') +
+          ': no open snapshot is older than the unlink, so no reader can still hold ' + (ready.length === 1 ? 'that handle. The page' : 'those handles. The pages') + ' may now be recycled.';
+      }
+      if (died) text += ' ' + (died === 1 ? '1 version' : died + ' versions') + ' with <code>xmax ≤ ' + after + '</code> ' + (died === 1 ? 'is' : 'are') + ' now dead to everyone. Nothing in the index knows that yet.';
+      if (!ready.length && !died) text += ' Nothing was waiting for that: no version ended and no page was unlinked in between.';
+    } else {
+      text += 'The horizon stays at ' + after + '.';
+    }
+    step(text, { code: 'visible', log: 'close ' + name + ', horizon ' + after });
   }
   function doClose() {
     act('Close the oldest snapshot.', function () {
       // A paused scan needs its snapshot: that one entry is not offered for closing.
       var keep = -1, best = -1;
-      if (db.scan && !db.scan.done) keep = index('scan') >= 0 ? index('scan') : db.open.indexOf(db.scan.snapshot);
+      if (db.scan && !db.scan.done) keep = index(db.scan.name);
       db.open.forEach(function (s, i) { if (i !== keep && (best < 0 || s < db.open[best])) best = i; });
       if (best < 0) {
         steps.pop();
@@ -429,6 +442,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
   function opScanStart(snapshot, name) {
     beginOp();
     db.scan = C.seek(db, snapshot, 0, 1e9);
+    db.scan.name = name;                // the snapshot this scan lives on: closed when the scan ends
     step('A scan under snapshot ' + name + ' = ' + snapshot + ' descends to the leftmost leaf and remembers its handle, #' + db.scan.next +
       '. It has read nothing yet. Between two reads a scan holds no pointer into a page, only a page handle.',
       { hl: { pages: pg(db.scan.next) }, code: 'readPage', log: 'scan starts at #' + db.scan.next });
@@ -436,6 +450,13 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
   function scanStart() {
     act('Start a scan of the whole index.', function () {
       if (db.root === NIL) { steps.pop(); message('The index is empty: put a key first.'); return; }
+      // The button is disabled according to the step ON SCREEN, but act() may run this on a later
+      // state (a double-click, or a press while the first start is still being played): check here.
+      if (db.scan && !db.scan.done) {
+        steps.pop();
+        message('A scan is already paused' + (db.scan.next === NIL ? '' : ' before #' + db.scan.next) + '. Let it finish with "Scan: read next page" before starting another.');
+        return;
+      }
       var s = C.openSnapshot(db);
       db.names.push('scan');
       opScanStart(s, 'scan');
@@ -456,8 +477,11 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
         { state: at, hl: { pages: pg(id) }, code: 'readPage', question: i === 0 ? question : null, log: { html: 'move right past ' + p.state + ' #' + id, state: 'merge' } });
     });
     if (r.status === 'dangling') {
-      step('The saved link names #' + r.page + ', and that page is on the <b>free list</b>. There is nothing to read and no right link to follow: the programs return <code>error.DanglingLink</code>. This can only happen when a page was recycled while a snapshot older than its stamp was open.',
-        { code: 'readPage', log: { html: 'dangling link to #' + r.page, state: 'deleted' } });
+      var closed = releaseScan();
+      step('The saved link names #' + r.page + ', and that page is on the <b>free list</b>. There is nothing to read and no right link to follow: the programs return <code>error.DanglingLink</code>, and the scan ends here with what it had: ' +
+        k(c.out.map(function (row) { return row.key; }).join(' ') || 'nothing') + '.' + closed +
+        ' This can only happen when a page was recycled while a snapshot older than its stamp was open. It is the <b>lucky</b> failure: had a split reused the page first, the scan would have read it without noticing. To see that, press Empty and repeat the recipe with the puts <em>before</em> this read.',
+        { code: 'readPage', log: { html: 'dangling link to #' + r.page + ': the scan ends', state: 'deleted' } });
       return r;
     }
     if (r.status === 'end') {
@@ -479,12 +503,23 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     if (c.next === NIL) finishScan('That was the last leaf.');
     return r;
   }
+  /**
+   * A scan that has ended, normally or with an error, gives up its snapshot: otherwise it would hold
+   * the horizon back with nothing on screen to say why. The scripted scenarios are the exception:
+   * they close their snapshot S in a step of its own. Returns the sentence for the caption.
+   */
+  var scripted = false;
+  function releaseScan() {
+    var i = scripted ? -1 : db.names.indexOf(db.scan.name);
+    if (i < 0) return '';
+    db.open.splice(i, 1);
+    db.names.splice(i, 1);
+    return ' Its snapshot is closed; the horizon is ' + C.horizon(db) + '.';
+  }
   function finishScan(why) {
-    var c = db.scan, i = db.names.indexOf('scan');
+    var c = db.scan;
     c.done = true;
-    if (i >= 0) { db.open.splice(i, 1); db.names.splice(i, 1); }
-    step(why + ' The scan is finished: it returned ' + k(c.out.map(function (r) { return r.key; }).join(' ') || 'nothing') +
-      (i >= 0 ? '. Its snapshot is closed; the horizon is ' + C.horizon(db) + '.' : '.'), { log: 'scan finished' });
+    step(why + ' The scan is finished: it returned ' + k(c.out.map(function (r) { return r.key; }).join(' ') || 'nothing') + '.' + releaseScan(), { log: 'scan finished' });
   }
   function scanNext() {
     act('The scan reads its next page.', function () {
@@ -524,7 +559,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
       step('<b>Phase 1.</b> Leaf #' + p + ' is empty: the parent drops its downlink and hands its key range to the right sibling. The page is now <b>half-dead</b>: its edge from above is gone, so no search can reach it, but it is still in the leaf chain, between the same neighbours.',
         { hl: { pages: mk(p, 'merge') }, code: 'markHalfDead', log: { html: '#' + p + ' half-dead', state: 'merge' } });
     } else if (type === 'unlink') {
-      step('<b>Phase 2.</b> The left neighbour\'s right link now bypasses #' + p + ': the page drops out of the chain into the row of deleted pages. It is stamped with a fresh epoch, ' + info.stamp +
+      step('<b>Phase 2.</b> The left neighbour\'s right link now bypasses #' + p + ': the page drops out of the chain into the row of deleted pages. It is stamped with a new tick of the counter, ' + info.stamp +
         ', and <b>keeps its own right link</b> (the dashed arrow → ' + (info.next === NIL ? 'end' : '#' + info.next) + ') for anyone who is still on the way to it.',
         { hl: { pages: mk(p, 'deleted') }, code: 'unlink', log: { html: '#' + p + ' unlinked, stamp ' + info.stamp, state: 'deleted' } });
     } else if (type === 'recycle') {
@@ -664,7 +699,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
       opPut(111, 1110);
       opPut(112, 1120);
       while (!db.scan.done) opScanPage();
-      note('The scan returned 10, 20 and 120. Rows 90, 100 and 110 exist and were visible to its snapshot, but it never saw leaves #5 and #8, and nothing reported an error. The tree itself is perfectly valid.');
+      note('The scan returned 10, 20 and 120. Rows 90, 100 and 110 exist and were visible to its snapshot, but it never saw leaves #5 and #8, and nothing reported an error. The tree itself is perfectly valid. (Snapshot S is still open, as in the programs.)');
     }
   };
 
@@ -672,7 +707,8 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     db = C.create(4);
     db.names = [];
     steps = [];
-    SCENARIOS[name]();
+    scripted = true;
+    try { SCENARIOS[name](); } finally { scripted = false; }
     return db;
   }
   function resetAll() {

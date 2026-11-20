@@ -250,4 +250,25 @@ mod tests {
         assert_eq!(t.arena[leaf_at(&t, 1)].keys, [11]); // it is there ...
         assert_eq!(t.get(11), None); // ... but search goes to [12 15 17]
     }
+
+    #[test]
+    fn two_defects_validate_reports_the_one_its_walk_meets_first() {
+        // Leaf [7] is visited before leaf [12 15 17], so its defect wins.
+        let mut a = HandTree::new(4);
+        canonical(&mut a).unwrap();
+        swap_two_keys(&mut a).unwrap();
+        key_on_wrong_side(&mut a).unwrap();
+        assert_eq!(a.validate(), Err(ValidateError::KeyOutsideParentBounds));
+
+        // A disordered first leaf and an erased last child pointer. This
+        // walk compares the number of children before it descends, so it
+        // reports MissingChild. The Zig twin looks at child slot 3 only
+        // after children 0 to 2 and reports KeysOutOfOrder for the same tree.
+        let mut b = HandTree::new(4);
+        canonical(&mut b).unwrap();
+        let first = leaf_at(&b, 0);
+        b.arena[first].keys.swap(0, 1);
+        erase_child(&mut b).unwrap();
+        assert_eq!(b.validate(), Err(ValidateError::MissingChild));
+    }
 }

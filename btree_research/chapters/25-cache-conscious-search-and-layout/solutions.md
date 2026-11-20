@@ -25,7 +25,11 @@ is cheaper than a branch that is taken half the time. The same shape is in Tiger
 
 ## 2. Reading the assembly
 
-Put three thin exported wrappers in a file next to a copy of `search.zig` and `trace.zig`:
+The recipe below was run with Zig 0.17.1 and rustc 1.97.0 on x86-64 Linux (an Intel Xeon
+with AVX-512). It reproduces the README's statement; other versions may not.
+
+**Zig.** Copy `search.zig` and `trace.zig` into an empty directory and add three files,
+one exported function each. `one_branch.zig`:
 
 ```zig
 const search = @import("search.zig");
@@ -33,28 +37,77 @@ const trace = @import("trace.zig");
 export fn h_branch(p: [*]const u64, n: usize, key: u64) usize {
     return search.lowerBoundHalving(.branch, false, p[0..n], key, trace.NoTrace{});
 }
-// ... h_arith with .arithmetic, h_hinted with .hinted
 ```
 
+`one_arithmetic.zig` and `one_hinted.zig` are the same with `h_arithmetic` /
+`.arithmetic` and `h_hinted` / `.hinted`. Compile each on its own:
+
 ```
-zig build-obj -O ReleaseFast wrappers.zig -femit-asm=wrappers.s
+zig build-obj -O ReleaseFast one_branch.zig     -fno-emit-bin -femit-asm=one_branch.s
+zig build-obj -O ReleaseFast one_arithmetic.zig -fno-emit-bin -femit-asm=one_arithmetic.s
+zig build-obj -O ReleaseFast one_hinted.zig     -fno-emit-bin -femit-asm=one_hinted.s
 ```
 
-In the loop body look at the instruction after `cmp qword ptr [...], rdx` (the key
-comparison). A `jb` / `jae` there is a data-dependent jump; a `cmovb` / `cmovae` is a
-conditional move. What we saw with Zig 0.17.1 on x86-64 is described in the README
-(jump for `.branch` and `.arithmetic`, `cmov` for the hinted form). Two traps:
+The function body is under the label `one_branch.h_branch:` (the exported name is an
+alias at the end of the file). In the loop look at the instruction after
+`cmp qword ptr [rdi + 8*rcx], rdx` (the key comparison; the registers may differ). A
+`jb` / `jae` there is a data-dependent jump; a `cmovb` / `cmovae` is a conditional move.
 
-- LLVM may merge functions whose code is identical after ignoring hints, so a wrapper
-  can end up as an alias of another (`h_hinted = h_branch` in the symbol table). Write
-  the loop out by hand in each exported function, or give them different surroundings,
-  to see each variant's own code.
-- In `Debug` mode nothing is optimised: every variant has jumps (and bounds checks).
-  The question only makes sense for optimised builds, and the answer can change between
-  `ReleaseSafe` (bounds checks stay) and `ReleaseFast`.
+| Mode | `.branch` | `.arithmetic` | `.hinted` |
+|---|---|---|---|
+| `ReleaseFast` | `jb` | `jb` | `cmovb` |
+| `ReleaseSmall` | `jb` | `jb` | `cmovb` |
 
-For Rust: `rustc -O --crate-type lib --emit asm` on a file with `#[unsafe(no_mangle)]`
-functions, or `cargo rustc --release -- --emit asm`.
+So the answer did not change between these two modes. In `ReleaseSafe` each file
+compiles to thousands of lines, because the panic and formatting code comes along; we
+did not locate the loop there and make no claim about it. In `Debug` nothing is
+optimised and the question is meaningless.
+
+**Rust.** In the chapter's `rust/` directory create three files next to `src/`.
+`h_branch.rs`:
+
+```rust
+#![allow(dead_code)]
+#[path = "src/layout.rs"] mod layout;
+#[path = "src/prng.rs"] mod prng;
+#[path = "src/search.rs"] mod search;
+#[path = "src/trace.rs"] mod trace;
+
+#[unsafe(no_mangle)]
+pub fn h_branch(keys: &[u64], key: u64) -> usize {
+    search::lower_bound_halving(search::Select::Branch, false, keys, key, &mut trace::NoTrace)
+}
+```
+
+and the same with `Select::Arithmetic` and `Select::Hinted`. Then, for each:
+
+```
+rustc -O --crate-type lib --emit asm -o h_branch.s h_branch.rs
+```
+
+(AT&T syntax: the comparison is `cmpq %rdx, (%rdi,%rcx,8)` or similar.) We saw a jump
+after the key comparison for `Branch` and `Arithmetic` and a `cmov` for `Hinted`. Delete
+the three files and the `.s` files afterwards.
+
+**The trap: all three in one file.** Put the three Zig wrappers in one file and compile
+it the same way. The end of the assembly then reads:
+
+```
+h_hinted = all.h_branch
+h_arith = all.h_arith
+h_branch = all.h_branch
+```
+
+`h_hinted` is an alias of `h_branch`, and the one shared body has `jb` in its loop. LLVM's
+function merging treats two functions as identical when they differ only in the
+unpredictable hint, and keeps one. The Rust file with all three functions ends with
+`h_hinted = h_branch` in the same way. Writing the loop out by hand in each exported
+function does not help, because the bodies are still identical apart from the hint.
+Separate files (separate compilation units) do.
+
+This is more than a trap for the exercise: in a real program a hinted function can be
+replaced by an unhinted twin, or be inlined into a caller where the compiler decides
+differently. The assembly of the final binary is the only evidence.
 
 ## 3. Upper bound
 
@@ -96,13 +149,14 @@ unconditional version is usually the better trade; for sixteen lines the early e
 Count lines with the tracer to see where the totals cross; time it with `--bench` on
 your machine to see where the cost crosses.
 
-## 5. Removing the `if (r < 8)` from the block tree
+## 5. Removing the select on `r < 8` from the block tree
 
 When the rank inside a node is 8, every key of the node is smaller than the needle and
-the best candidate is whatever the ancestors had found. The observation that makes this
-branch-free: for a given node that inherited candidate is *always the same key*. It is
-the key that follows the node's whole subtree in sorted order. It depends only on the
-node's position in the tree, not on the needle.
+the best candidate is whatever the ancestors had found. The chapter's code carries that
+candidate down as `slot`. The observation that makes it unnecessary: for a given node
+the inherited candidate is *always the same key*. It is the key that follows the node's
+whole subtree in sorted order. It depends only on the node's position in the tree, not
+on the needle.
 
 So give every node nine rank entries. Entries 0..7 are the ranks of its keys as before.
 Entry 8 is the sorted index of the first key greater than everything in this node's
@@ -114,15 +168,18 @@ fn fill(self: *BlockTree, sorted: []const u64, block: usize, next: *usize) void 
     if (block >= self.blockCount()) return;
     for (0..lanes) |j| {
         self.fill(sorted, block * fanout + j + 1, next);
-        if (next.* < sorted.len) { ...as before...  self.rank9[block * 9 + j] = next.*; ... }
-        else self.rank9[block * 9 + j] = sorted.len;
+        if (next.* < sorted.len) {
+            self.keys[block * lanes + j] = sorted[next.*];
+            self.rank9[block * 9 + j] = @intCast(next.*);
+            next.* += 1;
+        } else self.rank9[block * 9 + j] = @intCast(sorted.len);
     }
     self.fill(sorted, block * fanout + lanes + 1, next);
-    self.rank9[block * 9 + lanes] = next.*; // successor of the whole subtree
+    self.rank9[block * 9 + lanes] = @intCast(next.*); // successor of the whole subtree
 }
 ```
 
-The search then needs no running `result` at all. It remembers only the last node it
+The search then needs no running candidate at all. It remembers only the last node it
 visited and the rank there:
 
 ```zig
@@ -140,6 +197,11 @@ return if (blocks == 0) 0 else self.rank9[last * 9 + r];
 Why the last node is enough: if `r < 8` there, key `r` of that node is the smallest key
 that is `>=` the needle (its left child does not exist or the loop would have continued).
 If `r == 8`, entry 8 is the successor of the subtree, which is the inherited candidate.
+
+We ran this version against the linear scan for every array length from 0 to 699 and
+every needle: it agrees. It still reads `rank9` exactly once per lookup, so the line
+counts of the chapter do not change; what goes away is the select in the loop. We did
+not measure whether that is faster.
 
 This is how the tree would look with child ids instead of ranks: nine child ids per node
 is the natural shape of a node with eight keys, which is the "M - 1 keys, M children"

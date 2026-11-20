@@ -149,3 +149,26 @@ test "a key on the wrong side of a separator is stored but cannot be found" {
     try std.testing.expectEqual(11, leafAt(&t, 1).keys[0]); // it is there ...
     try std.testing.expectEqual(null, t.get(11)); // ... but search goes to [12 15 17]
 }
+
+test "two defects: validate reports the one its walk meets first" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Leaf [7] is visited before leaf [12 15 17], so its defect wins.
+    var a: Tree = .empty;
+    try tree_mod.canonical(&a, arena);
+    try swapTwoKeys(&a, arena);
+    try keyOnWrongSide(&a, arena);
+    try std.testing.expectError(error.KeyOutsideParentBounds, a.validate());
+
+    // A disordered first leaf and an erased last child pointer. This walk
+    // looks at child slot 3 only after it has finished with children 0 to 2,
+    // so it reports the leaf. The Rust twin compares the number of children
+    // before it descends and reports MissingChild for the same tree.
+    var b: Tree = .empty;
+    try tree_mod.canonical(&b, arena);
+    std.mem.swap(u64, &leafAt(&b, 0).keys[0], &leafAt(&b, 0).keys[1]);
+    try eraseChild(&b, arena);
+    try std.testing.expectError(error.KeysOutOfOrder, b.validate());
+}

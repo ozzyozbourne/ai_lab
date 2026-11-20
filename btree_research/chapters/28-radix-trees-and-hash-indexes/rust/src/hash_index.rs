@@ -183,6 +183,40 @@ mod tests {
     }
 
     #[test]
+    fn the_hand_example_three_keys_with_one_home_slot_probing_wraps_around() {
+        let mut index = HashIndex::new();
+        let key_at = |index: &HashIndex, i: usize| index.slots()[i].as_ref().map(|slot| slot.key.to_vec());
+        // The README's example. In an 8-slot table FNV-1a sends all three to slot 6.
+        let words: [&[u8]; 3] = [b"ant", b"fox", b"emu"];
+        for (k, i) in words.into_iter().zip(1..) {
+            assert_eq!(fnv1a(k) & 7, 6);
+            assert_eq!(index.put(k, i), None);
+        }
+        index.validate().unwrap();
+        assert_eq!(index.capacity(), 8);
+        // ant is at home; fox was pushed one slot on; emu wrapped around to slot 0.
+        assert_eq!(key_at(&index, 6), Some(b"ant".to_vec()));
+        assert_eq!(key_at(&index, 7), Some(b"fox".to_vec()));
+        assert_eq!(key_at(&index, 0), Some(b"emu".to_vec()));
+        for i in 1..6 {
+            assert_eq!(key_at(&index, i), None);
+        }
+        // A hit costs as many probes as the key is from home, plus one.
+        assert_eq!(index.lookup(b"ant"), Lookup { value: Some(1), steps: 1 });
+        assert_eq!(index.lookup(b"fox"), Lookup { value: Some(2), steps: 2 });
+        assert_eq!(index.lookup(b"emu"), Lookup { value: Some(3), steps: 3 });
+        // bee's home is slot 7. It meets fox and emu (neither has home 7) and is
+        // declared absent at the empty slot 1: the walk 7, 0, 1.
+        assert_eq!(fnv1a(b"bee") & 7, 7);
+        assert_eq!(index.lookup(b"bee"), Lookup { value: None, steps: 3 });
+        // Inserting bee uses exactly that slot.
+        assert_eq!(index.put(b"bee", 4), None);
+        assert_eq!(key_at(&index, 1), Some(b"bee".to_vec()));
+        assert_eq!(index.lookup(b"bee"), Lookup { value: Some(4), steps: 3 });
+        index.validate().unwrap();
+    }
+
+    #[test]
     fn scan_range_inspects_every_slot_and_returns_unordered_matches() {
         let mut index = HashIndex::new();
         for i in 0..50 {

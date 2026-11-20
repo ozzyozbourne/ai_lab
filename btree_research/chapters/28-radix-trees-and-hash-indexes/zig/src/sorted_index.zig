@@ -86,10 +86,25 @@ pub const SortedIndex = struct {
     /// order, so a prefix query is a range query in disguise (chapter 08).
     pub fn prefixRange(self: *const SortedIndex, prefix: []const u8) []const Entry {
         var steps: u32 = 0;
-        const a = self.lowerBound(prefix, &steps);
-        var b = a;
-        while (b < self.len() and std.mem.startsWith(u8, self.entries.items[b].key, prefix)) b += 1;
-        return self.entries.items[a..b];
+        return self.prefixRangeCounted(prefix, &steps);
+    }
+
+    /// `prefixRange` that also counts its whole-key comparisons. Two binary
+    /// searches, like `range`: the first finds the first key >= `prefix`. From
+    /// there on, every key that starts with `prefix` comes before every key
+    /// that does not, so the end of the run can be found by halving as well.
+    /// (A linear walk to the end would cost one comparison per result.)
+    pub fn prefixRangeCounted(self: *const SortedIndex, prefix: []const u8, compares: *u32) []const Entry {
+        const items = self.entries.items;
+        const a = self.lowerBound(prefix, compares);
+        var lo: usize = a;
+        var hi: usize = items.len;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            compares.* += 1;
+            if (std.mem.startsWith(u8, items[mid].key, prefix)) lo = mid + 1 else hi = mid;
+        }
+        return items[a..lo];
     }
 
     pub fn validate(self: *const SortedIndex) error{Unsorted}!void {
@@ -121,6 +136,39 @@ test "put keeps order; range and prefix are slices" {
     try testing.expectEqualStrings("cat/2", r[0].key);
     try testing.expectEqualStrings("cat/3", r[1].key);
     try testing.expectEqual(0, index.range("z", "a").len);
+}
+
+test "prefixRange is two binary searches, for every kind of prefix" {
+    const gpa = testing.allocator;
+    var index: SortedIndex = .init(gpa);
+    defer index.deinit();
+    // 1000 keys "k" ++ 2 bytes, plus neighbours on both sides and keys that
+    // end in 0xff (a prefix ending in 0xff has no simple "next" key).
+    for (0..1000) |i| _ = try index.put(&[_]u8{ 'k', @intCast(i / 256), @intCast(i % 256) }, i);
+    for ([_][]const u8{ "j", "j\xff", "j\xff\xff", "k", "l", "\xff", "\xff\xff", "\xff\xff\x00" }) |k| _ = try index.put(k, 0);
+    try index.validate();
+
+    const prefixes = [_][]const u8{ "", "k", "k\x01", "k\x03\xe7", "k\x03\xe8", "j", "j\xff", "\xff", "\xff\xff", "\xff\xff\xff", "a", "m", "kk" };
+    for (prefixes) |prefix| {
+        var compares: u32 = 0;
+        const got = index.prefixRangeCounted(prefix, &compares);
+        // The answer is what a filter over all entries would keep ...
+        var want_len: usize = 0;
+        var first: ?usize = null;
+        for (index.entries.items, 0..) |e, i| {
+            if (!std.mem.startsWith(u8, e.key, prefix)) continue;
+            if (first == null) first = i;
+            want_len += 1;
+        }
+        try testing.expectEqual(want_len, got.len);
+        if (first) |f| try testing.expectEqual(&index.entries.items[f], &got[0]);
+        try testing.expectEqual(got.len, index.prefixRange(prefix).len);
+        // ... found with at most 2 * ceil(log2(1008 + 1)) = 20 comparisons,
+        // however many entries match (1001 of them for "k").
+        try testing.expect(compares <= 20);
+    }
+    try testing.expectEqual(1001, index.prefixRange("k").len);
+    try testing.expectEqual(1008, index.prefixRange("").len);
 }
 
 test "model test against the oracle" {

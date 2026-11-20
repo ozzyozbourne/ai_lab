@@ -87,6 +87,9 @@ mod tests {
         assert_eq!(max_height(4, 2), 1);
         assert_eq!(max_height(4, 3), 2); // 3 keys may already be root + 2 leaves
         assert_eq!(min_height(4, 4), 2); // 4 keys no longer fit in one node
+        // Exercise 2: 100 keys at M = 5.
+        assert_eq!(min_height(5, 100), 3);
+        assert_eq!(max_height(5, 100), 4);
     }
 
     #[test]

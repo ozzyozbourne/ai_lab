@@ -24,7 +24,8 @@ costs in pages and in churn. Back to <a href="index.html">the step-by-step figur
   <li><b>onto old pages</b> counts cells that were moved onto a page that already existed. A plain split and the
     append fast path keep it at zero. Postgres needs it to be zero, because its scans wait between pages; that is
     why it never redistributes or merges.</li>
-  <li>Press play to watch the workload progress, or drag the scrubber.</li>
+  <li>Press play to watch the workload progress, or drag the scrubber. The table under the step controls gives
+    the exact numbers of the step shown.</li>
 </ul>
 <p>Cells are 40 to 200 bytes, pages 4096 bytes. With 20,000 keys the numbers are exactly those in
 <code>expected_output.txt</code>; the badge at the bottom of the page confirms it. Counts from this model on these workloads; not a benchmark of any engine.</p>
@@ -99,7 +100,10 @@ costs in pages and in churn. Back to <a href="index.html">the step-by-step figur
   fig.toolbar.append(workload, count, metric);
 
   var chartHost = el('div'), profile = el('div.c15-profile'), tableHost = el('div.bt-table-wrap');
-  fig.stage.append(chartHost, el('div', { style: { fontSize: '.8rem', color: 'var(--bt-muted)' } }, 'Leaf fill profile, and average fill:'), profile, tableHost);
+  fig.stage.append(chartHost, el('div', { style: { fontSize: '.8rem', color: 'var(--bt-muted)' } }, 'Leaf fill profile, and average fill:'), profile);
+  /* The table of exact numbers goes under the step controls, not between the drawing and
+   * its caption: chart, profiles, caption and controls then fit on one screen together. */
+  fig.root.appendChild(el('div.c15-numbers', el('div.c15-numbers-title', 'The numbers at this step'), tableHost));
   var chart = null, view = new Ch15.SiblingView(el('div'));   // SiblingView only to install the chapter CSS
   void view;
 

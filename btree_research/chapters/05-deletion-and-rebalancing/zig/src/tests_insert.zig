@@ -114,6 +114,34 @@ test "validate reports a leaked node" {
     }
 }
 
+test "a tree that validate rejects can still be printed and torn down" {
+    // What a fuzz test of a broken tree does (chapter 06): validate returns
+    // an error, the report prints the tree, the deferred deinit runs. None of
+    // that may abort. Break the canonical tree by unlinking the leaf [7]: the
+    // root keeps 3 keys but has only 3 of its 4 children, and one node is
+    // live in the pool that deinit will not reach.
+    const gpa = testing.allocator;
+    inline for (.{ pool.DirectNodes, pool.FreeListPool, pool.StdPool }) |PoolFn| {
+        var tree: BTree(4, PoolFn) = .empty;
+        defer tree.deinit(gpa);
+        for (canonical_keys) |key| _ = try tree.put(gpa, key, key * 10);
+        const root = tree.root.?;
+        const orphan = root.children[1].?;
+        root.children[1] = null;
+        try testing.expectError(error.MissingChild, tree.validate());
+        try testing.expectEqual(4, tree.shape().nodes);
+        var out: std.Io.Writer.Allocating = .init(gpa);
+        defer out.deinit();
+        try tree.render(&out.writer, "");
+        try testing.expectEqualStrings("[6 10 20]\n[1 3 5] [12 15 17] [25 30]\n", out.written());
+        try testing.expectEqual(5, tree.pool.usage.live());
+        // With one allocation per node the test allocator would (rightly)
+        // report the orphan as a leak, so hand that one back. The pooling
+        // pools keep it: their deinit frees it with its chunk.
+        if (PoolFn(u64) == pool.DirectNodes(u64)) tree.pool.destroy(gpa, orphan);
+    }
+}
+
 /// A node pool defined OUTSIDE pool.zig, to show what the contract in
 /// pool.zig asks for. It is the simplest pool there is, a bump allocator
 /// over a fixed array: `create` takes the next unused slot, `destroy` cannot

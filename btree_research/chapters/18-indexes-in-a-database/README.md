@@ -102,9 +102,10 @@ The two rows of day 12 are now ordered by address, which is arrival order: id 10
 
 Now `SELECT * FROM orders WHERE customer = 7`. All three trees involved have height 3.
 
-- Both layouts: one descent of the index to the first entry of customer 7 (3 nodes), then
-  along the leaf chain. The five entries span three leaves and the scan looks into a
-  fourth to see that customer 7 has ended: 3 leaf hops. So far 6 nodes.
+- Both layouts: one descent of the index for (7, smallest day, smallest locator), 3
+  nodes. It ends in the leaf just left of customer 7, because the seek key is smaller
+  than the separator (7,3,#12). The five entries are in the next two leaves, and the scan
+  looks into one more to see that customer 7 has ended: 3 leaf hops. So far 6 nodes.
 - Clustered: each of the 5 entries holds an id. Search the primary tree for it: 5
   descents of 3 nodes, 15 nodes. Total **21** page reads.
 - Heap: each of the 5 entries holds a TID. Read that heap page: 5 reads. Total **11**.

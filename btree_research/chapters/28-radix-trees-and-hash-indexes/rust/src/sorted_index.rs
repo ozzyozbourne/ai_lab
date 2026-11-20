@@ -95,12 +95,28 @@ impl SortedIndex {
     /// order, so a prefix query is a range query in disguise (chapter 08).
     pub fn prefix_range(&self, prefix: &[u8]) -> &[OwnedEntry] {
         let mut steps = 0;
-        let a = self.lower_bound(prefix, &mut steps);
-        let mut b = a;
-        while b < self.len() && self.entries[b].key.starts_with(prefix) {
-            b += 1;
+        self.prefix_range_counted(prefix, &mut steps)
+    }
+
+    /// `prefix_range` that also counts its whole-key comparisons. Two binary
+    /// searches, like `range`: the first finds the first key >= `prefix`. From
+    /// there on, every key that starts with `prefix` comes before every key
+    /// that does not, so the end of the run can be found by halving as well.
+    /// (A linear walk to the end would cost one comparison per result.)
+    pub fn prefix_range_counted(&self, prefix: &[u8], compares: &mut u32) -> &[OwnedEntry] {
+        let a = self.lower_bound(prefix, compares);
+        let mut lo = a;
+        let mut hi = self.entries.len();
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            *compares += 1;
+            if self.entries[mid].key.starts_with(prefix) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
         }
-        &self.entries[a..b]
+        &self.entries[a..lo]
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -133,6 +149,53 @@ mod tests {
         assert_eq!(*r[0].key, *b"cat/2");
         assert_eq!(*r[1].key, *b"cat/3");
         assert_eq!(index.range(b"z", b"a").len(), 0);
+    }
+
+    #[test]
+    fn prefix_range_is_two_binary_searches_for_every_kind_of_prefix() {
+        let mut index = SortedIndex::new();
+        // 1000 keys "k" ++ 2 bytes, plus neighbours on both sides and keys that
+        // end in 0xff (a prefix ending in 0xff has no simple "next" key).
+        for i in 0..1000u64 {
+            index.put(&[b'k', (i / 256) as u8, (i % 256) as u8], i);
+        }
+        let extra: [&[u8]; 8] = [b"j", b"j\xff", b"j\xff\xff", b"k", b"l", b"\xff", b"\xff\xff", b"\xff\xff\x00"];
+        for k in extra {
+            index.put(k, 0);
+        }
+        index.validate().unwrap();
+
+        let prefixes: [&[u8]; 13] = [
+            b"",
+            b"k",
+            b"k\x01",
+            b"k\x03\xe7",
+            b"k\x03\xe8",
+            b"j",
+            b"j\xff",
+            b"\xff",
+            b"\xff\xff",
+            b"\xff\xff\xff",
+            b"a",
+            b"m",
+            b"kk",
+        ];
+        for prefix in prefixes {
+            let mut compares = 0;
+            let got = index.prefix_range_counted(prefix, &mut compares);
+            // The answer is what a filter over all entries would keep ...
+            let want: Vec<&OwnedEntry> = index.entries().iter().filter(|e| e.key.starts_with(prefix)).collect();
+            assert_eq!(got.len(), want.len());
+            if let Some(first) = want.first() {
+                assert!(std::ptr::eq(*first, &got[0]));
+            }
+            assert_eq!(index.prefix_range(prefix).len(), got.len());
+            // ... found with at most 2 * ceil(log2(1008 + 1)) = 20 comparisons,
+            // however many entries match (1001 of them for "k").
+            assert!(compares <= 20, "{compares} comparisons");
+        }
+        assert_eq!(index.prefix_range(b"k").len(), 1001);
+        assert_eq!(index.prefix_range(b"").len(), 1008);
     }
 
     #[test]

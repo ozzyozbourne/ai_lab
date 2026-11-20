@@ -173,6 +173,36 @@ test "put, get, overwrite, growth" {
     try testing.expectEqual(100, index.len);
 }
 
+test "the hand example: three keys with one home slot, probing wraps around" {
+    var index: HashIndex = .init(testing.allocator);
+    defer index.deinit();
+    // The README's example. In an 8-slot table FNV-1a sends all three to slot 6.
+    for ([_][]const u8{ "ant", "fox", "emu" }, 1..) |k, i| {
+        try testing.expectEqual(6, keys.fnv1a(k) & 7);
+        try testing.expectEqual(null, try index.put(k, i));
+    }
+    try index.validate();
+    try testing.expectEqual(8, index.capacity());
+    // ant is at home; fox was pushed one slot on; emu wrapped around to slot 0.
+    try testing.expectEqualStrings("ant", index.slots[6].key.?);
+    try testing.expectEqualStrings("fox", index.slots[7].key.?);
+    try testing.expectEqualStrings("emu", index.slots[0].key.?);
+    for (1..6) |i| try testing.expectEqual(null, index.slots[i].key);
+    // A hit costs as many probes as the key is from home, plus one.
+    try testing.expectEqual(Lookup{ .value = 1, .steps = 1 }, index.lookup("ant"));
+    try testing.expectEqual(Lookup{ .value = 2, .steps = 2 }, index.lookup("fox"));
+    try testing.expectEqual(Lookup{ .value = 3, .steps = 3 }, index.lookup("emu"));
+    // bee's home is slot 7. It meets fox and emu (neither has home 7) and is
+    // declared absent at the empty slot 1: the walk 7, 0, 1.
+    try testing.expectEqual(7, keys.fnv1a("bee") & 7);
+    try testing.expectEqual(Lookup{ .value = null, .steps = 3 }, index.lookup("bee"));
+    // Inserting bee uses exactly that slot.
+    try testing.expectEqual(null, try index.put("bee", 4));
+    try testing.expectEqualStrings("bee", index.slots[1].key.?);
+    try testing.expectEqual(Lookup{ .value = 4, .steps = 3 }, index.lookup("bee"));
+    try index.validate();
+}
+
 test "scanRange inspects every slot and returns unordered matches" {
     const gpa = testing.allocator;
     var index: HashIndex = .init(gpa);

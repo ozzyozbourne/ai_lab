@@ -356,7 +356,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
     /** Everything a step needs besides the event; `settled` steps carry the model for later actions. */
     function extra(more) {
       var x = { found: cur.state === 'on' && !cur.isStale(tree) ? [cur.key] : [], result: history, dup: dup, pill: pill(),
-        stale: cur.isStale(tree), positionText: positionText(tree, cur) + (cur.isStale(tree) ? ' (as it was)' : ''),
+        stale: cur.isStale(tree), positionText: positionText(tree, cur) + (cur.isStale(tree) ? (cur.naive ? ' (never re-checked)' : ' (as it was)') : ''),
         model: { tree: tree.toJSON(), cursor: cur.toJSON(), history: history.slice(), dup: dup } };
       Object.keys(more || {}).forEach(function (p) { x[p] = more[p]; });
       return x;
@@ -436,7 +436,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
       if (op !== 'seek' && cur.naive && wasStale) {
         if (got !== correct) {
           dup = got === null ? null : history.length - 1;
-          text += ' <b>Wrong.</b> The entry ' + (fwd ? 'after ' : 'before ') + k(old.key) + ' is ' + (correct === null ? 'nothing' : k(correct, 'found')) + '. ' +
+          text = text.replace('s-found', 's-deleted') + ' <b>Wrong.</b> The entry ' + (fwd ? 'after ' : 'before ') + k(old.key) + ' is ' + (correct === null ? 'nothing' : k(correct, 'found')) + '. ' +
             (got !== null && (fwd ? got <= old.key : got >= old.key) ? 'The scan has gone backwards or returned an entry twice' : 'The scan has skipped or invented an entry') +
             ', because (leaf, index) meant something else before the change.';
           moreExtra.log = { html: name + ' → ' + (got === null ? 'none' : got) + ' (wrong)', state: 'deleted' };

@@ -101,6 +101,23 @@ fn validate_reports_a_leaked_node() {
     assert_eq!(tree.validate(), Ok(()));
 }
 
+#[test]
+fn a_tree_that_validate_rejects_can_still_be_printed_and_dropped() {
+    // What a fuzz test of a broken tree does (chapter 06): validate returns
+    // an error, the report prints the tree, the tree is dropped. None of that
+    // may panic. Break the canonical tree by unlinking the leaf [7]: the root
+    // keeps 3 keys but has only 3 of its 4 children, and one node is live in
+    // the slab that the root cannot reach.
+    use crate::validate::ValidateError;
+    let mut tree = build_canonical();
+    let root = tree.root.unwrap();
+    tree.pool[root].children.remove(1);
+    assert_eq!(tree.validate(), Err(ValidateError::MissingChild));
+    assert_eq!(tree.shape().nodes, 4);
+    assert_eq!(render(&tree), "[6 10 20]\n[1 3 5] [12 15 17] [25 30]\n");
+    assert_eq!(tree.pool.usage.live(), 5);
+}
+
 fn model_test_put_only(order: usize, seed: u64) {
     let mut tree = BTree::new(order);
     let mut oracle = Oracle::new();

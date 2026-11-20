@@ -468,6 +468,8 @@
     '.c15-free { margin-top: 8px; font-size: .82rem; color: var(--bt-muted); min-height: 26px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }',
     '.c15-stats { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; font-size: .84rem; }',
     '.c15-stats b { font-family: var(--bt-mono); text-align: right; }',
+    '.c15-numbers { padding: 10px 14px; border-top: 1px solid var(--bt-border); }',
+    '.c15-numbers-title { font-size: .8rem; color: var(--bt-muted); margin-bottom: 6px; }',
     '.c15-profile { display: grid; grid-template-columns: minmax(0, 11.5em) minmax(0, 1fr) 4.2em; gap: 6px 10px; align-items: center; font-size: .82rem; }',
     '.c15-profile svg { display: block; width: 100%; height: 34px; background: var(--bt-free-bg); border-radius: 4px; }',
     '.c15-profile path { fill: var(--bt-node-active); }',

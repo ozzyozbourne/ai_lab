@@ -73,6 +73,9 @@ test "height bounds: the README's worked example" {
     try std.testing.expectEqual(1, maxHeight(4, 2));
     try std.testing.expectEqual(2, maxHeight(4, 3)); // 3 keys may already be root + 2 leaves
     try std.testing.expectEqual(2, minHeight(4, 4)); // 4 keys no longer fit in one node
+    // Exercise 2: 100 keys at M = 5.
+    try std.testing.expectEqual(3, minHeight(5, 100));
+    try std.testing.expectEqual(4, maxHeight(5, 100));
 }
 
 test "the two bounds are consistent, and huge inputs saturate instead of overflowing" {

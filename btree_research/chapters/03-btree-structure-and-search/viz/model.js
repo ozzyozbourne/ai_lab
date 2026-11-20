@@ -242,13 +242,16 @@
     { id: 'max', text: 'A node holds at most M − 1 keys', errors: ['NodeOverfull'] },
     { id: 'min', text: 'A non-root node holds at least ⌈M/2⌉ − 1 keys; a root at least 1', errors: ['NodeUnderfull', 'EmptyRoot'] },
     { id: 'children', text: 'An interior node with n keys has n + 1 children; a leaf has none', errors: ['MissingChild', 'UnexpectedChild'] },
-    { id: 'depth', text: 'All leaves are at the same depth', errors: ['LeavesAtDifferentDepths'] },
+    { id: 'depth', text: 'All leaves are on the same level', errors: ['LeavesAtDifferentDepths'] },
     { id: 'count', text: 'Bookkeeping: the key count matches', errors: ['WrongKeyCount'] },
     { id: 'nodes', text: 'Bookkeeping: every allocated node is reachable', errors: ['NodeCountMismatch'] }
   ];
 
   /* The walk of base_validate.zig, one step per node. Returns steps;
-   * steps.error is the name of the first violation or null. */
+   * steps.error is the name of the first violation or null.
+   * The code counts `depth` from 0 at the root. The captions use the
+   * chapter's one convention instead: the root is on level 1, so
+   * level = depth + 1. */
   function validateSteps(tree, k) {
     k = k || function (v) { return String(v); };
     var M = tree.M, maxK = M - 1, minK = Math.ceil(M / 2) - 1;
@@ -291,11 +294,11 @@
       if (node.leaf) {
         if (present) return fail('UnexpectedChild', 'Check ' + where + ': it is marked as a leaf but has a child pointer.', [9], node);
         if (leafDepth !== null && leafDepth !== depth) {
-          return fail('LeavesAtDifferentDepths', 'Check ' + where + ': this leaf is at depth ' + depth + ', the first leaf was at depth ' + leafDepth + '. The tree is no longer balanced, so the height bound does not hold.', [10], node);
+          return fail('LeavesAtDifferentDepths', 'Check ' + where + ': this leaf is on level ' + (depth + 1) + ', the first leaf was on level ' + (leafDepth + 1) + '. The tree is no longer balanced, so the height bound does not hold.', [10], node);
         }
         leafDepth = depth;
         push('Check ' + where + ': ' + plural(n, 'key') + ' (allowed: ' + (isRoot ? 1 : minK) + ' to ' + maxK + '), ascending, ' + boundsText(lo, hi) +
-          ' and they do; a leaf without children at depth ' + depth + '. All fine.', [2, 3, 5, 6, 9, 10], node);
+          ' and they do; a leaf without children on level ' + (depth + 1) + '. All fine.', [2, 3, 5, 6, 9, 10], node);
         okNodes[node.id] = true;
         return true;
       }
@@ -355,16 +358,16 @@
     { what: "the root's last child pointer is erased", expect: 'MissingChild', searchable: false,
       apply: function (t) {
         var lost = t.root.children[3]; // still allocated, but out of reach: drawn as a second root
-        lost.meta = { note: 'nothing points here any more' };
+        lost.meta = { note: 'unreachable' };
         t.orphans.push(lost);
-        t.root.children[3] = null; t.root.meta = { note: 'child 3: pointer erased' };
+        t.root.children[3] = null; t.root.meta = { label: 'child 3 erased' }; // a label sits above the node, clear of the edges
       } },
     { what: 'leaf [7] gets a child pointer', expect: 'UnexpectedChild',
       apply: function (t) { leafAt(t, 1).children = [{ ref: leafAt(t, 0).id }]; leafAt(t, 1).meta = { note: 'leaf with a child pointer' }; } },
     { what: 'key 5 vanishes from leaf [1 3 5], the tree still claims 12 keys', expect: 'WrongKeyCount',
       apply: function (t) { leafAt(t, 0).keys.pop(); } },
     { what: 'a sixth node is allocated but nothing points to it', expect: 'NodeCountMismatch',
-      apply: function (t) { var n = t.leaf([99]); n.meta = { note: 'nothing points here' }; t.orphans.push(n); t.len -= 1; } }
+      apply: function (t) { var n = t.leaf([99]); n.meta = { note: 'unreachable' }; t.orphans.push(n); t.len -= 1; } }
   ];
   function keysFound(t) {
     return CANONICAL_KEYS.filter(function (key) { return t.get(key) === valueOf(key); }).length;
@@ -372,15 +375,45 @@
   /* The different keys stored in the nodes of `t`, and how many of them
    * `get` finds: counted on the tree itself, whatever keys it holds. */
   function storedFound(t) {
-    var seen = {}, stored = 0, found = 0;
+    var seen = {}, stored = 0, found = 0, twice = [];
     preorder(t.root).forEach(function (n) {
       n.keys.forEach(function (key) {
-        if (seen[key]) return;
+        if (seen[key]) { twice.push(key); return; }
         seen[key] = true; stored++;
         if (t.get(key) === valueOf(key)) found++;
       });
     });
-    return { stored: stored, found: found };
+    return { stored: stored, found: found, twice: twice };
+  }
+  /* The verdict line for a tree the programs do not print. */
+  function storedText(t) {
+    var s = storedFound(t);
+    if (!s.twice.length) return 'get finds ' + s.found + ' of the ' + plural(s.stored, 'key') + ' stored in this tree';
+    return 'get finds ' + s.found + ' of the ' + s.stored + ' different keys stored in this tree (' + s.twice.join(', ') + ' is stored twice)';
+  }
+
+  /* Two trees of order 5, where the minimum fill is 2 keys (README, "An
+   * order where the minimum fill bites"; tested in tree.zig / tree.rs). */
+  function order5(thin) {
+    var t = new HandTree(5);
+    t.root = t.interior([10, 20], thin ? [t.leaf([2, 5]), t.leaf([15]), t.leaf([25, 30, 35])]
+      : [t.leaf([2, 5]), t.leaf([12, 15, 17]), t.leaf([25, 30, 35, 40])]);
+    return t;
+  }
+  var ERROR_NAMES = ['ok', 'KeysOutOfOrder', 'KeyOutsideParentBounds', 'NodeOverfull', 'NodeUnderfull', 'EmptyRoot', 'MissingChild',
+    'UnexpectedChild', 'LeavesAtDifferentDepths', 'WrongKeyCount', 'NodeCountMismatch'];
+  /* Six choices for the predict question: ok, the answer, and distractors
+   * picked by `salt`, always listed in the fixed order of ERROR_NAMES. The
+   * position of a choice therefore says nothing about whether it is right. */
+  function predictChoices(answer, salt) {
+    var picked = { ok: true }, n = 1, i = salt % ERROR_NAMES.length;
+    if (!picked[answer]) { picked[answer] = true; n++; }
+    while (n < 6) {
+      var name = ERROR_NAMES[i];
+      if (!picked[name]) { picked[name] = true; n++; }
+      i = (i + 3) % ERROR_NAMES.length; // 3 and 11 have no common divisor: every name comes up
+    }
+    return ERROR_NAMES.filter(function (name) { return picked[name]; });
   }
   /* Part 4 of the program output. */
   function brokenText() {
@@ -465,9 +498,13 @@
   function redBlackText(tree) {
     var out = '';
     preorder(tree.root).forEach(function (n) { out += '  ' + fmtKeys(n.keys) + ' -> ' + describe(n.keys) + '\n'; });
+    return out + redBlackSummary(tree) + '\n';
+  }
+  /* The last line of part 6. */
+  function redBlackSummary(tree) {
     var s = rbCheck(redBlack(tree.root));
-    return out + 'red-black tree: ' + s.nodes + ' nodes, ' + s.blackHeight + ' black nodes on every path (B-tree height ' + heightOf(tree.root) +
-      '), paths of ' + s.shortest + ' to ' + s.longest + ' nodes\n';
+    return 'red-black tree: ' + s.nodes + ' nodes, ' + s.blackHeight + ' black nodes on every path (B-tree height ' + heightOf(tree.root) +
+      '), paths of ' + s.shortest + ' to ' + s.longest + ' nodes';
   }
 
   /* ---------------------------------------------------------------- height */
@@ -519,7 +556,8 @@
     HandTree: HandTree, CANONICAL_KEYS: CANONICAL_KEYS, canonical: canonical, sparsest: sparsest, fullest: fullest,
     valueOf: valueOf, fmtKeys: fmtKeys, renderText: renderText, shape: shape, shapeText: shapeText, heightOf: heightOf,
     lowerBound: lowerBound, searchSteps: searchSteps, inOrderKeys: inOrderKeys, inOrderSteps: inOrderSteps,
-    RULES: RULES, validateSteps: validateSteps, validateName: validateName, CASES: CASES, keysFound: keysFound, storedFound: storedFound, brokenText: brokenText, plural: plural,
+    RULES: RULES, validateSteps: validateSteps, validateName: validateName, CASES: CASES, keysFound: keysFound, storedFound: storedFound, storedText: storedText, order5: order5,
+    ERROR_NAMES: ERROR_NAMES, predictChoices: predictChoices, redBlackSummary: redBlackSummary, brokenText: brokenText, plural: plural,
     describe: describe, preorder: preorder, hybrid: hybrid, redBlack: redBlack, rbCheck: rbCheck, redBlackText: redBlackText,
     minKeys: minKeys, maxKeys: maxKeys, minHeight: minHeight, maxHeight: maxHeight, heightsText: heightsText,
     SplitMix64: SplitMix64, oracleText: oracleText

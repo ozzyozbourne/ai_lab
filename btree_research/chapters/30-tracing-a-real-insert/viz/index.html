@@ -413,8 +413,8 @@ is the program counter, the path and the carry are the local variables, and thei
         });
       }
     }
-    BTViz.selfTest('lanes: SPLIT_L / SPLIT_R rule (' + (splits > 100 ? 'many' : 'too few') + ' splits)', rule, 'ok');
-    BTViz.selfTest('lanes: Turso output pages in ascending page order (' + (groups > 100 ? 'many' : 'too few') + ' balances)', ascending, 'ok');
+    BTViz.selfTest('lanes: SPLIT_L / SPLIT_R rule', splits > 100 ? rule : 'only ' + splits + ' splits', 'ok');
+    BTViz.selfTest('lanes: Turso output pages in ascending page order', groups > 100 ? ascending : 'only ' + groups + ' balances', 'ok');
   })();
   // The resumable insert: the JS model makes the calls the programs print.
   var p1 = CH30.replayPart1();

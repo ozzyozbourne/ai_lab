@@ -264,7 +264,9 @@
   };
 
   /* ---- allocation with a step (and a predict question) */
-  T.allocStep = function (leaf, why, whenRefused) {
+  /* `full` is the handle of the node whose split needs the new slot; it is highlighted so
+   * that the tree view keeps it in sight. `whenRefused` is added to a refused request. */
+  T.allocStep = function (leaf, why, whenRefused, full) {
     var pool = leaf ? this.leaves : this.interiors, guess = pool.peek();
     var wrong = [];
     pool.slabs.forEach(function (slab, id) {
@@ -276,7 +278,7 @@
       // Only reachable under the static policy: the pool may not grow any more.
       var fail = this.step(why + ' Allocate ' + (leaf ? 'a leaf' : 'an interior node') + ': all ' + pool.slabCount * pool.S + ' slots of the ' + (leaf ? 'leaf' : 'interior') +
         ' pool are in use, so <code>create</code> asks for one more slab. The <code>StaticAllocator</code> wrapper is frozen (state <b>static</b>) and <b>refuses</b>: <code>create</code> returns OutOfMemory.' + (whenRefused || ''),
-        { type: 'refused', log: { html: 'create ' + (leaf ? 'leaf' : 'interior') + ': refused (frozen)', state: 'deleted' } });
+        { type: 'refused', nodes: full ? mark(full, 'active') : undefined, focus: full, log: { html: 'create ' + (leaf ? 'leaf' : 'interior') + ': refused (frozen)', state: 'deleted' } });
       if (fail) fail.question = { prompt: 'A new ' + (leaf ? 'leaf' : 'interior node') + ' is needed, and the allocator was frozen after init. What does <code>create</code> return?',
         choices: ['a slot in a new slab', 'OutOfMemory: the pool is full and may not grow'], answer: 1,
         explain: 'After freeze() the StaticAllocator wrapper refuses every request, so the memory footprint cannot change.' };
@@ -287,7 +289,7 @@
       (grew ? (pool.slabCount === 1 ? 'the pool has no slab yet' : 'every slab is full') + ', so a new slab ' + h.slab + ' is taken from the backing allocator, and its first slot is used.'
             : 'the lowest slab with a free slot is slab ' + h.slab + ', its lowest set bit is slot ' + h.slot + '. The bit is cleared.') +
       ' The new node is ' + hh(h) + ' = ' + hHex(h) + '.',
-      { type: 'alloc', slots: slotMark(h, 'inserted'), focus: h, log: { html: 'create ' + hName(h) + (grew ? ' (new slab)' : ''), state: 'inserted' } });
+      { type: 'alloc', nodes: full ? mark(full, 'active') : undefined, slots: slotMark(h, 'inserted'), focus: h, log: { html: 'create ' + hName(h) + (grew ? ' (new slab)' : ''), state: 'inserted' } });
     if (step) {
       var choices = [hName(h)], answer = 0;
       wrong.forEach(function (w) { choices.push(hName(w)); });
@@ -308,7 +310,7 @@
     var t = this.t, leftH = this.node(parent).kids[i], left = this.node(leftH);
     // Allocate the sibling BEFORE touching a key: if this fails, nothing is half-done.
     var rightH = this.allocStep(!leftH.c, 'Child ' + hh(leftH) + ' is full (' + this.K + ' keys), so it is split before the search enters it.',
-      leftH.c ? ABOVE_LEAF : '');
+      leftH.c ? ABOVE_LEAF : '', leftH);
     if (!rightH) return false;
     var right = this.node(rightH), p = this.node(parent);
     var median = left.keys[t - 1];
@@ -345,7 +347,7 @@
       }
       if (this.node(this.root).keys.length === this.K) {
         var oldRoot = this.root;
-        var newRoot = this.allocStep(false, 'The root ' + hh(this.root) + ' is full: the tree grows by one level.', oldRoot.c ? ABOVE_LEAF : '');
+        var newRoot = this.allocStep(false, 'The root ' + hh(this.root) + ' is full: the tree grows by one level.', oldRoot.c ? ABOVE_LEAF : '', oldRoot);
         if (!newRoot) return this.oomStep(key);
         this.node(newRoot).kids = [this.root];
         this.root = newRoot; this.height++;

@@ -61,7 +61,7 @@ pub fn run(w: *Io.Writer, gpa: Allocator, io: Io, dir: Io.Dir) !void {
 fn printCounters(w: *Io.Writer, tree: *DiskBTree) !void {
     const pool = tree.pool;
     try w.print("tree:  {d} keys, {d} pages, height {d}; splits: {d} leaf, {d} interior, {d} root\n", .{
-        tree.key_count,           pool.pager.pageCount(), try tree.height(),
+        tree.key_count,         pool.pager.pageCount(),     try tree.height(),
         tree.stats.leaf_splits, tree.stats.interior_splits, tree.stats.root_splits,
     });
     try w.print("pool:  {d} hits, {d} misses, {d} evictions, {d} write-backs\n", .{ pool.stats.hits, pool.stats.misses, pool.stats.evictions, pool.stats.writebacks });
@@ -89,7 +89,7 @@ fn part1(w: *Io.Writer, gpa: Allocator, io: Io, dir: Io.Dir) !void {
             if (!leaf_split) continue;
             const grew = tree.stats.root_splits != before.root_splits;
             try w.print("put #{d} key {s} ({d} bytes) splits a leaf{s}: {d} pages\n", .{
-                i,                                               scenarioKey(n, &key_buf),                      btree.cellCost(2, 300 + 24 * @as(usize, n)),
+                i,                                            scenarioKey(n, &key_buf), btree.cellCost(2, 300 + 24 * @as(usize, n)),
                 if (grew) " and moves the root down" else "", pager.pageCount(),
             });
             if (grew) try tree.dump(w);

@@ -235,6 +235,9 @@ pub fn BuddyAllocator(comptime heap_log2: u6, comptime min_log2: u6) type {
             _ = .{ alignment, ret_addr };
             const b: *Buddy = @ptrCast(@alignCast(ctx));
             const block = b.blockOf(memory);
+            // Check BEFORE touching the counters, so a double free is reported as this
+            // assertion and not as an integer overflow in the bookkeeping below.
+            assert(b.state[block] == .used); // double free or a pointer into a block
             b.requested -= memory.len;
             b.granted -= @as(usize, min_block) << @intCast(b.order[block]);
             b.freeBlock(block);

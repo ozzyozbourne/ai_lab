@@ -45,8 +45,8 @@ deliberate slack: it absorbs later inserts into old pages without an immediate s
 
 **Why only the rightmost page.** A lopsided cut is a bet that inserts will keep arriving
 on the small side. On the rightmost page under appends that bet is safe. On an ordinary
-page under random inserts it is wrong nine times out of ten: the 90% page overflows
-again almost at once, and the 10% page rarely fills. The experiment below shows that
+page under random inserts it usually loses, since most cells sit on the full side: the
+90% page overflows again almost at once, and the 10% page rarely fills. The experiment below shows that
 this "fill factor everywhere" policy needs twice as many pages as plain 50:50.
 
 **Equal keys.** If the gap falls between two cells with different keys, the separator
@@ -327,10 +327,9 @@ What would go wrong with other choices:
 
 - The general purpose allocator directly: two `alloc`/`free` pairs per split and two
   `errdefer`s to get right; correct but noisy, and slower.
-- The arena for the *pages*: an arena cannot give back one buffer, so every time a
-  page's cell list (or the page list, or the directory) grows, the outgrown buffer
-  would stay allocated until the tree dies. Pages are long-lived and individually
-  resized; they belong in the general purpose allocator.
+- The arena for the *pages*: every time a page's cell list (or the directory) grows,
+  the outgrown buffer would stay allocated until the tree dies. Pages are long-lived
+  and individually resized; they belong in the general purpose allocator.
 - A `FixedBufferAllocator` over a stack buffer: fine as long as the size bound
   (capacity plus one cell) is real; the arena does not need the bound.
 - Forgetting the reset: everything still works and nothing leaks at exit, because

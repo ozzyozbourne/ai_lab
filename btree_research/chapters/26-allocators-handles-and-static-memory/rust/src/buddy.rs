@@ -163,6 +163,12 @@ impl Buddy {
     pub fn free(&mut self, offset: usize) {
         assert!(offset.is_multiple_of(self.min_block), "not a block start");
         let block = offset / self.min_block;
+        // Check BEFORE touching the counters, so a double free is reported as such and
+        // not as an arithmetic overflow in the bookkeeping below.
+        assert!(
+            self.state[block] == State::Used,
+            "double free or a pointer into a block"
+        );
         self.requested -= self.lens[block];
         self.granted -= self.block_size(self.order[block] as usize);
         self.free_block(block as u32);

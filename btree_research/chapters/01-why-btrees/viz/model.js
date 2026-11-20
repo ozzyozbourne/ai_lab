@@ -202,6 +202,49 @@
   };
   C1.SplitMix64 = SplitMix64;
 
+  /* ------------------------------------------------ whole key sets (figure 1) */
+
+  /** `n` distinct keys (multiples of 5) in a seeded random order. */
+  C1.randomKeys = function (n, seed) {
+    var keys = [], i;
+    for (i = 0; i < n; i++) keys.push((i + 1) * 5);
+    new SplitMix64(seed).shuffle(keys);
+    return keys;
+  };
+
+  /**
+   * Look every key of `arrival` up once in all three structures and count page reads.
+   * `bstOrder` is the insert order for the binary search tree (default: `arrival`).
+   * Returns {n, array, bst, wide: {sum, avg, max}, fewest, tied, more}: the last three
+   * count the keys for which the wide nodes read strictly fewer pages than both other
+   * structures, tie with the better of the two, or read more than it.
+   */
+  C1.raceStats = function (arrival, perPage, bstOrder) {
+    var sorted = arrival.slice().sort(function (a, b) { return a - b; });
+    var bst = C1.bstFrom(bstOrder || arrival), wide = C1.wideBuild(sorted, perPage + 1);
+    function lane() { return { sum: 0, avg: 0, max: 0 }; }
+    function add(l, v) { l.sum += v; if (v > l.max) l.max = v; }
+    var st = { n: sorted.length, array: lane(), bst: lane(), wide: lane(), fewest: 0, tied: 0, more: 0 };
+    sorted.forEach(function (t) {
+      var a = C1.arraySearch(sorted, perPage, t), b = bst.search(t), w = C1.wideSearch(wide, t);
+      if (!a.found || !b.found || !w.found) throw new Error('structures disagree on ' + t);
+      var ra = a.pages.length, rb = b.path.length, rw = w.path.length, other = Math.min(ra, rb);
+      add(st.array, ra); add(st.bst, rb); add(st.wide, rw);
+      if (rw < other) st.fewest++; else if (rw === other) st.tied++; else st.more++;
+    });
+    [st.array, st.bst, st.wide].forEach(function (l) { l.avg = st.n ? l.sum / st.n : 0; });
+    return st;
+  };
+
+  /** Key-set sizes of the "growing key set" chart, and the seed of their random order. */
+  C1.SCALE_SIZES = [40, 400, 4000, 40000];
+  C1.SCALE_SEED = 7;
+
+  /** raceStats for each size in C1.SCALE_SIZES (random insert order), at `perPage` keys per page. */
+  C1.scaleRace = function (perPage) {
+    return C1.SCALE_SIZES.map(function (n) { return C1.raceStats(C1.randomKeys(n, C1.SCALE_SEED), perPage); });
+  };
+
   /* ------------------------------------------- main.zig: the text of the scenario */
 
   function padL(v, w) { return String(v).padStart(w, ' '); }

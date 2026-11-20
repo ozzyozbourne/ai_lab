@@ -252,16 +252,19 @@
     }
 
     var logical = rows.map(function (_, i2) { return i2; }).sort(function (x, y) { return compareRows(rows[x], rows[y]) || x - y; });
-    var wrong = order.filter(function (r, pos) { return compareRows(rows[r], rows[logical[pos]]) !== 0; });
+    var wrong = outOfPlace(order, logical);
     var ok = wrong.length === 0;
+    var off = Object.keys(WHAT_BREAKS).filter(function (f) { return !fixes[f]; });
+    var why = off.map(function (f) { return WHAT_BREAKS[f]; }).join(' ');
     steps.push({
       caption: ok
         ? 'Sorted with ' + comparisons + ' comparisons that looked at ' + examined + ' byte positions. The result is exactly the ' +
           'logical order (name ASC, score DESC NULLS LAST, id ASC). A comparator over records would have decoded ' + columns +
-          ' column values to reach the same order.'
-        : 'Sorted by bytes, but <b>' + wrong.length + ' row' + (wrong.length === 1 ? ' is' : 's are') + ' not where the logical order puts ' +
-          (wrong.length === 1 ? 'it' : 'them') + '</b> (marked). With a fix switched off, byte order no longer equals value order: ' +
-          'a B-tree built on these keys would return wrong range scans.',
+          ' column values to reach the same order.' +
+          (off.length ? ' A fix is switched off, but these particular rows do not expose it: ' + why : '')
+        : 'Sorted by bytes, but the result is not the logical order: <b>' + wrong.length + ' row' + (wrong.length === 1 ? ' is' : 's are') +
+          ' out of place</b> (marked; moving just ' + (wrong.length === 1 ? 'that one' : 'those') + ' would repair the order). ' + why +
+          ' A B-tree built on these keys would return wrong range scans.',
       state: { order: order.slice(), pair: null, diff: null, sortedUpTo: order.length, done: true, wrong: wrong, ok: ok, comparisons: comparisons, examined: examined },
       log: (ok ? 'sorted: ' : 'WRONG: ') + order.map(function (r) { return rows[r].id; }).join(' '),
       hold: 2
@@ -269,15 +272,61 @@
     return { steps: steps, order: order, logical: logical, keys: keys, comparisons: comparisons, examined: examined, columns: columns, ok: ok };
   }
 
+  /** What goes wrong without each fix, in one sentence (the final caption of figure 1). */
+  var WHAT_BREAKS = {
+    bigEndian: '<b>Little-endian integers:</b> the first byte compared is the least significant one, so numbers are ordered by ' +
+      'their low byte (256, low byte <code>00</code>, lands next to 0).',
+    signFlip: '<b>No sign flip:</b> a negative number keeps its top bit set, so it is compared as if it were larger than every ' +
+      'positive number.',
+    framing: '<b>No tag and terminator:</b> nothing marks where a name ends, so the byte after a short name is compared with the ' +
+      'first score byte of the other row ("Anna" against "Ann" plus a score), and a NULL score has no bytes at all.',
+    descInvert: '<b>No inversion:</b> the score column sorts ascending although the key asks for DESC.'
+  };
+
+  /**
+   * The rows that are out of place: `order` minus a longest run of rows that
+   * are already in logical order relative to each other (a longest increasing
+   * subsequence of logical ranks). One displaced row is reported as one row,
+   * not as every row it pushed down by a position.
+   */
+  function outOfPlace(order, logical) {
+    var rank = {}, n = order.length, len = [], prev = [], best = -1;
+    logical.forEach(function (r, pos) { rank[r] = pos; });
+    for (var i = 0; i < n; i++) {
+      len[i] = 1; prev[i] = -1;
+      for (var j = 0; j < i; j++) {
+        if (rank[order[j]] < rank[order[i]] && len[j] + 1 > len[i]) { len[i] = len[j] + 1; prev[i] = j; }
+      }
+      if (best < 0 || len[i] > len[best]) best = i;
+    }
+    var keep = {};
+    for (var k = best; k >= 0; k = prev[k]) keep[k] = true;
+    return order.filter(function (_, pos) { return !keep[pos]; });
+  }
+
   /* ---------- "build one key" pipeline (figure 2) ------------------------ */
 
+  function f64fromBits(bits) {
+    var dv = new DataView(new ArrayBuffer(8));
+    dv.setBigUint64(0, bits);
+    return dv.getFloat64(0);
+  }
+  /**
+   * What the reader typed -> {x, bits} or null. The bits are kept next to the
+   * number because a JS number cannot be trusted to carry a NaN's sign and
+   * payload. Accepted: a decimal number, inf, -inf, nan, -nan, and `0x` plus
+   * up to 16 hex digits for a raw bit pattern (0xfff000000000beef is a NaN).
+   */
   function parseFloatInput(s) {
     s = s.trim().toLowerCase();
-    if (s === 'nan') return NaN;
-    if (s === 'inf' || s === '+inf' || s === 'infinity') return Infinity;
-    if (s === '-inf' || s === '-infinity') return -Infinity;
+    var hexBits = /^0x([0-9a-f]{1,16})$/.exec(s);
+    if (hexBits) { var raw = BigInt('0x' + hexBits[1]); return { x: f64fromBits(raw), bits: raw }; }
+    if (s === 'nan' || s === '+nan') return { x: NaN, bits: CANONICAL_NAN };
+    if (s === '-nan') return { x: NaN, bits: CANONICAL_NAN | SIGN };
+    if (/^[-+]?(inf|infinity)$/.test(s)) s = s.charAt(0) === '-' ? '-Infinity' : 'Infinity';
+    else if (!/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/.test(s)) return null;
     var x = Number(s);
-    return s === '' || x !== x ? null : x;
+    return { x: x, bits: f64bits(x) };
   }
   function parseIntInput(s) {
     s = s.trim();
@@ -317,9 +366,9 @@
         'positive ones. Flipping it moves ' + (v < 0n ? 'this negative number below' : 'this non-negative number above') +
         ' the other half and keeps the order inside each half.', 'flip');
     } else if (kind === 'float') {
-      var x = parseFloatInput(text);
-      if (x === null) return { error: 'Type a number, inf, -inf or nan.' };
-      var bits = f64bits(x);
+      var parsed = parseFloatInput(text);
+      if (parsed === null) return { error: 'Type a number, inf, -inf, nan, -nan, or raw bits as hex (0xfff000000000beef).' };
+      var x = parsed.x, bits = parsed.bits;
       var shown = x !== x ? 'NaN' : (Object.is(x, -0) ? '-0.0' : String(x));
       push('IEEE 754 bits (big-endian)', u64be(bits), {},
         'The double <b class="bt-k">' + shown + '</b>: 1 sign bit, 11 exponent bits, 52 fraction bits. For non-negative numbers a larger ' +
@@ -332,7 +381,10 @@
       }
       if (x !== x && bits !== CANONICAL_NAN) {
         bits = CANONICAL_NAN;
-        push('NaN made canonical', u64be(bits), all(8, 'compare'), 'Every NaN is replaced by one fixed NaN pattern, so all NaNs are equal keys.', 'nan');
+        push('NaN made canonical', u64be(bits), all(8, 'compare'),
+          'There are 2^53 - 2 different NaN bit patterns: either sign, and any non-zero fraction ("payload"). This one is not the ' +
+          'usual <code>7f f8 00 ..</code>. All NaNs must be equal keys, so every NaN is replaced by that one pattern. ' +
+          'The price: sign and payload of a NaN do not survive encoding.', 'nan');
       }
       payload = encodeF64(x);
       var neg = (bits & SIGN) !== 0n;
@@ -474,7 +526,7 @@
     encodeI64: encodeI64, encodeF64: encodeF64, encodeBytes: encodeBytes, invert: invert,
     PEOPLE: PEOPLE, ALL_FIXES: ALL_FIXES, encodeKey: encodeKey, encodeRecord: encodeRecord, compareRows: compareRows,
     SplitMix64: SplitMix64, arrivalOrder: arrivalOrder, sortSteps: sortSteps, keySteps: keySteps,
-    parseIntInput: parseIntInput, report: report
+    parseIntInput: parseIntInput, parseFloatInput: parseFloatInput, outOfPlace: outOfPlace, report: report
   };
   root.CH11 = CH11;
   if (typeof module !== 'undefined' && module.exports) module.exports = CH11;

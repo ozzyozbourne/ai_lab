@@ -41,6 +41,8 @@
 .c11-toolrow .bt-input { width: 7.5rem; }
 .c11-toolrow .bt-input.is-wide { width: 10rem; }
 .c11-error { color: var(--bt-key-deleted); font-size: .86rem; min-height: 1.3em; }
+/* The input is invalid: what is drawn belongs to the previous, valid input. */
+.r-stale { opacity: .35; }
 
 .c11-strips { display: flex; flex-direction: column; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
 .c11-strip { display: grid; grid-template-columns: 13.5rem auto; align-items: center; gap: 2px 10px; min-width: min-content; }
@@ -58,8 +60,9 @@
 @media (max-width: 640px) {
   .c11-row { grid-template-columns: 1fr; }
   .c11-strip { grid-template-columns: 1fr; }
-  .c11-bytes { font-size: 9.5px; gap: 0; }
-  .c11-b { width: 1.42em; border-radius: 2px; }
+  /* Keep a gap between bytes: without it a key reads as one long hex string. Long keys scroll sideways. */
+  .c11-bytes { font-size: 10px; gap: 1px; }
+  .c11-b { width: 1.5em; border-radius: 2px; }
   .c11-b.r-colstart { margin-left: 3px; }
   .c11-strip .c11-b { width: 1.8em; font-size: 11px; }
 }
@@ -81,7 +84,8 @@ the four fixes off and watch the same sort put rows in the wrong place.</p>
 
 <h2>2. One value becomes one key column</h2>
 <p>Pick a type, type a value, and step through what the encoder does to it and why. The code panel highlights the
-line that performs each step.</p>
+line that performs each step. For <code>f64</code> you can also type <code>inf</code>, <code>nan</code>, <code>-nan</code>, or raw
+bits as hex such as <code>0xfff000000000beef</code> (a NaN with a payload).</p>
 <div id="fig-key"></div>
 
 <h2>3. Why varints are not keys</h2>
@@ -241,6 +245,12 @@ byte order of each encoding with the numeric order.</p>
       broken[f] = M.sortSteps(M.arrivalOrder(), fx).ok;
     });
     BTViz.selfTest('each fix is necessary', broken, { bigEndian: false, signFlip: false, framing: false, descInvert: false });
+    // Without framing three rows are displaced (both "Anna" rows and the empty name), not all eight.
+    var noFraming = M.sortSteps(M.arrivalOrder(), { bigEndian: true, signFlip: true, framing: false, descInvert: true });
+    var last = noFraming.steps[noFraming.steps.length - 1].state;
+    BTViz.selfTest('rows out of place',
+      { order: last.order.map(function (i) { return M.arrivalOrder()[i].id; }).join(' '), wrong: last.wrong.map(function (i) { return M.arrivalOrder()[i].id; }).sort().join(' ') },
+      { order: '8 1 2 3 4 5 6 7', wrong: '1 7 8' });
   })();
 
   /* ====================================================================
@@ -260,9 +270,10 @@ byte order of each encoding with the numeric order.</p>
     var descBox = el('input', { type: 'checkbox', id: 'c11-desc' });
     var err = el('span.c11-error', { role: 'alert' });
     var presets = el('div.c11-toolrow', el('span.c11-tl', 'Try:'));
-    [['int', '-2'], ['int', '256'], ['float', '-1.5'], ['float', '-0.0'], ['float', 'nan'], ['text', 'Ann'], ['text', 'a\\x00b']].forEach(function (p) {
+    [['int', '-2'], ['int', '256'], ['float', '-1.5'], ['float', '-0.0'], ['float', 'nan'], ['float', '0xfff000000000beef', 'NaN with payload'],
+      ['text', 'Ann'], ['text', 'a\\x00b']].forEach(function (p) {
       presets.appendChild(el('button.bt-btn', { type: 'button', onclick: function () { kindSel.value = p[0]; valueIn.value = p[1]; encode(true); } },
-        (p[0] === 'text' ? '"' + p[1] + '"' : p[1]) + ' '));
+        (p[2] || (p[0] === 'text' ? '"' + p[1] + '"' : p[1])) + ' '));
     });
     fig.toolbar.append(
       el('div.c11-toolrow', el('label.bt-field', 'Type ', kindSel), el('label.bt-field', 'Value ', valueIn),
@@ -304,8 +315,11 @@ byte order of each encoding with the numeric order.</p>
     });
     function encode(play) {
       var r = M.keySteps(kindSel.value, valueIn.value, descBox.checked);
-      err.textContent = r.error || '';
-      if (r.error) return;
+      // On bad input the old picture stays, dimmed and labelled, instead of posing as the answer.
+      err.textContent = r.error ? r.error + ' Dimmed below: the previous value.' : '';
+      strips.classList.toggle('r-stale', !!r.error);
+      fig.caption.classList.toggle('r-stale', !!r.error);
+      if (r.error) { stepper.pause(); return; }
       stepper.setSteps(r.steps, { play: play });
     }
     encode(false);
@@ -315,6 +329,12 @@ byte order of each encoding with the numeric order.</p>
     BTViz.selfTest('-2 DESC key column',
       { column: col, inOutput: window.CHAPTER_EXPECTED_OUTPUT.indexOf('01 41 6e 6e 00 ' + col + ' 01 80') >= 0 },
       { column: '01 80 00 00 00 00 00 00 01', inOutput: true });
+    // Every NaN, whatever its sign and payload, ends as the NaN key the programs print in section 3.
+    var nanKeys = ['nan', '-nan', '0xfff000000000beef', '0x7ff0000000000001'].map(function (t) { return M.hex(M.keySteps('float', t, false).column); });
+    BTViz.selfTest('all NaNs, one key',
+      { keys: nanKeys.filter(function (k, i) { return nanKeys.indexOf(k) === i; }), inOutput: window.CHAPTER_EXPECTED_OUTPUT.indexOf('NaN -> ' + nanKeys[0].slice(3)) >= 0,
+        steps: M.keySteps('float', '0xfff000000000beef', false).steps.map(function (st) { var l = st.state.strips; return l[l.length - 1].label; })[1] },
+      { keys: ['01 ff f8 00 00 00 00 00 00'], inOutput: true, steps: 'NaN made canonical' });
   })();
 
   /* ====================================================================
@@ -354,8 +374,10 @@ byte order of each encoding with the numeric order.</p>
     function be8(v) { var b = []; for (var i = 7; i >= 0; i--) b.push(Number((v >> BigInt(8 * i)) & 0xffn)); return b; }
     function draw() {
       var a = parse(aIn.value), b = parse(bIn.value);
-      err.textContent = a === null || b === null ? 'Both must be whole numbers from 0 to 18446744073709551615.' : '';
-      if (a === null || b === null) return;
+      var bad = a === null || b === null;
+      err.textContent = bad ? 'Both must be whole numbers from 0 to 18446744073709551615. Dimmed below: the previous pair.' : '';
+      out.classList.toggle('r-stale', bad);
+      if (bad) return;
       var numeric = a < b ? -1 : (a > b ? 1 : 0);
       var sym = { '-1': '<', '0': '=', '1': '>' };
       var encs = [['LEB128 varint', M.leb128], ['SQLite varint', M.sqliteVarint], ['8-byte big-endian key', be8]];

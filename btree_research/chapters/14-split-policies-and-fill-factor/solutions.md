@@ -1,5 +1,10 @@
 # Chapter 14: solutions
 
+Every count below was measured with the chapter's Zig code (20 000 inserts and seed
+2014 where a workload is involved, as in the README's experiment). The code changes that
+a solution describes were made in a scratch copy and are not part of the chapter's
+sources; the text says what was changed so that the numbers can be reproduced.
+
 ## 1. One split by hand
 
 Imaginary page: 30, 10, 10, 10, 10, 20, *15 bytes, 105 in total, capacity 100. All keys
@@ -19,7 +24,8 @@ All six candidates are legal (both sides at most 100 bytes). `half` cuts at `s=3
 leaving 50 and 55 bytes. `rightmost-90` cuts at `s=6`: the left page is exactly 90%
 full and the new cell is alone on the right page.
 
-Check it with `split.chooseSplit` on these seven cells and `upper_key = null`.
+`split.candidates`, `split.deltaOf` and `split.chooseSplit` on these seven cells with
+`upper_key = null` give the same table and the same two cuts.
 
 ## 2. Descending inserts
 
@@ -28,20 +34,23 @@ That page is not the rightmost one, so `rightmost-90` cuts it 50:50. The right h
 never receives another cell; the left half fills and splits again. This is the
 ascending case mirrored, and the rightmost rule looks in the wrong direction.
 
-Measured, by replacing the key in `runWorkload` with `n - i` (20 000 inserts, seed
-2014): `half` 774 pages at 50.5%, `rightmost-90` and `adaptive-90` 775 pages at 50.4%.
+Measured, by replacing the key of the `ascending` workload in `runWorkload` with
+`n - i`: `half` 774 pages at 50.5%, `rightmost-90` and `adaptive-90` 775 pages at
+50.4%. Naive `fill-90` is far worse here than anywhere in the README: 3 556 pages at
+11.0%, because it packs the left page, which is exactly the one that keeps growing.
 
 To do better a policy would need the mirror rule: when splitting the *leftmost* page,
-leave the *right* page fill factor% full. `nbtsplitloc.c` has no such rule; its only
-positional test is `is_rightmost` (`nbtsplitloc.c:287`). Descending keys are rare
-enough in practice (and an index can be declared `DESC`) that the asymmetry is
-accepted.
+leave the *right* page fill factor% full. `nbtsplitloc.c` has no such rule; the only
+position it tests when it chooses the space target is `is_rightmost`
+(`nbtsplitloc.c:287`).
 
 ## 3. What the slack buys
 
-Load with `Tree.init(gpa, 4096, .{ .rightmost = ff })` and keys `0..20000`, note
-`tree.stats.splits`, then insert 2 000 cells `put(rng.below(20000), 20000 + i, size)`
-and subtract. With seed 2014 for sizes and keys:
+Load with `Tree.init(gpa, 4096, .{ .rightmost = ff })`: keys and tids `0..20000`, sizes
+`rng.range(40, 121)` from one `SplitMix64.init(2014)`. Note `tree.stats.splits`. Then,
+with the same generator carrying on, insert 2 000 cells
+`put(rng.below(20000), 20000 + i, size)` (the key is drawn before the size) and
+subtract.
 
 ```
 fill factor   after load          after 2000 random inserts
@@ -52,14 +61,15 @@ fill factor   after load          after 2000 random inserts
     50          774    50.5%            0       774    55.5%
 ```
 
-At 100 the load is as compact as possible, and then almost every one of the 396 pages
-splits on its first new cell: the page count doubles and the index is *less* compact
-than if it had been loaded at 90. At 90 each page has room for about five more cells
-and 167 pages run out. At 70 nothing splits. The cost of slack is paid up front and for
-ever in pages that are read by every scan; the cost of no slack is paid later in splits
-and in half-empty pages. An index that is only ever appended to wants 100; one that
-receives updates all over wants less. That is why the fill factor is a user-visible
-setting in Postgres (default 90, `nbtree.h:201`) and not a constant.
+At 100 the load is as compact as possible, and then the second phase causes 392
+splits in 396 pages: a page that is 98.8% full has about 50 bytes free, less than most
+cells need. The page count doubles and the index ends up *less* compact than the one
+loaded at 90. At 90 a page has about 410 free bytes, room for about five cells of
+average size, and there are 167 splits. At 70 nothing splits. The cost of slack is
+paid up front and for ever in pages that are read by every scan; the cost of no slack
+is paid later in splits and in half-empty pages. An index that is only ever appended
+to wants 100; one that receives inserts all over wants less. Postgres makes the fill
+factor a setting with a default of 90 (`nbtree.h:201`) and not a constant.
 
 ## 4. The many-duplicates guard
 
@@ -68,12 +78,13 @@ a few larger keys, and new keys arrive in *descending* order just above `d`. The
 duplicates strategy cuts at the right edge of the run. The new right page starts with
 the smallest key above `d`. The next insert is smaller than that key, so it goes to
 the left page again, which is still nearly full; it splits again at the same edge, and
-leaves behind another right page holding one or two cells that will never receive
-anything.
+leaves behind another right page holding only the cells above the run, which will
+never receive anything.
 
 A workload that shows it (capacity 4096, `adaptive-90`, every cell 100 bytes):
-`put(5, tid, 100)` for tids 0..40, so that the run fills 98% of the page, then 2 000
-keys `10_000 - i` with ascending `i`. Count the pages under 10% full in `fill()`.
+`put(5, tid, 100)` for tids 0..40 (40 cells, so that the run fills 98% of the page),
+then `put(10_000 - i, 40 + i, 100)` for `i` in 0..2000. Count the pages under 10% full
+in `fill()`.
 Measured: 2 001 pages, 2 000 of them under 10% full (one 100-byte cell each), 2.4%
 average fill. The stranded right page holds whatever did not belong to the run, so
 the run has to fill nearly the whole page for the effect to be this stark: with
@@ -81,7 +92,8 @@ the run has to fill nearly the whole page for the effect to be this stark: with
 of them 20 to 29% full. With the guard below the two runs need 98 pages (50.8%
 average fill) and 79 pages (51.0%).
 
-The guard, at the end of `chooseSplit` (Zig; `nbtsplitloc.c:833-843`):
+The guard, at the end of `chooseSplit` just before `const c = cands[pick]` (Zig;
+`nbtsplitloc.c:833-843`):
 
 ```zig
 if (strategy == .many_duplicates and !page.isRightmost() and
@@ -98,33 +110,89 @@ the first right tuple": in Postgres terms `!newitemonleft && firstrightoff ==
 newitemoff`. (Postgres writes the test as a range of nine offsets and calls it
 "conservative". As far as I can tell from how candidates are recorded at
 `nbtsplitloc.c:225-254`, a candidate with the new item on the right never has
-`firstrightoff > newitemoff`, so equality is the case that matters.) Add a test that builds the page above and checks that
-the choice is the 50:50 candidate, and re-run the model test: the guard changes where
-cells go, never whether the tree is valid.
+`firstrightoff > newitemoff`, so equality is the case that matters.)
+
+A test for it: 40 cells `(5, tid)` of 100 bytes, then `(8999, 50)` as the new cell at
+index 40 and `(9000, 49)` after it, capacity 4096, upper key 9001. Without the guard
+`adaptive-90` cuts before index 40 (many duplicates); with it, before index 21, the
+same cut as `half`. With the guard in place all of the chapter's tests still pass,
+the model test and the comparison with `expected_output.txt` included: the guard
+changes none of the numbers in the README's experiment.
 
 ## 5. Split after the new item
 
-Idea: on a page that is not rightmost, if the new cell is the *last cell of its key* on
-the imaginary page (the next cell has a larger key, or the upper bound is a different
-key) and the previous cell has the same key, assume the key is an ascending stream and
-cut directly after the new cell: `first_right = new_index + 1`, if that candidate is
-legal. The cells of this key stay on the left page and the right page starts with the
-next key, so the separator is a bare key.
+The rule, as simple as it can be made in this model: on a page that is not rightmost,
+if the cell before the new one has the same key and the cell after it has a larger
+key, assume the key is an ascending stream and cut directly after the new cell, so
+that the cells of this key stay on the left page and the right page starts with the
+next key (a bare-key separator). When the new cell is the last one on the imaginary
+page there is no gap after it and the rule cannot apply.
 
-Where to put it: in `chooseSplit`, before the delta sort, for `.adaptive` only, the way
-`_bt_findsplitloc` calls `_bt_afternewitemoff` before anything else on a leaf that is
-not rightmost (`nbtsplitloc.c:293`).
+In `chooseSplit`, before the first `deltaSort`, the way `_bt_findsplitloc` calls
+`_bt_afternewitemoff` before anything else on a leaf that is not rightmost
+(`nbtsplitloc.c:293`):
 
-What to measure: pages, average fill and tid separators for `dup-groups` and for
-`random` (which must not get worse: there the previous cell never has the same key, so
-the rule must not fire at all). Do not expect the gain of the rightmost rule. With
-about 8 cells per key the stream for one key is short, and after the cut the left page
-is full of *other* keys that are still growing, so it splits again soon. Postgres is
-careful for the same reason: the real heuristic applies only to multi-column indexes
-with equally sized tuples, requires the new tuple's heap TID to be adjacent to the
-previous tuple's, and falls back to the fill factor as its target when cutting after
-the new item would leave the left page fuller than that (`nbtsplitloc.c:631-740`). The comment above it
-admits that it "may leave extra free space" behind a group that never grows again.
-The honest answer to this exercise is a table of your own counts, and it may well show
-no improvement for short groups and a clear one when groups span several pages but
-pages hold more than one group.
+```zig
+if (policy == .adaptive and !page.isRightmost() and
+    new_index > 0 and new_index + 1 < items.len and
+    items[new_index - 1].key == items[new_index].key and
+    items[new_index + 1].key != items[new_index].key)
+{
+    for (cands) |c| if (c.first_right == new_index + 1) { // only if that gap is legal
+        return .{
+            .first_right = c.first_right,
+            .left_bytes = c.left_bytes,
+            .right_bytes = c.right_bytes,
+            .penalty = 1,
+            .strategy = .default,
+            .interval = 1,
+        };
+    };
+}
+```
+
+Measured under `adaptive-90`, pages and average fill, with the number of splits the
+rule decided in brackets. The last column adds one condition, the model's version of
+Postgres's "heap TID adjacency": `items[new_index - 1].tid + 1 == items[new_index].tid`.
+The rows "with N keys" are `dup-groups` with `rng.below(N)` as the key.
+
+```
+workload                     no rule       with the rule       ... and adjacent tids
+random                       565  69.0%    565  69.0%   (0)    565  69.0%   (0)
+dup-groups (2500 keys)       572  68.2%    697  56.0% (539)    572  68.2%   (1)
+dup-groups with 1000 keys    582  67.0%    643  60.7% (494)    583  66.9%   (1)
+dup-groups with 400 keys     567  68.8%    567  68.8% (272)    567  68.8%   (1)
+dup-groups with 100 keys     447  87.3%    447  87.3%  (64)    447  87.3%   (0)
+dup-heavy (22 keys)          417  93.6%    417  93.6%  (16)    417  93.6%   (0)
+```
+
+So the answer is no. The rule never helped, and on the workload the exercise names it
+costs 125 pages, 22% more. The number of separators with a tid is the same in all
+three columns of every row. `random` is untouched, as it must be: there the cell
+before the new one never has the same key.
+
+Why it loses (my reading of the numbers, not a further measurement): tids ascend with
+arrival, so a new cell is always the last one of its key. The rule's condition
+therefore says little more than "this key already has a cell on this page", and it
+decided 539 of the 696 splits of `dup-groups`. Each of those cuts falls wherever the
+newest cell happens to sit, which is a random place on the page, and nothing makes the
+next inserts follow it: they go to other keys. The rule replaces a balanced cut by a
+random one. Requiring adjacent tids removes the damage by removing the rule: with keys
+drawn at random, two consecutive rows almost never share a key, and it fired at most
+once per run.
+
+I also tried a workload in which the adjacency test does hold: `dup-groups`, but each
+randomly chosen key receives a burst of 4 cells with consecutive tids. Without the
+rule 584 pages at 66.9%; with it 658 at 59.4%; with the adjacency condition 645 at
+60.6%. With bursts of 16 the three results are 565, 592 and 592 pages. Still a loss.
+
+The case the heuristic exists for, a long ascending stream per group, shows up in this
+single-column model as one key filling whole pages, and the single value strategy
+already handles it: `dup-heavy` reaches 93.6% without the rule. Postgres is careful in
+the same direction. `_bt_afternewitemoff` (`nbtsplitloc.c:631-740`) returns false at
+once for single-column indexes, applies only to pages of equally sized, narrow tuples,
+requires the new tuple's heap TID to be adjacent to the previous tuple's unless the
+new tuple is the last on the page, and uses the leaf fill factor as its target when
+cutting after the new item would leave the left page fuller than that. The comment
+above it admits that it "may leave extra free space" behind a group that never grows
+again.

@@ -1,0 +1,121 @@
+== 1. One table, two layouts ==
+orders(id PRIMARY KEY, customer, day, amount, code UNIQUE); INDEX by_customer_day(customer, day)
+index key = columns, then locator, packed into one u64: customer:16 | day:16 | locator:32
+12 rows inserted with ids 10 20 5 6 12 30 7 17 3 25 1 15; every tree has order M = 4
+
+-- clustered: the row is in the primary tree; locator = row id, printed #id --
+  primary tree (id -> row): height 3, 12 keys, 8 nodes
+  level 0: #7[15]
+  level 1: #2[6 10] #6[20]
+  leaves : #0(1 3 5) <-> #4(6 7) <-> #1(10 12) <-> #5(15 17) <-> #3(20 25 30)
+  by_customer_day (customer,day,locator): height 3, 8 nodes
+    (3,4,#3) (3,4,#20) | (3,9,#30) (3,28,#1) | (7,3,#12) (7,12,#5) | (7,12,#10) (7,17,#25) (7,21,#7) | (9,2,#6) (9,2,#15) (9,15,#17)
+  by_code (code,locator): height 3, 8 nodes
+    (102,#30) (107,#20) (111,#3) | (118,#6) (126,#15) | (129,#7) (134,#25) | (141,#10) (148,#1) (155,#12) | (163,#5) (170,#17)
+
+-- heap + index: the row is in the heap; locator = TID, printed (page,slot) --
+  heap page 0: (0,1)=id 10 (0,2)=id 20 (0,3)=id 5 (0,4)=id 6
+  heap page 1: (1,1)=id 12 (1,2)=id 30 (1,3)=id 7 (1,4)=id 17
+  heap page 2: (2,1)=id 3 (2,2)=id 25 (2,3)=id 1 (2,4)=id 15
+  primary key index (id,TID): height 3, 8 nodes
+    (1,(2,3)) (3,(2,1)) (5,(0,3)) | (6,(0,4)) (7,(1,3)) | (10,(0,1)) (12,(1,1)) | (15,(2,4)) (17,(1,4)) | (20,(0,2)) (25,(2,2)) (30,(1,2))
+  by_customer_day (customer,day,locator): height 3, 8 nodes
+    (3,4,(0,2)) (3,4,(2,1)) | (3,9,(1,2)) (3,28,(2,3)) | (7,3,(1,1)) (7,12,(0,1)) | (7,12,(0,3)) (7,17,(2,2)) (7,21,(1,3)) | (9,2,(0,4)) (9,2,(2,4)) (9,15,(1,4))
+  by_code (code,locator): height 3, 8 nodes
+    (102,(1,2)) (107,(0,2)) (111,(2,1)) | (118,(0,4)) (126,(2,4)) | (129,(1,3)) (134,(2,2)) | (141,(0,1)) (148,(2,3)) (155,(1,1)) | (163,(0,3)) (170,(1,4))
+
+== 2. Point lookup: SELECT * FROM orders WHERE id = 17 ==
+clustered: id=17 customer=9 day=15 amount=510 code=170
+  cost: descents=1 tree nodes=3 index entries=0 row fetches=0 heap reads=0 -> 3 page reads
+heap     : id=17 customer=9 day=15 amount=510 code=170
+  cost: descents=1 tree nodes=3 index entries=1 row fetches=1 heap reads=1 -> 4 page reads
+
+== 3. Secondary index, then back to the row: SELECT * WHERE customer = 7 ==
+clustered: ids 12 5 10 25 7, amounts 120 75 250 125 35
+  cost: descents=6 tree nodes=21 index entries=5 row fetches=5 heap reads=0 -> 21 page reads
+heap     : ids 12 10 5 25 7, amounts 120 250 75 125 35
+  cost: descents=1 tree nodes=6 index entries=5 row fetches=5 heap reads=5 -> 11 page reads
+
+== 4. Covering (index-only) scan: SELECT day WHERE customer = 7 ==
+clustered: days 3 12 12 17 21, locators in the entries #12 #5 #10 #25 #7
+  cost: descents=1 tree nodes=6 index entries=5 row fetches=0 heap reads=0 -> 6 page reads
+heap     : days 3 12 12 17 21, locators in the entries (1,1) (0,1) (0,3) (2,2) (1,3)
+  cost: descents=1 tree nodes=6 index entries=5 row fetches=0 heap reads=0 -> 6 page reads
+clustered only: the locator is the id, so SELECT id, day is covered as well
+
+== 5. Composite key: which predicates are one contiguous run of the index? ==
+WHERE customer = 7 AND day BETWEEN 10 AND 20
+clustered: ids 5 10 25
+  cost: descents=4 tree nodes=13 index entries=3 row fetches=3 heap reads=0 -> 13 page reads
+heap     : ids 10 5 25
+  cost: descents=1 tree nodes=4 index entries=3 row fetches=3 heap reads=3 -> 7 page reads
+WHERE customer = 7 AND day = 12
+clustered: ids 5 10
+  cost: descents=3 tree nodes=10 index entries=2 row fetches=2 heap reads=0 -> 10 page reads
+heap     : ids 10 5
+  cost: descents=1 tree nodes=4 index entries=2 row fetches=2 heap reads=2 -> 6 page reads
+WHERE customer = 8
+clustered: ids (none)
+  cost: descents=1 tree nodes=4 index entries=0 row fetches=0 heap reads=0 -> 4 page reads
+heap     : ids (none)
+  cost: descents=1 tree nodes=4 index entries=0 row fetches=0 heap reads=0 -> 4 page reads
+WHERE day = 12   (not a prefix: the first column is free, so the whole index is read)
+clustered: count 2
+  cost: descents=1 tree nodes=7 index entries=12 row fetches=0 heap reads=0 -> 7 page reads
+heap     : count 2
+  cost: descents=1 tree nodes=7 index entries=12 row fetches=0 heap reads=0 -> 7 page reads
+
+== 6. Unique constraint: probe the index before writing ==
+INSERT id=40 code=129
+clustered: rejected, duplicate code; 12 rows
+  cost: descents=2 tree nodes=7 index entries=1 row fetches=0 heap reads=0 -> 7 page reads
+heap     : rejected, duplicate code; 12 rows
+  cost: descents=2 tree nodes=7 index entries=1 row fetches=0 heap reads=0 -> 7 page reads
+INSERT id=12 code=500
+clustered: rejected, duplicate primary key; 12 rows
+  cost: descents=1 tree nodes=3 index entries=0 row fetches=0 heap reads=0 -> 3 page reads
+heap     : rejected, duplicate primary key; 12 rows
+  cost: descents=1 tree nodes=3 index entries=1 row fetches=0 heap reads=0 -> 3 page reads
+INSERT id=40 code=500
+clustered: ok; 13 rows
+  cost: descents=5 tree nodes=15 index entries=0 row fetches=0 heap reads=0 -> 15 page reads
+heap     : ok; 13 rows
+  cost: descents=5 tree nodes=15 index entries=0 row fetches=0 heap reads=0 -> 15 page reads
+
+== 7. Delete: read the row first, its columns name the index entries ==
+DELETE FROM orders WHERE id = 5
+clustered: deleted true; 12 rows
+  cost: descents=4 tree nodes=12 index entries=0 row fetches=0 heap reads=0 -> 12 page reads
+  by_customer_day: height 3, 8 nodes
+    (3,1,#40) (3,4,#3) (3,4,#20) | (3,9,#30) (3,28,#1) | (7,3,#12) | (7,12,#10) (7,17,#25) (7,21,#7) | (9,2,#6) (9,2,#15) (9,15,#17)
+heap     : deleted true; 12 rows
+  cost: descents=4 tree nodes=12 index entries=1 row fetches=1 heap reads=1 -> 13 page reads
+  by_customer_day: height 3, 8 nodes
+    (3,1,(3,1)) (3,4,(0,2)) (3,4,(2,1)) | (3,9,(1,2)) (3,28,(2,3)) | (7,3,(1,1)) (7,12,(0,1)) | (7,17,(2,2)) (7,21,(1,3)) | (9,2,(0,4)) (9,2,(2,4)) (9,15,(1,4))
+  heap page 0: (0,1)=id 10 (0,2)=id 20 (0,3)=dead (0,4)=id 6
+  heap page 1: (1,1)=id 12 (1,2)=id 30 (1,3)=id 7 (1,4)=id 17
+  heap page 2: (2,1)=id 3 (2,2)=id 25 (2,3)=id 1 (2,4)=id 15
+  heap page 3: (3,1)=id 40
+
+== 8. The same queries on 2000 random rows, order M = 16 ==
+2000 rows loaded, 17 inserts rejected for a duplicate id
+clustered: primary height 3 (204 nodes), by_customer_day height 3 (200 nodes), by_code height 4 (236 nodes), heap pages 0
+heap     : primary height 3 (204 nodes), by_customer_day height 3 (200 nodes), by_code height 4 (236 nodes), heap pages 500
+
+layout     query                                rows  descents  tree nodes  row fetches  heap reads  page reads
+clustered  2000 inserts                         2000     10017       29599            0           0       29599
+heap       2000 inserts                         2000     10017       29794            0           0       29794
+clustered  2000 x WHERE id = ?                  2000      2000        6000            0           0        6000
+heap       2000 x WHERE id = ?                  2000      2000        6186         2000        2000        8186
+clustered  50 x SELECT * WHERE customer = ?     2000      2050        6346         2000           0        6346
+heap       50 x SELECT * WHERE customer = ?     2000        50         346         2000        2000        2346
+clustered  50 x SELECT day WHERE customer = ?   2000        50         346            0           0         346
+heap       50 x SELECT day WHERE customer = ?   2000        50         346            0           0         346
+clustered  50 x ... AND day BETWEEN 100 AND 129  176       226         699          176           0         699
+heap       50 x ... AND day BETWEEN 100 AND 129  176        50         171          176         176         347
+clustered  1 x SELECT count(*) WHERE day = 180     2         1         186            0           0         186
+heap       1 x SELECT count(*) WHERE day = 180     2         1         186            0           0         186
+clustered  500 x DELETE WHERE id = ?             500      2000        6500            0           0        6500
+heap       500 x DELETE WHERE id = ?             500      2000        6544          500         500        7044
+
+both layouts returned the same rows: true; rows left: 1500 and 1500; dead heap slots: 500

@@ -120,8 +120,8 @@ pub fn columnRange(value: u32) KeyRange {
 test "packed order equals column-by-column order" {
     // (customer, day, locator) triples in ascending lexicographic order.
     const triples = [_][3]u32{
-        .{ 0, 0, 0 },  .{ 0, 0, 1 },     .{ 0, 1, 0 },     .{ 0, 65535, 9 },
-        .{ 1, 0, 0 },  .{ 7, 12, 5 },    .{ 7, 12, 10 },   .{ 7, 13, 0 },
+        .{ 0, 0, 0 },  .{ 0, 0, 1 },     .{ 0, 1, 0 },                   .{ 0, 65535, 9 },
+        .{ 1, 0, 0 },  .{ 7, 12, 5 },    .{ 7, 12, 10 },                 .{ 7, 13, 0 },
         .{ 8, 0, 99 }, .{ 65535, 0, 0 }, .{ 65535, 65535, 0xFFFF_FFFF },
     };
     var previous: ?u64 = null;

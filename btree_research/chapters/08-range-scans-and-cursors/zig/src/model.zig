@@ -57,7 +57,7 @@ pub fn run(gpa: Allocator, config: Config) !Report {
     defer scan_arena.deinit();
 
     var link: LinkCursor = .init(.{});
-    var stack: StackCursor = .init(try .init(live_arena.allocator()));
+    var stack: StackCursor = .init(try stack_cursor.StackPosition.init(live_arena.allocator()));
     var expected_state: State = .before_first;
     var report: Report = .{};
 
@@ -146,7 +146,7 @@ pub fn run(gpa: Allocator, config: Config) !Report {
 /// filtered by the definition of a range (`bounds.contains`).
 fn checkScan(arena: Allocator, tree: *const Tree, oracle: *const ops.Oracle, lo: Bound, hi: Bound, direction: bounds.Direction) !usize {
     var by_link = scan.Scan(LinkCursor).init(tree, .init(.{}), lo, hi, direction);
-    var by_stack = scan.Scan(StackCursor).init(tree, .init(try .init(arena)), lo, hi, direction);
+    var by_stack = scan.Scan(StackCursor).init(tree, .init(try stack_cursor.StackPosition.init(arena)), lo, hi, direction);
     const from_link = try by_link.collect(arena);
     const from_stack = try by_stack.collect(arena);
 
@@ -192,26 +192,23 @@ fn randomSeek(rng: *SplitMix64, key_space: u64) Seek {
     };
 }
 
-/// What a seek must return, straight from the sorted array.
-/// (Keys in this run are far below maxInt, so `k + 1` cannot overflow HERE.)
+/// What a seek must return, by counting in the sorted array.
 fn expectedSeek(all: []const ops.Entry, target: Seek) ?ops.Entry {
-    var first_at_or_after: usize = 0; // for the forward seeks
-    const forward = switch (target) {
-        .first, .ge, .gt => true,
-        .last, .le, .lt => false,
-    };
-    // Number of entries strictly before the landing point.
+    // Number of entries in front of the landing point.
+    var before: usize = 0;
     for (all) |e| {
-        const before = switch (target) {
+        const in_front = switch (target) {
             .first => false,
             .last => true,
-            .ge => |k| e.key < k,
-            .gt => |k| e.key <= k,
-            .le => |k| e.key <= k,
-            .lt => |k| e.key < k,
+            .ge, .lt => |k| e.key < k,
+            .gt, .le => |k| e.key <= k,
         };
-        if (before) first_at_or_after += 1;
+        if (in_front) before += 1;
     }
-    if (forward) return if (first_at_or_after < all.len) all[first_at_or_after] else null;
-    return if (first_at_or_after > 0) all[first_at_or_after - 1] else null;
+    return switch (target) {
+        // Forward seeks: the first entry that is not in front.
+        .first, .ge, .gt => if (before < all.len) all[before] else null,
+        // Backward seeks: the last entry that is.
+        .last, .le, .lt => if (before > 0) all[before - 1] else null,
+    };
 }

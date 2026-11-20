@@ -3,7 +3,8 @@
 //! arithmetic, so that the README's numbers are printed by a program.
 //!
 //! M is a run-time number here (not `comptime`), because the functions only
-//! compute with it. Results saturate at maxInt(u64) instead of overflowing.
+//! compute with it. Key counts saturate at maxInt(u64) instead of overflowing,
+//! and no tree of u64 keys is taller than 64 levels (2 * 2^63 - 1 keys).
 const std = @import("std");
 
 const max_u64 = std.math.maxInt(u64);
@@ -24,18 +25,20 @@ fn power(base: u64, exponent: usize) u64 {
 pub fn minKeys(m: u64, height: usize) u64 {
     if (height == 0) return 0;
     const half = power(minChildren(m), height - 1);
-    return (std.math.mul(u64, 2, half) catch max_u64) - 1;
+    const twice = std.math.mul(u64, 2, half) catch return max_u64;
+    return twice - 1;
 }
 
 /// Most keys in a tree of `height` levels: M^height - 1 (every node full).
 pub fn maxKeys(m: u64, height: usize) u64 {
-    return power(m, height) - 1;
+    const full = power(m, height);
+    return if (full == max_u64) max_u64 else full - 1;
 }
 
 /// Shortest tree that can hold n keys: the smallest h with M^h - 1 >= n.
 pub fn minHeight(m: u64, n: u64) usize {
     var h: usize = 0;
-    while (maxKeys(m, h) < n) h += 1;
+    while (h < 64 and maxKeys(m, h) < n) h += 1;
     return h;
 }
 
@@ -43,7 +46,7 @@ pub fn minHeight(m: u64, n: u64) usize {
 pub fn maxHeight(m: u64, n: u64) usize {
     if (n == 0) return 0;
     var h: usize = 1;
-    while (minKeys(m, h + 1) <= n) h += 1;
+    while (h < 64 and minKeys(m, h + 1) <= n) h += 1;
     return h;
 }
 
@@ -82,6 +85,8 @@ test "the two bounds are consistent, and huge inputs saturate instead of overflo
             try std.testing.expect(minKeys(m, hi) <= n and n <= maxKeys(m, lo));
         }
     }
-    try std.testing.expectEqual(max_u64 - 1, maxKeys(1024, 100));
-    try std.testing.expect(maxHeight(4, max_u64) >= 63);
+    try std.testing.expectEqual(max_u64, maxKeys(1024, 100));
+    try std.testing.expectEqual(max_u64, minKeys(1024, 100));
+    try std.testing.expectEqual(64, maxHeight(4, max_u64)); // 2 * 2^63 - 1 keys
+    try std.testing.expectEqual(32, minHeight(4, max_u64)); // 4^32 - 1 keys
 }

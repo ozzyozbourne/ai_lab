@@ -370,8 +370,8 @@ pub const WriteTxn = struct {
 
     /// Merges children `li` and `li + 1` of `parent` into ONE page.
     ///
-    /// Chapter 07 always merged right into left. Here exactly one of the two
-    /// is already a private copy (the child we came up from, named by
+    /// Chapter 07 always merged right into left. Here one of the two is
+    /// certainly a private copy already (the child we came up from, named by
     /// `survivor`), so we merge INTO THAT ONE: the other sibling is only read
     /// and then freed, and never has to be copied.
     fn merge(self: *WriteTxn, parent: *Node, li: usize, survivor: enum { left, right }) Allocator.Error!void {
@@ -380,10 +380,12 @@ pub const WriteTxn = struct {
         const right_id = children[li + 1];
         const keep_id = if (survivor == .left) left_id else right_id;
         const drop_id = if (survivor == .left) right_id else left_id;
+        // In a one-operation transaction the other sibling is a committed
+        // page; in a longer one it may be dirty from an earlier operation.
+        // `peek` handles both. Its memory outlives `discard` either way.
+        const left = self.peek(left_id);
+        const right = self.peek(right_id);
         try self.discard(drop_id); // may fail; nothing has been changed yet
-        // (A discarded committed page stays readable: it is only on our list.)
-        const left: *const Node = if (survivor == .left) self.dirty.get(left_id).? else self.db.store.read(left_id);
-        const right: *const Node = if (survivor == .right) self.dirty.get(right_id).? else self.db.store.read(right_id);
 
         // Build the merged node in a scratch copy, then store it in the survivor.
         var merged = left.*;
@@ -419,7 +421,9 @@ pub const WriteTxn = struct {
         if (self.failed) return error.TxnFailed;
         const db = self.db;
         if (self.dirty.count() == 0 and self.freed.items.len == 0) {
-            // Nothing changed (e.g. delete of a missing key): no new root.
+            // Nothing changed (e.g. delete of a missing key): no new root,
+            // no new transaction id.
+            self.returnPageIds();
             self.close();
             return .{};
         }
@@ -467,15 +471,19 @@ pub const WriteTxn = struct {
     /// Throws the transaction away. No page of the store was written, so the
     /// committed tree and every snapshot are exactly as before.
     pub fn abort(self: *WriteTxn) void {
-        // Hand the reserved page ids back, last taken first, which restores
-        // the free list's order.
+        self.returnPageIds();
+        self.db.stats.aborts += 1;
+        self.close();
+    }
+
+    /// Hands the reserved page ids back, last taken first, which restores
+    /// the free list's order.
+    fn returnPageIds(self: *WriteTxn) void {
         var i = self.taken.items.len;
         while (i > 0) {
             i -= 1;
             self.db.store.free.appendAssumeCapacity(self.taken.items[i]);
         }
-        self.db.stats.aborts += 1;
-        self.close();
     }
 
     fn close(self: *WriteTxn) void {

@@ -174,4 +174,7 @@ fn model_a_reserved_tail_of_4_or_32_bytes_is_never_touched_zig_and_rust_build_th
     };
     let (_, hash) = run_model_reserved(short, 0);
     assert_eq!(hash, 0x3b3ad4029bd5294a); // the last line of expected_output.txt
+    // The visualization's JS model replays this one as a self-test.
+    let (_, hash) = run_model_reserved(short, 4);
+    assert_eq!(hash, 0x5f6f7576b6c3ed44);
 }

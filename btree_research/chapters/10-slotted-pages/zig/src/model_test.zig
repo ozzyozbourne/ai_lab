@@ -149,6 +149,9 @@ test "model: a reserved tail of 4 or 32 bytes is never touched; Zig and Rust bui
     // reserved = 0 through the same function is the page of the first test.
     _ = try runModelReserved(testing.allocator, .{ .seed = 10, .count = 3000, .key_space = 300 }, 0, &hash);
     try testing.expectEqual(0x3b3ad4029bd5294a, hash); // the last line of expected_output.txt
+    // The visualization's JS model replays this one as a self-test.
+    _ = try runModelReserved(testing.allocator, .{ .seed = 10, .count = 3000, .key_space = 300 }, 4, &hash);
+    try testing.expectEqual(0x5f6f7576b6c3ed44, hash);
 }
 
 test "model: the oracle's allocation failure leaves nothing leaked" {

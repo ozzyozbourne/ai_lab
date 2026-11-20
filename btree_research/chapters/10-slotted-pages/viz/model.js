@@ -2,9 +2,10 @@
  * Chapter 10 — JavaScript model of the slotted page.
  *
  * A byte-for-byte port of zig/src/slotted_page.zig (and rust/src/slotted_page.rs): same
- * header layout, same first-fit free list, same merge rules, same compaction. The page
- * size is a parameter so the visualization can show a 256-byte page, while the self-test
- * replays the programs' whole scenario on 4096 bytes and compares the printed text.
+ * header layout, same first-fit free list, same merge rules, same compaction, same
+ * reserved tail. The page size is a parameter so the visualization can show a 256-byte
+ * page, while the self-test replays the programs' whole scenario on 4096 bytes and
+ * compares the printed text.
  *
  * Classic script: defines the global `Ch10`. Also loadable from node (`require`).
  */
@@ -12,7 +13,8 @@
   'use strict';
 
   var HEADER_SIZE = 16, SLOT_SIZE = 2, CELL_HEADER_SIZE = 4, FREE_BLOCK_HEADER_SIZE = 4, MAX_FRAG_BYTES = 60;
-  var OFF_CELL_COUNT = 0, OFF_CONTENT_START = 2, OFF_FIRST_FREE = 4, OFF_FRAG_BYTES = 6, OFF_KIND = 7;
+  var OFF_CELL_COUNT = 0, OFF_CONTENT_START = 2, OFF_FIRST_FREE = 4, OFF_FRAG_BYTES = 6, OFF_KIND = 7, OFF_RESERVED = 8;
+  var USER_AREA_SIZE = 7;
   var SLIVER_MAX = FREE_BLOCK_HEADER_SIZE - 1;
 
   /** ASCII string -> array of byte values. */
@@ -35,11 +37,14 @@
   }
   function cellSize(keyLen, valueLen) { return CELL_HEADER_SIZE + keyLen + valueLen; }
 
-  function Page(size) {
+  /** `reserved` (default 0) = initReserved: the content area ends that many bytes early. */
+  function Page(size, reserved) {
     this.size = size || 4096;
     this.buf = new Uint8Array(this.size);
-    this.wr16(OFF_CONTENT_START, this.size);
-    this.maxCellSize = this.size - HEADER_SIZE - SLOT_SIZE;
+    this.buf[OFF_RESERVED] = reserved || 0;
+    this.usable = this.size - this.buf[OFF_RESERVED];   // usableSize()
+    this.wr16(OFF_CONTENT_START, this.usable);
+    this.maxCellSize = this.usable - HEADER_SIZE - SLOT_SIZE;
     this.on = null;          // optional event hook used by the visualization
   }
   var P = Page.prototype;
@@ -141,7 +146,7 @@
     this.wr16(OFF_CELL_COUNT, n - 1);
 
     if (n === 1) {
-      this.wr16(OFF_CONTENT_START, this.size);
+      this.wr16(OFF_CONTENT_START, this.usable);
       this.wr16(OFF_FIRST_FREE, 0);
       this.buf[OFF_FRAG_BYTES] = 0;
       this.emit({ t: 'freed', how: 'reset', off: off, size: size });
@@ -153,7 +158,7 @@
   P.compact = function (explicit) {
     if (explicit) this.emit({ t: 'compact-start' });
     var scratch = this.buf.slice();
-    var top = this.size, n = this.count();
+    var top = this.usable, n = this.count();
     for (var i = 0; i < n; i++) {
       var off = this.slot(i);
       var size = cellSize(scratch[off] | (scratch[off + 1] << 8), scratch[off + 2] | (scratch[off + 3] << 8));
@@ -289,25 +294,26 @@
   /** Byte ownership map of the content area: 0 unclaimed, 1 cell, 2 free block. Null on error. */
   P.validate = function () {
     var n = this.count(), slotsEnd = HEADER_SIZE + n * SLOT_SIZE, contentStart = this.rd16(OFF_CONTENT_START);
-    if (slotsEnd > contentStart || contentStart > this.size) return 'BadHeader';
+    var usable = this.usable;
+    if (slotsEnd > contentStart || contentStart > usable) return 'BadHeader';
     var owner = new Uint8Array(this.size), i, j;
     for (i = 0; i < n; i++) {
       var off = this.slot(i);
-      if (off < contentStart || off + CELL_HEADER_SIZE > this.size) return 'SlotOutOfRange';
+      if (off < contentStart || off + CELL_HEADER_SIZE > usable) return 'SlotOutOfRange';
       var end = off + this.cellSizeAt(off);
-      if (end > this.size) return 'SlotOutOfRange';
+      if (end > usable) return 'SlotOutOfRange';
       for (j = off; j < end; j++) { if (owner[j]) return 'CellOverlap'; owner[j] = 1; }
     }
     var minStart = contentStart + FREE_BLOCK_HEADER_SIZE;
     for (var block = this.rd16(OFF_FIRST_FREE); block !== 0; block = this.rd16(block)) {
-      if (block < minStart || block + FREE_BLOCK_HEADER_SIZE > this.size) return 'FreeListCorrupt';
+      if (block < minStart || block + FREE_BLOCK_HEADER_SIZE > usable) return 'FreeListCorrupt';
       var size = this.rd16(block + 2);
-      if (size < FREE_BLOCK_HEADER_SIZE || block + size > this.size) return 'FreeListCorrupt';
+      if (size < FREE_BLOCK_HEADER_SIZE || block + size > usable) return 'FreeListCorrupt';
       for (j = block; j < block + size; j++) { if (owner[j]) return 'CellOverlap'; owner[j] = 2; }
       minStart = block + size + FREE_BLOCK_HEADER_SIZE;
     }
     var unclaimed = 0;
-    for (j = contentStart; j < this.size; j++) if (!owner[j]) unclaimed++;
+    for (j = contentStart; j < usable; j++) if (!owner[j]) unclaimed++;
     if (unclaimed !== this.buf[OFF_FRAG_BYTES] || unclaimed > MAX_FRAG_BYTES) return 'FragmentMismatch';
     for (i = 1; i < n; i++) if (cmpBytes(this.key(i - 1), this.key(i)) >= 0) return 'KeysOutOfOrder';
     this._owner = owner;
@@ -330,20 +336,23 @@
     // Fragments are whatever the content area does not account for.
     var owner = new Uint8Array(this.size);
     cells.forEach(function (c) { for (var j = c.off; j < c.off + c.len; j++) owner[j] = 1; });
-    var frags = [];
-    for (var j = st.contentStart; j < this.size; j++) {
+    var frags = [], usable = this.usable, reserved = this.size - usable;
+    for (var j = st.contentStart; j < usable; j++) {
       if (owner[j]) continue;
       var from = j;
-      while (j + 1 < this.size && !owner[j + 1]) j++;
+      while (j + 1 < usable && !owner[j + 1]) j++;
       frags.push({ offset: from, size: j - from + 1 });
       cells.push({ id: 'x:' + from, off: from, len: j - from + 1, label: '', dead: true, kind: 'frag' });
     }
+    // The reserved tail is not a cell; it is drawn as one inert block after the content area.
+    if (reserved) cells.push({ id: 'r:tail', off: usable, len: reserved, label: 'reserved', dead: true, kind: 'reserved' });
     return {
-      size: this.size, headerSize: HEADER_SIZE, slotSize: SLOT_SIZE,
+      size: this.size, usable: usable, reserved: reserved, headerSize: HEADER_SIZE, slotSize: SLOT_SIZE,
       header: [
-        { name: 'n', len: 2, value: n }, { name: 'top', len: 2, value: st.contentStart },
-        { name: 'ff', len: 2, value: this.rd16(OFF_FIRST_FREE) }, { name: 'fr', len: 1, value: st.fragBytes },
-        { name: 'k', len: 1, value: this.buf[OFF_KIND] }, { name: 'user area', len: 8, value: '0' }
+        { name: 'cell_count', len: 2, value: n }, { name: 'content_start', len: 2, value: st.contentStart },
+        { name: 'first_free', len: 2, value: this.rd16(OFF_FIRST_FREE) }, { name: 'frag_bytes', len: 1, value: st.fragBytes },
+        { name: 'kind', len: 1, value: this.buf[OFF_KIND] }, { name: 'reserved', len: 1, value: reserved },
+        { name: 'user area', len: USER_AREA_SIZE, value: '0' }
       ],
       slots: slots, cells: cells, rows: rows, blocks: blocks, frags: frags, stats: st,
       bytes: Array.prototype.slice.call(this.buf)
@@ -480,8 +489,25 @@
     return out;
   }
 
+  /**
+   * The twin of the Zig/Rust model test "a reserved tail ... the same image": the shared
+   * operation stream on a 4096-byte page whose tail was filled with 0xA5 after init.
+   * Returns the FNV-1a hash of the final image, or throws if the tail was touched.
+   */
+  function reservedImageHash(seed, count, keySpace, reserved) {
+    var page = new Page(4096, reserved), stream = new OpStream(seed, count, keySpace), op, i;
+    page.buf.fill(0xA5, page.usable);
+    while ((op = stream.next())) {
+      if (op.op === 'put') page.put(keyBytes(op.key), valueBytes(op.value));
+      else if (op.op === 'delete') page.delete(keyBytes(op.key));
+    }
+    if (page.validate()) throw new Error('reserved ' + reserved + ': ' + page.validate());
+    for (i = page.usable; i < page.size; i++) if (page.buf[i] !== 0xA5) throw new Error('reserved tail was written at ' + i);
+    return fnv1a64(page.buf);
+  }
+
   var Ch10 = {
-    Page: Page, cellSize: cellSize, bytesOf: bytesOf, strOf: strOf, cmpBytes: cmpBytes, demoText: demoText, PART_ONE: PART_ONE,
+    Page: Page, reservedImageHash: reservedImageHash, cellSize: cellSize, bytesOf: bytesOf, strOf: strOf, cmpBytes: cmpBytes, demoText: demoText, PART_ONE: PART_ONE,
     HEADER_SIZE: HEADER_SIZE, SLOT_SIZE: SLOT_SIZE, CELL_HEADER_SIZE: CELL_HEADER_SIZE,
     FREE_BLOCK_HEADER_SIZE: FREE_BLOCK_HEADER_SIZE, MAX_FRAG_BYTES: MAX_FRAG_BYTES
   };

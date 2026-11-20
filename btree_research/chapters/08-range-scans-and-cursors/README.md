@@ -7,8 +7,7 @@
   excluded, and how each case maps to a lower-bound or upper-bound search
   without ever computing `key + 1`.
 - Why a prefix scan is a range scan.
-- Two designs for a **cursor** (a position that can step forward and
-  backward): one that follows the leaf links, and one that keeps the
+- Two designs for a **cursor**: one follows the leaf links, one keeps the
   root-to-leaf path on a stack and never uses a sibling link.
 - What goes wrong when the tree changes between two steps of a cursor, and
   the standard repair: save the key, seek again.
@@ -82,14 +81,14 @@ bound is unbounded. For byte strings: increment the last byte that is not
 
 **Leaf-link cursor.** The position is `(leaf handle, index)`. To leave a
 leaf, follow its `next` or `prev` link. Internal nodes are touched only
-during the seek. This is the reason chapter 07 chained the leaves.
+during the seek.
 
 **Stack cursor.** The position is the whole path: for every internal node
 from the root down, a frame `(node, which child I took)`, then the leaf and
 an index. To leave a leaf going right, look at the top frame. If that node
-has a child to the right of the one taken, move the frame to it and descend
-along the left edge to a leaf, pushing frames. Otherwise pop the frame and
-ask the node above. If the stack runs empty, the scan is past the last leaf.
+has a child further right, move the frame to it and descend along the left
+edge, pushing frames. Otherwise pop the frame and ask the node above. An
+empty stack means the scan is past the last leaf.
 
 Both designs return exactly the same entries. They differ in cost and in
 what they demand from the tree:
@@ -141,32 +140,27 @@ level 1: #2[6 10] #6[20]
 leaves : #0(1 3 5) <-> #4(6 7) <-> #1(10 12) <-> #5(15 17) <-> #3(20 25 30)
 ```
 
-**Scan `[6, 17)` forward.** The lower bound is included, so seek `ge 6`. At
-`#7`, 6 < 15: child 0. At `#2`, 6 equals the separator 6 and a key equal to a
-separator goes right: child 1, leaf `#4`. `lowerBound(6)` in `(6 7)` is 0.
-Return 6, 7. Next leaf `#1`: return 10, 12. Next leaf `#5`: return 15; then
-17 fails `key < 17`, stop. Result: 6 7 10 12 15.
+**Scan `[6, 17)` forward.** Seek `ge 6`. At `#7`, 6 < 15: child 0. At `#2`, 6
+equals the separator 6 and goes right: child 1, leaf `#4`. `lowerBound(6)`
+in `(6 7)` is 0. Return 6, 7; next leaf `#1`: 10, 12; next leaf `#5`: 15;
+then 17 fails `key < 17`. Result: 6 7 10 12 15.
 
 **Scan `(6, 17]` backward.** Seek `le 17`: at `#7` child 1, at `#6` child 0,
-leaf `#5`. `upperBound(17)` in `(15 17)` is 2, so the cursor lands on index
-1. Return 17, 15, then 12, 10, then 7; 6 fails `key > 6`. Result:
-17 15 12 10 7.
+leaf `#5`. `upperBound(17)` in `(15 17)` is 2: index 1. Return 17, 15, then
+12, 10, then 7; 6 fails `key > 6`. Result: 17 15 12 10 7.
 
-**The same forward steps with the stack cursor.** After the seek the stack
-is `(#7, child 0) (#2, child 1)` and the leaf is `#4`.
+**The forward scan with the stack cursor.** After the seek the stack is
+`(#7, child 0) (#2, child 1)`.
 
-- 7 to 10: leaf `#4` is exhausted. Top frame `#2` took child 1 of 0..2, so
-  there is a child to the right: the frame becomes `(#2, child 2)`, descend
-  to leaf `#1`. Two moves (up to `#2`, down to `#1`).
-- 12 to 15: leaf `#1` is exhausted. Top frame `#2` took its last child: pop.
-  Frame `#7` took child 0 of 0..1: it becomes `(#7, child 1)`. Descend: push
-  `(#6, child 0)`, reach leaf `#5`. Four moves (up to `#2`, up to `#7`, down
-  to `#6`, down to `#5`), where the link cursor needs one.
+- 7 to 10: top frame `#2` took child 1 of 0..2, so it becomes
+  `(#2, child 2)`; descend to leaf `#1`. Two moves.
+- 12 to 15: `#2` took its last child: pop. `#7` took child 0 of 0..1: it
+  becomes `(#7, child 1)`; push `(#6, child 0)`, reach leaf `#5`. Four moves
+  (up, up, down, down), where the link cursor needs one.
 
 **A split under the cursor.** Both cursors seek `ge 10` and step once: they
-are on 12, at leaf `#1`, index 1. Now insert 11, 13, 14. Leaf `#1` becomes
-`(10 11 12 13)`, overflows and splits into `#1(10 11)` and a new leaf
-`#8(12 13)`, which then also receives 14:
+are on 12, at leaf `#1`, index 1. Now insert 11, 13, 14. Leaf `#1` overflows
+and splits:
 
 ```
 level 1: #2[6 10 12] #6[20]
@@ -183,17 +177,10 @@ and return 12 a second time. The real cursor sees that the version changed
 
 Both languages have the same files, names, tests and output.
 
-| File | Contents |
-|------|----------|
-| `base_*` | the chapter 07 B+tree, copied unchanged (only import paths renamed) |
-| `tree` | `Tree`: the B+tree plus `version`; `get`, `put`, `delete`, `validate`, `range` |
-| `bounds` | `Bound`, `aboveLower`, `belowUpper`, `contains`, `prefixRange` |
-| `cursor` | `Seek`, `landing`, and `Cursor(Position)`: the save-key and re-seek rule |
-| `link_cursor` | `LinkPosition`: leaf + index, follows sibling links |
-| `stack_cursor` | `StackPosition`: path of frames, no sibling links |
-| `scan` | `Scan`: range scan in either direction over any cursor |
-| `model` | seeded model run against the oracle from `common/` |
-| `tests`, `main` | tests and the demo program |
+Files, in both `zig/src` and `rust/src`: `base_*` (the chapter 07 B+tree,
+copied unchanged apart from import paths), `tree`, `bounds`, `cursor`,
+`link_cursor`, `stack_cursor`, `scan`, `model` (the seeded run against the
+oracle from `common/`), `tests` and `main`.
 
 ### Zig
 
@@ -398,10 +385,9 @@ The saved position, `BTScanPosData`, holds `currPage`, `prevPage` and
 `nextPage` (`postgres/src/include/access/nbtree.h:962-970`), and stepping to
 the next page reads `so->currPos.nextPage` or `prevPage`
 (`postgres/src/backend/access/nbtree/nbtsearch.c:1715-1719`). That is a
-different answer to the stale-position problem than the one in this chapter:
-copy what you need while you hold the page, instead of re-seeking by key. It
-relies on a property stated in the same README passage: items are never
-moved across pre-existing page boundaries, except to the right by a split.
+different answer to the stale-position problem: copy what you need while you
+hold the page, and rely on the rule (same passage) that items never move
+across existing page boundaries except to the right by a split.
 
 The bound decides the seek there as well: for `>=` the insertion scan key
 gets `nextkey = false`, for `>` it gets `nextkey = true`
@@ -509,8 +495,8 @@ capacities stay the same across 100 scans.
   `(10 12)` is index 2: the answer is in the next leaf. `lt 6` reaches leaf
   `(6 7)` because 6 is a separator, and the answer is in the previous leaf.
 - **Using a position after the tree changed.** The worked example returns 12
-  twice. After a merge the leaf may have been freed and its handle reused,
-  which in this arena is not even a crash, only a wrong answer.
+  twice. A freed leaf's handle may be reused, which in this arena is not a
+  crash, only a wrong answer.
 - **Passing a different tree.** A version only means something for the tree
   the cursor was positioned in; the check does not catch a mix-up.
 - **Inserting ahead of your own scan.** A forward scan that inserts `key + 1`
@@ -518,9 +504,8 @@ capacities stay the same across 100 scans.
   cursor and is returned next. This is known as the Halloween problem
   (textbook). The re-seek rule makes the behaviour well defined; it does not
   make it finite.
-- **Expecting a snapshot.** A cursor that re-seeks sees the tree as it is now.
-  Giving a scan a frozen view is the job of copy-on-write (chapter 23) or
-  versioned rows (chapter 24).
+- **Expecting a snapshot.** A re-seeking cursor sees the tree as it is now.
+  Frozen views are chapters 23 and 24.
 - **Resetting the scratch arena under a live stack cursor.** See above.
 
 ## Exercises

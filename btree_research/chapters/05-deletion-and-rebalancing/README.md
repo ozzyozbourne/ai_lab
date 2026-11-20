@@ -177,8 +177,8 @@ separator (now 2):
 ```
 
 Delete 7: `[8]` is underfull, the left sibling has four keys, so 6 moves down and 5
-moves up: `[5 9]` over `[1 2 4] [6 8] [10 11 12 13]`. (Both steps are a test; try them
-in the visualization at order 5.)
+moves up: `[5 9]` over `[1 2 4] [6 8] [10 11 12 13]`. (Try both in the visualization
+at order 5.)
 
 ## Code walk-through
 
@@ -227,8 +227,7 @@ although at most 217 were alive at once.
 
 ### Zig
 
-The source is split by topic so later chapters can copy what they need. The last
-column says which other files a file imports:
+The source is split by topic so later chapters can copy what they need:
 
 | File | Content | Needs |
 |------|---------|-------|
@@ -332,16 +331,14 @@ written.
 **Turso (SQLite format): one balance routine, byte thresholds.**
 - An index-tree delete of an interior cell replaces it with the predecessor from a
   leaf, as here: the flow is documented at `turso/core/storage/btree.rs:7029-7040`
-  ("we copy the left subtree leaf node into the deleted interior node's place") and the
-  three steps (move to the largest key of the left subtree, replace the interior cell,
-  delete the predecessor from the leaf) are marked in the code at `:7203`, `:7282` and
-  `:7301`. Table trees keep all rows in leaves (chapter 07), so
-  their deletes always start in a leaf.
+  ("we copy the left subtree leaf node into the deleted interior node's place") and its
+  three steps are marked in the code at `:7203`, `:7282` and `:7301`. Table trees keep
+  all rows in leaves (chapter 07), so their deletes always start in a leaf.
 - Underflow is measured in bytes, lazily. `delete_may_need_balancing`
   (`btree.rs:10836-10848`) asks whether more than two thirds of the page would be free;
   `balance` treats a page as fine when `free_space * 3 <= usable_space * 2`
   (`btree.rs:3427-3430`). A page is repaired when it is less than one third full, not
-  when it is less than half full.
+  half.
 - There is no separate borrow or merge function. `balance_non_root` collects the cells
   of up to 3 siblings (`MAX_SIBLING_PAGES_TO_BALANCE`, `btree.rs:160`) plus the dividers
   between them, and redistributes them over as many pages as needed, up to 5
@@ -401,8 +398,8 @@ when needed. `destroy` pushes the slot on the list. Memory returns to `gpa` only
 `deinit`. The model tests run all three pools and require identical trees.
 
 **Lifetime.** The pool lives exactly as long as the tree; `tree.deinit` returns every
-node it can reach and then calls `pool.deinit`. It does not assert anything, so it also
-works on a tree that `validate` has just rejected. A node's lifetime ends at the merge
+node it can reach and then calls `pool.deinit`. It asserts nothing, so it also works on
+a tree `validate` has just rejected. A node's lifetime ends at the merge
 or root shrink that unlinks it.
 
 **What goes wrong with other choices.**
@@ -441,8 +438,8 @@ allocations.
   count looks right, the child count does not (`MissingChild`), and a subtree becomes
   unreachable.
 - **Leaving the separator in the parent on a merge.** The parent then has as many keys
-  as children (`MissingChild` again). `validate` returns only the first broken
-  invariant it meets, top down, so test for "an error", not for one name.
+  as children (`MissingChild` again). `validate` reports only the first broken
+  invariant it meets.
 - **Repairing in the wrong place.** The underfull node cannot reach its siblings.
   Check the child in the parent, after the recursive call returns.
 - **Taking the predecessor without repairing its path.** `removeMax` must call
@@ -451,7 +448,6 @@ allocations.
   replaced only when it has none.
 - **Not freeing the merged-away node**, or freeing it twice. The first is invisible
   without a leak check or a live counter.
-- **Reading "underfull" as "empty".** True only for M = 3 and 4.
 - **Testing only with large nodes.** With M = 4, part 4 of the output needs 646 borrows
   and 442 merges in 20000 operations; with M = 64 the workload of exercise 4 merges 56
   times in 200000 operations. Small orders find bugs (chapter 06).

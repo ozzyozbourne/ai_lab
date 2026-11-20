@@ -58,7 +58,12 @@
 //! NOT crash-safe, and not error-atomic. A split changes two or three pages
 //! and the file only ever receives them one at a time. If `put` fails after
 //! its first page change (I/O error, out of memory), the tree in memory is
-//! half-split: the handle marks itself poisoned and refuses further work.
+//! half-split: the handle marks itself poisoned. From then on `put`, `get`,
+//! `range` and `flush` (and so `close`) return `TreePoisoned`, so nothing is
+//! read through the broken tree and nothing more of it is written. `validate`,
+//! `height` and `dump` do not check the flag: they are how the damage is
+//! looked at. Neither does `RangeIterator.next`, so a scan must not be
+//! continued across a `put` (its position is stale after any put anyway).
 //! If the process dies between the page writes, the file is half-split.
 //! Chapters 21 and 22 repair this with checksums and a write-ahead log.
 const std = @import("std");
@@ -201,7 +206,9 @@ pub const DiskBTree = struct {
     arena: std.heap.ArenaAllocator,
     root: PageId,
     key_count: u64,
-    /// Set when a `put` failed between two page changes of a split.
+    /// Set when a `put` failed between two page changes of a split. Checked
+    /// by `put`, `get`, `range` and `flush`; not by `validate`, `height`,
+    /// `dump` or a `RangeIterator` that already exists.
     poisoned: bool = false,
     stats: Stats = .{},
 

@@ -117,8 +117,11 @@ pub struct BLinkTree {
     /// lock. It may be stale by the time they use it, which is fine, because
     /// an old root is still a node of the tree and has a right link.
     pub(crate) root: AtomicU32,
-    /// Protects root changes, `height` and `level_head`. Always taken LAST
-    /// (after any node latch), so it cannot be part of a deadlock cycle.
+    /// Protects root changes, `height` and `level_head`. Taken after every
+    /// latch on a node that other threads can reach, so it cannot be part of
+    /// a deadlock cycle. The one latch taken while it is held is that of a
+    /// brand-new root (`alloc_page`, then filling it in `insert_parent`):
+    /// no other thread knows that node yet, so that latch never waits.
     pub(crate) meta: Mutex<Meta>,
     /// Number of entries.
     pub(crate) count: AtomicU64,

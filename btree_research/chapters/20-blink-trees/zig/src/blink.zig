@@ -112,6 +112,8 @@ pub const BLinkTree = struct {
     root: std.atomic.Value(u32),
     /// Protects root changes, `height` and `level_head`. Always taken LAST
     /// (after any node latch), so it cannot be part of a deadlock cycle.
+    /// (The new root is written under `meta` without a latch, see
+    /// `allocPage`; Rust has to latch it there, which cannot block.)
     meta: Io.Mutex = .init,
     /// Number of levels; 1 when the root is a leaf. Guarded by `meta`.
     height: usize = 1,

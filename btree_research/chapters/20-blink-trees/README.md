@@ -47,6 +47,12 @@ only have moved right: follow the right link and look again. This is called
 **moving right**. A node may have split several times, so the reader repeats
 it until the key fits.
 
+The comparison is made on every level, with two different jobs. On the leaf
+level it is what makes the answer correct. On the internal levels it keeps
+the path short: a search that ignored the high key of an internal node would
+go down into a leaf too far to the left and still arrive, along the right
+links of the leaf level.
+
 With that, a reader never needs two latches. It latches a node, reads it,
 decides where to go, releases the latch, and only then latches the next node.
 
@@ -178,7 +184,11 @@ step 2. `insertParent`
 1. takes the downlink from the left node itself: `(left.high_key, left.right)`;
 2. if the left node is the root, builds a new root under the `meta` mutex;
 3. otherwise finds the parent by searching for the child's **handle**, starting
-   at the remembered node and moving right;
+   at the remembered node and moving right. A writer may remember no node on
+   the parent level: the left node was the root when it came down, and another
+   writer has built a root above it since. It then starts at
+   `level_head[level + 1]`, the leftmost node of the parent level. This is the
+   one place the algorithm uses `level_head`;
 4. finishes a pending split of that parent first, if it is flagged;
 5. inserts the downlink and clears the flag while holding both latches;
 6. if the parent overflowed, runs the same two steps one level up.
@@ -186,9 +196,15 @@ step 2. `insertParent`
 If a node is needed for the parent and the table is full, `insertParent` gives
 up and leaves the flag set. The `put` still succeeded: the key is in the tree.
 
-**The test hook.** `setAbandonSplits(true)` makes every split stop after
+**The test hooks.** `setAbandonSplits(true)` makes every split stop after
 step 1. This is how tests and the demo reach the half-finished state without
-threads.
+threads. The second hook is for the writer's own stale knowledge:
+`putFrom(start, key, value, pause)` is `put` that begins its descent at
+`start` (a former root) and, when it has latched its leaf, calls
+`pause.at_leaf` before inserting. The callback runs other puts, as other
+threads would in that gap, so the parents the paused writer remembers can
+split, be left half split or get a new root above them before it climbs back
+up. `put` is `putFrom(rootId(), ..., null)`.
 
 ### Rust
 
@@ -208,6 +224,17 @@ The structure is the same; three things differ in kind.
 - **`&self` everywhere.** `put` takes `&self`: shared access to the tree, with
   exclusivity inside the latches. Counters and the root are atomics, and the
   fields guarded by `meta` live inside a `Mutex<Meta>`.
+
+- **`meta` under a latch that cannot be contended.** In Zig the `meta` mutex
+  is the last lock a writer takes. In Rust `insert_parent` holds `meta` and
+  then latches the new root, in `alloc_page` and again to fill it. No other
+  thread knows that node yet, so the latch cannot wait and adds no edge to
+  the lock order.
+
+The pause hook is a function pointer plus a context pointer in Zig and a
+`&mut dyn FnMut` closure in Rust. The Rust callback is handed the leaf's
+`&Page`, because it could not latch the node itself, and for the same reason
+it must not call `incomplete_splits()`, which latches every node.
 
 A held latch in either mode is the enum `Latch` in Rust and a node id plus a
 `bool` in Zig. Threads are `std::thread::scope` in Rust (the closure may
@@ -230,6 +257,20 @@ The tests are ordered from deterministic to concurrent.
 - **Root and internal levels.** A root split paused after step 1 has height 1
   and two nodes; ascending inserts with the hook always on leave internal
   nodes half split.
+- **Stale writers.** Four tests use `putFrom`. A writer is paused on its leaf
+  while another put splits its parent: step 2 starts at the remembered node
+  and finds the downlink one node to the right. Three writers, two of them
+  paused: the parent is left half split and is the root; the second writer
+  finishes that split (a new root) before inserting its own downlink, and the
+  first, which remembers no node above the old root, reaches the parent level
+  through `level_head`. A writer started at an old root moves right and must
+  not build a second root. A seeded run pauses 3000 writers, started at the
+  root or at a former root, while up to 24 other puts run with the abandon
+  hook on a coin.
+- **Internal levels.** A reader told "#6" by the root finds #6 split and moves
+  right on level 1. A writer started at the old root #2 needs two hops on
+  level 1 and none on the leaves; with the internal comparison removed the
+  same put still succeeds, after five hops along the leaf level.
 - **Full table.** For every table size from 1 to 40, inserts run until
   `OutOfNodes`; the failed key is absent, `validate` passes, and at least one
   size ends with a legal incomplete split.
@@ -429,8 +470,8 @@ owns two `Vec`s and returns them through `join`; dropping them is the arena.
   argument in this chapter rests on "keys only move right into a new node".
 - **Validating from the root only.** A node without a downlink is invisible
   from above. Walk each level as a list.
-- **Tests that sleep.** A paused split and a one-node-at-a-time reader reach
-  the same states every time.
+- **Tests that sleep.** A paused split, a one-node-at-a-time reader and a
+  writer paused on its leaf reach the same states every time.
 
 ## Exercises
 

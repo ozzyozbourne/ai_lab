@@ -298,6 +298,9 @@
    * Returns { root, toolbar, stage, side, caption, controls, legend }.
    * Put your views in fig.stage, inputs in fig.toolbar, Log/code panel in fig.side,
    * and pass `mount: fig.controls, caption: fig.caption, root: fig.root` to a Stepper.
+   * With `side: true`, add `controlsUnderStage: true` (recommended for new pages; off by default so
+   * existing pages keep their layout): caption and controls then sit directly under the stage, in a
+   * `fig.main` column next to the side panel, and the side panel follows them on narrow screens.
    */
   function figure(target, o) {
     o = o || {};
@@ -309,11 +312,14 @@
     f.caption = el('div.bt-caption', { 'aria-live': 'polite' });
     f.controls = el('div.bt-controls-slot');
     f.legend = el('div.bt-legend');
+    var under = !!(o.side && o.controlsUnderStage);
+    f.main = under ? el('div.bt-figure-main', f.stage, f.caption, f.controls) : null;
     f.root = el('figure.bt-figure', { tabindex: 0, 'aria-label': o.title || 'Visualization' },
       o.title ? el('figcaption.bt-figure-title', o.title) : null,
       f.toolbar,
-      el('div.bt-figure-body' + (o.side ? '.has-side' : ''), f.stage, f.side),
-      f.caption, f.controls, f.legend);
+      under ? el('div.bt-figure-body.has-side.is-controls-under', f.main, f.side)
+        : el('div.bt-figure-body' + (o.side ? '.has-side' : ''), f.stage, f.side),
+      under ? null : f.caption, under ? null : f.controls, f.legend);
     if (o.legend) legend(f.legend, o.legend);
     host.appendChild(f.root);
     return f;
@@ -543,7 +549,8 @@
     if (b && this.ui.root.contains(document.activeElement)) b.focus();
   };
   Stepper.prototype.prev = function () { if (this.index > 0) this.go(this.index - 1); };
-  Stepper.prototype.restart = function () { this.pause(); this.go(0, { instant: true }); };
+  /** Back to step 0. Predict-mode questions are asked again on the next run through. */
+  Stepper.prototype.restart = function () { this.pause(); this._answered = {}; this.go(0, { instant: true }); };
   Stepper.prototype.end = function () { this.pause(); this.go(this.steps.length - 1, { instant: true }); };
   Stepper.prototype.toggle = function () { if (this.playing) this.pause(); else this.play(); };
 
@@ -731,11 +738,13 @@
    * model:     {id, keys:[…], children:[model…], leaf, next?: id, right?: id, highKey?, meta?}
    * highlight: {nodes: {id: state}, keys: {'id:key': state, '*:key': state},
    *             edges: {childId: state}, links: {fromId: state}, cursor: {node: id, label}}
-   * opts:      {zoom: 'fit' | number, minScale, toolbar, minHeight, maxHeight, onNodeClick,
+   * opts:      {zoom: 'fit' | number, minScale, toolbar, minHeight, maxHeight, followY, onNodeClick,
    *             ariaLabel, cellH, minCellW, charW, hGap, vGap, binary}
+   * Tall trees: `maxHeight` makes the tree scroll vertically inside its box; add `followY: true` to keep
+   * highlighted nodes in view vertically too (off by default). See also centerOnRoot() / scrollToNode(id).
    */
   function TreeView(target, opts) {
-    var o = this.opts = { zoom: 'fit', minScale: 0.7, toolbar: true, minHeight: 0, maxHeight: 0, ariaLabel: 'Tree diagram', onNodeClick: null };
+    var o = this.opts = { zoom: 'fit', minScale: 0.7, toolbar: true, minHeight: 0, maxHeight: 0, followY: false, ariaLabel: 'Tree diagram', onNodeClick: null };
     var key;
     for (key in TREE_DEFAULTS) o[key] = TREE_DEFAULTS[key];
     for (key in (opts || {})) o[key] = opts[key];
@@ -757,9 +766,9 @@
       return el('marker', { id: self.uid + cls, viewBox: '0 0 8 8', refX: 7, refY: 4, markerWidth: 7, markerHeight: 7, orient: 'auto' },
         el('path', { d: 'M0 .8L7.2 4L0 7.2z', class: 'bt-arrowhead' + (cls ? ' is-active' : '') }));
     };
-    this.gEdges = el('g'); this.gLinks = el('g'); this.gNodes = el('g'); this.gKeys = el('g'); this.gOver = el('g');
+    this.gEdges = el('g'); this.gLinks = el('g'); this.gNodes = el('g'); this.gKeys = el('g'); this.gLocks = el('g'); this.gOver = el('g');
     this.svg = el('svg', { class: 'bt-tree-svg', role: 'img', 'aria-label': o.ariaLabel },
-      el('defs', mk(''), mk('a')), this.gEdges, this.gLinks, this.gNodes, this.gKeys, this.gOver);
+      el('defs', mk(''), mk('a')), this.gEdges, this.gLinks, this.gNodes, this.gKeys, this.gLocks, this.gOver);
     this.scroller = el('div.bt-tree-scroll', { tabindex: 0, role: 'group', 'aria-label': o.ariaLabel + ' (scrollable)' }, this.svg);
     if (o.minHeight) this.scroller.style.minHeight = o.minHeight + 'px';
     if (o.maxHeight) this.scroller.style.maxHeight = o.maxHeight + 'px';
@@ -846,20 +855,26 @@
     it.note = el('text', { class: 'bt-node-note', y: o.cellH + 13 });
     it.dirty = el('circle', { class: 'bt-node-dirty', r: 4.5, cx: 0, cy: 0 });
     it.lock = el('g');
-    it.el = el('g', { class: 'bt-node', 'data-id': id }, it.rect, it.label, it.empty, it.note, it.dirty, it.lock);
+    // Latch badges live in their own layer above the key cells (inside the node group the cells of
+    // gKeys covered their lower half); write() keeps the layer glued to the node's top-right corner.
+    it.el = el('g', { class: 'bt-node', 'data-id': id }, it.rect, it.label, it.empty, it.note, it.dirty);
+    it.lock.setAttribute('data-node', id);
     if (o.onNodeClick) {
       it.el.classList.add('is-clickable');
       it.el.addEventListener('click', function () { o.onNodeClick(id, it.model); });
+      it.lock.style.cursor = 'pointer';
+      it.lock.addEventListener('click', function () { o.onNodeClick(id, it.model); });
     }
     it.write = function (c) {
       it.el.setAttribute('transform', 'translate(' + c.x.toFixed(2) + ',' + c.y.toFixed(2) + ')');
       it.rect.setAttribute('width', Math.max(0, c.w).toFixed(2));
       it.empty.setAttribute('x', c.w / 2);
       it.note.setAttribute('x', c.w / 2);
-      it.lock.setAttribute('transform', 'translate(' + c.w.toFixed(2) + ',0)');
-      it.el.style.opacity = c.o >= 1 ? '' : c.o.toFixed(3);
+      it.lock.setAttribute('transform', 'translate(' + (c.x + c.w).toFixed(2) + ',' + c.y.toFixed(2) + ')');
+      it.el.style.opacity = it.lock.style.opacity = c.o >= 1 ? '' : c.o.toFixed(3);
     };
     this.gNodes.appendChild(it.el);
+    this.gLocks.appendChild(it.lock);
     return it;
   };
   TreeView.prototype._mkKey = function (occ) {
@@ -893,7 +908,10 @@
   };
 
   TreeView.prototype._purge = function () {
-    this._dying.forEach(function (it) { if (it.el.parentNode) it.el.parentNode.removeChild(it.el); });
+    this._dying.forEach(function (it) {
+      if (it.el.parentNode) it.el.parentNode.removeChild(it.el);
+      if (it.lock && it.lock.parentNode) it.lock.parentNode.removeChild(it.lock);
+    });
     this._dying = [];
   };
 
@@ -1093,6 +1111,7 @@
       var cls = stateClass('bt-node', hn[id] || it.meta.state);
       if (o.onNodeClick) cls += ' is-clickable';
       it.el.setAttribute('class', cls);
+      if ((hn[id] || it.meta.state) === 'dim') it.lock.setAttribute('class', 's-dim'); else it.lock.removeAttribute('class');
     });
     this.keys.forEach(function (it) {
       var st = it.hk ? hk[it.nodeId + ':high'] : (hk[it.nodeId + ':' + it.raw] || hk['*:' + it.raw]);
@@ -1176,6 +1195,7 @@
   /** Scroll the internal scroller so highlighted nodes are visible. */
   TreeView.prototype._reveal = function (dur) {
     var sc = this.scroller, L = this.layout, h = this.hl || {};
+    if (L && this.opts.followY && sc.scrollHeight > sc.clientHeight + 1) this._revealY(dur);
     if (!L || sc.scrollWidth <= sc.clientWidth + 1) return;
     var ids = Object.keys(h.nodes || {});
     if (h.cursor) ids.push(h.cursor.node);
@@ -1195,6 +1215,52 @@
       if (sc.scrollTo) sc.scrollTo({ left: target, behavior: dur > 0 ? 'smooth' : 'auto' });
       else sc.scrollLeft = target;
     }
+  };
+
+  /** opts.followY: vertical counterpart of _reveal (only used when the tree box scrolls vertically). */
+  TreeView.prototype._revealY = function (dur) {
+    var sc = this.scroller, L = this.layout, h = this.hl || {}, s = this.scale;
+    var ids = Object.keys(h.nodes || {});
+    if (h.cursor) ids.push(h.cursor.node);
+    var lo = Infinity, hi = -Infinity;
+    ids.forEach(function (id) {
+      var i = L.nodes.get(id);
+      if (i) { lo = Math.min(lo, i.y); hi = Math.max(hi, i.y + i.h); }
+    });
+    if (lo === Infinity) return;
+    lo = lo * s - 44; hi = hi * s + 24;                       // room for the cursor pill above, the note below
+    var top = sc.scrollTop, target = top;
+    if (hi - lo > sc.clientHeight) target = lo;
+    else if (lo < top) target = lo;
+    else if (hi > top + sc.clientHeight) target = hi - sc.clientHeight;
+    target = Math.max(0, target);
+    if (target !== top) {
+      if (sc.scrollTo) sc.scrollTo({ top: target, behavior: dur > 0 ? 'smooth' : 'auto' });
+      else sc.scrollTop = target;
+    }
+  };
+  /**
+   * Scroll the tree's own box (never the page) so node `id` is centred, horizontally and — when the box
+   * scrolls vertically (opts.maxHeight) — vertically. opts: {smooth: false}. No-op for an unknown id. Returns this.
+   */
+  TreeView.prototype.scrollToNode = function (id, opts) {
+    var sc = this.scroller, L = this.layout, i = L ? L.nodes.get(id) : null;
+    if (!i) return this;
+    var s = this.scale, off = Math.max(0, (sc.scrollWidth - this.W * s) / 2);
+    var left = Math.max(0, (i.x + i.w / 2) * s + off - sc.clientWidth / 2);
+    var top = Math.max(0, (i.y + i.h / 2) * s - sc.clientHeight / 2);
+    if (sc.scrollTo) sc.scrollTo({ left: left, top: top, behavior: opts && opts.smooth ? 'smooth' : 'auto' });
+    else { sc.scrollLeft = left; sc.scrollTop = top; }
+    return this;
+  };
+  /** Scroll the tree's box to the top with the (first) root centred horizontally. Returns this. */
+  TreeView.prototype.centerOnRoot = function (opts) {
+    var L = this.layout, r = L && L.order[0];
+    if (!r) return this;
+    this.scrollToNode(r.id, opts);
+    var sc = this.scroller;
+    if (sc.scrollTo) sc.scrollTo({ top: 0, behavior: opts && opts.smooth ? 'smooth' : 'auto' }); else sc.scrollTop = 0;
+    return this;
   };
 
   /** The SVG <g> of a node (or null) — for tooltips or custom decoration. */
@@ -1580,11 +1646,13 @@
   var LANG_LABELS = { zig: 'Zig', rust: 'Rust', js: 'JavaScript', c: 'C', pseudo: 'Pseudocode' };
 
   /**
-   * const code = BTViz.codePanel(target, {zig: '…', rust: '…'}, {title, active, maxHeight});
+   * const code = BTViz.codePanel(target, {zig: '…', rust: '…'}, {title, active, maxHeight, wrap});
    * code.highlight([3, 4])                     same lines in every tab
    * code.highlight({zig: [3, [5, 7]], rust: 4})  per language; [a, b] is an inclusive range
    * code.setTab('rust')
    * The chosen tab is remembered and shared by every code panel on the page.
+   * Long lines scroll sideways inside the panel (edge shadows show there is more); pass `wrap: true`
+   * to soft-wrap them instead, with continuation lines indented past the line numbers (default off).
    */
   function codePanel(target, sources, opts) {
     opts = opts || {};
@@ -1612,6 +1680,7 @@
       });
       var pre = el('pre.bt-code', { role: 'tabpanel', id: uid + '-p-' + lang, 'aria-labelledby': uid + '-t-' + lang, tabindex: 0 }, code);
       if (opts.maxHeight) pre.style.maxHeight = opts.maxHeight + 'px';
+      if (opts.wrap) pre.classList.add('is-wrap');
       panel.pres[lang] = pre;
       var tab = el('button.bt-tab', {
         type: 'button', role: 'tab', id: uid + '-t-' + lang, 'aria-controls': uid + '-p-' + lang,
@@ -2668,10 +2737,34 @@
     var o = this.opts, d = this.data, svg = this.svg;
     var W = Math.max(240, this.root.clientWidth || 600), H = o.height;
     var m = { l: 44, r: 14, t: o.yLabel ? 28 : 16, b: o.xLabel ? 42 : 26 };
-    var pw = W - m.l - m.r, ph = H - m.t - m.b, S = d.series.length, i, si;
+    var pw = W - m.l - m.r, S = d.series.length, i, si;
     var n = 0, vmax = 0;
     d.series.forEach(function (s) { n = Math.max(n, s.values.length); s.values.forEach(function (v) { if (v > vmax) vmax = v; }); });
     if (o.type === 'bar') n = Math.max(n, d.labels.length);
+    // x labels that would collide: bar labels are slanted (all categories stay readable, the plot gives
+    // up a little height), line-chart labels are thinned. Charts whose labels fit are drawn as before.
+    var every = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(pw / 44))));
+    var slant = false, maxLW = 0, lw = [], shown = 0;
+    svg.textContent = '';
+    for (i = 0; i < n; i++) {
+      if (d.labels[i] === undefined) continue;
+      var probe = el('text', { class: 'bt-chart-tick' }, String(d.labels[i])), len = 0;
+      svg.appendChild(probe);
+      try { len = probe.getComputedTextLength(); } catch (e) { len = 0; }
+      lw[i] = len || String(d.labels[i]).length * 6.2;
+      if (i % every === 0) { shown++; if (lw[i] > maxLW) maxLW = lw[i]; }
+    }
+    if (shown > 1 && n) {
+      var pitch = (o.type === 'bar' ? pw / n : n > 1 ? pw / (n - 1) : pw) * every;
+      if (maxLW + 3 > pitch) {
+        if (o.type === 'bar') {
+          slant = true;
+          m.b += Math.min(64, Math.ceil(maxLW * 0.57)) - 6;
+          every = Math.max(1, Math.ceil(15 / (pw / n)));
+        } else every = Math.max(every, Math.ceil((maxLW + 8) / (pitch / every)));
+      }
+    }
+    var ph = H - m.t - m.b;
     var ymax = o.yMax || niceMax(vmax);
     var Y = function (v) { return m.t + ph - (v / ymax) * ph; };
     svg.textContent = '';
@@ -2687,13 +2780,15 @@
     }
     if (o.yLabel) svg.appendChild(el('text', { class: 'bt-chart-label', x: 4, y: 11 }, o.yLabel));
     if (o.xLabel) svg.appendChild(el('text', { class: 'bt-chart-label', x: m.l + pw / 2, y: H - 6, 'text-anchor': 'middle' }, o.xLabel));
-    var every = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(pw / 44))));
     var tok = function (s, idx) { return 'var(--bt-' + (s.token || SERIES_TOKENS[idx % SERIES_TOKENS.length]) + ')'; };
     if (o.type === 'bar') {
       var band = n ? pw / n : pw, bw = Math.min(46, band * 0.72 / Math.max(1, S));
       for (i = 0; i < n; i++) {
         var cx = m.l + band * (i + 0.5);
-        if (i % every === 0 && d.labels[i] !== undefined) svg.appendChild(el('text', { class: 'bt-chart-tick', x: cx, y: m.t + ph + 14, 'text-anchor': 'middle' }, String(d.labels[i])));
+        if (i % every === 0 && d.labels[i] !== undefined) {
+          if (slant) svg.appendChild(el('text', { class: 'bt-chart-tick', x: cx + 4, y: m.t + ph + 12, 'text-anchor': 'end', transform: 'rotate(-35 ' + (cx + 4).toFixed(1) + ' ' + (m.t + ph + 12) + ')' }, String(d.labels[i])));
+          else svg.appendChild(el('text', { class: 'bt-chart-tick', x: cx, y: m.t + ph + 14, 'text-anchor': 'middle' }, String(d.labels[i])));
+        }
         for (si = 0; si < S; si++) {
           var val = d.series[si].values[i] || 0, x = cx - bw * S / 2 + si * bw, top = Y(val);
           svg.appendChild(el('rect', { class: 'bt-chart-bar', x: x + 0.5, y: top, width: Math.max(1, bw - 1), height: Math.max(0, m.t + ph - top), rx: 2, style: { fill: tok(d.series[si], si) } },
@@ -2703,7 +2798,11 @@
       }
     } else {
       var X = function (idx) { return m.l + (n > 1 ? pw * idx / (n - 1) : pw / 2); };
-      for (i = 0; i < n; i += every) if (d.labels[i] !== undefined) svg.appendChild(el('text', { class: 'bt-chart-tick', x: X(i), y: m.t + ph + 14, 'text-anchor': 'middle' }, String(d.labels[i])));
+      for (i = 0; i < n; i += every) if (d.labels[i] !== undefined) {
+        // a label that would run past the right edge of the SVG is right-aligned to that edge instead
+        var over = X(i) + lw[i] / 2 > W - 2;
+        svg.appendChild(el('text', { class: 'bt-chart-tick', x: over ? W - 2 : X(i), y: m.t + ph + 14, 'text-anchor': over ? 'end' : 'middle' }, String(d.labels[i])));
+      }
       d.series.forEach(function (s, idx) {
         if (!s.values.length) return;
         var pts = s.values.map(function (val, j) { return X(j).toFixed(1) + ',' + Y(val).toFixed(1); }).join(' ');

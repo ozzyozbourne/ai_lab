@@ -24,7 +24,7 @@
 //!   arena   the memory those two point into
 //!
 //! The rules that make re-entry safe (they are Turso's rules, see
-//! turso/docs/agent-guides/async-io-model.md:113-160):
+//! turso/docs/agent-guides/async-io-model.md:117-160):
 //!
 //!   R1  A step asks for its page FIRST and changes nothing before that.
 //!       If the page is missing it returns `.io` having done nothing, so
@@ -93,7 +93,7 @@ pub const Options = struct {
     /// Testing knob: before every transition, drop every unpinned page from
     /// the pool, the worst an eviction policy could do to us. It turns every
     /// state into an actual suspension. (Turso has the same kind of knob:
-    /// `inject_io_yield!`, turso/core/storage/btree.rs:3306-3309.)
+    /// `inject_io_yield!`, turso/core/storage/btree.rs:3312-3315.)
     pressure: bool = false,
 };
 
@@ -235,7 +235,7 @@ pub const InsertOp = struct {
                 pool.unpin(id, false);
                 // The path grows AFTER the yield point above (R2). Had the
                 // append come first, every re-entry would add the same page
-                // again: the bug of async-io-model.md:164-171.
+                // again: the bug of async-io-model.md:162-169.
                 try self.path.append(self.arena.allocator(), .{ .id = id, .index = index });
                 self.cur = child;
                 return .again;

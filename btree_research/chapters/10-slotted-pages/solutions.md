@@ -187,7 +187,8 @@ two policies can meet again after one, but nothing forces them to.
   (`bufpage.h:180-181`) and gives a per-slot state that our page has no room for.
 - **Binary search.** One probe reads a slot and then the key bytes in the cell. With the
   length in the slot, the probe has the cell's size before touching the cell, which can
-  save a cache line when keys are compared from a known offset. With the length in the
+  save a cache line when keys are compared from a known offset (an expectation from the
+  layout; nothing here was measured). With the length in the
   cell (ours) the probe reads the cell header first; the key follows it directly, so it
   is usually the same cache line as the first key bytes. Neither design avoids the jump
   from the slot array to the content area, which is the expensive part. Engines that want

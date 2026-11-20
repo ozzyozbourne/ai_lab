@@ -327,9 +327,10 @@ The B+tree column is the tree of chapters 07 to 12, not one engine; the ART is D
 An ART's nodes are small and scattered, so every level is a jump to a different place.
 That suits memory and not disk, where a B-tree reads one page and finds many
 neighbouring keys in it. DuckDB writes its ART to disk as whole allocator buffers at a
-checkpoint (`art.cpp:1197-1218`), not as a tree of pages. Long keys make the tree deep: the 596 `cat/0042` keys above already need paths
-of up to 7 nodes. A scan yields row ids, not data, and DuckDB abandons the index for a
-table scan when more than 2,048 rows or 0.1% of the table match, whichever is larger
+checkpoint (`art.cpp:1197-1218`), not as a tree of pages. Long keys make the tree
+deep: the 596 `cat/0042` keys above already need paths of up to 7 nodes. A scan yields
+row ids, not data, and DuckDB abandons the index for a table scan when more than 2,048
+rows or 0.1% of the table match, whichever is larger
 (`duckdb/src/function/table/table_scan.cpp:1015-1020`, `art.cpp:896-902`; see chapter
 29). Its main job there is checking PRIMARY KEY and UNIQUE constraints
 (`art.cpp:663-667`), which are point lookups.

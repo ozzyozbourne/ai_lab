@@ -547,7 +547,7 @@
     var W = 430;
     order.forEach(function (b) { W = Math.max(W, b.x + b.w + g.padX + (b.kind === 'deleted' ? 40 : 0)); });
     return { boxes: boxes, order: order, edges: edges, links: links, leafY: leafY, ghostY: ghostY, freeY: freeY,
-             W: Math.ceil(W), H: freeY + g.cellH + 10, ghosts: ghosts.length, free: order.length && order.filter(function (b) { return b.kind === 'free'; }).length };
+             W: Math.ceil(W), H: freeY + g.cellH + 10, ghosts: ghosts.length, free: freeList(db.pages).length };
   }
 
   var SVG_NS = 'http://www.w3.org/2000/svg';

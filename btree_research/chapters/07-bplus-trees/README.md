@@ -12,12 +12,9 @@
 - How to build a tree from 32-bit **handles** into one array instead of
   pointers, with a free list that recycles nodes.
 
-Prerequisites: chapters 03 to 05 (B-tree structure, splitting, borrowing and
-merging) and chapter 02 (lower bound and upper bound). Chapter 06 explains the
-testing style used here.
-
-The code in this chapter is the base that chapters 08, 18, 19, 20, 23, 24 and
-27 copy, so it is split into one file per concern.
+Prerequisites: chapters 02 to 05; chapter 06 explains the testing style.
+Chapters 08, 18, 19, 20, 23, 24 and 27 copy this chapter's code, so it is
+split into one file per concern.
 
 ## The idea in plain words
 
@@ -31,10 +28,9 @@ Three things follow from that.
 
 **Internal nodes get smaller, so the tree gets wider.** An internal node no
 longer carries values. With real page sizes this is the main benefit: more
-separators fit in a page, each node has more children, and the tree is
-shorter. The small fixed-size nodes of this chapter cannot show it: here the
-B+tree uses more nodes than the B-tree for the same keys, because the
-separators are extra copies.
+separators fit in a page, so the tree is shorter. The small fixed-size nodes
+of this chapter cannot show it: here the B+tree uses more nodes than the
+B-tree, because the separators are extra copies.
 
 **A separator is a signpost, not a key.** When a leaf splits, the first key of
 the new right leaf is *copied* into the parent. The entry stays in the leaf.
@@ -42,19 +38,18 @@ The copy in the parent only says "keys greater than or equal to me are to the
 right". It follows that:
 
 - a lookup never stops in an internal node, even when the key equals a
-  separator. It always continues to a leaf;
-- deleting a key does not have to touch the internal nodes. If the key was
-  also a separator, the separator stays behind. It is still a correct
-  signpost, it just no longer names an existing key;
-- a separator does not need to be a real key at all. Any value that separates
-  the two children works. Chapter 17 uses this to shorten separators.
+  separator;
+- deleting a key does not have to touch the internal nodes. A separator may
+  stay behind (a *stale* separator): still a correct signpost, it just no
+  longer names an existing key;
+- a separator does not need to be a real key at all. Chapter 17 uses this to
+  shorten separators.
 
 **The leaves can be chained.** All entries are in the leaves, in key order, so
 linking each leaf to its neighbours gives a sorted list of everything in the
 tree. An ordered scan finds its first leaf by one descent and then walks
-sideways. It never climbs back into the internal nodes. This chapter builds
-and validates the chain and walks it in the simplest possible way; chapter 08
-builds real range scans and cursors on top of it.
+sideways. This chapter builds and validates the chain and walks it in the
+simplest way; chapter 08 builds range scans and cursors on it.
 
 ### Copy-up and push-up
 
@@ -65,9 +60,8 @@ A leaf split and an internal split are different operations:
 | Leaf split: **copy-up** | a copy of the right half's first key | all entries, including that key |
 | Internal split: **push-up** | the middle separator itself | the separators left and right of it |
 
-An internal split is the same as in a classic B-tree: the middle key moves up
-and is in neither half. A separator only needs to exist once per boundary, so
-there is no reason to keep a copy below.
+An internal split is the same as in a classic B-tree. A separator only needs
+to exist once per boundary, so there is no reason to keep a copy below.
 
 ### The rules, for working by hand
 
@@ -219,18 +213,15 @@ invariants), `search`, `insert`, `delete`, `walk` (the minimal leaf walk),
 ### Zig
 
 **Arena** (`arena.zig`). `NodeId` is `enum(u32) { nil = maxInt(u32), _ }`: a
-distinct type, so a handle cannot be confused with an index or a count. A slot
-is `union(enum) { used: T, free: NodeId }`. The tag makes a double free and a
+distinct type, so a handle cannot be confused with a count. A slot is
+`union(enum) { used: T, free: NodeId }`; the tag makes a double free and a
 dangling handle detectable. `reserve(gpa, n)` is the only function that
-allocates. After it succeeds, `allocAssumeCapacity` cannot fail and does not
-move the array.
+allocates. After it, `allocAssumeCapacity` cannot fail or move the array.
 
-**Node** (`node.zig`). The order M is a runtime field of the tree, and the
-arrays inside a node are sized for `max_order = 16`. That wastes memory for
-small M but keeps the code free of generics. The arrays have one spare slot
-so a node can overflow by one key before it is split. The `kind` union is the
-chapter in one line: `leaf` has `values`, `prev`, `next`; `internal` has
-`children`.
+**Node** (`node.zig`). The order M is a runtime field of the tree; the arrays
+in a node are sized for `max_order = 16`, with one spare slot so a node can
+overflow by one key before it is split. The `kind` union is the chapter in
+one line: `leaf` has `values`, `prev`, `next`; `internal` has `children`.
 
 **Search** (`search.zig`). In an internal node the child to follow is
 `upperBound(separators, key)`. A key equal to a separator therefore goes
@@ -238,23 +229,22 @@ right, which matches copy-up (the separator is the first key of the right
 leaf).
 
 **Insert** (`insert.zig`). `put` first reserves `height + 1` nodes: one per
-level in case every node on the path splits, plus a new root. If that fails
-the tree has not been touched. Then `insertInto` recurses to the leaf and
-returns `replaced`, `inserted` or `split`; a parent that receives `split`
-inserts the separator and may split in turn. The left half of a split keeps
-its handle, so the parent's child link and the left neighbour's `next` link
-need no update. `splitLeaf` returns `right.keys[0]` without removing it
-(copy-up) and splices the new leaf into the chain. `splitInternal` returns
-`left.keys[mid]` and keeps it in neither half (push-up).
+level plus a new root. If that fails the tree has not been touched. Then
+`insertInto` recurses to the leaf and returns `replaced`, `inserted` or
+`split`; a parent that receives `split` inserts the separator and may split
+in turn. The left half keeps its handle, so the parent's child link and the
+left neighbour's `next` link need no update. `splitLeaf` returns
+`right.keys[0]` without removing it and splices the new leaf into the chain.
+`splitInternal` returns `left.keys[mid]` and keeps it in neither half.
 
 **Delete** (`delete.zig`). There is no "delete from an internal node" case.
 `deleteFrom` removes the entry from its leaf; on the way back up each parent
 checks whether its child fell below the minimum and calls `rebalance`, which
-is the four steps of the delete rule above as one `if` chain. A leaf merge
-*drops* the separator because it was a copy; an internal merge *pulls it
-down* because it is real routing information for the children being joined.
-Merging is always right into left, so `first_leaf` never changes after the
-first insert. Delete never allocates.
+is the four steps of the delete rule as one `if` chain. A leaf merge *drops*
+the separator because it was a copy; an internal merge *pulls it down*
+because it routes between the children being joined. Merging is always right
+into left, so `first_leaf` never changes after the first insert. Delete never
+allocates.
 
 **Validate** (`validate.zig`). One recursive pass checks key order, key
 bounds from the separators, node sizes, leaf depth, and that the leaves in
@@ -282,13 +272,11 @@ The structure is the same. The differences come from ownership:
   allocation failure is modelled with a node budget:
   `BPlusTree::with_node_budget(order, n)` makes `put` return
   `Err(OutOfNodes)` instead of exceeding `n` nodes.
-- **A few tests have no twin.** Zig's `checkAllAllocationFailures` test fails
-  each allocation of a build in turn; Rust has no failing allocator to do
-  that with, so only the budget test covers failure there (for the same
-  reason the copied `ops.zig` has one allocation-failure test more than
-  `ops.rs`). Rust adds `pair_mut_gives_two_nodes_at_once` and
-  `double_free_panics` for the arena; Zig has no `pair_mut`, and its double
-  free is an `assert`.
+- **A few tests have no twin.** Zig's `checkAllAllocationFailures` test has
+  no Rust counterpart (no failing allocator; the budget test covers failure,
+  and the copied `ops.zig` has one such test more than `ops.rs`). Rust adds
+  `pair_mut_gives_two_nodes_at_once` and `double_free_panics`; Zig has no
+  `pair_mut`, and its double free is an `assert`.
 - **The walker borrows the tree**, so using it across a `put` is a compile
   error. In Zig the same rule is a comment.
 - `kind` is an `enum Kind`; the accessors `leaf()` / `internal()` panic on
@@ -411,10 +399,9 @@ a free list.
   order, all with the same lifetime as the tree. A slot array gives O(1)
   allocation and free, 4-byte links, and one `deinit` for everything.
 - **Which allocator backs it.** Any `std.mem.Allocator`: it is passed to
-  `put` and `deinit` and never stored. The array is the only thing that
-  allocates, and it does so rarely because `ArrayList` grows geometrically.
-  The tests pass `std.testing.allocator`, so a missing `deinit` fails the
-  test.
+  `put` and `deinit` and never stored. Only the array allocates, and rarely,
+  because `ArrayList` grows geometrically. The tests pass
+  `std.testing.allocator`, so a missing `deinit` fails the test.
 - **Lifetime.** Nodes live until `delete` frees them or the tree is
   deinitialised. The array never shrinks: `slots` in the output is the
   largest number of nodes the tree ever had. Handles are reused, so a handle
@@ -440,11 +427,10 @@ a free list.
 - **"Fixing" stale separators.** Rewriting ancestors after every delete is
   work for no gain, and a validator that demands every separator to exist in
   a leaf is wrong.
-- **Forgetting one of the four link updates.** A leaf split writes
-  `left.next`, `right.prev`, `right.next` and `old_next.prev` (or
-  `last_leaf`). A merge writes `left.next` and `next.prev` (or `last_leaf`).
-  `validate` compares the chain with the tree in both directions for this
-  reason.
+- **Forgetting a link update.** A leaf split writes `left.next`,
+  `right.prev`, `right.next` and `old_next.prev` (or `last_leaf`). A merge
+  writes `left.next` and `next.prev` (or `last_leaf`). `validate` therefore
+  compares the chain with the tree in both directions.
 - **Dropping the separator in an internal merge**, or keeping it in a leaf
   merge. The two cases are opposites.
 - **Holding a `*Node` across an allocation** (Zig). The array may move. Here

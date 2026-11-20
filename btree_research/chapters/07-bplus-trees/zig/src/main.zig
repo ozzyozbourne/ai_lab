@@ -168,7 +168,7 @@ fn duplicatesDemo(gpa: Allocator, w: *Writer) !void {
 
 fn composite(user_key: u64, row_id: u64) u64 {
     // 32 bits each: anything larger would collide with another pair.
-    std.debug.assert(user_key <= std.math.maxInt(u32) and row_id <= std.math.maxInt(u32));
+    assert(user_key <= std.math.maxInt(u32) and row_id <= std.math.maxInt(u32));
     return (user_key << 32) | row_id;
 }
 

@@ -222,6 +222,8 @@ fn duplicates_demo(w: &mut dyn Write) -> io::Result<()> {
 }
 
 fn composite(user_key: u64, row_id: u64) -> u64 {
+    // 32 bits each: anything larger would collide with another pair.
+    assert!(user_key <= u64::from(u32::MAX) && row_id <= u64::from(u32::MAX));
     (user_key << 32) | row_id
 }
 

@@ -11,8 +11,18 @@
   .c24-bar b { color: var(--bt-text); }
   .c24-bar .bt-chip { font-size: .78rem; }
   .c24-bar + .c24-bar { margin-top: 2px; }
-  .c24-strips { border-top: 1px dashed var(--bt-border); margin-top: 8px; padding-top: 8px; }
-  .c24-mark { color: var(--bt-node-active); font-weight: 700; }
+  /* The drawing (Ch24.Picture in local.js); shapes reuse the toolkit's tree classes. */
+  .c24-pic { overflow-x: auto; max-width: 100%; min-height: 236px; border-radius: 6px; background: var(--bt-bg); border: 1px solid var(--bt-border); scrollbar-width: thin; }
+  .c24-svg { display: block; margin: 0 auto; font-family: var(--bt-mono); }
+  .c24-svg .bt-key text { font-size: 12px; }
+  .c24-page.is-half-dead .bt-node-box, .c24-page.is-deleted .bt-node-box, .c24-page.is-free .bt-node-box { stroke-dasharray: 5 3; }
+  .c24-inner { font: italic 11px var(--bt-font); fill: var(--bt-text); text-anchor: middle; dominant-baseline: central; }
+  .c24-rowtitle { font: 10.5px var(--bt-font); fill: var(--bt-muted); }
+  .c24-kept { fill: none; stroke: var(--bt-key-deleted); stroke-width: 1.5; stroke-dasharray: 4 3; }
+  .c24-arrow-kept { fill: var(--bt-key-deleted); }
+  .c24-pill rect, .c24-pill path { fill: var(--bt-accent); }
+  .c24-pill.is-stale rect, .c24-pill.is-stale path { fill: var(--bt-key-deleted); }
+  .c24-pill text { font: 700 10px var(--bt-font); fill: var(--bt-on-accent); text-anchor: middle; dominant-baseline: central; }
   .c24-msg { font-size: .85rem; min-height: 1.3em; margin: 4px 0 0; color: var(--bt-key-deleted); }
   .c24-versions { max-height: 260px; overflow: auto; }
   .c24-versions table { font-size: .78rem; width: 100%; }
@@ -42,11 +52,20 @@ deletion until it is safe to reuse.</p>
     until the snapshot is closed.</li>
   <li><strong>Hints.</strong> Play scenario 1. A scan that meets a dead version sets <code>!</code> on its index entry.
     The next insert that finds that leaf full drops the hinted entries instead of splitting.</li>
-  <li><strong>Half-dead, deleted, free.</strong> Play scenario 2 with <em>Predict</em> ticked. An empty leaf first loses
-    its parent downlink, then its place in the chain, and only then, when no snapshot is older than its stamp, its
-    identity. The paused scan still holds the page's handle the whole time.</li>
-  <li><strong>Break it.</strong> Play scenario 3, or do it yourself: start a scan, read one page, run Vacuum, press
-    <em>Recycle anyway</em>, insert until a split reuses the page, then let the scan read on.</li>
+  <li><strong>Half-dead, deleted, free: follow one box.</strong> Play scenario 2 with <em>Predict</em> ticked and watch
+    page <code>#1</code>. Phase 1: the edge from its parent disappears, but the box stays in the leaf row, between its
+    neighbours, dashed (<em>half-dead</em>). Phase 2: the chain arrow of its left neighbour now passes over it and the box
+    drops into the row of deleted pages with a stamp; the dashed red arrow is the right link it keeps. Only when the
+    horizon reaches the stamp does it drop into the free list, and the next split lifts it back into the tree. The
+    <em>scan reads next</em> pill stays on the box the whole time: that is the handle the paused scan holds.</li>
+  <li><strong>Break it.</strong> Play scenario 3, or do it yourself: press <em>Empty</em>, put nine keys
+    (10, 20, … 90), delete four neighbours in the middle (30, 40, 50, 60), and only then start a scan and read one
+    page. Run Vacuum (a page is deleted but must wait: the scan's snapshot is older than its stamp), press
+    <em>Recycle anyway</em>, put 81, 82, … until a split reuses the page, then let the scan read on. The order matters:
+    rows deleted <em>after</em> the scan started are still visible to it, so Vacuum would not remove them.</li>
+  <li><strong>Clicking fast is fine.</strong> If you press a control while the previous action is still being played,
+    that action is run to its end first and the caption says so. If you stepped back yourself, the control continues
+    from the step on screen.</li>
 </ul>
 <p>Text and code: <a href="../README.md">chapter 24 README</a>. The three scenarios are the fixed scenario of the
 chapter's Zig and Rust programs; the trees they end in are checked against the programs' output (self-tests below).</p>
@@ -71,9 +90,9 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
       { token: 'node-active', label: 'page being worked on' },
       { token: 'key-inserted', label: 'entry just added' },
       { token: 'key-compare', label: 'old version an open snapshot still sees' },
-      { token: 'key-deleted', label: 'dead to every snapshot (! = hint bit set)' },
+      { token: 'key-deleted', label: 'dead to every snapshot: entry (! = hint bit set) or deleted page' },
       { token: 'split', label: 'split' },
-      { token: 'merge', label: 'half-dead page' },
+      { token: 'merge', label: 'half-dead page: in the chain, no downlink' },
       { token: 'free', label: 'free page / free version slot' }
     ]
   });
@@ -101,21 +120,17 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     btn('btn-unsafe', 'Recycle anyway', doUnsafe),
     el('span.bt-toolbar-sep'),
     scenario, btn('btn-play', 'Play scenario', function () { playScenario(scenario.value, true); }),
-    btn('btn-reset', 'Empty', function () { message(''); db = C.create(4); db.names = []; steps = []; note('Empty database. Put a few keys, or play a scenario.'); commit(false); }));
+    btn('btn-reset', 'Empty', function () { message(''); db = C.create(4); db.names = []; steps = []; note('Empty database. Put a few keys, or play a scenario.'); commit(false); ownTimeline = false; }));
   var msg = el('p.c24-msg', { role: 'status', 'aria-live': 'polite' });
   fig.toolbar.after(msg);
   function message(text) { msg.textContent = text; }
 
   var clock = el('div.c24-bar', { 'aria-label': 'Transaction counter and open snapshots' });
   var treeBox = el('div');
-  var strips = el('div.c24-strips');
-  var chainEl = el('div.c24-bar', { 'aria-label': 'Leaf chain' });
-  var deletedEl = el('div.c24-bar', { 'aria-label': 'Deleted pages waiting to be recycled' });
-  var freeEl = el('div.c24-bar', { 'aria-label': 'Free pages' });
   var scanEl = el('div.c24-bar', { 'aria-label': 'Paused scan' });
-  strips.append(chainEl, deletedEl, freeEl, scanEl);
-  fig.stage.append(clock, treeBox, strips);
-  var view = new BTViz.TreeView(treeBox, { minHeight: 200, ariaLabel: 'The index' });
+  fig.stage.append(clock, treeBox, scanEl);
+  // Not BTViz.TreeView: half-dead, deleted and free pages have no parent to hang under (see local.js).
+  var view = new C.Picture(treeBox);
 
   var versionsPanel = el('div.bt-panel', el('div.bt-panel-title', 'Version store (the rows)'));
   var versionsBody = el('div.bt-panel-body');
@@ -154,74 +169,26 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     return C.deadToAll(d, tid) ? 'deleted' : 'compare';
   }
 
-  function treeModel(d, keyStates) {
-    if (d.root === NIL) return null;
-    var liveNext = {}, prev = NIL;
-    C.chain(d).forEach(function (id) {
-      if (C.page(d, id).state !== 'live') return;
-      if (prev !== NIL) liveNext[prev] = id;
-      prev = id;
+  /** Default colour of every leaf entry: what the version store says about its version. */
+  function keyStates(d) {
+    var out = {};
+    d.pages.slots.forEach(function (n, id) {
+      if (n.free !== undefined || !n.leaf || n.state !== 'live') return;
+      n.keys.forEach(function (ik, i) {
+        var st = versionState(d, C.tidOf(ik));
+        if (st) out[pid(id) + ':' + C.entryText(d, n, i)] = st;
+      });
     });
-    function build(id) {
-      var n = C.page(d, id), node = { id: pid(id), leaf: n.leaf, meta: { label: '#' + id } };
-      if (n.leaf) {
-        node.keys = n.keys.map(function (ik, i) {
-          var text = C.entryText(d, n, i), st = versionState(d, C.tidOf(ik));
-          if (st) keyStates[pid(id) + ':' + text] = st;
-          return text;
-        });
-        if (liveNext[id] !== undefined) node.next = pid(liveNext[id]);
-      } else {
-        node.keys = n.keys.map(function (ik) { return C.userKey(ik) + '.' + C.tidOf(ik); });
-        node.children = n.children.map(build);
-      }
-      return node;
-    }
-    return build(d.root);
+    return out;
   }
 
   function chip(text, state, title) { return el('span.bt-chip' + (state ? '.s-' + state : ''), title ? { title: title } : {}, text); }
-  function mark() { return el('span.c24-mark', { title: 'the page handle the paused scan will follow next' }, '◀ scan'); }
 
-  function renderStrips(d, hl) {
-    var target = d.scan && !d.scan.done ? d.scan.next : null;
-    hl = hl || {};
+  function renderStrips(d) {
     clock.textContent = '';
     clock.append('now = ', el('b', String(d.now)), ' · horizon = ', el('b', String(C.horizon(d))), ' · open snapshots:');
     if (!d.open.length) clock.append(' none');
     d.open.forEach(function (s, i) { clock.append(chip(snapName(d, i), s === C.horizon(d) ? 'compare' : null, s === C.horizon(d) ? 'the oldest snapshot: it is the horizon' : '')); });
-
-    chainEl.textContent = '';
-    chainEl.append('leaf chain: first →');
-    var ch = C.chain(d);
-    if (!ch.length) chainEl.append(' (empty)');
-    ch.forEach(function (id, i) {
-      if (i) chainEl.append('→');
-      var p = C.page(d, id);
-      chainEl.append(chip('#' + id + (p.state === 'half-dead' ? ' half-dead' : ''), hl[id] || (p.state === 'half-dead' ? 'merge' : null)));
-      if (target === id) chainEl.append(mark());
-    });
-    if (ch.length) chainEl.append('→ end');
-
-    deletedEl.textContent = '';
-    deletedEl.append('deleted, waiting:');
-    var dq = C.deletedQueue(d);
-    if (!dq.length) deletedEl.append(' none');
-    dq.forEach(function (id) {
-      var p = C.page(d, id);
-      deletedEl.append(chip('#' + id + ' stamp ' + p.stamp + ', right link → ' + (p.next === NIL ? 'end' : '#' + p.next), hl[id] || 'deleted',
-                            'reusable when the horizon reaches ' + p.stamp));
-      if (target === id) deletedEl.append(mark());
-    });
-
-    freeEl.textContent = '';
-    freeEl.append('free pages (the next split takes the first):');
-    var fl = C.freeList(d.pages);
-    if (!fl.length) freeEl.append(' none');
-    fl.forEach(function (id) {
-      freeEl.append(chip('#' + id, 'free'));
-      if (target === id) freeEl.append(mark());
-    });
 
     scanEl.textContent = '';
     if (!d.scan) { scanEl.append('scan: none'); return; }
@@ -255,20 +222,16 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
 
   var stepper = new BTViz.Stepper({
     mount: fig.controls, caption: fig.caption, root: fig.root, predict: true,
-    onStep: function (s, i) {
-      var d = s.state, hl = s.hl || {}, keys = {}, nodes = {};
-      var model = treeModel(d, keys);
+    onStep: function (s, i) {   // BTViz.motion.duration() is 0 when the stepper jumps
+      var d = s.state, hl = s.hl || {}, keys = keyStates(d), scan = null;
       Object.keys(hl.keys || {}).forEach(function (id) { keys[id] = hl.keys[id]; });
-      Object.keys(hl.pages || {}).forEach(function (id) {
-        // Only pages that are drawn in the tree; half-dead and deleted ones are in the strips below it.
-        if (C.isLive(d.pages, +id) && (!C.page(d, +id).leaf || C.page(d, +id).state === 'live')) nodes[pid(id)] = hl.pages[id];
-      });
-      var h = { nodes: nodes, keys: keys };
-      if (d.scan && !d.scan.done && C.isLive(d.pages, d.scan.next) && C.page(d, d.scan.next).state === 'live') {
-        h.cursor = { node: pid(d.scan.next), label: 'scan reads next' };
+      // The pill sits on whatever the saved handle names NOW: a leaf, a half-dead or deleted page,
+      // a free slot, or a page that a split has reused for something else (both of those: stale).
+      if (d.scan && !d.scan.done && d.scan.next !== NIL) {
+        scan = { page: d.scan.next, stale: !C.isLive(d.pages, d.scan.next) || d.scan.betrayed === d.scan.next };
       }
-      view.render(model, h);
-      renderStrips(d, hl.pages);
+      view.render(d, { pages: hl.pages, keys: keys, scan: scan }, BTViz.motion.duration());
+      renderStrips(d);
       renderVersions(d, hl.versions);
       showCode(s.code);
       log.sync(stepper ? stepper.steps : [], i);
@@ -302,19 +265,41 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
   }
 
   /**
-   * Every control acts on the state that is ON SCREEN: the database is restored from the step the
-   * reader is looking at (which may be the middle of a scenario), and the new timeline starts with
-   * that same picture.
+   * No press of a control is ever dropped, and every control starts from a state the reader has seen:
+   *
+   *  - Normally that is the step ON SCREEN (which may be the middle of a scenario). If that step
+   *    shows a half-finished operation, the operation is finished first.
+   *  - But a timeline made by the reader's own previous action plays by itself, starting from the
+   *    picture BEFORE that action. A second press during those moments must not start from there,
+   *    or the first action would silently vanish (type 10, Put, 11, Put quickly: only 11 arrived).
+   *    So while such a timeline is still playing, the previous action is run to its end first.
+   *
+   * Either way the first caption of the new timeline says what was done.
    */
+  var ownTimeline = false;
   function act(title, fn) {
     message('');
-    var shown = stepper.index, resume = stepper.steps[shown].resume;
+    var shown = stepper.index, last = stepper.steps.length - 1, resume = stepper.steps[shown].resume, said = '';
+    if (ownTimeline && stepper.playing && shown < last) {
+      resume = last;
+      said = 'Your previous action was still being played; it has been run to its end first.';
+    } else if (resume !== shown) {
+      said = 'The operation that was in progress has been finished first.';
+    } else if (shown < last) {
+      said = 'Continuing from the step on screen (step ' + (shown + 1) + ' of ' + (last + 1) + '); the later steps are dropped.';
+    }
     db = BTViz.clone(stepper.state(resume));
     steps = [];
-    note((resume !== shown ? '<em>(The operation that was in progress has been finished first.)</em> ' : '') + title);
+    note((said ? '<em>(' + said + ')</em> ' : '') + title);
     fn();
-    if (!steps.length) return;            // the action was refused: leave the picture alone
+    if (!steps.length) {
+      // The action was refused (a message says why). Nothing changes, but if we promised above to
+      // run the previous action to its end, do it: show its last step.
+      if (resume === last && shown < last) stepper.go(last);
+      return;
+    }
     commit(steps.length > 1);
+    ownTimeline = true;
   }
 
   function withKey(fn) {
@@ -495,31 +480,51 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     });
   }
 
+  /**
+   * Leaves where vacuum finds nothing are not worth a step each: they are collected here and shown
+   * as ONE step just before the next thing that does happen (or before the final recycle).
+   */
+  var quiet = [];
+  function flushQuiet() {
+    if (!quiet.length) return;
+    var names = quiet.map(function (id) { return '#' + id; }).join(', '), hp = {};
+    quiet.forEach(function (id) { hp[id] = 'active'; });
+    step((quiet.length === 1 ? 'Leaf ' + names + ': nothing here is' : 'Leaves ' + names + ': nothing in them is') + ' dead to the horizon (' + C.horizon(db) + '). Vacuum moves on along the chain.',
+      { state: quiet.state, hl: { pages: hp }, code: 'vacuum', log: names + ': nothing dead' });
+    quiet = [];
+  }
   function vacuumEvent(type, info) {
     var p = info.page, H = C.horizon(db);
+    if (type === 'sweep' && !info.removed) {
+      quiet.push(p);
+      quiet.state = BTViz.clone(db);      // the picture when the last of them was visited
+      return;
+    }
+    flushQuiet();
     if (type === 'sweep') {
-      step(info.removed
-        ? 'Leaf #' + p + ': ' + entries(info.removed) + ' pointed at versions with <code>xmax ≤ horizon</code>. The entries are removed first, then the version slots are freed.'
-        : 'Leaf #' + p + ': nothing here is dead to the horizon.',
-        { hl: { pages: pg(p) }, code: 'vacuum', log: info.removed ? { html: '#' + p + ': removed ' + info.removed, state: 'deleted' } : '#' + p + ': nothing dead' });
+      step('Leaf #' + p + ': ' + entries(info.removed) + ' pointed at versions with <code>xmax ≤ horizon</code>. The entries are removed first, then the version slots are freed.',
+        { hl: { pages: pg(p) }, code: 'vacuum', log: { html: '#' + p + ': removed ' + info.removed, state: 'deleted' } });
     } else if (type === 'keep') {
       step('Leaf #' + p + ' is empty, but it cannot be deleted: ' + info.reason + '. It stays in the tree, empty. Non-empty pages are never merged either.',
         { hl: { pages: pg(p) }, code: 'markHalfDead', log: '#' + p + ' empty, kept' });
     } else if (type === 'half-dead') {
-      step('<b>Phase 1.</b> Leaf #' + p + ' is empty: the parent drops its downlink and hands its key range to the right sibling. The page is now <b>half-dead</b>: no search can reach it from above, but it is still in the leaf chain.',
+      step('<b>Phase 1.</b> Leaf #' + p + ' is empty: the parent drops its downlink and hands its key range to the right sibling. The page is now <b>half-dead</b>: its edge from above is gone, so no search can reach it, but it is still in the leaf chain, between the same neighbours.',
         { hl: { pages: mk(p, 'merge') }, code: 'markHalfDead', log: { html: '#' + p + ' half-dead', state: 'merge' } });
     } else if (type === 'unlink') {
-      step('<b>Phase 2.</b> The left neighbour\'s right link now bypasses #' + p + '. The page is stamped with a fresh epoch, ' + info.stamp +
-        ', and <b>keeps its own right link</b> (→ ' + (info.next === NIL ? 'end' : '#' + info.next) + ') for anyone who is still on the way to it.',
+      step('<b>Phase 2.</b> The left neighbour\'s right link now bypasses #' + p + ': the page drops out of the chain into the row of deleted pages. It is stamped with a fresh epoch, ' + info.stamp +
+        ', and <b>keeps its own right link</b> (the dashed arrow → ' + (info.next === NIL ? 'end' : '#' + info.next) + ') for anyone who is still on the way to it.',
         { hl: { pages: mk(p, 'deleted') }, code: 'unlink', log: { html: '#' + p + ' unlinked, stamp ' + info.stamp, state: 'deleted' } });
     } else if (type === 'recycle') {
       var text = 'Recycle: the horizon is ' + H + '. ';
-      if (info.freed.length) text += 'Freed ' + info.freed.map(function (id) { return '#' + id; }).join(', ') + ' (stamp ≤ horizon: no open snapshot is older than the unlink). ';
+      if (info.freed.length) text += 'Freed ' + info.freed.map(function (id) { return '#' + id; }).join(', ') + ' (stamp ≤ horizon: no open snapshot is older than the unlink): into the free list. ';
       if (info.waiting.length) {
         text += info.waiting.map(function (id) { return '#' + id; }).join(', ') + ' must wait: stamp &gt; ' + H + ', so a reader with an older snapshot may still hold the handle.';
       }
       if (!info.freed.length && !info.waiting.length) text += 'No deleted pages.';
-      step(text, { code: 'recycle', question: info.question, log: 'recycled ' + info.freed.length + ', waiting ' + info.waiting.length });
+      var hp = {};
+      info.freed.forEach(function (id) { hp[id] = 'free'; });
+      info.waiting.forEach(function (id) { hp[id] = 'deleted'; });
+      step(text, { hl: { pages: hp }, code: 'recycle', question: info.question, log: 'recycled ' + info.freed.length + ', waiting ' + info.waiting.length });
     }
   }
   function opVacuum(options) {
@@ -545,10 +550,11 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     beginOp();
     var waiting = C.deletedQueue(db);
     if (db.scan && !db.scan.done && waiting.indexOf(db.scan.next) >= 0) db.scan.betrayed = db.scan.next;
-    var freed = C.recycle(db, Infinity);
-    step('<b>The bug, on purpose.</b> ' + freed.map(function (id) { return '#' + id; }).join(', ') + ' go to the free list although the horizon (' + C.horizon(db) +
-      ') has not reached their stamp. A reader that still holds one of these handles has not been asked.',
-      { code: 'recycle', log: { html: 'recycled ' + freed.length + ' ignoring snapshots', state: 'deleted' } });
+    var freed = C.recycle(db, Infinity), one = freed.length === 1, hp = {};
+    freed.forEach(function (id) { hp[id] = 'free'; });
+    step('<b>The bug, on purpose.</b> ' + freed.map(function (id) { return '#' + id; }).join(', ') + (one ? ' goes' : ' go') + ' to the free list although the horizon (' + C.horizon(db) +
+      ') has not reached ' + (one ? 'its stamp' : 'their stamps') + '. A reader that still holds ' + (one ? 'this handle' : 'one of these handles') + ' has not been asked.',
+      { hl: { pages: hp }, code: 'recycle', log: { html: 'recycled ' + freed.length + ' ignoring snapshots', state: 'deleted' } });
   }
   function doUnsafe() {
     act('Recycle anyway.', function () {
@@ -660,6 +666,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     message('');
     buildScenario(name);
     commit(play);
+    ownTimeline = false;
   }
 
   /* --------------------------------------------------------- self-tests */

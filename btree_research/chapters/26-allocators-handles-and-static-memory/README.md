@@ -381,4 +381,5 @@ Solutions: [solutions.md](solutions.md).
 - Previous: [25. Cache-conscious search and layout](../25-cache-conscious-search-and-layout/README.md)
 - Next: [27. B-tree vs LSM](../27-btree-vs-lsm/README.md)
 - Visualization: [viz/index.html](viz/index.html) (slab memory map, pointer vs handle,
-  vacuum) and [viz/buddy.html](viz/buddy.html) (buddy allocator)
+  vacuum, and "Static memory": reserve, freeze, fill until refused) and
+  [viz/buddy.html](viz/buddy.html) (buddy allocator)

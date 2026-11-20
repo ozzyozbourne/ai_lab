@@ -17,12 +17,19 @@
     this.slabs = [];          // id -> null | {used, free: [bool], items: [node]}
     this.slabCount = 0; this.live = 0; this.hint = 0; this.victim = null;
     this.nextBase = 0;        // only for the "pointer" column of the page: fake addresses
+    this.releaseEmpty = true; // false: static policy, an empty slab is kept (TigerBeetle NodePool style)
+    this.budget = Infinity;   // slabs the backing allocator will still hand out; 0 once frozen
+    this.growFailures = 0;    // creates that failed because the backing allocator refused
+    this.backingAllocs = 0; this.backingFrees = 0;   // calls that reached the backing allocator
   }
   Pool.prototype.freeSlots = function () { return this.slabCount * this.S - this.live; };
   Pool.prototype.hasSpace = function (id) {
     return this.victim !== id && this.slabs[id] && this.slabs[id].used < this.S;
   };
+  /** -1 when the backing allocator refuses (the Zig version returns error.OutOfMemory). */
   Pool.prototype.addSlab = function () {
+    if (this.budget === 0) return -1;
+    this.budget--; this.backingAllocs++;
     var id = this.slabs.indexOf(null);
     if (id < 0) { id = this.slabs.length; this.slabs.push(null); }
     var free = [], items = [];
@@ -32,11 +39,22 @@
     this.hint = Math.min(this.hint, id);
     return id;
   };
-  /** Lowest free slot of the lowest slab that has one. `grew` reports a new slab. */
+  /** Static policy, init phase: size the directory once (one allocation), then create
+   *  every slab. Nothing is freed on the way: a free would end the init phase. */
+  Pool.prototype.reserve = function (count) {
+    if (count > this.slabCount && !this.directorySized) { this.directorySized = true; this.backingAllocs++; }
+    while (this.slabCount < count) if (this.addSlab() < 0) return false;
+    return true;
+  };
+  /** Lowest free slot of the lowest slab that has one. `grew` reports a new slab.
+   *  Returns null when every slab is full and no new slab can be had. */
   Pool.prototype.create = function (value) {
     var id = this.hint, grew = false;
     while (id < this.slabs.length && !this.hasSpace(id)) id++;
-    if (id === this.slabs.length) { id = this.addSlab(); grew = true; }
+    if (id === this.slabs.length) {
+      id = this.addSlab(); grew = true;
+      if (id < 0) { this.growFailures++; return null; }
+    }
     if (this.victim === null) this.hint = id;
     var slab = this.slabs[id], slot = slab.free.indexOf(true);
     slab.free[slot] = false; slab.items[slot] = value; slab.used++; this.live++;
@@ -47,7 +65,7 @@
   Pool.prototype.peek = function () {
     var id = this.hint;
     while (id < this.slabs.length && !this.hasSpace(id)) id++;
-    if (id === this.slabs.length) { var n = this.slabs.indexOf(null); return { c: this.c, slab: n < 0 ? id : n, slot: 0, grew: true }; }
+    if (id === this.slabs.length) { var n = this.slabs.indexOf(null); return { c: this.c, slab: n < 0 ? id : n, slot: 0, grew: true, full: this.budget === 0 }; }
     return { c: this.c, slab: id, slot: this.slabs[id].free.indexOf(true), grew: false };
   };
   Pool.prototype.isLive = function (h) {
@@ -64,11 +82,11 @@
     var slab = this.slabs[h.slab];
     slab.free[h.slot] = true; slab.items[h.slot] = null; slab.used--; this.live--;
     if (this.victim !== h.slab) this.hint = Math.min(this.hint, h.slab);
-    if (slab.used !== 0) return false;
+    if (slab.used !== 0 || !this.releaseEmpty) return false;
     var other = this.victim === h.slab;
     for (var id = 0; id < this.slabs.length && !other; id++) other = id !== h.slab && this.hasSpace(id);
     if (!other) return false;           // the only free space left: keep it
-    this.slabs[h.slab] = null; this.slabCount--;
+    this.slabs[h.slab] = null; this.slabCount--; this.backingFrees++;
     return true;
   };
   Pool.prototype.vacuumBegin = function () {
@@ -88,7 +106,7 @@
   };
   Pool.prototype.vacuumEnd = function () {
     var id = this.victim;
-    if (this.slabs[id]) { this.slabs[id] = null; this.slabCount--; }
+    if (this.slabs[id]) { this.slabs[id] = null; this.slabCount--; this.backingFrees++; }
     this.victim = null; this.hint = 0;
   };
   /** Same text as SlabPool.writeMap in the programs: "0[##.#] 1[released]". */
@@ -118,9 +136,14 @@
 
   /* ---------------------------------------------------------------- B-tree on two pools
    * Top-down split / CLRS delete, order M (even). Node = {uid, keys: [], kids: [handle]}. */
-  function Tree(M, slots) {
+  function Tree(M, slots, opts) {
     this.M = M; this.t = M / 2; this.K = M - 1;
     this.leaves = new Pool(0, slots); this.interiors = new Pool(1, slots);
+    // Static policy (section 4 of the programs): the pools never release a slab, and
+    // `phase` is the state of the StaticAllocator wrapper above the backing allocator.
+    this.isStatic = !!(opts && opts.static);
+    this.phase = 'init';
+    if (this.isStatic) { this.leaves.releaseEmpty = false; this.interiors.releaseEmpty = false; }
     this.root = null; this.height = 0; this.count = 0; this.uid = 0;
     this.rec = null;         // step recorder while an operation runs
   }
@@ -129,6 +152,13 @@
   T.node = function (h) { return this.pool(h).get(h); };
   T.newNode = function (leaf) {
     return (leaf ? this.leaves : this.interiors).create({ uid: 'n' + this.uid++, keys: [], kids: [] });
+  };
+  /** What the page shows about the memory policy at this step. */
+  T.policy = function () {
+    var l = this.leaves, n = this.interiors;
+    return { static: this.isStatic, phase: this.isStatic ? this.phase : 'growing',
+      leafSlabs: l.slabCount, intSlabs: n.slabCount, slots: l.slabCount * l.S + n.slabCount * n.S, live: l.live + n.live,
+      allocs: l.backingAllocs + n.backingAllocs, frees: l.backingFrees + n.backingFrees, refused: l.growFailures + n.growFailures };
   };
   T.freeNode = function (h) { return this.pool(h).destroy(h); };
   function lowerBound(keys, key) { var i = 0; while (i < keys.length && keys[i] < key) i++; return i; }
@@ -172,7 +202,8 @@
         focus: focus ? { name: hName(focus), hex: hHex(focus), c: focus.c, slab: focus.slab, slot: focus.slot,
                          addr: this.pool(focus).slabs[focus.slab] ? this.pool(focus).slabs[focus.slab].base * 0x100 + 16 + focus.slot * (focus.c ? 72 : 56) : null,
                          moved: opts.movedFrom || null } : null,
-        stats: { keys: this.count, height: this.height, leafMap: this.leaves.map(), intMap: this.interiors.map() }
+        stats: { keys: this.count, height: this.height, leafMap: this.leaves.map(), intMap: this.interiors.map() },
+        policy: this.policy()
       },
       highlight: { nodes: nodes, keys: opts.keys || {}, cursor: opts.cursor }
     };
@@ -196,6 +227,27 @@
     return this.run(function () { self.step(caption, { type: 'idle' }); });
   };
 
+  /* ---- static memory: reserve everything in init, then freeze (section 4 of the programs) */
+  T.reserveAndFreeze = function (leafSlabs, intSlabs) {
+    return this.run(function () {
+      var S = this.leaves.S;
+      this.step('<b>Static memory, phase init.</b> The tree is empty and owns no memory yet. While the allocator wrapper is in state <b>init</b>, requests pass through to the backing allocator. The plan: take everything the tree will ever need now.',
+        { type: 'init', hold: 2 });
+      this.leaves.reserve(leafSlabs);
+      this.step('<code>leaves.reserve(' + leafSlabs + ')</code>: the slab directory is sized once for ' + leafSlabs + ' entries, then ' + leafSlabs + ' slabs of ' + S + ' leaf slots are created. Every slot is free (hatched). ' +
+        this.leaves.backingAllocs + ' allocations, no free: a free during init would end the init phase.',
+        { type: 'reserve', hold: 2, log: { html: 'reserve ' + leafSlabs + ' leaf slabs', state: 'inserted' } });
+      this.interiors.reserve(intSlabs);
+      this.step('<code>interiors.reserve(' + intSlabs + ')</code>: ' + intSlabs + ' slabs of ' + S + ' interior slots. The tree still holds no key, but all of its memory exists: ' +
+        leafSlabs * S + ' leaf slots and ' + intSlabs * S + ' interior slots.',
+        { type: 'reserve', hold: 2, log: { html: 'reserve ' + intSlabs + ' interior slabs', state: 'inserted' } });
+      this.phase = 'static'; this.leaves.budget = 0; this.interiors.budget = 0;
+      this.step('<code>freeze()</code>: init &rarr; <b>static</b>. From here on the backing allocator refuses every request, so the footprint of ' + (leafSlabs + intSlabs) +
+        ' slabs can neither grow nor shrink, and a hidden allocation anywhere in the code would be caught. Inserts now only flip bits in these slabs. Press <b>Put</b>, or <b>Fill</b> to insert keys until the pool is dry.',
+        { type: 'freeze', hold: 2, log: { html: 'freeze: init → static', state: 'lock-exclusive' } });
+    });
+  };
+
   /* ---- allocation with a step (and a predict question) */
   T.allocStep = function (leaf, why) {
     var pool = leaf ? this.leaves : this.interiors, guess = pool.peek();
@@ -205,6 +257,16 @@
       slab.free.forEach(function (f, slot) { if (f && !(id === guess.slab && slot === guess.slot) && wrong.length < 2) wrong.push({ c: pool.c, slab: id, slot: slot }); });
     });
     var h = this.newNode(leaf);
+    if (!h) {
+      // Only reachable under the static policy: the pool may not grow any more.
+      var fail = this.step(why + ' Allocate ' + (leaf ? 'a leaf' : 'an interior node') + ': all ' + pool.slabCount * pool.S + ' slots of the ' + (leaf ? 'leaf' : 'interior') +
+        ' pool are in use, so <code>create</code> asks the backing allocator for one more slab. The allocator is frozen (state <b>static</b>) and <b>refuses</b>: <code>create</code> returns OutOfMemory.',
+        { type: 'refused', log: { html: 'create ' + (leaf ? 'leaf' : 'interior') + ': refused (frozen)', state: 'deleted' } });
+      if (fail) fail.question = { prompt: 'A new ' + (leaf ? 'leaf' : 'interior node') + ' is needed, and the allocator was frozen after init. What does <code>create</code> return?',
+        choices: ['a slot in a new slab', 'OutOfMemory: the pool is full and may not grow'], answer: 1,
+        explain: 'After freeze() the backing allocator refuses every request, so the memory footprint cannot change.' };
+      return null;
+    }
     var grew = pool.lastGrew;
     var step = this.step(why + ' Allocate a ' + (leaf ? 'leaf' : 'interior node') + ': ' +
       (grew ? 'every slab is full, so a new slab ' + h.slab + ' is taken from the backing allocator, and its first slot is used.'
@@ -229,7 +291,9 @@
   /* ---- put */
   T.splitChild = function (parent, i) {
     var t = this.t, leftH = this.node(parent).kids[i], left = this.node(leftH);
+    // Allocate the sibling BEFORE touching a key: if this fails, nothing is half-done.
     var rightH = this.allocStep(!leftH.c, 'Child ' + hh(leftH) + ' is full (' + this.K + ' keys), so it is split before the search enters it.');
+    if (!rightH) return false;
     var right = this.node(rightH), p = this.node(parent);
     var median = left.keys[t - 1];
     right.keys = left.keys.slice(t);
@@ -242,20 +306,37 @@
     this.step('The upper half moves to ' + hh(rightH) + ', the median ' + kk(median, 'split') + ' goes up into ' + hh(parent) +
       ', and the parent stores the new 4-byte handle next to the old one.',
       { type: 'split', nodes: nodes, keys: keys, focus: rightH, log: { html: 'split ' + hName(leftH) + ' → + ' + hName(rightH), state: 'split' } });
+    return true;
+  };
+  /** The last step of a put that ran out of memory. Result of the operation: 'oom'. */
+  T.oomStep = function (key) {
+    this.step('<b>OutOfMemory</b>: ' + kk(key) + ' was not inserted. Nothing is half-done, because every split allocates its new node before it moves a key: the tree is valid and holds the same ' +
+      this.count + ' keys. The footprint is still ' + this.leaves.slabCount + ' leaf and ' + this.interiors.slabCount + ' interior slabs. Delete a key to free a slot, or press Reset.',
+      { type: 'oom', log: { html: 'put ' + key + ': OutOfMemory', state: 'deleted' } });
+    return 'oom';
   };
   T.put = function (key) {
     return this.run(function () {
       if (!this.root) {
-        this.root = this.allocStep(true, 'The tree is empty.');
+        var first = this.allocStep(true, 'The tree is empty.');
+        if (!first) return this.oomStep(key);
+        this.root = first;
         this.height = 1;
       }
       this.step('Insert ' + kk(key, 'inserted') + '. Top-down insertion: every full node on the path is split <i>before</i> it is entered, so each allocation happens before anything is changed.',
         { type: 'start', nodes: mark(this.root, 'active'), cursor: { node: this.node(this.root).uid, label: key } });
       if (this.node(this.root).keys.length === this.K) {
+        var oldRoot = this.root;
         var newRoot = this.allocStep(false, 'The root ' + hh(this.root) + ' is full: the tree grows by one level.');
+        if (!newRoot) return this.oomStep(key);
         this.node(newRoot).kids = [this.root];
         this.root = newRoot; this.height++;
-        this.splitChild(newRoot, 0);
+        if (!this.splitChild(newRoot, 0)) {
+          // Zig: `errdefer tree.freeNode(new_root)`. The half-built level is undone.
+          this.root = oldRoot; this.height--;
+          this.freeStep(newRoot, 'The new root was allocated, but the sibling for the split was refused, so the new root is given back (<code>errdefer</code>).');
+          return this.oomStep(key);
+        }
       }
       var h = this.root;
       for (;;) {
@@ -274,7 +355,7 @@
         }
         var child = n.kids[i];
         if (this.node(child).keys.length === this.K) {
-          this.splitChild(h, i);
+          if (!this.splitChild(h, i)) return this.oomStep(key);
           n = this.node(h);
           if (key === n.keys[i]) { keys[n.uid + ':' + key] = 'found'; this.step('The median that came up is the key itself: overwrite its value.', { type: 'exists', nodes: mark(h, 'active'), keys: keys, focus: h }); return false; }
           if (key > n.keys[i]) child = n.kids[i + 1];
@@ -292,7 +373,8 @@
     var marks = {}; marks[name] = 'deleted';
     this.step(why + ' Slot ' + '<code>' + name + '</code> is freed: its bit is set to 1. ' +
       (released ? 'That was the last node of slab ' + h.slab + ' and another slab still has room, so the whole slab goes back to the backing allocator.'
-                : (this.pool(h).slabs[h.slab].used === 0 ? 'The slab is now empty, but it is the only free space of the pool, so it is kept.'
+                : (this.isStatic ? 'The slot goes back to the <i>pool</i>, never to the allocator: a static pool keeps every slab, so the footprint does not shrink either.'
+                : this.pool(h).slabs[h.slab].used === 0 ? 'The slab is now empty, but it is the only free space of the pool, so it is kept.'
                                                          : 'A hole: the next <code>create</code> that reaches this slab will reuse it.')),
       { type: 'free', slots: released ? {} : marks, log: { html: 'destroy ' + name + (released ? ' (slab released)' : ''), state: 'deleted' } });
   };
@@ -538,7 +620,10 @@
         if (this.state[buddy] !== 'free' || this.order[buddy] !== k) {
           m[buddy] = 'compare';
           this.step('Its buddy starts at offset ' + buddy * this.minBlock + ' (block number XOR ' + (1 << k) + '). ' +
-            (this.state[buddy] === 'free' ? 'That space is free but split into smaller blocks' : 'That space is in use, whole or in part') +
+            (this.state[buddy] === 'used' && this.order[buddy] === k
+              ? 'That ' + this.size(k) + '-byte block is in use'
+              // A buddy region of smaller blocks is never entirely free: its halves would have merged.
+              : 'That ' + this.size(k) + '-byte region has been split into smaller blocks and at least one of them is still in use') +
             ', so merging stops. The block goes on the free list of order ' + k + '.', m, { log: { html: 'free ' + name, state: 'deleted' } });
           return;
         }

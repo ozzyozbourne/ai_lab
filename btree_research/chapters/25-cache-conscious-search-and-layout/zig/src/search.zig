@@ -206,7 +206,8 @@ test "halving: branch, arithmetic, hinted and prefetch variants probe identical 
         try testing.expectEqualSlices(u32, a.probeSlice(), c.probeSlice());
         try testing.expectEqualSlices(u32, a.probeSlice(), d.probeSlice());
         try testing.expectEqual(a.linesRead(), c.linesRead());
-        // Every line except the very first probe was hinted before it was read.
+        // Every line except the very first probe was hinted at least one
+        // comparison before it was read.
         try testing.expectEqual(1, c.uncovered);
         try testing.expectEqual(a.linesRead(), a.uncovered);
         try testing.expectEqual(2 * (c.comparisons - 1), c.prefetches);

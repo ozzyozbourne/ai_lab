@@ -6,9 +6,19 @@
 //! only reads keys, so in SoA every line it loads is 100% keys, while in AoS
 //! half of every line is child ids the search never looks at.
 //!
+//! The other side of the trade: once the search has found its entry, AoS has
+//! the child on the line it just read, while SoA must read the child column,
+//! which is one more line. `get` reports both reads to the tracer, so the
+//! counts show the saving and its price.
+//!
 //! Zig has `std.MultiArrayList(Entry)`, which derives the columns from the
 //! struct declaration. Rust's std has nothing like it, so `SoaNode` spells the
 //! columns out by hand: one `Vec` per field, kept the same length.
+//!
+//! Alignment caveat: a `Vec<u64>` or `Vec<Entry>` is aligned to 8 bytes, not
+//! to a cache line. The tracer's counts describe a node whose key array and
+//! child column each start on a line boundary. A node that starts in the
+//! middle of a line can touch one line more.
 
 use crate::search::{Select, lower_bound_halving};
 use crate::trace::{Layout, NoTrace, Tracer};
@@ -66,7 +76,7 @@ impl SoaNode {
 
     /// Insert in sorted position, or overwrite the child of an existing key.
     pub fn put(&mut self, key: u64, child: u32) -> Result<(), NodeFull> {
-        let i = lower_bound_halving(Select::Hinted, false, &self.keys, key, &mut NoTrace);
+        let i = self.lower_bound(key, &mut NoTrace);
         if i < self.keys.len() && self.keys[i] == key {
             self.children[i] = child;
             return Ok(());
@@ -81,11 +91,26 @@ impl SoaNode {
         Ok(())
     }
 
-    /// The search touches only the key column; the child column is read once,
-    /// at the very end, for the single entry that matched.
+    /// The search part of `get`: reads the key column and nothing else.
+    pub fn lower_bound<T: Tracer>(&self, key: u64, tracer: &mut T) -> usize {
+        lower_bound_halving(Select::Hinted, false, &self.keys[..], key, tracer)
+    }
+
+    /// The search touches only the key column. Then come two more reads, and
+    /// the tracer hears about both: the equality check on key `i` (usually on
+    /// a line the search already read) and, for a hit, the child column,
+    /// which is a different array and so always a line of its own.
     pub fn get<T: Tracer>(&self, key: u64, tracer: &mut T) -> Option<u32> {
-        let i = lower_bound_halving(Select::Hinted, false, &self.keys, key, tracer);
-        (i < self.keys.len() && self.keys[i] == key).then(|| self.children[i])
+        let i = self.lower_bound(key, tracer);
+        if i == self.keys.len() {
+            return None;
+        }
+        tracer.cmp(i);
+        if self.keys[i] != key {
+            return None;
+        }
+        tracer.side(i);
+        Some(self.children[i])
     }
 
     pub fn validate(&self) -> Result<(), Corrupt> {
@@ -155,9 +180,17 @@ impl AosNode {
         Ok(())
     }
 
+    /// Same two extra reads as `SoaNode::get`, but here the second one is
+    /// free: the child is in the 16-byte entry whose key the equality check
+    /// just read, and (in a line-aligned array) a 16-byte entry never
+    /// straddles two lines. So there is no `tracer.side` call.
     pub fn get<T: Tracer>(&self, key: u64, tracer: &mut T) -> Option<u32> {
         let i = self.lower_bound(key, tracer);
-        (i < self.entries.len() && self.entries[i].key == key).then(|| self.entries[i].child)
+        if i == self.entries.len() {
+            return None;
+        }
+        tracer.cmp(i);
+        (self.entries[i].key == key).then(|| self.entries[i].child)
     }
 
     pub fn validate(&self) -> Result<(), Corrupt> {
@@ -223,8 +256,24 @@ mod tests {
                 assert_eq!(aos.get(key, &mut ta), want);
                 // Same probes, same comparison count; only the lines differ.
                 assert_eq!(ts.probes(), ta.probes());
-                assert_eq!(ts.comparisons, halving_comparisons(count));
-                assert!(ts.lines_read() <= ta.lines_read());
+                assert_eq!(ts.comparisons, ta.comparisons);
+                // The search, plus the equality check unless the needle is
+                // above every key.
+                let searched = halving_comparisons(count);
+                assert!(ts.comparisons == searched || ts.comparisons == searched + 1);
+                assert!(ts.key_lines() <= ta.key_lines());
+                // Regression (review round 1, G1): the child column is a read
+                // too. SoA pays one side line for every hit, AoS never does.
+                assert_eq!(ts.side_lines(), u32::from(want.is_some()));
+                assert_eq!(ta.side_lines(), 0);
+                assert_eq!(ts.lines_read(), ts.key_lines() + ts.side_lines());
+                // The search alone reads only keys, in both layouts.
+                let mut ss = Trace::new(SOA_LAYOUT);
+                let mut sa = Trace::new(AOS_LAYOUT);
+                assert_eq!(soa.lower_bound(key, &mut ss), aos.lower_bound(key, &mut sa));
+                assert_eq!(ss.comparisons, searched);
+                assert_eq!(ss.side_lines() + sa.side_lines(), 0);
+                assert!(ss.lines_read() <= sa.lines_read());
             }
         }
         assert_eq!(soa.len(), capacity); // the node did fill up

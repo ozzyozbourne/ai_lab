@@ -17,7 +17,7 @@ mod trace;
 
 use std::fmt::Write as _;
 
-use layout::{AlignedKeys, BlockTree, Eytzinger, SENTINEL};
+use layout::{AlignedKeys, BlockTree, Eytzinger, SENTINEL, SortedView};
 use prng::SplitMix64;
 use search::Select;
 use trace::{LINE_BYTES, Layout, NoTrace, Trace};
@@ -28,6 +28,9 @@ struct Stats {
     lookups: u64,
     comparisons: u64,
     steps: u64,
+    /// Distinct lines of the key array, of the side array, and both together.
+    key_lines: u64,
+    side_lines: u64,
     lines: u64,
     max_lines: u64,
     prefetches: u64,
@@ -39,6 +42,8 @@ impl Stats {
         self.lookups += 1;
         self.comparisons += u64::from(t.comparisons);
         self.steps += u64::from(t.steps);
+        self.key_lines += u64::from(t.key_lines());
+        self.side_lines += u64::from(t.side_lines());
         self.lines += u64::from(t.lines_read());
         self.max_lines = self.max_lines.max(u64::from(t.lines_read()));
         self.prefetches += u64::from(t.prefetches);
@@ -67,7 +72,12 @@ fn make_keys(n: usize, seed: u64) -> Vec<u64> {
 
 /// Every searchable form of one sorted key set.
 struct Index {
+    /// The keys as generated. Only the oracle (`lower_bound_linear`) and the
+    /// printout read this copy.
     sorted: Vec<u64>,
+    /// The same keys in line-aligned storage, padded with sentinels. Every
+    /// search of the scenario runs on this one, so the model's "the array
+    /// starts on a line boundary" is true for classic and halving as well.
     padded: AlignedKeys,
     eytzinger: Eytzinger,
     blocks: BlockTree,
@@ -90,6 +100,12 @@ impl Index {
             eytzinger,
             blocks,
         }
+    }
+
+    /// The sorted keys without the padding, in the aligned storage (Zig:
+    /// `padded[0..n]`).
+    fn aligned(&self) -> SortedView<'_> {
+        self.padded.sorted(self.sorted.len())
     }
 }
 
@@ -124,9 +140,9 @@ impl Algorithm {
 
 fn run_one(index: &Index, algorithm: Algorithm, needle: u64, t: &mut Trace) -> usize {
     match algorithm {
-        Algorithm::Classic => search::lower_bound_classic(&index.sorted, needle, t),
+        Algorithm::Classic => search::lower_bound_classic(&index.aligned(), needle, t),
         Algorithm::Halving => {
-            search::lower_bound_halving(Select::Hinted, false, &index.sorted, needle, t)
+            search::lower_bound_halving(Select::Hinted, false, &index.aligned(), needle, t)
         }
         Algorithm::Vector => search::lower_bound_vector(&index.padded, needle, t),
         Algorithm::Eytzinger => index.eytzinger.lower_bound(needle, false, t),
@@ -170,11 +186,13 @@ fn hand_example(w: &mut String) -> std::fmt::Result {
             assert_eq!(got, want);
             write!(
                 w,
-                "  {:<9} cmps {:>2} steps {} lines {} probes",
+                "  {:<9} cmps {:>2} steps {} lines {} (keys {} + rank {}) probes",
                 algorithm.name(),
                 t.comparisons,
                 t.steps,
-                t.lines_read()
+                t.lines_read(),
+                t.key_lines(),
+                t.side_lines()
             )?;
             for p in t.probes() {
                 write!(w, " {p}")?;
@@ -192,7 +210,7 @@ fn size_table(w: &mut String, agree: &mut u64, checksum: &mut u64) -> std::fmt::
         w,
         "\n== 2. {LOOKUPS_PER_SIZE} lookups per size: comparisons and cache lines per lookup =="
     )?;
-    w.push_str("     n  algorithm     cmps   steps   lines  max lines\n");
+    w.push_str("     n  algorithm     cmps   steps  key lines  rank lines   lines  max lines\n");
     for n in [7usize, 15, 63, 255, 1023, 4095] {
         let index = Index::new(make_keys(n, 1000 + n as u64));
         let mut stats = [Stats::default(); ALGORITHMS.len()];
@@ -218,11 +236,13 @@ fn size_table(w: &mut String, agree: &mut u64, checksum: &mut u64) -> std::fmt::
         for (algorithm, s) in ALGORITHMS.into_iter().zip(&stats) {
             writeln!(
                 w,
-                "{:>6}  {:<9} {:>8} {:>7} {:>7} {:>10}",
+                "{:>6}  {:<9} {:>8} {:>7} {:>10} {:>11} {:>7} {:>10}",
                 n,
                 algorithm.name(),
                 avg(s.comparisons, s.lookups),
                 avg(s.steps, s.lookups),
+                avg(s.key_lines, s.lookups),
+                avg(s.side_lines, s.lookups),
                 avg(s.lines, s.lookups),
                 s.max_lines
             )?;
@@ -255,8 +275,12 @@ fn node_layouts(w: &mut String) -> std::fmt::Result {
     assert_eq!(soa.keys(), keys);
     assert_eq!(soa.len(), capacity);
 
-    let mut soa_stats = Stats::default();
-    let mut aos_stats = Stats::default();
+    // `search`: only the lower bound. `get`: the lower bound, the equality
+    // check and, in SoA, the read of the child column.
+    let mut soa_search = Stats::default();
+    let mut aos_search = Stats::default();
+    let mut soa_get = Stats::default();
+    let mut aos_get = Stats::default();
     let mut hits = 0u64;
     for _ in 0..LOOKUPS_PER_SIZE {
         // Half the needles are keys that exist, half are random.
@@ -265,31 +289,45 @@ fn node_layouts(w: &mut String) -> std::fmt::Result {
         } else {
             rng.below(keys[capacity - 1] + 50)
         };
+        let mut ss = Trace::new(node::SOA_LAYOUT);
+        let mut sa = Trace::new(node::AOS_LAYOUT);
+        assert_eq!(
+            soa.lower_bound(needle, &mut ss),
+            aos.lower_bound(needle, &mut sa)
+        );
         let mut ts = Trace::new(node::SOA_LAYOUT);
         let mut ta = Trace::new(node::AOS_LAYOUT);
         let a = soa.get(needle, &mut ts);
         let b = aos.get(needle, &mut ta);
         assert_eq!(a, b);
         hits += u64::from(a.is_some());
-        soa_stats.add(&ts);
-        aos_stats.add(&ta);
+        soa_search.add(&ss);
+        aos_search.add(&sa);
+        soa_get.add(&ts);
+        aos_get.add(&ta);
     }
-    w.push_str("layout  bytes/key  key bytes  key lines    cmps   lines  max lines\n");
-    for (name, layout, stats) in [
-        ("aos", node::AOS_LAYOUT, aos_stats),
-        ("soa", node::SOA_LAYOUT, soa_stats),
+    w.push_str(
+        "layout  bytes/key  key bytes  key lines | search: cmps   lines | get: cmps  key lines  child lines   lines  max lines\n",
+    );
+    for (name, layout, s, g) in [
+        ("aos", node::AOS_LAYOUT, aos_search, aos_get),
+        ("soa", node::SOA_LAYOUT, soa_search, soa_get),
     ] {
         let bytes = layout.stride * capacity;
         writeln!(
             w,
-            "{:<6} {:>10} {:>10} {:>10} {:>7} {:>7} {:>10}",
+            "{:<6} {:>10} {:>10} {:>10} | {:>12} {:>7} | {:>9} {:>10} {:>12} {:>7} {:>10}",
             name,
             layout.stride,
             bytes,
             bytes.div_ceil(LINE_BYTES),
-            avg(stats.comparisons, stats.lookups),
-            avg(stats.lines, stats.lookups),
-            stats.max_lines
+            avg(s.comparisons, s.lookups),
+            avg(s.lines, s.lookups),
+            avg(g.comparisons, g.lookups),
+            avg(g.key_lines, g.lookups),
+            avg(g.side_lines, g.lookups),
+            avg(g.lines, g.lookups),
+            g.max_lines
         )?;
     }
     writeln!(
@@ -310,14 +348,14 @@ fn prefetch_table(w: &mut String) -> std::fmt::Result {
         let r0 = search::lower_bound_halving(
             Select::Hinted,
             false,
-            &index.sorted,
+            &index.aligned(),
             needle,
             &mut traces[0],
         );
         let r1 = search::lower_bound_halving(
             Select::Hinted,
             true,
-            &index.sorted,
+            &index.aligned(),
             needle,
             &mut traces[1],
         );
@@ -350,7 +388,10 @@ fn prefetch_table(w: &mut String) -> std::fmt::Result {
 
 fn write_scenario(w: &mut String) -> std::fmt::Result {
     w.push_str("Chapter 25: cache-conscious search and layout\n");
-    w.push_str("model: 64-byte cache lines, 8-byte keys, arrays start on a line boundary\n\n");
+    w.push_str(
+        "model: 64-byte cache lines, 8-byte keys, 4-byte ranks, every array starts on a line boundary\n",
+    );
+    w.push_str("lines = key lines + rank lines: every array a lookup reads is counted\n\n");
     hand_example(w)?;
     let mut agree = 0;
     let mut checksum = 0;
@@ -382,19 +423,19 @@ fn bench() {
     type Lookup = fn(&Index, u64) -> usize;
     let variants: [(&str, Lookup); 9] = [
         ("classic", |ix, x| {
-            search::lower_bound_classic(&ix.sorted, x, &mut NoTrace)
+            search::lower_bound_classic(&ix.aligned(), x, &mut NoTrace)
         }),
         ("halving-branch", |ix, x| {
-            search::lower_bound_halving(Select::Branch, false, &ix.sorted, x, &mut NoTrace)
+            search::lower_bound_halving(Select::Branch, false, &ix.aligned(), x, &mut NoTrace)
         }),
         ("halving-arith", |ix, x| {
-            search::lower_bound_halving(Select::Arithmetic, false, &ix.sorted, x, &mut NoTrace)
+            search::lower_bound_halving(Select::Arithmetic, false, &ix.aligned(), x, &mut NoTrace)
         }),
         ("halving-hinted", |ix, x| {
-            search::lower_bound_halving(Select::Hinted, false, &ix.sorted, x, &mut NoTrace)
+            search::lower_bound_halving(Select::Hinted, false, &ix.aligned(), x, &mut NoTrace)
         }),
         ("halving+prefetch", |ix, x| {
-            search::lower_bound_halving(Select::Hinted, true, &ix.sorted, x, &mut NoTrace)
+            search::lower_bound_halving(Select::Hinted, true, &ix.aligned(), x, &mut NoTrace)
         }),
         ("vector", |ix, x| {
             search::lower_bound_vector(&ix.padded, x, &mut NoTrace)
@@ -444,6 +485,22 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression (review round 1, G6): the header says every array starts on
+    // a line boundary; the array the classic and halving searches run on must
+    // really do so.
+    #[test]
+    fn the_scenario_searches_line_aligned_keys() {
+        for n in [7usize, 15, 63, 255] {
+            let index = Index::new(make_keys(n, 1000 + n as u64));
+            assert_eq!(index.padded.lines().as_ptr().addr() % LINE_BYTES, 0);
+            let view = index.aligned();
+            assert_eq!(search::Keys::len(&view), n);
+            for (i, &k) in index.sorted.iter().enumerate() {
+                assert_eq!(search::Keys::key(&view, i), k);
+            }
+        }
+    }
 
     #[test]
     fn the_scenario_prints_exactly_expected_output_txt() {

@@ -363,6 +363,23 @@ test "the scenario prints exactly expected_output.txt" {
     try std.testing.expectEqualStrings(@embedFile("expected_output"), out.written());
 }
 
+// Regression (review round 1, G6): the header says every array starts on a
+// line boundary; the array the classic and halving searches run on used to
+// come from a plain `gpa.alloc(u64, n)`, which starts 16 bytes into a line
+// for small n.
+test "the scenario searches line-aligned keys" {
+    const gpa = std.testing.allocator;
+    for ([_]usize{ 7, 15, 63, 255 }) |n| {
+        var index = try Index.init(gpa, n, 1000 + n);
+        defer index.deinit(gpa);
+        try std.testing.expectEqual(n, index.sorted.len);
+        try std.testing.expectEqual(0, @intFromPtr(index.sorted.ptr) % trace.line_bytes);
+        const keys = try makeKeys(gpa, n, 1000 + n);
+        defer gpa.free(keys);
+        try std.testing.expectEqualSlices(u64, keys, index.sorted);
+    }
+}
+
 test "the scenario survives allocation failure at every allocation" {
     const Run = struct {
         fn run(gpa: Allocator) !void {

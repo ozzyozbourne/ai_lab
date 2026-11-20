@@ -45,9 +45,15 @@ impl BPlusTree {
         // The price: even an overwrite, which needs no node, can report
         // OutOfNodes. Simplicity wins here.
         self.nodes.reserve(self.height + 1)?;
+        let old = self.put_reserved(key, value);
+        self.dev.end_op(); // ch27: write back every dirty node
+        Ok(old)
+    }
 
+    /// ch27: the body of `put`, split off so that `end_op` runs on every path.
+    fn put_reserved(&mut self, key: u64, value: u64) -> Option<u64> {
         if self.root.is_nil() {
-            let id = self.nodes.alloc_reserved(Node::new_leaf());
+            let id = self.alloc_node(Node::new_leaf());
             self.root = id;
             self.first_leaf = id;
             self.last_leaf = id;
@@ -55,7 +61,7 @@ impl BPlusTree {
         }
 
         match self.insert_into(self.root, key, value) {
-            Outcome::Replaced(old) => return Ok(Some(old)),
+            Outcome::Replaced(old) => return Some(old),
             Outcome::Inserted => {}
             Outcome::Split(s) => {
                 // The root itself split: grow a new root above the two halves.
@@ -65,20 +71,24 @@ impl BPlusTree {
                 let mut new_root = Node::new_internal();
                 new_root.internal_mut().children[0] = self.root;
                 new_root.internal_insert_at(0, s.separator, s.right);
-                self.root = self.nodes.alloc_reserved(new_root);
+                self.root = self.alloc_node(new_root);
                 self.height += 1;
             }
         }
         self.count += 1;
-        Ok(None)
+        None
     }
 
     fn insert_into(&mut self, id: NodeId, key: u64, value: u64) -> Outcome {
         let max_keys = self.max_keys();
+        self.touch(id); // ch27: read the node
         let n = self.nodes.get_mut(id);
         let (i, child) = match &mut n.kind {
             Kind::Leaf(leaf) => {
                 let i = lower_bound(&n.keys[..n.len], key);
+                // ch27: insert or overwrite, the leaf block is rewritten.
+                // (`self.dev` directly: `n` still borrows `self.nodes`.)
+                self.dev.mark_dirty(id.index());
                 if i < n.len && n.keys[i] == key {
                     return Outcome::Replaced(std::mem::replace(&mut leaf.values[i], value));
                 }
@@ -103,6 +113,7 @@ impl BPlusTree {
                 // s.right. Slot the separator in between them.
                 let n = self.nodes.get_mut(id);
                 n.internal_insert_at(i, s.separator, s.right);
+                self.dev.mark_dirty(id.index()); // ch27: the parent of a split is rewritten too
                 if n.len <= max_keys {
                     return Outcome::Inserted;
                 }
@@ -116,7 +127,7 @@ impl BPlusTree {
     /// The left half keeps the old handle, so the parent's child pointer and
     /// the left neighbour's `next` link stay correct without being touched.
     fn split_leaf(&mut self, left_id: NodeId) -> Split {
-        let right_id = self.nodes.alloc_reserved(Node::new_leaf());
+        let right_id = self.alloc_node(Node::new_leaf());
         let (left, right) = self.nodes.pair_mut(left_id, right_id);
 
         // floor(M/2) entries stay, ceil(M/2) move. Both halves end up with at
@@ -140,6 +151,10 @@ impl BPlusTree {
         if old_next.is_nil() {
             self.last_leaf = right_id; // we split the rightmost leaf
         } else {
+            // ch27: the back link lives in ANOTHER leaf, so a leaf split reads
+            // and rewrites a third data block that the insert never visited.
+            self.touch(old_next);
+            self.dirty(old_next);
             self.nodes.get_mut(old_next).leaf_mut().prev = right_id;
         }
 
@@ -152,7 +167,7 @@ impl BPlusTree {
 
     /// Splits an internal node holding M separators and M+1 children.
     fn split_internal(&mut self, left_id: NodeId) -> Split {
-        let right_id = self.nodes.alloc_reserved(Node::new_internal());
+        let right_id = self.alloc_node(Node::new_internal());
         let (left, right) = self.nodes.pair_mut(left_id, right_id);
 
         //   keys:      k0 .. k(mid-1) | k(mid) | k(mid+1) .. k(len-1)

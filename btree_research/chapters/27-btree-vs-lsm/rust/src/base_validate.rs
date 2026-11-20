@@ -32,6 +32,9 @@ pub enum Violation {
     WrongCount,
     /// Live arena slots that the tree does not reach, or a corrupt free list.
     ArenaLeak,
+    /// ch27: the device's block count is not the number of live nodes, or an
+    /// operation left blocks pinned.
+    DeviceAccounting,
 }
 
 impl std::fmt::Display for Violation {

@@ -20,7 +20,18 @@ impl BPlusTree {
         if self.root.is_nil() {
             return None;
         }
-        let removed = self.delete_from(self.root, key)?;
+        let removed = self.delete_from(self.root, key);
+        self.finish_delete(removed.is_some());
+        self.dev.end_op(); // ch27
+        removed
+    }
+
+    /// ch27: the root fix-up of `delete`, split off so that `end_op` runs
+    /// on every path (also when the key was absent).
+    fn finish_delete(&mut self, removed: bool) {
+        if !removed {
+            return;
+        }
         self.count -= 1;
 
         // The root is allowed to be underfull, but not to be empty.
@@ -40,13 +51,13 @@ impl BPlusTree {
                 // paths at once.
                 Kind::Internal(internal) => self.root = internal.children[0],
             }
-            self.nodes.free(old_root);
+            self.free_node(old_root);
             self.height -= 1;
         }
-        Some(removed)
     }
 
     fn delete_from(&mut self, id: NodeId, key: u64) -> Option<u64> {
+        self.touch(id); // ch27: read the node
         let n = self.nodes.get_mut(id);
         let (i, child_id) = match &n.kind {
             Kind::Leaf(_) => {
@@ -54,6 +65,7 @@ impl BPlusTree {
                 if i == n.len || n.keys[i] != key {
                     return None;
                 }
+                self.dev.mark_dirty(id.index()); // ch27
                 return Some(n.leaf_remove_at(i).value);
             }
             Kind::Internal(internal) => {
@@ -76,13 +88,28 @@ impl BPlusTree {
     ///
     /// A merge is only chosen when both siblings are at the minimum, which is
     /// exactly when the two nodes are guaranteed to fit into one.
+    ///
+    /// ch27: every sibling whose key count is examined is a block read
+    /// (`touch`). Every branch changes the parent, so it is marked dirty once
+    /// here.
     fn rebalance(&mut self, parent_id: NodeId, i: usize) {
-        let parent = self.nodes.get(parent_id);
-        let children = parent.child_slice();
         let min = self.min_keys();
-        if i > 0 && self.nodes.get(children[i - 1]).len > min {
-            self.borrow_from_left(parent_id, i);
-        } else if i < parent.len && self.nodes.get(children[i + 1]).len > min {
+        self.dirty(parent_id);
+        let parent = self.nodes.get(parent_id);
+        let parent_len = parent.len;
+        let left = (i > 0).then(|| parent.child_slice()[i - 1]);
+        let right = (i < parent_len).then(|| parent.child_slice()[i + 1]);
+        if let Some(left) = left {
+            self.touch(left);
+            if self.nodes.get(left).len > min {
+                self.borrow_from_left(parent_id, i);
+                return;
+            }
+        }
+        if let Some(right) = right {
+            self.touch(right);
+        }
+        if right.is_some_and(|r| self.nodes.get(r).len > min) {
             self.borrow_from_right(parent_id, i);
         } else if i > 0 {
             self.merge(parent_id, i - 1);
@@ -101,6 +128,8 @@ impl BPlusTree {
         let parent = self.nodes.get(parent_id);
         let old_separator = parent.keys[i - 1];
         let (left_id, child_id) = (parent.child_slice()[i - 1], parent.child_slice()[i]);
+        self.dirty(left_id); // ch27: both siblings change
+        self.dirty(child_id);
         let (left, child) = self.nodes.pair_mut(left_id, child_id);
         let new_separator = if child.is_leaf() {
             // The entry moves sideways; the parent gets a fresh COPY of the
@@ -133,6 +162,8 @@ impl BPlusTree {
         let parent = self.nodes.get(parent_id);
         let old_separator = parent.keys[i];
         let (child_id, right_id) = (parent.child_slice()[i], parent.child_slice()[i + 1]);
+        self.dirty(child_id); // ch27: both siblings change
+        self.dirty(right_id);
         let (child, right) = self.nodes.pair_mut(child_id, right_id);
         let new_separator = if child.is_leaf() {
             let e = right.leaf_remove_at(0);
@@ -162,6 +193,7 @@ impl BPlusTree {
         let parent = self.nodes.get(parent_id);
         let separator = parent.keys[li];
         let (left_id, right_id) = (parent.child_slice()[li], parent.child_slice()[li + 1]);
+        self.dirty(left_id); // ch27: the survivor is rewritten, the other is freed
         let (left, right) = self.nodes.pair_mut(left_id, right_id);
         let (llen, rlen) = (left.len, right.len);
         if left.is_leaf() {
@@ -175,6 +207,8 @@ impl BPlusTree {
             if next.is_nil() {
                 self.last_leaf = left_id;
             } else {
+                self.touch(next); // ch27: back link in a third leaf
+                self.dirty(next);
                 self.nodes.get_mut(next).leaf_mut().prev = left_id;
             }
         } else {
@@ -188,7 +222,7 @@ impl BPlusTree {
         }
         assert!(self.nodes.get(left_id).len <= self.max_keys());
         self.nodes.get_mut(parent_id).internal_remove_at(li);
-        self.nodes.free(right_id);
+        self.free_node(right_id);
         self.stats.merges += 1;
     }
 }

@@ -165,6 +165,7 @@ pub fn check(tree: &Tree, workers: &[Worker]) -> Report {
         .zip(&got)
         .filter(|(e, g)| e.key != g.key || e.value != g.value)
         .count()
-        + expected.len().abs_diff(got.len());
+        + expected.len().saturating_sub(got.len())
+        + usize::from(got.len() > expected.len());
     report
 }

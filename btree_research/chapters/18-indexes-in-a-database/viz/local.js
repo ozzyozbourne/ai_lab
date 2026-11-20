@@ -183,6 +183,18 @@
       highlight: hl || {}
     });
   };
+  /** Predict mode: asked on the first row fetch of a query. */
+  Rec.prototype.ask = function () {
+    if (this.c.fetches !== 1) return;
+    var clustered = this.t.layout === 'clustered';
+    this.steps[this.steps.length - 1].question = {
+      prompt: 'The index entry matched and the query needs the whole row. What does this layout do with the locator?',
+      choices: ['Search the primary tree for it (another descent)', 'Read the heap page it names (no search)', 'Nothing: the row is inside the index entry'],
+      answer: clustered ? 0 : 1,
+      explain: clustered ? 'In a clustered table the locator is the row id, a key of the primary tree, whose leaves hold the rows.'
+                         : 'In a heap table the locator is a TID, the physical address (page, slot) of the row.'
+    };
+  };
   Rec.prototype.finish = function (extra) {
     this.steps.counters = this.c; this.steps.results = this.results;
     for (var key in extra || {}) this.steps[key] = extra[key];
@@ -223,6 +235,7 @@
         '. That is a second descent, ' + path.length + ' more node' + (path.length === 1 ? '' : 's') + '.',
         { index: entryHl, primary: { nodes: nodes, edges: edges, cursor: { node: t.primary.id(path[0]), label: loc } } },
         'row fetch #' + loc + ': descent of the primary tree');
+      this.ask();
       this.results.push(row);
       this.emit('Row found in the primary leaf: ' + rowText(row) + '. In a clustered table the leaf <i>is</i> the row storage.',
         { index: entryHl, primary: { nodes: mk(t.primary.id(path[path.length - 1]), 'active'), keys: mk(t.primary.id(path[path.length - 1]) + ':' + loc, 'found') } });
@@ -232,6 +245,7 @@
       this.emit('The locator ' + k(tidText(loc), 'pointer') + ' is an <b>address</b>: heap page ' + Math.floor(loc / SLOTS) + ', slot ' + (loc % SLOTS + 1) +
         '. Read that page, no search: ' + rowText(row) + '.',
         { index: entryHl, heap: mk(loc, 'found') }, 'row fetch ' + tidText(loc) + ': one heap page');
+      this.ask();
     }
   };
 

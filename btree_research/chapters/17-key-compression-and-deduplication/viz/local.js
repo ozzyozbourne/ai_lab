@@ -47,7 +47,7 @@
       if (!p.cells.length) body.appendChild(el('span.c17-empty', 'empty'));
       p.cells.forEach(function (c, i) {
         var chip = el('span', { class: cls('bt-chip c17-cell' + (c.tids.length > 1 ? ' c17-posting' : ''), H.cells[p.id + ':' + i]) },
-          el('span.c17-key', c.key), el('span.c17-tids', c.tids.length === 1 ? '@' + c.tids[0] : '@[' + c.tids.join(',') + ']'));
+          el('span.c17-key', M.keyText(c.key)), el('span.c17-tids', M.tidsText(c.tids)));
         if (c.tids.length > 1) chip.title = 'posting list: one key, ' + c.tids.length + ' TIDs';
         body.appendChild(chip);
       });
@@ -72,6 +72,9 @@
 
   /* ---- SepView: two keys compared byte by byte -------------------------- */
 
+  // A space in a byte box would look like an empty box: draw it as an open box.
+  function byteText(ch) { return ch === ' ' ? '\u2423' : ch; }
+
   function SepView(mount) {
     this.root = el('div.c17-bytes', { role: 'img', 'aria-label': 'Byte-by-byte comparison of the two keys around the cut' });
     mount.appendChild(this.root);
@@ -90,7 +93,7 @@
         if (ch === undefined) { cells.push(el('span.c17-byte.is-none', '·')); continue; }
         if (i < m.upto) state = (m.decisive !== null && i === m.decisive) ? 'compare' : 'found';
         else if (m.sep) state = isRight && m.sep.tid === null ? 'deleted' : 'dim';
-        cells.push(el('span', { class: cls('c17-byte' + (state === 'deleted' ? ' is-cut' : ''), state) }, ch));
+        cells.push(el('span', { class: cls('c17-byte' + (state === 'deleted' ? ' is-cut' : ''), state) }, byteText(ch)));
       }
       var tidState = m.sep ? (m.sep.tid !== null && !isRight ? 'inserted' : (isRight && m.sep.tid === null ? 'deleted' : 'dim')) : '';
       cells.push(el('span', { class: cls('c17-byte c17-tid' + (tidState === 'deleted' ? ' is-cut' : ''), tidState) }, '@' + t.tid));
@@ -98,7 +101,7 @@
     }
     var sepRow = [el('span.c17-rowlabel', 'separator')];
     if (m.sep) {
-      m.sep.key.split('').forEach(function (ch) { sepRow.push(el('span.c17-byte.s-inserted', ch)); });
+      m.sep.key.split('').forEach(function (ch) { sepRow.push(el('span.c17-byte.s-inserted', byteText(ch))); });
       for (var i = m.sep.key.length; i < n; i++) sepRow.push(el('span.c17-byte.is-none', '·'));
       sepRow.push(el('span', { class: 'c17-byte c17-tid ' + (m.sep.tid !== null ? 's-inserted' : 'is-none') }, m.sep.tid !== null ? '@' + m.sep.tid : '−∞'));
     } else {

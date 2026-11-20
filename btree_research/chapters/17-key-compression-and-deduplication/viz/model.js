@@ -71,9 +71,12 @@
     if (!s) return infinity;
     return '"' + s.key + '"' + (s.tid !== null ? '@' + s.tid : '');
   }
-  function cellText(c) {
-    return c.key + '@' + (c.tids.length === 1 ? c.tids[0] : '[' + c.tids.join(',') + ']');
-  }
+  function tidsText(tids) { return '@' + (tids.length === 1 ? tids[0] : '[' + tids.join(',') + ']'); }
+  // The programs' dump format (unquoted), for the self-tests only.
+  function cellText(c) { return c.key + tidsText(c.tids); }
+  // What the page shows: the key in quotes, so that "a", "a " and "" differ.
+  function keyText(key) { return '"' + key + '"'; }
+  function cellLabel(c) { return keyText(c.key) + tidsText(c.tids); }
   function tenths(num, den) {
     if (den === 0) return '-';
     var x = Math.floor((num * 10 + Math.floor(den / 2)) / den);
@@ -231,12 +234,14 @@
   // Captions, log lines and quiz texts are all rendered as HTML by the
   // toolkit, and keys are typed by the reader: every key that goes into one of
   // them passes through esc() (or q(), which calls it). dump() and statsRow()
-  // are plain text for the self-tests and stay unescaped.
+  // are plain text for the self-tests and stay unescaped. Keys are shown in
+  // quotes inside a .bt-k element, which the page styles with
+  // white-space: pre-wrap: a key may contain spaces or be empty.
   function q(s) { return '<b class="bt-k">' + esc(s) + '</b>'; }
   function esc(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
-  function tupleText(key, tid) { return '(' + key + ', ' + tid + ')'; }
+  function tupleText(key, tid) { return '(' + keyText(key) + ', ' + tid + ')'; }
 
   // Why separator s is below / not below the tuple (key, tid), in words.
   function why(s, key, tid) {
@@ -246,9 +251,9 @@
       return q(st) + ' has the same key, so the TIDs decide: ' + s.tid + (s.tid < tid ? ' &lt; ' : ' &ge; ') + tid;
     }
     var n = commonPrefixLen(s.key, key);
-    if (n === s.key.length) return q(st) + ' is a prefix of ' + q(key) + ', and a prefix sorts first, so it is below the tuple';
-    if (n === key.length) return q(key) + ' is a prefix of ' + q(st) + ', so the tuple is below it';
-    return q(st) + ' differs from ' + q(key) + ' at byte ' + n + ': \'' + esc(s.key[n]) + '\' ' +
+    if (n === s.key.length) return q(st) + ' is a prefix of ' + q(keyText(key)) + ', and a prefix sorts first, so it is below the tuple';
+    if (n === key.length) return q(keyText(key)) + ' is a prefix of ' + q(st) + ', so the tuple is below it';
+    return q(st) + ' differs from ' + q(keyText(key)) + ' at byte ' + n + ': \'' + esc(s.key[n]) + '\' ' +
       (s.key[n] < key[n] ? '&lt;' : '&gt;') + ' \'' + esc(key[n]) + '\'';
   }
 
@@ -265,7 +270,8 @@
     return { zig: zig, rust: [3, [8, 10]] };
   }
 
-  // One step per internal page on the way down. `label` is already escaped.
+  // One step per internal page on the way down. `label` is HTML (see opLabel).
+  // These steps show the tree as it is BEFORE the operation changes anything.
   Tree.prototype.descendSteps = function (key, tid, rec, label) {
     var id = this.root;
     while (!this.pages[id].leaf) {
@@ -277,7 +283,7 @@
       rec.push({
         caption: label + ': page ' + id + ' has ' + i + ' separator' + (i === 1 ? '' : 's') + ' below ' + q(tupleText(key, tid)) +
           ', so follow child ' + i + ' (page ' + page.children[i] + '). ' + parts.join('; ') + '.',
-        state: this.snapshot(), highlight: hl, lines: routingLines(page, i, key), log: label + ': page ' + id + ' -&gt; child ' + i
+        state: this.snapshot(), highlight: hl, lines: routingLines(page, i, key), before: true, log: label + ': page ' + id + ' -&gt; child ' + i
       });
       id = page.children[i];
     }
@@ -285,7 +291,7 @@
   };
 
   Tree.prototype.getSteps = function (key) {
-    var rec = [], label = esc('get ' + key);
+    var rec = [], label = 'get ' + q(keyText(key));
     var id = this.descendSteps(key, 0, rec, label), tids = this.get(key), hl = { pages: {}, cells: {} };
     // Highlight every cell with this key along the leaf chain.
     var pid = id, any = false;
@@ -310,12 +316,13 @@
 
   /* ---- put ----------------------------------------------------------- */
 
-  // opts.verbose: also record the descent. Returns the array of steps;
+  // opts.verbose: also record the descent (those steps carry before: true,
+  // every later step shows the tree with the new tuple). Returns the steps;
   // steps.ok is false when the tuple was already present, the key too long or
   // the TID not a whole number in 0 .. MAX_TID.
   Tree.prototype.put = function (key, tid, opts) {
     opts = opts || {};
-    var rec = [], self = this, label = esc('put ' + key + '@' + tid);
+    var rec = [], self = this, label = 'put ' + q(keyText(key) + '@' + tid);
     rec.ok = false;
     if (!validTid(tid)) {
       rec.push({ caption: label + ': a TID is a whole number from 0 to ' + MAX_TID + ' (2<sup>48</sup> &minus; 1): it has to fit in the 6 bytes every cell is charged for it. Nothing was inserted.',
@@ -413,15 +420,24 @@
     else explain = 'They share ' + (sep.key.length - 1) + ' byte' + (sep.key.length === 2 ? '' : 's') + ', so the separator is ' + q(sepText(sep, '')) +
       ': ' + pivotSize(sep) + ' bytes as a pivot instead of ' + pivotSize(full) + ' for ' + q(sepText(full, '')) + '.';
     var splitStep = {
-      caption: label + ': cut between ' + q(cellText(items[cut - 1])) + ' and ' + q(cellText(items[cut])) + '. ' + explain +
+      caption: label + ': cut between ' + q(cellLabel(items[cut - 1])) + ' and ' + q(cellLabel(items[cut])) + '. ' + explain +
         (others.length ? ' Other cuts near the middle would give ' + others.map(q).join(', ') + '.' : ''),
       state: this.snapshot(over), highlight: hl, log: label + ': split page ' + leafId + ', separator ' + esc(sepText(sep, ''))
     };
     if (this.cfg.truncate && sep.tid === null) {
-      var choices = [sepText(full, ''), '"' + items[cut].key + '"', sepText(sep, '')].filter(function (c, i, a) { return a.indexOf(c) === i; });
+      // Three candidates: the full last-left tuple, the whole right key, the
+      // truncated separator. Two of them can be the same separator ("date" |
+      // "dates" gives "dates" twice), so equal ones are offered once, and the
+      // right answer is found by comparing separators, never their labels.
+      var options = [];
+      [full, { key: items[cut].key, tid: null }, sep].forEach(function (o) {
+        if (!options.some(function (seen) { return compareTuple(seen.key, seen.tid, o.key, o.tid) === 0; })) options.push(o);
+      });
+      var right = -1;
+      options.forEach(function (o, i) { if (compareTuple(o.key, o.tid, sep.key, sep.tid) === 0) right = i; });
       splitStep.question = {
-        prompt: 'The leaf splits between ' + q(cellText(items[cut - 1])) + ' and ' + q(cellText(items[cut])) + '. Which separator goes to the parent?',
-        choices: choices.map(esc), answer: choices.indexOf(sepText(sep, '')),
+        prompt: 'The leaf splits between ' + q(cellLabel(items[cut - 1])) + ' and ' + q(cellLabel(items[cut])) + '. Which separator goes to the parent?',
+        choices: options.map(function (o) { return q(sepText(o, '')); }), answer: right,
         explain: 'The shortest string above the left key and not above the right key: the common prefix plus one byte.'
       };
     }
@@ -594,7 +610,7 @@
     Tree: Tree, SCENARIO: SCENARIO, SCENARIO_PAGE_SIZE: 256, MAX_TID: MAX_TID, validTid: validTid,
     compareTuple: compareTuple, commonPrefixLen: commonPrefixLen, separator: separator,
     sepSize: sepSize, pivotSize: pivotSize, leafCellSize: leafCellSize, usedBytes: usedBytes,
-    sepText: sepText, cellText: cellText, tenths: tenths, pad: pad, configName: configName, esc: esc
+    sepText: sepText, cellText: cellText, keyText: keyText, cellLabel: cellLabel, tidsText: tidsText, tenths: tenths, pad: pad, configName: configName, esc: esc
   };
   root.Ch17Model = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

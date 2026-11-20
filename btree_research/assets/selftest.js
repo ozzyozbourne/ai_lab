@@ -9,9 +9,9 @@ function ok(cond, msg) { checks++; if (!cond) fail(msg); }
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 /* ---- 1. randomized insert / delete / search against a sorted-array oracle ---- */
-function fuzz(Tree, order, seed, ops, keyRange) {
-  const r = BTViz.rng(seed), t = Tree(order), oracle = [];
-  const tag = `${t.kind} order=${order} seed=${seed}`;
+function fuzz(Tree, order, seed, ops, keyRange, opts) {
+  const r = BTViz.rng(seed), t = Tree(order, opts), oracle = [];
+  const tag = `${t.kind}${opts ? ' ' + JSON.stringify(opts) : ''} order=${order} seed=${seed}`;
   for (let i = 0; i < ops; i++) {
     const key = r.int(0, keyRange), at = oracle.indexOf(key);
     // phases: grow, churn, shrink to empty, regrow
@@ -57,6 +57,10 @@ for (const Tree of [BTree, BPlusTree]) {
     for (const seed of [1, 2, 3]) { fuzz(Tree, order, seed * 100 + order, 2500, order < 6 ? 120 : 400); total += 2500; }
   }
 }
+// same fuzz with the guide's B+tree convention (PLAN.md / chapter 07)
+for (const order of [3, 4, 5, 6, 7, 8, 16]) {
+  for (const seed of [1, 2, 3]) { fuzz(BPlusTree, order, seed * 100 + order, 2500, order < 6 ? 120 : 400, { convention: 'guide' }); total += 2500; }
+}
 
 /* ---- 2. conventions: order M = max children, default 4, B+ separators are copies ---- */
 ok(BTree().order === 4 && BPlusTree().order === 4, 'default order must be 4');
@@ -81,6 +85,36 @@ ok(same(BTree(5).limits(), { maxKeys: 4, minLeafKeys: 2, minInternalKeys: 2, max
   let threw = false; try { BTree(2); } catch (e) { threw = true; } ok(threw, 'order 2 must be rejected');
   const s = BTree(4, { detail: 'key' }).insertMany([1, 2, 3]).search(3);
   ok(s.filter(x => x.type === 'compare-key').length === 3, 'detail:"key" emits one step per comparison');
+}
+
+/* ---- 2b. {convention: 'guide'}: the B+tree of PLAN.md and chapter 07 ---- */
+{
+  const G = { convention: 'guide' };
+  const shape = n => n.leaf ? n.keys : { k: n.keys, c: n.children.map(shape) };
+  // every non-root node, leaves included, holds at least ceil(M/2) - 1 keys
+  for (const m of [3, 4, 5, 6, 7, 8, 16]) {
+    const min = Math.ceil(m / 2) - 1;
+    ok(same(BPlusTree(m, G).limits(), { maxKeys: m - 1, minLeafKeys: min, minInternalKeys: min, maxChildren: m }), `guide B+tree(${m}) limits`);
+    // leaf split: the left leaf keeps the lower floor(M/2) keys, the separator is a copy of the right leaf's first key
+    const keys = []; for (let i = 1; i <= m; i++) keys.push(i * 10);
+    const s = BPlusTree(m, G).insertMany(keys).snapshot(), half = Math.floor(m / 2);
+    ok(same(s.children.map(c => c.keys), [keys.slice(0, half), keys.slice(half)]) && same(s.keys, [keys[half]]), `guide B+tree(${m}) first leaf split: ${JSON.stringify(s)}`);
+  }
+  // the default convention is unchanged
+  ok(same(BPlusTree(4).limits(), { maxKeys: 3, minLeafKeys: 2, minInternalKeys: 1, maxChildren: 4 }), 'default B+tree(4) limits must not change');
+  ok(same(BPlusTree(5).insertMany([1, 2, 3, 4, 5]).snapshot().children.map(c => c.keys), [[1, 2, 3], [4, 5]]), 'default B+tree(5) split point must not change');
+  ok(BPlusTree(4).convention === 'default' && BPlusTree(4, G).convention === 'guide' && same(BTree(4, G).limits(), BTree(4).limits()), 'convention property');
+  // canonical hand example, M = 4: the shapes printed by chapters/07-bplus-trees (zig/src, viz/local.js)
+  const t = BPlusTree(4, G).insertMany([10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15]);
+  ok(same(shape(t.root), { k: [15], c: [{ k: [6, 10], c: [[1, 3, 5], [6, 7], [10, 12]] }, { k: [20], c: [[15, 17], [20, 25, 30]] }] }), 'guide canonical insert shape: ' + JSON.stringify(shape(t.root)));
+  // a key equal to a separator goes right
+  ok(t.search(15).found && t.search(15).filter(x => x.type === 'compare').length === 2 && t.insert(15).ok === false, 'guide: key equal to a separator is found in the right subtree');
+  for (const key of [15, 17, 20, 25, 30, 12]) ok(t.delete(key).ok, 'guide canonical delete ' + key);
+  ok(same(shape(t.root), { k: [6, 10], c: [[1, 3, 5], [6, 7], [10]] }) && t.validate().length === 0, 'guide canonical delete shape: ' + JSON.stringify(shape(t.root)));
+  // a one-key leaf is legal under the guide's minimum for M = 4 and illegal under the default one
+  const d = BPlusTree(4).insertMany([1, 3, 5, 6, 7, 10]);
+  d.root.children[d.root.children.length - 1].keys.length = 1; d.size = d.keys().length;
+  ok(d.validate().length > 0, 'default convention rejects a one-key leaf at M = 4');
 }
 
 /* ---- 3. slotted page against an oracle ---- */
@@ -154,7 +188,20 @@ for (const seed of [1, 2, 3, 4]) {
     { id: 'r2', keys: [5], children: [{ id: 'L1b', keys: [1, 2], leaf: true, children: [] }, { ref: 'L2' }] }
   ]);
   ok(dag.order.length === 5 && dag.edges.length === 4 && dag.edges.filter(e => e.child === 'L2').length === 2, 'DAG layout');
+  // binary trees: an only child with a side hint (or opts.binary) is not centred under its parent
+  {
+    const mid = n => n.x + n.w / 2, leafL = { id: 'c', keys: [1], leaf: true, children: [] };
+    const plain = BTViz.TreeView.layout({ id: 'p', keys: [5], children: [leafL] });
+    ok(mid(plain.nodes.get('c')) === mid(plain.nodes.get('p')), 'only child without a hint stays centred (default unchanged)');
+    const L1 = BTViz.TreeView.layout({ id: 'p', keys: [5], children: [Object.assign({ side: 'left' }, leafL)] });
+    const R1 = BTViz.TreeView.layout({ id: 'p', keys: [5], children: [Object.assign({ side: 'right' }, leafL)] });
+    ok(mid(L1.nodes.get('c')) < mid(L1.nodes.get('p')) && mid(R1.nodes.get('c')) > mid(R1.nodes.get('p')), 'side hint moves an only child off-centre');
+    ok(L1.edges[0].ci === 0 && R1.edges[0].ci === 1, 'side hint picks the edge anchor');
+    const B = BTViz.TreeView.layout({ id: 'p', keys: [5], children: [null, { id: 'r', keys: [8], children: [{ id: 'rl', keys: [6], children: [] }, null] }] }, { binary: true });
+    ok(mid(B.nodes.get('r')) > mid(B.nodes.get('p')) && mid(B.nodes.get('rl')) < mid(B.nodes.get('r')) && B.order.length === 3 && B.edges.length === 2, 'binary: true places [null, right] and [left, null]');
+    B.order.forEach(n => ok(n.x >= 0 && n.x + n.w <= B.width, 'binary layout exceeds canvas'));
+  }
   ok(BTViz.selfTest('selftest-internal', { b: 1, a: [1, 2] }, { a: [1, 2], b: 1 }) === true && BTViz.selfTest.results.length === 1, 'selfTest structural equality');
 }
 
-console.log(`BTViz self-test OK — ${total} random tree operations (B-tree + B+tree, orders 3–16), 12000 slotted-page operations, ${checks} checks passed.`);
+console.log(`BTViz self-test OK — ${total} random tree operations (B-tree + B+tree + guide-convention B+tree, orders 3–16), 12000 slotted-page operations, ${checks} checks passed.`);

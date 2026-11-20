@@ -22,7 +22,8 @@
 
 <p>This page belongs to <a href="../README.md">Chapter 05: Deletion and rebalancing</a>.
 The tree below is a B-tree of order M: every node holds at most M&nbsp;&minus;&nbsp;1 keys and,
-except the root, at least &lceil;M/2&rceil;&nbsp;&minus;&nbsp;1. Click a key button (or type a key) to delete it.
+except the root, at least &lceil;M/2&rceil;&nbsp;&minus;&nbsp;1. Click a key button (or type a key from 0 to 999) to delete it.
+The key buttons always show the keys of the tree drawn below them; they can be pressed when the animation has reached its last step.
 Every frame is produced by a real JavaScript B-tree that follows the same rules as the chapter's Zig and Rust code:
 try the left sibling first, then the right one, otherwise merge.</p>
 
@@ -153,27 +154,68 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
       code.highlight(window.CHAPTER_LINES[step.type] || []);
       textPre.textContent = (step.summary ? step.summary + '\n' : '') + renderText(step.state, step.summary ? '  ' : '');
       showFacts(step.state);
+      // The key bar shows the tree on screen, not the model's final state. A
+      // new delete always starts from the final state, so the buttons work
+      // only on the last step, where the two are the same.
+      showKeyBar(step.state, !stepper || i === stepper.steps.length - 1);
     }
   });
 
-  function showFacts(state) {
-    var nodes = 0, keys = 0, height = 0, n;
-    for (n = state && state.keys && state.keys.length ? state : null; n; n = n.children && n.children[0]) height++;
+  function isEmptyTree(state) {
+    return !state || !state.keys || (!state.keys.length && !(state.children || []).length);
+  }
+
+  /* Keys of a snapshot in ascending order (in-order walk). */
+  function keysOf(state) {
+    var out = [];
     (function walk(node) {
-      if (!node || !node.keys || (!node.keys.length && !(node.children || []).length)) return;
-      nodes++; keys += node.keys.length; (node.children || []).forEach(walk);
+      var kids = node.children || [];
+      for (var i = 0; i <= node.keys.length; i++) {
+        if (kids[i]) walk(kids[i]);
+        if (i < node.keys.length) out.push(node.keys[i]);
+      }
     })(state);
+    return out;
+  }
+
+  function showFacts(state) {
+    // Every node of the snapshot counts, also one that is empty for a moment
+    // in the middle of a repair. Only a root without keys and without
+    // children is the empty tree (the programs then have no node at all).
+    var nodes = 0, keys = 0, height = 0, n;
+    if (!isEmptyTree(state)) {
+      for (n = state; n; n = n.children && n.children[0]) height++;
+      (function walk(node) { nodes++; keys += node.keys.length; (node.children || []).forEach(walk); })(state);
+    }
     var lim = tree.limits();
     facts.replaceChildren(
       el('span.bt-chip', 'height ' + height), el('span.bt-chip', 'nodes ' + nodes), el('span.bt-chip', 'keys ' + keys),
       el('span.bt-chip', 'per node: ' + lim.minLeafKeys + ' to ' + lim.maxKeys + ' keys'));
   }
 
-  function refreshKeyBar() {
-    keyBar.replaceChildren(el('span.keybar-label', tree.size ? 'Delete:' : 'The tree is empty. Insert a key or press Reset.'));
-    tree.keys().forEach(function (key) {
-      keyBar.appendChild(el('button.bt-btn', { type: 'button', 'aria-label': 'Delete key ' + key, onclick: function () { run('delete', key); } }, String(key)));
+  function showKeyBar(state, live) {
+    var keys = isEmptyTree(state) ? [] : keysOf(state);
+    keyBar.replaceChildren(el('span.keybar-label', !keys.length ? 'The tree is empty. Insert a key or press Reset.' :
+      live ? 'Delete:' : 'Keys at this step (go to the last step to delete one):'));
+    keys.forEach(function (key) {
+      keyBar.appendChild(el('button.bt-btn', { type: 'button', disabled: !live, 'aria-label': 'Delete key ' + key,
+        onclick: function () { run('delete', key); } }, String(key)));
     });
+  }
+
+  /* The model names nodes n1, n2, ... in its event log. The reader cannot see
+   * those names, so show the node's keys instead, as they were just before
+   * the step (after a merge one of the two nodes is gone). */
+  function nodeText(id, states) {
+    for (var s = 0; s < states.length; s++) {
+      var hit = null;
+      (function walk(node) { if (!node || hit) return; if (node.id === id) hit = node; else (node.children || []).forEach(walk); })(states[s]);
+      if (hit) return '[' + hit.keys.join(' ') + ']';
+    }
+    return id;
+  }
+  function readable(text, states) {
+    return text.replace(/\bn\d+\b/g, function (id) { return nodeText(id, states); });
   }
 
   /* Decorate the model's steps: code lines come from step.type in onStep; here we
@@ -182,6 +224,12 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
     var lim = tree.limits();
     steps.forEach(function (s, i) {
       var prev = steps[i - 1];
+      // The chapter's words: "interior" node; and a first or last child has
+      // only one sibling, so "neither" would be wrong.
+      s.caption = s.caption.replace(/internal node/g, 'interior node').replace('Neither sibling can spare a key', 'No sibling can spare a key');
+      var states = prev ? [prev.state, s.state] : [s.state];
+      if (typeof s.log === 'string') s.log = readable(s.log, states);
+      else if (s.log && s.log.html) s.log = { html: readable(s.log.html, states), state: s.log.state };
       if (prev && prev.type === 'underflow' && /^(borrow-left|borrow-right|merge)$/.test(s.type)) {
         s.question = {
           prompt: 'This node has too few keys. How will its parent repair it?',
@@ -200,22 +248,29 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
   function run(op, key) {
     stepper.pause();
     var steps = decorate(op, key, tree[op](key));
-    refreshKeyBar();
     stepper.setSteps(steps, { play: true });
   }
 
+  /* One still frame of the current (final) tree with a message. */
+  function say(caption) {
+    stepper.pause();
+    stepper.setSteps([{ type: 'intro', state: tree.snapshot(), highlight: {}, caption: caption }]);
+  }
+
   function fromInput(op) {
-    if (keyInput.value === '') { keyInput.focus({ preventScroll: true }); return; }
-    var key = +keyInput.value;
+    var text = keyInput.value.trim();
+    // An empty value is also what a number input reports for text it cannot parse.
+    if (text === '' && keyInput.validity && !keyInput.validity.badInput) { keyInput.focus({ preventScroll: true }); return; }
     keyInput.value = '';
-    if (isFinite(key)) run(op, Math.round(key));
+    // The programs use u64 keys; this page keeps them small so they fit in a node.
+    if (!/^\d{1,3}$/.test(text)) { say('Not a key this page accepts. Type a whole number from 0 to 999.'); return; }
+    run(op, +text);
   }
 
   function build() {
     var preset = PRESETS[presetSel.value];
     tree = BTViz.models.BTree(+orderSel.value);
     preset.keys().forEach(function (key) { tree.insert(key, { steps: false }); });
-    refreshKeyBar();
     scriptBtn.disabled = !preset.script;
     return preset;
   }
@@ -242,7 +297,6 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
       var steps = decorate('delete', key, tree.delete(key));
       all = all.concat(steps);
     });
-    refreshKeyBar();
     stepper.setSteps(all, { play: true });
   }
 

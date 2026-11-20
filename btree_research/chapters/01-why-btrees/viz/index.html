@@ -168,8 +168,7 @@ they sit on is rewritten.</p>
         { name: 'sorted array, ' + perPage + ' keys per page', values: rows.map(function (r) { return +fix2(r.array.avg); }), token: 'merge' },
         { name: 'binary search tree, random insert order', values: rows.map(function (r) { return +fix2(r.bst.avg); }), token: 'split' },
         { name: 'wide nodes, M = ' + (perPage + 1), values: rows.map(function (r) { return +fix2(r.wide.avg); }), token: 'node-active' }] });
-      scoreScale.innerHTML = 'The same count on larger sets of random keys, with ' + perPage + ' keys per page. From ' + fmtInt(first.n) + ' to ' + fmtInt(last.n) +
-        ' keys the wide nodes go from <b>' + fix2(first.wide.avg) + '</b> to <b>' + fix2(last.wide.avg) + '</b> page reads per lookup, the sorted array from <b>' +
+      scoreScale.innerHTML = 'The same count on four fresh sets of random keys, from 40 to 40,000, with ' + perPage + ' keys per page. From the smallest set to the largest the wide nodes go from <b>' + fix2(first.wide.avg) + '</b> to <b>' + fix2(last.wide.avg) + '</b> page reads per lookup, the sorted array from <b>' +
         fix2(first.array.avg) + '</b> to <b>' + fix2(last.array.avg) + '</b> and the binary search tree from <b>' + fix2(first.bst.avg) + '</b> to <b>' + fix2(last.bst.avg) +
         '</b>. Among ' + fmtInt(last.n) + ' keys the wide nodes read strictly the fewest pages for ' + fmtInt(last.fewest) + ' of them.';
       scaleNote.textContent = 'These numbers are counted by this page\'s model (the same search code as the lanes above), not timed. The gap widens with the keys per page: ' +

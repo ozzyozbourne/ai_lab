@@ -226,20 +226,21 @@ pub const InsertOp = struct {
         const pool = tree.pool;
         switch (self.state) {
             .descend => {
-                try self.path.append(self.arena.allocator(), .{ .id = self.cur, .index = 0 });
                 if (self.need(self.cur)) |id| return .{ .io = id };
                 const id = self.cur;
                 const page = try tree.pinNode(id);
                 if (page.kind() == btree.kind_leaf) {
                     pool.unpin(id, false);
-                    _ = self.path.pop();
                     self.state = .leaf_put;
                     return .again;
                 }
                 const index = btree.childIndex(page, self.key);
                 const child = btree.childAt(page, index);
                 pool.unpin(id, false);
-                self.path.items[self.path.items.len - 1].index = index;
+                // The path grows AFTER the yield point above (R2). Had the
+                // append come first, every re-entry would add the same page
+                // again: the bug of async-io-model.md:162-169.
+                try self.path.append(self.arena.allocator(), .{ .id = id, .index = index });
                 self.cur = child;
                 return .again;
             },

@@ -802,9 +802,19 @@ mod tests {
     /// Mostly short strings (so that ties and prefixes are common), sometimes up
     /// to `TEST_MAX_BYTES`; bytes from the nasty alphabet or from all 256 values.
     fn test_random_bytes(rng: &mut TestRng) -> Vec<u8> {
-        let n = if rng.below(4) == 0 { rng.below(TEST_MAX_BYTES + 1) } else { rng.below(5) };
+        let n = if rng.below(4) == 0 {
+            rng.below(TEST_MAX_BYTES + 1)
+        } else {
+            rng.below(5)
+        };
         (0..n)
-            .map(|_| if rng.below(4) == 0 { rng.next() as u8 } else { TEST_ALPHABET[rng.below(TEST_ALPHABET.len())] })
+            .map(|_| {
+                if rng.below(4) == 0 {
+                    rng.next() as u8
+                } else {
+                    TEST_ALPHABET[rng.below(TEST_ALPHABET.len())]
+                }
+            })
             .collect()
     }
 
@@ -985,14 +995,14 @@ mod tests {
             second[0][..shared].clone_from_slice(&first[0][..shared]);
             // ... and where one string is often a prefix of the other, or one byte longer.
             let pc = rng.below(ncol);
-            if let TestValue::Bytes(s) = &first[0][pc] {
-                if rng.below(2) == 0 {
-                    let mut t = s[..rng.below(s.len() + 1)].to_vec();
-                    if t.len() < TEST_MAX_BYTES && rng.below(2) == 0 {
-                        t.push(TEST_ALPHABET[rng.below(TEST_ALPHABET.len())]);
-                    }
-                    second[0][pc] = TestValue::Bytes(t);
+            if let TestValue::Bytes(s) = &first[0][pc]
+                && rng.below(2) == 0
+            {
+                let mut t = s[..rng.below(s.len() + 1)].to_vec();
+                if t.len() < TEST_MAX_BYTES && rng.below(2) == 0 {
+                    t.push(TEST_ALPHABET[rng.below(TEST_ALPHABET.len())]);
                 }
+                second[0][pc] = TestValue::Bytes(t);
             }
 
             let mut logical = Ordering::Equal;
@@ -1002,7 +1012,7 @@ mod tests {
                     break;
                 }
             }
-            seen[logical as usize + 1] += 1;
+            seen[(logical as i8 + 1) as usize] += 1;
 
             let mut keys = Vec::new();
             for row in &rows {
@@ -1012,7 +1022,11 @@ mod tests {
                 let mut reader = KeyReader::new(&key);
                 let mut back = Vec::new();
                 for c in 0..ncol {
-                    let peeked = if kinds[c] == TestKind::Bytes { reader.bytes_len(opts[c]).unwrap() } else { None };
+                    let peeked = if kinds[c] == TestKind::Bytes {
+                        reader.bytes_len(opts[c]).unwrap()
+                    } else {
+                        None
+                    };
                     let v = test_take(&mut reader, kinds[c], opts[c]).unwrap();
                     assert_eq!(test_order(&row[c], &v, opts[c]), Ordering::Equal);
                     if let TestValue::Bytes(s) = &v {
@@ -1052,7 +1066,13 @@ mod tests {
                 keys.push(key);
             }
 
-            assert_eq!(keys[0].cmp(&keys[1]), logical, "{kinds:?} {opts:?}\n  {:?}\n  {:?}", rows[0], rows[1]);
+            assert_eq!(
+                keys[0].cmp(&keys[1]),
+                logical,
+                "{kinds:?} {opts:?}\n  {:?}\n  {:?}",
+                rows[0],
+                rows[1]
+            );
         }
         // All three outcomes must be common, or the test proves little.
         assert!(seen.iter().all(|&n| n > 500), "{seen:?}");
@@ -1081,7 +1101,11 @@ mod tests {
                 let row: Vec<TestValue> = kinds.iter().map(|&kind| test_random_value(&mut rng, kind)).collect();
                 let mut key = test_encode(&row, &opts).0;
                 let at = rng.below(key.len());
-                key[at] = if rng.below(4) == 0 { rng.next() as u8 } else { BIAS[rng.below(BIAS.len())] };
+                key[at] = if rng.below(4) == 0 {
+                    rng.next() as u8
+                } else {
+                    BIAS[rng.below(BIAS.len())]
+                };
                 key
             };
 
@@ -1098,10 +1122,10 @@ mod tests {
                 // The reader takes any 8 bytes as an f64. The two families that
                 // encode_f64 never writes (-0.0, NaNs other than the canonical one)
                 // are for the layer above to reject.
-                if let TestValue::F64(x) = v {
-                    if x.to_bits() == SIGN_BIT || (x.is_nan() && x.to_bits() != CANONICAL_NAN) {
-                        canonical = false;
-                    }
+                if let TestValue::F64(x) = v
+                    && (x.to_bits() == SIGN_BIT || (x.is_nan() && x.to_bits() != CANONICAL_NAN))
+                {
+                    canonical = false;
                 }
                 back.push(v);
             }

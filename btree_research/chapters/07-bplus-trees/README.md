@@ -165,7 +165,8 @@ and the loss of a level.
 
 ## Code walk-through
 
-Both languages have the same files, names, tests and output.
+Both languages have the same files, names and output, and the same tests
+except for the three named in the Rust section.
 
 Files, in both `zig/src` and `rust/src`: `arena` (handles, slots, free list),
 `node` (layout, in-node inserts and removes), `tree` (fields and the list of
@@ -240,6 +241,11 @@ The structure is the same. The differences come from ownership:
   allocation failure is modelled with a node budget:
   `BPlusTree::with_node_budget(order, n)` makes `put` return
   `Err(OutOfNodes)` instead of exceeding `n` nodes.
+- **Three tests have no twin.** Zig's `checkAllAllocationFailures` test fails
+  each allocation of a build in turn; Rust has no failing allocator to do
+  that with, so only the budget test covers failure there. Rust adds
+  `pair_mut_gives_two_nodes_at_once` and `double_free_panics` for the arena;
+  Zig has no `pair_mut`, and its double free is an `assert`.
 - **The walker borrows the tree**, so using it across a `put` is a compile
   error. In Zig the same rule is a comment.
 - `kind` is an `enum Kind { Leaf(Leaf), Internal(Internal) }`; the accessors
@@ -248,49 +254,15 @@ The structure is the same. The differences come from ownership:
 
 ### Output
 
-Both programs print exactly this (`expected_output.txt`; a test in each
-language checks it):
+Both programs print exactly the 87 lines of
+[expected_output.txt](expected_output.txt); a test in each language checks
+it. Sections 1 to 3 are the build of the worked example above, the chain
+walked in both directions, and three lookups. Section 6 is the tie-breaker
+example and section 7 a model run of 20000 random operations for M = 3, 4
+and 16 with 0 mismatches. Sections 4 and 5 start from the final tree of the
+worked example:
 
 ```
-== 1. Build: canonical keys, order M = 4 (at most 3 keys per node) ==
-put 10: first leaf
-  height 1, 1 keys, 1 nodes
-  leaves : #0(10)
-put 20: no structural change
-put 5: no structural change
-put 6: leaf split (copy-up), new root
-  height 2, 4 keys, 3 nodes
-  level 0: #2[10]
-  leaves : #0(5 6) <-> #1(10 20)
-put 12: no structural change
-put 30: leaf split (copy-up)
-  height 2, 6 keys, 4 nodes
-  level 0: #2[10 20]
-  leaves : #0(5 6) <-> #1(10 12) <-> #3(20 30)
-put 7: no structural change
-put 17: no structural change
-put 3: leaf split (copy-up)
-  height 2, 9 keys, 5 nodes
-  level 0: #2[6 10 20]
-  leaves : #0(3 5) <-> #4(6 7) <-> #1(10 12 17) <-> #3(20 30)
-put 25: no structural change
-put 1: no structural change
-put 15: leaf split (copy-up), internal split (push-up), new root
-  height 3, 12 keys, 8 nodes
-  level 0: #7[15]
-  level 1: #2[6 10] #6[20]
-  leaves : #0(1 3 5) <-> #4(6 7) <-> #1(10 12) <-> #5(15 17) <-> #3(20 25 30)
-
-== 2. The leaf chain ==
-forward  (next links): 1 3 5 6 7 10 12 15 17 20 25 30
-backward (prev links), leaf handles: #3 #5 #1 #4 #0
-separators: 6 10 15 20
-
-== 3. Lookups always end in a leaf ==
-get 15 = 1500
-get 12 = 1200
-get 13 = null
-
 == 4. Delete: stale separator, borrow, merge, shrink ==
 delete 15: no structural change
   get 15 = null, but separators: 6 10 15(stale) 20
@@ -328,24 +300,13 @@ put 14: leaf split (copy-up)
   level 0: #2[6 10 13]
   leaves : #0(1 3 5) <-> #4(6 7) <-> #1(10 11) <-> #7(13 14)
 arena: 8 slots, 5 live, 3 free; free list: #6 #5 #3
-
-== 6. Duplicates through a tie-breaker: key = (user key, row id) ==
-leaf order (user key, row id): (3,2) (3,6) (7,1) (7,3) (7,5) (7,7) (9,4)
-row ids with user key 7: 1 3 5 7
-row ids with user key 3: 2 6
-row ids with user key 8:
-
-== 7. Model run: 20000 random operations against a sorted-array oracle ==
-M=3  keys=322 height=7 nodes=412 slots=455 | leaf splits=908 internal splits=605 borrows=738 merges=1108 | mismatches=0
-M=4  keys=322 height=6 nodes=298 slots=310 | leaf splits=384 internal splits=111 borrows=410 merges=203 | mismatches=0
-M=16 keys=322 height=3 nodes=40 slots=43 | leaf splits=72 internal splits=6 borrows=287 merges=41 | mismatches=0
 ```
 
 In section 4, `delete 25` merges two leaves (separator 30 is dropped), which
 empties internal node `#6`; `#6` then borrows through the root: the stale 15
 comes down and 10 goes up. In section 5 the new leaf gets handle `#7`, the
-slot of the old root, because it was freed last. In section 7, `slots` minus
-`nodes` is the length of the free list at the end of the run.
+slot of the old root, because it was freed last. In section 7 of the file,
+`slots` minus `nodes` is the length of the free list at the end of the run.
 
 ## In real databases
 
@@ -430,7 +391,8 @@ a free list.
 ## Pitfalls
 
 - **Removing the separator on a leaf split.** That is push-up applied to a
-  leaf: the key disappears from the tree. The copy-up test catches it.
+  leaf: the key disappears from the tree. The copy-up test and the model
+  tests catch it.
 - **Sending a key equal to a separator to the left.** Use upper bound in
   internal nodes and lower bound in leaves.
 - **"Fixing" stale separators.** Rewriting ancestors after every delete is

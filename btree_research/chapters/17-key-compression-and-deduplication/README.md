@@ -144,7 +144,7 @@ Layout (Zig; Rust has the same files with `.rs`):
 |------|---------|
 | `src/tree.zig` | the page model, `put`, `get`, `range`, `delete`, `validate`, `stats` |
 | `src/demo.zig` | the fixed scenario and the measurements printed by `run` |
-| `src/tests.zig` | unit tests, model test against an oracle, allocation-failure tests |
+| `src/tests.zig` | unit tests, two model tests against an oracle, allocation-failure tests |
 | `src/prng.zig` | copied from `common/` |
 
 ### Zig
@@ -176,7 +176,8 @@ Search: `childIndex` returns the number of separators strictly below the tuple, 
 search. It does not know whether separators are truncated. `range(lo, hi)` descends with
 `(lo, 0)` and iterates along the leaf chain; `get(key)` collects TIDs while the key matches.
 
-`put(key, tid)`:
+`put(key, tid)` rejects a key longer than `maxKeyLen` (`error.KeyTooLarge`) and a TID above
+`max_tid` = 2^48 - 1 (`error.TidTooLarge`: every size formula charges 6 bytes for it). Then:
 
 1. `findLeaf` descends and records the path. `locate` finds the tuple's slot in the leaf:
    `found`, `insert_at` (a new plain cell) or `inside` (within a posting list's TID range).
@@ -201,7 +202,13 @@ happens completely or not at all.
 discuss why real engines often do not either).
 
 `validate` walks the tree with the expected fences of each page and checks fences, tuple
-order, posting lists, size limits, leaf depth, the leaf chain and the entry count.
+order, posting lists, size limits, leaf depth, the entry count and the chain of `right`
+links on every level (the leaf chain that scans follow, and the same chain one level up).
+
+Two seeded model tests compare the tree with a sorted oracle. The second is adversarial,
+because routing through truncated separators is the chapter's claim: the empty key, keys at
+`maxKeyLen`, keys that are prefixes of each other, the bytes 0x00 and 0xff, TID 0 and
+`max_tid`, bounded ranges, then deleting everything.
 
 **Why one sixth.** No cell may exceed one sixth of the usable page, and keys are limited so
 that a pivot *with* a TID still fits in that (`maxKeyLen`). Then an overflowing page holds at
@@ -259,10 +266,12 @@ B. 20000 rows over 50 distinct keys ("category-NN")
 C. 20000 hierarchical keys ("user/NNNNNN/order/NNNNNN"), random order
   neither                3     248         5    50.4       30.0         35.4          247             0
   truncate               3     234         3    78.7       10.3         34.6          233             0
+  dedup                  3     246         5    50.0       30.0         35.4          245             8
+  truncate + dedup       3     233         3    78.3       10.3         34.6          232             7
 ```
 
-(repeated headers and the rows where deduplication changes nothing are omitted here). How to
-read it:
+(the repeated header lines are omitted here, and so are the two deduplication rows of A,
+which equal the rows above them). How to read it:
 
 - **A.** Random 32-byte keys differ in their first bytes. Separators shrink from 38 bytes
   (32 of key plus a 6-byte TID) to 2.4 on average, all 300 children fit in one root, and the
@@ -278,7 +287,9 @@ read it:
   change (exercise 4 separates the two effects).
 - **C.** Hierarchical keys share long prefixes. Truncation still cuts the suffix
   (`/order/NNNNNN`), but every separator keeps `user/00...`: 10.3 bytes where A needs 2.4.
-  Removing a shared *prefix* is a different technique.
+  Removing a shared *prefix* is a different technique. The deduplication rows differ a
+  little because C is not free of duplicates: 20000 random draws from 2000 × 10000
+  (user, order) pairs repeat a few keys, enough for 8 and 7 passes to avoid a split.
 
 ### Prefix compression (textbook, not implemented)
 
@@ -293,8 +304,10 @@ shortens separators.
 
 **Postgres (nbtree), commit `11591f2`.**
 
-- Heap TID as the last key column since index version 4, so that all keys are unique:
-  `src/backend/access/nbtree/README:42-49`; TID comparison in `_bt_compare`,
+- Heap TID as the last key column, so that all keys are unique:
+  `src/backend/access/nbtree/README:42-49`. This holds since index version 4
+  (`BTREE_VERSION`, `src/include/access/nbtree.h:151`; "a tiebreaker key column as of
+  BTREE_VERSION 4", `nbtree.h:387-388`). TID comparison in `_bt_compare`,
   `nbtsearch.c:797-857`.
 - Suffix truncation: `_bt_truncate`, `nbtutils.c:692` onwards; called for leaf splits at
   `nbtinsert.c:1657-1682`. Prose in `README:823-902`. Postgres truncates whole columns
@@ -341,9 +354,10 @@ Two allocators carry this chapter in Zig.
 **One `ArenaAllocator` per page** owns every byte the page refers to: fence keys, cell keys,
 TID arrays and the cell lists themselves. A split or a deduplication pass never edits a page
 in place. It builds the replacement in a new arena (`buildLeaf`, `buildInternal`) and
-`commit` drops the old arena in one call. That makes failure handling trivial: an aborted put deinitialises the arenas of its pending pages and the tree
-has not been touched. With a general-purpose allocator the same code would need one `free`
-per key and per TID array and an `errdefer` for each.
+`commit` drops the old arena in one call. That makes failure handling trivial: an aborted
+put deinitialises the arenas of its pending pages and the tree has not been touched. With a
+general-purpose allocator the same code would need one `free` per key and per TID array and
+an `errdefer` for each.
 
 The price: an arena cannot free a single cell. A delete leaves the key bytes unreachable
 inside the arena. The page counts them in `dead_bytes` and, once they exceed a page size,
@@ -356,8 +370,8 @@ separators per level. All of it is bounded by the page size, so `Tree.init` allo
 `16 × page_size` bytes once and every `putSlow` resets a `FixedBufferAllocator` over it. No
 allocator call can fail in the middle for lack of system memory, and nothing has to be
 freed. The buffer is a stack: the loop over internal levels saves `end_index`, uses the
-space, and restores it. A general-purpose allocator here would add a dozen fallible, individually freed
-allocations to the most delicate code path.
+space, and restores it. A general-purpose allocator here would add a dozen fallible,
+individually freed allocations to the most delicate code path.
 
 Lifetimes: scratch memory lives for one put; a page arena until the page is next rebuilt.
 

@@ -231,7 +231,7 @@ Next: <a href="../../29-zone-maps-and-vector-indexes/viz/index.html">29 Zone map
   var input = el('input.bt-input', { type: 'text', 'aria-label': 'Key', placeholder: 'key', maxlength: 16, value: 'roman', style: { width: '8.5em' } });
   function readKey() {
     var text = input.value;
-    if (!text.length) { fig.caption.textContent = 'Type a key first (1 to 16 characters).'; return null; }
+    if (!text.length) { stepper.pause(); fig.caption.textContent = 'Type a key first (1 to 16 characters).'; return null; }
     return text;
   }
   /**
@@ -271,7 +271,7 @@ Next: <a href="../../29-zone-maps-and-vector-indexes/viz/index.html">29 Zone map
       model.rec = null; model.op = null;
       stepper.pause();
       // The model now equals the drawn tree; show exactly that tree with the message.
-      rejected('Rejected (<code>error.PrefixKey</code>): ' + BTViz.k(A.fmtBytes(keyBytes(text))) + ' is a prefix of a stored key, or a stored key is a prefix of it. ' +
+      rejected(note + 'Rejected (<code>error.PrefixKey</code>): ' + BTViz.k(A.fmtBytes(keyBytes(text))) + ' is a prefix of a stored key, or a stored key is a prefix of it. ' +
         'This preset uses raw bytes without a terminator; the tree has no place for a value in the middle of a path. The tree is unchanged.');
     }
   }
@@ -291,7 +291,7 @@ Next: <a href="../../29-zone-maps-and-vector-indexes/viz/index.html">29 Zone map
   function doScan() {
     var note = syncModel();
     if (model.len > 40) {
-      rejected('The scan animation is limited to 40 keys and this tree holds ' + model.len + '. Choose "Reset to empty" or the words preset first, or step back to a smaller tree.');
+      rejected(note + 'The scan animation is limited to 40 keys and this tree holds ' + model.len + '. Choose "Reset to empty" or the words preset first, or step back to a smaller tree.');
       return;
     }
     show(model.scanSteps(), 'scan', note);

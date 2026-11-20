@@ -341,7 +341,11 @@ mod tests {
             let mut buf = [0u8; 12];
             let n = rng.below(buf.len() as u64 + 1) as usize;
             for c in &mut buf[..n] {
-                *c = if rng.below(4) == 0 { rng.next() as u8 } else { BIAS[rng.below(BIAS.len() as u64) as usize] };
+                *c = if rng.below(4) == 0 {
+                    rng.next() as u8
+                } else {
+                    BIAS[rng.below(BIAS.len() as u64) as usize]
+                };
             }
             if let Ok((value, len)) = decode(&buf[..n]) {
                 accepted += 1;

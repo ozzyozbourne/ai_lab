@@ -1,3 +1,4 @@
+// Copied from common/rust/prng.rs; do not edit here
 //! SplitMix64: a tiny, fast, deterministic pseudo-random number generator.
 //!
 //! Source of truth: common/rust/prng.rs (twin: common/zig/prng.zig).

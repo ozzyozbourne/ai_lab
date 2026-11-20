@@ -1,0 +1,15 @@
+[package]
+name = "ch23_copy_on_write_btrees"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.86"
+publish = false
+
+# std only: no external dependencies.
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

@@ -2,8 +2,9 @@
  * Chapter 01: two small chapter-local views that the shared toolkit does not have.
  *   C1.PageStrip  a sorted array drawn as a row of fixed-size pages (the toolkit's
  *                 ArrayView is one unbroken row and cannot show page boundaries)
- *   C1.BstView    a binary search tree where left and right children stay on their
- *                 side (the toolkit's TreeView centres an only child under its parent)
+ *   C1.BstView    a binary search tree drawn compactly, one column per key, in a box
+ *                 that follows the search path in both directions (the toolkit's
+ *                 TreeView can draw binary trees too; see the note at BstView)
  * Both are dumb views in the toolkit's style: call render(state) from a Stepper.
  * Colours come only from the toolkit's tokens (viz.css); the CSS is in index.html.
  * Requires viz.js (BTViz.el) and model.js (the C1 namespace).
@@ -49,6 +50,12 @@
    * new C1.BstView(target, {ariaLabel, maxHeight}).render(rootNode, {nodes: {id: state}, edges: {childId: state}, focus: id})
    * rootNode: {id, key, left, right}. x = in-order rank, y = depth, so a left child is
    * always drawn to the left of its parent and a right child to the right.
+   * The box scrolls inside itself: it follows `focus`, and without a focus it shows the root.
+   *
+   * Why not BTViz.TreeView with `binary: true`? Measured on this chapter's trees it is no
+   * narrower (998 px against 1056 for the 40 default keys, 1324 against 1056 for the
+   * ascending chain), it is taller per level, and it only scrolls sideways to a highlighted
+   * node, while the 40-level chain also has to be followed downwards.
    */
   function BstView(target, opts) {
     this.opts = opts || {};
@@ -57,10 +64,10 @@
     if (this.opts.maxHeight) this.root.style.maxHeight = this.opts.maxHeight + 'px';
     (typeof target === 'string' ? document.querySelector(target) : target).appendChild(this.root);
   }
-  var NODE_W = 25, NODE_H = 22, PITCH_X = 26, PITCH_Y = 36, PAD = 8;
+  var NODE_H = 22, PITCH_Y = 30, PAD = 8, PITCH_X_MIN = 23, PITCH_X_MAX = 26;
   BstView.prototype.render = function (rootNode, hl) {
     hl = hl || {};
-    var nodes = hl.nodes || {}, edges = hl.edges || {}, svg = this.svg, placed = [], rank = 0, maxDepth = 0;
+    var nodes = hl.nodes || {}, edges = hl.edges || {}, svg = this.svg, placed = [], rank = 0, maxDepth = 0, box = this.root;
     // In-order walk without recursion (a degenerate tree is as deep as it is large).
     var stack = [], cur = rootNode, depthOf = new Map();
     if (rootNode) depthOf.set(rootNode, 0);
@@ -68,14 +75,18 @@
       while (cur) { stack.push(cur); if (cur.left) depthOf.set(cur.left, depthOf.get(cur) + 1); cur = cur.left; }
       cur = stack.pop();
       var d = depthOf.get(cur);
-      placed.push({ node: cur, x: PAD + rank * PITCH_X, y: PAD + d * PITCH_Y });
+      placed.push({ node: cur, rank: rank, y: PAD + d * PITCH_Y });
       if (d > maxDepth) maxDepth = d;
       rank++;
       if (cur.right) depthOf.set(cur.right, d + 1);
       cur = cur.right;
     }
+    // One column per key. The columns shrink a little (a three-digit key still fits) when that
+    // lets the whole tree fit the box, so that a wide screen needs no sideways scrolling.
+    var PITCH_X = Math.max(PITCH_X_MIN, Math.min(PITCH_X_MAX, Math.floor((box.clientWidth - 2 * PAD) / Math.max(1, rank))));
+    var NODE_W = PITCH_X - 1;
     var pos = new Map();
-    placed.forEach(function (p) { pos.set(p.node, p); });
+    placed.forEach(function (p) { p.x = PAD + p.rank * PITCH_X; pos.set(p.node, p); });
     var W = PAD * 2 + Math.max(1, rank) * PITCH_X - (PITCH_X - NODE_W), H = PAD * 2 + maxDepth * PITCH_Y + NODE_H;
     svg.textContent = '';
     svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
@@ -98,11 +109,17 @@
       gN.appendChild(g);
     });
     // Keep the focused node visible by scrolling the view's own box (never the page).
-    var f = hl.focus && placed.filter(function (p) { return p.node.id === hl.focus; })[0], box = this.root;
+    var f = hl.focus && placed.filter(function (p) { return p.node.id === hl.focus; })[0];
     if (f) {
       if (f.x < box.scrollLeft + 8 || f.x + NODE_W > box.scrollLeft + box.clientWidth - 8) box.scrollLeft = Math.max(0, f.x - box.clientWidth / 2);
       if (f.y < box.scrollTop + 8 || f.y + NODE_H > box.scrollTop + box.clientHeight - 8) box.scrollTop = Math.max(0, f.y - box.clientHeight / 2);
-    } else { box.scrollLeft = 0; box.scrollTop = 0; }
+    } else {
+      // Nothing is being searched: show the top of the tree with the root in the middle (on a
+      // narrow screen the root of a 40-key tree is far to the right of the left edge).
+      var top = rootNode && pos.get(rootNode);
+      box.scrollLeft = top ? Math.max(0, top.x + NODE_W / 2 - box.clientWidth / 2) : 0;
+      box.scrollTop = 0;
+    }
     return this;
   };
 

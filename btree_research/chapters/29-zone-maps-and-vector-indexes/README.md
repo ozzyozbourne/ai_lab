@@ -55,7 +55,7 @@ side stay adjacent, but cells above each other are a whole row apart. Interleave
 of x and y instead (Z-order): fewer touching cells are far apart, but at the seams of
 the curve they are very far apart. The program measures both on a 16 x 16 grid: row-major
 has 240 touching pairs that are 16 positions apart; Z-order has only 64 pairs that far
-apart, but the worst is 86. It is a textbook result (not from the sources studied here) that every
+apart, but the worst is 86. A textbook result (not from the sources studied here): every
 order of an n x n grid separates some touching pair by at least n positions.
 
 So for nearness in many dimensions there is nothing to binary-search. The two families
@@ -68,7 +68,7 @@ list of its nearest centroid. This is a two-level tree: the root holds the centr
 leaves are flat lists.
 
 To search, compute the distance from the query to every centroid, take the nearest
-`nprobe` lists, scan them completely and keep the best k. Compare this with a B-tree
+`nprobe` lists, scan them completely and keep the best k. Compare with a B-tree
 root:
 
 - Routing is a scan over all centroids, not a binary search, because centroids have no
@@ -141,7 +141,7 @@ belongs to list 0. Query q = (6, 3):
 
 ## Code walk-through
 
-Both versions have the same four files. Zig first.
+Zig first.
 
 **`zonemap.zig`**. `checkZone(zone, op, c)` is the three-way test for one comparison. Each
 arm asks "true for all rows?" then "true for some row?":
@@ -175,7 +175,7 @@ sequential pass, like a leaf page.
 
 **`root.zig`** holds the data generators and the fixed scenario.
 
-**Rust.** Same names in snake_case, same tests, same output. The differences:
+**Rust.** Same files, same names in snake_case, same tests, same output. The differences:
 
 - `Hit` derives `Ord`; field order (`dist`, then `id`) gives the tie-break that Zig
   writes out in `lessThan`.
@@ -260,10 +260,10 @@ How to read it:
 - Section 1. On `sorted` data almost every chunk is decided by its summary. On `arrival`
   data (row number plus a delay of up to 299) zones overlap their neighbours, so three or
   four chunks are scanned; `v = 777` reads 400 rows to find nothing. On `shuffled` data
-  the zone map never helps. The last line shows that appends only touch the last zone.
-- Section 2. The sum of gaps is the same for both orders, so Z-order does not bring
-  touching cells closer on average. It trades row-major's 240 gaps of 16 for many gaps
-  of 2 to 11 and a few long ones.
+  the zone map never helps. The last line: appends only touch the last zone.
+- Section 2. The sums are equal: Z-order does not bring touching cells closer on
+  average. It turns 240 gaps of 1 and 240 of 16 into 416 gaps of 1 to 11 and 64 of 22
+  to 86.
 - Section 3. One probe finds 109 of the 120 true neighbours. Query 12 is the hand
   example again.
 - Section 4. In 16 dimensions with uniform data one probe finds 28% of the true
@@ -304,7 +304,7 @@ min/max for ranges, bloom for points, where a B-tree does both by keeping order.
 quantization indices are selected and several inverted lists are visited"
 (`faiss/faiss/IndexIVF.h:212-217`). The default is `nprobe = 1` (`IndexIVF.h:133`). Search
 asks the coarse quantizer for the nearest centroids, then prefetches those lists
-(`faiss/faiss/IndexIVF.cpp:916-921`), like read-ahead for leaves. FAISS's k-means
+(`faiss/faiss/IndexIVF.cpp:916-921`). FAISS's k-means
 defaults to 25 iterations and seed 1234 (`faiss/faiss/Clustering.h:24`, `:50`) and
 splits large clusters to refill empty ones (`faiss/faiss/Clustering.cpp:413`); this
 chapter's version leaves an empty cell empty.
@@ -316,9 +316,6 @@ the upper levels (`HNSW.cpp:1775-1783`, `greedy_update_nearest_impl` at `:702`) 
 candidate search on level 0 with `efSearch` candidates, default 16
 (`faiss/faiss/impl/HNSW.h:144`). The graph is not made of pointers: all neighbour lists
 live in one array indexed through `offsets` (`HNSW.h:123-129`).
-
-**What FAISS does not have.** Per the research notes, a search of the FAISS source for
-kd-trees and ball trees finds nothing.
 
 Not verified in these sources (textbook): the claim that no linear order of two or more
 dimensions keeps all near pairs near, and the grid lower bound quoted above.

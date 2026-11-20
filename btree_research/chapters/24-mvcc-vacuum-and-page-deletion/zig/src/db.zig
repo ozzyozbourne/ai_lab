@@ -231,7 +231,7 @@ pub const Cursor = struct {
             const tid = node.tidOf(index_key);
             const v = db.store.versions.get(tid);
             db.reads.heap_fetches += 1;
-            if (Store.visible(v, self.snapshot)) {
+            if (v.visible(self.snapshot)) {
                 self.rows[self.len] = .{ .key = v.key, .value = v.value };
                 self.len += 1;
             } else if (db.store.deadToAll(tid)) {

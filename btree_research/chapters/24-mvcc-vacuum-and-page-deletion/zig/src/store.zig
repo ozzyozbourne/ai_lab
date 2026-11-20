@@ -29,6 +29,10 @@ pub const Version = struct {
     value: u64,
     xmin: u64,
     xmax: u64 = 0,
+
+    pub fn visible(self: *const Version, snapshot: u64) bool {
+        return self.xmin <= snapshot and (self.xmax == 0 or self.xmax > snapshot);
+    }
 };
 
 pub const max_snapshots = 16;
@@ -79,10 +83,6 @@ pub const Store = struct {
         return h;
     }
 
-    pub fn visible(v: *const Version, snapshot: u64) bool {
-        return v.xmin <= snapshot and (v.xmax == 0 or v.xmax > snapshot);
-    }
-
     /// Dead to everyone: deleted at or before the horizon, so no open and no
     /// future snapshot can see it. (Compare with `visible`: xmax <= horizon
     /// <= snapshot fails the second half of the test for every snapshot.)
@@ -94,12 +94,12 @@ pub const Store = struct {
 
 test "visibility is two comparisons" {
     const v: Version = .{ .key = 1, .value = 1, .xmin = 5, .xmax = 9 };
-    try std.testing.expect(!Store.visible(&v, 4)); // created later
-    try std.testing.expect(Store.visible(&v, 5));
-    try std.testing.expect(Store.visible(&v, 8));
-    try std.testing.expect(!Store.visible(&v, 9)); // deleted by then
+    try std.testing.expect(!v.visible(4)); // created later
+    try std.testing.expect(v.visible(5));
+    try std.testing.expect(v.visible(8));
+    try std.testing.expect(!v.visible(9)); // deleted by then
     const live: Version = .{ .key = 1, .value = 1, .xmin = 5 };
-    try std.testing.expect(Store.visible(&live, 1000));
+    try std.testing.expect(live.visible(1000));
 }
 
 test "the horizon is the oldest open snapshot, or now" {

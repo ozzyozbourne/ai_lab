@@ -36,19 +36,18 @@ The fix is to stop treating the main file as the place where changes first land.
    has a commit record is applied again to the main file (**redo**). An operation
    without one is ignored.
 
-Now look at a power cut at each moment. Before the log sync finished: the main file was
-never touched, the log has no commit record for the operation, recovery ignores it, the
-tree is the old one. After the log sync: the log holds complete images of all four pages,
-so whatever mess the main file is in, recovery overwrites those four pages and the tree
-is the new one. There is no third case. The commit record's arrival on disk is the single
-instant at which the operation happens.
+A power cut before the log sync finished leaves the main file untouched and the log
+without a commit record: the tree is the old one. A power cut after it leaves complete
+images of all changed pages in the log, so recovery overwrites whatever the main file
+holds: the tree is the new one. There is no third case. The commit record's arrival on
+disk is the single instant at which the operation happens.
 
 Some vocabulary:
 
 - **LSN** (log sequence number): the position of a record in the log. Here it is a
   counter, 1, 2, 3, ..., that is never reused.
 - **Checkpoint**: copying the logged pages to the main file, syncing it, and then
-  emptying the log. Without it the log grows forever and recovery takes longer and longer.
+  emptying the log, so that the log and the recovery time stay bounded.
 - **Redo is idempotent**: writing the same page image twice gives the same page. So a
   crash during a checkpoint, or during recovery itself, is harmless. Run recovery again.
 - **Physical redo with full page images**: the record contains the whole 4096-byte page.
@@ -120,7 +119,7 @@ the first 4096 bytes to itself), so the five records occupy log pages 1 to 5. Th
 calls are: five log page writes, `sync log` (the commit point), four main page writes,
 `sync main`, one write of a new log header, `sync log` (the checkpoint is complete).
 
-Do the crash table by hand for `keep`, where every unsynced write reached the disk:
+By hand, for `keep` (every unsynced write reached the disk):
 
 - N = 3: log pages 1, 2, 3 are on disk. LSN 39 (pages 1 and 2) and LSN 40 (pages 2 and 3)
   are complete. LSN 41 runs into page 4, which is missing: its CRC fails, the scan stops.
@@ -159,11 +158,11 @@ New in this chapter (Zig file names; the Rust files have the same names with `.r
 
 Chapter 12's pager talks to a byte-addressed storage (`read(offset, buffer)`, errors
 `ShortRead` and `StorageFailure`). Chapter 21's `SimDisk` is page-addressed
-(`readPage(page_no, *Page)`, errors `PowerLoss`, `OutOfBounds`, ...). The pager only ever
-moves whole pages at page-aligned offsets, so the first interface can be served by the
-second with one division. `PageFile` in `adapter.zig` does exactly that and nothing else;
-it is how the "no log" experiments run chapter 12's tree on a disk that can lose power.
-`OutOfBounds` on a read becomes `ShortRead`; every other error becomes `StorageFailure`.
+(`readPage(page_no, *Page)`, errors `PowerLoss`, `OutOfBounds`, ...). The pager only
+moves whole pages at page-aligned offsets, so `PageFile` in `adapter.zig` serves the
+first interface with the second by one division. `OutOfBounds` on a read becomes
+`ShortRead`; every other error becomes `StorageFailure`. The "no log" experiments run
+chapter 12's tree through it.
 
 ### The log is slid in underneath the pager
 
@@ -230,12 +229,11 @@ whatever is left in `open_op` at the end is the interrupted operation and is dro
 Then `committed` is written to the main file, synced, and the log is reset: recovery
 always ends with a checkpoint.
 
-**Page LSNs** are absent here on purpose. With full images, redo never has to ask "was
-this change already applied?", because applying it again is harmless. A system whose
-records are *deltas* ("insert this tuple at offset 7") cannot redo blindly: inserting
-twice is wrong. So every page stores the LSN of the last record applied to it, and redo
-skips a record when the page's LSN is already at or beyond it. Postgres does exactly
-this; see below.
+**Page LSNs** are absent here on purpose. With full images, redo never asks "was this
+change already applied?", because applying it again is harmless. A system whose records
+are *deltas* ("insert this tuple at offset 7") cannot redo blindly. So every page stores
+the LSN of the last record applied to it, and redo skips a record when the page's LSN is
+already at or beyond it. Postgres does exactly this; see below.
 
 ### Rust differences
 
@@ -246,9 +244,8 @@ this; see below.
   `WalStorage` wrapper. The same goes for the `Machine` shared by its two storage ports.
 - Zig's `PageTable` is a hand-written sorted array (its images come from two different
   allocators); Rust uses `BTreeMap<PageId, Box<Page>>`.
-- Zig merges error sets (`Db.Error = DiskBTree.Error || Wal.Error`); Rust wraps them in
-  `DbError::{Tree, Wal}`. Both lose information at the storage interface, which only
-  knows `StorageFailure`; `Wal.last_error` keeps the real cause.
+- Zig merges error sets; Rust wraps them in `DbError::{Tree, Wal}`. Both flatten errors
+  to `StorageFailure` at the storage interface; `Wal.last_error` keeps the real cause.
 - Rust has no failing allocator in std, so the allocation-failure test exists only in Zig.
 - `Cargo.toml` sets `opt-level = 2` for the dev and test profiles: unoptimised, the
   crash loop's checksumming makes `cargo run` several times slower. Overflow checks and
@@ -258,10 +255,9 @@ this; see below.
 
 `crash.zig` is the chapter's central test. One run: a fresh seeded `Machine`, power off
 after N page writes (counted over both files), apply the workload until a put fails,
-`crash(mode)`, reopen, `validate`, compare every key and value with the oracle. The
-loop does this for every N from 0 to the total number of writes and for all four crash
-modes. The workload is 36 seeded puts of long keys and large values, enough for 16 leaf
-splits, an interior split and two root splits.
+`crash(mode)`, reopen, `validate`, compare every key and value with the oracle. The loop
+does this for every N and all four crash modes. The workload is 36 seeded puts with 16
+leaf splits, an interior split and two root splits.
 
 The oracle accepts exactly two states: the first `acked` puts (those that returned
 success), or those plus the one in flight. Nothing else. From the program:
@@ -303,11 +299,10 @@ checksum is seeded with the previous frame's (`sqlite3_ondisk.rs:1924-1925`,
 `checksum_wal` at `:2300-2325`). When Turso scans a WAL it stops at the first frame whose
 salt does not match the header or whose checksum does not chain
 (`sqlite3_ondisk.rs:1909-1937`), and it only advances "last valid frame" at a commit frame
-(`:1945-1947`). The salts play the role of this chapter's generation number. Reads go
-through the WAL first: the pager asks `find_frame` for the newest frame of a page and
-falls back to the database file (`turso/core/storage/pager.rs:3610`,
-`turso/core/storage/wal.rs:3684`). The commit path is `commit_wal_inner`
-(`pager.rs:4562`). Summary in `research/turso.md`, section 14.
+(`:1945-1947`). The salts play the role of this chapter's generation number. Reads ask `find_frame`
+for the newest frame of a page before falling back to the database file
+(`turso/core/storage/wal.rs:3684`, `pager.rs:3610`). Summary: `research/turso.md`,
+section 14.
 
 **Postgres: logical records, page LSNs, and two records per split.** Postgres states the
 write-ahead rule in the page header documentation: the LSN enforces "thou shalt write
@@ -392,10 +387,9 @@ without the log: 129 page writes in place, no second copy, and Part 3's failures
   on every error path. Freeing images one by one would need bookkeeping for exactly the
   replaced ones. Nothing read during recovery is needed afterwards, because recovery
   ends with a checkpoint.
-- **General-purpose allocator** for `pending` and `index`: their images are created and
-  destroyed one at a time over the life of the database. `commit` reserves the `index`
-  capacity it needs *before* writing to the log, so that nothing after the commit point
-  can fail for lack of memory.
+- **General-purpose allocator** for `pending` and `index`, whose images come and go one
+  at a time. `commit` reserves the `index` capacity it needs *before* writing to the
+  log, so nothing after the commit point can fail for lack of memory.
 - Tests use `std.testing.allocator`. The test "allocation failure at any point leaves a
   recoverable database and leaks nothing" fails every allocation of `Db.open` and of
   twelve puts in turn, and then reopens the files with a working allocator.
@@ -416,8 +410,8 @@ without the log: 129 page writes in place, no second copy, and Part 3's failures
 - **The chain cuts both ways.** A damaged record in the middle of the log hides every
   committed operation behind it (test "recovery stops at the first record whose checksum
   chain breaks"). A power cut only damages the unsynced tail; a failing disk can do this.
-- **This fault model is limited.** Sector-atomic writes, sync that really syncs, no
-  bit rot, one writer. Recovery is exactly as trustworthy as those assumptions.
+- **The fault model is limited**: sector-atomic writes, a sync that really syncs, no bit
+  rot, one writer. Recovery is exactly as trustworthy as those assumptions.
 
 ## Exercises
 

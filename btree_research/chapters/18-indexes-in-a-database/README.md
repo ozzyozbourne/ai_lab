@@ -14,10 +14,10 @@
   predicates a composite key can answer with one contiguous scan.
 
 Prerequisites: [chapter 07](../07-bplus-trees/README.md) (B+tree, leaf chain, the
-tie-breaker idea). Composite keys as byte strings are the subject of
-[chapter 11](../11-key-and-record-encoding/README.md); here a composite key is packed into
-one `u64`, which needs no encoding theory. Range scans are used in their simplest form;
-[chapter 08](../08-range-scans-and-cursors/README.md) treats cursors properly.
+tie-breaker idea). A composite key is packed into one `u64` here
+([chapter 11](../11-key-and-record-encoding/README.md) encodes them as byte strings), and
+range scans appear in their simplest form
+([chapter 08](../08-range-scans-and-cursors/README.md) treats cursors properly).
 
 ## The idea in plain words
 
@@ -62,6 +62,9 @@ The search is "position at (code, smallest possible locator) and look at the nex
 
 **Covering scan.** If the query asks only for columns that are in the index key, the scan
 never follows a locator. It is called index-only. Both layouts then do the same work.
+One difference remains: in the clustered layout the locator is the row id, so the id
+counts as a column of every index, and `SELECT id, day` is covered too. A TID is not a
+column.
 
 **Composite keys and prefixes.** An index on (customer, day) is sorted by customer, then
 by day inside one customer. Entries matching `customer = 7` are one contiguous run. So are
@@ -138,6 +141,26 @@ heap     : ids 12 10 5 25 7, amounts 120 250 75 125 35
 The covering query `SELECT day WHERE customer = 7` (section 4 of the output) costs 6 page
 reads in both layouts: the index part only.
 
+**The unique check**, `INSERT id=40 code=129` (section 6), costs the same in both
+layouts. Code 129 belongs to id 7.
+
+- Primary-key check: one descent, 3 nodes. Id 40 is free.
+- Unique check: seek (129, smallest locator) in `by_code`, whose leaves are
+  `... | (118,#6) (126,#15) | (129,#7) (134,#25) | ...`. The seek key is smaller than the
+  separator (129,#7), so the descent ends in the leaf on the left: 3 nodes. Nothing there
+  is large enough, so the cursor hops to the next leaf, and its first entry has code
+  129: rejected.
+
+```
+INSERT id=40 code=129
+clustered: rejected, duplicate code; 12 rows
+  cost: descents=2 tree nodes=7 index entries=1 row fetches=0 heap reads=0 -> 7 page reads
+```
+
+Nothing was written. A duplicate id fails the first check alone (1 descent, 3 nodes). An
+insert that passes both makes 5 descents: the two checks, then three writes (primary
+tree and two indexes).
+
 "Page reads" is tree nodes plus heap reads, as if nothing were cached. That is a count of
 the work, not a prediction of disk I/O: a buffer pool
 ([chapter 09](../09-pages-and-the-buffer-pool/README.md)) keeps the upper levels of a tree
@@ -153,11 +176,10 @@ clustered  2000 x WHERE id = ?                  2000      2000        6000      
 heap       2000 x WHERE id = ?                  2000      2000        6186         2000        2000        8186
 clustered  50 x SELECT * WHERE customer = ?     2000      2050        6346         2000           0        6346
 heap       50 x SELECT * WHERE customer = ?     2000        50         346         2000        2000        2346
-clustered  1 x SELECT count(*) WHERE day = 180     2         1         186            0           0         186
-heap       1 x SELECT count(*) WHERE day = 180     2         1         186            0           0         186
 ```
 
-The last pair is the non-prefix predicate: 186 nodes and all 2000 entries read to find 2.
+The heap's 6186 tree nodes instead of 6000 are explained under Pitfalls: a prefix search
+can land one leaf early.
 
 ## Code walk-through
 
@@ -185,9 +207,6 @@ pub fn customerDaysRange(customer: u16, day_lo: u16, day_hi: u16) KeyRange {
     };
 }
 ```
-
-`KeyRange` is a closed interval. A half-open one would need the key after the last key of
-customer 65535, which does not fit in a `u64`.
 
 The clustered layout packs the four `u16` columns of a row into the `u64` value
 (`packRow`). A real engine stores a variable-length record there.
@@ -277,23 +296,19 @@ The Rust crate has the same files, names, tests and output. The differences:
   guarantees that a query changes nothing else.
 - **Rollback.** Rust has no `errdefer`. `insert` runs the three `put`s in a closure that
   records how far it got, and undoes that many steps on `Err`.
-- **Borrowing.** `put_new` and `remove` are associated functions taking the tree and the
-  counters as separate arguments, so the borrow checker sees two different fields. A
-  `Cursor` borrows its tree, so "do not modify the tree during a scan" is enforced; in Zig
-  it is a comment.
+- **Borrowing.** A `Cursor` borrows its tree, so "do not modify the tree during a scan"
+  is enforced; in Zig it is a comment.
 - **Allocation failure.** A Rust `Vec` aborts when memory runs out. The Zig tests make the
   allocator fail; the Rust tests give one of the three trees a node budget
   (`Table::with_node_budgets`) and get `InsertError::OutOfNodes`. `Heap::append` cannot
   fail in Rust.
-- **Query results.** Zig queries allocate from an arena passed by the caller. Rust queries
-  fill a `&mut Vec` passed by the caller, cleared first.
 
 ### Tests
 
-Both languages assert the cost claims above, run a seeded model test of both layouts
-against a plain list of rows (M = 3, 4, 16, exact result order checked), fail an insert at
-every possible point and check that the row is in all trees or in none, and show two
-corruptions that `validate` reports. The chapter 07 tests of the base tree run as well.
+Both languages assert the cost claims above (the unique check's 7 nodes included) and run
+a seeded model test of both layouts against a plain list of rows (M = 3, 4, 16, exact
+result order checked). They also fail an insert at every possible point, show two
+corruptions that `validate` reports, and run the chapter 07 tests of the base tree.
 
 ## In real databases
 
@@ -303,10 +318,8 @@ corruptions that `validate` reports. The chapter 07 tests of the base tree run a
   rowid and payload; the interior cell carries only a child page and a rowid
   (`turso/core/storage/sqlite3_ondisk.rs:813-826`). This is the clustered layout.
 - An index B-tree is a different tree kind: its cells carry a record and no separate
-  rowid field (`sqlite3_ondisk.rs:829-843`). The research notes (`research/turso.md`,
-  section 4) describe the key as the index columns followed by the rowid, and note that
-  index trees keep entries in interior pages too. That is a classic B-tree, not a B+tree.
-  This chapter's index is a B+tree for simplicity; the locator-last key is the same idea.
+  rowid field (`sqlite3_ondisk.rs:829-843`); the rowid is the last column of the record
+  (`research/turso.md`, section 4). That is the locator-last key of this chapter.
 - Going back to the row is an explicit instruction. `DeferredSeek` positions the table
   cursor at the rowid of the index cursor's current entry, and does it lazily, "if no
   reads occur, no unnecessary I/O happens" (`turso/core/vdbe/insn.rs:1295-1300`;
@@ -314,16 +327,15 @@ corruptions that `validate` reports. The chapter 07 tests of the base tree run a
   index entry and `SeekRowid` searches the table tree (`insn.rs:1279-1290`).
 - Covering: the planner asks `index_is_covering` (`turso/core/translate/plan.rs:3672`).
   `index_covers_columns` skips the rowid alias column with the comment "rowid is always
-  implicitly covered by the index" (`plan.rs:3698-3723`). That is section 4's "clustered
-  only" line. The cost model charges the table lookup only when the index is not covering
+  implicitly covered by the index" (`plan.rs:3698-3723`). That is the "clustered only"
+  line of section 4: `SELECT id, day` is covered. The cost model charges the table lookup only when the index is not covering
   (`turso/core/translate/optimizer/cost.rs:233-240`).
 - Unique: before inserting, the generated program probes each unique index with
   `NoConflict`, which checks whether any entry has a matching key prefix and always
   passes if the key contains a NULL (`insn.rs:1645-1660`; emitted by the "preflight
   phase", `turso/core/translate/insert.rs:3592`).
 - An `INTEGER PRIMARY KEY` column is an alias for the rowid and gets no separate index
-  (`turso/core/schema.rs:3721-3723`). `WITHOUT ROWID` tables are behind an experimental
-  flag at this commit (`turso/core/translate/schema.rs:1205`).
+  (`turso/core/schema.rs:3721-3723`).
 
 ### Postgres: heap, TIDs, and every index is secondary
 
@@ -362,10 +374,8 @@ corruptions that `validate` reports. The chapter 07 tests of the base tree run a
 - "A clustered secondary lookup costs two tree traversals" is standard textbook material
   (InnoDB is the usual example; it is not in `db_study/`).
 - When a heap row is updated, Postgres writes a new version at a new TID, so every index
-  needs a new entry unless the HOT optimisation applies. `README.HOT` exists at
-  `postgres/src/backend/access/heap/README.HOT`; this chapter did not study it. The
-  general trade-off is: a TID is fast to follow but changes when the row moves; a primary
-  key is slower to follow but stable.
+  needs a new entry unless the HOT optimisation applies (`README.HOT`, not studied here).
+  Solution 4 works out that trade-off.
 
 ## Allocator notes
 
@@ -375,15 +385,11 @@ Plan row: "Arena per query; pool for rows".
   allocator the caller passes. The demo and the tests pass a `std.heap.ArenaAllocator`
   and call `reset(.retain_capacity)` before the next query. The lifetime of a result is
   "until the next query", which is exactly what an arena expresses, and the query code
-  needs no `errdefer` and no free path. With the general-purpose allocator instead, every
-  caller would have to free every result, and under `std.testing.allocator` a forgotten
-  one fails the test as a leak. The arena must not be used for the table itself: a reset
+  needs no `errdefer` and no free path. The arena must not be used for the table itself: a reset
   would free tree nodes that are still linked.
 - **Pool for rows.** In the heap layout rows live in fixed-size pages taken from a
   `std.heap.MemoryPool(Page)`; a separate `ArrayList(*Page)` maps page number to page.
   Pages are allocated one at a time, never move and are all released by `pool.deinit`.
-  An `ArrayList(Row)` would also work for TIDs, since a TID is an index and not a
-  pointer, but it copies every row each time it grows, which a heap file never does.
 - **Failure.** `heap.append` reserves the slot in the page list before it takes a page
   from the pool, so a failure leaves the heap unchanged. The table-level test runs 40
   inserts with the allocator failing at every possible point and validates the table after
@@ -400,15 +406,12 @@ Plan row: "Arena per query; pool for rows".
 - **A prefix search can land one leaf early.** The descent for (17, smallest locator) may
   end in the leaf to the left of the entry (17, (1,4)), when that entry is the separator
   copy and the first key of the next leaf. The cursor has to step to the next leaf
-  instead of reporting "not found". Section 8 shows it: 6186 tree nodes for 2000 heap
+  instead of reporting "not found". The unique check traced by hand above is such a
+  case, and section 8 shows it: 6186 tree nodes for 2000 heap
   primary-key lookups, 186 more than 2000 descents of height 3. Postgres handles the same
   case by continuing the unique check onto the right sibling (`nbtinsert.c:732-760`).
-- **Column order in a composite index is not symmetric.** (customer, day) answers
-  `customer = ?` and not `day = ?`.
 - **Delete needs the old row.** Forgetting to remove an index entry leaves an entry whose
   locator leads nowhere, or, worse, to a different row once ids or slots are reused.
-- **Partial inserts.** Without the rollback a failed insert leaves a row that one index
-  can find and another cannot.
 
 ## Exercises
 
@@ -437,4 +440,5 @@ Solutions: [`solutions.md`](solutions.md).
 - Visualization: [`viz/index.html`](viz/index.html) runs one query on both layouts, step
   by step, with the same counters, including `SELECT count(*) WHERE day = ?`, the
   non-prefix predicate of section 5. Its table has no `code` column and no delete, so an
-  insert there costs 3 descents, not the 5 of section 6.
+  insert there costs 3 descents, not the 5 of section 6. The unique check is on the page
+  all the same: the heap figure's primary-key check on insert is the same prefix search.

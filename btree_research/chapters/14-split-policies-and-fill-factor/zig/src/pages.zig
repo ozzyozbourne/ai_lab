@@ -116,10 +116,13 @@ pub const Tree = struct {
 
     /// `capacity` must be at least 4 bytes: below that `maxCellSize` is 0, so
     /// no cell could ever be stored, and a capacity of 0 would make every
-    /// fill percentage a division by zero. Passing less is a programming
-    /// error (asserted), not a runtime condition.
+    /// fill percentage a division by zero. The policy's fill factor must be
+    /// a percentage, 0..100 (`Policy.isValid`). Passing anything else is a
+    /// programming error (asserted here, where the mistake is made, and not
+    /// at the first split), not a runtime condition.
     pub fn init(gpa: Allocator, capacity: u32, policy: Policy) Allocator.Error!Tree {
         std.debug.assert(capacity >= min_capacity);
+        std.debug.assert(policy.isValid());
         var tree: Tree = .{
             .gpa = gpa,
             .scratch = .init(gpa),
@@ -429,6 +432,36 @@ test "the smallest legal page: capacity 4 holds 1-byte cells, splits, and report
         for (f.histogram) |n| pages += n;
         try testing.expectEqual(f.pages, pages);
     }
+}
+
+test "fill factors 0 and 100, the ends of the legal range, split like any other" {
+    const ends = [_]Policy{
+        .{ .fill = 0 },      .{ .fill = 100 },
+        .{ .rightmost = 0 }, .{ .rightmost = 100 },
+        .{ .adaptive = 0 },  .{ .adaptive = 100 },
+    };
+    for (ends) |policy| {
+        try testing.expect(policy.isValid());
+        var tree: Tree = try .init(testing.allocator, 100, policy);
+        defer tree.deinit();
+        for (0..200) |i| try testing.expect(try tree.put(i % 7, i, 20));
+        try tree.validate();
+        try testing.expectEqual(200, tree.len);
+        try testing.expect(tree.stats.splits > 0);
+    }
+    // Ascending keys, 5 cells of 20 bytes per page. Fill factor 100 leaves
+    // every page but the last one completely full; fill factor 0 leaves one
+    // cell behind on every split.
+    var full: Tree = try .init(testing.allocator, 100, .{ .rightmost = 100 });
+    defer full.deinit();
+    var empty: Tree = try .init(testing.allocator, 100, .{ .rightmost = 0 });
+    defer empty.deinit();
+    for (0..100) |i| {
+        _ = try full.put(i, i, 20);
+        _ = try empty.put(i, i, 20);
+    }
+    try testing.expectEqual(20, full.fill().pages);
+    try testing.expectEqual(96, empty.fill().pages);
 }
 
 // Seeded model test: random puts, deletes, gets and ranges against a hash

@@ -29,7 +29,8 @@ pub fn cell_less(a: Cell, b: Cell) -> bool {
 }
 
 /// The split policy is a value, not a trait object: an enum that
-/// `choose_split` matches on. The payload is a fill factor in percent.
+/// `choose_split` matches on. The payload is a fill factor in percent, so it
+/// must be 0..=100 (`is_valid`); `Tree::new` and `delta_of` assert that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Policy {
     /// Textbook: equalize the bytes on both sides, always.
@@ -42,6 +43,18 @@ pub enum Policy {
     /// `Rightmost` plus the duplicate-aware part of nbtsplitloc.c: split
     /// interval, separator penalty, "many duplicates" and "single value".
     Adaptive(u8),
+}
+
+impl Policy {
+    /// Is the fill factor a percentage? Anything above 100 has no meaning
+    /// ("the left page stays 150% full") and would make `100 - ff` in
+    /// `delta_of` overflow.
+    pub fn is_valid(self) -> bool {
+        match self {
+            Policy::Half => true,
+            Policy::Fill(ff) | Policy::Rightmost(ff) | Policy::Adaptive(ff) => ff <= 100,
+        }
+    }
 }
 
 /// Which of the three nbtsplitloc.c strategies decided a split
@@ -136,7 +149,9 @@ pub fn candidates(out: &mut Vec<Candidate>, items: &[Cell], capacity: u32) {
 /// the same as saying left_free : right_free = (100 - fill) : fill.
 /// nbtsplitloc.c:575-582 computes this with doubles; we scale by 100 and stay
 /// in integers so that Zig and Rust agree bit for bit.
+/// `fill` is a percentage; more than 100 is a programming error (asserted).
 pub fn delta_of(c: Candidate, capacity: u32, fill: Option<u8>) -> u64 {
+    assert!(fill.is_none_or(|ff| ff <= 100), "a fill factor is a percentage");
     let left_free = i64::from(capacity) - i64::from(c.left_bytes);
     let right_free = i64::from(capacity) - i64::from(c.right_bytes);
     let d = match fill {

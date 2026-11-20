@@ -319,9 +319,9 @@ default build the two tests report "skipped":
 
 | Step | Extra flag | Result on this machine |
 |---|---|---|
-| `zig build test` | none | 51 passed, 2 skipped (`brk_allocator`, `c_allocator`) |
-| `zig build test-single-threaded` | `single_threaded = true` | 51 passed, 2 skipped (`smp_allocator`, `c_allocator`) |
-| `zig build test-libc` | `link_libc = true` | 52 passed, 1 skipped (`brk_allocator`) |
+| `zig build test` | none | 52 passed, 2 skipped (`brk_allocator`, `c_allocator`) |
+| `zig build test-single-threaded` | `single_threaded = true` | 52 passed, 2 skipped (`smp_allocator`, `c_allocator`) |
+| `zig build test-libc` | `link_libc = true` | 53 passed, 1 skipped (`brk_allocator`) |
 
 **The Rust side** (`rust/src/idioms.rs`):
 

@@ -31,7 +31,8 @@ pub fn cellLess(a: Cell, b: Cell) bool {
 }
 
 /// The split policy is a value, not a subclass: a tagged union that
-/// `chooseSplit` switches on. The payload is a fill factor in percent.
+/// `chooseSplit` switches on. The payload is a fill factor in percent, so it
+/// must be 0..100 (`isValid`); `Tree.init` and `deltaOf` assert that.
 pub const Policy = union(enum) {
     /// Textbook: equalize the bytes on both sides, always.
     half,
@@ -43,6 +44,16 @@ pub const Policy = union(enum) {
     /// `rightmost` plus the duplicate-aware part of nbtsplitloc.c: split
     /// interval, separator penalty, "many duplicates" and "single value".
     adaptive: u8,
+
+    /// Is the fill factor a percentage? Anything above 100 has no meaning
+    /// ("the left page stays 150% full") and would make `100 - ff` in
+    /// `deltaOf` overflow.
+    pub fn isValid(self: Policy) bool {
+        return switch (self) {
+            .half => true,
+            .fill, .rightmost, .adaptive => |ff| ff <= 100,
+        };
+    }
 };
 
 /// Which of the three nbtsplitloc.c strategies decided a split
@@ -119,7 +130,9 @@ pub fn candidates(scratch: Allocator, items: []const Cell, capacity: u32) Alloca
 /// the same as saying left_free : right_free = (100 - fill) : fill.
 /// nbtsplitloc.c:575-582 computes this with doubles; we scale by 100 and stay
 /// in integers so that Zig and Rust agree bit for bit.
+/// `fill` is a percentage; more than 100 is a programming error (asserted).
 pub fn deltaOf(c: Candidate, capacity: u32, fill: ?u8) u64 {
+    if (fill) |ff| std.debug.assert(ff <= 100);
     const left_free: i64 = @as(i64, capacity) - c.left_bytes;
     const right_free: i64 = @as(i64, capacity) - c.right_bytes;
     const d: i64 = if (fill) |ff|
@@ -367,6 +380,25 @@ test "adaptive: single value packs the left page only at the end of the group" {
     try testing.expectEqual(Strategy.default, middle.strategy);
     try testing.expectEqual(52, middle.left_bytes);
     try testing.expectEqual(2, middle.penalty);
+}
+
+test "a fill factor is a percentage: only 0..100 is valid" {
+    try testing.expect((Policy{ .half = {} }).isValid());
+    for ([_]u8{ 0, 50, 100 }) |ff| {
+        try testing.expect((Policy{ .fill = ff }).isValid());
+        try testing.expect((Policy{ .rightmost = ff }).isValid());
+        try testing.expect((Policy{ .adaptive = ff }).isValid());
+    }
+    for ([_]u8{ 101, 150, 255 }) |ff| {
+        try testing.expect(!(Policy{ .fill = ff }).isValid());
+        try testing.expect(!(Policy{ .rightmost = ff }).isValid());
+        try testing.expect(!(Policy{ .adaptive = ff }).isValid());
+    }
+    // The two ends of the range are ordinary targets. 100: the left page
+    // should keep no free space, so the fullest legal left page wins.
+    // 0: the left page should be empty, so the emptiest one wins.
+    try testing.expectEqual(6, (try handChoice(.{ .fill = 100 }, 40)).first_right);
+    try testing.expectEqual(1, (try handChoice(.{ .fill = 0 }, 40)).first_right);
 }
 
 test "chooseSplit reports OutOfMemory from the scratch allocator" {

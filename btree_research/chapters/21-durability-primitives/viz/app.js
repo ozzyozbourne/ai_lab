@@ -203,12 +203,26 @@
         (bad ? '<b>' + bad + ' page' + (bad > 1 ? 's fail' : ' fails') + ' the checksum.</b>' + (protocol === 'double' ? ' Press Recover.' : ' In place there is no second copy: the page is lost.') : 'Every page on disk verifies.'),
         { touched: touched });
     }
+    // The version letter of an intact copy as the process reads it, or null.
+    function versionAt(pageNo) {
+      var r = disk.readChecked(pageNo);
+      return r.check === 'ok' ? String.fromCharCode(r.page[0]) : null;
+    }
+    // How many versions behind the next one a letter is (letters repeat after 26).
+    function age(l) { return ((letterIx - (l.charCodeAt(0) - 65)) % 26 + 26) % 26; }
     function recover() {
       var dw = new M.DoubleWrite(disk, 1);
+      var slotV = versionAt(0), homeV = versionAt(1);
       var r = dw.recover();
+      // The sandbox knows what recovery cannot: which of two intact copies is newer.
+      var slotOlder = r.rolled_forward && slotV && homeV && age(slotV) > age(homeV);
+      // If recovery completed the update in progress, the next write is a new version.
+      if (!r.unrecoverable && versionAt(1) === letter()) letterIx++;
       var msg = r.unrecoverable ? '<b>Unrecoverable:</b> slot and home are both damaged. This can only happen when both copies were in flight at once, i.e. the sync between the two writes was skipped.'
         : r.restored ? 'Recover: the slot verifies and home does not, so home was rebuilt from the slot and synced.'
-        : r.rolled_forward ? 'Recover: both verify but the slot is newer. The update had stopped between its two steps; it is now finished (home := slot).'
+        : slotOlder ? '<b>Recover undid a durable write.</b> Both copies verify and differ, so the rule "slot ok: home := slot" ran. But the slot held the <em>older</em> version ' + slotV +
+          ': you wrote ' + homeV + ' to home without writing the slot first, and recovery has replaced it with ' + slotV + '. Recovery cannot see which copy is newer; it is only correct when every update goes slot first.'
+        : r.rolled_forward ? 'Recover: both copies verify and differ. Every update writes the slot first, so the slot is the newer one: the update had stopped between its two steps and is now finished (home := slot).'
         : r.blank ? 'Recover: neither copy was ever written. Nothing to do.'
         : 'Recover: home verifies and the slot is not a newer complete copy (same version, or a torn or dropped slot write). Home is kept as it is.';
       record(msg, { touched: { 1: true } });

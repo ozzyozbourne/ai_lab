@@ -1,8 +1,10 @@
 //! Text rendering of a tree for the demo program and for debugging.
 //!
-//!     height 2, 7 keys, 5 nodes
-//!       level 1: #2[10 20]
-//!       level 0: #0(5 6)<10 -> #1(10 12)<20 {incomplete} -> #4(20 25)<30 {no downlink} -> #3(30 40)
+//! ```text
+//! height 2, 7 keys, 5 nodes
+//!   level 1: #2[10 20]
+//!   level 0: #0(5 6)<10 -> #1(10 12)<20 {incomplete} -> #4(20 25)<30 {no downlink} -> #3(30 40)
+//! ```
 //!
 //! `#n` is a node handle, `[..]` an internal node (separators), `(..)` a leaf
 //! (keys). `<k` is the node's high key (keys in the node are below k); the

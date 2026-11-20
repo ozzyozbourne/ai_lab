@@ -319,9 +319,9 @@
       else check(tree.root, null, null, true, 0);
     }
     if (!error) {
-      if (count !== tree.len) fail('WrongKeyCount', 'The walk met ' + plural(count, 'key') + ', but the tree claims to hold ' + tree.len + '. Every node is fine on its own; a key was lost or counted twice.', [], null);
-      else if (reachable !== tree.created) fail('NodeCountMismatch', 'The walk reached ' + plural(reachable, 'node') + ', but ' + tree.created + ' were allocated. A node that nothing points to is a leak' + (tree.orphans.length ? ' (drawn on the right)' : '') + '.', [], tree.orphans[0] || null);
-      else push('Every node passed, the walk met ' + plural(count, 'key') + ' (the tree claims ' + tree.len + ') and reached ' + plural(reachable, 'node') + ' (allocated: ' + tree.created + '). <b>validate: ok</b>', [], null);
+      if (count !== tree.len) fail('WrongKeyCount', 'The walk met ' + plural(count, 'key') + ', but the tree claims to hold ' + tree.len + '. Every node is fine on its own; a key was lost or counted twice.', [19], null);
+      else if (reachable !== tree.created) fail('NodeCountMismatch', 'The walk reached ' + plural(reachable, 'node') + ', but ' + tree.created + ' were allocated. A node that nothing points to is a leak' + (tree.orphans.length ? ' (drawn on the right)' : '') + '.', [20], tree.orphans[0] || null);
+      else push('Every node passed, the walk met ' + plural(count, 'key') + ' (the tree claims ' + tree.len + ') and reached ' + plural(reachable, 'node') + ' (allocated: ' + tree.created + '). <b>validate: ok</b>', [19, 20], null);
     }
     steps.error = error;
     return steps;

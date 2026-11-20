@@ -124,7 +124,8 @@
     // Captions are only built when steps are recorded (`rec`): the fill page
     // inserts many thousands of keys without them.
     var push = function (type, caption, highlight, extra) {
-      var step = { type: type, caption: caption, state: self.snapshot(), highlight: highlight || {}, op: { kind: 'insert', key: key } };
+      var step = { type: type, caption: caption, state: self.snapshot(), highlight: highlight || {}, op: { kind: 'insert', key: key },
+                   splits: self.splits, rootSplits: self.rootSplits };
       if (extra) for (var name in extra) step[name] = extra[name];
       steps.push(step);
     };

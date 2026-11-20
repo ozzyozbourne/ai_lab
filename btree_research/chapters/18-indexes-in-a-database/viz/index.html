@@ -102,7 +102,7 @@ Text: <a href="../README.md">chapter 18</a>.</p>
     this.results = el('div.c18-results');
     stage.append(this.counters, this.results);
     this.stepper = new BTViz.Stepper({
-      mount: this.fig.controls, caption: this.fig.caption, root: this.fig.root, steps: [], predict: true,
+      mount: this.fig.controls, caption: this.fig.caption, root: this.fig.root, steps: [], predict: false,   // false = show the Predict checkbox, unticked
       onStep: function (step) { self.render(step); }
     });
   }
@@ -191,7 +191,7 @@ Text: <a href="../README.md">chapter 18</a>.</p>
   function read(input, min) {
     var text = input.value.trim(), info = input.c18;
     if (!/^[0-9]+$/.test(text) || +text < min || +text > info.max) {
-      say(info.label + ' must be a whole number from ' + min + ' to ' + info.max + '; got "' + (text === '' ? '(empty)' : text.slice(0, 20)) + '". Nothing was run.', true);
+      say(info.label + ' must be a whole number from ' + min + ' to ' + info.max + '; got "' + (text === '' ? '(empty)' : text.slice(0, 20)) + '". Nothing was done.', true);
       input.focus();
       return null;
     }

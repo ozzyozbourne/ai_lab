@@ -49,6 +49,11 @@ pub fn run(gpa: Allocator, w: *std.Io.Writer) !void {
     }
     try w.writeAll("hits per coverage point, all orders together:\n");
     try printCoverage(w, &all.coverage);
+    // Tiny nodes are a test parameter, not a detail: the same seeds with 31
+    // keys per node never touch an interior node.
+    var large: fuzz.Totals = .{};
+    _ = try fuzz.hunt(Tree(32, .none), gpa, 1, sweep_seeds, .{}, &large);
+    try printReach(w, "the same seeds at M=32", &large);
 
     try w.print("\n== 3. A fixed mix against the swarm (M = 4, seeds 1..{d}) ==\n", .{sweep_seeds});
     var fixed: fuzz.Totals = .{};

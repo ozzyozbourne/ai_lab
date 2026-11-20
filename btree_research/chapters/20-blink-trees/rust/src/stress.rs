@@ -74,7 +74,7 @@ fn work(tree: &BLinkTree, seed: u64, config: &Config, preloaded: &[u64]) -> Work
         failed_puts: 0,
     };
     let mut rng = SplitMix64::new(seed);
-    let mut expect_present = |key: u64, missed: &mut Vec<u64>| {
+    let expect_present = |key: u64, missed: &mut Vec<u64>| {
         if tree.get(key) != Some(value_of(key)) {
             missed.push(key);
         }

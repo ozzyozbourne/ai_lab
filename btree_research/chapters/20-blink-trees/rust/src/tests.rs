@@ -414,7 +414,7 @@ fn a_paused_writer_whose_parent_split_meanwhile_re_finds_the_downlink_by_moving_
 
 #[test]
 fn two_paused_writers_a_half_split_parent_and_a_grown_root_finish_first_then_find_the_parent_level()
- {
+{
     let tree = build_three_full_leaves();
 
     // Three writers. The first is paused on leaf #0, the second on leaf #1,
@@ -427,9 +427,12 @@ fn two_paused_writers_a_half_split_parent_and_a_grown_root_finish_first_then_fin
         t.put(31, 3100).unwrap();
         t.set_abandon_splits(false);
         // #2 is still the root, is flagged, and has a right sibling #5
-        // that nothing points down to.
+        // that nothing points down to. It is the one unfinished split.
+        // (Counted from the statistics: `incomplete_splits()` would latch
+        // every node, including the two leaves the paused writers hold.)
         assert!(t.root_id() == id(2) && t.read(id(2)).incomplete_split);
-        assert!(t.read(id(2)).right == id(5) && t.incomplete_splits() == 1);
+        assert!(t.read(id(2)).right == id(5));
+        assert_eq!(t.stats().half_splits - t.stats().completed_splits, 1);
     };
     let mut second = |t: &BLinkTree, _: NodeId, _: &Page| {
         // put 22: paused on #1 while the third writer runs. Afterwards
@@ -437,7 +440,8 @@ fn two_paused_writers_a_half_split_parent_and_a_grown_root_finish_first_then_fin
         // #2 is finished first (that builds the new root #7), and only
         // then does #2 receive the downlink (22, #6).
         t.put_from(t.root_id(), 22, 2200, Some(&mut third)).unwrap();
-        assert!(t.root_id() == id(7) && t.incomplete_splits() == 0);
+        assert_eq!(t.root_id(), id(7));
+        assert_eq!(t.stats().half_splits, t.stats().completed_splits);
         assert_eq!(t.stats().finished_later, 2); // #3 by the third writer, #2 by the second
     };
     // put 12: paused on #0. When it started, #2 was the root, so it remembers
@@ -465,7 +469,7 @@ fn two_paused_writers_a_half_split_parent_and_a_grown_root_finish_first_then_fin
 
 #[test]
 fn a_writer_that_starts_at_an_old_root_moves_right_then_finds_the_parent_level_through_level_head()
- {
+{
     let tree = BLinkTree::new(4, 8);
     for key in [1, 2, 3] {
         tree.put(key, key * 100).unwrap();

@@ -278,7 +278,7 @@
 
   /** The step that did the insert is named after what actually happened. */
   function relabel(step, t, where) {
-    if (t.result === 'OutOfNodes') { step.text = 'OutOfNodes' + where; step.chip = 'deleted'; }
+    if (t.result === 'OutOfNodes') { step.text = 'OutOfNodes' + where; step.chip = null; }
     else if (t.result === 'overwrote') { step.text = 'overwrite' + where; step.chip = null; }
     return step;
   }

@@ -73,7 +73,9 @@
     { label: 'T1 put 26 into the full leaf #3; T2 get 17 (same parent)', setup: [], a: { kind: 'put', key: 26 }, b: { kind: 'get', key: 17 } },
     { label: 'T1 put 26 into the full leaf #3; T2 get 12 (other subtree)', setup: [], a: { kind: 'put', key: 26 }, b: { kind: 'get', key: 12 } },
     { label: 'T1 put 2: full leaf under a full parent; T2 get 25', setup: [8, 9], a: { kind: 'put', key: 2 }, b: { kind: 'get', key: 25 } },
-    { label: 'Root replaced: T1 get 20 has read the root id; T2 put 6 splits the root', keys: [10, 20, 5], capacity: 16, setup: [], a: { kind: 'get', key: 20 }, b: { kind: 'put', key: 6 }, freeze: 'afterRootLoad' }
+    { label: 'Root replaced: T1 get 20 has read the root id; T2 put 6 splits the root', keys: [10, 20, 5], capacity: 16, setup: [], a: { kind: 'get', key: 20 }, b: { kind: 'put', key: 6 }, freeze: 'afterRootLoad' },
+    { label: 'Convoy, four threads: T1 put 26 frozen; then T2 get 17, T3 get 12, T4 put 11', setup: [], a: { kind: 'put', key: 26 },
+      others: [{ kind: 'get', key: 17 }, { kind: 'get', key: 12 }, { kind: 'put', key: 11 }] }
   ];
 
   function experimentTree(ex) {
@@ -86,7 +88,63 @@
     return m ? m[1] : 'nothing';
   }
 
+  /**
+   * Section 7 of the programs: T1 frozen, then several threads start one after
+   * the other. A thread that waits keeps what it holds, so a later one can
+   * wait for a thread that is itself only waiting.
+   */
+  function convoySteps(ex, protocol) {
+    var c = Sim.convoy(experimentTree(ex), protocol, ex.a, ex.others, 'atLeaf');
+    var steps = [], last = c.initial, n = ex.others.length;
+    function op(o) { return o.kind + ' ' + o.key; }
+    function push(caption, view, extra) {
+      var s = { caption: caption, state: view };
+      for (var key in (extra || {})) s[key] = extra[key];
+      steps.push(s);
+    }
+    function lane(view, tid) { return view.lanes.filter(function (l) { return l.id === tid; })[0]; }
+    push('Protocol: <b>' + Sim.NAMES[protocol] + '</b>. Four threads this time. <b>T1</b> will ' + op(ex.a) + ' and is frozen in the middle. Then ' +
+      ex.others.map(function (o, i) { return '<b>T' + (i + 2) + '</b> (' + op(o) + ')'; }).join(', ') +
+      ' start one after the other; each runs until it finishes or has to wait. Press <kbd>→</kbd> or Play.', c.initial);
+    function stopNote(i) {
+      var tid = 'T' + (i + 2), out = c.outcomes[i], text;
+      if (out === 'finishes') text = '<b>' + tid + ' is done</b> although T1 never moved.';
+      else {
+        var m = /waiting for (.*?), held by ([^·]*)/.exec(lane(last, tid).status), holds = heldText(last, tid);
+        text = '<b>' + tid + ' cannot continue</b>: it ' + (out === 'waits' ? 'waits for the tree-wide lock' : out.replace('#', 'node #')) +
+          ', held by <b>' + (m ? m[2].trim() : 'T1') + '</b>. ' +
+          (holds === 'nothing' ? tid + ' holds nothing while it waits.' : 'While it waits, ' + tid + ' <b>keeps ' + holds + '</b>: whoever needs that node in a conflicting mode now waits for a thread that is itself waiting.');
+      }
+      var next = i + 1 < n ? ' Next: T' + (i + 3) + ', ' + op(ex.others[i + 1]) + '.' : ' Now T1 is released and everybody goes on.';
+      var extra = { hold: 2 };
+      if (i + 1 === n - 1) {
+        // Ask before the last thread starts: it is the one the convoy catches (or not).
+        var lastOut = c.outcomes[n - 1], t1 = heldText(last, 'T1');
+        extra.question = {
+          prompt: 'T' + (n + 1) + ' wants to ' + op(ex.others[n - 1]) + ' under <b>' + Sim.NAMES[protocol] + '</b>. T1 is frozen holding <b>' + t1 + '</b>. What happens to T' + (n + 1) + '?',
+          choices: ['T' + (n + 1) + ' finishes while T1 is frozen', 'T' + (n + 1) + ' has to wait'],
+          answer: lastOut === 'finishes' ? 0 : 1,
+          explain: lastOut === 'finishes' ? 'Nothing T' + (n + 1) + ' needs is held in a conflicting mode.' :
+            'T' + (n + 1) + ' ' + lastOut + (lastOut === 'waits' ? ' for the tree-wide lock' : '') + '. Look at who holds it.'
+        };
+      }
+      push(text + next, last, extra);
+    }
+    c.trace.forEach(function (item, i) {
+      if (i === c.frozenAt) push('<b>T1 is frozen here.</b> It holds: <b>' + heldText(last, 'T1') + '</b>. Now T2 runs: ' + op(ex.others[0]) + '.', last, { hold: 2 });
+      c.stops.forEach(function (at, f) { if (at === i) stopNote(f); });
+      push(item.caption, item.view, { mark: item.mark });
+      last = item.view;
+    });
+    var waiting = c.outcomes.filter(function (o) { return o !== 'finishes'; }).length;
+    push('All four threads are done. While T1 was frozen, ' + waiting + ' of the other three had to wait. ' +
+      (protocol === 'coupling' ? 'In section 1, with two threads, the same put 11 finished next to the same frozen put 26. ' : '') +
+      'Try this under another protocol.', last);
+    return steps;
+  }
+
   function guidedSteps(ex, protocol) {
+    if (ex.others) return convoySteps(ex, protocol);
     var p = Sim.probe(experimentTree(ex), protocol, ex.a, ex.b, ex.freeze || 'atLeaf');
     var opA = ex.a.kind + ' ' + ex.a.key, opB = ex.b.kind + ' ' + ex.b.key, steps = [];
     function push(caption, view, extra) {
@@ -158,7 +216,10 @@
     });
     function load() {
       protocol = selProto.value;
-      stepper.setSteps(guidedSteps(EXPERIMENTS[+selExp.value], protocol));
+      var ex = EXPERIMENTS[+selExp.value];
+      // Four lanes: two by two on a wide screen, so the picture and the controls stay together.
+      fig.root.classList.toggle('ch19-many', !!ex.others);
+      stepper.setSteps(guidedSteps(ex, protocol));
     }
     selProto.addEventListener('change', load);
     selExp.addEventListener('change', load);
@@ -371,5 +432,17 @@
       });
     });
     BTViz.selfTest('5 full table', s5, sections['5'], '#selftests');
+
+    // Section 7: four threads, a convoy behind the frozen put 26.
+    var OTHERS = [['get', 17, 'under #6'], ['get', 12, 'under #2'], ['put', 11, 'under #2']];
+    var t7 = Tree.build(64, Ch19.CANONICAL);
+    var c7 = Sim.convoy(t7, 'coupling', { kind: 'put', key: 26 }, OTHERS.map(function (o) { return { kind: o[0], key: o[1] }; }), 'atLeaf');
+    var s7 = '';
+    OTHERS.forEach(function (o, i) { s7 += '  ' + 'BCD'.charAt(i) + ' = ' + pad(o[0] + ' ' + o[1] + ' (' + o[2] + ')', 18) + ' ' + c7.outcomes[i] + '\n'; });
+    s7 += 'D needs nothing that A holds. It waits for the shared latch B keeps on the root #7 while B itself waits at #6.\n';
+    var left7 = 0;
+    c7.sim.order.forEach(function (tid) { left7 += c7.sim.held(tid).length; });
+    s7 += 'after A is released: get 26 = ' + (t7.has(26) ? 2600 : 'null') + ', get 11 = ' + (t7.has(11) ? 1100 : 'null') + ', valid=yes, latches still held: ' + (left7 === 0 ? 'none' : 'SOME') + '\n';
+    BTViz.selfTest('7 convoy', s7, sections['7'], '#selftests');
   })();
 })();

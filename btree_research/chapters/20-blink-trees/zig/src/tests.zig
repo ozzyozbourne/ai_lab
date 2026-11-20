@@ -380,9 +380,13 @@ test "two paused writers, a half-split parent and a grown root: finish first, th
             otherPut(t, io_, 31);
             t.setAbandonSplits(false);
             // #2 is still the root, is flagged, and has a right sibling #5
-            // that nothing points down to.
+            // that nothing points down to. It is the one unfinished split.
+            // (Counted from the statistics, as the Rust version must: its
+            // `incomplete_splits()` latches every node, including the two
+            // leaves the paused writers hold.)
             std.debug.assert(t.rootId() == id(2) and t.page(id(2)).incomplete_split);
-            std.debug.assert(t.page(id(2)).right == id(5) and t.incompleteSplits() == 1);
+            std.debug.assert(t.page(id(2)).right == id(5));
+            std.debug.assert(t.stats().half_splits - t.stats().completed_splits == 1);
         }
     };
     const Second = struct {
@@ -392,7 +396,8 @@ test "two paused writers, a half-split parent and a grown root: finish first, th
             // #2 is finished first (that builds the new root #7), and only
             // then does #2 receive the downlink (22, #6).
             _ = t.putFrom(io_, t.rootId(), 22, 2200, .{ .at_leaf = Third.run }) catch @panic("OutOfNodes");
-            std.debug.assert(t.rootId() == id(7) and t.incompleteSplits() == 0);
+            std.debug.assert(t.rootId() == id(7));
+            std.debug.assert(t.stats().half_splits == t.stats().completed_splits);
             std.debug.assert(t.stats().finished_later == 2); // #3 by the third writer, #2 by the second
         }
     };

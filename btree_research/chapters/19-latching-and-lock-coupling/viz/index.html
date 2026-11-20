@@ -17,6 +17,11 @@
   /* The experiment list has long labels: let it shrink instead of widening the page. */
   .ch19-wide { display: flex; flex: 1 1 16em; min-width: 0; max-width: 100%; }
   .ch19-wide select { flex: 1 1 auto; min-width: 0; width: 100%; max-width: 34em; }
+  /* Four lanes (the convoy experiment): two by two where there is room. */
+  @media (min-width: 720px) {
+    .ch19-many .bt-lanes { display: grid; grid-template-columns: 1fr 1fr; }
+    .ch19-many .bt-lane { min-width: 0; }
+  }
   /* Lift the latch badges so that the key cells do not cover their lower half. */
   .bt-node-lock rect, .bt-node-lock text { transform: translateY(-5px); }
 </style>
@@ -30,8 +35,10 @@ a latch per node with <em>latch coupling</em>, and <em>optimistic</em> descent w
 Text and code: <a href="../README.md">chapter README</a>.</p>
 
 <h2>1. One operation frozen, the other one runs</h2>
-<p>These are the experiments of section 3 and 4 of <code>zig build run</code> / <code>cargo run</code>.
+<p>These are the experiments of sections 3, 4 and 7 of <code>zig build run</code> / <code>cargo run</code>.
 Thread T1 starts and is stopped in the middle, still holding its locks; then thread T2 runs.
+The last experiment in the list has four threads: it shows a <em>convoy</em>, a thread that waits for
+one that is itself only waiting.
 A badge on a node names the thread and the mode: <b>S</b> shared (several readers), <b>X</b> exclusive
 (one writer); a dashed badge ending in <b>?</b> is a thread waiting for that latch.
 Change the protocol and watch the same experiment end differently. Press <kbd>Space</kbd> to play,
@@ -46,18 +53,22 @@ cannot step until it is released. Things to try with latch coupling: <code>put 2
 leaves; then the same under the reader-writer lock. With the optimistic protocol, let a reader note a
 version, run a writer through the same leaf, and watch the reader start again.</p>
 <div id="fig-sandbox"></div>
+<p>The sandbox tree lives in a node table of 24 nodes, like the fixed table of the programs. After enough
+splits a <code>put</code> ends with <b>OutOfNodes</b> and changes nothing; <em>Reset tree</em> starts over.</p>
 <p>The model grants a shared latch whenever no writer holds the node. Real reader-writer locks often make
 new readers queue behind a waiting writer so that writers are not starved; the order of who gets in is
-then different, the set of latches each protocol needs is the same.</p>
+then different, the set of latches each protocol needs is the same. In the convoy experiment above that
+makes things worse: once T4 waits for the root, a fifth thread that only wants to read would queue behind
+it as well.</p>
 
 <h2>3. Does the picture match the code?</h2>
 <p>The JavaScript model behind this page is a port of the chapter's Zig and Rust code. It rebuilds the
 canonical tree under each protocol, repeats every frozen-operation experiment, the replaced-root
-experiment and the full-node-table experiment, and compares the text with <code>expected_output.txt</code>
-(sections 1, 3, 4 and 5). The optimistic protocol is not in the programs and so has no such check.</p>
+experiment, the full-node-table experiment and the four-thread convoy, and compares the text with
+<code>expected_output.txt</code> (sections 1, 3, 4, 5 and 7). The optimistic protocol is not in the programs and so has no such check.</p>
 <div id="selftests" class="bt-selftests" role="status" aria-label="Model self-tests"><span class="bt-selftests-title">Self-tests</span></div>
 <details>
-  <summary>Output of the programs (all six sections)</summary>
+  <summary>Output of the programs (all seven sections)</summary>
   <pre class="bt-code" id="program-output" tabindex="0"></pre>
 </details>
 

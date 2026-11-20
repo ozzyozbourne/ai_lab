@@ -404,9 +404,6 @@ without the log: 129 page writes in place, no second copy, and Part 3's failures
 - **Syncing in the wrong order.** Resetting the log before the main file is synced loses
   committed pages; writing main-file pages before the log is synced leaves a torn tree
   with nothing to repair it. The test "write-ahead rule" checks the order on a trace.
-- **Trusting a record because its own checksum is good.** After a reset the file is full
-  of valid-looking old records; only the chain from the current header makes a record
-  current (test "records of an earlier generation are stale": 9 old records, 3 accepted).
 - **The chain cuts both ways.** A damaged record in the middle of the log hides every
   committed operation behind it (test "recovery stops at the first record whose checksum
   chain breaks"). A power cut only damages the unsynced tail; a failing disk can do this.

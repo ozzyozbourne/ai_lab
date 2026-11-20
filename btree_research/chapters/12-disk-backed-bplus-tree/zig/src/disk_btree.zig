@@ -459,11 +459,12 @@ pub const DiskBTree = struct {
         for (cells, costs, 0..) |*cell, *cost, i| {
             // Slot i of the result: the old cells with the new one inserted
             // at r.index, or put in place of the old cell with the same key.
-            const from = if (i < r.index) i else if (r.found) i else i - 1;
-            cell.* = if (i == r.index)
-                .{ .key = key, .value = value }
-            else
-                .{ .key = old.key(from), .value = old.value(from) };
+            if (i == r.index) {
+                cell.* = .{ .key = key, .value = value };
+            } else {
+                const from = if (i < r.index or r.found) i else i - 1;
+                cell.* = .{ .key = old.key(from), .value = old.value(from) };
+            }
             cost.* = cellCost(cell.key.len, cell.value.len);
         }
         const k = splitPoint(costs, 1);

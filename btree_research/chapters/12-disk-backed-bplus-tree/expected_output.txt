@@ -1,0 +1,54 @@
+Chapter 12: a disk-backed B+tree
+
+== Part 1: a tree of pages in a real file (3-frame pool) ==
+a page offers 4076 bytes to cells; a key may have 256 bytes, a value 1024
+created ch12_demo.db: 2 pages (page 0 = metapage, page 1 = root)
+put #7 key 07 (476 bytes) splits a leaf and moves the root down: 4 pages
+page 1  interior  1 keys  12/4076 bytes  | (2) 20 (3)
+  page 2  leaf      5 keys  2500/4076 bytes  next 3  | 05:420 06:444 07:468 10:540 12:588
+  page 3  leaf      2 keys  1816/4076 bytes  next -  | 20:780 30:1020
+put #12 key 15 (668 bytes) splits a leaf: 5 pages
+put #15 key 28 (980 bytes) splits a leaf: 6 pages
+put #21 key 23 (860 bytes) splits a leaf: 7 pages
+put #22 key 11 (572 bytes) splits a leaf: 8 pages
+after 24 puts:
+page 1  interior  5 keys  60/4076 bytes  | (2) 08 (7) 12 (4) 20 (3) 25 (6) 28 (5)
+  page 2  leaf      7 keys  2828/4076 bytes  next 7  | 01:324 02:348 03:372 04:396 05:420 06:444 07:468
+  page 7  leaf      4 keys  2144/4076 bytes  next 4  | 08:492 09:516 10:540 11:564
+  page 4  leaf      5 keys  3364/4076 bytes  next 3  | 12:588 14:636 15:660 17:708 18:732
+  page 3  leaf      3 keys  2484/4076 bytes  next 6  | 20:780 22:828 23:852
+  page 6  leaf      2 keys  1864/4076 bytes  next 5  | 25:900 27:948
+  page 5  leaf      3 keys  3012/4076 bytes  next -  | 28:972 29:996 30:1020
+tree:  24 keys, 8 pages, height 2; splits: 5 leaf, 0 interior, 1 root
+pool:  69 hits, 27 misses, 32 evictions, 19 write-backs
+pager: 27 reads, 21 writes, 8 allocations, 1 syncs
+flushed: file size = 32768 bytes
+reopened: root = page 1, 24 keys, height 2, validate ok
+get 17 -> 708 bytes of 'r'
+get 13 -> not found
+range [10, 20) -> 10:540 11:564 12:588 14:636 15:660 17:708 18:732
+
+== Part 2: 4000 random puts, keys of 1 to 64 bytes, values of 0 to 300 bytes (8-frame pool) ==
+first 2000 puts:
+tree:  1421 keys, 103 pages, height 3; splits: 98 leaf, 1 interior, 2 root
+pool:  4782 hits, 1675 misses, 1770 evictions, 1658 write-backs
+pager: 1675 reads, 1660 writes, 103 allocations, 1 syncs
+reopened, 2000 more puts:
+tree:  2167 keys, 157 pages, height 3; splits: 54 leaf, 0 interior, 0 root
+pool:  5927 hits, 2341 misses, 2387 evictions, 2024 write-backs
+pager: 2341 reads, 2024 writes, 54 allocations, 0 syncs
+full scan: 2167 entries, oracle has 2167, identical: true
+
+== Part 3: integer keys as big-endian bytes (chapter 11) ==
+1000 keys, 9 pages, height 2
+range [254, 259) -> 254 255 256 257 258
+(255 = 00..00ff and 256 = 00..0100: adjacent as bytes only because the high byte comes first)
+
+== Part 4: not crash-safe: one split, stopped after every page write ==
+11 keys are on disk; put 15 splits a leaf, then flush; the storage fails after N writes
+N = 0: validate ok; 11 of 11 old keys readable; new key missing
+N = 1: validate fails with error.UnreachablePage; 11 of 11 old keys readable; new key missing
+N = 2: validate fails with error.UnreachablePage; 11 of 11 old keys readable; new key missing
+N = 3: validate fails with error.KeyOutOfBounds; 9 of 11 old keys readable; new key missing
+N = 4: validate fails with error.BadPage; 9 of 11 old keys readable; new key missing
+N = 5: no crash, all writes done; validate ok; 11 of 11 old keys readable; new key readable

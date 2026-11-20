@@ -282,7 +282,7 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
     var moved = fromLeft ? node.children[0] : node.children[node.children.length - 1];
     var down = fromLeft ? node.keys[0] : node.keys[node.keys.length - 1];
     var up = parent.keys[fromLeft ? at - 1 : at];
-    return ' The sibling’s ' + (fromLeft ? 'last' : 'first') + ' child, [' + moved.keys.join(' ') + '], changes parent with it: its keys lie between ' +
+    return ' The sibling\'s ' + (fromLeft ? 'last' : 'first') + ' child, [' + moved.keys.join(' ') + '], changes parent with it: its keys lie between ' +
       k(Math.min(up, down)) + ' and ' + k(Math.max(up, down)) + '.';
   }
 

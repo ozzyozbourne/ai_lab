@@ -75,24 +75,21 @@ it.
 
 In the first design, dead entries are removed by whoever is cheapest:
 
-1. **Hint bit.** A scan follows an entry to its version and finds it dead to
-   everyone. It sets one bit on the index entry. Later scans skip the entry without
-   visiting the table.
-2. **Deletion instead of a split.** An insert finds its leaf full. Before splitting,
-   it removes the hinted entries (*simple deletion*). If nothing is hinted it may ask
-   the table about the entries on this one page (*bottom-up deletion*). Only if the
-   page is still full does it split.
-3. **VACUUM.** A background pass over the whole index removes every entry whose
-   version is dead to the horizon.
+1. **Hint bit.** A scan that finds an entry's version dead to everyone sets one bit
+   on the entry. Later scans skip it without visiting the table.
+2. **Deletion instead of a split.** An insert that finds its leaf full first removes
+   hinted entries (*simple deletion*); if none are hinted it may ask the table about
+   the entries on this one page (*bottom-up deletion*). Only then does it split.
+3. **VACUUM.** A background pass removes every entry whose version is dead to the
+   horizon.
 
 ### Page deletion
 
-VACUUM can leave a leaf completely empty. Chapter 05 would merge it into a sibling,
-and would also merge half-empty pages. PostgreSQL does neither for non-empty pages,
-for a reason that only appears with concurrent readers: a scan sits *between* pages
-and remembers only "the next page is P". If items could move left across a page
-boundary, a scan moving right could miss them. So the rule is: items move right
-(splits) or disappear; nothing else.
+VACUUM can leave a leaf completely empty, and many half-empty. Chapter 05 would
+merge them. PostgreSQL never merges non-empty pages, for a reason that only appears
+with concurrent readers: a scan sits *between* pages and remembers only "the next
+page is P". If items moved across a page boundary, a scan going the other way could
+miss them. So items move right (splits) or disappear; nothing else.
 
 An empty page has no items to move, so it can be removed, in three steps that are
 each safe on their own:
@@ -182,9 +179,8 @@ Both languages have the same files, names, tests and output.
 
 ### Zig
 
-`store.zig` is the MVCC primer as code. `Version.visible` is the two comparisons;
-`Store.horizon` is a minimum over a small array; `Store.deadToAll` is
-`xmax != 0 and xmax <= horizon()`.
+`store.zig` is the primer as code: `Version.visible`, `Store.horizon` (a minimum
+over a small array) and `Store.deadToAll` (`xmax != 0 and xmax <= horizon()`).
 
 An index key is `(user key, tid)` packed into one `u64` (`base_node.pack`), the
 tie-breaker idea of chapter 07, so that the many versions of one row are distinct
@@ -296,10 +292,9 @@ mismatches:
 | hints + vacuum | 278 | 433 | 1207 | 317 | 781 | 762 |
 | hints only | 1126 | 755 | 748 | 3411 | 0 | 0 |
 
-Without VACUUM the index ends with 1126 entries for 278 rows and never gives a page
-back. With it, most splits are served from recycled pages. But 423 pages for 278 rows
-is far from compact: that is the cost of never merging, exaggerated here by a leaf
-capacity of 3.
+Without VACUUM the index keeps 1126 entries for 278 rows. With it, most splits are
+served from recycled pages; but 423 pages for 278 rows is the cost of never merging,
+exaggerated here by a leaf capacity of 3.
 
 ## In real databases
 

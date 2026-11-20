@@ -1,3 +1,8 @@
+// Copied from chapters/12-disk-backed-bplus-tree/rust/src/disk_btree.rs. Changes for chapter 30, none of
+// which alters what `put` does or which bytes reach the file: the steps of `put` (pin_node,
+// push_root_down, split_leaf, insert_separator, split_interior), the types they exchange (PathEntry,
+// Carry) and the tree's bookkeeping fields are `pub(crate)`, so that resumable.rs can run the steps
+// one by one.
 //! disk_btree.rs: a B+tree whose nodes are slotted pages in a file.
 //!
 //! Layers (each one only talks to the one below):
@@ -262,7 +267,7 @@ pub fn split_point(costs: &[usize], min_right: usize) -> usize {
 /// A free function over the pool, not a method of the tree: the returned
 /// page then borrows only `tree.pool`, and the tree's other fields stay
 /// usable while it is alive.
-fn pin_node(pool: &mut BufferPool, id: PageId) -> Result<SlottedPage<'_>> {
+pub(crate) fn pin_node(pool: &mut BufferPool, id: PageId) -> Result<SlottedPage<'_>> {
     if id == META_PAGE_ID || id >= pool.pager().page_count() {
         return Err(TreeError::Corrupt);
     }
@@ -308,17 +313,17 @@ pub struct Stats {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PathEntry {
-    id: PageId,
-    index: usize,
+pub(crate) struct PathEntry {
+    pub(crate) id: PageId,
+    pub(crate) index: usize,
 }
 
 /// What a split hands to the level above: `left` kept the keys below `sep`,
 /// the new page `right` got the keys from `sep` on.
-struct Carry {
-    sep: Vec<u8>,
-    left: PageId,
-    right: PageId,
+pub(crate) struct Carry {
+    pub(crate) sep: Vec<u8>,
+    pub(crate) left: PageId,
+    pub(crate) right: PageId,
 }
 
 pub struct DiskBTree {
@@ -571,7 +576,7 @@ impl DiskBTree {
     /// with no key and that new page as its only (rightmost) child. Returns
     /// the new page, which the caller then splits like any other page.
     /// Fails before changing anything.
-    fn push_root_down(&mut self) -> Result<PageId> {
+    pub(crate) fn push_root_down(&mut self) -> Result<PageId> {
         let root_id = self.root;
         self.pool.fetch_page(root_id)?;
         let child_id = match self.pool.new_page() {
@@ -598,7 +603,7 @@ impl DiskBTree {
     /// `id`, so the leaf that pointed at it still does; the right half goes
     /// to a new page and is linked in after it. Fails before changing
     /// anything.
-    fn split_leaf(&mut self, id: PageId, key: &[u8], value: &[u8]) -> Result<Carry> {
+    pub(crate) fn split_leaf(&mut self, id: PageId, key: &[u8], value: &[u8]) -> Result<Carry> {
         // The split buffer: a copy of the page (on the stack), so that both
         // halves can be rebuilt from it. The cells below borrow from it.
         let mut copy: Page = *self.pool.fetch_page(id)?;
@@ -649,7 +654,7 @@ impl DiskBTree {
     /// `carry.left`, there are now `left`, the separator and `right`.
     /// Returns false, with the parent untouched, if the separator does not
     /// fit.
-    fn insert_separator(&mut self, parent: PathEntry, carry: &Carry) -> Result<bool> {
+    pub(crate) fn insert_separator(&mut self, parent: PathEntry, carry: &Carry) -> Result<bool> {
         let mut page = pin_node(&mut self.pool, parent.id)?;
         if page.kind() != KIND_INTERIOR
             || parent.index > page.count()
@@ -683,7 +688,7 @@ impl DiskBTree {
     /// `carry` at `parent.index`. Unlike in a leaf, the middle key MOVES up:
     /// it separates the two halves and is needed in neither. Fails before
     /// changing anything.
-    fn split_interior(&mut self, parent: PathEntry, carry: &Carry) -> Result<Carry> {
+    pub(crate) fn split_interior(&mut self, parent: PathEntry, carry: &Carry) -> Result<Carry> {
         let id = parent.id;
         let mut copy: Page = *self.pool.fetch_page(id)?;
         let old = SlottedPage::open(&mut copy);

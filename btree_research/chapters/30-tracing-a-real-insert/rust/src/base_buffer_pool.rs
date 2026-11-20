@@ -248,6 +248,25 @@ impl BufferPool {
         self.pager.sync()
     }
 
+    /// (Chapter 30.) Write back and drop every page that is not pinned, as
+    /// if memory pressure had pushed them all out. Returns how many were
+    /// dropped.
+    pub fn evict_unpinned(&mut self) -> Result<usize, Error> {
+        let mut dropped = 0;
+        for f in 0..self.frames.len() {
+            let frame = self.frames[f];
+            if frame.page_id == INVALID_PAGE_ID || frame.pin_count > 0 {
+                continue;
+            }
+            self.flush_frame(f)?;
+            self.page_table.remove(&frame.page_id);
+            self.frames[f] = Frame::EMPTY;
+            self.stats.evictions += 1;
+            dropped += 1;
+        }
+        Ok(dropped)
+    }
+
     pub fn pager(&self) -> &Pager {
         &self.pager
     }

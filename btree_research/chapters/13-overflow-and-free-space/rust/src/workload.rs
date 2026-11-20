@@ -1,3 +1,5 @@
+// Copied from chapters/12-disk-backed-bplus-tree/rust/src/workload.rs and extended:
+// `mixed_value` (values of every size class), `Model::delete`, `Model::key_at`.
 //! workload.rs: seeded byte-string keys and values, and the oracle the tree
 //! is compared with. The Zig twin draws the same random numbers, so both
 //! languages run the same operations and print the same counters.
@@ -33,6 +35,31 @@ pub fn random_value(rng: &mut SplitMix64, max_len: usize) -> Vec<u8> {
     (0..len).map(|i| start.wrapping_add(i as u8)).collect()
 }
 
+/// A value from one of four size classes, so that a run mixes cells that
+/// stay in the leaf with chains of several pages, and overwrites move a key
+/// from one class to another. `max_len` caps every class.
+///
+/// ```text
+///   4 in 8   tiny: 0 to 64 bytes
+///   2 in 8   around the local limit X = 1088: 1000 to 1199 bytes
+///   1 in 8   one to three overflow pages: 1089 to 9256 bytes
+///   1 in 8   anything from 0 to `max_len`
+/// ```
+pub fn mixed_value(rng: &mut SplitMix64, max_len: usize) -> Vec<u8> {
+    let wanted = match rng.below(8) {
+        0..=3 => rng.below(65),
+        4 | 5 => 1000 + rng.below(200),
+        6 => 1089 + rng.below(2 * 4084),
+        _ => rng.below(max_len as u64 + 1),
+    } as usize;
+    let len = wanted.min(max_len);
+    // 4084 payload bytes per overflow page is not a multiple of 256, so two
+    // pages of a chain never hold the same bytes: a chain put together in
+    // the wrong order cannot pass for the right value.
+    let start = rng.next_u64() as u8;
+    (0..len).map(|i| start.wrapping_add(i as u8)).collect()
+}
+
 /// The oracle. Zig keeps a sorted array in an arena; std's `BTreeMap` is the
 /// natural choice here (and an in-memory B-tree checking an on-disk one).
 #[derive(Debug, Default)]
@@ -51,6 +78,21 @@ impl Model {
 
     pub fn put(&mut self, key: &[u8], value: &[u8]) {
         self.entries.insert(key.to_vec(), value.to_vec());
+    }
+
+    /// Remove `key`; false if it was not there.
+    pub fn delete(&mut self, key: &[u8]) -> bool {
+        self.entries.remove(key).is_some()
+    }
+
+    /// The `index`-th key in key order.
+    pub fn key_at(&self, index: usize) -> Option<&[u8]> {
+        self.entries.keys().nth(index).map(Vec::as_slice)
+    }
+
+    /// All entries in key order.
+    pub fn iter(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
+        self.entries.iter().map(|(k, v)| (k.as_slice(), v.as_slice()))
     }
 
     /// The entries with lo <= key < hi (`hi` None = to the end).
@@ -93,5 +135,9 @@ mod tests {
         assert_eq!(model.range(b"a", Some(b"c")).len(), 2);
         assert_eq!(model.range(b"b", None).len(), 2);
         assert_eq!(model.range(b"c", Some(b"a")).len(), 0);
+        assert!(model.delete(b"b") && !model.delete(b"b"));
+        assert_eq!(model.len(), 2);
+        assert_eq!(model.get(b"b"), None);
+        assert_eq!(model.key_at(1), Some(&b"c"[..]));
     }
 }

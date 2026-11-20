@@ -1,12 +1,12 @@
-//! Chapter 12: a disk-backed B+tree.
+//! Chapter 13: overflow chains and free space.
 //!
 //!   base_storage.rs       Storage trait, FileStorage, MemStorage, Error   (chapter 09)
 //!   base_pager.rs         Pager: a storage as an array of 4096-byte pages (chapter 09)
 //!   base_buffer_pool.rs   BufferPool: pinned frames, dirty flags, CLOCK   (chapter 09)
 //!   base_slotted_page.rs  SlottedPage: variable-length cells in one page  (chapter 10)
-//!   disk_btree.rs         DiskBTree: this chapter
-//!   workload.rs           seeded keys and values, the oracle
-//!   tests.rs              model tests, fault injection, the torn split
+//!   disk_btree.rs         DiskBTree (chapter 12) + overflow chains, delete, free list
+//!   workload.rs           seeded keys and values of every size class, the oracle
+//!   tests.rs              model tests, fault injection, damaged files
 //!   demo.rs               the fixed scenario printed by `cargo run`
 pub mod base_buffer_pool;
 pub mod base_pager;
@@ -30,7 +30,7 @@ pub(crate) struct TempDir(pub std::path::PathBuf);
 #[cfg(test)]
 impl TempDir {
     pub(crate) fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("ch12_{}_{}", std::process::id(), name));
+        let path = std::env::temp_dir().join(format!("ch13_{}_{}", std::process::id(), name));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("create temp dir");
         Self(path)

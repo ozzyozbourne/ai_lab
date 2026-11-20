@@ -501,6 +501,7 @@ test "restart after a crash at any write, with either slot damaged, finds a comp
     const gpa = testing.allocator;
     var fell_back_two: usize = 0; // restarts that landed on T-2 while T was in flight
     var cases: usize = 0;
+    var torn: usize = 0; // torn slots seen to fail their checksum
     for ([_]usize{ 3, 4 }) |order| {
         var db: Db = .init(order);
         defer db.deinit(gpa);
@@ -530,9 +531,18 @@ test "restart after a crash at any write, with either slot damaged, finds a comp
                 try history.append(gpa, content); // history[t]
             }
 
+            // How many pages the commit writes before it writes its meta slot.
+            const pages = blk: {
+                var txn = db.begin(gpa);
+                defer txn.abort();
+                if (is_put) _ = try txn.put(key, value) else _ = try txn.delete(key);
+                break :blk txn.dirty.count();
+            };
+
             // Crash the commit of transaction t after w device writes, for
             // every w, until it gets through.
             var w: usize = 0;
+            var last_seen: ?[2]?Meta = null; // the slots as decoded at the previous w
             while (true) : (w += 1) {
                 var trial = try cloneDb(gpa, &db);
                 defer trial.deinit(gpa);
@@ -545,6 +555,27 @@ test "restart after a crash at any write, with either slot damaged, finds a comp
                     break :blk {};
                 };
                 if (crashed) |_| {} else |e| try testing.expectEqual(error.Crashed, e);
+
+                // The meta write is 32 device writes, and for most of them the
+                // disk is the same to a restart: all pages written, the new
+                // slot not valid. `reopen` sees the slots only through
+                // `decode`, so one restart matrix per DIFFERENT pair of
+                // decoded slots covers them all. (One kind of damage does
+                // look at the bytes: a bit flip can complete a slot that was
+                // torn one bit short. That disk is byte for byte the disk of
+                // the finished commit, which the last round restarts.)
+                const seen: [2]?Meta = .{
+                    Meta.decode(&trial.store.meta_slots[0]),
+                    Meta.decode(&trial.store.meta_slots[1]),
+                };
+                if (w > pages) {
+                    // Torn after w - pages bytes: the slot fails its checksum,
+                    // unless the missing bytes equal the ones they replace.
+                    if (seen[t % 2]) |m| try testing.expectEqual(t, m.txn_id) else torn += 1;
+                    const done = if (crashed) |_| true else |_| false;
+                    if (!done and std.meta.eql(seen, last_seen.?)) continue;
+                }
+                if (w >= pages) last_seen = seen;
 
                 // The disk as the crash left it, then with one slot damaged.
                 for ([_]usize{ 0, 1 }) |slot| {
@@ -576,7 +607,8 @@ test "restart after a crash at any write, with either slot damaged, finds a comp
             try testing.expectEqual(t, db.current.txn_id);
         }
     }
-    try testing.expect(cases > 20_000);
+    try testing.expect(cases > 5_000);
+    try testing.expect(torn > 5_000);
     try testing.expect(fell_back_two > 1_000); // the double fault really was exercised
 }
 

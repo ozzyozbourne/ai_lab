@@ -242,7 +242,7 @@ pub fn steadyState(gpa: Allocator, rounds: usize, pages: []u32, stats: *DiskBTre
 }
 
 fn part3(w: *Io.Writer, gpa: Allocator) !void {
-    try w.writeAll("\n== Part 3: the file stops growing: 12 rounds of 250 puts + 250 deletes over 200 keys ==\n");
+    try w.writeAll("\n== Part 3: the file stops growing: 12 rounds of 500 operations, half puts and half deletes, over 200 keys ==\n");
     var pages: [12]u32 = undefined;
     var stats: DiskBTree.Stats = undefined;
     try steadyState(gpa, pages.len, &pages, &stats);

@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use ch12_disk_backed_bplus_tree::demo;
+use ch13_overflow_and_free_space::demo;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut stdout = io::BufWriter::new(io::stdout().lock());

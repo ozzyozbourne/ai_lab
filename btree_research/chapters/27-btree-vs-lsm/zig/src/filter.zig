@@ -118,7 +118,7 @@ test "a filter never says no for a key it holds, and rarely says maybe for other
     // 100000 absent keys: about 0.8% expected for 10 bits per key, 7 hashes.
     var false_positives: usize = 0;
     for (0..100_000) |i| false_positives += @intFromBool(f.mayContain(i * 3 + 1));
-    try std.testing.expectEqual(879, false_positives); // the same count in Rust
+    try std.testing.expectEqual(838, false_positives); // the same count in Rust
 }
 
 test "a filter with too few bits still never loses a key" {

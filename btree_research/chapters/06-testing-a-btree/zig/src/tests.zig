@@ -282,7 +282,7 @@ fn someBlockIsRemovable(comptime T: type, gpa: Allocator, steps: []const fuzz.St
 test "minimize: no contiguous block of steps can be removed from the result" {
     // The guarantee stated in minimize.zig, checked on the first failing
     // seeds of each variant (not only the hand-picked shortest run). A
-    // minimiser whose chunk sizes only shrink fails this for 14 of these 60
+    // minimiser whose chunk sizes only shrink fails this for 13 of these 60
     // runs: it leaves pairs of steps that can only be removed together.
     const gpa = testing.allocator;
     inline for (scenario.bugs) |bug| {

@@ -1,4 +1,4 @@
-//! SECTION 1 of 6: the node type.
+//! SECTION 1: the node type.
 //!
 //! A B-tree of order M (Knuth: M = maximum number of children) is made of
 //! nodes that hold
@@ -16,12 +16,35 @@
 //! tree and a node holds three `Vec`s. A node may briefly hold M keys inside
 //! `insert.rs` ("overflow, then split"); `validate` rejects that state.
 
+use std::ops::{Index, IndexMut};
+
 /// Handle of a node: an index into the slab (pool.rs), not a pointer.
 /// Indices are `Copy`, stay valid when the slab's `Vec` reallocates, and let
 /// the tree hold "pointers" to parent, child and sibling at the same time
 /// without fighting the borrow checker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub u32);
+
+/// Read access to nodes by id. This is all that search.rs, validate.rs and
+/// stats.rs ask of the place where the nodes live, so they work with the
+/// slab of pool.rs and equally with a plain `Vec<Node>` (a *typed arena*:
+/// nodes are pushed and never freed, which is what chapter 03 uses).
+pub trait Nodes: Index<NodeId, Output = Node> {}
+impl<T: Index<NodeId, Output = Node> + ?Sized> Nodes for T {}
+
+/// The typed arena: `nodes[id]` for a `Vec<Node>`.
+impl Index<NodeId> for Vec<Node> {
+    type Output = Node;
+    fn index(&self, id: NodeId) -> &Node {
+        &self[id.0 as usize]
+    }
+}
+
+impl IndexMut<NodeId> for Vec<Node> {
+    fn index_mut(&mut self, id: NodeId) -> &mut Node {
+        &mut self[id.0 as usize]
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Entry {

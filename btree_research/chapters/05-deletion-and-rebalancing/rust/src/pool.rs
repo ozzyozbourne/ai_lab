@@ -1,4 +1,4 @@
-//! SECTION 2 of 6: node allocation.
+//! SECTION 2: node allocation.
 //!
 //! The tree never creates nodes on its own. It asks the *slab* for a slot and
 //! gives slots back to it:

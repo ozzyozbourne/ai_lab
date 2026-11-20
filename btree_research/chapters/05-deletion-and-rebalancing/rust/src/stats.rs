@@ -1,7 +1,7 @@
-//! SECTION 6b of 6: shape statistics and a text rendering of the tree.
+//! SECTION 6b: shape statistics and a text rendering of the tree.
+//! This file needs only node.rs.
 
-use crate::node::{NodeId, max_keys};
-use crate::pool::Slab;
+use crate::node::{NodeId, Nodes, max_keys};
 use std::io::{self, Write};
 
 /// What the tree looks like right now.
@@ -25,21 +25,21 @@ impl Shape {
     }
 }
 
-pub fn shape(pool: &Slab, order: usize, root: Option<NodeId>) -> Shape {
+pub fn shape<P: Nodes + ?Sized>(nodes: &P, order: usize, root: Option<NodeId>) -> Shape {
     let mut s = Shape::default();
     let mut node = root;
     while let Some(id) = node {
         s.height += 1;
-        node = pool[id].children.first().copied();
+        node = nodes[id].children.first().copied();
     }
     if let Some(root) = root {
-        add_node(pool, order, root, &mut s);
+        add_node(nodes, order, root, &mut s);
     }
     s
 }
 
-fn add_node(pool: &Slab, order: usize, id: NodeId, s: &mut Shape) {
-    let node = &pool[id];
+fn add_node<P: Nodes + ?Sized>(nodes: &P, order: usize, id: NodeId, s: &mut Shape) {
+    let node = &nodes[id];
     s.nodes += 1;
     s.keys += node.len();
     s.capacity += max_keys(order);
@@ -47,7 +47,7 @@ fn add_node(pool: &Slab, order: usize, id: NodeId, s: &mut Shape) {
         s.leaves += 1;
     }
     for &child in &node.children {
-        add_node(pool, order, child, s);
+        add_node(nodes, order, child, s);
     }
 }
 
@@ -61,8 +61,8 @@ fn add_node(pool: &Slab, order: usize, id: NodeId, s: &mut Shape) {
 /// ```
 ///
 /// Every line starts with `indent`. An empty tree prints `(empty)`.
-pub fn render(
-    pool: &Slab,
+pub fn render<P: Nodes + ?Sized>(
+    nodes: &P,
     order: usize,
     root: Option<NodeId>,
     w: &mut dyn Write,
@@ -71,24 +71,24 @@ pub fn render(
     let Some(root_id) = root else {
         return writeln!(w, "{indent}(empty)");
     };
-    for level in 0..shape(pool, order, root).height {
+    for level in 0..shape(nodes, order, root).height {
         write!(w, "{indent}")?;
         let mut first = true;
-        render_level(pool, root_id, level, w, &mut first)?;
+        render_level(nodes, root_id, level, w, &mut first)?;
         writeln!(w)?;
     }
     Ok(())
 }
 
 /// Print the nodes `remaining` levels below `id`, left to right.
-fn render_level(
-    pool: &Slab,
+fn render_level<P: Nodes + ?Sized>(
+    nodes: &P,
     id: NodeId,
     remaining: usize,
     w: &mut dyn Write,
     first: &mut bool,
 ) -> io::Result<()> {
-    let node = &pool[id];
+    let node = &nodes[id];
     if remaining == 0 {
         let keys: Vec<String> = node.keys.iter().map(u64::to_string).collect();
         return write!(w, "[{}]", keys.join(" "));
@@ -103,7 +103,7 @@ fn render_level(
             }
             *first = false;
         }
-        render_level(pool, child, remaining - 1, w, first)?;
+        render_level(nodes, child, remaining - 1, w, first)?;
     }
     Ok(())
 }

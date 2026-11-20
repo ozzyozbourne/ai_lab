@@ -123,9 +123,8 @@ interior slabs: 0[###.]
 node sizes:     leaf 56 bytes, interior 72 bytes
 ```
 
-`L0.3` is "leaf pool, slab 0, slot 3". (The tree is one level taller than the one
-chapter 04 builds from the same keys, because this chapter splits full nodes on the
-way down; see below.)
+`L0.3` is "leaf pool, slab 0, slot 3". (The tree is one level taller than chapter
+04's for the same keys, because this chapter splits full nodes on the way down.)
 
 ### Zig
 
@@ -153,24 +152,23 @@ never relocate anything: the interface gives up what handles were for.
 
 **`btree.zig`.** `Interior` is `{ head: Leaf, children: [M]Handle }`, so `head(h)`
 returns the keys and values of either kind and the class bit picks the pool. The tree
-uses **top-down splitting** (chapter 04 mentions it as the textbook alternative): on
-the way down, every full node is split before it is entered. Each split first
-allocates the new sibling and only then moves keys, so when an allocation fails
-nothing is half-done: the tree is valid, the key is absent, and the caller gets
-`error.OutOfMemory`. `checkAllAllocationFailures` proves that for every allocation of
-a 40-key build. Top-down splitting needs an even `M` (a full node has an odd number of
-keys, so the median splits it into two minimal nodes), which is asserted at comptime.
-`delete` is CLRS top-down deletion; it never allocates. `deinit` does not walk the
-tree: dropping the slabs drops the nodes.
+uses **top-down splitting** (the textbook alternative to chapter 04's bottom-up
+insert): on the way down, every full node is split before it is entered. Each split
+allocates the new sibling first and only then moves keys, so a failed allocation
+leaves a valid tree without the key and returns `error.OutOfMemory`;
+`checkAllAllocationFailures` proves it for every allocation of a 40-key build.
+Top-down splitting needs an even `M`, asserted at comptime. `delete` is CLRS top-down
+deletion and never allocates. `deinit` does not walk the tree: dropping the slabs
+drops the nodes.
 
 `vacuum` asks each pool for a victim, walks the tree in preorder and replaces every
-child handle that points into a victim by the result of `relocate`. Because a node is
-referenced from exactly one place (its parent, or `root`), one write per moved node is
-enough.
+child handle that points into a victim by the result of `relocate`. A node is
+referenced from exactly one place (its parent, or `root`), so one write per moved
+node is enough.
 
-`validate` checks the B-tree invariants and the allocator: every reachable handle must
-be live, and the number of reachable nodes must equal the number of live slots, so a
-leaked or double-freed node fails `validate` whatever the backing allocator is.
+`validate` checks the B-tree invariants and the allocator: every reachable handle is
+live and the number of reachable nodes equals the number of live slots, so a leaked
+or double-freed node fails `validate` under any backing allocator.
 
 **`static_allocator.zig`.** A wrapper is four functions that forward to the parent's
 `rawAlloc`, `rawResize`, `rawRemap` and `rawFree`. This one adds a state. `init`
@@ -190,12 +188,11 @@ cannot supply the nodes for a root split: one refused request, a clean `OutOfMem
 and `deinit` the buddy heap is one free block again.
 
 **`buddy.zig`.** All bookkeeping (state, order, free-list links) lives in side arrays
-indexed by minimum-block number, not inside the free blocks, so the allocator never
-writes into the memory it manages. `allocBlock(k)` takes the smallest free block of
-order at least `k` and splits it down; `freeBlock` merges upwards while the buddy is
-free *and* whole. The `std.mem.Allocator` face maps `len` and `alignment` to an order,
-answers `resize` in place when the new length still fits the block, and tracks
-`requested` against `granted` bytes.
+indexed by minimum-block number, so the allocator never writes into the memory it
+manages. `allocBlock(k)` takes the smallest free block of order at least `k` and
+splits it down; `freeBlock` merges upwards while the buddy is free *and* whole. The
+`std.mem.Allocator` face maps `len` and `alignment` to an order, resizes in place when
+the new length still fits the block, and tracks `requested` against `granted` bytes.
 
 ### Rust
 
@@ -255,11 +252,11 @@ pointer in the parent and restores its type and gate status
 chapter's version takes one victim per pool per pass and uses the simpler threshold
 "one whole slab can be saved".
 
-**TigerBeetle `NodePool`** (`tigerbeetle/src/lsm/node_pool.zig:10-84`; TigerBeetle has
-no B-tree either, the pool serves its manifest's segmented arrays). One buffer, one
-bitset, `acquire` and `release` by pointer, exhaustion is fatal, `deinit` asserts that
-everything was released. It is not a `std.mem.Allocator`; the `Allocator` is used only
-in `init`. `release_empty = false` plus `reserve` is that policy on this chapter's pool.
+**TigerBeetle `NodePool`** (`tigerbeetle/src/lsm/node_pool.zig:10-84`; no B-tree
+either, the pool serves the manifest's segmented arrays). One buffer, one bitset,
+`acquire` and `release` by pointer, exhaustion is fatal, `deinit` asserts that
+everything was released. It is not a `std.mem.Allocator`; one is used only in `init`.
+`release_empty = false` plus `reserve` is that policy on this chapter's pool.
 
 **TigerBeetle `StaticAllocator`** (`tigerbeetle/src/static_allocator.zig:14-23` for the
 three states, `:58-62` for `alloc`). The replica flips it after start-up
@@ -267,9 +264,9 @@ three states, `:58-62` for `alloc`). The replica flips it after start-up
 original asserts; this chapter's version refuses and counts so that a test can watch.
 Both end `init` at the first `free` ("Once you start freeing, you don't stop", `:76-82`).
 TigerBeetle's documentation separates this from "an arena with a limit": every object
-type has an explicit upper bound, so the pools are sized never to run out
-(`tigerbeetle/docs/ARCHITECTURE.md:203-206`). Section 4 of the demo, which fills the
-pool until it fails, shows the arena-with-a-limit behaviour on purpose.
+type has an explicit upper bound, so the pools never run out
+(`tigerbeetle/docs/ARCHITECTURE.md:203-206`). Section 4 of the demo fills the pool
+until it fails, the arena-with-a-limit behaviour, on purpose.
 
 **Buddy allocation** is textbook material (Knuth, TAOCP volume 1, section 2.5). None
 of the six code bases studied here uses one for its index.
@@ -279,15 +276,15 @@ list and the buffer pool of chapter 09, and a page number is a handle in this se
 
 ## Allocator notes
 
-**Choices in this chapter.** Nodes come from `SlabPool`, because nodes are fixed-size
-and the tree wants relocation and 4-byte links. The pool takes its slabs from whatever
-`Allocator` it is given: `std.testing.allocator` in tests (a leaked slab fails the
-test), `init.gpa` in sections 1 to 3 of the demo, and the buddy-on-a-fixed-buffer stack
-in section 4. Lifetimes are nested: the buffer outlives the buddy heap, which outlives
-the pools, which outlive the tree's use of any handle. What goes wrong with other
-choices: a general-purpose allocator per node works but pays a header and a size-class
-lookup per node and can never compact; an `ArenaAllocator` cannot give back the nodes
-that deletes free; `page_allocator` per node is a system call per insert.
+**Choices in this chapter.** Nodes come from `SlabPool`: they are fixed-size and the
+tree wants relocation and 4-byte links. The pool takes its slabs from the `Allocator`
+it is given: `std.testing.allocator` in tests (a leaked slab fails the test),
+`init.gpa` in sections 1 to 3 of the demo, the buddy-on-a-fixed-buffer stack in
+section 4. Lifetimes are nested: the buffer outlives the buddy heap, which outlives
+the pools, which outlive every handle. With other choices: a general-purpose
+allocator per node pays a header and a size-class lookup and can never compact; an
+`ArenaAllocator` cannot give back the nodes that deletes free; `page_allocator` per
+node is a system call per insert.
 
 **The tour** (`zig/src/tour.zig`, at least one test per row; "free one item" means the
 memory becomes reusable before the allocator is torn down):
@@ -312,11 +309,10 @@ memory becomes reusable before the allocator is torn down):
 | `checkAllAllocationFailures` | Runs a function once per allocation, failing from that one on | (allocations + 1) runs | n/a | n/a | Exhaustive `OutOfMemory` test of every insert path |
 | `std.mem.ValidationAllocator` (`validationWrap`) | Wrapper that asserts the interface contract: no zero-length request, returned pointers aligned | Child cost plus asserts | Via the child | As the child | Around an allocator you wrote yourself (here: the buddy heap) |
 
-The list was checked against the 0.17.1 sources: the nine files of `lib/std/heap/`, the
-instances in `lib/std/heap.zig`, `std.testing`, and the two allocators that live in
-`std.mem`. One is not run: `std.os.uefi.pool_allocator` exists only on UEFI firmware.
-`main` receives two ready-made ones in `std.process.Init`: `init.gpa` (a
-`SafeAllocator` in debug and safe builds) and `init.arena`.
+The list was checked against the 0.17.1 sources: the nine files of `lib/std/heap/`,
+the instances in `heap.zig`, `std.testing`, and the two in `std.mem`. Not run:
+`std.os.uefi.pool_allocator`, which exists only on UEFI firmware. `main` also receives
+`init.gpa` (a `SafeAllocator` in debug and safe builds) and `init.arena`.
 
 Two rows need a special build, which is why `build.zig` has three test steps. In the
 default build the two tests report "skipped":
@@ -338,30 +334,28 @@ default build the two tests report "skipped":
 
 ## Pitfalls
 
-- **Reading the bitmap the wrong way round.** Here and in DuckDB a set bit means
-  *free*. TigerBeetle's `NodePool` bitset means the same. Many other bitmaps mean
-  "used".
+- **Reading the bitmap the wrong way round.** Here, in DuckDB and in TigerBeetle's
+  `NodePool` a set bit means *free*. Many other bitmaps mean "used".
 - **Keeping a handle across a vacuum, or a pointer across a `destroy`.** A handle is
   valid until its node is freed *or moved*. Cursors must re-find their node by key
   after a vacuum (chapter 08's re-seek).
 - **Stale handles are not detected by a bitmap.** If slot 0.1 is freed and reused,
-  the old handle `0.1` opens the new occupant. The pool only catches a handle whose
-  slot is currently free. Generation counters (`GenSlab` in `idioms.rs`) close the
-  gap at 4 more bytes per handle.
-- **Slab sizes and waste.** One live node keeps a whole slab alive. Large slabs cost
-  memory for small trees; small slabs cost directory entries and allocator calls.
+  the old handle opens the new occupant; the pool only catches a handle whose slot is
+  free right now. Generation counters (`GenSlab` in `idioms.rs`) close the gap at 4
+  more bytes per handle.
+- **Slab sizes.** One live node keeps a whole slab alive; small slabs cost directory
+  entries and allocator calls.
 - **Growing during start-up under a `StaticAllocator`.** The first `free` ends `init`,
   and a list that grows frees its old buffer: the next allocation is refused although
   the program is still starting up. Reserve final sizes (`initCapacity`,
   `ensureTotalCapacityPrecise`), and call `SlabPool.reserve` once per pool.
-- **"Static" is not "arena with a cap".** Freezing the allocator proves that memory
-  does not grow. It does not prove that the reserved amount is enough; that needs an
-  upper bound for every structure, computed before start-up.
+- **"Static" is not "arena with a cap".** Freezing proves that memory does not grow,
+  not that the reserved amount is enough; that needs an upper bound for every
+  structure, computed before start-up.
 - **Buddy rounding.** A request of 65 bytes takes 128. Sizes just above a power of two
   waste almost half; choose slab sizes that are powers of two.
 - **Top-down splitting splits early.** Ascending inserts leave every node at its
-  minimum, so the tree is taller than a bottom-up tree of the same keys (42 keys reach
-  height 5 in the demo with M = 4).
+  minimum (42 keys reach height 5 in the demo with M = 4).
 
 ## Exercises
 

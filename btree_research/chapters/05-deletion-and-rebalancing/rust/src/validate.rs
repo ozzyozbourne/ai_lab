@@ -1,10 +1,12 @@
-//! SECTION 6a of 6: the invariants as code.
+//! SECTION 6a: the invariants as code.
 //!
 //! `validate` walks the whole tree and returns the first broken invariant.
 //! Every test calls it after every operation; chapter 06 builds a fuzzer on it.
+//!
+//! This file needs only node.rs: it knows nothing about the slab, insert or
+//! delete, and works on trees built by hand in a `Vec<Node>`.
 
-use crate::node::{NodeId, max_keys, min_keys};
-use crate::pool::Slab;
+use crate::node::{NodeId, Nodes, max_keys, min_keys};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValidateError {
@@ -26,24 +28,25 @@ pub enum ValidateError {
     UnexpectedChild,
     /// The number of keys in the tree differs from the tree's `len`.
     WrongKeyCount,
-    /// The pool's live-node counter differs from the nodes reachable from
-    /// the root: a node was leaked (checked by `BTree::validate`).
+    /// The pool's live-node counter differs from the number of nodes
+    /// reachable from the root: a node was leaked. Not returned by the
+    /// function below, which sees no pool; `BTree::validate` adds this check.
     NodeCountMismatch,
 }
 
-pub fn validate(
-    pool: &Slab,
+pub fn validate<P: Nodes + ?Sized>(
+    nodes: &P,
     order: usize,
     root: Option<NodeId>,
     expected_len: usize,
 ) -> Result<(), ValidateError> {
     let mut count = 0;
     if let Some(root) = root {
-        if pool[root].is_empty() {
+        if nodes[root].is_empty() {
             return Err(ValidateError::EmptyRoot);
         }
         let mut walk = Walk {
-            pool,
+            nodes,
             order,
             leaf_depth: None,
             count: 0,
@@ -57,14 +60,14 @@ pub fn validate(
     Ok(())
 }
 
-struct Walk<'a> {
-    pool: &'a Slab,
+struct Walk<'a, P: Nodes + ?Sized> {
+    nodes: &'a P,
     order: usize,
     leaf_depth: Option<usize>,
     count: usize,
 }
 
-impl Walk<'_> {
+impl<P: Nodes + ?Sized> Walk<'_, P> {
     /// `lo` / `hi` are exclusive bounds inherited from the separators in the
     /// ancestors (`None` = unbounded).
     fn check(
@@ -75,7 +78,7 @@ impl Walk<'_> {
         is_root: bool,
         depth: usize,
     ) -> Result<(), ValidateError> {
-        let node = &self.pool[id];
+        let node = &self.nodes[id];
         if node.len() > max_keys(self.order) {
             return Err(ValidateError::NodeOverfull);
         }
@@ -138,18 +141,23 @@ mod tests {
         node
     }
 
+    fn push(nodes: &mut Vec<Node>, node: Node) -> NodeId {
+        nodes.push(node);
+        NodeId(nodes.len() as u32 - 1)
+    }
+
     #[test]
     fn validate_names_the_broken_invariant() {
         use ValidateError::*;
         //            [20]
         //     [5 10]      [30 40]
-        let mut pool = Slab::new();
-        let left = pool.alloc(leaf(&[5, 10])).unwrap();
-        let right = pool.alloc(leaf(&[30, 40])).unwrap();
+        let mut pool: Vec<Node> = Vec::new(); // a typed arena is enough here
+        let left = push(&mut pool, leaf(&[5, 10]));
+        let right = push(&mut pool, leaf(&[30, 40]));
         let mut top = leaf(&[20]);
         top.leaf = false;
         top.children = vec![left, right];
-        let root = pool.alloc(top).unwrap();
+        let root = push(&mut pool, top);
         assert_eq!(validate(&pool, 4, Some(root), 5), Ok(()));
         assert_eq!(validate(&pool, 4, None, 0), Ok(()));
 
@@ -178,19 +186,19 @@ mod tests {
         pool[left].children.clear();
 
         // Hang a subtree under the right slot: its leaves are one level deeper.
-        let deep_a = pool.alloc(leaf(&[25])).unwrap();
-        let deep_b = pool.alloc(leaf(&[35])).unwrap();
+        let deep_a = push(&mut pool, leaf(&[25]));
+        let deep_b = push(&mut pool, leaf(&[35]));
         let mut mid = leaf(&[30]);
         mid.leaf = false;
         mid.children = vec![deep_a, deep_b];
-        let mid = pool.alloc(mid).unwrap();
+        let mid = push(&mut pool, mid);
         pool[root].children[1] = mid;
         assert_eq!(
             validate(&pool, 4, Some(root), 6),
             Err(LeavesAtDifferentDepths)
         );
 
-        let empty_root = pool.alloc(leaf(&[])).unwrap();
+        let empty_root = push(&mut pool, leaf(&[]));
         assert_eq!(validate(&pool, 4, Some(empty_root), 0), Err(EmptyRoot));
     }
 }

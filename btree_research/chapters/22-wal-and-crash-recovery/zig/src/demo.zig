@@ -301,7 +301,7 @@ fn part1(w: *Io.Writer, gpa: Allocator) !void {
     var counts: [5]u32 = @splat(0);
     for (0..32) |mask| {
         const o = try splitSubset(gpa, &writes, @intCast(mask));
-        counts[@intFromEnum(o.state)] += 1;
+        counts[@backingInt(o.state)] += 1;
         var cell_buf: [64]u8 = undefined;
         var cell: Io.Writer = .fixed(&cell_buf);
         for (0..split_write_count) |i| try cell.writeByte(if (mask & (@as(usize, 1) << @intCast(i)) != 0) '1' else '0');
@@ -310,8 +310,8 @@ fn part1(w: *Io.Writer, gpa: Allocator) !void {
         if (mask % 2 == 0) try w.print("  {s:<34}", .{cell.buffered()}) else try w.print("{s}\n", .{cell.buffered()});
     }
     try w.print("of the 32 subsets: {d} before, {d} after, {d} cannot be opened, {d} invalid, {d} valid with wrong contents\n", .{
-        counts[@intFromEnum(State.before)],  counts[@intFromEnum(State.after)],          counts[@intFromEnum(State.open_failed)],
-        counts[@intFromEnum(State.invalid)], counts[@intFromEnum(State.wrong_contents)],
+        counts[@backingInt(State.before)],  counts[@backingInt(State.after)],          counts[@backingInt(State.open_failed)],
+        counts[@backingInt(State.invalid)], counts[@backingInt(State.wrong_contents)],
     });
 }
 

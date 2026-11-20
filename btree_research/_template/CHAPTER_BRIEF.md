@@ -126,3 +126,7 @@ Disk space is limited and shared: before you finish, delete all build output (ta
 .zig-cache, zig-out) and screenshots from your own scratch directory, keeping only small
 source and script files that a later agent may need. Never delete anything outside your
 own scratch directory and your chapter.
+Other agents build and test on this machine at the same time: never kill processes by a
+name pattern (no `pkill -f`, no `killall`); kill only PIDs or process groups you started.
+Scripts left by earlier agents in scratchpad/work/ may contain such lines: remove them
+before running.

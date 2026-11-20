@@ -320,6 +320,7 @@ pub(crate) struct PathEntry {
 
 /// What a split hands to the level above: `left` kept the keys below `sep`,
 /// the new page `right` got the keys from `sep` on.
+#[derive(Debug)]
 pub(crate) struct Carry {
     pub(crate) sep: Vec<u8>,
     pub(crate) left: PageId,

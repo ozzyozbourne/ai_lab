@@ -306,7 +306,7 @@ pub fn ascendingUntilBroken(gpa: Allocator, frames: u32, scratch: resumable.Scra
 fn part5(w: *Io.Writer, gpa: Allocator) !void {
     try w.writeAll("\n== Part 5: where the scratch memory of a split must live ==\n");
     const cases = [_]struct { frames: u32, scratch: resumable.Scratch, label: []const u8 }{
-        .{ .frames = 2, .scratch = .op_arena, .label = "arena per operation,  2-frame pool" },
+        .{ .frames = 2, .scratch = .op_arena, .label = "owned by the operation, 2-frame pool" },
         .{ .frames = 64, .scratch = .step_buffer, .label = "buffer reused per call, 64-frame pool" },
         .{ .frames = 2, .scratch = .step_buffer, .label = "buffer reused per call, 2-frame pool" },
     };

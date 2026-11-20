@@ -70,6 +70,6 @@ insert 16 has split a leaf into pages 4 and 8 and waits for page 1 in state inse
 after the insert is done, get 18: found
 
 == Part 5: where the scratch memory of a split must live ==
-arena per operation,  2-frame pool: 30 inserts, validate ok after each
+owned by the operation, 2-frame pool: 30 inserts, validate ok after each
 buffer reused per call, 64-frame pool: 30 inserts, validate ok after each
 buffer reused per call, 2-frame pool: tree broken after insert 10 (KeyOutOfBounds)

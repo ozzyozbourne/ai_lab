@@ -497,6 +497,9 @@ fn latch_coupling_a_writer_that_latched_a_replaced_root_starts_again() {
     });
     assert_eq!(result, Ok(None));
     assert_eq!(tree.stats.root_restarts.load(Ordering::Relaxed), 1);
+    // First of all: a latch left on the old root would make `validate` and
+    // `dump` below wait forever instead of failing.
+    assert!(tree.nothing_locked());
     tree.validate().unwrap();
     // Without the second look the writer would put 30 into #0, the LEFT
     // leaf, to the left of separator 10: no search would ever find it.
@@ -507,7 +510,6 @@ fn latch_coupling_a_writer_that_latched_a_replaced_root_starts_again() {
          \x20 level 0: #2[10]\n\
          \x20 leaves : #0(5 6) -> #1(10 20 30)\n"
     );
-    assert!(tree.nothing_locked());
 }
 
 #[test]

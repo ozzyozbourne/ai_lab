@@ -170,9 +170,8 @@ they sit on is rewritten.</p>
       scaleNote.textContent = 'These numbers are counted by this page\'s model (the same search code as the lanes above), not timed. The gap widens with the keys per page: ' +
         'move the slider. With real 4096-byte pages a node holds 170 keys, and the chapter\'s programs measure 8.52, 21.69 and 2.99 page reads for 100,000 keys ' +
         '(the third self-test at the bottom of this page reproduces that table).';
-      root.dispatchEvent(new CustomEvent('c1-scale-ready', { detail: { perPage: perPage } }));
+      fig.root.setAttribute('data-scale-per', perPage); // lets a test wait for the chart
     }
-    var root = fig.root;
 
     var rand = BTViz.rng(11), seed = 5, cur = null;
     function keySet() {
@@ -415,11 +414,25 @@ they sit on is rewritten.</p>
       title: 'Put a key into a sorted array of 4-key pages', side: true,
       legend: [{ token: 'key-compare', label: 'position found by binary search' }, { token: 'page-dirty', label: 'shifted entry / rewritten page' }, { token: 'key-inserted', label: 'new key' }]
     });
-    var PER = 4, keys, totals;
+    var PER = 4, KEY_MAX = 999, keys, totals;
+    // Keys are u64 in the chapter's code, so the figure takes whole numbers from 0 up; the upper
+    // limit of 999 only keeps a key inside its cell.
+    function refuse(why) {
+      stepper.setSteps([{ caption: why + ' Nothing was changed.',
+        state: { strip: { keys: keys.slice(), perPage: PER }, totals: BTViz.clone(totals) } }]);
+      input.value = '';
+    }
     var input = el('input.bt-input#put-key', { type: 'number', inputmode: 'numeric', placeholder: 'key', 'aria-label': 'Key to put', min: 0, max: 999 });
-    fig.toolbar.append(input, button('put-go', 'Put', function () { put(input.value === '' ? null : +input.value); }, true),
-      button('put-smallest', 'Put a new smallest key', function () { put(keys[0] - 1); }),
-      button('put-largest', 'Put a new largest key', function () { put(keys[keys.length - 1] + 5); }),
+    fig.toolbar.append(input, button('put-go', 'Put', function () { put(typed()); }, true),
+      button('put-smallest', 'Put a new smallest key', function () {
+        if (keys[0] === 0) refuse('The smallest key is already ' + k(0) + ', and keys are unsigned integers: there is no smaller one.');
+        else put(keys[0] - 1);
+      }),
+      button('put-largest', 'Put a new largest key', function () {
+        var top = keys[keys.length - 1];
+        if (top >= KEY_MAX) refuse('The largest key is already ' + k(top) + ', the largest this figure draws.');
+        else put(Math.min(KEY_MAX, top + 5));
+      }),
       button('put-reset', 'Reset', reset));
     var statsHost = el('div.c1-stats');
     fig.stage.appendChild(statsHost);
@@ -451,8 +464,17 @@ they sit on is rewritten.</p>
         state: { strip: { keys: keys.slice(), perPage: PER }, totals: BTViz.clone(totals) }
       }]);
     }
+    /** The typed key: null for an empty box (a random key is chosen), NaN for anything that is not a number. */
+    function typed() {
+      if (input.value !== '') return +input.value;
+      return input.validity && input.validity.badInput ? NaN : null;
+    }
     function put(key) {
-      if (key === null || !isFinite(key)) { do key = rand.int(1, 240); while (keys.indexOf(key) >= 0); }
+      if (key === null) { do key = rand.int(1, 240); while (keys.indexOf(key) >= 0); }
+      if (!Number.isInteger(key) || key < 0 || key > KEY_MAX) {
+        refuse('A key must be a whole number from 0 to ' + KEY_MAX + ': the code stores unsigned integers (<code>u64</code>), and this figure draws at most three digits per cell.');
+        return;
+      }
       if (keys.length >= 44) reset();
       var before = keys.slice(), c = C1.arrayPutCost(before, PER, key), t0 = BTViz.clone(totals), steps;
       if (c.exists) {
@@ -487,7 +509,7 @@ they sit on is rewritten.</p>
       stepper.setSteps(steps, { play: true });
       input.value = '';
     }
-    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') put(input.value === '' ? null : +input.value); });
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') put(typed()); });
     reset();
   })();
 

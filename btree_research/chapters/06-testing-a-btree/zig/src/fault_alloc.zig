@@ -88,8 +88,11 @@ pub const FaultAllocator = struct {
         return ptr;
     }
 
-    // Growing in place is not an "allocation attempt" here: the B-tree never
-    // resizes a node. The byte counters still follow.
+    // `resize` (grow or shrink in place) and `remap` (the same, but the block
+    // may move) are not "allocation attempts" here and are never failed: the
+    // B-tree never resizes a node. The byte counters still follow. For code
+    // that grows a list this is a real limit: `failNth` cannot make its
+    // growth fail (README, "Allocator notes").
     fn resize(ctx: *anyopaque, memory: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) bool {
         const self: *FaultAllocator = @ptrCast(@alignCast(ctx));
         if (!self.child.rawResize(memory, alignment, new_len, ret_addr)) return false;

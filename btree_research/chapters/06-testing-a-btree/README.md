@@ -35,7 +35,8 @@ So do not write the cases. Write three small things instead.
 
 Then run the same operations on both, compare every answer, and call the checker after
 every step. Do that for many seeds. When something disagrees, you have a seed and a step
-number, and the run can be repeated exactly.
+number, and the run can be repeated exactly. (That holds when a check fails. A bug that
+makes the tree crash needs one more tool: see "When the tree crashes instead".)
 
 Four refinements turn this from a toy into something that finds real bugs:
 
@@ -71,8 +72,15 @@ answers with the oracle would never have noticed.
 
 The tree is copied from chapter 05 as `base_*` files. Three things were added to the copy:
 coverage points (replacing chapter 05's counters), a diagnostic in `validate`, and three
-fault seams marked `SEAM`. `deinit`, `shape` and `render` were also made tolerant of a
-malformed tree, so a rejected tree can still be printed and torn down.
+fault seams marked `SEAM`. `deinit`, `shape` and `render` are tolerant of a malformed tree
+(a missing child, a key count larger than the node), so a rejected tree can still be
+printed and torn down. Two more seams break the rollback of a failed `put`; they are not
+part of the story below and exist only so that the tests can show the harness catching
+them. In Rust the slab also counts its occupied slots (see "Allocator notes").
+
+Two things were left out of the copy: the third node pool (`StdPool`) and chapter 05's
+unit tests of insert and delete. `base_insert`, `base_delete`, `base_btree` and
+`base_stats` therefore have no hand-written unit test here; the fuzzer is their test.
 
 ### Zig
 
@@ -100,14 +108,20 @@ children, was ever run.
 - `swarm(seed) Case` draws the configuration: 4, 16, 64 or 256 possible keys; 64 to 512
   operations; weights for put, delete, get, range (any of the last three may be zero);
   how often a put gets an injected allocation failure; whether the run ends by deleting
-  every remaining key in random order.
+  every remaining key in random order; and where the keys lie (`KeyLayout`): the small
+  numbers from 0, consecutive keys on both sides of 2^32, keys spread evenly over the
+  whole of `u64` (all with the same low 32 bits, half of them with the top bit set), or
+  the last keys below 2^64. The layouts keep the order of the keys, so the shape of the
+  tree is the same in all four; only the numbers being compared change. The largest key
+  used is `maxInt(u64) - 1`: `range` is half-open, so no range can contain `maxInt`.
 - `generate(gpa, case) []Step` produces the whole sequence up front. A `Step` is an `Op`
   plus an optional fault ("the n-th node allocation of this put fails").
 - `replay(Tree, gpa, steps, checks, totals) ?Failure` builds a fresh tree and a fresh
   oracle and applies each step to both. After every step: compare the answer, call
   `validate`, compare the key count; every 16 steps and at the end, compare a full
   in-order scan with the oracle. The first failed check ends the run with a
-  `Failure{ step, kind, diag }`.
+  `Failure{ step, kind, diag }`. After a put that was made to fail, the tree must validate,
+  hold the same contents, and have the same `pool.usage` as before the call.
 - `hunt` runs one swarm case per seed and stops at the first failure; `huntShortest` runs
   all seeds and keeps the failure that needed the fewest steps.
 
@@ -124,12 +138,39 @@ if (Tree.bug != .merge_leaks_node) tree.pool.destroy(gpa, emptied);   // base_de
 no test for it at all.
 
 **Minimisation** (`minimize.zig`). Cut the sequence after the failing step. Then try to
-delete chunks: half the sequence, then quarters, down to single steps, repeating single
-steps until a whole pass removes nothing. A deletion is kept only if the shorter sequence
-still fails with the same kind of failure. Three cosmetic passes follow: drop injected
-faults, rename keys to 1, 2, 3, ... in order, make the n-th put write the value n.
+delete chunks: half the sequence, then quarters, down to single steps. That is fast but
+leaves pairs of steps that can only go together (a put and the delete that undoes it),
+because a larger chunk is never tried again. So a second phase tries to remove every
+contiguous block of steps, longest first, and starts over after each success. A deletion
+is kept only if the shorter sequence still fails with the same kind of failure. The
+result has a precise guarantee: no contiguous block of steps, of any length, can be
+removed. Three cosmetic passes follow: drop injected faults, rename keys to 1, 2, 3, ...
+in order, make the n-th put write the value n.
 
 **Fault injection** (`fault_alloc.zig`). See "Allocator notes".
+
+**When the tree crashes instead.** Many real bugs do not corrupt the tree quietly. They
+trip an assert, an index check or a null unwrap inside `put` or `delete`, and the process
+stops before `validate` runs. `hunt` then never returns, and the panic message does not
+know the seed. For this the harness has a trace mode that prints one line to stderr before
+every step:
+
+```
+zig build test -Dtrace=true -Dtest-filter="correct tree passes" 2> trace.txt
+cargo test --features trace correct_tree_passes 2> trace.txt
+
+trace: seed 1, M=3, bug none, step 209 of 294: put 11240984669916758016 = 10737218468902139262
+thread 17183 panic: index out of bounds: index 4, len 4
+```
+
+(That is a real run, with `max_height` lowered to 4 in a scratch copy.) The last `trace:`
+line before the panic names the seed, the order and the step that was running. To work on
+it, replay that one seed: `hunt(Tree(3, .none), gpa, 1, 1, .{}, null)` in a test of its
+own, with the trace on or under a debugger. Use a test filter: the whole suite prints
+about a million trace lines. What this does not give you is minimisation. In Zig a panic
+ends the process, so the minimiser cannot replay a crashing sequence and carry on; in Rust
+`replay` could catch the unwind and report a crash as one more kind of failure, which is
+left as an exercise.
 
 ### Rust
 
@@ -142,6 +183,11 @@ Structure, names, tests and output match. The differences:
   version would be `BTree<F: Fault>` with an associated constant.
 - **Errors carry data.** `validate` returns `Result<(), Violation>` where `Violation`
   holds the `ValidateError`, the depth and the node's first key. No out-parameter.
+- **The slab counts its own slots.** `BTree::validate` compares the reachable nodes with
+  `usage.live()` and with `Slab::live_slots()` (all slots minus the free list). In Zig a
+  reserved node that a failed `put` forgets to hand back is seen from outside, by the
+  counting allocator under the tree. Rust has no such outside view of a slab slot, so the
+  slab has to say it itself (see "Allocator notes").
 - **No arena, no `deinit`.** Dropping the slab drops every node, reachable or not, so a
   corrupt tree is torn down safely by construction.
 - **Allocation failure** is the slab's `fail_after` switch from chapter 04, not an
@@ -149,7 +195,15 @@ Structure, names, tests and output match. The differences:
 
 ### What `run` prints
 
-Both programs print the same 86 lines (`expected_output.txt`). The parts that matter:
+Both programs print the same 86 lines (`expected_output.txt`). Part 1 shows that one seed
+is a whole test case:
+
+```
+seed 1: 256 ops on 64 keys spread over u64, put:delete:get:range = 8:4:4:1, fault in 1 of 2 puts, drain yes
+  M=4: 294 steps replayed, 4 allocation failures injected, max height 4, max keys 42: ok
+```
+
+The parts that matter most:
 
 ```
 == 2. Swarm sweep of the correct tree: seeds 1..150 at each order ==
@@ -174,7 +228,7 @@ bug split_wrong_value
   caught by 191 of 200 seeds; shortest failing run: seed 72, step 5 of 512
   wrong result (answer differs from the oracle)
   with validate alone: not caught
-  minimised to 5 steps in 11 replays:
+  minimised to 5 steps in 25 replays:
     put 6 = 1
     put 1 = 2
     put 2 = 3
@@ -185,13 +239,13 @@ bug merge_leaks_node
   caught by 154 of 200 seeds; shortest failing run: seed 68, step 9 of 512
   invariant NodeCountMismatch
   with the oracle comparison alone: not caught
-  minimised to 6 steps in 24 replays:
+  minimised to 6 steps in 38 replays:
     ...
 bug borrow_forgets_child
   caught by 74 of 200 seeds; shortest failing run: seed 28, step 52 of 256
-  invariant MissingChild at depth 1 (node starts with key 27)
+  invariant MissingChild at depth 1 (node starts with key 7782220156096217088)
   with the oracle comparison alone: not tried (the tree is malformed)
-  minimised to 11 steps in 63 replays:
+  minimised to 11 steps in 117 replays:
     ...
 ```
 
@@ -203,6 +257,10 @@ bug borrow_forgets_child
 
 The two families of checks are not redundant: each sees a bug the other cannot.
 
+Seed 28 uses the "spread" layout, which is why the node that lost its child starts with
+key 7782220156096217088 (27 * 2^58). The minimised reproducer says key 7: renaming the
+keys in order is part of making a failure readable.
+
 ## In real databases
 
 **TigerBeetle** tests its data structures with exactly this pattern. For its segmented
@@ -211,7 +269,7 @@ randomness and the seed is logged (`tigerbeetle/src/fuzz_tests.zig:145`); the re
 model is a flat `std.ArrayList`; after every operation a `verify` function compares length,
 forward and reverse iteration and structural invariants
 (`tigerbeetle/src/lsm/segmented_array.zig:1295-1370`). The configurations are deliberately
-tiny: node sizes giving a capacity of 2 to 16 elements
+tiny: for `u32` elements, node sizes of 8 to 64 bytes, which is 2 to 16 elements per node
 (`tigerbeetle/src/lsm/segmented_array.zig:1466-1480`). And the driver ends with coverage
 asserts, `assert(tested_padding); assert(tested_node_capacity_min);`
 (`tigerbeetle/src/lsm/segmented_array.zig:1508-1509`), which is where this chapter's
@@ -245,7 +303,7 @@ a property "PRAGMA integrity_check should return ok"
 
 Textbook, not from these sources: delta debugging (Zeller and Hildebrandt's `ddmin`) and
 the term "swarm testing" (Groce et al.). The minimiser here is a simplified chunk-removal
-variant of `ddmin`.
+variant of `ddmin`, followed by an exhaustive pass over contiguous blocks.
 
 ## Allocator notes
 
@@ -253,7 +311,12 @@ variant of `ddmin`.
 of four functions: `alloc`, `resize`, `remap`, `free`. `FaultAllocator` stores a child
 allocator, does its bookkeeping in each of the four and forwards. It counts attempts,
 allocations, frees and live / peak / total bytes, and `failNth(n)` makes the n-th attempt
-from now return null once. The wrapper is a plain struct on the caller's stack;
+from now return null once. Only `alloc` counts as an attempt. `resize` and `remap` are
+forwarded and never failed, which is right for this tree (it only creates and destroys
+whole nodes) and is a limit to know before pointing the wrapper at anything that grows
+an `ArrayList`: most of a list's growth goes through `resize` / `remap`, which
+`failNth` cannot reach (`std.testing.FailingAllocator` has `resize_fail_index` for
+that). The wrapper is a plain struct on the caller's stack;
 `allocator()` returns an interface pointing at it, so it must outlive every use and must
 not be moved.
 
@@ -285,8 +348,16 @@ With `FreeListPool` an injected fault only bites when a new chunk of 32 nodes is
 the guide's one declared exception to safe code in Part I: three one-line forwards to
 `System`, each with a `SAFETY` comment; `Cargo.toml` lowers `unsafe_code` from `forbid` to
 `deny` and only that file opts out. The counters are thread-local, because `cargo test`
-runs tests on several threads. `replay` uses them as its leak check. The wrapper does not
-inject failures: `Vec::push` aborts the process when the allocator returns null.
+runs tests on several threads. `replay` uses them as its leak check, and it is important
+to know what that check can see. It sees heap memory that outlives the tree
+(`mem::forget`, a reference cycle). It cannot see a lost NODE: every node is a slot in the
+slab's `Vec`, and dropping the tree frees that `Vec` whole, lost slots included. A failed
+`put` that keeps one reserved slot would pass it. That bug is caught by `validate`
+instead, through `Slab::live_slots()`: the slab's own count of occupied slots, which a
+rollback cannot paper over by restoring `usage`. (The test with the seam
+`RollbackLeaksNode` shows it; in Zig the same seam is reported as a leak by the
+`FaultAllocator`.) The wrapper does not inject failures: `Vec::push` aborts the process
+when the allocator returns null.
 
 ## Pitfalls
 
@@ -300,9 +371,17 @@ inject failures: `Vec::push` aborts the process when the allocator returns null.
   minimised, logged or replayed in the other language.
 - **A minimiser that accepts any failure.** Deleting steps can turn failure A into an
   unrelated failure B. Compare the kind.
-- **Expecting the shortest reproducer.** The result is 1-minimal (no single step can go),
-  not globally shortest (exercise 3).
-- **A seed without a version.** Seed 28 means nothing after the generator changes.
+- **Expecting the shortest reproducer.** The guarantee is "no contiguous block of steps
+  can be removed", which includes "no single step". It is not the shortest failing
+  sequence: two steps that are not neighbours are never removed together, and a shorter
+  reproducer need not be a subsequence at all (exercise 3).
+- **Only small keys.** With keys 0 to 255, a tree that compares the low 32 bits of a key
+  passes everything. Random VALUES do not help; the keys must cover the type's range.
+- **A crash is a failure too.** An assert that fires inside the tree ends the run before
+  any check, without seed or step. Run with the trace on, or log the seed before each
+  case as TigerBeetle does (`tigerbeetle/src/fuzz_tests.zig:145`).
+- **A seed without a version.** Seed 28 means nothing after the generator changes (adding
+  the key layouts changed what every seed prints).
   TigerBeetle reproduces from seed plus git commit.
 - **Zig error traces under fault injection.** Every injected `OutOfMemory` is recorded in
   the error return trace; a failing test later prints thousands of unrelated frames.

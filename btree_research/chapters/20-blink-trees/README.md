@@ -198,13 +198,12 @@ up and leaves the flag set. The `put` still succeeded: the key is in the tree.
 
 **The test hooks.** `setAbandonSplits(true)` makes every split stop after
 step 1. This is how tests and the demo reach the half-finished state without
-threads. The second hook is for the writer's own stale knowledge:
+threads. The second hook makes a writer's knowledge stale:
 `putFrom(start, key, value, pause)` is `put` that begins its descent at
-`start` (a former root) and, when it has latched its leaf, calls
-`pause.at_leaf` before inserting. The callback runs other puts, as other
-threads would in that gap, so the parents the paused writer remembers can
-split, be left half split or get a new root above them before it climbs back
-up. `put` is `putFrom(rootId(), ..., null)`.
+`start` (a former root) and calls `pause.at_leaf` once it has latched its
+leaf. The callback runs other puts, as other threads would in that gap, so
+the parents the paused writer remembers can split, be left half split or get
+a new root above them before it climbs back up.
 
 ### Rust
 
@@ -232,9 +231,8 @@ The structure is the same; three things differ in kind.
   the lock order.
 
 The pause hook is a function pointer plus a context pointer in Zig and a
-`&mut dyn FnMut` closure in Rust. The Rust callback is handed the leaf's
-`&Page`, because it could not latch the node itself, and for the same reason
-it must not call `incomplete_splits()`, which latches every node.
+`&mut dyn FnMut` closure in Rust. The Rust callback must not call
+`incomplete_splits()`: it latches every node, the paused leaf included.
 
 A held latch in either mode is the enum `Latch` in Rust and a node id plus a
 `bool` in Zig. Threads are `std::thread::scope` in Rust (the closure may
@@ -257,20 +255,18 @@ The tests are ordered from deterministic to concurrent.
 - **Root and internal levels.** A root split paused after step 1 has height 1
   and two nodes; ascending inserts with the hook always on leave internal
   nodes half split.
-- **Stale writers.** Four tests use `putFrom`. A writer is paused on its leaf
-  while another put splits its parent: step 2 starts at the remembered node
-  and finds the downlink one node to the right. Three writers, two of them
-  paused: the parent is left half split and is the root; the second writer
-  finishes that split (a new root) before inserting its own downlink, and the
-  first, which remembers no node above the old root, reaches the parent level
-  through `level_head`. A writer started at an old root moves right and must
-  not build a second root. A seeded run pauses 3000 writers, started at the
-  root or at a former root, while up to 24 other puts run with the abandon
-  hook on a coin.
-- **Internal levels.** A reader told "#6" by the root finds #6 split and moves
-  right on level 1. A writer started at the old root #2 needs two hops on
-  level 1 and none on the leaves; with the internal comparison removed the
-  same put still succeeds, after five hops along the leaf level.
+- **Stale writers** (`putFrom`). A writer is paused on its leaf while another
+  put splits its parent: step 2 finds the downlink one node to the right of
+  the remembered one. With two writers paused, a third leaves their parent,
+  the root, half split: the second finishes that split (a new root) before
+  inserting its own downlink, and the first, which remembers nothing above
+  the old root, reaches the parent level through `level_head`. A writer
+  started at an old root must not build a second root. A seeded run pauses
+  3000 writers while other puts run with the abandon hook on a coin.
+- **Internal levels.** A reader sent to #6 finds it split and moves right on
+  level 1. A writer started at the old root #2 makes two hops on level 1 and
+  none on the leaves; with the internal comparison removed the same put
+  still succeeds, after five hops along the leaf level.
 - **Full table.** For every table size from 1 to 40, inserts run until
   `OutOfNodes`; the failed key is absent, `validate` passes, and at least one
   size ends with a legal incomplete split.

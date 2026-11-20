@@ -80,13 +80,16 @@ level 1: #2[6 10] #6[20 26]
 leaves : ... -> #5(15 17) -> #3(20 25) -> #8(26 30)
 ```
 
-Which tests fail (ran three times with only the two swapped lines):
+Which tests fail (ran ten times with only the two swapped lines):
 
-- `latch coupling: a get holds at most two latches, and only the leaf at the
-  end` failed in all three runs (it sees one latch where it expects two).
+- Four deterministic tests failed in all ten runs: `latch coupling: a get
+  holds at most two latches, and only the leaf at the end` (it sees one latch
+  where it expects two), `probe: mid-descent, the parent is still latched
+  when the child has just been latched`, and both `convoy` tests (the waiting
+  reader no longer holds the root, so the writer behind it gets through).
 - `stress: 4 threads, disjoint and overlapping keys, every protocol` failed in
-  one run of three, and the demo-output test in one run of three. The window
-  is a few instructions wide, so a stress test hits it only sometimes.
+  four runs of ten. The window is a few instructions wide, so a stress test
+  hits it only sometimes.
 
 With coupling the same interleaving cannot happen: the reader still holds S on
 #6 when it asks for #3, and the writer needs X on #6 to finish its split. One

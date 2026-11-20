@@ -327,11 +327,19 @@
     this.nextRun = 0;
     this.stats = { flushes: 0, l0Compactions: 0, levelMerges: 0, versionsDropped: 0, tombstonesDropped: 0,
                    runsSkipped: 0, runsProbed: 0, probesWasted: 0 };
+    this.memWrites = 0;             // puts and deletes absorbed by the memtable since the last flush
     this.onPhase = null;            // function (name, info): called around flush / compaction
   }
   var L = Lsm.prototype;
   L.dataBlocks = function (n) { return Math.ceil(n / this.cfg.blockEntries); };
-  L.indexBlocks = function (n) { return Math.ceil(this.dataBlocks(n) / this.cfg.indexFanout); };
+  /** Blocks per index level, bottom level first; the last entry is the single root block. */
+  L.indexLevels = function (n) {
+    var levels = [], b = this.dataBlocks(n);
+    do { b = Math.ceil(b / this.cfg.indexFanout); levels.push(b); } while (b > 1);
+    return levels;
+  };
+  L.indexHeight = function (n) { return this.indexLevels(n).length; };
+  L.indexBlocks = function (n) { return this.indexLevels(n).reduce(function (a, b) { return a + b; }, 0); };
   L.blocks = function (n) { return this.dataBlocks(n) + this.indexBlocks(n); };
   L.levelLimit = function (n) { return this.cfg.memtableEntries * this.cfg.l0Runs * Math.pow(this.cfg.growth, n); };
   L.deepestLevel = function () {
@@ -352,8 +360,8 @@
     if (i < this.mem.length && this.mem[i].key === key) this.mem[i].value = value;
     else this.mem.splice(i, 0, { key: key, value: value });
   };
-  L.put = function (key, value) { this._maintain(); this._memPut(key, value); };
-  L.delete = function (key) { this._maintain(); this._memPut(key, null); };
+  L.put = function (key, value) { this._maintain(); this._memPut(key, value); this.memWrites++; };
+  L.delete = function (key) { this._maintain(); this._memPut(key, null); this.memWrites++; };
 
   L._pending = function () {
     if (this.l0.length >= this.cfg.l0Runs) return 0;
@@ -369,7 +377,7 @@
     this._flush();
     while ((n = this._pending()) >= 0) this._compact(n);
   };
-  /** Writes `slots` as a run: one write per data block, then the index blocks. */
+  /** Writes `slots` as a run: one write per data block, then every index level. */
   L._buildRun = function (slots) {
     if (!slots.length) return null;
     var d = this.dataBlocks(slots.length), x = this.indexBlocks(slots.length);
@@ -383,7 +391,9 @@
     this.mem = [];
     this.l0.push(run);
     this.stats.flushes++;
-    this._phase('flush', { run: run.id, blocks: this.blocks(run.slots.length) });
+    var absorbed = this.memWrites;
+    this.memWrites = 0;
+    this._phase('flush', { run: run.id, blocks: this.blocks(run.slots.length), writes: absorbed, keys: run.slots.length });
   };
   L._compact = function (from) {
     var self = this;
@@ -439,11 +449,13 @@
         trail.push({ where: where, run: run.id, result: 'skipped' });
         return undefined;
       }
-      self.dev.read(INDEX, 1); self.dev.read(DATA, 1);
+      // Root to data block, one block per index level: the rule the B+tree is charged by.
+      var height = self.indexHeight(run.slots.length);
+      self.dev.read(INDEX, height); self.dev.read(DATA, 1);
       self.stats.runsProbed++;
       var r = findInRun(run, key);
       if (r === undefined) self.stats.probesWasted++;
-      trail.push({ where: where, run: run.id, result: r === undefined ? 'wasted' : r === null ? 'tombstone' : 'hit',
+      trail.push({ where: where, run: run.id, result: r === undefined ? 'wasted' : r === null ? 'tombstone' : 'hit', index: height,
                    block: Math.floor(lowerBound(run.slots.map(function (s) { return s.key; }), key) / self.cfg.blockEntries) });
       return r;
     }
@@ -468,11 +480,17 @@
       // enters, including the one holding the first key >= hi.
       var first = Math.floor(a / self.cfg.blockEntries);
       var last = Math.floor(Math.min(b, keys.length - 1) / self.cfg.blockEntries);
-      var fan = self.cfg.indexFanout;
+      // On every index level: the block above `first` (the path down from the
+      // root) and every further block the cursor moves under.
+      var index = 0, span = self.cfg.indexFanout;
+      for (var lv = self.indexHeight(keys.length); lv > 0; lv--) {
+        index += Math.floor(last / span) - Math.floor(first / span) + 1;
+        span *= self.cfg.indexFanout;
+      }
       self.dev.read(DATA, last - first + 1);
-      self.dev.read(INDEX, Math.floor(last / fan) - Math.floor(first / fan) + 1);
-      trail.push({ where: where, run: run.id, result: 'read', first: first, last: last,
-                   blocks: last - first + 1 + Math.floor(last / fan) - Math.floor(first / fan) + 1 });
+      self.dev.read(INDEX, index);
+      trail.push({ where: where, run: run.id, result: 'read', first: first, last: last, index: index,
+                   blocks: last - first + 1 + index });
       for (var i = a; i < b; i++) if (!(keys[i] in newest)) newest[keys[i]] = run.slots[i];
     }
     for (var i = this.l0.length - 1; i >= 0; i--) add(this.l0[i], 'level 0');
@@ -599,7 +617,7 @@
   };
   P.save = function () {
     return clone({ opts: this.opts, tree: this.tree, lsm: { cfg: this.lsm.cfg, dev: this.lsm.dev, mem: this.lsm.mem, l0: this.lsm.l0,
-                   levels: this.lsm.levels, nextRun: this.lsm.nextRun, stats: this.lsm.stats }, live: this.live });
+                   levels: this.lsm.levels, nextRun: this.lsm.nextRun, stats: this.lsm.stats, memWrites: this.lsm.memWrites }, live: this.live });
   };
   Pair.restore = function (saved) {
     var s = clone(saved), p = new Pair(s.opts), k;

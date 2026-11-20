@@ -43,7 +43,7 @@ expensive fix; lowering M is the cheap one.
 ## 3. First failing seed against shortest failing run
 
 The first failing seed for `merge_leaks_node` at M = 4 is seed 1, failing at step 76 of
-294. Minimising from there gives 12 steps in 60 replays (measured with the JavaScript port
+294. Minimising from there gives 12 steps in 125 replays (measured with the JavaScript port
 in `viz/local.js`, which reproduces the programs' part 4 exactly):
 
 ```
@@ -52,13 +52,13 @@ put 11, put 5, put 4, put 3, put 9, put 10, put 7, put 6, put 1, put 8, put 2, d
 
 Starting from seed 68 (step 9 of 512) the same minimiser reaches 6 steps.
 
-Why 12 and not 6: chunk removal only ever deletes steps. The 12-step survivor contains a
+Why 12 and not 6: the minimiser only ever deletes steps. The 12-step survivor contains a
 single delete, and with one delete a merge only happens in a tree where the victim leaf
 and its neighbours are all at the minimum; that needs those eleven puts, and removing any
 one of them changes the shape so that the delete borrows instead of merging. The 6-step
 reproducer uses TWO deletes and four puts. It is not a subsequence of the 12 steps, so no
-amount of deleting gets there. "1-minimal" promises that no single step can be removed;
-it does not promise the shortest sequence. Starting from a short failing run is the cheap
+amount of deleting gets there. The minimiser promises that no contiguous block of steps
+can be removed; it does not promise the shortest sequence. Starting from a short failing run is the cheap
 remedy, which is what `huntShortest` is for.
 
 ## 4. Why the fixed mix never shrinks the root

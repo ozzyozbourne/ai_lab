@@ -316,7 +316,33 @@
     r.emit('Done: ' + n + ' row' + (n === 1 ? '' : 's') + '. Cost: ' + r.summary() + '.' +
       (mode === 'fetch' && n > 0 ? (t.layout === 'clustered'
         ? ' Every row cost a full descent of the primary tree.' : ' Every row cost one heap page, however tall the trees are.') : ''), {}, 'done: ' + pages(r.c) + ' page reads');
-    return r.finish({ found: n });
+    return r.finish({ found: n, what: (mode === 'fetch' ? 'SELECT * ' : 'SELECT day ') + 'WHERE ' + where });
+  };
+
+  /**
+   * SELECT count(*) WHERE day = ?   The programs' countOnDay: `day` is the
+   * second column and the first is free, so the matches are not one run of
+   * the index. The whole leaf chain is read; no row is fetched.
+   */
+  P.queryDay = function (day) {
+    var r = new Rec(this), t = this, name = t.layout === 'heap' ? 'heap + index' : 'clustered', count = 0;
+    r.emit('SELECT count(*) WHERE day = ' + day + ', ' + name + ' layout. The index is sorted by customer <b>first</b>, and the query does not say which customer. ' +
+      'Entries with day ' + day + ' can follow any customer, so they are scattered: there is no single place to seek to. Start at the smallest key and read everything.',
+      {}, 'WHERE day = ' + day);
+    r.scan(t.index, 'index', 0, Number.MAX_SAFE_INTEGER, 'the smallest possible key (the scan has no lower bound)', function (key) { return t.indexLabel(key); }, function (key, hl) {
+      var label = t.indexLabel(key), cd = Math.floor(key / LOC), d = cd % 100;
+      if (d === day) {
+        count++;
+        r.results.push({ counted: label });
+        r.emit('Entry ' + k(label, 'found') + ' has day ' + day + ': count it (' + count + ' so far). The day is inside the key, so no row is fetched.', { index: hl }, 'counted ' + label);
+      } else {
+        hl.keys[Object.keys(hl.keys)[0]] = 'compare';
+        r.emit('Entry ' + k(label, 'compare') + ' has day ' + d + ', not ' + day + ': read and thrown away. The scan cannot skip it or stop here, because a later customer may have day ' + day + ' again.', { index: hl });
+      }
+    });
+    r.emit('Done: count = ' + count + '. Cost: ' + r.summary() + '. All ' + r.c.entries + ' entries of the index were read to find ' + count +
+      '; the same index answers "customer = ?" by reading only the matching run.', {}, 'done: ' + pages(r.c) + ' page reads');
+    return r.finish({ found: count, what: 'SELECT count(*) WHERE day = ' + day });
   };
 
   /** SELECT * WHERE id = ? */
@@ -343,20 +369,21 @@
       if (!n) r.emit('No entry with id ' + id + ': there is no such row, and the heap is never touched.', {});
     }
     r.emit((row ? 'Done: 1 row. ' : 'Done: no row. ') + 'Cost: ' + r.summary() + '.', {}, 'done: ' + pages(r.c) + ' page reads');
-    return r.finish({ found: row ? 1 : 0 });
+    return r.finish({ found: row ? 1 : 0, what: 'SELECT * WHERE id = ' + id });
   };
 
   /** INSERT, recorded: primary-key check, then the writes. Mutates the table. */
   P.insertSteps = function (row) {
     var r = new Rec(this), t = this, taken;
-    r.emit('INSERT ' + rowText(row) + '. First the primary-key check: is id ' + row.id + ' already there? One descent, before anything is written.', {}, 'INSERT id ' + row.id);
+    r.emit('INSERT ' + rowText(row) + '. First the primary-key check: is id ' + row.id + ' already there? One descent, before anything is written.' +
+      (t.layout === 'heap' ? ' The search key is (' + row.id + ', any TID): the TID is left out, because <i>any</i> entry with this id is a conflict.' : ''), {}, 'INSERT id ' + row.id);
     if (t.layout === 'clustered') {
       var leaf = r.descend(t.primary, 'primary', row.id, 'id ' + row.id);
       taken = t.primary.get(row.id) !== undefined;
       if (taken) r.emit('Id ' + k(row.id, 'deleted') + ' exists: <b>rejected</b>, duplicate primary key. Nothing was written.',
         { primary: { nodes: mk(t.primary.id(leaf), 'active'), keys: mk(t.primary.id(leaf) + ':' + row.id, 'deleted') } }, 'rejected: duplicate id');
     } else {
-      taken = r.scan(t.primary, 'primary', row.id * LOC, row.id * LOC + LOC - 1, '(' + row.id + ', any TID): the TID is left out, because <i>any</i> entry with this id is a conflict',
+      taken = r.scan(t.primary, 'primary', row.id * LOC, row.id * LOC + LOC - 1, '(' + row.id + ', any TID)',
         function (key) { return t.primaryLabel(key); }, function (key, hl) {
           hl.keys[Object.keys(hl.keys)[0]] = 'deleted';
           r.emit('Entry ' + k(t.primaryLabel(key), 'deleted') + ' has the id: <b>rejected</b>, duplicate primary key. Nothing was written.', { primary: hl }, 'rejected: duplicate id');
@@ -364,11 +391,15 @@
     }
     if (taken) return r.finish({ ok: false });
 
+    // The programs charge each write's descent BEFORE the put (putNew calls
+    // chargeDescent first), so the heights are read before the insert: a
+    // split of the root during this insert does not add a node to its cost.
+    var before = t.primary.height + t.index.height;
     t.insert(row);
     r.snap = t.snapshot();                     // from here on the picture shows the new table
     var loc = t.layout === 'heap' ? t.heap.length - 1 : row.id;
     var ikey = (row.customer * 100 + row.day) * LOC + loc;
-    r.c.descents += 2; r.c.nodes += t.primary.height + t.index.height;
+    r.c.descents += 2; r.c.nodes += before;
     var hl = { index: { keys: mk('*:' + t.indexLabel(ikey), 'inserted') } };
     if (t.layout === 'clustered') {
       hl.primary = { keys: mk('*:' + row.id, 'inserted') };

@@ -290,6 +290,137 @@ test "lsm: deleting costs space first and gives it back only through compaction"
     try lsm.validate();
 }
 
+// ------------------------------------------------------- LSM: filters
+
+/// `tiny` with a Bloom filter per run.
+const tiny_filtered: lsm_.Config = .{ .block_entries = 3, .index_fanout = 4, .memtable_entries = 4, .l0_runs = 2, .growth = 2, .filter_bits_per_key = 10 };
+
+test "lsm filter: an absent key inside a run's range costs no block; a present key costs the same" {
+    const gpa = testing.allocator;
+    var plain: Lsm = .init(gpa, tiny);
+    defer plain.deinit(gpa);
+    var lsm: Lsm = .init(gpa, tiny_filtered);
+    defer lsm.deinit(gpa);
+    for ([_]u64{ 10, 20, 5, 6, 12 }) |k| {
+        try plain.put(gpa, k, k * 100);
+        try lsm.put(gpa, k, k * 100);
+    }
+    // One run (5 6 10 20) in level 0. Building its filter wrote no block.
+    try testing.expectEqual(plain.dev.counters, lsm.dev.counters);
+    try testing.expectEqual(plain.dev.live, lsm.dev.live);
+    try testing.expectEqual(40, lsm.filterBits()); // 4 slots x 10 bits, in RAM
+    try testing.expectEqual(0, plain.filterBits());
+
+    // 7 lies between 5 and 20, so min/max cannot help. Without a filter the
+    // probe is paid for and wasted; the filter answers "no" in RAM.
+    try testing.expectEqual(null, plain.get(7));
+    try io(2, 0, plain.dev.counters.since(lsm.dev.counters));
+    try testing.expectEqual(null, lsm.get(7));
+    try testing.expectEqual(1, lsm.stats.filter_negatives);
+    try testing.expectEqual(0, lsm.stats.runs_probed);
+    const before = lsm.dev.counters;
+    // A key the run holds is never ruled out: index block + data block.
+    try testing.expectEqual(1000, lsm.get(10));
+    try io(2, 0, lsm.dev.counters.since(before));
+    // Outside the key range the min/max check answers first.
+    try testing.expectEqual(null, lsm.get(99));
+    try testing.expectEqual(1, lsm.stats.runs_skipped);
+    try testing.expectEqual(1, lsm.stats.filter_negatives);
+    try lsm.validate();
+}
+
+test "lsm filter: changes no answer, no write and no scan, and only lowers the cost of gets" {
+    const gpa = testing.allocator;
+    const configs = [_]lsm_.Config{
+        tiny,
+        .{ .block_entries = 1, .index_fanout = 2, .memtable_entries = 2, .l0_runs = 1, .growth = 2 },
+        .{ .block_entries = 15, .index_fanout = 16, .memtable_entries = 60, .l0_runs = 4, .growth = 4 },
+    };
+    for (configs, 0..) |cfg, c| {
+        // 1 bit per key is a bad filter (many false positives) and must
+        // still be a correct one.
+        for ([_]usize{ 1, 10 }) |bits| {
+            var filter_cfg = cfg;
+            filter_cfg.filter_bits_per_key = bits;
+            var plain: Lsm = .init(gpa, cfg);
+            defer plain.deinit(gpa);
+            var lsm: Lsm = .init(gpa, filter_cfg);
+            defer lsm.deinit(gpa);
+            var plain_out: std.ArrayList(Entry) = .empty;
+            defer plain_out.deinit(gpa);
+            var out: std.ArrayList(Entry) = .empty;
+            defer out.deinit(gpa);
+
+            var stream = ops.OpStream.init(.{ .seed = 700 + c, .count = 4000, .key_space = 3000, .weights = .{ .put = 5, .delete = 2, .get = 4, .range = 1 } });
+            var step: usize = 0;
+            while (stream.next()) |op| : (step += 1) {
+                const p0 = plain.dev.counters;
+                const f0 = lsm.dev.counters;
+                switch (op) {
+                    .put => |p| {
+                        try plain.put(gpa, p.key, p.value);
+                        try lsm.put(gpa, p.key, p.value);
+                    },
+                    .delete => |d| {
+                        try plain.delete(gpa, d.key);
+                        try lsm.delete(gpa, d.key);
+                    },
+                    .get => |g| {
+                        try testing.expectEqual(plain.get(g.key), lsm.get(g.key));
+                        // Never more blocks than without the filter.
+                        const p = plain.dev.counters.since(p0);
+                        const f = lsm.dev.counters.since(f0);
+                        try testing.expect(f.reads[0] <= p.reads[0] and f.reads[1] <= p.reads[1]);
+                        continue;
+                    },
+                    .range => |r| {
+                        const hi = @min(r.hi, r.lo + 50);
+                        plain_out.clearRetainingCapacity();
+                        out.clearRetainingCapacity();
+                        try plain.range(gpa, r.lo, hi, &plain_out);
+                        try lsm.range(gpa, r.lo, hi, &out);
+                        try testing.expectEqualSlices(Entry, plain_out.items, out.items);
+                    },
+                }
+                // Writes and scans: block for block the same.
+                try testing.expectEqual(plain.dev.counters.since(p0), lsm.dev.counters.since(f0));
+                try testing.expectEqual(plain.dev.live, lsm.dev.live);
+                if (step % 64 == 0) try lsm.validate();
+            }
+            try lsm.validate();
+            try testing.expectEqual(plain.dev.peak, lsm.dev.peak);
+            try testing.expectEqual(plain.dev.counters.writes, lsm.dev.counters.writes);
+            try testing.expectEqual(plain.stats.versions_dropped, lsm.stats.versions_dropped);
+            try testing.expectEqual(lsm.slotsOnDevice() * bits, lsm.filterBits());
+            try testing.expect(lsm.stats.filter_negatives > 0);
+            try testing.expect(lsm.dev.counters.totalReads() < plain.dev.counters.totalReads());
+            // Every probe the plain tree made was either made here too or
+            // ruled out by a filter.
+            try testing.expectEqual(plain.stats.runs_probed, lsm.stats.runs_probed + lsm.stats.filter_negatives);
+            try testing.expectEqual(plain.stats.runs_skipped, lsm.stats.runs_skipped);
+        }
+    }
+}
+
+test "the harness measures the filtered tree on the same gets" {
+    const r = try bench.runWorkload(testing.allocator, bench.workloads[1], bench.bench_order, bench.bench_lsm);
+    try testing.expectEqual(0, r.mismatches);
+    try testing.expectEqual(r.lsm.gets.ops, r.filter_gets.ops);
+    try testing.expect(r.get_misses > 0 and r.get_misses < r.lsm.gets.ops);
+    try testing.expect(r.filter_gets.io.totalReads() < r.lsm.gets.io.totalReads());
+    try testing.expectEqual(0, r.filter_gets.io.totalWrites());
+    try testing.expectEqual(r.lsm_slots * bench.bench_filter_bits, r.filter_bits);
+    // Both trees did the same maintenance.
+    try testing.expectEqual(r.lsm_stats.flushes, r.filter_stats.flushes);
+    try testing.expectEqual(r.lsm_stats.versions_dropped, r.filter_stats.versions_dropped);
+    try testing.expectEqual(r.lsm_stats.runs_probed, r.filter_stats.runs_probed + r.filter_stats.filter_negatives);
+    // False positives exist and are rare: under 2% at 10 bits per slot.
+    try testing.expect(r.filter_stats.probes_wasted > 0);
+    try testing.expect(r.filter_stats.probes_wasted * 50 < r.filter_stats.filter_negatives);
+    // No filter was asked for, none was built: the plain tree is unchanged.
+    try testing.expectEqual(0, r.lsm_stats.filter_negatives);
+}
+
 // ----------------------------------------------------------- model tests
 
 /// Applies one operation stream to the B+tree, the LSM-tree and the oracle,
@@ -415,8 +546,8 @@ test "the peak is compared with the keys that were live at the peak" {
 
 // ------------------------------------------------------ allocation failure
 
-fn buildLsmUnderFailure(gpa: Allocator) !void {
-    var lsm: Lsm = .init(gpa, tiny);
+fn buildLsmUnderFailure(gpa: Allocator, cfg: lsm_.Config) !void {
+    var lsm: Lsm = .init(gpa, cfg);
     defer lsm.deinit(gpa);
     for (0..60) |i| {
         const key: u64 = (i * 37) % 64;
@@ -427,7 +558,9 @@ fn buildLsmUnderFailure(gpa: Allocator) !void {
 }
 
 test "lsm: every allocation failure during a build is reported and leaks nothing" {
-    try testing.checkAllAllocationFailures(testing.allocator, buildLsmUnderFailure, .{});
+    try testing.checkAllAllocationFailures(testing.allocator, buildLsmUnderFailure, .{tiny});
+    // With filters every run has a second allocation that can fail.
+    try testing.checkAllAllocationFailures(testing.allocator, buildLsmUnderFailure, .{tiny_filtered});
 }
 
 fn buildTreeUnderFailure(gpa: Allocator) !void {
@@ -474,9 +607,14 @@ test "btree: a put that runs out of memory changes neither the tree nor the devi
 }
 
 test "lsm: a write that runs out of memory changes no answer, and the retry finishes the job" {
+    try writeUnderFailure(tiny);
+    try writeUnderFailure(tiny_filtered);
+}
+
+fn writeUnderFailure(cfg: lsm_.Config) !void {
     var failing: testing.FailingAllocator = .init(testing.allocator, .{});
     const gpa = failing.allocator();
-    var lsm: Lsm = .init(gpa, tiny);
+    var lsm: Lsm = .init(gpa, cfg);
     defer lsm.deinit(gpa);
     var oracle: ops.Oracle = .{};
     defer oracle.deinit(testing.allocator);
@@ -499,6 +637,8 @@ test "lsm: a write that runs out of memory changes no answer, and the retry fini
                 try lsm.validateStructure();
                 if (lsm.needsMaintenance()) pending_after_failure += 1;
                 for (0..97) |k| try testing.expectEqual(oracle.get(k), lsm.get(k));
+                // A failed write built no run: counters and filters untouched.
+                try testing.expectEqual(lsm.slotsOnDevice() * cfg.filter_bits_per_key, lsm.filterBits());
                 failing.fail_index = std.math.maxInt(usize);
             }
         }
@@ -534,6 +674,21 @@ test "validate names the broken invariant" {
     lsm.dev.live += 1; // a leaked block
     try testing.expectError(error.DeviceAccounting, lsm.validate());
     lsm.dev.live -= 1;
+
+    {
+        // A filter that says "no" for a key its run holds would hide the key.
+        var filtered: Lsm = .init(gpa, tiny_filtered);
+        defer filtered.deinit(gpa);
+        for (canonical) |k| try filtered.put(gpa, k, k);
+        try filtered.put(gpa, 99, 99);
+        try filtered.validate();
+        const words = filtered.levels[0].?.filter.words;
+        const saved_word = words[0];
+        words[0] = 0;
+        try testing.expectError(error.FilterLostKey, filtered.validate());
+        words[0] = saved_word;
+        try filtered.validate();
+    }
 
     const saved = lsm.cfg.l0_runs;
     lsm.cfg.l0_runs = 1; // level 0 now counts as full

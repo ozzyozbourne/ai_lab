@@ -156,7 +156,7 @@ fn compareCosts(arena: Allocator, w: *Writer, tree: *const Tree, lo: Bound, hi: 
     for (a, b) |x, y| std.debug.assert(x.key == y.key and x.value == y.value);
     var buf: [64]u8 = undefined;
     try w.print("{s:<12} {s:<8} : {d:>2} entries, link {d:>2}, stack {d:>2}\n", .{
-        rangeLabel(&buf, lo, hi),         @tagName(direction),            a.len,
+        rangeLabel(&buf, lo, hi),      @tagName(direction),            a.len,
         link.cursor.stats.node_visits, stack.cursor.stats.node_visits,
     });
 }
@@ -200,7 +200,7 @@ fn changeDemo(gpa: Allocator, arena: Allocator, w: *Writer, tree: *Tree) !void {
     const on_stack = stack.next(tree).?;
     var buf: [64]u8 = undefined;
     try w.print("both cursors: seek >= 10, next. link on {d} at #{d}[{d}], stack on {d} at {s} -> #{d}[{d}]\n", .{
-        on_link.key,                 link.pos.leaf.index(),  link.pos.index, on_stack.key,
+        on_link.key,                 link.pos.leaf.index(),  link.pos.index,  on_stack.key,
         pathLabel(&buf, &stack.pos), stack.pos.leaf.index(), stack.pos.index,
     });
 

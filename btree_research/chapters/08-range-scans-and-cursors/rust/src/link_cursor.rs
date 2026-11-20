@@ -38,7 +38,12 @@ impl LinkPosition {
 
     /// Moves to entry `start` of the current leaf, or, if the leaf has no
     /// such entry, to the first entry of the next leaf: ONE link, no parent.
-    fn settle_forward(&mut self, tree: &BPlusTree, start: usize, stats: &mut Stats) -> Option<Entry> {
+    fn settle_forward(
+        &mut self,
+        tree: &BPlusTree,
+        start: usize,
+        stats: &mut Stats,
+    ) -> Option<Entry> {
         let mut i = start;
         while !self.leaf.is_nil() {
             let n = tree.nodes.get(self.leaf);
@@ -57,7 +62,12 @@ impl LinkPosition {
 
     /// Moves to the last of the first `count` entries of the current leaf,
     /// or, if `count` is 0, to the last entry of the previous leaf.
-    fn settle_backward(&mut self, tree: &BPlusTree, count: usize, stats: &mut Stats) -> Option<Entry> {
+    fn settle_backward(
+        &mut self,
+        tree: &BPlusTree,
+        count: usize,
+        stats: &mut Stats,
+    ) -> Option<Entry> {
         let mut n_qualifying = count;
         loop {
             let n = tree.nodes.get(self.leaf);
@@ -81,7 +91,9 @@ impl Position for LinkPosition {
             // The tree keeps handles of both ends of the chain: no descent.
             Seek::First => tree.first_leaf,
             Seek::Last => tree.last_leaf,
-            Seek::Ge(key) | Seek::Gt(key) | Seek::Le(key) | Seek::Lt(key) => descend(tree, key, stats),
+            Seek::Ge(key) | Seek::Gt(key) | Seek::Le(key) | Seek::Lt(key) => {
+                descend(tree, key, stats)
+            }
         };
         if self.leaf.is_nil() {
             return None; // empty tree

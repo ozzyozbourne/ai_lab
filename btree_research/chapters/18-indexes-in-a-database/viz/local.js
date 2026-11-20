@@ -213,7 +213,7 @@
 
   /** The step "back to the row" for one index entry. */
   Rec.prototype.fetch = function (loc, entryHl) {
-    var t = this.t, row = t.rowAt(loc), self = this;
+    var t = this.t, row = t.rowAt(loc);
     this.c.fetches++;
     if (t.layout === 'clustered') {
       var path = t.primary.path(loc), nodes = {}, edges = {};
@@ -241,7 +241,7 @@
    * scan stops after that many entries (a probe of a unique index: limit 1).
    */
   Rec.prototype.scan = function (tree, which, lo, hi, what, label, onEntry, limit) {
-    var h = this.descend(tree, which, lo, what), self = this, found = 0;
+    var h = this.descend(tree, which, lo, what), found = 0;
     var i = h === NIL ? 0 : lowerBound(tree.nodes[h].keys, lo);
     while (h !== NIL) {
       var n = tree.nodes[h];

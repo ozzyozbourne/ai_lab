@@ -1,10 +1,12 @@
 //! Text rendering of a Db for the demo program and for debugging.
 //!
-//!     now=7 horizon=3 | height 2, 4 entries, 3 pages
-//!       level 0: #2[20.1]
-//!       leaves : #0(10:1-) -> #1(20:2-4! 20:4- 30:3-5)
-//!       deleted: #5@9->#1
-//!       free   : #4
+//! ```text
+//! now=7 horizon=3 | height 2, 4 entries, 3 pages
+//!   level 0: #2[20.1]
+//!   leaves : #0(10:1-) -> #1(20:2-4! 20:4- 30:3-5)
+//!   deleted: #5@9->#1
+//!   free   : #4
+//! ```
 //!
 //! `#n` is a page handle. `[..]` is an internal page; a separator is printed
 //! as `key.tid`. `(..)` is a leaf; an entry is printed as `key:xmin-xmax`

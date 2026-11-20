@@ -78,7 +78,9 @@ impl<P: Position> Scan<P> {
     pub fn next(&mut self, tree: &Tree) -> Option<Entry> {
         let candidate = match self.phase {
             Phase::Done => return None,
-            Phase::Start => self.cursor.seek(tree, start_seek(self.lo, self.hi, self.direction)),
+            Phase::Start => self
+                .cursor
+                .seek(tree, start_seek(self.lo, self.hi, self.direction)),
             Phase::Running => match self.direction {
                 Direction::Forward => self.cursor.next(tree),
                 Direction::Backward => self.cursor.prev(tree),

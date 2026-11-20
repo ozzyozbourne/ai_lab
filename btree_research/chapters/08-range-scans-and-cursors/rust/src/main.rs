@@ -6,8 +6,8 @@ use std::ops::Bound::{self, Excluded, Included, Unbounded};
 
 use ch08_range_scans_and_cursors::bounds::prefix_range;
 use ch08_range_scans_and_cursors::{
-    Cursor, Direction, Entry, LinkCursor, LinkPosition, Position, Scan, Seek, StackCursor, StackPosition,
-    Stats, Tree, base_dump, model,
+    Cursor, Direction, Entry, LinkCursor, LinkPosition, Position, Scan, Seek, StackCursor,
+    StackPosition, Stats, Tree, base_dump, model,
 };
 
 /// Canonical hand example of chapters 03 to 08.
@@ -28,7 +28,10 @@ fn run(w: &mut dyn Write) -> io::Result<()> {
     writeln!(w, "== 1. The tree: canonical keys, order M = 4 ==")?;
     base_dump::dump(&tree.base, w)?;
 
-    writeln!(w, "\n== 2. Bounds matrix: every combination for the bounds 6 and 17 ==")?;
+    writeln!(
+        w,
+        "\n== 2. Bounds matrix: every combination for the bounds 6 and 17 =="
+    )?;
     let lows = [Unbounded, Included(6), Excluded(6)];
     let highs = [Unbounded, Included(17), Excluded(17)];
     for lo in lows {
@@ -40,14 +43,52 @@ fn run(w: &mut dyn Write) -> io::Result<()> {
     let max = u64::MAX;
     let forward = Direction::Forward;
     print_range(w, &tree, Included(12), Included(12), forward, "one key")?;
-    print_range(w, &tree, Excluded(12), Excluded(15), forward, "neighbours, both excluded")?;
-    print_range(w, &tree, Included(13), Included(14), forward, "both bounds in one gap")?;
+    print_range(
+        w,
+        &tree,
+        Excluded(12),
+        Excluded(15),
+        forward,
+        "neighbours, both excluded",
+    )?;
+    print_range(
+        w,
+        &tree,
+        Included(13),
+        Included(14),
+        forward,
+        "both bounds in one gap",
+    )?;
     print_range(w, &tree, Included(17), Included(6), forward, "inverted")?;
-    print_range(w, &tree, Included(12), Excluded(12), forward, "half open, same key")?;
-    print_range(w, &tree, Unbounded, Excluded(0), forward, "below the smallest u64")?;
-    print_range(w, &tree, Excluded(max), Unbounded, forward, "above the largest u64, no overflow")?;
+    print_range(
+        w,
+        &tree,
+        Included(12),
+        Excluded(12),
+        forward,
+        "half open, same key",
+    )?;
+    print_range(
+        w,
+        &tree,
+        Unbounded,
+        Excluded(0),
+        forward,
+        "below the smallest u64",
+    )?;
+    print_range(
+        w,
+        &tree,
+        Excluded(max),
+        Unbounded,
+        forward,
+        "above the largest u64, no overflow",
+    )?;
 
-    writeln!(w, "\n== 3. Backward: seek to the upper bound, step with prev ==")?;
+    writeln!(
+        w,
+        "\n== 3. Backward: seek to the upper bound, step with prev =="
+    )?;
     let backward = Direction::Backward;
     print_range(w, &tree, Unbounded, Unbounded, backward, "")?;
     print_range(w, &tree, Included(6), Excluded(17), backward, "")?;
@@ -66,7 +107,10 @@ fn run(w: &mut dyn Write) -> io::Result<()> {
 
     writeln!(w, "\n== 6. The tree changes under the cursor ==")?;
     change_demo(w, &mut tree)?;
-    writeln!(w, "delete every even key while scanning the whole tree forward:")?;
+    writeln!(
+        w,
+        "delete every even key while scanning the whole tree forward:"
+    )?;
     delete_while_scanning(w, "link ", LinkPosition::new())?;
     delete_while_scanning(w, "stack", StackPosition::new())?;
 
@@ -167,9 +211,15 @@ fn trace_both(w: &mut dyn Write, tree: &Tree) -> io::Result<()> {
     )?;
     writeln!(w, "key  link cursor  stack cursor")?;
     let mut link = Scan::new(Cursor::new(LinkPosition::new()), 5..=20, Direction::Forward);
-    let mut stack = Scan::new(Cursor::new(StackPosition::new()), 5..=20, Direction::Forward);
+    let mut stack = Scan::new(
+        Cursor::new(StackPosition::new()),
+        5..=20,
+        Direction::Forward,
+    );
     while let Some(a) = link.next(tree) {
-        let b = stack.next(tree).expect("both cursors return the same entries");
+        let b = stack
+            .next(tree)
+            .expect("both cursors return the same entries");
         assert_eq!(a, b);
         let lp = &link.cursor.pos;
         let sp = &stack.cursor.pos;
@@ -240,12 +290,17 @@ fn prefix_demo(w: &mut dyn Write) -> io::Result<()> {
         (LAST_USER, 9),
     ];
     for (user_key, row_id) in rows {
-        tree.put(composite(user_key, row_id), row_id).expect(NO_BUDGET);
+        tree.put(composite(user_key, row_id), row_id)
+            .expect(NO_BUDGET);
     }
     tree.validate().expect("valid tree");
     for user_key in [7, 3, 8, LAST_USER] {
         let (lo, hi) = prefix_range(user_key, 32);
-        write!(w, "user key {user_key}: range {}, row ids:", range_label(lo, hi))?;
+        write!(
+            w,
+            "user key {user_key}: range {}, row ids:",
+            range_label(lo, hi)
+        )?;
         let mut n = 0;
         for e in tree.range((lo, hi)) {
             write!(w, " {}", e.value)?;

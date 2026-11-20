@@ -64,7 +64,13 @@ fn agree(a: Option<Entry>, b: Option<Entry>) -> Option<u64> {
 }
 
 /// The keys a scan returns, with a cursor on position type `P`.
-fn scan_keys<P: Position>(pos: P, tree: &Tree, lo: Bound<u64>, hi: Bound<u64>, direction: Direction) -> Vec<u64> {
+fn scan_keys<P: Position>(
+    pos: P,
+    tree: &Tree,
+    lo: Bound<u64>,
+    hi: Bound<u64>,
+    direction: Direction,
+) -> Vec<u64> {
     let mut scan = Scan::new(Cursor::new(pos), (lo, hi), direction);
     let mut keys = Vec::new();
     while let Some(e) = scan.next(tree) {
@@ -94,15 +100,30 @@ fn bounds_matrix_every_lo_hi_kind_and_value_both_cursors_both_directions() {
                     let lo = make_bound(lo_kind, lo_key);
                     let hi = make_bound(hi_kind, hi_key);
                     // The specification: filter the sorted keys by `contains`.
-                    let mut expected: Vec<u64> = SORTED.into_iter().filter(|&k| contains(lo, hi, k)).collect();
+                    let mut expected: Vec<u64> = SORTED
+                        .into_iter()
+                        .filter(|&k| contains(lo, hi, k))
+                        .collect();
 
                     let forward = Direction::Forward;
-                    assert_eq!(scan_keys(LinkPosition::new(), &tree, lo, hi, forward), expected);
-                    assert_eq!(scan_keys(StackPosition::new(), &tree, lo, hi, forward), expected);
+                    assert_eq!(
+                        scan_keys(LinkPosition::new(), &tree, lo, hi, forward),
+                        expected
+                    );
+                    assert_eq!(
+                        scan_keys(StackPosition::new(), &tree, lo, hi, forward),
+                        expected
+                    );
                     expected.reverse();
                     let backward = Direction::Backward;
-                    assert_eq!(scan_keys(LinkPosition::new(), &tree, lo, hi, backward), expected);
-                    assert_eq!(scan_keys(StackPosition::new(), &tree, lo, hi, backward), expected);
+                    assert_eq!(
+                        scan_keys(LinkPosition::new(), &tree, lo, hi, backward),
+                        expected
+                    );
+                    assert_eq!(
+                        scan_keys(StackPosition::new(), &tree, lo, hi, backward),
+                        expected
+                    );
                     checked += 1;
                 }
             }
@@ -120,7 +141,10 @@ fn tree_range_and_tree_range_backward_on_the_readme_examples() {
     assert_eq!(keys, [6, 7, 10, 12, 15]);
     assert!(entries.iter().all(|e| e.value == e.key * 100));
 
-    let back: Vec<u64> = tree.range_backward((Excluded(6), Included(17))).map(|e| e.key).collect();
+    let back: Vec<u64> = tree
+        .range_backward((Excluded(6), Included(17)))
+        .map(|e| e.key)
+        .collect();
     assert_eq!(back, [17, 15, 12, 10, 7]);
 
     // Range syntax covers six of the nine combinations; an excluded lower
@@ -220,7 +244,14 @@ fn empty_tree_and_single_entry_tree() {
     let mut tree = Tree::new(4);
     let mut pair = Pair::new();
 
-    let targets = [Seek::First, Seek::Last, Seek::Ge(5), Seek::Gt(5), Seek::Le(5), Seek::Lt(5)];
+    let targets = [
+        Seek::First,
+        Seek::Last,
+        Seek::Ge(5),
+        Seek::Gt(5),
+        Seek::Le(5),
+        Seek::Lt(5),
+    ];
     for t in targets {
         assert_eq!(pair.seek(&tree, t), None);
     }
@@ -285,14 +316,35 @@ fn the_stack_cursor_never_uses_sibling_links_the_link_cursor_depends_on_them() {
     assert_eq!(tree.validate(), Err(Violation::BrokenLeafChain));
 
     let (forward, backward) = (Direction::Forward, Direction::Backward);
-    assert_eq!(scan_keys(StackPosition::new(), &tree, Unbounded, Unbounded, forward), SORTED);
     assert_eq!(
-        scan_keys(StackPosition::new(), &tree, Excluded(6), Included(17), backward),
+        scan_keys(StackPosition::new(), &tree, Unbounded, Unbounded, forward),
+        SORTED
+    );
+    assert_eq!(
+        scan_keys(
+            StackPosition::new(),
+            &tree,
+            Excluded(6),
+            Included(17),
+            backward
+        ),
         [17, 15, 12, 10, 7]
     );
     // The link cursor finds the leaf by descent but cannot leave it.
-    assert_eq!(scan_keys(LinkPosition::new(), &tree, Included(6), Included(17), forward), [6, 7]);
-    assert_eq!(scan_keys(LinkPosition::new(), &tree, Unbounded, Unbounded, forward), []);
+    assert_eq!(
+        scan_keys(
+            LinkPosition::new(),
+            &tree,
+            Included(6),
+            Included(17),
+            forward
+        ),
+        [6, 7]
+    );
+    assert_eq!(
+        scan_keys(LinkPosition::new(), &tree, Unbounded, Unbounded, forward),
+        []
+    );
 }
 
 #[test]
@@ -503,11 +555,18 @@ fn scratch_buffers_after_the_first_scan_later_scans_reuse_the_same_memory() {
         } else {
             Direction::Backward
         };
-        let mut scan = Scan::new(Cursor::new(StackPosition::with_buffer(frames)), (i % 30).., direction);
+        let mut scan = Scan::new(
+            Cursor::new(StackPosition::with_buffer(frames)),
+            (i % 30)..,
+            direction,
+        );
         scan.collect_into(&tree, &mut rows);
         assert!(rows.len() <= SORTED.len());
         frames = scan.cursor.pos.into_buffer();
-        assert_eq!((frames.as_ptr(), frames.capacity()), (frames_at, frames_capacity));
+        assert_eq!(
+            (frames.as_ptr(), frames.capacity()),
+            (frames_at, frames_capacity)
+        );
         assert_eq!((rows.as_ptr(), rows.capacity()), (rows_at, rows_capacity));
     }
 }

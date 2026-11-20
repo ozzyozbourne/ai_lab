@@ -55,7 +55,10 @@ pub fn prefix_range(prefix: u64, prefix_bits: u32) -> (Bound<u64>, Bound<u64>) {
     assert!((1..=64).contains(&prefix_bits));
     let shift = 64 - prefix_bits;
     let largest_prefix = u64::MAX >> shift;
-    assert!(prefix <= largest_prefix, "the prefix must fit in prefix_bits");
+    assert!(
+        prefix <= largest_prefix,
+        "the prefix must fit in prefix_bits"
+    );
     let hi = if prefix == largest_prefix {
         Unbounded
     } else {

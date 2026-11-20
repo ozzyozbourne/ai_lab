@@ -8,7 +8,7 @@
 //!     entry stays on the page it was put on until it is removed or the page
 //!     splits (then it may move RIGHT, never left).
 //!   * An EMPTY leaf is deleted in two phases plus a delayed third step:
-//!       live --markHalfDead--> half-dead --unlink--> deleted --recycle--> free
+//!     live -> (markHalfDead) half-dead -> (unlink) deleted -> (recycle) free
 //!
 //! Invariants (checked by validate.zig):
 //!   1. Keys inside a page are strictly ascending; a child holds only keys

@@ -179,7 +179,11 @@ fn check_scan(
 ) -> usize {
     let mut by_link = Scan::new(Cursor::new(LinkPosition::new()), (lo, hi), direction);
     let frames = std::mem::take(&mut scratch.frames);
-    let mut by_stack = Scan::new(Cursor::new(StackPosition::with_buffer(frames)), (lo, hi), direction);
+    let mut by_stack = Scan::new(
+        Cursor::new(StackPosition::with_buffer(frames)),
+        (lo, hi),
+        direction,
+    );
     by_link.collect_into(tree, &mut scratch.from_link);
     by_stack.collect_into(tree, &mut scratch.from_stack);
     scratch.frames = by_stack.cursor.pos.into_buffer(); // hand the memory back

@@ -118,6 +118,7 @@ pub const Db = struct {
     ///   2. finishes page deletions that stopped after phase 1,
     ///   3. deletes (both phases) the leaves it emptied, where allowed,
     ///   4. recycles the deleted pages that no snapshot can reach any more.
+    ///
     /// Never allocates, so it cannot fail.
     pub fn vacuum(self: *Db, options: VacuumOptions) VacuumReport {
         var report: VacuumReport = .{ .horizon = self.store.horizon() };

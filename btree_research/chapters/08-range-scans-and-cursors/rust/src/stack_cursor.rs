@@ -89,7 +89,13 @@ impl StackPosition {
     }
 
     /// Walks down from `start` to a leaf, pushing a frame per internal node.
-    fn descend(&mut self, tree: &BPlusTree, start: NodeId, target: Seek, stats: &mut Stats) -> NodeId {
+    fn descend(
+        &mut self,
+        tree: &BPlusTree,
+        start: NodeId,
+        target: Seek,
+        stats: &mut Stats,
+    ) -> NodeId {
         let mut id = start;
         loop {
             let n = tree.nodes.get(id);
@@ -112,7 +118,12 @@ impl StackPosition {
         }
     }
 
-    fn settle_forward(&mut self, tree: &BPlusTree, start: usize, stats: &mut Stats) -> Option<Entry> {
+    fn settle_forward(
+        &mut self,
+        tree: &BPlusTree,
+        start: usize,
+        stats: &mut Stats,
+    ) -> Option<Entry> {
         let mut i = start;
         loop {
             let n = tree.nodes.get(self.leaf);
@@ -127,7 +138,12 @@ impl StackPosition {
         }
     }
 
-    fn settle_backward(&mut self, tree: &BPlusTree, count: usize, stats: &mut Stats) -> Option<Entry> {
+    fn settle_backward(
+        &mut self,
+        tree: &BPlusTree,
+        count: usize,
+        stats: &mut Stats,
+    ) -> Option<Entry> {
         let mut n_qualifying = count;
         loop {
             let n = tree.nodes.get(self.leaf);

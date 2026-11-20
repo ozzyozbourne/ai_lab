@@ -8,7 +8,7 @@
 //!     entry stays on the page it was put on until it is removed or the page
 //!     splits (then it may move RIGHT, never left).
 //!   * An EMPTY leaf is deleted in two phases plus a delayed third step:
-//!       live --mark_half_dead--> half-dead --unlink--> deleted --recycle--> free
+//!     live -> (mark_half_dead) half-dead -> (unlink) deleted -> (recycle) free
 //!
 //! Invariants (checked by validate.rs):
 //!   1. Keys inside a page are strictly ascending; a child holds only keys
@@ -290,7 +290,9 @@ impl Index {
     /// goes away. The target's key range is thereby handed to its right
     /// sibling without touching a single key in either leaf:
     ///
-    ///     .. k(i-1) [T] k(i) [R] k(i+1) ..   ->   .. k(i-1) [R] k(i+1) ..
+    /// ```text
+    /// .. k(i-1) [T] k(i) [R] k(i+1) ..   ->   .. k(i-1) [R] k(i+1) ..
+    /// ```
     pub fn mark_half_dead(&mut self, id: NodeId) -> bool {
         if !self.nodes.is_live(id) || id == self.root {
             return false;

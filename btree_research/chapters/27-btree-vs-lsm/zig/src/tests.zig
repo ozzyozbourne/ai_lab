@@ -393,7 +393,9 @@ test "btree: a put that runs out of memory changes neither the tree nor the devi
     for (0..500) |i| {
         const key: u64 = (i * 37) % 503;
         // Make the next allocation fail, whenever it comes.
+        // (Growing the node array in place counts as a "resize".)
         failing.fail_index = failing.alloc_index;
+        failing.resize_fail_index = failing.resize_index;
         const counters = tree.dev.counters;
         const live = tree.dev.live;
         if (tree.put(gpa, key, key)) |_| {
@@ -406,11 +408,12 @@ test "btree: a put that runs out of memory changes neither the tree nor the devi
             try tree.validate();
             try testing.expectEqual(i, tree.len());
             failing.fail_index = std.math.maxInt(usize);
+            failing.resize_fail_index = std.math.maxInt(usize);
             try testing.expectEqual(null, try tree.put(gpa, key, key));
         }
         try tree.validate();
     }
-    try testing.expect(failures >= 3);
+    try testing.expect(failures >= 5);
 }
 
 test "lsm: a write that runs out of memory changes no answer, and the retry finishes the job" {

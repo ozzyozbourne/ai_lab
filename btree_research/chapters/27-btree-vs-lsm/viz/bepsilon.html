@@ -35,6 +35,15 @@
   .be-err { color: var(--bt-key-deleted); font-size: .84rem; min-height: 1.2em; flex-basis: 100%; }
   .be-points li { margin: .35em 0; }
   #code { margin-top: 14px; }
+  /* Phone: the toolkit stacks the side column (chart, log) between the picture
+     and its caption. Locally, put the caption and the step controls directly
+     under the picture and the side column after them. */
+  @media (max-width: 820px) {
+    #fig .bt-figure { display: flex; flex-direction: column; }
+    #fig .bt-figure-body { display: contents; }
+    #fig .bt-side { order: 1; }
+    #fig .bt-legend { order: 2; }
+  }
 </style>
 </head>
 <body>

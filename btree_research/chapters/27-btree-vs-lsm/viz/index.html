@@ -36,6 +36,15 @@
     .c27-row { grid-template-columns: minmax(0, 1fr); gap: 2px; }
     .c27-label small { display: inline; margin-left: 6px; }
   }
+  /* Phone: the toolkit stacks the side column (chart, log) between the picture
+     and its caption. Locally, put the caption and the step controls directly
+     under the picture and the side column after them. */
+  @media (max-width: 820px) {
+    #fig .bt-figure { display: flex; flex-direction: column; }
+    #fig .bt-figure-body { display: contents; }
+    #fig .bt-side { order: 1; }
+    #fig .bt-legend { order: 2; }
+  }
 </style>
 </head>
 <body>

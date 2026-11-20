@@ -74,37 +74,36 @@ there is no reason to keep a copy below.
 Order M: a node holds at most M - 1 keys and, except the root, at least
 ceil(M/2) - 1.
 
-**Insert.** Walk down: in an internal node follow child number *i*, where *i*
-is the number of separators less than or equal to the key. Put the entry into
-the leaf in key order. A node that now holds M keys splits: the first
-floor(M/2) keys stay and the rest go to a new node on its right. From a leaf,
-the new node's first key is copied up. From an internal node, the key at
-position floor(M/2) moves up and only the keys after it go to the new node. A
-root that splits gets a new root above it.
+**Insert.** In an internal node follow child number *i*, where *i* is the
+number of separators less than or equal to the key. Put the entry into the
+leaf in key order. A node that now holds M keys splits: the first floor(M/2)
+keys stay and the rest go to a new node on its right. From a leaf, the new
+node's first key is copied up. From an internal node, the key at position
+floor(M/2) moves up and only the keys after it go to the new node. A root
+that splits gets a new root above it.
 
 **Delete.** Remove the entry from its leaf and leave the separators alone. If
-the leaf now has fewer keys than the minimum, repair it with the first of
-these steps that applies. Only siblings under the same parent count.
+the leaf now has fewer keys than the minimum, apply the first of these steps
+that fits. Only siblings under the same parent count.
 
 1. The left sibling has more than the minimum: borrow its last entry.
 2. The right sibling has more than the minimum: borrow its first entry.
 3. There is a left sibling: merge with it.
 4. Otherwise the node is the leftmost child: merge with the right sibling.
 
-So the left sibling is always tried first, for borrowing and for merging. A
-borrow between leaves rewrites the separator between the two as a copy of the
-right one's first key. A merge empties the right node of the pair into the
-left one and frees the right one. The parent loses the separator between
-them: between leaves it is dropped, between internal nodes it is pulled down
-into the merged node. If the parent is now below the minimum, the same four
-steps repair it one level up; a borrow between internal nodes is the rotation
-through the parent from chapter 05. A root left with no separator is replaced
-by its only child.
+So the left sibling is tried first, for borrowing and for merging. A borrow
+between leaves rewrites the separator between the two as a copy of the right
+one's first key. A merge empties the right node of the pair into the left one
+and frees it. The parent loses the separator between them: between leaves it
+is dropped, between internal nodes it is pulled down into the merged node. If
+the parent is now below the minimum, the same four steps repair it; a borrow
+between internal nodes is the rotation from chapter 05. A root left with no
+separator is replaced by its only child.
 
 **Handles** are given out in allocation order: `#0`, `#1`, and so on. The
 left half of a split keeps its handle, the new right node gets the next one,
-and a new root is allocated after the split below it. Once nodes have been
-freed, the handle freed last is reused first.
+and a new root is allocated after the split below it. The handle freed last
+is reused first.
 
 ### Duplicate keys and tie-breakers
 
@@ -188,25 +187,21 @@ same split rule ends as:
 ```
 
 Height 2 and 5 nodes against height 3 and 8 nodes: 6, 10 and 20 are stored
-once, in the root, with their values. The B+tree pays for its copies here
-because both trees have the same number of keys per node; in a real page its
-internal nodes would hold many more separators than a B-tree node holds
-entries.
+once, in the root, with their values. With equal node sizes the B+tree pays
+for its copies.
 
 **Deleting.** Delete 15: the entry leaves `#5`, and that is all. The root
 still says 15, and a later search for 16 still goes right and arrives in the
 correct leaf. Delete 17: leaf `#5` is now empty. Its right sibling
 `#3(20 25 30)` can spare a key, so 20 moves over and the separator between
-them becomes a copy of the sibling's new first key, 25 (step 2 of the rules;
-`#5` is a leftmost child, so step 1 does not apply). The program output below
-continues through a leaf merge, an internal rotation, an internal merge and
-the loss of a level.
+them becomes a copy of the sibling's new first key, 25 (step 2; `#5` has no
+left sibling). The program output below continues through a leaf merge, an
+internal rotation, an internal merge and the loss of a level.
 
-**A merge in the middle.** Start again from the final tree and delete 3, 5,
-12 and 7. No leaf goes below the minimum, but the three children of `#2` are
-now at it: `#0(1)`, `#4(6)`, `#1(10)`. Delete 6: `#4` is empty. Neither
-sibling can spare a key, so steps 1 and 2 fail, and `#4` has a left sibling,
-so step 3 merges it with `#0`. `#4` is the right node of that pair: it is
+**A merge in the middle.** From the final tree again, delete 3, 5, 12 and 7.
+The children of `#2` are now all at the minimum: `#0(1)`, `#4(6)`, `#1(10)`.
+Delete 6: `#4` is empty and neither sibling can spare a key, so step 3 merges
+it with its left sibling `#0`. `#4` is the right node of that pair: it is
 freed, and separator 6 is dropped. `#2[10]` is left over `#0(1) <-> #1(10)`.
 A test in both languages checks this case.
 
@@ -238,9 +233,9 @@ chapter in one line: `leaf` has `values`, `prev`, `next`; `internal` has
 `children`.
 
 **Search** (`search.zig`). In an internal node the child to follow is
-`upperBound(separators, key)`: the number of separators less than or equal to
-the key. A key equal to a separator therefore goes right, which matches
-copy-up (the separator is the first key of the right leaf).
+`upperBound(separators, key)`. A key equal to a separator therefore goes
+right, which matches copy-up (the separator is the first key of the right
+leaf).
 
 **Insert** (`insert.zig`). `put` first reserves `height + 1` nodes: one per
 level in case every node on the path splits, plus a new root. If that fails
@@ -296,9 +291,8 @@ The structure is the same. The differences come from ownership:
   free is an `assert`.
 - **The walker borrows the tree**, so using it across a `put` is a compile
   error. In Zig the same rule is a comment.
-- `kind` is an `enum Kind { Leaf(Leaf), Internal(Internal) }`; the accessors
-  `leaf()` / `internal()` panic on the wrong kind, as Zig's `n.kind.leaf`
-  does in a safe build. `NodeId` is a newtype with a `NIL` constant.
+- `kind` is an `enum Kind`; the accessors `leaf()` / `internal()` panic on
+  the wrong kind, as Zig's `n.kind.leaf` does in a safe build.
 
 ### Output
 
@@ -369,7 +363,7 @@ entry that exists nowhere else. The scan code has to account for that: when
 an index cursor comes back up from a child, it stops on the divider cell,
 "because index interior cells have payloads, so unless we do this we will be
 skipping an entry when traversing the tree" (`turso/core/storage/btree.rs:1875-1878`).
-Table trees never stop there. When table leaves are rebalanced, the divider
+When table leaves are rebalanced, the divider
 that goes to the parent is built from the left page's id and a rowid read
 from a leaf cell, which itself stays in a leaf (`btree.rs:4616-4629`): a
 copy-up. The convention differs from ours: in Turso rowids less than or
@@ -456,7 +450,6 @@ a free list.
 - **Holding a `*Node` across an allocation** (Zig). The array may move. Here
   that is prevented by reserving at the top of `put`; if you add an
   allocation elsewhere, fetch the pointer again afterwards.
-- **Using a handle after `free`.** It may already name a new node.
 
 ## Exercises
 

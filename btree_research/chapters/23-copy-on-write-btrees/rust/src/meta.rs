@@ -15,6 +15,11 @@
 //! written slot fails and the reader falls back to the other slot: the
 //! previous commit, complete and untouched.
 //!
+//! The older slot is also the fallback when the NEWER one becomes unreadable
+//! later (a bad sector). That only helps if the tree it names is still
+//! complete, so the database keeps the pages of both slots' trees unwritten:
+//! see `Db::previous` and the reclamation rule in db.rs.
+//!
 //! Slot layout, 32 bytes, little-endian:
 //!
 //! ```text

@@ -1,6 +1,7 @@
 //! `validate`: every invariant of the copy-on-write tree as code.
 //!
-//! Per root (the committed root and every snapshot root), the B+tree
+//! Per root (the committed root, the previous root and every snapshot root),
+//! the B+tree
 //! invariants of chapter 07 minus the leaf chain:
 //!   1. keys in a node strictly ascending, within the bounds of the separators
 //!      above; 2. at most M-1 keys, at least ceil(M/2)-1 except in the root;
@@ -16,9 +17,13 @@
 //!   7. The free list, the pending list and the set reachable from the
 //!      current root are pairwise disjoint and together cover every page:
 //!      nothing reachable is writable, nothing is leaked.
-//!   8. A page that only a snapshot reaches is pending, freed by a LATER
-//!      transaction than the snapshot (so the reclamation rule protects it).
+//!   8. A page that only an older root reaches (a snapshot, or the previous
+//!      root) is pending, freed by a LATER transaction than that root (so
+//!      the reclamation rule protects it).
 //!   9. `current` is what the two meta slots decode to.
+//!  10. If the other meta slot holds an older commit, that commit is
+//!      `previous` and passes every check above: whichever slot a restart
+//!      can read, it finds a complete tree.
 
 use crate::base_node::{Kind, PageId};
 use crate::db::Db;
@@ -53,6 +58,8 @@ pub enum Violation {
     PageLeak,
     /// Invariant 8.
     SnapshotPageUnprotected,
+    /// Invariant 10: a restart could fall back to a root nobody protects.
+    FallbackUnprotected,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -126,6 +133,22 @@ impl Db {
         // is open, the page ids it has reserved are in none of the three sets.)
         if !self.writer_active && c.class.contains(&Class::Unknown) {
             return Err(Violation::PageLeak);
+        }
+
+        // Invariant 10. The fallback root is checked exactly like a snapshot.
+        if let Some(p) = self.previous {
+            if p.txn_id >= m.txn_id {
+                return Err(Violation::BadRoot);
+            }
+            c.root_txn = p.txn_id;
+            c.is_current = false;
+            c.height = p.height as usize;
+            c.check_root(p.root, p.count)?;
+        }
+        if let Some(f) = Meta::fallback(&self.store.meta_slots)
+            && self.previous != Some(f)
+        {
+            return Err(Violation::FallbackUnprotected);
         }
 
         let mut prev_id = None;

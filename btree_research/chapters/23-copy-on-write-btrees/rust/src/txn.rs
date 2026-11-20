@@ -48,6 +48,11 @@ pub enum TxnError {
     OutOfPages,
     /// `commit` on a transaction in which `put` or `delete` failed.
     TxnFailed,
+    /// Only with `Db::crash_after`: a power failure in the middle of the
+    /// commit's writes. The store is as the "disk" was at that instant and
+    /// the rest of the `Db` is as meaningless as the memory of a dead
+    /// process: call `Db::reopen`.
+    Crashed,
 }
 
 pub struct WriteTxn<'db> {
@@ -525,7 +530,8 @@ impl<'db> WriteTxn<'db> {
 
     /// Publishes the transaction: write the new pages, then flip the root.
     /// Consumes the transaction; on `Err(TxnFailed)` it is dropped, which
-    /// aborts it.
+    /// aborts it. `Err(Crashed)` is the injected power failure: restart with
+    /// `Db::reopen`.
     pub fn commit(mut self) -> Result<CommitInfo, TxnError> {
         if self.failed {
             return Err(TxnError::TxnFailed);
@@ -547,7 +553,12 @@ impl<'db> WriteTxn<'db> {
         // Phase 2: write the new pages. Each goes to a FREE slot, so a crash
         // (or a reader) in the middle of this loop still sees the old tree
         // complete: the old meta slot does not point at any of these pages.
+        // The same holds for the tree of the OTHER meta slot
+        // (`db.previous`): the pages only it reaches are still pending.
         for (&page, &i) in &self.dirty {
+            if power_fails(self.db) {
+                return Err(self.crashed());
+            }
             self.db.store.write(page, &self.pages[i], id);
         }
         self.db.store.free.extend_from_slice(&self.scrapped);
@@ -556,17 +567,31 @@ impl<'db> WriteTxn<'db> {
         // NOT hold the current root. Before it, readers find the old tree;
         // after it, the new one. A real engine syncs the pages before this
         // write and the meta slot after it (chapter 21).
-        self.db.current = Meta {
+        let new = Meta {
             txn_id: id,
             root: self.root,
             height: u32::try_from(self.height).expect("height fits"),
             count: self.count,
             page_count: u32::try_from(self.db.store.page_count()).expect("page count fits"),
         };
-        self.db.store.meta_slots[(id % 2) as usize] = self.db.current.encode();
+        // Byte by byte only so that a crash can tear it; a slot with some
+        // new and some old bytes fails its checksum.
+        for (i, byte) in new.encode().into_iter().enumerate() {
+            if power_fails(self.db) {
+                return Err(self.crashed());
+            }
+            self.db.store.meta_slots[(id % 2) as usize][i] = byte;
+        }
+        self.db.crash_after = None; // the commit is durable: nothing left to interrupt
+        // The slot just overwritten held the root from two commits back.
+        // From here on the fallback is the root we are replacing.
+        self.db.previous = Some(self.db.current);
+        self.db.current = new;
 
         // Phase 4: the replaced pages are unreachable from the new root, but
-        // older snapshots may still reach them: pending, not free.
+        // older roots still reach them: pending, not free. `reclaim` then
+        // releases what no protected root needs. That never includes the
+        // pages replaced just now, because `previous` reaches them.
         let freed = self
             .freed
             .iter()
@@ -585,6 +610,12 @@ impl<'db> WriteTxn<'db> {
         Ok(info)
     }
 
+    fn crashed(&mut self) -> TxnError {
+        // The free list is rebuilt by `reopen`; `Drop` must not touch it.
+        self.taken.clear();
+        TxnError::Crashed
+    }
+
     /// Throws the transaction away. No page of the store was written, so the
     /// committed tree and every snapshot are exactly as before. (Letting the
     /// transaction go out of scope does the same.)
@@ -595,6 +626,21 @@ impl<'db> WriteTxn<'db> {
     fn return_page_ids(&mut self) {
         while let Some(id) = self.taken.pop() {
             self.db.store.free.push(id);
+        }
+    }
+}
+
+/// Fault injection: counts down `db.crash_after`; true when it runs out.
+fn power_fails(db: &mut Db) -> bool {
+    match db.crash_after {
+        None => false,
+        Some(0) => {
+            db.crash_after = None;
+            true
+        }
+        Some(left) => {
+            db.crash_after = Some(left - 1);
+            false
         }
     }
 }

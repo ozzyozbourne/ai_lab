@@ -27,7 +27,7 @@ pub mod validate;
 mod tests;
 
 pub use base_node::{Entry, Node, PageId};
-pub use db::{Db, NoValidMeta, Snapshot, Stats};
+pub use db::{Db, ReopenError, Snapshot, Stats};
 pub use meta::Meta;
 pub use read::{Cursor, View};
 pub use store::PageStore;

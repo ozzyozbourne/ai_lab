@@ -85,7 +85,8 @@ impl<'a> View<'a> {
         }
     }
 
-    /// Entries with lo <= key < hi, ascending.
+    /// Entries with lo <= key < hi, ascending. `hi` is exclusive, so no
+    /// range reaches the key `u64::MAX`: scan everything with `seek(0)`.
     pub fn range(&self, lo: u64, hi: u64) -> Range<'a> {
         Range {
             cursor: self.seek(lo),

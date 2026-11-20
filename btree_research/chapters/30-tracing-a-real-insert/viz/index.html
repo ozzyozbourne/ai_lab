@@ -32,6 +32,7 @@
 /* The scenario labels are long; on a phone the select must not widen the page. */
 #fig-op .bt-select { max-width: calc(100vw - 120px); }
 .ch30-show { font-size: .74rem; padding: 2px 8px; min-height: 0; margin-left: auto; }
+.ch30-show[hidden] { display: none; }
 .ch30-col.is-folded .ch30-view, .ch30-col.is-folded .ch30-log { display: none; }
 .ch30-col.is-folded { opacity: .8; }
 .ch30-note { font-size: .9rem; color: var(--bt-muted); }
@@ -170,13 +171,15 @@ is the program counter, the path and the carry are the local variables, and thei
     return col;
   }
   /* Scroll a tree's box sideways so that the middle of the given pages is in
-   * the middle of the box (TreeView.scrollToNode centres one page only). */
+   * the middle of the box (TreeView.scrollToNode centres one page only). If
+   * they are wider than the box together, the leftmost one is shown whole. */
   function centreOn(view, ids) {
     var L = view.layout, lo = Infinity, hi = -Infinity;
     ids.forEach(function (id) { var n = L && L.nodes.get(id); if (n) { lo = Math.min(lo, n.x); hi = Math.max(hi, n.x + n.w); } });
     if (lo > hi) return;
     var sc = view.scroller, s = view.scale, off = Math.max(0, (sc.scrollWidth - view.W * s) / 2);
-    sc.scrollLeft = Math.max(0, (lo + hi) / 2 * s + off - sc.clientWidth / 2);
+    var fits = (hi - lo) * s <= sc.clientWidth - 16;
+    sc.scrollLeft = Math.max(0, fits ? (lo + hi) / 2 * s + off - sc.clientWidth / 2 : lo * s + off - 8);
   }
   function applyResting() {
     [colPg, colTu].forEach(function (c) {

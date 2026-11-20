@@ -53,7 +53,8 @@
 //!   T2  keys are strictly ascending inside a page
 //!   T3  every key of a subtree lies inside the bounds its ancestors'
 //!       separators give it: lower bound inclusive, upper bound exclusive
-//!   T4  all leaves are at the same depth
+//!   T4  all leaves are at the same depth, and there are at most
+//!       `max_height` levels
 //!   T5  following the links from the leftmost leaf visits every leaf once,
 //!       in key order, and ends with invalid_page_id
 //!   T6  every page has exactly one role: none is unreachable, none is
@@ -77,6 +78,20 @@
 //! split, a leaf and one page of a chain, two consecutive pages of a chain
 //! being written, the root and its only child. The free list never needs a
 //! third pin: a trunk is unpinned before the page it handed out is fetched.
+//!
+//! The file is untrusted input. Every count, length and page id that comes
+//! from a page is checked before it is used as an index or followed, and
+//! every walk has a bound, so a damaged file gives `Corrupt` (or a wrong
+//! answer that `validate` explains), never a crash or an endless loop:
+//!
+//!   tree page     checked as a whole (`nodeIsSound`) the first time this
+//!                 handle pins it; see `pinNode`
+//!   page id       must lie inside the file and must not be page 0
+//!   descent       at most `max_height` levels
+//!   leaf chain    a scan follows at most as many links as the file has pages
+//!   value field   `parseField`; a chain has exactly overflowPages(P) pages
+//!   trunk         kind byte, count <= `trunk_capacity`, the id handed out
+//!   metapage      `open`; the two counters before they are changed
 //!
 //! Memory. Nodes live in the pool's frame slab. Each operation gets scratch
 //! memory from one ArenaAllocator that is reset when the operation returns.
@@ -130,6 +145,13 @@ pub const page_capacity = page_size - reserved_tail - slotted.header_size;
 pub const max_key_len = 256;
 /// Sixteen pages. The limit is arbitrary now: no value has to fit in a page.
 pub const max_value_len = 65536;
+/// No tree has more levels than this, so a descent that goes deeper is in a
+/// damaged file (a child pointer that leads back up). Why 32 is out of
+/// reach: a level is added only when the root is full, and after a split a
+/// page needs at least 7 more separators to fill up again, each of them from
+/// a split one level down. A tree with L levels has therefore seen more than
+/// 7^(L-2) leaf splits.
+pub const max_height = 32;
 
 /// What a cell costs its page: the cell itself plus its slot.
 pub fn cellCost(key_len: usize, value_len: usize) usize {
@@ -286,6 +308,26 @@ pub fn childIndex(page: SlottedPage, key: []const u8) usize {
     return if (r.found) r.index + 1 else r.index;
 }
 
+/// Is this page a tree page that the code below can use without looking
+/// twice? Safe on any bytes. The slotted page's own `validate` covers
+/// everything inside the page (slots, cell bounds, the free blocks, key
+/// order); the rest is what the TREE assumes about a cell: a key of at most
+/// `max_key_len` bytes, in a leaf a value field that can be one, in an
+/// interior page a 4-byte child id. Without those the one-third rule behind
+/// `splitPoint` would not hold and `childAt` would read past a cell.
+pub fn nodeIsSound(page: SlottedPage) bool {
+    const leaf = page.kind() == kind_leaf;
+    if (!leaf and page.kind() != kind_interior) return false;
+    if (page.reservedSize() != reserved_tail) return false;
+    page.validate() catch return false;
+    for (0..page.count()) |i| {
+        if (page.key(i).len > max_key_len) return false;
+        const len = page.value(i).len;
+        if (if (leaf) len > max_field_len else len != @sizeOf(PageId)) return false;
+    }
+    return true;
+}
+
 fn childBytes(id: PageId) [4]u8 {
     var b: [4]u8 = undefined;
     std.mem.writeInt(u32, &b, id, .little);
@@ -370,6 +412,9 @@ pub const DiskBTree = struct {
     /// The free list: first trunk page, and how many pages it holds in all.
     free_head: PageId,
     free_count: u32,
+    /// One flag per page the file had when it was opened: true once the page
+    /// has passed `nodeIsSound`. Pages added later are this handle's work.
+    checked: []bool,
     /// True once the operation in progress has changed a page.
     changed: bool = false,
     /// Set when a `put` or `delete` failed after its first page change.
@@ -446,13 +491,14 @@ pub const DiskBTree = struct {
         pool.unpin(root.id, true);
         assert(meta.id == meta_page_id and root.id == 1);
 
-        var tree: DiskBTree = .{ .pool = pool, .gpa = gpa, .arena = .init(gpa), .root = root.id, .key_count = 0, .free_head = invalid_page_id, .free_count = 0 };
+        var tree: DiskBTree = .{ .pool = pool, .gpa = gpa, .arena = .init(gpa), .root = root.id, .key_count = 0, .free_head = invalid_page_id, .free_count = 0, .checked = &.{} };
         errdefer tree.deinit();
         try tree.flush();
         return tree;
     }
 
-    /// Open an existing tree. Only the metapage is read here.
+    /// Open an existing tree. Only the metapage is read here, and every
+    /// number in it is checked against the size of the file.
     pub fn open(gpa: Allocator, pool: *BufferPool) Error!DiskBTree {
         const pages = pool.pager.pageCount();
         if (pages < 2) return error.BadMagic;
@@ -466,12 +512,15 @@ pub const DiskBTree = struct {
         const no_list = meta.free_head == invalid_page_id;
         if (no_list != (meta.free_count == 0) or meta.free_count >= pages) return error.Corrupt;
         if (!no_list and (meta.free_head == meta_page_id or meta.free_head >= pages)) return error.Corrupt;
-        return .{ .pool = pool, .gpa = gpa, .arena = .init(gpa), .root = meta.root, .key_count = meta.key_count, .free_head = meta.free_head, .free_count = meta.free_count };
+        const checked = try gpa.alloc(bool, pages);
+        @memset(checked, false);
+        return .{ .pool = pool, .gpa = gpa, .arena = .init(gpa), .root = meta.root, .key_count = meta.key_count, .free_head = meta.free_head, .free_count = meta.free_count, .checked = checked };
     }
 
     /// Free the scratch arena. Does not flush: see `close`.
     pub fn deinit(self: *DiskBTree) void {
         self.arena.deinit();
+        self.gpa.free(self.checked);
         self.* = undefined;
     }
 
@@ -496,17 +545,32 @@ pub const DiskBTree = struct {
     // ---- pinning pages by role ----------------------------------------------
 
     /// Fetch and pin page `id` as a tree node. A page that is not a node of
-    /// this tree (zeroes, an overflow page, a trunk) is reported as
-    /// `Corrupt` and not pinned.
+    /// this tree (zeroes, an overflow page, a trunk, damaged bytes) is
+    /// reported as `Corrupt` and not pinned.
+    ///
+    /// The slotted page trusts its bytes, so a page from the file must pass
+    /// `nodeIsSound` before anything searches it. That check reads the whole
+    /// page; it runs ONCE per page and handle, the first time the page is
+    /// pinned as a node. After that the page only changes through this
+    /// code, in memory or on its way to the file and back. (A checksum,
+    /// chapter 21, is checked at the same moment for the same reason.)
     fn pinNode(self: *DiskBTree, id: PageId) Error!SlottedPage {
         if (id == meta_page_id or id >= self.pool.pager.pageCount()) return error.Corrupt;
         const page = SlottedPage.open(try self.pool.fetchPage(id));
         const known = page.kind() == kind_leaf or page.kind() == kind_interior;
-        if (!known or page.reservedSize() != reserved_tail) {
+        const unchecked = id < self.checked.len and !self.checked[id];
+        if (!known or page.reservedSize() != reserved_tail or (unchecked and !nodeIsSound(page))) {
             self.pool.unpin(id, false);
             return error.Corrupt;
         }
+        if (unchecked) self.checked[id] = true;
         return page;
+    }
+
+    /// True if somebody holds a pin on page `id` right now.
+    fn isPinned(self: *const DiskBTree, id: PageId) bool {
+        const frame = self.pool.frameOf(id) orelse return false;
+        return self.pool.frames[frame].pin_count > 0;
     }
 
     /// Fetch and pin page `id` as an overflow or trunk page.
@@ -539,7 +603,13 @@ pub const DiskBTree = struct {
         }
         const trunk_id = self.free_head;
         const trunk = try self.pinPlain(trunk_id, kind_trunk);
+        // The count comes from the file: check it BEFORE it is used as an
+        // index. (And a list that still has a trunk holds at least one page.)
         const n = trunkCount(trunk);
+        if (n > trunk_capacity or self.free_count == 0) {
+            self.pool.unpin(trunk_id, false);
+            return error.Corrupt;
+        }
         if (n == 0) {
             // A trunk that lists nothing is itself the next free page.
             self.free_head = plainNext(trunk);
@@ -547,9 +617,11 @@ pub const DiskBTree = struct {
             self.took();
             return .{ .id = trunk_id, .page = trunk };
         }
-        // Take the LAST id: no other entry moves.
+        // Take the LAST id: no other entry moves. The id comes from the file
+        // too. A free page is inside the file and nobody has it pinned: a
+        // pinned one is this trunk or a page of the operation in progress.
         const id = std.mem.readInt(u32, trunkEntry(trunk, n - 1), .little);
-        if (n > trunk_capacity or id == meta_page_id or id >= self.pool.pager.pageCount()) {
+        if (id == meta_page_id or id >= self.pool.pager.pageCount() or self.isPinned(id)) {
             self.pool.unpin(trunk_id, false);
             return error.Corrupt;
         }
@@ -578,6 +650,9 @@ pub const DiskBTree = struct {
     fn freePage(self: *DiskBTree, id: PageId) Error!void {
         // Whatever happens below, the page has already left the tree.
         self.changed = true;
+        // A list cannot hold more pages than the file has. (This also ends
+        // every loop that frees pages of a damaged file again and again.)
+        if (self.free_count >= self.pool.pager.pageCount()) return error.Corrupt;
         if (self.free_head != invalid_page_id) {
             const trunk_id = self.free_head;
             const trunk = try self.pinPlain(trunk_id, kind_trunk);
@@ -719,7 +794,7 @@ pub const DiskBTree = struct {
     /// appended to it. Returns the leaf's page id, not pinned.
     fn findLeaf(self: *DiskBTree, key: []const u8, path: ?*std.ArrayList(PathEntry)) Error!PageId {
         var id = self.root;
-        while (true) {
+        for (0..max_height) |_| {
             const page = try self.pinNode(id);
             if (page.kind() == kind_leaf) {
                 self.pool.unpin(id, false);
@@ -731,6 +806,8 @@ pub const DiskBTree = struct {
             if (path) |p| try p.append(self.arena.allocator(), .{ .id = id, .index = index });
             id = child;
         }
+        // Deeper than any tree: the child pointers lead in a circle.
+        return error.Corrupt;
     }
 
     // ---- put ----------------------------------------------------------------
@@ -766,6 +843,8 @@ pub const DiskBTree = struct {
                 old_pages = overflowPages(old.total);
             }
         }
+        // (the metapage's counter is a number from the file like any other)
+        if (!existed and self.key_count == std.math.maxInt(u64)) return error.Corrupt;
         // 2. The new value field; a large value gets its chain here.
         var field_buf: [max_field_len]u8 = undefined;
         const field = try self.writeValue(value, &field_buf);
@@ -886,6 +965,10 @@ pub const DiskBTree = struct {
         errdefer self.pool.unpin(parent.id, false);
         if (page.kind() != kind_interior or parent.index > page.count()) return error.Corrupt;
         if (childAt(page, parent.index) != carry.left) return error.Corrupt;
+        // In a sound tree the separator sorts between its new neighbours
+        // (T3). `insertAt` asserts it, and so does the split of this page.
+        if (parent.index > 0 and std.mem.order(u8, page.key(parent.index - 1), carry.sep) != .lt) return error.Corrupt;
+        if (parent.index < page.count() and std.mem.order(u8, carry.sep, page.key(parent.index)) != .lt) return error.Corrupt;
         if (!page.fits(carry.sep.len, @sizeOf(PageId))) {
             self.pool.unpin(parent.id, false);
             return false;
@@ -987,6 +1070,11 @@ pub const DiskBTree = struct {
             self.pool.unpin(leaf_id, false);
             return err;
         };
+        if (self.key_count == 0) {
+            // A key in a tree that the metapage says is empty.
+            self.pool.unpin(leaf_id, false);
+            return error.Corrupt;
+        }
         const old_first = old.first;
         const old_pages = overflowPages(old.total);
         const next = link(leaf);
@@ -1091,7 +1179,7 @@ pub const DiskBTree = struct {
             if (page.kind() != kind_interior or turn.index > page.count()) return error.Corrupt;
             break :blk childAt(page, turn.index - 1);
         };
-        while (true) {
+        for (0..max_height) |_| {
             const page = try self.pinNode(id);
             const is_leaf = page.kind() == kind_leaf;
             const rightmost = link(page);
@@ -1099,6 +1187,7 @@ pub const DiskBTree = struct {
             if (is_leaf) return id;
             id = rightmost;
         }
+        return error.Corrupt;
     }
 
     /// While the root is an interior page with no key, its single child
@@ -1107,7 +1196,7 @@ pub const DiskBTree = struct {
     /// page id. Only the root is collapsed; a single-child page further
     /// down stays (exercise 4).
     fn collapseRoot(self: *DiskBTree) Error!void {
-        while (true) {
+        for (0..max_height) |_| {
             const root = try self.pinNode(self.root);
             if (root.kind() != kind_interior or root.count() != 0) {
                 self.pool.unpin(self.root, false);
@@ -1131,6 +1220,7 @@ pub const DiskBTree = struct {
             self.stats.interior_pages_freed += @intFromBool(SlottedPage.open(root.buf).kind() == kind_interior);
             self.stats.root_collapses += 1;
         }
+        return error.Corrupt;
     }
 
     // ---- range --------------------------------------------------------------
@@ -1163,6 +1253,9 @@ pub const DiskBTree = struct {
         slot: usize,
         /// Borrowed from the caller of `range`.
         hi: ?[]const u8,
+        /// Sibling links followed so far. A scan that follows more links
+        /// than the file has pages is going round in a circle.
+        hops: usize = 0,
         /// The current value: a slice of `inline_buf`, or heap memory.
         value: []u8 = &.{},
         key_buf: [max_key_len]u8 = undefined,
@@ -1198,12 +1291,14 @@ pub const DiskBTree = struct {
                     tree.pool.unpin(pinned, false);
                     return error.Corrupt;
                 }
-                if (self.slot == page.count()) {
+                if (self.slot >= page.count()) {
                     // End of this leaf: follow the sibling link. No parent
                     // is needed, which is the point of chaining the leaves.
                     self.leaf = link(page);
                     self.slot = 0;
                     tree.pool.unpin(pinned, false);
+                    self.hops += 1;
+                    if (self.hops > tree.pool.pager.pageCount()) return error.Corrupt;
                     continue;
                 }
                 const pending = blk: {
@@ -1293,6 +1388,7 @@ pub const DiskBTree = struct {
             const pool = w.tree.pool;
             const scratch = w.tree.arena.allocator();
             if (id >= w.roles.len) return error.BadPage;
+            if (depth >= max_height) return error.UnevenDepth; // T4
             // Claimed as a leaf for now; corrected below.
             try w.claim(id, .leaf);
 
@@ -1300,10 +1396,10 @@ pub const DiskBTree = struct {
             var pinned = true;
             defer if (pinned) pool.unpin(id, false);
             var page = SlottedPage.open(buf);
-            // `SlottedPage.validate` is safe on any bytes; everything after
-            // it may trust the page.
-            page.validate() catch return error.BadPage; // T1, T2
-            if (page.reservedSize() != reserved_tail) return error.BadPage;
+            // `nodeIsSound` is safe on any bytes; everything after it may
+            // trust the page. Checked here every time: `validate` is also
+            // for pages this handle has changed.
+            if (!nodeIsSound(page)) return error.BadPage; // T1, T2
             const n = page.count();
             if (n > 0) {
                 if (lo) |bound| if (std.mem.order(u8, page.key(0), bound) == .lt) return error.KeyOutOfBounds; // T3
@@ -1320,7 +1416,6 @@ pub const DiskBTree = struct {
                 for (0..n) |i| try w.chain(parseField(page.value(i)) catch return error.BadCell); // T9
                 return;
             }
-            if (page.kind() != kind_interior) return error.BadPage;
             if (n == 0 and id == w.tree.root) return error.EmptyPage; // T7
             w.roles[id] = .interior;
 
@@ -1386,24 +1481,36 @@ pub const DiskBTree = struct {
     pub fn height(self: *DiskBTree) Error!u32 {
         var levels: u32 = 1;
         var id = self.root;
-        while (true) : (levels += 1) {
+        while (levels <= max_height) : (levels += 1) {
             const page = try self.pinNode(id);
             const child = if (page.kind() == kind_leaf) null else childAt(page, 0);
             self.pool.unpin(id, false);
             id = child orelse return levels;
         }
+        return error.Corrupt;
     }
 
     /// Print the tree, one page per line, children indented under their
     /// parent, then the free list. Keys are printed as text. A value is
     /// printed as its length; a value with a chain as
     /// `total=local+[overflow page ids]`.
+    ///
+    /// Bounded on a damaged file: the tree part prints at most as many pages
+    /// as the file has and stops with `Corrupt` after that, the free list
+    /// part prints at most that many trunks and then says that it loops.
     pub fn dump(self: *DiskBTree, w: *Io.Writer) (Error || Io.Writer.Error)!void {
         defer _ = self.arena.reset(.retain_capacity);
-        try self.dumpPage(w, self.root, 0);
+        const pages = self.pool.pager.pageCount();
+        var budget: usize = pages;
+        try self.dumpPage(w, self.root, 0, &budget);
         try w.print("free list: {d} pages", .{self.free_count});
         var id = self.free_head;
-        while (id != invalid_page_id) {
+        var trunks: usize = 0;
+        while (id != invalid_page_id) : (trunks += 1) {
+            if (trunks == pages) {
+                try w.writeAll(" | ... (the list loops)");
+                break;
+            }
             const pinned = id;
             const trunk = try self.pinPlain(pinned, kind_trunk);
             defer self.pool.unpin(pinned, false);
@@ -1414,7 +1521,11 @@ pub const DiskBTree = struct {
         try w.writeAll("\n");
     }
 
-    fn dumpPage(self: *DiskBTree, w: *Io.Writer, id: PageId, depth: usize) (Error || Io.Writer.Error)!void {
+    fn dumpPage(self: *DiskBTree, w: *Io.Writer, id: PageId, depth: usize, budget: *usize) (Error || Io.Writer.Error)!void {
+        // A page reached twice is printed twice, so a loop among the child
+        // pointers would print for ever without these two bounds.
+        if (depth >= max_height or budget.* == 0) return error.Corrupt;
+        budget.* -= 1;
         const page = try self.pinNode(id);
         var pinned = true;
         defer if (pinned) self.pool.unpin(id, false);
@@ -1451,6 +1562,6 @@ pub const DiskBTree = struct {
         }
         self.pool.unpin(id, false);
         pinned = false;
-        for (children) |child| try self.dumpPage(w, child, depth + 1);
+        for (children) |child| try self.dumpPage(w, child, depth + 1, budget);
     }
 };

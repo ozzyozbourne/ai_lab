@@ -1045,3 +1045,293 @@ test "Zig and Rust write the same bytes" {
     try db.tree.flush();
     try testing.expectEqual(@as(u64, 10315806560220619977), std.hash.Fnv1a_64.hash(mem.bytes.items));
 }
+
+// ---- a file is untrusted input ------------------------------------------------
+//
+// The tests below damage a flushed file and open it with a new handle. No
+// call may crash or run for ever, whatever the bytes are: it returns a value
+// or an error, and it leaves no pin.
+
+const page_size = btree.page_size;
+
+/// Key number `i` of the damage tests' tree: 250 bytes, so that fifteen
+/// separators fill an interior page.
+fn damageKey(buf: *[250]u8, i: usize) []const u8 {
+    @memset(buf, 'k');
+    _ = std.fmt.bufPrint(buf[0..4], "{d:0>4}", .{i}) catch unreachable;
+    return buf;
+}
+
+/// Where the pages of every role are in the file of `buildDamageFile`.
+const Layout = struct {
+    pages: u32,
+    keys: usize,
+    /// The root (page 1, interior) and its first two children (interior).
+    inner: [2]u32,
+    /// The first leaf that holds a value with a chain, the slot of that
+    /// value's cell, the leaf after it, and the two pages of the chain.
+    leaf: u32,
+    slot: usize,
+    next_leaf: u32,
+    chain: [2]u32,
+    /// The only trunk of the free list.
+    trunk: u32,
+
+    fn page(file: []u8, id: u32) SlottedPage {
+        return SlottedPage.open(file[@as(usize, id) * page_size ..][0..page_size]);
+    }
+};
+
+/// A file with three levels, values with and without chains, and a free list.
+fn buildDamageFile(file: *std.ArrayList(u8)) !Layout {
+    var mem: MemStorage = .init(testing.allocator);
+    defer mem.deinit();
+    var db: Db = undefined;
+    try db.start(mem.storage(), 8, .create);
+    defer db.stop();
+    const tree = &db.tree;
+    var key_buf: [250]u8 = undefined;
+    const value: [9000]u8 = @splat('v');
+    var keys: usize = 0;
+    while (tree.stats.interior_splits == 0) : (keys += 1) {
+        // Every fourth value has a chain of two pages.
+        try tree.put(damageKey(&key_buf, keys), value[0..if (keys % 4 == 1) 9000 else 1000]);
+    }
+    // Sixteen pages for the free list: one trunk that lists fifteen.
+    const huge: [btree.max_value_len]u8 = @splat('h');
+    try tree.put("zz", &huge);
+    try testing.expect(try tree.delete("zz"));
+    try tree.validate();
+    try testing.expectEqual(3, try tree.height());
+    try testing.expectEqual(16, tree.free_count);
+    try tree.flush();
+    try file.appendSlice(testing.allocator, mem.bytes.items);
+
+    var layout: Layout = .{ .pages = db.pager.pageCount(), .keys = keys, .inner = undefined, .leaf = undefined, .slot = undefined, .next_leaf = undefined, .chain = undefined, .trunk = tree.free_head };
+    const root = Layout.page(file.items, 1);
+    layout.inner = .{ btree.childAt(root, 0), btree.childAt(root, 1) };
+    layout.leaf = btree.childAt(Layout.page(file.items, layout.inner[0]), 0);
+    find: while (true) : (layout.leaf = layout.next_leaf) {
+        const leaf = Layout.page(file.items, layout.leaf);
+        layout.next_leaf = btree.link(leaf);
+        for (0..leaf.count()) |slot| {
+            const ref = try btree.parseField(leaf.value(slot));
+            if (ref.first == btree.invalid_page_id) continue;
+            layout.slot = slot;
+            layout.chain[0] = ref.first;
+            layout.chain[1] = std.mem.readInt(u32, file.items[@as(usize, ref.first) * page_size ..][0..4], .little);
+            break :find;
+        }
+    }
+    return layout;
+}
+
+/// What `poke` saw.
+const Poked = struct {
+    opened: bool = false,
+    valid: bool = false,
+    dump_ok: bool = false,
+    /// The free-list part of the dump said that the list loops.
+    dump_loops: bool = false,
+};
+
+/// `Corrupt` is the answer to damage (and `TreePoisoned` what follows it);
+/// any other error fails the test.
+fn damageOnly(err: anyerror) !void {
+    switch (err) {
+        error.Corrupt, error.TreePoisoned => {},
+        else => return err,
+    }
+}
+
+/// Open `file` with a new handle and call everything: validate, height,
+/// dump, a get for every key, two scans, then puts and deletes that split
+/// leaves, write and free chains, and empty the first leaves. Checks after
+/// every call that no pin is left.
+fn poke(file: []const u8, layout: Layout, frames: u32) !Poked {
+    var result: Poked = .{};
+    var mem: MemStorage = .init(testing.allocator);
+    defer mem.deinit();
+    try mem.bytes.appendSlice(testing.allocator, file);
+    var db: Db = undefined;
+    db.start(mem.storage(), frames, .open) catch |err| switch (err) {
+        error.Corrupt, error.BadMagic, error.UnsupportedVersion => return result,
+        else => return err,
+    };
+    defer db.stop(); // asserts that no pin is left
+    result.opened = true;
+    const tree = &db.tree;
+    const pool = &db.pool;
+
+    if (tree.validate()) |_| {
+        result.valid = true;
+    } else |err| switch (err) {
+        error.OutOfMemory, error.StorageFailure, error.ShortRead, error.AllFramesPinned => return err,
+        else => {}, // one of the twelve violations, or Corrupt
+    }
+    try testing.expectEqual(0, pool.pinnedFrames());
+
+    _ = tree.height() catch |err| try damageOnly(err);
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    if (tree.dump(&out.writer)) |_| {
+        result.dump_ok = true;
+        result.dump_loops = std.mem.indexOf(u8, out.written(), "(the list loops)") != null;
+    } else |err| try damageOnly(err);
+    try testing.expectEqual(0, pool.pinnedFrames());
+
+    var key_buf: [250]u8 = undefined;
+    for (0..layout.keys + 1) |i| {
+        const got = tree.get(testing.allocator, damageKey(&key_buf, i)) catch |err| {
+            try damageOnly(err);
+            continue;
+        };
+        if (got) |v| testing.allocator.free(v);
+    }
+    try testing.expectEqual(0, pool.pinnedFrames());
+
+    // A scan ends by itself, with the last entry or with an error. A sound
+    // leaf has fewer than 700 cells, and a scan visits each page once.
+    var lo_buf: [250]u8 = undefined;
+    for ([_][]const u8{ "", damageKey(&lo_buf, layout.keys / 2) }) |lo| {
+        var it = tree.range(lo, null) catch |err| {
+            try damageOnly(err);
+            continue;
+        };
+        defer it.deinit();
+        var entries: usize = 0;
+        while (it.next() catch |err| blk: {
+            try damageOnly(err);
+            break :blk null;
+        }) |_| entries += 1;
+        try testing.expect(entries <= 700 * @as(usize, layout.pages));
+    }
+    try testing.expectEqual(0, pool.pinnedFrames());
+
+    // Writes: a new large value, overwrites that free and write chains,
+    // deletes that empty the first leaves, puts that split and reuse pages.
+    const value: [9000]u8 = @splat('w');
+    for (0..12) |i| {
+        if (tree.delete(damageKey(&key_buf, i))) |_| {} else |err| try damageOnly(err);
+        try testing.expectEqual(0, pool.pinnedFrames());
+    }
+    for (0..24) |i| {
+        const k = damageKey(&key_buf, if (i % 2 == 0) layout.keys + i else i);
+        tree.put(k, value[0..if (i % 3 == 0) 9000 else 1000]) catch |err| try damageOnly(err);
+        try testing.expectEqual(0, pool.pinnedFrames());
+    }
+    try pool.validate();
+    if (tree.validate()) |_| {} else |err| switch (err) {
+        error.OutOfMemory, error.StorageFailure, error.ShortRead, error.AllFramesPinned => return err,
+        else => {},
+    }
+    tree.flush() catch |err| try damageOnly(err);
+    return result;
+}
+
+/// One field of one page, overwritten.
+const Damage = struct {
+    name: []const u8,
+    page: u32,
+    offset: usize,
+    bytes: [8]u8 = @splat(0),
+    len: usize,
+
+    fn int(comptime T: type, name: []const u8, page: u32, offset: usize, value: T) Damage {
+        var d: Damage = .{ .name = name, .page = page, .offset = offset, .len = @sizeOf(T) };
+        std.mem.writeInt(T, d.bytes[0..@sizeOf(T)], value, .little);
+        return d;
+    }
+
+    fn apply(d: Damage, file: []u8) void {
+        @memcpy(file[@as(usize, d.page) * page_size + d.offset ..][0..d.len], d.bytes[0..d.len]);
+    }
+};
+
+/// Every count, length and page id that the tree reads from a page, each
+/// with the values that could send a careless reader out of the page, out
+/// of the file, or round in a circle.
+fn damageList(list: *std.ArrayList(Damage), file: []u8, layout: Layout) !void {
+    const gpa = testing.allocator;
+    const int = Damage.int;
+    const outside = layout.pages + 7;
+    const leaf = Layout.page(file, layout.leaf);
+    const cell = leaf.cellOffset(layout.slot);
+    const field = cell + 4 + leaf.key(layout.slot).len;
+    const field_len = leaf.value(layout.slot).len;
+    const root_cell = Layout.page(file, 1).cellOffset(0);
+    const inner_cell = Layout.page(file, layout.inner[0]).cellOffset(0);
+
+    // The metapage: root, page count, key count, free-list head and count.
+    for ([_]u32{ 0, outside, layout.leaf, layout.chain[0], layout.trunk }) |v| try list.append(gpa, int(u32, "meta root", 0, 16, v));
+    try list.append(gpa, int(u32, "meta page count", 0, 20, outside));
+    for ([_]u64{ 0, 1, std.math.maxInt(u64) }) |v| try list.append(gpa, int(u64, "meta key count", 0, 24, v));
+    for ([_]u32{ 0, 1, outside, btree.invalid_page_id, layout.leaf, layout.chain[0] }) |v| try list.append(gpa, int(u32, "meta free head", 0, 32, v));
+    for ([_]u32{ 0, 1, 15, 17, layout.pages - 1, layout.pages, std.math.maxInt(u32) }) |v| try list.append(gpa, int(u32, "meta free count", 0, 36, v));
+
+    // The trunk: link, count, the entry that the next allocation takes.
+    for ([_]u32{ layout.trunk, 0, 1, outside, layout.leaf }) |v| try list.append(gpa, int(u32, "trunk next", layout.trunk, 0, v));
+    for ([_]u16{ 0, 14, 16, btree.trunk_capacity, btree.trunk_capacity + 1, 5000, 0xffff }) |v| try list.append(gpa, int(u16, "trunk count", layout.trunk, 4, v));
+    for ([_]u32{ 0, 1, outside, btree.invalid_page_id, layout.trunk, layout.leaf, layout.inner[0], layout.chain[0] }) |v| try list.append(gpa, int(u32, "trunk last entry", layout.trunk, 8 + 4 * 14, v));
+    try list.append(gpa, int(u8, "trunk kind", layout.trunk, 7, btree.kind_leaf));
+
+    // An overflow page: its link and its kind.
+    for ([_]u32{ layout.chain[0], 0, 1, outside, btree.invalid_page_id, layout.trunk, layout.leaf }) |v| try list.append(gpa, int(u32, "overflow next", layout.chain[0], 0, v));
+    for ([_]u32{ layout.chain[0], layout.chain[1], 0, 1, outside, layout.trunk }) |v| try list.append(gpa, int(u32, "last overflow next", layout.chain[1], 0, v));
+    for ([_]u8{ 0, btree.kind_leaf, btree.kind_interior, btree.kind_trunk }) |v| try list.append(gpa, int(u8, "overflow kind", layout.chain[0], 7, v));
+
+    // A leaf cell's value field: the total length and the chain's first page.
+    for ([_]u32{ 0, 1000, btree.max_local, btree.max_local + 1, 9001, 4916, 13084, btree.max_value_len, btree.max_value_len + 1, std.math.maxInt(u32) }) |v| try list.append(gpa, int(u32, "value length", layout.leaf, field, v));
+    for ([_]u32{ 0, 1, outside, btree.invalid_page_id, layout.leaf, layout.trunk, layout.chain[1] }) |v| try list.append(gpa, int(u32, "value first overflow page", layout.leaf, field + field_len - 4, v));
+
+    // A tree page's own numbers: the slotted page header, a slot, a cell
+    // header, the link. Leaf, root and the interior page between them.
+    for ([_]u32{ layout.leaf, 1, layout.inner[0] }) |id| {
+        const at = Layout.page(file, id).cellOffset(0);
+        for ([_]u16{ 0, 1, 2, 300, 2040, 0xffff }) |v| try list.append(gpa, int(u16, "cell count", id, 0, v));
+        for ([_]u16{ 0, 15, 4092, 4093, 0xffff }) |v| try list.append(gpa, int(u16, "content start", id, 2, v));
+        for ([_]u16{ 1, 16, 4090, 4094, 0xffff }) |v| try list.append(gpa, int(u16, "first free block", id, 4, v));
+        for ([_]u8{ 0, 3, 4, 255 }) |v| try list.append(gpa, int(u8, "kind", id, 7, v));
+        try list.append(gpa, int(u8, "kind", id, 7, if (id == layout.leaf) btree.kind_interior else btree.kind_leaf));
+        for ([_]u8{ 0, 5, 255 }) |v| try list.append(gpa, int(u8, "reserved tail", id, 8, v));
+        for ([_]u32{ id, 0, 1, outside, layout.trunk, layout.chain[0], layout.leaf, layout.inner[1] }) |v| try list.append(gpa, int(u32, "link", id, 9, v));
+        for ([_]u16{ 0, 8, 4091, 4095, 0xffff }) |v| try list.append(gpa, int(u16, "slot 0", id, 16, v));
+        for ([_]u16{ 0, 251, 257, 4000, 0xffff }) |v| try list.append(gpa, int(u16, "key length", id, at, v));
+        for ([_]u16{ 0, 2, 3, 5, 1097, 4000, 0xffff }) |v| try list.append(gpa, int(u16, "value length in the cell header", id, at + 2, v));
+    }
+    // A child pointer: up (a circle), sideways, out of the file, to a page
+    // that is not a tree page.
+    for ([_]u32{ 1, 0, outside, layout.inner[0], layout.inner[1], layout.leaf, layout.trunk, layout.chain[0] }) |v| {
+        try list.append(gpa, int(u32, "root child 0", 1, root_cell + 4 + 250, v));
+        try list.append(gpa, int(u32, "interior child 0", layout.inner[0], inner_cell + 4 + 250, v));
+    }
+}
+
+test "damage to every count, length and page id of a page: an error, never a crash or an endless loop" {
+    var file: std.ArrayList(u8) = .empty;
+    defer file.deinit(testing.allocator);
+    const layout = try buildDamageFile(&file);
+    var list: std.ArrayList(Damage) = .empty;
+    defer list.deinit(testing.allocator);
+    try damageList(&list, file.items, layout);
+    const sound = try testing.allocator.dupe(u8, file.items);
+    defer testing.allocator.free(sound);
+
+    // The file as it is passes, and `poke` leaves a valid tree behind.
+    const intact = try poke(sound, layout, 3);
+    try testing.expect(intact.opened and intact.valid and intact.dump_ok and !intact.dump_loops);
+
+    var unnoticed: usize = 0;
+    for (list.items) |damage| {
+        @memcpy(file.items, sound);
+        damage.apply(file.items);
+        if (std.mem.eql(u8, file.items, sound)) continue; // the value it had
+        for ([_]u32{ 2, 5 }) |frames| {
+            const seen = try poke(file.items, layout, frames);
+            if (seen.opened and seen.valid) unnoticed += 1;
+        }
+    }
+    try testing.expectEqual(230, list.items.len);
+    // `open` or `validate` reports every one of them.
+    try testing.expectEqual(0, unnoticed);
+}

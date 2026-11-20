@@ -548,8 +548,8 @@ test "allocation failure at every scratch request of a put that splits a leaf, a
         // Run that put again and again on a copy of the image, refusing
         // request 0, 1, 2, ... The last run refuses nothing and counts.
         for ([_]OomDriver{ .blocking, .resumable }) |driver| {
-            const requests = case.requests[@intFromEnum(driver)];
-            const first_poisoned = case.first_poisoned[@intFromEnum(driver)];
+            const requests = case.requests[@backingInt(driver)];
+            const first_poisoned = case.first_poisoned[@backingInt(driver)];
             for (0..requests + 1) |fail_at| {
                 var mem: MemStorage = .init(testing.allocator);
                 defer mem.deinit();

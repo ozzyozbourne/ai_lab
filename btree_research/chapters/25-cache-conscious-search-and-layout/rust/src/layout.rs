@@ -5,15 +5,23 @@
 //!   * `Eytzinger`: a binary search tree stored in breadth-first order, the
 //!     way a binary heap is stored. Children of slot k are slots 2k and 2k+1.
 //!   * `BlockTree`: the same idea with 8 keys (one cache line) per node and 9
-//!     children. It is a pointer-free B-tree: one line per level.
+//!     children: one key line per level. It borrows the B-tree's node shape
+//!     (8 keys, 9 children, one unit of transfer) but it is NOT a B-tree. It
+//!     is a complete 9-ary search tree in breadth-first numbering: leaves may
+//!     sit on two adjacent levels and a node may have fewer children than
+//!     keys + 1.
 //!
 //! Both are built once from sorted input and never modified (compare the
 //! bulk-loaded trees of chapter 16). Both keep a `rank` array that maps a slot
 //! back to the index in sorted order, so that their answers can be compared
 //! with the searches in search.rs. A real index would store the payload
 //! (a child page id, a row id) in that parallel array instead.
+//!
+//! `rank` is a second array, so reading it costs a cache line of its own.
+//! Both searches therefore read it exactly ONCE, after the descent, and
+//! report that read to the tracer (`tracer.side`).
 
-use crate::search::rank8;
+use crate::search::{Keys, rank8};
 use crate::trace::{LANES, LINE_BYTES, Tracer};
 
 /// Padding value: compares greater than or equal to every needle, so padded
@@ -73,8 +81,37 @@ impl AlignedKeys {
         &self.lines
     }
 
+    /// The first `n` keys, without the padding, as something the scalar
+    /// searches accept. Zig simply slices the aligned array (`padded[0..n]`).
+    /// Safe Rust cannot turn a `&[Line]` into a `&[u64]`, so the searches are
+    /// generic over `search::Keys` and this view implements it.
+    pub fn sorted(&self, n: usize) -> SortedView<'_> {
+        assert!(n <= self.len());
+        SortedView { keys: self, n }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = u64> + '_ {
         self.lines.iter().flat_map(|line| line.0.iter().copied())
+    }
+}
+
+/// `n` sorted keys that start on a cache-line boundary: the classic and
+/// halving searches run on this, so the model's "the array starts on a line
+/// boundary" is true for them too. (A `Vec<u64>` only promises 8 bytes.)
+#[derive(Debug, Clone, Copy)]
+pub struct SortedView<'a> {
+    keys: &'a AlignedKeys,
+    n: usize,
+}
+
+impl Keys for SortedView<'_> {
+    fn len(&self) -> usize {
+        self.n
+    }
+
+    fn key(&self, i: usize) -> u64 {
+        assert!(i < self.n);
+        self.keys.get(i)
     }
 }
 
@@ -142,6 +179,8 @@ impl Eytzinger {
             k = 2 * k + usize::from(self.keys.get(k) < key);
         }
         k >>= k.trailing_ones() + 1;
+        // The only read of the second array: one more cache line.
+        tracer.side(k);
         self.rank[k] as usize
     }
 
@@ -183,7 +222,9 @@ pub struct BlockTree {
     /// Node b owns keys[8b ..= 8b+7], i.e. `keys.lines()[b]`. Child j of node
     /// b is node 9b + j + 1. No pointers are stored: the position is arithmetic.
     pub keys: AlignedKeys,
-    /// rank[slot] = index in sorted order, n for padding slots.
+    /// rank[slot] = index in sorted order, n for padding slots. One entry
+    /// longer than `keys`: rank[keys.len()] = n is the "no key is >= the
+    /// needle" answer, so the search can end with one unconditional read.
     pub rank: Vec<u32>,
     pub n: usize,
 }
@@ -194,7 +235,7 @@ impl BlockTree {
     pub fn new(sorted: &[u64]) -> Self {
         let n = sorted.len();
         let keys = AlignedKeys::filled(n, SENTINEL);
-        let rank = vec![n as u32; keys.len()];
+        let rank = vec![n as u32; keys.len() + 1];
         let mut this = Self { keys, rank, n };
         let mut next = 0;
         this.fill(sorted, 0, &mut next);
@@ -228,24 +269,31 @@ impl BlockTree {
     /// compare of one line gives the child number r. If r < 8, key r of this
     /// node is the best candidate so far (deeper candidates are smaller and
     /// still >= the needle, so later ones overwrite earlier ones).
+    ///
+    /// The descent only REMEMBERS the candidate's slot number. It does not
+    /// look the rank up on every level: `rank` is another array, and each
+    /// lookup there would be another cache line, about one per level, as many
+    /// again as the key lines. One read after the loop is enough.
     pub fn lower_bound<T: Tracer>(&self, key: u64, tracer: &mut T) -> usize {
-        let mut result = self.n;
+        let mut slot = self.keys.len(); // the "no key" entry of rank
         let mut block = 0;
         while let Some(line) = self.keys.lines().get(block) {
             tracer.cmp_block(block * LANES, LANES);
             let r = rank8(&line.0, key);
-            // rank[] is read at most once per level; a tree that stored child
-            // ids would not need it at all.
-            if r < LANES {
-                result = self.rank[block * LANES + r] as usize;
-            }
+            // A select between two values that are already in registers: no
+            // memory is touched. (Exercise 5 removes even this select.)
+            slot = if r < LANES { block * LANES + r } else { slot };
             block = block * Self::FANOUT + r + 1;
         }
-        result
+        tracer.side(slot);
+        self.rank[slot] as usize
     }
 
     pub fn validate(&self) -> Result<(), Corrupt> {
-        if self.keys.len() != self.rank.len() || self.keys.len() != self.n.next_multiple_of(LANES) {
+        if self.keys.len() + 1 != self.rank.len()
+            || self.keys.len() != self.n.next_multiple_of(LANES)
+            || self.rank[self.keys.len()] as usize != self.n
+        {
             return Err(Corrupt);
         }
         let mut next = 0;
@@ -280,7 +328,9 @@ impl BlockTree {
 mod tests {
     use super::*;
     use crate::prng::SplitMix64;
-    use crate::search::{lower_bound_linear, lower_bound_vector};
+    use crate::search::{
+        Select, lower_bound_classic, lower_bound_halving, lower_bound_linear, lower_bound_vector,
+    };
     use crate::trace::{Layout, NoTrace, Trace};
 
     fn tens() -> Vec<u64> {
@@ -305,7 +355,9 @@ mod tests {
         let mut t = Trace::new(Layout::KEYS);
         assert_eq!(e.lower_bound(70, false, &mut t), 6);
         assert_eq!(t.probes(), &[1, 2, 5, 11]); // 80, 40, 60, 70
-        assert_eq!(t.lines_read(), 2); // slots 1..7 share line 0, slot 11 is in line 1
+        assert_eq!(t.key_lines(), 2); // slots 1..7 share line 0, slot 11 is in line 1
+        assert_eq!(t.side_lines(), 1); // rank[11]
+        assert_eq!(t.lines_read(), 3);
         assert_eq!(e.lower_bound(151, false, &mut NoTrace), 15); // never turned left
     }
 
@@ -321,7 +373,11 @@ mod tests {
         let mut t = Trace::new(Layout::KEYS);
         assert_eq!(b.lower_bound(70, &mut t), 6);
         assert_eq!(t.steps, 2);
-        assert_eq!(t.lines_read(), 2);
+        assert_eq!(t.key_lines(), 2);
+        assert_eq!(t.side_lines(), 1); // one rank read, after the descent
+        assert_eq!(t.lines_read(), 3);
+        assert_eq!(b.rank[b.keys.len()], 15); // the "no key" entry
+        assert_eq!(b.lower_bound(151, &mut NoTrace), 15);
     }
 
     #[test]
@@ -362,16 +418,53 @@ mod tests {
                     // Eytzinger depth: floor(log2 n) or one more.
                     let depth = n.ilog2();
                     assert!(te.comparisons >= depth && te.comparisons <= depth + 1);
-                    // Only line 0 (slots 1..7) is read without having been hinted.
-                    // (Below 8 keys the clamped hint lands on line 0 itself.)
-                    assert_eq!(tp.uncovered, u32::from(n >= LANES));
-                    // One line per level of the 9-way tree.
-                    assert_eq!(tb.steps, tb.lines_read());
+                    // Two lines are read without a hint that had lead time:
+                    // key line 0 (slots 1..7; below 8 keys the clamped hint
+                    // names line 0 itself, but in the same step as the read)
+                    // and the rank line.
+                    assert_eq!(tp.uncovered, 2);
+                    // One key line per level of the 9-way tree.
+                    assert_eq!(tb.steps, tb.key_lines());
                 }
+                // Regression (review round 1, G1): the rank array is read, and
+                // counted, exactly once per lookup, whatever the depth. Even
+                // an empty layout reads its "no key" entry.
+                assert_eq!(te.side_lines(), 1);
+                assert_eq!(tb.side_lines(), 1);
+                assert_eq!(te.lines_read(), te.key_lines() + 1);
+                assert_eq!(tb.lines_read(), tb.key_lines() + 1);
+                assert_eq!(tb.uncovered, tb.lines_read()); // no hints at all
             }
             assert_eq!(e.lower_bound(SENTINEL, false, &mut NoTrace), n);
             assert_eq!(b.lower_bound(SENTINEL, &mut NoTrace), n);
         }
+    }
+
+    // Regression (review round 1, G6): the classic and halving searches of the
+    // scenario ran on a `Vec<u64>`, which need not start on a line boundary.
+    #[test]
+    fn sorted_view_is_line_aligned_and_searches_like_the_slice() {
+        let sorted: Vec<u64> = (0..37).map(|i| i * 3 + 1).collect();
+        let padded = AlignedKeys::padded(&sorted);
+        assert_eq!(padded.lines().as_ptr().addr() % LINE_BYTES, 0);
+        let view = padded.sorted(sorted.len());
+        assert_eq!(view.len(), 37);
+        for needle in 0..120 {
+            let want = lower_bound_linear(&sorted, needle);
+            let mut a = Trace::new(Layout::KEYS);
+            let mut b = Trace::new(Layout::KEYS);
+            assert_eq!(lower_bound_classic(&view, needle, &mut NoTrace), want);
+            assert_eq!(
+                lower_bound_halving(Select::Hinted, true, &view, needle, &mut a),
+                want
+            );
+            assert_eq!(
+                lower_bound_halving(Select::Hinted, true, &sorted[..], needle, &mut b),
+                want
+            );
+            assert_eq!(a.probes(), b.probes());
+        }
+        assert_eq!(lower_bound_classic(&padded.sorted(0), 5, &mut NoTrace), 0);
     }
 
     #[test]
@@ -386,6 +479,12 @@ mod tests {
         let (a, b) = (t.keys.get(0), t.keys.get(1));
         t.keys.set(0, b);
         t.keys.set(1, a);
+        assert_eq!(t.validate(), Err(Corrupt));
+        t.keys.set(0, a);
+        t.keys.set(1, b);
+        assert_eq!(t.validate(), Ok(()));
+        let no_key = t.keys.len();
+        t.rank[no_key] = 0; // the "no key" entry must stay n
         assert_eq!(t.validate(), Err(Corrupt));
     }
 }

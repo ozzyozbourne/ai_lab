@@ -110,19 +110,21 @@ fn printReach(w: *std.Io.Writer, label: []const u8, totals: *const fuzz.Totals) 
     try w.writeByte('\n');
 }
 
-/// Find the first swarm seed that exposes the bug, show which family of
+/// Find the swarm seed that exposes the bug in the fewest steps, show which family of
 /// checks is needed to see it, and print the minimised reproducer.
 fn huntAndMinimize(comptime T: type, gpa: Allocator, w: *std.Io.Writer) !void {
     try w.print("bug {t}\n", .{T.bug});
-    const found = try fuzz.hunt(T, gpa, 1, hunt_seeds, .{}, null) orelse {
+    const census = try fuzz.huntShortest(T, gpa, 1, hunt_seeds, .{});
+    const found = census.shortest orelse {
         try w.writeAll("  NOT CAUGHT\n");
         return;
     };
     const steps = try fuzz.generate(gpa, found.case);
     defer gpa.free(steps);
-    try w.print("  caught by seed {d} at step {d} of {d}: {f}\n", .{
-        found.case.seed, found.failure.step + 1, steps.len, found.failure,
+    try w.print("  caught by {d} of {d} seeds; shortest failing run: seed {d}, step {d} of {d}\n", .{
+        census.failing_seeds, hunt_seeds, found.case.seed, found.failure.step + 1, steps.len,
     });
+    try w.print("  {f}\n", .{found.failure});
     // Which half of the checks does the work? Replay the same steps with one
     // half switched off. (Only safe because of what these three bugs do: see
     // the README before trying this with a bug that corrupts pointers.)

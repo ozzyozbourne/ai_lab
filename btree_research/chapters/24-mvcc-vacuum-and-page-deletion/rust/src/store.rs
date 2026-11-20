@@ -99,12 +99,22 @@ mod tests {
 
     #[test]
     fn visibility_is_two_comparisons() {
-        let v = Version { key: 1, value: 1, xmin: 5, xmax: 9 };
+        let v = Version {
+            key: 1,
+            value: 1,
+            xmin: 5,
+            xmax: 9,
+        };
         assert!(!v.visible(4)); // created later
         assert!(v.visible(5));
         assert!(v.visible(8));
         assert!(!v.visible(9)); // deleted by then
-        let live = Version { key: 1, value: 1, xmin: 5, xmax: 0 };
+        let live = Version {
+            key: 1,
+            value: 1,
+            xmin: 5,
+            xmax: 0,
+        };
         assert!(live.visible(1000));
     }
 

@@ -101,7 +101,12 @@ fn print_node(db: &Db, id: NodeId, w: &mut dyn Write) -> io::Result<()> {
             write!(w, "[")?;
             for (i, &k) in n.key_slice().iter().enumerate() {
                 let space = if i == 0 { "" } else { " " };
-                write!(w, "{space}{}.{}", node::user_key(k), node::tid_of(k).index())?;
+                write!(
+                    w,
+                    "{space}{}.{}",
+                    node::user_key(k),
+                    node::tid_of(k).index()
+                )?;
             }
             write!(w, "]")
         }

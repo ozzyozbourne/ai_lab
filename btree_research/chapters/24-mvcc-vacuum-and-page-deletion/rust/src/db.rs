@@ -65,7 +65,10 @@ impl Db {
     /// `max_versions` row versions (Zig tests this with a failing allocator).
     pub fn with_budgets(order: usize, max_pages: usize, max_versions: usize) -> Db {
         Db {
-            store: Store { versions: Arena::with_budget(max_versions), ..Store::default() },
+            store: Store {
+                versions: Arena::with_budget(max_versions),
+                ..Store::default()
+            },
             index: Index::with_budget(order, max_pages),
             reads: ReadStats::default(),
         }
@@ -112,8 +115,14 @@ impl Db {
             v.xmax = xid;
             old = Some(v.value);
         }
-        let tid = self.store.versions.alloc_reserved(Version { key, value, xmin: xid, xmax: 0 });
-        self.index.insert_reserved(&mut self.store, node::pack(key, tid));
+        let tid = self.store.versions.alloc_reserved(Version {
+            key,
+            value,
+            xmin: xid,
+            xmax: 0,
+        });
+        self.index
+            .insert_reserved(&mut self.store, node::pack(key, tid));
         Ok(old)
     }
 
@@ -145,7 +154,10 @@ impl Db {
     ///
     /// Never allocates, so it cannot fail.
     pub fn vacuum(&mut self, options: VacuumOptions) -> VacuumReport {
-        let mut report = VacuumReport { horizon: self.store.horizon(), ..VacuumReport::default() };
+        let mut report = VacuumReport {
+            horizon: self.store.horizon(),
+            ..VacuumReport::default()
+        };
         let index = &mut self.index;
         let mut left = NodeId::NIL; // chain predecessor of `id`
         let mut id = index.first_leaf;
@@ -279,7 +291,10 @@ impl Cursor {
             let v = db.store.versions.get(tid);
             db.reads.heap_fetches += 1;
             if v.visible(self.snapshot) {
-                self.rows.push(Row { key: v.key, value: v.value });
+                self.rows.push(Row {
+                    key: v.key,
+                    value: v.value,
+                });
             } else if db.store.dead_to_all(tid) {
                 // Not just invisible to me: invisible to everyone, for ever.
                 // Leave a note so that the next reader skips the heap visit

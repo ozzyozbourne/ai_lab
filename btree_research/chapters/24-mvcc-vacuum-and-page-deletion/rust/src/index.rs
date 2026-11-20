@@ -237,7 +237,10 @@ impl Index {
         right_leaf.next = left_leaf.next;
         left_leaf.next = right_id;
         self.stats.leaf_splits += 1;
-        Split { separator: right.keys[0], right: right_id }
+        Split {
+            separator: right.keys[0],
+            right: right_id,
+        }
     }
 
     fn split_internal(&mut self, left_id: NodeId) -> Split {
@@ -252,7 +255,10 @@ impl Index {
         right.len = moved;
         left.len = mid;
         self.stats.internal_splits += 1;
-        Split { separator, right: right_id }
+        Split {
+            separator,
+            right: right_id,
+        }
     }
 
     // ----------------------------------------------------- page deletion
@@ -355,7 +361,10 @@ impl Index {
         if self.deleted_tail.is_nil() {
             self.deleted_head = id;
         } else {
-            self.nodes.get_mut(self.deleted_tail).leaf_mut().next_deleted = id;
+            self.nodes
+                .get_mut(self.deleted_tail)
+                .leaf_mut()
+                .next_deleted = id;
         }
         self.deleted_tail = id;
         self.stats.pages_unlinked += 1;

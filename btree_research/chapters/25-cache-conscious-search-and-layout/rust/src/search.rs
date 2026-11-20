@@ -9,6 +9,29 @@
 use crate::layout::AlignedKeys;
 use crate::trace::{LANES, Tracer};
 
+/// What the scalar searches need from a sorted run of keys. Zig passes a
+/// slice. Here there are two implementations: a plain `[u64]`, and
+/// `layout::SortedView`, the line-aligned storage the scenario searches.
+pub trait Keys {
+    fn len(&self) -> usize;
+    fn key(&self, i: usize) -> u64;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl Keys for [u64] {
+    #[inline]
+    fn len(&self) -> usize {
+        <[u64]>::len(self)
+    }
+
+    #[inline]
+    fn key(&self, i: usize) -> u64 {
+        self[i]
+    }
+}
+
 /// The oracle: count the smaller keys one by one. Obviously correct.
 pub fn lower_bound_linear(keys: &[u64], key: u64) -> usize {
     keys.iter().map(|&k| usize::from(k < key)).sum()
@@ -18,13 +41,17 @@ pub fn lower_bound_linear(keys: &[u64], key: u64) -> usize {
 /// at or right of `hi` is >= key. The `if` is a data-dependent branch: for
 /// random needles the predictor is wrong about half the time, and the number
 /// of iterations depends on the path taken.
-pub fn lower_bound_classic<T: Tracer>(keys: &[u64], key: u64, tracer: &mut T) -> usize {
+pub fn lower_bound_classic<K: Keys + ?Sized, T: Tracer>(
+    keys: &K,
+    key: u64,
+    tracer: &mut T,
+) -> usize {
     let mut lo = 0;
     let mut hi = keys.len();
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
         tracer.cmp(mid);
-        if keys[mid] < key {
+        if keys.key(mid) < key {
             lo = mid + 1;
         } else {
             hi = mid;
@@ -70,10 +97,10 @@ pub enum Select {
 /// is a separate function with no test left in the loop. Here they are plain
 /// arguments: the function is small, gets inlined at each call site with
 /// constant arguments, and the optimiser removes the tests the same way.
-pub fn lower_bound_halving<T: Tracer>(
+pub fn lower_bound_halving<K: Keys + ?Sized, T: Tracer>(
     select: Select,
     prefetch: bool,
-    keys: &[u64],
+    keys: &K,
     key: u64,
     tracer: &mut T,
 ) -> usize {
@@ -97,7 +124,7 @@ pub fn lower_bound_halving<T: Tracer>(
             tracer.prefetch(mid + next_half);
         }
         tracer.cmp(mid);
-        let take_upper = keys[mid] < key;
+        let take_upper = keys.key(mid) < key;
         match select {
             Select::Branch => {
                 if take_upper {
@@ -111,7 +138,7 @@ pub fn lower_bound_halving<T: Tracer>(
     }
     // One key is left in the window. It is the answer unless it is too small.
     tracer.cmp(offset);
-    offset + usize::from(keys[offset] < key)
+    offset + usize::from(keys.key(offset) < key)
 }
 
 /// Comparisons made by `lower_bound_halving` for an array of `n` keys:
@@ -175,17 +202,17 @@ mod tests {
             let padded = AlignedKeys::padded(&keys);
             for needle in (0..=(n as u64 + 1) * 10).step_by(5) {
                 let want = lower_bound_linear(&keys, needle);
-                assert_eq!(lower_bound_classic(&keys, needle, &mut NoTrace), want);
+                assert_eq!(lower_bound_classic(&keys[..], needle, &mut NoTrace), want);
                 assert_eq!(
-                    lower_bound_halving(Select::Branch, false, &keys, needle, &mut NoTrace),
+                    lower_bound_halving(Select::Branch, false, &keys[..], needle, &mut NoTrace),
                     want
                 );
                 assert_eq!(
-                    lower_bound_halving(Select::Arithmetic, false, &keys, needle, &mut NoTrace),
+                    lower_bound_halving(Select::Arithmetic, false, &keys[..], needle, &mut NoTrace),
                     want
                 );
                 assert_eq!(
-                    lower_bound_halving(Select::Hinted, true, &keys, needle, &mut NoTrace),
+                    lower_bound_halving(Select::Hinted, true, &keys[..], needle, &mut NoTrace),
                     want
                 );
                 assert_eq!(lower_bound_vector(&padded, needle, &mut NoTrace), want);
@@ -216,10 +243,10 @@ mod tests {
             let mut b = Trace::new(Layout::KEYS);
             let mut c = Trace::new(Layout::KEYS);
             let mut d = Trace::new(Layout::KEYS);
-            let ra = lower_bound_halving(Select::Branch, false, &keys, needle, &mut a);
-            let rb = lower_bound_halving(Select::Arithmetic, false, &keys, needle, &mut b);
-            let rc = lower_bound_halving(Select::Hinted, true, &keys, needle, &mut c);
-            let rd = lower_bound_halving(Select::Hinted, false, &keys, needle, &mut d);
+            let ra = lower_bound_halving(Select::Branch, false, &keys[..], needle, &mut a);
+            let rb = lower_bound_halving(Select::Arithmetic, false, &keys[..], needle, &mut b);
+            let rc = lower_bound_halving(Select::Hinted, true, &keys[..], needle, &mut c);
+            let rd = lower_bound_halving(Select::Hinted, false, &keys[..], needle, &mut d);
             assert_eq!(ra, rb);
             assert_eq!(ra, rc);
             assert_eq!(ra, rd);
@@ -227,7 +254,8 @@ mod tests {
             assert_eq!(a.probes(), c.probes());
             assert_eq!(a.probes(), d.probes());
             assert_eq!(a.lines_read(), c.lines_read());
-            // Every line except the very first probe was hinted before it was read.
+            // Every line except the very first probe was hinted at least one
+            // comparison before it was read.
             assert_eq!(c.uncovered, 1);
             assert_eq!(a.uncovered, a.lines_read());
             assert_eq!(c.prefetches, 2 * (c.comparisons - 1));

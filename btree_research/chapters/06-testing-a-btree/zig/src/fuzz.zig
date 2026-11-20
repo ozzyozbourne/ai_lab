@@ -6,7 +6,8 @@
 //!   generate(case)   -> []Step   the operations, as plain data
 //!   replay(steps)    -> ?Failure run them against the tree AND a trivially
 //!                                correct oracle; stop at the first difference
-//!   hunt(seeds)      -> ?Found   replay one swarm case per seed
+//!   hunt(seeds)      -> ?Found   replay one swarm case per seed, stop at the
+//!                                first failure (huntShortest: try them all)
 //!
 //! Operations are data, generated up front and replayed afterwards (never
 //! "draw a random number, act on it immediately"). That is what makes a
@@ -352,6 +353,26 @@ pub fn hunt(comptime Tree: type, gpa: Allocator, first_seed: u64, seeds: u64, ch
         if (try replay(Tree, gpa, steps, checks, totals)) |failure| return .{ .case = case, .failure = failure };
     }
     return null;
+}
+
+pub const Census = struct {
+    /// How many of the seeds exposed a failure.
+    failing_seeds: u64 = 0,
+    /// The failing case that got there in the fewest steps (ties: lowest seed).
+    shortest: ?Found = null,
+};
+
+/// Like `hunt`, but runs EVERY seed and keeps the failure that needed the
+/// fewest steps. A short failing run is the better starting point for the
+/// minimiser, and the count says how easy the bug is to hit.
+pub fn huntShortest(comptime Tree: type, gpa: Allocator, first_seed: u64, seeds: u64, checks: Checks) Allocator.Error!Census {
+    var census: Census = .{};
+    for (first_seed..first_seed + seeds) |seed| {
+        const found = try hunt(Tree, gpa, seed, 1, checks, null) orelse continue;
+        census.failing_seeds += 1;
+        if (census.shortest == null or found.failure.step < census.shortest.?.failure.step) census.shortest = found;
+    }
+    return census;
 }
 
 /// One step per line: `put 7 = 70`, `delete 7`, `get 7`, `range [3, 9)`.

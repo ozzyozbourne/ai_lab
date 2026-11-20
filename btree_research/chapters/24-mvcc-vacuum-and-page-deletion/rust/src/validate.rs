@@ -58,7 +58,12 @@ pub fn validate(db: &Db) -> Result<(), Violation> {
         if !index.nodes.is_live(index.root) {
             return Err(Violation::BadRoot);
         }
-        let mut walk = Walk { chain: index.first_leaf, pages: 0, entries: 0, last_current: None };
+        let mut walk = Walk {
+            chain: index.first_leaf,
+            pages: 0,
+            entries: 0,
+            last_current: None,
+        };
         // Half-dead pages are in the chain but not in the tree: count them
         // while skipping to the first live leaf, and again after each leaf.
         skip_half_dead(db, &mut walk)?;

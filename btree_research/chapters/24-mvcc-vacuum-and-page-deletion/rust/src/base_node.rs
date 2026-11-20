@@ -198,7 +198,9 @@ impl Node {
         let len = self.len;
         assert!(i < len);
         self.keys.copy_within(i + 1..len, i);
-        self.internal_mut().children.copy_within(i + 2..len + 1, i + 1);
+        self.internal_mut()
+            .children
+            .copy_within(i + 2..len + 1, i + 1);
         self.len -= 1;
     }
 }

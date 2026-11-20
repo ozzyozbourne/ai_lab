@@ -123,7 +123,10 @@ fn print_rows(w: &mut dyn Write, cursor: &mut Cursor, db: &mut Db, limit: usize)
 fn versions_and_hints(w: &mut dyn Write) -> io::Result<()> {
     let mut db = Db::new(4);
 
-    writeln!(w, "== 1. Versions and snapshots (order M = 4: at most 3 entries per leaf) ==")?;
+    writeln!(
+        w,
+        "== 1. Versions and snapshots (order M = 4: at most 3 entries per leaf) =="
+    )?;
     for key in [10, 20, 30] {
         put(&mut db, w, key, key * 10)?;
     }
@@ -140,7 +143,10 @@ fn versions_and_hints(w: &mut dyn Write) -> io::Result<()> {
         writeln!(w, "get {key}: under A = {under_a}, under B = {under_b}")?;
     }
 
-    writeln!(w, "\n== 2. A scan leaves hints, but only for versions dead to everyone ==")?;
+    writeln!(
+        w,
+        "\n== 2. A scan leaves hints, but only for versions dead to everyone =="
+    )?;
     scan(&mut db, w, "B", b)?;
     db.store.close_snapshot(a);
     writeln!(w, "close snapshot A: horizon is now {}", db.store.horizon())?;
@@ -189,39 +195,77 @@ fn build_with_deleted_range(db: &mut Db) -> u64 {
 fn vacuum_and_page_deletion(w: &mut dyn Write) -> io::Result<()> {
     let mut db = Db::new(4);
 
-    writeln!(w, "\n== 4. VACUUM removes only what the oldest snapshot cannot see ==")?;
+    writeln!(
+        w,
+        "\n== 4. VACUUM removes only what the oldest snapshot cannot see =="
+    )?;
     let r = build_with_deleted_range(&mut db);
-    writeln!(w, "put 10..120 (xid 1..12), open snapshot R = {r}, delete 30..80 (xid 13..18)")?;
+    writeln!(
+        w,
+        "put 10..120 (xid 1..12), open snapshot R = {r}, delete 30..80 (xid 13..18)"
+    )?;
     show(&db, w)?;
-    vacuum(&mut db, w, VacuumOptions { delete_pages: false })?;
+    vacuum(
+        &mut db,
+        w,
+        VacuumOptions {
+            delete_pages: false,
+        },
+    )?;
     scan(&mut db, w, "R", r)?;
     db.store.close_snapshot(r);
     writeln!(w, "close snapshot R: horizon is now {}", db.store.horizon())?;
-    vacuum(&mut db, w, VacuumOptions { delete_pages: false })?;
+    vacuum(
+        &mut db,
+        w,
+        VacuumOptions {
+            delete_pages: false,
+        },
+    )?;
     show(&db, w)?;
 
-    writeln!(w, "\n== 5. Deleting an empty leaf: half-dead, unlinked, recycled ==")?;
+    writeln!(
+        w,
+        "\n== 5. Deleting an empty leaf: half-dead, unlinked, recycled =="
+    )?;
     let s = db.store.open_snapshot().expect(FEW);
     let mut cursor = Cursor::seek(&db, s, 0, EVERYTHING);
     write!(w, "open snapshot S = {s}; a scan under S returns:")?;
     print_rows(w, &mut cursor, &mut db, 2)?;
     let target = cursor.next_leaf;
     let neighbour = db.index.nodes.get(target).leaf().next;
-    writeln!(w, " and pauses; the next page it will read is #{}", target.index())?;
+    writeln!(
+        w,
+        " and pauses; the next page it will read is #{}",
+        target.index()
+    )?;
 
     let marked = outcome(db.index.mark_half_dead(target));
     writeln!(w, "phase 1, mark #{} half-dead: {marked}", target.index())?;
     show(&db, w)?;
     let left = db.index.left_sibling(target);
     db.index.unlink_half_dead(&mut db.store, left, target);
-    writeln!(w, "phase 2, unlink #{}: stamped with epoch {}", target.index(), db.store.now)?;
+    writeln!(
+        w,
+        "phase 2, unlink #{}: stamped with epoch {}",
+        target.index(),
+        db.store.now
+    )?;
     show(&db, w)?;
     let horizon = db.store.horizon();
-    writeln!(w, "recycle (horizon {horizon}): pages freed {}", db.index.recycle(horizon))?;
+    writeln!(
+        w,
+        "recycle (horizon {horizon}): pages freed {}",
+        db.index.recycle(horizon)
+    )?;
     let moved_before = db.reads.moved_right;
     write!(w, "the scan resumes:")?;
     print_rows(w, &mut cursor, &mut db, 100)?;
-    writeln!(w, " | moved right past {} deleted page", db.reads.moved_right - moved_before)?;
+    writeln!(
+        w,
+        " | moved right past {} deleted page",
+        db.reads.moved_right - moved_before
+    )?;
     db.store.close_snapshot(s);
     let horizon = db.store.horizon();
     writeln!(
@@ -251,7 +295,9 @@ fn recycling_too_early(w: &mut dyn Write) -> io::Result<()> {
     writeln!(w, "\n== 6. Recycling too early breaks a scan ==")?;
     let r = build_with_deleted_range(&mut db);
     db.store.close_snapshot(r);
-    db.vacuum(VacuumOptions { delete_pages: false });
+    db.vacuum(VacuumOptions {
+        delete_pages: false,
+    });
     let s = db.store.open_snapshot().expect(FEW);
     let mut cursor = Cursor::seek(&db, s, 0, EVERYTHING);
     write!(w, "same tree as in section 5; the scan returns:")?;
@@ -281,7 +327,10 @@ fn recycling_too_early(w: &mut dyn Write) -> io::Result<()> {
     show(&db, w)?;
     write!(w, "the scan resumes after the split:")?;
     print_rows(w, &mut cursor, &mut db, 100)?;
-    writeln!(w, " <- 90, 100 and 110 are missing, and nothing reports an error")
+    writeln!(
+        w,
+        " <- 90, 100 and 110 are missing, and nothing reports an error"
+    )
 }
 
 struct ModelConfig {
@@ -301,7 +350,12 @@ fn model_runs(w: &mut dyn Write) -> io::Result<()> {
         w,
         "\n== 7. Model run: 20000 random operations, long snapshots, different collectors =="
     )?;
-    let config = |name, order, bottom_up, vacuum_every| ModelConfig { name, order, bottom_up, vacuum_every };
+    let config = |name, order, bottom_up, vacuum_every| ModelConfig {
+        name,
+        order,
+        bottom_up,
+        vacuum_every,
+    };
     let configs = [
         config("M=4  all collectors       ", 4, true, 250),
         config("M=4  no bottom-up         ", 4, false, 250),
@@ -320,7 +374,12 @@ fn model_run(w: &mut dyn Write, config: &ModelConfig) -> io::Result<()> {
     let mut oracle = Oracle::new();
     let mut frozen: Vec<Entry> = Vec::new(); // oracle copy of the long snapshot
     let mut long_snapshot = None;
-    let stream = OpStream::new(Config { seed: 24, count: 20_000, key_space: 400, weights: Weights::default() });
+    let stream = OpStream::new(Config {
+        seed: 24,
+        count: 20_000,
+        key_space: 400,
+        weights: Weights::default(),
+    });
     let mut mismatches = 0;
     for (step, op) in (0u64..).zip(stream) {
         match op {
@@ -404,6 +463,9 @@ mod tests {
     fn run_prints_exactly_expected_output_txt() {
         let mut out = Vec::new();
         super::run(&mut out).unwrap();
-        assert_eq!(String::from_utf8(out).unwrap(), include_str!("../../expected_output.txt"));
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            include_str!("../../expected_output.txt")
+        );
     }
 }

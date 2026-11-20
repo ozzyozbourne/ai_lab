@@ -292,9 +292,9 @@ fn modelRun(gpa: Allocator, w: *Writer, config: ModelConfig) !void {
     try db.validate();
     const s = db.index.stats;
     try w.print("{s} | rows {d} entries {d} pages {d} slots {d} | splits {d} avoided {d} | removed: simple {d} bottom-up {d} vacuum {d} | pages unlinked {d} recycled {d} reused {d} | mismatches {d}\n", .{
-        config.name,         oracle.len(),     db.index.count,         db.index.nodes.liveCount(), db.index.nodes.slotCount(),
-        s.leaf_splits + s.internal_splits, s.splits_avoided, s.simple_deleted,       s.bottom_up_deleted,        s.vacuum_deleted,
-        s.pages_unlinked,    s.pages_recycled, s.pages_reused,         mismatches,
+        config.name,                       oracle.len(),     db.index.count,   db.index.nodes.liveCount(), db.index.nodes.slotCount(),
+        s.leaf_splits + s.internal_splits, s.splits_avoided, s.simple_deleted, s.bottom_up_deleted,        s.vacuum_deleted,
+        s.pages_unlinked,                  s.pages_recycled, s.pages_reused,   mismatches,
     });
 }
 

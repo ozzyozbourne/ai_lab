@@ -12,7 +12,9 @@ use crate::ops::{Config, Entry, Op, OpStream, Oracle, Weights};
 use crate::validate::Violation;
 
 const EVERYTHING: u64 = u64::MAX;
-const KEEP_PAGES: VacuumOptions = VacuumOptions { delete_pages: false };
+const KEEP_PAGES: VacuumOptions = VacuumOptions {
+    delete_pages: false,
+};
 
 fn vacuum(db: &mut Db) -> crate::db::VacuumReport {
     db.vacuum(VacuumOptions::default())
@@ -283,7 +285,10 @@ fn a_scan_about_to_step_onto_a_page_that_is_then_deleted_moves_right_safely() {
     }
     assert_eq!(db.index.stats.pages_reused, 1);
     assert_eq!(db.index.nodes.slot_count(), slots_after);
-    assert_eq!(scan_keys(&mut db), [10, 11, 12, 13, 14, 20, 90, 91, 92, 100, 110, 120]);
+    assert_eq!(
+        scan_keys(&mut db),
+        [10, 11, 12, 13, 14, 20, 90, 91, 92, 100, 110, 120]
+    );
     db.validate().unwrap();
 }
 
@@ -385,10 +390,17 @@ fn model_random_operations_with_a_long_lived_snapshot_match_the_oracle() {
         let mut oracle = Oracle::new();
         let mut frozen: Vec<Entry> = Vec::new();
         let mut long = None;
-        let config = Config { seed: 0xC0FFEE + order as u64, count: 6000, key_space: 150, weights: Weights::default() };
+        let config = Config {
+            seed: 0xC0FFEE + order as u64,
+            count: 6000,
+            key_space: 150,
+            weights: Weights::default(),
+        };
         for (step, op) in OpStream::new(config).enumerate() {
             match op {
-                Op::Put { key, value } => assert_eq!(db.put(key, value), Ok(oracle.put(key, value))),
+                Op::Put { key, value } => {
+                    assert_eq!(db.put(key, value), Ok(oracle.put(key, value)))
+                }
                 Op::Delete { key } => assert_eq!(db.delete(key), oracle.delete(key)),
                 Op::Get { key } => {
                     let s = db.store.open_snapshot().unwrap();

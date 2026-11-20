@@ -169,7 +169,7 @@
       push('new-root', 'The tree is empty. ' + K + ' goes into a new leaf, which is also the root.', h0, { log: 'put ' + key + ': first node' });
       return true;
     }
-    var path = [], node = this.root, i;
+    var path = [], node = this.root, i, splitsBefore = this.splits, rootSplitsBefore = this.rootSplits;
     push('start', 'Insert ' + k(key, 'compare') + '. An insert begins like a search: start at the root and walk down to the leaf where the key belongs.',
       { nodes: (function () { var o = {}; o[node.id] = 'active'; return o; })(), cursor: { node: node.id, label: key } }, { log: 'put ' + key });
     while (true) {
@@ -240,8 +240,10 @@
           'The parent has room for it, so the insert ends here.'),
         hs, { log: { html: 'split: ' + median + ' up, [' + left.keys.join(' ') + '] + [' + right.keys.join(' ') + ']', state: 'split' }, question: question, hold: 2 });
     }
-    var n = this.splits;
-    push('done', 'Done: ' + K + ' is in the tree. ' + (path[path.length - 1].node.keys.length <= this.maxKeys && n === this.splits ? '' : ''), { keys: (function () { var o = {}; o['*:' + key] = 'inserted'; return o; })() });
+    var made = this.splits - splitsBefore;
+    push('done', 'Done: ' + K + ' is in the tree. ' + (made === 0 ? 'No node had to split.' :
+      'This insert split ' + plural(made, 'node') + (this.rootSplits > rootSplitsBefore ? ' and made the tree one level taller.' : '.')),
+      { keys: (function () { var o = {}; o['*:' + key] = 'inserted'; return o; })() });
     return true;
   };
 
@@ -280,7 +282,7 @@
       var allRoot = node.keys.slice();
       var hp = { nodes: {} }; hp.nodes[node.id] = 'split';
       push('preempt', 'The root ' + box(allRoot) + ' is full. It is split now, although nobody knows yet whether a key will come up from below.',
-        hp, { log: { html: 'full root [' + allRoot.join(' ') + ']', state: 'split' }, question: preemptQuestion(allRoot, 'root') });
+        hp, { at: 'root', log: { html: 'full root [' + allRoot.join(' ') + ']', state: 'split' }, question: preemptQuestion(allRoot, 'root') });
       var r = this._splitFull(node);
       var newRoot = this._node(false);
       newRoot.keys = [r.median];
@@ -291,7 +293,7 @@
       hr.nodes[node.id] = 'split'; hr.nodes[r.right.id] = 'split'; hr.keys['*:' + r.median] = 'split';
       push('root-grow', 'The middle key ' + k(r.median, 'split') + ' becomes a new root above the halves ' + box(node.keys) + ' and ' + box(r.right.keys) +
         '. Both halves hold ' + plural(this.minKeys, 'key') + ', the legal minimum: this is why top-down splitting needs an even order.',
-        hr, { log: { html: 'root split: ' + r.median + ' up, height ' + this.stats().height, state: 'split' }, hold: 2 });
+        hr, { at: 'root', log: { html: 'root split: ' + r.median + ' up, height ' + this.stats().height, state: 'split' }, hold: 2 });
       node = newRoot;
     }
     while (true) {

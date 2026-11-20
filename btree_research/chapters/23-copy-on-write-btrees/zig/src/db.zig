@@ -25,8 +25,10 @@
 //!     reusable when T+1 has committed, and not before.
 //!
 //! The second line is what makes two meta slots worth having. At every
-//! moment, also in the middle of a commit, the trees of BOTH slots are
-//! complete: whichever slot a restart is able to read names a whole tree.
+//! moment, also in the middle of a commit, each slot names a complete tree or
+//! names nothing: whichever slot a restart is able to read names a whole
+//! tree. `reopen` keeps that true across restarts by scrubbing a slot it
+//! could not use BEFORE it frees the pages of that slot's tree.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
@@ -75,8 +77,8 @@ pub const Db = struct {
     current: Meta,
     /// The committed root one commit back, as recorded in the other meta
     /// slot. null when that slot holds nothing (a new database, or after a
-    /// restart that could not use it and scrubbed it). `reclaim` treats it like a
-    /// snapshot that nobody can release early.
+    /// restart that could not use it and scrubbed it). `reclaim` treats it
+    /// like a snapshot that nobody can release early.
     previous: ?Meta = null,
     /// Fault injection for the tests and the demo: when set, the next commit
     /// "loses power" after this many device writes (one per page, then one

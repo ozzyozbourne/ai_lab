@@ -16,7 +16,9 @@
 //! The older slot is also the fallback when the NEWER one becomes unreadable
 //! later (a bad sector). That only helps if the tree it names is still
 //! complete, so the database keeps the pages of both slots' trees unwritten:
-//! see `Db.previous` and the reclamation rule in db.zig.
+//! see `Db.previous` and the reclamation rule in db.zig. A restart that had
+//! to skip a slot overwrites it with zeroes (`Db.reopen`), so a slot that
+//! was unreadable once cannot come back and win a later restart.
 //!
 //! Slot layout, 32 bytes, little-endian:
 //!

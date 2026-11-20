@@ -17,14 +17,13 @@ Visualization: [viz/index.html](viz/index.html)
   encoding is right: *encoded order equals logical order*.
 
 Prerequisites: chapter 02 (a node is searched by comparing keys) and chapter
-10 (a cell is just a run of bytes inside a page). You need two's complement
-and a rough idea of IEEE 754 doubles; both are recalled where they are used.
+10 (a cell is a run of bytes inside a page). Two's complement and IEEE 754
+doubles are recalled where they are used.
 
 ## The idea in plain words
 
 Up to chapter 8 a key was a `u64` compared with `<`. On disk a key is a
-byte string inside a cell, and the row behind it has typed columns. Two
-questions follow.
+byte string inside a cell, and the row behind it has typed columns.
 
 **How do I store a row compactly?** Most integers are small and most strings
 are short, so fixed-width fields waste space. A *record* stores, for each
@@ -94,16 +93,15 @@ has the single tag byte `02` in that position; `02 > 01`, so it sorts after
 every non-NULL score.
 
 A float column (section 3 of the output). A double is 1 sign bit, 11
-exponent bits and 52 fraction bits, sign-magnitude. The exponent sits above
-the fraction, so among non-negative doubles a larger bit pattern is a larger
-number; among negative ones it is the reverse.
+exponent bits, 52 fraction bits: sign-magnitude, exponent above fraction. So
+among non-negative doubles a larger bit pattern is a larger number, and
+among negative ones it is the reverse.
 
 - `1.5` is `3f f8 00 ..`; set the sign bit: `bf f8 00 ..`
 - `-1.5` is `bf f8 00 ..`; invert every bit: `40 07 ff ..`
 
-So -1.5 sorts before 1.5, and the inversion reverses the negatives: `-inf`
-(`ff f0 00 ..`, the largest negative pattern) becomes `00 0f ff ..`, the
-smallest key.
+So -1.5 sorts before 1.5, and `-inf` (`ff f0 00 ..`, the largest negative
+pattern) becomes `00 0f ff ..`, the smallest key.
 
 Why the terminator? Take two columns of text. Concatenating raw bytes turns
 both `("a", "b")` and `("ab", "")` into `61 62`. With tag and terminator
@@ -211,9 +209,9 @@ key, otherwise a lookup for `0.0` misses a stored `-0.0`.
 fly, and an optional output buffer so the same loop can also just measure.
 
 **`KeyWriter`.** A cursor over a caller-supplied `[]u8`. Each `put*` call
-first reserves the exact number of bytes it needs and only then writes, so a
-`NoSpaceLeft` leaves the key as it was. DESC inverts the payload but not the
-tag: that is what makes NULLS FIRST / LAST independent of ASC / DESC.
+reserves the bytes it needs before it writes, so `NoSpaceLeft` leaves the
+key as it was. DESC inverts the payload but not the tag: that makes NULLS
+FIRST / LAST independent of ASC / DESC.
 
 **Records.** `RecordCursor` keeps two positions, `type_pos` in the serial
 types and `body_pos` in the bodies, and moves both only after a column has
@@ -235,9 +233,9 @@ carry tests of the same kind inside the file, so they move with it.
 
 **`validate`.** `validateKey` walks a key with the schema and checks that it
 ends exactly after the last column and that float columns hold canonical
-bits. `validateRecord` checks that the header and the bodies add up to the
-record's length. Both return errors on every truncation of a valid input
-(tested), because these bytes come from disk and cannot be trusted.
+bits. `validateRecord` checks that header and bodies add up to the record's
+length. Both reject every truncation of a valid input (tested): bytes from
+disk cannot be trusted.
 
 ### Rust
 
@@ -289,9 +287,7 @@ that.
 `turso/core/types.rs:3264-3295`). Index keys are records, compared by
 `compare_immutable`, which walks the columns and calls `cmp_in_column`
 (`turso/core/types.rs:2730-2764`), and `cmp_with_sort` applies sort order
-and NULL order afterwards (`turso/core/types.rs:2799-2820`). There are
-specialised comparators chosen by the type of the first column
-(`turso/core/types.rs:2882-2895`). The varint is the SQLite one:
+and NULL order afterwards (`turso/core/types.rs:2799-2820`). The varint is the SQLite one:
 `read_varint` at `turso/core/storage/sqlite3_ondisk.rs:1353-1399`,
 `varint_len` at `:1458-1467`, `write_varint` at `:1470-1507`; a 9-byte
 encoding of a value that fits in 8 is rejected as corrupt (`:1385-1391`),
@@ -337,14 +333,13 @@ never allocate; the caller picks where the bytes live.
   bounded and the lifetime is one scope; a general-purpose allocator would
   pay for bookkeeping that is never used. What goes wrong: the buffer is
   finite, so a key that does not fit is
-  `error.OutOfMemory` (tested in `row.zig`), and returning a key that points
-  into a stack buffer from the function that owns the buffer is a dangling
-  slice.
+  `error.OutOfMemory` (tested in `row.zig`), and a key returned from the
+  function that owns the stack buffer is a dangling slice.
 - **`ArenaAllocator` for decoded rows.** `decodeRecord` and `decodeKey`
   allocate one value array plus one copy per text column. Their lifetimes
   are identical ("until the caller is done with this row"), so they are
-  freed together; the functions do not even clean up on failure, because the
-  arena's `deinit` releases a half-built row. `model.checkPairs` resets the
+  freed together, and the arena's `deinit` releases a half-built row after
+  a failure. `model.checkPairs` resets the
   arena with `.retain_capacity` once per pair, so it soon stops asking the
   backing allocator for memory. With a general-purpose
   allocator every decoded row would need a matching free of each text, and
@@ -386,10 +381,10 @@ never allocate; the caller picks where the bytes live.
 - **Prefix scans on DESC strings.** Inverted, the terminator is `ff`, so a
   string sorts after its extensions. That is correct, but the bounds of a
   prefix scan must then be built from the inverted bytes too.
-- **Collations.** Bytewise order is not alphabetical order in most
-  languages ("Z" < "a" in ASCII). A byte-comparable key for a collated
-  column has to store a collation sort key instead of the text, which
-  usually cannot be decoded back (textbook; not verified in these sources).
+- **Collations.** Bytewise order is not alphabetical order ("Z" < "a" in
+  ASCII). A key for a collated column has to store a collation sort key
+  instead of the text, which usually cannot be decoded back (textbook; not
+  verified in these sources).
 
 ## Exercises
 

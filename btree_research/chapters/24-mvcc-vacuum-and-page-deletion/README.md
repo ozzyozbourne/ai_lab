@@ -69,9 +69,9 @@ entry, so it needs none of the machinery below. The price is paid elsewhere: eve
 read is a two-way merge, the versions need their own garbage collection, and the
 checkpoint has to replay them.
 
-Neither is "the right one". The first keeps the read path a plain index scan and pays
-with garbage inside the tree; the second keeps the tree clean and pays with a second
-structure in front of it.
+The first keeps the read path a plain index scan and pays with garbage inside the
+tree; the second keeps the tree clean and pays with a second structure in front of
+it.
 
 ### The garbage pipeline
 
@@ -225,9 +225,9 @@ after the unlink, so that "snapshot < stamp" means exactly "taken before the unl
 Deleted pages are threaded onto an intrusive FIFO (`next_deleted`), so nothing is
 allocated. `Index.recycle(horizon)` frees from the head while `stamp <= horizon`.
 
-`Db.vacuum` walks the leaf chain once, keeping track of the chain predecessor, and
-does all of it: remove entries, finish half-dead pages, delete emptied leaves, then
-recycle. It never allocates, so it cannot fail.
+`Db.vacuum` walks the leaf chain once and does all of it: remove entries, finish
+half-dead pages, delete emptied leaves, recycle. It never allocates, so it cannot
+fail.
 
 ### Rust
 
@@ -254,7 +254,7 @@ The port is line for line where the borrow checker allows it. The differences:
 
 ### What the programs print
 
-`zig build run` and `cargo run` print the same 110 lines
+`zig build run` and `cargo run` print the same 111 lines
 ([expected_output.txt](expected_output.txt)). The first three sections are the first
 half of the worked example. The core of the chapter is section 5:
 
@@ -283,30 +283,28 @@ switched off:
 ```
 #1 is deleted with stamp 19; snapshot S = 18 is older, but we recycle anyway (pages freed 1)
 the scan resumes at once: error.DanglingLink (the page is on the free list)
-put 111=1110: xid 20
 put 112=1120: xid 21; page full: leaf split into a recycled page
-  ...
-  leaves : #0(10:1- 20:2-) -> #3() -> #4() -> #5(90:9- 100:10-) -> #8(110:11- 111:20-) -> #1(112:21- 120:12-)
 the scan resumes after the split: 120 <- 90, 100 and 110 are missing, and nothing reports an error
 ```
 
 The first failure is the lucky one. The second is the real danger: the tree passes
 `validate`, and the reader silently gets a wrong answer.
 
-Section 7 runs 20000 random operations against the oracle, holding a long snapshot
-for 300 operations at a time and checking that it still reads the frozen copy.
-The counts (not timings) show what each collector is worth at M = 4, key space 400:
+Section 7 runs 20000 random operations against the oracle (key space 400), holding a
+long snapshot for 300 operations at a time and checking that it still reads its
+frozen copy. Counts from its output, all with 278 live rows at the end and 0
+mismatches:
 
-```
-M=4  all collectors        | rows 278 entries 278 pages 423 slots 439 | splits 1109 avoided 688 | removed: simple 396 bottom-up 488 vacuum 6761 | pages unlinked 693 recycled 693 reused 677 | mismatches 0
-M=4  no bottom-up          | rows 278 entries 278 pages 433 slots 452 | splits 1207 avoided 317 | removed: simple 384 bottom-up 0 vacuum 7261 | pages unlinked 781 recycled 781 reused 762 | mismatches 0
-M=4  hints only, no vacuum | rows 278 entries 1126 pages 755 slots 755 | splits 748 avoided 3411 | removed: simple 6797 bottom-up 0 vacuum 0 | pages unlinked 0 recycled 0 reused 0 | mismatches 0
-```
+| M = 4, collectors | entries | pages | splits | splits avoided | pages recycled | reused |
+| --- | --- | --- | --- | --- | --- | --- |
+| hints + bottom-up + vacuum | 278 | 423 | 1109 | 688 | 693 | 677 |
+| hints + vacuum | 278 | 433 | 1207 | 317 | 781 | 762 |
+| hints only | 1126 | 755 | 748 | 3411 | 0 | 0 |
 
-Without VACUUM the index ends with 1126 entries for 278 rows and never returns a
-page. With it, 677 of the 1109 splits were served from recycled pages. Note also that
-423 pages for 278 rows is far from compact: that is the cost of never merging, and it
-is exaggerated here by a leaf capacity of 3.
+Without VACUUM the index ends with 1126 entries for 278 rows and never gives a page
+back. With it, most splits are served from recycled pages. But 423 pages for 278 rows
+is far from compact: that is the cost of never merging, exaggerated here by a leaf
+capacity of 3.
 
 ## In real databases
 
@@ -371,8 +369,8 @@ and `end` timestamps (`turso/core/mvcc/database/mod.rs:456-476`). `MvccLazyCurso
 wraps a B-tree cursor and merges (`turso/core/mvcc/cursor.rs:222-275`); on equal keys
 the MVCC side wins (`:257`). A checkpoint writes committed versions into the B-tree
 with ordinary cursor operations (`turso/core/mvcc/database/checkpoint.rs`). The
-version store has its own garbage collector, which we did not study (unverified
-beyond its existence in `mod.rs`).
+version store has its own garbage collector (`gc_version_chain`,
+`turso/core/mvcc/database/mod.rs:8625`), which this guide did not study.
 
 ## Allocator notes
 
@@ -396,12 +394,11 @@ row, vacuums, and reloads the rows, asserting that neither arena grows: the recl
 slots were reused. `put` is tested with a `FailingAllocator` at every allocation
 index and must leave the database, including the transaction counter, unchanged.
 
-What would go wrong with other choices: allocating each page with `gpa.create`
-and storing pointers would turn a premature recycle into a real use-after-free
-instead of a detectable stale handle. An `ArenaAllocator` (bump allocator) could
-never return a single page, which is the one thing this chapter needs. Putting the
-deleted queue in an `ArrayList` would make VACUUM able to fail with `OutOfMemory`
-halfway through a page deletion; the intrusive `next_deleted` link avoids that.
+What would go wrong with other choices: with `gpa.create` per page and raw pointers,
+a premature recycle is a real use-after-free instead of a detectable stale handle. A
+bump `ArenaAllocator` cannot return a single page, which is the one thing this
+chapter needs. A deleted queue in an `ArrayList` would let VACUUM fail with
+`OutOfMemory` halfway through a page deletion; the intrusive link avoids that.
 
 ## Pitfalls
 
@@ -418,7 +415,6 @@ halfway through a page deletion; the intrusive `next_deleted` link avoids that.
   afterwards has a snapshot >= stamp and no protection.
 - **Clearing the deleted page's right link.** It looks tidy and strands every reader
   that is on its way to the page.
-- **Deleting the rightmost child.** Its key range would move under another parent.
 - **One long-running snapshot.** It holds the horizon back: no hints, no bottom-up
   deletion, VACUUM removes nothing, deleted pages wait. The third line of section 7
   is what an index looks like when garbage is not collected.

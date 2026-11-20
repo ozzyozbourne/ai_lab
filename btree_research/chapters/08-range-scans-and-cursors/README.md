@@ -126,8 +126,10 @@ up on every insert and delete, and the cursor stores the version it saw. The
 rule does not depend on the cursor design; the code has it once for both.
 
 The guarantee: a scan returns every entry that was in the range for the
-whole scan exactly once and in order. An entry inserted or deleted during
-the scan is returned if and only if the scan had not passed its key yet.
+whole scan exactly once and in order. An entry inserted during the scan is
+returned if and only if the scan had not passed its key yet; an entry
+deleted during the scan is not returned unless the scan had already passed
+it.
 
 ## A worked example by hand
 

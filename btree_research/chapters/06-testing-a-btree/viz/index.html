@@ -59,7 +59,7 @@ operations, the same failing step and the same reproducer that <code>zig build r
 </table>
 </div>
 <p>Suggested experiments: for each variant, press <em>Shortest failing run</em>, step to the end, then press <em>Minimise</em> and
-step through the reproducer by hand. Replay seed 3 (four possible keys) and seed 28 (64 keys) on the correct tree
+step through the reproducer by hand. Tick <em>Predict</em> to be asked which check will catch the bug before the failing step is shown. Replay seed 3 (four possible keys) and seed 28 (64 keys) on the correct tree
 to see how different two swarm cases are. Replay a seed that does not catch the third variant (seed 3 is one) to see
 a broken tree pass a test that never builds a third level.</p>
 
@@ -185,7 +185,16 @@ a broken tree pass a test that never builds a third level.</p>
         body += fr.swept ? ' <code>validate()</code> passes and the full scan equals the oracle.' : ' <code>validate()</code> passes.';
         if (fr.index + 1 === total) body += ' <b>End of the run: no difference found.</b>';
       }
-      list.push({ caption: head + body, state: { frame: fr }, hold: fr.failure ? 3 : 1 });
+      var entry = { caption: head + body, state: { frame: fr }, hold: fr.failure ? 3 : 1 };
+      if (fr.failure && fr.failure.kind !== 'oom_changed_tree') {
+        entry.question = {
+          prompt: 'The next step, ' + opHtml(fr.step) + ', exposes the bug. Which check notices first?',
+          choices: ['The step’s answer differs from the oracle’s', 'validate() reports a broken invariant', 'The full scan differs from the oracle'],
+          answer: fr.failure.kind === 'wrong_result' ? 0 : fr.failure.kind === 'invariant' ? 1 : 2,
+          explain: 'The checks run in this order after every step: answer, validate(), then (every 16 steps and at the end) the full scan.'
+        };
+      }
+      list.push(entry);
     });
     return { steps: list, result: res };
   }
@@ -265,7 +274,7 @@ a broken tree pass a test that never builds a third level.</p>
   }
 
   var stepper = new BTViz.Stepper({
-    mount: fig.controls, caption: fig.caption, root: fig.root, steps: [], interval: 900,
+    mount: fig.controls, caption: fig.caption, root: fig.root, steps: [], interval: 900, predict: false,
     onStep: function (step) { render(step); }
   });
 

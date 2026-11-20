@@ -12,9 +12,10 @@
 //! on the link cursor and on the stack cursor. Because cursors re-seek by
 //! key, a scan keeps working when entries are inserted or deleted between
 //! two `next` calls. What it returns then: every entry that was in the range
-//! for the whole scan exactly once, in order; an entry inserted or deleted
-//! during the scan is returned if and only if the scan had not passed its
-//! key yet.
+//! for the whole scan exactly once, in order; an entry inserted during the
+//! scan is returned if and only if the scan had not passed its key yet; an
+//! entry deleted during the scan is not returned unless the scan had passed
+//! it.
 //!
 //! Two shapes, because of the borrow checker:
 //!   * `Scan<P>` does not borrow the tree; `scan.next(&tree)` takes it per

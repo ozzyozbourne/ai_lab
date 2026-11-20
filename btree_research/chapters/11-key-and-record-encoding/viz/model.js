@@ -257,10 +257,10 @@
     var off = Object.keys(WHAT_BREAKS).filter(function (f) { return !fixes[f]; });
     var why = (off.length > 1 ? 'With several fixes off the effects mix; on its own, each one does this. ' : '') +
       off.map(function (f) { return WHAT_BREAKS[f]; }).join(' ');
-    if (off.length === 1 && off[0] === 'bigEndian') why += littleEndianOnScreen(rows, keys, order);
+    if (off.length === 1 && off[0] === 'bigEndian') why += littleEndianOnScreen(rows, keys, order, ok);
     steps.push({
       caption: ok
-        ? 'Sorted with ' + comparisons + ' comparisons that looked at ' + examined + ' byte positions. The result is exactly the ' +
+        ? 'Sorted with ' + comparisons + ' comparison' + (comparisons === 1 ? '' : 's') + ' that looked at ' + examined + ' byte positions. The result is exactly the ' +
           'logical order (name ASC, score DESC NULLS LAST, id ASC). A comparator over records would have decoded ' + columns +
           ' column values to reach the same order.' +
           (off.length ? ' A fix is switched off, but these particular rows do not expose it: ' + why : '')
@@ -287,7 +287,7 @@
    * (it does for the chapter's eight rows: every pair of equal names with
    * different scores happens to come out reversed).
    */
-  function littleEndianOnScreen(rows, keys, order) {
+  function littleEndianOnScreen(rows, keys, order, ok) {
     var text = '';
     for (var p = 0; p + 1 < order.length; p++) {
       var a = rows[order[p]], b = rows[order[p + 1]];
@@ -302,9 +302,9 @@
       break;
     }
     var noDesc = byteOrder(rows, { bigEndian: true, signFlip: true, framing: true, descInvert: false });
-    if (noDesc.join() === order.join()) {
+    if (!ok && noDesc.join() === order.join()) {
       text += ' With these rows the result happens to be the same as with "DESC column inverted" off. It is a different fault: ' +
-        'add the row <code>Bo</code>, <code>1</code> and switch each of the two off in turn.';
+        'add a row such as <code>Bo</code>, <code>1</code> and switch each of the two off in turn.';
     }
     return text;
   }

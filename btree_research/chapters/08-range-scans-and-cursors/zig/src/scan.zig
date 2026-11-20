@@ -12,8 +12,9 @@
 //! cursor and on the stack cursor. Because cursors re-seek by key, a scan
 //! keeps working when entries are inserted or deleted between two `next`
 //! calls. What it returns then: every entry that was in the range for the
-//! whole scan exactly once, in order; an entry inserted or deleted during
-//! the scan is returned if and only if the scan had not passed its key yet.
+//! whole scan exactly once, in order; an entry inserted during the scan is
+//! returned if and only if the scan had not passed its key yet; an entry
+//! deleted during the scan is not returned unless the scan had passed it.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Tree = @import("tree.zig").Tree;

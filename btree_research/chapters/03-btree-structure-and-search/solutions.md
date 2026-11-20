@@ -3,35 +3,35 @@
 Every result below that is not pure arithmetic was produced by the chapter's code. The
 place where it is checked is named with each answer.
 
-## 1. Three lookups by hand
+## 1. Three trees of order 5
 
-```
-                 [6 10 20]
-    [1 3 5]  [7]  [12 15 17]  [25 30]
-```
+At order 5 a node below the root holds 2 to 4 keys and, if it is interior, has 3 to 5
+children. The root may hold 1 to 4 keys.
 
-**get(15).** Root `[6 10 20]`: the first key that is not smaller than 15 is 20, index 2.
-It is not 15, the root is not a leaf, so follow child 2. Leaf `[12 15 17]`: the lower
-bound is index 1, and the key there is 15. Found, value 150, 2 nodes read.
+**(a) Valid.** The root has one key, which only the root may have, and two children.
+The leaves have 3 and 2 keys. 5, 10 and 15 are below 20; 25 and 30 are above it. Both
+leaves are on level 2. It is also valid at order 4 (1 to 3 keys per node).
 
-**get(26).** Root: no key is 26 or larger, so the lower bound is index 3, one past the
-end. Follow child 3. Leaf `[25 30]`: the lower bound is index 1 (key 30), which is not
-26. A leaf has no children: absent, 2 nodes read.
+**(b) Not valid: rule 4, in the interior node `[40]`.** It has one key and two children,
+and it is not the root, so at order 5 it needs at least 2 keys (and therefore 3
+children). The root `[30]` has one key as well, and that is allowed. Nothing else is
+wrong: every node is sorted, every key is inside its range, all leaves are on level 3.
+`validate` returns `NodeUnderfull`. At order 4 the minimum is one key, and the same
+tree is valid.
 
-**get(6).** Root: the lower bound is index 0, and the key there is 6. Found, value 60,
-1 node read. The search ends in an interior node.
+**(c) Not valid: rule 2, in the leaf `[12 21]`.** The leaf is sorted and has enough
+keys, but it is the child between the separators 10 and 20, and 21 is not smaller
+than 20. `validate` returns `KeyOutsideParentBounds`. `get(21)` turns right at 20,
+arrives in `[25 30]` and reports the key as absent. The order does not matter here: the
+tree is not valid at order 4 either.
 
-`explainGet` (or the Search box of the visualization) prints the same:
-
-```
-get 15: [6 10 20] child 2 -> [12 15 17] has it at index 1 -> value 150 (2 nodes read)
-get 26: [6 10 20] child 3 -> [25 30] is a leaf without it -> absent (2 nodes read)
-get 6: [6 10 20] has it at index 0 -> value 60 (1 node read)
-```
+All three results, and the two answers about order 4 for (a) and (b), are asserted by
+the test "order 5: the minimum fill is two keys, except in the root" in `tree.zig` and
+its twin in `tree.rs`.
 
 ## 2. Heights for M = 5 and 100 keys
 
-t = ceil(5/2) = 3.
+d = ceil(5/2) = 3 (the fewest children of an interior node below the root).
 
 - Fewest keys with h levels: 2 * 3^(h-1) - 1, that is 1, 5, 17, 53, 161 for h = 1 to 5.
   100 keys reach 53 but not 161, so the largest possible height is **4**.
@@ -41,12 +41,13 @@ t = ceil(5/2) = 3.
 A tree of order 5 needs **161** keys before it can have 5 levels.
 
 Checked by the test "height bounds: the README's worked example" in `height.zig` and
-`height.rs` (`minHeight(5, 100) == 3`, `maxHeight(5, 100) == 4`, `minKeys(5, 5) == 161`).
+`height.rs` (`minHeight(5, 100) == 3`, `maxHeight(5, 100) == 4`, `minKeys(5, 5) == 161`;
+the order is the first argument).
 
 ## 3. Two defects at once
 
 **Leaf `[7]` becomes `[11]` and leaf `[12 15 17]` becomes `[12 17 15]`.** `validate`
-returns `KeyOutsideParentBounds`. The walk is depth-first, left to right. It checks the
+returns `KeyOutsideParentBounds`. The walk goes down before it goes right. It checks the
 root, then leaf `[1 3 5]`, then leaf `[11]` with the bounds (6, 10). 11 is not below 10,
 so the walk stops there. It never reaches the third leaf. Both languages agree.
 
@@ -82,8 +83,12 @@ each side, and a < b < c).
 
 The choices of different nodes are independent, so a 2-3-4 tree with j two-key nodes has
 2^j red-black forms. The canonical tree has exactly one two-key node, `[25 30]`, so it
-has **2**. (This is counting, not a program result. The code's choice, red on the left,
-is the left-leaning form.)
+has **2**. The code's choice, red on the left, is the left-leaning form.
+
+Checked by enumeration with a scratch script (not part of the chapter's test suite): of
+the 688 red-black trees that can be built from the twelve canonical keys, exactly 2
+fold back into the canonical tree; for `[3 6]` above `[1 2]`, `[4 5]`, `[7 8]`, which
+has four two-key nodes, the count is 16.
 
 ## 5. `successor`
 

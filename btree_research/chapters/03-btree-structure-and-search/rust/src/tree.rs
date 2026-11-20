@@ -273,8 +273,9 @@ mod tests {
         assert_eq!(two_levels(4, &[10, 20], &thin).validate(), Ok(()));
 
         // Exercise 1 (a): a root with one key is legal at every order.
-        let a = two_levels(5, &[20], &[&[5, 10, 15], &[25, 30]]);
-        assert_eq!(a.validate(), Ok(()));
+        let a: [&[u64]; 2] = [&[5, 10, 15], &[25, 30]];
+        assert_eq!(two_levels(5, &[20], &a).validate(), Ok(()));
+        assert_eq!(two_levels(4, &[20], &a).validate(), Ok(()));
 
         // Exercise 1 (b): interior node [40] is not the root and has one key.
         assert_eq!(
@@ -284,9 +285,15 @@ mod tests {
         assert_eq!(one_key_interior(4).validate(), Ok(())); // a legal 2-3-4 tree
 
         // Exercise 1 (c): every node is full enough, but 21 is right of separator 20.
-        let c = two_levels(5, &[10, 20], &[&[2, 5], &[12, 21], &[25, 30]]);
+        let leaves: [&[u64]; 3] = [&[2, 5], &[12, 21], &[25, 30]];
+        let c = two_levels(5, &[10, 20], &leaves);
         assert_eq!(c.validate(), Err(ValidateError::KeyOutsideParentBounds));
         assert_eq!(c.get(21), None); // stored, but a search goes to [25 30]
+        // The order does not matter for rule 2.
+        assert_eq!(
+            two_levels(4, &[10, 20], &leaves).validate(),
+            Err(ValidateError::KeyOutsideParentBounds)
+        );
     }
 
     #[test]

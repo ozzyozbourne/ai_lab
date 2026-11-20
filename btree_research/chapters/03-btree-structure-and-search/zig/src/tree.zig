@@ -262,6 +262,9 @@ test "order 5: the minimum fill is two keys, except in the root" {
     var a: Tree5 = .empty;
     a.root = try a.interior(gpa, &.{20}, &.{ try a.leaf(gpa, &.{ 5, 10, 15 }), try a.leaf(gpa, &.{ 25, 30 }) });
     try a.validate();
+    var a4: Tree4 = .empty;
+    a4.root = try a4.interior(gpa, &.{20}, &.{ try a4.leaf(gpa, &.{ 5, 10, 15 }), try a4.leaf(gpa, &.{ 25, 30 }) });
+    try a4.validate();
 
     // Exercise 1 (b): interior node [40] is not the root and has one key.
     var b: Tree5 = .empty;
@@ -286,6 +289,11 @@ test "order 5: the minimum fill is two keys, except in the root" {
     });
     try testing.expectError(error.KeyOutsideParentBounds, c.validate());
     try testing.expectEqual(null, c.get(21)); // stored, but a search goes to [25 30]
+    var c4: Tree4 = .empty; // the order does not matter for rule 2
+    c4.root = try c4.interior(gpa, &.{ 10, 20 }, &.{
+        try c4.leaf(gpa, &.{ 2, 5 }), try c4.leaf(gpa, &.{ 12, 21 }), try c4.leaf(gpa, &.{ 25, 30 }),
+    });
+    try testing.expectError(error.KeyOutsideParentBounds, c4.validate());
 }
 
 test "every u64 is a legal key: the largest ones can be stored and found" {

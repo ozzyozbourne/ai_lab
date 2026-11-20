@@ -33,6 +33,7 @@ use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::base_handle::{NodeId, OutOfNodes};
 use crate::base_node::{MAX_ORDER, Node};
+use crate::insert::Pause;
 use crate::search::{self, Lookup, Mode};
 use crate::validate::{self, Violation};
 

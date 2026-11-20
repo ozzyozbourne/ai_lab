@@ -13,7 +13,12 @@
 //!     hide the leak from `std.testing.allocator`;
 //!   * one fault: `failNth(n)` makes the n-th allocation attempt from now
 //!     return null (which callers see as error.OutOfMemory). ONE attempt
-//!     fails; the attempts after it succeed again.
+//!     fails; the attempts after it succeed again;
+//!   * a quarantine (off by default): `quarantine = byte` makes `free`
+//!     overwrite the block with that byte and KEEP it, so the block is never
+//!     handed out again and a pointer that outlived it reads the byte, not
+//!     the old contents and not somebody else's new node. That is what makes
+//!     a use after free visible (fuzz.zig; README, "Which allocator where").
 //!
 //! The standard library has the same tool, `std.testing.FailingAllocator`.
 //! Differences (tested at the bottom of this file):
@@ -41,6 +46,10 @@ pub const FaultAllocator = struct {
     live_bytes: usize = 0,
     peak_bytes: usize = 0,
     total_bytes: usize = 0,
+    /// null: `free` passes the block on to the child. A byte: `free` fills
+    /// the block with it and does NOT pass it on, so the memory is only
+    /// released when the child releases everything (use an arena as child).
+    quarantine: ?u8 = null,
 
     pub fn init(child: Allocator) FaultAllocator {
         return .{ .child = child };
@@ -109,7 +118,11 @@ pub const FaultAllocator = struct {
 
     fn free(ctx: *anyopaque, memory: []u8, alignment: Alignment, ret_addr: usize) void {
         const self: *FaultAllocator = @ptrCast(@alignCast(ctx));
-        self.child.rawFree(memory, alignment, ret_addr);
+        if (self.quarantine) |byte| {
+            @memset(memory, byte);
+        } else {
+            self.child.rawFree(memory, alignment, ret_addr);
+        }
         self.frees += 1;
         self.live_bytes -= memory.len;
     }
@@ -163,6 +176,36 @@ test "a leak hidden by an arena is still counted" {
     var fault: FaultAllocator = .init(arena.allocator());
     _ = try fault.allocator().create(u64); // never destroyed
     try testing.expectEqual(1, fault.liveAllocations());
+}
+
+test "quarantine: a freed block reads as the chosen byte and is never handed out again" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const Block = [4]u64;
+    {
+        // Without it, on an arena: the freed block still holds its old
+        // contents, and the very next allocation gets the same address. A
+        // stale pointer reads plausible data either way.
+        var fault: FaultAllocator = .init(arena.allocator());
+        const a = fault.allocator();
+        const first = try a.create(Block);
+        first.* = @splat(7);
+        const stale: *const volatile Block = first;
+        a.destroy(first);
+        try testing.expectEqual(7, stale[0]);
+        try testing.expectEqual(first, try a.create(Block));
+    }
+    var fault: FaultAllocator = .init(arena.allocator());
+    fault.quarantine = 0x01;
+    const a = fault.allocator();
+    const first = try a.create(Block);
+    first.* = @splat(7);
+    const stale: *const volatile Block = first;
+    a.destroy(first);
+    try testing.expectEqual(0x0101010101010101, stale[0]);
+    try testing.expect(first != try a.create(Block));
+    try testing.expectEqual(0x0101010101010101, stale[3]);
+    try testing.expectEqual(1, fault.liveAllocations()); // the counters do not know about the quarantine
 }
 
 test "std.testing.FailingAllocator stays failed; FaultAllocator recovers" {

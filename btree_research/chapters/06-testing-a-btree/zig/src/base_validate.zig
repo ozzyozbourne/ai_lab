@@ -1,6 +1,7 @@
 // Copied from chapters/05-deletion-and-rebalancing/zig/src/validate.zig
-// Changes for chapter 06: `Diagnostic` (WHERE the invariant broke), and a node's
-// own checks (including its child slots) now all run before the walk descends.
+// Changes for chapter 06: `Diagnostic` (WHERE the invariant broke), a node's
+// own checks (including its child slots) now all run before the walk descends,
+// and `maxHeight` (chapter 03's height bound), asserted on every valid tree.
 //! The invariants as code (README section "Invariants as code").
 //!
 //! `validate` walks the whole tree and returns the first broken invariant as
@@ -59,8 +60,32 @@ pub fn validate(comptime M: usize, root: ?*const Node(M), expected_len: usize, d
         var walk: Walk(M) = .{ .diag = diag };
         try walk.check(r, null, null, 0);
         count = walk.count;
+        // Not a new invariant: every node below the root has its minimum of
+        // keys and all leaves are level, so the height bound of chapter 03
+        // follows. It is asserted here because `put` sizes its path array
+        // with the same function (base_insert.zig, `max_height`), and a
+        // formula that no test ever compares with a real tree is a comment.
+        std.debug.assert(walk.leaf_depth.? + 1 <= maxHeight(M, count));
     }
     if (count != expected_len) return error.WrongKeyCount;
+}
+
+/// The tallest B-tree of order `m` that `n` keys can form, in levels
+/// (chapter 03, "The height bound"): with d = ceil(m/2), a tree of h levels
+/// holds at least 2 * d^(h-1) - 1 keys, so this is the largest h for which
+/// that number is <= n. For n = maxInt(u64) and m = 3 or 4 it is 64.
+pub fn maxHeight(m: usize, n: u64) usize {
+    std.debug.assert(m >= 3);
+    if (n == 0) return 0;
+    const d: u64 = (m + 1) / 2;
+    const half = n / 2 + n % 2; // (n + 1) / 2 rounded down, without overflow
+    var h: usize = 1;
+    var power: u64 = 1; // d^(h-1)
+    while (true) : (h += 1) {
+        // One more level needs 2 * d^h - 1 <= n, that is d^h <= (n + 1) / 2.
+        power = std.math.mul(u64, power, d) catch return h;
+        if (power > half) return h;
+    }
 }
 
 fn Walk(comptime M: usize) type {
@@ -115,6 +140,21 @@ fn Walk(comptime M: usize) type {
             }
         }
     };
+}
+
+test "maxHeight: the numbers of chapter 03, and the 64 levels `put` relies on" {
+    try std.testing.expectEqual(0, maxHeight(4, 0));
+    try std.testing.expectEqual(1, maxHeight(4, 2));
+    try std.testing.expectEqual(2, maxHeight(4, 3)); // 3 keys may already be root + 2 leaves
+    try std.testing.expectEqual(3, maxHeight(3, 10)); // 2 * 2^2 - 1 = 7 <= 10 < 15
+    try std.testing.expectEqual(4, maxHeight(5, 100));
+    try std.testing.expectEqual(19, maxHeight(4, 1_000_000));
+    try std.testing.expectEqual(3, maxHeight(256, 1_000_000));
+    const max = std.math.maxInt(u64);
+    try std.testing.expectEqual(64, maxHeight(3, max)); // 2 * 2^63 - 1 keys
+    try std.testing.expectEqual(64, maxHeight(4, max));
+    try std.testing.expectEqual(40, maxHeight(5, max)); // 2 * 3^39 - 1 <= max < 2 * 3^40 - 1
+    try std.testing.expectEqual(63, maxHeight(3, max / 2));
 }
 
 test "validate names the broken invariant" {

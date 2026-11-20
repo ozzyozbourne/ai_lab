@@ -41,9 +41,10 @@ pub fn run(gpa: Allocator, w: *std.Io.Writer) !void {
     inline for (orders) |M| {
         var totals: fuzz.Totals = .{};
         const found = try fuzz.hunt(Tree(M, .none), gpa, 1, sweep_seeds, .{}, &totals);
-        try w.print("M={d}: {d} cases, {d} steps, {d} injected allocation failures, max height {d}, coverage {d}/{d}: {s}\n", .{
-            M,                 totals.cases,              totals.steps,         totals.injected_faults,
-            totals.max_height, totals.coverage.reached(), coverage.point_count, if (found == null) "ok" else "FAILED",
+        try w.print("M={d}: {d} cases, {d} steps, {d} injected allocation failures (deepest rollback {d} nodes), max height {d}, coverage {d}/{d}: {s}\n", .{
+            M,                                     totals.cases,      totals.steps,              totals.injected_faults,
+            totals.deepest_rollback,               totals.max_height, totals.coverage.reached(), coverage.point_count,
+            if (found == null) "ok" else "FAILED",
         });
         all.coverage.add(&totals.coverage);
     }
@@ -87,8 +88,10 @@ fn printCase(w: *std.Io.Writer, case: fuzz.Case) !void {
     });
     if (case.fault_one_in == 0) {
         try w.writeAll("no faults");
+    } else if (case.fault_one_in == 1) {
+        try w.writeAll("faults in every put");
     } else {
-        try w.print("fault in 1 of {d} puts", .{case.fault_one_in});
+        try w.print("faults in 1 of {d} puts", .{case.fault_one_in});
     }
     try w.print(", drain {s}\n", .{if (case.drain) "yes" else "no"});
 }

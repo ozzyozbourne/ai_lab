@@ -7,7 +7,8 @@
  *
  *   SplitMix64, opStream   common/zig/prng.zig, common/zig/ops.zig
  *   Tree                   base_insert.zig, base_delete.zig, base_validate.zig
- *                          (with the three fault seams of base_btree.zig `Bug`)
+ *                          (with the three fault seams of base_btree.zig `Bug`
+ *                          and the 21 coverage points of coverage.zig)
  *   swarm, generate,
  *   replay, huntShortest   fuzz.zig
  *   minimize               minimize.zig
@@ -52,7 +53,7 @@
     var del = prng.chance(1, 4) ? 0 : 1 + prng.below(8);
     var get = prng.chance(1, 2) ? 0 : 1 + prng.below(4);
     var range = prng.chance(1, 2) ? 0 : 1 + prng.below(2);
-    var faultOneIn = [0, 0, 8, 2][prng.below(4)];
+    var faultOneIn = [0, 1, 8, 2][prng.below(4)];
     var drain = prng.chance(1, 2);
     var streamSeed = prng.nextU64();
     var auxSeed = prng.nextU64();
@@ -67,9 +68,26 @@
   var SUP = { '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹' };
   function pow2(n) { return '2' + String(n).replace(/[0-9]/g, function (d) { return SUP[d]; }); }
 
+  /* The fixed mix of fuzz.zig: the same configuration for every seed. */
+  function fixedMix(seed) {
+    return { seed: seed, count: 256, keySpace: 64, keyLayout: 0, weights: { put: 4, del: 2, get: 3, range: 1 },
+             faultOneIn: 0, drain: false, streamSeed: BigInt(seed), auxSeed: BigInt.asUintN(64, ~BigInt(seed)) };
+  }
+
+  /* Two range bounds are not keys of the case: 0 and maxInt(u64) (fuzz.zig
+   * `reshapeRange`). As indices: 0 IS the key with index 0 in the layouts
+   * that start at 0 (dense, spread), otherwise it lies below every key: -1.
+   * maxInt IS index keySpace where the layout ends there (spread, top),
+   * otherwise it lies above: keySpace + 1. Keeping equal bounds equal
+   * matters to the minimiser, which renames keys by rank. */
+  function zeroIndex(c) { return c.keyLayout === 0 || c.keyLayout === 2 ? 0 : -1; }
+  function maxIndex(c) { return c.keyLayout >= 2 ? c.keySpace : c.keySpace + 1; }
+
   /* The real key for index k, as a BigInt (`KeyLayout.key`). k may equal
    * keySpace: the exclusive upper bound of a range. */
   function realKey(c, k) {
+    if (k < 0) return 0n;
+    if (k > c.keySpace) return MASK;
     var ks = BigInt(c.keySpace), i = BigInt(k);
     if (c.keyLayout === 0) return i;
     if (c.keyLayout === 1) return (1n << 32n) - ks / 2n + i;
@@ -78,6 +96,8 @@
   }
   /* The same key, short enough for a tree node: 2³²+5, 27·2⁵⁸, 2⁶⁴−38. */
   function shortKey(c, k) {
+    if (k < 0) return '0';
+    if (k > c.keySpace) return pow2(64) + '−1';
     if (c.keyLayout === 0) return String(k);
     if (c.keyLayout === 1) {
       var d = k - c.keySpace / 2;
@@ -102,37 +122,47 @@
   function describeCase(c) {
     return 'seed ' + c.seed + ': ' + c.count + ' ops on ' + c.keySpace + ' keys ' + LAYOUTS[c.keyLayout] + ', put:delete:get:range = ' +
       c.weights.put + ':' + c.weights.del + ':' + c.weights.get + ':' + c.weights.range + ', ' +
-      (c.faultOneIn === 0 ? 'no faults' : 'fault in 1 of ' + c.faultOneIn + ' puts') +
+      (c.faultOneIn === 0 ? 'no faults' : c.faultOneIn === 1 ? 'faults in every put' : 'faults in 1 of ' + c.faultOneIn + ' puts') +
       ', drain ' + (c.drain ? 'yes' : 'no');
   }
 
-  /* Steps: {kind: 'put'|'delete'|'get'|'range', key, value (BigInt), lo, hi, fault (null | n)}.
-   * key, lo and hi are key INDICES (see the note at the top of this file). */
+  /* Steps: {kind: 'put'|'delete'|'get'|'range', key, value (BigInt), lo, hi, fault (true | false)}.
+   * key, lo and hi are key INDICES (see the note at the top of this file).
+   * A put with `fault` is first tried with each of its node allocations
+   * failing in turn. 5 ranges in 16 are reshaped (inverted, empty, from 0,
+   * up to maxInt, both), from a third random stream. */
   function generate(c) {
     var steps = [], alive = new Set();
     var aux = new SplitMix64(c.auxSeed), s = new SplitMix64(c.streamSeed);
+    var shapes = new SplitMix64(BigInt.asUintN(64, ~c.auxSeed));
     var w = c.weights, total = w.put + w.del + w.get + w.range;
     for (var n = 0; n < c.count; n++) {
       var r = s.below(total), step;
       if (r < w.put) {
-        step = { kind: 'put', key: s.below(c.keySpace), value: s.nextU64(), fault: null };
-        if (c.faultOneIn > 0 && aux.chance(1, c.faultOneIn)) step.fault = aux.below(3);
+        step = { kind: 'put', key: s.below(c.keySpace), value: s.nextU64(), fault: false };
+        step.fault = c.faultOneIn > 0 && aux.chance(1, c.faultOneIn);
         alive.add(step.key);
       } else if ((r -= w.put) < w.del) {
-        step = { kind: 'delete', key: s.below(c.keySpace), fault: null };
+        step = { kind: 'delete', key: s.below(c.keySpace), fault: false };
         alive.delete(step.key);
       } else if ((r -= w.del) < w.get) {
-        step = { kind: 'get', key: s.below(c.keySpace), fault: null };
+        step = { kind: 'get', key: s.below(c.keySpace), fault: false };
       } else {
         var a = s.below(c.keySpace), b = s.below(c.keySpace);
-        step = { kind: 'range', lo: Math.min(a, b), hi: Math.max(a, b) + 1, fault: null };
+        var lo = Math.min(a, b), hi = Math.max(a, b) + 1, shape = shapes.below(16);
+        step = { kind: 'range', lo: lo, hi: hi, fault: false };
+        if (shape === 0) { step.lo = hi; step.hi = lo; }
+        else if (shape === 1) step.hi = lo;
+        else if (shape === 2) step.lo = zeroIndex(c);
+        else if (shape === 3) step.hi = maxIndex(c);
+        else if (shape === 4) { step.lo = zeroIndex(c); step.hi = maxIndex(c); }
       }
       steps.push(step);
     }
     if (c.drain) {
       var keys = Array.from(alive).sort(function (x, y) { return x - y; });
       aux.shuffle(keys);
-      keys.forEach(function (key) { steps.push({ kind: 'delete', key: key, fault: null }); });
+      keys.forEach(function (key) { steps.push({ kind: 'delete', key: key, fault: false }); });
     }
     steps.kase = c;
     return steps;
@@ -143,11 +173,16 @@
     var t = st.kind === 'put' ? 'put ' + name(st.key) + ' = ' + st.value
           : st.kind === 'range' ? 'range [' + name(st.lo) + ', ' + name(st.hi) + ')'
           : st.kind + ' ' + name(st.key);
-    return st.fault === null ? t : t + ' (node allocation ' + st.fault + ' fails first)';
+    return st.fault ? t + ' (each node allocation fails once first)' : t;
   }
 
   /* ------------------------------------------------------------- the tree */
   var BUGS = ['split_wrong_value', 'merge_leaks_node', 'borrow_forgets_child'];
+  /* coverage.zig `Point`, in the same order. */
+  var POINTS = ['put_first_key', 'put_overwrite', 'put_no_split', 'split_leaf', 'split_interior', 'root_split_leaf',
+    'root_split_interior', 'put_oom', 'put_oom_rollback', 'delete_missing', 'delete_leaf_key', 'delete_interior_key',
+    'borrow_left_leaf', 'borrow_left_interior', 'borrow_right_leaf', 'borrow_right_interior', 'merge_leaf',
+    'merge_interior', 'merge_first_child', 'root_shrink', 'tree_emptied'];
 
   function Tree(order, bug) {
     this.order = order; this.bug = bug || 'none';
@@ -157,7 +192,9 @@
     this.failAfter = null;                   // node-allocation fault switch
     this.leaked = [];                        // nodes the tree lost track of (for drawing only)
     this.events = [];                        // what the last operation did, in words
+    this.cov = {};                           // coverage point -> hits (also counts failed puts)
   }
+  Tree.prototype.hit = function (point) { this.cov[point] = (this.cov[point] || 0) + 1; };
   Tree.prototype.alloc = function (leaf) {
     if (this.failAfter !== null) {
       if (this.failAfter === 0) return null;
@@ -190,7 +227,8 @@
     this.events = [];
     if (!this.root) {
       var leaf = this.alloc(true);
-      if (!leaf) return { ok: false };
+      if (!leaf) { this.hit('put_oom'); return { ok: false }; }
+      this.hit('put_first_key');
       leaf.keys.push(key); leaf.vals.push(value);
       this.root = leaf; this.len = 1;
       return { ok: true, old: null };
@@ -201,6 +239,7 @@
       if (i < node.keys.length && node.keys[i] === key) {
         var old = node.vals[i]; node.vals[i] = value;
         this.events.push('overwrite');
+        this.hit('put_overwrite');
         return { ok: true, old: old };
       }
       path.push({ node: node, index: i });
@@ -214,7 +253,11 @@
     var spare = [], liveBefore = this.live, idBefore = this.nextId;
     for (var r = 0; r < need; r++) {
       var n = this.alloc(true);
-      if (!n) { this.live = liveBefore; this.nextId = idBefore; return { ok: false }; }
+      if (!n) {
+        this.live = liveBefore; this.nextId = idBefore;
+        this.hit(spare.length > 0 ? 'put_oom_rollback' : 'put_oom');
+        return { ok: false };
+      }
       spare.push(n);
     }
     // Commit.
@@ -222,6 +265,7 @@
     path[level].node.keys.splice(path[level].index, 0, key);
     path[level].node.vals.splice(path[level].index, 0, value);
     this.len += 1;
+    if (need === 0) this.hit('put_no_split');
     while (path[level].node.keys.length > this.maxKeys) {
       var left = path[level].node, right = spare[used++];
       var mid = left.keys.length >> 1;
@@ -232,11 +276,13 @@
       var medianVal = left.vals.pop(), medianKey = left.keys.pop();
       if (this.bug === 'split_wrong_value') medianVal = left.vals[mid - 1];      // SEAM
       this.events.push('split');
+      this.hit(left.leaf ? 'split_leaf' : 'split_interior');
       if (level === 0) {
         var top = spare[used++];
         top.leaf = false; top.keys = [medianKey]; top.vals = [medianVal]; top.children = [left, right];
         this.root = top;
         this.events.push('root split');
+        this.hit(left.leaf ? 'root_split_leaf' : 'root_split_interior');
         break;
       }
       level -= 1;
@@ -251,13 +297,14 @@
   Tree.prototype.delete = function (key) {
     this.events = [];
     var removed = this.root ? this.removeFrom(this.root, key) : null;
-    if (removed === null) return null;
+    if (removed === null) { this.hit('delete_missing'); return null; }
     var root = this.root;
     this.len -= 1;
     if (root.keys.length === 0) {
       this.root = root.leaf ? null : root.children[0];
       this.free();
       this.events.push(this.root ? 'root shrink' : 'tree emptied');
+      this.hit(this.root ? 'root_shrink' : 'tree_emptied');
     }
     return removed;
   };
@@ -266,6 +313,7 @@
     var found = i < node.keys.length && node.keys[i] === key;
     if (node.leaf) {
       if (!found) return null;
+      this.hit('delete_leaf_key');
       node.keys.splice(i, 1);
       return node.vals.splice(i, 1)[0];
     }
@@ -275,6 +323,7 @@
       var pred = this.removeMax(node.children[i]);
       node.keys[i] = pred.key; node.vals[i] = pred.value;
       this.events.push('predecessor');
+      this.hit('delete_interior_key');
     } else {
       removed = this.removeFrom(node.children[i], key);
       if (removed === null) return null;
@@ -302,6 +351,7 @@
       parent.keys[sep] = upKey; parent.vals[sep] = upVal;
       if (moved) { if (keepChild) child.children.unshift(moved); else this.leaked.push(moved); }
       this.events.push('borrow from left (' + level + ')');
+      this.hit('borrow_left_' + level);
     } else if (i + 1 < parent.children.length && parent.children[i + 1].keys.length > min) {
       var right = parent.children[i + 1];
       var upK = right.keys.shift(), upV = right.vals.shift();
@@ -310,6 +360,7 @@
       parent.keys[i] = upK; parent.vals[i] = upV;
       if (movedR) { if (keepChild) child.children.push(movedR); else this.leaked.push(movedR); }
       this.events.push('borrow from right (' + level + ')');
+      this.hit('borrow_right_' + level);
     } else {
       var at = i > 0 ? i - 1 : i;
       var l = parent.children[at], r = parent.children[at + 1];
@@ -320,6 +371,8 @@
       if (this.bug === 'merge_leaks_node') this.leaked.push({ id: r.id, leaf: true, keys: [], vals: [], children: [] }); // SEAM
       else this.free();
       this.events.push('merge (' + level + ')');
+      this.hit('merge_' + level);
+      if (i === 0) this.hit('merge_first_child');
     }
   };
 
@@ -431,16 +484,22 @@
     var tree = new Tree(order, bug), oracle = new Oracle(), frames = opts.record ? [] : null;
     var failure = null, injected = 0, maxHeight = 0, maxKeys = 0, done = 0;
     for (var i = 0; i < steps.length && !failure; i++) {
-      var st = steps[i], treeAnswer, oracleAnswer, ok = true, verdict = null, oom = false;
+      var st = steps[i], treeAnswer, oracleAnswer, ok = true, verdict = null, oom = 0;
+      tree.events = [];   // get and range change nothing: do not show the previous step's events
       if (st.kind === 'put') {
-        tree.failAfter = st.fault;
-        var res = tree.put(st.key, st.value);
-        tree.failAfter = null;
-        if (!res.ok) {
-          injected += 1; oom = true;
+        // With `fault`: node allocation 0 fails, then allocation 1, ... until
+        // the put gets through. After each failure the tree must be unchanged.
+        var res;
+        for (var nth = 0; ; nth++) {
+          tree.failAfter = st.fault ? nth : null;
+          res = tree.put(st.key, st.value);
+          tree.failAfter = null;
+          if (res.ok) break;
+          injected += 1; oom += 1;
           if ((checkValidate && tree.validate()) || tree.len !== oracle.map.size || tree.get(st.key) !== oracle.get(st.key)) {
             verdict = { kind: 'oom_changed_tree' };
-          } else res = tree.put(st.key, st.value);
+            break;
+          }
         }
         if (!verdict) {
           treeAnswer = res.old; oracleAnswer = oracle.put(st.key, st.value);
@@ -475,13 +534,14 @@
           treeAnswer: treeAnswer, oracleAnswer: oracleAnswer, answerOk: ok, swept: swept,
           tree: tree.snapshot(), treeEntries: bad ? null : tree.entries(0, Infinity),
           oracleEntries: oracle.entries(0, Infinity),
-          live: tree.live, reachable: tree.shape().nodes, len: tree.len, failure: failure
+          live: tree.live, reachable: tree.shape().nodes, len: tree.len, failure: failure,
+          reached: Object.keys(tree.cov).length
         });
       }
       done = i + 1;
       if (!failure) { var sh = tree.shape(); maxHeight = Math.max(maxHeight, sh.height); maxKeys = Math.max(maxKeys, sh.keys); }
     }
-    return { failure: failure, frames: frames, injected: injected, maxHeight: maxHeight, maxKeys: maxKeys, steps: done };
+    return { failure: failure, frames: frames, injected: injected, maxHeight: maxHeight, maxKeys: maxKeys, steps: done, cov: tree.cov };
   }
 
   var stepCache = {};
@@ -498,14 +558,29 @@
     return census;
   }
 
+  /* Coverage of a batch of cases, as scenario.zig `printReach` words it. */
+  function reach(order, label, cases) {
+    var seen = {}, steps = 0, maxHeight = 0;
+    cases.forEach(function (c) {
+      var r = replay(order, 'none', generate(c));
+      steps += r.steps; maxHeight = Math.max(maxHeight, r.maxHeight);
+      Object.keys(r.cov).forEach(function (point) { seen[point] = true; });
+    });
+    var missing = POINTS.filter(function (point) { return !seen[point]; });
+    return label + ': ' + steps + ' steps, max height ' + maxHeight + ', coverage ' + (POINTS.length - missing.length) + '/' + POINTS.length +
+      (missing.length ? ', never reached: ' + missing.join(', ') : '');
+  }
+
   /* ------------------------------------------------------------- minimize */
   function minimize(order, bug, original, target) {
     var current = original.slice(0, target.step + 1), failure = target, replays = 0;
+    var lengths = [current.length];   // after the cut, and after every removal that was kept
     function accept(candidate) {
       replays += 1;
       var f = replay(order, bug, candidate).failure;
       if (!f || !sameKind(f, target)) return false;
       current = candidate.slice(0, f.step + 1); failure = f;
+      if (current.length < lengths[lengths.length - 1]) lengths.push(current.length);
       return true;
     }
     function tryWithout(start, end) { return accept(current.slice(0, start).concat(current.slice(end))); }
@@ -525,7 +600,7 @@
     }
     function copy() { return current.map(function (s) { return Object.assign({}, s); }); }
     // 1. forget injected faults
-    var c = copy(); c.forEach(function (s) { s.fault = null; }); accept(c);
+    var c = copy(); c.forEach(function (s) { s.fault = false; }); accept(c);
     // 2. rename keys 1, 2, 3, ... in order
     var seen = [];
     current.forEach(function (s) { if (s.kind === 'range') seen.push(s.lo, s.hi); else seen.push(s.key); });
@@ -539,11 +614,11 @@
     c.forEach(function (s) { if (s.kind === 'put') { n += 1; s.value = BigInt(n); } });
     accept(c);
     if (!renamed) current.kase = original.kase;   // keys are still indices of the original case
-    return { steps: current, failure: failure, replays: replays };
+    return { steps: current, failure: failure, replays: replays, lengths: lengths };
   }
 
   window.Fuzz06 = {
-    BUGS: BUGS, SplitMix64: SplitMix64, swarm: swarm, describeCase: describeCase, generate: generate, stepsOf: stepsOf,
+    BUGS: BUGS, POINTS: POINTS, SplitMix64: SplitMix64, swarm: swarm, fixedMix: fixedMix, reach: reach, describeCase: describeCase, generate: generate, stepsOf: stepsOf,
     stepText: stepText, keyNamer: keyNamer, realKey: realKey, shortKey: shortKey, Tree: Tree, replay: replay, huntShortest: huntShortest, minimize: minimize,
     failureText: failureText, sameKind: sameKind
   };

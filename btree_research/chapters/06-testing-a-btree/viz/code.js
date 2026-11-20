@@ -3,8 +3,8 @@
  * CHAPTER_CODE: the heart of the fuzzer and of the minimiser, condensed from
  * zig/src/fuzz.zig, zig/src/minimize.zig and their Rust twins.
  *
- * CHAPTER_EXPECTED: parts 1 and 4 of ../expected_output.txt, copied verbatim.
- * index.html recomputes both with the JavaScript port in local.js and
+ * CHAPTER_EXPECTED: parts 1, 3 and 4 of ../expected_output.txt, copied verbatim.
+ * index.html recomputes them with the JavaScript port in local.js and
  * compares the text, so the picture cannot drift from the programs.
  */
 window.CHAPTER_CODE = {
@@ -97,24 +97,28 @@ loop {
 window.CHAPTER_EXPECTED = {
   part1: `
 == 1. One seed is one test case ==
-seed 1: 256 ops on 64 keys spread over u64, put:delete:get:range = 8:4:4:1, fault in 1 of 2 puts, drain yes
-  M=4: 294 steps replayed, 4 allocation failures injected, max height 4, max keys 42: ok
-seed 2: 256 ops on 64 keys spread over u64, put:delete:get:range = 5:3:0:2, no faults, drain no
-  M=4: 256 steps replayed, 0 allocation failures injected, max height 4, max keys 38: ok
-seed 3: 256 ops on 4 keys spread over u64, put:delete:get:range = 5:0:0:1, fault in 1 of 2 puts, drain yes
-  M=4: 260 steps replayed, 0 allocation failures injected, max height 2, max keys 4: ok`,
+seed 1: 256 ops on 64 keys spread over u64, put:delete:get:range = 8:4:4:1, faults in 1 of 2 puts, drain yes
+  M=4: 294 steps replayed, 9 allocation failures injected, max height 4, max keys 42: ok
+seed 2: 256 ops on 64 keys spread over u64, put:delete:get:range = 5:3:0:2, faults in every put, drain no
+  M=4: 256 steps replayed, 28 allocation failures injected, max height 4, max keys 38: ok
+seed 3: 256 ops on 4 keys spread over u64, put:delete:get:range = 5:0:0:1, faults in 1 of 2 puts, drain yes
+  M=4: 260 steps replayed, 2 allocation failures injected, max height 2, max keys 4: ok`,
+  part3: `
+== 3. A fixed mix against the swarm (M = 4, seeds 1..150) ==
+fixed mix: 38400 steps, max height 4, coverage 18/21, never reached: put_oom, put_oom_rollback, root_shrink
+swarm    : 40965 steps, max height 5, coverage 21/21`,
   part4: `
 == 4. Three broken trees (M = 4, swarm seeds 1..200) ==
 bug split_wrong_value
-  caught by 191 of 200 seeds; shortest failing run: seed 72, step 5 of 512
+  caught by 191 of 200 seeds; shortest failing run: seed 20, step 6 of 67
   wrong result (answer differs from the oracle)
   with validate alone: not caught
   minimised to 5 steps in 25 replays:
-    put 6 = 1
-    put 1 = 2
-    put 2 = 3
-    put 4 = 4
-    range [3, 5)
+    put 2 = 1
+    put 4 = 2
+    put 3 = 3
+    put 1 = 4
+    delete 3
     -> wrong result (answer differs from the oracle)
 bug merge_leaks_node
   caught by 154 of 200 seeds; shortest failing run: seed 68, step 9 of 512
@@ -129,7 +133,7 @@ bug merge_leaks_node
     delete 4
     -> invariant NodeCountMismatch
 bug borrow_forgets_child
-  caught by 74 of 200 seeds; shortest failing run: seed 28, step 52 of 256
+  caught by 71 of 200 seeds; shortest failing run: seed 28, step 52 of 256
   invariant MissingChild at depth 1 (node starts with key 7782220156096217088)
   with the oracle comparison alone: not tried (the tree is malformed)
   minimised to 11 steps in 117 replays:

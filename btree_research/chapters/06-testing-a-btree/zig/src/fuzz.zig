@@ -7,7 +7,9 @@
 //!   replay(steps)    -> ?Failure run them against the tree AND a trivially
 //!                                correct oracle; stop at the first difference
 //!   hunt(seeds)      -> ?Found   replay one swarm case per seed, stop at the
-//!                                first failure (huntShortest: try them all)
+//!                                first failure (huntShortest: try them all).
+//!                                A case that passes is replayed once more
+//!                                with other bytes in its freed nodes
 //!
 //! Operations are data, generated up front and replayed afterwards (never
 //! "draw a random number, act on it immediately"). That is what makes a
@@ -38,20 +40,27 @@ threadlocal var trace_seed: ?u64 = null;
 
 /// One line on stderr, written BEFORE the step runs: if the tree aborts
 /// inside the step, this is the last line and it names the case.
-///   trace: seed 72, M=4, bug none, step 5 of 512: put 6 = 1
-fn traceStep(order: usize, bug: []const u8, index: usize, total: usize, step: Step) void {
+///   trace: seed 1, M=3, bug none, step 2 of 294: delete 3746994889972252672
+///
+/// `hunt` replays a passing case a second time with a different byte in
+/// freed nodes; those lines end in "(freed nodes hold 0x01)".
+fn traceStep(order: usize, bug: []const u8, index: usize, total: usize, step: Step, poison: u8) void {
+    const note = if (poison == first_poison) "" else " (freed nodes hold 0x01)";
     if (trace_seed) |seed| {
-        std.debug.print("trace: seed {d}, M={d}, bug {s}, step {d} of {d}: {f}\n", .{ seed, order, bug, index + 1, total, step });
+        std.debug.print("trace: seed {d}, M={d}, bug {s}, step {d} of {d}: {f}{s}\n", .{ seed, order, bug, index + 1, total, step, note });
     } else {
-        std.debug.print("trace: no seed (steps given directly), M={d}, bug {s}, step {d} of {d}: {f}\n", .{ order, bug, index + 1, total, step });
+        std.debug.print("trace: no seed (steps given directly), M={d}, bug {s}, step {d} of {d}: {f}{s}\n", .{ order, bug, index + 1, total, step, note });
     }
 }
 
-/// One operation, plus an optional injected fault: "the `fault`-th node
-/// allocation of this put fails" (0 = the first). Only puts allocate.
+/// One operation, plus an optional round of injected faults. A put with
+/// `fault` set is first tried with its node allocation 0 failing, then with
+/// allocation 1 failing, and so on until it gets through: every allocation
+/// the put makes fails once, down to the last node of the deepest
+/// reservation. Only puts allocate.
 pub const Step = struct {
     op: ops.Op,
-    fault: ?u8 = null,
+    fault: bool = false,
 
     /// Printed with `{f}`: `put 7 = 70`, `delete 7`, `get 7`, `range [3, 9)`.
     pub fn format(self: Step, w: *std.Io.Writer) std.Io.Writer.Error!void {
@@ -61,7 +70,7 @@ pub const Step = struct {
             .get => |g| try w.print("get {d}", .{g.key}),
             .range => |r| try w.print("range [{d}, {d})", .{ r.lo, r.hi }),
         }
-        if (self.fault) |n| try w.print(" (node allocation {d} fails first)", .{n});
+        if (self.fault) try w.writeAll(" (each node allocation fails once first)");
     }
 };
 
@@ -121,8 +130,8 @@ pub const Case = struct {
     /// Which `key_space` keys: see `KeyLayout`.
     key_layout: KeyLayout,
     weights: ops.Weights,
-    /// A put gets an injected allocation failure with probability
-    /// 1 / fault_one_in; 0 = never.
+    /// A put gets injected allocation failures with probability
+    /// 1 / fault_one_in; 0 = never, 1 = every put.
     fault_one_in: u64,
     /// Finish by deleting every remaining key in random order, so that the
     /// run ends on an empty tree (merges all the way up, root shrinks).
@@ -135,7 +144,7 @@ pub const Case = struct {
 /// Swarm testing: instead of one "reasonable" configuration, every seed
 /// draws its own. Some runs never delete (trees grow tall), some have four
 /// possible keys (overwrite, delete-missing and the empty tree all the
-/// time), some fail a quarter of their allocations, some use keys next to
+/// time), some fail every allocation of every put, some use keys next to
 /// 2^64. A fixed mix reaches the same few shapes over and over; the swarm
 /// reaches the corners.
 ///
@@ -144,7 +153,7 @@ pub const Case = struct {
 pub fn swarm(seed: u64) Case {
     var prng = SplitMix64.init(seed);
     const key_spaces = [_]u64{ 4, 16, 64, 256 };
-    const fault_rates = [_]u64{ 0, 0, 8, 2 };
+    const fault_rates = [_]u64{ 0, 1, 8, 2 };
     const key_space = key_spaces[@intCast(prng.below(4))];
     const count = @as(u64, 64) << @intCast(prng.below(4)); // 64, 128, 256 or 512
     const put: u32 = @intCast(1 + prng.below(8)); // never zero: something must be inserted
@@ -186,6 +195,28 @@ pub fn fixedMix(seed: u64) Case {
     };
 }
 
+/// The operation stream only produces ranges with lo < hi, both taken from
+/// the keys of the case. Callers are not that polite, and the end of a scan
+/// is exactly where an off-by-one or a wrapping subtraction hides, so 5
+/// ranges in 16 get one of these shapes instead:
+///
+///   [hi, lo)        inverted: must be empty, like the oracle's
+///   [lo, lo)        empty; with the smallest key of a dense case, [0, 0)
+///   [0, hi)         from the smallest u64 ...
+///   [lo, maxInt)    ... up to the largest bound there is ...
+///   [0, maxInt)     ... or both: every key in the tree
+fn reshapeRange(prng: *SplitMix64, lo: u64, hi: u64) ops.Op {
+    const max = std.math.maxInt(u64);
+    return switch (prng.below(16)) {
+        0 => .{ .range = .{ .lo = hi, .hi = lo } },
+        1 => .{ .range = .{ .lo = lo, .hi = lo } },
+        2 => .{ .range = .{ .lo = 0, .hi = hi } },
+        3 => .{ .range = .{ .lo = lo, .hi = max } },
+        4 => .{ .range = .{ .lo = 0, .hi = max } },
+        else => .{ .range = .{ .lo = lo, .hi = hi } },
+    };
+}
+
 /// Produce the steps of a case. Caller frees the slice.
 pub fn generate(gpa: Allocator, case: Case) Allocator.Error![]Step {
     var steps: std.ArrayList(Step) = .empty;
@@ -194,6 +225,9 @@ pub fn generate(gpa: Allocator, case: Case) Allocator.Error![]Step {
     var model: ops.Oracle = .{};
     defer model.deinit(gpa);
     var aux = SplitMix64.init(case.aux_seed);
+    // A third stream, only for the shape of ranges: the faults and the drain
+    // of a case do not depend on how many ranges it happens to contain.
+    var shapes = SplitMix64.init(~case.aux_seed);
     var stream = ops.OpStream.init(.{
         .seed = case.stream_seed,
         .count = case.count,
@@ -208,13 +242,11 @@ pub fn generate(gpa: Allocator, case: Case) Allocator.Error![]Step {
             .put => |p| .{ .put = .{ .key = layout.key(ks, p.key), .value = p.value } },
             .delete => |d| .{ .delete = .{ .key = layout.key(ks, d.key) } },
             .get => |g| .{ .get = .{ .key = layout.key(ks, g.key) } },
-            .range => |r| .{ .range = .{ .lo = layout.key(ks, r.lo), .hi = layout.key(ks, r.hi) } },
+            .range => |r| reshapeRange(&shapes, layout.key(ks, r.lo), layout.key(ks, r.hi)),
         } };
         switch (step.op) {
             .put => |p| {
-                if (case.fault_one_in > 0 and aux.chance(1, case.fault_one_in)) {
-                    step.fault = @intCast(aux.below(3));
-                }
+                step.fault = case.fault_one_in > 0 and aux.chance(1, case.fault_one_in);
                 _ = try model.put(gpa, p.key, p.value);
             },
             .delete => |d| _ = model.delete(d.key),
@@ -257,6 +289,10 @@ pub const Kind = union(enum) {
     oom_changed_tree,
     /// Nodes still allocated after `deinit`.
     leak,
+    /// Two replays that differ only in the bytes a freed node holds did not
+    /// do the same thing: the tree read a node after giving it back. Found
+    /// by `hunt`, not by a single `replay`, so `minimize` cannot shrink it.
+    read_after_free,
 };
 
 pub const Failure = struct {
@@ -284,6 +320,7 @@ pub const Failure = struct {
             .wrong_contents => try w.writeAll("wrong contents (full scan differs from the oracle)"),
             .oom_changed_tree => try w.writeAll("a failed put changed the tree or its node accounting"),
             .leak => try w.writeAll("leak (nodes still allocated after deinit)"),
+            .read_after_free => try w.writeAll("use after free (the run depends on the bytes of a freed node)"),
         }
     }
 };
@@ -293,48 +330,84 @@ pub const Totals = struct {
     cases: u64 = 0,
     steps: u64 = 0,
     injected_faults: u64 = 0,
+    /// Most reserved nodes one failed put had to hand back.
+    deepest_rollback: u64 = 0,
     max_height: usize = 0,
     max_keys: usize = 0,
     coverage: Coverage = .{},
+
+    pub fn add(self: *Totals, other: *const Totals) void {
+        self.cases += other.cases;
+        self.steps += other.steps;
+        self.injected_faults += other.injected_faults;
+        self.deepest_rollback = @max(self.deepest_rollback, other.deepest_rollback);
+        self.max_height = @max(self.max_height, other.max_height);
+        self.max_keys = @max(self.max_keys, other.max_keys);
+        self.coverage.add(&other.coverage);
+    }
 };
+
+/// What freed nodes are filled with (see `replayWith`). Both bytes make a
+/// node that `validate` rejects without following a wild pointer:
+///   0x00  no keys, not a leaf, no children  -> EmptyRoot / NodeUnderfull / MissingChild
+///   0x01  a leaf with 0x0101... keys        -> NodeOverfull
+/// and they disagree about `leaf`, the one field a tree can read from a
+/// dead node without anything else going wrong.
+const first_poison: u8 = 0x00;
+const second_poison: u8 = 0x01;
 
 /// Run `steps` against a fresh `Tree` and a fresh oracle. Returns the first
 /// failure, or null if every check passed. An error return means the test
 /// itself ran out of memory, which is not a verdict about the tree.
 ///
-/// Memory: the tree's nodes come from an arena (wrapped in the counting
-/// FaultAllocator). A tree that has just failed validation may have lost
-/// track of nodes; no walk can find those, so on failure nothing is walked:
-/// the arena releases everything in one go. See README, "Allocator notes".
+/// Memory: the tree's nodes come from an arena, through the counting
+/// FaultAllocator with its quarantine switched on. Two reasons:
+///   * A tree that has just failed validation may have lost track of nodes;
+///     no walk can find those, so on failure nothing is walked: the arena
+///     releases everything in one go.
+///   * A freed node must not stay readable. A bare arena hides every use
+///     after free: `destroy` leaves the bytes alone and the memory stays
+///     mapped, so the dead node answers exactly like the live one did. The
+///     quarantine overwrites it and never hands it out again.
+/// See README, "Which allocator where".
 pub fn replay(comptime Tree: type, gpa: Allocator, steps: []const Step, checks: Checks, totals: ?*Totals) Allocator.Error!?Failure {
+    const run = try replayWith(Tree, gpa, steps, checks, first_poison, totals != null);
+    if (totals) |t| t.add(&run.totals);
+    return run.failure;
+}
+
+const Run = struct { failure: ?Failure, totals: Totals };
+
+/// `replay` with the byte for freed nodes as a parameter. `measure`: also
+/// record height and key count after every step (one more walk per step).
+fn replayWith(comptime Tree: type, gpa: Allocator, steps: []const Step, checks: Checks, poison: u8, measure: bool) Allocator.Error!Run {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     var fault: FaultAllocator = .init(arena.allocator());
+    fault.quarantine = poison;
     const tree_gpa = fault.allocator();
     var tree: Tree = .empty;
     var oracle: ops.Oracle = .{};
     defer oracle.deinit(gpa);
 
     var failure: ?Failure = null;
-    var done: usize = 0;
     var local: Totals = .{ .cases = 1 };
     for (steps, 0..) |step, i| {
-        if (trace) traceStep(Tree.order, @tagName(Tree.bug), i, steps.len, step);
+        if (trace) traceStep(Tree.order, @tagName(Tree.bug), i, steps.len, step, poison);
         var diag: validation.Diagnostic = .{};
         const last = i + 1 == steps.len;
-        const verdict = try applyAndCheck(Tree, &tree, tree_gpa, &fault, &oracle, gpa, step, checks, last or (i + 1) % checks.sweep_every == 0, &diag);
-        done = i + 1;
+        const verdict = try applyAndCheck(Tree, &tree, tree_gpa, &fault, &oracle, gpa, step, checks, last or (i + 1) % checks.sweep_every == 0, &diag, &local);
+        local.steps = i + 1;
         if (verdict) |kind| {
             failure = .{ .step = i, .kind = kind, .diag = diag };
             break;
         }
-        if (totals != null) {
+        if (measure) {
             const shape = tree.shape();
             local.max_height = @max(local.max_height, shape.height);
             local.max_keys = @max(local.max_keys, shape.keys);
         }
     }
-    local.steps = done;
     local.injected_faults = fault.injected;
     local.coverage = tree.coverage;
 
@@ -344,15 +417,31 @@ pub fn replay(comptime Tree: type, gpa: Allocator, steps: []const Step, checks: 
         tree.deinit(tree_gpa);
         if (fault.liveAllocations() != 0) failure = .{ .step = steps.len -| 1, .kind = .leak };
     }
-    if (totals) |t| {
-        t.cases += local.cases;
-        t.steps += local.steps;
-        t.injected_faults += local.injected_faults;
-        t.max_height = @max(t.max_height, local.max_height);
-        t.max_keys = @max(t.max_keys, local.max_keys);
-        t.coverage.add(&local.coverage);
+    return .{ .failure = failure, .totals = local };
+}
+
+/// The second opinion on memory. `first` is a replay that passed with
+/// `first_poison` in its freed nodes. Replay again with `second_poison`:
+/// a tree that never looks at a freed node cannot tell the difference, so
+/// both runs must pass and hit every coverage point equally often. If they
+/// do not, the step is found by bisection: the shortest prefix of the steps
+/// on which the two runs already disagree ends with the step that did it.
+fn readAfterFree(comptime Tree: type, gpa: Allocator, steps: []const Step, checks: Checks, first: *const Run) Allocator.Error!?Failure {
+    const second = try replayWith(Tree, gpa, steps, checks, second_poison, false);
+    if (sameRun(first, &second)) return null;
+    var same: usize = 0; // the runs agree on steps[0..same] ...
+    var differ: usize = steps.len; // ... and disagree on steps[0..differ]
+    while (differ - same > 1) {
+        const mid = same + (differ - same) / 2;
+        const a = try replayWith(Tree, gpa, steps[0..mid], checks, first_poison, false);
+        const b = try replayWith(Tree, gpa, steps[0..mid], checks, second_poison, false);
+        if (sameRun(&a, &b)) same = mid else differ = mid;
     }
-    return failure;
+    return .{ .step = differ -| 1, .kind = .read_after_free };
+}
+
+fn sameRun(a: *const Run, b: *const Run) bool {
+    return std.meta.eql(a.failure, b.failure) and std.meta.eql(a.totals.coverage, b.totals.coverage);
 }
 
 fn applyAndCheck(
@@ -366,34 +455,38 @@ fn applyAndCheck(
     checks: Checks,
     sweep: bool,
     diag: *validation.Diagnostic,
+    local: *Totals,
 ) Allocator.Error!?Kind {
     var answer_ok = true;
     switch (step.op) {
         .put => |p| {
-            if (step.fault) |n| {
-                // Fault injection: let the n-th node allocation of this put
-                // fail. If the put needed that many nodes it returns
-                // OutOfMemory, and the promise is "nothing happened".
+            // Fault injection: with `step.fault` the put is tried with its
+            // node allocation 0 failing, then allocation 1, and so on. Each
+            // failed attempt must return OutOfMemory and keep the promise
+            // "nothing happened"; the first attempt whose armed fault lies
+            // beyond the put's last allocation goes through.
+            const usage_before = tree.pool.usage;
+            var nth: u64 = 0;
+            while (true) : (nth += 1) {
                 const injected_before = fault.injected;
-                const usage_before = tree.pool.usage;
-                fault.failNth(n);
-                const first_try = tree.put(tree_gpa, p.key, p.value);
+                if (step.fault) fault.failNth(nth);
+                const attempt = tree.put(tree_gpa, p.key, p.value);
                 fault.disarm();
-                if (first_try) |got| {
+                if (attempt) |got| {
                     answer_ok = got == try oracle.put(gpa, p.key, p.value);
+                    break;
                 } else |err| {
                     if (fault.injected == injected_before) return err; // the test itself is out of memory
+                    // Allocation `nth` failed: `nth` nodes were already
+                    // reserved and had to be handed back.
+                    local.deepest_rollback = @max(local.deepest_rollback, nth);
                     // Structure first (a `get` on a malformed tree may
                     // abort), then the contents, then the pool's counters:
                     // "exactly as before the call" includes `pool.usage`.
                     if (checks.validate) tree.validate(diag) catch return .oom_changed_tree;
                     if (tree.len != oracle.len() or tree.get(p.key) != oracle.get(p.key)) return .oom_changed_tree;
                     if (checks.validate and !std.meta.eql(tree.pool.usage, usage_before)) return .oom_changed_tree;
-                    // The operation still has to happen: try again, unharmed.
-                    answer_ok = try tree.put(tree_gpa, p.key, p.value) == try oracle.put(gpa, p.key, p.value);
                 }
-            } else {
-                answer_ok = try tree.put(tree_gpa, p.key, p.value) == try oracle.put(gpa, p.key, p.value);
             }
         },
         .delete => |d| answer_ok = tree.delete(tree_gpa, d.key) == oracle.delete(d.key),
@@ -445,7 +538,9 @@ const Compare = struct {
 pub const Found = struct { case: Case, failure: Failure };
 
 /// One swarm case per seed in [first_seed, first_seed + seeds). Returns the
-/// first failing case, or null when all pass.
+/// first failing case, or null when all pass. With `checks.validate` (the
+/// family that watches memory) a case that passes is replayed a second time
+/// to look for a use after free: see `readAfterFree`.
 pub fn hunt(comptime Tree: type, gpa: Allocator, first_seed: u64, seeds: u64, checks: Checks, totals: ?*Totals) Allocator.Error!?Found {
     for (first_seed..first_seed + seeds) |seed| {
         const case = swarm(seed);
@@ -453,7 +548,11 @@ pub fn hunt(comptime Tree: type, gpa: Allocator, first_seed: u64, seeds: u64, ch
         defer gpa.free(steps);
         trace_seed = seed;
         defer trace_seed = null;
-        if (try replay(Tree, gpa, steps, checks, totals)) |failure| return .{ .case = case, .failure = failure };
+        const run = try replayWith(Tree, gpa, steps, checks, first_poison, totals != null);
+        if (totals) |t| t.add(&run.totals);
+        var failure = run.failure;
+        if (failure == null and checks.validate) failure = try readAfterFree(Tree, gpa, steps, checks, &run);
+        if (failure) |f| return .{ .case = case, .failure = f };
     }
     return null;
 }

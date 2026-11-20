@@ -7,6 +7,7 @@ const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const btree = @import("base_btree.zig");
+const validation = @import("base_validate.zig");
 const pool = @import("base_pool.zig");
 const coverage = @import("coverage.zig");
 const fuzz = @import("fuzz.zig");
@@ -33,6 +34,7 @@ test "swarm: the seeds really differ in the dimensions that matter" {
     var no_delete = false;
     var tiny_keys = false;
     var with_faults = false;
+    var every_put_faulted = false;
     var without_drain = false;
     var layouts: [4]bool = @splat(false);
     for (1..scenario.sweep_seeds + 1) |seed| {
@@ -43,9 +45,10 @@ test "swarm: the seeds really differ in the dimensions that matter" {
         no_delete = no_delete or c.weights.delete == 0;
         tiny_keys = tiny_keys or c.key_space == 4;
         with_faults = with_faults or c.fault_one_in != 0;
+        every_put_faulted = every_put_faulted or c.fault_one_in == 1;
         without_drain = without_drain or !c.drain;
     }
-    try testing.expect(no_delete and tiny_keys and with_faults and without_drain);
+    try testing.expect(no_delete and tiny_keys and with_faults and every_put_faulted and without_drain);
     try testing.expectEqual(@as([4]bool, @splat(true)), layouts);
 }
 
@@ -124,13 +127,48 @@ test "generate: same case, same steps; a drained case ends with no key alive" {
     for (a) |step| switch (step.op) {
         .put => |p| {
             try alive.put(gpa, p.key, {});
-            faults += @intFromBool(step.fault != null);
+            faults += @intFromBool(step.fault);
         },
         .delete => |d| _ = alive.remove(d.key),
-        else => try testing.expectEqual(null, step.fault), // only puts allocate
+        else => try testing.expect(!step.fault), // only puts allocate
     };
     try testing.expectEqual(0, alive.count());
     try testing.expect(faults > 0);
+}
+
+test "generate: ranges also come empty, inverted and up to both ends of u64" {
+    // The operation stream alone only ever asks for [lo, hi) with lo < hi
+    // between two keys of the case. A scan that stops on `key > hi - 1`
+    // (overflow at hi = 0) or on `key -% lo >= hi -% lo` (wrong for lo > hi)
+    // passed every test until these shapes were generated.
+    const gpa = testing.allocator;
+    const max = std.math.maxInt(u64);
+    var ordinary: usize = 0;
+    var inverted: usize = 0;
+    var empty: usize = 0;
+    var hi_is_zero: usize = 0;
+    var from_zero: usize = 0;
+    var to_max: usize = 0;
+    var everything: usize = 0;
+    for (1..scenario.sweep_seeds + 1) |seed| {
+        const case = fuzz.swarm(seed);
+        const steps = try fuzz.generate(gpa, case);
+        defer gpa.free(steps);
+        for (steps) |step| switch (step.op) {
+            .range => |r| {
+                ordinary += @intFromBool(r.lo < r.hi and r.hi != max);
+                inverted += @intFromBool(r.lo > r.hi);
+                empty += @intFromBool(r.lo == r.hi);
+                hi_is_zero += @intFromBool(r.hi == 0);
+                from_zero += @intFromBool(r.lo == 0 and case.key_layout != .dense);
+                to_max += @intFromBool(r.hi == max and r.lo != 0);
+                everything += @intFromBool(r.lo == 0 and r.hi == max);
+            },
+            else => {},
+        };
+    }
+    for ([_]usize{ inverted, empty, hi_is_zero, from_zero, to_max, everything }) |n| try testing.expect(n >= 20);
+    try testing.expect(ordinary > inverted + empty + from_zero + to_max + everything); // still the common case
 }
 
 // ---- the correct tree ------------------------------------------------------
@@ -145,7 +183,79 @@ test "fuzz: the correct tree passes at every order, and every branch was reached
         try testing.expectEqual(null, totals.coverage.firstMissing());
         try testing.expect(totals.max_height >= 4);
         try testing.expect(totals.injected_faults > 0);
+        // Faults reach deep reservations too: some failed put had already
+        // taken three nodes or more. (With faults only at allocation 0, 1
+        // or 2 a rollback that hands back at most two nodes passed.)
+        try testing.expect(totals.deepest_rollback >= 3);
     }
+}
+
+test "range: empty, inverted and extreme bounds on a real tree" {
+    const gpa = testing.allocator;
+    const max = std.math.maxInt(u64);
+    var tree: Tree(4, .none) = .empty;
+    defer tree.deinit(gpa);
+    const keys = [_]u64{ 0, 1, 5, 9, 1 << 32, 1 << 63, max - 1 }; // three levels at M = 4
+    for (keys) |key| _ = try tree.put(gpa, key, key);
+    const Count = struct {
+        n: usize = 0,
+        pub fn visit(self: *@This(), _: u64, _: u64) void {
+            self.n += 1;
+        }
+    };
+    const cases = [_]struct { lo: u64, hi: u64, want: usize }{
+        .{ .lo = 0, .hi = max, .want = keys.len },
+        .{ .lo = 0, .hi = 0, .want = 0 }, // `hi - 1` would overflow here
+        .{ .lo = 5, .hi = 5, .want = 0 },
+        .{ .lo = 9, .hi = 1, .want = 0 }, // inverted: empty, not "from 9 upward"
+        .{ .lo = max, .hi = 0, .want = 0 },
+        .{ .lo = max - 1, .hi = max, .want = 1 },
+        .{ .lo = 0, .hi = 1, .want = 1 },
+        .{ .lo = 1, .hi = (1 << 63) + 1, .want = 5 },
+    };
+    for (cases) |c| {
+        var seen: Count = .{};
+        tree.range(c.lo, c.hi, &seen);
+        try testing.expectEqual(c.want, seen.n);
+    }
+    // The one key the fuzzer never uses, because no half-open range (not
+    // even its own full scan of the oracle) can contain it.
+    try testing.expectEqual(null, try tree.put(gpa, max, 7));
+    try testing.expectEqual(7, tree.get(max));
+    var widest: Count = .{};
+    tree.range(0, max, &widest);
+    try testing.expectEqual(keys.len, widest.n); // still without it
+    try tree.validate(null);
+    try testing.expectEqual(7, tree.delete(gpa, max));
+    try testing.expectEqual(null, tree.get(max));
+    try tree.validate(null);
+}
+
+test "the height bound: put's path array is as long as the tallest tree validate accepts" {
+    // `max_height` cannot be reached by any test (64 levels need 2^64 keys),
+    // so it is tied to chapter 03's formula instead: `put` does not compile
+    // with a smaller constant, and `validate` asserts the formula on every
+    // tree the fuzzer builds. Here: the formula is not just generous.
+    const insert = @import("base_insert.zig");
+    inline for (scenario.orders) |M| {
+        try testing.expect(insert.max_height >= validation.maxHeight(M, std.math.maxInt(u64)));
+    }
+    try testing.expectEqual(insert.max_height, validation.maxHeight(3, std.math.maxInt(u64)));
+    // Ascending inserts at M = 3 leave every node at its minimum except on
+    // the right edge: the tree is as tall as 2^h - 1 keys allow, whenever
+    // the count is one of those numbers.
+    const gpa = testing.allocator;
+    var tree: Tree(3, .none) = .empty;
+    defer tree.deinit(gpa);
+    var tight: usize = 0;
+    for (1..256) |key| {
+        _ = try tree.put(gpa, key, key);
+        try tree.validate(null); // asserts height <= maxHeight(3, key)
+        const height = tree.shape().height;
+        try testing.expect(height <= validation.maxHeight(3, key));
+        tight += @intFromBool(height == validation.maxHeight(3, key));
+    }
+    try testing.expect(tight > 0);
 }
 
 test "fuzz: tiny nodes are what reaches the interior cases" {
@@ -189,9 +299,9 @@ test "fuzz: each broken variant is caught at every order" {
 test "fuzz: seed and step of the shortest failing run (M = 4), as printed by `run`" {
     const gpa = testing.allocator;
     const expected = [_]struct { failing: u64, seed: u64, step: usize }{
-        .{ .failing = 191, .seed = 72, .step = 4 },
+        .{ .failing = 191, .seed = 20, .step = 5 },
         .{ .failing = 154, .seed = 68, .step = 8 },
-        .{ .failing = 74, .seed = 28, .step = 51 },
+        .{ .failing = 71, .seed = 28, .step = 51 },
     };
     inline for (scenario.bugs, expected) |bug, want| {
         const census = try fuzz.huntShortest(Tree(4, bug), gpa, 1, scenario.hunt_seeds, .{});
@@ -239,10 +349,38 @@ test "fuzz: a failed put that leaks a reserved node, or leaves its mark on pool.
     }
 }
 
+test "fuzz: a node that is read after it was freed is caught (Zig)" {
+    // Two test-only seams (base_btree.zig, `Bug`). On a bare arena both pass
+    // every check: the freed node still reads exactly as before.
+    const gpa = testing.allocator;
+    inline for (scenario.orders) |M| {
+        // Root shrink reads its only child from the freed root. The
+        // quarantine has zeroed it, so the tree is suddenly empty.
+        const lost = (try fuzz.hunt(Tree(M, .root_read_after_free), gpa, 1, scenario.sweep_seeds, .{}, null)).?;
+        try testing.expectEqual(fuzz.Kind{ .invariant = error.WrongKeyCount }, lost.failure.kind);
+
+        // One flag read from a freed node, used only to pick a coverage
+        // point: the tree stays correct, so one replay sees nothing ...
+        const T = Tree(M, .merge_reads_freed_flag);
+        const flag = (try fuzz.hunt(T, gpa, 1, scenario.sweep_seeds, .{}, null)).?;
+        try testing.expectEqual(fuzz.Kind.read_after_free, flag.failure.kind);
+        const steps = try fuzz.generate(gpa, flag.case);
+        defer gpa.free(steps);
+        try testing.expectEqual(null, try fuzz.replay(T, gpa, steps, .{}, null));
+        // ... and the step `hunt` names is a delete (only deletes merge).
+        try testing.expect(steps[flag.failure.step].op == .delete);
+        // The oracle comparison alone does not look at memory at all.
+        try testing.expectEqual(null, try fuzz.hunt(T, gpa, 1, scenario.sweep_seeds, .{ .validate = false }, null));
+    }
+    // Pinned (M = 3): the step where the Rust slab panics for the same bug.
+    const first = (try fuzz.hunt(Tree(3, .merge_reads_freed_flag), gpa, 1, 1, .{}, null)).?;
+    try testing.expectEqual(141, first.failure.step);
+}
+
 test "Step prints as one line of a reproducer (also the line of the -Dtrace output)" {
     var buf: [128]u8 = undefined;
-    const put: fuzz.Step = .{ .op = .{ .put = .{ .key = 7, .value = 70 } }, .fault = 1 };
-    try testing.expectEqualStrings("put 7 = 70 (node allocation 1 fails first)", try std.fmt.bufPrint(&buf, "{f}", .{put}));
+    const put: fuzz.Step = .{ .op = .{ .put = .{ .key = 7, .value = 70 } }, .fault = true };
+    try testing.expectEqualStrings("put 7 = 70 (each node allocation fails once first)", try std.fmt.bufPrint(&buf, "{f}", .{put}));
     const range: fuzz.Step = .{ .op = .{ .range = .{ .lo = 3, .hi = 9 } } };
     try testing.expectEqualStrings("range [3, 9)", try std.fmt.bufPrint(&buf, "{f}", .{range}));
 }
@@ -334,7 +472,7 @@ test "minimize: short, still failing the same way, and 1-minimal" {
         // Readable: keys renumbered from 1, the n-th put writes n, no faults.
         var puts: u64 = 0;
         for (small.steps) |step| {
-            try testing.expectEqual(null, step.fault);
+            try testing.expect(!step.fault);
             switch (step.op) {
                 .put => |p| {
                     puts += 1;

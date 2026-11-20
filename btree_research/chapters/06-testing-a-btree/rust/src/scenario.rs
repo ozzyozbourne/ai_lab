@@ -61,10 +61,11 @@ pub fn run(w: &mut dyn Write) -> Result<(), Box<dyn Error>> {
         );
         writeln!(
             w,
-            "M={order}: {} cases, {} steps, {} injected allocation failures, max height {}, coverage {}/{POINT_COUNT}: {}",
+            "M={order}: {} cases, {} steps, {} injected allocation failures (deepest rollback {} nodes), max height {}, coverage {}/{POINT_COUNT}: {}",
             totals.cases,
             totals.steps,
             totals.injected_faults,
+            totals.deepest_rollback,
             totals.max_height,
             totals.coverage.reached(),
             if found.is_none() { "ok" } else { "FAILED" }
@@ -152,10 +153,10 @@ fn print_case(w: &mut dyn Write, case: Case) -> std::io::Result<()> {
         case.weights.get,
         case.weights.range
     )?;
-    if case.fault_one_in == 0 {
-        write!(w, "no faults")?;
-    } else {
-        write!(w, "fault in 1 of {} puts", case.fault_one_in)?;
+    match case.fault_one_in {
+        0 => write!(w, "no faults")?,
+        1 => write!(w, "faults in every put")?,
+        n => write!(w, "faults in 1 of {n} puts")?,
     }
     writeln!(w, ", drain {}", if case.drain { "yes" } else { "no" })
 }

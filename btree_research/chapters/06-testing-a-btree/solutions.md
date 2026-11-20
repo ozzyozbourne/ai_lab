@@ -76,13 +76,19 @@ remaining key at the end) and seeds whose delete weight exceeds their put weight
 
 ## 5. A fourth broken variant
 
-Open exercise; nothing below was run. An expectation for "root shrink does not free the
-old root": the tree stays well-formed and every answer stays right, exactly like
+Open exercise; an expectation, not a measurement. For "root shrink does not free the old
+root": the tree stays well-formed and every answer stays right, exactly like
 `merge_leaks_node`, so the oracle comparison should be silent and `validate` should report
-`NodeCountMismatch` at the first root shrink. If your run agrees, you have a second bug
-that only the pool accounting sees. To add it: a fourth `Bug` tag, one `if (Tree.bug != ...)`
-around `tree.pool.destroy(gpa, root)` in `base_delete.zig` (Rust: clone the root instead
-of calling `pool.free`), and one more entry in `scenario.bugs`.
+`NodeCountMismatch`. Not only at a root shrink: the same line also frees the leaf root
+when the last key of the tree is deleted, so expect the failure at the first delete that
+empties the tree OR shrinks the root, whichever comes first (`put 1, delete 1` is enough).
+
+To add it: a fourth `Bug` tag and one `if (Tree.bug != ...)` around
+`tree.pool.destroy(gpa, root)` in `base_delete.zig` (Rust: clone the root instead of
+calling `pool.free`). Then hunt it in a test of its own, as the test for the two rollback
+seams does. Do NOT append it to `scenario.bugs`: two tests pair that list with tables of
+three expected results (`inline for (scenario.bugs, expected)` no longer compiles with
+four), and `run` would print a fourth block that `expected_output.txt` does not have.
 
 The Rust half (not run here): wrap the body of the step loop in
 `std::panic::catch_unwind(AssertUnwindSafe(|| ...))`, add a `Kind::Crash`, and return it

@@ -124,7 +124,7 @@ fn Minimizer(comptime Tree: type) type {
 
         fn withoutFaults(self: *Self) Allocator.Error!void {
             try self.copyToCandidate();
-            for (self.candidate.items) |*step| step.fault = null;
+            for (self.candidate.items) |*step| step.fault = false;
             _ = try self.acceptIfStillFailing();
         }
 

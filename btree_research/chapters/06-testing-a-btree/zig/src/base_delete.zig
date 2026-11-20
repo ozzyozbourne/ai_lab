@@ -1,5 +1,5 @@
 // Copied from chapters/05-deletion-and-rebalancing/zig/src/delete.zig
-// Changes for chapter 06: coverage points instead of counters, and two fault
+// Changes for chapter 06: coverage points instead of counters, and fault
 // seams (search for "SEAM") that are only compiled into a broken variant.
 //! SECTION 5: delete with borrow, merge and root shrink (explained in chapter 05).
 //!
@@ -55,8 +55,10 @@ pub fn delete(comptime Tree: type, tree: *Tree, gpa: Allocator, key: u64) ?u64 {
         // separator down (interior root: its single child holds everything).
         // Every leaf gets one level closer to the root at the same time, so
         // "all leaves at the same depth" still holds.
+        // SEAM root_read_after_free (test-only): the two lines in the wrong order.
+        if (Tree.bug == .root_read_after_free) tree.pool.destroy(gpa, root);
         tree.root = if (root.leaf) null else root.children[0];
-        tree.pool.destroy(gpa, root);
+        if (Tree.bug != .root_read_after_free) tree.pool.destroy(gpa, root);
         tree.coverage.hit(if (tree.root != null) .root_shrink else .tree_emptied);
     }
     return removed;
@@ -132,7 +134,10 @@ pub fn fixUnderflow(comptime Tree: type, tree: *Tree, gpa: Allocator, parent: *T
         // The tree still answers every question correctly; only the pool's
         // live counter (checked by `BTree.validate`) knows.
         if (Tree.bug != .merge_leaks_node) tree.pool.destroy(gpa, emptied);
-        tree.coverage.hit(if (at_leaf) .merge_leaf else .merge_interior);
+        // SEAM merge_reads_freed_flag (test-only): `child` may be the node
+        // that was just destroyed, which is why `at_leaf` was read early.
+        const was_leaf = if (Tree.bug == .merge_reads_freed_flag) child.leaf else at_leaf;
+        tree.coverage.hit(if (was_leaf) .merge_leaf else .merge_interior);
         if (i == 0) tree.coverage.hit(.merge_first_child);
     }
 }

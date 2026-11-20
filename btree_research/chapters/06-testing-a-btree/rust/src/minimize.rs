@@ -132,7 +132,7 @@ impl Minimizer {
     fn without_faults(&mut self) {
         let mut candidate = self.current.clone();
         for step in &mut candidate {
-            step.fault = None;
+            step.fault = false;
         }
         self.accept_if_still_failing(candidate);
     }

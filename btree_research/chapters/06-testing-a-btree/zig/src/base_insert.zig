@@ -1,6 +1,7 @@
 // Copied from chapters/05-deletion-and-rebalancing/zig/src/insert.zig
-// Changes for chapter 06: coverage points instead of counters, and fault
-// seams (search for "SEAM") that are only compiled into a broken variant.
+// Changes for chapter 06: coverage points instead of counters, fault seams
+// (search for "SEAM") that are only compiled into a broken variant, and
+// `max_height` is checked against chapter 03's formula at compile time.
 //! SECTION 4: insert with bottom-up splitting (explained in chapter 04).
 //!
 //! `put` works in three phases:
@@ -22,9 +23,13 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const node_mod = @import("base_node.zig");
 const search = @import("base_search.zig");
+const validation = @import("base_validate.zig");
 const Bug = @import("base_btree.zig").Bug;
 
 /// A tree of order 3 with 2^64 keys is at most 64 levels high (chapter 03).
+/// No test can build a tree that tall (the fuzzer reaches 6 levels), so the
+/// number is not left to a comment: `put` refuses to compile if it is
+/// smaller than the height bound that `validate` asserts on every tree.
 pub const max_height = 64;
 
 /// `Tree` is a `BTreeWith(M, PoolFn, bug)` from base_btree.zig; this function
@@ -33,6 +38,11 @@ pub const max_height = 64;
 /// On error.OutOfMemory the tree and `pool.usage` are unchanged.
 pub fn put(comptime Tree: type, tree: *Tree, gpa: Allocator, key: u64, value: u64) Allocator.Error!?u64 {
     const N = Tree.NodeT;
+    comptime {
+        if (max_height < validation.maxHeight(Tree.order, std.math.maxInt(u64))) {
+            @compileError("max_height is smaller than the tallest tree of this order (base_validate.zig, maxHeight)");
+        }
+    }
 
     const root = tree.root orelse {
         const leaf = tree.pool.create(gpa) catch |err| {

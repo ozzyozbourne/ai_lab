@@ -50,7 +50,7 @@ thread_local! {
 /// inside the step, this is the last line and it names the case.
 ///
 /// ```text
-/// trace: seed 72, M=4, bug none, step 5 of 512: put 6 = 1
+/// trace: seed 1, M=3, bug none, step 2 of 294: delete 3746994889972252672
 /// ```
 ///
 /// Written to the stderr handle directly, not with `eprintln!`: the test
@@ -73,12 +73,15 @@ fn trace_step(subject: Subject, index: usize, total: usize, step: Step) {
     );
 }
 
-/// One operation, plus an optional injected fault: "the `fault`-th node
-/// allocation of this put fails" (0 = the first). Only puts allocate nodes.
+/// One operation, plus an optional round of injected faults. A put with
+/// `fault` set is first tried with its node allocation 0 failing, then with
+/// allocation 1 failing, and so on until it gets through: every allocation
+/// the put makes fails once, down to the last node of the deepest
+/// reservation. Only puts allocate nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Step {
     pub op: Op,
-    pub fault: Option<u8>,
+    pub fault: bool,
 }
 
 /// `put 7 = 70`, `delete 7`, `get 7`, `range [3, 9)`.
@@ -90,8 +93,8 @@ impl fmt::Display for Step {
             Op::Get { key } => write!(f, "get {key}")?,
             Op::Range { lo, hi } => write!(f, "range [{lo}, {hi})")?,
         }
-        if let Some(n) = self.fault {
-            write!(f, " (node allocation {n} fails first)")?;
+        if self.fault {
+            f.write_str(" (each node allocation fails once first)")?;
         }
         Ok(())
     }
@@ -164,8 +167,8 @@ pub struct Case {
     /// Which `key_space` keys: see [`KeyLayout`].
     pub key_layout: KeyLayout,
     pub weights: Weights,
-    /// A put gets an injected allocation failure with probability
-    /// 1 / fault_one_in; 0 = never.
+    /// A put gets injected allocation failures with probability
+    /// 1 / fault_one_in; 0 = never, 1 = every put.
     pub fault_one_in: u64,
     /// Finish by deleting every remaining key in random order, so that the
     /// run ends on an empty tree (merges all the way up, root shrinks).
@@ -178,7 +181,7 @@ pub struct Case {
 /// Swarm testing: instead of one "reasonable" configuration, every seed
 /// draws its own. Some runs never delete (trees grow tall), some have four
 /// possible keys (overwrite, delete-missing and the empty tree all the
-/// time), some fail a quarter of their allocations, some use keys next to
+/// time), some fail every allocation of every put, some use keys next to
 /// 2^64. A fixed mix reaches the same few shapes over and over; the swarm
 /// reaches the corners.
 ///
@@ -186,7 +189,7 @@ pub struct Case {
 /// same draws in the same order.
 pub fn swarm(seed: u64) -> Case {
     const KEY_SPACES: [u64; 4] = [4, 16, 64, 256];
-    const FAULT_RATES: [u64; 4] = [0, 0, 8, 2];
+    const FAULT_RATES: [u64; 4] = [0, 1, 8, 2];
     let mut prng = SplitMix64::new(seed);
     let key_space = KEY_SPACES[prng.below(4) as usize];
     let count = 64 << prng.below(4); // 64, 128, 256 or 512
@@ -246,12 +249,39 @@ pub fn fixed_mix(seed: u64) -> Case {
     }
 }
 
+/// The operation stream only produces ranges with lo < hi, both taken from
+/// the keys of the case. Callers are not that polite, and the end of a scan
+/// is exactly where an off-by-one or a wrapping subtraction hides, so 5
+/// ranges in 16 get one of these shapes instead:
+///
+/// ```text
+/// [hi, lo)        inverted: must be empty, like the oracle's
+/// [lo, lo)        empty; with the smallest key of a dense case, [0, 0)
+/// [0, hi)         from the smallest u64 ...
+/// [lo, MAX)       ... up to the largest bound there is ...
+/// [0, MAX)        ... or both: every key in the tree
+/// ```
+fn reshape_range(prng: &mut SplitMix64, lo: u64, hi: u64) -> Op {
+    let (lo, hi) = match prng.below(16) {
+        0 => (hi, lo),
+        1 => (lo, lo),
+        2 => (0, hi),
+        3 => (lo, u64::MAX),
+        4 => (0, u64::MAX),
+        _ => (lo, hi),
+    };
+    Op::Range { lo, hi }
+}
+
 /// Produce the steps of a case.
 pub fn generate(case: Case) -> Vec<Step> {
     let mut steps = Vec::new();
     // Only here to know which keys are alive when the drain starts.
     let mut model = Oracle::new();
     let mut aux = SplitMix64::new(case.aux_seed);
+    // A third stream, only for the shape of ranges: the faults and the drain
+    // of a case do not depend on how many ranges it happens to contain.
+    let mut shapes = SplitMix64::new(!case.aux_seed);
     let stream = OpStream::new(Config {
         seed: case.stream_seed,
         count: case.count,
@@ -268,17 +298,12 @@ pub fn generate(case: Case) -> Vec<Step> {
             },
             Op::Delete { key } => Op::Delete { key: at(key) },
             Op::Get { key } => Op::Get { key: at(key) },
-            Op::Range { lo, hi } => Op::Range {
-                lo: at(lo),
-                hi: at(hi),
-            },
+            Op::Range { lo, hi } => reshape_range(&mut shapes, at(lo), at(hi)),
         };
-        let mut step = Step { op, fault: None };
+        let mut step = Step { op, fault: false };
         match op {
             Op::Put { key, value } => {
-                if case.fault_one_in > 0 && aux.chance(1, case.fault_one_in) {
-                    step.fault = Some(aux.below(3) as u8);
-                }
+                step.fault = case.fault_one_in > 0 && aux.chance(1, case.fault_one_in);
                 model.put(key, value);
             }
             Op::Delete { key } => {
@@ -293,7 +318,7 @@ pub fn generate(case: Case) -> Vec<Step> {
         aux.shuffle(&mut keys);
         steps.extend(keys.into_iter().map(|key| Step {
             op: Op::Delete { key },
-            fault: None,
+            fault: false,
         }));
     }
     steps
@@ -441,6 +466,8 @@ pub struct Totals {
     pub cases: u64,
     pub steps: u64,
     pub injected_faults: u64,
+    /// Most reserved nodes one failed put had to hand back.
+    pub deepest_rollback: u64,
     pub max_height: usize,
     pub max_keys: usize,
     pub coverage: Coverage,
@@ -454,6 +481,11 @@ pub struct Totals {
 /// the slab frees every node, reachable or not, so nothing special is
 /// needed. The counting global allocator then confirms that the whole run
 /// gave back everything it took (see `Kind::Leak` for what that can show).
+///
+/// The Zig twin also poisons freed nodes and replays every passing case
+/// twice to find a use after free. Nothing of that is needed here: a freed
+/// slab slot is marked, and any access to it panics on the spot
+/// (base_pool.rs, "use of freed NodeId").
 pub fn replay(
     subject: Subject,
     steps: &[Step],
@@ -477,6 +509,7 @@ pub fn replay(
         t.cases += local.cases;
         t.steps += local.steps;
         t.injected_faults += local.injected_faults;
+        t.deepest_rollback = t.deepest_rollback.max(local.deepest_rollback);
         t.max_height = t.max_height.max(local.max_height);
         t.max_keys = t.max_keys.max(local.max_keys);
         t.coverage.add(&local.coverage);
@@ -525,33 +558,41 @@ fn apply_and_check(
 ) -> Result<(), Verdict> {
     let answer_ok = match step.op {
         Op::Put { key, value } => {
-            // Fault injection: let the n-th node allocation of this put
-            // fail. If the put needed that many nodes it returns
-            // `OutOfNodes`, and the promise is "nothing happened".
+            // Fault injection: with `step.fault` the put is tried with its
+            // node allocation 0 failing, then allocation 1, and so on. Each
+            // failed attempt must return `OutOfNodes` and keep the promise
+            // "nothing happened"; the first attempt whose armed fault lies
+            // beyond the put's last allocation goes through.
             let usage_before = tree.pool.usage;
-            tree.pool.fail_after = step.fault.map(u64::from);
-            let first_try = tree.put(key, value);
-            tree.pool.fail_after = None;
-            let got = match first_try {
-                Ok(got) => got,
-                Err(_) => {
-                    local.injected_faults += 1;
-                    // Structure first (a `get` on a malformed tree may
-                    // panic), then the contents, then the slab's counters:
-                    // "exactly as before the call" includes `pool.usage`.
-                    // `validate` also counts the occupied slab slots, so a
-                    // reserved node that was not handed back is caught here.
-                    if checks.validate && tree.validate().is_err() {
-                        return Err(Kind::OomChangedTree.into());
+            let mut nth = 0;
+            let got = loop {
+                tree.pool.fail_after = step.fault.then_some(nth);
+                let attempt = tree.put(key, value);
+                tree.pool.fail_after = None;
+                match attempt {
+                    Ok(got) => break got,
+                    Err(_) => {
+                        assert!(step.fault, "no fault armed, no budget");
+                        local.injected_faults += 1;
+                        // Allocation `nth` failed: `nth` nodes were already
+                        // reserved and had to be handed back.
+                        local.deepest_rollback = local.deepest_rollback.max(nth);
+                        // Structure first (a `get` on a malformed tree may
+                        // panic), then the contents, then the slab's counters:
+                        // "exactly as before the call" includes `pool.usage`.
+                        // `validate` also counts the occupied slab slots, so a
+                        // reserved node that was not handed back is caught here.
+                        if checks.validate && tree.validate().is_err() {
+                            return Err(Kind::OomChangedTree.into());
+                        }
+                        if tree.len != oracle.len() || tree.get(key) != oracle.get(key) {
+                            return Err(Kind::OomChangedTree.into());
+                        }
+                        if checks.validate && tree.pool.usage != usage_before {
+                            return Err(Kind::OomChangedTree.into());
+                        }
+                        nth += 1;
                     }
-                    if tree.len != oracle.len() || tree.get(key) != oracle.get(key) {
-                        return Err(Kind::OomChangedTree.into());
-                    }
-                    if checks.validate && tree.pool.usage != usage_before {
-                        return Err(Kind::OomChangedTree.into());
-                    }
-                    // The operation still has to happen: try again, unharmed.
-                    tree.put(key, value).expect("no fault armed, no budget")
                 }
             };
             got == oracle.put(key, value)

@@ -1,6 +1,7 @@
 // Copied from chapters/05-deletion-and-rebalancing/rust/src/insert.rs
-// Changes for chapter 06: coverage points instead of counters, and fault
-// seams (search for "SEAM") that only a broken variant takes.
+// Changes for chapter 06: coverage points instead of counters, fault seams
+// (search for "SEAM") that only a broken variant takes, and `MAX_HEIGHT` is
+// checked against chapter 03's formula at compile time.
 //! SECTION 4: insert with bottom-up splitting (explained in chapter 04).
 //!
 //! `put` works in three phases:
@@ -24,10 +25,16 @@ use crate::base_btree::{BTree, Bug};
 use crate::base_node::{Entry, Node, NodeId, max_keys, min_keys};
 use crate::base_pool::OutOfNodes;
 use crate::base_search::lower_bound;
+use crate::base_validate::max_height;
 use crate::coverage::Point;
 
 /// A tree of order 3 with 2^64 keys is at most 64 levels high (chapter 03).
+/// No test can build a tree that tall (the fuzzer reaches 6 levels), so the
+/// number is not left to a comment: this file does not compile if it is
+/// smaller than the height bound that `validate` asserts on every tree.
+/// Order 3 is the worst case (the smallest minimum fan-out, d = 2).
 pub const MAX_HEIGHT: usize = 64;
+const _: () = assert!(MAX_HEIGHT >= max_height(3, u64::MAX));
 
 /// Returns the previous value if the key was already present (overwrite).
 /// On `Err(OutOfNodes)` the tree and `pool.usage` are unchanged.

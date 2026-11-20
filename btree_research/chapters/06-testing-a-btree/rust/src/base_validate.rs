@@ -1,6 +1,7 @@
 // Copied from chapters/05-deletion-and-rebalancing/rust/src/validate.rs
 // Changes for chapter 06: the error is a `Violation` (WHICH invariant and
-// WHERE), and a node's own checks all run before the walk descends.
+// WHERE), a node's own checks all run before the walk descends, and
+// `max_height` (chapter 03's height bound) is asserted on every valid tree.
 //! The invariants as code (README section "Invariants as code").
 //!
 //! `validate` walks the whole tree and returns the first broken invariant.
@@ -81,11 +82,43 @@ pub fn validate<P: Nodes + ?Sized>(
         };
         walk.check(root, None, None, 0)?;
         count = walk.count;
+        // Not a new invariant: every node below the root has its minimum of
+        // keys and all leaves are level, so the height bound of chapter 03
+        // follows. It is asserted here because `put` sizes its path array
+        // with the same function (base_insert.rs, `MAX_HEIGHT`), and a
+        // formula that no test ever compares with a real tree is a comment.
+        let height = walk.leaf_depth.expect("a tree with a root has a leaf") + 1;
+        assert!(height <= max_height(order, count as u64));
     }
     if count != expected_len {
         return Err(Violation::whole_tree(ValidateError::WrongKeyCount));
     }
     Ok(())
+}
+
+/// The tallest B-tree of order `m` that `n` keys can form, in levels
+/// (chapter 03, "The height bound"): with d = ceil(m/2), a tree of h levels
+/// holds at least 2 * d^(h-1) - 1 keys, so this is the largest h for which
+/// that number is <= n. For n = `u64::MAX` and m = 3 or 4 it is 64.
+///
+/// A `const fn`, so that base_insert.rs can check `MAX_HEIGHT` at compile time.
+pub const fn max_height(m: usize, n: u64) -> usize {
+    assert!(m >= 3);
+    if n == 0 {
+        return 0;
+    }
+    let d = m.div_ceil(2) as u64;
+    let half = n / 2 + n % 2; // (n + 1) / 2 rounded down, without overflow
+    let mut h = 1;
+    let mut power: u64 = 1; // d^(h-1)
+    loop {
+        // One more level needs 2 * d^h - 1 <= n, that is d^h <= (n + 1) / 2.
+        power = match power.checked_mul(d) {
+            Some(next) if next <= half => next,
+            _ => return h,
+        };
+        h += 1;
+    }
 }
 
 struct Walk<'a, P: Nodes + ?Sized> {
@@ -258,5 +291,20 @@ mod tests {
                 first_key: Some(50)
             })
         );
+    }
+
+    #[test]
+    fn max_height_the_numbers_of_chapter_03_and_the_64_levels_put_relies_on() {
+        assert_eq!(max_height(4, 0), 0);
+        assert_eq!(max_height(4, 2), 1);
+        assert_eq!(max_height(4, 3), 2); // 3 keys may already be root + 2 leaves
+        assert_eq!(max_height(3, 10), 3); // 2 * 2^2 - 1 = 7 <= 10 < 15
+        assert_eq!(max_height(5, 100), 4);
+        assert_eq!(max_height(4, 1_000_000), 19);
+        assert_eq!(max_height(256, 1_000_000), 3);
+        assert_eq!(max_height(3, u64::MAX), 64); // 2 * 2^63 - 1 keys
+        assert_eq!(max_height(4, u64::MAX), 64);
+        assert_eq!(max_height(5, u64::MAX), 40); // 2 * 3^39 - 1 <= max < 2 * 3^40 - 1
+        assert_eq!(max_height(3, u64::MAX / 2), 63);
     }
 }

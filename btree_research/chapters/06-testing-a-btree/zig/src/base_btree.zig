@@ -43,6 +43,14 @@ pub const Bug = enum {
     rollback_leaks_node,
     /// insert: a failed put does not restore `pool.usage`.
     rollback_keeps_usage,
+    // Two uses of a node after it went back to the pool (Zig only: the Rust
+    // slab panics on any access to a freed slot, so there the bug cannot
+    // even be written to fail quietly).
+    /// delete: root shrink frees the old root, THEN reads its only child from it.
+    root_read_after_free,
+    /// delete: after a merge, the `leaf` flag is read from the node the
+    /// merge has just freed. It only decides which coverage point is hit.
+    merge_reads_freed_flag,
 };
 
 /// The correct tree.
@@ -78,7 +86,7 @@ pub fn BTreeWith(comptime M: usize, comptime PoolFn: fn (type) type, comptime bu
         /// node the tree lost track of is not freed here. With `DirectNodes`
         /// that is a leak the backing allocator reports; `validate` reports
         /// it earlier as NodeCountMismatch. fuzz.zig sidesteps the question
-        /// with an arena.
+        /// with an arena, and does not call this at all after a failure.
         pub fn deinit(self: *Self, gpa: Allocator) void {
             if (self.root) |root| self.destroySubtree(gpa, root);
             self.pool.deinit(gpa);

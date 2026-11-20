@@ -46,6 +46,7 @@ Pick a broken tree and watch it get caught, then shrink the failing run to a few
 The operation stream is on the left; the tree under test and the oracle are on the right.
 After every step the page runs the three checks of the chapter's fuzzer: is the answer the same, does
 <code>validate()</code> pass, and (every 16 steps and at the end) is a full scan of the tree equal to the oracle.
+A fourth chip counts how many of the chapter's 21 coverage points (kinds of split, borrow, merge and so on) the run has reached so far.
 Everything is computed in your browser by a JavaScript port of the chapter's Zig and Rust code: the same seeds give the same
 operations, the same failing step and the same reproducer that <code>zig build run</code> prints.</p>
 
@@ -72,7 +73,8 @@ to see how different two swarm cases are. Each seed also decides where in the 64
 around 2<sup>32</sup> (seed 5), spread over the whole range (seed 1) or just below 2<sup>64</sup> (seed 7). The shape of the tree does not depend on that,
 but a tree that compared only the low 32 bits of a key would pass every test on small keys. Large keys are written compactly:
 27·2<sup>58</sup> is 27 times 2<sup>58</sup>, 2<sup>64</sup>−38 is 38 below 2<sup>64</sup>. Replay a seed that does not catch the third variant (seed 3 is one) to see
-a broken tree pass a test that never builds a third level.</p>
+a broken tree pass a test that never builds a third level: the caption of its last step lists the coverage points the run never reached.
+A green run has only tested the branches it went through.</p>
 
 <h2>The loop behind the picture</h2>
 <div id="fig-code"></div>
@@ -206,10 +208,19 @@ a broken tree pass a test that never builds a third level.</p>
         body = '<b>Divergence.</b> ' + explain(fr, bug);
       } else {
         body = 'Tree and oracle both say <b>' + esc(answerText(fr.step, fr.oracleAnswer)) + '</b>.';
-        if (fr.oom) body = 'An allocation failure was injected: the put returned out-of-memory, the tree was checked to be unchanged, and the put was repeated. ' + body;
+        if (fr.oom) {
+          body = (fr.oom === 1 ? 'An allocation failure was injected: the put returned out-of-memory, the tree was checked to be unchanged, and the put was repeated. '
+            : fr.oom + ' allocation failures were injected, one per attempt and each one node later in the reservation: every time the put returned out-of-memory, ' +
+              'handed back the nodes it had reserved, and the tree was checked to be unchanged. Then the put went through. ') + body;
+        }
         if (fr.events.length) body += ' Inside the tree: ' + esc(fr.events.join(', ')) + '.';
         body += fr.swept ? ' <code>validate()</code> passes and the full scan equals the oracle.' : ' <code>validate()</code> passes.';
-        if (fr.index + 1 === total) body += ' <b>End of the run: no difference found.</b>';
+        if (fr.index + 1 === total) {
+          var missing = F.POINTS.filter(function (point) { return !res.cov[point]; });
+          body += ' <b>End of the run: no difference found.</b> ' + (missing.length
+            ? 'But it reached only ' + fr.reached + ' of the ' + F.POINTS.length + ' coverage points, so it says nothing about: ' + esc(missing.join(', ')) + '.'
+            : 'It reached all ' + F.POINTS.length + ' coverage points.');
+        }
       }
       var entry = { caption: head + body, state: { frame: fr }, hold: fr.failure ? 3 : 1 };
       if (fr.failure && fr.failure.kind !== 'oom_changed_tree') {
@@ -230,7 +241,7 @@ a broken tree pass a test that never builds a third level.</p>
     var tl = buildTimeline(bug, steps);
     current = { bug: bug, label: label, steps: steps, result: tl.result, minimised: !!minimised };
     opsList.replaceChildren.apply(opsList, steps.map(function (st, i) {
-      return el('li', {}, el('span.n', {}, String(i + 1)), el('span', {}, opHtml(st) + (st.fault === null ? '' : '  ⚠ alloc ' + st.fault)));
+      return el('li', {}, el('span.n', {}, String(i + 1)), el('span', {}, opHtml(st) + (st.fault ? '  ⚠ faults' : '')));
     }));
     var f = tl.result.failure;
     status.innerHTML = esc(label) + ' &rarr; ' + (f
@@ -283,6 +294,7 @@ a broken tree pass a test that never builds a third level.</p>
       if (f && f.kind === 'wrong_contents') checks.append(chip('full scan: differs', 'deleted'));
       else if (fr.swept) checks.append(chip('full scan: equal', 'found'));
       else if (!f) checks.append(chip('full scan: next at step ' + (Math.floor((fr.index + 1) / 16) + 1) * 16 + ' or the end', null));
+      checks.append(chip('coverage so far: ' + fr.reached + ' of ' + F.POINTS.length + ' points', null));
     }
 
     // contents
@@ -354,8 +366,9 @@ a broken tree pass a test that never builds a third level.</p>
     msg.textContent = '';
     var before = current.steps.length;
     var m = F.minimize(ORDER, current.bug, current.steps, f);
-    show(current.bug, 'Minimised reproducer: ' + before + ' steps shrunk to ' + m.steps.length + ' in ' + m.replays +
-         ' replays (no contiguous block of steps can be removed; keys renamed 1, 2, 3, … in order; the n-th put writes n)', m.steps, true);
+    show(current.bug, 'Minimised: ' + before + ' steps shrunk to ' + m.steps.length + ' in ' + m.replays +
+         ' replays. Length after the cut at the failing step, then after each removal that still failed the same way: ' + m.lengths.join(' → ') +
+         '. Keys renamed 1, 2, 3, …; the n-th put writes n', m.steps, true);
   }
 
   shortestBtn.addEventListener('click', showShortest);
@@ -374,7 +387,7 @@ a broken tree pass a test that never builds a third level.</p>
     'Each row of the operation stream above is one pass through the loop on the left.';
 
   /* -------------------------------------------------------------- self-test
-   * Recompute parts 1 and 4 of the program output with the JavaScript port. */
+   * Recompute parts 1, 3 and 4 of the program output with the JavaScript port. */
   var part1 = ['== 1. One seed is one test case =='];
   [1, 2, 3].forEach(function (seed) {
     var r = F.replay(ORDER, 'none', F.stepsOf(seed));
@@ -383,6 +396,11 @@ a broken tree pass a test that never builds a third level.</p>
                r.maxHeight + ', max keys ' + r.maxKeys + ': ' + (r.failure ? 'FAILED' : 'ok'));
   });
   BTViz.selfTest('part 1', part1.join('\n'), window.CHAPTER_EXPECTED.part1);
+
+  var sweep = [], fixed = [];
+  for (var seed = 1; seed <= 150; seed++) { sweep.push(F.swarm(seed)); fixed.push(F.fixedMix(seed)); }
+  BTViz.selfTest('part 3', ['== 3. A fixed mix against the swarm (M = 4, seeds 1..150) ==',
+    F.reach(ORDER, 'fixed mix', fixed), F.reach(ORDER, 'swarm    ', sweep)].join('\n'), window.CHAPTER_EXPECTED.part3);
 
   var part4 = ['== 4. Three broken trees (M = 4, swarm seeds 1..' + SEEDS + ') =='];
   F.BUGS.forEach(function (bug) {

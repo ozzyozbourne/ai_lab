@@ -5,8 +5,9 @@
 
 use crate::alloc_count;
 use crate::base_btree::{BTree, Bug};
+use crate::base_insert::MAX_HEIGHT;
 use crate::base_pool::OutOfNodes;
-use crate::base_validate::ValidateError;
+use crate::base_validate::{ValidateError, max_height};
 use crate::coverage::{POINT_COUNT, Point};
 use crate::fuzz::{self, Checks, Failure, KeyLayout, Kind, Step, Subject, Totals};
 use crate::minimize::minimize;
@@ -48,6 +49,7 @@ fn swarm_the_seeds_really_differ_in_the_dimensions_that_matter() {
     assert!(cases.iter().any(|c| c.weights.delete == 0));
     assert!(cases.iter().any(|c| c.key_space == 4));
     assert!(cases.iter().any(|c| c.fault_one_in != 0));
+    assert!(cases.iter().any(|c| c.fault_one_in == 1)); // faults in every put
     assert!(cases.iter().any(|c| !c.drain));
     // `KeyLayout::Spread` relies on it.
     assert!(cases.iter().all(|c| c.key_space.is_power_of_two()));
@@ -124,16 +126,46 @@ fn generate_same_case_same_steps_and_a_drained_case_ends_with_no_key_alive() {
         match step.op {
             Op::Put { key, .. } => {
                 alive.insert(key);
-                faults += usize::from(step.fault.is_some());
+                faults += usize::from(step.fault);
             }
             Op::Delete { key } => {
                 alive.remove(&key);
             }
-            _ => assert_eq!(step.fault, None), // only puts allocate
+            _ => assert!(!step.fault), // only puts allocate
         }
     }
     assert!(alive.is_empty());
     assert!(faults > 0);
+}
+
+#[test]
+fn generate_ranges_also_come_empty_inverted_and_up_to_both_ends_of_u64() {
+    // The operation stream alone only ever asks for [lo, hi) with lo < hi
+    // between two keys of the case. A scan that stops on `key > hi - 1`
+    // (overflow at hi = 0) passed every test until these shapes were
+    // generated.
+    let (mut ordinary, mut inverted, mut empty, mut hi_is_zero) = (0, 0, 0, 0);
+    let (mut from_zero, mut to_max, mut everything) = (0, 0, 0);
+    for seed in 1..=SWEEP_SEEDS {
+        let case = fuzz::swarm(seed);
+        for step in fuzz::generate(case) {
+            let Op::Range { lo, hi } = step.op else {
+                continue;
+            };
+            ordinary += usize::from(lo < hi && hi != u64::MAX);
+            inverted += usize::from(lo > hi);
+            empty += usize::from(lo == hi);
+            hi_is_zero += usize::from(hi == 0);
+            from_zero += usize::from(lo == 0 && case.key_layout != KeyLayout::Dense);
+            to_max += usize::from(hi == u64::MAX && lo != 0);
+            everything += usize::from(lo == 0 && hi == u64::MAX);
+        }
+    }
+    for n in [inverted, empty, hi_is_zero, from_zero, to_max, everything] {
+        assert!(n >= 20);
+    }
+    // Still the common case.
+    assert!(ordinary > inverted + empty + from_zero + to_max + everything);
 }
 
 // ---- the correct tree ------------------------------------------------------
@@ -155,7 +187,72 @@ fn fuzz_the_correct_tree_passes_at_every_order_and_every_branch_was_reached() {
         assert_eq!(totals.coverage.first_missing(), None);
         assert!(totals.max_height >= 4);
         assert!(totals.injected_faults > 0);
+        // Faults reach deep reservations too: some failed put had already
+        // taken three nodes or more. (With faults only at allocation 0, 1
+        // or 2 a rollback that hands back at most two nodes passed.)
+        assert!(totals.deepest_rollback >= 3);
     }
+}
+
+#[test]
+fn range_empty_inverted_and_extreme_bounds_on_a_real_tree() {
+    const MAX: u64 = u64::MAX;
+    let keys = [0, 1, 5, 9, 1 << 32, 1 << 63, MAX - 1]; // three levels at M = 4
+    let mut tree = BTree::new(4);
+    for key in keys {
+        tree.put(key, key).unwrap();
+    }
+    let cases = [
+        (0, MAX, keys.len()),
+        (0, 0, 0), // `hi - 1` would overflow here
+        (5, 5, 0),
+        (9, 1, 0), // inverted: empty, not "from 9 upward"
+        (MAX, 0, 0),
+        (MAX - 1, MAX, 1),
+        (0, 1, 1),
+        (1, (1 << 63) + 1, 5),
+    ];
+    for (lo, hi, want) in cases {
+        let mut seen = 0;
+        tree.range(lo, hi, |_, _| seen += 1);
+        assert_eq!(seen, want, "range [{lo}, {hi})");
+    }
+    // The one key the fuzzer never uses, because no half-open range (not
+    // even its own full scan of the oracle) can contain it.
+    assert_eq!(tree.put(MAX, 7), Ok(None));
+    assert_eq!(tree.get(MAX), Some(7));
+    let mut widest = 0;
+    tree.range(0, MAX, |_, _| widest += 1);
+    assert_eq!(widest, keys.len()); // still without it
+    tree.validate().unwrap();
+    assert_eq!(tree.delete(MAX), Some(7));
+    assert_eq!(tree.get(MAX), None);
+    tree.validate().unwrap();
+}
+
+#[test]
+fn the_height_bound_puts_path_array_is_as_long_as_the_tallest_tree_validate_accepts() {
+    // `MAX_HEIGHT` cannot be reached by any test (64 levels need 2^64 keys),
+    // so it is tied to chapter 03's formula instead: base_insert.rs does not
+    // compile with a smaller constant, and `validate` asserts the formula on
+    // every tree the fuzzer builds. Here: the formula is not just generous.
+    for order in ORDERS {
+        assert!(MAX_HEIGHT >= max_height(order, u64::MAX));
+    }
+    assert_eq!(MAX_HEIGHT, max_height(3, u64::MAX));
+    // Ascending inserts at M = 3 leave every node at its minimum except on
+    // the right edge: the tree is as tall as 2^h - 1 keys allow, whenever
+    // the count is one of those numbers.
+    let mut tree = BTree::new(3);
+    let mut tight = 0;
+    for key in 1..256 {
+        tree.put(key, key).unwrap();
+        tree.validate().unwrap(); // asserts height <= max_height(3, key)
+        let height = tree.shape().height;
+        assert!(height <= max_height(3, key));
+        tight += usize::from(height == max_height(3, key));
+    }
+    assert!(tight > 0);
 }
 
 #[test]
@@ -217,7 +314,7 @@ fn fuzz_each_broken_variant_is_caught_at_every_order() {
 
 #[test]
 fn fuzz_seed_and_step_of_the_shortest_failing_run_as_printed_by_run() {
-    let expected = [(191, 72, 4), (154, 68, 8), (74, 28, 51)];
+    let expected = [(191, 20, 5), (154, 68, 8), (71, 28, 51)];
     for (bug, (failing, seed, step)) in BUGS.into_iter().zip(expected) {
         let census = fuzz::hunt_shortest(Subject { order: 4, bug }, 1, HUNT_SEEDS, checks());
         let shortest = census.shortest.unwrap();
@@ -323,15 +420,15 @@ fn validate_counts_the_occupied_slots_not_only_the_usage_counters() {
 fn step_prints_as_one_line_of_a_reproducer_also_the_line_of_the_trace_output() {
     let put = Step {
         op: Op::Put { key: 7, value: 70 },
-        fault: Some(1),
+        fault: true,
     };
     assert_eq!(
         put.to_string(),
-        "put 7 = 70 (node allocation 1 fails first)"
+        "put 7 = 70 (each node allocation fails once first)"
     );
     let range = Step {
         op: Op::Range { lo: 3, hi: 9 },
-        fault: None,
+        fault: false,
     };
     assert_eq!(range.to_string(), "range [3, 9)");
 }
@@ -438,7 +535,7 @@ fn minimize_short_still_failing_the_same_way_and_1_minimal() {
         // Readable: keys renumbered from 1, the n-th put writes n, no faults.
         let mut puts = 0;
         for step in &small.steps {
-            assert_eq!(step.fault, None);
+            assert!(!step.fault);
             if let Op::Put { key, value } = step.op {
                 puts += 1;
                 assert_eq!(value, puts);

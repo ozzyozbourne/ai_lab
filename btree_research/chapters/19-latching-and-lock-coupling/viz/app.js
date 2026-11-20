@@ -138,7 +138,7 @@
     });
     var waiting = c.outcomes.filter(function (o) { return o !== 'finishes'; }).length;
     push('All four threads are done. While T1 was frozen, ' + waiting + ' of the other three had to wait. ' +
-      (protocol === 'coupling' ? 'In section 1, with two threads, the same put 11 finished next to the same frozen put 26. ' : '') +
+      (protocol === 'coupling' ? 'With only two threads, the same put 11 finishes next to the same frozen put 26 (section 3 of the programs\' output): here it was stopped by T2, which was itself only waiting. ' : '') +
       'Try this under another protocol.', last);
     return steps;
   }

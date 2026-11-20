@@ -534,7 +534,7 @@
     { n: 5, name: 'Fix the parent' },
     { n: 6, name: 'Make it durable' }
   ];
-  var START_KEYS = [10, 20, 30, 40, 50, 60, 70, 80, 25, 28, 55, 90];
+  var START_KEYS = [50, 10, 30, 20, 15, 35, 75, 45, 65, 25, 40];
 
   function Pair() {
     this.pg = new Pg();

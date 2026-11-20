@@ -542,6 +542,7 @@ fn newest_slot_unreadable_while_the_next_commit_is_in_flight_the_older_slot_name
 fn restart_after_a_crash_at_any_write_with_either_slot_damaged_finds_a_complete_committed_tree() {
     let mut fell_back_two = 0; // restarts that landed on T-2 while T was in flight
     let mut cases = 0;
+    let mut torn = 0; // torn slots seen to fail their checksum
     for order in [3usize, 4] {
         let mut db = Db::new(order);
         let mut oracle = Oracle::new();
@@ -565,8 +566,20 @@ fn restart_after_a_crash_at_any_write_with_either_slot_damaged_finds_a_complete_
             let t = db.current.txn_id + 1;
             history.push(oracle_all(&oracle)); // history[t]
 
+            // How many pages the commit writes before it writes its meta slot.
+            let pages = {
+                let mut txn = db.begin();
+                if is_put {
+                    txn.put(key, value).unwrap();
+                } else {
+                    txn.delete(key).unwrap();
+                }
+                txn.dirty_count() // dropped here = aborted
+            };
+
             // Crash the commit of transaction t after w device writes, for
             // every w, until it gets through.
+            let mut last_seen = None; // the slots as decoded at the previous w
             for w in 0.. {
                 let mut trial = clone_db(&db);
                 trial.crash_after = Some(w);
@@ -578,6 +591,30 @@ fn restart_after_a_crash_at_any_write_with_either_slot_damaged_finds_a_complete_
                 let done = result.is_ok();
                 if !done {
                     assert_eq!(result, Err(TxnError::Crashed));
+                }
+
+                // The meta write is 32 device writes, and for most of them the
+                // disk is the same to a restart: all pages written, the new
+                // slot not valid. `reopen` sees the slots only through
+                // `decode`, so one restart matrix per DIFFERENT pair of
+                // decoded slots covers them all. (One kind of damage does
+                // look at the bytes: a bit flip can complete a slot that was
+                // torn one bit short. That disk is byte for byte the disk of
+                // the finished commit, which the last round restarts.)
+                let seen = trial.store.meta_slots.map(|s| Meta::decode(&s));
+                if w > pages {
+                    // Torn after w - pages bytes: the slot fails its checksum,
+                    // unless the missing bytes equal the ones they replace.
+                    match seen[(t % 2) as usize] {
+                        Some(m) => assert_eq!(m.txn_id, t),
+                        None => torn += 1,
+                    }
+                    if !done && Some(seen) == last_seen {
+                        continue;
+                    }
+                }
+                if w >= pages {
+                    last_seen = Some(seen);
                 }
 
                 // The disk as the crash left it, then with one slot damaged.
@@ -621,22 +658,52 @@ fn restart_after_a_crash_at_any_write_with_either_slot_damaged_finds_a_complete_
             assert_eq!(db.current.txn_id, t);
         }
     }
-    assert!(cases > 20_000);
+    assert!(cases > 5_000);
+    assert!(torn > 4_000);
     assert!(fell_back_two > 1_000); // the double fault really was exercised
 }
 
-#[test]
-fn a_long_life_of_crashes_damaged_slots_and_restarts_never_shows_a_mixed_tree() {
-    let mut rng = Rng(2323);
-    let mut db = Db::new(4);
+/// After a restart each meta slot holds the current root, holds the
+/// fallback root, or is all zeroes: a slot the restart could not use is gone
+/// for good, whatever the device answers next time.
+fn assert_slots_scrubbed(db: &Db) {
+    let mut kept = 0;
+    for slot in &db.store.meta_slots {
+        match Meta::decode(slot) {
+            None => assert_eq!(slot, &[0; SLOT_SIZE]),
+            Some(m) => {
+                assert!(m == db.current || Some(m) == db.previous);
+                kept += 1;
+            }
+        }
+    }
+    assert_eq!(kept, if db.previous.is_none() { 1 } else { 2 });
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SlotFaults {
+    /// A slot rots for good (a flipped bit).
+    Rot,
+    /// As `Rot`, and in addition a slot may be unreadable at one restart and
+    /// readable again at the next (`PageStore::meta_read_fault`).
+    Intermittent,
+}
+
+/// A seeded life of commits, crashes at random device writes, slot faults
+/// and restarts, with one reader. After every restart the tree is exactly
+/// the content of the newest commit that restart could read.
+fn life_of_faults(order: usize, seed: u64, steps: u64, faults: SlotFaults) {
+    let mut rng = Rng(seed);
+    let mut db = Db::new(order);
     // content[t] = what the newest commit with id t wrote (ids repeat after
     // a fallback: the lost transaction's id is handed out again).
     let mut content: Vec<Vec<Entry>> = vec![Vec::new()];
     let mut oracle = Oracle::new();
     let mut held: Option<Held> = None; // one reader, to mix snapshots into the rule
     let (mut restarts, mut fallbacks) = (0, 0);
+    let mut read_faults = 0; // restarts that could not read the newest slot, which was intact
 
-    for step in 0..4000u64 {
+    for step in 0..steps {
         let key = rng.below(40);
         let is_put = rng.below(5) < 3;
         let before = db.current.txn_id;
@@ -676,20 +743,37 @@ fn a_long_life_of_crashes_damaged_slots_and_restarts_never_shows_a_mixed_tree() 
             content.push(oracle_all(&oracle));
         }
 
-        if restart {
+        // Sometimes a second restart follows at once, with no write in between.
+        let rounds = match restart {
+            false => 0,
+            true if rng.below(4) == 0 => 2,
+            true => 1,
+        };
+        for _ in 0..rounds {
             // One slot may rot, as long as the other one is readable.
             let slots = &mut db.store.meta_slots;
             if slots.iter().all(|s| Meta::decode(s).is_some()) && rng.below(2) == 0 {
                 let which = rng.below(2) as usize;
                 damage(&mut slots[which], Damage::BitFlip, rng.below(256) as usize);
             }
-            let want = newest_readable(&db).unwrap();
+            if faults == SlotFaults::Intermittent {
+                // And one slot may fail to be read at this restart only.
+                let which = rng.below(2) as usize;
+                let other_readable = Meta::decode(&slots[1 - which]).is_some();
+                db.store.meta_read_fault[which] = other_readable && rng.below(2) == 0;
+            }
+            let want = Meta::pick(&db.store.read_meta()).unwrap().txn_id;
+            if newest_readable(&db) != Some(want) {
+                read_faults += 1;
+            }
             db.reopen().unwrap();
+            db.store.meta_read_fault = [false; 2]; // the device answers again
             restarts += 1;
             if want < before {
                 fallbacks += 1;
             }
             assert_eq!(db.current.txn_id, want);
+            assert_slots_scrubbed(&db);
             assert_eq!(all(db.view()), content[want as usize]);
             oracle = Oracle::new();
             for e in &content[want as usize] {
@@ -713,8 +797,137 @@ fn a_long_life_of_crashes_damaged_slots_and_restarts_never_shows_a_mixed_tree() 
             });
         }
     }
-    assert!(restarts > 300);
-    assert!(fallbacks > 50);
+    assert!(restarts > steps / 14);
+    assert!(fallbacks > steps / 80);
+    if faults == SlotFaults::Intermittent {
+        assert!(read_faults > steps / 200);
+    }
+}
+
+#[test]
+fn a_long_life_of_crashes_damaged_slots_and_restarts_never_shows_a_mixed_tree() {
+    life_of_faults(4, 2323, 4000, SlotFaults::Rot);
+}
+
+#[test]
+fn campaign_a_meta_slot_that_is_unreadable_at_one_restart_and_readable_at_the_next_never_wins_again()
+ {
+    for (i, order) in [3usize, 4, 5].into_iter().enumerate() {
+        life_of_faults(order, 9000 + i as u64, 4000, SlotFaults::Intermittent);
+    }
+}
+
+#[test]
+fn a_slot_skipped_by_one_restart_is_scrubbed_and_cannot_win_the_next_one_no_write_in_between() {
+    // Twice: a read error that is gone at the next restart, and a flipped
+    // bit that flips back.
+    for read_error in [true, false] {
+        let mut db = build_canonical(); // slot 0: txn 12, 12 pages; slot 1: txn 11, 9 pages
+        if read_error {
+            db.store.meta_read_fault[0] = true;
+        } else {
+            db.store.meta_slots[0][3] ^= 1;
+        }
+        db.reopen().unwrap();
+        assert_eq!(db.current.txn_id, 11);
+        assert_eq!(db.store.page_count(), 9); // the pages only txn 12 had are given away
+        // The restart overwrote the slot it could not use ...
+        assert_eq!(db.store.meta_slots[0], [0; SLOT_SIZE]);
+        if read_error {
+            db.store.meta_read_fault[0] = false;
+        } else {
+            db.store.meta_slots[0][3] ^= 1;
+        }
+        // ... so when the device answers again there is no txn 12 to find.
+        db.reopen().unwrap();
+        assert_eq!(db.current.txn_id, 11);
+        db.validate().unwrap();
+        assert_eq!(keys(db.view()), [1, 3, 5, 6, 7, 10, 12, 17, 20, 25, 30]);
+        db.put(15, 1500).unwrap(); // the id 12 is handed out again, into the scrubbed slot
+        assert_eq!(db.current.txn_id, 12);
+        db.validate().unwrap();
+        db.reopen().unwrap();
+        assert_eq!(db.get(15), Some(1500));
+    }
+}
+
+#[test]
+fn a_slot_skipped_by_one_restart_cannot_come_back_after_a_crashed_commit_reused_its_transaction_id()
+{
+    let (mut crashed_commits, mut finished_commits) = (0, 0);
+    for order in [3usize, 4] {
+        let mut db = Db::new(order);
+        let mut oracle = Oracle::new();
+        let mut older: Vec<Entry> = Vec::new(); // content one commit back
+
+        for op in OpStream::new(config(70 + order as u64, 120, 14)) {
+            let t = db.current.txn_id; // the commit that is about to be lost
+            if t >= 2 {
+                // Restart 1: the slot of T cannot be read. The database falls
+                // back to T-1 and gives away the pages only T reached.
+                let mut base = clone_db(&db);
+                base.store.meta_read_fault[(t % 2) as usize] = true;
+                base.reopen().unwrap();
+                base.store.meta_read_fault[(t % 2) as usize] = false; // from now on the device answers
+                assert_eq!(base.current.txn_id, t - 1);
+                assert_eq!(all(base.view()), older);
+
+                // The next transaction gets the id T again and writes into
+                // pages T used. Crash its commit after w device writes, for
+                // every w, and restart: T-1, or the new T once its slot is
+                // complete. Never the lost T, never a mixture.
+                let key = (t * 7) % 14;
+                for w in 0.. {
+                    let mut trial = clone_db(&base);
+                    trial.crash_after = Some(w);
+                    let result = trial.put(key, 7777);
+                    let done = result.is_ok();
+                    if !done {
+                        assert_eq!(result, Err(TxnError::Crashed));
+                    }
+                    trial.reopen().unwrap();
+                    trial.validate().unwrap();
+                    assert_slots_scrubbed(&trial);
+                    if trial.current.txn_id == t {
+                        // The new T: the content of T-1 with one more put.
+                        let mut want: Vec<Entry> =
+                            older.iter().filter(|e| e.key != key).copied().collect();
+                        want.push(Entry { key, value: 7777 });
+                        want.sort_by_key(|e| e.key);
+                        assert_eq!(all(trial.view()), want);
+                        finished_commits += 1;
+                    } else {
+                        assert!(!done);
+                        assert_eq!(trial.current.txn_id, t - 1);
+                        assert_eq!(all(trial.view()), older);
+                        crashed_commits += 1;
+                    }
+                    if done {
+                        break;
+                    }
+                }
+            }
+
+            // The real line of history moves on without a fault.
+            let content_before = oracle_all(&oracle);
+            match op {
+                Op::Put { key, value } => {
+                    db.put(key, value).unwrap();
+                    oracle.put(key, value);
+                }
+                Op::Delete { key } => {
+                    db.delete(key).unwrap();
+                    oracle.delete(key);
+                }
+                _ => {}
+            }
+            if db.current.txn_id != t {
+                older = content_before;
+            }
+        }
+    }
+    assert!(crashed_commits > 2_000);
+    assert!(finished_commits > 100);
 }
 
 #[test]

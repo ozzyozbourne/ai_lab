@@ -1003,3 +1003,29 @@ test "a crash between freeing a page and reusing it leaves a file that validates
     try testing.expectEqual(.intact, after.new.state);
     try testing.expectEqual(.missing, after.old.state);
 }
+
+test "Zig and Rust write the same bytes" {
+    // The Rust twin has this test with the same two numbers: FNV-1a hashes
+    // of the file after part 1's sixteen steps and after a seeded workload.
+    {
+        var mem: MemStorage = .init(testing.allocator);
+        defer mem.deinit();
+        var db: Db = undefined;
+        try buildScenario(&db, &mem, 16);
+        defer db.stop();
+        try db.tree.flush();
+        try testing.expectEqual(@as(u64, 4600392725701261712), std.hash.Fnv1a_64.hash(mem.bytes.items));
+    }
+    var mem: MemStorage = .init(testing.allocator);
+    defer mem.deinit();
+    var model: Model = .init(testing.allocator);
+    defer model.deinit();
+    var db: Db = undefined;
+    try db.start(mem.storage(), 4, .create);
+    defer db.stop();
+    var rng = SplitMix64.init(77);
+    const shape: Shape = .{ .frames = 4, .key_space = 300, .max_key = 24, .max_value = 12000 };
+    for (0..2000) |_| try randomOp(&db.tree, &model, &rng, shape);
+    try db.tree.flush();
+    try testing.expectEqual(@as(u64, 10315806560220619977), std.hash.Fnv1a_64.hash(mem.bytes.items));
+}

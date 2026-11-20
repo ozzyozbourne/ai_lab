@@ -749,12 +749,12 @@ fn validate_detects_each_kind_of_damage() -> TestResult {
                 let old = *pool.fetch_page(4)?;
                 let (a, _) = pool.new_page()?;
                 let (b, _) = pool.new_page()?;
+                *pool.page_mut(a) = old;
+                *pool.page_mut(b) = old;
                 let mut left = SlottedPage::open(pool.page_mut(a));
-                left.bytes_from(&old);
                 left.delete_at(2);
                 put_u32(left.user_area_mut(), 0, b);
                 let mut right = SlottedPage::open(pool.page_mut(b));
-                right.bytes_from(&old);
                 right.delete_at(0);
                 right.delete_at(0);
                 let sep = right.key(0).to_vec();
@@ -941,15 +941,27 @@ fn a_crash_between_freeing_a_page_and_reusing_it_leaves_a_file_that_validates_an
     Ok(())
 }
 
-#[test]
-fn zig_and_rust_write_the_same_bytes() -> TestResult {
-    // The Zig twin has the same test with the same number: an FNV-1a hash of
-    // the file after part 1's sixteen steps.
-    let mem = MemStorage::new();
-    build_scenario(&mem, 16).close()?;
-    let hash = mem.bytes().iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3));
-    assert_eq!(hash, SCENARIO_FILE_HASH);
-    Ok(())
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3))
 }
 
-const SCENARIO_FILE_HASH: u64 = 0;
+#[test]
+fn zig_and_rust_write_the_same_bytes() -> TestResult {
+    // The Zig twin has this test with the same two numbers: FNV-1a hashes of
+    // the file after part 1's sixteen steps and after a seeded workload.
+    let mem = MemStorage::new();
+    build_scenario(&mem, 16).close()?;
+    assert_eq!(fnv1a(&mem.bytes()), 4600392725701261712);
+
+    let mem = MemStorage::new();
+    let mut model = Model::new();
+    let mut tree = create_mem(&mem, 4);
+    let mut rng = SplitMix64::new(77);
+    let shape = Shape::new(4, 300, 24, 12000);
+    for _ in 0..2000 {
+        random_op(&mut tree, &mut model, &mut rng, shape)?;
+    }
+    tree.close()?;
+    assert_eq!(fnv1a(&mem.bytes()), 10315806560220619977);
+    Ok(())
+}

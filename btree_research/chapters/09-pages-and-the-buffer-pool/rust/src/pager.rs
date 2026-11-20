@@ -65,8 +65,10 @@ impl Pager {
     /// (Reusing freed pages is chapter 13.)
     pub fn allocate_page(&mut self) -> Result<PageId, Error> {
         let id = self.page_count;
-        // INVALID_PAGE_ID must never name a real page, so the last usable id
-        // is INVALID_PAGE_ID - 1 and the largest page count is the same number.
+        // INVALID_PAGE_ID must never name a real page and a page count must
+        // stay below it too (`new` rejects a larger file). So the largest
+        // page count is INVALID_PAGE_ID - 1 and the last id handed out is
+        // INVALID_PAGE_ID - 2.
         if id == INVALID_PAGE_ID - 1 {
             return Err(Error::FileFull);
         }

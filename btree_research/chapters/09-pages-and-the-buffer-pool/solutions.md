@@ -152,7 +152,8 @@ hot page is gone, and the pool is full of pages that will never be used again. W
 normal workload resumes it pays one miss per hot page to bring them back. Counters to
 watch: `evictions` grows by about `2n` during the scan, and `misses` jumps by `|H|`
 right after it. You can reproduce it in the visualization: fetch 0, 1, 0, 1, 0, 1 and
-then 2, 3, 4, 5, 6, 7 with four frames.
+then 2, 3, 4, 5, 6, 7 with four frames and "release at once" ticked: pages 0 and 1
+are gone after the fourth scan fetch.
 
 Fixes, from simple to elaborate:
 

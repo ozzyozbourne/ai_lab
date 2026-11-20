@@ -66,8 +66,10 @@ pub const Pager = struct {
     /// (Reusing freed pages is chapter 13.)
     pub fn allocatePage(self: *Pager) Error!PageId {
         const id = self.page_count;
-        // invalid_page_id must never name a real page, so the last usable id
-        // is invalid_page_id - 1 and the largest page count is the same number.
+        // invalid_page_id must never name a real page and a page count must
+        // stay below it too (`init` rejects a larger file). So the largest
+        // page count is invalid_page_id - 1 and the last id handed out is
+        // invalid_page_id - 2.
         if (id == invalid_page_id - 1) return error.FileFull;
         const zero: Page = @splat(0);
         try self.storage.write(offsetOf(id), &zero);

@@ -77,7 +77,7 @@ somebody forgot to unpin.
 
 ## A worked example by hand
 
-Four frames, pages 0 to 7 on disk, hand at frame 0. Notation: `page pin flags`, with
+Four frames, pages 0 to 7 on disk, hand at frame 0. Notation: `page flags`, with
 `R` = referenced and `D` = dirty.
 
 1. Fetch and release 0, 1, 2, 3 (page 1 is modified). Each is a miss into an empty
@@ -95,7 +95,8 @@ Four frames, pages 0 to 7 on disk, hand at frame 0. Notation: `page pin flags`, 
 6. Fetch 3 and keep it pinned.
 7. Fetch 6: the hand is at frame 3, which is pinned: skipped. Frame 0 (page 4) loses its
    bit. Frame 1 (page 1) has no bit and no pin: victim. It is dirty, so the pool writes
-   page 1 to the file first, then loads page 6 into frame 1.
+   page 1 to the file first, then loads page 6 into frame 1. Page 6 is then modified and
+   released.
 8. Pin 4, 5 and 6 as well, then fetch 7: two full turns find nothing to evict and the
    fetch fails with `AllFramesPinned`. The pool is unchanged. After unpinning, the same
    fetch succeeds.
@@ -145,15 +146,6 @@ aligned to 4096, an array of `Frame { page_id, pin_count, referenced, dirty }`, 
 page table. Frame `f` is `slab[f * 4096 ..][0..4096]`; `fetchPage` returns it as
 `*align(4096) [4096]u8`.
 
-The page table is a small hand-written hash table (`PageTable`, about 90 lines): open
-addressing, linear probing, `2 * frame_count` slots rounded up to a power of two. It is
-not `std.AutoHashMapUnmanaged` because of how the pool uses it: one removal and one
-insertion per eviction, forever, at a fixed capacity. The std map marks a removed entry
-with a tombstone and clears tombstones only when it grows. Ours never grows, so after
-enough evictions it has no free slot left and every miss probes the whole table.
-`PageTable` deletes by shifting the following entries of the probe run back into the gap,
-so there are no tombstones and a lookup stays one short probe.
-
 ```zig
 pub fn fetchPage(self: *BufferPool, id: PageId) Error!PagePtr {
     if (id >= self.pager.pageCount()) return error.PageOutOfRange;
@@ -189,6 +181,15 @@ error paths are where the order of steps matters:
   a second page while an empty frame sat unused.
 
 A pool call that fails takes no pin and leaves the pool valid.
+
+The page table is a small hand-written hash table (`PageTable`, about 90 lines): open
+addressing, linear probing, `2 * frame_count` slots rounded up to a power of two. It is
+not `std.AutoHashMapUnmanaged` because of how the pool uses it: one removal and one
+insertion per eviction, forever, at a fixed capacity. The std map marks a removed entry
+with a tombstone and clears tombstones only when it grows. Ours never grows, so after
+enough evictions it has no free slot left and every miss probes the whole table.
+`PageTable` deletes by shifting the following entries of the probe run back into the gap,
+so there are no tombstones and a lookup stays one short probe.
 
 `validate` checks four invariants: frames and page table agree in both directions, empty
 frames carry no pin or flag, the hand is in range, and no cached page id is beyond the
@@ -313,7 +314,8 @@ every run ended with the same page contents as the oracle
 
 Things to read off: step 23 counts as a miss but reads nothing (9 misses, 8 reads); page
 6 was edited at step 19 but reaches the file only at `flushAll`; in part 3 the same 5000
-accesses cost 3433 file reads with 4 frames and 557 with 32. The part 3 workload keeps
+accesses cost 3433 file reads with 4 frames and 557 with 32; `file writes` can exceed
+`writebacks` because each row is printed after a final `flushAll`. The part 3 workload keeps
 up to two pages pinned across operations, so the 4-frame pool often has only two frames
 it can reuse. Part 3 runs on `MemStorage` and parts 1 and 2 on a real file, through the
 same pager and pool code.
@@ -323,7 +325,8 @@ same pager and pool code.
 **Turso** (`research/turso.md` section 12). The B-tree never touches the file; it asks
 the pager for a page and marks it dirty before changing it. A page carries a pin counter
 (`turso/core/storage/pager.rs:1105-1142`), and the cursor pins every page on its
-root-to-leaf path. Eviction is a clock with a small counter instead of one bit: the
+root-to-leaf path. Turso calls its eviction SIEVE (`page_cache.rs:91`, `:673`); as implemented it is a
+clock with a small counter instead of one bit: the
 reference counter saturates at 3 (`turso/core/storage/page_cache.rs:35`) and is bumped on
 every `get` (`page_cache.rs:438`). `evict_one` (`page_cache.rs:674-740`) advances the
 hand, decrements the counter of evictable entries and evicts the first one at zero. Its
@@ -409,7 +412,7 @@ of "allocation failed" is the fixed frame budget: running out is `Err(AllFramesP
 
 1. (easy) Three frames, all empty, hand at 0. Pages are fetched and released in the
    order 1, 2, 3, 1, 4, 1, 5, 2, 1. Predict hits, misses, evictions and the final frames
-   by hand, then check with the visualization.
+   by hand, then check with the visualization (3 frames, "release at once" ticked).
 2. (easy) In `takeFrame`, swap the two steps "write the dirty victim" and "remove it
    from the page table". Which existing test fails, and what would a user lose?
 3. (medium) Replace the referenced bit by a counter that saturates at 3, as Turso does.

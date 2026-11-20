@@ -59,19 +59,27 @@ decides where to go, releases the latch, and only then latches the next node.
 ### A split in two steps
 
 A split has to change two nodes on the child level and one on the parent
-level. Doing all three at once would need latches on two levels for the whole
-time. The B-link structure allows it to be cut in two:
+level. With lock coupling the writer keeps the parent latched on its way down,
+in case the child has to split. The B-link structure allows the split to be
+cut in two:
 
 1. **Step 1**, under the latch of the full node only: create the right
    sibling, move the upper half into it, give it the old high key and the old
    right link, then set the old node's high key to the separator and its right
    link to the new node.
-2. **Step 2**, under the latch of the parent: insert the **downlink** (the
-   separator plus the handle of the new node) into the parent.
+2. **Step 2**, under the latches of that node and of its parent: insert the
+   **downlink** (the separator plus the handle of the new node) into the
+   parent.
 
 After step 1 the tree is already correct. The parent still sends keys of the
 upper half to the old node, and the old node's high key sends them on. Step 2
 only shortens the path.
+
+The writer does **not** release the split node between the two steps. It
+keeps that latch until the downlink is in the parent, so other threads
+normally never look at the node in between: they wait for it. What the cut
+buys is this: nothing above the node is latched during the descent and during
+step 1, and if the writer stops after step 1, it leaves a legal tree.
 
 What if step 2 never happens, because the writer crashed or ran out of space?
 Searches still work. But a node without a downlink must not be split again,
@@ -100,7 +108,7 @@ level 0: #0(1 3 5)<6 -> #4(6 7)<10 -> #1(10 12)<15 -> #5(15 17)<20 -> #3(20 25 3
 
 Insert 26. It belongs in leaf #3, which is full.
 
-**Step 1.** New node #8 takes the upper half (26, 30). #8 inherits #3's old
+**Step 1**, under the latch of #3. New node #8 takes the upper half (26, 30). #8 inherits #3's old
 high key (none) and old right link (none). #3 gets high key 26, right link to
 #8, and the flag:
 
@@ -109,21 +117,25 @@ level 1: #2[6 10]<15 -> #6[20]
 level 0: ... -> #5(15 17)<20 -> #3(20 25)<26 {incomplete} -> #8(26 30) {no downlink}
 ```
 
-Search for 30 now. Root #7: 30 >= 15, go to #6. #6: 30 >= 20, go to #3. In #3:
-30 >= high key 26, so follow the right link to #8. Found, after one extra hop.
-A search that ignores the high key stops in #3 and misses 30.
+Suppose the writer stopped here and let go of #3 (a crash, an error, or the
+test hook). Search for 30 now. Root #7: 30 >= 15, go to #6. #6: 30 >= 20, go
+to #3. In #3: 30 >= high key 26, so follow the right link to #8. Found, after
+one extra hop. A search that ignores the high key stops in #3 and misses 30.
 
-**Step 2.** Latch #6, insert (26, #8) after the entry for #3, clear the flag:
+**Step 2**, by the same writer if it did not stop, otherwise by the next
+writer that comes to #3. Still holding #3, latch #6, insert (26, #8) after the
+entry for #3, clear the flag, release both:
 
 ```
 level 1: #2[6 10]<15 -> #6[20 26]
 level 0: ... -> #5(15 17)<20 -> #3(20 25)<26 -> #8(26 30)
 ```
 
-Now consider a reader that read #6 *before* step 2 and was told "#3". If it
-arrives after step 2, the parent has changed but the reader does not know. It
-still lands on #3, sees 30 >= 26, and moves right. This is the normal case in
-a running system: the reader's information was stale, not the tree.
+Now consider a reader that read #6 *before* the split and was told "#3". If
+the writer did not stop, the reader waits for the latch on #3 and gets it
+after step 2. The parent has changed but the reader does not know. It lands on
+#3, sees 30 >= 26, and moves right. This is the normal case in a running
+system: the reader's information was stale, not the tree.
 
 ## Code walk-through
 
@@ -179,22 +191,25 @@ move right: if it sees the flag it calls `finishSplit` before going on.
 If the leaf is full, `put` allocates the new node *before* changing anything,
 so a full table leaves the tree untouched and `put` returns
 `error.OutOfNodes`. Then `halfSplit` does step 1 and `insertParent` does
-step 2. `insertParent`
+step 2, with the leaf latched throughout. `insertParent`
 
 1. takes the downlink from the left node itself: `(left.high_key, left.right)`;
 2. if the left node is the root, builds a new root under the `meta` mutex;
 3. otherwise finds the parent by searching for the child's **handle**, starting
-   at the remembered node and moving right. A writer may remember no node on
-   the parent level: the left node was the root when it came down, and another
-   writer has built a root above it since. It then starts at
-   `level_head[level + 1]`, the leftmost node of the parent level. This is the
-   one place the algorithm uses `level_head`;
+   at the remembered node and moving right. A writer that came down while the
+   left node was still the root remembers no parent and starts at
+   `level_head[level + 1]`, the leftmost node of the parent level;
 4. finishes a pending split of that parent first, if it is flagged;
 5. inserts the downlink and clears the flag while holding both latches;
 6. if the parent overflowed, runs the same two steps one level up.
 
 If a node is needed for the parent and the table is full, `insertParent` gives
 up and leaves the flag set. The `put` still succeeded: the key is in the tree.
+From then on every writer whose path leads through the flagged node must
+finish that split first and fails with `OutOfNodes`, even if its own work
+needs no node (an overwrite, or an insert into a leaf with room). If the
+flagged node is the root, that is every `put`. Nodes are never freed here, so
+these puts fail for good. Searches are not affected.
 
 **The test hooks.** `setAbandonSplits(true)` makes every split stop after
 step 1. This is how tests and the demo reach the half-finished state without
@@ -203,7 +218,9 @@ threads. The second hook makes a writer's knowledge stale:
 `start` (a former root) and calls `pause.at_leaf` once it has latched its
 leaf. The callback runs other puts, as other threads would in that gap, so
 the parents the paused writer remembers can split, be left half split or get
-a new root above them before it climbs back up.
+a new root above them before it climbs back up. A second callback,
+`pause.root_built`, runs when a root split has filled its new root and has not
+yet stored the root pointer.
 
 ### Rust
 
@@ -215,7 +232,8 @@ The structure is the same; three things differ in kind.
   `validate` and `dump` read pages without latching (documented as
   single-threaded only), and `allocPage` initialises a new page without its
   latch because no other thread knows the handle yet. Safe Rust cannot express
-  that argument, so `alloc_page` takes the uncontended latch.
+  that argument, so `alloc_page` takes the uncontended latch (for a new root
+  while holding `meta`, which is otherwise the last lock taken).
 - **Releasing is `drop`.** `insert_parent` takes the left node's write guard
   *by value*. Every `return` releases it. The Zig function has an explicit
   `unlockExclusive` on each of its exits; forgetting one would be a deadlock
@@ -224,19 +242,9 @@ The structure is the same; three things differ in kind.
   exclusivity inside the latches. Counters and the root are atomics, and the
   fields guarded by `meta` live inside a `Mutex<Meta>`.
 
-- **`meta` under a latch that cannot be contended.** In Zig the `meta` mutex
-  is the last lock a writer takes. In Rust `insert_parent` holds `meta` and
-  then latches the new root, in `alloc_page` and again to fill it. No other
-  thread knows that node yet, so the latch cannot wait and adds no edge to
-  the lock order.
-
-The pause hook is a function pointer plus a context pointer in Zig and a
-`&mut dyn FnMut` closure in Rust. The Rust callback must not call
-`incomplete_splits()`: it latches every node, the paused leaf included.
-
-A held latch in either mode is the enum `Latch` in Rust and a node id plus a
-`bool` in Zig. Threads are `std::thread::scope` in Rust (the closure may
-borrow the tree) and `std.Thread.spawn` / `join` in Zig.
+The pause callbacks are function pointers plus a context pointer in Zig and
+`&mut dyn FnMut` closures in Rust. Threads are `std::thread::scope` in Rust
+(the closure may borrow the tree) and `std.Thread.spawn` / `join` in Zig.
 
 ### Testing
 
@@ -255,21 +263,19 @@ The tests are ordered from deterministic to concurrent.
 - **Root and internal levels.** A root split paused after step 1 has height 1
   and two nodes; ascending inserts with the hook always on leave internal
   nodes half split.
-- **Stale writers** (`putFrom`). A writer is paused on its leaf while another
-  put splits its parent: step 2 finds the downlink one node to the right of
-  the remembered one. With two writers paused, a third leaves their parent,
-  the root, half split: the second finishes that split (a new root) before
-  inserting its own downlink, and the first, which remembers nothing above
-  the old root, reaches the parent level through `level_head`. A writer
-  started at an old root must not build a second root. A seeded run pauses
-  3000 writers while other puts run with the abandon hook on a coin.
+- **Stale writers** (`putFrom`). Three hand-written cases: the remembered
+  parent split, it was left half split with a new root above it, and the
+  writer started at an old root. A seeded run pauses 3000 writers while other
+  puts run with the abandon hook on a coin.
+- **Root publication.** The `root_built` callback records what it sees: the
+  root pointer is still the old root, and the new root is complete.
 - **Internal levels.** A reader sent to #6 finds it split and moves right on
-  level 1. A writer started at the old root #2 makes two hops on level 1 and
-  none on the leaves; with the internal comparison removed the same put
-  still succeeds, after five hops along the leaf level.
+  level 1; a writer started at the old root #2 makes two hops there.
 - **Full table.** For every table size from 1 to 40, inserts run until
   `OutOfNodes`; the failed key is absent, `validate` passes, and at least one
-  size ends with a legal incomplete split.
+  size ends with a legal incomplete split. With six nodes a leaf stays
+  flagged and the puts routed to it fail, overwrites included; with two nodes
+  it is the root and every put fails. Every get still works.
 - **Model test.** Seeded puts and gets against the oracle of `common/`, with a
   seeded coin switching the hook.
 - **Stress.** Four threads; after every put a thread reads back that key, one

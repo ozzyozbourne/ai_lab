@@ -392,7 +392,7 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     Object.keys(panels).forEach(function (sn) { panels[sn].root.hidden = sn !== step.snippet; });
   }
   stepper = new BTViz.Stepper({
-    mount: fig.controls, caption: fig.caption, root: fig.root, steps: [], predict: true, interval: 2200,
+    mount: fig.controls, caption: fig.caption, root: fig.root, steps: [], predict: false, interval: 2200,
     onStep: function (step, i) { render(step); log.sync(stepper ? stepper.steps : [], i); }
   });
   function reset() {

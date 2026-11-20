@@ -247,7 +247,7 @@ written in JavaScript only; none of the guide's code bases contains one.</p>
     return { caption: caption, state: model.snapshot(), hi: {}, save: 0, final: true, opName: null };
   }
   stepper = new BTViz.Stepper({
-    mount: fig.controls, caption: fig.caption, root: fig.root, steps: [], predict: true, interval: 2400,
+    mount: fig.controls, caption: fig.caption, root: fig.root, steps: [], predict: false, interval: 2400,
     onStep: function (step, i) { render(step); log.sync(stepper ? stepper.steps : [], i); }
   });
   function reset() {

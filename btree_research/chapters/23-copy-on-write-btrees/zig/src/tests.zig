@@ -981,10 +981,12 @@ test "reopen reports a tree that is not all there instead of walking into it" {
         forge.f(&m, &db);
         db.store.meta_slots[m.txn_id % 2] = m.encode();
         const pages = db.store.pageCount();
+        const slots = db.store.meta_slots;
         try testing.expectError(error.CorruptTree, db.reopen(gpa));
-        // A failed restart changes nothing.
+        // A failed restart changes nothing: no page freed, no slot scrubbed.
         try testing.expectEqual(12, db.current.txn_id);
         try testing.expectEqual(pages, db.store.pageCount());
+        try testing.expectEqual(slots, db.store.meta_slots);
     }
 
     // A grown store whose new pages were never written: the slot names one.

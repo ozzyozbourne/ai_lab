@@ -12,6 +12,7 @@
 use std::io::Write;
 
 use crate::base_disk_btree::{DiskBTree, TreeError};
+use crate::base_page_storage::Storage as _;
 use crate::base_workload::Model;
 use crate::crash::{self, CrashMode, Loop, Outcome};
 use crate::db::{Db, DbError, Options};
@@ -133,11 +134,7 @@ pub fn split_without_log(
     let machine = Machine::new(22);
     let mut outcome = SplitOutcome::new();
     {
-        let mut tree = crash::open_plain(&machine)?;
-        for &k in &SCENARIO_KEYS[..OLD_KEYS] {
-            tree.put(&scenario_key(k), &scenario_value(k))?;
-        }
-        tree.flush()?;
+        let mut tree = build_old_tree(&machine)?;
         if let Some(w) = out.as_mut() {
             writeln!(w, "{OLD_KEYS} keys are on disk, flushed and synced:")?;
             write!(w, "{}", tree.dump()?)?;
@@ -171,6 +168,79 @@ pub fn split_without_log(
     }
     machine.borrow_mut().crash(mode);
 
+    match crash::open_plain(&machine) {
+        Ok(mut tree) => classify(&mut tree, &mut outcome),
+        Err(err) => outcome.err = Some(error_name(&err)),
+    }
+    Ok(outcome)
+}
+
+pub const SPLIT_WRITE_COUNT: usize = 5;
+
+#[derive(Clone)]
+pub struct SplitWrite {
+    pub page_no: u64,
+    pub image: Box<wal::Page>,
+}
+
+fn build_old_tree(machine: &machine::SharedMachine) -> Result<DiskBTree, TreeError> {
+    let mut tree = crash::open_plain(machine)?;
+    for &k in &SCENARIO_KEYS[..OLD_KEYS] {
+        tree.put(&scenario_key(k), &scenario_value(k))?;
+    }
+    tree.flush()?;
+    Ok(tree)
+}
+
+/// The five page writes of the split of part 1, in order, with their bytes.
+pub fn split_writes() -> DemoResult<Vec<SplitWrite>> {
+    let machine = Machine::new(22);
+    let mut tree = build_old_tree(&machine)?;
+    machine.borrow_mut().tracing = true;
+    let last = SCENARIO_KEYS[OLD_KEYS];
+    tree.put(&scenario_key(last), &scenario_value(last))?;
+    tree.flush()?;
+
+    let pages: Vec<u64> = machine
+        .borrow()
+        .trace
+        .iter()
+        .filter(|e| e.kind == EventKind::Write)
+        .map(|e| e.page_no)
+        .collect();
+    assert_eq!(pages.len(), SPLIT_WRITE_COUNT);
+    let mut main = machine::main_storage(&machine);
+    let mut writes = Vec::new();
+    for (i, &page_no) in pages.iter().enumerate() {
+        // The first write is the zero page that grows the file; every later
+        // one carries the final contents of its page.
+        let mut image = Box::new([0u8; PAGE_SIZE]);
+        if i > 0 {
+            main.read_page(page_no, &mut image)
+                .map_err(|e| format!("{e:?}"))?;
+        }
+        writes.push(SplitWrite { page_no, image });
+    }
+    Ok(writes)
+}
+
+/// Part 1, the general case: the old tree is on disk, and of the five
+/// writes exactly those whose bit is set in `mask` (bit i = write i + 1)
+/// reached the disk before the power failed.
+pub fn split_subset(writes: &[SplitWrite], mask: u8) -> DemoResult<SplitOutcome> {
+    let machine = Machine::new(22);
+    let mut outcome = SplitOutcome::new();
+    drop(build_old_tree(&machine)?);
+    {
+        let mut main = machine::main_storage(&machine);
+        for (i, write) in writes.iter().enumerate() {
+            if mask & (1 << i) != 0 {
+                main.write_page(write.page_no, &write.image)
+                    .map_err(|e| format!("{e:?}"))?;
+            }
+        }
+        main.sync().map_err(|e| format!("{e:?}"))?;
+    }
     match crash::open_plain(&machine) {
         Ok(mut tree) => classify(&mut tree, &mut outcome),
         Err(err) => outcome.err = Some(error_name(&err)),
@@ -293,15 +363,7 @@ fn print_outcome(
     o: &SplitOutcome,
     with_log: bool,
 ) -> DemoResult {
-    write!(w, "{}: ", mode.name())?;
-    let err = o.err.as_deref().unwrap_or("?");
-    match o.state {
-        State::Before => write!(w, "before")?,
-        State::After => write!(w, "after")?,
-        State::OpenFailed => write!(w, "open fails ({err})")?,
-        State::Invalid => write!(w, "invalid ({err})")?,
-        State::WrongContents => write!(w, "valid tree, wrong contents")?,
-    }
+    write!(w, "{}: {}", mode.name(), state_text(o))?;
     if with_log {
         write!(
             w,
@@ -310,6 +372,17 @@ fn print_outcome(
         )?;
     }
     Ok(())
+}
+
+fn state_text(o: &SplitOutcome) -> String {
+    let err = o.err.as_deref().unwrap_or("?");
+    match o.state {
+        State::Before => "before".to_string(),
+        State::After => "after".to_string(),
+        State::OpenFailed => format!("open fails ({err})"),
+        State::Invalid => format!("invalid ({err})"),
+        State::WrongContents => "valid tree, wrong contents".to_string(),
+    }
 }
 
 const SPLIT_MODES: [CrashMode; 3] = [CrashMode::Drop, CrashMode::Keep, CrashMode::Tear];
@@ -337,6 +410,37 @@ fn part1(w: &mut dyn Write) -> DemoResult {
     writeln!(
         w,
         "(before = the 11 old keys, valid tree; after = all 12 keys, valid tree)"
+    )?;
+
+    // An operating system may write unsynced pages in any order, so any
+    // subset of the five writes can be what a power cut leaves behind.
+    writeln!(
+        w,
+        "any subset of the 5 writes may be what reached the disk (digit i = write i; 1 = on disk, 0 = lost):"
+    )?;
+    let writes = split_writes()?;
+    let mut counts = [0u32; 5];
+    for mask in 0..32u8 {
+        let o = split_subset(&writes, mask)?;
+        counts[o.state as usize] += 1;
+        let digits: String = (0..SPLIT_WRITE_COUNT)
+            .map(|i| if mask & (1 << i) != 0 { '1' } else { '0' })
+            .collect();
+        let cell = format!("{digits} {}", state_text(&o));
+        if mask % 2 == 0 {
+            write!(w, "  {cell:<34}")?;
+        } else {
+            writeln!(w, "{cell}")?;
+        }
+    }
+    writeln!(
+        w,
+        "of the 32 subsets: {} before, {} after, {} cannot be opened, {} invalid, {} valid with wrong contents",
+        counts[State::Before as usize],
+        counts[State::After as usize],
+        counts[State::OpenFailed as usize],
+        counts[State::Invalid as usize],
+        counts[State::WrongContents as usize]
     )?;
     Ok(())
 }

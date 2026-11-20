@@ -23,6 +23,8 @@
   .c23-hint[hidden] { display: none; }
   /* Page id labels sit where edges from a second parent arrive: a halo in the stage colour keeps them readable. */
   .bt-node-label { paint-order: stroke; stroke: var(--bt-bg); stroke-width: 5px; stroke-linejoin: round; }
+  /* Spacers that push the root of a shorter tree down, so that all leaves share the bottom row (local.js, picture). */
+  .bt-node.s-c23-spacer, .bt-edge-g.s-c23-spacer { display: none; }
   #code { margin-top: 14px; }
   .c23-points li { margin: .35em 0; }
   .bt-selftest { white-space: normal; border-radius: 10px; }
@@ -183,7 +185,9 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
       var s = step.state, nodes = {}, h = step.highlight || {};
       Object.keys(s.states).forEach(function (id) { nodes[id] = s.states[id]; });
       Object.keys(h.nodes || {}).forEach(function (id) { nodes[id] = h.nodes[id]; });
-      view.render(s.forest, { nodes: nodes, keys: h.keys || {} });
+      view.render(s.forest, { nodes: nodes, keys: h.keys || {}, edges: s.hiddenEdges || {} });
+      var drawn = view.layout.order.length - Object.keys(s.hiddenEdges || {}).length;
+      view.svg.setAttribute('aria-label', 'The trees of every kept root, sharing pages: ' + drawn + ' node' + (drawn === 1 ? '' : 's') + ', ' + view.layout.depth + ' level' + (view.layout.depth === 1 ? '' : 's'));
       var sc = view.scroller;
       hint.hidden = !(sc && sc.scrollWidth > sc.clientWidth + 4);
       renderStatus(s);
@@ -208,9 +212,10 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
       metaRows.appendChild(el('div.c23-row',
         el('span', 'slot ' + i),
         m.never ? el('span.bt-chip.s-free', 'never written')
+          : m.scrubbed ? el('span.bt-chip.s-free', { title: 'The restart could not use this slot and overwrote it, so that it can never be chosen again' }, 'zeroed by the restart')
           : el('span.bt-chip' + (m.valid ? (isCur ? '.s-found' : '') : '.s-deleted'),
               'txn ' + m.txn + ' → ' + (m.root === null ? 'empty' : 'root #' + m.root)),
-        m.never ? null : el('span', { title: 'CRC-32 stored in the slot' }, 'crc ' + m.crc + (m.valid ? ' ✓' : ' ✗ unreadable')),
+        m.never || m.scrubbed ? null : el('span', { title: 'CRC-32 stored in the slot' }, 'crc ' + m.crc + (m.valid ? ' ✓' : ' ✗ unreadable')),
         isCur ? el('span', '← current') : isPrev ? el('span', '← fallback') : null));
     });
   }
@@ -434,6 +439,18 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
     t.meta[0].valid = false; t.reopen();
     BTViz.selfTest('two faults', wrote + ' ' + t.dump() + t.storeLine() + ' ' + t.validate().length,
       '3 ' + tree17 + 'store: 18 pages | free: #3 #7 #8 #10 #11 #14 #15 #16 | pending: - 0');
+    // The slot the restart could not use is scrubbed; the next commit reuses id 18 and that slot.
+    var scrubbed = !!t.meta[0].scrubbed; put(t, 9);
+    BTViz.selfTest('scrub', scrubbed + ' ' + t.cur.txn + ' ' + t.meta[0].valid + ' ' + t.prev.txn + ' ' + t.validate().length, 'true 18 true 17 0');
+
+    // Layout: roots of different heights (txn 11 has 2 levels, txn 12 has 3). Every leaf on one
+    // row, every edge one row long, the shorter root one row below the taller one.
+    var c = new Cow(4); CANONICAL.forEach(function (v) { put(c, v); });
+    var pic = c.picture(null), L = BTViz.TreeView.layout(pic.forest), leafRows = {}, spans = {};
+    L.order.forEach(function (info) { if (info.node.leaf) leafRows[info.depth] = true; });
+    L.edges.forEach(function (e) { spans[L.nodes.get(e.child).depth - L.nodes.get(e.parent).depth] = true; });
+    BTViz.selfTest('leaf row', Object.keys(leafRows).join(',') + ' / ' + Object.keys(spans).join(',') + ' / ' + L.nodes.get(pic.ofPage[c.prev.root]).depth + ' ' + L.nodes.get(pic.ofPage[c.cur.root]).depth,
+      '2 / 1 / 1 0');
 
     // Seeded fuzz of the model itself: snapshots must keep reading what they saw.
     var r = BTViz.rng(2323), f = new Cow(4), ref = {}, held = [], bad = 0, i;

@@ -382,13 +382,16 @@
   };
   /**
    * What a restart does: pick a meta slot, check its tree, forget readers, keep the other slot's
-   * tree as the fallback if it is complete too, and rebuild the lists by reachability.
+   * tree as the fallback if it is complete too, and rebuild the lists by reachability. A slot the
+   * restart could not use is scrubbed (zeroed) BEFORE any page is given away, so it can never be
+   * read at a later restart and win with a tree whose pages are gone.
    */
   Cow.prototype.reopen = function () {
     var m = this.pick(), f = this.fallback(), i;
     var live = this.treeComplete(m);
     if (!live) throw new Error('the tree of transaction ' + m.txn + ' is not complete');
     var kept = f && f.pages <= m.pages ? this.treeComplete(f) : null;
+    if (!kept) this.meta = this.meta.map(function (s) { return s === m || s.never ? s : { valid: false, scrubbed: true }; });
     this.cur = { txn: m.txn, root: m.root, height: m.height, count: m.count, pages: m.pages };
     this.prev = kept ? { txn: f.txn, root: f.root, height: f.height, count: f.count, pages: f.pages } : null;
     this.snaps = []; this.pending = []; this.free = [];
@@ -515,7 +518,7 @@
    */
   Cow.prototype.picture = function (t, opts) {
     opts = opts || {};
-    var self = this, placed = {}, forest = [], states = {}, ofPage = {}, cur = this.cur;
+    var self = this, placed = {}, forest = [], states = {}, ofPage = {}, cur = this.cur, levels = {}, hidden = {};
     var pendingBy = {};
     this.pending.forEach(function (p) { pendingBy[p.page] = p.by; });
     function did(id, dirty) { var s = self.slots[id]; return 'p' + id + 'g' + ((s ? s.gen : 0) + (dirty ? 1 : 0)); }
@@ -528,7 +531,11 @@
       else if (pendingBy[id] !== undefined) states[d] = 'compare';
       else if (self.slots[id].state === 'free') states[d] = 'deleted';
       var model = { id: d, keys: n.keys.slice(), leaf: n.leaf, meta: { label: '#' + id + (label ? ' · ' + label : '') } };
-      if (!n.leaf) model.children = n.kids.map(function (c) { return build(c, inTxn); });
+      levels[d] = 1;                                      // levels of the subtree below this page, itself included
+      if (!n.leaf) {
+        model.children = n.kids.map(function (c) { return build(c, inTxn); });
+        levels[d] = 1 + levels[model.children[0].ref !== undefined ? model.children[0].ref : model.children[0].id];
+      }
       return model;
     }
     if (opts.extra && opts.extra.root !== null && opts.extra.root !== undefined) forest.push(build(opts.extra.root, false, opts.extra.label));
@@ -539,6 +546,19 @@
     var txnRoot = t ? (t.moved[t.root] !== undefined ? t.moved[t.root] : t.root) : null;
     if (t && txnRoot !== null && (t.dirty[txnRoot] || txnRoot !== cur.root)) forest.push(build(txnRoot, true, 'txn ' + t.id + ' open'));
 
+    // Rows are counted from the leaves, not from each root: TreeView puts a root on row 0, so a root
+    // of a shorter tree is pushed down by spacer nodes (never drawn) until every leaf is on the leaf
+    // row. A shared page then has one row whichever root reaches it, and every edge spans one row.
+    var tallest = Math.max.apply(null, forest.map(function (r) { return levels[r.id] || 0; }).concat(0));
+    forest = forest.map(function (r) {
+      for (var gap = tallest - (levels[r.id] || tallest); gap > 0; gap--) {
+        var sid = 'spacer' + gap + r.id;
+        hidden[sid + '>' + r.id] = 'c23-spacer';
+        r = { id: sid, keys: [], leaf: false, children: [r], meta: { state: 'c23-spacer' } };
+      }
+      return r;
+    });
+
     var reserved = {};
     if (t) Object.keys(t.dirty).forEach(function (id) { reserved[id] = true; });
     var slots = [], n = Math.max(this.slots.length, t ? t.nextNew : 0), i;
@@ -547,11 +567,14 @@
       slots.push(reserved[i] ? 'dirty' : !s || s.state === 'free' ? 'free' : pendingBy[i] !== undefined ? 'compare' : 'used');
     }
     return {
-      forest: forest.length ? forest : null, states: states, ofPage: ofPage, slots: slots, stored: this.slots.length,
+      forest: forest.length ? forest : null, hiddenEdges: hidden, states: states, ofPage: ofPage, slots: slots, stored: this.slots.length,
       free: this.free.slice(), pending: this.pending.map(function (p) { return { page: p.page, by: p.by }; }),
       snaps: this.snaps.map(function (s) { return { id: s.id, root: s.root, refs: s.refs, count: s.count }; }),
       prev: this.prev ? { txn: this.prev.txn, root: this.prev.root } : null,
-      meta: this.meta.map(function (m) { return m.valid || !m.never ? { txn: m.txn, root: m.root, count: m.count, crc: hex8(m.crc), valid: m.valid } : { never: true, valid: false }; }),
+      meta: this.meta.map(function (m) {
+        return m.never ? { never: true, valid: false } : m.scrubbed ? { scrubbed: true, valid: false }
+          : { txn: m.txn, root: m.root, count: m.count, crc: hex8(m.crc), valid: m.valid };
+      }),
       cur: { txn: cur.txn, root: cur.root, height: cur.height, count: cur.count },
       txn: t ? { id: t.id, copied: t.copied, reused: t.reused, fresh: t.fresh } : null
     };
@@ -572,8 +595,8 @@
         cap = 'Page ' + pg(d.old) + ' ' + nodeText(this.slots[d.old].node) + ' has to change, but it is part of the committed tree of transaction ' + this.cur.txn +
           (others.length ? ', and ' + others.map(function (r) { return self.describeRoot(r); }).join(' and ') + ' can reach it too' : '') +
           '. A page that a committed root can reach is never modified, so it is <b>copied</b> to page ' + pg(d.id) + (t.lastFrom === 'free' ? ', a page id taken from the free list' : ', a new page at the end of the store') +
-          '. The copy is private to transaction ' + t.id + '; whoever pointed at ' + pg(d.old) + ' in this transaction now points at ' + pg(d.id) +
-          ', which is why the parent had to be copied first.';
+          '. The copy is private to transaction ' + t.id + (d.old === this.cur.root ? '; the transaction\'s root is now ' + pg(d.id) + '.'
+            : '; the private copy of its parent now points at ' + pg(d.id) + ', which is why the parent had to be copied first.');
         lines = { snippet: 'touch', part: 'copy' };
         if (t.copied === 1 && t.height > 1) {
           question = { prompt: 'The tree has ' + plural(t.height, 'level') + '. How many committed pages will this transaction copy before it can make its change (not counting a borrow from a sibling)?',
@@ -759,6 +782,10 @@
   Cow.prototype.drawable = function (root, pages) {
     return root !== null && Object.keys(this.reachable(root)).every(function (id) { return +id < pages; });
   };
+  Cow.prototype.scrubNote = function (slot) {
+    return 'Before it gave any page away, the restart <b>overwrote slot ' + slot + ' with zeroes</b>. The slot might have been readable again at a later restart ' +
+      '(a read error can be transient), and it would then win with a tree whose pages have been reused. A slot the restart decided against must never come back. ';
+  };
   /** The newest meta slot is torn (its checksum no longer matches), then the database restarts. */
   Cow.prototype.opTear = function () {
     return this.record(function () {
@@ -774,8 +801,8 @@
         ' wrote only into free pages' + (waiting.length ? ', and the ' + plural(waiting.length, 'page') + ' it replaced (' + pgs(waiting) + ') ' + (waiting.length === 1 ? 'was' : 'were') + ' still pending' : '') +
         '. All of transaction ' + lost + ' is gone, and none of it is half there. (Snapshots are in-memory handles; a restart forgets them.)',
         { extra: extra && extra.root !== this.cur.root ? extra : null, log: 'restart → txn ' + this.cur.txn });
-      this.note('The lists were rebuilt by walking the tree: every page the chosen root cannot reach is free. ' +
-        (this.prev ? 'The other slot still names transaction ' + this.prev.txn + ', so its pages are kept as the fallback. ' : 'No second readable slot is left, so there is no fallback until the next commit rewrites slot ' + slot + '. ') + this.summary());
+      this.note((this.meta[slot].scrubbed ? this.scrubNote(slot) : '') + 'The lists were rebuilt by walking the tree: every page the chosen root cannot reach is free. ' +
+        (this.prev ? 'The other slot still names transaction ' + this.prev.txn + ', so its pages are kept as the fallback. ' : 'There is no fallback until the next commit rewrites slot ' + slot + '. ') + this.summary());
     });
   };
   /**
@@ -802,7 +829,7 @@
         ') ' + (waiting.length === 1 ? 'was' : 'were') + ' still pending, so ' + (waiting.length === 1 ? 'it was' : 'they were') + ' not among them' : '') +
         '. <b>This is why a freed page waits one more commit.</b> Transactions ' + newest + ' and ' + t.id + ' are gone; nothing is half there.',
         { extra: extra && extra.root !== this.cur.root ? extra : null, log: 'restart → txn ' + this.cur.txn });
-      this.note('The lists were rebuilt by walking the tree. ' + this.summary());
+      this.note((this.meta[slot].scrubbed ? this.scrubNote(slot) : '') + 'Then the lists were rebuilt by walking the tree. ' + this.summary());
     });
   };
 

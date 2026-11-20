@@ -7,7 +7,8 @@
 //!     complete split between "read the parent" and "visit the child";
 //!   * `putFrom` starts a writer at a former root and can pause it on its
 //!     leaf (`Pause`), so a test can split, half-split or outgrow the
-//!     parents that writer remembers before it climbs back up.
+//!     parents that writer remembers before it climbs back up. It can also
+//!     stop the writer between filling a new root and publishing it.
 //!
 //! Only the last tests use threads, and they assert nothing about timing.
 const std = @import("std");
@@ -292,14 +293,62 @@ test "a full node table: put fails cleanly, or leaves a legal incomplete split" 
         // A put succeeded although the PARENT could not be split: the key is
         // in, and the leaf split simply stays incomplete.
         if (tree.incompleteSplits() > 0) saw_incomplete = true;
-        // Overwrites need no node and still work, unless the leaf is flagged
-        // and cannot be finished.
+        // An overwrite needs no node. It still fails if a node on its path
+        // (the root, an internal node or the leaf) is flagged, because the
+        // writer must finish that split first: see the next test.
         if (tree.put(io, 0, 1)) |old| try testing.expectEqual(0, old) else |_| {}
         try tree.validate();
         try expectNoLatchHeld(&tree, io);
     }
     try testing.expect(saw_clean_failure);
     try testing.expect(saw_incomplete);
+}
+
+test "a full table: puts that need no node fail too when a flag on their path cannot be cleared" {
+    const io = testing.io;
+    {
+        // Six nodes. put 10 splits leaf #4; its parent #2 is full and there
+        // is no node left to split it, so #4 stays flagged.
+        var tree = try BLinkTree.init(testing.allocator, 4, 6);
+        defer tree.deinit(testing.allocator);
+        for (1..11) |key| try testing.expectEqual(null, try tree.put(io, key, key * 100));
+        const state =
+            \\height 2, 10 keys, 6 nodes
+            \\  level 1: #2[3 5 7]
+            \\  level 0: #0(1 2)<3 -> #1(3 4)<5 -> #3(5 6)<7 -> #4(7 8)<9 {incomplete} -> #5(9 10) {no downlink}
+            \\
+        ;
+        try expectDump(&tree, state);
+        // Puts that do not come through #4 work: these are overwrites.
+        for (1..7) |key| try testing.expectEqual(key * 100, try tree.put(io, key, key * 100));
+        // Every put that is routed to #4 must finish its split first and
+        // cannot: an overwrite (7 to 10) fails exactly like an insert (11),
+        // although #5 has room for 11.
+        for (7..12) |key| try testing.expectError(error.OutOfNodes, tree.put(io, key, 1));
+        // Nothing was changed by the failed puts, and readers do not care.
+        try expectDump(&tree, state);
+        for (1..11) |key| try testing.expectEqual(key * 100, tree.get(io, key));
+        try tree.validate();
+        try expectNoLatchHeld(&tree, io);
+    }
+    {
+        // Two nodes: the root leaf splits and there is no node for the new
+        // root. Every put starts at the flagged root, so every put fails.
+        var tree = try BLinkTree.init(testing.allocator, 4, 2);
+        defer tree.deinit(testing.allocator);
+        for (1..5) |key| try testing.expectEqual(null, try tree.put(io, key, key * 100));
+        const state =
+            \\height 1, 4 keys, 2 nodes
+            \\  level 0: #0(1 2)<3 {incomplete} -> #1(3 4) {no downlink}
+            \\
+        ;
+        try expectDump(&tree, state);
+        for (1..6) |key| try testing.expectError(error.OutOfNodes, tree.put(io, key, 1));
+        try expectDump(&tree, state);
+        for (1..5) |key| try testing.expectEqual(key * 100, tree.get(io, key));
+        try tree.validate();
+        try expectNoLatchHeld(&tree, io);
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -448,6 +497,50 @@ test "a writer that starts at an old root: moves right, then finds the parent le
         \\
     );
     try expectAllFound(&tree, io, &.{ 1, 2, 3, 4, 5, 6 });
+    try expectNoLatchHeld(&tree, io);
+}
+
+test "a root split fills the new root before it publishes it" {
+    const io = testing.io;
+    var tree = try BLinkTree.init(testing.allocator, 4, 8);
+    defer tree.deinit(testing.allocator);
+    for ([_]u64{ 1, 2, 3 }) |key| _ = try tree.put(io, key, key * 100);
+
+    // Readers load the root pointer without a lock. The moment it changes,
+    // a reader may be inside the new root, so the node must be complete
+    // BEFORE the pointer is stored. The hook stands between the two and
+    // writes down what a reader arriving at that moment would get.
+    const Seen = struct {
+        calls: usize = 0,
+        root_pointer: NodeId = .nil,
+        new_root_id: NodeId = .nil,
+        new_root: blink.Page = undefined,
+
+        fn rootBuilt(context: ?*anyopaque, t: *BLinkTree, new_root_id: NodeId, new_root: *const blink.Page) void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.calls += 1;
+            self.root_pointer = t.rootId();
+            self.new_root_id = new_root_id;
+            self.new_root = new_root.*;
+        }
+    };
+    var seen: Seen = .{};
+    // put 4 splits the root leaf #0 (new sibling #1) and builds the root #2.
+    try testing.expectEqual(null, try tree.putFrom(io, tree.rootId(), 4, 400, .{ .context = &seen, .root_built = Seen.rootBuilt }));
+
+    try testing.expectEqual(1, seen.calls);
+    // Not published yet: a descent that starts now starts at the old root.
+    try testing.expectEqual(id(0), seen.root_pointer);
+    // And already complete: one separator, two children.
+    try testing.expectEqual(id(2), seen.new_root_id);
+    try testing.expectEqual(1, seen.new_root.level);
+    try testing.expectEqualSlices(u64, &.{3}, seen.new_root.node.keySlice());
+    try testing.expectEqualSlices(NodeId, &.{ id(0), id(1) }, seen.new_root.node.childSlice());
+
+    // Afterwards it is the root.
+    try testing.expectEqual(id(2), tree.rootId());
+    try tree.validate();
+    try expectAllFound(&tree, io, &.{ 1, 2, 3, 4 });
     try expectNoLatchHeld(&tree, io);
 }
 

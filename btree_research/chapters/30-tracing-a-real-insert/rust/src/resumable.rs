@@ -3,8 +3,8 @@
 //!
 //! The blocking `DiskBTree::put` calls `pool.fetch_page(id)`, and when the
 //! page is not in memory that call sits inside `read()` until the disk
-//! answers. Nothing else can run on that thread meanwhile. An engine that
-//! serves many statements from one thread (Turso) cannot afford that, so its
+//! answers. Nothing else can run on that thread meanwhile. An engine built on
+//! asynchronous I/O and cooperative yielding (Turso) does not wait there. Its
 //! B-tree code has this shape instead:
 //!
 //! ```text

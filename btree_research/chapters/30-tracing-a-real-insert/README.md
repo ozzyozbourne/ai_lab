@@ -194,7 +194,7 @@ Chapter 12's `put` is a straight line: `findLeaf`, put into the leaf, and on ove
 `pushRootDown`, `splitLeaf`, then a loop of `insertSeparator` and `splitInterior`. Each
 of these calls `pool.fetchPage`, and a miss blocks the thread in `read()`.
 
-Turso runs many statements on one thread and uses asynchronous I/O. Its rule
+Turso is built on asynchronous I/O and cooperative yielding instead. Its rule
 (`turso/docs/agent-guides/async-io-model.md:10-23`): a function that may need I/O returns
 `IOResult::Done(value)` or `IOResult::IO(completions)`, and the caller must call it
 again until it says `Done` (`turso/core/types.rs:3797-3804`). It does not use Rust's
@@ -295,8 +295,8 @@ progress even with two frames. It asserts after every `step` that the pager's re
 counter did not move and that no frame is pinned.
 
 **Who may interleave.** Any number of lookups (`GetOp`) run together and their reads
-complete in any order. An insert runs alone. The reason is in Part 4 of the output
-below: an insert that waits between `split_leaf` and `insert_separator` has left a right
+complete in any order. An insert runs alone. The reason is Part 4 of the program
+output: an insert that waits between `split_leaf` and `insert_separator` has left a right
 half that no parent points to, and a lookup let in at that moment does not find a key
 that is in the tree. PostgreSQL makes that state legal with right links. Turso avoids
 exposing it: one writer, and readers read their snapshot through the WAL. This chapter

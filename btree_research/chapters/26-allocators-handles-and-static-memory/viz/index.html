@@ -211,7 +211,9 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
   function run(k, op) {
     if (k.v === null) { show(tree.idle(k.note)); return; }
     var steps = op(k.v);
+    // Said on the first step and repeated on the last, so it is seen wherever the reader looks.
     steps[0].caption = k.note + steps[0].caption;
+    if (k.note && steps.length > 1) steps[steps.length - 1].caption += ' <i>(' + k.note.trim() + ')</i>';
     show(steps, true);
   }
   function guard() {
@@ -241,7 +243,7 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
   reset();
 
   /* ---- code panels */
-  var cf = BTViz.figure('#fig-code', { title: 'The two functions the picture is made of' });
+  var cf = BTViz.figure('#fig-code', { title: 'The functions the picture is made of' });
   var grid = el('div.c26-code');
   cf.stage.appendChild(grid);
   BTViz.codePanel(grid, 'create', { title: 'SlabPool.create', maxHeight: 330 }).highlight({ zig: [[3, 5], [10, 11]], rust: [[3, 9], [11, 13]] });

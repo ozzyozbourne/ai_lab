@@ -140,6 +140,7 @@ Chapter text: <a href="../README.md">README</a>. First page: <a href="index.html
     var steps = heap.alloc(len, peekName());
     if (steps.result !== null) nextName++;
     steps[0].caption = note + steps[0].caption;
+    if (note && steps.length > 1) steps[steps.length - 1].caption += ' <i>(' + note.trim() + ')</i>';
     show(steps, true);
   }
   fig.toolbar.append(

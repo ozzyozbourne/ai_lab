@@ -224,6 +224,7 @@
   };
   function mark(h, state) { var o = {}; o[hName(h)] = { h: h, state: state }; return o; }
   function slotMark(h, state) { var o = {}; o[hName(h)] = state; return o; }
+  function pl(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
   function kk(v, s) { return '<b class="bt-k' + (s ? ' s-' + s : '') + '">' + v + '</b>'; }
   function hh(h) { return '<code>' + hName(h) + '</code>'; }
 
@@ -323,7 +324,7 @@
   /** The last step of a put that ran out of memory. Result of the operation: 'oom'. */
   T.oomStep = function (key) {
     this.step('<b>OutOfMemory</b>: ' + kk(key) + ' was not inserted. Nothing is half-done, because every split allocates its new node before it moves a key: the tree is valid and holds the same ' +
-      this.count + ' keys. The footprint is still ' + this.leaves.slabCount + ' leaf and ' + this.interiors.slabCount + ' interior slabs. Delete a key to free a slot, or press Reset.',
+      pl(this.count, 'key', 'keys') + '. The footprint is still ' + this.leaves.slabCount + ' leaf and ' + this.interiors.slabCount + ' interior slabs. Delete a key to free a slot, or press Reset.',
       { type: 'oom', log: { html: 'put ' + key + ': OutOfMemory', state: 'deleted' } });
     return 'oom';
   };
@@ -361,8 +362,8 @@
         if (!h.c) {
           n.keys.splice(i, 0, key); this.count++;
           keys[n.uid + ':' + key] = 'inserted';
-          this.step('Leaf ' + hh(h) + ' has room: ' + kk(key, 'inserted') + ' is written into it. Done: ' + this.count + ' keys, ' +
-            this.leaves.live + ' leaves and ' + this.interiors.live + ' interior nodes.', { type: 'done', nodes: mark(h, 'active'), keys: keys, focus: h, log: { html: 'put ' + key + ' into ' + hName(h), state: 'inserted' } });
+          this.step('Leaf ' + hh(h) + ' has room: ' + kk(key, 'inserted') + ' is written into it. Done: ' + pl(this.count, 'key', 'keys') + ', ' +
+            pl(this.leaves.live, 'leaf', 'leaves') + ' and ' + pl(this.interiors.live, 'interior node', 'interior nodes') + '.', { type: 'done', nodes: mark(h, 'active'), keys: keys, focus: h, log: { html: 'put ' + key + ' into ' + hName(h), state: 'inserted' } });
           return true;
         }
         var child = n.kids[i];
@@ -476,8 +477,8 @@
         this.height--;
         this.freeStep(old, 'The root has no keys left' + (this.root ? ', so its only child ' + hh(this.root) + ' becomes the root.' : ': the tree is empty.'));
       }
-      this.step((removed ? 'Deleted ' + kk(key) + '. ' : 'Key ' + kk(key) + ' was not present. ') + this.count + ' keys in ' + this.leaves.live + ' leaves and ' + this.interiors.live +
-        ' interior nodes; free slots: ' + this.leaves.freeSlots() + ' leaf, ' + this.interiors.freeSlots() + ' interior.', { type: 'done', log: removed ? { html: 'delete ' + key, state: 'deleted' } : undefined });
+      this.step((removed ? 'Deleted ' + kk(key) + '. ' : 'Key ' + kk(key) + ' was not present. ') + pl(this.count, 'key', 'keys') + ' in ' + pl(this.leaves.live, 'leaf', 'leaves') + ' and ' + pl(this.interiors.live, 'interior node', 'interior nodes') +
+        '; free slots: ' + this.leaves.freeSlots() + ' leaf, ' + this.interiors.freeSlots() + ' interior.', { type: 'done', log: removed ? { html: 'delete ' + key, state: 'deleted' } : undefined });
       return removed;
     });
   };

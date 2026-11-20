@@ -167,9 +167,9 @@ they sit on is rewritten.</p>
     var strip = new C1.PageStrip(laneA.body, { ariaLabel: 'Sorted array on pages' });
     // The binary tree is as deep as the insert order makes it (10 levels for the default keys, 40
     // when fed in ascending order), so its box has a fixed height and follows the search path.
-    var bstView = new C1.BstView(laneB.body, { ariaLabel: 'Binary search tree', maxHeight: 240 });
+    var bstView = new C1.BstView(laneB.body, { ariaLabel: 'Binary search tree', maxHeight: 220 });
     // Four levels (2 keys per page) need about 300 px; a lower limit hides the leaf where the search ends.
-    var treeView = new BTViz.TreeView(laneW.body, { minHeight: 150, maxHeight: 330, vGap: 40, ariaLabel: 'Tree of wide nodes' });
+    var treeView = new BTViz.TreeView(laneW.body, { minHeight: 150, maxHeight: 320, vGap: 36, ariaLabel: 'Tree of wide nodes' });
 
     // Caption and step controls travel together in one block that stays in view with the lanes (see .c1-dock).
     var dock = el('div.c1-dock');

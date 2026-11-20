@@ -82,6 +82,7 @@ pub fn put(tree: *Tree, gpa: Allocator, key: u64, value: u64) !?u64 {
         const median = splitFull(root, right);
         new_root.children[0] = root;         // the tree grows at the top
         new_root.insertChild(1, right);
+        new_root.insertEntry(0, median.key, median.value);
         node = new_root;
     }
     while (true) {                           // invariant: node is NOT full
@@ -109,6 +110,7 @@ pub fn put(tree: &mut BTree, key: u64, value: u64) -> Result<Option<u64>, OutOfN
         let median = split_full(tree, root, right);
         let node = &mut tree.pool[new_root]; // the tree grows at the top
         node.children = vec![root, right];
+        node.insert_entry(0, median.key, median.value);
         id = new_root;
     }
     loop {                                   // invariant: node is NOT full
@@ -136,12 +138,12 @@ pub fn put(tree: &mut BTree, key: u64, value: u64) -> Result<Option<u64>, OutOfN
 /* Lines to highlight per step type (same numbers in both languages). */
 window.CHAPTER_LINES = {
   'bottom-up': {
-    'start': [2], 'descend': [3, [5, 8]], 'exists': [4], 'new-root': [14],
+    'start': [2], 'descend': [3, [5, 8]], 'exists': [4], 'new-root': [1],
     'insert-leaf': [[10, 14]], 'overflow': [15], 'split': [16, [24, 26]], 'root-grow': [16, [17, 22]], 'done': [28]
   },
   'top-down': {
-    'start': [8], 'preempt-root': [2], 'root-grow-root': [[3, 6]], 'descend': [9, 15], 'preempt': [16],
-    'split': [[17, 21]], 'insert-leaf': [11, 12], 'exists': [10], 'new-root': [12], 'done': [13]
+    'start': [9], 'preempt-root': [2], 'root-grow-root': [[3, 7]], 'descend': [10, 16], 'preempt': [17],
+    'split': [[18, 22]], 'insert-leaf': [12, 13], 'exists': [11], 'new-root': [1], 'done': [14]
   }
 };
 

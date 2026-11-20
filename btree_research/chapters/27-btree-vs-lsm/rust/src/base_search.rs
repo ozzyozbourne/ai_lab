@@ -50,12 +50,16 @@ pub fn child_index(separators: &[u64], key: u64) -> usize {
 impl BPlusTree {
     /// The leaf whose key range contains `key` (whether or not the key is in
     /// it). `NIL` only for an empty tree.
-    pub fn find_leaf(&self, key: u64) -> NodeId {
+    ///
+    /// ch27: every node on the way down is one block read (`touch`), which
+    /// is why this takes `&mut self` now.
+    pub fn find_leaf(&mut self, key: u64) -> NodeId {
         let mut id = self.root;
         if id.is_nil() {
             return NodeId::NIL;
         }
         loop {
+            self.touch(id);
             let n = self.nodes.get(id);
             match &n.kind {
                 Kind::Leaf(_) => return id,
@@ -64,8 +68,11 @@ impl BPlusTree {
         }
     }
 
-    pub fn get(&self, key: u64) -> Option<u64> {
+    /// ch27: `&mut self` because a read changes the device counters. Real
+    /// buffer pools also write on a read: pin counts, usage bits.
+    pub fn get(&mut self, key: u64) -> Option<u64> {
         let id = self.find_leaf(key);
+        self.dev.end_op(); // ch27: nothing was dirtied
         if id.is_nil() {
             return None;
         }

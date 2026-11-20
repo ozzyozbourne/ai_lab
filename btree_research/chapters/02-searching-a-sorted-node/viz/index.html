@@ -558,13 +558,13 @@ cursor: put the cursor past the answer (from index 40, key 10) to see what it re
       onStep: function (s) { av.render(s.state); chipRow(chips, s.chips || []); code.highlight(s.lines); }
     });
     function go(play) {
-      var loNotes = [], hiNotes = [], was = sync.unchanged();
       // An unbounded end has no limit: its (disabled) field is not read, so it is not rewritten either.
       var bound = function (kindSel, input, label, notes) {
         return kindSel.value === 'unbounded' ? { kind: 'unbounded' } : { kind: kindSel.value, k: readInt(input, 0, MAX_KEY, label, notes) };
       };
       loIn.disabled = loKind.value === 'unbounded';
       hiIn.disabled = hiKind.value === 'unbounded';
+      var loNotes = [], hiNotes = [], was = sync.unchanged();
       var lo = bound(loKind, loIn, 'lower limit', loNotes), hi = bound(hiKind, hiIn, 'upper limit', hiNotes);
       sync.commit([loNotes, hiNotes], was);
       stepper.setSteps(buildSteps(SETS[setIn.value], lo, hi), { play: play, instant: true });

@@ -17,6 +17,7 @@
 
 use crate::base_arena::{Arena, NodeId};
 use crate::base_node::{MAX_ORDER, Node};
+use crate::device::{Device, Kind as BlockKind}; // ch27
 
 /// Counters of structural changes. Counts only; used by the demo program to
 /// say what an operation did, and by tests to prove a path was exercised.
@@ -43,6 +44,9 @@ pub struct BPlusTree {
     /// Number of entries.
     pub count: usize,
     pub stats: Stats,
+    /// ch27: the counted block device this tree "lives on". Every node is one
+    /// block: internal nodes are index blocks, leaves are data blocks.
+    pub dev: Device,
 }
 
 impl BPlusTree {
@@ -65,6 +69,7 @@ impl BPlusTree {
             height: 0,
             count: 0,
             stats: Stats::default(),
+            dev: Device::new(),
         }
     }
 
@@ -84,5 +89,33 @@ impl BPlusTree {
 
     pub fn is_empty(&self) -> bool {
         self.count == 0
+    }
+
+    // ------------------------------------------------ ch27: device hooks
+
+    /// The operation in progress looks at node `id`: one block read, unless
+    /// this operation already holds the block.
+    pub(crate) fn touch(&mut self, id: NodeId) {
+        let kind = if self.nodes.get(id).is_leaf() { BlockKind::Data } else { BlockKind::Index };
+        self.dev.pin(id.index(), kind);
+    }
+
+    /// The operation in progress changed node `id`: one block write at the
+    /// end of the operation.
+    pub(crate) fn dirty(&mut self, id: NodeId) {
+        self.dev.mark_dirty(id.index());
+    }
+
+    /// Allocates a node (the budget was checked by `put`) and its block.
+    pub(crate) fn alloc_node(&mut self, n: Node) -> NodeId {
+        let kind = if n.is_leaf() { BlockKind::Data } else { BlockKind::Index };
+        let id = self.nodes.alloc_reserved(n);
+        self.dev.pin_new(id.index(), kind);
+        id
+    }
+
+    pub(crate) fn free_node(&mut self, id: NodeId) {
+        self.dev.release(id.index());
+        self.nodes.free(id);
     }
 }

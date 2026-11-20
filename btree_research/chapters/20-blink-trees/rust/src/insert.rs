@@ -54,8 +54,10 @@ use crate::blink::{BLinkTree, MAX_LEVELS, Page};
 /// level l (l >= 1) from which it followed a downlink. Like Postgres'
 /// BTStack it is only a HINT for finding the parent later: by then that node
 /// may have split, and the real parent may be further right.
-struct Stack {
+struct Stack<'p> {
     at: [NodeId; MAX_LEVELS],
+    /// TEST HOOK, carried along so that step 2 can reach it: see `Pause`.
+    root_built: Option<Callback<'p>>,
 }
 
 /// Result of step 2 for one split.
@@ -98,22 +100,56 @@ fn latch(tree: &BLinkTree, id: NodeId, exclusive: bool) -> Latch<'_> {
     }
 }
 
-/// TEST HOOK for `put_from`: a callback that runs while ONE writer stands
-/// still on its leaf. `abandon_splits` stops a split between its two steps;
-/// this stops a writer between its way down and its way up, which is the
-/// only moment at which its remembered parents can go stale.
-///
-/// It is called once, when the writer has found its leaf: the node with the
-/// given id is latched exclusively (by the paused writer), its flag is
-/// clear, and nothing has been inserted yet. No other latch is held. The
-/// callback may run whole operations on the tree, as other threads would in
-/// this gap. It must not touch the latched leaf: a `put` or `get` of a key
-/// in that leaf's range would wait for the paused writer forever. That is
-/// also why the leaf's page is passed in: the callback cannot latch it.
-pub type Pause<'p> = &'p mut dyn FnMut(&BLinkTree, NodeId, &Page);
+/// A test callback: the tree, a node id, and that node's page (passed in
+/// because the paused writer holds its latch, so the callback cannot).
+pub type Callback<'p> = &'p mut dyn FnMut(&BLinkTree, NodeId, &Page);
+
+/// TEST HOOK for `put_from`: callbacks that run while ONE writer stands
+/// still. `abandon_splits` stops a split between its two steps; `at_leaf`
+/// stops a writer between its way down and its way up, which is the only
+/// moment at which its remembered parents can go stale; `root_built` stops
+/// it in the middle of step 2 of a root split.
+#[derive(Default)]
+pub struct Pause<'p> {
+    /// Called once, when the writer has found its leaf: the node with the
+    /// given id is latched exclusively (by the paused writer), its flag is
+    /// clear, and nothing has been inserted yet. No other latch is held. The
+    /// callback may run whole operations on the tree, as other threads would
+    /// in this gap. It must not touch the latched leaf: a `put` or `get` of
+    /// a key in that leaf's range would wait for the paused writer forever.
+    pub at_leaf: Option<Callback<'p>>,
+    /// Called for every root this writer builds, when the new root is
+    /// complete and the root pointer has NOT been changed yet. The writer
+    /// holds the old root's latch, the new root's latch and the `meta`
+    /// mutex, so the callback must not start an operation on the tree (not
+    /// even `height()`). It may only look: at `root_id()` and at the page
+    /// it is given.
+    pub root_built: Option<Callback<'p>>,
+}
+
+impl<'p> Pause<'p> {
+    /// No callback: `put_from` is then `put` with a chosen starting node.
+    pub fn none() -> Pause<'p> {
+        Pause::default()
+    }
+
+    pub fn at_leaf(callback: Callback<'p>) -> Pause<'p> {
+        Pause {
+            at_leaf: Some(callback),
+            root_built: None,
+        }
+    }
+
+    pub fn root_built(callback: Callback<'p>) -> Pause<'p> {
+        Pause {
+            at_leaf: None,
+            root_built: Some(callback),
+        }
+    }
+}
 
 pub(crate) fn put(tree: &BLinkTree, key: u64, value: u64) -> Result<Option<u64>, OutOfNodes> {
-    put_from(tree, tree.root_id(), key, value, None)
+    put_from(tree, tree.root_id(), key, value, Pause::none())
 }
 
 /// `put` with the two things a test must control to reach a stale writer
@@ -128,10 +164,11 @@ pub(crate) fn put_from(
     start: NodeId,
     key: u64,
     value: u64,
-    pause: Option<Pause<'_>>,
+    pause: Pause<'_>,
 ) -> Result<Option<u64>, OutOfNodes> {
     let mut stack = Stack {
         at: [NodeId::NIL; MAX_LEVELS],
+        root_built: pause.root_built,
     };
 
     // ---- Descend to the leaf whose key range contains `key`. -------------
@@ -146,7 +183,7 @@ pub(crate) fn put_from(
             drop(held);
             held = latch(tree, id, true);
         }
-        (id, held) = move_right(tree, id, held, key, &stack)?;
+        (id, held) = move_right(tree, id, held, key, &mut stack)?;
         if held.level == 0 {
             match held {
                 Latch::Exclusive(guard) => break guard,
@@ -170,7 +207,7 @@ pub(crate) fn put_from(
     // TEST HOOK: the writer knows its leaf and its (hinted) parents, and
     // the rest of the world moves on. Everything in `stack` may be out of
     // date when the callback returns; `insert_parent` must cope.
-    if let Some(at_leaf) = pause {
+    if let Some(at_leaf) = pause.at_leaf {
         at_leaf(tree, id, &leaf);
     }
 
@@ -201,7 +238,7 @@ pub(crate) fn put_from(
         return Ok(None);
     }
     // Step 2. Whether it succeeds or not, the put itself has succeeded.
-    let _ = insert_parent(tree, id, leaf, &stack);
+    let _ = insert_parent(tree, id, leaf, &mut stack);
     Ok(None)
 }
 
@@ -216,7 +253,7 @@ fn move_right<'a>(
     start: NodeId,
     mut held: Latch<'a>,
     key: u64,
-    stack: &Stack,
+    stack: &mut Stack<'_>,
 ) -> Result<(NodeId, Latch<'a>), OutOfNodes> {
     let mut id = start;
     loop {
@@ -312,7 +349,7 @@ fn finish_split(
     tree: &BLinkTree,
     left_id: NodeId,
     left: RwLockWriteGuard<'_, Page>,
-    stack: &Stack,
+    stack: &mut Stack<'_>,
 ) -> Finish {
     assert!(left.incomplete_split);
     let result = insert_parent(tree, left_id, left, stack);
@@ -332,7 +369,7 @@ fn insert_parent(
     tree: &BLinkTree,
     left_id: NodeId,
     mut left: RwLockWriteGuard<'_, Page>,
-    stack: &Stack,
+    stack: &mut Stack<'_>,
 ) -> Finish {
     assert!(left.incomplete_split);
     let level = left.level as usize;
@@ -359,12 +396,18 @@ fn insert_parent(
                 let mut root = tree.write(new_root);
                 root.node.internal_mut().children[0] = left_id;
                 root.node.internal_insert_at(0, separator, right_id);
+                // TEST HOOK: the new root is complete and nobody can see it.
+                if let Some(root_built) = stack.root_built.as_mut() {
+                    root_built(tree, new_root, &root);
+                }
             }
             meta.level_head[level + 1] = new_root;
             meta.height = level + 2;
             left.incomplete_split = false;
-            // Publishing the root last: a reader that still starts at the
-            // old root finds everything by moving right.
+            // Publish the root LAST. Readers load the root pointer without
+            // any lock, so from this store on they may be inside the new
+            // node; before it they start at the old root and find
+            // everything by moving right.
             tree.root.store(new_root.index() as u32, Ordering::Release);
             tree.completed_splits.fetch_add(1, Ordering::Relaxed);
             return Finish::Done;

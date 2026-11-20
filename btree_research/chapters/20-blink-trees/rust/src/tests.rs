@@ -7,7 +7,8 @@
 //!     complete split between "read the parent" and "visit the child";
 //!   * `put_from` starts a writer at a former root and can pause it on its
 //!     leaf (`Pause`), so a test can split, half-split or outgrow the
-//!     parents that writer remembers before it climbs back up.
+//!     parents that writer remembers before it climbs back up. It can also
+//!     stop the writer between filling a new root and publishing it.
 //!
 //! Only the last tests use threads, and they assert nothing about timing.
 
@@ -339,8 +340,9 @@ fn a_full_node_table_put_fails_cleanly_or_leaves_a_legal_incomplete_split() {
         if tree.incomplete_splits() > 0 {
             saw_incomplete = true;
         }
-        // Overwrites need no node and still work, unless the leaf is flagged
-        // and cannot be finished.
+        // An overwrite needs no node. It still fails if a node on its path
+        // (the root, an internal node or the leaf) is flagged, because the
+        // writer must finish that split first: see the next test.
         if let Ok(old) = tree.put(0, 1) {
             assert_eq!(old, Some(0));
         }
@@ -349,6 +351,59 @@ fn a_full_node_table_put_fails_cleanly_or_leaves_a_legal_incomplete_split() {
     }
     assert!(saw_clean_failure);
     assert!(saw_incomplete);
+}
+
+#[test]
+fn a_full_table_puts_that_need_no_node_fail_too_when_a_flag_on_their_path_cannot_be_cleared() {
+    {
+        // Six nodes. put 10 splits leaf #4; its parent #2 is full and there
+        // is no node left to split it, so #4 stays flagged.
+        let tree = BLinkTree::new(4, 6);
+        for key in 1..=10u64 {
+            assert_eq!(tree.put(key, key * 100), Ok(None));
+        }
+        let state = "height 2, 10 keys, 6 nodes\n\
+             \x20 level 1: #2[3 5 7]\n\
+             \x20 level 0: #0(1 2)<3 -> #1(3 4)<5 -> #3(5 6)<7 -> #4(7 8)<9 {incomplete} -> #5(9 10) {no downlink}\n";
+        assert_eq!(dump_string(&tree), state);
+        // Puts that do not come through #4 work: these are overwrites.
+        for key in 1..=6u64 {
+            assert_eq!(tree.put(key, key * 100), Ok(Some(key * 100)));
+        }
+        // Every put that is routed to #4 must finish its split first and
+        // cannot: an overwrite (7 to 10) fails exactly like an insert (11),
+        // although #5 has room for 11.
+        for key in 7..=11u64 {
+            assert_eq!(tree.put(key, 1), Err(OutOfNodes));
+        }
+        // Nothing was changed by the failed puts, and readers do not care.
+        assert_eq!(dump_string(&tree), state);
+        for key in 1..=10u64 {
+            assert_eq!(tree.get(key), Some(key * 100));
+        }
+        tree.validate().unwrap();
+        expect_no_latch_held(&tree);
+    }
+    {
+        // Two nodes: the root leaf splits and there is no node for the new
+        // root. Every put starts at the flagged root, so every put fails.
+        let tree = BLinkTree::new(4, 2);
+        for key in 1..=4u64 {
+            assert_eq!(tree.put(key, key * 100), Ok(None));
+        }
+        let state = "height 1, 4 keys, 2 nodes\n\
+             \x20 level 0: #0(1 2)<3 {incomplete} -> #1(3 4) {no downlink}\n";
+        assert_eq!(dump_string(&tree), state);
+        for key in 1..=5u64 {
+            assert_eq!(tree.put(key, 1), Err(OutOfNodes));
+        }
+        assert_eq!(dump_string(&tree), state);
+        for key in 1..=4u64 {
+            assert_eq!(tree.get(key), Some(key * 100));
+        }
+        tree.validate().unwrap();
+        expect_no_latch_held(&tree);
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -389,7 +444,7 @@ fn a_paused_writer_whose_parent_split_meanwhile_re_finds_the_downlink_by_moving_
     };
     // put 32 goes down #2 -> #3 and is paused there. #3 is full: it will split.
     assert_eq!(
-        tree.put_from(tree.root_id(), 32, 3200, Some(&mut others)),
+        tree.put_from(tree.root_id(), 32, 3200, Pause::at_leaf(&mut others)),
         Ok(None)
     );
 
@@ -435,7 +490,8 @@ fn two_paused_writers_a_half_split_parent_and_a_grown_root_finish_first_then_fin
         // #1 splits. Its remembered parent #2 is flagged: the split of
         // #2 is finished first (that builds the new root #7), and only
         // then does #2 receive the downlink (22, #6).
-        t.put_from(t.root_id(), 22, 2200, Some(&mut third)).unwrap();
+        t.put_from(t.root_id(), 22, 2200, Pause::at_leaf(&mut third))
+            .unwrap();
         assert_eq!(t.root_id(), id(7));
         assert_eq!(t.stats().half_splits, t.stats().completed_splits);
         assert_eq!(t.stats().finished_later, 2); // #3 by the third writer, #2 by the second
@@ -443,7 +499,7 @@ fn two_paused_writers_a_half_split_parent_and_a_grown_root_finish_first_then_fin
     // put 12: paused on #0. When it started, #2 was the root, so it remembers
     // no node above #2.
     assert_eq!(
-        tree.put_from(tree.root_id(), 12, 1200, Some(&mut second)),
+        tree.put_from(tree.root_id(), 12, 1200, Pause::at_leaf(&mut second)),
         Ok(None)
     );
 
@@ -484,7 +540,7 @@ fn a_writer_that_starts_at_an_old_root_moves_right_then_finds_the_parent_level_t
     // It splits. The writer came through no node of level 1 and #1 is not
     // the root, so step 2 starts at level_head[1]. It must NOT build a root.
     let before = tree.stats().moves_right;
-    assert_eq!(tree.put_from(old_root, 6, 600, None), Ok(None));
+    assert_eq!(tree.put_from(old_root, 6, 600, Pause::none()), Ok(None));
     assert_eq!(tree.stats().moves_right - before, 1);
     tree.validate().unwrap();
     assert_eq!(
@@ -494,6 +550,45 @@ fn a_writer_that_starts_at_an_old_root_moves_right_then_finds_the_parent_level_t
          \x20 level 0: #0(1 2)<3 -> #1(3 4)<5 -> #3(5 6)\n"
     );
     expect_all_found(&tree, &[1, 2, 3, 4, 5, 6]);
+    expect_no_latch_held(&tree);
+}
+
+#[test]
+fn a_root_split_fills_the_new_root_before_it_publishes_it() {
+    let tree = BLinkTree::new(4, 8);
+    for key in [1, 2, 3] {
+        tree.put(key, key * 100).unwrap();
+    }
+
+    // Readers load the root pointer without a lock. The moment it changes,
+    // a reader may be inside the new root, so the node must be complete
+    // BEFORE the pointer is stored. The hook stands between the two and
+    // writes down what a reader arriving at that moment would get:
+    // (root pointer, id of the new root, copy of the new root).
+    let mut seen: Vec<(NodeId, NodeId, Page)> = Vec::new();
+    let mut root_built = |t: &BLinkTree, new_root_id: NodeId, new_root: &Page| {
+        seen.push((t.root_id(), new_root_id, new_root.clone()));
+    };
+    // put 4 splits the root leaf #0 (new sibling #1) and builds the root #2.
+    assert_eq!(
+        tree.put_from(tree.root_id(), 4, 400, Pause::root_built(&mut root_built)),
+        Ok(None)
+    );
+
+    assert_eq!(seen.len(), 1);
+    let (root_pointer, new_root_id, new_root) = &seen[0];
+    // Not published yet: a descent that starts now starts at the old root.
+    assert_eq!(*root_pointer, id(0));
+    // And already complete: one separator, two children.
+    assert_eq!(*new_root_id, id(2));
+    assert_eq!(new_root.level, 1);
+    assert_eq!(new_root.node.key_slice(), [3]);
+    assert_eq!(new_root.node.child_slice(), [id(0), id(1)]);
+
+    // Afterwards it is the root.
+    assert_eq!(tree.root_id(), id(2));
+    tree.validate().unwrap();
+    expect_all_found(&tree, &[1, 2, 3, 4]);
     expect_no_latch_held(&tree);
 }
 
@@ -547,7 +642,7 @@ fn moving_right_on_an_internal_level_a_stale_reader_and_a_stale_writer() {
     // internal levels is what keeps the walk short.
     assert_eq!(tree.meta_snapshot().level_head[1], id(2));
     let before = tree.stats().moves_right;
-    assert_eq!(tree.put_from(id(2), 33, 3300, None), Ok(None));
+    assert_eq!(tree.put_from(id(2), 33, 3300, Pause::none()), Ok(None));
     assert_eq!(tree.stats().moves_right - before, 2);
     assert_eq!(tree.get(33), Some(3300));
     tree.validate().unwrap();

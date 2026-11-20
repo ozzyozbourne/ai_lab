@@ -274,20 +274,23 @@ impl BLinkTree {
 
     /// Inserts or overwrites. Returns the previous value if the key existed.
     /// Safe to call from several threads at once: note `&self`, not
-    /// `&mut self`. On `Err(OutOfNodes)` the tree content is unchanged.
+    /// `&mut self`. On `Err(OutOfNodes)` the key was not inserted and no
+    /// value was changed. A put that needs no node can fail this way too: a
+    /// writer must finish every half-finished split on its path first, and
+    /// that needs a node if the parent is full or the split is the root's.
     pub fn put(&self, key: u64, value: u64) -> Result<Option<u64>, OutOfNodes> {
         crate::insert::put(self, key, value)
     }
 
     /// TEST HOOK: `put` that starts its descent at `start` (the leftmost node
-    /// of a level, i.e. a former root) and can be paused on its leaf. See
-    /// `insert::put_from`.
+    /// of a level, i.e. a former root) and can be paused on its leaf or
+    /// before it publishes a new root. See `insert::put_from`.
     pub fn put_from(
         &self,
         start: NodeId,
         key: u64,
         value: u64,
-        pause: Option<Pause<'_>>,
+        pause: Pause<'_>,
     ) -> Result<Option<u64>, OutOfNodes> {
         crate::insert::put_from(self, start, key, value, pause)
     }

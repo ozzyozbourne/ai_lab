@@ -61,7 +61,8 @@ Two things are separate from this routine and matter just as much.
 **The append fast path.** If the cell that does not fit is the last cell of the
 right-most leaf, the workload is probably appending. Balancing would spread the full
 pages out again and leave room where nobody will ever insert. So do the cheapest thing:
-give the new cell a fresh page and leave the old one 100% full.
+give the new cell a fresh page and leave the old one as full as it is (100% when all
+cells have one size).
 
 **When to bother on delete.** Repairing overflow is mandatory, because a page cannot
 hold more than its capacity. Repairing underflow is optional. A half-empty page is a
@@ -183,6 +184,11 @@ inserted and the tree is exactly as before.
 `delete` shows the asymmetry. It returns `bool`, not an error union. If the optional
 rebalance runs out of memory, the tree is left underfull, which is still valid. A page
 that became completely empty is unlinked by `removeEmpty`, which needs no memory.
+Nothing is reported to the caller and nothing retries: the page stays below the
+policy's threshold until a later delete balances it or one of its neighbours. That is
+acceptable only because underflow repair is pure policy in this model. An engine whose
+free-space accounting or free list depends on the merge having happened must propagate
+the error instead.
 
 `removeEmpty` removes divider `i` from the parent. That hands the key range of child
 `i` to its **right** neighbour without changing any other page.
@@ -206,7 +212,8 @@ Same names in snake case, same tests, same output. The differences:
 - **Underflow repair cannot fail in Rust.** A rebalance after a delete never needs more
   pages than it started with, so the budget never bites. In Zig it can still fail,
   because scratch memory is an allocation too. The two "failed" tests therefore differ
-  in their second half.
+  in their second half, and the Zig test of an emptied page whose rebalance fails has a
+  Rust twin in which the same deletes simply merge.
 - `validate` returns `Result<(), &'static str>` with a reason instead of Zig's single
   `error.Invalid`; `partition_point` replaces `std.sort.lowerBound`; `Vec::splice`
   replaces `replaceRangeAssumeCapacity`.
@@ -356,8 +363,10 @@ here are:
   `ends` here.
 - Even out, right to left (`btree.rs:4312` onward; stop condition at
   `btree.rs:4384-4390`). The comment borrowed from SQLite says "This adjustment is not
-  optional" (`btree.rs:4311`): for index pages the packing could otherwise leave the
-  last sibling empty.
+  optional" (`btree.rs:4311`), because after packing left "the right-most sibling might
+  be completely empty". The comment does not say for which pages. This chapter's reading
+  is that it concerns pages whose boundary cell moves up into the parent (exercise 5);
+  in the model here, pack-left alone never leaves a page empty.
 - Table-leaf dividers are not part of the redistributed cells; a new divider is built
   from the left page id and the rowid of the last cell on the left page
   (`btree.rs:4622-4630`). The model's parent works the same way.
@@ -435,7 +444,8 @@ page pointing at freed memory after the first reset.
 
 The failure tests use `std.testing.allocator` behind `checkAllAllocationFailures` (a
 run of puts must return `OutOfMemory` and leak nothing at every allocation index) and a
-`FailingAllocator` to show that a failed `put` leaves no trace.
+`FailingAllocator` to show that a failed `put` leaves no trace, that a failed merge is
+skipped, and that a page emptied while the rebalance cannot allocate is still unlinked.
 
 ## Pitfalls
 

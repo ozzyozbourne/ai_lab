@@ -53,7 +53,7 @@
   var bars = new C.RangeBars(fig.stage, { rowH: 22 });
   var counters = el('div');
   fig.side.appendChild(el('div.bt-panel', el('div.bt-panel-title', 'Counters'), el('div.bt-panel-body', counters)));
-  var code = C.wrapCode(BTViz.codePanel(fig.side, 'checkZone', { title: 'The three-way test', maxHeight: 560 }));
+  var code = C.wrapCode(BTViz.codePanel(fig.side, 'checkZone', { title: 'The three-way test', maxHeight: 330 }));
 
   var zm, filter, result;
   var stepper = new BTViz.Stepper({

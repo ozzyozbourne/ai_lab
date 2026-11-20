@@ -24,6 +24,7 @@ test {
     _ = @import("base_tests_insert.zig");
     _ = @import("topdown.zig");
     _ = @import("tests_topdown.zig");
+    _ = @import("tests_alloc.zig");
     _ = @import("measure.zig");
     _ = @import("scenario.zig");
     _ = @import("prng.zig");

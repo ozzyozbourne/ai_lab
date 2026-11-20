@@ -28,7 +28,6 @@ pub fn run(gpa: Allocator, w: *Writer) !void {
 fn show(db: *const Db, w: *Writer) !void {
     try w.writeAll("  ");
     try lib.dump.dump(db, w);
-    try w.flush(); // DEBUG
 }
 
 /// `put` plus one line saying which transaction it was and what the index
@@ -74,6 +73,10 @@ fn vacuum(db: *Db, w: *Writer, options: lib.VacuumOptions) !void {
     try w.print("vacuum (horizon {d}): removed {d} entries, unlinked {d} pages, recycled {d}, waiting {d}\n", .{
         r.horizon, r.entries_removed, r.pages_unlinked, r.pages_recycled, r.pages_waiting,
     });
+}
+
+fn outcome(done: bool) []const u8 {
+    return if (done) "done" else "refused";
 }
 
 fn printRows(w: *Writer, cursor: *Cursor, db: *Db, limit: usize) !void {
@@ -131,13 +134,13 @@ fn versionsAndHints(gpa: Allocator, w: *Writer) !void {
     });
 }
 
-/// Twelve rows 10..120, then rows 40..90 deleted while snapshot R is open.
+/// Twelve rows 10..120, then rows 30..80 deleted while snapshot R is open.
 fn buildWithDeletedRange(db: *Db, gpa: Allocator) !u64 {
     var key: u64 = 10;
     while (key <= 120) : (key += 10) _ = try db.put(gpa, key, key * 10);
     const r = try db.store.openSnapshot();
-    key = 40;
-    while (key <= 90) : (key += 10) _ = db.delete(key);
+    key = 30;
+    while (key <= 80) : (key += 10) _ = db.delete(key);
     return r;
 }
 
@@ -147,7 +150,7 @@ fn vacuumAndPageDeletion(gpa: Allocator, w: *Writer) !void {
 
     try w.writeAll("\n== 4. VACUUM removes only what the oldest snapshot cannot see ==\n");
     const r = try buildWithDeletedRange(&db, gpa);
-    try w.print("put 10..120 (xid 1..12), open snapshot R = {d}, delete 40..90 (xid 13..18)\n", .{r});
+    try w.print("put 10..120 (xid 1..12), open snapshot R = {d}, delete 30..80 (xid 13..18)\n", .{r});
     try show(&db, w);
     try vacuum(&db, w, .{ .delete_pages = false });
     try scan(&db, w, "R", r);
@@ -162,9 +165,10 @@ fn vacuumAndPageDeletion(gpa: Allocator, w: *Writer) !void {
     try w.print("open snapshot S = {d}; a scan under S returns:", .{s});
     try printRows(w, &cursor, &db, 2);
     const target = cursor.next_leaf;
+    const neighbour = db.index.nodes.get(target).kind.leaf.next;
     try w.print(" and pauses; the next page it will read is #{d}\n", .{target.index()});
 
-    try w.print("phase 1, mark #{d} half-dead: {s}\n", .{ target.index(), if (db.index.markHalfDead(target)) "done" else "refused" });
+    try w.print("phase 1, mark #{d} half-dead: {s}\n", .{ target.index(), outcome(db.index.markHalfDead(target)) });
     try show(&db, w);
     db.index.unlinkHalfDead(&db.store, db.index.leftSibling(target), target);
     try w.print("phase 2, unlink #{d}: stamped with epoch {d}\n", .{ target.index(), db.store.now });
@@ -173,17 +177,16 @@ fn vacuumAndPageDeletion(gpa: Allocator, w: *Writer) !void {
     const moved_before = db.reads.moved_right;
     try w.writeAll("the scan resumes:");
     try printRows(w, &cursor, &db, 100);
-    try w.print(" | moved right past {d} dead page(s)\n", .{db.reads.moved_right - moved_before});
+    try w.print(" | moved right past {d} deleted page\n", .{db.reads.moved_right - moved_before});
     db.store.closeSnapshot(s);
     try w.print("close snapshot S; recycle (horizon {d}): {d} pages\n", .{ db.store.horizon(), db.index.recycle(db.store.horizon()) });
     try show(&db, w);
     try put(&db, gpa, w, 11, 110);
     try put(&db, gpa, w, 12, 120);
     try show(&db, w);
+    try w.print("mark #{d} (the rightmost child of its parent) half-dead: {s}\n", .{ neighbour.index(), outcome(db.index.markHalfDead(neighbour)) });
     try vacuum(&db, w, .{});
     try show(&db, w);
-    const last = db.index.leftSibling(.nil);
-    try w.print("mark the rightmost leaf #{d} half-dead: {s}\n", .{ last.index(), if (db.index.markHalfDead(last)) "done" else "refused" });
     try db.validate();
 }
 
@@ -212,12 +215,12 @@ fn recyclingTooEarly(gpa: Allocator, w: *Writer) !void {
     } else |err| {
         try w.print("the scan resumes at once: error.{t} (the page is on the free list)\n", .{err});
     }
-    try put(&db, gpa, w, 11, 110);
-    try put(&db, gpa, w, 12, 120);
+    try put(&db, gpa, w, 111, 1110);
+    try put(&db, gpa, w, 112, 1120);
     try show(&db, w);
-    try w.writeAll("the scan resumes after that:");
+    try w.writeAll("the scan resumes after the split:");
     try printRows(w, &cursor, &db, 100);
-    try w.writeAll(" <- rows 100..120 are missing and the scan cannot tell\n");
+    try w.writeAll(" <- 90, 100 and 110 are missing, and nothing reports an error\n");
 }
 
 const ModelConfig = struct {

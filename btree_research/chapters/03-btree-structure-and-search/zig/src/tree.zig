@@ -101,7 +101,7 @@ pub fn HandTree(comptime M: usize, comptime PoolFn: fn (type) type) type {
             // levels. The root may have 2 children, other nodes at least t.
             const child_capacity = height_mod.maxKeys(M, h - 1);
             var n_children: usize = if (is_root) 2 else (M + 1) / 2;
-            while ((keys.len - (n_children - 1)).divCeil(n_children) > child_capacity) n_children += 1;
+            while ((keys.len - (n_children - 1) + n_children - 1) / n_children > child_capacity) n_children += 1; // ceil
 
             // n_children - 1 keys stay here as separators; the others are
             // dealt out evenly, the left children taking the remainder.

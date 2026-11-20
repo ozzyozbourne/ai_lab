@@ -20,6 +20,12 @@
 .ch10-slots td.v { white-space: normal; word-break: break-all; }
 .ch10-msg { font-size: .82rem; color: var(--bt-muted); min-height: 1.2em; flex-basis: 100%; }
 .ch10-keys { font-size: .85rem; }
+/* The reserved tail: an inert block in its own colour, not hatched like free space. */
+.bt-pb.r-dead.s-active { background-image: none; background-color: var(--s-bg); }
+/* Header fields: the squares hold only the value, this line under the picture names them. */
+.ch10-header { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 12px; font-size: .78rem; color: var(--bt-muted); }
+.ch10-header b { font-family: var(--bt-mono); color: var(--bt-text); font-weight: 600; }
+.ch10-header span { white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -44,10 +50,16 @@ Press <b>Play</b>, or step with <kbd>→</kbd> and <kbd>←</kbd>. Then type you
   <li><b>Delete the lowest cell.</b> No free block: the gap simply grows.</li>
   <li><b>Scenario "Fragmented page".</b> The page has enough free bytes for the new cell but no single piece is
       large enough, so the insert compacts first. Slot numbers stay; offsets change.</li>
+  <li><b>Reserved tail: 4 bytes.</b> The content area ends 4 bytes before the end of the buffer, and no operation
+      reads or writes those bytes: they belong to the caller. Chapter 22 keeps a page checksum there. The number is
+      stored in the header byte <code>reserved</code>, so a page read back from disk knows where its content ends.
+      The programs' scenario uses the default, 0.</li>
+  <li><b>Your own operations are appended</b> to the history: step back with <kbd>←</kbd> or press Home to see how
+      the page got into its current shape.</li>
 </ul>
-<p class="ch10-keys">Header fields in the picture: <code>n</code> = cell_count, <code>top</code> = content_start,
-<code>ff</code> = first_free (offset of the first free block), <code>fr</code> = frag_bytes, <code>k</code> = kind
-(caller-defined), then the 8-byte user area. Hover any byte for details.</p>
+<p class="ch10-keys">The 16 header squares show values only. In order: cell_count (2 bytes), content_start (2),
+first_free (2, offset of the first free block, 0 = none), frag_bytes (1), kind (1, caller-defined), reserved (1),
+then the 7-byte user area. The line under the picture repeats them with names. Hover any byte for details.</p>
 
 <p>Read the chapter: <a href="../README.md">README.md</a> · exercises and <a href="../solutions.md">solutions</a>.
 Previous visualization: <a href="../../09-pages-and-the-buffer-pool/viz/index.html">09 Pages and the buffer pool</a> ·
@@ -72,6 +84,7 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
     legend: [
       { token: 'pointer', label: 'slot (offset of a cell)' }, { token: 'key', label: 'cell (key + value)' },
       { token: 'free', label: 'gap / free block' }, { token: 'merge', label: 'fragment byte' },
+      { token: 'node-active', label: 'reserved tail (caller-owned)' },
       { token: 'key-compare', label: 'compared by the search' }, { token: 'key-found', label: 'chosen place' },
       { token: 'key-inserted', label: 'written in this step' }, { token: 'key-deleted', label: 'being removed' }
     ]
@@ -81,6 +94,8 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
   var stage = el('div.ch10-stage');
   fig.stage.appendChild(stage);
   var pv = new BTViz.PageView(stage, { cols: 16, regions: false, ariaLabel: 'Slotted page, one square per byte' });
+  var headerLine = el('div.ch10-header', { 'aria-label': 'Header fields' });
+  stage.appendChild(headerLine);
   var chips = el('div.bt-page-regions');
   stage.appendChild(chips);
   var hexHost = el('details.ch10-hex', { open: 'open' }, el('summary', 'Raw bytes (hex). Highlighted: the bytes this step wrote, or the bytes the search read.'));
@@ -110,7 +125,7 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
       ['top -= size;', 'self.buf[top..top + size].copy_from_slice', 'self.wr16(HEADER_SIZE + i * SLOT_SIZE, top);']],
     'inserted': ['insert', ['@memmove(self.buf[at + slot_size .. end + slot_size]', 'self.wr16(at, off);'], ['self.buf.copy_within(at..end, at + SLOT_SIZE);', 'self.wr16(at, off);']],
     'unslot': ['delete', ['@memmove(self.buf[at .. end - slot_size]'], ['self.buf.copy_within(at + SLOT_SIZE..end, at);']],
-    'freed-reset': ['delete', ['self.wr16(off_content_start, page_size);'], ['self.wr16(OFF_CONTENT_START, PAGE_SIZE);']],
+    'freed-reset': ['delete', ['self.wr16(off_content_start, self.usableSize());'], ['self.wr16(OFF_CONTENT_START, self.usable_size());']],
     'freed-gap': ['delete', ['self.wr16(off_content_start, end);'], ['self.wr16(OFF_CONTENT_START, end);']],
     'freed-block': ['delete', ['self.wr16(start, next);', 'self.wr16(start + 2, end - start);'], ['self.wr16(start, next);', 'self.wr16(start + 2, end - start);']]
   };
@@ -128,9 +143,11 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
     });
     LINES[name] = { panel: m[0], spec: spec };
   });
+  LINES['compact-plain'] = { panel: 'compact', spec: { zig: [], rust: [] } };   // show the function, highlight nothing
 
   // ---- model + step generation ---------------------------------------------------
-  var page, pageSize = 256, rand = BTViz.rng(10);
+  var page, pageSize = 256, reserved = 0, rand = BTViz.rng(10);
+  var MAX_HISTORY = 400;   // steps kept when the reader's operations are appended
 
   function q(s) { return s === '' ? '""' : s; }
   function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
@@ -151,6 +168,7 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
     // Fragments always carry the "merge" colour; everything else comes from the step.
     var h = { cells: {}, slots: {}, pointers: [] };
     view.frags.forEach(function (f) { h.cells['x:' + f.offset] = 'merge'; });
+    if (view.reserved) h.cells['r:tail'] = 'active';
     if (extra) {
       Object.keys(extra.cells || {}).forEach(function (id) { h.cells[id] = extra.cells[id]; });
       h.slots = extra.slots || {};
@@ -221,17 +239,26 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
           break;
         case 'compact-start':
           push({
-            state: v, hi: { cells: freeHi(v, 'compare'), pointers: 'all' },
+            state: v, code: 'compact-plain', hi: { cells: freeHi(v, 'compare'), pointers: 'all' },
             caption: 'Compact. The page has ' + st.freeBytes + ' free bytes in ' + plural(1 + st.freeBlockCount + v.frags.length, 'piece') +
               ': gap ' + st.gap + ', ' + plural(st.freeBlockCount, 'free block') + ' (' + st.freeBlockBytes + ' bytes), ' + plural(st.fragBytes, 'fragment byte') + '.'
           });
           break;
         case 'compacted':
+          // `cur` is the page just before the compaction. Say what it really did.
+          var same = cur.bytes.every(function (b, i) { return b === v.bytes[i]; });
+          var wasOnePiece = cur.stats.freeBlockCount === 0 && cur.stats.fragBytes === 0;
           push({
-            state: v, code: 'compacted', hi: { pointers: 'all' }, hold: 1.6,
-            caption: 'Compacted: every cell was rewritten from the end of the page in slot order (slot 0 is now last). Free blocks and fragments are gone; all ' +
-              st.freeBytes + ' free bytes are one gap. <b>Slot numbers did not change, the offsets stored in them did</b>, so anything that remembered an offset is now wrong.',
-            logResult: e.explicit ? { html: '→ gap ' + st.gap, state: 'found' } : null
+            state: v, code: same ? 'compact-plain' : 'compacted', hi: { pointers: 'all' }, hold: 1.6,
+            caption: same ?
+              '<b>Nothing to compact.</b> ' + (v.rows.length ? 'The cells already sit at the end of the page in slot order, and all ' :
+                'The page has no cells, and all ') + st.freeBytes + ' free bytes are already one gap. Not a single byte changed.' :
+              wasOnePiece ?
+                'Compacted: there was no free block and no fragment, so the gap stays ' + st.gap + ' bytes. The cells were still rewritten from the end of the page ' +
+                'in slot order (slot 0 is now last): before, they were in the order they had been written. <b>Slot numbers did not change, the offsets stored in them did.</b>' :
+                'Compacted: every cell was rewritten from the end of the page in slot order (slot 0 is now last). Free blocks and fragments are gone; all ' +
+                st.freeBytes + ' free bytes are one gap. <b>Slot numbers did not change, the offsets stored in them did</b>, so anything that remembered an offset is now wrong.',
+            logResult: e.explicit ? { html: same ? '→ nothing to do' : '→ gap ' + st.gap, state: 'found' } : null
           });
           break;
         case 'inserted':
@@ -300,7 +327,8 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
       var caption, answer, hi = null, code;
       if (e.how === 'reset') {
         answer = 2; code = 'freed-reset';
-        caption = 'That was the last cell. The page resets: content_start = ' + v.size + ', no free blocks, no fragments. Everything after the header is gap.';
+        caption = 'That was the last cell. The page resets: content_start = ' + v.usable + ', no free blocks, no fragments. Everything after the header is gap' +
+          (v.reserved ? ' (up to the reserved tail).' : '.') + ' The bytes of the cell are not erased; they are simply no longer referenced.';
       } else if (e.how === 'gap') {
         answer = 2; code = 'freed-gap';
         caption = 'The freed bytes ' + (e.mergedNext ? '(together with the free block that followed them) ' : '') +
@@ -343,7 +371,10 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
     if (off < 4) return 'content_start';
     if (off < 6) return 'first_free';
     if (off < 7) return 'frag_bytes';
-    if (off < 16) return 'kind / user area';
+    if (off < 8) return 'kind';
+    if (off < 9) return 'reserved';
+    if (off < 16) return 'user area';
+    if (off >= view.usable) return 'reserved tail';
     var slotsEnd = 16 + view.slots.length * 2;
     if (off < slotsEnd) return 'slot array';
     if (off < view.stats.contentStart) return 'gap';
@@ -376,13 +407,23 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
     pv.items.forEach(function (it, key) {
       if (key.indexOf('c|f:') === 0) it.el.title = it.el.title.replace(/^dead cell /, 'free block: ');
       else if (key.indexOf('c|x:') === 0) it.el.title = it.el.title.replace(/^dead cell\s*:?/, 'fragment:');
+      else if (key.indexOf('c|r:') === 0) it.el.title = it.el.title.replace(/^dead cell reserved/, 'reserved tail (caller-owned, never touched by the page)');
+    });
+    // PageView writes "name=value" into each header field, which does not fit a one-byte
+    // field. Keep only the value in the squares and name the fields in a line of text.
+    headerLine.textContent = '';
+    v.header.forEach(function (f, i) {
+      var lab = pv.hfLayer && pv.hfLayer.children[i];
+      if (lab) lab.textContent = f.name === 'user area' ? f.name : String(f.value);
+      if (f.name !== 'user area') headerLine.appendChild(el('span', f.name + ' ', el('b', String(f.value))));
     });
 
     chips.textContent = '';
     chips.appendChild(chip('node', 'header 0–15'));
     chips.appendChild(chip('pointer', v.slots.length ? 'slots 16–' + (slotsEnd - 1) + ' →' : 'slots (none) →'));
     chips.appendChild(chip('free', 'gap ' + st.gap + ' B'));
-    chips.appendChild(chip('key', st.contentStart < v.size ? '← content ' + st.contentStart + '–' + (v.size - 1) : '← content (none)'));
+    chips.appendChild(chip('key', st.contentStart < v.usable ? '← content ' + st.contentStart + '–' + (v.usable - 1) : '← content (none)'));
+    if (v.reserved) chips.appendChild(chip('node-active', 'reserved ' + v.usable + '–' + (v.size - 1)));
 
     var prev = index > 0 ? stepper.state(index - 1) : null;
     var ranges = prev ? diffRanges(prev, v) : [];
@@ -462,16 +503,19 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
   function initialStep(caption) {
     return { caption: caption, state: page.view(), highlight: hl(page.view(), { pointers: 'all' }) };
   }
+  function tailNote() {
+    return reserved ? ' The last ' + reserved + ' bytes are the reserved tail: the content area ends at ' + page.usable + ', and the page never touches them.' : '';
+  }
   function loadReadme() {
-    page = new Ch10.Page(pageSize);
-    var steps = [initialStep('An empty ' + pageSize + '-byte page: a 16-byte header, then nothing but gap. content_start = ' + pageSize +
-      ' means the content area is empty. Press Play to run the chapter\'s worked example.')];
+    page = new Ch10.Page(pageSize, reserved);
+    var steps = [initialStep('An empty ' + pageSize + '-byte page: a 16-byte header, then nothing but gap. content_start = ' + page.usable +
+      ' means the content area is empty.' + tailNote() + ' Press Play to run the chapter\'s worked example.')];
     Ch10.PART_ONE.forEach(function (op) { steps = steps.concat(opSteps(op)); });
     stepper.setSteps(steps);
     return steps;
   }
   function loadFragmented() {
-    page = new Ch10.Page(pageSize);
+    page = new Ch10.Page(pageSize, reserved);
     var n = 0, i, name = function (j) { return 'k' + ('0' + j).slice(-2); };
     while (page.fits(3, 9)) { page.put(name(n), 'vvvvvvvvv'); n++; }
     for (i = 0; i < n; i += 2) page.delete(name(i));
@@ -484,8 +528,8 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
     stepper.setSteps(steps.concat(opSteps(['put', 'big', big])));
   }
   function loadEmpty() {
-    page = new Ch10.Page(pageSize);
-    stepper.setSteps([initialStep('An empty ' + pageSize + '-byte page. Type a key and a value, then press Put.')]);
+    page = new Ch10.Page(pageSize, reserved);
+    stepper.setSteps([initialStep('An empty ' + pageSize + '-byte page.' + tailNote() + ' Type a key and a value, then press Put.')]);
   }
 
   // ---- toolbar ---------------------------------------------------------------------
@@ -496,9 +540,24 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
     el('option', { value: 'readme' }, 'Worked example (README)'), el('option', { value: 'frag' }, 'Fragmented page'), el('option', { value: 'empty' }, 'Empty page'));
   var sizeSel = el('select.bt-select#ch10-size', { 'aria-label': 'Page size' },
     el('option', { value: '256' }, '256 bytes'), el('option', { value: '128' }, '128 bytes'));
+  var resSel = el('select.bt-select#ch10-reserved', { 'aria-label': 'Reserved tail' },
+    el('option', { value: '0' }, '0 bytes'), el('option', { value: '4' }, '4 bytes'));
 
   function ascii(s) { return /^[\x20-\x7e]*$/.test(s); }
-  function play(steps) { msg.textContent = ''; stepper.setSteps(steps, { play: true }); }
+  /**
+   * Append the steps of one more operation to the history and play them. Everything
+   * before stays reachable with step back / Home, and the Operations log keeps its
+   * entries. Long histories lose whole operations from the front.
+   */
+  function play(steps) {
+    msg.textContent = '';
+    var all = stepper.steps.concat(steps), firstNew = all.length - steps.length, from = 0;
+    while (all.length - from > MAX_HISTORY && from < firstNew) {
+      from++;
+      while (from < firstNew && !all[from].log) from++;   // an operation starts at the step that carries its log line
+    }
+    stepper.setSteps(all.slice(from), { index: firstNew - from, play: true });
+  }
   function doPut() {
     if (!ascii(keyIn.value) || !ascii(valIn.value)) { msg.textContent = 'Printable ASCII only, please: one character is one byte here.'; return; }
     play(opSteps(['put', keyIn.value, valIn.value]));
@@ -518,11 +577,13 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
   function loadScenario() {
     msg.textContent = '';
     pageSize = +sizeSel.value;
+    reserved = +resSel.value;
     if (scenario.value === 'readme') loadReadme(); else if (scenario.value === 'frag') loadFragmented(); else loadEmpty();
   }
   [keyIn, valIn].forEach(function (input) { input.addEventListener('keydown', function (e) { if (e.key === 'Enter') doPut(); }); });
   scenario.addEventListener('change', loadScenario);
   sizeSel.addEventListener('change', loadScenario);
+  resSel.addEventListener('change', loadScenario);
   fig.toolbar.append(
     el('label.bt-field', 'Key', keyIn), el('label.bt-field', 'Value', valIn),
     el('button.bt-btn.bt-primary#ch10-put', { type: 'button', onclick: doPut }, 'Put'),
@@ -530,13 +591,17 @@ next: <a href="../../11-key-and-record-encoding/viz/index.html">11 Key and recor
     el('button.bt-btn#ch10-compact', { type: 'button', onclick: function () { play(opSteps(['compact'])); } }, 'Compact'),
     el('button.bt-btn#ch10-random', { type: 'button', onclick: doRandom }, 'Random op'),
     el('span.bt-toolbar-sep'),
-    el('label.bt-field', 'Scenario', scenario), el('label.bt-field', 'Page', sizeSel),
+    el('label.bt-field', 'Scenario', scenario), el('label.bt-field', 'Page', sizeSel), el('label.bt-field', 'Reserved tail', resSel),
     el('button.bt-btn#ch10-reset', { type: 'button', onclick: loadScenario }, 'Reset'),
     msg);
 
   // ---- self-tests: the JS model against the Zig/Rust programs -------------------------
   // The whole stdout of `zig build run` / `cargo run` (4096-byte page, parts 1 to 3).
   BTViz.selfTest('program output reproduced (3 parts)', Ch10.demoText(), window.CHAPTER_EXPECTED_OUTPUT);
+
+  // A page with a 4-byte reserved tail after 3000 operations of the shared stream: the same
+  // image hash is pinned in zig/src/model_test.zig and rust/src/model_test.rs.
+  BTViz.selfTest('reserved tail of 4 bytes: page image = Zig/Rust', Ch10.reservedImageHash(10, 3000, 300, 4), '5f6f7576b6c3ed44');
 
   loadReadme();
   // The picture shows the same scenario on a small page: every offset is lower by 4096 - 256.

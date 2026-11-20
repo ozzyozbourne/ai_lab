@@ -114,14 +114,14 @@ fn failureDemo(gpa: Allocator, w: *std.Io.Writer) !void {
     const bottom_before = bottom.counters;
     if (bottom.put(fgpa, 13, 13)) |_| return error.ExpectedOutOfMemory else |_| {}
     try bottom.validate();
-    try w.print("bottom-up put 13: OutOfMemory after {d} splits; keys={d}; tree unchanged:\n", .{ bottom.counters.splits - bottom_before.splits, bottom.len });
+    try w.print("bottom-up put 13: OutOfMemory; splits done: {d}; keys: {d}; tree unchanged:\n", .{ bottom.counters.splits - bottom_before.splits, bottom.len });
     try bottom.render(w, "  ");
 
     failing.fail_index = failing.alloc_index + 2;
     const top_before = top.counters;
     if (topdown.put(TrackedTree, &top, fgpa, 13, 13)) |_| return error.ExpectedOutOfMemory else |_| {}
     try top.validate();
-    try w.print("top-down put 13: OutOfMemory after {d} split; keys={d}; valid tree, same keys, new shape:\n", .{ top.counters.splits - top_before.splits, top.len });
+    try w.print("top-down put 13: OutOfMemory; splits done: {d}; keys: {d}; valid tree, same keys, new shape:\n", .{ top.counters.splits - top_before.splits, top.len });
     try top.render(w, "  ");
 
     failing.fail_index = std.math.maxInt(usize); // memory is back

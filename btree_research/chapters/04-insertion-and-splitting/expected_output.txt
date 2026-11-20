@@ -1,0 +1,119 @@
+== 1. Bottom-up insert: the canonical keys (M = 4: at most 3 keys per node) ==
+put 10: no split
+  [10]
+put 20: no split
+  [10 20]
+put 5: no split
+  [5 10 20]
+put 6: 1 split, the root split: height 2
+  [10]
+  [5 6] [20]
+put 12: no split
+  [10]
+  [5 6] [12 20]
+put 30: no split
+  [10]
+  [5 6] [12 20 30]
+put 7: no split
+  [10]
+  [5 6 7] [12 20 30]
+put 17: 1 split
+  [10 20]
+  [5 6 7] [12 17] [30]
+put 3: 1 split
+  [6 10 20]
+  [3 5] [7] [12 17] [30]
+put 25: no split
+  [6 10 20]
+  [3 5] [7] [12 17] [25 30]
+put 1: no split
+  [6 10 20]
+  [1 3 5] [7] [12 17] [25 30]
+put 15: no split
+  [6 10 20]
+  [1 3 5] [7] [12 15 17] [25 30]
+shape: height=2 nodes=5 leaves=4 keys=12 fill=80% splits=3 root_splits=1
+
+== 2. Top-down insert (textbook, CLRS): the same keys ==
+put 10: no split
+put 20: no split
+put 5: no split
+put 6: 1 split, the root split: height 2
+put 12: no split
+put 30: no split
+put 7: no split
+put 17: 1 split
+put 3: 1 split
+put 25: 1 split, the root split: height 3
+put 1: no split
+put 15: no split
+  [10]
+  [6] [20]
+  [1 3 5] [7] | [12 15 17] [25 30]
+shape: height=3 nodes=7 leaves=4 keys=12 fill=57% splits=4 root_splits=2
+same keys and values as the bottom-up tree: yes
+
+== 3. A put that runs out of memory (the third node allocation fails) ==
+both trees before:
+  [3 6 9]
+  [1 2] [4 5] [7 8] [10 11 12]
+bottom-up put 13: OutOfMemory; splits done: 0; keys: 12; tree unchanged:
+  [3 6 9]
+  [1 2] [4 5] [7 8] [10 11 12]
+top-down put 13: OutOfMemory; splits done: 1; keys: 12; valid tree, same keys, new shape:
+  [6]
+  [3] [9]
+  [1 2] [4 5] | [7 8] [10 11 12]
+with memory again, bottom-up put 13:
+  [9]
+  [3 6] [12]
+  [1 2] [4 5] [7 8] | [10 11] [13]
+with memory again, top-down put 13:
+  [6]
+  [3] [9 11]
+  [1 2] [4 5] | [7 8] [10] [12 13]
+
+== 4. Fill and split cost, bottom-up: 100000 distinct keys per row (random: seed 4) ==
+   M  keys       variant    height   nodes    fill  splits  per 1000 puts  most in one put
+   3  ascending  bottom-up      16   99994   50.0%   99978          999.7               15
+   4  ascending  bottom-up      11   50002   66.6%   49991          499.9               10
+   5  ascending  bottom-up      10   49995   50.0%   49985          499.8                9
+   8  ascending  bottom-up       7   24999   57.1%   24992          249.9                6
+  16  ascending  bottom-up       5   12498   53.3%   12493          124.9                4
+  32  ascending  bottom-up       4    6249   51.6%    6245           62.4                3
+  64  ascending  bottom-up       4    3124   50.8%    3120           31.2                3
+ 128  ascending  bottom-up       3    1562   50.4%    1559           15.5                2
+ 256  ascending  bottom-up       3     782   50.1%     779            7.7                2
+   3  random     bottom-up      14   74697   66.9%   74683          746.8               13
+   4  random     bottom-up      11   51865   64.2%   51854          518.5               10
+   5  random     bottom-up       9   37038   67.4%   37029          370.2                8
+   8  random     bottom-up       7   21203   67.3%   21196          211.9                6
+  16  random     bottom-up       5    9731   68.5%    9726           97.2                4
+  32  random     bottom-up       4    4677   68.9%    4673           46.7                3
+  64  random     bottom-up       3    2280   69.6%    2277           22.7                2
+ 128  random     bottom-up       3    1124   70.0%    1121           11.2                2
+ 256  random     bottom-up       3     529   74.1%     526            5.2                2
+references: all nodes at the minimum = about 50%; textbook (Yao 1978), random inserts, large M: ln 2 = 69.3%
+
+== 5. Top-down against bottom-up on the same keys (even M only) ==
+   M  keys       variant    height   nodes    fill  splits  per 1000 puts  most in one put
+   4  ascending  bottom-up      11   50002   66.6%   49991          499.9               10
+   4  ascending  top-down       16   99990   33.3%   99974          999.7                3
+   8  ascending  bottom-up       7   24999   57.1%   24992          249.9                6
+   8  ascending  top-down        8   33329   42.8%   33321          333.2                2
+  16  ascending  bottom-up       5   12498   53.3%   12493          124.9                4
+  16  ascending  top-down        6   14285   46.6%   14279          142.7                1
+  64  ascending  bottom-up       4    3124   50.8%    3120           31.2                3
+  64  ascending  top-down        4    3226   49.2%    3222           32.2                1
+ 256  ascending  bottom-up       3     782   50.1%     779            7.7                2
+ 256  ascending  top-down        3     788   49.7%     785            7.8                1
+   4  random     bottom-up      11   51865   64.2%   51854          518.5               10
+   4  random     top-down       13   56970   58.5%   56957          569.5                4
+   8  random     bottom-up       7   21203   67.3%   21196          211.9                6
+   8  random     top-down        7   21626   66.0%   21619          216.1                3
+  16  random     bottom-up       5    9731   68.5%    9726           97.2                4
+  16  random     top-down        5    9806   67.9%    9801           98.0                2
+  64  random     bottom-up       3    2280   69.6%    2277           22.7                2
+  64  random     top-down        4    2304   68.8%    2300           23.0                2
+ 256  random     bottom-up       3     529   74.1%     526            5.2                2
+ 256  random     top-down        3     528   74.2%     525            5.2                1

@@ -64,8 +64,9 @@ of 11,594).
 
 So "leave the left page full" is right only when you know the next inserts go to the
 right. The fast path tests exactly that (last cell of the right-most leaf); pack-left
-alone applies it everywhere. For index pages it can also leave the last sibling with no
-cell at all, which is not a legal page (exercise 5).
+alone applies it everywhere. Where the boundary cell moves up into the parent it can,
+by the reasoning of exercise 5, also leave the last sibling with no cell at all, which
+is not a legal page.
 
 ## 4. Never free the right-most page
 
@@ -108,7 +109,9 @@ cell's size when it moves a boundary (`turso/core/storage/btree.rs:4224-4240`). 
 parent's free space also changes by the difference between old and new divider sizes,
 so the parent can overflow even when the number of pages stays the same.
 
-Why even-out is "not optional" here: suppose pack-left fills the first pages and the
+Why even-out is "not optional" here (this is the chapter's reading; the comment itself
+only says that the right-most sibling "might be completely empty" and does not name a
+page type): suppose pack-left fills the first pages and the
 last remaining cell is the one that does not fit. That cell becomes the divider, and
 the page after it gets nothing. An empty non-root page is not allowed in this format.
 Even-out pulls cells to the right until the last page is no longer the smaller one,

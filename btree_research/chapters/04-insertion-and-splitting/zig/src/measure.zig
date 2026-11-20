@@ -127,7 +127,7 @@ test "random inserts fill nodes better than ascending inserts" {
     }
 }
 
-test "top-down never fills better than bottom-up on the same keys" {
+test "top-down holds the same keys; ascending keys at M = 4 leave it one third full" {
     const gpa = testing.allocator;
     var keys: [20_000]u64 = undefined;
     inline for (.{ KeyOrder.ascending, KeyOrder.random }) |order| {
@@ -136,8 +136,16 @@ test "top-down never fills better than bottom-up on the same keys" {
             const bottom = try build(M, .bottom_up, gpa, &keys);
             const top = try build(M, .top_down, gpa, &keys);
             try testing.expectEqual(bottom.shape.keys, top.shape.keys);
-            try testing.expect(top.splits >= bottom.splits); // it splits early, so at least as often
+            try testing.expectEqual(1 + top.splits + top.root_splits, top.shape.nodes);
+            // Which variant splits more often is NOT fixed (the scenario has
+            // a row where top-down needs one split fewer), so no assertion
+            // on that. What does hold: a put splits at most one node per level.
             try testing.expect(top.most_splits_in_one_put <= top.shape.height);
         }
     }
+    // With M = 4 a top-down split leaves 1 + 1 keys in nodes of 3 slots, and
+    // ascending keys never refill a left half: one third full.
+    fillKeys(&keys, .ascending, 0);
+    const worst = try build(4, .top_down, gpa, &keys);
+    try testing.expect(worst.fillPermille() >= 330 and worst.fillPermille() <= 340);
 }

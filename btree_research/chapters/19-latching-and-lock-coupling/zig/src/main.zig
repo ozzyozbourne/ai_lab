@@ -93,7 +93,7 @@ fn modelRun(gpa: Allocator, io: Io, w: *Writer) !void {
         };
         try tree.validate();
         try w.print("{s:<14} keys={d} height={d} nodes={d} leaf splits={d} internal splits={d} mismatches={d}\n", .{
-            lib.protocolName(protocol),             tree.len(),                                  tree.height(), tree.table.count(),
+            lib.protocolName(protocol),              tree.len(),                                  tree.height(), tree.table.count(),
             tree.stats.leaf_splits.load(.monotonic), tree.stats.internal_splits.load(.monotonic), mismatches,
         });
     }
@@ -130,13 +130,20 @@ const scenarios = [_]Scenario{
         },
     },
     .{
+        .title = "A = put 26, frozen at leaf #3 (full; its parent #6 has room: #6 and #3 stay latched)",
+        .frozen = .{ .put = 26 },
+        .others = &.{
+            .{ .op = .{ .get = 12 }, .note = "under #2" },
+            .{ .op = .{ .put = 11 }, .note = "under #2" },
+            .{ .op = .{ .get = 17 }, .note = "under #6" },
+        },
+    },
+    .{
         .setup = &.{ 8, 9 },
-        .title = "after put 8, put 9: A = put 2, frozen at leaf #0 (full, under the full node #2: both stay latched)",
+        .title = "after put 8, put 9: A = put 2, frozen at leaf #0 (full; its parent #2 is full too: #7, #2 and #0 stay latched)",
         .frozen = .{ .put = 2 },
         .others = &.{
             .{ .op = .{ .get = 25 }, .note = "under #6" },
-            .{ .op = .{ .get = 12 }, .note = "under #2" },
-            .{ .op = .{ .put = 16 }, .note = "under #6" },
         },
     },
 };
@@ -146,8 +153,7 @@ fn probeDemo(gpa: Allocator, io: Io, w: *Writer) !void {
     for (scenarios) |s| {
         try w.print("{s}\n", .{s.title});
         try w.print("  {s:<22}", .{"B"});
-        for (lib.protocols) |p| try w.print(" {s:<15}", .{lib.protocolName(p)});
-        try w.writeByte('\n');
+        try w.writeAll(" global mutex    global rwlock   latch coupling\n");
         for (s.others) |other| {
             var label_buf: [32]u8 = undefined;
             const label = try std.fmt.bufPrint(&label_buf, "{t} {d} ({s})", .{ other.op, opKey(other.op), other.note });
@@ -163,7 +169,8 @@ fn probeDemo(gpa: Allocator, io: Io, w: *Writer) !void {
                     .completed => "finishes",
                     .blocked => |node| if (node == .nil) "waits" else try std.fmt.bufPrint(&cell_buf, "waits at #{d}", .{node.index()}),
                 };
-                try w.print(" {s:<15}", .{cell});
+                // The last column is not padded: no trailing spaces.
+                if (protocol == .latch_coupling) try w.print(" {s}", .{cell}) else try w.print(" {s:<15}", .{cell});
             }
             try w.writeByte('\n');
         }
@@ -205,21 +212,22 @@ fn rootDemo(gpa: Allocator, io: Io, w: *Writer) !void {
 }
 
 fn outOfNodesDemo(gpa: Allocator, io: Io, w: *Writer) !void {
-    try w.writeAll("\n== 5. A full node table: the failing put changes nothing ==\n");
+    try w.writeAll("\n== 5. A node table of 7: put 15 needs 3 new nodes (leaf, internal, root) ==\n");
     for (lib.protocols) |protocol| {
-        var tree: Tree = try .init(gpa, 4, protocol, 5);
+        var tree: Tree = try .init(gpa, 4, protocol, 7);
         defer tree.deinit(gpa);
         for (lib.canonical) |key| {
             const before = try dumpToString(gpa, &tree);
             defer gpa.free(before);
+            const used = tree.table.count();
             _ = tree.put(io, key, probe.valueOf(key)) catch {
                 const after = try dumpToString(gpa, &tree);
                 defer gpa.free(after);
                 try tree.validate();
-                try w.print("{s:<14} capacity 5: put {d} needs 3 nodes, {d} left: OutOfNodes; tree unchanged: {s}; locks left held: {s}\n", .{
-                    lib.protocolName(protocol),                  key,
-                    tree.table.capacity() - tree.table.count(), if (std.mem.eql(u8, before, after)) "yes" else "NO",
-                    if (tree.nothingLocked(io)) "none" else "SOME",
+                try w.print("{s:<14} put {d}: OutOfNodes; nodes used {d} -> {d} of 7; tree unchanged: {s}; locks still held: {s}\n", .{
+                    lib.protocolName(protocol),                          key,
+                    used,                                                tree.table.count(),
+                    if (std.mem.eql(u8, before, after)) "yes" else "NO", if (tree.nothingLocked(io)) "none" else "SOME",
                 });
                 break;
             };

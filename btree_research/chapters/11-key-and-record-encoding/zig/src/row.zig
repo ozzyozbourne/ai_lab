@@ -145,7 +145,7 @@ pub fn decodeKey(arena: Allocator, key: []const u8, schema: []const Column) Deco
 }
 
 /// Checks that `key` is a well-formed key for `schema`, without allocating:
-/// every column decodes, nothing is left over, and re-encoding each fixed
+/// every column decodes, nothing is left over, and re-encoding each float
 /// column gives the same bytes (so -0.0 or a stray NaN payload is caught).
 pub fn validateKey(key: []const u8, schema: []const Column) (keycodec.DecodeError || error{ TrailingBytes, NotCanonical })!void {
     var r: keycodec.KeyReader = .init(key);
@@ -228,7 +228,14 @@ test "validateKey and decodeKey reject malformed keys" {
     var buf: [64]u8 = undefined;
     const row = [_]Value{ .{ .text = "Ann" }, .{ .int = 7 }, .{ .int = 2 } };
     const key = try encodeKey(&buf, &row, &people);
-    try testing.expectError(error.Truncated, validateKey(key[0 .. key.len - 1], &people));
+    // Cut anywhere (inside the text, after its terminator, on a tag, inside
+    // an integer), the key is Truncated; decodeKey agrees.
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    for (0..key.len) |cut| {
+        try testing.expectError(error.Truncated, validateKey(key[0..cut], &people));
+        try testing.expectError(error.Truncated, decodeKey(arena_state.allocator(), key[0..cut], &people));
+    }
     buf[key.len] = 0;
     try testing.expectError(error.TrailingBytes, validateKey(buf[0 .. key.len + 1], &people));
 

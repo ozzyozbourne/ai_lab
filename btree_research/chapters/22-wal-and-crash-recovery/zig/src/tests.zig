@@ -292,15 +292,16 @@ test "the record buffer is a hard limit: CommitTooLarge" {
         try db.put("a", rep('1', 1000));
         try db.put("b", rep('2', 1000));
         try db.put("c", rep('3', 1000));
-        try testing.expectError(error.StorageFailure, db.put("d", rep('4', 1000))); // the root splits
+        try db.put("d", rep('4', 1000));
+        try testing.expectError(error.StorageFailure, db.put("e", rep('5', 1000))); // the root splits
         try testing.expectEqual(error.CommitTooLarge, db.wal.last_error.?);
     }
     machine.crash(.keep);
     const db = try openDb(&machine, .{});
     defer db.close();
     try db.validate();
-    try expectValue(db, "c", rep('3', 1000));
-    try expectValue(db, "d", null); // nothing of the failed operation reached a file
+    try expectValue(db, "d", rep('4', 1000));
+    try expectValue(db, "e", null); // nothing of the failed operation reached a file
 }
 
 test "allocation failure at any point leaves a recoverable database and leaks nothing" {

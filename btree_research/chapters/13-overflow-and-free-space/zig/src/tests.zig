@@ -165,6 +165,7 @@ fn runModel(storage: Storage, seed: u64, shape: Shape) !DiskBTree.Stats {
     try expectSameContent(&db.tree, &model);
     try db.pool.validate();
     try testing.expectEqual(1, db.tree.root); // the root never moved
+    try db.tree.flush(); // the caller may look at the storage afterwards
     addStats(&total, db.tree.stats);
     return total;
 }
@@ -185,6 +186,7 @@ test "model: memory storage, tiny pools, values of every size, deletes, reopen m
         var mem: MemStorage = .init(testing.allocator);
         defer mem.deinit();
         const stats = try runModel(mem.storage(), seed, shape);
+        std.debug.print("{any}\n", .{stats});
         try testing.expect(stats.pages_freed > 0 and stats.pages_reused > 0);
         if (shape.mixed) try testing.expect(stats.overflow_pages_written > 100);
         if (!shape.mixed) try testing.expect(stats.tree_pages_freed > 20 and stats.interior_splits > 0);

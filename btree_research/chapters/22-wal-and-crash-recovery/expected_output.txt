@@ -1,0 +1,91 @@
+Chapter 22: write-ahead log and crash recovery
+
+== Part 1: no log: one leaf split on a disk that loses power ==
+11 keys are on disk, flushed and synced:
+page 1  interior  1 keys  12/4076 bytes  | (2) 20 (3)
+  page 2  leaf      8 keys  3928/4076 bytes  next 3  | 01:324 03:372 05:420 06:444 07:468 10:540 12:588 17:708
+  page 3  leaf      3 keys  2724/4076 bytes  next -  | 20:780 25:900 30:1020
+put 15 splits leaf page 2; the new right half is page 4. put + flush issue:
+  write 1: main page 4  (zeroes: the file grows by one page)
+  write 2: main page 0
+  write 3: main page 1
+  write 4: main page 2
+  write 5: main page 4
+  sync main
+the tree after the split:
+page 1  interior  2 keys  24/4076 bytes  | (2) 12 (4) 20 (3)
+  page 2  leaf      6 keys  2616/4076 bytes  next 4  | 01:324 03:372 05:420 06:444 07:468 10:540
+  page 4  leaf      3 keys  1980/4076 bytes  next 3  | 12:588 15:660 17:708
+  page 3  leaf      3 keys  2724/4076 bytes  next -  | 20:780 25:900 30:1020
+the power fails after N writes; the unsynced writes are then dropped, kept or torn:
+N = 0: drop: before | keep: before | tear: before
+N = 1: drop: before | keep: invalid (UnreachablePage) | tear: invalid (UnreachablePage)
+N = 2: drop: before | keep: invalid (UnreachablePage) | tear: invalid (UnreachablePage)
+N = 3: drop: before | keep: invalid (KeyOutOfBounds) | tear: invalid (UnreachablePage)
+N = 4: drop: before | keep: invalid (BadPage) | tear: invalid (BadPage)
+N = 5: drop: before | keep: after | tear: invalid (BadPage)
+(before = the 11 old keys, valid tree; after = all 12 keys, valid tree)
+
+== Part 2: the same split through the write-ahead log ==
+11 keys are in the main file (checkpointed); the log is empty, generation 2
+put 15 changes 4 pages in memory; its commit appends to the log:
+  LSN 39  log bytes 4096..8216  image of page 0  crc 9f89b3f1
+  LSN 40  log bytes 8216..12336  image of page 1  crc dad04a9e
+  LSN 41  log bytes 12336..16456  image of page 2  crc 4144ab2b
+  LSN 42  log bytes 16456..20576  image of page 4  crc 3154f203
+  LSN 43  log bytes 20576..20600  commit (4 pages)  crc 2791045f
+storage calls of the put and of the checkpoint after it:
+  write 1: log page 1
+  write 2: log page 2
+  write 3: log page 3
+  write 4: log page 4
+  write 5: log page 5
+  sync log
+  write 6: main page 0
+  write 7: main page 1
+  write 8: main page 2
+  write 9: main page 4
+  sync main
+  write 10: log page 0
+  sync log
+the power fails after N writes; reopening runs recovery [what it found in the log]:
+N = 0: drop: before [0 records, 0 commit] | keep: before [0 records, 0 commit] | tear: before [0 records, 0 commit]
+N = 1: drop: before [0 records, 0 commit] | keep: before [0 records, 0 commit] | tear: before [0 records, 0 commit]
+N = 2: drop: before [0 records, 0 commit] | keep: before [1 records, 0 commit] | tear: before [0 records, 0 commit]
+N = 3: drop: before [0 records, 0 commit] | keep: before [2 records, 0 commit] | tear: before [0 records, 0 commit]
+N = 4: drop: before [0 records, 0 commit] | keep: before [3 records, 0 commit] | tear: before [0 records, 0 commit]
+N = 5: drop: before [0 records, 0 commit] | keep: after [5 records, 1 commit] | tear: before [0 records, 0 commit]
+N = 6: drop: after [5 records, 1 commit] | keep: after [5 records, 1 commit] | tear: after [5 records, 1 commit]
+N = 7: drop: after [5 records, 1 commit] | keep: after [5 records, 1 commit] | tear: after [5 records, 1 commit]
+N = 8: drop: after [5 records, 1 commit] | keep: after [5 records, 1 commit] | tear: after [5 records, 1 commit]
+N = 9: drop: after [5 records, 1 commit] | keep: after [5 records, 1 commit] | tear: after [5 records, 1 commit]
+N = 10: drop: after [5 records, 1 commit] | keep: after [0 records, 0 commit] | tear: after [5 records, 1 commit]
+
+== Part 3: a power cut after every write, four crash modes ==
+workload: 36 puts (seed 4), keys of 240 to 256 bytes, values of 700 to 1023 bytes
+no crash: splits: 16 leaf, 1 interior, 2 root (the tree grows to 3 levels)
+WITH the log (3-frame pool, checkpoint every 4 commits): 211 page writes, power cut after N = 0..211
+  mode    runs  before  after  open fails  invalid  wrong contents
+  drop     212     147     65           0        0               0
+  keep     212     111    101           0        0               0
+  tear     212     147     65           0        0               0
+  random   212     147     65           0        0               0
+WITHOUT the log (chapter 12: put, then flush): 129 page writes, power cut after N = 0..129
+  mode    runs  before  after  open fails  invalid  wrong contents
+  drop     130     130      0           0        0               0
+  keep     130       7     37           2       84               0
+  tear     130      21      3           2      104               0
+  random   130       7     10           2       97              14
+exactly the before or the after state: with the log 848 of 848 runs, without 215 of 520
+a second power cut during recovery (every 5th N, after each recovery write, keep and random): 524 of 524 runs exact
+
+== Part 4: what the log costs (the same 36 puts, no crash) ==
+the puts carry 39385 bytes of keys and values
+  checkpoint  log bytes  largest  page     log page  main page  syncs
+  every       appended   log      records  writes    writes
+  1              445848    24744      108       182        106    110
+  4              445848    66016      108       155         56     56
+  (largest commit: 6 page images; 37 commits)
+  16             445848   198144      108       148         24     42
+  never          445848   445848      108       146          0     38
+without the log: 129 page writes in place, no second copy, and Part 3's failures

@@ -350,15 +350,18 @@ fn price_of_inserts(w: &mut String) -> Result<(), Failure> {
     // A one-level fix: cut the array into page-sized chunks and keep a
     // directory with one slot per chunk. Inserting now shifts one chunk only,
     // but the directory is itself a sorted array with one slot per page.
+    // A slot is the first key of its chunk (8 bytes) plus where the chunk is
+    // (8 bytes): the same 16 bytes as an entry.
+    let slot_bytes = 2 * size_of::<u64>() as u64;
     writeln!(
         w,
-        "one level of chunks plus a directory (8 bytes per chunk):"
+        "one level of chunks plus a directory ({slot_bytes} bytes per chunk: first key and location):"
     )?;
     writeln!(w, "          keys       chunks  directory pages")?;
     let mut n: u64 = 1000;
     while n <= 1_000_000_000_000 {
         let chunks = n.div_ceil(ENTRIES_PER_PAGE as u64);
-        let directory_pages = (chunks * 8).div_ceil(PAGE_SIZE as u64);
+        let directory_pages = (chunks * slot_bytes).div_ceil(PAGE_SIZE as u64);
         writeln!(w, "{n:>14} {chunks:>12} {directory_pages:>16}")?;
         n *= 1000;
     }

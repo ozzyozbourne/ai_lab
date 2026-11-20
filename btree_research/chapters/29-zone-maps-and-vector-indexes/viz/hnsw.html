@@ -36,6 +36,8 @@ step. Try <em>ef = 1</em> first and use the button to find a query it gets wrong
 <li><strong>Order does not.</strong> Without an order there is no "too far" test, so the search can stop at a point
 that merely has no closer neighbour. Keeping several candidates (<code>ef</code>) lets it walk around such a spot.</li>
 <li><strong>This picture is HNSW-like, not HNSW.</strong> Each point is simply linked to its nearest points per layer.
+That is why layer 1 here falls into two pieces with no link between them: nearest-point links alone do not keep a
+layer connected, and the search only works because it arrives from layer 2 at the right piece.
 The real construction inserts points one at a time and chooses links with a heuristic that keeps the graph better
 connected; FAISS stores all links in one flat array (see the chapter text).</li>
 </ul>

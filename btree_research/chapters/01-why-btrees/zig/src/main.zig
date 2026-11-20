@@ -257,12 +257,15 @@ fn priceOfInserts(gpa: Allocator, w: *Io.Writer) !void {
     // A one-level fix: cut the array into page-sized chunks and keep a
     // directory with one slot per chunk. Inserting now shifts one chunk only,
     // but the directory is itself a sorted array with one slot per page.
-    try w.writeAll("one level of chunks plus a directory (8 bytes per chunk):\n");
+    // A slot is the first key of its chunk (8 bytes) plus where the chunk is
+    // (8 bytes): the same 16 bytes as an entry.
+    const slot_bytes = 2 * @sizeOf(u64);
+    try w.print("one level of chunks plus a directory ({d} bytes per chunk: first key and location):\n", .{slot_bytes});
     try w.writeAll("          keys       chunks  directory pages\n");
     var n: u64 = 1000;
     while (n <= 1_000_000_000_000) : (n *= 1000) {
         const chunks = (n + cost.entries_per_page - 1) / cost.entries_per_page;
-        const directory_pages = (chunks * 8 + cost.page_size - 1) / cost.page_size;
+        const directory_pages = (chunks * slot_bytes + cost.page_size - 1) / cost.page_size;
         try w.print("{d:>14} {d:>12} {d:>16}\n", .{ n, chunks, directory_pages });
     }
 }

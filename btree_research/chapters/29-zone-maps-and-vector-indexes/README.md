@@ -261,7 +261,8 @@ How to read it:
   data (row number plus a delay of up to 299) zones overlap their neighbours, so three or
   four chunks are scanned; `v = 777` reads 400 rows to find nothing. On `shuffled` data
   the zone map never helps. The last line shows that appends only touch the last zone.
-- Section 3. One probe finds 109 of the 120 true neighbours. Query 12 is the hand example again.
+- Section 3. One probe finds 109 of the 120 true neighbours. Query 12 is the hand
+  example again.
 - Section 4. In 16 dimensions with uniform data one probe finds 28% of the true
   neighbours, and it takes half the lists to reach 95%. These are counts from this
   program on this data, not a general law.

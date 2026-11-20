@@ -89,7 +89,11 @@ fn trace(w: &mut dyn Write) -> io::Result<()> {
     )?;
     writeln!(
         w,
-        "r = blocks read, w = blocks written by that one operation.\n"
+        "r = blocks read, w = blocks written by that one operation. Every block counts, index"
+    )?;
+    writeln!(
+        w,
+        "blocks too; nothing is cached; there is no log (the limits are listed under section 3).\n"
     )?;
 
     for op in TRACE_OPS {
@@ -272,14 +276,58 @@ fn dump_run(w: &mut dyn Write, run: &Run) -> io::Result<()> {
 
 // ------------------------------------------------- 3 to 5. workloads
 
-/// `num / den` with two decimals, by integer arithmetic only (truncated),
-/// so that Zig and Rust print the same digits. "-" when there is no data.
+/// `num / den` rounded to two decimals (half up), by integer arithmetic
+/// only, so that Zig and Rust print the same digits. "-" when there is no
+/// data.
 fn ratio(num: u64, den: u64) -> String {
     if den == 0 {
         return "-".to_string();
     }
-    let hundredths = num * 100 / den;
+    let hundredths = (num * 200 + den) / (den * 2);
     format!("{}.{:02}", hundredths / 100, hundredths % 100)
+}
+
+/// What the tables leave out. Printed under every table, because a ratio
+/// without its limits is the easiest thing in this chapter to misread.
+fn limits(w: &mut dyn Write, memtable_entries: usize) -> io::Result<()> {
+    writeln!(
+        w,
+        "Limits of these numbers (ratios are rounded to two decimals):"
+    )?;
+    writeln!(
+        w,
+        "  * No cache. Each operation reads every block it looks at from the device, index"
+    )?;
+    writeln!(
+        w,
+        "    levels included, in both structures. \"data blocks per get\" is what is left if"
+    )?;
+    writeln!(w, "    every index block of either structure is held in RAM.")?;
+    writeln!(
+        w,
+        "  * No write-ahead log, and so NOT the same durability. A B+tree write is on the"
+    )?;
+    writeln!(
+        w,
+        "    device when it returns. An LSM write is in RAM only until the next flush: up to {memtable_entries}"
+    )?;
+    writeln!(
+        w,
+        "    writes are lost in a crash. The \"+ 1 log block\" row is computed, not run: it adds"
+    )?;
+    writeln!(
+        w,
+        "    one block per LSM write, the price of the same promise without group commit."
+    )?;
+    writeln!(
+        w,
+        "  * A B+tree with a log and a buffer pool writes a hot page once for many updates,"
+    )?;
+    writeln!(w, "    so its write column is an upper bound.")
+}
+
+fn packed_blocks(keys: u64, per_block: u64) -> u64 {
+    keys.div_ceil(per_block)
 }
 
 fn row_count(w: &mut dyn Write, label: &str, a: u64, b: u64) -> io::Result<()> {
@@ -300,6 +348,7 @@ fn compare(w: &mut dyn Write, wl: &Workload, section: usize) -> io::Result<()> {
     let r = bench::run_workload(wl, bench::BENCH_ORDER, cfg);
     let (b, l) = (&r.btree, &r.lsm);
     let index = Kind::Index as usize;
+    let data = Kind::Data as usize;
     let per_block = cfg.block_entries as u64;
 
     writeln!(w, "\n== {section}. Workload: {} ==", wl.name)?;
@@ -342,6 +391,14 @@ fn compare(w: &mut dyn Write, wl: &Workload, section: usize) -> io::Result<()> {
         (bw * per_block, b.writes.ops),
         (lw * per_block, l.writes.ops),
     )?;
+    // Equal durability, computed: the B+tree already has it, the LSM would
+    // append to a log and write the log's last block on every operation.
+    row_ratio(
+        w,
+        "    same, + 1 log block per LSM write",
+        (bw * per_block, b.writes.ops),
+        ((lw + l.writes.ops) * per_block, l.writes.ops),
+    )?;
     row_ratio(
         w,
         "  blocks read per write",
@@ -363,9 +420,15 @@ fn compare(w: &mut dyn Write, wl: &Workload, section: usize) -> io::Result<()> {
     )?;
     row_ratio(
         w,
-        "    of which index blocks",
+        "    index blocks per get",
         (b.gets.io.reads[index], b.gets.ops),
         (l.gets.io.reads[index], l.gets.ops),
+    )?;
+    row_ratio(
+        w,
+        "    data blocks per get",
+        (b.gets.io.reads[data], b.gets.ops),
+        (l.gets.io.reads[data], l.gets.ops),
     )?;
     row_count(w, "short scans", b.scans.ops, l.scans.ops)?;
     row_ratio(
@@ -380,26 +443,42 @@ fn compare(w: &mut dyn Write, wl: &Workload, section: usize) -> io::Result<()> {
         (b.scans.io.total_reads(), b.scans.ops),
         (l.scans.io.total_reads(), l.scans.ops),
     )?;
-    let packed_blocks = (r.live_keys as u64).div_ceil(per_block);
+    // Space amplification = blocks on the device / data blocks that the keys
+    // live AT THAT MOMENT would fill if packed with no index and no slack.
+    let packed_end = packed_blocks(r.live_keys as u64, per_block);
     row_count(w, "blocks on the device at the end", b.blocks, l.blocks)?;
     row_count(
         w,
-        "  blocks if every live key were packed",
-        packed_blocks,
-        packed_blocks,
+        "  data blocks if the live keys were packed",
+        packed_end,
+        packed_end,
     )?;
     row_ratio(
         w,
         "  SPACE AMPLIFICATION (at the end)",
-        (b.blocks, packed_blocks),
-        (l.blocks, packed_blocks),
+        (b.blocks, packed_end),
+        (l.blocks, packed_end),
     )?;
-    row_count(w, "  most blocks at any moment", b.peak, l.peak)?;
+    let b_packed_peak = packed_blocks(b.peak_live_keys, per_block);
+    let l_packed_peak = packed_blocks(l.peak_live_keys, per_block);
+    row_count(w, "most blocks on the device at any moment", b.peak, l.peak)?;
+    row_count(
+        w,
+        "  live keys at that moment",
+        b.peak_live_keys,
+        l.peak_live_keys,
+    )?;
+    row_count(
+        w,
+        "  data blocks if those were packed",
+        b_packed_peak,
+        l_packed_peak,
+    )?;
     row_ratio(
         w,
-        "  space amplification (at the peak)",
-        (b.peak, packed_blocks),
-        (l.peak, packed_blocks),
+        "  SPACE AMPLIFICATION (at the peak)",
+        (b.peak, b_packed_peak),
+        (l.peak, l_packed_peak),
     )?;
 
     let s = r.lsm_stats;
@@ -417,14 +496,19 @@ fn compare(w: &mut dyn Write, wl: &Workload, section: usize) -> io::Result<()> {
         w,
         "LSM lookups: {} runs probed, {} of those without finding the key, {} runs skipped by min/max.",
         s.runs_probed, s.probes_wasted, s.runs_skipped
-    )
+    )?;
+    limits(w, cfg.memtable_entries)
 }
 
 fn growth_sweep(w: &mut dyn Write) -> io::Result<()> {
     writeln!(w, "\n== 6. The growth factor is the tuning knob ==")?;
     writeln!(
         w,
-        "LSM only, insert-heavy workload again, everything else unchanged.\n"
+        "LSM only, insert-heavy workload again, everything else unchanged: the same counting"
+    )?;
+    writeln!(
+        w,
+        "rule and the same limits as above (no cache, no log, not durable until a flush).\n"
     )?;
     writeln!(
         w,
@@ -457,6 +541,18 @@ fn growth_sweep(w: &mut dyn Write) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ratio_rounds_half_up_to_two_decimals() {
+        use super::ratio;
+        assert_eq!(ratio(14032, 10824), "1.30"); // 1.2964
+        assert_eq!(ratio(14032 * 15, 10824), "19.45"); // 19.4457
+        assert_eq!(ratio(1, 8), "0.13"); // 0.125: half goes up
+        assert_eq!(ratio(124, 1000), "0.12");
+        assert_eq!(ratio(1995, 1000), "2.00");
+        assert_eq!(ratio(3, 1), "3.00");
+        assert_eq!(ratio(3, 0), "-");
+    }
+
     #[test]
     fn run_prints_exactly_expected_output_txt() {
         let mut out = Vec::new();

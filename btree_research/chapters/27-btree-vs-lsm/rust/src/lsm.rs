@@ -91,7 +91,7 @@ pub struct Stats {
     pub versions_dropped: u64,
     pub tombstones_dropped: u64,
     /// Point lookups, per run: skipped thanks to the min/max check, probed
-    /// (2 block reads), and probed without finding the key.
+    /// (index path + 1 data block), and probed without finding the key.
     pub runs_skipped: u64,
     pub runs_probed: u64,
     pub probes_wasted: u64,
@@ -315,7 +315,7 @@ impl Lsm {
 
     /// Point lookup: newest place first, stop at the first place that knows
     /// the key (invariant 4). Each run that the min/max check cannot rule out
-    /// costs one index block and one data block.
+    /// costs its index path, root first, and one data block.
     pub fn get(&mut self, key: u64) -> Option<u64> {
         let mut result = self.mem.get(key);
         // `self.dev` and `self.stats` are borrowed next to the runs, so the
@@ -324,7 +324,7 @@ impl Lsm {
             if result != Lookup::Absent {
                 break;
             }
-            result = probe(&mut self.dev, &mut self.stats, run, key);
+            result = probe(&mut self.dev, &mut self.stats, geo, run, key);
         }
         match result {
             Lookup::Value(v) => Some(v),
@@ -399,12 +399,14 @@ impl Lsm {
     }
 }
 
-fn probe(dev: &mut Device, stats: &mut Stats, run: &Run, key: u64) -> Lookup {
+fn probe(dev: &mut Device, stats: &mut Stats, geo: Geometry, run: &Run, key: u64) -> Lookup {
     if !run.may_contain(key) {
         stats.runs_skipped += 1; // decided in RAM, no I/O
         return Lookup::Absent;
     }
-    dev.read(Kind::Index, 1);
+    // Root to data block, one block per level: the rule the B+tree's
+    // `find_leaf` is charged by.
+    dev.read(Kind::Index, geo.index_height(run.len()) as u64);
     dev.read(Kind::Data, 1);
     stats.runs_probed += 1;
     let result = run.find(key);

@@ -40,6 +40,19 @@ pub struct Side {
     /// Blocks allocated at the end, and the most at any moment.
     pub blocks: u64,
     pub peak: u64,
+    /// Live keys when the operation that set `peak` returned. Space
+    /// amplification at the peak divides by THIS, not by the final count:
+    /// the peak usually happens earlier, when fewer keys were live.
+    pub peak_live_keys: u64,
+}
+
+impl Side {
+    fn note_peak(&mut self, dev_peak: u64, live_keys: usize) {
+        if dev_peak > self.peak {
+            self.peak = dev_peak;
+            self.peak_live_keys = live_keys as u64;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -113,6 +126,8 @@ pub fn run_workload(wl: &Workload, order: usize, cfg: lsm::Config) -> Report {
     lsm.stats = lsm::Stats::default();
 
     let mut report = Report::default();
+    report.btree.note_peak(tree.dev.peak, oracle.len());
+    report.lsm.note_peak(lsm.dev.peak, oracle.len());
     let stream = OpStream::new(ops::Config {
         seed: wl.seed,
         count: wl.count,
@@ -171,16 +186,16 @@ pub fn run_workload(wl: &Workload, order: usize, cfg: lsm::Config) -> Report {
         };
         tree_tally.record(tree.dev.counters.since(&t0));
         lsm_tally.record(lsm.dev.counters.since(&l0));
+        report.btree.note_peak(tree.dev.peak, oracle.len());
+        report.lsm.note_peak(lsm.dev.peak, oracle.len());
     }
 
     tree.validate().expect("valid tree");
     lsm.validate().expect("valid lsm");
     report.live_keys = oracle.len();
     report.btree.blocks = tree.dev.live;
-    report.btree.peak = tree.dev.peak;
     report.btree_height = tree.height;
     report.lsm.blocks = lsm.dev.live;
-    report.lsm.peak = lsm.dev.peak;
     report.lsm_levels = lsm.deepest_level();
     report.lsm_l0_runs = lsm.l0.len();
     report.lsm_slots = lsm.slots_on_device();

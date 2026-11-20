@@ -323,9 +323,9 @@ one black binary node and up to two red ones and you get a red-black tree with t
     });
 
     /* Timeline for one damaged tree: an intro frame, then the walk. */
-    /* `own`: the reader replaced a key. The programs have no such line, and
-     * "x of 12 keys" would count the 12 canonical keys, one of which is no
-     * longer in the tree. So count the keys this tree holds. */
+    /* `own`: a tree the programs do not print (a key replaced by the reader,
+     * or one of the order 5 trees). "x of the 12 original keys" would count
+     * keys this tree may not hold, so count the keys it does hold. */
     function show(tree, what, searchable, play, own) { // own: panel title for a tree the programs do not print
       msg.textContent = '';
       var walk = M3.validateSteps(tree, k);

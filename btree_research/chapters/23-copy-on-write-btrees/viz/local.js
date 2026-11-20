@@ -9,7 +9,7 @@
  *
  *   var db = new Ch23.Cow(4);
  *   var steps = db.opPut(13);          // one transaction, recorded as Stepper steps
- *   db.opSnapshot(); db.opRelease(12); db.opTear();
+ *   db.opSnapshot(); db.opRelease(12); db.opTear(); db.opDoubleFault(9);
  *   db.save() / Ch23.Cow.load(json)    // plain-data checkpoint of the whole database
  */
 (function () {
@@ -68,17 +68,18 @@
     this.pending = [];               // {by: txn id, page}
     this.snaps = [];                 // {id, root, height, count, refs}, ascending by id
     this.cur = { txn: 0, root: null, height: 0, count: 0, pages: 0 };
+    this.prev = null;                // the committed root one commit back (the other meta slot), or null
     this.meta = [metaSlot(this.cur), { valid: false, never: true }];
     this.steps = null;               // recording target
   }
   Cow.prototype.maxKeys = function () { return this.order - 1; };
   Cow.prototype.minKeys = function () { return Math.ceil(this.order / 2) - 1; };
   Cow.prototype.save = function () {
-    return JSON.stringify({ order: this.order, slots: this.slots, free: this.free, pending: this.pending, snaps: this.snaps, cur: this.cur, meta: this.meta });
+    return JSON.stringify({ order: this.order, slots: this.slots, free: this.free, pending: this.pending, snaps: this.snaps, cur: this.cur, prev: this.prev, meta: this.meta });
   };
   Cow.load = function (json) {
     var d = JSON.parse(json), db = new Cow(d.order);
-    db.slots = d.slots; db.free = d.free; db.pending = d.pending; db.snaps = d.snaps; db.cur = d.cur; db.meta = d.meta;
+    db.slots = d.slots; db.free = d.free; db.pending = d.pending; db.snaps = d.snaps; db.cur = d.cur; db.prev = d.prev; db.meta = d.meta;
     return db;
   };
 
@@ -277,23 +278,28 @@
     this.rec('merge', t, { id: keepId, dropped: dropId });
   };
 
-  /** Applies the reclamation rule; returns the page ids released. */
+  /** The transaction id of the oldest root that must stay complete (Infinity when there is none). */
+  Cow.prototype.oldestKept = function () {
+    var oldest = this.snaps.length ? this.snaps[0].id : Infinity;
+    if (this.prev) oldest = Math.min(oldest, this.prev.txn);
+    return oldest;
+  };
+  /** Applies the reclamation rule; returns the entries released, [{page, by}]. */
   Cow.prototype.reclaim = function () {
-    var oldest = this.snaps.length ? this.snaps[0].id : Infinity, out = [];
+    var oldest = this.oldestKept(), out = [];
     while (this.pending.length && this.pending[0].by <= oldest) {
       var p = this.pending.shift();
       this.slots[p.page].state = 'free';
       this.free.push(p.page);
-      out.push(p.page);
+      out.push(p);
     }
     return out;
   };
   Cow.prototype.returnIds = function (t) { while (t.taken.length) this.free.push(t.taken.pop()); };
 
-  /** Commit, recorded in its phases. Returns {txn, copied, reused, fresh, freed, released}. */
-  Cow.prototype.commit = function (t) {
+  /** Commit, phase 2: the transaction's pages go into free slots of the store. Returns their ids. */
+  Cow.prototype.writePages = function (t) {
     var self = this, ids = Object.keys(t.dirty).map(Number);
-    if (!ids.length && !t.freed.length) { this.returnIds(t); return { txn: 0, copied: 0, reused: 0, fresh: 0, freed: 0, released: 0 }; }
     while (this.slots.length < t.nextNew) this.slots.push({ state: 'free', by: 0, gen: 0, node: null });
     ids.forEach(function (id) {
       var s = self.slots[id];
@@ -301,20 +307,28 @@
       self.slots[id] = { state: 'live', by: t.id, gen: s.gen + 1, node: t.dirty[id] };
     });
     t.scrapped.forEach(function (id) { self.free.push(id); });
-    var written = { ids: ids, dirty: t.dirty };
     t.dirty = {};                                     // the pages are in the store now
+    return ids;
+  };
+  /** Commit, recorded in its phases. Returns {txn, copied, reused, fresh, freed, released}. */
+  Cow.prototype.commit = function (t) {
+    var self = this;
+    if (!Object.keys(t.dirty).length && !t.freed.length) { this.returnIds(t); return { txn: 0, copied: 0, reused: 0, fresh: 0, freed: 0, released: 0 }; }
+    var ids = this.writePages(t);
     this.rec('commit-write', t, { ids: ids, written: true });
 
-    var oldRoot = this.cur.root, pinned = this.snaps.some(function (s) { return s.id === self.cur.txn; });
+    // The slot about to be overwritten names the root from two commits back. Unless a snapshot
+    // pins it, that root is on its way out: draw it once more.
+    var gone = this.prev, pinned = gone && this.snaps.some(function (s) { return s.id === gone.txn; });
+    var oldRoot = gone && !pinned ? gone.root : undefined;
+    this.prev = this.cur;
     this.cur = { txn: t.id, root: t.root, height: t.height, count: t.count, pages: this.slots.length };
     this.meta[t.id % 2] = metaSlot(this.cur);
-    this.rec('commit-flip', null, { ids: ids, slot: t.id % 2, oldRoot: pinned ? undefined : oldRoot });
+    this.rec('commit-flip', null, { ids: ids, slot: t.id % 2, oldRoot: oldRoot, gone: gone });
 
     t.freed.forEach(function (id) { self.pending.push({ by: t.id, page: id }); });
     var released = this.reclaim();
-    this.rec('retire', null, { freed: t.freed.slice(), released: released, oldRoot: pinned ? undefined : oldRoot, txn: t.id });
-    if (released.length) this.rec('done', null, { txn: t.id });
-    void written;
+    this.rec('retire', null, { freed: t.freed.slice(), released: released, oldRoot: oldRoot, txn: t.id });
     return { txn: t.id, copied: t.copied, reused: t.reused, fresh: t.fresh, freed: t.freed.length, released: released.length };
   };
   Cow.prototype.abort = function (t) {
@@ -337,7 +351,7 @@
     this.snaps.splice(i, 1);
     return this.reclaim();
   };
-  /** A torn commit can only be shown while the other slot holds a valid older commit. */
+  /** A lost slot can only be shown while the other slot holds a valid older commit. */
   Cow.prototype.canTear = function () { return this.meta[0].valid && this.meta[1].valid; };
   Cow.prototype.pick = function () {
     var a = this.meta[0].valid ? this.meta[0] : null, b = this.meta[1].valid ? this.meta[1] : null;
@@ -345,16 +359,44 @@
     if (!b) return a;
     return a.txn > b.txn ? a : b;
   };
-  /** What a restart does: pick a meta slot, forget readers, rebuild the free list by reachability. */
+  /** The valid slot that pick() did not choose, when it holds an older commit. */
+  Cow.prototype.fallback = function () {
+    var a = this.meta[0], b = this.meta[1];
+    if (!a.valid || !b.valid || a.txn === b.txn) return null;
+    return a.txn < b.txn ? a : b;
+  };
+  /** The set of pages of the tree a meta slot names, or null when that tree is not all there. */
+  Cow.prototype.treeComplete = function (m) {
+    var self = this, marks = {}, entries = 0, ok = true;
+    if (m.root === null) return m.height === 0 && m.count === 0 ? marks : null;
+    (function walk(id, depth) {
+      var s = self.slots[id];
+      if (!ok) return;
+      if (id >= m.pages || !s || !s.node || marks[id] || s.by === 0 || s.by > m.txn) { ok = false; return; }
+      marks[id] = true;
+      if (s.node.leaf) { entries += s.node.keys.length; if (depth !== m.height) ok = false; return; }
+      if (depth >= m.height) { ok = false; return; }
+      s.node.kids.forEach(function (c) { walk(c, depth + 1); });
+    })(m.root, 1);
+    return ok && entries === m.count ? marks : null;
+  };
+  /**
+   * What a restart does: pick a meta slot, check its tree, forget readers, keep the other slot's
+   * tree as the fallback if it is complete too, and rebuild the lists by reachability.
+   */
   Cow.prototype.reopen = function () {
-    var m = this.pick(), i;
+    var m = this.pick(), f = this.fallback(), i;
+    var live = this.treeComplete(m);
+    if (!live) throw new Error('the tree of transaction ' + m.txn + ' is not complete');
+    var kept = f && f.pages <= m.pages ? this.treeComplete(f) : null;
     this.cur = { txn: m.txn, root: m.root, height: m.height, count: m.count, pages: m.pages };
+    this.prev = kept ? { txn: f.txn, root: f.root, height: f.height, count: f.count, pages: f.pages } : null;
     this.snaps = []; this.pending = []; this.free = [];
     this.slots.length = m.pages;
-    var live = this.reachable(m.root);
     for (i = 0; i < this.slots.length; i++) {
-      this.slots[i].state = live[i] ? 'live' : 'free';
-      if (!live[i]) this.free.push(i);
+      this.slots[i].state = live[i] || (kept && kept[i]) ? 'live' : 'free';
+      if (live[i]) continue;
+      if (kept && kept[i]) this.pending.push({ by: m.txn, page: i }); else this.free.push(i);
     }
   };
 
@@ -408,14 +450,66 @@
     }
     if (this.cur.root !== null) walk(this.cur.root, this.cur.txn, true, this.cur.height, this.cur.count);
     for (i = 0; i < this.slots.length; i++) if (!cls[i]) errs.push('page #' + i + ' leaked');
+    if (this.prev && this.prev.root !== null) walk(this.prev.root, this.prev.txn, false, this.prev.height, this.prev.count);
+    var f = this.fallback();
+    if (f && !(this.prev && this.prev.txn === f.txn && this.prev.root === f.root)) errs.push('the fallback slot names a root nobody protects');
     this.snaps.forEach(function (s) { if (s.root !== null) walk(s.root, s.id, false, s.height, s.count); });
     return errs;
   };
 
+  /* ---------------------------------------------------------- who keeps a page alive */
+  /**
+   * The roots the database keeps complete, oldest first: [{txn, root, roles: [...], slot}].
+   * One root can have several roles (a snapshot of the previous commit is also the fallback).
+   */
+  Cow.prototype.keptRoots = function () {
+    var by = {}, cur = this.cur, self = this;
+    var add = function (txn, root, role) { (by[txn] = by[txn] || { txn: txn, root: root, roles: [] }).roles.push(role); };
+    this.snaps.forEach(function (s) { add(s.id, s.root, 'snap ' + s.id + (s.refs > 1 ? ' ×' + s.refs : '')); });
+    if (this.prev) add(this.prev.txn, this.prev.root, 'fallback');
+    add(cur.txn, cur.root, 'current');
+    return Object.keys(by).map(Number).sort(function (a, b) { return a - b; }).map(function (txn) {
+      var r = by[txn];
+      r.slot = self.meta.findIndex(function (m) { return m.valid && m.txn === txn && m.root === r.root; });
+      return r;
+    });
+  };
+  /** "the root of txn 12 (held by a snapshot; the fallback in meta slot 0)": computed from the model. */
+  Cow.prototype.describeRoot = function (r) {
+    var what = r.roles.map(function (role) {
+      return role === 'fallback' ? 'the fallback in meta slot ' + r.slot : role === 'current' ? 'the current root' : 'held by a snapshot';
+    });
+    return 'the root of txn ' + r.txn + ' (' + what.join('; ') + ')';
+  };
+  /** Kept roots other than the current one that reach `page`. */
+  Cow.prototype.holders = function (page) {
+    var self = this;
+    return this.keptRoots().filter(function (r) { return r.txn !== self.cur.txn && r.root !== null && self.reachable(r.root)[page]; });
+  };
+  /**
+   * One sentence per group of pending pages saying which kept root still reaches them, or that
+   * none does and they wait only because the rule compares transaction ids. Computed, never assumed.
+   */
+  Cow.prototype.pendingReasons = function () {
+    var self = this, groups = {}, order = [], oldest = this.oldestKept();
+    this.pending.forEach(function (p) {
+      var h = self.holders(p.page), key = h.map(function (r) { return r.txn; }).join(',');
+      if (!groups[key]) { groups[key] = { roots: h, pages: [], by: {} }; order.push(key); }
+      groups[key].pages.push(p.page); groups[key].by[p.by] = true;
+    });
+    return order.map(function (key) {
+      var g = groups[key], many = g.pages.length > 1;
+      if (g.roots.length) return pgs(g.pages) + ': still reached by ' + g.roots.map(function (r) { return self.describeRoot(r); }).join(' and by ') + '.';
+      return pgs(g.pages) + ': no kept root reaches ' + (many ? 'them' : 'it') + ' any more. ' + (many ? 'They wait' : 'It waits') + ' only because the rule compares transaction ids, and the oldest kept root (txn ' + oldest +
+        ') is older than transaction ' + Object.keys(g.by).join(', ') + ', which freed ' + (many ? 'them' : 'it') + '.';
+    }).join(' ');
+  };
+
   /* ---------------------------------------------------------- what the page draws */
   /**
-   * Plain-data picture of the database: a TreeView forest (one root per held snapshot, the committed
-   * root, and the open transaction's private root; shared pages are drawn once and referenced),
+   * Plain-data picture of the database: a TreeView forest (one root per held snapshot, the fallback
+   * root, the committed root, and the open transaction's private root; shared pages are drawn once
+   * and referenced),
    * plus the store, the lists and the meta slots.
    * opts.extra = {root, label}: one more root to draw (an old root on its way out).
    */
@@ -438,14 +532,10 @@
       return model;
     }
     if (opts.extra && opts.extra.root !== null && opts.extra.root !== undefined) forest.push(build(opts.extra.root, false, opts.extra.label));
-    var curPinned = false;
-    this.snaps.forEach(function (s) {
-      var isCur = s.id === cur.txn;
-      curPinned = curPinned || isCur;
-      if (s.root === null) return;
-      forest.push(build(s.root, false, (isCur ? 'current, ' : '') + 'snap ' + s.id + (s.refs > 1 ? ' ×' + s.refs : '')));
+    // Every root that is kept complete, oldest first: snapshots, the fallback, the current root.
+    this.keptRoots().forEach(function (r) {
+      if (r.root !== null) forest.push(build(r.root, false, r.roles.join(', ')));
     });
-    if (!curPinned && cur.root !== null) forest.push(build(cur.root, false, 'current'));
     var txnRoot = t ? (t.moved[t.root] !== undefined ? t.moved[t.root] : t.root) : null;
     if (t && txnRoot !== null && (t.dirty[txnRoot] || txnRoot !== cur.root)) forest.push(build(txnRoot, true, 'txn ' + t.id + ' open'));
 
@@ -460,6 +550,7 @@
       forest: forest.length ? forest : null, states: states, ofPage: ofPage, slots: slots, stored: this.slots.length,
       free: this.free.slice(), pending: this.pending.map(function (p) { return { page: p.page, by: p.by }; }),
       snaps: this.snaps.map(function (s) { return { id: s.id, root: s.root, refs: s.refs, count: s.count }; }),
+      prev: this.prev ? { txn: this.prev.txn, root: this.prev.root } : null,
       meta: this.meta.map(function (m) { return m.valid || !m.never ? { txn: m.txn, root: m.root, count: m.count, crc: hex8(m.crc), valid: m.valid } : { never: true, valid: false }; }),
       cur: { txn: cur.txn, root: cur.root, height: cur.height, count: cur.count },
       txn: t ? { id: t.id, copied: t.copied, reused: t.reused, fresh: t.fresh } : null
@@ -473,12 +564,14 @@
     var hl = { nodes: {}, keys: {} }, cap = '', log = null, lines = null, question = null;
     var at = function (id) { return pic.ofPage[id]; };
     var mark = function (id, state) { if (at(id)) hl.nodes[at(id)] = state; };
-    var who = this.snaps.length ? 'the snapshot of txn ' + this.snaps[0].id : 'a reader that started earlier';
+    var others, gone;
     switch (type) {
       case 'copy':
         mark(d.old, 'active'); mark(d.id, 'dirty');
-        cap = 'Page ' + pg(d.old) + ' ' + nodeText(this.slots[d.old].node) + ' has to change, but it belongs to a committed tree and ' + who +
-          ' may be reading it. So it is <b>copied</b> to page ' + pg(d.id) + (t.lastFrom === 'free' ? ', a page id taken from the free list' : ', a new page at the end of the store') +
+        others = this.holders(d.old);
+        cap = 'Page ' + pg(d.old) + ' ' + nodeText(this.slots[d.old].node) + ' has to change, but it is part of the committed tree of transaction ' + this.cur.txn +
+          (others.length ? ', and ' + others.map(function (r) { return self.describeRoot(r); }).join(' and ') + ' can reach it too' : '') +
+          '. A page that a committed root can reach is never modified, so it is <b>copied</b> to page ' + pg(d.id) + (t.lastFrom === 'free' ? ', a page id taken from the free list' : ', a new page at the end of the store') +
           '. The copy is private to transaction ' + t.id + '; whoever pointed at ' + pg(d.old) + ' in this transaction now points at ' + pg(d.id) +
           ', which is why the parent had to be copied first.';
         lines = { snippet: 'touch', part: 'copy' };
@@ -543,30 +636,34 @@
         d.ids.forEach(function (id) { mark(id, 'found'); });
         cap = '<b>Commit, part 2: the root flip.</b> One small write puts transaction ' + this.cur.txn + ', its root' + (this.cur.root === null ? ' (none)' : ' ' + pg(this.cur.root)) +
           ' and a checksum into meta slot ' + d.slot + ', the slot that did <em>not</em> hold the current root. From now on a reader that picks "valid slot with the higher id" finds the new tree. ' +
-          'Nothing was overwritten.';
+          'No page was overwritten. ' + (this.prev ? 'Meta slot ' + (1 - d.slot) + ' keeps transaction ' + this.prev.txn + ': it is the <b>fallback</b> if slot ' + d.slot + ' can ever not be read. ' : '') +
+          (d.gone ? 'Transaction ' + d.gone.txn + ', which slot ' + d.slot + ' named until now, can no longer be chosen by a restart.' : '');
         lines = { snippet: 'commit', part: 'flip' };
         log = 'commit txn ' + this.cur.txn + ' → root ' + (this.cur.root === null ? 'none' : '#' + this.cur.root);
         break;
       case 'retire':
-        if (!d.freed.length) { cap = 'This transaction replaced no committed page, so nothing has to be retired.'; break; }
+        d.freed.forEach(function (id) { mark(id, 'compare'); });
+        d.released.forEach(function (p) { mark(p.page, 'deleted'); });
+        if (!d.freed.length && !d.released.length && !this.pending.length) { cap = 'This transaction replaced no committed page, and no page was waiting: nothing to retire.'; break; }
+        if (d.freed.length) {
+          cap = 'The ' + plural(d.freed.length, 'page') + ' this transaction replaced (' + pgs(d.freed) + ') cannot be reached from the new root. ' +
+            (d.freed.length === 1 ? 'It goes' : 'They go') + ' to the <b>pending</b> list, tagged "freed by txn ' + d.txn + '", and must not be overwritten yet. ';
+        }
         if (d.released.length) {
-          d.freed.forEach(function (id) { mark(id, 'deleted'); });
-          cap = 'The ' + plural(d.freed.length, 'page') + ' this transaction replaced (' + pgs(d.freed) + ') cannot be reached from the new root, and no snapshot holds an older root. ' +
-            'They go to the <b>free list</b> at once and the next transaction may overwrite them.';
-          question = null;
-        } else {
-          d.freed.forEach(function (id) { mark(id, 'compare'); });
-          cap = 'The ' + plural(d.freed.length, 'page') + ' this transaction replaced (' + pgs(d.freed) + ') cannot be reached from the new root, but ' + who + ' still reads ' +
-            (d.freed.length === 1 ? 'it' : 'them') + '. They go to the <b>pending</b> list, tagged "freed by txn ' + d.txn + '", and must not be overwritten. ' +
-            'The two roots now share every page that is not on the copied path.';
-          question = { prompt: 'Transaction ' + d.txn + ' replaced ' + plural(d.freed.length, 'page') + ' while ' + who + ' is still held. What happens to the old pages?',
+          gone = {};
+          d.released.forEach(function (p) { gone[p.by] = true; });
+          cap += 'No kept root is older than transaction ' + Object.keys(gone).join(', ') + ' any more, so the ' + plural(d.released.length, 'page') + ' ' +
+            (d.released.length === 1 ? 'it' : 'they') + ' freed (' + pgs(d.released.map(function (p) { return p.page; })) + ') ' + (d.released.length === 1 ? 'moves' : 'move') + ' to the <b>free list</b>. ';
+        }
+        if (this.pending.length) cap += 'Pending, and why. ' + this.pendingReasons();
+        if (d.freed.length) {
+          others = this.holders(d.freed[0]);
+          question = { prompt: 'Transaction ' + d.txn + ' replaced ' + plural(d.freed.length, 'page') + '. What happens to the old ' + (d.freed.length === 1 ? 'page' : 'pages') + '?',
             choices: ['They go to the free list now', 'They wait on a pending list', 'They are overwritten with the new content'], answer: 1,
-            explain: 'A snapshot older than transaction ' + d.txn + ' can still reach them. They become reusable only when no such snapshot remains.' };
+            explain: (others.length ? others.map(function (r) { return self.describeRoot(r); }).join(' and ') + ' can still reach them. ' : '') +
+              'A page freed by transaction ' + d.txn + ' becomes reusable when no kept root older than ' + d.txn + ' remains: at the earliest when the next commit has overwritten the fallback slot.' };
         }
         lines = { snippet: 'reclaim', part: 'rule' };
-        break;
-      case 'done':
-        cap = 'Transaction ' + d.txn + ' is committed. ' + this.summary();
         break;
       case 'abort':
         d.ids.forEach(function (id) { mark(id, 'deleted'); });
@@ -583,13 +680,13 @@
         lines = d.lines || null;
         question = d.question || null;
     }
-    void self;
     this.steps.push({ type: type, caption: cap, state: pic, highlight: hl, log: log, lines: lines, question: question });
   };
   Cow.prototype.summary = function () {
     var c = this.cur, live = Object.keys(this.reachable(c.root)).length;
     return 'Current tree: ' + plural(c.count, 'key') + ' in ' + plural(live, 'page') + '. Store: ' + plural(this.slots.length, 'page') + ', ' +
-      this.free.length + ' free, ' + this.pending.length + ' pending' + (this.snaps.length ? ', ' + plural(this.snaps.length, 'pinned root') : '') + '.';
+      this.free.length + ' free, ' + this.pending.length + ' pending' + (this.snaps.length ? ', ' + plural(this.snaps.length, 'pinned root') : '') +
+      (this.prev ? ', fallback: txn ' + this.prev.txn : ', no fallback') + '.';
   };
 
   /* ---------------------------------------------------------- recorded operations */
@@ -617,13 +714,13 @@
         return;
       }
       if (abort) this.abort(t);
-      else if (!this.commit(t).released) this.note('Transaction ' + t.id + ' is committed. ' + this.summary());
+      else { this.commit(t); this.note('Transaction ' + t.id + ' is committed. ' + this.summary()); }
     });
   };
   Cow.prototype.opSnapshot = function () {
     return this.record(function () {
       var s = this.snapshot(), mark = {};
-      Object.keys(this.reachable(s.root)).forEach(function (id) { mark[id] = 'found'; });
+      if (s.root !== null) Object.keys(this.reachable(s.root)).forEach(function (id) { mark[id] = 'found'; });
       this.note(s.refs > 1
         ? 'A second reader takes the same root: the snapshot of transaction ' + s.id + ' now has ' + s.refs + ' references. The root stays pinned until every one of them is released.'
         : 'A reader takes a <b>snapshot</b>: a handle on the committed root' + (s.root === null ? ' (an empty tree)' : ' ' + pg(s.root)) + ' of transaction ' + s.id +
@@ -633,51 +730,79 @@
   };
   Cow.prototype.opRelease = function (id) {
     return this.record(function () {
-      var s = this.snaps.find(function (x) { return x.id === id; }), self = this;
+      var s = this.snaps.find(function (x) { return x.id === id; });
       if (s.refs > 1) {
         this.release(id);
         this.note('One handle on the snapshot of transaction ' + id + ' is released. ' + plural(s.refs, 'reference') + ' remain' + (s.refs === 1 ? 's' : '') + ', so the root stays pinned and nothing is freed.',
           { log: 'release txn ' + id + ' (' + s.refs + ' left)' });
         return;
       }
-      var isCur = id === this.cur.txn, older = this.snaps[0].id < id ? this.snaps[0].id : null;
-      var extra = isCur ? null : { root: s.root, label: 'released' };
-      var own = this.reachable(s.root);
-      var released = this.release(id), mark = {}, stay = [];
-      released.forEach(function (p) { mark[p] = 'deleted'; });
-      Object.keys(own).forEach(function (p) { if (self.pending.some(function (x) { return x.page === +p; })) stay.push(+p); });
+      var kept = this.keptRoots().some(function (r) { return r.txn === id && r.roles.length > 1; });
+      var extra = kept ? null : { root: s.root, label: 'released' };
+      var released = this.release(id), mark = {}, oldest = this.oldestKept();
+      released.forEach(function (p) { mark[p.page] = 'deleted'; });
       var text = 'The last handle on the snapshot of transaction ' + id + ' is released. ';
       if (released.length) {
-        text += 'The rule: a page freed by transaction T may be reused once no snapshot older than T remains. ' +
-          (this.snaps.length ? 'The oldest snapshot left is that of transaction ' + this.snaps[0].id : 'No snapshot is left') + ', so ' + plural(released.length, 'pending page') +
-          ' (' + pgs(released) + ') ' + (released.length === 1 ? 'moves' : 'move') + ' to the <b>free list</b>.' +
-          (this.pending.length ? ' ' + plural(this.pending.length, 'page') + ' stay pending for the snapshots that remain.' : '');
-      } else if (older !== null && this.pending.length) {
-        text += '<b>Nothing is freed.</b> The snapshot of transaction ' + older + ' is older than every transaction on the pending list, and the rule only looks at the oldest snapshot. ' +
-          (stay.length ? 'The pages only this root could reach (' + pgs(stay) + ') stay pending although nobody can read them any more: one long-lived reader holds back all later garbage.' : '');
+        text += 'The rule: a page freed by transaction T may be reused once no kept root older than T remains. The oldest kept root is now transaction ' + oldest +
+          ', so ' + plural(released.length, 'pending page') + ' (' + pgs(released.map(function (p) { return p.page; })) + ') ' + (released.length === 1 ? 'moves' : 'move') + ' to the <b>free list</b>. ';
+      } else if (this.pending.length) {
+        text += '<b>Nothing is freed</b>: the oldest kept root is transaction ' + oldest + ', and every pending page was freed by a later transaction. ';
       } else {
-        text += 'No page was waiting for it, so nothing moves.';
+        text += 'No page was waiting, so nothing moves.';
       }
-      this.note(text, { extra: released.length || stay.length ? extra : null, mark: mark, log: 'release txn ' + id + ': ' + released.length + ' freed', lines: { snippet: 'reclaim', part: 'rule' } });
-      if (released.length || (extra && stay.length)) this.note('Done. ' + this.summary());
+      if (this.pending.length) text += 'Pending, and why. ' + this.pendingReasons();
+      this.note(text, { extra: extra, mark: mark, log: 'release txn ' + id + ': ' + released.length + ' freed', lines: { snippet: 'reclaim', part: 'rule' } });
+      if (extra) this.note('Done. ' + this.summary());
     });
+  };
+  /** Draw `root` as an extra root only if a store of `pages` pages still holds all of it. */
+  Cow.prototype.drawable = function (root, pages) {
+    return root !== null && Object.keys(this.reachable(root)).every(function (id) { return +id < pages; });
   };
   /** The newest meta slot is torn (its checksum no longer matches), then the database restarts. */
   Cow.prototype.opTear = function () {
     return this.record(function () {
-      var slot = this.cur.txn % 2, lost = this.cur.txn;
+      var slot = this.cur.txn % 2, lost = this.cur.txn, before = this.cur.root;
+      var waiting = this.pending.filter(function (p) { return p.by === lost; }).map(function (p) { return p.page; });
       this.meta[slot].valid = false;
       this.meta[slot].crc = (this.meta[slot].crc ^ 0xFF00) >>> 0;
       this.note('<b>Crash during the root flip.</b> Suppose the write of meta slot ' + slot + ' for transaction ' + lost + ' was torn: the stored checksum no longer matches the bytes. ' +
         'The other slot was not touched by this commit.', { log: 'meta slot ' + slot + ' torn' });
-      var before = this.cur.root, keep = this.pick().pages;
-      // The lost tree can only be drawn if the restart does not cut its pages off the store.
-      if (!Object.keys(this.reachable(before)).every(function (id) { return +id < keep; })) before = this.pick().root;
+      var extra = this.drawable(before, this.pick().pages) ? { root: before, label: 'lost' } : null;
       this.reopen();
-      this.note('<b>Restart.</b> The reader takes the valid slot with the higher id: transaction ' + this.cur.txn + '. Its tree is complete, because transaction ' + lost +
-        ' wrote only into pages that this root could not reach. All of transaction ' + lost + ' is gone, and none of it is half there. (Snapshots are in-memory handles; a restart forgets them.)',
-        { extra: before !== this.cur.root ? { root: before, label: 'lost' } : null, log: 'restart → txn ' + this.cur.txn });
-      this.note('The free list was rebuilt as "every page the chosen root cannot reach". ' + this.summary());
+      this.note('<b>Restart.</b> The reader takes the valid slot with the higher id: transaction ' + this.cur.txn + '. Its tree is complete: transaction ' + lost +
+        ' wrote only into free pages' + (waiting.length ? ', and the ' + plural(waiting.length, 'page') + ' it replaced (' + pgs(waiting) + ') ' + (waiting.length === 1 ? 'was' : 'were') + ' still pending' : '') +
+        '. All of transaction ' + lost + ' is gone, and none of it is half there. (Snapshots are in-memory handles; a restart forgets them.)',
+        { extra: extra && extra.root !== this.cur.root ? extra : null, log: 'restart → txn ' + this.cur.txn });
+      this.note('The lists were rebuilt by walking the tree: every page the chosen root cannot reach is free. ' +
+        (this.prev ? 'The other slot still names transaction ' + this.prev.txn + ', so its pages are kept as the fallback. ' : 'No second readable slot is left, so there is no fallback until the next commit rewrites slot ' + slot + '. ') + this.summary());
+    });
+  };
+  /**
+   * Two faults at once: the next transaction (put `key`) loses power after writing its pages and
+   * before its meta write, and the slot of the newest commit turns out to be unreadable.
+   */
+  Cow.prototype.opDoubleFault = function (key) {
+    return this.record(function () {
+      var t = this.begin(), newest = this.cur.txn, slot = newest % 2, before = this.cur.root;
+      var waiting = this.pending.filter(function (p) { return p.by === newest; }).map(function (p) { return p.page; });
+      this.note('Transaction ' + t.id + ' begins: put ' + k(key) + '. This time the power will fail in the middle of its commit.', { log: 'put ' + key + ' (will crash)' });
+      this.txnPut(t, key, key * 100);
+      var ids = this.writePages(t);
+      this.rec('commit-write', t, { ids: ids, written: true });
+      this.meta[slot].valid = false;
+      this.meta[slot].crc = (this.meta[slot].crc ^ 0xFF00) >>> 0;
+      this.note('<b>Power fails</b> before the meta write of transaction ' + t.id + '. And when the machine comes back, meta slot ' + slot + ' (transaction ' + newest +
+        ', the newest commit) cannot be read: a bad sector. Two faults at once. The only readable slot is the one transaction ' + t.id + ' was about to overwrite.',
+        { txn: t, log: 'crash; meta slot ' + slot + ' unreadable' });
+      var extra = this.drawable(before, this.pick().pages) ? { root: before, label: 'lost' } : null;
+      this.reopen();
+      this.note('<b>Restart.</b> Slot ' + (1 - slot) + ' names transaction ' + this.cur.txn + ', and its tree is complete, although transaction ' + t.id + ' had already written ' + plural(ids.length, 'page') +
+        ' (' + pgs(ids) + '). Those went into free pages' + (waiting.length ? ', and the ' + plural(waiting.length, 'page') + ' transaction ' + newest + ' had replaced (' + pgs(waiting) +
+        ') ' + (waiting.length === 1 ? 'was' : 'were') + ' still pending, so ' + (waiting.length === 1 ? 'it was' : 'they were') + ' not among them' : '') +
+        '. <b>This is why a freed page waits one more commit.</b> Transactions ' + newest + ' and ' + t.id + ' are gone; nothing is half there.',
+        { extra: extra && extra.root !== this.cur.root ? extra : null, log: 'restart → txn ' + this.cur.txn });
+      this.note('The lists were rebuilt by walking the tree. ' + this.summary());
     });
   };
 

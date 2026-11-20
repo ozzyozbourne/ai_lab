@@ -178,7 +178,7 @@ impl Builder {
         dev.write(Kind::Data, 1);
     }
 
-    /// Writes the last partial block and the index blocks. Returns `None` if
+    /// Writes the last partial block and every index level. Returns `None` if
     /// nothing was appended: there is no empty run.
     pub fn finish(mut self, dev: &mut Device) -> Option<Run> {
         if self.block_len > 0 {
@@ -210,8 +210,15 @@ mod tests {
         assert_eq!(g.data_blocks(3), 1);
         assert_eq!(g.data_blocks(4), 2);
         assert_eq!(g.index_blocks(12), 1); // 4 data blocks: one index block
-        assert_eq!(g.index_blocks(13), 2); // 5 data blocks: two
-        assert_eq!(g.blocks(13), 7);
+        assert_eq!(g.index_height(12), 1);
+        // 5 data blocks need two index blocks, and those need a root above them.
+        assert_eq!(g.index_blocks(13), 3);
+        assert_eq!(g.index_height(13), 2);
+        assert_eq!(g.blocks(13), 8);
+        // 17 data blocks: 5 + 2 + 1 index blocks in three levels.
+        assert_eq!(g.index_blocks(49), 8);
+        assert_eq!(g.index_height(49), 3);
+        assert_eq!(g.index_blocks(0), 0);
     }
 
     #[test]

@@ -27,6 +27,8 @@ enum Source<'a> {
     Run {
         slots: &'a [Slot],
         pos: usize,
+        /// Index levels of the run (`Geometry::index_height`).
+        index_height: usize,
         /// Data block the cursor has paid for, if any.
         loaded: Option<usize>,
     },
@@ -63,6 +65,7 @@ impl<'a> Merger<'a> {
             sources: [Source::Run {
                 slots: &[],
                 pos: 0,
+                index_height: 1,
                 loaded: None,
             }; MAX_SOURCES],
             count: 0,
@@ -79,6 +82,7 @@ impl<'a> Merger<'a> {
             Source::Run {
                 slots: &run.slots,
                 pos: from,
+                index_height: self.geo.index_height(run.len()),
                 loaded: None,
             },
         );
@@ -104,11 +108,20 @@ impl<'a> Merger<'a> {
     }
 
     /// Charges the device for the block under the cursor of input `s`, if the
-    /// cursor has just entered it: one data block, plus one index block
-    /// whenever the data block is the first one that index block describes.
+    /// cursor has just entered it: one data block, plus, on every index
+    /// level, the index block above it unless the cursor was already under
+    /// that one. The first block of a stream therefore costs the whole path
+    /// from the run's root, exactly like a point lookup, and a stream that
+    /// reads a whole run reads each of its index blocks once.
     fn load(&mut self, dev: &mut Device, s: u8) {
         let (block_entries, fan) = (self.geo.block_entries, self.geo.index_fanout);
-        if let Source::Run { slots, pos, loaded } = &mut self.sources[s as usize] {
+        if let Source::Run {
+            slots,
+            pos,
+            index_height,
+            loaded,
+        } = &mut self.sources[s as usize]
+        {
             if *pos >= slots.len() {
                 return;
             }
@@ -116,8 +129,12 @@ impl<'a> Merger<'a> {
             if *loaded == Some(block) {
                 return;
             }
-            if loaded.is_none_or(|old| old / fan != block / fan) {
-                dev.read(Kind::Index, 1);
+            let mut span = fan; // data blocks under one index block
+            for _ in 0..*index_height {
+                if loaded.is_none_or(|old| old / span != block / span) {
+                    dev.read(Kind::Index, 1);
+                }
+                span *= fan;
             }
             dev.read(Kind::Data, 1);
             *loaded = Some(block);
@@ -278,7 +295,10 @@ mod tests {
         m.add_run(&mut dev, &run, run.lower_bound(65)); // slot 7 = key 70, in data block 3
         assert_eq!(m.next(&mut dev).map(|s| s.key), Some(70)); // cursor moves into block 4
         assert_eq!(m.peek_key(), Some(80));
-        // Blocks 3 and 4 are described by different index blocks (fan-out 2).
-        assert_eq!(dev.counters.since(&before).reads, [2, 2]);
+        // 10 data blocks at fan-out 2: index levels of 5, 3, 2 and 1 blocks.
+        // Positioning at block 3 reads one block of each level; block 4 lies
+        // under a different block of levels 1 and 2 (3/2 != 4/2, 3/4 != 4/4)
+        // but under the same block of levels 3 and 4.
+        assert_eq!(dev.counters.since(&before).reads, [4 + 2, 2]);
     }
 }

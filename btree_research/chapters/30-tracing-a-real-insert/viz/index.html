@@ -233,12 +233,16 @@ is the program counter, the path and the carry are the local variables, and thei
     lanes.render({ lanes: [lane('pg', 'PostgreSQL', L.pg), lane('turso', 'Turso', L.turso)] });
   }
 
+  // The file:line list of a step. On a narrow screen it is folded, so that
+  // the tree, the caption and the step buttons stay close together.
+  function sources(html) {
+    return narrow.matches ? '<details class="ch30-src"><summary>Source lines</summary> ' + html + '</details>' : 'Source: ' + html;
+  }
   function decorate(steps) {
     steps.forEach(function (s) {
       if (!s.stage) return;
       s.caption += '<div class="ch30-refs">Stage ' + s.stage + ' is taught in ' + STAGE_CHAPTERS[s.stage].map(chapterLink).join(', ') + '.' +
-        (s.refs.length ? '<br><details class="ch30-src"' + (narrow.matches ? '' : ' open') + '><summary>Source lines (' + s.refs.length + ')</summary> ' +
-          s.refs.map(function (r) { return '<code>' + esc(r) + '</code>'; }).join(' ') + '</details>' : '') + '</div>';
+        (s.refs.length ? '<br>' + sources(s.refs.map(function (r) { return '<code>' + esc(r) + '</code>'; }).join(' ')) : '') + '</div>';
     });
     return steps;
   }

@@ -4,8 +4,9 @@ Every number below was produced by the chapter's code. Where a number comes
 from a scratch run that is not part of `expected_output.txt`, that is said.
 All of them are block counts under the chapter's counting model, with its
 limits: nothing is cached, every index block is charged, there is no
-write-ahead log, and an LSM write is not on the device until the next flush
-while a B+tree write is (README, "The counting model, and what it leaves
+write-ahead log, an LSM write is not on the device until the next flush
+while a B+tree write is, and the LSM-tree has no bloom filters unless a
+number says "with filters" (README, "The counting model, and what it leaves
 out"). Ratios are rounded to two decimals.
 
 ## 1. Four lookups after the trace
@@ -43,26 +44,44 @@ one data block per run it probes. So a cache of all index blocks helps both,
 and it helps the B+tree more: the ratio between the two grows. How much RAM
 such a cache needs was not measured.
 
-## 3. A perfect filter
+With bloom filters the LSM column of that row is 0.03, 0.54 and 0.80 (the
+second "data blocks per get" row of each table): below the B+tree's 1.00,
+because a get for an absent key then usually reads nothing at all.
 
-Read-heavy workload: 9588 gets, 37328 runs probed, 32452 of them without
-finding the key. A probe costs the run's index height plus one data block, so
-the saving cannot be read off the probe counts alone.
+## 3. Bits per slot
 
-- Now: 10.96 blocks per get (the printed value; 105045 blocks).
-- Scratch run (not in `expected_output.txt`): the same workload with `probe`
-  changed to charge nothing when the key is not in the run. 16974 blocks
-  remain, 12098 index and 4876 data: 1.77 blocks per get.
+Read-heavy workload, 9588 gets, 4686 of them for an absent key. The 10-bit
+row is in `expected_output.txt`; the others are scratch runs (not in
+`expected_output.txt`) of the same workload with only `filter_bits_per_key`
+changed. The number of hash functions stays 7.
 
-That is 4876 useful probes for 9588 gets, about half a probe per get, because
-roughly half of the lookups in this workload ask for keys that do not exist
-and would then cost nothing.
+| Bits per slot | Runs probed | Of those in vain | False-positive rate | Blocks per get | Filter RAM at the end |
+|---|---|---|---|---|---|
+| none | 37328 | 32452 | - | 10.96 | 0 |
+| 5 | 9530 | 4654 | 14.34% | 3.08 | 35985 bits |
+| 10 | 5182 | 306 | 0.94% | 1.86 | 71970 bits |
+| 20 | 4890 | 14 | 0.04% | 1.77 | 143940 bits |
+| perfect | 4876 | 0 | 0 | 1.77 | not a real filter |
 
-A real bloom filter is not perfect. It never says "absent" for a key that is
-present, but it sometimes says "maybe" for an absent key, so some wasted
-probes remain. It also needs memory per key and must be built during every
-flush and compaction. How many probes remain depends on the bits spent per
-key; this was not measured here, since the chapter's code has no filter.
+The perfect row is a scratch run with `probe` changed to charge nothing when
+the key is not in the run: 16974 blocks, 12098 index and 4876 data. Every
+other row is that plus its probes in vain; a false positive costs a whole
+probe, the run's index path and a data block.
+
+What to take from it:
+
+- The floor is 1.77, about half a probe per get: half of the gets hit, and a
+  hit must read the run that holds the key. No filter can go below that.
+- From 10 to 20 bits the RAM doubles and the gain is under 0.1 blocks per
+  get. From 10 to 5 bits the RAM halves and the cost rises by two thirds.
+  The curve bends around 10 bits, which is why that is a common setting
+  (textbook).
+- At 5 bits the rate is worse than it has to be: 7 hash functions set too
+  many bits in so small a filter. The textbook optimum is about 0.7 times the
+  bits per key, 3 or 4 here; this was not measured.
+- Even 5 bits beat the B+tree's 4.00 in this model. That says more about the
+  model than about the structures: nothing here is cached, and the filters'
+  RAM is not counted (README, limits 1 and 4).
 
 ## 4. Ascending keys
 

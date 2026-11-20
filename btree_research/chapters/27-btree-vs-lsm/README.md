@@ -31,9 +31,9 @@ An LSM-tree refuses to change anything in place.
 2. When the memtable is full it is **flushed**: written out once, in key order,
    as an immutable **sorted run**. The memtable starts again empty.
 3. Runs pile up, so they are organised in **levels**. Level 0 collects flushed
-   runs. Each deeper level holds one larger run. When a level is full, it is
-   merged into the next one: **compaction**. Each level may hold `growth`
-   times as much as the level above; that number is the **growth factor**.
+   runs; each deeper level holds one larger run. A full level is merged into
+   the next one: **compaction**. Each level may hold `growth` times as much
+   as the level above; that number is the **growth factor**.
 4. A **delete** cannot remove a key from an immutable run. It writes a
    **tombstone**: an entry that says "this key is gone". A tombstone hides
    every older version of the key below it.
@@ -266,9 +266,8 @@ filters` of the three tables:
 | update-heavy | 290 of 1186 (24%) | 4.00 | 7.52 | 2.32 | 1.08% |
 
 - **Without filters** the LSM-tree reads 1.9 to 2.7 times as many blocks as
-  the B+tree. Each run is a tree of its own, and an absent key is looked for
-  in every run whose key range covers it: `3322 runs probed, 3316 of those
-  without finding the key` in the insert-heavy workload.
+  the B+tree. Each run is a tree of its own, and most probes are in vain:
+  `3322 runs probed, 3316 of those without finding the key` (insert-heavy).
 - **With filters** the result reverses in all three. An absent key costs
   nothing unless a filter gives a false positive (27 of those 3316 probes
   remain), and a present key costs one run's index path plus one data block.
@@ -303,9 +302,8 @@ By these counts, within the five limits:
 - **An LSM-tree fits when writes dominate.** It writes 8.39 slots per entry
   against 19.45, all in flushes and compactions, appended in sequence, which
   the count does not reward (limit 5). Part of that gap is the missing log:
-  with one log block per write it is at 23.39, and real engines land in
-  between (limits 2 and 3). Data at rest is more compact too: packed runs
-  (1.07) against partly empty leaves (1.54).
+  with one log block per write it is at 23.39 (limits 2 and 3). Data at rest
+  is more compact too: packed runs (1.07) against partly empty leaves (1.54).
 - **Its price** is RAM for filters if point lookups matter, and spare device
   space: a compaction holds its inputs and its output at once (2.14 at the
   peak). Overwrites and deletes add to it. The update-heavy workload ends at
@@ -429,9 +427,8 @@ table is a fixed array of 128 entries.
 - **Dropping a tombstone too early.** If a tombstone is removed while an older
   value of the key still lies in a deeper level, the deleted key comes back.
   Drop tombstones only when the output of the merge is the deepest data.
-- **Searching in the wrong order.** Newer data must always be found first:
-  memtable, level 0 from newest to oldest, then deeper levels. Merging two
-  runs that are not adjacent in age breaks this.
+- **Searching in the wrong order.** Newer data must always be found first.
+  Merging two runs that are not adjacent in age breaks this.
 - **Quoting a read number without its filter.** "LSM reads cost more" and
   "LSM reads cost less" are both in the table above. Say whether filters and
   a cache were on, and how many lookups missed.

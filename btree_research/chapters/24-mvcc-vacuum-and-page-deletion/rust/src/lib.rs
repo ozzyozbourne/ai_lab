@@ -9,6 +9,7 @@
 //!   db.rs           Db (put / delete / get / vacuum) and the snapshot Cursor
 //!   validate.rs     every invariant as code
 //!   dump.rs         text rendering
+//!   tests.rs        fixed scenarios;  fuzz.rs  random interleavings of scans and page deletion
 
 pub mod base_arena;
 pub mod base_node;
@@ -20,6 +21,8 @@ pub mod ops;
 pub mod store;
 pub mod validate;
 
+#[cfg(test)]
+mod fuzz;
 #[cfg(test)]
 mod tests;
 

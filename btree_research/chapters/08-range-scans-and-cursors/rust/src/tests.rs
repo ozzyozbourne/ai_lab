@@ -163,6 +163,103 @@ fn tree_range_and_tree_range_backward_on_the_readme_examples() {
     assert_eq!(tree.range((Included(17), Included(6))).next(), None);
 }
 
+/// Keys and probes for the two ends of the key space.
+const MAX: u64 = u64::MAX;
+const EXTREME_KEYS: [u64; 8] = [0, 1, 2, 500, 1 << 40, MAX - 2, MAX - 1, MAX];
+const EXTREME_PROBES: [u64; 9] = [0, 1, 2, 3, 500, MAX - 3, MAX - 2, MAX - 1, MAX];
+
+/// A tree that really stores 0 and `u64::MAX`, inserted from both ends
+/// inward. The value is `!key` (`key * 100` would overflow).
+fn build_extremes(order: usize) -> Tree {
+    let mut tree = Tree::new(order);
+    for k in [MAX, 0, MAX - 1, 1, 500, MAX - 2, 2, 1 << 40] {
+        tree.put(k, !k).unwrap();
+    }
+    tree.validate().unwrap();
+    tree
+}
+
+/// One scan over the tree of `build_extremes`, compared with `expected`.
+fn expect_extreme_scan<P: Position>(
+    pos: P,
+    tree: &Tree,
+    bounds: (Bound<u64>, Bound<u64>),
+    direction: Direction,
+    expected: &[u64],
+) {
+    let mut scan = Scan::new(Cursor::new(pos), bounds, direction);
+    for &k in expected {
+        assert_eq!(scan.next(tree), Some(Entry { key: k, value: !k }));
+    }
+    assert_eq!(scan.next(tree), None);
+    assert_eq!(scan.next(tree), None);
+}
+
+#[test]
+fn u64_extremes_stored_in_the_tree_0_1_max_1_and_max_under_every_bound_kind() {
+    for order in [3, 4, 16] {
+        let mut tree = build_extremes(order);
+
+        let mut checked = 0;
+        for lo_kind in 0..3 {
+            for hi_kind in 0..3 {
+                for lo_key in EXTREME_PROBES {
+                    for hi_key in EXTREME_PROBES {
+                        let lo = make_bound(lo_kind, lo_key);
+                        let hi = make_bound(hi_kind, hi_key);
+                        let mut expected: Vec<u64> = EXTREME_KEYS
+                            .into_iter()
+                            .filter(|&k| contains(lo, hi, k))
+                            .collect();
+
+                        let forward = Direction::Forward;
+                        expect_extreme_scan(LinkPosition::new(), &tree, (lo, hi), forward, &expected);
+                        expect_extreme_scan(StackPosition::new(), &tree, (lo, hi), forward, &expected);
+                        expected.reverse();
+                        let backward = Direction::Backward;
+                        expect_extreme_scan(LinkPosition::new(), &tree, (lo, hi), backward, &expected);
+                        expect_extreme_scan(StackPosition::new(), &tree, (lo, hi), backward, &expected);
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 9 * EXTREME_PROBES.len() * EXTREME_PROBES.len());
+
+        // Seeks at the two ends: "greater than the largest u64" and "less
+        // than 0" have no answer, and must not wrap around to find one.
+        let mut pair = Pair::new();
+        assert_eq!(pair.seek(&tree, Seek::Gt(MAX)), None);
+        assert_eq!(pair.link.state, State::AfterLast);
+        assert_eq!(pair.seek(&tree, Seek::Ge(MAX)), Some(MAX));
+        assert_eq!(pair.seek(&tree, Seek::Le(MAX)), Some(MAX));
+        assert_eq!(pair.seek(&tree, Seek::Lt(MAX)), Some(MAX - 1));
+        assert_eq!(pair.next(&tree), Some(MAX));
+        assert_eq!(pair.next(&tree), None);
+        assert_eq!(pair.prev(&tree), Some(MAX));
+
+        assert_eq!(pair.seek(&tree, Seek::Lt(0)), None);
+        assert_eq!(pair.stack.state, State::BeforeFirst);
+        assert_eq!(pair.seek(&tree, Seek::Le(0)), Some(0));
+        assert_eq!(pair.seek(&tree, Seek::Ge(0)), Some(0));
+        assert_eq!(pair.seek(&tree, Seek::Gt(0)), Some(1));
+        assert_eq!(pair.prev(&tree), Some(0));
+        assert_eq!(pair.prev(&tree), None);
+        assert_eq!(pair.next(&tree), Some(0));
+
+        // Delete the entry under the cursor at each end: the saved key still
+        // says where to continue.
+        assert_eq!(pair.seek(&tree, Seek::Last), Some(MAX));
+        assert_eq!(tree.delete(MAX), Some(!MAX));
+        assert_eq!(pair.entry(&tree), None);
+        assert_eq!(pair.prev(&tree), Some(MAX - 1));
+        assert_eq!(pair.seek(&tree, Seek::First), Some(0));
+        assert_eq!(tree.delete(0), Some(!0));
+        assert_eq!(pair.next(&tree), Some(1));
+        tree.validate().unwrap();
+    }
+}
+
 #[test]
 fn seek_ge_gt_le_lt_on_present_keys_gaps_separators_and_both_ends() {
     let mut tree = build_canonical();
@@ -512,6 +609,34 @@ fn insert_while_scanning_keys_behind_the_cursor_are_not_seen_keys_ahead_are() {
 }
 
 #[test]
+fn a_cursor_past_the_end_stays_there_a_cursor_on_the_last_entry_sees_later_inserts() {
+    let mut tree = build_canonical();
+    let mut on_last = Pair::new();
+    let mut past_end = Pair::new();
+
+    assert_eq!(on_last.seek(&tree, Seek::Last), Some(30));
+    assert_eq!(past_end.seek(&tree, Seek::Last), Some(30));
+    assert_eq!(past_end.next(&tree), None); // now AfterLast: no saved key
+    tree.put(40, 4000).unwrap();
+    // "On 30" continues with the first key > 30. "After the last entry" is
+    // a position of its own, and an entry appended later is in front of it.
+    assert_eq!(on_last.next(&tree), Some(40));
+    assert_eq!(past_end.next(&tree), None);
+    assert_eq!(past_end.link.state, State::AfterLast);
+    assert_eq!(past_end.prev(&tree), Some(40));
+
+    // The mirror image at the front.
+    assert_eq!(on_last.seek(&tree, Seek::First), Some(1));
+    assert_eq!(past_end.seek(&tree, Seek::First), Some(1));
+    assert_eq!(past_end.prev(&tree), None);
+    tree.put(0, 0).unwrap();
+    assert_eq!(on_last.prev(&tree), Some(0));
+    assert_eq!(past_end.prev(&tree), None);
+    assert_eq!(past_end.stack.state, State::BeforeFirst);
+    assert_eq!(past_end.next(&tree), Some(0));
+}
+
+#[test]
 fn handles_are_reused_the_tree_is_emptied_and_refilled_under_a_cursor() {
     let mut tree = build_canonical();
     let mut pair = Pair::new();
@@ -594,7 +719,7 @@ fn node_budget_exhausted_in_put_tree_version_and_cursors_are_unchanged() {
 
 #[test]
 fn model_random_operations_with_cursors_stepping_in_between_against_the_oracle() {
-    for order in [3, 4, 5, 16] {
+    for order in [3, 4, 5, 6, 7, 8, 16] {
         for seed in [1, 2, 3] {
             let r = model::run(model::Config {
                 order,
@@ -617,4 +742,19 @@ fn model_random_operations_with_cursors_stepping_in_between_against_the_oracle()
         key_space: 8,
     });
     assert_eq!(small.mismatches, 0);
+}
+
+#[test]
+fn model_the_expected_side_sees_every_oracle_entry_including_the_key_u64_max() {
+    let mut oracle = crate::ops::Oracle::new();
+    for k in [MAX, 0, 7] {
+        oracle.put(k, k);
+    }
+    // The half-open range of the oracle cannot name the last key ...
+    assert_eq!(oracle.range(0, MAX).len(), 2);
+    // ... so the model adds it.
+    let all = model::all_entries(&oracle);
+    assert_eq!(all.len(), 3);
+    assert_eq!(all[0].key, 0);
+    assert_eq!(all[2].key, MAX);
 }

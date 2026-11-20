@@ -20,6 +20,8 @@
   .charts > div { min-width: 0; }
   .chart-title { font-size: .86rem; color: var(--bt-muted); margin: 0 0 2px; }
   @media (max-width: 760px) { .charts { grid-template-columns: 1fr; } }
+  .seed-note { font-size: .86rem; color: var(--bt-muted); margin: 0 0 6px; }
+  .seed-note:empty { display: none; }
   .measured { margin: 0; font-family: var(--bt-mono); font-size: .78rem; line-height: 1.45; white-space: pre; overflow-x: auto; color: var(--bt-text); }
 </style>
 </head>
@@ -80,6 +82,11 @@ under random inserts the expected fill approaches ln&nbsp;2&nbsp;&asymp;&nbsp;69
   fig.toolbar.append(el('label.bt-field', 'order M ', orderSel), el('label.bt-field', 'keys N ', countSel), variantSel,
     el('label.bt-field', 'seed ', seedInput), runBtn);
 
+  /* Stays on screen until the seed field is edited again: a corrected seed
+   * must not go unnoticed behind an animation that has already started. */
+  var seedNote = el('p.seed-note#seed-note', { role: 'status' });
+  fig.stage.append(seedNote);
+
   /* One strip per tree: the leaves from left to right, bar height = fill. */
   function Strip(cls, title) {
     this.cls = cls;
@@ -110,6 +117,7 @@ under random inserts the expected fill approaches ln&nbsp;2&nbsp;&asymp;&nbsp;69
     this.note.textContent = !leaves.length ? 'No leaves yet.' :
       'Each bar is ' + (group === 1 ? 'one leaf' : 'the average of ' + group + ' neighbouring leaves') + ', smallest keys on the left. Full height = a full leaf; the dashed line is 50%.';
   };
+  function nodesText(n) { return n + (n === 1 ? ' node' : ' nodes'); }
   function percent(s) { return Math.floor(s.fillPermille / 10) + '.' + (s.fillPermille % 10) + '%'; }
 
   var ascStrip = new Strip('asc', 'Ascending keys');
@@ -155,10 +163,11 @@ under random inserts the expected fill approaches ln&nbsp;2&nbsp;&asymp;&nbsp;69
   function rebuild(play) {
     stepper.pause();
     var order = +orderSel.value, n = +countSel.value, variant = variantSel.value, seed = readSeed();
-    var note = '';
     if (seed === null) {
+      var typed = seedInput.value.trim();   // '' is also what a number input reports for text it cannot parse
       seed = 4; seedInput.value = '4';
-      note = 'The seed must be a whole number from 0 to 9999; it was set back to 4. ';
+      seedNote.textContent = 'The seed must be a whole number from 0 to 9999. ' + (typed === '' ? 'What was typed' : '"' + typed + '"') +
+        ' was not accepted, and the seed was set back to 4.';
     }
     var keys = { asc: Ch04.fillKeys(n, 'ascending', 0), rnd: Ch04.fillKeys(n, 'random', seed) };
     var trees = { asc: Ch04.Tree(order, variant), rnd: Ch04.Tree(order, variant) };
@@ -178,10 +187,10 @@ under random inserts the expected fill approaches ln&nbsp;2&nbsp;&asymp;&nbsp;69
     var last = steps[CHECKPOINTS].state, A = percent(last.asc), R = percent(last.rnd);
     var fuller = last.asc.fillPermille > last.rnd.fillPermille ? 0 : last.asc.fillPermille < last.rnd.fillPermille ? 1 : 2;
     steps.forEach(function (s, c) {
-      var st = s.state, head = 'After ' + k(st.n) + ' of ' + n + ' keys: ascending ' + k(percent(st.asc), 'active') + ' full in ' + st.asc.nodes + ' nodes, random ' +
-        k(percent(st.rnd), 'split') + ' full in ' + st.rnd.nodes + ' nodes. ';
+      var st = s.state, head = 'After ' + k(st.n) + ' of ' + n + ' keys: ascending ' + k(percent(st.asc), 'active') + ' full in ' + nodesText(st.asc.nodes) + ', random ' +
+        k(percent(st.rnd), 'split') + ' full in ' + nodesText(st.rnd.nodes) + '. ';
       if (c === 0) {
-        s.caption = note + 'Two empty trees of order ' + order + ' (at most ' + maxKeys + ' keys per node), ' + variant + ' splitting. Both will receive the keys 0 to ' + (n - 1) +
+        s.caption = 'Two empty trees of order ' + order + ' (at most ' + maxKeys + ' keys per node), ' + variant + ' splitting. Both will receive the keys 0 to ' + (n - 1) +
           ': the upper tree in ascending order, the lower one shuffled with seed ' + seed + '. Press play.';
       } else if (c === CHECKPOINTS) {
         var pa = programFill(order, 'ascending', variant), pr = programFill(order, 'random', variant);
@@ -189,6 +198,13 @@ under random inserts the expected fill approaches ln&nbsp;2&nbsp;&asymp;&nbsp;69
           (fuller === 0 ? 'Here the ascending tree is the fuller one: with order ' + order + ' a split leaves ' + leftKeeps + ' of ' + maxKeys + ' slots used on the left, which is more than random keys reach on average. ' :
             fuller === 1 ? 'The random tree is the fuller one: its half-full nodes kept receiving keys, the left halves of the ascending tree never did. ' : 'Both trees are equally full. ') +
           (pa && pr ? 'The programs measured ' + pa + ' and ' + pr + ' for 100000 keys with this order.' : '');
+      } else if (st.asc.splits === 0 || st.rnd.splits === 0) {
+        // The explanations below describe what splits leave behind; they are
+        // not true of a tree that has not split yet.
+        var one = st.asc.splits === 0 && st.rnd.splits === 0;
+        s.caption = head + (one ? 'Nothing has split yet: each tree is still a single leaf, the root, which takes keys until it holds ' + maxKeys +
+          '. Up to that point the order of arrival makes no difference to the fill.' :
+          'Only one of the two trees has split so far, so there is not much to compare yet.');
       } else if (c % 3 === 1) {
         s.caption = head + 'Ascending keys always land in the rightmost leaf. When it splits, the left half keeps ' + leftKeeps + ' of ' + maxKeys +
           ' slots (' + leftPct + '%) and is never touched again: the upper strip is flat at that height.';
@@ -211,6 +227,7 @@ under random inserts the expected fill approaches ln&nbsp;2&nbsp;&asymp;&nbsp;69
 
   [orderSel, countSel, variantSel].forEach(function (s) { s.addEventListener('change', function () { rebuild(false); }); });
   seedInput.addEventListener('change', function () { rebuild(false); });
+  seedInput.addEventListener('input', function () { seedNote.textContent = ''; });
   seedInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); rebuild(true); } });
   rebuild(false);
 

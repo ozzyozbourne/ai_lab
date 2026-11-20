@@ -25,6 +25,22 @@ pub struct Config {
     pub key_space: u64,
 }
 
+/// Every entry of the oracle, in key order. Not `oracle.range(0, u64::MAX)`
+/// alone: that range is half open (lo <= key < hi), so an entry with the key
+/// `u64::MAX` would be missing from the expected side and a cursor that lost
+/// it would go unnoticed. (Zig reads the oracle's entry slice directly; the
+/// Rust oracle keeps its `Vec` private, hence the copy.)
+pub fn all_entries(oracle: &Oracle) -> Vec<ops::Entry> {
+    let mut all = oracle.range(0, u64::MAX).to_vec();
+    if let Some(value) = oracle.get(u64::MAX) {
+        all.push(ops::Entry {
+            key: u64::MAX,
+            value,
+        });
+    }
+    all
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Report {
     pub keys: usize,
@@ -101,7 +117,7 @@ pub fn run(config: Config) -> Report {
             }
         }
         // One step of the long-lived cursors, whatever just happened.
-        let all = oracle.range(0, u64::MAX);
+        let all = all_entries(&oracle);
         let action = rng.below(8);
         let expected: Option<ops::Entry>;
         let got_link: Option<Entry>;
@@ -191,7 +207,7 @@ fn check_scan(
     let (from_link, from_stack) = (&scratch.from_link, &scratch.from_stack);
     let mut mismatches = 0;
     let mut n = 0;
-    let all = oracle.range(0, u64::MAX);
+    let all = all_entries(oracle);
     for i in 0..all.len() {
         let e = match direction {
             Direction::Forward => all[i],

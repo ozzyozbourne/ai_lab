@@ -7,17 +7,27 @@
 <link rel="stylesheet" href="../../../assets/viz.css">
 <style>
   /* Chapter-local layout only; every colour comes from the toolkit's tokens. */
-  .c7-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: .9rem; }
+  /* Wide screens: the two trees side by side, so that trees, caption and step controls fit one screen. */
+  .c7-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 12px 16px; align-items: start; }
+  .c7-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .c7-tree { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  @media (max-width: 820px) { .c7-grid { grid-template-columns: minmax(0, 1fr); } }
+  .c7-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; font-size: .9rem; }
   .c7-head strong { font-size: .95rem; }
   .c7-head span { color: var(--bt-muted); font-size: .82rem; }
-  .c7-tree + .c7-tree { border-top: 1px dashed var(--bt-border); padding-top: 12px; }
   .c7-tree.is-idle .c7-head strong { color: var(--bt-muted); }
   .c7-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font: .78rem/1.6 var(--bt-mono); color: var(--bt-muted); }
   .c7-chain .bt-chip { font-size: .78rem; }
-  .c7-free { font: .78rem/1.6 var(--bt-mono); color: var(--bt-muted); overflow-wrap: anywhere; }
+  .c7-free { font: .78rem/1.6 var(--bt-mono); color: var(--bt-muted); overflow-wrap: anywhere; margin-top: 6px; }
   .c7-free b { color: var(--bt-text); }
-  .c7-note { font-size: .82rem; color: var(--bt-muted); margin: 0; }
-  #code { margin-top: 14px; }
+  /* The leaf chain is doubly linked: an arrowhead at both ends of every sibling link (markers added in the script). */
+  .c7-plus .bt-link { marker-start: url(#c7-back); }
+  .c7-plus .bt-link[class*="s-"] { marker-start: url(#c7-backa); }
+  /* Below the step controls, so nothing stands between the trees and their caption. */
+  .c7-extra { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; align-items: start;
+    padding: 12px 14px; border-top: 1px solid var(--bt-border); background: var(--bt-bg); }
+  .c7-extra > * { min-width: 0; }
+  .c7-codenote { font-size: .85rem; color: var(--bt-muted); margin: 14px 0 6px; min-height: 1.5em; }
   .c7-points li { margin: .35em 0; }
   .bt-selftest { white-space: normal; border-radius: 10px; }   /* long names must wrap on a phone */
 </style>
@@ -28,6 +38,7 @@
 node splits, what the leaf chain looks like, and which slot of the node array each B+tree node occupies.</p>
 
 <div id="fig"></div>
+<p class="c7-codenote" id="codenote"></p>
 <div id="code"></div>
 
 <h2>What to look for</h2>
@@ -38,8 +49,12 @@ node splits, what the leaf chain looks like, and which slot of the node array ea
   <li><strong>Lookups.</strong> Search for 10 in the canonical trees: the B-tree stops in the root, the B+tree carries
     on to a leaf, because the 10 in its internal node is only a signpost.</li>
   <li><strong>Stale separators.</strong> Run the delete walk-through. After <em>delete 15</em> the root of the B+tree
-    still shows 15, dimmed: no leaf holds it any more, and the tree is still correct.</li>
-  <li><strong>Handles.</strong> <code>#n</code> above a B+tree node is its index in the arena on the right. Freed slots go
+    still shows 15, dimmed: no leaf holds it any more, and the tree is still correct. Pause there and search for 15 or 16:
+    the buttons always work on the trees you are looking at.</li>
+  <li><strong>The leaf chain.</strong> The double-headed arrows between the leaves are the <code>next</code> and
+    <code>prev</code> links. The line under the B+tree lists the same chain from <code>first_leaf</code> to
+    <code>last_leaf</code>.</li>
+  <li><strong>Handles.</strong> <code>#n</code> above a B+tree node is its index in the arena panel. Freed slots go
     to the head of the free list and are the first to be reused: delete until nodes are freed, then insert again.</li>
   <li><strong>Size.</strong> With the same tiny order the B+tree needs more nodes than the B-tree, because separators are
     extra copies. In a real page the opposite matters: internal nodes without values hold many more separators.</li>
@@ -62,8 +77,9 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
 
   /* ------------------------------------------------------------- figure */
   var fig = BTViz.figure('#fig', {
-    title: 'Classic B-tree and B+tree, same keys', side: true,
-    legend: ['node-active', 'key-compare', 'key-found', 'key-inserted', 'key-deleted', 'split', 'merge', 'free']
+    title: 'Classic B-tree and B+tree, same keys',
+    legend: ['node-active', 'key-compare', 'key-found', 'key-inserted', 'key-deleted', 'split', 'merge', 'free',
+      { token: 'pointer', label: 'leaf link (next and prev)', line: true }]
   });
   fig.legend.appendChild(el('span.bt-legend-item', el('span.bt-chip.s-dim', '15'), 'stale separator'));
 
@@ -79,28 +95,73 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     btn('btn-delete', 'Delete', function () { run('delete'); }),
     btn('btn-search', 'Search', function () { run('search'); }),
     el('span.bt-toolbar-sep'),
-    btn('btn-canonical', 'Canonical build', function () { canonical(true); }),
-    btn('btn-walk', 'Delete walk-through', deleteWalk),
+    btn('btn-canonical', 'Canonical build', function () { canonical(true); reveal(); }),
+    btn('btn-walk', 'Delete walk-through', function () { deleteWalk(true); reveal(); }),
     btn('btn-random', 'Random fill', randomFill),
-    btn('btn-clear', 'Clear', function () { reset(); showIdle('Both trees are empty. Insert a key, or replay the canonical build.'); }));
+    btn('btn-clear', 'Clear', function () { reset(); showIdle('Both trees are empty. Insert a key, or replay the canonical build.'); reveal(); }));
 
+  /*
+   * Layout. Wide screens: B-tree (with the arena under it) and B+tree side by side, then caption and
+   * step controls, so all of it fits one 1280x800 screen. Narrow screens: one column, B-tree, B+tree,
+   * caption, controls; the arena and the log come after the controls.
+   */
   var headA = el('span'), headB = el('span');
   var boxA = el('div.c7-tree', el('div.c7-head', el('strong', 'Classic B-tree'), el('span', 'entries (key + value) in every node'), headA));
-  var boxB = el('div.c7-tree', el('div.c7-head', el('strong', 'B+tree'), el('span', 'entries only in leaves; separators above; leaves chained'), headB));
-  fig.stage.append(boxA, boxB);
-  var viewA = new BTViz.TreeView(boxA, { minHeight: 150, ariaLabel: 'Classic B-tree' });
-  var viewB = new BTViz.TreeView(boxB, { minHeight: 210, ariaLabel: 'B+tree' });
+  var boxB = el('div.c7-tree.c7-plus', el('div.c7-head', el('strong', 'B+tree'), el('span', 'entries only in leaves; separators above; leaves chained'), headB));
+  var colA = el('div.c7-col', boxA), colB = el('div.c7-col', boxB);
+  fig.stage.append(el('div.c7-grid', colA, colB));
+  // Heights reserved for the canonical trees (height 2 and 3), so the caption does not move during the build.
+  var GEOM = { vGap: 36, padTop: 24, padBottom: 10 };
+  var viewA = new BTViz.TreeView(boxA, Object.assign({ minHeight: 132, ariaLabel: 'Classic B-tree' }, GEOM));
+  var viewB = new BTViz.TreeView(boxB, Object.assign({ minHeight: 198, hGap: 24, ariaLabel: 'B+tree' }, GEOM));
   var chainEl = el('div.c7-chain', { 'aria-label': 'Leaf chain of the B+tree' });
   boxB.appendChild(chainEl);
 
-  var arenaPanel = el('div.bt-panel', el('div.bt-panel-title', 'B+tree arena: one array of nodes'));
+  // The toolkit draws a sibling link with one arrowhead (next). The chain of this chapter also has prev
+  // links, so give every link a second head at its start.
+  ['', 'a'].forEach(function (sfx) {
+    viewB.svg.querySelector('defs').appendChild(
+      el('marker', { id: 'c7-back' + sfx, viewBox: '0 0 8 8', refX: 7, refY: 4, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' },
+        el('path', { d: 'M0 .8L7.2 4L0 7.2z', class: 'bt-arrowhead' + (sfx ? ' is-active' : '') })));
+  });
+  /** Puts each handle label on the side of the node that its incoming edge does not cross. */
+  function placeLabels(view) {
+    var L = view.layout;
+    if (!L) return;
+    L.edges.forEach(function (e) {
+      var p = L.nodes.get(e.parent), c = L.nodes.get(e.child), it = view.nodes.get(e.child);
+      if (!p || !c || !it || !it.label) return;
+      var fromRight = p.x + p.anchors[Math.min(e.ci, p.anchors.length - 1)] > c.x + c.w / 2 + 0.5;
+      it.label.setAttribute('x', c.w / 2 + (fromRight ? -6 : 6));
+      it.label.setAttribute('text-anchor', fromRight ? 'end' : 'start');
+    });
+  }
+
+  var arenaPanel = el('div.bt-panel', el('div.bt-panel-title', 'B+tree arena: handle #n is an index into this array'));
   var arenaBody = el('div.bt-panel-body');
   var freeEl = el('div.c7-free');
   arenaPanel.appendChild(arenaBody);
-  fig.side.appendChild(arenaPanel);
   var mem = new BTViz.MemoryMap(arenaBody, { cell: 32 });
-  arenaBody.append(freeEl, el('p.c7-note', 'A handle #n is an index into this array. Nodes never point at each other.'));
-  var log = new BTViz.Log(fig.side, { title: 'Operations' });
+  arenaBody.append(freeEl);
+  var extra = el('div.c7-extra');
+  fig.root.appendChild(extra);
+  var log = new BTViz.Log(extra, { title: 'Operations' });
+  var narrow = window.matchMedia('(max-width: 820px)');
+  function placeArena() { if (narrow.matches) extra.insertBefore(arenaPanel, extra.firstChild); else colA.appendChild(arenaPanel); }
+  placeArena();
+  narrow.addEventListener('change', placeArena);
+
+  /**
+   * After a button was used: scroll so that trees, caption and step controls are on screen together
+   * (with the toolbar if that fits too). Does nothing when they already are.
+   */
+  function reveal() {
+    var top = fig.toolbar.getBoundingClientRect().top, stage = fig.stage.getBoundingClientRect().top;
+    var bottom = fig.controls.getBoundingClientRect().bottom, vh = window.innerHeight;
+    if (stage >= 0 && bottom <= vh) return;
+    var dy = bottom - top + 12 <= vh ? top - 6 : bottom - stage + 8 <= vh ? stage - 4 : bottom - vh + 4;
+    window.scrollBy(0, dy);
+  }
 
   /* -------------------------------------------------------- code panels */
   var parts = {};                       // parts[snippet][part] = {zig: [[a, b]], rust: [[a, b]]}
@@ -113,6 +174,7 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
         var want = window.CHAPTER_PARTS[sn][part][lang];
         var a = src.findIndex(function (l) { return l.indexOf(want[0]) >= 0; });
         var b = src.findIndex(function (l, i) { return i >= a && l.indexOf(want[1]) >= 0; });
+        if (a < 0 || b < 0) throw new Error('code.js: part ' + sn + '.' + part + ' (' + lang + ') not found in its snippet');
         spec[lang] = [[a + 1, b + 1]];
       });
       parts[sn][part] = spec;
@@ -120,33 +182,81 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
   });
   var TITLES = {
     search: 'search — a lookup always ends in a leaf',
+    put: 'insert — put (first leaf, new root)',
+    insertInto: 'insert — insertInto (the leaf, then back up)',
     splitLeaf: 'insert — splitLeaf (copy-up)',
     splitInternal: 'insert — splitInternal (push-up)',
+    'delete': 'delete — delete (the root may shrink)',
+    rebalance: 'delete — deleteFrom and rebalance (which sibling)',
     borrow: 'delete — borrowing between leaves',
+    rotate: 'delete — borrowing between internal nodes (rotation)',
     merge: 'delete — merge'
   };
-  var panels = {};
+  var OP_SNIPPET = { insert: 'put', 'delete': 'delete', search: 'search' };   // shown when a step runs no B+tree line
+  var panels = {}, codeNote = document.getElementById('codenote');
   Object.keys(TITLES).forEach(function (sn) {
     panels[sn] = BTViz.codePanel('#code', sn, { title: TITLES[sn], maxHeight: 330 });
-    panels[sn].root.hidden = sn !== 'splitLeaf';
+    panels[sn].root.hidden = true;
   });
-  function showCode(lines) {
-    if (!lines) { Object.keys(panels).forEach(function (sn) { panels[sn].highlight([]); }); return; }
-    Object.keys(panels).forEach(function (sn) { panels[sn].root.hidden = sn !== lines.snippet; });
-    panels[lines.snippet].highlight(parts[lines.snippet][lines.part]);
+  /** The panel always belongs to the step shown: its own lines, or the code of the operation in progress, or nothing. */
+  function showCode(step) {
+    var lines = step.lines, sn = lines ? lines.snippet : OP_SNIPPET[step.op];
+    Object.keys(panels).forEach(function (name) { panels[name].root.hidden = name !== sn; panels[name].highlight([]); });
+    if (lines && lines.part) panels[sn].highlight(parts[sn][lines.part]);
+    codeNote.textContent = !sn ? 'No operation is running. Start one above: the B+tree code of each step is shown here.'
+      : lines ? (lines.part ? 'B+tree code that runs in this step (highlighted lines).' : 'B+tree code of the operation in progress.')
+      : step.focus === 'a' ? 'The classic B-tree is at work in this step. Below is the B+tree code of the same operation; it runs next.'
+      : 'The operation is finished. Below is the B+tree code it started from.';
   }
 
   /* ------------------------------------------------------------ models */
-  var a, b, rand = BTViz.rng(7), fills = 0;
-  function reset() {
+  /*
+   * `history` lists every insert and delete applied to the two models, in order. A timeline is
+   * computed ahead of what is shown, so the models are usually ahead of the picture. Every step
+   * therefore records `h`, the length of the history at the end of its operation, and `last`,
+   * whether it shows that end. Before a control acts, settle() replays the history up to the step
+   * on screen: controls act on the trees the reader is looking at.
+   */
+  var a, b, rand = BTViz.rng(7), fills = 0, history = [], seq = 0;
+  function resetModels() {
     a = BTViz.models.BTree(+order.value);
     b = new Ch07.BPlus(+order.value);
-    log.clear();
+  }
+  function reset() { resetModels(); history = []; log.clear(); }
+  function quiet(op, v) {
+    if (op === 'insert') { a.insert(v, { steps: false }); b.put(v, v * 100, { steps: false }); }
+    else { a.delete(v, { steps: false }); b.delete(v, { steps: false }); }
+    history.push({ op: op, v: v });
+  }
+  function rebuild(n) {
+    var keep = history.slice(0, n);
+    resetModels();
+    history = [];
+    keep.forEach(function (e) { quiet(e.op, e.v); });
+  }
+  var WORD = { insert: 'insert', 'delete': 'delete', search: 'search' };
+  /**
+   * Makes the models equal to the picture. If the step on screen is in the middle of an operation,
+   * returns the rest of that operation (starting with the step on screen), to be played first.
+   */
+  function settle() {
+    var i = stepper.index, cur = stepper.steps[i];
+    if (!cur) return [];
+    if (cur.h !== history.length) rebuild(cur.h);
+    if (cur.last) return [];
+    var rest = [];
+    for (var j = i; j < stepper.steps.length && stepper.steps[j].seq === cur.seq; j++) rest.push(Object.assign({}, stepper.steps[j]));
+    delete rest[0].question;                       // it is already on screen
+    return rest;
+  }
+  function unfinished(rest) {
+    return rest.length ? 'The ' + WORD[rest[0].op] + ' of ' + k(rest[0].v) + ' was still in progress' : '';
   }
   // An empty B-tree model still has a root object; report it as 0 nodes, as the B+tree side does.
   function both() { return { a: a.snapshot(), b: b.snapshot(), an: a.size ? a.nodeCount() : 0, ah: a.size ? a.height() : 0, asize: a.size }; }
 
   /* ------------------------------------------------------------- render */
+  function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
   var stepper = new BTViz.Stepper({
     mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
     onStep: function (step, i) {
@@ -157,13 +267,14 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
       s.b.stale.forEach(function (id) { keys[id] = 'dim'; });
       Object.keys(hb.keys || {}).forEach(function (id) { keys[id] = hb.keys[id]; });
       viewB.render(s.b.tree, { nodes: hb.nodes || {}, keys: keys, edges: hb.edges || {}, links: hb.links || {} });
+      placeLabels(viewB);
       boxA.classList.toggle('is-idle', step.focus === 'b');
       boxB.classList.toggle('is-idle', step.focus === 'a');
-      headA.textContent = '· ' + s.asize + ' keys, ' + s.an + ' node' + (s.an === 1 ? '' : 's') + ', height ' + s.ah;
-      headB.textContent = '· ' + s.b.count + ' keys, ' + s.b.nodes + ' node' + (s.b.nodes === 1 ? '' : 's') + ', height ' + s.b.height;
+      headA.textContent = '· ' + plural(s.asize, 'key') + ', ' + plural(s.an, 'node') + ', height ' + s.ah;
+      headB.textContent = '· ' + plural(s.b.count, 'key') + ', ' + plural(s.b.nodes, 'node') + ', height ' + s.b.height;
       renderChain(s.b, hb.chain || {});
       renderArena(s.b, hb.arena || {});
-      showCode(step.lines);
+      showCode(step);
       log.sync(stepper ? stepper.steps : [], i);
       if (step.centre) centreViews(s);
     }
@@ -200,7 +311,7 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
   }
   function renderArena(sb, hl) {
     mem.render({ slabs: [{
-      label: sb.arena.length + ' slot' + (sb.arena.length === 1 ? '' : 's') + ': ' + sb.nodes + ' live, ' + sb.free.length + ' free',
+      label: plural(sb.arena.length, 'slot') + ': ' + sb.nodes + ' live, ' + sb.free.length + ' free',
       slots: sb.arena.map(function (s) {
         return { state: hl[s.h] || (s.state === 'free' ? 'free' : 'used'), label: '#' + s.h,
                  title: 'slot ' + s.h + ': ' + (s.state === 'free' ? 'free' : s.state + ' node') };
@@ -223,6 +334,7 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     var mid = both();
     var sb = op === 'insert' ? b.put(v, v * 100) : op === 'delete' ? b.delete(v) : b.search(v);
     var after = both();
+    if (op !== 'search') history.push({ op: op, v: v });
     sa.forEach(function (s) {
       if (brief && SKIP_A[s.type]) return;
       out.push({ focus: 'a', type: s.type, caption: chip('B-tree') + s.caption,
@@ -238,8 +350,10 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     if (brief && !out.length) return out;
     if (out.length) out[0].log = (op === 'insert' ? 'put ' : op === 'delete' ? 'delete ' : 'get ') + v;
     var hlA = {}, hlB = {};
-    if (op === 'insert') { hlA = { keys: mk('*:' + v, 'inserted') }; hlB = { keys: mk('*:' + v, 'inserted') }; }
-    out.push({ focus: null, type: 'summary', caption: summary(op, v, sa, sb, after), state: after, hlA: hlA, hlB: hlB });
+    if (op === 'insert' && sb.ok) { hlA = { keys: mk('*:' + v, 'inserted') }; hlB = { keys: mk('*:' + v, 'inserted') }; }
+    out.push({ focus: null, type: 'summary', caption: summary(op, v, sb, after), state: after, hlA: hlA, hlB: hlB, last: true });
+    seq++;
+    out.forEach(function (st) { st.op = op; st.v = v; st.seq = seq; st.h = history.length; });
     return out;
   }
   function mk(key, value) { var o = {}; o[key] = value; return o; }
@@ -261,87 +375,112 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     }
     return { read: read, found: false };
   }
-  function nodes(n) { return n + ' node' + (n === 1 ? '' : 's'); }
   function heightOf(n) { var h = 1; while (n.children && n.children.length) { n = n.children[0]; h++; } return n.keys.length || h > 1 ? h : 0; }
 
-  function summary(op, v, sa, sb, s) {
-    var copies = b.separators().filter(function (x) { return !x.stale; }).length;
-    var stale = b.separators().filter(function (x) { return x.stale; });
+  /** Sizes of both trees as the models are now (`s` = both()). */
+  function sizes(s) {
+    var seps = b.separators(), stale = seps.filter(function (x) { return x.stale; });
+    return 'B-tree: ' + plural(s.asize, 'key') + ' in ' + plural(s.an, 'node') + ', height ' + s.ah +
+      '. B+tree: ' + plural(s.b.count, 'key') + ' in ' + plural(s.b.nodes, 'node') + ', height ' + s.b.height +
+      (s.b.height > 1 ? ', with ' + plural(seps.length, 'separator') + ' on top of the entries' : '') +
+      (stale.length ? ' (' + stale.map(function (x) { return k(x.key); }).join(', ') + ' stale: dimmed).' : '.');
+  }
+  /** Closing caption of one operation; `sb` = the B+tree's steps (sb.ok is false when nothing was added or removed). */
+  function summary(op, v, sb, s) {
     var text;
     if (op === 'search') {
       var look = btreeLookup(s.a, v), h = s.b.height;
       if (!s.asize) return 'Search ' + k(v) + ': both trees are empty, so there is no node to read and the key is not found.';
       text = 'Search ' + k(v) + ': ' + (look.found
-        ? 'found in both trees. The B-tree read ' + nodes(look.read) + ' and stopped at the first node that holds the key, ' +
-          (look.leaf ? 'here a leaf' : 'here an internal node') + '. The B+tree read ' + nodes(h) + ': a lookup always goes down all ' + h + ' level' + (h === 1 ? '' : 's') + ' to a leaf. '
-        : 'in neither tree. A search can only say "not found" in a leaf, so both went all the way down: the B-tree read ' + nodes(look.read) + ', the B+tree ' + nodes(h) + '. ');
+        ? 'found in both trees. The B-tree read ' + plural(look.read, 'node') + ' and stopped at the first node that holds the key, ' +
+          (look.leaf ? 'here a leaf' : 'here an internal node') + '. The B+tree read ' + plural(h, 'node') + ': a lookup always goes down all ' + plural(h, 'level') + ' to a leaf. '
+        : 'in neither tree. A search can only say "not found" in a leaf, so both went all the way down: the B-tree read ' + plural(look.read, 'node') + ', the B+tree ' + plural(h, 'node') + '. ');
+    } else if (op === 'insert') {
+      text = sb.ok ? 'After insert ' + k(v) + ': '
+        : 'Insert ' + k(v) + ': the key was already in both trees. Keys are unique, so nothing was added; the B+tree only overwrote the value. ';
     } else {
-      text = (op === 'insert' ? 'After insert ' : 'After delete ') + k(v) + ': ';
+      text = sb.ok ? 'After delete ' + k(v) + ': ' : 'Delete ' + k(v) + ': the key is in neither tree, so nothing was removed. ';
     }
-    text += 'B-tree: ' + s.asize + ' keys in ' + s.an + ' node(s), height ' + s.ah + '. B+tree: ' + s.b.count + ' keys in ' + s.b.nodes + ' node(s), height ' + s.b.height;
-    text += s.b.height > 1 ? ', with ' + (copies + stale.length) + ' separator(s) on top of the entries' : '';
-    text += stale.length ? ' (' + stale.map(function (x) { return k(x.key); }).join(', ') + ' stale: dimmed).' : '.';
-    return text;
+    return text + sizes(s);
   }
 
   function showIdle(caption) {
-    stepper.setSteps([{ caption: caption, state: both(), focus: null, centre: true }]);
+    stepper.setSteps([{ caption: caption, state: both(), focus: null, centre: true, h: history.length, last: true }]);
   }
 
   /* ------------------------------------------------------------ actions */
+  /** A key for an empty key field: for insert a key that is not in the trees, for delete and search one that is. */
+  function pick(op) {
+    var have = b.keys(), v;
+    if (op !== 'insert' && have.length) return { v: rand.pick(have), why: ', a key that is in the trees, was picked. ' };
+    for (var tries = 0; tries < 50; tries++) { v = rand.int(1, 99); if (have.indexOf(v) < 0) break; }
+    return { v: v, why: op === 'insert' ? ' was picked at random. ' : ' was picked at random (the trees are empty). ' };
+  }
   function run(op) {
     // Typed input is used exactly as typed or not at all: nothing is rounded or clamped silently.
-    var raw = key.value.trim(), unreadable = !!(key.validity && key.validity.badInput), picked = raw === '' && !unreadable;
-    var v = picked ? rand.int(1, 99) : Number(raw);
-    if (!picked && (unreadable || !Number.isInteger(v) || v < KEY_MIN || v > KEY_MAX)) {
-      showIdle('Nothing was done: ' + (unreadable ? 'that input' : '<b>' + raw.replace(/[&<>]/g, '') + '</b>') + ' is not a key this page accepts. ' +
-        'Keys are whole numbers from ' + KEY_MIN + ' to ' + KEY_MAX + '. Both trees are unchanged.');
+    var raw = key.value.trim(), unreadable = !!(key.validity && key.validity.badInput), empty = raw === '' && !unreadable;
+    var v = Number(raw);
+    if (!empty && (unreadable || !Number.isInteger(v) || v < KEY_MIN || v > KEY_MAX)) {
+      // Only the caption changes: the timeline and the picture stay exactly as they are.
+      stepper.pause();
+      fig.caption.innerHTML = 'Nothing was done: ' + (unreadable ? 'that input' : '<b>' + BTViz.esc(raw) + '</b>') + ' is not a key this page accepts. ' +
+        'Keys are whole numbers from ' + KEY_MIN + ' to ' + KEY_MAX + '. Both trees are unchanged.';
       key.focus({ preventScroll: true });
+      reveal();
       return;
     }
+    var rest = settle(), note = '';                 // from here on the models are the trees on screen
+    if (empty) { var p = pick(op); v = p.v; note = 'No key was typed, so ' + k(v) + p.why; }
     var steps = opSteps(op, v, false);
-    if (picked) steps[0].caption = 'No key was typed, so ' + k(v) + ' was picked at random. ' + steps[0].caption;
-    stepper.setSteps(steps, { play: true });
+    if (rest.length) {
+      rest[0].caption = unfinished(rest) + ' and is finished first; then the ' + WORD[op] + ' of ' + k(v) + ' starts. ' + rest[0].caption;
+    }
+    steps[0].caption = note + steps[0].caption;
+    stepper.setSteps(rest.concat(steps), { play: true });
     key.value = '';
     key.focus({ preventScroll: true });
+    reveal();
   }
   /** The chapter's fixed scenario, part 1: the twelve canonical inserts. */
   function canonical(play) {
     order.value = 4;
     reset();
     var steps = [{ focus: null, caption: 'Two empty trees of order 4: at most 3 keys per node, at least 1 (except the root). Insert ' +
-      Ch07.CANONICAL.map(function (v) { return k(v); }).join(' ') + ' into both. Only the steps that change the structure are shown.', state: both(), log: 'canonical build' }];
+      Ch07.CANONICAL.map(function (v) { return k(v); }).join(' ') + ' into both. Only the steps that change the structure are shown.', state: both(), log: 'canonical build', h: 0, last: true }];
     Ch07.CANONICAL.forEach(function (v) { steps = steps.concat(opSteps('insert', v, true)); });
     steps[steps.length - 1].caption = 'The same twelve keys. ' + steps[steps.length - 1].caption +
       ' Use the controls to replay the build, or type a key above.';
     stepper.setSteps(steps, play ? { play: true } : { index: steps.length - 1 });
   }
   /** Part 2 of the scenario: the deletes of section 4 of the program output. */
-  function deleteWalk() {
+  function deleteWalk(play) {
     order.value = 4;
     reset();
-    Ch07.CANONICAL.forEach(function (v) { a.insert(v, { steps: false }); b.put(v, v * 100, { steps: false }); });
+    Ch07.CANONICAL.forEach(function (v) { quiet('insert', v); });
     var steps = [{ focus: null, caption: 'The canonical trees again. Now delete ' + Ch07.DELETES.map(function (v) { return k(v); }).join(' ') +
-      ': a stale separator, three leaf borrows, a merge with an internal rotation, and finally two merges that remove a level.', state: both(), log: 'delete walk-through' }];
+      ': a stale separator, three leaf borrows, a merge with an internal rotation, and finally two merges that remove a level.', state: both(), log: 'delete walk-through', h: history.length, last: true }];
     Ch07.DELETES.forEach(function (v) { steps = steps.concat(opSteps('delete', v, true)); });
-    stepper.setSteps(steps, { play: true });
+    stepper.setSteps(steps, play ? { play: true } : {});
   }
   function randomFill() {
-    var have = b.keys(), n = 0;
+    var rest = settle(), have = b.keys(), n = 0;
     BTViz.rng(11 + fills++).sample(40, 1, 99).forEach(function (v) {
       if (n >= 10 || have.indexOf(v) >= 0) return;
-      a.insert(v, { steps: false }); b.put(v, v * 100, { steps: false }); n++;
+      quiet('insert', v); n++;
     });
     log.clear();
-    var filled = 'Inserted ' + n + ' random keys into both trees. ' + summary('insert', '…', [], [], both()).replace(/^After insert .*?: /, '');
+    var filled = (rest.length ? unfinished(rest) + ' and was finished first. ' : '') +
+      'Inserted ' + plural(n, 'random key') + ' into both trees. ' + sizes(both());
     showIdle(filled);
     // Only known after the trees are drawn: say that a tree no longer fits, and how to move around in it.
     if (overflows()) showIdle(filled + ' A tree is now wider than its frame: scroll or drag sideways inside it. During an operation the view follows the active node.');
+    reveal();
   }
   key.addEventListener('keydown', function (e) { if (e.key === 'Enter') run('insert'); });
   order.addEventListener('change', function () {
     reset();
-    showIdle('Empty trees of order ' + order.value + ': at most ' + (order.value - 1) + ' keys per node, at least ' + b.minKeys() + ' in every node but the root.');
+    showIdle('Empty trees of order ' + order.value + ': at most ' + plural(order.value - 1, 'key') + ' per node, at least ' + b.minKeys() + ' in every node but the root.');
+    reveal();
   });
 
   /* ---------------------------------------------------------- self-tests */
@@ -352,7 +491,27 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
   BTViz.selfTest('B-tree model = chapter 05 canonical tree',
     '[' + ref.keys.join(' ') + ']\n' + ref.children.map(function (c) { return '[' + c.keys.join(' ') + ']'; }).join(' '), E.btreeCanonical);
 
+  /**
+   * The controls act on the step on screen by replaying the history up to it. Check that for every
+   * step that ends an operation the replay gives exactly the trees, handles and free list that the
+   * step shows. Returns the numbers of the steps where it does not.
+   */
+  function replayMismatches() {
+    var steps = stepper.steps, full = history.slice(), bad = [];
+    steps.forEach(function (st, i) {
+      if (!st.last) return;
+      history = full.slice();
+      rebuild(st.h);
+      if (JSON.stringify(both()) !== JSON.stringify(st.state)) bad.push(i + 1);
+    });
+    history = full.slice();
+    rebuild(full.length);
+    return bad.join(' ');
+  }
+  deleteWalk(false);
+  BTViz.selfTest('replay to any shown step = the trees shown (walk-through)', replayMismatches(), '');
   canonical(false);
+  BTViz.selfTest('replay to any shown step = the trees shown (build)', replayMismatches(), '');
   // The trees this page actually shows after the canonical build are the ones the programs print.
   BTViz.selfTest('page state after the canonical build', Ch07.dump(b),
     E.sections1to5.slice(E.sections1to5.indexOf('  height 3, 12 keys'), E.sections1to5.indexOf('\n== 2.')).replace(/^ {2}/, ''));

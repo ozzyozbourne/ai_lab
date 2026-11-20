@@ -20,7 +20,7 @@ Prerequisites: B+trees (chapter 07), slotted pages and byte-based fullness (10, 
 points (14).
 
 Scope: prefix compression (storing a prefix shared by all keys of a page once) is textbook
-material here; none of the six codebases does it in a B-tree.
+material; none of the six codebases does it in a B-tree.
 
 ## The idea in plain words
 
@@ -72,7 +72,7 @@ builds concurrency on that test). They cost space on every page, one more reason
 truncate: a fence is as short as the separator it copies.
 
 Postgres stores only the upper one, the high key. Storing both is the textbook form
-(Graefe's "fence keys"; unverified against any of the six codebases).
+(Graefe's "fence keys"; unverified against the six codebases).
 
 ### Posting lists
 
@@ -85,8 +85,7 @@ thousand times. A *posting list* stores the key once, followed by the sorted TID
 The content is the same, only the representation changes. The cost is a more complicated
 insert: a new TID may fall *inside* the range of an existing list.
 
-Deduplication is lazy, as in Postgres: it runs only when a leaf is full and would otherwise
-split.
+Deduplication is lazy, as in Postgres: it runs only when a full leaf would otherwise split.
 
 ## A worked example by hand
 
@@ -110,7 +109,7 @@ several cuts near the middle and prefers the shortest separator.
 
 **Routing.** The parent now contains `... "blu" ...`. Look up `blackberry`: the search tuple
 is `(blackberry, 0)`. Why 0? It is the smallest TID, so `(key, 0)` is at or below every
-stored tuple with that key and the search lands where the run of that key begins. Compare
+stored tuple with that key and the search lands where that key's run begins. Compare
 the key bytes with `blu`: `bla < blu`, so the tuple is below the separator and goes left.
 Look up `blueberry`: `blu` is a prefix of `blueberry`, a prefix sorts first, so the
 separator is below the tuple and the search goes right. Look up `blu` itself (not in the
@@ -241,9 +240,9 @@ page 2 internal low=-inf high=+inf used=46/256
 ```
 
 The `apple` lists stop at five TIDs because no cell may exceed one sixth of the usable
-page: (256 - 8) / 6 = 41 bytes, exactly `apple` with five TIDs. `apple@1` and `apple@15`
-stay plain cells because a pass merges from left to right and never re-cuts an existing
-list: a tuple that arrives later next to a full list stays alone. Postgres does the same, a
+page: (256 - 8) / 6 = 41 bytes rounded down, exactly `apple` with five TIDs. `apple@1` and
+`apple@15` stay plain because a pass merges left to right and never re-cuts an existing
+list: a tuple that arrives next to a full list stays alone. Postgres does the same, a
 tuple that would push the pending list over its size limit starts a new one
 (`_bt_dedup_save_htid`, `nbtdedup.c:507-515`).
 

@@ -21,7 +21,8 @@ and see why the tree only ever gets taller at the root.</p>
 <p>This page belongs to <a href="../README.md">Chapter 04: Insertion and splitting</a>.
 The second page of this chapter, <a href="fill.html">How full do the nodes get?</a>, compares ascending and random keys.
 The tree below has order M: a node holds at most M&nbsp;&minus;&nbsp;1 keys. It starts empty. Type a whole number from 0 to 999 and press
-<em>Insert</em>, or play the guide's twelve canonical keys. Every frame comes from a JavaScript B-tree that follows the same rules as
+<em>Insert</em>, or play the guide's twelve canonical keys. <em>Play an interior split</em> shows the one step those twelve keys do not reach
+bottom-up: a node that has children is split, and its children are divided between the two halves. Every frame comes from a JavaScript B-tree that follows the same rules as
 the chapter's Zig and Rust code, and is checked against their output at the bottom of the page.</p>
 
 <h2>Insert a key</h2>
@@ -35,13 +36,15 @@ the chapter's Zig and Rust code, and is checked against their output at the bott
 <tr><td>Walking down</td><td>Only looks; remembers the path.</td><td>Splits every full node it is about to enter.</td></tr>
 <tr><td>At the leaf</td><td>Puts the key in. If the leaf now holds M keys, it splits.</td><td>Puts the key in. There is always room.</td></tr>
 <tr><td>A split</td><td>M keys: the lower M/2 stay, the middle key goes up, the rest move to a new node.</td><td>M&nbsp;&minus;&nbsp;1 keys: M/2&nbsp;&minus;&nbsp;1 stay, the middle key goes up, M/2&nbsp;&minus;&nbsp;1 move. Needs an even M.</td></tr>
+<tr><td>The node that splits has children</td><td>The children are divided with the keys: the left half keeps M/2 keys and M/2&nbsp;+&nbsp;1 children (M/2 rounded down), the new node gets the rest.</td><td>Each half gets M/2&nbsp;&minus;&nbsp;1 keys and M/2 children.</td></tr>
 <tr><td>The parent is full too</td><td>The split repeats one level higher, along the remembered path.</td><td>Cannot happen: the parent was made non-full on the way down.</td></tr>
 <tr><td>The root splits</td><td colspan="2">A new root with one key is created above the two halves. This is the only way the tree gets taller.</td></tr>
 </tbody>
 </table>
 </div>
 <p>Suggested experiments: play the canonical keys bottom-up, then top-down, and compare the final trees (the top-down tree is one level taller:
-watch the insert of 25). Insert 1, 2, 3, &hellip; in ascending order and look at the leaves that are left behind.
+watch the insert of 25). Press <em>Play an interior split</em> in both modes: bottom-up, key 2 splits a leaf and then the full root with its five children;
+top-down, key 25 splits the full root with its four children before it goes any further. Insert 1, 2, 3, &hellip; in ascending order and look at the leaves that are left behind.
 Switch to order 3, where a node overflows at three keys. Tick <em>Predict</em> to be asked before each split.</p>
 
 <script src="code.js"></script>
@@ -60,6 +63,7 @@ Switch to order 3, where a node overflows at three keys. Tick <em>Predict</em> t
 
   /* The same constant as zig/src/scenario.zig and rust/src/scenario.rs. */
   var CANONICAL = [10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15];
+  var INTERIOR_SPLIT_KEY = 2;
   var ORDERS = { 'bottom-up': [3, 4, 5, 6], 'top-down': [4, 6] };
 
   var fig = BTViz.figure('#fig', {
@@ -77,19 +81,24 @@ Switch to order 3, where a node overflows at three keys. Tick <em>Predict</em> t
   var insertBtn = button('btn-insert', 'Insert', fromInput, true);
   var randomBtn = button('btn-random', 'Insert a random key', insertRandom);
   var scriptBtn = button('btn-script', 'Play the canonical keys', playScript);
+  var interiorBtn = button('btn-interior', 'Play an interior split', playInterior);
   var resetBtn = button('btn-reset', 'Empty the tree', function () { reset(); });
-  fig.toolbar.append(modeSel, orderSel, el('span.bt-toolbar-sep'), keyInput, insertBtn, randomBtn, el('span.bt-toolbar-sep'), scriptBtn, resetBtn);
+  fig.toolbar.append(modeSel, orderSel, el('span.bt-toolbar-sep'), keyInput, insertBtn, randomBtn, el('span.bt-toolbar-sep'), scriptBtn, interiorBtn, resetBtn);
 
   var hint = el('p.hint#hint', { role: 'status' });
   var facts = el('div.facts');
   fig.stage.append(hint);
   var view = new BTViz.TreeView(fig.stage, { minHeight: 250, ariaLabel: 'B-tree' });
   fig.stage.append(facts);
+  // The tree, the caption and the step buttons have to fit on one 1280x800
+  // screen with this panel between them, so it is kept low; it scrolls to
+  // the highlighted lines by itself.
+  var CODE_HEIGHT = 220;
   var codeHost = el('div');
   fig.stage.append(codeHost);
   var codes = {
-    'bottom-up': BTViz.codePanel(codeHost, 'bottom-up', { title: 'put, bottom-up (condensed from base_insert.zig / base_insert.rs)', maxHeight: 330 }),
-    'top-down': BTViz.codePanel(codeHost, 'top-down', { title: 'put, top-down (condensed from topdown.zig / topdown.rs)', maxHeight: 330 })
+    'bottom-up': BTViz.codePanel(codeHost, 'bottom-up', { title: 'put, bottom-up (condensed from base_insert.zig / base_insert.rs)', maxHeight: CODE_HEIGHT }),
+    'top-down': BTViz.codePanel(codeHost, 'top-down', { title: 'put, top-down (condensed from topdown.zig / topdown.rs)', maxHeight: CODE_HEIGHT })
   };
   var codeEls = codeHost.children;   // one element per panel, in creation order
 
@@ -193,6 +202,24 @@ Switch to order 3, where a node overflows at three keys. Tick <em>Predict</em> t
     stepper.setSteps(all, { play: true });
   }
 
+  /* The first split of an INTERIOR node, on its own (order 4). Bottom-up it
+   * is the put after the twelve canonical keys (key 2, as in part 1 of the
+   * programs' output); top-down it is the put of 25, the tenth canonical key. */
+  function playInterior() {
+    stepper.pause();
+    orderSel.value = '4';
+    tree = Ch04.Tree(4, modeSel.value);
+    var bottomUp = tree.mode === 'bottom-up';
+    var before = bottomUp ? CANONICAL : CANONICAL.slice(0, CANONICAL.indexOf(25)), key = bottomUp ? INTERIOR_SPLIT_KEY : 25;
+    before.forEach(function (x) { tree.insert(x, { steps: false }); });
+    var intro = { type: 'intro', state: tree.snapshot(), highlight: {}, splits: tree.splits,
+      caption: 'The tree after ' + (bottomUp ? 'the twelve canonical keys' : 'the first ' + before.length + ' canonical keys') + ', inserted ' + tree.mode +
+        '. The root is full and has ' + tree.root.children.length + ' children. Next: insert ' + k(key, 'compare') + '. ' +
+        (bottomUp ? 'Its leaf is full too, so the split will reach the root.' : 'Its leaf has room, but top-down splits the full root anyway.') +
+        ' Watch which children end up under which half.' };
+    stepper.setSteps([intro].concat(tree.insert(key)), { play: true });
+  }
+
   modeSel.addEventListener('change', function () {
     var changed = fillOrders();
     reset(changed ? 'Top-down splitting needs an even order, so the order was set to 4. ' : '');
@@ -210,6 +237,9 @@ Switch to order 3, where a node overflows at three keys. Tick <em>Predict</em> t
     var a = Ch04.Tree(4, 'bottom-up'), out = '';
     CANONICAL.forEach(function (key) { out += a.insert(key).summary + '\n' + text(a.snapshot(), '  '); });
     BTViz.selfTest('part 1: bottom-up', out, E.part1.slice(0, out.length));
+    // The last step of part 1: one more key splits a leaf and the interior root.
+    out = a.insert(INTERIOR_SPLIT_KEY).summary + '\n' + text(a.snapshot(), '  ');
+    BTViz.selfTest('part 1: interior split', out, E.part1.slice(E.part1.indexOf('put ' + INTERIOR_SPLIT_KEY + ':')));
 
     var b = Ch04.Tree(4, 'top-down');
     out = '';

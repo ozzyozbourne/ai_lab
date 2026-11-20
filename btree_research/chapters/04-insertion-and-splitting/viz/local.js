@@ -241,7 +241,7 @@
         this.root = newRoot;
         this.rootSplits++;
         if (rec) push('root-grow', 'The root split, so ' + k(median, 'split') + ' has no parent to go to: a new root is created above the two halves ' + box(left.keys) + ' and ' + box(right.keys) +
-          (left.leaf ? '' : ' (' + plural(left.children.length, 'child') + 'ren under the left half, ' + right.children.length + ' under the right)') +
+          (left.leaf ? '' : ' (' + left.children.length + ' children under the left half, ' + right.children.length + ' under the right)') +
           '. This is the only way the tree gets taller, and it happens at the top, so every leaf is still at the same depth.',
           hs, { log: { html: 'root split: ' + median + ' up, height ' + this.stats().height, state: 'split' }, question: question, hold: 2 });
         break;

@@ -1,7 +1,7 @@
 # Chapter 20: solutions
 
 Every outcome quoted here was produced by running the chapter's Zig tests
-(`zig build test --summary all`, 32 tests) against a scratch copy with the
+(`zig build test --summary all`, 34 tests) against a scratch copy with the
 described change, unless the text says "expected" or "not run". Where a
 threaded test is involved the change was run eight times, and the text says
 what varied.
@@ -24,14 +24,14 @@ a split makes old, committed keys disappear, not only the new one.
 
 ## 2. `key > high_key` instead of `key >= high_key`
 
-Run with only that change, 8 or 9 of the 32 tests fail. Eight fail in every
+Run with only that change, 9 or 10 of the 34 tests fail. Nine fail in every
 run: the output test, "paused between step 1 and step 2"
 (`expected 2600, found null`), the paused root split, the paused internal
-node, the full node table, both model tests and the stress test with
-abandoned splits. The ninth is the stress test with normal splits. It fails
+node, both full-table tests, both model tests and the stress test with
+abandoned splits. The tenth is the stress test with normal splits. It fails
 only if some thread reaches the left half of a split with out-of-date
 directions and a key equal to the new high key, so it depends on the
-interleaving: it failed in 7 of 8 runs.
+interleaving: it failed in 3 of 8 runs.
 
 The first failure explains all of them. In the paused state #3 has high key
 26, and 26 itself lives in #8. A search for 26 computes `26 > 26`, which is
@@ -60,8 +60,10 @@ if (parent.node.len == tree.maxKeys()) {
 parent.node.internalInsertAt(slot, separator, right_id);
 ```
 
-One test fails: "a full node table: put fails cleanly, or leaves a legal
-incomplete split". `validate` returns `error.MissingDownlink`.
+The two full-table tests fail. In "a full node table: put fails cleanly, or
+leaves a legal incomplete split" `validate` returns `error.MissingDownlink`.
+The other one prints the state it found, `... #4(7 8)<9 -> #5(9 10)`, where it
+expects `#4(7 8)<9 {incomplete} -> #5(9 10) {no downlink}`.
 
 What happened: the parent was full, the table had no node left for the
 parent's split, and the function returned without inserting the downlink. The
@@ -80,7 +82,7 @@ them. In Postgres both are part of one critical section and one WAL record
 
 Change `if (page.incomplete_split)` in `moveRight` to `if (false and ...)`.
 
-Three tests fail on an assertion and five abort (the same eight in 8 of 8
+Four tests fail on an assertion and five abort (the same nine in 8 of 8
 runs). The assertion failures are the direct effect: in "an insert that meets
 the flag finishes the split before its own work", `incompleteSplits()` is
 still 1 after `put 27`.

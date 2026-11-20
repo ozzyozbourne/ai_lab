@@ -318,6 +318,7 @@ impl Lsm {
     /// costs its index path, root first, and one data block.
     pub fn get(&mut self, key: u64) -> Option<u64> {
         let mut result = self.mem.get(key);
+        let geo = self.cfg.geometry();
         // `self.dev` and `self.stats` are borrowed next to the runs, so the
         // probe is a free function over the fields it needs.
         for run in self.l0.iter().rev().chain(self.levels.iter().flatten()) {

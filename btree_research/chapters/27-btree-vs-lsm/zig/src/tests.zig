@@ -158,6 +158,43 @@ test "lsm: writes are free until the memtable is full, then one flush" {
     try lsm.validate();
 }
 
+test "lsm: a run's index is a tree, and every level of it is read and written" {
+    // Regression test: the index used to be one level deep, with the choice
+    // of the right index block made for free "in RAM". The B+tree paid for
+    // every level, so the comparison was tilted.
+    const gpa = testing.allocator;
+    var lsm: Lsm = .init(gpa, .{ .block_entries = 1, .index_fanout = 2, .memtable_entries = 8, .l0_runs = 1, .growth = 2 });
+    defer lsm.deinit(gpa);
+    for (1..10) |k| try lsm.put(gpa, k, k * 10);
+    // The ninth put flushed keys 1..8 (8 data blocks; 4 + 2 + 1 index blocks)
+    // and compacted that run into level 1: every block read once, and the
+    // same 15 blocks written again.
+    try testing.expectEqual(8, lsm.levels[0].?.len());
+    try testing.expectEqual(3, lsm.cfg.geometry().indexHeight(8));
+    try testing.expectEqual([2]u64{ 14, 16 }, lsm.dev.counters.writes);
+    try testing.expectEqual([2]u64{ 7, 8 }, lsm.dev.counters.reads);
+    try testing.expectEqual(15, lsm.dev.live);
+    try testing.expectEqual(30, lsm.dev.peak);
+
+    // A point lookup walks root, level 2, level 1, data block: like a B+tree
+    // of height 4.
+    var before = lsm.dev.counters;
+    try testing.expectEqual(50, lsm.get(5));
+    try testing.expectEqual([2]u64{ 3, 1 }, lsm.dev.counters.since(before).reads);
+
+    // A scan pays the same path to find its first block, then only the
+    // index blocks it newly moves under. Keys 3 and 4 are data blocks 2 and
+    // 3; the cursor then steps on to block 4, which lies under another
+    // level-1 block and another level-2 block, but under the same root.
+    var out: std.ArrayList(Entry) = .empty;
+    defer out.deinit(gpa);
+    before = lsm.dev.counters;
+    try lsm.range(gpa, 3, 5, &out);
+    try testing.expectEqual(2, out.items.len);
+    try testing.expectEqual([2]u64{ 3 + 2, 3 }, lsm.dev.counters.since(before).reads);
+    try lsm.validate();
+}
+
 test "lsm: newest version wins, a tombstone hides older runs, compaction drops both" {
     const gpa = testing.allocator;
     var lsm: Lsm = .init(gpa, tiny);
@@ -356,6 +393,26 @@ test "the three workloads of the chapter agree with the oracle (shortened)" {
     }
 }
 
+test "the peak is compared with the keys that were live at the peak" {
+    // Regression test: "space amplification at the peak" used to divide the
+    // peak by the packed size at the END of the run. The insert-heavy
+    // workload only grows, so the LSM's peak (its last big compaction) comes
+    // before the end, with fewer keys live.
+    const r = try bench.runWorkload(testing.allocator, bench.workloads[0], bench.bench_order, bench.bench_lsm);
+    try testing.expect(r.lsm.peak > r.lsm.blocks);
+    try testing.expect(r.lsm.peak_live_keys > 0 and r.lsm.peak_live_keys < r.live_keys);
+    try testing.expect(r.btree.peak >= r.btree.blocks);
+    try testing.expect(r.btree.peak_live_keys <= r.live_keys);
+
+    // With no measured operation the peak is the preloaded state.
+    var wl = bench.workloads[1];
+    wl.count = 0;
+    const idle = try bench.runWorkload(testing.allocator, wl, bench.bench_order, bench.bench_lsm);
+    try testing.expectEqual(idle.lsm.blocks, idle.lsm.peak);
+    try testing.expectEqual(idle.live_keys, idle.lsm.peak_live_keys);
+    try testing.expectEqual(idle.live_keys, idle.btree.peak_live_keys);
+}
+
 // ------------------------------------------------------ allocation failure
 
 fn buildLsmUnderFailure(gpa: Allocator) !void {
@@ -495,5 +552,13 @@ test "validate names the broken invariant" {
     tree.dev.pin(0, .data); // an operation that never ended
     try testing.expectError(error.DeviceAccounting, tree.validate());
     tree.dev.endOp();
+    try tree.validate();
+
+    // Regression test (ported from chapter 07): a length beyond the node's
+    // arrays is reported before it is used to slice them, not a crash.
+    const saved_len = tree.nodes.ptr(tree.last_leaf).len;
+    tree.nodes.ptr(tree.last_leaf).len = @import("base_node.zig").key_capacity + 1;
+    try testing.expectError(error.NodeOverfull, tree.validate());
+    tree.nodes.ptr(tree.last_leaf).len = saved_len;
     try tree.validate();
 }

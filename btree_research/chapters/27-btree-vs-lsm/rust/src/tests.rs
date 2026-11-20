@@ -163,6 +163,50 @@ fn lsm_writes_are_free_until_the_memtable_is_full_then_one_flush() {
 }
 
 #[test]
+fn lsm_a_runs_index_is_a_tree_and_every_level_of_it_is_read_and_written() {
+    // Regression test: the index used to be one level deep, with the choice
+    // of the right index block made for free "in RAM". The B+tree paid for
+    // every level, so the comparison was tilted.
+    let cfg = lsm::Config {
+        block_entries: 1,
+        index_fanout: 2,
+        memtable_entries: 8,
+        l0_runs: 1,
+        growth: 2,
+    };
+    let mut lsm = Lsm::new(cfg);
+    for k in 1..10 {
+        lsm.put(k, k * 10).unwrap();
+    }
+    // The ninth put flushed keys 1..8 (8 data blocks; 4 + 2 + 1 index blocks)
+    // and compacted that run into level 1: every block read once, and the
+    // same 15 blocks written again.
+    assert_eq!(lsm.levels[0].as_ref().unwrap().len(), 8);
+    assert_eq!(cfg.geometry().index_height(8), 3);
+    assert_eq!(lsm.dev.counters.writes, [14, 16]);
+    assert_eq!(lsm.dev.counters.reads, [7, 8]);
+    assert_eq!(lsm.dev.live, 15);
+    assert_eq!(lsm.dev.peak, 30);
+
+    // A point lookup walks root, level 2, level 1, data block: like a B+tree
+    // of height 4.
+    let mut before = lsm.dev.counters;
+    assert_eq!(lsm.get(5), Some(50));
+    assert_eq!(lsm.dev.counters.since(&before).reads, [3, 1]);
+
+    // A scan pays the same path to find its first block, then only the
+    // index blocks it newly moves under. Keys 3 and 4 are data blocks 2 and
+    // 3; the cursor then steps on to block 4, which lies under another
+    // level-1 block and another level-2 block, but under the same root.
+    let mut out = Vec::new();
+    before = lsm.dev.counters;
+    lsm.range(3, 5, &mut out);
+    assert_eq!(out.len(), 2);
+    assert_eq!(lsm.dev.counters.since(&before).reads, [3 + 2, 3]);
+    lsm.validate().unwrap();
+}
+
+#[test]
 fn lsm_newest_version_wins_a_tombstone_hides_older_runs_compaction_drops_both() {
     let mut lsm = Lsm::new(TINY);
     for k in [1, 2, 3, 4] {
@@ -459,6 +503,29 @@ fn the_three_workloads_of_the_chapter_agree_with_the_oracle_shortened() {
     }
 }
 
+#[test]
+fn the_peak_is_compared_with_the_keys_that_were_live_at_the_peak() {
+    // Regression test: "space amplification at the peak" used to divide the
+    // peak by the packed size at the END of the run. The insert-heavy
+    // workload only grows, so the LSM's peak (its last big compaction) comes
+    // before the end, with fewer keys live.
+    let r = bench::run_workload(&bench::WORKLOADS[0], bench::BENCH_ORDER, bench::BENCH_LSM);
+    assert!(r.lsm.peak > r.lsm.blocks);
+    assert!(r.lsm.peak_live_keys > 0 && r.lsm.peak_live_keys < r.live_keys as u64);
+    assert!(r.btree.peak >= r.btree.blocks);
+    assert!(r.btree.peak_live_keys <= r.live_keys as u64);
+
+    // With no measured operation the peak is the preloaded state.
+    let wl = bench::Workload {
+        count: 0,
+        ..bench::WORKLOADS[1]
+    };
+    let idle = bench::run_workload(&wl, bench::BENCH_ORDER, bench::BENCH_LSM);
+    assert_eq!(idle.lsm.blocks, idle.lsm.peak);
+    assert_eq!(idle.live_keys as u64, idle.lsm.peak_live_keys);
+    assert_eq!(idle.live_keys as u64, idle.btree.peak_live_keys);
+}
+
 // ------------------------------------------- budget (allocation) failure
 //
 // Zig injects failures into the allocator (`checkAllAllocationFailures`,
@@ -610,5 +677,14 @@ fn validate_names_the_broken_invariant() {
     tree.dev.pin(NodeId::from_index(0).index(), Kind::Data); // an operation that never ended
     assert_eq!(tree.validate(), Err(TreeViolation::DeviceAccounting));
     tree.dev.end_op();
+    tree.validate().unwrap();
+
+    // Regression test (ported from chapter 07): a length beyond the node's
+    // arrays is reported before it is used to slice them, not a panic.
+    let last_leaf = tree.last_leaf;
+    let saved_len = tree.nodes.get(last_leaf).len;
+    tree.nodes.get_mut(last_leaf).len = crate::base_node::KEY_CAPACITY + 1;
+    assert_eq!(tree.validate(), Err(TreeViolation::NodeOverfull));
+    tree.nodes.get_mut(last_leaf).len = saved_len;
     tree.validate().unwrap();
 }

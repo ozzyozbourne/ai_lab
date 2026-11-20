@@ -238,6 +238,9 @@ test "a merge that stops early reads only the blocks it entered" {
     try testing.expectEqual(70, m.next(&dev).?.key); // cursor moves into block 4
     try testing.expectEqual(80, m.peekKey());
     const io = dev.counters.since(before);
-    // Blocks 3 and 4 are described by different index blocks (fan-out 2).
-    try testing.expectEqual([2]u64{ 2, 2 }, io.reads);
+    // 10 data blocks at fan-out 2: index levels of 5, 3, 2 and 1 blocks.
+    // Positioning at block 3 reads one block of each level; block 4 lies
+    // under a different block of levels 1 and 2 (3/2 != 4/2, 3/4 != 4/4)
+    // but under the same block of levels 3 and 4.
+    try testing.expectEqual([2]u64{ 4 + 2, 2 }, io.reads);
 }

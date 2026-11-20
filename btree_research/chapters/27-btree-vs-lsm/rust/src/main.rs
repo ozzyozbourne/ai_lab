@@ -302,7 +302,10 @@ fn limits(w: &mut dyn Write, memtable_entries: usize) -> io::Result<()> {
         w,
         "    levels included, in both structures. \"data blocks per get\" is what is left if"
     )?;
-    writeln!(w, "    every index block of either structure is held in RAM.")?;
+    writeln!(
+        w,
+        "    every index block of either structure is held in RAM."
+    )?;
     writeln!(
         w,
         "  * No write-ahead log, and so NOT the same durability. A B+tree write is on the"

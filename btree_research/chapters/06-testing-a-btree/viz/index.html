@@ -129,7 +129,7 @@ a broken tree pass a test that never builds a third level.</p>
           el('div', {}, el('div.fz-row-label', {}, 'Oracle (a sorted list)'), oracleRow),
           el('div', {}, el('div.fz-row-label', {}, 'Tree (full in-order scan)'), scanRow)))));
   fig.stage.append(status, el('div.fz', {}, el('div.fz-col', {}, opsPanel), right), msg);
-  var view = new BTViz.TreeView(treeBody, { minHeight: 190, maxHeight: 330, ariaLabel: 'B-tree under test' });
+  var view = new BTViz.TreeView(treeBody, { minHeight: 190, maxHeight: 330, minScale: 0.55, ariaLabel: 'B-tree under test' });
 
   /* ------------------------------------------------------------- formatting */
   function val(v) {           // 64-bit random values are shown by their last four digits

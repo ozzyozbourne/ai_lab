@@ -23,6 +23,16 @@
   .c8-points li { margin: .35em 0; }
   .c8-num { width: 5.2em; }
   .bt-selftest { white-space: normal; border-radius: 10px; }   /* long names must wrap on a phone */
+  /* Node handles ("#6") sit where the edge from the parent arrives; a halo in the stage colour keeps
+     them readable, because captions and stack frames refer to nodes by these handles. */
+  .bt-tree-svg .bt-node-label { paint-order: stroke; stroke: var(--bt-bg); stroke-width: 4px; stroke-linejoin: round; }
+  /* Narrow screens: the toolkit stacks the side column between the picture and its caption. Here the
+     picture, the caption and the step controls stay together and the cursor panel and log follow. */
+  @media (max-width: 820px) {
+    .bt-figure { display: flex; flex-direction: column; }
+    .bt-figure > .bt-figure-body.has-side { display: contents; }
+    .bt-figure .bt-side { order: 1; }
+  }
 </style>
 </head>
 <body>
@@ -84,11 +94,12 @@ here are checked against the output of the chapter's Zig and Rust programs (self
   }
   /** Typed input is used exactly as typed or not at all. Returns {ok, value} or {ok: false, why}. */
   function readKey(input, what) {
+    var a = /^[aeiou]/.test(what) ? 'an ' : 'a ';
     var raw = input.value.trim(), unreadable = !!(input.validity && input.validity.badInput);
     var v = Number(raw);
     if (unreadable || raw === '' || !Number.isInteger(v) || v < KEY_MIN || v > KEY_MAX) {
       return { ok: false, why: 'Nothing was done: ' + (raw === '' && !unreadable ? 'no ' + what + ' was typed' :
-        (unreadable ? 'that input' : '<b>' + BTViz.esc(raw) + '</b>') + ' is not a ' + what + ' this page accepts') +
+        (unreadable ? 'that input' : '<b>' + BTViz.esc(raw) + '</b>') + ' is not ' + a + what + ' this page accepts') +
         '. Keys are whole numbers from ' + KEY_MIN + ' to ' + KEY_MAX + '.' };
     }
     return { ok: true, value: v };
@@ -215,7 +226,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
       btn('Canonical keys', function () { build(Ch08.CANONICAL, 'the canonical keys'); }),
       btn('Random keys', randomKeys));
 
-    var view = new BTViz.TreeView(fig.stage, { minHeight: 230, ariaLabel: 'B+tree being scanned' });
+    var view = new BTViz.TreeView(fig.stage, { minHeight: 230, minScale: 0.5, ariaLabel: 'B+tree being scanned' });
     var strip = el('div.c8-strip', { 'aria-label': 'Keys returned so far' });
     fig.stage.appendChild(strip);
     var panel = el('div.bt-panel', el('div.bt-panel-title', 'The cursor'));
@@ -250,11 +261,16 @@ here are checked against the output of the chapter's Zig and Rust programs (self
     function run(play) {
       var lo = readBound(loKind, loKey, 'lower bound'), hi = readBound(hiKind, hiKey, 'upper bound');
       if (!lo.ok || !hi.ok) { idle((lo.ok ? hi : lo).why + ' The tree is unchanged and no scan was started.'); return; }
-      var steps = [], pill = null, asked = false, d = design.value, dir = direction.value;
+      var steps = [], pill = null, asked = false, d = design.value, dir = direction.value, fwd = dir === 'forward';
+      var restLeaf = NIL;          // the leaf the cursor last rested in (landed in, or returned a key from)
       var res = Ch08.scan(tree, d, lo.bound, hi.bound, dir, function (ev, cur, keys) {
-        if (ev.type === 'return') pill = { leaf: cur.leaf, label: keys[keys.length - 1] };
-        if (ev.type === 'stop' || ev.type === 'end') pill = ev.type === 'end' ? null : pill;
         var moving = { descend: 1, jump: 1, land: 1, link: 1, up: 1, pop: 1, down: 1, start: 1 }[ev.type];
+        // The marker is the cursor itself, so it shows the key the cursor is on (the same key the panel
+        // shows), also when that key fails the far bound and is not returned. While the cursor is between
+        // two entries the marker waits on the entry it left.
+        if (ev.type === 'end') pill = null;
+        else if (!moving) pill = cur.state === 'on' ? { leaf: cur.leaf, label: cur.key } : null;
+        if (ev.type === 'land' || ev.type === 'return') restLeaf = cur.leaf;
         var extra = { found: keys, result: keys, pill: pill, positionText: moving ? 'moving (see the caption)' : positionText(tree, cur) };
         if (ev.type === 'start') extra.log = 'scan ' + Ch08.rangeLabel(lo.bound, hi.bound) + ' ' + dir + ', ' + d;
         if (ev.type === 'return') extra.log = { html: '&nbsp;&nbsp;return ' + keys[keys.length - 1], state: 'found' };
@@ -264,8 +280,14 @@ here are checked against the output of the chapter's Zig and Rust programs (self
         if (ev.type === 'stop') extra.log = '&nbsp;&nbsp;stop';
         if (!asked && (ev.type === 'link' || ev.type === 'up' || ev.type === 'pop')) {
           asked = true;
+          // Built from the model: during the seek nothing has been returned yet, and a backward scan
+          // leaves a leaf through its first entry. There may be no neighbouring leaf at all.
+          var here = tree.base.name(restLeaf), toward = fwd ? 'next' : 'previous';
           extra.question = {
-            prompt: 'The cursor has returned the last entry of this leaf and the scan is not finished. How does the ' + DESIGN[d] + ' reach the neighbouring leaf?',
+            prompt: (cur.state !== 'on'
+              ? 'The seek came down into leaf ' + here + ', but no key there qualifies. Nothing has been returned yet: the first entry of this scan, if there is one, is in the ' + toward + ' leaf.'
+              : 'The cursor has returned ' + keys[keys.length - 1] + ', the ' + (fwd ? 'last' : 'first') + ' entry of leaf ' + here + ', and steps on.') +
+              ' How does the ' + DESIGN[d] + ' get from here to the ' + toward + ' leaf, if there is one?',
             choices: ['It follows the sibling link stored in the leaf', 'It goes back up to the parent it remembered and comes down again', 'It descends again from the root, searching for the last key'],
             answer: d === 'link' ? 0 : 1,
             explain: d === 'link' ? 'A leaf-link cursor keeps only (leaf, index); the leaf itself knows its neighbours.' : 'A stack cursor never reads sibling links. Its frames say which child it took in each ancestor, so "the next child" is one step sideways in the parent.'
@@ -280,7 +302,9 @@ here are checked against the output of the chapter's Zig and Rust programs (self
         'Done. ' + Ch08.rangeLabel(lo.bound, hi.bound) + ' ' + dir + ' returned ' + n + (n === 1 ? ' key' : ' keys') +
         (n ? ': ' + res.keys.map(function (v) { return k(v, 'found'); }).join(' ') : ' (an empty or inverted range needs no special case: the first candidate already fails the far-bound test, or there is none)') +
         '. The ' + DESIGN[d] + ' moved between nodes ' + res.cursor.stats.visits + ' times; the ' + DESIGN[other] + ' needs ' + alt.cursor.stats.visits +
-        ' for the same scan and returns the same keys.' }, { found: res.keys, result: res.keys, pill: pill, positionText: positionText(tree, res.cursor),
+        ' for the same scan and returns the same keys.' +
+        (res.cursor.state === 'on' ? ' The cursor still rests on ' + k(res.cursor.key, 'compare') + ' at leaf #' + res.cursor.leaf + ', index ' + res.cursor.index +
+          ': the first key outside the range, which was read and tested but not returned.' : '') }, { found: res.keys, result: res.keys, pill: pill, positionText: positionText(tree, res.cursor),
         log: { html: '&nbsp;&nbsp;' + n + ' keys, ' + res.cursor.stats.visits + ' node visits (' + other + ': ' + alt.cursor.stats.visits + ')', state: 'found' } }));
       stepper.setSteps(steps, play ? { play: true } : { index: 0 });
     }
@@ -319,7 +343,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
       el('span.bt-toolbar-sep'),
       btn('Scenario: split under the cursor', function () { scenario(true); }), btn('Reset', reset));
 
-    var view = new BTViz.TreeView(fig.stage, { minHeight: 230, ariaLabel: 'B+tree with a cursor on it' });
+    var view = new BTViz.TreeView(fig.stage, { minHeight: 230, minScale: 0.5, ariaLabel: 'B+tree with a cursor on it' });
     var strip = el('div.c8-strip', { 'aria-label': 'Keys the cursor returned since its last seek' });
     fig.stage.appendChild(strip);
     var panel = el('div.bt-panel', el('div.bt-panel-title', 'The cursor'));
@@ -417,9 +441,10 @@ here are checked against the output of the chapter's Zig and Rust programs (self
             'Switch the mode back to re-seek, or seek again.', { log: { html: name + ': dangling position', state: 'deleted' } }));
           return seal(steps);
         }
-        steps.push(makeStep(tree, cur, { type: 'fresh', code: 'reseek', caption: 'The tree has changed, but this naive cursor does not check. It trusts leaf #' + old.leaf + ', index ' + old.index +
-          ', which now holds ' + k(b.node(old.leaf).keys[old.index], 'compare') + ' instead of ' + k(old.key) + ', and steps from there.',
-          hl: { nodes: mk(old.leaf, 'active'), keys: [[old.leaf, b.node(old.leaf).keys[old.index], 'compare']] } }, extra({ log: name + ' (naive)' })));
+        var held = b.node(old.leaf).keys[old.index];
+        steps.push(makeStep(tree, cur, { type: 'fresh', code: 'reseek', caption: 'The tree has changed since this cursor computed its position, but this naive cursor does not check. It trusts leaf #' + old.leaf + ', index ' + old.index +
+          ', which ' + (held === old.key ? 'happens to hold ' + k(held, 'compare') + ' still' : 'now holds ' + k(held, 'compare') + ' instead of ' + k(old.key)) + ', and steps from there.',
+          hl: { nodes: mk(old.leaf, 'active'), keys: [[old.leaf, held, 'compare']] } }, extra({ log: name + ' (naive)' })));
       }
       cur.rec = rec;
       var got = op === 'seek' ? cur.seek(tree, { kind: 'ge', key: target }) : cur.step(tree, fwd ? 'forward' : 'backward');
@@ -529,15 +554,33 @@ here are checked against the output of the chapter's Zig and Rust programs (self
       var add = function (more) { steps = steps.concat(more); };
       add(cursorSteps('seek', 10, null));
       add(cursorSteps('next', null, null));
+      var was = { key: cur.key, leaf: cur.leaf, index: cur.index }, leavesBefore = tree.base.stats.splits;
       [11, 13, 14].forEach(function (v) { add(treeSteps('insert', v)); });
-      add(cursorSteps('next', null, {
-        prompt: 'The cursor returned 12 from leaf #1, index 1. Since then 11, 13 and 14 were inserted and that leaf split. What does this cursor\'s next() return now?',
-        choices: ['12, a second time', '13', '15'],
-        answer: cur.naive ? 0 : 1,
-        explain: cur.naive ? 'Leaf #1 is now (10 11). Index 1 holds 11, the naive cursor steps to "index 2", which is past the end, follows the link, and lands on 12 again.'
-          : 'The cursor sees that the tree version changed, drops (leaf #1, index 1) and seeks the first key greater than its saved key 12.'
-      }));
+      add(cursorSteps('next', null, scenarioQuestion(was, tree.base.stats.splits > leavesBefore)));
       stepper.setSteps(steps, play ? { play: true } : { index: 0 });
+    }
+    /**
+     * The question before the scenario's last next(), computed from the model: what both kinds of
+     * cursor would return is found by running copies of this cursor, not written down by hand.
+     */
+    function scenarioQuestion(was, didSplit) {
+      var b = tree.base, pos = 'leaf #' + was.leaf + ', index ' + was.index;
+      var run = function (naive) { var c = Ch08.Cursor.fromJSON(cur.toJSON()); c.naive = naive; return c.step(tree, 'forward'); };
+      var right = run(false), wrong = run(true), after = tree.keys().filter(function (v) { return v > right; })[0];
+      var say = function (v) { return v === null || v === undefined ? 'nothing' : v === was.key ? v + ', a second time' : String(v); };
+      var choices = [];
+      [wrong, right, after].forEach(function (v) { if (choices.indexOf(say(v)) < 0) choices.push(say(v)); });
+      var holds = b.slots[was.leaf] && b.slots[was.leaf].used ? b.node(was.leaf).keys : [];
+      return {
+        prompt: 'The cursor returned ' + was.key + ' from ' + pos + '. Since then 11, 13 and 14 were inserted' + (didSplit ? ' and that leaf split' : '') +
+          '. What does this cursor\'s next() return now?',
+        choices: choices,
+        answer: choices.indexOf(say(cur.naive ? wrong : right)),
+        explain: cur.naive
+          ? 'Leaf #' + was.leaf + ' is now (' + holds.join(' ') + '), so index ' + was.index + ' ' + (holds[was.index] === undefined ? 'is past its end' : 'holds ' + holds[was.index]) +
+            '. The naive cursor steps on from that old position and returns ' + say(wrong) + '; the entry after ' + was.key + ' is ' + say(right) + '.'
+          : 'The cursor sees that the tree version changed, drops (' + pos + ') and seeks the first key greater than its saved key ' + was.key + '.'
+      };
     }
     function reset() {
       fresh();

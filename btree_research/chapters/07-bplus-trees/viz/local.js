@@ -205,9 +205,9 @@
       this.root = this.firstLeaf = this.lastLeaf = first;
       this.height = 1;
       this._emit('first-leaf', 'The tree is empty. Allocate the first leaf: slot ' + this.name(first) + ' of the arena. It is the root, the first leaf and the last leaf at once.',
-        { nodes: mk(first, 'active'), arena: mk(first, 'inserted') }, { log: 'allocate ' + this.name(first) });
+        { nodes: mk(first, 'active'), arena: mk(first, 'inserted') }, { log: 'allocate ' + this.name(first), lines: { snippet: 'put', part: 'firstLeaf' } });
     }
-    this._emit('start', 'Insert ' + K + ': walk from the root to the leaf whose key range contains it.', { nodes: mk(this.root, 'active') }, { log: 'put ' + key });
+    this._emit('start', 'Insert ' + K + ': walk from the root to the leaf whose key range contains it.', { nodes: mk(this.root, 'active') }, { log: 'put ' + key, lines: { snippet: 'put' } });
     var path = this._descend(key);
     var leafH = path[path.length - 1].h, leaf = this.node(leafH);
     var i = lowerBound(leaf.keys, key);
@@ -215,7 +215,7 @@
       var old = leaf.vals[i];
       leaf.vals[i] = value;
       this._emit('replace', kfmt(key, 'found') + ' is already in leaf ' + this.fmt(leafH) + '. Keys are unique, so <code>put</code> overwrites the value and the structure does not change.',
-        { nodes: mk(leafH, 'found'), keys: [[leafH, key, 'found']] }, { log: 'overwrite ' + key });
+        { nodes: mk(leafH, 'found'), keys: [[leafH, key, 'found']] }, { log: 'overwrite ' + key, lines: { snippet: 'insertInto', part: 'replace' } });
       return this._end({ old: old, ok: false });
     }
     leaf.keys.splice(i, 0, key);
@@ -224,7 +224,7 @@
     var over = leaf.keys.length > max;
     this._emit('insert-leaf', 'Put ' + kfmt(key, 'inserted') + ' and its value into leaf ' + this.name(leafH) + ' at position ' + i + '. The leaf holds ' + plural(leaf.keys.length, 'key') +
       (over ? ', one more than the maximum of ' + max + '.' : ' (maximum ' + max + '). Nothing else changes.'),
-      { nodes: mk(leafH, 'active'), keys: [[leafH, key, 'inserted']] });
+      { nodes: mk(leafH, 'active'), keys: [[leafH, key, 'inserted']] }, { lines: { snippet: 'insertInto', part: 'insert' } });
 
     // Split overflowing nodes bottom-up along the path.
     for (var level = path.length - 1; level >= 0; level--) {
@@ -299,7 +299,7 @@
       }
     }
     this._emit('done', 'Done: ' + plural(this.count, 'key') + ' in ' + plural(this.live, 'node') + ', height ' + this.height + '.',
-      { keys: [[this.findLeaf(key), key, 'inserted']] });
+      { keys: [[this.findLeaf(key), key, 'inserted']] }, { lines: { snippet: 'put' } });
     return this._end({ old: null, ok: true });
   };
 
@@ -309,29 +309,30 @@
     this._begin(opts && opts.steps);
     var K = kfmt(key), self = this, min = this.minKeys();
     if (this.root === NIL) {
-      this._emit('not-found', 'The tree is empty: nothing to delete.', {}, { log: key + ' not found' });
+      this._emit('not-found', 'The tree is empty: nothing to delete.', {}, { log: key + ' not found', lines: { snippet: 'delete' } });
       return this._end({ removed: null, ok: false });
     }
-    this._emit('start', 'Delete ' + K + ': find its leaf. Entries are only in leaves, so there is no "delete from an internal node" case.', { nodes: mk(this.root, 'active') }, { log: 'delete ' + key });
+    this._emit('start', 'Delete ' + K + ': find its leaf. Entries are only in leaves, so there is no "delete from an internal node" case.', { nodes: mk(this.root, 'active') }, { log: 'delete ' + key, lines: { snippet: 'delete' } });
     var path = this._descend(key);
     var leafH = path[path.length - 1].h, leaf = this.node(leafH);
     var i = lowerBound(leaf.keys, key);
     if (i === leaf.keys.length || leaf.keys[i] !== key) {
-      this._emit('not-found', K + ' is not in leaf ' + this.fmt(leafH) + ', so it is not in the tree.', { nodes: mk(leafH, 'active') }, { log: key + ' not found' });
+      this._emit('not-found', K + ' is not in leaf ' + this.fmt(leafH) + ', so it is not in the tree.', { nodes: mk(leafH, 'active') }, { log: key + ' not found', lines: { snippet: 'rebalance', part: 'leaf' } });
       return this._end({ removed: null, ok: false });
     }
     var sepHolder = this.separators().filter(function (s) { return s.key === key; })[0];
-    this._emit('found', 'Found ' + kfmt(key, 'deleted') + ' in leaf ' + this.fmt(leafH) + '.', { nodes: mk(leafH, 'active'), keys: [[leafH, key, 'deleted']] }, { lines: { snippet: 'search', part: 'leaf' } });
+    this._emit('found', 'Found ' + kfmt(key, 'deleted') + ' in leaf ' + this.fmt(leafH) + '.', { nodes: mk(leafH, 'active'), keys: [[leafH, key, 'deleted']] }, { lines: { snippet: 'rebalance', part: 'leaf' } });
     var removed = leaf.vals[i];
     leaf.keys.splice(i, 1);
     leaf.vals.splice(i, 1);
     this.count--;
+    var under = leaf.keys.length < min && path.length > 1;
     this._emit('remove', 'Removed. ' + (sepHolder
       ? 'The copy of ' + kfmt(key, 'compare') + ' in internal node ' + this.name(sepHolder.node) + ' <em>stays</em>: it is now a stale separator. It still routes correctly ("keys ≥ ' + key + ' are to the right"), it just names no existing key.'
       : 'No internal node was touched.') +
-      (leaf.keys.length < min && path.length > 1 ? ' But the leaf now has ' + plural(leaf.keys.length, 'key') + ', below the minimum of ' + min + '.' : ''),
-      { nodes: mk(leafH, leaf.keys.length < min && path.length > 1 ? 'merge' : 'active'), keys: sepHolder ? [[sepHolder.node, key, 'compare']] : [] },
-      {});
+      (under ? ' But the leaf now has ' + plural(leaf.keys.length, 'key') + ', below the minimum of ' + min + '. The repair rule: borrow from the left sibling if it has a key to spare, otherwise from the right sibling, otherwise merge.' : ''),
+      { nodes: mk(leafH, under ? 'merge' : 'active'), keys: sepHolder ? [[sepHolder.node, key, 'compare']] : [] },
+      { lines: { snippet: 'rebalance', part: under ? 'choose' : 'leaf' } });
 
     // Repair underfull nodes bottom-up.
     for (var level = path.length - 1; level > 0; level--) {
@@ -348,7 +349,7 @@
           child.vals.unshift(L.vals.pop());
           parent.keys[ci - 1] = child.keys[0];
           hl.keys.push([childH, moved, 'inserted'], [parentH, moved, 'split']);
-          this._note('borrow', 'The left sibling ' + this.name(leftH) + ' has a key to spare. Its last entry ' + kfmt(moved, 'inserted') + ' moves over, and the separator between the two leaves is overwritten with a fresh copy of ' + this.name(childH) + '\'s new first key, ' + kfmt(moved, 'split') + '.', hl, childH, leftH, 'left');
+          this._note('borrow', 'The left sibling ' + this.name(leftH) + ' has a key to spare. Its last entry ' + kfmt(moved, 'inserted') + ' moves over, and the separator between the two leaves is overwritten with a fresh copy of ' + this.name(childH) + '\'s new first key, ' + kfmt(moved, 'split') + '.', hl, childH, leftH, { snippet: 'borrow', part: 'left' });
         } else {
           var down = parent.keys[ci - 1];
           up = L.keys.pop();
@@ -356,7 +357,7 @@
           child.children.unshift(L.children.pop());
           parent.keys[ci - 1] = up;
           hl.keys.push([childH, down, 'inserted'], [parentH, up, 'split']);
-          this._note('borrow', 'Internal node ' + this.name(childH) + ' is underfull; its left sibling can spare a separator. Rotate through the parent as in a classic B-tree: ' + kfmt(down, 'inserted') + ' comes down, ' + kfmt(up, 'split') + ' goes up, and one child changes parent.', hl, childH, leftH, null);
+          this._note('borrow', 'Internal node ' + this.name(childH) + ' is underfull; its left sibling can spare a separator. Rotate through the parent as in a classic B-tree: ' + kfmt(down, 'inserted') + ' comes down, ' + kfmt(up, 'split') + ' goes up, and one child changes parent.', hl, childH, leftH, { snippet: 'rotate', part: 'left' });
         }
         this.stats.borrows++;
         break;
@@ -369,7 +370,7 @@
           child.vals.push(R.vals.shift());
           parent.keys[ci] = R.keys[0];
           hl.keys.push([childH, moved, 'inserted'], [parentH, R.keys[0], 'split']);
-          this._note('borrow', 'The right sibling ' + this.name(rightH) + ' has a key to spare. Its first entry ' + kfmt(moved, 'inserted') + ' moves over, and the separator between the two leaves is overwritten with a copy of the sibling\'s new first key, ' + kfmt(R.keys[0], 'split') + '.', hl, childH, rightH, 'right');
+          this._note('borrow', 'The right sibling ' + this.name(rightH) + ' has a key to spare. Its first entry ' + kfmt(moved, 'inserted') + ' moves over, and the separator between the two leaves is overwritten with a copy of the sibling\'s new first key, ' + kfmt(R.keys[0], 'split') + '.', hl, childH, rightH, { snippet: 'borrow', part: 'right' });
         } else {
           var down2 = parent.keys[ci];
           up = R.keys.shift();
@@ -377,13 +378,21 @@
           child.children.push(R.children.shift());
           parent.keys[ci] = up;
           hl.keys.push([childH, down2, 'inserted'], [parentH, up, 'split']);
-          this._note('borrow', 'Internal node ' + this.name(childH) + ' is underfull; its right sibling can spare a separator. Rotate through the parent: ' + kfmt(down2, 'inserted') + ' comes down, ' + kfmt(up, 'split') + ' goes up, and one child changes parent.', hl, childH, rightH, null);
+          this._note('borrow', 'Internal node ' + this.name(childH) + ' is underfull; its right sibling can spare a separator. Rotate through the parent: ' + kfmt(down2, 'inserted') + ' comes down, ' + kfmt(up, 'split') + ' goes up, and one child changes parent.', hl, childH, rightH, { snippet: 'rotate', part: 'right' });
         }
         this.stats.borrows++;
         break;
       }
-      // Merge: always the right node of the pair INTO the left one.
+      // Merge with the left sibling if there is one, otherwise with the right
+      // one; always the right node of the pair INTO the left one.
       var li = leftH !== NIL ? ci - 1 : ci;
+      var sibH = leftH !== NIL ? leftH : rightH, twoSiblings = leftH !== NIL && rightH !== NIL;
+      var unit = child.leaf ? 'key' : 'separator';
+      var why = (twoSiblings
+        ? 'Neither sibling (' + this.name(leftH) + ', ' + this.name(rightH) + ') can spare a ' + unit
+        : 'Its only sibling, ' + this.name(sibH) + ', cannot spare a ' + unit) +
+        ', so ' + (child.leaf ? 'leaf ' : 'internal node ') + this.name(childH) + ' merges with its ' + (leftH !== NIL ? 'left' : 'right') + ' sibling ' + this.name(sibH) + '.' +
+        (twoSiblings ? ' (A node with two siblings merges with the left one.)' : '');
       var aH = parent.children[li], bH = parent.children[li + 1], a = this.node(aH), b = this.node(bH);
       var sep = parent.keys[li], text;
       if (a.leaf) {
@@ -391,12 +400,12 @@
         a.vals = a.vals.concat(b.vals);
         a.next = b.next;
         if (b.next !== NIL) this.node(b.next).prev = aH; else this.lastLeaf = aH;
-        text = 'Neither sibling can spare a key, so leaf ' + this.name(bH) + ' is merged into ' + this.name(aH) + '. The separator ' + kfmt(sep, 'deleted') + ' between them was only a copy: it is <em>dropped</em>. ' + this.name(bH) + ' is unlinked from the chain';
+        text = why + ' The entries of the right node of the pair, ' + this.name(bH) + ', move into the left one, ' + this.name(aH) + '. The separator ' + kfmt(sep, 'deleted') + ' between them was only a copy: it is <em>dropped</em>. ' + this.name(bH) + ' is unlinked from the chain';
         hl.chain[aH] = 'merge';
       } else {
         a.keys = a.keys.concat([sep], b.keys);
         a.children = a.children.concat(b.children);
-        text = 'Neither sibling can spare a separator, so internal node ' + this.name(bH) + ' is merged into ' + this.name(aH) + '. The separator ' + kfmt(sep, 'merge') + ' between them is real routing information: it is <em>pulled down</em> into the merged node. ' + this.name(bH) + ' is freed';
+        text = why + ' The right node of the pair, ' + this.name(bH) + ', is emptied into the left one, ' + this.name(aH) + '. The separator ' + kfmt(sep, 'merge') + ' between them is real routing information: it is <em>pulled down</em> into the merged node. ' + this.name(bH) + ' is freed';
         hl.keys.push([aH, sep, 'merge']);
       }
       parent.keys.splice(li, 1);
@@ -421,23 +430,23 @@
         this._free(oldRoot);
         this.height--;
         this._emit('root-shrink', 'That was the last entry. The root leaf ' + this.name(oldRoot) + ' is freed: the tree is empty and uses no nodes.',
-          { arena: mk(oldRoot, 'deleted') }, { log: { html: 'free ' + this.name(oldRoot) + ' → empty tree', state: 'merge' } });
+          { arena: mk(oldRoot, 'deleted') }, { lines: { snippet: 'delete', part: 'root' }, log: { html: 'free ' + this.name(oldRoot) + ' → empty tree', state: 'merge' } });
       } else {
         this.root = rootNode.children[0];
         this._free(oldRoot);
         this.height--;
         this._emit('root-shrink', 'The root ' + this.name(oldRoot) + ' has no separator left and only one child. That child, ' + this.name(this.root) + ', becomes the root and ' + this.name(oldRoot) + ' is freed: height ' + this.height + '. Every path got one level shorter at once.',
-          { nodes: mk(this.root, 'active'), arena: mk(oldRoot, 'deleted') }, { log: { html: 'root removed, free ' + this.name(oldRoot) + ' → height ' + this.height, state: 'merge' } });
+          { nodes: mk(this.root, 'active'), arena: mk(oldRoot, 'deleted') }, { lines: { snippet: 'delete', part: 'root' }, log: { html: 'root removed, free ' + this.name(oldRoot) + ' → height ' + this.height, state: 'merge' } });
       }
     }
-    this._emit('done', 'Done: ' + plural(this.count, 'key') + ' in ' + plural(this.live, 'node') + ', height ' + this.height + '.', {});
+    this._emit('done', 'Done: ' + plural(this.count, 'key') + ' in ' + plural(this.live, 'node') + ', height ' + this.height + '.', {}, { lines: { snippet: 'delete' } });
     return this._end({ removed: removed, ok: true });
   };
-  P._note = function (type, caption, hl, childH, siblingH, part) {
+  P._note = function (type, caption, hl, childH, siblingH, lines) {
     hl.nodes[childH] = 'merge';
     hl.nodes[siblingH] = 'active';
     this._emit(type, caption, hl, {
-      lines: part ? { snippet: 'borrow', part: part } : null,
+      lines: lines,
       log: { html: 'borrow from ' + this.name(siblingH), state: 'merge' }
     });
   };
@@ -447,10 +456,10 @@
     this._begin(true);
     var K = kfmt(key);
     if (this.root === NIL) {
-      this._emit('not-found', 'The tree is empty.', {});
+      this._emit('not-found', 'The tree is empty.', {}, { lines: { snippet: 'search' } });
       return this._end({ found: false });
     }
-    this._emit('start', 'Search for ' + K + ' in the B+tree. Every lookup ends in a leaf.', { nodes: mk(this.root, 'active') }, { log: 'get ' + key });
+    this._emit('start', 'Search for ' + K + ' in the B+tree. Every lookup ends in a leaf.', { nodes: mk(this.root, 'active') }, { log: 'get ' + key, lines: { snippet: 'search' } });
     var path = this._descend(key), h = path[path.length - 1].h, n = this.node(h);
     var i = lowerBound(n.keys, key), found = i < n.keys.length && n.keys[i] === key;
     this._emit(found ? 'found' : 'not-found', found

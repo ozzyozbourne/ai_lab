@@ -24,6 +24,9 @@ const Stats = struct {
     lookups: u64 = 0,
     comparisons: u64 = 0,
     steps: u64 = 0,
+    /// Distinct lines of the key array, of the side array, and both together.
+    key_lines: u64 = 0,
+    side_lines: u64 = 0,
     lines: u64 = 0,
     max_lines: u64 = 0,
     prefetches: u64 = 0,
@@ -33,6 +36,8 @@ const Stats = struct {
         self.lookups += 1;
         self.comparisons += t.comparisons;
         self.steps += t.steps;
+        self.key_lines += t.keyLines();
+        self.side_lines += t.sideLines();
         self.lines += t.linesRead();
         self.max_lines = @max(self.max_lines, t.linesRead());
         self.prefetches += t.prefetches;
@@ -61,27 +66,34 @@ fn makeKeys(gpa: Allocator, n: usize, seed: u64) ![]u64 {
 
 /// Every searchable form of one sorted key set.
 const Index = struct {
-    sorted: []u64,
+    /// The sorted keys: a view of `padded` without its padding. It is the
+    /// SAME line-aligned memory, so the model's "the array starts on a line
+    /// boundary" is true for the classic and halving searches as well. (A
+    /// plain `gpa.alloc(u64, n)` only promises 8-byte alignment.)
+    sorted: []const u64,
     padded: layout.AlignedKeys,
     eytzinger: layout.Eytzinger,
     blocks: layout.BlockTree,
 
     fn init(gpa: Allocator, n: usize, seed: u64) !Index {
-        const sorted = try makeKeys(gpa, n, seed);
-        errdefer gpa.free(sorted);
-        const padded = try layout.padToLanes(gpa, sorted);
+        const keys = try makeKeys(gpa, n, seed);
+        defer gpa.free(keys);
+        return build(gpa, keys);
+    }
+
+    fn build(gpa: Allocator, keys: []const u64) !Index {
+        const padded = try layout.padToLanes(gpa, keys);
         errdefer gpa.free(padded);
-        var eytzinger = try layout.Eytzinger.init(gpa, sorted);
+        var eytzinger = try layout.Eytzinger.init(gpa, keys);
         errdefer eytzinger.deinit(gpa);
-        var blocks = try layout.BlockTree.init(gpa, sorted);
+        var blocks = try layout.BlockTree.init(gpa, keys);
         errdefer blocks.deinit(gpa);
         try eytzinger.validate();
         try blocks.validate();
-        return .{ .sorted = sorted, .padded = padded, .eytzinger = eytzinger, .blocks = blocks };
+        return .{ .sorted = padded[0..keys.len], .padded = padded, .eytzinger = eytzinger, .blocks = blocks };
     }
 
     fn deinit(self: *Index, gpa: Allocator) void {
-        gpa.free(self.sorted);
         gpa.free(self.padded);
         self.eytzinger.deinit(gpa);
         self.blocks.deinit(gpa);
@@ -109,33 +121,31 @@ fn printKeys(w: *Io.Writer, keys: []const u64) !void {
 
 fn handExample(gpa: Allocator, w: *Io.Writer) !void {
     try w.writeAll("== 1. Fifteen keys by hand ==\n");
-    var sorted: [15]u64 = undefined;
-    for (&sorted, 1..) |*k, i| k.* = i * 10;
-    const padded = try layout.padToLanes(gpa, &sorted);
-    defer gpa.free(padded);
-    var eytzinger = try layout.Eytzinger.init(gpa, &sorted);
-    defer eytzinger.deinit(gpa);
-    var blocks = try layout.BlockTree.init(gpa, &sorted);
-    defer blocks.deinit(gpa);
-    const index: Index = .{ .sorted = &sorted, .padded = padded, .eytzinger = eytzinger, .blocks = blocks };
+    var tens: [15]u64 = undefined;
+    for (&tens, 1..) |*k, i| k.* = i * 10;
+    var index = try Index.build(gpa, &tens);
+    defer index.deinit(gpa);
+    const sorted = index.sorted;
 
     try w.writeAll("sorted    :");
-    try printKeys(w, &sorted);
+    try printKeys(w, sorted);
     try w.writeAll("\neytzinger :");
-    try printKeys(w, eytzinger.keys[1..]);
+    try printKeys(w, index.eytzinger.keys[1..]);
     try w.writeAll("\nblocktree :");
-    try printKeys(w, blocks.keys[0..8]);
+    try printKeys(w, index.blocks.keys[0..8]);
     try w.writeAll(" |");
-    try printKeys(w, blocks.keys[8..16]);
+    try printKeys(w, index.blocks.keys[8..16]);
     try w.writeAll("\n");
 
     for ([_]u64{ 70, 95, 999 }) |needle| {
-        try w.print("needle {d} -> index {d}\n", .{ needle, search.lowerBoundLinear(&sorted, needle) });
+        try w.print("needle {d} -> index {d}\n", .{ needle, search.lowerBoundLinear(sorted, needle) });
         for (algorithms) |algorithm| {
-            var t: Trace = .init(.{});
+            var t: Trace = .init(.keys);
             const got = runOne(&index, algorithm, needle, &t);
-            std.debug.assert(got == search.lowerBoundLinear(&sorted, needle));
-            try w.print("  {t:<9} cmps {d:>2} steps {d} lines {d} probes", .{ algorithm, t.comparisons, t.steps, t.linesRead() });
+            std.debug.assert(got == search.lowerBoundLinear(sorted, needle));
+            try w.print("  {t:<9} cmps {d:>2} steps {d} lines {d} (keys {d} + rank {d}) probes", .{
+                algorithm, t.comparisons, t.steps, t.linesRead(), t.keyLines(), t.sideLines(),
+            });
             for (t.probeSlice()) |p| try w.print(" {d}", .{p});
             try w.writeAll("\n");
         }
@@ -146,7 +156,7 @@ const lookups_per_size = 1000;
 
 fn sizeTable(gpa: Allocator, w: *Io.Writer, agree: *u64, checksum: *u64) !void {
     try w.print("\n== 2. {d} lookups per size: comparisons and cache lines per lookup ==\n", .{lookups_per_size});
-    try w.writeAll("     n  algorithm     cmps   steps   lines  max lines\n");
+    try w.writeAll("     n  algorithm     cmps   steps  key lines  rank lines   lines  max lines\n");
     for ([_]usize{ 7, 15, 63, 255, 1023, 4095 }) |n| {
         var index = try Index.init(gpa, n, 1000 + n);
         defer index.deinit(gpa);
@@ -157,7 +167,7 @@ fn sizeTable(gpa: Allocator, w: *Io.Writer, agree: *u64, checksum: *u64) !void {
             const want = search.lowerBoundLinear(index.sorted, needle);
             var all_equal = true;
             for (algorithms, &stats) |algorithm, *s| {
-                var t: Trace = .init(.{});
+                var t: Trace = .init(.keys);
                 const got = runOne(&index, algorithm, needle, &t);
                 all_equal = all_equal and got == want;
                 s.add(&t);
@@ -171,10 +181,13 @@ fn sizeTable(gpa: Allocator, w: *Io.Writer, agree: *u64, checksum: *u64) !void {
             var b1: [24]u8 = undefined;
             var b2: [24]u8 = undefined;
             var b3: [24]u8 = undefined;
-            try w.print("{d:>6}  {t:<9} {s:>8} {s:>7} {s:>7} {d:>10}\n", .{
+            var b4: [24]u8 = undefined;
+            var b5: [24]u8 = undefined;
+            try w.print("{d:>6}  {t:<9} {s:>8} {s:>7} {s:>10} {s:>11} {s:>7} {d:>10}\n", .{
                 n,                                  algorithm,
                 avg(&b1, s.comparisons, s.lookups), avg(&b2, s.steps, s.lookups),
-                avg(&b3, s.lines, s.lookups),       s.max_lines,
+                avg(&b3, s.key_lines, s.lookups),   avg(&b4, s.side_lines, s.lookups),
+                avg(&b5, s.lines, s.lookups),       s.max_lines,
             });
         }
     }
@@ -201,34 +214,48 @@ fn nodeLayouts(gpa: Allocator, w: *Io.Writer) !void {
     try soa.validate();
     try aos.validate();
 
-    var soa_stats: Stats = .{};
-    var aos_stats: Stats = .{};
+    // `search`: only the lower bound. `get`: the lower bound, the equality
+    // check and, in SoA, the read of the child column.
+    var soa_search: Stats = .{};
+    var aos_search: Stats = .{};
+    var soa_get: Stats = .{};
+    var aos_get: Stats = .{};
     var hits: u64 = 0;
     for (0..lookups_per_size) |_| {
         // Half the needles are keys that exist, half are random.
         const needle = if (rng.chance(1, 2)) keys[@intCast(rng.below(capacity))] else rng.below(keys[capacity - 1] + 50);
+        var ss: Trace = .init(node.soa_layout);
+        var sa: Trace = .init(node.aos_layout);
+        const is = soa.lowerBound(needle, &ss);
+        const ia = aos.lowerBound(needle, &sa);
+        std.debug.assert(is == ia);
         var ts: Trace = .init(node.soa_layout);
         var ta: Trace = .init(node.aos_layout);
         const a = soa.get(needle, &ts);
         const b = aos.get(needle, &ta);
         std.debug.assert(a == b);
         hits += @intFromBool(a != null);
-        soa_stats.add(&ts);
-        aos_stats.add(&ta);
+        soa_search.add(&ss);
+        aos_search.add(&sa);
+        soa_get.add(&ts);
+        aos_get.add(&ta);
     }
-    try w.writeAll("layout  bytes/key  key bytes  key lines    cmps   lines  max lines\n");
-    for ([_]struct { []const u8, trace.Layout, Stats }{
-        .{ "aos", node.aos_layout, aos_stats },
-        .{ "soa", node.soa_layout, soa_stats },
+    try w.writeAll("layout  bytes/key  key bytes  key lines | search: cmps   lines | get: cmps  key lines  child lines   lines  max lines\n");
+    for ([_]struct { []const u8, trace.Layout, Stats, Stats }{
+        .{ "aos", node.aos_layout, aos_search, aos_get },
+        .{ "soa", node.soa_layout, soa_search, soa_get },
     }) |row| {
-        var b1: [24]u8 = undefined;
-        var b2: [24]u8 = undefined;
+        var bufs: [6][24]u8 = undefined;
         const bytes = row[1].stride * capacity;
-        try w.print("{s:<6} {d:>10} {d:>10} {d:>10} {s:>7} {s:>7} {d:>10}\n", .{
-            row[0],                                       row[1].stride,
-            bytes,                                        (bytes + trace.line_bytes - 1) / trace.line_bytes,
-            avg(&b1, row[2].comparisons, row[2].lookups), avg(&b2, row[2].lines, row[2].lookups),
-            row[2].max_lines,
+        const s = row[2];
+        const g = row[3];
+        try w.print("{s:<6} {d:>10} {d:>10} {d:>10} | {s:>12} {s:>7} | {s:>9} {s:>10} {s:>12} {s:>7} {d:>10}\n", .{
+            row[0],                                  row[1].stride,
+            bytes,                                   (bytes + trace.line_bytes - 1) / trace.line_bytes,
+            avg(&bufs[0], s.comparisons, s.lookups), avg(&bufs[1], s.lines, s.lookups),
+            avg(&bufs[2], g.comparisons, g.lookups), avg(&bufs[3], g.key_lines, g.lookups),
+            avg(&bufs[4], g.side_lines, g.lookups),  avg(&bufs[5], g.lines, g.lookups),
+            g.max_lines,
         });
     }
     try w.print("found {d} of {d} needles; both layouts returned the same child every time\n", .{ hits, lookups_per_size });
@@ -243,7 +270,7 @@ fn prefetchTable(gpa: Allocator, w: *Io.Writer) !void {
     var rng = SplitMix64.init(4000);
     for (0..lookups_per_size) |_| {
         const needle = rng.below(index.sorted[n - 1] + 50);
-        var traces: [4]Trace = @splat(.init(.{}));
+        var traces: [4]Trace = @splat(.init(.keys));
         const r0 = search.lowerBoundHalving(.hinted, false, index.sorted, needle, &traces[0]);
         const r1 = search.lowerBoundHalving(.hinted, true, index.sorted, needle, &traces[1]);
         const r2 = index.eytzinger.lowerBound(needle, false, &traces[2]);
@@ -267,7 +294,8 @@ fn prefetchTable(gpa: Allocator, w: *Io.Writer) !void {
 /// The whole deterministic scenario. Tests call it with an in-memory writer.
 pub fn scenario(gpa: Allocator, w: *Io.Writer) !void {
     try w.writeAll("Chapter 25: cache-conscious search and layout\n");
-    try w.writeAll("model: 64-byte cache lines, 8-byte keys, arrays start on a line boundary\n\n");
+    try w.writeAll("model: 64-byte cache lines, 8-byte keys, 4-byte ranks, every array starts on a line boundary\n");
+    try w.writeAll("lines = key lines + rank lines: every array a lookup reads is counted\n\n");
     try handExample(gpa, w);
     var agree: u64 = 0;
     var checksum: u64 = 0;

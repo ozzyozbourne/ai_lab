@@ -568,9 +568,16 @@ is the one the programs print; change how skewed the accesses are and watch the 
           record('unpin ' + id, function () { return applyOp(pool, ['unpin', id]); });
         }
       }
-      var start = resume ? shown + 1 : first;
-      if (!queued) ownFrom = start;
-      stepper.setSteps(all, { index: start, instant: !resume, play: all.length - 1 > start });
+      if (!queued) ownFrom = resume ? shown + 1 : first;
+      if (!resume) {
+        stepper.setSteps(all, { index: first, instant: true, play: all.length - 1 > first });
+        return;
+      }
+      /* Mid-operation: stay on the step shown and walk on from it with next(),
+       * so that a Predict question on the next step is still asked. */
+      stepper.setSteps(all, { index: shown, instant: true });
+      stepper.next();
+      if (stepper.index > shown) stepper.play();
     }
     function loadTrace(play) {
       framesSel.value = 4;

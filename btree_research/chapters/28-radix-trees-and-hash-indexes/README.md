@@ -124,10 +124,10 @@ put emu   emu   .    .    .    .    .   ant  fox   6 and 7 are taken: wrap aroun
 
 Keeping collided keys in the slot array itself is *open addressing*; the walk from the
 home slot is the *probe sequence*. `get emu` reads slots 6, 7 and 0: three probes.
-`get bee` starts at 7 and finds `fox`,
-which is in its way although their home slots differ. It goes on to `emu` in slot 0 and
-then to slot 1, which is empty. An insert of `bee` would have taken the same walk and
-used that slot, so `bee` is absent. Two things follow:
+`get bee` starts at 7 and finds `fox`, which is in its way although their home slots
+differ. It goes on to `emu` in slot 0 and then to slot 1, which is empty. An insert of
+`bee` would have taken the same walk and used that slot, so `bee` is absent. Two things
+follow:
 
 - Every unsuccessful search ends at an empty slot, so the table must never fill up.
   Long before that it gets slow, because runs of taken slots grow and merge. The
@@ -223,18 +223,12 @@ The same functions with snake_case names, and the same tests. Differences:
 
 ### What the programs print
 
-Section 3 stores 1000 integer keys twice, as 8 big-endian bytes:
-
-```
-         prefix  node4  node16  node48  node256  slots used/reserved  longest path  nodes visited by 1000 gets
-dense         1      1       0       0        4       1004/1028                  3                        3000
-sparse     1001    166      82       0        1       1248/2232                  4                        3004
-```
-
-The dense keys 0..999 share their first six bytes (one prefix node), differ in the
-seventh (a Node4) and fill the last byte (four Node256). The random keys differ in the
-first byte already, so the root is a Node256 and almost every key ends in a prefix node
-holding its unshared tail. Either way a lookup visits three or four nodes.
+Section 3 stores 1000 integer keys twice, as 8 big-endian bytes. The dense keys 0..999
+share their first six bytes (one prefix node), differ in the seventh (a Node4) and fill
+the last byte (four Node256): 1004 of 1028 child slots are used. Random keys differ in
+the first byte already, so the root is a Node256 and almost every key ends in a prefix
+node holding its unshared tail: 1001 prefix nodes, 1248 of 2232 slots used. Either way
+a lookup visits three or four nodes.
 
 Section 4 loads 596 keys such as `cat/0042` into all three indexes (`...` marks lines
 left out here):
@@ -330,11 +324,10 @@ The B+tree column is the tree of chapters 07 to 12, not one engine; the ART is D
 | A scan yields | keys with their values, in order | row ids in byte order; the rows are fetched one by one | nothing in order |
 | Keys must have | a comparison function | a byte-comparable encoding (chapter 11) | equality and a hash |
 
-Its nodes are small and scattered, so every level of an ART is a jump to a different
-place. That suits memory and not disk, where a
-B-tree reads one page and finds many neighbouring keys in it. DuckDB writes its ART to
-disk as whole allocator buffers at a checkpoint (`art.cpp:1197-1218`), not as a tree of
-pages. Long keys make the tree deep: the 596 `cat/0042` keys above already need paths
+An ART's nodes are small and scattered, so every level is a jump to a different place.
+That suits memory and not disk, where a B-tree reads one page and finds many
+neighbouring keys in it. DuckDB writes its ART to disk as whole allocator buffers at a
+checkpoint (`art.cpp:1197-1218`), not as a tree of pages. Long keys make the tree deep: the 596 `cat/0042` keys above already need paths
 of up to 7 nodes. A scan yields row ids, not data, and DuckDB abandons the index for a
 table scan when more than 2,048 rows or 0.1% of the table match, whichever is larger
 (`duckdb/src/function/table/table_scan.cpp:1015-1020`, `art.cpp:896-902`; see chapter
@@ -358,8 +351,7 @@ uses one `std.heap.MemoryPool(T)` per node type (`Pools` in `art.zig`).
 - *Lifetime.* All nodes live exactly as long as the tree. `Art.deinit` calls `deinit`
   on the five pools and each releases its memory in bulk, without a tree walk.
 - *The backing allocator* is passed to `Art.init` and must outlive the tree. Each pool
-  asks it for chunks, not for single nodes, so the allocation failure test meets a
-  failure point only every so many inserts.
+  asks it for chunks, not for single nodes.
 - *What would go wrong with others.* An `ArenaAllocator` alone cannot give a single node
   back, so every outgrown Node4, Node16 and Node48 would stay allocated until the tree
   dies. A `FixedBufferAllocator` has the same problem plus a hard size limit. Plain

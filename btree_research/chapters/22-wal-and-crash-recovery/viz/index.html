@@ -142,13 +142,14 @@ and reopens the file; so does the model behind this page. Pick a cell to load it
     explain: 'The parent already says "keys from 12 on are in page 4", but page 2 still holds 12 and 17 and page 4 is all zeroes. The program reports <code>KeyOutOfBounds</code>.'
   };
 
+  var current = steps[0]; // the step on screen
   var stepper = new BTViz.Stepper({
     mount: fig.controls, caption: fig.caption, root: fig.root, steps: steps, predict: true, interval: 2600,
-    onStep: function (step) { code.highlight(step.lines); draw(); }
+    onStep: function (step) { current = step; code.highlight(step.lines); draw(); }
   });
 
   function draw() {
-    var step = stepper ? stepper.steps[stepper.index] : steps[0];
+    var step = current;
     var mask = currentMask(step), disk = M.diskFor(mask), v = M.check(disk);
     for (var i = 0; i < N; i++) boxes[i].disabled = step.synced || i >= step.issued;
     allBtn.disabled = noneBtn.disabled = step.synced || step.issued === 0;

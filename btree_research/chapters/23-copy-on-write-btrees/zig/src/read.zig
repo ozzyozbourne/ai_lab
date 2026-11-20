@@ -70,7 +70,8 @@ pub const View = struct {
         }
     }
 
-    /// Entries with lo <= key < hi, ascending.
+    /// Entries with lo <= key < hi, ascending. `hi` is exclusive, so no
+    /// range reaches the key maxInt(u64): scan everything with `seek(0)`.
     pub fn range(self: View, lo: u64, hi: u64) Range {
         return .{ .cursor = self.seek(lo), .hi = hi };
     }

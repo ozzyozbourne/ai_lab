@@ -260,7 +260,7 @@
     var i = h === NIL ? 0 : lowerBound(tree.nodes[h].keys, lo);
     // True until the scan has looked at an entry: a hop made while it is still
     // true means the descent landed one leaf early (the README's pitfall).
-    var early = true;
+    var early = h !== NIL;
     while (h !== NIL) {
       var n = tree.nodes[h];
       if (i < n.keys.length) {

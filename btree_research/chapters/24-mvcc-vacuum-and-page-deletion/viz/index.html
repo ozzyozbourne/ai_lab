@@ -90,9 +90,9 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
       { token: 'node-active', label: 'page being worked on' },
       { token: 'key-inserted', label: 'entry just added' },
       { token: 'key-compare', label: 'old version an open snapshot still sees' },
-      { token: 'key-deleted', label: 'dead to every snapshot: entry (! = hint bit set) or deleted page' },
+      { token: 'key-deleted', label: 'dead to all: entry (! = hint), deleted page' },
       { token: 'split', label: 'split' },
-      { token: 'merge', label: 'half-dead page: in the chain, no downlink' },
+      { token: 'merge', label: 'half-dead page: chained, no downlink' },
       { token: 'free', label: 'free page / free version slot' }
     ]
   });
@@ -276,10 +276,11 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
    *
    * Either way the first caption of the new timeline says what was done.
    */
-  var ownTimeline = false;
+  var ownTimeline = false, said = '';     // said: what act() did before the action, for its first caption
   function act(title, fn) {
     message('');
-    var shown = stepper.index, last = stepper.steps.length - 1, resume = stepper.steps[shown].resume, said = '';
+    var shown = stepper.index, last = stepper.steps.length - 1, resume = stepper.steps[shown].resume;
+    said = '';
     if (ownTimeline && stepper.playing && shown < last) {
       resume = last;
       said = 'Your previous action was still being played; it has been run to its end first.';
@@ -290,7 +291,8 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     }
     db = BTViz.clone(stepper.state(resume));
     steps = [];
-    note((said ? '<em>(' + said + ')</em> ' : '') + title);
+    said = said ? '<em>(' + said + ')</em> ' : '';
+    note(said + title);
     fn();
     if (!steps.length) {
       // The action was refused (a message says why). Nothing changes, but if we promised above to
@@ -527,17 +529,17 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
       step(text, { hl: { pages: hp }, code: 'recycle', question: info.question, log: 'recycled ' + info.freed.length + ', waiting ' + info.waiting.length });
     }
   }
-  function opVacuum(options) {
+  function opVacuum(options, preface) {
     beginOp();
     var H = C.horizon(db);
-    step('Vacuum walks the leaf chain once. Its rule for entries: remove those whose version has <code>xmax ≤ ' + H + '</code> (the horizon).', { code: 'vacuum', log: 'vacuum, horizon ' + H });
+    step((preface || '') + 'Vacuum walks the leaf chain once. Its rule for entries: remove those whose version has <code>xmax ≤ ' + H + '</code> (the horizon).', { code: 'vacuum', log: 'vacuum, horizon ' + H });
     return C.vacuum(db, options, vacuumEvent);
   }
   function doVacuum() {
     act('Vacuum.', function () {
       if (db.root === NIL) { steps.pop(); message('The index is empty: nothing to vacuum.'); return; }
-      steps.pop();
-      opVacuum();
+      steps.pop();                        // vacuum's own first step is the "before" picture
+      opVacuum(undefined, said);
     });
   }
 

@@ -20,8 +20,12 @@
 //! Latches held by a writer:
 //!   going down   one at a time, like a reader (shared, exclusive on the leaf);
 //!   going up     the child stays latched until its downlink is in the parent,
-//!                so child + parent, plus one more level while it finishes
-//!                somebody else's split of that parent.
+//!                so child + parent. If that parent is flagged, the writer
+//!                first finishes the parent's split, which needs the
+//!                grandparent, and if that one is flagged too, the node above
+//!                it: one latch per level, bottom-up, for as long as each
+//!                level's parent turns out to be flagged. The bound is the
+//!                height of the tree, not a constant. LATCH_COUNTS
 //! The order is always child before parent and never left-and-right at once;
 //! the `meta` mutex comes last. With one global order there is no deadlock.
 const std = @import("std");
@@ -52,11 +56,37 @@ const Finish = enum {
     out_of_nodes,
 };
 
+/// TEST HOOK for `putFrom`: a callback that runs while ONE writer stands
+/// still on its leaf. `abandon_splits` stops a split between its two steps;
+/// this stops a writer between its way down and its way up, which is the
+/// only moment at which its remembered parents can go stale.
+pub const Pause = struct {
+    context: ?*anyopaque = null,
+    /// Called once, when the writer has found its leaf: `leaf_id` is latched
+    /// exclusively (by the paused writer), its flag is clear, and nothing
+    /// has been inserted yet. No other latch is held. The callback may run
+    /// whole operations on the tree, as other threads would in this gap. It
+    /// must not touch the latched leaf: a `put` or `get` of a key in that
+    /// leaf's range would wait for the paused writer forever.
+    at_leaf: *const fn (context: ?*anyopaque, tree: *BLinkTree, io: Io, leaf_id: NodeId, leaf: *const Page) void,
+};
+
 pub fn put(tree: *BLinkTree, io: Io, key: u64, value: u64) PutError!?u64 {
+    return putFrom(tree, io, tree.rootId(), key, value, null);
+}
+
+/// `put` with the two things a test must control to reach a stale writer
+/// without threads:
+///
+///   `start`  the node the descent begins at, as if the writer had loaded
+///            the root pointer at some earlier time. It must be the leftmost
+///            node of a level (`level_head`): each of them was the root once.
+///   `pause`  see `Pause`.
+pub fn putFrom(tree: *BLinkTree, io: Io, start: NodeId, key: u64, value: u64, pause: ?Pause) PutError!?u64 {
     var stack: Stack = .{};
 
     // ---- Descend to the leaf whose key range contains `key`. -------------
-    var id = tree.rootId();
+    var id = start;
     var exclusive = false; // mode of the latch we hold on `id`
     _ = tree.lockShared(io, id);
     while (true) {
@@ -86,6 +116,11 @@ pub fn put(tree: *BLinkTree, io: Io, key: u64, value: u64) PutError!?u64 {
         exclusive = child_is_leaf;
         latch(tree, io, id, exclusive);
     }
+
+    // TEST HOOK: the writer knows its leaf and its (hinted) parents, and
+    // the rest of the world moves on. Everything in `stack` may be out of
+    // date when the callback returns; `insertParent` must cope.
+    if (pause) |p| p.at_leaf(p.context, tree, io, id, tree.page(id));
 
     // ---- Insert into the leaf (exclusively latched, flag clear). ----------
     const leaf = tree.page(id);
@@ -250,7 +285,8 @@ fn insertParent(tree: *BLinkTree, io: Io, left_id: NodeId, stack: *const Stack) 
     var parent_id = stack.at[level + 1];
     if (parent_id == .nil) {
         // We did not come through a node of level+1: `left` was the root
-        // when we started. Is it still?
+        // when we started (or we started below the root, see `putFrom`).
+        // Is it still the root?
         tree.meta.lockUncancelable(io);
         if (tree.rootId() == left_id) {
             // Root split: build a new root above the two halves. This is

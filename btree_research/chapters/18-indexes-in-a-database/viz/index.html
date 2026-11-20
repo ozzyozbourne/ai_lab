@@ -188,7 +188,7 @@ Text: <a href="../README.md">chapter 18</a>.</p>
         el('th.num', { text: 'tree nodes' }), el('th.num', { text: 'row fetches' }), el('th.num', { text: 'heap reads' }))), cmpBody)),   // page reads first: it must be on screen on a phone
     el('p', { style: { color: 'var(--bt-muted)', fontSize: '.86rem' },
       text: 'Page reads = tree nodes + heap reads, with no cache at all. A buffer pool (chapter 09) keeps the upper tree levels in memory, so real clustered lookups are cheaper than this count, and several rows on one heap page cost one read. ' +
-        'This page leaves out the code column and its unique index by_code, so an INSERT here costs 3 descents where the chapter\'s programs count 5: theirs also probe by_code for a duplicate and write its entry.' }));
+        'This page leaves out the code column and its unique index by_code, so an INSERT here costs 3 descents where the chapter\'s programs count 5: theirs also probe by_code for a duplicate and write its entry. That probe is the search the heap figure shows as the primary-key check of an insert.' }));
   var codeWrap = el('div.c18-code');
   cmp.stage.append(codeWrap);
   var lastFetchFig = null;
@@ -287,10 +287,10 @@ Text: <a href="../README.md">chapter 18</a>.</p>
     var a = tables.clustered.insertSteps(row), b = tables.heap.insertSteps(row);
     figC.play(a, { index: true, primary: true }); figH.play(b, { index: true, primary: true });
     compare('INSERT id ' + id + (a.ok ? '' : ' — rejected, duplicate primary key'), a.counters, b.counters);
-    // The insert is already applied to both tables; show where it went.
-    figC.stepper.end(); figH.stepper.end();
-    say(a.ok ? 'Inserted id ' + id + ' into both layouts (now ' + tables.clustered.rows + ' rows). Both figures show the new table; step back to replay the primary-key check.'
-             : 'Id ' + id + ' already exists: both layouts rejected the row and are unchanged. Step back to see the check.', !a.ok);
+    // Both figures start at step 1, like a query: the first thing to watch is the check that runs
+    // before any write (the page's only uniqueness check). The last step shows the new table.
+    say(a.ok ? 'UNIQUE check passed: id ' + id + ' is new, and the row is now in both layouts (' + tables.clustered.rows + ' rows). Step or play each figure: first the check, then the writes.'
+             : 'UNIQUE check failed: id ' + id + ' already exists. Both layouts rejected the row and are unchanged. Step or play each figure to watch the check find it.', !a.ok);
   }
 
   function reset() {
@@ -302,7 +302,7 @@ Text: <a href="../README.md">chapter 18</a>.</p>
 
   /* ----------------------------------------------------------- self-tests
    * The model must reproduce what the chapter's programs print
-   * (expected_output.txt, sections 1 to 5). */
+   * (expected_output.txt, sections 1 to 5), and the captions must explain it. */
   var tc = M.demoTable('clustered'), th = M.demoTable('heap');
   BTViz.selfTest('clustered index', M.leavesText(tc, 'index'),
     '(3,4,#3) (3,4,#20) | (3,9,#30) (3,28,#1) | (7,3,#12) (7,12,#5) | (7,12,#10) (7,17,#25) (7,21,#7) | (9,2,#6) (9,2,#15) (9,15,#17)');
@@ -338,6 +338,17 @@ Text: <a href="../README.md">chapter 18</a>.</p>
     '9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 11 11 / 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 11 11');
   // Regression (review G3): the search key is a noun phrase inside the descent captions.
   BTViz.selfTest('caption grammar', String(M.demoTable('heap').insertSteps({ id: 40, customer: 7, day: 12, amount: 10 }).some(function (s) { return /conflict with the separators/.test(s.caption); })), 'false');
+  // Regression (review round 2, G4): a prefix seek that lands one leaf early says so, once. Customer 7
+  // and heap id 10 are separator copies (first entry of the next leaf); heap id 17 is mid-leaf; a new
+  // id 40 is past the last leaf, which has no next leaf to hop to.
+  function count(steps, re) { return steps.filter(function (s) { return re.test(s.caption); }).length; }
+  var early = /smaller than the seek key: nothing there/, fresh = M.demoTable('heap');
+  BTViz.selfTest('leaf early', [count(M.demoTable('clustered').queryCustomer(7, 0, 99, 'fetch'), early), count(fresh.queryId(10), early), count(fresh.queryId(17), early),
+    count(fresh.insertSteps({ id: 40, customer: 7, day: 12, amount: 10 }), /it is the last leaf: nothing matches/)].join(' '), '1 1 0 1');
+  // Regression (review round 2, G1): the heap's primary-key check is named as the UNIQUE check, on the
+  // first step of an accepted insert and on the rejection of a repeated one (id 40 is now taken).
+  BTViz.selfTest('unique captions', count(M.demoTable('heap').insertSteps({ id: 40, customer: 7, day: 12, amount: 10 }).slice(0, 1), /UNIQUE/) + ' ' +
+    count(fresh.insertSteps({ id: 40, customer: 7, day: 12, amount: 10 }), /rejected.*UNIQUE check/), '1 1');
 })();
 </script>
 </body>

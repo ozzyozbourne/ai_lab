@@ -248,6 +248,13 @@ pub const BLinkTree = struct {
         return insert.put(self, io, key, value);
     }
 
+    /// TEST HOOK: `put` that starts its descent at `start` (the leftmost node
+    /// of a level, i.e. a former root) and can be paused on its leaf. See
+    /// `insert.putFrom`.
+    pub fn putFrom(self: *BLinkTree, io: Io, start: NodeId, key: u64, value: u64, pause: ?insert.Pause) PutError!?u64 {
+        return insert.putFrom(self, io, start, key, value, pause);
+    }
+
     /// Checks every invariant. Call only while no other thread uses the tree.
     pub fn validate(self: *const BLinkTree) validate_.Violation!void {
         return validate_.validate(self);

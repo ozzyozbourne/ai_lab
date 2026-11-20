@@ -204,8 +204,9 @@ Differences worth knowing:
 - **Node budget instead of allocation failure.** Rust's `Vec` aborts when memory runs
   out, so the failure path is modelled by `Art::with_node_budget(n)`: `put` returns
   `Err(ArtError::OutOfNodes)` when a node would exceed the budget. The matching test
-  runs every budget from 0 upward. The hash and sorted indexes have no failure path in
-  Rust, and the two Zig tests that use `checkAllAllocationFailures` have no twin.
+  runs every budget from 0 upward. Nothing else can fail in Rust, so the six Zig tests
+  that inject allocation failures into the hash index, the sorted index, `encodeStr`,
+  the oracle and the ART iterator have no twin.
 - **The iterator lends.** `Iter::next` returns an `Entry` whose key borrows the
   iterator's own buffer, which `std::iter::Iterator` cannot express, so it is an
   inherent method. In exchange the borrow checker enforces what Zig only documents:
@@ -356,6 +357,11 @@ standing in for allocation failure.
   is not wrong; the encoding is.
 - **Unsorted bytes in Node4 or Node16.** Lookup still works, iteration silently returns
   keys out of order. `validate` checks it.
+- **Recursion depth follows key length.** `insertAt`, `census`, `validate` and `dump`
+  recurse once per node, and a path can have one node per key byte. A key of some tens
+  of thousands of bytes overflowed the stack in both languages, so `put` refuses keys
+  longer than `max_key_len` (512 bytes) with `error.KeyTooLong`. The test "the longest
+  keys" builds the deepest tree the limit allows. `lookup` and the iterator are loops.
 - **Forgetting to store the returned reference.** `insertAt` returns a new reference
   when a node grows. Dropping it leaves the parent pointing at a freed node.
 - **A lower bound is not a lookup.** `seek("rube")` must find `rubens` although no key

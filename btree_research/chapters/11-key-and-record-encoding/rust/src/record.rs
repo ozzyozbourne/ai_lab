@@ -274,6 +274,33 @@ mod tests {
     }
 
     #[test]
+    fn records_keep_float_bits_equal_under_the_comparator_different_as_bytes() {
+        // A key normalises -0.0 and NaN so that equal values are equal bytes. A
+        // record must read back exactly, so it does not: never memcmp records.
+        let schema = [Column {
+            ty: ColumnType::Float,
+            opts: ColumnOpts::ASC,
+        }];
+        let odd_nan = f64::from_bits(0xfff0_0000_0000_beef);
+        for (x, y) in [(0.0, -0.0), (f64::NAN, odd_nan)] {
+            let (a, b) = (rec(&[Float(x)]), rec(&[Float(y)]));
+            assert_eq!(compare_records(&a, &b, &schema, None), Ok(Ordering::Equal));
+            assert_ne!(a, b);
+            // The bits survive the round trip.
+            let Ok(Some(Float(back))) = RecordCursor::new(&b).unwrap().next_column() else {
+                panic!("a float column");
+            };
+            assert_eq!(back.to_bits(), y.to_bits());
+            // The keys of the same two rows are identical.
+            let (mut ka, mut kb) = ([0u8; 9], [0u8; 9]);
+            assert_eq!(
+                row::encode_key(&mut ka, &[Float(x)], &schema),
+                row::encode_key(&mut kb, &[Float(y)], &schema)
+            );
+        }
+    }
+
+    #[test]
     fn compare_records_stops_at_the_first_differing_column() {
         let schema = [
             Column {

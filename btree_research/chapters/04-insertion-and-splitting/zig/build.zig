@@ -14,7 +14,7 @@ pub fn build(b: *std.Build) void {
     // cannot @embedFile outside its own directory, so expose it as an import.
     mod.addAnonymousImport("expected_output", .{ .root_source_file = b.path("../expected_output.txt") });
 
-    const exe = b.addExecutable(.{ .name = "ch05_deletion_and_rebalancing", .root_module = mod });
+    const exe = b.addExecutable(.{ .name = "ch04_insertion_and_splitting", .root_module = mod });
     b.installArtifact(exe);
 
     // `zig build run`
@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) void {
     run_cmd.step.dependOn(b.getInstallStep());
     run_step.dependOn(&run_cmd.step);
 
-    // `zig build test` (add -Dtest-filter=merge to run only matching tests)
+    // `zig build test` (add -Dtest-filter=split to run only matching tests)
     const filters = b.option([]const []const u8, "test-filter", "Only run tests whose name contains this") orelse &.{};
     const tests = b.addTest(.{ .root_module = mod, .filters = filters });
     const test_step = b.step("test", "Run tests");

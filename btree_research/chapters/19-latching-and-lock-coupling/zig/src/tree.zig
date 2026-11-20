@@ -37,6 +37,9 @@ pub const Protocol = enum { global_mutex, global_rwlock, latch_coupling };
 
 pub const Error = error{OutOfNodes};
 
+/// Shared: many holders, all of them only read. Exclusive: one holder.
+pub const Mode = enum { shared, exclusive };
+
 /// A tree of order M >= 3 over n nodes is at most log2(n) levels deep, and a
 /// table holds fewer than 2^32 nodes.
 pub const max_height = 32;
@@ -61,8 +64,6 @@ pub const Hook = struct {
     func: *const fn (ctx: *anyopaque, event: Event) void,
 
     pub const Point = enum {
-        /// Global protocols: the tree-wide lock has just been acquired.
-        global_locked,
         /// Latch coupling: the root id was read; no latch is held yet.
         root_loaded,
         /// Latch coupling: a latch on `node` was acquired.
@@ -139,56 +140,57 @@ pub const Tree = struct {
     }
 
     pub fn getHooked(self: *Tree, io: Io, key: u64, hook: ?*const Hook) ?u64 {
-        switch (self.protocol) {
-            .global_mutex => {
-                // A mutex cannot tell readers from writers: two `get`s exclude
-                // each other although neither changes anything.
-                if (hook == null or !self.mutex.tryLock()) {
-                    emit(hook, .blocked, .nil);
-                    self.mutex.lockUncancelable(io);
-                }
-                defer self.mutex.unlock(io);
-                emit(hook, .global_locked, .nil);
-                emit(hook, .at_leaf, .nil);
-                return plain.get(self, key);
-            },
-            .global_rwlock => {
-                if (hook == null or !self.rwlock.tryLockShared(io)) {
-                    emit(hook, .blocked, .nil);
-                    self.rwlock.lockSharedUncancelable(io);
-                }
-                defer self.rwlock.unlockShared(io);
-                emit(hook, .global_locked, .nil);
-                emit(hook, .at_leaf, .nil);
-                return plain.get(self, key);
-            },
-            .latch_coupling => return coupled.get(self, io, key, hook),
-        }
+        if (self.protocol == .latch_coupling) return coupled.get(self, io, key, hook);
+        self.lockGlobal(io, .shared, hook);
+        defer self.unlockGlobal(io, .shared);
+        emit(hook, .at_leaf, .nil);
+        return plain.get(self, key);
     }
 
     pub fn putHooked(self: *Tree, io: Io, key: u64, value: u64, hook: ?*const Hook) Error!?u64 {
+        if (self.protocol == .latch_coupling) return coupled.put(self, io, key, value, hook);
+        self.lockGlobal(io, .exclusive, hook);
+        defer self.unlockGlobal(io, .exclusive);
+        emit(hook, .at_leaf, .nil);
+        return plain.put(self, key, value);
+    }
+
+    /// Takes the tree-wide lock. A mutex cannot tell readers from writers, so
+    /// under `global_mutex` two `get`s exclude each other although neither
+    /// changes anything; under `global_rwlock` they share the lock.
+    fn lockGlobal(self: *Tree, io: Io, mode: Mode, hook: ?*const Hook) void {
         switch (self.protocol) {
             .global_mutex => {
-                if (hook == null or !self.mutex.tryLock()) {
-                    emit(hook, .blocked, .nil);
-                    self.mutex.lockUncancelable(io);
-                }
-                defer self.mutex.unlock(io);
-                emit(hook, .global_locked, .nil);
-                emit(hook, .at_leaf, .nil);
-                return plain.put(self, key, value);
+                // With a hook: try first, so that the hook hears about the
+                // wait before it starts. Without: just lock.
+                if (hook != null and self.mutex.tryLock()) return;
+                emit(hook, .blocked, .nil);
+                self.mutex.lockUncancelable(io);
             },
-            .global_rwlock => {
-                if (hook == null or !self.rwlock.tryLock(io)) {
+            .global_rwlock => switch (mode) {
+                .shared => {
+                    if (hook != null and self.rwlock.tryLockShared(io)) return;
+                    emit(hook, .blocked, .nil);
+                    self.rwlock.lockSharedUncancelable(io);
+                },
+                .exclusive => {
+                    if (hook != null and self.rwlock.tryLock(io)) return;
                     emit(hook, .blocked, .nil);
                     self.rwlock.lockUncancelable(io);
-                }
-                defer self.rwlock.unlock(io);
-                emit(hook, .global_locked, .nil);
-                emit(hook, .at_leaf, .nil);
-                return plain.put(self, key, value);
+                },
             },
-            .latch_coupling => return coupled.put(self, io, key, value, hook),
+            .latch_coupling => unreachable,
+        }
+    }
+
+    fn unlockGlobal(self: *Tree, io: Io, mode: Mode) void {
+        switch (self.protocol) {
+            .global_mutex => self.mutex.unlock(io),
+            .global_rwlock => switch (mode) {
+                .shared => self.rwlock.unlockShared(io),
+                .exclusive => self.rwlock.unlock(io),
+            },
+            .latch_coupling => unreachable,
         }
     }
 

@@ -244,6 +244,34 @@ test "corrupt records are rejected, never trusted" {
     try testing.expectError(error.Truncated, validateRecord(&.{9})); // header longer than the record
 }
 
+test "records keep float bits: equal under the comparator, different as bytes" {
+    // A key normalises -0.0 and NaN so that equal values are equal bytes. A
+    // record must read back exactly, so it does not: never memcmp records.
+    const schema = [_]Column{.{ .type = .float }};
+    const odd_nan: f64 = @bitCast(@as(u64, 0xfff0_0000_0000_beef));
+    const pairs = [_][2]f64{ .{ 0.0, -0.0 }, .{ std.math.nan(f64), odd_nan } };
+    for (pairs) |pair| {
+        var ba: [16]u8 = undefined;
+        var bb: [16]u8 = undefined;
+        const a = try encodeRecord(&ba, &.{.{ .float = pair[0] }});
+        const b = try encodeRecord(&bb, &.{.{ .float = pair[1] }});
+        try testing.expectEqual(.eq, try compareRecords(a, b, &schema, null));
+        try testing.expect(!std.mem.eql(u8, a, b));
+        // The bits survive the round trip.
+        var cursor: RecordCursor = try .init(b);
+        const back = (try cursor.next()).?.float;
+        try testing.expectEqual(@as(u64, @bitCast(pair[1])), @as(u64, @bitCast(back)));
+        // The keys of the same two rows are identical.
+        var ka: [9]u8 = undefined;
+        var kb: [9]u8 = undefined;
+        try testing.expectEqualSlices(
+            u8,
+            try row_mod.encodeKey(&ka, &.{.{ .float = pair[0] }}, &schema),
+            try row_mod.encodeKey(&kb, &.{.{ .float = pair[1] }}, &schema),
+        );
+    }
+}
+
 test "compareRecords: stops at the first differing column" {
     const schema = [_]Column{ .{ .type = .text }, .{ .type = .int, .opts = .{ .desc = true } } };
     var ba: [32]u8 = undefined;

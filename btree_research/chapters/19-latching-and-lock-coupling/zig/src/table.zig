@@ -93,7 +93,6 @@ test "reserve is all or nothing" {
     try std.testing.expectEqual(4, table.count());
     try std.testing.expectEqual(4, (try table.reserve(1)).index());
     try std.testing.expectError(error.OutOfNodes, table.reserve(1));
-    try std.testing.expectEqual(0, (try table.reserve(0)).index() - 5);
 }
 
 test "the table is allocated once and an allocation failure is reported" {

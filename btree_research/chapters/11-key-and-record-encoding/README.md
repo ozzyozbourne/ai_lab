@@ -178,10 +178,9 @@ their header comments list the API. Chapter 12 copies them.
 the high bit on every byte but the last. `decode` rejects three kinds of bad
 input: `Truncated`, `Overflow` (more than 64 bits) and `NonCanonical` (a
 trailing zero group such as `80 00`). The last one is an invariant worth
-having: one integer, one encoding, so decoding and re-encoding a varint
-gives the same bytes. (It does not make whole records canonical; see the
-pitfall "Equal values, different bytes".) `zigzag` interleaves negative and
-positive numbers so that -1 costs one byte rather than ten.
+having: one integer, one encoding (whole records are still not canonical;
+see the pitfalls). `zigzag` interleaves negative and positive numbers so
+that -1 costs one byte rather than ten.
 
 **Fixed-width keys.** `encodeU64` is `writeInt(.., .big)`. `encodeI64` XORs
 the sign bit first. `encodeF64` normalises `-0.0` to `+0.0` and every NaN to
@@ -206,14 +205,12 @@ draws random rows for one fixed schema from a small alphabet
 (`00 01 02 a b ff`, integer extremes, infinities, NaN, both zeros) and
 requires, for each pair, that `std.mem.order` on the keys, `compareRecords`
 on the records and `compareRows` on the values give the same answer, and
-that both encodings validate and round trip. That is the run printed in
-section 8. The tests go further: `checkRandomSchemas` draws a new schema
-for every pair (any type with any options), adds `fd fe ff` (the bytes that
-become tag, escape and terminator once a DESC column is inverted), strings
-of up to 24 bytes and floats at every edge of the format (subnormals, NaN
-payloads, neighbours of 1.0), and cuts every key and record at every
-position. `keycodec` and `varint` carry the same kind of tests inside the
-file, with their own small oracle, so the tests move with the files.
+that both encodings validate and round trip (section 8 of the output). The tests go further:
+`checkRandomSchemas` draws a new schema for every pair, adds `fd fe ff`
+(they become tag, escape and terminator when a DESC column is inverted),
+longer strings and floats at every edge of the format, and cuts every key
+and record at every position. `keycodec` and `varint` carry tests of the
+same kind inside the file, so they move with it.
 
 **`validate`.** `validateKey` walks a key with the schema and checks that it
 ends exactly after the last column and that float columns hold canonical
@@ -295,7 +292,7 @@ and `01` with `01` and end with `00`
 encoding special-cases infinities and NaN to fixed patterns instead of
 relying on their bit patterns, and NULLs are not encoded at all: a NULL
 produces an empty key (`duckdb/src/execution/index/art/art.cpp:362-370`)
-and the insert loop skips empty keys (`art.cpp:635-637`). The tag byte and DESC by
+that the insert loop skips (`art.cpp:635-637`). The tag byte and DESC by
 inversion in this chapter are textbook techniques, not taken from these
 sources.
 
@@ -354,21 +351,18 @@ the bytes live.
   sort before `"aa"`.
 - **Equal values, different bytes.** `-0.0` and `0.0`, NaNs with different
   payloads, non-canonical varints. In a key, normalise on encode and reject
-  on decode; the flip side is that the sign of zero and NaN payloads do not
-  survive. A record here does the opposite on purpose: it stores the raw
-  float bits so that a row reads back exactly, which means two records can
-  be equal under `compareRecords` and still differ as bytes (`0.0` and
-  `-0.0`; tested in `record.zig`). Never compare records with `memcmp`,
-  not even for equality.
+  on decode; the price is that the sign of zero and NaN payloads do not
+  survive. Records here keep the raw float bits on purpose (a row reads
+  back exactly), so two records can be equal under `compareRecords` and
+  differ as bytes: do not `memcmp` records, not even for equality.
 - **Forgetting that keys are not self-describing.** Decoding `01 80 ..` needs
   to know whether the column is an int or a float, ASC or DESC. If the
   schema changes, old keys do not.
 - **Inverting the tag for DESC.** Then NULLS LAST silently becomes NULLS
   FIRST on descending columns. Decide which behaviour you want and test all
-  four combinations. Here `nulls_first` defaults to false for ASC and for
-  DESC. Postgres differs: a bare `DESC` means NULLS FIRST
-  (`postgres/doc/src/sgml/ref/create_index.sgml:319-333`), so a layer that
-  mirrors Postgres has to set the flag itself.
+  four combinations. Here NULLS LAST is the default for ASC and DESC; in
+  Postgres a bare `DESC` means NULLS FIRST
+  (`postgres/doc/src/sgml/ref/create_index.sgml:319-333`).
 - **Prefix scans on DESC strings.** Inverted, the terminator is `ff`, so a
   string sorts after its extensions. That is correct, but the bounds of a
   prefix scan must then be built from the inverted bytes too.

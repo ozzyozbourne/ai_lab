@@ -13,6 +13,11 @@
 //! written slot fails and the reader falls back to the other slot: the
 //! previous commit, complete and untouched.
 //!
+//! The older slot is also the fallback when the NEWER one becomes unreadable
+//! later (a bad sector). That only helps if the tree it names is still
+//! complete, so the database keeps the pages of both slots' trees unwritten:
+//! see `Db.previous` and the reclamation rule in db.zig.
+//!
 //! Slot layout, 32 bytes, little-endian:
 //!
 //!     0   u64  txn_id      id of the transaction that wrote this slot
@@ -69,6 +74,16 @@ pub const Meta = struct {
         return if (a.?.txn_id > b.?.txn_id) a else b;
     }
 
+    /// The valid slot that `pick` did NOT choose, if it holds an older
+    /// transaction: the root a restart falls back to when the chosen slot
+    /// cannot be read any more.
+    pub fn fallback(slots: *const Slots) ?Meta {
+        const a = decode(&slots[0]) orelse return null;
+        const b = decode(&slots[1]) orelse return null;
+        if (a.txn_id == b.txn_id) return null;
+        return if (a.txn_id < b.txn_id) a else b;
+    }
+
     pub fn checksum(b: *const [slot_size]u8) u32 {
         return std.mem.readInt(u32, b[28..32], .little);
     }
@@ -89,8 +104,10 @@ test "pick takes the valid slot with the higher transaction id" {
     try std.testing.expectEqual(null, Meta.pick(&slots)); // never written
     slots[0] = old.encode();
     try std.testing.expectEqual(old, Meta.pick(&slots).?); // one valid slot
+    try std.testing.expectEqual(null, Meta.fallback(&slots)); // nothing to fall back to
     slots[1] = new.encode();
     try std.testing.expectEqual(new, Meta.pick(&slots).?); // higher id wins
+    try std.testing.expectEqual(old, Meta.fallback(&slots).?);
     slots[1][0] ^= 0xFF; // torn write of the newest commit
     try std.testing.expectEqual(old, Meta.pick(&slots).?); // fall back
 }

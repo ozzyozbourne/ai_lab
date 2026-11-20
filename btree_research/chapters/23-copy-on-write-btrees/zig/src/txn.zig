@@ -27,6 +27,7 @@ const PageId = base_node.PageId;
 const search = @import("base_search.zig");
 const read = @import("read.zig");
 const Db = @import("db.zig").Db;
+const Meta = @import("meta.zig").Meta;
 
 /// What one commit did; the demo program prints it.
 pub const CommitInfo = struct {
@@ -415,11 +416,17 @@ pub const WriteTxn = struct {
 
     // --------------------------------------------------- commit / abort
 
-    pub const CommitError = error{TxnFailed} || Allocator.Error;
+    pub const CommitError = error{ TxnFailed, Crashed } || Allocator.Error;
 
     /// Publishes the transaction: write the new pages, then flip the root.
     /// On error nothing has been published and the transaction is still
     /// open; the caller aborts it (or, for OutOfMemory, may try again).
+    ///
+    /// `error.Crashed` (only with `Db.crash_after`) is different: it stands
+    /// for a power failure in the middle of the writes. The store is as the
+    /// "disk" was at that instant and the rest of the `Db` is as meaningless
+    /// as the memory of a dead process: abort the transaction to free its
+    /// memory, then call `Db.reopen`.
     pub fn commit(self: *WriteTxn, gpa: Allocator) CommitError!CommitInfo {
         assert(self.open);
         if (self.failed) return error.TxnFailed;
@@ -441,25 +448,42 @@ pub const WriteTxn = struct {
         // Phase 2: write the new pages. Each goes to a FREE slot, so a crash
         // (or a reader) in the middle of this loop still sees the old tree
         // complete: the old meta slot does not point at any of these pages.
+        // The same holds for the tree of the OTHER meta slot (`db.previous`):
+        // the pages only it reaches are still pending.
         var it = self.dirty.iterator();
-        while (it.next()) |e| db.store.write(e.key_ptr.*, e.value_ptr.*, self.id);
+        while (it.next()) |e| {
+            if (powerFails(db)) return error.Crashed;
+            db.store.write(e.key_ptr.*, e.value_ptr.*, self.id);
+        }
         for (self.scrapped.items) |id| db.store.free.appendAssumeCapacity(id);
 
         // Phase 3: THE atomic step. One small write into the slot that does
         // NOT hold the current root. Before it, readers find the old tree;
         // after it, the new one. A real engine syncs the pages before this
         // write and the meta slot after it (chapter 21).
-        db.current = .{
+        const new: Meta = .{
             .txn_id = self.id,
             .root = self.root,
             .height = @intCast(self.height),
             .count = self.count,
             .page_count = @intCast(db.store.pageCount()),
         };
-        db.store.meta_slots[self.id % 2] = db.current.encode();
+        const slot = &db.store.meta_slots[self.id % 2];
+        // Byte by byte only so that a crash can tear it; a slot with some
+        // new and some old bytes fails its checksum.
+        for (new.encode(), slot) |byte, *dst| {
+            if (powerFails(db)) return error.Crashed;
+            dst.* = byte;
+        }
+        // The slot just overwritten held the root from two commits back.
+        // From here on the fallback is the root we are replacing.
+        db.previous = db.current;
+        db.current = new;
 
         // Phase 4: the replaced pages are unreachable from the new root, but
-        // older snapshots may still reach them: pending, not free.
+        // older roots still reach them: pending, not free. `reclaim` then
+        // releases what no protected root needs. That never includes the
+        // pages replaced just now, because `previous` reaches them.
         for (self.freed.items) |id| db.pending.appendAssumeCapacity(.{ .freed_by = self.id, .page = id });
         var info = self.info;
         info.txn_id = self.id;
@@ -472,6 +496,17 @@ pub const WriteTxn = struct {
         db.stats.pages_fresh += info.fresh;
         self.close();
         return info;
+    }
+
+    /// Fault injection: counts down `db.crash_after`; true when it runs out.
+    fn powerFails(db: *Db) bool {
+        const left = db.crash_after orelse return false;
+        if (left == 0) {
+            db.crash_after = null;
+            return true;
+        }
+        db.crash_after = left - 1;
+        return false;
     }
 
     /// Throws the transaction away. No page of the store was written, so the

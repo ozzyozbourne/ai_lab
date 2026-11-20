@@ -120,7 +120,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     btn('btn-unsafe', 'Recycle anyway', doUnsafe),
     el('span.bt-toolbar-sep'),
     scenario, btn('btn-play', 'Play scenario', function () { playScenario(scenario.value, true); }),
-    btn('btn-reset', 'Empty', function () { message(''); db = C.create(4); db.names = []; steps = []; note('Empty database. Put a few keys, or play a scenario.'); commit(false); ownTimeline = false; }));
+    btn('btn-reset', 'Empty', function () { resetAll(); }));
   var msg = el('p.c24-msg', { role: 'status', 'aria-live': 'polite' });
   fig.toolbar.after(msg);
   function message(text) { msg.textContent = text; }
@@ -558,7 +558,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
   }
   function doUnsafe() {
     act('Recycle anyway.', function () {
-      if (!C.deletedQueue(db).length) { steps.pop(); message('No deleted page is waiting. Delete rows, run Vacuum while a snapshot or a paused scan is open, then try again.'); return; }
+      if (!C.deletedQueue(db).length) { steps.pop(); message('No deleted page is waiting. Delete neighbouring rows first, then start a scan (or open a snapshot) and run Vacuum: the pages it deletes must wait, and this button frees them anyway.'); return; }
       opUnsafe();
     });
   }
@@ -662,6 +662,15 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     SCENARIOS[name]();
     return db;
   }
+  function resetAll() {
+    message('');
+    db = C.create(4);
+    db.names = [];
+    steps = [];
+    note('Empty database. Put a few keys, or play a scenario.');
+    commit(false);
+    ownTimeline = false;
+  }
   function playScenario(name, play) {
     message('');
     buildScenario(name);
@@ -695,6 +704,35 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
   ['hints', 'pages', 'early'].forEach(function (name) {
     BTViz.selfTest(name + ': valid', C.validate(buildScenario(name)).join('; '), '');
   });
+
+
+  // The drawing: where page #1 is in the picture at each stage of its deletion in scenario 2.
+  buildScenario('pages');
+  function drawn(state, id) {
+    var L = C.layout(state), b = L.boxes[id], out = [b.kind];
+    if (b.y === L.leafY) out.push('in chain row');
+    if (L.edges.some(function (e) { return e.to === id; })) out.push('downlink');
+    L.links.forEach(function (l) {
+      if (l.kind === 'chain' && (l.from === id || l.to === id)) out.push('#' + l.from + '→#' + l.to);
+      if (l.kind === 'kept' && l.from === id) out.push('kept link →#' + l.to);
+    });
+    return out.join(' ');
+  }
+  function firstStep(test, from) { for (var i = from || 0; i < steps.length; i++) if (test(steps[i])) return i; return -1; }
+  var ph1 = firstStep(function (st) { return /^<b>Phase 1/.test(st.caption); }), ph2 = ph1 + 1;
+  var freed = firstStep(function (st) { return /^Recycle/.test(st.caption) && !C.isLive(st.state.pages, 1); }, ph2);
+  BTViz.selfTest('drawn: live', drawn(steps[ph1 - 1].state, 1), 'leaf in chain row downlink #0→#1 #1→#3');
+  BTViz.selfTest('drawn: half-dead', drawn(steps[ph1].state, 1), 'half-dead in chain row #0→#1 #1→#3');
+  BTViz.selfTest('drawn: deleted', drawn(steps[ph2].state, 1) + ' | ' + C.layout(steps[ph2].state).links.filter(function (l) { return l.from === 0; }).map(function (l) { return '#0→#' + l.to; }).join(),
+    'deleted kept link →#3 | #0→#3');
+  BTViz.selfTest('drawn: free', drawn(steps[freed].state, 1), 'free');
+  BTViz.selfTest('drawn: reused', drawn(steps[steps.length - 1].state, 1), 'leaf in chain row downlink #0→#1 #1→#3');
+  BTViz.selfTest('pages: steps', String(steps.length < 40), 'true');
+
+  // No press is dropped: three Puts with no time between them all arrive.
+  resetAll();
+  [10, 11, 12].forEach(doPut);
+  BTViz.selfTest('fast clicks kept', stepper.state(stepper.steps.length - 1).versions.live + ' rows; ' + (/run to its end first/.test(stepper.steps[0].caption) ? 'said so' : 'silent'), '3 rows; said so');
 
   playScenario('hints', false);
 })();

@@ -2,6 +2,8 @@
 //!
 //!   store      page slab + free list + two metapage slots   (store.zig)
 //!   current    the decoded winner of the two meta slots: the committed root
+//!   previous   the root in the OTHER meta slot: where a restart lands if the
+//!              newest slot cannot be read
 //!   snapshots  one entry per root that some reader still holds, refcounted
 //!   pending    pages that a commit made unreachable from ITS root, but that
 //!              older roots can still reach
@@ -9,12 +11,22 @@
 //! The life of a page:
 //!
 //!     free --(written by a commit)--> live --(replaced or dropped by txn T)-->
-//!     pending(T) --(no snapshot older than T remains)--> free
+//!     pending(T) --(no protected root older than T remains)--> free
 //!
 //! THE reclamation rule: a page freed by transaction T is reachable from the
-//! roots of transactions before T and from no root at or after T. A snapshot
-//! with id S therefore needs it exactly when S < T, and the page may be
-//! reused once every live snapshot has S >= T.
+//! roots of transactions before T and from no root at or after T. A root with
+//! id R therefore needs it exactly when R < T, and the page may be reused
+//! once every PROTECTED root has R >= T. Two kinds of root are protected:
+//!
+//!   * every snapshot, for as long as a reader holds it;
+//!   * `previous`, the root of the commit before the current one, for as
+//!     long as its meta slot can still be chosen by a restart. Its slot is
+//!     overwritten by the NEXT commit, so pages freed by transaction T become
+//!     reusable when T+1 has committed, and not before.
+//!
+//! The second line is what makes two meta slots worth having. At every
+//! moment, also in the middle of a commit, the trees of BOTH slots are
+//! complete: whichever slot a restart is able to read names a whole tree.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
@@ -61,6 +73,15 @@ pub const Db = struct {
     order: usize,
     store: PageStore = .{},
     current: Meta,
+    /// The committed root one commit back, as recorded in the other meta
+    /// slot. null when that slot holds nothing usable (a new database, or
+    /// after a restart that found it unreadable). `reclaim` treats it like a
+    /// snapshot that nobody can release early.
+    previous: ?Meta = null,
+    /// Fault injection for the tests and the demo: when set, the next commit
+    /// "loses power" after this many device writes (one per page, then one
+    /// per byte of the meta slot) and returns `error.Crashed`.
+    crash_after: ?usize = null,
     /// Ascending by snapshot id (a new snapshot always has the newest id).
     snapshots: std.ArrayList(SnapshotRef) = .empty,
     /// Ascending by `freed_by` (commits append).
@@ -162,7 +183,11 @@ pub const Db = struct {
     /// Applies the reclamation rule. Cannot fail: `store.free` always has
     /// room for every page id.
     pub fn reclaim(self: *Db) usize {
-        const oldest = if (self.snapshots.items.len > 0) self.snapshots.items[0].snap.id else std.math.maxInt(u64);
+        // The oldest root that must stay complete: the oldest snapshot, or
+        // the previous committed root, whichever is older.
+        var oldest: u64 = std.math.maxInt(u64);
+        if (self.snapshots.items.len > 0) oldest = self.snapshots.items[0].snap.id;
+        if (self.previous) |p| oldest = @min(oldest, p.txn_id);
         const items = self.pending.items;
         var n: usize = 0;
         // `pending` is ascending by freed_by, so the releasable entries are a prefix.
@@ -204,37 +229,107 @@ pub const Db = struct {
 
     // ---------------------------------------------------------- restart
 
-    pub const ReopenError = error{NoValidMeta} || Allocator.Error;
+    pub const ReopenError = error{ NoValidMeta, CorruptTree } || Allocator.Error;
 
-    /// What a restart does: forget all in-memory state (readers, pending
-    /// list, free list), choose the meta slot by checksum and transaction id,
-    /// and rebuild the free list as "every page the chosen root cannot
-    /// reach". (A real engine stores the free list in the file instead of
-    /// scanning; see the README.)
+    /// What a restart does. Only the "file" is trusted: the two meta slots
+    /// and the pages (content and `written_by`). Everything else (readers,
+    /// pending list, free list, slot states) is rebuilt:
+    ///
+    ///   1. choose the meta slot by checksum and transaction id;
+    ///   2. walk its tree and CHECK it while walking (`treeIsComplete`);
+    ///   3. if the other slot holds an older commit with a complete tree, it
+    ///      stays the fallback: the pages only it reaches go back on the
+    ///      pending list;
+    ///   4. every page neither root reaches is free.
+    ///
+    /// (A real engine stores the free list in the file instead of scanning;
+    /// see the README.) On error nothing has been changed.
+    ///
+    /// `error.NoValidMeta`: neither slot has a valid checksum.
+    /// `error.CorruptTree`: the chosen slot has a valid checksum but its tree
+    /// is not all there. The reclamation rule guarantees this cannot happen
+    /// after a crash, a torn meta write or one unreadable slot, so it means
+    /// damage this design does not defend against (a lost page write, a
+    /// forged slot), and it is reported instead of guessed around.
     pub fn reopen(self: *Db, gpa: Allocator) ReopenError!void {
         assert(!self.writer_active);
-        const m = Meta.pick(&self.store.meta_slots) orelse return error.NoValidMeta;
-        const reachable = try gpa.alloc(bool, m.page_count);
-        defer gpa.free(reachable);
-        @memset(reachable, false);
+        const slots = &self.store.meta_slots;
+        const m = Meta.pick(slots) orelse return error.NoValidMeta;
+        if (m.page_count > self.store.pageCount()) return error.CorruptTree;
+        const n: usize = m.page_count;
 
+        const in_current = try gpa.alloc(bool, n);
+        defer gpa.free(in_current);
+        const in_previous = try gpa.alloc(bool, n);
+        defer gpa.free(in_previous);
+        if (!self.treeIsComplete(m, in_current)) return error.CorruptTree;
+
+        // The other slot is a fallback only if its tree is whole as well.
+        var previous = Meta.fallback(slots);
+        if (previous) |p| {
+            if (p.page_count > n or !self.treeIsComplete(p, in_previous)) previous = null;
+        }
+        if (previous == null) @memset(in_previous, false);
+        var only_previous: usize = 0;
+        for (in_current, in_previous) |c, p| {
+            if (p and !c) only_previous += 1;
+        }
+        try self.pending.ensureTotalCapacity(gpa, only_previous);
+
+        // Nothing can fail from here on.
         self.current = m;
+        self.previous = previous;
+        self.crash_after = null;
         self.snapshots.clearRetainingCapacity();
         self.pending.clearRetainingCapacity();
         // Pages past the chosen meta's page_count belong to a lost commit.
-        self.store.slots.shrinkRetainingCapacity(m.page_count);
+        self.store.slots.shrinkRetainingCapacity(n);
         self.store.free.clearRetainingCapacity();
-        if (m.root != .nil) self.mark(m.root, reachable);
-        for (self.store.slots.items, reachable, 0..) |*slot, r, i| {
-            slot.state = if (r) .live else .free;
-            if (!r) self.store.free.appendAssumeCapacity(.fromIndex(i));
+        for (self.store.slots.items, in_current, in_previous, 0..) |*slot, c, p, i| {
+            slot.state = if (c or p) .live else .free;
+            if (c) continue;
+            if (p) {
+                // Replaced by the current commit; released when the next
+                // commit overwrites the fallback slot.
+                self.pending.appendAssumeCapacity(.{ .freed_by = m.txn_id, .page = .fromIndex(i) });
+            } else {
+                self.store.free.appendAssumeCapacity(.fromIndex(i));
+            }
         }
     }
 
-    fn mark(self: *const Db, id: PageId, reachable: []bool) void {
-        reachable[id.index()] = true;
-        const n = &self.store.slots.items[id.index()].node;
-        if (n.isLeaf()) return;
-        for (n.childSlice()) |child| self.mark(child, reachable);
+    /// Walks the tree a meta slot names, marking its pages, and reports
+    /// whether it is all there. A valid checksum only says the 32 bytes of
+    /// the slot are intact; it says nothing about the pages. So the walk
+    /// trusts nothing: every page id is range-checked, a page may be reached
+    /// only once (no cycles), it must have been written by a transaction no
+    /// later than the slot's, and `height` and `count` must come out right.
+    /// The recursion is at most `max_height` deep whatever the input.
+    fn treeIsComplete(self: *const Db, m: Meta, marks: []bool) bool {
+        @memset(marks, false);
+        if (m.root == .nil) return m.height == 0 and m.count == 0;
+        if (m.height == 0 or m.height > read.max_height) return false;
+        var entries: u64 = 0;
+        return self.markChecked(m, m.root, 1, marks, &entries) and entries == m.count;
+    }
+
+    fn markChecked(self: *const Db, m: Meta, id: PageId, depth: usize, marks: []bool, entries: *u64) bool {
+        if (id == .nil or id.index() >= marks.len) return false;
+        if (marks[id.index()]) return false;
+        marks[id.index()] = true;
+        const slot = &self.store.slots.items[id.index()];
+        // 0 = never written (its content is undefined: do not even look).
+        if (slot.written_by == 0 or slot.written_by > m.txn_id) return false;
+        const n = &slot.node;
+        if (n.len > self.maxKeys()) return false;
+        if (n.isLeaf()) {
+            entries.* += n.len;
+            return depth == m.height;
+        }
+        if (depth >= m.height) return false;
+        for (n.childSlice()) |child| {
+            if (!self.markChecked(m, child, depth + 1, marks, entries)) return false;
+        }
+        return true;
     }
 };

@@ -1653,6 +1653,60 @@ test "a trunk that lists a page of the operation in progress: Corrupt, not one p
     try expectValue(&db.tree, "1", &value);
 }
 
+test "a well-formed slotted page whose cells are not a tree page's: Corrupt before anything reads them" {
+    // `SlottedPage.validate` accepts these pages. The tree does not: it
+    // reads four bytes of every interior value, copies keys into a 256-byte
+    // buffer, and splits on the promise that a cell is at most a third of a
+    // page.
+    var file: std.ArrayList(u8) = .empty;
+    defer file.deinit(testing.allocator);
+    const layout = try buildDamageFile(&file);
+    const sound = try testing.allocator.dupe(u8, file.items);
+    defer testing.allocator.free(sound);
+    var key_buf: [250]u8 = undefined;
+    const long_key: [btree.max_key_len + 1]u8 = @splat('z');
+    const long_field: [btree.max_field_len + 1]u8 = @splat(0);
+    for (0..3) |case| {
+        @memcpy(file.items, sound);
+        const page = Layout.page(file.items, if (case == 0) layout.inner[0] else layout.leaf);
+        var first: [250]u8 = undefined;
+        @memcpy(&first, page.key(0));
+        switch (case) {
+            // An interior cell with a child id of two bytes.
+            0 => {
+                page.deleteAt(0);
+                try page.insertAt(0, &first, "\x05\x00");
+            },
+            // A leaf with a key of 257 bytes, and one with a value field
+            // longer than any that `put` writes.
+            1, 2 => {
+                while (page.count() > 1) page.deleteAt(page.count() - 1);
+                if (case == 1) try page.put(&long_key, "\x01\x00\x00\x00v") else try page.put("zzz", &long_field);
+            },
+            else => unreachable,
+        }
+        try page.validate();
+
+        var mem: MemStorage = .init(testing.allocator);
+        defer mem.deinit();
+        try mem.bytes.appendSlice(testing.allocator, file.items);
+        var db: Db = undefined;
+        try db.start(mem.storage(), 4, .open);
+        defer db.stop();
+        try testing.expectError(error.BadPage, db.tree.validate());
+        try testing.expectError(error.Corrupt, db.tree.get(testing.allocator, &first));
+        try testing.expectError(error.Corrupt, db.tree.put(&first, "v"));
+        try testing.expectError(error.Corrupt, db.tree.delete(&first));
+        var it = try db.tree.range(damageKey(&key_buf, layout.keys - 1), null);
+        defer it.deinit();
+        try testing.expect(try it.next() != null); // the last leaf is sound
+        try testing.expectError(error.Corrupt, db.tree.range("", null)); // the damaged page is on the way
+        try testing.expect(!db.tree.poisoned);
+        try testing.expectEqual(0, db.pool.pinnedFrames());
+        _ = try poke(file.items, layout, 2);
+    }
+}
+
 test "pointers that lead in a circle: every walk ends with Corrupt" {
     var file: std.ArrayList(u8) = .empty;
     defer file.deinit(testing.allocator);

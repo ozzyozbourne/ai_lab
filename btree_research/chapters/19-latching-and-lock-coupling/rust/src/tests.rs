@@ -15,14 +15,35 @@ use crate::base_node::Kind;
 use crate::dump::{dump_to_string, entries};
 use crate::ops::{Config, Op, OpStream, Oracle, Weights};
 use crate::prng::SplitMix64;
-use crate::probe::{self, Actor, OpSpec, Outcome, Pause, ProbeError, value_of};
+use crate::probe::{self, Actor, Gate, OpSpec, Outcome, Pause, ProbeError, value_of};
 use crate::stress;
 use crate::{CANONICAL, Event, NodeId, OutOfNodes, PROTOCOLS, Point, Protocol, Tree};
+
+/// Hook for operations that run while NO other thread touches the tree.
+/// Nobody else can hold a lock or latch then, so an operation that has to
+/// wait would wait for something an earlier operation leaked, forever. The
+/// hook hears about the wait before it starts and fails the test instead of
+/// letting it hang.
+fn never_waits(event: Event) {
+    if event.point != Point::Blocked {
+        return;
+    }
+    if event.node == NodeId::NIL {
+        panic!(
+            "an operation running alone must wait for the tree-wide lock: an earlier one leaked it"
+        );
+    }
+    panic!(
+        "an operation running alone must wait for the latch of #{}: an earlier one leaked it",
+        event.node.index()
+    );
+}
 
 fn canonical_tree(protocol: Protocol) -> Tree {
     let tree = Tree::new(4, protocol, 64);
     for key in CANONICAL {
-        tree.put(key, value_of(key)).unwrap();
+        tree.put_hooked(key, value_of(key), Some(&never_waits))
+            .unwrap();
     }
     tree
 }
@@ -97,9 +118,12 @@ fn model_test_every_protocol_against_the_oracle_orders_3_4_5_and_16() {
             for (step, op) in stream.enumerate() {
                 match op {
                     Op::Put { key, value } => {
-                        assert_eq!(tree.put(key, value), Ok(oracle.put(key, value)));
+                        let old = tree.put_hooked(key, value, Some(&never_waits));
+                        assert_eq!(old, Ok(oracle.put(key, value)));
                     }
-                    Op::Get { key } => assert_eq!(tree.get(key), oracle.get(key)),
+                    Op::Get { key } => {
+                        assert_eq!(tree.get_hooked(key, Some(&never_waits)), oracle.get(key));
+                    }
                     Op::Delete { .. } | Op::Range { .. } => unreachable!(),
                 }
                 if step % 97 == 0 {
@@ -513,7 +537,7 @@ fn latch_coupling_a_writer_that_latched_a_replaced_root_starts_again() {
 }
 
 #[test]
-fn a_new_root_is_complete_before_it_is_published_and_published_before_its_latch_is_needed() {
+fn a_new_root_is_complete_before_it_is_published() {
     for protocol in PROTOCOLS {
         let tree = Tree::new(4, protocol, 16);
         for key in [10, 20, 5] {
@@ -552,6 +576,148 @@ fn a_new_root_is_complete_before_it_is_published_and_published_before_its_latch_
         tree.validate().unwrap();
         assert!(tree.nothing_locked());
     }
+}
+
+#[test]
+fn a_thread_waiting_for_the_old_roots_latch_starts_again_when_the_root_is_replaced() {
+    for b_op in [OpSpec::Get(20), OpSpec::Put(30)] {
+        let tree = Tree::new(4, Protocol::LatchCoupling, 16);
+        for key in [10, 20, 5] {
+            tree.put(key, value_of(key)).unwrap();
+        }
+        // A = put 6 is frozen with the new root #2 built but not published.
+        // It must still hold the old root #0 exclusively: a writer keeps its
+        // latches until the last node is written. B reads "root = #0" and so
+        // has to WAIT at #0. (The two tests above freeze the thread before
+        // it asks for the latch; here it is already in the queue.)
+        let outcome = probe::probe(&tree, OpSpec::Put(6), Pause::at(Point::RootBuilt), b_op);
+        assert_eq!(outcome, Ok(waits_at(0)), "{b_op:?}");
+        // When B gets #0 at last it is no longer the root: one restart. A
+        // B that looked at the root id only BEFORE it queued would go on
+        // into #0, the left half, and miss 20 (or misplace 30).
+        assert_eq!(tree.stats.root_restarts.load(Ordering::Relaxed), 1);
+        assert!(tree.nothing_locked());
+        tree.validate().unwrap();
+        assert_eq!(tree.get(20), Some(2000));
+        if let OpSpec::Put(key) = b_op {
+            assert_eq!(tree.get(key), Some(value_of(key)));
+        }
+    }
+}
+
+/// A `get` that its test stops three times: when it has read the root id,
+/// when it has latched that node, and at the first event after that.
+struct SteppedGet<'t> {
+    tree: &'t Tree,
+    key: u64,
+    /// `at[i]` is set by the reader when it reaches stop i; it then waits
+    /// for `go[i]`.
+    at: [Gate; 3],
+    go: [Gate; 3],
+    /// Number of stops so far, and the event of the third stop.
+    seen: Mutex<(usize, Option<Event>)>,
+}
+
+impl<'t> SteppedGet<'t> {
+    fn new(tree: &'t Tree, key: u64) -> SteppedGet<'t> {
+        SteppedGet {
+            tree,
+            key,
+            at: Default::default(),
+            go: Default::default(),
+            seen: Mutex::new((0, None)),
+        }
+    }
+
+    fn on_event(&self, event: Event) {
+        let i = {
+            let mut seen = self.seen.lock().unwrap();
+            let wanted = match seen.0 {
+                0 => Some(Point::RootLoaded),
+                1 => Some(Point::Latched),
+                2 => None, // whatever comes first
+                _ => return,
+            };
+            if wanted.is_some_and(|point| point != event.point) {
+                return;
+            }
+            if seen.0 == 2 {
+                seen.1 = Some(event);
+            }
+            seen.0 += 1;
+            seen.0 - 1
+        };
+        self.at[i].set();
+        self.go[i].wait();
+    }
+
+    fn run(&self) -> Option<u64> {
+        let hook = |event: Event| self.on_event(event);
+        self.tree.get_hooked(self.key, Some(&hook))
+    }
+
+    /// Lets the reader run from stop `i` to the next one.
+    fn step(&self, i: usize) {
+        self.go[i].set();
+        if let Some(next) = self.at.get(i + 1) {
+            next.wait();
+        }
+    }
+
+    fn third(&self) -> Option<Event> {
+        self.seen.lock().unwrap().1
+    }
+}
+
+#[test]
+fn latch_order_at_the_root_a_restart_lets_go_of_the_old_root_before_it_asks_for_the_new_one() {
+    let tree = Tree::new(4, Protocol::LatchCoupling, 16);
+    for key in [10, 20, 5] {
+        tree.put(key, value_of(key)).unwrap();
+    }
+
+    let reader = SteppedGet::new(&tree, 20);
+    let writer = Actor::new(&tree, OpSpec::Put(7), None);
+    let (split, stale, third, held, writer_blocked_at, got) = thread::scope(|scope| {
+        let reader_thread = scope.spawn(|| reader.run());
+        reader.at[0].wait(); // the reader has read "root = #0"
+        let split = tree.put(6, value_of(6)); // the root is #2 now, #0 its left child
+        reader.step(0); // the reader holds #0 (shared) and has not looked again
+        let stale = tree.latched_nodes();
+        reader.step(1); // its next event, whatever it is
+        // The reader is frozen again. It must hold NOTHING: #0 is below the
+        // root now, and asking for #2 while holding #0 would be a latch
+        // request going UP the tree. A writer that holds #2 and wants #0
+        // goes down. The two would wait for each other forever.
+        let third = reader.third();
+        let held = tree.latched_nodes();
+        // Such a writer, while the reader is frozen: it must get through.
+        // If the reader kept a latch, the writer reports that it is stuck,
+        // which ends this wait; nothing here can hang.
+        let writer_thread = scope.spawn(|| writer.run());
+        writer.wait_settled();
+        let writer_blocked_at = writer.blocked_at();
+        // Let everybody finish before the first assertion.
+        reader.step(2);
+        let got = reader_thread.join().unwrap();
+        writer_thread.join().unwrap().unwrap();
+        (split, stale, third, held, writer_blocked_at, got)
+    });
+
+    assert_eq!(split, Ok(None));
+    assert_eq!(stale, [0]);
+    let new_root = NodeId::from_index(2);
+    assert_eq!(
+        third.map(|e| (e.point, e.node)),
+        Some((Point::RootLoaded, new_root))
+    );
+    assert_eq!(held, [0u32; 0]);
+    assert_eq!(writer_blocked_at, None);
+    assert_eq!(tree.stats.root_restarts.load(Ordering::Relaxed), 1);
+    assert_eq!(got, Some(2000));
+    assert!(tree.nothing_locked());
+    tree.validate().unwrap();
+    assert_eq!(tree.get(7), Some(700));
 }
 
 // ------------------------------------------------------------------ 4. stress

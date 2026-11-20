@@ -34,10 +34,24 @@ fn dumpAlloc(tree: *const Tree) ![]u8 {
     return out.toOwnedSlice();
 }
 
+/// Hook for operations that run while NO other thread touches the tree.
+/// Nobody else can hold a lock or latch then, so an operation that has to
+/// wait would wait for something an earlier operation leaked, forever. The
+/// hook hears about the wait before it starts and stops the test binary
+/// with a message instead of letting it hang.
+var never_waits_ctx: u8 = 0; // a hook needs a context; this one has no state
+const never_waits: Hook = .{ .ctx = &never_waits_ctx, .func = panicOnWait };
+
+fn panicOnWait(_: *anyopaque, event: Hook.Event) void {
+    if (event.point != .blocked) return;
+    if (event.node == NodeId.nil) @panic("an operation running alone must wait for the tree-wide lock: an earlier one leaked it");
+    std.debug.panic("an operation running alone must wait for the latch of #{d}: an earlier one leaked it", .{event.node.index()});
+}
+
 fn canonicalTree(protocol: Protocol) !Tree {
     var tree: Tree = try .init(testing.allocator, 4, protocol, 64);
     errdefer tree.deinit(testing.allocator);
-    for (lib.canonical) |key| _ = try tree.put(testing.io, key, valueOf(key));
+    for (lib.canonical) |key| _ = try tree.putHooked(testing.io, key, valueOf(key), &never_waits);
     return tree;
 }
 
@@ -105,8 +119,8 @@ test "model test: every protocol against the oracle, orders 3, 4, 5 and 16" {
             var step: usize = 0;
             while (stream.next()) |op| : (step += 1) {
                 switch (op) {
-                    .put => |p| try testing.expectEqual(try oracle.put(gpa, p.key, p.value), try tree.put(testing.io, p.key, p.value)),
-                    .get => |g| try testing.expectEqual(oracle.get(g.key), tree.get(testing.io, g.key)),
+                    .put => |p| try testing.expectEqual(try oracle.put(gpa, p.key, p.value), try tree.putHooked(testing.io, p.key, p.value, &never_waits)),
+                    .get => |g| try testing.expectEqual(oracle.get(g.key), tree.getHooked(testing.io, g.key, &never_waits)),
                     .delete, .range => unreachable,
                 }
                 if (step % 97 == 0) try tree.validate();
@@ -182,9 +196,33 @@ test "Tree.init reports an allocation failure and leaks nothing" {
 
 // --------------------------------------------- 2. the hook on a single thread
 
-/// Records, at chosen points of ONE operation, which nodes are latched. It
-/// finds out by trying to latch every node exclusively: that fails exactly
-/// for the nodes somebody (here: the operation itself) holds.
+const Latched = struct {
+    ids: [8]u32 = undefined,
+    len: usize = 0,
+
+    fn slice(self: *const Latched) []const u32 {
+        return self.ids[0..self.len];
+    }
+};
+
+/// Handles of the nodes somebody holds a latch on right now, found by trying
+/// to latch every node exclusively. Only meaningful while every other thread
+/// is frozen or done.
+fn latched(tree: *Tree) Latched {
+    var result: Latched = .{};
+    for (tree.table.slots, 0..) |*slot, i| {
+        if (slot.latch.tryLock(testing.io)) {
+            slot.latch.unlock(testing.io);
+        } else {
+            result.ids[result.len] = @intCast(i);
+            result.len += 1;
+        }
+    }
+    return result;
+}
+
+/// Records, at chosen points of ONE operation, which nodes are latched:
+/// those the operation itself holds.
 const LatchSpy = struct {
     tree: *Tree,
     /// Nodes latched when the descent ended (`at_leaf`).
@@ -196,20 +234,11 @@ const LatchSpy = struct {
     fn onEvent(ctx: *anyopaque, event: Hook.Event) void {
         const self: *LatchSpy = @ptrCast(@alignCast(ctx));
         if (event.point != .latched and event.point != .at_leaf) return;
-        var held: [8]u32 = undefined;
-        var n: usize = 0;
-        for (self.tree.table.slots, 0..) |*slot, i| {
-            if (slot.latch.tryLock(testing.io)) {
-                slot.latch.unlock(testing.io);
-            } else {
-                held[n] = @intCast(i);
-                n += 1;
-            }
-        }
-        self.max_held = @max(self.max_held, n);
+        const held = latched(self.tree);
+        self.max_held = @max(self.max_held, held.len);
         if (event.point == .at_leaf) {
-            self.at_leaf = held;
-            self.at_leaf_len = n;
+            self.at_leaf = held.ids;
+            self.at_leaf_len = held.len;
         }
     }
 
@@ -497,7 +526,7 @@ test "latch coupling: a writer that latched a replaced root starts again" {
     );
 }
 
-test "a new root is complete before it is published, and published before its latch is needed" {
+test "a new root is complete before it is published" {
     if (builtin.single_threaded) return error.SkipZigTest;
     const io = testing.io;
     for (lib.protocols) |protocol| {
@@ -529,6 +558,122 @@ test "a new root is complete before it is published, and published before its la
         try tree.validate();
         try testing.expect(tree.nothingLocked(io));
     }
+}
+
+test "a thread waiting for the old root's latch starts again when the root is replaced" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+    const io = testing.io;
+    for ([_]probe.OpSpec{ .{ .get = 20 }, .{ .put = 30 } }) |b_op| {
+        var tree: Tree = try .init(testing.allocator, 4, .latch_coupling, 16);
+        defer tree.deinit(testing.allocator);
+        for ([_]u64{ 10, 20, 5 }) |key| _ = try tree.put(io, key, valueOf(key));
+        // A = put 6 is frozen with the new root #2 built but not published.
+        // It must still hold the old root #0 exclusively: a writer keeps its
+        // latches until the last node is written. B reads "root = #0" and so
+        // has to WAIT at #0. (The two tests above freeze the thread before
+        // it asks for the latch; here it is already in the queue.)
+        const outcome = try probe.probe(&tree, io, .{ .put = 6 }, .{ .point = .root_built }, b_op);
+        try testing.expectEqual(waitsAt(0), outcome);
+        // When B gets #0 at last it is no longer the root: one restart. A
+        // B that looked at the root id only BEFORE it queued would go on
+        // into #0, the left half, and miss 20 (or misplace 30).
+        try testing.expectEqual(1, tree.stats.root_restarts.load(.monotonic));
+        try testing.expect(tree.nothingLocked(io));
+        try tree.validate();
+        try testing.expectEqual(2000, tree.get(io, 20));
+        switch (b_op) {
+            .put => |key| try testing.expectEqual(valueOf(key), tree.get(io, key)),
+            .get => {},
+        }
+    }
+}
+
+/// A `get` that its test stops three times: when it has read the root id,
+/// when it has latched that node, and at the first event after that.
+const SteppedGet = struct {
+    tree: *Tree,
+    io: Io,
+    key: u64,
+    /// `at[i]` is set by the reader when it reaches stop i; it then waits
+    /// for `go[i]`.
+    at: [3]Io.Event = @splat(.unset),
+    go: [3]Io.Event = @splat(.unset),
+    stops: usize = 0,
+    /// The event of the third stop. Written before `at[2]` is set.
+    third: ?Hook.Event = null,
+    result: ?u64 = null,
+
+    fn onEvent(ctx: *anyopaque, event: Hook.Event) void {
+        const self: *SteppedGet = @ptrCast(@alignCast(ctx));
+        const wanted: ?Hook.Point = switch (self.stops) {
+            0 => .root_loaded,
+            1 => .latched,
+            2 => null, // whatever comes first
+            else => return,
+        };
+        if (wanted != null and wanted.? != event.point) return;
+        const i = self.stops;
+        self.stops += 1;
+        if (i == 2) self.third = event;
+        self.at[i].set(self.io);
+        self.go[i].waitUncancelable(self.io);
+    }
+
+    fn run(self: *SteppedGet) void {
+        const hook: Hook = .{ .ctx = self, .func = onEvent };
+        self.result = self.tree.getHooked(self.io, self.key, &hook);
+    }
+
+    /// Lets the reader run from stop `i` to the next one.
+    fn step(self: *SteppedGet, i: usize) void {
+        self.go[i].set(self.io);
+        if (i + 1 < self.at.len) self.at[i + 1].waitUncancelable(self.io);
+    }
+};
+
+test "latch order at the root: a restart lets go of the old root before it asks for the new one" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+    const io = testing.io;
+    var tree: Tree = try .init(testing.allocator, 4, .latch_coupling, 16);
+    defer tree.deinit(testing.allocator);
+    for ([_]u64{ 10, 20, 5 }) |key| _ = try tree.put(io, key, valueOf(key));
+
+    var reader: SteppedGet = .{ .tree = &tree, .io = io, .key = 20 };
+    const thread = try std.Thread.spawn(.{}, SteppedGet.run, .{&reader});
+    reader.at[0].waitUncancelable(io); // the reader has read "root = #0"
+    const split = tree.put(io, 6, valueOf(6)); // the root is #2 now, #0 its left child
+    reader.step(0); // the reader holds #0 (shared) and has not looked again
+    const stale = latched(&tree);
+    reader.step(1); // its next event, whatever it is
+    // The reader is frozen again. It must hold NOTHING: #0 is below the
+    // root now, and asking for #2 while holding #0 would be a latch request
+    // going UP the tree. A writer that holds #2 and wants #0 goes down. The
+    // two would wait for each other forever.
+    const third = reader.third.?;
+    const held = latched(&tree);
+    // Such a writer, while the reader is frozen: it must get through. If
+    // the reader kept a latch, the writer reports that it is stuck, which
+    // ends this wait; nothing here can hang.
+    var writer: probe.Actor = .{ .tree = &tree, .io = io, .op = .{ .put = 7 } };
+    const spawned = writer.spawn();
+    if (spawned) |_| writer.waitSettled() else |_| {}
+    const writer_blocked_at = writer.blocked_at;
+    // Let everybody finish before the first assertion.
+    reader.step(2);
+    thread.join();
+    if (spawned) |_| writer.join() else |_| {}
+
+    try spawned;
+    try testing.expectEqual(null, try split);
+    try testing.expectEqualSlices(u32, &.{0}, stale.slice());
+    try testing.expectEqual(Hook.Event{ .point = .root_loaded, .node = .fromIndex(2) }, third);
+    try testing.expectEqualSlices(u32, &.{}, held.slice());
+    try testing.expectEqual(null, writer_blocked_at);
+    try testing.expectEqual(1, tree.stats.root_restarts.load(.monotonic));
+    try testing.expectEqual(2000, reader.result);
+    try testing.expect(tree.nothingLocked(io));
+    try tree.validate();
+    try testing.expectEqual(700, tree.get(io, 7));
 }
 
 // ------------------------------------------------------------------ 4. stress

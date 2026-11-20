@@ -207,9 +207,10 @@ is chapter 12's with two changes: it calls `allocPage()` where it called `pool.n
   that once. `allocPage` checks the trunk's count before indexing with it and refuses an id
   that is page 0, outside the file, or pinned. A descent stops after `max_height` = 32
   levels, a scan after as many sibling links as the file has pages, `dump` after as many
-  pages and trunks. Tests (both languages): 236 single fields damaged in turn, and 600
-  seeded rounds of flipped bytes, planted page ids and swapped pages; `open`, `get`, `range`,
-  `validate`, `dump`, `put` and `delete` return a value or `Corrupt` and leave no pin.
+  pages and trunks. Tests, in both languages: 236 fields damaged one at a time, three
+  well-formed slotted pages that are not tree pages, and 600 seeded rounds of flipped bytes,
+  planted page ids and swapped pages. Every call returns a value or `Corrupt` and leaves no
+  pin.
 
 ### Rust (`rust/src/disk_btree.rs`) and the differences
 
@@ -230,7 +231,7 @@ pool calls in the same order. Differences beyond those listed in chapter 12:
   borrowing the pool cannot coexist with further pool calls. The pin is still held for the
   same span, so that the pool behaves identically.
 - **Poisoning** is an inner function (`put_steps`, `delete_steps`) plus a check of its result.
-- **Tests.** Zig has 81 tests, Rust 77. The four that exist only in Zig are the two
+- **Tests.** Zig has 82 tests, Rust 78. The four that exist only in Zig are the two
   allocation-failure tests (safe Rust cannot make a `Vec` allocation fail), one storage test
   and the import block.
 

@@ -1538,6 +1538,61 @@ fn a_trunk_that_lists_a_page_of_the_operation_in_progress_corrupt_not_one_page_u
 }
 
 #[test]
+fn a_well_formed_slotted_page_whose_cells_are_not_a_tree_pages_corrupt_before_anything_reads_them()
+-> TestResult {
+    // `SlottedPage::validate` accepts these pages. The tree does not: it
+    // reads four bytes of every interior value and splits on the promise
+    // that a cell is at most a third of a page. (Zig also copies keys into a
+    // 256-byte buffer.)
+    let (sound, layout) = build_damage_file()?;
+    for case in 0..3 {
+        let mut file = sound.clone();
+        let id = if case == 0 {
+            layout.inner[0]
+        } else {
+            layout.leaf
+        };
+        let mut page = page_of(&mut file, id);
+        let first = page.key(0).to_vec();
+        match case {
+            // An interior cell with a child id of two bytes.
+            0 => {
+                page.delete_at(0);
+                page.insert_at(0, &first, &[5, 0]).expect("room");
+            }
+            // A leaf with a key of 257 bytes, and one with a value field
+            // longer than any that `put` writes.
+            _ => {
+                while page.count() > 1 {
+                    page.delete_at(page.count() - 1);
+                }
+                let (key, value) = if case == 1 {
+                    (vec![b'z'; btree::MAX_KEY_LEN + 1], vec![1, 0, 0, 0, b'v'])
+                } else {
+                    (b"zzz".to_vec(), vec![0; btree::MAX_FIELD_LEN + 1])
+                };
+                page.put(&key, &value).expect("room");
+            }
+        }
+        assert!(page.validate().is_ok());
+
+        let mut tree = open_copy(&file, 4)?;
+        assert_eq!(tree.validate(), Err(TreeError::Invalid(Violation::BadPage)));
+        assert_eq!(tree.get(&first), Err(TreeError::Corrupt));
+        assert_eq!(tree.put(&first, b"v"), Err(TreeError::Corrupt));
+        assert_eq!(tree.delete(&first), Err(TreeError::Corrupt));
+        let mut it = tree.range(&damage_key(layout.keys - 1), None)?;
+        assert!(it.next()?.is_some()); // the last leaf is sound
+        // The damaged page is on the way to the first key.
+        assert!(matches!(tree.range(b"", None), Err(TreeError::Corrupt)));
+        assert!(!tree.is_poisoned());
+        assert_eq!(tree.pool().pinned_frames(), 0);
+        poke(&file, layout, 2)?;
+    }
+    Ok(())
+}
+
+#[test]
 fn pointers_that_lead_in_a_circle_every_walk_ends_with_corrupt() -> TestResult {
     let (sound, layout) = build_damage_file()?;
     let mut file = sound.clone();

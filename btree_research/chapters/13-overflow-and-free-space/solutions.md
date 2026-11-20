@@ -67,7 +67,7 @@ and in `allocPage` the last three lines become `const page = try self.pool.fetch
 Measured with the workload of part 3 (12 rounds, 1855 reuses): pager reads go from 9723 to
 8675, so 1048 reads are saved. Writes, hits and misses are unchanged (6355, 20167, 9723): a
 miss still takes a frame, it just does not fill it from the storage. The other 807 reuses
-were cache hits or trunk pages. With the change, 80 of the 81 Zig tests pass, including the
+were cache hits or trunk pages. With the change, 81 of the 82 Zig tests pass, including the
 file-hash test: the bytes written are the same. The one failure is the expected-output test,
 because the demo prints the read counters (for example part 1: 74 reads instead of 78).
 
@@ -151,7 +151,7 @@ fails `validate`.
 What it costs: six writes instead of three for the same work, a file one page larger, and no
 reuse at all between flushes. Part 3 never flushes, so with this change its file grows in
 every round, to 1993 pages after round 12 instead of 138 (1993 is the number the unchanged
-program prints as "without a free list"). Eighteen of the 81 tests fail, as they should: they
+program prints as "without a free list"). Nineteen of the 82 tests fail, as they should: they
 pin immediate reuse, or build their test files with it.
 
 What still goes wrong: everything else. Five of the seven crash points still leave a file

@@ -59,18 +59,18 @@ impl Pause {
 
 /// A one-way flag with "wait until set" (Zig: `std.Io.Event`).
 #[derive(Default)]
-struct Gate {
+pub struct Gate {
     open: Mutex<bool>,
     changed: Condvar,
 }
 
 impl Gate {
-    fn set(&self) {
+    pub fn set(&self) {
         *self.open.lock().expect("gate poisoned") = true;
         self.changed.notify_all();
     }
 
-    fn wait(&self) {
+    pub fn wait(&self) {
         let mut open = self.open.lock().expect("gate poisoned");
         while !*open {
             open = self.changed.wait(open).expect("gate poisoned");

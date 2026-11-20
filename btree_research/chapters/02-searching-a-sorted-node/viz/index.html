@@ -257,18 +257,30 @@ cursor: put the cursor past the answer (from index 40, key 10) to see what it re
     host.hidden = !notes.length;
   }
   var STALE = 'The picture still shows the previous input: press Enter or leave the field to apply the change.';
-  /** Keep a figure and its fields in step. `applied()` returns the field texts the picture was built
-   *  from. Enter applies and plays; leaving an edited field (`change`) applies; while an edit is not
-   *  applied yet (typing, the spin arrows of a number field) the note line says so. */
-  function watchFields(inputs, note, applied, go) {
-    var dirty = function () { var a = applied(); return inputs.some(function (inp, i) { return inp.value !== a[i]; }); };
-    inputs.forEach(function (inp) {
-      inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') go(true); });
-      inp.addEventListener('change', function () { if (dirty()) go(false); });
-      inp.addEventListener('input', function () {
-        if (dirty()) showNotes(note, [STALE]); else if (note.textContent === STALE) showNotes(note, []);
-      });
-    });
+  /** Keeps a figure and its text / number fields in step. The figure's `go` calls `unchanged()` before
+   *  it reads the fields and `commit(notes, unchanged)` after it has written the used values back.
+   *  - Enter applies and plays; leaving an edited field (`change`) applies without playing;
+   *  - while an edit is not applied yet (typing, the spin arrows of a number field) the note line says so;
+   *  - leaving a field by clicking Search applies twice (change, then click). The second run reads the
+   *    already corrected fields and has nothing to report, so the notes of the first one are kept. */
+  function fieldSync(inputs, note) {
+    var applied = inputs.map(function () { return null; }), last = [];
+    var unchanged = function () { return inputs.every(function (inp, i) { return inp.value === applied[i]; }); };
+    return {
+      unchanged: unchanged,
+      commit: function (notes, wasUnchanged) {
+        applied = inputs.map(function (inp) { return inp.value; });
+        if (!(wasUnchanged && !notes.length)) last = notes;
+        showNotes(note, last);
+      },
+      watch: function (go) {
+        inputs.forEach(function (inp) {
+          inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') go(true); });
+          inp.addEventListener('change', function () { if (!unchanged()) go(false); });
+          inp.addEventListener('input', function () { showNotes(note, unchanged() ? last : [STALE]); });
+        });
+      }
+    };
   }
   function chipRow(host, chips) {
     host.textContent = '';
@@ -438,7 +450,7 @@ cursor: put the cursor past the answer (from index 40, key 10) to see what it re
     }
 
     var ids = function (state) { return state.ids ? state : Object.assign({}, state, { ids: state.values.map(function (v, i) { return 'k' + i; }) }); };
-    var mode = 'lower', applied = ['', ''];   // the field texts the current steps were built from
+    var mode = 'lower', sync = fieldSync([keysIn, keyIn], note);
     var stepper = new BTViz.Stepper({
       mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
       onStep: function (s, i, info) {
@@ -449,7 +461,7 @@ cursor: put the cursor past the answer (from index 40, key 10) to see what it re
       }
     });
     function go(play) {
-      var parsed = parseKeys(keysIn.value, 24), keys = parsed.keys, notes = [];
+      var unchanged = sync.unchanged(), parsed = parseKeys(keysIn.value, 24), keys = parsed.keys, notes = [];
       if (parsed.rejected.length) {
         notes.push('Ignored ' + parsed.rejected.slice(0, 6).join(', ') + (parsed.rejected.length > 6 ? ', …' : '') +
           ': keys are whole numbers from 0 to ' + MAX_KEY + '.');
@@ -460,14 +472,13 @@ cursor: put the cursor past the answer (from index 40, key 10) to see what it re
       if (!keys.length && parsed.rejected.length) { keys = PRESETS.canonical.slice(); notes.push('No usable key was typed: using the canonical keys.'); }
       keysIn.value = keys.join(' ');
       var key = readInt(keyIn, 0, MAX_KEY, 'key', notes);
-      applied = [keysIn.value, keyIn.value];
-      showNotes(note, notes);
+      sync.commit(notes, unchanged);
       mode = modeIn.value;
       codeLower.style.display = mode === 'lower' ? '' : 'none';
       codeUpper.style.display = mode === 'upper' ? '' : 'none';
       stepper.setSteps(buildSteps(keys, key, mode), { play: play, instant: true });
     }
-    watchFields([keysIn, keyIn], note, function () { return applied; }, go);
+    sync.watch(go);
     modeIn.addEventListener('change', function () { go(false); });
     go(false);
     T.boundSteps = buildSteps;
@@ -533,13 +544,13 @@ cursor: put the cursor past the answer (from index 40, key 10) to see what it re
       });
       return steps;
     }
-    var applied = ['', ''];
+    var sync = fieldSync([loIn, hiIn], note);
     var stepper = new BTViz.Stepper({
       mount: fig.controls, caption: fig.caption, root: fig.root,
       onStep: function (s) { av.render(s.state); chipRow(chips, s.chips || []); code.highlight(s.lines); }
     });
     function go(play) {
-      var notes = [];
+      var notes = [], unchanged = sync.unchanged();
       // An unbounded end has no limit: its (disabled) field is not read, so it is not rewritten either.
       var bound = function (kindSel, input, label) {
         return kindSel.value === 'unbounded' ? { kind: 'unbounded' } : { kind: kindSel.value, k: readInt(input, 0, MAX_KEY, label, notes) };
@@ -547,13 +558,12 @@ cursor: put the cursor past the answer (from index 40, key 10) to see what it re
       loIn.disabled = loKind.value === 'unbounded';
       hiIn.disabled = hiKind.value === 'unbounded';
       var lo = bound(loKind, loIn, 'lower limit'), hi = bound(hiKind, hiIn, 'upper limit');
-      applied = [loIn.value, hiIn.value];
-      showNotes(note, notes);
+      sync.commit(notes, unchanged);
       stepper.setSteps(buildSteps(SETS[setIn.value], lo, hi), { play: play, instant: true });
       if (!play) stepper.end();
     }
     [setIn, loKind, hiKind].forEach(function (s) { s.addEventListener('change', function () { go(false); }); });
-    watchFields([loIn, hiIn], note, function () { return applied; }, go);
+    sync.watch(go);
     go(false);
   })();
 
@@ -675,20 +685,19 @@ cursor: put the cursor past the answer (from index 40, key 10) to see what it re
       });
       return steps;
     }
-    var applied = ['', ''];
+    var sync = fieldSync([fromIn, keyIn], note);
     var stepper = new BTViz.Stepper({
       mount: fig.controls, caption: fig.caption, root: fig.root,
       onStep: function (s) { av.render(s.state); chipRow(chips, s.chips || []); code.highlight(s.lines); }
     });
     function go(play) {
-      var notes = [];
+      var notes = [], unchanged = sync.unchanged();
       var from = readInt(fromIn, 0, n, 'from index', notes), key = readInt(keyIn, 0, MAX_KEY, 'key', notes);
-      applied = [fromIn.value, keyIn.value];
-      showNotes(note, notes);
+      sync.commit(notes, unchanged);
       nextBtn.disabled = gallopTrace(KEYS, from, key).index === n;   // the batch is finished
       stepper.setSteps(buildSteps(from, key), { play: play, instant: true });
     }
-    watchFields([fromIn, keyIn], note, function () { return applied; }, go);
+    sync.watch(go);
     // A new question was typed: Next probe is usable again (go disables it again if the batch is over).
     [fromIn, keyIn].forEach(function (inp) { inp.addEventListener('input', function () { nextBtn.disabled = false; }); });
     go(false);

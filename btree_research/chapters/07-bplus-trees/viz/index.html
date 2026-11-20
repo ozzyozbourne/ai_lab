@@ -165,19 +165,23 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
       renderArena(s.b, hb.arena || {});
       showCode(step.lines);
       log.sync(stepper ? stepper.steps : [], i);
-      if (step.centre) centreViews();
+      if (step.centre) centreViews(s);
     }
   });
 
   /**
    * A tree wider than its stage scrolls inside the view (the toolkit never shrinks it below 0.7x, so
    * keys stay readable) and the toolkit scrolls to the highlighted node of each step. A step without
-   * a highlight would open at the far left with the root out of sight, so show the middle instead.
+   * a highlight would open at the far left with the root out of sight, so bring the root to the middle.
    */
-  function centreViews() {
-    [viewA, viewB].forEach(function (view) {
-      var sc = view.scroller;
-      if (sc && sc.scrollWidth > sc.clientWidth + 1) sc.scrollLeft = (sc.scrollWidth - sc.clientWidth) / 2;
+  function centreViews(state) {
+    [[viewA, state.a], [viewB, state.b.tree]].forEach(function (pair) {
+      var view = pair[0], sc = view.scroller, rootId = pair[1] && pair[1].id;
+      if (!sc || sc.scrollWidth <= sc.clientWidth + 1) return;
+      var at = view.layout && view.layout.nodes && view.layout.nodes.get(rootId);
+      // Same geometry as the toolkit's own scroll-to-highlight; without it, the middle of the drawing.
+      var x = at ? (at.x + at.w / 2) * view.scale + (sc.scrollWidth - view.W * view.scale) / 2 : sc.scrollWidth / 2;
+      sc.scrollLeft = Math.max(0, x - sc.clientWidth / 2);
     });
   }
   function overflows() {

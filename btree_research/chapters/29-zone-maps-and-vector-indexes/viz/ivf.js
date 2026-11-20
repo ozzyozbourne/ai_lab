@@ -61,10 +61,14 @@
   var gvZoom = new BTViz.GraphView(zoomCell, { height: 320, r: 6, pad: 14, ariaLabel: 'Zoom on the neighbourhood of the query' });
   var ranking = el('div');
   fig.side.appendChild(el('div.bt-panel', el('div.bt-panel-title', 'Centroid ranking for this query'), el('div.bt-panel-body', ranking)));
-  // The code goes under the pictures, not into the side column: its lines are up to 90 characters long
-  // and the side column shows about 33, which hid the half of each line that says what is done.
-  var codeHost = el('div.c29-codebelow');
-  fig.stage.appendChild(codeHost);
+  // On wide screens the code goes under the pictures, not into the side column: its lines are up to 90
+  // characters long and the side column shows about 33, which hid the half of each line that says what
+  // is done. On narrow screens everything is stacked anyway; there it stays with the side panels, which
+  // sideLast() puts after the caption, so the caption remains next to the pictures.
+  var codeHost = el('div.c29-codebelow'), narrow = window.matchMedia('(max-width: 820px)');
+  function placeCode() { (narrow.matches ? fig.side : fig.stage).appendChild(codeHost); }
+  narrow.addEventListener('change', placeCode);
+  placeCode();
   var code = BTViz.codePanel(codeHost, 'search', { title: 'Ivf.search' });
 
   var query = S.queries[12].slice(), rng = BTViz.rng(29), search, truth;

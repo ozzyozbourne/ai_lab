@@ -46,8 +46,9 @@ deliberate slack: it absorbs later inserts into old pages without an immediate s
 **Why only the rightmost page.** A lopsided cut is a bet that inserts will keep arriving
 on the small side. On the rightmost page under appends that bet is safe. On an ordinary
 page under random inserts it usually loses, since most cells sit on the full side: the
-90% page overflows again almost at once, and the 10% page rarely fills. The experiment below shows that
-this "fill factor everywhere" policy needs twice as many pages as plain 50:50.
+90% page overflows again almost at once, and the 10% page rarely fills. The experiment
+below shows that this "fill factor everywhere" policy needs twice as many pages as
+plain 50:50.
 
 **Equal keys.** If the gap falls between two cells with different keys, the separator
 only needs the key of the right-hand cell. If it falls inside a run of equal keys, the
@@ -91,6 +92,11 @@ candidate split points (cut before index s)
   6    86     20           66          460  (30)      8 bytes
 ```
 
+The program gives the four ideas of the previous section names: **half** is 50:50 on
+every split, **fill-90** a fill factor of 90 on every split, **rightmost-90** a fill
+factor of 90 on the rightmost page only, and **adaptive-90** is rightmost-90 plus the
+two rules for equal keys.
+
 - **half** takes the smallest 50:50 delta: `s=3` (the tie with `s=4` goes to the left
   one). It cuts inside the run of 20s, so the separator is `(20,3)`, 16 bytes.
 - **fill-90** takes the smallest 90:10 delta: `s=6`, left page 86 bytes.
@@ -102,6 +108,10 @@ candidate split points (cut before index s)
   tid. So it widens the search to the whole page and takes the best-balanced candidate
   with a bare-key separator: `s=6` (delta 66 beats `s=1` with 70). The split is
   lopsided, 86 to 20, but the five 20s stay together and the separator is `(30)`.
+
+The program prints the choice twice. In the first block the page is not the rightmost
+one: the page to its right starts with key 40, which is this page's **upper bound**.
+In the second block it is the rightmost page and has no upper bound.
 
 ```
 choice when the page is NOT the rightmost page (upper bound 40)
@@ -151,7 +161,12 @@ The policy is data: a tagged union with a fill factor as payload.
 pub const Policy = union(enum) { half, fill: u8, rightmost: u8, adaptive: u8 };
 ```
 
-`chooseSplit` is the five steps of the hand example:
+The payload is a percentage, 0 to 100; `Tree.init` asserts that, so a wrong value
+fails where the tree is created and not at its first split.
+
+`chooseSplit` does by program what the hand example did, in five numbered steps (the
+same list, with the name of the PostgreSQL function behind each step, is at the top
+of `split.zig`):
 
 ```zig
 const cands = try candidates(scratch, items, page.capacity);   // 1. legal gaps
@@ -301,7 +316,7 @@ Two things in the source are **not** in the model, and the exercises return to b
   multi-column index and cuts right after the new item. It returns false at once for
   single-column indexes.
 
-The plan for this chapter names only PostgreSQL. How the other engines in this guide
+This chapter looks only at PostgreSQL. How the other engines in this guide
 choose split points is the subject of chapter 15 (Turso's `balance_non_root`
 redistributes over siblings instead of cutting one page in two).
 
@@ -330,8 +345,11 @@ What would go wrong with other choices:
 - The arena for the *pages*: every time a page's cell list (or the directory) grows,
   the outgrown buffer would stay allocated until the tree dies. Pages are long-lived
   and individually resized; they belong in the general purpose allocator.
-- A `FixedBufferAllocator` over a stack buffer: fine as long as the size bound
-  (capacity plus one cell) is real; the arena does not need the bound.
+- A `FixedBufferAllocator` over a stack buffer: possible, but the bound is a number of
+  structs, not the bytes of a page. The scratch memory holds one `Cell` and one
+  `Candidate` (24 bytes each) per cell of the imaginary page, and a page can hold as
+  many cells as it has bytes, because a cell may be 1 byte long: about 197 kB for a
+  4096-byte page. The arena does not need the bound.
 - Forgetting the reset: everything still works and nothing leaks at exit, because
   `deinit` frees the arena, but memory grows with every split. No test fails; only a
   memory counter shows it.

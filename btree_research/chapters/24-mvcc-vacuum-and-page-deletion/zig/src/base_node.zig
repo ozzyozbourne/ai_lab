@@ -23,17 +23,24 @@ pub const child_capacity = max_order + 1;
 /// fits in one u64 and base_search.zig can compare it as a plain integer.
 pub const max_user_key = std.math.maxInt(u32);
 
+/// Checked in every build mode, like Rust's `assert!`. `std.debug.assert`
+/// would vanish in ReleaseFast, and `<<` would then silently drop the high
+/// bits: the row would be filed under a different key.
+fn checkUserKey(user_key: u64) void {
+    if (user_key > max_user_key) @panic("user key does not fit in 32 bits");
+}
+
 /// Index key = (user key, tid): the tid is the tie-breaker that makes every
 /// entry unique even when one user key has many row versions (chapter 07,
 /// "duplicates through a tie-breaker").
 pub fn pack(user_key: u64, tid: NodeId) u64 {
-    assert(user_key <= max_user_key);
+    checkUserKey(user_key);
     return (user_key << 32) | tid.index();
 }
 
 /// Smallest index key with this user key: where a search for the key starts.
 pub fn packLow(user_key: u64) u64 {
-    assert(user_key <= max_user_key);
+    checkUserKey(user_key);
     return user_key << 32;
 }
 
@@ -150,6 +157,9 @@ test "pack keeps (user key, tid) order and round-trips" {
     try std.testing.expectEqual(9, tidOf(a).index());
     try std.testing.expect(pack(7, .fromIndex(9)) < pack(8, .fromIndex(0)));
     try std.testing.expect(packLow(7) <= pack(7, .fromIndex(0)));
+    // The largest user key still fits. One more is a @panic in every build
+    // mode (a Zig test cannot catch it; the Rust twin has a should_panic test).
+    try std.testing.expectEqual(max_user_key, userKey(pack(max_user_key, .fromIndex(9))));
 }
 
 test "leaf insert and remove keep keys and hint bits aligned" {

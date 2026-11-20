@@ -131,6 +131,14 @@ returned if and only if the scan had not passed its key yet; an entry
 deleted during the scan is not returned unless the scan had already passed
 it.
 
+"Passed" includes the two ends. A cursor that is still on the last entry
+finds a larger key inserted afterwards, because `next` asks for the first
+key greater than the saved one. A cursor that has already stepped off the
+end is in the state `after_last`, which holds no key: `next` keeps returning
+nothing however many entries are appended, and `prev` comes back in at the
+entry that is last by then. `before_first` mirrors this. Both designs behave
+this way (test `a cursor past the end stays there`).
+
 ## A worked example by hand
 
 The canonical keys (10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15, order 4) give
@@ -384,7 +392,7 @@ moved by a page split" (`postgres/src/backend/access/nbtree/README:88-104`).
 The saved position, `BTScanPosData`, holds `currPage`, `prevPage` and
 `nextPage` (`postgres/src/include/access/nbtree.h:962-970`), and stepping to
 the next page reads `so->currPos.nextPage` or `prevPage`
-(`postgres/src/backend/access/nbtree/nbtsearch.c:1715-1719`). That is a
+(`postgres/src/backend/access/nbtree/nbtsearch.c:1715-1718`). That is a
 different answer to the stale-position problem: copy what you need while you
 hold the page, and rely on the rule (same passage) that items never move
 across existing page boundaries except to the right by a split.
@@ -414,10 +422,10 @@ a validity state; `RequireSeek` means "Cursor may be pointing to a
 non-existent location/cell. This can happen after balancing operations"
 (`btree.rs:600-610`). `save_context` stores the key and sets that state
 (`btree.rs:6521-6531`); `restore_context` seeks to the saved key again
-(`btree.rs:6562-6620`). If the saved row is gone, the seek lands on the next
+(`btree.rs:6562-6616`). If the saved row is gone, the seek lands on the next
 greater one and `skip_advance` makes the following `next()` return it rather
 than step past it, mirroring SQLite's `CURSOR_SKIPNEXT` according to the
-comment (`btree.rs:6603-6611`). Our `Cursor` gets the same effect by
+comment (`btree.rs:6598-6605`). Our `Cursor` gets the same effect by
 re-seeking with `gt`. Turso saves explicitly when it knows a change is
 coming; our version counter detects the change afterwards. The counter is
 this chapter's simplification, not taken from either engine.
@@ -488,8 +496,8 @@ capacities stay the same across 100 scans.
   twice. A freed leaf's handle may be reused, which in this arena is not a
   crash, only a wrong answer.
 - **Inserting ahead of your own scan.** A forward scan that inserts `key + 1`
-  for every key it returns never ends: each insert lands just ahead of the
-  cursor and is returned next. This is known as the Halloween problem
+  for every key it returns never ends: each insert creates (or overwrites)
+  the entry just ahead of the cursor, and that entry is returned next. This is known as the Halloween problem
   (textbook). The re-seek rule makes the behaviour well defined; it does not
   make it finite.
 - **Expecting a snapshot.** A re-seeking cursor sees the tree as it is now.

@@ -234,6 +234,19 @@ fn page_deletion_phase_1_rewires_the_parent_phase_2_the_sibling_chain() {
     db.validate().unwrap();
 }
 
+/// The snapshot is the cursor's only protection. (Zig asserts the same thing
+/// in `readPage`; a Zig test cannot catch the panic.)
+#[test]
+#[should_panic(expected = "is_open")]
+fn a_cursor_used_after_its_snapshot_was_closed_is_refused() {
+    let mut db = build_with_empty_leaves();
+    let s = db.store.open_snapshot().unwrap();
+    let mut cursor = Cursor::seek(&db, s, 0, EVERYTHING);
+    assert_eq!(next_key(&mut cursor, &mut db), Some(10));
+    db.store.close_snapshot(s);
+    drain(&mut cursor, &mut db); // must not get past the buffered row 20
+}
+
 #[test]
 fn a_scan_about_to_step_onto_a_page_that_is_then_deleted_moves_right_safely() {
     let mut db = build_with_empty_leaves();

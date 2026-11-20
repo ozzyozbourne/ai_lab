@@ -62,10 +62,10 @@ they fill up again depends on where later keys arrive, which the measurements be
 
 One `put` splits at most one node per level, so at most `height` nodes. That worst case
 is rare. Every split creates exactly one node (a root split creates two: the right half
-and the new root), and every non-root node keeps at least ceil(M/2) - 1 keys. A tree
-with N keys therefore has fewer than N / (ceil(M/2) - 1) nodes, and it took fewer than
-that many splits to build. Spread over the N inserts, that is less than one split per
-ceil(M/2) - 1 inserts. This is the **amortised** split cost: for M = 64 it is at most one
+and the new root), so a tree never took more splits than it has non-root nodes. Every
+non-root node keeps at least m = ceil(M/2) - 1 keys, so a tree with N keys has at most
+(N - 1) / m of them, and it took fewer than N / m splits to build. Spread over the N
+inserts, that is less than one split per m inserts. This is the **amortised** split cost: for M = 64 it is at most one
 split per 31 inserts, however unlucky a single insert may be.
 
 ## A worked example by hand
@@ -116,8 +116,35 @@ is made:
 [1 3 5] [7] [12 15 17] [25 30]
 ```
 
-Twelve inserts, three splits, one of them a root split. The next key that overflows a
-leaf will also overflow the root, and the tree will get its third level.
+Twelve inserts, three splits, one of them a root split. Every node that split so far
+was a leaf (the first root was a leaf too). One more key shows the case that is left:
+the split of an interior node, where the children have to be divided as well.
+
+`2` belongs in the leaf `[1 3 5]`, which becomes `[1 2 3 5]`: overfull. Median 3 goes
+up, `[1 2]` stays, `[5]` is the new right sibling. The root was full, so it is overfull
+now, with four keys and five children:
+
+```
+[3 6 10 20]
+[1 2] [5] [7] [12 15 17] [25 30]
+```
+
+The root splits by the same rule: `mid = 4 / 2 = 2`, the median is 10, `[3 6]` stays,
+`[20]` moves to a new node. The children are cut at the same place. A child holds the
+keys between the two keys it hangs between, so the three children left of 10 (`[1 2]`,
+`[5]`, `[7]`) stay with `[3 6]`, and the two right of 10 (`[12 15 17]`, `[25 30]`) move
+with `[20]`. In general the left half keeps `mid` keys and `mid + 1` children, and both
+halves again have one child more than keys. The leaves themselves are not changed; only
+the pointers to them move. 10 has no parent, so a new root is made:
+
+```
+[10]
+[3 6] [20]
+[1 2] [5] [7] | [12 15 17] [25 30]
+```
+
+The `|` separates the children of `[3 6]` from the children of `[20]`. One insert, two
+splits, and every leaf is one level deeper than before.
 
 ## Code walk-through
 
@@ -225,7 +252,10 @@ One pass, no path, no walk back up. The costs:
   `@compileError`.
 - **It splits nodes that did not need it.** In the canonical example, 25 belongs in the
   leaf `[30]`, which has room. Top-down meets the full root `[6 10 20]` first and splits
-  it. The result is a tree of height 3 with 7 nodes where bottom-up has height 2 with 5.
+  it: `[6]` and `[20]` get two of its four children each. The result is a tree of
+  height 3 with 7 nodes where bottom-up has height 2 with 5. It is not always the taller
+  one: the two variants cut at different points, and a test shows ten keys for which the
+  top-down tree is one level shorter.
 - **It does not carry over to variable-length keys.** "Full" has to be decided before the
   key arrives. With fixed-size keys it is a count. In a page of byte strings, whether a
   node can take the separator from below depends on that separator's size, which is not
@@ -257,7 +287,8 @@ Names, tests and output match the Zig version.
 
 ### Output of `zig build run` and `cargo run`
 
-Part 1 prints the worked example above, one tree per put. The rest:
+Part 1 prints the worked example above, one tree per put, including the last step
+(`put 2: 2 splits, the root split: height 3`). The rest:
 
 ```
 == 2. Top-down insert (textbook, CLRS): the same keys ==
@@ -285,7 +316,8 @@ top-down put 13: OutOfMemory; splits done: 1; keys: 12; valid tree, same keys, n
 ```
 
 Part 4 measures fill (keys stored divided by key slots in all nodes) and splits for
-100000 distinct keys, bottom-up. A selection of its rows:
+100000 distinct keys, bottom-up. The fill and "per 1000 puts" columns are cut off after
+one decimal, not rounded: 66.664% is printed as 66.6%. A selection of its rows:
 
 ```
    M  keys       variant    height   nodes    fill  splits  per 1000 puts  most in one put
@@ -314,7 +346,11 @@ How to read it:
   64.2% (M = 4) to about 69 to 70% (M = 32 to 128). The textbook result (Yao, 1978; not
   derived here) is that the expected fill approaches ln 2 = 69.3% as the order grows.
   The row for M = 256 shows 74.1%: with only 529 nodes for 100000 keys this tree is too
-  small for the limit to apply, and this single seed sits above it.
+  small for the limit to apply. At this size the fill swings by several points with the
+  seed and, more strongly, with the number of keys. Seeds 1 to 8 give 69.9 to 74.1% at
+  100000 keys (seed 4 is the highest), 64.7 to 68.5% at 70000 keys and 71.5 to 74.2% at
+  200000 (measured with the visualization's model, which is checked against rows of
+  this table).
 - **Random is not always fuller.** At M = 4 the ascending tree (66.6%) is fuller than
   the random one (64.2%).
 - **Amortised cost.** "per 1000 puts" falls roughly in proportion to 1 / M, while "most
@@ -363,9 +399,11 @@ and 4.4, [`research/turso.md`](../../research/turso.md) sections 8 and 9).
   `page.overflow_cells.is_empty()` and the page is not too empty (`btree.rs:3429-3430`).
   Otherwise `balance_non_root` (`btree.rs:3604`) redistributes the cells of up to three
   siblings, which may put a new divider into the parent and overflow it in turn.
-- A root that overflows is handled by `balance_root` (`btree.rs:5410`): per the research
-  notes its content is copied into a new child and the root page itself stays in place,
-  so the root's page number never changes. Chapter 12 uses that trick.
+- A root that overflows is handled by `balance_root` (`btree.rs:5410`): it allocates a
+  new child page, copies the root's cell pointers, cell content, header and overflow
+  cells into it (`btree.rs:5452-5466`) and turns the emptied root page into an interior
+  page that points to that child (`btree.rs:5468-5482`). The root's page number never
+  changes. Chapter 12 uses that trick.
 
 The differences from this chapter's tree: fullness is measured in bytes, not keys; the
 split point is chosen (chapter 14); and Turso balances across siblings instead of always

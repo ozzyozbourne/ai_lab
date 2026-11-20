@@ -44,7 +44,9 @@ one. So nearly every node ends at `mid / (M - 1)`:
 
 The same holds one level up: the separators arrive in ascending order too, so interior
 nodes are also left behind at `mid` keys. Only the nodes on the right edge of the tree
-differ, which is why the measured value for M = 4 is 66.6% and not 66.7%.
+differ, which is why the exact value for M = 4 is 100000 / (50002 * 3) = 66.664% and
+not 66.667%. The table prints it as 66.6% because the fill column is cut off after one
+decimal, not rounded.
 
 Even orders do better than their odd neighbours here because `M / 2` rounds in their
 favour: the left half gets the larger share.
@@ -87,7 +89,8 @@ Bottom-up splits one key later, when the node holds 4 keys, and the left half ke
 That single key is the whole difference between 33.3% and 66.6%.
 
 At M = 256 the same effect is one key out of 255: top-down leaves 127 keys on the left
-(49.8%), bottom-up 128 (50.2%). Measured: 49.7% against 50.1%, 785 against 779 splits.
+(49.8%), bottom-up 128 (50.2%). Measured: 49.77% against 50.15%, printed cut off as 49.7%
+and 50.1%; 785 against 779 splits.
 The early split costs a fixed number of keys per node, so it matters for tiny nodes and
 disappears for the node sizes real engines use. What remains at any size are the other
 two objections from the chapter: it needs an even M, and it needs to know what "full"

@@ -118,8 +118,14 @@ row for the returned keys and the empty tree.
 
 Inserting `key + 1` after every returned key: the scan does not terminate.
 The run was cut off after 40 steps, and the keys returned up to there were
-1, 2, 3, ..., 40. Each insert creates the entry that the following `next`
-(a re-seek for "first key > the one just returned") finds. The guarantee of
+1, 2, 3, ..., 40. Each `put` either creates the entry that the following
+`next` returns or, when `key + 1` is already in the tree, overwrites it. The
+second case happens 11 times in these 40 steps (for 3, 5, 6, 7, 10, 12, 15,
+17, 20, 25 and 30): an overwrite does not change the tree version, so the
+`next` after it is an ordinary step. The other 28 of the 39 `next` calls are
+re-seeks for "first key > the one just returned" (both designs; from 31 on
+every step is one). A side effect: the scan replaces the values of those 11
+existing entries with whatever it writes. The guarantee of
 the chapter holds for every single step and still the scan is infinite,
 because it keeps creating entries ahead of itself. The usual cures are to
 collect the keys first and modify afterwards (`collect`), or to scan a

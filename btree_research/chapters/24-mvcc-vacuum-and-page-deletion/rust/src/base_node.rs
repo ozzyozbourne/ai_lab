@@ -216,6 +216,17 @@ mod tests {
         assert_eq!(tid_of(a).index(), 9);
         assert!(pack(7, NodeId::from_index(9)) < pack(8, NodeId::from_index(0)));
         assert!(pack_low(7) <= pack(7, NodeId::from_index(0)));
+        // The largest user key still fits.
+        assert_eq!(user_key(pack(MAX_USER_KEY, NodeId::from_index(9))), MAX_USER_KEY);
+    }
+
+    /// A key above 32 bits must stop the program, not be filed under its low
+    /// bits. (Zig: the same check is an unconditional `@panic`, which a Zig
+    /// test cannot catch; it is checked in every build mode there too.)
+    #[test]
+    #[should_panic(expected = "user_key <= MAX_USER_KEY")]
+    fn a_user_key_above_32_bits_is_refused() {
+        pack(MAX_USER_KEY + 1, NodeId::from_index(0));
     }
 
     #[test]

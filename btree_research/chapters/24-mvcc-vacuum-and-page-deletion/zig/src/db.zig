@@ -202,6 +202,9 @@ pub const Cursor = struct {
 
     /// Fills the buffer from the next live page. Returns false at the end.
     fn readPage(self: *Cursor, db: *Db) Error!bool {
+        // Without its snapshot the cursor has no protection at all: the
+        // horizon may pass the stamp of the page it is about to follow.
+        assert(db.store.isOpen(self.snapshot));
         var id = self.next_leaf;
         self.len = 0;
         self.pos = 0;

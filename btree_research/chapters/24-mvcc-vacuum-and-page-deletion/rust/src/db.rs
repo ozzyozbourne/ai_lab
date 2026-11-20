@@ -253,6 +253,9 @@ impl Cursor {
 
     /// Fills the buffer from the next live page. Returns false at the end.
     fn read_page(&mut self, db: &mut Db) -> Result<bool, DanglingLink> {
+        // Without its snapshot the cursor has no protection at all: the
+        // horizon may pass the stamp of the page it is about to follow.
+        assert!(db.store.is_open(self.snapshot));
         let mut id = self.next_leaf;
         self.rows.clear();
         self.pos = 0;

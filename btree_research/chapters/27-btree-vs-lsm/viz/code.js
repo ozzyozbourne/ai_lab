@@ -121,6 +121,8 @@ pub fn get(self: *Lsm, key: u64) ?u64 {
 
 fn probe(self: *Lsm, run: *const Run, key: u64) Lookup {
     if (!run.mayContain(key)) return .absent;  // min/max in RAM: no I/O
+    // a bloom filter per run, if configured, is asked here: RAM, no I/O
+    // (this page's model has none, so every run in range is probed)
     // one block per index level, root first: charged like the B+tree's descent
     self.dev.read(.index, self.cfg.geometry().indexHeight(run.len()));
     self.dev.read(.data, 1);
@@ -147,6 +149,8 @@ fn probe(dev: &mut Device, stats: &mut Stats, geo: Geometry, run: &Run, key: u64
     if !run.may_contain(key) {
         return Lookup::Absent;                 // min/max in RAM: no I/O
     }
+    // a bloom filter per run, if configured, is asked here: RAM, no I/O
+    // (this page's model has none, so every run in range is probed)
     // one block per index level, root first: charged like the B+tree's descent
     dev.read(Kind::Index, geo.index_height(run.len()) as u64);
     dev.read(Kind::Data, 1);

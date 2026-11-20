@@ -159,7 +159,7 @@ and reopens the file; so does the model behind this page. Pick a cell to load it
     M.WRITES.forEach(function (w, i) {
       var issued = i < step.issued, onDisk = !!(mask & (1 << i));
       writesRow.appendChild(el('div', { role: 'listitem', class: 'ch22-write' + (issued ? (onDisk ? ' s-inserted' : ' s-deleted') : ' is-future') },
-        el('b', 'write ' + (i + 1) + ': page ' + w.page), el('span', !issued ? 'not issued yet' : step.synced ? 'synced' : onDisk ? 'on disk' : 'lost in the power cut')));
+        el('b', 'write ' + (i + 1)), el('span', 'page ' + w.page + ' · ' + (!issued ? 'not issued' : step.synced ? 'synced' : onDisk ? 'on disk' : 'lost'))));
     });
     writesRow.appendChild(el('div', { role: 'listitem', class: 'ch22-write' + (step.synced ? ' s-found' : ' is-future') }, el('b', 'sync'), el('span', step.synced ? 'done' : 'not yet')));
 

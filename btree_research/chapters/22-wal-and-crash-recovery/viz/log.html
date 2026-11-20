@@ -183,11 +183,11 @@ and <code>cargo run</code>.</p>
       crash: crashAt,
       records: CALLS.map(function (c, i) {
         var state, sub;
-        if (i >= crashAt) { state = 'dim'; sub = 'never happened'; }
+        if (i >= crashAt) { state = 'dim'; sub = 'never ran'; }
         else if (c.kind === 'sync') { state = 'durable'; sub = 'done'; }
         else if (i < syncedUpTo[c.file]) { state = 'durable'; sub = 'synced'; }
-        else if (mode === 'keep') { state = 'pending'; sub = 'unsynced, kept'; }
-        else { state = 'lost'; sub = 'unsynced, lost'; }
+        else if (mode === 'keep') { state = 'pending'; sub = 'kept'; }
+        else { state = 'lost'; sub = 'lost'; }
         return { label: callLabel(c), state: state, sub: sub, title: (i + 1) + '. ' + callLabel(c) + ': ' + sub };
       })
     });

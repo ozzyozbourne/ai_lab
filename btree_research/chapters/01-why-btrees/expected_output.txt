@@ -33,12 +33,12 @@ sorted array, new key larger than every key  :      0 entries shifted,   1 pages
 sorted array, new key in the middle          :  50000 entries shifted, 196 pages rewritten
 sorted array, new key smaller than every key : 100000 entries shifted, 391 pages rewritten
 BST, any new key: 1 node written, 1 pointer changed (after the page reads to find the place)
-one level of chunks plus a directory (8 bytes per chunk):
+one level of chunks plus a directory (16 bytes per chunk: first key and location):
           keys       chunks  directory pages
           1000            4                1
-       1000000         3907                8
-    1000000000      3906250             7630
- 1000000000000   3906250000          7629395
+       1000000         3907               16
+    1000000000      3906250            15259
+ 1000000000000   3906250000         15258790
 
 == 5. Height calculator: page reads per lookup ==
           keys   binary best   M = 4 best   worst   M = 171 best   worst

@@ -156,7 +156,7 @@ every page ends up on the free list.</p>
     }
     throw new Error('no step for question: ' + logText);
   }
-  ask(6, 'page 2', { prompt: 'Put 25 with 9000 bytes. A leaf keeps at most X = 1088 and at least M = 544 bytes of a spilled value; an overflow page holds 4084. How many bytes stay in the leaf?',
+  ask(6, 'put 25', { prompt: 'Put 25 with 9000 bytes. A leaf keeps at most X = 1088 and at least M = 544 bytes of a spilled value; an overflow page holds 4084. How many bytes stay in the leaf?',
     choices: ['1088, as many as allowed', '832, what is left after two full pages', '544, the minimum'], answer: 1,
     explain: 'K = 544 + (9000 − 544) mod 4084 = 832, and 832 ≤ X, so the leaf takes the remainder and both overflow pages are full.' });
   ask(8, 'free page 2', { prompt: 'Key 25 now has a 100-byte value. Pages 2 and 3 held its old value, and the free list is empty. What happens to page 2?',
@@ -180,7 +180,7 @@ every page ends up on the free list.</p>
     el('button.bt-btn', { type: 'button', onclick: function () { stepperA.pause(); stepperA.go(opStart[+jump.value]); } }, 'Go'));
 
   var stepperA = new BTViz.Stepper({
-    mount: figA.controls, caption: figA.caption, root: figA.root, steps: stepsA, interval: 2400, predict: true,
+    mount: figA.controls, caption: figA.caption, root: figA.root, steps: stepsA, interval: 2400, predict: false,
     onStep: function (step, i) {
       var t = Ch13View.treeModel(step.state, step.highlight);
       statusA.innerHTML = statusHtml(step.state);

@@ -20,6 +20,7 @@
     return '<b class="bt-k' + (state ? ' s-' + state : '') + '">' + esc(text) + '</b>';
   }
   function clone(v) { return JSON.parse(JSON.stringify(v)); }
+  function onlyFree(n) { return n === 0 ? 'no free bytes' : 'only ' + n + ' free byte' + (n === 1 ? '' : 's'); }
 
   // ---- buffer pool: chapter 09's CLOCK, bookkeeping only ---------------------
 
@@ -258,7 +259,7 @@
       this.pool.unpin(leafId, true);
     } else {
       hl.nodes['p' + leafId] = 'split';
-      this.step('full', 'Leaf page ' + leafId + ' has only ' + free + ' free bytes and the cell needs ' + need + '. The page is full, with ' +
+      this.step('full', 'Leaf page ' + leafId + ' has ' + onlyFree(free) + ' and the cell needs ' + need + '. The page is full, with ' +
         leaf.cells.length + ' cells in it: full is a number of bytes, not a number of keys. It must split.', hl, 'put',
         'leaf ' + leafId + ' is full (' + free + ' free, needs ' + need + ')');
       this.why = 'nothing was changed yet: unpin the leaf as clean';
@@ -354,7 +355,7 @@
     var hl = { nodes: {}, keys: {}, edges: {} };
     if (need > free) {
       hl.nodes['p' + parent.id] = 'split';
-      this.step('parent-full', 'Parent page ' + parent.id + ' has only ' + free + ' free bytes; the separator cell for ' + kb(carry.sep, 'split') + ' needs ' + need +
+      this.step('parent-full', 'Parent page ' + parent.id + ' has ' + onlyFree(free) + '; the separator cell for ' + kb(carry.sep, 'split') + ' needs ' + need +
         ' (4 + ' + carry.sep.length + ' key + 4 child id + 2 slot). The parent must split too.', hl, 'insertSeparator',
         'parent ' + parent.id + ' is full (' + free + ' free, needs ' + need + ')');
       this.why = 'the parent is unchanged: unpin it as clean';
@@ -400,7 +401,10 @@
     hl.nodes['p' + right] = 'split';
     this.step('split-interior', 'Interior page ' + id + ' splits around the new separator, again by bytes: ' + k + ' cells stay on page ' + id + ', ' +
       (entries.length - k - 1) + ' go to the new page ' + right + ', and the middle key ' + kb(entries[k].k, 'split') +
-      ' moves up to the parent. It is moved, not copied: an interior key is only a signpost, and the middle one is needed in neither half.', hl, 'splitInterior',
+      ' moves up to the parent. It is moved, not copied: an interior key is only a signpost, and the middle one is needed in neither half. ' +
+      (k === parent.index ? 'Here the middle entry happens to be the separator that just came up from the split below, so it passes straight through: neither half gets a new cell.' :
+        'The separator that came up from the split below, ' + kb(carry.sep, 'split') + ', is now a cell of the ' + (parent.index < k ? 'left half, page ' + id : 'right half, page ' + right) + '.'),
+      hl, 'splitInterior',
       'interior ' + id + ' split, ' + esc(entries[k].k) + ' moves up, new page ' + right);
     this.why = 'both halves were written in memory: unpin them as dirty';
     this.pool.unpin(right, true);
@@ -578,7 +582,7 @@
     switch (ev.type) {
       case 'hit': text = '<b>fetch ' + name + '</b>: it is cached in frame ' + ev.frame + ', so no file read. Its pin count goes up and its referenced bit is set.'; break;
       case 'miss': text = '<b>fetch ' + name + '</b>: not cached, so it is read from the file into frame ' + ev.frame + ' and pinned.'; state = 'compare'; break;
-      case 'new': text = '<b>new page ' + ev.page + '</b>: the file grows by one zero-filled page; it is pinned in frame ' + ev.frame + ' without a read.'; state = 'inserted'; break;
+      case 'new': text = '<b>new page ' + ev.page + '</b>: the file grows by one zero-filled page, which is a file write; it is pinned in frame ' + ev.frame + ' without a read.'; state = 'inserted'; break;
       case 'unpin': text = '<b>unpin ' + name + '</b>' + (ev.dirty ? ' as <b>dirty</b>: the frame now differs from the file and must be written before it is reused.' : ' (not modified).'); state = ev.dirty ? 'dirty' : undefined; break;
       case 'skip-pinned': text = 'The clock hand is at frame ' + ev.frame + ': ' + name + ' is <b>pinned</b>, so it cannot be evicted. The hand moves on.'; break;
       case 'second-chance': text = 'The clock hand is at frame ' + ev.frame + ': ' + name + ' was used recently. Its referenced bit is cleared (its second chance) and the hand moves on.'; break;

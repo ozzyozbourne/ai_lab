@@ -38,23 +38,23 @@ Text of the chapter: <a href="../README.md">README.md</a>. Second page:
 <a href="pool.html">the buffer pool during an insert that splits</a>.</p>
 
 <h2>1. A tree of pages</h2>
-<p>Every box is one page of the file, labelled with its page id and with how many of its
-bytes are in use. Page 0 is the metapage and is not drawn; page 1 is the root and stays the root.
-A page is full when its <em>bytes</em> run out, so a leaf with a few large values splits as early as a leaf
-with many small ones. A line from an interior page starts between the two separators that bound the child
-it leads to; the dot is the parent's end of it (a page stores no pointer to its parent).
-The figure starts with an empty tree. <strong>Put next scenario key</strong> replays, one
-key at a time, the 24 puts that the chapter's Zig and Rust programs print (key <em>n</em> carries a value of
-300 + 24·<em>n</em> bytes); or type your own key and value size. A new put always starts from the tree as it is
-after the put you are looking at has finished. Tick <em>Predict</em> to be asked, before each put is carried out,
-whether the cell fits.</p>
-<p>With 4096-byte pages an interior page holds hundreds of separators, so these 24 puts never fill one.
-To watch an <em>interior</em> page split, choose <strong>128-byte toy pages</strong> (not a real format: 108
-bytes for cells, values of at most 22 bytes) and press <strong>Run to the interior split</strong>: the first 25 puts
-of a 30-put scenario are applied at once, and put 26 is played step by step. Its leaf splits, the root has no room
+<p>Every box is one page of the file, labelled with its page id and the bytes in use. A page is full when its
+<em>bytes</em> run out, so a leaf with a few large values splits as early as a leaf with many small ones.
+<strong>Put next scenario key</strong> replays the 24 puts of the chapter's programs one at a time; or type
+your own key and value size.</p>
+<div id="fig-tree"></div>
+<p><strong>Reading the figure.</strong> Page 0 is the metapage and is not drawn; page 1 is the root and stays
+the root. A line from an interior page starts between the two separators that bound the child it leads to;
+the dot is the parent's end of it (a page stores no pointer to its parent). In the scenario, key <em>n</em>
+carries a value of 300 + 24·<em>n</em> bytes. A new put always starts from the tree as it is after the put you
+are looking at has finished. Tick <em>Predict</em> to be asked, before each put is carried out, whether the
+cell fits.</p>
+<p><strong>An interior split.</strong> With 4096-byte pages an interior page holds hundreds of separators, so
+these 24 puts never fill one. Choose <strong>128-byte toy pages</strong> (not a real format: 108 bytes for
+cells, values of at most 22 bytes) and press <strong>Run to the interior split</strong>: the first 25 puts of a
+30-put scenario are applied at once, and put 26 is played step by step. Its leaf splits, the root has no room
 for the tenth separator, the root's content moves down for the second time, the interior page splits, and the
 tree has three levels with page 1 still on top.</p>
-<div id="fig-tree"></div>
 
 <h2>2. Page 0: where the tree starts</h2>
 <p>The first 32 bytes of the metapage as <code>flush</code> would write them for the tree drawn above.
@@ -151,7 +151,7 @@ The root page id never changes, however often the root splits; only the two coun
     mount: fig.controls, caption: fig.caption, root: fig.root, predict: false, interval: 1700,
     onStep: function (step, index) {
       view.render(step.state, step.highlight);
-      if (step.type === 'rest') centreRoot();
+      if (step.type === 'rest' || step.type === 'done') centreRoot();
       chart.render({ labels: step.fill.labels, series: [{ name: 'bytes used', token: 'split', values: step.fill.values }] });
       log.sync(history.concat(stepper.steps.slice(0, index + 1)), history.length + index);
       Object.keys(panels).forEach(function (name) { panels[name].root.hidden = name !== (step.code || 'put'); });
@@ -160,7 +160,8 @@ The root page id never changes, however often the root splits; only the two coun
   });
 
   /* The toolkit scrolls a wide tree to the highlighted pages. A resting
-   * picture highlights nothing, so there the root is brought to the middle;
+   * picture and the last step of a put highlight nothing, so there the root
+   * is brought to the middle;
    * otherwise a tree wider than the stage would open on its leftmost leaves
    * with the root out of view. (Reads TreeView's layout and scroller.) */
   function centreRoot() {
@@ -259,6 +260,7 @@ The root page id never changes, however often the root splits; only the two coun
     var key = keyIn.value, raw = valIn.value.trim();
     if (key === '') return say('Type a key first (1 to ' + MAX_KEY_CHARS + ' printable characters).', true);
     if (!/^[\x21-\x7e]+$/.test(key)) return say('Keys on this page are printable ASCII without spaces, so that byte order is what you see.', true);
+    if (key.length > tree.maxKey) return say('A key may have at most ' + tree.maxKey + ' bytes with these toy pages: put would return KeyTooLarge.', true);
     if (key.length > MAX_KEY_CHARS) return say('This page limits keys to ' + MAX_KEY_CHARS + ' characters to keep the drawing legible (the format allows ' + tree.maxKey + ' bytes).', true);
     if (!/^\d+$/.test(raw)) return say('The value size must be a whole number of bytes from 0 to ' + tree.maxValue + ' ("' + raw + '" is not).', true);
     var vlen = parseInt(raw, 10);
@@ -325,7 +327,10 @@ The root page id never changes, however often the root splits; only the two coun
     say(done + ' puts applied.');
   }
 
-  sizeSel.addEventListener('change', function () { reset(); say('Page size changed: the tree was reset.'); });
+  sizeSel.addEventListener('change', function () {
+    reset();
+    say(tree.pageSize === 128 ? 'Toy pages (not a real format): press "Run to the interior split" to watch an interior page split.' : 'Page size changed: the tree was reset.');
+  });
   [keyIn, valIn].forEach(function (input) {
     input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.stopPropagation(); putTyped(); } });
   });

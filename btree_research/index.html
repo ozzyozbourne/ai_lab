@@ -41,8 +41,8 @@
 .ix-path a:hover { box-shadow: inset 0 0 0 1px var(--bt-accent); }
 
 .ix-sources { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px 18px;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); font-size: .88rem; }
-.ix-sources li { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; align-items: baseline; }
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); font-size: .88rem; }
+.ix-sources li { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; align-items: baseline; align-content: start; }
 .ix-sources b { font-weight: 600; }
 .ix-sources span.ix-what { grid-column: 1 / -1; color: var(--bt-muted); line-height: 1.4; }
 .ix-yes { --s: var(--bt-key-found); --s-bg: var(--bt-key-found-bg); }

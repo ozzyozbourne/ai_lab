@@ -208,7 +208,7 @@ pub const InsertOp = struct {
             self.waiting = null;
             return null;
         }
-        if (self.waiting == null) self.suspended[@intFromEnum(self.state)] += 1;
+        if (self.waiting == null) self.suspended[@backingInt(self.state)] += 1;
         self.waiting = id;
         return id;
     }

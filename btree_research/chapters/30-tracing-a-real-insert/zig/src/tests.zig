@@ -146,7 +146,7 @@ test "every suspension point is exercised" {
             // (another operation, or a smaller pool, can take the page away),
             // which is why the run above forces them.
             for (s.suspended, 0..) |n, i| {
-                const state: State = @enumFromInt(i);
+                const state: State = @fromBackingInt(@intCast(i));
                 const expected_to_wait = state == .descend or state == .insert_separator;
                 try testing.expectEqual(expected_to_wait, n > 0);
             }
@@ -215,7 +215,7 @@ test "an operation re-entered before its page arrived makes no progress and chan
                 try testing.expectEqual(first.io, again.io);
                 try testing.expectEqualDeep(before, Snapshot.take(&rig, &op));
             }
-            reentered[@intFromEnum(op.state)] += 1;
+            reentered[@backingInt(op.state)] += 1;
             try rig.supply(first.io);
         }
     }
@@ -382,7 +382,7 @@ test "a read failure, a write failure or an allocation failure mid-operation lea
     }
 }
 
-test "out of memory in the middle of a cascading split: no pin, no leak, and the handle is poisoned" {
+test "out of memory or a failed page allocation in the middle of a cascading split: no pin, no leak, and the handle is poisoned" {
     const gpa = testing.allocator;
     const shape: Shape = .{};
     // Pilot run: which put is the first to split an interior page?
@@ -401,55 +401,60 @@ test "out of memory in the middle of a cascading split: no pin, no leak, and the
         target -= 1;
     }
 
-    var before_change: u32 = 0;
-    var after_change: u32 = 0;
-    var fail_index: usize = 0;
-    while (true) : (fail_index += 1) {
-        var rig: Rig = undefined;
-        try rig.create(gpa, 8);
-        defer rig.deinit();
-        var rng = SplitMix64.init(1);
-        var key_buf: [workload.max_key_len]u8 = undefined;
-        var value_buf: [workload.max_value_len]u8 = undefined;
-        for (0..target) |_| {
+    for ([_]Fault{ .memory, .write }) |fault| {
+        var before_change: u32 = 0;
+        var after_change: u32 = 0;
+        var n: usize = 0;
+        while (true) : (n += 1) {
+            var rig: Rig = undefined;
+            try rig.create(gpa, 8);
+            defer rig.deinit();
+            var rng = SplitMix64.init(1);
+            var key_buf: [workload.max_key_len]u8 = undefined;
+            var value_buf: [workload.max_value_len]u8 = undefined;
+            for (0..target) |_| {
+                const key, const value = nextPut(&rng, shape, &key_buf, &value_buf);
+                try rig.tree.put(key, value);
+            }
             const key, const value = nextPut(&rng, shape, &key_buf, &value_buf);
-            try rig.tree.put(key, value);
-        }
-        const key, const value = nextPut(&rng, shape, &key_buf, &value_buf);
 
-        var failing: testing.FailingAllocator = .init(gpa, .{ .fail_index = fail_index });
-        var op = InsertOp.init(failing.allocator(), &rig.tree, key, value, .{ .pressure = true }) catch |err| {
-            try testing.expectEqual(error.OutOfMemory, err);
-            before_change += 1;
-            continue;
-        };
-        defer op.deinit();
-        const outcome = while (true) {
-            const s = op.step() catch |err| break err;
-            switch (s) {
-                .done => break {},
-                .io => |id| try rig.supply(id),
-            }
-        };
-        if (outcome) |_| {
-            try testing.expect(!failing.has_induced_failure);
-            try testing.expectEqual(1, rig.tree.stats.interior_splits);
-            try rig.tree.validate();
-            break; // the sweep has passed the operation's last allocation
-        } else |err| {
-            try testing.expectEqual(error.OutOfMemory, err);
-            try testing.expectEqual(.failed, op.state);
-            try testing.expectEqual(0, rig.pool.pinnedFrames());
-            try testing.expectEqual(0, op.arena.queryCapacity());
-            if (rig.tree.poisoned) {
-                after_change += 1;
-            } else {
+            // Fault number `n` of this kind strikes the one insert below.
+            var failing: testing.FailingAllocator = .init(gpa, .{ .fail_index = if (fault == .memory) n else std.math.maxInt(usize) });
+            var op = InsertOp.init(failing.allocator(), &rig.tree, key, value, .{ .pressure = true }) catch |err| {
+                try testing.expectEqual(error.OutOfMemory, err);
                 before_change += 1;
-                try rig.tree.validate(); // untouched
+                continue;
+            };
+            defer op.deinit();
+            if (fault == .write) rig.mem.writes_before_failure = n;
+            const outcome = while (true) {
+                const s = op.step() catch |err| break err;
+                switch (s) {
+                    .done => break {},
+                    .io => |id| try rig.supply(id),
+                }
+            };
+            rig.mem.writes_before_failure = null;
+            if (outcome) |_| {
+                try testing.expect(!failing.has_induced_failure);
+                try testing.expectEqual(1, rig.tree.stats.interior_splits);
+                try rig.tree.validate();
+                break; // the sweep has passed the operation's last allocation / write
+            } else |err| {
+                try testing.expectEqual(if (fault == .memory) error.OutOfMemory else error.StorageFailure, err);
+                try testing.expectEqual(.failed, op.state);
+                try testing.expectEqual(0, rig.pool.pinnedFrames());
+                try testing.expectEqual(0, op.arena.queryCapacity());
+                if (rig.tree.poisoned) {
+                    after_change += 1;
+                } else {
+                    before_change += 1;
+                    try rig.tree.validate(); // untouched
+                }
             }
         }
+        try testing.expect(before_change > 0 and after_change > 0);
     }
-    try testing.expect(before_change > 0 and after_change > 0);
 }
 
 test "cancelling a waiting insert: nothing pinned, nothing changed, memory returned" {

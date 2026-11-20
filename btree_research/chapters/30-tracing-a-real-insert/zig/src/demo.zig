@@ -153,7 +153,7 @@ const part2_puts = 2000;
 fn printSuspensions(w: *Io.Writer, s: *const Scheduler) !void {
     try w.print("  {d} calls of step, {d} of them returned Io\n  suspended in:", .{ s.steps, s.yields });
     for (s.suspended, 0..) |n, i| {
-        const state: State = @enumFromInt(i);
+        const state: State = @fromBackingInt(@intCast(i));
         try w.print("{s} {t} {d}", .{ if (i == 0) "" else ",", state, n });
     }
     try w.writeAll("\n");
@@ -175,7 +175,7 @@ fn part2(w: *Io.Writer, gpa: Allocator) !void {
     try blocking.tree.flush();
     const t = &blocking.tree;
     try w.print("blocking put: {d} keys, {d} pages, height {d}; splits: {d} leaf, {d} interior, {d} root\n", .{
-        t.key_count,          blocking.pager.pageCount(), try t.height(),
+        t.key_count,         blocking.pager.pageCount(), try t.height(),
         t.stats.leaf_splits, t.stats.interior_splits,    t.stats.root_splits,
     });
 

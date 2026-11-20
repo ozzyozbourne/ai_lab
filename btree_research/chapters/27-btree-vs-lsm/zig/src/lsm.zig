@@ -24,8 +24,8 @@
 //!      stop at the first hit. Compaction only ever merges ADJACENT ages, so
 //!      it cannot break this.
 //!   5. The device's block count is exactly the blocks of all runs.
-//!   7. A run's filter, if it has one, says "maybe" for every key of the run.
 //!   6. (When no maintenance is pending) no level is over its limit.
+//!   7. A run's filter, if it has one, says "maybe" for every key of the run.
 //!
 //! Not an invariant but a space rule: a compaction whose output becomes the
 //! deepest level drops tombstones, because nothing older is left to hide.

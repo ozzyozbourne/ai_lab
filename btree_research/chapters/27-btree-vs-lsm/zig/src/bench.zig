@@ -2,6 +2,11 @@
 //! the LSM-tree and to the oracle, with the device counters of each structure
 //! read before and after every single operation.
 //!
+//! The LSM-tree runs twice, side by side: once as configured, and once with
+//! a Bloom filter per run (`bench_filter_bits`). The filter changes no write
+//! and no scan, only what a point lookup reads, so the second tree
+//! contributes the "with filters" read numbers and nothing else.
+//!
 //! Only counts come out of here. No timings: block counts are what the
 //! structure decides; how long a block takes is the hardware's business.
 const std = @import("std");
@@ -76,6 +81,14 @@ pub const Report = struct {
     lsm_l0_runs: usize = 0,
     lsm_slots: usize = 0,
     lsm_stats: lsm_.Stats = .{},
+    /// Gets whose answer was "no such key". Without filters these are the
+    /// expensive ones for an LSM-tree, so the tables say how many there were.
+    get_misses: u64 = 0,
+    /// The same gets on the LSM-tree with a filter per run.
+    filter_gets: Tally = .{},
+    filter_stats: lsm_.Stats = .{},
+    /// RAM the filters hold at the end, in bits.
+    filter_bits: usize = 0,
 };
 
 fn sameEntries(got: []const Entry, want: []const ops.Entry) bool {
@@ -91,6 +104,10 @@ pub fn runWorkload(gpa: Allocator, wl: Workload, order: usize, cfg: lsm_.Config)
     defer tree.deinit(gpa);
     var lsm: Lsm = .init(gpa, cfg);
     defer lsm.deinit(gpa);
+    var filter_cfg = cfg;
+    filter_cfg.filter_bits_per_key = bench_filter_bits;
+    var filtered: Lsm = .init(gpa, filter_cfg);
+    defer filtered.deinit(gpa);
     var oracle: ops.Oracle = .{};
     defer oracle.deinit(gpa);
     var tree_out: std.ArrayList(Entry) = .empty;
@@ -108,11 +125,13 @@ pub fn runWorkload(gpa: Allocator, wl: Workload, order: usize, cfg: lsm_.Config)
     while (load.next()) |op| {
         _ = try tree.put(gpa, op.put.key, op.put.value);
         try lsm.put(gpa, op.put.key, op.put.value);
+        try filtered.put(gpa, op.put.key, op.put.value);
         _ = try oracle.put(gpa, op.put.key, op.put.value);
     }
     tree.dev.peak = tree.dev.live;
     lsm.dev.peak = lsm.dev.live;
     lsm.stats = .{};
+    filtered.stats = .{};
 
     var report: Report = .{};
     report.btree.notePeak(tree.dev.peak, oracle.len());
@@ -128,6 +147,7 @@ pub fn runWorkload(gpa: Allocator, wl: Workload, order: usize, cfg: lsm_.Config)
                 const old = try oracle.put(gpa, p.key, p.value);
                 if (try tree.put(gpa, p.key, p.value) != old) report.mismatches += 1;
                 try lsm.put(gpa, p.key, p.value);
+                try filtered.put(gpa, p.key, p.value);
                 tree_tally = &report.btree.writes;
                 lsm_tally = &report.lsm.writes;
             },
@@ -135,6 +155,7 @@ pub fn runWorkload(gpa: Allocator, wl: Workload, order: usize, cfg: lsm_.Config)
                 const old = oracle.delete(d.key);
                 if (tree.delete(d.key) != old) report.mismatches += 1;
                 try lsm.delete(gpa, d.key);
+                try filtered.delete(gpa, d.key);
                 tree_tally = &report.btree.writes;
                 lsm_tally = &report.lsm.writes;
             },
@@ -142,6 +163,10 @@ pub fn runWorkload(gpa: Allocator, wl: Workload, order: usize, cfg: lsm_.Config)
                 const want = oracle.get(g.key);
                 if (tree.get(g.key) != want) report.mismatches += 1;
                 if (lsm.get(g.key) != want) report.mismatches += 1;
+                if (want == null) report.get_misses += 1;
+                const f0 = filtered.dev.counters;
+                if (filtered.get(g.key) != want) report.mismatches += 1;
+                report.filter_gets.record(filtered.dev.counters.since(f0));
                 tree_tally = &report.btree.gets;
                 lsm_tally = &report.lsm.gets;
             },
@@ -170,6 +195,9 @@ pub fn runWorkload(gpa: Allocator, wl: Workload, order: usize, cfg: lsm_.Config)
 
     try tree.validate();
     try lsm.validate();
+    try filtered.validate();
+    report.filter_stats = filtered.stats;
+    report.filter_bits = filtered.filterBits();
     report.live_keys = oracle.len();
     report.btree.blocks = tree.dev.live;
     report.btree_height = tree.height;
@@ -223,3 +251,7 @@ pub const bench_lsm: lsm_.Config = .{
     .l0_runs = 4,
     .growth = 4,
 };
+/// Filter size of the "with filters" rows: 10 bits per slot and
+/// `filter.hash_count` = 7 hash functions, a common textbook setting with a
+/// false-positive rate near 1%.
+pub const bench_filter_bits = 10;

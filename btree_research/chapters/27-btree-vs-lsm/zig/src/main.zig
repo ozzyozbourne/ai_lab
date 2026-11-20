@@ -210,11 +210,15 @@ fn limits(w: *Writer, memtable_entries: usize) !void {
     try w.writeAll("    levels included, in both structures. \"data blocks per get\" is what is left if\n");
     try w.writeAll("    every index block of either structure is held in RAM.\n");
     try w.writeAll("  * No write-ahead log, and so NOT the same durability. A B+tree write is on the\n");
-    try w.print("    device when it returns. An LSM write is in RAM only until the next flush: up to {d}\n", .{memtable_entries});
-    try w.writeAll("    writes are lost in a crash. The \"+ 1 log block\" row is computed, not run: it adds\n");
+    try w.print("    device when it returns. An LSM write is in RAM only until the next flush: a crash\n    loses the writes to up to {d} keys. The \"+ 1 log block\" row is computed, not run: it adds\n", .{memtable_entries});
     try w.writeAll("    one block per LSM write, the price of the same promise without group commit.\n");
     try w.writeAll("  * A B+tree with a log and a buffer pool writes a hot page once for many updates,\n");
     try w.writeAll("    so its write column is an upper bound.\n");
+    try w.writeAll("  * The \"with bloom filters\" rows are run, not computed: the same operations on a\n");
+    try w.writeAll("    second LSM-tree whose runs each have a filter in RAM. A filter costs no block, only\n");
+    try w.writeAll("    that memory; it helps point lookups, mostly those for absent keys, and no scan.\n");
+    try w.writeAll("  * A block is a block. One appended in sequence (flush, compaction) counts the same\n");
+    try w.writeAll("    as one written at a position chosen by the key (B+tree), on any device.\n");
 }
 
 fn rowCount(w: *Writer, label: []const u8, a: u64, b: u64) !void {
@@ -258,9 +262,15 @@ fn compare(gpa: Allocator, w: *Writer, wl: bench.Workload, section: usize) !void
     try rowRatio(w, "  blocks read per write", b.writes.io.totalReads(), b.writes.ops, l.writes.io.totalReads(), l.writes.ops);
     try rowCount(w, "  most blocks written by one write", b.writes.max_writes, l.writes.max_writes);
     try rowCount(w, "point lookups (get)", b.gets.ops, l.gets.ops);
+    try rowCount(w, "  of those, for a key that is absent", r.get_misses, r.get_misses);
     try rowRatio(w, "  READ AMPLIFICATION (blocks per get)", b.gets.io.totalReads(), b.gets.ops, l.gets.io.totalReads(), l.gets.ops);
     try rowRatio(w, "    index blocks per get", b.gets.io.reads[index], b.gets.ops, l.gets.io.reads[index], l.gets.ops);
     try rowRatio(w, "    data blocks per get", b.gets.io.reads[data], b.gets.ops, l.gets.io.reads[data], l.gets.ops);
+    // The B+tree column repeats: a filter is of no use to a tree with one path.
+    const f = &r.filter_gets;
+    try rowRatio(w, "  READ AMPLIFICATION with bloom filters", b.gets.io.totalReads(), b.gets.ops, f.io.totalReads(), f.ops);
+    try rowRatio(w, "    index blocks per get", b.gets.io.reads[index], b.gets.ops, f.io.reads[index], f.ops);
+    try rowRatio(w, "    data blocks per get", b.gets.io.reads[data], b.gets.ops, f.io.reads[data], f.ops);
     try rowCount(w, "short scans", b.scans.ops, l.scans.ops);
     try rowRatio(w, "  entries returned per scan", b.scans.entries, b.scans.ops, l.scans.entries, l.scans.ops);
     try rowRatio(w, "  blocks read per scan", b.scans.io.totalReads(), b.scans.ops, l.scans.io.totalReads(), l.scans.ops);
@@ -287,6 +297,16 @@ fn compare(gpa: Allocator, w: *Writer, wl: bench.Workload, section: usize) !void
     try w.print("LSM lookups: {d} runs probed, {d} of those without finding the key, {d} runs skipped by min/max.\n", .{
         s.runs_probed, s.probes_wasted, s.runs_skipped,
     });
+    // With filters a wasted probe is a false positive. The rate is taken
+    // over the questions whose true answer was "not in this run".
+    const fs = r.filter_stats;
+    var rate_buf: [32]u8 = undefined;
+    try w.print("With bloom filters ({d} bits per slot, {d} hash functions): {d} runs probed, {d} of those without finding the key,\n", .{
+        bench.bench_filter_bits, lib.filter.hash_count, fs.runs_probed, fs.probes_wasted,
+    });
+    try w.print("  {d} runs ruled out by a filter; false-positive rate {s}%; {d} bits of filter in RAM at the end.\n", .{
+        fs.filter_negatives, ratio(&rate_buf, fs.probes_wasted * 100, fs.probes_wasted + fs.filter_negatives), r.filter_bits,
+    });
     try limits(w, cfg.memtable_entries);
 }
 
@@ -294,7 +314,7 @@ fn growthSweep(gpa: Allocator, w: *Writer) !void {
     try w.writeAll("\n== 6. The growth factor is the tuning knob ==\n");
     try w.writeAll("LSM only, insert-heavy workload again, everything else unchanged: the same counting\n");
     try w.writeAll("rule and the same limits as above (no cache, no log, not durable until a flush).\n\n");
-    try w.print("{s:<8}{s:>8}{s:>16}{s:>16}{s:>16}{s:>14}\n", .{ "growth", "levels", "write amp", "blocks per get", "blocks per scan", "peak blocks" });
+    try w.print("{s:<8}{s:>8}{s:>12}{s:>17}{s:>15}{s:>18}\n", .{ "growth", "levels", "write amp", "blocks per get", "with filters", "blocks per scan" });
     for ([_]usize{ 2, 4, 8, 16 }) |growth| {
         var cfg = bench.bench_lsm;
         cfg.growth = growth;
@@ -303,13 +323,14 @@ fn growthSweep(gpa: Allocator, w: *Writer) !void {
         var b1: [32]u8 = undefined;
         var b2: [32]u8 = undefined;
         var b3: [32]u8 = undefined;
-        try w.print("{d:<8}{d:>8}{s:>16}{s:>16}{s:>16}{d:>14}\n", .{
+        var b4: [32]u8 = undefined;
+        try w.print("{d:<8}{d:>8}{s:>12}{s:>17}{s:>15}{s:>18}\n", .{
             growth,
             r.lsm_levels,
             ratio(&b1, l.writes.io.totalWrites() * cfg.block_entries, l.writes.ops),
             ratio(&b2, l.gets.io.totalReads(), l.gets.ops),
-            ratio(&b3, l.scans.io.totalReads(), l.scans.ops),
-            l.peak,
+            ratio(&b3, r.filter_gets.io.totalReads(), r.filter_gets.ops),
+            ratio(&b4, l.scans.io.totalReads(), l.scans.ops),
         });
     }
 }

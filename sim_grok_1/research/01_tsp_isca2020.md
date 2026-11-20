@@ -8,19 +8,32 @@
 |---|---|---|
 | **[P]** | Groq-hosted PDF `https://groq.com/wp-content/uploads/2024/02/2020-Isca.pdf` | Live URL returns **HTTP 404** (2026-11-14). I read the **Wayback Machine capture**: `https://web.archive.org/web/2024id_/https://groq.com/wp-content/uploads/2024/02/2020-Isca.pdf` (14 pages, the full IEEE camera-ready). This is the primary source for everything below. |
 | [P-alt] | `https://groq.com/wp-content/uploads/2020/06/ISCA-TSP.pdf` | Live URL 404. The Wayback capture `https://web.archive.org/web/2021id_/https://groq.com/wp-content/uploads/2020/06/ISCA-TSP.pdf` gives the same text. I used it only as a cross-check. |
+| **[P-2026-11-20]** | `https://cdn.sanity.io/files/chol0sk5/production/16e7e13197dfe5f52d3b0ed62e29620662c38743.pdf` | Reachable on 2026-11-20 (HTTP 200, `application/pdf`, 1,750,676 bytes, SHA-256 `d3832d40…f84eb783`). 14 pages, IEEE camera-ready with the proceedings header and printed page numbers 145–158; PDF metadata title and author list are the paper's. Found by a web search for a sentence of the paper; the file name is the paper's Semantic Scholar id. It is in the same CDN bucket as the copy of the ISCA 2022 paper used in `02_...`; who runs that bucket is unconfirmed, so the file was identified by its content: the IEEE copyright line and DOI 10.1109/ISCA45697.2020.00023 at the foot of p.145, the proceedings header, and the printed page numbers. This copy was used for the re-check of 2026-11-20 below. |
 | — | IEEE Xplore / ACM DL | Not fetched. Not needed because the full text was available from [P]. |
 | — | Groq patents, Hot Chips 2020 talk, Groq ISCA 2022 paper | **Not consulted.** Nothing in this report comes from them. |
 
-**Re-check of 2026-11-17 (independent verifier).** [P] could not be re-opened: the two groq.com URLs still return 404, the Wayback Machine was unreachable from the checking machine (connection reset by the network proxy), and IEEE Xplore / ACM DL are closed access. So the *verbatim wording*, page numbers and section labels of the quotations below were **not re-verified against the paper**. What could be cross-checked, and agreed, came from four other documents:
+**Re-check of 2026-11-20 (second verifier): the paper was read.** The copy [P-2026-11-20] in the table above was downloaded and every item in this note was compared with it: all quotations (by normalised text search, then by eye for the ones that span a column break or carry added bold), every "p.N" and section label, Table I row by row, the equations, the listings, and every figure reading (Figs. 2, 4, 5, 6, 7, 8, 9, 10, 11, from the embedded images at their native resolution, 220 to 550 dpi). Routes that failed on the way: the two groq.com URLs (404), `groq.humain.ai/wp-content/uploads/2024/02/2020-Isca.pdf` (not reachable through the network proxy, HTTP 502 on connect), Semantic Scholar and OpenAlex (both list the paper as closed access), CORE (no answer); the Wayback Machine was not retried.
+
+Result:
+
+- **Quotations:** all match the paper's wording. Two spellings were corrected: the paper writes "2.5 Mibyte per-slice capacity" (§6) and Fig. 2 writes "Permutor" (§2.2).
+- **Page numbers and section labels:** all correct. One convention needs stating: Section V (Discussion) has no lettered subsections. "Sec. V-a/b/c" in this note means the run-in paragraphs "a) Operating regimes", "b) Matrix operations" and "c) On-chip network", which are printed in the right-hand column of p.155 beside the Section V heading. `04_static_scheduling_background.md` had cited two of them as §IV.F; that was wrong and is corrected there.
+- **Table I:** the transcription in §4 is complete and verbatim. The paper's table has four MEM rows (Read, Write, Gather, Scatter). **It has no Countdown, Step or Iterations rows**, and the paper's text never mentions them; they exist only in Groq's slides ([ISC20] slide 9, [HC22] slide 25).
+- **Fig. 4 and the "sum to 43" question (§2.4):** the reading was right and there is no inconsistency. See §2.4.
+- **Figure readings:** all confirmed; they are no longer low-confidence. One annotation of Fig. 9 that the note had not recorded is added in §6.
+- **Whether a MEM Write ends a stream:** the paper does not say. Its only statement about how a stream ends is the Sec. V-c sentence quoted in §3 ("until they fall off the edge of the chip or are overwritten by a functional slice"). The "a write terminates a stream" wording is on [HC22] slide 30 only.
+- **"One or more instructions per cycle" (§7):** the wording is verbatim from Sec. II, p.147, and the paper nowhere says when a queue issues more than one. [HC22] slide 23 says "One instruction issued per cycle at each dispatch path".
+
+**Re-check of 2026-11-17 (first verifier), kept for the record.** On that date [P] could not be opened, and the note's facts were cross-checked against four other documents instead. Those cross-checks remain useful as independent corroboration:
 
 - **[ISC20]** Abts, "Groq's Tensor Streaming Processor (TSP)", ISC 2020 ML Hardware Workshop slides, `https://mlhardware.github.io/2020/groq.pdf` (same author, same month as the paper). Slide 8 gives the ICU split 6 / 14 / 44 / 16 / 44 / 14 / 6, "144 independent instructions queues (ICUs) on-chip", "64 logical streams - 32 Eastward, and 32 Westward", "220 MiBytes of globally shared SRAM", 20 superlanes of 16 lanes; slide 9 is the instruction table; slide 12 gives 44 slices per hemisphere, 2 banks per slice and address offsets 0..8191.
 - **[HC22]** Abts, Hot Chips 34 slides (see `02_tsp_multiprocessor_isca2022.md`): slide 14 (144 queues, 5,120 ALUs, 409,600 MACCs), slide 24 ("Stream register = one-cycle hop"), slide 25 (instruction table), slide 57 ("45 SRF stations across the superlane").
 - **[PAT]** Groq patent US 12,271,339 B2, `https://patents.google.com/patent/US12271339B2/en`, whose description paraphrases much of the paper. It repeats: the 144 ICUs issuing "one or more instructions per clock cycle"; 64 logical streams, 32 each way; the `in(28)` / `out(24)` naming; the first-hop direction and X-Y-X routing; 13-bit addressing of 16-byte words; pseudo-dual-ported SRAM with banks; the 4×4 ALU mesh, "16 vector ALUs per lane", no condition codes, saturating and modulo variants; "twenty 16×16 supercells", 16 streams of 16 bytes installing 256 weights per supercell per cycle, 409,600 weights in under about 40 cycles, a single rounding step; d_func and d_skew; the 16-bit NOP count (1 ns to 65 µs at 1 GHz); the 640-byte Ifetch; the notifier IQ, the preamble and the 35-cycle barrier; the ICU at under 3% of area; the two sets of lane shifters, the permute bijection and the distributor; a nominal 900 MHz core clock; the 20 TiB/s stream-bandwidth equation. A patent is a paraphrase, not the paper, so it confirms the facts but not the exact words.
 - The ISCA 2022 paper (read in full for `02_...`) repeats 220 MiBytes, 20 tiles × 16-way SIMD, 900 MHz, and SYNC / NOTIFY.
 
-**Not cross-checked anywhere** (they rest on the original reading of [P] alone): 26.8B transistors and 820 TeraOps/s; the 43 µs / 49 µs latencies and the ResNet101/152 projections (a third-party summary of the paper at `https://hackmd.io/@nctu-cas-lab/rJfwSx1ju` repeats 20.4K IPS, "< 43us", "49 us", 14.3k and 10.7k IPS); accuracy figures; the 5,500-cycle saving; the A0 date; 176-way concurrency; the ECC widths; the bandwidth equations other than Eq. 1; the C2C link counts (the 480 GB/s on [ISC20] slide 7 equals 16 × 4 × 30 Gb/s × 2 directions); and every figure reading in §2.4 and Fig. 8.
+The items the 2026-11-17 check listed as "not cross-checked anywhere" (26.8B transistors, 820 TeraOps/s, the 43 µs and 49 µs latencies, the ResNet101/152 projections, the accuracy figures, the 5,500-cycle saving, the A0 date, 176-way concurrency, the ECC widths, the bandwidth figures other than Eq. 1 (Eq. 2 and the 27.5, 2.25 and 10 TiB/s values), the C2C link counts and all figure readings) were all confirmed in the paper on 2026-11-20.
 
-**Citation convention:** "p.N" is the printed proceedings page (145–158). PDF page = p − 144. Section numbers, figure numbers and table numbers are the paper's own. All quotes come from [P] unless marked otherwise. Figures are raster images. I read them from 400-dpi renders, and the small labels are blurry, so readings of figure labels are marked **(fig. reading)**.
+**Citation convention:** "p.N" is the printed proceedings page (145–158). PDF page = p − 144. Section numbers, figure numbers and table numbers are the paper's own. All quotes come from [P] unless marked otherwise. Figures are raster images. I read them from 400-dpi renders, and the small labels are blurry, so readings of figure labels are marked **(fig. reading)**. (2026-11-20: the embedded images of [P-2026-11-20] are sharp enough to read every label; the readings below were all confirmed.)
 
 ---
 
@@ -55,7 +68,7 @@
 - Fig. 2 (fig. reading) shows the order of one row, west to east:
   - **MXM | SXM | MEM (44 slices) | VXM | MEM (44 slices) | SXM | MXM**
   - The VXM sits at the "on-chip bisection".
-  - Box texts: MXM "320x320 array, int8 and fp16 numerics"; SXM "Transposer, Permuter & Shifters, PCIe & IO"; VXM "16 vector ALUs per lane".
+  - Box texts: MXM "320x320 array, int8 and fp16 numerics"; SXM "Transposer Permutor & Shifters PCIe & IO"; VXM "16 vector ALUs per lane".
 - **ICU count per slice group (Fig. 2, fig. reading):** MXM 6 | SXM 14 | MEM 44 | VXM 16 | MEM 44 | SXM 14 | MXM 6. This totals **144**, which matches "144 independent instruction queues (ICUs) on-chip" (Sec. II, p.147).
 - **MEM numbering:** "Memory is partitioned into two hemispheres (Figure 5), each having 44 slices numbered 0 to 43 with slice MEM0 closest to the VXM and MEM43 nearest to the SXM" (Sec. II-B, p.149).
 - **SXM:** "There are two instances of the SXM on-chip, one in each hemisphere" (Sec. III-E, p.153).
@@ -73,7 +86,7 @@
 - Low-power mode: Config can "power-down any unused superlane" so that VL "from 16 to 320 bytes in 16-lane steps" (Sec. II-F, p.151).
 
 ### 2.4 Physical ordering of sub-slices and stream-register positions (Fig. 4, p.148)
-Everything in this subsection is **fig. reading at low resolution, medium confidence**. Fig. 4 is titled "Stream registers are numbered to show their locations between the functional slices within a superlane."
+Everything in this subsection is a **fig. reading**. It was first made at low resolution; on 2026-11-20 it was re-read from the embedded images of Fig. 4 (1106×851 pixels per half) and confirmed label by label. Fig. 4 is titled "Stream registers are numbered to show their locations between the functional slices within a superlane."
 
 **Eastward-flow numbering**, from the West MXM to the East MXM. SR numbers 0..44 increase in the direction of flow.
 
@@ -91,7 +104,8 @@ MXM_W | SR0 SR1 SR2 [ACC] SR3 SR4 (shifter taps) SR5 [RX] SR6 SR7 SR8
   - MEM East: 24/19, 25/18, ..., 35/8.
   - MEM West: 19/24 ... 8/35.
   - Interpretation (mine, unverified): one stream-register hop crosses one quad of 4 MEM slices. The full chip is 44 hops from MXM to MXM.
-  - **Unresolved inconsistency in this reading (verifier, 2026-11-17):** if both directions are numbered SR0..SR44, a register's eastward and westward numbers must sum to 44, not 43. Either the pair labels or the end numbers were misread from the blurry figure, and [P] could not be re-opened to settle it. The count of 45 positions is independently supported by [HC22] slide 57 ("45 SRF stations across the superlane"), so treat 45 as the better-supported number and the individual SR numbers above as approximate.
+  - **Resolved (2026-11-20): the pairs sum to 43 and both directions are numbered 0..44; the two facts are consistent.** The first verifier reasoned that numbers running 0..44 in opposite directions over the same registers must sum to 44. They would, if the two directions had a register at every one of the same physical places. In Fig. 4 they do not: near each MXM the eastward and westward paths are drawn as separate rows with different contents. Between an MXM and the adjacent MEM hemisphere, the path *leaving* the MXM has 9 registers (0..8, interleaved with the ACC and RX blocks) and the path *arriving* at the MXM has 10 (35..44, interleaved with TX, DST, TSP, PRM, SEL, LWB, IW and ABC). So at the west edge of MEM West the eastward register is 8 and the westward one is 35 (sum 43), and the offset of one persists through both MEM hemispheres and the VXM, where the eastward registers 19, 20, 21 | VXM | 22, 23, 24 sit beside the westward 24, 23, 22 | VXM | 21, 20, 19. Count per direction: 9 + 10 (MEM, registers 9..18) + 3 + 3 + 10 (MEM, 25..34) + 10 = 45, in agreement with [HC22] slide 57 ("45 SRF stations across the superlane").
+  - The MEM detail panels show 12 register positions per hemisphere (eastward 8..19 in MEM West, 24..35 in MEM East), one on each side of each of the 11 quads.
 - **Legend colours:** MEM memory slice; VXM or MXM arithmetic slice; SXM data movement slice (DST, TSP, PRM, SEL, ACC drawn green); C2C chip-to-chip IO slice (TX, RX).
   - Interpretation: DST = distributor, TSP = transposer, PRM = permuter, SEL = shifter select.
   - LWB, IW and ABC are drawn in MXM colour. They correspond to the LW/IW/ABC instructions in Table I.
@@ -152,9 +166,9 @@ TABLE I: "Summary of instructions for each functional slice."
 | C2C | Send | Send a 320-byte vector |
 | C2C | Receive | Receive a 320-byte vector, emplacing it in main memory |
 
-**Caveat on "verbatim" (verifier, 2026-11-17).** The same table appears on [ISC20] slide 9 and [HC22] slide 25. Every row above matches those slides except:
+**"Verbatim" confirmed (2026-11-20).** The table above was compared row by row with Table I on p.149 of the paper: every row and every description matches, and no row is missing. Groq's slides carry a later version of the same table ([ISC20] slide 9, [HC22] slide 25), which differs in two ways:
 
-- The slides list **three more MEM instructions**: "Countdown d — Set the delay d in cycles between loop iterations", "Step a — Set the stride a between subsequent generated memory addresses", "Iterations n — Set the loop bounds for address generation". [P] could not be re-opened to see whether the paper's Table I has these rows and the transcription above dropped them, or whether they exist only in the slides. Until that is checked, treat them as part of the published MEM instruction set (slides, same author) but not as confirmed content of Table I.
+- The slides list **three more MEM instructions**: "Countdown d — Set the delay d in cycles between loop iterations", "Step a — Set the stride a between subsequent generated memory addresses", "Iterations n — Set the loop bounds for address generation". **These rows are not in the paper's Table I** and the paper's text does not mention them. They are part of the MEM instruction set as Groq presented it in slides (ISC 2020, the same month as the paper, and Hot Chips 34 in 2022), not content of the ISCA paper.
 - The slides' Shift row ends at "by N lanes", without "and Select between North/South shifted vectors"; their binary-operation row has no "z" after "producing 1 result,".
 
 Other ISA details from the text:
@@ -186,7 +200,7 @@ Other ISA details from the text:
 
 ## 6. SRAM / MEM
 
-- **Organisation:** 2 hemispheres × 44 slices = **88 MEM slices**. Each slice has **20 tiles** "yielding a **2.5 MiByte** per-slice capacity, or 220 MiBytes for all 88 slices" (Sec. II-B, p.149–150).
+- **Organisation:** 2 hemispheres × 44 slices = **88 MEM slices**. Each slice has **20 tiles** "yielding a **2.5 Mibyte** per-slice capacity, or 220 MiBytes for all 88 slices" (Sec. II-B, p.149–150).
 - **Addressing:** "Each slice provides **13-bits of physical addressing of 16-byte memory words**, each byte maps to a lane" (Sec. II item 5, p.148).
   - Derived: 2^13 × 16 B = 128 KiB per tile; × 20 tiles = 2.5 MiB per slice. This is consistent.
 - **Word layout:** "Slices of memory are partitioned into 16-byte words, each word spread across a superlane, and each byte of each word occupying a lane ... byte 0 is lane0, byte 1 is lane1" (Sec. II-B, p.150).
@@ -198,7 +212,7 @@ Other ISA details from the text:
 - **Addressing modes:** "Read and write use direct addressing ... Indirect addressing uses the contents of a stream, s, to specify an address map for a gather or scatter" (Sec. III-B, p.152).
 - **ECC:** "9-bit ECC, 137-bits in total ... SECDED". Check bits are generated **only at the producer** and checked by the consuming slice, so they cover SRAM and stream registers. Corrected SEUs are logged to a CSR (Sec. II-D, p.150). Multi-bit errors may raise a host interrupt via PCIe (Sec. II item 6, p.149).
 - **Instruction storage:** "the compiler reserves several MEM slices to serve as 'instruction dispatch' slices" (Sec. IV, p.153).
-- **Placement guidance:** place weights "toward the middle of the chip in MEM slices ... so that data transit from memory slice MEM_i to MXM is minimized" (Sec. V-b, p.155). The Fig. 9 annotation says "Hand-generated code places tensors in MEM_22 (slice 22 which is in the middle of the MEM and has a few cycles of added transit delay)" (fig. reading, low confidence).
+- **Placement guidance:** place weights "toward the middle of the chip in MEM slices ... so that data transit from memory slice MEM_i to MXM is minimized" (Sec. V-b, p.155). The Fig. 9 annotation says "Hand-generated code places tensors in MEM_22 (slice 22 which is in the middle of the MEM and has a few cycles of added transit delay)" (fig. reading, confirmed 2026-11-20). The same figure has a second annotation, on the compiler-generated points: "Compiler-generated code places tensors closer to the MXM in MEM_43". So the figure shows the compiler placing weights in the slice nearest the SXM and MXM (MEM43), and its points lie above the hand-generated ones (placed in MEM22) at the low end of the x-axis. The text's "toward the middle of the chip" does not match the compiler-generated annotation.
 
 ## 7. ICU and instruction issue
 
@@ -220,8 +234,8 @@ Other ISA details from the text:
 - **Numerics:** "8-bit integer, and 16-bit floating point by using two 320×320 byte-planes in tandem for 16-bit floating point ... The 320-element sum is produced for each output with only a single rounding step" (p.153). "The MXM accepts int8 or fp16 inputs and accumulates to int32 or fp32" (Sec. IV-D, p.154).
 - **Fig. 7 (p.152, fig. reading):**
   - The array is drawn as "320 input channels" by "320 output features", with "Load data into array from side".
-  - Each cell computes "a=a + b*c"; a "16 columns × 16 rows" supercell is shown.
-  - The "antidiagonal of two-dimensional array" is highlighted.
+  - Each cell computes "a=a + b*c"; a supercell is shown enlarged, labelled "16 columns" and "16 rows".
+  - The "antidiagonal of two dimensional array" is highlighted.
   - The caption says: "activations and weights being loaded at the side of the array, and INT32 or FP32 results flow back from the inside edge."
 - **Under-use with power-of-2 channels:** "256×256 dimensions of weights split across multiple passes under-utilizes the MXM" (Sec. IV-E, p.154).
 - **Sub-units (Fig. 4):** LWB, IW, ABC on the input side and ACC on the output side.
@@ -277,7 +291,7 @@ All of this is from Sec. III-E (p.153) and Fig. 8.
 **Searched in [P] but absent:**
 
 - **Per-instruction d_func and d_skew values:** no numeric latency for any instruction (Read, Write, Add, MXM ops, Transpose, and so on). Only "1 or more cycles".
-- **Explicit hop counts:** no explicit hop count per slice. The 45 stream-register positions and the one-hop-per-quad-of-4-MEM reading are my interpretation of Fig. 4 only.
+- **Explicit hop counts:** no explicit hop count per slice in the text. The 45 stream-register positions and the one-register-per-quad-of-4-MEM layout come from Fig. 4 only (confirmed as drawn, 2026-11-20); that a register position equals one cycle is from Sec. V-c.
 - **ICU internals:** IQ depth in instructions, instruction encoding and size, and how "one or more instructions per cycle" are issued.
 - **Ifetch latency:** no cycle cost for Ifetch, and no ICU-to-tile wiring delay beyond the "+1 cycle per tile northward" stagger.
 - **MXM internals:**
@@ -310,10 +324,10 @@ All of this is from Sec. III-E (p.153) and Fig. 8.
 | Streams per direction | 32 (IDs 0..31), East and West | Sec. II p.147 | High |
 | Multi-byte type packing | int16 = 2 streams, int32/fp32 = 4 (SG4 aligned) | Sec. I-B p.146 | High |
 | Stream hop rate | 1 stream-register hop per cycle | Sec. V-c p.155 | High |
-| Stream register positions per direction | 45 (SR0..SR44, MXM to MXM) | Fig. 4 p.148 (fig. reading) | Medium |
-| MEM slices per SR hop | 4 (one SR per quad) | Fig. 4 (interpretation) | Low–Medium |
+| Stream register positions per direction | 45 (SR0..SR44, MXM to MXM) | Fig. 4 p.148 (fig. reading, confirmed 2026-11-20); [HC22] slide 57 | High |
+| MEM slices per SR hop | 4 (one SR per quad) | Fig. 4 (as drawn; the text does not state it) | Medium |
 | Slice order (W→E) | MXM, SXM(+C2C), MEM43..0, VXM, MEM0..43, SXM(+C2C), MXM | Fig. 2 p.146; Sec. II-B p.149; Fig. 4 | High (coarse) / Medium (fine) |
-| ICU queues | 144 (6+14+44+16+44+14+6) | Sec. II p.147; Fig. 2 | High (total) / Medium (split) |
+| ICU queues | 144 (6+14+44+16+44+14+6) | Sec. II p.147; Fig. 2 | High (the split is legible in Fig. 2 and as text on [ISC20] slide 8) |
 | Instruction vertical stagger | +1 cycle per tile northward, 20 cycles total | Sec. II-B, II-C p.150 | High |
 | Data stagger | superlane k lags by k cycles | Sec. II-C p.150, Fig. 6 | High |
 | Timing equation | T = N + d_func + δ(j,i) | Eq. 4, Sec. III p.151 | High |
@@ -332,7 +346,7 @@ All of this is from Sec. III-E (p.153) and Fig. 8.
 | MXM weight install | 16 streams × 16 B → 256 weights per supercell per cycle; all 409,600 weights in <40 cycles | Sec. III-D p.152 | High |
 | VXM ALUs | 16 per lane (4×4 mesh), 5,120 total, 32-bit operands | Sec. III-C p.152; VII p.156 | High |
 | SXM instances | 2 (1 per hemisphere); max 4 concurrent Transpose16 | Sec. III-E p.153 | High |
-| SXM select encoding | 00 unshifted, 01 north, 10 south, 11 old | Fig. 8 p.153 (fig. reading) | Medium |
+| SXM select encoding | 00 unshifted, 01 north, 10 south, 11 old | Fig. 8 p.153 (fig. reading, confirmed 2026-11-20) | High |
 | Clock | 900 MHz nominal; 1 GHz used in calculations | Abstract; Sec. II-B p.150 | High (with caveat) |
 | Peak | 820 TOps/s (int8 @1 GHz) | Sec. VII p.156 | High |
 | C2C | 16 × x4 links @ 30 Gbps; 320-B Send/Receive | Sec. II item 6 p.148–149 | High |

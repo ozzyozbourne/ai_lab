@@ -260,6 +260,43 @@ def test_run_ends_after_last_commit():
     assert tr.n_cycles == max(tr.mem_writes[0]["cycle"], tr.emissions[-1]["cycle"]) + 1
 
 
+def test_write_does_not_end_the_stream():
+    """Ledger B2: a MEM Write samples the stream and leaves it flowing.
+
+    The value written at MEM_E0 is still on the stream further east, where a
+    second slice stores it again.  ([HC22] slide 30 says "a write terminates a
+    stream"; the simulator follows [TSP20] Sec. V, where a stream ends only by
+    falling off the edge or being overwritten.)
+    """
+    t = T0
+    src, near, far = "MEM_W0", "MEM_E0", "MEM_E3"
+    arrive = lambda u: t + LAT["read"] + P(u) - P(src)
+    data = bytes(range(1, CFG.lanes + 1))
+    tl = {src: [(t, isa.Read(0, ref(E, 0), tag="a#0"))],
+          near: [(arrive(near), isa.Write(1, ref(E, 0), expect=("a#0",)))],
+          far: [(arrive(far), isa.Write(2, ref(E, 0), expect=("a#0",)))]}
+    sim, tr = run(program(CFG, tl, mem_image={(src, 0): data}))
+    (em,) = emissions_of(tr, dispatch_of(tr, src, t)["did"])
+    # both Writes sampled the same value, the second one three positions downstream of the first
+    assert [d["reads"][0]["vid"] for d in tr.dispatches if d["kind"] == "write"] == [em["vid"], em["vid"]]
+    assert sim.mem.read(near, 1).tobytes() == data and sim.mem.read(far, 2).tobytes() == data
+    # the value occupies one register per cycle from its emission to the east edge, Writes or not
+    cells = cells_of_vid(tr, em["vid"])
+    last_recorded = min(LAST, P(src) + (tr.n_cycles - 1 - em["cycle"]))
+    assert cells == [(em["cycle"] + k, E, 0, P(src) + k) for k in range(last_recorded - P(src) + 1)]
+    assert last_recorded >= P(far) > P(near)   # the run ends with the last commit (B21)
+
+
+def test_one_instruction_per_queue_per_cycle_in_the_cycle_loop():
+    """Ledger T16: three data instructions queued back to back dispatch on three consecutive cycles."""
+    tl = {"MEM_W0": [(T0 + k, isa.Read(k, ref(E, k), tag=f"a{k}#0")) for k in range(3)]}
+    img = {("MEM_W0", k): bytes(CFG.lanes) for k in range(3)}
+    _, tr = run(program(CFG, tl, mem_image=img))
+    assert [d["cycle"] for d in tr.dispatches if d["unit"] == "MEM_W0"] == [T0, T0 + 1, T0 + 2]
+    per_unit_cycle = [(d["unit"], d["cycle"]) for d in tr.dispatches]
+    assert len(per_unit_cycle) == len(set(per_unit_cycle))
+
+
 # --- Repeat, op(a, a), two results per cycle, overwrite ------------------------------
 def test_repeat_program():
     t, n, d = T0, 2, 3

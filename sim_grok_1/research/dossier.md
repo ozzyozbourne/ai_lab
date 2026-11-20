@@ -13,17 +13,19 @@ folder as the detailed evidence:
 Rules used throughout:
 
 - A claim marked with a source tag was read in a fetched document by the research agent.
-- "(fig. reading)" means the value was read off a low-resolution figure and is less certain.
+- "(fig. reading)" means the value was read off a figure, not the text. The [TSP20] figure readings were first made at low resolution and were all re-read and confirmed from a sharp copy on 2026-11-20.
 - "[derived]" means arithmetic or inference by us, not a statement in the source.
 - Anything the simulator needs that no source gives is **ASSUMED** in the ledger (section 7), with the reasoning.
 
 **Verification pass, 2026-11-17.** An independent checker re-fetched the sources and compared the four reports and this dossier with them. Result in one paragraph: [TSP22], [HC22], [SHIP], [XPU], [GFLOW], [NV-LPX] and [HC26-STH] were re-read and the statements taken from them stand, after the corrections recorded at the head of each report. **[TSP20] could not be re-opened** (the Wayback Machine was unreachable from the checking machine), so its quotations, page numbers and section labels rest on the original reading. Its facts were cross-checked where possible against Groq's ISC 2020 slides, [HC22] and a Groq patent that paraphrases the paper; report 01 lists what was and was not confirmed that way. Changes to this dossier are marked "(2026-11-17)".
 
+**Verification pass, 2026-11-20.** [TSP20] was obtained from another URL (section 0) and read in full. Every [TSP20] quotation, page number, section label, table row and figure reading in report 01 and in this dossier was compared with it and stands; report 01 lists the details. Three open questions from the first pass are settled: (1) the paper's Table I does **not** contain Countdown, Step or Iterations, which appear only in Groq's slides (section 1.4); (2) the Fig. 4 register numbers are consistent (section 1.3); (3) where reports 01 and 04 cited different locations for the same sentence, report 01 was right and report 04 has been corrected. Two questions the paper does not settle remain open and are decided by assumption in the ledger: whether a MEM Write ends its stream (B2) and when a queue issues more than one instruction per cycle (T16). Changes are marked "(2026-11-20)".
+
 ## 0. Sources and reachability
 
 | Tag | Source | How it was read |
 |---|---|---|
-| **[TSP20]** | Abts et al., "Think Fast: A Tensor Streaming Processor (TSP) for Accelerating Deep Learning Workloads", ISCA 2020, DOI 10.1109/ISCA45697.2020.00023 | Full text. The Groq-hosted PDF now returns 404; read from the Wayback Machine capture `https://web.archive.org/web/2024id_/https://groq.com/wp-content/uploads/2024/02/2020-Isca.pdf`. Page numbers are proceedings pages 145-158. |
+| **[TSP20]** | Abts et al., "Think Fast: A Tensor Streaming Processor (TSP) for Accelerating Deep Learning Workloads", ISCA 2020, DOI 10.1109/ISCA45697.2020.00023 | Full text. The Groq-hosted PDF now returns 404; read from the Wayback Machine capture `https://web.archive.org/web/2024id_/https://groq.com/wp-content/uploads/2024/02/2020-Isca.pdf`. Page numbers are proceedings pages 145-158. (2026-11-20) Re-read in full from `https://cdn.sanity.io/files/chol0sk5/production/16e7e13197dfe5f52d3b0ed62e29620662c38743.pdf` (14 pages, IEEE copyright line and DOI on p.145; the same CDN bucket as [TSP22] below). |
 | **[TSP22]** | Abts et al., "A Software-defined Tensor Streaming Multiprocessor for Large-scale Machine Learning", ISCA 2022, DOI 10.1145/3470496.3527405 | Full text, from `https://cdn.sanity.io/files/chol0sk5/production/81d0c45ed70a10f1804bbd82f2d0076af1186ff0.pdf`. The PDF carries the ACM permission block and DOI, but who runs that CDN bucket is unconfirmed. ACM DL returned 403, Groq-hosted copies 404, Wayback 429. |
 | **[HC22]** | Abts, Hot Chips 34 slides (2022), `https://hc34.hotchips.org/assets/program/conference/day2/Machine%20Learning/HotChips34%20-%20Groq%20-%20Abts%20-%20final.pdf` | Read. **Secondary** (a talk by the same first author). |
 | **[NV-LPX]** | NVIDIA Technical Blog, "Inside NVIDIA Groq 3 LPX: The Low-Latency Inference Accelerator for the NVIDIA Vera Rubin Platform", 2026-03-16, `https://developer.nvidia.com/blog/inside-nvidia-groq-3-lpx-the-low-latency-inference-accelerator-for-the-nvidia-vera-rubin-platform/` | Read. Primary. Rack-level; little microarchitecture. |
@@ -65,7 +67,7 @@ Rules used throughout:
 - Streams "simply flow (propagate) Eastward or Westward until they fall off the edge of the chip or are overwritten by a functional slice" (Sec. V-c). The hardware does not track origin or destination.
 - Reading does not consume a value: at time t the vector at slice x1 "can be accessed as operands by that slice", and in the next cycle it has "either propagated to the functional slice at x2, or else it is overwritten with a result r1 produced by the slice at x1" (Sec. II-A).
 - A slice can overwrite a stream with its result instead of letting the old value propagate, and can choose the direction of its result, so a stream can be "turned around" at any slice (Secs. II-A, II-E).
-- Fig. 4 shows 45 stream-register positions (SR0-SR44) per direction, with one register per group of 4 MEM slices (fig. reading, medium confidence). [HC22] slide 57 independently says "45 SRF stations across the superlane" (secondary).
+- Fig. 4 shows 45 stream-register positions (SR0-SR44) per direction, with one register per group of 4 MEM slices (fig. reading, confirmed 2026-11-20). [HC22] slide 57 independently says "45 SRF stations across the superlane" (secondary). The two directions do not have their registers at the same places near the MXMs: the path leaving an MXM has 9 registers before the MEM hemisphere and the path arriving at an MXM has 10 after it, so the eastward and westward numbers printed at one place inside the MEM and VXM regions sum to 43, not 44 (report 01, section 2.4).
 
 ### 1.4 Instruction set (Table I, [TSP20] p.149)
 
@@ -78,7 +80,7 @@ Rules used throughout:
 | SXM | Shift up/down N, Permute map, Distribute map, Rotate stream, Transpose sg16 |
 | C2C | Deskew, Send, Receive |
 
-(2026-11-17) The same table on Groq's ISC 2020 slides and on [HC22] slide 25 has three more MEM instructions: Countdown d, Step a and Iterations n, which set the delay, stride and bounds of an address-generation loop. Whether the paper's own Table I has them could not be re-checked; see report 01, section 4. The simulator does not model them.
+(2026-11-20) The same table on Groq's ISC 2020 slides (slide 9) and on [HC22] slide 25 has three more MEM instructions: Countdown d, Step a and Iterations n, which set the delay, stride and bounds of an address-generation loop. **They are not in the paper**: Table I on p.149 has exactly the four MEM rows above and the text does not mention them. The simulator does not model them (ledger B17).
 
 Other details: VXM has saturating and modulo variants of add and mul and produces no condition codes (Sec. III-C). No binary encoding is given apart from the 16-bit NOP repeat count (Sec. III-A1).
 
@@ -201,8 +203,8 @@ Collected from the four reports. None of these is filled from memory.
 
 - Numeric d_func and d_skew for any instruction; SRAM read latency; MXM pipeline depth; VXM per-operation latency ([TSP20]).
 - Instruction encoding, queue depth, Ifetch latency ([TSP20]).
-- Exact stream-register spacing: known only from a blurry Fig. 4 ([TSP20]) and one [HC22] slide. The count of 45 positions agrees between the two; the individual register numbers read from Fig. 4 do not add up (report 01, section 2.4).
-- Whether a MEM Write ends the stream it stores (see B2), and when a queue issues more than one instruction in a cycle (see T16).
+- Exact stream-register spacing in the text: it is given only by Fig. 4 ([TSP20]) and one [HC22] slide, which agree on 45 positions per direction. (2026-11-20: the register numbers in Fig. 4 were re-read from a sharp copy and are consistent; report 01, section 2.4.)
+- Whether a MEM Write ends the stream it stores (see B2), and when a queue issues more than one instruction in a cycle (see T16). (2026-11-20: [TSP20] was searched for both and settles neither.)
 - How VXM ALUs are wired for chaining within the 4x4 mesh ([TSP20]).
 - How instructions that move data between superlanes (Permute, Shift) interact with the one-cycle-per-tile stagger ([TSP20]).
 - The compiler's scheduling and stream-allocation algorithm ([TSP20], [TSP22]).
@@ -237,7 +239,7 @@ Status meanings:
 | G5 | Streams per value | int8: 1, fp16: 2, int32 and fp32: 4, on aligned groups | SOURCED for int16/int32/fp32 ([TSP20] Sec. I-B). ASSUMED for fp16 | fp16 as 2 streams follows from 1 byte per stream element [derived]. |
 | G6 | Slice order west to east | MXM, SXM, MEM(k-1..0), VXM, MEM(0..k-1), SXM, MXM | SOURCED | [TSP20] Fig. 2, Sec. II-B |
 | G7 | MEM slices per hemisphere | 8 | ASSUMED | Sourced value is 44 ([TSP20] Sec. II-B). Reduced for readability; 8 lets a 4-stream value occupy 4 distinct slices with room to spare. |
-| G8 | Stream-register positions | one per slice, 2k + 5 in all for k MEM slices per hemisphere (toy: 21): MXM at the edge, SXM one position inside it, then the MEM slices, VXM in the middle. All MXM planes of a hemisphere share one position, and all 16 ALUs share the VXM position | ASSUMED | Sourced reading is 45 positions with one per 4 MEM slices and several registers around the SXM and MXM ([TSP20] Fig. 4, fig. reading). One per slice is simpler to explain and keeps "distance = number of slices". |
+| G8 | Stream-register positions | one per slice, 2k + 5 in all for k MEM slices per hemisphere (toy: 21): MXM at the edge, SXM one position inside it, then the MEM slices, VXM in the middle. All MXM planes of a hemisphere share one position, and all 16 ALUs share the VXM position | ASSUMED | Sourced layout is 45 positions per direction with one per 4 MEM slices and several registers around the SXM and MXM ([TSP20] Fig. 4, fig. reading, confirmed 2026-11-20; [HC22] slide 57). One per slice is simpler to explain and keeps "distance = number of slices". |
 | G9 | Words per MEM slice | 8192 | SOURCED | [TSP20] Sec. II: "13-bits of physical addressing" |
 | G10 | MXM planes per hemisphere | 1 | ASSUMED | Sourced value is 2 ([TSP20] Sec. III-D). Reduced for readability. |
 | G11 | MXM plane size | lanes x lanes (16x16 on the toy chip) | SOURCED rule, scaled value | [TSP20] Sec. III-D: 320x320 planes for 320 lanes. The toy value follows from G2, which is ASSUMED. |
@@ -264,7 +266,7 @@ Status meanings:
 | T13 | d_func, SXM Distribute, Permute, Shift | 2 | ASSUMED | Not in any source. |
 | T14 | NOP repeat count | 16 bits | SOURCED | [TSP20] Sec. III-A1 |
 | T15 | Sync/Notify barrier | 35 cycles | SOURCED | [TSP20] Sec. III-A2 |
-| T16 | Instructions per queue per cycle | 1 | SOURCED, with a conflict | [SHIP] Sec. 2.1: "Each FU is issued one instruction per cycle". [TSP20] Sec. II says instead that each of the 144 queues "can issue one or more instructions per cycle" and does not explain when more than one is issued. The simulator follows [SHIP]. |
+| T16 | Instructions per queue per cycle | at most 1 | SOURCED, with a conflict | Two Groq sources say one: [SHIP] Sec. 2.1, "Each FU is issued one instruction per cycle", and [HC22] slide 23, "One instruction issued per cycle at each dispatch path". [TSP20] Sec. II (p.147) says instead that each of the 144 queues "can issue one or more instructions per cycle"; the paper was searched on 2026-11-20 and nowhere says when more than one is issued or how. **Choice:** the simulator follows [SHIP] and [HC22]: a queue dispatches at most one data instruction per cycle, and none while it executes a Nop or waits on Sync. Tests: `tests/test_icu.py::test_one_dispatch_per_cycle`, `tests/test_hw_sim.py::test_one_instruction_per_queue_per_cycle_in_the_cycle_loop`; the trace validator rejects two dispatches of one unit on one cycle. |
 | T17 | Core clock, used only to convert cycles to time in reports | 900 MHz | SOURCED | [TSP20] Abstract; [TSP22] Sec. 5.2 |
 | T18 | Repeat n,d timing | after an instruction dispatched at cycle c, Repeat n,d dispatches it again at c + d, c + 2d, ..., c + n*d, with d >= 1 | ASSUMED | Table I says only "n times, with d cycles between iterations". |
 
@@ -273,7 +275,7 @@ Status meanings:
 | ID | Parameter | Sim value | Status | Source or reasoning |
 |---|---|---|---|---|
 | B1 | Stream fate | flows until it leaves the chip edge or is overwritten | SOURCED | [TSP20] Sec. V-c |
-| B2 | Reading a stream | does not consume it; the value keeps flowing | SOURCED for operand reads; open for MEM Write | [TSP20] Sec. II-A: the value is "accessed as operands" and then propagates. One secondary source differs for one case: [HC22] slide 30 says "a write terminates a stream". [TSP20] does not say whether a MEM Write ends the stream it stores, so the simulator's choice for Write is an assumption. |
+| B2 | Reading a stream | no instruction consumes a stream value: an operand read leaves it flowing, and so does a MEM Write | SOURCED for operand reads; ASSUMED for MEM Write (the sources conflict) | Operand reads: [TSP20] Sec. II-A, the value is "accessed as operands" and then propagates. MEM Write: [HC22] slide 30 says "a write terminates a stream". [TSP20] (searched on 2026-11-20) never says that; its one statement on how a stream ends is Sec. V-c, "until they fall off the edge of the chip or are overwritten by a functional slice". **Choice:** the simulator follows the paper's sentence, so a value stays on its stream after a Write stores it, and one value can be written by two slices in turn (`tests/test_hw_sim.py::test_write_does_not_end_the_stream`). The choice does not affect compiled programs: the compiler frees a stream register after the value's last reader (B1), and in compiled programs the Write is that last reader: no compiled instruction samples a value on a later cycle than its Write (`tests/test_compiler_e2e.py::test_compiled_programs_never_read_a_value_after_its_write`; also checked on 216 random graphs). Outputs and cycle counts would be the same under the slide's reading; only the stream cells drawn after a Write in the trace and timeline would disappear. |
 | B3 | Result direction | chosen per instruction | SOURCED | [TSP20] Secs. I-B, II-E |
 | B4 | MEM accesses per slice per cycle | 1 instruction (a Read or a Write) | ASSUMED | Sourced behaviour is 1 read plus 1 write if on different banks ([TSP20] Sec. III-B). Banks are not modelled. |
 | B5 | MEM word | one address holds one vector of `lanes` bytes | SOURCED (derived) | [TSP20] Sec. II-B |
@@ -288,7 +290,7 @@ Status meanings:
 | B14 | Program start | one queue begins with Notify and every other queue with Sync; the notifier is always the first VXM ALU | SOURCED mechanism ([TSP20] Sec. III-A2). ASSUMED: which queue is the notifier, and that Notify is dispatched at cycle 0 | The paper says one queue is designated as the notifier but not which. |
 | B15 | Instruction fetch | queues are preloaded; Ifetch is not modelled | ASSUMED | Sourced behaviour: instructions are fetched from MEM via streams ([TSP20] Sec. III-A3). |
 | B16 | Validity of stream registers and memory words | each register is either empty or holds a value with a debug name; each memory address used by a program has the debug name of the tensor plane stored there | ASSUMED | The hardware has no valid bit or names. These exist only so the simulator can check that operands arrive on time and that reads and writes use the right address. |
-| B17 | Not modelled | C2C links, ECC, Gather/Scatter, Config, power, MEM banks | ASSUMED (omission) | All are sourced features left out to keep the simulator small. |
+| B17 | Not modelled | C2C links and their Deskew, Send and Receive instructions; ECC; Gather and Scatter; Config; power; MEM banks; the MEM address-loop instructions Countdown, Step and Iterations | ASSUMED (omission) | All are sourced features left out to keep the simulator small. Countdown, Step and Iterations are sourced from Groq's slides only ([HC22] slide 25 and the ISC 2020 slides); they are not in [TSP20] Table I (checked 2026-11-20). The simulator has no address-generation loop: every Read and Write carries one explicit address, and a repeated access uses Repeat (T18) with the same address. |
 | B18 | Unit pipelining | every unit accepts a new instruction every cycle, whatever its d_func; one unit may emit two results on one cycle if they go to different stream registers | ASSUMED | [TSP20] Sec. III-D says the MXM can produce a new result every cycle; nothing is stated for other units. |
 | B19 | Result length | every result-producing instruction except Read carries a length n (the row count for ABC); result lanes at or above n are zero | ASSUMED | Not in any source. Keeps unused lanes zero everywhere, so padding never produces infinities or NaN. |
 | B20 | Requantize | VXM operation: arithmetic shift right by an immediate, then saturate to int8 | ASSUMED | [TSP20] Sec. IV-D says the VXM requantizes MXM results; the arithmetic is not given. |

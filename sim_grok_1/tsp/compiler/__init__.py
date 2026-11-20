@@ -26,8 +26,13 @@ def compile_graph(graph: Graph, config: ChipConfig) -> Program:
     """Compile a fixed-shape graph to a Program for the given chip.
 
     A vector longer than the chip's lane count cannot be stored in one MEM
-    word or carried on a stream (ledger B5), so it is a CompileError.
+    word or carried on a stream (ledger B5), and a matrix with more rows than
+    lanes does not fit an MXM plane (ledger G11), so both are a CompileError.
+    This applies to every tensor and matrix of the graph, used or not.
     """
+    for m in graph.matrices:
+        if len(m.rows) > config.lanes:
+            raise CompileError(f"{m.name}: {len(m.rows)} rows do not fit the chip's {config.lanes} lanes")
     for t in graph.tensors:
         if t.n > config.lanes:
             raise CompileError(f"{t.name}: length {t.n} does not fit the chip's {config.lanes} lanes")

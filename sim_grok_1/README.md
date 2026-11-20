@@ -55,7 +55,7 @@ Run the tests:
 python -m pytest -q tests
 ```
 
-Expected result: `357 passed, 2 skipped`. The two skipped tests are the browser
+Expected result: `370 passed, 2 skipped`. The two skipped tests are the browser
 tests of the timeline (`test_browser_render` and `test_real_m1_run` in
 `tests/test_viz.py`). They need the Python `playwright` package and a Chromium
 it can launch, and are skipped when the package cannot be imported.
@@ -149,7 +149,7 @@ number appears elsewhere without one.
 - Streams move one register per cycle and flow until they leave the chip or are overwritten.
 - 16 lanes per superlane, 16 ALUs per lane in the VXM, 13-bit memory addresses.
 - The instruction names (`Read`, `Write`, `Distribute`, `Permute`, `Shift`, the VXM operation names, and the paper's IW and ABC, written `Iw` and `Abc` here), `Nop` with a 16-bit count, `Repeat`, and the 35-cycle `Sync`/`Notify` barrier. The instruction fields are this project's own; the papers give no encoding.
-- One instruction per unit per cycle.
+- One instruction per unit per cycle (T16). The sources conflict here: Groq's SHIP paper and Hot Chips 2022 slides say one per cycle, which the simulator follows; the ISCA 2020 paper says a queue "can issue one or more instructions per cycle" without saying when.
 - MXM data types (int8 to int32, fp16 to fp32), 16 streams of weights installed per cycle, and a single rounding step in the sum.
 - The 900 MHz clock, used only to turn cycles into nanoseconds.
 
@@ -163,18 +163,28 @@ number appears elsewhere without one.
 - One Read or Write per MEM slice per cycle; the paper allows one of each on different banks (B4).
 - Which queue issues `Notify` (always the first VXM ALU), and that constants and inputs are already in memory at cycle 0 (B14, B22).
 - Integer VXM arithmetic wraps around; the paper's saturating variants are not offered (B11).
+- A MEM `Write` stores the value and leaves it flowing on its stream (B2). The ISCA 2020 paper says only that a stream ends by leaving the chip or being overwritten, and the simulator follows that; one Hot Chips 2022 slide says "a write terminates a stream". Compiled programs never read a value after its `Write`, so their outputs and cycle counts are the same under either reading; a test checks this.
+- One instruction queue per unit: per MEM slice, per VXM ALU, per MXM plane and per SXM (G14). Only the total of 144 queues and the per-group counts are published.
+- Every unit accepts a new instruction every cycle whatever its latency (B18).
+- Stream registers and memory words carry an empty/valid state and a debug name that the hardware does not have; they exist so that the simulator can detect a mistimed or misaddressed operand (B16).
 - The whole compiler algorithm. Groq has not published theirs (C1 to C4).
 
-**Left out:** multi-chip links, ECC, instruction fetch from memory, `Config`,
-Gather and Scatter, the SXM's Rotate and Transpose, the VXM's `mask`, memory
-banks, power, and the per-tile stagger of instructions (the simulator runs in
-the time of tile 0 and adds `tiles - 1` cycles to the reported wall-clock time).
+**Left out:** multi-chip links and their `Send`, `Receive` and `Deskew`
+instructions, ECC, `Config`, Gather and Scatter, memory banks and power (all
+B17); instruction fetch from memory (B15); the SXM's Rotate and Transpose (B13);
+the VXM's `mask` (B11); and the per-tile stagger of instructions (T5: the
+simulator runs in the time of tile 0 and adds `tiles - 1` cycles to the reported
+wall-clock time). Also left out are the MEM instructions `Countdown`, `Step` and
+`Iterations`, which set up an address-generation loop (B17). They appear in the
+instruction table of Groq's ISC 2020 and Hot Chips 2022 slides but not in the
+ISCA 2020 paper's Table I; here every `Read` and `Write` carries one explicit
+address.
 
 `ChipConfig.isca2020()` uses the published slice counts (320 lanes, 44 memory
 slices per hemisphere, 2 MXM planes per hemisphere) with the same assumed
 latencies; tests run M1 at 320x320 on it. It is not a model of the real chip's
 stream registers: it keeps one register position per slice (93 positions, where
-the paper's figure is read as 45, G8). The compiler uses only MXM plane 0 of
+the paper's Fig. 4 shows 45, G8). The compiler uses only MXM plane 0 of
 each hemisphere, and it rejects `broadcast` on this configuration, because
 `Distribute` cannot move data between superlanes.
 
@@ -182,8 +192,10 @@ each hemisphere, and it rejects `broadcast` on this configuration, because
 
 The Hot Chips 2026 slides are behind paid registration and are known here only
 through a live blog. The Groq-hosted copies of both ISCA papers now return 404;
-archived or mirrored copies were read instead. Details are in the dossier,
-section 0.
+archived or mirrored copies were read instead. The ISCA 2020 paper was re-read
+in full from a mirrored copy on 2026-11-20, and the quotations, page references,
+instruction table and figure readings taken from it were confirmed
+(`research/01_tsp_isca2020.md`). Details are in the dossier, section 0.
 
 ## Layout
 

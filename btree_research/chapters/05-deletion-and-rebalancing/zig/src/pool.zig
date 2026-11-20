@@ -270,7 +270,7 @@ test "FreeListPool does not notice a double destroy" {
     // so the free list never runs out and every later create returns `a`.
     // No counter looks wrong (two creates, two destroys). With DirectNodes
     // and std.testing.allocator the second destroy stops the program:
-    // "panic: double free of [addr: ..., len: 16 ...]" (README, exercise 5).
+    // "panic: double free of [addr: ..., len: 16 ...]" (README, "Allocator notes").
     const gpa = std.testing.allocator;
     var pool: FreeListPool(TestItem) = .empty;
     defer pool.deinit(gpa);
@@ -280,7 +280,7 @@ test "FreeListPool does not notice a double destroy" {
     pool.destroy(gpa, a);
     try std.testing.expectEqual(2, pool.usage.destroyed);
     for (0..3) |_| try std.testing.expectEqual(a, try pool.create(gpa)); // one slot, three owners
-    try std.testing.expectEqual(4, pool.usage.live()); // plausible, and wrong
+    try std.testing.expectEqual(3, pool.usage.live()); // plausible: nothing looks wrong
     try std.testing.expectEqual(2, pool.carved);
 }
 

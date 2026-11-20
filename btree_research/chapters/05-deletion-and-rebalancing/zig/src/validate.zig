@@ -2,6 +2,9 @@
 //!
 //! `validate` walks the whole tree and returns the first broken invariant.
 //! Every test calls it after every operation; chapter 06 builds a fuzzer on it.
+//!
+//! This file needs only node.zig: it knows nothing about pools, insert or
+//! delete, and works on trees built by hand.
 const std = @import("std");
 const Node = @import("node.zig").Node;
 
@@ -24,6 +27,10 @@ pub const Error = error{
     UnexpectedChild,
     /// The number of keys in the tree differs from the tree's `len`.
     WrongKeyCount,
+    /// The pool's live-node counter differs from the number of nodes
+    /// reachable from the root: a node was leaked. Not returned by the
+    /// function below, which sees no pool; `BTree.validate` adds this check.
+    NodeCountMismatch,
 };
 
 pub fn validate(comptime M: usize, root: ?*const Node(M), expected_len: usize) Error!void {

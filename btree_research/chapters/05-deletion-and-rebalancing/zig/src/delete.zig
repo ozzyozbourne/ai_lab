@@ -24,12 +24,21 @@
 //! and the tree gets one level shorter.
 //!
 //! Delete never allocates: it only ever returns nodes to the pool.
+//!
+//! This file needs node.zig and search.zig (`lowerBound`), nothing from
+//! insert.zig. The four steps (`fixUnderflow`, `borrowFromLeft`,
+//! `borrowFromRight`, `mergeChildren`) are `pub` so that a test can call one
+//! step on a hand-built node, and so that chapter 06 can build its
+//! deliberately broken variants: copy this file, break one line (do not
+//! destroy `emptied`; do not move the child in a borrow; leave the separator
+//! in the parent) and let the fuzzer find it.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const node_mod = @import("node.zig");
 const search = @import("search.zig");
 
-/// `Tree` is a `BTree(M, PoolFn)` from btree.zig. Returns the removed value,
+/// `Tree` is a `BTree(M, PoolFn)` from btree.zig; this function uses its
+/// `root`, `len`, `pool` and `counters` fields. Returns the removed value,
 /// or null if the key was not present (the tree is then unchanged).
 pub fn delete(comptime Tree: type, tree: *Tree, gpa: Allocator, key: u64) ?u64 {
     const root = tree.root orelse return null;
@@ -93,7 +102,7 @@ fn removeMax(comptime Tree: type, tree: *Tree, gpa: Allocator, node: *Tree.NodeT
 /// If parent.children[i] has fewer than `min_keys` keys, repair it.
 /// Afterwards every child of `parent` is legal again; `parent` itself may
 /// have lost one key (merge), which its own parent checks next.
-fn fixUnderflow(comptime Tree: type, tree: *Tree, gpa: Allocator, parent: *Tree.NodeT, i: usize) void {
+pub fn fixUnderflow(comptime Tree: type, tree: *Tree, gpa: Allocator, parent: *Tree.NodeT, i: usize) void {
     const N = Tree.NodeT;
     const child = parent.children[i].?;
     if (child.len >= N.min_keys) return;
@@ -126,7 +135,7 @@ fn fixUnderflow(comptime Tree: type, tree: *Tree, gpa: Allocator, parent: *Tree.
 /// sideways directly: S lies between the two nodes in key order, so skipping
 /// it would break the ordering invariant. In interior nodes the left
 /// sibling's last child (keys between L and S) changes parent as well.
-fn borrowFromLeft(comptime N: type, parent: *N, i: usize) void {
+pub fn borrowFromLeft(comptime N: type, parent: *N, i: usize) void {
     const child = parent.children[i].?;
     const left = parent.children[i - 1].?;
     const sep = i - 1;
@@ -141,7 +150,7 @@ fn borrowFromLeft(comptime N: type, parent: *N, i: usize) void {
 /// Mirror image: the separator moves down to the END of the child, the right
 /// sibling's SMALLEST entry moves up, and the right sibling's first child
 /// moves over.
-fn borrowFromRight(comptime N: type, parent: *N, i: usize) void {
+pub fn borrowFromRight(comptime N: type, parent: *N, i: usize) void {
     const child = parent.children[i].?;
     const right = parent.children[i + 1].?;
     const sep = i;
@@ -163,7 +172,7 @@ fn borrowFromRight(comptime N: type, parent: *N, i: usize) void {
 /// min_keys (otherwise we would have borrowed), plus the separator:
 /// 2 * min_keys <= M - 1. The separator MUST come down: with one child fewer
 /// the parent needs one key fewer.
-fn mergeChildren(comptime N: type, parent: *N, at: usize) *N {
+pub fn mergeChildren(comptime N: type, parent: *N, at: usize) *N {
     const left = parent.children[at].?;
     const right = parent.children[at + 1].?;
     std.debug.assert(left.len + 1 + right.len <= N.max_keys);

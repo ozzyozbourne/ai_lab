@@ -7,7 +7,14 @@
 //!   3. COMMIT: insert into the leaf, then split upwards along the path while
 //!      a node is overfull. Nothing in this phase can fail.
 //! Reserving first means an allocation failure leaves the tree exactly as it
-//! was (see "put under allocation failure" in tests.zig).
+//! was (see "put under allocation failure" in tests_insert.zig). The pool's
+//! `usage` counters are put back as well, so a failed `put` cannot be seen
+//! from the tree at all. The one trace it can leave is inside the pool: a
+//! slot that was carved for a reservation and returned stays on the pool's
+//! free list.
+//!
+//! This file needs node.zig and search.zig (`lowerBound`), nothing from
+//! delete.zig.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const node_mod = @import("node.zig");
@@ -17,8 +24,9 @@ const search = @import("search.zig");
 pub const max_height = 64;
 
 /// `Tree` is a `BTree(M, PoolFn)` from btree.zig; this function uses its
-/// `root`, `len`, `pool` and `counters` fields.
+/// `root`, `len`, `pool` and `counters` fields (`splits`, `root_splits`).
 /// Returns the previous value if the key was already present (overwrite).
+/// On error.OutOfMemory the tree, its counters and `pool.usage` are unchanged.
 pub fn put(comptime Tree: type, tree: *Tree, gpa: Allocator, key: u64, value: u64) Allocator.Error!?u64 {
     const N = Tree.NodeT;
 
@@ -56,7 +64,14 @@ pub fn put(comptime Tree: type, tree: *Tree, gpa: Allocator, key: u64, value: u6
     if (need == depth) need += 1; // the root splits too: one more node for the new root
     var spare: [max_height + 1]*N = undefined;
     var reserved: usize = 0;
-    errdefer for (spare[0..reserved]) |n| tree.pool.destroy(gpa, n);
+    const usage_before = tree.pool.usage;
+    errdefer {
+        // Hand back what we already took, and forget that we took it:
+        // `usage` (created, destroyed, peak) counts nodes of the tree, and
+        // these never became part of it.
+        for (spare[0..reserved]) |n| tree.pool.destroy(gpa, n);
+        tree.pool.usage = usage_before;
+    }
     while (reserved < need) : (reserved += 1) spare[reserved] = try tree.pool.create(gpa);
 
     // Phase 3: commit.

@@ -1,4 +1,5 @@
 //! SECTION 6b: shape statistics and a text rendering of the tree.
+//! This file needs only node.zig.
 const std = @import("std");
 const Node = @import("node.zig").Node;
 

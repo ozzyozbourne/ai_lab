@@ -16,9 +16,13 @@ pub const StaticAllocator = struct {
     refused: u32 = 0,
 
     pub const State = enum {
-        /// Start-up: `alloc`, `resize`, `remap` and `free` all pass through.
+        /// Start-up: `alloc`, `resize` and `remap` pass through. So does `free`, but
+        /// the first `free` moves the state to `deinit` (it exists for `errdefer`
+        /// clean-up). Consequence: nothing may GROW by reallocation during start-up,
+        /// because growing frees the old buffer. Allocate final sizes.
         init,
-        /// Running: nothing may be allocated or freed.
+        /// Running: `alloc`, `resize` and `remap` are refused. A `free` is a bug too;
+        /// it is counted in `refused` and then still performed (TigerBeetle asserts).
         static,
         /// Shutting down: only `free` passes through.
         deinit,
@@ -109,6 +113,38 @@ test "init allocates, static refuses, deinit only frees" {
     list.deinit(a);
     try testing.expectError(error.OutOfMemory, a.create(u64)); // no way back to init
     try testing.expectEqual(refused + 1, static.refused);
+}
+
+test "a free while static is counted, and still performed" {
+    var static: StaticAllocator = .init(testing.allocator);
+    const a = static.allocator();
+    const x = try a.create(u64);
+    static.freeze();
+    a.destroy(x); // testing.allocator would report a leak if this were dropped
+    try testing.expectEqual(1, static.refused);
+    try testing.expectEqual(StaticAllocator.State.static, static.state);
+}
+
+// The limit that comes with "the first free ends init": a container that grows during
+// start-up reallocates, which frees. Reserve exact sizes (see `SlabPool.reserve`).
+test "growing a list during init ends init; reserving its final size does not" {
+    var failing: testing.FailingAllocator = .init(testing.allocator, .{ .resize_fail_index = 0 });
+    var static: StaticAllocator = .init(failing.allocator()); // no in-place growth: worst case
+    const a = static.allocator();
+
+    var exact: std.ArrayList(u64) = try .initCapacity(a, 100);
+    defer exact.deinit(a);
+    for (0..100) |i| exact.appendAssumeCapacity(i);
+    try testing.expectEqual(StaticAllocator.State.init, static.state);
+
+    var grown: std.ArrayList(u64) = .empty;
+    defer grown.deinit(a);
+    const result = for (0..100) |i| {
+        grown.append(a, i) catch |err| break err;
+    } else {};
+    try testing.expectError(error.OutOfMemory, result);
+    try testing.expectEqual(StaticAllocator.State.deinit, static.state);
+    try testing.expect(grown.items.len < 100 and static.refused >= 1);
 }
 
 test "a free during init ends init" {

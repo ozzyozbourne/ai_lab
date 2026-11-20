@@ -1,6 +1,7 @@
 //! SECTION 3: search and ordered traversal (explained in chapter 03).
 //!
-//! Nothing here allocates or modifies the tree.
+//! Nothing here allocates or modifies the tree. This file needs only
+//! node.zig.
 const std = @import("std");
 const Node = @import("node.zig").Node;
 
@@ -40,6 +41,11 @@ pub fn inOrder(comptime M: usize, root: ?*const Node(M), visitor: anytype) void 
 
 /// Entries with lo <= key < hi in ascending order. Like `inOrder`, but it
 /// skips the subtrees left of `lo` and stops at the first key >= `hi`.
+///
+/// Limitation of the half-open interval: no `hi` is larger than
+/// maxInt(u64), so this function can never return the key maxInt(u64).
+/// `get` and `inOrder` reach it. Chapter 08 introduces inclusive and
+/// unbounded bounds.
 pub fn range(comptime M: usize, root: ?*const Node(M), lo: u64, hi: u64, visitor: anytype) void {
     const node = root orelse return;
     var i = lowerBound(node.keySlice(), lo);
@@ -99,4 +105,27 @@ test "get, inOrder and range on a tree built by hand" {
     var none: Collect = .{};
     range(4, &root, 21, 30, &none);
     try std.testing.expectEqual(0, none.n);
+}
+
+test "range cannot reach the key maxInt(u64); get and inOrder can" {
+    const max = std.math.maxInt(u64);
+    var leaf: Node(4) = .{ .leaf = true };
+    leaf.insertEntry(0, 7, 70);
+    leaf.insertEntry(1, max, 1);
+    try std.testing.expectEqual(1, get(4, &leaf, max));
+    const Count = struct {
+        n: usize = 0,
+        last: u64 = 0,
+        fn visit(self: *@This(), key: u64, _: u64) void {
+            self.n += 1;
+            self.last = key;
+        }
+    };
+    var all: Count = .{};
+    inOrder(4, &leaf, &all);
+    try std.testing.expectEqual(max, all.last);
+    var widest: Count = .{};
+    range(4, &leaf, 0, max, &widest); // the widest interval there is
+    try std.testing.expectEqual(1, widest.n);
+    try std.testing.expectEqual(7, widest.last);
 }

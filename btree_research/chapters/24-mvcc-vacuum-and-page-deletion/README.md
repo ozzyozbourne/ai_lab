@@ -14,10 +14,9 @@
   cursor (Turso).
 
 Prerequisites: chapter 07 (B+tree, leaf chain, handles into an arena, duplicates
-through a tie-breaker). Chapter 05 is useful for contrast: this chapter is about not
-doing what chapter 05 taught. No threads are used here; chapters 18 to 20 cover
-latching. Everything "concurrent" in this chapter is an interleaving of single
-steps, which is enough to show every problem.
+through a tie-breaker); chapter 05 for contrast. No threads are used: everything
+"concurrent" here is an interleaving of single steps, which is enough to show every
+problem. Latching is the subject of chapters 18 to 20.
 
 ## The idea in plain words
 
@@ -43,8 +42,7 @@ That is the whole model of this chapter. It leaves out something real systems ca
 here every transaction commits immediately and none aborts, so comparing numbers is
 enough. A real system also has to ask whether `xmin` and `xmax` committed.
 
-Old versions are garbage once nobody can see them. "Nobody" has a precise meaning.
-The **horizon** is the oldest snapshot any reader still holds, or `now` if there are
+Old versions are garbage once nobody can see them. The **horizon** is the oldest snapshot any reader still holds, or `now` if there are
 none. A version with `xmax <= horizon` fails the visibility test for every open
 snapshot and for every snapshot that will ever be taken: it is **dead to everyone**.
 Every clean-up step in this chapter is justified by a comparison against the horizon.
@@ -124,8 +122,7 @@ updates row 20; transaction 5 deletes row 30. Snapshot B = 5 is taken.
 #0(10:1- 20:2-4) -> #1(20:4- 30:3-5)
 ```
 
-Four entries for two live rows. The update had to split the leaf, because the old
-version of 20 is still visible to A. A sees `20:2-4` (2 <= 3, and 4 > 3) and `30:3-5`;
+Four entries for two live rows. A sees `20:2-4` (2 <= 3, and 4 > 3) and `30:3-5`;
 B sees `20:4-` and no row 30.
 
 A scan under B visits all four entries. Two are invisible to it, but A is open, the
@@ -204,12 +201,11 @@ before the insert. `makeRoom` calls `removeWhere(.hinted)` and, if the page is s
 full and `bottom_up` is set, `removeWhere(.dead_to_all)`. `removeWhere` removes the
 entry and then frees the version, in that order (see Pitfalls).
 
-`Cursor` is the reader. It is plain data: a snapshot, bounds, a buffer of rows and
-`next_leaf`, the handle of the page to read when the buffer is empty. `readPage`
-first walks right over pages that are not `live`, then reads one leaf completely,
-copies out the visible rows, sets hints on entries that are dead to all, and saves
-the page's right link. Because the cursor does not point into the tree between
-calls, the tests can run writers and VACUUM between two `next` calls.
+`Cursor` is the reader: a snapshot, bounds, a buffer of rows and `next_leaf`, the
+handle of the page to read when the buffer is empty. `readPage` walks right over
+pages that are not `live`, reads one leaf completely, copies out the visible rows,
+sets hints on entries that are dead to all, and saves the page's right link. The
+tests run writers and VACUUM between two `next` calls.
 
 `Index.markHalfDead` is phase 1. It finds the parent slot by walking the internal
 pages (an empty leaf has no key to search for), refuses the rightmost child, then:
@@ -239,11 +235,10 @@ The port is line for line where the borrow checker allows it. The differences:
   arena's `pair_mut` to hold two pages at once.
 - **The cursor does not borrow the `Db`.** `Cursor::next(&mut self, db: &mut Db)`
   takes the database on every call. A cursor holding `&Db` would make the compiler
-  reject every interleaving this chapter is about; that is the borrow checker
-  enforcing "no writers while a reader exists", which is precisely the guarantee a
-  database cannot afford. The page handle in the cursor is the unchecked reference
-  that replaces it, and recycling is the lifetime rule that the database has to
-  enforce itself.
+  reject every interleaving this chapter is about: "no writers while a reader
+  exists" is the guarantee a database cannot afford. The page handle in the cursor
+  is the unchecked reference that replaces the borrow, and the recycling rule is the
+  lifetime rule the database must enforce itself.
 - **`get` takes `&mut self`** in Rust and `*Db` in Zig, for the same reason: a read
   may set hint bits.
 - **Allocation failure.** Zig tests `put` with a `FailingAllocator` at every
@@ -383,9 +378,9 @@ exactly a dangling `NodeId`, which the arena's slot tag lets `Cursor.readPage` d
 as `error.DanglingLink` instead of reading freed memory.
 
 Lifetimes: a page lives from the split that created it to the `recycle` that frees
-it, which may be long after it left the tree; a version lives from its `put` to the
-moment its index entry is removed. Reclaimed slots return to the pool, not to the
-operating system; the whole array is released by `deinit`.
+it, long after it left the tree; a version lives from its `put` until its index
+entry is removed. Reclaimed slots return to the pool, not to the operating system;
+`deinit` releases the whole array.
 
 What `std.testing.allocator` proves: every test ends with `db.deinit(gpa)`, and the
 test fails if a single byte is still allocated, including pages that are half-dead,
@@ -416,8 +411,7 @@ chapter needs. A deleted queue in an `ArrayList` would let VACUUM fail with
 - **Clearing the deleted page's right link.** It looks tidy and strands every reader
   that is on its way to the page.
 - **One long-running snapshot.** It holds the horizon back: no hints, no bottom-up
-  deletion, VACUUM removes nothing, deleted pages wait. The third line of section 7
-  is what an index looks like when garbage is not collected.
+  deletion, VACUUM removes nothing, deleted pages wait.
 - **Expecting VACUUM to shrink the tree.** It never merges non-empty pages and never
   lowers the height. Empty pages that are rightmost children stay.
 

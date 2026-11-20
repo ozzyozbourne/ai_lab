@@ -406,7 +406,7 @@ Next: <a href="../../29-zone-maps-and-vector-indexes/viz/index.html">29 Zone map
       hPtr = {};
       push('Point lookup: ' + sCount + ' cells read in the sorted array, ' + hCount + ' in the hash table. ' +
         (hCount === 1 ? 'No collision on the way: one slot is the best case, and the common one. '
-          : 'Collisions made this lookup walk ' + hCount + ' slots, more than the binary search needed here. ') +
+          : 'Collisions made this lookup walk ' + hCount + ' slots, ' + (hCount > sCount ? 'more than' : hCount === sCount ? 'as many as' : 'still fewer than') + ' the binary search read here. ') +
         'How far a hash lookup walks depends on how full the table is (9 of 16 slots here), not on how many keys it holds; ' +
         'the binary search grows with the logarithm of the number of keys. The chapter’s programs keep their table at most 70% full and count 1702 probes for 896 lookups.');
     } else {

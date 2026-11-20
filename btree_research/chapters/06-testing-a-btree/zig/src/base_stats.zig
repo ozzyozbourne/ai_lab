@@ -1,7 +1,8 @@
 // Copied from chapters/05-deletion-and-rebalancing/zig/src/stats.zig
 // Change for chapter 06: `shape` and `render` tolerate a malformed tree (a
-// missing child is skipped / printed as `[?]`) instead of aborting, so a
-// failure report can show the tree that failed.
+// missing child is skipped / printed as `[?]`, a key count larger than the
+// node is clamped and marked `!`) instead of aborting, so a failure report
+// can show the tree that failed.
 //! SECTION 6b: shape statistics and a text rendering of the tree.
 //! This file needs only node.zig.
 const std = @import("std");
@@ -71,12 +72,15 @@ pub fn render(comptime M: usize, root: ?*const Node(M), w: *std.Io.Writer, inden
 fn renderLevel(comptime M: usize, maybe_node: ?*const Node(M), remaining: usize, w: *std.Io.Writer, first: *bool) std.Io.Writer.Error!void {
     const node = maybe_node orelse return w.writeAll("[?]"); // a missing child
     if (remaining == 0) {
+        // Not `keySlice()`: a garbage `len` (NodeOverfull) must not index
+        // past the array. Such a node is printed with a `!` after its keys.
+        const shown = @min(node.len, node.keys.len);
         try w.writeByte('[');
-        for (node.keySlice(), 0..) |key, i| {
+        for (node.keys[0..shown], 0..) |key, i| {
             if (i > 0) try w.writeByte(' ');
             try w.print("{d}", .{key});
         }
-        try w.writeByte(']');
+        try w.writeAll(if (shown == node.len) "]" else " !]");
         return;
     }
     if (node.leaf) return; // a leaf above the lowest level: nothing below it

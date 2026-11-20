@@ -111,19 +111,51 @@ pub fn run(gpa: Allocator, w: *Writer) !void {
     try lib.dump.dump(db.view(), db.current.txn_id, w);
     try lib.validate(&db, gpa);
 
-    try w.writeAll("\n== 6. The two-slot metapage; a torn commit ==\n");
+    try w.writeAll("\n== 6. The two-slot metapage: restarts after damage ==\n");
     try printMeta(w, &db);
-    const newest = db.current.txn_id % 2;
-    db.store.meta_slots[newest][8] ^= 0xFF; // damage the root field of the newest slot
-    try w.print("flip one byte in slot {d}, then restart:\n", .{newest});
+    // (a) A torn meta write. Commits alternate, so txn 18 writes slot 0.
+    _ = try crashingPut(gpa, &db, 9, 12);
+    try w.writeAll("put 9: power fails in the middle of the meta write of txn 18 (slot 0). Restart:\n");
+    try printMeta(w, &db);
+    try db.reopen(gpa);
+    try w.print("get 9 = {?d}, {d} keys (txn 18 never happened; txn 17 is complete)\n", .{ db.get(9), db.len() });
+    try printStore(w, &db);
+    try lib.validate(&db, gpa);
+    {
+        var txn = db.begin(gpa);
+        defer txn.abort();
+        _ = try txn.put(9, 900);
+        try w.writeAll("put 9 ");
+        try printCommit(w, try txn.commit(gpa), &db);
+    }
+    try printStore(w, &db);
+    // (b) Two faults at once: txn 19 is in flight, and the slot of the
+    // newest commit (txn 18, slot 0) cannot be read any more.
+    const pages = try crashingPut(gpa, &db, 4, 0);
+    db.store.meta_slots[0][8] ^= 0xFF; // damage the root field
+    try w.print("put 4: power fails after the {d} page writes of txn 19, before its meta write.\n", .{pages});
+    try w.writeAll("On top of that, slot 0 (txn 18, the newest commit) has become unreadable. Restart:\n");
     try printMeta(w, &db);
     try db.reopen(gpa);
     try lib.dump.dump(db.view(), db.current.txn_id, w);
-    try w.print("get 27 = {?d} (the torn commit is gone, the one before it is intact)\n", .{db.get(27)});
+    try w.print("get 9 = {?d}, get 4 = {?d} (txn 18 is lost with its slot; txn 17 is complete, although txn 19 had written pages)\n", .{ db.get(9), db.get(4) });
     try printStore(w, &db);
     try lib.validate(&db, gpa);
 
     try modelRun(gpa, w);
+}
+
+/// `put key` as a transaction whose commit loses power after all of its page
+/// writes and `meta_bytes` bytes of its meta slot. Returns the number of
+/// page writes. The caller restarts with `db.reopen`.
+fn crashingPut(gpa: Allocator, db: *Db, key: u64, meta_bytes: usize) !usize {
+    var txn = db.begin(gpa);
+    defer txn.abort();
+    _ = try txn.put(key, key * 100);
+    const pages = txn.dirty.count();
+    db.crash_after = pages + meta_bytes;
+    if (txn.commit(gpa)) |_| unreachable else |err| if (err != error.Crashed) return err;
+    return pages;
 }
 
 fn printCommit(w: *Writer, info: CommitInfo, db: *const Db) !void {

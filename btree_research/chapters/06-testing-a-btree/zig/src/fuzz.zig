@@ -16,6 +16,13 @@
 //!
 //! `replay` is generic over the tree type, so the same harness tests the
 //! correct tree at every order and each broken variant (base_btree.zig, `Bug`).
+//!
+//! A bug that corrupts the tree ends as a `Failure` with a step number. A bug
+//! that trips an assert or a bounds check inside the tree ABORTS the process
+//! before any check runs, and takes the seed with it. For that case there is
+//! a trace mode: `zig build test -Dtrace=true` prints the seed and every step
+//! to stderr BEFORE it runs, so the last lines before the panic name the case
+//! (README, "When the tree crashes instead").
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ops = @import("ops.zig");
@@ -24,11 +31,70 @@ const validation = @import("base_validate.zig");
 const Coverage = @import("coverage.zig").Coverage;
 const FaultAllocator = @import("fault_alloc.zig").FaultAllocator;
 
+/// Set by `zig build test -Dtrace=true` / `zig build run -Dtrace=true`.
+pub const trace = @import("build_options").trace;
+
 /// One operation, plus an optional injected fault: "the `fault`-th node
 /// allocation of this put fails" (0 = the first). Only puts allocate.
 pub const Step = struct {
     op: ops.Op,
     fault: ?u8 = null,
+
+    /// Printed with `{f}`: `put 7 = 70`, `delete 7`, `get 7`, `range [3, 9)`.
+    pub fn format(self: Step, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        switch (self.op) {
+            .put => |p| try w.print("put {d} = {d}", .{ p.key, p.value }),
+            .delete => |d| try w.print("delete {d}", .{d.key}),
+            .get => |g| try w.print("get {d}", .{g.key}),
+            .range => |r| try w.print("range [{d}, {d})", .{ r.lo, r.hi }),
+        }
+        if (self.fault) |n| try w.print(" (node allocation {d} fails first)", .{n});
+    }
+};
+
+/// Where in the 64-bit key space the keys of a case lie. The operation
+/// stream draws a small index k in [0, key_space); the layout turns it into
+/// the key. All four are strictly increasing in k, so the SHAPE of the tree
+/// is the same whichever is chosen; what changes is the numbers the tree has
+/// to compare. A tree that truncates a key to 32 bits, or compares keys as
+/// signed, passes every test on small keys.
+pub const KeyLayout = enum {
+    /// k: the keys 0, 1, 2, ... (easy to read in a failure report).
+    dense,
+    /// 2^32 - key_space/2 + k: consecutive keys on both sides of 2^32.
+    around_2_32,
+    /// k * (2^64 / key_space): evenly over the whole range. Every key has
+    /// the same low 32 bits (zero) and half of them have the top bit set.
+    spread,
+    /// 2^64 - 1 - key_space + k: the last keys below maxInt(u64). The key
+    /// maxInt itself is left out because `range` is half-open: no [lo, hi)
+    /// can contain it (base_search.zig).
+    top,
+
+    /// The key for index `k`. `k == key_space` is allowed: a range's
+    /// exclusive upper bound is one past the largest index.
+    pub fn key(self: KeyLayout, key_space: u64, k: u64) u64 {
+        std.debug.assert(k <= key_space);
+        return switch (self) {
+            .dense => k,
+            .around_2_32 => (1 << 32) - key_space / 2 + k,
+            // key_space is a power of two (see `swarm`), so the stride is
+            // exact. k == key_space would be 2^64: saturate, which names
+            // the same set of keys because no key equals maxInt.
+            .spread => std.math.mul(u64, k, (1 << 63) / key_space * 2) catch std.math.maxInt(u64),
+            .top => std.math.maxInt(u64) - key_space + k,
+        };
+    }
+
+    /// For the case description printed by `run`.
+    pub fn describe(self: KeyLayout) []const u8 {
+        return switch (self) {
+            .dense => "from 0",
+            .around_2_32 => "around 2^32",
+            .spread => "spread over u64",
+            .top => "below 2^64",
+        };
+    }
 };
 
 /// Everything that defines one fuzz run. `seed` is all a bug report needs
@@ -37,8 +103,10 @@ pub const Case = struct {
     seed: u64,
     /// Number of generated operations (the drain comes on top).
     count: u64,
-    /// Keys are drawn from [0, key_space).
+    /// Number of distinct keys. Always a power of two.
     key_space: u64,
+    /// Which `key_space` keys: see `KeyLayout`.
+    key_layout: KeyLayout,
     weights: ops.Weights,
     /// A put gets an injected allocation failure with probability
     /// 1 / fault_one_in; 0 = never.
@@ -54,8 +122,9 @@ pub const Case = struct {
 /// Swarm testing: instead of one "reasonable" configuration, every seed
 /// draws its own. Some runs never delete (trees grow tall), some have four
 /// possible keys (overwrite, delete-missing and the empty tree all the
-/// time), some fail a quarter of their allocations. A fixed mix reaches the
-/// same few shapes over and over; the swarm reaches the corners.
+/// time), some fail a quarter of their allocations, some use keys next to
+/// 2^64. A fixed mix reaches the same few shapes over and over; the swarm
+/// reaches the corners.
 ///
 /// The draw order below is part of the contract: the Rust twin makes the
 /// same draws in the same order.
@@ -73,10 +142,12 @@ pub fn swarm(seed: u64) Case {
     const drain = prng.chance(1, 2);
     const stream_seed = prng.nextU64();
     const aux_seed = prng.nextU64();
+    const key_layout: KeyLayout = @enumFromInt(prng.below(4));
     return .{
         .seed = seed,
         .count = count,
         .key_space = key_space,
+        .key_layout = key_layout,
         .weights = .{ .put = put, .delete = delete, .get = get, .range = range },
         .fault_one_in = fault_one_in,
         .drain = drain,
@@ -86,13 +157,14 @@ pub fn swarm(seed: u64) Case {
 }
 
 /// The opposite of a swarm: the same mix for every seed (common/ default
-/// weights 4:2:3:1, 64 keys, no faults, no drain). Used to show what a
-/// fixed configuration never reaches.
+/// weights 4:2:3:1, 64 small keys, no faults, no drain). Used to show what
+/// a fixed configuration never reaches.
 pub fn fixedMix(seed: u64) Case {
     return .{
         .seed = seed,
         .count = 256,
         .key_space = 64,
+        .key_layout = .dense,
         .weights = .{},
         .fault_one_in = 0,
         .drain = false,
@@ -115,9 +187,17 @@ pub fn generate(gpa: Allocator, case: Case) Allocator.Error![]Step {
         .key_space = case.key_space,
         .weights = case.weights,
     });
-    while (stream.next()) |op| {
-        var step: Step = .{ .op = op };
-        switch (op) {
+    while (stream.next()) |index_op| {
+        // The stream speaks in key indices; the layout says which keys.
+        const layout = case.key_layout;
+        const ks = case.key_space;
+        var step: Step = .{ .op = switch (index_op) {
+            .put => |p| .{ .put = .{ .key = layout.key(ks, p.key), .value = p.value } },
+            .delete => |d| .{ .delete = .{ .key = layout.key(ks, d.key) } },
+            .get => |g| .{ .get = .{ .key = layout.key(ks, g.key) } },
+            .range => |r| .{ .range = .{ .lo = layout.key(ks, r.lo), .hi = layout.key(ks, r.hi) } },
+        } };
+        switch (step.op) {
             .put => |p| {
                 if (case.fault_one_in > 0 and aux.chance(1, case.fault_one_in)) {
                     step.fault = @intCast(aux.below(3));
@@ -158,7 +238,8 @@ pub const Kind = union(enum) {
     wrong_result,
     /// Key count or a full in-order scan differs from the oracle.
     wrong_contents,
-    /// A put failed with OutOfMemory and left a trace in the tree.
+    /// A put failed with OutOfMemory and left a trace: in the contents, in
+    /// the structure or in the pool's counters (`pool.usage`).
     oom_changed_tree,
     /// Nodes still allocated after `deinit`.
     leak,
@@ -187,7 +268,7 @@ pub const Failure = struct {
             },
             .wrong_result => try w.writeAll("wrong result (answer differs from the oracle)"),
             .wrong_contents => try w.writeAll("wrong contents (full scan differs from the oracle)"),
-            .oom_changed_tree => try w.writeAll("a failed put changed the tree"),
+            .oom_changed_tree => try w.writeAll("a failed put changed the tree or its node accounting"),
             .leak => try w.writeAll("leak (nodes still allocated after deinit)"),
         }
     }
@@ -223,7 +304,11 @@ pub fn replay(comptime Tree: type, gpa: Allocator, steps: []const Step, checks: 
     var failure: ?Failure = null;
     var done: usize = 0;
     var local: Totals = .{ .cases = 1 };
+    if (trace) std.debug.print("trace: replay of {d} steps, M={d}, bug {t}\n", .{ steps.len, Tree.order, Tree.bug });
     for (steps, 0..) |step, i| {
+        // Before the step, not after: if the tree aborts inside it, this
+        // line is the last thing on stderr.
+        if (trace) std.debug.print("trace:   step {d}: {f}\n", .{ i + 1, step });
         var diag: validation.Diagnostic = .{};
         const last = i + 1 == steps.len;
         const verdict = try applyAndCheck(Tree, &tree, tree_gpa, &fault, &oracle, gpa, step, checks, last or (i + 1) % checks.sweep_every == 0, &diag);
@@ -279,6 +364,7 @@ fn applyAndCheck(
                 // fail. If the put needed that many nodes it returns
                 // OutOfMemory, and the promise is "nothing happened".
                 const injected_before = fault.injected;
+                const usage_before = tree.pool.usage;
                 fault.failNth(n);
                 const first_try = tree.put(tree_gpa, p.key, p.value);
                 fault.disarm();
@@ -286,8 +372,12 @@ fn applyAndCheck(
                     answer_ok = got == try oracle.put(gpa, p.key, p.value);
                 } else |err| {
                     if (fault.injected == injected_before) return err; // the test itself is out of memory
-                    if (tree.len != oracle.len() or tree.get(p.key) != oracle.get(p.key)) return .oom_changed_tree;
+                    // Structure first (a `get` on a malformed tree may
+                    // abort), then the contents, then the pool's counters:
+                    // "exactly as before the call" includes `pool.usage`.
                     if (checks.validate) tree.validate(diag) catch return .oom_changed_tree;
+                    if (tree.len != oracle.len() or tree.get(p.key) != oracle.get(p.key)) return .oom_changed_tree;
+                    if (!std.meta.eql(tree.pool.usage, usage_before)) return .oom_changed_tree;
                     // The operation still has to happen: try again, unharmed.
                     answer_ok = try tree.put(tree_gpa, p.key, p.value) == try oracle.put(gpa, p.key, p.value);
                 }
@@ -350,6 +440,7 @@ pub fn hunt(comptime Tree: type, gpa: Allocator, first_seed: u64, seeds: u64, ch
         const case = swarm(seed);
         const steps = try generate(gpa, case);
         defer gpa.free(steps);
+        if (trace) std.debug.print("trace: seed {d}\n", .{seed});
         if (try replay(Tree, gpa, steps, checks, totals)) |failure| return .{ .case = case, .failure = failure };
     }
     return null;
@@ -377,15 +468,5 @@ pub fn huntShortest(comptime Tree: type, gpa: Allocator, first_seed: u64, seeds:
 
 /// One step per line: `put 7 = 70`, `delete 7`, `get 7`, `range [3, 9)`.
 pub fn writeSteps(w: *std.Io.Writer, steps: []const Step, indent: []const u8) std.Io.Writer.Error!void {
-    for (steps) |step| {
-        try w.writeAll(indent);
-        switch (step.op) {
-            .put => |p| try w.print("put {d} = {d}", .{ p.key, p.value }),
-            .delete => |d| try w.print("delete {d}", .{d.key}),
-            .get => |g| try w.print("get {d}", .{g.key}),
-            .range => |r| try w.print("range [{d}, {d})", .{ r.lo, r.hi }),
-        }
-        if (step.fault) |n| try w.print(" (node allocation {d} fails first)", .{n});
-        try w.writeByte('\n');
-    }
+    for (steps) |step| try w.print("{s}{f}\n", .{ indent, step });
 }

@@ -6,9 +6,22 @@
 //!   1. cut everything after the failing step (it never ran);
 //!   2. try to delete a chunk of steps; if the shorter sequence STILL FAILS
 //!      IN THE SAME WAY, keep it, otherwise put the chunk back;
-//!   3. start with chunks of half the sequence, halve the chunk size after
-//!      each pass, and at chunk size 1 repeat until a whole pass removes
-//!      nothing. The result is 1-minimal: no single step can be removed.
+//!   3. start with chunks of half the sequence and halve the chunk size
+//!      after each pass, down to single steps. This is the fast part: it
+//!      throws away most of a long run in few replays;
+//!   4. finish exhaustively: try to remove EVERY contiguous block of steps
+//!      (every start, every length, longest first), and start over whenever
+//!      one goes. Chunk sizes that only shrink would miss a pair of steps
+//!      that can only go together (a put and the delete that undoes it),
+//!      because by the time single steps are stable no larger chunk is tried
+//!      again.
+//!
+//! The guarantee, exactly: in the result no contiguous block of steps, of
+//! any length, can be removed without losing the failure. In particular no
+//! single step can (1-minimal). It is NOT the shortest failing sequence:
+//! removing two steps that are not next to each other is never tried (that
+//! search is exponential), and a shorter reproducer may not be a
+//! subsequence of this run at all.
 //!
 //! Then three cosmetic passes make the survivor readable: forget injected
 //! faults, rename the keys 1, 2, 3, ... (keeping their order), and replace
@@ -38,26 +51,29 @@ pub fn minimize(comptime Tree: type, gpa: Allocator, original: []const Step, tar
     errdefer m.current.deinit(gpa);
     try m.current.appendSlice(gpa, original[0 .. target.step + 1]);
 
+    // Fast reduction: aligned chunks, halving.
     var chunk = @max(m.current.items.len / 2, 1);
-    while (true) {
-        var removed_any = false;
+    while (true) : (chunk /= 2) {
         var i: usize = 0;
         while (i < m.current.items.len) {
-            const end = @min(i + chunk, m.current.items.len);
-            m.candidate.clearRetainingCapacity();
-            try m.candidate.appendSlice(gpa, m.current.items[0..i]);
-            try m.candidate.appendSlice(gpa, m.current.items[end..]);
-            if (try m.acceptIfStillFailing()) {
-                removed_any = true; // do not advance: the next chunk slid to position i
-            } else {
-                i = end;
+            // On success do not advance: the next chunk slid to position i.
+            if (!try m.tryWithout(i, i + chunk)) i += chunk;
+        }
+        if (chunk == 1) break;
+    }
+    // Exhaustive finish: every contiguous block, longest first, until a
+    // whole round removes nothing. Each success shortens the sequence, so
+    // this ends; a round costs about n^2 / 2 replays for n steps, which is
+    // why the fast reduction comes first.
+    restart: while (true) {
+        const n = m.current.items.len;
+        var len = n -| 1; // removing all n steps leaves nothing to fail
+        while (len >= 1) : (len -= 1) {
+            for (0..n - len + 1) |start| {
+                if (try m.tryWithout(start, start + len)) continue :restart;
             }
         }
-        if (chunk > 1) {
-            chunk /= 2;
-        } else if (!removed_any) {
-            break;
-        }
+        break;
     }
 
     try m.withoutFaults();
@@ -79,6 +95,15 @@ fn Minimizer(comptime Tree: type) type {
         /// Scratch: the sequence being tried.
         candidate: std.ArrayList(Step) = .empty,
         replays: usize = 0,
+
+        /// Try the current sequence without steps [start, end).
+        fn tryWithout(self: *Self, start: usize, end_: usize) Allocator.Error!bool {
+            const end = @min(end_, self.current.items.len);
+            self.candidate.clearRetainingCapacity();
+            try self.candidate.appendSlice(self.gpa, self.current.items[0..start]);
+            try self.candidate.appendSlice(self.gpa, self.current.items[end..]);
+            return self.acceptIfStillFailing();
+        }
 
         /// Replay `candidate`. If it fails like the target, it becomes
         /// `current` (cut after its failing step) and the result is true.

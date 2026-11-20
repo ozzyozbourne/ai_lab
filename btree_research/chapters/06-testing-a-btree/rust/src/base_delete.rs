@@ -37,9 +37,9 @@
 //! not break. Each classic bug is one line here: do not free the right node;
 //! do not move the child in a borrow; leave the separator in the parent.
 
-use crate::btree::BTree;
-use crate::node::{Entry, NodeId, max_keys, min_keys};
-use crate::search::lower_bound;
+use crate::base_btree::BTree;
+use crate::base_node::{Entry, NodeId, max_keys, min_keys};
+use crate::base_search::lower_bound;
 
 /// Returns the removed value, or `None` if the key was not present (the tree
 /// is then unchanged).

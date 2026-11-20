@@ -1,10 +1,10 @@
 // Copied from chapters/05-deletion-and-rebalancing/rust/src/btree.rs
 //! The complete in-memory B-tree: this file only ties the sections together.
 
-use crate::node::NodeId;
-use crate::pool::{OutOfNodes, Slab};
-use crate::stats::Shape;
-use crate::validate::ValidateError;
+use crate::base_node::NodeId;
+use crate::base_pool::{OutOfNodes, Slab};
+use crate::base_stats::Shape;
+use crate::base_validate::ValidateError;
 use crate::{delete, insert, search, stats, validate};
 use std::io::{self, Write};
 

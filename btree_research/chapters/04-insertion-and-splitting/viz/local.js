@@ -157,7 +157,7 @@
   function existsStep(push, node, key) {
     var h = { nodes: {}, keys: {} };
     h.nodes[node.id] = 'active'; h.keys[node.id + ':' + key] = 'found';
-    if (rec) push('exists', 'Key ' + k(key, 'found') + ' is already in the tree. Keys are unique in this part of the guide: <code>put</code> overwrites the value and the structure stays as it is.',
+    push('exists', 'Key ' + k(key, 'found') + ' is already in the tree. Keys are unique in this part of the guide: <code>put</code> overwrites the value and the structure stays as it is.',
       h, { log: 'put ' + key + ': already present, value overwritten' });
   }
 

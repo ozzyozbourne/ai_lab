@@ -2,7 +2,7 @@
 //! SECTION 6b: shape statistics and a text rendering of the tree.
 //! This file needs only node.rs.
 
-use crate::node::{NodeId, Nodes, max_keys};
+use crate::base_node::{NodeId, Nodes, max_keys};
 use std::io::{self, Write};
 
 /// What the tree looks like right now.

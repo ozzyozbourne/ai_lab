@@ -5,7 +5,7 @@
 //! node.rs: the nodes are reached through the [`Nodes`] trait, so they may
 //! live in the slab of pool.rs or in a plain `Vec<Node>`.
 
-use crate::node::{NodeId, Nodes};
+use crate::base_node::{NodeId, Nodes};
 
 /// Index of the first key that is >= `key` (chapter 02). For a key that is
 /// absent this is both the place where it would be inserted and the index of
@@ -90,7 +90,7 @@ pub fn range<P: Nodes + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::Node;
+    use crate::base_node::Node;
 
     #[test]
     fn lower_bound_cases() {

@@ -127,7 +127,6 @@ one black binary node and up to two red ones and you get a red-black tree with t
     fig.stage.append(facts, panel('As the programs print it', textPre));
     var codeGet = BTViz.codePanel(fig.side, 'get', { title: 'get (base_search)' });
     var codeIn = BTViz.codePanel(fig.side, 'inorder', { title: 'inOrder (base_search)' });
-    var codeGetEl = fig.side.children[0], codeInEl = fig.side.children[1];
 
     var stepper = new BTViz.Stepper({
       mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
@@ -138,8 +137,8 @@ one black binary node and up to two red ones and you get a red-black tree with t
         if (mode === 'get' && step.nodesRead !== undefined) items.push('nodes read: ' + step.nodesRead + ' of ' + s.height + ' levels');
         chips(facts, items);
         textPre.textContent = step.printed || '';
-        codeGetEl.hidden = mode !== 'get';
-        codeInEl.hidden = mode === 'get';
+        codeGet.root.style.display = mode === 'get' ? '' : 'none';
+        codeIn.root.style.display = mode === 'get' ? 'none' : '';
         (mode === 'get' ? codeGet : codeIn).highlight(step.lines || []);
       }
     });

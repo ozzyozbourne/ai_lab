@@ -36,7 +36,7 @@
 //!   one particular `put` in a tree of any size, which a limit on live nodes
 //!   cannot express.
 
-use crate::node::{Node, NodeId};
+use crate::base_node::{Node, NodeId};
 
 /// The slab's node budget is exhausted (the Rust stand-in for `error.OutOfMemory`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

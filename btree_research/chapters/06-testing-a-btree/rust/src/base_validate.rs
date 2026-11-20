@@ -7,7 +7,7 @@
 //! This file needs only node.rs: it knows nothing about the slab, insert or
 //! delete, and works on trees built by hand in a `Vec<Node>`.
 
-use crate::node::{NodeId, Nodes, max_keys, min_keys};
+use crate::base_node::{NodeId, Nodes, max_keys, min_keys};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValidateError {
@@ -133,7 +133,7 @@ impl<P: Nodes + ?Sized> Walk<'_, P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::Node;
+    use crate::base_node::Node;
 
     fn leaf(keys: &[u64]) -> Node {
         let mut node = Node::new(true);

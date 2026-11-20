@@ -1,13 +1,19 @@
 // Copied from chapters/05-deletion-and-rebalancing/rust/src/validate.rs
-//! SECTION 6a: the invariants as code.
+// Changes for chapter 06: the error is a `Violation` (WHICH invariant and
+// WHERE), and a node's own checks all run before the walk descends.
+//! The invariants as code (README section "Invariants as code").
 //!
 //! `validate` walks the whole tree and returns the first broken invariant.
-//! Every test calls it after every operation; chapter 06 builds a fuzzer on it.
+//! Each invariant has its own `ValidateError`, so a failing fuzz run says
+//! WHICH promise was broken; the `Violation` around it says WHERE.
 //!
-//! This file needs only node.rs: it knows nothing about the slab, insert or
-//! delete, and works on trees built by hand in a `Vec<Node>`.
+//! In Rust the details travel inside the `Err` value. A Zig error is a bare
+//! tag, so the Zig twin fills in a `Diagnostic` out-parameter instead.
+//!
+//! This file needs only base_node.rs: it knows nothing about the slab,
+//! insert or delete, and works on trees built by hand in a `Vec<Node>`.
 
-use crate::base_node::{NodeId, Nodes, max_keys, min_keys};
+use crate::base_node::{Node, NodeId, Nodes, max_keys, min_keys};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValidateError {
@@ -35,16 +41,37 @@ pub enum ValidateError {
     NodeCountMismatch,
 }
 
+/// A broken invariant and the node where the walk found it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Violation {
+    pub error: ValidateError,
+    /// Depth of the offending node (root = 0).
+    pub depth: usize,
+    /// Its first key, to find the node in a rendering of the tree. `None`
+    /// for errors about the tree as a whole (and for a node without keys).
+    pub first_key: Option<u64>,
+}
+
+impl Violation {
+    pub fn whole_tree(error: ValidateError) -> Self {
+        Self {
+            error,
+            depth: 0,
+            first_key: None,
+        }
+    }
+}
+
 pub fn validate<P: Nodes + ?Sized>(
     nodes: &P,
     order: usize,
     root: Option<NodeId>,
     expected_len: usize,
-) -> Result<(), ValidateError> {
+) -> Result<(), Violation> {
     let mut count = 0;
     if let Some(root) = root {
         if nodes[root].is_empty() {
-            return Err(ValidateError::EmptyRoot);
+            return Err(Violation::whole_tree(ValidateError::EmptyRoot));
         }
         let mut walk = Walk {
             nodes,
@@ -52,11 +79,11 @@ pub fn validate<P: Nodes + ?Sized>(
             leaf_depth: None,
             count: 0,
         };
-        walk.check(root, None, None, true, 0)?;
+        walk.check(root, None, None, 0)?;
         count = walk.count;
     }
     if count != expected_len {
-        return Err(ValidateError::WrongKeyCount);
+        return Err(Violation::whole_tree(ValidateError::WrongKeyCount));
     }
     Ok(())
 }
@@ -76,14 +103,41 @@ impl<P: Nodes + ?Sized> Walk<'_, P> {
         id: NodeId,
         lo: Option<u64>,
         hi: Option<u64>,
-        is_root: bool,
+        depth: usize,
+    ) -> Result<(), Violation> {
+        let node = &self.nodes[id];
+        // Everything that can be said about this node alone comes first, so
+        // the error names the node closest to the root that is wrong.
+        self.check_node(node, lo, hi, depth)
+            .map_err(|error| Violation {
+                error,
+                depth,
+                first_key: node.keys.first().copied(),
+            })?;
+        for (i, &child) in node.children.iter().enumerate() {
+            // Child i lives strictly between separator i - 1 and separator i.
+            let child_lo = if i == 0 { lo } else { Some(node.keys[i - 1]) };
+            let child_hi = if i == node.len() {
+                hi
+            } else {
+                Some(node.keys[i])
+            };
+            self.check(child, child_lo, child_hi, depth + 1)?;
+        }
+        Ok(())
+    }
+
+    fn check_node(
+        &mut self,
+        node: &Node,
+        lo: Option<u64>,
+        hi: Option<u64>,
         depth: usize,
     ) -> Result<(), ValidateError> {
-        let node = &self.nodes[id];
         if node.len() > max_keys(self.order) {
             return Err(ValidateError::NodeOverfull);
         }
-        if !is_root && node.len() < min_keys(self.order) {
+        if depth > 0 && node.len() < min_keys(self.order) {
             return Err(ValidateError::NodeUnderfull);
         }
         self.count += node.len();
@@ -97,34 +151,20 @@ impl<P: Nodes + ?Sized> Walk<'_, P> {
             }
         }
 
-        if node.leaf {
-            if !node.children.is_empty() {
-                return Err(ValidateError::UnexpectedChild);
-            }
-            return match self.leaf_depth {
-                Some(d) if d != depth => Err(ValidateError::LeavesAtDifferentDepths),
-                _ => {
-                    self.leaf_depth = Some(depth);
-                    Ok(())
-                }
-            };
-        }
-
-        if node.children.len() < node.len() + 1 {
+        // Children: exactly len + 1 in an interior node, none in a leaf.
+        let want = if node.leaf { 0 } else { node.len() + 1 };
+        if node.children.len() < want {
             return Err(ValidateError::MissingChild);
         }
-        if node.children.len() > node.len() + 1 {
+        if node.children.len() > want {
             return Err(ValidateError::UnexpectedChild);
         }
-        for (i, &child) in node.children.iter().enumerate() {
-            // Child i lives strictly between separator i - 1 and separator i.
-            let child_lo = if i == 0 { lo } else { Some(node.keys[i - 1]) };
-            let child_hi = if i == node.len() {
-                hi
-            } else {
-                Some(node.keys[i])
-            };
-            self.check(child, child_lo, child_hi, false, depth + 1)?;
+
+        if node.leaf {
+            match self.leaf_depth {
+                Some(d) if d != depth => return Err(ValidateError::LeavesAtDifferentDepths),
+                _ => self.leaf_depth = Some(depth),
+            }
         }
         Ok(())
     }
@@ -134,6 +174,11 @@ impl<P: Nodes + ?Sized> Walk<'_, P> {
 mod tests {
     use super::*;
     use crate::base_node::Node;
+
+    /// Only the error kind, for the table of cases below.
+    fn kind(nodes: &[Node], order: usize, root: NodeId, len: usize) -> Result<(), ValidateError> {
+        validate(nodes, order, Some(root), len).map_err(|v| v.error)
+    }
 
     fn leaf(keys: &[u64]) -> Node {
         let mut node = Node::new(true);
@@ -159,31 +204,31 @@ mod tests {
         top.leaf = false;
         top.children = vec![left, right];
         let root = push(&mut nodes, top);
-        assert_eq!(validate(&nodes, 4, Some(root), 5), Ok(()));
+        assert_eq!(kind(&nodes, 4, root, 5), Ok(()));
         assert_eq!(validate(&nodes, 4, None, 0), Ok(()));
 
-        assert_eq!(validate(&nodes, 4, Some(root), 4), Err(WrongKeyCount));
+        assert_eq!(kind(&nodes, 4, root, 4), Err(WrongKeyCount));
 
         nodes[left].keys[1] = 5;
-        assert_eq!(validate(&nodes, 4, Some(root), 5), Err(KeysOutOfOrder));
+        assert_eq!(kind(&nodes, 4, root, 5), Err(KeysOutOfOrder));
         nodes[left].keys[1] = 25; // sorted inside the leaf, but on the wrong side of 20
         assert_eq!(
-            validate(&nodes, 4, Some(root), 5),
+            kind(&nodes, 4, root, 5),
             Err(KeyOutsideParentBounds)
         );
         nodes[left].keys[1] = 10;
 
         nodes[right] = leaf(&[]);
-        assert_eq!(validate(&nodes, 4, Some(root), 3), Err(NodeUnderfull));
+        assert_eq!(kind(&nodes, 4, root, 3), Err(NodeUnderfull));
         nodes[right] = leaf(&[30, 40, 50, 60]);
-        assert_eq!(validate(&nodes, 4, Some(root), 7), Err(NodeOverfull));
+        assert_eq!(kind(&nodes, 4, root, 7), Err(NodeOverfull));
         nodes[right] = leaf(&[30, 40]);
 
         nodes[root].children.pop();
-        assert_eq!(validate(&nodes, 4, Some(root), 5), Err(MissingChild));
+        assert_eq!(kind(&nodes, 4, root, 5), Err(MissingChild));
         nodes[root].children.push(right);
         nodes[left].children.push(right);
-        assert_eq!(validate(&nodes, 4, Some(root), 5), Err(UnexpectedChild));
+        assert_eq!(kind(&nodes, 4, root, 5), Err(UnexpectedChild));
         nodes[left].children.clear();
 
         // Hang a subtree under the right slot: its leaves are one level deeper.
@@ -195,11 +240,23 @@ mod tests {
         let mid = push(&mut nodes, mid);
         nodes[root].children[1] = mid;
         assert_eq!(
-            validate(&nodes, 4, Some(root), 6),
+            kind(&nodes, 4, root, 6),
             Err(LeavesAtDifferentDepths)
         );
 
         let empty_root = push(&mut nodes, leaf(&[]));
-        assert_eq!(validate(&nodes, 4, Some(empty_root), 0), Err(EmptyRoot));
+        assert_eq!(kind(&nodes, 4, empty_root, 0), Err(EmptyRoot));
+
+        // The violation points at the node that broke the rule.
+        nodes[root].children[1] = right;
+        nodes[right].keys[0] = 50; // [50 40]
+        assert_eq!(
+            validate(&nodes, 4, Some(root), 5),
+            Err(Violation {
+                error: KeysOutOfOrder,
+                depth: 1,
+                first_key: Some(50)
+            })
+        );
     }
 }

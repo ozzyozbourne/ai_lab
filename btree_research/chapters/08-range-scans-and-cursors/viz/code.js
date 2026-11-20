@@ -249,10 +249,10 @@ window.CHAPTER_PARTS = {
   scan: {
     start: { zig: ['.start =>', '.start =>'], rust: ['Phase::Start =>', 'Phase::Start =>'] },
     return: { zig: ['const inside', 'if (inside) return found;'], rust: ['let inside', 'return Some(found);'] },
-    stop: { zig: ['// Past the far bound', 'return null;\n}'], rust: ['// Past the far bound', 'None\n}'] }
+    stop: { zig: ['// Past the far bound', 'return null;'], rust: ['// Past the far bound', 'None'] }
   },
   seek: {
-    descend: { zig: ['pub fn startSeek', '};\n}'], rust: ['pub fn start_seek', '    }\n}'] },
+    descend: { zig: ['pub fn startSeek', '.excluded => |k| .{ .lt = k },'], rust: ['pub fn start_seek', 'Bound::Excluded(k) => Seek::Lt(k),'] },
     land: { zig: ['pub fn landing', '.lt =>'], rust: ['pub fn landing', 'Seek::Lt'] }
   },
   linkStep: {

@@ -80,6 +80,33 @@ test "the worked example continued: put 2 splits a leaf and then the interior ro
     try top.validate();
 }
 
+test "exercise 1: ascending keys, the first interior splits (root at 13, below the root at 22)" {
+    const gpa = testing.allocator;
+    var tree: Tree4 = .empty;
+    defer tree.deinit(gpa);
+    for (1..13) |key| _ = try tree.put(gpa, key, key);
+    try expectTree(&tree, "[3 6 9]\n[1 2] [4 5] [7 8] [10 11 12]\n");
+    // 13: leaf [10 11 12 13], 12 goes up. Root [3 6 9 12] with five
+    // children: 9 goes up, [3 6] keeps three children, [12] gets two.
+    var before = tree.counters;
+    _ = try tree.put(gpa, 13, 13);
+    try expectTree(&tree, "[9]\n[3 6] [12]\n[1 2] [4 5] [7 8] | [10 11] [13]\n");
+    try testing.expectEqual(2, tree.counters.splits - before.splits);
+    try testing.expectEqual(1, tree.counters.root_splits - before.root_splits);
+    // 14 to 21: two leaf splits (at 16 and 19) fill the interior node [12 15 18].
+    for (14..22) |key| _ = try tree.put(gpa, key, key);
+    try expectTree(&tree, "[9]\n[3 6] [12 15 18]\n[1 2] [4 5] [7 8] | [10 11] [13 14] [16 17] [19 20 21]\n");
+    // 22: leaf [19 20 21 22], 21 goes up. [12 15 18 21] is an interior node
+    // that is NOT the root: its median 18 goes into the existing root, which
+    // has room. No new root, same height.
+    before = tree.counters;
+    _ = try tree.put(gpa, 22, 22);
+    try expectTree(&tree, "[9 18]\n[3 6] [12 15] [21]\n[1 2] [4 5] [7 8] | [10 11] [13 14] [16 17] | [19 20] [22]\n");
+    try testing.expectEqual(2, tree.counters.splits - before.splits);
+    try testing.expectEqual(0, tree.counters.root_splits - before.root_splits);
+    try tree.validate();
+}
+
 test "neither variant is always the taller one" {
     const gpa = testing.allocator;
     // The canonical keys make the top-down tree taller (height 3 against 2,

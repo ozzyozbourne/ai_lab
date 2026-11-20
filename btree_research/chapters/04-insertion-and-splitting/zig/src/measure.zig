@@ -90,8 +90,8 @@ test "split accounting: every split adds one node, every root split one more and
             // No single put splits more nodes than the tree is high ...
             try testing.expect(r.most_splits_in_one_put <= r.shape.height);
             // ... and on average far fewer: every non-root node keeps at least
-            // min_keys = ceil(M/2) - 1 keys, so there are fewer than
-            // N / min_keys nodes, and each split made one of them.
+            // min_keys = ceil(M/2) - 1 keys, so there are at most
+            // (N - 1) / min_keys non-root nodes, and each split made one of them.
             const min_keys = (M + 1) / 2 - 1;
             try testing.expect(r.splits < keys.len / min_keys);
         }

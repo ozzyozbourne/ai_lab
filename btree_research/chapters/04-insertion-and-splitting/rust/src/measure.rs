@@ -116,8 +116,8 @@ mod tests {
                 // No single put splits more nodes than the tree is high ...
                 assert!(r.most_splits_in_one_put <= r.shape.height as u64);
                 // ... and on average far fewer: every non-root node keeps at
-                // least min_keys = ceil(M/2) - 1 keys, so there are fewer than
-                // N / min_keys nodes, and each split made one of them.
+                // least min_keys = ceil(M/2) - 1 keys, so there are at most
+                // (N - 1) / min_keys non-root nodes, and each split made one of them.
                 let min_keys = order.div_ceil(2) - 1;
                 assert!(r.splits < (keys.len() / min_keys) as u64);
             }

@@ -367,7 +367,8 @@ fn model_run(w: &mut dyn Write) -> io::Result<()> {
                     }
                 }
                 Op::Range { lo, hi } => {
-                    mismatches += count_mismatches(db.view().seek(lo), Some(hi), oracle.range(lo, hi));
+                    mismatches +=
+                        count_mismatches(db.view().seek(lo), Some(hi), oracle.range(lo, hi));
                 }
             }
             peak_pending = peak_pending.max(db.pending.len());
@@ -421,7 +422,10 @@ fn count_mismatches(cursor: Cursor<'_>, hi: Option<u64>, expected: &[Entry]) -> 
         if hi.is_some_and(|hi| e.key >= hi) {
             break;
         }
-        if expected.get(i).is_none_or(|x| e.key != x.key || e.value != x.value) {
+        if expected
+            .get(i)
+            .is_none_or(|x| e.key != x.key || e.value != x.value)
+        {
             mismatches += 1;
         }
         i += 1;

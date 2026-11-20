@@ -317,7 +317,9 @@ impl Db {
         if n > self.store.page_count() {
             return Err(ReopenError::CorruptTree);
         }
-        let in_current = self.tree_is_complete(m, n).ok_or(ReopenError::CorruptTree)?;
+        let in_current = self
+            .tree_is_complete(m, n)
+            .ok_or(ReopenError::CorruptTree)?;
 
         // The other slot is a fallback only if its tree is whole as well.
         let mut previous = None;
@@ -341,7 +343,11 @@ impl Db {
         self.store.free.clear();
         for i in 0..n {
             let (c, p) = (in_current[i], in_previous[i]);
-            self.store.slots[i].state = if c || p { SlotState::Live } else { SlotState::Free };
+            self.store.slots[i].state = if c || p {
+                SlotState::Live
+            } else {
+                SlotState::Free
+            };
             if c {
                 continue;
             }
@@ -349,7 +355,10 @@ impl Db {
             if p {
                 // Replaced by the current commit; released when the next
                 // commit overwrites the fallback slot.
-                self.pending.push(PendingFree { freed_by: m.txn_id, page });
+                self.pending.push(PendingFree {
+                    freed_by: m.txn_id,
+                    page,
+                });
             } else {
                 self.store.free.push(page);
             }
@@ -378,7 +387,14 @@ impl Db {
         ok.then_some(marks)
     }
 
-    fn mark_checked(&self, m: Meta, id: PageId, depth: usize, marks: &mut [bool], entries: &mut u64) -> bool {
+    fn mark_checked(
+        &self,
+        m: Meta,
+        id: PageId,
+        depth: usize,
+        marks: &mut [bool],
+        entries: &mut u64,
+    ) -> bool {
         if id.is_nil() || id.index() >= marks.len() || marks[id.index()] {
             return false;
         }

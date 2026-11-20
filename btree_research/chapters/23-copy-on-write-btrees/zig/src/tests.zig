@@ -682,31 +682,41 @@ test "reopen reports a tree that is not all there instead of walking into it" {
         f: *const fn (m: *Meta, db: *Db) void,
     };
     const forgeries = [_]Forge{
-        .{ .f = struct {
-            fn f(m: *Meta, _: *Db) void {
-                m.root = .fromIndex(500); // root outside the store
-            }
-        }.f },
-        .{ .f = struct {
-            fn f(m: *Meta, _: *Db) void {
-                m.page_count = 1_000_000; // a store that is not there
-            }
-        }.f },
-        .{ .f = struct {
-            fn f(m: *Meta, _: *Db) void {
-                m.page_count = 3; // the root lies beyond the end
-            }
-        }.f },
-        .{ .f = struct {
-            fn f(m: *Meta, _: *Db) void {
-                m.height = 4_000_000_000; // would be a very deep recursion
-            }
-        }.f },
-        .{ .f = struct {
-            fn f(m: *Meta, _: *Db) void {
-                m.height = 2; // leaves are deeper than that
-            }
-        }.f },
+        .{
+            .f = struct {
+                fn f(m: *Meta, _: *Db) void {
+                    m.root = .fromIndex(500); // root outside the store
+                }
+            }.f,
+        },
+        .{
+            .f = struct {
+                fn f(m: *Meta, _: *Db) void {
+                    m.page_count = 1_000_000; // a store that is not there
+                }
+            }.f,
+        },
+        .{
+            .f = struct {
+                fn f(m: *Meta, _: *Db) void {
+                    m.page_count = 3; // the root lies beyond the end
+                }
+            }.f,
+        },
+        .{
+            .f = struct {
+                fn f(m: *Meta, _: *Db) void {
+                    m.height = 4_000_000_000; // would be a very deep recursion
+                }
+            }.f,
+        },
+        .{
+            .f = struct {
+                fn f(m: *Meta, _: *Db) void {
+                    m.height = 2; // leaves are deeper than that
+                }
+            }.f,
+        },
         .{ .f = struct {
             fn f(m: *Meta, _: *Db) void {
                 m.height = 0;
@@ -717,24 +727,30 @@ test "reopen reports a tree that is not all there instead of walking into it" {
                 m.count += 1;
             }
         }.f },
-        .{ .f = struct {
-            fn f(m: *Meta, _: *Db) void {
-                m.root = .nil; // "empty", but with 12 keys
-            }
-        }.f },
-        .{ .f = struct {
-            fn f(m: *Meta, db: *Db) void {
-                m.root = db.store.free.items[0]; // a page of no tree (a stale leaf)
-            }
-        }.f },
-        .{ .f = struct {
-            fn f(m: *Meta, db: *Db) void {
-                // A cycle: the root's first child points back at the root.
-                const root = &db.store.slots.items[m.root.index()].node;
-                const child = &db.store.slots.items[root.kind.internal.children[0].index()].node;
-                child.kind.internal.children[0] = m.root;
-            }
-        }.f },
+        .{
+            .f = struct {
+                fn f(m: *Meta, _: *Db) void {
+                    m.root = .nil; // "empty", but with 12 keys
+                }
+            }.f,
+        },
+        .{
+            .f = struct {
+                fn f(m: *Meta, db: *Db) void {
+                    m.root = db.store.free.items[0]; // a page of no tree (a stale leaf)
+                }
+            }.f,
+        },
+        .{
+            .f = struct {
+                fn f(m: *Meta, db: *Db) void {
+                    // A cycle: the root's first child points back at the root.
+                    const root = &db.store.slots.items[m.root.index()].node;
+                    const child = &db.store.slots.items[root.kind.internal.children[0].index()].node;
+                    child.kind.internal.children[0] = m.root;
+                }
+            }.f,
+        },
         .{ .f = struct {
             fn f(m: *Meta, db: *Db) void {
                 db.store.slots.items[m.root.index()].node.kind.internal.children[1] = .fromIndex(77);
@@ -745,18 +761,22 @@ test "reopen reports a tree that is not all there instead of walking into it" {
                 db.store.slots.items[m.root.index()].node.kind.internal.children[1] = .nil;
             }
         }.f },
-        .{ .f = struct {
-            fn f(m: *Meta, db: *Db) void {
-                // A page of this tree was overwritten by a later transaction:
-                // what a stale slot looks like when its pages were reused.
-                db.store.slots.items[m.root.index()].written_by = m.txn_id + 1;
-            }
-        }.f },
-        .{ .f = struct {
-            fn f(m: *Meta, db: *Db) void {
-                db.store.slots.items[m.root.index()].node.len = 99; // more keys than a node holds
-            }
-        }.f },
+        .{
+            .f = struct {
+                fn f(m: *Meta, db: *Db) void {
+                    // A page of this tree was overwritten by a later transaction:
+                    // what a stale slot looks like when its pages were reused.
+                    db.store.slots.items[m.root.index()].written_by = m.txn_id + 1;
+                }
+            }.f,
+        },
+        .{
+            .f = struct {
+                fn f(m: *Meta, db: *Db) void {
+                    db.store.slots.items[m.root.index()].node.len = 99; // more keys than a node holds
+                }
+            }.f,
+        },
     };
     for (forgeries) |forge| {
         var db = try buildCanonical(gpa);

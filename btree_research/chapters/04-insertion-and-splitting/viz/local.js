@@ -196,13 +196,22 @@
       node = node.children[i];
     }
     var full = node.keys.length === this.maxKeys;
+    // What the program reserves before it changes anything: one new node for
+    // each full node in the unbroken run from the leaf upwards, plus one for
+    // a new root when that run reaches the root (README, "Reserve, then commit").
+    var need = 0;
+    while (need < path.length && path[path.length - 1 - need].node.keys.length === this.maxKeys) need++;
+    if (need === path.length) need++;
     var beforeKeys = rec ? node.keys.slice() : null;
     node.keys.splice(i, 0, key);
     this.size++;
     var hl = { nodes: {}, keys: {} };
     if (rec) { hl.nodes[node.id] = full ? 'split' : 'active'; hl.keys[node.id + ':' + key] = 'inserted'; }
     if (rec) push('insert-leaf', 'New keys always go into a leaf. ' + K + ' is placed in sorted position' +
-      (full ? '. The leaf now holds ' + (this.maxKeys + 1) + ' keys, one more than the ' + this.maxKeys + ' it may keep.' :
+      (full ? '. The leaf now holds ' + (this.maxKeys + 1) + ' keys, one more than the ' + this.maxKeys + ' it may keep. Before touching the leaf, the program took ' +
+        plural(need, 'new node') + ' from the pool: one for each full node in the unbroken run from the leaf upwards' +
+        (need === path.length + 1 ? ', plus one for a new root because that run reaches the root' : '') +
+        '. With the nodes in hand, the ' + (need === 1 ? 'split that follows' : 'splits that follow') + ' cannot fail.' :
         '; the leaf holds ' + plural(node.keys.length, 'key') + ' of at most ' + this.maxKeys + ', so nothing else has to change.'),
       hl, {
         log: 'leaf ' + '[' + beforeKeys.join(' ') + '] takes ' + key,

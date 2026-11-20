@@ -72,6 +72,7 @@ the chapter's Zig and Rust code, and is checked against their output at the bott
 <tr><td>A split</td><td>M keys: the lower M/2 stay, the middle key goes up, the rest move to a new node.</td><td>M&nbsp;&minus;&nbsp;1 keys: M/2&nbsp;&minus;&nbsp;1 stay, the middle key goes up, M/2&nbsp;&minus;&nbsp;1 move. Needs an even M.</td></tr>
 <tr><td>The node that splits has children</td><td>The children are divided with the keys: the left half keeps M/2 keys and M/2&nbsp;+&nbsp;1 children (M/2 rounded down), the new node gets the rest.</td><td>Each half gets M/2&nbsp;&minus;&nbsp;1 keys and M/2 children.</td></tr>
 <tr><td>The parent is full too</td><td>The split repeats one level higher, along the remembered path.</td><td>Cannot happen: the parent was made non-full on the way down.</td></tr>
+<tr><td>Out of memory</td><td>Every new node is taken before the leaf is touched. If one is missing, the tree stays exactly as it was.</td><td>Each split takes its node when it happens. Splits already made stay; the tree is valid and holds the same keys, but the new key is not in it.</td></tr>
 <tr><td>The root splits</td><td colspan="2">A new root with one key is created above the two halves. This is the only way the tree gets taller.</td></tr>
 </tbody>
 </table>

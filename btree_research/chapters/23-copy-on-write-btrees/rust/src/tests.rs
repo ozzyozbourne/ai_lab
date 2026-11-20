@@ -250,7 +250,10 @@ fn pages_replaced_by_a_commit_become_reusable_one_commit_later_not_at_once() {
     // its own meta slot has replaced the one of txn 12.
     db.put(14, 1400).unwrap();
     assert_eq!(db.previous.unwrap().txn_id, 13);
-    assert_eq!(before.iter().filter(|&&id| !db.store.is_live(id)).count(), 3);
+    assert_eq!(
+        before.iter().filter(|&&id| !db.store.is_live(id)).count(),
+        3
+    );
     db.validate().unwrap();
 }
 
@@ -344,7 +347,10 @@ fn a_full_scan_reaches_the_largest_key_range_lo_hi_excludes_hi() {
     assert_eq!(keys(db.view()), [0, 5, MAX_KEY]);
     assert_eq!(db.get(MAX_KEY), Some(1));
     // Half-open: stops before MAX_KEY.
-    assert_eq!(db.range(0, MAX_KEY).map(|e| e.key).collect::<Vec<_>>(), [0, 5]);
+    assert_eq!(
+        db.range(0, MAX_KEY).map(|e| e.key).collect::<Vec<_>>(),
+        [0, 5]
+    );
     assert_eq!(db.delete(MAX_KEY), Ok(Some(1)));
     db.validate().unwrap();
 }
@@ -484,7 +490,11 @@ impl Rng {
 }
 
 fn newest_readable(db: &Db) -> Option<u64> {
-    let ids = db.store.meta_slots.iter().filter_map(|s| Meta::decode(s).map(|m| m.txn_id));
+    let ids = db
+        .store
+        .meta_slots
+        .iter()
+        .filter_map(|s| Meta::decode(s).map(|m| m.txn_id));
     ids.max()
 }
 
@@ -560,7 +570,11 @@ fn restart_after_a_crash_at_any_write_with_either_slot_damaged_finds_a_complete_
             for w in 0.. {
                 let mut trial = clone_db(&db);
                 trial.crash_after = Some(w);
-                let result = if is_put { trial.put(key, value) } else { trial.delete(key) };
+                let result = if is_put {
+                    trial.put(key, value)
+                } else {
+                    trial.delete(key)
+                };
                 let done = result.is_ok();
                 if !done {
                     assert_eq!(result, Err(TxnError::Crashed));
@@ -631,7 +645,11 @@ fn a_long_life_of_crashes_damaged_slots_and_restarts_never_shows_a_mixed_tree() 
             let fuse = if rng.below(2) == 0 { 4 } else { 44 };
             db.crash_after = Some(rng.below(fuse) as usize);
         }
-        let result = if is_put { db.put(key, step) } else { db.delete(key) };
+        let result = if is_put {
+            db.put(key, step)
+        } else {
+            db.delete(key)
+        };
         let restart = match result {
             Ok(_) => {
                 db.crash_after = None; // the commit was shorter than the fuse
@@ -712,7 +730,7 @@ fn reopen_reports_a_tree_that_is_not_all_there_instead_of_walking_into_it() {
         |m, _| m.height = 2,                     // leaves are deeper than that
         |m, _| m.height = 0,
         |m, _| m.count += 1,
-        |m, _| m.root = PageId::NIL, // "empty", but with 12 keys
+        |m, _| m.root = PageId::NIL,       // "empty", but with 12 keys
         |m, db| m.root = db.store.free[0], // a page of no tree (a stale leaf)
         |m, db| {
             // A cycle: the root's first child points back at the root.

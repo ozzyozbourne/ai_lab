@@ -15,10 +15,9 @@ Prerequisites: [chapter 02](../02-searching-a-sorted-node/README.md) (lower boun
 [chapter 03](../03-btree-structure-and-search/README.md) (node layout, invariants, search,
 `validate`). The node type, `get` and `validate` used here are the ones from chapter 03.
 
-Terms: the **order** M is the maximum number of children. A node holds at most M - 1
-keys and, unless it is the root, at least ceil(M/2) - 1. All examples use M = 4, so a
-node has 1 to 3 keys. A node with M - 1 keys is **full**. A node with M keys is
-**overfull**: that state is not allowed to last.
+Two new terms: a node with M - 1 keys, the most it may keep, is **full**. A node with
+M keys is **overfull**: that state is not allowed to last. All examples use order M = 4,
+so a node has 1 to 3 keys.
 
 ## The idea in plain words
 
@@ -65,8 +64,9 @@ is rare. Every split creates exactly one node (a root split creates two: the rig
 and the new root), so a tree never took more splits than it has non-root nodes. Every
 non-root node keeps at least m = ceil(M/2) - 1 keys, so a tree with N keys has at most
 (N - 1) / m of them, and it took fewer than N / m splits to build. Spread over the N
-inserts, that is less than one split per m inserts. This is the **amortised** split cost: for M = 64 it is at most one
-split per 31 inserts, however unlucky a single insert may be.
+inserts, that is less than one split per m inserts. This is the **amortised** split
+cost: for M = 64 it is at most one split per 31 inserts, however unlucky a single insert
+may be.
 
 ## A worked example by hand
 
@@ -155,7 +155,7 @@ Layout of both projects:
 | `base_insert` | `put`, bottom-up |
 | `base_btree` | the tree type that ties them together |
 | `topdown` | `put`, top-down (textbook) |
-| `measure` | fill and split counts after N inserts |
+| `measure` | fill and split counts after N inserts (in Zig the order is a `comptime` parameter, so the scenario loops over orders with `inline for`) |
 | `scenario` | the output of `run` |
 
 The `base_*` files are copies from chapter 05 (the complete tree of Part I) without
@@ -197,6 +197,10 @@ pub fn put(comptime Tree: type, tree: *Tree, gpa: Allocator, key: u64, value: u6
 }
 ```
 
+`insertEntry(i, k, v)` opens a gap at index `i` and writes the key and value there.
+`insertChild(i, c)` does the same for a child pointer. It is called first, while the
+node still has `len + 1` children.
+
 Three decisions are worth noticing.
 
 **The path is an array, not parent pointers.** Nodes do not know their parent. A parent
@@ -214,15 +218,16 @@ split travels upwards only as long as each node it reaches is already full, so `
 counts the unbroken run of full nodes from the leaf upwards and needs one node for each.
 A full node higher up, above a node with room, does not count: the split stops below
 it. If the run reaches the root, one more node is needed for the new root. All of them
-are taken from the pool before the tree is touched. If the pool cannot
-deliver, the `errdefer` hands back what was taken and `put` returns `error.OutOfMemory`
-with the tree exactly as it was.
+are taken from the pool before the tree is touched. If the pool cannot deliver, the
+`errdefer` hands back what was taken and `put` returns `error.OutOfMemory` with the tree
+exactly as it was.
 
 ### Zig: top-down `put` (`zig/src/topdown.zig`)
 
 This is the insert of Cormen, Leiserson, Rivest and Stein ("B-TREE-INSERT"), textbook
 material. Its rule: never walk into a full node. A full child is split *before* it is
-entered, so the node we stand in always has room for a median coming up.
+entered, so the node we stand in always has room for a median coming up. The listing
+is condensed: the overwrite check and the split of a full root are left out.
 
 ```zig
 // Loop invariant: `node` is NOT full, so it can take one more key.
@@ -260,12 +265,6 @@ One pass, no path, no walk back up. The costs:
 - **A failed allocation leaves a different tree.** Each split is complete before the next
   begins, so after `error.OutOfMemory` the tree is valid and holds the same keys, but
   splits that already happened stay. Bottom-up leaves the tree unchanged.
-
-### Zig: measurements (`zig/src/measure.zig`)
-
-`build(M, variant, gpa, keys)` inserts distinct keys into an empty tree and returns the
-shape, the number of splits and the largest number of splits in one `put`. The order is
-a `comptime` parameter, so the scenario loops over orders with `inline for`.
 
 ### Rust: the same code, three differences
 
@@ -339,13 +338,15 @@ How to read it:
   2 of 3: the tree is two thirds full, not half. For M = 5 it is 2 of 4, exactly 50%.
   As M grows, (M / 2) / (M - 1) approaches one half, and the measured fill follows:
   57.1%, 50.8%, 50.1%. "Ascending inserts give 50%" is the large-M statement.
-- **Random keys.** Half-empty nodes keep receiving keys. The measured fill rises from
-  64.2% (M = 4) to about 69 to 70% (M = 32 to 128). The textbook result (Yao, 1978; not
-  derived here) is that the expected fill approaches ln 2 = 69.3% as the order grows.
-  The row for M = 256 shows 74.1%: with only 529 nodes for 100000 keys this tree is too
-  small for the limit to apply. Here the fill swings by several points with the seed
-  and with the number of keys: seeds 1 to 8 give 69.9 to 74.1% at 100000 keys, 64.7 to
-  68.5% at 70000 and 71.5 to 74.2% at 200000 (measured with the visualization's model).
+- **Random keys.** Half-empty nodes keep receiving keys. Among the even orders the
+  measured fill rises from 64.2% (M = 4) to about 69 to 70% (M = 32 to 128). The odd
+  orders are not on that curve: the full table has 66.9% for M = 3 and 67.4% for M = 5.
+  One difference between them: an odd order splits into two equal halves, an even order
+  leaves the right half one key smaller. The textbook result (Yao, 1978; not derived
+  here) is that the expected fill approaches ln 2 = 69.3% as the order grows. The row
+  for M = 256 shows 74.1%: with only 529 nodes for 100000 keys this tree is too small
+  for the limit to apply. At this size the fill swings by several points with the seed
+  and with the number of keys (try it on the visualization's second page).
 - **Random is not always fuller.** At M = 4 the ascending tree (66.6%) is fuller than
   the random one (64.2%).
 - **Amortised cost.** "per 1000 puts" falls roughly in proportion to 1 / M, while "most
@@ -378,11 +379,8 @@ and 4.4, [`research/turso.md`](../../research/turso.md) sections 8 and 9).
 - *The parent stack is only a hint.* Postgres remembers the path too
   (`BTStackData`, `postgres/src/include/access/nbtree.h:743-748`), but other backends
   may split pages while this one works, so the stack "can become stale due to concurrent
-  page splits and page deletions" (`nbtree.h:739-741`). `_bt_getstackbuf`
-  (`nbtinsert.c:2348-2453`) finds the parent again starting from the remembered
-  position, and the median's counterpart, the downlink, is then inserted with a recursive
-  `_bt_insertonpg` at `stack->bts_offset + 1` (`nbtinsert.c:2247-2249`). In our
-  single-threaded tree the path is always exact. Chapter 20 covers the concurrent case.
+  page splits and page deletions" (`nbtree.h:739-741`). In our single-threaded tree the
+  path is always exact. Chapter 20 covers the concurrent case.
 
 **Turso, overflow cell then balance** (`turso/core/storage/btree.rs`).
 
@@ -422,9 +420,6 @@ measurements use it.
 - *What an arena alone would cost:* nothing in this chapter, because an insert-only tree
   never frees a node (a test asserts `destroyed == 0`). It stops working in chapter 05,
   where merges give nodes back.
-- *Reservation in one call:* `MemoryPool.addCapacity(gpa, n)` pre-allocates n slots, after
-  which n calls of `create` cannot fail (tested in `tests_alloc.zig`). `put` reserves
-  through `create` instead, to keep one pool interface for all pools.
 
 **`DirectNodes` exists for the tests.** It makes every node its own allocation. With
 `std.testing.allocator` a node the tree forgets is then a reported leak, and
@@ -456,22 +451,23 @@ heap allocations, which the Zig pool does not have.
 - **Forgetting the children.** In an interior split the children right of the median
   move with their keys (worked example, key 2). Losing or duplicating one pointer breaks
   the tree in a way only `validate` notices.
-- **Inserting the separator and the child in the wrong positions.** The median goes to
-  index `i` of the parent and the right half to child index `i + 1`, where `i` is the
-  child index followed on the way down.
+- **Inserting the separator and the child in the wrong positions or order.** The median
+  goes to index `i` of the parent and the right half to child index `i + 1`, where `i`
+  is the child index followed on the way down. `insertChild` comes before `insertEntry`.
 - **Allocating in the middle of a split chain.** If the second of three splits fails,
   the tree has an overfull node and no way back. Count first, allocate everything, then
   change the tree.
 - **Treating an overwrite as an insert.** `put` of an existing key must not change `len`
   and must not split anything in the bottom-up version. The top-down version in this
   chapter does split full nodes on its way to an existing key; a test documents it.
-- **Reading "50% for ascending keys" as exact.** It depends on M and on the split point;
-  measure before quoting a number.
 
 ## Exercises
 
-1. (easy) Insert 1, 2, ..., 10 in this order into an empty tree with M = 4, bottom-up,
-   by hand. Which puts split a node?
+1. (easy) Insert 1, 2, ..., 13 in this order into an empty tree with M = 4, bottom-up,
+   by hand. Which puts split a node? Draw the root and its children just before and
+   after it splits at 13, and check your tree against part 3 of the program output.
+   Then continue with 14, 15, ...: which key is the first to split an interior node
+   that is not the root, and where does its median go?
 2. (easy) The table shows 50.0% fill for ascending keys at M = 3 and M = 5 but 66.6% at
    M = 4. Derive all three numbers from the split point.
 3. (medium) Prove that building a tree of N keys takes fewer than N / (ceil(M/2) - 1)

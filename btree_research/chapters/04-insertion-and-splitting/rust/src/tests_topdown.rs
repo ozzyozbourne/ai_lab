@@ -87,6 +87,45 @@ fn the_worked_example_continued_put_2_splits_a_leaf_and_then_the_interior_root()
 }
 
 #[test]
+fn exercise_1_ascending_keys_the_first_interior_splits_root_at_13_below_the_root_at_22() {
+    let mut tree = BTree::new(4);
+    for key in 1..13 {
+        tree.put(key, key).unwrap();
+    }
+    expect_tree(&tree, "[3 6 9]\n[1 2] [4 5] [7 8] [10 11 12]\n");
+    // 13: leaf [10 11 12 13], 12 goes up. Root [3 6 9 12] with five
+    // children: 9 goes up, [3 6] keeps three children, [12] gets two.
+    let before = tree.counters;
+    tree.put(13, 13).unwrap();
+    expect_tree(
+        &tree,
+        "[9]\n[3 6] [12]\n[1 2] [4 5] [7 8] | [10 11] [13]\n",
+    );
+    assert_eq!(tree.counters.splits - before.splits, 2);
+    assert_eq!(tree.counters.root_splits - before.root_splits, 1);
+    // 14 to 21: two leaf splits (at 16 and 19) fill the interior node [12 15 18].
+    for key in 14..22 {
+        tree.put(key, key).unwrap();
+    }
+    expect_tree(
+        &tree,
+        "[9]\n[3 6] [12 15 18]\n[1 2] [4 5] [7 8] | [10 11] [13 14] [16 17] [19 20 21]\n",
+    );
+    // 22: leaf [19 20 21 22], 21 goes up. [12 15 18 21] is an interior node
+    // that is NOT the root: its median 18 goes into the existing root, which
+    // has room. No new root, same height.
+    let before = tree.counters;
+    tree.put(22, 22).unwrap();
+    expect_tree(
+        &tree,
+        "[9 18]\n[3 6] [12 15] [21]\n[1 2] [4 5] [7 8] | [10 11] [13 14] [16 17] | [19 20] [22]\n",
+    );
+    assert_eq!(tree.counters.splits - before.splits, 2);
+    assert_eq!(tree.counters.root_splits - before.root_splits, 0);
+    assert_eq!(tree.validate(), Ok(()));
+}
+
+#[test]
 fn neither_variant_is_always_the_taller_one() {
     // The canonical keys make the top-down tree taller (height 3 against 2,
     // see the first test of this file). These ten keys make it SHORTER. The

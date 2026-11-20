@@ -16,14 +16,11 @@ Prerequisites: [chapter 02](../02-searching-a-sorted-node/README.md) (lower boun
 and [chapter 04](../04-insertion-and-splitting/README.md) (insert and split).
 
 This chapter's code is the complete in-memory B-tree of Part I. Search and insertion are
-in it, but they are explained in chapters 03 and 04. In short: `get` walks from the root
-to a leaf and runs a lower-bound search in every node; `put` inserts into a leaf and,
-if the leaf now holds M keys, splits it around the median and pushes the median into the
-parent, which may split in turn, up to the root.
+in it, but they are explained in chapters 03 and 04.
 
 ## The idea in plain words
 
-A B-tree of order M (M = 4 in all examples) promises three things:
+A B-tree of order M (M = 4 in most examples) promises three things:
 
 1. Keys are sorted inside a node, and a separator key in a parent lies between the keys
    of the two children next to it.
@@ -46,16 +43,29 @@ and smaller than everything on the right, so it is a valid separator. Then remov
 predecessor from its leaf. Every delete has now become a leaf delete.
 
 **Part two: repair an underflow from the parent.** A node that lost a key may have
-ceil(M/2) - 2 keys, one too few. Its parent looks at the node's direct siblings:
+ceil(M/2) - 2 keys, one too few. Its parent looks at the node's **direct siblings**: the
+neighbours on its left and right under the same parent. A first or last child has only
+one. There are two repairs:
 
-- **Borrow.** If a sibling has more than the minimum, one key rotates through the
-  parent: the separator between the two nodes moves down into the underfull node, and
-  the sibling's nearest key moves up to become the new separator. The key cannot go
-  directly from sibling to sibling, because the separator lies between them in sorted
-  order. In interior nodes one child pointer moves with the key.
-- **Merge.** If no direct sibling can spare a key, the node, one sibling, and the
-  separator between them become one node. It always fits: (min - 1) + min + 1 = 2 * min
-  keys, and 2 * (ceil(M/2) - 1) is at most M - 1. One node is freed.
+- **Borrow.** One key rotates through the parent: the separator between the two nodes
+  moves down into the underfull node, and the sibling's nearest key moves up to become
+  the new separator. The key cannot go directly from sibling to sibling, because the
+  separator lies between them in sorted order. In interior nodes one child pointer
+  moves with the key.
+- **Merge.** The node, one sibling, and the separator between them become one node. It
+  always fits: (min - 1) + min + 1 = 2 * min keys, and 2 * (ceil(M/2) - 1) is at most
+  M - 1. One node is freed.
+
+The rule, in the order this guide's code and visualization apply it:
+
+1. If the left sibling has more than the minimum, borrow from it.
+2. Otherwise, if the right sibling has more than the minimum, borrow from it.
+3. Otherwise merge with the left sibling, or with the right one if the node is the
+   first child.
+
+Any order gives a valid tree; a fixed order lets you check your drawing against the
+program. A node next to the underfull one under a different parent (a cousin) cannot
+help: no single separator lies between the two.
 
 A borrow leaves the parent's key count unchanged, so the repair ends there. A merge
 takes one key out of the parent, so the parent may now underflow, and its own parent
@@ -149,6 +159,28 @@ is empty, and the tree shrinks from three levels to two:
   [4 5] [7] [11 12]
 ```
 
+**Underfull is not the same as empty.** With M = 4 the minimum is one key, so every
+underfull node above was empty. With M = 5 the minimum is two. Keys 1 to 13 in
+ascending order with M = 5:
+
+```
+            [3 6 9]
+  [1 2]  [4 5]  [7 8]  [10 11 12 13]
+```
+
+Delete 3, an interior key. Its predecessor 2 moves up and leaves `[1]`: one key where
+two are required. `[1]` is the first child, and its only sibling `[4 5]` is at the
+minimum, so they merge with the separator (now 2):
+
+```
+            [6 9]
+  [1 2 4 5]  [7 8]  [10 11 12 13]
+```
+
+Delete 7: `[8]` is underfull, the left sibling has four keys, so 6 moves down and 5
+moves up: `[5 9]` over `[1 2 4] [6 8] [10 11 12 13]`. (Not in the program output; the
+tests and the visualization at order 5 show it.)
+
 ## Code walk-through
 
 Both programs print exactly [`expected_output.txt`](expected_output.txt). Parts 2 and 3
@@ -237,8 +269,7 @@ fn removeFrom(comptime Tree: type, tree: *Tree, gpa: Allocator, node: *Tree.Node
 ```
 
 `fixUnderflow(parent, i)` returns at once if child `i` still has `min_keys` keys.
-Otherwise it tries the left sibling, then the right sibling, then merges (with the left
-sibling if there is one). `borrowFromLeft` is five moves:
+Otherwise it applies the three-step rule above. `borrowFromLeft` is five moves:
 
 ```zig
 if (!child.leaf) child.insertChild(0, left.children[left.len].?);
@@ -256,8 +287,9 @@ no keys after the recursion, its first child (or nothing, for a leaf) becomes th
 and the old root is freed.
 
 Deletion never allocates and cannot fail. Insertion can, so `put` first reserves every
-node the split chain will need (one per full node on the path, plus one if the root
-splits) and only then changes the tree. A failed allocation therefore leaves the tree
+node the split chain will need (one per node in the unbroken run of full nodes from
+the leaf upwards, plus one if that run reaches the root) and only then changes the
+tree. A failed allocation therefore leaves the tree
 untouched. `put` also restores the pool's `usage` counters; the only trace of a failed
 `put` is a slot that stays on the pool's free list. `tests_insert.zig` checks this with
 `std.testing.FailingAllocator` and `std.testing.checkAllAllocationFailures`.
@@ -339,10 +371,10 @@ happen --- a scan moving in the opposite direction might miss the items if so.)"
 (`postgres/src/backend/access/nbtree/README:235-239`). Empty pages are removed later by
 VACUUM, and the tree never gets shorter. Chapter 24 covers that.
 
-**Milvus** uses the Go library `google/btree` with degree 2 in two in-memory places
+**Milvus** uses the Go library `google/btree` in two in-memory places
 (`milvus/internal/kv/mem/mem_kv.go:53`,
-`milvus/internal/streamingcoord/server/broadcaster/schema.go:90`). The library's
-delete code is not part of the Milvus checkout and was not inspected (unverified).
+`milvus/internal/streamingcoord/server/broadcaster/schema.go:90`); its delete code is
+not in the checkout and was not inspected.
 
 The pattern: strict "at least half full" is a textbook guarantee. Engines that store
 variable-size records count bytes, repair late or never, and accept emptier pages in
@@ -373,8 +405,9 @@ when needed. `destroy` pushes the slot on the list. Memory returns to `gpa` only
 `deinit`. The model tests run all three pools and require identical trees.
 
 **Lifetime.** The pool lives exactly as long as the tree; `tree.deinit` returns every
-node and then calls `pool.deinit`. A node's lifetime ends at the merge or root shrink
-that unlinks it.
+node it can reach and then calls `pool.deinit`. It does not assert anything, so it also
+works on a tree that `validate` has just rejected. A node's lifetime ends at the merge
+or root shrink that unlinks it.
 
 **What goes wrong with other choices.**
 - An `ArenaAllocator` cannot free a single node. Under the workload of part 4 it would
@@ -409,10 +442,11 @@ heap allocations, so the slab is not the full pool of the Zig version.
   sibling's key straight into the underfull node leaves the old separator on the wrong
   side of it. `validate` reports `KeyOutsideParentBounds`.
 - **Forgetting the child pointer** when borrowing or merging interior nodes. The key
-  count looks right, the child count does not (`MissingChild`), or a subtree becomes
+  count looks right, the child count does not (`MissingChild`), and a subtree becomes
   unreachable.
 - **Leaving the separator in the parent on a merge.** The parent then has as many keys
-  as children.
+  as children (`MissingChild` again). `validate` returns only the first broken
+  invariant it meets, top down, so test for "an error", not for one name.
 - **Repairing in the wrong place.** The underfull node cannot fix itself: it has no
   access to its siblings. Check the child after the recursive call returns, in the
   parent.

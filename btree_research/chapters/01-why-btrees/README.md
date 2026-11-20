@@ -102,22 +102,21 @@ keeping such a tree balanced while keys come and go: chapters 03 to 05.
 
 ### Why height at all: the one-level trap
 
-Before accepting a tree, try the cheap fix for the sorted array: cut it into
-page-sized chunks and keep a small **directory** with one slot per chunk (the first key
-of the chunk and where the chunk is, 16 bytes). A lookup searches the directory, then
-one chunk.
-An insert shifts entries inside one chunk only.
+Before accepting a tree, try the cheap fix for the sorted array: cut it into page-sized
+chunks and keep a small **directory** with one slot per chunk (the first key of the
+chunk and where the chunk is, 16 bytes). A lookup searches the directory, then one
+chunk. An insert shifts entries inside one chunk only.
 
-It works until you look at the directory: a sorted array with one slot per chunk. When
-a chunk fills up and splits, a slot is inserted into it, shifting everything behind. The cost of a change is again proportional to the size of a flat array, now
-divided by 256. For a billion keys the directory has 3.9 million slots and fills 15,259
-pages.
+It works until you look at the directory: a sorted array with one slot per chunk. When a
+chunk fills up and splits, a slot is inserted into it, shifting everything behind. The
+cost of a change is again proportional to the size of a flat array, now divided by 256.
+For a billion keys the directory has 3.9 million slots and fills 15,259 pages.
 
-The repair is the same trick again: cut the directory into chunks and put a directory
-on top of it. Repeat until the top directory fits in one page. Now you have built a
-tree, each level a couple of hundred times smaller than the one below (256 with these
-16-byte slots, 171 for candidate 3's nodes, which also hold values), and a change
-touches a few pages per level in the worst case (chapter 04 shows exactly which) instead of a number
+The repair is the same trick again: cut the directory into chunks and put a directory on
+top of it. Repeat until the top directory fits in one page. Now you have built a tree,
+each level a couple of hundred times smaller than the one below (256 with these 16-byte
+slots, 171 for candidate 3's nodes, which also hold values), and a change touches a few
+pages per level in the worst case (chapter 04 shows exactly which) instead of a number
 of pages that grows with n. That is why height exists: a one-level structure costs
 O(number of pages) per change, a tree costs O(height).
 

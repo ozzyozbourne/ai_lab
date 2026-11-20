@@ -16,7 +16,7 @@ use std::sync::atomic::Ordering;
 
 use crate::base_node::{Node, NodeId, OutOfNodes};
 use crate::base_search::{child_index, lower_bound};
-use crate::tree::{Tree, fresh_node};
+use crate::tree::{Hook, Point, Tree, emit, fresh_node};
 
 pub type Held<'a> = (NodeId, RwLockWriteGuard<'a, Node>);
 
@@ -27,6 +27,7 @@ pub fn insert_at_leaf(
     top_is_root: bool,
     key: u64,
     value: u64,
+    hook: Hook<'_>,
 ) -> Result<Option<u64>, OutOfNodes> {
     let (_, leaf) = path.last_mut().expect("the path ends at a leaf");
     let at = lower_bound(leaf.key_slice(), key);
@@ -82,9 +83,16 @@ pub fn insert_at_leaf(
             new_root.internal_mut().children[0] = *left_id;
             new_root.internal_insert_at(0, separator, right_id);
             drop(fresh_node(tree, root_id, new_root));
-            // Publish. Under latch coupling a thread that read the OLD root
-            // id and is waiting for its latch will notice this store when it
-            // gets the latch, and start again (coupled::latch_root).
+            // PUBLISH LAST. Nobody holds a latch on the new root, and nobody
+            // needs one while it is unreachable. The store below makes it
+            // reachable for every thread at once, so the node must have been
+            // written before it. Stored earlier, a reader could latch the
+            // new root (its latch is free) and read the empty placeholder
+            // leaf that the table was filled with.
+            emit(hook, Point::RootBuilt, root_id);
+            // Under latch coupling a thread that read the OLD root id and is
+            // waiting for its latch will notice this store when it gets the
+            // latch, and start again (coupled::latch_root).
             tree.set_root(root_id);
         }
     }

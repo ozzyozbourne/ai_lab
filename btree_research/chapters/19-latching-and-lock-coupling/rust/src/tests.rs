@@ -3,8 +3,8 @@
 //!   1. single-threaded: every protocol against the oracle and against the
 //!      other protocols; a full node table;
 //!   2. the test hook on ONE thread: which latches an operation holds;
-//!   3. the test hook with TWO threads (probe.rs): one operation frozen, the
-//!      other one run, no sleeps;
+//!   3. the test hook with TWO OR MORE threads (probe.rs): one operation
+//!      frozen, the others run one at a time, no sleeps;
 //!   4. bounded stress with up to 4 threads, then validate and oracle.
 
 use std::sync::Mutex;
@@ -16,6 +16,7 @@ use crate::ops::{Config, Op, OpStream, Oracle, Weights};
 use crate::prng::SplitMix64;
 use crate::probe::{self, Actor, OpSpec, Outcome, Pause, ProbeError, value_of};
 use crate::stress;
+use crate::base_node::Kind;
 use crate::{CANONICAL, Event, NodeId, OutOfNodes, PROTOCOLS, Point, Protocol, Tree};
 
 fn canonical_tree(protocol: Protocol) -> Tree {
@@ -222,6 +223,10 @@ fn latch_coupling_the_safe_node_rule_decides_which_latches_a_put_keeps() {
     // Leaf #1 has room: everything above it is released.
     let (_, spy) = put(11, value_of(11));
     assert_eq!(spy.at_leaf, [1]);
+    // A writer couples too: it held #7 while it latched #2, and #2 while it
+    // latched #1. Looking at a child and releasing the parent BEFORE the
+    // child is latched would show up here as 1.
+    assert_eq!(spy.max_held, 2);
 
     // Leaf #3 is full, its parent #6 has room: the split stops at #6, so #6
     // stays latched and the root does not.
@@ -349,6 +354,76 @@ fn probe_what_a_frozen_writer_allows() {
 }
 
 #[test]
+fn probe_mid_descent_the_parent_is_still_latched_when_the_child_has_just_been_latched() {
+    let tree = canonical_tree(Protocol::LatchCoupling);
+    let after = |node: usize| Pause {
+        point: Point::Latched,
+        node: Some(NodeId::from_index(node)),
+    };
+    // Writer: put 26 has just latched #6. It has not looked at #6 yet, so it
+    // still holds the root, and even a reader bound for #2 waits there.
+    let outcome = probe::probe(&tree, OpSpec::Put(26), after(6), OpSpec::Get(12));
+    assert_eq!(outcome, Ok(waits_at(7)));
+    // Reader: get 12 has just latched leaf #1 and still holds #2 shared. A
+    // put under #2 waits at #2; a reader passes; the root is free again.
+    let behind_reader = |b: OpSpec| probe::probe(&tree, OpSpec::Get(12), after(1), b);
+    assert_eq!(behind_reader(OpSpec::Put(7)), Ok(waits_at(2)));
+    assert_eq!(behind_reader(OpSpec::Get(7)), Ok(DONE));
+    assert_eq!(behind_reader(OpSpec::Put(16)), Ok(DONE));
+    tree.validate().unwrap();
+    assert!(tree.nothing_locked());
+}
+
+#[test]
+fn convoy_a_reader_that_waits_keeps_the_root_and_a_writer_bound_elsewhere_waits_behind_it() {
+    let tree = canonical_tree(Protocol::LatchCoupling);
+    // A = put 26 is frozen holding #6 and #3 (exclusive). With two threads,
+    // `put 11` finishes next to it (see probe_what_a_frozen_writer_allows).
+    let outcomes = probe::convoy(
+        &tree,
+        OpSpec::Put(26),
+        Pause::at(Point::AtLeaf),
+        &[
+            OpSpec::Get(17), // B: waits at #6, HOLDING #7 shared
+            OpSpec::Get(12), // C: shares #7 with B and gets through
+            OpSpec::Put(11), // D: needs #7 exclusive; B is in its way, not A
+        ],
+    );
+    assert_eq!(outcomes, Ok(vec![waits_at(6), DONE, waits_at(7)]));
+    tree.validate().unwrap();
+    assert!(tree.nothing_locked());
+    for key in [26, 11] {
+        assert_eq!(tree.get(key), Some(value_of(key)));
+    }
+}
+
+#[test]
+fn convoy_one_reader_stalled_on_a_leaf_closes_the_tree_for_writers_three_waits_deep() {
+    let tree = canonical_tree(Protocol::LatchCoupling);
+    // A = get 25 is frozen on leaf #3 with one SHARED latch.
+    let outcomes = probe::convoy(
+        &tree,
+        OpSpec::Get(25),
+        Pause::at(Point::AtLeaf),
+        &[
+            OpSpec::Put(26), // waits at #3 for A, holding #6 exclusive
+            OpSpec::Get(17), // waits at #6 for the put, holding #7 shared
+            OpSpec::Get(12), // shares #7 and gets through
+            OpSpec::Put(11), // waits at #7 for the get 17
+        ],
+    );
+    assert_eq!(
+        outcomes,
+        Ok(vec![waits_at(3), waits_at(6), DONE, waits_at(7)])
+    );
+    tree.validate().unwrap();
+    assert!(tree.nothing_locked());
+    for key in [26, 11] {
+        assert_eq!(tree.get(key), Some(value_of(key)));
+    }
+}
+
+#[test]
 fn probe_reports_a_pause_point_that_is_never_reached() {
     let tree = canonical_tree(Protocol::GlobalMutex);
     // A global protocol never emits `RootLoaded`.
@@ -394,6 +469,87 @@ fn latch_coupling_a_reader_that_latched_a_replaced_root_starts_again() {
     assert_eq!(result, Ok(Some(2000)));
     assert_eq!(tree.stats.root_restarts.load(Ordering::Relaxed), 1);
     assert!(tree.nothing_locked());
+}
+
+#[test]
+fn latch_coupling_a_writer_that_latched_a_replaced_root_starts_again() {
+    let tree = Tree::new(4, Protocol::LatchCoupling, 16);
+    for key in [10, 20, 5] {
+        tree.put(key, value_of(key)).unwrap();
+    }
+
+    // The writer has read "root = #0" and holds nothing.
+    let writer = Actor::new(&tree, OpSpec::Put(30), Some(Pause::at(Point::RootLoaded)));
+    let result = thread::scope(|scope| {
+        let handle = scope.spawn(|| writer.run());
+        writer.wait_settled();
+        let frozen = writer.frozen();
+        // The root splits: #0 keeps (5 6); (10 20) move to the new leaf #1.
+        let put = tree.put(6, value_of(6));
+        let root_after = tree.root();
+        // Release and join BEFORE asserting (see the reader's test above).
+        writer.release();
+        let result = handle.join().unwrap();
+        assert!(frozen);
+        assert_eq!(put, Ok(None));
+        assert_eq!(root_after.index(), 2);
+        result
+    });
+    assert_eq!(result, Ok(None));
+    assert_eq!(tree.stats.root_restarts.load(Ordering::Relaxed), 1);
+    tree.validate().unwrap();
+    // Without the second look the writer would put 30 into #0, the LEFT
+    // leaf, to the left of separator 10: no search would ever find it.
+    assert_eq!(tree.get(30), Some(3000));
+    assert_eq!(
+        dump_to_string(&tree),
+        "height 2, 5 keys, 3 nodes\n\
+         \x20 level 0: #2[10]\n\
+         \x20 leaves : #0(5 6) -> #1(10 20 30)\n"
+    );
+    assert!(tree.nothing_locked());
+}
+
+#[test]
+fn a_new_root_is_complete_before_it_is_published_and_published_before_its_latch_is_needed() {
+    for protocol in PROTOCOLS {
+        let tree = Tree::new(4, protocol, 16);
+        for key in [10, 20, 5] {
+            tree.put(key, value_of(key)).unwrap();
+        }
+
+        // put 6 splits the root leaf #0 and is frozen with the new root #2
+        // built but not yet published.
+        let writer = Actor::new(&tree, OpSpec::Put(6), Some(Pause::at(Point::RootBuilt)));
+        let new_root_id = NodeId::from_index(2);
+        let (frozen, published, keys, children, result) = thread::scope(|scope| {
+            let handle = scope.spawn(|| writer.run());
+            writer.wait_settled();
+            let frozen = writer.frozen();
+            // Read while the writer is frozen. Nobody holds the new node's
+            // latch: it is not reachable yet.
+            let published = tree.root();
+            let (keys, children) = {
+                let node = tree.table.read(new_root_id);
+                let children = match &node.kind {
+                    Kind::Internal(internal) => internal.children[..2].to_vec(),
+                    Kind::Leaf(_) => Vec::new(),
+                };
+                (node.key_slice().to_vec(), children)
+            };
+            writer.release();
+            (frozen, published, keys, children, handle.join().unwrap())
+        });
+
+        assert!(frozen, "{protocol:?}");
+        assert_eq!(published.index(), 0); // still the old root
+        assert_eq!(keys, [10]); //           and #2 is finished
+        assert_eq!(children, [NodeId::from_index(0), NodeId::from_index(1)]);
+        assert_eq!(result, Ok(None));
+        assert_eq!(tree.root(), new_root_id);
+        tree.validate().unwrap();
+        assert!(tree.nothing_locked());
+    }
 }
 
 // ------------------------------------------------------------------ 4. stress

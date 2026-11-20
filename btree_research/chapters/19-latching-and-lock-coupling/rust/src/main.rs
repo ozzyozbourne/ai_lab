@@ -1,10 +1,10 @@
 //! Demo program of chapter 19. Its stdout is exactly ../expected_output.txt
 //! (checked by the test at the bottom) and is identical to the Zig program's.
 //!
-//! Sections 3, 4 and 6 start threads, and still print the same text on every
-//! run: sections 3 and 4 because the second thread only runs while the first
-//! is frozen by the test hook, section 6 because it prints only facts that
-//! do not depend on the interleaving.
+//! Sections 3, 4, 6 and 7 start threads, and still print the same text on
+//! every run: sections 3, 4 and 7 because the other threads only run while
+//! the first is frozen by the test hook, section 6 because it prints only
+//! facts that do not depend on the interleaving.
 
 use std::io::{self, Write};
 use std::sync::atomic::Ordering;
@@ -30,7 +30,8 @@ fn run(w: &mut dyn Write) -> io::Result<()> {
     probe_demo(w)?;
     root_demo(w)?;
     out_of_nodes_demo(w)?;
-    stress_demo(w)
+    stress_demo(w)?;
+    convoy_demo(w)
 }
 
 fn canonical_tree(protocol: Protocol) -> Tree {
@@ -323,6 +324,50 @@ fn stress_demo(w: &mut dyn Write) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Four threads. A waiting thread keeps the latches it already has, so a
+/// thread can be stopped by one that is itself only waiting.
+fn convoy_demo(w: &mut dyn Write) -> io::Result<()> {
+    writeln!(
+        w,
+        "\n== 7. Latch coupling, four threads: A = put 26 is frozen as in section 3; then B, C, D start, one after the other =="
+    )?;
+    let tree = canonical_tree(Protocol::LatchCoupling);
+    let others = [
+        (OpSpec::Get(17), "under #6"),
+        (OpSpec::Get(12), "under #2"),
+        (OpSpec::Put(11), "under #2"),
+    ];
+    let ops = others.map(|(op, _)| op);
+    let outcomes = probe::convoy(&tree, OpSpec::Put(26), Pause::at(Point::AtLeaf), &ops)
+        .map_err(|e| io::Error::other(format!("{e:?}")))?;
+    for (((op, note), outcome), name) in others.into_iter().zip(outcomes).zip("BCD".chars()) {
+        let label = format!("{} {} ({})", op.name(), op.key(), note);
+        match outcome {
+            Outcome::Completed => writeln!(w, "  {name} = {label:<18} finishes")?,
+            Outcome::Blocked(node) => {
+                writeln!(w, "  {name} = {label:<18} waits at #{}", node.index())?;
+            }
+        }
+    }
+    writeln!(
+        w,
+        "D needs nothing that A holds. It waits for the shared latch B keeps on the root #7 while B itself waits at #6."
+    )?;
+    tree.validate().expect("valid");
+    let show = |v: Option<u64>| v.map_or("null".to_string(), |v| v.to_string());
+    writeln!(
+        w,
+        "after A is released: get 26 = {}, get 11 = {}, valid=yes, latches still held: {}",
+        show(tree.get(26)),
+        show(tree.get(11)),
+        if tree.nothing_locked() {
+            "none"
+        } else {
+            "SOME"
+        }
+    )
 }
 
 #[cfg(test)]

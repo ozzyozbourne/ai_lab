@@ -15,7 +15,7 @@
 use crate::base_node::{Kind, OutOfNodes};
 use crate::base_search::{child_index, lower_bound};
 use crate::insert::{Held, insert_at_leaf};
-use crate::tree::Tree;
+use crate::tree::{Hook, Tree};
 
 pub fn get(tree: &Tree, key: u64) -> Option<u64> {
     let mut id = tree.root();
@@ -33,7 +33,7 @@ pub fn get(tree: &Tree, key: u64) -> Option<u64> {
     }
 }
 
-pub fn put(tree: &Tree, key: u64, value: u64) -> Result<Option<u64>, OutOfNodes> {
+pub fn put(tree: &Tree, key: u64, value: u64, hook: Hook<'_>) -> Result<Option<u64>, OutOfNodes> {
     // Remember the whole path: any node on it may have to split.
     let mut path: Vec<Held<'_>> = Vec::new();
     let mut id = tree.root();
@@ -49,5 +49,5 @@ pub fn put(tree: &Tree, key: u64, value: u64) -> Result<Option<u64>, OutOfNodes>
             None => break,
         }
     }
-    insert_at_leaf(tree, &mut path, true, key, value)
+    insert_at_leaf(tree, &mut path, true, key, value, hook)
 }

@@ -7,6 +7,9 @@
 //! `probe` uses two actors to answer one question without any sleep or
 //! timing: "while operation A is frozen at this point, does operation B run
 //! to completion, or does it get stuck, and on which node?"
+//!
+//! `convoy` asks the same about several operations started one after the
+//! other behind the frozen one.
 
 use std::sync::{Condvar, Mutex};
 use std::thread;
@@ -173,9 +176,44 @@ pub enum ProbeError {
 
 /// Freezes `a` at `pause`, runs `b` on a second thread, and reports whether
 /// `b` got through. Both operations have completed when this returns.
+///
+/// B either finishes or reports that it must wait. If it waits, it waits for
+/// something the frozen A holds, so it cannot finish before A is released:
+/// the answer is final.
 pub fn probe(tree: &Tree, a_op: OpSpec, pause: Pause, b_op: OpSpec) -> Result<Outcome, ProbeError> {
-    let a = Actor::new(tree, a_op, Some(pause));
-    let b = Actor::new(tree, b_op, None);
+    convoy(tree, a_op, pause, &[b_op]).map(|outcomes| outcomes[0])
+}
+
+/// `probe` with more than two threads. Freezes `first` at `pause`, then
+/// starts `others` ONE AT A TIME: each is started only after the one before
+/// it has finished or has reported that it must wait. Element `i` of the
+/// result is what happened to `others[i]`. Then `first` is released and
+/// every thread is joined, so all operations have completed on return.
+///
+/// A follower that waits keeps the latches it already holds, so a later
+/// follower can get stuck behind an EARLIER FOLLOWER and not behind `first`.
+/// That is the convoy the chapter describes.
+///
+/// CAVEAT. `Blocked` means "the try-lock failed". While only held latches are
+/// in the way, that is a fact about the tree and the outcome is the same in
+/// every run. But once a follower waits for an EXCLUSIVE latch on a node,
+/// what a later reader of that node sees is no longer determined: the
+/// follower reports `Blocked` a moment BEFORE it enters the lock's queue,
+/// and a writer-preferring lock turns new readers away only once the writer
+/// is queued. (`std::sync::RwLock` promises no policy at all; on Linux it
+/// currently prefers writers.) So put a follower that will wait for an
+/// exclusive latch LAST among those that touch the same node.
+pub fn convoy(
+    tree: &Tree,
+    first: OpSpec,
+    pause: Pause,
+    others: &[OpSpec],
+) -> Result<Vec<Outcome>, ProbeError> {
+    let a = Actor::new(tree, first, Some(pause));
+    let followers: Vec<Actor<'_>> = others
+        .iter()
+        .map(|&op| Actor::new(tree, op, None))
+        .collect();
     thread::scope(|scope| {
         let a_thread = scope.spawn(|| a.run());
         a.wait_settled();
@@ -186,22 +224,25 @@ pub fn probe(tree: &Tree, a_op: OpSpec, pause: Pause, b_op: OpSpec) -> Result<Ou
             return Err(ProbeError::PauseNotReached);
         }
 
-        let b_thread = scope.spawn(|| b.run());
-        // B either finishes or reports that it must wait. If it waits, it
-        // waits for something A holds, so it cannot finish before A is
-        // released: the answer read here is final.
-        b.wait_settled();
-        let outcome = match b.blocked_at() {
-            Some(node) => Outcome::Blocked(node),
-            None => Outcome::Completed,
-        };
+        let mut threads = Vec::new();
+        let mut outcomes = Vec::new();
+        for b in &followers {
+            threads.push(scope.spawn(|| b.run()));
+            b.wait_settled();
+            outcomes.push(match b.blocked_at() {
+                Some(node) => Outcome::Blocked(node),
+                None => Outcome::Completed,
+            });
+        }
 
         a.release();
-        let a_result = a_thread.join().expect("actor panicked");
-        let b_result = b_thread.join().expect("actor panicked");
-        if a_result.is_err() || b_result.is_err() {
+        let mut failed = a_thread.join().expect("actor panicked").is_err();
+        for thread in threads {
+            failed |= thread.join().expect("actor panicked").is_err();
+        }
+        if failed {
             return Err(ProbeError::OperationFailed);
         }
-        Ok(outcome)
+        Ok(outcomes)
     })
 }

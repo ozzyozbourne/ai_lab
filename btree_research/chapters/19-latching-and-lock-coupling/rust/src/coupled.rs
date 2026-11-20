@@ -127,5 +127,5 @@ pub fn put(tree: &Tree, key: u64, value: u64, hook: Hook<'_>) -> Result<Option<u
     // Every node that can change is latched: held[0] has room (or is the
     // root), everything below it is full. On OutOfNodes nothing was changed.
     // The guards are dropped, top-down, when `held` goes out of scope.
-    insert_at_leaf(tree, &mut held, top_is_root, key, value)
+    insert_at_leaf(tree, &mut held, top_is_root, key, value, hook)
 }

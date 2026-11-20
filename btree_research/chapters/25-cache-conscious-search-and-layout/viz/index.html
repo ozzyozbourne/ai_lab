@@ -168,8 +168,10 @@ nothing prefetches.</p>
     late: function (l) { return ' Line ' + l + ' is read for the first time. It was hinted in this same step, with no comparison in between, which is too late to help: <b>still a cache miss the CPU must wait for</b>.'; },
     again: function (l) { return ' Line ' + l + ' is already in the cache: this read is nearly free.'; },
     // The vector scan reads line after line whatever the comparisons say, so its misses do not form a chain.
-    scan: function (l) { return ' Line ' + l + ' is read for the first time. Its address does not depend on any comparison, so the CPU can ' +
-      'start fetching it without waiting for the line before it. (The counter below still lists it as unhinted: the model knows only explicit hints.)'; }
+    scan: function (l) { return ' Line ' + l + ' is read for the first time. Its address does not depend on any comparison, so the CPU need not ' +
+      'wait for the line before it. (The model knows only explicit hints, so it still counts the line as unhinted.)'; },
+    // The classic search branches on the key, so the CPU does not sit still during the miss.
+    guess: function (l) { return ' Line ' + l + ' is read for the first time, with no hint: <b>a cache miss</b>. While it waits, the CPU runs ahead on its guess.'; }
   };
 
   /** Turn one traced lookup into Stepper steps. */
@@ -328,7 +330,7 @@ nothing prefetches.</p>
         win = info.less ? [e.index + 1, info.hi] : [info.lo, e.index];
         cap = 'Compare index ' + e.index + ': ' + K(kv, 'compare') + rel + K(needle) + '. ' +
           (info.less ? 'Smaller, so the answer is to the right: <code>lo = ' + (e.index + 1) + '</code>.' : 'Not smaller, so it could be the answer: <code>hi = ' + e.index + '</code>.') +
-          ' This <code>if</code> is a jump the CPU guessed before the key arrived.';
+          ' This <code>if</code> is a jump the CPU had to guess before the key arrived.';
         lines = info.less ? { zig: [6, 7, 8], rust: [6, 7, 8] } : { zig: [6, 7, 10], rust: [6, 7, 10] };
       } else if (algo === 'eytzinger') {
         cap = 'Compare slot ' + e.index + ': ' + K(kv, 'compare') + rel + K(needle) + '. ' +
@@ -353,7 +355,7 @@ nothing prefetches.</p>
           choices: ['Yes: the answer lies after this key', 'No: this key could be the answer'], answer: info.less ? 0 : 1,
           explain: info.less ? kv + ' < ' + needle + '.' : kv + ' ≥ ' + needle + '.' };
       }
-      push(carry + cap + HOW[e.how](e.line), lines, null, q);
+      push(carry + cap + HOW[algo === 'classic' && e.how === 'cold' ? 'guess' : e.how](e.line), lines, null, q);
       carry = '';
       steps[steps.length - 1].state.strip.fresh = fresh;
     });

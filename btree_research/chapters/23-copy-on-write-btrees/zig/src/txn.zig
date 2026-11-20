@@ -452,7 +452,7 @@ pub const WriteTxn = struct {
         // the pages only it reaches are still pending.
         var it = self.dirty.iterator();
         while (it.next()) |e| {
-            if (powerFails(db)) return error.Crashed;
+            if (powerFails(db)) return self.crashed();
             db.store.write(e.key_ptr.*, e.value_ptr.*, self.id);
         }
         for (self.scrapped.items) |id| db.store.free.appendAssumeCapacity(id);
@@ -472,9 +472,10 @@ pub const WriteTxn = struct {
         // Byte by byte only so that a crash can tear it; a slot with some
         // new and some old bytes fails its checksum.
         for (new.encode(), slot) |byte, *dst| {
-            if (powerFails(db)) return error.Crashed;
+            if (powerFails(db)) return self.crashed();
             dst.* = byte;
         }
+        db.crash_after = null; // the commit is durable: nothing left to interrupt
         // The slot just overwritten held the root from two commits back.
         // From here on the fallback is the root we are replacing.
         db.previous = db.current;
@@ -507,6 +508,12 @@ pub const WriteTxn = struct {
         }
         db.crash_after = left - 1;
         return false;
+    }
+
+    fn crashed(self: *WriteTxn) error{Crashed} {
+        // The free list is rebuilt by `reopen`; `abort` must not touch it.
+        self.taken.clearRetainingCapacity();
+        return error.Crashed;
     }
 
     /// Throws the transaction away. No page of the store was written, so the

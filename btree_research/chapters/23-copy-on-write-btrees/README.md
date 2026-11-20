@@ -5,12 +5,12 @@
 - How a B+tree can be updated without ever overwriting a page that a reader
   might be looking at: **path copying**.
 - How a commit becomes one small write, the **root flip**, through a metapage
-  with two checksummed slots, and why two slots are enough to survive a torn
-  write.
+  with two checksummed slots, and what has to be true for the second slot to
+  be a real fallback.
 - How old versions of the tree stay readable as **snapshots**, and what that
   costs.
 - When a replaced page may be reused: the **pending-free list** and the rule
-  that releases it.
+  that releases it, including the part that waits for the *next* commit.
 - Why a copy-on-write tree **cannot have leaf sibling links**, and how range
   scans work without them.
 
@@ -36,17 +36,17 @@ the changed tree is visible, and it shares every page that is not on the path
 with the old tree:
 
 ```
-old root #9 [15]                         new root #2 [15]
+old root #11 [15]                        new root #2 [15]
    |        \                               /        |
-#4 [6 10]    \_______ #8 [20] ____________/      #5 [6 10]
+#7 [6 10]    \_______ #10 [20] ___________/      #6 [6 10]
  |   |   \            /     \                    /  |   \
-#3  #6   #0        #7       #1    (shared) -> #3   #6   #10
+#5  #8   #0        #9       #3    (shared) -> #5   #8   #12
            (10 12)                                     (10 12 13)
 ```
 
-Only three pages were written (`#2`, `#5`, `#10`), one per level. Five pages
+Only three pages were written (`#2`, `#6`, `#12`), one per level. Five pages
 belong to both trees. At this point nothing is committed: the database still
-says "the root is #9".
+says "the root is #11".
 
 **Commit** is the act of changing that one fact. It is a single small write
 into the **metapage**. Before the write, every reader finds the old tree;
@@ -59,6 +59,12 @@ and a checksum. Commits alternate: transaction 7 writes slot 1, transaction 8
 writes slot 0. A reader takes the slot with a valid checksum and the higher
 transaction id. If the write of transaction 8 is torn, slot 0 fails its
 checksum and the reader falls back to slot 1: transaction 7, complete.
+
+The same fallback covers a second kind of damage: slot 0 was written
+correctly and becomes unreadable later (a bad sector). Then the reader also
+lands on transaction 7, possibly long after transaction 8 committed. That
+only works if the tree of transaction 7 is still all there, which the reuse
+rule below has to guarantee.
 
 ### Snapshots
 
@@ -76,23 +82,46 @@ page, because no page it can reach ever changes.
 
 ### When may a page be reused?
 
-Transaction T copied pages `#9 #4 #0`. The old versions are unreachable from
+Transaction T copied pages `#11 #7 #0`. The old versions are unreachable from
 T's root. They are reachable from the roots of earlier transactions and from
-no later one. So:
+no later one. So a page freed by T is needed by exactly the roots older than
+T that somebody may still read, and there are two kinds of those:
 
-> A page freed by transaction T may be reused once no snapshot older than T
-> remains.
+> A page freed by transaction T may be reused once
+> 1. no snapshot older than T remains, **and**
+> 2. the meta slot of T-1 can no longer be chosen by a restart, which is the
+>    case when transaction T+1 has committed and overwritten it.
 
-Until then it sits on the **pending-free list**, tagged with T. The store
-therefore has three kinds of page: reachable from the current root, pending,
-and free. `validate` checks that these three sets never overlap and together
-cover the store.
+Until then it sits on the **pending-free list**, tagged with T. The store has
+three kinds of page: reachable from the current root, pending, and free.
+`validate` checks that these three sets never overlap and together cover the
+store.
 
-Two details follow from the rule. With no snapshot at all, the pages freed by
-T become free as soon as T's meta slot is written, and transaction T+1 reuses
-them: the store stops growing. And T+1 may overwrite them safely even though
-the *previous* meta slot (T-1) still points at them, because T-1 is only a
-fallback for a torn write of T, and T is already complete when T+1 starts.
+Part 1 is about readers. Part 2 is about restarts, and it is easy to get
+wrong. The tempting argument goes: "T-1 is only a fallback for a torn write
+of T; once T's slot is written completely, T-1 is not needed, so T+1 may
+reuse the pages T freed." That holds for a crash and nothing else. Suppose
+T+1 is in flight and has overwritten two of those pages, the power fails,
+and on restart the slot of T turns out to be unreadable. The checksum of
+T-1's slot is still valid, the reader picks it, and walks a tree in which two
+pages now belong to T+1. A checksum on the slot says the 32 bytes are intact.
+It says nothing about the pages.
+
+With part 2 the code keeps a stronger invariant:
+
+> At every moment, also in the middle of a commit, the trees of **both** meta
+> slots are complete.
+
+T+1 writes only free pages; the pages T replaced are pending until T+1's own
+slot is durable, and that slot is the one that used to name T-1. Whichever
+slot a restart can read, it finds a whole tree. In the code the root of T-1
+is `Db.previous`, and `reclaim` treats it like a snapshot nobody can release
+early. The price is one commit's worth of pages: with no snapshot at all,
+the store holds the tree plus two paths instead of one, and then stops
+growing.
+
+Both databases in "In real databases" defer reuse the same way: a freed block
+becomes reusable only after the *next* checkpoint is durable.
 
 ### Why the leaf chain has to go
 
@@ -100,9 +129,12 @@ Chapter 07 linked every leaf to its neighbours so that a range scan could walk
 sideways. Try to keep that under path copying. Leaf `#0` is copied to `#10`.
 Its left neighbour `#6` has a `next` link that says `#0`. For the new tree
 that link must say `#10`, so `#6` has to change, so `#6` must be copied, say
-to `#11`. Now the `next` link of *its* left neighbour is wrong. The copying
-runs along the whole chain, and every copied leaf needs its parent copied.
-One insert would rewrite the entire tree.
+to `#11`. Now the `next` link of *its* left neighbour is wrong. Chapter 07's
+leaves also have a `prev` link, so the right neighbour of `#0`, whose `prev`
+says `#0`, has to be copied for the same reason, and then *its* right
+neighbour. The copying runs along the whole chain in both directions, and
+every copied leaf needs its parent copied. One insert would rewrite the
+entire tree.
 
 The underlying reason: path copying works because each page is pointed at by
 exactly one other page, its parent. A sibling link is a second pointer to the
@@ -121,47 +153,56 @@ transaction per key. `#n` is a page id.
 
 Transaction 1 (`put 10`) writes a leaf into page `#0`. Transaction 2
 (`put 20`) may not change `#0`: it copies it to `#1`, adds 20 there and
-commits root `#1`. Nobody holds a snapshot, so `#0` is free at once, and
-transaction 3 (`put 5`) copies `#1` right back into `#0`. The tree hops
-between page ids while the store stays small. After 12 transactions:
+commits root `#1`. Nobody holds a snapshot, but `#0` is not free yet: meta
+slot 1 still names transaction 1, whose root is `#0`. Transaction 3 (`put 5`)
+therefore takes a new page `#2`; its commit overwrites slot 1, and now `#0`
+is free. From here on each commit frees what the commit before it replaced.
+The tree hops between page ids while the store stays small. After 12
+transactions:
 
 ```
-txn 12: root #9, height 3, 12 keys
-  level 0: #9[15]
-  level 1: #4[6 10] #8[20]
-  leaves : #3(1 3 5) #6(6 7) #0(10 12) | #7(15 17) #1(20 25 30)
-store: 10 pages | free: #5 #2 | pending: -
+txn 12: root #11, height 3, 12 keys
+  level 0: #11[15]
+  level 1: #7[6 10] #10[20]
+  leaves : #5(1 3 5) #8(6 7) #0(10 12) | #9(15 17) #3(20 25 30)
+store: 12 pages | free: #6 #2 | pending: #4(txn 12) #1(txn 12)
 ```
+
+`#4` and `#1` are the path transaction 12 replaced. They are the part of
+transaction 11's tree that slot 1 still needs.
 
 Now a reader takes a snapshot of transaction 12, and transaction 13 does
 `put 13`. The key belongs in leaf `#0`. Top down:
 
-1. Copy root `#9` to a free page. The free list is used as a stack: `#2`.
-2. Copy `#4` to `#5`, and make `#2` point at `#5`.
-3. Copy `#0` to a new page `#10` (the free list is empty, the store grows),
-   make `#5` point at `#10`, insert 13 there.
-4. Commit: write pages `#2 #5 #10`, then write meta slot 1 with
+1. Copy root `#11` to a free page. The free list is used as a stack: `#2`.
+2. Copy `#7` to `#6`, and make `#2` point at `#6`.
+3. Copy `#0` to a new page `#12` (the free list is empty, the store grows),
+   make `#6` point at `#12`, insert 13 there.
+4. Commit: write pages `#2 #6 #12`, then write meta slot 1 with
    "txn 13, root #2".
 
-Pages `#9 #4 #0` go to the pending list tagged 13. The snapshot of 12 is
-older than 13, so they stay. The store now holds two complete trees in 11
-pages:
+Slot 1 named transaction 11 until this write, so `#4` and `#1` are free now.
+Pages `#11 #7 #0` go to the pending list tagged 13. Both parts of the rule
+hold them: the snapshot of 12 is older than 13, and slot 0 names 12. The
+store holds two complete trees in 13 pages:
 
 ```
-shared by both roots: #1 #3 #6 #7 #8
-only the old root   : #0 #4 #9
-only the new root   : #2 #5 #10
+shared by both roots: #3 #5 #8 #9 #10
+only the old root   : #0 #7 #11
+only the new root   : #2 #6 #12
 ```
 
 `delete 6` (transaction 14) copies another path of three. `delete 7`
-(transaction 15) leaves leaf `(6 7)` empty, which is below the minimum of
-one key; it borrows 5 from its left sibling `(1 3 5)`. The sibling changes, so
+(transaction 15) leaves leaf `(7)` empty, which is below the minimum of one
+key; it borrows 5 from its left sibling `(1 3 5)`. The sibling changes, so
 **the sibling is copied too**: four copies, not three. Ten pages are now
 pending and the store has grown to 18.
 
-Releasing the snapshot removes the last root older than 13, 14 and 15. All
-ten pending pages move to the free list, and `put 8` (transaction 16) takes
-its three pages from there. The store stays at 18 pages.
+Releasing the snapshot removes the only reader. The six pages freed by 13 and
+14 move to the free list. The four freed by 15 stay: slot 0 names transaction
+14, and its root reaches them. `put 8` (transaction 16) takes its three pages
+from the free list, and its commit releases those four. The store stays at 18
+pages.
 
 ## Code walk-through
 
@@ -172,10 +213,10 @@ The files, in reading order (same names in `zig/src/*.zig` and
 | --- | --- |
 | `base_node`, `base_search` | Copied from chapter 07 and trimmed: node layout without leaf links, in-node binary search |
 | `crc32`, `ops` | Copied from `common/` |
-| `meta` | The 32-byte meta slot: `encode`, `decode`, `pick` |
+| `meta` | The 32-byte meta slot: `encode`, `decode`, `pick`, `fallback` |
 | `store` | `PageStore`: the page slab, the free list, the two meta slots |
 | `read` | `View` (a root plus where to find pages): `get`, the stack `Cursor`, `range` |
-| `db` | `Db`: committed root, refcounted snapshots, pending list, `reclaim`, `reopen` |
+| `db` | `Db`: committed root, previous root, refcounted snapshots, pending list, `reclaim`, `reopen` |
 | `txn` | `WriteTxn`: `touch` (the copy), `put`, `delete`, `commit`, `abort` |
 | `validate` | Every invariant as code |
 | `dump`, `tests`, `main` | Text rendering, tests, the demo program |
@@ -236,10 +277,18 @@ left; here the direction depends on which side is already private.
 `commit` has four phases, and their order is the point:
 
 1. Reserve memory (the only part that can fail). Nothing has changed yet.
-2. Write the dirty pages into their slots. All are free slots, so the old
-   tree is intact.
-3. Set `db.current` and write `meta_slots[id % 2]`. This is the commit.
-4. Append the replaced pages to `pending` and call `reclaim`.
+2. Write the dirty pages into their slots. All are free slots, so the trees
+   of both meta slots are intact.
+3. Write `meta_slots[id % 2]`. This is the commit. Then `db.previous` becomes
+   the root just replaced and `db.current` the new one.
+4. Append the replaced pages to `pending` and call `reclaim`. It releases
+   what the commit *before* this one replaced, never what this one did.
+
+`Db.crash_after` is fault injection for the tests and the demo: the commit
+stops after that many device writes (one per page, then one per byte of the
+meta slot, so that a slot can be torn) and returns `error.Crashed`. The store
+is then what a disk would hold after a power failure, and the only sensible
+next call is `reopen`.
 
 A transaction that changed nothing skips all of it: no new root, no new id.
 
@@ -258,23 +307,37 @@ height, count). `Db.snapshots` holds one entry per pinned root with a
 reference count. `reclaim` is the rule from above:
 
 ```zig
-const oldest = if (self.snapshots.items.len > 0) self.snapshots.items[0].snap.id else std.math.maxInt(u64);
+var oldest: u64 = std.math.maxInt(u64);
+if (self.snapshots.items.len > 0) oldest = self.snapshots.items[0].snap.id;
+if (self.previous) |p| oldest = @min(oldest, p.txn_id);
 while (n < items.len and items[n].freed_by <= oldest) : (n += 1) {
     self.store.release(items[n].page);
 }
 ```
 
-`reopen` simulates a restart: pick a meta slot, forget snapshots and pending
-pages, and rebuild the free list as every page the chosen root cannot reach.
-A real engine keeps the free list in the file instead of scanning; this
-program has everything in memory, so the scan is the honest equivalent.
+`reopen` simulates a restart. It trusts only what a file would hold: the two
+meta slots and the pages. It picks a slot, walks that tree and **checks it
+while walking** (`treeIsComplete`): page ids in range, no page reached twice,
+no page written by a later transaction than the slot's, `height` and `count`
+as the slot says, recursion bounded by the maximum height. If the other slot
+holds an older commit whose tree passes the same check, it stays the
+fallback and the pages only it reaches go back on the pending list.
+Everything else is free. The result is an error, never a panic:
+`NoValidMeta` when neither checksum matches, `CorruptTree` when a slot is
+intact and its tree is not. The reuse rule makes `CorruptTree` unreachable
+after a crash, a torn meta write or one unreadable slot; it stands for damage
+this design does not defend against, such as a lost page write. A real
+engine keeps the free list in the file instead of scanning; this program has
+everything in memory, so the scan is the honest equivalent.
 
-**Validate** (`validate.zig`) walks the current root and every snapshot root.
-Besides the B+tree invariants it checks: a page is reached once per root; a
-page reachable from the root of transaction R was last written by a
-transaction no later than R (so no page shared by two live roots was ever
-modified); free, pending and reachable sets are disjoint and complete; a page
-only a snapshot reaches is pending and freed by a later transaction.
+**Validate** (`validate.zig`) walks the current root, the previous root and
+every snapshot root. Besides the B+tree invariants it checks: a page is
+reached once per root; a page reachable from the root of transaction R was
+last written by a transaction no later than R (so no page shared by two live
+roots was ever modified); free, pending and reachable sets are disjoint and
+complete; a page only an older root reaches is pending and freed by a later
+transaction; and if the other meta slot holds an older commit, that commit
+is `previous` (`FallbackUnprotected` otherwise).
 
 ### Rust
 
@@ -301,7 +364,8 @@ differences:
 - **Failure model.** A `Vec` aborts the process when memory runs out, so the
   Rust tests use `Db::page_budget`, a limit on the pages one transaction may
   hold, returning `Err(TxnError::OutOfPages)`. Zig's commit can fail and leave
-  the transaction open; Rust's commit cannot run out of pages.
+  the transaction open; Rust's commit cannot run out of pages. The injected
+  crash is `Err(TxnError::Crashed)`, and `reopen` returns a `ReopenError`.
 - The Rust cursor keeps its stack in a `Vec`; the Zig cursor uses a fixed
   array of 32 frames and allocates nothing.
 
@@ -312,40 +376,40 @@ Both programs print exactly this (`expected_output.txt`):
 ```
 == 1. Build: canonical keys, M = 4, one transaction per put ==
 put 10 -> txn 1  copied 0 reused 0 fresh 1 | freed 0 released 0 | root #0
-put 20 -> txn 2  copied 1 reused 0 fresh 1 | freed 1 released 1 | root #1
-put 5  -> txn 3  copied 1 reused 1 fresh 0 | freed 1 released 1 | root #0
-put 6  -> txn 4  copied 1 reused 1 fresh 2 | freed 1 released 1 | root #3
-put 12 -> txn 5  copied 2 reused 1 fresh 1 | freed 2 released 2 | root #0
-put 30 -> txn 6  copied 2 reused 2 fresh 1 | freed 2 released 2 | root #2
-put 7  -> txn 7  copied 2 reused 2 fresh 0 | freed 2 released 2 | root #4
-put 17 -> txn 8  copied 2 reused 2 fresh 0 | freed 2 released 2 | root #1
-put 3  -> txn 9  copied 2 reused 2 fresh 1 | freed 2 released 2 | root #3
-put 25 -> txn 10 copied 2 reused 2 fresh 0 | freed 2 released 2 | root #0
-put 1  -> txn 11 copied 2 reused 2 fresh 0 | freed 2 released 2 | root #5
-put 15 -> txn 12 copied 2 reused 2 fresh 3 | freed 2 released 2 | root #9
-txn 12: root #9, height 3, 12 keys
-  level 0: #9[15]
-  level 1: #4[6 10] #8[20]
-  leaves : #3(1 3 5) #6(6 7) #0(10 12) | #7(15 17) #1(20 25 30)
-store: 10 pages | free: #5 #2 | pending: -
+put 20 -> txn 2  copied 1 reused 0 fresh 1 | freed 1 released 0 | root #1
+put 5  -> txn 3  copied 1 reused 0 fresh 1 | freed 1 released 1 | root #2
+put 6  -> txn 4  copied 1 reused 1 fresh 2 | freed 1 released 1 | root #4
+put 12 -> txn 5  copied 2 reused 1 fresh 1 | freed 2 released 1 | root #1
+put 30 -> txn 6  copied 2 reused 1 fresh 2 | freed 2 released 2 | root #2
+put 7  -> txn 7  copied 2 reused 2 fresh 0 | freed 2 released 2 | root #3
+put 17 -> txn 8  copied 2 reused 2 fresh 0 | freed 2 released 2 | root #5
+put 3  -> txn 9  copied 2 reused 2 fresh 1 | freed 2 released 2 | root #0
+put 25 -> txn 10 copied 2 reused 2 fresh 0 | freed 2 released 2 | root #6
+put 1  -> txn 11 copied 2 reused 2 fresh 0 | freed 2 released 2 | root #4
+put 15 -> txn 12 copied 2 reused 2 fresh 3 | freed 2 released 2 | root #11
+txn 12: root #11, height 3, 12 keys
+  level 0: #11[15]
+  level 1: #7[6 10] #10[20]
+  leaves : #5(1 3 5) #8(6 7) #0(10 12) | #9(15 17) #3(20 25 30)
+store: 12 pages | free: #6 #2 | pending: #4(txn 12) #1(txn 12)
 
 == 2. Path copying: a snapshot keeps the old root alive ==
-snapshot taken at txn 12 (root #9)
-put 13 -> txn 13 copied 3 reused 2 fresh 1 | freed 3 released 0 | root #2
+snapshot taken at txn 12 (root #11)
+put 13 -> txn 13 copied 3 reused 2 fresh 1 | freed 3 released 2 | root #2
 old tree, still readable through the snapshot:
-txn 12: root #9, height 3, 12 keys
-  level 0: #9[15]
-  level 1: #4[6 10] #8[20]
-  leaves : #3(1 3 5) #6(6 7) #0(10 12) | #7(15 17) #1(20 25 30)
+txn 12: root #11, height 3, 12 keys
+  level 0: #11[15]
+  level 1: #7[6 10] #10[20]
+  leaves : #5(1 3 5) #8(6 7) #0(10 12) | #9(15 17) #3(20 25 30)
 new tree:
 txn 13: root #2, height 3, 13 keys
   level 0: #2[15]
-  level 1: #5[6 10] #8[20]
-  leaves : #3(1 3 5) #6(6 7) #10(10 12 13) | #7(15 17) #1(20 25 30)
-shared by both roots: #1 #3 #6 #7 #8
-only the old root   : #0 #4 #9
-only the new root   : #2 #5 #10
-store: 11 pages | free: - | pending: #9(txn 13) #4(txn 13) #0(txn 13)
+  level 1: #6[6 10] #10[20]
+  leaves : #5(1 3 5) #8(6 7) #12(10 12 13) | #9(15 17) #3(20 25 30)
+shared by both roots: #3 #5 #8 #9 #10
+only the old root   : #0 #7 #11
+only the new root   : #2 #6 #12
+store: 13 pages | free: #4 #1 | pending: #11(txn 13) #7(txn 13) #0(txn 13)
 
 == 3. Two readers, two answers; range without sibling links ==
 snapshot: get 13 = null, 12 keys
@@ -354,67 +418,82 @@ snapshot range [6, 20): 6 7 10 12 15 17
 current  range [6, 20): 6 7 10 12 13 15 17
 
 == 4. Freed pages wait for the snapshot ==
-delete 6 -> txn 14 copied 3 reused 0 fresh 3 | freed 3 released 0 | root #11
+delete 6 -> txn 14 copied 3 reused 2 fresh 1 | freed 3 released 0 | root #1
 delete 7 -> txn 15 copied 4 reused 0 fresh 4 | freed 4 released 0 | root #14
-store: 18 pages | free: - | pending: #9(txn 13) #4(txn 13) #0(txn 13) #2(txn 14) #5(txn 14) #6(txn 14) #11(txn 15) #12(txn 15) #13(txn 15) #3(txn 15)
+store: 18 pages | free: - | pending: #11(txn 13) #7(txn 13) #0(txn 13) #2(txn 14) #6(txn 14) #8(txn 14) #1(txn 15) #4(txn 15) #13(txn 15) #5(txn 15)
 snapshot still sees 12 keys, get 6 = 600
 two handles on txn 12; release the first : 0 pages released
-                       release the second: 10 pages move from pending to the free list
-store: 18 pages | free: #9 #4 #0 #2 #5 #6 #11 #12 #13 #3 | pending: -
-put 8  -> txn 16 copied 3 reused 3 fresh 0 | freed 3 released 3 | root #3
-txn 16: root #3, height 3, 12 keys
-  level 0: #3[15]
-  level 1: #13[5 10] #8[20]
-  leaves : #17(1 3) #12(5 8) #10(10 12 13) | #7(15 17) #1(20 25 30)
-store: 18 pages | free: #9 #4 #0 #2 #5 #6 #11 #14 #15 #16 | pending: -
+                       release the second: 6 pages move from pending to the free list
+store: 18 pages | free: #11 #7 #0 #2 #6 #8 | pending: #1(txn 15) #4(txn 15) #13(txn 15) #5(txn 15)
+put 8  -> txn 16 copied 3 reused 3 fresh 0 | freed 3 released 4 | root #8
+txn 16: root #8, height 3, 12 keys
+  level 0: #8[15]
+  level 1: #6[5 10] #10[20]
+  leaves : #17(1 3) #2(5 8) #12(10 12 13) | #9(15 17) #3(20 25 30)
+store: 18 pages | free: #11 #7 #0 #1 #4 #13 #5 | pending: #14(txn 16) #15(txn 16) #16(txn 16)
 
 == 5. A transaction with several writes; abort ==
   put 26: 4 dirty pages, 3 copied so far
   put 27: 4 dirty pages, 3 copied so far
   put 28: 5 dirty pages, 3 copied so far
   inside the txn: get 27 = 2700; outside: get 27 = null
-abort : current is still txn 16, root #3, get 27 = null
-store: 18 pages | free: #9 #4 #0 #2 #5 #6 #11 #14 #15 #16 | pending: -
+abort : current is still txn 16, root #8, get 27 = null
+store: 18 pages | free: #11 #7 #0 #1 #4 #13 #5 | pending: #14(txn 16) #15(txn 16) #16(txn 16)
   put 26: 4 dirty pages, 3 copied so far
   put 27: 4 dirty pages, 3 copied so far
   put 28: 5 dirty pages, 3 copied so far
   inside the txn: get 27 = 2700; outside: get 27 = null
-commit -> txn 17 copied 3 reused 5 fresh 0 | freed 3 released 3 | root #16
-txn 17: root #16, height 3, 15 keys
-  level 0: #16[15]
-  level 1: #13[5 10] #15[20 26 28]
-  leaves : #17(1 3) #12(5 8) #10(10 12 13) | #7(15 17) #14(20 25) #11(26 27) #6(28 30)
+commit -> txn 17 copied 3 reused 5 fresh 0 | freed 3 released 3 | root #5
+txn 17: root #5, height 3, 15 keys
+  level 0: #5[15]
+  level 1: #6[5 10] #13[20 26 28]
+  leaves : #17(1 3) #2(5 8) #12(10 12 13) | #9(15 17) #4(20 25) #1(26 27) #0(28 30)
 
-== 6. The two-slot metapage; a torn commit ==
-  slot 0: txn 16, root #3, height 3, 12 keys, 18 pages, crc e2548d94  valid
-  slot 1: txn 17, root #16, height 3, 15 keys, 18 pages, crc db104496  valid
+== 6. The two-slot metapage: restarts after damage ==
+  slot 0: txn 16, root #8, height 3, 12 keys, 18 pages, crc d02616ec  valid
+  slot 1: txn 17, root #5, height 3, 15 keys, 18 pages, crc 105c3fac  valid
   reader picks txn 17
-flip one byte in slot 1, then restart:
-  slot 0: txn 16, root #3, height 3, 12 keys, 18 pages, crc e2548d94  valid
-  slot 1: stored crc db104496 does not match  INVALID
-  reader picks txn 16
-txn 16: root #3, height 3, 12 keys
-  level 0: #3[15]
-  level 1: #13[5 10] #8[20]
-  leaves : #17(1 3) #12(5 8) #10(10 12 13) | #7(15 17) #1(20 25 30)
-get 27 = null (the torn commit is gone, the one before it is intact)
-store: 18 pages | free: #0 #2 #4 #5 #6 #9 #11 #14 #15 #16 | pending: -
+put 9: power fails in the middle of the meta write of txn 18 (slot 0). Restart:
+  slot 0: stored crc d02616ec does not match  INVALID
+  slot 1: txn 17, root #5, height 3, 15 keys, 18 pages, crc 105c3fac  valid
+  reader picks txn 17
+get 9 = null, 15 keys (txn 18 never happened; txn 17 is complete)
+store: 18 pages | free: #3 #7 #8 #10 #11 #14 #15 #16 | pending: -
+put 9  -> txn 18 copied 3 reused 3 fresh 0 | freed 3 released 0 | root #16
+store: 18 pages | free: #3 #7 #8 #10 #11 | pending: #5(txn 18) #6(txn 18) #2(txn 18)
+put 4: power fails after the 3 page writes of txn 19, before its meta write.
+On top of that, slot 0 (txn 18, the newest commit) has become unreadable. Restart:
+  slot 0: stored crc a742313c does not match  INVALID
+  slot 1: txn 17, root #5, height 3, 15 keys, 18 pages, crc 105c3fac  valid
+  reader picks txn 17
+txn 17: root #5, height 3, 15 keys
+  level 0: #5[15]
+  level 1: #6[5 10] #13[20 26 28]
+  leaves : #17(1 3) #2(5 8) #12(10 12 13) | #9(15 17) #4(20 25) #1(26 27) #0(28 30)
+get 9 = null, get 4 = null (txn 18 is lost with its slot; txn 17 is complete, although txn 19 had written pages)
+store: 18 pages | free: #3 #7 #8 #10 #11 #14 #15 #16 | pending: -
 
 == 7. Model run: 3000 operations, snapshots against saved oracle copies ==
-M=4  keys=124 height=5 commits=1542 | pages: store=973 copied=7579 reused=6739 fresh=973 released=7597 peak pending=858 | snapshot checks=174 mismatches=0
-M=5  keys=124 height=4 commits=1542 | pages: store=772 copied=6161 reused=5498 fresh=772 released=6205 peak pending=703 | snapshot checks=174 mismatches=0
-M=8  keys=124 height=3 commits=1542 | pages: store=562 copied=4619 reused=4106 fresh=562 released=4631 peak pending=522 | snapshot checks=174 mismatches=0
+M=4  keys=124 height=5 commits=1542 | pages: store=973 copied=7579 reused=6739 fresh=973 released=7592 peak pending=858 | snapshot checks=174 mismatches=0
+M=5  keys=124 height=4 commits=1542 | pages: store=772 copied=6161 reused=5498 fresh=772 released=6201 peak pending=703 | snapshot checks=174 mismatches=0
+M=8  keys=124 height=3 commits=1542 | pages: store=562 copied=4619 reused=4106 fresh=562 released=4628 peak pending=522 | snapshot checks=174 mismatches=0
 ```
 
-Things to notice. In section 1 almost every commit reuses pages
-(`reused 2 fresh 0`). In section 2 `released 0`: the snapshot holds the three
-old pages. In section 4 `delete 7` shows `copied 4`, the borrow. In section 5
-three puts into one transaction copy three pages in total, and the abort
-leaves the `store:` line unchanged. In section 6 the restart falls back to
-transaction 16; its page `#1` was replaced by transaction 17 and already
-counted as free, but nobody had overwritten it yet. Section 7 shows what
-snapshots cost: with three snapshots held 100 operations apart, a tree of 124
-keys sits in a store of 973 pages (M = 4).
+Things to notice. In section 1 `released` lags one commit behind `freed`:
+`put 20` frees a page and releases none, and from `put 7` on each commit
+releases exactly what the previous one freed (`reused 2 fresh 0`). In
+section 2 `released 2` are the pages of transaction 12; the three old pages
+of this commit stay. In section 4 `delete 7` shows `copied 4`, the borrow,
+and releasing the snapshot frees 6 of 10 pages: the other 4 wait for
+transaction 16. In section 5 three puts into one transaction copy three
+pages in total, and the abort leaves the `store:` line unchanged. Section 6
+restarts twice. First a torn meta write: slot 0 fails its checksum and
+nothing is lost but the transaction in flight. Then the case from "When may
+a page be reused?": transaction 19 has written its three pages, the slot of
+18 is unreadable, and the restart lands on transaction 17 with its tree
+whole, because the pages 18 replaced (`#5 #6 #2`) were still pending.
+Section 7 shows what snapshots cost: with three snapshots held 100
+operations apart, a tree of 124 keys sits in a store of 973 pages (M = 4).
 
 ## In real databases
 
@@ -431,14 +510,17 @@ header with the higher iteration is used
 (`duckdb/src/storage/single_file_block_manager.cpp:721-729`). A checkpoint
 syncs the data blocks first, then writes the *other* header and syncs again
 (`single_file_block_manager.cpp:1423-1424`, `:1443-1450`). A block that the
-last checkpoint used is not reused directly; it goes to `modified_blocks`
-"indicating it will be re-usable after the next checkpoint"
-(`single_file_block_manager.cpp:1023-1028`,
-`duckdb/src/include/duckdb/storage/single_file_block_manager.hpp:216-226`).
+last checkpoint used is not reused directly: "we cannot directly re-use it",
+it goes to `modified_blocks` "indicating it will be re-usable after the next
+checkpoint" (`single_file_block_manager.cpp:1023-1028`), and the header file
+describes that list as blocks "that are no longer in-use, but cannot be
+re-used until the next checkpoint"
+(`duckdb/src/include/duckdb/storage/single_file_block_manager.hpp:216-226`).
 That is this chapter's metapage and pending list, per checkpoint instead of
-per transaction. Both headers are read through `ReadAndChecksum`
-(`:714-719`); what DuckDB does when one of them fails its checksum was not
-traced (unverified).
+per transaction, and the same shape as part 2 of the reuse rule: freed in
+one checkpoint, reusable after the next. Both headers are read through
+`ReadAndChecksum` (`:714-719`); what DuckDB does when one of them fails its
+checksum was not traced (unverified).
 
 **TigerBeetle: copy-on-write blocks, checksummed pointers, superblock.**
 TigerBeetle stores LSM trees, not a B-tree, in a grid of blocks. Its
@@ -448,8 +530,12 @@ swapping the pointer to the root node"
 (`tigerbeetle/docs/internals/data_file.md:36-46`). A pointer to a block is an
 address plus the block's checksum, and a read is validated against the
 checksum the parent expected (`tigerbeetle/src/vsr/grid.zig:1421-1446`). A
-released block stays allocated "but free it when the next checkpoint becomes
-durable" (`tigerbeetle/src/vsr/free_set.zig:509-533`). The root is the
+released block stays allocated: "free it when the next checkpoint becomes
+durable. This ensures that it will not be overwritten during the current
+checkpoint — the block may still be needed if we crash and recover from the
+current checkpoint" (`tigerbeetle/src/vsr/free_set.zig:509-533`). That is
+the argument of this chapter's rule in one sentence: a freed block belongs
+to a state a restart can still land on. The root is the
 superblock, with a checksum, a `sequence` counter and the checksum of its
 predecessor (`tigerbeetle/src/vsr/superblock.zig:53-79`). It is written as
 four copies and the latest one with at least two copies wins, because a
@@ -505,7 +591,14 @@ In Rust the transaction owns a `Vec<Node>`; dropping it is the arena reset.
 
 - **Reusing a freed page too early.** If transaction T reuses a page that T
   itself freed, a torn meta write of T falls back to T-1, whose tree now has
-  a hole. Pages freed by T may be reused from T+1 on.
+  a hole. If T+1 reuses it, the hole appears when T's slot is unreadable
+  while T+1 is in flight. This chapter's first version had the second bug,
+  and no single-fault test showed it. Pages freed by T may be reused from
+  T+2 on.
+- **Letting a checksum vouch for a tree.** A valid CRC on a meta slot proves
+  that 32 bytes are intact. `reopen` used to index straight into the store
+  with what the slot said; fed a stale slot, it ran off the end of the store
+  or recursed without end. A restart walks nothing it has not checked.
 - **Changing the store before the last fallible step.** The first version of
   `commit` grew the store and *then* reserved the pending list. When that
   reservation failed, the store had more pages than the meta slot said. The
@@ -533,9 +626,10 @@ In Rust the transaction owns a `Vec<Node>`; dropping it is the arena reset.
    freed by transaction T is needed only by snapshots S with B <= S < T.
    Change `reclaim` accordingly. Which tests change, and what happens to the
    store size in the model run?
-3. (Medium) The fallback argument in "When may a page be reused?" claims that
-   T+1 may overwrite pages that the meta slot of T-1 still points at. Which
-   test would fail if that were wrong, and why does it pass?
+3. (Medium) Delete the `previous` line from `reclaim`, so that only snapshots
+   hold pages back (part 1 of the rule alone). Which tests fail and with
+   which error? Then find the smallest history, in crashes and damaged
+   slots, that makes `reopen` return `CorruptTree`.
 4. (Medium) Give each child pointer a checksum of the child page, as
    TigerBeetle does. What has to change in `touch`, `commit` and `validate`,
    and what would it detect that a per-page checksum does not?
@@ -551,6 +645,6 @@ Solutions: [solutions.md](solutions.md).
 - Previous: [chapter 22, WAL and crash recovery](../22-wal-and-crash-recovery/README.md)
 - Next: [chapter 24, MVCC, vacuum and page deletion](../24-mvcc-vacuum-and-page-deletion/README.md)
 - Visualization: [viz/index.html](viz/index.html) (two roots sharing
-  subtrees, path copying step by step, the meta slots, pending and free
-  pages)
+  subtrees, path copying step by step, the meta slots and the fallback root,
+  pending and free pages, a crash with an unreadable slot)
 - Code: [zig/src](zig/src), [rust/src](rust/src)

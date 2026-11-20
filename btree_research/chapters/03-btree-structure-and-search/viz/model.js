@@ -340,7 +340,7 @@
     { what: 'leaf [7] loses its only key', expect: 'NodeUnderfull',
       apply: function (t) { leafAt(t, 1).keys = []; t.len -= 1; } },
     { what: "the root's key count is set to 0", expect: 'EmptyRoot',
-      apply: function (t) { t.root.keys = []; } },
+      apply: function (t) { t.root.keys = []; t.root.meta = { label: '0 keys, 4 children' }; } },
     { what: 'leaf [12 15 17] becomes interior [15] above new leaves [12] and [17]', expect: 'LeavesAtDifferentDepths',
       apply: function (t) {
         var low = t.leaf([12]), high = t.leaf([17]), n = leafAt(t, 2);
@@ -348,13 +348,13 @@
         n.leaf = false; n.keys = [15]; n.children = [low, high];
       } },
     { what: "the root's last child pointer is erased", expect: 'MissingChild', searchable: false,
-      apply: function (t) { t.root.children[3] = null; } },
+      apply: function (t) { t.root.children[3] = null; t.root.meta = { note: 'child 3: pointer erased' }; } },
     { what: 'leaf [7] gets a child pointer', expect: 'UnexpectedChild',
-      apply: function (t) { leafAt(t, 1).children = [{ ref: leafAt(t, 0).id }]; } },
+      apply: function (t) { leafAt(t, 1).children = [{ ref: leafAt(t, 0).id }]; leafAt(t, 1).meta = { note: 'leaf with a child pointer' }; } },
     { what: 'key 5 vanishes from leaf [1 3 5], the tree still claims 12 keys', expect: 'WrongKeyCount',
       apply: function (t) { leafAt(t, 0).keys.pop(); } },
     { what: 'a sixth node is allocated but nothing points to it', expect: 'NodeCountMismatch',
-      apply: function (t) { t.orphans.push(t.leaf([99])); t.len -= 1; } }
+      apply: function (t) { var n = t.leaf([99]); n.meta = { note: 'nothing points here' }; t.orphans.push(n); t.len -= 1; } }
   ];
   function keysFound(t) {
     return CANONICAL_KEYS.filter(function (key) { return t.get(key) === valueOf(key); }).length;

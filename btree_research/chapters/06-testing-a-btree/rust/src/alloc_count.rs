@@ -30,15 +30,17 @@ pub struct AllocStats {
     pub frees: u64,
     /// Calls of `realloc`: a `Vec` growing in place or moving.
     pub reallocations: u64,
-    /// Bytes currently held.
-    pub live_bytes: u64,
+    /// Bytes currently held. Signed, like `live()`: a block allocated on
+    /// one thread and freed on another makes the per-thread balance drift,
+    /// possibly below zero. Single-threaded test bodies never see that.
+    pub live_bytes: i64,
 }
 
 impl AllocStats {
     /// Allocations not yet freed. Equal before and after a piece of code
     /// means that code leaked nothing.
-    pub fn live(&self) -> u64 {
-        self.allocations - self.frees
+    pub fn live(&self) -> i64 {
+        self.allocations as i64 - self.frees as i64
     }
 }
 
@@ -78,7 +80,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
         if !ptr.is_null() {
             update(|s| {
                 s.allocations += 1;
-                s.live_bytes += layout.size() as u64;
+                s.live_bytes += layout.size() as i64;
             });
         }
         ptr
@@ -90,7 +92,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
         unsafe { System.dealloc(ptr, layout) };
         update(|s| {
             s.frees += 1;
-            s.live_bytes -= layout.size() as u64;
+            s.live_bytes -= layout.size() as i64;
         });
     }
 
@@ -100,7 +102,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
         if !new_ptr.is_null() {
             update(|s| {
                 s.reallocations += 1;
-                s.live_bytes = s.live_bytes - layout.size() as u64 + new_size as u64;
+                s.live_bytes += new_size as i64 - layout.size() as i64;
             });
         }
         new_ptr
@@ -141,7 +143,7 @@ mod tests {
         let after = stats();
         assert_eq!(after.allocations - before.allocations, 1);
         assert!(after.reallocations > before.reallocations);
-        assert_eq!(after.live_bytes - before.live_bytes, 8 * xs.capacity() as u64);
+        assert_eq!(after.live_bytes - before.live_bytes, 8 * xs.capacity() as i64);
     }
 
     #[test]
@@ -149,8 +151,8 @@ mod tests {
         let before = stats();
         let leaked: &'static mut u64 = Box::leak(Box::new(7));
         assert_eq!(stats().live() - before.live(), 1);
-        // Give it back so the test itself is clean.
-        // (Box::from_raw is unsafe; a leaked 8 bytes in a test is the lesser evil.)
+        // Taking it back needs `Box::from_raw`, which is unsafe: these 8
+        // bytes stay leaked on purpose.
         *leaked += 1;
     }
 
@@ -159,7 +161,7 @@ mod tests {
         let before = stats();
         std::thread::spawn(|| {
             let v = vec![1u8; 4096];
-            assert!(stats().live_bytes >= v.len() as u64);
+            assert!(stats().live_bytes >= v.len() as i64);
         })
         .join()
         .unwrap();

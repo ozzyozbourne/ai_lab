@@ -137,7 +137,8 @@ key greater than the saved one. A cursor that has already stepped off the
 end is in the state `after_last`, which holds no key: `next` keeps returning
 nothing however many entries are appended, and `prev` comes back in at the
 entry that is last by then. `before_first` mirrors this. Both designs behave
-this way (test `a cursor past the end stays there`).
+this way (the test whose name starts with `a cursor past the end stays
+there`).
 
 ## A worked example by hand
 

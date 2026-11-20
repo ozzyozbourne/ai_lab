@@ -181,8 +181,9 @@ Same structure, names, tests and output. The differences that matter:
   iterator, so it cannot implement `std::iter::Iterator`.
 - **Errors.** Zig merges error sets; Rust has one `TreeError` enum with `Io(...)` and
   `Invalid(Violation)` variants.
-- **Tests.** Zig has 67 tests, Rust 64: the allocation-failure test and two base-file tests
-  exist only in Zig. Safe Rust cannot make a `Vec` allocation fail; the nearest case, "the
+- **Tests.** Zig reports 67 tests, Rust 64. Only in Zig: the allocation-failure test, one
+  storage test (out of memory reported as `StorageFailure`) and the `test` block that pulls in
+  the other files. Safe Rust cannot make a `Vec` allocation fail; the nearest case, "the
   page allocation in the middle of a split fails", is covered by the I/O tests in both.
 
 ## Not crash-safe yet

@@ -10,6 +10,40 @@
   .textform { margin: 0; font-family: var(--bt-mono); font-size: .84rem; line-height: 1.5;
               white-space: pre; overflow-x: auto; color: var(--bt-text); }
   .facts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  /* The tree, its caption and the step buttons belong together (same layout
+     as chapter 03). The toolkit stacks stage and side panels first and puts
+     caption and controls under both, so on a phone every side panel ends up
+     between the picture and its buttons, and a code panel in the stage does
+     the same on a desktop. The stage and the side column are therefore taken
+     out of their wrapper and placed directly. */
+  .bt-figure-body.has-side { display: contents; }
+  /* Wide: caption and controls sit under the tree in the left column; the
+     side column runs next to all three. Legend and code span the card. */
+  @media (min-width: 821px) {
+    .bt-figure { display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, 330px);
+                 grid-template-rows: auto auto auto auto auto 1fr auto auto; }
+    .bt-figure-title { grid-area: 1 / 1 / 2 / -1; }
+    .bt-toolbar { grid-area: 2 / 1 / 3 / -1; }
+    .bt-stage { grid-area: 3 / 1; }
+    .bt-caption { grid-area: 4 / 1; }
+    .bt-controls-slot { grid-area: 5 / 1; }
+    .bt-side { grid-area: 3 / 2 / 7 / 3; }
+    .bt-legend { grid-area: 7 / 1 / 8 / -1; border-top: 1px solid var(--bt-border); }
+    .below { grid-area: 8 / 1 / 9 / -1; }
+  }
+  /* Narrow: picture, caption, controls, legend, and only then the panels. */
+  @media (max-width: 820px) {
+    .bt-figure { display: flex; flex-direction: column; }
+    .bt-stage { order: 1; }
+    .bt-caption { order: 2; }
+    .bt-controls-slot { order: 3; }
+    .bt-legend { order: 4; }
+    .bt-side { order: 5; }
+    .below { order: 6; }
+  }
+  /* The code panel sits under everything else, at every width. */
+  .below { padding: 12px 14px; border-top: 1px solid var(--bt-border); background: var(--bt-bg);
+           border-radius: 0 0 var(--bt-radius) var(--bt-radius); min-width: 0; }
   .hint { font-size: .86rem; color: var(--bt-muted); margin: 0 0 6px; min-height: 1.3em; }
 </style>
 </head>
@@ -90,12 +124,11 @@ Switch to order 3, where a node overflows at three keys. Tick <em>Predict</em> t
   fig.stage.append(hint);
   var view = new BTViz.TreeView(fig.stage, { minHeight: 250, ariaLabel: 'B-tree' });
   fig.stage.append(facts);
-  // The tree, the caption and the step buttons have to fit on one 1280x800
-  // screen with this panel between them, so it is kept low; it scrolls to
-  // the highlighted lines by itself.
-  var CODE_HEIGHT = 220;
-  var codeHost = el('div');
-  fig.stage.append(codeHost);
+  // The code panel goes under the caption and the step buttons, not between
+  // them and the tree (see the layout rules in the style block).
+  var CODE_HEIGHT = 300;
+  var codeHost = el('div.below');
+  fig.root.appendChild(codeHost);
   var codes = {
     'bottom-up': BTViz.codePanel(codeHost, 'bottom-up', { title: 'put, bottom-up (condensed from base_insert.zig / base_insert.rs)', maxHeight: CODE_HEIGHT }),
     'top-down': BTViz.codePanel(codeHost, 'top-down', { title: 'put, top-down (condensed from topdown.zig / topdown.rs)', maxHeight: CODE_HEIGHT })

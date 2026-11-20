@@ -240,15 +240,13 @@ and tests the far bound. `collect(gpa)` materialises the rest into a slice.
 The structure is the same. The differences:
 
 - **`Bound` comes from the standard library.** `std::ops::Bound<u64>` has the
-  same three cases, and `RangeBounds` gives range syntax on top:
-  `tree.range(6..17)`, `tree.range(..=17)`, `tree.range(..)`. An excluded
-  lower bound has no syntax and is written as a pair,
+  same three cases, and `RangeBounds` adds range syntax: `tree.range(6..17)`,
+  `tree.range(..=17)`. An excluded lower bound is written as a pair,
   `(Excluded(6), Included(17))`. Unlike `BTreeMap::range`, an inverted range
   does not panic here; it is empty, as in Zig.
 - **A trait instead of duck typing.** Zig's `Cursor(comptime Position: type)`
-  accepts any type with the right functions and fails at compile time
-  otherwise. Rust names the interface: `trait Position`, and `Cursor<P:
-  Position>`.
+  accepts any type with the right functions. Rust names the interface:
+  `trait Position`, and `Cursor<P: Position>`.
 - **Cursors do not borrow the tree.** Every cursor method takes `&Tree`. A
   cursor holding `&Tree` could not exist across a `put`, which needs
   `&mut Tree`. Zig cursors take the tree per call too, to keep the versions
@@ -402,12 +400,12 @@ back to the page it came from (`README:330-345`). Chapter 20 returns to this.
 **Turso (SQLite format): a page stack.** There are no sibling links on disk
 (chapter 07), so the cursor holds the path: `struct PageStack` with an array
 of `BTCURSOR_MAX_DEPTH + 1` pages and a cell index per level
-(`turso/core/storage/btree.rs:8989-9000`); `BTCURSOR_MAX_DEPTH` is 20 and a
-tree that looks deeper is treated as corrupt (`btree.rs:155-157`).
+(`turso/core/storage/btree.rs:8989-9000`); the limit is 20 levels and a tree
+that looks deeper is treated as corrupt (`btree.rs:155-157`).
 `get_next_record` (`btree.rs:1759`) advances on the current page or moves up
-and down the stack. Index trees add a twist that our B+tree does not have:
-interior cells hold real entries, so the cursor must visit the divider cell
-when it comes back up from a child (`btree.rs:1875-1878`).
+and down the stack. In index trees interior cells hold real entries, so the
+cursor also visits the divider cell when it comes back up from a child
+(`btree.rs:1875-1878`); our B+tree has no such case.
 
 Turso's answer to a changing tree is the one implemented here. A cursor has
 a validity state; `RequireSeek` means "Cursor may be pointing to a
@@ -424,31 +422,25 @@ this chapter's simplification, not taken from either engine.
 
 **DuckDB: the ART iterator.** DuckDB has no B-tree. Its ART index has no
 sibling links, and its iterator is a stack cursor over a radix tree: `Next`
-increments the byte at the top of the stack, asks the node for the next
-child, pops when the node is exhausted, and descends to the minimum of the
-new child (`duckdb/src/execution/index/art/iterator.cpp:329-345`). See
-chapter 28.
+steps the top of the stack to the next child, pops when a node is exhausted,
+and descends to the minimum of the new child
+(`duckdb/src/execution/index/art/iterator.cpp:329-345`). See chapter 28.
 
 **Milvus: the same bounds table on a sorted array.** The sorted scalar index
 picks `lo_inc ? lower_bound : upper_bound` for the start and `hi_inc ?
 upper_bound : lower_bound` for the end
 (`milvus/internal/core/src/index/scalar/sort/SortedIndexReader.cpp:637-642`),
-which is `landing`. Its `PrefixRange` computes the successor of a string
-prefix by incrementing the last byte that is not the maximum, and falls back
-to "the end" when there is none (`SortedIndexReader.cpp:364-379`). Milvus's
-in-memory key-value store does a prefix scan as "seek to the prefix, iterate,
-stop at the first key without it"
-(`milvus/internal/kv/mem/mem_kv.go:297-307`).
+which is `landing`. Its `PrefixRange` increments the last byte of the prefix
+that is not the maximum, and falls back to "the end" when there is none
+(`SortedIndexReader.cpp:364-379`).
 
 **Sidebar: skip scan.** An index on `(x, y)` is sorted by `x` first, so
-`WHERE y = 4` is not one range. Postgres can treat it as one small range per
-distinct `x`: "Prior to Postgres 18, a qual like "WHERE y = 4" always
-resulted in a full scan. This qual now becomes "WHERE x = ANY('{every
-possible x value}') and y = 4"", though it "behaves like a full scan when
-there's many distinct "x" values"
-(`postgres/src/backend/access/nbtree/nbtpreprocesskeys.c:130-137`). In this
-chapter's terms: a sequence of seeks, each followed by a short scan. Not
-implemented here.
+`WHERE y = 4` is not one range. Postgres 18 can run it as one small range
+per distinct `x`: the qual "now becomes "WHERE x = ANY('{every possible x
+value}') and y = 4"", though it "behaves like a full scan when there's many
+distinct "x" values"
+(`postgres/src/backend/access/nbtree/nbtpreprocesskeys.c:130-137`). That is
+a sequence of seeks, each followed by a short scan. Not implemented here.
 
 Textbook, not verified in these sources: the name "Halloween problem" (see
 Pitfalls).
@@ -460,8 +452,6 @@ room for its frames, and a caller who wants the results as a slice needs
 room for those. Both live exactly as long as one scan, which is what an
 **arena** is for.
 
-- **Why an arena.** Everything a scan allocates is freed together when the
-  scan is over. `ArenaAllocator` makes that one `reset`.
 - **What allocates.** `StackPosition.init(scratch)` (32 frames) and
   `Scan.collect(gpa)` (the result slice). No other cursor or scan function
   takes an allocator, so `seek`, `next` and `prev` cannot fail.
@@ -489,16 +479,12 @@ capacities stay the same across 100 scans.
 
 - **Rewriting `> k` as `>= k + 1`.** Overflows at the largest key and is
   impossible for strings. Choose the binary search by the kind of the bound.
-- **Testing the wrong bound.** A backward scan seeks with the upper bound and
-  stops on the lower bound.
 - **Forgetting that a seek can land outside the leaf.** `gt 12` in leaf
   `(10 12)` is index 2: the answer is in the next leaf. `lt 6` reaches leaf
   `(6 7)` because 6 is a separator, and the answer is in the previous leaf.
 - **Using a position after the tree changed.** The worked example returns 12
   twice. A freed leaf's handle may be reused, which in this arena is not a
   crash, only a wrong answer.
-- **Passing a different tree.** A version only means something for the tree
-  the cursor was positioned in; the check does not catch a mix-up.
 - **Inserting ahead of your own scan.** A forward scan that inserts `key + 1`
   for every key it returns never ends: each insert lands just ahead of the
   cursor and is returned next. This is known as the Halloween problem

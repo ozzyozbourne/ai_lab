@@ -583,9 +583,9 @@
     }
     function build(id) {
       var nd = tree.nodes[id], b = badges(id);
-      var m = { id: 'n' + id, keys: nd.keys.slice(), leaf: nd.leaf, meta: { label: '#' + id } };
+      // In the optimistic protocol the label also shows the node's version.
+      var m = { id: 'n' + id, keys: nd.keys.slice(), leaf: nd.leaf, meta: { label: '#' + id + (self.protocol === 'optimistic' ? ' v' + nd.version : '') } };
       if (b.length) m.meta.lock = b;
-      if (self.protocol === 'optimistic') m.meta.note = 'v' + nd.version;
       if (nd.leaf) { if (nd.next !== null) m.next = 'n' + nd.next; } else m.children = nd.children.map(build);
       var l = self.latch(id);
       if (l.x !== null) hl.nodes['n' + id] = 'lock-exclusive';

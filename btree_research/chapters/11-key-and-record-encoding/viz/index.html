@@ -79,7 +79,8 @@ and <code>rust/src/keycodec.rs</code>.</p>
 <h2>1. Sort by bytes, get the order of the values</h2>
 <p>Eight rows with the key <code>(name ASC, score DESC NULLS LAST, id ASC)</code>, in the order the chapter's
 program receives them. Press play: an insertion sort orders them by comparing key bytes only. Then switch one of
-the four fixes off and watch the same sort put rows in the wrong place.</p>
+the four fixes off and watch the same sort put rows in the wrong place. You can add rows of your own; in a name,
+<code>\x00</code> (backslash, x, two hex digits) enters one arbitrary byte.</p>
 <div id="fig-sort"></div>
 
 <h2>2. One value becomes one key column</h2>
@@ -143,7 +144,7 @@ byte order of each encoding with the numeric order.</p>
         box.checked = true;
         fixRow.appendChild(el('label.bt-field', box, f[1]));
       });
-    var nameIn = el('input.bt-input', { type: 'text', 'aria-label': 'Name', placeholder: 'name', maxlength: 10 });
+    var nameIn = el('input.bt-input', { type: 'text', 'aria-label': 'Name', placeholder: 'name (\\x00 = a byte)', maxlength: 40 });
     var scoreIn = el('input.bt-input', { type: 'text', inputmode: 'numeric', 'aria-label': 'Score (empty = NULL)', placeholder: 'score or empty' });
     var err = el('span.c11-error', { role: 'alert' });
     var addBtn = el('button.bt-btn.bt-primary', { type: 'button', id: 'c11-add', onclick: addRow }, 'Add row');
@@ -220,7 +221,7 @@ byte order of each encoding with the numeric order.</p>
       var name = nameIn.value, scoreText = scoreIn.value.trim();
       var score = scoreText === '' ? null : M.parseIntInput(scoreText);
       if (scoreText !== '' && score === null) { err.textContent = 'Score must be a whole number that fits in 64 bits, or empty for NULL.'; return; }
-      if (M.textBytes(name).length > 10) { err.textContent = 'Name: at most 10 bytes.'; return; }
+      if (M.textBytes(name).length > 10) { err.textContent = 'Name: at most 10 bytes (\\xNN counts as one).'; return; }
       if (rows.length >= 12) { err.textContent = 'Twelve rows is the limit; press Reset.'; return; }
       rows = rows.concat([{ id: nextId++, name: name, score: score }]);
       nameIn.value = ''; scoreIn.value = '';
@@ -372,6 +373,35 @@ byte order of each encoding with the numeric order.</p>
       return parts.join(' ');
     }
     function be8(v) { var b = []; for (var i = 7; i >= 0; i--) b.push(Number((v >> BigInt(8 * i)) & 0xffn)); return b; }
+    /** The caption explains the verdicts on screen: which varint fails for THIS pair, and for which of the two reasons. */
+    function varintCaption(a, b, numeric) {
+      var tail = ' The fixed-width big-endian key is right for every pair, at the price of 8 bytes per value. ' +
+        'That is why records use varints and keys do not.';
+      if (numeric === 0) return 'Equal numbers have equal bytes in every encoding. Type two different numbers.' + tail;
+      var la = M.leb128(a), lb = M.leb128(b), sa = M.sqliteVarint(a), sb = M.sqliteVarint(b);
+      var lebOk = M.compareBytes(la, lb).order === numeric, sqlOk = M.compareBytes(sa, sb).order === numeric;
+      var code = function (x) { return '<code>' + M.hex([x]) + '</code>'; };
+      var small = numeric < 0 ? [la, sa] : [lb, sb], big = numeric < 0 ? [lb, sb] : [la, sa];   // encodings of the smaller / larger number
+      var text;
+      if (!lebOk) {
+        text = '<b>LEB128</b> writes the <i>low</i> 7 bits first, so the first byte compared is the least significant group: ' +
+          code(small[0][0]) + ' for the smaller number against ' + code(big[0][0]) + ' for the larger. It is little-endian, the fault ' +
+          'that step 1 of figure 2 removes.';
+      } else {
+        text = '<b>LEB128</b> agrees for this pair, but only by luck: it compares the low 7 bits first (129 vs 256 fails).';
+      }
+      if (!sqlOk) {
+        text += ' The <b>SQLite varint</b> writes the high group first, which is right while both encodings have the same length. Here they have ' +
+          small[1].length + ' and ' + big[1].length + ' bytes, and the longer one starts with the smaller byte (' + code(big[1][0]) + ' &lt; ' +
+          code(small[1][0]) + ').';
+      } else if (sa.length === sb.length) {
+        text += ' The <b>SQLite varint</b> agrees because both encodings have ' + sa.length + ' byte' + (sa.length === 1 ? '' : 's') +
+          ' and it writes the high group first; across different lengths it can fail (16383 vs 16384).';
+      } else {
+        text += ' The <b>SQLite varint</b> agrees here although the lengths differ; that is not guaranteed (16383 vs 16384 fails).';
+      }
+      return text + tail;
+    }
     function draw() {
       var a = parse(aIn.value), b = parse(bIn.value);
       var bad = a === null || b === null;
@@ -395,9 +425,7 @@ byte order of each encoding with the numeric order.</p>
       });
       out.textContent = '';
       out.append(el('div.bt-table-wrap', table), verdicts);
-      fig.caption.innerHTML = 'A varint puts its <i>length</i> into the leading bytes: LEB128 starts with the low 7 bits, the SQLite varint with a ' +
-        'continuation flag, so a longer number can begin with a smaller byte. Fixed-width big-endian never has that problem, at the ' +
-        'price of 8 bytes for every value. That is why records use varints and keys do not.';
+      fig.caption.innerHTML = varintCaption(a, b, numeric);
     }
     draw();
   })();

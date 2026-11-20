@@ -486,7 +486,8 @@ pub const DiskBTree = struct {
     fn insertSeparator(self: *DiskBTree, parent: PathEntry, carry: Carry) Error!bool {
         const page = try self.pinNode(parent.id);
         errdefer self.pool.unpin(parent.id, false);
-        if (page.kind() != kind_interior or childAt(page, parent.index) != carry.left) return error.Corrupt;
+        if (page.kind() != kind_interior or parent.index > page.count()) return error.Corrupt;
+        if (childAt(page, parent.index) != carry.left) return error.Corrupt;
         if (!page.fits(carry.sep.len, @sizeOf(PageId))) {
             self.pool.unpin(parent.id, false);
             return false;
@@ -594,8 +595,9 @@ pub const DiskBTree = struct {
         /// the next call.
         pub fn next(self: *RangeIterator) Error!?Item {
             while (self.leaf != invalid_page_id) {
-                const page = try self.tree.pinNode(self.leaf);
-                defer self.tree.pool.unpin(self.leaf, false);
+                const pinned = self.leaf; // `self.leaf` may move on below
+                const page = try self.tree.pinNode(pinned);
+                defer self.tree.pool.unpin(pinned, false);
                 if (page.kind() != kind_leaf) return error.Corrupt;
                 if (self.slot < page.count()) {
                     const key = page.key(self.slot);
@@ -706,9 +708,9 @@ pub const DiskBTree = struct {
         var id = self.root;
         while (true) : (levels += 1) {
             const page = try self.pinNode(id);
-            defer self.pool.unpin(id, false);
-            if (page.kind() == kind_leaf) return levels;
-            id = childAt(page, 0);
+            const child = if (page.kind() == kind_leaf) null else childAt(page, 0);
+            self.pool.unpin(id, false);
+            id = child orelse return levels;
         }
     }
 

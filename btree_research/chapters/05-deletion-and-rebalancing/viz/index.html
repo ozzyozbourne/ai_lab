@@ -23,7 +23,8 @@
 <p>This page belongs to <a href="../README.md">Chapter 05: Deletion and rebalancing</a>.
 The tree below is a B-tree of order M: every node holds at most M&nbsp;&minus;&nbsp;1 keys and,
 except the root, at least &lceil;M/2&rceil;&nbsp;&minus;&nbsp;1. Click a key button (or type a key from 0 to 999) to delete it.
-The key buttons always show the keys of the tree drawn below them; they can be pressed when the animation has reached its last step.
+The key buttons always show the keys of the tree drawn below them. Every delete or insert, by button, by the key field or with Enter,
+is applied to the tree on screen, so all of them wait until the animation has reached its last step.
 Every frame is produced by a real JavaScript B-tree that follows the same rules as the chapter's Zig and Rust code:
 try the left sibling first, then the right one, otherwise merge.</p>
 
@@ -69,8 +70,13 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
   var PRESETS = {
     canonical: { label: 'Canonical tree (12 keys)', keys: function () { return CANONICAL.slice(); }, script: CASE_DELETES,
                  about: 'The guide’s canonical tree: 10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15 inserted in that order.' },
-    tall: { label: 'Three levels (keys 1 to 13)', keys: function () { var a = []; for (var i = 1; i <= TALL_COUNT; i++) a.push(i); return a; }, script: TALL_DELETES,
-            about: 'Keys 1 to 13 inserted in ascending order. With order 4 this tree has three levels, so an underflow can travel up.' },
+    tall: { label: 'Keys 1 to 13 (three levels at order 4)', keys: function () { var a = []; for (var i = 1; i <= TALL_COUNT; i++) a.push(i); return a; }, script: TALL_DELETES,
+            // The sentence depends on the order: at order 5 or 6 the same keys give only two levels.
+            about: function (t) {
+              var h = t.height();
+              return 'Keys 1 to 13 inserted in ascending order. With order ' + t.order + ' this tree has ' + h + ' levels' +
+                (h >= 3 ? ', so an underflow can travel up through an interior node.' : '. Choose order 3 or 4 to see an underflow travel up through an interior node.');
+            } },
     random: { label: 'Random (24 keys)', keys: function () { return BTViz.rng(randomSeed).sample(24, 1, 99); }, script: null,
               about: '24 random keys between 1 and 99.' }
   };
@@ -126,11 +132,12 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
   function button(id, text, fn, primary) {
     return el('button.bt-btn' + (primary ? '.bt-primary' : '') + '#' + id, { type: 'button', onclick: fn }, text);
   }
-  var scriptBtn = button('btn-script', 'Play scripted deletes', playScript);
+  var scriptBtn = button('btn-script', 'Play scripted deletes (order 4)', playScript);
+  var deleteBtn = button('btn-delete', 'Delete', function () { fromInput('delete'); }, true);
+  var insertBtn = button('btn-insert', 'Insert', function () { fromInput('insert'); });
   fig.toolbar.append(
     el('label.bt-field', 'Start from ', presetSel), orderSel, el('span.bt-toolbar-sep'),
-    keyInput, button('btn-delete', 'Delete', function () { fromInput('delete'); }, true),
-    button('btn-insert', 'Insert', function () { fromInput('insert'); }),
+    keyInput, deleteBtn, insertBtn,
     el('span.bt-toolbar-sep'), scriptBtn, button('btn-reset', 'Reset', reset));
 
   var keyBar = el('div.keybar', { role: 'group', 'aria-label': 'Keys in the tree: press one to delete it' });
@@ -155,11 +162,19 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
       textPre.textContent = (step.summary ? step.summary + '\n' : '') + renderText(step.state, step.summary ? '  ' : '');
       showFacts(step.state);
       // The key bar shows the tree on screen, not the model's final state. A
-      // new delete always starts from the final state, so the buttons work
+      // new delete or insert always starts from the final state, so every
+      // control that starts one (key buttons, Delete, Insert, Enter) works
       // only on the last step, where the two are the same.
-      showKeyBar(step.state, !stepper || i === stepper.steps.length - 1);
+      var live = !stepper || i === stepper.steps.length - 1;
+      deleteBtn.disabled = insertBtn.disabled = !live;
+      showKeyBar(step.state, live);
     }
   });
+
+  /* True when the tree on screen is the model's tree: the last step is shown. */
+  function isLive() {
+    return stepper.index === stepper.steps.length - 1;
+  }
 
   function isEmptyTree(state) {
     return !state || !state.keys || (!state.keys.length && !(state.children || []).length);
@@ -195,8 +210,9 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
 
   function showKeyBar(state, live) {
     var keys = isEmptyTree(state) ? [] : keysOf(state);
-    keyBar.replaceChildren(el('span.keybar-label', !keys.length ? 'The tree is empty. Insert a key or press Reset.' :
-      live ? 'Delete:' : 'Keys at this step (go to the last step to delete one):'));
+    keyBar.replaceChildren(el('span.keybar-label#keybar-label', { role: 'status' },
+      !live ? (keys.length ? 'Keys at this step (go to the last step to delete or insert a key):' : 'No keys at this step (go to the last step to insert one).') :
+      keys.length ? 'Delete:' : 'The tree is empty. Insert a key or press Reset.'));
     keys.forEach(function (key) {
       keyBar.appendChild(el('button.bt-btn', { type: 'button', disabled: !live, 'aria-label': 'Delete key ' + key,
         onclick: function () { run('delete', key); } }, String(key)));
@@ -240,12 +256,39 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
         };
       }
       if (s.type === 'merge') s.hold = 2;
+      // A borrow between interior nodes also moves one child. The model's
+      // caption only names the two keys, so name the child as well.
+      if (prev && prev.type === 'underflow' && (s.type === 'borrow-left' || s.type === 'borrow-right')) s.caption += movedChildText(prev, s);
+      // The model keeps an empty leaf as the root of an empty tree and calls
+      // that height 1; the programs (and the chips above) have no node at all.
+      if (s.type === 'done' && isEmptyTree(s.state)) s.caption = s.caption.replace(/0 keys, height \d+\.$/, 'The tree is empty: 0 keys, height 0.');
     });
     if (op === 'delete') steps[steps.length - 1].summary = summarize(key, steps);
     return steps;
   }
 
+  /* For a borrow step: which child changed parent, or '' between leaves.
+   * `under` is the step that announced the underflow; it highlights the
+   * underfull node. After the borrow that node's first (borrow from the
+   * left) or last (from the right) child is the one that moved, and the
+   * parent's separator between the two siblings is the key that went up. */
+  function movedChildText(under, step) {
+    var id = Object.keys((under.highlight && under.highlight.nodes) || {})[0];
+    var fromLeft = step.type === 'borrow-left', node = null, parent = null, at = -1;
+    (function walk(n) {
+      (n.children || []).forEach(function (c, i) { if (c.id === id) { node = c; parent = n; at = i; } else walk(c); });
+    })(step.state);
+    if (!node || !(node.children || []).length) return '';
+    var moved = fromLeft ? node.children[0] : node.children[node.children.length - 1];
+    var down = fromLeft ? node.keys[0] : node.keys[node.keys.length - 1];
+    var up = parent.keys[fromLeft ? at - 1 : at];
+    return ' The sibling’s ' + (fromLeft ? 'last' : 'first') + ' child, [' + moved.keys.join(' ') + '], changes parent with it: its keys lie between ' +
+      k(Math.min(up, down)) + ' and ' + k(Math.max(up, down)) + '.';
+  }
+
   function run(op, key) {
+    // Never start from a tree the reader is not looking at.
+    if (!isLive()) return;
     stepper.pause();
     var steps = decorate(op, key, tree[op](key));
     stepper.setSteps(steps, { play: true });
@@ -258,6 +301,14 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
   }
 
   function fromInput(op) {
+    if (!isLive()) {
+      // Enter in the key field on an earlier step: the model's tree is the
+      // one of the LAST step. Change nothing, keep what was typed, say why.
+      var label = keyBar.querySelector('.keybar-label');
+      if (label) label.textContent = 'Not yet: this is step ' + (stepper.index + 1) + ' of ' + stepper.steps.length +
+        '. Go to the last step (End), then ' + op + ' the key.';
+      return;
+    }
     var text = keyInput.value.trim();
     // An empty value is also what a number input reports for text it cannot parse.
     if (text === '' && keyInput.validity && !keyInput.validity.badInput) { keyInput.focus({ preventScroll: true }); return; }
@@ -281,7 +332,7 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
     var lim = tree.limits();
     stepper.setSteps([{
       type: 'intro', state: tree.snapshot(), highlight: {},
-      caption: preset.about + ' Order ' + tree.order + ': every node holds at most ' + lim.maxKeys + ' keys and, except the root, at least ' +
+      caption: (typeof preset.about === 'function' ? preset.about(tree) : preset.about) + ' Order ' + tree.order + ': every node holds at most ' + lim.maxKeys + ' keys and, except the root, at least ' +
         lim.minLeafKeys + '. Press a key button above the tree to delete that key' + (preset.script ? ', or play the scripted deletes.' : '.')
     }]);
   }
@@ -290,9 +341,15 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
   function playScript() {
     var preset = PRESETS[presetSel.value];
     if (!preset.script) return;
+    var before = orderSel.value;
     orderSel.value = '4';
     build();
     var all = [];
+    // The script is the program's scenario, which is fixed to order 4. Say so
+    // when that changes the tree the reader was looking at.
+    if (before !== '4') all.push({ type: 'intro', state: tree.snapshot(), highlight: {},
+      caption: 'The scripted deletes are parts 2 and 3 of the program output, which use order 4. The order was changed from ' + before +
+        ' to 4 and the tree was built again: this is the tree the script starts from.' });
     preset.script.forEach(function (key) {
       var steps = decorate('delete', key, tree.delete(key));
       all = all.concat(steps);

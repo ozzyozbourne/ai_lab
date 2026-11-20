@@ -14,8 +14,11 @@
   }
   .ch19-free { color: var(--bt-muted); }
   .ch19-error { color: var(--bt-key-deleted); font-weight: 650; }
-  .ch19-wide select { max-width: min(100%, 30em); }
-  .bt-toolbar .bt-field { white-space: normal; }
+  /* The experiment list has long labels: let it shrink instead of widening the page. */
+  .ch19-wide { display: flex; flex: 1 1 16em; min-width: 0; max-width: 100%; }
+  .ch19-wide select { flex: 1 1 auto; min-width: 0; width: 100%; max-width: 34em; }
+  /* Lift the latch badges so that the key cells do not cover their lower half. */
+  .bt-node-lock rect, .bt-node-lock text { transform: translateY(-5px); }
 </style>
 </head>
 <body>

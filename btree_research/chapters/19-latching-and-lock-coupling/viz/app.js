@@ -33,7 +33,7 @@
     var r = this.root;
     r.textContent = '';
     if (protocol === 'coupling') { r.appendChild(el('span', 'No tree-wide lock: one latch per node, shown as badges on the nodes.')); return; }
-    if (protocol === 'optimistic') { r.appendChild(el('span', 'No tree-wide lock. The number under a node (v0, v1 …) is its version; readers take no latch.')); return; }
+    if (protocol === 'optimistic') { r.appendChild(el('span', 'No tree-wide lock. Next to each node id is the node's version (v0, v1 …); readers take no latch.')); return; }
     r.appendChild(el('strong', protocol === 'mutex' ? 'Tree-wide mutex: ' : 'Tree-wide reader-writer lock: '));
     var any = false;
     if (g.x !== null) { r.appendChild(el('span.bt-lock.is-exclusive', g.x + (protocol === 'mutex' ? '' : ':X'))); any = true; }

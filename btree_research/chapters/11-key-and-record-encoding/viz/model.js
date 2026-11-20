@@ -257,6 +257,7 @@
     var off = Object.keys(WHAT_BREAKS).filter(function (f) { return !fixes[f]; });
     var why = (off.length > 1 ? 'With several fixes off the effects mix; on its own, each one does this. ' : '') +
       off.map(function (f) { return WHAT_BREAKS[f]; }).join(' ');
+    if (off.length === 1 && off[0] === 'bigEndian') why += littleEndianOnScreen(rows, keys, order);
     steps.push({
       caption: ok
         ? 'Sorted with ' + comparisons + ' comparisons that looked at ' + examined + ' byte positions. The result is exactly the ' +
@@ -273,10 +274,45 @@
     return { steps: steps, order: order, logical: logical, keys: keys, comparisons: comparisons, examined: examined, columns: columns, ok: ok };
   }
 
+  /** Row indices in the byte order of their keys under `fixes` (stable, like the insertion sort). */
+  function byteOrder(rows, fixes) {
+    var keys = rows.map(function (r) { return encodeKey(r, fixes); });
+    return rows.map(function (_, i) { return i; }).sort(function (x, y) { return compareBytes(keys[x].bytes, keys[y].bytes).order || x - y; });
+  }
+
+  /**
+   * Only "big-endian integers" is off: point at a pair that is on screen. The
+   * caption must not talk about rows whose scores are never compared, and it
+   * must say so when the damage looks exactly like a missing DESC inversion
+   * (it does for the chapter's eight rows: every pair of equal names with
+   * different scores happens to come out reversed).
+   */
+  function littleEndianOnScreen(rows, keys, order) {
+    var text = '';
+    for (var p = 0; p + 1 < order.length; p++) {
+      var a = rows[order[p]], b = rows[order[p + 1]];
+      if (a.score === null || b.score === null || a.score === b.score) continue;
+      if (compareBytes(textBytes(a.name), textBytes(b.name)).order !== 0 || compareRows(a, b) <= 0) continue;
+      var first = function (key) {             // first payload byte of the score column
+        for (var i = 0; i < key.roles.length; i++) if (key.roles[i].col === 1 && key.roles[i].kind === 'data') return key.bytes[i];
+      };
+      text = ' Here <b class="bt-k">id ' + a.id + '</b> (score ' + a.score + ') stands above <b class="bt-k">id ' + b.id + '</b> (score ' + b.score +
+        ') although DESC wants the larger score first: the first score byte compared is the low byte, inverted for DESC, and <code>' +
+        hex([first(keys[order[p]])]) + '</code> &lt; <code>' + hex([first(keys[order[p + 1]])]) + '</code>.';
+      break;
+    }
+    var noDesc = byteOrder(rows, { bigEndian: true, signFlip: true, framing: true, descInvert: false });
+    if (noDesc.join() === order.join()) {
+      text += ' With these rows the result happens to be the same as with "DESC column inverted" off. It is a different fault: ' +
+        'add the row <code>Bo</code>, <code>1</code> and switch each of the two off in turn.';
+    }
+    return text;
+  }
+
   /** What goes wrong without each fix, in one sentence (the final caption of figure 1). */
   var WHAT_BREAKS = {
-    bigEndian: '<b>Little-endian integers:</b> the first byte compared is the least significant one, so numbers are ordered by ' +
-      'their low byte (256, low byte <code>00</code>, lands next to 0).',
+    bigEndian: '<b>Little-endian integers:</b> the first byte compared is the least significant one, so the scores (and ids) are ' +
+      'ordered by their low byte, not by their value.',
     signFlip: '<b>No sign flip:</b> a negative number keeps its top bit set, so it is compared as if it were larger than every ' +
       'positive number.',
     framing: '<b>No tag and terminator:</b> nothing marks where a name ends, so the byte after a short name is compared with the ' +

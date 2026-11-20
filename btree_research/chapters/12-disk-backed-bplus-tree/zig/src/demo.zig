@@ -209,7 +209,7 @@ pub const CrashOutcome = struct {
 
 /// The index into `scenario_keys` of the put that causes the second leaf
 /// split (the first one that has to update an existing parent).
-pub const crash_put = 9;
+pub const crash_put = 11;
 
 /// Build the scenario tree up to (not including) `crash_put` and flush it.
 /// Then let only `writes_allowed` more page writes reach the storage while

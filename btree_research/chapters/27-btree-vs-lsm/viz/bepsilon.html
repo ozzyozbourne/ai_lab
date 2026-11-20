@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 27 — a buffered (B-epsilon) node</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  /* Chapter-local layout only; every colour comes from the toolkit's tokens. */
+  .be-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .be-card { border: 1px solid var(--bt-border); border-radius: 8px; padding: 6px 10px; background: var(--bt-surface-2); min-width: 0; }
+  .be-card h3 { margin: 0 0 2px; font-size: .86rem; }
+  .be-card p { margin: 0; font: .8rem/1.5 var(--bt-mono); color: var(--bt-muted); overflow-wrap: anywhere; }
+  .be-card b { color: var(--bt-text); font-variant-numeric: tabular-nums; }
+  .be-node { border: 2px solid var(--s, var(--bt-node)); background: var(--s-bg, var(--bt-surface)); border-radius: 10px; padding: 8px 10px; }
+  .be-node h4, .be-leaf h4 { margin: 0 0 4px; font-size: .78rem; font-weight: 600; color: var(--bt-muted); }
+  .be-pivots { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); text-align: center; font: .8rem/1.4 var(--bt-mono); color: var(--bt-muted); margin-bottom: 6px; }
+  .be-pivots span { border-left: 1.5px solid var(--bt-border); padding: 0 2px; }
+  .be-pivots span:first-child { border-left: 0; }
+  .be-pivots b { color: var(--bt-text); }
+  .be-buffer { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 30px; padding: 4px;
+               border: 1.5px dashed var(--bt-border); border-radius: 8px; }
+  .be-msg { font: .8rem/1.2 var(--bt-mono); padding: 2px 6px; border-radius: 6px; border: 1.5px solid var(--s, var(--bt-border));
+            background: var(--s-bg, var(--bt-surface-2)); color: var(--bt-text); white-space: nowrap; }
+  .be-msg.is-empty { color: var(--bt-muted); border-style: dashed; background: none; }
+  .be-msg small { color: var(--bt-muted); font-size: .68rem; margin-left: 3px; }
+  .be-arrows { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); text-align: center; color: var(--bt-muted); font-size: .8rem; line-height: 1.6; }
+  .be-arrows .is-on { color: var(--bt-node-active); font-weight: 700; }
+  .be-leaves { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  .be-leaf { border: 2px solid var(--s, var(--bt-border)); background: var(--s-bg, var(--bt-surface)); border-radius: 8px; padding: 5px 6px; min-width: 0; }
+  .be-keys { display: flex; flex-wrap: wrap; gap: 3px; min-height: 22px; }
+  .be-key { font: .78rem/1.2 var(--bt-mono); padding: 1px 4px; border-radius: 4px; border: 1px solid var(--s, var(--bt-border));
+            background: var(--s-bg, transparent); color: var(--bt-text); }
+  .be-wait { font-size: .7rem; color: var(--bt-muted); margin-top: 3px; }
+  .be-err { color: var(--bt-key-deleted); font-size: .84rem; min-height: 1.2em; flex-basis: 100%; }
+  .be-points li { margin: .35em 0; }
+  #code { margin-top: 14px; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">A B-tree applies every change to a leaf at once. An LSM-tree collects changes and merges them
+later. A <strong>B-epsilon tree</strong> sits in between: each internal node keeps a small buffer of pending
+changes and pushes them one level down in batches. This page shows a single such node. It is a textbook model,
+written in JavaScript only; none of the guide's code bases contains one.</p>
+
+<div id="fig"></div>
+<div id="code"></div>
+
+<h2>What to look for</h2>
+<ul class="be-points">
+  <li><strong>A put is a message.</strong> It is appended to the buffer of the node, which is in RAM. No leaf is read
+    or written.</li>
+  <li><strong>Flush in batches.</strong> When the buffer is full, the child with the most waiting messages gets all
+    of them at once: one leaf read, one leaf write, one write of the node, however many messages move. The card on
+    the right shows what a B+tree would have paid for the same keys: one read and one write per key.</li>
+  <li><strong>Reads stay cheap.</strong> A get looks at the buffer first (the node had to be read anyway to find the
+    child), and the newest message for the key wins. Only then does it read the leaf. Nothing has to be searched
+    in several runs, as in an LSM-tree.</li>
+  <li><strong>Deletes are messages too.</strong> A delete message does the job of an LSM tombstone, but it only lives
+    until the next flush of its child.</li>
+  <li><strong>The epsilon knob.</strong> A node has a fixed size. The more of it is buffer, the bigger the batches and
+    the fewer pivots fit, so the tree gets taller. All pivots and no buffer is a B-tree; change the buffer size
+    above and compare the I/O per message. With a buffer of 2 a batch is often a single message, and the extra node
+    write makes it <em>worse</em> than a B+tree.</li>
+</ul>
+<p>Text: <a href="../README.md">chapter 27 README</a>, section "B-epsilon trees". Back to
+<a href="index.html">page 1: B+tree and LSM-tree side by side</a>.</p>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="local.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, k = BTViz.k;
+  BTViz.page({
+    title: 'A buffered (B-epsilon) node', chapter: 27,
+    prev: { href: 'index.html', title: 'Page 1: B+tree and LSM-tree side by side' },
+    next: { href: '../../28-radix-trees-and-hash-indexes/viz/index.html', title: 'Chapter 28: radix trees and hash indexes' }
+  });
+
+  var fig = BTViz.figure('#fig', {
+    title: 'One internal node with a message buffer, and its four leaves', side: true,
+    legend: [{ token: 'key-inserted', label: 'put message / key added' }, { token: 'key-deleted', label: 'delete message / key removed' },
+             { token: 'key-compare', label: 'messages about to move' }, { token: 'node-active', label: 'leaf read' },
+             { token: 'page-dirty', label: 'block written' }, { token: 'key-found', label: 'answer of a get' }]
+  });
+
+  var PIVOTS = [25, 50, 75], KEY_MIN = 0, KEY_MAX = 99;
+  var RANGES = ['keys 0 to 24', 'keys 25 to 49', 'keys 50 to 74', 'keys 75 to 99'];
+  var START_KEYS = [4, 11, 19, 27, 33, 41, 48, 52, 66, 71, 80, 93];
+
+  /* ------------------------------------------------------------ toolbar */
+  var keyInput = el('input.bt-input#key', { type: 'number', inputmode: 'numeric', placeholder: 'key', min: KEY_MIN, max: KEY_MAX, step: 1,
+                                            'aria-label': 'Key (whole number, 0 to 99)' });
+  var capSel = el('select.bt-select#capacity', { 'aria-label': 'Buffer size in messages' });
+  [2, 4, 8].forEach(function (c) { capSel.appendChild(el('option', { value: c, selected: c === 4 }, 'buffer ' + c)); });
+  var err = el('span.be-err#err', { role: 'status', 'aria-live': 'polite' });
+  function btn(id, text, fn, primary) {
+    return el('button.bt-btn' + (primary ? '.bt-primary' : '') + '#' + id, { type: 'button', onclick: fn }, text);
+  }
+  fig.toolbar.append(keyInput,
+    btn('btn-put', 'Put', function () { userOp('put'); }, true),
+    btn('btn-delete', 'Delete', function () { userOp('delete'); }),
+    btn('btn-get', 'Get', function () { userOp('get'); }),
+    el('span.bt-toolbar-sep'),
+    btn('btn-random', '8 random puts', randomPuts),
+    btn('btn-reset', 'Reset', function () { reset(); }),
+    el('span.bt-toolbar-sep'), capSel, err);
+  capSel.addEventListener('change', function () { reset(); });
+  keyInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') userOp('put'); });
+
+  /* -------------------------------------------------------------- stage */
+  var cardBe = el('p'), cardPlain = el('p');
+  var nodeEl = el('div.be-node'), arrowsEl = el('div.be-arrows'), leavesEl = el('div.be-leaves');
+  fig.stage.append(
+    el('div.be-cards', el('div.be-card', el('h3', 'Buffered node'), cardBe),
+                       el('div.be-card', el('h3', 'B+tree, same keys'), cardPlain)),
+    nodeEl, arrowsEl, leavesEl);
+  var log = new BTViz.Log(fig.side, { title: 'Operations' });
+  var code = BTViz.codePanel('#code', 'buffered', { title: 'the model: send, flush, get (JavaScript)', maxHeight: 340 });
+
+  function ratio(num, den) {
+    if (!den) return '–';
+    var h = Math.floor(num * 100 / den);
+    return Math.floor(h / 100) + '.' + (h % 100 < 10 ? '0' : '') + (h % 100);
+  }
+  function msgText(m) { return (m.kind === 'put' ? '+' : '−') + m.key; }
+  function render(step) {
+    var s = step.state, hi = step.hi || {};
+    var c = s.counters;
+    cardBe.innerHTML = '<b>' + c.messages + '</b> messages, <b>' + c.flushes + '</b> flushes<br>' +
+      '<b>' + c.leafReads + '</b> read, <b>' + (c.leafWrites + c.nodeWrites) + '</b> written<br>' +
+      'I/O per message: <b>' + ratio(c.leafReads + c.leafWrites + c.nodeWrites, c.messages) + '</b>' +
+      (c.queryReads ? '<br>gets: <b>' + c.queryReads + '</b> leaf read' + (c.queryReads === 1 ? '' : 's') : '');
+    cardPlain.innerHTML = '<b>' + c.messages + '</b> puts and deletes<br>' +
+      '<b>' + c.plainReads + '</b> read, <b>' + c.plainWrites + '</b> written<br>' +
+      'I/O per message: <b>' + ratio(c.plainReads + c.plainWrites, c.messages) + '</b>';
+
+    nodeEl.textContent = '';
+    nodeEl.className = 'be-node' + (hi.node ? ' s-' + hi.node : '');
+    nodeEl.appendChild(el('h4', 'internal node (in RAM): 3 pivots, buffer of ' + s.capacity + ' messages'));
+    var piv = el('div.be-pivots');
+    ['< 25', '25 ≤ k < 50', '50 ≤ k < 75', '≥ 75'].forEach(function (t) { piv.appendChild(el('span', el('b', t))); });
+    nodeEl.appendChild(piv);
+    var buf = el('div.be-buffer', { 'aria-label': 'message buffer' });
+    s.buffer.forEach(function (m) {
+      var st = (hi.msgs && hi.msgs[m.seq]) || (m.kind === 'put' ? 'inserted' : 'deleted');
+      buf.appendChild(el('span.be-msg.s-' + st, { title: (m.kind === 'put' ? 'put ' : 'delete ') + m.key + ', for leaf ' + (Ch27.upperBound(s.pivots, m.key) + 1) },
+        msgText(m)));
+    });
+    for (var i = s.buffer.length; i < s.capacity; i++) buf.appendChild(el('span.be-msg.is-empty', 'free'));
+    nodeEl.appendChild(buf);
+
+    arrowsEl.textContent = '';
+    leavesEl.textContent = '';
+    s.leaves.forEach(function (keys, c2) {
+      arrowsEl.appendChild(el('span' + (hi.arrow === c2 ? '.is-on' : ''), hi.arrow === c2 ? '▼ ' + hi.arrowText : '│'));
+      var leaf = el('div.be-leaf' + (hi.leaf && hi.leaf[c2] ? '.s-' + hi.leaf[c2] : ''));
+      leaf.appendChild(el('h4', 'leaf ' + (c2 + 1) + ' · ' + RANGES[c2]));
+      var box = el('div.be-keys');
+      keys.forEach(function (key) {
+        box.appendChild(el('span.be-key' + (hi.keys && hi.keys[key] ? '.s-' + hi.keys[key] : ''), String(key)));
+      });
+      if (!keys.length) box.appendChild(el('span.be-wait', 'empty'));
+      leaf.appendChild(box);
+      leaf.appendChild(el('div.be-wait', s.pending[c2] ? s.pending[c2] + ' waiting in the buffer' : 'nothing waiting'));
+      leavesEl.appendChild(leaf);
+    });
+  }
+
+  /* ------------------------------------------------------------- frames */
+  function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
+  function framesFor(node, op, saveIndex) {
+    var frames = [], name = op.kind + ' ' + op.key, title = '<b>' + name + '</b> · ';
+    function push(caption, hi, extra) {
+      var f = { caption: title + caption, state: node.snapshot(), hi: hi || {}, save: saveIndex, final: false, opName: name };
+      for (var p in (extra || {})) f[p] = extra[p];
+      frames.push(f);
+    }
+    if (op.kind === 'get') {
+      var before = node.snapshot(), r = node.get(op.key), hi = { keys: {}, msgs: {}, leaf: {} }, cap;
+      if (r.from === 'buffer') {
+        hi.msgs[r.seq] = 'found';
+        cap = 'The node is read on the way down anyway, so its buffer is searched first. The newest message for ' + k(op.key) + ' is a ' +
+              (r.present ? 'put: the key <b>exists</b>' : 'delete: the key is <b>gone</b>') + '. Leaf ' + (r.child + 1) +
+              ' is not read at all, even though it may still hold an older state.';
+      } else {
+        hi.leaf[r.child] = 'active';
+        if (r.present) hi.keys[op.key] = 'found';
+        cap = 'No message for ' + k(op.key) + ' is waiting in the buffer, so leaf ' + (r.child + 1) + ' has the truth: 1 block read. The key ' +
+              (r.present ? '<b>exists</b>.' : 'is <b>not there</b>.') + ' Same cost as in a B+tree.';
+      }
+      frames.push({ caption: title + cap, state: before.counters === undefined ? before : node.snapshot(), hi: hi, save: saveIndex, final: true, opName: name,
+                    log: { html: name + ' — ' + (r.present ? 'present' : 'absent') + ' (from the ' + r.from + ')', state: r.from === 'leaf' ? 'active' : undefined } });
+      return frames;
+    }
+
+    var note = '';
+    if (node.buffer.length >= node.capacity) {
+      var victim = node.victim(), pending = node.pending(), hi1 = { msgs: {}, leaf: {}, arrow: victim, arrowText: plural(pending[victim], 'message') };
+      node.buffer.forEach(function (m) { if (node.childOf(m.key) === victim) hi1.msgs[m.seq] = 'compare'; });
+      push('The buffer is full (' + node.capacity + ' of ' + node.capacity + '), so room must be made first. Waiting per leaf: ' + pending.join(', ') +
+           '. Leaf ' + (victim + 1) + ' has the most' + (pending.filter(function (p) { return p === pending[victim]; }).length > 1 ? ' (leftmost on a tie)' : '') +
+           ': its ' + plural(pending[victim], 'message') + ' will move down together.', hi1,
+           { question: { prompt: 'The buffer is full. Which leaf gets its messages?', choices: RANGES.map(function (t, i) { return 'leaf ' + (i + 1); }), answer: victim,
+                         explain: 'The leaf with the most waiting messages: moving the biggest batch frees the most room for one leaf read and write.' } });
+      var leafBefore = node.leaves[victim].slice();
+      var res = node.send(op.kind, op.key), moved = res.flushed.moved;
+      var hi2 = { leaf: {}, keys: {}, node: 'dirty', msgs: {} };
+      hi2.leaf[victim] = 'dirty';
+      moved.forEach(function (m) { if (m.kind === 'put' && leafBefore.indexOf(m.key) < 0) hi2.keys[m.key] = 'inserted'; });
+      hi2.msgs[res.msg.seq] = 'dim';
+      var gone = moved.filter(function (m) { return m.kind === 'delete'; }).map(function (m) { return m.key; });
+      note = ' (after a flush of ' + plural(moved.length, 'message') + ' to leaf ' + (victim + 1) + ')';
+      var f = { caption: title + '<b>Flush</b>: leaf ' + (victim + 1) + ' is read once, ' + plural(moved.length, 'message') + ' (' +
+                moved.map(msgText).join(' ') + ') ' + (moved.length === 1 ? 'is' : 'are') + ' applied in arrival order, and the leaf and the node are written: ' +
+                '1 read + 2 writes for ' + plural(moved.length, 'change') + '. A B+tree would have used ' + moved.length + ' + ' + moved.length + '.' +
+                (gone.length ? ' Deleted from the leaf: ' + gone.join(', ') + '.' : ''),
+                state: node.snapshot(), hi: hi2, save: saveIndex, final: false, opName: name };
+      // Show the state after the flush but before the new message is visible.
+      f.state.buffer = f.state.buffer.filter(function (m) { return m.seq !== res.msg.seq; });
+      f.state.pending[node.childOf(op.key)]--;
+      f.state.counters.messages--; f.state.counters.plainReads--; f.state.counters.plainWrites--;
+      frames.push(f);
+      var hi3 = { msgs: {} };
+      hi3.msgs[res.msg.seq] = op.kind === 'put' ? 'inserted' : 'deleted';
+      push('Now there is room: ' + name + ' becomes the message ' + k(msgText(res.msg), op.kind === 'put' ? 'inserted' : 'deleted') +
+           ' in the buffer. The node is in RAM; no leaf is touched for it.', hi3);
+    } else {
+      var res2 = node.send(op.kind, op.key), hi4 = { msgs: {} };
+      hi4.msgs[res2.msg.seq] = op.kind === 'put' ? 'inserted' : 'deleted';
+      push(name + ' becomes the message ' + k(msgText(res2.msg), op.kind === 'put' ? 'inserted' : 'deleted') + ' in the buffer of the node (' +
+           node.buffer.length + ' of ' + node.capacity + ' used). The node is in RAM: no leaf is read or written. Leaf ' + (node.childOf(op.key) + 1) +
+           ' does not know about the change yet' + (op.kind === 'delete' ? '; a delete message hides the key just as a put message would add it.' : '.'), hi4);
+    }
+    var last = frames[frames.length - 1];
+    last.final = true;
+    last.log = { html: name + ' — buffered' + note, state: note ? 'dirty' : undefined };
+    return frames;
+  }
+
+  /* ------------------------------------------------------------ session */
+  var model, saves, stepper;
+  function idleFrame(caption) {
+    return { caption: caption, state: model.snapshot(), hi: {}, save: 0, final: true, opName: null };
+  }
+  stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, steps: [], predict: true, interval: 2400,
+    onStep: function (step, i) { render(step); log.sync(stepper ? stepper.steps : [], i); }
+  });
+  function reset() {
+    model = new Ch27.BufferedNode({ pivots: PIVOTS, capacity: +capSel.value, keys: START_KEYS });
+    saves = [model.save()];
+    err.textContent = '';
+    stepper.setSteps([idleFrame('Four leaves already hold ' + START_KEYS.length + ' keys; the buffer of the node above them is empty. ' +
+      'Type a key from 0 to 99 and press <b>Put</b>, or press <b>8 random puts</b> and watch the buffer fill and flush.')]);
+  }
+  /** Applies `ops` to the state on screen and replaces the timeline. */
+  function runOps(ops) {
+    var cur = stepper.steps[stepper.index], steps = [];
+    model = Ch27.BufferedNode.restore(saves[cur ? cur.save : 0]);
+    saves = [model.save()];
+    if (cur && !cur.final) {
+      steps.push(idleFrame('The operation on screen (<b>' + cur.opName + '</b>) was completed first; this is the state after it. The new operation starts from here.'));
+    }
+    ops.forEach(function (op) {
+      var frames = framesFor(model, op, saves.length);
+      saves.push(model.save());
+      steps = steps.concat(frames);
+    });
+    stepper.setSteps(steps, { play: true });
+  }
+  function readKey() {
+    var raw = keyInput.value.trim();
+    if (raw === '' || !/^\d+$/.test(raw) || +raw < KEY_MIN || +raw > KEY_MAX) {
+      err.textContent = 'Type a whole number from ' + KEY_MIN + ' to ' + KEY_MAX + ' as the key' + (raw === '' ? '.' : ' (got “' + raw + '”).');
+      keyInput.focus();
+      return null;
+    }
+    err.textContent = '';
+    return +raw;
+  }
+  function userOp(kind) {
+    var key = readKey();
+    if (key === null) return;
+    runOps([{ kind: kind, key: key }]);
+    keyInput.value = '';
+  }
+  var rand = BTViz.rng(2727);
+  function randomPuts() {
+    var ops = [];
+    for (var i = 0; i < 8; i++) ops.push({ kind: 'put', key: rand.int(KEY_MIN, KEY_MAX) });
+    err.textContent = '';
+    runOps(ops);
+  }
+  reset();
+
+  /* --------------------------------------------------------- self-tests */
+  // No Zig/Rust program exists for this page (the plan asks for a JS-only model),
+  // so the model is checked against a plain set instead.
+  (function () {
+    var r = BTViz.rng(5), ok = true, costs = {};
+    [2, 4, 8].forEach(function (capacity) {
+      var n = new Ch27.BufferedNode({ pivots: PIVOTS, capacity: capacity, keys: START_KEYS }), oracle = {};
+      START_KEYS.forEach(function (key) { oracle[key] = true; });
+      for (var i = 0; i < 600; i++) {
+        var key = r.int(0, 99), what = r.int(0, 9);
+        if (what < 5) { n.send('put', key); oracle[key] = true; }
+        else if (what < 8) { n.send('delete', key); delete oracle[key]; }
+        else if (n.get(key).present !== (key in oracle)) ok = false;
+      }
+      for (var c = 0; c < 4; c++) n.flush(c);
+      var all = [].concat.apply([], n.leaves);
+      if (all.join(' ') !== Object.keys(oracle).map(Number).sort(function (a, b) { return a - b; }).join(' ')) ok = false;
+      if (n.buffer.length) ok = false;
+      costs[capacity] = (n.counters.leafReads + n.counters.leafWrites + n.counters.nodeWrites) / n.counters.messages;
+    });
+    BTViz.selfTest('model = set', ok, true);
+    BTViz.selfTest('bigger buffer, less I/O', costs[2] > costs[4] && costs[4] > costs[8] && costs[8] < 2, true);
+  })();
+})();
+</script>
+</body>
+</html>

@@ -258,26 +258,31 @@ cursor: put the cursor past the answer (from index 40, key 10) to see what it re
   }
   var STALE = 'The picture still shows the previous input: press Enter or leave the field to apply the change.';
   /** Keeps a figure and its text / number fields in step. The figure's `go` calls `unchanged()` before
-   *  it reads the fields and `commit(notes, unchanged)` after it has written the used values back.
+   *  it reads the fields and `commit(notes, was)` after it has written the used values back; `notes`
+   *  holds one list of notes per field.
    *  - Enter applies and plays; leaving an edited field (`change`) applies without playing;
    *  - while an edit is not applied yet (typing, the spin arrows of a number field) the note line says so;
-   *  - leaving a field by clicking Search applies twice (change, then click). The second run reads the
-   *    already corrected fields and has nothing to report, so the notes of the first one are kept. */
+   *  - a note belongs to its field and stays until that field is edited again. Typing a bad value and
+   *    clicking Search applies twice (change, then click): the second run reads the corrected field and
+   *    has nothing to say about it, and must not wipe what the first one reported. */
   function fieldSync(inputs, note) {
-    var applied = inputs.map(function () { return null; }), last = [];
-    var unchanged = function () { return inputs.every(function (inp, i) { return inp.value === applied[i]; }); };
+    var applied = inputs.map(function () { return null; }), last = inputs.map(function () { return []; });
+    var unchanged = function () { return inputs.map(function (inp, i) { return !inp.disabled && inp.value === applied[i]; }); };
+    var show = function () { showNotes(note, [].concat.apply([], last)); };
     return {
       unchanged: unchanged,
-      commit: function (notes, wasUnchanged) {
-        applied = inputs.map(function (inp) { return inp.value; });
-        if (!(wasUnchanged && !notes.length)) last = notes;
-        showNotes(note, last);
+      commit: function (notes, was) {
+        inputs.forEach(function (inp, i) {
+          applied[i] = inp.value;
+          if (!(was[i] && !notes[i].length)) last[i] = notes[i];
+        });
+        show();
       },
       watch: function (go) {
         inputs.forEach(function (inp) {
           inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') go(true); });
-          inp.addEventListener('change', function () { if (!unchanged()) go(false); });
-          inp.addEventListener('input', function () { showNotes(note, unchanged() ? last : [STALE]); });
+          inp.addEventListener('change', function () { if (unchanged().indexOf(false) >= 0) go(false); });
+          inp.addEventListener('input', function () { if (unchanged().indexOf(false) >= 0) showNotes(note, [STALE]); else show(); });
         });
       }
     };
@@ -424,8 +429,11 @@ cursor: put the cursor past the answer (from index 40, key 10) to see what it re
           steps.push({
             caption: 'Why the index matters: writing ' + k(key, 'inserted') + ' at index ' + r +
               (n - r === 0
-                ? (n === 0 ? ', the first slot of the empty node,' : ', one past the last key,') + ' keeps the node sorted and <strong>nothing has to move</strong>: the key is appended at the end. ' +
-                  'For any smaller index <code>put</code> first moves the keys from that index one slot to the right. '
+                ? (n === 0
+                  ? ', the first slot of the empty node, gives a sorted node of one key and <strong>nothing has to move</strong>. ' +
+                    'In a node that has keys, <code>put</code> first moves the keys from the insertion index on one slot to the right. '
+                  : ', one past the last key, keeps the node sorted and <strong>nothing has to move</strong>: the key is appended at the end. ' +
+                    'For any smaller index <code>put</code> first moves the keys from that index on one slot to the right. ')
                 : ' and moving the ' + (n - r) + ' key' + (n - r === 1 ? '' : 's') +
                   ' from there one slot to the right keeps the node sorted without sorting anything. This is how <code>put</code> works. ') +
               '(If the node is full there is no room' + (n - r === 0 ? '' : ' to move') + ': chapter 04 splits it.)',
@@ -461,7 +469,7 @@ cursor: put the cursor past the answer (from index 40, key 10) to see what it re
       }
     });
     function go(play) {
-      var unchanged = sync.unchanged(), parsed = parseKeys(keysIn.value, 24), keys = parsed.keys, notes = [];
+      var was = sync.unchanged(), parsed = parseKeys(keysIn.value, 24), keys = parsed.keys, notes = [], keyNotes = [];
       if (parsed.rejected.length) {
         notes.push('Ignored ' + parsed.rejected.slice(0, 6).join(', ') + (parsed.rejected.length > 6 ? ', …' : '') +
           ': keys are whole numbers from 0 to ' + MAX_KEY + '.');
@@ -471,8 +479,8 @@ cursor: put the cursor past the answer (from index 40, key 10) to see what it re
       // falls back to the canonical keys, so that a typing mistake does not look like an empty node.
       if (!keys.length && parsed.rejected.length) { keys = PRESETS.canonical.slice(); notes.push('No usable key was typed: using the canonical keys.'); }
       keysIn.value = keys.join(' ');
-      var key = readInt(keyIn, 0, MAX_KEY, 'key', notes);
-      sync.commit(notes, unchanged);
+      var key = readInt(keyIn, 0, MAX_KEY, 'key', keyNotes);
+      sync.commit([notes, keyNotes], was);
       mode = modeIn.value;
       codeLower.style.display = mode === 'lower' ? '' : 'none';
       codeUpper.style.display = mode === 'upper' ? '' : 'none';
@@ -550,15 +558,15 @@ cursor: put the cursor past the answer (from index 40, key 10) to see what it re
       onStep: function (s) { av.render(s.state); chipRow(chips, s.chips || []); code.highlight(s.lines); }
     });
     function go(play) {
-      var notes = [], unchanged = sync.unchanged();
+      var loNotes = [], hiNotes = [], was = sync.unchanged();
       // An unbounded end has no limit: its (disabled) field is not read, so it is not rewritten either.
-      var bound = function (kindSel, input, label) {
+      var bound = function (kindSel, input, label, notes) {
         return kindSel.value === 'unbounded' ? { kind: 'unbounded' } : { kind: kindSel.value, k: readInt(input, 0, MAX_KEY, label, notes) };
       };
       loIn.disabled = loKind.value === 'unbounded';
       hiIn.disabled = hiKind.value === 'unbounded';
-      var lo = bound(loKind, loIn, 'lower limit'), hi = bound(hiKind, hiIn, 'upper limit');
-      sync.commit(notes, unchanged);
+      var lo = bound(loKind, loIn, 'lower limit', loNotes), hi = bound(hiKind, hiIn, 'upper limit', hiNotes);
+      sync.commit([loNotes, hiNotes], was);
       stepper.setSteps(buildSteps(SETS[setIn.value], lo, hi), { play: play, instant: true });
       if (!play) stepper.end();
     }
@@ -691,9 +699,9 @@ cursor: put the cursor past the answer (from index 40, key 10) to see what it re
       onStep: function (s) { av.render(s.state); chipRow(chips, s.chips || []); code.highlight(s.lines); }
     });
     function go(play) {
-      var notes = [], unchanged = sync.unchanged();
-      var from = readInt(fromIn, 0, n, 'from index', notes), key = readInt(keyIn, 0, MAX_KEY, 'key', notes);
-      sync.commit(notes, unchanged);
+      var fromNotes = [], keyNotes = [], was = sync.unchanged();
+      var from = readInt(fromIn, 0, n, 'from index', fromNotes), key = readInt(keyIn, 0, MAX_KEY, 'key', keyNotes);
+      sync.commit([fromNotes, keyNotes], was);
       nextBtn.disabled = gallopTrace(KEYS, from, key).index === n;   // the batch is finished
       stepper.setSteps(buildSteps(from, key), { play: play, instant: true });
     }

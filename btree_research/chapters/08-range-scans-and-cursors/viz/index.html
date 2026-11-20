@@ -578,7 +578,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
         answer: choices.indexOf(say(cur.naive ? wrong : right)),
         explain: cur.naive
           ? 'Leaf #' + was.leaf + ' is now (' + holds.join(' ') + '), so index ' + was.index + ' ' + (holds[was.index] === undefined ? 'is past its end' : 'holds ' + holds[was.index]) +
-            '. The naive cursor steps on from that old position and returns ' + say(wrong) + '; the entry after ' + was.key + ' is ' + say(right) + '.'
+            '. The naive cursor steps on from that old position and returns ' + (wrong === was.key ? wrong + ' a second time' : say(wrong)) + '; the entry after ' + was.key + ' is ' + say(right) + '.'
           : 'The cursor sees that the tree version changed, drops (' + pos + ') and seeks the first key greater than its saved key ' + was.key + '.'
       };
     }

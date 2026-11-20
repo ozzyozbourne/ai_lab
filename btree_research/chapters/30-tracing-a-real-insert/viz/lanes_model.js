@@ -200,7 +200,7 @@
   };
 
   Pg.prototype.insertParent = function (left, right, sep, stack, level) {
-    var rec = this.rec, hl = { nodes: {}, keys: {}, edges: {} }, self = this;
+    var rec = this.rec, hl = { nodes: {}, keys: {}, edges: {} };
     if (stack.length === 0) {
       // The split page was the root: build a new level above it.
       var top = this.alloc(false, this.pages[left].level + 1), t = this.pages[top];
@@ -241,7 +241,6 @@
     rec.emit(5, level, 'parent ' + ent.id + ' is full', 'PostgreSQL: the parent, block ' + ent.id + ', has no room for the new pivot. <code>_bt_insertonpg</code> is the same function for every level: it calls <code>_bt_split</code> on the parent, and the insert climbs one level.',
       hl, [PG + 'nbtinsert.c:2247', PG + 'nbtinsert.c:1223-1231']);
     this.split(ent.id, sep, right, stack, level + 1, off);
-    void self;
   };
 
   Pg.prototype.finish = function (ok) {
@@ -465,16 +464,13 @@
     var before = { keys: par.keys.slice(first, first + count - 1) };
     hl = { nodes: {}, keys: {} };
     ids.forEach(function (id2) { hl.nodes['t' + id2] = fresh.indexOf(id2) >= 0 ? 'inserted' : 'merge'; });
-    // Draw the redistributed pages under the old dividers for one step: the
-    // parent is patched in the next step (stage 5), as in the source.
-    var oldKeys = par.keys.slice(), oldChildren = par.children.slice();
     par.keys.splice.apply(par.keys, [first, count - 1].concat(dividers));
     par.children.splice.apply(par.children, [first, count].concat(ids));
     dividers.forEach(function (dk) { hl.keys['t' + parentId + ':' + dk] = 'split'; });
     rec.emit(4, level, count + ' pages → ' + pagesOut + (fresh.length ? ' (new ' + fresh.join(', ') + ')' : ''), 'Turso: all ' + flat.length + ' cells (the siblings\' cells, the dividers between them and the overflow cell) are laid out in one array and dealt out again: first packed to the left, then evened out from the right. ' +
       'Result: ' + counts.join(' + ') + ' cells on ' + pagesOut + ' page' + (pagesOut === 1 ? '' : 's') + ', with ' + (dividers.length ? dividers.map(function (dk) { return k(dk, 'split'); }).join(', ') : 'nothing') + ' going up as divider' + (dividers.length === 1 ? '' : 's') + '. ' +
       (fresh.length ? '<b>One page was allocated</b> (page ' + fresh.join(', ') + '): this is what a split looks like here.' : '<b>No page was allocated</b>: the neighbours had room, so the "split" turned into a redistribution. PostgreSQL never does this.') +
-      ' This step is pure computation, with no I/O and therefore no yield point.',
+      ' The redistribution itself is pure computation, with no I/O and therefore no yield point. (The picture already shows the dividers in the parent; that is the next stage.)',
       hl, [TU + 'storage/btree.rs:3872', TU + 'storage/btree.rs:3992-4107', TU + 'storage/btree.rs:4200-4284', TU + 'storage/btree.rs:4293-4420', TU + 'storage/btree.rs:4428'], fresh.length ? 'split' : 'merge');
 
     hl = { nodes: {}, keys: {}, edges: {} };
@@ -489,7 +485,6 @@
       ' There is no moment at which a page exists that the parent does not point to, and none is needed: nobody else can be looking.',
       hl, [TU + 'storage/btree.rs:4583-4592', TU + 'storage/btree.rs:4692', TU + 'storage/btree.rs:3429-3430'], par.keys.length > CAP ? 'split' : 'found');
     if (par.keys.length > CAP) this.overflow = { page: parentId, key: dividers[dividers.length - 1] };
-    void oldKeys; void oldChildren;
   };
 
   Turso.prototype.finish = function (ok) {
@@ -563,9 +558,7 @@
     b.forEach(function (s) { s.engine = 'turso'; (slots[order(s)] = slots[order(s)] || []).push(s); });
     var cur = { pg: { state: before.pg, highlight: {}, wal: [], dirty: [], events: [], last: 0 },
       turso: { state: before.turso, highlight: {}, wal: [], dirty: [], events: [], last: 0 } };
-    var out = [{ engine: null, stage: 0, key: key, caption: 'Both engines hold the same ' + this.pg.keys().length +
-      ' keys' + (a.length && a[a.length - 1].stage === 6 ? ' (now including ' + k(key, 'inserted') + ')' : '') + ', in differently shaped trees. PostgreSQL (left) keeps every key in a leaf and draws a dashed <b>high key</b> and a <b>right link</b> on each page. Turso (right) is an index B-tree: the keys in its interior pages are entries too, and pages have no links. Press play to insert ' + k(key, 'inserted') + ' into both.',
-      refs: [], lanes: clone(cur) }];
+    var out = [{ engine: null, stage: 0, key: key, caption: '', refs: [], lanes: clone(cur) }];
     out[0].caption = 'Before the insert of ' + k(key, 'inserted') + '. Both engines hold the same keys in differently shaped trees. PostgreSQL (left) keeps every key in a leaf; each page shows its dashed <b>high key</b> and its <b>right link</b>. Turso (right) is an index B-tree: keys in interior pages are entries too, and pages have no links. Step forward to follow the insert through both.';
     Object.keys(slots).map(Number).sort(function (x, y) { return x - y; }).forEach(function (o) {
       slots[o].forEach(function (s) {

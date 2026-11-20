@@ -3,10 +3,10 @@
 //!   base_node.zig    Node layout and in-node surgery   (from chapter 07, no leaf links)
 //!   base_search.zig  lowerBound / upperBound / childIndex   (from chapter 07)
 //!   crc32.zig, ops.zig                                      (from common/)
-//!   meta.zig         two-slot checksummed metapage: encode, decode, pick
+//!   meta.zig         two-slot checksummed metapage: encode, decode, pick, fallback
 //!   store.zig        PageStore: page slab, free list, meta slots
 //!   read.zig         View: get, stack cursor, range
-//!   db.zig           Db: committed root, snapshots (refcounted), pending frees
+//!   db.zig           Db: committed and previous root, snapshots, pending frees, reopen
 //!   txn.zig          WriteTxn: path copying, put, delete, commit, abort
 //!   validate.zig     every invariant as code
 //!   dump.zig         text rendering

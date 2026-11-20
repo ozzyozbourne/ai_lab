@@ -27,8 +27,10 @@
 //!     reusable when T+1 has committed, and not before.
 //!
 //! The second line is what makes two meta slots worth having. At every
-//! moment, also in the middle of a commit, the trees of BOTH slots are
-//! complete: whichever slot a restart is able to read names a whole tree.
+//! moment, also in the middle of a commit, each slot names a complete tree or
+//! names nothing: whichever slot a restart is able to read names a whole
+//! tree. `reopen` keeps that true across restarts by scrubbing a slot it
+//! could not use BEFORE it frees the pages of that slot's tree.
 
 use crate::base_node::{MAX_ORDER, PageId};
 use crate::meta::Meta;
@@ -103,9 +105,9 @@ pub struct Db {
     pub store: PageStore,
     pub current: Meta,
     /// The committed root one commit back, as recorded in the other meta
-    /// slot. `None` when that slot holds nothing usable (a new database, or
-    /// after a restart that found it unreadable). `reclaim` treats it like a
-    /// snapshot that nobody can release early.
+    /// slot. `None` when that slot holds nothing (a new database, or after a
+    /// restart that could not use it and scrubbed it). `reclaim` treats it
+    /// like a snapshot that nobody can release early.
     pub previous: Option<Meta>,
     /// Fault injection for the tests and the demo: when set, the next commit
     /// "loses power" after this many device writes (one per page, then one
@@ -299,10 +301,21 @@ impl Db {
     ///   3. if the other slot holds an older commit with a complete tree, it
     ///      stays the fallback: the pages only it reaches go back on the
     ///      pending list;
-    ///   4. every page neither root reaches is free.
+    ///   4. otherwise the other slot is SCRUBBED (overwritten with zeroes)
+    ///      before anything else changes: see below;
+    ///   5. every page neither root reaches is free.
     ///
     /// (A real engine stores the free list in the file instead of scanning;
     /// see the README.) On error nothing has been changed.
+    ///
+    /// Why step 4. Step 5 gives away the pages of every tree this restart
+    /// did not keep. If the slot of such a tree were left as it is and read
+    /// correctly at a LATER restart (the read error was transient), it would
+    /// win again by transaction id and name a tree whose pages are gone or,
+    /// worse, rewritten by a transaction that reused its id. A slot that a
+    /// restart has decided against must never be chosen again, so it is
+    /// overwritten first. After `reopen` each slot holds `current`, holds
+    /// `previous`, or is all zeroes.
     ///
     /// `NoValidMeta`: neither slot has a valid checksum.
     /// `CorruptTree`: the chosen slot has a valid checksum but its tree is
@@ -311,7 +324,8 @@ impl Db {
     /// damage this design does not defend against (a lost page write, a
     /// forged slot), and it is reported instead of guessed around.
     pub fn reopen(&mut self) -> Result<(), ReopenError> {
-        let slots = &self.store.meta_slots;
+        let seen = self.store.read_meta(); // what this restart is able to read
+        let slots = &seen;
         let m = Meta::pick(slots).ok_or(ReopenError::NoValidMeta)?;
         let n = m.page_count as usize;
         if n > self.store.page_count() {
@@ -332,6 +346,16 @@ impl Db {
             in_previous = marks;
         }
 
+        // Nothing can fail from here on. The scrub is the first write: until
+        // it is done no page has been given away, so a crash in the middle
+        // of it leaves every tree as it was.
+        if previous.is_none() {
+            for (slot, read_back) in self.store.meta_slots.iter_mut().zip(slots) {
+                if Meta::decode(read_back) != Some(m) {
+                    slot.fill(0);
+                }
+            }
+        }
         self.current = m;
         self.previous = previous;
         self.crash_after = None;

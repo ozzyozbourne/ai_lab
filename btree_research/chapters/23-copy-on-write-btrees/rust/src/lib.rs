@@ -3,10 +3,10 @@
 //!   base_node.rs    Node layout and in-node surgery   (from chapter 07, no leaf links)
 //!   base_search.rs  lower_bound / upper_bound / child_index   (from chapter 07)
 //!   crc32.rs, ops.rs                                          (from common/)
-//!   meta.rs         two-slot checksummed metapage: encode, decode, pick
+//!   meta.rs         two-slot checksummed metapage: encode, decode, pick, fallback
 //!   store.rs        PageStore: page slab, free list, meta slots
 //!   read.rs         View: get, stack cursor, range
-//!   db.rs           Db: committed root, snapshots (refcounted), pending frees
+//!   db.rs           Db: committed and previous root, snapshots, pending frees, reopen
 //!   txn.rs          WriteTxn: path copying, put, delete, commit, abort
 //!   validate.rs     every invariant as code
 //!   dump.rs         text rendering

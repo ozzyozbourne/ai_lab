@@ -39,6 +39,11 @@ pub struct PageStore {
     /// Page ids that may be written right now, used as a stack.
     pub free: Vec<PageId>,
     pub meta_slots: Slots,
+    /// Fault injection for the tests: while set, meta slot i cannot be read
+    /// (a restart sees garbage in its place). The bytes are still on the
+    /// "disk" and a write still reaches them, so this is the kind of read
+    /// error that may be gone at the next restart.
+    pub meta_read_fault: [bool; 2],
 }
 
 impl Default for PageStore {
@@ -47,6 +52,7 @@ impl Default for PageStore {
             slots: Vec::new(),
             free: Vec::new(),
             meta_slots: [[0; SLOT_SIZE]; 2],
+            meta_read_fault: [false; 2],
         }
     }
 }
@@ -60,6 +66,17 @@ impl PageStore {
         !id.is_nil()
             && id.index() < self.slots.len()
             && self.slots[id.index()].state == SlotState::Live
+    }
+
+    /// The two meta slots as a restart reads them.
+    pub fn read_meta(&self) -> Slots {
+        let mut seen = self.meta_slots;
+        for (slot, fault) in seen.iter_mut().zip(self.meta_read_fault) {
+            if fault {
+                slot.fill(0xFF); // fails its checksum
+            }
+        }
+        seen
     }
 
     /// A committed page. Readers get a shared reference: nothing may change it.

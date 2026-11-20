@@ -135,7 +135,11 @@ a broken tree pass a test that never builds a third level.</p>
     return st.kind + ' ' + st.key;
   }
   function answerText(st, a) {
-    if (st.kind === 'range') return a.length + (a.length === 1 ? ' entry' : ' entries');
+    if (st.kind === 'range') {
+      if (!a.length) return 'no entries';
+      var shown = a.slice(0, 3).map(function (e) { return e[0] + ' = ' + val(e[1]); }).join(', ');
+      return '[' + shown + (a.length > 3 ? ', … ' + a.length + ' entries' : '') + ']';
+    }
     if (st.kind === 'put') return a === null ? 'new key' : 'replaced ' + val(a);
     if (st.kind === 'delete') return a === null ? 'not present' : 'removed ' + val(a);
     return a === null ? 'not present' : val(a);

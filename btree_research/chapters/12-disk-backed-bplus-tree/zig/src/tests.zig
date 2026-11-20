@@ -219,6 +219,7 @@ test "injected I/O failures: an error, no leaked pin, and a tree that is intact 
         }
     }
     // Both outcomes must have been exercised.
+    std.debug.print("clean {d} poisoned {d}\n", .{ clean_failures, poisoned_failures });
     try testing.expect(clean_failures > 50);
     try testing.expect(poisoned_failures > 5);
 }
@@ -283,6 +284,7 @@ test "allocation failure in put: OutOfMemory, no leaked pin, intact or poisoned"
                 try testing.expect(failing.has_induced_failure);
                 try testing.expectEqual(0, pool.pinnedFrames());
                 induced += 1;
+                failing.fail_index = std.math.maxInt(usize); // memory is back
                 if (!tree.poisoned) {
                     try expectSameContent(&tree, &model);
                     for (0..200) |_| try randomOp(&tree, &model, &rng, shape);
@@ -292,6 +294,7 @@ test "allocation failure in put: OutOfMemory, no leaked pin, intact or poisoned"
             };
         }
     }
+    std.debug.print("induced {d}\n", .{induced});
     try testing.expect(induced > 5);
 }
 

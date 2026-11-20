@@ -3,7 +3,7 @@
   'use strict';
   var el = BTViz.el, clone = BTViz.clone;
   var CANONICAL = [10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15];
-  var MAX_NODES = 40;
+  var MAX_NODES = 40, MAX_STEPS = 400;
 
   BTViz.page({
     title: 'B-link trees', chapter: 20,
@@ -164,6 +164,7 @@
   function advance(who) {
     var i = stepper.index, S = clone(history[i].state);
     if (!BLink.canStep(S, who)) return;
+    if (i >= MAX_STEPS) { say('This timeline is long enough. Choose a scenario to start again.', true); return; }
     history = history.slice(0, i + 1);
     history.push(mkStep(S, BLink.advance(S, who)));
     untouched = null;
@@ -187,7 +188,7 @@
   }
   function start(mutate, caption, logText) {
     var i = stepper.index, S = clone(history[i].state);
-    var problem = mutate(S);
+    var problem = i >= MAX_STEPS ? 'This timeline is long enough. Choose a scenario to start again.' : mutate(S);
     if (problem) { say(problem, true); return; }
     history = history.slice(0, i + 1);
     history.push(mkStep(S, { caption: caption(S), log: logText }));

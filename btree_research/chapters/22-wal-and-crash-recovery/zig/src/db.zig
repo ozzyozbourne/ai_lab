@@ -48,6 +48,9 @@ pub const Db = struct {
     wal: Wal,
     pager: Pager,
     pool: BufferPool,
+    /// For inspection (the crash loop, the demo, the tests). Zig has no
+    /// private fields: a caller that reads or writes through `tree` goes
+    /// around the `failed` check of the methods below.
     tree: DiskBTree,
     /// What recovery found when this handle was opened.
     recovery: wal_mod.Recovery,
@@ -134,6 +137,9 @@ pub const Db = struct {
         return self.tree.get(allocator, key);
     }
 
+    /// The check covers the call, not the iterator: one obtained before a
+    /// failed `put` must not be advanced afterwards, it would read
+    /// uncommitted pages. (Rust's borrow rules exclude that case.)
     pub fn range(self: *Db, lo: []const u8, hi: ?[]const u8) Error!DiskBTree.RangeIterator {
         if (self.failed) return error.ReopenRequired;
         return self.tree.range(lo, hi);

@@ -80,7 +80,10 @@ pub struct Db {
     /// the log. This is the second handle. (Zig: one struct on the heap whose
     /// parts point at each other.)
     wal: Rc<RefCell<Wal>>,
-    pub tree: DiskBTree,
+    /// Visible inside this crate only, for the crash loop, the demo and the
+    /// tests, which inspect the tree directly. A `pub` field would let any
+    /// caller read around the `failed` check below.
+    pub(crate) tree: DiskBTree,
     /// What recovery found when this handle was opened.
     pub recovery: Recovery,
     /// Set when an operation failed half-way: the buffer pool and the log

@@ -1,6 +1,8 @@
 # Plan: Understanding B-trees, from simple to complex
 
-Status: v2. Draft v1 was reviewed by three independent gap reviewers (topic coverage and
+Status: implemented. All 30 chapters were written, then reviewed and fixed in two rounds
+(each finding validated before it was fixed); `./run_all_tests.sh` passes 154 of 154 steps.
+Plan v2: draft v1 was reviewed by three independent gap reviewers (topic coverage and
 teaching order, fidelity to the database sources, implementation feasibility). Their
 confirmed findings are folded in; the change log is at the end.
 

@@ -271,6 +271,118 @@ test "a batch that fails after its first put: the handle refuses everything unti
     try expectValue(db, "a", rep('1', 1000));
 }
 
+test "a checkpoint that fails: the handle refuses everything until it is reopened" {
+    var machine: Machine = .init(testing.allocator, 1);
+    defer machine.deinit();
+    {
+        const db = try openDb(&machine, .{ .checkpoint_every = 0 });
+        defer db.close();
+        try db.put("a", "1");
+        // The explicit checkpoint has two main-file pages to write (the
+        // metapage and the root leaf). The power fails after the first.
+        machine.powerOffAfterWrites(1);
+        try testing.expectError(error.PowerLoss, db.checkpoint());
+        try testing.expect(db.failed);
+        // "a" is still in the buffer pool and would be served from memory.
+        try testing.expectError(error.ReopenRequired, db.get(testing.allocator, "a"));
+        try testing.expectError(error.ReopenRequired, db.put("b", "2"));
+        try testing.expectError(error.ReopenRequired, db.checkpoint());
+    }
+    machine.crash(.tear);
+    const db = try openDb(&machine, .{});
+    defer db.close();
+    try db.validate();
+    try expectValue(db, "a", "1"); // committed before the checkpoint began
+    try expectValue(db, "b", null);
+}
+
+/// A storage in front of another one whose next `sync` fails with an I/O
+/// error while the power stays on: the writes before it are readable but not
+/// durable. `SimDisk` has no such fault (its only failure is the power cut).
+const SyncFails = struct {
+    inner: page_storage.Storage,
+    armed: bool = false,
+
+    const vtable: page_storage.Storage.VTable = .{ .readPage = readPage, .writePage = writePage, .sync = sync, .size = size };
+
+    fn storage(self: *SyncFails) page_storage.Storage {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    fn readPage(ptr: *anyopaque, page_no: u64, out: *Page) page_storage.Storage.Error!void {
+        const self: *SyncFails = @ptrCast(@alignCast(ptr));
+        return self.inner.readPage(page_no, out);
+    }
+
+    fn writePage(ptr: *anyopaque, page_no: u64, page: *const Page) page_storage.Storage.Error!void {
+        const self: *SyncFails = @ptrCast(@alignCast(ptr));
+        return self.inner.writePage(page_no, page);
+    }
+
+    fn sync(ptr: *anyopaque) page_storage.Storage.Error!void {
+        const self: *SyncFails = @ptrCast(@alignCast(ptr));
+        if (self.armed) {
+            self.armed = false;
+            return error.InputOutput;
+        }
+        return self.inner.sync();
+    }
+
+    fn size(ptr: *anyopaque) u64 {
+        const self: *SyncFails = @ptrCast(@alignCast(ptr));
+        return self.inner.size();
+    }
+};
+
+test "a log sync that fails with the power on, a reopen, then a power cut inside that recovery" {
+    // The commit's records are all in the log file, readable, but its sync
+    // returned an error: they are not durable. The reopen that the handle
+    // demands finds a complete commit. If recovery copied it to the main
+    // file at once, a power cut that keeps those main-file writes and drops
+    // the log's would leave pages of an operation the log knows nothing of.
+    // So `recover` syncs the log before its first main-file write.
+    const options: db_mod.Options = .{ .checkpoint_every = 0 };
+    var cut: u64 = 0;
+    while (true) : (cut += 1) {
+        var machine: Machine = .init(testing.allocator, 1);
+        defer machine.deinit();
+        {
+            const db = try openDb(&machine, options);
+            defer db.close();
+            for ("abcd") |c| try db.put(&.{c}, rep('1', 1000));
+            try db.checkpoint();
+        }
+        var flaky: SyncFails = .{ .inner = machine.logStorage() };
+        {
+            const db = try Db.open(testing.allocator, machine.mainStorage(), flaky.storage(), options);
+            defer db.close();
+            flaky.armed = true;
+            // "e" splits the root leaf: 4 page images and a commit record.
+            try testing.expectError(error.StorageFailure, db.put("e", rep('5', 1000)));
+            try testing.expectEqual(error.InputOutput, db.wal.last_error.?);
+            try testing.expect(!flaky.armed); // it was the commit's sync that failed
+            try testing.expectError(error.ReopenRequired, db.put("f", "x"));
+        }
+        // "After an error, reopen." The power fails after `cut` writes of
+        // that recovery; the main file keeps them, the log loses its own.
+        machine.powerOffAfterWrites(cut);
+        if (openDb(&machine, options)) |db| {
+            db.close();
+            break; // recovery needed fewer than `cut` writes
+        } else |err| try testing.expectEqual(error.PowerLoss, err);
+        machine.crashEach(.keep, .drop);
+
+        const db = try openDb(&machine, options);
+        defer db.close();
+        try db.validate();
+        for ("abcd") |c| try expectValue(db, &.{c}, rep('1', 1000));
+        // Before the first write nothing was synced and the put is gone.
+        // From the first main-file write on, the log had been synced first.
+        try expectValue(db, "e", if (cut == 0) null else rep('5', 1000));
+    }
+    try testing.expectEqual(6, cut); // 4 main-file pages, the new log header, and a run without a cut
+}
+
 // ---- the write-ahead rule ------------------------------------------------------
 
 test "write-ahead rule: no main-file write while the log has unsynced records" {

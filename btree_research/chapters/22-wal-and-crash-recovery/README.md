@@ -66,10 +66,9 @@ healthy. Two devices deal with both:
 - The header contains a **generation** number that goes up at every reset. An old record
   has a good CRC of its own, but it chains from the old header, so it is rejected.
 
-Only the CRC is essential: nothing else notices a torn record. Against old records there
-is a third device, and it would be enough alone: LSNs are never reused, so an old record
-always carries a smaller LSN than the one its position calls for. The chain and the
-generation are belt and braces. The tests forge logs that defeat one device at a time.
+Only the CRC is essential: nothing else notices a torn record. An old record is also given
+away by its LSN, which is smaller than its position calls for, since LSNs are never
+reused. The tests forge logs that defeat one device at a time.
 
 ## A worked example by hand
 
@@ -77,32 +76,13 @@ The scenario is chapter 12's: eleven keys are stored, key 15 is put next and spl
 leaf on page 2. `zig build run` and `cargo run` print the following (the full text is
 [expected_output.txt](expected_output.txt)).
 
-**Without a log** the split is five page writes and a sync:
-
-```
-  write 1: main page 4  (zeroes: the file grows by one page)
-  write 2: main page 0
-  write 3: main page 1
-  write 4: main page 2
-  write 5: main page 4
-  sync main
-```
-
-Cut the power after N of them. `drop`, `keep` and `tear` are chapter 21's crash modes:
-the writes not yet synced are all lost, all on disk, or each partly on disk.
-
-```
-N = 0: drop: before | keep: before | tear: before
-N = 1: drop: before | keep: invalid (UnreachablePage) | tear: invalid (UnreachablePage)
-N = 2: drop: before | keep: invalid (UnreachablePage) | tear: invalid (UnreachablePage)
-N = 3: drop: before | keep: invalid (KeyOutOfBounds) | tear: invalid (UnreachablePage)
-N = 4: drop: before | keep: invalid (BadPage) | tear: invalid (BadPage)
-N = 5: drop: before | keep: after | tear: invalid (BadPage)
-```
-
-`drop` always gives the old tree, but only because every unsynced write vanished
-together. An operating system writes its cache out in whatever order it likes, so any
-subset of the five writes can be what a power cut leaves. The program tries all 32:
+**Without a log** the split is five page writes and a sync. Cut the power after N of
+them, in chapter 21's crash modes: the unsynced writes are all lost (`drop`), all on disk
+(`keep`), or each partly on disk (`tear`). With `keep`, N = 0 gives the old tree, N = 5
+the new one, and N = 1 to 4 an invalid one (`UnreachablePage`, `KeyOutOfBounds`,
+`BadPage`); with `tear` N = 5 is invalid too. `drop` always gives the old tree, but only
+because every unsynced write vanished together. An operating system may write out any
+subset of the five, and the program tries all 32:
 
 ```
 of the 32 subsets: 1 before, 2 after, 4 cannot be opened, 25 invalid, 0 valid with wrong contents
@@ -119,33 +99,27 @@ of the 32 subsets: 1 before, 2 after, 4 cannot be opened, 25 invalid, 0 valid wi
 ```
 
 Each page record is a 24-byte header plus 4096 bytes; the commit record is the header
-alone. The records are packed back to back from byte 4096 of the log file (the header has
-the first 4096 bytes to itself), so the five records occupy log pages 1 to 5. The storage
-calls are: five log page writes, `sync log` (the commit point), four main page writes,
-`sync main`, one write of a new log header, `sync log` (the checkpoint is complete).
+alone. The records are packed back to back from byte 4096 (log page 0 belongs to the log
+header), so they occupy log pages 1 to 5. The storage calls are: five log page writes,
+`sync log` (the commit point), four main page writes, `sync main`, one write of a new log
+header, `sync log` (the checkpoint is complete).
 
 By hand, for `keep` (every unsynced write reached the disk):
 
 - N = 3: log pages 1, 2, 3 are on disk. LSN 39 (pages 1 and 2) and LSN 40 (pages 2 and 3)
-  are complete. LSN 41 runs into page 4, which is missing: its CRC fails, the scan stops.
+  are complete. LSN 41 runs into page 4, whose write never arrived. The log file is
+  reused, so page 4 still holds bytes of generation 1: the CRC fails, the scan stops.
   Two valid records, no commit record: ignored. The main file was never touched. Before.
 - N = 5: all five log pages are on disk although the sync never ran. The chain is intact
   up to and including the commit record. Recovery replays four pages. After. Nobody was
   told that this put succeeded, yet it did; see "Pitfalls".
-- N = 7: the checkpoint had written pages 0 and 1 of the main file: a broken tree, exactly
-  as in the no-log table. But the log still holds the commit. Recovery rewrites all four
+- N = 7: the checkpoint had written pages 0 and 1 of the main file: a broken tree, as
+  without a log. But the log still holds the commit. Recovery rewrites all four
   pages. After.
 - N = 10: the new log header is on disk. Nothing chains from it, so recovery finds zero
   records; the main file was synced before the header was written. After.
 
-The program prints the same:
-
-```
-N = 3: drop: before [0 records, 0 commit] | keep: before [2 records, 0 commit] | tear: before [0 records, 0 commit]
-N = 5: drop: before [0 records, 0 commit] | keep: after [5 records, 1 commit] | tear: before [0 records, 0 commit]
-N = 7: drop: after [5 records, 1 commit] | keep: after [5 records, 1 commit] | tear: after [5 records, 1 commit]
-N = 10: drop: after [5 records, 1 commit] | keep: after [0 records, 0 commit] | tear: after [5 records, 1 commit]
-```
+Part 2 of the program output shows the same for every N and mode.
 
 ## Code walk-through
 
@@ -159,15 +133,9 @@ New in this chapter (Zig file names; the Rust files have the same names with `.r
 | `db.zig` | `Db`: recovery on open, then the tree; `put`, `putBatch`; refuses further use after a failed operation |
 | `crash.zig` | the crash loop, with the log and without |
 
-### Two storage interfaces, one adapter
-
-Chapter 12's pager talks to a byte-addressed storage (`read(offset, buffer)`, errors
-`ShortRead` and `StorageFailure`). Chapter 21's `SimDisk` is page-addressed
-(`readPage(page_no, *Page)`, errors `PowerLoss`, `OutOfBounds`, ...). The pager only
-moves whole pages at page-aligned offsets, so `PageFile` in `adapter.zig` serves the
-first interface with the second by one division. `OutOfBounds` on a read becomes
-`ShortRead`; every other error becomes `StorageFailure`. The "no log" experiments run
-chapter 12's tree through it.
+Chapter 12's pager is byte-addressed and chapter 21's `SimDisk` is page-addressed.
+`PageFile` in `adapter.zig` serves the first interface with the second by one division;
+the "no log" experiments run chapter 12's tree through it.
 
 ### The log is slid in underneath the pager
 
@@ -185,13 +153,11 @@ DiskBTree -> BufferPool -> Pager -> Wal -+-> log file   (appended, synced at com
 - `read(page)` returns the newest image: `pending`, then `index` (committed, in the log,
   not yet checkpointed), then the main file, whose page checksum is verified.
 
-This answers the buffer-pool question. Chapter 12's pool evicts dirty pages in the middle
-of an operation. Either eviction of dirty pages is forbidden until commit (and the pool
-sized for the largest operation), or it is routed through the log. This chapter routes
-it: an evicted page arrives at `Wal.write` and waits in `pending` like any other, so the
-pool can stay at 2 frames, and the central test runs with exactly that. The test
-"eviction goes through the log" checks that 36 puts with a 2-frame pool and no checkpoint
-do not write the main file once.
+Chapter 12's pool evicts dirty pages in the middle of an operation. Here an evicted page arrives at `Wal.write` and waits in `pending` like
+any other, so eviction is routed through the log and the pool can stay at 2 frames. The
+test "eviction goes through the log" checks that 36 puts with a 2-frame pool and no
+checkpoint never write the main file. (The alternative is to forbid writing a dirty page
+out until its log record is durable; see Postgres below.)
 
 ### Commit
 
@@ -211,14 +177,12 @@ try self.log.sync();   // the commit point
 ```
 
 The image is sealed with its page checksum before it is logged, so checkpoint and
-recovery copy log images to the main file byte for byte. The log file is page-addressed
-but records are not page-sized, so `appendToLog` usually rewrites the last, partly
-filled log page first. Under chapter 21's sector model that is safe: the bytes of
-earlier records are rewritten unchanged, so a torn sector there is the same either way.
+recovery copy log images to the main file byte for byte. Records are not page-sized, so
+`appendToLog` usually rewrites the last, partly filled log page. Under chapter 21's
+sector model that is safe: the bytes of earlier records are rewritten unchanged.
 
 After the sync the images move from `pending` to `index`. Pages are always processed in
-page-id order (the tables are sorted), which is what makes the Zig and Rust programs
-issue identical writes.
+page-id order, which makes the Zig and Rust programs issue identical writes.
 
 ### Checkpoint and recovery
 
@@ -231,35 +195,27 @@ durable, the old log is complete and a crash simply replays it.
 LSN is not the expected one or whose CRC does not chain. Page records are collected in
 `open_op`; a commit record moves them to `committed` (newest image per page wins);
 whatever is left in `open_op` at the end is the interrupted operation and is dropped.
-Then `committed` is written to the main file, synced, and the log is reset: recovery
-always ends with a checkpoint.
+Then the log is synced (the records were read back, which does not prove them durable;
+see "Pitfalls"), `committed` is written to the main file and synced, and the log is
+reset: recovery always ends with a checkpoint.
 
-**Page LSNs** are absent here on purpose. With full images, redo never asks "was this
-change already applied?", because applying it again is harmless. A system whose records
-are *deltas* ("insert this tuple at offset 7") cannot redo blindly. So every page stores
-the LSN of the last record applied to it, and redo skips a record when the page's LSN is
-already at or beyond it. Postgres does exactly this; see below.
+**Page LSNs** are absent on purpose: with full images, redo never asks "was this change
+already applied?", because applying it again is harmless. Records that are deltas need
+that question answered; see Postgres below.
 
 ### Rust differences
 
-- Zig's `Db` is one heap-allocated struct whose parts point at each other (pager to wal,
-  pool to pager, tree to pool). In Rust the tree owns the pool, which owns the pager,
-  which owns a `Box<dyn Storage>`. The `Db` needs a second handle to the log for
-  checkpoints, so the `Wal` lives in an `Rc<RefCell<Wal>>` and the pager holds a
-  `WalStorage` wrapper. The same goes for the `Machine` shared by its two storage ports.
-- Zig's `PageTable` is a hand-written sorted array (its images come from two different
-  allocators); Rust uses `BTreeMap<PageId, Box<Page>>`.
+- Zig's `Db` is one heap-allocated struct whose parts point at each other. In Rust the
+  tree owns the pool, which owns the pager, which owns a `Box<dyn Storage>`; the `Db`
+  needs a second handle to the log for checkpoints, so the `Wal` lives in an
+  `Rc<RefCell<Wal>>`. Its `tree` field is `pub(crate)`: outside the crate only the
+  methods that check for an earlier failure can read.
 - Zig merges error sets; Rust wraps them in `DbError::{Tree, Wal}`, next to
   `ReopenRequired`. Both flatten errors to `StorageFailure` at the storage interface;
   `Wal.last_error` keeps the real cause.
-- Rust has no failing allocator in std. The twin of Zig's "allocation failure at any
-  point" test is a budget that returns an error: a storage wrapper refuses one page write
-  with `OutOfMemory`, the first, then the second, and so on. Zig's second test, which
-  refuses single requests of the tree's scratch arena, has no twin: safe Rust cannot fail
-  a `Vec` allocation.
-- `Cargo.toml` sets `opt-level = 2` for the dev and test profiles: unoptimised, the
-  crash loop's checksumming makes `cargo run` several times slower. Overflow checks and
-  debug assertions stay on.
+- Rust has no failing allocator in std. The twin of Zig's allocation-failure test is a
+  storage wrapper that refuses one page write with `OutOfMemory`, each write in turn.
+  Zig's test on the tree's scratch arena has no twin.
 
 ### The crash loop
 
@@ -289,14 +245,11 @@ exactly the before or the after state: with the log 848 of 848 runs, without 215
 a second power cut during recovery (every 5th N, after each recovery write, keep and random): 524 of 524 runs exact
 ```
 
-The 14 runs in the last column of the control experiment are the worst outcome of all: a
-tree that passes `validate` but has lost a key whose put had returned success.
+The 14 runs in the last column are the worst outcome of all: a tree that passes `validate` but has lost a key whose put had returned success.
 
-The tests add three loops that the table does not show. The two files get different
-crash modes (the main file keeps every unsynced write while the log loses its own, and
-the other way round). The power fails at a sync instead of after a write: the sync
-completes, but its caller gets an error. And a second cut hits recovery in the modes
-`drop` and `tear`. Every run ends in the before or the after state.
+The tests add loops the table does not show: a different crash mode for each file, a
+power cut at a sync (it completes, but its caller gets an error), and a second cut during
+recovery in the modes `drop` and `tear`. Every run ends in the before or the after state.
 
 A larger loop (120 puts) runs with `zig build test -Dlong=true` or
 `cargo test --features long`.
@@ -315,10 +268,8 @@ checksum is seeded with the previous frame's (`sqlite3_ondisk.rs:1924-1925`,
 `checksum_wal` at `:2300-2325`). When Turso scans a WAL it stops at the first frame whose
 salt does not match the header or whose checksum does not chain
 (`sqlite3_ondisk.rs:1909-1937`), and it only advances "last valid frame" at a commit frame
-(`:1945-1947`). The salts play the role of this chapter's generation number. Reads ask `find_frame`
-for the newest frame of a page before falling back to the database file
-(`turso/core/storage/wal.rs:3684`, `pager.rs:3610`). Summary: `research/turso.md`,
-section 14.
+(`:1945-1947`). The salts play the role of this chapter's generation number. Summary:
+`research/turso.md`, section 14.
 
 **Postgres: per-page delta records, page LSNs, and two records per split.** Postgres states the
 write-ahead rule in the page header documentation: the LSN enforces "thou shalt write
@@ -331,9 +282,7 @@ A nbtree split is **not** one atomic unit in the log. The split of one level is 
 record (`XLOG_BTREE_SPLIT_L` or `_R`, `postgres/src/include/access/nbtxlog.h:27-43`,
 replayed by `btree_xlog_split` at `postgres/src/backend/access/nbtree/nbtxlog.c:246`),
 and the insertion of the new downlink into the parent is a second record. Between the
-two, the left page carries the flag `BTP_INCOMPLETE_SPLIT`: set by the split
-(`nbtinsert.c:1580`) and by its redo (`nbtxlog.c:415`), cleared by the parent insertion
-and its redo (`nbtinsert.c:1317`, `_bt_clear_incomplete_split` at `nbtxlog.c:136-155`).
+two, the left page carries the flag `BTP_INCOMPLETE_SPLIT` (set at `nbtinsert.c:1580`).
 A crash between the records leaves a valid B-link tree (chapter 20): searches reach the
 right half through the right link, and the next writer that passes finishes the split.
 The nbtree README says "A single WAL entry is effectively an atomic action"
@@ -346,46 +295,34 @@ already at or past the record's, the block is skipped
 (`postgres/src/backend/access/transam/xlogutils.c:444-445`). Deltas alone cannot repair a
 torn page, so the first change to a page after a checkpoint logs a full image of it
 (`needs_backup = (page_lsn <= RedoRecPtr)`,
-`postgres/src/backend/access/transam/xloginsert.c:698`), minus the unused "hole" in the
-middle of the page (`xloginsert.c:738-743`). Summary in `research/postgres.md`, section 10.
+`postgres/src/backend/access/transam/xloginsert.c:698`). Summary in `research/postgres.md`, section 10.
 
 **TigerBeetle: the testing style.** TigerBeetle has no B-tree, but its deterministic
 simulator is the model for the crash loop: "Because our simulator is deterministic based
 on a _seed_ number and the Git commit, we can perfectly reproduce any bugs discovered in
 testing" (`tigerbeetle/docs/internals/vopr.md:6-8`; see `research/tigerbeetle.md`,
-section 10.4). Our loop is far smaller: one process, no network, and a fault schedule
-that is exhaustive over N instead of random.
+section 10.4).
 
 ### What this design costs, and how real systems pay less
 
-Part 4 of the program output measures it for the 36-put workload:
+Part 4 of the program output measures it for the 36-put workload, with a checkpoint
+every 1, 4 or 16 commits and with none (two of the four rows):
 
 ```
-the puts carry 39385 bytes of keys and values
   checkpoint  log bytes  largest  page     log page  main page  syncs
   every       appended   log      records  writes    writes
   1              445848    24744      108       182        106    110
-  4              445848    66016      108       155         56     56
-  (largest commit: 6 page images; 37 commits)
   16             445848   198144      108       148         24     42
-  never          445848   445848      108       146          0     38
-without the log: 129 page writes in place, no second copy, and Part 3's failures
 ```
 
 - **Every dirtied page is logged in full.** 39385 bytes of data became 445848 bytes of
   log, about eleven times as much, because a put that changes 300 bytes of a leaf logs
   the whole leaf and the whole metapage. Postgres logs a delta unless it is the first
-  change after a checkpoint (source above). Logging only the changed byte ranges, or
-  compressing images, are textbook refinements not shown here.
+  change after a checkpoint (source above).
 - **Every page is written twice**, to the log and to the main file. Rare checkpoints
   soften this: with one every 16 commits the main file receives 24 page writes instead
   of 106, because a page changed by several commits is copied once. The price is a log
   that grows until the checkpoint ("largest log"), and a longer recovery.
-- **One sync per put.** Real systems batch several transactions' commit records into one
-  sync (group commit; textbook, not verified in the sources here). `putBatch` shows the
-  single-writer version: several puts, one commit record.
-- One commit is limited to `max_commit_pages` images (default 32), the size of the record
-  buffer. A larger operation fails with `CommitTooLarge`, and the handle must be reopened.
 
 ## Allocator notes
 
@@ -393,26 +330,22 @@ without the log: 129 page writes in place, no second copy, and Part 3's failures
   allocates one slab at `init`; each commit wraps it in a fresh `FixedBufferAllocator`
   and allocates the records one by one. A bump allocator hands out adjacent memory, so
   the used prefix of the slab *is* the byte run to append, and "reset" is free. Running
-  out is the documented size limit (`CommitTooLarge`, pinned by a test). A
-  general-purpose allocator would allocate and free 4 KiB per record, could fail in the
-  middle of a commit, and would not give contiguous records. The slab lives as long as
-  the `Wal`; its contents mean nothing after `commit` returns.
+  out is the documented size limit: more than `max_commit_pages` images (default 32)
+  fail with `CommitTooLarge`, pinned by a test. A general-purpose allocator could fail
+  in the middle of a commit and would not give contiguous records. The slab lives as
+  long as the `Wal`; its contents mean nothing after `commit` returns.
 - **An arena for recovery** (`Wal.recover`). Recovery reads an unknown number of page
   images and drops pointers along the way (a newer image of a page replaces an older
   one). All come from one `ArenaAllocator`, destroyed by a single `defer` on success and
   on every error path. Freeing images one by one would need bookkeeping for exactly the
-  replaced ones. Nothing read during recovery is needed afterwards, because recovery
-  ends with a checkpoint.
+  replaced ones.
 - **General-purpose allocator** for `pending` and `index`, whose images come and go one
   at a time. `commit` reserves the `index` capacity it needs *before* writing to the
   log, so nothing after the commit point can fail for lack of memory.
-- Tests use `std.testing.allocator`. The test "allocation failure at any point leaves a
-  recoverable database and leaks nothing" fails every allocation of `Db.open` and of
-  twelve puts in turn, and then reopens the files with a working allocator. The tree's
-  scratch arena hides most of the tree's own requests from that allocator, so a second
-  test (chapter 12's, on top of the log) refuses each scratch request of three splitting
-  puts in turn. A put that fails half-way through a split leaves nothing behind after a
-  reopen: none of its pages was committed.
+- Tests use `std.testing.allocator`. One test fails every allocation of `Db.open` and of
+  twelve puts in turn, then reopens the files with a working allocator; a second
+  (chapter 12's) refuses each request of the tree's scratch arena during three splitting
+  puts. Nothing of a put that failed half-way survives the reopen.
 
 ## Pitfalls
 
@@ -420,20 +353,22 @@ without the log: 129 page writes in place, no second copy, and Part 3's failures
   record is durable but before `put` returns, the caller sees an error and the key is
   there after recovery. That is why the oracle allows "after" for the put in flight. The
   only promises are: a put that returned success is never lost, and a put is never half
-  applied. The test "a sync that completes but reports the power cut" stops the machine
-  at exactly that point, for every sync of the workload.
+  applied.
 - **After an error, reopen.** The tree has no undo. A `put` or `putBatch` that fails
   after its first page change leaves that change in the buffer pool, and the next commit
-  on the same handle would make it durable: half a batch, committed by an unrelated put.
-  So `Db` remembers the failure, and every later call returns `ReopenRequired`. Close
-  the handle and open the database again; recovery restores the last committed state.
-  One error is harmless: a key or value that is too long is refused before anything is
-  touched, for a whole batch at once, and the handle stays usable.
+  on the same handle would make it durable. So `Db` remembers the failure, and every
+  later call returns `ReopenRequired` until the database is opened again and recovery
+  has restored the last committed state. Only a key or value that is too long is refused
+  before anything is touched, and leaves the handle usable.
+- **Readable is not durable.** A commit whose log sync returned an error while the power
+  stayed on leaves complete records in the log file, and the reopen reads them. So
+  `recover` syncs the log before it copies anything to the main file. Without that sync,
+  a power cut during the copy could keep main-file pages and lose the records they came
+  from: a database that cannot be opened (test "a log sync that fails with the power
+  on").
 - **Syncing in the wrong order.** Resetting the log before the main file is synced loses
   committed pages; writing main-file pages before the log is synced leaves a torn tree
-  with nothing to repair it. The test "write-ahead rule" checks the order on a trace;
-  the crash loop that lets the main file keep its writes while the log loses its own
-  checks the result.
+  with nothing to repair it. The test "write-ahead rule" checks the order on a trace.
 - **The chain cuts both ways.** A damaged record in the middle of the log hides every
   committed operation behind it (test "recovery stops at the first record whose checksum
   chain breaks"). A power cut only damages the unsynced tail; a failing disk can do this.
@@ -444,7 +379,7 @@ without the log: 129 page writes in place, no second copy, and Part 3's failures
 
 1. (easy) In the worked example, what does recovery find after a power cut at N = 4 in
    mode `keep`? Predict the number of valid records and the state, then check the output.
-2. (easy) Swap the last two steps of `checkpoint` in your head: reset the log, then sync
+2. (easy) Reorder `checkpoint` in your head: reset the log first, then write and sync
    the main file. Describe a crash that now loses a committed key.
 3. (medium) Change `Db.put` so that it checkpoints after every commit. Which numbers of
    the crash-loop table change, and which cannot change?

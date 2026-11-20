@@ -7,8 +7,8 @@ says so.
 
 Log pages 1 to 4 are on disk. LSN 39 (bytes 4096..8216, pages 1 and 2), LSN 40 (pages 2
 and 3) and LSN 41 (bytes 12336..16456, pages 3 and 4) are complete. LSN 42 runs from byte
-16456 to 20576 and needs page 5, which was never written, so its checksum fails and the
-scan stops. Three valid records, no commit record: the operation is ignored and the tree
+16456 to 20576 and needs page 5, whose write never arrived. The log file is reused, so
+page 5 still holds bytes of generation 1; the record's checksum fails and the scan stops. Three valid records, no commit record: the operation is ignored and the tree
 is the old one. The program prints
 
 ```
@@ -17,14 +17,14 @@ N = 4: drop: before [0 records, 0 commit] | keep: before [3 records, 0 commit] |
 
 ## 2. Checkpoint in the wrong order
 
-With "reset the log, then write and sync the main file": the power fails after the new
-log header is durable and before the main-file pages are. The log is now empty (nothing
-chains from the new header), the main file still has the old pages, and the committed
-operations that were only in the log are gone for good.
+The exercise's order is: reset the log, then write and sync the main file. The power
+fails after the new log header is durable and before the main-file pages are. The log is
+now empty (nothing chains from the new header), the main file still has the old pages,
+and the committed operations that were only in the log are gone for good.
 
-This was run. In a scratch copy of the Zig code the two calls in `Wal.checkpoint` were
-swapped and the crash loop of part 3 (36 puts, 3-frame pool, checkpoint every 4) was
-repeated. Of 212 runs per mode:
+This was run. In a scratch copy of the Zig code the two calls in `Wal.checkpoint`
+(`writeToMain`, which writes and syncs, and `resetLog`) were swapped and the crash loop
+of part 3 (36 puts, 3-frame pool, checkpoint every 4) was repeated. Of 212 runs per mode:
 
 | mode | before | after | open fails | invalid | wrong contents |
 |---|---|---|---|---|---|

@@ -161,6 +161,9 @@ and <code>cargo run</code>.</p>
     }
 
     if (r.committed) {
+      push('Before it touches the main file, recovery syncs the log. Reading a record back does not prove that it is durable ' +
+        '(an earlier sync may have failed while the power stayed on), and the write-ahead rule holds for recovery too: ' +
+        'no page goes to the main file before its log record is durable.');
       M.MAIN_PAGES.forEach(function (p, i) {
         st.replayed = i + 1;
         push('Redo: write the logged image of page ' + p + ' to the main file' +
@@ -220,6 +223,7 @@ and <code>cargo run</code>.</p>
     // Log file: header + the five records.
     logRow.textContent = '';
     var gen = st.reset ? r.generation + 1 : r.generation;
+    var logSynced = syncedUpTo.log >= 0; // the commit's "sync log" completed before the cut
     logRow.appendChild(el('div', { class: 'ch22-box s-found' + (st.now === 'header' ? ' is-now' : '') }, el('b', 'header'), el('span', 'generation ' + gen)));
     RECORDS.forEach(function (rec, k) {
       var onDisk = M.recordPages(rec).every(function (p) { return s.log[p]; });
@@ -229,13 +233,18 @@ and <code>cargo run</code>.</p>
       else if (k < st.scanned) { cls += ' s-found'; note = 'valid'; }
       else if (st.broken && k === r.brokenAt) { cls += ' s-deleted'; note = 'chain breaks'; }
       else if (st.broken) { cls += ' is-absent'; note = 'not trusted'; }
-      else { cls += onDisk ? ' s-compare' : ' is-absent'; note = onDisk ? 'on disk, unread' : torn ? 'torn' : 'incomplete'; }
+      // Yellow only while the record's pages are on disk WITHOUT a sync (mode keep).
+      else if (onDisk) { cls += logSynced ? ' s-found' : ' s-compare'; note = logSynced ? 'durable, unread' : 'on disk, unread'; }
+      else { cls += ' is-absent'; note = torn ? 'torn' : 'incomplete'; }
       if (st.now === 'rec' + k) cls += ' is-now';
       logRow.appendChild(el('div', { class: cls }, el('b', 'LSN ' + rec.lsn), el('span', rec.commit ? 'COMMIT' : 'page ' + rec.page), el('span', note)));
     });
     // The file is reused, never erased: behind the new records lie the old ones.
-    logRow.appendChild(el('div', { class: 'ch22-box is-absent', title: 'Log pages 6 to 27 still hold records of generation 1 (LSN 1 to 38). The scan never gets that far: the chain ends before them.' },
-      el('b', 'pages 6–27'), el('span', 'generation 1'), el('span', 'old, never erased')));
+    // Before this put, generation 1's records (LSN 1 to 38) filled log pages 1 to 27.
+    var firstOld = 1;
+    for (var lp = 1; lp <= 5; lp++) if (s.log[lp] || s.tornLog[lp]) firstOld = lp + 1;
+    logRow.appendChild(el('div', { class: 'ch22-box is-absent', title: 'Log pages ' + firstOld + ' to 27 still hold bytes of generation 1 (its records LSN 1 to 38). They are never erased, only overwritten; the scan does not accept them: wrong LSN, and a checksum that does not chain.' },
+      el('b', 'pages ' + firstOld + '–27'), el('span', 'generation 1'), el('span', 'old, never erased')));
 
     // Main file: the four pages the operation changed.
     mainRow.textContent = '';
@@ -249,7 +258,7 @@ and <code>cargo run</code>.</p>
     var tornNow = M.MAIN_PAGES.filter(function (p, i) { return s.tornMain[p] && i >= st.replayed; }).length;
     var text, ok = true;
     if (done) text = 'After recovery: ' + (r.state === 'after' ? 'the new tree, 12 keys (the put is committed)' : 'the old tree, 11 keys (the put never happened)') + '.';
-    else if (tornNow > 0) { ok = false; text = 'Main file right now: ' + tornNow + ' torn page' + (tornNow > 1 ? 's' : '') + ' (the page checksum fails) among ' + fresh + ' new and ' + (M.MAIN_PAGES.length - fresh - tornNow) + ' old: a broken tree. The log still has the commit; recovery will finish the job.'; }
+    else if (tornNow > 0) { ok = false; text = 'Main file right now: ' + tornNow + ' torn page' + (tornNow > 1 ? 's' : '') + ' (written in part: such a page normally fails its checksum) among ' + fresh + ' new and ' + (M.MAIN_PAGES.length - fresh - tornNow) + ' old: a broken tree. The log still has the commit; recovery will finish the job.'; }
     else if (fresh === 0) text = 'Main file right now: the old tree, untouched.';
     else if (fresh === M.MAIN_PAGES.length) text = 'Main file right now: all four new pages.';
     else { ok = false; text = 'Main file right now: ' + fresh + ' new page' + (fresh > 1 ? 's' : '') + ' and ' + (M.MAIN_PAGES.length - fresh) + ' old: a broken tree, as on page 1. The log still has the commit; recovery will finish the job.'; }

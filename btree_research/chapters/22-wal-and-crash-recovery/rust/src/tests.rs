@@ -323,6 +323,136 @@ fn a_batch_that_fails_after_its_first_put_the_handle_refuses_everything_until_it
     expect_value(&mut db, b"a", Some(&[b'1'; 1000]));
 }
 
+#[test]
+fn a_checkpoint_that_fails_the_handle_refuses_everything_until_it_is_reopened() {
+    let machine = Machine::new(1);
+    {
+        let options = Options {
+            checkpoint_every: 0,
+            ..Options::default()
+        };
+        let mut db = open_db(&machine, options);
+        db.put(b"a", b"1").unwrap();
+        // The explicit checkpoint has two main-file pages to write (the
+        // metapage and the root leaf). The power fails after the first.
+        machine.borrow_mut().power_off_after_writes(1);
+        assert_eq!(
+            db.checkpoint(),
+            Err(DbError::Wal(WalError::Storage(StorageError::PowerLoss)))
+        );
+        assert!(db.is_failed());
+        // "a" is still in the buffer pool and would be served from memory.
+        assert_eq!(db.get(b"a"), Err(DbError::ReopenRequired));
+        assert_eq!(db.put(b"b", b"2"), Err(DbError::ReopenRequired));
+        assert_eq!(db.checkpoint(), Err(DbError::ReopenRequired));
+    }
+    machine.borrow_mut().crash(CrashMode::Tear);
+    let mut db = open_db(&machine, Options::default());
+    db.validate().unwrap();
+    expect_value(&mut db, b"a", Some(b"1")); // committed before the checkpoint began
+    expect_value(&mut db, b"b", None);
+}
+
+/// A storage in front of another one whose next `sync` fails with an I/O
+/// error while the power stays on: the writes before it are readable but not
+/// durable. `SimDisk` has no such fault (its only failure is the power cut).
+struct SyncFails {
+    inner: Box<dyn Storage>,
+    armed: Rc<Cell<bool>>,
+}
+
+impl Storage for SyncFails {
+    fn read_page(&mut self, page_no: u64, out: &mut Page) -> Result<(), StorageError> {
+        self.inner.read_page(page_no, out)
+    }
+
+    fn write_page(&mut self, page_no: u64, page: &Page) -> Result<(), StorageError> {
+        self.inner.write_page(page_no, page)
+    }
+
+    fn sync(&mut self) -> Result<(), StorageError> {
+        if self.armed.replace(false) {
+            return Err(StorageError::InputOutput);
+        }
+        self.inner.sync()
+    }
+
+    fn size(&self) -> u64 {
+        self.inner.size()
+    }
+}
+
+#[test]
+fn a_log_sync_that_fails_with_the_power_on_a_reopen_then_a_power_cut_inside_that_recovery() {
+    // The commit's records are all in the log file, readable, but its sync
+    // returned an error: they are not durable. The reopen that the handle
+    // demands finds a complete commit. If recovery copied it to the main
+    // file at once, a power cut that keeps those main-file writes and drops
+    // the log's would leave pages of an operation the log knows nothing of.
+    // So `recover` syncs the log before its first main-file write.
+    let options = Options {
+        checkpoint_every: 0,
+        ..Options::default()
+    };
+    let mut cut = 0;
+    loop {
+        let machine = Machine::new(1);
+        {
+            let mut db = open_db(&machine, options);
+            for key in b"abcd" {
+                db.put(&[*key], &[b'1'; 1000]).unwrap();
+            }
+            db.checkpoint().unwrap();
+        }
+        {
+            let armed = Rc::new(Cell::new(false));
+            let flaky = Box::new(SyncFails {
+                inner: machine::log_storage(&machine),
+                armed: Rc::clone(&armed),
+            });
+            let mut db = Db::open(machine::main_storage(&machine), flaky, options).unwrap();
+            armed.set(true);
+            // "e" splits the root leaf: 4 page images and a commit record.
+            assert_eq!(
+                db.put(b"e", &[b'5'; 1000]),
+                Err(DbError::Tree(TreeError::Io(IoError::StorageFailure)))
+            );
+            assert_eq!(
+                db.wal().last_error,
+                Some(WalError::Storage(StorageError::InputOutput))
+            );
+            assert!(!armed.get()); // it was the commit's sync that failed
+            assert_eq!(db.put(b"f", b"x"), Err(DbError::ReopenRequired));
+        }
+        // "After an error, reopen." The power fails after `cut` writes of
+        // that recovery; the main file keeps them, the log loses its own.
+        machine.borrow_mut().power_off_after_writes(cut);
+        match Db::open(
+            machine::main_storage(&machine),
+            machine::log_storage(&machine),
+            options,
+        ) {
+            Ok(_) => break, // recovery needed fewer than `cut` writes
+            Err(e) => assert_eq!(e, DbError::Wal(WalError::Storage(StorageError::PowerLoss))),
+        }
+        machine
+            .borrow_mut()
+            .crash_each(CrashMode::Keep, CrashMode::Drop);
+
+        let mut db = open_db(&machine, options);
+        db.validate().unwrap();
+        for key in b"abcd" {
+            expect_value(&mut db, &[*key], Some(&[b'1'; 1000]));
+        }
+        // Before the first write nothing was synced and the put is gone.
+        // From the first main-file write on, the log had been synced first.
+        let e: Option<&[u8]> = if cut == 0 { None } else { Some(&[b'5'; 1000]) };
+        expect_value(&mut db, b"e", e);
+        cut += 1;
+    }
+    assert_eq!(cut, 6); // 4 main-file pages, the new log header, and a run without a cut
+}
+
 // ---- the write-ahead rule ------------------------------------------------------
 
 #[test]

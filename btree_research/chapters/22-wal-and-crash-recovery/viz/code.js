@@ -90,6 +90,8 @@ window.CHAPTER_CODE = {
       '        open_op.clearRetainingCapacity();',
       '    }',
       '    // open_op without a commit record is dropped here',
+      '    // read back is not durable: the write-ahead rule again',
+      '    if (committed.len() != 0) try self.log.sync();',
       '    try self.writeToMain(&committed); // redo + sync',
       '    try self.resetLog(); // new generation, sync',
       '}'
@@ -111,6 +113,8 @@ window.CHAPTER_CODE = {
       '        committed.extend(open_op.drain(..));',
       '    }',
       '    // open_op without a commit record is dropped here',
+      '    // read back is not durable: the write-ahead rule again',
+      '    if !committed.is_empty() { self.log.sync()?; }',
       '    self.write_to_main(&committed)?; // redo + sync',
       '    self.reset_log()?; // new generation, sync',
       '    Ok(report)',

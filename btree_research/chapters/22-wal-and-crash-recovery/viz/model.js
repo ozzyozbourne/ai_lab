@@ -189,9 +189,14 @@ window.CH22 = (function () {
         var missing = recordPages(RECORDS[i]).filter(function (p) { return !s.log[p]; });
         if (missing.length) {
           r.brokenAt = i;
+          // The log file is reused: before this put it already had 28 pages
+          // full of generation 1's records (LSN 1 to 38). A write that did
+          // not reach the disk leaves those old bytes, not a hole.
           r.why = s.tornLog[missing[0]] ?
             'log page ' + missing[0] + ' is torn: some of its sectors hold the new bytes and some do not, so the checksum computed over the record does not match the one stored in it' :
-            'log page ' + missing[0] + ' never reached the disk';
+            missing[0] === Math.floor(RECORDS[i].from / PAGE) ?
+            'the new bytes of log page ' + missing[0] + ' never reached the disk. The log file is reused, so at this position still lies record LSN 1 of generation 1; the scan expects LSN ' + RECORDS[i].lsn + ' here and refuses it' :
+            'the new bytes of log page ' + missing[0] + ' never reached the disk. The page still holds old bytes of generation 1, so the record\'s tail is not what its checksum was computed over';
           break;
         }
         r.valid++;

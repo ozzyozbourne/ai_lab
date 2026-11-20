@@ -17,9 +17,11 @@
 //!                 the main file, start a new generation.
 //!
 //! The write-ahead rule: a page reaches the main file only after the log
-//! record holding its image is durable. It holds by construction: `checkpoint`
-//! and `recover` are the only code that writes the main file, and both write
-//! only images that were read back from, or already synced to, the log.
+//! record holding its image is durable. `checkpoint` and `recover` are the
+//! only code that writes the main file. `checkpoint` writes images whose
+//! commit synced the log. `recover` writes images it read back from the log,
+//! and readable is not durable (an earlier sync may have failed with the
+//! power on), so it syncs the log itself before its first main-file write.
 //!
 //! The buffer pool may evict a dirty page in the middle of an operation. Its
 //! write-back arrives here as `write` and lands in `pending`, so eviction is
@@ -363,8 +365,8 @@ pub const Wal = struct {
     ///      checksum chain breaks (torn, never written, or an old generation)
     ///   2. page records are collected per operation; a commit record
     ///      promotes them, a missing one means they are dropped
-    ///   3. write the newest committed image of each page to the main file,
-    ///      sync, start a new log generation (a checkpoint)
+    ///   3. sync the log, write the newest committed image of each page to
+    ///      the main file, sync, start a new log generation (a checkpoint)
     ///
     /// Running it twice, or crashing inside it and running it again, gives
     /// the same main file: step 3 only copies images.
@@ -410,6 +412,15 @@ pub const Wal = struct {
         // valid, committed or not, so no LSN is ever handed out twice.
         self.generation = scanner.generation;
         self.next_lsn = scanner.lsn;
+        if (committed.len() != 0) {
+            // The write-ahead rule. The records were READ from the log; that
+            // does not make them durable. If the sync of their commit failed
+            // while the power stayed on, they sit in the operating system's
+            // cache, and a power cut during the writes below could keep the
+            // main-file pages and lose the records they came from.
+            try self.log.sync();
+            self.stats.log_syncs += 1;
+        }
         try self.writeToMain(&committed);
         try self.resetLog();
         self.broken = false;

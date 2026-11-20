@@ -20,7 +20,7 @@ Prerequisites: B+trees (chapter 07), slotted pages and byte-based fullness (10, 
 points (14). The code here is self-contained.
 
 Scope: prefix compression (storing a prefix shared by all keys of a page once) is textbook
-material here. None of the six codebases does it in a B-tree; neither does this code.
+material here; none of the six codebases does it in a B-tree.
 
 ## The idea in plain words
 
@@ -69,10 +69,9 @@ bracket the page in its parent. They are called fence keys. The low fence of the
 page is minus infinity and the high fence of the rightmost page is plus infinity; neither
 takes space.
 
-Fences make a page self-describing. `validate` checks that every tuple of a page lies
-between its fences and that the fences equal the parent's separators. A search that lands
-on a page can tell from the high fence alone whether it is on the right page (chapter 20
-builds concurrency on that test). Fences cost space on every page, one more reason to
+Fences make a page self-describing: `validate` checks every tuple against them, and a
+search can tell from the high fence alone whether it is on the right page (chapter 20
+builds concurrency on that test). They cost space on every page, one more reason to
 truncate: a fence is as short as the separator it copies.
 
 Postgres stores only the upper one and calls it the high key. Storing both, as here, is the
@@ -86,11 +85,11 @@ thousand times. A *posting list* stores the key once, followed by the sorted TID
     apple@2  apple@4  apple@7        three cells, 45 bytes
     apple@[2,4,7]                    one cell,   29 bytes
 
-The logical content is the same, only the representation changes. The cost is a more
-complicated insert: a new TID may fall *inside* the range of an existing list.
+The content is the same, only the representation changes. The cost is a more complicated
+insert: a new TID may fall *inside* the range of an existing list.
 
-Deduplication is done lazily, as in Postgres: only when a leaf is full and would otherwise
-split. A split is permanent in a tree that never merges pages; a posting list is free.
+Deduplication is lazy, as in Postgres: it runs only when a leaf is full and would otherwise
+split.
 
 ## A worked example by hand
 
@@ -113,8 +112,9 @@ Cutting one position earlier (`banana` | `blackberry`) gives `bl`; one later (`b
 several cuts near the middle and prefers the shortest separator.
 
 **Routing.** The parent now contains `... "blu" ...`. Look up `blackberry`: the search tuple
-is `(blackberry, 0)`. Compare the key bytes with `blu`: `bla < blu`, so the tuple is below
-the separator and goes left. Look up `blueberry`: `blu` is a prefix of `blueberry`, a prefix
+is `(blackberry, 0)`. Why 0? It is the smallest TID, so `(key, 0)` is at or below every
+stored tuple with that key and the search lands where the run of that key begins. Compare
+the key bytes with `blu`: `bla < blu`, so the tuple is below the separator and goes left. Look up `blueberry`: `blu` is a prefix of `blueberry`, a prefix
 sorts first, so the separator is below the tuple and the search goes right. Look up `blu`
 itself (not in the index): the key bytes are equal, the separator has no TID, the search
 tuple has TID 0, minus infinity is below 0, so it goes right, where `blu` would be if it
@@ -162,15 +162,14 @@ if (truncate) {
 return .{ .key = last_left.key, .tid = last_left.tids[last_left.tids.len - 1] };
 ```
 
-If the keys differ, byte `n` of the right key is either where they differ or lies beyond the
-end of the left key; in both cases the `n + 1` byte prefix is above the left key. If the
-keys are equal, `n` equals the key length and the function falls through to the full
-last-left tuple, TID included. With `truncate = false` it always returns the full last-left
-tuple, which is the choice of Lehman and Yao and the baseline for the measurements.
+If the keys differ, byte `n` of the right key is where they differ or lies beyond the end
+of the left key; either way the `n + 1` byte prefix is above the left key. If the keys are
+equal, the function falls through to the full last-left tuple, TID included. With
+`truncate = false` it always does: the baseline for the measurements.
 
-A `Page` has an arena, two optional fences, a right link and either a list of
-`LeafCell { key, tids }` or lists of separators and children. `usedBytes` adds up what the
-cells would cost in a slotted page.
+A `Page` has an arena, two optional fences, a right link and either `LeafCell { key, tids }`
+entries or separators and children. `usedBytes` adds up what they would cost in a slotted
+page.
 
 Search: `childIndex` returns the number of separators strictly below the tuple, by binary
 search. It does not know whether separators are truncated. `range(lo, hi)` descends with
@@ -202,13 +201,12 @@ happens completely or not at all.
 discuss why real engines often do not either).
 
 `validate` walks the tree with the expected fences of each page and checks fences, tuple
-order, posting lists, size limits, leaf depth, the entry count and the chain of `right`
-links on every level (the leaf chain that scans follow, and the same chain one level up).
+order, posting lists, size limits, leaf depth, the entry count and the `right` links of
+every level.
 
-Two seeded model tests compare the tree with a sorted oracle. The second is adversarial,
-because routing through truncated separators is the chapter's claim: the empty key, keys at
-`maxKeyLen`, keys that are prefixes of each other, the bytes 0x00 and 0xff, TID 0 and
-`max_tid`, bounded ranges, then deleting everything.
+Two seeded model tests compare the tree with a sorted oracle. The second is adversarial:
+the empty key, keys at `maxKeyLen`, prefixes of prefixes, the bytes 0x00 and 0xff, TID 0
+and `max_tid`, bounded ranges, then deleting everything.
 
 **Why one sixth.** No cell may exceed one sixth of the usable page, and keys are limited so
 that a pivot *with* a TID still fits in that (`maxKeyLen`). Then an overflowing page holds at
@@ -221,17 +219,15 @@ obey the same limit, so a long run of duplicates becomes several lists.
 Same structure, names and tests (`snake_case`). The differences:
 
 - A `Page` owns `Vec`s; each key is its own `Vec<u8>`. There are no arenas: replacing a
-  page is `self.pages[id] = new_page`, and the old value is dropped as a whole. That is the
-  "drop the `Vec`" idiom standing in for a per-page arena.
+  page is `self.pages[id] = new_page`, and the old value is dropped as a whole.
 - No scratch allocator: `put_slow` clones the cell list into a local `Vec`.
 - `separator` returns borrowed parts `(&[u8], Option<Tid>)`, so the split-point search does
   not allocate; `Sep` is the owned form.
 - `Option<Tid>` already orders `None` before `Some(_)`, so `compare_tuple` is one line.
 - Allocation failure is mirrored by a page budget (`max_pages`): a put that needs more
-  pages returns `Err(Error::OutOfPages)`. The pending pages and the pending parent insert
-  are applied only after the budget check, so the tree is unchanged on error.
-- Zig tracks bytes made unreachable by deletes and rebuilds the leaf (see Allocator notes).
-  Rust frees each `Vec` when it is removed and needs nothing of the kind.
+  pages returns `Err(Error::OutOfPages)` before anything is applied.
+- Zig counts bytes made unreachable by deletes and rebuilds the leaf (see Allocator notes).
+  Rust frees each `Vec` when it is removed.
 
 ### Output
 
@@ -251,7 +247,14 @@ page 2 internal low=-inf high=+inf used=46/256
     cranberry@20 date@23 elderberry@14 fig@5 grape@9 grapefruit@26 guava@34
 ```
 
-and the measurements with 4096-byte pages are:
+The `apple` lists stop at five TIDs because no cell may exceed one sixth of the usable
+page: (256 - 8) / 6 = 41 bytes, exactly `apple` with five TIDs. `apple@1` and `apple@15`
+stay plain cells because a pass merges from left to right and never re-cuts an existing
+list: a tuple that arrives later next to a full list stays alone. Postgres does the same, a
+tuple that would push the pending list over its size limit starts a new one
+(`_bt_dedup_save_htid`, `nbtdedup.c:507-515`).
+
+The measurements with 4096-byte pages are:
 
 ```
 A. 20000 unique 32-byte keys (hex hashes), random order
@@ -275,16 +278,13 @@ which equal the rows above them). How to read it:
 
 - **A.** Random 32-byte keys differ in their first bytes. Separators shrink from 38 bytes
   (32 of key plus a 6-byte TID) to 2.4 on average, all 300 children fit in one root, and the
-  tree loses a level. Leaves barely change: truncation does not touch them, apart from
-  shorter fences. Deduplication has nothing to merge.
+  tree loses a level. Leaves barely change: only their fences get shorter.
 - **B.** With 400 rows per key, truncation has almost nothing to cut (most splits fall
   inside a run of equal keys and need the TID). Deduplication cuts the leaf count to a
-  quarter and the bytes per entry from 21.7 to 7.3; a bare TID is 6. With both on, the
-  separators that do fall between different keys get shorter (17.0 to 11.9 bytes on
-  average) but the leaf count is 50 instead of 45: the split-point rule gives up a little
-  balance for a shorter separator, and shorter fences shift which page splits when. With
-  only 45 to 50 leaves, each holding a few large posting lists, that difference is small
-  change (exercise 4 separates the two effects).
+  quarter and the bytes per entry from 21.7 to 7.3; a bare TID is 6. With both on,
+  separators get shorter (17.0 to 11.9 bytes on average) but there are 50 leaves instead
+  of 45: the split-point rule gives up a little balance for a shorter separator, and
+  shorter fences shift which page splits when (exercise 4 separates the two effects).
 - **C.** Hierarchical keys share long prefixes. Truncation still cuts the suffix
   (`/order/NNNNNN`), but every separator keeps `user/00...`: 10.3 bytes where A needs 2.4.
   Removing a shared *prefix* is a different technique. The deduplication rows differ a
@@ -295,10 +295,9 @@ which equal the rows above them). How to read it:
 
 If every key of a page starts with `user/0012`, those bytes can be stored once in the page
 header and stripped from every cell. With fence keys the shared prefix is known without
-looking at the cells: it is the common prefix of the low and high fence, because every key
-of the page lies between them. This is the "prefix B-tree" of Bayer and Unterauer; what this
-chapter implements is their simpler variant, the "simple prefix B-tree", which only
-shortens separators.
+looking at the cells: it is the common prefix of the two fences. This is the "prefix
+B-tree" of Bayer and Unterauer; this chapter implements their "simple prefix B-tree",
+which only shortens separators.
 
 ## In real databases
 
@@ -354,37 +353,36 @@ Two allocators carry this chapter in Zig.
 **One `ArenaAllocator` per page** owns every byte the page refers to: fence keys, cell keys,
 TID arrays and the cell lists themselves. A split or a deduplication pass never edits a page
 in place. It builds the replacement in a new arena (`buildLeaf`, `buildInternal`) and
-`commit` drops the old arena in one call. That makes failure handling trivial: an aborted
-put deinitialises the arenas of its pending pages and the tree has not been touched. With a
-general-purpose allocator the same code would need one `free` per key and per TID array and
-an `errdefer` for each.
+`commit` drops the old arena in one call. An aborted put deinitialises the arenas of its
+pending pages and the tree has not been touched. A general-purpose allocator would need
+one `free` per key and per TID array and an `errdefer` for each.
 
-The price: an arena cannot free a single cell. A delete leaves the key bytes unreachable
-inside the arena. The page counts them in `dead_bytes` and, once they exceed a page size,
-rebuilds itself into a new arena. This is compaction of a slotted page (chapter 10) under
-another name. The test "deletes do not grow a leaf's arena without bound" covers it.
+The price: an arena cannot free a single cell. A delete leaves the key bytes unreachable;
+the page counts them in `dead_bytes` and, once they exceed a page size, rebuilds itself
+into a new arena (compaction, as in chapter 10; a test covers it).
 
 **A `FixedBufferAllocator` for scratch.** The slow path needs temporary lists: the page's
 cells plus the new one, the deduplicated list, merged TID arrays, and one internal page's
 separators per level. All of it is bounded by the page size, so `Tree.init` allocates
-`16 × page_size` bytes once and every `putSlow` resets a `FixedBufferAllocator` over it. No
-allocator call can fail in the middle for lack of system memory, and nothing has to be
-freed. The buffer is a stack: the loop over internal levels saves `end_index`, uses the
-space, and restores it. A general-purpose allocator here would add a dozen fallible,
-individually freed allocations to the most delicate code path.
+`16 × page_size` bytes once and every `putSlow` resets a `FixedBufferAllocator` over it.
+Nothing can fail for lack of system memory in the middle, and nothing has to be freed. The
+buffer is a stack: the loop over internal levels saves `end_index`, uses the space, and
+restores it. A general-purpose allocator would add a dozen fallible, individually freed
+allocations to the most delicate code path.
 
 Lifetimes: scratch memory lives for one put; a page arena until the page is next rebuilt.
 
 Failure tests: `checkAllAllocationFailures` fails every allocation of a 70-put build in turn
-and checks for leaks; a second test fails the 1st, 2nd, 3rd ... allocation of each put
-until it succeeds and checks after each failure that `validate` passes and `stats` are
-unchanged.
+and checks for leaks. Two more fail the 1st, 2nd, 3rd ... allocation of each put until it
+succeeds, and check after each failure that `validate` passes and `stats` are unchanged:
+one without deduplication (deep splits), one with it (deduplication passes and
+posting-list swaps).
 
 ## Pitfalls
 
 - **Truncating in internal splits.** A separator that moves up must stay identical to the
   fences below it. Truncate only when a *leaf* splits.
-- **Comparing a truncated separator with `<=` on the key alone.** The lookup key `c` and the
+- **Comparing a truncated separator on the key alone.** The lookup key `c` and the
   separator `c` have equal bytes, but the tuples `(c, anything)` live to the right. The TID
   (minus infinity in the separator) decides.
 - **Using the first-right key in full as the separator** while routing `<=` left: the first
@@ -395,8 +393,8 @@ unchanged.
 - **Growing a posting list in place.** The page-space arithmetic of the caller assumes one
   plain cell per insert; the swap keeps that true.
 - **Byte order must be key order.** Truncating bytes is only valid if comparing bytes is
-  comparing keys (chapter 11). With a comparator that is not bytewise (case-insensitive
-  collations, for example) a byte prefix may not be a valid separator.
+  comparing keys (chapter 11); under a case-insensitive collation, for example, a byte
+  prefix may not be a valid separator.
 
 ## Exercises
 

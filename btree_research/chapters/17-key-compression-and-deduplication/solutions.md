@@ -53,8 +53,9 @@ simply the easiest to compute.
 ## 4. Balance only
 
 Change the score in `chooseLeafSplit` to ignore the separator (for example
-`.{ 0, 0, imbalance }` for every legal cut). Workload B, truncation and deduplication on,
-measured with that change:
+`.{ 0, 0, imbalance }` for every legal cut) and delete the `in_window` line, which is now
+unused: Zig rejects an unused constant, and in Rust it is a warning that fails clippy.
+Workload B, truncation and deduplication on, measured with that change:
 
 | split rule | leaves | sep bytes | bytes/entry |
 |---|---|---|---|

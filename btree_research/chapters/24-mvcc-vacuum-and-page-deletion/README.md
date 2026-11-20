@@ -242,6 +242,9 @@ The port is line for line where the borrow checker allows it. The differences:
 - **Allocation failure.** Zig tests `put` with a `FailingAllocator` at every
   allocation index. Rust's `Vec` aborts instead of failing, so the arenas carry a
   budget and `put` returns `Err(OutOfNodes)`.
+- **Two tests more.** A Zig test cannot catch a panic, a Rust test can
+  (`#[should_panic]`): a user key above 32 bits is refused (an unconditional `@panic`
+  in Zig), and a cursor is refused once its snapshot is closed.
 - **Errors.** `error.DanglingLink` is a unit struct `DanglingLink`; `Violation` is an
   enum; the open snapshots are a `Vec` with the same limit of 16.
 

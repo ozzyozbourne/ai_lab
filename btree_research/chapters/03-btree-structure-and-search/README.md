@@ -7,10 +7,9 @@
 - What a 2-3-4 tree is, and why it is the same thing as a red-black tree.
 - Why a B-tree with n keys cannot be tall: the height bound, with its proof.
 - How `get` walks from the root to a leaf, and how an in-order traversal lists all keys.
-- A first look at `validate`, the function that turns the invariants into code, and at
-  testing against an oracle. [Chapter 06](../06-testing-a-btree/README.md) goes deep.
-- The simplest allocator there is, a bump allocator, written by hand; then
-  `std.heap.ArenaAllocator`, which does the same job.
+- A first look at `validate`, which turns the invariants into code, and at testing
+  against an oracle ([chapter 06](../06-testing-a-btree/README.md) goes deep).
+- A bump allocator written by hand, then `std.heap.ArenaAllocator`.
 
 Prerequisites: [chapter 01](../01-why-btrees/README.md) (why wide nodes: count node reads,
 not comparisons) and [chapter 02](../02-searching-a-sorted-node/README.md) (lower bound
@@ -34,13 +33,13 @@ ranges, and each child holds one range:
 
 Some words first.
 
-- The **root** is the one node without a parent. A **leaf** is a node without children.
-  Every other node, and a root that has children, is an **interior node**.
-- The **subtree** below a child is that child and everything that can be reached from it.
-- **Levels** are counted from the top: the root is on level 1, its children on level 2,
-  and so on. The **height** of a tree is its number of levels. This guide always says
-  level. The code has a variable `depth` that starts at 0 in the root (depth = level - 1),
-  which is where the error name `LeavesAtDifferentDepths` comes from.
+- The **root** is the node without a parent. A **leaf** is a node without children; a
+  node with children is an **interior node**. The root can be either.
+- The **subtree** below a child is that child and everything reachable from it.
+- **Levels** count from the top: the root is on level 1, its children on level 2. The
+  **height** of a tree is its number of levels. The guide always says level; the code's
+  `depth` starts at 0 in the root (depth = level - 1), hence the error name
+  `LeavesAtDifferentDepths`.
 - ceil(x) rounds up: ceil(5/2) = 3.
 
 A B-tree of **order M** is a tree whose nodes hold `u64` keys (each with a value) and
@@ -66,7 +65,6 @@ What rules 3 to 5 allow for a node that is not the root:
 | 4 | 1 to 3 | 2 to 4 |
 | 5 | 2 to 4 | 3 to 5 |
 | 6 | 2 to 5 | 3 to 6 |
-| 7 | 3 to 6 | 4 to 7 |
 
 At M = 3 and M = 4 the minimum is one key, so rule 4 only forbids an empty node. From
 M = 5 on it asks for more (the worked example shows a tree that fails it).
@@ -169,15 +167,14 @@ n <= (M - 1)(1 + M + ... + M^(h-1)) = M^h - 1.
 
 **Worked example.** One million keys.
 
-- M = 4, so d = 2. Upper bound: 1 + log2(500000.5) = 1 + 18.93..., so h <= 19.
+- M = 4, so d = 2. Upper bound: 1 + log2(500000.5) = 19.93..., so h <= 19.
   Lower bound: log4(1000001) = 9.97..., so h >= 10.
-- M = 256, so d = 128. 128^2 = 16384 and 128^3 = 2097152, so log128(500000.5) is between
-  2 and 3 and h <= 3. Lower bound: 256^2 = 65536 < 1000001 <= 256^3, so h >= 3. The
-  height is exactly 3.
+- M = 256, so d = 128. 128^2 = 16384 and 128^3 = 2097152, so h <= 3. Lower bound:
+  256^2 = 65536 < 1000001, so h >= 3. The height is exactly 3.
 
-Both results are printed by the programs (part 5 below) and asserted in a test. Drop
-rule 4 or rule 6 and the bound is gone, which is why `validate` checks them even though
-a lookup never notices when they are broken.
+The programs print both results (part 5) and a test asserts them. Drop rule 4 or
+rule 6 and the bound is gone, which is why `validate` checks them although no lookup
+notices when they are broken.
 
 ## A worked example by hand
 
@@ -241,10 +238,9 @@ each language compares.
 | `redblack.zig` | `fromTree`, `check` |
 | `scenario.zig` | What `zig build run` prints |
 
-The order comes first in every function of `height.zig`. Chapter 01 has a `minHeight`
-and a `maxHeight` too, with the arguments the other way round, `(n, m)`. Both are
-`u64`, so a swapped call compiles: `minHeight(5, 100)` is 3 here, `minHeight(100, 5)`
-is 1. A test pins the order.
+Every function of `height.zig` takes the order first. Chapter 01's `minHeight` and
+`maxHeight` take `(n, m)` instead, and both arguments are `u64`, so a swapped call
+compiles: `minHeight(5, 100)` is 3 here, `minHeight(100, 5)` is 1. A test pins the order.
 
 **The node** (`base_node.zig`). `Node(M)` is a struct with `len`, `leaf`, and three
 fixed arrays: `keys: [M]u64`, `values: [M]u64`, `children: [M + 1]?*Node`. The arrays
@@ -262,10 +258,10 @@ const d = try t.leaf(gpa, &.{ 25, 30 });
 t.root = try t.interior(gpa, &.{ 6, 10, 20 }, &.{ a, b, c, d });
 ```
 
-`leaf` and `interior` check nothing about the six rules: the same builder makes valid
-trees and broken ones, and `validate` is the only judge. `fromSorted` builds a valid tree
-of minimal height from sorted keys, so that tests can check big trees (bulk loading done
-properly is [chapter 16](../16-bulk-loading/README.md)).
+`leaf` and `interior` check none of the six rules: the same builder makes valid trees
+and broken ones, and `validate` is the only judge. `fromSorted` builds a valid tree of
+minimal height from sorted keys for the tests (bulk loading is
+[chapter 16](../16-bulk-loading/README.md)).
 
 **Search** (`base_search.zig`). The whole algorithm:
 
@@ -301,17 +297,15 @@ separators of all its ancestors, which is why the bounds are passed down.
 
 **Broken trees** (`broken.zig`). Each case changes one thing in the canonical tree.
 Part 4 of the output shows what `validate` says and how many of the 12 original keys
-`get` still finds. A key that the corruption added is not counted. In case 2 the
-missing one is 7, which was overwritten; the 11 that replaced it is in the tree, but no
-search can reach it. In case 4 the missing one is the key that was removed: the tree
-answers correctly for what it holds, and only the node size is wrong. Four cases find
-all twelve (an overfull node, leaves on different levels, a leaf with a child pointer,
-an unreachable node). Query tests alone would not find these.
+`get` still finds; a key that a corruption added is not counted. In case 2 the missing
+key is 7, which was overwritten, while the 11 that replaced it is stored where no
+search arrives. In case 4 it is the key that was removed. Four cases find all twelve
+(an overfull node, leaves on different levels, a leaf with a child pointer, an
+unreachable node): query tests alone would not notice them.
 
-A tree that `validate` has rejected can still be looked at and thrown away: `render`,
-`shape` and `deinit` skip a missing child instead of aborting, and a test runs all three
-on each of the ten trees. Only `get` is not safe on case 7, which is why part 4 does
-not try it there.
+A rejected tree can still be inspected and freed: `render`, `shape` and `deinit` skip a
+missing child (a test runs them on all ten trees). Only `get` is unsafe on case 7,
+so part 4 does not try it there.
 
 **Oracle test** (`tree.zig`, "seeded model test"). An oracle is a second implementation
 that is too simple to be wrong. Here it is one `bool` per possible key, filled from the
@@ -323,21 +317,20 @@ with the oracle for every possible key, present or absent, for several orders an
 The files have the same names and the tests the same names, with these differences.
 
 - **No pointers.** A node is named by its index, `NodeId(u32)`, into a typed arena
-  (`arena.rs`: a `Vec<Node>` that is only pushed to). A parent holds the ids of its
-  children. Indices are `Copy`, stay valid when the `Vec` grows, and need no lifetimes.
+  (`arena.rs`: a `Vec<Node>` that is only pushed to). Indices are `Copy`, stay valid
+  when the `Vec` grows, and need no lifetimes.
 - **Order at run time.** Stable Rust cannot size an array from a const generic
   expression (`[u64; M - 1]`), so `order` is a field of the tree and a node holds three
-  `Vec`s. An overfull node needs no spare slot: a `Vec` does not know about M.
-- **No allocator parameter and no `deinit`.** The tree owns its arena; dropping the tree
-  frees every node. There is no `bump.rs`: the arena is the bump allocator.
+  `Vec`s. An overfull node needs no spare slot.
+- **No allocator parameter, no `deinit`, no `bump.rs`.** The tree owns its arena, which
+  is the bump allocator; dropping the tree frees every node.
 - **Out of memory.** Rust aborts when the global allocator fails, so the arena has a
   node budget and `alloc` returns `Err(OutOfNodes)`. Zig tests real allocation failure
   with `std.testing.checkAllAllocationFailures`.
-- **Missing child.** A null pointer in Zig, a too-short `children` vector in Rust. Both
-  versions of `validate` name the same first error for the same tree. Printing a broken
-  tree can differ: in Zig the key count also says how many children a walk follows, in
-  Rust the `children` vector keeps its own length (the root of case 5 prints one child
-  in Zig and four in Rust).
+- **Missing child.** A null pointer in Zig, a too-short `children` vector in Rust.
+  `validate` names the same first error in both. Printing a broken tree can differ: a
+  Zig walk follows key count + 1 children, a Rust walk the `children` vector (the root
+  of case 5 prints one child in Zig and four in Rust).
 
 ### Output
 
@@ -420,11 +413,10 @@ tree; trees grown by insertion (chapter 04) land between the bounds.
 ## In real databases
 
 - **A 2-3-4 tree in production code.** Milvus uses the Go library `google/btree` in two
-  small in-memory places, both with degree 2: `btree.New(2)` in
+  small in-memory places with degree 2: `btree.New(2)` in
   `milvus/internal/kv/mem/mem_kv.go:51-55` and `btree.NewG(2, ...)` in
   `milvus/internal/streamingcoord/server/broadcaster/schema.go:90`. That degree 2 means
-  1 to 3 items per node (CLRS t = 2, our M = 4) is **unverified**: the library source
-  is not in the checkout.
+  CLRS t = 2, our M = 4, is **unverified**: the library source is not in the checkout.
 - **Keys in interior nodes.** Turso's index B-tree is a plain B-tree like the one in
   this chapter. An interior cell carries a full payload, not just a routing key
   (`IndexInteriorCell`, `turso/core/storage/sqlite3_ondisk.rs:828-835`), and a forward
@@ -441,23 +433,20 @@ tree; trees grown by insertion (chapter 04) land between the bounds.
 
 ## Allocator notes
 
-**The lifetime.** A tree of this chapter is built once and never changes. No node dies
-before the tree does. So the allocator never needs to take a single node back, and
-"free everything at once" is all the freeing there is.
+**The lifetime.** A tree of this chapter is built once and never changes: no node dies
+before the tree does. "Free everything at once" is all the freeing there is.
 
 **First by hand: `BumpAllocator`** (`bump.zig`). It owns a chunk of memory and a cursor.
 To allocate: round the cursor up to the alignment, return that address, advance the
-cursor. When the chunk is full it asks its child allocator for another chunk; what was
-left in the old chunk stays unused. An object too big for an ordinary chunk gets a chunk
-of its own, and the current chunk stays in use. `free`
-does nothing. `deinit` gives every chunk back. It implements the four functions of
-`std.mem.Allocator` (`alloc`, `resize`, `remap`, `free`), so any code that takes an
-`Allocator` runs on it; a test appends 1000 items to an `ArrayList` on it.
+cursor. A full chunk is followed by a new one from the child allocator. An object too
+big for an ordinary chunk gets a chunk of its own, and the current chunk stays in use.
+`free` does nothing; `deinit` gives every chunk back. It implements the four functions
+of `std.mem.Allocator` (`alloc`, `resize`, `remap`, `free`), so any code that takes an
+`Allocator` runs on it (a test fills an `ArrayList`).
 
-**Used as the node pool.** The tree gets nodes from a pool (`base_pool.zig`, the
-contract that chapters 04 and 05 fill with other pools). `DirectNodes` calls
-`gpa.create` once per node, so the allocator handed to `leaf` and `interior` decides
-where nodes live:
+**Used as the node pool.** `DirectNodes` (`base_pool.zig`, the pool contract that
+chapters 04 and 05 fill differently) calls `gpa.create` once per node, so the allocator
+handed to `leaf` and `interior` decides where nodes live:
 
 | Allocator passed in | Where nodes live | Teardown |
 |---|---|---|
@@ -477,13 +466,12 @@ is thread-safe when its child allocator is (comment at the top of
 
 - *No walk at teardown.* Freeing node by node means visiting every node just to throw
   it away.
-- *A broken or half-built tree can still be freed.* `deinit` follows child pointers, so
-  it frees only what can be reached from the root. That is everything for seven of the
-  ten broken trees. The other three keep nodes the walk cannot reach (the zeroed root
-  of case 5 hides three leaves, cases 7 and 10 one node each), and a build that failed
-  half-way has no root at all. With node-by-node allocation those nodes leak; with an
-  arena all of it is one call (a test counts what the walk frees for each broken tree;
-  `checkAllAllocationFailures` fails every allocation of a build in turn; no leak).
+- *A broken or half-built tree can still be freed.* `deinit` frees only what the root
+  reaches. Three of the ten broken trees keep nodes out of reach (three leaves in
+  case 5, one node each in cases 7 and 10), and a build that failed half-way has no
+  root at all. Node-by-node allocation leaks those; an arena frees them in one call
+  (one test counts what the walk frees, `checkAllAllocationFailures` fails every
+  allocation of a build in turn).
 - *Neighbours in memory.* Nodes created one after the other are adjacent, with no
   header between them (a test checks the addresses; a `Node(4)` is 120 bytes on the
   64-bit target used here).
@@ -491,16 +479,15 @@ is thread-safe when its child allocator is (comment at the top of
 **What would go wrong with a different choice.**
 
 - A bump allocator or arena in a tree that deletes: every merged node stays allocated
-  until the tree dies. Memory use only grows. Chapter 05 uses a free list for that
-  reason.
+  until the tree dies. Chapter 05 uses a free list for that reason.
 - A general-purpose allocator here: correct, but it tracks every node and needs the
-  walk at teardown. Tests use it once: `std.testing.allocator` reports a forgotten node.
+  walk. Tests use it once, because `std.testing.allocator` reports a forgotten node.
 - Forgetting the lifetime: after `bump.deinit()` every node pointer dangles. Zig does
   not check this; Rust's ownership does.
 
-**Rust.** `Arena` is a `Vec<Node>` plus a budget; dropping it frees all nodes. It is not
-a single deallocation, though: each Rust node owns three small `Vec`s, freed one by one
-when the arena is dropped. The Zig node is one flat block.
+**Rust.** `Arena` is a `Vec<Node>` plus a budget; dropping it frees all nodes, though
+not in one deallocation: each node owns three small `Vec`s. The Zig node is one flat
+block.
 
 ## Pitfalls
 
@@ -509,11 +496,9 @@ when the arena is dropped. The Zig node is one flat block.
   traversal must emit a key between two children.
 - **Trusting lookups as a test.** Four of the ten broken trees answer every `get`
   correctly. Run `validate` after every operation in tests.
-- **Reading meaning into which error `validate` returns.** It returns the first
-  violation its walk meets, and a tree with two defects gets only one name. The order
-  of the walk decides: a node's own keys, then its child slots, then the subtrees from
-  left to right (a test in `broken.zig` / `broken.rs` shows two cases). Fix what is
-  named, then validate again.
+- **Reading meaning into which error `validate` returns.** A tree with two defects
+  gets one name: the first violation the walk meets (a node's keys, then its child
+  slots, then the subtrees from left to right). Fix what is named, then validate again.
 
 ## Exercises
 

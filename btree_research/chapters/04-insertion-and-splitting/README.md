@@ -205,7 +205,7 @@ Three decisions are worth noticing.
 **The path is an array, not parent pointers.** Nodes do not know their parent. A parent
 pointer in every node would have to be updated in every child that moves during a split.
 The path costs 64 entries on the stack, enough for any tree of order 3 or more with 2^64
-keys (height bound from chapter 03).
+keys.
 
 **Overflow, then split.** The key arrays have M slots, one more than a node may keep.
 The new key is written into the full node first, and `splitNode` then cuts a node of M
@@ -337,7 +337,7 @@ How to read it:
   57.1%, 50.8%, 50.1%. "Ascending inserts give 50%" is the large-M statement.
 - **Random keys.** Half-empty nodes keep receiving keys. Among the even orders the
   measured fill rises from 64.2% (M = 4) to about 69 to 70% (M = 32 to 128). The odd
-  orders 3 and 5 are not on that curve (66.9% and 67.4% in the full table): they split
+  orders 3 and 5 are not on that curve (66.9% and 67.4% in the full table); they split
   into two equal halves, an even order leaves the right half one key smaller. The
   textbook result (Yao, 1978; not derived here) is that the expected fill approaches
   ln 2 = 69.3% as the order grows. The row for M = 256 shows 74.1%: with only 529 nodes
@@ -423,14 +423,14 @@ reason: with `MemoryPool`, several nodes share one request to the backing alloca
 allocations, then once per allocation with that allocation and all later ones failing.
 Each run must return `error.OutOfMemory` and free everything. `tests_alloc.zig` gives it
 a build of 120 keys in which every failed `put` is followed by a check that the rendered
-tree, the counters and the pool usage are identical to the state before the call. It
-runs for M = 3, 4 and 7 with both pools. `tests_topdown.zig` does the same for the
-top-down insert with the weaker promise: valid tree, same keys.
+tree, the counters and the pool usage are identical to the state before the call.
+`tests_topdown.zig` does the same for the top-down insert with the weaker promise:
+valid tree, same keys.
 
 **Rust: slab plus node budget.** `Slab` is a `Vec` of slots with a free list of indices.
 Two switches model memory running out: `budget = Some(n)` refuses to have more than n
 live nodes, and `fail_after = Some(n)` lets n more allocations succeed and fails the
-rest (the twin of `FailingAllocator.fail_index`). Both return `Err(OutOfNodes)`.
+rest. Both return `Err(OutOfNodes)`.
 `tests_alloc.rs` tries every failing allocation index and every budget below what the
 build needs. The slab recycles slots only; each node's `Vec` buffers are still separate
 heap allocations, which the Zig pool does not have.

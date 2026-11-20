@@ -164,12 +164,11 @@ sorted array also keeps in a second array and which the two layouts would store 
 - **Classic and halving touch the same number of lines.** The halving search is not a
   cache optimisation. It removes the unpredictable branch, nothing else.
 - **The vector scan reads everything.** Two steps and two lines for 15 keys is hard to
-  beat. 512 steps for 4095 keys is absurd. It is a technique for nodes of a few lines.
-  There its misses are at least independent: the address of the next line does not
-  depend on a comparison, so the loads can overlap, and a sequential read is what
-  hardware prefetchers are built for (textbook; the model counts neither).
-- **Eytzinger does not touch fewer lines than binary search.** This surprises people. A
-  binary search over 4095 sorted keys reads about 9 lines, Eytzinger 10 of keys and one
+  beat; 512 steps for 4095 keys is absurd. It is a technique for nodes of a few lines.
+  There its misses are independent: no address depends on a comparison, so the loads
+  overlap, and hardware prefetchers are built for sequential reads (textbook; the model
+  counts neither).
+- **Eytzinger does not touch fewer lines than binary search.** A binary search over 4095 sorted keys reads about 9 lines, Eytzinger 10 of keys and one
   of `rank`. Its advantage is that the key lines are *predictable*, which section 4 of
   the output shows.
 - **The block tree touches the fewest lines**: about 4 of keys and one of `rank`, 4.91 in
@@ -200,15 +199,14 @@ eytzinger+prefetch   11.00   12.00              2.00
 ```
 
 Without prefetch every line is a miss that must finish before the next address is even
-known: the misses form a chain. (A search that branches guesses the address instead. The
+known: the misses form a chain. (A search that branches guesses the address instead; the
 paper cited under "In real databases" reports that on arrays much larger than the cache
-this lets it beat a branch-free search without prefetch; we did not measure that.) With
-prefetch only the first key line is a surprise,
-plus, for Eytzinger, the `rank` line, which nothing prefetches. The halving search needs
-two hints per step (one is always wasted) and each is only one comparison ahead.
-Eytzinger needs one hint per step, three comparisons ahead. A line counts as hinted only
-if at least one comparison lies between the hint and the read. Whether such a hint
-arrives in time depends on the machine.
+this lets it beat a branch-free search without prefetch. We did not measure that.) With
+prefetch only the first key line is a surprise, plus, for Eytzinger, the `rank` line,
+which nothing prefetches. The halving search needs two hints per step (one is always
+wasted), each only one comparison ahead; Eytzinger needs one, three comparisons ahead. A
+line counts as hinted only if at least one comparison lies between the hint and the
+read. Whether such a hint arrives in time depends on the machine.
 
 ## Code walk-through
 
@@ -221,12 +219,9 @@ Every search takes a `tracer` and calls `tracer.cmp(index)` for each key it comp
 `tracer.side(index)` for a read of a second array (`rank`, or a node's child column).
 `Trace` turns an index into a line number (`index * stride / 64`), keeps the distinct
 lines of each array in a fixed bitmap and counts; it assumes each array starts on a line
-boundary (see Allocator notes). `NoTrace` has empty methods. The search
-is written once and instantiated with both, so the counted code and the fast code cannot
-diverge.
-
-Zig passes `tracer: anytype` (duck typing at compile time); Rust names the contract as
-`trait Tracer`. Both produce one specialised copy per tracer type.
+boundary (see Allocator notes). `NoTrace` has empty methods. The search is written once
+and instantiated with both (Zig `tracer: anytype`, Rust `trait Tracer`), so the counted
+code and the fast code cannot diverge.
 
 ### `search`: four lower bounds over a sorted slice
 
@@ -246,8 +241,8 @@ switch (select) {
 }
 ```
 
-Tests assert that all three probe the same keys in the same order, with and without
-prefetch, and make exactly `halvingComparisons(n)` comparisons for every needle.
+Tests assert that all three probe the same keys in the same order and make exactly
+`halvingComparisons(n)` comparisons for every needle.
 
 **"Branchless" is not something source code can promise.** We compiled each loop as a
 standalone exported function, one function per file (Zig 0.17.1 `-O ReleaseFast`, rustc
@@ -270,14 +265,12 @@ pub fn rank8(block: *const [trace.lanes]u64, key: u64) usize {
 
 `lowerBoundVector` adds up `rank8` over every block of a padded array. The padding value
 is the largest `u64`, which is never smaller than a needle, so the last block needs no
-special case. The price is a precondition: real keys must be below the sentinel.
+special case.
 
 ### `layout`: Eytzinger and the block tree
 
 Both are built by an in-order walk of an implicit tree that hands out the sorted keys
-one by one (`fill`). Both keep a parallel `rank` array (slot to sorted index) so that
-their answers can be compared with the other searches. A real index would keep its
-payload there instead. `validate()` repeats the in-order walk and checks that keys are
+one by one (`fill`), which also writes `rank` (slot to sorted index). `validate()` repeats the in-order walk and checks that keys are
 strictly increasing, ranks count 0, 1, 2, ... and the padding is intact.
 
 The Eytzinger search is a few lines:
@@ -292,9 +285,9 @@ tracer.side(k);
 return self.rank[k];
 ```
 
-There is no `if` on the key at all: the comparison result is added to the index. When
-we read the assembly of this loop (Zig, same setup as above) the comparison was a
-compare, a set-on-below and an add, with no jump on the key.
+There is no `if` on the key at all: the comparison result is added to the index. In the
+assembly of this loop (Zig, same setup as above) that was a compare, a set-on-below and
+an add, with no jump on the key.
 
 `BlockTree.lowerBound` calls `rank8` once per level and moves to child `9 * block + r + 1`.
 If `r < 8`, key `r` of the node is the best candidate so far. The loop only remembers
@@ -312,17 +305,17 @@ probe sequences and `lines(SoA) <= lines(AoS)`.
 
 | Topic | Zig | Rust |
 |---|---|---|
-| Vector compare | `@Vector(8, u64)`, `<`, `@bitCast`, `@popCount`: explicit SIMD in the language | `std::simd` is nightly only. A fixed loop of 8 that adds 0 or 1 ("chunked auto-vectorisable loop") |
-| Alignment | `gpa.alignedAlloc(u64, .fromByteUnits(64), n)` returns `[]align(64) u64`; the scalar searches take any slice of it | `#[repr(align(64))] struct Line([u64; 8])` in a `Vec<Line>`; element i is `lines[i / 8].0[i % 8]`. Safe Rust cannot view that as `&[u64]`, so the scalar searches are generic over a small `Keys` trait |
-| Prefetch | `@prefetch(&keys[i], .{...})` builtin | No safe stable prefetch (`_mm_prefetch` is `unsafe` and x86-only). The Rust twin *records* the hint for the model but issues none |
+| Vector compare | `@Vector(8, u64)`, `<`, `@bitCast`, `@popCount`: explicit SIMD in the language | `std::simd` is nightly only: a fixed loop of 8 that adds 0 or 1 |
+| Alignment | `gpa.alignedAlloc(u64, .fromByteUnits(64), n)` returns `[]align(64) u64`; the scalar searches take any slice of it | `Vec<Line>` with `#[repr(align(64))] struct Line([u64; 8])`. Safe Rust cannot view that as `&[u64]`, so the scalar searches are generic over a small `Keys` trait |
+| Prefetch | `@prefetch(&keys[i], .{...})` builtin | No safe stable prefetch (`_mm_prefetch` is `unsafe` and x86-only): the hint is recorded for the model, none is issued |
 | Unpredictable select | `@branchHint(.unpredictable)` inside the arm | `std::hint::select_unpredictable(cond, a, b)` |
 | SoA node | `std.MultiArrayList(Entry)` derives the columns from the struct | Three `Vec`s written by hand |
 | Allocation failure | `checkAllAllocationFailures` on every builder | Mirrored by the fixed node capacity: `Err(NodeFull)` |
 
 Two caveats for the Rust column. "Auto-vectorisable" is a hope: at the default target
 the `rank8` loop was eight scalar compares, and one vector compare only with
-`-C target-cpu=native` (solution 2). And the Rust twin issues no real prefetch, so its
-`--bench` rows with and without prefetch run the same machine code.
+`-C target-cpu=native` (solution 2). And with no real prefetch, the Rust `--bench` rows
+with and without prefetch run the same machine code.
 
 ## In real databases
 
@@ -336,8 +329,8 @@ cost more than the prefetch gains (`:70-74`); our version stays in bounds instea
 benchmark has two scenarios, 64 values per page ("in-cache") and
 4096 values per page with a 1 GiB buffer ("out-of-cache")
 (`tigerbeetle/src/lsm/binary_search_benchmark.zig:26-37`), because prefetch can only help
-when the data is not already cached. TigerBeetle is not a B-tree; this routine searches
-the blocks of its LSM tables.
+when the data is not already cached. (The routine searches LSM table blocks; TigerBeetle
+is not a B-tree.)
 
 TigerBeetle also uses the other two layout ideas. Its k-way merge keeps a loser tree "in
 a flat Eytzinger layout", struct-of-arrays, with both arrays `align(64)`
@@ -380,10 +373,9 @@ index. The scenario's classic and halving searches run on `padded[0..n]`, a view
 same memory.
 
 What goes wrong with an ordinary `gpa.alloc(u64, n)`: nothing visible. Results are the
-same. But the array may start in the middle of a line. Then every 8-key block straddles
-two lines, and slots 8k..8k+7 of the Eytzinger array no longer share a line, so one
-prefetch covers only part of the next level. It is a silent performance bug, which is
-why `validate()` checks the address.
+same, but the array may start in the middle of a line. Then every 8-key block straddles
+two lines and one Eytzinger prefetch covers only part of slots 8k..8k+7. It is a silent
+performance bug, which is why `validate()` checks the address.
 
 **`MultiArrayList`.** `SoaNode` holds a `std.MultiArrayList(Entry)`. It makes one
 allocation and lays the columns out one after another, so the `key` column is a dense
@@ -400,7 +392,7 @@ out of a line-aligned page, as TigerBeetle's index block does.
 
 - **Prefetching everything.** A hint for a line that is already cached costs an
   instruction and gains nothing. Prefetch pays only when the structure is larger than the
-  cache, which is why TigerBeetle benchmarks both cases.
+  cache.
 - **Sentinel padding.** Our builders reserve the largest `u64` and assert that no real
   key has it. A lower bound would survive such a key (it behaves like padding); an upper
   bound would not (exercise 3).

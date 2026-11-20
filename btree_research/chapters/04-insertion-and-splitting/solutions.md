@@ -4,7 +4,7 @@ Every tree and number below was produced by the chapter's code (the test suites,
 output of `run`, or the JavaScript model of the visualization, which is checked against
 that output). Where something was not run, the text says so.
 
-## 1. Keys 1 to 10 in ascending order, M = 4, bottom-up
+## 1. Keys 1 to 13 in ascending order, M = 4, bottom-up
 
 ```
 put 1, 2, 3      [1 2 3]
@@ -21,14 +21,38 @@ put 8, 9         [3 6]
 put 10           [7 8 9 10] is overfull; median 9 goes up
                  [3 6 9]
                  [1 2] [4 5] [7 8] [10]
+put 11, 12       [3 6 9]
+                 [1 2] [4 5] [7 8] [10 11 12]
+put 13           [10 11 12 13] is overfull; median 12 goes up; the full root is overfull:
+                 [3 6 9 12]
+                 [1 2] [4 5] [7 8] [10 11] [13]
+                 mid = 2, median 9; [3 6] keeps the first three children,
+                 [12] gets the last two; 9 has no parent: a new root
+                 [9]
+                 [3 6] [12]
+                 [1 2] [4 5] [7 8] | [10 11] [13]
 ```
 
-The puts of 4, 7 and 10 split a node: one split for every three keys once the first
-leaf is full. The state after 9 keys is asserted in `base_tests_insert` ("put under
-allocation failure leaves the tree unchanged"); the whole sequence was replayed with
-the visualization's model. Every
-left half stays at `[a b]` forever, because no later key is smaller than the median
-that was pushed up.
+The puts of 4, 7, 10 and 13 split a node: one leaf split for every three keys once the
+first leaf is full. Put 13 splits two nodes, the leaf and the root, and the tree gets
+one level taller. The program prints the trees before and after 13 in part 3 ("both
+trees before" and "with memory again, bottom-up put 13"). Every left half stays at
+`[a b]` forever, because no later key is smaller than the median that was pushed up.
+
+Continuing: 16 and 19 split the rightmost leaf and send 15 and 18 up, which fills the
+interior node `[12 15 18]`. Put 22 is the first to split an interior node below the
+root. The leaf `[19 20 21 22]` sends 21 up, `[12 15 18 21]` is overfull and splits
+around 18: `[12 15]` keeps three children, `[21]` gets two. The median 18 goes into
+the root, which has room. No new root is made and the height stays 3:
+
+```
+[9 18]
+[3 6] [12 15] [21]
+[1 2] [4 5] [7 8] | [10 11] [13 14] [16 17] | [19 20] [22]
+```
+
+All of these trees are asserted in the test "exercise 1: ascending keys, the first
+interior splits (root at 13, below the root at 22)" (`tests_topdown`, both languages).
 
 ## 2. Fill for ascending keys at M = 3, 4 and 5
 
@@ -89,12 +113,11 @@ Bottom-up splits one key later, when the node holds 4 keys, and the left half ke
 That single key is the whole difference between 33.3% and 66.6%.
 
 At M = 256 the same effect is one key out of 255: top-down leaves 127 keys on the left
-(49.8%), bottom-up 128 (50.2%). Measured: 49.77% against 50.15%, printed cut off as 49.7%
-and 50.1%; 785 against 779 splits.
-The early split costs a fixed number of keys per node, so it matters for tiny nodes and
-disappears for the node sizes real engines use. What remains at any size are the other
-two objections from the chapter: it needs an even M, and it needs to know what "full"
-means before the key arrives.
+(49.8%), bottom-up 128 (50.2%). Measured: 49.77% against 50.15%, printed cut off as
+49.7% and 50.1%; 785 against 779 splits. The early split costs a fixed number of keys
+per node, so it matters for tiny nodes and disappears for the node sizes real engines
+use. What remains at any size are the other two objections from the chapter: it needs
+an even M, and it needs to know what "full" means before the key arrives.
 
 ## 5. Reserving with `MemoryPool.addCapacity`
 

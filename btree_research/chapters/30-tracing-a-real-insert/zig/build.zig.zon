@@ -1,0 +1,12 @@
+.{
+    .name = .ch12_disk_backed_bplus_tree,
+    .version = "0.0.0",
+    .fingerprint = 0x48c7bda3177b2c7,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

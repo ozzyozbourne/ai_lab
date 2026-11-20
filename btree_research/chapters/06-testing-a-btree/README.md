@@ -75,8 +75,8 @@ coverage points (replacing chapter 05's counters), a diagnostic in `validate`, a
 fault seams marked `SEAM`. `deinit`, `shape` and `render` tolerate a malformed tree (a
 missing child, a key count larger than the node), so a rejected tree can still be printed
 and torn down. Two more seams break the rollback of a failed `put`; only the tests use
-them, to show the harness catching them. Left out of the copy: the `StdPool` node pool
-and chapter 05's unit tests of insert and delete. Here the fuzzer is their test.
+them. Left out of the copy: the `StdPool` node pool and chapter 05's unit tests of insert
+and delete. Here the fuzzer is their test.
 
 ### Zig
 
@@ -143,10 +143,9 @@ in order, make the n-th put write the value n.
 
 **Fault injection** (`fault_alloc.zig`). See "Allocator notes".
 
-**When the tree crashes instead.** Many real bugs trip an assert, an index check or a
-null unwrap inside `put` or `delete`. The process stops before `validate` runs, `hunt`
-never returns, and the panic message does not know the seed. For this the harness has a
-trace mode that prints one line to stderr before every step:
+**When the tree crashes instead.** Many real bugs trip an assert or an index check inside
+`put` or `delete`. The process stops before `validate` runs, and the panic message does
+not know the seed. Trace mode prints one line to stderr before every step:
 
 ```
 zig build test -Dtrace=true -Dtest-filter="correct tree passes" 2> trace.txt
@@ -237,8 +236,7 @@ bug borrow_forgets_child
 
 The two families of checks are not redundant: each sees a bug the other cannot.
 
-Seed 28 uses the "spread" layout: 7782220156096217088 is 27 * 2^58. The minimised
-reproducer says key 7, because renaming keys in order is part of making it readable.
+(Seed 28 uses the "spread" layout: 7782220156096217088 is 27 * 2^58.)
 
 ## In real databases
 
@@ -330,8 +328,7 @@ memory that outlives the tree (`mem::forget`, a reference cycle). It cannot see 
 NODE: every node is a slot in the slab's `Vec`, and dropping the tree frees that `Vec`
 whole. A failed `put` that keeps one reserved slot is caught by `validate` instead,
 through `Slab::live_slots()`, the slab's own count, which a rollback cannot hide by
-restoring `usage`. (In Zig the `FaultAllocator` under the tree reports the same bug as a
-leak.) The wrapper does not inject failures: `Vec::push` aborts the process
+restoring `usage`. The wrapper does not inject failures: `Vec::push` aborts the process
 when the allocator returns null.
 
 ## Pitfalls
@@ -346,13 +343,11 @@ when the allocator returns null.
   minimised, logged or replayed in the other language.
 - **A minimiser that accepts any failure.** Deleting steps can turn failure A into an
   unrelated failure B. Compare the kind.
-- **Expecting the shortest reproducer.** "No contiguous block can be removed" is not
-  "shortest": steps that are not neighbours are never removed together, and a shorter
+- **Expecting the shortest reproducer.** Only contiguous blocks are tried, and a shorter
   reproducer need not be a subsequence at all (exercise 3).
-- **Only small keys.** With keys 0 to 255, a tree that compares the low 32 bits of a key
-  passes everything. Random values do not help; the keys must cover the type's range.
-- **A crash is a failure too.** An assert inside the tree ends the run before any check,
-  without seed or step. Trace it, or log the seed before each case as TigerBeetle does.
+- **Only small keys.** A tree that compares only the low 32 bits of a key passes every
+  test on keys 0 to 255.
+- **A crash is a failure too**, and it arrives without seed or step unless traced.
 - **A seed without a version.** Seed 28 means nothing after the generator changes.
   TigerBeetle reproduces from seed plus git commit.
 - **Zig error traces under fault injection.** Every injected `OutOfMemory` is recorded in

@@ -88,6 +88,8 @@ pub fn keyLen(row: []const Value) usize {
 }
 
 /// Encodes `row` as one composite key into `buf` and returns the used part.
+/// Contract: `row.len == schema.len`. It is asserted, not returned as an
+/// error, because the row comes from the caller, not from disk.
 pub fn encodeKey(buf: []u8, row: []const Value, schema: []const Column) KeyError![]u8 {
     std.debug.assert(row.len == schema.len);
     var w: keycodec.KeyWriter = .init(buf);

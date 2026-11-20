@@ -318,7 +318,7 @@ written in JavaScript only; none of the guide's code bases contains one.</p>
       costs[capacity] = (n.counters.leafReads + n.counters.leafWrites + n.counters.nodeWrites) / n.counters.messages;
     });
     BTViz.selfTest('model = set', ok, true);
-    BTViz.selfTest('bigger buffer, less I/O', costs[2] > costs[4] && costs[4] > costs[8] && costs[8] < 2, true);
+    BTViz.selfTest('bigger buffer, less I/O', costs[2] > 2 && costs[2] > costs[4] && costs[4] > costs[8] && costs[8] < 2, true);
   })();
 })();
 </script>

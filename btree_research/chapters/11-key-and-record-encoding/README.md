@@ -44,8 +44,9 @@ systems are split between them.
    keys byte by byte, as unsigned bytes, gives the same answer the comparator
    would have given. The tree then needs no schema at all: one `memcmp` per
    comparison, and the same code handles every key type. DuckDB's ART index
-   and TigerBeetle's composite keys work this way (a radix tree has no
-   choice: it *is* the bytes).
+   works this way (a radix tree has no choice: it *is* the bytes).
+   TigerBeetle gets the same effect without bytes: it packs the columns into
+   one wide integer and compares integers.
 
 The second approach moves all the cleverness into the encoder. The rest of
 this chapter is mostly the list of things that go wrong when you encode
@@ -59,7 +60,7 @@ naively, and the fix for each:
 | string | raw bytes | in a composite key, column boundaries disappear | terminator byte, with escaping for data bytes that look like it |
 | NULL | nothing | indistinguishable from an empty value | one tag byte per column |
 | DESC column | (same as ASC) | wrong direction | invert every payload byte |
-| varint | as is | a longer encoding can start with a smaller byte | do not use varints in keys |
+| varint | as is | LEB128 is little-endian (low group first); the SQLite varint is big-endian, but a longer encoding can start with a smaller byte | do not use varints in keys |
 
 The price: byte-comparable keys are bigger (every integer takes 8 bytes plus
 a tag), they are not self-describing (you need the schema to decode them),
@@ -71,7 +72,8 @@ and some orders cannot be expressed as bytes at all without extra work
 Schema: `(name ASC, score DESC NULLS LAST, id ASC)`. Row: `("Ann", -2, 3)`.
 
 **As a byte-comparable key.** Each column is a tag byte followed by a
-payload; tag `01` means "a value follows".
+payload. Tags: `00` NULL when NULLS FIRST, `01` "a value follows", `02` NULL
+when NULLS LAST. That is why the value tag is `01` and not `00`.
 
 - `name = "Ann"`: tag `01`, then the bytes `41 6e 6e`, then the terminator
   `00`. No byte of "Ann" is `00` or `01`, so nothing is escaped.
@@ -93,6 +95,18 @@ first: 7 before -2, which is what DESC asks for. A row with `score = NULL`
 has the single tag byte `02` in that position; `02 > 01`, so it sorts after
 every non-NULL score.
 
+A float column (section 3 of the output). A double is 1 sign bit, 11
+exponent bits and 52 fraction bits, sign-magnitude. The exponent sits above
+the fraction, so among non-negative doubles a larger bit pattern is a larger
+number; among negative ones it is the reverse.
+
+- `1.5` is `3f f8 00 ..`; set the sign bit: `bf f8 00 ..`
+- `-1.5` is `bf f8 00 ..`; invert every bit: `40 07 ff ..`
+
+So -1.5 sorts before 1.5, and the inversion reverses the negatives: `-inf`
+(`ff f0 00 ..`, the largest negative pattern) becomes `00 0f ff ..`, the
+smallest key.
+
 Why the terminator? Take two columns of text. Concatenating raw bytes turns
 both `("a", "b")` and `("ab", "")` into `61 62`. With tag and terminator
 they are `01 61 00 01 62 00` and `01 61 62 00 01 00`: the third byte is `00`
@@ -105,15 +119,32 @@ tell them from the terminator; `"a\x00"` becomes `61 01 00 00`.
 **As a record.** The same row in the comparator format:
 
 ```
-03          header: three bytes of serial types follow
-06 01 01    text of 3 bytes (3 + 3), int, int
+03          header_len: three bytes of serial types follow
+06 01 01    serial types: text of 3 bytes (3 + 3), int, int
 41 6e 6e    "Ann"
 03          zigzag(-2) = 3, as a one-byte varint
 06          zigzag(3) = 6
 ```
 
 9 bytes instead of 23, and it can be decoded without knowing the schema.
-But there is no way to order two such records without decoding them.
+But there is no way to order two such records without decoding them. The
+whole format (a *serial type* is the type code of one column):
+
+```
+header_len    varint: how many bytes of serial types follow
+serial types  one varint per column:
+                0       NULL   no body
+                1       int    body: zigzag, then LEB128 varint
+                2       float  body: 8 bytes, the IEEE bits little-endian
+                n >= 3  text   body: n - 3 raw bytes
+bodies        in column order
+```
+
+*Zigzag* maps 0, -1, 1, -2, 2 to 0, 1, 2, 3, 4, so small negative numbers
+are short too. With `score = NULL` the row is `03 06 00 01 41 6e 6e 06`.
+This is the SQLite record simplified: there `header_len` counts itself,
+integers are fixed-width (1 to 8 bytes by magnitude) and text is
+`13 + 2 * len`.
 
 Varints by hand: LEB128 writes 300 = `10 0101100` in binary as the low seven
 bits `0101100` with the "more" bit set (`ac`), then the rest `10` (`02`):
@@ -154,9 +185,9 @@ byte order of keys == comparator order of records == logical order: yes
 ```
 
 The counts describe the work; they are not a benchmark. The same 27
-comparisons either look at 117 bytes with no knowledge of the schema, or
-decode 66 column values and dispatch on type and options for each. The
-space line is the other side of the trade: 173 bytes against 71.
+comparisons either look at 117 bytes without the schema, or decode 66 column
+values and dispatch on type and options for each. The price is space: 173
+bytes against 71.
 
 ## Code walk-through
 
@@ -198,19 +229,23 @@ first reserves the exact number of bytes it needs and only then writes, so a
 `NoSpaceLeft` leaves the key as it was. DESC inverts the payload but not the
 tag: that is what makes NULLS FIRST / LAST independent of ASC / DESC.
 
-**The oracle.** `row.compareRows` never looks at bytes. It encodes the rules
-directly: NULL equals NULL, NULL against a value is decided by `nulls_first`
-alone, value against value is reversed by `desc`. `model.checkPairs` then
-draws random rows for one fixed schema from a small alphabet
-(`00 01 02 a b ff`, integer extremes, infinities, NaN, both zeros) and
-requires, for each pair, that `std.mem.order` on the keys, `compareRecords`
-on the records and `compareRows` on the values give the same answer, and
-that both encodings validate and round trip (section 8 of the output). The tests go further:
-`checkRandomSchemas` draws a new schema for every pair, adds `fd fe ff`
-(they become tag, escape and terminator when a DESC column is inverted),
-longer strings and floats at every edge of the format, and cuts every key
-and record at every position. `keycodec` and `varint` carry tests of the
-same kind inside the file, so they move with it.
+**Records.** `RecordCursor` keeps two positions, `type_pos` in the serial
+types and `body_pos` in the bodies, and moves both only after a column has
+decoded completely. Text values borrow from the record. A type varint is
+read from the type area only, so a damaged header cannot take a type from
+the bodies (tested).
+
+**The oracle.** `row.compareRows` never looks at bytes: NULL equals NULL,
+NULL against a value is decided by `nulls_first` alone, value against value
+is reversed by `desc`. `model.checkPairs` draws random rows for one schema
+from a small alphabet (`00 01 02 a b ff`, integer extremes, infinities, NaN,
+both zeros) and requires that `std.mem.order` on the keys, `compareRecords`
+on the records and `compareRows` on the values agree, and that both
+encodings validate and round trip (section 8 of the output). In the tests,
+`checkRandomSchemas` also draws a schema per pair, adds `fd fe ff` (tag,
+escape and terminator once a DESC column is inverted) and float edge cases,
+and cuts every key and record at every position. `keycodec` and `varint`
+carry tests of the same kind inside the file, so they move with it.
 
 **`validate`.** `validateKey` walks a key with the schema and checks that it
 ends exactly after the last column and that float columns hold canonical
@@ -221,8 +256,8 @@ record's length. Both return errors on every truncation of a valid input
 ### Rust
 
 Same files (`varint.rs`, `keycodec.rs`, `row.rs`, `record.rs`, `model.rs`,
-`main.rs`), same function names in snake_case, same tests, byte-identical
-output. `bump.rs` is extra: it holds the Rust counterparts of the Zig
+`main.rs`), same function names in snake_case, matching tests,
+byte-identical output. `bump.rs` is extra: it holds the Rust counterparts of the Zig
 allocators.
 
 Differences worth noticing:
@@ -244,8 +279,8 @@ Differences worth noticing:
 - **Self-referential data.** Zig's `RandomRow` stores slices into its own
   buffer and carries a comment "do not move". Rust will not let that struct
   exist; `RandomRow` owns the bytes and `values()` lends them out.
-- **`RecordCursor.next`** is called `next_column` in Rust, to avoid looking
-  like `Iterator::next` while returning a `Result`.
+- **`RecordCursor.next`** is `next_column` in Rust: it returns a `Result`,
+  so it should not look like `Iterator::next`.
 
 ## In real databases
 
@@ -296,10 +331,13 @@ that the insert loop skips (`art.cpp:635-637`). The tag byte and DESC by
 inversion in this chapter are textbook techniques, not taken from these
 sources.
 
-**Byte-comparable by construction: TigerBeetle.** A secondary index key is
+**Order-preserving integers: TigerBeetle.** A secondary index key is
 `(field, timestamp)` packed into one wide unsigned integer with the field in
-the high bits, so integer comparison is lexicographic comparison
-(`tigerbeetle/src/lsm/composite_key.zig:64-77`). Fixed-width columns need no
+the high bits (`tigerbeetle/src/lsm/composite_key.zig:64-77`), and the
+search compares with integer `<`
+(`tigerbeetle/src/lsm/binary_search.zig:48`). It is the same idea, one
+schema-free comparison, but not `memcmp`: the stored struct is
+little-endian (`composite_key.zig:39-47`). Fixed-width columns need no
 terminator, no tags and no escaping.
 
 ## Allocator notes
@@ -311,10 +349,10 @@ the bytes live.
 - **`FixedBufferAllocator` for encode buffers.** In section 5 all eight keys
   are bump-allocated from one 256-byte stack array (`encodeKeyAlloc` with
   `fba.allocator()`): no system call, no per-key free, and the whole batch
-  disappears when the function returns. It is the natural choice because the
-  total size is bounded and the lifetime is one scope. A general-purpose
-  allocator would pay for bookkeeping that is never used. What goes wrong
-  with it: the buffer is finite, so a key that does not fit is
+  disappears when the function returns. It fits because the total size is
+  bounded and the lifetime is one scope; a general-purpose allocator would
+  pay for bookkeeping that is never used. What goes wrong: the buffer is
+  finite, so a key that does not fit is
   `error.OutOfMemory` (tested in `row.zig`), and returning a key that points
   into a stack buffer from the function that owns the buffer is a dangling
   slice.
@@ -323,8 +361,8 @@ the bytes live.
   are identical ("until the caller is done with this row"), so they are
   freed together; the functions do not even clean up on failure, because the
   arena's `deinit` releases a half-built row. `model.checkPairs` resets the
-  arena with `.retain_capacity` once per pair, so after the first few pairs
-  it stops asking the backing allocator for memory. With a general-purpose
+  arena with `.retain_capacity` once per pair, so it soon stops asking the
+  backing allocator for memory. With a general-purpose
   allocator every decoded row would need a matching free of each text, and
   the error paths would need `errdefer` chains.
 - **`BufferFirstAllocator` for one key of unknown size.** Most keys are
@@ -335,11 +373,10 @@ the bytes live.
   for the heap case it is required, and `std.testing.allocator` fails the
   test if it is forgotten.
 - **Rust.** `Bump` is a fixed-capacity `Vec<u8>` that hands out index
-  ranges; `alloc` returns `Err(OutOfSpace)` when full, which is the
-  mirror of the allocation-failure tests. `RowArena` is a bump `Vec<u8>`
-  plus offsets, cleared with capacity kept. `SmallBuf<N>` is inline storage
-  with a `Vec` fallback. Ranges rather than slices because a slice borrowed
-  from the `Vec` would freeze it while the key is in use.
+  ranges (a borrowed slice would freeze the `Vec`) and returns
+  `Err(OutOfSpace)` when full. `RowArena` is a bump `Vec<u8>` plus offsets,
+  cleared with capacity kept. `SmallBuf<N>` is inline storage with a `Vec`
+  fallback.
 
 ## Pitfalls
 
@@ -347,8 +384,9 @@ the bytes live.
   little-endian; key payloads must be big-endian. Mixing them up produces a
   tree that works for keys below 256 and silently mis-sorts above.
 - **Using a varint inside a key.** `leb128(129) = 81 01` sorts after
-  `leb128(256) = 80 02`. A length prefix has the same problem: `"b"` would
-  sort before `"aa"`.
+  `leb128(256) = 80 02`: the low group comes first. The SQLite varint fails
+  across lengths: 16383 is `ff 7f`, 16384 is `81 80 00`. A length prefix
+  has the same problem: `"b"` would sort before `"aa"`.
 - **Equal values, different bytes.** `-0.0` and `0.0`, NaNs with different
   payloads, non-canonical varints. In a key, normalise on encode and reject
   on decode; the price is that the sign of zero and NaN payloads do not

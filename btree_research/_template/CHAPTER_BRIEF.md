@@ -105,3 +105,10 @@ that copies your code must know.
 - Known toolkit quirks: give `BTViz.ArrayView` its final `capacity` from the first frame;
   keep `BTViz.selfTest` names short (they do not wrap on phones).
 - Line counts above the 800-line aim are acceptable when most of the excess is tests.
+- Recurring visualization defect found in review: interactive controls (insert, delete,
+  fetch ...) acted on the hidden END state of a preloaded scripted trace instead of the
+  state shown on screen, so the picture jumped. Controls must act on the state the reader
+  is looking at; start interactive figures empty or from the displayed step.
+- Validate typed input: reject or clearly report negative numbers, decimals, empty and
+  out-of-range values instead of silently changing them; captions must stay true for
+  edge-case inputs.

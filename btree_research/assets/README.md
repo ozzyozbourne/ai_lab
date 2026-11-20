@@ -160,6 +160,7 @@ var stepper = new BTViz.Stepper({
 | `index`, `steps`, `playing` | read-only properties |
 
 Controls: restart, step back, play/pause, step forward, scrubber, "step i / n", speed slider.
+Dragging the scrubber pauses playback and jumps straight to the chosen step.
 Keyboard (focus anywhere in the figure, or nothing focused): <kbd>Space</kbd> play/pause,
 <kbd>←</kbd>/<kbd>→</kbd> step, <kbd>Home</kbd>/<kbd>End</kbd>.
 
@@ -192,6 +193,12 @@ view.render(model, highlight);
 }
 ```
 
+- **Binary trees**: by default an only child is centred under its parent, so left and right look the
+  same. Either give the child a hint, `children: [{id: 'n9', keys: [9], side: 'right'}]`
+  (`side: 'left' | 'right'`), or create the view with `binary: true` and write children positionally as
+  `[left, right]` with `null` for a missing one (`children: [null, {…}]`). The child is then drawn to
+  that side and its edge leaves the matching corner of the parent. `side` on a node that has siblings
+  is ignored for placement; without either option nothing changes.
 - **Forest**: pass an array of roots.
 - **DAG / copy-on-write**: list a node under a second parent as `{ref: 'id'}` (or repeat the same
   node object); it is drawn once, under its first parent, with an extra edge from the second.
@@ -213,11 +220,13 @@ new nodes emerge from the node their first key came from. First render is instan
 
 Options: `minHeight`, `maxHeight`, `zoom: 'fit' | number`, `minScale` (0.7 — fit never shrinks below
 it; wider trees scroll inside the view), `toolbar` (zoom buttons), `onNodeClick(id, node)`,
-`ariaLabel`, and geometry `cellH`, `minCellW`, `charW`, `hGap`, `vGap`.
+`ariaLabel`, `binary` (false; see *Binary trees* above), and geometry `cellH`, `minCellW`, `charW`,
+`hGap`, `vGap`.
 Methods: `render(model, highlight)`, `highlight(h)` (states only, no re-layout), `setZoom(z)`,
 `nodeEl(id)`, `destroy()`. Pan: drag, touch-scroll or scrollbars; zoom: buttons, pinch, or
 <kbd>Ctrl</kbd>+wheel. The view scrolls itself to keep highlighted nodes visible.
-`BTViz.TreeView.layout(model)` is the pure layout function (`{nodes: Map, order, edges, width, height}`).
+`BTViz.TreeView.layout(model[, opts])` is the pure layout function (`{nodes: Map, order, edges, width, height}`);
+`opts` takes the geometry options and `binary`.
 
 Legible up to roughly 60 nodes; beyond that reduce the key range or raise the order.
 
@@ -250,7 +259,8 @@ av.render({ values: [3, 8, 12, 17],       // null = empty slot
 ```
 
 Cells are matched by identity between renders, so inserting or removing a value makes the others
-slide. `BTViz.steps.binarySearch(values, target)` returns ready-made steps (`step.phase` is
+slide. The dashed slot outlines always stay underneath the cells, also when `capacity` grows later.
+`BTViz.steps.binarySearch(values, target)` returns ready-made steps (`step.phase` is
 `'init' | 'mid' | 'less' | 'greater' | 'done'`; `steps.index`, `steps.found`).
 
 ### 3.6 `BTViz.Log`
@@ -345,6 +355,11 @@ gv.render({ nodes: [{ id: 'a', x: 0, y: 0 }, { id: 'q', x: 5, y: 2, label: 'quer
           { nodes: { a: 'active' }, edges: { 'a>b': 'active' } });
 ```
 Shapes: `circle` (default), `square`, `diamond`, `cross`.
+Options: `height`, `pad`, `r`, `ariaLabel`, `onNodeClick(id, node)` and `onPlaneClick(x, y, event)` —
+called with the click position **in model coordinates** (the units of your nodes), e.g. to place a
+query point. A click on a node goes to `onNodeClick` only when that is set, otherwise to
+`onPlaneClick`. `gv.toModel(clientX, clientY)` → `{x, y}` does the same conversion for your own
+pointer handlers.
 
 ### 3.9 Reference models — generate steps from real operations
 
@@ -352,10 +367,24 @@ Conventions (fixed for the whole guide): **order M = maximum number of children*
 most M − 1 keys and, unless it is the root, at least ⌈M/2⌉ − 1; default M = 4. Splits happen on
 overflow (bottom-up); underflow is repaired by borrowing from the left sibling, then the right,
 else merging. In a B+tree the separators are **copies** (child *i+1* holds keys ≥ separator *i*),
-leaves hold at most M − 1 keys and at least ⌈(M−1)/2⌉, and are chained through `next`.
+leaves hold at most M − 1 keys and are chained through `next`.
+
+`BPlusTree` has two leaf conventions, chosen with `{convention}`:
+
+| | leaf minimum (non-root) | overflowing leaf of n = M keys splits into | M = 4 | M = 5 |
+| --- | --- | --- | --- | --- |
+| default | ⌈(M−1)/2⌉ | left ⌈n/2⌉, right ⌊n/2⌋ | min 2, split 2 + 2 | min 2, split 3 + 2 |
+| `{convention: 'guide'}` | ⌈M/2⌉ − 1, as every other node | left ⌊n/2⌋ (the lower half), right ⌈n/2⌉ | min 1, split 2 + 2 | min 2, split 2 + 3 |
+
+In both the separator is a copy of the right leaf's first key and a key equal to a separator is routed
+right. **`'guide'` is the convention of PLAN.md and of the chapter 07 Zig/Rust programs** (it produces
+the same tree shapes as that chapter's model for the same operations); use it whenever a page must
+match what a chapter program prints. The default is kept for the pages that already rely on it.
+`t.convention` reads back `'default'` or `'guide'`; `BTree` accepts the option and ignores it.
 
 ```js
 var t = BTViz.models.BTree(4);            // or BTViz.models.BPlusTree(4); `new` is optional
+var g = BTViz.models.BPlusTree(4, { convention: 'guide' });   // leaf minimum and split point of PLAN.md
 t.insertMany([10, 20, 30]);               // silent
 var steps = t.insert(40);                 // → array of steps; steps.ok === true
 steps = t.delete(20);                     // steps.ok === false when the key was absent
@@ -368,7 +397,7 @@ t.validate();  // [] when every invariant holds, else error strings
 ```
 
 Options: `{detail: 'key'}` adds one `compare-key` step per key comparison (default: one `compare`
-step per node); `{cmp}`; `{idPrefix}`.
+step per node); `{cmp}`; `{idPrefix}`; `{convention: 'guide'}` (B+tree only, see above).
 
 Each step is `{type, caption, state, highlight, op: {kind, key}, log}` where `state` is a TreeView
 model and `highlight` a TreeView highlight. Step `type`s:
@@ -403,7 +432,7 @@ own model in the chapter and emit the same step shape — the views do not care 
 | `BTViz.rng(seed)` | seeded PRNG: `r()`, `r.int(lo, hi)`, `r.pick(a)`, `r.shuffle(a)`, `r.sample(n, lo, hi)` (distinct). **Use it instead of `Math.random()`** so pages are reproducible. |
 | `BTViz.k(value, state?)` | `<b class="bt-k s-compare">17</b>` for captions |
 | `BTViz.esc(s)`, `BTViz.clone(v)` | HTML-escape; deep copy of plain data |
-| `BTViz.selfTest(name, actual, expected, target?)` | → boolean. Strings compare ignoring trailing whitespace, everything else structurally. Shows a ✓/✗ badge at the end of `<main>` and `console.error`s on mismatch (so the Playwright check fails). Results in `BTViz.selfTest.results`. |
+| `BTViz.selfTest(name, actual, expected, target?)` | → boolean. Strings compare ignoring trailing whitespace, everything else structurally. Shows a ✓/✗ badge at the end of `<main>` and `console.error`s on mismatch (so the Playwright check fails). Long names wrap inside the badge (the full name is also its tooltip). Results in `BTViz.selfTest.results`. |
 | `BTViz.motion` | `.duration()` → ms for the current step (0 when scrubbing or reduced motion). Use it for your own animations; `.off = true` disables animation. |
 
 ---

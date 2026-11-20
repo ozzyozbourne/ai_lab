@@ -26,6 +26,7 @@ Tick <em>Predict</em> to be asked before a leaf overflows.</p>
 
 <h2>4. TreeView extras: copy-on-write DAG, page ids, high keys, right links, latches</h2>
 <div id="fig-dag"></div>
+<div id="fig-binary"></div>
 
 <h2>5. Swim lanes (<code>Lanes</code>): you choose who steps next</h2>
 <div id="fig-lanes"></div>
@@ -212,6 +213,17 @@ fn lower_bound(keys: &[u32], target: u32) -> usize {
     });
   })();
 
+  /* ------------------------------------------------------------------ 4b. binary tree: left / right only children */
+  (function () {
+    var fig = BTViz.figure('#fig-binary', { title: 'Binary search tree: an only child keeps its side (binary: true, or a per-child side hint)' });
+    var view = new BTViz.TreeView(fig.stage, { minHeight: 200, binary: true, ariaLabel: 'Binary search tree' });
+    var n = function (key, l, r) { return { id: 'b' + key, keys: [key], children: l || r ? [l || null, r || null] : [] }; };
+    // children are [left, right]; null marks the missing one
+    view.render(n(8, n(3, null, n(6, n(4))), n(10, null, n(14, n(13)))));
+    fig.caption.innerHTML = 'With <code>binary: true</code> children are <code>[left, right]</code> and <code>null</code> marks a missing child. ' +
+      'Without the option, write <code>children: [{id, keys, side: \'right\'}]</code>.';
+  })();
+
   /* ------------------------------------------------------------------ 5. lanes */
   (function () {
     var fig = BTViz.figure('#fig-lanes', { title: 'Two threads, one latch' });
@@ -312,7 +324,10 @@ fn lower_bound(keys: &[u32], target: u32) -> usize {
     grow(100);
 
     var fig2 = BTViz.figure('#fig-graph', { title: 'Greedy descent towards a query point', legend: [{ token: 'node-active', label: 'visited' }, { token: 'key-found', label: 'nearest' }, { token: 'key-compare', label: 'candidate' }] });
-    var gv = new BTViz.GraphView(fig2.stage, { height: 280 });
+    var clicked = BTViz.el('span.bt-chip', 'click the plane');
+    fig2.toolbar.append(clicked);
+    var gv = new BTViz.GraphView(fig2.stage, { height: 280,
+      onPlaneClick: function (x, y) { clicked.textContent = 'onPlaneClick(' + x.toFixed(1) + ', ' + y.toFixed(1) + ')'; } });
     var g = BTViz.rng(12), nodes = [], edges = [], i, j;
     for (i = 0; i < 26; i++) nodes.push({ id: 'v' + i, x: g() * 100, y: g() * 60 });
     var d = function (a, b) { return Math.hypot(a.x - b.x, a.y - b.y); };
@@ -344,6 +359,9 @@ fn lower_bound(keys: &[u32], target: u32) -> usize {
   BTViz.selfTest('BTree(4) in-order keys', t.keys().join(' '), '10 20 30 40 50 60 70\n');
   BTViz.selfTest('BTree(4) shape', t.snapshot().keys, [30, 60]);
   BTViz.selfTest('B+tree(4) leaves', (function () { var out = [], n = BTViz.models.BPlusTree(4).insertMany([1, 2, 3, 4, 5]).root; while (!n.leaf) n = n.children[0]; for (; n; n = n.next) out.push(n.keys); return out; })(), [[1, 2], [3, 4, 5]]);
+  BTViz.selfTest('B+tree(5, {convention: \'guide\'}): the left leaf keeps the lower half and the separator is a copy of the first key of the right leaf',
+    (function () { var s = BTViz.models.BPlusTree(5, { convention: 'guide' }).insertMany([1, 2, 3, 4, 5]).snapshot(); return [s.keys, s.children.map(function (c) { return c.keys; })]; })(),
+    [[3], [[1, 2], [3, 4, 5]]]);
 })();
 </script>
 </body>

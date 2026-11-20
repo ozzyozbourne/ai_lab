@@ -36,6 +36,13 @@ pub const Bug = enum {
     merge_leaks_node,
     /// delete: a borrow between interior nodes moves the key but not the child.
     borrow_forgets_child,
+    // The next two are not part of the chapter's story. They break the
+    // rollback of a failed `put`, and exist so that tests.zig can show that
+    // the HARNESS notices (a check nobody has seen fail is not a check).
+    /// insert: a failed put hands back one reserved node too few.
+    rollback_leaks_node,
+    /// insert: a failed put does not restore `pool.usage`.
+    rollback_keeps_usage,
 };
 
 /// The correct tree.

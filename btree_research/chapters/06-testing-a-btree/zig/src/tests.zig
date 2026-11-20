@@ -21,6 +21,7 @@ test "swarm: one seed fixes the whole case (pinned, same numbers in Rust)" {
     const c = fuzz.swarm(1);
     try testing.expectEqual(256, c.count);
     try testing.expectEqual(64, c.key_space);
+    try testing.expectEqual(fuzz.KeyLayout.spread, c.key_layout);
     try testing.expectEqual(@as(@TypeOf(c.weights), .{ .put = 8, .delete = 4, .get = 4, .range = 1 }), c.weights);
     try testing.expectEqual(2, c.fault_one_in);
     try testing.expectEqual(true, c.drain);
@@ -33,15 +34,78 @@ test "swarm: the seeds really differ in the dimensions that matter" {
     var tiny_keys = false;
     var with_faults = false;
     var without_drain = false;
+    var layouts = [_]bool{false} ** 4;
     for (1..scenario.sweep_seeds + 1) |seed| {
         const c = fuzz.swarm(seed);
         try testing.expect(c.weights.put > 0);
+        try testing.expect(std.math.isPowerOfTwo(c.key_space)); // `KeyLayout.spread` relies on it
+        layouts[@intFromEnum(c.key_layout)] = true;
         no_delete = no_delete or c.weights.delete == 0;
         tiny_keys = tiny_keys or c.key_space == 4;
         with_faults = with_faults or c.fault_one_in != 0;
         without_drain = without_drain or !c.drain;
     }
     try testing.expect(no_delete and tiny_keys and with_faults and without_drain);
+    try testing.expectEqual([_]bool{true} ** 4, layouts);
+}
+
+test "key layouts: pinned keys, strictly increasing, never maxInt" {
+    const max = std.math.maxInt(u64);
+    const L = fuzz.KeyLayout;
+    try testing.expectEqual(5, L.dense.key(64, 5));
+    try testing.expectEqual((1 << 32) - 32, L.around_2_32.key(64, 0)); // 32 keys below 2^32 ...
+    try testing.expectEqual((1 << 32) + 31, L.around_2_32.key(64, 63)); // ... and 32 from it upwards
+    try testing.expectEqual(3 << 58, L.spread.key(64, 3));
+    try testing.expectEqual(255 << 56, L.spread.key(256, 255));
+    try testing.expectEqual(max, L.spread.key(4, 4)); // one past the end saturates
+    try testing.expectEqual(max - 64, L.top.key(64, 0));
+    try testing.expectEqual(max - 1, L.top.key(64, 63)); // the largest key ever used
+    try testing.expectEqual(max, L.top.key(64, 64)); // only as an exclusive range bound
+    inline for (comptime std.enums.values(L)) |layout| {
+        for ([_]u64{ 4, 16, 64, 256 }) |key_space| {
+            for (0..key_space) |k| {
+                try testing.expect(layout.key(key_space, k) < layout.key(key_space, k + 1));
+            }
+            try testing.expect(layout.key(key_space, key_space - 1) < max);
+        }
+    }
+}
+
+test "generate: the sweep uses keys a 32-bit or signed comparison would get wrong" {
+    // What the keys must offer for a magnitude bug to show (the reviewer's
+    // mutant: `put` compares only the low 32 bits of the key):
+    const gpa = testing.allocator;
+    var small = false; // dense small keys, as before
+    var above_32_bits = false;
+    var same_low_half = false; // two different keys that agree in their low 32 bits
+    var both_sides_of_2_32 = false;
+    var both_sides_of_2_63 = false; // different sign if read as i64
+    var near_max = false;
+    for (1..scenario.sweep_seeds + 1) |seed| {
+        const steps = try fuzz.generate(gpa, fuzz.swarm(seed));
+        defer gpa.free(steps);
+        var lowest: u64 = std.math.maxInt(u64);
+        var highest: u64 = 0;
+        var previous: ?u64 = null;
+        for (steps) |step| switch (step.op) {
+            .put => |p| {
+                lowest = @min(lowest, p.key);
+                highest = @max(highest, p.key);
+                if (previous) |q| {
+                    if (q != p.key and @as(u32, @truncate(q)) == @as(u32, @truncate(p.key))) same_low_half = true;
+                }
+                previous = p.key;
+            },
+            else => {},
+        };
+        small = small or highest < 256;
+        above_32_bits = above_32_bits or highest > std.math.maxInt(u32);
+        both_sides_of_2_32 = both_sides_of_2_32 or (lowest < 1 << 32 and highest >= 1 << 32 and highest < 1 << 33);
+        both_sides_of_2_63 = both_sides_of_2_63 or (lowest < 1 << 63 and highest >= 1 << 63);
+        near_max = near_max or highest >= std.math.maxInt(u64) - 2;
+    }
+    try testing.expect(small and above_32_bits and same_low_half);
+    try testing.expect(both_sides_of_2_32 and both_sides_of_2_63 and near_max);
 }
 
 test "generate: same case, same steps; a drained case ends with no key alive" {
@@ -158,6 +222,31 @@ test "fuzz: each family of checks sees a bug the other one cannot" {
     }
 }
 
+test "fuzz: a failed put that leaks a reserved node, or leaves its mark on pool.usage, is caught" {
+    // Two test-only seams in the rollback of `put` (base_btree.zig, `Bug`).
+    // Both leave the tree's shape and contents untouched, so only the
+    // accounting checks can see them.
+    const gpa = testing.allocator;
+    inline for (scenario.orders) |M| {
+        // The counting allocator under the tree still holds a node after `deinit`.
+        const leaked = (try fuzz.hunt(Tree(M, .rollback_leaks_node), gpa, 1, scenario.sweep_seeds, .{}, null)).?;
+        try testing.expectEqual(fuzz.Kind.leak, leaked.failure.kind);
+        // `created`, `destroyed` and `peak` count nodes that were never part of the tree.
+        const counted = (try fuzz.hunt(Tree(M, .rollback_keeps_usage), gpa, 1, scenario.sweep_seeds, .{}, null)).?;
+        try testing.expectEqual(fuzz.Kind.oom_changed_tree, counted.failure.kind);
+        // The oracle comparison alone sees neither.
+        try testing.expectEqual(null, try fuzz.hunt(Tree(M, .rollback_keeps_usage), gpa, 1, scenario.sweep_seeds, .{ .validate = false, .model = true }, null));
+    }
+}
+
+test "Step prints as one line of a reproducer (also the line of the -Dtrace output)" {
+    var buf: [128]u8 = undefined;
+    const put: fuzz.Step = .{ .op = .{ .put = .{ .key = 7, .value = 70 } }, .fault = 1 };
+    try testing.expectEqualStrings("put 7 = 70 (node allocation 1 fails first)", try std.fmt.bufPrint(&buf, "{f}", .{put}));
+    const range: fuzz.Step = .{ .op = .{ .range = .{ .lo = 3, .hi = 9 } } };
+    try testing.expectEqualStrings("range [3, 9)", try std.fmt.bufPrint(&buf, "{f}", .{range}));
+}
+
 test "Failure prints what broke and where" {
     var buf: [128]u8 = undefined;
     const located: fuzz.Failure = .{ .step = 3, .kind = .{ .invariant = error.MissingChild }, .diag = .{ .depth = 1, .first_key = 9 } };
@@ -172,6 +261,48 @@ test "Failure prints what broke and where" {
 }
 
 // ---- minimisation ----------------------------------------------------------
+
+/// True if some contiguous block of `steps` can be removed and the rest
+/// still fails like `target`.
+fn someBlockIsRemovable(comptime T: type, gpa: Allocator, steps: []const fuzz.Step, target: fuzz.Failure) !bool {
+    const shorter = try gpa.alloc(fuzz.Step, steps.len);
+    defer gpa.free(shorter);
+    for (0..steps.len) |start| {
+        for (start + 1..steps.len + 1) |end| {
+            if (end - start == steps.len) continue; // nothing left
+            @memcpy(shorter[0..start], steps[0..start]);
+            @memcpy(shorter[start .. start + steps.len - end], steps[end..]);
+            const f = try fuzz.replay(T, gpa, shorter[0 .. steps.len - (end - start)], .{}, null) orelse continue;
+            if (f.sameKind(target)) return true;
+        }
+    }
+    return false;
+}
+
+test "minimize: no contiguous block of steps can be removed from the result" {
+    // The guarantee stated in minimize.zig, checked on the first failing
+    // seeds of each variant (not only the hand-picked shortest run). A
+    // minimiser whose chunk sizes only shrink fails this for 14 of these 60
+    // runs: it leaves pairs of steps that can only be removed together.
+    const gpa = testing.allocator;
+    inline for (scenario.bugs) |bug| {
+        const T = Tree(4, bug);
+        var seed: u64 = 1;
+        var tried: usize = 0;
+        while (tried < 20) : (seed += 1) {
+            const found = try fuzz.hunt(T, gpa, seed, 1, .{}, null) orelse continue;
+            tried += 1;
+            const steps = try fuzz.generate(gpa, found.case);
+            defer gpa.free(steps);
+            const small = try minimize(T, gpa, steps, found.failure, .{});
+            defer gpa.free(small.steps);
+            const again = (try fuzz.replay(T, gpa, small.steps, .{}, null)).?;
+            try testing.expectEqual(small.steps.len - 1, again.step);
+            try testing.expect(again.sameKind(found.failure));
+            try testing.expect(!try someBlockIsRemovable(T, gpa, small.steps, found.failure));
+        }
+    }
+}
 
 test "minimize: short, still failing the same way, and 1-minimal" {
     const gpa = testing.allocator;
@@ -279,4 +410,22 @@ test "a tree that validate rejects can be rendered and deinit-ed without abortin
         tree.deinit(gpa);
     }
     try testing.expect(safe.deinitLog(false) > 0); // the lost nodes are leaks, not a crash
+}
+
+test "a node with a garbage key count is rejected by validate and still rendered" {
+    const gpa = testing.allocator;
+    var tree: Tree(4, .none) = .empty;
+    defer tree.deinit(gpa);
+    for (1..20) |key| _ = try tree.put(gpa, key, key);
+    const victim = tree.root.?.children[0].?;
+    const real_len = victim.len;
+    victim.len = 9; // more keys than the node has room for
+    try testing.expectError(error.NodeOverfull, tree.validate(null));
+    _ = tree.shape();
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    try tree.render(&out.writer, ""); // used to index past the key array
+    try testing.expect(std.mem.indexOf(u8, out.written(), " !]") != null);
+    victim.len = real_len; // so that deinit frees a sound tree
+    try tree.validate(null);
 }

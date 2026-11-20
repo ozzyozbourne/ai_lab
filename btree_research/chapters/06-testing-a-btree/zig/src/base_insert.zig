@@ -1,6 +1,6 @@
 // Copied from chapters/05-deletion-and-rebalancing/zig/src/insert.zig
-// Changes for chapter 06: coverage points instead of counters, and one fault
-// seam (search for "SEAM") that is only compiled into a broken variant.
+// Changes for chapter 06: coverage points instead of counters, and fault
+// seams (search for "SEAM") that are only compiled into a broken variant.
 //! SECTION 4: insert with bottom-up splitting (explained in chapter 04).
 //!
 //! `put` works in three phases:
@@ -78,8 +78,10 @@ pub fn put(comptime Tree: type, tree: *Tree, gpa: Allocator, key: u64, value: u6
         // Hand back what we already took, and forget that we took it:
         // `usage` (created, destroyed, peak) counts nodes of the tree, and
         // these never became part of it.
-        for (spare[0..reserved]) |n| tree.pool.destroy(gpa, n);
-        tree.pool.usage = usage_before;
+        // SEAMS rollback_leaks_node / rollback_keeps_usage (test-only, see `Bug`).
+        const hand_back = if (Tree.bug == .rollback_leaks_node) reserved -| 1 else reserved;
+        for (spare[0..hand_back]) |n| tree.pool.destroy(gpa, n);
+        if (Tree.bug != .rollback_keeps_usage) tree.pool.usage = usage_before;
         tree.coverage.hit(if (reserved > 0) .put_oom_rollback else .put_oom);
     }
     while (reserved < need) : (reserved += 1) spare[reserved] = try tree.pool.create(gpa);

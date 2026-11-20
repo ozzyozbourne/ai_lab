@@ -546,10 +546,10 @@
     });
     // Each lower row is named by a line of text to the right of its last box.
     var titles = [
-      { y: ghostY, x: g.padX, text: ghosts.length ? '← deleted: unlinked and stamped, right link kept; waiting for the horizon' : 'deleted pages: none' },
+      { y: ghostY, x: g.padX, text: ghosts.length ? '← deleted and stamped: waiting for the horizon' : 'deleted pages: none' },
       { y: freeY, x: x > g.padX ? x + 4 : g.padX, text: x > g.padX ? '← free list: the next split takes the leftmost' : 'free list: empty' }
     ];
-    var W = 0;
+    var W = 430;                           // wide enough for either title next to a few boxes: the picture does not jump
     order.forEach(function (b) {
       W = Math.max(W, b.x + b.w + g.padX);
       if (b.kind === 'deleted') titles[0].x = Math.max(titles[0].x, b.x + b.w + 46);    // past the hook of its arrow

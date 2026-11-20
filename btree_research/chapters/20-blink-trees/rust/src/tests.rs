@@ -15,6 +15,7 @@
 use crate::base_handle::{NodeId, OutOfNodes};
 use crate::blink::{BLinkTree, Page};
 use crate::dump;
+use crate::insert::Pause;
 use crate::ops::{Config, Op, OpStream, Oracle, Weights};
 use crate::prng::SplitMix64;
 use crate::search::{Descent, Mode, Step};
@@ -727,7 +728,7 @@ fn model_test_with_paused_writers_stale_parents_flagged_parents_old_roots_seeded
                     meta.level_head[level],
                     key,
                     PausedModel::value(key),
-                    Some(&mut pause),
+                    Pause::at_leaf(&mut pause),
                 )
                 .unwrap();
                 model.present[key as usize] = true;

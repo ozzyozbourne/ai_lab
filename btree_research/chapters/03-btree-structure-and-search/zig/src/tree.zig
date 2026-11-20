@@ -17,7 +17,8 @@
 //! decides everything:
 //!
 //!   std.testing.allocator   every node tracked; you must call `deinit`,
-//!                           which walks the tree and destroys node by node
+//!                           which walks the tree and destroys every node it
+//!                           can reach from the root
 //!   BumpAllocator (bump.zig) / std.heap.ArenaAllocator
 //!                           nodes packed into chunks; do NOT walk the tree,
 //!                           just deinit the allocator: one free per chunk
@@ -31,8 +32,10 @@ const pool_mod = @import("base_pool.zig");
 const height_mod = @import("height.zig");
 
 /// The guide's convention for example data: the value of key k is 10 * k.
+/// `*%` wraps around instead of trapping: every u64 is a legal key, also the
+/// ones above maxInt(u64) / 10, and the value is only example data.
 pub fn valueOf(key: u64) u64 {
-    return key * 10;
+    return key *% 10;
 }
 
 /// A read-only B-tree of order `M` (at most M children, at most M - 1 keys
@@ -150,20 +153,29 @@ pub fn HandTree(comptime M: usize, comptime PoolFn: fn (type) type) type {
 
         // ------------------------------------------------------- teardown
 
-        /// Destroys node by node. Needed when nodes come from an allocator
-        /// that tracks each allocation; needs a VALID tree (it follows the
-        /// child pointers). With a bump allocator or an arena, skip this
-        /// call and deinit the allocator instead.
+        /// Destroys every node that can be reached from the root, one by
+        /// one. Needed when nodes come from an allocator that tracks each
+        /// allocation. With a bump allocator or an arena, skip this call and
+        /// deinit the allocator instead.
+        ///
+        /// Teardown is total: it also works on a tree that `validate` has
+        /// rejected (a missing child is skipped), so a test can write
+        /// `defer t.deinit(gpa)` and still assert on the error. But a walk
+        /// frees only what it can reach. A node that nothing points to any
+        /// more stays allocated: `validate` names it (NodeCountMismatch),
+        /// `std.testing.allocator` reports it as a leak, and an arena frees
+        /// it with everything else. (Same as `BTree.deinit` in chapter 05.)
         pub fn deinit(self: *Self, gpa: Allocator) void {
             if (self.root) |root| self.destroySubtree(gpa, root);
-            std.debug.assert(self.pool.usage.live() == 0); // a node nothing pointed to?
             self.pool.deinit(gpa);
             self.* = undefined;
         }
 
         fn destroySubtree(self: *Self, gpa: Allocator, node: *NodeT) void {
             if (!node.leaf) {
-                for (node.children[0 .. node.len + 1]) |child| self.destroySubtree(gpa, child.?);
+                for (node.children[0 .. node.len + 1]) |child| {
+                    if (child) |c| self.destroySubtree(gpa, c);
+                }
             }
             self.pool.destroy(gpa, node);
         }
@@ -215,6 +227,24 @@ test "the canonical tree: shape, search, validate" {
     try testing.expectEqual(stats.Shape{ .height = 2, .nodes = 5, .leaves = 4, .keys = 12, .capacity = 15 }, t.shape());
     for (canonical_keys) |key| try testing.expectEqual(valueOf(key), t.get(key));
     for ([_]u64{ 0, 2, 4, 8, 9, 11, 16, 21, 31, std.math.maxInt(u64) }) |key| try testing.expectEqual(null, t.get(key));
+}
+
+test "every u64 is a legal key: the largest ones can be stored and found" {
+    // Regression: valueOf multiplied with `*`, which traps above maxInt / 10.
+    const max = std.math.maxInt(u64);
+    const gpa = testing.allocator;
+    var t: Tree4 = .empty;
+    defer t.deinit(gpa);
+    const low = try t.leaf(gpa, &.{ 0, max / 10 });
+    const high = try t.leaf(gpa, &.{ max - 1, max });
+    t.root = try t.interior(gpa, &.{max / 10 + 1}, &.{ low, high });
+    try t.validate();
+    try testing.expectEqual(max / 10 * 10, t.get(max / 10)); // the last key whose value does not wrap
+    try testing.expectEqual(valueOf(max / 10 + 1), t.get(max / 10 + 1));
+    try testing.expectEqual(valueOf(max - 1), t.get(max - 1));
+    try testing.expectEqual(valueOf(max), t.get(max));
+    try testing.expectEqual(max - 9, valueOf(max)); // (2^64 - 1) * 10 mod 2^64
+    try testing.expectEqual(null, t.get(max - 2));
 }
 
 test "the same builder on three allocators: tracked, bump, arena" {

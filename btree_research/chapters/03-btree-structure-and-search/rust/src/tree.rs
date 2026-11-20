@@ -31,8 +31,11 @@ use crate::{base_search, base_stats, base_validate, height};
 use std::io::{self, Write};
 
 /// The guide's convention for example data: the value of key k is 10 * k.
+/// `wrapping_mul` wraps around instead of panicking: every u64 is a legal
+/// key, also the ones above `u64::MAX / 10`, and the value is only example
+/// data.
 pub fn value_of(key: u64) -> u64 {
-    key * 10
+    key.wrapping_mul(10)
 }
 
 /// A read-only B-tree of order `order` (at most `order` children, at most

@@ -23,6 +23,8 @@ pub const Shape = struct {
     }
 };
 
+/// Like `render`, this also works on a tree that `validate` has rejected:
+/// a missing child is skipped, so a failure report can show the broken tree.
 pub fn shape(comptime M: usize, root: ?*const Node(M)) Shape {
     var s: Shape = .{};
     var node = root;
@@ -39,7 +41,9 @@ fn addNode(comptime M: usize, node: *const Node(M), s: *Shape) void {
         s.leaves += 1;
         return;
     }
-    for (node.children[0 .. node.len + 1]) |child| addNode(M, child.?, s);
+    for (node.children[0 .. node.len + 1]) |child| {
+        if (child) |c| addNode(M, c, s);
+    }
 }
 
 /// One line per level, root first. Nodes are `[k k k]`; ` | ` separates
@@ -75,12 +79,13 @@ fn renderLevel(comptime M: usize, node: *const Node(M), remaining: usize, w: *st
         try w.writeByte(']');
         return;
     }
-    for (node.children[0 .. node.len + 1], 0..) |child, i| {
+    for (node.children[0 .. node.len + 1], 0..) |maybe_child, i| {
+        const child = maybe_child orelse continue; // only in a broken tree
         if (remaining == 1) {
             // Siblings are separated by a space, families by " | ".
             if (i > 0) try w.writeByte(' ') else if (!first.*) try w.writeAll(" | ");
             first.* = false;
         }
-        try renderLevel(M, child.?, remaining - 1, w, first);
+        try renderLevel(M, child, remaining - 1, w, first);
     }
 }

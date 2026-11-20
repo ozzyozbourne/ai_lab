@@ -76,16 +76,19 @@ fn check(
         return;
     }
 
+    // All child slots of this node first, the subtrees after that: a node
+    // with a wrong number of children is then reported as such, and not as
+    // whatever its shifted children break one level down.
     for (node.children, 0..) |child, i| {
-        if (i > node.len) {
-            if (child != null) return error.UnexpectedChild;
-            continue;
-        }
-        const c = child orelse return error.MissingChild;
+        if (i <= node.len) {
+            if (child == null) return error.MissingChild;
+        } else if (child != null) return error.UnexpectedChild;
+    }
+    for (node.children[0 .. node.len + 1], 0..) |child, i| {
         // Child i lives strictly between separator i - 1 and separator i.
         const child_lo = if (i == 0) lo else node.keys[i - 1];
         const child_hi = if (i == node.len) hi else node.keys[i];
-        try check(M, c, child_lo, child_hi, false, depth + 1, leaf_depth, count);
+        try check(M, child.?, child_lo, child_hi, false, depth + 1, leaf_depth, count);
     }
 }
 
@@ -122,6 +125,11 @@ test "validate names the broken invariant" {
 
     root.children[1] = null;
     try std.testing.expectError(error.MissingChild, validate(4, &root, 5));
+    // The child count of a node is checked before its subtrees: a key on the
+    // wrong side in the first child does not hide the missing second child.
+    left.keys[1] = 25;
+    try std.testing.expectError(error.MissingChild, validate(4, &root, 5));
+    left.keys[1] = 10;
     root.children[1] = &right;
     left.children[0] = &right;
     try std.testing.expectError(error.UnexpectedChild, validate(4, &root, 5));

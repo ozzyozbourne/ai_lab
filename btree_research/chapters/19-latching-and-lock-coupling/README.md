@@ -140,11 +140,10 @@ so #6 stays latched. The writer holds #6 and #3. The leaf splits into
 Meanwhile a second thread's `get 12` or `put 11` runs freely through #7 and
 #2, and a `get 17` gets through #7 and then waits at #6.
 
-**The same `put 26`, four threads.** Let the `get 17` wait at #6. It holds #7
-shared. A third thread's `get 12` still passes: readers share the root. A
-fourth thread's `put 11` needs #7 exclusive and waits there, although nothing
-on its path (#7, #2, #1) is held by the writer of 26. That is the convoy
-(section 7 of the output).
+**The same `put 26`, four threads.** The waiting `get 17` holds #7 shared. A
+third thread's `get 12` still passes: readers share the root. A fourth
+thread's `put 11` needs #7 exclusive and waits, although the writer of 26
+holds nothing on its path. That is the convoy (section 7 of the output).
 
 **`put 2` after `put 8` and `put 9`** (which fill #2 to `[6 8 10]`). X on #7.
 X on #2: full, keep #7. X on #0: full, keep both. The writer holds #7, #2 and
@@ -299,28 +298,24 @@ callback tries to latch every node and notes the ones that fail.
 
 A stress test proves little by passing. As a check, sixteen bugs were put
 into a scratch copy, one at a time, and the test binary was run ten times per
-bug, in Zig and in Rust. (Two of the sixteen read a node without its latch
-and cannot be written in safe Rust.)
+bug, in both languages. (Two of them read a node without its latch and cannot
+be written in safe Rust.)
 
-- **Fourteen (Rust: twelve) fail a deterministic test in every run.** Among
-  them: no second look at the root id, for readers only or for writers only;
-  releasing the parent before latching the child, in the reader or in the
-  writer; a safe node rule that is too generous or too strict; publishing
-  the new root before it is filled in; `reserve` as load-then-store.
-- **The stress tests alone are a coin toss.** In the same runs they noticed
-  release-before-latch in the reader 4 times of 10 (Rust: 5), in the writer
-  9 (Rust: 3), the reader-only root bug 6 (Rust: 5), the non-atomic
-  `reserve` 7 (Rust: 3), and the early publish never. The first version of
-  this chapter had no hook test for four of these bugs, and whole runs of its
-  suite passed with the bug in place: 1, 4, 5 and 12 times of 12 (Zig).
-- **Two bugs leak a latch** (a restart that does not unlatch; a `put` that
-  never unlatches). The first fails both root tests and then hangs in the
-  stress test. The second hangs in the first test. Nothing fails; the run
-  just never ends.
+Fourteen (Rust: twelve) fail a deterministic test in every run: no second
+look at the root id (readers only, writers only), the parent released before
+the child is latched (reader, writer), a safe node rule that is too generous
+or too strict, a new root published before it is filled in, `reserve` as
+load-then-store, and others. The stress tests alone are a coin toss. In the
+same runs they noticed the reader's release-before-latch 4 times of 10 (Rust:
+5), the writer's 9 (3), the non-atomic `reserve` 7 (3), and the early publish
+never. The last two bugs leak a latch: one hangs in the first test, the other
+fails both root tests and then hangs in the stress test.
 
-So today none of the sixteen depends on luck. That is a statement about
-these sixteen bugs, not about all bugs: each deterministic test exists
-because somebody thought of the interleaving it replays.
+So none of the sixteen depends on luck today. The first version of this
+chapter had no hook test for four of them (writer-only root check, the
+writer's release-before-latch, `reserve`, early publish), and its whole suite
+passed with the bug in place in 1, 4, 5 and 12 runs of 12. A deterministic
+test exists only for an interleaving somebody thought of.
 
 ### Output
 
@@ -399,9 +394,6 @@ ladder turns some "waits" into "finishes". Read the last row: when the full
 nodes reach up to the root's child, latch coupling waits at the root like the
 global locks.
 
-In section 3 `put 11` finishes next to the frozen `put 26`. In section 7 it
-waits at the root, behind a reader that is itself waiting.
-
 In section 6, "first-time puts" is the number of `put` calls that returned "no
 previous value", summed over the threads. It equals the number of distinct
 keys exactly when every key was inserted once: no insert was lost and none
@@ -472,8 +464,7 @@ their index workloads do not need more.
 - **Rust**: the table is a `Box<[RwLock<Node>]>` built once. The node budget
   is the table's length; `reserve` returns `Err(OutOfNodes)`. Instead of an
   arena each worker owns its `Vec` and hands it back through `join`. Unlike
-  Zig, every `put` makes one small heap allocation: its guards live in a
-  `Vec`. No node moves because of it, so it costs time, not correctness.
+  Zig, every `put` makes one small heap allocation, the `Vec` of its guards.
 
 ## Pitfalls
 

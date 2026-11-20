@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 22 — A split torn without a log</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  .ch22-writes { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ch22-write {
+    flex: 1 1 96px; min-width: 96px; padding: 5px 7px; border-radius: 6px; font: .78rem/1.3 var(--bt-mono);
+    background: var(--s-bg, var(--bt-key-bg)); box-shadow: inset 0 0 0 1.5px var(--s, var(--bt-border));
+  }
+  .ch22-write b { display: block; }
+  .ch22-write span { font: .72rem var(--bt-font); color: var(--bt-muted); }
+  .ch22-write.is-future { opacity: .45; }
+  .ch22-verdict {
+    padding: 8px 10px; border-radius: 6px; font-size: .92rem;
+    background: var(--s-bg, var(--bt-surface-2)); box-shadow: inset 3px 0 0 var(--s, var(--bt-border));
+  }
+  .ch22-checks { display: inline-flex; flex-wrap: wrap; gap: .2em .8em; align-items: center; }
+  .ch22-checks label { display: inline-flex; align-items: center; gap: .3em; font-size: .86rem; white-space: nowrap; }
+  .ch22-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+  .ch22-cell {
+    display: block; width: 100%; text-align: left; padding: 5px 7px; border: 0; border-radius: 6px; cursor: pointer;
+    font: .76rem/1.3 var(--bt-mono); color: var(--bt-text);
+    background: var(--s-bg, var(--bt-key-bg)); box-shadow: inset 0 0 0 1.5px var(--s, var(--bt-border));
+  }
+  .ch22-cell:focus-visible { outline: 2px solid var(--bt-accent); outline-offset: 2px; }
+  .ch22-cell.is-current { box-shadow: inset 0 0 0 3px var(--bt-accent); }
+  .ch22-cell span { display: block; font-family: var(--bt-font); }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">Page 1 of 2. Splitting a leaf changes several pages, and a file receives them one at a
+time. If the power fails in between, the file holds a tree that never existed. This page replays
+part 1 of the chapter's program: chapter 12's tree, with no log, on a disk that can lose power.
+Page 2 shows the cure: <a href="log.html">the write-ahead log</a>. Text and code:
+<a href="../README.md">chapter README</a>.</p>
+
+<h2>1. One split, five page writes</h2>
+<p>Eleven keys are safely in the file. <code>put 15</code> splits leaf page 2; the flush then issues five
+page writes and one sync. Step through them. The tree drawn is <em>what is in the file</em> at that moment,
+as a reader would find it after a power cut, if the writes that are ticked had reached the disk. Untick a
+write to make the power cut lose it: an operating system may write unsynced pages in any order.</p>
+<div id="fig-split"></div>
+
+<h2>2. All 32 combinations</h2>
+<p>Each of the five writes either reached the disk or did not. The chapter's program tries every combination
+and reopens the file; so does the model behind this page. Pick a cell to load it into the figure above.</p>
+<div id="fig-grid"></div>
+
+<h2>3. Does the picture match the code?</h2>
+<p>The model on this page is checked against the output of <code>zig build run</code> and
+<code>cargo run</code> (part 1): the power cut after each write, and all 32 combinations.</p>
+<div class="bt-selftests" role="status" aria-label="Model self-tests"><span class="bt-selftests-title">Self-tests</span></div>
+
+<script src="code.js"></script>
+<script src="expected.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="model.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, M = window.CH22, N = M.WRITES.length;
+
+  BTViz.page({
+    title: 'A split torn without a log', chapter: 22,
+    prev: { href: '../../21-durability-primitives/viz/index.html', title: 'Chapter 21: durability primitives' },
+    next: { href: 'log.html', title: 'Chapter 22, page 2: the log timeline' },
+    index: '../../../index.html'
+  });
+
+  var EXPLAIN = {
+    UnreachablePage: function (v) { return 'page ' + v.bad + ' is part of the file, but no page points to it.'; },
+    KeyOutOfBounds: function (v) { return 'page ' + v.bad + ' still holds 12 and 17, but its parent now says that keys from 12 on live in page 4.'; },
+    BadPage: function (v) { return 'the parent points to page ' + v.bad + ', which is not a tree page (zeroes, or beyond the end of the file).'; },
+    LeafChainBroken: function (v) { return 'the sibling link of page ' + v.bad + ' does not lead to the next leaf in key order.'; },
+    KeyCountMismatch: function () { return 'the leaves hold 12 keys, the metapage still says 11.'; },
+    Corrupt: function () { return 'the metapage says the file has 5 pages, but it has only 4.'; }
+  };
+
+  /* ------------------------------------------------------------ figure 1 */
+  var fig = BTViz.figure('#fig-split', {
+    title: 'put 15 without a log: what the file holds after each write', side: true, controlsUnderStage: true,
+    legend: [
+      { token: 'key-inserted', label: 'new version of a page, on disk' },
+      { token: 'node', label: 'old version, on disk' },
+      { token: 'key-deleted', label: 'where validate fails / a lost write' },
+      { token: 'key-found', label: 'a valid tree' }
+    ]
+  });
+  var writesRow = el('div.ch22-writes', { role: 'list', 'aria-label': 'The five page writes and the sync' });
+  fig.stage.appendChild(writesRow);
+  var view = new BTViz.TreeView(fig.stage, { minHeight: 200, ariaLabel: 'The tree found in the file' });
+  var verdictBox = el('div.ch22-verdict', { role: 'status' });
+  fig.stage.appendChild(verdictBox);
+  var code = BTViz.codePanel(fig.side, 'flush', { title: 'flush (chapter 12)', wrap: true });
+
+  // Which writes reach the disk if the power fails before the sync.
+  var kept = [true, true, true, true, true];
+  var boxes = [], checks = el('span.ch22-checks', { role: 'group', 'aria-label': 'Writes that reached the disk' }, el('span.bt-field', 'reached the disk:'));
+  M.WRITES.forEach(function (w, i) {
+    var box = el('input', { type: 'checkbox', 'aria-label': 'write ' + (i + 1) + ' reached the disk' });
+    box.checked = true;
+    box.addEventListener('change', function () { kept[i] = box.checked; draw(); });
+    boxes.push(box);
+    checks.appendChild(el('label', box, 'write ' + (i + 1)));
+  });
+  var allBtn = el('button.bt-btn', { type: 'button', onclick: function () { setKept(31); } }, 'all (keep)');
+  var noneBtn = el('button.bt-btn', { type: 'button', onclick: function () { setKept(0); } }, 'none (drop)');
+  fig.toolbar.append(checks, allBtn, noneBtn);
+
+  function setKept(mask) {
+    for (var i = 0; i < N; i++) { kept[i] = !!(mask & (1 << i)); boxes[i].checked = kept[i]; }
+    draw();
+  }
+
+  /** The writes that are on disk at the displayed step. */
+  function currentMask(step) {
+    var mask = 0;
+    for (var i = 0; i < step.issued; i++) if (step.synced || kept[i]) mask |= 1 << i;
+    return mask;
+  }
+
+  var steps = [{ issued: 0, synced: false, lines: [], caption: 'Before <code>put 15</code>: 11 keys in three tree pages, flushed and synced. Page 2 is full (3928 of 4076 bytes), so the next key that belongs there will split it. In memory the split happens at once; the file hears about it one page at a time.' }];
+  M.WRITES.forEach(function (w, i) {
+    steps.push({
+      issued: i + 1, synced: false, lines: i === 0 ? [] : i === 1 ? [[3, 5]] : [[6, 9]],
+      caption: '<b>Write ' + (i + 1) + ':</b> ' + w.what + '. Why: ' + w.why + '. ' +
+        (i === 0 ? 'The write is issued, not synced: the operating system may or may not have put it on the disk when the power fails.' :
+         i === 2 ? 'This is the dangerous moment: the parent now describes a tree whose leaves are not on disk yet.' :
+         i === 4 ? 'All five writes are issued. If every one of them reached the disk the file is the new tree; if any is missing, it is not.' : '')
+    });
+  });
+  steps.push({ issued: N, synced: true, lines: [9], caption: '<b>sync.</b> Only now are all five writes guaranteed to be on disk, and the file holds the new tree. Everything between the first write and this sync was a window in which a power cut leaves a broken file. Page 2 closes that window.' });
+  steps[3].question = {
+    prompt: 'Writes 1, 2 and 3 are on disk: the zero page, the metapage and the parent. The power fails. What does a reopen find?',
+    choices: ['The old tree with 11 keys', 'The new tree with 12 keys', 'A tree that fails validation'],
+    answer: 2,
+    explain: 'The parent already says "keys from 12 on are in page 4", but page 2 still holds 12 and 17 and page 4 is all zeroes. The program reports <code>KeyOutOfBounds</code>.'
+  };
+
+  var stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, steps: steps, predict: true, interval: 2600,
+    onStep: function (step) { code.highlight(step.lines); draw(); }
+  });
+
+  function draw() {
+    var step = stepper ? stepper.steps[stepper.index] : steps[0];
+    var mask = currentMask(step), disk = M.diskFor(mask), v = M.check(disk);
+    for (var i = 0; i < N; i++) boxes[i].disabled = step.synced || i >= step.issued;
+    allBtn.disabled = noneBtn.disabled = step.synced || step.issued === 0;
+
+    writesRow.textContent = '';
+    M.WRITES.forEach(function (w, i) {
+      var issued = i < step.issued, onDisk = !!(mask & (1 << i));
+      writesRow.appendChild(el('div', { role: 'listitem', class: 'ch22-write' + (issued ? (onDisk ? ' s-inserted' : ' s-deleted') : ' is-future') },
+        el('b', 'write ' + (i + 1) + ': page ' + w.page), el('span', !issued ? 'not issued yet' : step.synced ? 'synced' : onDisk ? 'on disk' : 'lost in the power cut')));
+    });
+    writesRow.appendChild(el('div', { role: 'listitem', class: 'ch22-write' + (step.synced ? ' s-found' : ' is-future') }, el('b', 'sync'), el('span', step.synced ? 'done' : 'not yet')));
+
+    var hl = { nodes: {} };
+    for (var id in disk.fresh) hl.nodes['p' + id] = 'inserted';
+    if (v.bad !== null && v.bad !== 0) hl.nodes['p' + v.bad] = 'deleted';
+    view.render(M.treeModel(disk), hl);
+
+    var ok = v.state === 'before' || v.state === 'after';
+    var text = step.synced ? 'Synced. The file holds the new tree: all 12 keys, valid.' :
+      step.issued === 0 ? 'The file holds the old tree: 11 keys, valid.' :
+      'If the power fails now, a reopen finds: <b>' + BTViz.esc(M.verdictText(v)) + '</b>' +
+      (v.state === 'before' ? ' (the old tree, 11 keys, valid).' : v.state === 'after' ? ' (the new tree, all 12 keys, valid).' : ': ' + EXPLAIN[v.err](v));
+    verdictBox.className = 'ch22-verdict ' + (ok ? 's-found' : 's-deleted');
+    verdictBox.innerHTML = text;
+    drawGrid(step.synced || step.issued < N ? -1 : mask);
+  }
+
+  /* ------------------------------------------------------------ figure 2 */
+  var gridFig = BTViz.figure('#fig-grid', {
+    title: 'Which writes reached the disk (digit i = write i) → what a reopen finds',
+    legend: [{ token: 'key-found', label: 'valid tree (old or new)' }, { token: 'key-deleted', label: 'cannot be opened, or fails validate' }]
+  });
+  var grid = el('div.ch22-grid'), cells = [], counts = { ok: 0, bad: 0 };
+  gridFig.stage.appendChild(grid);
+  for (var mask = 0; mask < 32; mask++) (function (mask) {
+    var digits = '';
+    for (var i = 0; i < N; i++) digits += mask & (1 << i) ? '1' : '0';
+    var v = M.check(M.diskFor(mask)), ok = v.state === 'before' || v.state === 'after';
+    counts[ok ? 'ok' : 'bad']++;
+    var cell = el('button', { type: 'button', class: 'ch22-cell ' + (ok ? 's-found' : 's-deleted'), 'aria-label': digits + ': ' + M.verdictText(v) },
+      digits, el('span', M.verdictText(v)));
+    cell.addEventListener('click', function () {
+      stepper.go(N); // all five writes issued, not yet synced
+      setKept(mask);
+      fig.root.scrollIntoView({ block: 'nearest' });
+    });
+    cells.push(cell);
+    grid.appendChild(cell);
+  })(mask);
+  gridFig.caption.innerHTML = counts.ok + ' of 32 combinations leave a valid tree: the one where nothing was written, and the two where everything that matters was. ' +
+    'The other ' + counts.bad + ' are trees that never existed. A log makes the question "which pages made it?" irrelevant.';
+
+  function drawGrid(current) {
+    cells.forEach(function (cell, mask) { cell.classList.toggle('is-current', mask === current); });
+  }
+
+  draw();
+
+  /* ------------------------------------------------------------ self-tests */
+  var rows = M.crashRows(1), keep = [], drop = [], wantKeep = [], wantDrop = [];
+  for (var n = 0; n <= N; n++) {
+    keep.push(M.verdictText(M.check(M.diskFor((1 << n) - 1))));
+    drop.push(M.verdictText(M.check(M.diskFor(0))));
+    wantKeep.push(rows[n] ? rows[n].keep : '?');
+    wantDrop.push(rows[n] ? rows[n].drop : '?');
+  }
+  BTViz.selfTest('keep, N = 0..5', keep.join('\n'), wantKeep.join('\n'));
+  BTViz.selfTest('drop, N = 0..5', drop.join('\n'), wantDrop.join('\n'));
+  var table = M.subsetTable(), got = [], want = [];
+  for (var m = 0; m < 32; m++) { got.push(m + ' ' + M.verdictText(M.check(M.diskFor(m)))); want.push(m + ' ' + table[m]); }
+  BTViz.selfTest('32 subsets', got.join('\n'), want.join('\n'));
+})();
+</script>
+</body>
+</html>

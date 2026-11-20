@@ -1,0 +1,120 @@
+/* Chapter 22: code shown in the visualization's code panels. Excerpts of
+   zig/src and rust/src, shortened (error handling and statistics removed). */
+window.CHAPTER_CODE = {
+  flush: {
+    zig: [
+      '// base_disk_btree.zig (chapter 12): no log.',
+      'pub fn flush(self: *DiskBTree) Error!void {',
+      '    const buf = try self.pool.fetchPage(meta_page_id);',
+      '    meta.encode(buf); // root, page count, key count',
+      '    self.pool.unpin(meta_page_id, true);',
+      '    // Every dirty page, one write each, in frame',
+      '    // order; then one sync. A power cut between',
+      '    // two of the writes leaves a mix on disk.',
+      '    try self.pool.flushAll();',
+      '}'
+    ].join('\n'),
+    rust: [
+      '// base_disk_btree.rs (chapter 12): no log.',
+      'pub fn flush(&mut self) -> Result<()> {',
+      '    let buf = self.pool.fetch_page(META_PAGE_ID)?;',
+      '    meta.encode(buf); // root, page count, key count',
+      '    self.pool.unpin(META_PAGE_ID, true);',
+      '    // Every dirty page, one write each, in frame',
+      '    // order; then one sync. A power cut between',
+      '    // two of the writes leaves a mix on disk.',
+      '    self.pool.flush_all()',
+      '}'
+    ].join('\n')
+  },
+  commit: {
+    zig: [
+      '// wal.zig: the pager\'s sync() lands here.',
+      'pub fn commit(self: *Wal) Error!void {',
+      '    var fba: FixedBufferAllocator = .init(self.record_buffer);',
+      '    var chain = self.chain; // CRC of the last record',
+      '    for (self.pending.entries.items) |e| {',
+      '        checksum.seal(e.image, e.id);',
+      '        const rec = try fba.allocator().alloc(u8, 24 + page_size);',
+      '        @memcpy(rec[24..], e.image);',
+      '        chain = encodeRecord(rec, lsn, kind_page, e.id, chain);',
+      '        lsn += 1;',
+      '    }',
+      '    const c = try fba.allocator().alloc(u8, 24);',
+      '    chain = encodeRecord(c, lsn, kind_commit, count, chain);',
+      '    try self.appendToLog(self.record_buffer[0..fba.end_index]);',
+      '    try self.log.sync(); // the commit point',
+      '    // pending images move to the index; the main',
+      '    // file has not been touched.',
+      '}'
+    ].join('\n'),
+    rust: [
+      '// wal.rs: the pager\'s sync() lands here.',
+      'pub fn commit(&mut self) -> Result<(), WalError> {',
+      '    self.record_buffer.clear();',
+      '    let mut chain = self.chain; // CRC of the last record',
+      '    for (&id, image) in &mut self.pending {',
+      '        checksum::seal(image, u64::from(id));',
+      '        chain = append_record(&mut self.record_buffer, limit,',
+      '            lsn, KIND_PAGE, id, &image[..], chain)?;',
+      '        lsn += 1;',
+      '    }',
+      '    chain = append_record(&mut self.record_buffer, limit,',
+      '        lsn, KIND_COMMIT, pages, &[], chain)?;',
+      '    self.append_to_log()?;',
+      '    self.log.sync()?; // the commit point',
+      '    // pending images move to the index; the main',
+      '    // file has not been touched.',
+      '    self.index.append(&mut self.pending);',
+      '    Ok(())',
+      '}'
+    ].join('\n')
+  },
+  recover: {
+    zig: [
+      '// wal.zig: runs on every open.',
+      'pub fn recover(self: *Wal) Error!Recovery {',
+      '    var arena_state: ArenaAllocator = .init(self.gpa);',
+      '    defer arena_state.deinit(); // frees every image at once',
+      '    var scanner: LogScanner = try .init(self.log); // header',
+      '    while (true) {',
+      '        const image = spare orelse try arena.create(Page);',
+      '        // null as soon as the checksum chain breaks:',
+      '        const rec = try scanner.next(image) orelse break;',
+      '        if (rec.kind == kind_page) {',
+      '            try open_op.append(arena, .{ .id = rec.arg, .image = image });',
+      '            continue;',
+      '        }',
+      '        // a commit record: its pages are promoted',
+      '        for (open_op.items) |e| putNewest(&committed, e);',
+      '        open_op.clearRetainingCapacity();',
+      '    }',
+      '    // open_op without a commit record is dropped here',
+      '    try self.writeToMain(&committed); // redo + sync',
+      '    try self.resetLog(); // new generation, sync',
+      '}'
+    ].join('\n'),
+    rust: [
+      '// wal.rs: runs on every open.',
+      'pub fn recover(&mut self) -> Result<Recovery, WalError> {',
+      '    let mut committed = PageTable::new();',
+      '    let mut open_op = Vec::new();',
+      '    let mut scanner = LogScanner::new(self.log.as_mut())?; // header',
+      '    let mut image = Box::new([0; PAGE_SIZE]);',
+      '    // None as soon as the checksum chain breaks:',
+      '    while let Some(rec) = scanner.next(&mut image)? {',
+      '        if rec.kind == KIND_PAGE {',
+      '            open_op.push((rec.arg, mem::replace(&mut image, fresh())));',
+      '            continue;',
+      '        }',
+      '        // a commit record: its pages are promoted',
+      '        committed.extend(open_op.drain(..));',
+      '    }',
+      '    // open_op without a commit record is dropped here',
+      '    self.write_to_main(&committed)?; // redo + sync',
+      '    self.reset_log()?; // new generation, sync',
+      '    Ok(report)',
+      '}'
+    ].join('\n')
+  }
+};

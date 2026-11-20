@@ -43,22 +43,42 @@ costs in pages and in churn. Back to <a href="index.html">the step-by-step figur
   });
   var fig = BTViz.figure('#fig', { title: 'Pages and churn per policy', legend: [{ token: 'node-active', label: 'leaf fill (one column per page)' }, { token: 'free', label: 'free space' }] });
 
+  /* The closing captions are built from the rows just computed, so they are right for
+   * every workload and every number of keys the page offers. */
+  function fmt(v) { return v.toLocaleString('en-US'); }
+  function pct(r) { return (r.fill / 10).toFixed(1) + '%'; }
   var WORK = {
     ascending: { label: 'Insert: ascending keys', word: 'inserts', short: ['split', 'split+quick', 'bal 2', 'bal 3', 'bal 3+quick'],
       intro: 'Ascending keys only ever overflow the right-most leaf.',
-      end: 'A plain split leaves a half-full page behind every time. The append fast path leaves full pages and moves no cell. Balancing gets close to it, but rewrites pages again and again to get there.' },
+      end: function (r) {
+        return 'A plain split cuts the right-most page in two and nothing ever refills the left part: ' + pct(r[0]) + ' full on average. The append fast path leaves the old page as it is: ' +
+          pct(r[1]) + ' full, ' + fmt(r[1].moved) + ' cells moved. Balancing three siblings ends at ' + pct(r[3]) + ' after rewriting ' + fmt(r[3].writes) + ' pages (fast path: ' + fmt(r[1].writes) + ').';
+      } },
     random: { label: 'Insert: random order', word: 'inserts', short: ['split', 'split+quick', 'bal 2', 'bal 3', 'bal 3+quick'],
       intro: 'Random keys overflow pages all over the tree; the fast path almost never applies.',
-      end: 'Balancing with siblings packs the same cells into fewer pages. The price is in the other metrics: more balance runs, more pages rewritten, and many cells moved onto existing pages.' },
+      end: function (r) {
+        return 'The same cells end up on ' + fmt(r[0].pages) + ' pages with a plain split and on ' + fmt(r[3].pages) + ' when three siblings are balanced (' + pct(r[0]) + ' and ' + pct(r[3]) +
+          ' full). The other metrics show what that costs: ' + fmt(r[0].balances) + ' and ' + fmt(r[3].balances) + ' balance runs, ' + fmt(r[0].writes) + ' and ' + fmt(r[3].writes) +
+          ' pages rewritten, ' + fmt(r[0].movedToOld) + ' and ' + fmt(r[3].movedToOld) + ' cells moved onto existing pages.';
+      } },
     'delete-random': { label: 'Delete: 90% of the keys, random order', word: 'deletes', short: ['never', 'at empty', 'below 1/3', 'below 1/2'],
       intro: 'The tree was built by random inserts (balance 3). Now 90% of the keys are deleted in random order.',
-      end: 'Random deletes thin every page out but rarely empty one, so “at empty” frees almost nothing. Rebalancing shrinks the tree, and moves thousands of cells to do it.' },
+      end: function (r, first) {
+        return 'Random deletes thin every page out, and “at empty” can only free a page once they happen to take its last cell: ' + fmt(r[1].freed) + ' of ' + fmt(first[1].pages) +
+          ' pages freed. Rebalancing ends with ' + fmt(r[2].pages) + ' pages (below 1/3) and ' + fmt(r[3].pages) + ' pages (below 1/2), after moving ' + fmt(r[2].moved) + ' and ' + fmt(r[3].moved) + ' cells.';
+      } },
     'delete-queue': { label: 'Delete: the 90% smallest keys (a queue)', word: 'deletes', short: ['never', 'at empty', 'below 1/3', 'below 1/2'],
       intro: 'The tree was built by random inserts (balance 3). Now the smallest keys are deleted, like a queue being drained.',
-      end: 'Pages empty out completely, one after the other. “At empty” frees them without moving a single cell. The balancing policies reach the same page count but keep pulling cells towards the page that is running low, only to delete them next.' },
+      end: function (r) {
+        return 'Pages empty out completely, one after the other. “At empty” freed ' + fmt(r[1].freed) + ' pages and moved ' + fmt(r[1].moved) + ' cells; ' + fmt(r[1].pages) + ' pages are left. Below 1/3 ends with ' +
+          fmt(r[2].pages) + ' pages and below 1/2 with ' + fmt(r[3].pages) + ', after moving ' + fmt(r[2].moved) + ' and ' + fmt(r[3].moved) + ' cells: balancing keeps refilling the page the queue is about to drain.';
+      } },
     churn: { label: 'Churn: toggle random keys', word: 'toggles', short: ['never', 'at empty', 'below 1/3', 'below 1/2'],
       intro: 'The tree was built by random inserts (balance 3). Now a random key is deleted if present and inserted if absent, over and over.',
-      end: 'The population settles at about half the keys. Without merging the tree keeps all its pages, half empty. A tighter minimum keeps pages fuller and pays with more balance runs.' }
+      end: function (r, first) {
+        return 'By the end about half the keys are present. “Never” still has ' + fmt(r[0].pages) + ' of its ' + fmt(first[0].pages) + ' pages, ' + pct(r[0]) + ' full on average. Below 1/3 ends with ' +
+          fmt(r[2].pages) + ' pages at ' + pct(r[2]) + ' after ' + fmt(r[2].balances) + ' balance runs, below 1/2 with ' + fmt(r[3].pages) + ' pages at ' + pct(r[3]) + ' after ' + fmt(r[3].balances) + '.';
+      } }
   };
   var METRICS = [
     { id: 'pages', label: 'leaf pages', get: function (r) { return r.pages; } },
@@ -119,11 +139,11 @@ costs in pages and in churn. Back to <a href="index.html">the step-by-step figur
     fig.caption.innerHTML = 'Running ' + w.label.toLowerCase() + ' for every policy…';
     setTimeout(function () {
       var byPolicy = Ch15.runWorkload(id, n, 10), len = byPolicy[0].length, steps = [];
-      var total = byPolicy[0][len - 1].ops;
+      var total = byPolicy[0][len - 1].ops, first = byPolicy.map(function (p) { return p[0]; });
       for (var c = 0; c < len; c++) {
         var rows = byPolicy.map(function (p) { return p[c]; }), ops = rows[0].ops || 0;
         steps.push({
-          caption: (c === len - 1 ? '<b>Done: ' + total.toLocaleString('en-US') + ' ' + w.word + '.</b> ' + w.end
+          caption: (c === len - 1 ? '<b>Done: ' + total.toLocaleString('en-US') + ' ' + w.word + '.</b> ' + w.end(rows, first)
             : (ops ? 'After ' + ops.toLocaleString('en-US') + ' of ' + total.toLocaleString('en-US') + ' ' + w.word + '. ' : 'Before the first of ' + total.toLocaleString('en-US') + ' ' + w.word + '. ') + w.intro),
           state: { rows: rows }
         });

@@ -166,7 +166,7 @@ and the loss of a level.
 ## Code walk-through
 
 Both languages have the same files, names and output, and the same tests
-except for the three named in the Rust section.
+except for the few named in the Rust section.
 
 Files, in both `zig/src` and `rust/src`: `arena` (handles, slots, free list),
 `node` (layout, in-node inserts and removes), `tree` (fields and the list of
@@ -241,11 +241,13 @@ The structure is the same. The differences come from ownership:
   allocation failure is modelled with a node budget:
   `BPlusTree::with_node_budget(order, n)` makes `put` return
   `Err(OutOfNodes)` instead of exceeding `n` nodes.
-- **Three tests have no twin.** Zig's `checkAllAllocationFailures` test fails
+- **A few tests have no twin.** Zig's `checkAllAllocationFailures` test fails
   each allocation of a build in turn; Rust has no failing allocator to do
-  that with, so only the budget test covers failure there. Rust adds
-  `pair_mut_gives_two_nodes_at_once` and `double_free_panics` for the arena;
-  Zig has no `pair_mut`, and its double free is an `assert`.
+  that with, so only the budget test covers failure there (for the same
+  reason the copied `ops.zig` has one allocation-failure test more than
+  `ops.rs`). Rust adds `pair_mut_gives_two_nodes_at_once` and
+  `double_free_panics` for the arena; Zig has no `pair_mut`, and its double
+  free is an `assert`.
 - **The walker borrows the tree**, so using it across a `put` is a compile
   error. In Zig the same rule is a comment.
 - `kind` is an `enum Kind { Leaf(Leaf), Internal(Internal) }`; the accessors

@@ -17,6 +17,7 @@ const DiskBTree = btree.DiskBTree;
 const PageId = btree.PageId;
 const BufferPool = @import("base_buffer_pool.zig").BufferPool;
 const Pager = @import("base_pager.zig").Pager;
+const MemStorage = @import("base_storage.zig").MemStorage;
 const SplitMix64 = @import("prng.zig").SplitMix64;
 const workload = @import("workload.zig");
 const resumable = @import("resumable.zig");
@@ -455,6 +456,195 @@ test "out of memory or a failed page allocation in the middle of a cascading spl
         }
         try testing.expect(before_change > 0 and after_change > 0);
     }
+}
+
+/// One put that splits, described by the split counters after it and by what
+/// the code says it asks its scratch allocator for.
+const OomCase = struct {
+    leaf_splits: u64,
+    interior_splits: u64,
+    root_splits: u64,
+    /// Scratch requests of that put, in order, [blocking put, resumable insert].
+    requests: [2]usize,
+    /// The first request that comes after a page change. A failure from
+    /// there on leaves a half-split tree; an earlier one leaves it intact.
+    first_poisoned: [2]usize,
+};
+
+const OomDriver = enum { blocking, resumable };
+
+fn expectValue(tree: *DiskBTree, key: []const u8, expected: ?[]const u8) !void {
+    const got = try tree.get(testing.allocator, key);
+    defer if (got) |v| testing.allocator.free(v);
+    if (expected) |e| {
+        try testing.expect(got != null);
+        try testing.expectEqualSlices(u8, e, got.?);
+    } else try testing.expectEqual(null, got);
+}
+
+test "allocation failure at every scratch request of a put that splits a leaf, an interior page and the root, blocking and resumable" {
+    // (The blocking half is chapter 12's test.) An arena hides most requests
+    // from the allocator behind it: it asks for memory only when its buffer
+    // is too small, so a failing allocator behind a warm arena is never
+    // asked. Here every request is made visible:
+    //
+    //   - each run starts with a new arena (a new tree handle for the
+    //     blocking put, a new operation for the resumable insert);
+    //   - the test fills the arena's buffer to the last byte, so the next
+    //     request cannot be served from it;
+    //   - the buffer comes from a FixedBufferAllocator, which can grow its
+    //     last allocation in place. The arena then grows its buffer by
+    //     exactly the bytes of each request: one `resize` call per request.
+    //
+    // `resize_fail_index` refuses one chosen request, and `fail_index`
+    // refuses the new buffer the arena asks for after that.
+    const cases = [_]OomCase{
+        // The first split: the root leaf moves down, then splits. Requests:
+        // the path entry for the root, the page copy, cells, costs. The
+        // blocking put appends the path entry after the root has changed;
+        // the resumable insert reserves it before (`push_root_leaf`), so only
+        // its later requests come after a page change.
+        .{ .leaf_splits = 1, .interior_splits = 0, .root_splits = 1, .requests = .{ 4, 4 }, .first_poisoned = .{ 0, 1 } },
+        // A leaf that is not the rightmost child splits and its parent has
+        // room. Requests: the path, the page copy, cells, costs, and the copy
+        // of the parent's key whose pointer changes (`insertSeparator`).
+        .{ .leaf_splits = 2, .interior_splits = 0, .root_splits = 1, .requests = .{ 5, 5 }, .first_poisoned = .{ 4, 4 } },
+        // The root is a full interior page: the leaf splits, the root's
+        // content moves down, that page splits. Requests: the path; page
+        // copy, cells, costs (`splitLeaf`); page copy, entries, costs
+        // (`splitInterior`).
+        .{ .leaf_splits = 16, .interior_splits = 1, .root_splits = 2, .requests = .{ 7, 7 }, .first_poisoned = .{ 4, 4 } },
+    };
+    const value: [btree.max_value_len]u8 = @splat('v');
+    var reached: usize = 0;
+
+    for (cases) |case| {
+        // Build the tree up to the put in question. Keys descend, so every
+        // put goes to the leftmost leaf; the largest cells allowed make the
+        // root fill up after 16 leaf splits. `image` is the flushed file as
+        // it was just before the last put.
+        var image: std.ArrayList(u8) = .empty;
+        defer image.deinit(testing.allocator);
+        var key: [btree.max_key_len]u8 = @splat('k');
+        var before: DiskBTree.Stats = undefined;
+        {
+            var rig: Rig = undefined;
+            try rig.create(testing.allocator, 4);
+            defer rig.deinit();
+            var i: usize = 0;
+            while (rig.tree.stats.leaf_splits != case.leaf_splits) : (i += 1) {
+                try rig.tree.flush();
+                image.clearRetainingCapacity();
+                try image.appendSlice(testing.allocator, rig.mem.bytes.items);
+                before = rig.tree.stats;
+                _ = try std.fmt.bufPrint(key[0..4], "{d:0>4}", .{9999 - i});
+                try rig.tree.put(&key, &value);
+            }
+            try testing.expectEqual(case.interior_splits, rig.tree.stats.interior_splits);
+            try testing.expectEqual(case.root_splits, rig.tree.stats.root_splits);
+            try testing.expectEqual(case.leaf_splits - 1, before.leaf_splits);
+        }
+
+        // Run that put again and again on a copy of the image, refusing
+        // request 0, 1, 2, ... The last run refuses nothing and counts.
+        for ([_]OomDriver{ .blocking, .resumable }) |driver| {
+            const requests = case.requests[@intFromEnum(driver)];
+            const first_poisoned = case.first_poisoned[@intFromEnum(driver)];
+            for (0..requests + 1) |fail_at| {
+                var mem: MemStorage = .init(testing.allocator);
+                defer mem.deinit();
+                try mem.bytes.appendSlice(testing.allocator, image.items);
+                var pager: Pager = try .init(mem.storage());
+                var pool: BufferPool = try .init(testing.allocator, &pager, 4);
+                defer pool.deinit(); // asserts that no pin is left
+
+                var scratch_bytes: [64 * 1024]u8 align(16) = undefined;
+                var fixed: std.heap.FixedBufferAllocator = .init(&scratch_bytes);
+                var failing: testing.FailingAllocator = .init(fixed.allocator(), .{});
+
+                // The blocking put takes its scratch memory from the tree's
+                // arena, the resumable insert from the operation's.
+                var tree: DiskBTree = try .open(if (driver == .blocking) failing.allocator() else testing.allocator, &pool);
+                defer tree.deinit();
+                var op: InsertOp = undefined;
+                if (driver == .resumable) op = try .init(failing.allocator(), &tree, &key, &value, .{});
+                defer if (driver == .resumable) op.deinit();
+                const arena = if (driver == .blocking) &tree.arena else &op.arena;
+
+                // Fill the arena's one buffer: single bytes, until the arena
+                // has to grow the buffer for one of them. The operation's
+                // arena already holds the copies of the key and the value.
+                const filled_at = failing.resize_index;
+                while (failing.resize_index == filled_at) _ = try arena.allocator().alloc(u8, 1);
+                try testing.expectEqual(1, failing.alloc_index); // one buffer, now full
+                const base = failing.resize_index;
+                failing.fail_index = failing.alloc_index;
+                failing.resize_fail_index = base + fail_at;
+
+                const outcome: DiskBTree.Error!void = switch (driver) {
+                    .blocking => tree.put(&key, &value),
+                    .resumable => while (true) {
+                        const s = op.step() catch |err| break err;
+                        switch (s) {
+                            .done => break {},
+                            .io => |id| {
+                                _ = try pool.fetchPage(id);
+                                pool.unpin(id, false);
+                            },
+                        }
+                    },
+                };
+
+                if (fail_at == requests) {
+                    // Nothing refused: the put makes exactly the requests
+                    // listed above, so the runs before this one reached all
+                    // of them.
+                    try outcome;
+                    try testing.expectEqual(requests, failing.resize_index - base);
+                    try testing.expectEqual(1, failing.alloc_index);
+                    try testing.expect(!failing.has_induced_failure);
+                    try testing.expectEqual(case.leaf_splits - before.leaf_splits, tree.stats.leaf_splits);
+                    try testing.expectEqual(case.interior_splits - before.interior_splits, tree.stats.interior_splits);
+                    try testing.expectEqual(case.root_splits - before.root_splits, tree.stats.root_splits);
+                    try tree.validate();
+                    try expectValue(&tree, &key, &value);
+                    continue;
+                }
+
+                try testing.expectError(error.OutOfMemory, outcome);
+                try testing.expect(failing.has_induced_failure);
+                try testing.expectEqual(fail_at, failing.resize_index - base); // the requests before it were served
+                try testing.expectEqual(0, pool.pinnedFrames());
+                try pool.validate();
+                if (driver == .resumable) {
+                    try testing.expectEqual(.failed, op.state);
+                    try testing.expectEqual(0, op.arena.queryCapacity());
+                }
+                reached += 1;
+                failing.fail_index = std.math.maxInt(usize); // memory is back
+                failing.resize_fail_index = std.math.maxInt(usize);
+
+                try testing.expectEqual(fail_at >= first_poisoned, tree.poisoned);
+                if (tree.poisoned) {
+                    try testing.expectError(error.TreePoisoned, tree.put(&key, &value));
+                    try testing.expectError(error.TreePoisoned, tree.get(testing.allocator, &key));
+                    try testing.expectError(error.TreePoisoned, tree.range("", null));
+                    try testing.expectError(error.TreePoisoned, tree.flush());
+                    try testing.expectError(error.TreePoisoned, InsertOp.init(testing.allocator, &tree, &key, &value, .{}));
+                    try testing.expectError(error.TreePoisoned, GetOp.init(testing.allocator, &tree, &key));
+                } else {
+                    // The put did not happen at all, and it works when repeated.
+                    try tree.validate();
+                    try expectValue(&tree, &key, null);
+                    try tree.put(&key, &value);
+                    try tree.validate();
+                    try expectValue(&tree, &key, &value);
+                }
+                try testing.expectEqual(0, pool.pinnedFrames());
+            }
+        }
+    }
+    try testing.expectEqual(2 * (4 + 5 + 7), reached);
 }
 
 test "cancelling a waiting insert: nothing pinned, nothing changed, memory returned" {

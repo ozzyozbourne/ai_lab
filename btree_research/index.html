@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Understanding B-trees, from simple to complex</title>
+<link rel="stylesheet" href="assets/viz.css">
+<style>
+/* Landing page only. Colours come from the toolkit's tokens (assets/viz.css). */
+.ix-hero { max-width: 74ch; }
+.ix-hero p { margin: .5em 0; }
+.ix-jump { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 0; padding: 0; list-style: none; }
+.ix-jump a, .ix-read, .ix-viz {
+  display: inline-flex; align-items: center; gap: .4em; min-height: 32px; padding: 2px .7em;
+  font-size: .86rem; line-height: 1.25; text-decoration: none; border-radius: 6px;
+  border: 1px solid var(--bt-border); background: var(--bt-surface); color: var(--bt-text);
+}
+.ix-jump a:hover, .ix-viz:hover { border-color: var(--bt-accent); color: var(--bt-accent); }
+.ix-read { background: var(--bt-accent); border-color: var(--bt-accent); color: var(--bt-on-accent); font-weight: 600; }
+.ix-read:hover { filter: brightness(1.08); }
+.ix-play {
+  flex: none; width: 0; height: 0; border-style: solid; border-width: 5px 0 5px 8px;
+  border-color: transparent transparent transparent var(--bt-accent);
+}
+
+.ix-panel {
+  margin: 22px 0 0; padding: 14px 16px; background: var(--bt-surface);
+  border: 1px solid var(--bt-border); border-radius: var(--bt-radius); box-shadow: var(--bt-shadow);
+}
+.ix-panel h2 { margin: 0 0 .5em; font-size: 1.02rem; }
+.ix-panel > p { margin: 0 0 .7em; color: var(--bt-muted); font-size: .92rem; max-width: 80ch; }
+.ix-paths { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; font-size: .92rem; }
+.ix-paths b { display: inline-block; min-width: 15em; font-weight: 600; }
+.ix-path { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 3px 4px; color: var(--bt-muted); }
+.ix-path a {
+  font: 600 .8rem/1.7 var(--bt-mono); padding: 0 .45em; border-radius: 5px; text-decoration: none;
+  background: var(--bt-accent-bg); color: var(--bt-text);
+}
+.ix-path a:hover { box-shadow: inset 0 0 0 1px var(--bt-accent); }
+
+.ix-sources { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px 18px;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); font-size: .88rem; }
+.ix-sources li { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; align-items: baseline; }
+.ix-sources b { font-weight: 600; }
+.ix-sources span.ix-what { grid-column: 1 / -1; color: var(--bt-muted); line-height: 1.4; }
+.ix-yes { --s: var(--bt-key-found); --s-bg: var(--bt-key-found-bg); }
+.ix-part2 { --s: var(--bt-key-compare); --s-bg: var(--bt-key-compare-bg); }
+.ix-no { --s: var(--bt-free); }
+.ix-sources .bt-chip { justify-self: start; }
+
+.ix-part { margin-top: 34px; }
+.ix-part-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.ix-part-head h2 { margin: 0; font-size: 1.25rem; line-height: 1.3; }
+.ix-part-blurb { margin: .3em 0 .9em; color: var(--bt-muted); max-width: 74ch; }
+.ix-grid { margin: 0; padding: 0; list-style: none; display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
+.ix-card {
+  display: flex; flex-direction: column; min-width: 0; padding: 14px 14px 12px;
+  background: var(--bt-surface); border: 1px solid var(--bt-border);
+  border-radius: var(--bt-radius); box-shadow: var(--bt-shadow); scroll-margin-top: 12px;
+}
+.ix-card:target { border-color: var(--bt-accent); box-shadow: 0 0 0 2px var(--bt-accent-bg); }
+.ix-card-head { display: flex; align-items: flex-start; gap: 10px; }
+.ix-num {
+  flex: none; min-width: 2.3em; text-align: center; padding: .15em .3em; border-radius: 6px;
+  font: 700 .86rem/1.5 var(--bt-mono); color: var(--bt-accent); background: var(--bt-accent-bg);
+}
+.ix-card h3 { margin: 0; font-size: 1.02rem; line-height: 1.35; min-width: 0; overflow-wrap: anywhere; }
+.ix-card h3 a { color: var(--bt-text); text-decoration: none; }
+.ix-card h3 a:hover { color: var(--bt-accent); text-decoration: underline; }
+.ix-card p { margin: .6em 0 .9em; font-size: .9rem; line-height: 1.5; color: var(--bt-muted); flex: 1 1 auto; }
+.ix-links { display: flex; flex-wrap: wrap; gap: 6px; }
+.ix-viz { white-space: normal; text-align: left; }
+.ix-note { margin-top: 30px; font-size: .88rem; color: var(--bt-muted); max-width: 80ch; }
+@media (max-width: 520px) {
+  .ix-paths b { display: block; min-width: 0; margin-bottom: 2px; }
+  .ix-part-head h2 { font-size: 1.12rem; }
+}
+@media (pointer: coarse) { .ix-jump a, .ix-read, .ix-viz { min-height: 40px; } .ix-path a { line-height: 2.2; padding: 0 .6em; } }
+</style>
+</head>
+<body class="bt-page">
+
+<header class="bt-header">
+  <div class="bt-header-in">
+    <div class="bt-header-titles">
+      <span class="bt-guide">A guide in 30 chapters · Zig and Rust</span>
+      <h1>Understanding B-trees, from simple to complex</h1>
+    </div>
+    <nav class="bt-nav" id="ix-nav" aria-label="Guide documents">
+      <a href="README.md">README</a>
+      <a href="GLOSSARY.md">Glossary</a>
+      <a href="SOURCE_READING_MAP.md">Source map</a>
+    </nav>
+  </div>
+</header>
+
+<main class="bt-main">
+
+<div class="ix-hero">
+  <p class="bt-lead">From "what is a sorted array" to "how Postgres splits a page while others are reading it".
+  Each chapter explains one idea, implements it in Zig and in Rust, and shows it in an interactive
+  visualization.</p>
+  <p><b>Read</b> opens the chapter text (a Markdown file). The other buttons on a card open that chapter's
+  visualization pages; they run from the file system, with no server and no network.</p>
+  <ul class="ix-jump" aria-label="Jump to a part">
+    <li><a href="#part-I">I. In memory</a></li>
+    <li><a href="#part-II">II. On disk</a></li>
+    <li><a href="#part-III">III. Concurrency and durability</a></li>
+    <li><a href="#part-IV">IV. Beyond the textbook</a></li>
+  </ul>
+</div>
+
+<section class="ix-panel" aria-labelledby="paths-h">
+  <h2 id="paths-h">Three reading paths</h2>
+  <ul class="ix-paths">
+    <li><b>The core in a weekend</b> <span class="ix-path"><a href="#ch-01">01</a><span aria-hidden="true">→</span><a href="#ch-02">02</a><span aria-hidden="true">→</span><a href="#ch-03">03</a><span aria-hidden="true">→</span><a href="#ch-04">04</a><span aria-hidden="true">→</span><a href="#ch-05">05</a><span aria-hidden="true">→</span><a href="#ch-07">07</a><span aria-hidden="true">→</span><a href="#ch-10">10</a><span aria-hidden="true">→</span><a href="#ch-12">12</a></span></li>
+    <li><b>Storage engine (after the core)</b> <span class="ix-path"><a href="#ch-08">08</a><span aria-hidden="true">→</span><a href="#ch-09">09</a><span aria-hidden="true">→</span><a href="#ch-11">11</a><span aria-hidden="true">→</span><a href="#ch-13">13</a><span aria-hidden="true">→</span><a href="#ch-14">14</a><span aria-hidden="true">→</span><a href="#ch-15">15</a><span aria-hidden="true">→</span><a href="#ch-16">16</a><span aria-hidden="true">→</span><a href="#ch-17">17</a><span aria-hidden="true">→</span><a href="#ch-18">18</a><span aria-hidden="true">→</span><a href="#ch-26">26</a><span aria-hidden="true">→</span><a href="#ch-27">27</a><span aria-hidden="true">→</span><a href="#ch-30">30</a></span></li>
+    <li><b>Concurrency and durability</b> <span class="ix-path"><a href="#ch-06">06</a><span aria-hidden="true">→</span><a href="#ch-19">19</a><span aria-hidden="true">→</span><a href="#ch-20">20</a><span aria-hidden="true">→</span><a href="#ch-21">21</a><span aria-hidden="true">→</span><a href="#ch-22">22</a><span aria-hidden="true">→</span><a href="#ch-23">23</a><span aria-hidden="true">→</span><a href="#ch-24">24</a><span aria-hidden="true">→</span><a href="#ch-30">30</a></span></li>
+  </ul>
+</section>
+
+<section class="ix-panel" aria-labelledby="src-h">
+  <h2 id="src-h">The six studied codebases</h2>
+  <p>The guide cites six real systems. Only two of them store their data in a B-tree; the other four
+  are there for contrast and for techniques. The <a href="SOURCE_READING_MAP.md">source reading map</a>
+  says which files to read.</p>
+  <ul class="ix-sources">
+    <li><b>Postgres</b><span class="bt-chip ix-yes">B-tree: yes</span>
+      <span class="ix-what">The main reference: an on-disk, concurrent B-link tree. Splits, split points, truncation, deduplication, vacuum, WAL.</span></li>
+    <li><b>Turso</b><span class="bt-chip ix-yes">B-tree: yes</span>
+      <span class="ix-what">The SQLite-format B-tree: slotted pages, balancing over siblings, page-stack cursors, pager, WAL frames.</span></li>
+    <li><b>Milvus</b><span class="bt-chip ix-part2">in memory only</span>
+      <span class="ix-what">Two small in-memory B-trees, a sorted-array index, LSM-like segments.</span></li>
+    <li><b>DuckDB</b><span class="bt-chip ix-no">B-tree: no</span>
+      <span class="ix-what">Contrast: adaptive radix tree, zone maps, slab allocator with handles.</span></li>
+    <li><b>TigerBeetle</b><span class="bt-chip ix-no">B-tree: no</span>
+      <span class="ix-what">Contrast: an LSM forest. Fuzzing style, static allocation, in-node search.</span></li>
+    <li><b>FAISS</b><span class="bt-chip ix-no">B-tree: no</span>
+      <span class="ix-what">Contrast: IVF and HNSW show why ordered trees fail for vector similarity.</span></li>
+  </ul>
+</section>
+
+<section class="ix-part" id="part-I" aria-labelledby="part-I-h">
+  <div class="ix-part-head">
+    <h2 id="part-I-h">Part I. In memory</h2>
+    <span class="bt-chip">chapters 01 to 08</span>
+  </div>
+  <p class="ix-part-blurb">Keys and values are u64. From the cost model to a complete, tested B-tree and B+tree.</p>
+  <ol class="ix-grid">
+    <li class="ix-card" id="ch-01">
+      <div class="ix-card-head"><span class="ix-num">01</span><h3><a href="chapters/01-why-btrees/README.md">Why B-trees</a></h3></div>
+      <p>The cost model indexes are designed for (count page reads, not comparisons), why the sorted array and the binary search tree each fail at half of the job, and how fan-out and height fix it. Builds no B-tree yet.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/01-why-btrees/README.md">Read</a>
+        <a class="ix-viz" href="chapters/01-why-btrees/viz/index.html" title="Visualization: Page-read race and fan-out"><span class="ix-play" aria-hidden="true"></span>Page-read race and fan-out</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-02">
+      <div class="ix-card-head"><span class="ix-num">02</span><h3><a href="chapters/02-searching-a-sorted-node/README.md">Searching a sorted node</a></h3></div>
+      <p>Lower bound and upper bound derived from a loop invariant, the insertion-index result, ranges as two bound calls, the classic off-by-one traps, and galloping search.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/02-searching-a-sorted-node/README.md">Read</a>
+        <a class="ix-viz" href="chapters/02-searching-a-sorted-node/viz/index.html" title="Visualization: Lower and upper bound, step by step"><span class="ix-play" aria-hidden="true"></span>Lower and upper bound, step by step</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-03">
+      <div class="ix-card-head"><span class="ix-num">03</span><h3><a href="chapters/03-btree-structure-and-search/README.md">B-tree structure and search</a></h3></div>
+      <p>The definition as six invariants, the three meanings of &quot;order&quot;, 2-3-4 trees and red-black trees, the height bound with its proof, get, in-order traversal and a first validate. Trees are built by hand.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/03-btree-structure-and-search/README.md">Read</a>
+        <a class="ix-viz" href="chapters/03-btree-structure-and-search/viz/index.html" title="Visualization: Search descent and invariants"><span class="ix-play" aria-hidden="true"></span>Search descent and invariants</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-04">
+      <div class="ix-card-head"><span class="ix-num">04</span><h3><a href="chapters/04-insertion-and-splitting/README.md">Insertion and splitting</a></h3></div>
+      <p>put into a leaf, the split and its promoted key, growth only at the root, what an insert costs, measured node fill, textbook top-down splitting, and reserve-then-change so that running out of memory cannot corrupt the tree.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/04-insertion-and-splitting/README.md">Read</a>
+        <a class="ix-viz" href="chapters/04-insertion-and-splitting/viz/index.html" title="Visualization: Interactive insert"><span class="ix-play" aria-hidden="true"></span>Interactive insert</a>
+        <a class="ix-viz" href="chapters/04-insertion-and-splitting/viz/fill.html" title="Visualization: How full do the nodes get?"><span class="ix-play" aria-hidden="true"></span>How full do the nodes get?</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-05">
+      <div class="ix-card-head"><span class="ix-num">05</span><h3><a href="chapters/05-deletion-and-rebalancing/README.md">Deletion and rebalancing</a></h3></div>
+      <p>The four repairs (predecessor, borrow, merge, root shrink), why an underflow travels up, and what real engines do instead. Its code is the complete in-memory B-tree of Part I.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/05-deletion-and-rebalancing/README.md">Read</a>
+        <a class="ix-viz" href="chapters/05-deletion-and-rebalancing/viz/index.html" title="Visualization: Borrow, merge, shrink"><span class="ix-play" aria-hidden="true"></span>Borrow, merge, shrink</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-06">
+      <div class="ix-card-head"><span class="ix-num">06</span><h3><a href="chapters/06-testing-a-btree/README.md">Testing a B-tree</a></h3></div>
+      <p>Invariants as code, a model-based fuzzer against an oracle, tiny nodes and swarm testing, asserted coverage counters, three deliberately broken trees, minimising a failing run, and fault injection.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/06-testing-a-btree/README.md">Read</a>
+        <a class="ix-viz" href="chapters/06-testing-a-btree/viz/index.html" title="Visualization: Fuzzer replay"><span class="ix-play" aria-hidden="true"></span>Fuzzer replay</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-07">
+      <div class="ix-card-head"><span class="ix-num">07</span><h3><a href="chapters/07-bplus-trees/README.md">B+trees</a></h3></div>
+      <p>Values only in the leaves, copy-up versus push-up, the doubly linked leaf chain, duplicates through a tie-breaker, and nodes addressed by 32-bit handles into one array. Seven later chapters copy this code.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/07-bplus-trees/README.md">Read</a>
+        <a class="ix-viz" href="chapters/07-bplus-trees/viz/index.html" title="Visualization: B-tree and B+tree side by side"><span class="ix-play" aria-hidden="true"></span>B-tree and B+tree side by side</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-08">
+      <div class="ix-card-head"><span class="ix-num">08</span><h3><a href="chapters/08-range-scans-and-cursors/README.md">Range scans and cursors</a></h3></div>
+      <p>Seek, step, stop; the bounds matrix; a prefix scan as a range; two cursor designs (leaf links, root-to-leaf stack); and re-seeking by saved key when the tree changes under a cursor.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/08-range-scans-and-cursors/README.md">Read</a>
+        <a class="ix-viz" href="chapters/08-range-scans-and-cursors/viz/index.html" title="Visualization: Two cursors, one scan"><span class="ix-play" aria-hidden="true"></span>Two cursors, one scan</a>
+      </div>
+    </li>
+  </ol>
+</section>
+
+<section class="ix-part" id="part-II" aria-labelledby="part-II-h">
+  <div class="ix-part-head">
+    <h2 id="part-II-h">Part II. On disk</h2>
+    <span class="bt-chip">chapters 09 to 18</span>
+  </div>
+  <p class="ix-part-blurb">Byte-string keys, 4096-byte pages, a file. The tree becomes a storage engine.</p>
+  <ol class="ix-grid">
+    <li class="ix-card" id="ch-09">
+      <div class="ix-card-head"><span class="ix-num">09</span><h3><a href="chapters/09-pages-and-the-buffer-pool/README.md">Pages and the buffer pool</a></h3></div>
+      <p>A file as an array of fixed pages, a page id as a pointer that survives a restart, frames, the page table, pin counts, dirty flags and CLOCK eviction. No B-tree code.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/09-pages-and-the-buffer-pool/README.md">Read</a>
+        <a class="ix-viz" href="chapters/09-pages-and-the-buffer-pool/viz/index.html" title="Visualization: Frames, pins and the clock hand"><span class="ix-play" aria-hidden="true"></span>Frames, pins and the clock hand</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-10">
+      <div class="ix-card-head"><span class="ix-num">10</span><h3><a href="chapters/10-slotted-pages/README.md">Slotted pages</a></h3></div>
+      <p>Variable-size records kept sorted inside one fixed page: slot array, cell area, the three places free space hides, hole reuse and compaction, with the Turso and Postgres layouts side by side.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/10-slotted-pages/README.md">Read</a>
+        <a class="ix-viz" href="chapters/10-slotted-pages/viz/index.html" title="Visualization: Insert, delete, compact"><span class="ix-play" aria-hidden="true"></span>Insert, delete, compact</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-11">
+      <div class="ix-card-head"><span class="ix-num">11</span><h3><a href="chapters/11-key-and-record-encoding/README.md">Key and record encoding</a></h3></div>
+      <p>Varints and records, comparator keys versus byte-comparable keys, and order-preserving encodings for integers, floats, strings, composite keys, NULLs and descending columns.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/11-key-and-record-encoding/README.md">Read</a>
+        <a class="ix-viz" href="chapters/11-key-and-record-encoding/viz/index.html" title="Visualization: Bytes that sort like values"><span class="ix-play" aria-hidden="true"></span>Bytes that sort like values</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-12">
+      <div class="ix-card-head"><span class="ix-num">12</span><h3><a href="chapters/12-disk-backed-bplus-tree/README.md">A disk-backed B+tree</a></h3></div>
+      <p>The chapter 07 tree with slotted pages as nodes and page ids as pointers: fullness in bytes, a stable root page, a metapage, and a demonstration that it is not crash-safe yet.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/12-disk-backed-bplus-tree/README.md">Read</a>
+        <a class="ix-viz" href="chapters/12-disk-backed-bplus-tree/viz/index.html" title="Visualization: Tree of pages"><span class="ix-play" aria-hidden="true"></span>Tree of pages</a>
+        <a class="ix-viz" href="chapters/12-disk-backed-bplus-tree/viz/pool.html" title="Visualization: The buffer pool during a split"><span class="ix-play" aria-hidden="true"></span>The buffer pool during a split</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-13">
+      <div class="ix-card-head"><span class="ix-num">13</span><h3><a href="chapters/13-overflow-and-free-space/README.md">Overflow and free space</a></h3></div>
+      <p>Values larger than a page in overflow chains, delete that frees a leaf when it is empty, an on-disk free list of trunk pages, and when a freed page may be reused in four systems.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/13-overflow-and-free-space/README.md">Read</a>
+        <a class="ix-viz" href="chapters/13-overflow-and-free-space/viz/index.html" title="Visualization: Overflow chain and free list"><span class="ix-play" aria-hidden="true"></span>Overflow chain and free list</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-14">
+      <div class="ix-card-head"><span class="ix-num">14</span><h3><a href="chapters/14-split-policies-and-fill-factor/README.md">Split policies and fill factor</a></h3></div>
+      <p>Where to cut a full page: the middle, the rightmost-page rule, fill factor, runs of equal keys, and the decision procedure of Postgres nbtsplitloc.c on a small in-memory page model.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/14-split-policies-and-fill-factor/README.md">Read</a>
+        <a class="ix-viz" href="chapters/14-split-policies-and-fill-factor/viz/index.html" title="Visualization: Policies and fill histogram"><span class="ix-play" aria-hidden="true"></span>Policies and fill histogram</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-15">
+      <div class="ix-card-head"><span class="ix-num">15</span><h3><a href="chapters/15-redistribution-and-merge-policies/README.md">Redistribution and merge policies</a></h3></div>
+      <p>Repairing a page by flattening up to three siblings and cutting again (split, borrow and merge as one routine), the append fast path, and four merge policies compared by pages and churn.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/15-redistribution-and-merge-policies/README.md">Read</a>
+        <a class="ix-viz" href="chapters/15-redistribution-and-merge-policies/viz/index.html" title="Visualization: Balancing three siblings"><span class="ix-play" aria-hidden="true"></span>Balancing three siblings</a>
+        <a class="ix-viz" href="chapters/15-redistribution-and-merge-policies/viz/policies.html" title="Visualization: Policies compared"><span class="ix-play" aria-hidden="true"></span>Policies compared</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-16">
+      <div class="ix-card-head"><span class="ix-num">16</span><h3><a href="chapters/16-bulk-loading/README.md">Bulk loading</a></h3></div>
+      <p>Building a B+tree bottom-up from sorted input with one open page per level, no split and no search; what a fill factor buys; the cost against one-by-one inserts in counted pages.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/16-bulk-loading/README.md">Read</a>
+        <a class="ix-viz" href="chapters/16-bulk-loading/viz/index.html" title="Visualization: Leaves fill, parents grow"><span class="ix-play" aria-hidden="true"></span>Leaves fill, parents grow</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-17">
+      <div class="ix-card-head"><span class="ix-num">17</span><h3><a href="chapters/17-key-compression-and-deduplication/README.md">Key compression and deduplication</a></h3></div>
+      <p>Suffix truncation of separators, searching with shortened separators, fence keys, the row address as tie-breaker, posting lists, and the measured effect on fan-out and height.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/17-key-compression-and-deduplication/README.md">Read</a>
+        <a class="ix-viz" href="chapters/17-key-compression-and-deduplication/viz/index.html" title="Visualization: Truncation and posting lists"><span class="ix-play" aria-hidden="true"></span>Truncation and posting lists</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-18">
+      <div class="ix-card-head"><span class="ix-num">18</span><h3><a href="chapters/18-indexes-in-a-database/README.md">Indexes in a database</a></h3></div>
+      <p>What goes into key and value to make a table and an index: clustered versus heap plus index, the cost of going back to the row, unique checks, covering scans and composite-key prefix scans.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/18-indexes-in-a-database/README.md">Read</a>
+        <a class="ix-viz" href="chapters/18-indexes-in-a-database/viz/index.html" title="Visualization: Secondary index lookup, two layouts"><span class="ix-play" aria-hidden="true"></span>Secondary index lookup, two layouts</a>
+      </div>
+    </li>
+  </ol>
+</section>
+
+<section class="ix-part" id="part-III" aria-labelledby="part-III-h">
+  <div class="ix-part-head">
+    <h2 id="part-III-h">Part III. Concurrency and durability</h2>
+    <span class="bt-chip">chapters 19 to 24</span>
+  </div>
+  <p class="ix-part-blurb">Several threads in one tree, and a tree that survives a power cut.</p>
+  <ol class="ix-grid">
+    <li class="ix-card" id="ch-19">
+      <div class="ix-card-head"><span class="ix-num">19</span><h3><a href="chapters/19-latching-and-lock-coupling/README.md">Latching and lock coupling</a></h3></div>
+      <p>Latch versus lock; one mutex, one reader-writer lock, then a latch per node with latch coupling; the safe-node rule, latch order, convoys and deterministic concurrency tests. Optimistic descent is prose and visualization only.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/19-latching-and-lock-coupling/README.md">Read</a>
+        <a class="ix-viz" href="chapters/19-latching-and-lock-coupling/viz/index.html" title="Visualization: Two threads, shared and exclusive latches"><span class="ix-play" aria-hidden="true"></span>Two threads, shared and exclusive latches</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-20">
+      <div class="ix-card-head"><span class="ix-num">20</span><h3><a href="chapters/20-blink-trees/README.md">B-link trees</a></h3></div>
+      <p>Lehman and Yao: the high key and the right link, &quot;move right&quot;, one latch at a time, a split as two atomic steps, and the incomplete-split flag that the next writer finishes.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/20-blink-trees/README.md">Read</a>
+        <a class="ix-viz" href="chapters/20-blink-trees/viz/index.html" title="Visualization: A search meets a half-finished split"><span class="ix-play" aria-hidden="true"></span>A search meets a half-finished split</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-21">
+      <div class="ix-card-head"><span class="ix-num">21</span><h3><a href="chapters/21-durability-primitives/README.md">Durability primitives</a></h3></div>
+      <p>What write and fsync promise, torn writes, page checksums (detection, not repair), the double write, and a simulated disk with seeded crashes.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/21-durability-primitives/README.md">Read</a>
+        <a class="ix-viz" href="chapters/21-durability-primitives/viz/index.html" title="Visualization: Pending and durable writes, with a crash button"><span class="ix-play" aria-hidden="true"></span>Pending and durable writes, with a crash button</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-22">
+      <div class="ix-card-head"><span class="ix-num">22</span><h3><a href="chapters/22-wal-and-crash-recovery/README.md">WAL and crash recovery</a></h3></div>
+      <p>The write-ahead rule, LSN, commit, checkpoint and redo; a full-page-image log that makes a multi-page split atomic; a checksum chain that finds the end of the log; a crash after every single write.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/22-wal-and-crash-recovery/README.md">Read</a>
+        <a class="ix-viz" href="chapters/22-wal-and-crash-recovery/viz/index.html" title="Visualization: A split torn without a log"><span class="ix-play" aria-hidden="true"></span>A split torn without a log</a>
+        <a class="ix-viz" href="chapters/22-wal-and-crash-recovery/viz/log.html" title="Visualization: The log timeline and recovery"><span class="ix-play" aria-hidden="true"></span>The log timeline and recovery</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-23">
+      <div class="ix-card-head"><span class="ix-num">23</span><h3><a href="chapters/23-copy-on-write-btrees/README.md">Copy-on-write B-trees</a></h3></div>
+      <p>Path copying, the root flip through a two-slot checksummed metapage, snapshots, the pending-free list, and why a copy-on-write tree cannot have leaf sibling links.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/23-copy-on-write-btrees/README.md">Read</a>
+        <a class="ix-viz" href="chapters/23-copy-on-write-btrees/viz/index.html" title="Visualization: Path copying and shared subtrees"><span class="ix-play" aria-hidden="true"></span>Path copying and shared subtrees</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-24">
+      <div class="ix-card-head"><span class="ix-num">24</span><h3><a href="chapters/24-mvcc-vacuum-and-page-deletion/README.md">MVCC, vacuum and page deletion</a></h3></div>
+      <p>Transaction ids, row versions and snapshots; dead index entries cleaned in layers; two-phase deletion of an empty page and the rule for recycling it; and the design that keeps versions outside the tree.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/24-mvcc-vacuum-and-page-deletion/README.md">Read</a>
+        <a class="ix-viz" href="chapters/24-mvcc-vacuum-and-page-deletion/viz/index.html" title="Visualization: Dead entries, vacuum, recycle"><span class="ix-play" aria-hidden="true"></span>Dead entries, vacuum, recycle</a>
+      </div>
+    </li>
+  </ol>
+</section>
+
+<section class="ix-part" id="part-IV" aria-labelledby="part-IV-h">
+  <div class="ix-part-head">
+    <h2 id="part-IV-h">Part IV. Beyond the textbook</h2>
+    <span class="bt-chip">chapters 25 to 30</span>
+  </div>
+  <p class="ix-part-blurb">Hardware, memory, and the structures that are not B-trees.</p>
+  <ol class="ix-grid">
+    <li class="ix-card" id="ch-25">
+      <div class="ix-card-head"><span class="ix-num">25</span><h3><a href="chapters/25-cache-conscious-search-and-layout/README.md">Cache-conscious search and layout</a></h3></div>
+      <p>Why binary search is slow on modern CPUs, the branchless halving search, prefetch, a SIMD scan of a small node, the Eytzinger layout and block tree, and struct-of-arrays nodes, all measured in counts.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/25-cache-conscious-search-and-layout/README.md">Read</a>
+        <a class="ix-viz" href="chapters/25-cache-conscious-search-and-layout/viz/index.html" title="Visualization: Cache lines touched per algorithm"><span class="ix-play" aria-hidden="true"></span>Cache lines touched per algorithm</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-26">
+      <div class="ix-card-head"><span class="ix-num">26</span><h3><a href="chapters/26-allocators-handles-and-static-memory/README.md">Allocators, handles and static memory</a></h3></div>
+      <p>A bitmap slab with 32-bit handles, size classes, vacuum, memory frozen after start-up, a buddy allocator, and a tested tour of every allocator in the Zig 0.17.1 standard library.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/26-allocators-handles-and-static-memory/README.md">Read</a>
+        <a class="ix-viz" href="chapters/26-allocators-handles-and-static-memory/viz/index.html" title="Visualization: Slabs and handles"><span class="ix-play" aria-hidden="true"></span>Slabs and handles</a>
+        <a class="ix-viz" href="chapters/26-allocators-handles-and-static-memory/viz/buddy.html" title="Visualization: The buddy allocator"><span class="ix-play" aria-hidden="true"></span>The buddy allocator</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-27">
+      <div class="ix-card-head"><span class="ix-num">27</span><h3><a href="chapters/27-btree-vs-lsm/README.md">B-tree vs LSM-tree</a></h3></div>
+      <p>Memtable, sorted runs, levels, compaction and tombstones; write, read and space amplification measured by counting blocks; growth factor and Bloom filters; B-epsilon trees as the midpoint.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/27-btree-vs-lsm/README.md">Read</a>
+        <a class="ix-viz" href="chapters/27-btree-vs-lsm/viz/index.html" title="Visualization: Same workload, two structures"><span class="ix-play" aria-hidden="true"></span>Same workload, two structures</a>
+        <a class="ix-viz" href="chapters/27-btree-vs-lsm/viz/bepsilon.html" title="Visualization: A buffered (B-epsilon) node"><span class="ix-play" aria-hidden="true"></span>A buffered (B-epsilon) node</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-28">
+      <div class="ix-card-head"><span class="ix-num">28</span><h3><a href="chapters/28-radix-trees-and-hash-indexes/README.md">Radix trees and hash indexes</a></h3></div>
+      <p>The adaptive radix tree (four node layouts, path compression, ordered iteration), a hash index with linear probing, and which questions each structure can answer.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/28-radix-trees-and-hash-indexes/README.md">Read</a>
+        <a class="ix-viz" href="chapters/28-radix-trees-and-hash-indexes/viz/index.html" title="Visualization: An ART node grows"><span class="ix-play" aria-hidden="true"></span>An ART node grows</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-29">
+      <div class="ix-card-head"><span class="ix-num">29</span><h3><a href="chapters/29-zone-maps-and-vector-indexes/README.md">Zone maps and vector indexes</a></h3></div>
+      <p>Min/max summaries that prune without order, why no sort order keeps near vectors near, IVF with nprobe and recall, and HNSW in outline (prose and visualization only).</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/29-zone-maps-and-vector-indexes/README.md">Read</a>
+        <a class="ix-viz" href="chapters/29-zone-maps-and-vector-indexes/viz/index.html" title="Visualization: Zone-map pruning"><span class="ix-play" aria-hidden="true"></span>Zone-map pruning</a>
+        <a class="ix-viz" href="chapters/29-zone-maps-and-vector-indexes/viz/ivf.html" title="Visualization: IVF probing"><span class="ix-play" aria-hidden="true"></span>IVF probing</a>
+        <a class="ix-viz" href="chapters/29-zone-maps-and-vector-indexes/viz/hnsw.html" title="Visualization: Greedy graph descent"><span class="ix-play" aria-hidden="true"></span>Greedy graph descent</a>
+      </div>
+    </li>
+    <li class="ix-card" id="ch-30">
+      <div class="ix-card-head"><span class="ix-num">30</span><h3><a href="chapters/30-tracing-a-real-insert/README.md">Tracing a real insert</a></h3></div>
+      <p>The capstone: one INSERT followed through Postgres nbtree and through Turso with a file and line for every step, and the blocking put of chapter 12 rewritten as a resumable state machine.</p>
+      <div class="ix-links">
+        <a class="ix-read" href="chapters/30-tracing-a-real-insert/README.md">Read</a>
+        <a class="ix-viz" href="chapters/30-tracing-a-real-insert/viz/index.html" title="Visualization: Two swim lanes, one insert"><span class="ix-play" aria-hidden="true"></span>Two swim lanes, one insert</a>
+      </div>
+    </li>
+  </ol>
+</section>
+
+<p class="ix-note">To run the code and the tests (Zig 0.17.1, Rust 1.97), and for the chapter dependency
+diagram, the allocator index and the known limitations, see <a href="README.md">README.md</a>. Terms are
+defined in <a href="GLOSSARY.md">GLOSSARY.md</a>. The toolkit behind the visualizations is shown on
+<a href="assets/demo.html">assets/demo.html</a>.</p>
+
+</main>
+
+<footer class="bt-footer">
+  <div class="bt-footer-in">
+    <span>30 chapters · 38 visualization pages · teaching code, not production code</span>
+    <nav class="bt-nav" aria-label="Guide documents (bottom)">
+      <a href="README.md">README</a>
+      <a href="GLOSSARY.md">Glossary</a>
+      <a href="SOURCE_READING_MAP.md">Source map</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="assets/viz.js"></script>
+<script>
+(function () {
+  'use strict';
+  // The page is static HTML; the toolkit only supplies the theme toggle
+  // (the choice is shared with every chapter page).
+  if (window.BTViz && BTViz.theme) document.getElementById('ix-nav').appendChild(BTViz.theme.button());
+})();
+</script>
+</body>
+</html>

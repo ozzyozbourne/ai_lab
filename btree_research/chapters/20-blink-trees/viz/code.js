@@ -166,7 +166,7 @@ window.CHAPTER_CODE = {
       '',
       '// STEP 2: `left` is the exclusive latch on the flagged node.',
       'fn insert_parent(tree: &BLinkTree, left_id: NodeId,',
-      '                 mut left: RwLockWriteGuard<\'_, Page>, stack: &Stack) -> Finish {',
+      '                 mut left: RwLockWriteGuard<\'_, Page>, stack: &mut Stack<\'_>) -> Finish {',
       '    let separator = left.high_key.expect("a split node has a high key");',
       '    let right_id = left.right;',
       '    let mut parent_id = stack.at[left.level as usize + 1];',

@@ -218,7 +218,7 @@ threads. The second hook makes a writer's knowledge stale:
 `start` (a former root) and calls `pause.at_leaf` once it has latched its
 leaf. The callback runs other puts, as other threads would in that gap, so
 the parents the paused writer remembers can split, be left half split or get
-a new root above them before it climbs back up. A second callback,
+a new root above them before it climbs back up. The hook's other callback,
 `pause.root_built`, runs when a root split has filled its new root and has not
 yet stored the root pointer.
 
@@ -379,7 +379,7 @@ tree. Everything below was read in the Postgres source
   when moving right or up, but not when moving left or down"
   (`nbtree/README:106-110`). Unlike here, Postgres also keeps the new right
   page locked until it has locked the parent (`:2225-2238`). This chapter
-  latches only the left node: it holds the only pointer to the new one.
+  keeps only the left node latched: it holds the only pointer to the new one.
 - **Incomplete splits.** A crash or an error between the two actions leaves a
   page without a downlink; searches still work (`nbtree/README:642-650`).
   Missing downlinks are created by later insertions, not by searches, to keep

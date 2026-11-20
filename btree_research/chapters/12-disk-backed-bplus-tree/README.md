@@ -27,7 +27,7 @@ Take the B+tree of chapter 07 and replace three things.
 Two more decisions follow from "the tree lives in a file".
 
 **The file needs a fixed starting point.** Page 0 is the *metapage*: a magic number, a format
-version, the root's page id and two counters. Whoever opens the file reads page 0 first.
+version, the root's page id and two counters.
 
 **The root stays where it is.** When the root is full, this tree does not create a new root
 above it. It copies the root's content into a new page, and rewrites the root page in place as
@@ -35,9 +35,9 @@ an interior page with that new page as its only child. Then the new page splits 
 page. The height grows by one and the root is still page 1. Everything that knows where the
 root is (the metapage, and in a real database the catalog and every open cursor) stays correct.
 
-So the root id in page 0 never changes here. The metapage earns its page in other ways: `open`
-checks its magic number, version and page size before it trusts any other page, and it carries
-the two counters. The root id is stored so that a later format can let the root move.
+So the root id in page 0 never changes here. The metapage earns its page otherwise: `open`
+checks its magic, version and page size before it trusts any other page, and it carries the
+counters. The root id is stored so that a later format can move the root.
 
 ### Why a split is "50/50 by bytes"
 
@@ -59,12 +59,11 @@ give or take one cell. It may hold two cells or two hundred.
 
 ### Why chapter 04's top-down splitting does not carry over
 
-Chapter 04 showed an insert that splits every full node on the way *down*, so that a parent
-always has room for one more key when a child splits. That relies on two facts: "full" can be
-seen without knowing the key to insert, and a node that is not full can take any one key.
-Neither is true here. Whether an interior page can take a separator depends on that separator's
-length, and the separator is only known after the leaf below has chosen its split point. A page
-with 300 free bytes is full for a 256-byte key and far from full for a 3-byte one.
+Chapter 04 split every full node on the way *down*, so that a parent always had room when a
+child split. That needs "full" to be visible without knowing the key. Here, whether an
+interior page can take a separator depends on the separator's length, and that is known only
+after the leaf below has chosen its split point: a page with 300 free bytes is full for a
+256-byte key and far from full for a 3-byte one.
 
 So splits run bottom-up, along a path of page ids remembered on the way down.
 
@@ -154,14 +153,13 @@ step either happens or does not. The steps together are not atomic; see "Not cra
 
 **Pins.** No function returns with a pin it took, and at most two pages are pinned at once.
 `BufferPool.deinit` asserts that no pin is left, so every error path has an `errdefer` unpin.
-The tests check that: they make each of 150 successive reads and writes of a running workload
-fail, and (Zig only) each of the 16 scratch allocations of three puts that between them split
-a leaf, an interior page and the root.
+The tests check that by failing reads and writes at 150 successive positions of a workload
+and, in Zig, every scratch allocation of puts that split a leaf, an interior page and the root.
 
 **`get`, `range`.** `get` copies the value with an allocator the caller passes, because the
 page may be evicted the moment it is unpinned. `range(lo, hi)` returns an iterator that
 remembers `(leaf page id, slot)` and holds no pin between calls: each `next` pins the leaf,
-copies one entry into the iterator's own buffer and unpins. Nothing has to be released.
+copies one entry into the iterator's own buffer and unpins.
 
 **`validate`** walks the whole file and checks invariants T1 to T8 listed at the top of the
 file.
@@ -177,7 +175,6 @@ Same structure, names, tests and output. The differences that matter:
   `page_pair_mut`.
 - **No `errdefer`.** Every early return unpins by hand. The "poison if a later step fails"
   logic is one `errdefer` in Zig and an inner function plus a check of its result in Rust.
-- **Scratch memory.** See the allocator notes.
 - **The range iterator borrows the tree mutably**, so "do not modify the tree during a scan"
   is enforced by the compiler; in Zig it is a comment. Its `next` returns slices into the
   iterator, so it cannot implement `std::iter::Iterator`.
@@ -221,7 +218,7 @@ written: **two keys that had been flushed long ago no longer exist anywhere.** A
 an insert of one key destroyed two others.
 
 And this is the mildest crash: every write that returned is whole and on disk. A real one can
-also lose writes that were not yet synced, and tear a single page in half (chapter 21).
+also lose writes that were not yet synced and tear a page in half (chapter 21).
 
 The same holds in memory. If `put` fails with an I/O or allocation error after its first step
 has changed a page, the tree in the buffer pool is half-split. The handle then sets `poisoned`.
@@ -239,8 +236,6 @@ chapter 22 puts a write-ahead log in front of this tree so that a split is all o
   root's cells and header into it, changes the root's page type from leaf to interior, sets its
   cell count to 0 and its rightmost pointer to the child, and continues balancing the child
   (`turso/core/storage/btree.rs:5406-5489`). This chapter's `pushRootDown` is that function.
-  The research notes list it among the engine's main ideas: "the root page number never
-  changes" (`research/turso.md`, section on balancing).
 - **Postgres: the root moves and the metapage follows it.** Block 0 of every nbtree index is a
   metapage holding `btm_root`, `btm_level`, `btm_fastroot` and `btm_fastlevel`
   (`postgres/src/include/access/nbtree.h:104-111`). A root split builds a *new* root page above
@@ -268,7 +263,7 @@ latches (chapter 19), no log (chapter 22).
 
 ## Allocator notes
 
-The tree uses two kinds of memory with two very different lifetimes.
+Two kinds of memory, two lifetimes.
 
 - **Nodes live in the buffer pool's frame slab**, one aligned allocation made when the pool is
   created. The tree never allocates or frees a node. A node's memory is "freed" by eviction
@@ -281,10 +276,9 @@ The tree uses two kinds of memory with two very different lifetimes.
   leak it. The price: the arena keeps its high-water mark until `deinit` (one `validate`
   leaves 4096 bytes per interior page); `reset(.{ .retain_with_limit = n })` would cap that.
 
-What would go wrong with something else: a general-purpose allocator would need a matching
-`free` on every error path of the split code, next to the `unpin`s. A `FixedBufferAllocator`
-would have to be sized for the deepest tree and the largest `validate`. An arena that is never
-reset would grow with every put.
+The alternatives: a general-purpose allocator needs a matching `free` on every error path,
+next to the `unpin`s; a `FixedBufferAllocator` must be sized for the largest `validate`; an
+arena that is never reset grows with every put.
 
 `get` is the one place that uses a caller-supplied allocator: the returned value must outlive
 the operation, so it cannot come from the arena.

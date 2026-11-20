@@ -286,8 +286,9 @@ Reading it:
   LSM-tree 1115, because this model merges a whole level in one operation.
 - **Reads.** The LSM-tree reads about two and a half times as many blocks per
   lookup (9.42 against 3.81). Each run it probes is a tree of its own; the
-  level-3 run costs 4 blocks per probe, as much as the whole B+tree. With every index block
-  cached the B+tree would read 1.00 block per get and the LSM-tree 3.51.
+  level-3 run costs 4 blocks per probe, as much as the whole B+tree. With
+  every index block cached the B+tree would read 1.00 block per get and the
+  LSM-tree 3.51.
 - **Wasted probes.** The program also prints `3322 runs probed, 3316 of those
   without finding the key`: a min/max check cannot tell that a key inside the
   range is missing. A **bloom filter** per run answers "certainly not here"

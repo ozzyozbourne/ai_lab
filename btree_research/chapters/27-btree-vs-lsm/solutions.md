@@ -2,6 +2,11 @@
 
 Every number below was produced by the chapter's code. Where a number comes
 from a scratch run that is not part of `expected_output.txt`, that is said.
+All of them are block counts under the chapter's counting model, with its
+limits: nothing is cached, every index block is charged, there is no
+write-ahead log, and an LSM write is not on the device until the next flush
+while a B+tree write is (README, "The counting model, and what it leaves
+out"). Ratios are rounded to two decimals.
 
 ## 1. Four lookups after the trace
 
@@ -11,41 +16,47 @@ LSM-tree has `14` in the memtable, nothing in level 0, and one level-1 run
 
 | | B+tree | LSM-tree | why (LSM) |
 |---|---|---|---|
-| `get 3` | 3 | 2 | not in the memtable; level 1 covers 3: index block + data block, found |
+| `get 3` | 3 | 3 | not in the memtable; level 1 covers 3: root index block, index block, data block, found |
 | `get 14` | 3 | 0 | found in the memtable |
-| `get 30` | 3 | 2 | level 1 covers 30: index block + last data block, found |
+| `get 30` | 3 | 3 | level 1 covers 30: two index blocks and the last data block, found |
 | `get 31` | 3 | 0 | not in the memtable; 31 is above the run's largest key, so the run is skipped |
 
-The B+tree always reads one block per level, hit or miss. These four results
-were checked by running the visualization's model (`viz/local.js`), which the
-page's self-tests tie to the programs' output, after the trace.
+The B+tree always reads one block per level, hit or miss. The level-1 run has
+5 data blocks, so its index has two levels (2 blocks, then a root): a probe
+costs as much as the B+tree's whole path. These four results were checked by
+running the visualization's model (`viz/local.js`), which the page's
+self-tests tie to the programs' output, after the trace.
 
 ## 2. Index blocks cached
 
-Subtract the "of which index blocks" row from the row above it.
+The "data blocks per get" row is what remains; divide the LSM column by the
+B+tree column.
 
-| Workload | B+tree | LSM-tree |
-|---|---|---|
-| insert-heavy | 3.80 - 2.80 = 1.00 | 7.01 - 3.50 = 3.51 |
-| read-heavy | 4.00 - 3.00 = 1.00 | 7.78 - 3.89 = 3.89 |
-| update-heavy | 4.00 - 3.00 = 1.00 | 6.08 - 3.04 = 3.04 |
+| Workload | B+tree | LSM-tree | LSM / B+tree, index cached | LSM / B+tree, nothing cached |
+|---|---|---|---|---|
+| insert-heavy | 1.00 | 3.51 | 3.5 | 9.42 / 3.81 = 2.5 |
+| read-heavy | 1.00 | 3.89 | 3.9 | 10.96 / 4.00 = 2.7 |
+| update-heavy | 1.00 | 3.04 | 3.0 | 7.52 / 4.00 = 1.9 |
 
 The B+tree always ends at exactly one data block: its leaf. The LSM-tree reads
-one data block per run it probes, so caching the index halves its cost and no
-more. (The printed ratios are truncated to two decimals, so the last digit of
-a difference can be off by one.)
+one data block per run it probes. So a cache of all index blocks helps both,
+and it helps the B+tree more: the ratio between the two grows. How much RAM
+such a cache needs was not measured.
 
 ## 3. A perfect filter
 
 Read-heavy workload: 9588 gets, 37328 runs probed, 32452 of them without
-finding the key. A probe costs 2 blocks.
+finding the key. A probe costs the run's index height plus one data block, so
+the saving cannot be read off the probe counts alone.
 
-- Now: 37328 * 2 / 9588 = 7.78 blocks per get (the printed value).
-- With a perfect filter only the 37328 - 32452 = 4876 useful probes remain:
-  4876 * 2 / 9588 = 1.01 blocks per get, truncated.
+- Now: 10.96 blocks per get (the printed value; 105045 blocks).
+- Scratch run (not in `expected_output.txt`): the same workload with `probe`
+  changed to charge nothing when the key is not in the run. 16974 blocks
+  remain, 12098 index and 4876 data: 1.77 blocks per get.
 
-That is about half a probe per get, because roughly half of the lookups in
-this workload ask for keys that do not exist and would then cost nothing.
+That is 4876 useful probes for 9588 gets, about half a probe per get, because
+roughly half of the lookups in this workload ask for keys that do not exist
+and would then cost nothing.
 
 A real bloom filter is not perfect. It never says "absent" for a key that is
 present, but it sometimes says "maybe" for an absent key, so some wasted
@@ -60,18 +71,18 @@ into a B+tree of order 16 and into the benchmark LSM configuration.
 
 | | B+tree | LSM-tree |
 |---|---|---|
-| blocks written | 13826 | 5825 |
-| blocks in use at the end | 1517 | 763 |
-| blocks if packed (10800 / 15) | 720 | 720 |
-| space amplification at the end | 2.10 | 1.05 |
+| blocks written | 13826 | 5879 |
+| blocks in use at the end | 1517 | 768 |
+| data blocks if packed (10800 / 15) | 720 | 720 |
+| space amplification at the end | 2.11 | 1.07 |
 
 **B+tree.** Every insert goes into the rightmost leaf. When it overflows, the
 split leaves the lower half behind and nothing is ever added to it again, so
 every leaf except the last stays half full: about twice the packed size.
 Chapter 14 shows the fix (split at the right edge, or bulk loading).
 
-**LSM-tree.** Its write amplification does not improve: 5825 * 15 / 10800 =
-8.09 slots per entry, against 8.31 for random keys. This LSM-tree merges whole
+**LSM-tree.** Its write amplification hardly improves: 5879 * 15 / 10800 =
+8.17 slots per entry, against 8.39 for random keys. This LSM-tree merges whole
 levels, so it rewrites level n + 1 even when the incoming keys are all larger
 than everything in it. An engine that compacts table by table can notice that
 nothing overlaps and move the table by changing metadata only; that is
@@ -86,10 +97,10 @@ only `l0_runs` changed. All four runs agreed with the oracle.
 
 | `l0_runs` | levels | write amplification | blocks per get | blocks per scan |
 |---|---|---|---|---|
-| 1 | 4 | 11.09 | 5.51 | 6.27 |
-| 2 | 4 | 10.29 | 5.58 | 6.35 |
-| 4 | 3 | 8.31 | 7.01 | 7.59 |
-| 8 | 3 | 7.50 | 9.78 | 10.86 |
+| 1 | 4 | 11.22 | 8.05 | 8.78 |
+| 2 | 4 | 10.41 | 8.06 | 8.84 |
+| 4 | 3 | 8.39 | 9.42 | 9.97 |
+| 8 | 3 | 7.56 | 11.92 | 12.98 |
 
 More runs in level 0 means level 1 is rewritten less often: with `l0_runs = 1`
 every flush is merged into level 1 at once, with 8 only every eighth flush. So

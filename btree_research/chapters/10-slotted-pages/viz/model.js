@@ -49,6 +49,21 @@
   }
   var P = Page.prototype;
 
+  /**
+   * The counterpart of `open`: a page over a copy of bytes that are already formatted (the
+   * visualization continues from the bytes of the step on screen). The page size is the
+   * length of `bytes`; the reserved tail is read from the header.
+   */
+  Page.fromBytes = function (bytes) {
+    var p = Object.create(P);
+    p.size = bytes.length;
+    p.buf = Uint8Array.from(bytes);
+    p.usable = p.size - p.buf[OFF_RESERVED];
+    p.maxCellSize = p.usable - HEADER_SIZE - SLOT_SIZE;
+    p.on = null;
+    return p;
+  };
+
   P.rd16 = function (off) { return this.buf[off] | (this.buf[off + 1] << 8); };
   P.wr16 = function (off, v) { this.buf[off] = v & 255; this.buf[off + 1] = (v >> 8) & 255; };
   P.emit = function (e) { if (this.on) this.on(e); };

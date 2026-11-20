@@ -11,9 +11,15 @@
  *               its page number; whole pages go to the WAL at commit.
  *
  * Both are SCHEMATIC: a page holds at most 4 entries (real pages are filled
- * by bytes, chapters 10 and 12), there is one inserter, and keys are small
- * integers. What is modelled faithfully is the ORDER of the steps and which
- * pages each step touches; the source lines are given with every step.
+ * by bytes, chapters 10 and 12), there is one inserter, keys are small
+ * integers, and only the index is shown (not the table the row goes into).
+ * What is modelled faithfully is the ORDER of the steps, which pages each
+ * step touches, and the names: the WAL record names are chosen by the rule
+ * of nbtinsert.c (INSERT_LEAF / INSERT_UPPER at :1343-1360, SPLIT_L when the
+ * new tuple lands on the left page and SPLIT_R otherwise at :2080), and
+ * Turso's output pages take their page numbers in ascending order
+ * (btree.rs:4489-4513). Block numbers and split points are the models'.
+ * The source lines are given with every step.
  *
  * Classic script: defines window.CH30 (and module.exports under node).
  */
@@ -147,6 +153,10 @@
   Pg.prototype.split = function (id, key, child, stack, level, off) {
     var rec = this.rec, p = this.pages[id], rightmost = p.right === null;
     var right = this.alloc(p.leaf, p.level), r = this.pages[right], sep, cut, hl;
+    // nbtinsert.c:2080: the record is SPLIT_L when the new tuple ends up on
+    // the left page and SPLIT_R when it ends up on the right page. Leaf or
+    // interior does not matter.
+    var newItemOnLeft;
     this.locks = {}; this.locks[id] = 'X'; this.locks[right] = 'X';
     if (p.leaf) {
       var items = p.keys.slice();
@@ -155,6 +165,7 @@
       // optimisation. Otherwise cut in the middle.
       cut = rightmost ? CAP : Math.ceil(items.length / 2);
       sep = items[cut];
+      newItemOnLeft = items.indexOf(key) < cut;
       hl = { nodes: {}, keys: {} };
       hl.nodes['g' + id] = 'split';
       rec.emit(4, level, 'split point: ' + cut + ' | ' + (items.length - cut), 'PostgreSQL: <code>_bt_findsplitloc</code> imagines the page with ' + k(key, 'inserted') + ' already on it and picks where to cut. ' +
@@ -170,6 +181,7 @@
       p.keys.splice(off, 0, key);
       var lc = Math.ceil(p.children.length / 2);     // downlinks that stay left
       sep = p.keys[lc - 1];
+      newItemOnLeft = off + 1 < lc;                  // the new pivot tuple carries downlink number off + 1
       r.children = p.children.slice(lc);
       r.keys = p.keys.slice(lc);
       p.children = p.children.slice(0, lc);
@@ -182,17 +194,21 @@
     p.high = sep; p.right = right; p.incomplete = true;
     this.orphans.push(right);
     this.dirty[id] = true; this.dirty[right] = true;
-    this.wal.push((p.leaf ? 'SPLIT_R' : 'SPLIT_L') + ' blk ' + id + '+' + right);
+    var record = newItemOnLeft ? 'SPLIT_L' : 'SPLIT_R';
+    this.wal.push(record + ' blk ' + id + '+' + right);
     hl = { nodes: {}, keys: {}, links: {} };
     hl.nodes['g' + id] = 'split'; hl.nodes['g' + right] = 'split';
     hl.keys['g' + id + ':high'] = 'split'; hl.links['g' + id] = 'active';
     if (p.leaf) hl.keys['*:' + key] = 'inserted';
-    rec.emit(4, level, 'SPLIT → new blk ' + right, 'PostgreSQL: <code>_bt_split</code>. Both halves are built in private memory; only then is the new block ' + right +
+    rec.emit(4, level, record + ' → new blk ' + right, 'PostgreSQL: <code>_bt_split</code>. Both halves are built in private memory; only then is the new block ' + right +
       ' allocated (the last thing that can fail). In one critical section the left half is copied over block ' + id + ' (the left page never moves), the right half goes to block ' + right +
       ', the <b>right link</b> ' + id + ' → ' + right + ' is set, block ' + id + ' gets the flag <b>INCOMPLETE_SPLIT</b>' + (p.leaf ? '' : ' (and the child below loses its flag)') +
-      ', and <b>one WAL record</b> covers all of it. The parent knows nothing yet, and that is fine: a search arriving at block ' + id + ' with a key at or above ' +
+      ', and <b>one WAL record</b> covers all of it: <code>XLOG_BTREE_' + record + '</code>, because the new ' + (p.leaf ? 'tuple ' + k(key, 'inserted') : 'pivot ' + k(key, 'split')) +
+      ' ended up on the <b>' + (newItemOnLeft ? 'left' : 'right') + '</b> page (the name says nothing about leaf or interior). ' +
+      (p.leaf ? '' : 'This model cuts an interior page in the middle; the real <code>_bt_findsplitloc</code> leaves a rightmost interior page about 70% full. ') +
+      'The parent knows nothing yet, and that is fine: a search arriving at block ' + id + ' with a key at or above ' +
       k(sep, 'split') + ' sees the high key and follows the right link.',
-      hl, [PG + 'nbtinsert.c:1580', PG + 'nbtinsert.c:1739', PG + 'nbtinsert.c:1760-1770', PG + 'nbtinsert.c:1950-1959', PG + 'nbtinsert.c:2080-2081'], 'split');
+      hl, [PG + 'nbtinsert.c:1580', PG + 'nbtinsert.c:1739', PG + 'nbtinsert.c:1760-1770', PG + 'nbtinsert.c:1950-1959', PG + 'nbtinsert.c:2080-2081'].concat(p.leaf ? [] : [PG + 'nbtsplitloc.c:281-286']), 'split');
     this.insertParent(id, right, sep, stack, level);
   };
   /* The left sibling of `right` on its level (the page whose right link is it). */
@@ -339,7 +355,7 @@
       if (p.leaf) {
         dup = p.keys.indexOf(key) >= 0;
         rec.emit(1, 0, 'leaf ' + id + ' on the stack', 'Turso: page ' + id + ' is a leaf; a binary search over its cell pointers finds the slot for ' + k(key, 'inserted') +
-          '. The cursor now holds the whole path as a <b>page stack</b>, every page on it pinned. There are no latches: one writer at a time is the rule, enforced by the WAL write lock. ' +
+          '. The cursor now holds the whole path as a <b>page stack</b>, every page on it pinned. There are no latches: in the WAL journal mode traced here one write transaction at a time is the rule, enforced by the WAL write lock. ' +
           'Each <code>read_page</code> on the way may have returned <code>IO</code> instead of a page; the seek then returns to the caller and is called again later (see figure 2).',
           hl, [TU + 'storage/btree.rs:6928', TU + 'storage/btree.rs:2364', TU + 'storage/pager.rs:3672', TU + 'storage/wal.rs:3587-3589'], 'active');
         break;
@@ -373,7 +389,7 @@
       this.pinned = {};
       return this.finish(false);
     }
-    rec.emit(2, 0, 'unique: ok', 'Turso: uniqueness is checked <em>outside</em> the tree, by the bytecode that drives it. The seek of stage 1 was that check: the cursor is not on an equal key, so <code>IdxInsert</code> moves to its <code>Insert</code> state. No page lock is needed, because no other writer exists.',
+    rec.emit(2, 0, 'unique: ok', 'Turso: uniqueness is checked <em>outside</em> the tree, by the bytecode that drives it. The seek of stage 1 was that check: the cursor is not on an equal key, so <code>IdxInsert</code> moves to its <code>Insert</code> state. No page lock is needed, because no other write transaction exists in WAL mode.',
       hl, [TU + 'vdbe/execute.rs:12963', TU + 'vdbe/execute.rs:12518-12564', TU + 'storage/btree.rs:7012'], 'found');
 
     // ---- stage 3: make room -----------------------------------------------------
@@ -386,9 +402,10 @@
     } else {
       this.overflow = { page: id, key: key };
       hl.nodes['t' + id] = 'split';
-      rec.emit(3, 0, 'overflow cell on ' + id, 'Turso: the leaf is full. <code>insert_into_cell</code> does not touch the page bytes at all: the new cell ' + k(key, 'inserted') +
-        ' is parked in <code>page.overflow_cells</code>, a list in memory next to the cached page. "This page has an overflow cell" is the definition of overfull, and it sends the cursor into <code>balance</code>.',
-        hl, [TU + 'storage/btree.rs:10347-10368', TU + 'storage/btree.rs:3301-3303'], 'split');
+      rec.emit(3, 0, 'overflow cell on ' + id, 'Turso: the leaf is full. <code>insert_into_cell</code> (through <code>_insert_into_cell</code>) does not touch the page bytes at all: the new cell ' + k(key, 'inserted') +
+        ' is parked in <code>page.overflow_cells</code>, a list in memory next to the cached page. "This page has an overflow cell" is the definition of overfull: the write state becomes <code>Balancing</code> and the cursor calls <code>balance</code>. ' +
+        '(An <em>overflow cell</em> is a whole cell waiting for a page. It is not the <em>overflow page</em> of chapter 13, which holds the tail of one large value.)',
+        hl, [TU + 'storage/btree.rs:10325', TU + 'storage/btree.rs:10347-10368', TU + 'storage/btree.rs:3301', TU + 'storage/btree.rs:3307-3308', TU + 'storage/btree.rs:3364-3365'], 'split');
       sortedInsert(p.keys, key);    // from here on the model keeps the cell in the page's list
       this.balance(id, stack);
     }
@@ -453,6 +470,11 @@
     for (j = pagesOut - 1; j >= 1; j--) while (counts[j - 1] - counts[j] >= 2) { counts[j]++; counts[j - 1]--; }   // even out, right to left
     var ids = sibs.slice(0, pagesOut), fresh = [];
     while (ids.length < pagesOut) { var nid = this.alloc(leaf); ids.push(nid); fresh.push(nid); this.dirty[nid] = true; }
+    // "Reassign page numbers in increasing order" (btree.rs:4489-4513): the
+    // output pages, left to right, get the page numbers in ascending order.
+    var treeOrder = ids.join(',');
+    ids.sort(function (x, y) { return x - y; });
+    var renumbered = ids.join(',') !== treeOrder;
     var pos = 0, dividers = [];
     ids.forEach(function (id2, jj) {
       var cells = flat.slice(pos, pos + counts[jj]);
@@ -472,8 +494,9 @@
     rec.emit(4, level, count + ' pages → ' + pagesOut + (fresh.length ? ' (new ' + fresh.join(', ') + ')' : ''), 'Turso: all ' + flat.length + ' cells (the siblings\' cells, the dividers between them and the overflow cell) are laid out in one array and dealt out again: first packed to the left, then evened out from the right. ' +
       'Result: ' + counts.join(' + ') + ' cells on ' + pagesOut + ' page' + (pagesOut === 1 ? '' : 's') + ', with ' + (dividers.length ? dividers.map(function (dk) { return k(dk, 'split'); }).join(', ') : 'nothing') + ' going up as divider' + (dividers.length === 1 ? '' : 's') + '. ' +
       (fresh.length ? '<b>One page was allocated</b> (page ' + fresh.join(', ') + '): this is what a split looks like here.' : '<b>No page was allocated</b>: the neighbours had room, so the "split" turned into a redistribution. PostgreSQL never does this.') +
+      ' The output pages, left to right, take the old and new page numbers in ascending order' + (renumbered ? ' (here that changes which number holds which cells: ' + ids.join(', ') + ')' : '') + '.' +
       ' The redistribution itself is pure computation, with no I/O and therefore no yield point. (The picture already shows the dividers in the parent; that is the next stage.)',
-      hl, [TU + 'storage/btree.rs:3872', TU + 'storage/btree.rs:3992-4107', TU + 'storage/btree.rs:4200-4284', TU + 'storage/btree.rs:4293-4420', TU + 'storage/btree.rs:4428'], fresh.length ? 'split' : 'merge');
+      hl, [TU + 'storage/btree.rs:3872', TU + 'storage/btree.rs:3992-4107', TU + 'storage/btree.rs:4200-4284', TU + 'storage/btree.rs:4293-4420', TU + 'storage/btree.rs:4428', TU + 'storage/btree.rs:4489-4513'], fresh.length ? 'split' : 'merge');
 
     hl = { nodes: {}, keys: {}, edges: {} };
     hl.nodes['t' + parentId] = par.keys.length > CAP ? 'split' : 'active';

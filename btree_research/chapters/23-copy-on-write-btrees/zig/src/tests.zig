@@ -607,7 +607,6 @@ test "restart after a crash at any write, with either slot damaged, finds a comp
             try testing.expectEqual(t, db.current.txn_id);
         }
     }
-    std.debug.print("DBG cases {d} torn {d} two {d}\n", .{ cases, torn, fell_back_two });
     try testing.expect(cases > 5_000);
     try testing.expect(torn > 4_000);
     try testing.expect(fell_back_two > 1_000); // the double fault really was exercised
@@ -741,7 +740,6 @@ fn lifeOfFaults(gpa: Allocator, order: usize, seed: u64, steps: usize, faults: S
             held = .{ .snap = try db.snapshot(gpa), .saved = saved };
         }
     }
-    std.debug.print("DBG restarts {d} fallbacks {d} read_faults {d} steps {d}\n", .{ restarts, fallbacks, read_faults, steps });
     try testing.expect(restarts > steps / 14);
     try testing.expect(fallbacks > steps / 80);
     if (faults == .intermittent) try testing.expect(read_faults > steps / 200);
@@ -868,7 +866,6 @@ test "a slot skipped by one restart cannot come back after a crashed commit reus
             }
         }
     }
-    std.debug.print("DBG crashed {d} finished {d}\n", .{ crashed_commits, finished_commits });
     try testing.expect(crashed_commits > 2_000);
     try testing.expect(finished_commits > 100);
 }

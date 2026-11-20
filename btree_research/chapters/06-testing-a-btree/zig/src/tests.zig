@@ -257,3 +257,26 @@ test "faults: delete never asks for memory" {
     try testing.expectEqual(0, fault.injected);
     fault.disarm();
 }
+
+// ---- a rejected tree can still be shown and torn down ----------------------
+
+test "a tree that validate rejects can be rendered and deinit-ed without aborting" {
+    // A private SafeAllocator, so the node leaked on purpose (merge bug)
+    // does not fail this test; its leak count is asserted instead.
+    var safe: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
+    const gpa = safe.allocator();
+    const steps = [_]u64{ 10, 9, 3, 7, 8, 1, 6, 5, 4, 2 }; // the minimised reproducer of `run`
+    inline for (.{ btree.Bug.merge_leaks_node, btree.Bug.borrow_forgets_child }) |bug| {
+        var tree: Tree(4, bug) = .empty;
+        for (steps) |key| _ = try tree.put(gpa, key, key);
+        _ = tree.delete(gpa, 9);
+        try testing.expect(std.meta.isError(tree.validate(null)));
+        var out: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer out.deinit();
+        try tree.render(&out.writer, "");
+        if (bug == .borrow_forgets_child) try testing.expect(std.mem.indexOf(u8, out.written(), "[?]") != null);
+        _ = tree.shape();
+        tree.deinit(gpa);
+    }
+    try testing.expect(safe.deinitLog(false) > 0); // the lost nodes are leaks, not a crash
+}

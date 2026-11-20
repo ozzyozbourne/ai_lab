@@ -22,7 +22,7 @@ pub fn put(tree: *Tree, gpa: Allocator, key: u64, value: u64) !?u64 {
         if (node.leaf) break;
         node = node.children[i].?;
     }
-    // 2. reserve one node per full node on the path (+1 for a new root)
+    // 2. reserve: one node per full node in the unbroken run above the leaf
     while (reserved < need) : (reserved += 1)
         spare[reserved] = try tree.pool.create(gpa); // only this can fail
     // 3. commit: nothing below can fail
@@ -53,7 +53,7 @@ pub fn put(tree: &mut BTree, key: u64, value: u64) -> Result<Option<u64>, OutOfN
         if node.leaf { break; }
         id = node.children[i];
     }
-    // 2. reserve one node per full node on the path (+1 for a new root)
+    // 2. reserve: one node per full node in the unbroken run above the leaf
     for _ in 0..need {
         spare.push(tree.pool.alloc(Node::new(true))?); // only this can fail
     }   // 3. commit: nothing below can fail

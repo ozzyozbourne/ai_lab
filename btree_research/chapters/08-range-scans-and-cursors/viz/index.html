@@ -254,7 +254,8 @@ here are checked against the output of the chapter's Zig and Rust programs (self
       var res = Ch08.scan(tree, d, lo.bound, hi.bound, dir, function (ev, cur, keys) {
         if (ev.type === 'return') pill = { leaf: cur.leaf, label: keys[keys.length - 1] };
         if (ev.type === 'stop' || ev.type === 'end') pill = ev.type === 'end' ? null : pill;
-        var extra = { found: keys, result: keys, pill: pill, positionText: positionText(tree, cur) };
+        var moving = { descend: 1, jump: 1, land: 1, link: 1, up: 1, pop: 1, down: 1, start: 1 }[ev.type];
+        var extra = { found: keys, result: keys, pill: pill, positionText: moving ? 'moving (see the caption)' : positionText(tree, cur) };
         if (ev.type === 'start') extra.log = 'scan ' + Ch08.rangeLabel(lo.bound, hi.bound) + ' ' + dir + ', ' + d;
         if (ev.type === 'return') extra.log = { html: '&nbsp;&nbsp;return ' + keys[keys.length - 1], state: 'found' };
         if (ev.type === 'link') extra.log = '&nbsp;&nbsp;follow a sibling link';
@@ -395,7 +396,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
     /* ---- cursor operations ---- */
     function cursorSteps(op, target, question) {
       var steps = [], b = tree.base, fwd = op !== 'prev';
-      var rec = function (ev) { steps.push(makeStep(tree, cur, ev, extra({ pill: null, found: [] }))); };
+      var rec = function (ev) { steps.push(makeStep(tree, cur, ev, extra({ pill: null, found: [], positionText: 'moving (see the caption)' }))); };
       var wasStale = cur.isStale(tree), old = { key: cur.key, leaf: cur.leaf, index: cur.index, state: cur.state };
       var name = op === 'seek' ? 'seek(≥ ' + target + ')' : op + '()';
       var correct = null;          // what a correct cursor returns, from the keys themselves

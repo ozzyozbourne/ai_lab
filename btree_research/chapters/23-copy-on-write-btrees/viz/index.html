@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 23 — Copy-on-write B-trees</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+  /* Chapter-local layout only; every colour comes from the toolkit's tokens. */
+  .c23-rows { display: grid; gap: 6px; font: .8rem/1.5 var(--bt-mono); }
+  .c23-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+  .c23-row .bt-chip { font-size: .78rem; }
+  .c23-row .bt-btn { padding: 2px 8px; font-size: .78rem; min-height: 0; }
+  .c23-muted { color: var(--bt-muted); font: .8rem/1.5 var(--bt-font); margin: 0; }
+  .c23-list { font: .78rem/1.6 var(--bt-mono); color: var(--bt-muted); overflow-wrap: anywhere; margin-top: 6px; }
+  .c23-list b { color: var(--bt-text); }
+  .c23-status { font-size: .85rem; color: var(--bt-muted); margin: 0 0 6px; }
+  .c23-status b { color: var(--bt-text); }
+  #code { margin-top: 14px; }
+  .c23-points li { margin: .35em 0; }
+  .bt-selftest { white-space: normal; border-radius: 10px; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">A copy-on-write B+tree never overwrites a page that a committed root can reach. A write copies the
+path from the root to the leaf, and a commit is one small write that makes the new root the current one. Old roots stay
+readable for as long as someone holds them.</p>
+
+<div id="fig"></div>
+<div id="code"></div>
+
+<h2>What to look for</h2>
+<ul class="c23-points">
+  <li><strong>Path copying.</strong> Step through a put. One page per level is copied, top down; the new root points at
+    the copies and, for everything else, at the <em>same pages</em> as the old root. Tick <em>Predict</em> to be asked
+    how many pages a put copies.</li>
+  <li><strong>Two roots, shared subtrees.</strong> Take a snapshot, then put a key. Both roots stay on screen: the
+    pages under both are drawn once, with an edge from each root.</li>
+  <li><strong>The root flip.</strong> Watch the meta page on the right during a commit. Commits alternate between the
+    two slots, so the slot of the newest commit is never the one being written. <em>Tear the last commit</em> shows why.</li>
+  <li><strong>Pending, then free.</strong> Pages replaced while a snapshot is held go to the pending list and keep
+    their place in the store. Release the snapshot and they move to the free list; the next put reuses their page ids
+    instead of growing the store.</li>
+  <li><strong>The oldest reader decides.</strong> Hold two snapshots, commit a few times, and release the newer one
+    first: nothing is freed.</li>
+  <li><strong>No leaf chain.</strong> A leaf split here creates a page that only its parent points at. The README
+    explains why sibling links cannot survive path copying.</li>
+</ul>
+<p>Text and code: <a href="../README.md">chapter 23 README</a>. The page ids, trees, free list and checksums shown here
+are checked against the output of the chapter's Zig and Rust programs (self-tests below).</p>
+
+<script src="code.js"></script>
+<script src="../../../assets/viz.js"></script>
+<script src="local.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, k = BTViz.k, Cow = Ch23.Cow;
+  BTViz.page({
+    title: 'Copy-on-write B-trees', chapter: 23,
+    prev: { href: '../../22-wal-and-crash-recovery/viz/index.html', title: 'Chapter 22: WAL and crash recovery' },
+    next: { href: '../../24-mvcc-vacuum-and-page-deletion/viz/index.html', title: 'Chapter 24: MVCC, vacuum and page deletion' }
+  });
+
+  var CANONICAL = [10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15];
+  var KEY_MIN = 0, KEY_MAX = 999, MAX_KEYS = 40, MAX_SNAPS = 3, MAX_PAGES = 72;
+
+  /* ------------------------------------------------------------- figure */
+  var fig = BTViz.figure('#fig', {
+    title: 'One page store, several roots', side: true,
+    legend: [
+      { token: 'node-active', label: 'committed page being copied' },
+      { token: 'page-dirty', label: 'private copy (not committed)' },
+      { token: 'key-inserted', label: 'written / inserted' },
+      { token: 'key-found', label: 'just committed, or pinned by a snapshot' },
+      { token: 'key-compare', label: 'pending: only an old root reaches it' },
+      { token: 'key-deleted', label: 'freed, or thrown away' },
+      'split', 'merge', 'free'
+    ]
+  });
+
+  var order = el('select.bt-select#order', { 'aria-label': 'Order M (maximum children per node)' });
+  [3, 4, 5, 6].forEach(function (m) { order.appendChild(el('option', { value: m, selected: m === 4 }, 'order ' + m)); });
+  var key = el('input.bt-input#key', { type: 'number', inputmode: 'numeric', placeholder: 'key', 'aria-label': 'Key (whole number, 0 to 999)', min: KEY_MIN, max: KEY_MAX, step: 1 });
+  var btn = function (id, text, fn, primary) {
+    return el('button.bt-btn' + (primary ? '.bt-primary' : '') + '#' + id, { type: 'button', onclick: fn }, text);
+  };
+  fig.toolbar.append(order, el('span.bt-toolbar-sep'), key,
+    btn('btn-put', 'Put', function () { write('put', false); }, true),
+    btn('btn-delete', 'Delete', function () { write('delete', false); }),
+    btn('btn-abort', 'Put, then abort', function () { write('put', true); }),
+    el('span.bt-toolbar-sep'),
+    btn('btn-snapshot', 'Take snapshot', takeSnapshot),
+    btn('btn-tear', 'Tear the last commit', tear),
+    el('span.bt-toolbar-sep'),
+    btn('btn-tour', 'Guided tour', function () { tour(true); }),
+    btn('btn-build', 'Canonical build', function () { canonicalBuild(true); }),
+    btn('btn-clear', 'Clear', function () { reset(); idle('The database is empty: transaction 0 committed an empty tree into meta slot 0. Put a key, or start the guided tour.'); }));
+
+  var status = el('p.c23-status');
+  fig.stage.appendChild(status);
+  var view = new BTViz.TreeView(fig.stage, { minHeight: 300, ariaLabel: 'The trees of every live root, sharing pages' });
+
+  function panel(title) {
+    var body = el('div.bt-panel-body');
+    fig.side.appendChild(el('div.bt-panel', el('div.bt-panel-title', title), body));
+    return body;
+  }
+  var metaBody = panel('Meta page: two slots');
+  var metaRows = el('div.c23-rows');
+  metaBody.append(metaRows, el('p.c23-muted', 'A reader takes the valid slot with the higher transaction id.'));
+  var snapBody = panel('Snapshots (pinned roots)');
+  var snapRows = el('div.c23-rows');
+  snapBody.appendChild(snapRows);
+  var storeBody = panel('Page store');
+  var mem = new BTViz.MemoryMap(storeBody, { cell: 34 });
+  var freeEl = el('div.c23-list'), pendEl = el('div.c23-list');
+  storeBody.append(freeEl, pendEl);
+  var log = new BTViz.Log(fig.side, { title: 'Operations' });
+
+  /* -------------------------------------------------------- code panels */
+  var parts = {};
+  Object.keys(window.CHAPTER_PARTS).forEach(function (sn) {
+    parts[sn] = {};
+    Object.keys(window.CHAPTER_PARTS[sn]).forEach(function (part) {
+      var spec = {};
+      ['zig', 'rust'].forEach(function (lang) {
+        var src = String(window.CHAPTER_CODE[sn][lang]).split('\n');
+        var want = window.CHAPTER_PARTS[sn][part][lang];
+        var a = src.findIndex(function (l) { return l.indexOf(want[0]) >= 0; });
+        var b = src.findIndex(function (l, i) { return i >= a && l.indexOf(want[1]) >= 0; });
+        spec[lang] = [[a + 1, b + 1]];
+      });
+      parts[sn][part] = spec;
+    });
+  });
+  var TITLES = {
+    touch: 'touch — the copy-on-write step',
+    commit: 'commit — write the pages, then flip the root',
+    reclaim: 'reclaim — when a freed page may be reused'
+  };
+  var panels = {};
+  Object.keys(TITLES).forEach(function (sn) {
+    panels[sn] = BTViz.codePanel('#code', sn, { title: TITLES[sn], maxHeight: 340 });
+    panels[sn].root.hidden = sn !== 'touch';
+  });
+  function showCode(lines) {
+    if (!lines) { Object.keys(panels).forEach(function (sn) { panels[sn].highlight([]); }); return; }
+    Object.keys(panels).forEach(function (sn) { panels[sn].root.hidden = sn !== lines.snippet; });
+    panels[lines.snippet].highlight(parts[lines.snippet][lines.part]);
+  }
+
+  /* -------------------------------------------------------------- model */
+  var db, checkpoints, rand = BTViz.rng(23);
+  function reset() { db = new Cow(+order.value); log.clear(); }
+
+  /* ------------------------------------------------------------- render */
+  var stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
+    onStep: function (step, i) {
+      var s = step.state, nodes = {}, h = step.highlight || {};
+      Object.keys(s.states).forEach(function (id) { nodes[id] = s.states[id]; });
+      Object.keys(h.nodes || {}).forEach(function (id) { nodes[id] = h.nodes[id]; });
+      view.render(s.forest, { nodes: nodes, keys: h.keys || {} });
+      renderStatus(s);
+      renderMeta(s);
+      renderSnaps(s);
+      renderStore(s);
+      showCode(step.lines);
+      log.sync(stepper ? stepper.steps : [], i);
+    }
+  });
+
+  function renderStatus(s) {
+    var c = s.cur, roots = (s.forest || []).length;
+    status.innerHTML = 'Committed: <b>transaction ' + c.txn + '</b>, ' + (c.root === null ? 'empty tree' : 'root <b>#' + c.root + '</b>, ' + c.count + ' key' + (c.count === 1 ? '' : 's') + ', height ' + c.height) +
+      (s.txn ? ' · open: <b>transaction ' + s.txn.id + '</b> (' + s.txn.copied + ' copied)' : '') +
+      (roots > 1 ? ' · ' + roots + ' roots drawn, shared pages once' : '');
+  }
+  function renderMeta(s) {
+    metaRows.textContent = '';
+    s.meta.forEach(function (m, i) {
+      var isCur = m.valid && m.txn === s.cur.txn;
+      metaRows.appendChild(el('div.c23-row',
+        el('span', 'slot ' + i),
+        m.never ? el('span.bt-chip.s-free', 'never written')
+          : el('span.bt-chip' + (m.valid ? (isCur ? '.s-found' : '') : '.s-deleted'),
+              'txn ' + m.txn + ' → ' + (m.root === null ? 'empty' : 'root #' + m.root)),
+        m.never ? null : el('span', { title: 'CRC-32 stored in the slot' }, 'crc ' + m.crc + (m.valid ? ' ✓' : ' ✗ torn')),
+        isCur ? el('span', '← current') : null));
+    });
+  }
+  function renderSnaps(s) {
+    snapRows.textContent = '';
+    if (!s.snaps.length) {
+      snapRows.appendChild(el('p.c23-muted', 'None. Without a snapshot, pages replaced by a commit are free as soon as it is done.'));
+      return;
+    }
+    s.snaps.forEach(function (sn) {
+      snapRows.appendChild(el('div.c23-row',
+        el('span.bt-chip.s-found', 'txn ' + sn.id + ' · ' + (sn.root === null ? 'empty' : 'root #' + sn.root) + ' · refs ' + sn.refs),
+        el('button.bt-btn', { type: 'button', 'data-release': sn.id, 'aria-label': 'Release one handle on the snapshot of transaction ' + sn.id,
+          onclick: function () { releaseSnapshot(sn.id); } }, 'Release')));
+    });
+  }
+  function renderStore(s) {
+    var free = s.slots.filter(function (x) { return x === 'free'; }).length;
+    mem.render({ slabs: [{
+      label: s.slots.length + ' page' + (s.slots.length === 1 ? '' : 's') + (s.slots.length > s.stored ? ' (' + (s.slots.length - s.stored) + ' not yet in the store)' : ''),
+      slots: s.slots.map(function (state, i) {
+        return { state: state, label: '#' + i,
+          title: 'page ' + i + ': ' + ({ used: 'live, reachable from the current root', compare: 'pending: only an old root reaches it', free: 'free: may be written', dirty: 'reserved by the open transaction' })[state] };
+      })
+    }] });
+    void free;
+    freeEl.innerHTML = 'free list: ' + (s.free.length ? s.free.map(function (id) { return '<b>#' + id + '</b>'; }).join(' ') + ' ← next' : 'empty (the next page grows the store)');
+    pendEl.innerHTML = 'pending: ' + (s.pending.length ? s.pending.map(function (p) { return '<b>#' + p.page + '</b>(txn ' + p.by + ')'; }).join(' ') : 'none');
+  }
+
+  /* ------------------------------------------------------- timelines */
+  /** Shows `ops` (arrays of steps, one per operation) as one timeline; cps[j] = database after operation j. */
+  function show(ops, cps, play) {
+    var steps = [];
+    ops.forEach(function (list, j) { list.forEach(function (s) { s.op = j; steps.push(s); }); });
+    checkpoints = cps;
+    stepper.setSteps(steps, { play: !!play });
+  }
+  function idle(caption) {
+    show([[{ type: 'idle', caption: caption, state: db.picture(null), highlight: {} }]], [db.save()], false);
+  }
+  /**
+   * Controls act on what is on screen: the database is rewound to the end of the operation whose
+   * step is displayed. Returns a note for the caption when that is not what the picture showed.
+   */
+  function syncToScreen() {
+    var st = stepper.steps[stepper.index], j = st ? st.op : 0, last = stepper.steps[stepper.steps.length - 1];
+    var mid = stepper.steps[stepper.index + 1] && stepper.steps[stepper.index + 1].op === j && j > 0;
+    var dropped = last ? last.op - j : 0;
+    db = Cow.load(checkpoints[j]);
+    return (mid ? 'The operation that was being shown was finished first. ' : '') +
+      (dropped > 0 ? 'The ' + dropped + ' later operation' + (dropped === 1 ? '' : 's') + ' of the replay ' + (dropped === 1 ? 'was' : 'were') + ' not applied. ' : '');
+  }
+  /** Runs one recorded operation on the database as it is on screen. */
+  function act(fn) {
+    var note = syncToScreen(), before = db.save();
+    var steps = fn();
+    if (!steps) return;
+    if (note) steps[0].caption = '<em>' + note + '</em>' + steps[0].caption;
+    show([[], steps], [before, db.save()], true);
+  }
+  function refuse(text) {
+    var note = syncToScreen();
+    show([[{ type: 'idle', caption: (note ? '<em>' + note + '</em>' : '') + text, state: db.picture(null), highlight: {} }]], [db.save()], false);
+  }
+
+  /* ------------------------------------------------------------ actions */
+  function write(kind, abort) {
+    // Typed input is used exactly as typed or not at all: nothing is rounded or clamped silently.
+    var raw = key.value.trim(), unreadable = !!(key.validity && key.validity.badInput), picked = raw === '' && !unreadable;
+    var v = picked ? null : Number(raw);
+    if (!picked && (unreadable || !Number.isInteger(v) || v < KEY_MIN || v > KEY_MAX)) {
+      refuse('Nothing was done: ' + (unreadable ? 'that input' : '<b>' + BTViz.esc(raw) + '</b>') + ' is not a key this page accepts. Keys are whole numbers from ' + KEY_MIN + ' to ' + KEY_MAX + '. The database is unchanged.');
+      key.focus({ preventScroll: true });
+      return;
+    }
+    act(function () {
+      if (picked) {
+        var have = db.range(0, Infinity);
+        if (kind === 'delete' && have.length) v = rand.pick(have);
+        else do { v = rand.int(1, 99); } while (kind === 'put' && have.indexOf(v) >= 0);
+      }
+      if (kind === 'put' && db.cur.count >= MAX_KEYS && db.get(v) === undefined) {
+        refuse('Nothing was done: this page keeps the tree at ' + MAX_KEYS + ' keys or fewer so that it stays readable. Delete a key first.');
+        return null;
+      }
+      if (db.slots.length >= MAX_PAGES && db.free.length < 2 * db.cur.height + 2) {
+        refuse('Nothing was done: the store has grown to ' + db.slots.length + ' pages because held snapshots keep replaced pages pending. Release a snapshot to free pages (this limit exists only on this page).');
+        return null;
+      }
+      var steps = db.opWrite(kind, v, abort);
+      if (picked) steps[0].caption = 'No key was typed, so ' + k(v) + ' was picked' + (kind === 'delete' ? ' from the tree' : ' at random') + '. ' + steps[0].caption;
+      return steps;
+    });
+    key.value = '';
+  }
+  function takeSnapshot() {
+    act(function () {
+      var total = db.snaps.reduce(function (n, s) { return n + s.refs; }, 0);
+      var same = db.snaps.length && db.snaps[db.snaps.length - 1].id === db.cur.txn;
+      if ((!same && db.snaps.length >= MAX_SNAPS) || total >= 2 * MAX_SNAPS) {
+        refuse('Nothing was done: this page holds at most ' + MAX_SNAPS + ' pinned roots so that the picture stays readable. Release one first.');
+        return null;
+      }
+      return db.opSnapshot();
+    });
+  }
+  function releaseSnapshot(id) {
+    act(function () {
+      if (!db.snaps.some(function (s) { return s.id === id; })) {
+        refuse('Nothing was done: the snapshot of transaction ' + id + ' is not held any more.');
+        return null;
+      }
+      return db.opRelease(id);
+    });
+  }
+  function tear() {
+    act(function () {
+      if (!db.canTear()) {
+        refuse(db.cur.txn === 0
+          ? 'Nothing was done: no transaction has committed yet, so there is no commit to tear. Put a key first.'
+          : 'Nothing was done: the other meta slot is already invalid (it was torn before and no commit has rewritten it). A commit only ever writes one slot, so both cannot be torn by one crash. Commit something first.');
+        return null;
+      }
+      return db.opTear();
+    });
+  }
+
+  /* ----------------------------------------------------- scripted replays */
+  /** The canonical keys, one transaction each; one step per commit. */
+  function canonicalBuild(play) {
+    reset();
+    var ops = [[{ type: 'idle', caption: 'An empty database. The canonical keys of chapters 03 to 08 are put one transaction at a time. No snapshot is held, so each commit frees the pages it replaced and the next one reuses them.', state: db.picture(null), highlight: {} }]];
+    var cps = [db.save()];
+    CANONICAL.forEach(function (v) {
+      var before = db.slots.length, steps = db.opWrite('put', v, false), flip = steps.filter(function (s) { return s.type === 'commit-flip'; })[0];
+      var end = steps[steps.length - 1], t = db.cur.txn;
+      ops.push([{ type: 'built', log: 'put ' + v + ' → txn ' + t + ', root #' + db.cur.root,
+        caption: 'put ' + k(v, 'inserted') + ' committed as transaction ' + t + '. New root: <b>#' + db.cur.root + '</b>. ' +
+          (db.slots.length > before ? 'The store grew to ' + db.slots.length + ' pages. ' : 'The store did not grow: the new pages reused freed page ids. ') +
+          'Free list: ' + (db.free.length ? db.free.map(function (id) { return '#' + id; }).join(' ') : 'empty') + '.',
+        state: end.state, highlight: { nodes: flip ? flip.highlight.nodes : {}, keys: { ['*:' + v]: 'inserted' } } }]);
+      cps.push(db.save());
+    });
+    if (play !== null) show(ops, cps, play);
+  }
+  /** Sections 2 to 4 of the chapter's program, starting from the canonical tree. */
+  function tour(play) {
+    canonicalBuild(null);
+    log.clear();
+    var ops = [[{ type: 'idle', log: 'canonical tree (12 commits)',
+      caption: 'The canonical tree after 12 one-key transactions, exactly as the chapter\'s program builds it: root <b>#9</b>, 8 pages in a store of 10. ' +
+        'The tour takes a snapshot, changes the tree three times, releases the snapshot and writes once more.',
+      state: db.picture(null), highlight: {} }]];
+    var cps = [db.save()];
+    var run = function (fn) { ops.push(fn()); cps.push(db.save()); };
+    run(function () { return db.opSnapshot(); });
+    run(function () { return db.opWrite('put', 13, false); });
+    run(function () { return db.opWrite('delete', 6, false); });
+    run(function () { return db.opWrite('delete', 7, false); });
+    run(function () { return db.opRelease(12); });
+    run(function () { return db.opWrite('put', 8, false); });
+    show(ops, cps, play);
+  }
+
+  order.addEventListener('change', function () {
+    reset();
+    idle('Order ' + order.value + ': a node holds at most ' + (order.value - 1) + ' keys. The database is empty. Put a key, or replay the canonical build.');
+  });
+  key.addEventListener('keydown', function (e) { if (e.key === 'Enter') write('put', false); });
+
+  /* --------------------------------------------- self-tests against the programs */
+  (function () {
+    var t = new Cow(4), put = function (d, v) { var x = d.begin(); d.txnPut(x, v, v * 100); return d.commit(x); };
+    var del = function (d, v) { var x = d.begin(); d.txnDelete(x, v); return d.commit(x); };
+    CANONICAL.forEach(function (v) { put(t, v); });
+    BTViz.selfTest('build', t.dump() + t.storeLine(),
+      'txn 12: root #9, height 3, 12 keys\n  level 0: #9[15]\n  level 1: #4[6 10] #8[20]\n  leaves : #3(1 3 5) #6(6 7) #0(10 12) | #7(15 17) #1(20 25 30)\n' +
+      'store: 10 pages | free: #5 #2 | pending: -');
+    var snap = t.snapshot();
+    put(t, 13);
+    BTViz.selfTest('path copy', t.dump() + t.storeLine() + '\n' + t.dump(snap.root, snap.id, snap.height, snap.count),
+      'txn 13: root #2, height 3, 13 keys\n  level 0: #2[15]\n  level 1: #5[6 10] #8[20]\n  leaves : #3(1 3 5) #6(6 7) #10(10 12 13) | #7(15 17) #1(20 25 30)\n' +
+      'store: 11 pages | free: - | pending: #9(txn 13) #4(txn 13) #0(txn 13)\n' +
+      'txn 12: root #9, height 3, 12 keys\n  level 0: #9[15]\n  level 1: #4[6 10] #8[20]\n  leaves : #3(1 3 5) #6(6 7) #0(10 12) | #7(15 17) #1(20 25 30)\n');
+    BTViz.selfTest('ranges', t.range(6, 20, snap.root).join(' ') + ' / ' + t.range(6, 20).join(' '), '6 7 10 12 15 17 / 6 7 10 12 13 15 17');
+    del(t, 6); var d7 = del(t, 7);
+    BTViz.selfTest('borrow', d7.copied + ' ' + d7.fresh + ' ' + t.storeLine(),
+      '4 4 store: 18 pages | free: - | pending: #9(txn 13) #4(txn 13) #0(txn 13) #2(txn 14) #5(txn 14) #6(txn 14) #11(txn 15) #12(txn 15) #13(txn 15) #3(txn 15)');
+    t.release(12);
+    put(t, 8);
+    var afterTour = t.dump() + t.storeLine();
+    BTViz.selfTest('reuse', afterTour,
+      'txn 16: root #3, height 3, 12 keys\n  level 0: #3[15]\n  level 1: #13[5 10] #8[20]\n  leaves : #17(1 3) #12(5 8) #10(10 12 13) | #7(15 17) #1(20 25 30)\n' +
+      'store: 18 pages | free: #9 #4 #0 #2 #5 #6 #11 #14 #15 #16 | pending: -');
+    var x = t.begin(); [26, 27, 28].forEach(function (v) { t.txnPut(x, v, v * 100); }); t.abort(x);
+    var afterAbort = t.dump() + t.storeLine();
+    x = t.begin(); [26, 27, 28].forEach(function (v) { t.txnPut(x, v, v * 100); }); t.commit(x);
+    BTViz.selfTest('abort+txn', (afterAbort === afterTour) + '\n' + t.dump(),
+      'true\ntxn 17: root #16, height 3, 15 keys\n  level 0: #16[15]\n  level 1: #13[5 10] #15[20 26 28]\n  leaves : #17(1 3) #12(5 8) #10(10 12 13) | #7(15 17) #14(20 25) #11(26 27) #6(28 30)\n');
+    BTViz.selfTest('meta crc', Ch23.hex8(t.meta[0].crc) + ' ' + Ch23.hex8(t.meta[1].crc), 'e2548d94 db104496');
+    t.meta[1].valid = false; t.reopen();
+    BTViz.selfTest('restart', t.cur.txn + ' ' + t.storeLine(), '16 store: 18 pages | free: #0 #2 #4 #5 #6 #9 #11 #14 #15 #16 | pending: -');
+
+    // Seeded fuzz of the model itself: snapshots must keep reading what they saw.
+    var r = BTViz.rng(2323), f = new Cow(4), ref = {}, held = [], bad = 0, i;
+    for (i = 0; i < 1500; i++) {
+      var v = r.int(0, 60), tx = f.begin();
+      if (r() < 0.6) { f.txnPut(tx, v, i); ref[v] = i; } else { f.txnDelete(tx, v); delete ref[v]; }
+      if (i % 9 === 8) { f.abort(tx); ref = JSON.parse(f.refSaved); } else { f.commit(tx); }
+      f.refSaved = JSON.stringify(ref);
+      if (i % 13 === 0) held.push({ s: f.snapshot(), keys: Object.keys(ref).map(Number).sort(function (a, b) { return a - b; }).join(' ') });
+      if (i % 31 === 30 && held.length) { var hs = held.splice(r.int(0, held.length - 1), 1)[0]; f.release(hs.s.id); }
+      if (i % 7 === 0) {
+        if (f.validate().length) bad++;
+        if (f.range(0, Infinity).join(' ') !== Object.keys(ref).map(Number).sort(function (a, b) { return a - b; }).join(' ')) bad++;
+        held.forEach(function (h) { if (f.range(0, Infinity, h.s.root).join(' ') !== h.keys) bad++; });
+      }
+    }
+    while (held.length) f.release(held.pop().s.id);
+    BTViz.selfTest('model fuzz', bad + ' ' + f.validate().length + ' ' + f.pending.length, '0 0 0');
+  })();
+
+  /* ---------------------------------------------------------------- go */
+  tour(false);
+  (function () {
+    var s = db, text = s.dump() + s.storeLine();
+    BTViz.selfTest('tour end', text,
+      'txn 16: root #3, height 3, 12 keys\n  level 0: #3[15]\n  level 1: #13[5 10] #8[20]\n  leaves : #17(1 3) #12(5 8) #10(10 12 13) | #7(15 17) #1(20 25 30)\n' +
+      'store: 18 pages | free: #9 #4 #0 #2 #5 #6 #11 #14 #15 #16 | pending: -');
+  })();
+})();
+</script>
+</body>
+</html>

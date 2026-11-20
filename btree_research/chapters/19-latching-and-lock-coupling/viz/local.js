@@ -624,7 +624,7 @@
    */
   Sim.probe = function (tree, protocol, aOp, bOp, freeze) {
     var sim = new Sim(tree, protocol, { T1: aOp, T2: bOp });
-    var trace = [], outcome = 'finishes', a = sim.threads.T1, b = sim.threads.T2;
+    var trace = [], outcome = 'finishes', a = sim.threads.T1, b = sim.threads.T2, initial = sim.view();
     function run(tid, until) {
       var t = sim.threads[tid];
       while (!t.done && sim.canStep(tid) && !(until && until(t))) {
@@ -643,7 +643,7 @@
     run('T1');
     run('T2');
     if (!a.done || !b.done) throw new Error('probe did not finish');
-    return { outcome: outcome, trace: trace, frozenAt: frozenAt, bStoppedAt: bStoppedAt, sim: sim };
+    return { outcome: outcome, trace: trace, frozenAt: frozenAt, bStoppedAt: bStoppedAt, sim: sim, initial: initial };
   };
 
   window.Ch19 = { Tree: Tree, Sim: Sim, ORDER: ORDER, MAX_KEYS: MAX_KEYS, CANONICAL: [10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15] };

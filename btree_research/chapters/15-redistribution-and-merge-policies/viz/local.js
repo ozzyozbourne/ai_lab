@@ -5,6 +5,8 @@
  *   Ch15.packLeft / Ch15.evenOut / Ch15.PageTree
  *                     a line-by-line port of zig/src/pages.zig. With `tree.trace = []`
  *                     every phase of an operation is recorded for the Stepper.
+ *   Ch15.PageTree.restore(snapshot, cfg)
+ *                     the model behind a drawn step, so the buttons act on what is on screen
  *   Ch15.SiblingView  parent dividers, leaf pages as byte bars, and the scratch strip;
  *                     cells keep their DOM node between renders, so they glide.
  *   Ch15.report*      the same tables the Zig/Rust programs print (for the self-tests).
@@ -95,6 +97,25 @@
     info.type = type;
     info.tree = this.snapshot();
     this.trace.push(info);
+  };
+  /** The tree a snapshot shows, as a model that can carry on from there (the page ids,
+   *  the order of the free list and the counters are kept, so later page numbers match).
+   *  Only a snapshot taken between operations is a valid tree. */
+  PageTree.restore = function (snap, cfg) {
+    cfg = cfg || {};
+    var t = new PageTree({ capacity: snap.capacity, insertSiblings: cfg.insertSiblings, quickAppend: cfg.quickAppend, merge: cfg.merge });
+    t.pages = [];
+    t.count = 0;
+    snap.children.forEach(function (c) {
+      t.pages[c.id] = { cells: c.cells.map(function (x) { return { key: x.key, size: x.size }; }), used: c.used, live: true };
+      t.count += c.cells.length;
+    });
+    snap.free.forEach(function (id) { t.pages[id] = { cells: [], used: 0, live: false }; });
+    t.freeIds = snap.free.slice();
+    t.dividers = snap.dividers.map(function (d) { return { child: d.child, key: d.key }; });
+    t.rightmost = snap.rightmost;
+    t.stats = JSON.parse(JSON.stringify(snap.stats));
+    return t;
   };
   P.snapshot = function () {
     var self = this, kids = [];
@@ -419,6 +440,9 @@
 
   /* --------------------------------------------------------------- SiblingView */
   var CSS = [
+    '.c15-main { min-width: 0; display: flex; flex-direction: column; }',
+    '.c15-main > .bt-stage { flex: none; }',
+    '.c15-note { margin: 0 0 6px; padding: 4px 8px; border-left: 3px solid var(--bt-accent); background: var(--bt-surface-2); font-size: .88rem; }',
     '.c15-view { position: relative; min-width: 0; }',
     '.c15-parent { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: .84rem; color: var(--bt-muted); min-height: 30px; }',
     '.c15-parent .bt-chip { transition: background-color var(--bt-dur), box-shadow var(--bt-dur); }',

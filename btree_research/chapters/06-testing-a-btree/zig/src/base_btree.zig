@@ -1,6 +1,7 @@
 // Copied from chapters/05-deletion-and-rebalancing/zig/src/btree.zig
 // Changes for chapter 06: the comptime `bug` parameter (`BTreeWith`),
-// `Counters` replaced by `Coverage`, `validate` takes a diagnostic.
+// `Counters` replaced by `Coverage`, `validate` takes a diagnostic, and
+// `deinit` no longer aborts on a tree that `validate` has rejected.
 //! The complete in-memory B-tree of chapter 05, as the system under test.
 //!
 //!   file               content                              needs
@@ -62,19 +63,25 @@ pub fn BTreeWith(comptime M: usize, comptime PoolFn: fn (type) type, comptime bu
 
         pub const empty: Self = .{};
 
-        /// Returns every node to the pool, then releases the pool itself.
-        /// Only call this on a tree that passes `validate`: a corrupt tree
-        /// cannot be trusted to find its own nodes (see fuzz.zig).
+        /// Returns every REACHABLE node to the pool, then releases the pool.
+        ///
+        /// Tolerant on purpose: it must be callable on a tree that `validate`
+        /// has just rejected (a test wants to report the error, not abort),
+        /// so it skips missing children and asserts nothing. The price: a
+        /// node the tree lost track of is not freed here. With `DirectNodes`
+        /// that is a leak the backing allocator reports; `validate` reports
+        /// it earlier as NodeCountMismatch. fuzz.zig sidesteps the question
+        /// with an arena.
         pub fn deinit(self: *Self, gpa: Allocator) void {
             if (self.root) |root| self.destroySubtree(gpa, root);
-            std.debug.assert(self.pool.usage.live() == 0); // a merge forgot to free a node?
             self.pool.deinit(gpa);
             self.* = undefined;
         }
 
         fn destroySubtree(self: *Self, gpa: Allocator, node: *NodeT) void {
             if (!node.leaf) {
-                for (node.children[0 .. node.len + 1]) |child| self.destroySubtree(gpa, child.?);
+                const slots = @min(node.len + 1, node.children.len);
+                for (node.children[0..slots]) |child| if (child) |c| self.destroySubtree(gpa, c);
             }
             self.pool.destroy(gpa, node);
         }

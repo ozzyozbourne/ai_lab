@@ -153,7 +153,7 @@ pub fn put(comptime Tree: type, tree: *Tree, gpa: Allocator, key: u64, value: u6
         node = node.children[i].?;
     }
 
-    // Phase 2: reserve. The split travels up exactly as far as the nodes are full.
+    // Phase 2: reserve. Count the unbroken run of full nodes from the leaf upwards.
     var need: usize = 0;
     while (need < depth and path[depth - 1 - need].node.len == N.max_keys) need += 1;
     if (need == depth) need += 1; // the root splits too: one more node for the new root
@@ -184,9 +184,12 @@ The new key is written into the full node first, and `splitNode` then cuts a nod
 keys. The alternative, deciding which half the new key belongs to while splitting,
 needs three cases. The extra slot removes them.
 
-**Reserve, then commit.** How many nodes a `put` needs is known after the descent: one
-per full node at the bottom of the path, plus one if the chain of full nodes reaches the
-root. All of them are taken from the pool before the tree is touched. If the pool cannot
+**Reserve, then commit.** How many nodes a `put` needs is known after the descent. A
+split travels upwards only as long as each node it reaches is already full, so `put`
+counts the unbroken run of full nodes from the leaf upwards and needs one node for each.
+A full node higher up, above a node with room, does not count: the split stops below
+it. If the run reaches the root, one more node is needed for the new root. All of them
+are taken from the pool before the tree is touched. If the pool cannot
 deliver, the `errdefer` hands back what was taken and `put` returns `error.OutOfMemory`
 with the tree exactly as it was.
 
@@ -420,9 +423,8 @@ heap allocations, which the Zig pool does not have.
   M - 1 - M / 2. Using `(M - 1) / 2` is also legal for bottom-up, but cutting a node of
   M - 1 keys (a full node, before the insert) is only legal for even M.
 - **Forgetting the children.** In an interior split the children right of the median
-  move with their keys: `mid + 1` keys stay with `mid + 1` children... no: `mid` keys
-  stay with `mid + 1` children. Losing or duplicating one pointer breaks the tree in a
-  way only `validate` notices.
+  move with their keys: the left half keeps `mid` keys and `mid + 1` children. Losing or
+  duplicating one pointer breaks the tree in a way only `validate` notices.
 - **Inserting the separator and the child in the wrong positions.** The median goes to
   index `i` of the parent and the right half to child index `i + 1`, where `i` is the
   child index followed on the way down.

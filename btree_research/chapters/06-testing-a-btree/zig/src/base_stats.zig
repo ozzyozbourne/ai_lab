@@ -1,4 +1,7 @@
 // Copied from chapters/05-deletion-and-rebalancing/zig/src/stats.zig
+// Change for chapter 06: `shape` and `render` tolerate a malformed tree (a
+// missing child is skipped / printed as `[?]`) instead of aborting, so a
+// failure report can show the tree that failed.
 //! SECTION 6b: shape statistics and a text rendering of the tree.
 //! This file needs only node.zig.
 const std = @import("std");
@@ -38,7 +41,8 @@ fn addNode(comptime M: usize, node: *const Node(M), s: *Shape) void {
         s.leaves += 1;
         return;
     }
-    for (node.children[0 .. node.len + 1]) |child| addNode(M, child.?, s);
+    const slots = @min(node.len + 1, node.children.len);
+    for (node.children[0..slots]) |child| if (child) |c| addNode(M, c, s);
 }
 
 /// One line per level, root first. Nodes are `[k k k]`; ` | ` separates
@@ -64,7 +68,8 @@ pub fn render(comptime M: usize, root: ?*const Node(M), w: *std.Io.Writer, inden
 }
 
 /// Print the nodes `remaining` levels below `node`, left to right.
-fn renderLevel(comptime M: usize, node: *const Node(M), remaining: usize, w: *std.Io.Writer, first: *bool) std.Io.Writer.Error!void {
+fn renderLevel(comptime M: usize, maybe_node: ?*const Node(M), remaining: usize, w: *std.Io.Writer, first: *bool) std.Io.Writer.Error!void {
+    const node = maybe_node orelse return w.writeAll("[?]"); // a missing child
     if (remaining == 0) {
         try w.writeByte('[');
         for (node.keySlice(), 0..) |key, i| {
@@ -74,12 +79,13 @@ fn renderLevel(comptime M: usize, node: *const Node(M), remaining: usize, w: *st
         try w.writeByte(']');
         return;
     }
-    for (node.children[0 .. node.len + 1], 0..) |child, i| {
+    if (node.leaf) return; // a leaf above the lowest level: nothing below it
+    for (node.children[0..@min(node.len + 1, node.children.len)], 0..) |child, i| {
         if (remaining == 1) {
             // Siblings are separated by a space, families by " | ".
             if (i > 0) try w.writeByte(' ') else if (!first.*) try w.writeAll(" | ");
             first.* = false;
         }
-        try renderLevel(M, child.?, remaining - 1, w, first);
+        try renderLevel(M, child, remaining - 1, w, first);
     }
 }

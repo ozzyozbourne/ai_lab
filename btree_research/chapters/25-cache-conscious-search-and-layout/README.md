@@ -25,9 +25,9 @@ index). Nothing from Parts II or III is needed.
 
 Everything here is measured in **counts**: comparisons, compare instructions, distinct
 cache lines. They come from a small model in `trace.zig` / `trace.rs` and are identical
-in Zig and Rust. The model counts the lines of *every* array a lookup reads, and it
-assumes each array starts on a line boundary. There are no timings in the text; an
-optional `--bench` flag prints timings to stderr for your own machine.
+in Zig and Rust. The model counts the lines of *every* array a lookup reads. There are no
+timings in the text; an optional `--bench` flag prints timings to stderr for your own
+machine.
 
 ## The idea in plain words
 
@@ -56,9 +56,9 @@ The techniques of this chapter attack one or both:
 
 The block tree is the B-tree idea again: one node should be one unit of transfer. With
 disk the unit is a 4096-byte page; with memory it is a 64-byte line. It borrows the
-B-tree's node shape (8 keys, 9 children) but it is not a B-tree: it is a complete 9-ary
-search tree, so leaves may sit on two adjacent levels and a node may have fewer children
-than keys + 1.
+B-tree's node shape (8 keys, 9 children) but it is a complete 9-ary search tree, not a
+B-tree: leaves may sit on two adjacent levels and a node may have fewer children than
+keys + 1.
 
 ## A worked example by hand
 
@@ -142,10 +142,9 @@ needle 70 -> index 6
 `cmps` counts key comparisons, `steps` counts compare instructions (a vector compare of
 eight keys is one step), `lines` counts distinct cache lines in both arrays.
 
-The first three searches return the sorted position itself and read no second array. A
-real index wants a payload (a child id, a row id), which a sorted array also keeps in a
-second array, and which the two layouts would store where `rank` is. So for a payload
-lookup add one line to the first three rows.
+The first three searches read no second array. A real index wants a payload, which a
+sorted array also keeps in a second array and which the two layouts would store where
+`rank` is. So for a payload lookup add one line to the first three rows.
 
 ### What the counts say at larger sizes
 
@@ -178,9 +177,9 @@ lookup add one line to the first three rows.
   total against 9 to 11, because each key line narrows the search by a factor of 9
   instead of 2. This is chapter 01's fanout argument at cache-line scale.
 - **A side array is not free.** At 15 keys both layouts read more lines than the sorted
-  array, because of the `rank` line. And it matters where the read happens: a block tree
-  that looked `rank` up on every level instead of once at the end read 7.31 lines per
-  lookup in this same run (measured by changing the code; not part of the output).
+  array. And a block tree that looked `rank` up on every level instead of once at the end
+  read 7.31 lines per lookup in this run (measured by changing the code; not in the
+  output).
 
 ```
 == 4. Prefetch coverage, n = 4095, per lookup ==
@@ -195,10 +194,9 @@ Without prefetch every line is a miss that must finish before the next address i
 known: the misses form a chain. With prefetch only the first key line is a surprise,
 plus, for Eytzinger, the `rank` line, which nothing prefetches. The halving search needs
 two hints per step (one is always wasted) and each is only one comparison ahead.
-Eytzinger needs one hint per step, three comparisons ahead. The model counts a line as
-hinted only if at least one comparison lies between the hint and the read: a hint issued
-right before the read buys nothing. Whether a hint with lead time arrives in time
-depends on the machine.
+Eytzinger needs one hint per step, three comparisons ahead. A line counts as hinted only
+if at least one comparison lies between the hint and the read. Whether such a hint
+arrives in time depends on the machine.
 
 ```
 == 3. One 255-entry node: array of structs vs struct of arrays ==
@@ -211,12 +209,12 @@ Same node, same nine comparisons, same probe positions. With 16-byte `{key, chil
 flags}` entries the keys spread over 64 lines; as a separate column, over 32. The
 *search* saves one line per lookup, because only its last few probes are close together.
 
-`get` is the search, one equality check, and for a hit the read of the child. In the
-array of structs the child sits next to the key just compared. In the struct of arrays
-it is in another column, which is another line: 0.51 per lookup here, because 518 of the
-1000 needles were found. So a point lookup that fetches the child gains half a line, not
-a whole one. Anything that reads many keys (a vector scan, a range scan, a merge) saves
-the full factor of two.
+`get` adds an equality check and, for a hit, the read of the child. In the array of
+structs the child sits next to the key just compared. In the struct of arrays it is in
+another column, which is another line: 0.51 per lookup, because 518 of 1000 needles were
+found. So a point lookup that fetches the child gains half a line, not a whole one.
+Anything that reads many keys (a vector scan, a range scan, a merge) saves the full
+factor of two.
 
 ## Code walk-through
 
@@ -232,10 +230,9 @@ lines of each array in a fixed bitmap and counts. `NoTrace` has empty methods. T
 is written once and instantiated with both, so the counted code and the fast code cannot
 diverge.
 
-The model assumes that each array starts on a line boundary. The scenario makes that
-true for every key array it searches (see Allocator notes). For the two node types it is
-only an assumption: their containers align to 8 bytes, and a node that starts in the
-middle of a line can touch one line more than the table says.
+The model assumes that each array starts on a line boundary. That is true for every key
+array the scenario searches, but not guaranteed for the two node types (see Allocator
+notes): a node that starts mid-line can touch one line more than the table says.
 
 Zig passes `tracer: anytype` (duck typing at compile time); Rust names the contract as
 `trait Tracer`. Both produce one specialised copy per tracer type.
@@ -317,15 +314,9 @@ compare, a set-on-below and an add, with no jump on the key.
 
 `BlockTree.lowerBound` calls `rank8` once per level and moves to child `9 * block + r + 1`.
 If `r < 8`, key `r` of the node is the best candidate so far. The loop only remembers
-that slot number; it reads `rank` once, after the descent:
-
-```zig
-slot = if (r < lanes) block * lanes + r else slot;
-block = block * fanout + r + 1;
-```
-
-`rank` has one entry more than there are slots. It holds `n`, and `slot` starts there,
-so "every key is smaller" needs no special case.
+that slot number (`slot = if (r < lanes) block * lanes + r else slot;`) and reads `rank`
+once, after the descent. `rank` has one extra entry holding `n`, where `slot` starts, so
+"every key is smaller" needs no special case.
 
 ### `node`: struct of arrays
 
@@ -422,10 +413,9 @@ allocation and lays the columns out one after another, so the `key` column is a 
 `insertAssumeCapacity`, so `put` never allocates and can only fail with `NodeFull`, like
 a page. `checkAllAllocationFailures` covers the builders. One limitation:
 `MultiArrayList` aligns its buffer for the widest field (8 bytes), not for the cache
-line, and puts the child column directly behind the key column. The node counts above
-are therefore for an idealised node whose columns each start on a line boundary. A
-production node would carve its columns out of a line-aligned page, as TigerBeetle's
-index block does.
+line. The node counts above are therefore for an idealised node whose columns each start
+on a line boundary. A production node would carve its columns out of a line-aligned
+page, as TigerBeetle's index block does.
 
 **Rust.** `Vec<Line>` with `#[repr(align(64))]` gives the same guarantee without unsafe
 code, at the price of two-level indexing. `SoaNode` is three `Vec`s with capacity
@@ -442,14 +432,13 @@ reserved up front; like the Zig node they are aligned to 8 bytes only.
   stored. Our builders assert this.
 - **Forgetting the extra comparison.** The halving search makes `ceil(log2 n) + 1`
   comparisons: at most one more than the classic search's worst case, and up to two more
-  than the classic search needs for the same needle (5 keys, needle above all of them: 2
-  against 4). If a comparison is expensive (long strings, a comparator call), that can
-  cost more than a misprediction saves.
-- **Counting only the key array.** A lookup in a second array (a rank, a child id, a
+  than the classic search needs for the same needle (5 keys, needle above all: 4 against
+  2). If a comparison is expensive (long strings, a comparator call), that can cost more
+  than a misprediction saves.
+- **Counting only the key array.** A read of a second array (a rank, a child id, a
   payload) is another cache line. Do it once, after the search, not once per level.
-- **Trusting a hint you did not check.** The compiler may merge a hinted function with
-  an unhinted twin, or inline it into a context where it chooses differently. Read the
-  assembly of the final binary.
+- **Trusting a hint you did not check.** Function merging can silently replace a hinted
+  function with an unhinted twin. Check the final binary.
 - **Eytzinger and range scans.** In-order iteration over an Eytzinger array jumps around
   in memory. For range scans keep a sorted array.
 - **These layouts are static.** Inserting means rebuilding. They suit read-mostly data

@@ -107,7 +107,7 @@ one black binary node and up to two red ones and you get a red-black tree with t
       canonical: { label: 'Canonical tree (M = 4)', build: M3.canonical },
       sparsest: { label: 'Sparsest tree with 3 levels (M = 4)', build: M3.sparsest },
       fullest: { label: 'Fullest tree with 2 levels (M = 4)', build: M3.fullest },
-      random: { label: '30 random keys, order below', build: function () {
+      random: { label: '30 random keys, choose the order', build: function () {
         var keys = BTViz.rng(seed).sample(30, 1, 99).sort(function (a, b) { return a - b; });
         return new M3.HandTree(+orderSel.value).fromSorted(keys);
       } }
@@ -174,7 +174,7 @@ one black binary node and up to two red ones and you get a red-black tree with t
       msg.textContent = '';
       if (presetSel.value === 'random') seed++;
       tree = PRESETS[presetSel.value].build();
-      orderSel.disabled = presetSel.value !== 'random';
+      orderSel.style.display = presetSel.value === 'random' ? '' : 'none'; // the fixed trees are all order 4
       intro(presetSel.value === 'random' ? 'A tree of order ' + tree.M + ' with 30 random keys, laid out with as few levels as possible.' : PRESETS[presetSel.value].label.replace(/ \(M = 4\)/, '') + ', order 4.');
     }
     function fromInput() {
@@ -201,7 +201,7 @@ one black binary node and up to two red ones and you get a red-black tree with t
       msg.textContent = '';
       presetSel.value = 'canonical';
       tree = M3.canonical();
-      orderSel.disabled = true;
+      orderSel.style.display = 'none';
       mode = 'get';
       stepper.pause();
       var all = [], printed = '';

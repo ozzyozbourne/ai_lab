@@ -208,9 +208,9 @@ pub const Totals = struct {
 /// itself ran out of memory, which is not a verdict about the tree.
 ///
 /// Memory: the tree's nodes come from an arena (wrapped in the counting
-/// FaultAllocator). A tree that has just failed validation cannot be trusted
-/// to walk its own nodes in `deinit`, so on failure nothing is walked: the
-/// arena releases everything in one go. See README, "Allocator notes".
+/// FaultAllocator). A tree that has just failed validation may have lost
+/// track of nodes; no walk can find those, so on failure nothing is walked:
+/// the arena releases everything in one go. See README, "Allocator notes".
 pub fn replay(comptime Tree: type, gpa: Allocator, steps: []const Step, checks: Checks, totals: ?*Totals) Allocator.Error!?Failure {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();

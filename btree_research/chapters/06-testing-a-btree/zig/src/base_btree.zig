@@ -110,6 +110,7 @@ pub fn BTreeWith(comptime M: usize, comptime PoolFn: fn (type) type, comptime bu
         }
 
         /// `visitor.visit(key, value)` for every entry with lo <= key < hi, ascending.
+        /// (Half-open, so the key maxInt(u64) is out of reach: see base_search.zig.)
         pub fn range(self: *const Self, lo: u64, hi: u64, visitor: anytype) void {
             search.range(M, self.root, lo, hi, visitor);
         }

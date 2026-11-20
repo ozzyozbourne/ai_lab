@@ -196,7 +196,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
       el('b', d.scan.out.length ? d.scan.out.map(function (r) { return r.key; }).join(' ') : 'nothing yet'), ' · ');
     if (d.scan.error) scanEl.append(chip('error: dangling link', 'deleted'));
     else if (d.scan.done) scanEl.append('finished');
-    else scanEl.append('paused, saved link → ', el('b', d.scan.next === NIL ? 'end' : '#' + d.scan.next));
+    else scanEl.append('paused, saved link → ', el('b', d.scan.next === NIL ? 'end' : '#' + d.scan.next), d.scan.next === NIL ? '' : ' (the “scan” pill in the picture)');
   }
 
   function renderVersions(d, hl) {

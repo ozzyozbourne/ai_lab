@@ -14,6 +14,12 @@ pub fn build(b: *std.Build) void {
     // cannot @embedFile outside its own directory, so expose it as an import.
     mod.addAnonymousImport("expected_output", .{ .root_source_file = b.path("../expected_output.txt") });
 
+    // -Dtrace=true: the fuzzer prints seed and step to stderr before every
+    // operation, so a run that ABORTS inside the tree still names its case.
+    const options = b.addOptions();
+    options.addOption(bool, "trace", b.option(bool, "trace", "Print seed and step to stderr before each fuzz step") orelse false);
+    mod.addOptions("build_options", options);
+
     const exe = b.addExecutable(.{ .name = "ch06_testing_a_btree", .root_module = mod });
     b.installArtifact(exe);
 

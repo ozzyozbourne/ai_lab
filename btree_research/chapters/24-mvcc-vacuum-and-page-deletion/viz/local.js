@@ -459,7 +459,7 @@
    * A box is keyed by its page id, so a page visibly travels: leaf row, deleted row, free row, and
    * back into the tree when a split reuses it. layout() is pure; Picture animates between layouts.
    */
-  var GEO = { cellH: 28, vGap: 40, hGap: 16, padX: 14, padTop: 28, charW: 7.3, cellPad: 12, minCell: 30, rowGap: 38, minScale: 0.5 };
+  var GEO = { cellH: 28, vGap: 40, hGap: 16, padX: 14, padTop: 28, charW: 7.3, cellPad: 12, minCell: 30, rowGap: 34, minScale: 0.5 };
   var INNER = { 'empty': 46, 'half-dead': 66, 'free': 44 };   // box widths when there are no cells
 
   function layout(db) {
@@ -544,10 +544,19 @@
       b.x = x; b.y = freeY;
       x += b.w + 10;
     });
-    var W = 430;
-    order.forEach(function (b) { W = Math.max(W, b.x + b.w + g.padX + (b.kind === 'deleted' ? 40 : 0)); });
-    return { boxes: boxes, order: order, edges: edges, links: links, leafY: leafY, ghostY: ghostY, freeY: freeY,
-             W: Math.ceil(W), H: freeY + g.cellH + 10, ghosts: ghosts.length, free: freeList(db.pages).length };
+    // Each lower row is named by a line of text to the right of its last box.
+    var titles = [
+      { y: ghostY, x: g.padX, text: ghosts.length ? '← deleted: unlinked and stamped, right link kept; waiting for the horizon' : 'deleted pages: none' },
+      { y: freeY, x: x > g.padX ? x + 4 : g.padX, text: x > g.padX ? '← free list: the next split takes the leftmost' : 'free list: empty' }
+    ];
+    var W = 0;
+    order.forEach(function (b) {
+      W = Math.max(W, b.x + b.w + g.padX);
+      if (b.kind === 'deleted') titles[0].x = Math.max(titles[0].x, b.x + b.w + 46);    // past the hook of its arrow
+    });
+    titles.forEach(function (t) { W = Math.max(W, t.x + t.text.length * 5.5 + g.padX); });
+    return { boxes: boxes, order: order, edges: edges, links: links, titles: titles, leafY: leafY, ghostY: ghostY, freeY: freeY,
+             W: Math.ceil(W), H: freeY + g.cellH + 10 };
   }
 
   var SVG_NS = 'http://www.w3.org/2000/svg';
@@ -670,18 +679,16 @@
         path.style.opacity = Math.min(a.o, t ? t.o : 1);
       });
     });
-    this.gTitles.appendChild(sv('text', { 'class': 'c24-rowtitle', x: g.padX, y: L.ghostY - 24 },
-      'deleted pages (unlinked and stamped, right link kept), waiting for the horizon' + (L.ghosts ? '' : ': none')));
-    this.gTitles.appendChild(sv('text', { 'class': 'c24-rowtitle', x: g.padX, y: L.freeY - 24 },
-      'free list (the next split takes the leftmost)' + (L.free ? '' : ': empty')));
+    L.titles.forEach(function (t) { self.gTitles.appendChild(sv('text', { 'class': 'c24-rowtitle', x: t.x, y: t.y + g.cellH / 2 + 3.5 }, t.text)); });
     if (db.root === NIL) this.gTitles.appendChild(sv('text', { 'class': 'c24-inner', x: L.W / 2, y: g.padTop + g.cellH / 2 }, 'the index is empty'));
 
     // --- the paused scan's saved handle: a pill over whatever box that id names today
     var scan = hl.scan && L.boxes[hl.scan.page] ? hl.scan : null;
     if (scan) {
-      var text = scan.stale ? 'scan: stale handle' : 'scan reads next', pw = Math.round(text.length * 5.6) + 14;
+      var text = scan.stale ? 'scan ✗' : 'scan', pw = Math.round(text.length * 5.6) + 22;
       var pill = sv('g', { 'class': 'c24-pill' + (scan.stale ? ' is-stale' : ''), 'data-scan': scan.page },
-        sv('rect', { x: 0, y: -8, width: pw, height: 16, rx: 8, ry: 8 }), sv('path', { d: 'M6 7.5h8l-4 5z' }), sv('text', { x: pw / 2, y: 0.5 }, text));
+        sv('rect', { x: 0, y: -8, width: pw, height: 16, rx: 8, ry: 8 }), sv('path', { d: 'M6 7.5h8l-4 5z' }), sv('text', { x: pw / 2, y: 0.5 }, text),
+        sv('title', {}, scan.stale ? 'the page handle the paused scan saved; the page behind it is no longer the one it meant' : 'the page handle the paused scan saved: it reads this page next'));
       this.gOver.appendChild(pill);
       paths.push(function (at) {
         var a = at(scan.page);

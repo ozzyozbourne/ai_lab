@@ -103,7 +103,7 @@ impl KeyLayout {
             // key_space is a power of two (see `swarm`), so the stride is
             // exact. k == key_space would be 2^64: saturate, which names
             // the same set of keys because no key equals `u64::MAX`.
-            KeyLayout::Spread => k.checked_mul((1 << 63) / key_space * 2).unwrap_or(u64::MAX),
+            KeyLayout::Spread => k.saturating_mul((1 << 63) / key_space * 2),
             KeyLayout::Top => u64::MAX - key_space + k,
         }
     }

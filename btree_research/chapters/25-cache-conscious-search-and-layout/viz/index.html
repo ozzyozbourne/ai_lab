@@ -19,7 +19,11 @@
 .cl-line-head {
   display: flex; justify-content: space-between; gap: 8px;
   font: .68rem var(--bt-mono); color: var(--bt-muted); padding: 0 1px 2px;
+  /* The head never widens its line: a badge that appears while stepping must not re-wrap the strip. */
+  width: 0; min-width: 100%; box-sizing: border-box; white-space: nowrap;
 }
+.cl-line-head span { overflow: hidden; text-overflow: ellipsis; }
+.cl-line-head span:first-child { flex: none; }
 .cl-badge { color: var(--bt-text); }
 .cl-cells { display: grid; gap: 2px; }
 .cl-cell {

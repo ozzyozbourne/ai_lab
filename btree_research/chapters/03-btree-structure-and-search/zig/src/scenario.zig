@@ -102,7 +102,7 @@ fn brokenTrees(arena_state: *std.heap.ArenaAllocator, w: *Writer) !void {
             try w.print("    validate: {t}", .{violation});
         }
         if (case.searchable) {
-            try w.print("; get finds {d} of 12 keys\n", .{broken.keysFound(&t)});
+            try w.print("; get finds {d} of the 12 original keys\n", .{broken.keysFound(&t)});
         } else {
             try w.writeAll("; get not tried (it could follow the erased pointer)\n");
         }
@@ -135,7 +135,7 @@ fn heights(arena: Allocator, w: *Writer) !void {
         try w.print("fullest tree with 2 levels at M = 4 ({d} keys):\n", .{full.len});
         try full.render(w, "  ");
     }
-    try w.writeAll("keys in a tree of h levels: 2*t^(h-1) - 1 up to M^h - 1, with t = ceil(M/2)\n");
+    try w.writeAll("keys in a tree of h levels: 2*d^(h-1) - 1 up to M^h - 1, with d = ceil(M/2)\n");
     for ([_]u64{ 4, 256 }) |m| {
         try w.print("  M={d}:", .{m});
         for (1..5) |h| try w.print(" h={d}: {d}..{d}", .{ h, height.minKeys(m, h), height.maxKeys(m, h) });

@@ -9,11 +9,21 @@
 //! Every function asserts M >= 3, like `Node(M)` does: with M = 2 a non-root
 //! node could hold zero keys, and the formulas would describe no B-tree
 //! (the loops below would stop at their 64-level cap with a wrong answer).
+//!
+//! Argument order: every function here takes the order first, `(m, ...)`,
+//! as `minKeys(m, height)` does. Chapter 01's height calculator has functions
+//! of the same names with the arguments the other way round,
+//! `minHeight(n, m)`. Both arguments are `u64`, so the compiler cannot catch
+//! a swap: `minHeight(5, 100)` is 3 here (order 5, 100 keys), while
+//! `minHeight(100, 5)` means order 100 and 5 keys, and is 1.
+//!
+//! The letter d stands for ceil(M/2), as in the README. It is not the t of
+//! CLRS, which exists only for even M.
 const std = @import("std");
 
 const max_u64 = std.math.maxInt(u64);
 
-/// t = ceil(M/2): the fewest children of an interior node that is not the root.
+/// d = ceil(M/2): the fewest children of an interior node that is not the root.
 pub fn minChildren(m: u64) u64 {
     std.debug.assert(m >= 3);
     return (m + 1) / 2;
@@ -25,8 +35,8 @@ fn power(base: u64, exponent: usize) u64 {
     return result;
 }
 
-/// Fewest keys in a tree of `height` levels: 2 * t^(height-1) - 1.
-/// (The root has 1 key and 2 children; every other node has t - 1 keys.)
+/// Fewest keys in a tree of `height` levels: 2 * d^(height-1) - 1.
+/// (The root has 1 key and 2 children; every other node has d - 1 keys.)
 pub fn minKeys(m: u64, height: usize) u64 {
     if (height == 0) return 0;
     const half = power(minChildren(m), height - 1);
@@ -49,7 +59,7 @@ pub fn minHeight(m: u64, n: u64) usize {
     return h;
 }
 
-/// Tallest tree that n keys can form: the largest h with 2 * t^(h-1) - 1 <= n.
+/// Tallest tree that n keys can form: the largest h with 2 * d^(h-1) - 1 <= n.
 pub fn maxHeight(m: u64, n: u64) usize {
     std.debug.assert(m >= 3);
     if (n == 0) return 0;
@@ -70,10 +80,10 @@ test "key counts per height for M = 4" {
 }
 
 test "height bounds: the README's worked example" {
-    // One million keys, M = 4 (t = 2): at most 1 + floor(log2(500000.5)) = 19 levels.
+    // One million keys, M = 4 (d = 2): at most 1 + floor(log2(500000.5)) = 19 levels.
     try std.testing.expectEqual(19, maxHeight(4, 1_000_000));
     try std.testing.expectEqual(10, minHeight(4, 1_000_000));
-    // M = 256 (t = 128): 128^2 = 16384 <= 500000.5 < 128^3, so exactly 3 levels.
+    // M = 256 (d = 128): 128^2 = 16384 <= 500000.5 < 128^3, so exactly 3 levels.
     try std.testing.expectEqual(3, maxHeight(256, 1_000_000));
     try std.testing.expectEqual(3, minHeight(256, 1_000_000));
     try std.testing.expectEqual(0, maxHeight(4, 0));
@@ -92,12 +102,21 @@ test "the smallest legal order, M = 3, gets sensible answers" {
     // and maxHeight(2, n) returned the 64-level cap. They now trip the
     // assert (which a Zig test cannot catch; the Rust twin has
     // `should_panic` tests). M = 3 is the boundary that must keep working:
-    // t = 2, so 1 or 2 keys per node.
+    // d = 2, so 1 or 2 keys per node.
     try std.testing.expectEqual(2, minChildren(3));
     try std.testing.expectEqual(3, minKeys(3, 2));
     try std.testing.expectEqual(8, maxKeys(3, 2));
     try std.testing.expectEqual(3, minHeight(3, 10)); // 3^2 - 1 = 8 < 10 <= 26
     try std.testing.expectEqual(3, maxHeight(3, 10)); // 2 * 2^2 - 1 = 7 <= 10 < 15
+}
+
+test "argument order: the order M comes first, then the number of keys" {
+    // Chapter 01 has the same names with (n, m). A swapped call compiles
+    // and returns a plausible number, so the order is pinned here.
+    try std.testing.expectEqual(3, minHeight(5, 100)); // order 5, 100 keys
+    try std.testing.expectEqual(4, maxHeight(5, 100));
+    try std.testing.expectEqual(1, minHeight(100, 5)); // order 100, 5 keys
+    try std.testing.expectEqual(1, maxHeight(100, 5));
 }
 
 test "the two bounds are consistent, and huge inputs saturate instead of overflowing" {

@@ -410,7 +410,7 @@
       line.el.classList.toggle('is-hinted', h);
       line.el.classList.toggle('is-fresh', state.fresh === i);
       line.el.classList.toggle('is-dim', dim.has(i));
-      line.badge.textContent = r && h ? 'read, was hinted' : r ? 'read' : h ? 'hinted' : state.next === i ? 'next' : '';
+      line.badge.textContent = r && h ? 'hinted, then read' : r ? 'read' : h ? 'hinted' : state.next === i ? 'next' : '';
     });
     this.root.setAttribute('aria-label', (state.read || []).length + ' of ' + this.lines.length + ' cache lines read');
   };

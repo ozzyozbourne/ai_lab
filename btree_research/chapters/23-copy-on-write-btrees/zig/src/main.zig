@@ -249,7 +249,7 @@ fn modelRun(gpa: Allocator, w: *Writer) !void {
                 .get => |g| {
                     if (db.get(g.key) != oracle.get(g.key)) mismatches += 1;
                 },
-                .range => |r| mismatches += countRangeMismatches(db.view(), oracle.range(r.lo, r.hi), r.lo, r.hi),
+                .range => |r| mismatches += countMismatches(db.view().seek(r.lo), r.hi, oracle.range(r.lo, r.hi)),
             }
             peak_pending = @max(peak_pending, db.pending.items.len);
             if (i % 100 == 0) {
@@ -259,14 +259,14 @@ fn modelRun(gpa: Allocator, w: *Writer) !void {
                     _ = db.release(h.snap);
                     gpa.free(h.saved);
                 }
-                const saved = try gpa.dupe(lib.ops.Entry, oracle.range(0, std.math.maxInt(u64)));
+                const saved = try gpa.dupe(lib.ops.Entry, oracle.entries.items);
                 errdefer gpa.free(saved);
                 try held.append(gpa, .{ .snap = try db.snapshot(gpa), .saved = saved });
             }
             if (i % 50 == 49) {
                 // Every held snapshot must still read exactly what was saved.
                 for (held.items) |h| {
-                    mismatches += countRangeMismatches(h.snap.view(&db), h.saved, 0, std.math.maxInt(u64));
+                    mismatches += countMismatches(h.snap.view(&db).seek(0), null, h.saved);
                     snapshots_checked += 1;
                 }
                 try lib.validate(&db, gpa);
@@ -287,14 +287,17 @@ fn modelRun(gpa: Allocator, w: *Writer) !void {
     }
 }
 
-fn countRangeMismatches(view: lib.View, expected: []const lib.ops.Entry, lo: u64, hi: u64) usize {
+/// Compares what the cursor yields, up to `hi` (exclusive; null = to the
+/// end of the tree), with `expected`.
+fn countMismatches(cursor: lib.Cursor, hi: ?u64, expected: []const lib.ops.Entry) usize {
     var mismatches: usize = 0;
-    var it = view.range(lo, hi);
-    for (expected) |e| {
-        const got = it.next();
-        if (got == null or got.?.key != e.key or got.?.value != e.value) mismatches += 1;
+    var it = cursor;
+    var i: usize = 0;
+    while (it.next()) |e| : (i += 1) {
+        if (hi != null and e.key >= hi.?) break;
+        if (i >= expected.len or e.key != expected[i].key or e.value != expected[i].value) mismatches += 1;
     }
-    if (it.next() != null) mismatches += 1;
+    if (i < expected.len) mismatches += expected.len - i;
     return mismatches;
 }
 

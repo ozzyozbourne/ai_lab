@@ -390,7 +390,7 @@
       c.apply(t);
       var name = validateName(t);
       out += (i < 9 ? ' ' : '') + (i + 1) + '. ' + c.what + '\n    validate: ' + (name || 'ok') +
-        (c.searchable === false ? '; get not tried (it could follow the erased pointer)' : '; get finds ' + keysFound(t) + ' of 12 keys') + '\n';
+        (c.searchable === false ? '; get not tried (it could follow the erased pointer)' : '; get finds ' + keysFound(t) + ' of the 12 original keys') + '\n';
     });
     return out;
   }

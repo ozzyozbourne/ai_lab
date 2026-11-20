@@ -9,13 +9,23 @@
 //! non-root node could hold zero keys, and the formulas would describe no
 //! B-tree (the loops below would stop at their 64-level cap with a wrong
 //! answer).
+//!
+//! Argument order: every function here takes the order first, `(m, ...)`,
+//! as `min_keys(m, height)` does. Chapter 01's height calculator has functions
+//! of the same names with the arguments the other way round,
+//! `minHeight(n, m)` (`min_height(n, m)` in Rust). Both arguments are `u64`, so the compiler cannot catch
+//! a swap: `min_height(5, 100)` is 3 here (order 5, 100 keys), while
+//! `min_height(100, 5)` means order 100 and 5 keys, and is 1.
+//!
+//! The letter d stands for ceil(M/2), as in the README. It is not the t of
+//! CLRS, which exists only for even M.
 
 /// The precondition of every function in this file.
 fn assert_order(m: u64) {
     assert!(m >= 3, "a B-tree needs order M >= 3, got {m}");
 }
 
-/// t = ceil(M/2): the fewest children of an interior node that is not the root.
+/// d = ceil(M/2): the fewest children of an interior node that is not the root.
 pub fn min_children(m: u64) -> u64 {
     assert_order(m);
     m.div_ceil(2)
@@ -29,8 +39,8 @@ fn power(base: u64, exponent: usize) -> u64 {
     result
 }
 
-/// Fewest keys in a tree of `height` levels: 2 * t^(height-1) - 1.
-/// (The root has 1 key and 2 children; every other node has t - 1 keys.)
+/// Fewest keys in a tree of `height` levels: 2 * d^(height-1) - 1.
+/// (The root has 1 key and 2 children; every other node has d - 1 keys.)
 pub fn min_keys(m: u64, height: usize) -> u64 {
     if height == 0 {
         return 0;
@@ -59,7 +69,7 @@ pub fn min_height(m: u64, n: u64) -> usize {
     h
 }
 
-/// Tallest tree that n keys can form: the largest h with 2 * t^(h-1) - 1 <= n.
+/// Tallest tree that n keys can form: the largest h with 2 * d^(h-1) - 1 <= n.
 pub fn max_height(m: u64, n: u64) -> usize {
     assert_order(m);
     if n == 0 {
@@ -90,10 +100,10 @@ mod tests {
 
     #[test]
     fn height_bounds_the_readmes_worked_example() {
-        // One million keys, M = 4 (t = 2): at most 1 + floor(log2(500000.5)) = 19 levels.
+        // One million keys, M = 4 (d = 2): at most 1 + floor(log2(500000.5)) = 19 levels.
         assert_eq!(max_height(4, 1_000_000), 19);
         assert_eq!(min_height(4, 1_000_000), 10);
-        // M = 256 (t = 128): 128^2 = 16384 <= 500000.5 < 128^3, so exactly 3 levels.
+        // M = 256 (d = 128): 128^2 = 16384 <= 500000.5 < 128^3, so exactly 3 levels.
         assert_eq!(max_height(256, 1_000_000), 3);
         assert_eq!(min_height(256, 1_000_000), 3);
         assert_eq!(max_height(4, 0), 0);
@@ -110,7 +120,7 @@ mod tests {
     #[test]
     fn the_smallest_legal_order_m_3_gets_sensible_answers() {
         // Regression: orders below 3 were accepted (see the three tests
-        // below). M = 3 is the boundary that must keep working: t = 2, so
+        // below). M = 3 is the boundary that must keep working: d = 2, so
         // 1 or 2 keys per node.
         assert_eq!(min_children(3), 2);
         assert_eq!(min_keys(3, 2), 3);

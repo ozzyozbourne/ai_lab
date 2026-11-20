@@ -85,7 +85,7 @@ fn broken_trees(w: &mut dyn Write) -> Outcome {
             Err(violation) => write!(w, "    validate: {violation:?}")?,
         }
         if case.searchable {
-            writeln!(w, "; get finds {} of 12 keys", keys_found(&t))?;
+            writeln!(w, "; get finds {} of the 12 original keys", keys_found(&t))?;
         } else {
             writeln!(w, "; get not tried (it could follow the erased pointer)")?;
         }
@@ -133,7 +133,7 @@ fn heights(w: &mut dyn Write) -> Outcome {
     }
     writeln!(
         w,
-        "keys in a tree of h levels: 2*t^(h-1) - 1 up to M^h - 1, with t = ceil(M/2)"
+        "keys in a tree of h levels: 2*d^(h-1) - 1 up to M^h - 1, with d = ceil(M/2)"
     )?;
     for m in [4, 256] {
         write!(w, "  M={m}:")?;

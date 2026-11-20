@@ -481,7 +481,7 @@ fn expectCleanRestart(gpa: Allocator, disk: *Db, history: []const []const ops.En
     return want;
 }
 
-test "the reviewer's case: newest slot unreadable while the next commit is in flight" {
+test "newest slot unreadable while the next commit is in flight: the older slot names a whole tree" {
     const gpa = testing.allocator;
     var db = try buildCanonical(gpa);
     defer db.deinit(gpa);

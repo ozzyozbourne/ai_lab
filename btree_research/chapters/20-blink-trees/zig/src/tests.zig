@@ -389,10 +389,10 @@ test "two paused writers, a half-split parent and a grown root: finish first, th
         fn run(_: ?*anyopaque, t: *BLinkTree, io_: Io, _: NodeId, _: *const blink.Page) void {
             // put 22: paused on #1 while the third writer runs. Afterwards
             // #1 splits. Its remembered parent #2 is flagged: the split of
-            // #2 is finished first (that builds the new root #6), and only
-            // then does #2 receive the downlink (22, #7).
+            // #2 is finished first (that builds the new root #7), and only
+            // then does #2 receive the downlink (22, #6).
             _ = t.putFrom(io_, t.rootId(), 22, 2200, .{ .at_leaf = Third.run }) catch @panic("OutOfNodes");
-            std.debug.assert(t.rootId() == id(6) and t.incompleteSplits() == 0);
+            std.debug.assert(t.rootId() == id(7) and t.incompleteSplits() == 0);
             std.debug.assert(t.stats().finished_later == 2); // #3 by the third writer, #2 by the second
         }
     };
@@ -406,9 +406,9 @@ test "two paused writers, a half-split parent and a grown root: finish first, th
     try tree.validate();
     try expectDump(&tree,
         \\height 3, 10 keys, 10 nodes
-        \\  level 2: #6[20 30]
+        \\  level 2: #7[20 30]
         \\  level 1: #2[12]<20 -> #9[22]<30 -> #5[35]
-        \\  level 0: #0(10)<12 -> #8(12 15)<20 -> #1(20)<22 -> #7(22 25)<30 -> #3(30 31)<35 -> #4(35 40)
+        \\  level 0: #0(10)<12 -> #8(12 15)<20 -> #1(20)<22 -> #6(22 25)<30 -> #3(30 31)<35 -> #4(35 40)
         \\
     );
     try testing.expectEqual(0, tree.incompleteSplits());

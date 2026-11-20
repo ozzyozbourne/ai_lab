@@ -81,7 +81,7 @@ pub const KeyLayout = enum {
             // key_space is a power of two (see `swarm`), so the stride is
             // exact. k == key_space would be 2^64: saturate, which names
             // the same set of keys because no key equals maxInt.
-            .spread => std.math.mul(u64, k, (1 << 63) / key_space * 2) catch std.math.maxInt(u64),
+            .spread => k *| ((1 << 63) / key_space * 2),
             .top => std.math.maxInt(u64) - key_space + k,
         };
     }

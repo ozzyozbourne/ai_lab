@@ -137,12 +137,35 @@ Nothing else needs to change:
 - `merge` drops or pulls down separators without interpreting them.
 - `validate` checks bounds, and the new separator is inside them.
 
-Tests: everything that checks behaviour still passes (the model tests, the
-chain tests, the failure-injection test, the corruption tests). The tests
-that fail are the ones that compare an exact picture: the canonical shape
-(the root would hold 14 instead of 15), the delete walk-through, the
-copy-up test (it asks for 15 in the root), and the comparison with
-`expected_output.txt`.
+What the change does to the canonical example (output of both programs with
+the four lines above in `splitLeaf` / `split_leaf`):
+
+```
+height 3, 12 keys, 8 nodes
+  level 0: #7[17]
+  level 1: #2[6 9] #6[23]
+  leaves : #0(1 3 5) <-> #4(6 7) <-> #1(10 12 15) <-> #3(17 20) <-> #5(25 30)
+```
+
+Not just one number is different. The first split now stores 9 instead of 10,
+the second 17 instead of 20, and from then on some keys are routed to other
+leaves: 17 goes to the last leaf instead of the third, so later splits happen
+at other places and at other times (the internal split happens at `put 25`,
+not at `put 15`). 9 and 23 are in no leaf: they are stale from the moment
+they are created, so the stricter check of exercise 4 already fails after the
+fourth insert.
+
+Tests, measured by running both test suites with the change: 21 of 26 Zig
+tests and 20 of 25 Rust tests still pass. Everything that checks behaviour
+passes: the model tests against the oracle, the chain tests, the
+allocation-failure tests and the corruption test. The same five tests fail in
+both languages, and all five compare an exact picture of the canonical tree:
+
+- the canonical shape test (root 17 instead of 15, see above);
+- the copy-up test (it asks for 15 in the root);
+- "a separator may outlive its key" (it also asks for 15 in the root);
+- the delete walk-through (3 borrows instead of 4, and another final shape);
+- the comparison of the program output with `expected_output.txt`.
 
 This is the idea behind suffix truncation in chapter 17: with string keys the
 "value in between" can be much shorter than either key, and shorter separators

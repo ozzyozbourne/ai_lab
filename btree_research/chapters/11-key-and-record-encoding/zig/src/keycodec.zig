@@ -606,7 +606,7 @@ const test_f64_bits = [_]u64{
 
 /// Integers around every place where a byte of the encoding rolls over.
 const test_i64 = [_]i64{
-    std.math.minInt(i64), std.math.minInt(i64) + 1, -0x1_0000_0001, -0x8000_0000, -257, -256, -255, -129, -128, -1,
+    std.math.minInt(i64), std.math.minInt(i64) + 1, -0x1_0000_0001, -0x8000_0000, -257, -256, -255,        -129,          -128,                     -1,
     0,                    1,                        127,            128,          255,  256,  0x7fff_ffff, 0x1_0000_0000, std.math.maxInt(i64) - 1, std.math.maxInt(i64),
 };
 
@@ -787,7 +787,7 @@ test "random schemas: key order is logical order, round trip, every truncation r
         var kinds: [test_max_cols]TestKind = undefined;
         var opts: [test_max_cols]ColumnOpts = undefined;
         for (0..ncol) |c| {
-            kinds[c] = @enumFromInt(rng.below(4));
+            kinds[c] = @fromBackingInt(@intCast(rng.below(4)));
             opts[c] = .{ .desc = rng.below(2) == 1, .nulls_first = rng.below(2) == 1 };
         }
         // Two random rows ...
@@ -817,7 +817,7 @@ test "random schemas: key order is logical order, round trip, every truncation r
             logical = testOrder(rows[0][c], rows[1][c], opts[c]);
             if (logical != .eq) break;
         }
-        seen[@intFromEnum(logical)] += 1;
+        seen[@backingInt(logical)] += 1;
 
         var key_bufs: [2][test_max_cols * (2 * test_max_bytes + 2)]u8 = undefined;
         var keys: [2][]const u8 = undefined;
@@ -877,27 +877,40 @@ test "random schemas: key order is logical order, round trip, every truncation r
     for (seen) |n| try testing.expect(n > 500);
 }
 
-test "decoder fuzz: random bytes never crash the reader, and what it accepts is canonical" {
+test "decoder fuzz: damaged keys and random bytes never crash the reader, and what it accepts is canonical" {
     const bias = [_]u8{ 0x00, 0x01, 0x02, 0x03, 0x7f, 0x80, 0xfd, 0xfe, 0xff };
     var rng: TestRng = .{ .state = 99 };
     var accepted: u32 = 0;
+    var rejected: u32 = 0;
     for (0..50_000) |_| {
-        var buf: [20]u8 = undefined;
-        const n: usize = @intCast(rng.below(buf.len + 1));
-        for (buf[0..n]) |*c| {
-            c.* = if (rng.below(4) == 0) @truncate(rng.next()) else bias[@intCast(rng.below(bias.len))];
-        }
         const ncol: usize = @intCast(1 + rng.below(3));
         var kinds: [3]TestKind = undefined;
         var opts: [3]ColumnOpts = undefined;
         for (0..ncol) |c| {
-            kinds[c] = @enumFromInt(rng.below(4));
+            kinds[c] = @fromBackingInt(@intCast(rng.below(4)));
             opts[c] = .{ .desc = rng.below(2) == 1, .nulls_first = rng.below(2) == 1 };
         }
 
+        // The input: random bytes, or a valid key with one byte overwritten
+        // (which is how most corruption looks, and gets much deeper into the
+        // reader than noise does).
+        var buf: [3 * (2 * test_max_bytes + 2)]u8 = undefined;
+        var n: usize = undefined;
+        if (rng.below(3) == 0) {
+            n = @intCast(rng.below(21));
+            for (buf[0..n]) |*c| c.* = @truncate(rng.next());
+        } else {
+            var w: KeyWriter = .init(&buf);
+            var scratch: [test_max_bytes]u8 = undefined;
+            for (0..ncol) |c| try testPut(&w, testRandomValue(&rng, kinds[c], &scratch), opts[c]);
+            n = w.len;
+            const at: usize = @intCast(rng.below(n));
+            buf[at] = if (rng.below(4) == 0) @truncate(rng.next()) else bias[@intCast(rng.below(bias.len))];
+        }
+
         var reader: KeyReader = .init(buf[0..n]);
-        var text: [3][20]u8 = undefined;
-        var again_buf: [20]u8 = undefined;
+        var text: [3][buf.len]u8 = undefined;
+        var again_buf: [buf.len]u8 = undefined;
         var again: KeyWriter = .init(&again_buf);
         var canonical = true;
         const ok = for (0..ncol) |c| {
@@ -908,16 +921,22 @@ test "decoder fuzz: random bytes never crash the reader, and what it accepts is 
             };
             // The reader takes any 8 bytes as an f64. The two families that
             // encodeF64 never writes (-0.0, NaNs other than the canonical one)
-            // are for the layer above to reject (row.validateKey does).
+            // are for the layer above to reject.
             if (v == .f64) {
                 const bits: u64 = @bitCast(v.f64);
                 if (bits == sign_bit or (v.f64 != v.f64 and bits != canonical_nan)) canonical = false;
             }
             try testPut(&again, v, opts[c]);
         } else reader.done();
-        if (!ok) continue;
+        if (!ok) {
+            rejected += 1;
+            continue;
+        }
         accepted += 1;
+        // Accepted and canonical means: these are exactly the bytes the
+        // writer produces for the decoded values. No second spelling exists.
         if (canonical) try testing.expectEqualSlices(u8, buf[0..n], again.written());
     }
-    try testing.expect(accepted > 500);
+    std.debug.print("ACC {d} REJ {d}\n", .{ accepted, rejected });
+    try testing.expect(accepted > 5000 and rejected > 5000);
 }

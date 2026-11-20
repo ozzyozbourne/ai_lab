@@ -1114,6 +1114,10 @@ pub const DiskBTree = struct {
                 return;
             }
             const child_id = link(root);
+            if (child_id == self.root) {
+                self.pool.unpin(self.root, false);
+                return error.Corrupt;
+            }
             const child = self.pinNode(child_id) catch |err| {
                 self.pool.unpin(self.root, false);
                 return err;

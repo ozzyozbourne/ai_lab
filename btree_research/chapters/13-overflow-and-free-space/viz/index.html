@@ -57,6 +57,13 @@
 }
 .ch13-calc-box b { display: block; font-size: .74rem; }
 .ch13-formula { font: .84rem/1.5 var(--bt-mono); margin: 6px 0; overflow-wrap: anywhere; }
+
+/* The crash figure: the same three pages twice, in memory and on disk. */
+.ch13-lost { display: none; margin: 0 0 8px; padding: 14px 12px; border-radius: 6px; font-size: .86rem; font-weight: 600;
+  color: var(--bt-key-deleted); box-shadow: inset 0 0 0 1.25px var(--bt-key-deleted); }
+.ch13-mem.is-lost .ch13-file { display: none; }
+.ch13-mem.is-lost .ch13-lost { display: block; }
+#fig-crash .ch13-file { padding-bottom: 30px; }
 </style>
 </head>
 <body>
@@ -64,7 +71,8 @@
 <p class="bt-lead">Chapter 12's tree could not store a value larger than a quarter of a page, could not delete,
 and its file only grew. This page shows the three additions: a large value <em>spills</em> into a chain of
 overflow pages, a page that empties goes to a <em>free list</em>, and the next allocation takes a page from
-that list before the file grows. Text of the chapter: <a href="../README.md">README.md</a>.</p>
+that list before the file grows. The last figure shows the price of taking it <em>at once</em>: a crash at the
+wrong moment leaves a file that passes every check and returns a wrong value. Text of the chapter: <a href="../README.md">README.md</a>.</p>
 
 <h2>1. One file, sixteen operations</h2>
 <p>The tree on top is the logical view; the row of cards under it is the same file, page by page, in file order.
@@ -89,6 +97,15 @@ file, labelled with its page id. Try a large value, overwrite it with a small on
 and watch the page ids come back. <strong>Delete all keys</strong> shows the file <em>not</em> shrinking:
 every page ends up on the free list.</p>
 <div id="fig-own"></div>
+
+<h2>4. Why reusing a freed page at once is not crash-safe</h2>
+<p>Changes happen in memory first; <code>flush</code> then writes the changed pages to the file one by one. This
+figure is part 5 of the chapter's programs: a 5000-byte value <code>old</code> is on disk, then <code>old</code>
+is deleted and a 5000-byte value <code>new</code> is put, which gets the overflow page that <code>old</code> has
+just given back. Choose how many of the flush's three page writes reach the disk before the machine stops, and
+step through. Two of three is the interesting one. The chapter explains what real databases do instead:
+<a href="../README.md#not-crash-safe-and-worse-than-before">README, "Not crash-safe, and worse than before"</a>.</p>
+<div id="fig-crash"></div>
 
 <script src="../../../assets/viz.js"></script>
 <script src="code.js"></script>
@@ -367,6 +384,87 @@ every page ends up on the free list.</p>
   [keyIn, lenIn].forEach(function (input) { input.addEventListener('keydown', function (e) { if (e.key === 'Enter') doPut(); }); });
   reset();
 
+  /* ================== 4. a crash between free and reuse ================== */
+
+  // Three pages, each in its version before or after "delete old, put new".
+  // The value is 5000 bytes: 916 in the leaf, 4084 in one overflow page.
+  var CRASH_LEN = 5000;
+  function crashState(leafKey, page2, freeHead) {
+    return {
+      pages: [{ role: 'meta' },
+        { role: 'leaf', cells: leafKey ? [{ key: leafKey, total: CRASH_LEN, first: 2 }] : [], next: null },
+        page2 === 'trunk' ? { role: 'trunk', next: null, ids: [] }
+          : { role: 'overflow', owner: page2, part: 1, of: 1, bytes: Ch13.OVERFLOW_PAYLOAD, next: null }],
+      freeHead: freeHead, freeCount: freeHead === null ? 0 : 1
+    };
+  }
+  /** The file after `written` of the flush's three writes (page 0, then 1, then 2). */
+  function crashDisk(written) { return crashState(written >= 2 ? 'new' : 'old', written >= 3 ? 'new' : 'old', null); }
+
+  /** What a reader finds for `key` in the file `disk`, in the words of the programs' part 5. */
+  function crashLook(disk, key) {
+    var cell = disk.pages[1].cells.filter(function (c) { return c.key === key; })[0];
+    if (!cell) return 'missing';
+    var owner = disk.pages[cell.first].owner;   // whose bytes the overflow page really holds
+    return owner === key ? 'intact' : "WRONG VALUE (starts with '" + key[0] + "', ends with '" + owner[0] + "')";
+  }
+  function crashLine(n) {
+    var disk = crashDisk(n);
+    return 'N = ' + n + ': ' + (n === 3 ? 'no crash, all writes done; ' : '') + 'validate ok; old: ' + crashLook(disk, 'old') + '; new: ' + crashLook(disk, 'new');
+  }
+
+  function crashSteps(n) {
+    var before = crashDisk(0), after = crashState('new', 'new', null), steps = [];
+    function add(caption, mem, memHot, written, diskHot, lost) {
+      steps.push({ caption: caption, mem: mem, memHot: memHot || {}, disk: crashDisk(written), diskHot: diskHot || {}, written: written, lost: !!lost });
+    }
+    add('Key <b>old</b> has a 5000-byte value: 916 bytes in its cell in leaf page 1, the other 4084 in overflow page 2. Everything has been flushed, so memory and disk agree.', before, {}, 0);
+    add('<b>delete old</b>, in memory only. The cell leaves page 1, and page 2 is freed: the free list is empty, so page 2 becomes its first trunk. The file on disk has not changed.',
+      crashState(null, 'trunk', 2), { 1: 'inserted', 2: 'deleted' }, 0);
+    add('<b>put new</b> = 5000 bytes, in memory only. It needs one overflow page and the free list offers page 2, so page 2 is reused at once and now holds the bytes of <b>new</b>. On disk, page 2 still holds the bytes of <b>old</b>.',
+      after, { 1: 'inserted', 2: 'inserted' }, 0);
+    var writes = [
+      '<b>flush, write 1 of 3:</b> the metapage. It says the same as before (no free page), so the file is still the old tree.',
+      '<b>flush, write 2 of 3:</b> leaf page 1. On disk, the cell of <b>new</b> now points at page 2, and page 2 on disk is still the overflow page of <b>old</b>.',
+      '<b>flush, write 3 of 3:</b> overflow page 2, with the bytes of <b>new</b>. Disk and memory agree again.'];
+    for (var w = 1; w <= Math.min(n, 3); w++) { var hot = {}; hot[w - 1] = 'inserted'; add(writes[w - 1], after, {}, w, hot); }
+    if (n === 3) {
+      add('All three writes arrived: no crash. The file holds <b>new</b>, intact. Reuse was safe only because nothing interrupted the flush.', after, {}, 3);
+    } else if (n === 2) {
+      add('<b>The machine stops after 2 of 3 writes.</b> Memory is gone; this file is what is left. It passes every check: the cell says "5000 bytes, chain starts at page 2", and page 2 is a well-formed overflow page. It is the overflow page of the deleted value: reading <b>new</b> returns 916 bytes of n followed by 4084 bytes of o, and nothing can tell. Had the put taken a new page instead, the cell would point at a page of zeroes and the read would report damage.',
+        after, {}, 2, { 2: 'active' }, true);
+    } else {
+      add('<b>The machine stops after ' + n + ' of 3 writes.</b> Memory is gone; this file is what is left. It is the old tree, whole: <b>old</b> is intact and <b>new</b> was never stored. Losing the last operations is the harmless outcome. Now choose 2 writes.',
+        after, {}, n, {}, true);
+    }
+    return steps;
+  }
+
+  var figD = BTViz.figure('#fig-crash', { title: 'Delete "old", put "new", flush: memory above, the file below', legend: LEGEND });
+  var crashIn = el('select.bt-select#crash-n', { 'aria-label': 'Page writes that reach the disk' });
+  [0, 1, 2, 3].forEach(function (n) { crashIn.appendChild(el('option', { value: n }, n === 3 ? '3 (no crash)' : String(n))); });
+  crashIn.value = '2';
+  figD.toolbar.append(el('label.bt-field', 'writes that reach the disk', crashIn));
+  var statusD = el('p.ch13-status', { role: 'status' });
+  var memWrap = el('div.ch13-mem', el('div.ch13-lost', 'Lost: the machine stopped, and what was only in memory is gone.'));
+  figD.stage.append(statusD, el('div.ch13-label', 'In memory (the buffer pool):'), memWrap);
+  var stripMem = new Ch13View.FileStrip(memWrap, { ariaLabel: 'The three pages as they are in memory' });
+  figD.stage.appendChild(el('div.ch13-label', 'On disk (the file):'));
+  var stripDisk = new Ch13View.FileStrip(figD.stage, { ariaLabel: 'The three pages as they are on disk' });
+  var stepperD = new BTViz.Stepper({
+    mount: figD.controls, caption: figD.caption, root: figD.root, steps: [], interval: 3200,
+    onStep: function (step) {
+      statusD.innerHTML = 'Writes of the flush that reached the disk: <b>' + step.written + ' of 3</b>' +
+        (step.lost ? ' · after a restart: <b>' + crashLine(step.written).replace(/^N = \d: /, '') + '</b>' : '');
+      memWrap.classList.toggle('is-lost', step.lost);
+      stripMem.render(step.mem, { pages: step.memHot });
+      stripDisk.render(step.disk, { pages: step.diskHot });
+    }
+  });
+  function crashReset() { stepperD.setSteps(crashSteps(+crashIn.value)); }
+  crashIn.addEventListener('change', crashReset);
+  crashReset();
+
   /* ============= the model must agree with the Zig and Rust programs ============ */
 
   // From expected_output.txt (part 1).
@@ -385,6 +483,12 @@ every page ends up on the free list.</p>
     [100, 1088, 1089, 3000, 5000, 9000, 14000].map(function (p) { return p + ' -> ' + Ch13.localLen(p) + '+' + Ch13.overflowPages(p) + 'p'; }).join('  '),
     '100 -> 100+0p  1088 -> 1088+0p  1089 -> 544+1p  3000 -> 544+1p  5000 -> 916+1p  9000 -> 832+2p  14000 -> 544+4p');
   BTViz.selfTest('model valid', scenarioModel.validate().join('; '), '');
+  // From expected_output.txt (part 5).
+  BTViz.selfTest('crash, part 5', [0, 1, 2, 3].map(crashLine).join('\n'), [
+    'N = 0: validate ok; old: intact; new: missing',
+    'N = 1: validate ok; old: intact; new: missing',
+    "N = 2: validate ok; old: missing; new: WRONG VALUE (starts with 'n', ends with 'o')",
+    'N = 3: no crash, all writes done; validate ok; old: missing; new: intact'].join('\n'));
 })();
 </script>
 </body>

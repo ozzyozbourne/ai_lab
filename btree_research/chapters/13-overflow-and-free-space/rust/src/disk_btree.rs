@@ -2,7 +2,8 @@
 // overflow chains, `delete` with free-at-empty, the on-disk free list, a
 // wider `validate`. The split code (push_root_down, split_leaf,
 // insert_separator, split_interior, split_point) is chapter 12's, with
-// `pool.new_page()` replaced by `alloc_page()`.
+// `pool.new_page()` replaced by `alloc_page()` and an order check added to
+// `insert_separator`.
 //! disk_btree.rs: a B+tree of slotted pages with large values and a free list.
 //!
 //! Layers (each one only talks to the one below):
@@ -737,6 +738,21 @@ pub struct DiskBTree {
     /// Set when a `put` or `delete` failed after its first page change.
     poisoned: bool,
     pub stats: Stats,
+}
+
+/// A key for `dump`: printable ASCII as it is, any other byte as `\xNN`
+/// (what Zig's `std.ascii.hexEscape` prints).
+fn escape_key(key: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut text = String::new();
+    for &byte in key {
+        if (0x20..=0x7e).contains(&byte) {
+            text.push(byte as char);
+        } else {
+            let _ = write!(text, "\\x{byte:02x}");
+        }
+    }
+    text
 }
 
 impl DiskBTree {
@@ -1817,8 +1833,9 @@ impl DiskBTree {
     }
 
     /// The tree as text, one page per line, children indented under their
-    /// parent, then the free list. Keys are printed as text. A value is
-    /// printed as its length; a value with a chain as
+    /// parent, then the free list. Keys are printed as text, with every
+    /// byte that is not printable ASCII as `\xNN` (keys are arbitrary bytes,
+    /// and Zig and Rust must print the same). A value is printed as its length; a value with a chain as
     /// `total=local+[overflow page ids]`. (Zig prints to a writer.)
     ///
     /// Bounded on a damaged file: the tree part prints at most as many pages
@@ -1874,7 +1891,6 @@ impl DiskBTree {
         let page = SlottedPage::open(&mut copy);
         let n = page.count();
         let used = PAGE_CAPACITY - page.free_bytes();
-        let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
         out.push_str(&"  ".repeat(depth));
         if page.kind() == KIND_LEAF {
             let _ = write!(
@@ -1899,7 +1915,7 @@ impl DiskBTree {
         let children: Vec<PageId> = (0..=n).map(|i| child_at(&page, i)).collect();
         for (i, child) in children.iter().enumerate() {
             if i < n {
-                let _ = write!(out, " ({child}) {}", text(page.key(i)));
+                let _ = write!(out, " ({child}) {}", escape_key(page.key(i)));
             } else {
                 let _ = writeln!(out, " ({child})");
             }
@@ -1915,12 +1931,7 @@ impl DiskBTree {
         use std::fmt::Write;
         for i in 0..page.count() {
             let value = parse_field(page.value(i))?;
-            let _ = write!(
-                out,
-                " {}:{}",
-                String::from_utf8_lossy(page.key(i)),
-                value.total
-            );
+            let _ = write!(out, " {}:{}", escape_key(page.key(i)), value.total);
             if value.first == INVALID_PAGE_ID {
                 continue;
             }

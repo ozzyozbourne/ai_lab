@@ -1262,6 +1262,30 @@ test "Zig and Rust write the same bytes" {
     try testing.expectEqual(@as(u64, 10315806560220619977), std.hash.Fnv1a_64.hash(mem.bytes.items));
 }
 
+test "dump prints a key that is not text byte for byte the same in Zig and Rust" {
+    // Keys are arbitrary bytes. Six keys `ff 0i` with 700-byte values make a
+    // leaf split, so both a leaf line and a separator are printed. The Rust
+    // twin expects the same text.
+    var mem: MemStorage = .init(testing.allocator);
+    defer mem.deinit();
+    var db: Db = undefined;
+    try db.start(mem.storage(), 4, .create);
+    defer db.stop();
+    const value: [700]u8 = @splat('v');
+    for (0..6) |i| try db.tree.put(&.{ 0xff, @intCast(i) }, &value);
+    try db.tree.put("a\\ ~", "");
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try db.tree.dump(&out.writer);
+    try testing.expectEqualStrings(
+        \\page 1  interior  1 keys  12/4076 bytes  | (2) \xff\x03 (3)
+        \\  page 2  leaf      4 keys  2150/4076 bytes  next 3  | a\ ~:0 \xff\x00:700 \xff\x01:700 \xff\x02:700
+        \\  page 3  leaf      3 keys  2136/4076 bytes  next -  | \xff\x03:700 \xff\x04:700 \xff\x05:700
+        \\free list: 0 pages
+        \\
+    , out.written());
+}
+
 // ---- a file is untrusted input ------------------------------------------------
 //
 // The tests below damage a flushed file and open it with a new handle. No

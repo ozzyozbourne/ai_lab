@@ -10,9 +10,8 @@
 - **When** a freed page may be reused, in four systems, and why this chapter's answer
   ("immediately") is the one that is not crash-safe.
 
-Prerequisites: chapter 12 (this chapter extends its code: metapage, stable root, byte-based
-splits, pins, the poisoned handle), chapter 09 (buffer pool) and chapter 10 (slotted page).
-Chapter 05 explained deletion with borrowing and merging in memory; this chapter does not use it.
+Prerequisites: chapter 12 (this chapter extends its code), chapter 09 (buffer pool) and
+chapter 10 (slotted page). Chapter 05's borrowing and merging are not used here.
 
 ## The idea in plain words
 
@@ -60,7 +59,8 @@ K = M + (P - M) mod 4084        if K <= X keep K bytes in the leaf, else keep M
 Read it as: fill whole overflow pages counting from M, and look at the remainder. If the
 remainder fits in the leaf (K <= X), put it there: every overflow page is then full and no
 page is spent on a small tail. Otherwise keep only the minimum, so that more cells fit in the
-leaf, and let the last overflow page be partly full.
+leaf, and let the last overflow page be partly full. With L bytes kept in the leaf, the chain
+has `(P - L) / 4084` pages, rounded up.
 
 | P | K | in the leaf | overflow pages |
 |---|---|---|---|
@@ -68,7 +68,7 @@ leaf, and let the last overflow page be partly full.
 | 1089 | 1089 > X | 544 | 1 (545 bytes) |
 | 5000 | 544 + 4456 mod 4084 = 916 | 916 | 1, full |
 | 9000 | 544 + 8456 mod 4084 = 832 | 832 | 2, full |
-| 14000 | 544 + 13456 mod 4084 = 1748 > X | 544 | 4 (the last holds 1204) |
+| 14000 | 544 + 13456 mod 4084 = 1748 > X | 544 | 13456 / 4084 = 3.29, so 4 (the last holds 1204) |
 
 The alternative to chaining is a size cap: refuse what does not fit. Postgres does that for
 index entries (see "In real databases").
@@ -79,8 +79,9 @@ index entries (see "In real databases").
 cell goes does the page leave the tree:
 
 1. the left sibling's link is changed to skip it,
-2. the parent loses the pointer to it and one separator (no key moves: the neighbour inherits
-   an empty key range),
+2. the parent, with children C0..Cn and separators K0..Kn-1, loses the pointer Ci and one
+   separator: cell i (Ki with Ci) goes, and the right neighbour inherits Ci's key range. If Ci
+   was the rightmost child, the last cell goes and its child becomes the rightmost. No key moves,
 3. a parent that had no other child goes the same way, and so on up,
 4. the removed pages are put on the free list,
 5. if the root is left with one child and no key, the child's content is copied into the root
@@ -88,9 +89,9 @@ cell goes does the page leave the tree:
    and the root is still page 1.
 
 Pages that are merely nearly empty stay: no borrowing, no merging. That wastes space under
-some workloads (chapter 15 measures merge policies), and it is what Postgres does, for a
-reason that matters from chapter 19 on: moving cells between existing pages is what scans and
-concurrent readers cannot tolerate. Removing a page that is already empty moves nothing.
+some workloads (chapter 15 measures merge policies), and it is what Postgres does: moving
+cells between pages is what concurrent scans cannot tolerate (chapter 19 on), and removing a
+page that is already empty moves nothing.
 
 ### The free list
 
@@ -102,10 +103,9 @@ A trunk page is `next trunk id | count | up to 1021 page ids`. This is SQLite's 
 - **allocate()**: no trunk: grow the file. A trunk that lists ids: take the last one. A trunk
   that lists nothing: hand out the trunk page itself and move the head to the next trunk.
 
-The simpler design is a linked list threaded through the free pages themselves. Then freeing
-a page means writing it (its "next" field) and reusing one means reading it first. With
-trunks, freeing 1000 overflow pages dirties one page, the trunk, and the freed pages are not
-touched. The price is one more page format and one more case in allocation.
+The simpler design threads a linked list through the free pages themselves, so freeing a page
+writes it. With trunks, freeing 1000 overflow pages dirties one page, the trunk. The price is
+one more page format and one more case in allocation.
 
 The file never shrinks: a free page stays in the file until something reuses it.
 
@@ -153,87 +153,61 @@ A 700-byte value costs its leaf 712 bytes (2 slot + 4 cell header + 2 key + 4 le
 9. **put 80 = 3000 bytes** needs one page. Trunk 2 lists nothing, so page 2 itself is used.
    `page map: M L O O O O O`: seven pages, none free. Six of the eleven allocations reused a page.
 
-The [visualization](viz/index.html) plays these sixteen operations step by step.
+The [visualization](viz/index.html) plays these sixteen operations step by step, and part 5's crash.
 
 ## Code walk-through
 
-### Layout of the code
-
-```
-base_storage, base_pager, base_buffer_pool   copied from chapter 12 (chapter 09's), unchanged
-base_slotted_page                            copied from chapter 12 (chapter 10's), unchanged
-disk_btree                                   chapter 12's, extended: this chapter
-workload, tests, demo                        seeded values of every size class and the oracle, tests, the printed scenario
-```
-
-The split code (`pushRootDown`, `splitLeaf`, `insertSeparator`, `splitInterior`, `splitPoint`)
-is chapter 12's with two changes: it calls `allocPage()` where it called `pool.newPage()`, and
-`insertSeparator` returns `Corrupt` if the separator does not sort between its new neighbours
-(next section's last bullet). To the splitting code a value field is just a value of at most
-1096 bytes.
+`disk_btree` is chapter 12's file, extended; the `base_*` files are copied unchanged. The split
+code (`pushRootDown`, `splitLeaf`, `insertSeparator`, `splitInterior`, `splitPoint`) has two
+changes: it calls `allocPage()` where it called `pool.newPage()`, and `insertSeparator` returns
+`Corrupt` if the separator does not sort between its new neighbours. To the splitting code a
+value field is just a value of at most 1096 bytes.
 
 ### Zig (`zig/src/disk_btree.zig`)
 
 - **Constants.** `max_local`, `min_local`, `overflow_payload`, `trunk_capacity` are computed
-  from the page layout; a `comptime` block asserts the one-third rule for the largest value
-  field and the four numbers quoted here. `localLen` and `overflowPages` are the formulas
-  above. `parseField` decodes a value field and is safe on any bytes.
+  from the page layout and asserted at `comptime`. `localLen` and `overflowPages` are the
+  formulas above. `parseField` decodes a value field and is safe on any bytes.
 - **Free list.** `allocPage` and `freePage` (shown in the visualization). `allocPage` unpins
   the trunk *before* it fetches the page it handed out, so chapter 12's limit of two pins
   holds and a 2-frame pool still works.
-- **Chains.** `writeChain` allocates front to back, keeping the previous page pinned until the
-  next id is known. `readChain` fills a buffer and reports `Corrupt` if the chain is shorter
-  or longer than the stored length says. `freeChain` reads each page for its link, then frees
-  it; the page count comes from the stored length, so a damaged chain cannot make it loop.
-- **`put`**: read the old cell, `writeValue` (the new chain), the leaf `put` or a split,
-  `freeChain` of the old chain.
+- **Chains.** `writeChain` allocates front to back. `readChain` reports `Corrupt` if the chain
+  is shorter or longer than the stored length says. `freeChain` takes its page count from the
+  stored length, so a damaged chain cannot make it loop.
 - **`delete`, `removeLeaf`, `leftSibling`, `collapseRoot`**: the five steps of "free at
   empty". Leaves are singly linked, so the left sibling is found from the remembered path: up
   to the nearest ancestor where the path did not take child 0, one child to the left, then
   down along the rightmost children.
 - **The poisoned handle.** A field `changed` is set by whatever changes a page first; one
-  `errdefer` in `put` and in `delete` poisons the handle if the operation fails after that. A
-  failure before the first change leaves a working tree.
+  `errdefer` in `put` and in `delete` poisons the handle if the operation fails after that.
 - **`get` and `range`.** `get(allocator, key)` makes one allocation of exactly the value's
   length, copies the local part while the leaf is pinned, unpins, then reads the chain.
-  `RangeIterator` can no longer carry a buffer for the largest value; see "Allocator notes".
-  It now has a `deinit`.
+  `RangeIterator` now has a `deinit`; see "Allocator notes".
 - **`validate`** checks T1 to T10 (top of the file) and fills a `[]Role`, one per page;
   `pageMap` returns it, and the demo prints it as letters (`M I L O T F`).
 - **A file is untrusted input.** Every count, length and page id read from a page is checked
-  before it is used as an index or followed, and every walk has a bound. `pinNode` runs
-  `nodeIsSound` (the slotted page's `validate`, plus the key and value sizes the tree relies
-  on) the first time a handle pins a page of the file as a tree page; one flag per page makes
-  that once. `allocPage` checks the trunk's count before indexing with it and refuses an id
-  that is page 0, outside the file, or pinned. A descent stops after `max_height` = 32
-  levels, a scan after as many sibling links as the file has pages, `dump` after as many
-  pages and trunks. Tests, in both languages: 236 fields damaged one at a time, three
-  well-formed slotted pages that are not tree pages, and 600 seeded rounds of flipped bytes,
-  planted page ids and swapped pages. Every call returns a value or `Corrupt` and leaves no
-  pin.
+  before it is used, and every walk is bounded (`max_height` = 32 levels, the file's page
+  count). A tree page is checked as a whole (`nodeIsSound`) the first time a handle pins it.
+  On a damaged file every call returns a value or `Corrupt` and leaves no pin; the damage
+  tests in both languages check that.
 
 ### Rust (`rust/src/disk_btree.rs`) and the differences
 
-Same structure, names, tests and output. The two files written by the same operations are
-byte-identical (a test in each language compares a hash of the file with the same constant),
-and the pool counters printed by the demo are identical, because both programs make the same
-pool calls in the same order. Differences beyond those listed in chapter 12:
+Same structure, names, tests and output; the files the two programs write are byte-identical
+(a test in each language compares a hash of the file with the same constant). Differences
+beyond those listed in chapter 12:
 
-- **No allocator parameter.** Zig's `get` takes an `Allocator`. Stable Rust has no such
-  parameter, so the "stack first, heap if larger" idea is a type: `ValueBuf` holds an inline
-  array of 1088 bytes and a `Vec`, and `get_into(key, &mut buf)` fills whichever is large
-  enough. `get` is the convenience that returns a `Vec`.
-- **`ValueBuf` keeps its `Vec`'s capacity** between values, so a scan over many large values
-  allocates once. The Zig iterator frees each large value before reading the next.
-- **No `deinit` on the iterator.** Dropping it frees its buffers.
-- **Pin, copy, unpin.** Where Zig reads a pinned leaf while it walks that leaf's chains
-  (`validate`, `dump`), Rust copies the page to the stack first, because a `SlottedPage`
-  borrowing the pool cannot coexist with further pool calls. The pin is still held for the
-  same span, so that the pool behaves identically.
+- **No allocator parameter.** Zig's `get` takes an `Allocator`. In Rust the "stack first, heap
+  if larger" idea is a type: `ValueBuf` holds an inline array of 1088 bytes and a `Vec`, and
+  `get_into(key, &mut buf)` fills whichever is large enough. The `Vec` keeps its capacity, so
+  a scan over many large values allocates once; the Zig iterator frees each large value
+  before reading the next.
+- **Pin, copy, unpin.** In `validate` and `dump` Rust copies a pinned leaf to the stack before
+  it walks the leaf's chains: a `SlottedPage` borrowing the pool cannot coexist with further
+  pool calls. The pin is held for the same span.
 - **Poisoning** is an inner function (`put_steps`, `delete_steps`) plus a check of its result.
-- **Tests.** Zig has 82 tests, Rust 78. The four that exist only in Zig are the two
-  allocation-failure tests (safe Rust cannot make a `Vec` allocation fail), one storage test
-  and the import block.
+- **Tests.** Zig has 83 tests, Rust 79. Zig has four more: two allocation-failure tests (safe
+  Rust cannot make a `Vec` allocation fail), one storage test and the import block.
 
 ## Not crash-safe, and worse than before
 
@@ -253,29 +227,24 @@ At N = 2 the metapage and the leaf are new and page 2 is old. The file passes ev
 the cell says "5000 bytes, chain starts at page 2", and page 2 is a well-formed overflow page.
 It is the overflow page of the value that was deleted. `get("new")` returns 916 bytes of `'n'`
 followed by 4084 bytes of `'o'`, and nothing can tell. Without reuse the new cell would
-point at a page that was just appended to the file and is still all zeroes, which `get`
-reports as `Corrupt`.
+point at a newly appended page that is still all zeroes, which `get` reports as `Corrupt`.
 
 So: **this chapter reuses a freed page immediately, and that is not crash-safe.** Chapter 22
 adds the log that makes it safe; "In real databases" shows what others do instead.
 
 ## In real databases
 
-**Turso (SQLite format): overflow thresholds.** Max local payload X is `usable - 35` for table
-leaves and `((usable - 12) * 64 / 255) - 23` for index pages; min local M is
-`((usable - 12) * 32 / 255) - 23` (`turso/core/storage/btree.rs:10808-10832`; the comment at
-`:10804` gives the reason for the index formula: "a minimum fanout of 4 for index b-trees").
-`payload_overflows` is the rule this chapter copied (`turso/core/storage/sqlite3_ondisk.rs:2263-2278`).
-For 4096-byte pages X = 1002 and M = 489 on index pages (arithmetic in `research/turso.md`,
-section 5). The integrity check derives the expected chain length from the payload size, as
-`validate` does here (`btree.rs:8381-8393`); `clear_overflow_pages` frees a chain
-(`btree.rs:5499-5570`).
+**Turso (SQLite format): overflow thresholds.** On index pages max local payload X is
+`((usable - 12) * 64 / 255) - 23` and min local M is `((usable - 12) * 32 / 255) - 23`
+(`turso/core/storage/btree.rs:10808-10832`; the comment at `:10804` gives the reason: "a
+minimum fanout of 4 for index b-trees"). `payload_overflows` is the rule this chapter copied
+(`turso/core/storage/sqlite3_ondisk.rs:2263-2278`). For 4096-byte pages X = 1002 and M = 489
+(arithmetic in `research/turso.md`, section 5).
 
 **Postgres: a cap instead of a chain.** "We actually need to be able to fit three items on
 every page, so restrict any one item to 1/3 the per-page available space"
 (`postgres/src/include/access/nbtree.h:155-173`, `BTMaxItemSize`; 2704 bytes for 8 KiB pages,
-computed in `research/postgres.md`). A larger index tuple is an error with the hint "Values
-larger than 1/3 of a buffer page cannot be indexed" (`_bt_check_third_page`,
+computed in `research/postgres.md`). A larger index tuple is an error (`_bt_check_third_page`,
 `postgres/src/backend/access/nbtree/nbtutils.c:1107-1160`). The comment there says why it
 does not chain: out-of-line storage "would break assumptions made by suffix truncation and by
 contrib/amcheck".
@@ -288,30 +257,21 @@ happen --- a scan moving in the opposite direction might miss the items if so.)"
 deletes the rightmost page of a level, so its tree never loses a level. Like this chapter, it
 removes an interior page only together with its last child (exercise 4).
 
-**Turso: the freelist.** A trunk page is `next trunk (4) | leaf count (4) | leaf page numbers`
-(`sqlite3_ondisk.rs:89-97`). `free_page` appends to the first trunk while
-`leaf_count < usable/4 - 2`, else the freed page becomes the new first trunk
-(`turso/core/storage/pager.rs:5673-5690`, `:5700`). `allocate_page` hands out the trunk itself
-when it has no leaves (`pager.rs:5932-5957`) and otherwise the *first* leaf, shifting the rest
-down (`pager.rs:5960-6017`). This chapter takes the last, which moves nothing.
-
 ### When may a freed page be reused?
 
 | System | Where a freed page waits | It may be reused when |
 |---|---|---|
 | This chapter | free list (trunk pages) in the file | immediately, by the next allocation |
-| Turso | freelist trunk pages in the file, same structure (`pager.rs:5588-5725`, `:5853-6087`) | by the next allocation; trunk and reused page are marked dirty like any other page (`add_dirty`, `pager.rs:5681`, `:5990`) and reach the file through the WAL with the rest of the transaction (chapter 22) |
-| Postgres | the page stays in place as a deleted tombstone carrying `safexid`; later it is recorded in the free space map | only once no scan can still be on its way to it: `BTPageIsRecyclable` asks whether `safexid` is old enough (`nbtree.h:291-319`), and `_bt_allocbuf` re-checks before reuse (`nbtpage.c:910`). "A deleted page cannot be recycled immediately, since there may be other processes waiting to reference it" (`README:319-325`) |
-| DuckDB | an in-memory set of block ids, `modified_blocks` | after the next checkpoint: "this block was used in storage, we cannot directly re-use it" (`duckdb/src/storage/single_file_block_manager.cpp:1024-1028`); the blocks join the free list when the new header is written (`:1454-1458`). Only a block first used since the last checkpoint, which no durable state refers to, goes straight back (`:1018-1022`) |
+| Turso | freelist trunk pages in the file, same structure (`sqlite3_ondisk.rs:89-97`, `turso/core/storage/pager.rs:5588-5725`, `:5853-6087`). It hands out the first listed page and shifts the rest (`pager.rs:5960-6017`); this chapter takes the last | by the next allocation; trunk and reused page reach the file through the WAL with the rest of the transaction (`add_dirty`, `pager.rs:5681`, `:5990`) |
+| Postgres | the page stays in place as a deleted tombstone carrying `safexid`; later it is recorded in the free space map | once `safexid` is old enough (`BTPageIsRecyclable`, `nbtree.h:291-319`; `_bt_allocbuf` re-checks at `nbtpage.c:910`): "A deleted page cannot be recycled immediately, since there may be other processes waiting to reference it" (`README:319-325`) |
+| DuckDB | an in-memory set of block ids, `modified_blocks` | after the next checkpoint: "this block was used in storage, we cannot directly re-use it" (`duckdb/src/storage/single_file_block_manager.cpp:1024-1028`); the blocks join the free list when the new header is written (`:1454-1458`). Only a block first used since the last checkpoint goes straight back (`:1018-1022`) |
 | TigerBeetle | a "released" bit in the free set | after the next checkpoint is durable: "Leave the address acquired for now, but free it when the next checkpoint becomes durable" (`tigerbeetle/src/vsr/free_set.zig:509-511`) |
 
-Three different reasons to wait. Postgres waits for *readers*: a concurrent scan may still
-follow a link to the page. DuckDB and TigerBeetle wait for *recovery*: the last durable state
-still refers to the block, and a crash would return to that state (part 5 is this failure in
-miniature). Turso does not wait, because its log already makes the whole transaction atomic.
-This chapter has neither readers nor a log, so it does not wait and is not safe.
-
-DuckDB and TigerBeetle have no B-tree; the comparison is about page (block) allocators.
+Postgres waits for *readers*: a concurrent scan may still follow a link to the page. DuckDB
+and TigerBeetle (block allocators without a B-tree) wait for *recovery*: the last durable
+state still refers to the block, and a crash would return to that state (part 5 is this
+failure in miniature). Turso does not wait, because its log makes the whole transaction
+atomic. This chapter has neither readers nor a log, so it does not wait and is not safe.
 
 ## Allocator notes
 
@@ -319,38 +279,33 @@ DuckDB and TigerBeetle have no B-tree; the comparison is about page (block) allo
 `stackFallback`). It tries a fixed buffer first and falls back to another allocator when the
 request does not fit, and it tells by address which of the two a slice came from.
 
-Reading a value needs a buffer of the value's length, anything from 0 to 65536 bytes, and
-most values are small. Two places use the chain:
+Reading a value needs a buffer of 0 to 65536 bytes, and most values are small. Two places
+use it:
 
 - **The caller of `get`.** `get` takes an `Allocator` and makes exactly one allocation. Part 4
   of the demo passes a `BufferFirstAllocator` over a 1088-byte array in its own stack frame,
   with the general-purpose allocator behind it: of 383 values, 240 are assembled on the stack
   and 143 on the heap. The tree does not know.
 - **`RangeIterator`.** It contains `inline_buf: [1088]u8`, and each `next` puts a
-  `BufferFirstAllocator` over it with the tree's allocator as fallback. 1088 is X: a value
-  that was stored whole in its leaf fits in the iterator, which lives in its caller's stack
-  frame; only a value that had an overflow chain costs a heap allocation.
+  `BufferFirstAllocator` over it with the tree's allocator as fallback. 1088 is X: only a
+  value that had an overflow chain costs a heap allocation.
 
 Lifetime: the value returned by `next` is valid until the next call. That call, or `deinit`,
 frees it; a fresh `BufferFirstAllocator` over the same buffer can do so because ownership is
 decided by address.
 
-With other allocators: chapter 12's fixed inline buffer would make the iterator 64 KiB and
-limit value size again. The general-purpose allocator alone costs an allocation and a free per
-entry scanned. The per-operation arena cannot be used, because `next` is not an operation the
-tree can bracket with a reset, and an arena that is never reset grows by every value scanned.
+With other allocators: chapter 12's fixed inline buffer would make the iterator 64 KiB. The
+general-purpose allocator alone costs an allocation and a free per entry scanned. The
+per-operation arena cannot be reset between calls of `next`, so it would grow by every value
+scanned.
 
 **The arena per operation** is chapter 12's, with one more thing in it: the list of pages
 `removeLeaf` is about to free. The value field `put` builds (at most 1096 bytes) is a stack array.
 
-Tests: `get` with a `FixedBufferAllocator` of zero bytes returns `OutOfMemory` and leaves no
-pin; a `FailingAllocator` behind the iterator makes `next` fail, leaves no pin, and the scan
-continues from the same entry once memory is back. A third test refuses every scratch
-request of four puts that split and three deletes that free pages, one request per run (29
-failure points, counted): each run ends with `OutOfMemory`, no pin, and either an untouched
-tree or a poisoned handle behind which `validate` finds leaked pages or a half-done change,
-never a page with two roles. Rust: `ValueBuf`, as described above; allocation failure is not
-simulated.
+Tests: allocation failure is injected into `get`'s allocator, into the iterator's fallback,
+and into every scratch request of four puts that split and three deletes that free pages.
+Each run ends with `OutOfMemory`, no pin, and an intact tree or a poisoned handle. Rust does
+not simulate allocation failure.
 
 ## Pitfalls
 
@@ -358,15 +313,9 @@ simulated.
   written: it still looks like the leaf or overflow page it was. Only reachability decides a
   page's role. That is why part 5's damaged file validates.
 - **A trunk is a free page too.** `free_count` counts trunks, and an allocation may hand one out.
-- **The file never shrinks.** After "delete everything" the tests find a file of the same size
-  with all but two pages on the free list.
 - **Empty is not nearly empty.** One 10-byte cell keeps a 4096-byte leaf alive. Random deletes
   rarely empty a leaf; the model test needs range deletes ("sweeps") to reach the page-freeing
   code at all.
-- **A reused page is read from disk only to be overwritten with zeroes**: chapter 09's pool
-  cannot pin a page without reading it (exercise 2).
-- **`RangeIterator` needs `defer it.deinit()` in Zig now**; `std.testing.allocator` reports
-  the leak otherwise.
 
 ## Exercises
 
@@ -390,9 +339,8 @@ Solutions: [solutions.md](solutions.md).
 
 - Previous: [chapter 12, a disk-backed B+tree](../12-disk-backed-bplus-tree/README.md)
 - Next: [chapter 14, split policies and fill factor](../14-split-policies-and-fill-factor/README.md)
-- Later: [chapter 15](../15-redistribution-and-merge-policies/README.md) compares merge
-  policies; [chapter 22](../22-wal-and-crash-recovery/README.md) makes multi-page changes
-  atomic; [chapter 24](../24-mvcc-vacuum-and-page-deletion/README.md) is Postgres's page
-  deletion in full.
+- Later: [chapter 15](../15-redistribution-and-merge-policies/README.md) (merge policies),
+  [chapter 22](../22-wal-and-crash-recovery/README.md) (atomic multi-page changes),
+  [chapter 24](../24-mvcc-vacuum-and-page-deletion/README.md) (Postgres's page deletion).
 - Visualization: [a value spilling into a chain, pages going to the free list and coming back](viz/index.html)
 - Output of both programs: [expected_output.txt](expected_output.txt)

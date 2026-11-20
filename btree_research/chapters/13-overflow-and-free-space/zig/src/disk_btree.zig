@@ -2,7 +2,7 @@
 // overflow chains, `delete` with free-at-empty, the on-disk free list, a
 // wider `validate`. The split code (pushRootDown, splitLeaf, insertSeparator,
 // splitInterior, splitPoint) is chapter 12's, with `pool.newPage()` replaced
-// by `allocPage()`.
+// by `allocPage()` and an order check added to `insertSeparator`.
 //! disk_btree.zig: a B+tree of slotted pages with large values and a free list.
 //!
 //! Layers (each one only talks to the one below):
@@ -1491,8 +1491,9 @@ pub const DiskBTree = struct {
     }
 
     /// Print the tree, one page per line, children indented under their
-    /// parent, then the free list. Keys are printed as text. A value is
-    /// printed as its length; a value with a chain as
+    /// parent, then the free list. Keys are printed as text, with every
+    /// byte that is not printable ASCII as `\xNN` (keys are arbitrary bytes,
+    /// and Zig and Rust must print the same). A value is printed as its length; a value with a chain as
     /// `total=local+[overflow page ids]`.
     ///
     /// Bounded on a damaged file: the tree part prints at most as many pages
@@ -1521,6 +1522,11 @@ pub const DiskBTree = struct {
         try w.writeAll("\n");
     }
 
+    /// A key for `dump`: printable ASCII as it is, any other byte as `\xNN`.
+    fn escapeKey(key: []const u8) std.ascii.HexEscape {
+        return std.ascii.hexEscape(key, .lower);
+    }
+
     fn dumpPage(self: *DiskBTree, w: *Io.Writer, id: PageId, depth: usize, budget: *usize) (Error || Io.Writer.Error)!void {
         // A page reached twice is printed twice, so a loop among the child
         // pointers would print for ever without these two bounds.
@@ -1538,7 +1544,7 @@ pub const DiskBTree = struct {
             try w.writeAll("  |");
             for (0..n) |i| {
                 const ref = try parseField(page.value(i));
-                try w.print(" {s}:{d}", .{ page.key(i), ref.total });
+                try w.print(" {f}:{d}", .{ escapeKey(page.key(i)), ref.total });
                 if (ref.first == invalid_page_id) continue;
                 try w.print("={d}+[", .{ref.local.len});
                 var at = ref.first;
@@ -1558,7 +1564,7 @@ pub const DiskBTree = struct {
         const children = try self.arena.allocator().alloc(PageId, n + 1);
         for (children, 0..) |*child, i| {
             child.* = childAt(page, i);
-            if (i < n) try w.print(" ({d}) {s}", .{ child.*, page.key(i) }) else try w.print(" ({d})\n", .{child.*});
+            if (i < n) try w.print(" ({d}) {f}", .{ child.*, escapeKey(page.key(i)) }) else try w.print(" ({d})\n", .{child.*});
         }
         self.pool.unpin(id, false);
         pinned = false;

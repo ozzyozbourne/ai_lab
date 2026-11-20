@@ -1070,6 +1070,30 @@ fn zig_and_rust_write_the_same_bytes() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn dump_prints_a_key_that_is_not_text_byte_for_byte_the_same_in_zig_and_rust() -> TestResult {
+    // Keys are arbitrary bytes. Six keys `ff 0i` with 700-byte values make a
+    // leaf split, so both a leaf line and a separator are printed. The Zig
+    // twin expects the same text.
+    let mem = MemStorage::new();
+    let mut tree = create_mem(&mem, 4);
+    let value = [b'v'; 700];
+    for i in 0..6u8 {
+        tree.put(&[0xff, i], &value)?;
+    }
+    tree.put(b"a\\ ~", b"")?;
+    assert_eq!(
+        tree.dump()?,
+        concat!(
+            "page 1  interior  1 keys  12/4076 bytes  | (2) \\xff\\x03 (3)\n",
+            "  page 2  leaf      4 keys  2150/4076 bytes  next 3  | a\\ ~:0 \\xff\\x00:700 \\xff\\x01:700 \\xff\\x02:700\n",
+            "  page 3  leaf      3 keys  2136/4076 bytes  next -  | \\xff\\x03:700 \\xff\\x04:700 \\xff\\x05:700\n",
+            "free list: 0 pages\n",
+        )
+    );
+    Ok(())
+}
+
 // ---- a file is untrusted input ------------------------------------------------
 //
 // The tests below damage a flushed file and open it with a new handle. No

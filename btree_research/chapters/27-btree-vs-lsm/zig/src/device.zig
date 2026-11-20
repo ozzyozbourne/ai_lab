@@ -86,11 +86,11 @@ pub const Device = struct {
     // ------------------------------------------------- streaming I/O
 
     pub fn read(self: *Device, kind: Kind, n: u64) void {
-        self.counters.reads[@intFromEnum(kind)] += n;
+        self.counters.reads[@backingInt(kind)] += n;
     }
 
     pub fn write(self: *Device, kind: Kind, n: u64) void {
-        self.counters.writes[@intFromEnum(kind)] += n;
+        self.counters.writes[@backingInt(kind)] += n;
     }
 
     // ------------------------------------- per-operation pinned blocks
@@ -181,5 +181,5 @@ test "a freed block is not written, and peak remembers the high-water mark" {
     dev.write(.index, 2);
     const delta = dev.counters.since(before);
     try std.testing.expectEqual(5, delta.totalReads());
-    try std.testing.expectEqual(2, delta.writes[@intFromEnum(Kind.index)]);
+    try std.testing.expectEqual(2, delta.writes[@backingInt(Kind.index)]);
 }

@@ -236,8 +236,8 @@ fn compare(gpa: Allocator, w: *Writer, wl: bench.Workload, section: usize) !void
     const r = try bench.runWorkload(gpa, wl, bench.bench_order, cfg);
     const b = &r.btree;
     const l = &r.lsm;
-    const index = @intFromEnum(lib.device.Kind.index);
-    const data = @intFromEnum(lib.device.Kind.data);
+    const index = @backingInt(lib.device.Kind.index);
+    const data = @backingInt(lib.device.Kind.data);
     const per_block: u64 = cfg.block_entries;
 
     try w.print("\n== {d}. Workload: {s} ==\n", .{ section, wl.name });

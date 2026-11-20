@@ -211,7 +211,7 @@ test "three runs: ascending output, the newest version wins, tombstones pass thr
     m.addRun(&dev, &middle, 0);
     m.addRun(&dev, &oldest, 0);
     const expected = [_]Slot{
-        .{ .key = 1, .value = 12 }, .{ .key = 3, .value = 31 }, .{ .key = 5, .value = 53 },
+        .{ .key = 1, .value = 12 },   .{ .key = 3, .value = 31 }, .{ .key = 5, .value = 53 },
         .{ .key = 7, .value = null }, .{ .key = 9, .value = 92 },
     };
     for (expected) |e| try testing.expectEqual(e, m.next(&dev).?);

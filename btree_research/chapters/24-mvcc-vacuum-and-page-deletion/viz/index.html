@@ -15,6 +15,8 @@
   .c24-pic { overflow-x: auto; max-width: 100%; min-height: 236px; border-radius: 6px; background: var(--bt-bg); border: 1px solid var(--bt-border); scrollbar-width: thin; }
   .c24-svg { display: block; margin: 0 auto; font-family: var(--bt-mono); }
   .c24-svg .bt-key text { font-size: 12px; }
+  /* An entry is nested in its page's <g>: it must not inherit the page's highlight colour. */
+  .c24-page .bt-key:not([class*="s-"]) { --s: initial; --s-bg: initial; }
   .c24-page.is-half-dead .bt-node-box, .c24-page.is-deleted .bt-node-box, .c24-page.is-free .bt-node-box { stroke-dasharray: 5 3; }
   .c24-inner { font: italic 11px var(--bt-font); fill: var(--bt-text); text-anchor: middle; dominant-baseline: central; }
   .c24-rowtitle { font: 10.5px var(--bt-font); fill: var(--bt-muted); }

@@ -14,7 +14,7 @@
   .c8-cur dt { color: var(--bt-muted); }
   .c8-cur dd { margin: 0; font-family: var(--bt-mono); overflow-wrap: anywhere; }
   .c8-frames { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font: .8rem/1.5 var(--bt-mono); }
-  .c8-frames li { border: 1px solid var(--bt-pointer); background: var(--bt-pointer-bg); color: var(--bt-text); border-radius: 6px; padding: 1px 8px; }
+  .c8-frames li { border: 2px solid var(--c8-path); background: var(--c8-path-bg); color: var(--bt-text); border-radius: 6px; padding: 1px 8px; }
   .c8-frames li.is-none { border-style: dashed; border-color: var(--bt-border); background: none; color: var(--bt-muted); }
   .c8-stale { color: var(--bt-key-deleted); font-weight: 600; }
   .c8-fresh { color: var(--bt-key-found); font-weight: 600; }
@@ -23,6 +23,18 @@
   .c8-points li { margin: .35em 0; }
   .c8-num { width: 5.2em; }
   .bt-selftest { white-space: normal; border-radius: 10px; }   /* long names must wrap on a phone */
+  /* The stack cursor's path, the picture of the second design: every node that has a frame is filled,
+     and the edge into the child that frame took is drawn thick, in one colour that nothing else on this
+     page uses. The colour is borrowed from a toolkit token this chapter has no other use for (pages
+     and their dirty state start in chapter 09), so both themes are covered by the toolkit. The frame
+     list in the cursor panel uses the same colour: one list item per filled internal node. */
+  :root { --c8-path: var(--bt-page-dirty); --c8-path-bg: var(--bt-page-dirty-bg); }
+  .s-path { --s: var(--c8-path); --s-bg: var(--c8-path-bg); }
+  .bt-node.s-path .bt-node-box { stroke-width: 2.75; }
+  .bt-edge-g.s-path .bt-edge { stroke-width: 4; }
+  .bt-edge-g.s-path .bt-edge-dot { r: 3.4px; }
+  .c8-zoom { display: none; }
+  .c8-zoom.is-on { display: block; }
   /* Node handles ("#6") sit where the edge from the parent arrives; a halo in the stage colour keeps
      them readable, because captions and stack frames refer to nodes by these handles. */
   .bt-tree-svg .bt-node-label { paint-order: stroke; stroke: var(--bt-bg); stroke-width: 4px; stroke-linejoin: round; }
@@ -55,8 +67,9 @@ changes between two of its steps.</p>
   <li><strong>Crossing a leaf boundary.</strong> The leaf-link cursor makes one move. The stack cursor goes up to the
     parent and down again, and from <b class="bt-k">12</b> to <b class="bt-k">15</b> in the canonical tree it has to pop a
     frame and go through the root: four moves. The counter <em>node visits</em> adds them up.</li>
-  <li><strong>The stack is the position.</strong> With the stack design the highlighted path and the frame list on the
-    right are the whole cursor. Nothing in the leaves points sideways for it.</li>
+  <li><strong>The stack is the position.</strong> With the stack design the path drawn into the tree (filled nodes, and
+    a thick edge into the child each of them took) and the frame list in the cursor panel are the same thing, and they
+    are the whole cursor. Nothing in the leaves points sideways for it.</li>
   <li><strong>A stale position.</strong> In the second figure run the scenario, then switch the mode to
     <em>trust the old position</em> and run it again: the same <code>next</code> returns <b class="bt-k">12</b> twice.</li>
   <li><strong>Deleting under the cursor.</strong> Seek to a key, delete that key, then press Next and Prev: the saved key
@@ -150,7 +163,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
     var live = function (h) { return h !== NIL && b.slots[h] && b.slots[h].used; };
     snap.stale.forEach(function (id) { hl.keys[id] = 'dim'; });                 // stale separators (chapter 07)
     (extra.found || []).forEach(function (key) { var h = b.findLeaf(key); if (h !== NIL && b.get(key) !== null) hl.keys[b.id(h) + ':' + key] = 'found'; });
-    if (cur && cur.design === 'stack' && !(extra.stale)) cur.frames.forEach(function (f) { if (live(f.h)) hl.nodes[b.id(f.h)] = 'pointer'; });
+    if (cur && cur.design === 'stack' && !(extra.stale)) markPath(b, cur, hl);
     var e = ev.hl || {};
     Object.keys(e.nodes || {}).forEach(function (h) { if (live(+h)) hl.nodes[b.id(+h)] = e.nodes[h]; });
     Object.keys(e.edges || {}).forEach(function (h) { if (live(+h)) hl.edges[b.id(+h)] = e.edges[h]; });
@@ -165,6 +178,26 @@ here are checked against the output of the chapter's Zig and Rust programs (self
         result: (extra.result || []).slice(), model: extra.model || null, dup: extra.dup || null
       }
     };
+  }
+  /**
+   * Draws a stack cursor's position: each frame (node, child taken) fills its node and marks the edge
+   * into that child, and the leaf is filled when the frames lead to it (while the cursor is between two
+   * leaves they do not). Event highlights are applied afterwards, so the node being visited right now
+   * keeps its own colour.
+   */
+  function markPath(b, cur, hl) {
+    var live = function (h) { return h !== NIL && h !== undefined && b.slots[h] && b.slots[h].used; };
+    var reached = cur.frames.length ? NIL : b.root;      // the node the frames lead to
+    cur.frames.forEach(function (f) {
+      reached = NIL;
+      if (!live(f.h) || b.node(f.h).leaf) return;
+      hl.nodes[b.id(f.h)] = 'path';
+      var child = b.node(f.h).children[f.ci];
+      if (!live(child)) return;
+      hl.edges[b.id(child)] = 'path';
+      reached = child;
+    });
+    if (cur.state === 'on' && live(cur.leaf) && reached === cur.leaf) hl.nodes[b.id(cur.leaf)] = 'path';
   }
   /** Where the cursor says it is, in words. */
   function positionText(tree, cur) {
@@ -193,10 +226,20 @@ here are checked against the output of the chapter's Zig and Rust programs (self
         ul.appendChild(el('li', 'frame ' + i + ': node #' + f.h + ', child ' + f.ci + (i === c.frames.length - 1 ? '  ← top' : '')));
       });
       box.appendChild(ul);
-      box.appendChild(el('p.c8-note', s.stale ? 'These frames were computed for an older tree: they are not trusted.' : 'Root first. The top frame is the parent of the current leaf.'));
+      box.appendChild(el('p.c8-note', s.stale ? 'These frames were computed for an older tree: they are not trusted, and the path is not drawn.' :
+        'Root first. The top frame is the parent of the current leaf. Each frame is one filled node in the picture, with the thick edge into its child.'));
     } else {
       box.appendChild(el('p.c8-note', 'A leaf handle and an index: two words. No path is kept.'));
     }
+  }
+  /**
+   * On a narrow screen the whole tree is fitted into the stage, which makes the keys small. The hint
+   * appears only while the picture is drawn below 70 % (the toolkit's normal lower limit).
+   */
+  function zoomHint(stage) {
+    var hint = el('p.c8-note.c8-zoom', 'Keys too small on this screen? The + button under the tree enlarges it; drag the picture sideways to move it, and "fit" brings the whole tree back.');
+    stage.appendChild(hint);
+    return function (view) { hint.classList.toggle('is-on', view.scale < 0.7); };
   }
   function renderStrip(box, label, keys, dup) {
     box.textContent = '';
@@ -211,7 +254,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
   (function scanFigure() {
     var fig = BTViz.figure('#fig-scan', {
       title: 'A range scan with either cursor', side: true,
-      legend: ['node-active', 'key-compare', { token: 'key-found', label: 'returned by the scan' }, { token: 'pointer', label: 'on the stack cursor\'s path' }]
+      legend: ['node-active', 'key-compare', { token: 'key-found', label: 'returned by the scan' }, { token: 'page-dirty', label: 'stack cursor\'s path: node with a frame, edge taken' }]
     });
     var loKind = select('Lower bound kind', [['unbounded', '(−∞  none'], ['included', '[  included'], ['excluded', '(  excluded']], 'included');
     var hiKind = select('Upper bound kind', [['unbounded', '+∞)  none'], ['included', ']  included'], ['excluded', ')  excluded']], 'excluded');
@@ -229,6 +272,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
     var view = new BTViz.TreeView(fig.stage, { minHeight: 230, minScale: 0.45, ariaLabel: 'B+tree being scanned' });
     var strip = el('div.c8-strip', { 'aria-label': 'Keys returned so far' });
     fig.stage.appendChild(strip);
+    var hint = zoomHint(fig.stage);
     var panel = el('div.bt-panel', el('div.bt-panel-title', 'The cursor'));
     var body = el('div.bt-panel-body.c8-cur');
     panel.appendChild(body);
@@ -241,6 +285,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
       mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
       onStep: function (step, i) {
         view.render(step.state.tree, step.highlight);
+        hint(view);
         renderCursorPanel(body, step.state);
         renderStrip(strip, 'returned:', step.state.result, null);
         showCode(step.code, step.type);
@@ -331,7 +376,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
     var fig = BTViz.figure('#fig-change', {
       title: 'The tree changes under the cursor', side: true,
       legend: ['node-active', 'key-compare', { token: 'key-found', label: 'returned by the cursor' }, 'key-inserted',
-        { token: 'key-deleted', label: 'deleted, or returned wrongly' }, 'split', 'merge', { token: 'pointer', label: 'on the stack cursor\'s path' }]
+        { token: 'key-deleted', label: 'deleted, or returned wrongly' }, 'split', 'merge', { token: 'page-dirty', label: 'stack cursor\'s path: node with a frame, edge taken' }]
     });
     var design = select('Cursor design', [['link', 'leaf-link cursor'], ['stack', 'stack cursor']], 'link');
     var mode = select('What the cursor does after a change', [['safe', 're-seek by saved key (correct)'], ['naive', 'trust the old position (naive)']], 'safe');
@@ -346,6 +391,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
     var view = new BTViz.TreeView(fig.stage, { minHeight: 230, minScale: 0.45, ariaLabel: 'B+tree with a cursor on it' });
     var strip = el('div.c8-strip', { 'aria-label': 'Keys the cursor returned since its last seek' });
     fig.stage.appendChild(strip);
+    var hint = zoomHint(fig.stage);
     var panel = el('div.bt-panel', el('div.bt-panel-title', 'The cursor'));
     var body = el('div.bt-panel-body.c8-cur');
     panel.appendChild(body);
@@ -359,6 +405,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
       mount: fig.controls, caption: fig.caption, root: fig.root, predict: false,
       onStep: function (step, i) {
         view.render(step.state.tree, step.highlight);
+        hint(view);
         renderCursorPanel(body, step.state);
         renderStrip(strip, 'returned since the last seek:', step.state.result, step.state.dup);
         showCode(step.code, step.type);

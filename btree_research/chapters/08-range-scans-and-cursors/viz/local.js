@@ -169,7 +169,7 @@
     }
     var count = land.backward;
     this._emit('land', count > 0
-      ? 'Leaf ' + L + ': ' + count + ' of its keys qualify; ' + seekText(t) + ' is the last of them, at index ' + (count - 1) + '.'
+      ? 'Leaf ' + L + ': ' + (count === 1 ? '1 of its keys qualifies; ' : count + ' of its keys qualify; ') + seekText(t) + ' is the last of them, at index ' + (count - 1) + '.'
       : 'Leaf ' + L + ': no key here qualifies, so the answer is the last entry of the previous leaf.',
       { nodes: mk(this.leaf, 'active'), keys: count > 0 ? [[this.leaf, n.keys[count - 1], 'compare']] : [] }, 'seek');
     return this._settleBackward(b, count);

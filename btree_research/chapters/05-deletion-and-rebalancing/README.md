@@ -197,22 +197,28 @@ alive at once.
 
 ### Zig
 
-The source is split by topic so later chapters can copy what they need:
+The source is split by topic so later chapters can copy what they need. The last
+column says which other files a file imports:
 
-| File | Content |
-|------|---------|
-| `node.zig` | `Node(M)`: fixed arrays, one spare slot, entry and child helpers |
-| `pool.zig` | node allocation: `DirectNodes`, `FreeListPool`, `StdPool` |
-| `search.zig` | `lowerBound`, `get`, `inOrder`, `range` |
-| `insert.zig` | `put`: descend, reserve, commit; `splitNode` |
-| `delete.zig` | `delete`, `removeFrom`, `removeMax`, `fixUnderflow`, borrow, merge |
-| `validate.zig` | every invariant as a named error |
-| `stats.zig` | `Shape` (height, nodes, fill) and the text rendering |
-| `btree.zig` | `BTree(M, PoolFn)`: fields, counters, thin methods |
-| `scenario.zig`, `tests.zig` | the printed scenario; whole-tree tests |
+| File | Content | Needs |
+|------|---------|-------|
+| `node.zig` | `Node(M)`: fixed arrays, one spare slot, entry and child helpers | - |
+| `search.zig` | `lowerBound`, `get`, `inOrder`, `range` | node |
+| `validate.zig` | every invariant as a named error | node |
+| `stats.zig` | `Shape` (height, nodes, fill) and the text rendering | node |
+| `pool.zig` | node allocation: `DirectNodes`, `FreeListPool`, `StdPool` | - |
+| `insert.zig` | `put`: descend, reserve, commit; `splitNode` | node, search |
+| `delete.zig` | `delete`, `removeFrom`, `removeMax`, `fixUnderflow`, borrow, merge | node, search |
+| `btree.zig` | `BTree(M, PoolFn)`: fields, counters, thin methods | all of the above |
+| `tests_insert.zig` | whole-tree tests that never call `delete` | btree, pool |
+| `tests_delete.zig`, `scenario.zig` | the delete tests; the printed scenario | everything |
+
+Search alone is the first four files. Search and insert add `pool`, `insert`,
+`tests_insert` and `btree.zig` without its `delete` method.
 
 Deletion is recursive, because the repair happens in the parent after the child has
-been changed, which is exactly what "code after the recursive call" does:
+been changed, which is exactly what "code after the recursive call" does. Condensed
+from `delete.zig` (comments and the counter update removed):
 
 ```zig
 fn removeFrom(comptime Tree: type, tree: *Tree, gpa: Allocator, node: *Tree.NodeT, key: u64) ?u64 {
@@ -255,7 +261,10 @@ and the old root is freed.
 Deletion never allocates and cannot fail. Insertion can, so `put` first reserves every
 node the split chain will need (one per full node on the path, plus one if the root
 splits) and only then changes the tree. A failed allocation therefore leaves the tree
-untouched; `tests.zig` checks this with `std.testing.FailingAllocator` and
+untouched. `put` also restores the pool's `usage` counters, so they never count
+reservations that were handed back. The only trace of a failed `put` is inside the pool:
+a slot carved for a returned reservation stays on its free list. `tests_insert.zig`
+checks all of this with `std.testing.FailingAllocator` and
 `std.testing.checkAllAllocationFailures`.
 
 ### Rust
@@ -273,12 +282,19 @@ differences:
   same time; with indices the code takes a value out of one node, then touches the
   next, and the borrow checker is satisfied without `unsafe` or `Rc<RefCell<_>>`.
 - **`free` returns the node by value.** A merge frees the right node first and appends
-  its vectors to the left node, moving the keys instead of copying them.
+  its keys, values and children to the left node (`Vec::append` copies the elements).
+  The right node's own buffers are then dropped.
+- **Read-only code does not know the slab.** `search.rs`, `validate.rs` and `stats.rs`
+  take any `Nodes` (a type with `nodes[id]`). That is the slab, or a plain `Vec<Node>`,
+  the typed arena of chapter 03.
 - **No `deinit`.** Dropping the tree drops the slab and every node in it. In Zig the
   tree walks all nodes and returns each one, and the test allocator checks that none
   was missed.
-- **Failure model.** A failed allocation aborts a Rust process, so the slab has an
-  optional node budget and `put` returns `Err(OutOfNodes)`. The reserve-then-commit
+- **Failure model.** A failed allocation aborts a Rust process, so the slab itself
+  refuses and `put` returns `Err(OutOfNodes)`. It has two switches. `budget` limits
+  the number of live nodes. `fail_after = Some(n)` lets n more allocations succeed and
+  then fails, like `fail_index` of Zig's `FailingAllocator`; only this one can fail the
+  second allocation of one `put` in a tree of any size. The reserve-then-commit
   structure is identical; the `errdefer` that returns reserved nodes is an explicit
   loop.
 - **Use-after-free and double free** are panics in the slab (`slab[id]` on a freed
@@ -347,8 +363,12 @@ part 5 of the output shows 650 nodes created while at most 217 were alive. That 
 textbook case for a **pool**: fixed-size slots and a free list.
 
 The tree is generic over a pool type, `BTree(M, PoolFn)`, and every pool has the same
-four members: `create(gpa)`, `destroy(gpa, node)`, `deinit(gpa)`, `usage`. The backing
-allocator is passed to each call; nothing stores one.
+members: `empty`, `create(gpa)`, `destroy(gpa, node)`, `deinit(gpa)`, `usage`. The
+backing allocator is passed to each call; nothing stores one. The contract is checked
+by the compiler where the tree uses it, so a pool written in another file works too
+(`tests_insert.zig` has a bump allocator as an example). Every pool must keep `usage`
+current with `usage.onCreate()` and `usage.onDestroy()`; a pool that cannot free a
+single node only counts in `destroy`.
 
 | Pool | How it works | Use it for |
 |------|--------------|-----------|
@@ -379,15 +399,21 @@ that unlinks it.
   tests use `DirectNodes` (every node is its own allocation), why each pool counts
   `created` and `destroyed`, and why `validate` compares the pool's live count with the
   number of nodes reachable from the root.
-- A double `destroy` on `FreeListPool` would link a slot to itself and hand the same
-  node out twice. Nothing in the pool detects that; the same bug under `DirectNodes`
-  with the test allocator stops the test at the second `destroy`.
+- A double `destroy` on `FreeListPool` links a slot to itself. The free list then never
+  runs out and every later `create` returns that same node. No counter looks wrong (the
+  test "FreeListPool does not notice a double destroy" shows it). The same bug under
+  `DirectNodes` with the test allocator stops the program at the second `destroy` with
+  `panic: double free of [addr: ..., len: 16 ...]` and the stack traces of the
+  allocation and of both frees. A test that aborts cannot be part of the suite, so this
+  half is not in `zig build test`.
 - A pool never shrinks. After part 5 the tree is empty, but the chunks for 217 nodes
   stay allocated until `deinit`.
 
-Rust has one structure for all of this: `Slab`, a `Vec` of slots with a free list of
+Rust has one structure in this role: `Slab`, a `Vec` of slots with a free list of
 indices. It detects double free and use-after-free itself, and counts live nodes for
-`validate`.
+`validate`. It recycles node slots (ids) only. The key, value and child vectors of a
+node are still separate heap allocations, made by a split and released by a merge, so
+the slab is not the full pool of the Zig version.
 
 ## Pitfalls
 

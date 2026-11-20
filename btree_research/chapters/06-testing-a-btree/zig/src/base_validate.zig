@@ -1,13 +1,21 @@
 // Copied from chapters/05-deletion-and-rebalancing/zig/src/validate.zig
-//! SECTION 6a: the invariants as code.
+// Changes for chapter 06: `Diagnostic` (WHERE the invariant broke), and a node's
+// own checks (including its child slots) now all run before the walk descends.
+//! The invariants as code (README section "Invariants as code").
 //!
-//! `validate` walks the whole tree and returns the first broken invariant.
-//! Every test calls it after every operation; chapter 06 builds a fuzzer on it.
+//! `validate` walks the whole tree and returns the first broken invariant as
+//! an error value. Each invariant has its own error, so a failing fuzz run
+//! says WHICH promise was broken; the optional `Diagnostic` says WHERE.
 //!
-//! This file needs only node.zig: it knows nothing about pools, insert or
-//! delete, and works on trees built by hand.
+//! A Zig error is a bare tag: it cannot carry data. The standard idiom for
+//! "error plus details" is an out-parameter that the function fills in
+//! before it returns the error (`std.json` and `std.zon` do the same). In
+//! Rust the details simply travel inside the `Err` value.
+//!
+//! This file needs only base_node.zig: it knows nothing about pools, insert
+//! or delete, and works on trees built by hand.
 const std = @import("std");
-const Node = @import("node.zig").Node;
+const Node = @import("base_node.zig").Node;
 
 pub const Error = error{
     /// Keys inside a node are not strictly ascending.
@@ -34,58 +42,79 @@ pub const Error = error{
     NodeCountMismatch,
 };
 
-pub fn validate(comptime M: usize, root: ?*const Node(M), expected_len: usize) Error!void {
+/// Where the walk stopped. Only meaningful after an error; whole-tree errors
+/// (WrongKeyCount, NodeCountMismatch) leave it at the default.
+pub const Diagnostic = struct {
+    /// Depth of the offending node (root = 0).
+    depth: usize = 0,
+    /// Its first key, to find the node in a rendering of the tree.
+    first_key: ?u64 = null,
+};
+
+pub fn validate(comptime M: usize, root: ?*const Node(M), expected_len: usize, diag: ?*Diagnostic) Error!void {
+    if (diag) |d| d.* = .{};
     var count: usize = 0;
     if (root) |r| {
         if (r.len == 0) return error.EmptyRoot;
-        var leaf_depth: ?usize = null;
-        try check(M, r, null, null, true, 0, &leaf_depth, &count);
+        var walk: Walk(M) = .{ .diag = diag };
+        try walk.check(r, null, null, 0);
+        count = walk.count;
     }
     if (count != expected_len) return error.WrongKeyCount;
 }
 
-/// `lo` / `hi` are exclusive bounds inherited from the separators in the
-/// ancestors (null = unbounded).
-fn check(
-    comptime M: usize,
-    node: *const Node(M),
-    lo: ?u64,
-    hi: ?u64,
-    is_root: bool,
-    depth: usize,
-    leaf_depth: *?usize,
-    count: *usize,
-) Error!void {
-    const N = Node(M);
-    if (node.len > N.max_keys) return error.NodeOverfull;
-    if (!is_root and node.len < N.min_keys) return error.NodeUnderfull;
-    count.* += node.len;
+fn Walk(comptime M: usize) type {
+    return struct {
+        const Self = @This();
+        const N = Node(M);
 
-    for (node.keySlice(), 0..) |key, i| {
-        if (i > 0 and node.keys[i - 1] >= key) return error.KeysOutOfOrder;
-        if (lo) |l| if (key <= l) return error.KeyOutsideParentBounds;
-        if (hi) |h| if (key >= h) return error.KeyOutsideParentBounds;
-    }
+        diag: ?*Diagnostic,
+        leaf_depth: ?usize = null,
+        count: usize = 0,
 
-    if (node.leaf) {
-        for (node.children) |child| if (child != null) return error.UnexpectedChild;
-        if (leaf_depth.*) |d| {
-            if (d != depth) return error.LeavesAtDifferentDepths;
-        } else leaf_depth.* = depth;
-        return;
-    }
-
-    for (node.children, 0..) |child, i| {
-        if (i > node.len) {
-            if (child != null) return error.UnexpectedChild;
-            continue;
+        /// `lo` / `hi` are exclusive bounds inherited from the separators in
+        /// the ancestors (null = unbounded).
+        fn check(self: *Self, node: *const N, lo: ?u64, hi: ?u64, depth: usize) Error!void {
+            // Everything that can be said about this node alone comes first,
+            // so the error names the node closest to the root that is wrong.
+            self.checkNode(node, lo, hi, depth) catch |err| {
+                if (self.diag) |d| d.* = .{ .depth = depth, .first_key = if (node.len > 0) node.keys[0] else null };
+                return err;
+            };
+            if (node.leaf) return;
+            for (node.children[0 .. node.len + 1], 0..) |child, i| {
+                // Child i lives strictly between separator i - 1 and separator i.
+                const child_lo = if (i == 0) lo else node.keys[i - 1];
+                const child_hi = if (i == node.len) hi else node.keys[i];
+                try self.check(child.?, child_lo, child_hi, depth + 1);
+            }
         }
-        const c = child orelse return error.MissingChild;
-        // Child i lives strictly between separator i - 1 and separator i.
-        const child_lo = if (i == 0) lo else node.keys[i - 1];
-        const child_hi = if (i == node.len) hi else node.keys[i];
-        try check(M, c, child_lo, child_hi, false, depth + 1, leaf_depth, count);
-    }
+
+        fn checkNode(self: *Self, node: *const N, lo: ?u64, hi: ?u64, depth: usize) Error!void {
+            if (node.len > N.max_keys) return error.NodeOverfull;
+            if (depth > 0 and node.len < N.min_keys) return error.NodeUnderfull;
+            self.count += node.len;
+
+            for (node.keySlice(), 0..) |key, i| {
+                if (i > 0 and node.keys[i - 1] >= key) return error.KeysOutOfOrder;
+                if (lo) |l| if (key <= l) return error.KeyOutsideParentBounds;
+                if (hi) |h| if (key >= h) return error.KeyOutsideParentBounds;
+            }
+
+            // Child slots: exactly len + 1 in an interior node, none in a leaf.
+            const want: usize = if (node.leaf) 0 else node.len + 1;
+            for (node.children, 0..) |child, i| {
+                if (i < want and child == null) return error.MissingChild;
+                if (i >= want and child != null) return error.UnexpectedChild;
+            }
+
+            if (node.leaf) {
+                if (self.leaf_depth) |d| {
+                    if (d != depth) return error.LeavesAtDifferentDepths;
+                } else self.leaf_depth = depth;
+            }
+        }
+    };
 }
 
 test "validate names the broken invariant" {
@@ -102,28 +131,28 @@ test "validate names the broken invariant" {
     root.children[0] = &left;
     root.insertChild(1, &right);
     root.insertEntry(0, 20, 0);
-    try validate(4, &root, 5);
-    try validate(4, null, 0);
+    try validate(4, &root, 5, null);
+    try validate(4, null, 0, null);
 
-    try std.testing.expectError(error.WrongKeyCount, validate(4, &root, 4));
+    try std.testing.expectError(error.WrongKeyCount, validate(4, &root, 4, null));
 
     left.keys[1] = 5;
-    try std.testing.expectError(error.KeysOutOfOrder, validate(4, &root, 5));
+    try std.testing.expectError(error.KeysOutOfOrder, validate(4, &root, 5, null));
     left.keys[1] = 25; // sorted inside the leaf, but on the wrong side of 20
-    try std.testing.expectError(error.KeyOutsideParentBounds, validate(4, &root, 5));
+    try std.testing.expectError(error.KeyOutsideParentBounds, validate(4, &root, 5, null));
     left.keys[1] = 10;
 
     right.len = 0;
-    try std.testing.expectError(error.NodeUnderfull, validate(4, &root, 3));
+    try std.testing.expectError(error.NodeUnderfull, validate(4, &root, 3, null));
     right.len = 4;
-    try std.testing.expectError(error.NodeOverfull, validate(4, &root, 7));
+    try std.testing.expectError(error.NodeOverfull, validate(4, &root, 7, null));
     right.len = 2;
 
     root.children[1] = null;
-    try std.testing.expectError(error.MissingChild, validate(4, &root, 5));
+    try std.testing.expectError(error.MissingChild, validate(4, &root, 5, null));
     root.children[1] = &right;
     left.children[0] = &right;
-    try std.testing.expectError(error.UnexpectedChild, validate(4, &root, 5));
+    try std.testing.expectError(error.UnexpectedChild, validate(4, &root, 5, null));
     left.children[0] = null;
 
     // Hang a subtree under the right slot: its leaves are one level deeper.
@@ -136,8 +165,15 @@ test "validate names the broken invariant" {
     mid.insertChild(1, &deep_b);
     mid.insertEntry(0, 30, 0);
     root.children[1] = &mid;
-    try std.testing.expectError(error.LeavesAtDifferentDepths, validate(4, &root, 6));
+    try std.testing.expectError(error.LeavesAtDifferentDepths, validate(4, &root, 6, null));
 
     var empty_root: N = .{ .leaf = true };
-    try std.testing.expectError(error.EmptyRoot, validate(4, &empty_root, 0));
+    try std.testing.expectError(error.EmptyRoot, validate(4, &empty_root, 0, null));
+
+    // The diagnostic points at the node that broke the rule.
+    var diag: Diagnostic = .{};
+    root.children[1] = &right;
+    right.keys[0] = 50; // [50 40]
+    try std.testing.expectError(error.KeysOutOfOrder, validate(4, &root, 5, &diag));
+    try std.testing.expectEqual(Diagnostic{ .depth = 1, .first_key = 50 }, diag);
 }

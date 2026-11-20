@@ -133,7 +133,7 @@ test "every case breaks exactly the invariant it names" {
 }
 
 test "the cases cover every error validate can return" {
-    const names = @typeInfo(validation.Error).error_set.?;
+    const names = @typeInfo(validation.Error).error_set.error_names.?;
     try std.testing.expectEqual(names.len, cases.len);
     for (cases, 0..) |a, i| {
         for (cases[i + 1 ..]) |b| try std.testing.expect(a.expect != b.expect);

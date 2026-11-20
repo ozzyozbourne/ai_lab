@@ -70,7 +70,7 @@ fn scan(db: *Db, w: *Writer, name: []const u8, snapshot: u64) !void {
 
 fn vacuum(db: *Db, w: *Writer, options: lib.VacuumOptions) !void {
     const r = db.vacuum(options);
-    try w.print("vacuum (horizon {d}): removed {d} entries, unlinked {d} pages, recycled {d}, waiting {d}\n", .{
+    try w.print("vacuum (horizon {d}): entries removed {d}, pages unlinked {d}, recycled {d}, waiting {d}\n", .{
         r.horizon, r.entries_removed, r.pages_unlinked, r.pages_recycled, r.pages_waiting,
     });
 }
@@ -173,13 +173,13 @@ fn vacuumAndPageDeletion(gpa: Allocator, w: *Writer) !void {
     db.index.unlinkHalfDead(&db.store, db.index.leftSibling(target), target);
     try w.print("phase 2, unlink #{d}: stamped with epoch {d}\n", .{ target.index(), db.store.now });
     try show(&db, w);
-    try w.print("recycle (horizon {d}): {d} pages\n", .{ db.store.horizon(), db.index.recycle(db.store.horizon()) });
+    try w.print("recycle (horizon {d}): pages freed {d}\n", .{ db.store.horizon(), db.index.recycle(db.store.horizon()) });
     const moved_before = db.reads.moved_right;
     try w.writeAll("the scan resumes:");
     try printRows(w, &cursor, &db, 100);
     try w.print(" | moved right past {d} deleted page\n", .{db.reads.moved_right - moved_before});
     db.store.closeSnapshot(s);
-    try w.print("close snapshot S; recycle (horizon {d}): {d} pages\n", .{ db.store.horizon(), db.index.recycle(db.store.horizon()) });
+    try w.print("close snapshot S; recycle (horizon {d}): pages freed {d}\n", .{ db.store.horizon(), db.index.recycle(db.store.horizon()) });
     try show(&db, w);
     try put(&db, gpa, w, 11, 110);
     try put(&db, gpa, w, 12, 120);
@@ -206,7 +206,7 @@ fn recyclingTooEarly(gpa: Allocator, w: *Writer) !void {
     try w.print(" and pauses before #{d}\n", .{target.index()});
     _ = db.index.markHalfDead(target);
     db.index.unlinkHalfDead(&db.store, db.index.leftSibling(target), target);
-    try w.print("#{d} is deleted with stamp {d}; snapshot S = {d} is older, but we recycle anyway: {d} page\n", .{
+    try w.print("#{d} is deleted with stamp {d}; snapshot S = {d} is older, but we recycle anyway (pages freed {d})\n", .{
         target.index(), db.store.now, s, db.index.recycleIgnoringSnapshots(),
     });
     var early = cursor; // a copy of the paused scan
@@ -238,10 +238,10 @@ const ModelConfig = struct {
 fn modelRuns(gpa: Allocator, w: *Writer) !void {
     try w.writeAll("\n== 7. Model run: 20000 random operations, long snapshots, different collectors ==\n");
     const configs = [_]ModelConfig{
-        .{ .name = "M=4  all collectors      ", .order = 4 },
-        .{ .name = "M=4  no bottom-up        ", .order = 4, .bottom_up = false },
+        .{ .name = "M=4  all collectors       ", .order = 4 },
+        .{ .name = "M=4  no bottom-up         ", .order = 4, .bottom_up = false },
         .{ .name = "M=4  hints only, no vacuum", .order = 4, .bottom_up = false, .vacuum_every = 0 },
-        .{ .name = "M=16 all collectors      ", .order = 16 },
+        .{ .name = "M=16 all collectors       ", .order = 16 },
     };
     for (configs) |config| try modelRun(gpa, w, config);
 }

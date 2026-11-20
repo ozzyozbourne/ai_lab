@@ -149,7 +149,7 @@ pub const StackPosition = struct {
                 const subtree = parent.kind.internal.children[frame.child];
                 // Entering a subtree from the left we want its first leaf;
                 // from the right, its last.
-                self.leaf = self.descend(tree, subtree, if (direction == .forward) .first else .last, stats);
+                self.leaf = self.descend(tree, subtree, .first, stats);
                 return true;
             }
             self.depth -= 1; // this ancestor has nothing further: pop it

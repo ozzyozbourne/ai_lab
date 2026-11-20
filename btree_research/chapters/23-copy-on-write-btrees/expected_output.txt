@@ -1,0 +1,94 @@
+== 1. Build: canonical keys, M = 4, one transaction per put ==
+put 10 -> txn 1  copied 0 reused 0 fresh 1 | freed 0 released 0 | root #0
+put 20 -> txn 2  copied 1 reused 0 fresh 1 | freed 1 released 1 | root #1
+put 5  -> txn 3  copied 1 reused 1 fresh 0 | freed 1 released 1 | root #0
+put 6  -> txn 4  copied 1 reused 1 fresh 2 | freed 1 released 1 | root #3
+put 12 -> txn 5  copied 2 reused 1 fresh 1 | freed 2 released 2 | root #0
+put 30 -> txn 6  copied 2 reused 2 fresh 1 | freed 2 released 2 | root #2
+put 7  -> txn 7  copied 2 reused 2 fresh 0 | freed 2 released 2 | root #4
+put 17 -> txn 8  copied 2 reused 2 fresh 0 | freed 2 released 2 | root #1
+put 3  -> txn 9  copied 2 reused 2 fresh 1 | freed 2 released 2 | root #3
+put 25 -> txn 10 copied 2 reused 2 fresh 0 | freed 2 released 2 | root #0
+put 1  -> txn 11 copied 2 reused 2 fresh 0 | freed 2 released 2 | root #5
+put 15 -> txn 12 copied 2 reused 2 fresh 3 | freed 2 released 2 | root #9
+txn 12: root #9, height 3, 12 keys
+  level 0: #9[15]
+  level 1: #4[6 10] #8[20]
+  leaves : #3(1 3 5) #6(6 7) #0(10 12) | #7(15 17) #1(20 25 30)
+store: 10 pages | free: #5 #2 | pending: -
+
+== 2. Path copying: a snapshot keeps the old root alive ==
+snapshot taken at txn 12 (root #9)
+put 13 -> txn 13 copied 3 reused 2 fresh 1 | freed 3 released 0 | root #2
+old tree, still readable through the snapshot:
+txn 12: root #9, height 3, 12 keys
+  level 0: #9[15]
+  level 1: #4[6 10] #8[20]
+  leaves : #3(1 3 5) #6(6 7) #0(10 12) | #7(15 17) #1(20 25 30)
+new tree:
+txn 13: root #2, height 3, 13 keys
+  level 0: #2[15]
+  level 1: #5[6 10] #8[20]
+  leaves : #3(1 3 5) #6(6 7) #10(10 12 13) | #7(15 17) #1(20 25 30)
+shared by both roots: #1 #3 #6 #7 #8
+only the old root   : #0 #4 #9
+only the new root   : #2 #5 #10
+store: 11 pages | free: - | pending: #9(txn 13) #4(txn 13) #0(txn 13)
+
+== 3. Two readers, two answers; range without sibling links ==
+snapshot: get 13 = null, 12 keys
+current : get 13 = 1300, 13 keys
+snapshot range [6, 20): 6 7 10 12 15 17
+current  range [6, 20): 6 7 10 12 13 15 17
+
+== 4. Freed pages wait for the snapshot ==
+delete 6 -> txn 14 copied 3 reused 0 fresh 3 | freed 3 released 0 | root #11
+delete 7 -> txn 15 copied 4 reused 0 fresh 4 | freed 4 released 0 | root #14
+store: 18 pages | free: - | pending: #9(txn 13) #4(txn 13) #0(txn 13) #2(txn 14) #5(txn 14) #6(txn 14) #11(txn 15) #12(txn 15) #13(txn 15) #3(txn 15)
+snapshot still sees 12 keys, get 6 = 600
+two handles on txn 12; release the first : 0 pages released
+                       release the second: 10 pages move from pending to the free list
+store: 18 pages | free: #9 #4 #0 #2 #5 #6 #11 #12 #13 #3 | pending: -
+put 8  -> txn 16 copied 3 reused 3 fresh 0 | freed 3 released 3 | root #3
+txn 16: root #3, height 3, 12 keys
+  level 0: #3[15]
+  level 1: #13[5 10] #8[20]
+  leaves : #17(1 3) #12(5 8) #10(10 12 13) | #7(15 17) #1(20 25 30)
+store: 18 pages | free: #9 #4 #0 #2 #5 #6 #11 #14 #15 #16 | pending: -
+
+== 5. A transaction with several writes; abort ==
+  put 26: 4 dirty pages, 3 copied so far
+  put 27: 4 dirty pages, 3 copied so far
+  put 28: 5 dirty pages, 3 copied so far
+  inside the txn: get 27 = 2700; outside: get 27 = null
+abort : current is still txn 16, root #3, get 27 = null
+store: 18 pages | free: #9 #4 #0 #2 #5 #6 #11 #14 #15 #16 | pending: -
+  put 26: 4 dirty pages, 3 copied so far
+  put 27: 4 dirty pages, 3 copied so far
+  put 28: 5 dirty pages, 3 copied so far
+  inside the txn: get 27 = 2700; outside: get 27 = null
+commit -> txn 17 copied 3 reused 5 fresh 0 | freed 3 released 3 | root #16
+txn 17: root #16, height 3, 15 keys
+  level 0: #16[15]
+  level 1: #13[5 10] #15[20 26 28]
+  leaves : #17(1 3) #12(5 8) #10(10 12 13) | #7(15 17) #14(20 25) #11(26 27) #6(28 30)
+
+== 6. The two-slot metapage; a torn commit ==
+  slot 0: txn 16, root #3, height 3, 12 keys, 18 pages, crc e2548d94  valid
+  slot 1: txn 17, root #16, height 3, 15 keys, 18 pages, crc db104496  valid
+  reader picks txn 17
+flip one byte in slot 1, then restart:
+  slot 0: txn 16, root #3, height 3, 12 keys, 18 pages, crc e2548d94  valid
+  slot 1: stored crc db104496 does not match  INVALID
+  reader picks txn 16
+txn 16: root #3, height 3, 12 keys
+  level 0: #3[15]
+  level 1: #13[5 10] #8[20]
+  leaves : #17(1 3) #12(5 8) #10(10 12 13) | #7(15 17) #1(20 25 30)
+get 27 = null (the torn commit is gone, the one before it is intact)
+store: 18 pages | free: #0 #2 #4 #5 #6 #9 #11 #14 #15 #16 | pending: -
+
+== 7. Model run: 3000 operations, snapshots against saved oracle copies ==
+M=4  keys=124 height=5 commits=1542 | pages: store=973 copied=7579 reused=6739 fresh=973 released=7597 peak pending=858 | snapshot checks=174 mismatches=0
+M=5  keys=124 height=4 commits=1542 | pages: store=772 copied=6161 reused=5498 fresh=772 released=6205 peak pending=703 | snapshot checks=174 mismatches=0
+M=8  keys=124 height=3 commits=1542 | pages: store=562 copied=4619 reused=4106 fresh=562 released=4631 peak pending=522 | snapshot checks=174 mismatches=0

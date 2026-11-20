@@ -75,7 +75,9 @@ pub fn run(gpa: Allocator, w: *Writer) !void {
     try printStore(w, &db);
     try w.print("snapshot still sees {d} keys, get 6 = {?d}\n", .{ snap.count, snap.view(&db).get(6) });
     try lib.validate(&db, gpa);
-    try w.print("release snapshot: {d} pages move from pending to the free list\n", .{db.release(snap)});
+    const second = db.retain(snap); // a second reader of the same root
+    try w.print("two handles on txn {d}; release the first : {d} pages released\n", .{ snap.id, db.release(snap) });
+    try w.print("                       release the second: {d} pages move from pending to the free list\n", .{db.release(second)});
     try printStore(w, &db);
     {
         var txn = db.begin(gpa);

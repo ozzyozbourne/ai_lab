@@ -49,9 +49,14 @@ when a free range next to them is created. A sliver between two cells that are d
 the "wrong" order, or two slivers that sit side by side (4 to 6 dead bytes, more than the
 3-byte merge window), can outlive every merge. If the last cell went through `freeSpace`,
 an empty page could keep `frag_bytes > 0` and a free block forever, and "empty page" would
-not have a single canonical byte image. With zero cells there is nothing that could be
-live, so the whole content area is gap by definition. Turso does the same in `drop_cell`
-(`turso/core/storage/btree.rs:10852-10862`).
+not have a single canonical header. With zero cells there is nothing that could be live,
+so the whole content area is gap by definition, and `content_start` goes back to the end
+of the content area (`usableSize()`: 4096 without a reserved tail). Turso does the same
+in `drop_cell` (`turso/core/storage/btree.rs:10852-10862`, which writes `usable_space`).
+
+Only the header is canonical. The bytes of the deleted cells are still in the gap, so an
+emptied page is not byte for byte the page `init` produced (the test "delete does not
+erase" shows it).
 
 ## 3. Deleting the Postgres way
 

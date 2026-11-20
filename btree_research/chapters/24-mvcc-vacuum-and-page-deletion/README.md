@@ -265,23 +265,16 @@ half of the worked example. The core of the chapter is section 5:
 == 5. Deleting an empty leaf: half-dead, unlinked, recycled ==
 open snapshot S = 18; a scan under S returns: 10 20 and pauses; the next page it will read is #1
 phase 1, mark #1 half-dead: done
-  now=18 horizon=18 | height 3, 6 entries, 9 pages
-  level 0: #7[70.6]
-  level 1: #2[30.2] #6[90.8 110.10]
-  leaves : #0(10:1- 20:2-) -> #1(half-dead) -> #3() -> #4() -> #5(90:9- 100:10-) -> #8(110:11- 120:12-)
+  ...
 phase 2, unlink #1: stamped with epoch 19
-  now=19 horizon=18 | height 3, 6 entries, 9 pages
-  level 0: #7[70.6]
-  level 1: #2[30.2] #6[90.8 110.10]
-  leaves : #0(10:1- 20:2-) -> #3() -> #4() -> #5(90:9- 100:10-) -> #8(110:11- 120:12-)
-  deleted: #1@19->#3
+  ...
 recycle (horizon 18): pages freed 0
 the scan resumes: 90 100 110 120 | moved right past 1 deleted page
 close snapshot S; recycle (horizon 19): pages freed 1
 ```
 
-(`30.2` is a separator: user key 30, tid 2.) Section 6 repeats this with the rule
-switched off:
+The elided lines are the trees of the worked example. Section 6 repeats this with the
+rule switched off:
 
 ```
 #1 is deleted with stamp 19; snapshot S = 18 is older, but we recycle anyway (pages freed 1)
@@ -295,10 +288,8 @@ the scan resumes after the split: 120 <- 90, 100 and 110 are missing, and nothin
 The first failure is the lucky one. The second is the real danger: the tree passes
 `validate`, and the reader silently gets a wrong answer.
 
-Section 7 runs 20000 random operations against the oracle (key space 400), holding a
-long snapshot for 300 operations at a time and checking that it still reads its
-frozen copy. Counts from its output, all with 278 live rows at the end and 0
-mismatches:
+Section 7 runs 20000 random operations against an oracle; every run ends with 278
+live rows and 0 mismatches:
 
 | M = 4, collectors | entries | pages | splits | splits avoided | pages recycled | reused |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -306,9 +297,8 @@ mismatches:
 | hints + vacuum | 278 | 433 | 1207 | 317 | 781 | 762 |
 | hints only | 1126 | 755 | 748 | 3411 | 0 | 0 |
 
-Without VACUUM the index keeps 1126 entries for 278 rows. With it, most splits are
-served from recycled pages; but 423 pages for 278 rows is the cost of never merging,
-exaggerated here by a leaf capacity of 3.
+With VACUUM most splits are served from recycled pages; but 423 pages for 278 rows is
+the cost of never merging, exaggerated here by a leaf capacity of 3.
 
 ## In real databases
 

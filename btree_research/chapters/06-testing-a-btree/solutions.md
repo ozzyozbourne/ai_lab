@@ -83,3 +83,9 @@ old root": the tree stays well-formed and every answer stays right, exactly like
 that only the pool accounting sees. To add it: a fourth `Bug` tag, one `if (Tree.bug != ...)`
 around `tree.pool.destroy(gpa, root)` in `base_delete.zig` (Rust: clone the root instead
 of calling `pool.free`), and one more entry in `scenario.bugs`.
+
+The Rust half (not run here): wrap the body of the step loop in
+`std::panic::catch_unwind(AssertUnwindSafe(|| ...))`, add a `Kind::Crash`, and return it
+with the step index. The tree must not be used after the unwind, which `replay` already
+guarantees by stopping at the first failure. Expect the default panic hook to keep
+printing its message for every replay the minimiser makes.

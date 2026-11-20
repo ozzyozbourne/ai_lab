@@ -55,12 +55,18 @@ block device, which does nothing but count: blocks read, blocks written, blocks 
     <em>put 14</em>: level 0 is full, and a compaction reads and rewrites every block of level 0 and level 1 in one
     operation. The bars on the right show the totals; the spike is in the single step.</li>
   <li><strong>Reads.</strong> A get on the B+tree costs one block per level, hit or miss. The LSM-tree asks the
-    memtable, then each run from newest to oldest. A run whose key range covers the key costs two blocks even if the
-    key is not in it. Tick <em>Predict</em> to guess the cost of each get.</li>
+    memtable, then each run from newest to oldest. A run is a small static tree: a run whose key range covers the key
+    costs one block per index level plus one data block (2 or 3 blocks here), even if the key is not in it. Tick
+    <em>Predict</em> to guess the cost of each get.</li>
   <li><strong>Deletes and overwrites.</strong> <em>delete 15</em> writes a tombstone (struck through) without looking
     for the key. The old value and the tombstone both stay on the device until a compaction meets them.</li>
   <li><strong>Growth factor.</strong> A larger growth factor makes each level hold more before it is merged down:
     fewer levels to search, more rewriting per level.</li>
+  <li><strong>What the counters leave out.</strong> Nothing is cached: both structures pay for every block they look
+    at, index blocks included, on every operation. There is no write-ahead log either, so the two do <em>not</em>
+    promise the same thing: a B+tree put is on the device when it returns, while an LSM put sits in the memtable, in
+    RAM only, until the next flush. A log that made every LSM put durable at once would add about one block write per
+    put. The README puts numbers on both.</li>
 </ul>
 <p>Text and code: <a href="../README.md">chapter 27 README</a>. Second page:
 <a href="bepsilon.html">a buffered (B-epsilon) node</a>, the design between the two. The counts shown here are
@@ -105,7 +111,7 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     btn('btn-get', 'Get', function () { userOp('get'); }),
     btn('btn-scan', 'Scan ' + SCAN_SPAN, function () { userOp('scan'); }),
     el('span.bt-toolbar-sep'),
-    btn('btn-trace', 'Chapter trace', function () { reset(); runOps(Ch27.TRACE.slice(), true); }),
+    btn('btn-trace', 'Chapter trace', function () { reset(); runOps(Ch27.TRACE.slice()); }),
     btn('btn-random', '12 random writes', randomWrites),
     btn('btn-reset', 'Reset', function () { reset(); }),
     el('span.bt-toolbar-sep'), growthSel, memSel, err);
@@ -123,7 +129,9 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
   var boxLsm = el('div.c27-box', el('div.c27-head', el('strong', 'LSM-tree'),
     el('span', 'memtable in RAM; runs on the device are never changed, only merged')));
   fig.stage.append(boxTree, boxLsm);
-  var treeView = new BTViz.TreeView(boxTree, { minHeight: 170, ariaLabel: 'B+tree' });
+  // minScale: on a phone the tree of the chapter trace (six leaves) must fit
+  // the box without the reader having to find the zoom buttons.
+  var treeView = new BTViz.TreeView(boxTree, { minHeight: 170, minScale: 0.5, ariaLabel: 'B+tree' });
   var lsmEl = el('div.c27-lsm', { 'aria-label': 'LSM-tree: memtable and levels' });
   boxLsm.appendChild(lsmEl);
 
@@ -153,14 +161,20 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
   function renderRun(run, cfg, hi) {
     hi = hi || {};
     var box = el('div.c27-run' + (hi.state === 'dim' ? '.s-dim' : ''), { title: 'run: keys ' + run.min + ' .. ' + run.max });
-    var data = Math.ceil(run.slots.length / cfg.blockEntries), idx = Math.ceil(data / cfg.indexFanout);
+    var data = Math.ceil(run.slots.length / cfg.blockEntries);
     var whole = hi.state === 'active' || hi.state === 'dirty';
-    for (var x = 0; x < idx; x++) {
-      var ib = el('span.c27-blk.is-index', 'index');
-      var first = hi.blocks ? Math.floor(hi.blocks[0] / cfg.indexFanout) : -1, last = hi.blocks ? Math.floor(hi.blocks[1] / cfg.indexFanout) : -1;
-      if (whole && !hi.blocks) ib.classList.add('s-' + hi.state);
-      else if (hi.blocks && x >= first && x <= last) ib.classList.add('s-' + hi.state);
-      box.appendChild(ib);
+    // The index is a small static tree: level 1 over the data blocks, more
+    // levels above it until one root block is left. Drawn root first.
+    var levels = [], n = data;
+    do { n = Math.ceil(n / cfg.indexFanout); levels.push(n); } while (n > 1);
+    for (var lv = levels.length; lv >= 1; lv--) {
+      var span = Math.pow(cfg.indexFanout, lv);            // data blocks under one block of this level
+      for (var x = 0; x < levels[lv - 1]; x++) {
+        var ib = el('span.c27-blk.is-index', levels.length === 1 ? 'index' : lv === levels.length ? 'index root' : 'index');
+        ib.title = 'index block, level ' + lv + ' of ' + levels.length + ': first keys of the ' + (lv === 1 ? 'data' : 'index') + ' blocks below it';
+        if (whole && (!hi.blocks || (x >= Math.floor(hi.blocks[0] / span) && x <= Math.floor(hi.blocks[1] / span)))) ib.classList.add('s-' + hi.state);
+        box.appendChild(ib);
+      }
     }
     for (var j = 0; j < data; j++) {
       var blk = el('span.c27-blk');
@@ -280,8 +294,11 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
           ctr.lsm = { r: ph.counters.r, w: ph.counters.w, blocks: ph.counters.blocks, opR: ph.counters.r - rep.before.lsm.r, opW: ph.counters.w - rep.before.lsm.w };
           lsmHi.runs[ph.run] = { state: 'dirty' };
           push(title + 'The memtable is full. <b>Flush</b>: its keys are already sorted, so they are written out as a new run in level 0: ' +
-               plural(ph.blocks, 'block') + ' written (data blocks plus one index block), none read. This is the first device I/O for ' +
-               plural(lsm.cfg.memtableEntries, 'earlier write') + '.', 'write');
+               plural(ph.blocks, 'block') + ' written (data blocks plus the index above them), none read. This is the first device I/O for ' +
+               plural(ph.writes, 'earlier write') + (ph.writes > ph.keys
+                 ? ' to ' + plural(ph.keys, 'key') + ': the memtable absorbed ' + plural(ph.writes - ph.keys, 'overwrite') + ' of a key it already held'
+                 : '') +
+               '. Until now those writes existed in RAM only.', 'write');
         } else if (ph.name === 'compact-read') {
           ctr.lsm.r += ph.blocks; ctr.lsm.opR += ph.blocks;
           ph.inputs.forEach(function (id) { lsmHi.runs[id] = { state: 'active' }; });
@@ -331,8 +348,8 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
         } else if (op.kind === 'get') {
           lsmHi.runs[t.run] = { state: 'active', blocks: [t.block, t.block], keys: {} };
           if (t.result !== 'wasted') lsmHi.runs[t.run].keys[op.key] = t.result === 'hit' ? 'found' : 'deleted';
-          parts.push(t.where + ' run: key range covers it, read 1 index + 1 data block: ' +
-            (t.result === 'wasted' ? 'not there (2 reads wasted)' : t.result === 'hit' ? '<b>found</b>' : '<b>tombstone, so the key is deleted</b>'));
+          parts.push(t.where + ' run: key range covers it, read ' + plural(t.index, 'index block') + ' + 1 data block: ' +
+            (t.result === 'wasted' ? 'not there (' + (t.index + 1) + ' reads wasted)' : t.result === 'hit' ? '<b>found</b>' : '<b>tombstone, so the key is deleted</b>'));
         } else {
           lsmHi.runs[t.run] = { state: 'active', blocks: [t.first, t.last], keys: {} };
           rep.keys.forEach(function (key) { lsmHi.runs[t.run].keys[key] = 'found'; });
@@ -351,8 +368,10 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
       }
       var extra = {};
       if (op.kind === 'get' && d.lsm.r <= 6) {
-        extra.question = { prompt: 'How many blocks does the LSM-tree read for ' + rep.name + '?', choices: ['0', '2', '4', '6'], answer: d.lsm.r / 2,
-                           explain: 'Each run it has to probe costs 1 index block + 1 data block; the memtable and runs ruled out by their key range cost nothing.' };
+        var choices = [0, 2, 3, 4, 5, 6].filter(function (c) { return c === d.lsm.r || c === 0 || Math.abs(c - d.lsm.r) <= 2; });
+        extra.question = { prompt: 'How many blocks does the LSM-tree read for ' + rep.name + '?', choices: choices.map(String), answer: choices.indexOf(d.lsm.r),
+                           explain: 'Each run it has to probe costs one block per index level of that run (1 for a small run, 2 once it has more than ' +
+                                    lsm.cfg.indexFanout + ' data blocks) + 1 data block; the memtable and runs ruled out by their key range cost nothing.' };
       }
       push(title + cap, 'read', extra);
     }
@@ -365,13 +384,16 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
   }
 
   /* ------------------------------------------------------------ session */
-  var model, saves, stepper;
+  // saves[i] is the state after the first i operations of this session, and
+  // names[i] the name of operation i. Every frame carries the index of the
+  // save it leads to.
+  var model, saves, names, stepper;
   function options() {
     return { order: 4, memtableEntries: +memSel.value, l0Runs: 2, growth: +growthSel.value };
   }
   function idleFrame(caption, saveIndex) {
     var c = model.counters();
-    return { caption: caption, snippet: 'write', save: saveIndex, final: true,
+    return { caption: caption, snippet: 'write', save: saveIndex, final: true, idle: true,
              state: { tree: model.tree.snapshot(), treeHi: {}, lsm: model.lsm.snapshot(), lsmHi: {},
                       ctr: { bt: { r: c.bt.r, w: c.bt.w, blocks: c.bt.blocks, opR: 0, opW: 0 }, lsm: { r: c.lsm.r, w: c.lsm.w, blocks: c.lsm.blocks, opR: 0, opW: 0 } },
                       opName: null } };
@@ -381,7 +403,7 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     treeView.render(s.tree, s.treeHi);
     renderLsm(s.lsm, s.lsmHi);
     function card(c) {
-      return (s.opName ? BTViz.esc(s.opName) + ': <b>' + c.opR + '</b> read, <b>' + c.opW + '</b> written<br>' : 'no operation yet<br>') +
+      return (s.opName ? BTViz.esc(s.opName) + ': <b>' + c.opR + '</b> read, <b>' + c.opW + '</b> written<br>' : 'between operations<br>') +
              'total <b>' + c.r + '</b> read, <b>' + c.w + '</b> written, <b>' + c.blocks + '</b> in use';
     }
     cardBt.innerHTML = card(s.ctr.bt);
@@ -398,30 +420,51 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
   function reset() {
     model = new Ch27.Pair(options());
     saves = [model.save()];
+    names = [null];
     err.textContent = '';
     stepper.setSteps([idleFrame('Both structures are empty. Type a key and press <b>Put</b>, or press <b>Chapter trace</b> to replay the ' +
       Ch27.TRACE.length + ' operations of the chapter’s programs. The LSM-tree has a memtable of ' + model.opts.memtableEntries +
       ' keys, 2 runs in level 0 and growth factor ' + model.opts.growth + '.', 0)]);
   }
   /**
-   * Applies `ops` to the state THE READER IS LOOKING AT (not to the end of a
-   * timeline that is still playing) and replaces the timeline.
+   * Operations already asked for whose last frame the reader has not reached.
+   * A frame with `save: n` belongs to operation n; its last frame is `final`.
    */
-  function runOps(ops, fromStart) {
-    var cur = stepper.steps[stepper.index], steps = [];
-    model = Ch27.Pair.restore(saves[cur ? cur.save : 0]);
-    saves = [model.save()];
-    if (cur && !cur.final && !fromStart) {
-      steps.push(idleFrame('The operation on screen (<b>' + BTViz.esc(cur.state.opName) + '</b>) was completed first; this is the state after it. ' +
-                           'The new operation starts from here.', 0));
+  function unfinished() {
+    var cur = stepper.steps[stepper.index];
+    var from = cur ? (cur.final ? cur.save + 1 : cur.save) : 1;
+    return names.slice(Math.max(from, 1));
+  }
+  function listNames(list) {
+    var shown = list.slice(0, 4).map(function (n) { return '<b>' + BTViz.esc(n) + '</b>'; }).join(', ');
+    return shown + (list.length > 4 ? ' and ' + (list.length - 4) + ' more' : '');
+  }
+  /**
+   * NOTHING THE READER ASKED FOR IS EVER DROPPED. New operations are appended
+   * to the end of the timeline, after every operation asked for before, and
+   * the old frames stay where they are (step back to watch them). If the
+   * reader had not reached the end, a frame says which operations were
+   * completed first and shows the state after them, so the picture does not
+   * jump without an explanation.
+   */
+  function runOps(ops) {
+    var steps = stepper.steps.slice(), pending = unfinished();
+    model = Ch27.Pair.restore(saves[saves.length - 1]);
+    if (pending.length) {
+      steps.push(idleFrame((pending.length === 1 ? listNames(pending) + ' was completed first'
+                                                 : 'The ' + pending.length + ' operations still waiting (' + listNames(pending) + ') were completed first') +
+                           ': nothing is dropped. This is the state after ' + (pending.length === 1 ? 'it' : 'them') +
+                           '; step back to watch what you skipped. The new operation starts from here.', saves.length - 1));
     }
+    var start = steps.length;
     ops.forEach(function (op) {
       var rep = model.apply(op);
       saves.push(model.save());
+      names.push(rep.name);
       steps = steps.concat(framesFor(rep, saves.length - 1));
       if (!rep.ok) console.error('chapter 27: the two structures disagree on ' + rep.name);
     });
-    stepper.setSteps(steps, { play: true });
+    stepper.setSteps(steps, { play: true, index: pending.length ? start - 1 : start });
   }
   function readKey() {
     var raw = keyInput.value.trim();
@@ -433,9 +476,9 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     err.textContent = '';
     return +raw;
   }
+  /** The state a new operation will be applied to: after everything asked for so far. */
   function currentModel() {
-    var cur = stepper.steps[stepper.index];
-    return Ch27.Pair.restore(saves[cur ? cur.save : 0]);
+    return Ch27.Pair.restore(saves[saves.length - 1]);
   }
   function userOp(kind) {
     var key = readKey();
@@ -487,21 +530,21 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     'put 20      | btree r=3 w=1 | lsm r= 0 w= 0 |',
     'put 11      | btree r=3 w=1 | lsm r= 0 w= 0 |',
     'put 13      | btree r=4 w=4 | lsm r= 0 w= 0 | btree: leaf split.',
-    'put 14      | btree r=3 w=1 | lsm r=10 w=10 | lsm: flush. lsm: compact level 0 into level 1.',
-    'get 15      | btree r=3 w=0 | lsm r= 2 w= 0 | = none',
-    'get 20      | btree r=3 w=0 | lsm r= 2 w= 0 | = 2001',
-    'scan [5,14) | btree r=6 w=0 | lsm r= 5 w= 0 | = 5 6 7 10 11 12 13'
+    'put 14      | btree r=3 w=1 | lsm r=10 w=11 | lsm: flush. lsm: compact level 0 into level 1.',
+    'get 15      | btree r=3 w=0 | lsm r= 3 w= 0 | = none',
+    'get 20      | btree r=3 w=0 | lsm r= 3 w= 0 | = 2001',
+    'scan [5,14) | btree r=6 w=0 | lsm r= 6 w= 0 | = 5 6 7 10 11 12 13'
   ].join('\n');
   var EXPECT_DUMP = [
     'B+tree: height 3, 9 blocks',
     '  level 1: [15]',
     '  level 2: [6 10 12] [20]',
     '  level 3: (1 3 5) (6 7) (10 11) (12 13 14) (17) (20 25 30)',
-    'LSM: 7 blocks on the device holding 13 slots, 1 key(s) in the memtable',
+    'LSM: 8 blocks on the device holding 13 slots, 1 key(s) in the memtable',
     '  memtable: 14',
     '  level 0 (oldest first): -',
     '  level 1: (1 3 5 6 7 10 11 12 13 17 20 25 30)',
-    'totals: btree reads=58 writes=32 | lsm reads=29 writes=23',
+    'totals: btree reads=58 writes=32 | lsm reads=32 writes=24',
     'lsm compaction dropped 2 stale version(s) and 1 tombstone(s)'
   ].join('\n');
   var check = new Ch27.Pair(Ch27.TRACE_OPTS), agree = true;

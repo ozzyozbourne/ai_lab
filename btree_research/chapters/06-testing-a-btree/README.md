@@ -72,15 +72,11 @@ answers with the oracle would never have noticed.
 
 The tree is copied from chapter 05 as `base_*` files. Three things were added to the copy:
 coverage points (replacing chapter 05's counters), a diagnostic in `validate`, and three
-fault seams marked `SEAM`. `deinit`, `shape` and `render` are tolerant of a malformed tree
-(a missing child, a key count larger than the node), so a rejected tree can still be
-printed and torn down. Two more seams break the rollback of a failed `put`; they are not
-part of the story below and exist only so that the tests can show the harness catching
-them. In Rust the slab also counts its occupied slots (see "Allocator notes").
-
-Two things were left out of the copy: the third node pool (`StdPool`) and chapter 05's
-unit tests of insert and delete. `base_insert`, `base_delete`, `base_btree` and
-`base_stats` therefore have no hand-written unit test here; the fuzzer is their test.
+fault seams marked `SEAM`. `deinit`, `shape` and `render` tolerate a malformed tree (a
+missing child, a key count larger than the node), so a rejected tree can still be printed
+and torn down. Two more seams break the rollback of a failed `put`; only the tests use
+them, to show the harness catching them. Left out of the copy: the `StdPool` node pool
+and chapter 05's unit tests of insert and delete. Here the fuzzer is their test.
 
 ### Zig
 
@@ -108,12 +104,11 @@ children, was ever run.
 - `swarm(seed) Case` draws the configuration: 4, 16, 64 or 256 possible keys; 64 to 512
   operations; weights for put, delete, get, range (any of the last three may be zero);
   how often a put gets an injected allocation failure; whether the run ends by deleting
-  every remaining key in random order; and where the keys lie (`KeyLayout`): the small
-  numbers from 0, consecutive keys on both sides of 2^32, keys spread evenly over the
-  whole of `u64` (all with the same low 32 bits, half of them with the top bit set), or
-  the last keys below 2^64. The layouts keep the order of the keys, so the shape of the
-  tree is the same in all four; only the numbers being compared change. The largest key
-  used is `maxInt(u64) - 1`: `range` is half-open, so no range can contain `maxInt`.
+  every remaining key in random order; and where the keys lie (`KeyLayout`): from 0,
+  around 2^32, spread evenly over all of `u64` (equal low 32 bits, half with the top bit
+  set), or just below 2^64. Every layout keeps the keys' order, so the tree's shape does
+  not depend on it; only the numbers compared do. The largest key used is
+  `maxInt(u64) - 1`, because a half-open `range` cannot contain `maxInt`.
 - `generate(gpa, case) []Step` produces the whole sequence up front. A `Step` is an `Op`
   plus an optional fault ("the n-th node allocation of this put fails").
 - `replay(Tree, gpa, steps, checks, totals) ?Failure` builds a fresh tree and a fresh
@@ -139,38 +134,34 @@ no test for it at all.
 
 **Minimisation** (`minimize.zig`). Cut the sequence after the failing step. Then try to
 delete chunks: half the sequence, then quarters, down to single steps. That is fast but
-leaves pairs of steps that can only go together (a put and the delete that undoes it),
-because a larger chunk is never tried again. So a second phase tries to remove every
-contiguous block of steps, longest first, and starts over after each success. A deletion
-is kept only if the shorter sequence still fails with the same kind of failure. The
-result has a precise guarantee: no contiguous block of steps, of any length, can be
-removed. Three cosmetic passes follow: drop injected faults, rename keys to 1, 2, 3, ...
+leaves pairs of steps that can only go together (a put and the delete that undoes it).
+So a second phase tries every contiguous block of steps, longest first, and starts over
+after each success. A deletion is kept only if the shorter sequence still fails with the
+same kind of failure. The guarantee: no contiguous block of steps, of any length, can be
+removed from the result. Three cosmetic passes follow: drop injected faults, rename keys to 1, 2, 3, ...
 in order, make the n-th put write the value n.
 
 **Fault injection** (`fault_alloc.zig`). See "Allocator notes".
 
-**When the tree crashes instead.** Many real bugs do not corrupt the tree quietly. They
-trip an assert, an index check or a null unwrap inside `put` or `delete`, and the process
-stops before `validate` runs. `hunt` then never returns, and the panic message does not
-know the seed. For this the harness has a trace mode that prints one line to stderr before
-every step:
+**When the tree crashes instead.** Many real bugs trip an assert, an index check or a
+null unwrap inside `put` or `delete`. The process stops before `validate` runs, `hunt`
+never returns, and the panic message does not know the seed. For this the harness has a
+trace mode that prints one line to stderr before every step:
 
 ```
 zig build test -Dtrace=true -Dtest-filter="correct tree passes" 2> trace.txt
 cargo test --features trace correct_tree_passes 2> trace.txt
 
-trace: seed 1, M=3, bug none, step 209 of 294: put 11240984669916758016 = 10737218468902139262
-thread 17183 panic: index out of bounds: index 4, len 4
+TRACE_SAMPLE
 ```
 
-(That is a real run, with `max_height` lowered to 4 in a scratch copy.) The last `trace:`
-line before the panic names the seed, the order and the step that was running. To work on
-it, replay that one seed: `hunt(Tree(3, .none), gpa, 1, 1, .{}, null)` in a test of its
-own, with the trace on or under a debugger. Use a test filter: the whole suite prints
-about a million trace lines. What this does not give you is minimisation. In Zig a panic
-ends the process, so the minimiser cannot replay a crashing sequence and carry on; in Rust
-`replay` could catch the unwind and report a crash as one more kind of failure, which is
-left as an exercise.
+(A real run, with `max_height` lowered to 4 in a scratch copy.) The last `trace:` line
+before the panic names seed, order and step. To work on it, replay that one seed in a
+test of its own, `hunt(Tree(3, .none), gpa, 1, 1, .{}, null)`, with the trace on or under
+a debugger. Use a test filter: the whole suite prints over a million trace lines. A crash
+cannot be minimised this way: in Zig a panic ends the process and the minimiser with it.
+In Rust `replay` could catch the unwind and report a crash as one more kind of failure
+(exercise 5).
 
 ### Rust
 
@@ -184,10 +175,8 @@ Structure, names, tests and output match. The differences:
 - **Errors carry data.** `validate` returns `Result<(), Violation>` where `Violation`
   holds the `ValidateError`, the depth and the node's first key. No out-parameter.
 - **The slab counts its own slots.** `BTree::validate` compares the reachable nodes with
-  `usage.live()` and with `Slab::live_slots()` (all slots minus the free list). In Zig a
-  reserved node that a failed `put` forgets to hand back is seen from outside, by the
-  counting allocator under the tree. Rust has no such outside view of a slab slot, so the
-  slab has to say it itself (see "Allocator notes").
+  `usage.live()` and with `Slab::live_slots()` (all slots minus the free list); see
+  "Allocator notes" for why.
 - **No arena, no `deinit`.** Dropping the slab drops every node, reachable or not, so a
   corrupt tree is torn down safely by construction.
 - **Allocation failure** is the slab's `fail_after` switch from chapter 04, not an
@@ -195,15 +184,7 @@ Structure, names, tests and output match. The differences:
 
 ### What `run` prints
 
-Both programs print the same 86 lines (`expected_output.txt`). Part 1 shows that one seed
-is a whole test case:
-
-```
-seed 1: 256 ops on 64 keys spread over u64, put:delete:get:range = 8:4:4:1, fault in 1 of 2 puts, drain yes
-  M=4: 294 steps replayed, 4 allocation failures injected, max height 4, max keys 42: ok
-```
-
-The parts that matter most:
+Both programs print the same 86 lines (`expected_output.txt`). The parts that matter:
 
 ```
 == 2. Swarm sweep of the correct tree: seeds 1..150 at each order ==
@@ -257,9 +238,8 @@ bug borrow_forgets_child
 
 The two families of checks are not redundant: each sees a bug the other cannot.
 
-Seed 28 uses the "spread" layout, which is why the node that lost its child starts with
-key 7782220156096217088 (27 * 2^58). The minimised reproducer says key 7: renaming the
-keys in order is part of making a failure readable.
+Seed 28 uses the "spread" layout: 7782220156096217088 is 27 * 2^58. The minimised
+reproducer says key 7, because renaming keys in order is part of making it readable.
 
 ## In real databases
 
@@ -311,12 +291,10 @@ variant of `ddmin`, followed by an exhaustive pass over contiguous blocks.
 of four functions: `alloc`, `resize`, `remap`, `free`. `FaultAllocator` stores a child
 allocator, does its bookkeeping in each of the four and forwards. It counts attempts,
 allocations, frees and live / peak / total bytes, and `failNth(n)` makes the n-th attempt
-from now return null once. Only `alloc` counts as an attempt. `resize` and `remap` are
-forwarded and never failed, which is right for this tree (it only creates and destroys
-whole nodes) and is a limit to know before pointing the wrapper at anything that grows
-an `ArrayList`: most of a list's growth goes through `resize` / `remap`, which
-`failNth` cannot reach (`std.testing.FailingAllocator` has `resize_fail_index` for
-that). The wrapper is a plain struct on the caller's stack;
+from now return null once. Only `alloc` counts as an attempt: `resize` and `remap` are
+never failed. That suits this tree, which only creates and destroys whole nodes, but an
+`ArrayList` grows mostly through those two, out of `failNth`'s reach
+(`std.testing.FailingAllocator` has `resize_fail_index` for that). The wrapper is a plain struct on the caller's stack;
 `allocator()` returns an interface pointing at it, so it must outlive every use and must
 not be moved.
 
@@ -348,15 +326,13 @@ With `FreeListPool` an injected fault only bites when a new chunk of 32 nodes is
 the guide's one declared exception to safe code in Part I: three one-line forwards to
 `System`, each with a `SAFETY` comment; `Cargo.toml` lowers `unsafe_code` from `forbid` to
 `deny` and only that file opts out. The counters are thread-local, because `cargo test`
-runs tests on several threads. `replay` uses them as its leak check, and it is important
-to know what that check can see. It sees heap memory that outlives the tree
-(`mem::forget`, a reference cycle). It cannot see a lost NODE: every node is a slot in the
-slab's `Vec`, and dropping the tree frees that `Vec` whole, lost slots included. A failed
-`put` that keeps one reserved slot would pass it. That bug is caught by `validate`
-instead, through `Slab::live_slots()`: the slab's own count of occupied slots, which a
-rollback cannot paper over by restoring `usage`. (The test with the seam
-`RollbackLeaksNode` shows it; in Zig the same seam is reported as a leak by the
-`FaultAllocator`.) The wrapper does not inject failures: `Vec::push` aborts the process
+runs tests on several threads. `replay` uses them as its leak check, which sees heap
+memory that outlives the tree (`mem::forget`, a reference cycle). It cannot see a lost
+NODE: every node is a slot in the slab's `Vec`, and dropping the tree frees that `Vec`
+whole. A failed `put` that keeps one reserved slot is caught by `validate` instead,
+through `Slab::live_slots()`, the slab's own count, which a rollback cannot hide by
+restoring `usage`. (In Zig the `FaultAllocator` under the tree reports the same bug as a
+leak.) The wrapper does not inject failures: `Vec::push` aborts the process
 when the allocator returns null.
 
 ## Pitfalls
@@ -371,17 +347,14 @@ when the allocator returns null.
   minimised, logged or replayed in the other language.
 - **A minimiser that accepts any failure.** Deleting steps can turn failure A into an
   unrelated failure B. Compare the kind.
-- **Expecting the shortest reproducer.** The guarantee is "no contiguous block of steps
-  can be removed", which includes "no single step". It is not the shortest failing
-  sequence: two steps that are not neighbours are never removed together, and a shorter
+- **Expecting the shortest reproducer.** "No contiguous block can be removed" is not
+  "shortest": steps that are not neighbours are never removed together, and a shorter
   reproducer need not be a subsequence at all (exercise 3).
 - **Only small keys.** With keys 0 to 255, a tree that compares the low 32 bits of a key
-  passes everything. Random VALUES do not help; the keys must cover the type's range.
-- **A crash is a failure too.** An assert that fires inside the tree ends the run before
-  any check, without seed or step. Run with the trace on, or log the seed before each
-  case as TigerBeetle does (`tigerbeetle/src/fuzz_tests.zig:145`).
-- **A seed without a version.** Seed 28 means nothing after the generator changes (adding
-  the key layouts changed what every seed prints).
+  passes everything. Random values do not help; the keys must cover the type's range.
+- **A crash is a failure too.** An assert inside the tree ends the run before any check,
+  without seed or step. Trace it, or log the seed before each case as TigerBeetle does.
+- **A seed without a version.** Seed 28 means nothing after the generator changes.
   TigerBeetle reproduces from seed plus git commit.
 - **Zig error traces under fault injection.** Every injected `OutOfMemory` is recorded in
   the error return trace; a failing test later prints thousands of unrelated frames.
@@ -400,7 +373,8 @@ when the allocator returns null.
 4. (medium) The fixed mix never reaches `root_shrink`. Explain why from its configuration,
    and name the swarm dimension that fixes it.
 5. (hard, open) Add a fourth broken variant of your own (for example: root shrink does not
-   free the old root) and predict which check catches it before you run it.
+   free the old root) and predict which check catches it before you run it. Rust only:
+   make `replay` report a panic inside the tree as a failure with its step.
 
 Solutions: [solutions.md](solutions.md).
 

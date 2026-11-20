@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! base_*.rs       the B-tree of chapter 05 (the system under test), with
-//!                 coverage points and three one-line fault seams
+//!                 coverage points and one-line fault seams
 //! coverage.rs     counters that prove the tests reached the hard branches
 //! alloc_count.rs  counting #[global_allocator] (the only `unsafe` in Part I)
 //! fuzz.rs         swarm cases, operation generation, replay against the oracle

@@ -2,7 +2,7 @@
 //! (see scenario.zig); `zig build test` runs every test.
 //!
 //!   base_*.zig       the B-tree of chapter 05 (the system under test), with
-//!                    coverage points and three one-line fault seams
+//!                    coverage points and one-line fault seams
 //!   coverage.zig     counters that prove the tests reached the hard branches
 //!   fault_alloc.zig  counting + fault-injecting std.mem.Allocator wrapper
 //!   fuzz.zig         swarm cases, operation generation, replay against the oracle

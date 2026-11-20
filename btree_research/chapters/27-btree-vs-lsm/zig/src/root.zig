@@ -5,6 +5,7 @@
 //!   base_*.zig    the B+tree of chapter 07, instrumented (changes: "ch27:")
 //!   memtable.zig  skip list in an arena: the LSM-tree's mutable part
 //!   run.zig       immutable sorted run: data blocks + index blocks, builder
+//!   filter.zig    Bloom filter: a run's optional membership filter, in RAM
 //!   merge.zig     k-way merge with fixed buffers
 //!   lsm.zig       Lsm: put, delete, get, range, flush, compaction, validate
 //!   bench.zig     the same operation stream on both, counted per operation
@@ -13,6 +14,7 @@ const std = @import("std");
 pub const device = @import("device.zig");
 pub const memtable = @import("memtable.zig");
 pub const run = @import("run.zig");
+pub const filter = @import("filter.zig");
 pub const merge = @import("merge.zig");
 pub const lsm = @import("lsm.zig");
 pub const bench = @import("bench.zig");
@@ -35,6 +37,7 @@ test {
     _ = device;
     _ = memtable;
     _ = run;
+    _ = filter;
     _ = merge;
     _ = lsm;
     _ = bench;

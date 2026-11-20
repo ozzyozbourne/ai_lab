@@ -24,6 +24,7 @@
 //!      stop at the first hit. Compaction only ever merges ADJACENT ages, so
 //!      it cannot break this.
 //!   5. The device's block count is exactly the blocks of all runs.
+//!   7. A run's filter, if it has one, says "maybe" for every key of the run.
 //!   6. (When no maintenance is pending) no level is over its limit.
 //!
 //! Not an invariant but a space rule: a compaction whose output becomes the
@@ -70,9 +71,17 @@ pub const Config = struct {
     l0_runs: usize = 4,
     /// Each level may hold `growth` times as many slots as the one above.
     growth: usize = 4,
+    /// Bits of Bloom filter per slot of every run, in RAM (filter.zig).
+    /// 0, the default: no filters, a lookup probes every run whose key range
+    /// covers the key.
+    filter_bits_per_key: usize = 0,
 
     pub fn geometry(self: Config) Geometry {
-        return .{ .block_entries = self.block_entries, .index_fanout = self.index_fanout };
+        return .{
+            .block_entries = self.block_entries,
+            .index_fanout = self.index_fanout,
+            .filter_bits_per_key = self.filter_bits_per_key,
+        };
     }
 };
 
@@ -85,9 +94,12 @@ pub const Stats = struct {
     /// and tombstones that reached the deepest level.
     versions_dropped: u64 = 0,
     tombstones_dropped: u64 = 0,
-    /// Point lookups, per run: skipped thanks to the min/max check, probed
-    /// (index path + 1 data block), and probed without finding the key.
+    /// Point lookups, per run: skipped thanks to the min/max check, ruled
+    /// out by the run's filter (both in RAM, no I/O), probed (index path +
+    /// 1 data block), and probed without finding the key. With filters a
+    /// wasted probe is a false positive of the filter.
     runs_skipped: u64 = 0,
+    filter_negatives: u64 = 0,
     runs_probed: u64 = 0,
     probes_wasted: u64 = 0,
 };
@@ -100,6 +112,7 @@ pub const Violation = error{
     TooManyL0Runs,
     LevelOverLimit,
     DeviceAccounting,
+    FilterLostKey,
 };
 
 pub const Lsm = struct {
@@ -279,8 +292,9 @@ pub const Lsm = struct {
     // ------------------------------------------------------------- reads
 
     /// Point lookup: newest place first, stop at the first place that knows
-    /// the key (invariant 4). Each run that the min/max check cannot rule out
-    /// costs its index path, root first, and one data block.
+    /// the key (invariant 4). Each run that neither the min/max check nor
+    /// the run's filter can rule out costs its index path, root first, and
+    /// one data block.
     pub fn get(self: *Lsm, key: u64) ?u64 {
         var result = self.mem.get(key);
         var i = self.l0_len;
@@ -303,13 +317,18 @@ pub const Lsm = struct {
             self.stats.runs_skipped += 1; // decided in RAM, no I/O
             return .absent;
         }
+        if (!run.filter.mayContain(key)) {
+            self.stats.filter_negatives += 1; // decided in RAM as well
+            return .absent;
+        }
         // Root to data block, one block per level: the rule the B+tree's
         // `findLeaf` is charged by.
         self.dev.read(.index, self.cfg.geometry().indexHeight(run.len()));
         self.dev.read(.data, 1);
         self.stats.runs_probed += 1;
         const result = run.find(key);
-        // A bloom filter per run exists to make this case rare.
+        // Without filters this is the common case for an absent key. With
+        // them it is a false positive of the filter.
         if (result == .absent) self.stats.probes_wasted += 1;
         return result;
     }
@@ -352,36 +371,51 @@ pub const Lsm = struct {
         return n;
     }
 
+    /// Bits of RAM held by the filters of all runs.
+    pub fn filterBits(self: *const Lsm) usize {
+        var n: usize = 0;
+        for (self.l0[0..self.l0_len]) |*run| n += run.filter.bits;
+        for (&self.levels) |*level| {
+            if (level.*) |*run| n += run.filter.bits;
+        }
+        return n;
+    }
+
     pub fn validate(self: *const Lsm) Violation!void {
         try self.validateStructure();
         // 6. Limits hold whenever maintenance is not pending.
         if (self.pendingCompaction() != null) return error.LevelOverLimit;
     }
 
-    /// Invariants 1 to 5: these hold even after a write failed half-way.
+    /// Invariants 1 to 5 and 7: these hold even after a write failed half-way.
     pub fn validateStructure(self: *const Lsm) Violation!void {
         if (self.mem.count > self.cfg.memtable_entries) return error.MemtableOverfull;
         if (self.l0_len > self.cfg.l0_runs) return error.TooManyL0Runs;
         const geo = self.cfg.geometry();
         var blocks: usize = 0;
         for (self.l0[0..self.l0_len]) |*run| {
-            try checkRun(run);
+            try self.checkRun(run);
             blocks += geo.blocks(run.len());
         }
         for (&self.levels) |*level| {
             const run = if (level.*) |*r| r else continue;
-            try checkRun(run);
+            try self.checkRun(run);
             blocks += geo.blocks(run.len());
         }
         if (blocks != self.dev.live) return error.DeviceAccounting;
     }
 
-    fn checkRun(run: *const Run) Violation!void {
+    fn checkRun(self: *const Lsm, run: *const Run) Violation!void {
         const slots = run.slots.items;
         if (slots.len == 0) return error.RunEmpty;
         for (slots[1..], slots[0 .. slots.len - 1]) |b, a| {
             if (a.key >= b.key) return error.RunNotSorted;
         }
         if (run.min_key != slots[0].key or run.max_key != slots[slots.len - 1].key) return error.RunBoundsWrong;
+        // 7. A filter may answer "maybe" too often, never "no" for a key it holds.
+        if (run.filter.bits != slots.len * self.cfg.filter_bits_per_key) return error.FilterLostKey;
+        for (slots) |slot| {
+            if (!run.filter.mayContain(slot.key)) return error.FilterLostKey;
+        }
     }
 };

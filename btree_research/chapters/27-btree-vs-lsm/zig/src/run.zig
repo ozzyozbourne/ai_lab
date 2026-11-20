@@ -14,6 +14,8 @@
 //!   RAM     the "manifest": per run its smallest and largest key and where
 //!           its root block is. A few words per run, so not counted (the
 //!           B+tree's root handle and height are not counted either).
+//!           Optionally also a Bloom filter over the run's keys (filter.zig):
+//!           `bits_per_key` bits of RAM per slot, reported by the program.
 //! A point lookup into a run therefore costs one index block per index level
 //! plus one data block: the height of the run's static tree.
 //!
@@ -23,6 +25,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const Device = @import("device.zig").Device;
+const Filter = @import("filter.zig").Filter;
 pub const Lookup = @import("memtable.zig").Lookup;
 
 /// One entry of a run or of the memtable. `value == null` is a tombstone.
@@ -35,6 +38,8 @@ pub const Geometry = struct {
     block_entries: usize,
     /// First-keys per index block. Set to M, the fan-out of an internal node.
     index_fanout: usize,
+    /// Bits of Bloom filter per slot, kept in RAM. 0: runs have no filter.
+    filter_bits_per_key: usize = 0,
 
     pub fn dataBlocks(self: Geometry, slots: usize) usize {
         return std.math.divCeil(usize, slots, self.block_entries) catch unreachable;
@@ -78,9 +83,13 @@ pub const Run = struct {
     /// without touching the device.
     min_key: u64,
     max_key: u64,
+    /// Also in RAM: answers "certainly not in this run" for most absent
+    /// keys. Empty (always "maybe") when the geometry asks for no filter.
+    filter: Filter = .{},
 
     pub fn deinit(self: *Run, gpa: Allocator) void {
         self.slots.deinit(gpa);
+        self.filter.deinit(gpa);
     }
 
     pub fn len(self: *const Run) usize {
@@ -123,16 +132,19 @@ pub const Run = struct {
 pub const Builder = struct {
     geo: Geometry,
     slots: std.ArrayList(Slot),
+    filter: Filter,
     block: [max_block_entries]Slot = undefined,
     block_len: usize = 0,
 
     /// `max_slots` is an upper bound on what will be appended (the sum of the
-    /// inputs). Reserving it here is the builder's ONLY allocation, so a merge
-    /// that got this far cannot fail half-way through.
+    /// inputs). The slots and the filter's bits are reserved here and nowhere
+    /// else, so a merge that got this far cannot fail half-way through.
     pub fn init(gpa: Allocator, geo: Geometry, max_slots: usize) Allocator.Error!Builder {
         assert(geo.block_entries >= 1 and geo.block_entries <= max_block_entries);
         assert(geo.index_fanout >= 2);
-        return .{ .geo = geo, .slots = try .initCapacity(gpa, max_slots) };
+        var slots: std.ArrayList(Slot) = try .initCapacity(gpa, max_slots);
+        errdefer slots.deinit(gpa);
+        return .{ .geo = geo, .slots = slots, .filter = try .init(gpa, max_slots, geo.filter_bits_per_key) };
     }
 
     pub fn append(self: *Builder, dev: *Device, slot: Slot) void {
@@ -159,12 +171,17 @@ pub const Builder = struct {
         const items = self.slots.items;
         if (items.len == 0) {
             self.slots.deinit(gpa);
+            self.filter.deinit(gpa);
             return null;
         }
         const index_blocks = self.geo.indexBlocks(items.len);
         dev.allocBlocks(index_blocks);
         dev.write(.index, index_blocks);
-        return .{ .slots = self.slots, .min_key = items[0].key, .max_key = items[items.len - 1].key };
+        // The filter is built in RAM from the keys just written: no block.
+        // Tombstones are added too; a lookup must find them.
+        self.filter.seal(gpa, items.len, self.geo.filter_bits_per_key);
+        for (items) |slot| self.filter.add(slot.key);
+        return .{ .slots = self.slots, .min_key = items[0].key, .max_key = items[items.len - 1].key, .filter = self.filter };
     }
 };
 
@@ -215,4 +232,32 @@ test "a builder with nothing appended produces no run" {
     var b: Builder = try .init(std.testing.allocator, .{ .block_entries = 3, .index_fanout = 4 }, 5);
     try std.testing.expectEqual(null, b.finish(std.testing.allocator, &dev));
     try std.testing.expectEqual(0, dev.live);
+}
+
+test "builder with a filter: built at finish, in RAM, sized by the slots written" {
+    const gpa = std.testing.allocator;
+    const g: Geometry = .{ .block_entries = 3, .index_fanout = 4, .filter_bits_per_key = 10 };
+    var dev: Device = .{};
+    var b: Builder = try .init(gpa, g, 40); // reserved for 40, 7 arrive
+    for ([_]u64{ 2, 4, 6, 8, 10, 12, 14 }) |k| {
+        b.append(&dev, .{ .key = k, .value = if (k == 8) null else k * 10 });
+    }
+    var run = b.finish(gpa, &dev).?;
+    defer run.deinit(gpa);
+    // The same blocks as without a filter: it is not on the device.
+    try std.testing.expectEqual([2]u64{ 1, 3 }, dev.counters.writes);
+    try std.testing.expectEqual(4, dev.live);
+    try std.testing.expectEqual(70, run.filter.bits);
+    for ([_]u64{ 2, 4, 6, 8, 10, 12, 14 }) |k| try std.testing.expect(run.filter.mayContain(k));
+
+    // An empty builder frees its filter as well (the testing allocator checks).
+    var empty: Builder = try .init(gpa, g, 5);
+    try std.testing.expectEqual(null, empty.finish(gpa, &dev));
+}
+
+test "builder: a failed filter reservation frees the slots" {
+    const g: Geometry = .{ .block_entries = 3, .index_fanout = 4, .filter_bits_per_key = 10 };
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 1 });
+    try std.testing.expectError(error.OutOfMemory, Builder.init(failing.allocator(), g, 10));
+    try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
 }

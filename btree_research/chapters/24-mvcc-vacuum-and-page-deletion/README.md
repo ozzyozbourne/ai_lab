@@ -201,7 +201,8 @@ entry and then frees the version, in that order (see Pitfalls).
 handle of the page to read when the buffer is empty. `readPage` walks right over
 pages that are not `live`, reads one leaf completely, copies out the visible rows,
 sets hints on entries that are dead to all, and saves the page's right link. The
-tests run writers and VACUUM between two `next` calls.
+tests run writers and VACUUM between two `next` calls; `fuzz.zig` does it at random,
+with many paused scans, and calls the three steps of page deletion one by one.
 
 `Index.markHalfDead` is phase 1. It finds the parent slot by walking the internal
 pages (an empty leaf has no key to search for), refuses the rightmost child, then:
@@ -274,7 +275,9 @@ switched off:
 ```
 #1 is deleted with stamp 19; snapshot S = 18 is older, but we recycle anyway (pages freed 1)
 the scan resumes at once: error.DanglingLink (the page is on the free list)
+put 111=1110: xid 20
 put 112=1120: xid 21; page full: leaf split into a recycled page
+  ...
 the scan resumes after the split: 120 <- 90, 100 and 110 are missing, and nothing reports an error
 ```
 
@@ -309,9 +312,9 @@ process), then we can return to the index and mark the corresponding index entry
 'known dead'" (`N/README:513-516`). The bit is set by `_bt_killitems`
 (`N/nbtutils.c:190-390`, `ItemIdMarkDead` at `:361`) under a share lock, and scans
 skip marked items (`N/nbtreadpage.c:249`). Our model sets the bit while reading the
-page; PostgreSQL does it when the scan leaves the page, and skips it entirely if the
-page changed in the meantime, because a TID may have been recycled and reused
-(`N/README:474-489`).
+page; PostgreSQL does it when the scan leaves the page. A scan that dropped its pin
+on the page skips it entirely if the page changed in the meantime, because a TID may
+have been recycled and reused (`N/README:474-489`).
 
 **Simple and bottom-up deletion.** When an insert finds its leaf full,
 `_bt_delete_or_dedup_one_page` first collects the LP_DEAD items and deletes them
@@ -356,8 +359,9 @@ recycle it at the end of the same scan (`N/README:417-424`), as our `vacuum` doe
 
 **Turso.** `MvStore` keeps row versions in a skip map; a `RowVersion` has `begin`
 and `end` timestamps (`turso/core/mvcc/database/mod.rs:456-476`). `MvccLazyCursor`
-wraps a B-tree cursor and merges (`turso/core/mvcc/cursor.rs:222-275`); on equal keys
-the MVCC side wins (`:257`). A checkpoint writes committed versions into the B-tree
+(`turso/core/mvcc/cursor.rs:541`) wraps a B-tree cursor; the merge of the two streams
+is `DualCursorPeek::get_next` (`:222-275`), and on equal keys the MVCC side wins
+(`:257`). A checkpoint writes committed versions into the B-tree
 with ordinary cursor operations (`turso/core/mvcc/database/checkpoint.rs`). The
 version store has its own garbage collector (`gc_version_chain`,
 `turso/core/mvcc/database/mod.rs:8625`), which this guide did not study.
@@ -405,6 +409,9 @@ chapter needs. A deleted queue in an `ArrayList` would let VACUUM fail with
   afterwards has a snapshot >= stamp and no protection.
 - **Clearing the deleted page's right link.** It looks tidy and strands every reader
   that is on its way to the page.
+- **Using a cursor after closing its snapshot.** The open snapshot is the only thing
+  that keeps the cursor's saved page from being recycled. `seek` and every page read
+  assert that it is still open.
 - **One long-running snapshot.** It holds the horizon back: no hints, no bottom-up
   deletion, VACUUM removes nothing, deleted pages wait.
 - **Expecting VACUUM to shrink the tree.** It never merges non-empty pages and never

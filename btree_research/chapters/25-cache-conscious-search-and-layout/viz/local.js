@@ -355,9 +355,13 @@
   /** Draws `cells` as cache lines of `perLine` cells. Elements persist between
    *  renders, so state changes animate through CSS transitions.
    *
-   *  render({ key, cells: [{text, sub, free}], perLine, lineLabel(i),
+   *  render({ key, cells: [{text, sub, free}], perLine, lineLabels: [text] | null, rest: bool,
    *           cellState: {i: 'compare'|'found'|'seen'}, read: [lines], hinted: [lines],
-   *           fresh: line | null, window: [lo, hi] | null })
+   *           dim: [lines], next: line | null, fresh: line | null, window: [lo, hi] | null })
+   *
+   *  `rest` draws a hatched stub in every cell: the bytes of a 16-byte entry
+   *  that are not the key. `dim` fades lines the search can no longer reach
+   *  and `next` badges the line it goes to (block tree).
    */
   function LineStrip(mount, options) {
     this.options = options || {};
@@ -369,7 +373,8 @@
     var el = BTViz.el, self = this;
     this.root.textContent = '';
     this.cells = []; this.lines = [];
-    this.root.classList.toggle('cl-wide', state.perLine < 8);
+    this.root.classList.toggle('cl-wide', !!state.rest);
+    this.root.classList.toggle('cl-dense', state.cells.length / state.perLine > 16);
     for (var start = 0; start < state.cells.length; start += state.perLine) {
       var lineNo = start / state.perLine;
       var grid = el('div.cl-cells', { style: { gridTemplateColumns: 'repeat(' + state.perLine + ', minmax(0, 1fr))' } });
@@ -377,11 +382,12 @@
         var c = state.cells[i];
         var cell = el('div.cl-cell', {}, el('small', { text: String(c.sub) }), el('span', { text: c.text }));
         if (c.free) cell.classList.add('s-free', 'is-free');
+        if (state.rest) cell.appendChild(el('i.cl-rest'));
         self.cells.push(cell);
         grid.appendChild(cell);
       }
       var badge = el('span.cl-badge');
-      var line = el('div.cl-line', {}, el('div.cl-line-head', {}, el('span', { text: 'line ' + lineNo }), badge), grid);
+      var line = el('div.cl-line', {}, el('div.cl-line-head', {}, el('span', { text: state.lineLabels ? state.lineLabels[lineNo] : 'line ' + lineNo }), badge), grid);
       self.lines.push({ el: line, badge: badge });
       this.root.appendChild(line);
     }
@@ -389,7 +395,7 @@
   };
   LineStrip.prototype.render = function (state) {
     if (state.key !== this.key) this.build(state);
-    var read = new Set(state.read || []), hinted = new Set(state.hinted || []);
+    var read = new Set(state.read || []), hinted = new Set(state.hinted || []), dim = new Set(state.dim || []);
     var win = state.window, cs = state.cellState || {};
     this.cells.forEach(function (cell, i) {
       var s = cs[i];
@@ -403,7 +409,8 @@
       line.el.classList.toggle('is-read', r);
       line.el.classList.toggle('is-hinted', h);
       line.el.classList.toggle('is-fresh', state.fresh === i);
-      line.badge.textContent = r && h ? 'read, was hinted' : r ? 'read' : h ? 'hinted' : '';
+      line.el.classList.toggle('is-dim', dim.has(i));
+      line.badge.textContent = r && h ? 'read, was hinted' : r ? 'read' : h ? 'hinted' : state.next === i ? 'next' : '';
     });
     this.root.setAttribute('aria-label', (state.read || []).length + ' of ' + this.lines.length + ' cache lines read');
   };

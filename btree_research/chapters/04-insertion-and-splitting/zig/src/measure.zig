@@ -28,6 +28,7 @@ pub const Measured = struct {
     most_splits_in_one_put: u64,
 
     /// Average node fill in tenths of a percent: keys / (nodes * (M - 1)).
+    /// Rounded DOWN (integer division): 66.664% is 666 and prints as 66.6%.
     pub fn fillPermille(self: Measured) usize {
         return if (self.shape.capacity == 0) 0 else self.shape.keys * 1000 / self.shape.capacity;
     }

@@ -51,6 +51,7 @@ pub struct Measured {
 
 impl Measured {
     /// Average node fill in tenths of a percent: keys / (nodes * (M - 1)).
+    /// Rounded DOWN (integer division): 66.664% is 666 and prints as 66.6%.
     pub fn fill_permille(&self) -> usize {
         (self.shape.keys * 1000)
             .checked_div(self.shape.capacity)

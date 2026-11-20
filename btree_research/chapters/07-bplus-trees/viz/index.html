@@ -111,7 +111,8 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
   var colA = el('div.c7-col', boxA), colB = el('div.c7-col', boxB);
   fig.stage.append(el('div.c7-grid', colA, colB));
   // Heights reserved for the canonical trees (height 2 and 3), so the caption does not move during the build.
-  var GEOM = { vGap: 36, padTop: 24, padBottom: 10 };
+  // No zoom buttons: a tree that is too wide scrolls inside its frame (drag, or pinch / Ctrl+wheel to zoom).
+  var GEOM = { vGap: 36, padTop: 24, padBottom: 10, toolbar: false };
   var viewA = new BTViz.TreeView(boxA, Object.assign({ minHeight: 132, ariaLabel: 'Classic B-tree' }, GEOM));
   var viewB = new BTViz.TreeView(boxB, Object.assign({ minHeight: 198, hGap: 24, ariaLabel: 'B+tree' }, GEOM));
   var chainEl = el('div.c7-chain', { 'aria-label': 'Leaf chain of the B+tree' });
@@ -137,7 +138,7 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     });
   }
 
-  var arenaPanel = el('div.bt-panel', el('div.bt-panel-title', 'B+tree arena: handle #n is an index into this array'));
+  var arenaPanel = el('div.bt-panel', el('div.bt-panel-title', 'B+tree arena'));
   var arenaBody = el('div.bt-panel-body');
   var freeEl = el('div.c7-free');
   arenaPanel.appendChild(arenaBody);
@@ -311,7 +312,7 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
   }
   function renderArena(sb, hl) {
     mem.render({ slabs: [{
-      label: plural(sb.arena.length, 'slot') + ': ' + sb.nodes + ' live, ' + sb.free.length + ' free',
+      label: 'One array of nodes; handle #n is index n. ' + plural(sb.arena.length, 'slot') + ': ' + sb.nodes + ' live, ' + sb.free.length + ' free.',
       slots: sb.arena.map(function (s) {
         return { state: hl[s.h] || (s.state === 'free' ? 'free' : 'used'), label: '#' + s.h,
                  title: 'slot ' + s.h + ': ' + (s.state === 'free' ? 'free' : s.state + ' node') };

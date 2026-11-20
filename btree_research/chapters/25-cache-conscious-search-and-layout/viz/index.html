@@ -33,8 +33,22 @@
 .cl-cell.is-seen { border-color: var(--bt-key-compare); box-shadow: inset 0 -3px 0 var(--bt-key-compare); }
 .cl-cell.is-free { color: var(--bt-muted); background: var(--bt-free-bg); }
 .cl-cell.is-out { opacity: .38; }
-.cl-wide .cl-cell { min-width: 62px; }
-.cl-wide .cl-cell::after { content: '+ child, flags'; display: block; font-size: .56rem; color: var(--bt-muted); }
+.cl-line.is-dim { opacity: .4; }
+/* 16-byte entries: the hatched stub stands for the 8 bytes of child and flags behind each key. */
+.cl-wide .cl-cell { position: relative; padding-right: 11px; }
+.cl-rest {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 9px; border-left: 1px solid var(--bt-border); border-radius: 0 3px 3px 0;
+  background: repeating-linear-gradient(135deg, var(--bt-border) 0 1.5px, var(--bt-free-bg) 1.5px 4px);
+}
+/* More than 16 lines: tighter rows, so that picture, caption and controls still share one screen. */
+.cl-dense { gap: 6px 10px; }
+.cl-dense .cl-line { padding: 2px 4px 3px; }
+.cl-dense .cl-line-head { padding-bottom: 1px; }
+.cl-strip-note { font-size: .8rem; color: var(--bt-muted); margin-top: 4px !important; display: flex; align-items: center; gap: 6px; }
+.cl-strip-note[hidden] { display: none; }
+.cl-strip-note .cl-rest { position: static; display: inline-block; width: 11px; height: 14px; border: 1px solid var(--bt-border); border-radius: 3px; flex: none; }
+#fig-main .bt-caption { box-sizing: border-box; }
+.cl-probe { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; min-height: 0 !important; }
 .cl-counters { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 8px; }
 .cl-counters .bt-chip b { font-family: var(--bt-mono); margin-left: .35em; }
 .cl-mini { display: flex; flex-wrap: wrap; gap: 2px; max-width: 420px; min-width: 120px; }
@@ -64,7 +78,8 @@ lines each one touches. Text and code: <a href="../README.md">chapter 25 README<
 The answer is always the lower bound: the position of the first key that is not smaller than the needle.
 The Eytzinger layout and the block tree keep their keys in a different order, so they finish by reading
 one entry of a second array, <code>rank</code>, that maps a slot back to the sorted position: that is one
-more cache line, and it is counted. Tick <em>Predict</em> to be asked before each comparison.</p>
+more cache line, and it is counted. In the block tree every line is a node; its label says whose child it is.
+Tick <em>Predict</em> to be asked before each comparison.</p>
 <div id="fig-main"></div>
 
 <h2>2. The same lookup in all five</h2>
@@ -130,8 +145,16 @@ nothing prefetches.</p>
       if (algo === 'halving-aos') { perLine = 4; stride = 16; }
       while (values.length % perLine !== 0) values.push(undefined); // rest of the last line: not part of the array
     }
+    var labels = null;
+    if (algo === 'blocktree') {
+      // Node b is line b; child j of node b is node 9b + j + 1.
+      labels = [];
+      for (var b = 0; b < values.length / 8; b++) {
+        labels.push(b === 0 ? 'line 0 · root' : 'line ' + b + ' · child ' + ((b - 1) % 9) + ' of line ' + Math.floor((b - 1) / 9));
+      }
+    }
     return {
-      key: algo + ':' + index.sorted.length, perLine: perLine, stride: stride,
+      key: algo + ':' + index.sorted.length, perLine: perLine, stride: stride, lineLabels: labels, rest: algo === 'halving-aos',
       cells: values.map(function (v, i) {
         return { text: v === undefined ? '' : keyText(v), sub: i, free: v === undefined || v === null || v === C.SENTINEL };
       })
@@ -142,7 +165,10 @@ nothing prefetches.</p>
     cold: function (l) { return ' Line ' + l + ' is read for the first time and nothing asked for it in advance: <b>a cache miss the CPU must wait for</b>.'; },
     hinted: function (l) { return ' Line ' + l + ' was prefetched earlier, so it is already on its way: the wait overlaps with earlier work.'; },
     late: function (l) { return ' Line ' + l + ' is read for the first time. It was hinted in this same step, with no comparison in between, which is too late to help: <b>still a cache miss the CPU must wait for</b>.'; },
-    again: function (l) { return ' Line ' + l + ' is already in the cache: this read is nearly free.'; }
+    again: function (l) { return ' Line ' + l + ' is already in the cache: this read is nearly free.'; },
+    // The vector scan reads line after line whatever the comparisons say, so its misses do not form a chain.
+    scan: function (l) { return ' Line ' + l + ' is read for the first time. Its address does not depend on any comparison, so the CPU can ' +
+      'start fetching it without waiting for the line before it. (The counter below still lists it as unhinted: the model knows only explicit hints.)'; }
   };
 
   /** Turn one traced lookup into Stepper steps. */
@@ -150,7 +176,9 @@ nothing prefetches.</p>
     var lay = layoutFor(algo, index), spec = ALGOS[algo], n = index.sorted.length;
     var t = new C.Trace(lay.stride);
     var result = C.runOne(index, algo, needle, t, prefetch && spec.prefetch);
-    var steps = [], read = [], hinted = [], cellState = {}, win = null, side = null;
+    var steps = [], read = [], hinted = [], cellState = {}, win = null, side = null, dim = [], nextLine = null;
+    var carry = '';        // said at the start of the next comparison step (hints that got no step of their own)
+    var stoppedAt = null;  // vector scan: the line where a scan with early exit would have stopped
     var counters = { comparisons: 0, steps: 0, lines: 0, cold: 0, hints: 0 };
     var hasRank = algo === 'eytzinger' || algo === 'blocktree';
     var codeName = spec.code;
@@ -159,7 +187,8 @@ nothing prefetches.</p>
       var seen = {};
       Object.keys(cellState).forEach(function (i) { seen[i] = cellState[i]; });
       return Object.assign({
-        strip: { key: lay.key, cells: lay.cells, perLine: lay.perLine, cellState: seen, read: read.slice(), hinted: hinted.slice(), window: win, fresh: null },
+        strip: { key: lay.key, cells: lay.cells, perLine: lay.perLine, lineLabels: lay.lineLabels, rest: lay.rest, cellState: seen,
+          read: read.slice(), hinted: hinted.slice(), dim: dim.slice(), next: nextLine, window: win, fresh: null },
         side: hasRank ? (side || { read: false }) : null,
         counters: BTViz.clone(counters), code: codeName
       }, extra || {});
@@ -171,34 +200,57 @@ nothing prefetches.</p>
       steps.push(s);
     }
 
+    // Said once, not on every comparison.
+    var SELECTS = 'Each comparison only selects the new <code>offset</code>, so the compiler <em>can</em> emit a conditional move with nothing to guess; whether it does is for the assembly to say (see the README).';
     var intro = {
       classic: 'Sorted array of ' + n + ' keys. Keep a range <code>[lo, hi)</code>, compare the middle key, and <b>branch</b>: the CPU has to guess each outcome.',
-      halving: 'Sorted array of ' + n + ' keys. Keep a window <code>[offset, offset + length)</code>. The window shrinks by half on every step whatever the comparison says, so the number of steps is known in advance.',
-      'halving-aos': 'The same ' + n + ' keys stored as 16-byte entries <code>{key, child, flags}</code>: only four keys fit in a cache line. The halving search compares exactly the same keys as before.',
-      vector: 'Sorted keys padded with ∞ to whole lines. Compare eight keys at once with one vector instruction and count how many are smaller. No branch on the data, but every line is read.',
+      halving: 'Sorted array of ' + n + ' keys. Keep a window <code>[offset, offset + length)</code>. It shrinks by half on every step whatever the comparison says, so the number of steps is known in advance. ' + SELECTS,
+      'halving-aos': 'The same ' + n + ' keys stored as 16-byte entries <code>{key, child, flags}</code>: only four keys fit in a cache line. The halving search compares exactly the same keys as before. ' + SELECTS,
+      vector: 'Sorted keys padded with ∞ to whole lines. Compare eight keys at once with one vector instruction and count how many are smaller. No branch on the data, but every line is read, one after the other.',
       eytzinger: 'The balanced search tree stored level by level: the children of slot <code>k</code> are slots <code>2k</code> and <code>2k + 1</code>. Slot 0 is unused so that slots 8k..8k+7 share one line.',
-      blocktree: 'A search tree whose node is one cache line: 8 keys, 9 children, like a tiny B-tree node. Child <code>j</code> of node <code>b</code> is node <code>9b + j + 1</code>. Line 0 is the root. (It is a complete 9-way tree, not a real B-tree: its leaves can sit on two levels and a node can have fewer children than keys + 1.)'
+      blocktree: 'A search tree whose node is one cache line: 8 keys, 9 children, like a tiny B-tree node. Node <code>b</code> is line <code>b</code> and its child <code>j</code> is line <code>9b + j + 1</code>; each label says whose child the line is. (A complete 9-way tree, not a real B-tree: leaves can sit on two levels and a node can have fewer children than keys + 1.)'
     }[algo];
     push(intro + ' Needle: ' + K(needle, 'compare') + '.', { zig: [1], rust: [1] });
 
-    t.events.forEach(function (e) {
+    function hint(e) {
+      counters.hints++;
+      if (!e.useless && hinted.indexOf(e.line) < 0) hinted.push(e.line);
+    }
+    t.events.forEach(function (e, ei) {
       var info = e.info, cap, lines, q = null;
+      if (e.kind === 'hint' && algo !== 'eytzinger') {
+        // The halving search issues its two hints together: one step for the pair.
+        if (info.which !== 'lower') return; // the upper hint was handled with its partner
+        var up = t.events[ei + 1], lo = e;
+        hint(lo); hint(up);
+        if (lo.useless && up.useless) {
+          // Nothing changes in the picture, so no step of its own.
+          carry = 'Two more hints, for line' + (lo.line === up.line ? ' ' + lo.line : 's ' + lo.line + ' and ' + up.line) +
+            ', already read: they do nothing. ';
+          return;
+        }
+        if (lo.line === up.line) {
+          cap = 'Prefetch line ' + lo.line + ', twice: the next probe lands at index ' + lo.index + ' if the search keeps the lower half and at index ' +
+            up.index + ' if it keeps the upper half, and both are on that line.';
+        } else {
+          cap = 'Prefetch lines ' + lo.line + ' and ' + up.line + ': the two places the next probe can land (index ' + lo.index +
+            ' if the search keeps the lower half, index ' + up.index + ' if it keeps the upper half). It does not know yet which, so it asks for both and one hint is wasted.';
+          if (lo.useless || up.useless) cap += ' Line ' + (lo.useless ? lo.line : up.line) + ' has already been read, so that hint does nothing.';
+        }
+        push(cap, { zig: [[8, 10]], rust: [[8, 10]] });
+        return;
+      }
       if (e.kind === 'hint') {
-        counters.hints++;
-        if (hinted.indexOf(e.line) < 0) hinted.push(e.line);
-        if (algo === 'eytzinger' && info.clamped) {
+        hint(e);
+        if (info.clamped) {
           cap = 'Slot ' + info.from + ' has nothing three levels below it: slots ' + (8 * info.from) + '..' + (8 * info.from + 7) +
             ' are past the end of the array. The code clamps the address to the last slot (' + e.index + ', line ' + e.line +
             ') so that it stays in bounds. <b>This hint is wasted.</b>';
           lines = { zig: [4, 5], rust: [4, 5] };
-        } else if (algo === 'eytzinger') {
+        } else {
           cap = 'Prefetch line ' + e.line + ' (slot ' + e.index + ' onwards): the eight slots <b>three levels below</b> slot ' + info.from +
             ' all live there. One hint, three comparisons before it is needed.';
           lines = { zig: [4, 5], rust: [4, 5] };
-        } else {
-          cap = 'Prefetch line ' + e.line + ' (index ' + e.index + '): where the next probe lands if the search keeps the <b>' + info.which +
-            '</b> half. The search does not know yet which half it will keep, so it asks for both and one hint is wasted.';
-          lines = { zig: [[8, 10]], rust: [[8, 10]] };
         }
         if (e.useless) cap += ' (This line has already been read, so the hint does nothing.)';
         push(cap, lines);
@@ -212,8 +264,8 @@ nothing prefetches.</p>
         if (algo === 'eytzinger') {
           var ey = index.eytzinger;
           cap = 'The descent ended at slot number ' + ey.lastEnd + ' = <code>' + ey.lastEnd.toString(2) + '</code> in binary. Dropping ' +
-            (ey.lastOnes ? 'the ' + ey.lastOnes + ' trailing 1 bit' + (ey.lastOnes > 1 ? 's' : '') + ' (right turns) and ' : '') +
-            'one more bit (the last left turn) gives slot ' + ey.lastSlot + (ey.lastSlot === 0 ? ', the unused slot, meaning "no such key".' : '.');
+            (ey.lastOnes ? 'the ' + ey.lastOnes + ' trailing 1 bit' + (ey.lastOnes > 1 ? 's' : '') + ' (right turns) and one more bit' : 'the last bit') +
+            ' (the last left turn) gives slot ' + ey.lastSlot + (ey.lastSlot === 0 ? ', the unused slot, meaning "no such key".' : '.');
           if (ey.lastSlot > 0) cellState[ey.lastSlot] = 'compare';
           lines = { zig: [9, 10], rust: [9, 10] };
         } else {
@@ -239,19 +291,31 @@ nothing prefetches.</p>
         for (var i = e.index; i < e.index + e.count; i++) cellState[i] = 'compare';
         if (algo === 'vector') {
           cap = 'One vector compare of line ' + e.line + ': <b>' + info.r + '</b> of its 8 keys are smaller than ' + K(needle, 'compare') +
-            '. Running count: <b>' + info.count + '</b>.' + (info.r < 8 ? ' (A scan with early exit could stop here; this one always reads on, so it has no data-dependent branch.)' : '');
+            '. Running count: <b>' + info.count + '</b>.';
+          if (stoppedAt !== null) cap += ' (An early-exit scan would have stopped at line ' + stoppedAt + '.)';
+          else if (info.r < 8) {
+            stoppedAt = e.line;
+            cap += ' (A scan with early exit could stop here; this one always reads on, so it has no data-dependent branch.)';
+          }
           lines = { zig: [3, 4, 11, 12], rust: [[3, 5], 12, 13] };
         } else {
-          cap = 'Node ' + info.block + ' (line ' + e.line + '): <b>' + info.r + '</b> of its 8 keys are smaller than ' + K(needle, 'compare') + '. ' +
+          cap = 'Line ' + e.line + (e.line === 0 ? ', the root' : ', child ' + ((e.line - 1) % 9) + ' of line ' + Math.floor((e.line - 1) / 9)) +
+            ': <b>' + info.r + '</b> of its 8 keys are smaller than ' + K(needle, 'compare') + '. ' +
             (info.r < 8 ? 'Key number ' + info.r + ' of this node is the best candidate so far: remember its slot, ' + info.slot + ' (a register, no memory read). ' : 'All eight are smaller: keep the candidate remembered above. ') +
-            'Go to child ' + info.r + ' = node 9·' + info.block + ' + ' + info.r + ' + 1 = ' + info.child +
+            'Go to child ' + info.r + ': line 9·' + info.block + ' + ' + info.r + ' + 1 = ' + info.child +
             (info.exists ? '.' : ', which does not exist: the search ends.');
+          // Light up the path so far and the nine children of this node; everything else is out of reach.
+          dim = [];
+          for (var d = 0; d < index.blocks.blocks; d++) {
+            if (d !== e.line && read.indexOf(d) < 0 && Math.floor((d - 1) / 9) !== e.line) dim.push(d);
+          }
+          nextLine = info.exists ? info.child : null;
           lines = { zig: [[5, 8]], rust: [[5, 8]] };
           q = { prompt: 'Next: node ' + info.block + ' is compared with ' + needle + ' in one step. How many of its eight keys are smaller?',
             choices: ['0', '1', '2', '3', '4', '5', '6', '7', '8'], answer: info.r,
             explain: 'That count is also the number of the child to descend into.' };
         }
-        push(cap + HOW[e.how](e.line), lines, { fresh: fresh }, q);
+        push(cap + HOW[algo === 'vector' && e.how === 'cold' ? 'scan' : e.how](e.line), lines, { fresh: fresh }, q);
         steps[steps.length - 1].state.strip.fresh = fresh;
         return;
       }
@@ -280,7 +344,7 @@ nothing prefetches.</p>
         win = [newOffset, newOffset + newLen];
         cap = 'Window [' + info.offset + ', ' + (info.offset + info.length) + '), half = ' + info.half + '. Compare index ' + e.index + ': ' + K(kv, 'compare') + rel + K(needle) + '. ' +
           (info.less ? '<code>offset</code> moves to ' + e.index : '<code>offset</code> stays at ' + info.offset) +
-          '; <code>length</code> becomes ' + newLen + ' either way. The comparison only selects a value, so the compiler <em>can</em> emit a conditional move with nothing to guess. Whether it does is for the assembly to say (see the README).';
+          '; <code>length</code> becomes ' + newLen + ' either way.';
         lines = { zig: [[11, 16]], rust: [[11, 13]] };
       }
       if (!info.final) {
@@ -288,13 +352,14 @@ nothing prefetches.</p>
           choices: ['Yes: the answer lies after this key', 'No: this key could be the answer'], answer: info.less ? 0 : 1,
           explain: info.less ? kv + ' < ' + needle + '.' : kv + ' ≥ ' + needle + '.' };
       }
-      push(cap + HOW[e.how](e.line), lines, null, q);
+      push(carry + cap + HOW[e.how](e.line), lines, null, q);
+      carry = '';
       steps[steps.length - 1].state.strip.fresh = fresh;
     });
 
     // Final step: mark the answer.
     age();
-    win = null;
+    win = null; nextLine = null;
     var slot = algo === 'eytzinger' ? index.eytzinger.lastSlot : algo === 'blocktree' ? index.blocks.lastSlot : result;
     var where;
     if (result === n) {
@@ -347,6 +412,9 @@ nothing prefetches.</p>
   fig.stage.appendChild(needleError);
   fig.stage.appendChild(counterBar);
   var strip = new C.LineStrip(fig.stage);
+  var aosNote = el('div.cl-strip-note', { id: 'aos-note', hidden: true }, el('i.cl-rest'),
+    el('span', { text: 'the 8 bytes of child and flags behind each key: an entry is 16 bytes, so a line holds four keys, not eight' }));
+  fig.stage.appendChild(aosNote);
   // The second array of the Eytzinger layout and the block tree, drawn as the one line a lookup reads.
   var sideLine = el('div.cl-line', { id: 'rank-line' });
   var sideRow = el('div.cl-side', {}, el('span', { text: 'rank array (4-byte entries, 16 per line):' }), sideLine);
@@ -377,6 +445,7 @@ nothing prefetches.</p>
     onStep: function (step) {
       var s = step.state;
       strip.render(s.strip);
+      aosNote.hidden = !s.strip.rest;
       sideRow.hidden = !s.side;
       if (s.side) {
         sideLine.classList.toggle('is-read', s.side.read);
@@ -389,17 +458,56 @@ nothing prefetches.</p>
     }
   });
 
-  function run(play) {
+  // The caption is two lines on some steps and three or more on others. Reserve the height of the
+  // tallest one of the current search (at the current width), so the step controls stay where they are.
+  var predictBox = fig.controls.querySelector('.bt-predict input');
+  var probe = el('div.bt-caption.cl-probe', { 'aria-hidden': 'true' });
+  function fitCaption() {
+    var width = fig.caption.getBoundingClientRect().width, tallest = 0;
+    if (!width) return;
+    probe.style.width = width + 'px';
+    probe.style.boxSizing = 'border-box';
+    document.body.appendChild(probe);
+    function measure(html) { probe.innerHTML = html; tallest = Math.max(tallest, probe.getBoundingClientRect().height); }
+    stepper.steps.forEach(function (s) {
+      measure(s.caption);
+      var q = s.question;
+      if (!q || !predictBox || !predictBox.checked) return;
+      // Predict mode shows a question instead of the caption, then a verdict above it (same markup as the toolkit).
+      measure('<div class="bt-quiz"><div class="bt-quiz-prompt"><span class="bt-chip s-compare">Predict</span> ' + q.prompt +
+        '</div><div class="bt-quiz-choices">' + q.choices.map(function (c) { return '<button class="bt-btn" type="button">' + c + '</button>'; }).join('') + '</div></div>');
+      measure('<div class="bt-quiz-verdict"><span class="bt-chip s-deleted">✗ Not quite</span> Answer: ' + q.choices[q.answer] + '. ' + (q.explain || '') + '</div>' + s.caption);
+    });
+    probe.textContent = '';
+    probe.remove();
+    fig.caption.style.minHeight = Math.ceil(tallest) + 'px';
+  }
+  if (predictBox) predictBox.addEventListener('change', fitCaption);
+  var refit = null;
+  window.addEventListener('resize', function () { clearTimeout(refit); refit = setTimeout(fitCaption, 100); });
+
+  var lastNeedle = null;
+  /** `fromSelector`: the reader changed the algorithm or the prefetch box, not the needle. */
+  function run(play, fromSelector) {
     var algo = algoSel.value, ix = currentIndex();
     prefetchBox.disabled = !ALGOS[algo].prefetch;
     prefetchLabel.classList.toggle('s-dim', !ALGOS[algo].prefetch);
     var needle = readNeedle(needleIn, needleError);
-    if (needle === null) return; // keep what is on screen; the message says why
+    if (needle === null) {
+      // Keep what is on screen; the message says why. A change of algorithm still has to show that
+      // algorithm, so it is drawn with the last needle that was valid, and the message says so.
+      if (!fromSelector || lastNeedle === null) return;
+      needle = lastNeedle;
+      needleError.textContent = needleError.textContent.replace('The picture still shows the previous search.',
+        'The picture uses the last valid needle, ' + lastNeedle + '.');
+    }
+    lastNeedle = needle;
     stepper.setSteps(buildSteps(algo, ix, needle, prefetchBox.checked), { play: !!play });
+    fitCaption();
     renderCompare();
   }
-  algoSel.addEventListener('change', function () { run(false); });
-  prefetchBox.addEventListener('change', function () { run(false); });
+  algoSel.addEventListener('change', function () { run(false, true); });
+  prefetchBox.addEventListener('change', function () { run(false, true); });
   sizeSel.addEventListener('change', function () { randomNeedle(); run(false); });
   needleIn.addEventListener('keydown', function (e) { if (e.key === 'Enter') run(true); });
 

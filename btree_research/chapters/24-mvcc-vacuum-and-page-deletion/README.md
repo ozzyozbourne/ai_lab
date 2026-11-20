@@ -48,10 +48,8 @@ snapshot that will ever be taken: it is **dead to everyone**. Every clean-up ste
 this chapter is justified by a comparison against the horizon.
 
 The counter has a second job, as a clock. Page deletion (below) advances it by one, a
-*tick*, without writing a row, and keeps the new value as a timestamp. A value used
-that way is called an **epoch**. Because snapshots are values of the same counter, a
-snapshot and an epoch can be compared: "snapshot < epoch" means "taken before that
-moment".
+*tick*, without writing a row, and keeps the new value as a timestamp called an
+**epoch**. A snapshot smaller than an epoch was taken before that moment.
 
 ### Where do the versions live? Two designs
 
@@ -60,11 +58,10 @@ version; each version has an address (a TID). An index entry is `(key, TID)`. Th
 index does not know `xmin` or `xmax`: a reader follows the TID and the table decides
 visibility. An update adds an index entry for the new version. A delete cannot remove
 the entry of the old one: a snapshot taken before the delete still sees that version
-and has to find it through the index. The entry is needed until the version is dead
-to everyone, and no transaction is there to remove it at that moment. So the index
-fills up with entries that point at dead versions. Somebody has to remove them later,
-and the B-tree has to cope with pages that slowly become empty. This is the design
-the chapter's code models.
+and has to find it through the index. So the index fills up with entries whose
+versions are, sooner or later, dead. Somebody has to remove them afterwards, and the
+B-tree has to cope with pages that slowly become empty. This is the design the
+chapter's code models.
 
 **Versions outside the tree (Turso's MVCC mode).** The B-tree is not versioned at
 all. Recent versions live in an in-memory ordered map next to it, and a cursor merges
@@ -111,18 +108,16 @@ phases, and the page is reused in a third step:
    older than the stamp is open), put the page on the free list.
 
 Why two phases and not one? They change different pages: the parent, then the left
-sibling. This chapter's single-threaded model could do both at once, but a real
-system locks each group of pages separately and logs each phase as its own record
-(`N/README:247-259`, `:279-282`, `:688-692`; `N/` is explained under "In real
-databases"). So the state in between must be a tree that searches and scans survive,
-and one that a crash may leave behind for a later VACUUM to finish. PostgreSQL calls
-it "a similar state as during a page split: the page has no downlink pointing to it,
-but it's still linked to its siblings" (`N/README:257-259`).
+sibling. This chapter's single-threaded model could do both at once. PostgreSQL
+cannot: it locks the pages of each phase separately and logs each phase as its own
+record (`postgres/src/backend/access/nbtree/README:247-259`, `:279-282`,
+`:688-692`). So the state in between must be a tree that searches and scans survive,
+and one that a crash may leave behind for the next VACUUM to finish.
 
 Why the downlink first? Once it is gone, no new descent arrives at the page, while
-the chain still carries every scan across it. The other order would leave a page
-that the parent still routes to but that no scan passes: an insert sent there would
-add an entry that scans never return.
+the chain still carries every scan across it (`README:255-259`). The other order
+would leave a page that the parent still routes to but that no scan passes: an
+insert sent there would add an entry that scans never return.
 
 Step 3 is delayed because of the scan that read "next page is P" just before step 2.
 It will still arrive at P. If P is a tombstone with an intact right link, the scan
@@ -236,8 +231,8 @@ fail.
 
 The port is line for line where the borrow checker allows it. The differences:
 
-- **Handles instead of pointers.** Zig keeps `*Node` across calls (`makeRoom(store, n)`).
-  Rust passes the `NodeId` and looks the node up again (`make_room(store, id)`),
+- **Handles instead of pointers.** Zig keeps `*Node` across calls
+  (`makeRoom(store, n)`). Rust passes the `NodeId` and looks the node up again,
   because a `&mut Node` would keep the whole arena borrowed. `split_leaf` uses the
   arena's `pair_mut` to hold two pages at once.
 - **The cursor does not borrow the `Db`.** `Cursor::next(&mut self, db: &mut Db)`
@@ -248,9 +243,8 @@ The port is line for line where the borrow checker allows it. The differences:
   lifetime rule the database must enforce itself.
 - **`get` takes `&mut self`** in Rust and `*Db` in Zig, for the same reason: a read
   may set hint bits.
-- **Allocation failure.** Zig tests `put` with a `FailingAllocator` at every
-  allocation index. Rust's `Vec` aborts instead of failing, so the arenas carry a
-  budget and `put` returns `Err(OutOfNodes)`.
+- **Allocation failure.** Rust's `Vec` aborts instead of failing, so the arenas
+  carry a budget and `put` returns `Err(OutOfNodes)`.
 - **Panics and errors.** Rust has two tests more (`#[should_panic]`, which Zig cannot
   express): an oversized key and a cursor whose snapshot was closed.
   `error.DanglingLink` is a unit struct.
@@ -308,9 +302,9 @@ All statements below were checked in the source trees under `db_study/`; see
 `N/` = `postgres/src/backend/access/nbtree/`.
 
 **PostgreSQL, hint bits (LP_DEAD).** "If a process visits a heap tuple [a row
-version in the table] and finds that it's dead and removable (ie, dead to all open transactions, not only that
-process), then we can return to the index and mark the corresponding index entry
-'known dead'" (`N/README:513-516`). The bit is set by `_bt_killitems`
+version in the table] and finds that it's dead and removable (ie, dead to all open
+transactions, not only that process), then we can return to the index and mark the
+corresponding index entry 'known dead'" (`N/README:513-516`). The bit is set by `_bt_killitems`
 (`N/nbtutils.c:190-390`, `ItemIdMarkDead` at `:361`) under a share lock, and scans
 skip marked items (`N/nbtreadpage.c:249`). Our model sets the bit while reading the
 page; PostgreSQL does it when the scan leaves the page. A scan that dropped its pin

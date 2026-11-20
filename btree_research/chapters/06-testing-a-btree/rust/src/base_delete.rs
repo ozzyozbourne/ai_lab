@@ -38,9 +38,9 @@
 //! child in a borrow (borrow_forgets_child).
 
 use crate::base_btree::{BTree, Bug};
-use crate::coverage::Point;
 use crate::base_node::{Entry, NodeId, max_keys, min_keys};
 use crate::base_search::lower_bound;
+use crate::coverage::Point;
 
 /// Returns the removed value, or `None` if the key was not present (the tree
 /// is then unchanged).

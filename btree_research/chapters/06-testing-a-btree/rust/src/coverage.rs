@@ -14,9 +14,9 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Point {
     // base_insert.rs
-    PutFirstKey,       // empty tree: the root leaf is created
-    PutOverwrite,      // key already present: value replaced, no structural change
-    PutNoSplit,        // new key fits into its leaf
+    PutFirstKey,  // empty tree: the root leaf is created
+    PutOverwrite, // key already present: value replaced, no structural change
+    PutNoSplit,   // new key fits into its leaf
     SplitLeaf,
     SplitInterior,     // children move with their keys
     RootSplitLeaf,     // height 1 -> 2

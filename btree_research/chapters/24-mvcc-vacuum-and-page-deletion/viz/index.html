@@ -101,7 +101,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     btn('btn-unsafe', 'Recycle anyway', doUnsafe),
     el('span.bt-toolbar-sep'),
     scenario, btn('btn-play', 'Play scenario', function () { playScenario(scenario.value, true); }),
-    btn('btn-reset', 'Empty', function () { message(''); db = C.create(4); db.names = []; steps = []; step('Empty database. Put a few keys, or play a scenario.', {}); commit(false); }));
+    btn('btn-reset', 'Empty', function () { message(''); db = C.create(4); db.names = []; steps = []; note('Empty database. Put a few keys, or play a scenario.'); commit(false); }));
   var msg = el('p.c24-msg', { role: 'status', 'aria-live': 'polite' });
   fig.toolbar.after(msg);
   function message(text) { msg.textContent = text; }
@@ -278,13 +278,28 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
   });
 
   /* ----------------------------------------------- building a timeline */
-  var db = C.create(4), steps = [];
+  var db = C.create(4), steps = [], opId = 0;
   db.names = [];
   function step(caption, o) {
     o = o || {};
-    steps.push({ caption: caption, state: BTViz.clone(db), hl: o.hl, log: o.log, code: o.code, question: o.question, hold: o.hold });
+    steps.push({ caption: caption, state: o.state || BTViz.clone(db), hl: o.hl, log: o.log, code: o.code, question: o.question, hold: o.hold, op: opId });
   }
-  function commit(play) { stepper.setSteps(steps, { play: !!play }); }
+  /**
+   * Steps between two beginOp() calls belong to one operation. Some of them show the database in
+   * the middle of it (a version without its index entry, say), which is a fine picture but not a
+   * state to continue from. `resume` is the index of the operation's last step, which is.
+   */
+  function beginOp() { opId++; }
+  function note(caption) { beginOp(); step(caption, {}); }
+  function commit(play) {
+    for (var i = steps.length - 1, last = i; i >= 0; i--) {
+      if (steps[i].op !== steps[last].op) last = i;
+      steps[i].resume = last;
+      // A state the reader may continue from must satisfy the invariants.
+      if (last === i && C.validate(steps[i].state).length) console.error('step ' + i + ' is not a valid state: ' + C.validate(steps[i].state).join('; '));
+    }
+    stepper.setSteps(steps, { play: !!play });
+  }
 
   /**
    * Every control acts on the state that is ON SCREEN: the database is restored from the step the
@@ -293,10 +308,10 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
    */
   function act(title, fn) {
     message('');
-    if (stepper.steps.length) db = BTViz.clone(stepper.state(stepper.index));
-    if (!db.names) db.names = [];
+    var shown = stepper.index, resume = stepper.steps[shown].resume;
+    db = BTViz.clone(stepper.state(resume));
     steps = [];
-    step(title, {});
+    note((resume !== shown ? '<em>(The operation that was in progress has been finished first.)</em> ' : '') + title);
     fn();
     if (!steps.length) return;            // the action was refused: leave the picture alone
     commit(steps.length > 1);
@@ -318,7 +333,8 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
 
   /* -------------------------------------------------------- operations */
   function opPut(keyValue, value, question) {
-    var xid = db.now + 1, asked = false;
+    beginOp();
+    var xid = db.now + 1, asked = false, split = null;
     var r = C.put(db, keyValue, value, function (type, info) {
       var p = info.page, text;
       if (type === 'full') {
@@ -338,12 +354,15 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
         step('The new version of row ' + k(keyValue) + ' (xmin = ' + xid + ') gets an index entry in leaf #' + p + '.',
           { hl: { pages: pg(p), keys: hk, versions: mk(C.tidOf(info.ik), 'inserted') }, log: { html: 'entry ' + C.entryText(db, n, i) + ' in #' + p, state: 'inserted' } });
       } else if (type === 'split') {
-        var sp = {}; sp[p] = 'split'; sp[info.right] = 'split';
-        step('Every entry on #' + p + ' is needed by somebody, so the page <b>splits</b>: the upper half moves right into #' + info.right +
-          (info.reused ? ', a <b>recycled</b> page taken from the free list.' : ', a new page.') + ' Entries only ever move right.',
-          { hl: { pages: sp }, log: { html: 'split #' + p + ' → #' + info.right + (info.reused ? ' (recycled page)' : ''), state: 'split' } });
+        split = info;                   // shown below, once the parent has its new separator
       }
     });
+    if (split) {
+      var sp = {}; sp[split.page] = 'split'; sp[split.right] = 'split';
+      step('That made ' + db.order + ' entries on #' + split.page + ', one too many, and all of them are needed by somebody. The page <b>splits</b>: the upper half moves right into #' + split.right +
+        (split.reused ? ', a <b>recycled</b> page taken from the free list.' : ', a new page.') + ' Entries only ever move right.',
+        { hl: { pages: sp }, log: { html: 'split #' + split.page + ' → #' + split.right + (split.reused ? ' (recycled page)' : ''), state: 'split' } });
+    }
     return r;
   }
   function mk(id, state) { var o = {}; o[id] = state; return o; }
@@ -361,6 +380,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
   }
 
   function opDelete(keyValue) {
+    beginOp();
     var r = C.del(db, keyValue);
     if (!r) { step('Row ' + k(keyValue) + ' has no current version: nothing to delete, no transaction started.', { log: 'delete ' + keyValue + ': absent' }); return; }
     step('Delete ' + k(keyValue) + ' = transaction ' + r.xid + ' writes <code>xmax = ' + r.xid + '</code> into version ' + r.tid +
@@ -370,6 +390,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
   function doDelete(keyValue) { act('Delete ' + k(keyValue) + '.', function () { opDelete(keyValue); }); }
 
   function opOpen(name) {
+    beginOp();
     var s = C.openSnapshot(db);
     db.names.push(name);
     step('Snapshot ' + name + ' = ' + s + ' (the counter when the reader started). It sees a version iff <code>xmin ≤ ' + s + '</code> and (<code>xmax</code> is unset or <code>xmax &gt; ' + s +
@@ -383,6 +404,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     });
   }
   function opClose(index) {
+    beginOp();
     var before = C.horizon(db), name = snapName(db, index);
     db.open.splice(index, 1);
     db.names.splice(index, 1);
@@ -407,6 +429,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
   }
 
   function opScanStart(snapshot, name) {
+    beginOp();
     db.scan = C.seek(db, snapshot, 0, 1e9);
     step('A scan under snapshot ' + name + ' = ' + snapshot + ' descends to the leftmost leaf and remembers its handle, #' + db.scan.next +
       '. It has read nothing yet. Between two reads a scan holds no pointer into a page, only a page handle.',
@@ -421,15 +444,18 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     });
   }
   function opScanPage(question) {
+    beginOp();
     var c = db.scan, from = c.next;
     // Is the saved link still the page it was when the scan saved it?
     var betrayed = c.betrayed !== undefined && c.betrayed === from && C.isLive(db.pages, from) && C.page(db, from).state === 'live';
+    var before = BTViz.clone(db);
     var r = C.readPage(db, c);
     r.skipped.forEach(function (id, i) {
-      var p = C.page(db, id);
+      var p = C.page(db, id), at = BTViz.clone(before);
+      at.scan.next = id;                // the picture: the scan is standing on the dead page
       step('The saved link leads to #' + id + ', which is ' + p.state + '. It holds nothing, and its <b>own right link is intact</b> (→ ' +
         (p.next === NIL ? 'end' : '#' + p.next) + '): the scan moves right. Everything that was to the right of #' + id + ' is still to the right.',
-        { hl: { pages: pg(id) }, code: 'readPage', question: i === 0 ? question : null, log: { html: 'move right past ' + p.state + ' #' + id, state: 'merge' } });
+        { state: at, hl: { pages: pg(id) }, code: 'readPage', question: i === 0 ? question : null, log: { html: 'move right past ' + p.state + ' #' + id, state: 'merge' } });
     });
     if (r.status === 'dangling') {
       step('The saved link names #' + r.page + ', and that page is on the <b>free list</b>. There is nothing to read and no right link to follow: the programs return <code>error.DanglingLink</code>. This can only happen when a page was recycled while a snapshot older than its stamp was open.',
@@ -497,6 +523,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     }
   }
   function opVacuum(options) {
+    beginOp();
     var H = C.horizon(db);
     step('Vacuum walks the leaf chain once. Its rule for entries: remove those whose version has <code>xmax ≤ ' + H + '</code> (the horizon).', { code: 'vacuum', log: 'vacuum, horizon ' + H });
     return C.vacuum(db, options, vacuumEvent);
@@ -510,10 +537,12 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
   }
 
   function opRecycle(question) {
+    beginOp();
     var freed = C.recycle(db, C.horizon(db));
     vacuumEvent('recycle', { freed: freed, waiting: C.deletedQueue(db), question: question });
   }
   function opUnsafe() {
+    beginOp();
     var waiting = C.deletedQueue(db);
     if (db.scan && !db.scan.done && waiting.indexOf(db.scan.next) >= 0) db.scan.betrayed = db.scan.next;
     var freed = C.recycle(db, Infinity);
@@ -532,6 +561,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
   var EVERYTHING = { deletePages: false };
   function index(name) { return db.names.indexOf(name); }
   function fullScan(name) {
+    beginOp();
     var c = C.seek(db, db.open[index(name)], 0, 1e9), before = BTViz.clone(db.reads);
     var out = C.scanAll(db, c);
     step('A scan under ' + name + ' reads every leaf and returns ' + k(out.join(' ')) + '. Heap visits: ' + (db.reads.heapFetches - before.heapFetches) +
@@ -546,7 +576,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
 
   var SCENARIOS = {
     hints: function () {
-      step('Scenario 1. An empty database. Three rows are inserted by transactions 1, 2 and 3.', {});
+      note('Scenario 1. An empty database. Three rows are inserted by transactions 1, 2 and 3.');
       [10, 20, 30].forEach(function (key) { opPut(key, key * 10); });
       opOpen('A');
       opPut(20, 201);
@@ -564,21 +594,23 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
       [251, 252, 253].forEach(function (v) { opPut(25, v); });
       opOpen('C');
       [254, 255].forEach(function (v) { opPut(25, v); });
-      step('Five updates of one row: three were absorbed by bottom-up deletion while no snapshot was open; with snapshot C open the old versions are needed and the leaf had to split.', {});
+      note('Five updates of one row: three were absorbed by bottom-up deletion while no snapshot was open; with snapshot C open the old versions are needed and the leaf had to split.');
     },
     pages: function () {
       buildDeletedRange();
-      step('Scenario 2. Rows 10 … 120 were inserted (transactions 1 … 12), snapshot R = 12 was opened, then rows 30 … 80 were deleted (13 … 18). The index is unchanged: six entries point at versions that R still sees.', {});
+      note('Scenario 2. Rows 10 … 120 were inserted (transactions 1 … 12), snapshot R = 12 was opened, then rows 30 … 80 were deleted (13 … 18). The index is unchanged: six entries point at versions that R still sees.');
       opVacuum(EVERYTHING);
       opClose(index('R'));
       opVacuum(EVERYTHING);
-      step('(For this walk-through vacuum was told to leave empty pages alone.) Three leaves are empty. Next: a scan starts, pauses, and page #1 is deleted under it, one phase at a time.', {});
+      note('(For this walk-through vacuum was told to leave empty pages alone.) Three leaves are empty. Next: a scan starts, pauses, and page #1 is deleted under it, one phase at a time.');
       opOpen('S');
       opScanStart(db.open[index('S')], 'S');
       opScanPage();
       var target = db.scan.next;
+      beginOp();
       C.markHalfDead(db, target);
       vacuumEvent('half-dead', { page: target });
+      beginOp();
       C.unlinkHalfDead(db, C.leftSibling(db, target), target);
       vacuumEvent('unlink', { page: target, stamp: C.page(db, target).stamp, next: C.page(db, target).next });
       opRecycle({ prompt: 'Nothing in the tree or the chain points at #1 any more. Snapshot S = 18 is open; the page was stamped 19. May it be reused now?',
@@ -598,20 +630,22 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
       buildDeletedRange();
       db.open.splice(index('R'), 1); db.names.splice(index('R'), 1);
       C.vacuum(db, EVERYTHING);
-      step('Scenario 3. The same tree as in scenario 2: rows 30 … 80 are gone and three leaves are empty.', {});
+      note('Scenario 3. The same tree as in scenario 2: rows 30 … 80 are gone and three leaves are empty.');
       opOpen('S');
       opScanStart(db.open[index('S')], 'S');
       opScanPage();
       var target = db.scan.next;
+      beginOp();
       C.markHalfDead(db, target);
       vacuumEvent('half-dead', { page: target });
+      beginOp();
       C.unlinkHalfDead(db, C.leftSibling(db, target), target);
       vacuumEvent('unlink', { page: target, stamp: C.page(db, target).stamp, next: C.page(db, target).next });
       opUnsafe();
       opPut(111, 1110);
       opPut(112, 1120);
       while (!db.scan.done) opScanPage();
-      step('The scan returned 10, 20 and 120. Rows 90, 100 and 110 exist and were visible to its snapshot, but it never saw leaves #5 and #8, and nothing reported an error. The tree itself is perfectly valid.', {});
+      note('The scan returned 10, 20 and 120. Rows 90, 100 and 110 exist and were visible to its snapshot, but it never saw leaves #5 and #8, and nothing reported an error. The tree itself is perfectly valid.');
     }
   };
 

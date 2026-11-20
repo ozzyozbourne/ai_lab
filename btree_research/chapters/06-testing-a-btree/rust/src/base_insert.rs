@@ -21,10 +21,10 @@
 //! slab, nothing from base_delete.rs.
 
 use crate::base_btree::{BTree, Bug};
-use crate::coverage::Point;
 use crate::base_node::{Entry, Node, NodeId, max_keys, min_keys};
 use crate::base_pool::OutOfNodes;
 use crate::base_search::lower_bound;
+use crate::coverage::Point;
 
 /// A tree of order 3 with 2^64 keys is at most 64 levels high (chapter 03).
 pub const MAX_HEIGHT: usize = 64;

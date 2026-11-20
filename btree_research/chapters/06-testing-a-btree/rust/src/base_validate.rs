@@ -177,7 +177,12 @@ mod tests {
 
     /// Only the error kind, for the table of cases below.
     #[allow(clippy::ptr_arg)] // `Nodes` is implemented for Vec<Node>
-    fn kind(nodes: &Vec<Node>, order: usize, root: NodeId, len: usize) -> Result<(), ValidateError> {
+    fn kind(
+        nodes: &Vec<Node>,
+        order: usize,
+        root: NodeId,
+        len: usize,
+    ) -> Result<(), ValidateError> {
         validate(nodes, order, Some(root), len).map_err(|v| v.error)
     }
 
@@ -213,10 +218,7 @@ mod tests {
         nodes[left].keys[1] = 5;
         assert_eq!(kind(&nodes, 4, root, 5), Err(KeysOutOfOrder));
         nodes[left].keys[1] = 25; // sorted inside the leaf, but on the wrong side of 20
-        assert_eq!(
-            kind(&nodes, 4, root, 5),
-            Err(KeyOutsideParentBounds)
-        );
+        assert_eq!(kind(&nodes, 4, root, 5), Err(KeyOutsideParentBounds));
         nodes[left].keys[1] = 10;
 
         nodes[right] = leaf(&[]);
@@ -240,10 +242,7 @@ mod tests {
         mid.children = vec![deep_a, deep_b];
         let mid = push(&mut nodes, mid);
         nodes[root].children[1] = mid;
-        assert_eq!(
-            kind(&nodes, 4, root, 6),
-            Err(LeavesAtDifferentDepths)
-        );
+        assert_eq!(kind(&nodes, 4, root, 6), Err(LeavesAtDifferentDepths));
 
         let empty_root = push(&mut nodes, leaf(&[]));
         assert_eq!(kind(&nodes, 4, empty_root, 0), Err(EmptyRoot));

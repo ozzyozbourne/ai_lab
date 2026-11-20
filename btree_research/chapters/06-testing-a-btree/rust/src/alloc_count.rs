@@ -143,7 +143,10 @@ mod tests {
         let after = stats();
         assert_eq!(after.allocations - before.allocations, 1);
         assert!(after.reallocations > before.reallocations);
-        assert_eq!(after.live_bytes - before.live_bytes, 8 * xs.capacity() as i64);
+        assert_eq!(
+            after.live_bytes - before.live_bytes,
+            8 * xs.capacity() as i64
+        );
     }
 
     #[test]

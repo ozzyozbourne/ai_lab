@@ -181,7 +181,9 @@ Same structure, names, tests and output. The differences that matter:
   iterator, so it cannot implement `std::iter::Iterator`.
 - **Errors.** Zig merges error sets; Rust has one `TreeError` enum with `Io(...)` and
   `Invalid(Violation)` variants.
-- **Tests.** Zig reports 67 tests, Rust 64. Only in Zig: the allocation-failure test, one
+- **Tests.** Zig reports 69 tests, Rust 66. Both hash the file that a fixed run of puts
+  leaves (the empty key, 0x00 and 0xFF bytes, chains of prefixes, 400 seeded puts) and compare
+  it with the same constant, so the two programs write the same bytes. Only in Zig: the allocation-failure test, one
   storage test (out of memory reported as `StorageFailure`) and the `test` block that pulls in
   the other files. Safe Rust cannot make a `Vec` allocation fail; the nearest case, "the
   page allocation in the middle of a split fails", is covered by the I/O tests in both.
@@ -220,8 +222,13 @@ written: **two keys that had been flushed long ago no longer exist anywhere.** A
 an insert of one key destroyed two others.
 
 The same holds in memory. If `put` fails with an I/O or allocation error after its first step
-has changed a page, the tree in the buffer pool is half-split. The handle then sets `poisoned`
-and every later call returns `TreePoisoned`, which is honest but not a repair.
+has changed a page, the tree in the buffer pool is half-split. The handle then sets `poisoned`.
+From then on `put`, `get`, `range` and `flush` (and `close`, which flushes) return
+`TreePoisoned`: nothing is answered from the broken tree and no more of it is written. That is
+honest but not a repair. `validate`, `height` and `dump` deliberately do not check the flag:
+they still read the half-split pages, because they are how you look at the damage. Neither
+does a range iterator obtained earlier (Rust's borrow checker forbids keeping one across a
+`put`; in Zig, do not).
 
 Chapter 21 adds the tools (checksums in the reserved 4 bytes, what `fsync` promises) and
 chapter 22 puts a write-ahead log in front of this tree so that a split is all or nothing.
@@ -324,6 +331,7 @@ Solutions: [solutions.md](solutions.md).
 
 - Previous: [chapter 11, key and record encoding](../11-key-and-record-encoding/README.md)
 - Next: [chapter 13, overflow and free space](../13-overflow-and-free-space/README.md)
-- Visualization: [the tree of pages](viz/index.html) and
+- Visualization: [the tree of pages](viz/index.html) (its 128-byte toy pages show an interior
+  split and a third level) and
   [the buffer pool during an insert that splits](viz/pool.html)
 - Output of both programs: [expected_output.txt](expected_output.txt)

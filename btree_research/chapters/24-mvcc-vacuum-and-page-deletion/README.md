@@ -14,9 +14,8 @@
   cursor (Turso).
 
 Prerequisites: chapter 07 (B+tree, leaf chain, handles into an arena, duplicates
-through a tie-breaker); chapter 05 for contrast. No threads are used: everything
-"concurrent" here is an interleaving of single steps, which is enough to show every
-problem. Latching is the subject of chapters 18 to 20.
+through a tie-breaker). No threads are used: everything "concurrent" here is an
+interleaving of single steps, which is enough to show every problem.
 
 ## The idea in plain words
 
@@ -42,10 +41,17 @@ That is the whole model of this chapter. It leaves out something real systems ca
 here every transaction commits immediately and none aborts, so comparing numbers is
 enough. A real system also has to ask whether `xmin` and `xmax` committed.
 
-Old versions are garbage once nobody can see them. The **horizon** is the oldest snapshot any reader still holds, or `now` if there are
-none. A version with `xmax <= horizon` fails the visibility test for every open
-snapshot and for every snapshot that will ever be taken: it is **dead to everyone**.
-Every clean-up step in this chapter is justified by a comparison against the horizon.
+Old versions are garbage once nobody can see them. The **horizon** is the oldest
+snapshot any reader still holds, or `now` if there are none. A version with
+`xmax <= horizon` fails the visibility test for every open snapshot and for every
+snapshot that will ever be taken: it is **dead to everyone**. Every clean-up step in
+this chapter is justified by a comparison against the horizon.
+
+The counter has a second job, as a clock. Page deletion (below) advances it by one, a
+*tick*, without writing a row, and keeps the new value as a timestamp. A value used
+that way is called an **epoch**. Because snapshots are values of the same counter, a
+snapshot and an epoch can be compared: "snapshot < epoch" means "taken before that
+moment".
 
 ### Where do the versions live? Two designs
 

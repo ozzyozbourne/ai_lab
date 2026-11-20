@@ -273,8 +273,25 @@ fn a_failure_between_the_page_changes_of_a_split_poisons_the_handle() -> TestRes
     mem.set_writes_before_failure(None);
     assert!(tree.is_poisoned());
     assert_eq!(tree.pool().pinned_frames(), 0);
+    // The four calls that would act on the half-split tree refuse.
     assert_eq!(tree.put(b"e", &value), Err(TreeError::TreePoisoned));
+    assert_eq!(tree.get(b"a"), Err(TreeError::TreePoisoned));
+    assert_eq!(tree.range(b"", None).err(), Some(TreeError::TreePoisoned));
     assert_eq!(tree.flush(), Err(TreeError::TreePoisoned));
+    // The three that only look do not: they are how the damage is examined.
+    // Here the root moved down (page 1 is an interior page without a key,
+    // page 2 has its four cells) and the split of page 2 never started.
+    assert_eq!(
+        tree.validate(),
+        Err(TreeError::Invalid(Violation::EmptyPage))
+    );
+    assert_eq!(tree.height()?, 2);
+    assert_eq!(
+        tree.dump()?,
+        "page 1  interior  0 keys  0/4076 bytes  | (2)\n\
+         \x20 page 2  leaf      4 keys  4028/4076 bytes  next -  | a:1000 b:1000 c:1000 d:1000\n"
+    );
+    assert_eq!(tree.pool().pinned_frames(), 0);
 
     // A failure BEFORE the first page change leaves a working tree.
     let mem2 = MemStorage::new();
@@ -421,6 +438,171 @@ fn range_bounds_are_half_open_leaves_are_followed_through_their_links() -> TestR
         assert_eq!(count, expected_count);
         assert_eq!(tree.pool().pinned_frames(), 0);
     }
+    Ok(())
+}
+
+/// A value that depends on the key, so that a get which finds the wrong
+/// key cannot return the right bytes.
+fn edge_value(key: &[u8]) -> Vec<u8> {
+    let first = key.first().copied().unwrap_or(0xAA);
+    vec![first ^ key.len() as u8; key.len() * 37 % 500]
+}
+
+/// Keys that a tree of byte strings must get right and that `key_for` (1 to
+/// n letters 'a' to 'f') never produces: the empty key, the bytes 0x00 and
+/// 0xFF, and long chains in which every key is a prefix of the next.
+/// The Zig twin issues the same puts in the same order.
+fn put_edge_keys(tree: &mut DiskBTree, model: &mut Model) -> TestResult {
+    let mut put = |key: &[u8]| -> TestResult {
+        let value = edge_value(key);
+        tree.put(key, &value)?;
+        model.put(key, &value);
+        Ok(())
+    };
+    let runs: [(u8, &[usize]); 2] = [
+        (0x00, &[0, 1, 2, 3, 4]), // length 0 is the empty key
+        (0xFF, &[1, 2, 3, 4, btree::MAX_KEY_LEN]),
+    ];
+    for (byte, lens) in runs {
+        for &len in lens {
+            put(&vec![byte; len])?;
+        }
+    }
+    // "a", "aa", ... up to 256 bytes, longest first: every put is a prefix
+    // of all the keys already there and must land in front of them.
+    for len in (1..=btree::MAX_KEY_LEN).rev() {
+        put(&vec![b'a'; len])?;
+    }
+    // 0x00 and 0xFF after a common prefix sort before and after every "aa...".
+    let tails: [&[u8]; 4] = [b"a\x00", b"a\xff", b"a\x00\xff", b"a\xff\x00"];
+    for key in tails {
+        put(key)?;
+    }
+    Ok(())
+}
+
+fn expect_edge_keys(tree: &mut DiskBTree, model: &Model) -> TestResult {
+    expect_same_content(tree, model)?;
+    for (key, value) in model.range(b"", None) {
+        assert_eq!(tree.get(key)?.as_deref(), Some(value));
+    }
+    assert_eq!(model.len(), 5 + 5 + 256 + 4);
+
+    // Order: the empty key is the smallest, a key sorts before everything it
+    // is a prefix of, 0x00 sorts first and 0xFF last (bytes are unsigned).
+    let all_ff = [0xFFu8; btree::MAX_KEY_LEN];
+    let expected_head: [&[u8]; 10] = [
+        b"",
+        b"\x00",
+        b"\x00\x00",
+        b"\x00\x00\x00",
+        b"\x00\x00\x00\x00",
+        b"a",
+        b"a\x00",
+        b"a\x00\xff",
+        b"aa",
+        b"aaa",
+    ];
+    let mut it = tree.range(b"", None)?;
+    for key in expected_head {
+        assert_eq!(it.next()?.map(|(k, _)| k), Some(key));
+    }
+    let mut last = Vec::new();
+    while let Some((key, _)) = it.next()? {
+        last = key.to_vec();
+    }
+    assert_eq!(last, all_ff);
+
+    // Bounds made of these bytes.
+    type Case<'a> = (&'a [u8], Option<&'a [u8]>, usize);
+    let cases: [Case; 8] = [
+        (b"", Some(b""), 0),
+        (b"", Some(b"\x00"), 1), // the empty key alone
+        (b"\x00", Some(b"\x00\x00\x00"), 2),
+        (b"\x00\x00\x00\x00\x00", Some(b"a"), 0), // five zero bytes: not a key
+        (b"a", Some(b"b"), 256 + 4),
+        (b"a\xff", None, 2 + 5), // a FF, a FF 00, and the five FF runs
+        (b"\xff", None, 5),
+        (&all_ff, None, 1),
+    ];
+    for (lo, hi, count) in cases {
+        expect_range(tree, model, lo, hi)?;
+        assert_eq!(model.range(lo, hi).len(), count);
+    }
+    // Neighbours that are not keys.
+    assert_eq!(tree.get(b"\x00\x00\x00\x00\x00")?, None);
+    assert_eq!(tree.get(b"a\x00\x00")?, None);
+    assert_eq!(tree.get(&all_ff[..btree::MAX_KEY_LEN - 1])?, None);
+    assert_eq!(tree.get(b"b")?, None);
+    Ok(())
+}
+
+#[test]
+fn the_empty_key_0x00_and_0xff_bytes_and_keys_that_are_prefixes_of_each_other() -> TestResult {
+    // 2 frames: every one of these puts works with the minimum of memory.
+    for frames in [2, 8] {
+        let mem = MemStorage::new();
+        let mut model = Model::new();
+        let mut tree = create_mem(&mem, frames);
+
+        put_edge_keys(&mut tree, &mut model)?;
+        expect_edge_keys(&mut tree, &model)?;
+        assert!(tree.height()? >= 3); // long keys: interior pages split too
+        assert!(tree.stats.interior_splits > 0);
+
+        // The same from the file alone.
+        tree.close()?;
+        let mut tree = DiskBTree::open(pool_over(mem.clone(), frames))?;
+        expect_edge_keys(&mut tree, &model)?;
+
+        // Overwriting the empty key and the longest key changes only them.
+        let all_ff = [0xFFu8; btree::MAX_KEY_LEN];
+        tree.put(b"", b"empty key, new value")?;
+        model.put(b"", b"empty key, new value");
+        tree.put(&all_ff, b"")?;
+        model.put(&all_ff, b"");
+        expect_edge_keys(&mut tree, &model)?;
+    }
+    Ok(())
+}
+
+/// FNV-1a, 64 bits: small enough to write out twice, and any change of one
+/// byte of the file changes it.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &b| {
+        (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+#[test]
+fn the_file_is_the_format_a_fixed_run_of_puts_gives_the_same_bytes_in_zig_and_in_rust() -> TestResult
+{
+    // The constants below are also in tests.zig. If a change to the tree, the
+    // slotted page or the pool moves one byte of the file, this test fails
+    // in the language that changed; change both or neither.
+    assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
+
+    let mem = MemStorage::new();
+    let mut model = Model::new();
+    let mut tree = create_mem(&mem, 3);
+
+    put_edge_keys(&mut tree, &mut model)?;
+    tree.close()?;
+    let mut tree = DiskBTree::open(pool_over(mem.clone(), 3))?;
+    let mut rng = SplitMix64::new(12);
+    for _ in 0..400 {
+        let key = workload::key_for(rng.below(250), 40);
+        let value = workload::random_value(&mut rng, 300);
+        tree.put(&key, &value)?;
+        model.put(&key, &value);
+    }
+    tree.flush()?;
+    expect_same_content(&mut tree, &model)?;
+
+    assert_eq!(tree.pool().pager().page_count(), 71);
+    assert_eq!(tree.key_count(), 478);
+    assert_eq!(mem.bytes().len(), 71 * btree::PAGE_SIZE);
+    assert_eq!(fnv1a64(&mem.bytes()), 0x27e1_691c_5290_7390);
     Ok(())
 }
 

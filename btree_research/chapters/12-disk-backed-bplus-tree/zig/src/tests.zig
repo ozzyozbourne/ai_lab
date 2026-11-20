@@ -254,8 +254,25 @@ test "a failure between the page changes of a split poisons the handle" {
     mem.writes_before_failure = null;
     try testing.expect(db.tree.poisoned);
     try testing.expectEqual(0, db.pool.pinnedFrames());
+    // The four calls that would act on the half-split tree refuse.
     try testing.expectError(error.TreePoisoned, db.tree.put("e", &value));
+    try testing.expectError(error.TreePoisoned, db.tree.get(testing.allocator, "a"));
+    try testing.expectError(error.TreePoisoned, db.tree.range("", null));
     try testing.expectError(error.TreePoisoned, db.tree.flush());
+    // The three that only look do not: they are how the damage is examined.
+    // Here the root moved down (page 1 is an interior page without a key,
+    // page 2 has its four cells) and the split of page 2 never started.
+    try testing.expectError(error.EmptyPage, db.tree.validate());
+    try testing.expectEqual(2, try db.tree.height());
+    var dump: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer dump.deinit();
+    try db.tree.dump(&dump.writer);
+    try testing.expectEqualStrings(
+        \\page 1  interior  0 keys  0/4076 bytes  | (2)
+        \\  page 2  leaf      4 keys  4028/4076 bytes  next -  | a:1000 b:1000 c:1000 d:1000
+        \\
+    , dump.written());
+    try testing.expectEqual(0, db.pool.pinnedFrames());
 
     // A failure BEFORE the first page change leaves a working tree.
     var mem2: MemStorage = .init(testing.allocator);
@@ -443,6 +460,164 @@ test "range: bounds are half-open, leaves are followed through their links" {
         try testing.expectEqual(case.count, count);
         try testing.expectEqual(0, db.pool.pinnedFrames());
     }
+}
+
+/// Keys that a tree of byte strings must get right and that `keyFor` (1 to
+/// n letters 'a' to 'f') never produces: the empty key, the bytes 0x00 and
+/// 0xFF, and long chains in which every key is a prefix of the next.
+/// The Rust twin issues the same puts in the same order.
+fn putEdgeKeys(tree: *DiskBTree, model: *Model) !void {
+    var key: [btree.max_key_len]u8 = undefined;
+    var value: [500]u8 = undefined;
+    const Run = struct { byte: u8, lens: []const usize };
+    const runs = [_]Run{
+        .{ .byte = 0x00, .lens = &.{ 0, 1, 2, 3, 4 } }, // length 0 is the empty key
+        .{ .byte = 0xFF, .lens = &.{ 1, 2, 3, 4, btree.max_key_len } },
+    };
+    for (runs) |run| for (run.lens) |len| {
+        @memset(key[0..len], run.byte);
+        const v = edgeValue(key[0..len], &value);
+        try tree.put(key[0..len], v);
+        try model.put(key[0..len], v);
+    };
+    // "a", "aa", ... up to 256 bytes, longest first: every put is a prefix
+    // of all the keys already there and must land in front of them.
+    var len: usize = btree.max_key_len;
+    while (len >= 1) : (len -= 1) {
+        @memset(key[0..len], 'a');
+        const v = edgeValue(key[0..len], &value);
+        try tree.put(key[0..len], v);
+        try model.put(key[0..len], v);
+    }
+    // 0x00 and 0xFF after a common prefix sort before and after every "aa...".
+    for ([_][]const u8{ "a\x00", "a\xff", "a\x00\xff", "a\xff\x00" }) |k| {
+        const v = edgeValue(k, &value);
+        try tree.put(k, v);
+        try model.put(k, v);
+    }
+}
+
+/// A value that depends on the key, so that a get which finds the wrong
+/// key cannot return the right bytes.
+fn edgeValue(key: []const u8, buf: *[500]u8) []const u8 {
+    const len = key.len * 37 % 500;
+    const first: u8 = if (key.len == 0) 0xAA else key[0];
+    @memset(buf[0..len], first ^ @as(u8, @truncate(key.len)));
+    return buf[0..len];
+}
+
+fn expectEdgeKeys(tree: *DiskBTree, model: *const Model) !void {
+    try expectSameContent(tree, model);
+    for (model.entries.items) |entry| try expectValue(tree, entry.key, entry.value);
+    try testing.expectEqual(5 + 5 + 256 + 4, model.len());
+
+    // Order: the empty key is the smallest, a key sorts before everything it
+    // is a prefix of, 0x00 sorts first and 0xFF last (bytes are unsigned).
+    const all_ff: [btree.max_key_len]u8 = @splat(0xFF);
+    var it = try tree.range("", null);
+    const expected_head = [_][]const u8{ "", "\x00", "\x00\x00", "\x00\x00\x00", "\x00\x00\x00\x00", "a", "a\x00", "a\x00\xff", "aa", "aaa" };
+    for (expected_head) |k| try testing.expectEqualSlices(u8, k, (try it.next()).?.key);
+    var last: [btree.max_key_len]u8 = undefined;
+    var last_len: usize = 0;
+    while (try it.next()) |item| {
+        last_len = item.key.len;
+        @memcpy(last[0..last_len], item.key);
+    }
+    try testing.expectEqualSlices(u8, &all_ff, last[0..last_len]);
+
+    // Bounds made of these bytes.
+    const Case = struct { lo: []const u8, hi: ?[]const u8, count: usize };
+    const cases = [_]Case{
+        .{ .lo = "", .hi = "", .count = 0 },
+        .{ .lo = "", .hi = "\x00", .count = 1 }, // the empty key alone
+        .{ .lo = "\x00", .hi = "\x00\x00\x00", .count = 2 },
+        .{ .lo = "\x00\x00\x00\x00\x00", .hi = "a", .count = 0 }, // five zero bytes: not a key
+        .{ .lo = "a", .hi = "b", .count = 256 + 4 },
+        .{ .lo = "a\xff", .hi = null, .count = 2 + 5 }, // a FF, a FF 00, and the five FF runs
+        .{ .lo = "\xff", .hi = null, .count = 5 },
+        .{ .lo = &all_ff, .hi = null, .count = 1 },
+    };
+    for (cases) |case| {
+        try expectRange(tree, model, case.lo, case.hi);
+        try testing.expectEqual(case.count, model.range(case.lo, case.hi).len);
+    }
+    // Neighbours that are not keys.
+    try expectValue(tree, "\x00\x00\x00\x00\x00", null);
+    try expectValue(tree, "a\x00\x00", null);
+    try expectValue(tree, all_ff[0 .. btree.max_key_len - 1], null);
+    try expectValue(tree, "b", null);
+}
+
+test "the empty key, 0x00 and 0xFF bytes, and keys that are prefixes of each other" {
+    // 2 frames: every one of these puts works with the minimum of memory.
+    for ([_]u32{ 2, 8 }) |frames| {
+        var mem: MemStorage = .init(testing.allocator);
+        defer mem.deinit();
+        var model: Model = .init(testing.allocator);
+        defer model.deinit();
+        var db: Db = undefined;
+        try db.start(mem.storage(), frames, .create);
+        defer db.stop();
+
+        try putEdgeKeys(&db.tree, &model);
+        try expectEdgeKeys(&db.tree, &model);
+        try testing.expect(try db.tree.height() >= 3); // long keys: interior pages split too
+        try testing.expect(db.tree.stats.interior_splits > 0);
+
+        // The same from the file alone.
+        try db.reopen(mem.storage(), frames);
+        try expectEdgeKeys(&db.tree, &model);
+
+        // Overwriting the empty key and the longest key changes only them.
+        const all_ff: [btree.max_key_len]u8 = @splat(0xFF);
+        try db.tree.put("", "empty key, new value");
+        try model.put("", "empty key, new value");
+        try db.tree.put(&all_ff, "");
+        try model.put(&all_ff, "");
+        try expectEdgeKeys(&db.tree, &model);
+    }
+}
+
+/// FNV-1a, 64 bits: small enough to write out twice, and any change of one
+/// byte of the file changes it.
+fn fnv1a64(bytes: []const u8) u64 {
+    var hash: u64 = 0xcbf29ce484222325;
+    for (bytes) |b| hash = (hash ^ b) *% 0x100000001b3;
+    return hash;
+}
+
+test "the file is the format: a fixed run of puts gives the same bytes in Zig and in Rust" {
+    // The constants below are also in tests.rs. If a change to the tree, the
+    // slotted page or the pool moves one byte of the file, this test fails
+    // in the language that changed; change both or neither.
+    try testing.expectEqual(0xaf63dc4c8601ec8c, fnv1a64("a"));
+
+    var mem: MemStorage = .init(testing.allocator);
+    defer mem.deinit();
+    var model: Model = .init(testing.allocator);
+    defer model.deinit();
+    var db: Db = undefined;
+    try db.start(mem.storage(), 3, .create);
+    defer db.stop();
+
+    try putEdgeKeys(&db.tree, &model);
+    try db.reopen(mem.storage(), 3);
+    var rng = SplitMix64.init(12);
+    var key_buf: [workload.max_key_len]u8 = undefined;
+    var value_buf: [workload.max_value_len]u8 = undefined;
+    for (0..400) |_| {
+        const key = workload.keyFor(rng.below(250), 40, &key_buf);
+        const value = workload.randomValue(&rng, 300, &value_buf);
+        try db.tree.put(key, value);
+        try model.put(key, value);
+    }
+    try db.tree.flush();
+    try expectSameContent(&db.tree, &model);
+
+    try testing.expectEqual(71, db.pager.pageCount());
+    try testing.expectEqual(478, db.tree.key_count);
+    try testing.expectEqual(71 * btree.page_size, mem.bytes.items.len);
+    try testing.expectEqual(0x27e1691c52907390, fnv1a64(mem.bytes.items));
 }
 
 test "validate detects each kind of damage" {

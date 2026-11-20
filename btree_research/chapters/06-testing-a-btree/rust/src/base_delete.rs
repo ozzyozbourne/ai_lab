@@ -1,5 +1,7 @@
 // Copied from chapters/05-deletion-and-rebalancing/rust/src/delete.rs
-//! SECTION 5: delete with borrow, merge and root shrink (THIS chapter).
+// Changes for chapter 06: coverage points instead of counters, and two fault
+// seams (search for "SEAM") that only a broken variant takes.
+//! SECTION 5: delete with borrow, merge and root shrink (explained in chapter 05).
 //!
 //! Removing a key can leave a node with fewer than `min_keys` keys
 //! (an *underflow*). The repair is always done by the PARENT of the underfull
@@ -30,22 +32,27 @@
 //!
 //! Delete never allocates: it only ever returns nodes to the pool.
 //!
-//! This file needs node.rs, search.rs (`lower_bound`) and the slab, nothing
-//! from insert.rs. The four steps (`fix_underflow`, `borrow_from_left`,
-//! `borrow_from_right`, `merge_children`) are `pub`: chapter 06 builds
-//! deliberately broken variants of delete and can reuse the steps it does
-//! not break. Each classic bug is one line here: do not free the right node;
-//! do not move the child in a borrow; leave the separator in the parent.
+//! This file needs base_node.rs, base_search.rs (`lower_bound`) and the
+//! slab, nothing from base_insert.rs. Two classic delete bugs are one line
+//! each here: do not free the right node (merge_leaks_node); do not move the
+//! child in a borrow (borrow_forgets_child).
 
-use crate::base_btree::BTree;
+use crate::base_btree::{BTree, Bug};
+use crate::coverage::Point;
 use crate::base_node::{Entry, NodeId, max_keys, min_keys};
 use crate::base_search::lower_bound;
 
 /// Returns the removed value, or `None` if the key was not present (the tree
 /// is then unchanged).
 pub fn delete(tree: &mut BTree, key: u64) -> Option<u64> {
-    let root = tree.root?;
-    let removed = remove_from(tree, root, key)?;
+    let removed = match tree.root {
+        Some(root) => remove_from(tree, root, key),
+        None => None,
+    };
+    let (Some(root), Some(removed)) = (tree.root, removed) else {
+        tree.coverage.hit(Point::DeleteMissing);
+        return None;
+    };
     tree.len -= 1;
     if tree.pool[root].is_empty() {
         // Root shrink. Either the last key of the tree was deleted (leaf
@@ -55,9 +62,11 @@ pub fn delete(tree: &mut BTree, key: u64) -> Option<u64> {
         // "all leaves at the same depth" still holds.
         let old_root = tree.pool.free(root);
         tree.root = old_root.children.first().copied();
-        if tree.root.is_some() {
-            tree.counters.root_shrinks += 1;
-        }
+        tree.coverage.hit(if tree.root.is_some() {
+            Point::RootShrink
+        } else {
+            Point::TreeEmptied
+        });
     }
     Some(removed)
 }
@@ -70,7 +79,11 @@ fn remove_from(tree: &mut BTree, id: NodeId, key: u64) -> Option<u64> {
     if node.leaf {
         // Case 1: the key is in a leaf. Just take it out; if the leaf is now
         // too small, our caller (the parent) repairs it.
-        return found.then(|| node.remove_entry(i).value);
+        if !found {
+            return None;
+        }
+        tree.coverage.hit(Point::DeleteLeafKey);
+        return Some(tree.pool[id].remove_entry(i).value);
     }
     let child = node.children[i];
 
@@ -85,7 +98,7 @@ fn remove_from(tree: &mut BTree, id: NodeId, key: u64) -> Option<u64> {
         let node = &mut tree.pool[id];
         node.keys[i] = predecessor.key;
         let removed = std::mem::replace(&mut node.values[i], predecessor.value);
-        tree.counters.predecessor_swaps += 1;
+        tree.coverage.hit(Point::DeleteInteriorKey);
         fix_underflow(tree, id, i);
         return Some(removed);
     }
@@ -120,20 +133,36 @@ pub fn fix_underflow(tree: &mut BTree, parent: NodeId, i: usize) {
         return;
     }
     debug_assert_eq!(tree.pool[siblings[i]].len(), min - 1); // one delete removes one key
+    let at_leaf = tree.pool[siblings[i]].leaf; // read now: a merge frees a node
 
     // A sibling can lend a key only if it stays legal afterwards.
     if i > 0 && tree.pool[siblings[i - 1]].len() > min {
         borrow_from_left(tree, parent, i);
-        tree.counters.borrows_left += 1;
+        tree.coverage.hit(if at_leaf {
+            Point::BorrowLeftLeaf
+        } else {
+            Point::BorrowLeftInterior
+        });
     } else if i + 1 < siblings.len() && tree.pool[siblings[i + 1]].len() > min {
         borrow_from_right(tree, parent, i);
-        tree.counters.borrows_right += 1;
+        tree.coverage.hit(if at_leaf {
+            Point::BorrowRightLeaf
+        } else {
+            Point::BorrowRightInterior
+        });
     } else {
         // No sibling can spare a key. Merge with the left sibling if there is
         // one, otherwise with the right one. `at` is the separator between them.
         let at = if i > 0 { i - 1 } else { i };
         merge_children(tree, parent, at);
-        tree.counters.merges += 1;
+        tree.coverage.hit(if at_leaf {
+            Point::MergeLeaf
+        } else {
+            Point::MergeInterior
+        });
+        if i == 0 {
+            tree.coverage.hit(Point::MergeFirstChild);
+        }
     }
 }
 
@@ -163,9 +192,13 @@ pub fn borrow_from_left(tree: &mut BTree, parent: NodeId, i: usize) {
         key: std::mem::replace(&mut node.keys[sep], up.key),
         value: std::mem::replace(&mut node.values[sep], up.value),
     };
+    // SEAM borrow_forgets_child: the key rotates, the child pointer (already
+    // popped from the left sibling) is dropped. Leaves have no children, so
+    // the bug needs a tree of height 3 to show.
+    let keep_child = tree.bug != Bug::BorrowForgetsChild;
     let node = &mut tree.pool[child];
     node.insert_entry(0, down.key, down.value);
-    if let Some(grandchild) = moved_child {
+    if let Some(grandchild) = moved_child.filter(|_| keep_child) {
         node.children.insert(0, grandchild);
     }
 }
@@ -189,9 +222,10 @@ pub fn borrow_from_right(tree: &mut BTree, parent: NodeId, i: usize) {
         key: std::mem::replace(&mut node.keys[sep], up.key),
         value: std::mem::replace(&mut node.values[sep], up.value),
     };
+    let keep_child = tree.bug != Bug::BorrowForgetsChild; // SEAM
     let node = &mut tree.pool[child];
     node.insert_entry(node.len(), down.key, down.value);
-    node.children.extend(moved_child);
+    node.children.extend(moved_child.filter(|_| keep_child));
 }
 
 /// Merge `children[at]`, the separator `keys[at]` and `children[at + 1]` into
@@ -214,7 +248,14 @@ pub fn merge_children(tree: &mut BTree, parent: NodeId, at: usize) {
     // `free` hands the right node back by value. Its entries are appended
     // (copied) to the left node; its slot is on the free list for the next
     // split, and its own buffers are released when `right` goes out of scope.
-    let mut right = tree.pool.free(right);
+    // SEAM merge_leaks_node: the entries are copied out but the slot is
+    // never freed. The tree still answers every question correctly; only
+    // the slab's live counter (checked by `BTree::validate`) knows.
+    let mut right = if tree.bug == Bug::MergeLeaksNode {
+        tree.pool[right].clone()
+    } else {
+        tree.pool.free(right)
+    };
     let node = &mut tree.pool[left];
     node.keys.push(sep.key);
     node.values.push(sep.value);

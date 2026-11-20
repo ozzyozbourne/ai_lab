@@ -23,6 +23,10 @@
   .s-rbblack { --s: var(--bt-text); }
   .bt-node.s-rbblack .bt-node-box { stroke-width: 3.25; }
   .wide-input { width: 15em; max-width: 100%; }
+  /* Long option texts must not widen the page on a phone. */
+  .bt-field { max-width: 100%; min-width: 0; }
+  .bt-field .bt-select { min-width: 0; max-width: 100%; flex: 1 1 auto; text-overflow: ellipsis; }
+  #v-case { width: 17em; }
 </style>
 </head>
 <body>

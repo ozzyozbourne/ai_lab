@@ -1,4 +1,6 @@
 // Copied from chapters/05-deletion-and-rebalancing/rust/src/insert.rs
+// Changes for chapter 06: coverage points instead of counters, and one fault
+// seam (search for "SEAM") that only a broken variant takes.
 //! SECTION 4: insert with bottom-up splitting (explained in chapter 04).
 //!
 //! `put` works in three phases:
@@ -10,16 +12,16 @@
 //!    a node is overfull. Nothing in this phase can fail.
 //!
 //! Reserving first means a failed allocation leaves the tree exactly as it
-//! was (see `put_under_allocation_failure_leaves_the_tree_unchanged` in
-//! tests_insert.rs). The slab's `usage` counters are put back as well, so a
+//! was (tests.rs checks exactly that). The slab's `usage` counters are put back as well, so a
 //! failed `put` cannot be seen from the tree at all. The one trace it can
 //! leave is inside the slab: a slot that was pushed for a reservation and
 //! returned stays on the free list.
 //!
-//! This file needs node.rs, search.rs (`lower_bound`) and the slab, nothing
-//! from delete.rs.
+//! This file needs base_node.rs, base_search.rs (`lower_bound`) and the
+//! slab, nothing from base_delete.rs.
 
-use crate::base_btree::BTree;
+use crate::base_btree::{BTree, Bug};
+use crate::coverage::Point;
 use crate::base_node::{Entry, Node, NodeId, max_keys, min_keys};
 use crate::base_pool::OutOfNodes;
 use crate::base_search::lower_bound;
@@ -28,12 +30,17 @@ use crate::base_search::lower_bound;
 pub const MAX_HEIGHT: usize = 64;
 
 /// Returns the previous value if the key was already present (overwrite).
-/// On `Err(OutOfNodes)` the tree, its counters and `pool.usage` are unchanged.
+/// On `Err(OutOfNodes)` the tree and `pool.usage` are unchanged.
 pub fn put(tree: &mut BTree, key: u64, value: u64) -> Result<Option<u64>, OutOfNodes> {
     let Some(root) = tree.root else {
         let mut leaf = Node::new(true);
         leaf.insert_entry(0, key, value);
-        tree.root = Some(tree.pool.alloc(leaf)?);
+        let Ok(id) = tree.pool.alloc(leaf) else {
+            tree.coverage.hit(Point::PutOom);
+            return Err(OutOfNodes);
+        };
+        tree.coverage.hit(Point::PutFirstKey);
+        tree.root = Some(id);
         tree.len = 1;
         return Ok(None);
     };
@@ -48,6 +55,7 @@ pub fn put(tree: &mut BTree, key: u64, value: u64) -> Result<Option<u64>, OutOfN
         let i = lower_bound(&node.keys, key);
         if i < node.len() && node.keys[i] == key {
             // Duplicate key: overwrite, no structural change.
+            tree.coverage.hit(Point::PutOverwrite);
             return Ok(Some(std::mem::replace(&mut node.values[i], value)));
         }
         path[depth] = (id, i);
@@ -77,10 +85,16 @@ pub fn put(tree: &mut BTree, key: u64, value: u64) -> Result<Option<u64>, OutOfN
                 // Hand back what we already took (Zig: `errdefer`), and
                 // forget that we took it: `usage` (created, destroyed, peak)
                 // counts nodes of the tree, and these never became part of it.
+                let reserved = spare.len();
                 for id in spare {
                     tree.pool.free(id);
                 }
                 tree.pool.usage = usage_before;
+                tree.coverage.hit(if reserved > 0 {
+                    Point::PutOomRollback
+                } else {
+                    Point::PutOom
+                });
                 return Err(out_of_nodes);
             }
         }
@@ -90,12 +104,20 @@ pub fn put(tree: &mut BTree, key: u64, value: u64) -> Result<Option<u64>, OutOfN
     let mut level = depth - 1;
     tree.pool[path[level].0].insert_entry(path[level].1, key, value);
     tree.len += 1;
+    if need == 0 {
+        tree.coverage.hit(Point::PutNoSplit);
+    }
     let mut spare = spare.into_iter();
     while tree.pool[path[level].0].len() > full {
         let left = path[level].0;
         let right = spare.next().expect("reserved");
+        let at_leaf = tree.pool[left].leaf;
         let median = split_node(tree, left, right);
-        tree.counters.splits += 1;
+        tree.coverage.hit(if at_leaf {
+            Point::SplitLeaf
+        } else {
+            Point::SplitInterior
+        });
         if level == 0 {
             // The root was split: the tree grows by one level, at the top.
             // This is the only way a B-tree gets taller, which is why all
@@ -106,7 +128,11 @@ pub fn put(tree: &mut BTree, key: u64, value: u64) -> Result<Option<u64>, OutOfN
             node.insert_entry(0, median.key, median.value);
             node.children = vec![left, right];
             tree.root = Some(new_root);
-            tree.counters.root_splits += 1;
+            tree.coverage.hit(if at_leaf {
+                Point::RootSplitLeaf
+            } else {
+                Point::RootSplitInterior
+            });
             break;
         }
         // Push the median into the parent, right half next to the left half.
@@ -138,9 +164,17 @@ fn split_node(tree: &mut BTree, left: NodeId, right: NodeId) -> Entry {
             node.children.split_off(mid + 1)
         },
     };
+    let median_value = node.values.pop().expect("median");
     let median = Entry {
         key: node.keys.pop().expect("median"),
-        value: node.values.pop().expect("median"),
+        // SEAM split_wrong_value: the key goes up with the value of its left
+        // neighbour. Every node keeps a legal shape, so `validate` stays
+        // silent; only a comparison of answers with the oracle can notice.
+        value: if tree.bug == Bug::SplitWrongValue {
+            node.values[mid - 1]
+        } else {
+            median_value
+        },
     };
     debug_assert!(node.len() >= min_keys(tree.order) && upper.len() >= min_keys(tree.order));
     tree.pool[right] = upper;

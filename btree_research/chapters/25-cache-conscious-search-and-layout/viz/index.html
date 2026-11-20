@@ -48,6 +48,7 @@
 .cl-strip-note[hidden] { display: none; }
 .cl-strip-note .cl-rest { position: static; display: inline-block; width: 11px; height: 14px; border: 1px solid var(--bt-border); border-radius: 3px; flex: none; }
 #fig-main .bt-caption { box-sizing: border-box; }
+.cl-code { padding: 12px 14px; border-top: 1px solid var(--bt-border); background: var(--bt-bg); min-width: 0; }
 .cl-probe { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; min-height: 0 !important; }
 .cl-counters { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 8px; }
 .cl-counters .bt-chip b { font-family: var(--bt-mono); margin-left: .35em; }
@@ -382,7 +383,7 @@ nothing prefetches.</p>
   // ------------------------------------------------------------- figure 1
   // "cache lines read" counts both arrays: key lines and, where there is one, the rank line.
   var fig = BTViz.figure('#fig-main', {
-    title: 'Cache lines touched by one lookup', side: true,
+    title: 'Cache lines touched by one lookup',
     legend: [{ token: 'node-active', label: 'cache line read' }, { token: 'pointer', label: 'line prefetched, not read (yet)' },
       { token: 'key-compare', label: 'key being compared' }, { token: 'key-found', label: 'answer' },
       { token: 'free', label: 'padding / unused slot' }]
@@ -420,12 +421,15 @@ nothing prefetches.</p>
   var sideRow = el('div.cl-side', {}, el('span', { text: 'rank array (4-byte entries, 16 per line):' }), sideLine);
   fig.stage.appendChild(sideRow);
 
-  // One code panel per snippet, created once; only the current one is shown.
-  var panels = {};
+  // One code panel per snippet, created once; only the current one is shown. The code sits below the
+  // step controls, not beside the strip: the strip gets the full width (three or more lines per row),
+  // and picture, caption and controls stay together on one screen, on a phone as well.
+  var panels = {}, codeWrap = el('div.cl-code');
+  fig.root.insertBefore(codeWrap, fig.legend);
   ['classic', 'halving', 'vector', 'eytzinger', 'blocktree'].forEach(function (name) {
     var host = el('div');
-    fig.side.appendChild(host);
-    panels[name] = { host: host, panel: BTViz.codePanel(host, name, { title: name + ' (simplified)', maxHeight: 360 }) };
+    codeWrap.appendChild(host);
+    panels[name] = { host: host, panel: BTViz.codePanel(host, name, { title: name + ' (simplified)', maxHeight: 300 }) };
   });
 
   var rng = BTViz.rng(25), index = null, indexN = 0;

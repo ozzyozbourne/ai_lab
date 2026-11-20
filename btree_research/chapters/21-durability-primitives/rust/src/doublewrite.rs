@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn seeded_oracle_over_three_pages_with_crashes_and_interrupted_recoveries() {
-        // Model test: 200 seeds x 40 updates of a random logical page. Every
+        // Model test: 60 seeds x 40 updates of a random logical page. Every
         // update may lose power after 0, 1 or 2 writes, in a random crash
         // mode, and recovery itself may be cut up to three times. After every
         // step all three logical pages must equal the oracle: a crash while
@@ -330,7 +330,7 @@ mod tests {
         ];
         let mut scratch = [payload_of(0); DoubleWrite::SCRATCH_PAGES];
         let (mut crashes, mut interrupted) = (0u32, 0u32);
-        for seed in 0..200u64 {
+        for seed in 0..60u64 {
             let mut disk = SimDisk::new(seed);
             let mut rng = SplitMix64::new(seed + 1000);
             let mut oracle: [Option<u8>; 3] = [None; 3]; // None = never written

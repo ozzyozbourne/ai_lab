@@ -4,9 +4,10 @@
 //! `base_keycodec.rs`. Nothing here allocates: the caller owns every buffer.
 //! Twin of `zig/src/keycodec.zig`; the bytes produced are identical.
 //!
-//! THE property (tested here and, against an independent oracle, in
-//! model.rs): for two keys built with the same sequence of `put_*` calls and
-//! the same `ColumnOpts` per column,
+//! THE property (tested at the bottom of this file against an oracle that
+//! never looks at bytes: random schemas, every byte value, every truncation):
+//! for two keys built with the same sequence of `put_*` calls and the same
+//! `ColumnOpts` per column,
 //!
 //!     key_a.cmp(key_b) (slice comparison = memcmp) == logical order of the values
 //!
@@ -16,7 +17,11 @@
 //!
 //!     tag (1 byte)   0x00 NULL when NULLS FIRST
 //!                    0x01 a value follows
-//!                    0x02 NULL when NULLS LAST (the default, as in Postgres)
+//!                    0x02 NULL when NULLS LAST (the default here, for ASC and
+//!                         for DESC; Postgres defaults to NULLS LAST for ASC
+//!                         but to NULLS FIRST for DESC, so a caller that
+//!                         mirrors Postgres must set `nulls_first` on a
+//!                         bare DESC column itself)
 //!     payload        u64   8 bytes big-endian
 //!                    i64   8 bytes big-endian with the sign bit flipped
 //!                    f64   8 bytes, see `encode_f64`
@@ -39,7 +44,8 @@
 pub struct ColumnOpts {
     /// Descending order for this column.
     pub desc: bool,
-    /// NULLs sort before all values (default: after all values).
+    /// NULLs sort before all values (default: after all values, whatever
+    /// `desc` is; see the note on Postgres in the file header).
     pub nulls_first: bool,
 }
 
@@ -49,7 +55,7 @@ impl ColumnOpts {
         desc: false,
         nulls_first: false,
     };
-    /// Descending, NULLS LAST.
+    /// Descending, NULLS LAST (not what a bare `DESC` means in Postgres).
     pub const DESC: ColumnOpts = ColumnOpts {
         desc: true,
         nulls_first: false,

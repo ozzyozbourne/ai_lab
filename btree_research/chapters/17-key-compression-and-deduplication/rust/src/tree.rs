@@ -24,6 +24,10 @@ use std::cmp::Ordering;
 /// Row address. 6 bytes on disk in Postgres (block number + slot); here a
 /// plain integer below 2^48 so that ordering is integer ordering.
 pub type Tid = u64;
+/// The largest TID that fits in the 6 bytes every size formula charges for
+/// one. `put` rejects anything larger: otherwise the byte accounting would
+/// describe a page that could not be written.
+pub const MAX_TID: Tid = (1 << 48) - 1;
 pub type PageId = u32;
 
 // ---- byte accounting (what a cell would cost in a slotted page) ----
@@ -74,6 +78,7 @@ pub enum Error {
     /// The page budget is exhausted (the Rust stand-in for Zig's OutOfMemory).
     OutOfPages,
     KeyTooLarge,
+    TidTooLarge,
 }
 
 /// The total order of the tree. A shorter key sorts first when it is a prefix
@@ -345,10 +350,14 @@ impl Tree {
     // ------------------------------------------------------------------- put
 
     /// Insert the tuple (key, tid). Returns Ok(false) if it is already
-    /// present. On error the tree is unchanged.
+    /// present. The key must fit `max_key_len` and the TID must fit 6 bytes
+    /// (`MAX_TID`). On error the tree is unchanged.
     pub fn put(&mut self, key: &[u8], tid: Tid) -> Result<bool, Error> {
         if key.len() > self.max_key_len() {
             return Err(Error::KeyTooLarge);
+        }
+        if tid > MAX_TID {
+            return Err(Error::TidTooLarge);
         }
         let mut path = Vec::new();
         let leaf_id = self.find_leaf(key, tid, &mut path);
@@ -577,10 +586,9 @@ impl Tree {
     pub fn validate(&self) -> Result<(), &'static str> {
         let mut st = Check::default();
         self.check_page(self.root, None, None, 0, &mut st)?;
-        // The DFS met the leaves left to right; the chain must end where it did.
-        let last = st.prev_leaf.ok_or("no leaf")?;
-        if self.pages[last as usize].right.is_some() {
-            return Err("last leaf has a right link");
+        // Every level's chain must end at the last page the DFS met there.
+        if st.prev_at.iter().flatten().any(|&last| self.pages[last as usize].right.is_some()) {
+            return Err("the last page of a level has a right link");
         }
         if st.entries != self.count {
             return Err("entry count mismatch");
@@ -608,6 +616,13 @@ impl Tree {
         if p.used_bytes() > self.cfg.page_size {
             return Err("page overflows");
         }
+        // The sibling chain of this level (the leaf chain at the bottom).
+        if let Some(prev) = st.prev_at[depth]
+            && self.pages[prev as usize].right != Some(id)
+        {
+            return Err("sibling chain broken");
+        }
+        st.prev_at[depth] = Some(id);
         // low < (key, tid): a missing low fence is minus infinity.
         let above_low = |low: Option<&Sep>, key: &[u8], tid: Option<Tid>| {
             low.is_none_or(|l| compare_tuple(&l.key, l.tid, key, tid) == Ordering::Less)
@@ -625,12 +640,6 @@ impl Tree {
             if *st.leaf_depth.get_or_insert(depth) != depth {
                 return Err("leaves at different depths");
             }
-            if let Some(prev) = st.prev_leaf
-                && self.pages[prev as usize].right != Some(id)
-            {
-                return Err("leaf chain broken");
-            }
-            st.prev_leaf = Some(id);
 
             let mut prev_cell: Option<&LeafCell> = None;
             for c in &p.cells {
@@ -642,6 +651,9 @@ impl Tree {
                 }
                 if !c.tids.is_sorted_by(|a, b| a < b) {
                     return Err("posting list not ascending");
+                }
+                if c.tids.last().is_some_and(|&t| t > MAX_TID) {
+                    return Err("TID does not fit 6 bytes");
                 }
                 // Strictly ascending in (key, TID) order across cells.
                 if let Some(pc) = prev_cell
@@ -727,7 +739,10 @@ fn swap_into_posting(tids: &mut Vec<Tid>, pos: usize, tid: Tid) -> Tid {
 #[derive(Default)]
 struct Check {
     leaf_depth: Option<usize>,
-    prev_leaf: Option<PageId>,
+    /// The page met last at each depth. The DFS meets the pages of one level
+    /// left to right, so each one must be the `right` of the one before: a
+    /// sibling chain per level, leaves and internal pages alike.
+    prev_at: [Option<PageId>; MAX_HEIGHT],
     entries: usize,
 }
 

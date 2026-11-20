@@ -26,6 +26,10 @@ const Order = std.math.Order;
 /// Row address. 6 bytes on disk in Postgres (block number + slot); here a
 /// plain integer below 2^48 so that ordering is integer ordering.
 pub const Tid = u64;
+/// The largest TID that fits in the 6 bytes every size formula charges for
+/// one. `put` rejects anything larger: otherwise the byte accounting would
+/// describe a page that could not be written.
+pub const max_tid: Tid = (1 << 48) - 1;
 pub const PageId = u32;
 
 // ---- byte accounting (what a cell would cost in a slotted page) ----
@@ -59,7 +63,7 @@ pub const LeafCell = struct { key: []const u8, tids: []Tid };
 
 pub const Entry = struct { key: []const u8, tid: Tid };
 
-pub const Error = error{ OutOfMemory, KeyTooLarge };
+pub const Error = error{ OutOfMemory, KeyTooLarge, TidTooLarge };
 
 /// The total order of the tree. Shorter key sorts first when one is a prefix
 /// of the other (std.mem.order does that), which is exactly "truncated bytes
@@ -366,9 +370,11 @@ pub const Tree = struct {
     // ------------------------------------------------------------------- put
 
     /// Insert the tuple (key, tid). Returns false if it is already present.
+    /// The key must fit `maxKeyLen` and the TID must fit 6 bytes (`max_tid`).
     /// On error the tree is unchanged.
     pub fn put(self: *Tree, key: []const u8, tid: Tid) Error!bool {
         if (key.len > self.maxKeyLen()) return error.KeyTooLarge;
+        if (tid > max_tid) return error.TidTooLarge;
         var path: Path = .{};
         const leaf_id = self.findLeaf(key, tid, &path);
         const leaf = &self.pages.items[leaf_id];
@@ -418,6 +424,11 @@ pub const Tree = struct {
     /// Pages built by a put that are not part of the tree yet. Either all of
     /// them are installed (`commit`) or all are dropped (`abort`): this is
     /// what makes a multi-level split atomic under allocation failure.
+    ///
+    /// The array sizes are exact, not generous: `validate` accepts at most
+    /// `max_height` levels, so a path has at most max_height - 1 internal
+    /// steps; a put then replaces at most one page per level (max_height)
+    /// and adds at most one per level plus a new root (max_height + 1).
     const Txn = struct {
         tree: *Tree,
         replaced: [max_height]struct { id: PageId, page: Page } = undefined,
@@ -715,7 +726,10 @@ pub const Tree = struct {
 
     const Check = struct {
         leaf_depth: ?usize = null,
-        prev_leaf: ?PageId = null,
+        /// The page met last at each depth. The DFS meets the pages of one
+        /// level left to right, so each one must be the `right` of the one
+        /// before: a sibling chain per level, leaves and internal pages alike.
+        prev_at: [max_height]?PageId = @splat(null),
         entries: usize = 0,
     };
 
@@ -723,8 +737,10 @@ pub const Tree = struct {
     pub fn validate(self: *const Tree) error{Corrupt}!void {
         var st: Check = .{};
         try self.checkPage(self.root, null, null, 0, &st);
-        // The DFS met the leaves left to right; the chain must end where it did.
-        if (self.pages.items[st.prev_leaf.?].right != null) return error.Corrupt;
+        // Every level's chain must end at the last page the DFS met there.
+        for (st.prev_at[0 .. st.leaf_depth.? + 1]) |last| {
+            if (self.pages.items[last.?].right != null) return error.Corrupt;
+        }
         if (st.entries != self.count) return error.Corrupt;
     }
 
@@ -754,17 +770,19 @@ pub const Tree = struct {
         // This is what lets a page be verified without looking at its parent.
         if (!sameFence(p.low, low) or !sameFence(p.high, high)) return error.Corrupt;
         if (p.usedBytes() > self.cfg.page_size) return error.Corrupt;
+        // The sibling chain of this level (the leaf chain at the bottom).
+        if (st.prev_at[depth]) |prev| if (self.pages.items[prev].right != id) return error.Corrupt;
+        st.prev_at[depth] = id;
 
         if (p.is_leaf) {
             if (st.leaf_depth) |d| {
                 if (d != depth) return error.Corrupt; // all leaves at one depth
             } else st.leaf_depth = depth;
-            if (st.prev_leaf) |prev| if (self.pages.items[prev].right != id) return error.Corrupt;
-            st.prev_leaf = id;
 
             var prev_cell: ?LeafCell = null;
             for (p.cells.items) |c| {
                 if (c.tids.len == 0 or c.key.len > self.maxKeyLen()) return error.Corrupt;
+                if (c.tids[c.tids.len - 1] > max_tid) return error.Corrupt; // must fit 6 bytes
                 if (leafCellSize(c.key.len, c.tids.len) > self.maxCell()) return error.Corrupt;
                 for (c.tids[1..], c.tids[0 .. c.tids.len - 1]) |t, before| if (before >= t) return error.Corrupt;
                 // Strictly ascending in (key, TID) order across cells.

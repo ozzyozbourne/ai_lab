@@ -66,9 +66,11 @@ pub fn encode(buf: &mut [u8], value: u64) -> Result<usize, VarintError> {
 
 /// Reads one varint from the start of `buf`.
 ///
-/// Invariant kept by rejecting `NonCanonical`: every value has exactly one
-/// encoding, so two records are equal as rows if and only if they are equal
-/// as bytes. Without it `80 00` and `00` would both mean 0.
+/// Invariant kept by rejecting `NonCanonical`: every number has exactly one
+/// encoding, so two LEB128 fields hold the same number if and only if they
+/// hold the same bytes, and `decode` followed by `encode` gives the input
+/// back. Without it `80 00` and `00` would both mean 0. (This is a property
+/// of one varint, not of whatever is built from several of them.)
 pub fn decode(buf: &[u8]) -> Result<(u64, usize), VarintError> {
     let mut value: u64 = 0;
     for i in 0..MAX_LEN {
@@ -132,6 +134,11 @@ pub fn sqlite_encode(buf: &mut [u8], value: u64) -> Result<usize, VarintError> {
     Ok(n)
 }
 
+/// Reads one SQLite varint from the start of `buf`.
+///
+/// Unlike `decode` this is NOT canonical below nine bytes: like SQLite and
+/// Turso it accepts padded forms such as `80 05` for 5. Only the nine-byte
+/// form is checked.
 pub fn sqlite_decode(buf: &[u8]) -> Result<(u64, usize), VarintError> {
     let mut value: u64 = 0;
     for i in 0..8 {

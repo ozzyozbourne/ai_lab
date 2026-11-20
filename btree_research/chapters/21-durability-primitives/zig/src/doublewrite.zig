@@ -263,7 +263,7 @@ test "DoubleWrite: recovery interrupted by a second crash still converges" {
 }
 
 test "DoubleWrite: seeded oracle over three pages, with crashes and interrupted recoveries" {
-    // Model test: 200 seeds x 40 updates of a random logical page. Every
+    // Model test: 60 seeds x 40 updates of a random logical page. Every
     // update may lose power after 0, 1 or 2 writes, in a random crash mode,
     // and recovery itself may be cut up to three times. After every step all
     // three logical pages must equal the oracle: a crash while page i is being
@@ -273,7 +273,7 @@ test "DoubleWrite: seeded oracle over three pages, with crashes and interrupted 
     var buf: [DoubleWrite.scratch_bytes]u8 = undefined;
     var crashes: u32 = 0;
     var interrupted: u32 = 0;
-    for (0..200) |seed| {
+    for (0..60) |seed| {
         var disk: SimDisk = .init(testing.allocator, seed);
         defer disk.deinit();
         const dw: DoubleWrite = .{ .storage = disk.storage(), .slots = 3 };

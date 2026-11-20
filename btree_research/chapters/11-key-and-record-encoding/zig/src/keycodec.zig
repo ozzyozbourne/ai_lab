@@ -3,9 +3,10 @@
 //! STANDALONE: depends on `std` only. Chapter 12 may copy this file as
 //! `base_keycodec.zig`. Nothing here allocates: the caller owns every buffer.
 //!
-//! THE property (tested here and, against an independent oracle, in
-//! model.zig): for two keys built with the same sequence of `put*` calls and
-//! the same `ColumnOpts` per column,
+//! THE property (tested at the bottom of this file against an oracle that
+//! never looks at bytes: random schemas, every byte value, every truncation):
+//! for two keys built with the same sequence of `put*` calls and the same
+//! `ColumnOpts` per column,
 //!
 //!     std.mem.order(u8, key_a, key_b) == logical order of the column values
 //!
@@ -15,7 +16,11 @@
 //!
 //!     tag (1 byte)   0x00 NULL when NULLS FIRST
 //!                    0x01 a value follows
-//!                    0x02 NULL when NULLS LAST (the default, as in Postgres)
+//!                    0x02 NULL when NULLS LAST (the default here, for ASC and
+//!                         for DESC; Postgres defaults to NULLS LAST for ASC
+//!                         but to NULLS FIRST for DESC, so a caller that
+//!                         mirrors Postgres must set `nulls_first` on a
+//!                         bare DESC column itself)
 //!     payload        u64   8 bytes big-endian
 //!                    i64   8 bytes big-endian with the sign bit flipped
 //!                    f64   8 bytes, see `encodeF64`
@@ -38,7 +43,8 @@ const std = @import("std");
 pub const ColumnOpts = struct {
     /// Descending order for this column.
     desc: bool = false,
-    /// NULLs sort before all values (default: after all values).
+    /// NULLs sort before all values (default: after all values, whatever
+    /// `desc` is; see the note on Postgres in the file header).
     nulls_first: bool = false,
 };
 

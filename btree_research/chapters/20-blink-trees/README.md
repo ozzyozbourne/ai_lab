@@ -343,7 +343,7 @@ tree. Everything below was read in the Postgres source
 - **Step 1.** `_bt_split` (`nbtree/nbtinsert.c:1486-2109`) sets
   `BTP_INCOMPLETE_SPLIT` on the left page (`:1580`) and links the pages
   (`:1760`, `:1770`). The left half keeps the original block:
-  "the left page never move[s] during a split" (`:1952-1959`). The new page is
+  "the left page never move during a split" (`:1952-1959`). The new page is
   acquired late so that a failure before it leaves no trace (`:1527-1532`).
 - **Step 2.** `_bt_insert_parent` (`nbtree/nbtinsert.c:2127-2254`) forms the
   downlink from the left page's high key (`:2206-2212`), re-finds the parent

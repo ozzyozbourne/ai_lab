@@ -6,7 +6,7 @@
 //! one process-wide allocator instead; the only place to count is there.
 //! `GlobalAlloc` is an `unsafe trait` (the compiler cannot check that `alloc`
 //! returns valid, properly aligned memory), so this file is the guide's ONE
-//! declared exception to "safe code only" in Part I. The unsafe code is four
+//! declared exception to "safe code only" in Part I. The unsafe code is three
 //! one-line forwards to the system allocator; the counting itself is safe.
 //!
 //! The counters are per THREAD. `cargo test` runs tests on several threads

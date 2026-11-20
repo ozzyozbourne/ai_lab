@@ -15,8 +15,8 @@
 //!
 //!   * Every pool keeps `usage` up to date: `usage.onCreate()` after each
 //!     successful `create`, `usage.onDestroy()` in each `destroy`. The tree
-//!     relies on it (`deinit` asserts `usage.live() == 0`, `validate`
-//!     compares `usage.live()` with the nodes reachable from the root).
+//!     relies on it: `validate` compares `usage.live()` with the nodes
+//!     reachable from the root, which is how a leaked node is found.
 //!   * A pool that cannot give a single node back (a bump allocator, an
 //!     arena) still counts in `destroy` and otherwise does nothing; its
 //!     memory is released in `deinit`.

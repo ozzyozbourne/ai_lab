@@ -48,9 +48,8 @@ systems are split between them.
    TigerBeetle gets the same effect without bytes: it packs the columns into
    one wide integer and compares integers.
 
-The second approach moves all the cleverness into the encoder. The rest of
-this chapter is mostly the list of things that go wrong when you encode
-naively, and the fix for each:
+The second approach moves all the cleverness into the encoder. What goes
+wrong when you encode naively, and the fix for each:
 
 | Value | Naive encoding | What breaks | Fix |
 |---|---|---|---|
@@ -63,9 +62,8 @@ naively, and the fix for each:
 | varint | as is | LEB128 is little-endian (low group first); the SQLite varint is big-endian, but a longer encoding can start with a smaller byte | do not use varints in keys |
 
 The price: byte-comparable keys are bigger (every integer takes 8 bytes plus
-a tag), they are not self-describing (you need the schema to decode them),
-and some orders cannot be expressed as bytes at all without extra work
-(language-aware collations).
+a tag), they need the schema to be decoded, and some orders cannot be
+expressed as bytes without extra work (language-aware collations).
 
 ## A worked example by hand
 
@@ -154,15 +152,10 @@ bits `0101100` with the "more" bit set (`ac`), then the rest `10` (`02`):
 
 `zig build run` and `cargo run` print exactly
 [`expected_output.txt`](expected_output.txt) (a test in each language checks
-it). The central part:
+it). Sections 1 to 4 show the primitives one by one, 6 to 8 one row in both
+encodings, the allocators and the random check. The central part:
 
 ```
-== 2. integers as keys ==
-i64 values -2 -1 0 1 256, sorted by comparing the bytes of each encoding:
-  little-endian          : 0 256 1 -2 -1  (WRONG)
-  big-endian             : 0 1 256 -2 -1  (WRONG)
-  big-endian + sign flip : -2 -1 0 1 256  (correct)
-
 == 5. composite keys: (name ASC, score DESC NULLS LAST, id ASC) ==
 arrival order (ids): 5 6 7 1 8 4 2 3
 sorted by key bytes (27 comparisons, 117 byte positions examined):
@@ -178,10 +171,6 @@ sorted by record comparator (27 comparisons, 66 columns decoded):
   7 2 3 4 8 1 5 6
 same order: yes
 space: 8 keys = 173 bytes of a 256-byte fixed buffer, 8 records = 71 bytes
-
-== 8. the property, checked on random rows ==
-seed 11, 2000 pairs: 771 less, 434 equal, 795 greater
-byte order of keys == comparator order of records == logical order: yes
 ```
 
 The counts describe the work; they are not a benchmark. The same 27
@@ -208,17 +197,14 @@ their header comments list the API. Chapter 12 copies them.
 **Varints.** `encode` writes seven bits per byte, low group first, and sets
 the high bit on every byte but the last. `decode` rejects three kinds of bad
 input: `Truncated`, `Overflow` (more than 64 bits) and `NonCanonical` (a
-trailing zero group such as `80 00`). The last one is an invariant worth
-having: one integer, one encoding (whole records are still not canonical;
-see the pitfalls). `zigzag` interleaves negative and positive numbers so
-that -1 costs one byte rather than ten.
+trailing zero group such as `80 00`), so one integer has one encoding (whole
+records are still not canonical; see the pitfalls). Without `zigzag`, -1
+would cost ten bytes.
 
 **Fixed-width keys.** `encodeU64` is `writeInt(.., .big)`. `encodeI64` XORs
-the sign bit first. `encodeF64` normalises `-0.0` to `+0.0` and every NaN to
-one canonical NaN, then sets the sign bit of non-negative numbers and
-inverts negative ones. The normalisations matter: if two values compare
-equal they must produce the same key, otherwise a lookup for `0.0` misses a
-stored `-0.0`.
+the sign bit first. `encodeF64` first normalises `-0.0` to `+0.0` and every
+NaN to one canonical NaN: values that compare equal must produce the same
+key, otherwise a lookup for `0.0` misses a stored `-0.0`.
 
 **Strings.** `encodeBytes` escapes and terminates; `decodeBytes` takes a
 `mask` (`0x00` or `0xff`) so a descending column can be un-inverted on the
@@ -270,15 +256,14 @@ Differences worth noticing:
   to the page buffer, so using the row after the page changes does not
   compile (the test `decode_record_borrows_text_from_the_record` shows the
   line that is rejected). Zig has no such check, so `decodeRecord` copies
-  the text into an arena and the test overwrites the "page" afterwards to
-  prove the row survived.
+  the text into an arena.
 - **Decoded keys cannot borrow** in either language: key text is escaped and
   possibly inverted, so it must be rebuilt. Zig allocates it from the arena;
   Rust appends it to `RowArena.text`, a bump `Vec<u8>`, and the columns hold
   offset ranges into it.
 - **Self-referential data.** Zig's `RandomRow` stores slices into its own
-  buffer and carries a comment "do not move". Rust will not let that struct
-  exist; `RandomRow` owns the bytes and `values()` lends them out.
+  buffer ("do not move"). Rust forbids that struct; `RandomRow` owns the
+  bytes and `values()` lends them out.
 - **`RecordCursor.next`** is `next_column` in Rust: it returns a `Result`,
   so it should not look like `Iterator::next`.
 
@@ -335,16 +320,15 @@ sources.
 `(field, timestamp)` packed into one wide unsigned integer with the field in
 the high bits (`tigerbeetle/src/lsm/composite_key.zig:64-77`), and the
 search compares with integer `<`
-(`tigerbeetle/src/lsm/binary_search.zig:48`). It is the same idea, one
+(`tigerbeetle/src/lsm/binary_search.zig:105`). It is the same idea, one
 schema-free comparison, but not `memcmp`: the stored struct is
 little-endian (`composite_key.zig:39-47`). Fixed-width columns need no
 terminator, no tags and no escaping.
 
 ## Allocator notes
 
-Encoding is a hot path: one key per insert and per lookup. The design goal
-is that the encoders themselves never allocate, and the caller picks where
-the bytes live.
+Encoding is a hot path: one key per insert and per lookup. The encoders
+never allocate; the caller picks where the bytes live.
 
 - **`FixedBufferAllocator` for encode buffers.** In section 5 all eight keys
   are bump-allocated from one 256-byte stack array (`encodeKeyAlloc` with
@@ -368,10 +352,8 @@ the bytes live.
 - **`BufferFirstAllocator` for one key of unknown size.** Most keys are
   short, a few are not. `BufferFirstAllocator.init(&stack_buf, gpa)` serves
   allocations from the stack buffer and falls back to `gpa` when they do not
-  fit (section 7: 22 bytes on the stack, 34 bytes on the heap). The caller
-  still calls `free` on every key; for the stack case that is nearly free,
-  for the heap case it is required, and `std.testing.allocator` fails the
-  test if it is forgotten.
+  fit (section 7: 22 bytes on the stack, 34 on the heap). The caller still
+  frees every key; `std.testing.allocator` fails the test if it forgets.
 - **Rust.** `Bump` is a fixed-capacity `Vec<u8>` that hands out index
   ranges (a borrowed slice would freeze the `Vec`) and returns
   `Err(OutOfSpace)` when full. `RowArena` is a bump `Vec<u8>` plus offsets,
@@ -393,9 +375,9 @@ the bytes live.
   survive. Records here keep the raw float bits on purpose (a row reads
   back exactly), so two records can be equal under `compareRecords` and
   differ as bytes: do not `memcmp` records, not even for equality.
-- **Forgetting that keys are not self-describing.** Decoding `01 80 ..` needs
-  to know whether the column is an int or a float, ASC or DESC. If the
-  schema changes, old keys do not.
+- **Keys are not self-describing.** Decoding `01 80 ..` needs to know
+  whether the column is an int or a float, ASC or DESC. If the schema
+  changes, old keys do not.
 - **Inverting the tag for DESC.** Then NULLS LAST silently becomes NULLS
   FIRST on descending columns. Decide which behaviour you want and test all
   four combinations. Here NULLS LAST is the default for ASC and DESC; in
@@ -408,8 +390,6 @@ the bytes live.
   languages ("Z" < "a" in ASCII). A byte-comparable key for a collated
   column has to store a collation sort key instead of the text, which
   usually cannot be decoded back (textbook; not verified in these sources).
-- **Trusting bytes from disk.** Every decoder here returns an error on
-  truncated or malformed input instead of indexing past the end.
 
 ## Exercises
 
@@ -439,7 +419,6 @@ Solutions are in [`solutions.md`](solutions.md).
 - Previous: [chapter 10, slotted pages](../10-slotted-pages/README.md)
   defined the cell; this chapter defined what goes inside it.
 - Next: [chapter 12, a disk-backed B+tree](../12-disk-backed-bplus-tree/README.md)
-  stores byte-string keys in slotted pages and compares them with `memcmp`,
-  using `varint` and `keycodec` from here.
+  stores byte-string keys in slotted pages and compares them with `memcmp`.
 - Visualization: [viz/index.html](viz/index.html): type values, watch the
-  bytes, and switch individual fixes off to see the sort order break.
+  bytes, and switch single fixes off to see the sort order break.

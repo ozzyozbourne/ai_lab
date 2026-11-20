@@ -116,6 +116,8 @@ pub fn key_len(row: &[Value<'_>]) -> usize {
 }
 
 /// Encodes `row` as one composite key into `buf` and returns the used part.
+/// Contract: `row.len() == schema.len()`. It is asserted, not returned as an
+/// error, because the row comes from the caller, not from disk.
 pub fn encode_key<'b>(buf: &'b mut [u8], row: &[Value<'_>], schema: &[Column]) -> Result<&'b [u8], RowError> {
     assert_eq!(row.len(), schema.len());
     let mut w = KeyWriter::new(&mut *buf);

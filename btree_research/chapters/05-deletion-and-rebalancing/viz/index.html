@@ -68,9 +68,9 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
   var TALL_COUNT = 13;
   var TALL_DELETES = [9, 13, 10, 1, 2, 3];
   var PRESETS = {
-    canonical: { label: 'Canonical tree (12 keys)', keys: function () { return CANONICAL.slice(); }, script: CASE_DELETES,
+    canonical: { label: 'Canonical tree (12 keys)', keys: function () { return CANONICAL.slice(); }, script: CASE_DELETES, part: 'part 2',
                  about: 'The guide’s canonical tree: 10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15 inserted in that order.' },
-    tall: { label: 'Keys 1 to 13 (three levels at order 4)', keys: function () { var a = []; for (var i = 1; i <= TALL_COUNT; i++) a.push(i); return a; }, script: TALL_DELETES,
+    tall: { label: 'Keys 1 to 13 (three levels at order 4)', keys: function () { var a = []; for (var i = 1; i <= TALL_COUNT; i++) a.push(i); return a; }, script: TALL_DELETES, part: 'part 3',
             // The sentence depends on the order: at order 5 or 6 the same keys give only two levels.
             about: function (t) {
               var h = t.height();
@@ -348,7 +348,7 @@ then order 6, where repairs become rare. Tick <em>Predict</em> to be asked befor
     // The script is the program's scenario, which is fixed to order 4. Say so
     // when that changes the tree the reader was looking at.
     if (before !== '4') all.push({ type: 'intro', state: tree.snapshot(), highlight: {},
-      caption: 'The scripted deletes are parts 2 and 3 of the program output, which use order 4. The order was changed from ' + before +
+      caption: 'The scripted deletes are ' + preset.part + ' of the program output, which uses order 4. The order was changed from ' + before +
         ' to 4 and the tree was built again: this is the tree the script starts from.' });
     preset.script.forEach(function (key) {
       var steps = decorate('delete', key, tree.delete(key));

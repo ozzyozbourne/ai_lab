@@ -151,13 +151,7 @@ layouts. Code 129 belongs to id 7.
   is large enough, so the cursor hops to the next leaf, and its first entry has code
   129: rejected.
 
-```
-INSERT id=40 code=129
-clustered: rejected, duplicate code; 12 rows
-  cost: descents=2 tree nodes=7 index entries=1 row fetches=0 heap reads=0 -> 7 page reads
-```
-
-Nothing was written. A duplicate id fails the first check alone (1 descent, 3 nodes). An
+Total: 2 descents, 7 nodes, 1 entry read, nothing written. A duplicate id fails the first check alone (1 descent, 3 nodes). An
 insert that passes both makes 5 descents: the two checks, then three writes (primary
 tree and two indexes).
 
@@ -271,8 +265,8 @@ try self.putNew(gpa, &self.by_code, row_.columnKey(row.code, locator), 0);
 ```
 
 The undo cannot fail, because the chapter 07 `delete` never allocates. In the heap layout
-a failed insert leaves a dead heap slot behind. That is not an accident of this code: a
-heap is append-only, and a slot once handed out is not taken back.
+a failed insert leaves a dead heap slot behind: a heap is append-only, and a slot once
+handed out is not taken back.
 
 `delete` has to *read the row first*. The index entries are named by the row's column
 values plus its locator, and nothing else says where they are. Section 7 of the output
@@ -305,10 +299,10 @@ The Rust crate has the same files, names, tests and output. The differences:
 
 ### Tests
 
-Both languages assert the cost claims above (the unique check's 7 nodes included) and run
-a seeded model test of both layouts against a plain list of rows (M = 3, 4, 16, exact
-result order checked). They also fail an insert at every possible point, show two
-corruptions that `validate` reports, and run the chapter 07 tests of the base tree.
+Both languages assert the cost claims above (the unique check's 7 nodes included), run a
+seeded model test of both layouts against a plain list of rows (M = 3, 4, 16, exact
+result order checked), and show two corruptions that `validate` reports. The chapter 07
+tests of the base tree run as well.
 
 ## In real databases
 
@@ -318,12 +312,12 @@ corruptions that `validate` reports, and run the chapter 07 tests of the base tr
   rowid and payload; the interior cell carries only a child page and a rowid
   (`turso/core/storage/sqlite3_ondisk.rs:813-826`). This is the clustered layout.
 - An index B-tree is a different tree kind: its cells carry a record and no separate
-  rowid field (`sqlite3_ondisk.rs:829-843`); the rowid is the last column of the record
-  (`research/turso.md`, section 4). That is the locator-last key of this chapter.
+  rowid field (`sqlite3_ondisk.rs:829-843`); the record is the index columns followed by
+  the rowid (`research/turso.md`, section 4). That is the locator-last key of this
+  chapter.
 - Going back to the row is an explicit instruction. `DeferredSeek` positions the table
   cursor at the rowid of the index cursor's current entry, and does it lazily, "if no
-  reads occur, no unnecessary I/O happens" (`turso/core/vdbe/insn.rs:1295-1300`;
-  implementation `turso/core/vdbe/execute.rs:6421`). `IdxRowId` reads the rowid out of an
+  reads occur, no unnecessary I/O happens" (`turso/core/vdbe/insn.rs:1295-1300`). `IdxRowId` reads the rowid out of an
   index entry and `SeekRowid` searches the table tree (`insn.rs:1279-1290`).
 - Covering: the planner asks `index_is_covering` (`turso/core/translate/plan.rs:3672`).
   `index_covers_columns` skips the rowid alias column with the comment "rowid is always
@@ -401,8 +395,7 @@ Plan row: "Arena per query; pool for rows".
 ## Pitfalls
 
 - **The probe must leave the locator out.** Searching for (code, this row's locator)
-  finds nothing even when another row has the code. The unique check and the heap layout's
-  primary-key lookup are prefix searches.
+  finds nothing even when another row has the code.
 - **A prefix search can land one leaf early.** The descent for (17, smallest locator) may
   end in the leaf to the left of the entry (17, (1,4)), when that entry is the separator
   copy and the first key of the next leaf. The cursor has to step to the next leaf
@@ -440,5 +433,5 @@ Solutions: [`solutions.md`](solutions.md).
 - Visualization: [`viz/index.html`](viz/index.html) runs one query on both layouts, step
   by step, with the same counters, including `SELECT count(*) WHERE day = ?`, the
   non-prefix predicate of section 5. Its table has no `code` column and no delete, so an
-  insert there costs 3 descents, not the 5 of section 6. The unique check is on the page
-  all the same: the heap figure's primary-key check on insert is the same prefix search.
+  insert there costs 3 descents, not the 5 of section 6. The heap figure's primary-key
+  check on insert is the unique check: the same prefix search.

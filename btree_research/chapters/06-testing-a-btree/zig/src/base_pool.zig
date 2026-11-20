@@ -194,6 +194,18 @@ test "every pool: create, destroy, counters" {
     }
 }
 
+test "FreeListPool hands a destroyed slot out again (LIFO)" {
+    const gpa = std.testing.allocator;
+    var pool: FreeListPool(TestItem) = .empty;
+    defer pool.deinit(gpa);
+    const a = try pool.create(gpa);
+    const b = try pool.create(gpa);
+    pool.destroy(gpa, a);
+    pool.destroy(gpa, b);
+    try std.testing.expectEqual(b, try pool.create(gpa)); // last freed, first reused
+    try std.testing.expectEqual(a, try pool.create(gpa));
+}
+
 test "FreeListPool grows by whole chunks and carves each slot once" {
     const gpa = std.testing.allocator;
     const Pool = FreeListPool(TestItem);

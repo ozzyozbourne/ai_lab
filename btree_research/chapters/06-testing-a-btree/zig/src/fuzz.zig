@@ -223,7 +223,8 @@ pub fn generate(gpa: Allocator, case: Case) Allocator.Error![]Step {
 /// Which families of checks `replay` performs. Both are on in real use; the
 /// tests switch one off to show what the other one cannot see.
 pub const Checks = struct {
-    /// `tree.validate()` after every step: structure and node accounting.
+    /// `tree.validate()` after every step: structure and node accounting
+    /// (including: a failed put leaves `pool.usage` as it was).
     validate: bool = true,
     /// Compare every answer with the oracle, and the full contents every
     /// `sweep_every` steps and after the last one.
@@ -377,7 +378,7 @@ fn applyAndCheck(
                     // "exactly as before the call" includes `pool.usage`.
                     if (checks.validate) tree.validate(diag) catch return .oom_changed_tree;
                     if (tree.len != oracle.len() or tree.get(p.key) != oracle.get(p.key)) return .oom_changed_tree;
-                    if (!std.meta.eql(tree.pool.usage, usage_before)) return .oom_changed_tree;
+                    if (checks.validate and !std.meta.eql(tree.pool.usage, usage_before)) return .oom_changed_tree;
                     // The operation still has to happen: try again, unharmed.
                     answer_ok = try tree.put(tree_gpa, p.key, p.value) == try oracle.put(gpa, p.key, p.value);
                 }

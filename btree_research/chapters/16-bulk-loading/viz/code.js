@@ -190,13 +190,20 @@ fn close_right_edge(&mut self) -> Result<(), Error> {
 /*
  * Which lines light up for each kind of step (1-based, [a, b] is a range).
  * start, push, close and seal happen while keys arrive; end, merge, share,
- * last and root are the steps of closeRightEdge, which finish() runs.
+ * last and root are the steps of closeRightEdge, which finish() runs. A page
+ * sealed by closeRightEdge lights up the call that sealed it there (plus the
+ * body of seal), not closeOpenPage: seal_pending is the pending page before
+ * the last page of its level, seal_last the last page, seal_only a pending
+ * page that is itself the last one.
  */
 window.CHAPTER_LINES = {
   start: { zig: [[2, 7], [11, 13]], rust: [[2, 4], 9] },
   push: { zig: [[11, 13]], rust: [9] },
   close: { zig: [[8, 10], [17, 19], [24, 27]], rust: [[6, 8], [14, 16], 23] },
   seal: { zig: [[20, 23], [31, 34]], rust: [[17, 22], [28, 31]] },
+  seal_pending: { zig: [[78, 81], [31, 34]], rust: [[74, 79], [28, 31]] },
+  seal_last: { zig: [82, [31, 34]], rust: [80, [28, 31]] },
+  seal_only: { zig: [84, [31, 34]], rust: [82, [28, 31]] },
   end: { zig: [37, 40], rust: [34, 36] },
   merge: { zig: [45, [48, 54]], rust: [42, [45, 51]] },
   share: { zig: [45, [55, 61]], rust: [42, [52, 56]] },

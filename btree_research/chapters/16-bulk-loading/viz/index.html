@@ -62,8 +62,8 @@ writes: a buffer pool would absorb some of them, but not the reads, the splits o
 
 <h2>3. Why not fill every page to 100%?</h2>
 <p>A tree of 10,000 keys with order 16 is bulk-loaded at three fill factors, then random keys are
-inserted. A packed tree is the smallest on the day it is built, and then nearly every insert finds a
-full leaf. Move the slider to watch it overtake the other two. At 1000 inserts the numbers are those of section 3 of the program output.</p>
+inserted. A packed tree is the smallest on the day it is built, and then at first nearly every insert finds a
+full leaf (88 of the first 100, more than half of the first 1000). Move the slider to watch it overtake the other two. At 1000 inserts the numbers are those of section 3 of the program output.</p>
 <div id="fig-fill"></div>
 
 <script src="code.js"></script>
@@ -236,6 +236,27 @@ full leaf. Move the slider to watch it overtake the other two. At 1000 inserts t
   var hand = Ch16.bulkSteps([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13], 4, { leafFill: 100, innerFill: 100 });
   var want = window.CHAPTER_EXPECTED.split('bulk load, fill 100%:\n')[1].split('one-by-one insert')[0];
   BTViz.selfTest('animation = hand example', Ch16.dumpTree(hand.tree), want);
+
+  // Every snapshot of the animation, for inputs that reach each tail repair
+  // (merge: 4 keys, M = 8, 50%; share: the hand example) and each seal in
+  // finish: the keys drawn in leaves are exactly the keys loaded so far, each
+  // drawn once, and every step has code lines to highlight.
+  var faults = [];
+  [[4, 8, 50], [13, 4, 100], [9, 4, 100], [12, 4, 100], [1, 4, 100], [60, 3, 50], [37, 5, 70], [29, 6, 90]].forEach(function (c) {
+    var keys = [], name = c.join('/');
+    for (var k = 1; k <= c[0]; k++) keys.push(k);
+    Ch16.bulkSteps(keys, c[1], { leafFill: c[2], innerFill: c[2] }).steps.forEach(function (step, si) {
+      var drawn = [];
+      (step.state.levels[0] || { pages: [] }).pages.forEach(function (p) { p.pairs.forEach(function (q) { drawn.push(q.k); }); });
+      if (drawn.join(' ') !== keys.slice(0, step.state.consumed).join(' ')) faults.push(name + ' step ' + (si + 1) + ': leaves show ' + drawn.join(' '));
+      if (step.phase !== 'idle' && !window.CHAPTER_LINES[step.phase]) faults.push(name + ' step ' + (si + 1) + ': no code lines for ' + step.phase);
+    });
+  });
+  BTViz.selfTest('steps draw each key once', faults, []);
+  // Pages sealed by finish() must not be shown as sealed by closeOpenPage.
+  var tail = hand.steps.map(function (s) { return s.phase; });
+  BTViz.selfTest('finish seals', tail.slice(tail.indexOf('end')).join(' '),
+    'end last seal_pending push seal_last close push share last seal_pending start seal_last push root');
 })();
 </script>
 </body>

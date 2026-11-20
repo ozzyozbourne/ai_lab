@@ -181,11 +181,17 @@
     lv.ids.push(id);
     return id;
   };
-  BulkLoader.prototype.seal = function (level, id) {
+  /**
+   * `from` says which call site sealed the page, so that the code panel can
+   * light up the lines that really ran: undefined = closeOpenPage; in
+   * finish, 'pending' (the pending page, before the last page of its level),
+   * 'last' (the last page) or 'only' (the pending page is itself the last).
+   */
+  BulkLoader.prototype.seal = function (level, id, from) {
     this.tree.stats.writes++;
     this.levels[level].sealed++;
     this.levels[level].written[id] = true;
-    this.emit('seal', { level: level, id: id });
+    this.emit('seal', { level: level, id: id, from: from });
     this.addPair(level + 1, { key: this.tree.nodes[id].keys[0], slot: id });
   };
   BulkLoader.prototype.finish = function () {
@@ -197,8 +203,11 @@
         var left = tree.nodes[lv.pending], total = left.keys.length + lv.buf.length;
         if (total <= tree.cap(leaf)) {
           lv.buf.forEach(function (p) { left.keys.push(p.key); left.slots.push(p.slot); });
-          this.emit('merge', { level: level, id: lv.pending, moved: lv.buf.length });
+          // Empty the buffer BEFORE the snapshot (bulk.zig sets lv.len = 0 in
+          // this branch): the moved pairs must not be drawn in both pages.
+          var appended = lv.buf.length;
           lv.buf = [];
+          this.emit('merge', { level: level, id: lv.pending, moved: appended });
         } else {
           var keep = total - Math.floor(total / 2), moved = [];
           for (var i = keep; i < left.keys.length; i++) moved.push({ key: left.keys[i], slot: left.slots[i] });
@@ -226,13 +235,13 @@
         this.emit('last', { level: level, id: id });
         if (pending !== NIL) {
           if (leaf) tree.nodes[pending].next = id;
-          this.seal(level, pending);
+          this.seal(level, pending, 'pending');
         }
         lv.pending = NIL;
-        this.seal(level, id);
+        this.seal(level, id, 'last');
       } else {
         lv.pending = NIL;
-        this.seal(level, pending);
+        this.seal(level, pending, 'only');
       }
     }
   };
@@ -388,13 +397,15 @@
    * bulkSteps(keys, order, {leafFill, innerFill}) → {steps, tree, loader}
    * Each step: {caption, state, phase, question?}. `phase` picks code lines
    * (window.CHAPTER_LINES in code.js): idle, start, push, close, seal while
-   * keys arrive; end, merge, share, last, root (and seal, push) in finish.
+   * keys arrive; end, merge, share, last, root, seal_pending, seal_last and
+   * seal_only in finish (whose seals can again cause start, push, close and
+   * seal one level up).
    */
   function bulkSteps(keys, order, options) {
     // `consumed` counts the keys that are in a page. It moves when the key is
     // stored, not when it arrives: while the loader closes a page to make
     // room, the arriving key is still the "next" one in the input strip.
-    var tree = new Tree(order), steps = [], consumed = 0, asked = {};
+    var tree = new Tree(order), steps = [], consumed = 0, asked = {}, repaired = {};
     var loader = new BulkLoader(tree, options, function (kind, info) {
       var level = info.level, lv = level === undefined ? null : loader.levels[level];
       var hl = { pages: {}, cells: {} }, caption = '', question = null, target, t;
@@ -437,6 +448,7 @@
       } else if (kind === 'end') {
         caption = 'End of input. Each level still holds a pending page, an open page, or both. They are finished from the bottom up.';
       } else if (kind === 'share') {
+        repaired[level] = true;
         hl.pages['p' + info.id] = 'merge';
         hl.pages['open' + level] = 'merge';
         caption = 'The last page on ' + levelName(level) + ' was under the minimum (' + tree.min(level === 0) + '). Its pending neighbour ' + pid(info.id) +
@@ -453,13 +465,17 @@
           ' they fit in one. They are appended to ' + pid(info.id) + ', which may go above its fill target.';
       } else if (kind === 'last') {
         hl.pages['p' + info.id] = 'active';
-        caption = 'The open page on ' + levelName(level) + ' becomes page ' + pid(info.id) + ', the last one on its level.';
+        var held = tree.nodes[info.id].keys.length;
+        caption = 'The open page on ' + levelName(level) + ' becomes page ' + pid(info.id) + ', the last one on its level.' +
+          (repaired[level] ? '' : ' It holds ' + held + ' pair' + (held === 1 ? '' : 's') + ', which is not below the minimum of ' +
+            tree.min(level === 0) + ', so no repair is needed.');
       } else if (kind === 'root') {
         hl.pages['p' + info.id] = 'found';
         caption = 'Only one page exists on ' + levelName(level) + ', so it is the root: ' + pid(info.id) + ' is written (page write ' + tree.stats.writes +
           '). Done: ' + tree.stats.writes + ' pages, ' + tree.stats.writes + ' writes, 0 page reads, 0 splits.';
       }
-      var step = { caption: caption, state: snapshot(loader, consumed, hl), phase: kind === 'push' && info.started ? 'start' : kind };
+      var phase = kind === 'push' && info.started ? 'start' : kind === 'seal' && info.from ? 'seal_' + info.from : kind;
+      var step = { caption: caption, state: snapshot(loader, consumed, hl), phase: phase };
       if (question) step.question = question;
       steps.push(step);
     });

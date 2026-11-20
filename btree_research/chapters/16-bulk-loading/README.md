@@ -32,10 +32,12 @@ and so on. So:
 4. When the input ends, finish the open page on each level from the bottom up. The
    level that ends with a single page holds the root.
 
-The tree grows upward only when it needs to: level 1 comes into existence when the
-second leaf appears, level 2 when the second level-1 page appears. At any moment the
-loader holds one open page per level and nothing else. All pages to the left are done
-and will never be touched again.
+The tree grows upward only when it needs to: a level comes into existence when the
+first page below it is finished and handed up. At any moment the loader holds one open
+page per level and nothing else. All pages to the left are done and will never be
+touched again. (The loader below also holds back the newest full page of each level for
+a while, so a level appears one page later than you might expect: level 1 when the
+third leaf is started. The second detail below explains why.)
 
 The *fill factor* is the target in step 1, as a percentage of the page's capacity.
 Filling to 100% gives the smallest tree, and that is the right choice for data that
@@ -377,7 +379,9 @@ typed arena for the nodes.
 5. (Hard) Implement the "rightmost split" policy from chapter 14 in `put` (when the
    overflowing leaf is the last leaf and the new key is the largest, leave the left
    page full and start a new page with one key) and add it to experiment 2. How close
-   does ascending insert get to the bulk loader in pages, writes and reads?
+   does ascending insert get to the bulk loader in pages, writes and reads? Hint: the
+   new page starts below the leaf minimum, so decide what `validate` should say about
+   the last leaf.
 
 Solutions are in [solutions.md](solutions.md).
 

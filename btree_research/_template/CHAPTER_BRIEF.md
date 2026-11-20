@@ -112,3 +112,7 @@ that copies your code must know.
 - Validate typed input: reject or clearly report negative numbers, decimals, empty and
   out-of-range values instead of silently changing them; captions must stay true for
   edge-case inputs.
+- Exercise solutions were a repeated source of false claims: every number, outcome or
+  "this is atomic / this is better" statement in `solutions.md` must come from code you
+  actually ran against the chapter's own tests; otherwise word it as an expectation and
+  say it was not measured.

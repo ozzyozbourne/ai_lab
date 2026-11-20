@@ -105,14 +105,34 @@ In `put`, before the 50/50 split of a leaf, test: the leaf has no right neighbou
 (`next == nil`) and the new key landed in the last position. If so, keep all the old
 keys in the left page and move only the new key to the right page (`keep = len - 1`).
 
-What can be said without running it, for ascending inserts of n keys with order M:
+The new right page starts with one key. For every M >= 5 that is below the leaf minimum
+of ceil(M/2) - 1 (7 for M = 16), so with this change alone the tree breaks the promise
+the README makes, and `validate` returns `error.Underfull` until the page has filled up.
+The existing model test that bulk-loads and then keeps inserting catches it. Something
+has to give, and there are two choices:
+
+- Exempt the last leaf (`next == nil`) from the minimum in `validate`, keeping "at least
+  one key". This is the relaxation of solution 4 again, limited to one page. Without
+  `delete` nothing else in this chapter's tree depends on the minimum.
+- Keep the promise and leave `leafMin` keys in the new page instead of one. Then the
+  left page is not full and most of the space gain is lost, so this is not what the
+  policy is for.
+
+With the first choice, the two tests that pin the 50/50 behaviour ("ascending inserts
+leave leaves half full" and the report test) fail, as they should, and all others pass.
+Measured in a scratch copy for experiment 2 (n = 10,000, M = 16, ascending): 667 leaves,
+83 interior pages, 750 pages in total, 11,492 page writes, 37,476 page reads, 746
+splits. The bulk load at 100% has 667 leaves, 46 interior pages and 713 writes.
+
+Why, for ascending inserts of n keys with order M:
 
 - Leaves: every leaf is filled to M - 1 keys before the next one is started, so there
   are `ceil(n / (M - 1))` leaves, the same as the 100% bulk load (667 for the report's
   parameters) instead of 1250.
 - Interior pages still split 50/50 unless you apply the same rule there, so there are
-  more of them than the bulk loader's 46. Applying the rule to the rightmost interior
-  page as well closes that gap.
+  more of them than the bulk loader's 46 (83 measured). Applying the rule to the
+  rightmost interior page as well would close that gap, and needs the same exemption
+  for the last page of every level.
 - Page reads do not improve: every insert still descends from the root, one read per
   level.
 - Page writes stay above n: every insert dirties at least its leaf, where the loader

@@ -1069,3 +1069,580 @@ fn zig_and_rust_write_the_same_bytes() -> TestResult {
     assert_eq!(fnv1a(&mem.bytes()), 10315806560220619977);
     Ok(())
 }
+
+// ---- a file is untrusted input ------------------------------------------------
+//
+// The tests below damage a flushed file and open it with a new handle. No
+// call may panic or run for ever, whatever the bytes are: it returns a value
+// or an error, and it leaves no pin.
+
+const PAGE: usize = btree::PAGE_SIZE;
+
+/// Key number `i` of the damage tests' tree: 250 bytes, so that fifteen
+/// separators fill an interior page.
+fn damage_key(i: usize) -> Vec<u8> {
+    let mut key = vec![b'k'; 250];
+    key[..4].copy_from_slice(format!("{i:04}").as_bytes());
+    key
+}
+
+fn page_of(file: &mut [u8], id: u32) -> SlottedPage<'_> {
+    let at = id as usize * PAGE;
+    SlottedPage::open((&mut file[at..at + PAGE]).try_into().expect("a page"))
+}
+
+fn file_u32(file: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(file[at..at + 4].try_into().expect("4 bytes"))
+}
+
+/// A handle over a copy of `file`.
+fn open_copy(file: &[u8], frames: usize) -> Result<DiskBTree, TreeError> {
+    let mut mem = MemStorage::new();
+    mem.write(0, file)?;
+    DiskBTree::open(pool_over(mem, frames))
+}
+
+/// Where the pages of every role are in the file of `build_damage_file`.
+#[derive(Clone, Copy)]
+struct Layout {
+    pages: u32,
+    keys: usize,
+    /// The root (page 1, interior) and its first two children (interior).
+    inner: [u32; 2],
+    /// The first leaf that holds a value with a chain, the slot of that
+    /// value's cell, the leaf after it, and the two pages of the chain.
+    leaf: u32,
+    slot: usize,
+    next_leaf: u32,
+    chain: [u32; 2],
+    /// The only trunk of the free list.
+    trunk: u32,
+}
+
+/// A file with three levels, values with and without chains, and a free list.
+fn build_damage_file() -> Result<(Vec<u8>, Layout), TreeError> {
+    let mem = MemStorage::new();
+    let mut tree = create_mem(&mem, 8);
+    let value = [b'v'; 9000];
+    let mut keys = 0;
+    while tree.stats.interior_splits == 0 {
+        // Every fourth value has a chain of two pages.
+        let len = if keys % 4 == 1 { 9000 } else { 1000 };
+        tree.put(&damage_key(keys), &value[..len])?;
+        keys += 1;
+    }
+    // Sixteen pages for the free list: one trunk that lists fifteen.
+    tree.put(b"zz", &vec![b'h'; btree::MAX_VALUE_LEN])?;
+    assert!(tree.delete(b"zz")?);
+    tree.validate()?;
+    assert_eq!(tree.height()?, 3);
+    assert_eq!(tree.free_count(), 16);
+    tree.flush()?;
+    let mut file = mem.bytes();
+
+    let root = page_of(&mut file, 1);
+    let inner = [btree::child_at(&root, 0), btree::child_at(&root, 1)];
+    let mut layout = Layout {
+        pages: tree.pool().pager().page_count(),
+        keys,
+        inner,
+        leaf: btree::child_at(&page_of(&mut file, inner[0]), 0),
+        slot: 0,
+        next_leaf: 0,
+        chain: [0; 2],
+        trunk: tree.free_head(),
+    };
+    loop {
+        let leaf = page_of(&mut file, layout.leaf);
+        layout.next_leaf = btree::link(&leaf);
+        let spilled = (0..leaf.count()).find_map(|slot| {
+            let first = btree::parse_field(leaf.value(slot)).expect("sound").first;
+            (first != btree::INVALID_PAGE_ID).then_some((slot, first))
+        });
+        if let Some((slot, first)) = spilled {
+            layout.slot = slot;
+            layout.chain = [first, file_u32(&file, first as usize * PAGE)];
+            return Ok((file, layout));
+        }
+        layout.leaf = layout.next_leaf;
+    }
+}
+
+/// What `poke` saw.
+#[derive(Default)]
+struct Poked {
+    opened: bool,
+    valid: bool,
+    dump_ok: bool,
+    /// The free-list part of the dump said that the list loops.
+    dump_loops: bool,
+}
+
+/// `Corrupt` is the answer to damage (and `TreePoisoned` what follows it);
+/// any other error fails the test.
+fn damage_only<T>(result: Result<T, TreeError>) -> Result<Option<T>, TreeError> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(TreeError::Corrupt | TreeError::TreePoisoned) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// `validate` may also name one of the twelve violations.
+fn violation_or_corrupt(result: TestResult) -> Result<bool, TreeError> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(TreeError::Invalid(_) | TreeError::Corrupt) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Open `file` with a new handle and call everything: validate, height,
+/// dump, a get for every key, two scans, then puts and deletes that split
+/// leaves, write and free chains, and empty the first leaves. Checks after
+/// every call that no pin is left.
+fn poke(file: &[u8], layout: Layout, frames: usize) -> Result<Poked, TreeError> {
+    let mut result = Poked::default();
+    let mut tree = match open_copy(file, frames) {
+        Ok(tree) => tree,
+        Err(TreeError::Corrupt | TreeError::BadMagic | TreeError::UnsupportedVersion) => {
+            return Ok(result);
+        }
+        Err(e) => return Err(e),
+    };
+    result.opened = true;
+    result.valid = violation_or_corrupt(tree.validate())?;
+    assert_eq!(tree.pool().pinned_frames(), 0);
+
+    damage_only(tree.height())?;
+    if let Some(text) = damage_only(tree.dump())? {
+        result.dump_ok = true;
+        result.dump_loops = text.contains("(the list loops)");
+    }
+    assert_eq!(tree.pool().pinned_frames(), 0);
+
+    for i in 0..=layout.keys {
+        damage_only(tree.get(&damage_key(i)))?;
+    }
+    assert_eq!(tree.pool().pinned_frames(), 0);
+
+    // A scan ends by itself, with the last entry or with an error. A sound
+    // leaf has fewer than 700 cells, and a scan visits each page once.
+    for lo in [Vec::new(), damage_key(layout.keys / 2)] {
+        let Some(mut it) = damage_only(tree.range(&lo, None))? else {
+            continue;
+        };
+        let mut entries = 0;
+        while damage_only(it.next())?.flatten().is_some() {
+            entries += 1;
+        }
+        assert!(entries <= 700 * layout.pages as usize);
+    }
+    assert_eq!(tree.pool().pinned_frames(), 0);
+
+    // Writes: a new large value, overwrites that free and write chains,
+    // deletes that empty the first leaves, puts that split and reuse pages.
+    let value = [b'w'; 9000];
+    for i in 0..12 {
+        damage_only(tree.delete(&damage_key(i)))?;
+        assert_eq!(tree.pool().pinned_frames(), 0);
+    }
+    for i in 0..24 {
+        let key = damage_key(if i % 2 == 0 { layout.keys + i } else { i });
+        let len = if i % 3 == 0 { 9000 } else { 1000 };
+        damage_only(tree.put(&key, &value[..len]))?;
+        assert_eq!(tree.pool().pinned_frames(), 0);
+    }
+    assert_eq!(tree.pool().validate(), Ok(()));
+    violation_or_corrupt(tree.validate())?;
+    damage_only(tree.flush())?;
+    Ok(result)
+}
+
+/// One field of one page, overwritten.
+struct FieldDamage {
+    page: u32,
+    offset: usize,
+    bytes: Vec<u8>,
+}
+
+impl FieldDamage {
+    fn apply(&self, file: &mut [u8]) {
+        let at = self.page as usize * PAGE + self.offset;
+        file[at..at + self.bytes.len()].copy_from_slice(&self.bytes);
+    }
+}
+
+/// Every count, length and page id that the tree reads from a page, each
+/// with the values that could send a careless reader out of the page, out
+/// of the file, or round in a circle. (The Zig twin has the same list and
+/// names each entry.)
+fn damage_list(file: &mut [u8], layout: Layout) -> Vec<FieldDamage> {
+    let mut list = Vec::new();
+    let mut u8s = |page: u32, offset: usize, values: &[u8]| {
+        for &v in values {
+            let bytes = vec![v];
+            list.push(FieldDamage {
+                page,
+                offset,
+                bytes,
+            });
+        }
+    };
+    let invalid = btree::INVALID_PAGE_ID;
+    let outside = layout.pages + 7;
+    let (leaf_id, trunk, chain, inner) = (layout.leaf, layout.trunk, layout.chain, layout.inner);
+    let (field, field_len) = {
+        let leaf = page_of(file, leaf_id);
+        let cell = leaf.cell_offset(layout.slot);
+        (
+            cell + 4 + leaf.key(layout.slot).len(),
+            leaf.value(layout.slot).len(),
+        )
+    };
+    let root_cell = page_of(file, 1).cell_offset(0);
+    let inner_cell = page_of(file, inner[0]).cell_offset(0);
+    let (kind_leaf, kind_interior) = (btree::KIND_LEAF, btree::KIND_INTERIOR);
+    let capacity = btree::TRUNK_CAPACITY as u16;
+    let (max_local, max_value) = (btree::MAX_LOCAL as u32, btree::MAX_VALUE_LEN as u32);
+
+    // The trunk's and the pages' kind bytes and reserved-tail bytes.
+    u8s(trunk, 7, &[kind_leaf]);
+    u8s(
+        chain[0],
+        7,
+        &[0, kind_leaf, kind_interior, btree::KIND_TRUNK],
+    );
+    for id in [leaf_id, 1, inner[0]] {
+        u8s(id, 7, &[0, 3, 4, 255]);
+        let other = if id == leaf_id {
+            kind_interior
+        } else {
+            kind_leaf
+        };
+        u8s(id, 7, &[other]);
+        u8s(id, 8, &[0, 5, 255]);
+    }
+    let mut u16s = |page: u32, offset: usize, values: &[u16]| {
+        for &v in values {
+            let bytes = v.to_le_bytes().to_vec();
+            list.push(FieldDamage {
+                page,
+                offset,
+                bytes,
+            });
+        }
+    };
+    // The trunk's count; a tree page's slotted header, a slot, a cell header.
+    u16s(trunk, 4, &[0, 14, 16, capacity, capacity + 1, 5000, 0xffff]);
+    for id in [leaf_id, 1, inner[0]] {
+        let at = page_of(file, id).cell_offset(0);
+        u16s(id, 0, &[0, 1, 2, 300, 2040, 0xffff]); // cell count
+        u16s(id, 2, &[0, 15, 4092, 4093, 0xffff]); // content start
+        u16s(id, 4, &[1, 16, 4090, 4094, 0xffff]); // first free block
+        u16s(id, 16, &[0, 8, 4091, 4095, 0xffff]); // slot 0
+        u16s(id, at, &[0, 251, 257, 4000, 0xffff]); // key length
+        u16s(id, at + 2, &[0, 2, 3, 5, 1097, 4000, 0xffff]); // value length
+    }
+    let mut u32s = |page: u32, offset: usize, values: &[u32]| {
+        for &v in values {
+            let bytes = v.to_le_bytes().to_vec();
+            list.push(FieldDamage {
+                page,
+                offset,
+                bytes,
+            });
+        }
+    };
+    // The metapage: root, page count, free-list head and count.
+    u32s(0, 16, &[0, outside, leaf_id, chain[0], trunk]);
+    u32s(0, 20, &[outside]);
+    u32s(0, 32, &[0, 1, outside, invalid, leaf_id, chain[0]]);
+    u32s(
+        0,
+        36,
+        &[0, 1, 15, 17, layout.pages - 1, layout.pages, u32::MAX],
+    );
+    // The trunk: link, the entry that the next allocation takes.
+    u32s(trunk, 0, &[trunk, 0, 1, outside, leaf_id]);
+    u32s(
+        trunk,
+        8 + 4 * 14,
+        &[0, 1, outside, invalid, trunk, leaf_id, inner[0], chain[0]],
+    );
+    // The links of both overflow pages.
+    u32s(
+        chain[0],
+        0,
+        &[chain[0], 0, 1, outside, invalid, trunk, leaf_id],
+    );
+    u32s(chain[1], 0, &[chain[0], chain[1], 0, 1, outside, trunk]);
+    // A leaf cell's value field: the total length, the chain's first page.
+    u32s(
+        leaf_id,
+        field,
+        &[
+            0,
+            1000,
+            max_local,
+            max_local + 1,
+            9001,
+            4916,
+            13084,
+            max_value,
+            max_value + 1,
+            u32::MAX,
+        ],
+    );
+    u32s(
+        leaf_id,
+        field + field_len - 4,
+        &[0, 1, outside, invalid, leaf_id, trunk, chain[1]],
+    );
+    // A tree page's link, and a child pointer: up (a circle), sideways, out
+    // of the file, to a page that is not a tree page.
+    for id in [leaf_id, 1, inner[0]] {
+        u32s(
+            id,
+            9,
+            &[id, 0, 1, outside, trunk, chain[0], leaf_id, inner[1]],
+        );
+    }
+    let children = [1, 0, outside, inner[0], inner[1], leaf_id, trunk, chain[0]];
+    u32s(1, root_cell + 4 + 250, &children);
+    u32s(inner[0], inner_cell + 4 + 250, &children);
+    // The metapage's key count.
+    for v in [0, 1, u64::MAX] {
+        let bytes = v.to_le_bytes().to_vec();
+        list.push(FieldDamage {
+            page: 0,
+            offset: 24,
+            bytes,
+        });
+    }
+    list
+}
+
+#[test]
+fn damage_to_every_count_length_and_page_id_of_a_page_an_error_never_a_panic_or_an_endless_loop()
+-> TestResult {
+    let (sound, layout) = build_damage_file()?;
+    let mut file = sound.clone();
+    let list = damage_list(&mut file, layout);
+
+    // The file as it is passes, and `poke` leaves a valid tree behind.
+    let intact = poke(&sound, layout, 3)?;
+    assert!(intact.opened && intact.valid && intact.dump_ok && !intact.dump_loops);
+
+    let (mut unnoticed, mut refused_by_open, mut applied) = (0, 0, 0);
+    for damage in &list {
+        file.copy_from_slice(&sound);
+        damage.apply(&mut file);
+        if file == sound {
+            continue; // the value it has
+        }
+        applied += 1;
+        for frames in [2, 5] {
+            let seen = poke(&file, layout, frames)?;
+            unnoticed += usize::from(seen.opened && seen.valid);
+            refused_by_open += usize::from(!seen.opened);
+        }
+    }
+    assert_eq!(applied, 236);
+    // `open` or `validate` reports every one of them.
+    assert_eq!(unnoticed, 0);
+    assert_eq!(refused_by_open, 2 * 9);
+    Ok(())
+}
+
+#[test]
+fn the_free_list_of_a_damaged_file_a_count_beyond_the_page_an_id_that_is_in_use_a_trunk_that_points_at_itself()
+-> TestResult {
+    let (sound, layout) = build_damage_file()?;
+    let trunk = layout.trunk as usize * PAGE;
+    let big = [b'v'; 5000];
+
+    // 1. The count says 5000 ids; a trunk has room for 1021. `alloc_page`
+    //    must not use it as an index. (`free_page` treats the trunk as full.)
+    for count in [btree::TRUNK_CAPACITY as u16 + 1, 5000, 0xffff] {
+        let mut file = sound.clone();
+        file[trunk + 4..trunk + 6].copy_from_slice(&count.to_le_bytes());
+        let mut tree = open_copy(&file, 4)?;
+        assert_eq!(
+            tree.validate(),
+            Err(TreeError::Invalid(Violation::FreeListBroken))
+        );
+        assert_eq!(tree.put(b"k2", &big), Err(TreeError::Corrupt));
+        assert!(!tree.is_poisoned()); // nothing had changed yet
+        assert_eq!(tree.pool().pinned_frames(), 0);
+    }
+
+    // 2. The id that the next allocation takes is not a free page: page 0,
+    //    a page outside the file, the trunk itself.
+    for id in [0, layout.pages, layout.trunk] {
+        let mut file = sound.clone();
+        put_u32(&mut file, trunk + 8 + 4 * 14, id);
+        let mut tree = open_copy(&file, 4)?;
+        assert_eq!(tree.put(b"k2", &big), Err(TreeError::Corrupt));
+        assert!(!tree.is_poisoned());
+        assert_eq!(tree.pool().pinned_frames(), 0);
+    }
+
+    // 3. The trunk's link leads back to the trunk. `validate` names it, and
+    //    `dump` prints as many trunks as the file has pages, then stops.
+    let mut file = sound.clone();
+    put_u32(&mut file, trunk, layout.trunk);
+    let mut tree = open_copy(&file, 4)?;
+    assert_eq!(
+        tree.validate(),
+        Err(TreeError::Invalid(Violation::PageReachedTwice))
+    );
+    let text = tree.dump()?;
+    assert!(text.ends_with(" | ... (the list loops)\n"));
+    assert_eq!(text.matches(" | trunk ").count(), layout.pages as usize);
+    // Allocations still work until the list's count is used up.
+    for _ in 0..3 {
+        tree.put(b"k2", &big)?; // each frees one page and takes one
+    }
+    assert_eq!(tree.pool().pinned_frames(), 0);
+    Ok(())
+}
+
+#[test]
+fn a_trunk_that_lists_a_page_of_the_operation_in_progress_corrupt_not_one_page_under_two_pins()
+-> TestResult {
+    // The root is a full leaf, and the free list's next id is the root. The
+    // put below must split: it pins the root, asks for a page to move the
+    // root's content to, and would get the root.
+    let mem = MemStorage::new();
+    let value = [b'v'; 1080];
+    let mut tree = create_mem(&mem, 4);
+    tree.put(b"0", &[b'v'; 6000])?; // a chain: pages 2 and 3
+    tree.put(b"0", &value)?; // page 2 is the trunk and lists page 3
+    tree.put(b"1", &value)?;
+    tree.put(b"2", &value)?;
+    assert_eq!(tree.height()?, 1);
+    assert_eq!(tree.free_head(), 2);
+    tree.flush()?;
+    let mut file = mem.bytes();
+    assert_eq!(file[2 * PAGE + 4..2 * PAGE + 6], 1u16.to_le_bytes());
+    assert_eq!(file_u32(&file, 2 * PAGE + 8), 3);
+    put_u32(&mut file, 2 * PAGE + 8, 1);
+
+    let mut tree = open_copy(&file, 4)?;
+    assert_eq!(tree.put(b"3", &value), Err(TreeError::Corrupt));
+    assert!(!tree.is_poisoned()); // nothing had changed yet
+    assert_eq!(tree.pool().pinned_frames(), 0);
+    assert_eq!(tree.get(b"1")?.as_deref(), Some(&value[..]));
+    Ok(())
+}
+
+#[test]
+fn pointers_that_lead_in_a_circle_every_walk_ends_with_corrupt() -> TestResult {
+    let (sound, layout) = build_damage_file()?;
+    let mut file = sound.clone();
+    let root_child = page_of(&mut file, 1).cell_offset(0) + 4 + 250;
+    let inner_child = page_of(&mut file, layout.inner[0]).cell_offset(0) + 4 + 250;
+    // The root's first child is the root; an interior page's first child is
+    // the root above it.
+    for (page, offset) in [(1, root_child), (layout.inner[0], inner_child)] {
+        let mut file = sound.clone();
+        put_u32(&mut file, page as usize * PAGE + offset, 1);
+        let mut tree = open_copy(&file, 4)?;
+        let first = damage_key(0);
+        assert_eq!(
+            tree.validate(),
+            Err(TreeError::Invalid(Violation::PageReachedTwice))
+        );
+        assert_eq!(tree.get(&first), Err(TreeError::Corrupt));
+        assert!(matches!(tree.range(b"", None), Err(TreeError::Corrupt)));
+        assert_eq!(tree.height(), Err(TreeError::Corrupt));
+        assert_eq!(tree.put(&first, b"v"), Err(TreeError::Corrupt));
+        assert_eq!(tree.delete(&first), Err(TreeError::Corrupt));
+        assert!(!tree.is_poisoned());
+        // (Zig also checks that the partial dump has at most one line per
+        // page; here the text is dropped with the error.)
+        assert_eq!(tree.dump(), Err(TreeError::Corrupt));
+        assert_eq!(tree.pool().pinned_frames(), 0);
+    }
+
+    // A leaf whose link leads back to itself: the scan gives the leaf's
+    // entries once per round and stops after as many rounds as the file
+    // has pages.
+    let mut file = sound.clone();
+    put_u32(&mut file, layout.leaf as usize * PAGE + 9, layout.leaf);
+    let mut tree = open_copy(&file, 4)?;
+    assert_eq!(
+        tree.validate(),
+        Err(TreeError::Invalid(Violation::LeafChainBroken))
+    );
+    let mut it = tree.range(b"", None)?;
+    let mut entries = 0;
+    let end = loop {
+        match it.next() {
+            Ok(Some(_)) => entries += 1,
+            Ok(None) => break Ok(()),
+            Err(e) => break Err(e),
+        }
+    };
+    assert_eq!(end, Err(TreeError::Corrupt));
+    assert!(entries <= 700 * layout.pages as usize);
+    assert_eq!(tree.pool().pinned_frames(), 0);
+    Ok(())
+}
+
+#[test]
+fn fuzz_flipped_bytes_overwritten_ids_and_swapped_pages_never_panic_or_hang_a_handle() -> TestResult
+{
+    let (sound, layout) = build_damage_file()?;
+    let pages = u64::from(layout.pages);
+    let mut file = sound.clone();
+    let mut rng = SplitMix64::new(13);
+    let mut noticed = 0;
+    let rounds = 600;
+    for round in 0..rounds {
+        file.copy_from_slice(&sound);
+        // Every page gets its turn; the kind of damage is random.
+        let start = (round % layout.pages as usize) * PAGE;
+        let page = &mut file[start..start + PAGE];
+        match rng.below(8) {
+            // One to four bytes of the page, half of the time among the
+            // first 48 (headers, slots, the metapage's fields).
+            0..=3 => {
+                for _ in 0..rng.range(1, 5) {
+                    let limit = if rng.chance(1, 2) { 48 } else { PAGE as u64 };
+                    let at = rng.below(limit) as usize;
+                    page[at] = match rng.below(4) {
+                        0 => 0,
+                        1 => 0xff,
+                        2 => page[at] ^ (1 << rng.below(8)),
+                        _ => rng.next_u64() as u8,
+                    };
+                }
+            }
+            // A page id (of a page of this file, or just outside it) at a
+            // random place: most of them make a pointer where none was.
+            4 | 5 => {
+                let at = rng.below(PAGE as u64 - 3) as usize;
+                put_u32(page, at, rng.below(pages + 2) as u32);
+            }
+            // Another page's bytes: a sound page in the wrong place.
+            6 => {
+                let from = rng.below(pages) as usize * PAGE;
+                page.copy_from_slice(&sound[from..from + PAGE]);
+            }
+            // Noise, with the kind byte of a tree page half of the time.
+            _ => {
+                page.fill_with(|| rng.next_u64() as u8);
+                if rng.chance(1, 2) {
+                    page[7] = rng.range(1, 3) as u8;
+                }
+            }
+        }
+        let seen = poke(&file, layout, if round % 2 == 0 { 2 } else { 6 })?;
+        noticed += usize::from(!seen.opened || !seen.valid);
+    }
+    // Not every flipped byte matters (most bytes are values), many do.
+    assert!(noticed > rounds / 4 && noticed < rounds);
+    Ok(())
+}

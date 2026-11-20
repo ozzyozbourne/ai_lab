@@ -648,6 +648,8 @@ fn failEveryRequest(case: OomCase) !usize {
             try testing.expectEqual(case.requests, failing.resize_index);
             try testing.expectEqual(2, failing.alloc_index);
             try testing.expect(!failing.has_induced_failure);
+            failing.fail_index = std.math.maxInt(usize);
+            failing.resize_fail_index = std.math.maxInt(usize);
             const stats = tree.stats;
             try testing.expectEqual(case.leaf_splits, stats.leaf_splits);
             try testing.expectEqual(case.interior_splits, stats.interior_splits);
@@ -781,13 +783,14 @@ test "allocation failure at every scratch request of four puts that split and th
     // changed, if there is a left sibling.
     const Delete = struct { keep: []const usize, victim: usize, first_poisoned: usize, tree_pages_freed: u64, interior_pages_freed: u64, root_collapses: u64 };
     for ([_]Delete{
-        // The last leaf of two: it and its parent go, the root collapses.
-        .{ .keep = &.{ 0, 1999 }, .victim = 1999, .first_poisoned = 1, .tree_pages_freed = 0, .interior_pages_freed = 0, .root_collapses = 0 },
+        // The last leaf of two: it and its parent go, and the root, left
+        // with one child, collapses twice.
+        .{ .keep = &.{ 0, 1999 }, .victim = 1999, .first_poisoned = 1, .tree_pages_freed = 4, .interior_pages_freed = 2, .root_collapses = 2 },
         // A leaf in the middle and its parent go; the root keeps two children.
-        .{ .keep = &.{ 0, 1000, 1999 }, .victim = 1000, .first_poisoned = 1, .tree_pages_freed = 0, .interior_pages_freed = 0, .root_collapses = 0 },
+        .{ .keep = &.{ 0, 1000, 1999 }, .victim = 1000, .first_poisoned = 1, .tree_pages_freed = 2, .interior_pages_freed = 1, .root_collapses = 0 },
         // The first leaf has no left sibling: nothing has changed yet when
         // the list of pages to free is asked for.
-        .{ .keep = &.{ 0, 1999 }, .victim = 0, .first_poisoned = 2, .tree_pages_freed = 0, .interior_pages_freed = 0, .root_collapses = 0 },
+        .{ .keep = &.{ 0, 1999 }, .victim = 0, .first_poisoned = 2, .tree_pages_freed = 4, .interior_pages_freed = 2, .root_collapses = 2 },
     }) |delete| {
         var mem: MemStorage = .init(testing.allocator);
         defer mem.deinit();

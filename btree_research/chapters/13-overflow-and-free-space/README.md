@@ -167,8 +167,10 @@ workload, tests, demo                        seeded values of every size class a
 ```
 
 The split code (`pushRootDown`, `splitLeaf`, `insertSeparator`, `splitInterior`, `splitPoint`)
-is chapter 12's with one change: it calls `allocPage()` where it called `pool.newPage()`. To
-the splitting code a value field is just a value of at most 1096 bytes.
+is chapter 12's with two changes: it calls `allocPage()` where it called `pool.newPage()`, and
+`insertSeparator` returns `Corrupt` if the separator does not sort between its new neighbours
+(next section's last bullet). To the splitting code a value field is just a value of at most
+1096 bytes.
 
 ### Zig (`zig/src/disk_btree.zig`)
 
@@ -198,6 +200,16 @@ the splitting code a value field is just a value of at most 1096 bytes.
   It now has a `deinit`.
 - **`validate`** checks T1 to T10 (top of the file) and fills a `[]Role`, one per page;
   `pageMap` returns it, and the demo prints it as letters (`M I L O T F`).
+- **A file is untrusted input.** Every count, length and page id read from a page is checked
+  before it is used as an index or followed, and every walk has a bound. `pinNode` runs
+  `nodeIsSound` (the slotted page's `validate`, plus the key and value sizes the tree relies
+  on) the first time a handle pins a page of the file as a tree page; one flag per page makes
+  that once. `allocPage` checks the trunk's count before indexing with it and refuses an id
+  that is page 0, outside the file, or pinned. A descent stops after `max_height` = 32
+  levels, a scan after as many sibling links as the file has pages, `dump` after as many
+  pages and trunks. Tests (both languages): 236 single fields damaged in turn, and 600
+  seeded rounds of flipped bytes, planted page ids and swapped pages; `open`, `get`, `range`,
+  `validate`, `dump`, `put` and `delete` return a value or `Corrupt` and leave no pin.
 
 ### Rust (`rust/src/disk_btree.rs`) and the differences
 
@@ -218,7 +230,7 @@ pool calls in the same order. Differences beyond those listed in chapter 12:
   borrowing the pool cannot coexist with further pool calls. The pin is still held for the
   same span, so that the pool behaves identically.
 - **Poisoning** is an inner function (`put_steps`, `delete_steps`) plus a check of its result.
-- **Tests.** Zig has 76 tests, Rust 72. The four that exist only in Zig are the two
+- **Tests.** Zig has 81 tests, Rust 77. The four that exist only in Zig are the two
   allocation-failure tests (safe Rust cannot make a `Vec` allocation fail), one storage test
   and the import block.
 
@@ -288,8 +300,8 @@ down (`pager.rs:5960-6017`). This chapter takes the last, which moves nothing.
 |---|---|---|
 | This chapter | free list (trunk pages) in the file | immediately, by the next allocation |
 | Turso | freelist trunk pages in the file, same structure (`pager.rs:5588-5725`, `:5853-6087`) | by the next allocation; trunk and reused page are marked dirty like any other page (`add_dirty`, `pager.rs:5681`, `:5990`) and reach the file through the WAL with the rest of the transaction (chapter 22) |
-| Postgres | the page stays in place as a deleted tombstone carrying `safexid`; later it is recorded in the free space map | only once no scan can still be on its way to it: `BTPageIsRecyclable` asks whether `safexid` is old enough (`nbtree.h:291-319`), and `_bt_allocbuf` re-checks before reuse (`nbtpage.c:854`). "A deleted page cannot be recycled immediately, since there may be other processes waiting to reference it" (`README:319-325`) |
-| DuckDB | an in-memory set of block ids, `modified_blocks` | after the next checkpoint: "this block was used in storage, we cannot directly re-use it" (`duckdb/src/storage/single_file_block_manager.cpp:1024-1028`); the blocks join the free list when the new header is written (`:1454-1458`) |
+| Postgres | the page stays in place as a deleted tombstone carrying `safexid`; later it is recorded in the free space map | only once no scan can still be on its way to it: `BTPageIsRecyclable` asks whether `safexid` is old enough (`nbtree.h:291-319`), and `_bt_allocbuf` re-checks before reuse (`nbtpage.c:910`). "A deleted page cannot be recycled immediately, since there may be other processes waiting to reference it" (`README:319-325`) |
+| DuckDB | an in-memory set of block ids, `modified_blocks` | after the next checkpoint: "this block was used in storage, we cannot directly re-use it" (`duckdb/src/storage/single_file_block_manager.cpp:1024-1028`); the blocks join the free list when the new header is written (`:1454-1458`). Only a block first used since the last checkpoint, which no durable state refers to, goes straight back (`:1018-1022`) |
 | TigerBeetle | a "released" bit in the free set | after the next checkpoint is durable: "Leave the address acquired for now, but free it when the next checkpoint becomes durable" (`tigerbeetle/src/vsr/free_set.zig:509-511`) |
 
 Three different reasons to wait. Postgres waits for *readers*: a concurrent scan may still
@@ -332,8 +344,12 @@ tree can bracket with a reset, and an arena that is never reset grows by every v
 
 Tests: `get` with a `FixedBufferAllocator` of zero bytes returns `OutOfMemory` and leaves no
 pin; a `FailingAllocator` behind the iterator makes `next` fail, leaves no pin, and the scan
-continues from the same entry once memory is back. Rust: `ValueBuf`, as described above;
-allocation failure is not simulated.
+continues from the same entry once memory is back. A third test refuses every scratch
+request of four puts that split and three deletes that free pages, one request per run (29
+failure points, counted): each run ends with `OutOfMemory`, no pin, and either an untouched
+tree or a poisoned handle behind which `validate` finds leaked pages or a half-done change,
+never a page with two roles. Rust: `ValueBuf`, as described above; allocation failure is not
+simulated.
 
 ## Pitfalls
 

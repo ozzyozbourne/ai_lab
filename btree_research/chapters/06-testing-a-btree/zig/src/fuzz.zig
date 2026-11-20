@@ -142,7 +142,7 @@ pub fn swarm(seed: u64) Case {
     const drain = prng.chance(1, 2);
     const stream_seed = prng.nextU64();
     const aux_seed = prng.nextU64();
-    const key_layout: KeyLayout = @enumFromInt(prng.below(4));
+    const key_layout: KeyLayout = @fromBackingInt(@intCast(prng.below(4)));
     return .{
         .seed = seed,
         .count = count,

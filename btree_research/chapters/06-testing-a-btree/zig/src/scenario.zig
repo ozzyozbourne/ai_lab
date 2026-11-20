@@ -82,9 +82,8 @@ pub fn run(gpa: Allocator, w: *std.Io.Writer) !void {
 
 fn printCase(w: *std.Io.Writer, case: fuzz.Case) !void {
     try w.print("seed {d}: {d} ops on {d} keys {s}, put:delete:get:range = {d}:{d}:{d}:{d}, ", .{
-        case.seed,          case.count,           case.key_space,     case.key_layout.describe(),
-        case.weights.put,   case.weights.delete,  case.weights.get,
-        case.weights.range,
+        case.seed,        case.count,          case.key_space,   case.key_layout.describe(),
+        case.weights.put, case.weights.delete, case.weights.get, case.weights.range,
     });
     if (case.fault_one_in == 0) {
         try w.writeAll("no faults");

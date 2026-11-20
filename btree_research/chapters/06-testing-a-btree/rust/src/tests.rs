@@ -103,7 +103,7 @@ fn generate_the_sweep_uses_keys_a_32_bit_or_signed_comparison_would_get_wrong() 
             .any(|w| w[0] != w[1] && w[0] as u32 == w[1] as u32);
         small |= highest < 256;
         above_32_bits |= highest > u64::from(u32::MAX);
-        both_sides_of_2_32 |= lowest < 1 << 32 && highest >= 1 << 32 && highest < 1 << 33;
+        both_sides_of_2_32 |= lowest < 1 << 32 && ((1 << 32)..(1 << 33)).contains(&highest);
         both_sides_of_2_63 |= lowest < 1 << 63 && highest >= 1 << 63;
         near_max |= highest >= u64::MAX - 2;
     }

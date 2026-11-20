@@ -39,7 +39,7 @@ test "swarm: the seeds really differ in the dimensions that matter" {
         const c = fuzz.swarm(seed);
         try testing.expect(c.weights.put > 0);
         try testing.expect(std.math.isPowerOfTwo(c.key_space)); // `KeyLayout.spread` relies on it
-        layouts[@intFromEnum(c.key_layout)] = true;
+        layouts[@backingInt(c.key_layout)] = true;
         no_delete = no_delete or c.weights.delete == 0;
         tiny_keys = tiny_keys or c.key_space == 4;
         with_faults = with_faults or c.fault_one_in != 0;

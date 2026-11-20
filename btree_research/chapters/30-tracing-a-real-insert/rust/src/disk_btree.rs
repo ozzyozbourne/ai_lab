@@ -329,14 +329,14 @@ pub(crate) struct Carry {
 pub struct DiskBTree {
     /// Owned (Zig borrows a `*BufferPool`): the pool owns the pager, which
     /// owns the storage. `into_pool` gives it back.
-    pool: BufferPool,
+    pub(crate) pool: BufferPool,
     /// Scratch of the operation in progress: the interior pages passed on
     /// the way down and the child index taken in each.
     path: Vec<PathEntry>,
-    root: PageId,
-    key_count: u64,
+    pub(crate) root: PageId,
+    pub(crate) key_count: u64,
     /// Set when a `put` failed between two page changes of a split.
-    poisoned: bool,
+    pub(crate) poisoned: bool,
     pub stats: Stats,
 }
 

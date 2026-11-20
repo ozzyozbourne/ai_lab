@@ -52,6 +52,9 @@
 .a28-gridlabel { font-size: .8rem; color: var(--bt-muted); margin-top: 8px; }
 .a28-cmp-title { font-size: .85rem; color: var(--bt-muted); margin: 0 0 2px; }
 .a28-cmp-title b { color: var(--bt-text); }
+/* Figure 2: an EMPTY hash slot that a lookup or scan has read. The toolkit's ArrayView only
+   colours cells that hold a value, so the state class is put on the slot outline itself. */
+.a28-hash .bt-aslot[class*="s-"] { border: 1.75px solid var(--s); background: var(--s-bg); }
 .a28-links { margin-top: 2em; }
 </style>
 </head>
@@ -66,9 +69,14 @@ branching is stored once, as a prefix. Step through the inserts below and watch 
 
 <h2>What each index can answer</h2>
 <p>The same nine keys in a sorted array (which stands for a B-tree leaf level) and in a hash table with
-linear probing. Pick a question and compare how many cells each structure has to read. The hash table
-wins point lookups and has no answer to anything that involves order, short of reading every slot.
-The radix tree above answers all four kinds of question, in byte order (try <em>Ordered scan</em>).</p>
+linear probing. A key's hash picks its <em>home slot</em>. When another key already lives there (a
+<em>collision</em>), the key goes into the next free slot, and a lookup has to walk the same way: the
+first two questions show such a walk, the third a key that sits at home. Pick a question and compare
+how many cells each structure reads. The hash table has no answer to anything that involves order,
+short of reading every slot. The radix tree above answers all four kinds of question, in byte order
+(try <em>Ordered scan</em>). What a B-tree still has over the radix tree does not show in a picture
+this small: its nodes are disk pages that hold whole keys, in order, next to their values (see the
+chapter's last comparison).</p>
 
 <div id="fig-cmp"></div>
 
@@ -271,7 +279,7 @@ Next: <a href="../../29-zone-maps-and-vector-indexes/viz/index.html">29 Zone map
       model.rec = null; model.op = null;
       stepper.pause();
       // The model now equals the drawn tree; show exactly that tree with the message.
-      rejected(note + 'Rejected (<code>error.PrefixKey</code>): ' + BTViz.k(A.fmtBytes(keyBytes(text))) + ' is a prefix of a stored key, or a stored key is a prefix of it. ' +
+      rejected(note + 'Rejected (<code>error.PrefixKey</code>): ' + BTViz.k(A.showBytes(keyBytes(text))) + ' is a prefix of a stored key, or a stored key is a prefix of it. ' +
         'This preset uses raw bytes without a terminator; the tree has no place for a value in the middle of a path. The tree is unchanged.');
     }
   }
@@ -329,7 +337,7 @@ Next: <a href="../../29-zone-maps-and-vector-indexes/viz/index.html">29 Zone map
    * ================================================================== */
   var fig2 = BTViz.figure('#fig-cmp', {
     title: 'Same keys, two structures, four questions',
-    legend: [{ token: 'key-compare', label: 'cell read' }, { token: 'key-found', label: 'part of the answer' }, { token: 'key-deleted', label: 'read, not part of the answer' }]
+    legend: [{ token: 'key-compare', label: 'cell read' }, { token: 'key-found', label: 'part of the answer' }, { token: 'key-deleted', label: 'read, not part of the answer (key or empty slot)' }]
   });
   var KEYS = ['a1', 'b2', 'b5', 'c1', 'c3', 'c7', 'd4', 'e2', 'f9'];
   var sorted = new A.SortedIndex(), hash = new A.HashIndex();
@@ -343,10 +351,13 @@ Next: <a href="../../29-zone-maps-and-vector-indexes/viz/index.html">29 Zone map
   var sv = new BTViz.ArrayView(fig2.stage);
   fig2.stage.appendChild(t2);
   var hv = new BTViz.ArrayView(fig2.stage);
+  hv.root.classList.add('a28-hash');
 
   var QUERIES = {
-    hit: { label: 'Point lookup: c3 (present)', kind: 'point', key: 'c3' },
-    miss: { label: 'Point lookup: c4 (absent)', kind: 'point', key: 'c4' },
+    // e2 and d1 both have home slot 6, which b2 (home 5, itself displaced) occupies.
+    pushed: { label: 'Point lookup: e2 (present, two slots from home)', kind: 'point', key: 'e2' },
+    miss: { label: 'Point lookup: d1 (absent)', kind: 'point', key: 'd1' },
+    home: { label: 'Point lookup: c3 (present, in its home slot)', kind: 'point', key: 'c3' },
     range: { label: 'Range: b2 ≤ key < c7', kind: 'range', lo: 'b2', hi: 'c7', words: 'keys in [b2, c7)' },
     prefix: { label: 'Prefix: keys starting with c', kind: 'range', lo: 'c', hi: 'd', words: 'keys starting with c, which is the range [c, d)' }
   };
@@ -377,19 +388,25 @@ Next: <a href="../../29-zone-maps-and-vector-indexes/viz/index.html">29 Zone map
       push(hitS ? 'Sorted array: found ' + BTViz.k(q.key, 'found') + ' at index ' + i + ' after ' + sCount + ' comparisons (about log2 of ' + sortedVals.length + ' keys).'
         : 'Sorted array: the search ends at index ' + i + ', where ' + BTViz.k(q.key) + ' would be inserted. It is absent, after ' + sCount + ' comparisons.');
       var lk = hash.lookup(A.utf8(q.key));
+      var kq = BTViz.k(q.key);
       lk.path.forEach(function (slot, n) {
         hCount++;
-        var last = n === lk.path.length - 1;
+        var last = n === lk.path.length - 1, there = hashVals[slot];
         hStates[slot] = last && lk.value !== null ? 'found' : 'compare';
         hPtr = { probe: slot };
-        push(n === 0
-          ? 'Hash table: hash(' + BTViz.k(q.key) + ') mod 16 = slot ' + slot + '. ' + (hashVals[slot] === null ? 'The slot is empty: the key is absent, and no other slot needs to be read.' : last ? 'The key is right there.' : 'Another key lives there (a collision): try the next slot.')
-          : 'Hash table: linear probing, next slot ' + slot + '. ' + (hashVals[slot] === null ? 'Empty: an insert would have used this slot, so the key is absent.' : last ? 'Found.' : 'Still another key: keep going.'));
+        push((n === 0 ? 'Hash table: hash(' + kq + ') mod 16 = ' + slot + ', the home slot of ' + kq + '. ' : 'Hash table, linear probing: the next slot is ' + slot + '. ') +
+          (there === null ? 'It is empty. An insert of ' + kq + ' would have walked exactly this way and used this slot, so the key cannot be further along: it is absent.'
+            : last ? (n === 0 ? 'The key is right there.' : 'Found, ' + n + ' slot' + (n === 1 ? '' : 's') + ' away from home.')
+            : n === 0 ? 'Another key, ' + BTViz.k(there, 'deleted') + ', lives there: a collision. Try the next slot.'
+            : 'It holds ' + BTViz.k(there, 'deleted') + ', not the key either: keep going.'));
         if (!(last && lk.value !== null)) hStates[slot] = 'deleted';
       });
       hPtr = {};
-      push('Point lookup: ' + sCount + ' cells read in the sorted array, ' + hCount + ' in the hash table. The hash count does not grow with the number of keys; the binary search grows with its logarithm. ' +
-        'This is the one question a hash index is built for.');
+      push('Point lookup: ' + sCount + ' cells read in the sorted array, ' + hCount + ' in the hash table. ' +
+        (hCount === 1 ? 'No collision on the way: one slot is the best case, and the common one. '
+          : 'Collisions made this lookup walk ' + hCount + ' slots, more than the binary search needed here. ') +
+        'How far a hash lookup walks depends on how full the table is (9 of 16 slots here), not on how many keys it holds; ' +
+        'the binary search grows with the logarithm of the number of keys. The chapter’s programs keep their table at most 70% full and count 1702 probes for 896 lookups.');
     } else {
       var a = bsearch(q.lo, 'lower bound'), b = bsearch(q.hi, 'upper bound'), res = [], j;
       sPtr = { from: a, to: b };
@@ -423,6 +440,10 @@ Next: <a href="../../29-zone-maps-and-vector-indexes/viz/index.html">29 Zone map
       t2.innerHTML = '<b>Hash table</b>, 16 slots, linear probing: cells read <b>' + s.hc + '</b>';
       sv.render({ values: sortedVals, states: s.s, pointers: s.sp });
       hv.render({ values: hashVals, ids: hashIds, states: s.h, pointers: s.hp });
+      // Empty slots that were read (see the .a28-hash rule in the style block).
+      hv.slots.forEach(function (slotEl, i) {
+        slotEl.className = 'bt-aslot' + (hashVals[i] === null && s.h[i] ? ' s-' + s.h[i] : '');
+      });
     }
   });
   var qsel = el('select.bt-select', { 'aria-label': 'Question' });
@@ -462,6 +483,23 @@ Next: <a href="../../29-zone-maps-and-vector-indexes/viz/index.html">29 Zone map
     var got = A.Art.fromState(all[at].state);
     BTViz.selfTest('tree as drawn at a step', got.dump() + got.len + ' keys, next value ' + (got.maxValue + 1), three.dump() + '3 keys, next value 4');
   })();
+
+  // The chip "keys: N" counts the leaves of the tree that is drawn, at every step.
+  (function () {
+    var rec = new A.Art(), bad = [];
+    WORDS.forEach(function (w, i) {
+      rec.put(A.encodeStr(w), i + 1, true).forEach(function (st, j) {
+        var drawn = A.Art.fromState(st.state).len;
+        if (st.state.len !== drawn) bad.push('word ' + (i + 1) + ' step ' + (j + 1) + ': chip ' + st.state.len + ', drawn ' + drawn);
+      });
+    });
+    BTViz.selfTest('keys chip = leaves drawn', bad.join('\n') || 'ok', 'ok');
+  })();
+
+  // Figure 2 must keep showing a real probe walk: e2 and d1 start in a slot taken by another key.
+  BTViz.selfTest('figure 2: probe walks',
+    ['e2', 'd1', 'c3'].map(function (k) { var r = hash.lookup(A.utf8(k)); return k + ' ' + r.path.join(',') + ' ' + (r.value !== null); }).join('\n'),
+    'e2 6,7,8 true\nd1 6,7,8,9,10 false\nc3 3 true');
 
   var t = new A.Art();
   WORDS.forEach(function (w, i) { t.put(A.encodeStr(w), i + 1, false); });

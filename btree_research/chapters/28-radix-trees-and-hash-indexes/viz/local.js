@@ -5,7 +5,7 @@
  *                     Its walks are recursive, like the Zig ones; the page limits a typed key
  *                     to 16 characters, far below art.zig's max_key_len of 512 bytes.
  *                     Everything that reaches an HTML sink (captions, log lines) is escaped
- *                     here: kb() / kc() for captions, esc(fmtBytes(...)) for the log.
+ *                     here: kb() / kc() for captions, esc(showBytes(...)) for the log.
  *   ART28.ArtView     SVG drawing of that tree
  *   ART28.Inspector   the physical layout of one inner node (keys[], index[256], children[])
  *   ART28.HashIndex, ART28.SortedIndex, ART28.splitmix, ART28.fnv1a
@@ -44,6 +44,17 @@
   /** keys.zig writeBytes. */
   function fmtBytes(bytes) {
     return bytes.map(function (c) { return printable(c) ? String.fromCharCode(c) : '\\x' + hex2(c); }).join('');
+  }
+  /**
+   * fmtBytes for captions and the log. HTML collapses a run of spaces and drops a space at the
+   * edge of an inline box, so the keys " " and "  " would both be displayed as nothing. Spaces
+   * that would be lost that way (first byte, last byte, next to another space) are shown as \x20.
+   */
+  function showBytes(bytes) {
+    return bytes.map(function (c, i) {
+      var lost = c === 0x20 && (i === 0 || i === bytes.length - 1 || bytes[i - 1] === 0x20 || bytes[i + 1] === 0x20);
+      return lost ? '\\x20' : fmtBytes([c]);
+    }).join('');
   }
   /** Short label for one byte inside a cell. */
   function cellText(c) { return printable(c) && c !== 0x20 ? String.fromCharCode(c) : hex2(c); }
@@ -196,23 +207,35 @@
     return t;
   };
 
+  function countLeaves(ref) {
+    if (!ref) return 0;
+    if (ref.t === 'leaf') return 1;
+    if (ref.t === 'prefix') return countLeaves(ref.child);
+    var n = 0;
+    eachChild(ref, function (b, c) { n += countLeaves(c); });
+    return n;
+  }
+
   /* Recording. A step's state is everything the page draws. */
   Art.prototype._step = function (type, caption, d) {
     if (!this.rec) return;
     d = d || {};
+    var drawn = d.root === undefined ? this.root : d.root;
     this.rec.push({
       type: type, caption: caption, log: d.log || null, question: d.question || null, hold: d.hold || 1,
       state: {
-        root: clone(d.root === undefined ? this.root : d.root),
+        root: clone(drawn),
         key: this.op ? this.op.key.slice() : [], depth: d.depth === undefined ? -1 : d.depth,
         keyState: d.keyState || 'compare',
         nodes: d.nodes || {}, cells: d.cells || {}, leaves: d.leaves || {},
         focus: d.focus || null, insp: d.insp || {},
-        len: this.len, grows: this.grows.slice(), splits: this.prefixSplits
+        // The number of keys in the tree that is DRAWN. `this.len` only changes when put() returns,
+        // but the steps that link the new leaf in already show it.
+        len: countLeaves(drawn), grows: this.grows.slice(), splits: this.prefixSplits
       }
     });
   };
-  function kb(bytes, state) { return '<b class="bt-k' + (state ? ' s-' + state : '') + '">' + esc(fmtBytes(bytes)) + '</b>'; }
+  function kb(bytes, state) { return '<b class="bt-k' + (state ? ' s-' + state : '') + '">' + esc(showBytes(bytes)) + '</b>'; }
   function kc(c, state) { return kb([c], state); }
   function inspScan(n, byte) {
     // Which array elements a lookup of `byte` reads in this layout.
@@ -243,7 +266,7 @@
     this.rec = record ? [] : null;
     this.op = { key: key, text: text === undefined ? fmtBytes(key) : text };
     this._step('start', 'Insert ' + kb(key) + ' = ' + value + '. The key is ' + key.length +
-      ' bytes; the tree will consume them left to right, starting at the root.', { depth: 0, log: 'put ' + esc(fmtBytes(key)) });
+      ' bytes; the tree will consume them left to right, starting at the root.', { depth: 0, log: 'put ' + esc(showBytes(key)) });
 
     function insertAt(ref, depth) {
       var i;
@@ -325,7 +348,7 @@
       self._step('add-child', 'Add a child for byte ' + kc(byte, 'inserted') + ' (' + childCount(node) + ' of ' + CAP[node.t] + ' slots used now)' +
         (node.t === 'n4' || node.t === 'n16' ? ', keeping <code>keys[]</code> sorted so that iteration stays in order' : '') + '. ' +
         (key.length - depth - 1 > 0 ? 'The remaining ' + (key.length - depth - 1) + ' key byte' + (key.length - depth - 1 > 1 ? 's go' : ' goes') + ' into a prefix chain below it.' : 'No key bytes remain, so the child is the value itself.'),
-        { root: tmp2, depth: key.length, keyState: 'inserted', nodes: am, cells: ac, focus: node.id, insp: ai, log: 'add child ' + esc(fmtBytes([byte])) });
+        { root: tmp2, depth: key.length, keyState: 'inserted', nodes: am, cells: ac, focus: node.id, insp: ai, log: 'add child ' + esc(showBytes([byte])) });
       return node;
     }
 
@@ -403,7 +426,7 @@
     var ref = this.root, depth = 0, nodes = 0, value = null, why = '';
     this.rec = record ? [] : null;
     this.op = { key: key };
-    this._step('start', 'Search ' + kb(key) + ': walk from the root, one node per step.', { depth: 0, log: 'get ' + esc(fmtBytes(key)) });
+    this._step('start', 'Search ' + kb(key) + ': walk from the root, one node per step.', { depth: 0, log: 'get ' + esc(showBytes(key)) });
     for (;;) {
       var nm = {}, cm = {};
       if (!ref) { why = 'The tree is empty.'; break; }
@@ -477,7 +500,7 @@
         var nm = {};
         trail.forEach(function (id) { nm[id] = 'active'; });
         self._step('visit', 'Key ' + n + ': ' + kb(path, 'found') + ' = ' + ref.v + '. The key is not stored anywhere in one piece; it is rebuilt from the bytes along the highlighted path.',
-          { depth: path.length, keyState: 'found', nodes: nm, log: esc(fmtBytes(path)) });
+          { depth: path.length, keyState: 'found', nodes: nm, log: esc(showBytes(path)) });
       } else if (ref.t === 'prefix') walk(ref.child, path.concat(ref.bytes), trail.concat([ref.id]));
       else eachChild(ref, function (b, c) { walk(c, path.concat([b]), trail.concat([ref.id])); });
     })(this.root, [], []);
@@ -593,7 +616,7 @@
 
   var api = {
     Art: Art, HashIndex: HashIndex, SortedIndex: SortedIndex, splitmix: splitmix, fnv1a: fnv1a,
-    encodeStr: encodeStr, utf8: utf8, fmtBytes: fmtBytes, cellText: cellText, cmpBytes: cmpBytes, startsWith: startsWith,
+    encodeStr: encodeStr, utf8: utf8, fmtBytes: fmtBytes, showBytes: showBytes, cellText: cellText, cmpBytes: cmpBytes, startsWith: startsWith,
     CAP: CAP, NAME: NAME, NEXT: NEXT, EMPTY48: EMPTY48, isInner: isInner, childCount: childCount, eachChild: eachChild
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

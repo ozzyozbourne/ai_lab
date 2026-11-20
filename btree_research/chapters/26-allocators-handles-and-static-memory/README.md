@@ -282,7 +282,7 @@ it is given: `std.testing.allocator` in tests (a leaked slab fails the test),
 `init.gpa` in sections 1 to 3 of the demo, the buddy-on-a-fixed-buffer stack in
 section 4. Lifetimes are nested: the buffer outlives the buddy heap, which outlives
 the pools, which outlive every handle. With other choices: a general-purpose
-allocator per node pays a header and a size-class lookup and can never compact; an
+allocator per node rounds every node up to its size class and can never compact; an
 `ArenaAllocator` cannot give back the nodes that deletes free; `page_allocator` per
 node is a system call per insert.
 
@@ -291,27 +291,27 @@ memory becomes reusable before the allocator is torn down):
 
 | Allocator | What it is | Cost model | Free one item? | Thread safety | Use in a B-tree engine |
 |---|---|---|---|---|---|
-| `std.testing.allocator` | A `SafeAllocator` owned by the test runner | Slow, checks everything | Yes | Yes | Every unit test: leaks and double frees fail the run |
+| `std.testing.allocator` | A `SafeAllocator` over `page_allocator`, owned by the test runner | Slow, checks everything | As `SafeAllocator` | Yes | Every unit test: leaks and double frees fail the run |
 | `ArenaAllocator` | Bump allocation in chunks from a child allocator | Pointer bump; `deinit` or `reset` frees all at once | No (only the latest allocation) | Yes if the child is | Bulk-loaded read-only tree; per-query scratch |
 | `FixedBufferAllocator` | Bump allocation in a caller buffer | Pointer bump, no system calls, `OutOfMemory` when full | No (only the latest allocation) | No; `threadSafeAllocator()` is | Bounded scratch for one split or merge |
 | `BufferFirstAllocator` | A fixed buffer first, a fallback allocator after | Bump while the buffer lasts, then the fallback's cost | Fallback items yes; buffer items as above | No | Copying search keys: short ones never touch the heap |
 | `page_allocator` (`PageAllocator.map`, `unmap`) | One `mmap` per allocation, `munmap` per free | A system call each way; page granularity | Yes | Yes | Backing memory for the buffer pool or an arena, taken once |
 | `smp_allocator` (`SmpAllocator`) | General purpose, per-thread free lists in power-of-two classes; large requests mapped directly | Fast paths without contention | Yes | Yes (needs a multi-threaded build) | The general allocator of a release build |
-| `SafeAllocator` | The checking general-purpose allocator (`init.gpa` in debug) | Slow; footer per allocation; does not reuse memory when its backing allocator does not | Yes | Yes | Debug builds; finding leaks and use-after-free in node code |
-| `DebugAllocator` | Its deprecated predecessor | Slow, bucketed | Yes | Yes by default (`thread_safe` option) | Nowhere new; shown because old code uses it |
+| `SafeAllocator` | The checking general-purpose allocator (`init.gpa` in debug) | Slow; footer per allocation; does not reuse memory when its backing allocator does not | To the backing allocator: a large item at once, a small one when its bucket is no longer being filled and holds no live item | Yes if the backing allocator is | Debug builds; finding leaks and use-after-free in node code |
+| `DebugAllocator` | Deprecated in favour of `SafeAllocator` | Slow, bucketed, never reuses an address | To the backing allocator, when every item of its page is free | Yes in a multi-threaded build (`thread_safe` option) | Nowhere new; shown because old code uses it |
 | `MemoryPool(T)` | One item type, free list through freed items, memory from an internal arena | O(1) create and destroy, no header | Yes, to the pool | No | Nodes of a pointer-based tree (chapters 04, 05) |
-| `memory_pool.Extra(T, .{ .growable = false })` | The same, all memory taken in `initCapacity` | O(1); `create` fails when empty | Yes, to the pool | No | Fixed set of buffer-pool frames |
+| `memory_pool.Extra(T, .{ .growable = false })` | The same, memory taken up front (`initCapacity`, `addCapacity`) | O(1); `create` fails when empty | Yes, to the pool | No | Fixed set of buffer-pool frames |
 | `memory_pool.Aligned(T, alignment)` | The same pool, items over-aligned | As `MemoryPool` | Yes, to the pool | No | Nodes on cache-line boundaries (chapter 25) |
-| `brk_allocator` (`BrkAllocator`); `wasm_allocator` (`WasmAllocator`) is an alias of it in 0.17.1 | Grows the program break; size-class free lists | Fast, no locks | Yes | Single-threaded builds only | A single-threaded or WebAssembly build |
+| `brk_allocator` (`BrkAllocator`); `wasm_allocator` (`WasmAllocator`) is an alias of it in 0.17.1 | Grows the program break (Linux) or the WebAssembly memory; size-class free lists | Fast, no locks | Yes | Single-threaded builds only | A single-threaded or WebAssembly build |
 | `c_allocator` | libc `malloc` and `free` | Whatever the libc does | Yes | As the libc's `malloc` | Engine embedded in a C program, sharing its heap |
 | `std.testing.FailingAllocator` | Wrapper that lets N allocations succeed, then fails every later one; counts | Child cost plus counters | Via the child | No | Aim an `OutOfMemory` at one step of an insert |
-| `Allocator.failing`, `std.testing.failing_allocator` | Fails every request | Free | Nothing to free | Yes (no state) | Prove a path (lookup, delete) never allocates |
-| `checkAllAllocationFailures` | Runs a function once per allocation, failing from that one on | (allocations + 1) runs | n/a | n/a | Exhaustive `OutOfMemory` test of every insert path |
+| `Allocator.failing`, `std.testing.failing_allocator` | Fails every request; the second is a `FailingAllocator` with `fail_index = 0` | No work | Nothing to free (`Allocator.failing`: `unreachable`) | `Allocator.failing`: yes, no state; `failing_allocator`: no | Prove a path (lookup, delete) never allocates |
+| `checkAllAllocationFailures` | Runs a function once per allocation, failing from that one on; in-place resizes always fail | (allocations + 1) runs | n/a | n/a | Exhaustive `OutOfMemory` test of every insert path |
 | `std.mem.ValidationAllocator` (`validationWrap`) | Wrapper that asserts the interface contract: no zero-length request, returned pointers aligned | Child cost plus asserts | Via the child | As the child | Around an allocator you wrote yourself (here: the buddy heap) |
 
 The list was checked against the 0.17.1 sources: the nine files of `lib/std/heap/`,
 the instances in `heap.zig`, `std.testing`, and the two in `std.mem`. Not run:
-`std.os.uefi.pool_allocator`, which exists only on UEFI firmware. `main` also receives
+`std.os.uefi.pool_allocator` and `raw_pool_allocator` (UEFI firmware only). `main` also receives
 `init.gpa` (a `SafeAllocator` in debug and safe builds) and `init.arena`.
 
 Two rows need a special build, which is why `build.zig` has three test steps. In the

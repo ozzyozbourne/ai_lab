@@ -7,8 +7,8 @@
 //! instances declared in `lib/std/heap.zig` (page_allocator, smp_allocator,
 //! brk_allocator, wasm_allocator, c_allocator), `std.testing` (allocator,
 //! FailingAllocator, failing_allocator, checkAllAllocationFailures) and the two that
-//! live in `std.mem` (Allocator.failing, ValidationAllocator). The one allocator not
-//! run here is `std.os.uefi.pool_allocator`, which only exists on UEFI firmware.
+//! live in `std.mem` (Allocator.failing, ValidationAllocator). Not run here:
+//! `std.os.uefi.pool_allocator` and `raw_pool_allocator`, which need UEFI firmware.
 //!
 //! Three examples need a special build, because the allocator does not exist otherwise:
 //!   zig build test                   everything except BrkAllocator and c_allocator
@@ -25,8 +25,9 @@ const BTree = @import("btree.zig").BTree;
 const Node = struct { len: u8 = 0, keys: [7]u64 = @splat(0), next: ?*Node = null };
 
 // 1. std.testing.allocator: a SafeAllocator owned by the test runner. A test that
-// leaks, double-frees or frees with the wrong size FAILS. Use it in every unit test:
-// it is what proves that split, merge and deinit return every node.
+// leaks FAILS; a double free or a free with the wrong size panics, which ends the run.
+// Use it in every unit test: it is what proves that split, merge and deinit return
+// every node.
 test "testing.allocator: leaks fail the test" {
     const gpa = testing.allocator;
     const node = try gpa.create(Node);
@@ -38,20 +39,38 @@ test "testing.allocator: leaks fail the test" {
 // of one item does nothing (unless it was the latest allocation); everything dies at
 // once. Engine use: a bulk-loaded read-only tree, or scratch memory per query.
 test "ArenaAllocator: build many, free once, reuse per query" {
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    // A FailingAllocator that never fails is a counter for the calls that reach the child.
+    var child: testing.FailingAllocator = .init(testing.allocator, .{});
+    var arena: std.heap.ArenaAllocator = .init(child.allocator());
     defer arena.deinit(); // one call frees all 100 nodes
     const a = arena.allocator();
 
+    try buildList(a, 100);
+    const capacity = arena.queryCapacity();
+    try testing.expect(capacity >= 100 * @sizeOf(Node));
+    try testing.expect(child.allocations > 1); // the nodes did not fit one chunk
+    // Next query: forget the contents, keep the capacity. The first reset merges the
+    // chunks into one of the same total capacity, and that is one last trip to the
+    // child allocator (ArenaAllocator.zig:149-200) ...
+    try testing.expect(arena.reset(.retain_capacity));
+    try testing.expect(child.deallocations > 0);
+    try testing.expectEqual(capacity, arena.queryCapacity());
+    // ... from then on a query of the same size and its reset never call the child.
+    const allocations = child.allocations;
+    const deallocations = child.deallocations;
+    try buildList(a, 100);
+    try testing.expect(arena.reset(.retain_capacity));
+    try testing.expectEqual(allocations, child.allocations);
+    try testing.expectEqual(deallocations, child.deallocations);
+}
+
+fn buildList(a: Allocator, count: usize) !void {
     var head: ?*Node = null;
-    for (0..100) |_| {
+    for (0..count) |_| {
         const node = try a.create(Node);
         node.* = .{ .next = head };
         head = node;
     }
-    try testing.expect(arena.queryCapacity() >= 100 * @sizeOf(Node));
-    // Next query: keep the chunks, forget the contents. No call to the child allocator.
-    try testing.expect(arena.reset(.retain_capacity));
-    _ = try a.alloc(u64, 16);
 }
 
 // 3. FixedBufferAllocator: bump allocation in a buffer you provide; no syscalls, no
@@ -93,9 +112,9 @@ test "FixedBufferAllocator.threadSafeAllocator: the lock-free face" {
     try testing.expectEqual(0, fba.end_index);
 }
 
-// 4. BufferFirstAllocator (0.17's replacement for `stackFallback`): try a fixed buffer
-// first, fall back to another allocator when it is full. Engine use: copying a search
-// key; almost all keys are short and never touch the heap, a huge one still works.
+// 4. BufferFirstAllocator: try a fixed buffer first, fall back to another allocator
+// when the request does not fit what is left of it. Engine use: copying a search key;
+// almost all keys are short and never touch the heap, a huge one still works.
 test "BufferFirstAllocator: short keys on the stack, long keys on the heap" {
     var stack: [64]u8 = undefined;
     var bfa: std.heap.BufferFirstAllocator = .init(&stack, testing.allocator);
@@ -147,10 +166,12 @@ test "smp_allocator: fast general purpose, multi-threaded builds only" {
 }
 
 // 7. SafeAllocator: the checking general-purpose allocator of 0.17 (`init.gpa` in debug
-// builds and `std.testing.allocator` are instances). It adds no reuse of its own: a
-// freed small allocation is not handed out again, so, as long as the backing allocator
-// does not reuse memory either, most writes after free fault or are detected later
-// (SafeAllocator.zig:7-8). `deinit` returns the number of leaked allocations.
+// and safe builds and `std.testing.allocator` are instances). It adds no reuse of its
+// own: a freed small allocation is not handed out again (its bucket goes back to the
+// backing allocator as a whole, once it is no longer filled and empty), so, as long as the backing allocator does not reuse
+// memory either, most writes after free fault or are detected later
+// (SafeAllocator.zig:7-8). Thread-safe if the backing allocator is. `deinit` returns
+// the number of leaked allocations.
 test "SafeAllocator: counts leaks, does not reuse a freed slot" {
     var safe: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
     const a = safe.allocator();
@@ -165,9 +186,9 @@ test "SafeAllocator: counts leaks, does not reuse a freed slot" {
     try testing.expectEqual(1, safe.deinitLog(false)); // `deinit()` also logs a stack trace
 }
 
-// 8. DebugAllocator: the previous checking allocator (the old GeneralPurposeAllocator).
-// Deprecated in favour of SafeAllocator but still present; `deinit` returns .ok or .leak.
-test "DebugAllocator: deprecated predecessor of SafeAllocator" {
+// 8. DebugAllocator: the other checking allocator, marked "Deprecated; use
+// `SafeAllocator`" (heap.zig:23) but still present; `deinit` returns .ok or .leak.
+test "DebugAllocator: deprecated, SafeAllocator replaces it" {
     var debug: std.heap.DebugAllocator(.{}) = .init;
     const a = debug.allocator();
     const node = try a.create(Node);
@@ -192,9 +213,10 @@ test "MemoryPool (growable): O(1) create and destroy, LIFO reuse" {
     try pool.addCapacity(gpa, 32); // preheat: the next 32 creates cannot fail
 }
 
-// 10. MemoryPool, non-growable: all memory is taken in initCapacity; create never asks
-// for more and fails when the pool is empty. Engine use: a fixed set of buffer-pool
-// frames, or the std twin of this chapter's static slab.
+// 10. MemoryPool, non-growable: memory is taken up front (`initCapacity`, or a later
+// `addCapacity`); `create` never asks for more and fails when the pool is empty.
+// Engine use: a fixed set of buffer-pool frames, or the std twin of this chapter's
+// static slab.
 test "MemoryPool (non-growable): fixed capacity" {
     const gpa = testing.allocator;
     const Frames = std.heap.memory_pool.Extra(Node, .{ .growable = false });
@@ -224,11 +246,11 @@ test "memory_pool.Aligned: over-aligned items" {
     }
 }
 
-// 11. brk_allocator (BrkAllocator): grows the classic program break; size-class free
-// lists, no locking. It only exists in single-threaded builds (Linux, WebAssembly).
-// Engine use: a single-threaded embedded or WebAssembly build of the engine.
-// `wasm_allocator` / `WasmAllocator` are the same code under their older name: in
-// 0.17.1 `WasmAllocator` is an alias of `BrkAllocator` (heap.zig:18).
+// 11. brk_allocator (BrkAllocator): grows the program break on Linux and the linear
+// memory on WebAssembly; size-class free lists, no locking. It only exists in
+// single-threaded builds. Engine use: a single-threaded embedded or WebAssembly build
+// of the engine. `wasm_allocator` / `WasmAllocator` are the same code under a second
+// name: in 0.17.1 `WasmAllocator` is an alias of `BrkAllocator` (heap.zig:18).
 test "brk_allocator and wasm_allocator: single-threaded builds only" {
     if (!builtin.single_threaded) return error.SkipZigTest; // @compileError otherwise
     try testing.expect(std.heap.WasmAllocator == std.heap.BrkAllocator);
@@ -272,8 +294,10 @@ test "FailingAllocator: N allocations succeed, then all fail" {
     try testing.expectEqual(2 * @sizeOf(Node), failing.allocated_bytes);
 }
 
-// 14. Allocator.failing: fails every request. `std.testing.failing_allocator` does the
-// same (it is a FailingAllocator with `fail_index = 0`).
+// 14. Allocator.failing: fails every request and has no state; its resize, remap and
+// free are `unreachable`, because nothing it handed out can come back.
+// `std.testing.failing_allocator` also fails every request, but it is a FailingAllocator
+// with `fail_index = 0` (testing.zig:14-17): it has state and is not thread-safe.
 // Use: hand it to code that must not allocate. If the code is wrong the test fails.
 test "Allocator.failing: prove a path never allocates" {
     try testing.expectError(error.OutOfMemory, Allocator.failing.create(Node));
@@ -288,7 +312,8 @@ test "Allocator.failing: prove a path never allocates" {
 
 // 15. std.testing.checkAllAllocationFailures: runs a function once to count its
 // allocations, then once per allocation with that one (and any later one) failing, and
-// checks each time that it returns OutOfMemory and leaks nothing. Use: every insert path.
+// checks each time that it returns OutOfMemory and leaks nothing. In-place resizes are
+// refused in every run. Use: every insert path.
 fn buildTree(gpa: Allocator, key_count: u64) !void {
     var tree: BTree(4, 4) = .init(gpa, true);
     defer tree.deinit();

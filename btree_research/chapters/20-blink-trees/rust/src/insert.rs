@@ -25,7 +25,14 @@
 //!                grandparent, and if that one is flagged too, the node above
 //!                it: one latch per level, bottom-up, for as long as each
 //!                level's parent turns out to be flagged. The bound is the
-//!                height of the tree, not a constant. LATCH_COUNTS
+//!                height of the tree, not a constant.
+//!                In Rust add one for a moment at the very top: the latch of
+//!                a new root, which nobody else can know yet.
+//!                Measured with a thread-local counter in a scratch copy
+//!                of the Zig code: every hand-written test peaks at 2, the
+//!                seeded paused-writer test at 3. Under threads the peak
+//!                depends on the interleaving: the stress tests reached 2
+//!                in 18 of 20 runs and 3 in the other two.
 //! The order is always child before parent and never left-and-right at once;
 //! the `meta` mutex comes last. With one global order there is no deadlock.
 //!

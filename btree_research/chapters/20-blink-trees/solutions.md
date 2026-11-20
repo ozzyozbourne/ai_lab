@@ -28,9 +28,10 @@ Run with only that change, 8 or 9 of the 32 tests fail. Eight fail in every
 run: the output test, "paused between step 1 and step 2"
 (`expected 2600, found null`), the paused root split, the paused internal
 node, the full node table, both model tests and the stress test with
-abandoned splits. The ninth is the stress test with normal splits. It needs a
-reader to arrive between the two steps of another thread's split, so it
-depends on the interleaving: it failed in 7 of 8 runs.
+abandoned splits. The ninth is the stress test with normal splits. It fails
+only if some thread reaches the left half of a split with out-of-date
+directions and a key equal to the new high key, so it depends on the
+interleaving: it failed in 7 of 8 runs.
 
 The first failure explains all of them. In the paused state #3 has high key
 26, and 26 itself lives in #8. A search for 26 computes `26 > 26`, which is

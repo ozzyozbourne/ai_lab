@@ -231,9 +231,11 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
       el('p.c24-note', 'An index entry holds (key, tid); xmin and xmax are only here. old = ended, but an open snapshot still sees it; dead = no snapshot can.'));
   }
 
+  var mute = false;              // set by the random self-test: hundreds of presses need no drawing
   var stepper = new BTViz.Stepper({
     mount: fig.controls, caption: fig.caption, root: fig.root, predict: true,
     onStep: function (s, i) {   // BTViz.motion.duration() is 0 when the stepper jumps
+      if (mute) return;
       var d = s.state, hl = s.hl || {}, keys = keyStates(d), scan = null;
       Object.keys(hl.keys || {}).forEach(function (id) { keys[id] = hl.keys[id]; });
       // The pill sits on whatever the saved handle names NOW: a leaf, a half-dead or deleted page,
@@ -837,6 +839,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
       function () { return doVacuum; }, function () { return doUnsafe; }
     ];
     start(r);
+    mute = true;
     for (var i = 0; i < presses && !bad.length; i++) {
       var what = r.int(0, 9);
       if (what === 8) stepper.go(r.int(0, stepper.steps.length - 1));     // may well be while it plays
@@ -846,6 +849,7 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
         if (st.resume === j) hidden(st.state).forEach(function (m) { bad.push('seed ' + seed + ', press ' + i + ', step ' + j + ': ' + m); });
       });
     }
+    mute = false;
     return bad.join('; ');
   }
   BTViz.selfTest('monkey: from empty', [1, 2, 3].map(function (seed) { return monkey(seed, 150, resetAll); }).join(''), '');

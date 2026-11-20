@@ -207,6 +207,7 @@ test "injected I/O failures: an error, no leaked pin, and a tree that is intact 
                     if (db.tree.poisoned) {
                         // The failure hit between two page changes of a split.
                         poisoned_failures += 1;
+                        std.debug.print("P shape {d} reads {} countdown {d}\n", .{ countdown % 2, fail_reads, countdown });
                         try testing.expectError(error.TreePoisoned, db.tree.put("k", "v"));
                         try testing.expectError(error.TreePoisoned, db.tree.get(testing.allocator, "k"));
                         try testing.expectError(error.TreePoisoned, db.tree.range("", null));

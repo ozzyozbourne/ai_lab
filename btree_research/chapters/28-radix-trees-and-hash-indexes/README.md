@@ -11,8 +11,10 @@ Visualization: [viz/index.html](viz/index.html)
 - The adaptive radix tree (ART): four node layouts (Node4, Node16, Node48, Node256), how
   a node grows from one to the next, and path compression with prefix nodes.
 - How to iterate an ART in key order and how to seek to a lower bound.
-- A hash index with open addressing, and the one thing it cannot do.
-- Which questions each structure can answer: point lookup, range, prefix, ordered scan.
+- A hash index: collisions, linear probing, the load factor, and the one thing it
+  cannot do.
+- Which questions each structure can answer (point lookup, range, prefix, ordered scan)
+  and what a B-tree keeps that the other two give up.
 
 Prerequisites: [chapter 02](../02-searching-a-sorted-node/README.md) (lower bound),
 [chapter 08](../08-range-scans-and-cursors/README.md) (range scans, a prefix scan is a
@@ -47,10 +49,14 @@ key still needs one node per byte. The **adaptive** radix tree fixes both:
   instead of as a chain of one-child nodes.
 
 A **hash index** goes further in the same direction. It runs the whole key through a hash
-function and uses the result as an array position. One step, on average, whatever the
-key length and however many keys there are. The price is that the hash function
-scatters neighbouring keys on purpose. The index can answer "is this exact key here?"
-and nothing else.
+function and uses the result as a position in an array of slots: the key's *home slot*.
+Two keys can have the same home slot. That is a *collision*. *Open addressing* keeps
+both keys in the array, and *linear probing* is the simplest rule for where the second
+one goes: the next slot, then the one after, until a slot is empty. A lookup walks the
+same *probe sequence* and stops at the key or at the first empty slot. In a table that
+is not too full that walk is one or two slots long, whatever the key length and however
+many keys there are. The price is that the hash function scatters neighbouring keys on
+purpose. The index can answer "is this exact key here?" and nothing else.
 
 ### The four layouts
 
@@ -121,6 +127,31 @@ the same node, below the prefix `k`:
    256  node256  256/256              every byte has its own slot
 ```
 
+### Three keys with one home slot
+
+Now the hash index, with 8 slots. The hash function of this chapter (FNV-1a) sends
+`ant`, `fox` and `emu` all to slot 6, and `bee` to slot 7:
+
+```
+slot       0    1    2    3    4    5    6    7
+put ant    .    .    .    .    .    .   ant   .    home slot 6 is empty
+put fox    .    .    .    .    .    .   ant  fox   6 is taken: next slot
+put emu   emu   .    .    .    .    .   ant  fox   6 and 7 are taken: wrap around to 0
+```
+
+`get emu` reads slots 6, 7 and 0: three probes. `get bee` starts at 7 and finds `fox`,
+which collides with it although their home slots differ. It goes on to `emu` in slot 0
+and then to slot 1, which is empty. An insert of `bee` would have taken the same walk
+and used that slot, so `bee` is absent. Two things follow:
+
+- Every unsuccessful search ends at an empty slot, so the table may never fill up.
+  Long before that it gets slow, because runs of taken slots grow and merge. The
+  *load factor* (keys divided by slots) is therefore kept low: this code doubles the
+  table before it would exceed 70%.
+- A slot cannot simply be emptied. Empty slot 7 and `get emu` stops there (exercise 4).
+
+A test in each language ("the hand example") checks this layout and these probe counts.
+
 ## Code walk-through
 
 Both programs print [expected_output.txt](expected_output.txt); a test in each language
@@ -171,24 +202,23 @@ unchanged" fails each allocation index in turn and checks that the census of the
 is identical before and after the failed `put`.
 
 **Iteration** (`Iterator`). There are no sibling links between leaves, so the iterator
-keeps a stack with one frame per inner node on the current path. A frame remembers the
-node and the next byte value to try. `nextChild(ref, from)` returns the first child with
-a byte greater than or equal to `from`; it is the only layout-specific operation the
-iterator needs. The current key is rebuilt in a byte buffer as the iterator moves:
-push a byte when descending, truncate when returning to a frame. `seek(lo)` positions
-the iterator on the first key greater than or equal to `lo`. At each prefix it decides
-whether the whole subtree is smaller than `lo` (skip it), greater (take all of it) or
-still undecided (continue down).
+keeps a stack with one frame per inner node on the current path: the node and the next
+byte value to try. `nextChild(ref, from)`, the first child with a byte greater than or
+equal to `from`, is the only layout-specific operation it needs. The current key is
+rebuilt in a byte buffer as the iterator moves. `seek(lo)` positions the iterator on
+the first key greater than or equal to `lo`. At each prefix it decides whether the
+whole subtree is smaller than `lo` (skip it), greater (take all of it) or still
+undecided (continue down).
 
-**`validate`** checks sorted bytes in small nodes, a consistent `index` in Node48,
-counts that match, minimum child counts, that the number of leaves equals `len`, and
-that the nodes reachable from the root are exactly the nodes the pools consider live.
+**`validate`** checks sorted bytes in small nodes, a consistent `index` in Node48, child
+counts, that the number of leaves equals `len`, and that the nodes reachable from the
+root are exactly the nodes the pools consider live.
 
-**Hash index.** `put` probes from `hash & (capacity - 1)` to the key or to the first
-empty slot. Before inserting a new key it doubles the table if the load would exceed
-70%. Growing re-places every entry, because the slot depends on the capacity. `scanRange`
-is the honest implementation of a range query on a hash table: visit every slot, filter,
-and leave the sorting to the caller.
+**Hash index.** `probe` is the walk of the hand example: from `hash & (capacity - 1)` to
+the key or to the first empty slot. `put` doubles the table before the load factor
+would exceed 70%, and growing re-places every entry, because the home slot depends on
+the capacity. `scanRange` is the honest implementation of a range query on a hash
+table: visit every slot, filter, and leave the sorting to the caller.
 
 ### Rust
 
@@ -202,16 +232,15 @@ Differences worth knowing:
   because a `Ref` contains the pointer. In Rust the node can only be reached through
   the tree, so `child_of` and its relatives are methods on `Art`.
 - **Node budget instead of allocation failure.** Rust's `Vec` aborts when memory runs
-  out, so the failure path is modelled by `Art::with_node_budget(n)`: `put` returns
-  `Err(ArtError::OutOfNodes)` when a node would exceed the budget. The matching test
-  runs every budget from 0 upward. Nothing else can fail in Rust, so the six Zig tests
-  that inject allocation failures into the hash index, the sorted index, `encodeStr`,
-  the oracle and the ART iterator have no twin.
+  out, so `Art::with_node_budget(n)` models the failure: `put` returns
+  `Err(ArtError::OutOfNodes)` when a node would exceed the budget, and the matching
+  test runs every budget from 0 upward. Nothing else can fail in Rust, so the six Zig
+  tests that inject allocation failures into the hash index, the sorted index,
+  `encodeStr`, the oracle and the ART iterator have no twin.
 - **The iterator lends.** `Iter::next` returns an `Entry` whose key borrows the
   iterator's own buffer, which `std::iter::Iterator` cannot express, so it is an
   inherent method. In exchange the borrow checker enforces what Zig only documents:
   the tree cannot be modified while an iterator exists.
-- **Errors.** `validate` returns `Result<(), &'static str>`; Zig uses an error set.
 
 ### What the programs print
 
@@ -229,19 +258,26 @@ keys differ in the first byte already, so the root is a Node256 and almost every
 ends in a prefix node that holds its unshared tail. Both trees answer a lookup in three
 or four node visits.
 
-Section 4 loads 596 keys such as `cat/0042` into all three indexes:
+Section 4 loads 596 keys such as `cat/0042` into all three indexes (`...` marks lines
+left out here):
 
 ```
+...
 point lookups (596 hits, 300 misses)
                 found  steps  unit of a step
   sorted array    596   9219  whole-key comparison
   art             596   4823  node visited
   hash index      596   1702  slot probed
-
+...
 prefix "cat/"
   sorted array  113 entries in key order (a slice between two binary searches)
   art           113 entries in key order (seek, then iterate); same as sorted: true
   hash index    113 entries after inspecting all 1024 slots; in key order: false; same as sorted after sorting: true
+
+first 4 keys
+  sorted array  ant/0273 ant/0310 ant/0334 ant/0348
+  art           ant/0273 ant/0310 ant/0334 ant/0348
+  hash index    bee/0557 cat/6589 cat/8700 dog/4053  (slot order)
 
 what each index can answer
                 point  range        prefix       ordered scan
@@ -252,9 +288,15 @@ what each index can answer
 
 The step counts are counts of different things and must not be read as a speed ranking.
 A whole-key comparison, a node visit and a slot probe have different costs, and a node
-visit is typically a jump to memory that is not in the cache. What the table does show
-is the shape: the hash index needs about two probes per lookup, and it has to inspect
-all 1024 slots to answer a question about 113 neighbouring keys.
+visit is typically a jump to memory that is not in the cache. What the output does show
+is the shape. The hash index needs about two probes per lookup (1702 for 896 lookups,
+in a table that is 58% full). Its first four slots hold keys of three different
+tenants, which is the scattering at work, and it has to inspect all 1024 slots to
+answer a question about 113 neighbouring keys.
+
+The sorted array and the ART have the same four entries in the last table. That does
+not make the ART a B-tree with fewer steps: the table asks only which questions can be
+answered. What a B-tree keeps is at the end of the next section.
 
 ## In real databases
 
@@ -276,9 +318,6 @@ follows its design on purpose:
   flip on every insert and delete: Node256 shrinks at 36 or fewer children
   (`node256.hpp:25`), Node48 below 12 (`node48.hpp:29`), Node16 below 4
   (`base_node.cpp:142-153`). This chapter has no delete; exercise 5 adds it.
-- After deletes a Node48 has holes in its child array, so its insert first tries
-  position `count` and otherwise scans for a free one (`node48.cpp:14-26`). Without
-  delete our `addChild` can always use `count`.
 - A prefix is a separate node type holding up to `prefix_count` bytes, one count byte and
   one child (`prefix.hpp:18-29`). `prefix_count` is computed from the key type
   (`art.cpp:1258-1287`); for one 8-byte integer column the formula gives 7, which is why
@@ -308,6 +347,34 @@ code (`README:36-37`).
 The claim that hash lookups take a constant expected number of probes is textbook
 material and assumes a good hash function and a bounded load factor.
 
+### B-tree, ART, hash index: what each gives up
+
+The B+tree column is what this guide has built in chapters 07 to 12, not a claim about
+one engine. The ART column is DuckDB's.
+
+| | B+tree | ART | Hash index |
+|---|---|---|---|
+| A node is | a disk page full of whole keys | a small node for one key byte | one slot |
+| Steps to a key grow with | the logarithm of the key count, counted in pages | the key length in bytes | the load factor |
+| Next key in order | same page, or the linked next leaf | another node somewhere else; no sibling links | an unrelated slot |
+| A scan yields | keys with their values, in order | row ids in byte order; the rows are fetched one by one | nothing in order |
+| Keys must have | a comparison function | a byte-comparable encoding (chapter 11) | equality and a hash |
+
+So the ART is not free. Its nodes are small and scattered, and every level is a jump to
+a different place. That is fine in memory and poor on disk, where a B-tree reads one
+page and finds hundreds of neighbouring keys in it. DuckDB writes its ART to disk as
+whole allocator buffers at a checkpoint (`art.cpp:1197-1218`), not as a tree of pages.
+Long keys make the tree deep: the `cat/0042` keys above need up to 7 nodes for 596
+keys. A range scan returns row ids, not data, which is why DuckDB gives up on the index
+and scans the table when more than 2,048 rows or 0.1% of the table match, whichever is
+larger (`duckdb/src/function/table/table_scan.cpp:1015-1020`,
+`art.cpp:896-902`; chapter 29 picks this up). Its main job there is checking PRIMARY
+KEY and UNIQUE constraints (`art.cpp:663-667`), which are point lookups.
+
+The hash index gives up order altogether, and with it ranges, prefixes, `min`, `max`
+and sorted output. A B-tree is never the best at one of these questions. It is the one
+structure that answers all of them from pages on disk, with the data next to the keys.
+
 ## Allocator notes
 
 The ART allocates five kinds of objects, each of one fixed size: prefix nodes and the
@@ -327,13 +394,12 @@ uses one `std.heap.MemoryPool(T)` per node type (`Pools` in `art.zig`).
   so the allocation failure test meets a failure point only every so many inserts.
 - *What would go wrong with others.* An `ArenaAllocator` alone cannot give a single node
   back, so every outgrown Node4, Node16 and Node48 would stay allocated until the tree
-  dies. A `FixedBufferAllocator` only frees its most recent allocation and has the same
-  problem, plus a hard size limit. Plain `gpa.create` per node works and is the simplest
-  correct choice, at the cost of one general allocation per node and no locality.
-- *Leak checking.* Tests use `std.testing.allocator`. In addition `validate` compares
-  the nodes reachable from the root with the pools' live counters, which catches a node
-  that was dropped from the tree but never returned to its pool. The backing allocator
-  cannot see that kind of leak, because the pool still owns the memory.
+  dies. A `FixedBufferAllocator` has the same problem plus a hard size limit. Plain
+  `gpa.create` per node is correct, at the cost of one general allocation per node.
+- *Leak checking.* Tests use `std.testing.allocator`. `validate` also compares the nodes
+  reachable from the root with the pools' live counters. That catches a node dropped
+  from the tree but never returned to its pool, which the backing allocator cannot
+  see because the pool still owns the memory.
 
 The hash index owns one slot array plus one copy of each key; the sorted index owns an
 `ArrayList` plus one copy of each key. Both use the general-purpose allocator directly.
@@ -358,17 +424,20 @@ standing in for allocation failure.
 - **Unsorted bytes in Node4 or Node16.** Lookup still works, iteration silently returns
   keys out of order. `validate` checks it.
 - **Recursion depth follows key length.** `insertAt`, `census`, `validate` and `dump`
-  recurse once per node, and a path can have one node per key byte. A key of some tens
-  of thousands of bytes overflowed the stack in both languages, so `put` refuses keys
-  longer than `max_key_len` (512 bytes) with `error.KeyTooLong`. The test "the longest
+  recurse once per node, and a path can have one node per key byte. Long keys overflowed
+  the stack (at 20,000 bytes in Rust, at some hundreds of thousands in Zig), so `put`
+  refuses keys longer than `max_key_len` (512 bytes) with `error.KeyTooLong`. The test "the longest
   keys" builds the deepest tree the limit allows. `lookup` and the iterator are loops.
 - **Forgetting to store the returned reference.** `insertAt` returns a new reference
   when a node grows. Dropping it leaves the parent pointing at a freed node.
 - **A lower bound is not a lookup.** `seek("rube")` must find `rubens` although no key
   starts at the point where the descent fails. The three-way decision at each prefix
   node is where implementations go wrong.
-- **Hash tables and deletion.** Emptying a slot breaks every probe sequence that passed
-  through it. Deletion needs tombstones or a backward shift (exercise 4).
+- **Hash tables and deletion.** Emptying a slot cuts every probe sequence that passed
+  through it, as in the hand example. Deletion needs tombstones or a backward shift
+  (exercise 4).
+- **A full hash table.** Without the load factor limit a search for an absent key in a
+  full table never meets an empty slot and never ends.
 
 ## Exercises
 

@@ -15,6 +15,7 @@
 }
 .c11-row.r-pending .c11-meta { color: var(--bt-muted); }
 .c11-meta { font: .8rem/1.3 var(--bt-mono); white-space: nowrap; display: flex; gap: .6em; }
+.c11-meta > * { flex: none; }   /* a long name pushes the score right instead of running into it */
 .c11-meta b { min-width: 2.6em; }
 .c11-meta .c11-name { min-width: 3.9em; }
 .c11-bytes { display: flex; flex-wrap: nowrap; gap: 1px; font: 11.5px/1 var(--bt-mono); }

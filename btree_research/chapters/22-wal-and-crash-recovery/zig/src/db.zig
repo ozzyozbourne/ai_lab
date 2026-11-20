@@ -32,7 +32,8 @@ const wal_mod = @import("wal.zig");
 const Wal = wal_mod.Wal;
 
 pub const Options = struct {
-    /// Buffer pool size. 2 is enough: evicted dirty pages go to the log layer.
+    /// Buffer pool size, at least 1 (the pool asserts it). 2 is enough:
+    /// evicted dirty pages go to the log layer.
     frames: u32 = 8,
     /// Checkpoint when this many commits are in the log. 0 = never.
     checkpoint_every: u32 = 4,

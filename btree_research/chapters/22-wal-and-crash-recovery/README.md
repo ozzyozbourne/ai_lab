@@ -249,8 +249,9 @@ already at or beyond it. Postgres does exactly this; see below.
   `WalStorage` wrapper. The same goes for the `Machine` shared by its two storage ports.
 - Zig's `PageTable` is a hand-written sorted array (its images come from two different
   allocators); Rust uses `BTreeMap<PageId, Box<Page>>`.
-- Zig merges error sets; Rust wraps them in `DbError::{Tree, Wal}`. Both flatten errors
-  to `StorageFailure` at the storage interface; `Wal.last_error` keeps the real cause.
+- Zig merges error sets; Rust wraps them in `DbError::{Tree, Wal}`, next to
+  `ReopenRequired`. Both flatten errors to `StorageFailure` at the storage interface;
+  `Wal.last_error` keeps the real cause.
 - Rust has no failing allocator in std. The twin of Zig's "allocation failure at any
   point" test is a budget that returns an error: a storage wrapper refuses one page write
   with `OutOfMemory`, the first, then the second, and so on. Zig's second test, which

@@ -34,7 +34,8 @@ use crate::wal::{self, Recovery, Wal, WalError, WalStorage};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
-    /// Buffer pool size. 2 is enough: evicted dirty pages go to the log layer.
+    /// Buffer pool size, at least 1 (the pool asserts it). 2 is enough:
+    /// evicted dirty pages go to the log layer.
     pub frames: usize,
     /// Checkpoint when this many commits are in the log. 0 = never.
     pub checkpoint_every: u32,
@@ -142,10 +143,16 @@ impl Db {
         result
     }
 
+    /// Zig does this inline under an `errdefer`; here the caller looks at
+    /// the result.
     fn apply_and_commit(&mut self, pairs: &[(&[u8], &[u8])]) -> Result<(), DbError> {
         for (key, value) in pairs {
             self.tree.put(key, value)?;
         }
+        self.commit()
+    }
+
+    fn commit(&mut self) -> Result<(), DbError> {
         // flush = write the metapage and every dirty page, then sync. The
         // writes land in the Wal's pending table; the sync is `Wal::commit`.
         self.tree.flush()?;

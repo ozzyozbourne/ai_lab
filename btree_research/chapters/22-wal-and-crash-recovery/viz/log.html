@@ -100,10 +100,17 @@ and <code>cargo run</code>.</p>
   var verdictBox = el('div.ch22-verdict', { role: 'status' });
   fig.stage.appendChild(verdictBox);
 
-  /** Bring the power-cut marker into the visible part of the row: a phone shows only four calls. */
+  /**
+   * Bring the power-cut marker into the visible part of the row: a phone shows
+   * only four calls. Not while the reader drags the marker: it is under the
+   * finger then, and scrolling the row would move it away from there.
+   */
+  var dragging = false, markerEl = timeline.root.querySelector('.bt-tl-crash');
+  markerEl.addEventListener('pointerdown', function () { dragging = true; });
+  ['pointerup', 'pointercancel'].forEach(function (type) { markerEl.addEventListener(type, function () { dragging = false; showMarker(); }); });
   function showMarker() {
     var box = timeline.root, x = crashAt * CELL_W;
-    if (box.scrollWidth <= box.clientWidth) return;
+    if (dragging || box.scrollWidth <= box.clientWidth) return;
     if (x < box.scrollLeft + 24 || x > box.scrollLeft + box.clientWidth - 24) box.scrollLeft = Math.max(0, x - box.clientWidth / 2);
   }
 

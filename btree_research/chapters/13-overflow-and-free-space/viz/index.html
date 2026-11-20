@@ -8,7 +8,7 @@
 <style>
 /* The file as a row of pages. Colours come from the toolkit's state classes
  * (--s / --s-bg); a page that the current step changes gets an outline. */
-.ch13-file { position: relative; padding: 12px 2px 44px; }
+.ch13-file { position: relative; padding: 12px 2px 44px 16px; }
 .ch13-strip { display: flex; flex-wrap: wrap; gap: 52px 8px; }
 .ch13-page {
   position: relative; box-sizing: border-box; width: 92px; min-height: 100px; padding: 5px 6px 7px; border-radius: 6px;
@@ -118,7 +118,7 @@ every page ends up on the free list.</p>
 
   function statusHtml(s) {
     return 'File: <b>' + s.pages.length + ' pages</b> = ' + s.pages.length * Ch13.PAGE_SIZE + ' bytes · free list: <b>' + s.freeCount + '</b> · keys: <b>' + s.keyCount +
-      '</b> · so far the file grew ' + s.stats.grown + ' times and reused a page ' + s.stats.reused + ' times';
+      '</b> · allocations so far: <b>' + s.stats.grown + '</b> grew the file, <b>' + s.stats.reused + '</b> reused a page';
   }
 
   /* ====================== 1. the scripted scenario ======================= */

@@ -315,9 +315,9 @@ falls back to the database file (`turso/core/storage/pager.rs:3610`,
 (`pager.rs:4562`). Summary in `research/turso.md`, section 14.
 
 **Postgres: logical records, page LSNs, and two records per split.** Postgres states the
-write-ahead rule in the page header documentation: "thou shalt write xlog before data. A
-dirty buffer cannot be dumped to disk until xlog has been flushed at least as far as the
-page's LSN" (`postgres/src/include/storage/bufpage.h:152-154`). Its buffer manager
+write-ahead rule in the page header documentation: the LSN enforces "thou shalt write
+xlog before data", and "A dirty buffer cannot be dumped to disk until xlog has been
+flushed at least as far as the page's LSN" (`postgres/src/include/storage/bufpage.h:152-154`). Its buffer manager
 enforces it per page, by comparing the page's LSN with the flushed position of the log;
 that is the "forbid until logged" alternative to this chapter's routing.
 
@@ -345,9 +345,10 @@ middle of the page (`xloginsert.c:738-743`). Summary in `research/postgres.md`, 
 
 **TigerBeetle: the testing style.** TigerBeetle has no B-tree, but its deterministic
 simulator is the model for the crash loop: the whole system runs against simulated
-storage, faults are injected from a seed, and "because our simulator is deterministic
-based on a seed number and the Git commit, we can perfectly reproduce any bugs"
-(`tigerbeetle/docs/internals/vopr.md:6-8`; assertions as the detector: `vopr.md:56`). See
+storage, faults are injected from a seed, and "Because our simulator is deterministic
+based on a _seed_ number and the Git commit, we can perfectly reproduce any bugs
+discovered in testing" (`tigerbeetle/docs/internals/vopr.md:6-8`; assertions as the
+detector: `vopr.md:56`). See
 `research/tigerbeetle.md`, section 10.4. Our loop is far smaller: one process, no
 network, and the fault schedule is exhaustive over N instead of random.
 

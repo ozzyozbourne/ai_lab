@@ -122,19 +122,27 @@
       var r = c.getBoundingClientRect();
       return { x: r.left - base.left, y: r.top - base.top, w: r.width, h: r.height };
     }
-    this.links.forEach(function (l) {
+    this.links.forEach(function (l, n) {
       var a = box(l.from), b = box(l.to);
       if (!a || !b) return;
       var shift = l.kind === 'chain' ? 9 : 24;            // the two kinds leave and arrive at different x
       var x1 = a.x + a.w / 2 + shift, x2 = b.x + b.w / 2 - shift, d;
+      var lane = 8 + 6 * (n % 6);                          // staggers lines that share a gap between rows
       if (Math.abs(a.y - b.y) < 8) {
         // Same row: an arc under the cards, deeper for longer hops.
         var y = a.y + a.h, depth = 12 + 7 * Math.min(4, Math.abs(l.to - l.from));
         d = 'M' + x1 + ',' + y + ' C' + x1 + ',' + (y + depth) + ' ' + x2 + ',' + (y + depth) + ' ' + x2 + ',' + (y + 2);
-      } else if (b.y > a.y) {
-        d = 'M' + x1 + ',' + (a.y + a.h) + ' C' + x1 + ',' + (a.y + a.h + 30) + ' ' + x2 + ',' + (b.y - 30) + ' ' + x2 + ',' + (b.y - 2);
       } else {
-        d = 'M' + x1 + ',' + a.y + ' C' + x1 + ',' + (a.y - 30) + ' ' + x2 + ',' + (b.y + b.h + 30) + ' ' + x2 + ',' + (b.y + b.h + 2);
+        // Different rows (a narrow screen wraps the cards): straight segments
+        // that stay in the gaps between rows, and in the left margin when a
+        // row lies in between, so that no line runs across a card.
+        var down = b.y > a.y;
+        var y1 = down ? a.y + a.h : a.y, y2 = down ? b.y - 2 : b.y + b.h + 2;
+        var g1 = down ? y1 + lane : y1 - lane, g2 = down ? y2 - (50 - lane) + 6 : y2 + (50 - lane) - 6;
+        var adjacent = Math.abs(y2 - y1) < 70;
+        d = adjacent
+          ? 'M' + x1 + ',' + y1 + ' L' + x1 + ',' + g1 + ' L' + x2 + ',' + g1 + ' L' + x2 + ',' + y2
+          : 'M' + x1 + ',' + y1 + ' L' + x1 + ',' + g1 + ' L' + (4 + (n % 3) * 3) + ',' + g1 + ' L' + (4 + (n % 3) * 3) + ',' + g2 + ' L' + x2 + ',' + g2 + ' L' + x2 + ',' + y2;
       }
       var path = document.createElementNS(SVG, 'path');
       path.setAttribute('d', d);
@@ -155,7 +163,8 @@
         n = { id: 'p' + id, leaf: true, keys: p.cells.map(cellLabel), meta: { label: 'page ' + id, note: leafUsed(p) + ' / ' + Ch13.CAPACITY + ' B' } };
         if (p.next !== null) n.next = 'p' + p.next;
       } else {
-        n = { id: 'p' + id, leaf: false, keys: p.keys.slice(), children: p.children.map(node), meta: { label: 'page ' + id } };
+        // An interior page with one child and no key exists for a moment before the root collapses.
+        n = { id: 'p' + id, leaf: false, keys: p.keys.length ? p.keys.slice() : ['no key'], children: p.children.map(node), meta: { label: 'page ' + id } };
       }
       if (hot[id]) hl.nodes['p' + id] = hot[id];
       return n;

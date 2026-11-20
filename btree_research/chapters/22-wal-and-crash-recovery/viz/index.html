@@ -143,6 +143,7 @@ and reopens the file; so does the model behind this page. Pick a cell to load it
   };
 
   var current = steps[0]; // the step on screen
+  var cells = []; // figure 2's buttons, filled in below
   var stepper = new BTViz.Stepper({
     mount: fig.controls, caption: fig.caption, root: fig.root, steps: steps, predict: true, interval: 2600,
     onStep: function (step) { current = step; code.highlight(step.lines); draw(); }
@@ -182,7 +183,7 @@ and reopens the file; so does the model behind this page. Pick a cell to load it
     title: 'Which writes reached the disk (digit i = write i) → what a reopen finds',
     legend: [{ token: 'key-found', label: 'valid tree (old or new)' }, { token: 'key-deleted', label: 'cannot be opened, or fails validate' }]
   });
-  var grid = el('div.ch22-grid'), cells = [], counts = { ok: 0, bad: 0 };
+  var grid = el('div.ch22-grid'), counts = { ok: 0, bad: 0 };
   gridFig.stage.appendChild(grid);
   for (var mask = 0; mask < 32; mask++) (function (mask) {
     var digits = '';

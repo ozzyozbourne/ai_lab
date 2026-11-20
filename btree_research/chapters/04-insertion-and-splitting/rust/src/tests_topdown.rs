@@ -97,10 +97,7 @@ fn exercise_1_ascending_keys_the_first_interior_splits_root_at_13_below_the_root
     // children: 9 goes up, [3 6] keeps three children, [12] gets two.
     let before = tree.counters;
     tree.put(13, 13).unwrap();
-    expect_tree(
-        &tree,
-        "[9]\n[3 6] [12]\n[1 2] [4 5] [7 8] | [10 11] [13]\n",
-    );
+    expect_tree(&tree, "[9]\n[3 6] [12]\n[1 2] [4 5] [7 8] | [10 11] [13]\n");
     assert_eq!(tree.counters.splits - before.splits, 2);
     assert_eq!(tree.counters.root_splits - before.root_splits, 1);
     // 14 to 21: two leaf splits (at 16 and 19) fill the interior node [12 15 18].

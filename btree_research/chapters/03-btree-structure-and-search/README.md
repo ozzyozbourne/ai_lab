@@ -73,8 +73,8 @@ This is the plain B-tree: every key is stored exactly once, in a leaf or in an i
 node, with its value. Keys are unique, so the bounds in rule 2 are strict. The B+tree,
 which keeps all values in the leaves, is [chapter 07](../07-bplus-trees/README.md).
 
-Rules 1 and 2 make search possible. Rules 4 and 6 together make the tree short, which
-is the whole point (see the height bound below).
+Rules 1 and 2 make search possible. Rules 4 and 6 make the tree short, which is the
+whole point (see the height bound below).
 
 ### Order: one tree, three vocabularies
 
@@ -94,11 +94,6 @@ The table is textbook material (the books are not among the sources in `db_study
 - The default of this guide, M = 4, is t = 2 in CLRS and has no k.
 - CLRS counts height in edges (a single leaf has height 0). This guide counts levels (a
   single leaf has height 1), as `shape.height` in the code does.
-
-> **History.** Bayer and McCreight published the B-tree in 1972 and never said what
-> the B stands for. In the same year Bayer described a binary encoding of the B-tree
-> with 2, 3 or 4 children per node; Guibas and Sedgewick (1978) drew it with red and
-> black links, the name that stuck. (Textbook history, not verified here.)
 
 ### 2-3-4 trees and red-black trees
 
@@ -193,11 +188,11 @@ limit is "below 6"; `[7]` lies between 6 and 10; `[12 15 17]` between 10 and 20;
 keys (3, 4); the root has 3 keys and 4 children, the leaves have none (5); all leaves
 are on level 2 (6).
 
-**Search for 17.** In the root, find the first key that is not smaller than 17
-(the lower bound of chapter 02). That is 20, at index 2. It is not 17, and the node is
-not a leaf, so go to child 2. Why child 2? Two keys of the root (6 and 10) are smaller
-than 17, so 17 can only be in the range between 10 and 20. In the leaf `[12 15 17]` the
-lower bound is index 2, and the key there is 17. Found after 2 nodes.
+**Search for 17.** In the root, find the first key that is not smaller than 17 (the
+lower bound of chapter 02). That is 20, at index 2. It is not 17, and the root is not a
+leaf, so go to child 2: two keys of the root (6 and 10) are smaller than 17, so 17 can
+only be between 10 and 20. In the leaf `[12 15 17]` the lower bound is index 2, and the
+key there is 17. Found after 2 nodes.
 
 **Search for 8.** Root: the lower bound is 10 at index 1, not equal, go to child 1. Leaf
 `[7]`: the lower bound is index 1, past the end. A leaf has no children, so 8 is absent.
@@ -215,10 +210,10 @@ is rule 2 at work.
  [2 5]  [12 15 17]  [25 30 35 40]      [2 5]   [15]   [25 30 35]
 ```
 
-The left tree is valid: its leaves show every legal size, 2, 3 and 4 keys. In the right
-tree leaf `[15]` has one key, and ceil(5/2) - 1 = 2. Every other rule holds and every
-lookup works; as a tree of order 4 the same picture would be legal. `validate` returns
-`NodeUnderfull` (a test in `tree.zig` / `tree.rs`; figure 2 of the visualization).
+The left tree is valid: its leaves have 2, 3 and 4 keys, every legal size. In the right
+tree leaf `[15]` has one key, and the minimum is ceil(5/2) - 1 = 2. Every other rule
+holds and every lookup works; at order 4 the same picture would be legal. `validate`
+returns `NodeUnderfull` (a test in `tree.zig` / `tree.rs`; figure 2 of the visualization).
 
 ## Code walk-through
 
@@ -243,9 +238,9 @@ Every function of `height.zig` takes the order first. Chapter 01's `minHeight` a
 compiles: `minHeight(5, 100)` is 3 here, `minHeight(100, 5)` is 1. A test pins the order.
 
 **The node** (`base_node.zig`). `Node(M)` is a struct with `len`, `leaf`, and three
-fixed arrays: `keys: [M]u64`, `values: [M]u64`, `children: [M + 1]?*Node`. The arrays
-have one slot more than a legal node needs. Chapter 04 uses the spare slot to overflow a
-node before splitting it; here it lets `broken.zig` build an overfull node.
+fixed arrays: `keys: [M]u64`, `values: [M]u64`, `children: [M + 1]?*Node`, each one
+slot longer than a legal node needs. Chapter 04 overflows a node into the spare slot
+before splitting it; here it lets `broken.zig` build an overfull node.
 
 **Building by hand** (`tree.zig`).
 
@@ -284,13 +279,12 @@ then key i".
 
 **Validate** (`base_validate.zig`). `check(node, lo, hi, is_root, depth)` receives the
 open interval (lo, hi) that the node's keys must lie in. It checks the node's size, its
-order and the interval, then that all its child slots are filled (and no others), and
-only then calls itself for child i with the interval narrowed to
-(keys[i-1], keys[i]); the first child keeps the node's own lo and the last child its
-hi, as rule 2 says. `depth` is the level minus 1. The first leaf sets the expected
-depth; every later leaf is compared with it. After the walk, the number of keys met is compared with `tree.len`,
-and the number of nodes reached with the number of nodes created. It returns the first
-violation as an error.
+order and the interval, then that exactly its child slots are filled, and only then
+calls itself for child i with the interval (keys[i-1], keys[i]). The first child keeps
+the node's own lo and the last child its hi, as rule 2 says. `depth` is the level
+minus 1: the first leaf sets the expected depth, and every later leaf is compared with
+it. After the walk, the keys met are compared with `tree.len` and the nodes reached
+with the nodes created. The first violation is returned as an error.
 
 Comparing a child only with its parent would not be enough: a key must respect the
 separators of all its ancestors, which is why the bounds are passed down.
@@ -308,9 +302,9 @@ missing child (a test runs them on all ten trees). Only `get` is unsafe on case 
 so part 4 does not try it there.
 
 **Oracle test** (`tree.zig`, "seeded model test"). An oracle is a second implementation
-that is too simple to be wrong. Here it is one `bool` per possible key, filled from the
-shared SplitMix64 generator. The tree is built from the same keys, and `get` must agree
-with the oracle for every possible key, present or absent, for several orders and seeds.
+that is too simple to be wrong: here one `bool` per possible key, filled from the
+shared SplitMix64 generator. `get` must agree with it for every possible key, present
+or absent, for several orders and seeds.
 
 ### Rust (`rust/src/`)
 
@@ -516,11 +510,11 @@ block.
 2. (easy) A B-tree of order M = 5 holds 100 keys. What are the smallest and the largest
    possible height? Then: how many keys does a tree of order 5 need before it can have
    5 levels?
-3. (medium) Take the canonical tree and apply two corruptions at once: leaf `[7]`
-   becomes `[11]`, and leaf `[12 15 17]` becomes `[12 17 15]`. Which error does
-   `validate` return, and why? Then a different pair: leaf `[1 3 5]` becomes `[3 1 5]`,
-   and the root's last child pointer is erased. The disordered leaf is the leftmost node
-   below the root. Is it reported? Explain the answer from the code of `check`.
+3. (medium) Apply two corruptions to the canonical tree at once: leaf `[7]` becomes
+   `[11]`, and leaf `[12 15 17]` becomes `[12 17 15]`. Which error does `validate`
+   return, and why? Then another pair: leaf `[1 3 5]` becomes `[3 1 5]`, and the root's
+   last child pointer is erased. Is the disordered leaf, the leftmost node below the
+   root, reported? Explain the answer from the code of `check`.
 4. (medium) The conversion puts the red node of a two-key node on the left. How many
    different red-black trees represent the canonical tree if the red node may go on
    either side? Give a formula for any 2-3-4 tree. Why does a three-key node offer no
@@ -533,8 +527,7 @@ Solutions: [solutions.md](solutions.md).
 
 ## Links
 
-- Visualization: [viz/index.html](viz/index.html) (search and in-order traversal with a
-  predict mode, the invariant checker on broken trees, the 2-3-4 tree unfolding into a
-  red-black tree).
+- Visualization: [viz/index.html](viz/index.html) (search and traversal, the invariant
+  checker on broken trees, a 2-3-4 tree unfolding into a red-black tree).
 - Previous: [Chapter 02: Searching a sorted node](../02-searching-a-sorted-node/README.md)
 - Next: [Chapter 04: Insertion and splitting](../04-insertion-and-splitting/README.md)

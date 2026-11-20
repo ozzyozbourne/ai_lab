@@ -217,7 +217,10 @@ mod tests {
         assert!(pack(7, NodeId::from_index(9)) < pack(8, NodeId::from_index(0)));
         assert!(pack_low(7) <= pack(7, NodeId::from_index(0)));
         // The largest user key still fits.
-        assert_eq!(user_key(pack(MAX_USER_KEY, NodeId::from_index(9))), MAX_USER_KEY);
+        assert_eq!(
+            user_key(pack(MAX_USER_KEY, NodeId::from_index(9))),
+            MAX_USER_KEY
+        );
     }
 
     /// A key above 32 bits must stop the program, not be filed under its low

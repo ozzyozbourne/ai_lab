@@ -1,6 +1,6 @@
 /*
  * Chapter 23: code shown next to the visualization. Excerpts of zig/src/txn.zig, zig/src/db.zig and
- * rust/src/txn.rs, rust/src/db.rs, lightly abridged (comments shortened, nothing reordered).
+ * rust/src/txn.rs, rust/src/db.rs, lightly abridged (comments shortened, the fault-injection lines of commit left out, nothing reordered).
  * CHAPTER_PARTS names line ranges by the text of their first and last line.
  */
 window.CHAPTER_CODE = {
@@ -57,8 +57,11 @@ window.CHAPTER_CODE = {
       "    var it = self.dirty.iterator();",
       "    while (it.next()) |e| db.store.write(e.key_ptr.*, e.value_ptr.*, self.id);",
       "    // Phase 3: the atomic step, one small write.",
-      "    db.current = .{ .txn_id = self.id, .root = self.root, ... };",
-      "    db.store.meta_slots[self.id % 2] = db.current.encode();",
+      "    const new: Meta = .{ .txn_id = self.id, .root = self.root, ... };",
+      "    db.store.meta_slots[self.id % 2] = new.encode();",
+      "    // The root being replaced is the fallback from now on.",
+      "    db.previous = db.current;",
+      "    db.current = new;",
       "    // Phase 4: replaced pages are pending, not free.",
       "    for (self.freed.items) |id|",
       "        db.pending.appendAssumeCapacity(.{ .freed_by = self.id, .page = id });",
@@ -79,8 +82,11 @@ window.CHAPTER_CODE = {
       "        self.db.store.write(page, &self.pages[i], id);",
       "    }",
       "    // Phase 3: the atomic step, one small write.",
-      "    self.db.current = Meta { txn_id: id, root: self.root, ... };",
-      "    self.db.store.meta_slots[(id % 2) as usize] = self.db.current.encode();",
+      "    let new = Meta { txn_id: id, root: self.root, ... };",
+      "    self.db.store.meta_slots[(id % 2) as usize] = new.encode();",
+      "    // The root being replaced is the fallback from now on.",
+      "    self.db.previous = Some(self.db.current);",
+      "    self.db.current = new;",
       "    // Phase 4: replaced pages are pending, not free.",
       "    let freed = self.freed.iter().map(|&page| PendingFree { freed_by: id, page });",
       "    self.db.pending.extend(freed);",
@@ -93,12 +99,13 @@ window.CHAPTER_CODE = {
   reclaim: {
     zig: [
       "/// A page freed by txn T is reachable from roots before T",
-      "/// only. A snapshot S needs it exactly when S < T.",
+      "/// only. A protected root R needs it exactly when R < T.",
       "pub fn reclaim(self: *Db) usize {",
-      "    const oldest = if (self.snapshots.items.len > 0)",
-      "        self.snapshots.items[0].snap.id",
-      "    else",
-      "        std.math.maxInt(u64);",
+      "    // Protected: every snapshot, and the previous committed",
+      "    // root (the one the other meta slot names).",
+      "    var oldest: u64 = std.math.maxInt(u64);",
+      "    if (self.snapshots.items.len > 0) oldest = self.snapshots.items[0].snap.id;",
+      "    if (self.previous) |p| oldest = @min(oldest, p.txn_id);",
       "    const items = self.pending.items;",
       "    var n: usize = 0;",
       "    // pending is ascending by freed_by: release a prefix.",
@@ -112,9 +119,14 @@ window.CHAPTER_CODE = {
     ].join('\n'),
     rust: [
       "/// A page freed by txn T is reachable from roots before T",
-      "/// only. A snapshot S needs it exactly when S < T.",
+      "/// only. A protected root R needs it exactly when R < T.",
       "pub fn reclaim(&mut self) -> usize {",
-      "    let oldest = self.snapshots.first().map_or(u64::MAX, |s| s.snap.id);",
+      "    // Protected: every snapshot, and the previous committed",
+      "    // root (the one the other meta slot names).",
+      "    let mut oldest = self.snapshots.first().map_or(u64::MAX, |s| s.snap.id);",
+      "    if let Some(p) = self.previous {",
+      "        oldest = oldest.min(p.txn_id);",
+      "    }",
       "    // pending is ascending by freed_by: release a prefix.",
       "    let n = self",
       "        .pending",
@@ -134,7 +146,7 @@ window.CHAPTER_PARTS = {
   touch: { copy: { zig: ['// Committed: copy it', 'return copy;'], rust: ['// Committed: copy it', 'Ok(copy)'] } },
   commit: {
     write: { zig: ['// Phase 2', 'db.store.write('], rust: ['// Phase 2', 'self.db.store.write('] },
-    flip: { zig: ['// Phase 3', 'db.current.encode()'], rust: ['// Phase 3', 'self.db.current.encode()'] }
+    flip: { zig: ['// Phase 3', 'db.current = new;'], rust: ['// Phase 3', 'self.db.current = new;'] }
   },
-  reclaim: { rule: { zig: ['const oldest', 'self.store.release('], rust: ['let oldest', 'self.store.release('] } }
+  reclaim: { rule: { zig: ['// Protected', 'self.store.release('], rust: ['// Protected', 'self.store.release('] } }
 };

@@ -20,8 +20,8 @@ You will learn:
   of keys per level;
 - struct-of-arrays nodes, and when each technique is worth using.
 
-Prerequisites: chapter 01 (cost model, fanout), chapter 02 (lower bound, insertion
-index). Nothing from Parts II or III is needed.
+Prerequisites: chapter 01 (cost model, fanout) and chapter 02 (lower bound, insertion
+index).
 
 Everything here is measured in **counts** (comparisons, compare instructions, distinct
 cache lines), identical in Zig and Rust. There are no timings in the text; an optional
@@ -33,10 +33,9 @@ Two things make a memory access expensive.
 
 **A cache miss.** Memory arrives in lines of 64 bytes. Eight `u64` keys fit in one line.
 Reading a key whose line is not in the cache means waiting for main memory, which takes
-far longer than the comparison itself (textbook; how much longer depends on which cache
-level, if any, still has the line). Reading a second key from the same line is nearly
-free. So the unit to count is the number of *distinct lines*, exactly as chapter 01
-counted distinct pages.
+far longer than the comparison itself (textbook). Reading a second key from the same
+line is nearly free. So the unit to count is the number of *distinct lines*, exactly as
+chapter 01 counted distinct pages.
 
 **A mispredicted branch.** The CPU runs ahead of the instruction it is finishing, and
 at an `if` it guesses. In a binary search for a random key `keys[mid] < key` is a coin
@@ -63,9 +62,8 @@ index   0  1  2  3  4  5  6  7 |  8   9  10  11  12  13  14
 key    10 20 30 40 50 60 70 80 | 90 100 110 120 130 140 150
 ```
 
-**Classic search for 70** (chapter 02: `lo`, `hi`, `mid`). Probe index 7 (80, go left),
-3 (40, go right), 5 (60, go right), 6 (70, go left). Four comparisons, answer 6. Each of
-the four `if`s is a guess.
+**Classic search for 70** (chapter 02). Probe index 7 (80, go left), 3 (40, go right),
+5 (60, go right), 6 (70, go left). Four comparisons, answer 6. Each `if` is a guess.
 
 **Halving search for 70.** Keep a window `[offset, offset + length)`. Every step compares
 the key at `offset + length/2` and then shrinks `length` by `length/2` *whichever way the
@@ -138,9 +136,9 @@ needle 70 -> index 6
 `cmps` counts key comparisons, `steps` counts compare instructions (a vector compare of
 eight keys is one step), `lines` counts distinct cache lines in both arrays.
 
-The first three searches read no second array. A real index wants a payload, which a
-sorted array also keeps in a second array and which the two layouts would store where
-`rank` is. So for a payload lookup add one line to the first three rows.
+The first three searches read no second array. A real index wants a payload; a sorted
+array keeps it in a second array too, and the two layouts would store it where `rank`
+is. So for a payload lookup add one line to the first three rows.
 
 ### What the counts say at larger sizes
 
@@ -209,8 +207,6 @@ line counts as hinted only if at least one comparison lies between the hint and 
 read. Whether such a hint arrives in time depends on the machine.
 
 ## Code walk-through
-
-Four files per language, same names and structure.
 
 ### `trace`: the counting model
 
@@ -291,15 +287,14 @@ an add, with no jump on the key.
 
 `BlockTree.lowerBound` calls `rank8` once per level and moves to child `9 * block + r + 1`.
 If `r < 8`, key `r` of the node is the best candidate so far. The loop only remembers
-that slot number (`slot = if (r < lanes) block * lanes + r else slot;`) and reads `rank`
-once, after the descent. `rank` has one extra entry holding `n`, where `slot` starts, so
-"every key is smaller" needs no special case.
+that slot number and reads `rank` once, after the descent. `rank` has one extra entry
+holding `n`, where `slot` starts, so "every key is smaller" needs no special case.
 
 ### `node`: struct of arrays
 
-`SoaNode` and `AosNode` are fixed-capacity sorted nodes with `put`, `get` and `validate`.
-The model test drives both against an oracle and asserts identical results, identical
-probe sequences and `lines(SoA) <= lines(AoS)`.
+`SoaNode` and `AosNode` are fixed-capacity sorted nodes with `put`, `get` and `validate`
+(section 3 above). The model test drives both against an oracle and asserts identical
+results, identical probe sequences and `lines(SoA) <= lines(AoS)`.
 
 ### Zig and Rust differences
 
@@ -307,15 +302,14 @@ probe sequences and `lines(SoA) <= lines(AoS)`.
 |---|---|---|
 | Vector compare | `@Vector(8, u64)`, `<`, `@bitCast`, `@popCount`: explicit SIMD in the language | `std::simd` is nightly only: a fixed loop of 8 that adds 0 or 1 |
 | Alignment | `gpa.alignedAlloc(u64, .fromByteUnits(64), n)` returns `[]align(64) u64`; the scalar searches take any slice of it | `Vec<Line>` with `#[repr(align(64))] struct Line([u64; 8])`. Safe Rust cannot view that as `&[u64]`, so the scalar searches are generic over a small `Keys` trait |
-| Prefetch | `@prefetch(&keys[i], .{...})` builtin | No safe stable prefetch (`_mm_prefetch` is `unsafe` and x86-only): the hint is recorded for the model, none is issued |
+| Prefetch | `@prefetch(&keys[i], .{...})` builtin | No safe stable prefetch (`_mm_prefetch` is `unsafe` and x86-only): the hint is recorded for the model, none is issued, so `--bench` runs the same code with and without |
 | Unpredictable select | `@branchHint(.unpredictable)` inside the arm | `std::hint::select_unpredictable(cond, a, b)` |
 | SoA node | `std.MultiArrayList(Entry)` derives the columns from the struct | Three `Vec`s written by hand |
 | Allocation failure | `checkAllAllocationFailures` on every builder | Mirrored by the fixed node capacity: `Err(NodeFull)` |
 
-Two caveats for the Rust column. "Auto-vectorisable" is a hope: at the default target
-the `rank8` loop was eight scalar compares, and one vector compare only with
-`-C target-cpu=native` (solution 2). And with no real prefetch, the Rust `--bench` rows
-with and without prefetch run the same machine code.
+A caveat for the Rust column: "auto-vectorisable" is a hope. At the default target the
+`rank8` loop was eight scalar compares, and one vector compare only with
+`-C target-cpu=native` (solution 2).
 
 ## In real databases
 
@@ -381,7 +375,7 @@ performance bug, which is why `validate()` checks the address.
 allocation and lays the columns out one after another, so the `key` column is a dense
 `[]u64`. The node reserves its full capacity in `init` and uses
 `insertAssumeCapacity`, so `put` never allocates and can only fail with `NodeFull`, like
-a page. `checkAllAllocationFailures` covers the builders. One limitation:
+a page. One limitation:
 `MultiArrayList` aligns its buffer for the widest field (8 bytes), not for the cache
 line, and so do the Rust node's three `Vec`s. The node counts in section 3 are
 therefore for an idealised node whose columns each start on a line boundary; a node
@@ -406,7 +400,7 @@ out of a line-aligned page, as TigerBeetle's index block does.
 - **Eytzinger and range scans.** In-order iteration over an Eytzinger array jumps around
   in memory. For range scans keep a sorted array.
 - **These layouts are static.** Inserting means rebuilding. They suit read-mostly data
-  and the inside of a node, not a whole updatable index.
+  and the inside of a node.
 - **Benchmarks on a warm cache.** Looking up the same few keys in a loop measures a
   trained branch predictor. Use many random needles.
 

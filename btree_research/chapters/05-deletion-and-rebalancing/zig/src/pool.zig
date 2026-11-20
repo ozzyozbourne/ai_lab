@@ -1,4 +1,4 @@
-//! SECTION 2 of 6: node allocation.
+//! SECTION 2: node allocation.
 //!
 //! The tree never calls an allocator directly. It asks a *node pool* for a
 //! node and gives nodes back to it. A node pool is any type `P(T)` with:
@@ -8,6 +8,21 @@
 //!     pub fn destroy(self: *P(T), gpa: Allocator, item: *T) void
 //!     pub fn deinit(self: *P(T), gpa: Allocator) void                 // release everything
 //!     usage: Usage                                                    // counters
+//!
+//! The contract is structural (duck typing at compile time): a pool written
+//! in ANOTHER file works with `BTree(M, PoolFn)` as long as it has these five
+//! members. Two rules come with it:
+//!
+//!   * Every pool keeps `usage` up to date: `usage.onCreate()` after each
+//!     successful `create`, `usage.onDestroy()` in each `destroy`. The tree
+//!     relies on it (`deinit` asserts `usage.live() == 0`, `validate`
+//!     compares `usage.live()` with the nodes reachable from the root).
+//!   * A pool that cannot give a single node back (a bump allocator, an
+//!     arena) still counts in `destroy` and otherwise does nothing; its
+//!     memory is released in `deinit`.
+//!
+//! tests_insert.zig has such an outside pool ("a pool written outside
+//! pool.zig satisfies the contract").
 //!
 //! The backing allocator `gpa` is passed to every call (Zig's "unmanaged"
 //! style): the pool stores no allocator, and the caller can see exactly where
@@ -29,6 +44,9 @@ const Allocator = std.mem.Allocator;
 /// Counters every pool keeps, so the tree can check "no node was lost"
 /// (`live() == number of nodes reachable from the root`) even when the
 /// backing allocator cannot see individual nodes.
+///
+/// `put` restores `usage` when it fails (insert.zig), so the counters always
+/// describe nodes that were part of the tree, never returned reservations.
 pub const Usage = struct {
     created: u64 = 0,
     destroyed: u64 = 0,
@@ -38,12 +56,14 @@ pub const Usage = struct {
         return self.created - self.destroyed;
     }
 
-    fn onCreate(self: *Usage) void {
+    /// Call after every successful `create`.
+    pub fn onCreate(self: *Usage) void {
         self.created += 1;
         self.peak = @max(self.peak, self.live());
     }
 
-    fn onDestroy(self: *Usage) void {
+    /// Call in every `destroy`.
+    pub fn onDestroy(self: *Usage) void {
         std.debug.assert(self.live() > 0); // more destroys than creates: a double free
         self.destroyed += 1;
     }
@@ -106,6 +126,9 @@ pub fn FreeListPool(comptime T: type) type {
         /// All chunks, newest first. Only the newest can have never-used slots.
         chunks: ?*Chunk = null,
         /// Slots ever carved from chunks (never-used -> live transitions).
+        /// Equals `usage.peak` unless a `put` failed half-way through its
+        /// reservation: the slot carved for a returned reservation stays on
+        /// the free list.
         carved: u64 = 0,
         usage: Usage = .{},
 
@@ -240,6 +263,25 @@ test "FreeListPool reports allocation failure and stays usable" {
     try std.testing.expectEqual(0, pool.usage.created);
     defer pool.deinit(std.testing.allocator);
     _ = try pool.create(std.testing.allocator);
+}
+
+test "FreeListPool does not notice a double destroy" {
+    // The bug: destroy(a) twice. The second call links the slot to itself,
+    // so the free list never runs out and every later create returns `a`.
+    // No counter looks wrong (two creates, two destroys). With DirectNodes
+    // and std.testing.allocator the second destroy stops the program:
+    // "panic: double free of [addr: ..., len: 16 ...]" (README, exercise 5).
+    const gpa = std.testing.allocator;
+    var pool: FreeListPool(TestItem) = .empty;
+    defer pool.deinit(gpa);
+    const a = try pool.create(gpa);
+    _ = try pool.create(gpa);
+    pool.destroy(gpa, a);
+    pool.destroy(gpa, a);
+    try std.testing.expectEqual(2, pool.usage.destroyed);
+    for (0..3) |_| try std.testing.expectEqual(a, try pool.create(gpa)); // one slot, three owners
+    try std.testing.expectEqual(4, pool.usage.live()); // plausible, and wrong
+    try std.testing.expectEqual(2, pool.carved);
 }
 
 test "SafeAllocator sees a node that DirectNodes forgot, but not one a pool forgot" {

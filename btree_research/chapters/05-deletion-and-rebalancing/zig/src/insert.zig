@@ -1,4 +1,4 @@
-//! SECTION 4 of 6: insert with bottom-up splitting (explained in chapter 04).
+//! SECTION 4: insert with bottom-up splitting (explained in chapter 04).
 //!
 //! `put` works in three phases:
 //!   1. descend to the leaf, remembering the path (node + child index per level);

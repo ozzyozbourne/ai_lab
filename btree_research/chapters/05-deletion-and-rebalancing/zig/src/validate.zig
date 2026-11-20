@@ -1,4 +1,4 @@
-//! SECTION 6a of 6: the invariants as code.
+//! SECTION 6a: the invariants as code.
 //!
 //! `validate` walks the whole tree and returns the first broken invariant.
 //! Every test calls it after every operation; chapter 06 builds a fuzzer on it.

@@ -113,7 +113,7 @@ It works until you look at the directory. It is a sorted array with one slot per
 and when a chunk fills up and splits, a slot is inserted into it, shifting everything
 behind. The cost of a change is again proportional to the size of a flat array, now
 divided by 256. For a billion keys the directory has 3.9 million slots and fills 15,259
-pages by itself.
+pages.
 
 The repair is the same trick again: cut the directory into chunks and put a directory
 on top of it. Repeat until the top directory fits in one page. Now you have built a
@@ -186,7 +186,7 @@ heights: BST 39, wide nodes 3; the sorted array spans 391 pages
 BST, 2000 keys in ascending order: height 2000, get(largest) reads 2000 pages
 ```
 
-Read the wide-node row twice. It makes about nine times as many comparisons as the
+The wide-node row makes about nine times as many comparisons as the
 sorted array (this code scans the separators one by one; chapter 02 replaces the scan
 with a binary search) and a third of the page reads. That row is the cost model in one
 line.
@@ -241,10 +241,9 @@ Same files, names and tests in snake_case; `cargo run` prints the same bytes.
   is a loop that threads the nodes still to be freed through their own `right`
   pointers, so it needs no stack and no extra memory. Rust's automatically generated
   drop for `Option<Box<Node>>` is recursive and would overflow the stack, so `Bst`
-  implements `Drop` with an explicit `Vec` of pending nodes.
-- **Walking a deep tree.** `range`, `height` and `validate` keep their pending nodes in
-  a list on the heap, not on the call stack. In Zig the caller passes the allocator
-  for that list, so `tree.height(allocator)` can fail; in Rust it is a `Vec`.
+  implements `Drop` with an explicit `Vec` of pending nodes. `range`, `height` and
+  `validate` keep such a pending list too; in Zig the caller passes its allocator, so
+  `tree.height(allocator)` can fail.
 - **`range` on the array** returns a slice that points into the map. In Zig the comment
   says it is invalidated by the next `put`; in Rust the borrow checker refuses to
   compile a `put` while the slice is alive.
@@ -281,8 +280,8 @@ variant as "a stunted B-tree one-level deep" (`tigerbeetle/src/lsm/tree_fuzz.zig
 The O(nodes) cost is visible in the source: every insert adds to all later prefix counts
 in a loop over the rest of the directory (`segmented_array.zig:671-673`), and a split
 shifts the pointer array (`segmented_array.zig:422-430`). TigerBeetle uses it for
-in-memory metadata of bounded size (the tables of one LSM level,
-`tigerbeetle/src/lsm/manifest_level.zig:27-52`), where that is fine.
+in-memory metadata of bounded size
+(`tigerbeetle/src/lsm/manifest_level.zig:27-52`), where that is fine.
 
 **Page sizes and fan-out.**
 
@@ -343,8 +342,7 @@ page-aligned `FixedBufferAllocator` buffer, and there the whole path is on 1 pag
 So the allocator decides how many pages a pointer-based tree touches. A B-tree stops
 depending on the allocator by making the node itself page-sized.
 
-The large trees in `main.zig` and all tests use `init.gpa` and `std.testing.allocator`,
-so leaks fail the test run.
+Everything else uses `init.gpa` or `std.testing.allocator`, so leaks fail the test run.
 
 ## Pitfalls
 
@@ -357,10 +355,9 @@ so leaks fail the test run.
 - **Forgetting the worst case of the BST.** Sorted input is common in practice
   (timestamps, auto-increment ids), and it is the worst input for an unbalanced tree.
 - **Recursion on unbalanced trees.** A recursive `deinit`, `range`, `height` or
-  `validate` on a 20,000-node chain needs 20,000 stack frames. Looping along
-  single-child chains is not enough: nearly sorted input (2, 1, 4, 3, ...) gives a tree
-  just as deep that forks at every level. The code here uses no recursion; the tests
-  walk both shapes.
+  `validate` on a 20,000-node chain needs 20,000 stack frames, and nearly sorted input
+  (2, 1, 4, 3, ...) gives a tree just as deep that forks at every level. The code here
+  uses no recursion; the tests walk both shapes.
 - **`for (1..len)` in Zig when `len` is 0.** The range `1..0` is an integer overflow,
   not an empty loop. `validate` uses a `while` loop for this reason.
 - **Reading "height" differently.** Some texts count edges, so a single node has height
@@ -374,8 +371,7 @@ so leaks fail the test run.
 2. (easy) A Postgres-like leaf entry for an integer key takes 20 bytes on an 8192-byte
    page with 8152 usable bytes. What order does that give, and how many levels are
    needed for 10^6, 10^9 and 10^12 keys in the best and worst case? Check with the
-   height calculator of the visualization (that order is on its slider) or call
-   `minHeight` and `maxHeight` from a test.
+   visualization's height calculator or call `minHeight` and `maxHeight` from a test.
 3. (medium) Add `rangeTraced` to `SortedArrayMap` and `Bst`: return the number of page
    reads for a range query. How many pages does each touch for 1,000 consecutive keys
    out of 100,000?
@@ -390,8 +386,7 @@ Solutions: [solutions.md](solutions.md).
 
 ## Where next
 
-- Visualization: [viz/index.html](viz/index.html) races the three structures on the
-  same lookup and lets you change the fan-out.
+- Visualization: [viz/index.html](viz/index.html) races the three structures.
 - Previous: [guide index](../../README.md) ([landing page](../../index.html)).
 - Next: [02 Searching a sorted node](../02-searching-a-sorted-node/README.md), where the
   search inside one node gets the attention it deserves.

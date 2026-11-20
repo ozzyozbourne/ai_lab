@@ -1,4 +1,4 @@
-//! SECTION 5 of 6: delete with borrow, merge and root shrink (THIS chapter).
+//! SECTION 5: delete with borrow, merge and root shrink (THIS chapter).
 //!
 //! Removing a key can leave a node with fewer than `min_keys` keys
 //! (an *underflow*). The repair is always done by the PARENT of the underfull

@@ -1,4 +1,4 @@
-//! SECTION 3 of 6: search and ordered traversal (explained in chapter 03).
+//! SECTION 3: search and ordered traversal (explained in chapter 03).
 //!
 //! Nothing here allocates or modifies the tree.
 const std = @import("std");

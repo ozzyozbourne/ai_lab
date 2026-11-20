@@ -1,4 +1,4 @@
-//! SECTION 1 of 6: the node type.
+//! SECTION 1: the node type.
 //!
 //! A B-tree of order M (Knuth: M = maximum number of children) is made of
 //! nodes that hold

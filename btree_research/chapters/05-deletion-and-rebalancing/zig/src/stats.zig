@@ -1,4 +1,4 @@
-//! SECTION 6b of 6: shape statistics and a text rendering of the tree.
+//! SECTION 6b: shape statistics and a text rendering of the tree.
 const std = @import("std");
 const Node = @import("node.zig").Node;
 

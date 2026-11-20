@@ -118,6 +118,16 @@ mod tests {
     }
 
     #[test]
+    fn argument_order_the_order_m_comes_first_then_the_number_of_keys() {
+        // Chapter 01 has the same names with (n, m). A swapped call compiles
+        // and returns a plausible number, so the order is pinned here.
+        assert_eq!(min_height(5, 100), 3); // order 5, 100 keys
+        assert_eq!(max_height(5, 100), 4);
+        assert_eq!(min_height(100, 5), 1); // order 100, 5 keys
+        assert_eq!(max_height(100, 5), 1);
+    }
+
+    #[test]
     fn the_smallest_legal_order_m_3_gets_sensible_answers() {
         // Regression: orders below 3 were accepted (see the three tests
         // below). M = 3 is the boundary that must keep working: d = 2, so

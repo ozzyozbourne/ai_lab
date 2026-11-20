@@ -78,6 +78,17 @@ impl Meta {
         }
     }
 
+    /// The valid slot that `pick` did NOT choose, if it holds an older
+    /// transaction: the root a restart falls back to when the chosen slot
+    /// cannot be read any more.
+    pub fn fallback(slots: &Slots) -> Option<Meta> {
+        let (a, b) = (Meta::decode(&slots[0])?, Meta::decode(&slots[1])?);
+        if a.txn_id == b.txn_id {
+            return None;
+        }
+        Some(if a.txn_id < b.txn_id { a } else { b })
+    }
+
     pub fn checksum(b: &[u8; SLOT_SIZE]) -> u32 {
         u32::from_le_bytes(b[28..32].try_into().unwrap())
     }
@@ -122,8 +133,10 @@ mod tests {
         assert_eq!(Meta::pick(&slots), None); // never written
         slots[0] = old.encode();
         assert_eq!(Meta::pick(&slots), Some(old)); // one valid slot
+        assert_eq!(Meta::fallback(&slots), None); // nothing to fall back to
         slots[1] = new.encode();
         assert_eq!(Meta::pick(&slots), Some(new)); // higher id wins
+        assert_eq!(Meta::fallback(&slots), Some(old));
         slots[1][0] ^= 0xFF; // torn write of the newest commit
         assert_eq!(Meta::pick(&slots), Some(old)); // fall back
     }

@@ -109,7 +109,10 @@ fn orphanNode(t: *Tree, gpa: Allocator) Allocator.Error!void {
     t.len -= 1; // the key count is right; one node too many exists
 }
 
-/// How many of the 12 canonical keys `get` still finds, with the right value.
+/// How many of the 12 original (canonical) keys `get` still finds, with the
+/// right value. A key that a corruption put into the tree is not counted: in
+/// case 2 the missing one is 7, which was overwritten; the 11 that replaced
+/// it is stored but unreachable, and is not one of the twelve.
 pub fn keysFound(t: *const Tree) usize {
     var found: usize = 0;
     for (tree_mod.canonical_keys) |key| {

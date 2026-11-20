@@ -232,6 +232,63 @@ mod tests {
         }
     }
 
+    /// A two-level tree: `seps` in the root above the given leaves.
+    fn two_levels(order: usize, seps: &[u64], leaves: &[&[u64]]) -> HandTree {
+        let mut t = HandTree::new(order);
+        let ids: Vec<NodeId> = leaves.iter().map(|keys| t.leaf(keys).unwrap()).collect();
+        t.root = Some(t.interior(seps, &ids).unwrap());
+        t
+    }
+
+    /// Exercise 1 (b): [30] above [10 20] and [40], five leaves of two keys.
+    fn one_key_interior(order: usize) -> HandTree {
+        let mut t = HandTree::new(order);
+        let l: Vec<NodeId> = [[2, 5], [12, 15], [22, 25], [32, 35], [42, 45]]
+            .iter()
+            .map(|keys| t.leaf(keys).unwrap())
+            .collect();
+        let left = t.interior(&[10, 20], &l[0..3]).unwrap();
+        let right = t.interior(&[40], &l[3..5]).unwrap();
+        t.root = Some(t.interior(&[30], &[left, right]).unwrap());
+        t
+    }
+
+    #[test]
+    fn order_5_the_minimum_fill_is_two_keys_except_in_the_root() {
+        // The README's order 5 example and the three trees of exercise 1. At
+        // M = 4 the minimum is one key, so rule 4 only says "not empty"; at
+        // M = 5 it is ceil(5/2) - 1 = 2 and a one-key node below the root is
+        // an error.
+
+        // README: valid, every size from the minimum (2) to the maximum (4).
+        let valid = two_levels(5, &[10, 20], &[&[2, 5], &[12, 15, 17], &[25, 30, 35, 40]]);
+        assert_eq!(valid.validate(), Ok(()));
+
+        // README: the middle leaf has one key. Broken at M = 5, legal at M = 4.
+        let thin: [&[u64]; 3] = [&[2, 5], &[15], &[25, 30, 35]];
+        assert_eq!(
+            two_levels(5, &[10, 20], &thin).validate(),
+            Err(ValidateError::NodeUnderfull)
+        );
+        assert_eq!(two_levels(4, &[10, 20], &thin).validate(), Ok(()));
+
+        // Exercise 1 (a): a root with one key is legal at every order.
+        let a = two_levels(5, &[20], &[&[5, 10, 15], &[25, 30]]);
+        assert_eq!(a.validate(), Ok(()));
+
+        // Exercise 1 (b): interior node [40] is not the root and has one key.
+        assert_eq!(
+            one_key_interior(5).validate(),
+            Err(ValidateError::NodeUnderfull)
+        );
+        assert_eq!(one_key_interior(4).validate(), Ok(())); // a legal 2-3-4 tree
+
+        // Exercise 1 (c): every node is full enough, but 21 is right of separator 20.
+        let c = two_levels(5, &[10, 20], &[&[2, 5], &[12, 21], &[25, 30]]);
+        assert_eq!(c.validate(), Err(ValidateError::KeyOutsideParentBounds));
+        assert_eq!(c.get(21), None); // stored, but a search goes to [25 30]
+    }
+
     #[test]
     fn every_u64_is_a_legal_key_the_largest_ones_can_be_stored_and_found() {
         // Regression: value_of multiplied with `*`, which panics above

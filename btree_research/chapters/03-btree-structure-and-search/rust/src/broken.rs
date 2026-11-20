@@ -183,7 +183,10 @@ fn orphan_node(t: &mut HandTree) -> Result<(), OutOfNodes> {
     Ok(())
 }
 
-/// How many of the 12 canonical keys `get` still finds, with the right value.
+/// How many of the 12 original (canonical) keys `get` still finds, with the
+/// right value. A key that a corruption put into the tree is not counted: in
+/// case 2 the missing one is 7, which was overwritten; the 11 that replaced
+/// it is stored but unreachable, and is not one of the twelve.
 pub fn keys_found(t: &HandTree) -> usize {
     CANONICAL_KEYS
         .iter()

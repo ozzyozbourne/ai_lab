@@ -229,6 +229,65 @@ test "the canonical tree: shape, search, validate" {
     for ([_]u64{ 0, 2, 4, 8, 9, 11, 16, 21, 31, std.math.maxInt(u64) }) |key| try testing.expectEqual(null, t.get(key));
 }
 
+test "order 5: the minimum fill is two keys, except in the root" {
+    // The README's order 5 example and the three trees of exercise 1. At
+    // M = 4 the minimum is one key, so rule 4 only says "not empty"; at
+    // M = 5 it is ceil(5/2) - 1 = 2 and a one-key node below the root is
+    // an error.
+    const Tree5 = HandTree(5, pool_mod.DirectNodes);
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const gpa = arena_state.allocator();
+
+    // README: valid, every size from the minimum (2) to the maximum (4).
+    var valid: Tree5 = .empty;
+    valid.root = try valid.interior(gpa, &.{ 10, 20 }, &.{
+        try valid.leaf(gpa, &.{ 2, 5 }), try valid.leaf(gpa, &.{ 12, 15, 17 }), try valid.leaf(gpa, &.{ 25, 30, 35, 40 }),
+    });
+    try valid.validate();
+
+    // README: the middle leaf has one key. Broken at M = 5, legal at M = 4.
+    var thin5: Tree5 = .empty;
+    thin5.root = try thin5.interior(gpa, &.{ 10, 20 }, &.{
+        try thin5.leaf(gpa, &.{ 2, 5 }), try thin5.leaf(gpa, &.{15}), try thin5.leaf(gpa, &.{ 25, 30, 35 }),
+    });
+    try testing.expectError(error.NodeUnderfull, thin5.validate());
+    var thin4: Tree4 = .empty;
+    thin4.root = try thin4.interior(gpa, &.{ 10, 20 }, &.{
+        try thin4.leaf(gpa, &.{ 2, 5 }), try thin4.leaf(gpa, &.{15}), try thin4.leaf(gpa, &.{ 25, 30, 35 }),
+    });
+    try thin4.validate();
+
+    // Exercise 1 (a): a root with one key is legal at every order.
+    var a: Tree5 = .empty;
+    a.root = try a.interior(gpa, &.{20}, &.{ try a.leaf(gpa, &.{ 5, 10, 15 }), try a.leaf(gpa, &.{ 25, 30 }) });
+    try a.validate();
+
+    // Exercise 1 (b): interior node [40] is not the root and has one key.
+    var b: Tree5 = .empty;
+    const b_left = try b.interior(gpa, &.{ 10, 20 }, &.{
+        try b.leaf(gpa, &.{ 2, 5 }), try b.leaf(gpa, &.{ 12, 15 }), try b.leaf(gpa, &.{ 22, 25 }),
+    });
+    const b_right = try b.interior(gpa, &.{40}, &.{ try b.leaf(gpa, &.{ 32, 35 }), try b.leaf(gpa, &.{ 42, 45 }) });
+    b.root = try b.interior(gpa, &.{30}, &.{ b_left, b_right });
+    try testing.expectError(error.NodeUnderfull, b.validate());
+    var b4: Tree4 = .empty; // the same tree is a legal 2-3-4 tree
+    const b4_left = try b4.interior(gpa, &.{ 10, 20 }, &.{
+        try b4.leaf(gpa, &.{ 2, 5 }), try b4.leaf(gpa, &.{ 12, 15 }), try b4.leaf(gpa, &.{ 22, 25 }),
+    });
+    const b4_right = try b4.interior(gpa, &.{40}, &.{ try b4.leaf(gpa, &.{ 32, 35 }), try b4.leaf(gpa, &.{ 42, 45 }) });
+    b4.root = try b4.interior(gpa, &.{30}, &.{ b4_left, b4_right });
+    try b4.validate();
+
+    // Exercise 1 (c): every node is full enough, but 21 is right of separator 20.
+    var c: Tree5 = .empty;
+    c.root = try c.interior(gpa, &.{ 10, 20 }, &.{
+        try c.leaf(gpa, &.{ 2, 5 }), try c.leaf(gpa, &.{ 12, 21 }), try c.leaf(gpa, &.{ 25, 30 }),
+    });
+    try testing.expectError(error.KeyOutsideParentBounds, c.validate());
+    try testing.expectEqual(null, c.get(21)); // stored, but a search goes to [25 30]
+}
+
 test "every u64 is a legal key: the largest ones can be stored and found" {
     // Regression: valueOf multiplied with `*`, which traps above maxInt / 10.
     const max = std.math.maxInt(u64);

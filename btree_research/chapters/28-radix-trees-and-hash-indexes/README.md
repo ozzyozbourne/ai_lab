@@ -18,13 +18,11 @@ Visualization: [viz/index.html](viz/index.html)
 Prerequisites: [chapter 02](../02-searching-a-sorted-node/README.md) (lower bound),
 [chapter 08](../08-range-scans-and-cursors/README.md) (range scans, a prefix scan is a
 range) and [chapter 11](../11-key-and-record-encoding/README.md) (byte-comparable keys).
-Chapter [26](../26-allocators-handles-and-static-memory/README.md) covers slab
-allocators; this chapter uses one pool per node size.
 
 ## The idea in plain words
 
 A B-tree node stores whole keys and asks "is my key smaller or larger than this one?"
-several times per node. Both other structures in this chapter avoid that question.
+several times per node. The two structures of this chapter avoid that question.
 
 A **radix tree** uses the key itself as the route. The first byte of the key picks a
 child, the second byte picks again, and after the last byte you are standing on the
@@ -141,8 +139,8 @@ A test in each language ("the hand example") checks this layout and the probe co
 
 ## Code walk-through
 
-Both programs print [expected_output.txt](expected_output.txt); a test in each language
-checks that. Run them with `zig build run` in `zig/` and `cargo run` in `rust/`.
+Both programs (`zig build run` in `zig/`, `cargo run` in `rust/`) print
+[expected_output.txt](expected_output.txt); a test in each language checks that.
 
 | File (Zig / Rust) | Contents |
 |---|---|
@@ -209,9 +207,9 @@ The same functions with snake_case names, and the same tests. Differences:
 
 - **Indices instead of pointers.** `Ref::N4(u32)` is an index into a `Slab<Node4>`, a
   `Vec` plus a free list of indices; one slab per node type mirrors the five Zig pools.
-- **Operations live on the tree.** In Zig, `childOf(ref, byte)` is a free function
-  because a `Ref` contains the pointer. In Rust a node can only be reached through the
-  tree, so `child_of` and its relatives are methods on `Art`.
+- **Operations live on the tree.** A Zig `Ref` contains the pointer, so `childOf(ref,
+  byte)` is a free function. A Rust node is reached through the tree, so `child_of` and
+  its relatives are methods on `Art`.
 - **Node budget instead of allocation failure.** Rust's `Vec` aborts when memory runs
   out, so `Art::with_node_budget(n)` models the failure: `put` returns
   `Err(ArtError::OutOfNodes)` when a node would exceed the budget, and the matching
@@ -236,7 +234,7 @@ sparse     1001    166      82       0        1       1248/2232                 
 The dense keys 0..999 share their first six bytes (one prefix node), differ in the
 seventh (a Node4) and fill the last byte (four Node256). The random keys differ in the
 first byte already, so the root is a Node256 and almost every key ends in a prefix node
-that holds its unshared tail. Both trees answer a lookup in three or four node visits.
+holding its unshared tail. Either way a lookup visits three or four nodes.
 
 Section 4 loads 596 keys such as `cat/0042` into all three indexes (`...` marks lines
 left out here):
@@ -269,9 +267,9 @@ to three different tenants, which is the scattering at work, and it has to inspe
 1024 slots for the 113 keys that start with `cat/` (in the lines left out), which the
 sorted array finds as a slice between two binary searches.
 
-The sorted array and the ART have identical rows in the last table. That does not make
-the ART a B-tree with fewer steps: the table only asks which questions can be answered.
-What a B-tree keeps is at the end of the next section.
+The sorted array and the ART have identical rows in the last table, which only asks
+which questions can be answered. That does not make the ART a B-tree with fewer steps;
+the end of the next section says what a B-tree keeps.
 
 ## In real databases
 
@@ -303,7 +301,7 @@ follows its design:
   (`art_operator.hpp:25-61`). The iterator keeps a stack of nodes and bytes
   (`iterator.cpp:312-348`).
 - Each node type has its own fixed-size allocator (`art.cpp:120-135`), the slab
-  allocator of chapter 26.
+  allocator of [chapter 26](../26-allocators-handles-and-static-memory/README.md).
 
 Left out here: duplicate keys (nested trees behind a "gate"), delete, bulk build,
 serialization and locking (`research/duckdb.md`, sections 6, 10, 12, 15, 16).
@@ -322,8 +320,7 @@ assumes a good hash function and a bounded load factor.
 
 ### B-tree, ART, hash index: what each gives up
 
-The B+tree column describes the tree this guide built in chapters 07 to 12, not one
-engine; the ART column is DuckDB's.
+The B+tree column is the tree of chapters 07 to 12, not one engine; the ART is DuckDB's.
 
 | | B+tree | ART | Hash index |
 |---|---|---|---|
@@ -367,10 +364,10 @@ uses one `std.heap.MemoryPool(T)` per node type (`Pools` in `art.zig`).
   back, so every outgrown Node4, Node16 and Node48 would stay allocated until the tree
   dies. A `FixedBufferAllocator` has the same problem plus a hard size limit. Plain
   `gpa.create` per node is correct, at the cost of one general allocation per node.
-- *Leak checking.* Tests use `std.testing.allocator`. `validate` also compares the nodes
-  reachable from the root with the pools' live counters. That catches a node dropped
-  from the tree but never returned to its pool, which the backing allocator cannot
-  see because the pool still owns the memory.
+- *Leak checking.* Tests use `std.testing.allocator`. It cannot see a node that was
+  dropped from the tree but never returned to its pool, because the pool still owns
+  the memory; `validate` catches that by comparing reachable nodes with the pools'
+  live counters.
 
 The hash index owns one slot array, the sorted index an `ArrayList`, and each a copy of
 every key; both use the general-purpose allocator directly. Iterators take their own
@@ -392,8 +389,8 @@ Rust: one `Slab<T>` per node type, with a node budget standing in for allocation
 - **Recursion depth follows key length.** `insertAt`, `census`, `validate` and `dump`
   recurse once per node, and a path can have one node per key byte. Long keys overflowed
   the stack (at 20,000 bytes in Rust, at some hundreds of thousands in Zig), so `put`
-  refuses keys longer than `max_key_len` (512 bytes) with `error.KeyTooLong`. The test "the longest
-  keys" builds the deepest tree the limit allows. `lookup` and the iterator are loops.
+  refuses keys longer than `max_key_len` (512 bytes) with `error.KeyTooLong`. `lookup`
+  and the iterator are loops.
 - **Forgetting to store the returned reference.** `insertAt` returns a new reference
   when a node grows. Dropping it leaves the parent pointing at a freed node.
 - **A lower bound is not a lookup.** `seek("rube")` must find `rubens` although the
@@ -411,7 +408,7 @@ Solutions are in [solutions.md](solutions.md).
 
 1. (easy) Insert `team`, `tea`, `ten` in this order, each with a `\x00` terminator. Draw
    the tree after each insert in the dump format used above. Which insert splits a
-   prefix at a position where the old tail is empty?
+   prefix where the old tail is empty?
 2. (easy) For each of the four layouts, how many array elements does a lookup of one
    byte read in the worst case? Why does Node48 use a 256-entry index of one-byte
    positions instead of 48 sorted key bytes?

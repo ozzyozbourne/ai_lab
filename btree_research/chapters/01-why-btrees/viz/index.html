@@ -139,7 +139,7 @@ they sit on is rewritten.</p>
     var scoreSet = el('p.c1-score', { 'aria-live': 'polite' }), scoreScale = el('p.c1-score');
     laneS.body.append(scoreSet, scoreScale);
     var scaleChart = new BTViz.Chart(laneS.body, { type: 'bar', height: 230, title: 'Average page reads per lookup by number of keys',
-      xLabel: 'keys in the index (random keys, every key looked up once)', yLabel: 'average page reads per lookup' });
+      xLabel: 'keys in the index', yLabel: 'average page reads per lookup' });
     var scaleNote = el('p.c1-note');
     laneS.body.appendChild(scaleNote);
     var scaleCache = {}, scaleTimer = null;

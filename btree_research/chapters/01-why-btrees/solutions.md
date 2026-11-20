@@ -84,8 +84,8 @@ middle of a page), the first of which the search has already read. About 13 page
 in total. This sketch is not part of the tested code.
 
 BST. An in-order walk visits every node in the range, plus the nodes on the path to the
-first one. With one page per node that is at least 1,000 page reads. In `rangeNode`,
-add one page read per node visited (every call with a non-null node).
+first one. With one page per node that is at least 1,000 page reads. In `range`, add
+one page read for every node the inner loop looks at.
 
 The sorted array wins by two orders of magnitude, because neighbouring keys are stored
 next to each other. This is the reason chapter 07 moves all values into the leaves and

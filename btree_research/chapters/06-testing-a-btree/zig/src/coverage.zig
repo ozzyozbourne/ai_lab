@@ -44,11 +44,11 @@ pub const Coverage = struct {
     hits: [point_count]u64 = @splat(0),
 
     pub fn hit(self: *Coverage, point: Point) void {
-        self.hits[@intFromEnum(point)] += 1;
+        self.hits[@backingInt(point)] += 1;
     }
 
     pub fn count(self: *const Coverage, point: Point) u64 {
-        return self.hits[@intFromEnum(point)];
+        return self.hits[@backingInt(point)];
     }
 
     /// Fold another tree's counters into this one (one fuzz run = many trees).
@@ -65,7 +65,7 @@ pub const Coverage = struct {
 
     /// The first point that was never hit, or null if every branch ran.
     pub fn firstMissing(self: *const Coverage) ?Point {
-        for (self.hits, 0..) |h, i| if (h == 0) return @enumFromInt(i);
+        for (self.hits, 0..) |h, i| if (h == 0) return @fromBackingInt(@intCast(i));
         return null;
     }
 };
@@ -81,7 +81,7 @@ test "hit, count, add, reached, firstMissing" {
     try std.testing.expectEqual(2, b.count(.split_leaf));
     try std.testing.expectEqual(1, b.count(.merge_leaf));
     try std.testing.expectEqual(2, b.reached());
-    for (0..point_count) |i| b.hit(@enumFromInt(i));
+    for (0..point_count) |i| b.hit(@fromBackingInt(@intCast(i)));
     try std.testing.expectEqual(null, b.firstMissing());
     try std.testing.expectEqual(point_count, b.reached());
 }

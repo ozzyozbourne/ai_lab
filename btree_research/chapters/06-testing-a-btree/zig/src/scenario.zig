@@ -42,8 +42,8 @@ pub fn run(gpa: Allocator, w: *std.Io.Writer) !void {
         var totals: fuzz.Totals = .{};
         const found = try fuzz.hunt(Tree(M, .none), gpa, 1, sweep_seeds, .{}, &totals);
         try w.print("M={d}: {d} cases, {d} steps, {d} injected allocation failures, max height {d}, coverage {d}/{d}: {s}\n", .{
-            M,                 totals.cases,                 totals.steps,          totals.injected_faults,
-            totals.max_height, totals.coverage.reached(),    coverage.point_count,  if (found == null) "ok" else "FAILED",
+            M,                 totals.cases,              totals.steps,         totals.injected_faults,
+            totals.max_height, totals.coverage.reached(), coverage.point_count, if (found == null) "ok" else "FAILED",
         });
         all.coverage.add(&totals.coverage);
     }
@@ -82,8 +82,8 @@ pub fn run(gpa: Allocator, w: *std.Io.Writer) !void {
 
 fn printCase(w: *std.Io.Writer, case: fuzz.Case) !void {
     try w.print("seed {d}: {d} ops on {d} keys, put:delete:get:range = {d}:{d}:{d}:{d}, ", .{
-        case.seed,           case.count,       case.key_space,
-        case.weights.put,    case.weights.delete, case.weights.get,
+        case.seed,          case.count,          case.key_space,
+        case.weights.put,   case.weights.delete, case.weights.get,
         case.weights.range,
     });
     if (case.fault_one_in == 0) {
@@ -96,7 +96,7 @@ fn printCase(w: *std.Io.Writer, case: fuzz.Case) !void {
 
 fn printCoverage(w: *std.Io.Writer, cov: *const coverage.Coverage) !void {
     for (0..coverage.point_count) |i| {
-        const point: coverage.Point = @enumFromInt(i);
+        const point: coverage.Point = @fromBackingInt(@intCast(i));
         try w.print("  {t:<22} {d}\n", .{ point, cov.count(point) });
     }
 }
@@ -107,7 +107,7 @@ fn printReach(w: *std.Io.Writer, label: []const u8, totals: *const fuzz.Totals) 
     });
     var first = true;
     for (0..coverage.point_count) |i| {
-        const point: coverage.Point = @enumFromInt(i);
+        const point: coverage.Point = @fromBackingInt(@intCast(i));
         if (totals.coverage.count(point) != 0) continue;
         try w.print("{s}{t}", .{ if (first) ", never reached: " else ", ", point });
         first = false;

@@ -236,22 +236,18 @@ impl Lsm {
         // "come back" from a deeper level.
         let drop_tombstones = self.deepest_level() <= from + 1;
 
+        // The only allocation of a compaction. If it is refused, nothing has
+        // been read, written or changed.
+        let budget_left = self.budget_left();
+
         // `upper` is level `from` (None when from == 0: then the inputs are
         // the level-0 runs); `target` is level from + 1.
-        let (above, below) = self.levels.split_at_mut(from);
-        let upper = if from == 0 { None } else { above[from - 1].as_ref() };
-        let target = below[0].as_ref();
         let l0: &[Run] = if from == 0 { &self.l0 } else { &[] };
-
+        let upper = if from == 0 { None } else { self.levels[from - 1].as_ref() };
+        let target = self.levels[from].as_ref();
         let input_slots = l0.iter().map(Run::len).sum::<usize>()
             + upper.map_or(0, Run::len)
             + target.map_or(0, Run::len);
-        // The only allocation of a compaction. If it is refused, nothing has
-        // been read, written or changed.
-        let budget_left = self.slot_budget.saturating_sub(
-            self.l0.iter().map(Run::len).sum::<usize>()
-                + above.iter().chain(below.iter()).flatten().map(Run::len).sum::<usize>(),
-        );
         let mut builder = Builder::new(geo, input_slots, budget_left)?;
 
         // Inputs, newest first (invariant 4).

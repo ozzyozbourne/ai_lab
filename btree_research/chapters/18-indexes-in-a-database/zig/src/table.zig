@@ -58,7 +58,9 @@ pub const Table = struct {
     counters: Counters = .{},
     rows: usize = 0,
 
-    /// `order` is the M of all three trees. Does not allocate.
+    /// `order` is the M of all three trees, 3 <= order <= 16 (the base
+    /// tree's fixed node size; asserted there, so not checked in ReleaseFast).
+    /// Does not allocate.
     pub fn init(layout: Layout, order: usize) Table {
         return .{
             .layout = layout,

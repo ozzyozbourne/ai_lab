@@ -299,17 +299,22 @@
         okNodes[node.id] = true;
         return true;
       }
-      push('Check ' + where + ': ' + plural(n, 'key') + ' (allowed: ' + (isRoot ? 1 : minK) + ' to ' + maxK + '), ascending, ' + boundsText(lo, hi) +
-        (lo === null && hi === null ? '' : ' and they do') + '. Now its ' + (n + 1) + ' children, each with a narrower range.', [2, 3, 5, 6, 13], node);
+      /* All child slots of this node first, the subtrees after that
+       * (base_validate: Zig and Rust then name the same first error). */
       var slots = Math.max(node.children.length, n + 1);
       for (i = 0; i < slots; i++) {
-        var child = node.children[i];
-        if (i > n) {
-          if (child) return fail('UnexpectedChild', where.charAt(0).toUpperCase() + where.slice(1) + ' has a child beyond its ' + (n + 1) + ' slots.', [14], node);
-          continue;
+        if (i <= n && !node.children[i]) {
+          return fail('MissingChild', 'Check ' + where + ': its keys are fine, but ' + plural(n, 'key') + ' need ' + (n + 1) + ' children and child ' + i +
+            ' is missing. A search for ' + rangeText(node, i).replace('the keys', 'a key') + ' would follow a pointer that is not there. validate looks at every child slot of a node before it visits the first child.', [14], node);
         }
-        if (!child) return fail('MissingChild', 'Back in ' + where + ': ' + plural(n, 'key') + ' need ' + (n + 1) + ' children, but child ' + i + ' is missing. A search for ' + rangeText(node, i).replace('the keys', 'a key') + ' would follow a pointer that is not there.', [14], node);
-        if (!check(child, i === 0 ? lo : node.keys[i - 1], i === n ? hi : node.keys[i], false, depth + 1)) return false;
+        if (i > n && node.children[i]) {
+          return fail('UnexpectedChild', 'Check ' + where + ': it has a child beyond the ' + (n + 1) + ' slots that ' + plural(n, 'key') + ' allow.', [15], node);
+        }
+      }
+      push('Check ' + where + ': ' + plural(n, 'key') + ' (allowed: ' + (isRoot ? 1 : minK) + ' to ' + maxK + '), ascending, ' + boundsText(lo, hi) +
+        (lo === null && hi === null ? '' : ' and they do') + '; all ' + (n + 1) + ' child slots are filled. Now the children, each with a narrower range.', [2, 3, 5, 6, 14, 15, 17], node);
+      for (i = 0; i <= n; i++) {
+        if (!check(node.children[i], i === 0 ? lo : node.keys[i - 1], i === n ? hi : node.keys[i], false, depth + 1)) return false;
       }
       okNodes[node.id] = true;
       return true;
@@ -319,9 +324,9 @@
       else check(tree.root, null, null, true, 0);
     }
     if (!error) {
-      if (count !== tree.len) fail('WrongKeyCount', 'The walk met ' + plural(count, 'key') + ', but the tree claims to hold ' + tree.len + '. Every node is fine on its own; a key was lost or counted twice.', [19], null);
-      else if (reachable !== tree.created) fail('NodeCountMismatch', 'The walk reached ' + plural(reachable, 'node') + ', but ' + tree.created + ' were allocated. A node that nothing points to is a leak' + (tree.orphans.length ? ' (drawn on the right)' : '') + '.', [20], tree.orphans[0] || null);
-      else push('Every node passed, the walk met ' + plural(count, 'key') + ' (the tree claims ' + tree.len + ') and reached ' + plural(reachable, 'node') + ' (allocated: ' + tree.created + '). <b>validate: ok</b>', [19, 20], null);
+      if (count !== tree.len) fail('WrongKeyCount', 'The walk met ' + plural(count, 'key') + ', but the tree claims to hold ' + tree.len + '. Every node is fine on its own; a key was lost or counted twice.', [22], null);
+      else if (reachable !== tree.created) fail('NodeCountMismatch', 'The walk reached ' + plural(reachable, 'node') + ', but ' + tree.created + ' were allocated. A node that nothing points to is a leak' + (tree.orphans.length ? ' (drawn on the right)' : '') + '.', [23], tree.orphans[0] || null);
+      else push('Every node passed, the walk met ' + plural(count, 'key') + ' (the tree claims ' + tree.len + ') and reached ' + plural(reachable, 'node') + ' (allocated: ' + tree.created + '). <b>validate: ok</b>', [22, 23], null);
     }
     steps.error = error;
     return steps;
@@ -358,6 +363,19 @@
   ];
   function keysFound(t) {
     return CANONICAL_KEYS.filter(function (key) { return t.get(key) === valueOf(key); }).length;
+  }
+  /* The different keys stored in the nodes of `t`, and how many of them
+   * `get` finds: counted on the tree itself, whatever keys it holds. */
+  function storedFound(t) {
+    var seen = {}, stored = 0, found = 0;
+    preorder(t.root).forEach(function (n) {
+      n.keys.forEach(function (key) {
+        if (seen[key]) return;
+        seen[key] = true; stored++;
+        if (t.get(key) === valueOf(key)) found++;
+      });
+    });
+    return { stored: stored, found: found };
   }
   /* Part 4 of the program output. */
   function brokenText() {
@@ -496,7 +514,7 @@
     HandTree: HandTree, CANONICAL_KEYS: CANONICAL_KEYS, canonical: canonical, sparsest: sparsest, fullest: fullest,
     valueOf: valueOf, fmtKeys: fmtKeys, renderText: renderText, shape: shape, shapeText: shapeText, heightOf: heightOf,
     lowerBound: lowerBound, searchSteps: searchSteps, inOrderKeys: inOrderKeys, inOrderSteps: inOrderSteps,
-    RULES: RULES, validateSteps: validateSteps, validateName: validateName, CASES: CASES, keysFound: keysFound, brokenText: brokenText,
+    RULES: RULES, validateSteps: validateSteps, validateName: validateName, CASES: CASES, keysFound: keysFound, storedFound: storedFound, brokenText: brokenText, plural: plural,
     describe: describe, preorder: preorder, hybrid: hybrid, redBlack: redBlack, rbCheck: rbCheck, redBlackText: redBlackText,
     minKeys: minKeys, maxKeys: maxKeys, minHeight: minHeight, maxHeight: maxHeight, heightsText: heightsText,
     SplitMix64: SplitMix64, oracleText: oracleText

@@ -31,7 +31,8 @@ free blocks = [4062+5]   frag_bytes = 0   free = 4017 + 5 = 4022
 ```
 
 In the visualization: load the default scenario, step to the end, then type the three
-operations.
+operations. Its page is 256 bytes, so every offset it shows is 3840 lower:
+`banana@240 date@227 fig@201 pea@214`, `content_start` 201, free block `222+5`.
 
 ## 2. When does a delete grow the gap, and why the reset?
 

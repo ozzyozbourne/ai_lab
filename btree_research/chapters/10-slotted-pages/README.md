@@ -10,7 +10,7 @@ Visualization: [viz/index.html](viz/index.html)
 - The three places free space hides (the gap, free blocks, fragments) and why "enough
   free bytes" is not the same as "it fits".
 - How a page reuses the holes left by deleted records, and when it has to compact.
-- How Turso (the SQLite format) and Postgres lay out the same idea, and where they differ.
+- How Turso (the SQLite format) and Postgres lay out the same idea.
 
 Prerequisites: chapter 02 (lower-bound binary search) and chapter 09 (a file is an array of
 fixed-size pages). In chapter 12 every node of a disk-backed B+tree is one of these pages.
@@ -26,8 +26,8 @@ problems appear:
 2. Records have no fixed position, so "the i-th record" cannot be found by arithmetic,
    and binary search needs exactly that.
 
-A slotted page solves both with one level of indirection. The page has two regions that
-grow toward each other:
+A slotted page solves both with one level of indirection: two regions that grow toward
+each other.
 
 ```
  0        16                                           usable        4096
@@ -51,8 +51,8 @@ The 16-byte header (little-endian integers):
 |--------|------|-------|---------|
 | 0 | 2 | `cell_count` | number of slots, which is the number of cells |
 | 2 | 2 | `content_start` | offset of the lowest cell; `usable` when the page is empty |
-| 4 | 2 | `first_free` | offset of the first free block, 0 if there is none |
-| 6 | 1 | `frag_bytes` | number of fragment bytes |
+| 4 | 2 | `first_free` | offset of the first free block (see below), 0 if none |
+| 6 | 1 | `frag_bytes` | number of fragment bytes (see below) |
 | 7 | 1 | `kind` | the caller's: chapter 12 stores leaf or interior here |
 | 8 | 1 | `reserved` | size of the reserved tail |
 | 9 | 7 | user area | the caller's: chapter 12 stores a page number here |
@@ -229,7 +229,7 @@ Both implementations have the same four files:
 
 `SlottedPage` is a struct with one field, `buf: *[page_size]u8`. It owns nothing. `init`
 formats a buffer, `initReserved(buf, n)` formats it with a reserved tail, and `open` wraps
-a buffer that is already formatted (a frame of chapter 09's buffer pool, say). Every access
+a buffer that is already formatted. Every access
 goes through two helpers, `rd16` and `wr16`. The file never casts the buffer to a struct,
 so alignment and the host's byte order cannot leak into the file format.
 
@@ -266,8 +266,7 @@ replacement if the key exists).
 `insertAt` has two steps. First `allocSpace(size)` returns an *offset* for the cell, and
 the cell is written there. Then the slots from `index` on move up with one `@memmove`, and
 the new slot is written. The check `size + slot_size > freeBytes()` comes before anything
-is modified, so a `PageFull` leaves the page byte for byte as it was (a test compares
-against a snapshot).
+is modified, so a `PageFull` leaves the page byte for byte as it was.
 
 `allocSpace` is the allocation policy:
 
@@ -310,8 +309,8 @@ and output match the Zig version (`insert_at` for `insertAt`, and so on). Reads 
 - **Aliasing arguments.** `put(k, v)` may compact, so `k` and `v` must not point into the
   page. Zig asserts this on the pointer ranges (`assertOutside`). Rust needs no check: a
   `&[u8]` into the page cannot exist while `&mut self` does.
-- **Free list for dumps.** Zig's `freeBlocks(out: []FreeBlock)` fills a caller-provided
-  buffer; Rust's `free_blocks()` returns a `Vec`, the only allocation in the Rust file.
+- **Free list for dumps.** Zig's `freeBlocks(out)` fills a caller's buffer; Rust's
+  `free_blocks()` returns a `Vec`, the only allocation in the Rust file.
 - **Test counts.** Zig runs 32 tests, Rust 29: two Zig tests put the oracle under
   allocation failure, which Rust's `Vec` cannot report; one is the block in `root.zig`.
 
@@ -346,7 +345,7 @@ sections 2 and 3 and `research/postgres.md` section 1).
 - `allocate_cell_space` tries a freeblock only if the gap has room for the new 2-byte
   pointer, then the gap, then defragments (`btree.rs:10516-10562`).
 - `compute_free_space` sums gap, freeblocks and fragments (`btree.rs:10433-10513`); the
-  integrity check's coverage checker (`btree.rs:8913`) plays the role of our `validate`.
+  integrity check's coverage checker (`btree.rs:8913`) is our `validate`.
 - Our reserved tail is Turso's reserved space with the count stored per page instead of
   once in the database header (`sqlite3_ondisk.rs:321-322`, `:369-371`); Turso's optional
   8-byte page checksum lives there (`turso/core/storage/checksum.rs:4-6`, `:36-48`).
@@ -384,8 +383,8 @@ DuckDB, TigerBeetle, Milvus and FAISS are not sources for this chapter.
 
 ## Allocator notes
 
-`SlottedPage` never allocates from a heap. It works on the caller's buffer and two 4 KiB
-stack arrays (in `compact` and `validate`). The only `std.mem.Allocator` in the Zig code is
+`SlottedPage` never allocates from a heap: it works on the caller's buffer and two 4 KiB
+stack arrays. The only `std.mem.Allocator` in the Zig code is
 `std.testing.allocator`, passed explicitly to the oracle of the model test; one test runs
 the model under `checkAllAllocationFailures`. This structure's "allocation failure on
 insert" is `error.PageFull`, tested the same way: the operation fails and the page is
@@ -409,17 +408,15 @@ exposed as a `std.mem.Allocator`, for four reasons:
 
 What would go wrong with a different choice: a `FixedBufferAllocator` over the 4096 bytes
 is a bump allocator with no reuse, so a page that sees deletes would fill up with dead
-bytes. In Rust the idiom is the same code: offsets into a borrowed `[u8; 4096]`, where the
-borrow checker turns reason 1 into a compile error.
+bytes. In Rust the borrow checker turns reason 1 into a compile error.
 
 ## Pitfalls
 
 - **Total free space is not allocatable space.** Use `freeBytes()` (or `fits`) to decide
   whether an insert can succeed, never only the gap or only the largest hole.
 - **The slot needs room too.** A hole that fits the cell is useless if the gap has no 2
-  bytes for the new slot (test "a hole that fits the cell is not enough").
-- **Slices into the page die on the next mutation.** Copy a key out before you insert or
-  delete on the same page.
+  bytes for the new slot.
+- **Slices into the page die on the next mutation.** Copy a key out first.
 - **Compaction must not read what it has overwritten.** Take cell sizes from the scratch
   copy: a moved cell may have landed on the header of one not yet moved.
 - **Slot indexes are stable across compaction, not across insert and delete.** Long-lived
@@ -431,9 +428,9 @@ borrow checker turns reason 1 into a compile error.
   with the same records are not always the same bytes.
 - **A checksum in the last bytes needs a reserved tail.** After plain `init` the first
   cell ends at byte 4095. Use `initReserved(buf, 4)`; a tail cannot be added later.
-- **Nothing here is crash-safe, and `open` checks nothing.** A page written halfway is
-  corrupt, and on a corrupt page `stats` can follow a free list forever. Verify a checksum
-  or call `validate` on pages read from disk (chapters 21 and 22).
+- **Nothing here is crash-safe, and `open` checks nothing.** On a corrupt page `stats`
+  can follow a free list forever. Verify a checksum or call `validate` on pages read from
+  disk (chapters 21 and 22).
 
 ## Exercises
 

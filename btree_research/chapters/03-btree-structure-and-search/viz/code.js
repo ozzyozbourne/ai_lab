@@ -65,9 +65,12 @@ if (node.leaf) {
     if (depth != first_leaf_depth) return error.LeavesAtDifferentDepths;
     return;
 }
-for (0..node.len + 1) |i| {
-    const child = node.children[i] orelse return error.MissingChild;
-    try check(child, if (i == 0) lo else node.keys[i - 1],
+for (node.children, 0..) |child, i| { // every child slot of this node first ...
+    if (i <= node.len and child == null) return error.MissingChild;
+    if (i > node.len and child != null) return error.UnexpectedChild;
+}
+for (0..node.len + 1) |i| { // ... and only then the subtrees
+    try check(node.children[i].?, if (i == 0) lo else node.keys[i - 1],
         if (i == node.len) hi else node.keys[i], false, depth + 1);
 }
 // after the walk:
@@ -86,8 +89,11 @@ if node.leaf {
     if depth != first_leaf_depth { return Err(LeavesAtDifferentDepths); }
     return Ok(());
 }
-for i in 0..=node.len() {
-    let Some(&child) = node.children.get(i) else { return Err(MissingChild) };
+// the number of children of this node first ...
+if node.children.len() < node.len() + 1 { return Err(MissingChild); }
+if node.children.len() > node.len() + 1 { return Err(UnexpectedChild); }
+// (a Vec has no empty slots: too short or too long is all that can happen)
+for (i, &child) in node.children.iter().enumerate() { // ... and only then the subtrees
     check(child, if i == 0 { lo } else { node.keys[i - 1] },
         if i == node.len() { hi } else { node.keys[i] }, false, depth + 1)?;
 }

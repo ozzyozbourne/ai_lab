@@ -82,7 +82,8 @@ pub struct Table {
 }
 
 impl Table {
-    /// `order` is the M of all three trees. Does not allocate.
+    /// `order` is the M of all three trees, 3 <= order <= 16 (the base
+    /// tree's fixed node size; it panics otherwise). Does not allocate.
     pub fn new(layout: Layout, order: usize) -> Table {
         Self::with_node_budgets(layout, order, [usize::MAX; 3])
     }

@@ -53,6 +53,63 @@ fn top_down_overwrite_returns_the_old_value_also_when_the_key_is_the_median_that
 }
 
 #[test]
+fn the_worked_example_continued_put_2_splits_a_leaf_and_then_the_interior_root() {
+    let mut tree = BTree::new(4);
+    for key in CANONICAL_KEYS {
+        tree.put(key, key * 10).unwrap();
+    }
+    expect_tree(&tree, "[6 10 20]\n[1 3 5] [7] [12 15 17] [25 30]\n");
+    let before = tree.counters;
+    // Leaf [1 2 3 5]: 3 goes up. Root [3 6 10 20] with five children: 10
+    // goes up, [3 6] keeps the first three children, [20] gets the last two.
+    assert_eq!(tree.put(2, 20), Ok(None));
+    expect_tree(
+        &tree,
+        "[10]\n[3 6] [20]\n[1 2] [5] [7] | [12 15 17] [25 30]\n",
+    );
+    assert_eq!(tree.counters.splits - before.splits, 2);
+    assert_eq!(tree.counters.root_splits - before.root_splits, 1);
+    assert_eq!(tree.validate(), Ok(()));
+
+    // Top-down splits its interior root one put earlier (at 25, in the
+    // canonical example above); 2 then splits only the leaf. For these
+    // thirteen keys both variants end with the same tree.
+    let mut top = BTree::new(4);
+    put_all(&mut top, &CANONICAL_KEYS);
+    let top_before = top.counters;
+    assert_eq!(topdown::put(&mut top, 2, 20), Ok(None));
+    expect_tree(
+        &top,
+        "[10]\n[3 6] [20]\n[1 2] [5] [7] | [12 15 17] [25 30]\n",
+    );
+    assert_eq!(top.counters.splits - top_before.splits, 1);
+    assert_eq!(top.validate(), Ok(()));
+}
+
+#[test]
+fn neither_variant_is_always_the_taller_one() {
+    // The canonical keys make the top-down tree taller (height 3 against 2,
+    // see the first test of this file). These ten keys make it SHORTER. The
+    // two variants cut at different points (bottom-up cuts M keys and leaves
+    // M / 2 on the left, top-down cuts M - 1 keys and leaves M / 2 - 1 on
+    // each side), so the keys spread over the nodes differently, and the put
+    // that overflows the root of one tree does not overflow the other.
+    let mut bottom = BTree::new(4);
+    let mut top = BTree::new(4);
+    for key in [82, 83, 57, 74, 11, 67, 62, 48, 9, 29] {
+        bottom.put(key, key).unwrap();
+        topdown::put(&mut top, key, key).unwrap();
+    }
+    expect_tree(
+        &bottom,
+        "[67]\n[29 57] [82]\n[9 11] [48] [62] | [74] [83]\n",
+    );
+    expect_tree(&top, "[11 57 82]\n[9] [29 48] [62 67 74] [83]\n");
+    assert_eq!(bottom.validate(), Ok(()));
+    assert_eq!(top.validate(), Ok(()));
+}
+
+#[test]
 fn why_top_down_needs_an_even_m_the_arithmetic() {
     // A full node has M - 1 keys; without its median, M - 2 are left for two
     // halves that each need min_keys = ceil(M/2) - 1.
@@ -124,8 +181,8 @@ fn model_test_both_variants(order: usize, seed: u64) {
     top.in_order(|key, value| all_top.push(Entry { key, value }));
     assert_eq!(all_bottom, oracle.range(0, 400));
     assert_eq!(all_top, oracle.range(0, 400));
-    // Splitting early can make the top-down tree taller, never shorter.
-    assert!(top.shape().height >= bottom.shape().height);
+    // Nothing is asserted about the two heights: either tree can be the
+    // taller one (see `neither_variant_is_always_the_taller_one`).
 }
 
 #[test]

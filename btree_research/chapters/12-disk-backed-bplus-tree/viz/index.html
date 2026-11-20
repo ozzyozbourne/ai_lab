@@ -234,7 +234,7 @@ The root page id never changes, however often the root splits; only the two coun
     }
     stepper.setSteps([restingStep('The remaining ' + done + ' scenario puts were applied without animation: ' + tree.keyCount + ' keys in ' +
       tree.pool.pageCount + ' pages, ' + tree.stats.leaf + ' leaf splits, ' + tree.stats.interior + ' interior splits, the root moved down ' + tree.stats.root + ' time(s). ' +
-      'Compare the bars: the leaves on the left hold more cells than the leaves on the right, but about the same number of bytes.')]);
+      'Compare the boxes with the bars: how full a page is depends on the bytes of its cells, not on how many there are.')]);
     updateButtons();
     say(done + ' puts applied.');
   }

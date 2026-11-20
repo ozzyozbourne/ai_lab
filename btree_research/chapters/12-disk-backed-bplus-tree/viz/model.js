@@ -182,10 +182,10 @@
   Tree.splitPoint = splitPoint;
 
   Tree.prototype.flush = function () {
-    this.why = 'flush: the metapage (page 0) gets the current root id, page count and key count';
+    this.why = 'the metapage (page 0) gets the current root id, page count and key count';
     this.pool.fetch(0);
     this.pool.unpin(0, true);
-    this.why = 'flush: every dirty page is written, in frame order, one write at a time';
+    this.why = 'every dirty page is written, in frame order, one write at a time';
     this.pool.flushAll();
   };
 
@@ -579,7 +579,8 @@
       default: text = ev.type;
     }
     var caption = text + (this.why ? ' <span class="ch12-why">Why: ' + esc(this.why) + '.</span>' : '');
-    var step = this.makeStep('pool-' + ev.type, caption, this.mark, null, text);
+    // The log gets the first sentence only.
+    var step = this.makeStep('pool-' + ev.type, caption, this.mark, null, text.split(/[:.] /)[0].replace(/[:.]$/, ''));
     if (state && step.log) step.log.state = state;
     step.event = ev;
     this.steps.push(step);

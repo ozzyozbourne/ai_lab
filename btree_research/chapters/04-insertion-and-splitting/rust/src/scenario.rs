@@ -10,6 +10,9 @@ use std::io::Write;
 
 /// The guide's canonical insertion order (chapters 03 to 08), M = 4.
 pub const CANONICAL_KEYS: [u64; 12] = [10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15];
+/// Part 1, last step: after the canonical keys this key overflows the leaf
+/// [1 3 5] and then the full root [6 10 20].
+pub const INTERIOR_SPLIT_KEY: u64 = 2;
 /// Part 3: keys 1..12 in ascending order, then 13.
 pub const FAILURE_COUNT: u64 = 12;
 /// Parts 4 and 5: this many distinct keys per measurement.
@@ -32,6 +35,28 @@ pub fn run(w: &mut dyn Write) -> Result<(), Box<dyn Error>> {
     }
     bottom.validate().map_err(|e| format!("{e:?}"))?;
     print_shape(w, &bottom)?;
+    // The canonical keys end one step before the first split of an INTERIOR
+    // node. A second tree gets them and then one key more (`bottom` itself
+    // stays as it is: part 2 compares against it).
+    writeln!(
+        w,
+        "one more key, {INTERIOR_SPLIT_KEY}: a leaf splits, then the full root above it (the first split of an interior node)"
+    )?;
+    let mut more = BTree::new(4);
+    for key in CANONICAL_KEYS {
+        more.put(key, key * 10)?;
+    }
+    let more_before = more.counters;
+    more.put(INTERIOR_SPLIT_KEY, INTERIOR_SPLIT_KEY * 10)?;
+    describe_put(
+        w,
+        INTERIOR_SPLIT_KEY,
+        more_before,
+        more.counters,
+        more.shape().height,
+    )?;
+    more.render(w, "  ")?;
+    more.validate().map_err(|e| format!("{e:?}"))?;
 
     writeln!(
         w,

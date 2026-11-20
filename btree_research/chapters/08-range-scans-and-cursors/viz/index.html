@@ -226,7 +226,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
       btn('Canonical keys', function () { build(Ch08.CANONICAL, 'the canonical keys'); }),
       btn('Random keys', randomKeys));
 
-    var view = new BTViz.TreeView(fig.stage, { minHeight: 230, minScale: 0.5, ariaLabel: 'B+tree being scanned' });
+    var view = new BTViz.TreeView(fig.stage, { minHeight: 230, minScale: 0.45, ariaLabel: 'B+tree being scanned' });
     var strip = el('div.c8-strip', { 'aria-label': 'Keys returned so far' });
     fig.stage.appendChild(strip);
     var panel = el('div.bt-panel', el('div.bt-panel-title', 'The cursor'));
@@ -343,7 +343,7 @@ here are checked against the output of the chapter's Zig and Rust programs (self
       el('span.bt-toolbar-sep'),
       btn('Scenario: split under the cursor', function () { scenario(true); }), btn('Reset', reset));
 
-    var view = new BTViz.TreeView(fig.stage, { minHeight: 230, minScale: 0.5, ariaLabel: 'B+tree with a cursor on it' });
+    var view = new BTViz.TreeView(fig.stage, { minHeight: 230, minScale: 0.45, ariaLabel: 'B+tree with a cursor on it' });
     var strip = el('div.c8-strip', { 'aria-label': 'Keys the cursor returned since its last seek' });
     fig.stage.appendChild(strip);
     var panel = el('div.bt-panel', el('div.bt-panel-title', 'The cursor'));
@@ -554,9 +554,9 @@ here are checked against the output of the chapter's Zig and Rust programs (self
       var add = function (more) { steps = steps.concat(more); };
       add(cursorSteps('seek', 10, null));
       add(cursorSteps('next', null, null));
-      var was = { key: cur.key, leaf: cur.leaf, index: cur.index }, leavesBefore = tree.base.stats.splits;
+      var was = { key: cur.key, leaf: cur.leaf, index: cur.index }, splitsBefore = tree.base.stats.leafSplits;
       [11, 13, 14].forEach(function (v) { add(treeSteps('insert', v)); });
-      add(cursorSteps('next', null, scenarioQuestion(was, tree.base.stats.splits > leavesBefore)));
+      add(cursorSteps('next', null, scenarioQuestion(was, tree.base.stats.leafSplits > splitsBefore)));
       stepper.setSteps(steps, play ? { play: true } : { index: 0 });
     }
     /**

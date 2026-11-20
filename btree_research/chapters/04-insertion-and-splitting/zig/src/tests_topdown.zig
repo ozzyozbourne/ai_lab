@@ -52,6 +52,56 @@ test "top-down overwrite returns the old value, also when the key is the median 
     try testing.expectEqual(100, try topdown.put(Tree4, &tree, gpa, 10, 101)); // found in the root
 }
 
+test "the worked example continued: put 2 splits a leaf and then the interior root" {
+    const gpa = testing.allocator;
+    var tree: Tree4 = .empty;
+    defer tree.deinit(gpa);
+    for (canonical_keys) |key| _ = try tree.put(gpa, key, key * 10);
+    try expectTree(&tree, "[6 10 20]\n[1 3 5] [7] [12 15 17] [25 30]\n");
+    const before = tree.counters;
+    // Leaf [1 2 3 5]: 3 goes up. Root [3 6 10 20] with five children: 10
+    // goes up, [3 6] keeps the first three children, [20] gets the last two.
+    try testing.expectEqual(null, try tree.put(gpa, 2, 20));
+    try expectTree(&tree, "[10]\n[3 6] [20]\n[1 2] [5] [7] | [12 15 17] [25 30]\n");
+    try testing.expectEqual(2, tree.counters.splits - before.splits);
+    try testing.expectEqual(1, tree.counters.root_splits - before.root_splits);
+    try tree.validate();
+
+    // Top-down splits its interior root one put earlier (at 25, in "the
+    // canonical example, step by step"); 2 then splits only the leaf. For
+    // these thirteen keys both variants end with the same tree.
+    var top: Tree4 = .empty;
+    defer top.deinit(gpa);
+    for (canonical_keys) |key| _ = try topdown.put(Tree4, &top, gpa, key, key * 10);
+    const top_before = top.counters;
+    try testing.expectEqual(null, try topdown.put(Tree4, &top, gpa, 2, 20));
+    try expectTree(&top, "[10]\n[3 6] [20]\n[1 2] [5] [7] | [12 15 17] [25 30]\n");
+    try testing.expectEqual(1, top.counters.splits - top_before.splits);
+    try top.validate();
+}
+
+test "neither variant is always the taller one" {
+    const gpa = testing.allocator;
+    // The canonical keys make the top-down tree taller (height 3 against 2,
+    // see the first test of this file). These ten keys make it SHORTER. The
+    // two variants cut at different points (bottom-up cuts M keys and leaves
+    // M / 2 on the left, top-down cuts M - 1 keys and leaves M / 2 - 1 on
+    // each side), so the keys spread over the nodes differently, and the put
+    // that overflows the root of one tree does not overflow the other.
+    var bottom: Tree4 = .empty;
+    defer bottom.deinit(gpa);
+    var top: Tree4 = .empty;
+    defer top.deinit(gpa);
+    for ([_]u64{ 82, 83, 57, 74, 11, 67, 62, 48, 9, 29 }) |key| {
+        _ = try bottom.put(gpa, key, key);
+        _ = try topdown.put(Tree4, &top, gpa, key, key);
+    }
+    try expectTree(&bottom, "[67]\n[29 57] [82]\n[9 11] [48] [62] | [74] [83]\n");
+    try expectTree(&top, "[11 57 82]\n[9] [29 48] [62 67 74] [83]\n");
+    try bottom.validate();
+    try top.validate();
+}
+
 test "why top-down needs an even M: the arithmetic" {
     // A full node has M - 1 keys; without its median, M - 2 are left for two
     // halves that each need min_keys = ceil(M/2) - 1.
@@ -105,8 +155,8 @@ fn modelTestBothVariants(comptime M: usize, comptime PoolFn: fn (type) type, see
     top.inOrder(&all_top);
     try testing.expect(all_bottom.ok and all_bottom.seen == oracle.len());
     try testing.expect(all_top.ok and all_top.seen == oracle.len());
-    // Splitting early can make the top-down tree taller, never shorter.
-    try testing.expect(top.shape().height >= bottom.shape().height);
+    // Nothing is asserted about the two heights: either tree can be the
+    // taller one (see "neither variant is always the taller one").
 }
 
 test "model test: bottom-up and top-down hold the same keys, every even order from 4 to 12, both pools" {

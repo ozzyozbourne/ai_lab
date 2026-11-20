@@ -33,6 +33,11 @@ put 15: no split
   [6 10 20]
   [1 3 5] [7] [12 15 17] [25 30]
 shape: height=2 nodes=5 leaves=4 keys=12 fill=80% splits=3 root_splits=1
+one more key, 2: a leaf splits, then the full root above it (the first split of an interior node)
+put 2: 2 splits, the root split: height 3
+  [10]
+  [3 6] [20]
+  [1 2] [5] [7] | [12 15 17] [25 30]
 
 == 2. Top-down insert (textbook, CLRS): the same keys ==
 put 10: no split

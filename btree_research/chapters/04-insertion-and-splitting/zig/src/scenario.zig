@@ -10,6 +10,9 @@ const measure = @import("measure.zig");
 
 /// The guide's canonical insertion order (chapters 03 to 08), M = 4.
 pub const canonical_keys = [_]u64{ 10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15 };
+/// Part 1, last step: after the canonical keys this key overflows the leaf
+/// [1 3 5] and then the full root [6 10 20].
+pub const interior_split_key = 2;
 /// Part 3: keys 1..12 in ascending order, then 13.
 pub const failure_count = 12;
 /// Parts 4 and 5: this many distinct keys per measurement.
@@ -36,6 +39,18 @@ pub fn run(gpa: Allocator, w: *std.Io.Writer) !void {
     }
     try bottom.validate();
     try printShape(w, &bottom);
+    // The canonical keys end one step before the first split of an INTERIOR
+    // node. A second tree gets them and then one key more (`bottom` itself
+    // stays as it is: part 2 compares against it).
+    try w.print("one more key, {d}: a leaf splits, then the full root above it (the first split of an interior node)\n", .{interior_split_key});
+    var more: Tree = .empty;
+    defer more.deinit(gpa);
+    for (canonical_keys) |key| _ = try more.put(gpa, key, key * 10);
+    const more_before = more.counters;
+    _ = try more.put(gpa, interior_split_key, interior_split_key * 10);
+    try describePut(w, "put", interior_split_key, more_before, more.counters, more.shape().height);
+    try more.render(w, "  ");
+    try more.validate();
 
     try w.writeAll("\n== 2. Top-down insert (textbook, CLRS): the same keys ==\n");
     var top: Tree = .empty;

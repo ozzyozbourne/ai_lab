@@ -14,6 +14,8 @@
   /* The drawing (Ch24.Picture in local.js); shapes reuse the toolkit's tree classes. */
   .c24-pic { overflow-x: auto; max-width: 100%; min-height: 236px; border-radius: 6px; background: var(--bt-bg); border: 1px solid var(--bt-border); scrollbar-width: thin; }
   .c24-svg { display: block; margin: 0 auto; font-family: var(--bt-mono); }
+  .c24-zoom { display: block; margin: 4px 0 0 auto; font-size: .78rem; padding: 2px 8px; min-height: 0; }
+  .c24-zoom[hidden] { display: none; }
   .c24-svg .bt-key text { font-size: 12px; }
   /* An entry is nested in its page's <g>: it must not inherit the page's highlight colour. */
   .c24-page .bt-key:not([class*="s-"]) { --s: initial; --s-bg: initial; }

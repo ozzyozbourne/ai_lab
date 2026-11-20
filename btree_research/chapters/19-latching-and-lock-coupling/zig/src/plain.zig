@@ -26,7 +26,7 @@ pub fn get(tree: *const Tree, key: u64) ?u64 {
     }
 }
 
-pub fn put(tree: *Tree, key: u64, value: u64) tree_.Error!?u64 {
+pub fn put(tree: *Tree, key: u64, value: u64, hook: ?*const tree_.Hook) tree_.Error!?u64 {
     // Remember the whole path: any node on it may have to split.
     var path: [tree_.max_height]NodeId = undefined;
     var depth: usize = 0;
@@ -40,5 +40,5 @@ pub fn put(tree: *Tree, key: u64, value: u64) tree_.Error!?u64 {
             .leaf => break,
         }
     }
-    return insert.insertAtLeaf(tree, path[0..depth], true, key, value);
+    return insert.insertAtLeaf(tree, path[0..depth], true, key, value, hook);
 }

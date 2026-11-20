@@ -15,7 +15,9 @@
   .fz-ops li .n { color: var(--bt-muted); min-width: 2.6em; text-align: right; flex: none; }
   .fz-ops li.is-done { color: var(--bt-muted); }
   .fz-ops li[class*="s-"] { background: var(--s-bg); box-shadow: inset 3px 0 0 var(--s); color: var(--bt-text); }
-  .fz-row { display: flex; flex-wrap: wrap; gap: 4px; max-height: 96px; overflow-y: auto; align-items: center; }
+  /* Two lines of chips at most, then the row scrolls: the contents must not
+     push the caption and the step controls off a 1280x800 screen. */
+  .fz-row { display: flex; flex-wrap: wrap; gap: 4px; max-height: 58px; overflow-y: auto; align-items: center; }
   .fz-row-label { font-size: .8rem; color: var(--bt-muted); margin: 6px 0 3px; }
   .fz-row-label:first-child { margin-top: 0; }
   .fz-status { font-size: .88rem; margin: 0 0 8px; }
@@ -60,7 +62,10 @@ operations, the same failing step and the same reproducer that <code>zig build r
 </div>
 <p>Suggested experiments: for each variant, press <em>Shortest failing run</em>, step to the end, then press <em>Minimise</em> and
 step through the reproducer by hand. Tick <em>Predict</em> to be asked which check will catch the bug before the failing step is shown. Replay seed 3 (four possible keys) and seed 28 (64 keys) on the correct tree
-to see how different two swarm cases are. Replay a seed that does not catch the third variant (seed 3 is one) to see
+to see how different two swarm cases are. Each seed also decides where in the 64-bit key space its keys lie: from 0 (seed 4),
+around 2<sup>32</sup> (seed 13), spread over the whole range (seed 1) or just below 2<sup>64</sup> (seed 5). The shape of the tree does not depend on that,
+but a tree that compared only the low 32 bits of a key would pass every test on small keys. Large keys are written compactly:
+27·2<sup>58</sup> is 27 times 2<sup>58</sup>, 2<sup>64</sup>−38 is 38 below 2<sup>64</sup>. Replay a seed that does not catch the third variant (seed 3 is one) to see
 a broken tree pass a test that never builds a third level.</p>
 
 <h2>The loop behind the picture</h2>
@@ -129,15 +134,26 @@ a broken tree pass a test that never builds a third level.</p>
     var s = String(v);
     return s.length <= 5 ? s : '…' + s.slice(-4);
   }
+  /* Keys are indices inside the model (local.js); `name` turns one into
+     the key it stands for, written compactly (27·2⁵⁸, 2⁶⁴−38). */
+  var name = String;
   function opHtml(st) {
-    if (st.kind === 'put') return 'put ' + st.key + ' = ' + val(st.value);
-    if (st.kind === 'range') return 'range [' + st.lo + ', ' + st.hi + ')';
-    return st.kind + ' ' + st.key;
+    if (st.kind === 'put') return 'put ' + name(st.key) + ' = ' + val(st.value);
+    if (st.kind === 'range') return 'range [' + name(st.lo) + ', ' + name(st.hi) + ')';
+    return st.kind + ' ' + name(st.key);
+  }
+  function namedTree(node) {
+    if (!node) return node;
+    if (Array.isArray(node)) return node.map(namedTree);
+    var copy = Object.assign({}, node);
+    copy.keys = node.keys.map(name);
+    copy.children = node.children.map(namedTree);
+    return copy;
   }
   function answerText(st, a) {
     if (st.kind === 'range') {
       if (!a.length) return 'no entries';
-      var shown = a.slice(0, 3).map(function (e) { return e[0] + ' = ' + val(e[1]); }).join(', ');
+      var shown = a.slice(0, 3).map(function (e) { return name(e[0]) + ' = ' + val(e[1]); }).join(', ');
       return '[' + shown + (a.length > 3 ? ', … ' + a.length + ' entries' : '') + ']';
     }
     if (st.kind === 'put') return a === null ? 'new key' : 'replaced ' + val(a);
@@ -166,7 +182,7 @@ a broken tree pass a test that never builds a third level.</p>
         fr.reachable + ' can be reached from the root. Every answer is still correct, so the oracle comparison alone would never notice this leak.';
     }
     return '<code>validate()</code> reports <b>' + esc(f.error) + '</b>' +
-      (f.firstKey === null ? '' : ' at depth ' + f.depth + ', in the node that starts with key ' + k(f.firstKey, 'deleted')) +
+      (f.firstKey === null ? '' : ' at depth ' + f.depth + ', in the node that starts with key ' + k(name(f.firstKey), 'deleted')) +
       (bug === 'borrow_forgets_child' ? ': the borrow moved a key into that node but left the child behind. The subtree drawn apart, marked unreachable, is lost.' : '.');
   }
 
@@ -204,6 +220,7 @@ a broken tree pass a test that never builds a third level.</p>
   }
 
   function show(bug, label, steps, minimised) {
+    name = F.keyNamer(steps, false);
     var tl = buildTimeline(bug, steps);
     current = { bug: bug, label: label, steps: steps, result: tl.result, minimised: !!minimised };
     opsList.replaceChildren.apply(opsList, steps.map(function (st, i) {
@@ -211,7 +228,7 @@ a broken tree pass a test that never builds a third level.</p>
     }));
     var f = tl.result.failure;
     status.innerHTML = esc(label) + ' &rarr; ' + (f
-      ? '<b>fails at step ' + (f.step + 1) + ' of ' + steps.length + '</b>: ' + esc(F.failureText(f))
+      ? '<b>fails at step ' + (f.step + 1) + ' of ' + steps.length + '</b>: ' + esc(F.failureText(f, name))
       : '<b>passes all ' + steps.length + ' steps</b>' + (bug === 'none' ? '' : ' (this run never reaches the bug)'));
     treeTitle.textContent = 'B-tree under test: order ' + ORDER + ', ' + (bug === 'none' ? 'correct' : 'bug ' + bug);
     minBtn.disabled = !f || current.minimised;
@@ -237,11 +254,11 @@ a broken tree pass a test that never builds a third level.</p>
     // tree
     var hl = { nodes: {}, keys: {} };
     if (fr) {
-      if (fr.step.kind === 'put') hl.keys['*:' + fr.step.key] = 'inserted';
-      if (fr.step.kind === 'get' && fr.treeAnswer !== null) hl.keys['*:' + fr.step.key] = 'found';
+      if (fr.step.kind === 'put') hl.keys['*:' + name(fr.step.key)] = 'inserted';
+      if (fr.step.kind === 'get' && fr.treeAnswer !== null) hl.keys['*:' + name(fr.step.key)] = 'found';
       if (fr.failure && fr.failure.node) hl.nodes['n' + fr.failure.node] = 'deleted';
     }
-    view.render(fr ? fr.tree : null, hl);
+    view.render(fr ? namedTree(fr.tree) : null, hl);
 
     // checks
     checks.replaceChildren();
@@ -270,7 +287,7 @@ a broken tree pass a test that never builds a third level.</p>
       var theirs = new Map(other || []);
       entries.forEach(function (e) {
         var same = !other || (theirs.has(e[0]) && theirs.get(e[0]) === e[1]);
-        row.append(chip(e[0] + ' = ' + val(e[1]), same ? null : 'deleted'));
+        row.append(chip(name(e[0]) + ' = ' + val(e[1]), same ? null : 'deleted'));
       });
     }
     fill(oracleRow, fr ? fr.oracleEntries : [], null);
@@ -286,12 +303,27 @@ a broken tree pass a test that never builds a third level.</p>
   var censusCache = {};
   function census(bug) { return censusCache[bug] || (censusCache[bug] = F.huntShortest(ORDER, bug, 1, SEEDS)); }
 
+  var lastSeed = 1;   // the last seed that was accepted and shown
   function showShortest() {
     var bug = bugSelect.value;
     msg.textContent = '';
-    if (bug === 'none') { showSeed(); return; }
+    if (bug === 'none') {
+      // The correct tree has no "shortest failing run": replay the seed in
+      // the box. If the box holds something else, do not leave the previous
+      // (broken) run on screen under the new selection: fall back and say so.
+      var typed = seedInput.value.trim();
+      var seed = readSeed();
+      if (seed === null) {
+        seed = lastSeed;
+        seedInput.value = String(seed);
+        showSeed();
+        msg.textContent = '"' + typed + '" is not a seed from 1 to ' + SEEDS + ', so seed ' + seed + ' (the last one shown) is replayed on the correct tree.';
+      } else showSeed();
+      return;
+    }
     var c = census(bug);
     seedInput.value = String(c.shortest.seed);
+    lastSeed = c.shortest.seed;
     show(bug, 'Caught by ' + c.failingSeeds + ' of ' + SEEDS + ' seeds; shortest failing run: ' + F.describeCase(F.swarm(c.shortest.seed)),
          F.stepsOf(c.shortest.seed), false);
   }
@@ -307,6 +339,7 @@ a broken tree pass a test that never builds a third level.</p>
     var seed = readSeed();
     if (seed === null) return;
     msg.textContent = '';
+    lastSeed = seed;
     show(bugSelect.value, F.describeCase(F.swarm(seed)), F.stepsOf(seed), false);
   }
   function minimiseCurrent() {
@@ -316,7 +349,7 @@ a broken tree pass a test that never builds a third level.</p>
     var before = current.steps.length;
     var m = F.minimize(ORDER, current.bug, current.steps, f);
     show(current.bug, 'Minimised reproducer: ' + before + ' steps shrunk to ' + m.steps.length + ' in ' + m.replays +
-         ' replays (keys renamed 1, 2, 3, … in order; the n-th put writes n)', m.steps, true);
+         ' replays (no contiguous block of steps can be removed; keys renamed 1, 2, 3, … in order; the n-th put writes n)', m.steps, true);
   }
 
   shortestBtn.addEventListener('click', showShortest);
@@ -330,7 +363,7 @@ a broken tree pass a test that never builds a third level.</p>
   /* ------------------------------------------------------------- code panel */
   var figCode = BTViz.figure('#fig-code', { title: 'One replay, and the minimiser that calls it again and again', side: true });
   BTViz.codePanel(figCode.stage, 'replay', { title: 'replay: apply, compare, validate' });
-  BTViz.codePanel(figCode.side, 'minimize', { title: 'minimize: delete chunks while it still fails' });
+  BTViz.codePanel(figCode.side, 'minimize', { title: 'minimize: delete blocks of steps while it still fails' });
   figCode.caption.innerHTML = 'Condensed from <code>fuzz.zig</code> / <code>fuzz.rs</code> and <code>minimize.zig</code> / <code>minimize.rs</code>. ' +
     'Each row of the operation stream above is one pass through the loop on the left.';
 
@@ -351,7 +384,7 @@ a broken tree pass a test that never builds a third level.</p>
     part4.push('bug ' + bug);
     part4.push('  caught by ' + c.failingSeeds + ' of ' + SEEDS + ' seeds; shortest failing run: seed ' + found.seed +
                ', step ' + (found.failure.step + 1) + ' of ' + steps.length);
-    part4.push('  ' + F.failureText(found.failure));
+    part4.push('  ' + F.failureText(found.failure, F.keyNamer(steps, true)));
     if (found.failure.kind === 'invariant') {
       var silent = found.failure.error === 'NodeCountMismatch' && !F.replay(ORDER, bug, steps, { validate: false }).failure;
       part4.push('  with the oracle comparison alone: ' + (silent ? 'not caught' : 'not tried (the tree is malformed)'));
@@ -360,8 +393,9 @@ a broken tree pass a test that never builds a third level.</p>
     }
     var m = F.minimize(ORDER, bug, steps, found.failure);
     part4.push('  minimised to ' + m.steps.length + ' steps in ' + m.replays + ' replays:');
-    m.steps.forEach(function (st) { part4.push('    ' + F.stepText(st)); });
-    part4.push('    -> ' + F.failureText(m.failure));
+    var exact = F.keyNamer(m.steps, true);
+    m.steps.forEach(function (st) { part4.push('    ' + F.stepText(st, exact)); });
+    part4.push('    -> ' + F.failureText(m.failure, exact));
   });
   BTViz.selfTest('part 4', part4.join('\n'), window.CHAPTER_EXPECTED.part4);
 })();

@@ -588,13 +588,22 @@
     this.root.setAttribute('aria-label', 'The index, the deleted pages and the free list (scrollable)');
     this.root.appendChild(this.svg);
     target.appendChild(this.root);
+    // Only offered when the picture had to be shrunk to fit (phones, big trees).
+    this.fit = true;
+    this.zoomBtn = document.createElement('button');
+    this.zoomBtn.type = 'button';
+    this.zoomBtn.className = 'bt-btn c24-zoom';
+    this.zoomBtn.addEventListener('click', function () { self.fit = !self.fit; self._fit(); self._reveal(self._ids || [], 0); });
+    target.appendChild(this.zoomBtn);
     this.W = 430; this.H = 200;
     if (typeof ResizeObserver !== 'undefined') new ResizeObserver(function () { self._fit(); }).observe(this.root);
   }
   /** The whole picture is scaled to fit the width; below GEO.minScale it scrolls instead. */
   Picture.prototype._fit = function () {
     var avail = this.root.clientWidth || this.W;
-    this.scale = Math.min(1, Math.max(GEO.minScale, avail / this.W));
+    this.scale = this.fit ? Math.min(1, Math.max(GEO.minScale, avail / this.W)) : 1;
+    this.zoomBtn.hidden = avail >= this.W;
+    this.zoomBtn.textContent = this.fit ? 'Enlarge the picture (it then scrolls sideways)' : 'Fit the picture to the width';
     this.svg.setAttribute('viewBox', '0 0 ' + this.W + ' ' + this.H);
     this.svg.setAttribute('width', Math.floor(this.W * this.scale));
     this.svg.setAttribute('height', Math.floor(this.H * this.scale));
@@ -719,6 +728,7 @@
   /** On a narrow screen: scroll sideways so that the boxes this step is about are in view. */
   Picture.prototype._reveal = function (ids, duration) {
     var sc = this.root, L = this.L, lo = Infinity, hi = -Infinity, s = this.scale;
+    this._ids = ids;
     if (sc.scrollWidth <= sc.clientWidth + 1) return;
     ids.forEach(function (id) { var b = L.boxes[id]; if (b) { lo = Math.min(lo, b.x); hi = Math.max(hi, b.x + b.w); } });
     if (lo === Infinity) return;

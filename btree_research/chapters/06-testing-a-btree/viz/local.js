@@ -533,11 +533,12 @@
     function rank(x) { return lowerBound(distinct, x) + 1; }
     c = copy();
     c.forEach(function (s) { if (s.kind === 'range') { s.lo = rank(s.lo); s.hi = rank(s.hi); } else s.key = rank(s.key); });
-    accept(c);
+    var renamed = accept(c);
     // 3. the n-th put writes n
     c = copy(); var n = 0;
     c.forEach(function (s) { if (s.kind === 'put') { n += 1; s.value = BigInt(n); } });
     accept(c);
+    if (!renamed) current.kase = original.kase;   // keys are still indices of the original case
     return { steps: current, failure: failure, replays: replays };
   }
 

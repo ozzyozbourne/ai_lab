@@ -7,6 +7,9 @@
 //! `probe` uses two actors to answer one question without any sleep or
 //! timing: "while operation A is frozen at this point, does operation B run
 //! to completion, or does it get stuck, and on which node?"
+//!
+//! `convoy` asks the same about several operations started one after the
+//! other behind the frozen one.
 const std = @import("std");
 const Io = std.Io;
 
@@ -98,9 +101,42 @@ pub const ProbeError = error{ PauseNotReached, OperationFailed } || std.Thread.S
 
 /// Freezes `a` at `pause`, runs `b` on a second thread, and reports whether
 /// `b` got through. Both operations have completed when this returns.
+///
+/// B either finishes or reports that it must wait. If it waits, it waits for
+/// something the frozen A holds, so it cannot finish before A is released:
+/// the answer is final.
 pub fn probe(tree: *Tree, io: Io, a_op: OpSpec, pause: Pause, b_op: OpSpec) ProbeError!Outcome {
-    var a: Actor = .{ .tree = tree, .io = io, .op = a_op, .pause = pause };
-    var b: Actor = .{ .tree = tree, .io = io, .op = b_op };
+    var outcome: [1]Outcome = undefined;
+    try convoy(tree, io, a_op, pause, &.{b_op}, &outcome);
+    return outcome[0];
+}
+
+/// Most operations `convoy` can start behind the frozen one.
+pub const max_followers = 6;
+
+/// `probe` with more than two threads. Freezes `first` at `pause`, then
+/// starts `others` ONE AT A TIME: each is started only after the one before
+/// it has finished or has reported that it must wait. `outcomes[i]` is what
+/// happened to `others[i]`. Then `first` is released and every thread is
+/// joined, so all operations have completed when this returns.
+///
+/// A follower that waits keeps the latches it already holds, so a later
+/// follower can get stuck behind an EARLIER FOLLOWER and not behind `first`.
+/// That is the convoy the chapter describes.
+///
+/// CAVEAT. `blocked` means "the try-lock failed". While only held latches are
+/// in the way, that is a fact about the tree and the outcome is the same in
+/// every run. But once a follower waits for an EXCLUSIVE latch on a node,
+/// what a later reader of that node sees is no longer determined: the
+/// follower reports `blocked` a moment BEFORE it enters the lock's queue,
+/// and a writer-preferring lock (`std.Io.RwLock` is one) turns new readers
+/// away only once the writer is queued. So put a follower that will wait
+/// for an exclusive latch LAST among those that touch the same node.
+pub fn convoy(tree: *Tree, io: Io, first: OpSpec, pause: Pause, others: []const OpSpec, outcomes: []Outcome) ProbeError!void {
+    std.debug.assert(others.len == outcomes.len and others.len <= max_followers);
+    var a: Actor = .{ .tree = tree, .io = io, .op = first, .pause = pause };
+    // The threads hold pointers into this array: it must not move.
+    var followers: [max_followers]Actor = undefined;
 
     try a.spawn();
     a.waitSettled();
@@ -111,21 +147,25 @@ pub fn probe(tree: *Tree, io: Io, a_op: OpSpec, pause: Pause, b_op: OpSpec) Prob
         return error.PauseNotReached;
     }
 
-    b.spawn() catch |err| {
-        a.release();
-        a.join();
-        return err;
-    };
-    // B either finishes or reports that it must wait. If it waits, it waits
-    // for something A holds, so it cannot finish before A is released: the
-    // answer read here is final.
-    b.waitSettled();
-    const outcome: Outcome = if (b.blocked_at) |node| .{ .blocked = node } else .completed;
+    var started: usize = 0;
+    var spawn_error: ?std.Thread.SpawnError = null;
+    for (others, outcomes) |op, *outcome| {
+        const b = &followers[started];
+        b.* = .{ .tree = tree, .io = io, .op = op };
+        b.spawn() catch |err| {
+            spawn_error = err;
+            break;
+        };
+        started += 1;
+        b.waitSettled();
+        outcome.* = if (b.blocked_at) |node| .{ .blocked = node } else .completed;
+    }
 
+    // Whatever happened: release and join every thread that was started.
     a.release();
     a.join();
-    b.join();
+    for (followers[0..started]) |*b| b.join();
+    if (spawn_error) |err| return err;
     _ = a.result catch return error.OperationFailed;
-    _ = b.result catch return error.OperationFailed;
-    return outcome;
+    for (followers[0..started]) |*b| _ = b.result catch return error.OperationFailed;
 }

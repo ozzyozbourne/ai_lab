@@ -29,6 +29,9 @@
 .ch30-refs { font-size: .8rem; color: var(--bt-muted); margin-top: 6px; overflow-wrap: anywhere; }
 .ch30-refs code { font-size: .76rem; }
 .ch30-hint { font-size: .88rem; color: var(--bt-muted); margin: 0 0 8px; min-height: 1.3em; }
+.ch30-note { font-size: .9rem; color: var(--bt-muted); }
+.ch30-refs details { display: inline; }
+.ch30-refs summary { cursor: pointer; display: inline-block; padding: 4px 0; }
 .ch30-hint.is-error { color: var(--bt-key-deleted); font-weight: 600; }
 #key-in { width: 5.5em; }
 .ch30-lanes { margin-top: 8px; }
@@ -59,6 +62,10 @@ inserts are enough to see everything. Type a key from 1 to 99, or follow the sug
 PostgreSQL split a leaf while Turso only shuffles cells between neighbours; then <b>33</b> makes PostgreSQL's split
 climb to a new root while Turso's leaf simply has room; then <b>60</b> fits in both; then <b>12</b> finds all three
 Turso siblings full, so Turso allocates a page. A key that is already there stops at stage 2.</p>
+<p class="ch30-note">Both lanes are small models written for this page: four entries per page, single integer keys, the
+index only (not the table the row goes into, and not the commit record). Block numbers, split points and the number
+of steps are the models'. The order of the steps, the function names and the WAL record names are the engines';
+"Turso" means its default WAL journal mode, in which one write transaction runs at a time.</p>
 <div id="fig-lanes"></div>
 
 <h2>2. The same insert when every page read may suspend it</h2>
@@ -78,8 +85,10 @@ all-or-nothing step, record the next state.</p>
 <li><strong>The stages are the same.</strong> Find the leaf, check uniqueness, make room, restructure, tell the
 parent, make it durable. Any B-tree engine has these six.</li>
 <li><strong>The answers differ because the concurrency differs.</strong> PostgreSQL lets many writers into the tree,
-so it needs high keys, right links and a flag for the moment between "split" and "parent knows". Turso admits one
-writer, so it needs none of them and can afford to rewrite three siblings at once.</li>
+so it needs high keys, right links and a flag for the moment between "split" and "parent knows". Turso, in the WAL
+journal mode traced here, admits one write transaction at a time, so its tree needs none of them and can afford to
+rewrite three siblings at once. (Its second journal mode, <code>mvcc</code>, lets transactions write concurrently, but
+into row versions kept outside the B-tree; the B-tree is still written by one pager transaction at a time.)</li>
 <li><strong>The log differs for the same reason.</strong> PostgreSQL logs each small step as it happens (so each step
 is recoverable alone); Turso logs whole pages at commit (so the transaction is all or nothing).</li>
 <li><strong>A resumable operation is the blocking code with its stack moved into an object.</strong> The state enum
@@ -109,13 +118,14 @@ is the program counter, the path and the carry are the local variables, and thei
     4: ['04-insertion-and-splitting', 'splitting'], 7: ['07-bplus-trees', 'B+trees, duplicates'],
     8: ['08-range-scans-and-cursors', 'cursors'], 9: ['09-pages-and-the-buffer-pool', 'buffer pool'],
     10: ['10-slotted-pages', 'slotted pages'], 12: ['12-disk-backed-bplus-tree', 'stable root'],
+    13: ['13-overflow-and-free-space', 'values too large for a page'],
     14: ['14-split-policies-and-fill-factor', 'split point'], 15: ['15-redistribution-and-merge-policies', 'sibling balance'],
     17: ['17-key-compression-and-deduplication', 'truncation, dedup'], 18: ['18-indexes-in-a-database', 'unique checks'],
     19: ['19-latching-and-lock-coupling', 'latching'], 20: ['20-blink-trees', 'B-link'],
     21: ['21-durability-primitives', 'fsync, checksums'], 22: ['22-wal-and-crash-recovery', 'WAL'],
     24: ['24-mvcc-vacuum-and-page-deletion', 'dead entries']
   };
-  var STAGE_CHAPTERS = { 1: [3, 2, 9, 8, 19, 20], 2: [18, 7], 3: [10, 17, 24], 4: [4, 14, 15, 17, 12, 20], 5: [4, 20, 12], 6: [21, 22] };
+  var STAGE_CHAPTERS = { 1: [3, 2, 9, 8, 19, 20], 2: [18, 7], 3: [10, 13, 17, 24], 4: [4, 14, 15, 17, 12, 20], 5: [4, 20, 12], 6: [21, 22] };
   function chapterLink(n) {
     return '<a href="../../' + CHAPTERS[n][0] + '/README.md" title="Chapter ' + n + '">ch. ' + n + ' ' + CHAPTERS[n][1] + '</a>';
   }
@@ -145,7 +155,7 @@ is the program counter, the path and the carry are the local variables, and thei
     return { box: box, view: new BTViz.TreeView(view, { minHeight: 150, maxHeight: 210, ariaLabel: title + ' tree' }), log: log };
   }
   var colPg = column('PostgreSQL nbtree', 'B-link B+tree: high keys (dashed), right links, many writers');
-  var colTu = column('Turso (SQLite format)', 'index B-tree: keys in interior pages too, no links, one writer');
+  var colTu = column('Turso (SQLite format)', 'index B-tree: keys in interior pages too, no links, one write transaction (WAL mode)');
   var lanesBox = el('div.ch30-lanes');
   fig.stage.append(hint, stageList, el('div.ch30-pair', colPg.box, colTu.box), lanesBox);
   var lanes = new BTViz.Lanes(lanesBox, {});
@@ -190,7 +200,8 @@ is the program counter, the path and the carry are the local variables, and thei
     steps.forEach(function (s) {
       if (!s.stage) return;
       s.caption += '<div class="ch30-refs">Stage ' + s.stage + ' is taught in ' + STAGE_CHAPTERS[s.stage].map(chapterLink).join(', ') + '.' +
-        (s.refs.length ? '<br>Source: ' + s.refs.map(function (r) { return '<code>' + esc(r) + '</code>'; }).join(' ') : '') + '</div>';
+        (s.refs.length ? '<br><details class="ch30-src"><summary>Source lines (' + s.refs.length + ')</summary> ' +
+          s.refs.map(function (r) { return '<code>' + esc(r) + '</code>'; }).join(' ') + '</details>' : '') + '</div>';
     });
     return steps;
   }

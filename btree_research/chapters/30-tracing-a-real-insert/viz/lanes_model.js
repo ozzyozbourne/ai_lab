@@ -18,7 +18,7 @@
  * of nbtinsert.c (INSERT_LEAF / INSERT_UPPER at :1343-1360, SPLIT_L when the
  * new tuple lands on the left page and SPLIT_R otherwise at :2080), and
  * Turso's output pages take their page numbers in ascending order
- * (btree.rs:4489-4513). Block numbers and split points are the models'.
+ * (btree.rs:4491-4515). Block numbers and split points are the models'.
  * The source lines are given with every step.
  *
  * Classic script: defines window.CH30 (and module.exports under node).
@@ -470,7 +470,7 @@
     for (j = pagesOut - 1; j >= 1; j--) while (counts[j - 1] - counts[j] >= 2) { counts[j]++; counts[j - 1]--; }   // even out, right to left
     var ids = sibs.slice(0, pagesOut), fresh = [];
     while (ids.length < pagesOut) { var nid = this.alloc(leaf); ids.push(nid); fresh.push(nid); this.dirty[nid] = true; }
-    // "Reassign page numbers in increasing order" (btree.rs:4489-4513): the
+    // "Reassign page numbers in increasing order" (btree.rs:4491-4515): the
     // output pages, left to right, get the page numbers in ascending order.
     var treeOrder = ids.join(',');
     ids.sort(function (x, y) { return x - y; });
@@ -496,7 +496,7 @@
       (fresh.length ? '<b>One page was allocated</b> (page ' + fresh.join(', ') + '): this is what a split looks like here.' : '<b>No page was allocated</b>: the neighbours had room, so the "split" turned into a redistribution. PostgreSQL never does this.') +
       ' The output pages, left to right, take the old and new page numbers in ascending order' + (renumbered ? ' (here that changes which number holds which cells: ' + ids.join(', ') + ')' : '') + '.' +
       ' The redistribution itself is pure computation, with no I/O and therefore no yield point. (The picture already shows the dividers in the parent; that is the next stage.)',
-      hl, [TU + 'storage/btree.rs:3872', TU + 'storage/btree.rs:3992-4107', TU + 'storage/btree.rs:4200-4284', TU + 'storage/btree.rs:4293-4420', TU + 'storage/btree.rs:4428', TU + 'storage/btree.rs:4489-4513'], fresh.length ? 'split' : 'merge');
+      hl, [TU + 'storage/btree.rs:3872', TU + 'storage/btree.rs:3992-4107', TU + 'storage/btree.rs:4200-4284', TU + 'storage/btree.rs:4293-4420', TU + 'storage/btree.rs:4428', TU + 'storage/btree.rs:4491-4515'], fresh.length ? 'split' : 'merge');
 
     hl = { nodes: {}, keys: {}, edges: {} };
     hl.nodes['t' + parentId] = par.keys.length > CAP ? 'split' : 'active';

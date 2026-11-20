@@ -154,11 +154,22 @@
     if (!node.leaf) h.edges[node.children[i].id] = 'active';
     return h;
   }
-  function existsStep(push, node, key) {
+  /* `made`: nodes this put has split before it found the key. Bottom-up
+   * finds the key during the descent, before it changes anything, so it
+   * always passes 0; top-down may have split full nodes on the way. */
+  function existsStep(push, node, key, made) {
     var h = { nodes: {}, keys: {} };
     h.nodes[node.id] = 'active'; h.keys[node.id + ':' + key] = 'found';
-    push('exists', 'Key ' + k(key, 'found') + ' is already in the tree. Keys are unique in this part of the guide: <code>put</code> overwrites the value and the structure stays as it is.',
-      h, { log: 'put ' + key + ': already present, value overwritten' });
+    push('exists', 'Key ' + k(key, 'found') + ' is already in the tree. Keys are unique in this part of the guide: <code>put</code> overwrites the value' +
+      (made ? '. The ' + (made === 1 ? 'split' : plural(made, 'split')) + ' made on the way down ' + (made === 1 ? 'stays' : 'stay') +
+        ': top-down changed the structure for a key that was already there. Bottom-up finds the key first and would have split nothing.' :
+        ' and the structure stays as it is.'),
+      h, { log: 'put ' + key + ': already present, value overwritten' + (made ? ' (' + plural(made, 'split') + ' on the way)' : '') });
+  }
+  /* How the children of a splitting interior node are divided (caption text). */
+  function childrenCaption(total, stay) {
+    return ' It is an interior node, so its ' + total + ' children are divided as well: the first ' + stay + ' (those left of the middle key) stay, the last ' +
+      (total - stay) + ' move to the new node with the keys above the middle key.';
   }
 
   /* ---- bottom-up: insert into the leaf, then split upwards while a node is overfull */
@@ -178,7 +189,7 @@
       { nodes: (function () { var o = {}; o[node.id] = 'active'; return o; })(), cursor: { node: node.id, label: key } }, { log: 'put ' + key });
     while (true) {
       i = lowerBound(node.keys, key);
-      if (i < node.keys.length && node.keys[i] === key) { if (rec) existsStep(push, node, key); return false; }
+      if (i < node.keys.length && node.keys[i] === key) { if (rec) existsStep(push, node, key, 0); return false; }
       path.push({ node: node, i: i });
       if (node.leaf) break;
       if (rec) push('descend', descendCaption(node, i, key) + ' The path is remembered: a split below will need this node again.', descendHighlight(node, i, key));
@@ -209,7 +220,8 @@
       var all = rec ? left.keys.slice() : null;
       var ho = { nodes: {} }; if (rec) ho.nodes[left.id] = 'split';
       if (rec) push('overflow', 'Node ' + box(all) + ' is overfull. It splits around its middle key: the keys below it stay, the keys above it move to a new node, and the middle key itself goes up to the parent' +
-        (level === 0 ? ' (this node is the root, so a new root has to be made for it).' : '.'), ho, { log: { html: 'overflow ' + '[' + all.join(' ') + ']', state: 'split' } });
+        (level === 0 ? ' (this node is the root, so a new root has to be made for it).' : '.') +
+        (left.leaf ? '' : childrenCaption(left.children.length, mid + 1)), ho, { log: { html: 'overflow ' + '[' + all.join(' ') + ']', state: 'split' } });
       var right = this._node(left.leaf);
       right.keys = left.keys.splice(mid + 1);
       left.keys.pop();                                   // the median leaves this node
@@ -229,6 +241,7 @@
         this.root = newRoot;
         this.rootSplits++;
         if (rec) push('root-grow', 'The root split, so ' + k(median, 'split') + ' has no parent to go to: a new root is created above the two halves ' + box(left.keys) + ' and ' + box(right.keys) +
+          (left.leaf ? '' : ' (' + plural(left.children.length, 'child') + 'ren under the left half, ' + right.children.length + ' under the right)') +
           '. This is the only way the tree gets taller, and it happens at the top, so every leaf is still at the same depth.',
           hs, { log: { html: 'root split: ' + median + ' up, height ' + this.stats().height, state: 'split' }, question: question, hold: 2 });
         break;
@@ -238,7 +251,8 @@
       parent.children.splice(at + 1, 0, right);
       parent.keys.splice(at, 0, median);
       var over = parent.keys.length > this.maxKeys;
-      if (rec) push('split', k(median, 'split') + ' moves up into the parent, between the two halves ' + box(left.keys) + ' and ' + box(right.keys) + '. ' +
+      if (rec) push('split', k(median, 'split') + ' moves up into the parent, between the two halves ' + box(left.keys) + ' and ' + box(right.keys) +
+        (left.leaf ? '' : ' (' + left.children.length + ' children under the left half, ' + right.children.length + ' under the right)') + '. ' +
         (over ? 'The parent now holds ' + parent.keys.length + ' keys: it is overfull too, so the split repeats one level higher.' :
           'The parent has room for it, so the insert ends here.'),
         hs, { log: { html: 'split: ' + median + ' up, [' + left.keys.join(' ') + '] + [' + right.keys.join(' ') + ']', state: 'split' }, question: question, hold: 2 });
@@ -271,7 +285,7 @@
       if (rec) push('new-root', 'The tree is empty. ' + K + ' goes into a new leaf, which is also the root.', h0, { log: 'put ' + key + ': first node' });
       return true;
     }
-    var node = this.root, self = this;
+    var node = this.root, self = this, splitsBefore = this.splits;
     function preemptQuestion(keys, what) {
       return {
         prompt: 'The ' + what + ' ' + box(keys) + ' is full (' + self.maxKeys + ' keys). What does top-down insertion do now?',
@@ -284,7 +298,8 @@
     if (node.keys.length === this.maxKeys) {
       var allRoot = node.keys.slice();
       var hp = { nodes: {} }; hp.nodes[node.id] = 'split';
-      if (rec) push('preempt', 'The root ' + box(allRoot) + ' is full. It is split now, although nobody knows yet whether a key will come up from below.',
+      if (rec) push('preempt', 'The root ' + box(allRoot) + ' is full. It is split now, although nobody knows yet whether a key will come up from below.' +
+        (node.leaf ? '' : childrenCaption(node.children.length, Math.floor(this.maxKeys / 2) + 1)),
         hp, { at: 'root', log: { html: 'full root [' + allRoot.join(' ') + ']', state: 'split' }, question: preemptQuestion(allRoot, 'root') });
       var r = this._splitFull(node);
       var newRoot = this._node(false);
@@ -301,7 +316,7 @@
     }
     while (true) {
       var i = lowerBound(node.keys, key);
-      if (i < node.keys.length && node.keys[i] === key) { if (rec) existsStep(push, node, key); return false; }
+      if (i < node.keys.length && node.keys[i] === key) { if (rec) existsStep(push, node, key, this.splits - splitsBefore); return false; }
       if (node.leaf) {
         var beforeKeys = rec ? node.keys.slice() : null;
         node.keys.splice(i, 0, key);
@@ -319,7 +334,8 @@
         var all = rec ? child.keys.slice() : null;
         var hc = { nodes: {}, cursor: { node: node.id, label: key } };
         if (rec) { hc.nodes[child.id] = 'split'; hc.nodes[node.id] = 'active'; }
-        if (rec) push('preempt', 'The child ' + box(all) + ' is full. It is split before we enter it. The node we stand in is not full (we made sure of that one step earlier), so it can take the middle key.',
+        if (rec) push('preempt', 'The child ' + box(all) + ' is full. It is split before we enter it. The node we stand in is not full (we made sure of that one step earlier), so it can take the middle key.' +
+          (child.leaf ? '' : childrenCaption(child.children.length, Math.floor(this.maxKeys / 2) + 1)),
           hc, { log: { html: 'full child [' + all.join(' ') + ']', state: 'split' }, question: preemptQuestion(all, 'child') });
         var s = this._splitFull(child);
         node.children.splice(i + 1, 0, s.right);
@@ -329,7 +345,7 @@
         if (rec) push('split', k(s.median, 'split') + ' moves up between the halves ' + box(child.keys) + ' and ' + box(s.right.keys) + '. ' +
           (key === s.median ? 'It is the key we are inserting.' : k(key, 'compare') + ' is ' + (key > s.median ? 'larger' : 'smaller') + ' than ' + k(s.median) + ', so we continue in the ' + (key > s.median ? 'right' : 'left') + ' half.'),
           hs, { log: { html: 'split: ' + s.median + ' up, [' + child.keys.join(' ') + '] + [' + s.right.keys.join(' ') + ']', state: 'split' }, hold: 2 });
-        if (key === s.median) { if (rec) existsStep(push, node, key); return false; }
+        if (key === s.median) { if (rec) existsStep(push, node, key, this.splits - splitsBefore); return false; }
         if (key > s.median) child = s.right;
       }
       node = child;

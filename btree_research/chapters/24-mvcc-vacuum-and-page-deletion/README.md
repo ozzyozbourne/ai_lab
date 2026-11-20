@@ -307,8 +307,8 @@ All statements below were checked in the source trees under `db_study/`; see
 [research/turso.md](../../research/turso.md) section 15. Paths:
 `N/` = `postgres/src/backend/access/nbtree/`.
 
-**PostgreSQL, hint bits (LP_DEAD).** "If a process visits a heap tuple and finds
-that it's dead and removable (ie, dead to all open transactions, not only that
+**PostgreSQL, hint bits (LP_DEAD).** "If a process visits a heap tuple [a row
+version in the table] and finds that it's dead and removable (ie, dead to all open transactions, not only that
 process), then we can return to the index and mark the corresponding index entry
 'known dead'" (`N/README:513-516`). The bit is set by `_bt_killitems`
 (`N/nbtutils.c:190-390`, `ItemIdMarkDead` at `:361`) under a share lock, and scans
@@ -331,11 +331,8 @@ order, not in key order as our chain walk does, and needs a per-split "vacuum cy
 id" to cope with concurrent splits (`N/nbtree.c:1581-1586`). It also deletes emptied
 leaves and finishes half-dead pages left by an interrupted deletion.
 
-**No merging.** "We consider deleting an entire page from the btree only when it's
-become completely empty of items. (Merging partly-full pages would allow better space
-reuse, but it seems impractical to move existing data items left or right to make
-this happen --- a scan moving in the opposite direction might miss the items if so.)
-Also, we *never* delete the rightmost page on a tree level" (`N/README:235-240`).
+**No merging.** Only a completely empty page is deleted, for the reason given above,
+and never the rightmost page of a level (`N/README:235-240`).
 
 **Two phases.** The eligibility test is at `N/nbtpage.c:1906-1908`. Phase 1,
 `_bt_mark_page_halfdead`, does exactly the parent surgery of our `markHalfDead`: set
@@ -348,10 +345,8 @@ only child, removing the parent with it (a "skinny subtree", `N/README:240-245`)
 model never does. PostgreSQL re-finds the parent through the page's high key; our
 pages have none, so `findDownlink` walks the internal pages.
 
-**Recycling.** "A deleted page cannot be recycled immediately, since there may be
-other processes waiting to reference it (ie, search processes that just left the
-parent, or scans moving right or left from one of the siblings). ... they recover by
-moving right" (`N/README:319-324`). `BTPageIsRecyclable` asks whether `safexid` could
+**Recycling.** Processes that still reference a deleted page "recover by moving
+right" (`N/README:319-324`). `BTPageIsRecyclable` asks whether `safexid` could
 still be visible to anyone (`nbtree.h:296-319`); forward scans skip ignorable pages
 and continue with the saved right link (`N/nbtsearch.c:1921-1929`). Our epoch stamp
 and horizon are the same idea with one counter for both jobs; PostgreSQL uses its
@@ -392,8 +387,7 @@ index and must leave the database, including the transaction counter, unchanged.
 What would go wrong with other choices: with `gpa.create` per page and raw pointers,
 a premature recycle is a real use-after-free instead of a detectable stale handle. A
 bump `ArenaAllocator` cannot return a single page, which is the one thing this
-chapter needs. A deleted queue in an `ArrayList` would let VACUUM fail with
-`OutOfMemory` halfway through a page deletion; the intrusive link avoids that.
+chapter needs.
 
 ## Pitfalls
 
@@ -412,11 +406,14 @@ chapter needs. A deleted queue in an `ArrayList` would let VACUUM fail with
   that is on its way to the page.
 - **Using a cursor after closing its snapshot.** The open snapshot is the only thing
   that keeps the cursor's saved page from being recycled. `seek` and every page read
-  assert that it is still open.
+  assert that it is still open (Zig's `std.debug.assert` checks only in safe build
+  modes; Rust's `assert!` always).
 - **One long-running snapshot.** It holds the horizon back: no hints, no bottom-up
   deletion, VACUUM removes nothing, deleted pages wait.
 - **Expecting VACUUM to shrink the tree.** It never merges non-empty pages and never
-  lowers the height. Empty pages that are rightmost children stay.
+  lowers the height. An empty page that is the rightmost child of its parent stays:
+  its key range would pass to a page under another parent, and a separator higher up
+  would have to change (`N/README:268-275`).
 
 ## Exercises
 

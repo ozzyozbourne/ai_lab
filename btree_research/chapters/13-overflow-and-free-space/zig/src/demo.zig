@@ -1,6 +1,6 @@
 //! demo.zig: the fixed, deterministic scenario printed by `zig build run`.
 //!
-//! Part 1  a dozen operations on a real file: a value spills into an
+//! Part 1  sixteen operations on a real file: a value spills into an
 //!         overflow chain, pages are freed and reused, a leaf empties and
 //!         the root collapses. The visualization replays exactly this part.
 //! Part 2  a seeded workload of puts and deletes with values of every size
@@ -38,11 +38,13 @@ pub const scenario = [_]Step{
     .{ .key = 60, .len = 3000 },
     .{ .key = 25, .len = 100, .show = true }, // large -> small: the chain is freed
     .{ .key = 35, .len = 5000, .show = true }, // reuses a freed page
+    .{ .key = 60, .len = null }, // frees its chain
+    .{ .key = 35, .len = null },
     .{ .key = 40, .len = null },
     .{ .key = 50, .len = null },
-    .{ .key = 60, .len = null },
-    .{ .key = 35, .len = null, .show = true }, // the right leaf empties; the root collapses
-    .{ .key = 70, .len = 14000, .show = true }, // needs four pages; three are free
+    .{ .key = 30, .len = null, .show = true }, // the right leaf empties; the root collapses
+    .{ .key = 70, .len = 14000, .show = true }, // four overflow pages, all from the free list
+    .{ .key = 80, .len = 3000, .show = true }, // takes the trunk page itself
 };
 
 /// Key `n` as two decimal digits, so that byte order is numeric order.
@@ -152,8 +154,8 @@ fn part1(w: *Io.Writer, gpa: Allocator, io: Io, dir: Io.Dir) !void {
     defer gpa.free(value);
     try w.print("get 70 -> {d} bytes, all '{c}': {}\n", .{ value.len, value[0], std.mem.allEqual(u8, value, 'a' + 70 % 26) });
     try w.print("get 35 -> {s}\n", .{if (try tree.get(gpa, "35")) |_| "found?!" else "not found"});
-    try w.writeAll("range [10, 99) ->");
-    var it = try tree.range("10", "99");
+    try w.writeAll("range [20, 99) ->");
+    var it = try tree.range("20", "99");
     defer it.deinit();
     while (try it.next()) |item| try w.print(" {s}:{d}{s}", .{ item.key, item.value.len, if (it.valueOnHeap()) "(heap)" else "" });
     try w.writeAll("\n");
@@ -298,18 +300,29 @@ pub const CrashOutcome = struct {
     /// Both operations and the flush finished: there was no crash.
     completed: bool = false,
     validate_error: ?anyerror = null,
-    old: Found = .missing,
-    new: Found = .missing,
+    old: Found = .{},
+    new: Found = .{},
 
-    pub const Found = enum { missing, intact, wrong_bytes, unreadable };
+    pub const State = enum { missing, intact, wrong_bytes, unreadable };
+    /// What `get` returned, with the value's first and last byte.
+    pub const Found = struct { state: State = .missing, first: u8 = 0, last: u8 = 0 };
 };
 
 pub const crash_value_len = 5000;
 
 fn look(tree: *DiskBTree, gpa: Allocator, key: []const u8, letter: u8) CrashOutcome.Found {
-    const value = (tree.get(gpa, key) catch return .unreadable) orelse return .missing;
+    const value = (tree.get(gpa, key) catch return .{ .state = .unreadable }) orelse return .{};
     defer gpa.free(value);
-    return if (value.len == crash_value_len and std.mem.allEqual(u8, value, letter)) .intact else .wrong_bytes;
+    const intact = value.len == crash_value_len and std.mem.allEqual(u8, value, letter);
+    return .{ .state = if (intact) .intact else .wrong_bytes, .first = value[0], .last = value[value.len - 1] };
+}
+
+fn printFound(w: *Io.Writer, name: []const u8, found: CrashOutcome.Found) !void {
+    try w.print("; {s}: ", .{name});
+    switch (found.state) {
+        .wrong_bytes => try w.print("WRONG VALUE (starts with '{c}', ends with '{c}')", .{ found.first, found.last }),
+        else => try w.print("{t}", .{found.state}),
+    }
 }
 
 /// Store "old" = 5000 x 'o' (916 bytes in the leaf, one overflow page) and
@@ -366,7 +379,9 @@ fn part5(w: *Io.Writer, gpa: Allocator) !void {
         try w.print("N = {d}: ", .{writes});
         if (o.completed) try w.writeAll("no crash, all writes done; ");
         if (o.validate_error) |err| try w.print("validate fails with error.{t}", .{err}) else try w.writeAll("validate ok");
-        try w.print("; old: {t}; new: {t}\n", .{ o.old, o.new });
+        try printFound(w, "old", o.old);
+        try printFound(w, "new", o.new);
+        try w.writeAll("\n");
         if (o.completed) break;
     }
 }

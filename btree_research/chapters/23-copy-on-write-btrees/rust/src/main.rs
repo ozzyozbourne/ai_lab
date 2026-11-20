@@ -4,7 +4,7 @@
 use std::io::{self, Write};
 
 use ch23_copy_on_write_btrees::ops::{Config, Entry, Op, OpStream, Oracle, Weights};
-use ch23_copy_on_write_btrees::{CommitInfo, Db, Meta, Snapshot, View, dump};
+use ch23_copy_on_write_btrees::{CommitInfo, Cursor, Db, Meta, Snapshot, TxnError, dump};
 
 /// Canonical hand example of chapters 03 to 08.
 const CANONICAL: [u64; 12] = [10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15];
@@ -170,23 +170,69 @@ fn run(w: &mut dyn Write) -> io::Result<()> {
     dump::dump(db.view(), db.current.txn_id, w)?;
     db.validate().expect("valid");
 
-    writeln!(w, "\n== 6. The two-slot metapage; a torn commit ==")?;
+    writeln!(w, "\n== 6. The two-slot metapage: restarts after damage ==")?;
     print_meta(w, &db)?;
-    let newest = (db.current.txn_id % 2) as usize;
-    db.store.meta_slots[newest][8] ^= 0xFF; // damage the root field of the newest slot
-    writeln!(w, "flip one byte in slot {newest}, then restart:")?;
+    // (a) A torn meta write. Commits alternate, so txn 18 writes slot 0.
+    crashing_put(&mut db, 9, 12);
+    writeln!(
+        w,
+        "put 9: power fails in the middle of the meta write of txn 18 (slot 0). Restart:"
+    )?;
+    print_meta(w, &db)?;
+    db.reopen().expect("one slot is intact");
+    writeln!(
+        w,
+        "get 9 = {}, {} keys (txn 18 never happened; txn 17 is complete)",
+        opt(db.get(9)),
+        db.len()
+    )?;
+    print_store(w, &db)?;
+    db.validate().expect("valid");
+    {
+        let mut txn = db.begin();
+        txn.put(9, 900).expect(NO_BUDGET);
+        let info = txn.commit().expect(NO_BUDGET);
+        write!(w, "put 9 ")?;
+        print_commit(w, info, &db)?;
+    }
+    print_store(w, &db)?;
+    // (b) Two faults at once: txn 19 is in flight, and the slot of the
+    // newest commit (txn 18, slot 0) cannot be read any more.
+    let pages = crashing_put(&mut db, 4, 0);
+    db.store.meta_slots[0][8] ^= 0xFF; // damage the root field
+    writeln!(
+        w,
+        "put 4: power fails after the {pages} page writes of txn 19, before its meta write."
+    )?;
+    writeln!(
+        w,
+        "On top of that, slot 0 (txn 18, the newest commit) has become unreadable. Restart:"
+    )?;
     print_meta(w, &db)?;
     db.reopen().expect("one slot is intact");
     dump::dump(db.view(), db.current.txn_id, w)?;
     writeln!(
         w,
-        "get 27 = {} (the torn commit is gone, the one before it is intact)",
-        opt(db.get(27))
+        "get 9 = {}, get 4 = {} (txn 18 is lost with its slot; txn 17 is complete, although txn 19 had written pages)",
+        opt(db.get(9)),
+        opt(db.get(4))
     )?;
     print_store(w, &db)?;
     db.validate().expect("valid");
 
     model_run(w)
+}
+
+/// `put key` as a transaction whose commit loses power after all of its page
+/// writes and `meta_bytes` bytes of its meta slot. Returns the number of
+/// page writes. The caller restarts with `db.reopen`.
+fn crashing_put(db: &mut Db, key: u64, meta_bytes: usize) -> usize {
+    let mut txn = db.begin();
+    txn.put(key, key * 100).expect(NO_BUDGET);
+    let pages = txn.dirty_count();
+    txn.committed_mut().crash_after = Some(pages + meta_bytes);
+    assert_eq!(txn.commit(), Err(TxnError::Crashed));
+    pages
 }
 
 fn print_commit(w: &mut dyn Write, info: CommitInfo, db: &Db) -> io::Result<()> {
@@ -319,7 +365,7 @@ fn model_run(w: &mut dyn Write) -> io::Result<()> {
                     }
                 }
                 Op::Range { lo, hi } => {
-                    mismatches += count_range_mismatches(db.view(), oracle.range(lo, hi), lo, hi);
+                    mismatches += count_mismatches(db.view().seek(lo), Some(hi), oracle.range(lo, hi));
                 }
             }
             peak_pending = peak_pending.max(db.pending.len());
@@ -330,13 +376,14 @@ fn model_run(w: &mut dyn Write) -> io::Result<()> {
                 }
                 held.push(Held {
                     snap: db.snapshot(),
+                    // Every key is below 200, so the exclusive bound loses nothing.
                     saved: oracle.range(0, u64::MAX).to_vec(),
                 });
             }
             if i % 50 == 49 {
                 // Every held snapshot must still read exactly what was saved.
                 for h in &held {
-                    mismatches += count_range_mismatches(h.snap.view(&db), &h.saved, 0, u64::MAX);
+                    mismatches += count_mismatches(h.snap.view(&db).seek(0), None, &h.saved);
                     snapshots_checked += 1;
                 }
                 db.validate().expect("valid");
@@ -363,19 +410,21 @@ fn model_run(w: &mut dyn Write) -> io::Result<()> {
     Ok(())
 }
 
-fn count_range_mismatches(view: View<'_>, expected: &[Entry], lo: u64, hi: u64) -> usize {
+/// Compares what the cursor yields, up to `hi` (exclusive; `None` = to the
+/// end of the tree), with `expected`.
+fn count_mismatches(cursor: Cursor<'_>, hi: Option<u64>, expected: &[Entry]) -> usize {
     let mut mismatches = 0;
-    let mut it = view.range(lo, hi);
-    for e in expected {
-        match it.next() {
-            Some(got) if got.key == e.key && got.value == e.value => {}
-            _ => mismatches += 1,
+    let mut i = 0;
+    for e in cursor {
+        if hi.is_some_and(|hi| e.key >= hi) {
+            break;
         }
+        if expected.get(i).is_none_or(|x| e.key != x.key || e.value != x.value) {
+            mismatches += 1;
+        }
+        i += 1;
     }
-    if it.next().is_some() {
-        mismatches += 1;
-    }
-    mismatches
+    mismatches + expected.len().saturating_sub(i)
 }
 
 #[cfg(test)]

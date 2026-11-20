@@ -385,7 +385,7 @@ is the program counter, the path and the carry are the local variables, and thei
     w = new CH30.Pair();
     w.insert(31); names.push('31 alone: ' + w.pg.wal.join(' · '));
     BTViz.selfTest('lanes: WAL record names', names.join('\n'), window.EXPECTED_LANES_WAL);
-    var rule = 'ok', splits = 0, ascending = 'ok';
+    var rule = 'ok', splits = 0, ascending = 'ok', groups = 0;
     for (var r2 = 0; r2 < 20; r2++) {
       var q = new CH30.Pair();
       for (var j = 0; j < 70; j++) {
@@ -400,14 +400,21 @@ is the program counter, the path and the carry are the local variables, and thei
             : left.children.some(function (c) { return !down[c]; });
           if (onLeft !== (m[1] === 'L')) rule = 'wrong record name after ' + key2 + ': ' + rec;
         });
-        // Turso: siblings under one parent carry ascending page numbers only
-        // where a balance dealt them out; check the pages it just touched.
-        var steps2 = q.turso.lastBalanced || [];
-        steps2.forEach(function (ids) { for (var t = 1; t < ids.length; t++) if (ids[t - 1] >= ids[t]) ascending = 'page numbers not ascending: ' + ids.join(','); });
+        // Turso: the pages a balance dealt cells out to stand in the tree,
+        // left to right, in ascending page number (looked up in the parent;
+        // a group that a balance one level up spread over two parents is skipped).
+        (q.turso.lastBalanced || []).forEach(function (ids) {
+          Object.keys(q.turso.pages).forEach(function (pid) {
+            var ch = q.turso.pages[pid].children, at = ch.indexOf(ids[0]);
+            if (at < 0 || at + ids.length > ch.length) return;
+            groups++;
+            for (var t = 0; t < ids.length; t++) if (ch[at + t] !== ids[t] || (t > 0 && ids[t - 1] >= ids[t])) ascending = 'pages ' + ch.slice(at, at + ids.length).join(',') + ' under page ' + pid;
+          });
+        });
       }
     }
     BTViz.selfTest('lanes: SPLIT_L / SPLIT_R rule (' + (splits > 100 ? 'many' : 'too few') + ' splits)', rule, 'ok');
-    BTViz.selfTest('lanes: Turso output pages in ascending page order', ascending, 'ok');
+    BTViz.selfTest('lanes: Turso output pages in ascending page order (' + (groups > 100 ? 'many' : 'too few') + ' balances)', ascending, 'ok');
   })();
   // The resumable insert: the JS model makes the calls the programs print.
   var p1 = CH30.replayPart1();

@@ -373,9 +373,83 @@ test "a read failure, a write failure or an allocation failure mid-operation lea
         try testing.expect(hit >= 10); // the sweep really went through the operations
         // Reads cannot fail mid-split here without the split having changed a
         // page first, so every kind of fault must have produced both outcomes.
-        std.debug.print("{t}: hit {d} poisoned {d}\n", .{ fault, hit, poisoned_runs });
-        try testing.expect(poisoned_runs > 0 and poisoned_runs < hit);
+        // A failed read or write must have produced both outcomes: an insert
+        // that never started changing pages, and one caught half-way. (Out of
+        // memory strikes these twelve inserts only before their first page
+        // change; the next test goes after the other case.)
+        try testing.expect(poisoned_runs < hit);
+        if (fault != .memory) try testing.expect(poisoned_runs > 0);
     }
+}
+
+test "out of memory in the middle of a cascading split: no pin, no leak, and the handle is poisoned" {
+    const gpa = testing.allocator;
+    const shape: Shape = .{};
+    // Pilot run: which put is the first to split an interior page?
+    var target: usize = 0;
+    {
+        var rig: Rig = undefined;
+        try rig.create(gpa, 8);
+        defer rig.deinit();
+        var rng = SplitMix64.init(1);
+        var key_buf: [workload.max_key_len]u8 = undefined;
+        var value_buf: [workload.max_value_len]u8 = undefined;
+        while (rig.tree.stats.interior_splits == 0) : (target += 1) {
+            const key, const value = nextPut(&rng, shape, &key_buf, &value_buf);
+            try rig.tree.put(key, value);
+        }
+        target -= 1;
+    }
+
+    var before_change: u32 = 0;
+    var after_change: u32 = 0;
+    var fail_index: usize = 0;
+    while (true) : (fail_index += 1) {
+        var rig: Rig = undefined;
+        try rig.create(gpa, 8);
+        defer rig.deinit();
+        var rng = SplitMix64.init(1);
+        var key_buf: [workload.max_key_len]u8 = undefined;
+        var value_buf: [workload.max_value_len]u8 = undefined;
+        for (0..target) |_| {
+            const key, const value = nextPut(&rng, shape, &key_buf, &value_buf);
+            try rig.tree.put(key, value);
+        }
+        const key, const value = nextPut(&rng, shape, &key_buf, &value_buf);
+
+        var failing: testing.FailingAllocator = .init(gpa, .{ .fail_index = fail_index });
+        var op = InsertOp.init(failing.allocator(), &rig.tree, key, value, .{ .pressure = true }) catch |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            before_change += 1;
+            continue;
+        };
+        defer op.deinit();
+        const outcome = while (true) {
+            const s = op.step() catch |err| break err;
+            switch (s) {
+                .done => break {},
+                .io => |id| try rig.supply(id),
+            }
+        };
+        if (outcome) |_| {
+            try testing.expect(!failing.has_induced_failure);
+            try testing.expectEqual(1, rig.tree.stats.interior_splits);
+            try rig.tree.validate();
+            break; // the sweep has passed the operation's last allocation
+        } else |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            try testing.expectEqual(.failed, op.state);
+            try testing.expectEqual(0, rig.pool.pinnedFrames());
+            try testing.expectEqual(0, op.arena.queryCapacity());
+            if (rig.tree.poisoned) {
+                after_change += 1;
+            } else {
+                before_change += 1;
+                try rig.tree.validate(); // untouched
+            }
+        }
+    }
+    try testing.expect(before_change > 0 and after_change > 0);
 }
 
 test "cancelling a waiting insert: nothing pinned, nothing changed, memory returned" {

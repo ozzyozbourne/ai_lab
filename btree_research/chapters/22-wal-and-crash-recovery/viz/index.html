@@ -145,7 +145,7 @@ and reopens the file; so does the model behind this page. Pick a cell to load it
   var current = steps[0]; // the step on screen
   var cells = []; // figure 2's buttons, filled in below
   var stepper = new BTViz.Stepper({
-    mount: fig.controls, caption: fig.caption, root: fig.root, steps: steps, predict: true, interval: 2600,
+    mount: fig.controls, caption: fig.caption, root: fig.root, steps: steps, predict: false, interval: 2600,
     onStep: function (step) { current = step; code.highlight(step.lines); draw(); }
   });
 

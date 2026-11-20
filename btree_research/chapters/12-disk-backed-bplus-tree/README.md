@@ -10,9 +10,6 @@
 Prerequisites: chapter 07 (B+tree, separators are copies, leaf links), chapter 09 (pager and buffer
 pool: fetch, pin, unpin, dirty), chapter 10 (slotted page), chapter 11 (keys as byte strings).
 
-This chapter adds no new data structure. It puts chapters 07 to 11 together, and chapters 13, 22
-and 30 start from its code.
-
 ## The idea in plain words
 
 Take the B+tree of chapter 07 and replace three things.
@@ -38,6 +35,10 @@ an interior page with that new page as its only child. Then the new page splits 
 page. The height grows by one and the root is still page 1. Everything that knows where the
 root is (the metapage, and in a real database the catalog and every open cursor) stays correct.
 
+So the root id in page 0 never changes here. The metapage earns its page in other ways: `open`
+checks its magic number, version and page size before it trusts any other page, and it carries
+the two counters. The root id is stored so that a later format can let the root move.
+
 ### Why a split is "50/50 by bytes"
 
 When a cell does not fit, the leaf's cells plus the new one are laid out in key order and cut in
@@ -46,8 +47,9 @@ cut goes after the shortest prefix that holds at least half of the *bytes*.
 
 Does each half fit in a page? Only if no single cell is too large. Let `C` be the capacity
 (4076) and `m` the largest cost a cell may have. The page overflowed, so the costs add up to `T`
-with `C < T <= C + m`. The prefix before the cut point is below `T/2`, so the left half is below
-`T/2 + m <= C/2 + 3m/2`. That is at most `C` exactly when `m <= C/3`. The right half is at most
+with `C < T <= C + m`. Without its last cell the left half is below `T/2` (otherwise the cut
+would have come one cell earlier), and that last cell costs at most `m`, so the left half is
+below `T/2 + m <= C/2 + 3m/2`. That is at most `C` exactly when `m <= C/3`. The right half is at most
 `T/2`. So the rule is: **every cell must cost at most a third of a page.** This chapter allows
 keys up to 256 bytes and values up to 1024 bytes (a quarter of a page), which makes the largest
 leaf cell 1286 bytes, below 4076 / 3 = 1358. A `comptime` assertion checks it.
@@ -64,14 +66,13 @@ Neither is true here. Whether an interior page can take a separator depends on t
 length, and the separator is only known after the leaf below has chosen its split point. A page
 with 300 free bytes is full for a 256-byte key and far from full for a 3-byte one.
 
-So splits run bottom-up. The descent remembers its path (page ids and child indexes, not
-pinned pages). If the leaf is full it splits and hands a separator to its parent; if the parent
-has no room for that particular separator, the parent splits too, and so on.
+So splits run bottom-up, along a path of page ids remembered on the way down.
 
 ## A worked example by hand
 
 The programs insert 24 two-digit keys. Key `n` carries a value of `300 + 24*n` bytes, so its
-cell costs `4 + 2 + (300 + 24n) + 2` bytes: key 05 costs 428, key 30 costs 1028.
+cell costs `4 + 2 + (300 + 24n) + 2` bytes (cell header, key, value, slot): key 05 costs 428,
+key 30 costs 1028.
 
 The first six keys (10, 20, 05, 06, 12, 30) cost 548 + 788 + 428 + 452 + 596 + 1028 = 3840 bytes.
 They fit in the root, page 1, which is still a leaf. Key 07 costs 476 and only 236 bytes are free.
@@ -81,7 +82,9 @@ They fit in the root, page 1, which is still a leaf. Key 07 costs 476 and only 2
 - Page 2 now splits. The seven cells in key order cost 428, 452, 476, 548, 596, 788, 1028,
   together 4316. Half is 2158. The prefixes are 428, 880, 1356, 1904, **2500**: the first five
   cells stay on page 2 and the last two (20 and 30, 1816 bytes) go to a new page 3.
-- The separator is a copy of the right half's first key, 20. It goes into page 1.
+- The separator is a copy of the right half's first key, 20. In an interior cell the child is
+  *left* of its key, so page 1 gets the cell `(20 -> page 2)`, and its rightmost-child link,
+  which led to page 2, now leads to page 3.
 
 ```
 page 1  interior  1 keys  12/4076 bytes  | (2) 20 (3)
@@ -89,8 +92,7 @@ page 1  interior  1 keys  12/4076 bytes  | (2) 20 (3)
   page 3  leaf      2 keys  1816/4076 bytes  next -  | 20:780 30:1020
 ```
 
-Five keys on the left, two on the right: an uneven split by keys, a fair one by bytes. After
-all 24 puts (the full output is in `expected_output.txt`):
+After all 24 puts (the full output is in `expected_output.txt`):
 
 ```
 page 1  interior  5 keys  60/4076 bytes  | (2) 08 (7) 12 (4) 20 (3) 25 (6) 28 (5)
@@ -117,9 +119,8 @@ disk_btree                                   this chapter
 workload, tests, demo                        seeded keys and oracle, tests, the printed scenario
 ```
 
-Chapter 11's `varint` and `keycodec` are not copied: the tree treats keys as opaque bytes
-compared with memcmp, which is exactly what chapter 11's encoders produce. Part 3 of the demo
-uses the simplest of them, a `u64` as 8 big-endian bytes, and gets numeric order from byte order.
+Chapter 11's encoders are not copied: the tree compares opaque bytes with memcmp, which is
+what they produce (part 3 uses a big-endian `u64`).
 
 ### Zig (`zig/src/disk_btree.zig`)
 
@@ -152,17 +153,18 @@ Each step does everything that can fail (fetch, allocation) before it changes a 
 step either happens or does not. The steps together are not atomic; see "Not crash-safe yet".
 
 **Pins.** No function returns with a pin it took, and at most two pages are pinned at once.
-`BufferPool.deinit` asserts that no pin is left, so every error path has an `errdefer` unpin;
-the tests inject failures at every point to check that.
+`BufferPool.deinit` asserts that no pin is left, so every error path has an `errdefer` unpin.
+The tests check that: they make each of 150 successive reads and writes of a running workload
+fail, and (Zig only) each of the 16 scratch allocations of three puts that between them split
+a leaf, an interior page and the root.
 
 **`get`, `range`.** `get` copies the value with an allocator the caller passes, because the
 page may be evicted the moment it is unpinned. `range(lo, hi)` returns an iterator that
 remembers `(leaf page id, slot)` and holds no pin between calls: each `next` pins the leaf,
 copies one entry into the iterator's own buffer and unpins. Nothing has to be released.
 
-**`validate`** walks the whole file and checks eight invariants (T1 to T8 at the top of the
-file): well-formed pages, key order, separator bounds, equal leaf depth, the leaf chain, every
-page reachable exactly once, no empty pages, and the key count.
+**`validate`** walks the whole file and checks invariants T1 to T8 listed at the top of the
+file.
 
 ### Rust (`rust/src/disk_btree.rs`) and the differences
 
@@ -181,12 +183,9 @@ Same structure, names, tests and output. The differences that matter:
   iterator, so it cannot implement `std::iter::Iterator`.
 - **Errors.** Zig merges error sets; Rust has one `TreeError` enum with `Io(...)` and
   `Invalid(Violation)` variants.
-- **Tests.** Zig reports 69 tests, Rust 66. Both hash the file that a fixed run of puts
-  leaves (the empty key, 0x00 and 0xFF bytes, chains of prefixes, 400 seeded puts) and compare
-  it with the same constant, so the two programs write the same bytes. Only in Zig: the allocation-failure test, one
-  storage test (out of memory reported as `StorageFailure`) and the `test` block that pulls in
-  the other files. Safe Rust cannot make a `Vec` allocation fail; the nearest case, "the
-  page allocation in the middle of a split fails", is covered by the I/O tests in both.
+- **Tests.** Zig reports 69 tests, Rust 66; both compare a hash of the file written by a fixed
+  run of puts with the same constant. Three tests exist only in Zig (allocation failure, which
+  safe Rust cannot inject into a `Vec`; one storage test; the import block).
 
 ## Not crash-safe yet
 
@@ -195,8 +194,8 @@ fourth. The file receives pages one write at a time. There is no moment at which
 change together, so a crash between two writes leaves a file that is neither the old tree nor
 the new one. Two things make this worse than it sounds:
 
-- The writes do not even wait for `flush`. Whenever the buffer pool needs a frame it evicts a
-  dirty page and writes it, in the middle of whatever the tree is doing.
+- The writes do not even wait for `flush`. When the buffer pool needs a frame and its victim
+  is dirty, that page is written then, in the middle of whatever the tree is doing.
 - Nothing on a page says whether it is current. A reader cannot tell a stale page from a
   fresh one.
 
@@ -221,14 +220,15 @@ page. At N = 4 the left half has been rewritten without them and the right half 
 written: **two keys that had been flushed long ago no longer exist anywhere.** A crash during
 an insert of one key destroyed two others.
 
+And this is the mildest crash: every write that returned is whole and on disk. A real one can
+also lose writes that were not yet synced, and tear a single page in half (chapter 21).
+
 The same holds in memory. If `put` fails with an I/O or allocation error after its first step
 has changed a page, the tree in the buffer pool is half-split. The handle then sets `poisoned`.
 From then on `put`, `get`, `range` and `flush` (and `close`, which flushes) return
 `TreePoisoned`: nothing is answered from the broken tree and no more of it is written. That is
-honest but not a repair. `validate`, `height` and `dump` deliberately do not check the flag:
-they still read the half-split pages, because they are how you look at the damage. Neither
-does a range iterator obtained earlier (Rust's borrow checker forbids keeping one across a
-`put`; in Zig, do not).
+honest but not a repair. `validate`, `height` and `dump` still work, so that the damage can
+be looked at.
 
 Chapter 21 adds the tools (checksums in the reserved 4 bytes, what `fsync` promises) and
 chapter 22 puts a write-ahead log in front of this tree so that a split is all or nothing.
@@ -245,12 +245,10 @@ chapter 22 puts a write-ahead log in front of this tree so that a split is all o
   metapage holding `btm_root`, `btm_level`, `btm_fastroot` and `btm_fastlevel`
   (`postgres/src/include/access/nbtree.h:104-111`). A root split builds a *new* root page above
   the two halves and updates those fields (`_bt_newlevel`,
-  `postgres/src/backend/access/nbtree/nbtinsert.c:2489-2655`). The *fast root* exists because
-  Postgres never shrinks the tree: after mass deletion the top levels can be single pages, so
-  the metapage also records the lowest single-page level and searches start there
-  (`postgres/src/backend/access/nbtree/README:362-381`; `_bt_getroot` reads `btm_fastroot` at
-  `nbtpage.c:376`). The price of a moving root is one more page to consult (cached in
-  practice); the price of a fixed root is copying a page on every root split.
+  `postgres/src/backend/access/nbtree/nbtinsert.c:2489-2655`). Postgres never shrinks the tree,
+  so after mass deletion the top levels can be single pages; the *fast root* is the lowest of
+  them, and searches start there (`postgres/src/backend/access/nbtree/README:362-381`;
+  `_bt_getroot` reads `btm_fastroot` at `nbtpage.c:376`).
 - **The one-third rule is Postgres's.** "We actually need to be able to fit three items on
   every page, so restrict any one item to 1/3 the per-page available space"
   (`nbtree.h:155-173`, `BTMaxItemSize`). Postgres needs three because a page holds a high key
@@ -280,10 +278,8 @@ The tree uses two kinds of memory with two very different lifetimes.
   operation** (`reset(.retain_capacity)`). A put needs a path stack of unknown depth, a 4096-byte
   copy of each page it splits, and cell lists; `validate` needs a bitmap and copies of interior
   pages. None of it outlives the operation, so one reset frees it all, and no error path can
-  leak it. After the first few operations the arena has kept enough capacity that later ones
-  ask the backing allocator for nothing. The price: the arena keeps its high-water mark, so
-  one `validate` of a large tree leaves 4096 bytes per interior page with the handle until
-  `deinit`; `reset(.{ .retain_with_limit = n })` would cap that.
+  leak it. The price: the arena keeps its high-water mark until `deinit` (one `validate`
+  leaves 4096 bytes per interior page); `reset(.{ .retain_with_limit = n })` would cap that.
 
 What would go wrong with something else: a general-purpose allocator would need a matching
 `free` on every error path of the split code, next to the `unpin`s. A `FixedBufferAllocator`
@@ -306,15 +302,14 @@ of the split.
   into the frame. Copy what you need before unpinning, and before any insert into that page.
 - **A pool that is too small fails, it does not block.** With every frame pinned,
   `fetchPage` returns `AllFramesPinned`. This tree needs 2 frames.
-- **A crash inside `create` leaves a file neither call accepts.** With only page 0 written,
-  `create` returns `NotEmpty` and `open` returns `BadMagic`; delete the file.
+- **A crash inside `create`** leaves a one-page file that `create` and `open` both refuse;
+  delete it.
 - **The counters in the metapage lag.** Between flushes the file can have more pages than
   page 0 says. `open` accepts that; `validate` reports the orphans.
 - **Pages from disk are trusted.** `pinNode` checks only the page kind and the reserved size.
   A damaged page of the right kind can make the slotted page code read out of bounds, and an
-  interior page that points at one of its ancestors makes `get` and `put` descend forever
-  (only `validate` remembers which pages it has seen); real protection needs the checksum of
-  chapter 21.
+  interior page that points at one of its ancestors makes every descent except `validate`'s
+  run forever; real protection needs the checksum of chapter 21.
 - **An overwrite can split.** Replacing a value with a larger one may not fit; `put` handles
   it through the same split path.
 
@@ -324,8 +319,8 @@ of the split.
    many with an 8-byte value? Check against the test "full is a number of bytes".
 2. (easy) Change `max_value_len` to 2000 and build. What happens, and which step of the split
    argument would break without that check?
-3. (medium) Part 4 uses an 8-frame pool, so nothing is written before `flush`. Predict what
-   changes with a 3-frame pool, then try it.
+3. (medium) Part 4 uses an 8-frame pool, so no tree page is written before `flush`. Predict
+   what changes with a 3-frame pool and with a 2-frame pool, then try it.
 4. (medium) Insert 1000 keys in ascending order and in random order (8-byte keys, 100-byte
    values) and compare the number of leaves. Explain the difference.
 5. (hard) Make `put` leave the in-memory tree intact when a step fails, instead of poisoning
@@ -337,7 +332,6 @@ Solutions: [solutions.md](solutions.md).
 
 - Previous: [chapter 11, key and record encoding](../11-key-and-record-encoding/README.md)
 - Next: [chapter 13, overflow and free space](../13-overflow-and-free-space/README.md)
-- Visualization: [the tree of pages](viz/index.html) (its 128-byte toy pages show an interior
-  split and a third level) and
+- Visualization: [the tree of pages](viz/index.html) and
   [the buffer pool during an insert that splits](viz/pool.html)
 - Output of both programs: [expected_output.txt](expected_output.txt)

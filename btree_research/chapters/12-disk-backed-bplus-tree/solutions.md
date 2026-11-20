@@ -30,7 +30,7 @@ here; the point of `m <= C/3` is that the simple rule is then right for every in
 
 ## 3. Part 4 with a 3-frame pool
 
-Run (the pool size in `crashDuringSplit` changed from 8 to 3, then changed back):
+Run (the first pool in `crashDuringSplit` changed from 8 to 3 frames, then changed back):
 
 ```
 N = 0: validate ok; 11 of 11 old keys readable; new key missing
@@ -41,12 +41,30 @@ N = 4: validate fails with error.KeyCountMismatch; 11 of 11 old keys readable; n
 N = 5: no crash, all writes done; validate ok; 11 of 11 old keys readable; new key readable
 ```
 
-Still five writes, but in a different order and at different times. With three frames the
-pool must evict during the put, so tree pages reach the file before `flush` is even called,
-and the metapage goes last instead of first. That is why N = 4 is a new case: every tree page
-is written and the new key is readable, but page 0 still says 11 keys and 4 pages. The data
-is all there and `validate` still fails. The order in which a buffer pool writes pages is an
-accident of its eviction policy; nothing in this chapter controls it. Chapter 22 does.
+Still five writes, in a different order. Measured with a storage that logs every write
+(`alloc` is the page of zeroes that the allocation writes):
+
+| frames | written during the put | written during `flush` |
+|---|---|---|
+| 8 | alloc 4 | 0, 1, 2, 4 |
+| 3 | alloc 4 | 1 (evicted), 2, 4, 0 |
+| 2 | alloc 4, then 2 (evicted) | 4 (evicted), 0, 1 |
+
+With three frames the put still writes nothing but the allocation: it evicts three pages, and
+all three are clean. The difference comes in `flush`. Its first step is to fetch the metapage,
+the pool has no free frame, so it evicts the dirty parent (page 1) and writes it before page 0
+is even updated. The metapage then goes last instead of first. That is why N = 4 is a new
+case: every tree page is written and the new key is readable, but page 0 still says 11 keys
+and 4 pages. The data is all there and `validate` still fails.
+
+Only with two frames does a tree page reach the file during the put: the left half (page 2)
+is evicted when the parent is fetched, so the file holds half of the split before the parent
+has changed in memory. Run with two frames, N = 2, 3 and 4 all give
+`error.LeafChainBroken` with 9 of 11 old keys readable. (For write-backs during puts in the
+printed output, see part 1: 19 of them with three frames.)
+
+The order in which a buffer pool writes pages is an accident of its size and its eviction
+policy; nothing in this chapter controls it. Chapter 22 does.
 
 ## 4. Ascending versus random inserts
 

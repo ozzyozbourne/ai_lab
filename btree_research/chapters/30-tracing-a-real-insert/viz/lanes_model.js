@@ -60,11 +60,13 @@
     locks = locks || this.locks || {};
     function node(id) {
       var p = self.pages[id];
-      var out = { id: 'g' + id, keys: p.keys.slice(), leaf: p.leaf,
-        meta: { label: 'blk ' + id + (id === self.meta.root ? ' · root' : ''), dirty: !!self.dirty[id] } };
+      // A leaf's name goes UNDER the box: above it, the edge from the parent
+      // would run through the text.
+      var name = 'blk ' + id + (id === self.meta.root ? ' · root' : '') + (p.incomplete ? ' · INCOMPLETE_SPLIT' : '');
+      var out = { id: 'g' + id, keys: p.keys.slice(), leaf: p.leaf, meta: { dirty: !!self.dirty[id] } };
+      if (p.leaf) out.meta.note = name; else out.meta.label = name;
       if (p.high !== null) out.highKey = p.high;
       if (p.right !== null) out.right = 'g' + p.right;
-      if (p.incomplete) out.meta.note = 'INCOMPLETE_SPLIT';
       if (locks[id]) out.meta.lock = locks[id];
       if (!p.leaf) out.children = p.children.map(node);
       return out;
@@ -312,10 +314,10 @@
     var self = this;
     function node(id) {
       var p = self.pages[id];
-      var out = { id: 't' + id, keys: p.keys.slice(), leaf: p.leaf,
-        meta: { label: 'page ' + id + (id === self.root ? ' · root' : ''), dirty: !!self.dirty[id] } };
-      if (self.pinned && self.pinned[id]) out.meta.note = 'pinned';
-      if (self.overflow && self.overflow.page === id) out.meta.note = 'overflow cell: ' + self.overflow.key;
+      var name = 'page ' + id + (id === self.root ? ' · root' : '') + (self.pinned && self.pinned[id] ? ' · pinned' : '') +
+        (self.overflow && self.overflow.page === id ? ' · overflow cell ' + self.overflow.key : '');
+      var out = { id: 't' + id, keys: p.keys.slice(), leaf: p.leaf, meta: { dirty: !!self.dirty[id] } };
+      if (p.leaf) out.meta.note = name; else out.meta.label = name;
       if (!p.leaf) out.children = p.children.map(node);
       return out;
     }

@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 13 — Overflow and free space</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+/* The file as a row of pages. Colours come from the toolkit's state classes
+ * (--s / --s-bg); a page that the current step changes gets an outline. */
+.ch13-file { position: relative; padding: 12px 2px 44px; }
+.ch13-strip { display: flex; flex-wrap: wrap; gap: 52px 8px; }
+.ch13-page {
+  position: relative; box-sizing: border-box; width: 92px; min-height: 100px; padding: 5px 6px 7px; border-radius: 6px;
+  background-color: var(--s-bg, var(--bt-node-bg)); box-shadow: inset 0 0 0 1.25px var(--s, var(--bt-node));
+  font-size: .72rem; line-height: 1.32; color: var(--bt-text);
+}
+.ch13-page.is-hatch { background-image: repeating-linear-gradient(135deg, transparent 0 6px, var(--bt-border) 6px 7px); }
+.ch13-page-id { font: 700 .74rem var(--bt-mono); }
+.ch13-page-role { font-weight: 700; color: var(--s, var(--bt-muted)); margin-bottom: 2px; }
+.ch13-line { font: .68rem/1.35 var(--bt-mono); overflow-wrap: anywhere; }
+.ch13-line.is-muted { color: var(--bt-muted); }
+.ch13-meter { height: 5px; margin-top: 4px; border-radius: 3px; overflow: hidden; background: var(--bt-unused-bg); }
+.ch13-meter span { display: block; height: 100%; background: var(--s, var(--bt-node)); }
+.ch13-page.is-hot { outline: 3px solid var(--hot); outline-offset: 1px; }
+.hot-inserted { --hot: var(--bt-key-inserted); }
+.hot-deleted { --hot: var(--bt-key-deleted); }
+.hot-active { --hot: var(--bt-node-active); }
+.hot-split { --hot: var(--bt-split); }
+.ch13-badge {
+  position: absolute; top: -10px; right: 4px; padding: 0 6px; border-radius: 8px;
+  font: 700 .64rem/1.5 var(--bt-font); background: var(--hot); color: var(--bt-surface);
+}
+.ch13-arrows { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
+.ch13-arrow { fill: none; stroke-width: 1.75; }
+.ch13-arrow.is-chain { stroke: var(--bt-split); }
+.ch13-arrow.is-free { stroke: var(--bt-key-compare); stroke-dasharray: 4 3; }
+.ch13-head.is-chain { fill: var(--bt-split); }
+.ch13-head.is-free { fill: var(--bt-key-compare); }
+
+.ch13-status { font-size: .86rem; color: var(--bt-muted); margin: 0 0 4px; }
+.ch13-status b { color: var(--bt-text); }
+.ch13-label { font-size: .8rem; color: var(--bt-muted); margin: 8px 0 2px; }
+.ch13-hint { font-size: .88rem; color: var(--bt-muted); margin: 0 0 6px; min-height: 1.3em; }
+.ch13-hint.is-error { color: var(--bt-key-deleted); font-weight: 600; }
+.ch13-freelist { font: .78rem var(--bt-mono); margin: 6px 0 0; overflow-wrap: anywhere; }
+#key-in { width: 5.5em; }
+#len-in, #calc-in { width: 7em; }
+/* The page map of the sandbox: mark the pages the current step touches. */
+.bt-mem-slot.ch13-hot { outline: 3px solid var(--hot); outline-offset: 1px; }
+
+/* The calculator: one bar for the leaf cell, one box per overflow page. */
+.ch13-calc { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin: 8px 0 4px; }
+.ch13-calc-box {
+  box-sizing: border-box; width: 86px; padding: 4px 6px 6px; border-radius: 6px; font-size: .72rem;
+  background: var(--s-bg, var(--bt-node-bg)); box-shadow: inset 0 0 0 1.25px var(--s, var(--bt-node));
+}
+.ch13-calc-box b { display: block; font-size: .74rem; }
+.ch13-formula { font: .84rem/1.5 var(--bt-mono); margin: 6px 0; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">Chapter 12's tree could not store a value larger than a quarter of a page, could not delete,
+and its file only grew. This page shows the three additions: a large value <em>spills</em> into a chain of
+overflow pages, a page that empties goes to a <em>free list</em>, and the next allocation takes a page from
+that list before the file grows. Text of the chapter: <a href="../README.md">README.md</a>.</p>
+
+<h2>1. One file, sixteen operations</h2>
+<p>The tree on top is the logical view; the row of cards under it is the same file, page by page, in file order.
+Solid arrows are <em>overflow chains</em> (leaf cell → first overflow page → next). Dashed arrows are the
+<em>free list</em> (metapage → trunk page → the free pages it lists). In the tree, <code>25 +2p</code> means
+"key 25, and its value continues in 2 overflow pages". The sixteen operations are exactly part 1 of the
+chapter's Zig and Rust programs; the checks at the bottom of this page compare the result with their output.</p>
+<div id="fig-file"></div>
+
+<h2>2. How much of a value stays in the leaf?</h2>
+<p>A leaf cell may keep at most X = 1088 value bytes, so that any three cells fit in a page (the split
+argument of chapter 12 needs that). A larger value keeps a prefix and a 4-byte page id in the leaf. The size of
+the prefix follows SQLite's rule: if the bytes left over after filling whole overflow pages are few
+(K ≤ X), they stay in the leaf and every overflow page is full; otherwise the leaf keeps only the minimum
+M = 544. Type a size.</p>
+<div id="fig-calc"></div>
+
+<h2>3. Your own file</h2>
+<p>Starts empty. Keys are 0 to 99 (two digits, so at most 100 keys and a tree of at most two levels: a limit of
+this page, not of the format); a value may have up to 65536 bytes. Each cell of the page map is one page of the
+file, labelled with its page id. Try a large value, overwrite it with a small one, then put another large value
+and watch the page ids come back. <strong>Delete all keys</strong> shows the file <em>not</em> shrinking:
+every page ends up on the free list.</p>
+<div id="fig-own"></div>
+
+<script src="../../../assets/viz.js"></script>
+<script src="code.js"></script>
+<script src="model.js"></script>
+<script src="local.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el, esc = BTViz.esc;
+
+  BTViz.page({
+    title: 'Overflow and free space', chapter: 13,
+    prev: { href: '../../12-disk-backed-bplus-tree/viz/index.html', title: 'Chapter 12: a disk-backed B+tree' },
+    next: { href: '../../14-split-policies-and-fill-factor/viz/index.html', title: 'Chapter 14: split policies and fill factor' },
+    index: '../../../index.html'
+  });
+
+  var LEGEND = [
+    { token: 'node', label: 'metapage or tree page' },
+    { token: 'split', label: 'overflow page / chain' },
+    { token: 'key-compare', label: 'free-list trunk / list' },
+    { token: 'free', label: 'free page' },
+    { token: 'key-inserted', label: 'written in this step' },
+    { token: 'key-deleted', label: 'freed or removed in this step' },
+    { token: 'node-active', label: 'looked at' }
+  ];
+
+  function statusHtml(s) {
+    return 'File: <b>' + s.pages.length + ' pages</b> = ' + s.pages.length * Ch13.PAGE_SIZE + ' bytes · free list: <b>' + s.freeCount + '</b> · keys: <b>' + s.keyCount +
+      '</b> · so far the file grew ' + s.stats.grown + ' times and reused a page ' + s.stats.reused + ' times';
+  }
+
+  /* ====================== 1. the scripted scenario ======================= */
+
+  // Part 1 of zig/src/demo.zig and rust/src/demo.rs: [key, value bytes or null = delete].
+  var SCENARIO = [[10, 700], [20, 700], [30, 700], [40, 700], [50, 700], [25, 9000], [60, 3000], [25, 100], [35, 5000],
+    [60, null], [35, null], [40, null], [50, null], [30, null], [70, 14000], [80, 3000]];
+
+  var figA = BTViz.figure('#fig-file', { title: 'The tree, and the file it lives in', side: true, controlsUnderStage: true, legend: LEGEND });
+  var statusA = el('p.ch13-status', { role: 'status' });
+  figA.stage.appendChild(statusA);
+  var treeA = new BTViz.TreeView(figA.stage, { minHeight: 150, maxHeight: 190, ariaLabel: 'The tree: one box per tree page' });
+  figA.stage.appendChild(el('div.ch13-label', 'The file, page 0 first:'));
+  var stripA = new Ch13View.FileStrip(figA.stage, { ariaLabel: 'The file: one card per page' });
+  var logA = new BTViz.Log(figA.side, { title: 'What happened', empty: 'Nothing yet.' });
+
+  var scenarioModel = new Ch13.Model();
+  var stepsA = [{ caption: 'A new file has two pages: page 0, the metapage, and page 1, the root, which is an empty leaf. Press play, or step with the arrow keys.',
+                  state: scenarioModel.snapshot(), highlight: {} }];
+  var opStart = [], pageMaps = [];
+  SCENARIO.forEach(function (op, i) {
+    var key = String(op[0]);
+    var steps = op[1] === null ? scenarioModel.del(key) : scenarioModel.put(key, op[1]);
+    steps[0].caption = '<b>Operation ' + (i + 1) + ' of ' + SCENARIO.length + '.</b> ' + steps[0].caption;
+    opStart.push(stepsA.length);
+    stepsA = stepsA.concat(steps);
+    pageMaps.push(scenarioModel.pageMap().replace(/ /g, ''));
+  });
+
+  var jump = el('select.bt-select#jump', { 'aria-label': 'Jump to operation' });
+  SCENARIO.forEach(function (op, i) {
+    jump.appendChild(el('option', { value: i }, (i + 1) + '. ' + (op[1] === null ? 'delete ' + op[0] : 'put ' + op[0] + ' = ' + op[1] + ' B')));
+  });
+  figA.toolbar.append(el('label.bt-field', 'jump to operation', jump),
+    el('button.bt-btn', { type: 'button', onclick: function () { stepperA.pause(); stepperA.go(opStart[+jump.value]); } }, 'Go'));
+
+  var stepperA = new BTViz.Stepper({
+    mount: figA.controls, caption: figA.caption, root: figA.root, steps: stepsA, interval: 2400,
+    onStep: function (step, i) {
+      var t = Ch13View.treeModel(step.state, step.highlight);
+      statusA.innerHTML = statusHtml(step.state);
+      treeA.render(t.model, t.highlight);
+      stripA.render(step.state, step.highlight);
+      logA.sync(stepsA, i);
+    }
+  });
+
+  /* ============================ 2. the calculator ========================== */
+
+  var figB = BTViz.figure('#fig-calc', { title: 'Local bytes and overflow pages for a value of P bytes', side: true, controlsUnderStage: true,
+    legend: [{ token: 'node', label: 'bytes in the leaf cell' }, { token: 'split', label: 'overflow page' }, { token: 'free', label: 'unused part of the last page' }] });
+  var calcIn = el('input.bt-input#calc-in', { type: 'number', min: 0, max: Ch13.MAX_VALUE_LEN, step: 1, value: 9000, 'aria-label': 'Value size in bytes' });
+  figB.toolbar.append(el('label.bt-field', 'value bytes P', calcIn));
+  [100, 1088, 1089, 3000, 5000, 5172, 5173, 14000, 65536].forEach(function (p) {
+    figB.toolbar.append(el('button.bt-btn', { type: 'button', onclick: function () { calcIn.value = p; calc(); } }, String(p)));
+  });
+  var calcHint = el('p.ch13-hint', { role: 'status' });
+  var calcFormula = el('div.ch13-formula');
+  var calcBoxes = el('div.ch13-calc');
+  figB.stage.append(calcHint, calcFormula, calcBoxes);
+  BTViz.codePanel(figB.side, 'localLen', { title: 'disk_btree: localLen', maxHeight: 330 });
+
+  /** A whole number in [lo, hi] typed into `input`, or null (and a message in `hint`). */
+  function readInt(input, lo, hi, what, hint) {
+    var raw = input.value.trim();
+    if (!/^\d+$/.test(raw) || +raw < lo || +raw > hi) {
+      hint.className = 'ch13-hint is-error';
+      hint.textContent = what + ' must be a whole number from ' + lo + ' to ' + hi + (raw === '' ? '.' : ' ("' + raw + '" is not).');
+      return null;
+    }
+    hint.className = 'ch13-hint';
+    hint.textContent = '';
+    return +raw;
+  }
+
+  function calc() {
+    var P = readInt(calcIn, 0, Ch13.MAX_VALUE_LEN, 'The value size', calcHint);
+    calcBoxes.textContent = '';
+    if (P === null) { calcFormula.textContent = ''; figB.caption.textContent = 'Type a size to see where its bytes go.'; return; }
+    var X = Ch13.MAX_LOCAL, M = Ch13.MIN_LOCAL, U = Ch13.OVERFLOW_PAYLOAD;
+    var local = Ch13.localLen(P), pages = Ch13.overflowPages(P), tail = P - local;
+    if (P <= X) {
+      calcFormula.textContent = 'P = ' + P + ' ≤ X = ' + X + '  →  all ' + P + ' bytes in the leaf, no overflow page';
+      figB.caption.innerHTML = 'The value fits in the leaf cell. The cell costs its page ' + Ch13.cellCost(P) + ' bytes with a 2-byte key (6 bytes of cell header and slot, the key, 4 bytes of length, the value).';
+    } else {
+      var K = M + (P - M) % U;
+      calcFormula.textContent = 'K = M + (P − M) mod ' + U + ' = ' + M + ' + ' + (P - M) + ' mod ' + U + ' = ' + K + (K <= X ? '  ≤ X  →  keep K = ' + K : '  > X  →  keep M = ' + M);
+      figB.caption.innerHTML = K <= X
+        ? 'The remainder after ' + pages + ' full page' + (pages > 1 ? 's' : '') + ' is small enough to stay in the leaf: <b>' + local + '</b> bytes local, <b>' + pages + '</b> overflow page' + (pages > 1 ? 's' : '') + ', all full. No page is spent on a small tail.'
+        : 'The remainder is too large for the leaf, so the leaf keeps the minimum, <b>' + M + '</b> bytes (more cells fit beside it), and the last of the <b>' + pages + '</b> overflow page' + (pages > 1 ? 's' : '') + ' holds ' + (tail - (pages - 1) * U) + ' of ' + U + ' bytes.';
+    }
+    calcBoxes.appendChild(el('div.ch13-calc-box', el('b', 'leaf cell'), local + ' B' + (pages ? ' + page id' : '')));
+    var shown = Math.min(pages, 6);
+    for (var i = 0; i < shown; i++) {
+      var last = i === pages - 1, n = last ? tail - (pages - 1) * U : U;
+      if (!last && i === shown - 1) { calcBoxes.appendChild(el('div.ch13-calc-box.s-split', el('b', '… ' + (pages - shown + 1) + ' more'), 'full pages')); break; }
+      calcBoxes.appendChild(el('div.ch13-calc-box.s-split', el('b', 'overflow ' + (i + 1)), n + ' B' + (n < U ? ' of ' + U : ' (full)')));
+    }
+  }
+  calcIn.addEventListener('input', calc);
+  calc();
+
+  /* ============================== 3. the sandbox =========================== */
+
+  var MAX_PAGES = 60;   // keeps the page map on one screen; a limit of this page
+  var figC = BTViz.figure('#fig-own', { title: 'Put and delete in an empty file', side: true, controlsUnderStage: true, legend: LEGEND });
+  var keyIn = el('input.bt-input#key-in', { type: 'number', min: 0, max: 99, step: 1, value: 42, 'aria-label': 'Key, 0 to 99' });
+  var lenIn = el('input.bt-input#len-in', { type: 'number', min: 0, max: Ch13.MAX_VALUE_LEN, step: 1, value: 9000, 'aria-label': 'Value size in bytes' });
+  figC.toolbar.append(el('label.bt-field', 'key', keyIn), el('label.bt-field', 'value bytes', lenIn),
+    el('button.bt-btn.bt-primary#btn-put', { type: 'button', onclick: doPut }, 'Put'),
+    el('button.bt-btn#btn-del', { type: 'button', onclick: doDelete }, 'Delete'),
+    el('span.bt-toolbar-sep'),
+    el('button.bt-btn#btn-fill', { type: 'button', onclick: doFill }, 'Put 6 random'),
+    el('button.bt-btn#btn-clear', { type: 'button', onclick: doClear }, 'Delete all keys'),
+    el('button.bt-btn#btn-reset', { type: 'button', onclick: reset }, 'Reset'));
+  var hintC = el('p.ch13-hint#hint', { role: 'status' });
+  var statusC = el('p.ch13-status');
+  figC.stage.append(hintC, statusC);
+  var treeC = new BTViz.TreeView(figC.stage, { minHeight: 150, maxHeight: 210, ariaLabel: 'The tree: one box per tree page' });
+  figC.stage.appendChild(el('div.ch13-label', 'Page map: one cell per page of the file.'));
+  var mapC = new BTViz.MemoryMap(figC.stage, { cell: 34 });
+  var freeC = el('p.ch13-freelist');
+  figC.stage.appendChild(freeC);
+  var logC = new BTViz.Log(figC.side, { title: 'What happened', empty: 'Nothing yet.' });
+  BTViz.codePanel(figC.side, 'freeList', { title: 'disk_btree: the free list', maxHeight: 250 });
+
+  var own, rng;
+  var stepperC = new BTViz.Stepper({
+    mount: figC.controls, caption: figC.caption, root: figC.root, steps: [], interval: 2000,
+    onStep: function (step, i) {
+      var t = Ch13View.treeModel(step.state, step.highlight);
+      statusC.innerHTML = statusHtml(step.state);
+      treeC.render(t.model, t.highlight);
+      mapC.render({ slots: Ch13View.mapSlots(step.state) });
+      var hot = step.highlight.pages || {}, slots = mapC.root.querySelectorAll('.bt-mem-slot');
+      Object.keys(hot).forEach(function (id) { if (slots[id]) slots[id].classList.add('ch13-hot', 'hot-' + hot[id]); });
+      freeC.textContent = Ch13View.freeListText(step.state);
+      logC.sync(stepperC.steps, i);
+    }
+  });
+
+  function say(text, isError) {
+    hintC.className = 'ch13-hint' + (isError ? ' is-error' : '');
+    hintC.textContent = text;
+  }
+
+  /** The model is the state at the END of the timeline. Before a new operation
+   *  starts, show that state, so the picture never jumps behind the reader's back. */
+  function settle() {
+    if (stepperC.index === stepperC.steps.length - 1) return '';
+    stepperC.pause();
+    stepperC.end();
+    return 'The steps that were still to play have been finished first. ';
+  }
+
+  function show(steps, note) {
+    stepperC.setSteps(steps, { play: true });
+    say(note || '');
+  }
+
+  function wouldGrowPast(key, len) {
+    var trial = new Ch13.Model();
+    trial.s = own.snapshot();
+    trial.put(key, len, { steps: false });
+    return trial.pageCount() > MAX_PAGES;
+  }
+
+  function readKey() {
+    var n = readInt(keyIn, 0, 99, 'The key', hintC);
+    return n === null ? null : (n < 10 ? '0' : '') + n;
+  }
+
+  function doPut() {
+    var key = readKey();
+    if (key === null) return;
+    var len = readInt(lenIn, 0, Ch13.MAX_VALUE_LEN, 'The value size', hintC);
+    if (len === null) return;
+    if (wouldGrowPast(key, len)) { say('That put would make the file larger than ' + MAX_PAGES + ' pages, which is all this page map shows. Delete something first.', true); return; }
+    var note = settle();
+    show(own.put(key, len), note);
+  }
+
+  function doDelete() {
+    var key = readKey();
+    if (key === null) return;
+    var note = settle();
+    show(own.del(key), note);
+  }
+
+  function doFill() {
+    var note = settle(), steps = [], sizes = [60, 700, 1100, 3000, 5000, 9000, 14000];
+    for (var i = 0; i < 6; i++) {
+      var key = String(rng.int(0, 99)), len = rng.pick(sizes);
+      if (key.length < 2) key = '0' + key;
+      if (wouldGrowPast(key, len)) { note += 'Stopped early: the file would pass ' + MAX_PAGES + ' pages. '; break; }
+      steps = steps.concat(own.put(key, len));
+    }
+    if (steps.length) show(steps, note); else say(note, true);
+  }
+
+  function doClear() {
+    var note = settle(), steps = [], keys = [];
+    own.s.pages.forEach(function (p) { if (p.role === 'leaf') p.cells.forEach(function (c) { keys.push(c.key); }); });
+    keys.sort();
+    if (!keys.length) { say(note + 'There is no key to delete.', false); return; }
+    keys.forEach(function (key) { steps = steps.concat(own.del(key)); });
+    show(steps, note + 'Deleting ' + keys.length + ' key' + (keys.length > 1 ? 's' : '') + ' in key order.');
+  }
+
+  function reset() {
+    own = new Ch13.Model();
+    rng = BTViz.rng(13);
+    stepperC.setSteps([{ caption: 'An empty file: page 0 is the metapage, page 1 is the root, an empty leaf. Put a value of 9000 bytes and see where its bytes go.',
+                         state: own.snapshot(), highlight: {} }]);
+    say('');
+  }
+  [keyIn, lenIn].forEach(function (input) { input.addEventListener('keydown', function (e) { if (e.key === 'Enter') doPut(); }); });
+  reset();
+
+  /* ============= the model must agree with the Zig and Rust programs ============ */
+
+  // From expected_output.txt (part 1).
+  var EXPECTED_DUMP = [
+    'page 1  leaf      5 keys  2656/4076 bytes  next -  | 10:700 20:700 25:100 70:14000=544+[4 5 3 6] 80:3000=544+[2]',
+    'free list: 0 pages'].join('\n');
+  // The page map after each of the sixteen steps (pinned by a test in both languages).
+  var EXPECTED_MAPS = 'ML ML ML ML ML MIOOLL MIOOLLO MITFLLO MITOLLO MITOLLF MITFLLF MITFLLF MITFLLF MLTFFFF MLTOOOO MLOOOOO';
+  var st = scenarioModel.s.stats;
+  BTViz.selfTest('final tree', scenarioModel.dump(), EXPECTED_DUMP);
+  BTViz.selfTest('16 page maps', pageMaps.join(' '), EXPECTED_MAPS);
+  BTViz.selfTest('counters',
+    st.overflowWritten + ' overflow pages written, ' + st.treeFreed + ' tree pages freed, ' + st.freed + ' pages freed in all, ' + st.reused + ' allocations reused a page, ' + scenarioModel.pageCount() + ' pages',
+    '9 overflow pages written, 2 tree pages freed, 6 pages freed in all, 6 allocations reused a page, 7 pages');
+  BTViz.selfTest('local bytes',
+    [100, 1088, 1089, 3000, 5000, 9000, 14000].map(function (p) { return p + ' -> ' + Ch13.localLen(p) + '+' + Ch13.overflowPages(p) + 'p'; }).join('  '),
+    '100 -> 100+0p  1088 -> 1088+0p  1089 -> 544+1p  3000 -> 544+1p  5000 -> 916+1p  9000 -> 832+2p  14000 -> 544+4p');
+  BTViz.selfTest('model valid', scenarioModel.validate().join('; '), '');
+  void esc;
+})();
+</script>
+</body>
+</html>

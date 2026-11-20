@@ -29,6 +29,8 @@
 .ch30-refs { font-size: .8rem; color: var(--bt-muted); margin-top: 6px; overflow-wrap: anywhere; }
 .ch30-refs code { font-size: .76rem; }
 .ch30-hint { font-size: .88rem; color: var(--bt-muted); margin: 0 0 8px; min-height: 1.3em; }
+#fig-op .bt-select { max-width: 100%; }
+#fig-op .bt-field { max-width: 100%; min-width: 0; }
 .ch30-note { font-size: .9rem; color: var(--bt-muted); }
 .ch30-refs details { display: inline; }
 .ch30-refs summary { cursor: pointer; display: inline-block; padding: 4px 0; }
@@ -64,8 +66,9 @@ climb to a new root while Turso's leaf simply has room; then <b>60</b> fits in b
 Turso siblings full, so Turso allocates a page. A key that is already there stops at stage 2.</p>
 <p class="ch30-note">Both lanes are small models written for this page: four entries per page, single integer keys, the
 index only (not the table the row goes into, and not the commit record). Block numbers, split points and the number
-of steps are the models'. The order of the steps, the function names and the WAL record names are the engines';
-"Turso" means its default WAL journal mode, in which one write transaction runs at a time.</p>
+of steps are the models' (PostgreSQL, for one, leaves a rightmost interior page about 70% full; the model cuts it in
+the middle). The order of the steps, the function names and the WAL record names are the engines'. "Turso" means its
+default WAL journal mode, in which one write transaction runs at a time.</p>
 <div id="fig-lanes"></div>
 
 <h2>2. The same insert when every page read may suspend it</h2>
@@ -271,7 +274,7 @@ is the program counter, the path and the carry are the local variables, and thei
     { label: '15 into a two-level tree (11 keys)', count: 11, key: 15, vlen: null },
     { label: '16 with a 1000-byte value (24 keys)', count: 24, key: 16, vlen: 1000 },
     { label: '13: it simply fits (24 keys)', count: 24, key: 13, vlen: null },
-    { label: '16 on toy pages: the split climbs through a full root (25 keys)', count: CH30.CASCADE.count, key: CH30.CASCADE.key, vlen: null, pageSize: CH30.CASCADE.pageSize }
+    { label: '16, toy pages: the split climbs through a full root', count: CH30.CASCADE.count, key: CH30.CASCADE.key, vlen: null, pageSize: CH30.CASCADE.pageSize }
   ];
   var scenSel = el('select.bt-select', { 'aria-label': 'Scenario' }, SCENARIOS.map(function (s, i) { return el('option', { value: i }, s.label); }));
   var frameSel = el('select.bt-select', { 'aria-label': 'Buffer pool frames' }, [2, 3, 8].map(function (n) { return el('option', { value: n }, n + ' frames'); }));

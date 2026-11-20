@@ -19,9 +19,11 @@
 //! moment would descend into the left half and miss keys that exist
 //! (tests.rs shows it happen). PostgreSQL solves this inside the tree, with
 //! right links and high keys (chapter 20), and lets writers overlap. Turso
-//! keeps the tree simple and solves it outside: one write transaction at a
-//! time (turso/core/storage/wal.rs:3587-3589), while readers look at the
-//! snapshot in the WAL instead of the writer's dirty pages (chapter 22).
+//! keeps the tree simple and solves it outside: in its default WAL journal
+//! mode, one write transaction at a time (turso/core/storage/wal.rs:3587-3589),
+//! while readers look at the snapshot in the WAL instead of the writer's
+//! dirty pages (chapter 22). (Its `mvcc` journal mode lets transactions write
+//! concurrently, but into row versions outside the B-tree; see the README.)
 //! This file does the cruder thing and makes readers wait for the writer.
 //!
 //! Operations are admitted in the order they were submitted, so the result

@@ -16,7 +16,7 @@ The changed arm:
     self.path.items[self.path.items.len - 1].index = index;
 ```
 
-Run: 8 of the 65 tests fail. The most direct report comes from "an operation re-entered
+Run: 9 of the 66 tests fail. The most direct report comes from "an operation re-entered
 before its page arrived makes no progress and changes nothing":
 
 ```
@@ -106,10 +106,11 @@ The B-link answer (chapter 20):
   the right link and checks again. It must do this on every level, including the leaf.
 
 The check goes into `GetOp.step` right after the page is pinned and before the binary
-search. The scheduler may then admit lookups while an insert waits, with one condition
-that this tree does not meet yet: `pushRootDown` moves the root's content to another
-page, and a lookup holding the root's id would read an interior page with no keys where
-it expected a leaf. PostgreSQL avoids this by never moving the old root: it builds a new
-root above it and changes the pointer in the metapage
-(`postgres/src/backend/access/nbtree/nbtinsert.c:2490`). A full answer has to change
-that step as well, or forbid lookups only while a root push-down is in flight.
+search. The scheduler may then admit lookups while an insert waits.
+
+`pushRootDown` needs no extra rule. A lookup that waits holds only a page id and reads
+the page's kind again every time it is stepped. If the root's content moved down
+meanwhile, the lookup finds an interior root with no key and one child, follows it, and
+arrives at the old content. The remaining condition is the one in the list above: each
+split must set the high key and the right link in the same step that moves the keys,
+for `split_interior` as well as for `split_leaf`.

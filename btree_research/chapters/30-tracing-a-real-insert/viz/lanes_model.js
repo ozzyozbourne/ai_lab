@@ -205,10 +205,9 @@
       ', the <b>right link</b> ' + id + ' → ' + right + ' is set, block ' + id + ' gets the flag <b>INCOMPLETE_SPLIT</b>' + (p.leaf ? '' : ' (and the child below loses its flag)') +
       ', and <b>one WAL record</b> covers all of it: <code>XLOG_BTREE_' + record + '</code>, because the new ' + (p.leaf ? 'tuple ' + k(key, 'inserted') : 'pivot ' + k(key, 'split')) +
       ' ended up on the <b>' + (newItemOnLeft ? 'left' : 'right') + '</b> page (the name says nothing about leaf or interior). ' +
-      (p.leaf ? '' : 'This model cuts an interior page in the middle; the real <code>_bt_findsplitloc</code> leaves a rightmost interior page about 70% full. ') +
       'The parent knows nothing yet, and that is fine: a search arriving at block ' + id + ' with a key at or above ' +
       k(sep, 'split') + ' sees the high key and follows the right link.',
-      hl, [PG + 'nbtinsert.c:1580', PG + 'nbtinsert.c:1739', PG + 'nbtinsert.c:1760-1770', PG + 'nbtinsert.c:1950-1959', PG + 'nbtinsert.c:2080-2081'].concat(p.leaf ? [] : [PG + 'nbtsplitloc.c:281-286']), 'split');
+      hl, [PG + 'nbtinsert.c:1580', PG + 'nbtinsert.c:1739', PG + 'nbtinsert.c:1760-1770', PG + 'nbtinsert.c:1950-1959', PG + 'nbtinsert.c:2080-2081'], 'split');
     this.insertParent(id, right, sep, stack, level);
   };
   /* The left sibling of `right` on its level (the page whose right link is it). */

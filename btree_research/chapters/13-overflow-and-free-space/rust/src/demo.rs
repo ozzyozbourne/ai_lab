@@ -34,11 +34,19 @@ pub struct Step {
 }
 
 const fn put(key: u8, len: usize, show: bool) -> Step {
-    Step { key, len: Some(len), show }
+    Step {
+        key,
+        len: Some(len),
+        show,
+    }
 }
 
 const fn delete(key: u8, show: bool) -> Step {
-    Step { key, len: None, show }
+    Step {
+        key,
+        len: None,
+        show,
+    }
 }
 
 pub const SCENARIO: [Step; 16] = [
@@ -55,9 +63,9 @@ pub const SCENARIO: [Step; 16] = [
     delete(35, false),
     delete(40, false),
     delete(50, false),
-    delete(30, true),    // the right leaf empties; the root collapses
+    delete(30, true),     // the right leaf empties; the root collapses
     put(70, 14000, true), // four overflow pages, all from the free list
-    put(80, 3000, true), // takes the trunk page itself
+    put(80, 3000, true),  // takes the trunk page itself
 ];
 
 /// Key `n` as two decimal digits, so that byte order is numeric order.
@@ -148,7 +156,10 @@ fn print_counters(w: &mut dyn Write, tree: &mut DiskBTree) -> DemoResult {
 }
 
 fn part1(w: &mut dyn Write, path: &Path) -> DemoResult {
-    writeln!(w, "\n== Part 1: large values, freed pages and their reuse, in a real file (3-frame pool) ==")?;
+    writeln!(
+        w,
+        "\n== Part 1: large values, freed pages and their reuse, in a real file (3-frame pool) =="
+    )?;
     writeln!(
         w,
         "a page offers {} bytes to cells; a leaf cell keeps at most X = {} value bytes, a spilled value at least M = {}",
@@ -165,7 +176,13 @@ fn part1(w: &mut dyn Write, path: &Path) -> DemoResult {
     )?;
     write!(w, "value bytes -> in the leaf + overflow pages:")?;
     for total in [100, 1088, 1089, 3000, 5000, 9000, 14000] {
-        write!(w, "  {} -> {}+{}p", total, btree::local_len(total), btree::overflow_pages(total))?;
+        write!(
+            w,
+            "  {} -> {}+{}p",
+            total,
+            btree::local_len(total),
+            btree::overflow_pages(total)
+        )?;
     }
     writeln!(w)?;
     {
@@ -211,7 +228,11 @@ fn part1(w: &mut dyn Write, path: &Path) -> DemoResult {
         tree.validate()?;
         print_counters(w, &mut tree)?;
         tree.flush()?;
-        writeln!(w, "flushed: file size = {} bytes", std::fs::metadata(path)?.len())?;
+        writeln!(
+            w,
+            "flushed: file size = {} bytes",
+            std::fs::metadata(path)?.len()
+        )?;
     }
     let mut tree = DiskBTree::open(pool_over(FileStorage::open(path)?, 3)?)?;
     tree.validate()?;
@@ -234,12 +255,22 @@ fn part1(w: &mut dyn Write, path: &Path) -> DemoResult {
         value.iter().all(|&b| b == b'a' + 70 % 26)
     )?;
     let found = tree.get(b"35")?.is_some();
-    writeln!(w, "get 35 -> {}", if found { "found?!" } else { "not found" })?;
+    writeln!(
+        w,
+        "get 35 -> {}",
+        if found { "found?!" } else { "not found" }
+    )?;
     write!(w, "range [20, 99) ->")?;
     let mut it = tree.range(b"20", Some(b"99"))?;
     while let Some((key, value)) = it.next()? {
         let (key, len) = (text(key).into_owned(), value.len());
-        write!(w, " {}:{}{}", key, len, if it.value_on_heap() { "(heap)" } else { "" })?;
+        write!(
+            w,
+            " {}:{}{}",
+            key,
+            len,
+            if it.value_on_heap() { "(heap)" } else { "" }
+        )?;
     }
     writeln!(w)?;
     Ok(())
@@ -247,7 +278,13 @@ fn part1(w: &mut dyn Write, path: &Path) -> DemoResult {
 
 /// One random operation of parts 2 to 4, applied to tree and oracle: a put
 /// of a mixed-size value, or (`deletes` times in 10) a delete.
-fn mixed_op(tree: &mut DiskBTree, model: &mut Model, rng: &mut SplitMix64, key_space: u64, deletes: u64) -> Result<(), TreeError> {
+fn mixed_op(
+    tree: &mut DiskBTree,
+    model: &mut Model,
+    rng: &mut SplitMix64,
+    key_space: u64,
+    deletes: u64,
+) -> Result<(), TreeError> {
     let key = workload::key_for(rng.below(key_space), 32);
     if rng.below(10) < deletes {
         let deleted = tree.delete(&key)?;
@@ -272,19 +309,34 @@ fn same_as_oracle(tree: &mut DiskBTree, model: &Model) -> Result<bool, TreeError
 }
 
 fn part2(w: &mut dyn Write) -> DemoResult {
-    writeln!(w, "\n== Part 2: 4000 random operations, 3 puts to 1 delete, values of 0 to 20000 bytes (8-frame pool) ==")?;
+    writeln!(
+        w,
+        "\n== Part 2: 4000 random operations, 3 puts to 1 delete, values of 0 to 20000 bytes (8-frame pool) =="
+    )?;
     let mem = MemStorage::new();
     let mut model = Model::new();
     let mut rng = SplitMix64::new(13);
 
     for half in 0..2 {
         let pool = pool_over(mem.clone(), 8)?;
-        let mut tree = if half == 0 { DiskBTree::create(pool)? } else { DiskBTree::open(pool)? };
+        let mut tree = if half == 0 {
+            DiskBTree::create(pool)?
+        } else {
+            DiskBTree::open(pool)?
+        };
         for _ in 0..2000 {
             mixed_op(&mut tree, &mut model, &mut rng, 600, 3)?;
         }
         tree.validate()?;
-        writeln!(w, "{}", if half == 0 { "first 2000 operations:" } else { "reopened, 2000 more operations:" })?;
+        writeln!(
+            w,
+            "{}",
+            if half == 0 {
+                "first 2000 operations:"
+            } else {
+                "reopened, 2000 more operations:"
+            }
+        )?;
         print_counters(w, &mut tree)?;
         tree.flush()?;
         if half == 0 {
@@ -301,7 +353,12 @@ fn part2(w: &mut dyn Write) -> DemoResult {
             counts[1], counts[2], counts[3], counts[4], counts[5], counts[6]
         )?;
         let same = same_as_oracle(&mut tree, &model)?;
-        writeln!(w, "full scan: oracle has {} entries, identical: {}", model.len(), same)?;
+        writeln!(
+            w,
+            "full scan: oracle has {} entries, identical: {}",
+            model.len(),
+            same
+        )?;
     }
     Ok(())
 }
@@ -326,7 +383,10 @@ pub fn steady_state(rounds: usize) -> Result<(Vec<u32>, Stats), TreeError> {
 }
 
 fn part3(w: &mut dyn Write) -> DemoResult {
-    writeln!(w, "\n== Part 3: the file stops growing: 12 rounds of 500 operations, half puts and half deletes, over 200 keys ==")?;
+    writeln!(
+        w,
+        "\n== Part 3: the file stops growing: 12 rounds of 500 operations, half puts and half deletes, over 200 keys =="
+    )?;
     let (pages, stats) = steady_state(12)?;
     write!(w, "pages in the file after each round:")?;
     for n in &pages {
@@ -343,7 +403,10 @@ fn part3(w: &mut dyn Write) -> DemoResult {
 }
 
 fn part4(w: &mut dyn Write) -> DemoResult {
-    writeln!(w, "\n== Part 4: assembling values: a 1088-byte stack buffer first, the heap only if the value is larger ==")?;
+    writeln!(
+        w,
+        "\n== Part 4: assembling values: a 1088-byte stack buffer first, the heap only if the value is larger =="
+    )?;
     let mut model = Model::new();
     let mut tree = DiskBTree::create(pool_over(MemStorage::new(), 8)?)?;
     let mut rng = SplitMix64::new(4);
@@ -426,13 +489,22 @@ pub const CRASH_VALUE_LEN: usize = 5000;
 
 fn look(tree: &mut DiskBTree, key: &[u8], letter: u8) -> Found {
     let value = match tree.get(key) {
-        Err(_) => return Found { state: State::Unreadable, ..Found::default() },
+        Err(_) => {
+            return Found {
+                state: State::Unreadable,
+                ..Found::default()
+            };
+        }
         Ok(None) => return Found::default(),
         Ok(Some(value)) => value,
     };
     let intact = value.len() == CRASH_VALUE_LEN && value.iter().all(|&b| b == letter);
     Found {
-        state: if intact { State::Intact } else { State::WrongBytes },
+        state: if intact {
+            State::Intact
+        } else {
+            State::WrongBytes
+        },
         first: value[0],
         last: value[value.len() - 1],
     }
@@ -467,9 +539,8 @@ pub fn crash_during_reuse(writes_allowed: u64) -> Result<CrashOutcome, TreeError
         tree.flush()?;
 
         mem.set_writes_before_failure(Some(writes_allowed));
-        outcome.completed = tree.delete(b"old").is_ok()
-            && tree.put(b"new", &[b'n'; CRASH_VALUE_LEN]).is_ok()
-            && {
+        outcome.completed =
+            tree.delete(b"old").is_ok() && tree.put(b"new", &[b'n'; CRASH_VALUE_LEN]).is_ok() && {
                 assert!(tree.stats.pages_reused == 1 && tree.pool().pager().page_count() == 3);
                 tree.flush().is_ok()
             };
@@ -485,7 +556,10 @@ pub fn crash_during_reuse(writes_allowed: u64) -> Result<CrashOutcome, TreeError
 }
 
 fn part5(w: &mut dyn Write) -> DemoResult {
-    writeln!(w, "\n== Part 5: not crash-safe: a freed page is reused at once ==")?;
+    writeln!(
+        w,
+        "\n== Part 5: not crash-safe: a freed page is reused at once =="
+    )?;
     writeln!(
         w,
         "\"old\" (5000 x 'o', one overflow page) is on disk; delete it, put \"new\" (5000 x 'n') into the same page, flush; the storage fails after N writes"
@@ -517,6 +591,9 @@ mod tests {
         let tmp = crate::TempDir::new("expected_output");
         let mut out = Vec::new();
         super::run(&mut out, &tmp.0).expect("demo runs");
-        assert_eq!(String::from_utf8(out).expect("utf-8"), include_str!("../../expected_output.txt"));
+        assert_eq!(
+            String::from_utf8(out).expect("utf-8"),
+            include_str!("../../expected_output.txt")
+        );
     }
 }

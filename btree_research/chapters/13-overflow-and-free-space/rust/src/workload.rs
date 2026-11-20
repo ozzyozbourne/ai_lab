@@ -92,7 +92,9 @@ impl Model {
 
     /// All entries in key order.
     pub fn iter(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
-        self.entries.iter().map(|(k, v)| (k.as_slice(), v.as_slice()))
+        self.entries
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.as_slice()))
     }
 
     /// The entries with lo <= key < hi (`hi` None = to the end).

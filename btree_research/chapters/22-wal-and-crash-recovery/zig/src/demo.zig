@@ -135,6 +135,70 @@ pub fn splitWithoutLog(gpa: Allocator, n: ?u64, mode: CrashMode, out: ?*Io.Write
     return outcome;
 }
 
+pub const split_write_count = 5;
+pub const SplitWrite = struct { page_no: u64, image: wal_mod.Page };
+
+/// The five page writes of the split of part 1, in order, with their bytes.
+pub fn splitWrites(gpa: Allocator) ![split_write_count]SplitWrite {
+    var machine: Machine = .init(gpa, 22);
+    defer machine.deinit();
+    var key_buf: [2]u8 = undefined;
+    var value_buf: [btree.max_value_len]u8 = undefined;
+    var plain: crash.Plain = undefined;
+    try plain.open(gpa, &machine);
+    defer plain.close();
+    for (scenario_keys[0..old_keys]) |k| try plain.tree.put(scenarioKey(k, &key_buf), scenarioValue(k, &value_buf));
+    try plain.tree.flush();
+    machine.tracing = true;
+    const last = scenario_keys[old_keys];
+    try plain.tree.put(scenarioKey(last, &key_buf), scenarioValue(last, &value_buf));
+    try plain.tree.flush();
+
+    var writes: [split_write_count]SplitWrite = undefined;
+    var count: usize = 0;
+    for (machine.trace.items) |e| {
+        if (e.kind != .write) continue;
+        writes[count].page_no = e.page_no;
+        // The first write is the zero page that grows the file; every later
+        // one carries the final contents of its page.
+        if (count == 0) writes[count].image = @splat(0) else try machine.mainStorage().readPage(e.page_no, &writes[count].image);
+        count += 1;
+    }
+    std.debug.assert(count == split_write_count);
+    return writes;
+}
+
+/// Part 1, the general case: the old tree is on disk, and of the five
+/// writes exactly those whose bit is set in `mask` (bit i = write i + 1)
+/// reached the disk before the power failed.
+pub fn splitSubset(gpa: Allocator, writes: *const [split_write_count]SplitWrite, mask: u8) !SplitOutcome {
+    var machine: Machine = .init(gpa, 22);
+    defer machine.deinit();
+    var outcome: SplitOutcome = .{};
+    var key_buf: [2]u8 = undefined;
+    var value_buf: [btree.max_value_len]u8 = undefined;
+    {
+        var plain: crash.Plain = undefined;
+        try plain.open(gpa, &machine);
+        defer plain.close();
+        for (scenario_keys[0..old_keys]) |k| try plain.tree.put(scenarioKey(k, &key_buf), scenarioValue(k, &value_buf));
+        try plain.tree.flush();
+    }
+    for (writes, 0..) |write, i| {
+        if (mask & (@as(u8, 1) << @intCast(i)) != 0) try machine.mainStorage().writePage(write.page_no, &write.image);
+    }
+    try machine.mainStorage().sync();
+
+    var plain: crash.Plain = undefined;
+    plain.open(gpa, &machine) catch |err| {
+        outcome.err = err;
+        return outcome;
+    };
+    defer plain.close();
+    try classify(gpa, &plain.tree, &outcome);
+    return outcome;
+}
+
 /// Part 2. Eleven keys committed and checkpointed (the log is empty); then
 /// put 15 (a commit) and a checkpoint, with the power failing after `n`
 /// writes; then reopen, which runs recovery.
@@ -202,13 +266,17 @@ fn printLog(w: *Io.Writer, machine: *Machine) !void {
 
 fn printOutcome(w: *Io.Writer, mode: CrashMode, o: SplitOutcome, with_log: bool) !void {
     try w.print("{t}: ", .{mode});
+    try printState(w, o);
+    if (with_log) try w.print(" [{d} records, {d} commit]", .{ o.recovery.valid_records, o.recovery.committed_ops });
+}
+
+fn printState(w: *Io.Writer, o: SplitOutcome) !void {
     switch (o.state) {
         .before, .after => try w.print("{t}", .{o.state}),
         .open_failed => try w.print("open fails ({t})", .{o.err.?}),
         .invalid => try w.print("invalid ({t})", .{o.err.?}),
         .wrong_contents => try w.writeAll("valid tree, wrong contents"),
     }
-    if (with_log) try w.print(" [{d} records, {d} commit]", .{ o.recovery.valid_records, o.recovery.committed_ops });
 }
 
 fn part1(w: *Io.Writer, gpa: Allocator) !void {
@@ -225,6 +293,26 @@ fn part1(w: *Io.Writer, gpa: Allocator) !void {
         try w.writeAll("\n");
     }
     try w.writeAll("(before = the 11 old keys, valid tree; after = all 12 keys, valid tree)\n");
+
+    // An operating system may write unsynced pages in any order, so any
+    // subset of the five writes can be what a power cut leaves behind.
+    try w.writeAll("any subset of the 5 writes may be what reached the disk (digit i = write i; 1 = on disk, 0 = lost):\n");
+    const writes = try splitWrites(gpa);
+    var counts: [5]u32 = @splat(0);
+    for (0..32) |mask| {
+        const o = try splitSubset(gpa, &writes, @intCast(mask));
+        counts[@intFromEnum(o.state)] += 1;
+        var cell_buf: [64]u8 = undefined;
+        var cell: Io.Writer = .fixed(&cell_buf);
+        for (0..split_write_count) |i| try cell.writeByte(if (mask & (@as(usize, 1) << @intCast(i)) != 0) '1' else '0');
+        try cell.writeByte(' ');
+        try printState(&cell, o);
+        if (mask % 2 == 0) try w.print("  {s:<34}", .{cell.buffered()}) else try w.print("{s}\n", .{cell.buffered()});
+    }
+    try w.print("of the 32 subsets: {d} before, {d} after, {d} cannot be opened, {d} invalid, {d} valid with wrong contents\n", .{
+        counts[@intFromEnum(State.before)],  counts[@intFromEnum(State.after)],          counts[@intFromEnum(State.open_failed)],
+        counts[@intFromEnum(State.invalid)], counts[@intFromEnum(State.wrong_contents)],
+    });
 }
 
 fn part2(w: *Io.Writer, gpa: Allocator) !void {

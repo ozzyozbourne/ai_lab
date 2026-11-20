@@ -101,21 +101,37 @@ impl Shape {
     }
 
     const fn run(self, ops: usize, reopen_every: usize) -> Self {
-        Shape { ops, reopen_every, ..self }
+        Shape {
+            ops,
+            reopen_every,
+            ..self
+        }
     }
 
     const fn mix(self, puts: u64, deletes: u64) -> Self {
-        Shape { puts, deletes, ..self }
+        Shape {
+            puts,
+            deletes,
+            ..self
+        }
     }
 
     const fn plain(self) -> Self {
-        Shape { mixed: false, ..self }
+        Shape {
+            mixed: false,
+            ..self
+        }
     }
 }
 
 /// One random operation against tree and model. Returns the tree's error;
 /// the model is only changed when the tree succeeded.
-fn random_op(tree: &mut DiskBTree, model: &mut Model, rng: &mut SplitMix64, shape: Shape) -> TestResult {
+fn random_op(
+    tree: &mut DiskBTree,
+    model: &mut Model,
+    rng: &mut SplitMix64,
+    shape: Shape,
+) -> TestResult {
     let key = workload::key_for(rng.below(shape.key_space), shape.max_key);
     let pick = rng.below(10);
     if pick < shape.puts {
@@ -147,7 +163,12 @@ fn random_op(tree: &mut DiskBTree, model: &mut Model, rng: &mut SplitMix64, shap
 
 /// Delete up to `count` keys that follow each other in key order, starting
 /// at a random one.
-fn sweep(tree: &mut DiskBTree, model: &mut Model, rng: &mut SplitMix64, count: usize) -> TestResult {
+fn sweep(
+    tree: &mut DiskBTree,
+    model: &mut Model,
+    rng: &mut SplitMix64,
+    count: usize,
+) -> TestResult {
     if model.is_empty() {
         return Ok(());
     }
@@ -172,8 +193,17 @@ fn add_stats(total: &mut Stats, s: Stats) {
 
 /// `open_storage` hands out another handle to the same storage: a clone of
 /// the MemStorage, or the same file opened again.
-fn run_model(open_storage: &dyn Fn() -> Box<dyn Storage>, seed: u64, shape: Shape) -> Result<Stats, TreeError> {
-    let pool = || BufferPool::new(Pager::new(open_storage()).expect("whole pages"), shape.frames);
+fn run_model(
+    open_storage: &dyn Fn() -> Box<dyn Storage>,
+    seed: u64,
+    shape: Shape,
+) -> Result<Stats, TreeError> {
+    let pool = || {
+        BufferPool::new(
+            Pager::new(open_storage()).expect("whole pages"),
+            shape.frames,
+        )
+    };
     let mut model = Model::new();
     let mut tree = DiskBTree::create(pool())?;
     let mut rng = SplitMix64::new(seed);
@@ -213,7 +243,14 @@ fn model_memory_storage_tiny_pools_values_of_every_size_deletes_reopen_mid_run()
         Shape::new(4, 60, btree::MAX_KEY_LEN, btree::MAX_VALUE_LEN).run(700, 300),
         // Long keys, tiny values, three levels: interior pages split, and
         // the sweeps empty whole leaves and the interior pages above them.
-        Shape { sweep_every: 2900, sweep_len: 1500, ..Shape::new(16, 6000, btree::MAX_KEY_LEN, 8).plain().run(9000, 4000).mix(5, 1) },
+        Shape {
+            sweep_every: 2900,
+            sweep_len: 1500,
+            ..Shape::new(16, 6000, btree::MAX_KEY_LEN, 8)
+                .plain()
+                .run(9000, 4000)
+                .mix(5, 1)
+        },
     ];
     for (i, shape) in shapes.into_iter().enumerate() {
         let mem = MemStorage::new();
@@ -222,7 +259,11 @@ fn model_memory_storage_tiny_pools_values_of_every_size_deletes_reopen_mid_run()
         if shape.mixed {
             assert!(stats.overflow_pages_written > 100);
         } else {
-            assert!(stats.tree_pages_freed > 20 && stats.interior_pages_freed > 0 && stats.interior_splits > 0);
+            assert!(
+                stats.tree_pages_freed > 20
+                    && stats.interior_pages_freed > 0
+                    && stats.interior_splits > 0
+            );
         }
     }
     Ok(())
@@ -234,7 +275,11 @@ fn model_a_real_file_closed_and_opened_again() -> TestResult {
     let path = tmp.0.join("tree.db");
     let shape = Shape::new(5, 300, 48, 12000).run(2500, 700);
     drop(FileStorage::create(&path).expect("create file"));
-    run_model(&|| Box::new(FileStorage::open(&path).expect("open file")), 42, shape)?;
+    run_model(
+        &|| Box::new(FileStorage::open(&path).expect("open file")),
+        42,
+        shape,
+    )?;
 
     // Replay the same operations into a model and compare with the file as
     // it was left by the run above: nothing but the file carries the data.
@@ -280,14 +325,16 @@ fn the_file_stops_growing_under_a_steady_insert_delete_load() -> TestResult {
 }
 
 #[test]
-fn delete_everything_an_empty_root_leaf_every_other_page_free_and_nothing_grows_when_it_all_comes_back() -> TestResult {
+fn delete_everything_an_empty_root_leaf_every_other_page_free_and_nothing_grows_when_it_all_comes_back()
+-> TestResult {
     let mem = MemStorage::new();
     let mut tree = create_mem(&mem, 8);
 
     // Keys of 200 bytes: three levels, as in chapter 12.
     let mut key = [b'k'; 200];
     let n = 2000;
-    let digits = |key: &mut [u8; 200], i: usize| key[..6].copy_from_slice(format!("{i:06}").as_bytes());
+    let digits =
+        |key: &mut [u8; 200], i: usize| key[..6].copy_from_slice(format!("{i:06}").as_bytes());
     for round in 0..2 {
         for i in 0..n {
             digits(&mut key, i * 7919 % n);
@@ -297,7 +344,10 @@ fn delete_everything_an_empty_root_leaf_every_other_page_free_and_nothing_grows_
         assert_eq!(tree.height()?, 3);
         let pages = tree.pool().pager().page_count();
         // Second round: every page came from the free list.
-        assert_eq!(tree.pool().pager().stats.allocations, if round == 0 { u64::from(pages) } else { 0 });
+        assert_eq!(
+            tree.pool().pager().stats.allocations,
+            if round == 0 { u64::from(pages) } else { 0 }
+        );
 
         // Delete in another order than the keys were inserted.
         for i in 0..n {
@@ -327,7 +377,9 @@ fn delete_everything_an_empty_root_leaf_every_other_page_free_and_nothing_grows_
 fn more_free_pages_than_one_trunk_lists_a_second_trunk_and_both_are_used_up_again() -> TestResult {
     let mem = MemStorage::new();
     let mut tree = create_mem(&mem, 4);
-    let value: Vec<u8> = (0..btree::MAX_VALUE_LEN).map(|i| (i as u8).wrapping_mul(31)).collect();
+    let value: Vec<u8> = (0..btree::MAX_VALUE_LEN)
+        .map(|i| (i as u8).wrapping_mul(31))
+        .collect();
 
     // 80 values of 16 overflow pages each: 1280 pages to free.
     assert_eq!(btree::overflow_pages(btree::MAX_VALUE_LEN), 16);
@@ -342,7 +394,10 @@ fn more_free_pages_than_one_trunk_lists_a_second_trunk_and_both_are_used_up_agai
     tree.validate()?;
     assert!(tree.free_count() as usize > btree::TRUNK_CAPACITY + 1);
     assert_eq!(count_roles(&mut tree, Role::Trunk)?, 2);
-    assert_eq!(count_roles(&mut tree, Role::Free)?, tree.free_count() as usize - 2);
+    assert_eq!(
+        count_roles(&mut tree, Role::Free)?,
+        tree.free_count() as usize - 2
+    );
 
     tree = reopen(tree, &mem, 4)?;
     for i in 0..80 {
@@ -386,7 +441,9 @@ fn local_len_sqlites_rule_with_this_chapters_numbers() {
         assert!((btree::MIN_LOCAL..=btree::MAX_LOCAL).contains(&local));
         // The chain is exactly as long as the tail needs.
         let tail = total - local;
-        assert!(tail > (pages - 1) * btree::OVERFLOW_PAYLOAD && tail <= pages * btree::OVERFLOW_PAYLOAD);
+        assert!(
+            tail > (pages - 1) * btree::OVERFLOW_PAYLOAD && tail <= pages * btree::OVERFLOW_PAYLOAD
+        );
         // More than the minimum stays local only to make every page full.
         if local > btree::MIN_LOCAL {
             assert_eq!(tail, pages * btree::OVERFLOW_PAYLOAD);
@@ -400,13 +457,16 @@ fn local_len_sqlites_rule_with_this_chapters_numbers() {
 }
 
 #[test]
-fn overwrites_that_change_the_size_class_free_the_old_chain_and_keep_the_tree_valid() -> TestResult {
+fn overwrites_that_change_the_size_class_free_the_old_chain_and_keep_the_tree_valid() -> TestResult
+{
     let mut tree = create_mem(&MemStorage::new(), 3);
     let value: Vec<u8> = (0..30000).map(|i| (i as u8).wrapping_mul(7)).collect();
 
     tree.put(b"a", b"x")?;
     tree.put(b"z", b"y")?;
-    let sizes = [10, 5000, 1088, 1089, 30000, 0, 9000, 9000, 9001, 544, 20000, 3];
+    let sizes = [
+        10, 5000, 1088, 1089, 30000, 0, 9000, 9000, 9001, 544, 20000, 3,
+    ];
     let mut chain_pages = 0;
     for size in sizes {
         tree.put(b"k", &value[..size])?;
@@ -414,9 +474,15 @@ fn overwrites_that_change_the_size_class_free_the_old_chain_and_keep_the_tree_va
         assert_eq!(tree.get(b"k")?.as_deref(), Some(&value[..size]));
         chain_pages += btree::overflow_pages(size);
         // Exactly the pages of the current value are in use.
-        assert_eq!(count_roles(&mut tree, Role::Overflow)?, btree::overflow_pages(size));
+        assert_eq!(
+            count_roles(&mut tree, Role::Overflow)?,
+            btree::overflow_pages(size)
+        );
         let pages = tree.pool().pager().page_count() as usize;
-        assert_eq!(tree.free_count() as usize, pages - 2 - btree::overflow_pages(size));
+        assert_eq!(
+            tree.free_count() as usize,
+            pages - 2 - btree::overflow_pages(size)
+        );
     }
     assert_eq!(tree.stats.overflow_pages_written, chain_pages as u64);
     assert_eq!(tree.stats.pages_freed, chain_pages as u64);
@@ -461,7 +527,8 @@ fn values_are_assembled_where_the_caller_says_inline_buffer_first_heap_if_larger
 }
 
 #[test]
-fn injected_io_failures_an_error_no_leaked_pin_and_a_tree_that_is_intact_or_poisoned() -> TestResult {
+fn injected_io_failures_an_error_no_leaked_pin_and_a_tree_that_is_intact_or_poisoned() -> TestResult
+{
     let shapes = [
         Shape::new(3, 200, 32, 9000),
         // Small cells with long keys, many deletes: splits and freed leaves.
@@ -523,7 +590,8 @@ fn injected_io_failures_an_error_no_leaked_pin_and_a_tree_that_is_intact_or_pois
 }
 
 #[test]
-fn a_failure_after_the_first_page_change_poisons_the_handle_before_it_nothing_happened() -> TestResult {
+fn a_failure_after_the_first_page_change_poisons_the_handle_before_it_nothing_happened()
+-> TestResult {
     let big = [b'v'; 9000]; // two overflow pages
     // writes allowed -> poisoned? Growing the file writes a (zero) page, so
     // the first chain page is write 0 and the second is write 1.
@@ -532,7 +600,10 @@ fn a_failure_after_the_first_page_change_poisons_the_handle_before_it_nothing_ha
         let mut tree = create_mem(&mem, 8);
         tree.put(b"a", b"1")?;
         mem.set_writes_before_failure(Some(writes));
-        assert_eq!(tree.put(b"b", &big), Err(TreeError::Io(IoError::StorageFailure)));
+        assert_eq!(
+            tree.put(b"b", &big),
+            Err(TreeError::Io(IoError::StorageFailure))
+        );
         mem.set_writes_before_failure(None);
         assert_eq!(tree.is_poisoned(), poisoned);
         assert_eq!(tree.pool().pinned_frames(), 0);
@@ -540,7 +611,10 @@ fn a_failure_after_the_first_page_change_poisons_the_handle_before_it_nothing_ha
             assert_eq!(tree.put(b"b", &big), Err(TreeError::TreePoisoned));
             assert_eq!(tree.delete(b"a"), Err(TreeError::TreePoisoned));
             // The half-written chain is one page that nothing points to.
-            assert_eq!(tree.validate(), Err(TreeError::Invalid(Violation::UnreachablePage)));
+            assert_eq!(
+                tree.validate(),
+                Err(TreeError::Invalid(Violation::UnreachablePage))
+            );
         } else {
             tree.validate()?;
             tree.put(b"b", &big)?;
@@ -585,7 +659,10 @@ fn split_point_the_shortest_prefix_with_at_least_half_of_the_bytes() {
 fn limits_the_largest_key_with_the_largest_local_part_still_packs_three_to_a_page() -> TestResult {
     let mut tree = create_mem(&MemStorage::new(), 4);
     let big = vec![b'x'; btree::MAX_VALUE_LEN + 1];
-    assert_eq!(tree.put(&big[..btree::MAX_KEY_LEN + 1], b"v"), Err(TreeError::KeyTooLarge));
+    assert_eq!(
+        tree.put(&big[..btree::MAX_KEY_LEN + 1], b"v"),
+        Err(TreeError::KeyTooLarge)
+    );
     assert_eq!(tree.put(b"k", &big), Err(TreeError::ValueTooLarge));
     assert!(!tree.delete(&big[..btree::MAX_KEY_LEN + 1])?);
     assert_eq!(tree.key_count(), 0);
@@ -603,7 +680,10 @@ fn limits_the_largest_key_with_the_largest_local_part_still_packs_three_to_a_pag
     tree.put(b"", b"")?;
     assert_eq!(tree.get(b"")?.as_deref(), Some(&b""[..]));
     tree.put(&key, &big[..btree::MAX_VALUE_LEN])?;
-    assert_eq!(tree.get(&key)?.as_deref(), Some(&big[..btree::MAX_VALUE_LEN]));
+    assert_eq!(
+        tree.get(&key)?.as_deref(),
+        Some(&big[..btree::MAX_VALUE_LEN])
+    );
     tree.put(&key, b"small")?;
     assert_eq!(tree.get(&key)?.as_deref(), Some(&b"small"[..]));
     tree.validate()?;
@@ -627,7 +707,9 @@ fn build_scenario(mem: &MemStorage, steps: usize) -> DiskBTree {
 #[test]
 fn range_bounds_are_half_open_leaves_are_followed_through_their_links() -> TestResult {
     let mut tree = build_scenario(&MemStorage::new(), 9);
-    let cases: [(&[u8], Option<&[u8]>, Option<&[u8]>, usize); 7] = [
+    // lo, hi, first key expected, number of entries expected
+    type Case<'a> = (&'a [u8], Option<&'a [u8]>, Option<&'a [u8]>, usize);
+    let cases: [Case; 7] = [
         (b"", None, Some(b"10"), 8),
         (b"20", Some(b"40"), Some(b"20"), 4), // 40 itself is excluded
         (b"33", Some(b"33"), None, 0),
@@ -658,8 +740,8 @@ fn range_bounds_are_half_open_leaves_are_followed_through_their_links() -> TestR
 fn the_scenarios_page_map_step_by_step() -> TestResult {
     let mut tree = build_scenario(&MemStorage::new(), 0);
     let maps = [
-        "ML", "ML", "ML", "ML", "ML", "MIOOLL", "MIOOLLO", "MITFLLO", "MITOLLO", "MITOLLF", "MITFLLF", "MITFLLF", "MITFLLF",
-        "MLTFFFF", "MLTOOOO", "MLOOOOO",
+        "ML", "ML", "ML", "ML", "ML", "MIOOLL", "MIOOLLO", "MITFLLO", "MITOLLO", "MITOLLF",
+        "MITFLLF", "MITFLLF", "MITFLLF", "MLTFFFF", "MLTOOOO", "MLOOOOO",
     ];
     for (&step, want) in demo::SCENARIO.iter().zip(maps) {
         demo::apply_step(&mut tree, step)?;
@@ -708,7 +790,11 @@ fn validate_detects_each_kind_of_damage() -> TestResult {
         match damage {
             "link" => {
                 let pool = tree.pool_mut();
-                put_u32(SlottedPage::open(pool.fetch_page(4)?).user_area_mut(), 0, btree::INVALID_PAGE_ID); // skips page 5
+                put_u32(
+                    SlottedPage::open(pool.fetch_page(4)?).user_area_mut(),
+                    0,
+                    btree::INVALID_PAGE_ID,
+                ); // skips page 5
                 pool.unpin(4, true);
             }
             "bounds" => {
@@ -769,7 +855,9 @@ fn validate_detects_each_kind_of_damage() -> TestResult {
             "cell" => {
                 // A length of 5 in front of 3 bytes.
                 let pool = tree.pool_mut();
-                SlottedPage::open(pool.fetch_page(4)?).put(b"25", b"\x05\x00\x00\x00abc").expect("fits");
+                SlottedPage::open(pool.fetch_page(4)?)
+                    .put(b"25", b"\x05\x00\x00\x00abc")
+                    .expect("fits");
                 pool.unpin(4, true);
             }
             "chain_long" => {
@@ -784,7 +872,9 @@ fn validate_detects_each_kind_of_damage() -> TestResult {
                 put_u32(&mut field, 0, 9000);
                 put_u32(&mut field, 836, 6);
                 let pool = tree.pool_mut();
-                SlottedPage::open(pool.fetch_page(5)?).put(b"60", &field).expect("fits");
+                SlottedPage::open(pool.fetch_page(5)?)
+                    .put(b"60", &field)
+                    .expect("fits");
                 pool.unpin(5, true);
             }
             "chain_kind" => {
@@ -795,7 +885,9 @@ fn validate_detects_each_kind_of_damage() -> TestResult {
             "chain_shared" => {
                 // A second cell points at the chain of key 60.
                 let pool = tree.pool_mut();
-                SlottedPage::open(pool.fetch_page(4)?).put(b"25", &field_3000).expect("fits");
+                SlottedPage::open(pool.fetch_page(4)?)
+                    .put(b"25", &field_3000)
+                    .expect("fits");
                 pool.unpin(4, true);
             }
             "free_and_used" => {
@@ -860,13 +952,19 @@ fn operations_report_a_damaged_chain_or_free_list_as_corrupt_without_leaking_a_p
 fn open_and_create_check_what_they_are_given() -> TestResult {
     let mem = MemStorage::new();
     // An empty storage is not a tree.
-    assert_eq!(DiskBTree::open(pool_over(mem.clone(), 4)).err(), Some(TreeError::BadMagic));
+    assert_eq!(
+        DiskBTree::open(pool_over(mem.clone(), 4)).err(),
+        Some(TreeError::BadMagic)
+    );
     let mut tree = create_mem(&mem, 4);
     tree.put(b"k", &[b'v'; 5000])?;
     tree.put(b"k", b"v")?; // page 2 becomes a trunk
     assert_eq!(tree.free_head(), 2);
     tree.close()?;
-    assert_eq!(DiskBTree::create(pool_over(mem.clone(), 4)).err(), Some(TreeError::NotEmpty));
+    assert_eq!(
+        DiskBTree::create(pool_over(mem.clone(), 4)).err(),
+        Some(TreeError::NotEmpty)
+    );
 
     // Damage the metapage; each time `open` must refuse.
     let patches = [
@@ -899,7 +997,10 @@ fn every_page_of_every_role_keeps_its_last_four_bytes_free_for_a_checksum() -> T
     let bytes = mem.bytes();
     assert_eq!(bytes.len(), 7 * btree::PAGE_SIZE);
     for page in bytes.chunks(btree::PAGE_SIZE) {
-        assert_eq!(page[btree::PAGE_SIZE - btree::RESERVED_TAIL as usize..], [0, 0, 0, 0]);
+        assert_eq!(
+            page[btree::PAGE_SIZE - btree::RESERVED_TAIL as usize..],
+            [0, 0, 0, 0]
+        );
     }
     assert_eq!(&bytes[..8], btree::MAGIC);
     // A full overflow page: the 3000-byte value was freed from page 6, the
@@ -910,7 +1011,8 @@ fn every_page_of_every_role_keeps_its_last_four_bytes_free_for_a_checksum() -> T
 }
 
 #[test]
-fn a_crash_between_freeing_a_page_and_reusing_it_leaves_a_file_that_validates_and_lies() -> TestResult {
+fn a_crash_between_freeing_a_page_and_reusing_it_leaves_a_file_that_validates_and_lies()
+-> TestResult {
     // The same experiment as part 5 of the demo, with the outcomes pinned.
     let before = demo::crash_during_reuse(0)?;
     assert!(!before.completed && before.validate_error.is_none());
@@ -942,7 +1044,9 @@ fn a_crash_between_freeing_a_page_and_reusing_it_leaves_a_file_that_validates_an
 }
 
 fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3))
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 #[test]

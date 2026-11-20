@@ -115,8 +115,6 @@ pub const Tally = struct {
 };
 
 pub const Error = Db.Error || DiskBTree.ValidateError || error{
-    /// A put failed although the power was still on: a bug, not a crash.
-    UnexpectedFailure,
     /// The recovered database could not take another put.
     RecoveredDbUnusable,
 };

@@ -162,13 +162,16 @@ pub const MIN_LOCAL: usize = MAX_LOCAL / 2;
 /// Value bytes on one overflow page.
 pub const OVERFLOW_PAYLOAD: usize = PAGE_SIZE - RESERVED_TAIL as usize - PLAIN_HEADER;
 /// Free page ids on one trunk page.
-pub const TRUNK_CAPACITY: usize = (PAGE_SIZE - RESERVED_TAIL as usize - PLAIN_HEADER) / size_of::<PageId>();
+pub const TRUNK_CAPACITY: usize =
+    (PAGE_SIZE - RESERVED_TAIL as usize - PLAIN_HEADER) / size_of::<PageId>();
 /// The longest value field: X local bytes between the length and the id.
 pub const MAX_FIELD_LEN: usize = FIELD_LEN_SIZE + MAX_LOCAL + FIELD_PTR_SIZE;
 
 // The one-third rule of chapter 12, now for the LOCAL part of a cell.
 const _: () = assert!(3 * cell_cost(MAX_KEY_LEN, MAX_FIELD_LEN) <= PAGE_CAPACITY);
-const _: () = assert!(MAX_LOCAL == 1088 && MIN_LOCAL == 544 && OVERFLOW_PAYLOAD == 4084 && TRUNK_CAPACITY == 1021);
+const _: () = assert!(
+    MAX_LOCAL == 1088 && MIN_LOCAL == 544 && OVERFLOW_PAYLOAD == 4084 && TRUNK_CAPACITY == 1021
+);
 const _: () = assert!(slotted::USER_AREA_SIZE >= CHILD_SIZE);
 
 /// How many bytes of a value of `total` bytes stay in the leaf cell. This is
@@ -236,11 +239,19 @@ pub fn parse_field(field: &[u8]) -> Result<ValueRef<'_>> {
     if field.len() != FIELD_LEN_SIZE + local + if spilled { FIELD_PTR_SIZE } else { 0 } {
         return Err(TreeError::Corrupt);
     }
-    let first = if spilled { u32_at(field, field.len() - 4) } else { INVALID_PAGE_ID };
+    let first = if spilled {
+        u32_at(field, field.len() - 4)
+    } else {
+        INVALID_PAGE_ID
+    };
     if spilled && first == INVALID_PAGE_ID {
         return Err(TreeError::Corrupt);
     }
-    Ok(ValueRef { total, local: &field[FIELD_LEN_SIZE..FIELD_LEN_SIZE + local], first })
+    Ok(ValueRef {
+        total,
+        local: &field[FIELD_LEN_SIZE..FIELD_LEN_SIZE + local],
+        first,
+    })
 }
 
 /// Every way a tree operation can fail. Zig merges error sets with `||`;
@@ -424,7 +435,8 @@ fn pin_node(pool: &mut BufferPool, id: PageId) -> Result<SlottedPage<'_>> {
     }
     let known = {
         let page = SlottedPage::open(pool.fetch_page(id)?);
-        (page.kind() == KIND_LEAF || page.kind() == KIND_INTERIOR) && page.reserved_size() == RESERVED_TAIL as usize
+        (page.kind() == KIND_LEAF || page.kind() == KIND_INTERIOR)
+            && page.reserved_size() == RESERVED_TAIL as usize
     };
     if !known {
         pool.unpin(id, false);
@@ -462,7 +474,8 @@ fn write_interior(buf: &mut Page, rightmost: PageId, entries: &[(&[u8], PageId)]
     page.set_kind(KIND_INTERIOR);
     set_link(&mut page, rightmost);
     for (i, (key, child)) in entries.iter().enumerate() {
-        page.insert_at(i, key, &child.to_le_bytes()).expect("see split_point");
+        page.insert_at(i, key, &child.to_le_bytes())
+            .expect("see split_point");
     }
 }
 
@@ -537,7 +550,11 @@ impl ValueBuf {
     pub const INLINE_LEN: usize = MAX_LOCAL;
 
     pub const fn new() -> Self {
-        Self { len: 0, inline: [0; Self::INLINE_LEN], heap: Vec::new() }
+        Self {
+            len: 0,
+            inline: [0; Self::INLINE_LEN],
+            heap: Vec::new(),
+        }
     }
 
     /// Make room for a value of `len` bytes and return it for filling.
@@ -555,11 +572,19 @@ impl ValueBuf {
     }
 
     pub fn as_slice(&self) -> &[u8] {
-        if self.on_heap() { &self.heap[..self.len] } else { &self.inline[..self.len] }
+        if self.on_heap() {
+            &self.heap[..self.len]
+        } else {
+            &self.inline[..self.len]
+        }
     }
 
     fn as_mut_slice(&mut self) -> &mut [u8] {
-        if self.on_heap() { &mut self.heap[..self.len] } else { &mut self.inline[..self.len] }
+        if self.on_heap() {
+            &mut self.heap[..self.len]
+        } else {
+            &mut self.inline[..self.len]
+        }
     }
 
     /// True if the current value did not fit the inline buffer.
@@ -662,7 +687,13 @@ impl DiskBTree {
         pool.unpin(root_id, true);
         assert!(meta_id == META_PAGE_ID && root_id == 1);
 
-        let meta = Meta { root: root_id, page_count: 2, key_count: 0, free_head: INVALID_PAGE_ID, free_count: 0 };
+        let meta = Meta {
+            root: root_id,
+            page_count: 2,
+            key_count: 0,
+            free_head: INVALID_PAGE_ID,
+            free_count: 0,
+        };
         let mut tree = Self::with_meta(pool, meta);
         tree.flush()?;
         Ok(tree)
@@ -1035,7 +1066,9 @@ impl DiskBTree {
         //    very end, when no cell points at it any more.
         let old = {
             let leaf = pin_node(&mut self.pool, leaf_id)?;
-            let old = leaf.get(key).map(|field| parse_field(field).map(|r| (r.first, overflow_pages(r.total))));
+            let old = leaf
+                .get(key)
+                .map(|field| parse_field(field).map(|r| (r.first, overflow_pages(r.total))));
             self.pool.unpin(leaf_id, false);
             old.transpose()?
         };
@@ -1074,7 +1107,10 @@ impl DiskBTree {
             // The leaf is the root. The root never splits: its content
             // moves down first, and the page below it splits.
             id = self.push_root_down()?;
-            self.path.push(PathEntry { id: self.root, index: 0 });
+            self.path.push(PathEntry {
+                id: self.root,
+                index: 0,
+            });
         }
         let mut carry = self.split_leaf(id, key, value)?;
 
@@ -1087,7 +1123,10 @@ impl DiskBTree {
                 // The full parent is the root: same move, one level up. The
                 // child index stays valid because the cells moved unchanged.
                 parent.id = self.push_root_down()?;
-                self.path.push(PathEntry { id: self.root, index: 0 });
+                self.path.push(PathEntry {
+                    id: self.root,
+                    index: 0,
+                });
             }
             carry = self.split_interior(parent, &carry)?;
         }
@@ -1096,7 +1135,8 @@ impl DiskBTree {
     /// `alloc_page` for a caller that holds page `held` pinned: on failure
     /// that pin is released (Zig: `errdefer`).
     fn alloc_beside(&mut self, held: PageId) -> Result<PageId> {
-        self.alloc_page().inspect_err(|_| self.pool.unpin(held, false))
+        self.alloc_page()
+            .inspect_err(|_| self.pool.unpin(held, false))
     }
 
     /// Grow the tree by one level WITHOUT changing the root's page id: copy
@@ -1141,7 +1181,10 @@ impl DiskBTree {
                 cells.push((old.key(from), old.value(from)));
             }
         }
-        let costs: Vec<usize> = cells.iter().map(|(k, v)| cell_cost(k.len(), v.len())).collect();
+        let costs: Vec<usize> = cells
+            .iter()
+            .map(|(k, v)| cell_cost(k.len(), v.len()))
+            .collect();
         let k = split_point(&costs, 1);
 
         let right_id = self.alloc_beside(id)?; // the last step that can fail
@@ -1153,7 +1196,11 @@ impl DiskBTree {
         self.stats.leaf_splits += 1;
         // The separator is a COPY of the right half's first key: in a B+tree
         // the key itself stays in the leaf.
-        Ok(Carry { sep: cells[k].0.to_vec(), left: id, right: right_id })
+        Ok(Carry {
+            sep: cells[k].0.to_vec(),
+            left: id,
+            right: right_id,
+        })
     }
 
     /// Record a finished split in the parent: where one pointer led to
@@ -1162,7 +1209,10 @@ impl DiskBTree {
     /// fit.
     fn insert_separator(&mut self, parent: PathEntry, carry: &Carry) -> Result<bool> {
         let mut page = pin_node(&mut self.pool, parent.id)?;
-        if page.kind() != KIND_INTERIOR || parent.index > page.count() || child_at(&page, parent.index) != carry.left {
+        if page.kind() != KIND_INTERIOR
+            || parent.index > page.count()
+            || child_at(&page, parent.index) != carry.left
+        {
             self.pool.unpin(parent.id, false);
             return Err(TreeError::Corrupt);
         }
@@ -1177,10 +1227,12 @@ impl DiskBTree {
             // (same-size overwrite: happens in place and cannot fail; the
             // key is copied because `put` takes no slice of its own page)
             let old_key = page.key(parent.index).to_vec();
-            page.put(&old_key, &carry.right.to_le_bytes()).expect("same size");
+            page.put(&old_key, &carry.right.to_le_bytes())
+                .expect("same size");
         }
         // ...and the new cell (sep -> left) goes in front of it.
-        page.insert_at(parent.index, &carry.sep, &carry.left.to_le_bytes()).expect("fits was checked");
+        page.insert_at(parent.index, &carry.sep, &carry.left.to_le_bytes())
+            .expect("fits was checked");
         self.pool.unpin(parent.id, true);
         Ok(true)
     }
@@ -1208,7 +1260,10 @@ impl DiskBTree {
         } else {
             rightmost = carry.right;
         }
-        let costs: Vec<usize> = entries.iter().map(|(k, _)| cell_cost(k.len(), CHILD_SIZE)).collect();
+        let costs: Vec<usize> = entries
+            .iter()
+            .map(|(k, _)| cell_cost(k.len(), CHILD_SIZE))
+            .collect();
         // entries[k] moves up; at least one entry must remain right of it.
         let k = split_point(&costs, 2);
 
@@ -1219,7 +1274,11 @@ impl DiskBTree {
         self.pool.unpin(right_id, true);
         self.pool.unpin(id, true);
         self.stats.interior_splits += 1;
-        Ok(Carry { sep: entries[k].0.to_vec(), left: id, right: right_id })
+        Ok(Carry {
+            sep: entries[k].0.to_vec(),
+            left: id,
+            right: right_id,
+        })
     }
 
     // ---- delete -------------------------------------------------------------
@@ -1304,7 +1363,10 @@ impl DiskBTree {
             let entry = self.path[level];
             let mut page = pin_node(&mut self.pool, entry.id)?;
             let n = page.count();
-            if page.kind() != KIND_INTERIOR || entry.index > n || child_at(&page, entry.index) != doomed[doomed.len() - 1] {
+            if page.kind() != KIND_INTERIOR
+                || entry.index > n
+                || child_at(&page, entry.index) != doomed[doomed.len() - 1]
+            {
                 self.pool.unpin(entry.id, false);
                 return Err(TreeError::Corrupt);
             }
@@ -1328,7 +1390,8 @@ impl DiskBTree {
             }
             if level == 0 {
                 // The root lost its only child: the tree is empty.
-                let mut root = SlottedPage::init_reserved(self.pool.page_mut(entry.id), RESERVED_TAIL);
+                let mut root =
+                    SlottedPage::init_reserved(self.pool.page_mut(entry.id), RESERVED_TAIL);
                 root.set_kind(KIND_LEAF);
                 set_link(&mut root, INVALID_PAGE_ID);
                 self.pool.unpin(entry.id, true);
@@ -1358,7 +1421,8 @@ impl DiskBTree {
         };
         let mut id = {
             let page = pin_node(&mut self.pool, turn.id)?;
-            let child = (page.kind() == KIND_INTERIOR && turn.index <= page.count()).then(|| child_at(&page, turn.index - 1));
+            let child = (page.kind() == KIND_INTERIOR && turn.index <= page.count())
+                .then(|| child_at(&page, turn.index - 1));
             self.pool.unpin(turn.id, false);
             child.ok_or(TreeError::Corrupt)?
         };
@@ -1420,7 +1484,14 @@ impl DiskBTree {
         let leaf_id = self.find_leaf(lo, false)?;
         let slot = pin_node(&mut self.pool, leaf_id)?.search(lo).index;
         self.pool.unpin(leaf_id, false);
-        Ok(RangeIterator { tree: self, leaf: leaf_id, slot, hi: hi.map(<[u8]>::to_vec), key: Vec::new(), value: ValueBuf::new() })
+        Ok(RangeIterator {
+            tree: self,
+            leaf: leaf_id,
+            slot,
+            hi: hi.map(<[u8]>::to_vec),
+            key: Vec::new(),
+            value: ValueBuf::new(),
+        })
     }
 
     // ---- validate -------------------------------------------------------------
@@ -1444,7 +1515,10 @@ impl DiskBTree {
         self.visit(&mut walk, self.root, None, None, 0)?;
 
         for (i, &(_, next)) in walk.leaves.iter().enumerate() {
-            let expected = walk.leaves.get(i + 1).map_or(INVALID_PAGE_ID, |&(id, _)| id);
+            let expected = walk
+                .leaves
+                .get(i + 1)
+                .map_or(INVALID_PAGE_ID, |&(id, _)| id);
             if next != expected {
                 return invalid(Violation::LeafChainBroken); // T5
             }
@@ -1461,7 +1535,14 @@ impl DiskBTree {
 
     /// `lo` (inclusive) and `hi` (exclusive) are the bounds the ancestors'
     /// separators put on this subtree; None = unbounded.
-    fn visit(&mut self, walk: &mut Walk, id: PageId, lo: Option<&[u8]>, hi: Option<&[u8]>, depth: usize) -> Result<()> {
+    fn visit(
+        &mut self,
+        walk: &mut Walk,
+        id: PageId,
+        lo: Option<&[u8]>,
+        hi: Option<&[u8]>,
+        depth: usize,
+    ) -> Result<()> {
         if id as usize >= walk.roles.len() {
             return invalid(Violation::BadPage);
         }
@@ -1491,7 +1572,15 @@ impl DiskBTree {
 
     /// Everything `visit` checks about one page; for a leaf that includes
     /// the overflow chains of its values. Returns the page's kind.
-    fn check_page(&mut self, walk: &mut Walk, page: &SlottedPage, id: PageId, lo: Option<&[u8]>, hi: Option<&[u8]>, depth: usize) -> Result<u8> {
+    fn check_page(
+        &mut self,
+        walk: &mut Walk,
+        page: &SlottedPage,
+        id: PageId,
+        lo: Option<&[u8]>,
+        hi: Option<&[u8]>,
+        depth: usize,
+    ) -> Result<u8> {
         // `SlottedPage::validate` is safe on any bytes; everything after it
         // may trust the page.
         if page.validate().is_err() || page.reserved_size() != RESERVED_TAIL as usize {
@@ -1644,7 +1733,10 @@ impl DiskBTree {
         let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
         out.push_str(&"  ".repeat(depth));
         if page.kind() == KIND_LEAF {
-            let _ = write!(out, "page {id}  leaf      {n} keys  {used}/{PAGE_CAPACITY} bytes  next ");
+            let _ = write!(
+                out,
+                "page {id}  leaf      {n} keys  {used}/{PAGE_CAPACITY} bytes  next "
+            );
             match link(&page) {
                 INVALID_PAGE_ID => out.push('-'),
                 next => out.push_str(&next.to_string()),
@@ -1656,7 +1748,10 @@ impl DiskBTree {
             out.push('\n');
             return Ok(());
         }
-        let _ = write!(out, "page {id}  interior  {n} keys  {used}/{PAGE_CAPACITY} bytes  |");
+        let _ = write!(
+            out,
+            "page {id}  interior  {n} keys  {used}/{PAGE_CAPACITY} bytes  |"
+        );
         let children: Vec<PageId> = (0..=n).map(|i| child_at(&page, i)).collect();
         for (i, child) in children.iter().enumerate() {
             if i < n {
@@ -1676,7 +1771,12 @@ impl DiskBTree {
         use std::fmt::Write;
         for i in 0..page.count() {
             let value = parse_field(page.value(i))?;
-            let _ = write!(out, " {}:{}", String::from_utf8_lossy(page.key(i)), value.total);
+            let _ = write!(
+                out,
+                " {}:{}",
+                String::from_utf8_lossy(page.key(i)),
+                value.total
+            );
             if value.first == INVALID_PAGE_ID {
                 continue;
             }
@@ -1709,7 +1809,11 @@ impl Walk {
     fn claim(&mut self, id: PageId, role: Role) -> Result<()> {
         let old = self.roles[id as usize];
         if old != Role::Unseen {
-            return invalid(if old.family() == role.family() { Violation::PageReachedTwice } else { Violation::PageInTwoRoles });
+            return invalid(if old.family() == role.family() {
+                Violation::PageReachedTwice
+            } else {
+                Violation::PageInTwoRoles
+            });
         }
         self.roles[id as usize] = role;
         Ok(())
@@ -1770,7 +1874,10 @@ impl RangeIterator<'_> {
             let started = start_value(&mut self.value, page.value(self.slot));
             pool.unpin(pinned, false);
             let (filled, first) = started.inspect_err(|_| self.value.clear())?;
-            if let Err(e) = self.tree.read_chain(first, &mut self.value.as_mut_slice()[filled..]) {
+            if let Err(e) = self
+                .tree
+                .read_chain(first, &mut self.value.as_mut_slice()[filled..])
+            {
                 self.value.clear();
                 return Err(e);
             }

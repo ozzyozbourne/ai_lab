@@ -50,7 +50,7 @@ window.CHAPTER_CODE = {
         self.assertOutside(v);
 
         const size = cellSize(k.len, v.len);
-        if (size > max_cell_size) return error.CellTooLarge;
+        if (size > self.maxCellSize()) return error.CellTooLarge;
         if (size + slot_size > self.freeBytes()) return error.PageFull;
 
         // 1. Find room for the cell body. May compact, which moves cells but
@@ -127,7 +127,7 @@ window.CHAPTER_CODE = {
         debug_assert!(index == n || k < self.key(index));
 
         let size = cell_size(k.len(), v.len());
-        if size > MAX_CELL_SIZE {
+        if size > self.max_cell_size() {
             return Err(PageError::CellTooLarge);
         }
         if size + SLOT_SIZE > self.free_bytes() {
@@ -225,7 +225,8 @@ window.CHAPTER_CODE = {
         if (n == 1) {
             // Last cell gone: everything is gap again. This also recovers
             // slivers that no neighbouring free block could absorb.
-            self.wr16(off_content_start, page_size);
+            // The cell's bytes are not erased (see \`compact\`).
+            self.wr16(off_content_start, self.usableSize());
             self.wr16(off_first_free, 0);
             self.buf[off_frag_bytes] = 0;
         } else {
@@ -299,7 +300,8 @@ window.CHAPTER_CODE = {
         if n == 1 {
             // Last cell gone: everything is gap again. This also recovers
             // slivers that no neighbouring free block could absorb.
-            self.wr16(OFF_CONTENT_START, PAGE_SIZE);
+            // The cell's bytes are not erased (see \`compact\`).
+            self.wr16(OFF_CONTENT_START, self.usable_size());
             self.wr16(OFF_FIRST_FREE, 0);
             self.buf[OFF_FRAG_BYTES] = 0;
         } else {
@@ -364,9 +366,10 @@ window.CHAPTER_CODE = {
         // so read them from a copy of the content area. 4 KiB of stack.
         var scratch: [page_size]u8 = undefined;
         const old_start = self.rd16(off_content_start);
-        @memcpy(scratch[old_start..], self.buf[old_start..]);
+        const usable = self.usableSize();
+        @memcpy(scratch[old_start..usable], self.buf[old_start..usable]);
 
-        var top: usize = page_size;
+        var top: usize = usable;
         for (0..self.count()) |i| {
             const off = self.slot(i);
             // Lengths come from the copy: the live cell header at \`off\` may
@@ -378,7 +381,10 @@ window.CHAPTER_CODE = {
             @memcpy(self.buf[top..][0..size], scratch[off..][0..size]);
             self.wr16(header_size + i * slot_size, top);
         }
-        // Zero the new gap so that deleted data does not linger on disk.
+        // Zero the new gap. This keeps dumps readable; it is not an erase
+        // guarantee. \`deleteAt\` leaves the bytes of a deleted cell where they
+        // are (a free block overwrites only its first 4), and they stay on
+        // the page until a compaction or a new cell happens to cover them.
         @memset(self.buf[header_size + self.count() * slot_size .. top], 0);
         self.wr16(off_content_start, top);
         self.wr16(off_first_free, 0);
@@ -388,10 +394,13 @@ window.CHAPTER_CODE = {
     rust: `
     pub fn compact(&mut self) {
         // Cells would overwrite each other if moved in place in slot order,
-        // so read them from a copy of the page. 4 KiB of stack.
-        let scratch: [u8; PAGE_SIZE] = *self.buf;
+        // so read them from a copy of the content area. 4 KiB of stack.
+        let mut scratch = [0u8; PAGE_SIZE];
+        let old_start = self.rd16(OFF_CONTENT_START);
+        let usable = self.usable_size();
+        scratch[old_start..usable].copy_from_slice(&self.buf[old_start..usable]);
 
-        let mut top = PAGE_SIZE;
+        let mut top = usable;
         for i in 0..self.count() {
             let off = self.slot(i);
             // Lengths come from the copy: the live cell header at \`off\` may
@@ -403,7 +412,10 @@ window.CHAPTER_CODE = {
             self.buf[top..top + size].copy_from_slice(&scratch[off..off + size]);
             self.wr16(HEADER_SIZE + i * SLOT_SIZE, top);
         }
-        // Zero the new gap so that deleted data does not linger on disk.
+        // Zero the new gap. This keeps dumps readable; it is not an erase
+        // guarantee. \`delete_at\` leaves the bytes of a deleted cell where
+        // they are (a free block overwrites only its first 4), and they stay
+        // on the page until a compaction or a new cell happens to cover them.
         let slots_end = HEADER_SIZE + self.count() * SLOT_SIZE;
         self.buf[slots_end..top].fill(0);
         self.wr16(OFF_CONTENT_START, top);

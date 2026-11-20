@@ -1,6 +1,7 @@
 .{
     .name = .ch20_blink_trees,
     .version = "0.0.0",
+    .fingerprint = 0xa2fe27f4cf75c83f,
     .minimum_zig_version = "0.17.1",
     .dependencies = .{},
     .paths = .{

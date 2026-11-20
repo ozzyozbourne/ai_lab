@@ -161,8 +161,9 @@ fn printRow(w: *std.Io.Writer, comptime M: usize, order: []const u8, variant: []
     const fill = r.fillPermille();
     const rate = r.splitsPer1000Tenths();
     try w.print("{d:>4}  {s:<9}  {s:<9}  {d:>6}  {d:>6}  {d:>3}.{d}%  {d:>6}  {d:>11}.{d}  {d:>15}\n", .{
-        M,        order,     variant,   r.shape.height,           r.shape.nodes,
-        fill / 10, fill % 10, r.splits, rate / 10, rate % 10, r.most_splits_in_one_put,
+        M,                        order,     variant,  r.shape.height, r.shape.nodes,
+        fill / 10,                fill % 10, r.splits, rate / 10,      rate % 10,
+        r.most_splits_in_one_put,
     });
 }
 

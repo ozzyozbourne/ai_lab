@@ -69,7 +69,7 @@ const Worker = struct {
     /// touches allocator state another thread is using, and so that all of
     /// a thread's memory is released with one call after the join.
     arena: std.heap.ArenaAllocator,
-    /// Every key this thread tried to insert, in order (lives in `arena`).
+    /// Every key this thread inserted, in order (lives in `arena`).
     keys: []u64 = &.{},
     /// Keys a read failed to find (lives in `arena`). Must stay empty.
     missed: std.ArrayList(u64) = .empty,
@@ -86,16 +86,18 @@ const Worker = struct {
         const scratch = self.arena.allocator();
         var rng = SplitMix64.init(self.seed);
         const keys = try scratch.alloc(u64, self.puts);
-        for (keys, 0..) |*slot, i| {
+        var n: usize = 0;
+        for (0..self.puts) |_| {
             const key = rng.below(self.key_space);
-            slot.* = key;
-            self.keys = keys[0 .. i + 1];
             _ = self.tree.put(self.io, key, valueOf(key)) catch {
                 self.failed_puts += 1;
                 continue;
             };
+            keys[n] = key;
+            n += 1;
+            self.keys = keys[0..n];
             try self.expectPresent(scratch, key);
-            try self.expectPresent(scratch, keys[rng.below(i + 1)]);
+            try self.expectPresent(scratch, keys[rng.below(n)]);
             if (self.preloaded.len > 0) {
                 try self.expectPresent(scratch, self.preloaded[rng.below(self.preloaded.len)]);
             }

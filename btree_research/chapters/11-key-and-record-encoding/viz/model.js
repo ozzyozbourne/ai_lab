@@ -263,7 +263,7 @@
           ' column values to reach the same order.' +
           (off.length ? ' A fix is switched off, but these particular rows do not expose it: ' + why : '')
         : 'Sorted by bytes, but the result is not the logical order: <b>' + wrong.length + ' row' + (wrong.length === 1 ? ' is' : 's are') +
-          ' out of place</b> (marked; moving just ' + (wrong.length === 1 ? 'that one' : 'those') + ' would repair the order). ' + why +
+          ' out of place</b> (marked; the unmarked rows are still in the right order among themselves). ' + why +
           ' A B-tree built on these keys would return wrong range scans.',
       state: { order: order.slice(), pair: null, diff: null, sortedUpTo: order.length, done: true, wrong: wrong, ok: ok, comparisons: comparisons, examined: examined },
       log: (ok ? 'sorted: ' : 'WRONG: ') + order.map(function (r) { return rows[r].id; }).join(' '),
@@ -284,24 +284,33 @@
   };
 
   /**
-   * The rows that are out of place: `order` minus a longest run of rows that
-   * are already in logical order relative to each other (a longest increasing
-   * subsequence of logical ranks). One displaced row is reported as one row,
-   * not as every row it pushed down by a position.
+   * The rows that are out of place. A row is certainly fine if it belongs to
+   * EVERY longest run of rows that are in logical order relative to each
+   * other (every longest increasing subsequence of logical ranks); all other
+   * rows are marked. So one displaced row is reported as one row, not as every
+   * row it pushed down a position, and when two neighbours are swapped both
+   * are marked, because either of them could be the one that moved.
    */
   function outOfPlace(order, logical) {
-    var rank = {}, n = order.length, len = [], prev = [], best = -1;
+    var rank = {}, n = order.length, up = [], down = [], longest = 0, i, j;
     logical.forEach(function (r, pos) { rank[r] = pos; });
-    for (var i = 0; i < n; i++) {
-      len[i] = 1; prev[i] = -1;
-      for (var j = 0; j < i; j++) {
-        if (rank[order[j]] < rank[order[i]] && len[j] + 1 > len[i]) { len[i] = len[j] + 1; prev[i] = j; }
-      }
-      if (best < 0 || len[i] > len[best]) best = i;
+    var seq = order.map(function (r) { return rank[r]; });
+    for (i = 0; i < n; i++) {                  // up[i]: longest increasing run ending at i
+      up[i] = 1;
+      for (j = 0; j < i; j++) if (seq[j] < seq[i] && up[j] + 1 > up[i]) up[i] = up[j] + 1;
+      if (up[i] > longest) longest = up[i];
     }
-    var keep = {};
-    for (var k = best; k >= 0; k = prev[k]) keep[k] = true;
-    return order.filter(function (_, pos) { return !keep[pos]; });
+    for (i = n - 1; i >= 0; i--) {             // down[i]: longest increasing run starting at i
+      down[i] = 1;
+      for (j = i + 1; j < n; j++) if (seq[i] < seq[j] && down[j] + 1 > down[i]) down[i] = down[j] + 1;
+    }
+    var onSome = [], perLevel = {};
+    for (i = 0; i < n; i++) {
+      onSome[i] = up[i] + down[i] - 1 === longest;
+      if (onSome[i]) perLevel[up[i]] = (perLevel[up[i]] || 0) + 1;
+    }
+    // On every longest run = on some longest run, and alone at its position in it.
+    return order.filter(function (_, pos) { return !(onSome[pos] && perLevel[up[pos]] === 1); });
   }
 
   /* ---------- "build one key" pipeline (figure 2) ------------------------ */

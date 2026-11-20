@@ -66,27 +66,31 @@ test "checkAllAllocationFailures: a failed put leaves the tree unchanged (Memory
     }
 }
 
-test "MemoryPool asks the backing allocator once per node, DirectNodes too; only the pool keeps freed slots" {
-    // Count what a build costs the backing allocator.
-    inline for (.{ pool.StdPool, pool.DirectNodes }) |PoolFn| {
+test "what a build asks of the backing allocator: one request per node, or far fewer with MemoryPool" {
+    var requests: [2]usize = undefined;
+    var node_count: usize = 0;
+    inline for (.{ pool.DirectNodes, pool.StdPool }, 0..) |PoolFn, p| {
         var counting: testing.FailingAllocator = .init(testing.allocator, .{});
         const gpa = counting.allocator();
         var tree: BTree(4, PoolFn) = .empty;
         defer tree.deinit(gpa);
         for (0..key_count) |i| _ = try tree.put(gpa, keyAt(i), i);
         try tree.validate();
-        const nodes = tree.shape().nodes;
-        try testing.expectEqual(nodes, tree.pool.usage.live());
-        // An insert-only tree never destroys a node.
-        try testing.expectEqual(0, tree.pool.usage.destroyed);
-        try testing.expect(counting.allocations >= 1 and counting.allocations <= nodes);
+        node_count = tree.shape().nodes;
+        try testing.expectEqual(node_count, tree.pool.usage.live());
+        try testing.expectEqual(0, tree.pool.usage.destroyed); // an insert-only tree never frees a node
+        requests[p] = counting.allocations;
     }
+    try testing.expectEqual(node_count, requests[0]); // DirectNodes: exactly one per node
+    // MemoryPool cuts its slots from an arena, and the arena asks for memory
+    // in growing blocks, so many nodes share one request.
+    try testing.expect(requests[1] < requests[0] / 4);
 }
 
-test "MemoryPool.addCapacity: reserve first, then create cannot fail" {
-    // The reservation step of `put` in one call: after addCapacity(n) the
-    // next n creates are served from the pool's free list and never touch
-    // the backing allocator.
+test "MemoryPool.addCapacity: reserve first, then create does not allocate" {
+    // The reservation step of `put` as one call: after addCapacity(n) the
+    // next n creates are served from the pool's free list and never reach
+    // the backing allocator, so they cannot fail.
     var failing: testing.FailingAllocator = .init(testing.allocator, .{});
     const gpa = failing.allocator();
     var nodes: std.heap.MemoryPool(Node(4)) = .empty;
@@ -94,5 +98,5 @@ test "MemoryPool.addCapacity: reserve first, then create cannot fail" {
     try nodes.addCapacity(gpa, 3);
     failing.fail_index = failing.alloc_index; // from now on every allocation fails
     for (0..3) |_| _ = try nodes.create(gpa);
-    try testing.expectError(error.OutOfMemory, nodes.create(gpa));
+    try testing.expect(!failing.has_induced_failure); // nobody even asked
 }

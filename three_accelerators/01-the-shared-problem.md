@@ -15,10 +15,11 @@ operations per second.
 The standard way to draw this is a *roofline*. Divide a chip's peak arithmetic rate by its
 memory bandwidth and you get a ridge, in operations per byte. A workload that does fewer
 operations per byte than the ridge is waiting for memory. Single-stream token generation
-does about one multiply-add per weight byte or two, and current GPUs have ridges in the
-hundreds [derived in the Cerebras course, chapter 17: an H100 is about 295 FLOP per byte at
-dense BF16]. So the arithmetic units of a GPU that is serving one user spend most of their
-time idle.
+does about one operation per weight byte (one multiply-add, counted as two operations, per
+two-byte weight), and current GPUs have ridges in the hundreds [derived in the Cerebras
+course, chapter 1, from vendor figures: an H100 is about 295 FLOP per byte at dense BF16,
+a 16-bit floating-point format]. So the arithmetic units of a GPU that is serving one user
+spend most of their time idle.
 
 ## What a GPU does about it
 
@@ -35,15 +36,18 @@ request.
 
 Cerebras, Tenstorrent and Groq each start from the same diagnosis and share four choices:
 
-1. **Memory sits next to arithmetic.** All three spread SRAM through the compute fabric so
-   that the data a multiplier needs is a few wires away, not across a package boundary.
+1. **Memory sits next to arithmetic.** All three spread SRAM (fast memory built from the
+   same transistors as the logic) through the compute fabric, so that the data a multiplier
+   is working on is a few wires away, not across a package boundary. Tenstorrent also keeps
+   a larger, slower DRAM outside the chip (chapter 3).
 2. **The machine is a grid, and the program is laid out on it.** A model is placed in space:
    this layer here, that one beside it. Data flows between neighbours. None of the three is
-   a pool of interchangeable cores fed by a shared memory.
+   a pool of interchangeable cores fed through caches from one shared memory.
 3. **Communication is explicit.** There is no cache hierarchy that quietly fetches things.
    The program, or its compiler, says which data goes where.
-4. **A compiler does work that hardware does elsewhere.** Placement, routing and, on one of
-   the three, exact timing are decided before the run.
+4. **Software does work that hardware does elsewhere.** Placement is decided before the
+   run on all three, routes on two of them (Cerebras and Groq), and exact timing on one
+   (Groq).
 
 ## Where they part
 

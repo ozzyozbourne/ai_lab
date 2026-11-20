@@ -379,7 +379,7 @@ code bases this guide studies descends a tree this way.
   exclusive), but it does **not** couple them on the way down. `_bt_search`
   releases the parent and only then locks the child:
   `/* drop the read lock on the page, then acquire one on its child */`
-  (`postgres/src/backend/access/nbtree/nbtsearch.c:193-194`, through
+  (`postgres/src/backend/access/nbtree/nbtsearch.c:184-185`, through
   `_bt_relandgetbuf`, `nbtpage.c:988`). Its README says a scan holds nothing
   "between levels" (`postgres/src/backend/access/nbtree/README:428-431`). The
   gap this chapter closes with coupling, PostgreSQL closes differently: every

@@ -126,10 +126,9 @@ pessimistic `put` and does not rely on anything the first one saw.
 
 What this is expected to buy: writers stop excluding each other and the
 readers at the root and the upper levels, at the price of a second descent
-for the inserts that split. The count of latches held in the chapter's own
-examples shows the first half: `put 11` would hold S (not X) on #7 and #2 on
-its way. How much that helps depends on the workload and was not measured
-here. The optimistic protocol in the visualization goes one step further and
+for the inserts that split. In the chapter's example, `put 11` would take S
+instead of X on #7 and #2 on its way down. How much that helps depends on the
+workload and was not measured here. The optimistic protocol in the visualization goes one step further and
 takes no latch at all on the way down.
 
 ## 5. A `prev` link

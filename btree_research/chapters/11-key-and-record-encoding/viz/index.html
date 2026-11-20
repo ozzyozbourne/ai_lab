@@ -234,7 +234,7 @@ byte order of each encoding with the numeric order.</p>
       rebuild('play');
     }
     function reset() {
-      rows = M.arrivalOrder(); nextId = 9; err.textContent = '';
+      rows = M.arrivalOrder(); nextId = 9; err.textContent = ''; nameIn.value = ''; scoreIn.value = '';
       Object.keys(fixes).forEach(function (f) { fixes[f] = true; });
       fixRow.querySelectorAll('input').forEach(function (b) { b.checked = true; });
       rebuild('rest');
@@ -413,6 +413,7 @@ byte order of each encoding with the numeric order.</p>
       var bad = a === null || b === null;
       err.textContent = bad ? 'Both must be whole numbers from 0 to 18446744073709551615. Dimmed below: the previous pair.' : '';
       out.classList.toggle('r-stale', bad);
+      fig.caption.classList.toggle('r-stale', bad);   // the caption describes the previous pair too
       if (bad) return;
       var numeric = a < b ? -1 : (a > b ? 1 : 0);
       var sym = { '-1': '<', '0': '=', '1': '>' };

@@ -81,7 +81,17 @@ fn expectSameContent(tree: *DiskBTree, model: *const Model) !void {
     try expectRange(tree, model, "", null);
 }
 
-const Shape = struct { frames: u32, key_space: u64, max_key: usize, max_value: usize, ops: usize, reopen_every: usize };
+const Shape = struct {
+    frames: u32,
+    key_space: u64,
+    max_key: usize,
+    max_value: usize,
+    ops: usize = 0,
+    reopen_every: usize = 1,
+    /// How many operations in ten are puts; the rest are gets (2), a range
+    /// scan and a flush.
+    puts: u64 = 6,
+};
 
 /// One random operation against tree and model. Returns the tree's error;
 /// the model is only changed when the tree succeeded.
@@ -90,12 +100,12 @@ fn randomOp(tree: *DiskBTree, model: *Model, rng: *SplitMix64, shape: Shape) !vo
     var hi_buf: [workload.max_key_len]u8 = undefined;
     var value_buf: [workload.max_value_len]u8 = undefined;
     const key = workload.keyFor(rng.below(shape.key_space), shape.max_key, &key_buf);
-    switch (rng.below(10)) {
-        0...5 => {
-            const value = workload.randomValue(rng, shape.max_value, &value_buf);
-            try tree.put(key, value);
-            try model.put(key, value);
-        },
+    const pick = rng.below(10);
+    if (pick < shape.puts) {
+        const value = workload.randomValue(rng, shape.max_value, &value_buf);
+        try tree.put(key, value);
+        try model.put(key, value);
+    } else switch (pick) {
         6, 7 => try expectValue(tree, key, model.get(key)),
         8 => {
             const hi = workload.keyFor(rng.below(shape.key_space), shape.max_key, &hi_buf);
@@ -176,9 +186,9 @@ test "model: a real file, closed and opened again" {
 
 test "injected I/O failures: an error, no leaked pin, and a tree that is intact or poisoned" {
     const shapes = [2]Shape{
-        .{ .frames = 3, .key_space = 600, .max_key = 32, .max_value = 200, .ops = 0, .reopen_every = 1 },
-        // Large cells: most puts split, so failures often land inside one.
-        .{ .frames = 3, .key_space = 5000, .max_key = 200, .max_value = 1000, .ops = 0, .reopen_every = 1 },
+        .{ .frames = 3, .key_space = 600, .max_key = 32, .max_value = 200 },
+        // Only puts of large cells: the failure often lands inside a split.
+        .{ .frames = 3, .key_space = 5000, .max_key = 200, .max_value = 1000, .puts = 10 },
     };
     var clean_failures: usize = 0;
     var poisoned_failures: usize = 0;
@@ -267,7 +277,7 @@ test "a failure between the page changes of a split poisons the handle" {
 }
 
 test "allocation failure in put: OutOfMemory, no leaked pin, intact or poisoned" {
-    const shape: Shape = .{ .frames = 4, .key_space = 3000, .max_key = btree.max_key_len, .max_value = 30, .ops = 0, .reopen_every = 1 };
+    const shape: Shape = .{ .frames = 4, .key_space = 3000, .max_key = btree.max_key_len, .max_value = 30 };
     var induced: usize = 0;
     var fail_index: usize = 0;
     while (fail_index < 40) : (fail_index += 1) {

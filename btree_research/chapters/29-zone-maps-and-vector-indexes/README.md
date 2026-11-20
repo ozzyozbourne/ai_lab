@@ -40,8 +40,8 @@ inner level of a B+tree. If they arrive in random order every zone spans nearly 
 whole domain and every answer is "maybe".
 
 A B-tree pays to keep keys sorted on every insert; a zone map pays one `min` and one
-`max`. That is why analytical engines keep zone maps on every column and a real index
-on few or none.
+`max`. That is why DuckDB (below) can keep such statistics for every column and uses its
+real index only for very selective filters.
 
 ### No total order preserves nearness
 
@@ -52,10 +52,10 @@ before a B-tree can store it.
 
 Any flattening breaks some neighbourhoods. Sort by `(y, x)` (row-major): cells side by
 side stay adjacent, but cells above each other are a whole row apart. Interleave the bits
-of x and y instead (Z-order): most touching cells are close, but at the seams of the
-curve they are far apart. The program measures both on a 16 x 16 grid: row-major has 240
-touching pairs that are 16 positions apart; Z-order has only 64 pairs that far apart, but
-the worst is 86. It is a textbook result (not from the sources studied here) that every
+of x and y instead (Z-order): fewer touching cells are far apart, but at the seams of
+the curve they are very far apart. The program measures both on a 16 x 16 grid: row-major
+has 240 touching pairs that are 16 positions apart; Z-order has only 64 pairs that far
+apart, but the worst is 86. It is a textbook result (not from the sources studied here) that every
 order of an n x n grid separates some touching pair by at least n positions.
 
 So for nearness in many dimensions there is nothing to binary-search. The two families
@@ -261,6 +261,9 @@ How to read it:
   data (row number plus a delay of up to 299) zones overlap their neighbours, so three or
   four chunks are scanned; `v = 777` reads 400 rows to find nothing. On `shuffled` data
   the zone map never helps. The last line shows that appends only touch the last zone.
+- Section 2. The sum of gaps is the same for both orders, so Z-order does not bring
+  touching cells closer on average. It trades row-major's 240 gaps of 16 for many gaps
+  of 2 to 11 and a few long ones.
 - Section 3. One probe finds 109 of the 120 true neighbours. Query 12 is the hand
   example again.
 - Section 4. In 16 dimensions with uniform data one probe finds 28% of the true

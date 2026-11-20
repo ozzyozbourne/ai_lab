@@ -28,10 +28,13 @@ pub const Tally = struct {
         self.ops += 1;
         self.io.add(io);
         self.max_writes = @max(self.max_writes, io.totalWrites());
+        if (dbg_on and io.totalWrites() < 8) dbg[io.totalWrites()] += 1;
     }
 };
 
 /// One structure's side of a comparison.
+pub var dbg_on = false;
+pub var dbg: [8]u64 = @splat(0);
 pub const Side = struct {
     /// put + delete
     writes: Tally = .{},
@@ -150,7 +153,9 @@ pub fn runWorkload(gpa: Allocator, wl: Workload, order: usize, cfg: lsm_.Config)
                 lsm_tally.entries += want.len;
             },
         }
+        dbg_on = (op == .put or op == .delete);
         tree_tally.record(tree.dev.counters.since(t0));
+        dbg_on = false;
         lsm_tally.record(lsm.dev.counters.since(l0));
     }
 

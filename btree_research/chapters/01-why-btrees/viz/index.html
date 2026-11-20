@@ -18,7 +18,36 @@
 .c1-stats { display: flex; flex-wrap: wrap; gap: 6px; }
 .c1-score { margin: 0 0 8px; line-height: 1.55; }
 .c1-score b { font-family: var(--bt-mono); }
-.c1-note { margin: 8px 0 0; font-size: .88rem; color: var(--bt-muted); line-height: 1.5; }
+
+/* The race figure is built to be watched as a whole: on a wide screen every lane carries its name
+   and counters in a gutter on the left instead of a header row above, so that the three lanes,
+   the caption and the step controls fit on one screen together. */
+@media (min-width: 900px) {
+  .c1-lane { display: grid; grid-template-columns: 132px minmax(0, 1fr); }
+  .c1-lane-head {
+    flex-direction: column; flex-wrap: nowrap; align-items: flex-start; gap: 6px; padding: 8px 10px;
+    border-bottom: 0; border-right: 1px solid var(--bt-border); border-radius: var(--bt-radius) 0 0 var(--bt-radius);
+  }
+  .c1-lane-name { margin-right: 0; line-height: 1.25; }
+  .c1-stats { flex-direction: column; align-items: flex-start; gap: 4px; }
+  .c1-lane-body { padding: 8px; }
+  /* The zoom buttons sit in the empty top right corner of the tree instead of on a row of their own. */
+  .c1-lane .bt-tree-tools { position: absolute; top: 5px; right: 6px; margin: 0; }
+}
+/* The dock holds the caption and the step controls of the race. It sticks to the bottom of the
+   window for as long as the lanes are on screen, so stepping never happens out of sight of the
+   picture, also on a phone where the three lanes are taller than the screen. */
+.c1-dock { background: var(--bt-surface); }
+@media (min-height: 560px) {
+  .c1-dock { position: sticky; bottom: 0; z-index: 3; }
+  .c1-dock .bt-caption { border-top-width: 2px; }
+}
+@media (max-width: 560px) {
+  .c1-dock .bt-caption { font-size: .88rem; line-height: 1.4; max-height: 32vh; overflow-y: auto; padding-top: 7px; padding-bottom: 7px; }
+  .c1-dock .bt-controls { padding-top: 6px; padding-bottom: 6px; gap: 4px 10px; }
+  .c1-strip { gap: 6px; }
+  .c1-cell { width: 26px; font-size: 11px; }
+}
 
 /* PageStrip: a sorted array cut into pages */
 .c1-strip { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -42,6 +71,7 @@
 /* BstView */
 .c1-bst { overflow: auto; max-width: 100%; border: 1px solid var(--bt-border); border-radius: 6px; background: var(--bt-bg); scrollbar-width: thin; }
 .c1-bst-svg { display: block; margin: 0 auto; }
+.c1-stats-row { margin-bottom: 10px; }
 .c1-bnode rect { fill: var(--s-bg, var(--bt-node-bg)); stroke: var(--s, var(--bt-node)); stroke-width: 1; }
 .c1-bnode[class*="s-"] rect { stroke-width: 1.75; }
 .c1-bnode text { font: 600 11px var(--bt-mono); fill: var(--bt-key); }
@@ -72,9 +102,11 @@ calculator, and the price of an insert. Text and code: <a href="../README.md">ch
 <p>The same keys are stored three ways. Every structure lives on pages of the same size: a page of the sorted
 array holds a few keys, a binary-search-tree node is a page with one key, a wide node is a page full of keys.
 Each step is <b>one page read</b> for every structure that is still searching. Comparisons inside a page that
-has already been read are free. One lookup among 40 keys is a small sample, so below the three lanes the figure
-also counts <b>every</b> key, and then repeats the count on key sets up to a thousand times larger.</p>
+has already been read are free. The caption and the step controls stay at the bottom of the window while you
+look at the lanes. One lookup among 40 keys is a small sample, so the card after the race counts <b>every</b>
+key, and then repeats the count on key sets up to a thousand times larger.</p>
 <div id="fig-race"></div>
+<div id="fig-score"></div>
 
 <h2>2. Fan-out and height</h2>
 <p>A node with M children divides the remaining keys by M. Move the sliders and watch how few levels a wide
@@ -118,7 +150,9 @@ they sit on is rewritten.</p>
       el('option', { value: 'arrival' }, 'BST fed in random order'), el('option', { value: 'ascending' }, 'BST fed in ascending order'));
     var perOut = el('output', '3');
     var per = el('input#race-per', { type: 'range', min: 2, max: 7, step: 1, value: 3, 'aria-label': 'Keys per page' });
-    var target = el('input.bt-input#race-target', { type: 'number', inputmode: 'numeric', 'aria-label': 'Key to look up', min: 0, max: 999 });
+    // Keys are u64 in the chapter's code; 999 is the largest key a cell of this figure can show.
+    var KEY_MAX = 999;
+    var target = el('input.bt-input#race-target', { type: 'number', inputmode: 'numeric', 'aria-label': 'Key to look up', min: 0, max: KEY_MAX });
     fig.toolbar.append(selKeys, selOrder, el('label.bt-field', 'keys per page', per, perOut), el('span.bt-toolbar-sep'),
       el('label.bt-field', 'look up', target), button('race-go', 'Look up', function () { build(true); }, true),
       button('race-random', 'Random key', function () { target.value = pickKey(); build(true); }));
@@ -130,27 +164,35 @@ they sit on is rewritten.</p>
     }
     var laneA = lane('Sorted array'), laneB = lane('Binary search tree'), laneW = lane('Wide nodes (the B-tree idea)');
     var strip = new C1.PageStrip(laneA.body, { ariaLabel: 'Sorted array on pages' });
-    var bstView = new C1.BstView(laneB.body, { ariaLabel: 'Binary search tree', maxHeight: 300 });
-    // Four levels (2 keys per page) need about 330 px; a lower limit hides the leaf where the search ends.
-    var treeView = new BTViz.TreeView(laneW.body, { minHeight: 150, maxHeight: 360, ariaLabel: 'Tree of wide nodes' });
+    // The binary tree is as deep as the insert order makes it (10 levels for the default keys, 40
+    // when fed in ascending order), so its box has a fixed height and follows the search path.
+    var bstView = new C1.BstView(laneB.body, { ariaLabel: 'Binary search tree', maxHeight: 240 });
+    // Four levels (2 keys per page) need about 300 px; a lower limit hides the leaf where the search ends.
+    var treeView = new BTViz.TreeView(laneW.body, { minHeight: 150, maxHeight: 330, vGap: 40, ariaLabel: 'Tree of wide nodes' });
 
-    // Below the lanes: the same race for every key of the set, and for larger sets.
-    var laneS = lane('Every key, not just one');
+    // Caption and step controls travel together in one block that stays in view with the lanes (see .c1-dock).
+    var dock = el('div.c1-dock');
+    fig.root.insertBefore(dock, fig.caption);
+    dock.append(fig.caption, fig.controls);
+
+    // A card of its own after the race: the same race for every key of the set, and for larger sets.
+    // It is not part of the race figure, so that nothing stands between the lanes and their controls.
+    var score = BTViz.figure('#fig-score', { title: 'Every key, not just one' });
+    var scoreStats = el('div.c1-stats.c1-stats-row');
     var scoreSet = el('p.c1-score', { 'aria-live': 'polite' }), scoreScale = el('p.c1-score');
-    laneS.body.append(scoreSet, scoreScale);
-    var scaleChart = new BTViz.Chart(laneS.body, { type: 'bar', height: 230, title: 'Average page reads per lookup by number of keys',
+    score.stage.append(scoreStats, scoreSet, scoreScale);
+    var scaleChart = new BTViz.Chart(score.stage, { type: 'bar', height: 230, title: 'Average page reads per lookup by number of keys',
       xLabel: 'keys in the index', yLabel: 'average page reads per lookup' });
-    var scaleNote = el('p.c1-note');
-    laneS.body.appendChild(scaleNote);
+    var scaleNote = score.caption;
     var scaleCache = {}, scaleTimer = null;
     function fix2(v) { return v.toFixed(2); }
     function fmtInt(v) { return v.toLocaleString('en-US'); }
 
     /** The scoreboard for the key set that is drawn above. */
     function showSetStats(st, ascending) {
-      laneS.stats.textContent = '';
-      laneS.stats.append(chip(st.n + ' lookups'), chip('wide nodes fewest: ' + st.fewest, 'found'), chip('tie: ' + st.tied), chip('more: ' + st.more, st.more ? 'deleted' : ''));
-      scoreSet.innerHTML = 'All ' + st.n + ' keys drawn above, each looked up once. Average page reads: sorted array <b>' + fix2(st.array.avg) +
+      scoreStats.textContent = '';
+      scoreStats.append(chip(st.n + ' lookups'), chip('wide nodes fewest: ' + st.fewest, 'found'), chip('tie: ' + st.tied), chip('more: ' + st.more, st.more ? 'deleted' : ''));
+      scoreSet.innerHTML = 'All ' + st.n + ' keys of the race above, each looked up once. Average page reads: sorted array <b>' + fix2(st.array.avg) +
         '</b>, binary search tree <b>' + fix2(st.bst.avg) + '</b>' + (ascending ? ' (fed in ascending order)' : '') + ', wide nodes <b>' + fix2(st.wide.avg) +
         '</b>. The wide nodes read strictly the fewest pages for ' + plural(st.fewest, 'key') + ', tie with the better of the other two for ' + st.tied +
         ' and read more for ' + st.more + '. Worst single lookup: ' + st.array.max + ', ' + st.bst.max + ' and ' + st.wide.max + ' page reads.';
@@ -171,7 +213,7 @@ they sit on is rewritten.</p>
       scoreScale.innerHTML = 'The same count on four fresh sets of random keys, from 40 to 40,000, with ' + perPage + ' keys per page. From the smallest set to the largest the wide nodes go from <b>' + fix2(first.wide.avg) + '</b> to <b>' + fix2(last.wide.avg) + '</b> page reads per lookup, the sorted array from <b>' +
         fix2(first.array.avg) + '</b> to <b>' + fix2(last.array.avg) + '</b> and the binary search tree from <b>' + fix2(first.bst.avg) + '</b> to <b>' + fix2(last.bst.avg) +
         '</b>. Among ' + fmtInt(last.n) + ' keys the wide nodes read strictly the fewest pages for ' + fmtInt(last.fewest) + ' of them.';
-      scaleNote.textContent = 'These numbers are counted by this page\'s model (the same search code as the lanes above), not timed. The gap widens with the keys per page: ' +
+      scaleNote.textContent = 'These numbers are counted by this page\'s model (the same search code as the lanes of the race), not timed. The gap widens with the keys per page: ' +
         'move the slider. With real 4096-byte pages a node holds 170 keys, and the chapter\'s programs measure 8.52, 21.69 and 2.99 page reads for 100,000 keys ' +
         '(the third self-test at the bottom of this page reproduces that table).';
       fig.root.setAttribute('data-scale-per', perPage); // lets a test wait for the chart
@@ -195,13 +237,28 @@ they sit on is rewritten.</p>
       perOut.textContent = perPage + ' (M = ' + m + ')';
       var bst = C1.bstFrom(selOrder.value === 'ascending' ? sorted : arrival);
       var wide = C1.wideBuild(sorted, m);
-      var t = target.value === '' ? NaN : +target.value;
-      if (!isFinite(t)) { t = selKeys.value === 'canonical' ? 17 : typicalKey(sorted, perPage, bst, wide); target.value = t; }
+      // The typed key: null for an empty box (a typical key is chosen), NaN for anything that is not a number.
+      var typed = target.value !== '' ? +target.value : target.validity && target.validity.badInput ? NaN : null;
+      var refused = typed !== null && !(Number.isInteger(typed) && typed >= 0 && typed <= KEY_MAX);
+      var t = typed;
+      if (refused || typed === null) {
+        t = selKeys.value === 'canonical' ? 17 : typicalKey(sorted, perPage, bst, wide);
+        target.value = refused ? '' : t;
+      }
       var a = C1.arraySearch(sorted, perPage, t), b = bst.search(t), w = C1.wideSearch(wide, t);
       // One array event per page read: the probe that touches a new page plus the free probes after it.
       var events = [];
       a.probes.forEach(function (p) { if (p.fresh) events.push([p]); else events[events.length - 1].push(p); });
       cur = { sorted: sorted, perPage: perPage, m: m, target: t, bst: bst, wide: wide, a: a, aEvents: events, b: b, w: w };
+
+      showSetStats(C1.raceStats(arrival, perPage, selOrder.value === 'ascending' ? sorted : arrival), selOrder.value === 'ascending');
+      showScale(perPage);
+      if (refused) {
+        // Same rule and same words as the put figure below: the lanes stay as they are, unread.
+        stepper.setSteps([{ caption: 'A key must be a whole number from 0 to ' + KEY_MAX + ': the code stores unsigned integers (<code>u64</code>), and this figure draws at most three digits per cell. ' +
+          'Nothing was looked up. Type another key or press Random key.', state: { t: 0, done: false } }]);
+        return;
+      }
 
       var reads = [events.length, b.path.length, w.path.length], total = Math.max.apply(null, reads);
       var names = ['The sorted array', 'The binary search tree', 'The wide nodes'];
@@ -241,8 +298,6 @@ they sit on is rewritten.</p>
         explain: 'Page reads: sorted array ' + reads[0] + ', binary search tree ' + reads[1] + ', wide nodes ' + reads[2] + '.'
       };
       stepper.setSteps(steps, { play: !!play });
-      showSetStats(C1.raceStats(arrival, perPage, selOrder.value === 'ascending' ? sorted : arrival), selOrder.value === 'ascending');
-      showScale(perPage);
     }
 
     /**
@@ -269,6 +324,10 @@ they sit on is rewritten.</p>
         if (p.final) return 'checks ' + k(p.key, p.equal ? 'found' : 'deleted') + (p.equal ? ': found' : ': not ' + t + ', so the key is not present');
         return k(p.key, 'compare') + (p.less ? ' is smaller, keep the right part' : ' is not smaller, keep the left part');
       });
+      // A key above the largest one ends the search behind the last entry: there is no entry left to
+      // check for equality, so say what that means instead of stopping without a conclusion.
+      var last = cur.a.probes[cur.a.probes.length - 1];
+      if (i === ev.length && !last.final) parts.push('no entry is left to the right of ' + k(last.key, 'deleted') + ', so the key is not present');
       return '<b>Array:</b> reads page ' + ev[i - 1][0].page + ': ' + parts.join('; ') + '.';
     }
     function bstCaption(i) {
@@ -334,6 +393,13 @@ they sit on is rewritten.</p>
       if (t > 0 && !wDone) hl.cursor = { node: c.w.path[wn - 1].node.id, label: c.target };
       treeView.render(c.wide, hl);
       stats(laneW, wn, wc, wDone, c.w.found, t);
+      // Before the first page read nothing is highlighted, so the tree view has nothing to scroll to.
+      // On a narrow screen that would show its left edge without the root; start on the root instead.
+      if (t === 0) { centreWide(); requestAnimationFrame(centreWide); }
+    }
+    function centreWide() {
+      var sc = treeView.scroller;
+      if (sc && cur && stepper && stepper.index === 0) sc.scrollLeft = Math.max(0, (sc.scrollWidth - sc.clientWidth) / 2);
     }
     function stats(ln, reads, comparisons, done, found, t) {
       ln.stats.textContent = '';
@@ -420,7 +486,7 @@ they sit on is rewritten.</p>
       title: 'Put a key into a sorted array of 4-key pages', side: true,
       legend: [{ token: 'key-compare', label: 'position found by binary search' }, { token: 'page-dirty', label: 'shifted entry / rewritten page' }, { token: 'key-inserted', label: 'new key' }]
     });
-    var PER = 4, KEY_MAX = 999, keys, totals;
+    var PER = 4, KEY_MAX = 999, MAX_KEYS = 44, keys, totals;
     // Keys are u64 in the chapter's code, so the figure takes whole numbers from 0 up; the upper
     // limit of 999 only keeps a key inside its cell.
     function refuse(why) {
@@ -481,8 +547,13 @@ they sit on is rewritten.</p>
         refuse('A key must be a whole number from 0 to ' + KEY_MAX + ': the code stores unsigned integers (<code>u64</code>), and this figure draws at most three digits per cell.');
         return;
       }
-      if (keys.length >= 44) reset();
       var before = keys.slice(), c = C1.arrayPutCost(before, PER, key), t0 = BTViz.clone(totals), steps;
+      if (!c.exists && keys.length >= MAX_KEYS) {
+        // Never start over behind the reader's back: the running totals are the point of the figure.
+        refuse('The figure is full: ' + keys.length + ' keys on ' + Math.ceil(keys.length / PER) + ' pages are all it draws, so ' + k(key) +
+          ' was not put. The totals above stay as they are; press Reset to start again from the 22 starting keys.');
+        return;
+      }
       if (c.exists) {
         totals.puts++; totals.pages++;
         var hit = {}; hit[c.index] = 'found';

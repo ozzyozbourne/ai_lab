@@ -310,13 +310,9 @@ equivalent). `PageError` and `ValidateError` are plain enums implementing
 - **Free list for dumps.** Zig's `freeBlocks(out: []FreeBlock)` fills a caller-provided
   buffer; Rust's `free_blocks()` returns a `Vec`. It is the only place in the Rust file
   that allocates, and it is used only by tests and the demo.
-- **Test counts.** Zig runs 32 tests, Rust 29. Two Zig tests put the model test's *oracle*
-  under allocation failure; the Rust oracle is a `Vec`, which cannot report one (the page
-  allocates in neither language). The third is the `test` block in `root.zig` that
-  references the other files.
-
-Both languages pin the same hashes of the final page image for reserved tails of 0, 4 and
-32 bytes, so the two implementations write the same bytes.
+- **Test counts.** Zig runs 32 tests and Rust 29: two Zig tests put the model test's
+  *oracle* under allocation failure, which Rust's `Vec` oracle cannot report (the page
+  allocates in neither language), and one is the `test` block in `root.zig`.
 
 Run it:
 
@@ -352,10 +348,8 @@ source of its free-space design.
   pointer, then the gap, then defragments (`btree.rs:10516-10562`). Every allocation is at
   least 4 bytes (`MINIMUM_CELL_SIZE`, `sqlite3_ondisk.rs:82`).
 - `compute_free_space` sums gap, freeblocks and fragments (`btree.rs:10433-10513`); the
-  page fuzzer `test_fuzz_drop_defragment_insert` (`btree.rs:13883`) and the integrity
-  check's coverage checker over cell and freeblock ranges (`btree.rs:8913`) play the role
-  of our `validate`.
-
+  fuzzer `test_fuzz_drop_defragment_insert` (`btree.rs:13883`) and the integrity check's
+  coverage checker (`btree.rs:8913`) play the role of our `validate`.
 - Every page may end with reserved bytes that the B-tree does not use: a `u8` in the
   database header, "usually 0" (`sqlite3_ondisk.rs:321-322`, usable size at `:369-371`).
   Turso's optional page checksum is 8 bytes stored there
@@ -386,11 +380,10 @@ defragmentation has a fast path for one or two freeblocks (`btree.rs:9976-10098`
   (`PageAddItemExtended`, `bufpage.c:205`, the shuffle at `:338-340`). Tuple sizes are
   rounded up to the platform's maximum alignment (`MAXALIGN`, `bufpage.c:326`); our cells
   are byte-packed.
-- Deleting an index tuple closes the hole immediately: `PageIndexTupleDelete` moves all
-  tuple data below the deleted tuple up by its size and then adds that size to every line
-  pointer that pointed below it (`bufpage.c:1063-1160`). So a Postgres B-tree page has no
-  free list and no fragments; the price is a `memmove` of tuple data and a pass over all
-  line pointers on each delete.
+- Deleting an index tuple closes the hole at once: `PageIndexTupleDelete` moves all tuple
+  data below the deleted tuple up by its size and adds that size to every line pointer
+  that pointed below it (`bufpage.c:1063-1160`). No free list and no fragments; the price
+  is a `memmove` of tuple data and a pass over all line pointers per delete.
 - nbtree stores sibling links, level and flags in the special space
   (`BTPageOpaqueData`, `postgres/src/include/access/nbtree.h:63-70`) and reserves the first
   slot of a non-rightmost page for the high key (`nbtree.h:368-370`). Both belong to
@@ -456,10 +449,10 @@ borrow checker turns reason 1 from a comment into a compile error.
 - **A checksum in the last bytes needs a reserved tail.** After plain `init` the first
   cell ends at byte 4095. Use `initReserved(buf, 4)`; a tail cannot be added once the
   page has cells.
-- **`open` checks nothing.** On a damaged page `stats` can follow a free list forever.
-  Verify a checksum or call `validate` on pages read from disk.
-- **Nothing here is crash-safe.** An insert touches the cell, the slot array and the
-  header; a page written halfway is corrupt (chapters 21 and 22).
+- **Nothing here is crash-safe, and `open` checks nothing.** An insert touches the cell,
+  the slot array and the header; a page written halfway is corrupt, and on a corrupt page
+  `stats` can follow a free list forever. Verify a checksum or call `validate` on pages
+  read from disk (chapters 21 and 22).
 
 ## Exercises
 

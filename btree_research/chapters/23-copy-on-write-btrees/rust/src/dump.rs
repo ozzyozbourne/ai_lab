@@ -1,9 +1,11 @@
 //! Text rendering of one tree (any `View`) for the demo program and tests.
 //!
-//!     txn 13: root #11, height 3, 13 keys
-//!       level 0: #11[15]
-//!       level 1: #8[6 10] #10[20]
-//!       leaves : #0(1 3 5) #4(6 7) #9(10 12 13) | #5(15 17) #3(20 25 30)
+//! ```text
+//! txn 13: root #11, height 3, 13 keys
+//!   level 0: #11[15]
+//!   level 1: #8[6 10] #10[20]
+//!   leaves : #0(1 3 5) #4(6 7) #9(10 12 13) | #5(15 17) #3(20 25 30)
+//! ```
 //!
 //! `#n` is a page id, `[..]` an internal node (separators), `(..)` a leaf
 //! (keys; values are omitted). `|` separates groups of siblings. Every level

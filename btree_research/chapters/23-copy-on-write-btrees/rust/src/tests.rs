@@ -446,7 +446,7 @@ fn a_transaction_that_runs_out_of_pages_leaves_no_trace() {
             db.page_budget = Some(budget);
 
             let mut txn = db.begin();
-            let result = (|| {
+            let result: Result<(), TxnError> = (|| {
                 for k in 0..size {
                     txn.put(1000 * size + k, k)?;
                 }

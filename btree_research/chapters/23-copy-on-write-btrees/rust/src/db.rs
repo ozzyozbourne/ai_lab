@@ -3,13 +3,15 @@
 //!   store      page slab + free list + two metapage slots   (store.rs)
 //!   current    the decoded winner of the two meta slots: the committed root
 //!   snapshots  one entry per root that some reader still holds, refcounted
-//!   pending    pages that a commit made unreachable from ITS root, but that
-//!              older roots can still reach
+//!   pending    pages that a commit made unreachable from its root, while
+//!   older roots can still reach them
 //!
 //! The life of a page:
 //!
-//!     free --(written by a commit)--> live --(replaced or dropped by txn T)-->
-//!     pending(T) --(no snapshot older than T remains)--> free
+//! ```text
+//! free --(written by a commit)--> live --(replaced or dropped by txn T)-->
+//! pending(T) --(no snapshot older than T remains)--> free
+//! ```
 //!
 //! THE reclamation rule: a page freed by transaction T is reachable from the
 //! roots of transactions before T and from no root at or after T. A snapshot

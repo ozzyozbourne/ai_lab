@@ -181,6 +181,7 @@ impl<'db> WriteTxn<'db> {
     ///     per transaction);
     ///   * committed: copy it to a new page id; the old page stays as it is
     ///     for older roots and is recorded in `freed`.
+    ///
     /// The caller must store the returned id where the old id was.
     fn touch(&mut self, id: PageId) -> Result<PageId, TxnError> {
         if self.dirty.contains_key(&id) {

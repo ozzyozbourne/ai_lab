@@ -5,7 +5,9 @@
 //! behind a pager (chapter 09): slot i is "the page at offset i * page_size".
 //! The store enforces the one rule everything else depends on:
 //!
-//!     `write` only ever targets a FREE slot.
+//! ```text
+//! `write` only ever targets a FREE slot.
+//! ```
 //!
 //! A slot is free when no committed root and no snapshot can reach it. So a
 //! page that some reader may be looking at is never modified, by construction.

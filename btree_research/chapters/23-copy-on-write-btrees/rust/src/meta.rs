@@ -5,8 +5,10 @@
 //! a fixed address, or nobody could find it after a restart. So the metapage
 //! has TWO slots and commits alternate between them:
 //!
-//!     commit of txn 7 writes slot 1   (7 % 2), slot 0 still holds txn 6
-//!     commit of txn 8 writes slot 0   (8 % 2), slot 1 still holds txn 7
+//! ```text
+//! commit of txn 7 writes slot 1   (7 % 2), slot 0 still holds txn 6
+//! commit of txn 8 writes slot 0   (8 % 2), slot 1 still holds txn 7
+//! ```
 //!
 //! A commit therefore never overwrites the slot of the newest committed
 //! transaction. If the write is torn (chapter 21), the checksum of the half
@@ -15,12 +17,14 @@
 //!
 //! Slot layout, 32 bytes, little-endian:
 //!
-//!     0   u64  txn_id      id of the transaction that wrote this slot
-//!     8   u32  root        page id of the root, 0xFFFFFFFF = empty tree
-//!     12  u32  height      levels (0 = empty, 1 = the root is a leaf)
-//!     16  u64  count       number of entries
-//!     24  u32  page_count  size of the page store in pages at this commit
-//!     28  u32  checksum    CRC-32 of bytes 0..28
+//! ```text
+//! 0   u64  txn_id      id of the transaction that wrote this slot
+//! 8   u32  root        page id of the root, 0xFFFFFFFF = empty tree
+//! 12  u32  height      levels (0 = empty, 1 = the root is a leaf)
+//! 16  u64  count       number of entries
+//! 24  u32  page_count  size of the page store in pages at this commit
+//! 28  u32  checksum    CRC-32 of bytes 0..28
+//! ```
 
 use crate::base_node::PageId;
 use crate::crc32::crc32;

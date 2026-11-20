@@ -138,5 +138,5 @@ pub fn put(tree: *Tree, io: Io, key: u64, value: u64, hook: ?*const Hook) tree_.
     // Every node that can change is latched: held[0] has room (or is the
     // root), everything below it is full. On OutOfNodes nothing was changed.
     defer for (held[0..n]) |h| unlatch(tree, io, h, .exclusive);
-    return insert.insertAtLeaf(tree, held[0..n], top_is_root, key, value);
+    return insert.insertAtLeaf(tree, held[0..n], top_is_root, key, value, hook);
 }

@@ -12,8 +12,13 @@
  *   replay, huntShortest   fuzz.zig
  *   minimize               minimize.zig
  *
- * 64-bit arithmetic uses BigInt; keys are small and become Numbers, values
- * stay BigInt. A classic script: defines window.Fuzz06.
+ * 64-bit arithmetic uses BigInt; values stay BigInt. Keys are handled as
+ * their small INDEX k (a Number in [0, keySpace)): every key layout of the
+ * fuzzer is strictly increasing in k, so a tree built from the indices has
+ * exactly the shape and the answers of the tree built from the real 64-bit
+ * keys. Only when a key is shown is the index turned into the real key
+ * (`keyNamer`): exactly, as the programs print it, or in a compact form such
+ * as 2^64 - 38 for the drawing. A classic script: defines window.Fuzz06.
  */
 (function () {
   'use strict';
@@ -51,19 +56,58 @@
     var drain = prng.chance(1, 2);
     var streamSeed = prng.nextU64();
     var auxSeed = prng.nextU64();
-    return { seed: seed, count: count, keySpace: keySpace,
+    var keyLayout = prng.below(4);
+    return { seed: seed, count: count, keySpace: keySpace, keyLayout: keyLayout,
              weights: { put: put, del: del, get: get, range: range },
              faultOneIn: faultOneIn, drain: drain, streamSeed: streamSeed, auxSeed: auxSeed };
   }
 
+  /* fuzz.zig `KeyLayout`: where in the 64-bit key space the keys of a case lie. */
+  var LAYOUTS = ['from 0', 'around 2^32', 'spread over u64', 'below 2^64'];
+  var SUP = { '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹' };
+  function pow2(n) { return '2' + String(n).replace(/[0-9]/g, function (d) { return SUP[d]; }); }
+
+  /* The real key for index k, as a BigInt (`KeyLayout.key`). k may equal
+   * keySpace: the exclusive upper bound of a range. */
+  function realKey(c, k) {
+    var ks = BigInt(c.keySpace), i = BigInt(k);
+    if (c.keyLayout === 0) return i;
+    if (c.keyLayout === 1) return (1n << 32n) - ks / 2n + i;
+    if (c.keyLayout === 2) { var v = i * ((1n << 64n) / ks); return v > MASK ? MASK : v; }
+    return MASK - ks + i;
+  }
+  /* The same key, short enough for a tree node: 2³²+5, 27·2⁵⁸, 2⁶⁴−38. */
+  function shortKey(c, k) {
+    if (c.keyLayout === 0) return String(k);
+    if (c.keyLayout === 1) {
+      var d = k - c.keySpace / 2;
+      return pow2(32) + (d === 0 ? '' : d > 0 ? '+' + d : '−' + (-d));
+    }
+    if (c.keyLayout === 2) {
+      if (k === 0) return '0';
+      if (k === c.keySpace) return pow2(64) + '−1';
+      return k + '·' + pow2(64 - Math.log2(c.keySpace));
+    }
+    return pow2(64) + '−' + (c.keySpace + 1 - k);
+  }
+  /* A function index -> text for the keys of `steps`. Steps made by
+   * `generate` remember their case; a minimised reproducer has none (its
+   * keys were renamed 1, 2, 3, ...) and prints as it is. */
+  function keyNamer(steps, exact) {
+    var c = steps.kase;
+    if (!c) return String;
+    return exact ? function (k) { return String(realKey(c, k)); } : function (k) { return shortKey(c, k); };
+  }
+
   function describeCase(c) {
-    return 'seed ' + c.seed + ': ' + c.count + ' ops on ' + c.keySpace + ' keys, put:delete:get:range = ' +
+    return 'seed ' + c.seed + ': ' + c.count + ' ops on ' + c.keySpace + ' keys ' + LAYOUTS[c.keyLayout] + ', put:delete:get:range = ' +
       c.weights.put + ':' + c.weights.del + ':' + c.weights.get + ':' + c.weights.range + ', ' +
       (c.faultOneIn === 0 ? 'no faults' : 'fault in 1 of ' + c.faultOneIn + ' puts') +
       ', drain ' + (c.drain ? 'yes' : 'no');
   }
 
-  /* Steps: {kind: 'put'|'delete'|'get'|'range', key, value (BigInt), lo, hi, fault (null | n)} */
+  /* Steps: {kind: 'put'|'delete'|'get'|'range', key, value (BigInt), lo, hi, fault (null | n)}.
+   * key, lo and hi are key INDICES (see the note at the top of this file). */
   function generate(c) {
     var steps = [], alive = new Set();
     var aux = new SplitMix64(c.auxSeed), s = new SplitMix64(c.streamSeed);
@@ -90,13 +134,15 @@
       aux.shuffle(keys);
       keys.forEach(function (key) { steps.push({ kind: 'delete', key: key, fault: null }); });
     }
+    steps.kase = c;
     return steps;
   }
 
-  function stepText(st) {
-    var t = st.kind === 'put' ? 'put ' + st.key + ' = ' + st.value
-          : st.kind === 'range' ? 'range [' + st.lo + ', ' + st.hi + ')'
-          : st.kind + ' ' + st.key;
+  function stepText(st, name) {
+    name = name || String;
+    var t = st.kind === 'put' ? 'put ' + name(st.key) + ' = ' + st.value
+          : st.kind === 'range' ? 'range [' + name(st.lo) + ', ' + name(st.hi) + ')'
+          : st.kind + ' ' + name(st.key);
     return st.fault === null ? t : t + ' (node allocation ' + st.fault + ' fails first)';
   }
 
@@ -368,11 +414,11 @@
   var KIND_TEXT = {
     wrong_result: 'wrong result (answer differs from the oracle)',
     wrong_contents: 'wrong contents (full scan differs from the oracle)',
-    oom_changed_tree: 'a failed put changed the tree'
+    oom_changed_tree: 'a failed put changed the tree or its node accounting'
   };
-  function failureText(f) {
+  function failureText(f, name) {
     if (f.kind !== 'invariant') return KIND_TEXT[f.kind];
-    return 'invariant ' + f.error + (f.firstKey === null ? '' : ' at depth ' + f.depth + ' (node starts with key ' + f.firstKey + ')');
+    return 'invariant ' + f.error + (f.firstKey === null ? '' : ' at depth ' + f.depth + ' (node starts with key ' + (name || String)(f.firstKey) + ')');
   }
   function sameKind(a, b) { return a.kind === b.kind && (a.kind !== 'invariant' || a.error === b.error); }
 
@@ -392,7 +438,7 @@
         tree.failAfter = null;
         if (!res.ok) {
           injected += 1; oom = true;
-          if (tree.len !== oracle.map.size || tree.get(st.key) !== oracle.get(st.key) || (checkValidate && tree.validate())) {
+          if ((checkValidate && tree.validate()) || tree.len !== oracle.map.size || tree.get(st.key) !== oracle.get(st.key)) {
             verdict = { kind: 'oom_changed_tree' };
           } else res = tree.put(st.key, st.value);
         }
@@ -462,14 +508,20 @@
       current = candidate.slice(0, f.step + 1); failure = f;
       return true;
     }
-    var chunk = Math.max(current.length >> 1, 1);
-    for (;;) {
-      var removedAny = false, i = 0;
-      while (i < current.length) {
-        var end = Math.min(i + chunk, current.length);
-        if (accept(current.slice(0, i).concat(current.slice(end)))) removedAny = true; else i = end;
+    function tryWithout(start, end) { return accept(current.slice(0, start).concat(current.slice(end))); }
+    // Fast reduction: aligned chunks, halving.
+    for (var chunk = Math.max(current.length >> 1, 1); ; chunk >>= 1) {
+      for (var i = 0; i < current.length;) { if (!tryWithout(i, i + chunk)) i += chunk; }
+      if (chunk === 1) break;
+    }
+    // Exhaustive finish: every contiguous block, longest first, until a whole
+    // round removes nothing.
+    for (var again = true; again;) {
+      again = false;
+      var n = current.length;
+      for (var len = n - 1; len >= 1 && !again; len--) {
+        for (var start = 0; start + len <= n && !again; start++) again = tryWithout(start, start + len);
       }
-      if (chunk > 1) chunk >>= 1; else if (!removedAny) break;
     }
     function copy() { return current.map(function (s) { return Object.assign({}, s); }); }
     // 1. forget injected faults
@@ -491,7 +543,7 @@
 
   window.Fuzz06 = {
     BUGS: BUGS, SplitMix64: SplitMix64, swarm: swarm, describeCase: describeCase, generate: generate, stepsOf: stepsOf,
-    stepText: stepText, Tree: Tree, replay: replay, huntShortest: huntShortest, minimize: minimize,
+    stepText: stepText, keyNamer: keyNamer, realKey: realKey, shortKey: shortKey, Tree: Tree, replay: replay, huntShortest: huntShortest, minimize: minimize,
     failureText: failureText, sameKind: sameKind
   };
 })();

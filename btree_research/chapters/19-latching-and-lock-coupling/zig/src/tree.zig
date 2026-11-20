@@ -72,9 +72,15 @@ pub const Hook = struct {
         /// leaf (shared); a `put` holds the leaf and every unsafe ancestor
         /// (exclusive). Global protocols: the tree-wide lock is held.
         at_leaf,
-        /// The lock or latch on `node` is held by someone else; the operation
-        /// is about to wait for it. (`node` is `.nil` for the tree-wide lock.)
+        /// The lock or latch on `node` could not be taken at once; the
+        /// operation is about to wait for it. (`node` is `.nil` for the
+        /// tree-wide lock.) With two threads that means "the other one holds
+        /// it". With three or more it can also mean "a writer is already
+        /// waiting for it": see the caveat in probe.zig.
         blocked,
+        /// A `put` that splits the root has filled in the new root `node`
+        /// and is about to publish it. The root id still names the OLD root.
+        root_built,
     };
 
     pub const Event = struct { point: Point, node: NodeId };
@@ -152,7 +158,7 @@ pub const Tree = struct {
         self.lockGlobal(io, .exclusive, hook);
         defer self.unlockGlobal(io, .exclusive);
         emit(hook, .at_leaf, .nil);
-        return plain.put(self, key, value);
+        return plain.put(self, key, value, hook);
     }
 
     /// Takes the tree-wide lock. A mutex cannot tell readers from writers, so

@@ -17,10 +17,11 @@ const tree_ = @import("tree.zig");
 const Tree = tree_.Tree;
 const Node = tree_.Node;
 const NodeId = tree_.NodeId;
+const Hook = tree_.Hook;
 const search = @import("base_search.zig");
 
 /// `top_is_root`: path[0] is the root, so a split of path[0] grows the tree.
-pub fn insertAtLeaf(tree: *Tree, path: []const NodeId, top_is_root: bool, key: u64, value: u64) tree_.Error!?u64 {
+pub fn insertAtLeaf(tree: *Tree, path: []const NodeId, top_is_root: bool, key: u64, value: u64, hook: ?*const Hook) tree_.Error!?u64 {
     const leaf_id = path[path.len - 1];
     const leaf = tree.table.node(leaf_id);
     const at = search.lowerBound(leaf.keySlice(), key);
@@ -72,9 +73,16 @@ pub fn insertAtLeaf(tree: *Tree, path: []const NodeId, top_is_root: bool, key: u
             new_root.* = Node.initInternal();
             new_root.kind.internal.children[0] = left_id;
             new_root.internalInsertAt(0, separator, right_id);
-            // Publish. Under latch coupling a thread that read the OLD root
-            // id and is waiting for its latch will notice this store when it
-            // gets the latch, and start again (coupled.latchRoot).
+            // PUBLISH LAST. Nobody holds a latch on the new root, and nobody
+            // needs one while it is unreachable. The store below makes it
+            // reachable for every thread at once, so every field must have
+            // been written before it. Stored earlier, a reader could latch
+            // the new root (its latch is free) and follow a child pointer
+            // that is not there yet.
+            tree_.emit(hook, .root_built, root_id);
+            // Under latch coupling a thread that read the OLD root id and is
+            // waiting for its latch will notice this store when it gets the
+            // latch, and start again (coupled.latchRoot).
             tree.root.store(root_id, .release);
         }
     }

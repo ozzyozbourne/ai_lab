@@ -294,7 +294,7 @@ fn growthSweep(gpa: Allocator, w: *Writer) !void {
     try w.writeAll("\n== 6. The growth factor is the tuning knob ==\n");
     try w.writeAll("LSM only, insert-heavy workload again, everything else unchanged: the same counting\n");
     try w.writeAll("rule and the same limits as above (no cache, no log, not durable until a flush).\n\n");
-    try w.print("{s:<8}{s:>8}{s:>16}{s:>16}{s:>16}{s:>16}\n", .{ "growth", "levels", "write amp", "blocks per get", "blocks per scan", "peak space amp" });
+    try w.print("{s:<8}{s:>8}{s:>16}{s:>16}{s:>16}{s:>14}\n", .{ "growth", "levels", "write amp", "blocks per get", "blocks per scan", "peak blocks" });
     for ([_]usize{ 2, 4, 8, 16 }) |growth| {
         var cfg = bench.bench_lsm;
         cfg.growth = growth;
@@ -303,16 +303,26 @@ fn growthSweep(gpa: Allocator, w: *Writer) !void {
         var b1: [32]u8 = undefined;
         var b2: [32]u8 = undefined;
         var b3: [32]u8 = undefined;
-        var b4: [32]u8 = undefined;
-        try w.print("{d:<8}{d:>8}{s:>16}{s:>16}{s:>16}{s:>16}\n", .{
+        try w.print("{d:<8}{d:>8}{s:>16}{s:>16}{s:>16}{d:>14}\n", .{
             growth,
             r.lsm_levels,
             ratio(&b1, l.writes.io.totalWrites() * cfg.block_entries, l.writes.ops),
             ratio(&b2, l.gets.io.totalReads(), l.gets.ops),
             ratio(&b3, l.scans.io.totalReads(), l.scans.ops),
-            ratio(&b4, l.peak, packedBlocks(l.peak_live_keys, cfg.block_entries)),
+            l.peak,
         });
     }
+}
+
+test "ratio rounds half up to two decimals" {
+    var buf: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("1.30", ratio(&buf, 14032, 10824)); // 1.2964
+    try std.testing.expectEqualStrings("19.45", ratio(&buf, 14032 * 15, 10824)); // 19.4457
+    try std.testing.expectEqualStrings("0.13", ratio(&buf, 1, 8)); // 0.125: half goes up
+    try std.testing.expectEqualStrings("0.12", ratio(&buf, 124, 1000));
+    try std.testing.expectEqualStrings("2.00", ratio(&buf, 1995, 1000));
+    try std.testing.expectEqualStrings("3.00", ratio(&buf, 3, 1));
+    try std.testing.expectEqualStrings("-", ratio(&buf, 3, 0));
 }
 
 test "run prints exactly expected_output.txt" {

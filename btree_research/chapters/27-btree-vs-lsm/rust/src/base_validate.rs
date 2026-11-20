@@ -3,8 +3,9 @@
 //! one that is broken. Tests call it after every few operations; a bug in
 //! insert or delete then fails close to the operation that caused it.
 //!
-//! The checker trusts nothing it reads from a node: a child handle is tested
-//! with `is_live` before it is followed.
+//! The checker trusts nothing it reads from a node: a length is tested before
+//! it is used as a slice bound, a child handle with `is_live` before it is
+//! followed.
 
 use crate::base_arena::NodeId;
 use crate::base_node::Kind;
@@ -115,16 +116,18 @@ impl BPlusTree {
         walk: &mut Walk,
     ) -> Result<(), Violation> {
         let n = self.nodes.get(id);
-        let keys = n.key_slice();
         let is_root = id == self.root;
         walk.nodes += 1;
 
+        // The length is checked before it is used to slice the node's arrays:
+        // a corrupt `len` may be larger than the arrays themselves.
         if n.len > self.max_keys() {
             return Err(Violation::NodeOverfull);
         }
         if n.len < (if is_root { 1 } else { self.min_keys() }) {
             return Err(Violation::NodeUnderfull);
         }
+        let keys = n.key_slice();
         for (i, &k) in keys.iter().enumerate() {
             if i > 0 && keys[i - 1] >= k {
                 return Err(Violation::KeysNotSorted);

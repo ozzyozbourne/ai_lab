@@ -56,7 +56,9 @@ impl ByteStorage for PageFile {
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), Error> {
         let page_no = whole_page(offset, bytes.len()).ok_or(Error::StorageFailure)?;
         let page: &Page = bytes.try_into().expect("a whole page");
-        self.inner.write_page(page_no, page).map_err(|_| Error::StorageFailure)
+        self.inner
+            .write_page(page_no, page)
+            .map_err(|_| Error::StorageFailure)
     }
 
     fn size(&mut self) -> Result<u64, Error> {
@@ -77,7 +79,10 @@ mod tests {
     #[test]
     fn page_file_the_pager_of_chapter_12_runs_on_the_sim_disk_of_chapter_21() {
         let m = Machine::new(1);
-        let mut pager = Pager::new(Box::new(PageFile { inner: machine::main_storage(&m) })).unwrap();
+        let mut pager = Pager::new(Box::new(PageFile {
+            inner: machine::main_storage(&m),
+        }))
+        .unwrap();
         assert_eq!(pager.page_count(), 0);
 
         let id = pager.allocate_page().unwrap();
@@ -95,7 +100,9 @@ mod tests {
     #[test]
     fn page_file_error_mapping_and_whole_page_requests_only() {
         let m = Machine::new(1);
-        let mut s = PageFile { inner: machine::main_storage(&m) };
+        let mut s = PageFile {
+            inner: machine::main_storage(&m),
+        };
         let mut page = [7u8; PAGE_SIZE];
         assert_eq!(s.read(0, &mut page), Err(Error::ShortRead)); // past the end
         assert_eq!(s.read(0, &mut page[..100]), Err(Error::StorageFailure)); // not a whole page

@@ -33,7 +33,12 @@ use crate::machine::{self, Machine, SharedMachine};
 use crate::prng::SplitMix64;
 use crate::wal::{Recovery, Stats as WalStats};
 
-pub const MODES: [CrashMode; 4] = [CrashMode::Drop, CrashMode::Keep, CrashMode::Tear, CrashMode::Random];
+pub const MODES: [CrashMode; 4] = [
+    CrashMode::Drop,
+    CrashMode::Keep,
+    CrashMode::Tear,
+    CrashMode::Random,
+];
 
 /// A fixed, seeded list of puts. Keys of 240 to 256 bytes and values of 700
 /// to 1023 bytes, so that a few dozen puts already split leaves, split an
@@ -50,20 +55,37 @@ pub struct Workload {
 impl Workload {
     /// Put number `i` (0-based): (key, value). A function of (seed, i) alone.
     pub fn op(&self, i: u32) -> (Vec<u8>, Vec<u8>) {
-        let mut rng = SplitMix64::new(self.seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(u64::from(i)));
+        let mut rng = SplitMix64::new(
+            self.seed
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                .wrapping_add(u64::from(i)),
+        );
         let n = rng.below(u64::from(self.key_space)) as usize;
         // "k" + three digits, padded with one letter to 240..256 bytes.
         let mut key = vec![b'a' + (n % 26) as u8; 240 + (n * 7) % 17];
-        key[..4].copy_from_slice(&[b'k', b'0' + (n / 100 % 10) as u8, b'0' + (n / 10 % 10) as u8, b'0' + (n % 10) as u8]);
+        key[..4].copy_from_slice(&[
+            b'k',
+            b'0' + (n / 100 % 10) as u8,
+            b'0' + (n / 10 % 10) as u8,
+            b'0' + (n % 10) as u8,
+        ]);
         let value = vec![b'A' + (i % 26) as u8; 700 + rng.below(324) as usize];
         (key, value)
     }
 }
 
 /// The default workload of the tests and of the demo.
-pub const SMALL: Workload = Workload { seed: 4, puts: 36, key_space: 60 };
+pub const SMALL: Workload = Workload {
+    seed: 4,
+    puts: 36,
+    key_space: 60,
+};
 /// A longer one, used when the feature `long` is enabled.
-pub const LONG: Workload = Workload { seed: 2222, puts: 120, key_space: 150 };
+pub const LONG: Workload = Workload {
+    seed: 2222,
+    puts: 120,
+    key_space: 150,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -172,7 +194,9 @@ fn apply_ops(model: &mut Model, w: &Workload, from: u32, to: u32) {
 /// difference.
 pub fn same_contents(tree: &mut DiskBTree, model: &Model) -> bool {
     let expected = model.range(b"", None);
-    let Ok(mut it) = tree.range(b"", None) else { return false };
+    let Ok(mut it) = tree.range(b"", None) else {
+        return false;
+    };
     let mut count = 0;
     loop {
         match it.next() {
@@ -208,13 +232,23 @@ fn classify(tree: &mut DiskBTree, w: &Workload, acked: u32) -> Outcome {
 }
 
 fn open_db(machine: &SharedMachine, options: Options) -> Result<Db, DbError> {
-    Db::open(machine::main_storage(machine), machine::log_storage(machine), options)
+    Db::open(
+        machine::main_storage(machine),
+        machine::log_storage(machine),
+        options,
+    )
 }
 
 /// One run WITH the log. `n` = page writes before the power fails (None =
 /// never: the whole workload runs). `second` = if set, the power fails again
 /// after that many writes of the recovery, and recovery runs a second time.
-pub fn run_with_log(w: &Workload, n: Option<u64>, second: Option<u64>, mode: CrashMode, options: Options) -> Result<RunResult, CrashError> {
+pub fn run_with_log(
+    w: &Workload,
+    n: Option<u64>,
+    second: Option<u64>,
+    mode: CrashMode,
+    options: Options,
+) -> Result<RunResult, CrashError> {
     let machine = Machine::new(w.seed);
     if let Some(limit) = n {
         machine.borrow_mut().power_off_after_writes(limit);
@@ -255,12 +289,16 @@ pub fn run_with_log(w: &Workload, n: Option<u64>, second: Option<u64>, mode: Cra
         machine.borrow_mut().crash(mode);
     }
 
-    let Ok(mut db) = open_db(&machine, options) else { return Ok(result) }; // OpenFailed
+    let Ok(mut db) = open_db(&machine, options) else {
+        return Ok(result);
+    }; // OpenFailed
     result.recovery = db.recovery;
     result.outcome = classify(&mut db.tree, w, result.acked);
     if matches!(result.outcome, Outcome::Before | Outcome::After) {
         // The recovered database must be a working database.
-        let alive = db.put(b"zz after recovery", b"still alive").is_ok() && db.validate().is_ok() && db.get(b"zz after recovery") == Ok(Some(b"still alive".to_vec()));
+        let alive = db.put(b"zz after recovery", b"still alive").is_ok()
+            && db.validate().is_ok()
+            && db.get(b"zz after recovery") == Ok(Some(b"still alive".to_vec()));
         if !alive {
             return Err(CrashError::RecoveredDbUnusable);
         }
@@ -271,14 +309,24 @@ pub fn run_with_log(w: &Workload, n: Option<u64>, second: Option<u64>, mode: Cra
 /// A chapter 12 tree directly on the machine's main file: no log, no
 /// checksums. (Zig needs a struct for this; here the tree owns its parts.)
 pub fn open_plain(machine: &SharedMachine) -> Result<DiskBTree, TreeError> {
-    let pager = Pager::new(Box::new(PageFile { inner: machine::main_storage(machine) }))?;
+    let pager = Pager::new(Box::new(PageFile {
+        inner: machine::main_storage(machine),
+    }))?;
     let pool = BufferPool::new(pager, 8);
-    if pool.pager().page_count() == 0 { DiskBTree::create(pool) } else { DiskBTree::open(pool) }
+    if pool.pager().page_count() == 0 {
+        DiskBTree::create(pool)
+    } else {
+        DiskBTree::open(pool)
+    }
 }
 
 /// The same run WITHOUT the log: put, then flush (write the dirty pages in
 /// place, sync). This is all chapter 12 can do for durability.
-pub fn run_without_log(w: &Workload, n: Option<u64>, mode: CrashMode) -> Result<RunResult, CrashError> {
+pub fn run_without_log(
+    w: &Workload,
+    n: Option<u64>,
+    mode: CrashMode,
+) -> Result<RunResult, CrashError> {
     let machine = Machine::new(w.seed);
     if let Some(limit) = n {
         machine.borrow_mut().power_off_after_writes(limit);
@@ -306,7 +354,9 @@ pub fn run_without_log(w: &Workload, n: Option<u64>, mode: CrashMode) -> Result<
     result.writes = machine.borrow().writes;
     machine.borrow_mut().crash(mode);
 
-    let Ok(mut tree) = open_plain(&machine) else { return Ok(result) }; // OpenFailed
+    let Ok(mut tree) = open_plain(&machine) else {
+        return Ok(result);
+    }; // OpenFailed
     result.outcome = classify(&mut tree, w, result.acked);
     Ok(result)
 }
@@ -322,10 +372,19 @@ pub struct Loop {
 /// THE loop: for every N from 0 to the total number of writes, and for every
 /// crash mode, one run. With `with_log` false it is the control experiment.
 pub fn crash_loop(w: &Workload, with_log: bool, options: Options) -> Result<Loop, CrashError> {
-    let run = |n: Option<u64>, mode: CrashMode| if with_log { run_with_log(w, n, None, mode, options) } else { run_without_log(w, n, mode) };
+    let run = |n: Option<u64>, mode: CrashMode| {
+        if with_log {
+            run_with_log(w, n, None, mode, options)
+        } else {
+            run_without_log(w, n, mode)
+        }
+    };
     let clean = run(None, CrashMode::Drop)?;
     assert!(clean.acked == w.puts && clean.outcome == Outcome::Before);
-    let mut result = Loop { total_writes: clean.writes, tallies: [Tally::default(); 4] };
+    let mut result = Loop {
+        total_writes: clean.writes,
+        tallies: [Tally::default(); 4],
+    };
     for n in 0..=clean.writes {
         for (mode, tally) in MODES.iter().zip(&mut result.tallies) {
             tally.add(run(Some(n), *mode)?.outcome);

@@ -126,23 +126,36 @@ pub struct Port {
 }
 
 pub fn main_storage(machine: &SharedMachine) -> Box<dyn Storage> {
-    Box::new(Port { machine: Rc::clone(machine), file: FileId::Main })
+    Box::new(Port {
+        machine: Rc::clone(machine),
+        file: FileId::Main,
+    })
 }
 
 pub fn log_storage(machine: &SharedMachine) -> Box<dyn Storage> {
-    Box::new(Port { machine: Rc::clone(machine), file: FileId::Log })
+    Box::new(Port {
+        machine: Rc::clone(machine),
+        file: FileId::Log,
+    })
 }
 
 impl Storage for Port {
     fn read_page(&mut self, page_no: u64, out: &mut Page) -> Result<(), StorageError> {
-        self.machine.borrow_mut().disk(self.file).read_page(page_no, out)
+        self.machine
+            .borrow_mut()
+            .disk(self.file)
+            .read_page(page_no, out)
     }
 
     fn write_page(&mut self, page_no: u64, page: &Page) -> Result<(), StorageError> {
         let mut m = self.machine.borrow_mut();
         m.disk(self.file).write_page(page_no, page)?;
         if m.tracing {
-            m.trace.push(Event { file: self.file, kind: EventKind::Write, page_no });
+            m.trace.push(Event {
+                file: self.file,
+                kind: EventKind::Write,
+                page_no,
+            });
         }
         m.writes += 1;
         if let Some(left) = &mut m.writes_left {
@@ -160,7 +173,11 @@ impl Storage for Port {
         let mut m = self.machine.borrow_mut();
         m.disk(self.file).sync()?;
         if m.tracing {
-            m.trace.push(Event { file: self.file, kind: EventKind::Sync, page_no: 0 });
+            m.trace.push(Event {
+                file: self.file,
+                kind: EventKind::Sync,
+                page_no: 0,
+            });
         }
         Ok(())
     }
@@ -214,8 +231,29 @@ mod tests {
         main_storage(&m).write_page(1, &page).unwrap();
         let m = m.borrow();
         assert_eq!(m.trace.len(), 3);
-        assert_eq!(m.trace[0], Event { file: FileId::Log, kind: EventKind::Write, page_no: 3 });
-        assert_eq!(m.trace[1], Event { file: FileId::Log, kind: EventKind::Sync, page_no: 0 });
-        assert_eq!(m.trace[2], Event { file: FileId::Main, kind: EventKind::Write, page_no: 1 });
+        assert_eq!(
+            m.trace[0],
+            Event {
+                file: FileId::Log,
+                kind: EventKind::Write,
+                page_no: 3
+            }
+        );
+        assert_eq!(
+            m.trace[1],
+            Event {
+                file: FileId::Log,
+                kind: EventKind::Sync,
+                page_no: 0
+            }
+        );
+        assert_eq!(
+            m.trace[2],
+            Event {
+                file: FileId::Main,
+                kind: EventKind::Write,
+                page_no: 1
+            }
+        );
     }
 }

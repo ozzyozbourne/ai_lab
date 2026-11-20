@@ -56,7 +56,12 @@ pub struct SplitOutcome {
 
 impl SplitOutcome {
     fn new() -> Self {
-        Self { state: State::OpenFailed, err: None, recovery: Recovery::default(), writes: 0 }
+        Self {
+            state: State::OpenFailed,
+            err: None,
+            recovery: Recovery::default(),
+            writes: 0,
+        }
     }
 }
 
@@ -101,7 +106,12 @@ fn print_trace(w: &mut dyn Write, machine: &Machine, new_page: u64) -> DemoResul
             continue;
         }
         write_no += 1;
-        write!(w, "  write {write_no}: {} page {}", e.file.name(), e.page_no)?;
+        write!(
+            w,
+            "  write {write_no}: {} page {}",
+            e.file.name(),
+            e.page_no
+        )?;
         if e.file == FileId::Main && e.page_no == new_page && !seen_new_page {
             seen_new_page = true;
             if machine.trace[0].file == FileId::Main {
@@ -115,7 +125,11 @@ fn print_trace(w: &mut dyn Write, machine: &Machine, new_page: u64) -> DemoResul
 
 /// Part 1. Eleven keys flushed; then put 15 and flush, with the power
 /// failing after `n` writes. `out` (clean run only) receives the narration.
-pub fn split_without_log(n: Option<u64>, mode: CrashMode, mut out: Option<&mut dyn Write>) -> DemoResult<SplitOutcome> {
+pub fn split_without_log(
+    n: Option<u64>,
+    mode: CrashMode,
+    mut out: Option<&mut dyn Write>,
+) -> DemoResult<SplitOutcome> {
     let machine = Machine::new(22);
     let mut outcome = SplitOutcome::new();
     {
@@ -135,7 +149,10 @@ pub fn split_without_log(n: Option<u64>, mode: CrashMode, mut out: Option<&mut d
             machine.borrow_mut().power_off_after_writes(limit);
         }
         let last = SCENARIO_KEYS[OLD_KEYS];
-        if let Err(err) = tree.put(&scenario_key(last), &scenario_value(last)).and_then(|()| tree.flush()) {
+        if let Err(err) = tree
+            .put(&scenario_key(last), &scenario_value(last))
+            .and_then(|()| tree.flush())
+        {
             if !machine.borrow().is_powered_off() {
                 return Err(err.into());
             }
@@ -143,7 +160,11 @@ pub fn split_without_log(n: Option<u64>, mode: CrashMode, mut out: Option<&mut d
         outcome.writes = machine.borrow().writes - base;
         if let Some(w) = out.as_mut() {
             let key = scenario_key(last);
-            writeln!(w, "put {} splits leaf page 2; the new right half is page {new_page}. put + flush issue:", String::from_utf8_lossy(&key))?;
+            writeln!(
+                w,
+                "put {} splits leaf page 2; the new right half is page {new_page}. put + flush issue:",
+                String::from_utf8_lossy(&key)
+            )?;
             print_trace(*w, &machine.borrow(), new_page)?;
             writeln!(w, "the tree after the split:")?;
             write!(w, "{}", tree.dump()?)?;
@@ -159,25 +180,41 @@ pub fn split_without_log(n: Option<u64>, mode: CrashMode, mut out: Option<&mut d
 }
 
 fn open_db(machine: &machine::SharedMachine, options: Options) -> Result<Db, DbError> {
-    Db::open(machine::main_storage(machine), machine::log_storage(machine), options)
+    Db::open(
+        machine::main_storage(machine),
+        machine::log_storage(machine),
+        options,
+    )
 }
 
 /// Part 2. Eleven keys committed and checkpointed (the log is empty); then
 /// put 15 (a commit) and a checkpoint, with the power failing after `n`
 /// writes; then reopen, which runs recovery.
-pub fn split_with_log(n: Option<u64>, mode: CrashMode, mut out: Option<&mut dyn Write>) -> DemoResult<SplitOutcome> {
+pub fn split_with_log(
+    n: Option<u64>,
+    mode: CrashMode,
+    mut out: Option<&mut dyn Write>,
+) -> DemoResult<SplitOutcome> {
     let machine = Machine::new(22);
     let mut outcome = SplitOutcome::new();
-    let options = Options { checkpoint_every: 0, ..Options::default() }; // checkpoints by hand here
+    let options = Options {
+        checkpoint_every: 0,
+        ..Options::default()
+    }; // checkpoints by hand here
     let powered_off = || machine.borrow().is_powered_off();
     {
         let mut db = open_db(&machine, options).map_err(crash::CrashError::Db)?;
         for &k in &SCENARIO_KEYS[..OLD_KEYS] {
-            db.put(&scenario_key(k), &scenario_value(k)).map_err(crash::CrashError::Db)?;
+            db.put(&scenario_key(k), &scenario_value(k))
+                .map_err(crash::CrashError::Db)?;
         }
         db.checkpoint().map_err(crash::CrashError::Db)?;
         if let Some(w) = out.as_mut() {
-            writeln!(w, "{OLD_KEYS} keys are in the main file (checkpointed); the log is empty, generation {}", db.wal().generation)?;
+            writeln!(
+                w,
+                "{OLD_KEYS} keys are in the main file (checkpointed); the log is empty, generation {}",
+                db.wal().generation
+            )?;
         }
         let base = machine.borrow().writes;
         let new_page = u64::from(db.tree.pool().pager().page_count());
@@ -190,7 +227,11 @@ pub fn split_with_log(n: Option<u64>, mode: CrashMode, mut out: Option<&mut dyn 
             Ok(()) => {
                 if let Some(w) = out.as_mut() {
                     let key = scenario_key(last);
-                    writeln!(w, "put {} changes 4 pages in memory; its commit appends to the log:", String::from_utf8_lossy(&key))?;
+                    writeln!(
+                        w,
+                        "put {} changes 4 pages in memory; its commit appends to the log:",
+                        String::from_utf8_lossy(&key)
+                    )?;
                     print_log(*w, &machine)?;
                 }
                 if let Err(err) = db.checkpoint() {
@@ -204,7 +245,10 @@ pub fn split_with_log(n: Option<u64>, mode: CrashMode, mut out: Option<&mut dyn 
         }
         outcome.writes = machine.borrow().writes - base;
         if let Some(w) = out.as_mut() {
-            writeln!(w, "storage calls of the put and of the checkpoint after it:")?;
+            writeln!(
+                w,
+                "storage calls of the put and of the checkpoint after it:"
+            )?;
             print_trace(*w, &machine.borrow(), new_page)?;
         }
     }
@@ -225,8 +269,15 @@ fn print_log(w: &mut dyn Write, machine: &machine::SharedMachine) -> DemoResult 
     let mut log = machine::log_storage(machine);
     let mut scanner = LogScanner::new(log.as_mut()).map_err(|e| crash::CrashError::Db(e.into()))?;
     let mut image = [0u8; PAGE_SIZE];
-    while let Some(rec) = scanner.next(&mut image).map_err(|e| crash::CrashError::Db(e.into()))? {
-        write!(w, "  LSN {}  log bytes {}..{}  ", rec.lsn, rec.offset, scanner.pos)?;
+    while let Some(rec) = scanner
+        .next(&mut image)
+        .map_err(|e| crash::CrashError::Db(e.into()))?
+    {
+        write!(
+            w,
+            "  LSN {}  log bytes {}..{}  ",
+            rec.lsn, rec.offset, scanner.pos
+        )?;
         if rec.kind == wal::KIND_PAGE {
             write!(w, "image of page {}", rec.arg)?;
         } else {
@@ -237,7 +288,12 @@ fn print_log(w: &mut dyn Write, machine: &machine::SharedMachine) -> DemoResult 
     Ok(())
 }
 
-fn print_outcome(w: &mut dyn Write, mode: CrashMode, o: &SplitOutcome, with_log: bool) -> DemoResult {
+fn print_outcome(
+    w: &mut dyn Write,
+    mode: CrashMode,
+    o: &SplitOutcome,
+    with_log: bool,
+) -> DemoResult {
     write!(w, "{}: ", mode.name())?;
     let err = o.err.as_deref().unwrap_or("?");
     match o.state {
@@ -248,7 +304,11 @@ fn print_outcome(w: &mut dyn Write, mode: CrashMode, o: &SplitOutcome, with_log:
         State::WrongContents => write!(w, "valid tree, wrong contents")?,
     }
     if with_log {
-        write!(w, " [{} records, {} commit]", o.recovery.valid_records, o.recovery.committed_ops)?;
+        write!(
+            w,
+            " [{} records, {} commit]",
+            o.recovery.valid_records, o.recovery.committed_ops
+        )?;
     }
     Ok(())
 }
@@ -256,9 +316,15 @@ fn print_outcome(w: &mut dyn Write, mode: CrashMode, o: &SplitOutcome, with_log:
 const SPLIT_MODES: [CrashMode; 3] = [CrashMode::Drop, CrashMode::Keep, CrashMode::Tear];
 
 fn part1(w: &mut dyn Write) -> DemoResult {
-    writeln!(w, "\n== Part 1: no log: one leaf split on a disk that loses power ==")?;
+    writeln!(
+        w,
+        "\n== Part 1: no log: one leaf split on a disk that loses power =="
+    )?;
     let clean = split_without_log(None, CrashMode::Drop, Some(w))?;
-    writeln!(w, "the power fails after N writes; the unsynced writes are then dropped, kept or torn:")?;
+    writeln!(
+        w,
+        "the power fails after N writes; the unsynced writes are then dropped, kept or torn:"
+    )?;
     for n in 0..=clean.writes {
         write!(w, "N = {n}: ")?;
         for (i, &mode) in SPLIT_MODES.iter().enumerate() {
@@ -269,14 +335,23 @@ fn part1(w: &mut dyn Write) -> DemoResult {
         }
         writeln!(w)?;
     }
-    writeln!(w, "(before = the 11 old keys, valid tree; after = all 12 keys, valid tree)")?;
+    writeln!(
+        w,
+        "(before = the 11 old keys, valid tree; after = all 12 keys, valid tree)"
+    )?;
     Ok(())
 }
 
 fn part2(w: &mut dyn Write) -> DemoResult {
-    writeln!(w, "\n== Part 2: the same split through the write-ahead log ==")?;
+    writeln!(
+        w,
+        "\n== Part 2: the same split through the write-ahead log =="
+    )?;
     let clean = split_with_log(None, CrashMode::Drop, Some(w))?;
-    writeln!(w, "the power fails after N writes; reopening runs recovery [what it found in the log]:")?;
+    writeln!(
+        w,
+        "the power fails after N writes; reopening runs recovery [what it found in the log]:"
+    )?;
     for n in 0..=clean.writes {
         write!(w, "N = {n}: ")?;
         for (i, &mode) in SPLIT_MODES.iter().enumerate() {
@@ -291,32 +366,70 @@ fn part2(w: &mut dyn Write) -> DemoResult {
 }
 
 fn print_loop(w: &mut dyn Write, result: &Loop) -> DemoResult<u32> {
-    writeln!(w, "  mode    runs  before  after  open fails  invalid  wrong contents")?;
+    writeln!(
+        w,
+        "  mode    runs  before  after  open fails  invalid  wrong contents"
+    )?;
     let mut exact = 0;
     for (mode, t) in crash::MODES.iter().zip(&result.tallies) {
-        writeln!(w, "  {:<6} {:>5} {:>7} {:>6} {:>11} {:>8} {:>15}", mode.name(), t.runs, t.before, t.after, t.open_failed, t.invalid, t.wrong_contents)?;
+        writeln!(
+            w,
+            "  {:<6} {:>5} {:>7} {:>6} {:>11} {:>8} {:>15}",
+            mode.name(),
+            t.runs,
+            t.before,
+            t.after,
+            t.open_failed,
+            t.invalid,
+            t.wrong_contents
+        )?;
         exact += t.exact();
     }
     Ok(exact)
 }
 
 fn part3(w: &mut dyn Write) -> DemoResult {
-    writeln!(w, "\n== Part 3: a power cut after every write, four crash modes ==")?;
+    writeln!(
+        w,
+        "\n== Part 3: a power cut after every write, four crash modes =="
+    )?;
     let wl = crash::SMALL;
-    let options = Options { frames: 3, ..Options::default() };
+    let options = Options {
+        frames: 3,
+        ..Options::default()
+    };
     let clean = crash::run_with_log(&wl, None, None, CrashMode::Drop, options)?;
-    writeln!(w, "workload: {} puts (seed {}), keys of 240 to 256 bytes, values of 700 to 1023 bytes", wl.puts, wl.seed)?;
-    writeln!(w, "no crash: splits: {} leaf, {} interior, {} root (the tree grows to 3 levels)", clean.stats.leaf_splits, clean.stats.interior_splits, clean.stats.root_splits)?;
+    writeln!(
+        w,
+        "workload: {} puts (seed {}), keys of 240 to 256 bytes, values of 700 to 1023 bytes",
+        wl.puts, wl.seed
+    )?;
+    writeln!(
+        w,
+        "no crash: splits: {} leaf, {} interior, {} root (the tree grows to 3 levels)",
+        clean.stats.leaf_splits, clean.stats.interior_splits, clean.stats.root_splits
+    )?;
 
     let with_log = crash::crash_loop(&wl, true, options)?;
-    writeln!(w, "WITH the log (3-frame pool, checkpoint every 4 commits): {} page writes, power cut after N = 0..{}", with_log.total_writes, with_log.total_writes)?;
+    writeln!(
+        w,
+        "WITH the log (3-frame pool, checkpoint every 4 commits): {} page writes, power cut after N = 0..{}",
+        with_log.total_writes, with_log.total_writes
+    )?;
     let exact_with = print_loop(w, &with_log)?;
     let without = crash::crash_loop(&wl, false, options)?;
-    writeln!(w, "WITHOUT the log (chapter 12: put, then flush): {} page writes, power cut after N = 0..{}", without.total_writes, without.total_writes)?;
+    writeln!(
+        w,
+        "WITHOUT the log (chapter 12: put, then flush): {} page writes, power cut after N = 0..{}",
+        without.total_writes, without.total_writes
+    )?;
     let exact_without = print_loop(w, &without)?;
     let runs_with = (with_log.total_writes + 1) * crash::MODES.len() as u64;
     let runs_without = (without.total_writes + 1) * crash::MODES.len() as u64;
-    writeln!(w, "exactly the before or the after state: with the log {exact_with} of {runs_with} runs, without {exact_without} of {runs_without}")?;
+    writeln!(
+        w,
+        "exactly the before or the after state: with the log {exact_with} of {runs_with} runs, without {exact_without} of {runs_without}"
+    )?;
 
     // A second power cut, during recovery itself.
     let mut runs = 0;
@@ -335,28 +448,68 @@ fn part3(w: &mut dyn Write) -> DemoResult {
             }
         }
     }
-    writeln!(w, "a second power cut during recovery (every 5th N, after each recovery write, keep and random): {exact} of {runs} runs exact")?;
+    writeln!(
+        w,
+        "a second power cut during recovery (every 5th N, after each recovery write, keep and random): {exact} of {runs} runs exact"
+    )?;
     Ok(())
 }
 
 fn part4(w: &mut dyn Write) -> DemoResult {
-    writeln!(w, "\n== Part 4: what the log costs (the same 36 puts, no crash) ==")?;
+    writeln!(
+        w,
+        "\n== Part 4: what the log costs (the same 36 puts, no crash) =="
+    )?;
     let wl = crash::SMALL;
-    let payload: usize = (0..wl.puts).map(|i| wl.op(i)).map(|(key, value)| key.len() + value.len()).sum();
+    let payload: usize = (0..wl.puts)
+        .map(|i| wl.op(i))
+        .map(|(key, value)| key.len() + value.len())
+        .sum();
     writeln!(w, "the puts carry {payload} bytes of keys and values")?;
-    writeln!(w, "  checkpoint  log bytes  largest  page     log page  main page  syncs")?;
-    writeln!(w, "  every       appended   log      records  writes    writes")?;
+    writeln!(
+        w,
+        "  checkpoint  log bytes  largest  page     log page  main page  syncs"
+    )?;
+    writeln!(
+        w,
+        "  every       appended   log      records  writes    writes"
+    )?;
     for every in [1, 4, 16, 0] {
-        let options = Options { checkpoint_every: every, ..Options::default() };
+        let options = Options {
+            checkpoint_every: every,
+            ..Options::default()
+        };
         let s = crash::run_with_log(&wl, None, None, CrashMode::Drop, options)?.wal_stats;
-        let label = if every == 0 { "never".to_string() } else { every.to_string() };
-        writeln!(w, "  {:<10} {:>10} {:>8} {:>8} {:>9} {:>10} {:>6}", label, s.log_bytes, s.max_log_bytes, s.page_records, s.log_page_writes, s.main_page_writes, s.log_syncs + s.main_syncs)?;
+        let label = if every == 0 {
+            "never".to_string()
+        } else {
+            every.to_string()
+        };
+        writeln!(
+            w,
+            "  {:<10} {:>10} {:>8} {:>8} {:>9} {:>10} {:>6}",
+            label,
+            s.log_bytes,
+            s.max_log_bytes,
+            s.page_records,
+            s.log_page_writes,
+            s.main_page_writes,
+            s.log_syncs + s.main_syncs
+        )?;
         if every == 4 {
-            writeln!(w, "  (largest commit: {} page images; {} commits)", s.largest_commit, s.commits)?;
+            writeln!(
+                w,
+                "  (largest commit: {} page images; {} commits)",
+                s.largest_commit, s.commits
+            )?;
         }
     }
     let plain = crash::run_without_log(&wl, None, CrashMode::Drop)?;
-    writeln!(w, "without the log: {} page writes in place, no second copy, and Part 3's failures", plain.writes)?;
+    writeln!(
+        w,
+        "without the log: {} page writes in place, no second copy, and Part 3's failures",
+        plain.writes
+    )?;
     Ok(())
 }
 

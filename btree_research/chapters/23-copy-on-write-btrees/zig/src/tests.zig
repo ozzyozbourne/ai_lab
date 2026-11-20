@@ -612,11 +612,38 @@ test "restart after a crash at any write, with either slot damaged, finds a comp
     try testing.expect(fell_back_two > 1_000); // the double fault really was exercised
 }
 
-test "a long life of crashes, damaged slots and restarts never shows a mixed tree" {
-    const gpa = testing.allocator;
-    var prng: std.Random.DefaultPrng = .init(2323);
+/// After a restart each meta slot holds the current root, holds the
+/// fallback root, or is all zeroes: a slot the restart could not use is gone
+/// for good, whatever the device answers next time.
+fn expectSlotsScrubbed(db: *const Db) !void {
+    var kept: usize = 0;
+    for (&db.store.meta_slots) |*slot| {
+        const m = Meta.decode(slot) orelse {
+            try testing.expectEqual(@as([32]u8, @splat(0)), slot.*);
+            continue;
+        };
+        const is_previous = if (db.previous) |p| std.meta.eql(m, p) else false;
+        try testing.expect(std.meta.eql(m, db.current) or is_previous);
+        kept += 1;
+    }
+    try testing.expectEqual(@as(usize, if (db.previous == null) 1 else 2), kept);
+}
+
+const SlotFaults = enum {
+    /// A slot rots for good (a flipped bit).
+    rot,
+    /// As `rot`, and in addition a slot may be unreadable at one restart and
+    /// readable again at the next (`PageStore.meta_read_fault`).
+    intermittent,
+};
+
+/// A seeded life of commits, crashes at random device writes, slot faults
+/// and restarts, with one reader. After every restart the tree is exactly
+/// the content of the newest commit that restart could read.
+fn lifeOfFaults(gpa: Allocator, order: usize, seed: u64, steps: usize, faults: SlotFaults) !void {
+    var prng: std.Random.DefaultPrng = .init(seed);
     const rnd = prng.random();
-    var db: Db = .init(4);
+    var db: Db = .init(order);
     defer db.deinit(gpa);
     // content[t] = what the newest commit with id t wrote (ids repeat after
     // a fallback: the lost transaction's id is handed out again).
@@ -632,8 +659,9 @@ test "a long life of crashes, damaged slots and restarts never shows a mixed tre
     defer if (held) |h| gpa.free(h.saved);
     var restarts: usize = 0;
     var fallbacks: usize = 0;
+    var read_faults: usize = 0; // restarts that could not read the newest slot, which was intact
 
-    for (0..4000) |step| {
+    for (0..steps) |step| {
         const key = rnd.uintLessThan(u64, 40);
         const is_put = rnd.uintLessThan(u8, 5) < 3;
         const before = db.current.txn_id;
@@ -667,19 +695,29 @@ test "a long life of crashes, damaged slots and restarts never shows a mixed tre
             }
         }
 
-        if (restart) {
+        // Sometimes a second restart follows at once, with no write in between.
+        var rounds: usize = if (!restart) 0 else if (rnd.uintLessThan(u8, 4) == 0) 2 else 1;
+        while (rounds > 0) : (rounds -= 1) {
             const slots = &db.store.meta_slots;
             // One slot may rot, as long as the other one is readable.
             if (Meta.decode(&slots[0]) != null and Meta.decode(&slots[1]) != null and rnd.boolean()) {
                 damage(&slots[rnd.uintLessThan(usize, 2)], .bit_flip, rnd.uintLessThan(usize, 256));
             }
-            const a = Meta.decode(&slots[0]);
-            const b = Meta.decode(&slots[1]);
-            const want = @max(if (a) |m| m.txn_id else 0, if (b) |m| m.txn_id else 0);
+            if (faults == .intermittent) {
+                // And one slot may fail to be read at this restart only.
+                const which = rnd.uintLessThan(usize, 2);
+                const other_readable = Meta.decode(&slots[1 - which]) != null;
+                db.store.meta_read_fault[which] = other_readable and rnd.uintLessThan(u8, 3) == 0;
+            }
+            const seen = db.store.readMeta();
+            const want = Meta.pick(&seen).?.txn_id;
+            if (Meta.pick(slots).?.txn_id != want) read_faults += 1;
             try db.reopen(gpa);
+            db.store.meta_read_fault = @splat(false); // the device answers again
             restarts += 1;
             if (want < before) fallbacks += 1;
             try testing.expectEqual(want, db.current.txn_id);
+            try expectSlotsScrubbed(&db);
             try expectAll(content.items[want], db.view());
             oracle.entries.clearRetainingCapacity();
             try oracle.entries.appendSlice(gpa, content.items[want]);
@@ -702,8 +740,134 @@ test "a long life of crashes, damaged slots and restarts never shows a mixed tre
             held = .{ .snap = try db.snapshot(gpa), .saved = saved };
         }
     }
-    try testing.expect(restarts > 300);
-    try testing.expect(fallbacks > 50);
+    try testing.expect(restarts > steps / 14);
+    try testing.expect(fallbacks > steps / 80);
+    if (faults == .intermittent) try testing.expect(read_faults > steps / 200);
+}
+
+test "a long life of crashes, damaged slots and restarts never shows a mixed tree" {
+    try lifeOfFaults(testing.allocator, 4, 2323, 4000, .rot);
+}
+
+test "campaign: a meta slot that is unreadable at one restart and readable at the next never wins again" {
+    for ([_]usize{ 3, 4, 5 }, 0..) |order, i| {
+        try lifeOfFaults(testing.allocator, order, 9000 + i, 3000, .intermittent);
+    }
+}
+
+test "a slot skipped by one restart is scrubbed and cannot win the next one (no write in between)" {
+    const gpa = testing.allocator;
+    // Twice: a read error that is gone at the next restart, and a flipped
+    // bit that flips back.
+    for ([_]bool{ true, false }) |read_error| {
+        var db = try buildCanonical(gpa); // slot 0: txn 12, 12 pages; slot 1: txn 11, 9 pages
+        defer db.deinit(gpa);
+        if (read_error) db.store.meta_read_fault[0] = true else db.store.meta_slots[0][3] ^= 1;
+        try db.reopen(gpa);
+        try testing.expectEqual(11, db.current.txn_id);
+        try testing.expectEqual(9, db.store.pageCount()); // the pages only txn 12 had are given away
+        // The restart overwrote the slot it could not use ...
+        try testing.expectEqual(@as([32]u8, @splat(0)), db.store.meta_slots[0]);
+        if (read_error) db.store.meta_read_fault[0] = false else db.store.meta_slots[0][3] ^= 1;
+        // ... so when the device answers again there is no txn 12 to find.
+        try db.reopen(gpa);
+        try testing.expectEqual(11, db.current.txn_id);
+        try validate(&db, gpa);
+        try expectKeys(&.{ 1, 3, 5, 6, 7, 10, 12, 17, 20, 25, 30 }, db.view());
+        _ = try db.put(gpa, 15, 1500); // the id 12 is handed out again, into the scrubbed slot
+        try testing.expectEqual(12, db.current.txn_id);
+        try validate(&db, gpa);
+        try db.reopen(gpa);
+        try testing.expectEqual(1500, db.get(15).?);
+    }
+}
+
+test "a slot skipped by one restart cannot come back after a crashed commit reused its transaction id" {
+    const gpa = testing.allocator;
+    var crashed_commits: usize = 0;
+    var finished_commits: usize = 0;
+    for ([_]usize{ 3, 4 }) |order| {
+        var db: Db = .init(order);
+        defer db.deinit(gpa);
+        var oracle: ops.Oracle = .{};
+        defer oracle.deinit(gpa);
+        var older: std.ArrayList(ops.Entry) = .empty; // content one commit back
+        defer older.deinit(gpa);
+
+        var stream = ops.OpStream.init(.{ .seed = 70 + order, .count = 120, .key_space = 14 });
+        while (stream.next()) |op| {
+            const t = db.current.txn_id; // the commit that is about to be lost
+            if (t >= 2) {
+                // Restart 1: the slot of T cannot be read. The database falls
+                // back to T-1 and gives away the pages only T reached.
+                var base = try cloneDb(gpa, &db);
+                defer base.deinit(gpa);
+                base.store.meta_read_fault[t % 2] = true;
+                try base.reopen(gpa);
+                base.store.meta_read_fault[t % 2] = false; // from now on the device answers
+                try testing.expectEqual(t - 1, base.current.txn_id);
+                try expectAll(older.items, base.view());
+
+                // The next transaction gets the id T again and writes into
+                // pages T used. Crash its commit after w device writes, for
+                // every w, and restart: T-1, or the new T once its slot is
+                // complete. Never the lost T, never a mixture.
+                const key = (t * 7) % 14;
+                var w: usize = 0;
+                while (true) : (w += 1) {
+                    var trial = try cloneDb(gpa, &base);
+                    defer trial.deinit(gpa);
+                    trial.crash_after = w;
+                    const done = if (trial.put(gpa, key, 7777)) |_| true else |e| blk: {
+                        try testing.expectEqual(error.Crashed, e);
+                        break :blk false;
+                    };
+                    try trial.reopen(gpa);
+                    try validate(&trial, gpa);
+                    try expectSlotsScrubbed(&trial);
+                    if (trial.current.txn_id == t) {
+                        // The new T: the content of T-1 with one more put.
+                        try testing.expectEqual(7777, trial.get(key).?);
+                        var kept: u64 = 1;
+                        for (older.items) |e| {
+                            if (e.key == key) continue;
+                            kept += 1;
+                            try testing.expectEqual(e.value, trial.get(e.key).?);
+                        }
+                        try testing.expectEqual(kept, trial.len());
+                        finished_commits += 1;
+                    } else {
+                        try testing.expect(!done);
+                        try testing.expectEqual(t - 1, trial.current.txn_id);
+                        try expectAll(older.items, trial.view());
+                        crashed_commits += 1;
+                    }
+                    if (done) break;
+                }
+            }
+
+            // The real line of history moves on without a fault.
+            const content_before = try gpa.dupe(ops.Entry, oracle.entries.items);
+            defer gpa.free(content_before);
+            switch (op) {
+                .put => |p| {
+                    _ = try db.put(gpa, p.key, p.value);
+                    _ = try oracle.put(gpa, p.key, p.value);
+                },
+                .delete => |d| {
+                    _ = try db.delete(gpa, d.key);
+                    _ = oracle.delete(d.key);
+                },
+                else => {},
+            }
+            if (db.current.txn_id != t) {
+                older.clearRetainingCapacity();
+                try older.appendSlice(gpa, content_before);
+            }
+        }
+    }
+    try testing.expect(crashed_commits > 2_000);
+    try testing.expect(finished_commits > 100);
 }
 
 test "reopen reports a tree that is not all there instead of walking into it" {

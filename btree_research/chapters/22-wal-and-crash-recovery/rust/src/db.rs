@@ -38,7 +38,11 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { frames: 8, checkpoint_every: 4, max_commit_pages: 32 }
+        Self {
+            frames: 8,
+            checkpoint_every: 4,
+            max_commit_pages: 32,
+        }
     }
 }
 
@@ -73,16 +77,31 @@ pub struct Db {
 }
 
 impl Db {
-    pub fn open(main: Box<dyn PageStorage>, log: Box<dyn PageStorage>, options: Options) -> Result<Self, DbError> {
-        let wal_options = wal::Options { max_commit_pages: options.max_commit_pages };
+    pub fn open(
+        main: Box<dyn PageStorage>,
+        log: Box<dyn PageStorage>,
+        options: Options,
+    ) -> Result<Self, DbError> {
+        let wal_options = wal::Options {
+            max_commit_pages: options.max_commit_pages,
+        };
         let wal = Rc::new(RefCell::new(Wal::new(main, log, wal_options)));
         let recovery = wal.borrow_mut().recover()?;
         let pager = Pager::new(Box::new(WalStorage(Rc::clone(&wal)))).map_err(TreeError::from)?;
         let pool = BufferPool::new(pager, options.frames);
         // No pages at all: a new database, or one whose creation never
         // committed. Creating it is itself a logged, committed operation.
-        let tree = if pool.pager().page_count() == 0 { DiskBTree::create(pool)? } else { DiskBTree::open(pool)? };
-        Ok(Self { options, wal, tree, recovery })
+        let tree = if pool.pager().page_count() == 0 {
+            DiskBTree::create(pool)?
+        } else {
+            DiskBTree::open(pool)?
+        };
+        Ok(Self {
+            options,
+            wal,
+            tree,
+            recovery,
+        })
     }
 
     /// Insert or overwrite one key. Atomic and durable at return.
@@ -105,7 +124,8 @@ impl Db {
         // writes land in the Wal's pending table; the sync is `Wal::commit`.
         self.tree.flush()?;
         let mut wal = self.wal.borrow_mut();
-        if self.options.checkpoint_every != 0 && wal.commits_in_log >= self.options.checkpoint_every {
+        if self.options.checkpoint_every != 0 && wal.commits_in_log >= self.options.checkpoint_every
+        {
             wal.checkpoint()?;
         }
         Ok(())

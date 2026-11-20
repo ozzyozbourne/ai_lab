@@ -73,8 +73,8 @@ use std::rc::Rc;
 
 use crate::adapter::whole_page;
 use crate::base_checksum::{self as checksum, Check};
-use crate::base_page_storage::{Storage as PageStorage, StorageError};
 pub use crate::base_page_storage::{PAGE_SIZE, Page};
+use crate::base_page_storage::{Storage as PageStorage, StorageError};
 use crate::base_storage::{Error as ByteError, Storage as ByteStorage};
 use crate::crc32::{crc32, crc32_update};
 
@@ -141,7 +141,9 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { max_commit_pages: 32 }
+        Self {
+            max_commit_pages: 32,
+        }
     }
 }
 
@@ -196,7 +198,8 @@ pub struct Wal {
 impl Wal {
     /// Allocate the record buffer. The log is not read: call `recover` next.
     pub fn new(main: Box<dyn PageStorage>, log: Box<dyn PageStorage>, options: Options) -> Self {
-        let record_limit = options.max_commit_pages as usize * (RECORD_HEADER_LEN + PAGE_SIZE) + RECORD_HEADER_LEN;
+        let record_limit =
+            options.max_commit_pages as usize * (RECORD_HEADER_LEN + PAGE_SIZE) + RECORD_HEADER_LEN;
         Self {
             main,
             log,
@@ -240,11 +243,27 @@ impl Wal {
             // Seal first: the image in the log carries the page checksum, so
             // checkpoint and recovery can copy it to the main file verbatim.
             checksum::seal(image, u64::from(id));
-            chain = append_record(&mut self.record_buffer, self.record_limit, lsn, KIND_PAGE, id, &image[..], chain)?;
+            chain = append_record(
+                &mut self.record_buffer,
+                self.record_limit,
+                lsn,
+                KIND_PAGE,
+                id,
+                &image[..],
+                chain,
+            )?;
             lsn += 1;
         }
         let pages = self.pending.len();
-        chain = append_record(&mut self.record_buffer, self.record_limit, lsn, KIND_COMMIT, pages as u32, &[], chain)?;
+        chain = append_record(
+            &mut self.record_buffer,
+            self.record_limit,
+            lsn,
+            KIND_COMMIT,
+            pages as u32,
+            &[],
+            chain,
+        )?;
         lsn += 1;
 
         // From here on a failure leaves the log in a state only recovery
@@ -281,7 +300,8 @@ impl Wal {
             }
             let n = rest.len().min(PAGE_SIZE - offset);
             self.tail_page[offset..offset + n].copy_from_slice(&rest[..n]);
-            self.log.write_page(self.tail / PAGE_SIZE as u64, &self.tail_page)?;
+            self.log
+                .write_page(self.tail / PAGE_SIZE as u64, &self.tail_page)?;
             self.stats.log_page_writes += 1;
             self.tail += n as u64;
             rest = &rest[n..];
@@ -358,13 +378,19 @@ impl Wal {
         let mut committed = PageTable::new();
         let mut open_op: Vec<(PageId, Box<Page>)> = Vec::new(); // records since the last commit
         let mut scanner = LogScanner::new(self.log.as_mut())?;
-        let mut report = Recovery { generation: scanner.generation, ..Recovery::default() };
+        let mut report = Recovery {
+            generation: scanner.generation,
+            ..Recovery::default()
+        };
         let mut image: Box<Page> = Box::new([0; PAGE_SIZE]);
         while let Some(rec) = scanner.next(&mut image)? {
             report.valid_records += 1;
             if rec.kind == KIND_PAGE {
                 // The image is in use; the next record gets a new one.
-                open_op.push((rec.arg, std::mem::replace(&mut image, Box::new([0; PAGE_SIZE]))));
+                open_op.push((
+                    rec.arg,
+                    std::mem::replace(&mut image, Box::new([0; PAGE_SIZE])),
+                ));
                 continue;
             }
             // A commit record says how many page records it closes; with an
@@ -394,7 +420,10 @@ impl Wal {
     /// Pages in the database as the tree sees it: the main file, extended
     /// by any newer page that so far exists only in the log or in memory.
     pub fn page_count(&self) -> u64 {
-        self.main.size().max(table_page_count(&self.index)).max(table_page_count(&self.pending))
+        self.main
+            .size()
+            .max(table_page_count(&self.index))
+            .max(table_page_count(&self.pending))
     }
 
     fn fail(&mut self, err: WalError) -> ByteError {
@@ -500,7 +529,15 @@ pub struct LogScanner<'a> {
 
 impl<'a> LogScanner<'a> {
     pub fn new(log: &'a mut dyn PageStorage) -> Result<Self, WalError> {
-        let mut scanner = Self { log, generation: 0, lsn: 1, chain: 0, pos: LOG_START, cached: None, page: Box::new([0; PAGE_SIZE]) };
+        let mut scanner = Self {
+            log,
+            generation: 0,
+            lsn: 1,
+            chain: 0,
+            pos: LOG_START,
+            cached: None,
+            page: Box::new([0; PAGE_SIZE]),
+        };
         let mut header = [0u8; PAGE_SIZE];
         if scanner.read(0, &mut header)? {
             if let Some(h) = decode_header(&header) {
@@ -544,7 +581,13 @@ impl<'a> LogScanner<'a> {
         if sum != le_u32(&head[20..24]) {
             return Ok(None); // the chain breaks here
         }
-        let rec = Record { lsn: self.lsn, kind, arg: le_u32(&head[12..16]), crc: sum, offset: self.pos };
+        let rec = Record {
+            lsn: self.lsn,
+            kind,
+            arg: le_u32(&head[12..16]),
+            crc: sum,
+            offset: self.pos,
+        };
         self.chain = sum;
         self.lsn += 1;
         self.pos += (RECORD_HEADER_LEN + payload_len) as u64;
@@ -584,7 +627,15 @@ fn le_u32(bytes: &[u8]) -> u32 {
 
 /// Append one record (header, then payload) to `buffer` and return its CRC,
 /// the next link of the chain. `limit` is the buffer's fixed size.
-pub fn append_record(buffer: &mut Vec<u8>, limit: usize, lsn: u64, kind: u32, arg: u32, payload: &[u8], prev_crc: u32) -> Result<u32, WalError> {
+pub fn append_record(
+    buffer: &mut Vec<u8>,
+    limit: usize,
+    lsn: u64,
+    kind: u32,
+    arg: u32,
+    payload: &[u8],
+    prev_crc: u32,
+) -> Result<u32, WalError> {
     if buffer.len() + RECORD_HEADER_LEN + payload.len() > limit {
         return Err(WalError::CommitTooLarge);
     }
@@ -625,7 +676,10 @@ pub struct Header {
 }
 
 pub fn decode_header(page: &Page) -> Option<Header> {
-    if &page[0..8] != LOG_MAGIC || le_u32(&page[8..12]) != LOG_VERSION || le_u32(&page[12..16]) != PAGE_SIZE as u32 {
+    if &page[0..8] != LOG_MAGIC
+        || le_u32(&page[8..12]) != LOG_VERSION
+        || le_u32(&page[12..16]) != PAGE_SIZE as u32
+    {
         return None;
     }
     let sum = crc32(&page[0..32]);

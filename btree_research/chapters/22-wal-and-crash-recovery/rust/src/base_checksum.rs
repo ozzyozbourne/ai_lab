@@ -25,8 +25,8 @@
 //! a stale-but-intact page (a lost write) from the current one. Detection
 //! only; repair needs a second copy (doublewrite.rs here, the log in ch. 22).
 
-use crate::crc32::{crc32, crc32_update};
 use crate::base_page_storage::{PAGE_SIZE, Page, Storage, StorageError};
+use crate::crc32::{crc32, crc32_update};
 
 pub const CHECKSUM_SIZE: usize = 4;
 /// Bytes of a page that the layers above may use.

@@ -49,8 +49,10 @@
 //! runs out), so nothing is gained by reserving; the durable image grows in
 //! `apply`, when a write lands.
 
+use crate::base_page_storage::{
+    PAGE_SIZE, Page, SECTOR_SIZE, SECTORS_PER_PAGE, Storage, StorageError,
+};
 use crate::prng::SplitMix64;
-use crate::base_page_storage::{PAGE_SIZE, Page, SECTOR_SIZE, SECTORS_PER_PAGE, Storage, StorageError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrashMode {

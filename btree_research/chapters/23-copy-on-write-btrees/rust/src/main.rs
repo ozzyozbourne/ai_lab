@@ -227,11 +227,13 @@ fn run(w: &mut dyn Write) -> io::Result<()> {
 /// writes and `meta_bytes` bytes of its meta slot. Returns the number of
 /// page writes. The caller restarts with `db.reopen`.
 fn crashing_put(db: &mut Db, key: u64, meta_bytes: usize) -> usize {
+    // A dry run tells how many pages the commit will write.
     let mut txn = db.begin();
     txn.put(key, key * 100).expect(NO_BUDGET);
     let pages = txn.dirty_count();
-    txn.committed_mut().crash_after = Some(pages + meta_bytes);
-    assert_eq!(txn.commit(), Err(TxnError::Crashed));
+    txn.abort();
+    db.crash_after = Some(pages + meta_bytes);
+    assert_eq!(db.put(key, key * 100), Err(TxnError::Crashed));
     pages
 }
 

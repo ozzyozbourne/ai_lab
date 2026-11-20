@@ -14,7 +14,7 @@ use crate::cursor::{Cursor, Position, Seek, State, Stats};
 use crate::link_cursor::{LinkCursor, LinkPosition};
 use crate::model;
 use crate::scan::Scan;
-use crate::stack_cursor::{Frame, StackCursor, StackPosition};
+use crate::stack_cursor::{Frame, MAX_DEPTH, StackCursor, StackPosition};
 use crate::tree::Tree;
 
 const CANONICAL: [u64; 12] = [10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15];
@@ -718,6 +718,33 @@ fn scratch_buffers_after_the_first_scan_later_scans_reuse_the_same_memory() {
         );
         assert_eq!((rows.as_ptr(), rows.capacity()), (rows_at, rows_capacity));
     }
+}
+
+#[test]
+fn a_cloned_stack_cursor_keeps_the_reserved_capacity_and_its_own_path() {
+    let mut tree = build_canonical();
+    let mut original = StackCursor::new(StackPosition::new());
+    assert_eq!(original.seek(&tree, Seek::Ge(12)).map(|e| e.key), Some(12));
+
+    // The clone is a second, independent cursor on the same entry.
+    let mut copy = original.clone();
+    assert_eq!(copy.pos.path(), original.pos.path());
+    assert_eq!(copy.next(&tree).map(|e| e.key), Some(15));
+    assert_eq!(original.entry(&tree).map(|e| e.key), Some(12));
+
+    // Make the tree taller, so the clone's re-seek needs more frames than
+    // it held when it was cloned. Its buffer must not move or grow.
+    let (depth, frames_at) = (copy.pos.path().len(), copy.pos.path().as_ptr());
+    for k in 100..400 {
+        tree.put(k, k).unwrap();
+    }
+    assert_eq!(copy.next(&tree).map(|e| e.key), Some(17));
+    assert!(copy.pos.path().len() > depth);
+    assert_eq!(copy.pos.path().as_ptr(), frames_at);
+    assert_eq!(copy.stats.reseeks, 1);
+    let buffer = copy.pos.into_buffer();
+    assert_eq!(buffer.capacity(), original.pos.into_buffer().capacity());
+    assert!(buffer.capacity() >= MAX_DEPTH);
 }
 
 #[test]

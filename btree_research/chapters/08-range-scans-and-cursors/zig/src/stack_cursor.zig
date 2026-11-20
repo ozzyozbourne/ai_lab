@@ -53,8 +53,19 @@ pub const StackPosition = struct {
 
     /// `scratch` is typically an arena that lives as long as the scan. The
     /// position must not be used after that arena is reset or freed.
+    ///
+    /// Copying a `StackPosition` copies the slice, not the frames: both
+    /// copies then share one path, and only one of them may be used.
     pub fn init(scratch: Allocator) Allocator.Error!StackPosition {
         return .{ .frames = try scratch.alloc(Frame, max_depth) };
+    }
+
+    /// Returns the frames to the allocator `init` was called with. With an
+    /// arena this is unnecessary (the reset frees them); with any other
+    /// allocator it is the matching free.
+    pub fn deinit(self: *StackPosition, scratch: Allocator) void {
+        scratch.free(self.frames);
+        self.* = undefined;
     }
 
     /// The internal part of the path, root first.

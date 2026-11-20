@@ -650,6 +650,25 @@ fn collectDirect(gpa: Allocator, tree: *const Tree) !void {
     try testing.expectEqual(sorted.len, rows.len);
 }
 
+test "a stack cursor without an arena: deinit is the matching free" {
+    // testing.allocator reports a leak if the frames are not returned.
+    const gpa = testing.allocator;
+    var tree = try buildCanonical(gpa);
+    defer tree.deinit(gpa);
+
+    var cursor: StackCursor = .init(try StackPosition.init(gpa));
+    defer cursor.pos.deinit(gpa);
+    try testing.expectEqual(stack_cursor.max_depth, cursor.pos.frames.len);
+
+    var seen: usize = 0;
+    var found = cursor.seek(&tree, .first);
+    while (found) |e| : (found = cursor.next(&tree)) {
+        try testing.expectEqual(sorted[seen], e.key);
+        seen += 1;
+    }
+    try testing.expectEqual(sorted.len, seen);
+}
+
 test "allocation failure: cursor creation and collect fail cleanly" {
     const gpa = testing.allocator;
     var tree = try buildCanonical(gpa);

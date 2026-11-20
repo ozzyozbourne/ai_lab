@@ -45,7 +45,7 @@ enum Step {
     Backward,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct StackPosition {
     /// frames[0] is the root, the last frame is the leaf's parent. Capacity
     /// for `MAX_DEPTH` frames is reserved ONCE, so seeking and stepping
@@ -53,6 +53,21 @@ pub struct StackPosition {
     frames: Vec<Frame>,
     pub leaf: NodeId,
     pub index: usize,
+}
+
+/// Written by hand: the derived `Clone` copies a `Vec` with a capacity of
+/// only its length, so a clone would have to allocate on a later re-seek in
+/// a taller tree. A clone must keep the property stated on `frames`.
+impl Clone for StackPosition {
+    fn clone(&self) -> Self {
+        let mut frames = Vec::with_capacity(MAX_DEPTH);
+        frames.extend_from_slice(&self.frames);
+        StackPosition {
+            frames,
+            leaf: self.leaf,
+            index: self.index,
+        }
+    }
 }
 
 impl Default for StackPosition {

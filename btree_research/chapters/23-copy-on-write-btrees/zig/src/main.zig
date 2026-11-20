@@ -149,12 +149,14 @@ pub fn run(gpa: Allocator, w: *Writer) !void {
 /// writes and `meta_bytes` bytes of its meta slot. Returns the number of
 /// page writes. The caller restarts with `db.reopen`.
 fn crashingPut(gpa: Allocator, db: *Db, key: u64, meta_bytes: usize) !usize {
+    // A dry run tells how many pages the commit will write.
     var txn = db.begin(gpa);
     defer txn.abort();
     _ = try txn.put(key, key * 100);
     const pages = txn.dirty.count();
+    txn.abort();
     db.crash_after = pages + meta_bytes;
-    if (txn.commit(gpa)) |_| unreachable else |err| if (err != error.Crashed) return err;
+    if (db.put(gpa, key, key * 100)) |_| unreachable else |err| if (err != error.Crashed) return err;
     return pages;
 }
 

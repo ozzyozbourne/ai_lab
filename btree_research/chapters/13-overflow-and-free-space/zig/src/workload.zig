@@ -1,3 +1,5 @@
+// Copied from chapters/12-disk-backed-bplus-tree/zig/src/workload.zig and extended:
+// `mixedValue` (values of every size class) and `Model.delete`.
 //! workload.zig: seeded byte-string keys and values, and the oracle the tree
 //! is compared with. The Rust twin draws the same random numbers, so both
 //! languages run the same operations and print the same counters.
@@ -25,6 +27,30 @@ pub fn keyFor(n: u64, max_len: usize, buf: *[max_key_len]u8) []const u8 {
 pub fn randomValue(rng: *SplitMix64, max_len: usize, buf: *[max_value_len]u8) []const u8 {
     const pick = rng.below(16);
     const len: usize = if (pick == 0) 0 else if (pick == 1) max_len else @intCast(rng.below(max_len + 1));
+    const start: u8 = @truncate(rng.nextU64());
+    for (buf[0..len], 0..) |*b, i| b.* = start +% @as(u8, @truncate(i));
+    return buf[0..len];
+}
+
+/// A value from one of four size classes, so that a run mixes cells that
+/// stay in the leaf with chains of several pages, and overwrites move a key
+/// from one class to another. `max_len` caps every class.
+///
+///   4 in 8   tiny: 0 to 64 bytes
+///   2 in 8   around the local limit X = 1088: 1000 to 1199 bytes
+///   1 in 8   one to three overflow pages: 1089 to 9256 bytes
+///   1 in 8   anything from 0 to `max_len`
+pub fn mixedValue(rng: *SplitMix64, max_len: usize, buf: *[max_value_len]u8) []const u8 {
+    const wanted: usize = @intCast(switch (rng.below(8)) {
+        0...3 => rng.below(65),
+        4, 5 => 1000 + rng.below(200),
+        6 => 1089 + rng.below(2 * 4084),
+        else => rng.below(max_len + 1),
+    });
+    const len = @min(wanted, max_len);
+    // 4084 payload bytes per overflow page is not a multiple of 256, so two
+    // pages of a chain never hold the same bytes: a chain put together in
+    // the wrong order cannot pass for the right value.
     const start: u8 = @truncate(rng.nextU64());
     for (buf[0..len], 0..) |*b, i| b.* = start +% @as(u8, @truncate(i));
     return buf[0..len];
@@ -75,6 +101,14 @@ pub const Model = struct {
         }
     }
 
+    /// Remove `key`; false if it was not there. (The arena keeps the bytes.)
+    pub fn delete(self: *Model, key: []const u8) bool {
+        const i = self.lowerBound(key);
+        if (i == self.entries.items.len or !std.mem.eql(u8, self.entries.items[i].key, key)) return false;
+        _ = self.entries.orderedRemove(i);
+        return true;
+    }
+
     /// The entries with lo <= key < hi (`hi` null = to the end).
     pub fn range(self: *const Model, lo: []const u8, hi: ?[]const u8) []const Entry {
         const from = self.lowerBound(lo);
@@ -104,4 +138,7 @@ test "keyFor is a function of n; Model keeps keys sorted and overwrites" {
     try std.testing.expectEqual(2, model.range("a", "c").len);
     try std.testing.expectEqual(2, model.range("b", null).len);
     try std.testing.expectEqual(0, model.range("c", "a").len);
+    try std.testing.expect(model.delete("b") and !model.delete("b"));
+    try std.testing.expectEqual(2, model.len());
+    try std.testing.expectEqual(null, model.get("b"));
 }

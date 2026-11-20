@@ -27,11 +27,10 @@
 //!
 //! This file needs node.zig and search.zig (`lowerBound`), nothing from
 //! insert.zig. The four steps (`fixUnderflow`, `borrowFromLeft`,
-//! `borrowFromRight`, `mergeChildren`) are `pub` so that a test can call one
-//! step on a hand-built node, and so that chapter 06 can build its
-//! deliberately broken variants: copy this file, break one line (do not
-//! destroy `emptied`; do not move the child in a borrow; leave the separator
-//! in the parent) and let the fuzzer find it.
+//! `borrowFromRight`, `mergeChildren`) are `pub`: chapter 06 builds
+//! deliberately broken variants of delete and can reuse the steps it does
+//! not break. Each classic bug is one line here: do not destroy `emptied`;
+//! do not move the child in a borrow; leave the separator in the parent.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const node_mod = @import("node.zig");

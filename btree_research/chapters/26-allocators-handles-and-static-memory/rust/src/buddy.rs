@@ -276,6 +276,17 @@ mod tests {
         b.validate().unwrap();
     }
 
+    // Regression: `free` used to subtract from the counters before checking the block
+    // state, so a double free surfaced as "attempt to subtract with overflow".
+    #[test]
+    #[should_panic(expected = "double free or a pointer into a block")]
+    fn a_double_free_is_reported_as_a_double_free() {
+        let mut b = Buddy::new(10, 6);
+        let x = b.alloc(100).unwrap();
+        b.free(x);
+        b.free(x);
+    }
+
     #[test]
     fn split_on_alloc_merge_on_free() {
         let mut b = Buddy::new(10, 6); // 1024-byte heap, 64-byte minimum block

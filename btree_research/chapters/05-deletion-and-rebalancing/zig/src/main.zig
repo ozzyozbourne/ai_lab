@@ -23,7 +23,8 @@ test {
     _ = @import("stats.zig");
     _ = @import("btree.zig");
     _ = @import("scenario.zig");
-    _ = @import("tests.zig");
+    _ = @import("tests_insert.zig");
+    _ = @import("tests_delete.zig");
     _ = @import("prng.zig");
     _ = @import("ops.zig");
 }

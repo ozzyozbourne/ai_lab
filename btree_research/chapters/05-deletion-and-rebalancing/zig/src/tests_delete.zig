@@ -1,4 +1,5 @@
-//! Tests of the whole tree. (Each section file also has its own unit tests.)
+//! Tests of the whole tree that need `delete` (this chapter). The helpers
+//! and the tests of search and insert alone are in tests_insert.zig.
 const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
@@ -7,68 +8,14 @@ const pool = @import("pool.zig");
 const ops = @import("ops.zig");
 const SplitMix64 = @import("prng.zig").SplitMix64;
 const scenario = @import("scenario.zig");
+const base = @import("tests_insert.zig");
+const Tree4 = base.Tree4;
+const expectTree = base.expectTree;
+const buildCanonical = base.buildCanonical;
+const RangeCheck = base.RangeCheck;
 
-/// Tests default to DirectNodes: with `testing.allocator` every node is an
-/// allocation of its own, so a node the tree forgets fails the test as a
-/// leak, and a node freed twice aborts it as a double free.
-const Tree4 = BTree(4, pool.DirectNodes);
-
-fn expectTree(tree: anytype, expected: []const u8) !void {
-    var out: std.Io.Writer.Allocating = .init(testing.allocator);
-    defer out.deinit();
-    try tree.render(&out.writer, "");
-    try testing.expectEqualStrings(expected, out.written());
-    try tree.validate();
-}
-
-fn buildCanonical(gpa: Allocator) !Tree4 {
-    var tree: Tree4 = .empty;
-    errdefer tree.deinit(gpa);
-    for (scenario.canonical_keys) |key| _ = try tree.put(gpa, key, key * 10);
-    return tree;
-}
-
-test "put: the canonical example, step by step" {
-    const gpa = testing.allocator;
-    var tree: Tree4 = .empty;
-    defer tree.deinit(gpa);
-    try expectTree(&tree, "(empty)\n");
-    for ([_]u64{ 10, 20, 5 }) |key| _ = try tree.put(gpa, key, key * 10);
-    try expectTree(&tree, "[5 10 20]\n");
-    _ = try tree.put(gpa, 6, 60); // overflow: split, 10 becomes the root
-    try expectTree(&tree, "[10]\n[5 6] [20]\n");
-    for ([_]u64{ 12, 30, 7, 17 }) |key| _ = try tree.put(gpa, key, key * 10);
-    try expectTree(&tree, "[10 20]\n[5 6 7] [12 17] [30]\n");
-    for ([_]u64{ 3, 25, 1, 15 }) |key| _ = try tree.put(gpa, key, key * 10);
-    try expectTree(&tree, "[6 10 20]\n[1 3 5] [7] [12 15 17] [25 30]\n");
-    try testing.expectEqual(3, tree.counters.splits);
-    try testing.expectEqual(1, tree.counters.root_splits);
-}
-
-test "put overwrites, get finds keys in leaves and interior nodes" {
-    const gpa = testing.allocator;
-    var tree = try buildCanonical(gpa);
-    defer tree.deinit(gpa);
-    try testing.expectEqual(12, tree.len);
-    try testing.expectEqual(100, tree.get(10)); // interior
-    try testing.expectEqual(150, tree.get(15)); // leaf
-    try testing.expectEqual(null, tree.get(11));
-    try testing.expectEqual(100, try tree.put(gpa, 10, 111));
-    try testing.expectEqual(111, tree.get(10));
-    try testing.expectEqual(12, tree.len);
-}
-
-test "shape and fill statistics" {
-    const gpa = testing.allocator;
-    var tree = try buildCanonical(gpa);
-    defer tree.deinit(gpa);
-    const s = tree.shape();
-    try testing.expectEqual(2, s.height);
-    try testing.expectEqual(5, s.nodes);
-    try testing.expectEqual(4, s.leaves);
-    try testing.expectEqual(12, s.keys);
-    try testing.expectEqual(15, s.capacity); // 5 nodes * 3 keys
-    try testing.expectEqual(80, s.fillPercent());
+test "the scenario and the tests use the same canonical keys" {
+    try testing.expectEqualSlices(u64, &base.canonical_keys, &scenario.canonical_keys);
 }
 
 test "delete: leaf key without underflow" {
@@ -165,18 +112,6 @@ test "delete: an underflow travels up through interior nodes" {
     try testing.expectEqual(1, tree.counters.root_shrinks);
 }
 
-/// Checks a range scan against the oracle's answer, entry by entry.
-const RangeCheck = struct {
-    expected: []const ops.Entry,
-    seen: usize = 0,
-    ok: bool = true,
-    pub fn visit(self: *RangeCheck, key: u64, value: u64) void {
-        if (self.seen >= self.expected.len or
-            self.expected[self.seen].key != key or self.expected[self.seen].value != value) self.ok = false;
-        self.seen += 1;
-    }
-};
-
 fn modelTest(comptime M: usize, comptime PoolFn: fn (type) type, seed: u64) !void {
     const gpa = testing.allocator;
     var tree: BTree(M, PoolFn) = .empty;
@@ -270,44 +205,6 @@ test "delete everything in random order: every node goes back" {
     }
 }
 
-test "put under allocation failure leaves the tree unchanged" {
-    var failing: testing.FailingAllocator = .init(testing.allocator, .{});
-    const gpa = failing.allocator();
-    var tree: Tree4 = .empty;
-    defer tree.deinit(gpa);
-    // Keys 1..9 in order give [3 6] over [1 2] [4 5] [7 8 9]: the next
-    // ascending key splits the right-most leaf, which needs one new node.
-    for (1..10) |key| _ = try tree.put(gpa, key, key);
-    try expectTree(&tree, "[3 6]\n[1 2] [4 5] [7 8 9]\n");
-
-    failing.fail_index = failing.alloc_index; // the very next allocation fails
-    try testing.expectError(error.OutOfMemory, tree.put(gpa, 10, 10));
-    try expectTree(&tree, "[3 6]\n[1 2] [4 5] [7 8 9]\n"); // nothing changed, nothing leaked
-    try testing.expectEqual(9, tree.len);
-
-    // Overwrites and inserts into a node with room need no memory at all.
-    try testing.expectEqual(5, try tree.put(gpa, 5, 55));
-    _ = tree.delete(gpa, 9);
-    try testing.expectEqual(null, try tree.put(gpa, 9, 9));
-
-    // A cascade needs several nodes; fail the LAST one. The earlier
-    // reservations must be handed back (the errdefer in insert.zig).
-    for ([_]u64{ 10, 11, 12 }) |key| {
-        failing.fail_index = std.math.maxInt(usize);
-        _ = try tree.put(gpa, key, key);
-    }
-    try expectTree(&tree, "[3 6 9]\n[1 2] [4 5] [7 8] [10 11 12]\n");
-    const live = tree.pool.usage.live();
-    failing.fail_index = failing.alloc_index + 2; // leaf split ok, root split ok, new root fails
-    try testing.expectError(error.OutOfMemory, tree.put(gpa, 13, 13));
-    try testing.expectEqual(live, tree.pool.usage.live());
-    try expectTree(&tree, "[3 6 9]\n[1 2] [4 5] [7 8] [10 11 12]\n");
-
-    failing.fail_index = std.math.maxInt(usize); // memory is back: the same put succeeds
-    _ = try tree.put(gpa, 13, 13);
-    try expectTree(&tree, "[9]\n[3 6] [12]\n[1 2] [4 5] [7 8] | [10 11] [13]\n");
-}
-
 /// checkAllAllocationFailures wants a plain `fn (Allocator, ...) !void`, so
 /// the comptime pool choice is wrapped in a type.
 fn BuildThenDrain(comptime PoolFn: fn (type) type) type {
@@ -328,17 +225,4 @@ test "every allocation in a build-and-drain run may fail without a leak" {
     inline for (.{ pool.DirectNodes, pool.FreeListPool, pool.StdPool }) |PoolFn| {
         try testing.checkAllAllocationFailures(testing.allocator, BuildThenDrain(PoolFn).run, .{});
     }
-}
-
-test "SafeAllocator reports nodes a broken tree would leak" {
-    // Simulate the classic merge bug "unlink the node but forget to free it"
-    // by dropping a whole tree without deinit. A private SafeAllocator keeps
-    // the deliberate leak from failing this test; with testing.allocator the
-    // same leak fails the test run.
-    var safe: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
-    const gpa = safe.allocator();
-    var tree: Tree4 = .empty;
-    for (scenario.canonical_keys) |key| _ = try tree.put(gpa, key, key);
-    try testing.expectEqual(5, tree.shape().nodes);
-    try testing.expectEqual(5, safe.deinitLog(false)); // one leak per node
 }

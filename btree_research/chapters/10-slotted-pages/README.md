@@ -6,10 +6,9 @@ Visualization: [viz/index.html](viz/index.html)
 
 ## What you will learn
 
-- How one fixed 4096-byte page stores a changing number of records of different sizes
-  and still keeps them sorted.
-- The three places free space hides in such a page (the gap, free blocks, fragments) and
-  why "enough free bytes" is not the same as "it fits".
+- How one fixed 4096-byte page keeps a changing number of variable-size records sorted.
+- The three places free space hides (the gap, free blocks, fragments) and why "enough
+  free bytes" is not the same as "it fits".
 - How a page reuses the holes left by deleted records, and when it has to compact.
 - How Turso (the SQLite format) and Postgres lay out the same idea, and where they differ.
 
@@ -63,7 +62,7 @@ Free blocks and fragments are explained below.
 
 Slot `i` is at a computable position (`16 + 2*i`), so binary search works: probe a slot,
 follow it to the cell, compare keys. Inserting in the middle moves only the 2-byte slots
-that come after it. The cells themselves never move because of an insert.
+after it; no cell moves.
 
 Deleting is harder. Removing a slot is easy, but the cell leaves a hole in the content
 area, and the page has to remember it so that a later insert can reuse it. The page
@@ -263,9 +262,9 @@ pub fn validate(self) ValidateError!void
 pub fn kind(self) u8, setKind(self, u8) void, userArea(self) *[7]u8
 ```
 
-`search` is the lower bound of chapter 02 with one change: `keys[mid]` becomes
-`self.key(mid)`, which reads a slot and follows it. `put` is `search` followed by
-`insertAt` (or by a replacement if the key exists).
+`search` is the lower bound of chapter 02 with `keys[mid]` replaced by `self.key(mid)`,
+which reads a slot and follows it. `put` is `search` followed by `insertAt` (or by a
+replacement if the key exists).
 
 `insertAt` has two steps. First `allocSpace(size)` returns an *offset* for the cell, and
 the cell is written there. Then the slots from `index` on move up with one `@memmove`, and
@@ -288,7 +287,7 @@ a live cell (a cell is at least 4 bytes), so they are a sliver, and merging take
 back out of `frag_bytes`. If the merged range starts at `content_start`, no block is
 written: `content_start` moves up and the bytes are gap.
 
-`compact` copies the page to a 4 KiB scratch array on the stack and rewrites the cells
+`compact` copies the content area to a 4 KiB scratch array on the stack and rewrites the cells
 from the end of the content area in slot order, reading cell lengths from the copy.
 
 `validate` paints every byte of the content area into a 4 KiB map on the stack as "cell"
@@ -331,26 +330,24 @@ cd rust && cargo test && cargo run
 ## In real databases
 
 Everything below was read in the sources under `db_study/` (see `research/turso.md`
-sections 2 and 3 and `research/postgres.md` section 1), except where marked.
+sections 2 and 3 and `research/postgres.md` section 1).
 
-**Turso (SQLite file format)** is the closest relative of this chapter's page, and the
-source of its free-space design.
+**Turso (SQLite file format)** is the source of this chapter's free-space design.
 
-- A B-tree page is a header (8 bytes for a leaf, 12 for an interior page), an array of
-  2-byte cell pointers sorted by key, the unallocated gap, and the cell content area
-  growing from the end of the page. The header has the fields we use: first freeblock,
-  cell count, content area start, fragmented free bytes
+- A B-tree page is a header (8 bytes for a leaf, 12 for an interior page), 2-byte cell
+  pointers sorted by key, the unallocated gap, and cell content growing from the end of
+  the page. The header has our fields: first freeblock, cell count, content area start,
+  fragmented free bytes
   (`turso/core/storage/btree.rs:100-148`, `turso/core/storage/sqlite3_ondisk.rs:82-87`).
-- Freeblocks are a chain in ascending offset order; each hole stores `next` and `size` in
-  its own first 4 bytes. `find_free_slot` is first fit, shrinks a block from its tail, and
-  turns a remainder under 4 bytes into fragment bytes (`btree.rs:9288-9383`). The bound
-  of 60 fragment bytes is our `max_frag_bytes`, but the test differs: Turso will not use
-  up a block once the page has more than 57 (`:9335-9340`), even for an exact fit; we
-  compare the sum with 60.
-- `free_cell_range` merges a freed range with the next and previous freeblock, absorbing a
-  gap of 1 to 3 bytes and subtracting it from the fragment count, and extends the
-  unallocated region instead of creating a freeblock when the range starts at the content
-  area (`btree.rs:9797-9970`).
+- Freeblocks are a chain in ascending offset order; each stores `next` and `size` in its
+  first 4 bytes. `find_free_slot` is first fit, shrinks a block from its tail, and turns a
+  remainder under 4 bytes into fragment bytes (`btree.rs:9288-9383`). The bound of 60
+  fragment bytes is our `max_frag_bytes`, but the test differs: Turso will not use up a
+  block once the page has more than 57 (`:9335-9340`), even for an exact fit; we compare
+  the sum with 60.
+- `free_cell_range` merges a freed range with the next and previous freeblock, absorbing
+  a gap of 1 to 3 bytes out of the fragment count, and extends the unallocated region
+  when the range starts at the content area (`btree.rs:9797-9970`).
 - `allocate_cell_space` tries a freeblock only if the gap has room for the new 2-byte
   pointer, then the gap, then defragments (`btree.rs:10516-10562`).
 - `compute_free_space` sums gap, freeblocks and fragments (`btree.rs:10433-10513`); the
@@ -379,9 +376,8 @@ freeblocks (`btree.rs:9976-10098`).
   tuple data) (`bufpage.h:46-47`, struct at `bufpage.h:184-197`). Free space is their
   difference (`PageGetFreeSpace`, `postgres/src/backend/storage/page/bufpage.c:918`).
 - Inserting shifts line pointers with one `memmove` and copies the tuple to `pd_upper`
-  (`PageAddItemExtended`, `bufpage.c:205`, the shuffle at `:338-340`). Tuple sizes are
-  rounded up to the platform's maximum alignment (`MAXALIGN`, `bufpage.c:326`); our cells
-  are byte-packed.
+  (`PageAddItemExtended`, `bufpage.c:205`, `:338-340`). Tuple sizes are rounded up to the
+  maximum alignment (`MAXALIGN`, `bufpage.c:326`); our cells are byte-packed.
 - Deleting an index tuple closes the hole at once: `PageIndexTupleDelete` moves all tuple
   data below the deleted tuple up by its size and adjusts every line pointer that pointed
   below it (`bufpage.c:1063-1160`). No free list and no fragments, at the price of a
@@ -402,8 +398,8 @@ insert" is `error.PageFull`, tested the same way: the operation fails and the pa
 unchanged.
 
 The featured allocator is the one **inside the page**: `allocSpace(size) -> offset` and
-`freeSpace(offset, size)`, a first-fit free-list allocator with coalescing whose heap is
-the content area. It cannot be exposed as a `std.mem.Allocator`, for four reasons:
+`freeSpace(offset, size)`, first fit with coalescing over the content area. It cannot be
+exposed as a `std.mem.Allocator`, for four reasons:
 
 1. **Cells move.** `Allocator.alloc` returns a pointer that must stay valid until `free`;
    compaction relocates every cell. The slot array is the indirection a compacting
@@ -413,10 +409,9 @@ the content area. It cannot be exposed as a `std.mem.Allocator`, for four reason
    buffer-pool frame. An address inside it means nothing after that; an offset still
    does, which is why `first_free`, the `next` links and the slots are 16-bit offsets.
 3. **Free needs context the interface does not give.** `Allocator.free(memory)` receives
-   only the slice. Our `freeSpace` also has to remove the slot, and deleting the last cell
-   resets the whole page.
-4. **Failure is routine and has a different meaning.** `error.OutOfMemory` is exceptional.
-   `error.PageFull` happens on every page of every tree and means "split me" (chapter 12).
+   only the slice; deleting also removes a slot, and the last delete resets the page.
+4. **Failure is routine.** `error.OutOfMemory` is exceptional; `error.PageFull` happens on
+   every page of every tree and means "split me" (chapter 12).
 
 What would go wrong with a different choice: a `FixedBufferAllocator` over the 4096 bytes
 is a bump allocator with no reuse, so a page that sees deletes would fill up with dead
@@ -425,14 +420,14 @@ borrow checker turns reason 1 into a compile error.
 
 ## Pitfalls
 
-- **Total free space is not allocatable space.** Check `freeBytes()` (or `fits`) to decide
-  whether an insert can succeed; never check only the gap or only the largest hole.
+- **Total free space is not allocatable space.** Use `freeBytes()` (or `fits`) to decide
+  whether an insert can succeed, never only the gap or only the largest hole.
 - **The slot needs room too.** A hole that fits the cell is useless if the gap has no 2
   bytes for the new slot (test "a hole that fits the cell is not enough").
 - **Slices into the page die on the next mutation.** Copy a key out before you insert or
   delete on the same page.
-- **Compaction must not read what it has already overwritten.** Take cell sizes from the
-  scratch copy: a cell moved earlier may have landed on the header of one not yet moved.
+- **Compaction must not read what it has overwritten.** Take cell sizes from the scratch
+  copy: a moved cell may have landed on the header of one not yet moved.
 - **Slot indexes are stable across compaction, not across insert and delete.** Long-lived
   references use the key and search again (chapter 08's cursors did the same).
 - **Key order is byte order.** `"10"` sorts before `"9"`, and `"a"` before `"ab"`
@@ -441,8 +436,7 @@ borrow checker turns reason 1 into a compile error.
   overwrites only their first 4) until a new cell or a compaction covers them, so pages
   with the same records are not always the same bytes.
 - **A checksum in the last bytes needs a reserved tail.** After plain `init` the first
-  cell ends at byte 4095. Use `initReserved(buf, 4)`; a tail cannot be added once the
-  page has cells.
+  cell ends at byte 4095. Use `initReserved(buf, 4)`; a tail cannot be added later.
 - **Nothing here is crash-safe, and `open` checks nothing.** A page written halfway is
   corrupt, and on a corrupt page `stats` can follow a free list forever. Verify a checksum
   or call `validate` on pages read from disk (chapters 21 and 22).
@@ -477,6 +471,6 @@ Solutions: [solutions.md](solutions.md).
 - Next: [11 Key and record encoding](../11-key-and-record-encoding/README.md) decides what
   the key and value bytes inside a cell look like.
 - Chapter 12 copies `slotted_page.zig` / `slotted_page.rs` as its node format; chapter 13
-  handles values too large for one page (`CellTooLarge` here).
-- Chapter 22 formats its pages with a reserved tail of 4 bytes for chapter 21's CRC-32.
+  handles values too large for one page (`CellTooLarge` here); chapter 22 uses the
+  reserved tail for chapter 21's CRC-32.
 - Visualization: [viz/index.html](viz/index.html).

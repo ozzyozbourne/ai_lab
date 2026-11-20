@@ -93,7 +93,11 @@ const Counter = std.atomic.Value(u64);
 pub const Pause = insert.Pause;
 
 pub const PutError = error{
-    /// The preallocated node table is full. The tree content is unchanged.
+    /// The preallocated node table is full. The key was not inserted and no
+    /// value was changed. A put that needs no node can fail this way too:
+    /// a writer must finish every half-finished split on its path first,
+    /// and that needs a node if the parent is full or the split is the
+    /// root's.
     OutOfNodes,
 };
 
@@ -254,8 +258,8 @@ pub const BLinkTree = struct {
     }
 
     /// TEST HOOK: `put` that starts its descent at `start` (the leftmost node
-    /// of a level, i.e. a former root) and can be paused on its leaf. See
-    /// `insert.putFrom`.
+    /// of a level, i.e. a former root) and can be paused on its leaf or
+    /// before it publishes a new root. See `insert.putFrom`.
     pub fn putFrom(self: *BLinkTree, io: Io, start: NodeId, key: u64, value: u64, pause: ?insert.Pause) PutError!?u64 {
         return insert.putFrom(self, io, start, key, value, pause);
     }

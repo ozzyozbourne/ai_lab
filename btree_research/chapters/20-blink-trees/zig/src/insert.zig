@@ -50,6 +50,8 @@ const base_search = @import("base_search.zig");
 /// may have split, and the real parent may be further right.
 const Stack = struct {
     at: [blink.max_levels]NodeId = @splat(.nil),
+    /// TEST HOOK, carried along so that step 2 can reach `Pause.root_built`.
+    pause: ?Pause = null,
 };
 
 /// Result of step 2 for one split.
@@ -61,10 +63,11 @@ const Finish = enum {
     out_of_nodes,
 };
 
-/// TEST HOOK for `putFrom`: a callback that runs while ONE writer stands
-/// still on its leaf. `abandon_splits` stops a split between its two steps;
-/// this stops a writer between its way down and its way up, which is the
-/// only moment at which its remembered parents can go stale.
+/// TEST HOOK for `putFrom`: callbacks that run while ONE writer stands
+/// still. `abandon_splits` stops a split between its two steps; `at_leaf`
+/// stops a writer between its way down and its way up, which is the only
+/// moment at which its remembered parents can go stale; `root_built` stops
+/// it in the middle of step 2 of a root split.
 pub const Pause = struct {
     context: ?*anyopaque = null,
     /// Called once, when the writer has found its leaf: `leaf_id` is latched
@@ -73,7 +76,13 @@ pub const Pause = struct {
     /// whole operations on the tree, as other threads would in this gap. It
     /// must not touch the latched leaf: a `put` or `get` of a key in that
     /// leaf's range would wait for the paused writer forever.
-    at_leaf: *const fn (context: ?*anyopaque, tree: *BLinkTree, io: Io, leaf_id: NodeId, leaf: *const Page) void,
+    at_leaf: ?*const fn (context: ?*anyopaque, tree: *BLinkTree, io: Io, leaf_id: NodeId, leaf: *const Page) void = null,
+    /// Called for every root this writer builds, when the new root is
+    /// complete and the root pointer has NOT been changed yet. The writer
+    /// holds the old root's latch and the `meta` mutex, so the callback
+    /// must not start an operation on the tree. It may only look: at
+    /// `tree.rootId()` and at the page it is given.
+    root_built: ?*const fn (context: ?*anyopaque, tree: *BLinkTree, new_root_id: NodeId, new_root: *const Page) void = null,
 };
 
 pub fn put(tree: *BLinkTree, io: Io, key: u64, value: u64) PutError!?u64 {
@@ -88,7 +97,7 @@ pub fn put(tree: *BLinkTree, io: Io, key: u64, value: u64) PutError!?u64 {
 ///            node of a level (`level_head`): each of them was the root once.
 ///   `pause`  see `Pause`.
 pub fn putFrom(tree: *BLinkTree, io: Io, start: NodeId, key: u64, value: u64, pause: ?Pause) PutError!?u64 {
-    var stack: Stack = .{};
+    var stack: Stack = .{ .pause = pause };
 
     // ---- Descend to the leaf whose key range contains `key`. -------------
     var id = start;
@@ -125,7 +134,7 @@ pub fn putFrom(tree: *BLinkTree, io: Io, start: NodeId, key: u64, value: u64, pa
     // TEST HOOK: the writer knows its leaf and its (hinted) parents, and
     // the rest of the world moves on. Everything in `stack` may be out of
     // date when the callback returns; `insertParent` must cope.
-    if (pause) |p| p.at_leaf(p.context, tree, io, id, tree.page(id));
+    if (pause) |p| if (p.at_leaf) |at_leaf| at_leaf(p.context, tree, io, id, tree.page(id));
 
     // ---- Insert into the leaf (exclusively latched, flag clear). ----------
     const leaf = tree.page(id);
@@ -305,11 +314,15 @@ fn insertParent(tree: *BLinkTree, io: Io, left_id: NodeId, stack: *const Stack) 
             const root = tree.page(new_root);
             root.node.kind.internal.children[0] = left_id;
             root.node.internalInsertAt(0, separator, right_id);
+            // TEST HOOK: the new root is complete and nobody can see it.
+            if (stack.pause) |p| if (p.root_built) |root_built| root_built(p.context, tree, new_root, root);
             tree.level_head[level + 1] = new_root;
             tree.height = level + 2;
             left.incomplete_split = false;
-            // Publishing the root last: a reader that still starts at the
-            // old root finds everything by moving right.
+            // Publish the root LAST. Readers load the root pointer without
+            // any lock, so from this store on they may be inside the new
+            // node; before it they start at the old root and find
+            // everything by moving right.
             tree.root.store(@backingInt(new_root), .release);
             _ = tree.completed_splits.fetchAdd(1, .monotonic);
             tree.meta.unlock(io);

@@ -19,7 +19,7 @@ for N in 16 100; do
     d="$WORK/matvec_${N}_$rep"; rm -rf "$d"; cp -r "$BENCH" "$d"; cd "$d"
     cslc ./src/layout_matvec.csl --arch wse3 --fabric-dims=8,3 --fabric-offsets=4,1 \
       --params=width:1,height:1,tile_size:$N,iters:1 -o out --memcpy --channels=1 >/dev/null 2>&1
-    cs_python ./run.py --name out --verify 2>/dev/null | grep -E "cycle|SUCCESS|Real walltime|flop" | sed "s/^/   N=$N run $rep: /"
+    cs_python ./run.py --name out --verify 2>/dev/null | grep -E "cycle|SUCCESS" | sed "s/^/   N=$N run $rep: /"
     rm -rf "$d"
   done
 done

@@ -30,7 +30,8 @@ against a simulator:
 
 Every number carries one of these labels, in brackets or in a table column:
 
-- **vendor**: stated by the company in a paper, datasheet, slide deck or source file.
+- **vendor**: stated by the company in a paper, datasheet, product page, slide deck,
+  technical report or source file. The text says which where it matters.
 - **measured**: read off a simulator run made for these chapters or for the three courses.
   A simulator cycle count is not a hardware measurement; chapter 7 says what each one means.
 - **derived**: arithmetic on the numbers beside it.
@@ -53,6 +54,11 @@ SDK=/home/user/cerebras-sdk COURSE=/home/user/cerebrus/course bash three_acceler
 ```bash
 TT_COURSE=/home/user/tenstorrents bash three_accelerators/experiments/tenstorrent/run.sh
 ```
+
+The Cerebras and Tenstorrent scripts take an optional work directory as their first
+argument. Every number in the saved outputs repeats exactly on a re-run except the three
+"whole-run simulated cycles" lines of the Cerebras output, which depend on host timing and
+vary from run to run (chapter 5 uses that fact).
 
 The Groq script needs only Python and NumPy. The Cerebras script needs the SDK and the
 `cerebrus` course checkout. The Tenstorrent script needs a built tt-metal and ttsim, set up

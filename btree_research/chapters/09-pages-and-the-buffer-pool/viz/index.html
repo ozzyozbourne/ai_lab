@@ -40,6 +40,9 @@ This page lets you drive one. Text of the chapter: <a href="../README.md">README
 When no frame is empty the clock hand sweeps: a pinned frame is skipped, a referenced frame
 loses its bit and gets a second chance, and the first frame with neither is evicted.
 The steps loaded at the start are the fixed trace that the chapter's Zig and Rust programs print.
+The buttons always act on the pool <em>as it is drawn at the step you are on</em>: on a fresh page that is
+the empty pool, and after stepping to the middle of the trace it is the pool of that step. The steps after
+it are replaced by what you do; <strong>Replay chapter trace</strong> brings the trace back.
 Tick <em>Predict</em> to be asked which page will be evicted.</p>
 <div id="fig-pool"></div>
 
@@ -87,7 +90,7 @@ is the one the programs print; change how skewed the accesses are and watch the 
     return {
       frames: this.frames.map(function (f, i) {
         return {
-          page: f.page, pin: f.pin, ref: f.ref, dirty: f.dirty, state: hl[i] || undefined,
+          page: f.page, pin: f.pin, ref: f.ref, dirty: f.dirty, ver: f.ver, state: hl[i] || undefined,
           note: f.page === null ? 'empty' : 'holds v' + f.ver
         };
       }),
@@ -97,6 +100,20 @@ is the one the programs print; change how skewed the accesses are and watch the 
       disk: this.disk.slice(),
       diskHl: disk || {}
     };
+  };
+  /** The model exactly as a snapshot shows it. Lets the page continue from any
+   * step of the timeline instead of from wherever the live model happens to be. */
+  Pool.restore = function (st) {
+    var pool = new Pool(0, 0);
+    st.frames.forEach(function (f, i) {
+      pool.frames.push({ page: f.page, pin: f.pin, ref: f.ref, dirty: f.dirty, ver: f.ver });
+      if (f.page !== null) pool.table[f.page] = i;
+    });
+    pool.hand = st.hand;
+    pool.stats = BTViz.clone(st.stats);
+    pool.pager = BTViz.clone(st.pager);
+    pool.disk = st.disk.slice();
+    return pool;
   };
   Pool.prototype.emit = function (caption, code, hl, disk, extra) {
     if (this.quiet) return;
@@ -181,7 +198,7 @@ is the one the programs print; change how skewed the accesses are and watch the 
     var handBefore = this.hand;
     var got = this.takeFrame(id);
     if (!got) {
-      this.emit('The hand has gone round twice and every frame is pinned: nothing can be evicted. ' +
+      this.emit('One full turn found every frame pinned. The code makes a second turn (not drawn, it finds the same) and gives up: nothing can be evicted. ' +
         'The fetch fails with <code>AllFramesPinned</code> and the pool is unchanged. Either the pool is too small for this operation or someone forgot to unpin.', 'allpinned');
       if (!this.quiet && !hadEmpty && this.out[qIndex + 1]) {
         this.out[qIndex + 1].question = {
@@ -214,7 +231,8 @@ is the one the programs print; change how skewed the accesses are and watch the 
   Pool.prototype.unpin = function (id, dirty) {
     var f = this.table[id], h = {};
     if (f === undefined || this.frames[f].pin === 0) {
-      this.emit('Unpin page ' + id + ': it is not pinned. In the real code this is an assertion failure: every unpin needs a matching fetch.', 'unpin');
+      this.emit((dirty ? 'Edit + unpin page ' : 'Unpin page ') + id + ': it is not pinned' + (dirty ? ', so there is nothing to edit; fetch it first' : '') +
+        '. In the real code this is an assertion failure: every unpin needs a matching fetch.', 'unpin');
       return { kind: 'error', error: 'NotPinned' };
     }
     var fr = this.frames[f];
@@ -405,13 +423,17 @@ is the one the programs print; change how skewed the accesses are and watch the 
       btn('btn-trace', 'Replay chapter trace', function () { loadTrace(true); }),
       btn('btn-reset', 'Reset', reset));
 
-    /* Says why a click did nothing (empty, negative or fractional page number). */
+    /* Says why a click did nothing (empty or negative page number), or that
+     * later steps of the timeline were replaced by the operation. */
     var hint = el('div.ch09-hint#pool-hint', { role: 'status', hidden: true });
     fig.stage.appendChild(hint);
     var counters = el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px' }, role: 'status', 'aria-label': 'Counters' });
     fig.stage.appendChild(counters);
     fig.stage.appendChild(el('div.bt-mem-label', 'Memory: the frames. Each shows the page it holds, its pin count, referenced bit and dirty flag.'));
     var grid = new BTViz.FrameGrid(fig.stage);
+    fig.stage.appendChild(el('div.bt-mem-label', 'Page table: which frame holds which page. Every fetch looks here first.'));
+    var table = el('div#pool-table', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px' }, role: 'list', 'aria-label': 'Page table' });
+    fig.stage.appendChild(table);
     fig.stage.appendChild(el('div.bt-mem-label', 'File: 8 pages on disk, with the version of each that the file holds.'));
     var disk = el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px' }, role: 'list', 'aria-label': 'Pages in the file' });
     fig.stage.appendChild(disk);
@@ -440,7 +462,12 @@ is the one the programs print; change how skewed the accesses are and watch the 
       flush: { zig: lines('zig', 'pub fn flushAll', 4), rust: lines('rust', 'pub fn flush_all', 6) }
     };
 
+    var TABLE_STATE = { found: 'found', inserted: 'inserted', deleted: 'deleted' };
     var pool, all = [];
+    /* Index of the first step of the operations the reader has just asked for
+     * and is still watching play; null when the timeline is a preloaded trace
+     * or an empty pool. See act(). */
+    var ownFrom = null;
     var stepper = new BTViz.Stepper({
       mount: fig.controls, caption: fig.caption, root: fig.root, predict: false, interval: 1500,
       onStep: function (step, index) {
@@ -452,6 +479,16 @@ is the one the programs print; change how skewed the accesses are and watch the 
         ].forEach(function (c) {
           counters.appendChild(el('span', { class: 'bt-chip' + (c[2] ? ' s-' + c[2] : ''), 'data-counter': c[0] }, c[0] + ' ' + c[1]));
         });
+        /* The page table, sorted by page id. An entry takes the colour of its
+         * frame when the step is a hit, a load or the choice of a victim. */
+        table.textContent = '';
+        var entries = [];
+        st.frames.forEach(function (f, i) { if (f.page !== null) entries.push({ page: f.page, frame: i, state: TABLE_STATE[f.state] }); });
+        entries.sort(function (a, b) { return a.page - b.page; });
+        entries.forEach(function (e) {
+          table.appendChild(el('span', { class: 'bt-chip' + (e.state ? ' s-' + e.state : ''), role: 'listitem' }, 'page ' + e.page + ' → frame ' + e.frame));
+        });
+        if (!entries.length) table.appendChild(el('span.bt-chip', { role: 'listitem' }, 'empty'));
         disk.textContent = '';
         st.disk.forEach(function (ver, id) {
           var hl = st.diskHl[id];
@@ -462,13 +499,16 @@ is the one the programs print; change how skewed the accesses are and watch the 
       }
     });
 
-    function intro(n) {
+    function intro(n, trace) {
       return { caption: 'An empty pool of ' + n + ' frames in front of a file of ' + PAGES + ' pages. The clock hand is at frame 0. ' +
-        'Press play to run the chapter trace, or type a page number and press <strong>Fetch</strong>.', state: pool.snap() };
+        (trace ? 'Press play to run the chapter trace, or start your own run from this empty pool: type a page number and press <strong>Fetch</strong>.'
+          : 'Type a page number and press <strong>Fetch</strong>.'), state: pool.snap() };
     }
     function reset() {
       pool = new Pool(+framesSel.value, PAGES);
-      all = [intro(+framesSel.value)];
+      all = [intro(+framesSel.value, false)];
+      ownFrom = null;
+      hint.hidden = true;
       stepper.setSteps(all, { instant: true });
     }
     /** Run one user operation on the live model and append its steps. */
@@ -480,6 +520,20 @@ is the one the programs print; change how skewed the accesses are and watch the 
       all = all.concat(steps);
       return steps.length;
     }
+    /**
+     * A button was pressed. The operation must act on the pool the reader is
+     * looking at, which is the step the stepper shows and not the end of the
+     * timeline (a preloaded trace has 60 steps the reader may never have seen).
+     *
+     * - Normally: cut the timeline after the displayed step, rebuild the model
+     *   from that step's snapshot and run the operation there. If the displayed
+     *   step is in the middle of an operation (half-way through a sweep), that
+     *   operation is kept to its end, and playback continues through its
+     *   remaining steps into the new one, so nothing happens off screen.
+     * - Only while the reader's own operations are still playing (they typed
+     *   the next page before the animation of the previous one finished) is the
+     *   new operation queued after them: they asked for every one of those.
+     */
     function act(kind) {
       var raw = pageIn.value.trim(), id = Math.floor(Number(raw));
       hint.hidden = true;
@@ -492,21 +546,38 @@ is the one the programs print; change how skewed the accesses are and watch the 
         }
         if (String(id) !== raw) pageIn.value = id;   // 2.7 was read as 2: show what was used
       }
-      var first = all.length, n = 0;
-      if (kind === 'flush') n += record('flush all', function () { var w = pool.flushAll(); return w + ' page' + (w === 1 ? '' : 's') + ' written, 1 sync'; });
-      else {
-        n += record(kind + ' ' + id, function () { return applyOp(pool, [kind, id]); });
-        if (kind === 'fetch' && release.checked && pool.table[id] !== undefined && pool.frames[pool.table[id]].pin > 0) {
-          n += record('unpin ' + id, function () { return applyOp(pool, ['unpin', id]); });
+      var shown = stepper.index, resume = false;
+      var queued = stepper.playing && ownFrom !== null && shown >= ownFrom - 1;
+      if (!queued) {
+        var end = shown;
+        while (end > 0 && end < all.length - 1 && !all[end].log) end++;   // last step of the operation shown
+        var dropped = all.length - 1 - end;
+        all = all.slice(0, end + 1);
+        pool = Pool.restore(all[end].state);
+        resume = end > shown;
+        if (dropped) {
+          hint.textContent = 'Continuing from the step shown: the ' + dropped + ' later step' + (dropped === 1 ? ' was' : 's were') + ' replaced by this operation.';
+          hint.hidden = false;
         }
       }
-      if (!n) return;
-      stepper.setSteps(all, { index: first, instant: true, play: n > 1 });
+      var first = all.length;
+      if (kind === 'flush') record('flush all', function () { var w = pool.flushAll(); return w + ' page' + (w === 1 ? '' : 's') + ' written, 1 sync'; });
+      else {
+        record(kind + ' ' + id, function () { return applyOp(pool, [kind, id]); });
+        if (kind === 'fetch' && release.checked && pool.table[id] !== undefined && pool.frames[pool.table[id]].pin > 0) {
+          record('unpin ' + id, function () { return applyOp(pool, ['unpin', id]); });
+        }
+      }
+      var start = resume ? shown + 1 : first;
+      if (!queued) ownFrom = start;
+      stepper.setSteps(all, { index: start, instant: !resume, play: all.length - 1 > start });
     }
     function loadTrace(play) {
       framesSel.value = 4;
       pool = new Pool(4, PAGES);
-      all = [intro(4)];
+      all = [intro(4, true)];
+      ownFrom = null;
+      hint.hidden = true;
       TRACE.forEach(function (op) { record(op[0] + ' ' + op[1], function () { return applyOp(pool, op); }); });
       stepper.setSteps(all, { instant: true, play: !!play });
     }
@@ -559,6 +630,7 @@ is the one the programs print; change how skewed the accesses are and watch the 
           ? 'With uniform accesses nothing is hotter than anything else, so the hit count grows only in proportion to the pool size: no eviction policy can help.'
           : 'Because most accesses go to a few hot pages, a pool much smaller than the file already catches most of them. That skew is what makes a buffer pool worth having.') +
         ' Up to two pages stay pinned across operations, which is why very small pools do so badly. ' +
+        'Each run ends with a flush of the pages that are still dirty, so <em>file writes</em> = write-backs + that last flush (with 64 frames nothing is ever evicted and every write is in the flush). ' +
         (rows.every(function (r) { return r.ok; }) ? 'Every run ended with the file equal to the oracle.' : '<strong>Model error: a page had the wrong content.</strong>') +
         (replaced ? ' <em>The seed must be a whole number from 0 to 999999; seed ' + s + ' was used instead of what was typed.</em>' : '');
     }
@@ -629,6 +701,22 @@ is the one the programs print; change how skewed the accesses are and watch the 
     BTViz.selfTest('part 2: final state and counters', finalStateText(pool), EXPECTED_FINAL);
     pool.flushAll();
     BTViz.selfTest('part 2: versions on disk after flushAll', pool.disk.join(' '), '0 1 0 0 0 0 1 0');
+    /* What the buttons rely on: a pool rebuilt from the snapshot of any step
+     * behaves exactly like the pool that produced the snapshot. */
+    var resumed = [];
+    for (var k = 0; k <= TRACE.length; k++) {
+      var a = new Pool(4, 8);
+      a.quiet = true;
+      TRACE.slice(0, k).forEach(function (op) { applyOp(a, op); });
+      var b = Pool.restore(a.snap());
+      b.quiet = true;
+      TRACE.slice(k).forEach(function (op) { applyOp(b, op); });
+      var text = finalStateText(b);
+      b.flushAll();
+      resumed.push(text + '\n' + b.disk.join(' '));
+    }
+    BTViz.selfTest('part 2: resume from any step', resumed.join('\n'),
+      resumed.map(function () { return EXPECTED_FINAL + '\n0 1 0 0 0 0 1 0'; }).join('\n'));
     BTViz.selfTest('part 3: counters for 4, 8, 16, 32 frames',
       [4, 8, 16, 32].map(function (n) { return workloadRow(runWorkload(n, 2024, 4)); }).join('\n'), EXPECTED_WORKLOAD);
   })();

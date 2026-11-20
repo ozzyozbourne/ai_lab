@@ -572,43 +572,256 @@ test "a failure after the first page change poisons the handle; before it, nothi
     }
 }
 
-test "allocation failure in put and delete: OutOfMemory, no leaked pin, intact or poisoned" {
-    const shape: Shape = .{ .frames = 4, .key_space = 600, .max_key = btree.max_key_len, .max_value = 30, .mixed = false, .puts = 5, .deletes = 3 };
-    var induced: usize = 0;
-    var fail_index: usize = 0;
-    while (fail_index < 12) : (fail_index += 1) {
+/// One operation whose every scratch request is refused in turn.
+const OomCase = struct {
+    /// The flushed file just before the operation.
+    file: []const u8,
+    op: enum { put, delete },
+    key: []const u8,
+    value: []const u8 = "",
+    /// Scratch requests of the operation, in order.
+    requests: usize,
+    /// The first request that comes after a page change. A failure from
+    /// there on leaves a half-done change; an earlier one leaves the tree
+    /// intact. Equal to `requests` if no request comes after a change.
+    first_poisoned: usize,
+    /// What the operation does when nothing is refused.
+    leaf_splits: u64 = 0,
+    interior_splits: u64 = 0,
+    root_splits: u64 = 0,
+    pages_reused: u64 = 0,
+    tree_pages_freed: u64 = 0,
+    interior_pages_freed: u64 = 0,
+    root_collapses: u64 = 0,
+};
+
+/// Run the operation of `case` on a copy of its file once per scratch
+/// request, refusing request 0, 1, 2, ..., and once more refusing nothing.
+/// Returns the number of failure points reached.
+///
+/// An arena hides most requests from the allocator behind it: it asks for
+/// memory only when its buffer is too small, so a failing allocator behind a
+/// warm arena is never asked. Here every request is made visible:
+///
+///   - each run opens a new handle, so the arena starts without a buffer;
+///   - the test fills the arena's first buffer to the last byte, so the next
+///     request cannot be served from it;
+///   - the buffer comes from a FixedBufferAllocator, which can grow its last
+///     allocation in place. The arena then grows its buffer by exactly the
+///     bytes of each request: one `resize` call per request.
+///
+/// `resize_fail_index = i` refuses request number i, and `fail_index = 2`
+/// refuses the new buffer the arena asks for after that.
+fn failEveryRequest(case: OomCase) !usize {
+    var reached: usize = 0;
+    for (0..case.requests + 1) |fail_at| {
         var mem: MemStorage = .init(testing.allocator);
         defer mem.deinit();
-        var model: Model = .init(testing.allocator);
-        defer model.deinit();
+        try mem.bytes.appendSlice(testing.allocator, case.file);
         var pager: Pager = try .init(mem.storage());
-        var pool: BufferPool = try .init(testing.allocator, &pager, shape.frames);
-        defer pool.deinit();
-        // Only the tree's scratch arena draws from the failing allocator.
-        var failing: testing.FailingAllocator = .init(testing.allocator, .{ .fail_index = fail_index });
-        var tree: DiskBTree = try .create(failing.allocator(), &pool);
-        defer tree.deinit();
-        var rng = SplitMix64.init(7);
+        var pool: BufferPool = try .init(testing.allocator, &pager, 4);
+        defer pool.deinit(); // asserts that no pin is left
 
-        for (0..1500) |_| {
-            randomOp(&tree, &model, &rng, shape) catch |err| {
-                try testing.expectEqual(error.OutOfMemory, err);
-                try testing.expect(failing.has_induced_failure);
-                try testing.expectEqual(0, pool.pinnedFrames());
-                induced += 1;
-                failing.fail_index = std.math.maxInt(usize); // memory is back
-                if (!tree.poisoned) {
-                    try expectSameContent(&tree, &model);
-                    for (0..200) |_| try randomOp(&tree, &model, &rng, shape);
-                    try expectSameContent(&tree, &model);
-                }
-                break;
-            };
+        const scratch_bytes = try testing.allocator.alignedAlloc(u8, .@"16", 256 * 1024);
+        defer testing.allocator.free(scratch_bytes);
+        var fixed: std.heap.FixedBufferAllocator = .init(scratch_bytes);
+        var failing: testing.FailingAllocator = .init(fixed.allocator(), .{});
+        var tree: DiskBTree = try .open(failing.allocator(), &pool);
+        defer tree.deinit();
+        _ = try tree.arena.allocator().alloc(u8, 1);
+        _ = try tree.arena.allocator().alloc(u8, tree.arena.queryCapacity() - 1);
+        // Two allocations so far: the handle's page flags, then the arena's
+        // one buffer, which is now full and the last thing in `fixed`.
+        try testing.expectEqual(2, failing.alloc_index);
+        try testing.expectEqual(0, failing.resize_index);
+        failing.fail_index = 2;
+        failing.resize_fail_index = fail_at;
+
+        const result = switch (case.op) {
+            .put => tree.put(case.key, case.value),
+            .delete => if (tree.delete(case.key)) |found| try testing.expect(found) else |err| err,
+        };
+        if (fail_at == case.requests) {
+            // Nothing refused: the operation makes exactly the requests the
+            // case lists, so the runs before this one reached all of them.
+            try result;
+            try testing.expectEqual(case.requests, failing.resize_index);
+            try testing.expectEqual(2, failing.alloc_index);
+            try testing.expect(!failing.has_induced_failure);
+            const stats = tree.stats;
+            try testing.expectEqual(case.leaf_splits, stats.leaf_splits);
+            try testing.expectEqual(case.interior_splits, stats.interior_splits);
+            try testing.expectEqual(case.root_splits, stats.root_splits);
+            try testing.expectEqual(case.pages_reused, stats.pages_reused);
+            try testing.expectEqual(case.tree_pages_freed, stats.tree_pages_freed);
+            try testing.expectEqual(case.interior_pages_freed, stats.interior_pages_freed);
+            try testing.expectEqual(case.root_collapses, stats.root_collapses);
+            try tree.validate();
+            try expectValue(&tree, case.key, if (case.op == .put) case.value else null);
+            continue;
         }
+
+        try testing.expectError(error.OutOfMemory, result);
+        try testing.expect(failing.has_induced_failure);
+        try testing.expectEqual(fail_at, failing.resize_index); // the requests before it were served
+        try testing.expectEqual(0, pool.pinnedFrames());
+        try pool.validate();
+        reached += 1;
+        failing.fail_index = std.math.maxInt(usize); // memory is back
+        failing.resize_fail_index = std.math.maxInt(usize);
+
+        try testing.expectEqual(fail_at >= case.first_poisoned, tree.poisoned);
+        if (tree.poisoned) {
+            try testing.expectError(error.TreePoisoned, tree.put(case.key, case.value));
+            try testing.expectError(error.TreePoisoned, tree.delete(case.key));
+            try testing.expectError(error.TreePoisoned, tree.get(testing.allocator, case.key));
+            try testing.expectError(error.TreePoisoned, tree.range("", null));
+            try testing.expectError(error.TreePoisoned, tree.flush());
+            // What is behind the poison: leaked pages or a half-done change,
+            // but never a page with two roles or a broken free list. That
+            // is what the two ordering rules are for.
+            if (tree.validate()) |_| {} else |err| switch (err) {
+                error.UnreachablePage, error.LeafChainBroken, error.EmptyPage, error.KeyCountMismatch => {},
+                else => return err,
+            }
+        } else {
+            // The operation did not happen at all, and it works when repeated.
+            try tree.validate();
+            switch (case.op) {
+                .put => {
+                    try expectValue(&tree, case.key, null);
+                    try tree.put(case.key, case.value);
+                    try tree.validate();
+                    try expectValue(&tree, case.key, case.value);
+                },
+                .delete => {
+                    try testing.expect(try tree.delete(case.key));
+                    try tree.validate();
+                    try expectValue(&tree, case.key, null);
+                },
+            }
+        }
+        try testing.expectEqual(0, pool.pinnedFrames());
     }
-    // The arena keeps its memory between operations, so only its first few
-    // requests ever reach the backing allocator.
-    try testing.expect(induced >= 3);
+    return reached;
+}
+
+test "allocation failure at every scratch request of four puts that split and three deletes that free pages" {
+    var reached: usize = 0;
+
+    // ---- put ----
+    // Keys descend, so every put goes to the leftmost leaf, and the largest
+    // cells allowed (three to a page) fill the root after a few leaf splits.
+    // Two large values are written and shrunk first: the splits below take
+    // their pages from the free list. `file` is the flushed file as it was
+    // just before the last put.
+    const Put = struct { until_leaf_splits: u64, until_interior_splits: u64, chain: bool = false, requests: usize, first_poisoned: usize, root_splits: u64, pages_reused: u64 };
+    const value: [btree.max_local]u8 = @splat('v');
+    const chained: [btree.min_local + 4 * btree.overflow_payload]u8 = @splat('c');
+    for ([_]Put{
+        // The first split: the root leaf moves down, then splits. Requests:
+        // the path entry for the root, the page copy, cells, costs. The root
+        // has already changed when the first of them is made.
+        .{ .until_leaf_splits = 1, .until_interior_splits = 0, .requests = 4, .first_poisoned = 0, .root_splits = 1, .pages_reused = 2 },
+        // A leaf that is not the rightmost child splits and its parent has
+        // room. Requests: the path, the page copy, cells, costs, and the copy
+        // of the parent's key whose pointer changes (`insertSeparator`).
+        .{ .until_leaf_splits = 2, .until_interior_splits = 0, .requests = 5, .first_poisoned = 4, .root_splits = 0, .pages_reused = 1 },
+        // The root is a full interior page: the leaf splits, the root's
+        // content moves down, that page splits. Requests: the path; page
+        // copy, cells, costs (`splitLeaf`); page copy, entries, costs
+        // (`splitInterior`).
+        .{ .until_leaf_splits = 0, .until_interior_splits = 1, .requests = 7, .first_poisoned = 4, .root_splits = 1, .pages_reused = 3 },
+        // The same put with a value that has a chain of four pages. The
+        // chain is written right after the path: every later request comes
+        // after a page change.
+        .{ .until_leaf_splits = 0, .until_interior_splits = 1, .chain = true, .requests = 7, .first_poisoned = 1, .root_splits = 1, .pages_reused = 7 },
+    }) |put| {
+        var file: std.ArrayList(u8) = .empty;
+        defer file.deinit(testing.allocator);
+        var key: [btree.max_key_len]u8 = @splat('k');
+        {
+            var mem: MemStorage = .init(testing.allocator);
+            defer mem.deinit();
+            var db: Db = undefined;
+            try db.start(mem.storage(), 4, .create);
+            defer db.stop();
+            const huge: [btree.max_value_len]u8 = @splat('h');
+            for ([_][]const u8{ "~a", "~b" }) |k| try db.tree.put(k, &huge);
+            for ([_][]const u8{ "~a", "~b" }) |k| try db.tree.put(k, "");
+            try testing.expectEqual(32, db.tree.free_count);
+            var i: usize = 0;
+            while (db.tree.stats.leaf_splits < put.until_leaf_splits or db.tree.stats.interior_splits < put.until_interior_splits) : (i += 1) {
+                try db.tree.flush();
+                file.clearRetainingCapacity();
+                try file.appendSlice(testing.allocator, mem.bytes.items);
+                _ = try std.fmt.bufPrint(key[0..4], "{d:0>4}", .{9999 - i});
+                try db.tree.put(&key, &value);
+            }
+        }
+        reached += try failEveryRequest(.{
+            .file = file.items,
+            .op = .put,
+            .key = &key,
+            .value = if (put.chain) &chained else &value,
+            .requests = put.requests,
+            .first_poisoned = put.first_poisoned,
+            .leaf_splits = 1,
+            .interior_splits = put.until_interior_splits,
+            .root_splits = put.root_splits,
+            .pages_reused = put.pages_reused,
+        });
+    }
+
+    // ---- delete ----
+    // 2000 keys, then all but two or three are deleted again: what is left
+    // is a tall, thin tree in which one more delete empties a leaf and the
+    // interior pages above it. Requests: the path, then the list of pages
+    // to free (`removeLeaf`), which comes after the left sibling's link has
+    // changed, if there is a left sibling.
+    const Delete = struct { keep: []const usize, victim: usize, first_poisoned: usize, tree_pages_freed: u64, interior_pages_freed: u64, root_collapses: u64 };
+    for ([_]Delete{
+        // The last leaf of two: it and its parent go, the root collapses.
+        .{ .keep = &.{ 0, 1999 }, .victim = 1999, .first_poisoned = 1, .tree_pages_freed = 0, .interior_pages_freed = 0, .root_collapses = 0 },
+        // A leaf in the middle and its parent go; the root keeps two children.
+        .{ .keep = &.{ 0, 1000, 1999 }, .victim = 1000, .first_poisoned = 1, .tree_pages_freed = 0, .interior_pages_freed = 0, .root_collapses = 0 },
+        // The first leaf has no left sibling: nothing has changed yet when
+        // the list of pages to free is asked for.
+        .{ .keep = &.{ 0, 1999 }, .victim = 0, .first_poisoned = 2, .tree_pages_freed = 0, .interior_pages_freed = 0, .root_collapses = 0 },
+    }) |delete| {
+        var mem: MemStorage = .init(testing.allocator);
+        defer mem.deinit();
+        var key: [200]u8 = @splat('k');
+        {
+            var db: Db = undefined;
+            try db.start(mem.storage(), 8, .create);
+            defer db.stop();
+            for (0..2000) |i| {
+                _ = try std.fmt.bufPrint(key[0..4], "{d:0>4}", .{i});
+                try db.tree.put(&key, "v");
+            }
+            try testing.expectEqual(3, try db.tree.height());
+            for (0..2000) |i| {
+                if (std.mem.indexOfScalar(usize, delete.keep, i) != null) continue;
+                _ = try std.fmt.bufPrint(key[0..4], "{d:0>4}", .{i});
+                try testing.expect(try db.tree.delete(&key));
+            }
+            try testing.expectEqual(3, try db.tree.height());
+            try db.tree.flush();
+        }
+        _ = try std.fmt.bufPrint(key[0..4], "{d:0>4}", .{delete.victim});
+        reached += try failEveryRequest(.{
+            .file = mem.bytes.items,
+            .op = .delete,
+            .key = &key,
+            .requests = 2,
+            .first_poisoned = delete.first_poisoned,
+            .tree_pages_freed = delete.tree_pages_freed,
+            .interior_pages_freed = delete.interior_pages_freed,
+            .root_collapses = delete.root_collapses,
+        });
+    }
+    try testing.expectEqual((4 + 5 + 7 + 7) + (2 + 2 + 2), reached);
 }
 
 test "full is a number of bytes, not a number of keys" {
@@ -1322,16 +1535,225 @@ test "damage to every count, length and page id of a page: an error, never a cra
     try testing.expect(intact.opened and intact.valid and intact.dump_ok and !intact.dump_loops);
 
     var unnoticed: usize = 0;
+    var refused_by_open: usize = 0;
+    var applied: usize = 0;
     for (list.items) |damage| {
         @memcpy(file.items, sound);
         damage.apply(file.items);
-        if (std.mem.eql(u8, file.items, sound)) continue; // the value it had
+        if (std.mem.eql(u8, file.items, sound)) continue; // the value it has
+        applied += 1;
         for ([_]u32{ 2, 5 }) |frames| {
             const seen = try poke(file.items, layout, frames);
-            if (seen.opened and seen.valid) {unnoticed += 1; std.debug.print("UNNOTICED {s} {any}\n", .{damage.name, damage.bytes});}
+            if (seen.opened and seen.valid) unnoticed += 1;
+            if (!seen.opened) refused_by_open += 1;
         }
     }
-    try testing.expectEqual(240, list.items.len);
+    try testing.expectEqual(236, applied);
     // `open` or `validate` reports every one of them.
     try testing.expectEqual(0, unnoticed);
+    try testing.expectEqual(2 * 9, refused_by_open);
+}
+
+test "the free list of a damaged file: a count beyond the page, an id that is in use, a trunk that points at itself" {
+    var file: std.ArrayList(u8) = .empty;
+    defer file.deinit(testing.allocator);
+    const layout = try buildDamageFile(&file);
+    const trunk = file.items[@as(usize, layout.trunk) * page_size ..][0..page_size];
+    const sound: btree.Page = trunk.*;
+    const big: [5000]u8 = @splat('v');
+
+    // 1. The count says 5000 ids; a trunk has room for 1021. `allocPage`
+    //    must not use it as an index. (`freePage` treats the trunk as full.)
+    for ([_]u16{ btree.trunk_capacity + 1, 5000, 0xffff }) |count| {
+        trunk.* = sound;
+        std.mem.writeInt(u16, trunk[4..6], count, .little);
+        var mem: MemStorage = .init(testing.allocator);
+        defer mem.deinit();
+        try mem.bytes.appendSlice(testing.allocator, file.items);
+        var db: Db = undefined;
+        try db.start(mem.storage(), 4, .open);
+        defer db.stop();
+        try testing.expectError(error.FreeListBroken, db.tree.validate());
+        try testing.expectError(error.Corrupt, db.tree.put("k2", &big));
+        try testing.expect(!db.tree.poisoned); // nothing had changed yet
+        try testing.expectEqual(0, db.pool.pinnedFrames());
+    }
+
+    // 2. The id that the next allocation takes is not a free page: page 0,
+    //    a page outside the file, the trunk itself.
+    for ([_]u32{ 0, layout.pages, layout.trunk }) |id| {
+        trunk.* = sound;
+        std.mem.writeInt(u32, trunk[8 + 4 * 14 ..][0..4], id, .little);
+        var mem: MemStorage = .init(testing.allocator);
+        defer mem.deinit();
+        try mem.bytes.appendSlice(testing.allocator, file.items);
+        var db: Db = undefined;
+        try db.start(mem.storage(), 4, .open);
+        defer db.stop();
+        try testing.expectError(error.Corrupt, db.tree.put("k2", &big));
+        try testing.expect(!db.tree.poisoned);
+        try testing.expectEqual(0, db.pool.pinnedFrames());
+    }
+
+    // 3. The trunk's link leads back to the trunk. `validate` names it, and
+    //    `dump` prints as many trunks as the file has pages, then stops.
+    trunk.* = sound;
+    std.mem.writeInt(u32, trunk[0..4], layout.trunk, .little);
+    var mem: MemStorage = .init(testing.allocator);
+    defer mem.deinit();
+    try mem.bytes.appendSlice(testing.allocator, file.items);
+    var db: Db = undefined;
+    try db.start(mem.storage(), 4, .open);
+    defer db.stop();
+    try testing.expectError(error.PageReachedTwice, db.tree.validate());
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try db.tree.dump(&out.writer);
+    try testing.expect(std.mem.endsWith(u8, out.written(), " | ... (the list loops)\n"));
+    try testing.expectEqual(layout.pages, std.mem.count(u8, out.written(), " | trunk "));
+    // Allocations still work until the list's count is used up: 15 listed
+    // pages, then the trunk itself, which leaves a list that is not one.
+    for (0..3) |_| try db.tree.put("k2", &big); // each frees one page and takes one
+    try testing.expectEqual(0, db.pool.pinnedFrames());
+}
+
+test "a trunk that lists a page of the operation in progress: Corrupt, not one page under two pins" {
+    // The root is a full leaf, and the free list's next id is the root. The
+    // put below must split: it pins the root, asks for a page to move the
+    // root's content to, and would get the root.
+    var mem: MemStorage = .init(testing.allocator);
+    defer mem.deinit();
+    const value: [1080]u8 = @splat('v');
+    const large: [6000]u8 = @splat('v');
+    {
+        var db: Db = undefined;
+        try db.start(mem.storage(), 4, .create);
+        defer db.stop();
+        try db.tree.put("0", &large); // a chain: pages 2 and 3
+        try db.tree.put("0", &value); // page 2 is the trunk and lists page 3
+        try db.tree.put("1", &value);
+        try db.tree.put("2", &value);
+        try testing.expectEqual(1, try db.tree.height());
+        try testing.expectEqual(2, db.tree.free_head);
+        try db.tree.flush();
+    }
+    const trunk = mem.bytes.items[2 * page_size ..][0..page_size];
+    try testing.expectEqual(1, std.mem.readInt(u16, trunk[4..6], .little));
+    try testing.expectEqual(3, std.mem.readInt(u32, trunk[8..12], .little));
+    std.mem.writeInt(u32, trunk[8..12], 1, .little);
+    var db: Db = undefined;
+    try db.start(mem.storage(), 4, .open);
+    defer db.stop();
+    try testing.expectError(error.Corrupt, db.tree.put("3", &value));
+    try testing.expect(!db.tree.poisoned); // nothing had changed yet
+    try testing.expectEqual(0, db.pool.pinnedFrames());
+    try expectValue(&db.tree, "1", &value);
+}
+
+test "pointers that lead in a circle: every walk ends with Corrupt" {
+    var file: std.ArrayList(u8) = .empty;
+    defer file.deinit(testing.allocator);
+    const layout = try buildDamageFile(&file);
+    const sound = try testing.allocator.dupe(u8, file.items);
+    defer testing.allocator.free(sound);
+    var key_buf: [250]u8 = undefined;
+    const Case = struct { page: u32, offset: usize, value: u32 };
+    const root_child = Layout.page(file.items, 1).cellOffset(0) + 4 + 250;
+    const inner_child = Layout.page(file.items, layout.inner[0]).cellOffset(0) + 4 + 250;
+    for ([_]Case{
+        // The root's first child is the root; an interior page's first
+        // child is the root above it.
+        .{ .page = 1, .offset = root_child, .value = 1 },
+        .{ .page = layout.inner[0], .offset = inner_child, .value = 1 },
+    }) |case| {
+        @memcpy(file.items, sound);
+        std.mem.writeInt(u32, file.items[@as(usize, case.page) * page_size + case.offset ..][0..4], case.value, .little);
+        var mem: MemStorage = .init(testing.allocator);
+        defer mem.deinit();
+        try mem.bytes.appendSlice(testing.allocator, file.items);
+        var db: Db = undefined;
+        try db.start(mem.storage(), 4, .open);
+        defer db.stop();
+        const first = damageKey(&key_buf, 0);
+        try testing.expectError(error.PageReachedTwice, db.tree.validate());
+        try testing.expectError(error.Corrupt, db.tree.get(testing.allocator, first));
+        try testing.expectError(error.Corrupt, db.tree.range("", null));
+        try testing.expectError(error.Corrupt, db.tree.height());
+        try testing.expectError(error.Corrupt, db.tree.put(first, "v"));
+        try testing.expectError(error.Corrupt, db.tree.delete(first));
+        try testing.expect(!db.tree.poisoned);
+        var out: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer out.deinit();
+        try testing.expectError(error.Corrupt, db.tree.dump(&out.writer));
+        // One line per page at most, however the pointers are bent.
+        try testing.expect(std.mem.count(u8, out.written(), "\n") <= layout.pages);
+        try testing.expectEqual(0, db.pool.pinnedFrames());
+    }
+
+    // A leaf whose link leads back to itself: the scan gives the leaf's
+    // entries once per round and stops after as many rounds as the file
+    // has pages.
+    @memcpy(file.items, sound);
+    std.mem.writeInt(u32, file.items[@as(usize, layout.leaf) * page_size + 9 ..][0..4], layout.leaf, .little);
+    var mem: MemStorage = .init(testing.allocator);
+    defer mem.deinit();
+    try mem.bytes.appendSlice(testing.allocator, file.items);
+    var db: Db = undefined;
+    try db.start(mem.storage(), 4, .open);
+    defer db.stop();
+    try testing.expectError(error.LeafChainBroken, db.tree.validate());
+    var it = try db.tree.range("", null);
+    defer it.deinit();
+    var entries: usize = 0;
+    const end = while (it.next()) |item| {
+        if (item == null) break false;
+        entries += 1;
+    } else |err| err == error.Corrupt;
+    try testing.expect(end);
+    try testing.expect(entries <= 700 * @as(usize, layout.pages));
+    try testing.expectEqual(0, db.pool.pinnedFrames());
+}
+
+test "fuzz: flipped bytes, overwritten ids and swapped pages never crash or hang a handle" {
+    var file: std.ArrayList(u8) = .empty;
+    defer file.deinit(testing.allocator);
+    const layout = try buildDamageFile(&file);
+    const sound = try testing.allocator.dupe(u8, file.items);
+    defer testing.allocator.free(sound);
+    var rng = SplitMix64.init(13);
+    var noticed: usize = 0;
+    const rounds = 600;
+    for (0..rounds) |round| {
+        @memcpy(file.items, sound);
+        // Every page gets its turn; the kind of damage is random.
+        const id: u32 = @intCast(round % layout.pages);
+        const page = file.items[@as(usize, id) * page_size ..][0..page_size];
+        switch (rng.below(8)) {
+            // One to four bytes of the page, half of the time among the
+            // first 48 (headers, slots, the metapage's fields).
+            0, 1, 2, 3 => for (0..rng.range(1, 5)) |_| {
+                const at = rng.below(if (rng.chance(1, 2)) 48 else page_size);
+                page[at] = switch (rng.below(4)) {
+                    0 => 0,
+                    1 => 0xff,
+                    2 => page[at] ^ (@as(u8, 1) << @intCast(rng.below(8))),
+                    else => @truncate(rng.nextU64()),
+                };
+            },
+            // A page id (of a page of this file, or just outside it) at a
+            // random place: most of them make a pointer where none was.
+            4, 5 => std.mem.writeInt(u32, page[rng.below(page_size - 3)..][0..4], @intCast(rng.below(layout.pages + 2)), .little),
+            // Another page's bytes: a sound page in the wrong place.
+            6 => page.* = sound[rng.below(layout.pages) * page_size ..][0..page_size].*,
+            // Noise, with the kind byte of a tree page half of the time.
+            else => {
+                for (page) |*b| b.* = @truncate(rng.nextU64());
+                if (rng.chance(1, 2)) page[7] = @intCast(rng.range(1, 3));
+            },
+        }
+        const seen = try poke(file.items, layout, if (round % 2 == 0) 2 else 6);
+        if (!seen.opened or !seen.valid) noticed += 1;
+    }
+    // Not every flipped byte matters (most bytes are values), many do.
+    try testing.expect(noticed > rounds / 4 and noticed < rounds);
 }

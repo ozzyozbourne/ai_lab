@@ -1,76 +1,77 @@
 /* Verbatim copy of ../expected_output.txt (the stdout of the Zig and Rust programs).
  * The page checks its JS model against this text with BTViz.selfTest. */
 window.CH25_EXPECTED = `Chapter 25: cache-conscious search and layout
-model: 64-byte cache lines, 8-byte keys, arrays start on a line boundary
+model: 64-byte cache lines, 8-byte keys, 4-byte ranks, every array starts on a line boundary
+lines = key lines + rank lines: every array a lookup reads is counted
 
 == 1. Fifteen keys by hand ==
 sorted    : 10 20 30 40 50 60 70 80 90 100 110 120 130 140 150
 eytzinger : 80 40 120 20 60 100 140 10 30 50 70 90 110 130 150
 blocktree : 90 100 110 120 130 140 150 - | 10 20 30 40 50 60 70 80
 needle 70 -> index 6
-  classic   cmps  4 steps 4 lines 1 probes 7 3 5 6
-  halving   cmps  5 steps 5 lines 1 probes 7 4 6 5 5
-  vector    cmps 16 steps 2 lines 2 probes 0 8
-  eytzinger cmps  4 steps 4 lines 2 probes 1 2 5 11
-  blocktree cmps 16 steps 2 lines 2 probes 0 8
+  classic   cmps  4 steps 4 lines 1 (keys 1 + rank 0) probes 7 3 5 6
+  halving   cmps  5 steps 5 lines 1 (keys 1 + rank 0) probes 7 4 6 5 5
+  vector    cmps 16 steps 2 lines 2 (keys 2 + rank 0) probes 0 8
+  eytzinger cmps  4 steps 4 lines 3 (keys 2 + rank 1) probes 1 2 5 11
+  blocktree cmps 16 steps 2 lines 3 (keys 2 + rank 1) probes 0 8
 needle 95 -> index 9
-  classic   cmps  4 steps 4 lines 2 probes 7 11 9 8
-  halving   cmps  5 steps 5 lines 2 probes 7 11 9 8 8
-  vector    cmps 16 steps 2 lines 2 probes 0 8
-  eytzinger cmps  4 steps 4 lines 2 probes 1 3 6 12
-  blocktree cmps  8 steps 1 lines 1 probes 0
+  classic   cmps  4 steps 4 lines 2 (keys 2 + rank 0) probes 7 11 9 8
+  halving   cmps  5 steps 5 lines 2 (keys 2 + rank 0) probes 7 11 9 8 8
+  vector    cmps 16 steps 2 lines 2 (keys 2 + rank 0) probes 0 8
+  eytzinger cmps  4 steps 4 lines 3 (keys 2 + rank 1) probes 1 3 6 12
+  blocktree cmps  8 steps 1 lines 2 (keys 1 + rank 1) probes 0
 needle 999 -> index 15
-  classic   cmps  4 steps 4 lines 2 probes 7 11 13 14
-  halving   cmps  5 steps 5 lines 2 probes 7 11 13 14 14
-  vector    cmps 16 steps 2 lines 2 probes 0 8
-  eytzinger cmps  4 steps 4 lines 2 probes 1 3 7 15
-  blocktree cmps  8 steps 1 lines 1 probes 0
+  classic   cmps  4 steps 4 lines 2 (keys 2 + rank 0) probes 7 11 13 14
+  halving   cmps  5 steps 5 lines 2 (keys 2 + rank 0) probes 7 11 13 14 14
+  vector    cmps 16 steps 2 lines 2 (keys 2 + rank 0) probes 0 8
+  eytzinger cmps  4 steps 4 lines 3 (keys 2 + rank 1) probes 1 3 7 15
+  blocktree cmps  8 steps 1 lines 2 (keys 1 + rank 1) probes 0
 
 == 2. 1000 lookups per size: comparisons and cache lines per lookup ==
-     n  algorithm     cmps   steps   lines  max lines
-     7  classic       3.00    3.00    1.00          1
-     7  halving       4.00    4.00    1.00          1
-     7  vector        8.00    1.00    1.00          1
-     7  eytzinger     3.00    3.00    1.00          1
-     7  blocktree     8.00    1.00    1.00          1
-    15  classic       4.00    4.00    1.50          2
-    15  halving       5.00    5.00    1.50          2
-    15  vector       16.00    2.00    2.00          2
-    15  eytzinger     4.00    4.00    2.00          2
-    15  blocktree    12.77    1.59    1.59          2
-    63  classic       6.00    6.00    3.14          4
-    63  halving       7.00    7.00    3.06          4
-    63  vector       64.00    8.00    8.00          8
-    63  eytzinger     6.00    6.00    4.00          4
-    63  blocktree    15.88    1.98    1.98          2
-   255  classic       8.00    8.00    5.02          6
-   255  halving       9.00    9.00    4.99          6
-   255  vector      256.00   32.00   32.00         32
-   255  eytzinger     8.00    8.00    6.00          6
-   255  blocktree    22.22    2.77    2.77          3
-  1023  classic      10.00   10.00    7.00          8
-  1023  halving      11.00   11.00    7.00          8
-  1023  vector     1024.00  128.00  128.00        128
-  1023  eytzinger    10.00   10.00    8.00          8
-  1023  blocktree    26.56    3.32    3.32          4
-  4095  classic      12.00   12.00    9.00         10
-  4095  halving      13.00   13.00    9.00         10
-  4095  vector     4096.00  512.00  512.00        512
-  4095  eytzinger    12.00   12.00   10.00         10
-  4095  blocktree    31.33    3.91    3.91          4
+     n  algorithm     cmps   steps  key lines  rank lines   lines  max lines
+     7  classic       3.00    3.00       1.00        0.00    1.00          1
+     7  halving       4.00    4.00       1.00        0.00    1.00          1
+     7  vector        8.00    1.00       1.00        0.00    1.00          1
+     7  eytzinger     3.00    3.00       1.00        1.00    2.00          2
+     7  blocktree     8.00    1.00       1.00        1.00    2.00          2
+    15  classic       4.00    4.00       1.50        0.00    1.50          2
+    15  halving       5.00    5.00       1.50        0.00    1.50          2
+    15  vector       16.00    2.00       2.00        0.00    2.00          2
+    15  eytzinger     4.00    4.00       2.00        1.00    3.00          3
+    15  blocktree    12.77    1.59       1.59        1.00    2.59          3
+    63  classic       6.00    6.00       3.14        0.00    3.14          4
+    63  halving       7.00    7.00       3.06        0.00    3.06          4
+    63  vector       64.00    8.00       8.00        0.00    8.00          8
+    63  eytzinger     6.00    6.00       4.00        1.00    5.00          5
+    63  blocktree    15.88    1.98       1.98        1.00    2.98          3
+   255  classic       8.00    8.00       5.02        0.00    5.02          6
+   255  halving       9.00    9.00       4.99        0.00    4.99          6
+   255  vector      256.00   32.00      32.00        0.00   32.00         32
+   255  eytzinger     8.00    8.00       6.00        1.00    7.00          7
+   255  blocktree    22.22    2.77       2.77        1.00    3.77          4
+  1023  classic      10.00   10.00       7.00        0.00    7.00          8
+  1023  halving      11.00   11.00       7.00        0.00    7.00          8
+  1023  vector     1024.00  128.00     128.00        0.00  128.00        128
+  1023  eytzinger    10.00   10.00       8.00        1.00    9.00          9
+  1023  blocktree    26.56    3.32       3.32        1.00    4.32          5
+  4095  classic      12.00   12.00       9.00        0.00    9.00         10
+  4095  halving      13.00   13.00       9.00        0.00    9.00         10
+  4095  vector     4096.00  512.00     512.00        0.00  512.00        512
+  4095  eytzinger    12.00   12.00      10.00        1.00   11.00         11
+  4095  blocktree    31.33    3.91       3.91        1.00    4.91          5
 
 == 3. One 255-entry node: array of structs vs struct of arrays ==
-layout  bytes/key  key bytes  key lines    cmps   lines  max lines
-aos            16       4080         64    9.00    6.01          7
-soa             8       2040         32    9.00    5.00          6
+layout  bytes/key  key bytes  key lines | search: cmps   lines | get: cmps  key lines  child lines   lines  max lines
+aos            16       4080         64 |         9.00    6.01 |      9.99       6.01         0.00    6.01          7
+soa             8       2040         32 |         9.00    5.00 |      9.99       5.00         0.51    5.52          7
 found 518 of 1000 needles; both layouts returned the same child every time
 
 == 4. Prefetch coverage, n = 4095, per lookup ==
 algorithm            lines   hints  lines not hinted
 halving               8.99    0.00              8.99
 halving+prefetch      8.99   24.00              1.00
-eytzinger            10.00    0.00             10.00
-eytzinger+prefetch   10.00   12.00              1.00
+eytzinger            11.00    0.00             11.00
+eytzinger+prefetch   11.00   12.00              2.00
 
 == 5. Agreement ==
 all five algorithms returned the linear-scan answer in 6000 of 6000 lookups

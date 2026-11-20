@@ -90,6 +90,10 @@ impl BPlusTree {
                 return Err(Violation::ArenaLeak);
             }
         }
+        // ch27: one block per node, and no operation is in progress.
+        if self.dev.live != self.nodes.live_count() as u64 || self.dev.pinned() != 0 {
+            return Err(Violation::DeviceAccounting);
+        }
         // live + free must account for every slot ever created.
         let free = self.nodes.free_count().ok_or(Violation::ArenaLeak)?;
         if free + self.nodes.live_count() != self.nodes.slot_count() {

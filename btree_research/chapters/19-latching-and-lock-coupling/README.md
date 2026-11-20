@@ -97,13 +97,12 @@ id, then latch that node". The code latches the node and then reads the root id
 again. If it changed, the thread lets go and starts over.
 
 **Waiting while holding.** Coupling means that a thread waits for the child's
-latch with the parent's latch still in its hand. That is the point of it, and
-it is also its cost. A reader stuck below the root keeps its shared latch on
-the root. Every writer starts with an exclusive latch on the root, so every
-writer now waits, also those bound for a part of the tree nobody is working
-on. Threads queue behind a thread that is itself only waiting: a **convoy**.
-It is not a deadlock (the first thread will finish and the queue drains), but
-for a while one slow operation on one leaf can close the whole tree.
+latch with the parent's latch still in its hand. A reader stuck below the root
+keeps its shared latch on the root, and every writer starts with an exclusive
+latch on the root. So every writer waits, also those bound for a part of the
+tree nobody is working on. Threads queue behind a thread that is itself only
+waiting: a **convoy**. It is not a deadlock (the queue drains when the first
+thread finishes), but one slow operation can close the whole tree for a while.
 
 ### One rung further: optimistic descent (not implemented here)
 
@@ -168,7 +167,7 @@ from chapter 07 and trimmed.
 | `coupled` | `get` and `put` with latch coupling and the safe node rule |
 | `insert` | leaf insert and splits, shared by `plain` and `coupled` |
 | `validate`, `dump` | invariants and text rendering, for a quiescent tree |
-| `probe` | freeze one operation, run another |
+| `probe` | freeze one operation, run others behind it |
 | `stress` | bounded multi-threaded workload and its check |
 
 Run with `zig build test --summary all`, `zig build run`, `cargo test`,
@@ -269,12 +268,11 @@ cannot finish early and the answer is final.
 
 `probe.convoy` starts several operations behind the frozen one, each only
 after the one before has finished or reported `blocked`. With more than two
-threads `blocked` needs care. It is reported a moment *before* the thread
-enters the latch's queue, and a writer-preferring reader-writer lock (Zig's
-`Io.RwLock`; Rust's on Linux today, though it documents no policy) refuses new
-readers once a writer is queued. So after one thread waits for an *exclusive*
-latch, whether a later reader of that node gets in depends on timing. The
-tests put such a writer last and assert nothing after it.
+threads that word needs care: once a thread waits for an *exclusive* latch, a
+writer-preferring lock (Zig's `Io.RwLock`; Rust's on Linux today) turns later
+readers away although nobody holds the node, and whether a reader arrives
+before or after the writer is queued is a matter of timing. The tests put
+such a writer last.
 
 The same hook on a single thread shows *which* latches an operation holds: the
 callback tries to latch every node and notes the ones that fail.
@@ -287,11 +285,11 @@ callback tries to latch every node and notes the ones that fail.
 2. Hook on one thread: a `get` holds at most two latches; the safe node rule
    keeps exactly the nodes listed in the worked example.
 3. Hook with two or more threads: the table below; a reader and a writer
-   that latched a replaced root; a new root that must be complete before it
-   is published; operations frozen in mid-descent; two convoys.
-4. `reserve` has its own seam: a callback between "read the counter" and
-   "claim the slots". The test's callback takes a slot itself, which is what
-   another thread could do in that gap. The race is replayed on one thread.
+   that latched a replaced root; a new root that is complete before it is
+   published; operations frozen in mid-descent; two convoys.
+4. `reserve` has its own seam, a callback between "read the counter" and
+   "claim the slots". The test's callback takes a slot there, as another
+   thread could: the race is replayed on one thread.
 5. Stress: 4 threads, seeded, with disjoint and with overlapping key sets, a
    hot spot of 24 keys, and a table that runs out. It is bounded by an
    operation count, not by a clock. Afterwards `validate()` runs and the leaf
@@ -385,8 +383,7 @@ ladder turns some "waits" into "finishes". Read the last row: when the full
 nodes reach up to the root's child, latch coupling waits at the root like the
 global locks.
 
-Section 7 repeats the `put 26` experiment of section 3 with three more
-threads. In section 3 `put 11` finishes next to the frozen `put 26`; here it
+In section 3 `put 11` finishes next to the frozen `put 26`. In section 7 it
 waits at the root, behind a reader that is itself waiting.
 
 In section 6, "first-time puts" is the number of `put` calls that returned "no
@@ -469,11 +466,9 @@ their index workloads do not need more.
   exists to close.
 - **Reading the root id once.** The root pointer is not protected by any
   node's latch. Latch, then look again.
-- **Waiting while holding.** A thread that waits for a child keeps the parent,
-  and a reader's shared latch on the root stops every writer. One stalled
-  operation can queue the whole tree behind it (section 7). Chapter 20's
-  B-link tree holds one latch at a time on the way down, and the optimistic
-  rung holds none.
+- **Waiting while holding.** One stalled operation can queue the whole tree
+  behind it (section 7). Chapter 20's B-link tree holds one latch at a time
+  on the way down, and the optimistic rung holds none.
 - **Publishing a node before it is finished.** A new node needs no latch
   while nobody can reach it. The store that makes it reachable (the parent's
   child pointer, or the root id) must come last.
@@ -496,9 +491,8 @@ their index workloads do not need more.
   threads have been joined.
 - **Trusting a passing stress test.** See the mutation check above.
 - **A leaked latch is a hang, not a failure.** The next operation that needs
-  the node waits forever, and so does the test run. `nothingLocked` catches a
-  leak only after an operation has returned. Run concurrent tests under a
-  timeout (`timeout 120 zig build test`).
+  the node waits forever, and so does the test run. Run concurrent tests
+  under a timeout (`timeout 120 zig build test`).
 
 ## Exercises
 

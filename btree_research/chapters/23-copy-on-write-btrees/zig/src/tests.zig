@@ -576,7 +576,6 @@ test "restart after a crash at any write, with either slot damaged, finds a comp
             try testing.expectEqual(t, db.current.txn_id);
         }
     }
-    std.debug.print("cases {d} two {d}\n", .{cases, fell_back_two});
     try testing.expect(cases > 20_000);
     try testing.expect(fell_back_two > 1_000); // the double fault really was exercised
 }
@@ -666,7 +665,6 @@ test "a long life of crashes, damaged slots and restarts never shows a mixed tre
             held = .{ .snap = try db.snapshot(gpa), .saved = saved };
         }
     }
-    std.debug.print("restarts {d} fallbacks {d}\n", .{restarts, fallbacks});
     try testing.expect(restarts > 300);
     try testing.expect(fallbacks > 50);
 }

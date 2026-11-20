@@ -8,7 +8,7 @@ use crate::base_btree::{BTree, Bug};
 use crate::base_pool::OutOfNodes;
 use crate::base_validate::ValidateError;
 use crate::coverage::{POINT_COUNT, Point};
-use crate::fuzz::{self, Checks, Failure, Kind, Step, Subject, Totals};
+use crate::fuzz::{self, Checks, Failure, KeyLayout, Kind, Step, Subject, Totals};
 use crate::minimize::minimize;
 use crate::ops::{Op, Weights};
 use crate::scenario::{self, BUGS, HUNT_SEEDS, ORDERS, SWEEP_SEEDS};
@@ -25,6 +25,7 @@ fn swarm_one_seed_fixes_the_whole_case_pinned_same_numbers_in_zig() {
     let c = fuzz::swarm(1);
     assert_eq!(c.count, 256);
     assert_eq!(c.key_space, 64);
+    assert_eq!(c.key_layout, KeyLayout::Spread);
     assert_eq!(
         c.weights,
         Weights {
@@ -48,6 +49,66 @@ fn swarm_the_seeds_really_differ_in_the_dimensions_that_matter() {
     assert!(cases.iter().any(|c| c.key_space == 4));
     assert!(cases.iter().any(|c| c.fault_one_in != 0));
     assert!(cases.iter().any(|c| !c.drain));
+    // `KeyLayout::Spread` relies on it.
+    assert!(cases.iter().all(|c| c.key_space.is_power_of_two()));
+    for layout in KeyLayout::ALL {
+        assert!(cases.iter().any(|c| c.key_layout == layout));
+    }
+}
+
+#[test]
+fn key_layouts_pinned_keys_strictly_increasing_never_max() {
+    use KeyLayout::{Around2Pow32, Dense, Spread, Top};
+    assert_eq!(Dense.key(64, 5), 5);
+    assert_eq!(Around2Pow32.key(64, 0), (1 << 32) - 32); // 32 keys below 2^32 ...
+    assert_eq!(Around2Pow32.key(64, 63), (1 << 32) + 31); // ... and 32 from it upwards
+    assert_eq!(Spread.key(64, 3), 3 << 58);
+    assert_eq!(Spread.key(256, 255), 255 << 56);
+    assert_eq!(Spread.key(4, 4), u64::MAX); // one past the end saturates
+    assert_eq!(Top.key(64, 0), u64::MAX - 64);
+    assert_eq!(Top.key(64, 63), u64::MAX - 1); // the largest key ever used
+    assert_eq!(Top.key(64, 64), u64::MAX); // only as an exclusive range bound
+    for layout in KeyLayout::ALL {
+        for key_space in [4, 16, 64, 256] {
+            for k in 0..key_space {
+                assert!(layout.key(key_space, k) < layout.key(key_space, k + 1));
+            }
+            assert!(layout.key(key_space, key_space - 1) < u64::MAX);
+        }
+    }
+}
+
+#[test]
+fn generate_the_sweep_uses_keys_a_32_bit_or_signed_comparison_would_get_wrong() {
+    // What the keys must offer for a magnitude bug to show (the reviewer's
+    // mutant: `put` compares only the low 32 bits of the key):
+    let mut small = false; // dense small keys, as before
+    let mut above_32_bits = false;
+    let mut same_low_half = false; // two different keys that agree in their low 32 bits
+    let mut both_sides_of_2_32 = false;
+    let mut both_sides_of_2_63 = false; // different sign if read as i64
+    let mut near_max = false;
+    for seed in 1..=SWEEP_SEEDS {
+        let keys: Vec<u64> = fuzz::generate(fuzz::swarm(seed))
+            .iter()
+            .filter_map(|step| match step.op {
+                Op::Put { key, .. } => Some(key),
+                _ => None,
+            })
+            .collect();
+        let lowest = *keys.iter().min().unwrap();
+        let highest = *keys.iter().max().unwrap();
+        same_low_half |= keys
+            .windows(2)
+            .any(|w| w[0] != w[1] && w[0] as u32 == w[1] as u32);
+        small |= highest < 256;
+        above_32_bits |= highest > u64::from(u32::MAX);
+        both_sides_of_2_32 |= lowest < 1 << 32 && highest >= 1 << 32 && highest < 1 << 33;
+        both_sides_of_2_63 |= lowest < 1 << 63 && highest >= 1 << 63;
+        near_max |= highest >= u64::MAX - 2;
+    }
+    assert!(small && above_32_bits && same_low_half);
+    assert!(both_sides_of_2_32 && both_sides_of_2_63 && near_max);
 }
 
 #[test]
@@ -201,6 +262,81 @@ fn fuzz_each_family_of_checks_sees_a_bug_the_other_one_cannot() {
 }
 
 #[test]
+fn fuzz_a_failed_put_that_keeps_a_reserved_node_or_marks_pool_usage_is_caught() {
+    // Two test-only seams in the rollback of `put` (base_btree.rs, `Bug`).
+    // Both leave the tree's shape and contents untouched, so only the
+    // accounting checks can see them.
+    for order in ORDERS {
+        // The slab holds one slot more than the tree can reach. `usage` does
+        // not show it (the rollback restores it), and neither does the
+        // counting global allocator (the slab's Vec is dropped whole): only
+        // `validate`'s count of occupied slots does. In Zig the same bug is
+        // reported as a leak by the allocator wrapper.
+        let subject = Subject {
+            order,
+            bug: Bug::RollbackLeaksNode,
+        };
+        let leaked = fuzz::hunt(subject, 1, SWEEP_SEEDS, checks(), None).unwrap();
+        assert_eq!(leaked.failure.kind, Kind::OomChangedTree);
+        // `created`, `destroyed` and `peak` count nodes that were never part of the tree.
+        let subject = Subject {
+            order,
+            bug: Bug::RollbackKeepsUsage,
+        };
+        let counted = fuzz::hunt(subject, 1, SWEEP_SEEDS, checks(), None).unwrap();
+        assert_eq!(counted.failure.kind, Kind::OomChangedTree);
+        // The oracle comparison alone sees neither.
+        let without_validate = Checks {
+            validate: false,
+            ..checks()
+        };
+        for bug in [Bug::RollbackLeaksNode, Bug::RollbackKeepsUsage] {
+            let subject = Subject { order, bug };
+            assert_eq!(
+                fuzz::hunt(subject, 1, SWEEP_SEEDS, without_validate, None),
+                None
+            );
+        }
+    }
+}
+
+#[test]
+fn validate_counts_the_occupied_slots_not_only_the_usage_counters() {
+    // By hand what `Bug::RollbackLeaksNode` does: a slot is taken and the
+    // counters are put back. `usage.live()` still equals the reachable nodes.
+    let mut tree = BTree::new(4);
+    for key in 1..=10 {
+        tree.put(key, key).unwrap();
+    }
+    assert!(tree.validate().is_ok());
+    let usage = tree.pool.usage;
+    tree.pool.alloc(crate::base_node::Node::new(true)).unwrap();
+    tree.pool.usage = usage;
+    assert_eq!(tree.shape().nodes as u64, tree.pool.usage.live());
+    assert_eq!(
+        tree.validate().unwrap_err().error,
+        ValidateError::NodeCountMismatch
+    );
+}
+
+#[test]
+fn step_prints_as_one_line_of_a_reproducer_also_the_line_of_the_trace_output() {
+    let put = Step {
+        op: Op::Put { key: 7, value: 70 },
+        fault: Some(1),
+    };
+    assert_eq!(
+        put.to_string(),
+        "put 7 = 70 (node allocation 1 fails first)"
+    );
+    let range = Step {
+        op: Op::Range { lo: 3, hi: 9 },
+        fault: None,
+    };
+    assert_eq!(range.to_string(), "range [3, 9)");
+}
+
+#[test]
 fn failure_prints_what_broke_and_where() {
     let located = Failure {
         step: 3,
@@ -228,6 +364,49 @@ fn failure_prints_what_broke_and_where() {
 }
 
 // ---- minimisation ----------------------------------------------------------
+
+/// True if some contiguous block of `steps` can be removed and the rest
+/// still fails like `target`.
+fn some_block_is_removable(subject: Subject, steps: &[Step], target: &Failure) -> bool {
+    for start in 0..steps.len() {
+        for end in start + 1..=steps.len() {
+            if end - start == steps.len() {
+                continue; // nothing left
+            }
+            let mut shorter = steps[..start].to_vec();
+            shorter.extend_from_slice(&steps[end..]);
+            if fuzz::replay(subject, &shorter, checks(), None).is_some_and(|f| f.same_kind(target))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[test]
+fn minimize_no_contiguous_block_of_steps_can_be_removed_from_the_result() {
+    // The guarantee stated in minimize.rs, checked on the first failing
+    // seeds of each variant (not only the hand-picked shortest run). A
+    // minimiser whose chunk sizes only shrink fails this for 13 of these 60
+    // runs: it leaves pairs of steps that can only be removed together.
+    for bug in BUGS {
+        let subject = Subject { order: 4, bug };
+        let failing = (1..).filter_map(|seed| fuzz::hunt(subject, seed, 1, checks(), None));
+        for found in failing.take(20) {
+            let steps = fuzz::generate(found.case);
+            let small = minimize(subject, &steps, found.failure, checks());
+            let again = fuzz::replay(subject, &small.steps, checks(), None).unwrap();
+            assert_eq!(again.step, small.steps.len() - 1);
+            assert!(again.same_kind(&found.failure));
+            assert!(!some_block_is_removable(
+                subject,
+                &small.steps,
+                &found.failure
+            ));
+        }
+    }
+}
 
 #[test]
 fn minimize_short_still_failing_the_same_way_and_1_minimal() {

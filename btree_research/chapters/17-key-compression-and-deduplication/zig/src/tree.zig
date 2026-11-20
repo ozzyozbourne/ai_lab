@@ -208,7 +208,10 @@ pub const Tree = struct {
     scratch: std.heap.FixedBufferAllocator,
 
     pub fn init(gpa: Allocator, cfg: Config) Allocator.Error!Tree {
-        std.debug.assert(cfg.page_size >= 128);
+        // Not std.debug.assert: that check vanishes in ReleaseFast, where a
+        // smaller page would make maxKeyLen underflow. A panic in every build
+        // mode matches Rust's assert!.
+        if (cfg.page_size < 128) @panic("page_size must be at least 128 bytes");
         // Worst case per put, in units of the page size: two lists of 32-byte
         // LeafCells (10 bytes per cell on the page: 3.2 each), the merged TID
         // arrays (8 bytes per 6-byte TID: 1.4), one internal page as Sep and

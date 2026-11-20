@@ -445,6 +445,57 @@ test "a put that fails for lack of memory leaves the tree exactly as it was" {
     try testing.expect(saw_root_split_failure);
 }
 
+// The same guarantee on the paths the test above does not reach: with
+// deduplication on, a put can fail inside a deduplication pass or after a
+// posting-list swap. Few keys and a small TID range make both frequent.
+test "a failed put is atomic with deduplication on: dedup passes and posting-list swaps" {
+    const keys = [_][]const u8{ "", "a", "ab", "abc", "b", "ba", "zz", "abcd", "q" };
+    for ([_]bool{ false, true }) |truncate| {
+        for ([_]usize{ 128, 200 }) |page_size| {
+            var failing: testing.FailingAllocator = .init(testing.allocator, .{});
+            var tree = try Tree.init(failing.allocator(), .{ .page_size = page_size, .truncate = truncate, .dedup = true });
+            defer tree.deinit();
+            var rng = SplitMix64.init(77 + page_size);
+            var failures: usize = 0;
+            for (0..3000) |_| {
+                const key = keys[rng.below(keys.len)];
+                const tid = rng.below(400);
+                const had = tree.contains(key, tid);
+                if (rng.below(4) == 0) {
+                    // A delete may compact its leaf into a new arena. If that
+                    // allocation fails, the delete itself must still happen.
+                    failing.fail_index = failing.alloc_index;
+                    try testing.expectEqual(had, tree.delete(key, tid));
+                    failing.fail_index = std.math.maxInt(usize);
+                    try tree.validate();
+                    continue;
+                }
+                const before = tree.stats();
+                const counters_before = tree.counters;
+                var k: usize = 0;
+                while (true) : (k += 1) {
+                    failing.fail_index = failing.alloc_index + k;
+                    if (tree.put(key, tid)) |inserted| {
+                        try testing.expectEqual(!had, inserted);
+                        break;
+                    } else |err| {
+                        failures += 1;
+                        try testing.expectEqual(error.OutOfMemory, err);
+                        try tree.validate();
+                        try testing.expectEqual(before, tree.stats());
+                        try testing.expectEqual(counters_before, tree.counters);
+                        try testing.expectEqual(had, tree.contains(key, tid));
+                    }
+                }
+                failing.fail_index = std.math.maxInt(usize);
+            }
+            try tree.validate();
+            try testing.expect(failures > 100);
+            try testing.expect(tree.counters.dedup_passes > 0 and tree.counters.posting_swaps > 0);
+        }
+    }
+}
+
 test "deletes do not grow a leaf's arena without bound" {
     var tree = try Tree.init(testing.allocator, .{ .page_size = 128 });
     defer tree.deinit();

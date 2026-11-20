@@ -416,6 +416,60 @@ fn a_put_that_fails_for_lack_of_pages_leaves_the_tree_exactly_as_it_was() {
     assert!(saw_root_split_failure);
 }
 
+// The same guarantee on the paths the test above does not reach: with
+// deduplication on, a put can fail after a deduplication pass was tried or
+// after a posting-list swap. Few keys and a small TID range make both frequent.
+#[test]
+fn a_failed_put_is_atomic_with_deduplication_on_dedup_passes_and_posting_list_swaps() {
+    let keys: [&[u8]; 9] = [b"", b"a", b"ab", b"abc", b"b", b"ba", b"zz", b"abcd", b"q"];
+    for truncate in [false, true] {
+        for page_size in [128usize, 200] {
+            let mut tree = Tree::new(config(page_size, truncate, true));
+            let mut rng = SplitMix64::new(77 + page_size as u64);
+            let mut failures = 0;
+            for _ in 0..3000 {
+                let key = keys[rng.below(keys.len() as u64) as usize];
+                let tid = rng.below(400);
+                let had = tree.contains(key, tid);
+                if rng.below(4) == 0 {
+                    // A delete needs no new page, so no budget can stop it.
+                    tree.max_pages = tree.pages.len();
+                    assert_eq!(tree.delete(key, tid), had);
+                    tree.max_pages = usize::MAX;
+                    tree.validate().unwrap();
+                    continue;
+                }
+                let before = tree.stats();
+                let counters_before = tree.counters;
+                // Allow no new page, then one, then two ... until the put gets through.
+                let mut k = 0;
+                loop {
+                    tree.max_pages = tree.pages.len() + k;
+                    match tree.put(key, tid) {
+                        Ok(inserted) => {
+                            assert_eq!(inserted, !had);
+                            break;
+                        }
+                        Err(err) => {
+                            failures += 1;
+                            assert_eq!(err, Error::OutOfPages);
+                            tree.validate().unwrap();
+                            assert_eq!(tree.stats(), before);
+                            assert_eq!(tree.counters, counters_before);
+                            assert_eq!(tree.contains(key, tid), had);
+                        }
+                    }
+                    k += 1;
+                }
+                tree.max_pages = usize::MAX;
+            }
+            tree.validate().unwrap();
+            assert!(failures > 100);
+            assert!(tree.counters.dedup_passes > 0 && tree.counters.posting_swaps > 0);
+        }
+    }
+}
+
 #[test]
 fn deletes_empty_a_leaf_but_never_merge_it_away() {
     let mut tree = Tree::new(config(128, true, true));

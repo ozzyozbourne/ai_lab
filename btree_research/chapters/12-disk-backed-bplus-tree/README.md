@@ -281,7 +281,9 @@ The tree uses two kinds of memory with two very different lifetimes.
   copy of each page it splits, and cell lists; `validate` needs a bitmap and copies of interior
   pages. None of it outlives the operation, so one reset frees it all, and no error path can
   leak it. After the first few operations the arena has kept enough capacity that later ones
-  ask the backing allocator for nothing.
+  ask the backing allocator for nothing. The price: the arena keeps its high-water mark, so
+  one `validate` of a large tree leaves 4096 bytes per interior page with the handle until
+  `deinit`; `reset(.{ .retain_with_limit = n })` would cap that.
 
 What would go wrong with something else: a general-purpose allocator would need a matching
 `free` on every error path of the split code, next to the `unpin`s. A `FixedBufferAllocator`
@@ -304,11 +306,15 @@ of the split.
   into the frame. Copy what you need before unpinning, and before any insert into that page.
 - **A pool that is too small fails, it does not block.** With every frame pinned,
   `fetchPage` returns `AllFramesPinned`. This tree needs 2 frames.
+- **A crash inside `create` leaves a file neither call accepts.** With only page 0 written,
+  `create` returns `NotEmpty` and `open` returns `BadMagic`; delete the file.
 - **The counters in the metapage lag.** Between flushes the file can have more pages than
   page 0 says. `open` accepts that; `validate` reports the orphans.
 - **Pages from disk are trusted.** `pinNode` checks only the page kind and the reserved size.
-  A damaged page of the right kind can make the slotted page code read out of bounds; real
-  protection needs the checksum of chapter 21.
+  A damaged page of the right kind can make the slotted page code read out of bounds, and an
+  interior page that points at one of its ancestors makes `get` and `put` descend forever
+  (only `validate` remembers which pages it has seen); real protection needs the checksum of
+  chapter 21.
 - **An overwrite can split.** Replacing a value with a larger one may not fit; `put` handles
   it through the same split path.
 

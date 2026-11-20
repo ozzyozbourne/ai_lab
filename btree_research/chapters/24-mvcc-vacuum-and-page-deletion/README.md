@@ -99,8 +99,9 @@ them. So items move right (splits) or disappear; nothing else.
 An empty page has no items to move, so it can be removed. The deletion has two
 phases, and the page is reused in a third step:
 
-1. **Half-dead** (phase 1). Remove the parent's downlink. The page's key range is
-   given to its right sibling. No search from the root can reach the page any more.
+1. **Half-dead** (phase 1). Remove the parent's pointer to the page, its *downlink*.
+   The page's key range is given to its right sibling. No search from the root can
+   reach the page any more.
 2. **Unlink** (phase 2). Make the left sibling's right link skip the page, and stamp
    the page with a new epoch: a tick of the counter taken after the unlink. The page
    keeps its own right link.
@@ -110,19 +111,19 @@ phases, and the page is reused in a third step:
 Why two phases and not one? They change different pages: the parent, then the left
 sibling. This chapter's single-threaded model could do both at once. PostgreSQL
 cannot: it locks the pages of each phase separately and logs each phase as its own
-record (`postgres/src/backend/access/nbtree/README:247-259`, `:279-282`,
+record (`db_study/postgres/src/backend/access/nbtree/README:247-259`, `:279-282`,
 `:688-692`). So the state in between must be a tree that searches and scans survive,
 and one that a crash may leave behind for the next VACUUM to finish.
 
 Why the downlink first? Once it is gone, no new descent arrives at the page, while
-the chain still carries every scan across it (`nbtree/README:255-259`). The other order
-would leave a page that the parent still routes to but that no scan passes: an
+the chain still carries every scan across it (same file, `:255-259`). The other
+order would leave a page that the parent still routes to but that no scan passes: an
 insert sent there would add an entry that scans never return.
 
 Step 3 is delayed because of the scan that read "next page is P" just before step 2.
-It will still arrive at P. If P is a tombstone with an intact right link, the scan
-moves right and loses nothing. If P has been handed to a split somewhere else in the
-tree, the scan reads unrelated keys and has no way to notice.
+It will still arrive at P. If P is still there, marked deleted and with its right
+link intact, the scan moves right and loses nothing. If P has been handed to a split
+somewhere else in the tree, the scan reads unrelated keys and has no way to notice.
 
 ## A worked example by hand
 
@@ -301,12 +302,12 @@ All statements below were checked in the source trees under `db_study/`; see
 **PostgreSQL, hint bits (LP_DEAD).** "If a process visits a heap tuple [a row
 version in the table] and finds that it's dead and removable (ie, dead to all open
 transactions, not only that process), then we can return to the index and mark the
-corresponding index entry 'known dead'" (`N/README:513-516`). The bit is set by `_bt_killitems`
-(`N/nbtutils.c:190-390`, `ItemIdMarkDead` at `:361`) under a share lock, and scans
-skip marked items (`N/nbtreadpage.c:249`). Our model sets the bit while reading the
-page; PostgreSQL does it when the scan leaves the page. A scan that dropped its pin
-on the page skips it entirely if the page changed in the meantime, because a TID may
-have been recycled and reused (`N/README:474-489`).
+corresponding index entry 'known dead'" (`N/README:513-516`). The bit is set by
+`_bt_killitems` (`N/nbtutils.c:190-390`, `ItemIdMarkDead` at `:361`) under a share
+lock, and scans skip marked items (`N/nbtreadpage.c:249`). Our model sets the bit
+while reading the page; PostgreSQL does it when the scan leaves the page. A scan that
+dropped its pin on the page skips it entirely if the page changed in the meantime,
+because a TID may have been recycled and reused (`N/README:474-489`).
 
 **Simple and bottom-up deletion.** When an insert finds its leaf full,
 `_bt_delete_or_dedup_one_page` first collects the LP_DEAD items and deletes them

@@ -1,0 +1,75 @@
+Chapter 30: tracing a real insert
+
+== Part 1: one insert, call by call (2-frame pool) ==
+6 keys on 2 pages; the root (page 1) is still a leaf
+insert 07 (468-byte value), nothing cached:
+  call 1: descend -> Io(page 1)
+          the disk reads page 1 into the pool
+  call 2: descend, leaf_put, push_root_leaf, split_leaf, insert_separator -> Io(page 1)
+          the disk reads page 1 into the pool
+  call 3: insert_separator -> Done
+  3 calls; pages read by the disk: 2, by the insert itself: 0
+page 1  interior  1 keys  12/4076 bytes  | (2) 20 (3)
+  page 2  leaf      5 keys  2500/4076 bytes  next 3  | 05:420 06:444 07:468 10:540 12:588
+  page 3  leaf      2 keys  1816/4076 bytes  next -  | 20:780 30:1020
+insert 15 (660-byte value), nothing cached:
+  call 1: descend -> Io(page 1)
+          the disk reads page 1 into the pool
+  call 2: descend, descend -> Io(page 2)
+          the disk reads page 2 into the pool
+  call 3: descend, leaf_put, split_leaf, insert_separator -> Io(page 1)
+          the disk reads page 1 into the pool
+  call 4: insert_separator -> Done
+  4 calls; pages read by the disk: 3, by the insert itself: 0
+page 1  interior  2 keys  24/4076 bytes  | (2) 12 (4) 20 (3)
+  page 2  leaf      6 keys  2616/4076 bytes  next 4  | 01:324 03:372 05:420 06:444 07:468 10:540
+  page 4  leaf      3 keys  1980/4076 bytes  next 3  | 12:588 15:660 17:708
+  page 3  leaf      3 keys  2724/4076 bytes  next -  | 20:780 25:900 30:1020
+
+== Part 2: 2000 puts, blocking and resumable (4-frame pools) ==
+blocking put: 1451 keys, 106 pages, height 3; splits: 101 leaf, 1 interior, 2 root
+resumable insert:
+  3852 calls of step, 1852 of them returned Io
+  suspended in: descend 1831, leaf_put 0, push_root_leaf 0, split_leaf 0, insert_separator 21, push_root_interior 0, split_interior 0
+  pages read by the disk: 1957; file identical to the blocking one: true
+resumable insert, every unpinned page dropped between transitions:
+  8152 calls of step, 6152 of them returned Io
+  suspended in: descend 3946, leaf_put 2000, push_root_leaf 1, split_leaf 101, insert_separator 102, push_root_interior 1, split_interior 1
+  pages read by the disk: 6258; file identical to the blocking one: true
+
+== Part 3: five operations on one thread (8-frame pool, nothing cached) ==
+  #0 get 17: admitted
+  #0 get 17: Io(page 1)
+  #1 get 03: admitted
+  #1 get 03: Io(page 1)
+  #2 get 28: admitted
+  #2 get 28: Io(page 1)
+  disk: page 1 is in the pool, wake #0
+  #0 get 17: Io(page 4)
+  disk: page 4 is in the pool, wake #0
+  #0 get 17: Done, 708 bytes
+  disk: page 1 is in the pool, wake #2
+  #2 get 28: Io(page 5)
+  disk: page 1 is in the pool, wake #1
+  #1 get 03: Io(page 2)
+  disk: page 5 is in the pool, wake #2
+  #2 get 28: Done, 972 bytes
+  disk: page 2 is in the pool, wake #1
+  #1 get 03: Done, 372 bytes
+  #3 put 24: admitted
+  #3 put 24: Io(page 3)
+  disk: page 3 is in the pool, wake #3
+  #3 put 24: Done
+  #4 get 24: admitted
+  #4 get 24: Done, 876 bytes
+
+== Part 4: why the writer runs alone (2-frame pool) ==
+insert 16 has split a leaf into pages 4 and 8 and waits for page 1 in state insert_separator
+  a get of 15 let in now: found
+  a get of 18 let in now: NOT FOUND, although the key is in the tree
+after the insert is done, get 18: found
+
+== Part 5: where the scratch memory of a split must live ==
+arena per operation,  2-frame pool: 30 inserts, validate ok after each
+buffer reused per call, 64-frame pool: 30 inserts, validate ok after each
+buffer reused per call, 2-frame pool: tree broken after insert 10 (KeyOutOfBounds)

@@ -17,6 +17,11 @@
   #fig-tree .bt-legend { order: 4; }
   #fig-tree .bt-side { order: 5; }
 }
+/* Page labels sit where an edge from the parent can pass. A halo in the
+ * colour of the drawing's background keeps the text readable there. */
+.bt-tree-svg .bt-node-label, .bt-tree-svg .bt-node-note {
+  paint-order: stroke; stroke: var(--bt-bg); stroke-width: 4px; stroke-linejoin: round;
+}
 .ch12-hint { font-size: .88rem; color: var(--bt-muted); margin: 0 0 8px; min-height: 1.3em; }
 .ch12-hint.is-error { color: var(--bt-key-deleted); font-weight: 600; }
 .ch12-label { font-size: .82rem; color: var(--bt-muted); margin: 10px 0 4px; }
@@ -36,10 +41,19 @@ Text of the chapter: <a href="../README.md">README.md</a>. Second page:
 <p>Every box is one page of the file, labelled with its page id and with how many of its
 bytes are in use. Page 0 is the metapage and is not drawn; page 1 is the root and stays the root.
 A page is full when its <em>bytes</em> run out, so a leaf with a few large values splits as early as a leaf
-with many small ones. The figure starts with an empty tree. <strong>Put next scenario key</strong> replays, one
+with many small ones. A line from an interior page starts between the two separators that bound the child
+it leads to; the dot is the parent's end of it (a page stores no pointer to its parent).
+The figure starts with an empty tree. <strong>Put next scenario key</strong> replays, one
 key at a time, the 24 puts that the chapter's Zig and Rust programs print (key <em>n</em> carries a value of
 300 + 24·<em>n</em> bytes); or type your own key and value size. A new put always starts from the tree as it is
-after the put you are looking at has finished. Tick <em>Predict</em> to be asked whether the cell fits.</p>
+after the put you are looking at has finished. Tick <em>Predict</em> to be asked, before each put is carried out,
+whether the cell fits.</p>
+<p>With 4096-byte pages an interior page holds hundreds of separators, so these 24 puts never fill one.
+To watch an <em>interior</em> page split, choose <strong>128-byte toy pages</strong> (not a real format: 108
+bytes for cells, values of at most 22 bytes) and press <strong>Run to the interior split</strong>: the first 25 puts
+of a 30-put scenario are applied at once, and put 26 is played step by step. Its leaf splits, the root has no room
+for the tenth separator, the root's content moves down for the second time, the interior page splits, and the
+tree has three levels with page 1 still on top.</p>
 <div id="fig-tree"></div>
 
 <h2>2. Page 0: where the tree starts</h2>
@@ -78,19 +92,23 @@ The root page id never changes, however often the root splits; only the two coun
 
   var sizeSel = el('select.bt-select#size-sel', { 'aria-label': 'Page size' },
     el('option', { value: 4096 }, '4096-byte pages (the real format)'),
-    el('option', { value: 512 }, '512-byte toy pages (interior splits)'));
+    el('option', { value: 128 }, '128-byte toy pages (an interior page splits)'));
   var keyIn = el('input.bt-input#key-in', { type: 'text', maxlength: 12, 'aria-label': 'Key', placeholder: 'key', autocomplete: 'off' });
   var valIn = el('input.bt-input#val-in', { type: 'text', inputmode: 'numeric', 'aria-label': 'Value size in bytes', placeholder: 'bytes', autocomplete: 'off' });
   var putBtn = el('button.bt-btn.bt-primary#btn-put', { type: 'button', onclick: putTyped }, 'Put');
   var nextBtn = el('button.bt-btn#btn-next', { type: 'button', onclick: putNext }, 'Put next scenario key');
   var restBtn = el('button.bt-btn#btn-rest', { type: 'button', onclick: runRest }, 'Run the rest');
+  var interiorBtn = el('button.bt-btn#btn-interior', { type: 'button', onclick: runToInterior }, 'Run to the interior split');
   var resetBtn = el('button.bt-btn#btn-reset', { type: 'button', onclick: function () { reset(); } }, 'Reset');
   fig.toolbar.append(el('label.bt-field', 'key', keyIn), el('label.bt-field', 'value bytes', valIn), putBtn,
-    el('span.bt-toolbar-sep'), nextBtn, restBtn, el('span.bt-toolbar-sep'), sizeSel, resetBtn);
+    el('span.bt-toolbar-sep'), nextBtn, restBtn, interiorBtn, el('span.bt-toolbar-sep'), sizeSel, resetBtn);
 
   var hint = el('p.ch12-hint#hint', { role: 'status' });
   fig.stage.appendChild(hint);
-  var view = new BTViz.TreeView(fig.stage, { minHeight: 230, ariaLabel: 'The tree, one box per page' });
+  // A three-level toy tree is wider than the stage. On a wide screen it may
+  // shrink a little further than the toolkit's default so that all of it is
+  // visible; on a phone the default stays, and the view scrolls instead.
+  var view = new BTViz.TreeView(fig.stage, { minHeight: 230, minScale: window.innerWidth >= 700 ? 0.55 : 0.7, ariaLabel: 'The tree, one box per page' });
   fig.stage.appendChild(el('div.ch12-label#fill-label', 'Bytes in use per page (the full height is one page).'));
   var chart = new BTViz.Chart(fig.stage, { type: 'bar', height: 170, yMax: 4076, yLabel: 'bytes used', xLabel: 'page id' });
 
@@ -109,7 +127,7 @@ The root page id never changes, however often the root splits; only the two coun
   var metaNote = el('p.ch12-hint#meta-note');
   metaFig.stage.appendChild(metaNote);
 
-  var tree, scenarioAt, history;
+  var tree, scenario, scenarioAt, history;
 
   function le(value, bytes) {
     var out = [];
@@ -130,15 +148,29 @@ The root page id never changes, however often the root splits; only the two coun
   }
 
   var stepper = new BTViz.Stepper({
-    mount: fig.controls, caption: fig.caption, root: fig.root, predict: true, interval: 1700,
+    mount: fig.controls, caption: fig.caption, root: fig.root, predict: false, interval: 1700,
     onStep: function (step, index) {
       view.render(step.state, step.highlight);
+      if (step.type === 'rest') centreRoot();
       chart.render({ labels: step.fill.labels, series: [{ name: 'bytes used', token: 'split', values: step.fill.values }] });
       log.sync(history.concat(stepper.steps.slice(0, index + 1)), history.length + index);
       Object.keys(panels).forEach(function (name) { panels[name].root.hidden = name !== (step.code || 'put'); });
       renderMeta(step.counters.pages, step.keys);
     }
   });
+
+  /* The toolkit scrolls a wide tree to the highlighted pages. A resting
+   * picture highlights nothing, so there the root is brought to the middle;
+   * otherwise a tree wider than the stage would open on its leftmost leaves
+   * with the root out of view. (Reads TreeView's layout and scroller.) */
+  function centreRoot() {
+    var sc = view.scroller, layout = view.layout;
+    if (!sc || !layout || sc.scrollWidth <= sc.clientWidth + 1) return;
+    var rootBox = layout.nodes.get('p' + tree.root);
+    if (!rootBox) return;
+    var margin = (sc.scrollWidth - view.W * view.scale) / 2;
+    sc.scrollLeft = Math.max(0, (rootBox.x + rootBox.w / 2) * view.scale + margin - sc.clientWidth / 2);
+  }
 
   function say(text, isError) {
     hint.textContent = text || '';
@@ -152,18 +184,25 @@ The root page id never changes, however often the root splits; only the two coun
   }
 
   function updateButtons() {
-    var left = CH12.SCENARIO.length - scenarioAt;
+    var total = scenario.length, left = total - scenarioAt;
     nextBtn.disabled = restBtn.disabled = left === 0;
-    nextBtn.textContent = left === 0 ? 'Scenario finished (24 of 24)' :
-      'Put next scenario key: ' + CH12.scenarioKey(CH12.SCENARIO[scenarioAt]) + ' (' + (scenarioAt + 1) + ' of 24)';
+    nextBtn.textContent = left === 0 ? 'Scenario finished (' + total + ' of ' + total + ')' :
+      'Put next scenario key: ' + CH12.scenarioKey(scenario[scenarioAt]) + ' (' + (scenarioAt + 1) + ' of ' + total + ')';
+    // Only the toy pages can split an interior page within the scenario.
+    interiorBtn.hidden = tree.pageSize !== 128;
+    interiorBtn.disabled = left === 0 || tree.stats.interior > 0;
+    interiorBtn.textContent = tree.stats.interior > 0 ? 'Interior split reached' : 'Run to the interior split';
     keyIn.placeholder = 'key';
     valIn.placeholder = '0 to ' + tree.maxValue;
   }
 
   function reset(quiet) {
     tree = new CH12.Tree({ pageSize: +sizeSel.value, frames: 3 });
+    scenario = CH12.scenarioFor(tree.pageSize);
     scenarioAt = 0;
     history = [];
+    // Keep the typed value size legal for the page size just chosen.
+    if (!/^\d+$/.test(valIn.value.trim()) || +valIn.value > tree.maxValue) valIn.value = tree.pageSize === 128 ? '20' : '700';
     chart.opts.yMax = tree.capacity;
     document.getElementById('fill-label').textContent = 'Bytes in use per page (the full height is one page: ' + tree.capacity + ' bytes).';
     stepper.setSteps([restingStep('An empty tree: page 0 is the metapage, page 1 is the root, and the root is an empty leaf. ' +
@@ -178,12 +217,27 @@ The root page id never changes, however often the root splits; only the two coun
       say('This drawing stops at ' + MAX_PAGES + ' pages. Press Reset to start again.', true);
       return false;
     }
-    // Steps of earlier puts stay in the log.
+    keepLog();
+    show(record(key, vlen));
+    updateButtons();
+    return true;
+  }
+
+  /* Steps of earlier puts stay in the log. */
+  function keepLog() {
     stepper.steps.forEach(function (s) { history.push({ log: s.log }); });
+  }
+
+  function putLog(key, vlen) {
+    return { html: '<b>put ' + CH12.esc(key) + '</b> (' + vlen + ' value bytes)', state: 'inserted' };
+  }
+
+  /* Run one put on the model and return its steps, ready for the stepper. */
+  function record(key, vlen) {
     var before = tree.keyCount;
     var steps = tree.put(key, vlen, true);
     steps.forEach(function (s, i) { s.keys = i === steps.length - 1 ? tree.keyCount : before; });
-    steps[0].log = { html: '<b>put ' + CH12.esc(key) + '</b> (' + vlen + ' value bytes)', state: 'inserted' };
+    steps[0].log = putLog(key, vlen);
     // Predict: does it fit?
     steps.forEach(function (s, i) {
       if (s.type !== 'fit' && s.type !== 'full') return;
@@ -194,9 +248,11 @@ The root page id never changes, however often the root splits; only the two coun
         explain: s.type === 'fit' ? 'There is room: one page changes.' : 'Not enough free bytes: the leaf splits.'
       };
     });
+    return steps;
+  }
+
+  function show(steps) {
     stepper.setSteps(steps, { play: true });
-    updateButtons();
-    return true;
   }
 
   function putTyped() {
@@ -214,26 +270,56 @@ The root page id never changes, however often the root splits; only the two coun
   }
 
   function putNext() {
-    if (scenarioAt >= CH12.SCENARIO.length) return;
-    var n = CH12.SCENARIO[scenarioAt];
+    if (scenarioAt >= scenario.length) return;
+    var n = scenario[scenarioAt];
     if (play(CH12.scenarioKey(n), CH12.scenarioValueLen(n, tree.pageSize))) {
       scenarioAt++;
       updateButtons();
-      say('Scenario put ' + scenarioAt + ' of 24.');
+      say('Scenario put ' + scenarioAt + ' of ' + scenario.length + '.');
     }
+  }
+
+  /* Toy pages: apply scenario puts without animation until one of them
+   * splits an interior page, and play that one step by step. Every put is
+   * recorded, so the put that turns out to be the one is shown exactly as
+   * it ran, from the tree on screen. */
+  function runToInterior() {
+    var done = 0;
+    keepLog();
+    while (scenarioAt < scenario.length && tree.pool.pageCount < MAX_PAGES) {
+      var n = scenario[scenarioAt++];
+      var key = CH12.scenarioKey(n), vlen = CH12.scenarioValueLen(n, tree.pageSize);
+      var before = tree.stats.interior;
+      var steps = record(key, vlen);
+      if (tree.stats.interior > before) {
+        steps[0].caption = (done > 0 ? done + ' scenario put' + (done === 1 ? ' was' : 's were') + ' applied without animation. ' : '') +
+          'This is scenario put ' + scenarioAt + ' of ' + scenario.length + ', the one that splits an interior page. ' + steps[0].caption;
+        show(steps);
+        updateButtons();
+        say('Scenario put ' + scenarioAt + ' of ' + scenario.length + ': watch the root. Step with the arrow keys or the buttons below.');
+        return;
+      }
+      history.push({ log: putLog(key, vlen) });
+      done++;
+    }
+    stepper.setSteps([restingStep(done + ' scenario put' + (done === 1 ? ' was' : 's were') + ' applied without animation and none of them split an interior page: ' +
+      tree.keyCount + ' keys in ' + tree.pool.pageCount + ' pages.')]);
+    updateButtons();
+    say(done + ' puts applied.');
   }
 
   function runRest() {
     var done = 0;
-    stepper.steps.forEach(function (s) { history.push({ log: s.log }); });
-    while (scenarioAt < CH12.SCENARIO.length && tree.pool.pageCount < MAX_PAGES) {
-      var n = CH12.SCENARIO[scenarioAt++];
+    keepLog();
+    while (scenarioAt < scenario.length && tree.pool.pageCount < MAX_PAGES) {
+      var n = scenario[scenarioAt++];
       tree.put(CH12.scenarioKey(n), CH12.scenarioValueLen(n, tree.pageSize), false);
-      history.push({ log: { html: '<b>put ' + CH12.scenarioKey(n) + '</b> (' + CH12.scenarioValueLen(n, tree.pageSize) + ' value bytes)', state: 'inserted' } });
+      history.push({ log: putLog(CH12.scenarioKey(n), CH12.scenarioValueLen(n, tree.pageSize)) });
       done++;
     }
     stepper.setSteps([restingStep('The remaining ' + done + ' scenario puts were applied without animation: ' + tree.keyCount + ' keys in ' +
-      tree.pool.pageCount + ' pages, ' + tree.stats.leaf + ' leaf splits, ' + tree.stats.interior + ' interior splits, the root moved down ' + tree.stats.root + ' time(s). ' +
+      tree.pool.pageCount + ' pages, ' + tree.stats.leaf + ' leaf splits, ' + tree.stats.interior + ' interior split' + (tree.stats.interior === 1 ? '' : 's') + ', the root moved down ' + tree.stats.root + ' time' + (tree.stats.root === 1 ? '' : 's') +
+      ' and is still page ' + tree.root + '. ' +
       'Compare the boxes with the bars: how full a page is depends on the bytes of its cells, not on how many there are.')]);
     updateButtons();
     say(done + ' puts applied.');
@@ -244,8 +330,8 @@ The root page id never changes, however often the root splits; only the two coun
     input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.stopPropagation(); putTyped(); } });
   });
 
-  reset(true);
   valIn.value = '700';
+  reset(true);
 
   /* The JS model must reproduce what the chapter's programs print for part 1. */
   var EXPECTED_FIRST = [
@@ -269,6 +355,30 @@ The root page id never changes, however often the root splits; only the two coun
   BTViz.selfTest('tree after 24 puts', replay.dump, EXPECTED_DUMP);
   BTViz.selfTest('counters', replay.counters, EXPECTED_COUNTERS);
   BTViz.selfTest('validate', replay.valid, null);
+
+  /* The toy scenario must do what the text above promises: put 26 splits an
+   * interior page and the tree ends three levels high, the root still page 1. */
+  var toy = CH12.replayToy();
+  BTViz.selfTest('toy: interior split', toy.summary,
+    'interior split at put 26 of 30; root page 1; 30 keys, 17 pages, height 3; splits: 12 leaf, 1 interior, 2 root');
+  BTViz.selfTest('toy: tree after 30 puts', toy.dump, [
+    'page 1  interior  1 keys  12/108 bytes  | (13) 15 (14)',
+    '  page 13  interior  5 keys  60/108 bytes  | (2) 03 (11) 05 (7) 07 (4) 10 (9) 12 (3)',
+    '    page 2  leaf      2 keys  57/108 bytes  next 11  | 01:21 02:20',
+    '    page 11  leaf      2 keys  53/108 bytes  next 7  | 03:19 04:18',
+    '    page 7  leaf      2 keys  49/108 bytes  next 4  | 05:17 06:16',
+    '    page 4  leaf      3 keys  82/108 bytes  next 9  | 07:15 08:22 09:21',
+    '    page 9  leaf      2 keys  55/108 bytes  next 3  | 10:20 11:19',
+    '    page 3  leaf      3 keys  75/108 bytes  next 12  | 12:18 13:17 14:16',
+    '  page 14  interior  6 keys  72/108 bytes  | (12) 17 (8) 20 (6) 23 (15) 25 (5) 27 (16) 29 (10)',
+    '    page 12  leaf      2 keys  53/108 bytes  next 8  | 15:15 16:22',
+    '    page 8  leaf      3 keys  84/108 bytes  next 6  | 17:21 18:20 19:19',
+    '    page 6  leaf      3 keys  75/108 bytes  next 15  | 20:18 21:17 22:16',
+    '    page 15  leaf      2 keys  53/108 bytes  next 5  | 23:15 24:22',
+    '    page 5  leaf      2 keys  57/108 bytes  next 16  | 25:21 26:20',
+    '    page 16  leaf      2 keys  53/108 bytes  next 10  | 27:19 28:18',
+    '    page 10  leaf      2 keys  49/108 bytes  next -  | 29:17 30:16'].join('\n'));
+  BTViz.selfTest('toy: validate', toy.valid, null);
 })();
 </script>
 </body>

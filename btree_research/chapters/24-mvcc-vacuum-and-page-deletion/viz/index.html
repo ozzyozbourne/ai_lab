@@ -424,7 +424,9 @@ chapter's Zig and Rust programs; the trees they end in are checked against the p
     } else {
       text += 'The horizon stays at ' + after + '.';
     }
-    step(text, { code: 'visible', log: 'close ' + name + ', horizon ' + after });
+    var hp = {};                        // the pages the caption is about (on a phone the picture scrolls to them)
+    (ready || []).forEach(function (id) { hp[id] = 'deleted'; });
+    step(text, { hl: { pages: hp }, code: 'visible', log: 'close ' + name + ', horizon ' + after });
   }
   function doClose() {
     act('Close the oldest snapshot.', function () {

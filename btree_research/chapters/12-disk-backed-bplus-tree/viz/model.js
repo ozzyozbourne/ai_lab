@@ -115,9 +115,13 @@
 
   var SIZES = {
     4096: { pageSize: 4096, maxKey: 256, maxValue: 1024 },
-    // Not a real format: a toy page small enough that interior pages split
-    // on screen. The rule "three cells always fit" still holds.
-    512: { pageSize: 512, maxKey: 30, maxValue: 128 }
+    // Not a real format: a toy page small enough that an interior page
+    // splits, and the tree reaches three levels, within the 30 puts of
+    // TOY_SCENARIO. A page offers 128 - 4 - 16 = 108 bytes; an interior cell
+    // with a 2-byte key costs 12, so the root holds 9 separators and the
+    // tenth splits it. The rule "three cells always fit" still holds:
+    // 3 * (4 + 8 + 22 + 2) = 108.
+    128: { pageSize: 128, maxKey: 8, maxValue: 22 }
   };
 
   function Tree(opts) {
@@ -510,8 +514,13 @@
         id: 'p' + id,
         keys: page.cells.map(function (c) { return c.k; }),
         leaf: page.leaf,
-        meta: { label: 'page ' + id, note: self.used(id) + ' / ' + self.capacity + ' B', dirty: f >= 0 && self.pool.frames[f].dirty }
+        meta: { label: 'page ' + id, dirty: f >= 0 && self.pool.frames[f].dirty }
       };
+      // The toolkit centres `note` under the box. Under an interior page
+      // that is exactly where the edges to its children start, so there the
+      // byte count goes into the label above the box instead.
+      var bytes = self.used(id) + ' / ' + self.capacity + ' B';
+      if (page.leaf) out.meta.note = bytes; else out.meta.label += ' · ' + bytes;
       if (page.leaf) {
         if (page.link !== INVALID) out.next = 'p' + page.link;
       } else {
@@ -601,7 +610,29 @@
   /* The fixed scenario of the programs (demo.zig / demo.rs, part 1). */
   var SCENARIO = [10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15, 8, 22, 28, 14, 2, 27, 18, 9, 23, 11, 29, 4];
   function scenarioKey(n) { return (n < 10 ? '0' : '') + n; }
-  function scenarioValueLen(n, pageSize) { return pageSize === 512 ? 37 + 3 * n : 300 + 24 * n; }
+  function scenarioValueLen(n, pageSize) { return pageSize === 128 ? 22 - n % 8 : 300 + 24 * n; }
+
+  /* The scenario for the 128-byte toy pages (this page only; the programs
+   * have no toy size): the same 24 keys and six more, with values of 15 to
+   * 22 bytes. Put 26 (key 16) is the first to split an interior page, which
+   * is the root, so the root moves down a second time and the tree gets its
+   * third level. */
+  var TOY_SCENARIO = SCENARIO.concat([13, 16, 19, 21, 24, 26]);
+  function scenarioFor(pageSize) { return pageSize === 128 ? TOY_SCENARIO : SCENARIO; }
+
+  /* Replays the toy scenario and returns what the page's self-test pins:
+   * where the interior split happens and the tree it ends with. */
+  function replayToy() {
+    var tree = new Tree({ pageSize: 128, frames: 3 });
+    var firstInterior = 0;
+    TOY_SCENARIO.forEach(function (n, i) {
+      tree.put(scenarioKey(n), scenarioValueLen(n, 128), false);
+      if (!firstInterior && tree.stats.interior > 0) firstInterior = i + 1;
+    });
+    var valid = tree.validate();
+    return { tree: tree, firstInterior: firstInterior, valid: valid, dump: tree.dump(),
+      summary: 'interior split at put ' + firstInterior + ' of ' + TOY_SCENARIO.length + '; root page ' + tree.root + '; ' + tree.counters().split('\n')[0].slice(7) };
+  }
 
   /* Replays part 1 exactly as the programs run it (including the dumps and
    * the validate, which also go through the pool) and returns what they
@@ -620,7 +651,8 @@
     return { tree: tree, firstSplitDump: firstSplitDump, dump: dump, valid: valid, counters: counters };
   }
 
-  var api = { Tree: Tree, Pool: Pool, SCENARIO: SCENARIO, scenarioKey: scenarioKey, scenarioValueLen: scenarioValueLen, replayPart1: replayPart1, kb: kb, esc: esc };
+  var api = { Tree: Tree, Pool: Pool, SCENARIO: SCENARIO, TOY_SCENARIO: TOY_SCENARIO, scenarioFor: scenarioFor, scenarioKey: scenarioKey, scenarioValueLen: scenarioValueLen,
+    replayPart1: replayPart1, replayToy: replayToy, kb: kb, esc: esc };
   root.CH12 = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

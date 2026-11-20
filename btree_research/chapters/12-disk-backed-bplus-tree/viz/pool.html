@@ -15,6 +15,11 @@
   #fig-pool .bt-legend { order: 4; }
   #fig-pool .bt-side { order: 5; }
 }
+/* Page labels sit where an edge from the parent can pass. A halo in the
+ * colour of the drawing's background keeps the text readable there. */
+.bt-tree-svg .bt-node-label, .bt-tree-svg .bt-node-note {
+  paint-order: stroke; stroke: var(--bt-bg); stroke-width: 4px; stroke-linejoin: round;
+}
 .ch12-hint { font-size: .88rem; color: var(--bt-muted); margin: 0 0 8px; min-height: 1.3em; }
 .ch12-hint.is-error { color: var(--bt-key-deleted); font-weight: 600; }
 .ch12-label { font-size: .82rem; color: var(--bt-muted); margin: 10px 0 4px; }
@@ -222,14 +227,21 @@ from the state after the operation you are looking at has finished.</p>
     var steps = tree.flushSteps();
     steps.forEach(function (s) { s.codeOverride = 'flush'; });
     var writes = steps.filter(function (s) { return s.type === 'pool-write'; });
+    // A small pool may have to evict a dirty page to make room for the
+    // metapage: that is a storage write of this flush too.
+    var evicted = steps.filter(function (s) { return s.type === 'pool-evict' && s.event.wrote; }).length;
+    var total = writes.length + evicted;
     writes.forEach(function (s, i) {
       if (i < writes.length - 1) {
         s.caption += ' Still to write: page' + (s.dirtyPages.length === 1 ? ' ' : 's ') + s.dirtyPages.join(', ') + '.';
       }
     });
     steps[0].log = { html: '<b>flush</b>', state: 'found' };
-    steps[steps.length - 1].caption = 'Flushed and synced with ' + writes.length + ' page write' + (writes.length === 1 ? '' : 's') +
-      ': every frame is clean and the file holds the whole tree. Had the process died between two of those writes, the file would hold a mix of old and new pages (part 4 of the programs tries every such point).';
+    steps[steps.length - 1].caption = 'Flushed and synced with ' + total + ' page write' + (total === 1 ? '' : 's') +
+      (evicted > 0 ? ' (' + evicted + ' of them when a dirty page was evicted to make room for the metapage)' : '') +
+      ': every frame is clean and the file holds the whole tree. ' +
+      (total >= 2 ? 'Had the process died between two of those writes, the file would hold a mix of old and new pages (part 4 of the programs tries every such point).' :
+        'Only the metapage was dirty, so there was no moment at which the file held a mix of old and new pages.');
     stepper.setSteps(steps, { play: true });
     say('flush');
   }

@@ -219,12 +219,12 @@ fn part3(w: *Io.Writer, gpa: Allocator) !void {
     s.events = &events;
 
     var value_buf: [btree.max_value_len]u8 = undefined;
-    const names = [_][]const u8{ "get 17", "get 03", "get 28", "put 13", "get 13" };
+    const names = [_][]const u8{ "get 17", "get 03", "get 28", "put 24", "get 24" };
     _ = try s.submitGet(gpa, "17");
     _ = try s.submitGet(gpa, "03");
     _ = try s.submitGet(gpa, "28");
-    _ = try s.submitInsert(gpa, "13", scenarioValue(13, &value_buf));
-    _ = try s.submitGet(gpa, "13");
+    _ = try s.submitInsert(gpa, "24", scenarioValue(24, &value_buf));
+    _ = try s.submitGet(gpa, "24");
     try s.run();
 
     for (events.items) |e| {

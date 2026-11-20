@@ -28,13 +28,10 @@ pub const Tally = struct {
         self.ops += 1;
         self.io.add(io);
         self.max_writes = @max(self.max_writes, io.totalWrites());
-        if (dbg_on and io.totalWrites() < 8) dbg[io.totalWrites()] += 1;
     }
 };
 
 /// One structure's side of a comparison.
-pub var dbg_on = false;
-pub var dbg: [8]u64 = @splat(0);
 pub const Side = struct {
     /// put + delete
     writes: Tally = .{},
@@ -153,9 +150,7 @@ pub fn runWorkload(gpa: Allocator, wl: Workload, order: usize, cfg: lsm_.Config)
                 lsm_tally.entries += want.len;
             },
         }
-        dbg_on = (op == .put or op == .delete);
         tree_tally.record(tree.dev.counters.since(t0));
-        dbg_on = false;
         lsm_tally.record(lsm.dev.counters.since(l0));
     }
 
@@ -178,7 +173,7 @@ pub fn runWorkload(gpa: Allocator, wl: Workload, order: usize, cfg: lsm_.Config)
 pub const workloads = [_]Workload{
     .{
         .name = "insert-heavy",
-        .seed = 2701,
+        .seed = 271,
         .preload = 0,
         .count = 12_000,
         .key_space = 1_000_000,
@@ -187,7 +182,7 @@ pub const workloads = [_]Workload{
     },
     .{
         .name = "read-heavy",
-        .seed = 2702,
+        .seed = 272,
         .preload = 8_000,
         .count = 12_000,
         .key_space = 12_000,
@@ -196,7 +191,7 @@ pub const workloads = [_]Workload{
     },
     .{
         .name = "update-heavy",
-        .seed = 2703,
+        .seed = 273,
         .preload = 4_000,
         .count = 12_000,
         .key_space = 4_000,

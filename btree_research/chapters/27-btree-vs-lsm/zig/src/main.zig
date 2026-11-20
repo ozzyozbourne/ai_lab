@@ -129,7 +129,7 @@ fn trace(gpa: Allocator, w: *Writer) !void {
     try w.writeAll("\n== 2. Where the data ended up ==\n");
     try w.print("B+tree: height {d}, {d} blocks\n", .{ tree.height, tree.dev.live });
     try dumpTree(w, &tree);
-    try w.print("LSM: {d} blocks on the device, {d} slots for 14 live keys (~ marks a tombstone)\n", .{ lsm.dev.live, lsm.slotsOnDevice() });
+    try w.print("LSM: {d} blocks on the device holding {d} slots, {d} key(s) in the memtable\n", .{ lsm.dev.live, lsm.slotsOnDevice(), lsm.mem.count });
     try dumpLsm(w, &lsm);
     const tc = tree.dev.counters;
     const lc = lsm.dev.counters;
@@ -245,7 +245,6 @@ fn compare(gpa: Allocator, w: *Writer, wl: bench.Workload, section: usize) !void
     try rowCount(w, "  most blocks at any moment", b.peak, l.peak);
     try rowRatio(w, "  space amplification (at the peak)", b.peak, packed_blocks, l.peak, packed_blocks);
 
-    std.debug.print("{any}\n", .{bench.dbg});
     const s = r.lsm_stats;
     try w.print("B+tree: height {d}. LSM: {d} level(s) below level 0, {d} run(s) in level 0, {d} slots on the device.\n", .{
         r.btree_height, r.lsm_levels, r.lsm_l0_runs, r.lsm_slots,

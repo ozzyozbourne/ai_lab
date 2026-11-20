@@ -17,6 +17,11 @@
   /* The experiment list has long labels: let it shrink instead of widening the page. */
   .ch19-wide { display: flex; flex: 1 1 16em; min-width: 0; max-width: 100%; }
   .ch19-wide select { flex: 1 1 auto; min-width: 0; width: 100%; max-width: 34em; }
+  /* Slightly tighter lanes in the guided figure, so that the picture, the lanes, the
+     caption and the step controls fit on one 1280x800 screen together. */
+  #fig-guided .bt-lanes { gap: 6px; }
+  #fig-guided .bt-lane { padding: 5px 10px; }
+  #fig-guided .bt-lane-track { padding-top: 4px; }
   /* Four lanes (the convoy experiment): two by two where there is room. */
   @media (min-width: 720px) {
     .ch19-many .bt-lanes { display: grid; grid-template-columns: 1fr 1fr; }

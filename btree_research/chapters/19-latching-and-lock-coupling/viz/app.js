@@ -192,8 +192,6 @@
     fig.toolbar.append(el('label.bt-field', 'Protocol ', selProto), el('label.bt-field.ch19-wide', 'Experiment ', selExp));
 
     var strip = new GlobalStrip(fig.stage);
-    // 205 px is enough for three levels and keeps picture, lanes, caption and
-    // controls on one 1280x800 screen, also with a three-line caption.
     var view = new BTViz.TreeView(fig.stage, { minHeight: 205 });
     var lanes = new BTViz.Lanes(fig.stage, {});
     var panels = {};

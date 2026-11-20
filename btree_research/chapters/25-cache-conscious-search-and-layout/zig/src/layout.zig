@@ -4,13 +4,21 @@
 //!   * `Eytzinger`: a binary search tree stored in breadth-first order, the
 //!     way a binary heap is stored. Children of slot k are slots 2k and 2k+1.
 //!   * `BlockTree`: the same idea with 8 keys (one cache line) per node and 9
-//!     children. It is a pointer-free B-tree: one line per level.
+//!     children: one key line per level. It borrows the B-tree's node shape
+//!     (8 keys, 9 children, one unit of transfer) but it is NOT a B-tree. It
+//!     is a complete 9-ary search tree in breadth-first numbering: leaves may
+//!     sit on two adjacent levels and a node may have fewer children than
+//!     keys + 1.
 //!
 //! Both are built once from sorted input and never modified (compare the
 //! bulk-loaded trees of chapter 16). Both keep a `rank` array that maps a slot
 //! back to the index in sorted order, so that their answers can be compared
 //! with the searches in search.zig. A real index would store the payload
 //! (a child page id, a row id) in that parallel array instead.
+//!
+//! `rank` is a second array, so reading it costs a cache line of its own.
+//! Both searches therefore read it exactly ONCE, after the descent, and
+//! report that read to the tracer (`tracer.side`).
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const trace = @import("trace.zig");
@@ -105,6 +113,8 @@ pub const Eytzinger = struct {
             k = 2 * k + @intFromBool(self.keys[k] < key);
         }
         k >>= @intCast(@ctz(~k) + 1);
+        // The only read of the second array: one more cache line.
+        tracer.side(k);
         return self.rank[k];
     }
 
@@ -135,7 +145,9 @@ pub const BlockTree = struct {
     /// Node b owns keys[8b .. 8b+7]. Child j of node b is node 9b + j + 1.
     /// No pointers are stored: the child's position is arithmetic.
     keys: AlignedKeys,
-    /// rank[slot] = index in sorted order, n for padding slots.
+    /// rank[slot] = index in sorted order, n for padding slots. One entry
+    /// longer than `keys`: rank[keys.len] = n is the "no key is >= the needle"
+    /// answer, so the search can end with one unconditional read.
     rank: []u32,
     n: usize,
 
@@ -146,7 +158,7 @@ pub const BlockTree = struct {
         const slots = std.mem.alignForward(usize, n, lanes);
         const block_keys = try gpa.alignedAlloc(u64, line_align, slots);
         errdefer gpa.free(block_keys);
-        const rank = try gpa.alloc(u32, slots);
+        const rank = try gpa.alloc(u32, slots + 1);
         @memset(block_keys, sentinel);
         @memset(rank, @intCast(n));
         var self: BlockTree = .{ .keys = block_keys, .rank = rank, .n = n };
@@ -186,24 +198,30 @@ pub const BlockTree = struct {
     /// compare of one line gives the child number r. If r < 8, key r of this
     /// node is the best candidate so far (deeper candidates are smaller and
     /// still >= the needle, so later ones overwrite earlier ones).
+    ///
+    /// The descent only REMEMBERS the candidate's slot number. It does not
+    /// look the rank up on every level: `rank` is another array, and each
+    /// lookup there would be another cache line, about one per level, as many
+    /// again as the key lines. One read after the loop is enough.
     pub fn lowerBound(self: *const BlockTree, key: u64, tracer: anytype) usize {
-        var result: usize = self.n;
+        var slot: usize = self.keys.len; // the "no key" entry of rank
         var block: usize = 0;
         const blocks = self.blockCount();
         while (block < blocks) {
             tracer.cmpBlock(block * lanes, lanes);
             const r = search.rank8(self.keys[block * lanes ..][0..lanes], key);
-            // rank[] is read at most once per level; a tree that stored child
-            // ids would not need it at all. `r < 8` is a predictable branch
-            // only at the leaves, so real code pads rank to 9 entries instead.
-            if (r < lanes) result = self.rank[block * lanes + r];
+            // A select between two values that are already in registers: no
+            // memory is touched. (Exercise 5 removes even this select.)
+            slot = if (r < lanes) block * lanes + r else slot;
             block = block * fanout + r + 1;
         }
-        return result;
+        tracer.side(slot);
+        return self.rank[slot];
     }
 
     pub fn validate(self: *const BlockTree) ValidateError!void {
-        if (self.keys.len != self.rank.len or self.keys.len != std.mem.alignForward(usize, self.n, lanes)) return error.Corrupt;
+        if (self.keys.len + 1 != self.rank.len or self.keys.len != std.mem.alignForward(usize, self.n, lanes)) return error.Corrupt;
+        if (self.rank[self.keys.len] != self.n) return error.Corrupt;
         if (@intFromPtr(self.keys.ptr) % trace.line_bytes != 0) return error.Corrupt;
         var next: usize = 0;
         var prev: ?u64 = null;
@@ -249,7 +267,9 @@ test "Eytzinger layout of 15 keys is the breadth-first order of the balanced tre
     var t: Trace = .init(.{});
     try testing.expectEqual(6, e.lowerBound(70, false, &t));
     try testing.expectEqualSlices(u32, &.{ 1, 2, 5, 11 }, t.probeSlice()); // 80, 40, 60, 70
-    try testing.expectEqual(2, t.linesRead()); // slots 1..7 share line 0, slot 11 is in line 1
+    try testing.expectEqual(2, t.keyLines()); // slots 1..7 share line 0, slot 11 is in line 1
+    try testing.expectEqual(1, t.sideLines()); // rank[11]
+    try testing.expectEqual(3, t.linesRead());
     try testing.expectEqual(15, e.lowerBound(151, false, NoTrace{})); // never turned left
 }
 
@@ -264,7 +284,11 @@ test "BlockTree of 15 keys: one full leaf and a root with seven keys" {
     var t: Trace = .init(.{});
     try testing.expectEqual(6, b.lowerBound(70, &t));
     try testing.expectEqual(2, t.steps);
-    try testing.expectEqual(2, t.linesRead());
+    try testing.expectEqual(2, t.keyLines());
+    try testing.expectEqual(1, t.sideLines()); // one rank read, after the descent
+    try testing.expectEqual(3, t.linesRead());
+    try testing.expectEqual(15, b.rank[b.keys.len]); // the "no key" entry
+    try testing.expectEqual(15, b.lowerBound(151, NoTrace{}));
 }
 
 test "model test: both layouts agree with the linear oracle on seeded random arrays" {
@@ -304,12 +328,21 @@ test "model test: both layouts agree with the linear oracle on seeded random arr
                 // Eytzinger depth: floor(log2 n) or one more.
                 const depth = std.math.log2_int(usize, n);
                 try testing.expect(te.comparisons >= depth and te.comparisons <= depth + 1);
-                // Only line 0 (slots 1..7) is read without having been hinted.
-                // (Below 8 keys the clamped hint lands on line 0 itself.)
-                try testing.expectEqual(@as(u32, if (n >= lanes) 1 else 0), tp.uncovered);
-                // One line per level of the 9-way tree.
-                try testing.expectEqual(tb.steps, tb.linesRead());
+                // Two lines are read without a hint that had lead time: key
+                // line 0 (slots 1..7; below 8 keys the clamped hint names line
+                // 0 itself, but in the same step as the read) and the rank line.
+                try testing.expectEqual(2, tp.uncovered);
+                // One key line per level of the 9-way tree.
+                try testing.expectEqual(tb.steps, tb.keyLines());
             }
+            // Regression (review round 1, G1): the rank array is read, and
+            // counted, exactly once per lookup, whatever the depth. Even an
+            // empty layout reads its "no key" entry.
+            try testing.expectEqual(1, te.sideLines());
+            try testing.expectEqual(1, tb.sideLines());
+            try testing.expectEqual(te.keyLines() + 1, te.linesRead());
+            try testing.expectEqual(tb.keyLines() + 1, tb.linesRead());
+            try testing.expectEqual(tb.linesRead(), tb.uncovered); // no hints at all
         }
         try testing.expectEqual(n, e.lowerBound(sentinel, false, NoTrace{}));
         try testing.expectEqual(n, b.lowerBound(sentinel, NoTrace{}));
@@ -326,6 +359,10 @@ test "validate catches a swapped pair" {
     var b = try BlockTree.init(testing.allocator, &sorted);
     defer b.deinit(testing.allocator);
     std.mem.swap(u64, &b.keys[0], &b.keys[1]);
+    try testing.expectError(error.Corrupt, b.validate());
+    std.mem.swap(u64, &b.keys[0], &b.keys[1]);
+    try b.validate();
+    b.rank[b.keys.len] = 0; // the "no key" entry must stay n
     try testing.expectError(error.Corrupt, b.validate());
 }
 

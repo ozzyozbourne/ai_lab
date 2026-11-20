@@ -45,8 +45,6 @@
 @media (max-width: 560px) {
   .c1-dock .bt-caption { font-size: .88rem; line-height: 1.4; max-height: 32vh; overflow-y: auto; padding-top: 7px; padding-bottom: 7px; }
   .c1-dock .bt-controls { padding-top: 6px; padding-bottom: 6px; gap: 4px 10px; }
-  .c1-strip { gap: 6px; }
-  .c1-cell { width: 26px; font-size: 11px; }
 }
 
 /* PageStrip: a sorted array cut into pages */
@@ -85,8 +83,11 @@
 .c1-slider output { font: 650 1rem var(--bt-mono); }
 .c1-answer { font-size: 1rem; line-height: 1.55; }
 .c1-answer b.c1-big { font: 700 1.5rem var(--bt-mono); color: var(--bt-accent); }
-/* On a phone the height table keeps the three columns that answer the question. */
+/* On a phone: narrower cells, so that three 3-key pages fit in a row and the array lane is short;
+   and the height table keeps the three columns that answer the question. */
 @media (max-width: 560px) {
+  .c1-strip { gap: 6px; }
+  .c1-cell { width: 26px; font-size: 11px; }
   #fig-calc .bt-table th:nth-child(2), #fig-calc .bt-table td:nth-child(2) { display: none; }
   #fig-calc .bt-table th, #fig-calc .bt-table td { padding-left: 6px; padding-right: 6px; }
 }

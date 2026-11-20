@@ -351,10 +351,6 @@ fn a_full_node_table_put_fails_cleanly_or_leaves_a_legal_incomplete_split() {
     assert!(saw_incomplete);
 }
 
-/// Zig's twin of this test injects allocation failures into `init` and
-/// proves that `put` never calls the allocator. Rust aborts on a failed
-/// allocation, so the same fact is shown from the other side: the table is a
-/// boxed slice that cannot grow, and it is the same memory before and after.
 // ---------------------------------------------------------------------
 // Stale WRITERS. A reader goes stale between two nodes; a writer goes stale
 // between its way down and its way up: the parents it remembers may have
@@ -653,6 +649,10 @@ fn model_test_with_paused_writers_stale_parents_flagged_parents_old_roots_seeded
     assert!(level_head_starts > 0);
 }
 
+/// Zig's twin of this test injects allocation failures into `init` and
+/// proves that `put` never calls the allocator. Rust aborts on a failed
+/// allocation, so the same fact is shown from the other side: the table is a
+/// boxed slice that cannot grow, and it is the same memory before and after.
 #[test]
 fn the_only_allocation_is_the_node_table_put_never_allocates() {
     let tree = BLinkTree::new(4, 16);

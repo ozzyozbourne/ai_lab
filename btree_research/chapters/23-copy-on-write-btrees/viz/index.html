@@ -118,7 +118,7 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
   var status = el('p.c23-status');
   fig.stage.appendChild(status);
   var narrow = window.matchMedia('(max-width: 820px)').matches;
-  var view = new BTViz.TreeView(fig.stage, { minHeight: narrow ? 200 : 250, maxHeight: narrow ? 300 : 330, minScale: narrow ? 0.4 : 0.6,
+  var view = new BTViz.TreeView(fig.stage, { minHeight: narrow ? 170 : 250, maxHeight: narrow ? 260 : 330, minScale: narrow ? 0.55 : 0.6,
     ariaLabel: 'The trees of every kept root, sharing pages' });
   var hint = el('p.c23-hint', { hidden: true }, 'The picture is wider than its frame: drag it sideways, or use + and − to zoom.');
   fig.stage.appendChild(hint);

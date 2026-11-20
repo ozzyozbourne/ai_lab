@@ -1,11 +1,10 @@
 // Copied from chapters/05-deletion-and-rebalancing/zig/src/validate.zig; fixes go there first
-//! SECTION 6a: the invariants as code.
+//! The invariants as code.
 //!
 //! `validate` walks the whole tree and returns the first broken invariant.
 //! Every test calls it after every operation; chapter 06 builds a fuzzer on it.
 //!
-//! This file needs only base_node.zig: it knows nothing about pools, insert or
-//! delete, and works on trees built by hand.
+//! This file needs only base_node.zig: it knows nothing about pools or insert, and works on trees built by hand.
 const std = @import("std");
 const Node = @import("base_node.zig").Node;
 

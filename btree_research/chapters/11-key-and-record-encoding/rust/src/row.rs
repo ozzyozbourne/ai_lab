@@ -363,7 +363,15 @@ mod tests {
         let mut buf = [0u8; 64];
         let row = [Text(b"Ann"), Int(7), Int(2)];
         let n = encode_key(&mut buf, &row, &PEOPLE).unwrap().len();
-        assert_eq!(validate_key(&buf[..n - 1], &PEOPLE), Err(RowError::Key(KeyError::Truncated)));
+        // Cut anywhere (inside the text, after its terminator, on a tag, inside
+        // an integer), the key is Truncated; decode_key agrees.
+        for cut in 0..n {
+            assert_eq!(validate_key(&buf[..cut], &PEOPLE), Err(RowError::Key(KeyError::Truncated)));
+            assert_eq!(
+                decode_key(&mut RowArena::new(), &buf[..cut], &PEOPLE),
+                Err(RowError::Key(KeyError::Truncated))
+            );
+        }
         buf[n] = 0;
         assert_eq!(validate_key(&buf[..n + 1], &PEOPLE), Err(RowError::TrailingBytes));
         assert_eq!(

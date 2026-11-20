@@ -1,5 +1,5 @@
 // Copied from chapters/05-deletion-and-rebalancing/zig/src/insert.zig; fixes go there first
-//! SECTION 4: insert with bottom-up splitting (explained in chapter 04).
+//! Insert with bottom-up splitting: the subject of this chapter.
 //!
 //! `put` works in three phases:
 //!   1. descend to the leaf, remembering the path (node + child index per level);
@@ -14,8 +14,7 @@
 //! slot that was carved for a reservation and returned stays on the pool's
 //! free list.
 //!
-//! This file needs base_node.zig and base_search.zig (`lowerBound`), nothing from
-//! delete.zig.
+//! This file needs base_node.zig and base_search.zig (`lowerBound`).
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const node_mod = @import("base_node.zig");

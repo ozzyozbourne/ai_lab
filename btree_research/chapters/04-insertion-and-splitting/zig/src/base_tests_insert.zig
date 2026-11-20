@@ -1,7 +1,6 @@
 // Copied from chapters/05-deletion-and-rebalancing/zig/src/tests_insert.zig; fixes go there first
-//! Tests of the tree that need only search and insert (chapters 03 and 04):
-//! nothing in this file calls `delete`. The delete tests are in
-//! tests_delete.zig, which reuses the helpers declared `pub` here.
+//! Tests of search and bottom-up insert. tests_topdown.zig reuses the helpers
+//! declared `pub` here.
 const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
@@ -99,11 +98,10 @@ test "the extreme keys 0 and maxInt(u64) are ordinary keys" {
 }
 
 test "validate reports a leaked node" {
-    // Simulate the classic merge bug "unlink the node but forget to free it":
-    // one node is live in the pool that the root cannot reach. This works
+    // Simulate a node the tree lost track of: one node is live in the pool that the root cannot reach. This works
     // with every pool, including those the leak checker cannot see into.
     const gpa = testing.allocator;
-    inline for (.{ pool.DirectNodes, pool.FreeListPool, pool.StdPool }) |PoolFn| {
+    inline for (.{ pool.DirectNodes, pool.StdPool }) |PoolFn| {
         var tree: BTree(4, PoolFn) = .empty;
         defer tree.deinit(gpa);
         for (canonical_keys) |key| _ = try tree.put(gpa, key, key * 10);
@@ -196,7 +194,7 @@ fn modelTestPutOnly(comptime M: usize, comptime PoolFn: fn (type) type, seed: u6
 }
 
 test "model test, puts only: every order from 3 to 9, every pool, against the oracle" {
-    inline for (.{ pool.DirectNodes, pool.FreeListPool, pool.StdPool }, 0..) |PoolFn, p| {
+    inline for (.{ pool.DirectNodes, pool.StdPool }, 0..) |PoolFn, p| {
         inline for (3..10) |M| try modelTestPutOnly(M, PoolFn, 100 * p + M);
     }
 }
@@ -294,13 +292,13 @@ fn Build(comptime PoolFn: fn (type) type) type {
 
 test "every allocation in a build may fail without a leak" {
     // Runs the function once per allocation it makes, failing that one.
-    inline for (.{ pool.DirectNodes, pool.FreeListPool, pool.StdPool }) |PoolFn| {
+    inline for (.{ pool.DirectNodes, pool.StdPool }) |PoolFn| {
         try testing.checkAllAllocationFailures(testing.allocator, Build(PoolFn).run, .{});
     }
 }
 
 test "a put that fails in the middle of a build changes nothing, and the build goes on" {
-    inline for (.{ pool.DirectNodes, pool.FreeListPool, pool.StdPool }) |PoolFn| {
+    inline for (.{ pool.DirectNodes, pool.StdPool }) |PoolFn| {
         var want: std.Io.Writer.Allocating = .init(testing.allocator);
         defer want.deinit();
         try testing.expect(!try Build(PoolFn).runWithOneFailure(std.math.maxInt(usize), &want.writer));
@@ -313,13 +311,12 @@ test "a put that fails in the middle of a build changes nothing, and the build g
             try testing.expectEqualStrings(want.written(), got.written());
             if (!failed) break;
         }
-        try testing.expect(fail_at >= 2); // at least: first chunk, a later chunk
+        try testing.expect(fail_at >= 2); // the build allocates more than once with every pool
     }
 }
 
 test "SafeAllocator reports nodes a broken tree would leak" {
-    // Simulate the classic merge bug "unlink the node but forget to free it"
-    // by dropping a whole tree without deinit. A private SafeAllocator keeps
+    // Simulate a tree that forgets its nodes by dropping it without deinit. A private SafeAllocator keeps
     // the deliberate leak from failing this test; with testing.allocator the
     // same leak fails the test run.
     var safe: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});

@@ -1,56 +1,41 @@
 // Copied from chapters/05-deletion-and-rebalancing/zig/src/btree.zig; fixes go there first
-//! The complete in-memory B-tree: this file only ties the sections together.
+//! Trimmed for chapter 04: no `delete`, no delete counters.
 //!
-//!   file          content                              needs
+//! The in-memory B-tree with search and insert: this file only ties the
+//! parts together.
+//!
+//!   file               content                              needs
 //!   base_node.zig      the node type (chapter 03)           -
 //!   base_search.zig    get, inOrder, range (chapter 03)     node
 //!   base_validate.zig  the invariants as code               node
 //!   base_stats.zig     shape, fill, text rendering          node
 //!   base_pool.zig      where nodes come from and go back to -
-//!   base_insert.zig    put, split (chapter 04)              node, search
-//!   delete.zig    delete, borrow, merge, root shrink   node, search
+//!   base_insert.zig    put with bottom-up splitting         node, search
 //!
-//! Copying a part of the tree into another chapter:
-//!   search only       node, search, validate, stats (trees built by hand,
-//!                     or this file without `put`, `delete` and `Counters`)
-//!   search + insert   the above + pool, insert, this file without `delete`
-//!                     and the delete counters; base_tests_insert.zig
-//!   everything        all of the above + delete.zig, tests_delete.zig
+//! This chapter's own files sit on top: topdown.zig (the other way to
+//! insert), measure.zig (fill and split counts), scenario.zig.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const node_mod = @import("base_node.zig");
 const search = @import("base_search.zig");
 const insert = @import("base_insert.zig");
-const deletion = @import("delete.zig");
 const validation = @import("base_validate.zig");
 const stats = @import("base_stats.zig");
 
 /// How often each structural change happened since the tree was created.
 pub const Counters = struct {
-    // Written by base_insert.zig.
+    // Written by base_insert.zig and topdown.zig.
     /// Node splits, including root splits.
     splits: u64 = 0,
     /// Splits of the root: each one made the tree one level taller.
     root_splits: u64 = 0,
-    // Written by delete.zig.
-    /// Deletes that hit a key in an interior node and replaced it with its
-    /// in-order predecessor from a leaf.
-    predecessor_swaps: u64 = 0,
-    /// Underflows repaired by taking a key from the left sibling.
-    borrows_left: u64 = 0,
-    /// Underflows repaired by taking a key from the right sibling.
-    borrows_right: u64 = 0,
-    /// Underflows repaired by merging two siblings (one node freed).
-    merges: u64 = 0,
-    /// Times an empty interior root was replaced by its only child.
-    root_shrinks: u64 = 0,
 };
 
 /// A B-tree of order `M` (at most M children, at most M - 1 keys per node)
 /// mapping u64 keys to u64 values, with nodes from `PoolFn(Node(M))`
-/// (see base_pool.zig: `DirectNodes`, `FreeListPool` or `StdPool`).
+/// (see base_pool.zig: `DirectNodes` or `StdPool`).
 ///
-///     var tree: BTree(4, FreeListPool) = .empty;
+///     var tree: BTree(4, StdPool) = .empty;
 ///     defer tree.deinit(gpa);
 ///     _ = try tree.put(gpa, 10, 100);
 pub fn BTree(comptime M: usize, comptime PoolFn: fn (type) type) type {
@@ -71,7 +56,7 @@ pub fn BTree(comptime M: usize, comptime PoolFn: fn (type) type) type {
         /// Returns every node to the pool, then releases the pool itself.
         pub fn deinit(self: *Self, gpa: Allocator) void {
             if (self.root) |root| self.destroySubtree(gpa, root);
-            std.debug.assert(self.pool.usage.live() == 0); // a merge forgot to free a node?
+            std.debug.assert(self.pool.usage.live() == 0); // every node went back to the pool
             self.pool.deinit(gpa);
             self.* = undefined;
         }
@@ -92,13 +77,6 @@ pub fn BTree(comptime M: usize, comptime PoolFn: fn (type) type) type {
         /// exactly as before the call.
         pub fn put(self: *Self, gpa: Allocator, key: u64, value: u64) Allocator.Error!?u64 {
             return insert.put(Self, self, gpa, key, value);
-        }
-
-        /// Remove a key. Returns its value, or null if it was not present.
-        /// Never allocates, so it cannot fail; `gpa` is only used to give
-        /// nodes back.
-        pub fn delete(self: *Self, gpa: Allocator, key: u64) ?u64 {
-            return deletion.delete(Self, self, gpa, key);
         }
 
         /// `visitor.visit(key, value)` for every entry, ascending.

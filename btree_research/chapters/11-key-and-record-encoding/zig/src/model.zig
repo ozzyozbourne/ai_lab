@@ -332,7 +332,8 @@ test "model: random schemas, framing bytes, long strings, float edges, every tru
 test "model: random schemas produce the same bytes as the Rust twin" {
     // Same seed, same draws; the hash covers every key and record byte.
     const r = try checkRandomSchemas(std.testing.allocator, 11, 2000);
-    std.debug.print("WIDE {d} {d} {d} {x:0>16}\n", .{ r.counts.lt, r.counts.eq, r.counts.gt, r.hash });
+    try std.testing.expectEqual(Counts{ .lt = 707, .eq = 550, .gt = 743 }, r.counts);
+    try std.testing.expectEqual(0x2a9a_990c_169d_c507, r.hash);
 }
 
 test "model: key bytes, record comparator and oracle agree (several seeds)" {

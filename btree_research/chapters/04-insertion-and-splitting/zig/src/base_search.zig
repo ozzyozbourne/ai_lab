@@ -1,5 +1,5 @@
 // Copied from chapters/05-deletion-and-rebalancing/zig/src/search.zig; fixes go there first
-//! SECTION 3: search and ordered traversal (explained in chapter 03).
+//! Search and ordered traversal (explained in chapter 03).
 //!
 //! Nothing here allocates or modifies the tree. This file needs only
 //! base_node.zig.

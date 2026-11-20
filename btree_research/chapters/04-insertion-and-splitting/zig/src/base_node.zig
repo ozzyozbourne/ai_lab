@@ -1,5 +1,5 @@
 // Copied from chapters/05-deletion-and-rebalancing/zig/src/node.zig; fixes go there first
-//! SECTION 1: the node type.
+//! The node type.
 //!
 //! A B-tree of order M (Knuth: M = maximum number of children) is made of
 //! nodes that hold

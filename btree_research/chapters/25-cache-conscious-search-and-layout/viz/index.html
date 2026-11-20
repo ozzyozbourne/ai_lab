@@ -42,6 +42,12 @@
 .cl-mini i.is-read { background: var(--bt-node-active); border-color: var(--bt-node-active); }
 .cl-mini i.is-hinted { background: var(--bt-pointer-bg); border-color: var(--bt-pointer); }
 .cl-note { color: var(--bt-muted); font-size: .88rem; margin: .4em 0 .8em; }
+.cl-error { color: var(--bt-key-deleted); font-size: .88rem; margin: .2em 0 .4em; min-height: 1.2em; }
+.cl-error:empty { display: none; }
+.bt-input[aria-invalid="true"] { border-color: var(--bt-key-deleted); box-shadow: 0 0 0 2px var(--bt-key-deleted-bg); }
+.cl-side { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font: .74rem var(--bt-mono); color: var(--bt-muted); padding: 2px 2px 6px; }
+.cl-side .cl-line { padding: 3px 8px; color: var(--bt-text); }
+.cl-side[hidden] { display: none; }
 h3.cl-h { font-size: .95rem; margin: 1em 0 .3em; }
 .bt-toolbar .bt-select { max-width: 100%; }
 .bt-toolbar .bt-field { max-width: 100%; }
@@ -54,20 +60,25 @@ h3.cl-h { font-size: .95rem; margin: 1em 0 .3em; }
 lines each one touches. Text and code: <a href="../README.md">chapter 25 README</a>.</p>
 
 <h2>1. One lookup, step by step</h2>
-<p>Each box is one cache line holding eight 8-byte keys. Pick an algorithm and a needle, then step.
+<p>Each box is one cache line holding eight 8-byte keys. Pick an algorithm and a needle (a whole number), then step.
 The answer is always the lower bound: the position of the first key that is not smaller than the needle.
-Tick <em>Predict</em> to be asked before each comparison.</p>
+The Eytzinger layout and the block tree keep their keys in a different order, so they finish by reading
+one entry of a second array, <code>rank</code>, that maps a slot back to the sorted position: that is one
+more cache line, and it is counted. Tick <em>Predict</em> to be asked before each comparison.</p>
 <div id="fig-main"></div>
 
 <h2>2. The same lookup in all five</h2>
-<p>One small square per cache line of each algorithm's array; filled squares were read. Below it, the
+<p>One small square per cache line of each algorithm's key array; filled squares were read. "Lines read"
+adds the line of the <code>rank</code> array where the algorithm has one. Below it, the
 average over 1000 seeded random needles: these are the numbers the Zig and Rust programs print.</p>
 <div id="fig-compare"></div>
 
 <h2>3. What prefetch changes</h2>
 <p>4095 keys, 1000 lookups. A line that is read without having been hinted is a miss the CPU has to
 sit through before it can even compute the next address. Prefetch does not reduce the lines read; it
-makes all but the first one start loading early.</p>
+makes the key lines after the first one start loading early. A hint only counts if at least one
+comparison separates it from the read. The Eytzinger rows include the one <code>rank</code> line, which
+nothing prefetches.</p>
 <div id="fig-prefetch"></div>
 
 <script src="code.js"></script>
@@ -94,6 +105,17 @@ makes all but the first one start loading early.</p>
     blocktree: { label: 'block tree, 8 keys per node', code: 'blocktree', prefetch: false }
   };
 
+  var MAX_NEEDLE = 1000000;
+  /** The needle typed into `input`, or null (with a visible message in `errorEl`) when it is
+   *  not a whole number in range. Nothing is clamped or rounded behind the reader's back. */
+  function readNeedle(input, errorEl) {
+    var raw = String(input.value).trim(), ok = /^\d+$/.test(raw) && +raw <= MAX_NEEDLE;
+    input.setAttribute('aria-invalid', ok ? 'false' : 'true');
+    errorEl.textContent = ok ? '' : (raw === '' ? 'Type a needle first.' : 'Not searched: "' + raw + '" is not a valid needle.') +
+      ' The keys are whole numbers, so the needle must be a whole number from 0 to ' + MAX_NEEDLE + '. The picture still shows the previous search.';
+    return ok ? +raw : null;
+  }
+
   function keysFor(n) { return n === 15 ? C.handKeys() : C.makeKeys(n, 1000 + n); }
   function keyText(v) { return v === C.SENTINEL ? '∞' : v === null ? '·' : String(v); }
 
@@ -119,6 +141,7 @@ makes all but the first one start loading early.</p>
   var HOW = {
     cold: function (l) { return ' Line ' + l + ' is read for the first time and nothing asked for it in advance: <b>a cache miss the CPU must wait for</b>.'; },
     hinted: function (l) { return ' Line ' + l + ' was prefetched earlier, so it is already on its way: the wait overlaps with earlier work.'; },
+    late: function (l) { return ' Line ' + l + ' is read for the first time. It was hinted in this same step, with no comparison in between, which is too late to help: <b>still a cache miss the CPU must wait for</b>.'; },
     again: function (l) { return ' Line ' + l + ' is already in the cache: this read is nearly free.'; }
   };
 
@@ -127,8 +150,9 @@ makes all but the first one start loading early.</p>
     var lay = layoutFor(algo, index), spec = ALGOS[algo], n = index.sorted.length;
     var t = new C.Trace(lay.stride);
     var result = C.runOne(index, algo, needle, t, prefetch && spec.prefetch);
-    var steps = [], read = [], hinted = [], cellState = {}, win = null;
+    var steps = [], read = [], hinted = [], cellState = {}, win = null, side = null;
     var counters = { comparisons: 0, steps: 0, lines: 0, cold: 0, hints: 0 };
+    var hasRank = algo === 'eytzinger' || algo === 'blocktree';
     var codeName = spec.code;
 
     function snap(extra) {
@@ -136,6 +160,7 @@ makes all but the first one start loading early.</p>
       Object.keys(cellState).forEach(function (i) { seen[i] = cellState[i]; });
       return Object.assign({
         strip: { key: lay.key, cells: lay.cells, perLine: lay.perLine, cellState: seen, read: read.slice(), hinted: hinted.slice(), window: win, fresh: null },
+        side: hasRank ? (side || { read: false }) : null,
         counters: BTViz.clone(counters), code: codeName
       }, extra || {});
     }
@@ -152,7 +177,7 @@ makes all but the first one start loading early.</p>
       'halving-aos': 'The same ' + n + ' keys stored as 16-byte entries <code>{key, child, flags}</code>: only four keys fit in a cache line. The halving search compares exactly the same keys as before.',
       vector: 'Sorted keys padded with ∞ to whole lines. Compare eight keys at once with one vector instruction and count how many are smaller. No branch on the data, but every line is read.',
       eytzinger: 'The balanced search tree stored level by level: the children of slot <code>k</code> are slots <code>2k</code> and <code>2k + 1</code>. Slot 0 is unused so that slots 8k..8k+7 share one line.',
-      blocktree: 'A B-tree whose node is one cache line: 8 keys, 9 children. Child <code>j</code> of node <code>b</code> is node <code>9b + j + 1</code>. Line 0 is the root.'
+      blocktree: 'A search tree whose node is one cache line: 8 keys, 9 children, like a tiny B-tree node. Child <code>j</code> of node <code>b</code> is node <code>9b + j + 1</code>. Line 0 is the root. (It is a complete 9-way tree, not a real B-tree: its leaves can sit on two levels and a node can have fewer children than keys + 1.)'
     }[algo];
     push(intro + ' Needle: ' + K(needle, 'compare') + '.', { zig: [1], rust: [1] });
 
@@ -161,7 +186,12 @@ makes all but the first one start loading early.</p>
       if (e.kind === 'hint') {
         counters.hints++;
         if (hinted.indexOf(e.line) < 0) hinted.push(e.line);
-        if (algo === 'eytzinger') {
+        if (algo === 'eytzinger' && info.clamped) {
+          cap = 'Slot ' + info.from + ' has nothing three levels below it: slots ' + (8 * info.from) + '..' + (8 * info.from + 7) +
+            ' are past the end of the array. The code clamps the address to the last slot (' + e.index + ', line ' + e.line +
+            ') so that it stays in bounds. <b>This hint is wasted.</b>';
+          lines = { zig: [4, 5], rust: [4, 5] };
+        } else if (algo === 'eytzinger') {
           cap = 'Prefetch line ' + e.line + ' (slot ' + e.index + ' onwards): the eight slots <b>three levels below</b> slot ' + info.from +
             ' all live there. One hint, three comparisons before it is needed.';
           lines = { zig: [4, 5], rust: [4, 5] };
@@ -172,6 +202,30 @@ makes all but the first one start loading early.</p>
         }
         if (e.useless) cap += ' (This line has already been read, so the hint does nothing.)';
         push(cap, lines);
+        return;
+      }
+      if (e.kind === 'side') {
+        // The one read of the rank array: a second array, so one more line.
+        age();
+        counters.lines++; counters.cold++;
+        side = { read: true, slot: e.index, line: e.line, fresh: true };
+        if (algo === 'eytzinger') {
+          var ey = index.eytzinger;
+          cap = 'The descent ended at slot number ' + ey.lastEnd + ' = <code>' + ey.lastEnd.toString(2) + '</code> in binary. Dropping ' +
+            (ey.lastOnes ? 'the ' + ey.lastOnes + ' trailing 1 bit' + (ey.lastOnes > 1 ? 's' : '') + ' (right turns) and ' : '') +
+            'one more bit (the last left turn) gives slot ' + ey.lastSlot + (ey.lastSlot === 0 ? ', the unused slot, meaning "no such key".' : '.');
+          if (ey.lastSlot > 0) cellState[ey.lastSlot] = 'compare';
+          lines = { zig: [9, 10], rust: [9, 10] };
+        } else {
+          cap = info.slot < 0 ? 'No node had a key that is not smaller than the needle, so the remembered slot is still the extra "no key" entry.'
+            : 'The last candidate the descent remembered is slot ' + info.slot + '.';
+          if (info.slot >= 0) cellState[info.slot] = 'compare';
+          lines = { zig: [10], rust: [10] };
+        }
+        cap += ' Now read <code>rank[' + e.index + ']</code> to turn the slot into a sorted position. <code>rank</code> is a <b>second array</b>, so this is ' +
+          'one more cache line, and nothing asked for it in advance: <b>a cache miss the CPU must wait for</b>. It is read once per lookup, not once per level.';
+        push(cap, lines);
+        side = { read: true, slot: e.index, line: e.line, fresh: false };
         return;
       }
       age();
@@ -189,10 +243,10 @@ makes all but the first one start loading early.</p>
           lines = { zig: [3, 4, 11, 12], rust: [[3, 5], 12, 13] };
         } else {
           cap = 'Node ' + info.block + ' (line ' + e.line + '): <b>' + info.r + '</b> of its 8 keys are smaller than ' + K(needle, 'compare') + '. ' +
-            (info.r < 8 ? 'Key number ' + info.r + ' of this node is the best candidate so far. ' : 'All eight are smaller: keep the candidate found above. ') +
+            (info.r < 8 ? 'Key number ' + info.r + ' of this node is the best candidate so far: remember its slot, ' + info.slot + ' (a register, no memory read). ' : 'All eight are smaller: keep the candidate remembered above. ') +
             'Go to child ' + info.r + ' = node 9·' + info.block + ' + ' + info.r + ' + 1 = ' + info.child +
             (info.exists ? '.' : ', which does not exist: the search ends.');
-          lines = { zig: [[5, 8]], rust: [[5, 10]] };
+          lines = { zig: [[5, 8]], rust: [[5, 8]] };
           q = { prompt: 'Next: node ' + info.block + ' is compared with ' + needle + ' in one step. How many of its eight keys are smaller?',
             choices: ['0', '1', '2', '3', '4', '5', '6', '7', '8'], answer: info.r,
             explain: 'That count is also the number of the child to descend into.' };
@@ -226,7 +280,7 @@ makes all but the first one start loading early.</p>
         win = [newOffset, newOffset + newLen];
         cap = 'Window [' + info.offset + ', ' + (info.offset + info.length) + '), half = ' + info.half + '. Compare index ' + e.index + ': ' + K(kv, 'compare') + rel + K(needle) + '. ' +
           (info.less ? '<code>offset</code> moves to ' + e.index : '<code>offset</code> stays at ' + info.offset) +
-          '; <code>length</code> becomes ' + newLen + ' either way. The comparison only selects a value: a conditional move, nothing to guess.';
+          '; <code>length</code> becomes ' + newLen + ' either way. The comparison only selects a value, so the compiler <em>can</em> emit a conditional move with nothing to guess. Whether it does is for the assembly to say (see the README).';
         lines = { zig: [[11, 16]], rust: [[11, 13]] };
       }
       if (!info.final) {
@@ -249,24 +303,19 @@ makes all but the first one start loading early.</p>
       cellState[slot] = 'found';
       where = 'Answer: ' + K(index.sorted[result], 'found') + ', the key at sorted position <b>' + result + '</b>.';
     }
-    var tail = '';
-    if (algo === 'eytzinger') {
-      var e2 = index.eytzinger;
-      tail = ' The descent ended at slot number ' + e2.lastEnd + ' = <code>' + e2.lastEnd.toString(2) + '</code> in binary. Dropping ' +
-        (e2.lastOnes ? 'the ' + e2.lastOnes + ' trailing 1 bit' + (e2.lastOnes > 1 ? 's' : '') + ' (right turns) and ' : '') +
-        'one more bit (the last left turn) gives slot ' + e2.lastSlot + (e2.lastSlot === 0 ? ', the unused slot, meaning "no such key".' : '.');
-    }
     var sum = ' Totals: <b>' + t.comparisons + '</b> key comparisons in <b>' + t.steps + '</b> compare instruction' + (t.steps === 1 ? '' : 's') +
       ', <b>' + t.linesRead() + '</b> cache line' + (t.linesRead() === 1 ? '' : 's') + ' read' +
-      (t.prefetches ? ', of which only <b>' + t.uncovered + '</b> had not been prefetched.' : '.');
+      (hasRank ? ' (' + t.keyLines() + ' of keys + ' + t.sideLines() + ' of <code>rank</code>)' : '') +
+      (t.prefetches ? ', of which <b>' + t.uncovered + '</b> had no hint that came at least one comparison early.' : '.');
     var endLines = { classic: { zig: [13], rust: [13] }, halving: { zig: [19], rust: [16] }, vector: { zig: [14], rust: [15] },
-      eytzinger: { zig: [9, 10], rust: [9, 10] }, blocktree: { zig: [10], rust: [12] } }[codeName];
-    push(where + tail + sum, endLines);
+      eytzinger: { zig: [11], rust: [11] }, blocktree: { zig: [11], rust: [11] } }[codeName];
+    push(where + sum, endLines);
     steps.result = result; steps.trace = t;
     return steps;
   }
 
   // ------------------------------------------------------------- figure 1
+  // "cache lines read" counts both arrays: key lines and, where there is one, the rank line.
   var fig = BTViz.figure('#fig-main', {
     title: 'Cache lines touched by one lookup', side: true,
     legend: [{ token: 'node-active', label: 'cache line read' }, { token: 'pointer', label: 'line prefetched, not read (yet)' },
@@ -279,7 +328,7 @@ makes all but the first one start loading early.</p>
   var sizeSel = el('select.bt-select', { 'aria-label': 'Number of keys', id: 'size' });
   [15, 31, 63, 127].forEach(function (n) { sizeSel.appendChild(el('option', { value: n, text: n + ' keys' })); });
   sizeSel.value = '63';
-  var needleIn = el('input.bt-input', { type: 'number', id: 'needle', 'aria-label': 'Needle', min: 0, style: { width: '6.5em' } });
+  var needleIn = el('input.bt-input', { type: 'number', id: 'needle', 'aria-label': 'Needle', min: 0, max: MAX_NEEDLE, step: 1, style: { width: '6.5em' } });
   var prefetchBox = el('input', { type: 'checkbox', id: 'prefetch' });
   var prefetchLabel = el('label.bt-field', {}, prefetchBox, 'prefetch');
   var goBtn = el('button.bt-btn.bt-primary', { type: 'button', id: 'go', onclick: function () { run(true); } }, 'Search');
@@ -290,12 +339,18 @@ makes all but the first one start loading early.</p>
   var counterEls = {};
   var counterBar = el('div.cl-counters');
   [['comparisons', 'key comparisons'], ['steps', 'compare instructions'], ['lines', 'cache lines read'],
-    ['cold', 'lines read without a hint'], ['hints', 'prefetch hints']].forEach(function (c) {
+    ['cold', 'lines read without a timely hint'], ['hints', 'prefetch hints']].forEach(function (c) {
     counterEls[c[0]] = el('b', { text: '0' });
     counterBar.appendChild(el('span.bt-chip', {}, c[1], counterEls[c[0]]));
   });
+  var needleError = el('div.cl-error', { id: 'needle-error', role: 'alert' });
+  fig.stage.appendChild(needleError);
   fig.stage.appendChild(counterBar);
   var strip = new C.LineStrip(fig.stage);
+  // The second array of the Eytzinger layout and the block tree, drawn as the one line a lookup reads.
+  var sideLine = el('div.cl-line', { id: 'rank-line' });
+  var sideRow = el('div.cl-side', {}, el('span', { text: 'rank array (4-byte entries, 16 per line):' }), sideLine);
+  fig.stage.appendChild(sideRow);
 
   // One code panel per snippet, created once; only the current one is shown.
   var panels = {};
@@ -322,6 +377,12 @@ makes all but the first one start loading early.</p>
     onStep: function (step) {
       var s = step.state;
       strip.render(s.strip);
+      sideRow.hidden = !s.side;
+      if (s.side) {
+        sideLine.classList.toggle('is-read', s.side.read);
+        sideLine.classList.toggle('is-fresh', !!s.side.fresh);
+        sideLine.textContent = s.side.read ? 'line ' + s.side.line + ': rank[' + s.side.slot + '] read' : 'not read yet';
+      }
       Object.keys(counterEls).forEach(function (k) { counterEls[k].textContent = s.counters[k]; });
       Object.keys(panels).forEach(function (name) { panels[name].host.hidden = name !== s.code; });
       panels[s.code].panel.highlight(step.lines || []);
@@ -332,8 +393,8 @@ makes all but the first one start loading early.</p>
     var algo = algoSel.value, ix = currentIndex();
     prefetchBox.disabled = !ALGOS[algo].prefetch;
     prefetchLabel.classList.toggle('s-dim', !ALGOS[algo].prefetch);
-    if (needleIn.value === '') needleIn.value = 70;
-    var needle = Math.max(0, Math.floor(+needleIn.value));
+    var needle = readNeedle(needleIn, needleError);
+    if (needle === null) return; // keep what is on screen; the message says why
     stepper.setSteps(buildSteps(algo, ix, needle, prefetchBox.checked), { play: !!play });
     renderCompare();
   }
@@ -348,14 +409,15 @@ makes all but the first one start loading early.</p>
   var cmpSize = el('select.bt-select', { 'aria-label': 'Number of keys for the comparison', id: 'cmp-size' });
   [15, 63, 255, 1023].forEach(function (n) { cmpSize.appendChild(el('option', { value: n, text: n + ' keys' })); });
   cmpSize.value = '255';
-  var cmpNeedle = el('input.bt-input', { type: 'number', id: 'cmp-needle', 'aria-label': 'Needle for the comparison', min: 0, style: { width: '6.5em' } });
+  var cmpNeedle = el('input.bt-input', { type: 'number', id: 'cmp-needle', 'aria-label': 'Needle for the comparison', min: 0, max: MAX_NEEDLE, step: 1, style: { width: '6.5em' } });
+  var cmpError = el('div.cl-error', { id: 'cmp-error', role: 'alert' });
   var cmpRand = el('button.bt-btn', { type: 'button', id: 'cmp-random', onclick: function () { cmpRandom(); renderCompare(); } }, 'Random needle');
   cmp.toolbar.append(el('label.bt-field', {}, 'size', cmpSize), el('label.bt-field', {}, 'needle', cmpNeedle), cmpRand);
   var oneHost = el('div.bt-table-wrap'), avgHost = el('div.bt-table-wrap');
-  cmp.stage.append(el('h3.cl-h', { text: 'This needle' }), oneHost,
+  cmp.stage.append(cmpError, el('h3.cl-h', { text: 'This needle' }), oneHost,
     el('h3.cl-h', { text: 'Average over 1000 seeded needles (program output, section 2)' }), avgHost);
 
-  var cmpIndex = null, cmpN = 0, cmpAvg = null, rng2 = BTViz.rng(2525);
+  var cmpIndex = null, cmpN = 0, cmpAvg = null, rng2 = BTViz.rng(2525), cmpStarted = false;
   function cmpCurrent() {
     var n = +cmpSize.value;
     if (n !== cmpN) { cmpIndex = new C.Index(keysFor(n)); cmpN = n; cmpAvg = n === 15 ? null : C.sizeRows(n); }
@@ -374,31 +436,33 @@ makes all but the first one start loading early.</p>
   }
   function renderCompare() {
     var ix = cmpCurrent(), n = ix.sorted.length;
-    if (cmpNeedle.value === '') cmpRandom();
-    var needle = Math.max(0, Math.floor(+cmpNeedle.value));
+    if (!cmpStarted) { cmpRandom(); cmpStarted = true; }
+    var needle = readNeedle(cmpNeedle, cmpError);
+    if (needle === null) return; // keep the table that is on screen; the message says why
     var best = Infinity, rows = C.ALGORITHMS.map(function (a) {
       var t = new C.Trace();
       var r = C.runOne(ix, a, needle, t, false);
       var lineCount = Math.ceil((a === 'eytzinger' ? n + 1 : n) / 8);
       best = Math.min(best, t.linesRead());
-      return [a, C.miniStrip(lineCount, t.read), t.comparisons, t.steps, t.linesRead(), r];
+      return [a, C.miniStrip(lineCount, t.read), t.comparisons, t.steps, t.keyLines(), t.sideLines(), t.linesRead(), r];
     });
     oneHost.textContent = '';
-    oneHost.appendChild(table(['algorithm', 'lines of the array (filled = read)', 'comparisons', 'instructions', 'lines read', 'answer'], rows));
+    oneHost.appendChild(table(['algorithm', 'lines of the key array (filled = read)', 'comparisons', 'instructions', 'key lines', 'rank lines', 'lines read', 'answer'], rows));
     avgHost.textContent = '';
     if (cmpAvg) {
-      avgHost.appendChild(table(['algorithm', 'comparisons', 'instructions', 'lines read', 'most lines'],
+      avgHost.appendChild(table(['algorithm', 'comparisons', 'instructions', 'key lines', 'rank lines', 'lines read', 'most lines'],
         C.ALGORITHMS.map(function (a, j) {
           var s = cmpAvg.stats[j];
-          return [a, C.avg(s.comparisons, s.lookups), C.avg(s.steps, s.lookups), C.avg(s.lines, s.lookups), s.maxLines];
+          return [a, C.avg(s.comparisons, s.lookups), C.avg(s.steps, s.lookups), C.avg(s.keyLines, s.lookups), C.avg(s.sideLines, s.lookups),
+            C.avg(s.lines, s.lookups), s.maxLines];
         })));
     } else {
       avgHost.appendChild(el('p.cl-note', { text: 'For the 15 hand-example keys (10, 20, …, 150) the programs print single lookups, not averages. Pick another size.' }));
     }
-    var names = rows.filter(function (r) { return r[4] === best; }).map(function (r) { return r[0]; });
-    cmp.caption.innerHTML = 'Needle ' + K(needle, 'compare') + ' among ' + n + ' keys: every algorithm answers <b>' + rows[0][5] +
+    var names = rows.filter(function (r) { return r[6] === best; }).map(function (r) { return r[0]; });
+    cmp.caption.innerHTML = 'Needle ' + K(needle, 'compare') + ' among ' + n + ' keys: every algorithm answers <b>' + rows[0][7] +
       '</b>. Fewest lines read: <b>' + best + '</b> (' + names.join(', ') + '). The vector scan always reads all ' + Math.ceil(n / 8) +
-      '; the block tree reads one line per level of a 9-way tree.';
+      '; the block tree reads one key line per level of a 9-way tree. Eytzinger and the block tree then read one line of <code>rank</code>.';
   }
   cmpSize.addEventListener('change', function () { cmpRandom(); renderCompare(); });
   cmpNeedle.addEventListener('change', renderCompare);
@@ -407,10 +471,11 @@ makes all but the first one start loading early.</p>
   // ------------------------------------------------------------- figure 3
   var pf = BTViz.figure('#fig-prefetch', { title: 'Prefetch coverage, n = 4095, per lookup' });
   var prefetchText = C.prefetchText();
-  pf.stage.appendChild(el('div.bt-table-wrap', {}, table(['algorithm', 'lines read', 'hints issued', 'lines read without a hint'],
+  pf.stage.appendChild(el('div.bt-table-wrap', {}, table(['algorithm', 'lines read', 'hints issued', 'lines read without a timely hint'],
     prefetchText.split('\n').map(function (line) { return line.trim().split(/\s+/); }))));
   pf.caption.innerHTML = 'The halving search issues two hints per step, one comparison ahead, and one of the two is always wasted. ' +
-    'Eytzinger issues one hint per step, three comparisons ahead. These are counts from the model: whether a hint arrives in time depends on the machine.';
+    'Eytzinger issues one hint per step, three comparisons ahead; its two unhinted lines are the first key line and the <code>rank</code> line. ' +
+    'These are counts from the model: whether a hint arrives in time depends on the machine.';
 
   // ------------------------------------------------------------ self-tests
   // The JS model must reproduce the stdout of the Zig and Rust programs.

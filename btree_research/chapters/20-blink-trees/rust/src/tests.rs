@@ -221,7 +221,13 @@ fn a_reader_that_starts_at_an_old_root_still_finds_everything() {
     let step = reader.step(&tree);
     assert!(matches!(step, Step::MovedRight { to, .. } if to == id(1)));
     let step = reader.step(&tree);
-    assert!(matches!(step, Step::Done { value: Some(400), .. }));
+    assert!(matches!(
+        step,
+        Step::Done {
+            value: Some(400),
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -391,9 +397,11 @@ fn validate_names_the_broken_invariant() {
     assert_eq!(tree.validate(), Err(Violation::SeparatorMismatch));
     tree.write(id(6)).node.keys[0] = 20;
 
-    tree.count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    tree.count
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     assert_eq!(tree.validate(), Err(Violation::WrongCount));
-    tree.count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    tree.count
+        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     tree.validate().unwrap();
 }
 

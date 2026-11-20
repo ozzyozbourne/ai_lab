@@ -21,13 +21,13 @@ pub fn lowerBoundClassic(keys: []const u64, key: u64, tracer: anytype) usize {
     return lo;
 }`,
     rust: `
-pub fn lower_bound_classic<T: Tracer>(keys: &[u64], key: u64, tracer: &mut T) -> usize {
+pub fn lower_bound_classic<K: Keys + ?Sized, T: Tracer>(keys: &K, key: u64, tracer: &mut T) -> usize {
     let mut lo = 0;
     let mut hi = keys.len();
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
         tracer.cmp(mid);
-        if keys[mid] < key { // a coin flip the CPU must guess
+        if keys.key(mid) < key { // a coin flip the CPU must guess
             lo = mid + 1;
         } else {
             hi = mid;
@@ -59,7 +59,7 @@ pub fn lowerBoundHalving(keys: []const u64, key: u64, tracer: anytype) usize {
     return offset + @intFromBool(keys[offset] < key);
 }`,
     rust: `
-pub fn lower_bound_halving<T: Tracer>(keys: &[u64], key: u64, tracer: &mut T) -> usize {
+pub fn lower_bound_halving<K: Keys + ?Sized, T: Tracer>(keys: &K, key: u64, tracer: &mut T) -> usize {
     if keys.is_empty() { return 0; }
     let mut offset = 0;
     let mut length = keys.len();
@@ -70,11 +70,11 @@ pub fn lower_bound_halving<T: Tracer>(keys: &[u64], key: u64, tracer: &mut T) ->
         tracer.prefetch(offset + next_half); // recorded only: stable Rust
         tracer.prefetch(mid + next_half);    // has no safe prefetch
         tracer.cmp(mid);
-        offset = std::hint::select_unpredictable(keys[mid] < key, mid, offset);
+        offset = std::hint::select_unpredictable(keys.key(mid) < key, mid, offset);
         length -= half; // always, whichever way the comparison went
     }
     tracer.cmp(offset);
-    offset + usize::from(keys[offset] < key)
+    offset + usize::from(keys.key(offset) < key)
 }`
   },
   vector: {
@@ -123,6 +123,7 @@ pub fn lowerBound(self: *const Eytzinger, key: u64, tracer: anytype) usize {
         k = 2 * k + @intFromBool(self.keys[k] < key);
     }
     k >>= @intCast(@ctz(~k) + 1); // undo the right turns and one left turn
+    tracer.side(k); // rank is a second array: one more cache line
     return self.rank[k];
 }`,
     rust: `
@@ -135,35 +136,36 @@ pub fn lower_bound<T: Tracer>(&self, key: u64, tracer: &mut T) -> usize {
         k = 2 * k + usize::from(self.keys.get(k) < key);
     }
     k >>= k.trailing_ones() + 1; // undo the right turns and one left turn
+    tracer.side(k); // rank is a second array: one more cache line
     self.rank[k] as usize
 }`
   },
   blocktree: {
     zig: `
 pub fn lowerBound(self: *const BlockTree, key: u64, tracer: anytype) usize {
-    var result: usize = self.n;
+    var slot: usize = self.keys.len; // rank's extra "no key" entry
     var block: usize = 0;
     while (block < self.blockCount()) {
         tracer.cmpBlock(block * 8, 8);
         const r = search.rank8(self.keys[block * 8 ..][0..8], key);
-        if (r < 8) result = self.rank[block * 8 + r];
+        slot = if (r < 8) block * 8 + r else slot; // remember, do not read
         block = block * 9 + r + 1; // child r: arithmetic, no pointer
     }
-    return result;
+    tracer.side(slot); // rank is a second array: read it once, here
+    return self.rank[slot];
 }`,
     rust: `
 pub fn lower_bound<T: Tracer>(&self, key: u64, tracer: &mut T) -> usize {
-    let mut result = self.n;
+    let mut slot = self.keys.len(); // rank's extra "no key" entry
     let mut block = 0;
     while let Some(line) = self.keys.lines().get(block) {
         tracer.cmp_block(block * 8, 8);
         let r = rank8(&line.0, key);
-        if r < 8 {
-            result = self.rank[block * 8 + r] as usize;
-        }
+        slot = if r < 8 { block * 8 + r } else { slot }; // remember, do not read
         block = block * 9 + r + 1; // child r: arithmetic, no pointer
     }
-    result
+    tracer.side(slot); // rank is a second array: read it once, here
+    self.rank[slot] as usize
 }`
   }
 };

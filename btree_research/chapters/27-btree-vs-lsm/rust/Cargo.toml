@@ -1,5 +1,5 @@
 [package]
-name = "ch07_bplus_trees"
+name = "ch27_btree_vs_lsm"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.86" # slice::get_disjoint_mut

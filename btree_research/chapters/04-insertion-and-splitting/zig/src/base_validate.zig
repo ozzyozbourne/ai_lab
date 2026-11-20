@@ -120,6 +120,11 @@ test "validate names the broken invariant" {
 
     root.children[1] = null;
     try std.testing.expectError(error.MissingChild, validate(4, &root, 5));
+    // The child count of a node is checked before its subtrees: a key on the
+    // wrong side in the first child does not hide the missing second child.
+    left.keys[1] = 25;
+    try std.testing.expectError(error.MissingChild, validate(4, &root, 5));
+    left.keys[1] = 10;
     root.children[1] = &right;
     left.children[0] = &right;
     try std.testing.expectError(error.UnexpectedChild, validate(4, &root, 5));

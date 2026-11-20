@@ -1,6 +1,7 @@
 /*
  * Chapter 07 — source snippets for the code panel (classic script: no fetch under file://).
- * Trimmed from zig/src/{search,insert,delete}.zig and rust/src/{search,insert,delete}.rs.
+ * Trimmed from zig/src/{search,insert,delete}.zig and rust/src/{search,insert,delete}.rs:
+ * long comments are shortened, the code lines are the ones in the sources.
  *
  * CHAPTER_PARTS names line ranges inside a snippet by the text of their first and last line,
  * so the highlights cannot drift when a snippet is edited.
@@ -38,6 +39,328 @@ pub fn get(&self, key: u64) -> Option<u64> {
     let i = lower_bound(leaf.key_slice(), key);
     (i < leaf.len && leaf.keys[i] == key).then(|| leaf.leaf().values[i])
 }`
+  },
+
+  put: {
+    zig: `
+pub fn put(tree: *BPlusTree, gpa: Allocator, key: u64, value: u64) Allocator.Error!?u64 {
+    // Reserve the worst case first: one new node per level plus a new root.
+    try tree.nodes.reserve(gpa, tree.height + 1);
+
+    if (tree.root == .nil) {
+        const id = tree.nodes.allocAssumeCapacity(Node.initLeaf());
+        tree.root = id;
+        tree.first_leaf = id;
+        tree.last_leaf = id;
+        tree.height = 1;
+    }
+
+    switch (insertInto(tree, tree.root, key, value)) {
+        .replaced => |old| return old,
+        .inserted => {},
+        .split => |s| {
+            // The root itself split: grow a new root above the two halves.
+            var new_root = Node.initInternal();
+            new_root.kind.internal.children[0] = tree.root;
+            new_root.internalInsertAt(0, s.separator, s.right);
+            tree.root = tree.nodes.allocAssumeCapacity(new_root);
+            tree.height += 1;
+        },
+    }
+    tree.count += 1;
+    return null;
+}`,
+    rust: `
+pub fn put(&mut self, key: u64, value: u64) -> Result<Option<u64>, OutOfNodes> {
+    // Reserve the worst case first: one new node per level plus a new root.
+    self.nodes.reserve(self.height + 1)?;
+
+    if self.root.is_nil() {
+        let id = self.nodes.alloc_reserved(Node::new_leaf());
+        self.root = id;
+        self.first_leaf = id;
+        self.last_leaf = id;
+        self.height = 1;
+    }
+
+    match self.insert_into(self.root, key, value) {
+        Outcome::Replaced(old) => return Ok(Some(old)),
+        Outcome::Inserted => {}
+        Outcome::Split(s) => {
+            // The root itself split: grow a new root above the two halves.
+            let mut new_root = Node::new_internal();
+            new_root.internal_mut().children[0] = self.root;
+            new_root.internal_insert_at(0, s.separator, s.right);
+            self.root = self.nodes.alloc_reserved(new_root);
+            self.height += 1;
+        }
+    }
+    self.count += 1;
+    Ok(None)
+}`
+  },
+
+  insertInto: {
+    zig: `
+fn insertInto(tree: *BPlusTree, id: NodeId, key: u64, value: u64) Result {
+    const n = tree.nodes.ptr(id);
+    switch (n.kind) {
+        .leaf => |*leaf| {
+            const i = search.lowerBound(n.keySlice(), key);
+            if (i < n.len and n.keys[i] == key) {
+                const old = leaf.values[i];
+                leaf.values[i] = value;
+                return .{ .replaced = old };
+            }
+            // Insert first, split afterwards: the arrays have one spare slot.
+            n.leafInsertAt(i, key, value);
+            if (n.len <= tree.maxKeys()) return .inserted;
+            return .{ .split = splitLeaf(tree, id) };
+        },
+        .internal => |*in| {
+            const i = search.childIndex(n.keySlice(), key);
+            const result = insertInto(tree, in.children[i], key, value);
+            switch (result) {
+                .replaced, .inserted => return result,
+                .split => |s| {
+                    // Child i became two nodes: slot the separator in between.
+                    n.internalInsertAt(i, s.separator, s.right);
+                    if (n.len <= tree.maxKeys()) return .inserted;
+                    return .{ .split = splitInternal(tree, id) };
+                },
+            }
+        },
+    }
+}`,
+    rust: `
+fn insert_into(&mut self, id: NodeId, key: u64, value: u64) -> Outcome {
+    let max_keys = self.max_keys();
+    let n = self.nodes.get_mut(id);
+    let (i, child) = match &mut n.kind {
+        Kind::Leaf(leaf) => {
+            let i = lower_bound(&n.keys[..n.len], key);
+            if i < n.len && n.keys[i] == key {
+                return Outcome::Replaced(std::mem::replace(&mut leaf.values[i], value));
+            }
+            // Insert first, split afterwards: the arrays have one spare slot.
+            n.leaf_insert_at(i, key, value);
+            if n.len <= max_keys {
+                return Outcome::Inserted;
+            }
+            return Outcome::Split(self.split_leaf(id));
+        }
+        Kind::Internal(internal) => {
+            let i = child_index(&n.keys[..n.len], key);
+            (i, internal.children[i])
+        }
+    };
+    // The borrow of n ends here: the recursive call needs all of self.
+    match self.insert_into(child, key, value) {
+        Outcome::Split(s) => {
+            // Child i became two nodes: slot the separator in between.
+            let n = self.nodes.get_mut(id);
+            n.internal_insert_at(i, s.separator, s.right);
+            if n.len <= max_keys {
+                return Outcome::Inserted;
+            }
+            Outcome::Split(self.split_internal(id))
+        }
+        other => other,
+    }
+}`
+  },
+
+  delete: {
+    zig: `
+pub fn delete(tree: *BPlusTree, key: u64) ?u64 {
+    if (tree.root == .nil) return null;
+    const removed = deleteFrom(tree, tree.root, key) orelse return null;
+    tree.count -= 1;
+
+    // The root is allowed to be underfull, but not to be empty.
+    const root = tree.nodes.ptr(tree.root);
+    if (root.len == 0) {
+        const old_root = tree.root;
+        switch (root.kind) {
+            // Last entry gone: back to the empty tree, zero nodes.
+            .leaf => {
+                tree.root = .nil;
+                tree.first_leaf = .nil;
+                tree.last_leaf = .nil;
+            },
+            // An internal root with no separator has exactly one child.
+            // That child becomes the root: the tree gets one level shorter.
+            .internal => |*in| tree.root = in.children[0],
+        }
+        tree.nodes.free(old_root);
+        tree.height -= 1;
+    }
+    return removed;
+}`,
+    rust: `
+pub fn delete(&mut self, key: u64) -> Option<u64> {
+    if self.root.is_nil() {
+        return None;
+    }
+    let removed = self.delete_from(self.root, key)?;
+    self.count -= 1;
+
+    // The root is allowed to be underfull, but not to be empty.
+    let root = self.nodes.get(self.root);
+    if root.len == 0 {
+        let old_root = self.root;
+        match &root.kind {
+            // Last entry gone: back to the empty tree, zero nodes.
+            Kind::Leaf(_) => {
+                self.root = NodeId::NIL;
+                self.first_leaf = NodeId::NIL;
+                self.last_leaf = NodeId::NIL;
+            }
+            // An internal root with no separator has exactly one child.
+            // That child becomes the root: the tree gets one level shorter.
+            Kind::Internal(internal) => self.root = internal.children[0],
+        }
+        self.nodes.free(old_root);
+        self.height -= 1;
+    }
+    Some(removed)
+}`
+  },
+
+  rebalance: {
+    zig: `
+fn deleteFrom(tree: *BPlusTree, id: NodeId, key: u64) ?u64 {
+    const n = tree.nodes.ptr(id);
+    switch (n.kind) {
+        .leaf => {
+            const i = search.lowerBound(n.keySlice(), key);
+            if (i == n.len or n.keys[i] != key) return null;
+            return n.leafRemoveAt(i).value;
+        },
+        .internal => |*in| {
+            const i = search.childIndex(n.keySlice(), key);
+            const child_id = in.children[i];
+            const removed = deleteFrom(tree, child_id, key) orelse return null;
+            if (tree.nodes.get(child_id).len < tree.minKeys()) rebalance(tree, n, i);
+            return removed;
+        },
+    }
+}
+
+/// Child i of parent has one key too few. Preference order:
+///   1. borrow from the left sibling
+///   2. borrow from the right sibling
+///   3. merge with the left sibling
+///   4. merge with the right sibling (only the leftmost child gets here)
+fn rebalance(tree: *BPlusTree, parent: *Node, i: usize) void {
+    const children = &parent.kind.internal.children;
+    const min = tree.minKeys();
+    if (i > 0 and tree.nodes.get(children[i - 1]).len > min) {
+        borrowFromLeft(tree, parent, i);
+    } else if (i < parent.len and tree.nodes.get(children[i + 1]).len > min) {
+        borrowFromRight(tree, parent, i);
+    } else if (i > 0) {
+        merge(tree, parent, i - 1);
+    } else {
+        merge(tree, parent, i);
+    }
+}`,
+    rust: `
+fn delete_from(&mut self, id: NodeId, key: u64) -> Option<u64> {
+    let n = self.nodes.get_mut(id);
+    let (i, child_id) = match &n.kind {
+        Kind::Leaf(_) => {
+            let i = lower_bound(n.key_slice(), key);
+            if i == n.len || n.keys[i] != key {
+                return None;
+            }
+            return Some(n.leaf_remove_at(i).value);
+        }
+        Kind::Internal(internal) => {
+            let i = child_index(n.key_slice(), key);
+            (i, internal.children[i])
+        }
+    };
+    let removed = self.delete_from(child_id, key)?;
+    if self.nodes.get(child_id).len < self.min_keys() {
+        self.rebalance(id, i);
+    }
+    Some(removed)
+}
+
+/// Child i of parent has one key too few. Preference order:
+///   1. borrow from the left sibling
+///   2. borrow from the right sibling
+///   3. merge with the left sibling
+///   4. merge with the right sibling (only the leftmost child gets here)
+fn rebalance(&mut self, parent_id: NodeId, i: usize) {
+    let parent = self.nodes.get(parent_id);
+    let children = parent.child_slice();
+    let min = self.min_keys();
+    if i > 0 && self.nodes.get(children[i - 1]).len > min {
+        self.borrow_from_left(parent_id, i);
+    } else if i < parent.len && self.nodes.get(children[i + 1]).len > min {
+        self.borrow_from_right(parent_id, i);
+    } else if i > 0 {
+        self.merge(parent_id, i - 1);
+    } else {
+        self.merge(parent_id, i);
+    }
+}`
+  },
+
+  rotate: {
+    zig: `
+// Internal cases of borrowFromLeft / borrowFromRight (child i of parent):
+// a rotation through the parent, as in a classic B-tree.
+// From the LEFT sibling: the separator comes down, left's last key goes up,
+// and left's last child changes parent.
+const moved_child = left.kind.internal.children[left.len];
+@memmove(child.keys[1 .. child.len + 1], child.keys[0..child.len]);
+@memmove(in.children[1 .. child.len + 2], in.children[0 .. child.len + 1]);
+child.keys[0] = parent.keys[i - 1];
+in.children[0] = moved_child;
+child.len += 1;
+parent.keys[i - 1] = left.keys[left.len - 1];
+left.len -= 1;
+
+// From the RIGHT sibling: the separator comes down, right's first key goes
+// up, and right's first child changes parent.
+child.keys[child.len] = parent.keys[i];
+in.children[child.len + 1] = right.kind.internal.children[0];
+child.len += 1;
+parent.keys[i] = right.keys[0];
+const rc = &right.kind.internal.children;
+@memmove(right.keys[0 .. right.len - 1], right.keys[1..right.len]);
+@memmove(rc[0..right.len], rc[1 .. right.len + 1]);
+right.len -= 1;`,
+    rust: `
+// Internal cases of borrow_from_left / borrow_from_right (child i of parent):
+// a rotation through the parent, as in a classic B-tree.
+// From the LEFT sibling: the separator comes down, left's last key goes up,
+// and left's last child changes parent.
+let moved_child = left.internal().children[left.len];
+let len = child.len;
+child.keys.copy_within(0..len, 1);
+child.keys[0] = old_separator; // read from parent.keys[i - 1]
+let children = &mut child.internal_mut().children;
+children.copy_within(0..len + 1, 1);
+children[0] = moved_child;
+child.len += 1;
+left.len -= 1;
+let new_separator = left.keys[left.len]; // written to parent.keys[i - 1]
+
+// From the RIGHT sibling: the separator comes down, right's first key goes
+// up, and right's first child changes parent.
+let len = child.len;
+child.keys[len] = old_separator; // read from parent.keys[i]
+child.internal_mut().children[len + 1] = right.internal().children[0];
+child.len += 1;
+let new_separator = right.keys[0]; // written to parent.keys[i]
+let rlen = right.len;
+right.keys.copy_within(1..rlen, 0);
+right.internal_mut().children.copy_within(1..rlen + 1, 0);
+right.len -= 1;`
   },
 
   splitLeaf: {
@@ -231,6 +554,24 @@ window.CHAPTER_PARTS = {
   search: {
     route: { zig: ['pub fn childIndex', 'return upperBound'], rust: ['pub fn child_index', 'upper_bound(separators'] },
     leaf: { zig: ['const leaf =', 'if (i < leaf.len'], rust: ['let leaf =', '.then('] }
+  },
+  put: {
+    firstLeaf: { zig: ['if (tree.root == .nil)', 'tree.height = 1;'], rust: ['if self.root.is_nil()', 'self.height = 1;'] }
+  },
+  insertInto: {
+    replace: { zig: ['if (i < n.len and', 'return .{ .replaced'], rust: ['if i < n.len && n.keys[i] == key', 'return Outcome::Replaced'] },
+    insert: { zig: ['n.leafInsertAt', 'return .{ .split = splitLeaf'], rust: ['n.leaf_insert_at', 'return Outcome::Split(self.split_leaf'] }
+  },
+  delete: {
+    root: { zig: ['if (root.len == 0)', 'tree.height -= 1;'], rust: ['if root.len == 0', 'self.height -= 1;'] }
+  },
+  rebalance: {
+    leaf: { zig: ['const i = search.lowerBound', 'return n.leafRemoveAt'], rust: ['let i = lower_bound', 'return Some(n.leaf_remove_at'] },
+    choose: { zig: ['if (i > 0 and tree.nodes.get(children[i - 1])', 'merge(tree, parent, i);'], rust: ['if i > 0 && self.nodes.get(children[i - 1])', 'self.merge(parent_id, i);'] }
+  },
+  rotate: {
+    left: { zig: ['// From the LEFT', 'left.len -= 1;'], rust: ['// From the LEFT', 'written to parent.keys[i - 1]'] },
+    right: { zig: ['// From the RIGHT', 'right.len -= 1;'], rust: ['// From the RIGHT', 'right.len -= 1;'] }
   },
   splitLeaf: {
     divide: { zig: ['const mid', 'left.len = mid;'], rust: ['let mid', 'left.len = mid;'] },

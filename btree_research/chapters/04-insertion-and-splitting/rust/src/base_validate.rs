@@ -180,6 +180,12 @@ mod tests {
 
         nodes[root].children.pop();
         assert_eq!(validate(&nodes, 4, Some(root), 5), Err(MissingChild));
+        // The child count of a node is checked before its subtrees: a key on
+        // the wrong side in the first child does not hide the missing second
+        // child.
+        nodes[left].keys[1] = 25;
+        assert_eq!(validate(&nodes, 4, Some(root), 5), Err(MissingChild));
+        nodes[left].keys[1] = 10;
         nodes[root].children.push(right);
         nodes[left].children.push(right);
         assert_eq!(validate(&nodes, 4, Some(root), 5), Err(UnexpectedChild));

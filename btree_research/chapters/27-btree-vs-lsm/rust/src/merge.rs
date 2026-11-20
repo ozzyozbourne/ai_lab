@@ -244,6 +244,7 @@ mod tests {
         let geo = Geometry {
             block_entries: 2,
             index_fanout: 2,
+            filter_bits_per_key: 0,
         };
         let mut dev = Device::new();
         let newest = build_run(&mut dev, geo, &[(3, Some(31)), (7, None)]);
@@ -285,6 +286,7 @@ mod tests {
         let geo = Geometry {
             block_entries: 2,
             index_fanout: 2,
+            filter_bits_per_key: 0,
         };
         let mut dev = Device::new();
         let slots: Vec<(u64, Option<u64>)> = (0..20).map(|i| (i * 10, Some(i))).collect();

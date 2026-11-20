@@ -70,6 +70,7 @@ const TRACE_LSM: lsm::Config = lsm::Config {
     memtable_entries: 4,
     l0_runs: 2,
     growth: 2,
+    filter_bits_per_key: 0,
 };
 
 /// No budgets are set in this program, so writes cannot fail.

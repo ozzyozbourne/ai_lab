@@ -24,6 +24,7 @@ const TINY: lsm::Config = lsm::Config {
     memtable_entries: 4,
     l0_runs: 2,
     growth: 2,
+    filter_bits_per_key: 0,
 };
 
 fn io(c: Counters) -> (u64, u64) {
@@ -173,6 +174,7 @@ fn lsm_a_runs_index_is_a_tree_and_every_level_of_it_is_read_and_written() {
         memtable_entries: 8,
         l0_runs: 1,
         growth: 2,
+        filter_bits_per_key: 0,
     };
     let mut lsm = Lsm::new(cfg);
     for k in 1..10 {
@@ -391,6 +393,7 @@ fn model_test_both_structures_against_the_oracle_same_operation_stream() {
             memtable_entries: 1,
             l0_runs: 1,
             growth: 2,
+            filter_bits_per_key: 0,
         },
         lsm::Config {
             block_entries: 2,
@@ -398,6 +401,7 @@ fn model_test_both_structures_against_the_oracle_same_operation_stream() {
             memtable_entries: 3,
             l0_runs: 3,
             growth: 3,
+            filter_bits_per_key: 0,
         },
         lsm::Config {
             block_entries: 5,
@@ -405,6 +409,7 @@ fn model_test_both_structures_against_the_oracle_same_operation_stream() {
             memtable_entries: 8,
             l0_runs: 4,
             growth: 4,
+            filter_bits_per_key: 0,
         },
         lsm::Config {
             block_entries: 15,
@@ -412,6 +417,7 @@ fn model_test_both_structures_against_the_oracle_same_operation_stream() {
             memtable_entries: 60,
             l0_runs: 4,
             growth: 8,
+            filter_bits_per_key: 0,
         },
     ];
     for (i, cfg) in configs.into_iter().enumerate() {
@@ -469,6 +475,7 @@ fn model_test_delete_heavy_stream_tombstones_everywhere() {
         memtable_entries: 2,
         l0_runs: 1,
         growth: 2,
+        filter_bits_per_key: 0,
     };
     model_test(
         3,

@@ -14,6 +14,8 @@
 //!   RAM     the "manifest": per run its smallest and largest key and where
 //!           its root block is. A few words per run, so not counted (the
 //!           B+tree's root handle and height are not counted either).
+//!           Optionally also a Bloom filter over the run's keys (filter.rs):
+//!           `bits_per_key` bits of RAM per slot, reported by the program.
 //! A point lookup into a run therefore costs one index block per index level
 //! plus one data block: the height of the run's static tree.
 //!
@@ -21,6 +23,7 @@
 //! `slots[j * block_entries ..][..block_entries]`.
 
 use crate::device::{Device, Kind};
+use crate::filter::Filter;
 use crate::memtable::{Lookup, OutOfMemory};
 
 /// One entry of a run or of the memtable. `value == None` is a tombstone.
@@ -38,6 +41,8 @@ pub struct Geometry {
     pub block_entries: usize,
     /// First-keys per index block. Set to M, the fan-out of an internal node.
     pub index_fanout: usize,
+    /// Bits of Bloom filter per slot, kept in RAM. 0: runs have no filter.
+    pub filter_bits_per_key: usize,
 }
 
 impl Geometry {
@@ -89,6 +94,9 @@ pub struct Run {
     /// without touching the device.
     pub min_key: u64,
     pub max_key: u64,
+    /// Also in RAM: answers "certainly not in this run" for most absent
+    /// keys. Empty (always "maybe") when the geometry asks for no filter.
+    pub filter: Filter,
 }
 
 impl Run {
@@ -132,16 +140,17 @@ impl Run {
 pub struct Builder {
     geo: Geometry,
     slots: Vec<Slot>,
+    filter: Filter,
     block: [Slot; MAX_BLOCK_ENTRIES],
     block_len: usize,
 }
 
 impl Builder {
     /// `max_slots` is an upper bound on what will be appended (the sum of the
-    /// inputs). Reserving it here is the builder's ONLY allocation, so a merge
-    /// that got this far cannot fail half-way through. `budget` is how many
-    /// slots may still be reserved; it stands in for the allocator that can
-    /// say no in the Zig version.
+    /// inputs). The slots and the filter's bits are reserved here and nowhere
+    /// else, so a merge that got this far cannot fail half-way through.
+    /// `budget` is how many slots may still be reserved; it stands in for the
+    /// allocator that can say no in the Zig version.
     pub fn new(geo: Geometry, max_slots: usize, budget: usize) -> Result<Builder, OutOfMemory> {
         assert!((1..=MAX_BLOCK_ENTRIES).contains(&geo.block_entries));
         assert!(geo.index_fanout >= 2);
@@ -151,6 +160,7 @@ impl Builder {
         Ok(Builder {
             geo,
             slots: Vec::with_capacity(max_slots),
+            filter: Filter::with_capacity(max_slots, geo.filter_bits_per_key),
             block: [Slot {
                 key: 0,
                 value: None,
@@ -188,10 +198,18 @@ impl Builder {
         let index_blocks = self.geo.index_blocks(self.slots.len()) as u64;
         dev.alloc_blocks(index_blocks);
         dev.write(Kind::Index, index_blocks);
+        // The filter is built in RAM from the keys just written: no block.
+        // Tombstones are added too; a lookup must find them.
+        self.filter
+            .seal(self.slots.len(), self.geo.filter_bits_per_key);
+        for slot in &self.slots {
+            self.filter.add(slot.key);
+        }
         Some(Run {
             slots: self.slots,
             min_key,
             max_key,
+            filter: self.filter,
         })
     }
 }
@@ -205,6 +223,7 @@ mod tests {
         let g = Geometry {
             block_entries: 3,
             index_fanout: 4,
+            filter_bits_per_key: 0,
         };
         assert_eq!(g.data_blocks(1), 1);
         assert_eq!(g.data_blocks(3), 1);
@@ -226,6 +245,7 @@ mod tests {
         let g = Geometry {
             block_entries: 3,
             index_fanout: 4,
+            filter_bits_per_key: 0,
         };
         let mut dev = Device::new();
         let mut b = Builder::new(g, 10, usize::MAX).unwrap();
@@ -260,6 +280,7 @@ mod tests {
             Geometry {
                 block_entries: 3,
                 index_fanout: 4,
+                filter_bits_per_key: 0,
             },
             5,
             usize::MAX,
@@ -270,10 +291,40 @@ mod tests {
     }
 
     #[test]
+    fn builder_with_a_filter_built_at_finish_in_ram_sized_by_the_slots_written() {
+        let g = Geometry {
+            block_entries: 3,
+            index_fanout: 4,
+            filter_bits_per_key: 10,
+        };
+        let mut dev = Device::new();
+        let mut b = Builder::new(g, 40, usize::MAX).unwrap(); // reserved for 40, 7 arrive
+        for k in [2, 4, 6, 8, 10, 12, 14] {
+            b.append(
+                &mut dev,
+                Slot {
+                    key: k,
+                    value: (k != 8).then_some(k * 10),
+                },
+            );
+        }
+        let run = b.finish(&mut dev).unwrap();
+        // The same blocks as without a filter: it is not on the device.
+        assert_eq!(dev.counters.writes, [1, 3]);
+        assert_eq!(dev.live, 4);
+        assert_eq!(run.filter.bits(), 70);
+        assert!([2, 4, 6, 8, 10, 12, 14].iter().all(|&k| run.filter.may_contain(k)));
+
+        let empty = Builder::new(g, 5, usize::MAX).unwrap();
+        assert!(empty.finish(&mut dev).is_none());
+    }
+
+    #[test]
     fn a_builder_over_budget_is_refused_before_anything_is_written() {
         let g = Geometry {
             block_entries: 3,
             index_fanout: 4,
+            filter_bits_per_key: 0,
         };
         assert_eq!(Builder::new(g, 5, 4).err(), Some(OutOfMemory));
         assert!(Builder::new(g, 5, 5).is_ok());

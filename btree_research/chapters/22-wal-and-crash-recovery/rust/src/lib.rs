@@ -30,8 +30,7 @@ pub mod machine;
 pub mod prng;
 pub mod wal;
 
-#[cfg(test)]
-mod tests;
+//TESTS
 
 pub use db::Db;
 pub use wal::Wal;

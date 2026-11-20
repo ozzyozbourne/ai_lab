@@ -67,6 +67,7 @@ impl Default for Config {
             memtable_entries: 60,
             l0_runs: 4,
             growth: 4,
+            filter_bits_per_key: 0,
         }
     }
 }

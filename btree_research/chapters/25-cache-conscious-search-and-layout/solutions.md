@@ -49,19 +49,27 @@ zig build-obj -O ReleaseFast one_hinted.zig     -fno-emit-bin -femit-asm=one_hin
 ```
 
 The function body is under the label `one_branch.h_branch:` (the exported name is an
-alias at the end of the file). In the loop look at the instruction after
-`cmp qword ptr [rdi + 8*rcx], rdx` (the key comparison; the registers may differ). A
-`jb` / `jae` there is a data-dependent jump; a `cmovb` / `cmovae` is a conditional move.
+alias at the end of the file). Debug directives make it hard to read; this strips them:
+
+```
+grep -vE '^\s*\.(loc|file|cfi|p2align)|^\.Ltmp' one_branch.s
+```
+
+The function compares a key twice: `cmp qword ptr [rdi + 8*r8], rdx` inside the loop
+(registers vary) and once more for the final check, where it is followed by `adc`. Look
+at the instruction after the one in the loop. A `jb` there is a data-dependent jump; a
+`cmovb` is a conditional move. What we saw:
 
 | Mode | `.branch` | `.arithmetic` | `.hinted` |
 |---|---|---|---|
 | `ReleaseFast` | `jb` | `jb` | `cmovb` |
 | `ReleaseSmall` | `jb` | `jb` | `cmovb` |
+| `ReleaseSafe` | `jb` | `jb` | `cmovb` |
 
-So the answer did not change between these two modes. In `ReleaseSafe` each file
-compiles to thousands of lines, because the panic and formatting code comes along; we
-did not locate the loop there and make no claim about it. In `Debug` nothing is
-optimised and the question is meaningless.
+So the answer did not change with the optimisation mode. (`ReleaseSmall` names the
+label `.Lone_branch.h_branch:`. `ReleaseSafe` emits about 700 000 lines, because the
+panic handler comes along, and adds bounds and overflow checks around the comparison;
+search for the label.) In `Debug` nothing is optimised and the question is meaningless.
 
 **Rust.** In the chapter's `rust/` directory create three files next to `src/`.
 `h_branch.rs`:
@@ -85,16 +93,22 @@ and the same with `Select::Arithmetic` and `Select::Hinted`. Then, for each:
 rustc -O --crate-type lib --emit asm -o h_branch.s h_branch.rs
 ```
 
-(AT&T syntax: the comparison is `cmpq %rdx, (%rdi,%rcx,8)` or similar.) We saw a jump
-after the key comparison for `Branch` and `Arithmetic` and a `cmov` for `Hinted`. Delete
-the three files and the `.s` files afterwards.
+(AT&T syntax: the comparison in the loop is `cmpq %rdx, (%rdi,%rax,8)` or similar, after
+a bounds check.) We saw `jb` after it for `Branch` and `Arithmetic` and `cmovbq` for
+`Hinted`. Delete the three files and the `.s` files afterwards.
+
+The README's other statements about machine code come from the same method: a one-line
+wrapper around `rank8` (Zig at the host CPU: one `vpcmpnleuq` on a `zmm` register and a
+`popcnt`; Rust with `-O`: eight `cmpq` / `setb`; Rust with `-O -C target-cpu=native`:
+one `vpcmpnleuq`) and around `Eytzinger.lowerBound` (Zig: `cmp`, `setb`, `lea` in the
+loop).
 
 **The trap: all three in one file.** Put the three Zig wrappers in one file and compile
 it the same way. The end of the assembly then reads:
 
 ```
 h_hinted = all.h_branch
-h_arith = all.h_arith
+h_arithmetic = all.h_arithmetic
 h_branch = all.h_branch
 ```
 

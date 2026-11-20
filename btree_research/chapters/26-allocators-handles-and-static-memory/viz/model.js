@@ -284,7 +284,7 @@
     }
     var grew = pool.lastGrew;
     var step = this.step(why + ' Allocate a ' + (leaf ? 'leaf' : 'interior node') + ': ' +
-      (grew ? 'every slab is full, so a new slab ' + h.slab + ' is taken from the backing allocator, and its first slot is used.'
+      (grew ? (pool.slabCount === 1 ? 'the pool has no slab yet' : 'every slab is full') + ', so a new slab ' + h.slab + ' is taken from the backing allocator, and its first slot is used.'
             : 'the lowest slab with a free slot is slab ' + h.slab + ', its lowest set bit is slot ' + h.slot + '. The bit is cleared.') +
       ' The new node is ' + hh(h) + ' = ' + hHex(h) + '.',
       { type: 'alloc', slots: slotMark(h, 'inserted'), focus: h, log: { html: 'create ' + hName(h) + (grew ? ' (new slab)' : ''), state: 'inserted' } });

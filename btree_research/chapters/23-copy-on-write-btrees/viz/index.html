@@ -336,6 +336,7 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
   }
   /** Sections 2 to 4 of the chapter's program, starting from the canonical tree. */
   function tour(play) {
+    order.value = '4';                 // the tour is the program's scenario, which uses M = 4
     canonicalBuild(null);
     log.clear();
     var ops = [[{ type: 'idle', log: 'canonical tree (12 commits)',

@@ -291,6 +291,17 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
     '    I1.0 [14]\n      L1.2 [13]\n      L1.3 [15]\n    I1.3 [18 20 22]\n      L2.0 [17]\n      L2.1 [19]\n      L2.2 [21]\n      L2.3 [23 24]\n');
   st.delete(7);
   BTViz.selfTest('static: delete 7, put 25', [st.put(25).result, st.policy().leafSlabs, st.policy().frees].join(' | '), 'true | 3 | 0');
+  /* A delete frees a slot only when it merges two nodes: after put 50, fill, delete 50 no
+     slot is free, and put 60 is refused at the full interior node above a leaf that has room. */
+  var s2 = new Ch26.Tree(4, 4, { static: true });
+  s2.reserveAndFreeze(3, 2);
+  s2.put(50);
+  for (sk = 1; s2.has(sk) || s2.put(sk).result !== 'oom'; sk++) { /* fill */ }
+  s2.delete(50);
+  var refusedPut = s2.put(60);
+  BTViz.selfTest('static: a delete without a merge frees no slot',
+    [s2.leaves.freeSlots(), s2.interiors.freeSlots(), refusedPut.result, s2.policy().refused, /before<\/i> it reaches a leaf/.test(refusedPut[refusedPut.length - 2].caption), s2.dump().split('\n').slice(-2)[0].trim()].join(' | '),
+    '0 | 0 | oom | 2 | true | L2.3 [23]');
 })();
 </script>
 </body>

@@ -168,7 +168,9 @@ Chapter text: <a href="../README.md">README</a>. First page: <a href="index.html
   var cf = BTViz.figure('#fig-code', { title: 'Free: merge upwards while the buddy is free and whole' });
   BTViz.codePanel(cf.stage, 'buddy', { title: 'freeBlock', maxHeight: 360 }).highlight({ zig: [[7, 9]], rust: [[7, 11]] });
 
-  /* ---- self-test: the JS model must reproduce section 5 of expected_output.txt */
+  /* ---- self-tests. First: on load the picture and the model are the same empty heap. */
+  BTViz.selfTest('on load: the picture is the model', heap.map() + ' | step ' + (shown + 1) + ' of ' + current.length, '[1024 free] | step 1 of 1');
+  /* The JS model must reproduce section 5 of expected_output.txt. */
   var b = new Ch26.Buddy(10, 6), maps = [];
   var ids = [['a', 100], ['b', 60], ['c', 200]].map(function (r) { var blk = b.alloc(r[1], r[0]).result; maps.push(b.map()); return blk; });
   BTViz.selfTest('section 5: allocations', maps.join('\n'),

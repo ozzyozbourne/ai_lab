@@ -56,8 +56,8 @@ page (after about log2(391), roughly 9 probes) do the page reads stop. Binary se
 halves the problem with every page it reads.
 
 Writes are the real problem. To insert a key, every entry with a larger key moves one
-slot to the right. Inserting a new smallest key into 100,000 entries moves all 100,000
-of them and rewrites all 391 pages. Deleting has the same cost.
+slot to the right. A new smallest key among 100,000 entries moves all of them and
+rewrites all 391 pages. Deleting costs the same.
 
 ### Candidate 2: a binary search tree
 
@@ -229,31 +229,27 @@ Same files, names and tests in snake_case; the same output.
   `Allocator`, and `deinit` takes it again. In Rust `Vec` and `Box` allocate from the
   global allocator and free themselves when dropped.
 - **Failure.** Zig's `put` returns `error.OutOfMemory` when the allocator says no; the
-  tests inject that failure at every allocation with
-  `std.testing.checkAllAllocationFailures`. Rust's `Vec` and `Box` abort the process
-  when memory runs out, so the Rust versions carry an explicit limit instead:
+  tests inject that at every allocation with `std.testing.checkAllAllocationFailures`.
+  Rust's `Vec` and `Box` abort the process instead, so the Rust versions carry a limit:
   `SortedArrayMap::with_limit` returns `Err(OutOfSpace)` and `Bst::with_budget` returns
   `Err(OutOfNodes)`. The tests try every possible limit.
-- **The shift.** Zig spells it out with `@memmove`. Rust calls `Vec::insert` and
-  `Vec::remove`, which do the same shift internally.
+- **The shift.** Zig spells it out with `@memmove`; Rust's `Vec::insert` and
+  `Vec::remove` do the same shift internally.
 - **Deleting a BST node with two children.** Zig copies the successor's entry into the
   node and unlinks the successor. Rust re-links the successor node itself
   (`detach_min`), because moving a `Box` is easier than holding two mutable references
   into one tree. The resulting tree has the same shape.
 - **Freeing a deep tree.** A degenerate BST is as deep as it is large. Zig's `deinit`
-  is a loop that threads the nodes still to be freed through their own `right`
-  pointers, so it needs no stack and no extra memory. Rust's automatically generated
-  drop for `Option<Box<Node>>` is recursive and would overflow the stack, so `Bst`
-  implements `Drop` with an explicit `Vec` of pending nodes. `range`, `height` and
-  `validate` keep such a pending list too; in Zig the caller passes its allocator, so
-  `tree.height(allocator)` can fail.
-- **`range` on the array** returns a slice that points into the map. In Zig the comment
-  says it is invalidated by the next `put`; in Rust the borrow checker refuses to
-  compile a `put` while the slice is alive.
-- **One page per node.** Zig gets it by passing `std.heap.page_allocator`. Rust has no
-  such allocator in `std`, so `Bst<PageAligned>` adds a zero-sized field with
-  `#[repr(align(4096))]`, which forces every node to be a page-aligned, page-sized
-  allocation.
+  threads the nodes still to be freed through their own `right` pointers, so it needs
+  no stack and no extra memory. Rust's generated drop for `Option<Box<Node>>` is
+  recursive and would overflow the stack, so `Bst` implements `Drop` with a `Vec` of
+  pending nodes. `range`, `height` and `validate` keep such a list too; in Zig the
+  caller passes its allocator, so `tree.height(allocator)` can fail.
+- **`range` on the array** returns a slice into the map. In Zig a comment says the
+  next `put` invalidates it; in Rust a `put` while the slice is alive does not compile.
+- **One page per node.** Zig passes `std.heap.page_allocator`. Rust's `std` has no such
+  allocator, so `Bst<PageAligned>` adds a zero-sized field with `#[repr(align(4096))]`,
+  which makes every node a page-aligned, page-sized allocation.
 
 ## In real databases
 
@@ -320,10 +316,9 @@ calculator prints a best and a worst case; chapter 04 measures the fill.
 
 The chapter uses two allocators, and each makes a point about its structure.
 
-**`FixedBufferAllocator` on a stack buffer, for the sorted array.** A sorted array is a
-single contiguous block, which is exactly what a bump allocator over a fixed buffer
-hands out: no system call, no free list, and the memory disappears when the function
-returns. `handExample` in `main.zig` puts the twelve entries in a 256-byte buffer on
+**`FixedBufferAllocator` on a stack buffer, for the sorted array.** A sorted array is
+one contiguous block, exactly what a bump allocator over a fixed buffer hands out: no
+system call, no free list, and the memory disappears when the function returns. `handExample` in `main.zig` puts the twelve entries in a 256-byte buffer on
 the stack and never calls `deinit`. The lifetime is the stack frame; returning the map
 from that function would be a use-after-return bug.
 
@@ -336,9 +331,9 @@ the general weakness of one big array: growing it needs the old and the new bloc
 the same time.
 
 **`page_allocator`, for the BST: one page per pointer hop.** `std.heap.page_allocator`
-asks the operating system for fresh pages on every allocation. Using it for 32-byte
-nodes is wasteful and slow (`ZIG_CHEATSHEET.md` says never to do it per node). Here it
-is used on purpose, once, for twelve nodes: it makes the cost model literally true.
+asks the operating system for fresh pages on every allocation. For 32-byte nodes that
+is wasteful and slow (`ZIG_CHEATSHEET.md` says never to do it per node). Here it is
+used on purpose, for twelve nodes: it makes the cost model literally true.
 `Bst.pagesOnPath` looks at the real addresses of the nodes on a search path, and the
 program prints that `get(17)` visits 4 nodes on 4 distinct pages of memory. The test
 `page_allocator puts every node on its own page` builds the same tree in a
@@ -361,8 +356,8 @@ Everything else uses `init.gpa` or `std.testing.allocator`, so leaks fail the te
   auto-increment ids) and is the worst input for an unbalanced tree.
 - **Recursion on unbalanced trees.** A recursive `deinit`, `range`, `height` or
   `validate` on a 20,000-node chain needs 20,000 stack frames, and nearly sorted input
-  (2, 1, 4, 3, ...) gives a tree just as deep that forks at every level. The code here
-  uses no recursion; the tests walk both shapes.
+  (2, 1, 4, 3, ...) gives a tree just as deep that forks at every level. This code
+  does not recurse; the tests walk both shapes.
 - **`for (1..len)` in Zig when `len` is 0.** The range `1..0` is an integer overflow,
   not an empty loop. `validate` uses a `while` loop for this reason.
 - **Reading "height" differently.** Some texts count edges, so a single node has height

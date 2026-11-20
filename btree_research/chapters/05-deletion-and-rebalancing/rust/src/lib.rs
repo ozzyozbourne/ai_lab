@@ -1,14 +1,27 @@
 //! Chapter 05: deletion and rebalancing. The complete in-memory B-tree.
 //!
-//!   node.rs      the node type                      (chapter 03)
-//!   pool.rs      where nodes come from and go back to
-//!   search.rs    get, in_order, range               (chapter 03)
-//!   insert.rs    put, split                         (chapter 04)
-//!   delete.rs    delete, borrow, merge, root shrink (chapter 05, this one)
-//!   validate.rs  the invariants as code             (chapter 06 builds on it)
-//!   stats.rs     shape, fill, text rendering
-//!   btree.rs     ties the sections together
-//!   scenario.rs  what `cargo run` prints
+//! ```text
+//! file         content                              needs
+//! node.rs      the node type (chapter 03)           -
+//! search.rs    get, in_order, range (chapter 03)    node
+//! validate.rs  the invariants as code               node
+//! stats.rs     shape, fill, text rendering          node
+//! pool.rs      the slab: where nodes come from      node
+//! insert.rs    put, split (chapter 04)              node, search, pool, btree
+//! delete.rs    delete, borrow, merge, root shrink   node, search, pool, btree
+//! btree.rs     ties the sections together
+//! scenario.rs  what `cargo run` prints
+//! ```
+//!
+//! Copying a part of the tree into another chapter:
+//!
+//! ```text
+//! search only      node, search, validate, stats (nodes in a Vec<Node>,
+//!                  or btree.rs without put, delete and Counters)
+//! search + insert  the above + pool, insert, btree.rs without delete and
+//!                  the delete counters; tests_insert.rs
+//! everything       all of the above + delete.rs, tests_delete.rs
+//! ```
 
 pub mod btree;
 pub mod delete;
@@ -23,4 +36,6 @@ pub mod stats;
 pub mod validate;
 
 #[cfg(test)]
-mod tests;
+mod tests_delete;
+#[cfg(test)]
+mod tests_insert;

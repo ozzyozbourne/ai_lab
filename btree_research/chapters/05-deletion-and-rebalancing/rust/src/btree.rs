@@ -10,10 +10,12 @@ use std::io::{self, Write};
 /// How often each structural change happened since the tree was created.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Counters {
+    // Written by insert.rs.
     /// Node splits, including root splits.
     pub splits: u64,
     /// Splits of the root: each one made the tree one level taller.
     pub root_splits: u64,
+    // Written by delete.rs.
     /// Deletes that hit a key in an interior node and replaced it with its
     /// in-order predecessor from a leaf.
     pub predecessor_swaps: u64,
@@ -66,7 +68,8 @@ impl BTree {
     }
 
     /// Insert or overwrite. Returns the previous value of the key, if any.
-    /// On `Err(OutOfNodes)` the tree is unchanged.
+    /// On `Err(OutOfNodes)` the tree, `counters` and `pool.usage` are exactly
+    /// as before the call.
     pub fn put(&mut self, key: u64, value: u64) -> Result<Option<u64>, OutOfNodes> {
         insert::put(self, key, value)
     }
@@ -83,6 +86,7 @@ impl BTree {
     }
 
     /// `visit(key, value)` for every entry with lo <= key < hi, ascending.
+    /// (Half-open, so the key `u64::MAX` is out of reach: see search.rs.)
     pub fn range(&self, lo: u64, hi: u64, mut visit: impl FnMut(u64, u64)) {
         search::range(&self.pool, self.root, lo, hi, &mut visit);
     }

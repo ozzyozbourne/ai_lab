@@ -28,6 +28,13 @@
 //! and the tree gets one level shorter.
 //!
 //! Delete never allocates: it only ever returns nodes to the pool.
+//!
+//! This file needs node.rs, search.rs (`lower_bound`) and the slab, nothing
+//! from insert.rs. The four steps (`fix_underflow`, `borrow_from_left`,
+//! `borrow_from_right`, `merge_children`) are `pub`: chapter 06 builds
+//! deliberately broken variants of delete and can reuse the steps it does
+//! not break. Each classic bug is one line here: do not free the right node;
+//! do not move the child in a borrow; leave the separator in the parent.
 
 use crate::btree::BTree;
 use crate::node::{Entry, NodeId, max_keys, min_keys};
@@ -105,7 +112,7 @@ fn remove_max(tree: &mut BTree, id: NodeId) -> Entry {
 /// If `parent.children[i]` has fewer than `min_keys` keys, repair it.
 /// Afterwards every child of `parent` is legal again; `parent` itself may
 /// have lost one key (merge), which its own parent checks next.
-fn fix_underflow(tree: &mut BTree, parent: NodeId, i: usize) {
+pub fn fix_underflow(tree: &mut BTree, parent: NodeId, i: usize) {
     let min = min_keys(tree.order);
     let siblings = &tree.pool[parent].children;
     if tree.pool[siblings[i]].len() >= min {
@@ -141,7 +148,7 @@ fn fix_underflow(tree: &mut BTree, parent: NodeId, i: usize) {
 /// sideways directly: S lies between the two nodes in key order, so skipping
 /// it would break the ordering invariant. In interior nodes the left
 /// sibling's last child (keys between L and S) changes parent as well.
-fn borrow_from_left(tree: &mut BTree, parent: NodeId, i: usize) {
+pub fn borrow_from_left(tree: &mut BTree, parent: NodeId, i: usize) {
     let child = tree.pool[parent].children[i];
     let left = tree.pool[parent].children[i - 1];
     let sep = i - 1;
@@ -165,7 +172,7 @@ fn borrow_from_left(tree: &mut BTree, parent: NodeId, i: usize) {
 /// Mirror image: the separator moves down to the END of the child, the right
 /// sibling's SMALLEST entry moves up, and the right sibling's first child
 /// moves over.
-fn borrow_from_right(tree: &mut BTree, parent: NodeId, i: usize) {
+pub fn borrow_from_right(tree: &mut BTree, parent: NodeId, i: usize) {
     let child = tree.pool[parent].children[i];
     let right = tree.pool[parent].children[i + 1];
     let sep = i;
@@ -198,13 +205,14 @@ fn borrow_from_right(tree: &mut BTree, parent: NodeId, i: usize) {
 /// min_keys (otherwise we would have borrowed), plus the separator:
 /// 2 * min_keys <= M - 1. The separator MUST come down: with one child fewer
 /// the parent needs one key fewer.
-fn merge_children(tree: &mut BTree, parent: NodeId, at: usize) {
+pub fn merge_children(tree: &mut BTree, parent: NodeId, at: usize) {
     let node = &mut tree.pool[parent];
     let sep = node.remove_entry(at);
     let right = node.children.remove(at + 1);
     let left = node.children[at];
-    // `free` hands the right node back by value: its vectors are appended to
-    // the left node, and its slot is on the free list for the next split.
+    // `free` hands the right node back by value. Its entries are appended
+    // (copied) to the left node; its slot is on the free list for the next
+    // split, and its own buffers are released when `right` goes out of scope.
     let mut right = tree.pool.free(right);
     let node = &mut tree.pool[left];
     node.keys.push(sep.key);

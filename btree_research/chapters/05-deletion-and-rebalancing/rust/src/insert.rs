@@ -9,7 +9,14 @@
 //!    a node is overfull. Nothing in this phase can fail.
 //!
 //! Reserving first means a failed allocation leaves the tree exactly as it
-//! was (see `put_under_allocation_failure_leaves_the_tree_unchanged`).
+//! was (see `put_under_allocation_failure_leaves_the_tree_unchanged` in
+//! tests_insert.rs). The slab's `usage` counters are put back as well, so a
+//! failed `put` cannot be seen from the tree at all. The one trace it can
+//! leave is inside the slab: a slot that was pushed for a reservation and
+//! returned stays on the free list.
+//!
+//! This file needs node.rs, search.rs (`lower_bound`) and the slab, nothing
+//! from delete.rs.
 
 use crate::btree::BTree;
 use crate::node::{Entry, Node, NodeId, max_keys, min_keys};
@@ -20,6 +27,7 @@ use crate::search::lower_bound;
 pub const MAX_HEIGHT: usize = 64;
 
 /// Returns the previous value if the key was already present (overwrite).
+/// On `Err(OutOfNodes)` the tree, its counters and `pool.usage` are unchanged.
 pub fn put(tree: &mut BTree, key: u64, value: u64) -> Result<Option<u64>, OutOfNodes> {
     let Some(root) = tree.root else {
         let mut leaf = Node::new(true);
@@ -60,14 +68,18 @@ pub fn put(tree: &mut BTree, key: u64, value: u64) -> Result<Option<u64>, OutOfN
         need += 1; // the root splits too: one more node for the new root
     }
     let mut spare: Vec<NodeId> = Vec::with_capacity(need);
+    let usage_before = tree.pool.usage;
     for _ in 0..need {
         match tree.pool.alloc(Node::new(true)) {
             Ok(id) => spare.push(id),
             Err(out_of_nodes) => {
-                // Hand back what we already took (Zig: `errdefer`).
+                // Hand back what we already took (Zig: `errdefer`), and
+                // forget that we took it: `usage` (created, destroyed, peak)
+                // counts nodes of the tree, and these never became part of it.
                 for id in spare {
                     tree.pool.free(id);
                 }
+                tree.pool.usage = usage_before;
                 return Err(out_of_nodes);
             }
         }

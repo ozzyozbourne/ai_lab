@@ -103,10 +103,10 @@ mod tests {
         //            [20]
         //     [5 10]      [30 40]
         // A plain Vec<Node> is enough: search does not care where nodes live.
-        let mut pool: Vec<Node> = Vec::new();
+        let mut nodes: Vec<Node> = Vec::new();
         let mut alloc = |node: Node| {
-            pool.push(node);
-            NodeId(pool.len() as u32 - 1)
+            nodes.push(node);
+            NodeId(nodes.len() as u32 - 1)
         };
         let mut left = Node::new(true);
         left.insert_entry(0, 5, 50);
@@ -119,22 +119,22 @@ mod tests {
         top.children = vec![alloc(left), alloc(right)];
         let root = Some(alloc(top));
 
-        assert_eq!(get(&pool, root, 20), Some(200)); // found in the interior node
-        assert_eq!(get(&pool, root, 40), Some(400));
-        assert_eq!(get(&pool, root, 25), None);
-        assert_eq!(get(&pool, None, 25), None);
+        assert_eq!(get(&nodes, root, 20), Some(200)); // found in the interior node
+        assert_eq!(get(&nodes, root, 40), Some(400));
+        assert_eq!(get(&nodes, root, 25), None);
+        assert_eq!(get(&nodes, None, 25), None);
 
         let mut all = Vec::new();
-        in_order(&pool, root, &mut |key, value| {
+        in_order(&nodes, root, &mut |key, value| {
             assert_eq!(value, key * 10);
             all.push(key);
         });
         assert_eq!(all, [5, 10, 20, 30, 40]);
         let mut some = Vec::new();
-        range(&pool, root, 10, 31, &mut |key, _| some.push(key));
+        range(&nodes, root, 10, 31, &mut |key, _| some.push(key));
         assert_eq!(some, [10, 20, 30]);
         let mut none = Vec::new();
-        range(&pool, root, 21, 30, &mut |key, _| none.push(key));
+        range(&nodes, root, 21, 30, &mut |key, _| none.push(key));
         assert!(none.is_empty());
     }
 

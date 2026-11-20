@@ -151,54 +151,54 @@ mod tests {
         use ValidateError::*;
         //            [20]
         //     [5 10]      [30 40]
-        let mut pool: Vec<Node> = Vec::new(); // a typed arena is enough here
-        let left = push(&mut pool, leaf(&[5, 10]));
-        let right = push(&mut pool, leaf(&[30, 40]));
+        let mut nodes: Vec<Node> = Vec::new(); // a typed arena is enough here
+        let left = push(&mut nodes, leaf(&[5, 10]));
+        let right = push(&mut nodes, leaf(&[30, 40]));
         let mut top = leaf(&[20]);
         top.leaf = false;
         top.children = vec![left, right];
-        let root = push(&mut pool, top);
-        assert_eq!(validate(&pool, 4, Some(root), 5), Ok(()));
-        assert_eq!(validate(&pool, 4, None, 0), Ok(()));
+        let root = push(&mut nodes, top);
+        assert_eq!(validate(&nodes, 4, Some(root), 5), Ok(()));
+        assert_eq!(validate(&nodes, 4, None, 0), Ok(()));
 
-        assert_eq!(validate(&pool, 4, Some(root), 4), Err(WrongKeyCount));
+        assert_eq!(validate(&nodes, 4, Some(root), 4), Err(WrongKeyCount));
 
-        pool[left].keys[1] = 5;
-        assert_eq!(validate(&pool, 4, Some(root), 5), Err(KeysOutOfOrder));
-        pool[left].keys[1] = 25; // sorted inside the leaf, but on the wrong side of 20
+        nodes[left].keys[1] = 5;
+        assert_eq!(validate(&nodes, 4, Some(root), 5), Err(KeysOutOfOrder));
+        nodes[left].keys[1] = 25; // sorted inside the leaf, but on the wrong side of 20
         assert_eq!(
-            validate(&pool, 4, Some(root), 5),
+            validate(&nodes, 4, Some(root), 5),
             Err(KeyOutsideParentBounds)
         );
-        pool[left].keys[1] = 10;
+        nodes[left].keys[1] = 10;
 
-        pool[right] = leaf(&[]);
-        assert_eq!(validate(&pool, 4, Some(root), 3), Err(NodeUnderfull));
-        pool[right] = leaf(&[30, 40, 50, 60]);
-        assert_eq!(validate(&pool, 4, Some(root), 7), Err(NodeOverfull));
-        pool[right] = leaf(&[30, 40]);
+        nodes[right] = leaf(&[]);
+        assert_eq!(validate(&nodes, 4, Some(root), 3), Err(NodeUnderfull));
+        nodes[right] = leaf(&[30, 40, 50, 60]);
+        assert_eq!(validate(&nodes, 4, Some(root), 7), Err(NodeOverfull));
+        nodes[right] = leaf(&[30, 40]);
 
-        pool[root].children.pop();
-        assert_eq!(validate(&pool, 4, Some(root), 5), Err(MissingChild));
-        pool[root].children.push(right);
-        pool[left].children.push(right);
-        assert_eq!(validate(&pool, 4, Some(root), 5), Err(UnexpectedChild));
-        pool[left].children.clear();
+        nodes[root].children.pop();
+        assert_eq!(validate(&nodes, 4, Some(root), 5), Err(MissingChild));
+        nodes[root].children.push(right);
+        nodes[left].children.push(right);
+        assert_eq!(validate(&nodes, 4, Some(root), 5), Err(UnexpectedChild));
+        nodes[left].children.clear();
 
         // Hang a subtree under the right slot: its leaves are one level deeper.
-        let deep_a = push(&mut pool, leaf(&[25]));
-        let deep_b = push(&mut pool, leaf(&[35]));
+        let deep_a = push(&mut nodes, leaf(&[25]));
+        let deep_b = push(&mut nodes, leaf(&[35]));
         let mut mid = leaf(&[30]);
         mid.leaf = false;
         mid.children = vec![deep_a, deep_b];
-        let mid = push(&mut pool, mid);
-        pool[root].children[1] = mid;
+        let mid = push(&mut nodes, mid);
+        nodes[root].children[1] = mid;
         assert_eq!(
-            validate(&pool, 4, Some(root), 6),
+            validate(&nodes, 4, Some(root), 6),
             Err(LeavesAtDifferentDepths)
         );
 
-        let empty_root = push(&mut pool, leaf(&[]));
-        assert_eq!(validate(&pool, 4, Some(empty_root), 0), Err(EmptyRoot));
+        let empty_root = push(&mut nodes, leaf(&[]));
+        assert_eq!(validate(&nodes, 4, Some(empty_root), 0), Err(EmptyRoot));
     }
 }

@@ -16,10 +16,24 @@
 //! *indices*. A freed slot stores the index of the next free slot, exactly
 //! like the intrusive free list in Zig stores a pointer in the freed node.
 //!
+//! What the slab recycles is the SLOT (and with it the `NodeId`). It is not
+//! the full pool of the Zig version: a Rust node owns up to three `Vec`
+//! buffers on the heap (node.rs), which are allocated by a split and
+//! released by a merge through the global allocator as before.
+//!
+//! Without `free`, `free_head`, the failure switches and `usage`, a slab is a
+//! `Vec<Node>` that is only pushed to: the *typed arena* of chapter 03.
+//! search.rs, validate.rs and stats.rs accept either (node.rs, `Nodes`).
+//!
 //! Rust aborts the process when the global allocator fails, so "out of
-//! memory" is modelled with an optional node budget: once `budget` nodes are
-//! live, `alloc` returns `Err(OutOfNodes)`. That gives the tests the same
-//! failure paths that `std.testing.FailingAllocator` gives the Zig tests.
+//! memory" is modelled by the slab itself, with two switches:
+//!
+//! * `budget = Some(n)`: `alloc` fails while n nodes are live (a memory limit);
+//! * `fail_after = Some(n)`: n more calls of `alloc` succeed, then every call
+//!   fails until the switch is reset. This is `fail_index` of Zig's
+//!   `std.testing.FailingAllocator`: it can fail the second allocation of
+//!   one particular `put` in a tree of any size, which a limit on live nodes
+//!   cannot express.
 
 use crate::node::{Node, NodeId};
 
@@ -67,6 +81,10 @@ pub struct Slab {
     free_head: Option<NodeId>,
     /// `None`: unlimited. `Some(n)`: at most n live nodes.
     pub budget: Option<u64>,
+    /// `None`: never. `Some(n)`: n more allocations succeed, then all fail.
+    pub fail_after: Option<u64>,
+    /// `put` restores these when it fails (insert.rs), so they always
+    /// describe nodes that were part of the tree, never returned reservations.
     pub usage: Usage,
 }
 
@@ -76,7 +94,9 @@ impl Slab {
     }
 
     /// Slots ever created (the Zig pool calls this `carved`). Because a free
-    /// slot is always reused before a new one is pushed, it equals `usage.peak`.
+    /// slot is always reused before a new one is pushed, it equals
+    /// `usage.peak`, unless a `put` failed half-way through its reservation:
+    /// the slot pushed for a returned reservation stays on the free list.
     pub fn slot_count(&self) -> usize {
         self.slots.len()
     }
@@ -87,6 +107,11 @@ impl Slab {
             .is_some_and(|budget| self.usage.live() >= budget)
         {
             return Err(OutOfNodes);
+        }
+        match &mut self.fail_after {
+            Some(0) => return Err(OutOfNodes),
+            Some(left) => *left -= 1,
+            None => {}
         }
         self.usage.created += 1;
         self.usage.peak = self.usage.peak.max(self.usage.live());
@@ -104,8 +129,10 @@ impl Slab {
         Ok(id)
     }
 
-    /// Returns the slot to the free list and hands the node back by value
-    /// (a merge uses this to move the keys out without copying them).
+    /// Returns the slot to the free list and hands the node back by value,
+    /// so the caller decides what happens to its keys and children (a merge
+    /// appends them to the left sibling). The node's own buffers are dropped
+    /// with it: only the slot is recycled.
     pub fn free(&mut self, id: NodeId) -> Node {
         let next_free = self.free_head;
         match std::mem::replace(&mut self.slots[id.0 as usize], Slot::Free { next_free }) {
@@ -185,6 +212,20 @@ mod tests {
         assert_eq!(slab.usage.created, 1);
         slab.free(a);
         assert!(slab.alloc(leaf(2)).is_ok()); // a freed node makes room again
+    }
+
+    #[test]
+    fn fail_after_fails_a_chosen_allocation_whatever_is_live() {
+        let mut slab = Slab::new();
+        slab.fail_after = Some(2);
+        let a = slab.alloc(leaf(1)).unwrap();
+        slab.free(a); // nothing is live: a budget would let the next ones pass
+        slab.alloc(leaf(2)).unwrap();
+        assert_eq!(slab.alloc(leaf(3)), Err(OutOfNodes));
+        assert_eq!(slab.alloc(leaf(3)), Err(OutOfNodes)); // and stays failing
+        assert_eq!(slab.usage.created, 2);
+        slab.fail_after = None;
+        assert!(slab.alloc(leaf(3)).is_ok());
     }
 
     #[test]

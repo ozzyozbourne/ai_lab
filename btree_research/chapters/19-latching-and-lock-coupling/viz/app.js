@@ -17,9 +17,9 @@
   ];
   var PROTOCOLS = ['mutex', 'rwlock', 'coupling', 'optimistic'];
 
-  function protocolSelect(id, value) {
+  function protocolSelect(id, value, extra) {
     var sel = el('select.bt-select#' + id, { 'aria-label': 'Protocol' });
-    PROTOCOLS.forEach(function (p) { sel.appendChild(el('option', { value: p }, Sim.NAMES[p])); });
+    PROTOCOLS.concat(extra || []).forEach(function (p) { sel.appendChild(el('option', { value: p }, Sim.NAMES[p])); });
     sel.value = value;
     return sel;
   }
@@ -33,6 +33,7 @@
     var r = this.root;
     r.textContent = '';
     if (protocol === 'coupling') { r.appendChild(el('span', 'No tree-wide lock: one latch per node, shown as badges on the nodes.')); return; }
+    if (protocol === 'broken') { r.appendChild(el('span', 'One latch per node, but a reader releases the parent before it latches the child. Wrong on purpose.')); return; }
     if (protocol === 'optimistic') { r.appendChild(el('span', 'No tree-wide lock. Next to each node id is its version (v0, v1 …); readers take no latch.')); return; }
     r.appendChild(el('strong', protocol === 'mutex' ? 'Tree-wide mutex: ' : 'Tree-wide reader-writer lock: '));
     var any = false;
@@ -82,6 +83,29 @@
     return Tree.build(ex.capacity || 64, (ex.keys || Ch19.CANONICAL).concat(ex.setup));
   }
 
+  /**
+   * The model only knows "can step" and "must wait". The experiment knows more:
+   * T1 is held back on purpose (frozen), and a later thread has not begun yet.
+   * `frozen`: is T1 frozen in this picture; `started`: how many threads have begun.
+   */
+  function withStates(view, frozen, started) {
+    var out = {};
+    for (var key in view) out[key] = view[key];
+    out.lanes = view.lanes.map(function (l, i) {
+      var c = {};
+      for (var key in l) c[key] = l[key];
+      if (i === 0 && frozen && l.state !== 'done') {
+        c.state = 'frozen';
+        c.status = 'frozen by the experiment' + (/ · holds /.test(l.status) ? l.status.slice(l.status.indexOf(' · holds ')) : ' · holds nothing');
+      } else if (i >= started && !l.events.length) {
+        c.state = 'not started';
+        c.status = i === 1 ? 'starts when T1 is frozen' : 'starts when T' + i + ' has finished or has to wait';
+      }
+      return c;
+    });
+    return out;
+  }
+
   function heldText(view, tid) {
     var lane = view.lanes.filter(function (l) { return l.id === tid; })[0];
     var m = /holds (.*)$/.exec(lane.status);
@@ -95,10 +119,15 @@
    */
   function convoySteps(ex, protocol) {
     var c = Sim.convoy(experimentTree(ex), protocol, ex.a, ex.others, 'atLeaf');
-    var steps = [], last = c.initial, n = ex.others.length;
+    var steps = [], last = c.initial, n = ex.others.length, done = 0;
     function op(o) { return o.kind + ' ' + o.key; }
+    // `done`: trace items already shown. T1 is frozen from `frozenAt` until the last
+    // follower has stopped; follower f begins when the one before it has stopped.
     function push(caption, view, extra) {
-      var s = { caption: caption, state: view };
+      var started = 1;
+      if (done >= c.frozenAt) started = 2;
+      c.stops.forEach(function (at, f) { if (f + 1 < n && done >= at) started = f + 3; });
+      var s = { caption: caption, state: withStates(view, done >= c.frozenAt && done <= c.stops[n - 1], started) };
       for (var key in (extra || {})) s[key] = extra[key];
       steps.push(s);
     }
@@ -133,6 +162,7 @@
     c.trace.forEach(function (item, i) {
       if (i === c.frozenAt) push('<b>T1 is frozen here.</b> It holds: <b>' + heldText(last, 'T1') + '</b>. Now T2 runs: ' + op(ex.others[0]) + '.', last, { hold: 2 });
       c.stops.forEach(function (at, f) { if (at === i) stopNote(f); });
+      done = i + 1;
       push(item.caption, item.view, { mark: item.mark });
       last = item.view;
     });
@@ -146,9 +176,9 @@
   function guidedSteps(ex, protocol) {
     if (ex.others) return convoySteps(ex, protocol);
     var p = Sim.probe(experimentTree(ex), protocol, ex.a, ex.b, ex.freeze || 'atLeaf');
-    var opA = ex.a.kind + ' ' + ex.a.key, opB = ex.b.kind + ' ' + ex.b.key, steps = [];
+    var opA = ex.a.kind + ' ' + ex.a.key, opB = ex.b.kind + ' ' + ex.b.key, steps = [], done = 0;
     function push(caption, view, extra) {
-      var s = { caption: caption, state: view };
+      var s = { caption: caption, state: withStates(view, done >= p.frozenAt && done <= p.bStoppedAt, done >= p.frozenAt ? 2 : 1) };
       for (var key in (extra || {})) s[key] = extra[key];
       steps.push(s);
     }
@@ -175,6 +205,7 @@
       if (i === p.bStoppedAt && p.outcome === 'finishes') {
         push('<b>T2 is done</b> although T1 never moved' + (protocol === 'optimistic' ? '' : ': the programs print "finishes"') + '. T1 is released and goes on.', last, { hold: 2 });
       }
+      done = i + 1;
       push(item.caption, item.view, { mark: item.mark });
       last = item.view;
     });
@@ -185,7 +216,7 @@
   }
 
   (function () {
-    var fig = BTViz.figure('#fig-guided', { title: 'One operation frozen, the other one runs', side: true, legend: LEGEND });
+    var fig = BTViz.figure('#fig-guided', { title: 'One operation frozen, the other one runs', side: true, controlsUnderStage: true, legend: LEGEND });
     var selProto = protocolSelect('g-protocol', 'coupling');
     var selExp = el('select.bt-select#g-exp', { 'aria-label': 'Experiment' });
     EXPERIMENTS.forEach(function (ex, i) { selExp.appendChild(el('option', { value: i }, ex.label)); });
@@ -193,7 +224,12 @@
 
     var strip = new GlobalStrip(fig.stage);
     var view = new BTViz.TreeView(fig.stage, { minHeight: 205 });
-    var lanes = new BTViz.Lanes(fig.stage, {});
+    // The lanes get their own box in the figure's main column, after the step controls.
+    // On a phone that is where they stay, so the tree, the caption and the buttons are
+    // next to each other; on a wide screen CSS moves the box up, under the tree.
+    var lanesBox = el('div.ch19-lanes-box');
+    fig.main.appendChild(lanesBox);
+    var lanes = new BTViz.Lanes(lanesBox, {});
     var panels = {};
     ['coupled', 'global', 'optimistic'].forEach(function (name) {
       var holder = el('div');
@@ -229,8 +265,8 @@
   /* ------------------------------------------------------------ 2. sandbox */
 
   (function () {
-    var fig = BTViz.figure('#fig-sandbox', { title: 'Your turn: you are the scheduler', side: true, legend: LEGEND });
-    var selProto = protocolSelect('s-protocol', 'coupling');
+    var fig = BTViz.figure('#fig-sandbox', { title: 'Your turn: you are the scheduler', side: true, controlsUnderStage: true, legend: LEGEND });
+    var selProto = protocolSelect('s-protocol', 'coupling', ['broken']);
     function opControls(tid, kind, key) {
       var sel = el('select.bt-select#s-' + tid + '-kind', { 'aria-label': tid + ' operation' }, el('option', { value: 'get' }, 'get'), el('option', { value: 'put' }, 'put'));
       sel.value = kind;

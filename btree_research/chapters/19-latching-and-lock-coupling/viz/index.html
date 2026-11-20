@@ -22,11 +22,29 @@
   #fig-guided .bt-lanes { gap: 6px; }
   #fig-guided .bt-lane { padding: 5px 10px; }
   #fig-guided .bt-lane-track { padding-top: 4px; }
+  .ch19-lanes-box { min-width: 0; padding: 10px 14px 12px; border-top: 1px solid var(--bt-border); }
+  @media (min-width: 821px) {
+    .ch19-lanes-box { padding: 0 14px 8px; border-top: 0; }
+    .bt-figure-main > .bt-caption, .bt-figure-main > .bt-controls-slot { order: 1; }
+  }
+  /* On a wide screen the caption shares the left column with the picture (the code or
+     the log is beside them), so it wraps earlier: take the height back from paddings. */
+  @media (min-width: 821px) {
+    .bt-figure .bt-figure-title { padding-block: 6px; }
+    .bt-figure .bt-toolbar { padding-block: 5px; }
+    .bt-figure .bt-stage { padding-block: 8px; }
+    .bt-figure .bt-stage > * + * { margin-top: 6px; }
+    .bt-figure .ch19-glock { margin-bottom: 0; padding-block: 4px; }
+    .bt-figure .bt-caption { padding-block: 6px; }
+    .bt-figure .bt-controls { padding-block: 6px; }
+  }
   /* Four lanes (the convoy experiment): two by two where there is room. */
   @media (min-width: 720px) {
     .ch19-many .bt-lanes { display: grid; grid-template-columns: 1fr 1fr; }
     .ch19-many .bt-lane { min-width: 0; }
   }
+  /* T1 while the experiment holds it back. */
+  .s-frozen { --s: var(--bt-text); }
   /* Lift the latch badges so that the key cells do not cover their lower half. */
   .bt-node-lock rect, .bt-node-lock text { transform: translateY(-5px); }
 </style>
@@ -57,6 +75,11 @@ cannot step until it is released. Things to try with latch coupling: <code>put 2
 <code>get 17</code> (stop the writer after it has latched #6); two <code>put</code>s into different
 leaves; then the same under the reader-writer lock. With the optimistic protocol, let a reader note a
 version, run a writer through the same leaf, and watch the reader start again.</p>
+<p><b>The wrong answer that coupling prevents.</b> The last protocol in the list, <em>no coupling (broken)</em>,
+is latch coupling with the reader's two steps swapped: it releases the parent first and latches the child
+afterwards. Choose it, set T1 to <code>get 30</code> and T2 to <code>put 26</code>, and press Start. Step T1
+until it has released #6 and holds nothing. Then step T2 to the end: leaf #3 splits and 30 moves
+to the new leaf #8. Now finish T1. It reports that 30 is not in the tree.</p>
 <div id="fig-sandbox"></div>
 <p>The sandbox tree lives in a node table of 24 nodes, like the fixed table of the programs. After enough
 splits a <code>put</code> ends with <b>OutOfNodes</b> and changes nothing; <em>Reset tree</em> starts over.</p>

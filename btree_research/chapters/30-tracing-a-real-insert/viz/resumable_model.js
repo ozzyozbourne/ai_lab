@@ -155,7 +155,12 @@
   };
 
   /* Run one insert to the end and record it.
-   * opts: {pressure, impatient, cold}. Returns {steps, calls, lines}. */
+   * opts: {pressure, impatient, cold}. Returns {steps, calls, lines}.
+   * Every step has `ran`: the state whose arm its caption is about. After a
+   * transition that is the arm that just ran, while `state.op.state` is
+   * already the state recorded for the next one. The page highlights `ran`
+   * strongly and the recorded state weakly, so the reader looks at the arm
+   * the sentence describes. */
   function traceInsert(tree, key, vlen, opts) {
     opts = opts || {};
     if (opts.cold !== false) evictUnpinned(tree.pool);
@@ -163,7 +168,7 @@
     var steps = [], calls = [], lines = [], readsBefore = tree.pool.pager.reads;
     function snap(kind, caption, hl, extra) {
       var st = {
-        kind: kind, caption: caption, highlight: hl || {},
+        kind: kind, caption: caption, highlight: hl || {}, ran: op.state,
         state: { tree: tree.snapshot(), frames: tree.frameModel(),
           op: { state: op.state, cur: op.cur, path: op.path.map(function (p) { return 'page ' + p.id + ' · child ' + p.index; }),
             carry: op.carry ? 'sep "' + op.carry.sep + '", left ' + op.carry.left + ', right ' + op.carry.right : null,
@@ -191,7 +196,7 @@
         call.states.push(before);
         res = op.advance();
         if (res === 'again') {
-          snap('transition', '<code>' + before + '</code> (' + WHAT[before] + '). ' + op.note, {});
+          snap('transition', '<code>' + before + '</code> (' + WHAT[before] + '). ' + op.note, {}, { ran: before });
           if (opts.pressure) evictUnpinned(tree.pool);
           continue;
         }
@@ -200,7 +205,7 @@
       if (res === 'done') {
         call.end = 'Done';
         lines.push('call ' + n + ': ' + call.states.join(', ') + ' -> Done');
-        snap('done', '<code>' + call.states[call.states.length - 1] + '</code> (' + WHAT[call.states[call.states.length - 1]] + '). ' + op.note + ' <code>step()</code> returns <b>Done</b> after ' + n + ' calls.', {});
+        snap('done', '<code>' + call.states[call.states.length - 1] + '</code> (' + WHAT[call.states[call.states.length - 1]] + '). ' + op.note + ' <code>step()</code> returns <b>Done</b> after ' + n + ' calls.', {}, { ran: call.states[call.states.length - 1] });
         break;
       }
       call.end = 'Io(page ' + res.io + ')';

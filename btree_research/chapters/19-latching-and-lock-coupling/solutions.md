@@ -116,6 +116,12 @@ put(key, value):
         run the pessimistic put of this chapter from the root
 ```
 
+Two cases the sketch leaves open. If the root is a leaf there is no parent to
+hold: run the pessimistic put. And the writer must know that the child is a
+leaf before it chooses S or X: Zig can read the child's `kind`, which never
+changes, without a latch; safe Rust cannot, so it takes S, looks, drops it
+and takes X while the parent is still held.
+
 The descent needs coupling for the same reason the reader does. Taking X on
 the leaf while holding S on the parent is not an upgrade (the leaf was not
 latched before), so it cannot create the upgrade deadlock.
@@ -131,8 +137,9 @@ What this is expected to buy: writers stop excluding each other and the
 readers at the root and the upper levels, at the price of a second descent
 for the inserts that split. In the chapter's example, `put 11` would take S
 instead of X on #7 and #2 on its way down. How much that helps depends on the
-workload and was not measured here. The optimistic protocol in the visualization goes one step further and
-takes no latch at all on the way down.
+workload and was not measured here. The optimistic protocol in the
+visualization goes one step further and takes no latch at all on the way
+down.
 
 ## 5. A `prev` link
 

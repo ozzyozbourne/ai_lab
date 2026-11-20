@@ -140,7 +140,7 @@
         hl, [PG + 'nbtinsert.c:1295-1304', PG + 'nbtinsert.c:1346', PG + 'nbtinsert.c:1407'], 'inserted');
     } else {
       hl.nodes['g' + id] = 'split';
-      rec.emit(3, 0, 'leaf ' + id + ' is full', 'PostgreSQL: the leaf is full. Before splitting, <code>_bt_findinsertloc</code> tries to make room <em>on this page</em>: remove entries marked dead, bottom-up deletion, merge duplicates into posting lists. This model has nothing to remove, so the page must split.',
+      rec.emit(3, 0, 'leaf ' + id + ' is full', 'PostgreSQL: the leaf is full. Before splitting, <code>_bt_findinsertloc</code> tries to make room <em>on this page</em>: remove entries marked dead and, only if the page already holds versions of the same key, bottom-up deletion and then merging duplicates into posting lists. This model has nothing to remove, so the page must split.',
         hl, [PG + 'nbtinsert.c:915-916', PG + 'nbtinsert.c:1223-1231', PG + 'nbtinsert.c:2728']);
       this.split(id, key, null, stack, 0, -1);
     }
@@ -200,8 +200,8 @@
     hl.nodes['g' + id] = 'split'; hl.nodes['g' + right] = 'split';
     hl.keys['g' + id + ':high'] = 'split'; hl.links['g' + id] = 'active';
     if (p.leaf) hl.keys['*:' + key] = 'inserted';
-    rec.emit(4, level, record + ' → new blk ' + right, 'PostgreSQL: <code>_bt_split</code>. Both halves are built in private memory; only then is the new block ' + right +
-      ' allocated (the last thing that can fail). In one critical section the left half is copied over block ' + id + ' (the left page never moves), the right half goes to block ' + right +
+    rec.emit(4, level, record + ' → new blk ' + right, 'PostgreSQL: <code>_bt_split</code>. The left half is built in private memory with its high key, after which a split cannot fail; only then is block ' + right +
+      ' allocated, so no failure leaves an orphan block. In one critical section the left half is copied over block ' + id + ' (the left page never moves), the right half goes to block ' + right +
       ', the <b>right link</b> ' + id + ' → ' + right + ' is set, block ' + id + ' gets the flag <b>INCOMPLETE_SPLIT</b>' + (p.leaf ? '' : ' (and the child below loses its flag)') +
       ', and <b>one WAL record</b> covers all of it: <code>XLOG_BTREE_' + record + '</code>, because the new ' + (p.leaf ? 'tuple ' + k(key, 'inserted') : 'pivot ' + k(key, 'split')) +
       ' ended up on the <b>' + (newItemOnLeft ? 'left' : 'right') + '</b> page (the name says nothing about leaf or interior). ' +
@@ -585,7 +585,7 @@
     var cur = { pg: { state: before.pg, highlight: {}, wal: [], dirty: [], events: [], last: 0 },
       turso: { state: before.turso, highlight: {}, wal: [], dirty: [], events: [], last: 0 } };
     var out = [{ engine: null, stage: 0, key: key, caption: '', refs: [], lanes: clone(cur) }];
-    out[0].caption = 'Before the insert of ' + k(key, 'inserted') + '. Both engines hold the same keys in differently shaped trees. PostgreSQL (left) keeps every key in a leaf; each page shows its dashed <b>high key</b> and its <b>right link</b>. Turso (right) is an index B-tree: keys in interior pages are entries too, and pages have no links. Step forward to follow the insert through both.';
+    out[0].caption = 'Before the insert of ' + k(key, 'inserted') + '. Both engines hold the same keys in differently shaped trees. PostgreSQL (the first tree) keeps every key in a leaf; each page shows its dashed <b>high key</b> and its <b>right link</b>. Turso (the second tree) is an index B-tree: keys in interior pages are entries too, and pages have no links. Step forward to follow the insert through both.';
     Object.keys(slots).map(Number).sort(function (x, y) { return x - y; }).forEach(function (o) {
       slots[o].forEach(function (s) {
         var c = cur[s.engine];

@@ -6,7 +6,9 @@
  *
  * Protocols: 'mutex', 'rwlock', 'coupling' are ports of the Zig / Rust code.
  * 'optimistic' (version counters) exists only here: the chapter's programs do
- * not implement it.
+ * not implement it. 'broken' is latch coupling with the reader's two steps
+ * swapped (release the parent, then latch the child): wrong on purpose, to
+ * show the answer that coupling prevents.
  *
  * Classic script, no modules. The model never touches the DOM.
  */
@@ -154,7 +156,7 @@
 
   /* ------------------------------------------------------------------- sim */
 
-  var NAMES = { mutex: 'global mutex', rwlock: 'global rwlock', coupling: 'latch coupling', optimistic: 'optimistic (versions)' };
+  var NAMES = { mutex: 'global mutex', rwlock: 'global rwlock', coupling: 'latch coupling', optimistic: 'optimistic (versions)', broken: 'no coupling (broken)' };
 
   function Sim(tree, protocol, ops) {
     var self = this;
@@ -286,6 +288,7 @@
   function program(sim, t) {
     if (sim.protocol === 'mutex' || sim.protocol === 'rwlock') return globalProgram(sim, t);
     if (sim.protocol === 'coupling') return t.op.kind === 'get' ? coupledGet(sim, t) : coupledPut(sim, t);
+    if (sim.protocol === 'broken') return t.op.kind === 'get' ? uncoupledGet(sim, t) : coupledPut(sim, t);
     return t.op.kind === 'get' ? optimisticGet(sim, t) : optimisticPut(sim, t);
   }
 
@@ -371,7 +374,7 @@
         run: (function (child, parent) {
           return function () {
             sim.lock(t, child, 'S');
-            return who(t) + ' latches the child ' + n(child) + ' while still holding ' + n(parent) + '. For this moment it holds two latches: nobody can split ' + n(child) + ' in between, because that would need the exclusive latch on it.';
+            return who(t) + ' latches the child ' + n(child) + ' while still holding ' + n(parent) + '. For this moment it holds two latches. Nobody can split ' + n(child) + ' in between: a split of ' + n(child) + ' must write a new separator into ' + n(parent) + ', and ' + t.id + ' holds ' + n(parent) + '.';
           };
         })(child, parent)
       };
@@ -393,6 +396,56 @@
     };
     yield {
       text: 'unlatch #' + id, mark: 'getLeaf',
+      run: function () { sim.unlock(t, id); return who(t) + ' releases ' + n(id) + ' and is done.'; }
+    };
+  }
+
+  /* The reader WITHOUT coupling: it lets go of the parent and only then asks
+   * for the child. Between the two steps it holds nothing, and the child
+   * pointer it remembers can go stale. Writers are the correct coupledPut. */
+  function* uncoupledGet(sim, t) {
+    var tree = sim.tree, key = t.op.key, cur = {};
+    yield* latchRoot(sim, t, 'S', cur);
+    var id = cur.id;
+    while (!tree.nodes[id].leaf) {
+      var child = tree.childFor(id, key), parent = id;
+      yield {
+        text: 'unlatch #' + parent, chip: 'deleted',
+        run: (function (child, parent) {
+          return function () {
+            sim.unlock(t, parent);
+            return who(t) + ' has read in ' + n(parent) + ' that ' + k(key) + ' belongs under ' + n(child) + ', and releases ' + n(parent) + ' <b>before</b> it latches ' + n(child) +
+              '. This is the bug. ' + t.id + ' now holds nothing and only remembers "' + n(child) + '": a writer may split ' + n(child) + ' before ' + t.id + ' gets there.';
+          };
+        })(child, parent)
+      };
+      yield {
+        text: 'latch S #' + child, chip: 'lock-shared', need: { node: child, mode: 'S' },
+        run: (function (child) {
+          return function () { sim.lock(t, child, 'S'); return who(t) + ' latches ' + n(child) + ', the node it was pointed to a moment ago. Whether ' + n(child) + ' still covers ' + k(key) + ' is not checked.'; };
+        })(child)
+      };
+      id = child;
+    }
+    var read = {
+      text: 'read leaf #' + id, atLeaf: true,
+      run: function () {
+        var found = tree.nodes[id].keys.indexOf(key) >= 0, path = tree.path(key), home = path[path.length - 1];
+        if (found || !tree.has(key)) {
+          t.result = found ? 'found' : 'not found';
+          return who(t) + ' searches leaf ' + n(id) + ': ' + k(key) + ' is ' + (found ? 'found' : 'not there') + '. This time nothing changed between its two steps, so the answer is right.';
+        }
+        t.result = 'not found (WRONG)';
+        read.text = 'WRONG: not found';
+        read.chip = 'deleted';
+        return who(t) + ' searches leaf ' + n(id) + ' and answers <b>"' + key + ' is not in the tree"</b>. <b>That is wrong:</b> ' + k(key) + ' is in leaf ' + n(home) +
+          ' and was in the tree the whole time. A split moved it out of ' + n(id) + ' while ' + t.id + ' held no latch. With latch coupling ' + t.id +
+          ' would still have held the parent, and the split would have had to wait.';
+      }
+    };
+    yield read;
+    yield {
+      text: 'unlatch #' + id,
       run: function () { sim.unlock(t, id); return who(t) + ' releases ' + n(id) + ' and is done.'; }
     };
   }

@@ -8,7 +8,15 @@
 <style>
 @media (max-width: 820px) {
   .ch30-pair { grid-template-columns: 1fr !important; }
+  /* A phone shows one tree, the caption and the step buttons on one screen:
+   * the column subtitle (it is in the first caption) and, before the insert,
+   * the two empty logs are left out. */
+  .ch30-col h3 small { display: none; }
+  .ch30-pair.is-before .ch30-log { display: none; }
+  .ch30-refs .ch30-wide { display: none; }
+  #fig-lanes .bt-caption { line-height: 1.42; padding-top: 8px; padding-bottom: 8px; }
 }
+@media (min-width: 820.02px) { .ch30-refs .ch30-narrow { display: none; } }
 /* On a narrow screen the lanes move below the step controls (see placeLanes). */
 .ch30-lanes.is-below { margin: 0; padding: 10px 14px; border-top: 1px solid var(--bt-border); }
 .bt-tree-svg .bt-node-label, .bt-tree-svg .bt-node-note {
@@ -45,6 +53,12 @@
 .ch30-states { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 8px; }
 .ch30-states .bt-chip { font-family: var(--bt-mono); font-size: .76rem; }
 .ch30-states .is-now { outline: 2px solid var(--bt-accent); outline-offset: 1px; font-weight: 700; }
+.ch30-states .is-next { outline: 2px dashed var(--bt-muted); outline-offset: 1px; }
+.ch30-key { font-size: .78rem; color: var(--bt-muted); margin: 0 0 8px; }
+.ch30-key span { display: inline-block; padding: 0 5px; border-radius: 4px; }
+.ch30-key .k-now { outline: 2px solid var(--bt-accent); }
+.ch30-key .k-next { outline: 2px dashed var(--bt-muted); }
+#fig-code .bt-line.ch30-next { border-left-color: var(--bt-muted); border-left-style: dashed; }
 .ch30-op { width: 100%; border-collapse: collapse; font-size: .84rem; }
 .ch30-op th { text-align: left; font-weight: 600; color: var(--bt-muted); padding: 3px 8px 3px 0; vertical-align: top; white-space: nowrap; }
 .ch30-op td { padding: 3px 0; font-family: var(--bt-mono); font-size: .8rem; overflow-wrap: anywhere; }
@@ -67,7 +81,9 @@ written as a state machine.</p>
 inserts are enough to see everything. Type a key from 1 to 99, or follow the suggestions in order: <b>27</b> makes
 PostgreSQL split a leaf while Turso only shuffles cells between neighbours; then <b>33</b> makes PostgreSQL's split
 climb to a new root while Turso's leaf simply has room; then <b>60</b> fits in both; then <b>12</b> finds all three
-Turso siblings full, so Turso allocates a page. A key that is already there stops at stage 2.</p>
+Turso siblings full, so Turso allocates a page. A key that is already there stops at stage 2. An insert you start
+plays by itself and waits on each step for as long as its caption takes to read; pause it (Space) or step by hand at
+any time.</p>
 <p class="ch30-note">Both lanes are small models written for this page: four entries per page, single integer keys, the
 index only (not the table the row goes into, and not the commit record). Block numbers, split points and the number
 of steps are the models' (PostgreSQL, for one, leaves a rightmost interior page about 70% full; the model cuts it in
@@ -88,7 +104,8 @@ state wait for its page.</p>
 <div id="fig-op"></div>
 
 <h2>3. What that looks like in code</h2>
-<p>The arm of the current state of figure 2 is highlighted. Every arm has the same shape: ask for the page, do one
+<p>The arm that the caption of figure 2 is describing is highlighted. The arm of the state it recorded for the next
+transition, when that is a different one, has a dashed bar. Every arm has the same shape: ask for the page, do one
 all-or-nothing step, record the next state.</p>
 <div id="fig-code"></div>
 
@@ -165,9 +182,9 @@ is the program counter, the path and the carry are the local variables, and thei
     var log = el('p.ch30-log');
     // Narrow screens only (see renderLanes): the tree of the engine that is
     // not acting in this step is folded away, and this button brings it back.
-    var show = el('button.bt-btn.ch30-show', { type: 'button', onclick: function () { col.keep = !col.keep; applyResting(); } }, 'show its tree');
+    var show = el('button.bt-btn.ch30-show', { type: 'button', onclick: function () { keepResting = !keepResting; applyResting(); } }, 'show its tree');
     var box = el('div.ch30-col', el('h3', title, el('small', sub), show), view, log);
-    var col = { box: box, view: new BTViz.TreeView(view, { minHeight: 150, maxHeight: 210, ariaLabel: title + ' tree' }), log: log, show: show, keep: false, resting: false };
+    var col = { box: box, view: new BTViz.TreeView(view, { minHeight: 150, maxHeight: 210, ariaLabel: title + ' tree' }), log: log, show: show, resting: false };
     return col;
   }
   /* Scroll a tree's box sideways so that the middle of the given pages is in
@@ -183,19 +200,32 @@ is the program counter, the path and the carry are the local variables, and thei
   }
   function applyResting() {
     [colPg, colTu].forEach(function (c) {
-      var folded = narrow.matches && c.resting && !c.keep;
+      var folded = narrow.matches && c.resting && !keepResting;
       c.box.classList.toggle('is-folded', folded);
       c.show.hidden = !(narrow.matches && c.resting);
-      c.show.textContent = c.keep ? 'fold its tree' : 'show its tree';
+      c.show.textContent = keepResting ? 'fold its tree' : 'show its tree';
       c.show.setAttribute('aria-expanded', folded ? 'false' : 'true');
     });
   }
   var narrow = window.matchMedia('(max-width: 820px)');
+  // Two choices of a reader on a narrow screen that hold until changed, for
+  // both engines and across steps: "show its tree", and the opened list of
+  // chapters and source lines under the caption.
+  var keepResting = false, refsOpen = false;
   var colPg = column('PostgreSQL nbtree', 'B-link B+tree: high keys (dashed), right links, many writers');
   var colTu = column('Turso (SQLite format)', 'index B-tree: keys in interior pages too, no links, one write transaction (WAL mode)');
   var lanesBox = el('div.ch30-lanes');
   fig.stage.append(hint, stageList, el('div.ch30-pair', colPg.box, colTu.box), lanesBox);
+  var pairBox = lanesBox.previousSibling;
   var lanes = new BTViz.Lanes(lanesBox, {});
+  // The Stepper replaces the caption at every step; reopen the list if the reader had it open.
+  fig.caption.addEventListener('toggle', function (e) {
+    if (e.target.classList && e.target.classList.contains('ch30-src')) refsOpen = e.target.open;
+  }, true);
+  new MutationObserver(function () {
+    var d = fig.caption.querySelector('details.ch30-src');
+    if (d && refsOpen && !d.open) d.open = true;
+  }).observe(fig.caption, { childList: true });
   // The trees, their caption and the step buttons belong together. On a
   // narrow screen the lanes (a log of what was done) go below the buttons.
   function placeLanes() {
@@ -217,6 +247,7 @@ is the program counter, the path and the carry are the local variables, and thei
     // On a narrow screen the two trees are stacked. The tree of the engine
     // that is not acting is folded, so that the acting tree, the caption and
     // the step buttons are on one screen. Before and after the insert both show.
+    pairBox.classList.toggle('is-before', i === 0);
     colPg.resting = step.engine === 'turso';
     colTu.resting = step.engine === 'pg';
     applyResting();
@@ -242,16 +273,23 @@ is the program counter, the path and the carry are the local variables, and thei
     lanes.render({ lanes: [lane('pg', 'PostgreSQL', L.pg), lane('turso', 'Turso', L.turso)] });
   }
 
-  // The file:line list of a step. On a narrow screen it is folded, so that
-  // the tree, the caption and the step buttons stay close together.
-  function sources(html) {
-    return narrow.matches ? '<details class="ch30-src"><summary>Source lines</summary> ' + html + '</details>' : 'Source: ' + html;
-  }
+  /* Autoplay: a step stays for as long as its caption takes to read
+   * (READ_MS per word), never less than the stepper's own interval. */
+  var READ_MS = 260, LANES_INTERVAL = 2600, OP_INTERVAL = 2400;
+  function words(html) { return html.replace(/<[^>]*>/g, ' ').split(/\s+/).filter(Boolean).length; }
+  function holdFor(caption, interval) { return Math.max(1, words(caption) * READ_MS / interval); }
+
+  // The chapters and the file:line list of a step, written twice; CSS shows
+  // one. On a narrow screen they are folded behind one summary, so that the
+  // tree, the caption and the step buttons fit on one screen.
   function decorate(steps) {
     steps.forEach(function (s) {
-      if (!s.stage) return;
-      s.caption += '<div class="ch30-refs">Stage ' + s.stage + ' is taught in ' + STAGE_CHAPTERS[s.stage].map(chapterLink).join(', ') + '.' +
-        (s.refs.length ? '<br>' + sources(s.refs.map(function (r) { return '<code>' + esc(r) + '</code>'; }).join(' ')) : '') + '</div>';
+      if (!s.stage) return; // the "before" picture: the same short text every time
+      s.hold = holdFor(s.caption, LANES_INTERVAL);
+      var chapters = 'Stage ' + s.stage + ' is taught in ' + STAGE_CHAPTERS[s.stage].map(chapterLink).join(', ') + '.';
+      var src = s.refs.map(function (r) { return '<code>' + esc(r) + '</code>'; }).join(' ');
+      s.caption += '<div class="ch30-refs"><span class="ch30-wide">' + chapters + (src ? '<br>Source: ' + src : '') + '</span>' +
+        '<details class="ch30-narrow ch30-src"><summary>Chapters and source lines</summary> ' + chapters + (src ? '<br>' + src : '') + '</details></div>';
     });
     return steps;
   }
@@ -294,7 +332,7 @@ is the program counter, the path and the carry are the local variables, and thei
   keyIn.addEventListener('keydown', function (e) { if (e.key === 'Enter') insertTyped(); });
 
   stepper = new BTViz.Stepper({
-    mount: fig.controls, caption: fig.caption, root: fig.root, steps: [], interval: 2600,
+    mount: fig.controls, caption: fig.caption, root: fig.root, steps: [], interval: LANES_INTERVAL,
     onStep: function (step, i, info) { renderLanes(step, i, info.stepper.steps.length); syncButtons(); }
   });
 
@@ -335,7 +373,8 @@ is the program counter, the path and the carry are the local variables, and thei
   var treeBox = el('div');
   var framesLabel = el('p.ch30-frames-label');
   var framesBox = el('div');
-  fig2.stage.append(stateStrip, treeBox, framesLabel, framesBox);
+  var stateKey = el('p.ch30-key', { html: '<span class="k-now">solid</span> the arm this caption is about · <span class="k-next">dashed</span> the state it recorded for the next transition' });
+  fig2.stage.append(stateStrip, stateKey, treeBox, framesLabel, framesBox);
   var opTree = new BTViz.TreeView(treeBox, { minHeight: 170, maxHeight: 230, ariaLabel: 'The disk B+tree' });
   var frameGrid = new BTViz.FrameGrid(framesBox);
 
@@ -350,19 +389,40 @@ is the program counter, the path and the carry are the local variables, and thei
   function row(name, value, gone) {
     return el('tr', el('th', name), el('td', { class: gone ? 'is-gone' : null }, value));
   }
+  /* Which state a step marks strongly (the arm its caption is about) and
+   * which weakly (the state the operation recorded, when it is another one). */
+  function marks(step) {
+    var recorded = step.state.op.state, ran = step.ran || recorded;
+    return { now: ran, next: recorded === ran ? null : recorded };
+  }
+  function lineSet(spec) {
+    var want = {};
+    (spec || []).forEach(function (r) { for (var n = r[0]; n <= r[1]; n++) want[n] = true; });
+    return want;
+  }
+  function markState(step) {
+    var m = marks(step), waiting = step.kind === 'yield' || step.kind === 'again' || step.kind === 'disk';
+    CH30.STATES.concat(['done']).forEach(function (name) {
+      stateChips[name].className = 'bt-chip' + (name === m.now ? (waiting ? ' s-compare is-now' : name === 'done' ? ' s-found is-now' : ' s-active is-now')
+        : name === m.next ? (name === 'done' ? ' s-found is-next' : ' is-next') : '');
+    });
+    code.highlight(window.CHAPTER_CODE_LINES[m.now] || []);
+    var next = m.next ? window.CHAPTER_CODE_LINES[m.next] : null;
+    Object.keys(code.lines).forEach(function (lang) {
+      var want = lineSet(next && next[lang]);
+      code.lines[lang].forEach(function (span, i) { span.classList.toggle('ch30-next', want[i + 1] === true); });
+    });
+  }
   function renderOp(step) {
     var s = step.state, op = s.op;
     opTree.render(s.tree, step.highlight);
     frameGrid.render(s.frames);
     framesLabel.textContent = 'Buffer pool (' + s.frames.frames.length + ' frames). Pages read by the disk so far: ' + s.reads + '.';
-    CH30.STATES.concat(['done']).forEach(function (name) {
-      var now = op.state === name;
-      stateChips[name].className = 'bt-chip' + (now ? (step.kind === 'yield' || step.kind === 'again' || step.kind === 'disk' ? ' s-compare is-now' : name === 'done' ? ' s-found is-now' : ' s-active is-now') : '');
-    });
+    markState(step);
     opBody.textContent = '';
     var gone = !op.live;
     opBody.appendChild(el('table.ch30-op',
-      row('state', op.state),
+      row('state', op.state + (step.ran && step.ran !== op.state ? ' (recorded by ' + step.ran + ')' : '')),
       row('key, value', gone ? 'freed with the arena' : '"' + op.key + '", ' + op.vlen + ' bytes (copies, in the arena)', gone),
       row('cur', gone ? 'freed' : 'page ' + op.cur, gone),
       row('path', gone ? 'freed' : op.path.length ? op.path.join('; ') : '(empty)', gone),
@@ -377,12 +437,10 @@ is the program counter, the path and the carry are the local variables, and thei
     });
     if (!s.calls.length) list.appendChild(el('li', 'none yet'));
     callsBody.appendChild(list);
-    var lines = window.CHAPTER_CODE_LINES[op.state];
-    code.highlight(lines || []);
   }
 
   var stepper2 = new BTViz.Stepper({
-    mount: fig2.controls, caption: fig2.caption, root: fig2.root, steps: [], interval: 2400,
+    mount: fig2.controls, caption: fig2.caption, root: fig2.root, steps: [], interval: OP_INTERVAL,
     onStep: function (step) { renderOp(step); }
   });
   function rebuild(play) {
@@ -391,6 +449,7 @@ is the program counter, the path and the carry are the local variables, and thei
     var tree = CH30.scenarioTree(+frameSel.value, sc.count, pageSize);
     var vlen = sc.vlen === null ? CH12.scenarioValueLen(sc.key, pageSize) : sc.vlen;
     var t = CH30.traceInsert(tree, CH12.scenarioKey(sc.key), vlen, { pressure: pressureBox.checked, impatient: impatientBox.checked });
+    t.steps.forEach(function (s) { s.hold = holdFor(s.caption, OP_INTERVAL); });
     stepper2.setSteps(t.steps, { play: !!play });
   }
   [scenSel, frameSel, pressureBox, impatientBox].forEach(function (c) { c.addEventListener('change', function () { rebuild(false); }); });
@@ -480,6 +539,58 @@ is the program counter, the path and the carry are the local variables, and thei
       t.calls.forEach(function (c) { c.states.forEach(function (st) { seen[st] = true; }); });
     });
     BTViz.selfTest('figure 2 reaches every state', CH30.STATES.filter(function (st) { return seen[st]; }).join(' '), CH30.STATES.join(' '));
+  })();
+  // Figure 2 marks the arm its caption is about. For every step of every
+  // scenario, pool size and option: the first state the caption names is the
+  // strongly marked chip, the highlighted code is that state's arm in both
+  // languages, and the weakly marked chip is the recorded state. Read back
+  // from the page, not from the model.
+  (function () {
+    var verdict = 'ok', checked = 0, ahead = 0;
+    var nameRe = new RegExp('<code>(' + CH30.STATES.join('|') + ')</code>');
+    function armHead(lang) {
+      var first = code.lines[lang].filter(function (span) { return span.classList.contains('is-hl'); })[0];
+      return first ? first.textContent.trim() : '';
+    }
+    SCENARIOS.forEach(function (sc, si) {
+      [2, 3, 8].forEach(function (frames) {
+        [0, 1, 2, 3].forEach(function (o) {
+          var pageSize = sc.pageSize || 4096;
+          var t = CH30.traceInsert(CH30.scenarioTree(frames, sc.count, pageSize), CH12.scenarioKey(sc.key),
+            sc.vlen === null ? CH12.scenarioValueLen(sc.key, pageSize) : sc.vlen, { pressure: !!(o & 1), impatient: !!(o & 2) });
+          t.steps.forEach(function (step, i) {
+            var m = nameRe.exec(step.caption), where = 'scenario ' + (si + 1) + ', ' + frames + ' frames, options ' + o + ', step ' + (i + 1) + ': ';
+            markState(step);
+            var now = stateStrip.querySelectorAll('.is-now'), next = stateStrip.querySelectorAll('.is-next');
+            var recorded = step.state.op.state;
+            checked++;
+            if (now.length !== 1) verdict = where + now.length + ' chips marked';
+            else if (m && now[0].textContent !== m[1]) verdict = where + 'chip ' + now[0].textContent + ', caption ' + m[1];
+            else if (now[0].textContent !== 'done' && (armHead('zig').indexOf('.' + now[0].textContent + ' =>') !== 0 ||
+              armHead('rust').indexOf('State::' + now[0].textContent.replace(/(^|_)([a-z])/g, function (x, a, b) { return b.toUpperCase(); })) !== 0))
+              verdict = where + 'code arm "' + armHead('zig') + '" / "' + armHead('rust') + '" for chip ' + now[0].textContent;
+            else if (recorded !== now[0].textContent && (next.length !== 1 || next[0].textContent !== recorded)) verdict = where + 'recorded state ' + recorded + ' is not marked';
+            else if (recorded === now[0].textContent && next.length) verdict = where + 'two marks for one state';
+            if (recorded !== now[0].textContent) ahead++;
+          });
+        });
+      });
+    });
+    stepper2.go(stepper2.index, { instant: true });
+    BTViz.selfTest('figure 2: marked state and code arm match the caption', checked > 1000 && ahead > 100 ? verdict : 'only ' + checked + ' steps, ' + ahead + ' with a different recorded state', 'ok');
+  })();
+  // Autoplay leaves time to read: every step of the suggested inserts stays at least READ_MS per caption word.
+  (function () {
+    var p = new CH30.Pair(), verdict = 'ok', longest = 0;
+    [27, 33, 60, 12].forEach(function (key) {
+      decorate(p.insert(key)).forEach(function (s, i) {
+        if (!s.stage) return;
+        var w = words(s.caption.split('<div class="ch30-refs">')[0]), ms = LANES_INTERVAL * (s.hold || 1);
+        longest = Math.max(longest, w);
+        if (ms < w * READ_MS - 1 || ms < LANES_INTERVAL) verdict = 'insert ' + key + ' step ' + (i + 1) + ': ' + w + ' words, ' + Math.round(ms) + ' ms';
+      });
+    });
+    BTViz.selfTest('autoplay waits for the caption', longest > 100 ? verdict : 'longest caption only ' + longest + ' words', 'ok');
   })();
 })();
 </script>

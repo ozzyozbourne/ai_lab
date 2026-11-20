@@ -108,9 +108,9 @@ level 0: #0(1 3 5)<6 -> #4(6 7)<10 -> #1(10 12)<15 -> #5(15 17)<20 -> #3(20 25 3
 
 Insert 26. It belongs in leaf #3, which is full.
 
-**Step 1**, under the latch of #3. New node #8 takes the upper half (26, 30). #8 inherits #3's old
-high key (none) and old right link (none). #3 gets high key 26, right link to
-#8, and the flag:
+**Step 1**, under the latch of #3. New node #8 takes the upper half (26, 30).
+#8 inherits #3's old high key (none) and old right link (none). #3 gets high
+key 26, right link to #8, and the flag:
 
 ```
 level 1: #2[6 10]<15 -> #6[20]
@@ -283,20 +283,20 @@ The tests are ordered from deterministic to concurrent.
   with the oracle. No timing is asserted and nothing printed depends on the
   interleaving.
 
+A stress test only samples interleavings. Two orderings in `insert` have no
+deterministic test: `moveRight` re-checks the flag after trading its shared
+latch for an exclusive one, and `put` keeps the leaf latched between the
+insert that overfills it and step 1. Scratch copies with one of them broken
+failed the stress tests in 15 and in 9 of 40 runs (ten per language and build
+mode, on a machine busy with other work).
+
 ### Output
 
 Both programs print exactly [expected_output.txt](expected_output.txt), and a
-test in each language checks it. Sections 1 to 6, with the second half of
-section 5 left out:
+test in each language checks it. Section 1 prints the first tree of the
+worked example. Sections 2 to 4 and the first half of section 5:
 
 ```
-== 1. Build: canonical keys, order M = 4; every node has a high key and a right link ==
-height 3, 12 keys, 8 nodes
-  level 2: #7[15]
-  level 1: #2[6 10]<15 -> #6[20]
-  level 0: #0(1 3 5)<6 -> #4(6 7)<10 -> #1(10 12)<15 -> #5(15 17)<20 -> #3(20 25 30)
-legend: #n node, [..] separators, (..) leaf keys, <k high key (keys in the node are below k), -> right link
-
 == 2. Step 1 of a split, and nothing else ==
 put 26 into the full leaf #3(20 25 30); the writer stops between the two steps
 height 3, 13 keys, 9 nodes
@@ -331,22 +331,13 @@ with right links: get 30
   reader: visits #8(26 27), 30 >= high key 28, follows the right link to #9
   reader: visits #9(28 30), finds 30 = 3000
   ...
-
-== 6. A root split is the same two steps ==
-put 4, stopped after step 1: the root has a right sibling and there is no new root yet
-height 1, 4 keys, 2 nodes
-  level 0: #0(1 2)<3 {incomplete} -> #1(3 4) {no downlink}
-get 4 = 400 (moved right 1)
-put 5 finishes it: step 2 of a root split builds the new root
-height 2, 5 keys, 3 nodes
-  level 1: #2[3]
-  level 0: #0(1 2)<3 -> #1(3 4 5)
 ```
 
 The rest of section 5 is the same race without right links: the reader misses
-a key. Section 7 prints one line of counters per order for a seeded model run
-of 20000 operations (the search without right links is wrong 103, 49 and 6
-times for M = 3, 4, 16), and section 8 one line per stress run.
+a key. Section 6 stops a root split after step 1. Section 7 prints counters
+for a seeded model run of 20000 operations per order (the search without
+right links is wrong 103, 49 and 6 times for M = 3, 4, 16), and section 8 one
+line per stress run.
 
 ## In real databases
 
@@ -381,15 +372,14 @@ tree. Everything below was read in the Postgres source
   (`:2246-2249`). Lehman and Yao match on the separator key and must hold
   three locks at that point (`nbtree/README:139-156`). The flag is cleared in
   the same critical section (`:1316-1328`).
-- **Locks across the two steps.** As in this chapter, the left page stays
-  write-locked from the split until its downlink is in the parent
-  (`nbtree/nbtinsert.c:1236-1252`, `:2114-2120`, `nbtree/README:666-672`).
-  Child before parent is a safe order: locking the next page before releasing
-  the current one "is safe when moving right or up, but not when moving left
-  or down" (`nbtree/README:106-110`). Unlike this chapter, Postgres also keeps
-  the new right page locked until it has locked the parent (`:2225-2238`).
-  Here nothing latches the new node across the steps: the only pointer to it
-  is in the latched left node.
+- **Locks across the two steps.** As here, the left page stays write-locked
+  from the split until its downlink is in the parent
+  (`nbtree/nbtinsert.c:1236-1252`, `:2114-2120`, `nbtree/README:666-672`);
+  child before parent is safe because locking the next page first "is safe
+  when moving right or up, but not when moving left or down"
+  (`nbtree/README:106-110`). Unlike here, Postgres also keeps the new right
+  page locked until it has locked the parent (`:2225-2238`). This chapter
+  latches only the left node: it holds the only pointer to the new one.
 - **Incomplete splits.** A crash or an error between the two actions leaves a
   page without a downlink; searches still work (`nbtree/README:642-650`).
   Missing downlinks are created by later insertions, not by searches, to keep

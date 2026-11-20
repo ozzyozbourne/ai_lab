@@ -190,9 +190,7 @@ pub fn run_workload(wl: &Workload, order: usize, cfg: lsm::Config) -> Report {
                 if filtered.get(key) != want {
                     report.mismatches += 1;
                 }
-                report
-                    .filter_gets
-                    .record(filtered.dev.counters.since(&f0));
+                report.filter_gets.record(filtered.dev.counters.since(&f0));
                 (&mut report.btree.gets, &mut report.lsm.gets)
             }
             Op::Range { lo, hi } => {

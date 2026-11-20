@@ -312,6 +312,169 @@ fn lsm_deleting_costs_space_first_and_gives_it_back_only_through_compaction() {
     lsm.validate().unwrap();
 }
 
+// ------------------------------------------------------- LSM: filters
+
+/// `TINY` with a Bloom filter per run.
+const TINY_FILTERED: lsm::Config = lsm::Config {
+    filter_bits_per_key: 10,
+    ..TINY
+};
+
+#[test]
+fn lsm_filter_an_absent_key_inside_a_runs_range_costs_no_block_a_present_key_costs_the_same() {
+    let mut plain = Lsm::new(TINY);
+    let mut lsm = Lsm::new(TINY_FILTERED);
+    for k in [10, 20, 5, 6, 12] {
+        plain.put(k, k * 100).unwrap();
+        lsm.put(k, k * 100).unwrap();
+    }
+    // One run (5 6 10 20) in level 0. Building its filter wrote no block.
+    assert_eq!(lsm.dev.counters, plain.dev.counters);
+    assert_eq!(lsm.dev.live, plain.dev.live);
+    assert_eq!(lsm.filter_bits(), 40); // 4 slots x 10 bits, in RAM
+    assert_eq!(plain.filter_bits(), 0);
+
+    // 7 lies between 5 and 20, so min/max cannot help. Without a filter the
+    // probe is paid for and wasted; the filter answers "no" in RAM.
+    assert_eq!(plain.get(7), None);
+    assert_eq!(io(plain.dev.counters.since(&lsm.dev.counters)), (2, 0));
+    assert_eq!(lsm.get(7), None);
+    assert_eq!(lsm.stats.filter_negatives, 1);
+    assert_eq!(lsm.stats.runs_probed, 0);
+    let before = lsm.dev.counters;
+    // A key the run holds is never ruled out: index block + data block.
+    assert_eq!(lsm.get(10), Some(1000));
+    assert_eq!(io(lsm.dev.counters.since(&before)), (2, 0));
+    // Outside the key range the min/max check answers first.
+    assert_eq!(lsm.get(99), None);
+    assert_eq!(lsm.stats.runs_skipped, 1);
+    assert_eq!(lsm.stats.filter_negatives, 1);
+    lsm.validate().unwrap();
+}
+
+#[test]
+fn lsm_filter_changes_no_answer_no_write_and_no_scan_and_only_lowers_the_cost_of_gets() {
+    let configs = [
+        TINY,
+        lsm::Config {
+            block_entries: 1,
+            index_fanout: 2,
+            memtable_entries: 2,
+            l0_runs: 1,
+            growth: 2,
+            filter_bits_per_key: 0,
+        },
+        lsm::Config {
+            block_entries: 15,
+            index_fanout: 16,
+            memtable_entries: 60,
+            l0_runs: 4,
+            growth: 4,
+            filter_bits_per_key: 0,
+        },
+    ];
+    for (c, cfg) in configs.into_iter().enumerate() {
+        // 1 bit per key is a bad filter (many false positives) and must
+        // still be a correct one.
+        for bits in [1, 10] {
+            let mut plain = Lsm::new(cfg);
+            let mut lsm = Lsm::new(lsm::Config {
+                filter_bits_per_key: bits,
+                ..cfg
+            });
+            let mut plain_out: Vec<Entry> = Vec::new();
+            let mut out: Vec<Entry> = Vec::new();
+            let stream = OpStream::new(ops::Config {
+                seed: 700 + c as u64,
+                count: 4000,
+                key_space: 3000,
+                weights: Weights {
+                    put: 5,
+                    delete: 2,
+                    get: 4,
+                    range: 1,
+                },
+            });
+            for (step, op) in stream.enumerate() {
+                let p0 = plain.dev.counters;
+                let f0 = lsm.dev.counters;
+                match op {
+                    Op::Put { key, value } => {
+                        plain.put(key, value).unwrap();
+                        lsm.put(key, value).unwrap();
+                    }
+                    Op::Delete { key } => {
+                        plain.delete(key).unwrap();
+                        lsm.delete(key).unwrap();
+                    }
+                    Op::Get { key } => {
+                        assert_eq!(lsm.get(key), plain.get(key));
+                        // Never more blocks than without the filter.
+                        let p = plain.dev.counters.since(&p0);
+                        let f = lsm.dev.counters.since(&f0);
+                        assert!(f.reads[0] <= p.reads[0] && f.reads[1] <= p.reads[1]);
+                        continue;
+                    }
+                    Op::Range { lo, hi } => {
+                        let hi = hi.min(lo + 50);
+                        plain_out.clear();
+                        out.clear();
+                        plain.range(lo, hi, &mut plain_out);
+                        lsm.range(lo, hi, &mut out);
+                        assert_eq!(out, plain_out);
+                    }
+                }
+                // Writes and scans: block for block the same.
+                assert_eq!(lsm.dev.counters.since(&f0), plain.dev.counters.since(&p0));
+                assert_eq!(lsm.dev.live, plain.dev.live);
+                if step % 64 == 0 {
+                    lsm.validate().unwrap();
+                }
+            }
+            lsm.validate().unwrap();
+            assert_eq!(lsm.dev.peak, plain.dev.peak);
+            assert_eq!(lsm.dev.counters.writes, plain.dev.counters.writes);
+            assert_eq!(lsm.stats.versions_dropped, plain.stats.versions_dropped);
+            assert_eq!(lsm.filter_bits(), lsm.slots_on_device() * bits);
+            assert!(lsm.stats.filter_negatives > 0);
+            assert!(lsm.dev.counters.total_reads() < plain.dev.counters.total_reads());
+            // Every probe the plain tree made was either made here too or
+            // ruled out by a filter.
+            assert_eq!(
+                lsm.stats.runs_probed + lsm.stats.filter_negatives,
+                plain.stats.runs_probed
+            );
+            assert_eq!(lsm.stats.runs_skipped, plain.stats.runs_skipped);
+        }
+    }
+}
+
+#[test]
+fn the_harness_measures_the_filtered_tree_on_the_same_gets() {
+    let r = bench::run_workload(&bench::WORKLOADS[1], bench::BENCH_ORDER, bench::BENCH_LSM);
+    assert_eq!(r.mismatches, 0);
+    assert_eq!(r.filter_gets.ops, r.lsm.gets.ops);
+    assert!(r.get_misses > 0 && r.get_misses < r.lsm.gets.ops);
+    assert!(r.filter_gets.io.total_reads() < r.lsm.gets.io.total_reads());
+    assert_eq!(r.filter_gets.io.total_writes(), 0);
+    assert_eq!(r.filter_bits, r.lsm_slots * bench::BENCH_FILTER_BITS);
+    // Both trees did the same maintenance.
+    assert_eq!(r.filter_stats.flushes, r.lsm_stats.flushes);
+    assert_eq!(
+        r.filter_stats.versions_dropped,
+        r.lsm_stats.versions_dropped
+    );
+    assert_eq!(
+        r.filter_stats.runs_probed + r.filter_stats.filter_negatives,
+        r.lsm_stats.runs_probed
+    );
+    // False positives exist and are rare: under 2% at 10 bits per slot.
+    assert!(r.filter_stats.probes_wasted > 0);
+    assert!(r.filter_stats.probes_wasted * 50 < r.filter_stats.filter_negatives);
+    // No filter was asked for, none was built: the plain tree is unchanged.
+    assert_eq!(r.lsm_stats.filter_negatives, 0);
+}
+
 // ----------------------------------------------------------- model tests
 
 /// Applies one operation stream to the B+tree, the LSM-tree and the oracle,
@@ -543,9 +706,16 @@ fn the_peak_is_compared_with_the_keys_that_were_live_at_the_peak() {
 #[test]
 fn lsm_every_budget_from_zero_up_is_reported_and_the_structure_stays_valid() {
     // The counterpart of Zig's "every allocation failure during a build".
+    // With filters a refused builder must leave no filter behind either.
+    for cfg in [TINY, TINY_FILTERED] {
+        every_budget(cfg);
+    }
+}
+
+fn every_budget(cfg: lsm::Config) {
     let mut completed = 0;
     for budget in 0..200 {
-        let mut lsm = Lsm::with_slot_budget(TINY, budget);
+        let mut lsm = Lsm::with_slot_budget(cfg, budget);
         let mut failed = false;
         for i in 0..60u64 {
             let key = (i * 37) % 64;
@@ -592,7 +762,12 @@ fn btree_a_put_that_runs_out_of_nodes_changes_neither_the_tree_nor_the_device() 
 
 #[test]
 fn lsm_a_write_that_runs_out_of_memory_changes_no_answer_and_the_retry_finishes_the_job() {
-    let mut lsm = Lsm::with_slot_budget(TINY, 0);
+    write_under_failure(TINY);
+    write_under_failure(TINY_FILTERED);
+}
+
+fn write_under_failure(cfg: lsm::Config) {
+    let mut lsm = Lsm::with_slot_budget(cfg, 0);
     let mut oracle = Oracle::new();
     let mut failures = 0;
     let mut pending_after_failure = 0;
@@ -622,6 +797,11 @@ fn lsm_a_write_that_runs_out_of_memory_changes_no_answer_and_the_retry_finishes_
                     for k in 0..97 {
                         assert_eq!(lsm.get(k), oracle.get(k));
                     }
+                    // A failed write built no run: filters untouched.
+                    assert_eq!(
+                        lsm.filter_bits(),
+                        lsm.slots_on_device() * cfg.filter_bits_per_key
+                    );
                     lsm.slot_budget = usize::MAX;
                 }
             }
@@ -665,6 +845,21 @@ fn validate_names_the_broken_invariant() {
     lsm.dev.live += 1; // a leaked block
     assert_eq!(lsm.validate(), Err(Violation::DeviceAccounting));
     lsm.dev.live -= 1;
+
+    {
+        // A filter that says "no" for a key its run holds would hide the key.
+        let mut filtered = Lsm::new(TINY_FILTERED);
+        for k in CANONICAL {
+            filtered.put(k, k).unwrap();
+        }
+        filtered.put(99, 99).unwrap();
+        filtered.validate().unwrap();
+        let words = &mut filtered.levels[0].as_mut().unwrap().filter.words;
+        let saved_word = std::mem::replace(&mut words[0], 0);
+        assert_eq!(filtered.validate(), Err(Violation::FilterLostKey));
+        filtered.levels[0].as_mut().unwrap().filter.words[0] = saved_word;
+        filtered.validate().unwrap();
+    }
 
     let saved = lsm.cfg.l0_runs;
     lsm.cfg.l0_runs = 1; // level 0 now counts as full

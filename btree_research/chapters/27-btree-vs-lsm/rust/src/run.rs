@@ -313,7 +313,11 @@ mod tests {
         assert_eq!(dev.counters.writes, [1, 3]);
         assert_eq!(dev.live, 4);
         assert_eq!(run.filter.bits(), 70);
-        assert!([2, 4, 6, 8, 10, 12, 14].iter().all(|&k| run.filter.may_contain(k)));
+        assert!(
+            [2, 4, 6, 8, 10, 12, 14]
+                .iter()
+                .all(|&k| run.filter.may_contain(k))
+        );
 
         let empty = Builder::new(g, 5, usize::MAX).unwrap();
         assert!(empty.finish(&mut dev).is_none());

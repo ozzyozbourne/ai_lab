@@ -340,10 +340,7 @@ fn limits(w: &mut dyn Write, memtable_entries: usize) -> io::Result<()> {
         w,
         "    rely on such filters. A filter costs no block, only that memory; it helps point"
     )?;
-    writeln!(
-        w,
-        "    lookups, mostly those for absent keys, and no scan."
-    )?;
+    writeln!(w, "    lookups, mostly those for absent keys, and no scan.")?;
     writeln!(
         w,
         "  * A block is a block. One appended in sequence (flush, compaction) counts the same"

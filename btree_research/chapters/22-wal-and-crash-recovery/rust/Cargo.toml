@@ -16,3 +16,13 @@ unsafe_code = "forbid"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# The crash loop replays the workload hundreds of times and checksums every
+# page it touches. Unoptimised, `cargo run` and `cargo test` take several
+# times longer; a little optimisation keeps them in seconds. Overflow checks
+# and debug assertions stay on.
+[profile.dev]
+opt-level = 2
+
+[profile.test]
+opt-level = 2

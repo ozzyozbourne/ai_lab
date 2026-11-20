@@ -616,7 +616,10 @@ impl DiskBTree {
                 cells.push((old.key(from), old.value(from)));
             }
         }
-        let costs: Vec<usize> = cells.iter().map(|(k, v)| cell_cost(k.len(), v.len())).collect();
+        let costs: Vec<usize> = cells
+            .iter()
+            .map(|(k, v)| cell_cost(k.len(), v.len()))
+            .collect();
         let k = split_point(&costs, 1);
 
         // The last step that can fail.
@@ -700,7 +703,10 @@ impl DiskBTree {
         } else {
             rightmost = carry.right;
         }
-        let costs: Vec<usize> = entries.iter().map(|(k, _)| cell_cost(k.len(), CHILD_SIZE)).collect();
+        let costs: Vec<usize> = entries
+            .iter()
+            .map(|(k, _)| cell_cost(k.len(), CHILD_SIZE))
+            .collect();
         // entries[k] moves up; at least one entry must remain right of it.
         let k = split_point(&costs, 2);
 
@@ -761,7 +767,10 @@ impl DiskBTree {
         self.visit(&mut walk, self.root, None, None, 0)?;
 
         for (i, &(_, next)) in walk.leaves.iter().enumerate() {
-            let expected = walk.leaves.get(i + 1).map_or(INVALID_PAGE_ID, |&(id, _)| id);
+            let expected = walk
+                .leaves
+                .get(i + 1)
+                .map_or(INVALID_PAGE_ID, |&(id, _)| id);
             if next != expected {
                 return Err(TreeError::Invalid(Violation::LeafChainBroken)); // T5
             }
@@ -877,7 +886,10 @@ impl DiskBTree {
         out.push_str(&"  ".repeat(depth));
         // Writing to a String cannot fail.
         if page.kind() == KIND_LEAF {
-            let _ = write!(out, "page {id}  leaf      {n} keys  {used}/{PAGE_CAPACITY} bytes  next ");
+            let _ = write!(
+                out,
+                "page {id}  leaf      {n} keys  {used}/{PAGE_CAPACITY} bytes  next "
+            );
             match link(&page) {
                 INVALID_PAGE_ID => out.push('-'),
                 next => out.push_str(&next.to_string()),
@@ -890,7 +902,10 @@ impl DiskBTree {
             self.pool.unpin(id, false);
             return Ok(());
         }
-        let _ = write!(out, "page {id}  interior  {n} keys  {used}/{PAGE_CAPACITY} bytes  |");
+        let _ = write!(
+            out,
+            "page {id}  interior  {n} keys  {used}/{PAGE_CAPACITY} bytes  |"
+        );
         let children: Vec<PageId> = (0..=n).map(|i| child_at(&page, i)).collect();
         for (i, child) in children.iter().enumerate() {
             if i < n {

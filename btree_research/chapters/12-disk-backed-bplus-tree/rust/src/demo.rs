@@ -97,7 +97,10 @@ fn print_counters(w: &mut dyn Write, tree: &mut DiskBTree) -> DemoResult {
 }
 
 fn part1(w: &mut dyn Write, path: &Path) -> DemoResult {
-    writeln!(w, "\n== Part 1: a tree of pages in a real file (3-frame pool) ==")?;
+    writeln!(
+        w,
+        "\n== Part 1: a tree of pages in a real file (3-frame pool) =="
+    )?;
     writeln!(
         w,
         "a page offers {} bytes to cells; a key may have {} bytes, a value {}",
@@ -140,7 +143,11 @@ fn part1(w: &mut dyn Write, path: &Path) -> DemoResult {
         tree.validate()?;
         print_counters(w, &mut tree)?;
         tree.close()?;
-        writeln!(w, "flushed: file size = {} bytes", std::fs::metadata(path)?.len())?;
+        writeln!(
+            w,
+            "flushed: file size = {} bytes",
+            std::fs::metadata(path)?.len()
+        )?;
     }
     let mut tree = DiskBTree::open(pool_over(FileStorage::open(path)?, 3)?)?;
     tree.validate()?;
@@ -153,9 +160,22 @@ fn part1(w: &mut dyn Write, path: &Path) -> DemoResult {
     )?;
 
     let value = tree.get(b"17")?.expect("17 was inserted");
-    writeln!(w, "get 17 -> {} bytes of '{}'", value.len(), value[0] as char)?;
+    writeln!(
+        w,
+        "get 17 -> {} bytes of '{}'",
+        value.len(),
+        value[0] as char
+    )?;
     let missing = tree.get(b"13")?;
-    writeln!(w, "get 13 -> {}", if missing.is_some() { "found?!" } else { "not found" })?;
+    writeln!(
+        w,
+        "get 13 -> {}",
+        if missing.is_some() {
+            "found?!"
+        } else {
+            "not found"
+        }
+    )?;
     write!(w, "range [10, 20) ->")?;
     let mut it = tree.range(b"10", Some(b"20"))?;
     while let Some((key, value)) = it.next()? {
@@ -176,7 +196,11 @@ fn part2(w: &mut dyn Write) -> DemoResult {
 
     for half in 0..2 {
         let pool = pool_over(mem.clone(), 8)?;
-        let mut tree = if half == 0 { DiskBTree::create(pool)? } else { DiskBTree::open(pool)? };
+        let mut tree = if half == 0 {
+            DiskBTree::create(pool)?
+        } else {
+            DiskBTree::open(pool)?
+        };
         for _ in 0..2000 {
             let key = workload::key_for(rng.below(3000), 64);
             let value = workload::random_value(&mut rng, 300);
@@ -184,7 +208,15 @@ fn part2(w: &mut dyn Write) -> DemoResult {
             model.put(&key, &value);
         }
         tree.validate()?;
-        writeln!(w, "{}", if half == 0 { "first 2000 puts:" } else { "reopened, 2000 more puts:" })?;
+        writeln!(
+            w,
+            "{}",
+            if half == 0 {
+                "first 2000 puts:"
+            } else {
+                "reopened, 2000 more puts:"
+            }
+        )?;
         print_counters(w, &mut tree)?;
         tree.flush()?;
         if half == 0 {
@@ -212,7 +244,10 @@ fn part2(w: &mut dyn Write) -> DemoResult {
 }
 
 fn part3(w: &mut dyn Write) -> DemoResult {
-    writeln!(w, "\n== Part 3: integer keys as big-endian bytes (chapter 11) ==")?;
+    writeln!(
+        w,
+        "\n== Part 3: integer keys as big-endian bytes (chapter 11) =="
+    )?;
     let mut tree = DiskBTree::create(pool_over(MemStorage::new(), 8)?)?;
 
     // 1 ..= 1000 in a shuffled order; the value is the number as text.
@@ -222,7 +257,12 @@ fn part3(w: &mut dyn Write) -> DemoResult {
         tree.put(&n.to_be_bytes(), n.to_string().as_bytes())?;
     }
     tree.validate()?;
-    writeln!(w, "1000 keys, {} pages, height {}", tree.pool().pager().page_count(), tree.height()?)?;
+    writeln!(
+        w,
+        "1000 keys, {} pages, height {}",
+        tree.pool().pager().page_count(),
+        tree.height()?
+    )?;
 
     write!(w, "range [254, 259) ->")?;
     let mut it = tree.range(&254u64.to_be_bytes(), Some(&259u64.to_be_bytes()))?;
@@ -299,7 +339,10 @@ pub fn crash_during_split(writes_allowed: u64) -> Result<CrashOutcome, TreeError
 }
 
 fn part4(w: &mut dyn Write) -> DemoResult {
-    writeln!(w, "\n== Part 4: not crash-safe: one split, stopped after every page write ==")?;
+    writeln!(
+        w,
+        "\n== Part 4: not crash-safe: one split, stopped after every page write =="
+    )?;
     writeln!(
         w,
         "{} keys are on disk; put {} splits a leaf, then flush; the storage fails after N writes",
@@ -325,7 +368,11 @@ fn part4(w: &mut dyn Write) -> DemoResult {
             "; {} of {} old keys readable; new key {}",
             o.old_keys_readable,
             CRASH_PUT,
-            if o.new_key_readable { "readable" } else { "missing" }
+            if o.new_key_readable {
+                "readable"
+            } else {
+                "missing"
+            }
         )?;
         if o.completed {
             break;

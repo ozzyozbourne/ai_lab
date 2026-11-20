@@ -29,7 +29,15 @@
       frontier.forEach(function (id) { next = next.concat(state.pages[id].children); });
       frontier = next;
     }
-    var rootEl = this.root;
+    // Every page this step points at (as a page, or through a cell, separator,
+    // link or fence on it): the cards reveal() must keep in view.
+    var focus = {};
+    Object.keys(H.pages).forEach(function (id) { focus[id] = true; });
+    [H.cells, H.seps, H.links, H.fences].forEach(function (group) {
+      Object.keys(group).forEach(function (k) { focus[k.split(':')[0]] = true; });
+    });
+    this.focus = focus;
+    var rootEl = this.root, scrolled = rootEl.scrollTop;
     rootEl.textContent = '';
     levels.forEach(function (ids, depth) {
       var row = el('div.c17-level');
@@ -37,6 +45,37 @@
       rootEl.appendChild(el('div.c17-level-label', depth === levels.length - 1 ? 'leaves' : depth === 0 ? 'root' : 'internal'));
       rootEl.appendChild(row);
     });
+    rootEl.scrollTop = scrolled;
+    this.reveal();
+  };
+
+  // The page gives the tree a maximum height (so that drawing, caption and
+  // step controls fit on one screen) or null for "as tall as it needs". A tree
+  // taller than that scrolls inside its own box.
+  TreeCards.prototype.setMaxHeight = function (px) {
+    this.root.style.maxHeight = px ? px + 'px' : '';
+    this.reveal();
+  };
+
+  // Scroll the box, never the window, so that the highlighted pages are in
+  // view. If they do not all fit, the lowest ones win: that is where the
+  // operation is happening (the leaf being written, the halves of a split).
+  TreeCards.prototype.reveal = function () {
+    var box = this.root, focus = this.focus || {};
+    var clipped = box.scrollHeight > box.clientHeight + 1;
+    // A scrolling box must be reachable from the keyboard.
+    if (clipped) box.tabIndex = 0; else box.removeAttribute('tabindex');
+    if (!clipped) return;
+    var top = Infinity, bottom = -Infinity, base = box.getBoundingClientRect().top - box.scrollTop;
+    Array.prototype.forEach.call(box.querySelectorAll('.c17-page'), function (c) {
+      if (!focus[c.getAttribute('data-page')]) return;
+      var r = c.getBoundingClientRect();
+      top = Math.min(top, r.top - base);
+      bottom = Math.max(bottom, r.bottom - base);
+    });
+    if (top === Infinity) return;
+    if (top - 6 < box.scrollTop) box.scrollTop = top - 6;
+    if (bottom + 6 > box.scrollTop + box.clientHeight) box.scrollTop = bottom + 6 - box.clientHeight;
   };
 
   function card(p, pageSize, H) {

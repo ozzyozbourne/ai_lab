@@ -64,17 +64,34 @@ struct Shape {
 
 impl Shape {
     const fn new(frames: usize, key_space: u64, max_key: usize, max_value: usize) -> Self {
-        Shape { frames, key_space, max_key, max_value, ops: 0, reopen_every: 1, puts: 6 }
+        Shape {
+            frames,
+            key_space,
+            max_key,
+            max_value,
+            ops: 0,
+            reopen_every: 1,
+            puts: 6,
+        }
     }
 
     const fn run(self, ops: usize, reopen_every: usize) -> Self {
-        Shape { ops, reopen_every, ..self }
+        Shape {
+            ops,
+            reopen_every,
+            ..self
+        }
     }
 }
 
 /// One random operation against tree and model. Returns the tree's error;
 /// the model is only changed when the tree succeeded.
-fn random_op(tree: &mut DiskBTree, model: &mut Model, rng: &mut SplitMix64, shape: Shape) -> TestResult {
+fn random_op(
+    tree: &mut DiskBTree,
+    model: &mut Model,
+    rng: &mut SplitMix64,
+    shape: Shape,
+) -> TestResult {
     let key = workload::key_for(rng.below(shape.key_space), shape.max_key);
     let pick = rng.below(10);
     if pick < shape.puts {
@@ -98,7 +115,12 @@ fn random_op(tree: &mut DiskBTree, model: &mut Model, rng: &mut SplitMix64, shap
 /// `open_storage` hands out another handle to the same storage: a clone of
 /// the MemStorage, or the same file opened again.
 fn run_model(open_storage: &dyn Fn() -> Box<dyn Storage>, seed: u64, shape: Shape) -> TestResult {
-    let pool = || BufferPool::new(Pager::new(open_storage()).expect("whole pages"), shape.frames);
+    let pool = || {
+        BufferPool::new(
+            Pager::new(open_storage()).expect("whole pages"),
+            shape.frames,
+        )
+    };
     let mut model = Model::new();
     let mut tree = DiskBTree::create(pool())?;
     let mut rng = SplitMix64::new(seed);
@@ -146,7 +168,11 @@ fn model_a_real_file_closed_and_opened_again() -> TestResult {
     let path = tmp.0.join("tree.db");
     let shape = Shape::new(5, 800, 48, 400).run(3000, 700);
     drop(FileStorage::create(&path).expect("create file"));
-    run_model(&|| Box::new(FileStorage::open(&path).expect("open file")), 42, shape)?;
+    run_model(
+        &|| Box::new(FileStorage::open(&path).expect("open file")),
+        42,
+        shape,
+    )?;
 
     // Replay the same puts into a model and compare with the file as it
     // was left by the run above: nothing but the file carries the data.
@@ -164,11 +190,15 @@ fn model_a_real_file_closed_and_opened_again() -> TestResult {
 }
 
 #[test]
-fn injected_io_failures_an_error_no_leaked_pin_and_a_tree_that_is_intact_or_poisoned() -> TestResult {
+fn injected_io_failures_an_error_no_leaked_pin_and_a_tree_that_is_intact_or_poisoned() -> TestResult
+{
     let shapes = [
         Shape::new(3, 600, 32, 200),
         // Only puts of large cells: the failure often lands inside a split.
-        Shape { puts: 10, ..Shape::new(3, 5000, 200, 1000) },
+        Shape {
+            puts: 10,
+            ..Shape::new(3, 5000, 200, 1000)
+        },
     ];
     let mut clean_failures = 0;
     let mut poisoned_failures = 0;
@@ -189,7 +219,9 @@ fn injected_io_failures_an_error_no_leaked_pin_and_a_tree_that_is_intact_or_pois
                 mem.set_writes_before_failure(Some(countdown));
             }
             for _ in 0..300 {
-                let Err(err) = random_op(&mut tree, &mut model, &mut rng, shape) else { continue };
+                let Err(err) = random_op(&mut tree, &mut model, &mut rng, shape) else {
+                    continue;
+                };
                 assert_eq!(err, TreeError::Io(IoError::StorageFailure));
                 assert_eq!(tree.pool().pinned_frames(), 0);
                 tree.pool().validate().expect("pool invariants");
@@ -234,7 +266,10 @@ fn a_failure_between_the_page_changes_of_a_split_poisons_the_handle() -> TestRes
     // The fifth cell does not fit. Splitting the root leaf allocates two
     // pages; let the first allocation succeed and the second fail.
     mem.set_writes_before_failure(Some(1));
-    assert_eq!(tree.put(b"e", &value), Err(TreeError::Io(IoError::StorageFailure)));
+    assert_eq!(
+        tree.put(b"e", &value),
+        Err(TreeError::Io(IoError::StorageFailure))
+    );
     mem.set_writes_before_failure(None);
     assert!(tree.is_poisoned());
     assert_eq!(tree.pool().pinned_frames(), 0);
@@ -248,7 +283,10 @@ fn a_failure_between_the_page_changes_of_a_split_poisons_the_handle() -> TestRes
         tree2.put(key, &value)?;
     }
     mem2.set_writes_before_failure(Some(0));
-    assert_eq!(tree2.put(b"e", &value), Err(TreeError::Io(IoError::StorageFailure)));
+    assert_eq!(
+        tree2.put(b"e", &value),
+        Err(TreeError::Io(IoError::StorageFailure))
+    );
     mem2.set_writes_before_failure(None);
     assert!(!tree2.is_poisoned());
     tree2.validate()?;
@@ -261,7 +299,8 @@ fn a_failure_between_the_page_changes_of_a_split_poisons_the_handle() -> TestRes
 fn build_scenario(mem: &MemStorage) -> DiskBTree {
     let mut tree = create_mem(mem, 8);
     for n in demo::SCENARIO_KEYS {
-        tree.put(&demo::scenario_key(n), &demo::scenario_value(n)).expect("put");
+        tree.put(&demo::scenario_key(n), &demo::scenario_value(n))
+            .expect("put");
     }
     tree.validate().expect("valid");
     tree
@@ -327,7 +366,10 @@ fn split_point_the_shortest_prefix_with_at_least_half_of_the_bytes() {
 fn limits_keys_and_values_that_are_too_large_are_refused_the_largest_are_accepted() -> TestResult {
     let mut tree = create_mem(&MemStorage::new(), 4);
     let big = [b'x'; btree::MAX_VALUE_LEN + 1];
-    assert_eq!(tree.put(&big[..btree::MAX_KEY_LEN + 1], b"v"), Err(TreeError::KeyTooLarge));
+    assert_eq!(
+        tree.put(&big[..btree::MAX_KEY_LEN + 1], b"v"),
+        Err(TreeError::KeyTooLarge)
+    );
     assert_eq!(tree.put(b"k", &big), Err(TreeError::ValueTooLarge));
     assert_eq!(tree.key_count(), 0);
 
@@ -353,7 +395,9 @@ fn limits_keys_and_values_that_are_too_large_are_refused_the_largest_are_accepte
 #[test]
 fn range_bounds_are_half_open_leaves_are_followed_through_their_links() -> TestResult {
     let mut tree = build_scenario(&MemStorage::new());
-    let cases: [(&[u8], Option<&[u8]>, Option<&[u8]>, usize); 7] = [
+    /// (lo, hi, first key returned, number of entries)
+    type Case<'a> = (&'a [u8], Option<&'a [u8]>, Option<&'a [u8]>, usize);
+    let cases: [Case; 7] = [
         (b"", None, Some(b"01"), 24),
         (b"10", Some(b"20"), Some(b"10"), 7), // 20 itself is excluded
         (b"13", Some(b"13"), None, 0),
@@ -382,7 +426,9 @@ fn range_bounds_are_half_open_leaves_are_followed_through_their_links() -> TestR
 
 #[test]
 fn validate_detects_each_kind_of_damage() -> TestResult {
-    let set_link = |page: &mut SlottedPage, id: u32| page.user_area_mut()[..4].copy_from_slice(&id.to_le_bytes());
+    let set_link = |page: &mut SlottedPage, id: u32| {
+        page.user_area_mut()[..4].copy_from_slice(&id.to_le_bytes())
+    };
     let cases = [
         ("link", Violation::LeafChainBroken),
         ("bounds", Violation::KeyOutOfBounds),
@@ -407,7 +453,8 @@ fn validate_detects_each_kind_of_damage() -> TestResult {
             "bounds" => {
                 let pool = tree.pool_mut();
                 let mut leaf = SlottedPage::open(pool.fetch_page(7)?);
-                leaf.put(b"99", b"far too large for this leaf").expect("fits");
+                leaf.put(b"99", b"far too large for this leaf")
+                    .expect("fits");
                 pool.unpin(7, true);
             }
             "count" => {
@@ -480,11 +527,17 @@ fn validate_detects_each_kind_of_damage() -> TestResult {
 fn open_and_create_check_what_they_are_given() -> TestResult {
     let mem = MemStorage::new();
     // An empty storage is not a tree.
-    assert_eq!(DiskBTree::open(pool_over(mem.clone(), 4)).err(), Some(TreeError::BadMagic));
+    assert_eq!(
+        DiskBTree::open(pool_over(mem.clone(), 4)).err(),
+        Some(TreeError::BadMagic)
+    );
     let mut tree = create_mem(&mem, 4);
     tree.put(b"k", b"v")?;
     tree.close()?;
-    assert_eq!(DiskBTree::create(pool_over(mem.clone(), 4)).err(), Some(TreeError::NotEmpty));
+    assert_eq!(
+        DiskBTree::create(pool_over(mem.clone(), 4)).err(),
+        Some(TreeError::NotEmpty)
+    );
 
     // Damage the metapage in four ways; each time `open` must refuse.
     let patches = [
@@ -512,7 +565,10 @@ fn every_tree_page_keeps_its_last_four_bytes_free_for_a_checksum() -> TestResult
     let bytes = mem.bytes();
     assert_eq!(bytes.len(), 8 * btree::PAGE_SIZE);
     for page in bytes.chunks(btree::PAGE_SIZE) {
-        assert_eq!(page[btree::PAGE_SIZE - btree::RESERVED_TAIL as usize..], [0, 0, 0, 0]);
+        assert_eq!(
+            page[btree::PAGE_SIZE - btree::RESERVED_TAIL as usize..],
+            [0, 0, 0, 0]
+        );
     }
     assert_eq!(&bytes[..8], btree::MAGIC);
     Ok(())

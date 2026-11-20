@@ -210,7 +210,7 @@ are checked against the output of the chapter's Zig and Rust programs (self-test
         m.never ? el('span.bt-chip.s-free', 'never written')
           : el('span.bt-chip' + (m.valid ? (isCur ? '.s-found' : '') : '.s-deleted'),
               'txn ' + m.txn + ' → ' + (m.root === null ? 'empty' : 'root #' + m.root)),
-        m.never ? null : el('span', { title: 'CRC-32 stored in the slot' }, 'crc ' + m.crc + (m.valid ? ' ✓' : ' ✗ torn')),
+        m.never ? null : el('span', { title: 'CRC-32 stored in the slot' }, 'crc ' + m.crc + (m.valid ? ' ✓' : ' ✗ unreadable')),
         isCur ? el('span', '← current') : isPrev ? el('span', '← fallback') : null));
     });
   }

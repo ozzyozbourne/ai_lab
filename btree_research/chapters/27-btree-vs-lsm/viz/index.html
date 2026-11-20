@@ -403,7 +403,7 @@ checked against the output of the chapter's Zig and Rust programs (self-tests be
     treeView.render(s.tree, s.treeHi);
     renderLsm(s.lsm, s.lsmHi);
     function card(c) {
-      return (s.opName ? BTViz.esc(s.opName) + ': <b>' + c.opR + '</b> read, <b>' + c.opW + '</b> written<br>' : 'between operations<br>') +
+      return (s.opName ? BTViz.esc(s.opName) + ': <b>' + c.opR + '</b> read, <b>' + c.opW + '</b> written<br>' : 'no operation in progress<br>') +
              'total <b>' + c.r + '</b> read, <b>' + c.w + '</b> written, <b>' + c.blocks + '</b> in use';
     }
     cardBt.innerHTML = card(s.ctr.bt);

@@ -121,19 +121,21 @@ pub fn get(self: *Lsm, key: u64) ?u64 {
 
 fn probe(self: *Lsm, run: *const Run, key: u64) Lookup {
     if (!run.mayContain(key)) return .absent;  // min/max in RAM: no I/O
-    self.dev.read(.index, 1);
+    // one block per index level, root first: charged like the B+tree's descent
+    self.dev.read(.index, self.cfg.geometry().indexHeight(run.len()));
     self.dev.read(.data, 1);
     return run.find(key);                      // may still be .absent: wasted
 }`,
     rust: `
 pub fn get(&mut self, key: u64) -> Option<u64> {
     let mut result = self.mem.get(key);        // newest place first
+    let geo = self.cfg.geometry();
     // level 0 newest run first, then level 1, 2, ...
     for run in self.l0.iter().rev().chain(self.levels.iter().flatten()) {
         if result != Lookup::Absent {
             break;
         }
-        result = probe(&mut self.dev, &mut self.stats, run, key);
+        result = probe(&mut self.dev, &mut self.stats, geo, run, key);
     }
     match result {
         Lookup::Value(v) => Some(v),
@@ -141,11 +143,12 @@ pub fn get(&mut self, key: u64) -> Option<u64> {
     }
 }
 
-fn probe(dev: &mut Device, stats: &mut Stats, run: &Run, key: u64) -> Lookup {
+fn probe(dev: &mut Device, stats: &mut Stats, geo: Geometry, run: &Run, key: u64) -> Lookup {
     if !run.may_contain(key) {
         return Lookup::Absent;                 // min/max in RAM: no I/O
     }
-    dev.read(Kind::Index, 1);
+    // one block per index level, root first: charged like the B+tree's descent
+    dev.read(Kind::Index, geo.index_height(run.len()) as u64);
     dev.read(Kind::Data, 1);
     run.find(key)                              // may still be Absent: wasted
 }`

@@ -35,8 +35,8 @@ So do not write the cases. Write three small things instead.
 
 Then run the same operations on both, compare every answer, and call the checker after
 every step. Do that for many seeds. When something disagrees, you have a seed and a step
-number, and the run can be repeated exactly. (That holds when a check fails. A bug that
-makes the tree crash needs one more tool: see "When the tree crashes instead".)
+number, and the run can be repeated exactly. (If the tree crashes instead of failing a
+check, see "When the tree crashes instead".)
 
 Four refinements turn this from a toy into something that finds real bugs:
 
@@ -115,8 +115,8 @@ children, was ever run.
   oracle and applies each step to both. After every step: compare the answer, call
   `validate`, compare the key count; every 16 steps and at the end, compare a full
   in-order scan with the oracle. The first failed check ends the run with a
-  `Failure{ step, kind, diag }`. After a put that was made to fail, the tree must validate,
-  hold the same contents, and have the same `pool.usage` as before the call.
+  `Failure{ step, kind, diag }`. After a put that was made to fail, the tree must validate
+  and have the same contents and the same `pool.usage` as before.
 - `hunt` runs one swarm case per seed and stops at the first failure; `huntShortest` runs
   all seeds and keeps the failure that needed the fewest steps.
 
@@ -152,16 +152,15 @@ trace mode that prints one line to stderr before every step:
 zig build test -Dtrace=true -Dtest-filter="correct tree passes" 2> trace.txt
 cargo test --features trace correct_tree_passes 2> trace.txt
 
-TRACE_SAMPLE
+trace: seed 1, M=3, bug none, step 209 of 294: put 11240984669916758016 = 10737218468902139262
+thread 17799 panic: index out of bounds: index 4, len 4
 ```
 
 (A real run, with `max_height` lowered to 4 in a scratch copy.) The last `trace:` line
 before the panic names seed, order and step. To work on it, replay that one seed in a
-test of its own, `hunt(Tree(3, .none), gpa, 1, 1, .{}, null)`, with the trace on or under
-a debugger. Use a test filter: the whole suite prints over a million trace lines. A crash
-cannot be minimised this way: in Zig a panic ends the process and the minimiser with it.
-In Rust `replay` could catch the unwind and report a crash as one more kind of failure
-(exercise 5).
+test of its own: `hunt(Tree(3, .none), gpa, 1, 1, .{}, null)`. Use a test filter: the
+whole suite prints over a million trace lines. A crash cannot be minimised this way: in
+Zig a panic ends the process and the minimiser with it (for Rust, see exercise 5).
 
 ### Rust
 

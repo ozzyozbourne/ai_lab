@@ -242,9 +242,12 @@ written in JavaScript only; none of the guide's code bases contains one.</p>
   }
 
   /* ------------------------------------------------------------ session */
-  var model, saves, stepper;
-  function idleFrame(caption) {
-    return { caption: caption, state: model.snapshot(), hi: {}, save: 0, final: true, opName: null };
+  // saves[i] is the state after the first i operations of this session, and
+  // names[i] the name of operation i. Every frame carries the index of the
+  // save it leads to.
+  var model, saves, names, stepper;
+  function idleFrame(caption, saveIndex) {
+    return { caption: caption, state: model.snapshot(), hi: {}, save: saveIndex, final: true, opName: null };
   }
   stepper = new BTViz.Stepper({
     mount: fig.controls, caption: fig.caption, root: fig.root, steps: [], predict: false, interval: 2400,
@@ -253,24 +256,38 @@ written in JavaScript only; none of the guide's code bases contains one.</p>
   function reset() {
     model = new Ch27.BufferedNode({ pivots: PIVOTS, capacity: +capSel.value, keys: START_KEYS });
     saves = [model.save()];
+    names = [null];
     err.textContent = '';
     stepper.setSteps([idleFrame('Four leaves already hold ' + START_KEYS.length + ' keys; the buffer of the node above them is empty. ' +
-      'Type a key from 0 to 99 and press <b>Put</b>, or press <b>8 random puts</b> and watch the buffer fill and flush.')]);
+      'Type a key from 0 to 99 and press <b>Put</b>, or press <b>8 random puts</b> and watch the buffer fill and flush.', 0)]);
   }
-  /** Applies `ops` to the state on screen and replaces the timeline. */
+  /**
+   * NOTHING THE READER ASKED FOR IS EVER DROPPED. New operations are appended
+   * to the end of the timeline, after every operation asked for before, and
+   * the old frames stay (step back to watch them). If the reader had not
+   * reached the end, a frame says which operations were completed first.
+   */
   function runOps(ops) {
-    var cur = stepper.steps[stepper.index], steps = [];
-    model = Ch27.BufferedNode.restore(saves[cur ? cur.save : 0]);
-    saves = [model.save()];
-    if (cur && !cur.final) {
-      steps.push(idleFrame('The operation on screen (<b>' + cur.opName + '</b>) was completed first; this is the state after it. The new operation starts from here.'));
+    var steps = stepper.steps.slice(), cur = steps[stepper.index];
+    var from = cur ? (cur.final ? cur.save + 1 : cur.save) : 1;
+    var pending = names.slice(Math.max(from, 1));
+    model = Ch27.BufferedNode.restore(saves[saves.length - 1]);
+    if (pending.length) {
+      var shown = pending.slice(0, 4).map(function (n) { return '<b>' + BTViz.esc(n) + '</b>'; }).join(', ') +
+                  (pending.length > 4 ? ' and ' + (pending.length - 4) + ' more' : '');
+      steps.push(idleFrame((pending.length === 1 ? shown + ' was completed first'
+                                                 : 'The ' + pending.length + ' operations still waiting (' + shown + ') were completed first') +
+                           ': nothing is dropped. This is the state after ' + (pending.length === 1 ? 'it' : 'them') +
+                           '; step back to watch what you skipped. The new operation starts from here.', saves.length - 1));
     }
+    var start = steps.length;
     ops.forEach(function (op) {
       var frames = framesFor(model, op, saves.length);
       saves.push(model.save());
+      names.push(op.kind + ' ' + op.key);
       steps = steps.concat(frames);
     });
-    stepper.setSteps(steps, { play: true });
+    stepper.setSteps(steps, { play: true, index: pending.length ? start - 1 : start });
   }
   function readKey() {
     var raw = keyInput.value.trim();

@@ -17,8 +17,8 @@ the order in which a real `INSERT` meets them.
   shorter.
 
 Prerequisites: chapter 12 (the disk B+tree whose code this chapter copies), chapter 20
-(B-link trees) and chapter 22 (write-ahead log). The trace refers to most other chapters,
-but each reference says what it needs from them.
+(B-link trees) and chapter 22 (write-ahead log). The trace refers to most other chapters;
+each link sits on the phrase that uses that chapter's idea.
 
 Source checkouts: PostgreSQL commit `11591f2`, Turso commit `469c4f4`, both under
 `db_study/`. In this chapter `N/` means `postgres/src/backend/access/nbtree/` and `T/`
@@ -45,13 +45,10 @@ on their way to a page that the writer is changing, so its tree needs no links a
 flags, a rebalance may rewrite three siblings and their parent as one unit, and the log
 only has to say which pages a transaction changed.
 
-"One writer" needs a qualification for this checkout. Turso has a second journal mode,
-`mvcc` (`manual.md:585`), in which `BEGIN CONCURRENT` transactions write at the same time
-(`manual.md:172`, `:182`). They do it outside the B-tree: their writes are row versions
-in an in-memory index (`manual.md:1467`), and a checkpoint later writes the versions
-into the B-tree inside one pager write transaction
-(`turso/core/mvcc/database/checkpoint.rs:277-281`, `:2585`). The B-tree code is still
-entered by one writer at a time. This chapter traces the WAL mode.
+Turso's second journal mode, `mvcc`, lets transactions write concurrently, but into row
+versions outside the B-tree (`manual.md:1467`); a checkpoint writes them in under one
+pager write transaction (`turso/core/mvcc/database/checkpoint.rs:277-281`), so the
+B-tree code still has one writer. This chapter traces the WAL mode.
 
 The second half of the chapter is about a property of the code and not of the tree. The
 teaching code of this guide calls `fetchPage` and waits. Turso's code cannot wait: when a
@@ -63,31 +60,34 @@ reason production B-tree code is full of state enums.
 ## Part 1. The trace
 
 The statement is `INSERT INTO t (k) VALUES (27)`, where `t` has a unique index on `k`.
+The row itself goes into the heap first in PostgreSQL (the index tuple arrives with its
+TID, `N/nbtinsert.c:85`) and into the rowid table B-tree in Turso; this chapter follows
+the index entry only.
 The [visualization](viz/index.html) plays this trace on two small trees with the same
-keys. Read this section next to it.
+keys.
 
-### Stage 1: find the leaf (chapters 02, 03, 08, 09, 19, 20)
+### Stage 1: find the leaf
 
 **PostgreSQL.** `btinsert` (`N/nbtree.c:212`) calls `_bt_doinsert` (`N/nbtinsert.c:105`),
 which builds an insertion scan key from the tuple (`:116`) and calls `_bt_search_insert`
 (`:320`). That function first tries a shortcut: if this backend last inserted into the
-rightmost leaf and the new key belongs there too, it takes that page without a descent
-(`:347-352`). Otherwise `_bt_search` (`N/nbtsearch.c:102`) walks down. At every level it
+rightmost leaf and the new key belongs there and fits, it takes that page without a descent
+(`:347-352`). Otherwise `_bt_search` (`N/nbtsearch.c:102`) [walks down](../03-btree-structure-and-search/README.md). At every level it
 does three things. `_bt_moveright` (`:244`) compares the key with the page's high key and
-follows the right link if the page was split after its downlink was read (`:309-313`).
-`_bt_binsrch` (`:346`) picks the downlink. Then the lock on the parent is released and
-only after that is the child locked (`:185`). So one page lock is held at a time, and the
+[follows the right link](../20-blink-trees/README.md) if the page was split after its downlink was read (`:309-313`).
+`_bt_binsrch` (`:346`) [picks the downlink](../02-searching-a-sorted-node/README.md). Then the lock on the parent is released and
+only after that is the child locked (`:185`). So [one page lock is held at a time](../19-latching-and-lock-coupling/README.md), and the
 (block, offset) pairs pushed on the private stack (`:167-174`) are hints for the way back
 up, not pins. The leaf is locked in write mode.
 
 **Turso.** The bytecode instruction `IdxInsert` (`turso/core/vdbe/execute.rs:12424`)
 positions a cursor with a seek (`T/btree.rs:6928`, descent in `indexbtree_move_to_inner`,
-`:2364`). Each page on the way is read through `Pager::read_page` (`T/pager.rs:3672`),
-binary-searched through its cell pointer array, and pushed on the cursor's `PageStack`
+`:2364`). Each page on the way is read through [`Pager::read_page`](../09-pages-and-the-buffer-pool/README.md) (`T/pager.rs:3672`),
+binary-searched through its cell pointer array, and pushed on the cursor's [`PageStack`](../08-range-scans-and-cursors/README.md)
 (`T/btree.rs:8989`), which pins it. There are no latches and no moving right: there are
 no sibling links to follow and no other writer to move away from.
 
-### Stage 2: check uniqueness (chapters 07, 18)
+### Stage 2: check uniqueness
 
 **PostgreSQL.** `_bt_check_unique` (`N/nbtinsert.c:411`, called at `:213`) runs while
 the leaf is write-locked. That lock is the uniqueness lock: another insert of the same
@@ -95,90 +95,102 @@ key must reach the same page and wait. If an equal key belongs to a transaction 
 still running, the page is released, the backend waits for that transaction (`:230`),
 and the whole search starts again (`:235`).
 
-**Turso.** The tree does not know about uniqueness. The bytecode does: a `NoConflict`
-instruction (`execute.rs:12963`) or the `UniqueConstraintCheck` state of `IdxInsert`
-(`:12518-12549`) compares the entry under the cursor with the new key. No lock is
-needed because no other writer exists.
+Both engines store (key, row pointer), the [tie-breaker](../07-bplus-trees/README.md),
+and both leave the pointer out of this check. PostgreSQL searches without the heap TID
+(`:123`), so it lands on the first leaf the value could be on; with the TID restored
+(`:239-240`) the entry may belong one page to the right (`:871-908`). Whether an equal
+entry is alive it learns from the table row (`:563`); one found dead is marked
+(`:702-707`).
 
-### Stage 3: make room (chapters 10, 13, 17, 24)
+**Turso.** The tree does not know about uniqueness. The [bytecode does](../18-indexes-in-a-database/README.md): a
+`NoConflict` instruction (`execute.rs:12963`) or the `UniqueConstraintCheck` state of
+`IdxInsert` (`:12518-12549`) compares the entry under the cursor with the new key, all
+columns except the trailing rowid (`:12527-12533`). No lock is needed because no other
+writer exists.
+
+### Stage 3: make room
 
 **PostgreSQL.** `_bt_findinsertloc` (`:827`) finds the slot. If the page is full it first
 tries to free space on the page itself with `_bt_delete_or_dedup_one_page` (`:2728`,
-called at `:915-916`): remove entries marked dead, bottom-up deletion, deduplication.
+called at `:915-916`): remove [entries marked dead](../24-mvcc-vacuum-and-page-deletion/README.md); only if the page already
+holds versions of the same key, also bottom-up deletion and then
+[deduplication](../17-key-compression-and-deduplication/README.md) (`:2794-2827`).
 `_bt_insertonpg` (`:1117`) then either adds the tuple inside a critical section
 (`:1295-1419`: `PageAddItem` at `:1300`, one WAL record at `:1407`) or splits (`:1223`).
 
 **Turso.** `insert_into_page` (`T/btree.rs:3162`) marks the leaf dirty (`add_dirty`,
 `:3183`, `T/pager.rs:3919`) and calls `insert_into_cell` (`:3293`), a wrapper around
-`_insert_into_cell` (`:10325`). If the cell fits it is written into the cached page. If
+`_insert_into_cell` (`:10325`). If the cell fits it is [written into the cached page](../10-slotted-pages/README.md),
+which is compacted first if its free bytes are scattered (`:10543-10548`). If
 not, the page bytes are left alone and the cell is appended to `page.overflow_cells`, a
 list in memory (`:10347-10368`). A page with an overflow cell is, by definition,
 overfull (`:3301`): the write state becomes `Balancing` (`:3307-3308`), and that state
 calls `balance` (`:3364-3365`).
 
-Two different things are called "overflow" here. An *overflow cell* is a whole cell that
-waits in memory because its page is full. The *overflow pages* of chapter 13 hold the
-tail of one value that is too large for any page, and they belong to this stage too:
-Turso moves such a tail out while it builds the cell (`fill_cell_payload`, `:10609`,
-called at `:3278`), and PostgreSQL has no overflow pages and refuses an index tuple
-larger than about a third of a page (`_bt_check_third_page`, `N/nbtutils.c:1118`, called
-at `N/nbtinsert.c:842-843`).
+An *overflow cell* is not chapter 13's [*overflow page*](../13-overflow-and-free-space/README.md). Turso moves an
+oversized tail out while building the cell (`fill_cell_payload`, `:10609`, called at
+`:3278`); PostgreSQL refuses a tuple over a third of a page (`_bt_check_third_page`,
+`N/nbtutils.c:1118`, called at `N/nbtinsert.c:842-843`).
 
-### Stage 4: split or rebalance (chapters 04, 12, 14, 15, 17, 20)
+### Stage 4: split or rebalance
 
-**PostgreSQL.** `_bt_split` (`:1487`) asks `_bt_findsplitloc` (`N/nbtsplitloc.c:130`,
-called at `:1565`) where to cut, builds the new left page in private memory with the
+**PostgreSQL.** `_bt_split` (`:1487`) [splits](../04-insertion-and-splitting/README.md) the page. It asks
+`_bt_findsplitloc` (`N/nbtsplitloc.c:130`, called at `:1565`) [where to cut](../14-split-policies-and-fill-factor/README.md), builds the new left page in private memory with the
 flag `BTP_INCOMPLETE_SPLIT` set (`:1580`), and gives it a new high key, which on a leaf
-is the separator shortened by `_bt_truncate` (`N/nbtutils.c:692`, called at `:1680`).
-Only then does it allocate the right page (`:1739`), "the last point where splitting the
-page may fail" (`:1527-1532`). The right links are set (`:1760`, `:1770`). One critical
+is the separator [shortened by `_bt_truncate`](../17-key-compression-and-deduplication/README.md) (`N/nbtutils.c:692`, called at `:1680`).
+It allocates the right page (`:1739`) only after the left page has its high key, "the
+last point where splitting the page may fail" (`:1527-1532`), so a failed split leaves
+no orphan page. The right links are set (`:1760`, `:1770`), and the old right sibling's
+left link is fixed in the same record (`:1910-1923`). One critical
 section (`:1950-2093`) copies the left half over the original block, which never moves
 (`:1954-1959`), fills the right block and writes one WAL record (`:2080-2081`), named
 `XLOG_BTREE_SPLIT_L` if the new tuple went to the left page and `XLOG_BTREE_SPLIT_R` if
 it went to the right, on a leaf and on an interior page alike. The
 parent has not been touched. A search that arrives at the left page with a key in the
-right half sees the high key and moves right.
+right half [sees the high key and moves right](../20-blink-trees/README.md).
 
 **Turso.** `balance` (`T/btree.rs:3401`) is a loop over a sub-state machine
 (`BalanceSubState`, `:296`). If the overfull page is the root, `balance_root` (`:5410`)
-copies it into a new child and empties the root, so the root keeps its page number.
-`balance_quick` (`:3526`) appends a new right leaf, but only for table leaves (`:3462`),
-not for an index. Everything else is `balance_non_root` (`:3604`): choose up to three
+copies it into a new child and empties the root, so the root
+[keeps its page number](../12-disk-backed-bplus-tree/README.md); the child is still overfull and goes on to the next
+step (`:3451-3455`). `balance_quick` (`:3526`) appends a new right leaf, but only for table leaves (`:3462`),
+not for an index. Every index page goes through `balance_non_root` (`:3604`): choose up to three
 adjacent siblings (`:3693-3713`), read and pin them, put all their cells and the dividers
-between them into one array, and deal the cells out again (`:4200-4420`) over as many
+between them into one array, and [deal the cells out again](../15-redistribution-and-merge-policies/README.md) (`:4200-4420`) over as many
 pages as are needed, allocating only if the old ones do not suffice (`:4428`). The
 output pages, left to right, then take the old and new page numbers in ascending order
 (`:4491-4515`). When the neighbours have room, the "split" allocates nothing.
-PostgreSQL never redistributes.
 
-### Stage 5: fix the parent (chapters 04, 12, 20)
+### Stage 5: fix the parent
 
 **PostgreSQL.** `_bt_insert_parent` (`:2128`) is a second, separate atomic action. It
 re-finds the parent with `_bt_getstackbuf` (`:2349`, called at `:2223`), which looks for
 the downlink to the left child and does not trust the remembered offset, then calls
 `_bt_insertonpg` on the parent (`:2247`). That insert clears the child's flag in the
-same WAL record (`:1325-1327`). If the parent is full the same code splits it. If the
+same WAL record (`:1325-1327`). If the parent is full [the same code splits it](../04-insertion-and-splitting/README.md). If the
 page that split was the root, `_bt_newlevel` (`:2490`) builds a new root above and
-changes the root pointer in the metapage (`:2563`, WAL record at `:2637`). If the process
-dies between the two actions, the flag stays, and the next writer that passes finishes
-the split (`_bt_finish_split`, `:2270`).
+changes the root pointer in the [metapage](../12-disk-backed-bplus-tree/README.md) (`:2563`, WAL record at `:2637`). If the process
+dies between the two actions, the flag stays, and the next writer that passes
+[finishes the split](../20-blink-trees/README.md) (`_bt_finish_split`, `:2270`, called from
+`N/nbtsearch.c:288-306`).
 
 **Turso.** The last phase of `balance_non_root` puts the new dividers into the parent
 (`:4583-4704`) with the same `insert_into_cell`. If the parent has no room, the divider
 becomes an overflow cell of the parent, and the loop in `balance` runs again one level
 up (`:3427-3449`). There is no moment at which a page exists that the parent does not
-point to.
+point to. The cursor saves its key before the balance (`:3311`) and seeks to it
+afterwards (`:3380`).
 
-### Stage 6: make it durable (chapters 21, 22)
+### Stage 6: make it durable
 
 **PostgreSQL.** Each step above already wrote its own WAL record. At commit `XLogFlush`
-(`postgres/src/backend/access/transam/xact.c:1548`) forces the log to disk. Recovery
+(`postgres/src/backend/access/transam/xact.c:1548`) [forces the log to disk](../21-durability-primitives/README.md). Recovery
 replays the records one at a time (`btree_xlog_insert` `N/nbtxlog.c:158`,
 `btree_xlog_split` `:247`, `btree_xlog_newroot` `:927`).
 
 **Turso.** Until commit only cached pages changed and the pager collected their ids. At
 commit `commit_wal_inner` (`T/pager.rs:4562`, states at `:1228-1259`) writes every dirty
-page as a whole-page WAL frame and fsyncs. The last frame carries the database size,
+page as a whole-page [WAL frame](../22-wal-and-crash-recovery/README.md) and fsyncs. The last frame carries the database size,
 which makes it the commit frame (`T/sqlite3_ondisk.rs:481-500`). Readers and recovery
 accept frames only up to the last commit frame (the scan at open: `:1945-1954`), so all
 pages of the transaction appear together or not at all.
@@ -199,8 +211,9 @@ pages of the transaction appear together or not at all.
 
 | | PostgreSQL nbtree | Turso (SQLite format) |
 |---|---|---|
-| Writers in one tree | many | one write transaction in WAL mode (`T/wal.rs:3587-3589` returns `Busy` to a second); in `mvcc` mode concurrent writers stay outside the tree |
+| Writers in one tree | many | one write transaction in WAL mode (`T/wal.rs:3587-3589` returns `Busy` to a second) |
 | Held on the way down | one page lock at a time | pins on the whole path, no locks |
+| Where an index entry lives | leaves only; pivots are copies | any page; a divider is the entry itself |
 | Sibling links, high key | both, on every page | neither |
 | A full page | splits in two; never redistributes | is rebalanced with up to two siblings |
 | Between "split" and "parent knows" | a visible, legal state with a flag | does not exist for anyone else |
@@ -229,10 +242,12 @@ The consequence is in the same guide under "Re-Entrancy: The Critical Pitfall"
 changed before the yield is changed again. `vec.push(x); return_if_io!(...)` grows the
 vector on every re-entry (`:162-169`). The cure is to record progress in a state enum
 and to mutate only after the last point that can yield. That is why `btree.rs` contains
-`WriteState` (`:359`), `BalanceSubState` (`:296`) and a dozen others, why
+`WriteState` (`:359`), `BalanceSubState` (`:296`) and a dozen others (one insert runs
+three nested machines: `OpIdxInsertState` in `execute.rs:12415`, then these two), why
 `balance_non_root` is cut into states exactly at its reads, allocations and frees, and
 why its redistribution arithmetic is one uninterrupted block. Turso also has a test hook
-that forces a yield at a chosen point (`inject_io_yield!`, `T/btree.rs:3312-3315`).
+that forces a yield at a chosen point (`inject_io_yield!`, `T/btree.rs:3312-3315`); PostgreSQL has injection points between a
+split and its parent insert (`N/nbtinsert.c:1254-1259`).
 
 ### The same thing in this chapter
 
@@ -267,7 +282,7 @@ call 2: descend, leaf_put, push_root_leaf, split_leaf, insert_separator -> Io(pa
 call 3: insert_separator -> Done
 ```
 
-Call 1 stops at once: the root is not in memory. Call 2 enters at `descend` again, now
+Call 2 enters at `descend` again, now
 finds the root, sees that it is a full leaf, moves its content down to page 2 and splits
 that into pages 2 and 3. Those two pages fill both frames, so the root has been evicted
 when `insert_separator` wants it, and the call returns `Io(page 1)` a second time, with
@@ -278,8 +293,7 @@ page ids (`carry`) and the path. None of that can be a local variable of call 2.
 ## Code walk-through
 
 Files: `disk_btree`, the four `base_*` files, `prng` and `workload` are copied from
-chapter 12 (each header says what changed: the steps of `put` became callable from
-another file, and the buffer pool got `evictUnpinned` for the tests). New files:
+chapter 12 (each header says what changed). New files:
 `resumable` (the operations), `scheduler` (the simulated disk and the scheduler),
 `demo`, `tests`.
 
@@ -321,9 +335,7 @@ counter did not move and that no frame is pinned.
 complete in any order. An insert runs alone. The reason is Part 4 of the program
 output: an insert that waits between `split_leaf` and `insert_separator` has left a right
 half that no parent points to, and a lookup let in at that moment does not find a key
-that is in the tree. PostgreSQL makes that state legal with right links. Turso avoids
-exposing it: one write transaction, and readers read their snapshot through the WAL. This chapter
-does the simplest thing and makes readers wait.
+that is in the tree.
 
 ### Rust
 
@@ -340,10 +352,8 @@ The structure, names, tests and output are the same. The differences:
   it; `release` drops the rest when the operation ends.
 - **What `async fn` would generate.** The compiler would produce the same thing: an enum
   with one variant per `await`, each holding the locals that are live across it, and a
-  `poll` that matches on it. Two things would differ. Locals that borrow other locals
-  make that enum self-referential, which is why futures must be pinned; and the states
-  would have no names. Turso writes the enum by hand, so states can be printed, tested
-  one by one and forced to yield. This chapter uses std only, with no async runtime.
+  `poll` that matches on it. Turso writes the enum by hand, so states can be printed,
+  tested one by one and forced to yield.
 - The operations do not hold a reference to the tree (two `&mut` could not coexist); the
   scheduler lends the tree to the operation it steps.
 - Safe Rust cannot make a `Vec` allocation fail, so the out-of-memory tests of Zig
@@ -368,27 +378,14 @@ The structure, names, tests and output are the same. The differences:
   the tree validates and the key is absent, or the handle is poisoned. In Zig, three
   splitting inserts (root leaf, leaf under a parent with room, leaf under a full
   interior root) are also run with each of their scratch allocations refused in turn,
-  through the blocking `put` and through `InsertOp`. An arena asks its backing allocator
-  only when its buffer is too small, so the test first fills the buffer to the last
-  byte; then every request is visible and can be refused. `std.testing.allocator` fails
+  through the blocking `put` and through `InsertOp`. `std.testing.allocator` fails
   the Zig tests on any leaked arena.
 
 ### Program output
 
-Both programs print [expected_output.txt](expected_output.txt). Part 2 and Part 5:
+Both programs print [expected_output.txt](expected_output.txt). Part 5:
 
 ```
-== Part 2: 2000 puts, blocking and resumable (4-frame pools) ==
-blocking put: 1451 keys, 106 pages, height 3; splits: 101 leaf, 1 interior, 2 root
-resumable insert:
-  3852 calls of step, 1852 of them returned Io
-  suspended in: descend 1831, leaf_put 0, push_root_leaf 0, split_leaf 0, insert_separator 21, push_root_interior 0, split_interior 0
-  pages read by the disk: 1957; file identical to the blocking one: true
-resumable insert, every unpinned page dropped between transitions:
-  8152 calls of step, 6152 of them returned Io
-  suspended in: descend 3946, leaf_put 2000, push_root_leaf 1, split_leaf 101, insert_separator 102, push_root_interior 1, split_interior 1
-  pages read by the disk: 6258; file identical to the blocking one: true
-
 == Part 5: where the scratch memory of a split must live ==
 owned by the operation, 2-frame pool: 30 inserts, validate ok after each
 buffer reused per call, 64-frame pool: 30 inserts, validate ok after each
@@ -400,19 +397,14 @@ buffer reused per call, 2-frame pool: tree broken after insert 10 (KeyOutOfBound
 - Turso persists far smaller things than this chapter does. Binary-search bounds live in
   the cursor so that a seek can resume inside a page; `iteration_pending_descent`
   (`T/btree.rs:974`) exists because the stack had already advanced when a child read
-  yielded; `sibling_load_group` lives in `BalanceState` and not on the stack so that
-  reads issued before a yield are still awaited afterwards (`:336-341`).
+  yielded.
 - Turso's pager remembers reads that are in flight (`pending_reads`,
-  `T/pager.rs:1627`), so that re-entry does not issue the same read twice. `SimDisk`
-  here does not: two lookups that want the same page submit two requests, and the second
-  completion finds the page cached.
+  `T/pager.rs:1627`), so that re-entry does not issue the same read twice.
 - PostgreSQL's nbtree is ordinary blocking code: a backend that needs a page sleeps in
   the buffer manager while other backends, which are separate processes, keep running.
   Its tree pays for concurrency inside the data structure; Turso's code pays for it in
   the shape of every function. This comparison is the author's summary, not a statement
   from either code base.
-- This chapter yields only on reads. `pool.newPage` still writes synchronously. Turso
-  yields on writes, allocations and frees as well (the states of `balance_non_root`).
 
 ## Allocator notes
 
@@ -428,21 +420,12 @@ operation's, and that lifetime is neither a function call nor the tree's.
 - Chapter 12 used the tree's arena and reset it when `put` returned. A resumable `put`
   returns many times before it is finished, so that arena would be reset under a live
   separator.
-- A buffer on the stack of `step` dies at every yield. Part 5 and the test "scratch
-  memory that is reused at every yield breaks the tree, but only when the insert yields"
-  show it: with `Scratch.step_buffer` the split's scratch comes from a buffer that is
-  overwritten whenever `step` returns `Io`, as a stack frame would be. With a 64-frame
-  pool no split ever waits and 30 inserts pass. With a 2-frame pool the first split
-  whose parent was evicted hands the parent a separator of `0xAA` bytes, and `validate`
-  reports `KeyOutOfBounds`. The bug is invisible until the operation actually yields.
+- A buffer on the stack of `step` dies at every yield. Part 5 shows it: with
+  `Scratch.step_buffer` the split's scratch comes from a buffer that is overwritten
+  whenever `step` returns `Io`, as a stack frame would be.
 - A general-purpose allocator would work but needs one `free` per piece on every exit
   path, including cancellation; the arena makes "the operation is over" one call. The
   tests check that `queryCapacity()` is zero after completion, failure and cancel.
-
-Also: `init` copies the key and the value. The blocking `put` could borrow them, because
-it returned before the caller's buffers went away. Rust expresses the same lifetimes
-with ownership; its version of the stale buffer is an index into a reused `Vec<u8>`,
-which is the form this bug takes in safe Rust.
 
 ## Pitfalls
 
@@ -483,19 +466,11 @@ insert path alone, read the real files in this order:
 1. `postgres/src/backend/access/nbtree/README`: the design, before any code.
 2. `postgres/src/include/access/nbtree.h:60-90` and `:349-366`: the page's special
    space, the flags, the high key.
-3. `N/nbtsearch.c:102-331`: `_bt_search` and `_bt_moveright`.
-4. `N/nbtinsert.c:105-272`, then `:1117-1457`, `:1487-2109`, `:2128-2315`,
-   `:2490-2655`: `_bt_doinsert`, `_bt_insertonpg`, `_bt_split`, `_bt_insert_parent`,
-   `_bt_newlevel`.
-5. `N/nbtsplitloc.c:130-429` and `N/nbtutils.c:692`: the split point and truncation.
-6. `N/nbtxlog.c:158`, `:247`, `:927`: what each WAL record replays.
-7. `turso/docs/agent-guides/async-io-model.md`: the rules, in two hundred lines.
-8. `turso/core/storage/btree.rs:296-400`: the state enums, to see what must be remembered.
-9. `T/btree.rs:3162-3390`, `:3401-3600`, `:5410-5490`: `insert_into_page`, `balance`,
-   `balance_quick`, `balance_root`.
-10. `T/btree.rs:3604-4938`: `balance_non_root`, one state at a time.
-11. `T/pager.rs:3672`, `:3919`, `:4562` and `T/wal.rs:3571`: reading a page, dirtying
-    it, committing, and the write lock.
+3. `turso/docs/agent-guides/async-io-model.md`: the rules, in two hundred lines.
+
+Then read the functions of the trace table top to bottom; `_bt_insertonpg`
+`:1117-1457`, `_bt_split` `:1487-2109` and `balance_non_root` `T/btree.rs:3604-4938` are
+the three long ones.
 
 ## Links
 

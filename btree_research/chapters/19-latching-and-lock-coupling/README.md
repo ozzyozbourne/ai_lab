@@ -6,13 +6,11 @@
   node needs.
 - A ladder of three ways to share one tree between threads: one mutex, one
   reader-writer lock, and one latch per node with **latch coupling**
-  (also called lock coupling or crabbing).
+  (also called lock coupling or crabbing), and the **convoy** it can cause.
 - The **safe node** rule that tells a writer which latches it may release.
 - Why latch order matters, and why this design cannot deadlock.
 - How to test concurrent code deterministically: freeze one operation at a
   chosen point, run another, and look at what happened.
-- What a **convoy** is: threads queueing behind a thread that is itself only
-  waiting.
 - What optimistic descent with version counters changes (prose and
   visualization only).
 
@@ -51,9 +49,9 @@ all of which only read. **Exclusive** (X): one holder, who may write.
 
 ### The ladder
 
-**Rung 1: one mutex for the whole tree.** Every `get` and `put` takes it. The
-tree code stays exactly the single-threaded code. One thread works at a time,
-even if all of them only read.
+**Rung 1: one mutex for the whole tree.** Every `get` and `put` takes it. No
+two operations ever overlap, so the single-threaded tree code stays correct
+as it is. One thread works at a time, even if all of them only read.
 
 **Rung 2: one reader-writer lock for the whole tree.** `get` takes it shared,
 `put` exclusive. Readers no longer wait for each other. One writer still stops
@@ -97,12 +95,13 @@ id, then latch that node". The code latches the node and then reads the root id
 again. If it changed, the thread lets go and starts over.
 
 **Waiting while holding.** Coupling means that a thread waits for the child's
-latch with the parent's latch still in its hand. A reader stuck below the root
-keeps its shared latch on the root, and every writer starts with an exclusive
-latch on the root. So every writer waits, also those bound for a part of the
-tree nobody is working on. Threads queue behind a thread that is itself only
-waiting: a **convoy**. It is not a deadlock (the queue drains when the first
-thread finishes), but one slow operation can close the whole tree for a while.
+latch with the parent's latch still in its hand. A reader that waits for a
+child of the root keeps its shared latch on the root, and every writer starts
+with an exclusive latch on the root. So every writer waits, also those bound
+for a part of the tree nobody is working on. Threads queue behind a thread
+that is itself only waiting: a **convoy**. It is not a deadlock (the queue
+drains when the first thread finishes), but one slow operation can close the
+whole tree for a while.
 
 ### One rung further: optimistic descent (not implemented here)
 
@@ -140,10 +139,16 @@ so #6 stays latched. The writer holds #6 and #3. The leaf splits into
 Meanwhile a second thread's `get 12` or `put 11` runs freely through #7 and
 #2, and a `get 17` gets through #7 and then waits at #6.
 
-**The same `put 26`, four threads.** The waiting `get 17` holds #7 shared. A
-third thread's `get 12` still passes: readers share the root. A fourth
-thread's `put 11` needs #7 exclusive and waits, although the writer of 26
-holds nothing on its path. That is the convoy (section 7 of the output).
+With four threads the same `put 26` produces a convoy: section 7 of the
+output.
+
+**Without coupling.** Suppose `get 30` released #6 *before* it latched #3. It
+has read "30 is under #3" and holds nothing. Now `put 26` runs from start to
+end and moves 30 into the new leaf #8. The reader latches #3, searches
+(20 25) and answers "not found" for a key that never left the tree. With
+coupling the reader still holds #6, which the split needs: one of the two
+waits. (Solution 3 ran this; the visualization's sandbox has it as the
+protocol "no coupling (broken)".)
 
 **`put 2` after `put 8` and `put 9`** (which fill #2 to `[6 8 10]`). X on #7.
 X on #2: full, keep #7. X on #0: full, keep both. The writer holds #7, #2 and
@@ -236,7 +241,7 @@ root id, latches that node and reads the id again.
 ### Rust
 
 The table is `Box<[RwLock<Node>]>`: the node lives *inside* its latch. That
-changes three things.
+changes two things, and leaves one as it was.
 
 - A latch is released by dropping its guard. Coupling is an assignment:
   `node = child_guard;` drops the parent's guard after the child's exists. The
@@ -246,8 +251,7 @@ changes three things.
   node's latch as it goes although the global lock already keeps everybody
   out. The latches never wait there; they only satisfy the type system. Zig's
   `plain.zig` takes none.
-- Forgetting to release is impossible, and so is touching a node without its
-  latch. Releasing in the wrong *order*, or too early, is still possible: the
+- Releasing in the wrong *order*, or too early, is still possible: the
   compiler does not know about coupling.
 
 Threads are `std::thread::scope`, which lets the workers borrow the tree and
@@ -263,15 +267,8 @@ blocks inside the callback, which freezes the operation with all its latches.
 `probe.probe(tree, A, pause, B)` does this with two threads: it freezes A,
 starts B, and waits until B either finishes or reports `blocked`. No sleep is
 involved. If B has to wait, it waits for something the frozen A holds, so it
-cannot finish early and the answer is final.
-
-`probe.convoy` starts several operations behind the frozen one, each only
-after the one before has finished or reported `blocked`. With more than two
-threads that word needs care: once a thread waits for an *exclusive* latch, a
-writer-preferring lock (Zig's `Io.RwLock`; Rust's on Linux today) turns later
-readers away although nobody holds the node, and whether a reader arrives
-before or after the writer is queued is a matter of timing. The tests put
-such a writer last.
+cannot finish early and the answer is final. `probe.convoy` starts several
+operations behind the frozen one, one after the other.
 
 The same hook on a single thread shows *which* latches an operation holds: the
 callback tries to latch every node and notes the ones that fail.
@@ -280,42 +277,37 @@ callback tries to latch every node and notes the ones that fail.
 
 1. Single-threaded: every protocol against the oracle; the three protocols
    produce byte-identical trees; every table size from 1 to 7 nodes, checking
-   that a failing `put` changes nothing and leaves no latch held.
+   that a failing `put` changes nothing and leaves no latch held. The oracle
+   run stops with a message if an operation ever has to wait: on one thread
+   only a leaked latch can cause that.
 2. Hook on one thread: a `get` holds at most two latches; the safe node rule
    keeps exactly the nodes listed in the worked example.
-3. Hook with two or more threads: the table below; a reader and a writer
-   that latched a replaced root; a new root that is complete before it is
-   published; operations frozen in mid-descent; two convoys.
+3. Hook with two or more threads: the table of section 3 below; operations
+   frozen in mid-descent; two convoys. For the root: a reader and a writer
+   that latched a replaced root; a thread already waiting for the old root's
+   latch; a new root that is complete before it is published; and the latch
+   order, a restart that holds nothing when it asks for the new root.
 4. `reserve` has its own seam, a callback between "read the counter" and
    "claim the slots". The test's callback takes a slot there, as another
    thread could: the race is replayed on one thread.
 5. Stress: 4 threads, seeded, with disjoint and with overlapping key sets, a
    hot spot of 24 keys, and a table that runs out. It is bounded by an
    operation count, not by a clock. Afterwards `validate()` runs and the leaf
-   chain is compared with an oracle. Each worker's operations depend only on
-   its seed, so the final *set* of keys is the same in every run even though
-   the tree's shape is not.
+   chain is compared with an oracle.
 
-A stress test proves little by passing. As a check, sixteen bugs were put
-into a scratch copy, one at a time, and the test binary was run ten times per
-bug, in both languages. (Two of them read a node without its latch and cannot
-be written in safe Rust.)
+A stress test proves little by passing. As a check, 28 bugs were put into a
+scratch copy, one at a time, and the test binary was run ten times per bug in
+each language. (Five cannot be written in safe Rust. One, releasing latches
+bottom-up instead of top-down, changes nothing a test could see.)
 
-Fourteen (Rust: twelve) fail a deterministic test in every run: no second
-look at the root id (readers only, writers only), the parent released before
-the child is latched (reader, writer), a safe node rule that is too generous
-or too strict, a new root published before it is filled in, `reserve` as
-load-then-store, and others. The stress tests alone are a coin toss. In the
-same runs they noticed the reader's release-before-latch 4 times of 10 (Rust:
-5), the writer's 9 (3), the non-atomic `reserve` 7 (3), and the early publish
-never. The last two bugs leak a latch: one hangs in the first test, the other
-fails both root tests and then hangs in the stress test.
-
-So none of the sixteen depends on luck today. The first version of this
-chapter had no hook test for four of them (writer-only root check, the
-writer's release-before-latch, `reserve`, early publish), and its whole suite
-passed with the bug in place in 1, 4, 5 and 12 runs of 12. A deterministic
-test exists only for an interleaving somebody thought of.
+Every other bug fails a deterministic test in every run. Three examples: the
+parent released before the child is latched, the root id checked before the
+latch is taken instead of after, a new root published half filled. The
+stress tests alone noticed these in roughly one run in three, three runs in
+four, and never (approximate rates, from about 20 runs per bug and
+language). A bug that would end in a hang is reported by a hook that sees
+the stuck thread. A deterministic test exists only for an interleaving
+somebody thought of.
 
 ### Output
 
@@ -394,14 +386,11 @@ ladder turns some "waits" into "finishes". Read the last row: when the full
 nodes reach up to the root's child, latch coupling waits at the root like the
 global locks.
 
-In section 6, "first-time puts" is the number of `put` calls that returned "no
-previous value", summed over the threads. It equals the number of distinct
-keys exactly when every key was inserted once: no insert was lost and none
-happened twice.
+In section 6, "first-time puts" counts the `put` calls that returned "no
+previous value". It equals the number of distinct keys exactly when no
+insert was lost and none happened twice.
 
-No timings are printed, and this chapter makes no claim about which protocol
-is faster. That depends on the workload, the core count and the latch
-implementation, and was not measured.
+No timings are printed; which protocol is faster was not measured.
 
 ## In real databases
 
@@ -443,28 +432,24 @@ their index workloads do not need more.
 - **The node table is one allocation**, made in `Tree.init` from the allocator
   the caller passes, and freed in `deinit`. Operations never allocate a node,
   and in Zig they allocate nothing at all (the path is a fixed array on the
-  stack). This is a correctness property here, not a tuning choice: a table that grows would
-  move nodes under other threads, and a general-purpose `free` would let a
-  slot be reused under a thread that still holds its handle.
+  stack). This is a correctness property here, not a tuning choice: a table
+  that grows would move nodes under other threads, and a general-purpose
+  `free` would let a slot be reused under a thread that still holds its
+  handle.
 - **`std.heap.smp_allocator`** backs the tables in `main`. It is a global,
   thread-safe allocator made for multi-threaded programs, and needs no
-  `deinit`. (`init.gpa` would also work in `main`; the demo names
-  `smp_allocator` because the stress section allocates from four threads.)
+  `deinit`.
 - **A thread-safe arena** holds the stress workers' logs. In Zig 0.17.1
   `std.heap.ArenaAllocator` is thread-safe when its child allocator is
   (`lib/std/heap/ArenaAllocator.zig`, top comment). Four workers grow their
   key lists from one arena at the same time, and one `arena.deinit()` after the
-  check frees everything. With a non-thread-safe bump allocator the workers
-  would corrupt each other's lists; with a general-purpose allocator each list
-  would need its own `deinit`.
+  check frees everything.
 - **Tests use `std.testing.allocator`**, also under the stress arena, so a
-  leak fails the test. `Tree.init` is tested with a failing allocator. The
-  failure that can happen *during* an insert is the full table, and that is
-  tested for every table size and under concurrency.
-- **Rust**: the table is a `Box<[RwLock<Node>]>` built once. The node budget
-  is the table's length; `reserve` returns `Err(OutOfNodes)`. Instead of an
-  arena each worker owns its `Vec` and hands it back through `join`. Unlike
-  Zig, every `put` makes one small heap allocation, the `Vec` of its guards.
+  leak fails the test. `Tree.init` is tested with a failing allocator.
+- **Rust**: the table is a `Box<[RwLock<Node>]>` built once; its length is
+  the node budget. Instead of an arena each worker owns its `Vec` and hands
+  it back through `join`. Unlike Zig, every `put` makes one small heap
+  allocation, the `Vec` of its guards.
 
 ## Pitfalls
 
@@ -473,33 +458,26 @@ their index workloads do not need more.
   exists to close.
 - **Reading the root id once.** The root pointer is not protected by any
   node's latch. Latch, then look again.
-- **Waiting while holding.** One stalled operation can queue the whole tree
-  behind it (section 7). Chapter 20's B-link tree holds one latch at a time
-  on the way down, and the optimistic rung holds none.
+- **Waiting while holding.** See the convoy above. Chapter 20's B-link tree
+  holds one latch at a time on the way down.
 - **Publishing a node before it is finished.** A new node needs no latch
   while nobody can reach it. The store that makes it reachable (the parent's
   child pointer, or the root id) must come last.
-- **Reusing nodes.** The second look at the root, and every "I found this
-  handle a moment ago" step, is only safe because a handle always names the
-  same node. A delete that frees nodes needs a rule for when no thread can
-  still hold the handle (chapter 24).
+- **Reusing nodes.** The second look at the root is only safe because a
+  handle always names the same node. A delete that frees nodes needs a rule
+  for when no thread can still hold the handle (chapter 24).
 - **Sideways links.** A doubly linked leaf chain makes a leaf split write the
-  *right neighbour's* back pointer. That is a latch beside the ones held,
-  taken while holding latches: a second latch order, and a possible deadlock
-  against a scan walking the other way. This chapter keeps only `next`, which
-  the split can write with the latches it already has, and offers no
-  concurrent range scan.
+  *right neighbour's* back pointer: a latch beside the ones held, so a second
+  latch order and a possible deadlock against a scan walking the other way.
+  This chapter keeps only `next` and offers no concurrent range scan.
 - **Upgrading a latch.** Two readers that both try to turn their shared latch
   into an exclusive one wait for each other forever. The writer here takes
   exclusive latches from the root down instead.
-- **Reader-writer locks are not free for readers.** Taking a shared latch
-  writes to the latch. Every operation does that to the root.
 - **`validate()` and `dump()` are quiescent-only.** They are for after the
   threads have been joined.
-- **Trusting a passing stress test.** See the mutation check above.
 - **A leaked latch is a hang, not a failure.** The next operation that needs
-  the node waits forever, and so does the test run. Run concurrent tests
-  under a timeout (`timeout 120 zig build test`).
+  the node waits forever. Run concurrent tests under a timeout
+  (`timeout 120 zig build test`).
 
 ## Exercises
 
@@ -527,5 +505,5 @@ Solutions are in [solutions.md](solutions.md).
 - Previous: [chapter 18, indexes in a database](../18-indexes-in-a-database/README.md)
 - Next: [chapter 20, B-link trees](../20-blink-trees/README.md)
 - Visualization: [viz/index.html](viz/index.html) (two threads, you choose who
-  steps next, under four protocols; one experiment with four threads shows the
-  convoy)
+  steps next, under four protocols and a broken fifth; one experiment with
+  four threads shows the convoy)

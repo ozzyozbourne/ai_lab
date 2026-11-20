@@ -151,9 +151,9 @@ layouts. Code 129 belongs to id 7.
   is large enough, so the cursor hops to the next leaf, and its first entry has code
   129: rejected.
 
-Total: 2 descents, 7 nodes, 1 entry read, nothing written. A duplicate id fails the first check alone (1 descent, 3 nodes). An
-insert that passes both makes 5 descents: the two checks, then three writes (primary
-tree and two indexes).
+Total: 2 descents, 7 nodes, 1 entry read, nothing written. A duplicate id fails the
+first check alone (1 descent, 3 nodes). An insert that passes both makes 5 descents: the
+two checks, then three writes (primary tree and two indexes).
 
 "Page reads" is tree nodes plus heap reads, as if nothing were cached. That is a count of
 the work, not a prediction of disk I/O: a buffer pool
@@ -294,8 +294,7 @@ The Rust crate has the same files, names, tests and output. The differences:
   is enforced; in Zig it is a comment.
 - **Allocation failure.** A Rust `Vec` aborts when memory runs out. The Zig tests make the
   allocator fail; the Rust tests give one of the three trees a node budget
-  (`Table::with_node_budgets`) and get `InsertError::OutOfNodes`. `Heap::append` cannot
-  fail in Rust.
+  (`Table::with_node_budgets`) and get `InsertError::OutOfNodes`.
 
 ### Tests
 

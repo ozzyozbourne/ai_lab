@@ -1,9 +1,8 @@
 # Chapter 18: solutions
 
 Numbers marked **measured** were produced by running code against this chapter's Zig
-library (a temporary test using `buildDemo`, `fetchScan`, `countOnDay` and `Cursor`, which
-is not part of the repository). Everything else is reasoning from the code and is marked
-as such; it was not run.
+library (temporary tests in a copy of it, which are not part of the repository).
+Everything else is reasoning from the code and is marked as such; it was not run.
 
 ## 1. Cost of `SELECT * WHERE customer = 3`
 
@@ -47,8 +46,9 @@ duplicate codes on purpose) exercise it.
 
 ## 3. An INCLUDE column in the value slot
 
-Not implemented in the repository and not run; the following is a design derived from the
-code.
+Not implemented in the repository. The design below was built in a temporary copy of the
+Zig library (the `insert` change and a cursor method that also returns the value) to
+measure the cost line; the `validate` and update points are reasoning and were not run.
 
 - `insert`: pass `row.amount` instead of `0` as the value of the `by_customer_day` entry.
   Nothing else in `insert` changes, and the rollback is the same `delete` of the same key.
@@ -61,10 +61,11 @@ code.
 - An update of `amount` now has to update the index entry too. That is the price of an
   included column: one more tree to write on every change of that column.
 
-Expected cost of `amountsOfCustomer(7)`: the same cursor walk as the covering scan of
-section 4, so the same line, `descents=1 tree nodes=6 ... row fetches=0 -> 6 page reads`
-in both layouts, against 21 and 11 for the fetching query of section 3. This is an
-expectation from the code path, not a measurement.
+Cost of `amountsOfCustomer(7)`, **measured** on the 12-row table: amounts
+120 75 250 125 35 (clustered) and 120 250 75 125 35 (heap), each with
+`descents=1 tree nodes=6 index entries=5 row fetches=0 heap reads=0`, so 6 page reads in
+both layouts against 21 and 11 for the fetching query of section 3. It is the cursor walk
+of the covering scan of section 4.
 
 Why the value and not the key: an included column is payload. In the key it would take
 part in ordering and in separators for no benefit. Postgres drops INCLUDE columns from
@@ -100,8 +101,8 @@ fail goes last:
 3. Remove the old entry. It cannot fail.
 
 "Remove the old entry, then insert the new one" is the wrong order: if the insert fails,
-the row has no `by_customer_day` entry at all, which is the partial write the README's
-Pitfalls section warns about. In the temporary copy the injected failure hit step 2 once
+the row has no `by_customer_day` entry at all: a partial write, the state `insert`
+avoids with its rollback. In the temporary copy the injected failure hit step 2 once
 (clustered) and `validate` passed afterwards; in the first version of the test, which
 did not undo step 1, the same failure left the table inconsistent.
 
@@ -148,17 +149,24 @@ Measured (identical for both layouts, since no row is fetched):
 | 12 rows, M = 4, day 12 | skip scan | 2 | 7 | 24 | 5 |
 | 2000 rows, M = 16, day 180 | `countOnDay` | 2 | 1 | 186 | 2000 |
 | 2000 rows, M = 16, day 180 | skip scan | 2 | 101 | 320 | 52 |
+| 2000 rows, 3 customers, M = 16, day 180 | `countOnDay` | 5 | 1 | 193 | 2000 |
+| 2000 rows, 3 customers, M = 16, day 180 | skip scan | 5 | 7 | 28 | 8 |
+
+The first two tables are the ones of the chapter's programs (3 and 50 distinct customers).
+The third was built for this exercise: ids 1 to 2000, customer = id mod 3, a random day
+below 365; its index has height 4.
 
 The skip scan makes two descents per distinct customer plus one to find that there are no
 more (3 customers: 7; 50 customers: 101). It reads far fewer entries (52 instead of 2000)
-but, on these tables, **more** tree nodes: 320 against 186. With 50 customers and only
-about 185 leaves, two descents of height 3 per customer cost more nodes than walking every
-leaf once.
+but, on the chapter's two tables, **more** tree nodes: 24 against 7 and 320 against 186.
+With 50 customers and only about 185 leaves, two descents of height 3 per customer cost
+more nodes than walking every leaf once. With 3 customers on the same number of rows it
+wins clearly: 28 nodes against 193.
 
 So it wins when the number of distinct leading values is small compared with the number
 of leaf pages: roughly when `2 * distinct * height` is less than the leaf count. That
-condition is reasoning from the two formulas, and the table above shows two cases on the
-losing side of it; a winning case was not measured. A real implementation also avoids
+condition is reasoning from the two formulas; the table shows two cases on the losing
+side of it and one on the winning side. A real implementation also avoids
 the first of the two descents per value when the next customer is on the same leaf
 (Postgres' skip arrays, `nbtree/nbtpreprocesskeys.c:130-137`, are considerably more
 refined than this loop).

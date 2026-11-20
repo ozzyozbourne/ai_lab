@@ -148,7 +148,15 @@ test "unique constraint and primary key reject duplicates and change nothing" {
         const before = table.counters;
         try testing.expectError(error.DuplicateCode, table.insert(gpa, .{ .id = 40, .customer = 3, .day = 1, .amount = 10, .code = 129 }));
         // Rejected after two descents (id check, code check), before any write.
-        try testing.expectEqual(2, table.counters.minus(before).descents);
+        const cost = table.counters.minus(before);
+        try testing.expectEqual(2, cost.descents);
+        // The README's hand trace. The code probe seeks (129, smallest
+        // locator), which is below the separator (129, locator of id 7): the
+        // descent ends one leaf early, and the conflicting entry is the first
+        // one after a leaf hop. 3 + 3 nodes for the descents, 1 for the hop.
+        try testing.expectEqual(7, cost.tree_nodes);
+        try testing.expectEqual(1, cost.index_entries);
+        try testing.expectEqual(0, cost.row_fetches);
         try testing.expectError(error.DuplicatePrimaryKey, table.insert(gpa, .{ .id = 12, .customer = 3, .day = 1, .amount = 10, .code = 500 }));
         // The id is checked first, so a row that violates both reports the id.
         try testing.expectError(error.DuplicatePrimaryKey, table.insert(gpa, .{ .id = 12, .customer = 3, .day = 1, .amount = 10, .code = 129 }));

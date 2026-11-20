@@ -157,7 +157,15 @@ fn unique_constraint_and_primary_key_reject_duplicates_and_change_nothing() {
             Err(InsertError::DuplicateCode)
         );
         // Rejected after two descents (id check, code check), before any write.
-        assert_eq!(table.counters.get().minus(before).descents, 2);
+        let cost = table.counters.get().minus(before);
+        assert_eq!(cost.descents, 2);
+        // The README's hand trace. The code probe seeks (129, smallest
+        // locator), which is below the separator (129, locator of id 7): the
+        // descent ends one leaf early, and the conflicting entry is the first
+        // one after a leaf hop. 3 + 3 nodes for the descents, 1 for the hop.
+        assert_eq!(cost.tree_nodes, 7);
+        assert_eq!(cost.index_entries, 1);
+        assert_eq!(cost.row_fetches, 0);
         assert_eq!(
             table.insert(r(12, 3, 1, 10, 500)),
             Err(InsertError::DuplicatePrimaryKey)

@@ -258,16 +258,19 @@
   Rec.prototype.scan = function (tree, which, lo, hi, what, label, onEntry, limit) {
     var h = this.descend(tree, which, lo, what), found = 0;
     var i = h === NIL ? 0 : lowerBound(tree.nodes[h].keys, lo);
+    // True until the scan has looked at an entry: a hop made while it is still
+    // true means the descent landed one leaf early (the README's pitfall).
+    var early = true;
     while (h !== NIL) {
       var n = tree.nodes[h];
       if (i < n.keys.length) {
         var key = n.keys[i], keyHl = mk(which, { nodes: mk(tree.id(h), 'active'), keys: mk(tree.id(h) + ':' + label(key), 'found') });
         if (key > hi) {
-          this.emit('Next entry ' + k(label(key), 'compare') + ' is past the end of the range. Keys only grow from here, so the scan stops.',
+          this.emit((early ? 'First entry at or after the seek key: ' : 'Next entry ') + k(label(key), 'compare') + ' is past the end of the range. Keys only grow from here, so the scan stops.',
             mk(which, { nodes: mk(tree.id(h), 'active'), keys: mk(tree.id(h) + ':' + label(key), 'compare') }));
           return found;
         }
-        i++; found++; this.c.entries++;
+        i++; found++; this.c.entries++; early = false;
         onEntry(key, keyHl[which]);
         if (found === limit) return found;
       } else {
@@ -275,12 +278,16 @@
         h = n.next; i = 0;
         if (h !== NIL) {
           this.c.nodes++;
-          this.emit('End of this leaf. Follow its <b>next</b> link to the sibling leaf: one more node, but no new descent.',
+          this.emit(early
+            ? 'Every entry in the leaf the descent reached is smaller than the seek key: nothing there. The descent ended there all the same, because the separator above is a copy of the ' +
+              '<b>next</b> leaf\'s first entry, and the seek key sorts before that copy. So follow the next link to the sibling leaf: one more node, but no new descent.'
+            : 'End of this leaf. Follow its <b>next</b> link to the sibling leaf: one more node, but no new descent.',
             mk(which, { nodes: mk(tree.id(h), 'active'), links: mk(tree.id(from), 'active') }));
+          early = false;
         }
       }
     }
-    this.emit('The leaf chain ends here: nothing more to scan.', {});
+    this.emit(early ? 'Every entry in this leaf is smaller than the seek key, and it is the last leaf: nothing matches.' : 'The leaf chain ends here: nothing more to scan.', {});
     return found;
   };
 
@@ -377,7 +384,11 @@
   P.insertSteps = function (row) {
     var r = new Rec(this), t = this, taken;
     r.emit('INSERT ' + rowText(row) + '. First the primary-key check: is id ' + row.id + ' already there? One descent, before anything is written.' +
-      (t.layout === 'heap' ? ' The search key is (' + row.id + ', any TID): the TID is left out, because <i>any</i> entry with this id is a conflict.' : ''), {}, 'INSERT id ' + row.id);
+      (t.layout === 'heap'
+        ? ' The search key is (' + row.id + ', any TID): the TID is left out, because <i>any</i> entry with this id is a conflict. ' +
+          'This is how every <b>UNIQUE</b> index is checked, by_code in the chapter\'s programs included: seek (value, smallest locator) and look at one entry.'
+        : ' Here the id is the whole key of the primary tree, so the check is an exact search. The heap figure shows the search that every <b>UNIQUE</b> index needs.'),
+      {}, 'INSERT id ' + row.id);
     if (t.layout === 'clustered') {
       var leaf = r.descend(t.primary, 'primary', row.id, 'id ' + row.id);
       taken = t.primary.get(row.id) !== undefined;
@@ -387,7 +398,7 @@
       taken = r.scan(t.primary, 'primary', row.id * LOC, row.id * LOC + LOC - 1, '(' + row.id + ', any TID)',
         function (key) { return t.primaryLabel(key); }, function (key, hl) {
           hl.keys[Object.keys(hl.keys)[0]] = 'deleted';
-          r.emit('Entry ' + k(t.primaryLabel(key), 'deleted') + ' has the id: <b>rejected</b>, duplicate primary key. Nothing was written.', { primary: hl }, 'rejected: duplicate id');
+          r.emit('Entry ' + k(t.primaryLabel(key), 'deleted') + ' has the id: <b>rejected</b>, duplicate primary key. Nothing was written. One entry was enough: that is the whole UNIQUE check, and by_code is checked the same way.', { primary: hl }, 'rejected: duplicate id');
         }, 1) > 0;
     }
     if (taken) return r.finish({ ok: false });

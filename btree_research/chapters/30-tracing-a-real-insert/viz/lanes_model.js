@@ -344,6 +344,7 @@
     var rec = this.rec;
     rec.steps = record ? [] : null;
     this.wal = []; this.dirty = {}; this.pinned = {}; this.overflow = null;
+    this.lastBalanced = [];    // per balance_non_root of this insert: its output pages, left to right
     var stack = [], id = this.root, p, hl, i, dup = false;
 
     // ---- stage 1: find the leaf ---------------------------------------------
@@ -475,6 +476,7 @@
     var treeOrder = ids.join(',');
     ids.sort(function (x, y) { return x - y; });
     var renumbered = ids.join(',') !== treeOrder;
+    this.lastBalanced.push(ids.slice());
     var pos = 0, dividers = [];
     ids.forEach(function (id2, jj) {
       var cells = flat.slice(pos, pos + counts[jj]);

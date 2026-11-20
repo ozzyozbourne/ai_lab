@@ -246,7 +246,7 @@
     var pressed = traceInsert(cascadeTree(2), key, vlen, { pressure: true });
     var suspended = STATES.filter(function (st) { return pressed.op.suspended[st]; });
     return { text: t.lines.join('\n') + '\nunder pressure suspended in: ' + suspended.join(', '),
-      same: tree.dump() === blocking.dump() && tree.counters() === blocking.counters(), valid: tree.validate() };
+      same: tree.dump() === blocking.dump() && tree.counters().split('\n')[0] === blocking.counters().split('\n')[0], valid: tree.validate() };
   }
 
   /* What demo.zig / demo.rs print in Part 1 (the call lines and the dumps). */

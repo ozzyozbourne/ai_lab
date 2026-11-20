@@ -207,7 +207,15 @@
     'under pressure suspended in: descend, leaf_put, split_leaf, insert_separator, push_root_interior, split_interior'
   ].join('\n');
   /* Not program output: pins the behaviour of the two schematic models of figure 1. */
+  /* The WAL record names of figure 1 follow nbtinsert.c:2080 (SPLIT_L when
+   * the new tuple lands on the left page, else SPLIT_R). 27 goes to the right
+   * half of its leaf; 33 goes to the left half of its leaf, and the pivot it
+   * sends up lands on the right half of the root; 31 lands on the left. */
+  window.EXPECTED_LANES_WAL =
+    '27: SPLIT_R blk 1+5 · INSERT_UPPER blk 3\n' +
+    '33: SPLIT_L blk 4+6 · SPLIT_R blk 3+7 · NEWROOT blk 8 + meta\n' +
+    '31 alone: SPLIT_L blk 4+5 · INSERT_UPPER blk 3';
   window.EXPECTED_LANES_27 =
-    '1 · S-lock 3 → 1 / 1 · X-lock leaf 1 / 2 · unique: ok / 3 · leaf 1 is full / 4 · split point: 3 | 2 / 4 · SPLIT_L → new blk 5 / 5 · INSERT_UPPER blk 3 / 6 · commit: flush 2 WAL records\n' +
+    '1 · S-lock 3 → 1 / 1 · X-lock leaf 1 / 2 · unique: ok / 3 · leaf 1 is full / 4 · split point: 3 | 2 / 4 · SPLIT_R → new blk 5 / 5 · INSERT_UPPER blk 3 / 6 · commit: flush 2 WAL records\n' +
     '1 · push 2 → 4 / 1 · leaf 4 on the stack / 2 · unique: ok / 3 · overflow cell on 4 / 4 · siblings 3, 4, 5 / 4 · 3 pages → 3 / 5 · dividers 27, 45 → page 2 / 6 · commit: 4 page frames';
 })();

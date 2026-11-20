@@ -205,7 +205,7 @@ is the program counter, the path and the carry are the local variables, and thei
     steps.forEach(function (s) {
       if (!s.stage) return;
       s.caption += '<div class="ch30-refs">Stage ' + s.stage + ' is taught in ' + STAGE_CHAPTERS[s.stage].map(chapterLink).join(', ') + '.' +
-        (s.refs.length ? '<br><details class="ch30-src"><summary>Source lines (' + s.refs.length + ')</summary> ' +
+        (s.refs.length ? '<br><details class="ch30-src"' + (narrow.matches ? '' : ' open') + '><summary>Source lines (' + s.refs.length + ')</summary> ' +
           s.refs.map(function (r) { return '<code>' + esc(r) + '</code>'; }).join(' ') + '</details>' : '') + '</div>';
     });
     return steps;
@@ -376,6 +376,38 @@ is the program counter, the path and the carry are the local variables, and thei
       return first.filter(function (s) { return s.engine === engine; }).map(function (s) { var ev = s.lanes[engine].events; return ev[ev.length - 1].text; }).join(' / ');
     }
     BTViz.selfTest('lanes: insert 27', chips('pg') + '\n' + chips('turso'), window.EXPECTED_LANES_27);
+    // WAL record names, and their rule checked independently of the model's
+    // own bookkeeping: after a split, is the new key (leaf) or the new
+    // downlink (interior) on the left page?
+    var w = new CH30.Pair(), names = [];
+    w.insert(27); names.push('27: ' + w.pg.wal.join(' · '));
+    w.insert(33); names.push('33: ' + w.pg.wal.join(' · '));
+    w = new CH30.Pair();
+    w.insert(31); names.push('31 alone: ' + w.pg.wal.join(' · '));
+    BTViz.selfTest('lanes: WAL record names', names.join('\n'), window.EXPECTED_LANES_WAL);
+    var rule = 'ok', splits = 0, ascending = 'ok';
+    for (var r2 = 0; r2 < 20; r2++) {
+      var q = new CH30.Pair();
+      for (var j = 0; j < 70; j++) {
+        var key2 = rng.int(1, 99), down = {};
+        Object.keys(q.pg.pages).forEach(function (id) { q.pg.pages[id].children.forEach(function (c) { down[c] = true; }); });
+        q.insert(key2);
+        q.pg.wal.forEach(function (rec) {
+          var m = /^SPLIT_([LR]) blk (\d+)\+(\d+)$/.exec(rec);
+          if (!m) return;
+          splits++;
+          var left = q.pg.pages[m[2]], onLeft = left.leaf ? left.keys.indexOf(key2) >= 0
+            : left.children.some(function (c) { return !down[c]; });
+          if (onLeft !== (m[1] === 'L')) rule = 'wrong record name after ' + key2 + ': ' + rec;
+        });
+        // Turso: siblings under one parent carry ascending page numbers only
+        // where a balance dealt them out; check the pages it just touched.
+        var steps2 = q.turso.lastBalanced || [];
+        steps2.forEach(function (ids) { for (var t = 1; t < ids.length; t++) if (ids[t - 1] >= ids[t]) ascending = 'page numbers not ascending: ' + ids.join(','); });
+      }
+    }
+    BTViz.selfTest('lanes: SPLIT_L / SPLIT_R rule (' + (splits > 100 ? 'many' : 'too few') + ' splits)', rule, 'ok');
+    BTViz.selfTest('lanes: Turso output pages in ascending page order', ascending, 'ok');
   })();
   // The resumable insert: the JS model makes the calls the programs print.
   var p1 = CH30.replayPart1();

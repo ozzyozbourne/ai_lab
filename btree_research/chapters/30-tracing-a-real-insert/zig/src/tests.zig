@@ -268,9 +268,10 @@ test "a reader let in while a split is half done misses a key: why the writer ru
     while (op.state != .insert_separator) : (last = try op.step()) try rig.supply(last.io);
     try testing.expect(last == .io and op.changed);
 
-    // The tree in memory is half-split: validate sees it, and a lookup of a
-    // key that moved to the new right page comes back empty.
-    try testing.expectError(error.UnreachablePage, rig.tree.validate());
+    // The tree in memory is half-split: validate sees it (the leaf chain
+    // already contains a page that no parent leads to), and a lookup of a
+    // key that moved to that page comes back empty.
+    try testing.expectError(error.LeafChainBroken, rig.tree.validate());
     try testing.expectEqual(null, try rig.tree.get(gpa, "18"));
 
     while (last == .io) : (last = try op.step()) try rig.supply(last.io);
@@ -348,7 +349,7 @@ fn runWithFault(gpa: Allocator, fault: Fault, n: u64, poisoned_runs: *u32) !bool
         // The failed insert had already changed a page: the handle refuses
         // further work, exactly like chapter 12's blocking put.
         poisoned_runs.* += 1;
-        try testing.expectError(error.TreePoisoned, rig.tree.validate() catch |e| e);
+        try testing.expectError(error.TreePoisoned, rig.tree.flush());
         return true;
     }
     try rig.tree.validate();
@@ -372,6 +373,7 @@ test "a read failure, a write failure or an allocation failure mid-operation lea
         try testing.expect(hit >= 10); // the sweep really went through the operations
         // Reads cannot fail mid-split here without the split having changed a
         // page first, so every kind of fault must have produced both outcomes.
+        std.debug.print("{t}: hit {d} poisoned {d}\n", .{ fault, hit, poisoned_runs });
         try testing.expect(poisoned_runs > 0 and poisoned_runs < hit);
     }
 }

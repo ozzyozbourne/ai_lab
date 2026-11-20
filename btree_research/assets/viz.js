@@ -386,7 +386,10 @@
     ui.next = iconBtn('next', 'Step forward (→)', act(function () { self.pause(); self.next(); }));
     ui.scrub = el('input.bt-scrub', {
       type: 'range', min: 0, max: 0, step: 1, value: 0, 'aria-label': 'Step',
-      oninput: function () { activeStepper = self; self.pause(); self.go(+ui.scrub.value, { instant: true }); }
+      oninput: function () {
+        var v = +ui.scrub.value;        // read first: pause() re-syncs the slider to the current step
+        activeStepper = self; self.pause(); self.go(v, { instant: true });
+      }
     });
     ui.count = el('span.bt-stepcount', { 'aria-live': 'off' });
     ui.speedOut = el('output');
@@ -614,7 +617,8 @@
 
   var TREE_DEFAULTS = {
     cellH: 30, minCellW: 30, charW: 8, cellPadX: 9,
-    hGap: 16, vGap: 50, padX: 14, padTop: 44, padBottom: 16
+    hGap: 16, vGap: 50, padX: 14, padTop: 44, padBottom: 16,
+    binary: false     // true: children are [left, right] (null = missing); an only child is drawn off-centre
   };
 
   /**
@@ -622,6 +626,8 @@
    * second parent, or a {ref: id} stub, becomes an extra edge to the already-placed node).
    * Returns {nodes: Map(id → info), order: [info…], edges: [{parent, child, ci}], width, height, depth}
    * where info = {id, node, depth, parent, childIndex, x, y, w, h, kw[], anchors[]}.
+   * Binary trees: give an only child `side: 'left' | 'right'`, or pass opts.binary = true and write
+   * children as [left, right] with null for a missing one; the child is then drawn off-centre.
    */
   function layoutTree(model, opts) {
     var o = {};
@@ -655,18 +661,28 @@
       if (depth > maxDepth) maxDepth = depth;
       var ch = n.children || [];
       if (ch.length) {
-        var cw = 0;
+        var cw = 0, present = 0, onlySide = null;
         for (i = 0; i < ch.length; i++) {
+          if (!ch[i]) continue;                           // hole: a missing left / right child
+          present++;
+          // Which side of the parent the child hangs on: explicit `side` hint, or its position when opts.binary.
+          var side = ch[i].side === 'left' || ch[i].side === 'right' ? ch[i].side
+            : o.binary && ch.length <= 2 ? (i === 0 ? 'left' : 'right') : null;
+          onlySide = side;
+          var eci = side === 'right' ? Math.max(i, anchors.length - 1) : i;
           var cid = ch[i].ref !== undefined ? ch[i].ref : ch[i].id;
           // DAG mode: a child that is already placed (or a {ref: id} stub) only gets an extra edge.
-          if (ch[i].ref !== undefined || nodes.has(cid)) { edges.push({ parent: n.id, child: cid, ci: i, shared: true }); continue; }
+          if (ch[i].ref !== undefined || nodes.has(cid)) { edges.push({ parent: n.id, child: cid, ci: eci, shared: true }); continue; }
           var c = measure(ch[i], depth + 1, n, i);
+          if (side) c.side = side;
           info.kids.push(c);
-          edges.push({ parent: n.id, child: cid, ci: i });
+          edges.push({ parent: n.id, child: cid, ci: eci });
           cw += c.sw;
         }
+        // An only child with a known side leaves room for its missing sibling, so it is not centred.
+        if (present === 1 && info.kids.length === 1 && onlySide) { info.only = onlySide; cw += info.kids[0].w; }
         if (info.kids.length) {
-          cw += o.hGap * (info.kids.length - 1);
+          cw += o.hGap * (info.only ? 1 : info.kids.length - 1);
           info.cw = cw;
           info.sw = Math.max(w, cw);
         }
@@ -676,9 +692,14 @@
     function place(info, left) {
       if (!info.kids.length) { info.x = left + (info.sw - info.w) / 2; return; }
       var cl = left + (info.sw - info.cw) / 2;
-      for (var i = 0; i < info.kids.length; i++) { place(info.kids[i], cl); cl += info.kids[i].sw + o.hGap; }
-      var a = info.kids[0], b = info.kids[info.kids.length - 1];
-      var cx = (a.x + a.w / 2 + b.x + b.w / 2) / 2;
+      var a = info.kids[0], b = info.kids[info.kids.length - 1], cx;
+      if (info.only) {                                    // [child, gap] or [gap, child]; the gap is as wide as the child's box
+        place(a, info.only === 'left' ? cl : cl + a.w + o.hGap);
+        cx = (a.x + a.w / 2 + (info.only === 'left' ? cl + a.sw + o.hGap + a.w / 2 : cl + a.w / 2)) / 2;
+      } else {
+        for (var i = 0; i < info.kids.length; i++) { place(info.kids[i], cl); cl += info.kids[i].sw + o.hGap; }
+        cx = (a.x + a.w / 2 + b.x + b.w / 2) / 2;
+      }
       info.x = clamp(cx - info.w / 2, left, left + info.sw - info.w);
     }
     var roots = Array.isArray(model) ? model : [model];
@@ -711,7 +732,7 @@
    * highlight: {nodes: {id: state}, keys: {'id:key': state, '*:key': state},
    *             edges: {childId: state}, links: {fromId: state}, cursor: {node: id, label}}
    * opts:      {zoom: 'fit' | number, minScale, toolbar, minHeight, maxHeight, onNodeClick,
-   *             ariaLabel, cellH, minCellW, charW, hGap, vGap}
+   *             ariaLabel, cellH, minCellW, charW, hGap, vGap, binary}
    */
   function TreeView(target, opts) {
     var o = this.opts = { zoom: 'fit', minScale: 0.7, toolbar: true, minHeight: 0, maxHeight: 0, ariaLabel: 'Tree diagram', onNodeClick: null };
@@ -1222,7 +1243,10 @@
     // static slot outlines + index labels (one extra column so a pointer can sit one-past-the-end)
     while (this.slots.length < cap) {
       var s = el('div.bt-aslot'), ix = el('div.bt-aidx');
-      this.inner.appendChild(s); this.inner.appendChild(ix);
+      // Outlines are opaque and must stay BELOW the cells whatever the creation order, so they go
+      // in front of the first cell / pointer in DOM order instead of at the end.
+      var anchor = this.inner.querySelector('.bt-acell, .bt-aptr');
+      this.inner.insertBefore(s, anchor); this.inner.insertBefore(ix, anchor);
       this.slots.push(s); this.idx.push(ix);
     }
     this.slots.forEach(function (s, i) {
@@ -1673,6 +1697,9 @@
     this.cmp = opts.cmp || defaultCmp;
     this.detail = opts.detail || 'node';       // 'node' | 'key' — granularity of compare steps
     this.idPrefix = opts.idPrefix || 'n';
+    // 'guide' = PLAN.md / chapter 07: every non-root node, leaves included, holds ≥ ⌈M/2⌉ − 1 keys and an
+    // overflowing B+tree leaf keeps the lower ⌊n/2⌋ keys. Only changes BPlusTree (BTree already follows it).
+    this.convention = opts.convention === 'guide' ? 'guide' : 'default';
     this._nextId = 0;
     this.size = 0;
     this._rec = null;
@@ -1763,7 +1790,7 @@
   TreeBase.prototype.limits = function () {
     var m = this.order;
     return this.kind === 'bplus'
-      ? { maxKeys: m - 1, minLeafKeys: Math.ceil((m - 1) / 2), minInternalKeys: Math.ceil(m / 2) - 1, maxChildren: m }
+      ? { maxKeys: m - 1, minLeafKeys: this.convention === 'guide' ? Math.ceil(m / 2) - 1 : Math.ceil((m - 1) / 2), minInternalKeys: Math.ceil(m / 2) - 1, maxChildren: m }
       : { maxKeys: m - 1, minLeafKeys: Math.ceil(m / 2) - 1, minInternalKeys: Math.ceil(m / 2) - 1, maxChildren: m };
   };
 
@@ -1912,7 +1939,7 @@
       var node = path[level].node;
       if (node.keys.length <= lim.maxKeys) break;
       var copyUp = plus && node.leaf;
-      var mid = copyUp ? Math.ceil(node.keys.length / 2) : Math.floor(node.keys.length / 2);
+      var mid = copyUp && this.convention !== 'guide' ? Math.ceil(node.keys.length / 2) : Math.floor(node.keys.length / 2);
       var med = node.keys[mid];
       var h = { nodes: mk1(node.id, 'split'), keys: mk1(node.id + ':' + med, 'split') };
       if (key !== undefined) h.keys[node.id + ':' + key] = h.keys[node.id + ':' + key] || 'inserted';
@@ -2083,6 +2110,9 @@
    * internal nodes hold separator copies (child i+1 holds keys ≥ separator i).
    * order = max children of an internal node; a leaf holds at most order − 1 keys.
    * Also has scan(lo, hi) → steps, walking the leaf chain.
+   * opts.convention: 'guide' follows PLAN.md / chapter 07 exactly (leaf minimum ⌈order/2⌉ − 1, an
+   * overflowing leaf keeps its lower ⌊n/2⌋ keys); the default keeps leaves at least half full
+   * (minimum ⌈(order − 1)/2⌉, the left leaf keeps ⌈n/2⌉). Both copy the right leaf's first key up.
    */
   function BPlusTree(order, opts) {
     if (!(this instanceof BPlusTree)) return new BPlusTree(order, opts);
@@ -2705,8 +2735,25 @@
     this.svg = el('svg', { class: 'bt-graph-svg', role: 'img', 'aria-label': this.opts.ariaLabel });
     this.root = el('div.bt-graph', this.svg);
     resolve(target).appendChild(this.root);
+    this._map = null;               // model ↔ pixel mapping of the last render
+    if (this.opts.onPlaneClick) {
+      this.svg.classList.add('is-clickable');
+      this.svg.addEventListener('click', function (e) {
+        if (!self._map || !self.opts.onPlaneClick) return;
+        if (self.opts.onNodeClick && e.target.closest && e.target.closest('.bt-graph-node')) return;   // that click belongs to onNodeClick
+        var p = self.toModel(e.clientX, e.clientY);
+        self.opts.onPlaneClick(p.x, p.y, e);
+      });
+    }
     observeWidth(this.root, function () { if (self.model) self.render(self.model, self.hl); });
   }
+  /** Client (viewport) pixel coordinates → model coordinates of the last render. */
+  GraphView.prototype.toModel = function (clientX, clientY) {
+    var m = this._map, r = this.svg.getBoundingClientRect();
+    if (!m) return { x: 0, y: 0 };
+    var px = (clientX - r.left) * (r.width ? m.W / r.width : 1), py = (clientY - r.top) * (r.height ? m.H / r.height : 1);
+    return { x: m.x0 + (px - m.ox) / m.sc, y: m.y0 + (py - m.oy) / m.sc };
+  };
   GraphView.prototype.render = function (model, hl) {
     this.model = model; this.hl = hl = hl || {};
     var o = this.opts, svg = this.svg, self = this;
@@ -2719,6 +2766,7 @@
     var sc = Math.min((W - o.pad * 2) / ((x1 - x0) || 1), (H - o.pad * 2) / ((y1 - y0) || 1));
     var ox = (W - (x1 - x0) * sc) / 2, oy = (H - (y1 - y0) * sc) / 2;
     var PX = function (x) { return ox + (x - x0) * sc; }, PY = function (y) { return oy + (y - y0) * sc; };
+    this._map = { x0: x0, y0: y0, ox: ox, oy: oy, sc: sc, W: W, H: H };
     svg.textContent = '';
     svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
     svg.setAttribute('width', W);
@@ -2783,7 +2831,7 @@
       host = el('div.bt-selftests', { role: 'status', 'aria-label': 'Model self-tests' }, el('span.bt-selftests-title', 'Self-tests'));
       (document.querySelector('main') || document.body).appendChild(host);
     }
-    var badge = el('span', { class: 'bt-chip bt-selftest ' + (ok ? 's-found' : 's-deleted'), 'data-ok': ok ? '1' : '0', title: ok ? 'JS model output matches the expected output' : 'Mismatch — see below and the console' },
+    var badge = el('span', { class: 'bt-chip bt-selftest ' + (ok ? 's-found' : 's-deleted'), 'data-ok': ok ? '1' : '0', title: name + ' — ' + (ok ? 'JS model output matches the expected output' : 'mismatch, see below and the console') },
       (ok ? '✓ ' : '✗ ') + name);
     host.appendChild(badge);
     if (!ok) host.appendChild(el('details.bt-selftest-diff', el('summary', name + ': expected vs actual'),

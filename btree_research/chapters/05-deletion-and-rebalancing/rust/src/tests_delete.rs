@@ -1,69 +1,16 @@
-//! Tests of the whole tree. (Each section file also has its own unit tests.)
+//! Tests of the whole tree that need `delete` (this chapter). The helpers
+//! and the tests of search and insert alone are in tests_insert.rs.
 
 use crate::btree::BTree;
 use crate::ops::{Config, Entry, Op, OpStream, Oracle, Weights};
 use crate::pool::OutOfNodes;
 use crate::prng::SplitMix64;
 use crate::scenario::{CANONICAL_KEYS, TALL_COUNT};
-
-fn expect_tree(tree: &BTree, expected: &str) {
-    let mut out = Vec::new();
-    tree.render(&mut out, "").unwrap();
-    assert_eq!(String::from_utf8(out).unwrap(), expected);
-    assert_eq!(tree.validate(), Ok(()));
-}
-
-fn build_canonical() -> BTree {
-    let mut tree = BTree::new(4);
-    for key in CANONICAL_KEYS {
-        tree.put(key, key * 10).unwrap();
-    }
-    tree
-}
-
-fn put_all(tree: &mut BTree, keys: &[u64]) {
-    for &key in keys {
-        tree.put(key, key * 10).unwrap();
-    }
-}
+use crate::tests_insert::{BUILD_COUNT, build_canonical, build_key, expect_tree};
 
 #[test]
-fn put_the_canonical_example_step_by_step() {
-    let mut tree = BTree::new(4);
-    expect_tree(&tree, "(empty)\n");
-    put_all(&mut tree, &[10, 20, 5]);
-    expect_tree(&tree, "[5 10 20]\n");
-    tree.put(6, 60).unwrap(); // overflow: split, 10 becomes the root
-    expect_tree(&tree, "[10]\n[5 6] [20]\n");
-    put_all(&mut tree, &[12, 30, 7, 17]);
-    expect_tree(&tree, "[10 20]\n[5 6 7] [12 17] [30]\n");
-    put_all(&mut tree, &[3, 25, 1, 15]);
-    expect_tree(&tree, "[6 10 20]\n[1 3 5] [7] [12 15 17] [25 30]\n");
-    assert_eq!(tree.counters.splits, 3);
-    assert_eq!(tree.counters.root_splits, 1);
-}
-
-#[test]
-fn put_overwrites_get_finds_keys_in_leaves_and_interior_nodes() {
-    let mut tree = build_canonical();
-    assert_eq!(tree.len, 12);
-    assert_eq!(tree.get(10), Some(100)); // interior
-    assert_eq!(tree.get(15), Some(150)); // leaf
-    assert_eq!(tree.get(11), None);
-    assert_eq!(tree.put(10, 111), Ok(Some(100)));
-    assert_eq!(tree.get(10), Some(111));
-    assert_eq!(tree.len, 12);
-}
-
-#[test]
-fn shape_and_fill_statistics() {
-    let s = build_canonical().shape();
-    assert_eq!(s.height, 2);
-    assert_eq!(s.nodes, 5);
-    assert_eq!(s.leaves, 4);
-    assert_eq!(s.keys, 12);
-    assert_eq!(s.capacity, 15); // 5 nodes * 3 keys
-    assert_eq!(s.fill_percent(), 80);
+fn the_scenario_and_the_tests_use_the_same_canonical_keys() {
+    assert_eq!(crate::tests_insert::CANONICAL_KEYS, CANONICAL_KEYS);
 }
 
 #[test]
@@ -250,50 +197,12 @@ fn delete_everything_in_random_order_every_node_goes_back() {
     }
 }
 
-#[test]
-fn put_under_allocation_failure_leaves_the_tree_unchanged() {
-    let mut tree = BTree::new(4);
-    // Keys 1..9 in order give [3 6] over [1 2] [4 5] [7 8 9]: the next
-    // ascending key splits the right-most leaf, which needs one new node.
-    for key in 1..10 {
-        tree.put(key, key).unwrap();
-    }
-    expect_tree(&tree, "[3 6]\n[1 2] [4 5] [7 8 9]\n");
-
-    tree.pool.budget = Some(tree.pool.usage.live()); // the very next allocation fails
-    assert_eq!(tree.put(10, 10), Err(OutOfNodes));
-    expect_tree(&tree, "[3 6]\n[1 2] [4 5] [7 8 9]\n"); // nothing changed, nothing leaked
-    assert_eq!(tree.len, 9);
-
-    // Overwrites and inserts into a node with room need no memory at all.
-    assert_eq!(tree.put(5, 55), Ok(Some(5)));
-    tree.delete(9);
-    assert_eq!(tree.put(9, 9), Ok(None));
-
-    // A cascade needs several nodes; fail the LAST one. The earlier
-    // reservations must be handed back.
-    tree.pool.budget = None;
-    for key in [10, 11, 12] {
-        tree.put(key, key).unwrap();
-    }
-    expect_tree(&tree, "[3 6 9]\n[1 2] [4 5] [7 8] [10 11 12]\n");
-    let live = tree.pool.usage.live();
-    tree.pool.budget = Some(live + 2); // leaf split ok, root split ok, new root fails
-    assert_eq!(tree.put(13, 13), Err(OutOfNodes));
-    assert_eq!(tree.pool.usage.live(), live);
-    expect_tree(&tree, "[3 6 9]\n[1 2] [4 5] [7 8] [10 11 12]\n");
-
-    tree.pool.budget = None; // memory is back: the same put succeeds
-    tree.put(13, 13).unwrap();
-    expect_tree(&tree, "[9]\n[3 6] [12]\n[1 2] [4 5] [7 8] | [10 11] [13]\n");
-}
-
 /// Build 80 keys, then delete them all, under a node budget.
 fn build_then_drain(budget: Option<u64>) -> Result<u64, OutOfNodes> {
     let mut tree = BTree::new(4);
     tree.pool.budget = budget;
-    for i in 0..80 {
-        if let Err(out_of_nodes) = tree.put((i * 37) % 80, i) {
+    for i in 0..BUILD_COUNT {
+        if let Err(out_of_nodes) = tree.put(build_key(i), i) {
             // The failed put must leave a valid tree holding exactly the
             // keys inserted so far.
             assert_eq!(tree.validate(), Ok(()));
@@ -302,7 +211,7 @@ fn build_then_drain(budget: Option<u64>) -> Result<u64, OutOfNodes> {
         }
     }
     assert_eq!(tree.validate(), Ok(()));
-    for key in 0..80 {
+    for key in 0..BUILD_COUNT {
         tree.delete(key);
     }
     assert_eq!(tree.root, None);
@@ -310,7 +219,7 @@ fn build_then_drain(budget: Option<u64>) -> Result<u64, OutOfNodes> {
 }
 
 #[test]
-fn every_node_budget_fails_cleanly_or_succeeds() {
+fn every_node_budget_fails_cleanly_or_succeeds_build_then_drain() {
     // The Rust mirror of Zig's checkAllAllocationFailures: try every budget
     // below what the run needs; each must fail without corrupting the tree.
     let peak = build_then_drain(None).unwrap();
@@ -318,19 +227,4 @@ fn every_node_budget_fails_cleanly_or_succeeds() {
         assert_eq!(build_then_drain(Some(budget)), Err(OutOfNodes));
     }
     assert_eq!(build_then_drain(Some(peak)), Ok(peak));
-}
-
-#[test]
-fn validate_reports_a_leaked_node() {
-    // Simulate the classic merge bug "unlink the node but forget to free it".
-    // In Zig the leak checker of std.testing.allocator reports this; a slab
-    // never leaks to the operating system, so the live-node counter is the
-    // only witness.
-    use crate::node::Node;
-    use crate::validate::ValidateError;
-    let mut tree = build_canonical();
-    let orphan = tree.pool.alloc(Node::new(true)).unwrap();
-    assert_eq!(tree.validate(), Err(ValidateError::NodeCountMismatch));
-    tree.pool.free(orphan);
-    assert_eq!(tree.validate(), Ok(()));
 }

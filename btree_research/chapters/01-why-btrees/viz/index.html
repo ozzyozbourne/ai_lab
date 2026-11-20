@@ -55,6 +55,11 @@
 .c1-slider output { font: 650 1rem var(--bt-mono); }
 .c1-answer { font-size: 1rem; line-height: 1.55; }
 .c1-answer b.c1-big { font: 700 1.5rem var(--bt-mono); color: var(--bt-accent); }
+/* On a phone the height table keeps the three columns that answer the question. */
+@media (max-width: 560px) {
+  #fig-calc .bt-table th:nth-child(2), #fig-calc .bt-table td:nth-child(2) { display: none; }
+  #fig-calc .bt-table th, #fig-calc .bt-table td { padding-left: 6px; padding-right: 6px; }
+}
 </style>
 </head>
 <body>
@@ -242,18 +247,20 @@ they sit on is rewritten.</p>
     }
 
     /**
-     * The key shown when the reader has not chosen one: a key whose three page-read counts are
-     * the most common combination in this key set, so the first race is a typical one.
+     * The key shown when the reader has not chosen one. Its three page-read counts are the most
+     * common combination in this key set, so the first race is a typical one. Among the keys with
+     * that combination it is the one for which the wide nodes compare the most keys, because the
+     * figure is about page reads being what counts, not comparisons.
      */
     function typicalKey(sorted, perPage, bst, wide) {
       var groups = {}, bestSig = null;
       sorted.forEach(function (key) {
-        var sig = [C1.arraySearch(sorted, perPage, key).pages.length, bst.search(key).path.length, C1.wideSearch(wide, key).path.length].join('/');
-        (groups[sig] = groups[sig] || []).push(key);
+        var w = C1.wideSearch(wide, key);
+        var sig = [C1.arraySearch(sorted, perPage, key).pages.length, bst.search(key).path.length, w.path.length].join('/');
+        (groups[sig] = groups[sig] || []).push({ key: key, comparisons: w.comparisons });
         if (bestSig === null || groups[sig].length > groups[bestSig].length) bestSig = sig;
       });
-      var g = groups[bestSig];
-      return g[Math.floor(g.length / 2)];
+      return groups[bestSig].reduce(function (a, b) { return b.comparisons > a.comparisons ? b : a; }).key;
     }
 
     function arrayCaption(i) {
@@ -395,13 +402,13 @@ they sit on is rewritten.</p>
         { name: 'every node full', values: labels.map(function (o) { return C1.minHeight(n, o); }), token: 'node-active' },
         { name: 'every node half full', values: labels.map(function (o) { return C1.maxHeight(n, o); }), token: 'split' }] });
       // Compare full and half-full honestly: the gap depends on M (computed from the bars, not asserted).
-      var wideGap = 0, tiny = labels[0];
+      var wideGap = 0;
       labels.forEach(function (o) { if (o >= 128) wideGap = Math.max(wideGap, C1.maxHeight(n, o) - C1.minHeight(n, o)); });
       fig.caption.innerHTML = 'Each level multiplies the capacity by M = ' + m + ', so the height grows with the logarithm of the number of keys to base M. ' +
         'The chart shows the page reads for ' + fmt(n) + ' keys at every order from 3 to 1024: going from M = 3 to M = 64 removes most levels. ' +
         'Half-full nodes multiply the height by about log(M) / log(M / 2). For wide nodes that is close to 1: at M = 128 and above the half-full tree is ' +
-        (wideGap === 0 ? 'no taller here' : 'at most ' + plural(wideGap, 'level') + ' taller here') + '. For tiny nodes it is not: at M = ' + tiny + ' the bars read ' +
-        C1.minHeight(n, tiny) + ' and ' + C1.maxHeight(n, tiny) + ', and at M = 4 the factor approaches 2.';
+        (wideGap === 0 ? 'no taller here' : 'at most ' + plural(wideGap, 'level') + ' taller here') + '. For tiny nodes it is not: at M = 4, where the factor is 2, the bars read ' +
+        C1.minHeight(n, 4) + ' and ' + C1.maxHeight(n, 4) + '.';
     }
     nIn.addEventListener('input', update);
     mIn.addEventListener('input', update);

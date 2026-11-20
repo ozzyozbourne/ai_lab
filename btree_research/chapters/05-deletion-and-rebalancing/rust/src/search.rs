@@ -40,7 +40,11 @@ pub fn get<P: Nodes + ?Sized>(nodes: &P, root: Option<NodeId>, key: u64) -> Opti
 
 /// In-order traversal: child 0, key 0, child 1, key 1, ..., last child.
 /// Calls `visit(key, value)` for every entry in ascending key order.
-pub fn in_order<P: Nodes + ?Sized>(nodes: &P, root: Option<NodeId>, visit: &mut dyn FnMut(u64, u64)) {
+pub fn in_order<P: Nodes + ?Sized>(
+    nodes: &P,
+    root: Option<NodeId>,
+    visit: &mut dyn FnMut(u64, u64),
+) {
     let Some(id) = root else { return };
     let node = &nodes[id];
     for i in 0..=node.len() {

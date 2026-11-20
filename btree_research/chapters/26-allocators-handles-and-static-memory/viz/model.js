@@ -173,6 +173,17 @@
     }
     return this.root ? walk(this.root) : null;
   };
+  /** All keys in ascending order. */
+  T.keys = function () {
+    var self = this, out = [];
+    (function walk(h) {
+      var n = self.node(h);
+      n.keys.forEach(function (k, i) { if (h.c) walk(n.kids[i]); out.push(k); });
+      if (h.c) walk(n.kids[n.keys.length]);
+    })(this.root || { c: 0, slab: -1, slot: 0 });
+    return out;
+  };
+  T.has = function (key) { return this.keys().indexOf(key) >= 0; };
   /** Text dump identical to BTree.dump in the programs. */
   T.dump = function () {
     var self = this, out = [];

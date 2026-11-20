@@ -19,6 +19,17 @@
   .c26-row code { font-size: .8rem; }
   .c26-note { color: var(--bt-muted); font-size: .78rem; margin: 4px 0 0; }
   .c26-code { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+  /* The handle above each node is the subject of the page: larger than the toolkit
+     default, and with a halo in the stage colour so that an edge never strikes it out. */
+  #fig .bt-node-label { font-size: 12px; font-weight: 650; fill: var(--bt-text); paint-order: stroke; stroke: var(--bt-surface-2); stroke-width: 5px; stroke-linejoin: round; }
+  /* Memory policy strip: which allocator state the pools live under. */
+  .c26-policy { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--bt-border); font-size: .8rem; }
+  .c26-policy b.t { font-weight: 650; }
+  .c26-phases { display: inline-flex; align-items: center; gap: 4px; font-family: var(--bt-mono); font-size: .74rem; }
+  .c26-phases span.ph { padding: 2px 8px; border-radius: 999px; color: var(--bt-muted); box-shadow: inset 0 0 0 1px var(--bt-border); }
+  .c26-phases span.ph.on { color: var(--bt-text); font-weight: 650; background: var(--s-bg); box-shadow: inset 0 0 0 1.5px var(--s); }
+  .c26-policy .nums { color: var(--bt-muted); }
+  .c26-policy .nums b { color: var(--bt-text); font-family: var(--bt-mono); }
 </style>
 </head>
 <body>
@@ -26,6 +37,8 @@
 <p class="bt-lead">A B-tree of order 4 whose nodes live in <b>slabs</b>: blocks of four equal slots with one
 "free" bit per slot. Nodes name each other by a 32-bit <b>handle</b> (pool, slab, slot) and not by address.
 Insert and delete keys and watch slots fill, holes appear, and <b>vacuum</b> move nodes to give a slab back.
+Then press <b>Static memory</b>: all slabs are reserved before the first key, the allocator is <b>frozen</b>, and the
+tree runs in a footprint that cannot change until an insert is refused.
 Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.html">the buddy allocator</a>.</p>
 
 <div id="fig"></div>
@@ -57,18 +70,42 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
   BTViz.page({
     title: 'Slabs and handles', chapter: 26,
     prev: '../../25-cache-conscious-search-and-layout/viz/index.html',
-    next: '../../27-btree-vs-lsm/viz/index.html'
+    next: { href: 'buddy.html', title: 'The buddy allocator' }
   });
 
   var fig = BTViz.figure('#fig', { title: 'B-tree nodes in two slab pools (4 slots per slab)', side: true, legend: [
     { token: 'pointer', label: 'used slot' }, 'free', { token: 'node-active', label: 'node / slot being visited' },
-    { token: 'key-inserted', label: 'slot just allocated, key inserted' }, { token: 'key-deleted', label: 'slot just freed' },
-    'split', { token: 'merge', label: 'merge / borrow, nodes in the vacuum victim' }] });
+    { token: 'key-inserted', label: 'slot just allocated, key inserted' }, { token: 'key-deleted', label: 'slot just freed, request refused' },
+    'split', { token: 'merge', label: 'merge / borrow, nodes in the vacuum victim' },
+    { token: 'lock-exclusive', label: 'allocator frozen (static)' }] });
 
-  var view = new BTViz.TreeView(fig.stage, { minHeight: 250, ariaLabel: 'B-tree; the label above each node is its handle' });
+  // minScale 0.5: the 56-node limit of this page still fits the stage without scrolling.
+  var view = new BTViz.TreeView(fig.stage, { minHeight: 250, minScale: 0.5, ariaLabel: 'B-tree; the label above each node is its handle' });
+  var policyEl = el('div.c26-policy', { role: 'status', 'aria-label': 'Memory policy and allocator state' });
+  fig.stage.appendChild(policyEl);
   var leafTitle = el('div.c26-pool-title'), intTitle = el('div.c26-pool-title');
   var leafBox = el('div', leafTitle), intBox = el('div', intTitle);
   fig.stage.appendChild(el('div.c26-pools', leafBox, intBox));
+
+  // Which allocator state the pools live under, and what reached the backing allocator.
+  function showPolicy(p) {
+    policyEl.textContent = '';
+    function ph(name, on, state, title) { return el('span', { class: 'ph' + (on ? ' on s-' + state : ''), title: title }, name); }
+    function num(label, value) { return el('span', label + ' ', el('b', String(value))); }
+    if (!p.static) {
+      policyEl.append(el('b.t', 'Memory policy: growing'),
+        el('span.nums', 'slabs are taken from the backing allocator when a pool is full and given back when one empties · ',
+          num('slab allocations', p.allocs), ' · ', num('slabs given back', p.frees), ' · ', num('slabs now', p.leafSlabs + p.intSlabs)));
+      return;
+    }
+    policyEl.append(el('b.t', 'Memory policy: static'),
+      el('span.c26-phases', { 'aria-label': 'Allocator state: ' + p.phase },
+        ph('init', p.phase === 'init', 'inserted', 'start-up: allocations pass through'), '→',
+        ph('static', p.phase === 'static', 'lock-exclusive', 'running: every allocation is refused'), '→',
+        ph('deinit', false, 'deleted', 'shutting down: only free passes through')),
+      el('span.nums', num('footprint', p.leafSlabs + ' leaf + ' + p.intSlabs + ' interior slabs'), ' · ',
+        num('slots used', p.live + ' / ' + p.slots), ' · ', num('allocator calls', p.allocs), ' · ', num('refused', p.refused)));
+  }
   var leafMap = new BTViz.MemoryMap(leafBox, { cell: 28 }), intMap = new BTViz.MemoryMap(intBox, { cell: 28 });
 
   var panelBody = el('div.bt-panel-body');
@@ -100,6 +137,7 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
       leafMap.render(s.leaves);
       intMap.render(s.interiors);
       showFocus(s.focus);
+      showPolicy(s.policy);
       syncLog(i);
     }
   });
@@ -120,6 +158,31 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
     tree = new Ch26.Tree(4, 4);
     keys.forEach(function (k) { tree.put(k); });
     prior = []; current = [];
+    modeButtons();
+  }
+  // Static memory (section 4 of the programs, drawn small): 3 leaf slabs and 2 interior
+  // slabs are reserved while the tree is still empty, then the allocator is frozen.
+  function staticMode() {
+    tree = new Ch26.Tree(4, 4, { static: true });
+    prior = []; current = [];
+    modeButtons();
+    show(tree.reserveAndFreeze(3, 2), true);
+  }
+  // Insert ascending keys silently while they fit, then show the one that is refused.
+  function fill() {
+    var k = 1, probe;
+    for (;;) {
+      while (tree.has(k)) k++;
+      probe = tree.put(k);
+      if (probe.result === 'oom') break;
+    }
+    probe[0].caption = 'Ascending keys were inserted until one did not fit: ' + tree.count + ' keys are in, and now comes ' + BTViz.k(k, 'inserted') + '. ' + probe[0].caption;
+    show(probe, true);
+  }
+  function modeButtons() {
+    var st = !!tree.isStatic;
+    document.getElementById('vacuum').disabled = st;   // vacuum exists to give slabs back; a static pool never does
+    document.getElementById('fill').disabled = !st;
   }
   function reset() {
     build([10, 20, 5, 6, 12, 30, 7, 17, 3, 25, 1, 15]);
@@ -133,27 +196,48 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
       ' interior slabs. Deletes merged nodes and freed their slots, which left holes. Press <b>Vacuum</b>.'));
   }
 
-  var input = el('input.bt-input#key', { type: 'number', min: 0, max: 999, 'aria-label': 'Key', placeholder: 'key', style: { width: '5.5em' } });
+  var input = el('input.bt-input#key', { type: 'text', inputmode: 'numeric', 'aria-label': 'Key, a whole number from 0 to 999', placeholder: 'key', style: { width: '5.5em' } });
   var rand = BTViz.rng(26);
-  function key() { var v = input.value === '' ? rand.int(1, 99) : Math.max(0, Math.min(999, Math.floor(+input.value))); input.value = ''; return v; }
+  // Reads the key box. Returns {v, note}: `note` tells the reader whenever the key that
+  // is used differs from what was typed; v is null when the text is not a number.
+  function readKey(random, what) {
+    var raw = input.value.trim(), n = Number(raw);
+    input.value = '';
+    if (raw === '') { var r = random(); return { v: r, note: 'No key was typed, so ' + what + ': ' + BTViz.k(r) + '. ' }; }
+    if (!isFinite(n)) return { v: null, note: '“' + BTViz.esc(raw) + '” is not a number. Keys on this page are whole numbers from 0 to 999; nothing was changed.' };
+    var v = Math.max(0, Math.min(999, Math.floor(n)));
+    return { v: v, note: v === n ? '' : 'You typed ' + BTViz.esc(raw) + '. Keys on this page are whole numbers from 0 to 999, so ' + BTViz.k(v) + ' is used. ' };
+  }
+  function run(k, op) {
+    if (k.v === null) { show(tree.idle(k.note)); return; }
+    var steps = op(k.v);
+    steps[0].caption = k.note + steps[0].caption;
+    show(steps, true);
+  }
   function guard() {
     if (tree.leaves.live + tree.interiors.live < 56) return true;
     show(tree.idle('This demo stops at 56 nodes so that the picture stays readable. Delete some keys or press Reset.'));
     return false;
   }
+  function put() {
+    if (guard()) run(readKey(function () { return rand.int(1, 99); }, 'a random one is used'), function (v) { return tree.put(v); });
+  }
+  function del() {
+    run(readKey(function () { var ks = tree.keys(); return ks.length ? rand.pick(ks) : 1; }, 'a random key of the tree is deleted'), function (v) { return tree.delete(v); });
+  }
   fig.toolbar.append(
     input,
-    el('button.bt-btn.bt-primary#put', { type: 'button', onclick: function () { if (guard()) show(tree.put(key()), true); } }, 'Put'),
-    el('button.bt-btn#del', { type: 'button', onclick: function () {
-      var v = input.value === '' ? (function () { var ks = []; (function walk(n) { if (!n) return; ks = ks.concat(n.keys); n.children.forEach(walk); })(tree.snapshot()); return ks.length ? rand.pick(ks) : 1; })() : key();
-      input.value = '';
-      show(tree.delete(v), true);
-    } }, 'Delete'),
+    el('button.bt-btn.bt-primary#put', { type: 'button', onclick: put }, 'Put'),
+    el('button.bt-btn#del', { type: 'button', onclick: del }, 'Delete'),
     el('span.bt-toolbar-sep'),
-    el('button.bt-btn#vacuum', { type: 'button', onclick: function () { show(tree.vacuum(), true); } }, 'Vacuum'),
+    el('button.bt-btn#vacuum', { type: 'button', title: 'Evacuate the emptiest slab (growing policy only)', onclick: function () { show(tree.vacuum(), true); } }, 'Vacuum'),
     el('button.bt-btn#holes', { type: 'button', onclick: holes }, 'Make holes'),
+    el('span.bt-toolbar-sep'),
+    el('button.bt-btn#static', { type: 'button', title: 'Empty tree: reserve 3 leaf slabs and 2 interior slabs, then freeze the allocator', onclick: staticMode }, 'Static memory'),
+    el('button.bt-btn#fill', { type: 'button', title: 'Insert ascending keys until the frozen pool refuses one (static policy only)', onclick: fill }, 'Fill'),
+    el('span.bt-toolbar-sep'),
     el('button.bt-btn#reset', { type: 'button', onclick: reset }, 'Reset'));
-  input.addEventListener('keydown', function (e) { if (e.key === 'Enter' && guard()) show(tree.put(key()), true); });
+  input.addEventListener('keydown', function (e) { if (e.key === 'Enter') put(); });
   reset();
 
   /* ---- code panels */
@@ -162,6 +246,7 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
   cf.stage.appendChild(grid);
   BTViz.codePanel(grid, 'create', { title: 'SlabPool.create', maxHeight: 330 }).highlight({ zig: [[3, 5], [10, 11]], rust: [[3, 9], [11, 13]] });
   BTViz.codePanel(grid, 'relocate', { title: 'vacuum: relocate + one handle rewrite', maxHeight: 330 }).highlight({ zig: [[3, 5], 14], rust: [[3, 6], [16, 17]] });
+  BTViz.codePanel(grid, 'freeze', { title: 'static memory: reserve, then freeze', maxHeight: 330 }).highlight(FREEZE_LINES);
 
   /* ---- self-tests: the JS model must reproduce expected_output.txt */
   var t = new Ch26.Tree(4, 4);
@@ -181,6 +266,20 @@ Chapter text: <a href="../README.md">README</a>. Second page: <a href="buddy.htm
     '3 1 | 0[####] 1[#.#.] 2[released] 3[released] 4[released] | 0[####] 1[released] 2[released] 3[released]');
   BTViz.selfTest('section 3: tree after vacuum', t.dump(),
     'I0.1 [20 40]\n  I0.0 [10]\n    L0.0 [5]\n    L0.1 [15]\n  I0.3 [30]\n    L1.0 [25]\n    L1.2 [35]\n  I0.2 [50]\n    L0.2 [45]\n    L0.3 [55 60]\n');
+
+  /* Static mode: the same scenario as the test "static picture" in zig/src/btree.zig and rust/src/btree.rs. */
+  var st = new Ch26.Tree(4, 4, { static: true });
+  st.reserveAndFreeze(3, 2);
+  var sk = 1;
+  while (st.put(sk).result !== 'oom') sk++;
+  var sp = st.policy();
+  BTViz.selfTest('static: fill until refused', [sk, st.count, st.height, sp.refused, sp.leafSlabs, sp.intSlabs, st.leaves.map(), st.interiors.map()].join(' | '),
+    '25 | 24 | 4 | 1 | 3 | 2 | 0[####] 1[####] 2[####] | 0[####] 1[####]');
+  BTViz.selfTest('static: tree when dry', st.dump(),
+    'I1.1 [8]\n  I0.1 [4]\n    I0.0 [2]\n      L0.0 [1]\n      L0.1 [3]\n    I0.2 [6]\n      L0.2 [5]\n      L0.3 [7]\n  I1.2 [12 16]\n    I0.3 [10]\n      L1.0 [9]\n      L1.1 [11]\n' +
+    '    I1.0 [14]\n      L1.2 [13]\n      L1.3 [15]\n    I1.3 [18 20 22]\n      L2.0 [17]\n      L2.1 [19]\n      L2.2 [21]\n      L2.3 [23 24]\n');
+  st.delete(7);
+  BTViz.selfTest('static: delete 7, put 25', [st.put(25).result, st.policy().leafSlabs, st.policy().frees].join(' | '), 'true | 3 | 0');
 })();
 </script>
 </body>

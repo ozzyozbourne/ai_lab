@@ -157,7 +157,7 @@
     opts = opts || {};
     if (opts.cold !== false) evictUnpinned(tree.pool);
     var op = new InsertOp(tree, key, vlen);
-    var steps = [], calls = [], lines = [];
+    var steps = [], calls = [], lines = [], readsBefore = tree.pool.pager.reads;
     function snap(kind, caption, hl, extra) {
       var st = {
         kind: kind, caption: caption, highlight: hl || {},
@@ -166,7 +166,7 @@
             carry: op.carry ? 'sep "' + op.carry.sep + '", left ' + op.carry.left + ', right ' + op.carry.right : null,
             waiting: op.waiting, key: key, vlen: vlen, live: op.state !== 'done' },
           calls: JSON.parse(JSON.stringify(calls)), running: kind === 'transition' || kind === 'call' || kind === 'yield' || kind === 'again',
-          reads: tree.pool.pager.reads }
+          reads: tree.pool.pager.reads - readsBefore }
       };
       if (extra) for (var x in extra) st[x] = extra[x];
       steps.push(st);

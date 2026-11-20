@@ -820,7 +820,7 @@
       this.meta[slot].valid = false;
       this.meta[slot].crc = (this.meta[slot].crc ^ 0xFF00) >>> 0;
       this.note('<b>Power fails</b> before the meta write of transaction ' + t.id + '. And when the machine comes back, meta slot ' + slot + ' (transaction ' + newest +
-        ', the newest commit) cannot be read: a bad sector. Two faults at once. The only readable slot is the one transaction ' + t.id + ' was about to overwrite.',
+        ', the newest commit) cannot be read: a bad sector, or a read error that may be gone tomorrow. Two faults at once. The only readable slot is the one transaction ' + t.id + ' was about to overwrite.',
         { txn: t, log: 'crash; meta slot ' + slot + ' unreadable' });
       var extra = this.drawable(before, this.pick().pages) ? { root: before, label: 'lost' } : null;
       this.reopen();

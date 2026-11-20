@@ -12,6 +12,10 @@
 //! Several of these trees still answer every `get` correctly. That is the
 //! reason `validate` exists: a test that only looks at query results cannot
 //! see such damage until a later insert or delete trips over it.
+//!
+//! A broken tree can still be inspected and torn down: `render`, `shape` and
+//! `deinit` skip a missing child instead of aborting (a test below runs them
+//! on all ten). Only `get` is not safe on case 7.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const tree_mod = @import("tree.zig");
@@ -115,8 +119,8 @@ pub fn keysFound(t: *const Tree) usize {
 }
 
 test "every case breaks exactly the invariant it names" {
-    // An arena, because a broken tree cannot be freed by walking it: the
-    // walk would follow the very pointers that are wrong.
+    // An arena: one reset frees a tree whatever state it is in, including
+    // the nodes a walk from the root would no longer reach (next test).
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const found_expected = [cases.len]?usize{ 11, 11, 12, 11, 3, 12, null, 12, 11, 12 };
@@ -162,13 +166,67 @@ test "two defects: validate reports the one its walk meets first" {
     try keyOnWrongSide(&a, arena);
     try std.testing.expectError(error.KeyOutsideParentBounds, a.validate());
 
-    // A disordered first leaf and an erased last child pointer. This walk
-    // looks at child slot 3 only after it has finished with children 0 to 2,
-    // so it reports the leaf. The Rust twin compares the number of children
-    // before it descends and reports MissingChild for the same tree.
+    // A disordered first leaf and an erased last child pointer. The walk
+    // looks at ALL child slots of a node before it descends into the first
+    // child, so the root's defect wins although the leaf is further left.
+    // (Regression: an older walk descended first and said KeysOutOfOrder
+    // here, while the Rust twin said MissingChild.)
     var b: Tree = .empty;
     try tree_mod.canonical(&b, arena);
     std.mem.swap(u64, &leafAt(&b, 0).keys[0], &leafAt(&b, 0).keys[1]);
     try eraseChild(&b, arena);
-    try std.testing.expectError(error.KeysOutOfOrder, b.validate());
+    try std.testing.expectError(error.MissingChild, b.validate());
+}
+
+/// What `render` prints for each broken tree, and how many nodes a walk
+/// from the root can no longer reach (so `deinit` cannot free them).
+const Inspection = struct { rendered: []const u8, stranded: usize = 0 };
+const inspections = [cases.len]Inspection{
+    .{ .rendered = "[6 10 20]\n[1 3 5] [7] [12 17 15] [25 30]\n" },
+    .{ .rendered = "[6 10 20]\n[1 3 5] [11] [12 15 17] [25 30]\n" },
+    .{ .rendered = "[6 10 20]\n[1 3 5] [7] [12 15 17 18] [25 30]\n" },
+    .{ .rendered = "[6 10 20]\n[1 3 5] [] [12 15 17] [25 30]\n" },
+    // 0 keys means 1 child for a walk: the other three leaves are out of reach.
+    .{ .rendered = "[]\n[1 3 5]\n", .stranded = 3 },
+    // The height is measured along the leftmost path, so level 3 is not printed.
+    .{ .rendered = "[6 10 20]\n[1 3 5] [7] [15] [25 30]\n" },
+    .{ .rendered = "[6 10 20]\n[1 3 5] [7] [12 15 17]\n", .stranded = 1 },
+    .{ .rendered = "[6 10 20]\n[1 3 5] [7] [12 15 17] [25 30]\n" },
+    .{ .rendered = "[6 10 20]\n[1 3] [7] [12 15 17] [25 30]\n" },
+    .{ .rendered = "[6 10 20]\n[1 3 5] [7] [12 15 17] [25 30]\n", .stranded = 1 },
+};
+
+/// Build case `i` on `gpa`, then print, measure, validate and walk-free it.
+fn inspectAndTearDown(gpa: Allocator, i: usize) !void {
+    var t: Tree = .empty;
+    try tree_mod.canonical(&t, gpa);
+    try cases[i].apply(&t, gpa);
+    defer t.deinit(gpa); // must not abort, whatever the damage
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try t.render(&w, "");
+    try std.testing.expectEqualStrings(inspections[i].rendered, w.buffered());
+    const reachable = t.pool.usage.live() - inspections[i].stranded;
+    try std.testing.expectEqual(reachable, t.shape().nodes);
+    try std.testing.expectError(cases[i].expect, t.validate());
+}
+
+test "every broken tree can be printed, measured, validated and torn down" {
+    // Regression: `render` and `shape` unwrapped the erased pointer of case
+    // 7, and `deinit` asserted that no node was left, which aborted on
+    // cases 5, 7 and 10.
+    for (cases, inspections, 0..) |_, inspection, i| {
+        // 1. Nodes in an arena, with a counter in between: the walk in
+        //    `deinit` frees exactly the nodes it can reach, the arena frees
+        //    the stranded ones. testing.allocator sees no leak.
+        var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena_state.deinit();
+        var counting: std.testing.FailingAllocator = .init(arena_state.allocator(), .{});
+        try inspectAndTearDown(counting.allocator(), i);
+        try std.testing.expectEqual(inspection.stranded, counting.allocations - counting.deallocations);
+
+        // 2. Seven of the ten are freed completely by the walk alone:
+        //    testing.allocator would report a leak or a double free.
+        if (inspection.stranded == 0) try inspectAndTearDown(std.testing.allocator, i);
+    }
 }

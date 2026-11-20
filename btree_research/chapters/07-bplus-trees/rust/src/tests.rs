@@ -5,7 +5,7 @@
 
 use crate::arena::{NodeId, OutOfNodes};
 use crate::dump;
-use crate::node::Node;
+use crate::node::{KEY_CAPACITY, Node};
 use crate::ops::{Config, Op, OpStream, Oracle, Weights};
 use crate::tree::BPlusTree;
 use crate::validate::Violation;

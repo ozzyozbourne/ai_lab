@@ -523,7 +523,10 @@
 
   Tree.prototype.frameModel = function () {
     return { hand: this.pool.hand, frames: this.pool.frames.map(function (fr) {
-      return fr.page === null ? { page: null } : { page: fr.page, pin: fr.pin, ref: fr.ref ? 1 : 0, dirty: fr.dirty };
+      if (fr.page === null) return { page: null };
+      var out = { page: fr.page, pin: fr.pin, ref: fr.ref ? 1 : 0, dirty: fr.dirty };
+      if (fr.pin > 0) out.state = 'active';
+      return out;
     }) };
   };
 

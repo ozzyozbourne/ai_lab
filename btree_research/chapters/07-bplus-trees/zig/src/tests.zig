@@ -7,6 +7,7 @@ const Allocator = std.mem.Allocator;
 
 const BPlusTree = @import("tree.zig").BPlusTree;
 const NodeId = @import("arena.zig").NodeId;
+const node = @import("node.zig");
 const LeafWalker = @import("walk.zig").LeafWalker;
 const dump = @import("dump.zig");
 const ops = @import("ops.zig");

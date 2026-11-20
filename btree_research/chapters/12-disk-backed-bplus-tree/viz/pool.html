@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 12 — The buffer pool during a split</title>
+<link rel="stylesheet" href="../../../assets/viz.css">
+<style>
+@media (max-width: 820px) {
+  #fig-pool .bt-figure { display: flex; flex-direction: column; }
+  #fig-pool .bt-figure-body { display: contents; }
+  #fig-pool .bt-stage { order: 1; }
+  #fig-pool .bt-caption { order: 2; }
+  #fig-pool .bt-controls-slot { order: 3; }
+  #fig-pool .bt-legend { order: 4; }
+  #fig-pool .bt-side { order: 5; }
+}
+.ch12-hint { font-size: .88rem; color: var(--bt-muted); margin: 0 0 8px; min-height: 1.3em; }
+.ch12-hint.is-error { color: var(--bt-key-deleted); font-weight: 600; }
+.ch12-label { font-size: .82rem; color: var(--bt-muted); margin: 10px 0 4px; }
+.ch12-why { color: var(--bt-muted); }
+.ch12-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+#key-in { width: 7.5em; }
+#val-in { width: 6em; }
+</style>
+</head>
+<body>
+
+<p class="bt-lead">The tree never touches the file. It asks the buffer pool for a page id, gets a pinned
+frame, changes it, and unpins it as dirty. This page shows every one of those calls during a put.
+Text of the chapter: <a href="../README.md">README.md</a>. First page:
+<a href="index.html">the tree of pages</a>.</p>
+
+<h2>The buffer pool during an insert that splits</h2>
+<p>The figure starts where part 4 of the chapter's programs starts: the first 11 scenario keys are in the tree
+and the tree has been flushed, so every frame is clean. <strong>Put next scenario key</strong> inserts key 15,
+which splits leaf page 2. Step through it and watch three things: at most <em>two</em> pages are ever pinned
+at once; a small pool has to evict in the middle of the split, which writes a half-finished state to the file;
+and after the put the changed pages are only dirty in memory. <strong>Flush</strong> then writes them one by one.
+Change the number of frames to see the same put with more or less memory. A new operation always starts
+from the state after the operation you are looking at has finished.</p>
+<div id="fig-pool"></div>
+
+<script src="../../../assets/viz.js"></script>
+<script src="code.js"></script>
+<script src="model.js"></script>
+<script>
+(function () {
+  'use strict';
+  var el = BTViz.el;
+
+  BTViz.page({
+    title: 'The buffer pool during a split', chapter: 12,
+    prev: { href: 'index.html', title: 'Chapter 12, page 1: the tree of pages' },
+    next: { href: '../../13-overflow-and-free-space/viz/index.html', title: 'Chapter 13: overflow and free space' },
+    index: '../../../index.html'
+  });
+
+  var PRELOAD = 11;        // demo.CRASH_PUT: the keys that are on disk at the start
+  var MAX_PAGES = 30;
+  var MAX_KEY_CHARS = 8;
+
+  var fig = BTViz.figure('#fig-pool', {
+    title: 'Frames, pins and dirty pages', side: true,
+    legend: [
+      { token: 'node-active', label: 'pinned (frame and page)' },
+      { token: 'page-dirty', label: 'dirty: differs from the file' },
+      { token: 'split', label: 'page being split, its halves' },
+      { token: 'key-inserted', label: 'new cell' },
+      { token: 'free', label: 'empty frame' },
+      { token: 'node', label: 'faded page: only in the file, not cached' }
+    ]
+  });
+
+  var framesSel = el('select.bt-select#frames-sel', { 'aria-label': 'Number of frames' });
+  [2, 3, 4, 8].forEach(function (n) { framesSel.appendChild(el('option', { value: n, selected: n === 3 }, n + ' frames')); });
+  var keyIn = el('input.bt-input#key-in', { type: 'text', maxlength: 12, 'aria-label': 'Key', placeholder: 'key', autocomplete: 'off' });
+  var valIn = el('input.bt-input#val-in', { type: 'text', inputmode: 'numeric', 'aria-label': 'Value size in bytes', placeholder: '0 to 1024', autocomplete: 'off', value: '700' });
+  var nextBtn = el('button.bt-btn.bt-primary#btn-next', { type: 'button', onclick: putNext }, 'Put next scenario key');
+  var flushBtn = el('button.bt-btn#btn-flush', { type: 'button', onclick: doFlush }, 'Flush');
+  var putBtn = el('button.bt-btn#btn-put', { type: 'button', onclick: putTyped }, 'Put');
+  var resetBtn = el('button.bt-btn#btn-reset', { type: 'button', onclick: function () { reset(); say(''); } }, 'Reset');
+  fig.toolbar.append(nextBtn, flushBtn, el('span.bt-toolbar-sep'), el('label.bt-field', 'key', keyIn), el('label.bt-field', 'value bytes', valIn), putBtn,
+    el('span.bt-toolbar-sep'), framesSel, resetBtn);
+
+  var hint = el('p.ch12-hint#hint', { role: 'status' });
+  fig.stage.appendChild(hint);
+  var chips = el('div.ch12-chips#counters', { role: 'status', 'aria-label': 'Counters' });
+  fig.stage.appendChild(chips);
+  fig.stage.appendChild(el('div.ch12-label', 'Memory: the frames of the pool. Page 0 is the metapage.'));
+  var grid = new BTViz.FrameGrid(fig.stage);
+  fig.stage.appendChild(el('div.ch12-label', 'The tree. Outlined pages are pinned, a dot marks a dirty page, faded pages are not in memory.'));
+  var view = new BTViz.TreeView(fig.stage, { minHeight: 200, ariaLabel: 'The tree, one box per page' });
+
+  var log = new BTViz.Log(fig.side, { title: 'Buffer pool calls', empty: 'No calls yet.' });
+  var panels = {};
+  ['put', 'pushRootDown', 'splitLeaf', 'insertSeparator', 'splitInterior', 'flush'].forEach(function (name) {
+    panels[name] = BTViz.codePanel(fig.side, name, { title: 'disk_btree: ' + name, maxHeight: 230 });
+    panels[name].root.hidden = name !== 'put';
+  });
+
+  var tree, scenarioAt, base, lastCode = 'put';
+
+  function collectIds(node, out) {
+    if (Array.isArray(node)) { node.forEach(function (n) { collectIds(n, out); }); return out; }
+    out.push(+node.id.slice(1));
+    (node.children || []).forEach(function (c) { collectIds(c, out); });
+    return out;
+  }
+
+  var stepper = new BTViz.Stepper({
+    mount: fig.controls, caption: fig.caption, root: fig.root, interval: 1900,
+    onStep: function (step, index) {
+      grid.render(step.frames);
+      // Tree: the step's own highlight, then pinned pages on top, uncached pages faded.
+      var hl = { nodes: {}, keys: step.highlight.keys || {}, edges: step.highlight.edges || {}, links: step.highlight.links || {} };
+      collectIds(step.state, []).forEach(function (id) { if (step.cachedPages.indexOf(id) < 0) hl.nodes['p' + id] = 'dim'; });
+      Object.keys(step.highlight.nodes || {}).forEach(function (k) { hl.nodes[k] = step.highlight.nodes[k]; });
+      step.pinnedPages.forEach(function (id) { if (!hl.nodes['p' + id] || hl.nodes['p' + id] === 'dim') hl.nodes['p' + id] = 'active'; });
+      view.render(step.state, hl);
+      var c = step.counters;
+      chips.textContent = '';
+      [['pinned', step.pinnedPages.length, 'active'], ['dirty', step.dirtyPages.length, 'dirty'], ['hits', c.hits - base.hits, null], ['misses', c.misses - base.misses, null],
+        ['evictions', c.evictions - base.evictions, null], ['file reads', c.reads - base.reads, null], ['file writes', c.writes - base.writes, 'dirty'],
+        ['pages in file', c.pages, null]].forEach(function (x) {
+        chips.appendChild(el('span', { class: 'bt-chip' + (x[2] ? ' s-' + x[2] : ''), 'data-counter': x[0] }, x[0] + ' ' + x[1]));
+      });
+      log.sync(stepper.steps, index);
+      if (step.code) lastCode = step.code;
+      var show = step.codeOverride || (step.code ? step.code : lastCodeAt(index));
+      Object.keys(panels).forEach(function (name) { panels[name].root.hidden = name !== show; });
+    }
+  });
+
+  /* Pool-call steps carry no code name: show the function of the last tree-level step before them. */
+  function lastCodeAt(index) {
+    for (var i = index; i >= 0; i--) {
+      var s = stepper.steps[i];
+      if (s.codeOverride) return s.codeOverride;
+      if (s.code) return s.code;
+    }
+    return 'put';
+  }
+
+  function say(text, isError) {
+    hint.textContent = text || '';
+    hint.classList.toggle('is-error', !!isError);
+  }
+
+  function counterBase() {
+    var p = tree.pool;
+    return { hits: p.stats.hits, misses: p.stats.misses, evictions: p.stats.evictions, reads: p.pager.reads, writes: p.pager.writes };
+  }
+
+  function updateButtons() {
+    var left = CH12.SCENARIO.length - scenarioAt;
+    nextBtn.disabled = left === 0;
+    nextBtn.textContent = left === 0 ? 'Scenario finished (24 of 24)' :
+      'Put next scenario key: ' + CH12.scenarioKey(CH12.SCENARIO[scenarioAt]) + ' (' + (scenarioAt + 1) + ' of 24)';
+  }
+
+  function reset() {
+    tree = new CH12.Tree({ pageSize: 4096, frames: +framesSel.value, detail: 'pool' });
+    for (scenarioAt = 0; scenarioAt < PRELOAD; scenarioAt++) {
+      var n = CH12.SCENARIO[scenarioAt];
+      tree.put(CH12.scenarioKey(n), CH12.scenarioValueLen(n, 4096), false);
+    }
+    tree.flush();
+    base = counterBase();
+    var s = tree.makeStep('rest', 'Start: 11 keys in 4 pages (metapage 0, root 1, leaves 2 and 3), flushed, so no frame is dirty. ' +
+      'The counters above count from here. The pool has ' + tree.pool.frames.length + ' frames for ' + tree.pool.pageCount + ' pages' +
+      (tree.pool.frames.length < tree.pool.pageCount ? ', so not every page can be in memory.' : ', so everything fits in memory.'), {}, 'put', null);
+    stepper.setSteps([s]);
+    updateButtons();
+  }
+
+  function play(key, vlen) {
+    if (tree.pool.pageCount >= MAX_PAGES) {
+      say('This drawing stops at ' + MAX_PAGES + ' pages. Press Reset to start again.', true);
+      return false;
+    }
+    base = counterBase();
+    var steps = tree.put(key, vlen, true);
+    var maxPinned = 0;
+    steps.forEach(function (s) { maxPinned = Math.max(maxPinned, s.pinnedPages.length); });
+    var last = steps[steps.length - 1];
+    last.caption += ' This put made ' + (steps.filter(function (s) { return /^pool-(hit|miss|new)$/.test(s.type); }).length) +
+      ' fetch or new-page calls and never had more than ' + maxPinned + ' page' + (maxPinned === 1 ? '' : 's') + ' pinned at once; ' +
+      last.dirtyPages.length + ' frame' + (last.dirtyPages.length === 1 ? ' is' : 's are') + ' dirty now.';
+    steps[0].log = { html: '<b>put ' + CH12.esc(key) + '</b> (' + vlen + ' value bytes)', state: 'inserted' };
+    stepper.setSteps(steps, { play: true });
+    updateButtons();
+    return true;
+  }
+
+  function putNext() {
+    if (scenarioAt >= CH12.SCENARIO.length) return;
+    var n = CH12.SCENARIO[scenarioAt];
+    if (play(CH12.scenarioKey(n), CH12.scenarioValueLen(n, 4096))) {
+      scenarioAt++;
+      updateButtons();
+      say('Scenario put ' + scenarioAt + ' of 24.');
+    }
+  }
+
+  function putTyped() {
+    var key = keyIn.value, raw = valIn.value.trim();
+    if (key === '') return say('Type a key first (1 to ' + MAX_KEY_CHARS + ' printable characters).', true);
+    if (!/^[\x21-\x7e]+$/.test(key)) return say('Keys on this page are printable ASCII without spaces, so that byte order is what you see.', true);
+    if (key.length > MAX_KEY_CHARS) return say('This page limits keys to ' + MAX_KEY_CHARS + ' characters to keep the drawing legible (the format allows ' + tree.maxKey + ' bytes).', true);
+    if (!/^\d+$/.test(raw)) return say('The value size must be a whole number of bytes from 0 to ' + tree.maxValue + ' ("' + raw + '" is not).', true);
+    var vlen = parseInt(raw, 10);
+    if (vlen > tree.maxValue) return say('A value may have at most ' + tree.maxValue + ' bytes (a quarter of the page): put would return ValueTooLarge.', true);
+    if (play(key, vlen)) {
+      say('put ' + key + ' with ' + vlen + ' value bytes.');
+      keyIn.value = '';
+    }
+  }
+
+  function doFlush() {
+    base = counterBase();
+    var steps = tree.flushSteps();
+    steps.forEach(function (s) { s.codeOverride = 'flush'; });
+    var writes = steps.filter(function (s) { return s.type === 'pool-write'; });
+    writes.forEach(function (s, i) {
+      if (i < writes.length - 1) {
+        s.caption += ' Still to write: page' + (s.dirtyPages.length === 1 ? ' ' : 's ') + s.dirtyPages.join(', ') + '.';
+      }
+    });
+    steps[0].log = { html: '<b>flush</b>', state: 'found' };
+    steps[steps.length - 1].caption = 'Flushed and synced with ' + writes.length + ' page write' + (writes.length === 1 ? '' : 's') +
+      ': every frame is clean and the file holds the whole tree. Had the process died between two of those writes, the file would hold a mix of old and new pages (part 4 of the programs tries every such point).';
+    stepper.setSteps(steps, { play: true });
+    say('flush');
+  }
+
+  framesSel.addEventListener('change', function () { reset(); say('Pool size changed: back to the start state.'); });
+  [keyIn, valIn].forEach(function (input) {
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.stopPropagation(); putTyped(); } });
+  });
+
+  reset();
+
+  /* Self-tests: the model's pool makes the same calls as the programs. */
+  var replay = CH12.replayPart1();
+  BTViz.selfTest('part 1 counters', replay.counters, [
+    'tree:  24 keys, 8 pages, height 2; splits: 5 leaf, 0 interior, 1 root',
+    'pool:  69 hits, 27 misses, 32 evictions, 19 write-backs',
+    'pager: 27 reads, 21 writes, 8 allocations, 1 syncs'].join('\n'));
+  /* Part 4: with 8 frames, put 15 and the flush need exactly 5 storage writes
+   * (1 allocation + 4 pages), and no more than two pages are ever pinned. */
+  (function () {
+    var t = new CH12.Tree({ pageSize: 4096, frames: 8, detail: 'pool' });
+    CH12.SCENARIO.slice(0, PRELOAD).forEach(function (n) { t.put(CH12.scenarioKey(n), CH12.scenarioValueLen(n, 4096), false); });
+    t.flush();
+    var before = t.pool.pager.writes + t.pool.pager.allocations;
+    var steps = t.put('15', CH12.scenarioValueLen(15, 4096), true).concat(t.flushSteps());
+    var order = steps.filter(function (s) { return s.type === 'pool-write' || s.type === 'pool-new'; })
+      .map(function (s) { return (s.type === 'pool-new' ? 'allocate ' : 'write ') + s.event.page; }).join(', ');
+    var maxPinned = Math.max.apply(null, steps.map(function (s) { return s.pinnedPages.length; }));
+    BTViz.selfTest('part 4 writes', (t.pool.pager.writes + t.pool.pager.allocations - before) + ': ' + order, '5: allocate 4, write 0, write 1, write 2, write 4');
+    BTViz.selfTest('max pins', maxPinned, 2);
+  })();
+})();
+</script>
+</body>
+</html>

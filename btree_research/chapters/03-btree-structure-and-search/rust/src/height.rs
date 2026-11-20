@@ -4,9 +4,20 @@
 //!
 //! Key counts saturate at `u64::MAX` instead of overflowing, and no tree of
 //! u64 keys is taller than 64 levels (2 * 2^63 - 1 keys).
+//!
+//! Every function asserts M >= 3, like `HandTree::new` does: with M = 2 a
+//! non-root node could hold zero keys, and the formulas would describe no
+//! B-tree (the loops below would stop at their 64-level cap with a wrong
+//! answer).
+
+/// The precondition of every function in this file.
+fn assert_order(m: u64) {
+    assert!(m >= 3, "a B-tree needs order M >= 3, got {m}");
+}
 
 /// t = ceil(M/2): the fewest children of an interior node that is not the root.
 pub fn min_children(m: u64) -> u64 {
+    assert_order(m);
     m.div_ceil(2)
 }
 
@@ -33,12 +44,14 @@ pub fn min_keys(m: u64, height: usize) -> u64 {
 
 /// Most keys in a tree of `height` levels: M^height - 1 (every node full).
 pub fn max_keys(m: u64, height: usize) -> u64 {
+    assert_order(m);
     let full = power(m, height);
     if full == u64::MAX { u64::MAX } else { full - 1 }
 }
 
 /// Shortest tree that can hold n keys: the smallest h with M^h - 1 >= n.
 pub fn min_height(m: u64, n: u64) -> usize {
+    assert_order(m);
     let mut h = 0;
     while h < 64 && max_keys(m, h) < n {
         h += 1;
@@ -48,6 +61,7 @@ pub fn min_height(m: u64, n: u64) -> usize {
 
 /// Tallest tree that n keys can form: the largest h with 2 * t^(h-1) - 1 <= n.
 pub fn max_height(m: u64, n: u64) -> usize {
+    assert_order(m);
     if n == 0 {
         return 0;
     }
@@ -91,6 +105,36 @@ mod tests {
         assert_eq!(min_height(5, 100), 3);
         assert_eq!(max_height(5, 100), 4);
         assert_eq!(min_keys(5, 5), 161);
+    }
+
+    #[test]
+    fn the_smallest_legal_order_m_3_gets_sensible_answers() {
+        // Regression: orders below 3 were accepted (see the three tests
+        // below). M = 3 is the boundary that must keep working: t = 2, so
+        // 1 or 2 keys per node.
+        assert_eq!(min_children(3), 2);
+        assert_eq!(min_keys(3, 2), 3);
+        assert_eq!(max_keys(3, 2), 8);
+        assert_eq!(min_height(3, 10), 3); // 3^2 - 1 = 8 < 10 <= 26
+        assert_eq!(max_height(3, 10), 3); // 2 * 2^2 - 1 = 7 <= 10 < 15
+    }
+
+    #[test]
+    #[should_panic(expected = "order M >= 3")]
+    fn min_height_rejects_order_0() {
+        min_height(0, 10); // used to overflow in max_keys
+    }
+
+    #[test]
+    #[should_panic(expected = "order M >= 3")]
+    fn max_height_rejects_order_2() {
+        max_height(2, 10); // used to return the 64-level cap
+    }
+
+    #[test]
+    #[should_panic(expected = "order M >= 3")]
+    fn min_keys_rejects_order_1() {
+        min_keys(1, 3);
     }
 
     #[test]

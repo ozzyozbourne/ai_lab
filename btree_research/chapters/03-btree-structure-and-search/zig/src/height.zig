@@ -5,12 +5,17 @@
 //! M is a run-time number here (not `comptime`), because the functions only
 //! compute with it. Key counts saturate at maxInt(u64) instead of overflowing,
 //! and no tree of u64 keys is taller than 64 levels (2 * 2^63 - 1 keys).
+//!
+//! Every function asserts M >= 3, like `Node(M)` does: with M = 2 a non-root
+//! node could hold zero keys, and the formulas would describe no B-tree
+//! (the loops below would stop at their 64-level cap with a wrong answer).
 const std = @import("std");
 
 const max_u64 = std.math.maxInt(u64);
 
 /// t = ceil(M/2): the fewest children of an interior node that is not the root.
 pub fn minChildren(m: u64) u64 {
+    std.debug.assert(m >= 3);
     return (m + 1) / 2;
 }
 
@@ -31,12 +36,14 @@ pub fn minKeys(m: u64, height: usize) u64 {
 
 /// Most keys in a tree of `height` levels: M^height - 1 (every node full).
 pub fn maxKeys(m: u64, height: usize) u64 {
+    std.debug.assert(m >= 3);
     const full = power(m, height);
     return if (full == max_u64) max_u64 else full - 1;
 }
 
 /// Shortest tree that can hold n keys: the smallest h with M^h - 1 >= n.
 pub fn minHeight(m: u64, n: u64) usize {
+    std.debug.assert(m >= 3);
     var h: usize = 0;
     while (h < 64 and maxKeys(m, h) < n) h += 1;
     return h;
@@ -44,6 +51,7 @@ pub fn minHeight(m: u64, n: u64) usize {
 
 /// Tallest tree that n keys can form: the largest h with 2 * t^(h-1) - 1 <= n.
 pub fn maxHeight(m: u64, n: u64) usize {
+    std.debug.assert(m >= 3);
     if (n == 0) return 0;
     var h: usize = 1;
     while (h < 64 and minKeys(m, h + 1) <= n) h += 1;
@@ -77,6 +85,19 @@ test "height bounds: the README's worked example" {
     try std.testing.expectEqual(3, minHeight(5, 100));
     try std.testing.expectEqual(4, maxHeight(5, 100));
     try std.testing.expectEqual(161, minKeys(5, 5));
+}
+
+test "the smallest legal order, M = 3, gets sensible answers" {
+    // Regression: orders below 3 were accepted. minHeight(0, n) overflowed
+    // and maxHeight(2, n) returned the 64-level cap. They now trip the
+    // assert (which a Zig test cannot catch; the Rust twin has
+    // `should_panic` tests). M = 3 is the boundary that must keep working:
+    // t = 2, so 1 or 2 keys per node.
+    try std.testing.expectEqual(2, minChildren(3));
+    try std.testing.expectEqual(3, minKeys(3, 2));
+    try std.testing.expectEqual(8, maxKeys(3, 2));
+    try std.testing.expectEqual(3, minHeight(3, 10)); // 3^2 - 1 = 8 < 10 <= 26
+    try std.testing.expectEqual(3, maxHeight(3, 10)); // 2 * 2^2 - 1 = 7 <= 10 < 15
 }
 
 test "the two bounds are consistent, and huge inputs saturate instead of overflowing" {

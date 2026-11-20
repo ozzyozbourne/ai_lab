@@ -13,7 +13,10 @@
 
   function TreeCards(mount) {
     this.root = el('div.c17-tree', { role: 'img', 'aria-label': 'The tree, one card per page, root at the top' });
+    // Shown only while the tree is taller than the height it was given.
+    this.note = el('p.c17-note', { hidden: true }, 'The tree is taller than the screen: scroll inside the drawing to see the rest. It follows the highlighted pages by itself.');
     mount.appendChild(this.root);
+    mount.appendChild(this.note);
   }
 
   // state: {root, pageSize, pages: [{id, leaf, low, high, right, cells, seps, children, used}]}
@@ -53,7 +56,10 @@
   // step controls fit on one screen) or null for "as tall as it needs". A tree
   // taller than that scrolls inside its own box.
   TreeCards.prototype.setMaxHeight = function (px) {
+    var scrolled = this.root.scrollTop;
     this.root.style.maxHeight = px ? px + 'px' : '';
+    this.root.scrollTop = scrolled;
+    this.note.hidden = !px;
     this.reveal();
   };
 

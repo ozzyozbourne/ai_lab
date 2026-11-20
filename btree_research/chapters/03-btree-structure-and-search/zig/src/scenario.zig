@@ -88,8 +88,9 @@ const KeyPrinter = struct {
 fn brokenTrees(arena_state: *std.heap.ArenaAllocator, w: *Writer) !void {
     try w.writeAll("\n== 4. Break the canonical tree on purpose: one change, one broken invariant ==\n");
     for (broken.cases, 1..) |case, number| {
-        // A broken tree cannot be freed by walking it. The arena does not
-        // need to: forget the previous tree, keep the memory for the next.
+        // A walk frees only what it can reach from the root, and three of
+        // these trees have nodes it cannot reach. The arena does not need
+        // to walk: forget the previous tree, keep the memory for the next.
         _ = arena_state.reset(.retain_capacity);
         var t: Tree4 = .empty;
         try tree_mod.canonical(&t, arena_state.allocator());

@@ -56,9 +56,8 @@ The three costs have names:
 | Read amplification | blocks read per point lookup | the height of the tree | up to two blocks per run that might hold the key |
 | Space amplification | blocks in use divided by the blocks needed if every live key were packed tightly | leaves are partly empty | old versions and tombstones wait for compaction; a compaction needs input and output at once |
 
-A B+tree does its organising at write time. An LSM-tree postpones it and does
-it in batches. Nothing is free: the same sorting work is done, but at a
-different time and in a different shape.
+A B+tree organises at write time. An LSM-tree postpones the work and does it
+in batches.
 
 ## A worked example by hand
 
@@ -79,7 +78,7 @@ put 17      | btree r=2 w=1 | lsm r= 0 w= 0 |
 put 3       | btree r=3 w=4 | lsm r= 6 w= 7 | btree: leaf split. lsm: flush. lsm: compact level 0 into level 1.
 ```
 
-Follow the LSM column. The first four puts cost nothing. `put 12` finds the
+LSM column: the first four puts cost nothing. `put 12` finds the
 memtable full, so the four keys `5 6 10 20` are flushed first: two data blocks
 (`5 6 10` and `20`) and one index block, three writes. Then 12 goes into the
 empty memtable. `put 3` triggers the second flush (`7 12 17 30`, three more
@@ -88,7 +87,7 @@ blocks are read, and the eight keys are written as the level-1 run, three data
 blocks and one index block. That one operation read 6 and wrote 3 + 4 = 7
 blocks. Eight earlier writes had cost nothing; this is their bill.
 
-Follow the B+tree column. Every put reads the path to its leaf and writes at
+B+tree column: every put reads the path to its leaf and writes at
 least that leaf. `put 3` splits a leaf in the middle of the leaf chain and
 dirties four blocks: both halves, the parent that gets a separator, and the
 right-hand neighbour, whose back link must point at the new leaf.
@@ -134,8 +133,7 @@ blocks allocated. The rules are the same for both structures:
 - A data block holds M - 1 entries and an index block M first-keys, the same
   as a leaf and an internal node of the B+tree.
 
-Only counts are printed. How long a block takes depends on the hardware; how
-many blocks are touched depends on the data structure.
+Only counts are printed, never timings.
 
 ## Code walk-through
 
@@ -208,8 +206,8 @@ value. Finding the old value would cost a read, and not reading is the point.
 level 0 and the memtable are within their limits, that no compaction is
 pending, and that the device's block count equals the blocks of all runs.
 
-`bench.zig` applies one operation stream to the B+tree, the LSM-tree and the
-oracle, and records the counter difference around each operation.
+`bench.zig` applies one operation stream to both structures and the oracle and
+records the counter difference around each operation.
 
 ### Rust
 
@@ -228,7 +226,6 @@ The Rust crate has the same files, names, tests and output. The differences:
   versions read alike.
 - **Walker.** `LeafWalker` borrows the tree mutably, because stepping to the
   next leaf counts a read.
-- Level 0 is a `Vec<Run>` where Zig uses a fixed array and a length.
 
 ### What the programs measure
 
@@ -317,9 +314,8 @@ batches are large, the fan-out is small and the tree is taller. Textbook
 bounds: an insert costs about (log_B N) / (epsilon * B^(1 - epsilon)) block
 transfers amortised, and a lookup about (log_B N) / epsilon.
 
-It is a midpoint in this sense. Like an LSM-tree it turns many small writes
-into few block writes by batching. Like a B-tree it keeps one tree and one
-path per lookup, so a read does not have to probe several runs.
+It is a midpoint: it batches writes like an LSM-tree and keeps one path per
+lookup like a B-tree.
 
 The page's model has one node with four leaves. In a scratch run of that model
 (5000 puts of uniformly random keys from 0 to 99), the block I/O per message
@@ -336,8 +332,7 @@ B-tree (see `research/tigerbeetle.md`, section 0).
   "particularly good at writes and TigerBeetle's workload is write-heavy", it
   is "organized around batches of data, just like the rest of TigerBeetle", and
   it "keeps hot data near the root while colder data sinks down"
-  (`tigerbeetle/docs/ARCHITECTURE.md:384-387`). The research notes add that
-  the documents contain no explicit rejection of B-trees.
+  (`tigerbeetle/docs/ARCHITECTURE.md:384-387`).
 - *Growth factor and levels.* The defaults are 7 levels and growth factor 8
   (`tigerbeetle/src/config.zig:162-163`). The comment on the constant states
   the trade-off measured above: a higher growth factor "increases write
@@ -421,8 +416,7 @@ or a compaction therefore needs no allocator while it runs.
 
 **Runs: one allocation each.** A run's storage is reserved in `Builder.init`
 for the sum of its inputs. That makes compaction all-or-nothing: if the
-reservation fails, nothing has been read or written. The tests run a build
-under `std.testing.checkAllAllocationFailures` and, with a `FailingAllocator`,
+reservation fails, nothing has been read or written. The tests use `checkAllAllocationFailures` and a `FailingAllocator` to
 check that a failed write changes no answer and that the next write finishes
 the interrupted maintenance.
 
@@ -441,8 +435,7 @@ array of 128 entries.
 - **Freeing inputs before the output is complete.** A crash or an allocation
   failure in between would lose data. Build the new run, install it, then
   free the old ones. The price is space for both at once.
-- **Comparing with a cached B-tree against an uncached LSM-tree**, or the
-  reverse. Use one rule for both, and say which.
+- **Comparing a cached B-tree with an uncached LSM-tree**, or the reverse.
 - **Reading "blocks written per write" as latency.** The LSM-tree's average is
   low and its worst case is enormous unless compaction is paced.
 - **Expecting `put` to report whether the key existed.** An LSM-tree does not

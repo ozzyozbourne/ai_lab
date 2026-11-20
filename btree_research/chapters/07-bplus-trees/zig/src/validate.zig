@@ -2,8 +2,9 @@
 //! one that is broken. Tests call it after every few operations; a bug in
 //! insert or delete then fails close to the operation that caused it.
 //!
-//! The checker trusts nothing it reads from a node: a child handle is tested
-//! with `isLive` before it is followed.
+//! The checker trusts nothing it reads from a node: a length is tested before
+//! it is used as a slice bound, a child handle with `isLive` before it is
+//! followed.
 const std = @import("std");
 const BPlusTree = @import("tree.zig").BPlusTree;
 const NodeId = @import("arena.zig").NodeId;
@@ -66,12 +67,14 @@ pub fn validate(tree: *const BPlusTree) Violation!void {
 /// the sibling links as we go.
 fn checkNode(tree: *const BPlusTree, id: NodeId, depth: usize, lo: ?u64, hi: ?u64, walk: *Walk) Violation!void {
     const n = tree.nodes.get(id);
-    const keys = n.keySlice();
     const is_root = id == tree.root;
     walk.nodes += 1;
 
+    // The length is checked before it is used to slice the node's arrays: a
+    // corrupt `len` may be larger than the arrays themselves.
     if (n.len > tree.maxKeys()) return error.NodeOverfull;
     if (n.len < (if (is_root) 1 else tree.minKeys())) return error.NodeUnderfull;
+    const keys = n.keySlice();
     for (keys, 0..) |k, i| {
         if (i > 0 and keys[i - 1] >= k) return error.KeysNotSorted;
         if (lo != null and k < lo.?) return error.KeyOutOfBounds;

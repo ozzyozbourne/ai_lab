@@ -267,11 +267,17 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
   // the height that leaves its caption and step controls on the same screen;
   // a taller tree scrolls inside the drawing and follows the highlighted
   // pages. On a phone the tree is as tall as it needs and the page scrolls.
+  var NOTE_ROOM = 44; // the "scroll inside the drawing" line under a limited tree
   function fitTree() {
-    if (narrow.matches) { cards.setMaxHeight(null); return; }
+    var scrolled = cards.root.scrollTop;
+    cards.setMaxHeight(null); // measure the tree at its natural height
+    if (narrow.matches) return;
     var pad = f2.stage.offsetHeight - cards.root.offsetHeight; // the stage's own padding
-    var rest = f2.caption.offsetHeight + f2.controls.offsetHeight + pad + 12;
-    cards.setMaxHeight(Math.max(220, window.innerHeight - rest));
+    var room = window.innerHeight - (f2.caption.offsetHeight + f2.controls.offsetHeight + pad + 12);
+    if (cards.root.offsetHeight <= room) return;
+    cards.setMaxHeight(Math.max(220, room - NOTE_ROOM));
+    cards.root.scrollTop = scrolled; // measuring reset it
+    cards.reveal();
   }
   var log = new BTViz.Log(f2.side, { title: 'Events' });
   // Lit up while a search descends: each descent step names the lines that decide.
@@ -301,6 +307,7 @@ page model as the chapter's Zig and Rust programs. Text: <a href="../README.md">
     mount: f2.controls, caption: f2.caption, root: f2.root, steps: [], predict: false, interval: 1500,
     onStep: function (step, i) {
       cards.render(step.state, step.highlight);
+      fitTree(); // the tree may have grown or shrunk
       code2.highlight(step.lines || []);
       log.sync(stepper2 ? stepper2.steps : [step], i);
       renderTable(step.puts);

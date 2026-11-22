@@ -1,0 +1,9 @@
+== 1a. add_2_integers_in_riscv (Wormhole), twice
+   run 1: Success: Result is 21 clocks=[4501]
+   run 2: Success: Result is 21 clocks=[4501]
+== 1b. 640 x 640 bfloat16 matmul on one Tensix core (HiFi4, seed 42), twice
+   run 1: mean_abs_err = 1.505054 max_abs_err = 6.000000 result_hash = ef7abcd145720383 Test Passed  clocks=[330591]
+   run 2: mean_abs_err = 1.505054 max_abs_err = 6.000000 result_hash = ef7abcd145720383 Test Passed  clocks=[330591]
+== 2. eltwise add of 64 tiles: stock writer, then a writer that idles 300 clocks per tile
+   stock writer: Test Passed clocks=[7959]
+   slow writer:  Test Passed clocks=[27702]

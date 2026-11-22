@@ -1,0 +1,21 @@
+== 1. Same program, three runs, two different inputs (toy chip, 12 inputs, 8 outputs)
+   seed 0: cycles=68 dispatches=21 digest=c4cc9c761af8 matches_numpy=True validator_errors=0
+   seed 0: cycles=68 dispatches=21 digest=c4cc9c761af8 matches_numpy=True validator_errors=0
+   seed 7: cycles=68 dispatches=21 digest=f57876b75336 matches_numpy=True validator_errors=0
+== 2. The same layer at the published geometry (320 lanes, 320 x 320 weights)
+   cycles=145 (barrier 35) dispatches=352 matches_numpy=True
+== 3. Issue one instruction one cycle late (toy chip)
+   MXM_W0: Nop 11 -> 12: EmptyOperandError: MXM_W0: SR[W][0][0] is empty
+   MEM_W7: Nop 7 -> 8: EmptyOperandError: MXM_W0: SR[W][0][0] is empty
+   MEM_W6: Nop 6 -> 7: EmptyOperandError: MXM_W0: SR[W][1][0] is empty
+   MEM_W5: Nop 5 -> 6: EmptyOperandError: MXM_W0: SR[W][2][0] is empty
+   MEM_W4: Nop 4 -> 5: EmptyOperandError: MXM_W0: SR[W][3][0] is empty
+   MEM_W3: Nop 3 -> 4: EmptyOperandError: MXM_W0: SR[W][4][0] is empty
+   MEM_W2: Nop 2 -> 3: EmptyOperandError: MXM_W0: SR[W][5][0] is empty
+   MEM_W1: Nop 1 -> 2: EmptyOperandError: MXM_W0: SR[W][6][0] is empty
+   MEM_W0: Nop 22 -> 23: EmptyOperandError: VXM_A0: SR[E][4][10] is empty
+   VXM_A0: Nop 26 -> 27: EmptyOperandError: VXM_A0: SR[E][0][10] is empty
+   MEM_E0: Nop 28 -> 29: EmptyOperandError: MEM_E0: SR[E][0][11] is empty
+   MEM_E1: Nop 30 -> 31: EmptyOperandError: MEM_E1: SR[E][1][12] is empty
+   MEM_E2: Nop 31 -> 32: EmptyOperandError: MEM_E2: SR[E][2][13] is empty
+   MEM_E3: Nop 32 -> 33: EmptyOperandError: MEM_E3: SR[E][3][14] is empty

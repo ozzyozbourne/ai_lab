@@ -7,7 +7,9 @@ cycle, a Read or a Write (ledger B4); banks are not modelled (ledger B17).
 - Read(addr, out): the word is sampled on the dispatch cycle and appears on
   stream `out` at the slice's own position d_func cycles later (ledger T6, T3).
 - Write(addr, src): the plane on stream `src` is sampled on the dispatch
-  cycle t and stored at the end of cycle t + d_func - 1 (ledger T7).
+  cycle t and stored at the end of cycle t + d_func - 1 (ledger T7).  The
+  value stays on the stream and keeps flowing: a Write does not end the
+  stream (ledger B2 records the source conflict on this point).
 
 Reading an address that was never written (and was not in the memory image
 or poked as an input, ledger B22) raises EmptyOperandError.

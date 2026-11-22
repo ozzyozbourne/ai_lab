@@ -9,6 +9,7 @@ import pytest
 
 from tsp.compiler import compile_graph
 from tsp.compiler.timetable import plan_graph
+from tsp.errors import CompileError
 from tsp.graph import Graph
 from tsp.params import ChipConfig
 
@@ -200,6 +201,62 @@ def test_m1_320_on_isca2020():
     assert np.array_equal(out["y"], np.maximum(i32(W.astype(np.int64) @ x.astype(np.int64) + b), 0))
 
 
+def test_vector_longer_than_the_chip_is_rejected():
+    """A graph built for 320 lanes must not compile for the 16-lane toy chip."""
+    big = ChipConfig.isca2020()
+    toy = ChipConfig.toy()
+    n = toy.lanes + 1
+    g = Graph("too_long", lanes=big.lanes)
+    g.output("y", g.cast(g.input("x", "fp16", n), "fp32"))
+    with pytest.raises(CompileError, match="does not fit"):
+        compile_graph(g, toy)
+    assert compile_graph(g, big).inputs["x"].n == n
+
+
+def _sized_graph(case, n, lanes):
+    """A graph (built for a `lanes`-lane chip) whose only oversize dimension, if any, is n."""
+    g = Graph(f"sized_{case}", lanes=lanes)
+    if case == "input":
+        g.output("y", g.neg(g.input("x", "int32", n)))
+    elif case == "const":
+        g.output("y", g.neg(g.const("c", np.arange(n), "int32")))
+    elif case == "broadcast":
+        g.output("y", g.broadcast(g.input("x", "int32", 2), 1, n))
+    elif case in ("matrix_rows", "unused_matrix"):
+        m = g.const_matrix("W", np.ones((n, 4), dtype=np.int8), "int8")
+        x = g.input("x", "int8", 4)
+        g.output("y", g.neg(g.matvec(m, x)) if case == "matrix_rows" else g.neg(g.cast(g.input("f", "fp16", 4), "fp32")))
+    elif case == "matrix_cols":
+        m = g.const_matrix("W", np.ones((4, n), dtype=np.int8), "int8")
+        g.output("y", g.neg(g.matvec(m, g.input("x", "int8", n))))
+    elif case == "input_rows_cols":
+        m = g.matrix("W", [g.input(f"r{r}", "int8", n) for r in range(4)])
+        g.output("y", g.neg(g.matvec(m, g.input("x", "int8", n))))
+    return g
+
+
+SIZED_CASES = ["input", "const", "broadcast", "matrix_rows", "unused_matrix", "matrix_cols", "input_rows_cols"]
+
+
+@pytest.mark.parametrize("case", SIZED_CASES)
+def test_length_check_boundary(case):
+    """Exactly `lanes` elements (or rows) compiles; `lanes + 1` is a CompileError
+    for inputs, constants, computed vectors, matrix rows and matrix columns."""
+    big = ChipConfig.isca2020()
+    toy = ChipConfig.toy()
+    compile_graph(_sized_graph(case, toy.lanes, big.lanes), toy)
+    with pytest.raises(CompileError, match="not fit the chip's 16 lanes"):
+        compile_graph(_sized_graph(case, toy.lanes + 1, big.lanes), toy)
+    if case != "broadcast":   # broadcast is rejected on a multi-tile chip for another reason
+        compile_graph(_sized_graph(case, toy.lanes + 1, big.lanes), big)
+
+
+def test_matrix_with_too_many_rows_names_the_matrix():
+    g = _sized_graph("matrix_rows", ChipConfig.toy().lanes + 1, ChipConfig.isca2020().lanes)
+    with pytest.raises(CompileError, match=r"^W: 17 rows do not fit"):
+        compile_graph(g, ChipConfig.toy())
+
+
 @pytest.mark.parametrize("key", ["m1", "m2", "m3"])
 def test_milestones_against_reference(key):
     models = pytest.importorskip("tsp.models")
@@ -210,3 +267,24 @@ def test_milestones_against_reference(key):
     spec = reference.evaluate(g, inputs)
     for name in g.outputs:
         assert np.array_equal(out[name], spec[name]), name
+
+
+@pytest.mark.parametrize("key", ["m1", "m2", "m3"])
+def test_compiled_programs_never_read_a_value_after_its_write(key):
+    """Ledger B2: the simulator lets a value flow on after a MEM Write stores it,
+    where one Groq slide says a write ends the stream.  Compiled programs do not
+    depend on that choice: no instruction samples a value on a later cycle than
+    a Write that sampled it, so their outputs are the same under either reading."""
+    from tsp.models import MILESTONES, compile_and_run
+
+    g, inputs = MILESTONES[key].build()
+    _, trace, _ = compile_and_run(g, inputs)
+    written_at = {}
+    for d in trace.dispatches:
+        if d["kind"] == "write":
+            for r in d["reads"]:
+                written_at.setdefault(r["vid"], d["cycle"])
+    assert written_at
+    late = [(d["unit"], d["cycle"]) for d in trace.dispatches for r in d["reads"]
+            if r["vid"] in written_at and d["cycle"] > written_at[r["vid"]]]
+    assert late == []

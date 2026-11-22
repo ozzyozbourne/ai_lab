@@ -57,8 +57,7 @@ Still open:
 
 ## Tenstorrent course
 
-Both rounds are complete for the 22 chapters (A01 to A22) and for labs B00 to B07. Labs
-B08 to B11 have had the first round; the second is in progress.
+Both rounds are complete for the 22 chapters (A01 to A22) and the 12 labs (B00 to B11).
 
 Every command with a deterministic result was re-run on ttsim and now matches its page:
 clock counts, hashes, error messages, correlation figures and tables. That covers the
@@ -87,7 +86,10 @@ What varies between runs, and is now marked on the pages:
 - wall-clock times;
 - clock counts when debug printing or the Watcher is on, because those poll from the host;
 - clock counts of runs that end on a wall-clock timeout;
-- one two-chip program, which ends at one of two clock counts.
+- one two-chip program, which ends at one of two clock counts depending on which host
+  thread finishes first;
+- one two-chip experiment whose pass or fail depends on host speed, because it races a
+  5-second wall-clock timeout.
 
 Still open:
 

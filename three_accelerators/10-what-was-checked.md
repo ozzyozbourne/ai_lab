@@ -57,7 +57,47 @@ Still open:
 
 ## Tenstorrent course
 
-Both rounds are complete for chapters A01 to A19. The remaining chapters and the labs are still being checked; this section will be completed when that work ends.
+Both rounds are complete for the 22 chapters (A01 to A22) and for labs B00 to B07. Labs
+B08 to B11 have had the first round; the second is in progress.
+
+Every command with a deterministic result was re-run on ttsim and now matches its page:
+clock counts, hashes, error messages, correlation figures and tables. That covers the
+C++ examples, the course's patched simulator builds (packet logs, performance counters,
+Ethernet logs), the Python TT-NN scripts, the two-chip runs and Blackhole.
+
+Main corrections:
+
+- Several outputs came from scripts that were never in the repository, and two of them
+  could not be reproduced. They were replaced with output from scripts that now ship
+  (`a05_add.py`, `a09_shard.py`, `a19_oneop.py`, `mm_fid32.cpp`, `compute_pair.cpp`,
+  `gridinfo.cpp`).
+- The labs hard-coded a path from the machine they were written on. They now use one
+  convention that a reader adjusts once.
+- The description of the kernel cache was wrong: the cache directory is keyed on the
+  kernel's path and build settings, and edits are caught by dependency hashes.
+- Blackhole's processor count was 744 in places; it is 752 small RISC-V processors plus 16
+  large ones.
+- Two figures in lab B08 about how many results equal the exact value were wrong and
+  contradicted the page's own argument. They were recomputed in exact arithmetic.
+- Kernel hash directory names shown on the pages differ on every installation. The pages
+  now say so.
+
+What varies between runs, and is now marked on the pages:
+
+- wall-clock times;
+- clock counts when debug printing or the Watcher is on, because those poll from the host;
+- clock counts of runs that end on a wall-clock timeout;
+- one two-chip program, which ends at one of two clock counts.
+
+Still open:
+
+- Quotations from the Wormhole Galaxy product page, which has changed since they were
+  taken.
+- The summary lines of the `tt-perf-report` tool, which was not installed.
+- The compiler stack above TT-NN (TT-MLIR, TT-Forge) is described from documentation only.
+- In lab B00, the tt-metal build steps were not repeated from scratch; the transcripts are
+  from the original build. A section on build problems met on Ubuntu 24.04 was added.
+- Some figures in labs B08 to B11 that need hand-instrumented simulator builds.
 
 ## Groq simulator and notes
 

@@ -7,7 +7,7 @@ SLUG = "08-resets-state-and-control"
 TITLE = "Ch 08 · Resets, State, Mocap and Control Loops"
 AUTO_HEADER = False
 
-COLAB = ("https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/main/"
+COLAB = ("https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/master/"
          "dpdk-research/mujoco-warp-course/notebooks/08-resets-state-and-control.ipynb")
 
 EGL_CELL = '''# Rendering notebooks only: let glvnd find the NVIDIA EGL driver (from the official

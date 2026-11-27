@@ -6,7 +6,7 @@ SLUG = "05-first-simulation"
 TITLE = "Ch 05 · Your First MJWarp Simulation (and How to See It)"
 AUTO_HEADER = False
 
-COLAB = ("https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/main/"
+COLAB = ("https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/master/"
          "dpdk-research/mujoco-warp-course/notebooks/05-first-simulation.ipynb")
 
 EXERCISE_1 = '''# Exercise 5.1: put_data from a settled MjData carries its contacts to the device.

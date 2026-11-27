@@ -85,7 +85,7 @@ All in `reference/`, linked from the home page and chained by their own Previous
 ## Run the notebooks on Google Colab
 
 1. Open a chapter page and press **Open in Colab**, or go to
-   `https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/main/dpdk-research/mujoco-warp-course/notebooks/<slug>.ipynb`.
+   `https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/master/dpdk-research/mujoco-warp-course/notebooks/<slug>.ipynb`.
 2. **Runtime > Change runtime type**, choose a GPU (T4, L4 or A100), save.
 3. Run the first cells: `!nvidia-smi`, then the standard setup cell. It checks the driver, installs the pinned
    versions, quiets Warp's JIT log and prints `device: cuda:0`. If it prints "Warp sees no GPU", the runtime has no
@@ -94,7 +94,7 @@ All in `reference/`, linked from the home page and chained by their own Previous
 
 The first `mjw.step` compiles kernels and takes a while; later calls use Warp's kernel cache.
 
-The Colab links point at the `main` branch of the repository, so they work once the course is merged there.
+The Colab links point at the `master` branch of the repository, so they work once the course is merged there.
 
 ## Run the examples on your own machine
 

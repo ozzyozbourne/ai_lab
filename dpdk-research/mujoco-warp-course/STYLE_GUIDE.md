@@ -30,7 +30,7 @@ Links from a chapter: other chapters `NN-slug.html`, home `../index.html`, refer
 The Open-in-Colab link is exactly
 
 ```
-https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/main/dpdk-research/mujoco-warp-course/notebooks/<slug>.ipynb
+https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/master/dpdk-research/mujoco-warp-course/notebooks/<slug>.ipynb
 ```
 
 ---

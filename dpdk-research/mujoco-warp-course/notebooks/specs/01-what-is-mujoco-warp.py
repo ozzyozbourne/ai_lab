@@ -3,7 +3,7 @@
 SLUG = "01-what-is-mujoco-warp"
 TITLE = "Ch 01 · What Is MuJoCo Warp?"
 
-CH = "https://github.com/ozzyozbourne/ai_lab/blob/main/dpdk-research/mujoco-warp-course"
+CH = "https://github.com/ozzyozbourne/ai_lab/blob/master/dpdk-research/mujoco-warp-course"
 
 EX11_STUB = '''import mujoco
 import numpy as np

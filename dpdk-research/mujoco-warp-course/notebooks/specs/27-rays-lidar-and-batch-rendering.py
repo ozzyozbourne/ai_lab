@@ -7,7 +7,7 @@ TITLE = "Ch 27 · Rays, Lidar and Batch Rendering for Thousands of Worlds"
 # Example 27.5 uses OpenGL; every example uses the MJWarp batch renderer, which needs no EGL.
 AUTO_HEADER = False
 
-COLAB = ("https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/main/"
+COLAB = ("https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/master/"
          "dpdk-research/mujoco-warp-course/notebooks/27-rays-lidar-and-batch-rendering.ipynb")
 
 EGL_CELL = '# Rendering notebooks only: let glvnd find the NVIDIA EGL driver (from the official\n# mujoco_warp tutorial). Must run before mujoco is imported by the setup cell below.\nimport os\nos.environ.setdefault("MUJOCO_GL", "egl")\nNVIDIA_ICD_CONFIG_PATH = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"\ntry:\n    if not os.path.exists(NVIDIA_ICD_CONFIG_PATH):\n        os.makedirs(os.path.dirname(NVIDIA_ICD_CONFIG_PATH), exist_ok=True)\n        with open(NVIDIA_ICD_CONFIG_PATH, "w") as f:\n            f.write(\'{"file_format_version": "1.0.0", \'\n                    \'"ICD": {"library_path": "libEGL_nvidia.so.0"}}\\n\')\n    print("EGL ICD file:", NVIDIA_ICD_CONFIG_PATH, "| MUJOCO_GL =", os.environ["MUJOCO_GL"])\nexcept OSError as e:\n    print("could not write the EGL ICD file (fine outside Colab):", e)'

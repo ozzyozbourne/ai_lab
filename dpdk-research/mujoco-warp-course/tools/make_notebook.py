@@ -34,7 +34,7 @@ import runpy
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-REPO_PATH = "ozzyozbourne/ai_lab/blob/main/dpdk-research/mujoco-warp-course"
+REPO_PATH = "ozzyozbourne/ai_lab/blob/master/dpdk-research/mujoco-warp-course"
 
 SETUP_CELL = '''# Standard setup cell (identical in every notebook). Run it first.
 # 1. Rendering backend must be chosen BEFORE mujoco is imported (rendering notebooks only).

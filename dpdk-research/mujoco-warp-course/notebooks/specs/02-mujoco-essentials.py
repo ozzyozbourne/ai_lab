@@ -6,7 +6,7 @@ TITLE = "Ch 02 · MuJoCo Essentials for MJWarp Users"
 # notebooks write the ICD file right after choosing MUJOCO_GL). Example 2.12 uses mujoco.Renderer.
 AUTO_HEADER = False
 
-COLAB = ("https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/main/"
+COLAB = ("https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/master/"
          "dpdk-research/mujoco-warp-course/notebooks/02-mujoco-essentials.ipynb")
 
 EGL_CELL = '''# Rendering notebooks only: let glvnd find the NVIDIA EGL driver (from the official

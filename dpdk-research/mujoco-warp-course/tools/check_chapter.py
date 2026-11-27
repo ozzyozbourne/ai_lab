@@ -34,7 +34,7 @@ import sys
 import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-COLAB = ("https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/main/"
+COLAB = ("https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/master/"
          "dpdk-research/mujoco-warp-course/notebooks/{slug}.ipynb")
 FIG_RE = re.compile(r'(<figure\b[^>]*\bclass="[^"]*\bcode-example\b[^"]*"[^>]*>)(.*?)</figure>', re.S)
 CODE_RE = re.compile(r'<pre>\s*<code\b[^>]*>(.*?)</code>\s*</pre>', re.S)

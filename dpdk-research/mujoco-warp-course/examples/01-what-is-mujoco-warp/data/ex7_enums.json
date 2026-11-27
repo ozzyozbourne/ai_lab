@@ -1,0 +1,157 @@
+{
+ "mjtEnableBit": {
+  "warp": "EnableBit",
+  "supported": [
+   "ENERGY",
+   "INVDISCRETE",
+   "SLEEP"
+  ],
+  "unsupported": [
+   "OVERRIDE",
+   "FWDINV",
+   "DIAGEXACT",
+   "IPC",
+   "SPECULATIVE"
+  ]
+ },
+ "mjtDisableBit": {
+  "warp": "DisableBit",
+  "supported": [
+   "CONSTRAINT",
+   "EQUALITY",
+   "FRICTIONLOSS",
+   "LIMIT",
+   "CONTACT",
+   "SPRING",
+   "DAMPER",
+   "GRAVITY",
+   "CLAMPCTRL",
+   "WARMSTART",
+   "FILTERPARENT",
+   "ACTUATION",
+   "REFSAFE",
+   "SENSOR",
+   "EULERDAMP",
+   "NATIVECCD",
+   "ISLAND",
+   "MULTICCD"
+  ],
+  "unsupported": [
+   "MIDPHASE",
+   "AUTORESET"
+  ]
+ },
+ "mjtDyn": {
+  "warp": "DynType",
+  "supported": [
+   "NONE",
+   "INTEGRATOR",
+   "FILTER",
+   "FILTEREXACT",
+   "MUSCLE",
+   "DCMOTOR",
+   "USER"
+  ],
+  "unsupported": [
+   "PID"
+  ]
+ },
+ "mjtGain": {
+  "warp": "GainType",
+  "supported": [
+   "FIXED",
+   "AFFINE",
+   "MUSCLE",
+   "DCMOTOR",
+   "SO3",
+   "USER"
+  ],
+  "unsupported": [
+   "PID"
+  ]
+ },
+ "mjtBias": {
+  "warp": "BiasType",
+  "supported": [
+   "NONE",
+   "AFFINE",
+   "MUSCLE",
+   "DCMOTOR",
+   "USER"
+  ],
+  "unsupported": [
+   "SO3"
+  ]
+ },
+ "mjtTrn": {
+  "warp": "TrnType",
+  "supported": [
+   "JOINT",
+   "JOINTINPARENT",
+   "SLIDERCRANK",
+   "TENDON",
+   "SITE",
+   "BODY"
+  ],
+  "unsupported": [
+   "SO3"
+  ]
+ },
+ "mjtSleepPolicy": {
+  "warp": "SleepPolicy",
+  "supported": [
+   "AUTO",
+   "AUTO_NEVER",
+   "AUTO_ALLOWED"
+  ],
+  "unsupported": [
+   "NEVER",
+   "ALLOWED",
+   "INIT"
+  ]
+ },
+ "mjtIntegrator": {
+  "warp": "IntegratorType",
+  "supported": [
+   "EULER",
+   "RK4",
+   "IMPLICIT",
+   "IMPLICITFAST",
+   "DISCRETE"
+  ],
+  "unsupported": []
+ },
+ "mjtSolver": {
+  "warp": "SolverType",
+  "supported": [
+   "CG",
+   "NEWTON"
+  ],
+  "unsupported": [
+   "PGS"
+  ]
+ },
+ "mjtCone": {
+  "warp": "ConeType",
+  "supported": [
+   "PYRAMIDAL",
+   "ELLIPTIC"
+  ],
+  "unsupported": []
+ },
+ "mjtEq": {
+  "warp": "EqType",
+  "supported": [
+   "CONNECT",
+   "WELD",
+   "JOINT",
+   "TENDON",
+   "FLEX",
+   "FLEXSTRAIN"
+  ],
+  "unsupported": [
+   "FLEXVERT",
+   "DISTANCE"
+  ]
+ }
+}

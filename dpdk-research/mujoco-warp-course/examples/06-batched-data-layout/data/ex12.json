@@ -1,0 +1,1 @@
+{"device": "cpu", "on_gpu": false, "nstep": 50, "launches_per_step": 95, "c_rate": 398519.7, "rows": [{"nworld": 1, "step_ms": 3.8543, "rate": 259.4488}, {"nworld": 4, "step_ms": 3.8654, "rate": 1034.8097}, {"nworld": 16, "step_ms": 3.1632, "rate": 5058.2418}, {"nworld": 64, "step_ms": 3.074, "rate": 20819.659}]}

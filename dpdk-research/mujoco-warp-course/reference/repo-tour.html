@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Repository Tour</title>
+<meta name="description" content="An annotated map of the mujoco_warp repository at commit 8f5b9f1: every _src module with line counts, the CLI scripts, test data, benchmarks, contrib and notebooks, linked to the chapters.">
+<script>try{var t=localStorage.getItem("mwc-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="../assets/course.css">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<style>
+
+.tm { stroke: var(--surface); stroke-width: 1; }
+.area-core { fill: color-mix(in srgb, var(--accent-2) 38%, var(--surface)); }
+.area-dyn  { fill: color-mix(in srgb, var(--accent) 38%, var(--surface)); }
+.area-col  { fill: color-mix(in srgb, var(--warn) 36%, var(--surface)); }
+.area-sol  { fill: color-mix(in srgb, var(--purple) 32%, var(--surface)); }
+.area-ren  { fill: color-mix(in srgb, var(--teal) 36%, var(--surface)); }
+.area-tool { fill: color-mix(in srgb, var(--muted) 28%, var(--surface)); }
+.devonly { stroke: var(--danger); stroke-width: 2; stroke-dasharray: 4 3; }
+.tm-l { fill: var(--text); font-weight: 700; }
+.tm-n { fill: var(--text); font: 11px var(--font-mono); opacity: .8; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: .82rem; color: var(--muted); margin: 8px 2px 0; }
+.legend .lg { display: inline-flex; align-items: center; gap: 6px; }
+.legend .sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+.legend .sw.area-core { background: color-mix(in srgb, var(--accent-2) 38%, var(--surface)); }
+.legend .sw.area-dyn { background: color-mix(in srgb, var(--accent) 38%, var(--surface)); }
+.legend .sw.area-col { background: color-mix(in srgb, var(--warn) 36%, var(--surface)); }
+.legend .sw.area-sol { background: color-mix(in srgb, var(--purple) 32%, var(--surface)); }
+.legend .sw.area-ren { background: color-mix(in srgb, var(--teal) 36%, var(--surface)); }
+.legend .sw.area-tool { background: color-mix(in srgb, var(--muted) 28%, var(--surface)); }
+.legend .sw.devonly { background: none; border: 2px dashed var(--danger); }
+table.mods td:nth-child(2), table.mods td:nth-child(3) { white-space: nowrap; }
+table.mods td:nth-child(4) { min-width: 16rem; }
+table.mods td:first-child code { white-space: nowrap; }
+table.mods tr[id] { scroll-margin-top: calc(var(--topbar-h) + 16px); }
+table.mods tr:target td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.tag { font: 600 .7rem var(--font-mono); padding: 1px 6px; border-radius: 5px; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
+.tag.dev { background: var(--danger-soft); color: var(--danger-ink); }
+.tag.repo { background: var(--warn-soft); color: var(--warn-ink); }
+.dir-tree { font: .82rem/1.55 var(--font-mono); }
+.sw-inline{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:baseline}
+.sw-inline.area-core{background:color-mix(in srgb,var(--accent-2) 38%,var(--surface))}.sw-inline.area-dyn{background:color-mix(in srgb,var(--accent) 38%,var(--surface))}.sw-inline.area-col{background:color-mix(in srgb,var(--warn) 36%,var(--surface))}.sw-inline.area-sol{background:color-mix(in srgb,var(--purple) 32%,var(--surface))}.sw-inline.area-ren{background:color-mix(in srgb,var(--teal) 36%,var(--surface))}.sw-inline.area-tool{background:color-mix(in srgb,var(--muted) 28%,var(--surface))}
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="progress-bar" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="icon-btn toc-toggle" type="button" aria-label="Table of contents">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+  </button>
+  <a class="brand" href="../index.html">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><circle cx="10" cy="11" r="3" fill="#10200a"/><circle cx="22" cy="11" r="3" fill="#10200a" opacity=".7"/><circle cx="10" cy="22" r="3" fill="#10200a" opacity=".7"/><circle cx="22" cy="22" r="3" fill="#10200a" opacity=".45"/></svg>
+    <span class="brand-text">MuJoCo Warp Course</span>
+  </a>
+  <span class="chap-count">Reference · Repo tour</span>
+  <span class="topbar-spacer"></span>
+  <nav class="topnav" aria-label="Reference navigation">
+    <a href="api-at-a-glance.html" class="prev" aria-label="Previous: API at a glance"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg><span class="lbl">Prev</span></a>
+    <a href="../index.html" class="next" aria-label="Next: Course home"><span class="lbl">Next</span><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg></a>
+  </nav>
+  <button class="icon-btn theme-toggle" type="button" aria-label="Toggle dark mode">
+    <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+</header>
+
+<div class="layout">
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <ol data-auto></ol>
+    <p class="toc-progress" aria-live="off"></p>
+  </aside>
+
+  <main id="main" class="content">
+    <header class="chapter-hero">
+      <p class="eyebrow">Reference · Repository tour</p>
+      <h1>A Tour of the mujoco_warp Repository</h1>
+      <p class="lede">What lives where in <code>google-deepmind/mujoco_warp</code> at commit 8f5b9f1: the package that pip installs, and the benchmarks, contrib tools and notebooks that only the git repository has. Every module links to the chapter that reads it.</p>
+      <div class="hero-meta"><span class="badge data-driven">Line counts: wc -l at 8f5b9f1</span><span>37 engine modules</span><span class="sep">·</span><span>79,064 source lines, 57,773 test lines</span></div>
+      <h2 class="sr-only">On this page</h2>
+      <ul class="learn-list">
+            <li>The top-level layout, and which parts the 4.0.1 wheel ships.</li>
+            <li>A treemap and table of every <code>_src</code> module: size, job, tests, owning chapter.</li>
+            <li>The CLI scripts, test data, benchmark suite, <code>contrib/</code> and the notebook.</li>
+      </ul>
+    </header>
+    <section class="sec" id="layout">
+      <h2><span class="sec-num">1</span>The layout in one picture</h2>
+      <p>The repository has two halves. <code>mujoco_warp/</code> is the Python package; <code>pip install
+        mujoco-warp</code> ships it (the wheel also carries <code>test_data/</code>). Everything else
+        (<code>benchmarks/</code>, <code>contrib/</code>, <code>notebooks/</code>, CI) exists only in git, so code that
+        needs it must clone the repo (<a href="../chapters/28-interop-torch-and-jax.html#stale-contrib" title="Interop with PyTorch and JAX">Ch 28 §6</a> shows what breaks when you forget).</p>
+      <figure class="fig">
+        <div class="fig-frame scroll-x">
+<svg viewBox="0 0 700 430" role="img" aria-labelledby="fr-t fr-d">
+<title id="fr-t">Top-level layout of the mujoco_warp repository</title>
+<desc id="fr-d">The repository root holds the mujoco_warp package (shipped in the wheel: _src, test_data and the three CLI scripts), and folders that are only in git: benchmarks, contrib, notebooks, .github, plus pyproject.toml and uv.lock.</desc>
+<rect x="8" y="8" width="684" height="414" rx="14" class="s-box-2"/>
+<text x="24" y="32" class="s-label s-mono">google-deepmind/mujoco_warp @ 8f5b9f1</text>
+<rect x="20" y="46" width="410" height="364" rx="12" class="s-accent-soft" stroke="var(--border-strong)"/>
+<text x="34" y="68" class="s-label s-mono">mujoco_warp/</text><text x="150" y="68" class="s-small">the package: pip install mujoco-warp ships this</text>
+<a href="#src-modules"><g class="hot" data-info="&lt;strong&gt;mujoco_warp/_src/&lt;/strong&gt;: the engine. Private API: import from &lt;code&gt;mujoco_warp&lt;/code&gt; instead. 37 source modules (79,064 lines) and their tests (57,773 lines)."><rect x="34" y="80" width="250" height="150" rx="10" class="s-box-2"/><text x="46" y="104" class="s-label s-mono">_src/</text><text x="46" y="122" class="s-small">37 modules + 34 test files</text></g></a><a href="#public-api"><g class="hot" data-info="&lt;strong&gt;mujoco_warp/__init__.py&lt;/strong&gt;: re-exports every public name from &lt;code&gt;_src&lt;/code&gt; and wraps the functions with &lt;code&gt;_differentiable&lt;/code&gt;."><rect x="296" y="80" width="122" height="64" rx="10" class="s-box-2"/><text x="308" y="104" class="s-label s-mono">__init__.py</text><text x="308" y="122" class="s-small">public API</text></g></a><a href="#cli-scripts"><g class="hot" data-info="&lt;strong&gt;viewer.py, record.py, testspeed.py&lt;/strong&gt;: the &lt;code&gt;mjwarp-viewer&lt;/code&gt;, &lt;code&gt;mjwarp-record&lt;/code&gt;, &lt;code&gt;mjwarp-testspeed&lt;/code&gt; entry points (pyproject.toml scripts)."><rect x="296" y="152" width="122" height="78" rx="10" class="s-box-2"/><text x="308" y="176" class="s-label s-mono">CLI scripts</text><text x="308" y="194" class="s-small">3 entry points</text></g></a><a href="#test-data"><g class="hot" data-info="&lt;strong&gt;mujoco_warp/test_data/&lt;/strong&gt;: models such as &lt;code&gt;humanoid/humanoid.xml&lt;/code&gt;, &lt;code&gt;pendula.xml&lt;/code&gt;, &lt;code&gt;collision.xml&lt;/code&gt;. Shipped in the wheel, so examples can load them with &lt;code&gt;epath.resource_path(&quot;mujoco_warp&quot;)&lt;/code&gt;."><rect x="34" y="240" width="250" height="74" rx="10" class="s-box-2"/><text x="46" y="264" class="s-label s-mono">test_data/</text><text x="46" y="282" class="s-small">MJCF models used by tests and examples</text></g></a><a href="#cli-scripts"><g class="hot" data-info="&lt;strong&gt;conftest.py&lt;/strong&gt;: pytest options such as &lt;code&gt;--cpu&lt;/code&gt;, &lt;code&gt;--verify_cuda&lt;/code&gt;, &lt;code&gt;--debug_mode&lt;/code&gt;, &lt;code&gt;--kernel_cache_dir&lt;/code&gt;."><rect x="296" y="240" width="122" height="74" rx="10" class="s-box-2"/><text x="308" y="264" class="s-label s-mono">conftest.py</text><text x="308" y="282" class="s-small">pytest options</text></g></a><rect x="46" y="132" width="34.0" height="11" rx="3" class="tm area-core"/><text x="84.0" y="142" class="s-small" style="font-size:11px">core</text><rect x="46" y="147" width="70.1" height="11" rx="3" class="tm area-dyn"/><text x="120.1" y="157" class="s-small" style="font-size:11px">dynamics</text><rect x="46" y="162" width="43.0" height="11" rx="3" class="tm area-col"/><text x="93.0" y="172" class="s-small" style="font-size:11px">collision</text><rect x="46" y="177" width="51.5" height="11" rx="3" class="tm area-sol"/><text x="101.5" y="187" class="s-small" style="font-size:11px">solver</text><rect x="46" y="192" width="15.5" height="11" rx="3" class="tm area-ren"/><text x="65.5" y="202" class="s-small" style="font-size:11px">render</text><rect x="46" y="207" width="6.0" height="11" rx="3" class="tm area-tool"/><text x="56.0" y="217" class="s-small" style="font-size:11px">tools</text><text x="34" y="340" class="s-small">In the wheel: this green box (4.0.1 lacks sort.py, render_optix.py).</text><text x="34" y="360" class="s-small">Repo only: everything on the right.</text><text x="34" y="384" class="s-small s-mono">root: pyproject.toml · uv.lock · README.md</text><text x="34" y="400" class="s-small s-mono">AGENTS.md · CONTRIBUTING.md · LICENSE</text><a href="#benchmarks"><g class="hot" data-info="&lt;strong&gt;benchmarks/&lt;/strong&gt;: the benchmark suite. &lt;code&gt;run.py&lt;/code&gt; runs each &lt;code&gt;BENCHMARKS&lt;/code&gt; entry through &lt;code&gt;mjwarp-testspeed&lt;/code&gt;; &lt;code&gt;sweep.py&lt;/code&gt; runs them across commits for the nightly. Ch 25 §6."><rect x="444" y="46" width="236" height="92" rx="10" class="s-box"/><text x="456" y="70" class="s-label s-mono">benchmarks/</text><text x="456" y="88" class="s-small">suite: run.py, sweep.py, 10 model</text><text x="456" y="103" class="s-small">folders</text></g></a><a href="#contrib"><g class="hot" data-info="&lt;strong&gt;contrib/&lt;/strong&gt;: &quot;experiments, helper scripts and other tools that are not officially part of MJWarp&quot; (contrib/README.md)."><rect x="444" y="148" width="236" height="110" rx="10" class="s-box"/><text x="456" y="172" class="s-label s-mono">contrib/</text><text x="456" y="190" class="s-small">experiments: render.py,</text><text x="456" y="205" class="s-small">jax_unroll.py, kernel_analyzer,</text><text x="456" y="220" class="s-small">systemd, xml, Apollo notebook</text></g></a><a href="#notebooks"><g class="hot" data-info="&lt;strong&gt;notebooks/tutorial.ipynb&lt;/strong&gt;: the official tutorial notebook (repo only). Ch 1."><rect x="444" y="268" width="236" height="62" rx="10" class="s-box"/><text x="456" y="292" class="s-label s-mono">notebooks/</text><text x="456" y="310" class="s-small">tutorial.ipynb</text></g></a><a href="#meta"><g class="hot" data-info="&lt;strong&gt;.github/workflows&lt;/strong&gt;: CI tests, a nightly test against the latest dependencies, and PyPI publishing."><rect x="444" y="340" width="236" height="70" rx="10" class="s-box"/><text x="456" y="364" class="s-label s-mono">.github/workflows/</text><text x="456" y="382" class="s-small">ci.yml, nightly.yml, pypi.yml</text></g></a></svg>
+        </div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a folder; click to jump to its section."></div>
+        <figcaption><span class="fig-num">Figure 1.</span>Top level of the repository at 8f5b9f1 (from <code>git ls-files</code>). The bars inside <code>_src/</code> show the share of source lines per area.</figcaption>
+      </figure>
+      <div class="callout version"><p class="callout-title">Version note: dev tree vs 4.0.1</p><p>The chapters pin the
+        4.0.1 wheel. The tree at 8f5b9f1 is a little newer: it adds <code>_src/sort.py</code> (canonical contact and
+        constraint order, <a href="../chapters/22-determinism-and-reproducibility.html#contact-order" title="Determinism and Reproducibility">Ch 22 §2</a>) and <code>_src/render_optix.py</code> (OptiX back end,
+        <a href="../chapters/27-rays-lidar-and-batch-rendering.html#splats" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §13</a>), extends <code>types.py</code> (for example PID actuator types) and rewrites
+        <code>viewer.py</code> on MuJoCo Studio (<a href="../chapters/05-first-simulation.html#clis" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §9</a>). The public names in
+        <code>__init__.py</code> are identical.</p></div>
+    </section>
+    <section class="sec" id="public-api">
+      <h2><span class="sec-num">2</span>The front door: <code>mujoco_warp/__init__.py</code></h2>
+      <p>134 lines. It sets <code>__version__</code> from the installed metadata, imports every public name
+        from <code>_src</code> with an explicit <code>as</code> (<code>step</code>, <code>Model</code> and <code>Data</code>
+        first, under <code># isort: off</code>), and ends with <code>_differentiable(locals())</code>, which wraps the public
+        functions for the experimental gradient API (<a href="../chapters/29-gradients-and-system-identification.html#diff-py" title="Gradients, Sampling-Based Optimization and Parallel System Identification">Ch 29 §3</a>). Everything under <code>_src</code> is private: the
+        course marks such imports with a <span class="badge private-api">private API</span> badge.
+        The full list, with signatures, is <a href="api-at-a-glance.html#names">API at a glance</a>.</p>
+      <figure class="fig">
+        <div class="fig-frame scroll-x">
+<svg viewBox="0 0 700 330" role="img" aria-labelledby="fl-t fl-d">
+<title id="fl-t">Which module does what during one mjw.step</title>
+<desc id="fl-d">mjw.step lives in forward.py. It calls smooth.py and passive.py for dynamics, collision_driver.py for contacts (which fans out to the primitive, convex/GJK, SDF and flex colliders), constraint.py to build rows, solver.py to solve, sensor.py for sensors, and the integrators back in forward.py. types.py and io.py sit underneath everything; math.py and warp_util.py are shared helpers.</desc>
+<defs><marker id="fl-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+<g class="hot" data-info="&lt;strong&gt;forward.py&lt;/strong&gt;: &lt;code&gt;step&lt;/code&gt; = &lt;code&gt;forward&lt;/code&gt; (the stages) + one integrator. Every arrow below starts here."><rect x="260" y="10" width="180" height="40" rx="9" class="tm area-core"/><text x="350.0" y="34.0" text-anchor="middle" class="tm-l s-mono" style="font-size:12px">forward.py</text></g><g class="hot" data-info="&lt;strong&gt;smooth.py&lt;/strong&gt;: kinematics, com, crb + factor_m, tendon, transmission, rne. Ch 11-12."><rect x="10" y="90" width="130" height="40" rx="9" class="tm area-dyn"/><text x="75.0" y="114.0" text-anchor="middle" class="tm-l s-mono" style="font-size:12px">smooth.py</text></g><g class="hot" data-info="&lt;strong&gt;passive.py&lt;/strong&gt;: springs, dampers, gravcomp, fluid, flex elasticity. Ch 12, 23."><rect x="150" y="90" width="130" height="40" rx="9" class="tm area-dyn"/><text x="215.0" y="114.0" text-anchor="middle" class="tm-l s-mono" style="font-size:12px">passive.py</text></g><g class="hot" data-info="&lt;strong&gt;collision_driver.py&lt;/strong&gt;: broadphase, then the narrowphases. Ch 15."><rect x="290" y="90" width="120" height="40" rx="9" class="tm area-col"/><text x="350.0" y="114.0" text-anchor="middle" class="tm-l s-mono" style="font-size:12px">collision_driver</text></g><g class="hot" data-info="&lt;strong&gt;constraint.py&lt;/strong&gt;: make_constraint builds the efc rows. Ch 19."><rect x="420" y="90" width="130" height="40" rx="9" class="tm area-sol"/><text x="485.0" y="114.0" text-anchor="middle" class="tm-l s-mono" style="font-size:12px">constraint.py</text></g><g class="hot" data-info="&lt;strong&gt;solver.py&lt;/strong&gt;: CG / Newton, linesearch, noslip. Ch 20."><rect x="560" y="90" width="130" height="40" rx="9" class="tm area-sol"/><text x="625.0" y="114.0" text-anchor="middle" class="tm-l s-mono" style="font-size:12px">solver.py</text></g><g class="hot" data-info="&lt;strong&gt;collision_primitive(_core).py&lt;/strong&gt;: closed-form pair colliders. Ch 16."><rect x="210" y="170" width="110" height="36" rx="9" class="tm area-col"/><text x="265.0" y="192.0" text-anchor="middle" class="tm-l s-mono" style="font-size:12px">primitive</text></g><g class="hot" data-info="&lt;strong&gt;collision_convex.py + collision_gjk.py&lt;/strong&gt;: GJK, EPA, multi-contact, heightfields. Ch 17-18."><rect x="330" y="170" width="110" height="36" rx="9" class="tm area-col"/><text x="385.0" y="192.0" text-anchor="middle" class="tm-l s-mono" style="font-size:12px">convex + gjk</text></g><g class="hot" data-info="&lt;strong&gt;collision_sdf.py&lt;/strong&gt;: SDF narrowphase. Ch 18."><rect x="450" y="170" width="80" height="36" rx="9" class="tm area-col"/><text x="490.0" y="192.0" text-anchor="middle" class="tm-l s-mono" style="font-size:12px">sdf</text></g><g class="hot" data-info="&lt;strong&gt;collision_flex.py&lt;/strong&gt;: flex collision. Ch 23."><rect x="540" y="170" width="80" height="36" rx="9" class="tm area-col"/><text x="580.0" y="192.0" text-anchor="middle" class="tm-l s-mono" style="font-size:12px">flex</text></g><g class="hot" data-info="&lt;strong&gt;sensor.py&lt;/strong&gt;: sensor_pos / vel / acc. Ch 14."><rect x="10" y="170" width="90" height="36" rx="9" class="tm area-dyn"/><text x="55.0" y="192.0" text-anchor="middle" class="tm-l s-mono" style="font-size:12px">sensor.py</text></g><g class="hot" data-info="&lt;strong&gt;island.py, sleep.py&lt;/strong&gt;: islands and sleeping, only when sleep is enabled. Ch 21."><rect x="110" y="170" width="90" height="36" rx="9" class="tm area-sol"/><text x="155.0" y="192.0" text-anchor="middle" class="tm-l s-mono" style="font-size:12px">island/sleep</text></g><g class="hot" data-info="&lt;strong&gt;types.py, io.py&lt;/strong&gt;: the data structures every module reads and writes, and how they reach the device. Ch 5-6."><rect x="10" y="250" width="330" height="34" rx="9" class="tm area-core"/><text x="175.0" y="271.0" text-anchor="middle" class="tm-l s-mono" style="font-size:12px">types.py · io.py</text></g><g class="hot" data-info="&lt;strong&gt;Shared helpers&lt;/strong&gt;: @wp.func math, EventTracer/event_scope, kernel cache, mul_m, jac. Used everywhere."><rect x="350" y="250" width="340" height="34" rx="9" class="tm area-tool"/><text x="520.0" y="271.0" text-anchor="middle" class="tm-l s-mono" style="font-size:12px">math · warp_util · support · util_misc</text></g><path d="M350 52 L 75 88" class="s-line" fill="none" marker-end="url(#fl-arrow)"/><path d="M350 52 L 215 88" class="s-line" fill="none" marker-end="url(#fl-arrow)"/><path d="M350 52 L 350 88" class="s-line" fill="none" marker-end="url(#fl-arrow)"/><path d="M350 52 L 485 88" class="s-line" fill="none" marker-end="url(#fl-arrow)"/><path d="M350 52 L 625 88" class="s-line" fill="none" marker-end="url(#fl-arrow)"/><path d="M350 132 L 265 168" class="s-line s-dashed" fill="none" marker-end="url(#fl-arrow)"/><path d="M350 132 L 385 168" class="s-line s-dashed" fill="none" marker-end="url(#fl-arrow)"/><path d="M350 132 L 490 168" class="s-line s-dashed" fill="none" marker-end="url(#fl-arrow)"/><path d="M350 132 L 580 168" class="s-line s-dashed" fill="none" marker-end="url(#fl-arrow)"/><path d="M270 30 C 60 30, 55 120, 55 168" class="s-line s-dashed" fill="none" marker-end="url(#fl-arrow)"/><path d="M270 40 C 160 50, 155 130, 155 168" class="s-line s-dashed" fill="none" marker-end="url(#fl-arrow)"/><text x="10" y="312" class="s-small">Solid: called by forward.py. Dashed: via collision_driver, or only when needed. Bottom: used by all.</text></svg>
+        </div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a module."></div>
+        <figcaption><span class="fig-num">Figure 2.</span>Which module does what during one <code>mjw.step</code> (simplified from <code>forward.py</code>; the stage order is <a href="../chapters/07-pipeline-tour.html#stage-order" title="A Guided Tour of step and forward">Ch 7 §2</a>). Illustrative.</figcaption>
+      </figure>
+    </section>
+    <section class="sec" id="src-modules">
+      <h2><span class="sec-num">3</span>The engine: <code>mujoco_warp/_src/</code></h2>
+      <p>37 source modules with 79,064 lines, and 34 test files with
+        57,773 lines next to them (<code>foo.py</code> is tested by <code>foo_test.py</code>). Area is
+        proportional to lines of code; tap a block for what the module does.</p>
+      <figure class="fig">
+        <div class="fig-frame">
+<svg viewBox="0 0 680 420" role="img" aria-labelledby="ft-t ft-d">
+<title id="ft-t">Treemap of mujoco_warp/_src by lines of code</title>
+<desc id="ft-d">One rectangle per non-test module of mujoco_warp/_src at commit 8f5b9f1, area proportional to its line count (79064 lines in total), coloured by area of the engine. solver.py, constraint.py and smooth.py are the largest.</desc>
+<g class="hot" data-info="&lt;strong&gt;_src/solver.py&lt;/strong&gt;, 7,006 lines (+4,284 in solver_test.py). &lt;code&gt;solve&lt;/code&gt;: the CG and Newton primal solvers, exact linesearch, &lt;code&gt;noslip&lt;/code&gt;, the compacted sleep solve. Taught in Ch 20."><rect x="1.0" y="1.0" width="164.1" height="150.3" rx="3" class="tm area-sol"/>
+<text x="6.0" y="16.0" class="tm-l" style="font-size:12px">solver</text>
+<text x="6.0" y="29.0" class="tm-n">7,006</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/constraint.py&lt;/strong&gt;, 6,552 lines (+1,803 in constraint_test.py). &lt;code&gt;make_constraint&lt;/code&gt;: efc rows for equalities, friction loss, limits and contacts (J, D, aref). Taught in Ch 19."><rect x="1.0" y="153.3" width="164.1" height="140.5" rx="3" class="tm area-sol"/>
+<text x="6.0" y="168.3" class="tm-l" style="font-size:12px">constraint</text>
+<text x="6.0" y="181.3" class="tm-n">6,552</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/derivative.py&lt;/strong&gt;, 5,758 lines (+4,861 in derivative_test.py). &lt;code&gt;deriv_smooth_vel&lt;/code&gt; (analytic velocity derivatives for the implicit integrators) and the &lt;code&gt;eff_*&lt;/code&gt; effective-metric functions of DISCRETE. Taught in Ch 13."><rect x="1.0" y="295.8" width="164.1" height="123.2" rx="3" class="tm area-dyn"/>
+<text x="6.0" y="310.8" class="tm-l" style="font-size:12px">derivative</text>
+<text x="6.0" y="323.8" class="tm-n">5,758</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/smooth.py&lt;/strong&gt;, 5,651 lines (+2,635 in smooth_test.py). Smooth dynamics: &lt;code&gt;kinematics&lt;/code&gt;, &lt;code&gt;com_pos&lt;/code&gt;, &lt;code&gt;camlight&lt;/code&gt;, &lt;code&gt;crb&lt;/code&gt;, &lt;code&gt;factor_m&lt;/code&gt;, &lt;code&gt;solve_m&lt;/code&gt;, &lt;code&gt;rne&lt;/code&gt;, &lt;code&gt;rne_postconstraint&lt;/code&gt;, &lt;code&gt;tendon&lt;/code&gt;, &lt;code&gt;transmission&lt;/code&gt;, &lt;code&gt;com_vel&lt;/code&gt;, &lt;code&gt;subtree_vel&lt;/code&gt;, &lt;code&gt;flex&lt;/code&gt;. Taught in Ch 11."><rect x="167.1" y="1.0" width="132.1" height="150.2" rx="3" class="tm area-dyn"/>
+<text x="172.1" y="16.0" class="tm-l" style="font-size:12px">smooth</text>
+<text x="172.1" y="29.0" class="tm-n">5,651</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/passive.py&lt;/strong&gt;, 5,642 lines (+1,289 in passive_test.py). &lt;code&gt;passive&lt;/code&gt;: springs, dampers, gravity compensation, fluid forces and flex elasticity (stretch, bending, rods). Taught in Ch 12."><rect x="167.1" y="153.2" width="132.1" height="149.9" rx="3" class="tm area-dyn"/>
+<text x="172.1" y="168.2" class="tm-l" style="font-size:12px">passive</text>
+<text x="172.1" y="181.2" class="tm-n">5,642</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/collision_flex.py&lt;/strong&gt;, 4,302 lines. Flex collision: geoms against flex triangles, flex broadphase. Taught in Ch 23."><rect x="167.1" y="305.1" width="132.1" height="113.9" rx="3" class="tm area-col"/>
+<text x="172.1" y="320.1" class="tm-l" style="font-size:12px">collision_flex</text>
+<text x="172.1" y="333.1" class="tm-n">4,302</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/io.py&lt;/strong&gt;, 4,269 lines (+3,351 in io_test.py). &lt;code&gt;put_model&lt;/code&gt; (validation, NotImplementedError for unsupported features), &lt;code&gt;make_data&lt;/code&gt;, &lt;code&gt;put_data&lt;/code&gt;, &lt;code&gt;get_data_into&lt;/code&gt;, &lt;code&gt;reset_data&lt;/code&gt;, &lt;code&gt;reset_data_keyframe&lt;/code&gt;, &lt;code&gt;override_model&lt;/code&gt;, trajectories. Taught in Ch 5."><rect x="301.3" y="1.0" width="137.2" height="108.8" rx="3" class="tm area-core"/>
+<text x="306.3" y="16.0" class="tm-l" style="font-size:12px">io</text>
+<text x="306.3" y="29.0" class="tm-n">4,269</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/forward.py&lt;/strong&gt;, 3,908 lines (+4,532 in forward_test.py). The pipeline: &lt;code&gt;step&lt;/code&gt;, &lt;code&gt;forward&lt;/code&gt;, &lt;code&gt;fwd_*&lt;/code&gt; stages, &lt;code&gt;step1&lt;/code&gt;/&lt;code&gt;step2&lt;/code&gt; and the integrators (&lt;code&gt;euler&lt;/code&gt;, &lt;code&gt;rungekutta4&lt;/code&gt;, &lt;code&gt;implicit&lt;/code&gt;, &lt;code&gt;discrete&lt;/code&gt;). Taught in Ch 7."><rect x="440.4" y="1.0" width="125.4" height="108.8" rx="3" class="tm area-core"/>
+<text x="445.4" y="16.0" class="tm-l" style="font-size:12px">forward</text>
+<text x="445.4" y="29.0" class="tm-n">3,908</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/sensor.py&lt;/strong&gt;, 3,472 lines (+2,017 in sensor_test.py). &lt;code&gt;sensor_pos&lt;/code&gt;, &lt;code&gt;sensor_vel&lt;/code&gt;, &lt;code&gt;sensor_acc&lt;/code&gt;, &lt;code&gt;energy_pos&lt;/code&gt;, &lt;code&gt;energy_vel&lt;/code&gt;. Taught in Ch 14."><rect x="567.8" y="1.0" width="111.2" height="108.8" rx="3" class="tm area-dyn"/>
+<text x="572.8" y="16.0" class="tm-l" style="font-size:12px">sensor</text>
+<text x="572.8" y="29.0" class="tm-n">3,472</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/types.py&lt;/strong&gt;, 3,220 lines (+148 in types_test.py). Every enum, &lt;code&gt;Option&lt;/code&gt;, &lt;code&gt;Model&lt;/code&gt;, &lt;code&gt;Data&lt;/code&gt;, &lt;code&gt;Contact&lt;/code&gt;, &lt;code&gt;Constraint&lt;/code&gt;, &lt;code&gt;Callback&lt;/code&gt;, &lt;code&gt;RenderContext&lt;/code&gt;; array spec strings such as &lt;code&gt;&quot;*&quot;&lt;/code&gt; mark batchable fields. Taught in Ch 6."><rect x="301.3" y="111.8" width="100.5" height="111.5" rx="3" class="tm area-core"/>
+<text x="306.3" y="126.8" class="tm-l" style="font-size:12px">types</text>
+<text x="306.3" y="139.8" class="tm-n">3,220</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/collision_gjk.py&lt;/strong&gt;, 2,961 lines (+1,661 in collision_gjk_test.py). &lt;code&gt;gjk&lt;/code&gt;, &lt;code&gt;epa_phase&lt;/code&gt;, &lt;code&gt;multicontact&lt;/code&gt;, &lt;code&gt;ccd&lt;/code&gt;: the general convex algorithms. Taught in Ch 17."><rect x="301.3" y="225.3" width="100.5" height="102.3" rx="3" class="tm area-col"/>
+<text x="306.3" y="240.3" class="tm-l" style="font-size:12px">collision_gjk</text>
+<text x="306.3" y="253.3" class="tm-n">2,961</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/support.py&lt;/strong&gt;, 2,594 lines (+1,484 in support_test.py). Helpers: &lt;code&gt;mul_m&lt;/code&gt;, &lt;code&gt;jac&lt;/code&gt;, &lt;code&gt;xfrc_accumulate&lt;/code&gt;, &lt;code&gt;contact_force&lt;/code&gt;, &lt;code&gt;get_state&lt;/code&gt;/&lt;code&gt;set_state&lt;/code&gt;, &lt;code&gt;next_act&lt;/code&gt;, rod helpers. Taught in Ch 11."><rect x="301.3" y="329.6" width="100.5" height="89.4" rx="3" class="tm area-dyn"/>
+<text x="306.3" y="344.6" class="tm-l" style="font-size:12px">support</text>
+<text x="306.3" y="357.6" class="tm-n">2,594</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/collision_primitive_core.py&lt;/strong&gt;, 2,049 lines (+970 in collision_primitive_core_test.py). The pair formulas themselves: plane-sphere, capsule-capsule, box-box, sphere-triangle, ... Taught in Ch 16."><rect x="403.8" y="111.8" width="80.9" height="87.3" rx="3" class="tm area-col"/>
+<text x="407.8" y="125.8" class="tm-n">collision_</text>
+<text x="407.8" y="138.8" class="tm-n">primitive_</text>
+<text x="407.8" y="151.8" class="tm-n">core</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/render.py&lt;/strong&gt;, 1,661 lines (+2,127 in render_test.py). &lt;code&gt;render&lt;/code&gt;: the ray-tracing megakernel, shading, shadows, textures, splats. Taught in Ch 27."><rect x="486.7" y="111.8" width="65.2" height="87.3" rx="3" class="tm area-ren"/>
+<text x="491.7" y="126.8" class="tm-l" style="font-size:11px">render</text>
+<text x="491.7" y="139.8" class="tm-n">1,661</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/island.py&lt;/strong&gt;, 1,599 lines (+926 in island_test.py). &lt;code&gt;island&lt;/code&gt;: lock-free disjoint-set union over trees, island mapping, active DOFs. Taught in Ch 21."><rect x="553.9" y="111.8" width="62.7" height="87.3" rx="3" class="tm area-sol"/>
+<text x="558.9" y="126.8" class="tm-l" style="font-size:11px">island</text>
+<text x="558.9" y="139.8" class="tm-n">1,599</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/collision_primitive.py&lt;/strong&gt;, 1,543 lines. &lt;code&gt;primitive_narrowphase&lt;/code&gt;: the dispatch table and the wrappers that launch each primitive pair. Taught in Ch 16."><rect x="618.6" y="111.8" width="60.4" height="87.3" rx="3" class="tm area-col"/>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/collision_convex.py&lt;/strong&gt;, 1,529 lines. &lt;code&gt;convex_narrowphase&lt;/code&gt;: the CCD kernels for convex pairs and heightfield prisms. Taught in Ch 17."><rect x="403.8" y="201.1" width="69.9" height="74.9" rx="3" class="tm area-col"/>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/sleep.py&lt;/strong&gt;, 1,466 lines (+1,972 in sleep_test.py). Sleeping: &lt;code&gt;update_sleep&lt;/code&gt;, &lt;code&gt;wake&lt;/code&gt;, wake on collision, tendon and equality. Taught in Ch 21."><rect x="403.8" y="277.9" width="69.9" height="71.7" rx="3" class="tm area-sol"/>
+<text x="408.8" y="292.9" class="tm-l" style="font-size:11px">sleep</text>
+<text x="408.8" y="305.9" class="tm-n">1,466</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/ray.py&lt;/strong&gt;, 1,380 lines (+756 in ray_test.py). &lt;code&gt;ray&lt;/code&gt;, &lt;code&gt;rays&lt;/code&gt;: per-geom ray intersection, with BVH for meshes, heightfields and flexes. Taught in Ch 27."><rect x="403.8" y="351.6" width="69.9" height="67.4" rx="3" class="tm area-ren"/>
+<text x="408.8" y="366.6" class="tm-l" style="font-size:11px">ray</text>
+<text x="408.8" y="379.6" class="tm-n">1,380</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/bvh.py&lt;/strong&gt;, 1,364 lines (+234 in bvh_test.py). Scene, mesh, heightfield, flex and splat BVHs: build and &lt;code&gt;refit_bvh&lt;/code&gt;. Taught in Ch 27."><rect x="475.6" y="201.1" width="68.7" height="67.7" rx="3" class="tm area-ren"/>
+<text x="480.6" y="216.1" class="tm-l" style="font-size:11px">bvh</text>
+<text x="480.6" y="229.1" class="tm-n">1,364</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/collision_driver.py&lt;/strong&gt;, 1,308 lines (+3,547 in collision_driver_test.py). &lt;code&gt;collision&lt;/code&gt; (the entry point), &lt;code&gt;nxn_broadphase&lt;/code&gt;, &lt;code&gt;sap_broadphase&lt;/code&gt;, the per-pair filters. Taught in Ch 15."><rect x="546.3" y="201.1" width="65.8" height="67.7" rx="3" class="tm area-col"/>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/sort.py&lt;/strong&gt;, 1,292 lines (+1,723 in sort_test.py). Dev tree only: device-side canonical permutations for contacts and constraints (DeterminismType CONTACTS/CONSTRAINT). Taught in Ch 22. &lt;em&gt;Not in the 4.0.1 wheel.&lt;/em&gt;"><rect x="614.1" y="201.1" width="64.9" height="67.7" rx="3" class="tm area-sol devonly"/>
+<text x="619.1" y="216.1" class="tm-l" style="font-size:11px">sort</text>
+<text x="619.1" y="229.1" class="tm-n">1,292</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/util_misc.py&lt;/strong&gt;, 1,222 lines (+1,050 in util_misc_test.py). Muscle and DC-motor curves, tendon wrapping, Halton sequence, ctrl clamping, polynomial springs. Taught in Ch 12."><rect x="475.6" y="270.8" width="56.6" height="73.3" rx="3" class="tm area-tool"/>
+<text x="479.6" y="284.8" class="tm-n">util_</text>
+<text x="479.6" y="297.8" class="tm-n">misc</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/history.py&lt;/strong&gt;, 1,215 lines (+2,158 in history_test.py). Delay and history ring buffers: &lt;code&gt;init_ctrl_history&lt;/code&gt;, &lt;code&gt;read_ctrl&lt;/code&gt;, &lt;code&gt;read_sensor&lt;/code&gt;, &lt;code&gt;reset_history&lt;/code&gt;. Taught in Ch 14."><rect x="475.6" y="346.1" width="56.6" height="72.9" rx="3" class="tm area-dyn"/>
+<text x="480.6" y="361.1" class="tm-l" style="font-size:11px">history</text>
+<text x="480.6" y="374.1" class="tm-n">1,215</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/collision_sdf.py&lt;/strong&gt;, 1,163 lines. &lt;code&gt;sdf_narrowphase&lt;/code&gt;: analytic SDFs, mesh/volume octree SDFs and the &lt;code&gt;user_sdf&lt;/code&gt; hooks. Taught in Ch 18."><rect x="534.3" y="270.8" width="81.6" height="48.3" rx="3" class="tm area-col"/>
+<text x="538.3" y="284.8" class="tm-n">collision_</text>
+<text x="538.3" y="297.8" class="tm-n">sdf</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/render_util.py&lt;/strong&gt;, 879 lines (+421 in render_util_test.py). &lt;code&gt;create_render_context&lt;/code&gt;, &lt;code&gt;compute_ray&lt;/code&gt;, &lt;code&gt;get_rgb&lt;/code&gt;, &lt;code&gt;get_depth&lt;/code&gt;, &lt;code&gt;get_segmentation&lt;/code&gt;. Taught in Ch 27."><rect x="617.8" y="270.8" width="61.2" height="48.3" rx="3" class="tm area-ren"/>
+<text x="621.8" y="284.8" class="tm-n">render_</text>
+<text x="621.8" y="297.8" class="tm-n">util</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/set_const.py&lt;/strong&gt;, 817 lines (+1,513 in set_const_test.py). &lt;code&gt;set_const&lt;/code&gt;, &lt;code&gt;set_length_range&lt;/code&gt; (and the deprecated &lt;code&gt;set_const_0&lt;/code&gt;, &lt;code&gt;set_const_fixed&lt;/code&gt;). Taught in Ch 10."><rect x="534.3" y="321.1" width="48.6" height="56.3" rx="3" class="tm area-core"/>
+<text x="538.3" y="335.1" class="tm-n">set_</text>
+<text x="538.3" y="348.1" class="tm-n">const</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/collision_core.py&lt;/strong&gt;, 583 lines. Shared collision types: &lt;code&gt;Geom&lt;/code&gt;, &lt;code&gt;CollisionContext&lt;/code&gt;, &lt;code&gt;write_contact&lt;/code&gt;, material mixing (&lt;code&gt;contact_params&lt;/code&gt;). Taught in Ch 16."><rect x="534.3" y="379.4" width="48.6" height="39.6" rx="3" class="tm area-col"/>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/block_cholesky.py&lt;/strong&gt;, 581 lines. Blocked (tile) Cholesky factorize and solve used by the Newton solver. Taught in Ch 20."><rect x="584.9" y="321.1" width="46.6" height="41.2" rx="3" class="tm area-sol"/>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/math.py&lt;/strong&gt;, 569 lines (+395 in math_test.py). &lt;code&gt;@wp.func&lt;/code&gt; math: quaternions (&lt;code&gt;quat_integrate&lt;/code&gt;, &lt;code&gt;mul_quat&lt;/code&gt;), spatial algebra (&lt;code&gt;motion_cross&lt;/code&gt;), frames, segment distances. Taught in Ch 11."><rect x="633.4" y="321.1" width="45.6" height="41.2" rx="3" class="tm area-dyn"/>
+<text x="638.4" y="336.1" class="tm-l" style="font-size:11px">math</text>
+<text x="638.4" y="349.1" class="tm-n">569</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/cli.py&lt;/strong&gt;, 309 lines. Shared absl flags of the three CLIs, &lt;code&gt;load_model&lt;/code&gt;, &lt;code&gt;init_structs&lt;/code&gt;, &lt;code&gt;unroll&lt;/code&gt;. Taught in Ch 25."><rect x="584.9" y="364.3" width="37.0" height="26.6" rx="3" class="tm area-tool"/>
+<text x="587.9" y="381.6" class="tm-n">cli</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/inverse.py&lt;/strong&gt;, 303 lines (+430 in inverse_test.py). &lt;code&gt;inverse&lt;/code&gt;: inverse dynamics (the force that produces a given qacc). Taught in Ch 14."><rect x="584.9" y="392.9" width="37.0" height="26.1" rx="3" class="tm area-dyn"/>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/diff.py&lt;/strong&gt;, 292 lines (+1,125 in diff_test.py). Differentiability API: &lt;code&gt;differentiable&lt;/code&gt;, &lt;code&gt;AdjointRule&lt;/code&gt;, &lt;code&gt;register_adjoint&lt;/code&gt;. Taught in Ch 29."><rect x="623.9" y="364.3" width="34.2" height="27.2" rx="3" class="tm area-tool"/>
+<text x="626.9" y="381.9" class="tm-n">diff</text>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/render_optix.py&lt;/strong&gt;, 276 lines. Dev tree only: OptiX acceleration structures and pipeline for the batch renderer (&lt;code&gt;backend=&quot;optix&quot;&lt;/code&gt;). Taught in Ch 27. &lt;em&gt;Not in the 4.0.1 wheel.&lt;/em&gt;"><rect x="623.9" y="393.4" width="34.2" height="25.6" rx="3" class="tm area-ren devonly"/>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/warp_util.py&lt;/strong&gt;, 210 lines (+61 in warp_util_test.py). &lt;code&gt;EventTracer&lt;/code&gt;, &lt;code&gt;event_scope&lt;/code&gt;, &lt;code&gt;cache_kernel&lt;/code&gt;, &lt;code&gt;mark_batched&lt;/code&gt;, &lt;code&gt;check_toolkit_driver&lt;/code&gt;. Taught in Ch 25."><rect x="660.0" y="364.3" width="19.0" height="34.2" rx="3" class="tm area-tool"/>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/util_pkg.py&lt;/strong&gt;, 105 lines (+172 in util_pkg_test.py). Package version checks (&lt;code&gt;check_version&lt;/code&gt;). "><rect x="660.0" y="400.5" width="16.5" height="18.5" rx="3" class="tm area-tool"/>
+</g>
+<g class="hot" data-info="&lt;strong&gt;_src/__init__.py&lt;/strong&gt;, 14 lines. License header only (the public API is &lt;code&gt;mujoco_warp/__init__.py&lt;/code&gt;). "><rect x="678.5" y="400.5" width="0.5" height="18.5" rx="3" class="tm area-tool"/>
+</g>
+</svg>
+        </div>
+        <div class="legend"><span class="lg"><span class="sw area-core"></span>Core: types, I/O, pipeline (12,214)</span><span class="lg"><span class="sw area-dyn"></span>Smooth dynamics, sensors (25,204)</span><span class="lg"><span class="sw area-col"></span>Collision (15,438)</span><span class="lg"><span class="sw area-sol"></span>Constraints, solver, sleep (18,496)</span><span class="lg"><span class="sw area-ren"></span>Rays and rendering (5,560)</span><span class="lg"><span class="sw area-tool"></span>Tools and utilities (2,152)</span><span class="lg"><span class="sw devonly"></span>dev tree only</span></div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a module."></div>
+        <figcaption><span class="fig-num">Figure 3.</span>Treemap of <code>_src/*.py</code> (tests excluded) by <code>wc -l</code> at 8f5b9f1; the numbers are embedded below as JSON. Data-driven.</figcaption>
+      </figure>
+      <div class="table-wrap">
+        <table class="mods">
+          <thead><tr><th>Module</th><th>Lines</th><th>Test lines</th><th>What it does</th><th>Chapters</th></tr></thead>
+          <tbody>
+<tr id="mod-io"><td><span class="sw-inline area-core"></span><code>io.py</code></td><td class="num">4,269</td><td class="num">3,351</td><td><code>put_model</code> (validation, NotImplementedError for unsupported features), <code>make_data</code>, <code>put_data</code>, <code>get_data_into</code>, <code>reset_data</code>, <code>reset_data_keyframe</code>, <code>override_model</code>, trajectories.</td><td><a href="../chapters/05-first-simulation.html#put-model" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §2</a>, <a href="../chapters/06-batched-data-layout.html" title="Many Worlds: The Batched Data Layout">Ch 6</a>, <a href="../chapters/08-resets-state-and-control.html" title="Resets, State, Mocap and Control Loops">Ch 8</a>, <a href="../chapters/09-contacts-and-buffer-sizing.html" title="Contacts, Constraint Budgets and Overflow">Ch 9</a>, <a href="../chapters/25-profiling-benchmarking-tuning.html" title="Profiling, Benchmarking and Tuning for Throughput">Ch 25</a></td></tr>
+<tr id="mod-forward"><td><span class="sw-inline area-core"></span><code>forward.py</code></td><td class="num">3,908</td><td class="num">4,532</td><td>The pipeline: <code>step</code>, <code>forward</code>, <code>fwd_*</code> stages, <code>step1</code>/<code>step2</code> and the integrators (<code>euler</code>, <code>rungekutta4</code>, <code>implicit</code>, <code>discrete</code>).</td><td><a href="../chapters/07-pipeline-tour.html#stage-order" title="A Guided Tour of step and forward">Ch 7 §2</a>, <a href="../chapters/08-resets-state-and-control.html" title="Resets, State, Mocap and Control Loops">Ch 8</a>, <a href="../chapters/13-integrators.html" title="Time Integration: Euler, RK4, Implicit and Discrete">Ch 13</a></td></tr>
+<tr id="mod-types"><td><span class="sw-inline area-core"></span><code>types.py</code></td><td class="num">3,220</td><td class="num">148</td><td>Every enum, <code>Option</code>, <code>Model</code>, <code>Data</code>, <code>Contact</code>, <code>Constraint</code>, <code>Callback</code>, <code>RenderContext</code>; array spec strings such as <code>"*"</code> mark batchable fields.</td><td><a href="../chapters/06-batched-data-layout.html#spec-strings" title="Many Worlds: The Batched Data Layout">Ch 6 §9</a>, <a href="../chapters/02-mujoco-essentials.html" title="MuJoCo Essentials for MJWarp Users">Ch 2</a>, <a href="../chapters/05-first-simulation.html" title="Your First MJWarp Simulation (and How to See It)">Ch 5</a>, <a href="../chapters/09-contacts-and-buffer-sizing.html" title="Contacts, Constraint Budgets and Overflow">Ch 9</a>, <a href="../chapters/26-custom-kernels-and-extending.html" title="Writing Custom Kernels and Extending MJWarp">Ch 26</a></td></tr>
+<tr id="mod-set_const"><td><span class="sw-inline area-core"></span><code>set_const.py</code></td><td class="num">817</td><td class="num">1,513</td><td><code>set_const</code>, <code>set_length_range</code> (and the deprecated <code>set_const_0</code>, <code>set_const_fixed</code>).</td><td><a href="../chapters/10-domain-randomization.html#set-const" title="Domain Randomization with Batched Model Fields">Ch 10 §6</a>, <a href="../chapters/29-gradients-and-system-identification.html" title="Gradients, Sampling-Based Optimization and Parallel System Identification">Ch 29</a></td></tr>
+<tr id="mod-derivative"><td><span class="sw-inline area-dyn"></span><code>derivative.py</code></td><td class="num">5,758</td><td class="num">4,861</td><td><code>deriv_smooth_vel</code> (analytic velocity derivatives for the implicit integrators) and the <code>eff_*</code> effective-metric functions of DISCRETE.</td><td><a href="../chapters/13-integrators.html#implicitfast" title="Time Integration: Euler, RK4, Implicit and Discrete">Ch 13 §5</a>, <a href="../chapters/23-soft-bodies-flex-discrete-integrator.html" title="Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator">Ch 23</a></td></tr>
+<tr id="mod-smooth"><td><span class="sw-inline area-dyn"></span><code>smooth.py</code></td><td class="num">5,651</td><td class="num">2,635</td><td>Smooth dynamics: <code>kinematics</code>, <code>com_pos</code>, <code>camlight</code>, <code>crb</code>, <code>factor_m</code>, <code>solve_m</code>, <code>rne</code>, <code>rne_postconstraint</code>, <code>tendon</code>, <code>transmission</code>, <code>com_vel</code>, <code>subtree_vel</code>, <code>flex</code>.</td><td><a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#branches" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §5</a>, <a href="../chapters/12-forces-actuators-tendons.html" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12</a>, <a href="../chapters/07-pipeline-tour.html" title="A Guided Tour of step and forward">Ch 7</a></td></tr>
+<tr id="mod-passive"><td><span class="sw-inline area-dyn"></span><code>passive.py</code></td><td class="num">5,642</td><td class="num">1,289</td><td><code>passive</code>: springs, dampers, gravity compensation, fluid forces and flex elasticity (stretch, bending, rods).</td><td><a href="../chapters/12-forces-actuators-tendons.html#passive" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §2</a>, <a href="../chapters/23-soft-bodies-flex-discrete-integrator.html" title="Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator">Ch 23</a></td></tr>
+<tr id="mod-sensor"><td><span class="sw-inline area-dyn"></span><code>sensor.py</code></td><td class="num">3,472</td><td class="num">2,017</td><td><code>sensor_pos</code>, <code>sensor_vel</code>, <code>sensor_acc</code>, <code>energy_pos</code>, <code>energy_vel</code>.</td><td><a href="../chapters/14-sensors-delays-inverse-dynamics.html#stages" title="Sensors, Delays and Inverse Dynamics">Ch 14 §1</a>, <a href="../chapters/09-contacts-and-buffer-sizing.html" title="Contacts, Constraint Budgets and Overflow">Ch 9</a></td></tr>
+<tr id="mod-support"><td><span class="sw-inline area-dyn"></span><code>support.py</code></td><td class="num">2,594</td><td class="num">1,484</td><td>Helpers: <code>mul_m</code>, <code>jac</code>, <code>xfrc_accumulate</code>, <code>contact_force</code>, <code>get_state</code>/<code>set_state</code>, <code>next_act</code>, rod helpers.</td><td><a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#factorization" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §9</a>, <a href="../chapters/08-resets-state-and-control.html" title="Resets, State, Mocap and Control Loops">Ch 8</a>, <a href="../chapters/12-forces-actuators-tendons.html" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12</a></td></tr>
+<tr id="mod-history"><td><span class="sw-inline area-dyn"></span><code>history.py</code></td><td class="num">1,215</td><td class="num">2,158</td><td>Delay and history ring buffers: <code>init_ctrl_history</code>, <code>read_ctrl</code>, <code>read_sensor</code>, <code>reset_history</code>.</td><td><a href="../chapters/14-sensors-delays-inverse-dynamics.html#delays" title="Sensors, Delays and Inverse Dynamics">Ch 14 §8</a></td></tr>
+<tr id="mod-math"><td><span class="sw-inline area-dyn"></span><code>math.py</code></td><td class="num">569</td><td class="num">395</td><td><code>@wp.func</code> math: quaternions (<code>quat_integrate</code>, <code>mul_quat</code>), spatial algebra (<code>motion_cross</code>), frames, segment distances.</td><td><a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#spatial" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §3</a>, <a href="../chapters/13-integrators.html" title="Time Integration: Euler, RK4, Implicit and Discrete">Ch 13</a>, <a href="../chapters/16-primitive-narrowphase.html" title="Collision II: Geom Types and Primitive Colliders">Ch 16</a></td></tr>
+<tr id="mod-inverse"><td><span class="sw-inline area-dyn"></span><code>inverse.py</code></td><td class="num">303</td><td class="num">430</td><td><code>inverse</code>: inverse dynamics (the force that produces a given qacc).</td><td><a href="../chapters/14-sensors-delays-inverse-dynamics.html#inverse" title="Sensors, Delays and Inverse Dynamics">Ch 14 §9</a></td></tr>
+<tr id="mod-collision_flex"><td><span class="sw-inline area-col"></span><code>collision_flex.py</code></td><td class="num">4,302</td><td class="num">-</td><td>Flex collision: geoms against flex triangles, flex broadphase.</td><td><a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#collision" title="Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator">Ch 23 §5</a></td></tr>
+<tr id="mod-collision_gjk"><td><span class="sw-inline area-col"></span><code>collision_gjk.py</code></td><td class="num">2,961</td><td class="num">1,661</td><td><code>gjk</code>, <code>epa_phase</code>, <code>multicontact</code>, <code>ccd</code>: the general convex algorithms.</td><td><a href="../chapters/17-convex-collision-gjk-epa.html#gjk" title="Convex Shapes with GJK, EPA and Multi-Contact">Ch 17 §3</a></td></tr>
+<tr id="mod-collision_primitive_core"><td><span class="sw-inline area-col"></span><code>collision_primitive_core.py</code></td><td class="num">2,049</td><td class="num">970</td><td>The pair formulas themselves: plane-sphere, capsule-capsule, box-box, sphere-triangle, ...</td><td><a href="../chapters/16-primitive-narrowphase.html#colliders" title="Collision II: Geom Types and Primitive Colliders">Ch 16 §7</a>, <a href="../chapters/26-custom-kernels-and-extending.html" title="Writing Custom Kernels and Extending MJWarp">Ch 26</a></td></tr>
+<tr id="mod-collision_primitive"><td><span class="sw-inline area-col"></span><code>collision_primitive.py</code></td><td class="num">1,543</td><td class="num">-</td><td><code>primitive_narrowphase</code>: the dispatch table and the wrappers that launch each primitive pair.</td><td><a href="../chapters/16-primitive-narrowphase.html#dispatch" title="Collision II: Geom Types and Primitive Colliders">Ch 16 §4</a></td></tr>
+<tr id="mod-collision_convex"><td><span class="sw-inline area-col"></span><code>collision_convex.py</code></td><td class="num">1,529</td><td class="num">-</td><td><code>convex_narrowphase</code>: the CCD kernels for convex pairs and heightfield prisms.</td><td><a href="../chapters/17-convex-collision-gjk-epa.html#kernels-scratch" title="Convex Shapes with GJK, EPA and Multi-Contact">Ch 17 §7</a>, <a href="../chapters/18-heightfields-and-sdfs.html" title="Collision IV: Heightfields, SDFs and User SDF Plugins">Ch 18</a></td></tr>
+<tr id="mod-collision_driver"><td><span class="sw-inline area-col"></span><code>collision_driver.py</code></td><td class="num">1,308</td><td class="num">3,547</td><td><code>collision</code> (the entry point), <code>nxn_broadphase</code>, <code>sap_broadphase</code>, the per-pair filters.</td><td><a href="../chapters/15-geometry-toolkit-and-broadphase.html#funnel" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase">Ch 15 §2</a>, <a href="../chapters/09-contacts-and-buffer-sizing.html" title="Contacts, Constraint Budgets and Overflow">Ch 9</a>, <a href="../chapters/16-primitive-narrowphase.html" title="Collision II: Geom Types and Primitive Colliders">Ch 16</a></td></tr>
+<tr id="mod-collision_sdf"><td><span class="sw-inline area-col"></span><code>collision_sdf.py</code></td><td class="num">1,163</td><td class="num">-</td><td><code>sdf_narrowphase</code>: analytic SDFs, mesh/volume octree SDFs and the <code>user_sdf</code> hooks.</td><td><a href="../chapters/18-heightfields-and-sdfs.html#sdf-narrowphase" title="Collision IV: Heightfields, SDFs and User SDF Plugins">Ch 18 §7</a></td></tr>
+<tr id="mod-collision_core"><td><span class="sw-inline area-col"></span><code>collision_core.py</code></td><td class="num">583</td><td class="num">-</td><td>Shared collision types: <code>Geom</code>, <code>CollisionContext</code>, <code>write_contact</code>, material mixing (<code>contact_params</code>).</td><td><a href="../chapters/16-primitive-narrowphase.html#write-contact" title="Collision II: Geom Types and Primitive Colliders">Ch 16 §5</a>, <a href="../chapters/09-contacts-and-buffer-sizing.html" title="Contacts, Constraint Budgets and Overflow">Ch 9</a>, <a href="../chapters/15-geometry-toolkit-and-broadphase.html" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase">Ch 15</a></td></tr>
+<tr id="mod-solver"><td><span class="sw-inline area-sol"></span><code>solver.py</code></td><td class="num">7,006</td><td class="num">4,284</td><td><code>solve</code>: the CG and Newton primal solvers, exact linesearch, <code>noslip</code>, the compacted sleep solve.</td><td><a href="../chapters/20-solvers-cg-newton.html#solve-flow" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §2</a>, <a href="../chapters/24-cuda-graphs.html" title="CUDA Graphs: Capture, Replay and What Gets Baked">Ch 24</a></td></tr>
+<tr id="mod-constraint"><td><span class="sw-inline area-sol"></span><code>constraint.py</code></td><td class="num">6,552</td><td class="num">1,803</td><td><code>make_constraint</code>: efc rows for equalities, friction loss, limits and contacts (J, D, aref).</td><td><a href="../chapters/19-constraints-as-optimization.html#make-constraint" title="Constraints as Convex Optimization">Ch 19 §6</a>, <a href="../chapters/09-contacts-and-buffer-sizing.html" title="Contacts, Constraint Budgets and Overflow">Ch 9</a>, <a href="../chapters/22-determinism-and-reproducibility.html" title="Determinism and Reproducibility">Ch 22</a></td></tr>
+<tr id="mod-island"><td><span class="sw-inline area-sol"></span><code>island.py</code></td><td class="num">1,599</td><td class="num">926</td><td><code>island</code>: lock-free disjoint-set union over trees, island mapping, active DOFs.</td><td><a href="../chapters/21-islands-and-sleep.html#dsu" title="Islands and Sleeping">Ch 21 §2</a></td></tr>
+<tr id="mod-sleep"><td><span class="sw-inline area-sol"></span><code>sleep.py</code></td><td class="num">1,466</td><td class="num">1,972</td><td>Sleeping: <code>update_sleep</code>, <code>wake</code>, wake on collision, tendon and equality.</td><td><a href="../chapters/21-islands-and-sleep.html#falling-asleep" title="Islands and Sleeping">Ch 21 §5</a></td></tr>
+<tr id="mod-sort"><td><span class="sw-inline area-sol"></span><code>sort.py</code> <span class="tag dev">dev tree only</span></td><td class="num">1,292</td><td class="num">1,723</td><td>Dev tree only: device-side canonical permutations for contacts and constraints (DeterminismType CONTACTS/CONSTRAINT).</td><td><a href="../chapters/22-determinism-and-reproducibility.html#contact-order" title="Determinism and Reproducibility">Ch 22 §2</a></td></tr>
+<tr id="mod-block_cholesky"><td><span class="sw-inline area-sol"></span><code>block_cholesky.py</code></td><td class="num">581</td><td class="num">-</td><td>Blocked (tile) Cholesky factorize and solve used by the Newton solver.</td><td><a href="../chapters/20-solvers-cg-newton.html#newton" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §6</a></td></tr>
+<tr id="mod-render"><td><span class="sw-inline area-ren"></span><code>render.py</code></td><td class="num">1,661</td><td class="num">2,127</td><td><code>render</code>: the ray-tracing megakernel, shading, shadows, textures, splats.</td><td><a href="../chapters/27-rays-lidar-and-batch-rendering.html#megakernel" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §9</a></td></tr>
+<tr id="mod-ray"><td><span class="sw-inline area-ren"></span><code>ray.py</code></td><td class="num">1,380</td><td class="num">756</td><td><code>ray</code>, <code>rays</code>: per-geom ray intersection, with BVH for meshes, heightfields and flexes.</td><td><a href="../chapters/27-rays-lidar-and-batch-rendering.html#rays" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §1</a>, <a href="../chapters/14-sensors-delays-inverse-dynamics.html" title="Sensors, Delays and Inverse Dynamics">Ch 14</a></td></tr>
+<tr id="mod-bvh"><td><span class="sw-inline area-ren"></span><code>bvh.py</code></td><td class="num">1,364</td><td class="num">234</td><td>Scene, mesh, heightfield, flex and splat BVHs: build and <code>refit_bvh</code>.</td><td><a href="../chapters/27-rays-lidar-and-batch-rendering.html#bvh" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §3</a></td></tr>
+<tr id="mod-render_util"><td><span class="sw-inline area-ren"></span><code>render_util.py</code></td><td class="num">879</td><td class="num">421</td><td><code>create_render_context</code>, <code>compute_ray</code>, <code>get_rgb</code>, <code>get_depth</code>, <code>get_segmentation</code>.</td><td><a href="../chapters/27-rays-lidar-and-batch-rendering.html#options" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §5</a></td></tr>
+<tr id="mod-render_optix"><td><span class="sw-inline area-ren"></span><code>render_optix.py</code> <span class="tag dev">dev tree only</span></td><td class="num">276</td><td class="num">-</td><td>Dev tree only: OptiX acceleration structures and pipeline for the batch renderer (<code>backend="optix"</code>).</td><td><a href="../chapters/27-rays-lidar-and-batch-rendering.html#splats" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §13</a></td></tr>
+<tr id="mod-util_misc"><td><span class="sw-inline area-tool"></span><code>util_misc.py</code></td><td class="num">1,222</td><td class="num">1,050</td><td>Muscle and DC-motor curves, tendon wrapping, Halton sequence, ctrl clamping, polynomial springs.</td><td><a href="../chapters/12-forces-actuators-tendons.html#muscles" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §9</a>, <a href="../chapters/18-heightfields-and-sdfs.html" title="Collision IV: Heightfields, SDFs and User SDF Plugins">Ch 18</a></td></tr>
+<tr id="mod-cli"><td><span class="sw-inline area-tool"></span><code>cli.py</code></td><td class="num">309</td><td class="num">-</td><td>Shared absl flags of the three CLIs, <code>load_model</code>, <code>init_structs</code>, <code>unroll</code>.</td><td><a href="../chapters/25-profiling-benchmarking-tuning.html#testspeed" title="Profiling, Benchmarking and Tuning for Throughput">Ch 25 §4</a>, <a href="../chapters/05-first-simulation.html" title="Your First MJWarp Simulation (and How to See It)">Ch 5</a></td></tr>
+<tr id="mod-diff"><td><span class="sw-inline area-tool"></span><code>diff.py</code></td><td class="num">292</td><td class="num">1,125</td><td>Differentiability API: <code>differentiable</code>, <code>AdjointRule</code>, <code>register_adjoint</code>.</td><td><a href="../chapters/29-gradients-and-system-identification.html#register-adjoint" title="Gradients, Sampling-Based Optimization and Parallel System Identification">Ch 29 §4</a>, <a href="../chapters/28-interop-torch-and-jax.html" title="Interop with PyTorch and JAX">Ch 28</a></td></tr>
+<tr id="mod-warp_util"><td><span class="sw-inline area-tool"></span><code>warp_util.py</code></td><td class="num">210</td><td class="num">61</td><td><code>EventTracer</code>, <code>event_scope</code>, <code>cache_kernel</code>, <code>mark_batched</code>, <code>check_toolkit_driver</code>.</td><td><a href="../chapters/25-profiling-benchmarking-tuning.html#event-trace" title="Profiling, Benchmarking and Tuning for Throughput">Ch 25 §3</a>, <a href="../chapters/06-batched-data-layout.html" title="Many Worlds: The Batched Data Layout">Ch 6</a>, <a href="../chapters/24-cuda-graphs.html" title="CUDA Graphs: Capture, Replay and What Gets Baked">Ch 24</a></td></tr>
+<tr id="mod-util_pkg"><td><span class="sw-inline area-tool"></span><code>util_pkg.py</code></td><td class="num">105</td><td class="num">172</td><td>Package version checks (<code>check_version</code>).</td><td><span class="muted">not taught</span></td></tr>
+<tr id="mod-__init__"><td><span class="sw-inline area-tool"></span><code>__init__.py</code></td><td class="num">14</td><td class="num">-</td><td>License header only (the public API is <code>mujoco_warp/__init__.py</code>).</td><td><span class="muted">not taught</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="small muted">Test files without a module of the same name: <code>broadphase_test.py</code>, <code>determinism_test.py</code>, <code>flex_test.py</code>, <code>io_jax_test.py</code>, <code>jax_test.py</code>, <code>unroll_test.py</code>
+        (<code>determinism_test.py</code> is read in <a href="../chapters/22-determinism-and-reproducibility.html#replay" title="Determinism and Reproducibility">Ch 22 §6</a>, <code>jax_test.py</code> and
+        <code>io_jax_test.py</code> in <a href="../chapters/28-interop-torch-and-jax.html#jax-bridge" title="Interop with PyTorch and JAX">Ch 28 §4</a>).</p>
+      <script type="application/json" id="data-wc">{"commit": "8f5b9f1", "tool": "wc -l", "src": {"__init__.py": 14, "block_cholesky.py": 581, "bvh.py": 1364, "cli.py": 309, "collision_convex.py": 1529, "collision_core.py": 583, "collision_driver.py": 1308, "collision_flex.py": 4302, "collision_gjk.py": 2961, "collision_primitive.py": 1543, "collision_primitive_core.py": 2049, "collision_sdf.py": 1163, "constraint.py": 6552, "derivative.py": 5758, "diff.py": 292, "forward.py": 3908, "history.py": 1215, "inverse.py": 303, "io.py": 4269, "island.py": 1599, "math.py": 569, "passive.py": 5642, "ray.py": 1380, "render.py": 1661, "render_optix.py": 276, "render_util.py": 879, "sensor.py": 3472, "set_const.py": 817, "sleep.py": 1466, "smooth.py": 5651, "solver.py": 7006, "sort.py": 1292, "support.py": 2594, "types.py": 3220, "util_misc.py": 1222, "util_pkg.py": 105, "warp_util.py": 210}, "tests": {"broadphase_test.py": 393, "bvh_test.py": 234, "collision_driver_test.py": 3547, "collision_gjk_test.py": 1661, "collision_primitive_core_test.py": 970, "constraint_test.py": 1803, "derivative_test.py": 4861, "determinism_test.py": 1226, "diff_test.py": 1125, "flex_test.py": 8096, "forward_test.py": 4532, "history_test.py": 2158, "inverse_test.py": 430, "io_jax_test.py": 255, "io_test.py": 3351, "island_test.py": 926, "jax_test.py": 98, "math_test.py": 395, "passive_test.py": 1289, "ray_test.py": 756, "render_test.py": 2127, "render_util_test.py": 421, "sensor_test.py": 2017, "set_const_test.py": 1513, "sleep_test.py": 1972, "smooth_test.py": 2635, "solver_test.py": 4284, "sort_test.py": 1723, "support_test.py": 1484, "types_test.py": 148, "unroll_test.py": 60, "util_misc_test.py": 1050, "util_pkg_test.py": 172, "warp_util_test.py": 61}, "top": {"__init__.py": 134, "viewer.py": 215, "record.py": 179, "testspeed.py": 393, "conftest.py": 52}}</script>
+    </section>
+    <section class="sec" id="cli-scripts">
+      <h2><span class="sec-num">4</span>The three CLI scripts and <code>conftest.py</code></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>File</th><th>Lines</th><th>Installed as</th><th>What it does</th><th>Chapter</th></tr></thead>
+          <tbody>
+            <tr><td><code>viewer.py</code></td><td class="num">215</td><td><code>mjwarp-viewer</code></td><td>Load an MJCF and simulate one world interactively (4.0.1: MuJoCo passive viewer or <code>--viewer viser</code>; dev tree: MuJoCo Studio).</td><td><a href="../chapters/05-first-simulation.html#clis" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §9</a></td></tr>
+            <tr><td><code>record.py</code></td><td class="num">179</td><td><code>mjwarp-record</code></td><td>Roll out and save world 0 as GIF or WebP, with <code>mujoco.Renderer</code> or the batch renderer. GPU only.</td><td><a href="../chapters/05-first-simulation.html#clis" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §9</a></td></tr>
+            <tr><td><code>testspeed.py</code></td><td class="num">393</td><td><code>mjwarp-testspeed</code></td><td>Capture a function in a CUDA graph and time nstep replays over nworld worlds; reports, trace, memory.</td><td><a href="../chapters/25-profiling-benchmarking-tuning.html#testspeed" title="Profiling, Benchmarking and Tuning for Throughput">Ch 25 §4</a></td></tr>
+            <tr><td><code>_src/cli.py</code></td><td class="num">309</td><td>(shared)</td><td>The flags all three share, <code>load_model</code>, <code>init_structs</code>, <code>unroll</code>.</td><td><a href="../chapters/25-profiling-benchmarking-tuning.html#testspeed" title="Profiling, Benchmarking and Tuning for Throughput">Ch 25 §4</a></td></tr>
+            <tr><td><code>conftest.py</code></td><td class="num">52</td><td>(pytest)</td><td>Test options: <code>--cpu</code>, <code>--verify_cuda</code>, <code>--lineinfo</code>, <code>--optimization_level</code>, <code>--debug_mode</code>, <code>--kernel_cache_dir</code>.</td><td><span class="muted">not taught</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Every flag is listed in <a href="api-at-a-glance.html#cli">API at a glance</a>.</p>
+    </section>
+    <section class="sec" id="test-data">
+      <h2><span class="sec-num">5</span>Test models: <code>mujoco_warp/test_data/</code></h2>
+      <p>214 files, shipped in the wheel. The course loads several
+        of them with <code>epath.resource_path("mujoco_warp") / "test_data/..."</code>, for example the humanoid in
+        <a href="../chapters/05-first-simulation.html#clis" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §9</a>, <a href="../chapters/25-profiling-benchmarking-tuning.html#testspeed" title="Profiling, Benchmarking and Tuning for Throughput">Ch 25 §4</a> and <a href="../chapters/30-capstone-rl-at-scale.html#contact" title="Capstone: GPU-Native Reinforcement Learning at Scale">Ch 30 §10</a>.</p>
+      <div class="code-block"><pre><code class="language-bash">mujoco_warp/test_data/
+  __init__.py
+  actuation/
+  aloha_pot/
+  collision.xml
+  collision_sdf/
+  constraints.xml
+  convex_collision/
+  flex/
+  hfield/
+  humanoid/
+  jdotv/
+  meshes/
+  mug/
+  pendula.xml
+  primitives.xml
+  ray.xml
+  skybox/
+  tendon/</code></pre></div>
+    </section>
+    <section class="sec" id="benchmarks">
+      <h2><span class="sec-num">6</span>The benchmark suite: <code>benchmarks/</code></h2>
+      <p>Repo only. Each subfolder with an <code>__init__.py</code> defines a <code>BENCHMARKS</code> list (and optionally
+        pinned <code>ASSETS</code> such as MuJoCo Menagerie); every key except <code>name</code>, <code>mjcf</code> and
+        <code>assets</code> becomes a <code>mjwarp-testspeed</code> flag. Full table of benchmarks and flags:
+        <a href="../chapters/25-profiling-benchmarking-tuning.html#suite" title="Profiling, Benchmarking and Tuning for Throughput">Ch 25 §6</a>.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>File</th><th>Lines</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>run.py</code></td><td class="num">212</td><td>Discover benchmarks (<code>-f</code>/<code>--filter</code> regex), fetch assets, run testspeed with <code>--format=short</code>, the trace, memory and solver reports; <code>--view</code> opens one in the viewer.</td></tr>
+            <tr><td><code>sweep.py</code></td><td class="num">306</td><td>Run every benchmark across a range of commits (<code>forward</code>/<code>back</code>, <code>--daily</code>, <code>--mock</code>) and write <code>nightly/*.jsonl</code> to the gh-pages branch.</td></tr>
+            <tr><td><code>common.py</code></td><td class="num">85</td><td>Command and asset helpers shared by run.py and sweep.py.</td></tr>
+            <tr><td><code>kitchen/populate_scene.py</code></td><td class="num">156</td><td>Place a Menagerie robot in the kitchen scene. <code>kitchen/</code> has no <code>__init__.py</code>, so <code>run.py</code> does not discover it.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Benchmark folders with an <code>__init__.py</code>: <code>aloha</code>, <code>cloth</code>, <code>franka_emika_panda</code>, <code>franka_threading</code>, <code>humanoid</code>, <code>myosim</code>, <code>render</code>, <code>sharpa_wave</code>, <code>unitree_g1</code>. Without:
+        <code>kitchen</code>.</p>
+    </section>
+    <section class="sec" id="contrib">
+      <h2><span class="sec-num">7</span>Experiments and tools: <code>contrib/</code></h2>
+      <p>Repo only. The README calls it "a home for experiments, helper scripts and other tools that are not officially
+        part of MJWarp", subject to change with no notice.</p>
+      <div class="cards">
+        <a class="card" href="../chapters/27-rays-lidar-and-batch-rendering.html#splats"><span class="card-num">contrib/render.py · 531 lines</span><h3>CLI renderer</h3><p>RGB/depth images, PLY Gaussian splats, <code>--tiled</code>, <code>--rollout</code>, <code>--orbit</code>. Its docstring says <code>mjwarp-render</code>, but pip does not install it. Pitfall: it passes <code>create_render_context</code> arguments by position, so <code>--shadows</code> toggles fast math instead (Ch 27 §5).</p></a>
+        <a class="card" href="../chapters/28-interop-torch-and-jax.html#stale-contrib"><span class="card-num">contrib/jax_unroll.py · 85 lines</span><h3>JAX bridge benchmark</h3><p>8192 humanoids through <code>jax_callable</code>. Stale: wrong <code>benchmark</code> path, <code>nconmax</code> read as a total (now per world), <code>wp.clear_kernel_cache()</code> at import, hard-coded 8192.</p></a>
+        <a class="card" href="../chapters/26-custom-kernels-and-extending.html#analyzer"><span class="card-num">contrib/kernel_analyzer/</span><h3>Kernel analyzer</h3><p>An <code>ast</code>-based checker for MJWarp's kernel conventions (parameter grouping, <code>_in</code>/<code>_out</code> suffixes, atomics), as a CLI, an LSP server and a VS Code extension.</p></a>
+        <a class="card" href="../chapters/25-profiling-benchmarking-tuning.html#suite"><span class="card-num">contrib/systemd/</span><h3>Nightly benchmarks</h3><p><code>mjwarp-nightly.timer</code> fires at 02:00 daily (RandomizedDelaySec=1800, Persistent=true) and starts <code>mjwarp-nightly.service</code>, which runs <code>~/.local/bin/mjwarp-sweep --daily forward</code> (sweep.py installed under that name).</p></a>
+        <a class="card" href="../chapters/30-capstone-rl-at-scale.html#stretch"><span class="card-num">contrib/xml/ + Apollo notebook</span><h3>Apollo locomotion</h3><p><code>xml/apptronik_apollo.xml</code> and <code>xml/scene.xml</code> are the Apptronik Apollo humanoid used by <code>apptronik_apollo_locomotion.ipynb</code>, a notebook that trains the humanoid to walk with Brax PPO (MJX with the Warp back end).</p></a>
+      </div>
+      <div class="callout pitfall"><p class="callout-title">Pitfall: the nconmax trap in contrib</p><p>Both
+        <code>jax_unroll.py</code> and the Apollo notebook pass a total contact budget as <code>nconmax</code>. In 4.0.1
+        <code>nconmax</code> is per world (<code>io.py::put_data</code> docstring), so the old lines allocate nworld times
+        too many slots. Pass the per-world number, or use <code>naconmax</code> for the total (<a href="../chapters/28-interop-torch-and-jax.html#stale-contrib" title="Interop with PyTorch and JAX">Ch 28 §6</a>).</p></div>
+    </section>
+    <section class="sec" id="notebooks">
+      <h2><span class="sec-num">8</span>The notebook: <code>notebooks/tutorial.ipynb</code></h2>
+      <p>Repo only: the official MJWarp tutorial. <a href="../chapters/01-what-is-mujoco-warp.html#source-map" title="What Is MuJoCo Warp?">Ch 1</a> uses it as the install check
+        (<code>put_model(from_xml_string('&lt;mujoco/&gt;'))</code>). The course's own notebooks live in this course's
+        <code>notebooks/</code> folder, one per chapter, each with an Open-in-Colab link on its chapter page.</p>
+    </section>
+    <section class="sec" id="meta">
+      <h2><span class="sec-num">9</span>Project files</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>File</th><th>What it holds</th></tr></thead>
+          <tbody>
+            <tr><td><code>pyproject.toml</code></td><td>Package metadata, dependencies and extras (<code>viewer</code>, <code>dev</code>, <code>cpu</code>, <code>cuda</code>, <code>optix</code>), and the three <code>[project.scripts]</code> entry points.</td></tr>
+            <tr><td><code>uv.lock</code></td><td>Locked dependency versions for <code>uv</code>, used by the benchmark scripts (<code>uv run</code>).</td></tr>
+            <tr><td><code>.github/workflows/</code></td><td><code>ci.yml</code> (tests), <code>nightly.yml</code> (daily test against the latest dependencies, including pre-releases), <code>pypi.yml</code> (publishing). The nightly <em>benchmarks</em> are not here: they run from <code>contrib/systemd</code>.</td></tr>
+            <tr><td><code>AGENTS.md</code>, <code>.agent/rules/project.md</code>, <code>CONTRIBUTING.md</code></td><td><code>CONTRIBUTING.md</code>: setup, code style and Warp GPU conventions (<code>_in</code>/<code>_out</code> parameters in Model/Data field order, checked by the kernel analyzer, <a href="../chapters/26-custom-kernels-and-extending.html#analyzer" title="Writing Custom Kernels and Extending MJWarp">Ch 26 §12</a>), tests, benchmarks, PRs. <code>AGENTS.md</code> includes it and adds commit/PR rules for coding agents; <code>.agent/rules/project.md</code> points to <code>AGENTS.md</code>.</td></tr>
+            <tr><td><code>README.md</code>, <code>AUTHORS</code>, <code>LICENSE</code></td><td>Overview and feature notes (the README is where "differentiability ... is not yet available" comes from, <a href="../chapters/01-what-is-mujoco-warp.html#not-supported" title="What Is MuJoCo Warp?">Ch 1 §7</a>), Apache 2.0 licence.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section class="sec" id="summary">
+      <h2><span class="sec-num">10</span>Where next</h2>
+      <div class="cards">
+        <a class="card" href="api-at-a-glance.html"><span class="card-num">API</span><h3>API at a glance</h3><p>Every public name, with signature and owning chapter.</p></a>
+        <a class="card" href="glossary.html"><span class="card-num">TERMS</span><h3>Glossary</h3><p>One-line definitions of every term.</p></a>
+        <a class="card" href="../chapters/07-pipeline-tour.html"><span class="card-num">Ch 7</span><h3>A guided tour of step and forward</h3><p>The pipeline these modules implement.</p></a>
+      </div>
+      <p class="stuck">Stuck? See <a href="troubleshooting.html">Troubleshooting</a> or the <a href="course-map.html">course map</a>.</p>
+    </section>
+
+    <footer class="chapter-footer">
+      <nav class="pager" aria-label="Reference pager">
+        <a class="prev" href="api-at-a-glance.html"><span class="dir">Previous</span><span class="ttl">API at a glance</span></a>
+        <a class="index" href="../index.html"><span class="dir">All chapters</span><span class="ttl">Course home</span></a>
+        <a class="next" href="troubleshooting.html"><span class="dir">Next</span><span class="ttl">Troubleshooting</span></a>
+      </nav>
+      <p class="site-footer">MuJoCo Warp course · mujoco-warp 4.0.1 · warp-lang 1.19.0 · mujoco-core 4.0.1 · source tree at commit 8f5b9f1</p>
+    </footer>
+  </main>
+</div>
+
+<script defer src="../assets/course.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  MW.onReady(function () {
+
+  });
+});
+</script>
+</body>
+</html>

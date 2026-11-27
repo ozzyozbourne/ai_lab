@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Part I Cheat Sheet</title>
+<meta name="description" content="Code-first summary of Part I: put_model, make_data, step and get_data_into; the nworld-first shape rules; assign vs replace; Option arrays vs ints; Warp kernels; and the stage order of step.">
+<script>try{var t=localStorage.getItem("mwc-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="../assets/course.css">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<style>
+  /* cheat-sheet layout: dense cards that stack on phones and do not split when printed */
+  .cs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 14px; margin: 1rem 0 1.4rem; }
+  .cs-card { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); padding: 12px 14px; min-width: 0; }
+  .cs-card > h3 { margin: 0 0 6px; font-size: .98rem; }
+  .cs-card > p { margin: .3rem 0; font-size: .93rem; }
+  .cs-card .code-block { margin: .5rem 0 .2rem; }
+  .cs-card ul { margin: .3rem 0; padding-left: 1.1em; font-size: .93rem; }
+  .cs-more { font-size: .85rem; color: var(--muted); margin: .4rem 0 0; }
+  .cs-table td, .cs-table th { font-size: .9rem; vertical-align: top; }
+  .cs-table code { white-space: nowrap; }
+  .cs-table td.wrap code { white-space: normal; }
+  .cs-pitfalls li { margin-bottom: .45rem; }
+  .cs-pitfalls li strong { color: var(--warn-ink); }
+  .cs-chapters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 6px 18px; padding-left: 0; list-style: none; }
+  .cs-chapters li a { font-weight: 600; }
+  .cs-print { margin-top: 12px; }
+  .cs-cell-p { background: var(--accent-2-soft); color: var(--accent-2-ink); font-weight: 700; text-align: center; }
+  .cs-cell-c { background: var(--accent-soft); color: var(--accent-ink); font-weight: 700; text-align: center; }
+  .cs-cell-n { background: var(--surface-2); color: var(--muted); text-align: center; }
+  .cs-cell-f { outline: 2px dashed var(--warn); outline-offset: -3px; }
+  .cs-yes { color: var(--ok); font-weight: 700; }
+  .cs-no { color: var(--danger-ink); font-weight: 700; }
+  .cs-maybe { color: var(--warn-ink); font-weight: 700; }
+
+  @media print {
+    body { font-size: 10pt; }
+    .hero-actions, .cs-print, .p-stuck { display: none !important; }
+    .cs-card, figure, .table-wrap, .code-block, .callout { break-inside: avoid; }
+    .sec > h2 { break-after: avoid; }
+    .cs-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+    .layout { padding: 0; }
+  }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="progress-bar" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="icon-btn toc-toggle" type="button" aria-label="Table of contents">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+  </button>
+  <a class="brand" href="../index.html">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><circle cx="10" cy="11" r="3" fill="#10200a"/><circle cx="22" cy="11" r="3" fill="#10200a" opacity=".7"/><circle cx="10" cy="22" r="3" fill="#10200a" opacity=".7"/><circle cx="22" cy="22" r="3" fill="#10200a" opacity=".45"/></svg>
+    <span class="brand-text">MuJoCo Warp Course</span>
+  </a>
+  <span class="chap-count">Cheat sheet 1 of 6</span>
+  <span class="topbar-spacer"></span>
+  <nav class="topnav" aria-label="Cheat sheet navigation">
+    <a href="../index.html" class="prev" aria-label="Course home"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg><span class="lbl">Prev</span></a>
+    <a href="cheatsheet-part2.html" class="next" aria-label="Part II cheat sheet"><span class="lbl">Next</span><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg></a>
+  </nav>
+  <button class="icon-btn theme-toggle" type="button" aria-label="Toggle dark mode">
+    <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+</header>
+
+<div class="layout">
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <ol data-auto></ol>
+    <p class="toc-progress" aria-live="off"></p>
+  </aside>
+
+  <main id="main" class="content">
+    <header class="chapter-hero">
+      <p class="eyebrow">Reference · Part I cheat sheet</p>
+      <h1>Part I cheat sheet: Foundations</h1>
+      <p class="lede">The four calls, the shape rules, Warp basics and the pipeline map. Dense, printable, and checked against mujoco-warp 4.0.1 and the chapters. Every block
+        links back to the section that teaches it.</p>
+      <div class="hero-meta">
+        <span class="badge level-beginner">Beginner to intermediate</span>
+        <span>Chapters 1-7</span><span class="sep">·</span>
+        <span>Print: about 5 pages</span>
+      </div>
+      <div class="hero-actions cs-print">
+        <button class="btn btn-sm" type="button" onclick="window.print()">Print this sheet</button>
+        <a class="btn btn-sm btn-ghost" href="../index.html#reference">All reference pages</a>
+      </div>
+    </header>
+
+    <section class="recap" aria-labelledby="recap-h">
+      <h2 id="recap-h" data-toc="Chapters">Chapters on this sheet</h2>
+      <ul class="cs-chapters">
+        <li><a href="../chapters/01-what-is-mujoco-warp.html">Ch 1 · What Is MuJoCo Warp?</a></li>
+        <li><a href="../chapters/02-mujoco-essentials.html">Ch 2 · MuJoCo Essentials for MJWarp Users</a></li>
+        <li><a href="../chapters/03-rigid-body-physics-primer.html">Ch 3 · Rigid-Body Physics from Scratch</a></li>
+        <li><a href="../chapters/04-warp-and-the-gpu.html">Ch 4 · NVIDIA Warp and How a GPU Runs Your Kernel</a></li>
+        <li><a href="../chapters/05-first-simulation.html">Ch 5 · Your First MJWarp Simulation (and How to See It)</a></li>
+        <li><a href="../chapters/06-batched-data-layout.html">Ch 6 · Many Worlds: The Batched Data Layout</a></li>
+        <li><a href="../chapters/07-pipeline-tour.html">Ch 7 · A Guided Tour of step and forward</a></li>
+      </ul>
+    </section>
+
+    <section class="sec" id="at-a-glance">
+      <h2><span class="sec-num">1</span>Part I at a glance</h2>
+      <p>Every MJWarp program has the same shape: compile with ordinary MuJoCo on the host, copy the model to the
+        device once, allocate <code>nworld</code> worlds once, step all of them in one call, and copy one world home
+        only when you want to look at it.</p>
+      <figure class="fig">
+        <div class="fig-frame scroll-x">
+          <svg viewBox="0 0 760 272" role="img" aria-labelledby="cs1-f1t cs1-f1d" style="min-width:600px">
+            <title id="cs1-f1t">The four calls and the shapes they produce</title>
+            <desc id="cs1-f1d">MJCF is compiled on the host into an MjModel. put_model makes a device Model, make_data makes a Data whose arrays have one row per world, step advances all rows, and get_data_into copies one row back into a host MjData.</desc>
+            <defs><marker id="cs1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <text x="12" y="20" class="s-small">HOST (CPU, float64, one model)</text>
+            <text x="12" y="264" class="s-small">DEVICE (GPU or Warp CPU, float32, nworld worlds)</text>
+            <line x1="10" y1="128" x2="750" y2="128" class="s-line s-dashed"/>
+            <g class="hot" data-info="<code>mjm = mujoco.MjModel.from_xml_string(xml)</code>: ordinary MuJoCo compiles the MJCF. There is no special MJWarp model format.">
+              <rect x="12" y="34" width="150" height="70" rx="10" class="s-box"/>
+              <text x="87" y="62" text-anchor="middle" class="s-label">mjm</text>
+              <text x="87" y="82" text-anchor="middle" class="s-small s-mono">MjModel</text>
+            </g>
+            <g class="hot" data-info="<code>m = mjw.put_model(mjm)</code>: feature checks first (NotImplementedError), float32 device arrays, warp-only fields, tolerance clamped to at least 1e-6.">
+              <path d="M87 106 V 170" class="s-accent-stroke" marker-end="url(#cs1-arrow)"/>
+              <text x="94" y="152" class="s-small s-mono">put_model</text>
+              <rect x="12" y="176" width="150" height="60" rx="10" class="s-accent-soft"/>
+              <text x="87" y="202" text-anchor="middle" class="s-label">m</text>
+              <text x="87" y="222" text-anchor="middle" class="s-small s-mono">Model, "*" rows: B</text>
+            </g>
+            <g class="hot" data-info="<code>d = mjw.make_data(mjm, nworld=N, nconmax=..., njmax=...)</code> takes the <em>host</em> model. Derived fields stay zero until the first forward or step.">
+              <path d="M164 70 C 240 70 240 190 286 190" class="s-accent2-stroke" marker-end="url(#cs1-arrow)"/>
+              <text x="200" y="110" class="s-small s-mono">make_data</text>
+              <rect x="290" y="150" width="230" height="88" rx="10" class="s-box-2"/>
+              <text x="300" y="168" class="s-label">d: one row per world, w0..w3</text>
+              <rect x="300" y="178" width="210" height="11" rx="3" class="s-w0"/>
+              <rect x="300" y="192" width="210" height="11" rx="3" class="s-w1"/>
+              <rect x="300" y="206" width="210" height="11" rx="3" class="s-w2"/>
+              <rect x="300" y="220" width="210" height="11" rx="3" class="s-w3"/>
+            </g>
+            <g class="hot" data-info="<code>mjw.step(m, d)</code>: about 100 kernel launches, every world in each launch. Nothing is copied to the host.">
+              <path d="M524 175 C 580 140 580 250 524 215" class="s-accent-stroke" marker-end="url(#cs1-arrow)"/>
+              <text x="566" y="196" class="s-small s-mono">step</text>
+            </g>
+            <g class="hot" data-info="<code>mjw.get_data_into(mjd, mjm, d, world_id=k)</code>: filters the contact pool, reorders efc rows, about 140 host copies. For looking, never for training loops.">
+              <path d="M450 148 C 470 90 560 70 596 70" class="s-warn-stroke" marker-end="url(#cs1-arrow)"/>
+              <text x="470" y="100" class="s-small s-mono">get_data_into</text>
+              <rect x="600" y="34" width="150" height="70" rx="10" class="s-box"/>
+              <text x="675" y="62" text-anchor="middle" class="s-label">mjd</text>
+              <text x="675" y="82" text-anchor="middle" class="s-small s-mono">MjData, world k</text>
+            </g>
+            <g class="hot" data-info="The contact pool: <code>d.contact.*</code> is one flat <code>(naconmax,)</code> list for all worlds, each slot tagged with <code>worldid</code>; <code>d.nacon</code> is <code>(1,)</code>.">
+              <rect x="600" y="150" width="150" height="88" rx="10" class="s-box-2"/>
+              <text x="610" y="168" class="s-label">d.contact pool</text>
+              <rect x="610" y="180" width="16" height="16" class="s-w0"/><rect x="628" y="180" width="16" height="16" class="s-w2"/><rect x="646" y="180" width="16" height="16" class="s-w0"/><rect x="664" y="180" width="16" height="16" class="s-w3"/><rect x="682" y="180" width="16" height="16" class="s-w1"/><rect x="700" y="180" width="16" height="16" class="s-surface"/><rect x="718" y="180" width="16" height="16" class="s-surface"/>
+              <text x="610" y="216" class="s-small s-mono">(naconmax,) + worldid</text>
+              <text x="610" y="231" class="s-small s-mono">nacon: (1,)</text>
+            </g>
+          </svg>
+        </div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a part."></div>
+        <figcaption><span class="fig-num">Figure 1.</span>The four calls (<a href="../chapters/05-first-simulation.html#four-calls">Ch 5 §1</a>) and the shapes they produce (<a href="../chapters/06-batched-data-layout.html#nworld-first">Ch 6 §1</a>, <a href="../chapters/06-batched-data-layout.html#pooled">§8</a>). <span class="badge illustrative">Illustrative</span></figcaption>
+      </figure>
+    </section>
+
+    <section class="sec" id="four-calls">
+      <h2><span class="sec-num">2</span>The four calls</h2>
+      <div class="code-block"><pre><code class="language-python">import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING      # quiet the module-load log (Ch 4 §8)
+import mujoco_warp as mjw
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 8
+
+mjm = mujoco.MjModel.from_xml_string(XML)                    # 1. compile on the host
+m = mjw.put_model(mjm)                                        # 2. model to the device
+d = mjw.make_data(mjm, nworld=NWORLD, nconmax=8, njmax=32)    # 3. all worlds (host model!)
+for _ in range(1000):
+    mjw.step(m, d)                                            # 4. every world, one call
+assert not d.overflow.numpy().any()                           # size the buffers (Ch 9)
+mjd = mujoco.MjData(mjm)
+mjw.get_data_into(mjd, mjm, d, world_id=0)                    # look at world 0 on the host</code></pre></div>
+      <div class="table-wrap"><table class="cs-table">
+        <thead><tr><th>Call</th><th>Takes</th><th>Does</th><th>Read more</th></tr></thead>
+        <tbody>
+          <tr><td><code>mjw.put_model(mjm, batch_sizes=None)</code></td><td>host <code>MjModel</code></td><td>Raises <code>NotImplementedError</code> for unsupported features before allocating; float32 device arrays; adds warp-only fields and options; <code>opt.tolerance = max(tolerance, 1e-6)</code>.</td><td><a href="../chapters/05-first-simulation.html#put-model">Ch 5 §2</a></td></tr>
+          <tr><td><code>mjw.make_data(mjm, nworld=1, nconmax, njmax, ...)</code></td><td>host <code>MjModel</code></td><td>Allocates every buffer once. Default pose <code>qpos0</code>; derived fields (<code>xpos</code>, contacts, sensors) are zero until <code>forward</code>.</td><td><a href="../chapters/05-first-simulation.html#make-put">Ch 5 §4</a></td></tr>
+          <tr><td><code>mjw.put_data(mjm, mjd, nworld=1, ...)</code></td><td>host model + <code>MjData</code></td><td>Copies one host state into every world (and runs host kinematics on <code>mjd</code>, so it mutates it).</td><td><a href="../chapters/05-first-simulation.html#make-put">Ch 5 §4</a></td></tr>
+          <tr><td><code>mjw.step(m, d)</code> / <code>mjw.forward(m, d)</code></td><td>device <code>m</code>, <code>d</code></td><td><code>step = forward + integrator</code>; only <code>step</code> advances <code>d.time</code> (float32: 11 steps of 0.01 read <code>0.109999985</code>).</td><td><a href="../chapters/05-first-simulation.html#step-forward">Ch 5 §5</a></td></tr>
+          <tr><td><code>mjw.get_data_into(result, mjm, d, world_id=0)</code></td><td>an existing <code>MjData</code></td><td>Filters the pooled contacts, reorders efc rows, about 140 host copies.</td><td><a href="../chapters/05-first-simulation.html#get-data-into">Ch 5 §6</a></td></tr>
+        </tbody>
+      </table></div>
+      <p class="cs-more">C MuJoCo to MJWarp translation table: <a href="../chapters/02-mujoco-essentials.html#to-mjwarp">Ch 2 §13</a>. Setup cell and the GPU check: <a href="../chapters/01-what-is-mujoco-warp.html#colab-setup">Ch 1 §5</a>.</p>
+    </section>
+
+    <section class="sec" id="shape-rules">
+      <h2><span class="sec-num">3</span>Shape rules</h2>
+      <div class="table-wrap"><table class="cs-table">
+        <thead><tr><th>What</th><th>Shape (Warp)</th><th>Rule</th></tr></thead>
+        <tbody>
+          <tr><td>Every <code>mjw.Data</code> array</td><td><code>(nworld, &lt;MuJoCo size&gt;)</code></td><td>Row <code>w</code> is world <code>w</code>: <code>d.qpos (nworld, nq)</code>, <code>d.qvel (nworld, nv)</code>, <code>d.ctrl (nworld, nu)</code>.</td></tr>
+          <tr><td>Vector dtypes (<code>vec3</code>, <code>quat</code>, <code>mat33</code>, <code>spatial_vector</code>)</td><td><code>d.xpos (nworld, nbody)</code> of <code>vec3</code></td><td>One Warp element; <code>.numpy()</code> adds the trailing dims: <code>(nworld, nbody, 3)</code>.</td></tr>
+          <tr><td>Pool counters</td><td><code>d.nacon (1,)</code>, <code>d.ncollision (1,)</code></td><td>The only Data arrays without a world axis. Filled slots: <code>min(d.nacon[0], d.naconmax)</code>.</td></tr>
+          <tr><td>Contacts</td><td><code>d.contact.* (naconmax, ...)</code></td><td>One shared pool, each slot tagged <code>contact.worldid</code>; not contiguous per world, not sorted.</td></tr>
+          <tr><td>Constraint rows</td><td><code>d.efc.* (nworld, njmax)</code></td><td>Per world; <code>njmax</code> is a hard per-world cap, <code>nconmax</code> only sizes the pool.</td></tr>
+          <tr><td>Batched (<code>"*"</code>) Model field</td><td><code>(B, ...)</code>, <code>B = 1</code> by default</td><td>Kernels read <code>field[worldid % field.shape[0]]</code>: round robin, not blocks (<a href="../chapters/06-batched-data-layout.html#round-robin">Ch 6 §7</a>).</td></tr>
+          <tr><td>Structural Model fields</td><td>no batch axis</td><td>Sizes, topology, types: shared by all worlds.</td></tr>
+          <tr><td>Bytes</td><td>row-major</td><td><code>offset = ((w·nbody + b)·3 + k)·4</code> for a float32 <code>vec3</code>; <code>dim=(nworld, n)</code> launches read contiguous memory (<a href="../chapters/06-batched-data-layout.html#linear-memory">Ch 6 §3</a>).</td></tr>
+        </tbody>
+      </table></div>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>Find a joint's slots</h3>
+          <div class="code-block"><pre><code class="language-python">j = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "hinge")
+qadr, vadr = mjm.jnt_qposadr[j], mjm.jnt_dofadr[j]
+q = d.qpos.numpy()[:, qadr]          # one value per world</code></pre></div>
+          <p>Free joint 7 qpos / 6 qvel, ball 4 / 3, slide and hinge 1 / 1 (<a href="../chapters/02-mujoco-essentials.html#joints-coordinates">Ch 2 §3</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>One world's contacts</h3>
+          <div class="code-block"><pre><code class="language-python">n = min(int(d.nacon.numpy()[0]), d.naconmax)
+mine = d.contact.worldid.numpy()[:n] == w
+dist_w = d.contact.dist.numpy()[:n][mine]</code></pre></div>
+          <p>Pooled layout: <a href="../chapters/06-batched-data-layout.html#pooled">Ch 6 §8</a>; the pool in depth: <a href="../chapters/09-contacts-and-buffer-sizing.html#contact-pool">Ch 9 §2</a>.</p>
+        </div>
+        <div class="cs-card">
+          <h3>Quaternions are (w, x, y, z)</h3>
+          <p>Identity <code>(1, 0, 0, 0)</code> in MuJoCo and in MJWarp's <code>math.py</code> funcs. Warp's built-in <code>wp.quat</code> stores <code>(x, y, z, w)</code>: never feed one to the other unconverted (<a href="../chapters/02-mujoco-essentials.html#joints-coordinates">Ch 2 §3</a>, <a href="../chapters/04-warp-and-the-gpu.html#quat-storage">Ch 4 §6</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>Read the spec from the library</h3>
+          <div class="code-block"><pre><code class="language-python">import dataclasses
+for f in dataclasses.fields(mjw.Data):
+    print(f.name, getattr(f.type, "shape", None))
+# e.g. xpos ('nworld', 'nbody')</code></pre></div>
+          <p>Spec strings and <code>mark_batched</code>: <a href="../chapters/06-batched-data-layout.html#spec-strings">Ch 6 §9</a>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="writing-inputs">
+      <h2><span class="sec-num">4</span>Writing inputs: assign, never replace</h2>
+      <div class="table-wrap"><table class="cs-table">
+        <thead><tr><th>Call</th><th>Effect</th><th>Typical use</th></tr></thead>
+        <tbody>
+          <tr><td><code>d.qpos.assign(np_array)</code></td><td>copies into the existing array (same pointer)</td><td>initial states from NumPy</td></tr>
+          <tr><td><code>wp.copy(d.ctrl, src)</code></td><td>device-to-device (or host-to-device) copy</td><td>actions from a policy buffer</td></tr>
+          <tr><td><code>d.ctrl.fill_(v)</code> / <code>d.qfrc_applied.zero_()</code></td><td>sets every element</td><td>same value in all worlds; clear forces</td></tr>
+          <tr><td><code>d.qvel[w].fill_(v)</code></td><td>writes only world <code>w</code>'s row (a view)</td><td>kick one world</td></tr>
+          <tr><td>your own <code>@wp.kernel</code></td><td>writes on the device, no host round trip</td><td>resets, randomization (Ch 8, Ch 10)</td></tr>
+          <tr><td class="cs-no"><code>d.qpos = wp.array(q)</code></td><td>replaces the object: anything holding the old array (your variables, a captured graph, a torch view) keeps the old memory</td><td>avoid after setup</td></tr>
+        </tbody>
+      </table></div>
+      <div class="callout pitfall"><p class="callout-title">Pitfall: <code>.assign</code> checks bytes, not shapes</p>
+        <p>An array of the right total size but the wrong shape is accepted. Build inputs as <code>(nworld, n)</code>
+          float32 and compare shapes yourself. On a GPU, <code>.numpy()</code> is an allocation, a copy and a sync,
+          and writing into its result changes nothing on the device; on Warp's CPU device it is a live view (add
+          <code>.copy()</code> to keep a snapshot) (<a href="../chapters/06-batched-data-layout.html#replace-vs-assign">Ch 6 §5</a>,
+          <a href="../chapters/06-batched-data-layout.html#host-reads">§10</a>).</p></div>
+    </section>
+
+    <section class="sec" id="options">
+      <h2><span class="sec-num">5</span><code>m.opt</code>: arrays vs Python ints</h2>
+      <p>The split that matters is storage, not MuJoCo vs warp-only. Defaults below are what <code>put_model</code>
+        produces for an MJCF that sets nothing (values printed by the 4.0.1 wheel).</p>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>Arrays <code>(1,)</code>: can become per world</h3>
+          <p><code>timestep</code> 0.002, <code>gravity</code> (0, 0, -9.81), <code>wind</code>, <code>magnetic</code>,
+            <code>density</code> 0, <code>viscosity</code> 0, <code>tolerance</code> 1e-6 (clamped), <code>ls_tolerance</code> 0.01,
+            <code>noslip_tolerance</code>, <code>ccd_tolerance</code> 1e-6, <code>sleep_tolerance</code>, <code>impratio_invsqrt</code> 1.</p>
+          <div class="code-block"><pre><code class="language-python">m.opt.timestep.fill_(0.005)                     # in place: live
+m.opt.gravity.assign([[0, 0, -3.7]])
+m.opt.timestep = wp.array(np.full(NWORLD, 0.002), dtype=float)  # per world (Ch 10 §9)</code></pre></div>
+        </div>
+        <div class="cs-card">
+          <h3>Python ints / bools: same for all worlds</h3>
+          <p><code>integrator</code> EULER(0), <code>cone</code> PYRAMIDAL(0), <code>solver</code> NEWTON(2),
+            <code>iterations</code> 100, <code>ls_iterations</code> 50, <code>ccd_iterations</code> 35,
+            <code>sdf_initpoints</code> 40, <code>sdf_iterations</code> 10, <code>disableflags</code> 0,
+            <code>broadphase</code> (picked by <code>put_model</code>), <code>broadphase_filter</code> 11,
+            <code>graph_conditional</code> True, <code>warn_overflow</code> 4095, <code>deterministic</code> 0.</p>
+          <p>Read while dispatching, some baked in with <code>wp.static</code>: changing one can recompile, and always
+            needs a graph recapture (<a href="../chapters/24-cuda-graphs.html#knob-board">Ch 24 §4</a>).</p>
+        </div>
+      </div>
+      <p class="cs-more">Full field table and the tolerance clamp: <a href="../chapters/05-first-simulation.html#option">Ch 5 §3</a>.
+        <code>ls_parallel</code> raises <code>AttributeError</code> (removed in 3.9.1).</p>
+    </section>
+
+    <section class="sec" id="warp-basics">
+      <h2><span class="sec-num">6</span>Warp in one card each</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>A kernel, one thread per world</h3>
+          <div class="code-block"><pre><code class="language-python">@wp.kernel
+def push(force: float, qfrc_applied_out: wp.array2d[float]):
+    worldid = wp.tid()
+    qfrc_applied_out[worldid, 0] = force
+
+wp.launch(push, dim=d.nworld, inputs=[1.0],
+          outputs=[d.qfrc_applied])</code></pre></div>
+          <p>Typed parameters, no return value, typed locals in loops (<code>total = float(0.0)</code>). <code>dim=0</code> is a no-op; for 2-D launches the last index is fastest (<a href="../chapters/04-warp-and-the-gpu.html#kernels">Ch 4 §3</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>Devices and arrays</h3>
+          <div class="code-block"><pre><code class="language-python">wp.get_device()               # cuda:0 or cpu
+wp.get_cuda_device_count() &gt; 0  # else Warp silently runs on CPU
+a = wp.zeros((nworld, 3), dtype=float)
+a.numpy()                     # GPU: sync + copy</code></pre></div>
+          <p>A <code>wp.array</code> has a dtype, a shape and a device (<a href="../chapters/04-warp-and-the-gpu.html#devices">Ch 4 §1</a>, <a href="../chapters/04-warp-and-the-gpu.html#arrays">§2</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>How the GPU runs it</h3>
+          <ul>
+            <li>32 lanes form a warp and run in lockstep; divergent branches cost both sides.</li>
+            <li>Neighbouring lanes should read neighbouring addresses (coalescing).</li>
+            <li>Small launches leave most SMs idle; one world alone is not faster than C MuJoCo.</li>
+            <li>Warp's CPU device: block size 1, correct, not fast.</li>
+          </ul>
+          <p class="cs-more"><a href="../chapters/04-warp-and-the-gpu.html#gpu-model">Ch 4 §4</a>, <a href="../chapters/06-batched-data-layout.html#throughput">Ch 6 §11</a></p>
+        </div>
+        <div class="cs-card">
+          <h3>Compile, cache, time</h3>
+          <ul>
+            <li>The first call JIT-compiles; modules are cached on disk by hash. <code>wp.static</code> specializes at code generation (<a href="../chapters/04-warp-and-the-gpu.html#jit">Ch 4 §8</a>, <a href="../chapters/04-warp-and-the-gpu.html#static">§7</a>).</li>
+            <li>Float atomics depend on arrival order (<a href="../chapters/04-warp-and-the-gpu.html#atomics">Ch 4 §9</a>).</li>
+          </ul>
+          <div class="code-block"><pre><code class="language-python">mjw.step(m, d); wp.synchronize()   # warm up
+t0 = time.perf_counter()
+for _ in range(n): mjw.step(m, d)
+wp.synchronize()                    # launches are async
+dt = (time.perf_counter() - t0) / n</code></pre></div>
+          <p class="cs-more"><a href="../chapters/04-warp-and-the-gpu.html#timing">Ch 4 §10</a></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="pipeline">
+      <h2><span class="sec-num">7</span>The pipeline map</h2>
+      <p><strong>Stage order of <code>mjw.step</code> (4.0.1 wheel):</strong> kinematics → crb → collision →
+        make_constraint → [island] → transmission → sensor_pos → velocity → sensor_vel → control callback →
+        actuation → acceleration → solve → [rne_postconstraint] → sensor_acc → integrate
+        (<a href="../chapters/07-pipeline-tour.html#stage-order">Ch 7 §2</a>). The integrator's <code>_advance</code>
+        moves <code>qpos</code>, <code>qvel</code>, <code>act</code>, <code>time</code> and copies <code>qacc</code> into
+        <code>qacc_warmstart</code>.</p>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>Force budget</h3>
+          <div class="code-block"><pre><code class="language-python"># fwd_acceleration, per (world, dof), to the last bit:
+qfrc_smooth = (qfrc_passive - qfrc_bias + qfrc_actuator
+               + qfrc_applied + J^T xfrc_applied)
+# M qacc_smooth = qfrc_smooth; the solver adds qfrc_constraint</code></pre></div>
+          <p class="cs-more"><a href="../chapters/07-pipeline-tour.html#force-budget">Ch 7 §5</a>; every term in Part III's sheet.</p>
+        </div>
+        <div class="cs-card">
+          <h3>Switch stages off</h3>
+          <div class="code-block"><pre><code class="language-python">m.opt.disableflags |= mjw.DisableBit.CONTACT   # Python int
+m.opt.disableflags = 0                          # eager: change any time
+# graphs: recapture after a change (Ch 24)</code></pre></div>
+          <p>Bits: CONSTRAINT 1, EQUALITY 2, FRICTIONLOSS 4, LIMIT 8, CONTACT 16, SPRING 32, DAMPER 64, GRAVITY 128,
+            CLAMPCTRL 256, WARMSTART 512, FILTERPARENT 1024, ACTUATION 2048, REFSAFE 4096, SENSOR 8192, EULERDAMP 32768,
+            NATIVECCD, ISLAND, MULTICCD. No MIDPHASE, no AUTORESET (<a href="../chapters/07-pipeline-tour.html#disable-flags">Ch 7 §7</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>Factorize pairing</h3>
+          <p>One factorization of <code>M</code> per <code>qpos</code>: <code>_forward</code> factors inside
+            <code>fwd_acceleration(factorize=True)</code>; the public stage functions factor in
+            <code>fwd_position()</code>. Calling stages by hand in the wrong pairing solves with a stale factor
+            (<a href="../chapters/07-pipeline-tour.html#factorize">Ch 7 §3</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>Launches and timing</h3>
+          <p>About 100 launches per step (95 + 5 tiled for PLAYGROUND, 89 + 6 for the humanoid); features change the
+            count, sizes go into <code>dim</code> (<a href="../chapters/07-pipeline-tour.html#kernels">Ch 7 §8</a>).
+            Time stages with <code>wp.synchronize()</code> on both sides; <code>EventTracer</code> is GPU only, guard
+            it with <code>enabled=ON_GPU</code> (<a href="../chapters/07-pipeline-tour.html#instrumentation">Ch 7 §9</a>).</p>
+        </div>
+      </div>
+      <p class="cs-more">Which field each stage writes: the <a href="cheatsheet-part3.html#stage-data">Part III stage → Data map</a> and <a href="../chapters/07-pipeline-tour.html#cheat-sheet">Ch 7 §4</a>.</p>
+    </section>
+
+    <section class="sec" id="seeing-it">
+      <h2><span class="sec-num">8</span>Seeing a world</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>Path 1: copy one world, use <code>mujoco.Renderer</code></h3>
+          <div class="code-block"><pre><code class="language-python">import os
+os.environ.setdefault("MUJOCO_GL", "egl")   # BEFORE import mujoco
+import mujoco
+mjw.get_data_into(mjd, mjm, d, world_id=0)
+with mujoco.Renderer(mjm, 240, 320) as r:
+    r.update_scene(mjd); img = r.render()</code></pre></div>
+        </div>
+        <div class="cs-card">
+          <h3>Path 2: batch renderer, all worlds</h3>
+          <div class="code-block"><pre><code class="language-python">rc = mjw.create_render_context(mjm, nworld=N, cam_res=(W, H))
+mjw.forward(m, d); mjw.refit_bvh(m, d, rc); mjw.render(m, d, rc)
+rgb = wp.zeros((N, H, W), dtype=wp.vec3)
+mjw.get_rgb(rc, 0, rgb)</code></pre></div>
+          <p>Needs no OpenGL; works on Warp's CPU device too (slowly). Owner: <a href="../chapters/27-rays-lidar-and-batch-rendering.html#pipeline">Ch 27 §4</a>.</p>
+        </div>
+        <div class="cs-card">
+          <h3>The CLIs</h3>
+          <div class="code-block"><pre><code class="language-bash">mjwarp-viewer model.xml                      # needs a display
+mjwarp-viewer model.xml -o "opt.solver=cg"   # dotted overrides
+mjwarp-record model.xml --output run.gif --nstep 300   # GPU only
+mjwarp-record model.xml --output d.webp --render_mode warp --channel depth</code></pre></div>
+          <p><code>--output</code> must end in <code>.gif</code> or <code>.webp</code>. Both need the <code>[viewer]</code> extra (<a href="../chapters/05-first-simulation.html#clis">Ch 5 §9</a>; all flags in <a href="api-at-a-glance.html">API at a glance</a>).</p>
+        </div>
+      </div>
+      <p class="cs-more">Both render paths side by side: <a href="../chapters/05-first-simulation.html#seeing-it">Ch 5 §8</a>.</p>
+    </section>
+
+    <section class="sec" id="pitfalls">
+      <h2><span class="sec-num">9</span>Pitfalls</h2>
+      <ul class="cs-pitfalls">
+        <li><strong>Warp silently on CPU.</strong> Check <code>wp.get_cuda_device_count() &gt; 0</code> in the setup cell; everything still runs, slowly (<a href="../chapters/01-what-is-mujoco-warp.html#colab-setup">Ch 1 §5</a>).</li>
+        <li><strong>The first call is slow.</strong> It compiles kernels; warm up before timing (<a href="../chapters/04-warp-and-the-gpu.html#jit">Ch 4 §8</a>).</li>
+        <li><strong>Derived fields are zero after <code>make_data</code>.</strong> Call <code>mjw.forward</code> before reading <code>xpos</code>, sensors or contacts (<a href="../chapters/05-first-simulation.html#make-put">Ch 5 §4</a>).</li>
+        <li><strong>float32, not float64.</strong> Agreement with C MuJoCo is about 1e-6 per step; chaotic scenes amplify it, so compare statistics, not trajectories (<a href="../chapters/05-first-simulation.html#accuracy">Ch 5 §7</a>).</li>
+        <li><strong>Default buffer sizes are a guess</strong> (48 contacts, 64 rows per world for a rigid model). Pass <code>nconmax</code>/<code>njmax</code> and check <code>d.overflow</code> (<a href="cheatsheet-part2.html#sizing">Part II sheet</a>).</li>
+        <li><strong>Replacing arrays</strong> disconnects graphs and views; assign instead (<a href="../chapters/06-batched-data-layout.html#replace-vs-assign">Ch 6 §5</a>).</li>
+        <li><strong><code>get_data_into</code> in a loop</strong> costs about 140 host copies per call; record on the device and read once (<a href="../chapters/05-first-simulation.html#get-data-into">Ch 5 §6</a>).</li>
+        <li><strong>Unsupported in 4.0.1:</strong> PGS, NaN checks and auto-reset, float64, PID and SO3 actuators, body/actuator/sensor plugins, some flex combinations; <code>put_model</code> raises <code>NotImplementedError</code> (<a href="../chapters/01-what-is-mujoco-warp.html#not-supported">Ch 1 §7</a>).</li>
+      </ul>
+    </section>
+
+    <section class="sec" id="more-help">
+      <h2><span class="sec-num">10</span>More help</h2>
+      <p class="stuck p-stuck">Stuck? See <a href="troubleshooting.html">Troubleshooting</a> (symptom, cause, fix,
+        owning chapter) or the <a href="course-map.html">course map</a>. Terms are defined in the
+        <a href="glossary.html">glossary</a>; public names and CLI flags are in
+        <a href="api-at-a-glance.html">API at a glance</a>.</p>
+      <p class="small muted">Other cheat sheets: <a href="cheatsheet-part2.html">Part II</a>, <a href="cheatsheet-part3.html">Part III</a>, <a href="cheatsheet-part4.html">Part IV</a>, <a href="cheatsheet-part5.html">Part V</a>, <a href="cheatsheet-part6.html">Part VI</a>.</p>
+    </section>
+
+    <footer class="chapter-footer">
+      <nav class="pager" aria-label="Reference pager">
+        <a class="prev" href="math-toolkit.html"><span class="dir">Previous</span><span class="ttl">Math toolkit</span></a>
+        <a class="index" href="../index.html"><span class="dir">All chapters</span><span class="ttl">Course home</span></a>
+        <a class="next" href="cheatsheet-part2.html"><span class="dir">Next</span><span class="ttl">Part II cheat sheet</span></a>
+      </nav>
+      <p class="site-footer">MuJoCo Warp course · mujoco-warp 4.0.1 · warp-lang 1.19.0 · mujoco-core 4.0.1 · source commit 8f5b9f1</p>
+    </footer>
+  </main>
+</div>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/xml.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script defer src="../assets/course.js"></script>
+
+</body>
+</html>

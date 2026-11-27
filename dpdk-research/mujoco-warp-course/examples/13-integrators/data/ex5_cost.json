@@ -1,0 +1,1 @@
+{"device": "CPU dev box", "nworld": 8, "nstep": 10, "ms": {"Euler": 5.739, "RK4": 20.859, "implicit": 6.768, "implicitfast": 5.657}}

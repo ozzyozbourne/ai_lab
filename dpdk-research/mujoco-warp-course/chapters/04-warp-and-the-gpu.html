@@ -1,0 +1,2727 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 04 · NVIDIA Warp and How a GPU Runs Your Kernel</title>
+<meta name="description" content="Warp arrays, kernels and device functions, the GPU execution model (warps, blocks, divergence, coalescing, occupancy), JIT caching, atomics, timing, and a line-by-line read of a real MJWarp kernel.">
+<script>try{var t=localStorage.getItem("mwc-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../assets/course.css">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<style>
+  /* ---- chapter 4 local styles (tokens only, both themes) ---- */
+  .ch4-canvas { display: block; width: 100%; touch-action: manipulation; border-radius: var(--radius-sm); }
+  .ch4-canvas:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+  .ch4-readout { display: flex; flex-wrap: wrap; gap: 6px 18px; font-family: var(--font-mono); font-size: 13px; margin: 8px 0 2px; }
+  .ch4-readout b { color: var(--accent-ink); font-weight: 700; }
+  .ch4-codeline { font-family: var(--font-mono); font-size: 13px; background: var(--code-bg); border: 1px solid var(--code-border);
+    border-radius: var(--radius-sm); padding: 6px 10px; overflow-x: auto; white-space: pre; margin: 8px 0; }
+  .ch4-seg-row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 6px 0; }
+  .ch4-seg-row .lbl-sm { font-size: 13px; color: var(--muted); }
+  .seg button { min-height: 32px; }
+  /* annotated code figure */
+  .ann-code { font-family: var(--font-mono); font-size: 13px; line-height: 1.6; background: var(--code-bg); color: var(--code-text);
+    border: 1px solid var(--code-border); border-radius: var(--radius-sm); padding: 12px 0; overflow-x: auto; margin: 0; }
+  .ann-code .row { display: block; padding: 0 14px; white-space: pre; border-left: 3px solid transparent; }
+  .ann-code .row.hot { cursor: pointer; }
+  .ann-code .row.hot:hover, .ann-code .row.hot:focus, .ann-code .row.hot.pinned { background: var(--accent-soft); border-left-color: var(--accent); outline: none; }
+  .ann-code .cm { color: var(--hl-comment); }
+  .ann-code .kw { color: var(--hl-keyword); }
+  .ann-code .tag.blank { background: none; }
+  .ann-code .tag { display: inline-block; min-width: 20px; margin-right: 8px; padding: 0 5px; border-radius: 6px; font-size: 11px; text-align: center;
+    background: var(--accent-2-soft); color: var(--accent-2-ink); font-weight: 700; }
+  /* stepper lanes */
+  .lane-a { fill: var(--accent); }
+  .lane-b { fill: var(--accent-2); }
+  .lane-off { fill: var(--surface-3); stroke: var(--border-strong); }
+  .lane-done { fill: var(--ok); }
+  /* JIT figure modes */
+  #jit-fig[data-mode="first"] .jit-second { display: none; }
+  #jit-fig[data-mode="second"] .jit-first { display: none; }
+  #jit-fig[data-mode="second"] .jit-skip { opacity: .28; }
+  /* small data bar charts */
+  .bars { width: 100%; }
+  .bars text { font-family: var(--font-sans); }
+  .ch4-two { display: grid; grid-template-columns: 1fr; gap: 14px; }
+  @media (min-width: 760px) { .ch4-two { grid-template-columns: 1fr 1fr; } }
+  .ch4-hist { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); min-height: 1.4em; overflow-wrap: anywhere; }
+  .ch4-hist b { color: var(--text); }
+  .anim-ch4-token { animation: ch4-token 3.2s linear infinite; }
+  @keyframes ch4-token { 0% { transform: translateX(0); opacity: 0; } 8% { opacity: 1; } 92% { opacity: 1; } 100% { transform: translateX(var(--dx, 400px)); opacity: 0; } }
+  .is-paused .anim-ch4-token { animation-play-state: paused; }
+  /* phone layouts (below 640px) */
+  .ch4-phone-only { display: none; }
+  .ch4-scroll-hint { display: none; margin: 6px 0 0; font-size: 12.5px; color: var(--muted); }
+  .jit-phone { display: none; }
+  @media (max-width: 640px) {
+    .ch4-phone-only { display: flex; }
+    .ch4-scroll-hint { display: block; }
+    #coal-fig .fig-frame.scroll-x > svg { min-width: 0; }
+    .fig-frame.scroll-x.ch4-phone-wide > svg { min-width: 640px; }
+    #coal-svg .s-small { font-size: 12.5px; }
+    .ch4-zoom .s-small { font-size: 13px; }
+    .jit-wide { display: none; }
+    .jit-phone { display: block; }
+  }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="progress-bar" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="icon-btn toc-toggle" type="button" aria-label="Table of contents">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+  </button>
+  <a class="brand" href="../index.html">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><circle cx="10" cy="11" r="3" fill="#10200a"/><circle cx="22" cy="11" r="3" fill="#10200a" opacity=".7"/><circle cx="10" cy="22" r="3" fill="#10200a" opacity=".7"/><circle cx="22" cy="22" r="3" fill="#10200a" opacity=".45"/></svg>
+    <span class="brand-text">MuJoCo Warp Course</span>
+  </a>
+  <span class="chap-count">Ch 04 of 30</span>
+  <span class="topbar-spacer"></span>
+  <nav class="topnav" aria-label="Chapter navigation">
+    <a href="03-rigid-body-physics-primer.html" class="prev" aria-label="Previous chapter"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg><span class="lbl">Prev</span></a>
+    <a href="05-first-simulation.html" class="next" aria-label="Next chapter"><span class="lbl">Next</span><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg></a>
+  </nav>
+  <button class="icon-btn theme-toggle" type="button" aria-label="Toggle dark mode">
+    <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+</header>
+
+<div class="layout">
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <ol data-auto></ol>
+    <p class="toc-progress" aria-live="off"></p>
+  </aside>
+
+  <main id="main" class="content">
+    <header class="chapter-hero">
+      <p class="eyebrow">Part I · Foundations · Chapter 04</p>
+      <h1>NVIDIA Warp and How a GPU Runs Your Kernel</h1>
+      <p class="lede">MJWarp is MuJoCo written as a few hundred small Warp kernels. Before you can read it, debug it or
+        extend it, you need Warp itself: arrays that live on a device, kernels that run once per thread, and a mental
+        picture of what the GPU does with those threads. This chapter builds that picture from the ground up and ends
+        by reading a real MJWarp kernel line by line.</p>
+      <div class="hero-meta">
+        <span class="badge level-beginner">Beginner</span>
+        <span>About 2.5 h (tiles and factories are optional)</span><span class="sep">·</span>
+        <span class="prereqs">Prerequisites: <a href="01-what-is-mujoco-warp.html">Ch 1</a>, <a href="02-mujoco-essentials.html">Ch 2</a></span>
+      </div>
+      <div class="hero-grid">
+        <div>
+          <h2 class="sr-only">You will learn</h2>
+          <ul class="learn-list">
+            <li>Create, copy and inspect <code>wp.array</code>s, including vector dtypes and their NumPy shapes.</li>
+            <li>Write <code>@wp.kernel</code>s and <code>@wp.func</code>s, and launch them in 1-D and 2-D.</li>
+            <li>Explain warps, blocks, grids, SMs, divergence, coalescing, shared memory and occupancy.</li>
+            <li>Understand JIT compilation and caching, <code>wp.static</code>, atomics and correct timing.</li>
+            <li>Avoid the <code>wp.quat</code> storage pitfall, and read <code>forward.py::_next_velocity</code>.</li>
+          </ul>
+        </div>
+        <div>
+          <div class="hero-actions">
+            <a class="btn btn-colab" href="https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/master/dpdk-research/mujoco-warp-course/notebooks/04-warp-and-the-gpu.ipynb" target="_blank" rel="noopener">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M9 7.5a5 5 0 1 0 0 9"/><path d="M15 7.5a5 5 0 1 1 0 9"/></svg>
+              Open in Colab
+            </a>
+            <a class="btn" href="../notebooks/04-warp-and-the-gpu.ipynb" download>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12m0 0l-5-5m5 5l5-5M4 21h16"/></svg>
+              Download notebook
+            </a>
+          </div>
+          <p class="small muted" style="margin-top:10px">In Colab: Runtime &gt; Change runtime type &gt; GPU, then run the first cell. Every example also runs on Warp's CPU device; that is how this page was verified. Example numbers follow the example files and notebook cells, not the section order, so the page shows Example 4.6 before 4.4.</p>
+        </div>
+      </div>
+    </header>
+
+    <section class="recap" aria-labelledby="recap-h">
+      <h2 id="recap-h" data-toc="Recap">Before you start: recap</h2>
+      <ul>
+        <li>MJWarp re-implements MuJoCo's pipeline as Warp kernels so thousands of independent worlds step together (<a href="01-what-is-mujoco-warp.html">Ch 1</a>).</li>
+        <li>An <abbr class="gl" data-term="mjmodel" title="Compiled, constant description of a MuJoCo scene: bodies, geoms, joints, options.">MjModel</abbr> holds constants and an <abbr class="gl" data-term="mjdata" title="The changing state of one simulation: qpos, qvel, contacts, forces.">MjData</abbr> holds state; MJWarp mirrors them as <code>mjw.Model</code> and <code>mjw.Data</code> (<a href="02-mujoco-essentials.html">Ch 2 §1</a>).</li>
+        <li><code>qpos</code> has <code>nq</code> entries and <code>qvel</code>/<code>qacc</code> have <code>nv</code>; a free joint uses 7 positions and 6 velocities (<a href="02-mujoco-essentials.html#joints-coordinates">Ch 2 §3</a>).</li>
+        <li>MuJoCo quaternions are (w, x, y, z) (<a href="02-mujoco-essentials.html#quaternions">Ch 2 §3</a>).</li>
+        <li>Each step computes <code>qacc</code> and then integrates: <code>qvel += h * qacc</code>, then <code>qpos</code> from <code>qvel</code> (semi-implicit Euler, <a href="03-rigid-body-physics-primer.html">Ch 3</a>).</li>
+      </ul>
+    </section>
+
+    <!-- ===================== 1. DEVICES ===================== -->
+    <section class="sec" id="devices">
+      <h2><span class="sec-num">1</span>Devices: where your data lives</h2>
+      <p><abbr class="gl" data-term="warp" title="NVIDIA Warp: a Python framework that JIT-compiles typed Python functions into CPU or CUDA kernels.">Warp</abbr>
+        is a Python library from NVIDIA. You write ordinary-looking, typed Python functions; Warp translates them to C++
+        or CUDA, compiles them, and runs them on a <abbr class="gl" data-term="device" title="Where Warp arrays live and kernels run: &quot;cpu&quot; or a GPU such as &quot;cuda:0&quot;.">device</abbr>.
+        There are two kinds of device: <code>"cpu"</code> (always present) and one <code>"cuda:N"</code> per NVIDIA GPU.
+        The Python program itself always runs on the CPU; we call that side the <em>host</em>.</p>
+      <p>The key idea of GPU programming is that the host and the GPU have <strong>separate memories</strong>. An array
+        created on <code>"cuda:0"</code> lives in GPU memory; Python only holds a handle to it. Kernels run where the data
+        is, and moving data between the two sides crosses a comparatively slow bus. Everything in MJWarp is designed so
+        that the data <em>stays</em> on the GPU while you step: <code>mjw.Data</code> is a bag of device arrays, and
+        <code>mjw.step</code> only queues kernels that read and write them.</p>
+
+      <figure class="fig" data-anim>
+        <div class="fig-frame grid-bg scroll-x ch4-phone-wide">
+          <svg viewBox="0 0 640 250" role="img" aria-labelledby="f41t f41d">
+            <title id="f41t">Host and device have separate memories</title>
+            <desc id="f41d">The Python host on the CPU holds array handles. Device arrays live in GPU memory. Kernel launches travel to the GPU; .numpy() copies data back across the bus.</desc>
+            <defs>
+              <marker id="f41-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker>
+            </defs>
+            <g class="hot" data-info="<strong>Host (CPU)</strong>: your Python program. It owns <em>handles</em> to arrays (shape, dtype, device, pointer) and calls <code>wp.launch</code>. On a GPU it does not wait for kernels to finish.">
+              <rect x="12" y="20" width="250" height="210" rx="14" class="s-box"/>
+              <text x="30" y="46" class="s-label">Host: CPU + RAM</text>
+              <rect x="30" y="62" width="214" height="44" rx="8" class="s-surface"/>
+              <text x="42" y="81" class="s-small s-mono">import warp as wp</text>
+              <text x="42" y="97" class="s-small s-mono">wp.launch(k, dim, ...)</text>
+              <rect x="30" y="118" width="214" height="34" rx="8" class="s-accent2-soft"/>
+              <text x="42" y="140" class="s-small s-mono">d.qpos  (handle only)</text>
+              <rect x="30" y="164" width="214" height="50" rx="8" class="s-surface"/>
+              <text x="42" y="184" class="s-small">NumPy arrays (host memory)</text>
+              <text x="42" y="202" class="s-small s-mono">q = d.qpos.numpy()</text>
+            </g>
+            <g class="hot" data-info="<strong>The bus</strong> (PCIe or NVLink): kernel launches go one way as tiny commands; bulk data crosses it only when you ask (<code>wp.array(np_arr)</code>, <code>.numpy()</code>, <code>.assign()</code>). Crossing it every step would erase the GPU's advantage.">
+              <path d="M268 85 H 372" class="s-accent-stroke anim-flow" marker-end="url(#f41-arrow)"/>
+              <text x="320" y="76" text-anchor="middle" class="s-small">launch</text>
+              <path d="M372 190 H 268" class="s-line" marker-end="url(#f41-arrow)" stroke-dasharray="5 4"/>
+              <text x="320" y="182" text-anchor="middle" class="s-small">.numpy() copy</text>
+              <text x="320" y="138" text-anchor="middle" class="s-small s-muted">bus</text>
+            </g>
+            <g class="hot" data-info="<strong>Device (GPU)</strong>: thousands of simple cores and its own memory. <code>mjw.Data</code> fields such as <code>qpos (nworld, nq)</code> live here for the whole simulation; kernels read and write them in place.">
+              <rect x="378" y="20" width="250" height="210" rx="14" class="s-box-2"/>
+              <text x="396" y="46" class="s-label">Device: "cuda:0"</text>
+              <g>
+                <rect x="396" y="60" width="18" height="18" rx="3" class="s-accent anim-pulse"/>
+                <rect x="418" y="60" width="18" height="18" rx="3" class="s-accent anim-pulse delay-1"/>
+                <rect x="440" y="60" width="18" height="18" rx="3" class="s-accent anim-pulse delay-2"/>
+                <rect x="462" y="60" width="18" height="18" rx="3" class="s-accent anim-pulse delay-3"/>
+                <rect x="484" y="60" width="18" height="18" rx="3" class="s-accent anim-pulse delay-4"/>
+                <rect x="506" y="60" width="18" height="18" rx="3" class="s-accent anim-pulse delay-5"/>
+                <rect x="528" y="60" width="18" height="18" rx="3" class="s-accent anim-pulse delay-6"/>
+                <rect x="550" y="60" width="18" height="18" rx="3" class="s-accent anim-pulse delay-2"/>
+                <text x="580" y="74" class="s-small">cores</text>
+              </g>
+              <rect x="396" y="96" width="214" height="118" rx="8" class="s-surface"/>
+              <text x="408" y="116" class="s-small">GPU memory</text>
+              <rect x="408" y="126" width="190" height="20" rx="4" class="s-w0" opacity=".85"/>
+              <text x="414" y="140" class="s-small s-mono" style="fill:#fff">d.qpos  (nworld, nq)</text>
+              <rect x="408" y="152" width="190" height="20" rx="4" class="s-w1" opacity=".85"/>
+              <text x="414" y="166" class="s-small s-mono" style="fill:#fff">d.qvel  (nworld, nv)</text>
+              <rect x="408" y="178" width="190" height="20" rx="4" class="s-w4" opacity=".85"/>
+              <text x="414" y="192" class="s-small s-mono" style="fill:#fff">d.xpos  (nworld, nbody)</text>
+            </g>
+          </svg>
+        </div>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button><span class="badge illustrative">Illustrative</span></div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a part of the figure."></div>
+        <p class="ch4-scroll-hint" aria-hidden="true">Scroll the figure sideways to see the device side.</p>
+        <figcaption><span class="fig-num">Figure 1.</span>The host keeps handles; the data lives on the device. Launches are tiny commands; copies are the expensive part.</figcaption>
+      </figure>
+
+      <p>Three calls cover devices:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Call</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>wp.get_device()</code></td><td>The current default device: <code>cuda:0</code> when a GPU is visible, otherwise <code>cpu</code>. Its <code>.is_cuda</code> / <code>.is_cpu</code> flags drive the course's budget block.</td></tr>
+            <tr><td><code>wp.ScopedDevice("cpu")</code></td><td>A <code>with</code> block in which arrays and launches default to that device.</td></tr>
+            <tr><td><code>wp.init()</code></td><td>Initializes Warp (also done implicitly on first use). At INFO log level it prints the banner with devices and the kernel-cache path. MJWarp calls it from <code>warp_util.check_toolkit_driver</code> inside <code>put_model</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout pitfall"><p class="callout-title">Pitfall: Warp silently falls back to the CPU</p>
+        <p>If Warp sees no GPU (wrong Colab runtime, missing driver), the default device is <code>cpu</code> and
+          everything still runs, just slowly. On this box Warp prints <code>Warp CUDA warning: Could not find or load the
+          NVIDIA CUDA driver</code> to stderr. That is why every script in the course has the budget block
+          <code>ON_GPU = wp.get_device().is_cuda</code> and the notebook's setup cell prints the device.</p></div>
+    </section>
+
+    <!-- ===================== 2. ARRAYS ===================== -->
+    <section class="sec" id="arrays">
+      <h2><span class="sec-num">2</span>Arrays: <code>wp.array</code>, dtypes and shapes</h2>
+      <p>A <abbr class="gl" data-term="wp-array" title="Warp's typed, device-resident n-dimensional array (up to 4 dims).">wp.array</abbr> is
+        a typed block of memory on one device, with up to four dimensions. Three facts describe it: its <code>dtype</code>
+        (what one element is), its <code>shape</code> (how many elements along each axis) and its <code>device</code>. In
+        Warp, <code>float</code> means 32-bit float and <code>int</code> means 32-bit int. MJWarp is float32 throughout,
+        while C MuJoCo is float64, which is why the course compares the two with tolerances near <code>1e-5</code>.</p>
+      <p>The dtype can be a small vector or matrix. <code>wp.vec3</code> is three floats, <code>wp.quat</code> four,
+        <code>wp.mat33</code> nine, and <code>wp.spatial_vector</code> six (MuJoCo's rotation:translation pairs). The Warp
+        shape counts <em>elements</em>, so <code>wp.zeros(4, dtype=wp.vec3)</code> has shape <code>(4,)</code>, but its NumPy
+        copy has shape <code>(4, 3)</code>: the vector components become a trailing NumPy axis. This is exactly how
+        MJWarp's <code>Data</code> is declared in <code>types.py</code>: <code>xpos: array("nworld", "nbody", wp.vec3)</code>
+        has Warp shape <code>(nworld, nbody)</code> and NumPy shape <code>(nworld, nbody, 3)</code>.</p>
+
+      <figure class="fig widget" id="dtype-fig">
+        <p class="widget-title">Dtype and shape explorer <span class="badge illustrative">Interactive</span></p>
+        <div class="ch4-seg-row"><span class="lbl-sm">dtype</span>
+          <div class="seg" id="dt-seg" role="group" aria-label="Element dtype">
+            <button aria-pressed="true" data-c="1" data-n="float">float</button>
+            <button aria-pressed="false" data-c="3" data-n="wp.vec3">vec3</button>
+            <button aria-pressed="false" data-c="4" data-n="wp.quat">quat</button>
+            <button aria-pressed="false" data-c="9" data-n="wp.mat33">mat33</button>
+            <button aria-pressed="false" data-c="6" data-n="wp.spatial_vector">spatial_vector</button>
+          </div>
+        </div>
+        <div class="control"><label for="dt-nw">nworld</label><input id="dt-nw" type="range" min="1" max="4" step="1" value="2"><output id="dt-nw-out">2</output></div>
+        <div class="control"><label for="dt-n">elements per world</label><input id="dt-n" type="range" min="1" max="5" step="1" value="3"><output id="dt-n-out">3</output></div>
+        <div class="ch4-codeline" id="dt-code"></div>
+        <div class="ch4-readout" id="dt-readout"></div>
+        <div class="fig-frame"><svg id="dt-svg" viewBox="0 0 640 200" role="img" aria-label="Memory layout of the array: one row per world, each element split into its float components"></svg></div>
+        <div class="fig-caption-line" id="dt-cap" data-placeholder="Hover, tap or tab to a float to see its index and byte offset."></div>
+        <figcaption><span class="fig-num">Figure 2.</span>Row-major layout of a 2-D Warp array. Each colored row is one world; each outlined group is one element; each small cell is one float32. Memory runs left to right, then row by row.</figcaption>
+      </figure>
+
+      <p>Creation and transfer functions you will use constantly:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Call</th><th>Effect</th><th>Cost</th></tr></thead>
+          <tbody>
+            <tr><td><code>wp.zeros(shape, dtype)</code>, <code>wp.ones</code>, <code>wp.empty</code></td><td>Allocate on the current device (<code>empty</code> leaves contents undefined).</td><td>allocation</td></tr>
+            <tr><td><code>wp.array(np_arr, dtype=...)</code></td><td>Allocate and copy from NumPy; a trailing NumPy dim of 3 becomes one <code>vec3</code>.</td><td>host to device copy</td></tr>
+            <tr><td><code>arr.numpy()</code></td><td>On CUDA: wait for queued work, then copy to the host. On CPU: a view that shares memory.</td><td>sync + copy (GPU)</td></tr>
+            <tr><td><code>arr.assign(np_arr)</code></td><td>Overwrite the contents in place (same array object).</td><td>host to device copy</td></tr>
+            <tr><td><code>wp.copy(dst, src)</code></td><td>Device-to-device copy, stays on the GPU.</td><td>cheap</td></tr>
+            <tr><td><code>arr.fill_(v)</code>, <code>arr.zero_()</code></td><td>Set every element in place.</td><td>cheap</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <figure class="code-example" data-file="ex1_arrays.py">
+        <div class="code-head">
+          <span class="code-title">Example 4.1</span>
+          <span class="code-file">examples/04-warp-and-the-gpu/ex1_arrays.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 4.1 - wp.array basics: dtype, shape, device, NumPy views of vector dtypes.
+
+Creates float, vec3, quat, mat33 and spatial_vector arrays and prints their Warp shape next to
+the shape of their NumPy copy (vector dtypes add trailing NumPy dims). Also shows the copy and
+fill helpers MJWarp code uses all the time.
+Run: python ex1_arrays.py
+"""
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+
+np.set_printoptions(precision=4, suppress=True)
+
+device = wp.get_device()            # "cuda:0" on Colab with a GPU, "cpu" otherwise
+print("default device:", device, "| is_cuda:", device.is_cuda)
+
+# 1. scalar arrays: zeros / ones / empty / from NumPy
+a = wp.zeros(4, dtype=float)                       # float means float32 in Warp
+b = wp.array(np.arange(4, dtype=np.float32))       # copies host -&gt; device
+print("a:", a.shape, a.dtype.__name__, a.device, "| b.numpy():", b.numpy())
+
+# 2. vector and matrix dtypes: the Warp shape counts elements, NumPy adds the trailing dims
+arrays = {
+    "vec3": wp.zeros(4, dtype=wp.vec3),
+    "quat": wp.zeros(4, dtype=wp.quat),
+    "mat33": wp.zeros(4, dtype=wp.mat33),
+    "spatial_vector": wp.zeros(4, dtype=wp.spatial_vector),
+    "vec3 2d (nworld=2, nbody=3)": wp.zeros((2, 3), dtype=wp.vec3),
+}
+for name, arr in arrays.items():
+    print(f"{name:28s} warp shape {str(arr.shape):8s} numpy shape {arr.numpy().shape}")
+
+# 3. NumPy (N, 3) -&gt; vec3 array: the last NumPy dim is absorbed into the dtype
+pts = wp.array(np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32), dtype=wp.vec3)
+print("vec3 from (2, 3) numpy:", pts.shape, "first element:", pts.numpy()[0])
+
+# 4. in-place helpers: assign (copy from host), fill_, zero_, wp.copy (device -&gt; device)
+a.assign(np.array([10, 20, 30, 40], dtype=np.float32))
+c = wp.empty_like(a)                               # empty: contents undefined until written
+wp.copy(c, a)
+a.fill_(7.0)
+print("after assign+copy+fill_: a =", a.numpy(), "c =", c.numpy())
+c.zero_()
+print("after c.zero_():", c.numpy())
+
+# 5. .numpy() on a CUDA array waits for the GPU and copies to the host; on the CPU device it
+#    returns a view that shares memory with the Warp array. Never rely on either side effect.
+host = b.numpy()
+host[0] = 99.0
+kind = "copy (device unchanged)" if b.device.is_cuda else "view (CPU arrays share memory)"
+print(f"b after editing its .numpy() result: {b.numpy()} -&gt; {kind}")
+
+# 6. choose the device explicitly (cpu always exists)
+with wp.ScopedDevice("cpu"):
+    on_cpu = wp.ones(3, dtype=wp.vec3)
+print("ScopedDevice('cpu'):", on_cpu.device, on_cpu.numpy().shape)</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 4.1"</span><span>CPU: <code>python -I ex1_arrays.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run; on Colab the device is cuda:0 and the "view" line says "copy"</span></summary>
+<pre class="output">default device: cpu | is_cuda: False
+a: (4,) float32 cpu | b.numpy(): [0. 1. 2. 3.]
+vec3                         warp shape (4,)     numpy shape (4, 3)
+quat                         warp shape (4,)     numpy shape (4, 4)
+mat33                        warp shape (4,)     numpy shape (4, 3, 3)
+spatial_vector               warp shape (4,)     numpy shape (4, 6)
+vec3 2d (nworld=2, nbody=3)  warp shape (2, 3)   numpy shape (2, 3, 3)
+vec3 from (2, 3) numpy: (2,) first element: [1. 2. 3.]
+after assign+copy+fill_: a = [7. 7. 7. 7.] c = [10. 20. 30. 40.]
+after c.zero_(): [0. 0. 0. 0.]
+b after editing its .numpy() result: [99.  1.  2.  3.] -> view (CPU arrays share memory)
+ScopedDevice('cpu'): cpu (3, 3)</pre>
+        </details>
+      </figure>
+
+      <div class="callout warning"><p class="callout-title">Pitfall: <code>.numpy()</code> is a synchronization point</p>
+        <p>On a GPU, <code>.numpy()</code> first waits until every queued kernel has finished, then copies. One call per
+          step in a training loop can cost more than the physics. Keep data on the device and read it back only for
+          logging or plotting. (Example 4.1 also shows the CPU surprise: there, <code>.numpy()</code> is a view, so
+          writing into it changes the Warp array. Code that relies on either behavior is a bug on the other device.)</p></div>
+      <div class="callout note"><p class="callout-title">Note: shapes in MJWarp</p>
+        <p>The real shape of a <code>Data</code> field is set by <code>make_data</code>; the symbolic shape in
+          <code>types.py</code> (<code>"nworld"</code>, <code>"nq"</code>, <code>"*"</code>) is metadata written by the
+          <code>types.array(...)</code> helper. Batched layouts, the <code>"*"</code> Model axis and
+          <code>worldid % shape[0]</code> are the subject of <a href="06-batched-data-layout.html">Ch 6</a>.</p></div>
+    </section>
+
+    <!-- ===================== 3. KERNELS ===================== -->
+    <section class="sec" id="kernels">
+      <h2><span class="sec-num">3</span>Kernels and threads</h2>
+      <p>A <abbr class="gl" data-term="kernel" title="A function that runs on the device once per thread index.">kernel</abbr>
+        is a Python function decorated with <code>@wp.kernel</code>. It is not called directly. Instead you
+        <em>launch</em> it with <code>wp.launch(kernel, dim=..., inputs=[...], outputs=[...])</code>, and Warp runs the
+        body once for every index in <code>dim</code>. Each run is a <em>thread</em>, and inside the body
+        <abbr class="gl" data-term="wp-tid" title="Inside a kernel, returns this thread's launch index (one int per launch dimension).">wp.tid()</abbr>
+        tells the thread which index it is. A launch over one million elements starts one million threads; there is no
+        loop in your code.</p>
+      <p>Kernel rules follow from the fact that the body is compiled to C++/CUDA:</p>
+      <ul>
+        <li>Every parameter has a type annotation: <code>float</code>, <code>int</code>, <code>wp.vec3</code>,
+          <code>wp.array[float]</code>, <code>wp.array2d[wp.vec3]</code>, and so on. (MJWarp writes the bracket form
+          <code>wp.array[float]</code>; the older <code>wp.array(dtype=float)</code> is equivalent.)</li>
+        <li>A kernel returns nothing. Results are written into output arrays. <code>inputs</code> and <code>outputs</code>
+          are concatenated in order to fill the parameters; the split is a convention for readers and for
+          differentiation.</li>
+        <li>Only a typed subset of Python works inside: arithmetic, <code>if</code>, <code>for i in range(n)</code>,
+          <code>while</code>, Warp built-ins and <code>@wp.func</code>s. No lists, dicts, NumPy or prints of Python objects
+          (<code>wp.printf</code> exists for debugging).</li>
+        <li>A local that is reassigned in a loop must be typed at its first assignment, e.g. <code>total = float(0.0)</code>.</li>
+      </ul>
+
+      <figure class="code-example" data-file="ex2_saxpy.py">
+        <div class="code-head">
+          <span class="code-title">Example 4.2</span>
+          <span class="code-file">examples/04-warp-and-the-gpu/ex2_saxpy.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 4.2 - first kernel: y = a * x + y on 1M elements (SAXPY).
+
+One thread per element. Compares the result with NumPy.
+Run: python ex2_saxpy.py
+"""
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+
+np.set_printoptions(precision=4, suppress=True)
+
+N = 1 &lt;&lt; 20                                        # 1,048,576 elements (same on CPU and GPU)
+
+
+@wp.kernel
+def saxpy(a: float, x: wp.array[float], y: wp.array[float]):
+    i = wp.tid()                                   # this thread's index, 0 .. N-1
+    y[i] = a * x[i] + y[i]
+
+
+rng = np.random.default_rng(0)
+x_np = rng.standard_normal(N).astype(np.float32)
+y_np = rng.standard_normal(N).astype(np.float32)
+
+x = wp.array(x_np)
+y = wp.array(y_np)
+wp.launch(saxpy, dim=N, inputs=[2.0, x], outputs=[y])   # first launch compiles (JIT)
+
+y_out = y.numpy()                                  # .numpy() waits for the device, then copies
+ref = 2.0 * x_np + y_np
+print("device:", wp.get_device(), "| N =", N)
+print("first 3 values:", y_out[:3])
+print("NumPy reference:", ref[:3])
+print("max abs error:", float(np.max(np.abs(y_out - ref))))
+
+wp.launch(saxpy, dim=0, inputs=[2.0, x], outputs=[y])   # dim=0 is a safe no-op
+print("dim=0 launch ok, y unchanged:", bool(np.array_equal(y.numpy(), y_out)))</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 4.2"</span><span>CPU: <code>python -I ex2_saxpy.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run; identical on GPU except the device name</span></summary>
+<pre class="output">device: cpu | N = 1048576
+first 3 values: [1.4707 0.6034 2.0519]
+NumPy reference: [1.4707 0.6034 2.0519]
+max abs error: 0.0
+dim=0 launch ok, y unchanged: True</pre>
+        </details>
+      </figure>
+      <p>The last line matters for MJWarp: launch sizes come from the model (<code>m.nv</code>, <code>m.nu</code>,
+        <code>m.nsensor</code>, ...), and many models have zero of something. The repository's CONTRIBUTING.md tells
+        contributors not to wrap launches in <code>if n &gt; 0:</code> when the size is already the launch dimension:
+        "Launching with dimension 0 is a safe no-op in Warp."</p>
+
+      <h3 id="tid-2d">Two-dimensional launches</h3>
+      <p>Pass a tuple as <code>dim</code> and <code>wp.tid()</code> returns one index per dimension. MJWarp's most common
+        launch is <code>dim=(d.nworld, m.nv)</code> with <code>worldid, dofid = wp.tid()</code>: one thread per (world,
+        DOF) pair. Threads are numbered with the <strong>last</strong> dimension varying fastest, the same row-major order
+        as the arrays, so thread <code>(w, j)</code> and thread <code>(w, j+1)</code> are neighbours. Section 4.5 shows
+        why that matters.</p>
+
+      <figure class="code-example" data-file="ex3_grid_2d.py">
+        <div class="code-head">
+          <span class="code-title">Example 4.3</span>
+          <span class="code-file">examples/04-warp-and-the-gpu/ex3_grid_2d.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 4.3 - a 2D launch over (nworld, ndof): wp.tid() returns two indices.
+
+Each thread writes worldid * 100 + dofid, the same shape of launch MJWarp uses for
+dim=(d.nworld, m.nv). A second kernel records the order in which threads ran.
+Run: python ex3_grid_2d.py [--dump-json PATH]
+  --dump-json PATH writes the grid and the CPU run order for the page's thread-grid figure.
+"""
+import argparse
+import json
+
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--dump-json", default=None)
+args, _ = parser.parse_known_args()
+
+NWORLD, NDOF = 4, 6
+
+
+@wp.kernel
+def label(out: wp.array2d[int]):
+    worldid, dofid = wp.tid()                      # 2D launch -&gt; two indices
+    out[worldid, dofid] = worldid * 100 + dofid
+
+
+@wp.kernel
+def run_order(counter: wp.array[int], order: wp.array2d[int]):
+    worldid, dofid = wp.tid()
+    order[worldid, dofid] = wp.atomic_add(counter, 0, 1)   # ticket = when this thread ran
+
+
+grid = wp.zeros((NWORLD, NDOF), dtype=int)
+wp.launch(label, dim=(NWORLD, NDOF), outputs=[grid])
+print("launch dim:", (NWORLD, NDOF), "-&gt;", NWORLD * NDOF, "threads")
+print(grid.numpy())
+
+counter = wp.zeros(1, dtype=int)
+order = wp.zeros((NWORLD, NDOF), dtype=int)
+wp.launch(run_order, dim=(NWORLD, NDOF), inputs=[counter], outputs=[order])
+print("run order on", wp.get_device(), "(on a GPU the order is not defined):")
+print(order.numpy())
+
+if args.dump_json:
+    with open(args.dump_json, "w") as f:
+        json.dump({"nworld": NWORLD, "ndof": NDOF, "grid": grid.numpy().tolist(),
+                   "order": order.numpy().tolist(), "device": str(wp.get_device())},
+                  f, separators=(",", ":"))
+    print("wrote", args.dump_json)</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 4.3"</span><span>CPU: <code>python -I ex3_grid_2d.py --dump-json data/ex3.json</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run. On a GPU the order is not guaranteed; with only 24 threads (one warp) it may still come out in order</span></summary>
+<pre class="output">launch dim: (4, 6) -> 24 threads
+[[  0   1   2   3   4   5]
+ [100 101 102 103 104 105]
+ [200 201 202 203 204 205]
+ [300 301 302 303 304 305]]
+run order on cpu (on a GPU the order is not defined):
+[[ 0  1  2  3  4  5]
+ [ 6  7  8  9 10 11]
+ [12 13 14 15 16 17]
+ [18 19 20 21 22 23]]
+wrote data/ex3.json</pre>
+        </details>
+      </figure>
+
+      <figure class="fig widget" id="tgrid-fig">
+        <p class="widget-title">One launch, a grid of threads <span class="badge data-driven">Real data</span></p>
+        <div class="ch4-seg-row"><span class="lbl-sm">device</span>
+          <div class="seg" id="tgrid-seg" role="group" aria-label="Execution model">
+            <button aria-pressed="true" data-mode="gpu">GPU: all threads at once</button>
+            <button aria-pressed="false" data-mode="cpu">CPU: one thread at a time</button>
+          </div>
+        </div>
+        <canvas id="tgrid" class="ch4-canvas" tabindex="0" aria-label="Thread grid: rows are worlds, columns are DOFs. Use arrow keys to move between cells."></canvas>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button><span class="small muted">Arrow keys move the cell cursor when the grid has focus.</span></div>
+        <div class="fig-caption-line" id="tgrid-cap" data-placeholder="Hover, tap or focus the grid to read wp.tid() for a cell."></div>
+        <figcaption><span class="fig-num">Figure 3.</span>Rows are worlds, columns are DOFs: <code>dim=(4, 6)</code>, 24 threads. Values and the CPU run order come from <code>ex3_grid_2d.py --dump-json</code> (mujoco-warp 4.0.1 / warp-lang 1.19.0, CPU run). On a GPU all cells are scheduled together; the CPU device walks them in row-major order.</figcaption>
+        <script type="application/json" id="data-ch04-ex3" data-json-file="examples/04-warp-and-the-gpu/data/ex3.json">{"nworld":4,"ndof":6,"grid":[[0,1,2,3,4,5],[100,101,102,103,104,105],[200,201,202,203,204,205],[300,301,302,303,304,305]],"order":[[0,1,2,3,4,5],[6,7,8,9,10,11],[12,13,14,15,16,17],[18,19,20,21,22,23]],"device":"cpu"}</script>
+      </figure>
+      <div class="callout pitfall"><p class="callout-title">Pitfall: parameter names become C++ names</p>
+        <p>Warp copies kernel parameter names into the generated C++ argument struct. While writing Example 4.6 we named a
+          kernel parameter <code>case</code>, and the CPU build failed with <code>error: expected member name or ';'</code>
+          at <code>wp::int32 case;</code>. Avoid C++ keywords (<code>case</code>, <code>default</code>, <code>new</code>,
+          <code>class</code>, ...) as parameter names.</p></div>
+    </section>
+
+    <!-- ===================== 4. GPU EXECUTION MODEL ===================== -->
+    <section class="sec" id="gpu-model">
+      <h2><span class="sec-num">4</span>How a GPU runs your kernel</h2>
+      <p>A CPU core is built to run <em>one</em> stream of instructions as fast as possible: deep pipelines, branch
+        prediction, big caches. A GPU makes the opposite trade. It has many small, simple cores and hides slow memory not
+        with caches but with <em>sheer numbers of threads</em>: while some threads wait for data, others compute. Understanding
+        five ideas is enough to reason about almost every performance decision in MJWarp: the hardware units, the
+        thread hierarchy, scheduling in waves, divergence and coalescing.</p>
+
+      <h3 id="anatomy">4.1 The hardware: SMs, lanes, registers, shared memory</h3>
+      <p>An NVIDIA GPU is a collection of <abbr class="gl" data-term="sm" title="Streaming Multiprocessor: a GPU core cluster that runs warps, with its own registers and shared memory.">streaming multiprocessors</abbr>
+        (SMs). Each SM has execution lanes, a large <strong>register file</strong> (the fastest storage, private to each
+        thread), a block of on-chip <abbr class="gl" data-term="shared-memory" title="Fast on-chip memory of an SM, shared by the threads of one block.">shared memory</abbr>
+        (shared by the threads of one block), and warp schedulers that pick which group of threads issues its next
+        instruction. All SMs share an L2 cache and the large, slow <em>global memory</em> where every <code>wp.array</code>
+        lives. Small GPUs have a few dozen SMs, data-center GPUs more than a hundred.</p>
+
+      <figure class="fig" data-anim>
+        <div class="fig-frame scroll-x">
+          <svg viewBox="0 0 640 340" role="img" aria-labelledby="f44t f44d">
+            <title id="f44t">Anatomy of a GPU</title>
+            <desc id="f44d">Two streaming multiprocessors, each with warps of 32 lanes, a register file, shared memory and warp schedulers, above a shared L2 cache and global memory.</desc>
+            <rect x="6" y="6" width="628" height="328" rx="14" class="s-box-2"/>
+            <text x="20" y="27" class="s-label">GPU</text>
+            <g id="f44-sm0" class="hot" data-info="<strong>SM (streaming multiprocessor)</strong>: the unit that actually runs your threads. Blocks are assigned to SMs; a block never moves between SMs. Each SM holds many warps at once and switches between them every cycle to hide memory latency.">
+              <rect x="20" y="36" width="294" height="182" rx="10" class="s-box"/>
+              <text x="32" y="56" class="s-label">SM 0</text>
+            </g>
+            <g class="hot" data-info="<strong>SM 1</strong>: identical to SM 0. A launch's blocks are spread over all SMs; with more SMs, more blocks run at the same time.">
+              <rect x="326" y="36" width="294" height="182" rx="10" class="s-box"/>
+              <text x="338" y="56" class="s-label">SM 1</text>
+            </g>
+            <g class="hot" data-info="<strong>A warp = 32 lanes</strong>. The 32 threads of a warp execute the same instruction in lockstep (SIMT: single instruction, multiple threads), each on its own data. Lanes that do not take the current branch are masked off.">
+              <g id="f44-lanes"></g>
+              <text x="262" y="76" class="s-small">warp 0</text>
+              <text x="262" y="94" class="s-small">warp 1</text>
+              <text x="568" y="76" class="s-small">warp 0</text>
+              <text x="568" y="94" class="s-small">warp 1</text>
+              <text x="32" y="114" class="s-small s-muted">... up to dozens of resident warps per SM</text>
+            </g>
+            <g class="hot" data-info="<strong>Register file</strong>: each thread's local variables (<code>v</code>, <code>timestep</code>, loop counters) live in registers. The file is large but finite: a kernel that needs many registers per thread fits fewer warps on the SM (lower occupancy). CONTRIBUTING.md asks you to hoist global reads into locals, i.e. into registers.">
+              <rect x="32" y="124" width="124" height="40" rx="8" class="s-accent-soft"/>
+              <text x="94" y="148" text-anchor="middle" class="s-small">register file</text>
+              <rect x="338" y="124" width="124" height="40" rx="8" class="s-accent-soft"/>
+              <text x="400" y="148" text-anchor="middle" class="s-small">register file</text>
+            </g>
+            <g class="hot" data-info="<strong>Shared memory</strong> (with the L1 cache): fast on-chip memory shared by all threads of one block. Warp's tiles (<code>wp.tile_load</code>, section 11) place data here so a block can cooperate on it. On Warp's CPU device there is no such memory; tiles fall back to ordinary memory.">
+              <rect x="164" y="124" width="138" height="40" rx="8" class="s-accent2-soft"/>
+              <text x="233" y="148" text-anchor="middle" class="s-small">shared mem / L1</text>
+              <rect x="470" y="124" width="138" height="40" rx="8" class="s-accent2-soft"/>
+              <text x="539" y="148" text-anchor="middle" class="s-small">shared mem / L1</text>
+            </g>
+            <g class="hot" data-info="<strong>Warp schedulers</strong>: every cycle each scheduler picks a warp whose next instruction is ready (its operands have arrived) and issues it. A warp waiting on global memory simply is not picked; that is how GPUs hide latency, and why they need many warps.">
+              <rect x="32" y="174" width="64" height="30" rx="6" class="s-surface"/><text x="64" y="193" text-anchor="middle" class="s-small">sched</text>
+              <rect x="102" y="174" width="64" height="30" rx="6" class="s-surface"/><text x="134" y="193" text-anchor="middle" class="s-small">sched</text>
+              <rect x="172" y="174" width="64" height="30" rx="6" class="s-surface"/><text x="204" y="193" text-anchor="middle" class="s-small">sched</text>
+              <rect x="242" y="174" width="64" height="30" rx="6" class="s-surface"/><text x="274" y="193" text-anchor="middle" class="s-small">sched</text>
+              <rect x="338" y="174" width="64" height="30" rx="6" class="s-surface"/><text x="370" y="193" text-anchor="middle" class="s-small">sched</text>
+              <rect x="408" y="174" width="64" height="30" rx="6" class="s-surface"/><text x="440" y="193" text-anchor="middle" class="s-small">sched</text>
+              <rect x="478" y="174" width="64" height="30" rx="6" class="s-surface"/><text x="510" y="193" text-anchor="middle" class="s-small">sched</text>
+              <rect x="548" y="174" width="64" height="30" rx="6" class="s-surface"/><text x="580" y="193" text-anchor="middle" class="s-small">sched</text>
+            </g>
+            <text x="320" y="232" text-anchor="middle" class="s-small s-muted">... more SMs (tens to over a hundred on real GPUs)</text>
+            <g class="hot" data-info="<strong>L2 cache</strong>: shared by all SMs. Reads from global memory pass through it in aligned segments; neighbouring threads that read neighbouring addresses share segments (coalescing, section 4.5).">
+              <rect x="20" y="242" width="600" height="30" rx="8" class="s-warn" opacity=".28"/>
+              <text x="320" y="262" text-anchor="middle" class="s-small">L2 cache (shared by all SMs)</text>
+            </g>
+            <g class="hot" data-info="<strong>Global memory</strong> (GDDR or HBM): gigabytes, high bandwidth, but hundreds of cycles of latency. Every <code>wp.array</code>, including every <code>mjw.Data</code> field, lives here. Most MJWarp kernels are limited by how fast they move bytes here, not by arithmetic.">
+              <rect x="20" y="282" width="600" height="40" rx="8" class="s-box"/>
+              <text x="320" y="300" text-anchor="middle" class="s-small">global memory: every wp.array lives here</text>
+              <text x="320" y="315" text-anchor="middle" class="s-small s-mono">d.qpos  d.qvel  d.xpos  d.efc ...</text>
+            </g>
+          </svg>
+        </div>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button><span class="badge illustrative">Illustrative</span></div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a unit of the GPU."></div>
+        <p class="ch4-scroll-hint" aria-hidden="true">Scroll the figure sideways to see SM 1 and the rest of the chip.</p>
+        <figcaption><span class="fig-num">Figure 4.</span>GPU anatomy. Lanes of a warp blink together because they execute the same instruction at the same time.</figcaption>
+      </figure>
+
+      <h3 id="hierarchy">4.2 Threads, warps, blocks and grids</h3>
+      <p>Your launch's threads are grouped at three levels. Hardware groups 32 consecutive threads into a
+        <abbr class="gl" data-term="warp-32" title="32 GPU threads that execute one instruction stream in lockstep (SIMT).">warp</abbr>
+        (the word clash with "Warp the library" is a coincidence). Warp the library groups threads into
+        <abbr class="gl" data-term="block" title="A group of threads (block_dim, default 256 in Warp) that runs on one SM and can share memory.">blocks</abbr>
+        of <code>block_dim</code> threads (default 256, i.e. 8 warps); a block runs on one SM and its threads can share
+        memory and synchronize. All blocks of one launch form the <abbr class="gl" data-term="grid" title="All blocks of one kernel launch.">grid</abbr>.
+        <code>wp.tid()</code> hides all of this: it is the thread's global index, decoded into your <code>dim</code>
+        tuple.</p>
+
+      <figure class="fig">
+        <div class="fig-frame scroll-x ch4-phone-wide">
+          <svg viewBox="0 0 640 230" role="img" aria-labelledby="f45t f45d">
+            <title id="f45t">Thread, warp, block, grid</title>
+            <desc id="f45d">One thread; 32 threads form a warp; 8 warps form a block of 256 threads; all blocks of a launch form the grid.</desc>
+            <defs><marker id="f45-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <g class="hot" data-info="<strong>Thread</strong>: one execution of the kernel body, with its own registers. In Warp: one value of <code>wp.tid()</code>.">
+              <rect x="20" y="96" width="34" height="34" rx="6" class="s-accent"/>
+              <text x="37" y="160" text-anchor="middle" class="s-label">thread</text>
+              <text x="37" y="178" text-anchor="middle" class="s-small s-mono">wp.tid()</text>
+            </g>
+            <path d="M62 113 H 96" class="s-line" marker-end="url(#f45-arrow)"/>
+            <g class="hot" data-info="<strong>Warp</strong>: 32 consecutive threads (by global index). They share one instruction pointer: SIMT. This is the unit of divergence and of memory coalescing.">
+              <g id="f45-warp"></g>
+              <text x="160" y="160" text-anchor="middle" class="s-label">warp = 32 threads</text>
+              <text x="160" y="178" text-anchor="middle" class="s-small">lockstep (SIMT)</text>
+            </g>
+            <path d="M228 113 H 262" class="s-line" marker-end="url(#f45-arrow)"/>
+            <g class="hot" data-info="<strong>Block</strong>: <code>block_dim</code> threads (Warp's default is 256 = 8 warps; <code>wp.launch(..., block_dim=...)</code> overrides it). A block lives on one SM for its whole life; its threads can use shared memory and tiles together.">
+              <g id="f45-block"></g>
+              <text x="330" y="182" text-anchor="middle" class="s-label">block = 8 warps</text>
+              <text x="330" y="200" text-anchor="middle" class="s-small s-mono">block_dim = 256</text>
+            </g>
+            <path d="M400 113 H 434" class="s-line" marker-end="url(#f45-arrow)"/>
+            <g class="hot" data-info="<strong>Grid</strong>: all blocks of one launch, <code>ceil(threads / block_dim)</code> of them. For <code>dim=(4096, 27)</code> that is 110,592 threads in 432 blocks. The GPU runs as many blocks at once as fit, then the next wave.">
+              <g id="f45-grid"></g>
+              <text x="530" y="182" text-anchor="middle" class="s-label">grid = all blocks</text>
+              <text x="530" y="200" text-anchor="middle" class="s-small s-mono">ceil(N / block_dim)</text>
+            </g>
+          </svg>
+        </div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a level."></div>
+        <p class="ch4-scroll-hint" aria-hidden="true">Scroll the figure sideways to see the block and the grid.</p>
+        <figcaption><span class="fig-num">Figure 5.</span>The thread hierarchy. Only the warp is fixed by hardware (32); <code>block_dim</code> is a launch parameter.</figcaption>
+      </figure>
+
+      <h3 id="scheduling">4.3 Scheduling in waves, and occupancy</h3>
+      <p>The GPU does not start all blocks at once. Each SM can hold only so many threads, blocks and registers at a time.
+        The block scheduler fills every SM up to its limit; whenever a block finishes, the next one takes its place. When
+        the grid is much larger than what fits, the blocks run in successive <em>waves</em>.
+        <abbr class="gl" data-term="occupancy" title="Resident warps on an SM divided by the maximum it can hold; higher occupancy hides memory latency better.">Occupancy</abbr>
+        is the fraction of an SM's warp slots that are in use: high occupancy means more warps to switch to while
+        others wait for memory. Two consequences matter for MJWarp:</p>
+      <ul>
+        <li><strong>Small launches waste the GPU.</strong> With 8 worlds and <code>nv = 27</code> you launch 216 threads:
+          one block, one SM busy, the rest idle. That is why MJWarp shines at thousands of worlds, and why the course's
+          GPU budget is <code>NWORLD = 4096</code>.</li>
+        <li><strong>The last wave can be ragged.</strong> If the grid is 1.1 waves, the second wave keeps only a tenth of
+          the GPU busy. MJWarp sizes some launches from the hardware: <code>collision_convex.py::_ccd_grid_size</code> and
+          <code>solver.py::_jtdaj_groups_per_world</code> ask <code>wp.get_suggested_block_size</code> how many threads
+          fill the device and launch "a few device waves" instead of one mostly idle thread per buffer slot
+          (<a href="17-convex-collision-gjk-epa.html">Ch 17</a>, <a href="20-solvers-cg-newton.html">Ch 20</a>).</li>
+      </ul>
+
+      <figure class="fig widget" id="sched-fig">
+        <p class="widget-title">Block scheduling on an 8-SM GPU <span class="badge illustrative">Illustrative model</span></p>
+        <div class="control"><label for="sc-bd">block_dim</label><input id="sc-bd" type="range" min="0" max="5" step="1" value="3"><output id="sc-bd-out">256</output></div>
+        <div class="control"><label for="sc-nw">nworld</label><input id="sc-nw" type="range" min="0" max="10" step="1" value="7"><output id="sc-nw-out">1024</output></div>
+        <div class="ch4-seg-row"><span class="lbl-sm">device</span>
+          <div class="seg" id="sc-seg" role="group" aria-label="Device">
+            <button aria-pressed="true" data-dev="gpu">GPU</button>
+            <button aria-pressed="false" data-dev="cpu">CPU device</button>
+          </div>
+        </div>
+        <canvas id="sched" class="ch4-canvas" aria-label="Eight SMs filling with blocks in waves"></canvas>
+        <div class="ch4-readout" id="sc-readout"></div>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button><button class="btn btn-sm" id="sc-restart" type="button">Restart</button></div>
+        <figcaption><span class="fig-num">Figure 6.</span>A kernel launched with <code>dim=(nworld, 27)</code> (27 = humanoid <code>nv</code>). Model GPU: 8 SMs, at most 2048 threads and 16 blocks resident per SM. Blocks are colored by wave. Thread occupancy counts real threads (not the padding of a partial last block) against the 8 x 2048 thread slots. With <code>block_dim</code> 32 it cannot pass 25%: the 16-blocks-per-SM limit allows only 16 x 32 = 512 of the 2048 threads an SM could hold. The CPU toggle shows Warp's CPU device: one thread at a time, block size forced to 1.</figcaption>
+      </figure>
+
+      <h3 id="divergence">4.4 Divergence: when lanes disagree</h3>
+      <p>The 32 lanes of a warp share one instruction stream. If they reach an <code>if</code> and some lanes want the
+        <em>then</em> side while others want the <em>else</em> side, the warp cannot do both at once. It runs the
+        <em>then</em> side with the other lanes masked off, then the <em>else</em> side with the first group masked
+        off, then the lanes reconverge. This is
+        <abbr class="gl" data-term="divergence" title="Lanes of one warp taking different branches; the warp executes each taken branch in turn with the other lanes masked off.">divergence</abbr>:
+        the cost of a divergent branch is the <em>sum</em> of both sides, not the maximum. If all 32 lanes agree, the
+        untaken side is skipped entirely, so branches are only expensive when neighbours disagree.</p>
+      <p>MJWarp limits divergence at the design level. The convex narrowphase launches one kernel per pair of geom
+        types, so every thread of a launch runs the same collision routine (<code>collision_convex.py</code>,
+        <a href="17-convex-collision-gjk-epa.html">Ch 17</a>). The primitive narrowphase is a single kernel,
+        <code>collision_primitive.py::_primitive_narrowphase</code>, whose <code>if type1 == ... and type2 == ...</code> chain
+        is built with <code>wp.static</code> and contains only the pair types present in the model, so lanes can still diverge,
+        but only between pairs that actually exist (<a href="16-primitive-narrowphase.html">Ch 16</a>).
+        Compile-time flags become <code>wp.static</code> branches that are removed from the code (section 7).</p>
+
+      <div class="stepper" id="div-stepper" data-manual aria-label="Stepper: one warp executing a divergent if/else">
+        <div class="stepper-head"><h4>One warp meets an if/else</h4><span class="stepper-fn">ex6_divergence.py::interleaved (simplified to two branches)</span><span class="badge illustrative">Illustrative cycle counts</span></div>
+        <div class="ch4-seg-row" style="padding:0 14px"><span class="lbl-sm">branch chosen by</span>
+          <div class="seg" id="div-seg" role="group" aria-label="Data layout">
+            <button aria-pressed="true" data-m="mixed">interleaved: i % 2 (lanes disagree)</button>
+            <button aria-pressed="false" data-m="sorted">grouped: i // M (lanes agree)</button>
+          </div>
+        </div>
+        <div class="stepper-body">
+          <div class="stepper-fig">
+            <svg id="div-svg" viewBox="0 0 360 210" role="img" aria-label="32 lanes of one warp; active lanes are colored, masked lanes are grey"></svg>
+          </div>
+          <div class="stepper-side">
+            <pre class="stepper-code">i = wp.tid()
+take_a = i % 2 == 0  # or: i//M == 0
+if take_a:
+    r = branch_a(x[i])   # 4 cycles
+else:
+    r = branch_b(x[i])   # 4 cycles
+out[i] = r</pre>
+            <table class="stepper-vars"></table>
+          </div>
+        </div>
+        <div class="stepper-caption" aria-live="polite"></div>
+        <div class="stepper-controls">
+          <button class="btn btn-sm" data-act="prev">Prev</button>
+          <button class="btn btn-sm btn-primary" data-act="next">Step</button>
+          <button class="btn btn-sm" data-act="play">Play</button>
+          <button class="btn btn-sm btn-ghost" data-act="reset">Reset</button>
+          <input type="range">
+          <span class="stepper-count"></span>
+        </div>
+      </div>
+
+      <p>Example 4.6 (numbers follow the example files, so 4.4 and 4.5 come later, in sections 5 and 6) measures this with eight branches. All three variants compute identical numbers; only which
+        elements share a warp changes.</p>
+      <figure class="code-example" data-file="ex6_divergence.py">
+        <div class="code-head">
+          <span class="code-title">Example 4.6</span>
+          <span class="code-file">examples/04-warp-and-the-gpu/ex6_divergence.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 4.6 - branch divergence: 8 cases selected by tid % 8 vs grouped vs 8 launches.
+
+Every element runs one of 8 different loops. Three ways to schedule the same work:
+  interleaved  one launch, branch = i % 8      -&gt; the 32 lanes of a GPU warp disagree (divergent)
+  grouped      one launch, branch = i // M     -&gt; all lanes of a warp agree (no divergence)
+  specialized  8 launches, one branch each     -&gt; no divergence, 8 launch overheads
+On a GPU the interleaved kernel is expected to be the slowest; run it and compare your own numbers.
+On Warp's CPU device threads run one after another, there are no lanes, so the three times are
+close: divergence is a GPU effect.
+Run: python ex6_divergence.py [--dump-json PATH]
+"""
+import argparse
+import json
+import time
+
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--dump-json", default=None)
+args, _ = parser.parse_known_args()
+
+ON_GPU = wp.get_device().is_cuda
+N = (1 &lt;&lt; 22) if ON_GPU else (1 &lt;&lt; 16)            # elements; multiple of 8 * 32
+M = N // 8                                         # elements per branch
+ITERS = 64
+
+
+@wp.func
+def work(branch: int, x: float) -&gt; float:
+    r = x
+    if branch == 0:
+        for _ in range(ITERS):
+            r = wp.sin(r) + 0.5
+    elif branch == 1:
+        for _ in range(ITERS):
+            r = wp.cos(r) * 0.9
+    elif branch == 2:
+        for _ in range(ITERS):
+            r = wp.sqrt(r * r + 1.0) - 0.9
+    elif branch == 3:
+        for _ in range(ITERS):
+            r = wp.exp(-r * r)
+    elif branch == 4:
+        for _ in range(ITERS):
+            r = wp.tanh(r) + 0.25
+    elif branch == 5:
+        for _ in range(ITERS):
+            r = 1.0 / (1.0 + r * r)
+    elif branch == 6:
+        for _ in range(ITERS):
+            r = wp.log(1.0 + r * r)
+    else:
+        for _ in range(ITERS):
+            r = wp.atan(r) + 0.1
+    return r
+
+
+@wp.kernel
+def interleaved(x: wp.array[float], out: wp.array[float]):
+    i = wp.tid()
+    out[i] = work(i % 8, x[i])                     # neighbours take different branches
+
+
+@wp.kernel
+def grouped(m: int, x: wp.array[float], out: wp.array[float]):
+    i = wp.tid()
+    out[i] = work(i // m, x[i])                    # a whole warp shares one branch
+
+
+@wp.kernel
+def one_branch(branch: int, m: int, x: wp.array[float], out: wp.array[float]):
+    j = wp.tid()
+    i = branch * m + j
+    out[i] = work(branch, x[i])                    # every thread of this launch: same branch
+
+
+x_np = np.random.default_rng(0).random(N, dtype=np.float32)   # grouped order: branch-major
+x = wp.array(x_np)
+# the same values in interleaved order: element 8 * j + c holds x_np[c * M + j]
+x_inter = wp.array(x_np.reshape(8, M).T.copy().reshape(N))
+out_a = wp.zeros(N, dtype=float)
+out_b = wp.zeros(N, dtype=float)
+out_c = wp.zeros(N, dtype=float)
+
+
+def run_interleaved():
+    wp.launch(interleaved, dim=N, inputs=[x_inter], outputs=[out_a])
+
+
+def run_grouped():
+    wp.launch(grouped, dim=N, inputs=[M, x], outputs=[out_b])
+
+
+def run_specialized():
+    for branch in range(8):
+        wp.launch(one_branch, dim=M, inputs=[branch, M, x], outputs=[out_c])
+
+
+def best_ms(fn, reps=5):
+    fn()                                           # warm-up: JIT compile + first run
+    wp.synchronize()
+    best = float("inf")
+    for _ in range(reps):
+        t0 = time.perf_counter()
+        fn()
+        wp.synchronize()                           # wait for the device before reading the clock
+        best = min(best, time.perf_counter() - t0)
+    return 1e3 * best
+
+
+times = {"interleaved": best_ms(run_interleaved), "grouped": best_ms(run_grouped),
+         "specialized": best_ms(run_specialized)}
+
+# all three compute the same numbers (interleaved stores them in interleaved order)
+a_back = out_a.numpy().reshape(M, 8).T.reshape(N)
+print(f"device: {wp.get_device()} | N = {N} | {ITERS} iterations per element")
+for k, v in times.items():
+    print(f"  {k:12s} {v:8.2f} ms   ({v / times['grouped']:.2f}x grouped)")
+print("same results in all three:",
+      bool(np.array_equal(out_b.numpy(), out_c.numpy()) and np.array_equal(a_back, out_b.numpy())))
+if not ON_GPU:
+    print("CPU device: threads run in a loop, no 32-lane warps, so no divergence penalty.")
+
+if args.dump_json:
+    with open(args.dump_json, "w") as f:
+        json.dump({"device": str(wp.get_device()), "n": N, "iters": ITERS,
+                   "ms": {k: round(v, 2) for k, v in times.items()}}, f, separators=(",", ":"))
+    print("wrote", args.dump_json)</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 4.6" (and the "GPU vs CPU" cell)</span><span>CPU: <code>python -I ex6_divergence.py --dump-json data/ex6.json</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run on a shared dev box, N=65536; times vary. On Colab, N=4194304; compare your own GPU numbers (the interleaved kernel is expected to be slower there)</span></summary>
+<pre class="output">device: cpu | N = 65536 | 64 iterations per element
+  interleaved     70.31 ms   (1.01x grouped)
+  grouped         69.50 ms   (1.00x grouped)
+  specialized     69.36 ms   (1.00x grouped)
+same results in all three: True
+CPU device: threads run in a loop, no 32-lane warps, so no divergence penalty.
+wrote data/ex6.json</pre>
+        </details>
+      </figure>
+      <figure class="fig">
+        <div class="fig-frame"><svg id="ex6-bars" class="bars" viewBox="0 0 640 150" role="img" aria-label="Bar chart of the three Example 4.6 timings on the CPU device"></svg></div>
+        <figcaption><span class="fig-num">Figure 7.</span>Example 4.6 timings, CPU device (not GPU performance). Data from <code>ex6_divergence.py --dump-json</code>, mujoco-warp 4.0.1 / warp-lang 1.19.0, CPU run, N=65536. The bars are equal because the CPU device has no lanes to mask. Run the notebook's "GPU vs CPU" cell on Colab to see your GPU's numbers.</figcaption>
+        <script type="application/json" id="data-ch04-ex6" data-json-file="examples/04-warp-and-the-gpu/data/ex6.json">{"device":"cpu","n":65536,"iters":64,"ms":{"interleaved":70.31,"grouped":69.5,"specialized":69.36}}</script>
+      </figure>
+
+      <h3 id="coalescing">4.5 Coalescing: neighbours should read neighbours</h3>
+      <p>Global memory is not read one float at a time. The hardware fetches aligned segments (32-byte sectors, grouped
+        into 128-byte lines). When the 32 lanes of a warp load 32 consecutive floats, those 128 bytes arrive as one
+        line: the access is <abbr class="gl" data-term="coalescing" title="Neighbouring threads of a warp reading neighbouring addresses, so the hardware serves the warp with few memory transactions.">coalesced</abbr>.
+        When each lane reads an address a whole row apart, the warp needs 32 separate sectors and uses 4 bytes of each.
+        Same instructions, up to 8x the bytes moved (32 separate sectors instead of 4).</p>
+      <p>This is why the order of the launch dimensions must match the order of the array dimensions. MJWarp stores
+        state as <code>(nworld, n)</code> row-major arrays and launches <code>dim=(d.nworld, n)</code> with
+        <code>worldid, i = wp.tid()</code>: the fastest-varying thread index walks the contiguous axis. Flip either one and
+        every warp becomes strided. (One-thread-per-world kernels that read a short row, like the reward kernels of
+        <a href="26-custom-kernels-and-extending.html#rl-kernels">Ch 26 §2</a>, are strided by the row length; for small rows the
+        caches absorb most of it.)</p>
+
+      <figure class="fig widget" id="coal-fig">
+        <p class="widget-title">32 lanes, one load instruction <span class="badge illustrative">Interactive</span></p>
+        <div class="ch4-seg-row"><span class="lbl-sm">lane k reads float</span>
+          <div class="seg" id="coal-seg" role="group" aria-label="Access pattern">
+            <button aria-pressed="true" data-s="1">k (coalesced)</button>
+            <button aria-pressed="false" data-s="2">2k</button>
+            <button aria-pressed="false" data-s="8">8k</button>
+            <button aria-pressed="false" data-s="2048">2048k (strided by row)</button>
+          </div>
+        </div>
+        <div class="ch4-seg-row ch4-phone-only"><span class="lbl-sm">show lanes</span>
+          <div class="seg" id="coal-range" role="group" aria-label="Which 8 lanes to show">
+            <button aria-pressed="true" data-r="0">0-7</button>
+            <button aria-pressed="false" data-r="1">8-15</button>
+            <button aria-pressed="false" data-r="2">16-23</button>
+            <button aria-pressed="false" data-r="3">24-31</button>
+          </div>
+        </div>
+        <div class="fig-frame scroll-x"><svg id="coal-svg" viewBox="0 0 640 230" role="img" aria-label="Lanes of a warp connected to the memory sectors they read"></svg></div>
+        <div class="ch4-readout" id="coal-readout"></div>
+        <div class="fig-caption-line" id="coal-cap" data-placeholder="Hover, tap or tab to a lane."></div>
+        <figcaption><span class="fig-num">Figure 8.</span>Each box on the bottom is one 128-byte line (32 floats) made of four 32-byte sectors; the shaded sectors are the ones the hardware moves. On a phone the figure shows 8 lanes at a time; the readout always counts the whole warp. The stride 2048 case stands for Example 4.7's strided kernel, where consecutive threads are one row apart: 2048 floats with the CPU budget <code>(2048, 2048)</code>, 4096 with the GPU budget <code>(8192, 4096)</code>. Any stride of 32 floats or more gives the same 32 sectors.</figcaption>
+      </figure>
+
+      <figure class="code-example" data-file="ex7_coalescing.py">
+        <div class="code-head">
+          <span class="code-title">Example 4.7</span>
+          <span class="code-file">examples/04-warp-and-the-gpu/ex7_coalescing.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 4.7 - memory coalescing: which index do consecutive threads walk?
+
+Adds two (nworld, n) arrays. Both kernels do identical work; only the mapping from thread
+index to array element differs:
+  coalesced  w, j = wp.tid() with dim=(nworld, n): neighbouring threads read neighbouring
+             addresses (the contiguous last axis) -&gt; a GPU warp needs few memory transactions
+  strided    j, w = wp.tid() with dim=(n, nworld): neighbouring threads are a whole row
+             (n * 4 bytes) apart -&gt; one transaction per lane
+This is why MJWarp puts nworld first and launches dim=(nworld, n_elements).
+On the CPU device threads run in order, so the strided kernel jumps n * 4 bytes per thread
+and loses the CPU cache instead: it is slower too, for a different reason.
+Run: python ex7_coalescing.py [--dump-json PATH]
+"""
+import argparse
+import json
+import time
+
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--dump-json", default=None)
+args, _ = parser.parse_known_args()
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD, N = (8192, 4096) if ON_GPU else (2048, 2048)
+
+
+@wp.kernel
+def add_coalesced(a: wp.array2d[float], b: wp.array2d[float], c: wp.array2d[float]):
+    w, j = wp.tid()                                # last launch axis = contiguous array axis
+    c[w, j] = a[w, j] + b[w, j]
+
+
+@wp.kernel
+def add_strided(a: wp.array2d[float], b: wp.array2d[float], c: wp.array2d[float]):
+    j, w = wp.tid()                                # last launch axis = the row index
+    c[w, j] = a[w, j] + b[w, j]
+
+
+rng = np.random.default_rng(0)
+a = wp.array(rng.random((NWORLD, N), dtype=np.float32))
+b = wp.array(rng.random((NWORLD, N), dtype=np.float32))
+c1 = wp.zeros((NWORLD, N), dtype=float)
+c2 = wp.zeros((NWORLD, N), dtype=float)
+
+
+def best_ms(fn, reps=5):
+    fn()                                           # warm-up (JIT)
+    wp.synchronize()
+    best = float("inf")
+    for _ in range(reps):
+        t0 = time.perf_counter()
+        fn()
+        wp.synchronize()
+        best = min(best, time.perf_counter() - t0)
+    return 1e3 * best
+
+
+t_co = best_ms(lambda: wp.launch(add_coalesced, dim=(NWORLD, N), inputs=[a, b], outputs=[c1]))
+t_st = best_ms(lambda: wp.launch(add_strided, dim=(N, NWORLD), inputs=[a, b], outputs=[c2]))
+gbytes = 3 * NWORLD * N * 4 / 1e9                  # 2 reads + 1 write of float32
+
+print(f"device: {wp.get_device()} | array ({NWORLD}, {N}) float32, {gbytes:.3f} GB moved")
+print(f"  coalesced {t_co:8.2f} ms  {gbytes / (t_co / 1e3):7.1f} GB/s")
+print(f"  strided   {t_st:8.2f} ms  {gbytes / (t_st / 1e3):7.1f} GB/s"
+      f"   ({t_st / t_co:.1f}x slower)")
+print("same result:", bool(np.array_equal(c1.numpy(), c2.numpy())))
+print("thread k reads address offset (floats): coalesced k, strided k *", N)
+if not ON_GPU:
+    print("CPU device: the gap comes from CPU caches, not from GPU memory transactions.")
+
+if args.dump_json:
+    with open(args.dump_json, "w") as f:
+        json.dump({"device": str(wp.get_device()), "shape": [NWORLD, N],
+                   "ms": {"coalesced": round(t_co, 2), "strided": round(t_st, 2)}},
+                  f, separators=(",", ":"))
+    print("wrote", args.dump_json)</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 4.7" (and the "GPU vs CPU" cell)</span><span>CPU: <code>python -I ex7_coalescing.py --dump-json data/ex7.json</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run on a shared dev box, (2048, 2048); times vary. On Colab the shape is (8192, 4096)</span></summary>
+<pre class="output">device: cpu | array (2048, 2048) float32, 0.050 GB moved
+  coalesced    24.08 ms      2.1 GB/s
+  strided      83.09 ms      0.6 GB/s   (3.5x slower)
+same result: True
+thread k reads address offset (floats): coalesced k, strided k * 2048
+CPU device: the gap comes from CPU caches, not from GPU memory transactions.
+wrote data/ex7.json</pre>
+        </details>
+      </figure>
+      <figure class="fig">
+        <div class="fig-frame"><svg id="ex7-bars" class="bars" viewBox="0 0 640 120" role="img" aria-label="Bar chart of the two Example 4.7 timings on the CPU device"></svg></div>
+        <figcaption><span class="fig-num">Figure 9.</span>Example 4.7 timings, CPU device (not GPU performance). Data from <code>ex7_coalescing.py --dump-json</code>, mujoco-warp 4.0.1 / warp-lang 1.19.0, CPU run, shape (2048, 2048). Even serial CPU code pays for strided access, through cache misses.</figcaption>
+        <script type="application/json" id="data-ch04-ex7" data-json-file="examples/04-warp-and-the-gpu/data/ex7.json">{"device":"cpu","shape":[2048,2048],"ms":{"coalesced":24.08,"strided":83.09}}</script>
+      </figure>
+
+      <h3 id="shared-occupancy">4.6 Shared memory, registers and occupancy</h3>
+      <p>Two resources decide how many warps an SM can keep resident, and therefore its occupancy:</p>
+      <ul>
+        <li><strong>Registers.</strong> Each thread's locals live in registers. If a kernel needs many (long
+          functions, big unrolled loops, many <code>vec3</code>/<code>mat33</code> temporaries), fewer warps fit. This is
+          one reason MJWarp splits the pipeline into many small kernels instead of one huge one.</li>
+        <li><strong>Shared memory.</strong> A block that reserves a large tile in shared memory leaves room for fewer
+          blocks on the same SM. MJWarp's tiled kernels (Cholesky factorization in <code>smooth.py</code>, solver
+          reductions in <code>solver.py</code>) pick their <code>block_dim</code> per kernel family through the
+          experimental <code>types.BlockDim</code> settings stored as <code>m.block_dim</code>.</li>
+      </ul>
+      <p>Occupancy is not a goal in itself; a kernel limited by memory bandwidth needs enough warps in flight to keep the
+        memory system busy, and beyond that more warps do not help. <a href="25-profiling-benchmarking-tuning.html">Ch 25</a>
+        shows how to measure instead of guessing.</p>
+
+      <h3 id="cpu-device">4.7 What changes on Warp's CPU device</h3>
+      <p>Warp's CPU backend compiles the same kernel to native code and runs a launch as a plain loop over all thread
+        indices, in index order (Example 4.3 recorded it). There are no lanes, so no divergence; there is no shared
+        memory, so tiles use ordinary memory; and a launch returns only when the loop is done, so timing needs no
+        synchronization (Example 4.10, section 10). Blocks collapse too: Warp's config says that, unless
+        <code>wp.config.enable_cpu_blocks</code> (experimental) is set, "CPU launch block dimensions greater than one resolve to
+        one". MJWarp's code is written to stay correct when <code>wp.block_dim()</code> is 1:</p>
+      <div class="callout source"><p class="callout-title">Source</p>
+        <p><code>mujoco_warp/_src/smooth.py</code> · <code>_solve_LD_sparse</code>: <code>if wp.get_device().is_cuda:
+          dim_block = m.block_dim.solve_LD_sparse_fused</code> else <code># Fallback for CPU</code> <code>dim_block = 1</code>.<br>
+          <code>mujoco_warp/_src/solver.py</code> · <code>_update_gradient_JTDAJ_dense_tiled</code>: "wp.block_dim() is 1
+          on the CPU backend, so lane 0 then covers every entry."<br>
+          <code>mujoco_warp/_src/collision_convex.py</code> · <code>_ccd_grid_size</code>: "Warp forces CPU block_dim to 1
+          and has no CUDA occupancy information."</p></div>
+      <p>So the CPU device is a faithful <em>functional</em> model (same results, up to float order in atomics) and a
+        poor <em>performance</em> model. The course verifies every example on CPU for correctness and lets the
+        notebook print GPU numbers on your Colab GPU. Forward links: the nworld-first layout in
+        <a href="06-batched-data-layout.html">Ch 6</a>, collision kernels specialized to the model's geom-type pairs in
+        <a href="16-primitive-narrowphase.html">Ch 16</a> (<code>collision_primitive.py::_primitive_narrowphase</code>) and
+        <a href="17-convex-collision-gjk-epa.html">Ch 17</a> (<code>collision_convex.py</code>, one launch per pair), solver thread sizing in <a href="20-solvers-cg-newton.html">Ch 20</a>.</p>
+    </section>
+
+    <!-- ===================== 5. DEVICE FUNCTIONS ===================== -->
+    <section class="sec" id="funcs">
+      <h2><span class="sec-num">5</span>Device functions: <code>@wp.func</code></h2>
+      <p>A kernel is an entry point: it is launched from Python and returns nothing. A
+        <abbr class="gl" data-term="wp-func" title="A Warp device function: typed, callable from kernels and other funcs, may return values; inlined by the compiler.">@wp.func</abbr>
+        is a helper that runs <em>on the device</em> and is called from kernels or other funcs. It takes typed arguments,
+        may <code>return</code> a value (or a tuple), and is usually inlined by the compiler, so calling it usually costs
+        nothing. You cannot launch a func. Its parameters can be values or <code>wp.array</code>s, which the func may index
+        and write into, even with atomics: MJWarp's <code>collision_core.py::write_contact</code> takes the contact
+        arrays and does <code>wp.atomic_add(nacon_out, 0, 1)</code> itself.</p>
+      <p>MJWarp's <code>_src/math.py</code> is almost entirely funcs (30 <code>@wp.func</code> definitions in the 4.0.1
+        wheel): quaternion products, rotations, frame transforms. Because they follow MuJoCo's conventions, the course
+        reuses them rather than re-deriving the math. They are internal (<code>_src</code>), so they carry the private
+        badge.</p>
+      <figure class="code-example" data-file="ex4_func.py">
+        <div class="code-head">
+          <span class="code-title">Example 4.4 <span class="badge private-api">private API</span></span>
+          <span class="code-file">examples/04-warp-and-the-gpu/ex4_func.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 4.4 - @wp.func device functions, reusing MJWarp's own math helpers.
+
+A kernel calls our @wp.func, which calls mujoco_warp._src.math.rot_vec_quat (private API) to
+rotate a vec3 by a MuJoCo-ordered (w, x, y, z) quaternion. The result is compared with
+mujoco.mju_rotVecQuat, MuJoCo's C function.
+Run: python ex4_func.py
+"""
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw  # noqa: F401  (imported for the course-wide import order)
+from mujoco_warp._src import math as mjw_math   # private API: names may change
+
+np.set_printoptions(precision=4, suppress=True)
+
+
+@wp.func
+def rotate_and_scale(v: wp.vec3, q: wp.quat, s: float) -&gt; wp.vec3:
+    """A device function: called from kernels, inlined by the compiler, may return a value."""
+    return s * mjw_math.rot_vec_quat(v, q)
+
+
+@wp.kernel
+def rotate_all(vec_in: wp.array[wp.vec3], quat_in: wp.array[wp.quat],
+               vec_out: wp.array[wp.vec3]):
+    i = wp.tid()
+    vec_out[i] = rotate_and_scale(vec_in[i], quat_in[i], 1.0)
+
+
+rng = np.random.default_rng(1)
+N = 4
+quats = rng.standard_normal((N, 4))
+quats /= np.linalg.norm(quats, axis=1, keepdims=True)        # unit quats, MuJoCo order (w,x,y,z)
+vecs = rng.standard_normal((N, 3))
+
+out = wp.zeros(N, dtype=wp.vec3)
+wp.launch(rotate_all, dim=N,
+          inputs=[wp.array(vecs, dtype=wp.vec3), wp.array(quats, dtype=wp.quat)],
+          outputs=[out])
+
+ref = np.zeros((N, 3))
+for i in range(N):
+    mujoco.mju_rotVecQuat(ref[i], vecs[i], quats[i])          # C MuJoCo, float64
+
+print("quat[0] (w, x, y, z):", quats[0])
+print("MJWarp rot_vec_quat :", out.numpy()[0])
+print("mujoco.mju_rotVecQuat:", ref[0])
+print("max abs difference over", N, "vectors:", f"{np.max(np.abs(out.numpy() - ref)):.1e}",
+      "(float32 vs float64)")</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 4.4"</span><span>CPU: <code>python -I ex4_func.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run; the same on GPU</span></summary>
+<pre class="output">quat[0] (w, x, y, z): [ 0.2142  0.5094  0.2049 -0.8079]
+MJWarp rot_vec_quat : [ 0.3972  0.6651 -0.3138]
+mujoco.mju_rotVecQuat: [ 0.3972  0.6651 -0.3138]
+max abs difference over 4 vectors: 1.4e-07 (float32 vs float64)</pre>
+        </details>
+      </figure>
+      <div class="callout source"><p class="callout-title">Source</p>
+        <p><code>mujoco_warp/_src/math.py</code> · <code>rot_vec_quat(vec, quat)</code> reads <code>s, u = quat[0],
+          wp.vec3(quat[1], quat[2], quat[3])</code>: slot 0 is the scalar <code>w</code>. Its neighbours
+          <code>mul_quat</code>, <code>quat_to_mat</code> and <code>axis_angle_to_quat</code> use the same order.</p></div>
+    </section>
+
+    <!-- ===================== 6. QUATERNION STORAGE ===================== -->
+    <section class="sec" id="quat-storage">
+      <h2><span class="sec-num">6</span>The <code>wp.quat</code> storage pitfall</h2>
+      <div class="callout recall"><p class="callout-title">Recall from Ch 2</p><p>MuJoCo quats are (w,x,y,z); <a href="02-mujoco-essentials.html#quaternions">Ch 2 §3</a> and its <a href="02-mujoco-essentials.html#quat-card">quaternion card</a>.</p></div>
+      <p><code>wp.quat</code> is just four floats. Warp's own quaternion built-ins (<code>wp.quat_rotate</code>,
+        <code>wp.quat_identity</code>, <code>wp.transform</code>, ...) interpret them as <strong>(x, y, z, w)</strong>, with the
+        scalar <em>last</em>. MJWarp stores MuJoCo's <strong>(w, x, y, z)</strong> in the same four slots: <code>d.xquat</code>,
+        <code>m.body_quat</code> and the quaternion part of a free joint's <code>qpos</code> all have <code>w</code> in slot
+        0. Nothing in the type system notices the difference. Handing an MJWarp quaternion to a Warp built-in silently
+        rotates about the wrong axis.</p>
+
+      <figure class="fig">
+        <div class="fig-frame scroll-x">
+          <svg class="ch4-zoom" viewBox="0 0 640 200" role="img" aria-labelledby="f46t f46d">
+            <title id="f46t">Same four slots, two interpretations</title>
+            <desc id="f46d">A wp.quat has slots 0 to 3. MJWarp stores w, x, y, z. Warp built-ins read x, y, z, w.</desc>
+            <text x="20" y="28" class="s-label">one wp.quat in memory</text>
+            <g class="s-mono">
+              <g class="hot" data-info="<strong>Slot 0</strong>: MJWarp/MuJoCo put <code>w</code> (the scalar, cos of half the angle) here; Warp's built-ins read it as <code>x</code>.">
+                <rect x="150" y="40" width="110" height="44" rx="8" class="s-box"/><text x="205" y="68" text-anchor="middle" class="s-label">slot 0</text></g>
+              <g class="hot" data-info="<strong>Slot 1</strong>: MJWarp stores <code>x</code>; Warp reads <code>y</code>.">
+                <rect x="270" y="40" width="110" height="44" rx="8" class="s-box"/><text x="325" y="68" text-anchor="middle" class="s-label">slot 1</text></g>
+              <g class="hot" data-info="<strong>Slot 2</strong>: MJWarp stores <code>y</code>; Warp reads <code>z</code>.">
+                <rect x="390" y="40" width="110" height="44" rx="8" class="s-box"/><text x="445" y="68" text-anchor="middle" class="s-label">slot 2</text></g>
+              <g class="hot" data-info="<strong>Slot 3</strong>: MJWarp stores <code>z</code>; Warp reads <code>w</code>. Example 4.5: a 90 degree turn about z becomes a 90 degree turn about x.">
+                <rect x="510" y="40" width="110" height="44" rx="8" class="s-box"/><text x="565" y="68" text-anchor="middle" class="s-label">slot 3</text></g>
+            </g>
+            <text x="20" y="122" class="s-small">MJWarp stores</text>
+            <text x="20" y="138" class="s-small s-muted">(MuJoCo order)</text>
+            <rect x="150" y="104" width="110" height="34" rx="8" class="s-accent"/><text x="205" y="126" text-anchor="middle" class="s-label">w</text>
+            <rect x="270" y="104" width="110" height="34" rx="8" class="s-accent-soft"/><text x="325" y="126" text-anchor="middle" class="s-label">x</text>
+            <rect x="390" y="104" width="110" height="34" rx="8" class="s-accent-soft"/><text x="445" y="126" text-anchor="middle" class="s-label">y</text>
+            <rect x="510" y="104" width="110" height="34" rx="8" class="s-accent-soft"/><text x="565" y="126" text-anchor="middle" class="s-label">z</text>
+            <text x="20" y="168" class="s-small">wp.quat_rotate</text>
+            <text x="20" y="184" class="s-small s-muted">reads</text>
+            <rect x="150" y="150" width="110" height="34" rx="8" class="s-accent2-soft"/><text x="205" y="172" text-anchor="middle" class="s-label">x</text>
+            <rect x="270" y="150" width="110" height="34" rx="8" class="s-accent2-soft"/><text x="325" y="172" text-anchor="middle" class="s-label">y</text>
+            <rect x="390" y="150" width="110" height="34" rx="8" class="s-accent2-soft"/><text x="445" y="172" text-anchor="middle" class="s-label">z</text>
+            <rect x="510" y="150" width="110" height="34" rx="8" class="s-accent2"/><text x="565" y="172" text-anchor="middle" class="s-label" style="fill:#fff">w</text>
+          </svg>
+        </div>
+        <p class="ch4-scroll-hint" aria-hidden="true">Scroll the figure sideways to see all four slots.</p>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a slot."></div>
+        <figcaption><span class="fig-num">Figure 10.</span>The storage strip. For the convention itself and its interactive card, see the <a href="02-mujoco-essentials.html#quat-card">Ch 2 quaternion card</a>.</figcaption>
+      </figure>
+
+      <figure class="code-example" data-file="ex5_quat_pitfall.py">
+        <div class="code-head">
+          <span class="code-title">Example 4.5 <span class="badge private-api">private API</span></span>
+          <span class="code-file">examples/04-warp-and-the-gpu/ex5_quat_pitfall.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 4.5 - the quaternion storage pitfall: wp.quat_rotate expects (x, y, z, w).
+
+MuJoCo and MJWarp store quaternions as (w, x, y, z) inside wp.quat slots. Warp's own built-ins
+(wp.quat_rotate, wp.transform, ...) read the same four slots as (x, y, z, w). Passing a
+MuJoCo-ordered quaternion straight to wp.quat_rotate silently gives a different rotation.
+Run: python ex5_quat_pitfall.py
+"""
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw  # noqa: F401  (imported for the course-wide import order)
+from mujoco_warp._src import math as mjw_math   # private API: names may change
+
+np.set_printoptions(precision=4, suppress=True)
+
+
+@wp.kernel
+def three_ways(v: wp.vec3, q_mj: wp.quat, out: wp.array[wp.vec3]):
+    # q_mj holds MuJoCo order: q_mj[0] = w, q_mj[1..3] = x, y, z
+    out[0] = mjw_math.rot_vec_quat(v, q_mj)                  # MJWarp helper: (w, x, y, z)
+    out[1] = wp.quat_rotate(q_mj, v)                         # WRONG: Warp reads (x, y, z, w)
+    q_warp = wp.quat(q_mj[1], q_mj[2], q_mj[3], q_mj[0])     # reorder to Warp's (x, y, z, w)
+    out[2] = wp.quat_rotate(q_warp, v)                       # right again
+
+
+# 90 degrees about z, in MuJoCo order (w, x, y, z)
+q_mj = np.array([np.cos(np.pi / 4), 0.0, 0.0, np.sin(np.pi / 4)])
+v = np.array([1.0, 0.0, 0.0])
+
+out = wp.zeros(3, dtype=wp.vec3)
+wp.launch(three_ways, dim=1, inputs=[wp.vec3(*v), wp.quat(*q_mj)], outputs=[out])
+ref = np.zeros(3)
+mujoco.mju_rotVecQuat(ref, v, q_mj)
+
+r = np.round(out.numpy(), 6) + 0.0                         # tidy -0.0 and 1e-8 noise
+print("rotate (1, 0, 0) by 90 deg about z; quat (w, x, y, z) =", q_mj)
+print("mujoco.mju_rotVecQuat            :", ref)
+print("mjw math.rot_vec_quat (w,x,y,z)  :", r[0])
+print("wp.quat_rotate, MuJoCo order     :", r[1], "&lt;- wrong")
+print("wp.quat_rotate, reordered x,y,z,w:", r[2])
+print("wp.quat_identity() slots         :", np.array(wp.quat_identity()), "(w is LAST in Warp)")</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 4.5"</span><span>CPU: <code>python -I ex5_quat_pitfall.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run; the same on GPU</span></summary>
+<pre class="output">rotate (1, 0, 0) by 90 deg about z; quat (w, x, y, z) = [0.7071 0.     0.     0.7071]
+mujoco.mju_rotVecQuat            : [0. 1. 0.]
+mjw math.rot_vec_quat (w,x,y,z)  : [0. 1. 0.]
+wp.quat_rotate, MuJoCo order     : [1. 0. 0.] &lt;- wrong
+wp.quat_rotate, reordered x,y,z,w: [0. 1. 0.]
+wp.quat_identity() slots         : [0. 0. 0. 1.] (w is LAST in Warp)</pre>
+        </details>
+      </figure>
+      <div class="callout pitfall"><p class="callout-title">Pitfall: never pass an MJWarp quaternion to a Warp built-in</p>
+        <p>Use MJWarp's helpers (<code>math.rot_vec_quat</code>, <code>math.quat_to_mat</code>, <code>math.mul_quat</code>), or
+          reorder explicitly: <code>wp.quat(q[1], q[2], q[3], q[0])</code>. The repository's CONTRIBUTING.md states the
+          rule: "All public APIs, <code>Model</code>, and <code>Data</code> fields follow the MuJoCo convention
+          <code>(w, x, y, z)</code>. Explicitly convert or document when passing to native Warp functions
+          (<code>wp.transform</code>)." The wrong answer in Example 4.5 is not random: the MuJoCo-ordered
+          <code>[0.7071, 0, 0, 0.7071]</code> read as (x, y, z, w) is a 90 degree turn about <em>x</em>, which leaves
+          (1, 0, 0) where it was.</p></div>
+    </section>
+
+    <!-- ===================== 7. WP.STATIC ===================== -->
+    <section class="sec" id="static">
+      <h2><span class="sec-num">7</span>Compile-time specialization: <code>wp.static</code></h2>
+      <p>Ordinary <code>if</code>s in a kernel are decided per thread at run time. <code>wp.static(expr)</code> is evaluated
+        <em>once, in Python, while Warp generates the code</em>. Inside <code>if wp.static(flag):</code> the untaken side
+        is simply not emitted, and <code>for _ in range(wp.static(n)):</code> has a constant trip count the compiler can
+        unroll. The expression may read Python variables that are in scope when the kernel is defined, typically the
+        arguments of a function that builds the kernel: a <em>kernel factory</em>.</p>
+      <p>MJWarp uses this everywhere option flags would otherwise create branches: sleep on/off, the integrator, the cone
+        type, determinism. Each combination becomes its own small, branch-free kernel. The flip side is that changing such
+        a flag means a different kernel, which means a compile the first time and, under a CUDA graph, a recapture
+        (<a href="24-cuda-graphs.html">Ch 24</a>).</p>
+      <figure class="code-example" data-file="ex8_static.py">
+        <div class="code-head">
+          <span class="code-title">Example 4.8</span>
+          <span class="code-file">examples/04-warp-and-the-gpu/ex8_static.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 4.8 - compile-time specialization with wp.static inside a kernel factory.
+
+make_clip(use_abs) returns a kernel in which `if wp.static(use_abs):` is decided while Warp
+generates code, so each specialization contains only one side of the branch. The same pattern
+appears all over MJWarp (factories are cached by warp_util.cache_kernel; Ch 26).
+Run: python ex8_static.py
+"""
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+
+np.set_printoptions(precision=4, suppress=True)
+
+POWER = 3                                          # a Python int, read at compile time
+
+
+def make_clip(use_abs: bool):
+    @wp.kernel(module="unique", enable_backward=False)
+    def clip(x_in: wp.array[float], y_out: wp.array[float]):
+        i = wp.tid()
+        v = x_in[i]
+        if wp.static(use_abs):                     # resolved during code generation
+            v = wp.abs(v)
+        r = float(1.0)
+        for _ in range(wp.static(POWER)):          # constant trip count: unrolled
+            r *= v
+        y_out[i] = wp.clamp(r, -1.0, 1.0)
+    return clip
+
+
+x = wp.array(np.array([-1.5, -0.5, 0.5, 1.5], dtype=np.float32))
+y = wp.zeros(4, dtype=float)
+kernels = {flag: make_clip(flag) for flag in (False, True)}
+for flag, k in kernels.items():
+    wp.launch(k, dim=4, inputs=[x], outputs=[y])
+    expr = "clamp(|x|**3)" if flag else "clamp(x**3)  "
+    print(f"use_abs={flag!s:5s} -&gt; {expr} =", y.numpy(), "| module", k.module.name)
+
+again = make_clip(True)                            # same source + same static values
+print("modules compiled:", len({k.module.name for k in kernels.values()}))
+print("make_clip(True) twice -&gt; same kernel object:", again is kernels[True])</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 4.8"</span><span>CPU: <code>python -I ex8_static.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run; the module hashes are the same on GPU</span></summary>
+<pre class="output">use_abs=False -&gt; clamp(x**3)   = [-1.    -0.125  0.125  1.   ] | module make_clip__locals__clip_0601fb0a
+use_abs=True  -&gt; clamp(|x|**3) = [1.    0.125 0.125 1.   ] | module make_clip__locals__clip_dc6c9668
+modules compiled: 2
+make_clip(True) twice -&gt; same kernel object: True</pre>
+        </details>
+      </figure>
+      <p>The module name ends in the module hash. Both specializations have the same Python source, but the hash also
+        covers the resolved <code>wp.static</code> values, so they hash differently: two
+        modules and two compiles. Calling the factory again with the same flag produced the <em>same</em> kernel object
+        (Warp 1.19 recognized the identical unique module).</p>
+      <details class="callout deeper">
+        <summary class="callout-title">Going deeper: factories, <code>module="unique"</code>, <code>enable_backward=False</code></summary>
+        <p><strong><code>module="unique"</code></strong> gives a kernel its own Warp module instead of sharing the module of
+          the Python file it is defined in. Factories need it: every specialization is a separate kernel, and sharing one
+          module would mean recompiling all of them whenever one is added. The module name then encodes the factory,
+          as in the <code>make_clip__locals__clip_...</code> names above.</p>
+        <p><strong><code>enable_backward=False</code></strong> skips generating adjoint (reverse-mode gradient) code, which
+          roughly halves the generated code and the compile time. MJWarp sets it module-wide at the top of most files, e.g.
+          <code>forward.py</code> and <code>smooth.py</code> call <code>wp.set_module_options({"enable_backward": False})</code>
+          and <code>collision_core.py</code> also passes <code>"default_grid_stride": False</code>. Gradients through MJWarp
+          therefore need explicit adjoint rules (<a href="29-gradients-and-system-identification.html">Ch 29</a>).</p>
+        <p><strong>Caching factories.</strong> MJWarp wraps its factories in <code>warp_util.cache_kernel</code>, a
+          dictionary whose key is a hash of each positional argument (lists are hashed as tuples, and any argument with
+          a <code>.size</code> attribute, such as an array or a NumPy value, is reduced to that size) plus the function's
+          module and name. Two different arrays of equal size therefore map to the same cached kernel, so only pass
+          values that really define the specialization. The same Python kernel object is returned every time (the source comment says it exists "to avoid crashes in graph_conditional code").
+          Writing your own factories with it is the subject of <a href="26-custom-kernels-and-extending.html#factories">Ch 26 §7</a>,
+          which owns <code>cache_kernel</code>.</p>
+      </details>
+    </section>
+
+    <!-- ===================== 8. JIT ===================== -->
+    <section class="sec" id="jit">
+      <h2><span class="sec-num">8</span>JIT compilation and the kernel cache</h2>
+      <p>Nothing is compiled when you write <code>@wp.kernel</code>. On the first launch on a device, Warp takes the
+        whole <em>module</em> the kernel belongs to (by default, every kernel and func in the same Python file), generates
+        C++ source (for the CPU) or CUDA C++ (for a GPU), compiles it, and loads the binary. This is
+        <abbr class="gl" data-term="jit" title="Just-in-time compilation: Warp generates and compiles kernel code on first use, not at import.">just-in-time (JIT) compilation</abbr>.
+        The module is identified by a hash of its kernels' Python source, argument types, referenced constants and
+        functions, the resolved <code>wp.static</code> values and the module options. Code generation itself runs only
+        on a cache miss. The result is stored in the
+        <abbr class="gl" data-term="kernel-cache" title="Directory where Warp keeps generated source and compiled binaries per module hash (wp.config.kernel_cache_dir).">kernel cache</abbr>
+        (<code>wp.config.kernel_cache_dir</code>; <code>~/.cache/warp/1.19.0</code> on Linux, including Colab). The next
+        process that needs the same hash loads the binary instead of compiling it.</p>
+
+      <figure class="fig" id="jit-fig" data-mode="first" data-anim>
+        <div class="ch4-seg-row"><span class="lbl-sm">show</span>
+          <div class="seg" id="jit-seg" role="group" aria-label="Which call">
+            <button aria-pressed="true" data-m="first">first run (cold cache)</button>
+            <button aria-pressed="false" data-m="second">later run (warm cache)</button>
+          </div>
+        </div>
+        <div class="fig-frame scroll-x">
+          <svg viewBox="0 0 640 210" role="img" aria-labelledby="f48t f48d">
+            <title id="f48t">The JIT pipeline</title>
+            <desc id="f48d">Kernel source is hashed; on a cache miss it is translated to C++ or CUDA, compiled, written to the cache, loaded and launched. On a cache hit the compile steps are skipped.</desc>
+            <defs><marker id="f48-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <g class="hot" data-info="<strong>1. Hash</strong>: on the first launch of any kernel in a module, Warp hashes the module's Python source, argument types, referenced constants and functions and resolved <code>wp.static</code> values, together with its options. No code is generated yet. The INFO log names it: <code>Module mujoco_warp._src.smooth 4af3d3c</code>.">
+              <rect x="8" y="40" width="92" height="64" rx="10" class="s-box"/><text x="54" y="66" text-anchor="middle" class="s-label">hash</text><text x="54" y="84" text-anchor="middle" class="s-small">module</text></g>
+            <g class="hot jit-skip" data-info="<strong>2. Codegen</strong>: Warp parses the Python source (AST), infers types, and writes C++ (CPU) or CUDA C++ (GPU). The <code>wp.static</code> results (already part of the hash) are inlined as constants.">
+              <rect x="114" y="40" width="92" height="64" rx="10" class="s-box"/><text x="160" y="66" text-anchor="middle" class="s-label">codegen</text><text x="160" y="84" text-anchor="middle" class="s-small">AST to C++</text></g>
+            <g class="hot jit-skip" data-info="<strong>3. Compile</strong>: CPU code goes through the LLVM/Clang compiler bundled with Warp; CUDA code through NVRTC (the banner says &quot;NVRTC compilation available&quot;). Seconds per module; a cold first <code>mjw.step</code> compiles dozens of modules.">
+              <rect x="220" y="40" width="92" height="64" rx="10" class="s-box"/><text x="266" y="66" text-anchor="middle" class="s-label">compile</text><text x="266" y="84" text-anchor="middle" class="s-small">LLVM / NVRTC</text></g>
+            <g class="hot" data-info="<strong>4. Kernel cache</strong>: one folder per module hash, e.g. <code>wp___main___0ce3299/</code> holding the generated <code>.cpp</code>, the compiled <code>.o</code> and a <code>.meta</code> file on CPU (CUDA builds store device code instead). On Colab it is lost when the runtime is recycled.">
+              <rect x="326" y="40" width="92" height="64" rx="10" class="s-accent2-soft"/><text x="372" y="66" text-anchor="middle" class="s-label">cache</text><text x="372" y="84" text-anchor="middle" class="s-small">on disk</text></g>
+            <g class="hot" data-info="<strong>5. Load</strong>: the binary is loaded into the process for that device. The INFO line ends with <code>(compiled)</code> or <code>(cached)</code>. Within one process this happens once per module and device.">
+              <rect x="432" y="40" width="92" height="64" rx="10" class="s-box"/><text x="478" y="66" text-anchor="middle" class="s-label">load</text><text x="478" y="84" text-anchor="middle" class="s-small">per device</text></g>
+            <g class="hot" data-info="<strong>6. Launch</strong>: from now on, launches of any kernel in the module go straight here. That is why examples warm up once before timing.">
+              <rect x="538" y="40" width="92" height="64" rx="10" class="s-accent"/><text x="584" y="66" text-anchor="middle" class="s-label">launch</text><text x="584" y="84" text-anchor="middle" class="s-small">threads run</text></g>
+            <path d="M100 72 H 112" class="s-line" marker-end="url(#f48-arrow)"/>
+            <path d="M206 72 H 218" class="s-line jit-skip" marker-end="url(#f48-arrow)"/>
+            <path d="M312 72 H 324" class="s-line jit-skip" marker-end="url(#f48-arrow)"/>
+            <path d="M418 72 H 430" class="s-line" marker-end="url(#f48-arrow)"/>
+            <path d="M524 72 H 536" class="s-line" marker-end="url(#f48-arrow)"/>
+            <g class="jit-second">
+              <path d="M54 104 C 54 150, 372 150, 372 108" class="s-accent2-stroke anim-flow" fill="none" marker-end="url(#f48-arrow)"/>
+              <text x="213" y="160" text-anchor="middle" class="s-small">hash found: cache hit</text>
+            </g>
+            <line x1="20" y1="186" x2="620" y2="186" class="s-line"/>
+            <circle cx="24" cy="186" r="7" class="s-accent anim-ch4-token" style="--dx: 584px"/>
+            <text x="20" y="204" class="s-small jit-first">cold: every step runs (ex12 on a fresh Colab runtime says "(compiled)")</text>
+            <text x="20" y="204" class="s-small jit-second">warm: codegen and compile are skipped (ex12 on this box says "(cached)")</text>
+          </svg>
+        </div>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button><span class="badge illustrative">Illustrative</span></div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a stage."></div>
+        <figcaption><span class="fig-num">Figure 11.</span>From Python function to running threads. Toggle between a cold and a warm cache.</figcaption>
+      </figure>
+
+      <p>Warp reports each module load at INFO level, and INFO is Warp 1.19's default. A first <code>mjw.step</code>
+        loads dozens of modules, so an unconfigured script prints dozens of lines. This is the one place the course
+        shows that output; everywhere else the import block sets <code>wp.config.log_level = wp.LOG_WARNING</code>
+        right after <code>import warp</code> (<code>wp.config.quiet</code> does not exist in 1.19). Example 4.12 catches
+        the lines with <code>wp.set_logger</code> so it can count them.</p>
+      <figure class="code-example" data-file="ex12_jit_log.py">
+        <div class="code-head">
+          <span class="code-title">Example 4.12</span>
+          <span class="code-file">examples/04-warp-and-the-gpu/ex12_jit_log.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 4.12 - JIT compilation, the kernel cache and Warp's INFO log.
+
+This is the one script in the course that leaves Warp at its default log level (INFO) on
+purpose: Warp then prints one "Module ... load on device ... took ... ms (compiled|cached)"
+line per module it loads. A first mjw.step loads dozens of modules. We collect those lines with
+wp.set_logger, then switch to wp.LOG_WARNING (what every other example does right after
+`import warp`) and load a brand-new module: no line at all, although it is still compiled on a
+cold cache, or loaded from the kernel cache on a warm one.
+Run: python ex12_jit_log.py   (run it twice: the second run says "cached")
+"""
+import re
+import time
+
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_INFO                  # Warp 1.19 default, shown once in the course
+import mujoco_warp as mjw
+
+BALL_DROP = """
+&lt;mujoco model="ball_drop"&gt;
+  &lt;option timestep="0.002"/&gt;
+  &lt;worldbody&gt;
+    &lt;light pos="0 0 3" dir="0 0 -1"/&gt;
+    &lt;geom name="floor" type="plane" size="5 5 .1" rgba=".8 .8 .8 1"/&gt;
+    &lt;body name="ball" pos="0 0 1"&gt;
+      &lt;freejoint/&gt;
+      &lt;geom name="ball" type="sphere" size=".1" mass="1" rgba="1 .3 .3 1"/&gt;
+    &lt;/body&gt;
+  &lt;/worldbody&gt;
+&lt;/mujoco&gt;
+"""
+
+
+class CollectingLogger:
+    """Implements Warp's Logger protocol (debug/info/warning/error) and keeps the messages."""
+
+    def __init__(self):
+        self.lines = []
+
+    def debug(self, message):
+        self.lines.append(message)
+
+    def info(self, message):
+        self.lines.append(message)
+
+    def warning(self, message, category=None, stacklevel=1):
+        self.lines.append(message)
+
+    def error(self, message):
+        self.lines.append(message)
+
+
+def module_lines(log):
+    return [s for s in log.lines if s.startswith("Module ")]
+
+
+@wp.kernel(module="unique")
+def double_it(x: wp.array[float]):
+    i = wp.tid()
+    x[i] = 2.0 * x[i]
+
+
+# --- phase 1: default INFO level -------------------------------------------------------
+log1 = CollectingLogger()
+wp.set_logger(log1)
+mjm = mujoco.MjModel.from_xml_string(BALL_DROP)
+m = mjw.put_model(mjm)
+d = mjw.make_data(mjm, nworld=2, nconmax=4, njmax=16)
+t0 = time.perf_counter()
+mjw.step(m, d)                                     # first step: loads every module it needs
+wp.synchronize()
+t_first = time.perf_counter() - t0
+t0 = time.perf_counter()
+mjw.step(m, d)                                     # second step: modules already in memory
+wp.synchronize()
+t_second = time.perf_counter() - t0
+lines1 = module_lines(log1)
+
+# --- phase 2: the course setting ---------------------------------------------------------
+wp.config.log_level = wp.LOG_WARNING
+log2 = CollectingLogger()
+wp.set_logger(log2)
+x = wp.ones(4, dtype=float)
+t0 = time.perf_counter()
+wp.launch(double_it, dim=4, inputs=[x])            # a new module: compiled or loaded silently
+t_new = time.perf_counter() - t0
+lines2 = module_lines(log2)
+wp.set_logger(None)                                # restore Warp's default logger
+
+banner = [s for s in log1.lines if s.startswith("Warp ")]
+first = banner[0].splitlines()[0] if banner else "none (Warp was already initialized)"
+print("INFO level   : init banner captured:", first)
+print("INFO level   : 'Module' lines during the first mjw.step:", len(lines1))
+print("  of which (cached):", sum("(cached)" in s for s in lines1),
+      "| (compiled):", sum("(compiled)" in s for s in lines1))
+if lines1:
+    print("  example line:", re.sub(r"took [0-9.]+ ms", "took ... ms", lines1[0]))
+print(f"  first step {1e3 * t_first:.0f} ms, second step {1e3 * t_second:.1f} ms")
+print("WARNING level: 'Module' lines for a new module:", len(lines2),
+      f"(it still took {1e3 * t_new:.0f} ms)", "| x =", x.numpy())
+print("kernel cache directory:", wp.config.kernel_cache_dir)</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 4.12"</span><span>CPU: <code>python -I ex12_jit_log.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run with a warm cache (second run). On a fresh Colab runtime the lines say "(compiled)" and the first step takes much longer; in a notebook Warp is already initialized, so no banner is captured</span></summary>
+<pre class="output">INFO level   : init banner captured: Warp 1.19.0 initialized:
+INFO level   : 'Module' lines during the first mjw.step: 32
+  of which (cached): 32 | (compiled): 0
+  example line: Module mujoco_warp._src.smooth 4af3d3c load on device 'cpu' took ... ms  (cached)
+  first step 310 ms, second step 4.5 ms
+WARNING level: 'Module' lines for a new module: 0 (it still took 1 ms) | x = [2. 2. 2. 2.]
+kernel cache directory: /root/.cache/warp/1.19.0</pre>
+        </details>
+      </figure>
+      <div class="callout tip"><p class="callout-title">Tip: notebooks and the <code>__main__</code> module</p>
+        <p>In a notebook every kernel you define lives in the module <code>__main__</code>. Defining a new kernel in a
+          later cell changes that module's hash, so the next launch recompiles <em>all</em> notebook kernels together. It
+          is harmless but explains the occasional slow cell; <code>module="unique"</code> on a kernel isolates it.</p></div>
+    </section>
+
+    <!-- ===================== 9. ATOMICS ===================== -->
+    <section class="sec" id="atomics">
+      <h2><span class="sec-num">9</span>Atomics, and why float sums depend on order</h2>
+      <p>Threads run concurrently, so two threads that do <code>total[0] = total[0] + x</code> at the same time can both
+        read the old value and one update is lost. An
+        <abbr class="gl" data-term="atomics" title="Read-modify-write operations (wp.atomic_add, ...) that no other thread can interrupt.">atomic</abbr>
+        operation such as <code>wp.atomic_add(total, 0, x)</code> performs the read-add-write as one indivisible step and
+        returns the old value. MJWarp uses atomics to reserve slots in shared buffers: in
+        <code>collision_core.py::write_contact</code> each new contact does <code>cid = wp.atomic_add(nacon_out, 0, 1)</code>
+        to claim the next free contact index (<a href="09-contacts-and-buffer-sizing.html">Ch 9</a>).</p>
+      <p>Atomics remove lost updates, but not ordering. Floating-point addition is not associative:
+        <code>(a + b) + c</code> can differ from <code>a + (b + c)</code> because each addition rounds. On a GPU the order in
+        which threads reach the accumulator changes from run to run, so a float sum built by atomics can change in its low
+        bits between two identical runs. Integer atomics (counting) are exact; float atomics are not reproducible bit for
+        bit.</p>
+
+      <figure class="fig widget" id="race-fig">
+        <p class="widget-title">Eight threads, one accumulator, float32 <span class="badge illustrative">Real float32 math, random order</span></p>
+        <div class="ch4-seg-row"><span class="lbl-sm">arrival order</span>
+          <div class="seg" id="race-seg" role="group" aria-label="Arrival order">
+            <button aria-pressed="true" data-o="shuffle">shuffled each run (GPU)</button>
+            <button aria-pressed="false" data-o="fixed">fixed (CPU device)</button>
+          </div>
+        </div>
+        <canvas id="race" class="ch4-canvas" aria-label="Eight threads add their values into one accumulator in a random order"></canvas>
+        <p class="ch4-hist" id="race-hist" aria-live="polite"></p>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button><button class="btn btn-sm" id="race-step" type="button">Next run</button></div>
+        <div class="fig-caption-line" id="race-cap" data-placeholder="The running float32 sum appears here."></div>
+        <figcaption><span class="fig-num">Figure 12.</span>The eight values of Example 4.9. Sums are rounded to float32 after every addition (<code>Math.fround</code>), exactly like a float32 accumulator. The exact sum is 8.375; Example 4.9 found 72 different float32 results over all 40,320 orders.</figcaption>
+      </figure>
+
+      <figure class="code-example" data-file="ex9_atomics.py">
+        <div class="code-head">
+          <span class="code-title">Example 4.9</span>
+          <span class="code-file">examples/04-warp-and-the-gpu/ex9_atomics.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 4.9 - wp.atomic_add, and why a float sum depends on the order of additions.
+
+1M float32 values are summed by 1M threads into one accumulator with wp.atomic_add. Float
+addition is not associative, so the result depends on the order in which threads arrive:
+on a GPU that order changes from run to run (low bits flicker); on Warp's CPU device threads
+run in index order, so the two runs match. A tiny 8-number case shows order dependence exactly.
+Full treatment of determinism: Ch 22.
+Run: python ex9_atomics.py
+"""
+import itertools
+
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+
+N = 1 &lt;&lt; 20
+
+
+@wp.kernel
+def atomic_sum(x: wp.array[float], total: wp.array[float]):
+    i = wp.tid()
+    wp.atomic_add(total, 0, x[i])                  # read-modify-write, no lost updates
+
+
+x_np = np.random.default_rng(0).random(N, dtype=np.float32)
+x = wp.array(x_np)
+runs = []
+for _ in range(2):
+    total = wp.zeros(1, dtype=float)
+    wp.launch(atomic_sum, dim=N, inputs=[x], outputs=[total])
+    runs.append(float(total.numpy()[0]))
+
+exact = float(np.sum(x_np, dtype=np.float64))
+pairwise = float(np.sum(x_np))                     # NumPy float32 uses pairwise summation
+print(f"device: {wp.get_device()} | N = {N}")
+print(f"float64 sum (reference)  : {exact:.4f}")
+print(f"NumPy float32 (pairwise) : {pairwise:.4f}   error {pairwise - exact:+.4f}")
+print(f"atomic_add run 1         : {runs[0]:.4f}   error {runs[0] - exact:+.4f}")
+print(f"atomic_add run 2         : {runs[1]:.4f}   bitwise equal to run 1: {runs[0] == runs[1]}")
+
+# the same 8 float32 numbers added in every possible order (40320 orders)
+vals = np.array([1e8, 3.0, -1e8, 0.75, 7.0, 0.125, -5.0, 2.5], dtype=np.float32)
+results = set()
+for perm in itertools.permutations(range(8)):
+    acc = np.float32(0.0)
+    for k in perm:
+        acc = np.float32(acc + vals[k])
+    results.add(float(acc))
+print("8 values:", vals.tolist())
+print("exact sum: 8.375 | distinct float32 results over all 40320 orders:", len(results))
+print("smallest / largest:", min(results), "/", max(results))</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 4.9"</span><span>CPU: <code>python -I ex9_atomics.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run. On a GPU the atomic results differ from the CPU's, and "bitwise equal" can be False</span></summary>
+<pre class="output">device: cpu | N = 1048576
+float64 sum (reference)  : 524643.2017
+NumPy float32 (pairwise) : 524643.1875   error -0.0142
+atomic_add run 1         : 524638.5000   error -4.7017
+atomic_add run 2         : 524638.5000   bitwise equal to run 1: True
+8 values: [100000000.0, 3.0, -100000000.0, 0.75, 7.0, 0.125, -5.0, 2.5]
+exact sum: 8.375 | distinct float32 results over all 40320 orders: 72
+smallest / largest: -1.0 / 11.875</pre>
+        </details>
+      </figure>
+      <p>Two lessons hide in this output. First, a long serial float32 sum (the CPU device's atomic loop) accumulates
+        rounding error: about 4.7 here, while NumPy's pairwise float32 sum is off by only 0.014. Second, the 8-value case
+        is deliberately extreme (<code>1e8</code> swallows small numbers in float32), but it is the same effect that makes
+        the last digits of a GPU contact-force sum flicker between runs.</p>
+      <div class="callout note"><p class="callout-title">Teaser: determinism</p>
+        <p>Float atomics sum in an arbitrary order, so the low bits of a sum can change between runs. MJWarp has an
+          <code>opt.deterministic</code> mode (types <code>DeterminismType</code>: CONTACTS, CONSTRAINT, ATOMICS) that
+          trades some speed for bitwise-reproducible runs. The full treatment is <a href="22-determinism-and-reproducibility.html">Ch 22</a>.</p></div>
+    </section>
+
+    <!-- ===================== 10. TIMING ===================== -->
+    <section class="sec" id="timing">
+      <h2><span class="sec-num">10</span>Timing GPU code correctly</h2>
+      <p>On a GPU, <code>wp.launch</code> does not run the kernel; it appends it to a <em>stream</em>, a queue that the
+        GPU drains in order, and returns at once. Python races ahead while the GPU works. A timer that stops right after
+        the launch measures how long it took to queue, not to run. To time device work, make the host wait:
+        <code>wp.synchronize()</code> blocks until every queued kernel has finished, and
+        <code>wp.ScopedTimer(name, synchronize=True)</code> does that for you on entry and exit. Also warm up once first,
+        or you time the JIT compile.</p>
+
+      <figure class="fig" data-anim>
+        <div class="fig-frame scroll-x">
+          <svg viewBox="0 0 640 200" role="img" aria-labelledby="f410t f410d">
+            <title id="f410t">Asynchronous launches on a timeline</title>
+            <desc id="f410d">The host lane issues three short launch commands and stops a timer early; the GPU lane runs three long kernels; synchronize makes the host wait until the GPU is idle.</desc>
+            <defs><marker id="f410-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <text x="10" y="58" class="s-label">host</text>
+            <text x="10" y="128" class="s-label">GPU</text>
+            <line x1="70" y1="52" x2="630" y2="52" class="s-line"/>
+            <line x1="70" y1="122" x2="630" y2="122" class="s-line"/>
+            <g class="hot" data-info="<strong>Three launches</strong>: each <code>wp.launch</code> takes microseconds of Python and driver time and returns. The kernels are only queued.">
+              <rect x="80" y="38" width="26" height="28" rx="4" class="s-accent"/><rect x="110" y="38" width="26" height="28" rx="4" class="s-accent"/><rect x="140" y="38" width="26" height="28" rx="4" class="s-accent"/>
+              <text x="123" y="30" text-anchor="middle" class="s-small">3 x wp.launch</text></g>
+            <g class="hot" data-info="<strong>Wrong stop</strong>: <code>t = perf_counter() - t0</code> right after the launches. On a GPU this is the queueing time only.">
+              <line x1="172" y1="20" x2="172" y2="160" class="s-danger-stroke" stroke-dasharray="4 3"/>
+              <text x="176" y="176" class="s-small">stop without sync</text></g>
+            <g class="hot" data-info="<strong>GPU stream</strong>: kernels run one after another in launch order (same stream), each starting when the previous one ends.">
+              <rect x="96" y="108" width="140" height="28" rx="4" class="s-w0"/><text x="166" y="127" text-anchor="middle" class="s-small" style="fill:#fff">kernel 1</text>
+              <rect x="238" y="108" width="160" height="28" rx="4" class="s-w1"/><text x="318" y="127" text-anchor="middle" class="s-small" style="fill:#fff">kernel 2</text>
+              <rect x="400" y="108" width="130" height="28" rx="4" class="s-w4"/><text x="465" y="127" text-anchor="middle" class="s-small" style="fill:#fff">kernel 3</text></g>
+            <g class="hot" data-info="<strong>wp.synchronize()</strong>: the host blocks here until the GPU queue is empty. <code>.numpy()</code> does the same implicitly.">
+              <rect x="176" y="42" width="354" height="20" rx="4" class="s-warn" opacity=".35"/>
+              <text x="353" y="56" text-anchor="middle" class="s-small">wp.synchronize() waits</text></g>
+            <g class="hot" data-info="<strong>Right stop</strong>: after <code>wp.synchronize()</code> the clock covers the real device time (plus a little launch overhead).">
+              <line x1="534" y1="20" x2="534" y2="160" class="s-ok-stroke" stroke-dasharray="4 3"/>
+              <text x="538" y="176" class="s-small">stop after sync</text></g>
+            <line x1="80" y1="190" x2="80" y2="150" class="s-accent2-stroke anim-slide" style="--dx: 450px" stroke-width="2"/>
+          </svg>
+        </div>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button><span class="badge illustrative">Illustrative</span></div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a part of the timeline."></div>
+        <p class="ch4-scroll-hint" aria-hidden="true">Scroll the figure sideways to see kernel 3 and the stop after sync.</p>
+        <figcaption><span class="fig-num">Figure 13.</span>Host and GPU timelines. The blue cursor sweeps time. On Warp's CPU device the "host" and "device" lanes are the same thread, so each launch finishes before it returns.</figcaption>
+      </figure>
+
+      <figure class="code-example" data-file="ex10_timing.py">
+        <div class="code-head">
+          <span class="code-title">Example 4.10</span>
+          <span class="code-file">examples/04-warp-and-the-gpu/ex10_timing.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 4.10 - timing device code: launches are asynchronous on a GPU.
+
+wp.launch on a CUDA device only queues the kernel and returns at once. A timer that stops
+right after the launch measures Python, not the GPU. Call wp.synchronize() (or use
+wp.ScopedTimer(..., synchronize=True)) before reading the clock. On Warp's CPU device the
+launch runs the kernel before returning, so both numbers are close.
+Run: python ex10_timing.py
+"""
+import time
+
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+
+ON_GPU = wp.get_device().is_cuda
+N = (1 &lt;&lt; 24) if ON_GPU else (1 &lt;&lt; 16)
+ITERS = 200
+
+
+@wp.kernel
+def busy(x: wp.array[float], y: wp.array[float]):
+    i = wp.tid()
+    v = x[i]
+    for _ in range(ITERS):
+        v = wp.sin(v) * 0.99 + 0.01
+    y[i] = v
+
+
+x = wp.array(np.random.default_rng(0).random(N, dtype=np.float32))
+y = wp.zeros(N, dtype=float)
+wp.launch(busy, dim=N, inputs=[x], outputs=[y])    # warm-up: compile + load the module
+wp.synchronize()
+
+t0 = time.perf_counter()
+wp.launch(busy, dim=N, inputs=[x], outputs=[y])
+t_no_sync = time.perf_counter() - t0               # WRONG on GPU: kernel may still be running
+wp.synchronize()
+
+t0 = time.perf_counter()
+wp.launch(busy, dim=N, inputs=[x], outputs=[y])
+wp.synchronize()                                   # wait until the device is idle
+t_sync = time.perf_counter() - t0
+
+with wp.ScopedTimer("busy", synchronize=True, print=False) as timer:
+    wp.launch(busy, dim=N, inputs=[x], outputs=[y])
+
+print(f"device: {wp.get_device()} | N = {N} | {ITERS} sin() per element")
+print(f"  stop clock right after wp.launch : {1e3 * t_no_sync:8.2f} ms")
+print(f"  stop clock after wp.synchronize(): {1e3 * t_sync:8.2f} ms")
+print(f"  wp.ScopedTimer(synchronize=True) : {timer.elapsed:8.2f} ms")
+if ON_GPU:
+    print("GPU: the first number is only the cost of queueing the launch.")
+else:
+    print("CPU device: launches run synchronously, so the numbers are close.")</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 4.10"</span><span>CPU: <code>python -I ex10_timing.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run on a shared dev box; your times differ. On a GPU the first number is far smaller than the other two</span></summary>
+<pre class="output">device: cpu | N = 65536 | 200 sin() per element
+  stop clock right after wp.launch :   158.76 ms
+  stop clock after wp.synchronize():   159.81 ms
+  wp.ScopedTimer(synchronize=True) :   163.54 ms
+CPU device: launches run synchronously, so the numbers are close.</pre>
+        </details>
+      </figure>
+      <div class="callout tip"><p class="callout-title">Tip: the course's timing recipe</p>
+        <p>Warm up once (JIT), call <code>wp.synchronize()</code> before starting and before stopping the clock, repeat
+          and keep the best or the median, and report throughput (world-steps per second). Without a CUDA graph, timing
+          <code>mjw.step</code> for a small model mostly measures Python launch overhead; <a href="24-cuda-graphs.html">Ch 24</a>
+          removes it.</p></div>
+    </section>
+
+    <!-- ===================== 11. TILES (DEEPER) ===================== -->
+    <section class="sec" id="tiles">
+      <h2><span class="sec-num">11</span>Going deeper: a tiles preview</h2>
+      <p>Everything so far used independent threads. Some work, such as summing a row or factorizing a small matrix, is
+        faster when the threads of a block cooperate through shared memory. Warp exposes that with
+        <abbr class="gl" data-term="tile" title="A block-wide array that the threads of one block load, compute on and store together (shared memory on GPU).">tiles</abbr>.
+        This section is optional; <a href="26-custom-kernels-and-extending.html#tiles">Ch 26 §8</a> owns the topic.</p>
+      <details class="callout deeper">
+        <summary class="callout-title">Going deeper: <code>wp.launch_tiled</code>, <code>wp.tile_load</code>, <code>wp.tile_sum</code>, <code>wp.tile_store</code></summary>
+        <p><code>wp.launch_tiled(kernel, dim=[nworld], block_dim=32, ...)</code> starts <code>block_dim</code> threads for
+          each logical index, here one block per world. Inside, <code>wp.tid()</code> is the logical index (the world), and
+          tile operations are <em>collective</em>: every thread of the block calls them. <code>wp.tile_load(data[worldid],
+          shape=(64,))</code> loads one world's row into a tile, the threads split the elements between them;
+          <code>wp.tile_sum</code> reduces it in a tree; <code>wp.tile_store</code> writes the 1-element result. Tile shapes
+          must be compile-time constants, which is why MJWarp's tiled kernels (Cholesky in <code>smooth.py</code>, solver
+          reductions in <code>solver.py</code>) are factories keyed on sizes.</p>
+        <figure class="fig">
+          <div class="fig-frame scroll-x">
+            <svg class="ch4-zoom" viewBox="0 0 640 200" role="img" aria-labelledby="f411t f411d">
+              <title id="f411t">A block of 32 threads reduces a 64-element row</title>
+              <desc id="f411d">32 threads load 64 elements into a tile, two each, then a tree reduction halves the partial sums until one value remains.</desc>
+              <text x="10" y="22" class="s-small">row data[worldid] (64 floats) in global memory</text>
+              <g id="f411-row"></g>
+              <text x="10" y="82" class="s-small">tile_load: thread t loads elements t and t+32 into shared memory</text>
+              <g id="f411-tile"></g>
+              <text x="10" y="142" class="s-small">tile_sum: tree reduction 32, 16, 8, 4, 2, 1</text>
+              <g id="f411-tree"></g>
+            </svg>
+          </div>
+          <p class="ch4-scroll-hint" aria-hidden="true">Scroll the figure sideways to see the whole row.</p>
+          <figcaption><span class="fig-num">Figure 14.</span>Tile cooperation for one world (one block). On Warp's CPU device the block is a single thread that does all of it.</figcaption>
+        </figure>
+        <figure class="code-example" data-file="ex11_tile_sum.py">
+          <div class="code-head">
+            <span class="code-title">Example 4.11</span>
+            <span class="code-file">examples/04-warp-and-the-gpu/ex11_tile_sum.py</span>
+            <span class="spacer"></span>
+          </div>
+          <pre><code class="language-python">"""Example 4.11 (going deeper) - a tiled per-world reduction with wp.launch_tiled.
+
+launch_tiled starts block_dim threads per logical index (one block per world here). The block
+cooperatively loads one world's row into a tile (shared memory on a GPU), reduces it with
+wp.tile_sum and stores the result. On Warp's CPU device the block collapses to one thread
+(unless wp.config.enable_cpu_blocks is set), and the code still runs. Owner chapter: Ch 26.
+Run: python ex11_tile_sum.py
+"""
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+
+NW, N = 4, 64
+TILE = N                                           # tile shapes must be compile-time constants
+
+
+@wp.kernel
+def per_world_sum(data: wp.array2d[float], out: wp.array[float]):
+    worldid = wp.tid()                             # one logical index per block
+    t = wp.tile_load(data[worldid], shape=(TILE,))   # the whole row, loaded by the block
+    s = wp.tile_sum(t)                             # cooperative reduction -&gt; 1-element tile
+    wp.tile_store(out, s, offset=(worldid,))
+
+
+arr_np = np.arange(NW * N, dtype=np.float32).reshape(NW, N)
+arr = wp.array(arr_np)
+out = wp.zeros(NW, dtype=float)
+wp.launch_tiled(per_world_sum, dim=[NW], inputs=[arr], outputs=[out], block_dim=32)
+
+print("device:", wp.get_device(), "| block_dim requested: 32")
+print("tile sums :", out.numpy().astype(int).tolist())
+print("NumPy sums:", arr_np.sum(axis=1).astype(int).tolist())</code></pre>
+          <div class="run-note"><span>Colab: notebook cell "Example 4.11"</span><span>CPU: <code>python -I ex11_tile_sum.py</code></span></div>
+          <details class="output">
+            <summary>Expected output <span class="out-note">CPU run; the same on GPU</span></summary>
+<pre class="output">device: cpu | block_dim requested: 32
+tile sums : [2016, 6112, 10208, 14304]
+NumPy sums: [2016, 6112, 10208, 14304]</pre>
+          </details>
+        </figure>
+        <p>In short: a tiled launch gives each logical index a block of threads that share memory
+          (<a href="26-custom-kernels-and-extending.html#tiles">Ch 26 §8</a>).</p>
+      </details>
+    </section>
+
+    <!-- ===================== 12. READING MJWARP ===================== -->
+    <section class="sec" id="reading">
+      <h2><span class="sec-num">12</span>Reading a real MJWarp kernel: <code>_next_velocity</code></h2>
+      <p>You now know every construct in MJWarp's simplest kernel. <code>_next_velocity</code> is the velocity half of
+        semi-implicit Euler: <code>qvel = qvel + h * qacc</code> for every world and every DOF. Below is the 4.0.1 wheel
+        version, followed by its launch inside <code>forward.py::_advance</code>. Hover or tap each line.</p>
+
+      <figure class="fig" id="ann-fig">
+        <div class="fig-frame" style="padding:0">
+<pre class="ann-code" aria-label="Annotated source of _next_velocity"><span class="row hot" data-info="<strong>@wp.kernel</strong>: a plain kernel in the <code>forward.py</code> module. That file calls <code>wp.set_module_options({&quot;enable_backward&quot;: False})</code> at import, so no adjoint code is generated."><span class="tag">1</span><span class="kw">@wp.kernel</span></span><span class="row"><span class="tag blank"> </span><span class="kw">def</span> _next_velocity(</span><span class="row hot" data-info="<strong># Model:</strong> MJWarp groups parameters with comments: <code># Model:</code>, <code># Data in:</code>, <code># In:</code>, <code># Data out:</code>. The kernel analyzer in <code>contrib/kernel_analyzer</code> checks the grouping, the order and the <code>_in</code>/<code>_out</code> suffixes."><span class="tag">2</span>  <span class="cm"># Model:</span></span><span class="row hot" data-info="<strong>opt_timestep: wp.array[float]</strong>: the timestep is an <em>array</em>, not a float, because Model fields can be batched per world for domain randomization. Its first dimension is <code>&quot;*&quot;</code>: 1 (shared) or nworld."><span class="tag">3</span>  opt_timestep: wp.array[float],</span><span class="row"><span class="tag blank"> </span>  <span class="cm"># Data in:</span></span><span class="row hot" data-info="<strong>qvel_in, qacc_in: wp.array2d[float]</strong>: Data fields with shape <code>(nworld, nv)</code>. The suffix <code>_in</code> says the kernel only reads them."><span class="tag">4</span>  qvel_in: wp.array2d[float],
+<span class="tag blank"> </span>  qacc_in: wp.array2d[float],</span><span class="row"><span class="tag blank"> </span>  <span class="cm"># In:</span></span><span class="row hot" data-info="<strong>qacc_scale_in: float</strong>: a plain scalar argument (passed by value into every thread). <code>_advance</code> passes 1.0."><span class="tag">5</span>  qacc_scale_in: float,</span><span class="row"><span class="tag blank"> </span>  <span class="cm"># Data out:</span></span><span class="row hot" data-info="<strong>qvel_out</strong>: the output. In the launch below, <code>qvel_out</code> and <code>qvel_in</code> are the same array <code>d.qvel</code>: safe here because each thread reads and writes only its own element."><span class="tag">6</span>  qvel_out: wp.array2d[float],</span><span class="row"><span class="tag blank"> </span>):</span><span class="row hot" data-info="<strong>worldid, dofid = wp.tid()</strong>: a 2-D launch, one thread per (world, DOF). The DOF index varies fastest, matching the contiguous axis of <code>(nworld, nv)</code> arrays: coalesced (section 4.5). Ch 7 calls this the world x element launch layout."><span class="tag">7</span>  worldid, dofid = wp.tid()</span><span class="row hot" data-info="<strong>opt_timestep[worldid % opt_timestep.shape[0]]</strong>: the batching rule. With one shared timestep, <code>shape[0] == 1</code> and every world reads element 0; with a per-world array, world k reads element k. Hoisting it into the local <code>timestep</code> keeps it in a register (CONTRIBUTING.md: hoist global reads)."><span class="tag">8</span>  timestep = opt_timestep[worldid % opt_timestep.shape[0]]</span><span class="row hot" data-info="<strong>The update</strong>: a multiply-add per thread (plus one multiply), three global reads (the timestep read is shared and cached) and one write. Memory-bound, branch-free, fully coalesced: the ideal GPU kernel."><span class="tag">9</span>  qvel_out[worldid, dofid] = qvel_in[worldid, dofid] + qacc_scale_in * qacc_in[worldid, dofid] * timestep</span><span class="row"> </span><span class="row"><span class="tag blank"> </span><span class="cm"># in forward.py::_advance</span></span><span class="row hot" data-info="<strong>The launch</strong>: <code>dim=(d.nworld, m.nv)</code>; <code>inputs</code> fill the first four parameters in order (timestep, qvel, the given <code>qacc</code>, 1.0) and <code>outputs</code> the last. The same <code>d.qvel</code> appears as input and output. <code>qacc</code> is an argument of <code>_advance</code> because callers differ: by default the Euler path passes a <code>qacc</code> re-solved with implicit joint damping, and <code>d.qacc</code> itself only when the <code>EULERDAMP</code> or <code>DAMPER</code> disable flag is set; RK4 passes its weighted <code>qacc_rk</code>."><span class="tag">10</span>wp.launch(
+<span class="tag blank"> </span>  _next_velocity,
+<span class="tag blank"> </span>  dim=(d.nworld, m.nv),
+<span class="tag blank"> </span>  inputs=[m.opt.timestep, d.qvel, qacc, 1.0],
+<span class="tag blank"> </span>  outputs=[d.qvel],
+<span class="tag blank"> </span>)</span></pre>
+        </div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a numbered line."></div>
+        <figcaption><span class="fig-num">Figure 15.</span><code>mujoco_warp/_src/forward.py</code> in the 4.0.1 wheel: <code>_next_velocity</code> and its launch in <code>_advance</code> (whitespace as in the source).</figcaption>
+      </figure>
+      <div class="callout version"><p class="callout-title">Version note: dev tree vs 4.0.1 wheel</p>
+        <p>At commit 8f5b9f1 (dev tree) <code>_next_velocity</code> has become a <code>@cache_kernel</code> factory,
+          <code>_next_velocity(enable_sleep: bool = False)</code>, returning a <code>@wp.kernel(module="unique",
+          enable_backward=False)</code> with two extra parameters (<code>dof_treeid</code>, <code>tree_awake_in</code>) and
+          an <code>if wp.static(enable_sleep):</code> early return for sleeping trees. The launch becomes
+          <code>_next_velocity(sleep_enabled)</code>. This is the factory pattern of section 7 in the wild; sleep is
+          <a href="21-islands-and-sleep.html">Ch 21</a>. The page shows the wheel version because that is what the course
+          installs.</p></div>
+      <p>The pattern, which you will see hundreds of times: typed array parameters grouped by origin, one thread per
+        (world, element), a batched Model read with <code>worldid % shape[0]</code>, a few register-resident locals,
+        a write to <code>[worldid, element]</code>. <a href="07-pipeline-tour.html">Ch 7</a> tours the ~100 such launches
+        inside one <code>mjw.step</code>.</p>
+    </section>
+
+    <!-- ===================== QUIZ ===================== -->
+    <section class="sec" id="quiz">
+      <h2><span class="sec-num">13</span>Check yourself</h2>
+      <div class="quiz">
+        <div class="quiz-head"><h3>Quiz</h3><span class="quiz-score" aria-live="polite"></span></div>
+        <div class="quiz-q" data-answer="c">
+          <p class="q"><code>a = wp.zeros((8, 5), dtype=wp.vec3)</code>. What are <code>a.shape</code> and <code>a.numpy().shape</code>?</p>
+          <ul class="choices">
+            <li><button data-explain="The Warp shape counts vec3 elements; it does not include the 3 components.">(8, 5, 3) and (8, 5, 3)</button></li>
+            <li><button data-explain="NumPy has no vec3 dtype; the components become a trailing axis.">(8, 5) and (8, 5)</button></li>
+            <li><button>(8, 5) and (8, 5, 3)</button></li>
+            <li><button data-explain="Shapes keep the order you gave.">(5, 8) and (3, 5, 8)</button></li>
+          </ul>
+          <div class="quiz-feedback">Warp counts elements; NumPy appends the vector dims. Same as <code>d.xpos</code>: Warp <code>(nworld, nbody)</code>, NumPy <code>(nworld, nbody, 3)</code>.</div>
+        </div>
+        <div class="quiz-q" data-answer="b">
+          <p class="q">A kernel is launched with <code>dim=(nworld, nv)</code> and starts with <code>worldid, dofid = wp.tid()</code>. Which index differs between two consecutive threads (same warp)?</p>
+          <ul class="choices">
+            <li><button data-explain="worldid changes only every nv threads.">worldid</button></li>
+            <li><button>dofid</button></li>
+            <li><button data-explain="Thread numbering is fixed: row-major, last dimension fastest.">It is random</button></li>
+          </ul>
+          <div class="quiz-feedback">The last launch dimension varies fastest, so neighbouring threads touch neighbouring elements of a <code>(nworld, nv)</code> array: coalesced.</div>
+        </div>
+        <div class="quiz-q" data-answer="a">
+          <p class="q">Why is calling <code>d.qpos.numpy()</code> once per step in a GPU training loop a bad idea?</p>
+          <ul class="choices">
+            <li><button>It waits for all queued GPU work and then copies device memory to the host</button></li>
+            <li><button data-explain="It does not change the array; on GPU it returns a copy.">It modifies the device array</button></li>
+            <li><button data-explain="It is not compiled at all; it is a runtime copy.">It recompiles the kernels</button></li>
+          </ul>
+          <div class="quiz-feedback">It is a synchronization point plus a transfer over the bus. Keep data on the device; read it back only to log or plot.</div>
+        </div>
+        <div class="quiz-q" data-answer="c">
+          <p class="q">What is a warp (the hardware one)?</p>
+          <ul class="choices">
+            <li><button data-explain="That is a block, whose size block_dim you choose (Warp defaults to 256).">The threads of one block</button></li>
+            <li><button data-explain="That is the grid.">All threads of a launch</button></li>
+            <li><button>32 threads that execute the same instruction together (SIMT)</button></li>
+            <li><button data-explain="SMs are hardware units; a warp is a group of threads that runs on one SM.">One SM</button></li>
+          </ul>
+          <div class="quiz-feedback">32 lanes share an instruction stream; this is the unit of divergence and of coalescing.</div>
+        </div>
+        <div class="quiz-q" data-answer="b">
+          <p class="q">Half the lanes of a warp take the <code>if</code> side (4 cycles) and half the <code>else</code> side (4 cycles). Roughly how long does the warp spend in the branch?</p>
+          <ul class="choices">
+            <li><button data-explain="That would need both sides to run at the same time, which one instruction stream cannot do.">4 cycles</button></li>
+            <li><button>8 cycles: both sides run one after the other with lanes masked</button></li>
+            <li><button data-explain="Lanes run in lockstep; there is no per-lane serialization.">4 x 32 cycles</button></li>
+          </ul>
+          <div class="quiz-feedback">Divergent branches cost the sum of both sides. If all lanes agree, the untaken side is skipped.</div>
+        </div>
+        <div class="quiz-q" data-answer="a">
+          <p class="q">Why does MJWarp turn option flags into <code>if wp.static(flag):</code> branches inside kernel factories?</p>
+          <ul class="choices">
+            <li><button>The branch is decided at code generation, so each specialization is a small branch-free kernel</button></li>
+            <li><button data-explain="wp.static does not affect parallelism; it affects which code is generated.">It makes the branch run on the CPU in parallel</button></li>
+            <li><button data-explain="The opposite: a different flag value means a different kernel (and a compile the first time).">It lets you change the flag without recompiling</button></li>
+          </ul>
+          <div class="quiz-feedback">The untaken side is not emitted: no divergence, fewer registers. Cost: one module per specialization.</div>
+        </div>
+        <div class="quiz-q" data-answer="c">
+          <p class="q">On a GPU you time <code>wp.launch(k, ...)</code> by reading the clock right after it returns. What did you measure?</p>
+          <ul class="choices">
+            <li><button data-explain="The kernel may not have started yet.">The kernel's run time</button></li>
+            <li><button data-explain="The compile happened during the warm-up (or, without warm-up, it would dominate). Either way it is not the kernel time.">Only the JIT compile</button></li>
+            <li><button>Mostly the time to queue the launch</button></li>
+          </ul>
+          <div class="quiz-feedback">Launches are asynchronous. Use <code>wp.synchronize()</code> or <code>wp.ScopedTimer(..., synchronize=True)</code>.</div>
+        </div>
+        <div class="quiz-q" data-answer="b">
+          <p class="q"><code>q = d.xquat.numpy()[0, 1]</code> gives <code>[0.7071, 0, 0, 0.7071]</code>. What rotation is it, and can you pass the <code>wp.quat</code> directly to <code>wp.quat_rotate</code>?</p>
+          <ul class="choices">
+            <li><button data-explain="That is how wp.quat_rotate would read it, which is the bug.">90 degrees about x; yes</button></li>
+            <li><button>90 degrees about z (w first); no, reorder to (x, y, z, w) or use math.rot_vec_quat</button></li>
+            <li><button data-explain="Both libraries store unit quaternions; only the slot order differs.">It is not a unit quaternion</button></li>
+          </ul>
+          <div class="quiz-feedback">MJWarp stores (w, x, y, z) in <code>wp.quat</code> slots; Warp built-ins read (x, y, z, w).</div>
+        </div>
+        <div class="quiz-q" data-answer="a">
+          <p class="q">A float32 total built with <code>wp.atomic_add</code> by a million threads differs in its last digits between two identical GPU runs. Why?</p>
+          <ul class="choices">
+            <li><button>Threads reach the accumulator in a different order and float addition is not associative</button></li>
+            <li><button data-explain="Atomics prevent lost updates; every addition happens exactly once.">Some atomic updates are lost</button></li>
+            <li><button data-explain="The inputs are identical; only the order of the roundings changes.">The GPU uses random rounding</button></li>
+          </ul>
+          <div class="quiz-feedback">Each addition rounds; a different order rounds differently. Ch 22 shows MJWarp's deterministic mode.</div>
+        </div>
+        <div class="quiz-q" data-answer="c">
+          <p class="q">On Warp's CPU device (default config), what is <code>wp.block_dim()</code> inside a kernel launched with <code>wp.launch_tiled(..., block_dim=32)</code>?</p>
+          <ul class="choices">
+            <li><button data-explain="Only with the experimental wp.config.enable_cpu_blocks.">32</button></li>
+            <li><button data-explain="The CPU device does run tiled kernels; Example 4.11 runs on CPU.">The launch raises an error</button></li>
+            <li><button>1</button></li>
+          </ul>
+          <div class="quiz-feedback">CPU block dimensions resolve to one thread; MJWarp's tiled code is written so that lane 0 then covers everything.</div>
+        </div>
+        <button class="btn btn-sm quiz-reset" type="button">Reset quiz</button>
+      </div>
+    </section>
+
+    <!-- ===================== EXERCISES ===================== -->
+    <section class="sec" id="exercises">
+      <h2><span class="sec-num">14</span>Exercises</h2>
+      <p>Both auto-checked exercises run on the CPU in a few seconds; the notebook has the same stubs.</p>
+      <div class="exercise">
+        <div class="exercise-head"><h3>Exercise 4.1: clamp a batched control array</h3><span class="ex-level auto">Auto-checked</span></div>
+        <p>Write a kernel that clamps a <code>(nworld, nu)</code> control array to [-1, 1] in place, with one thread
+          per (world, actuator). This is what an RL wrapper does to policy actions before writing <code>d.ctrl</code>.</p>
+        <div class="code-block"><pre><code class="language-python">import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+
+
+@wp.kernel
+def clamp_ctrl(ctrl: wp.array2d[float]):
+    worldid, actid = wp.tid()
+    # TODO: clamp ctrl[worldid, actid] to [-1, 1]
+
+
+NWORLD, NU = 8, 3
+ctrl_np = np.random.default_rng(0).normal(0.0, 2.0, (NWORLD, NU)).astype(np.float32)
+ctrl = wp.array(ctrl_np)
+wp.launch(clamp_ctrl, dim=(NWORLD, NU), inputs=[ctrl])
+assert np.allclose(ctrl.numpy(), np.clip(ctrl_np, -1.0, 1.0))
+print("Exercise 4.1 passed")</code></pre></div>
+        <details class="solution">
+          <summary>Show solution</summary>
+          <div class="solution-body">
+            <p>A 2-D launch and <code>wp.clamp</code>. Reading and writing the same element from the same thread is safe.</p>
+            <div class="code-block"><pre><code class="language-python">@wp.kernel
+def clamp_ctrl(ctrl: wp.array2d[float]):
+    worldid, actid = wp.tid()
+    ctrl[worldid, actid] = wp.clamp(ctrl[worldid, actid], -1.0, 1.0)</code></pre></div>
+            <p>Verified on CPU: prints <code>Exercise 4.1 passed</code>; the clamped array's min and max are -1.0 and 1.0.</p>
+          </div>
+        </details>
+      </div>
+      <div class="exercise">
+        <div class="exercise-head"><h3>Exercise 4.2: per-world kinetic energy of point masses</h3><span class="ex-level auto">Auto-checked</span></div>
+        <p>Each world has <code>NP</code> point masses with shared masses <code>mass[i]</code> and per-world velocities
+          <code>vel[worldid, i]</code> (a <code>wp.array2d[wp.vec3]</code>). Write one thread per world that sums
+          <span class="math">\tfrac12 m_i \lVert v_i \rVert^2</span> over the masses. Remember to type the accumulator.</p>
+        <div class="code-block"><pre><code class="language-python">import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+
+
+@wp.kernel
+def kinetic_energy(mass: wp.array[float], vel: wp.array2d[wp.vec3], ke_out: wp.array[float]):
+    worldid = wp.tid()
+    # TODO: loop over vel.shape[1] masses and write the sum to ke_out[worldid]
+
+
+NWORLD, NP = 8, 5
+rng = np.random.default_rng(1)
+mass_np = rng.uniform(0.5, 2.0, NP).astype(np.float32)
+vel_np = rng.normal(size=(NWORLD, NP, 3)).astype(np.float32)
+ke = wp.zeros(NWORLD, dtype=float)
+wp.launch(kinetic_energy, dim=NWORLD,
+          inputs=[wp.array(mass_np), wp.array(vel_np, dtype=wp.vec3)], outputs=[ke])
+ref = 0.5 * np.sum(mass_np[None, :] * np.sum(vel_np**2, axis=2), axis=1)
+assert np.allclose(ke.numpy(), ref, rtol=1e-5)
+print("Exercise 4.2 passed")</code></pre></div>
+        <details class="solution">
+          <summary>Show solution</summary>
+          <div class="solution-body">
+            <p><code>total = float(0.0)</code> declares a mutable float local; <code>vel.shape[1]</code> is readable inside
+              the kernel; <code>wp.dot(v, v)</code> is the squared norm.</p>
+            <div class="code-block"><pre><code class="language-python">@wp.kernel
+def kinetic_energy(mass: wp.array[float], vel: wp.array2d[wp.vec3], ke_out: wp.array[float]):
+    worldid = wp.tid()
+    total = float(0.0)
+    for i in range(vel.shape[1]):
+        v = vel[worldid, i]
+        total += 0.5 * mass[i] * wp.dot(v, v)
+    ke_out[worldid] = total</code></pre></div>
+            <p>Verified on CPU: prints <code>Exercise 4.2 passed</code> (first three energies 1.985, 20.527, 4.844).
+              Each thread reads a row of <code>NP</code> vec3s, so neighbouring threads are <code>NP * 12</code> bytes
+              apart: a mildly strided pattern that is fine for small rows (section 4.5).</p>
+          </div>
+        </details>
+      </div>
+      <div class="exercise">
+        <div class="exercise-head"><h3>Stretch: a tiled per-world maximum</h3><span class="ex-level stretch">Stretch</span></div>
+        <p>After reading the tiles preview (section 11), change Example 4.11 to compute the maximum of each world's row
+          instead of the sum, with <code>wp.launch_tiled(..., block_dim=32)</code>. Assert against
+          <code>data.max(axis=1)</code>. Then, on Colab, time it against a plain one-thread-per-world loop for
+          <code>NW = 4096</code> and rows of 64 and 1024 floats, and explain the difference with sections 4.3 and 4.5.</p>
+        <details class="solution">
+          <summary>Show a possible solution (CPU-verified)</summary>
+          <div class="solution-body">
+            <div class="code-block"><pre><code class="language-python">TILE = 64
+
+@wp.kernel
+def per_world_max(data: wp.array2d[float], out: wp.array[float]):
+    worldid = wp.tid()
+    t = wp.tile_load(data[worldid], shape=(TILE,))
+    wp.tile_store(out, wp.tile_max(t), offset=(worldid,))
+
+wp.launch_tiled(per_world_max, dim=[NW], inputs=[arr], outputs=[out], block_dim=32)
+assert np.allclose(out.numpy(), arr.numpy().max(axis=1))</code></pre></div>
+            <p>The timing part has no single right answer: with one thread per world, each thread walks a whole row
+              (strided across threads, little parallelism for few worlds); with a block per world, 32 lanes load the row
+              together (coalesced) and reduce in a tree.</p>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <!-- ===================== SUMMARY ===================== -->
+    <section class="sec" id="summary">
+      <h2><span class="sec-num">15</span>Summary</h2>
+      <div class="takeaways">
+        <h3>Key takeaways</h3>
+        <ul>
+          <li>A <code>wp.array</code> has a dtype, a shape and a device. Vector dtypes add trailing NumPy dims:
+            <code>(nworld, nbody)</code> of <code>vec3</code> is <code>(nworld, nbody, 3)</code> in NumPy.</li>
+          <li><code>.numpy()</code> on a GPU array synchronizes and copies; keep simulation data on the device.</li>
+          <li>A kernel runs once per index of <code>dim</code>; <code>wp.tid()</code> returns the index, last dimension fastest.
+            <code>dim=0</code> is a no-op.</li>
+          <li>32 lanes form a warp and run in lockstep; branches where lanes disagree cost both sides; neighbouring lanes
+            should read neighbouring addresses. MJWarp's <code>(nworld, n)</code> arrays with <code>dim=(nworld, n)</code>
+            launches are built for exactly that.</li>
+          <li>Blocks run on SMs in waves; small launches leave most of a GPU idle. The CPU device runs threads in a loop,
+            with block size 1: correct, not fast.</li>
+          <li><code>@wp.func</code>s are inlined helpers; MJWarp's <code>math.py</code> funcs use (w, x, y, z)
+            quaternions, Warp's built-ins (x, y, z, w).</li>
+          <li><code>wp.static</code> specializes code at generation time; every specialization is a module, compiled once and
+            cached on disk by hash. The course sets <code>wp.config.log_level = wp.LOG_WARNING</code> to silence the load log.</li>
+          <li>Float atomics depend on arrival order; time device code with warm-up and <code>wp.synchronize()</code>.</li>
+        </ul>
+      </div>
+      <p>Next, <a href="05-first-simulation.html">Ch 5</a> puts these pieces to work: <code>put_model</code>,
+        <code>make_data</code>, <code>step</code>, and how to look at the result.</p>
+      <p class="stuck">Stuck? See <a href="../reference/troubleshooting.html">Troubleshooting</a> (slow first call, Warp
+        silently on CPU, module-load log spam) or the <a href="../reference/course-map.html">course map</a>.</p>
+    </section>
+
+    <!-- ===================== SOURCE MAP ===================== -->
+    <section class="sec" id="source-map">
+      <h2><span class="sec-num">16</span>Source map</h2>
+      <p class="small muted">Paths are relative to the <code>mujoco_warp</code> package of the 4.0.1 wheel (every row grepped there),
+        except CONTRIBUTING.md, which is at the repository root (commit 8f5b9f1).</p>
+      <div class="table-wrap">
+        <table class="source-map">
+          <thead><tr><th>Concept</th><th>File</th><th>Function / name</th></tr></thead>
+          <tbody>
+            <tr><td>The kernel read in section 12</td><td>_src/forward.py</td><td>_next_velocity</td></tr>
+            <tr><td>Its launch, <code>dim=(d.nworld, m.nv)</code></td><td>_src/forward.py</td><td>_advance</td></tr>
+            <tr><td>Module-wide <code>enable_backward=False</code></td><td>_src/forward.py, _src/smooth.py</td><td>wp.set_module_options (module top)</td></tr>
+            <tr><td>Quaternion helpers, (w, x, y, z)</td><td>_src/math.py</td><td>rot_vec_quat, mul_quat, quat_to_mat, axis_angle_to_quat</td></tr>
+            <tr><td>Data field dtypes (<code>xpos</code> vec3, <code>xquat</code> quat, <code>xmat</code> mat33, <code>cdof</code> spatial_vector)</td><td>_src/types.py</td><td>Data</td></tr>
+            <tr><td>Symbolic shapes on fields</td><td>_src/types.py</td><td>array</td></tr>
+            <tr><td>Per-kernel block sizes</td><td>_src/types.py</td><td>BlockDim</td></tr>
+            <tr><td>Factory cache</td><td>_src/warp_util.py</td><td>cache_kernel, _KERNEL_CACHE</td></tr>
+            <tr><td><code>wp.init()</code> and the CUDA 12.4 warning</td><td>_src/warp_util.py</td><td>check_toolkit_driver</td></tr>
+            <tr><td>CPU fallback <code>dim_block = 1</code></td><td>_src/smooth.py</td><td>_solve_LD_sparse</td></tr>
+            <tr><td>"wp.block_dim() is 1 on the CPU backend"</td><td>_src/solver.py</td><td>_update_gradient_JTDAJ_dense_tiled</td></tr>
+            <tr><td>Launch sized in device waves</td><td>_src/collision_convex.py, _src/solver.py</td><td>_ccd_grid_size, _jtdaj_groups_per_world</td></tr>
+            <tr><td>Atomic slot reservation</td><td>_src/collision_core.py</td><td>write_contact</td></tr>
+            <tr><td>Determinism flags (teaser)</td><td>_src/types.py</td><td>DeterminismType</td></tr>
+            <tr><td>Conventions: quaternions, launch guards, hoisting</td><td>CONTRIBUTING.md (repo root)</td><td>"Code Style &amp; Warp GPU Conventions"</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="chapter-footer">
+      <div class="complete-row"><button class="btn complete-btn" data-slug="04-warp-and-the-gpu">Mark chapter as complete</button></div>
+      <nav class="pager" aria-label="Chapter pager">
+        <a class="prev" href="03-rigid-body-physics-primer.html"><span class="dir">Previous</span><span class="ttl">Ch 3 · Rigid-Body Physics from Scratch: Particles, Rigid Bodies, Joints and Contacts</span></a>
+        <a class="index" href="../index.html"><span class="dir">All chapters</span><span class="ttl">Index</span></a>
+        <a class="next" href="05-first-simulation.html"><span class="dir">Next</span><span class="ttl">Ch 5 · Your First MJWarp Simulation (and How to See It)</span></a>
+      </nav>
+      <p class="site-footer">MuJoCo Warp course · mujoco-warp 4.0.1 · warp-lang 1.19.0 · mujoco-core 4.0.1</p>
+    </footer>
+  </main>
+</div>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="../assets/course.js"></script>
+<script>
+/* Chapter 4 widgets. All drawing reads theme tokens at draw time so light/dark both work. */
+document.addEventListener("DOMContentLoaded", function () {
+  MW.onReady(function () {
+    var $ = MW.$, $$ = MW.$$, S = MW.svgEl;
+
+    /* ---- shared helper: hover / focus / tap readouts for generated SVG parts (Rule I) ---- */
+    function wireHot(nodes, cap, info) {
+      var pinned = null;
+      function show(n) { cap.innerHTML = n ? info(n) : ""; }
+      function rove(t) { nodes.forEach(function (o) { o.setAttribute("tabindex", o === t ? "0" : "-1"); }); }
+      nodes.forEach(function (n, i) {
+        n.setAttribute("tabindex", i === 0 ? "0" : "-1"); n.setAttribute("role", "button");
+        n.style.cursor = "pointer";
+        n.addEventListener("mouseenter", function () { if (!pinned) show(n); });
+        n.addEventListener("mouseleave", function () { show(pinned); });
+        n.addEventListener("focus", function () { rove(n); show(n); });
+        n.addEventListener("blur", function () { show(pinned); });
+        n.addEventListener("click", function () { pinned = pinned === n ? null : n; show(pinned || n); });
+        n.addEventListener("keydown", function (e) {
+          var j = -1;
+          if (e.key === "ArrowRight" || e.key === "ArrowDown") j = (i + 1) % nodes.length;
+          if (e.key === "ArrowLeft" || e.key === "ArrowUp") j = (i - 1 + nodes.length) % nodes.length;
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); n.dispatchEvent(new MouseEvent("click")); }
+          if (j >= 0) { e.preventDefault(); rove(nodes[j]); nodes[j].focus(); }
+        });
+      });
+    }
+    function segWire(seg, cb) {
+      var bs = $$("button", seg);
+      bs.forEach(function (b) {
+        b.type = "button";
+        b.addEventListener("click", function () {
+          bs.forEach(function (o) { o.setAttribute("aria-pressed", o === b ? "true" : "false"); });
+          cb(b);
+        });
+      });
+    }
+    function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+    function font(px, mono) { return px + "px " + MW.css(mono ? "--font-mono" : "--font-sans"); }
+    function rrect(ctx, x, y, w, h, r) {
+      ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+    }
+
+    /* ---- Figure 4: warp lanes in two SMs ---- */
+    (function () {
+      var g = $("#f44-lanes"); if (!g) return;
+      [32, 338].forEach(function (x0) {
+        [66, 84].forEach(function (y, wi) {
+          var row = S("g", { "class": "anim-blink" + (wi ? " delay-2" : "") }, g);
+          for (var k = 0; k < 32; k++) S("rect", { x: x0 + k * 7, y: y, width: 6, height: 12, rx: 1.5, "class": wi ? "s-accent2" : "s-accent" }, row);
+        });
+      });
+    })();
+
+    /* ---- Figure 5: hierarchy icons ---- */
+    (function () {
+      var w = $("#f45-warp"), b = $("#f45-block"), gr = $("#f45-grid"); if (!w) return;
+      for (var k = 0; k < 32; k++) S("rect", { x: 100 + (k % 16) * 7.5, y: 96 + Math.floor(k / 16) * 18, width: 6, height: 15, rx: 1.5, "class": "s-accent" }, w);
+      for (var r = 0; r < 8; r++) S("rect", { x: 268, y: 58 + r * 13, width: 124, height: 10, rx: 2, "class": r === 0 ? "s-accent" : "s-accent-soft" }, b);
+      S("rect", { x: 262, y: 52, width: 136, height: 112, rx: 8, fill: "none", "class": "s-line" }, b);
+      for (var i = 0; i < 12; i++) {
+        var x = 444 + (i % 4) * 46, y = 58 + Math.floor(i / 4) * 36;
+        S("rect", { x: x, y: y, width: 40, height: 30, rx: 5, "class": i === 0 ? "s-accent2" : "s-accent2-soft" }, gr);
+      }
+    })();
+
+    /* ---- Figure 2: dtype explorer ---- */
+    (function () {
+      var svg = $("#dt-svg"); if (!svg) return;
+      var seg = $("#dt-seg"), nwIn = $("#dt-nw"), nIn = $("#dt-n"), cap = $("#dt-cap");
+      var dt = { c: 1, n: "float" };
+      var npTail = { "float": "", "wp.vec3": ", 3", "wp.quat": ", 4", "wp.mat33": ", 3, 3", "wp.spatial_vector": ", 6" };
+      function render() {
+        var nw = +nwIn.value, n = +nIn.value, c = dt.c;
+        $("#dt-nw-out").textContent = nw; $("#dt-n-out").textContent = n;
+        var shape = "(" + nw + ", " + n + ")";
+        var nps = "(" + nw + ", " + n + npTail[dt.n] + ")";
+        $("#dt-code").textContent = "a = wp.zeros(" + shape + ", dtype=" + dt.n + ")   # a.shape == " + shape + ",  a.numpy().shape == " + nps;
+        var floats = nw * n * c;
+        $("#dt-readout").innerHTML = "<span>Warp shape <b>" + shape + "</b></span><span>NumPy shape <b>" + nps + "</b></span>" +
+          "<span>floats <b>" + floats + "</b></span><span>bytes <b>" + floats * 4 + "</b></span>";
+        clear(svg);
+        var H = 30 + nw * 40;
+        var gap = 6, avail = 584, cw = Math.min(24, (avail - (n - 1) * gap) / (n * c)), cells = [];
+        var VW = Math.max(300, Math.ceil(44 + n * c * cw + (n - 1) * gap + 10));   // fit the content
+        svg.setAttribute("viewBox", "0 0 " + VW + " " + H);
+        svg.style.maxWidth = Math.round(VW * 1.5) + "px"; svg.style.display = "block"; svg.style.margin = "0 auto";
+        S("text", { x: 44, y: 16, "class": "s-small" }, svg).textContent = "memory order: left to right, then next row";
+        for (var w = 0; w < nw; w++) {
+          var y = 26 + w * 40;
+          S("text", { x: 8, y: y + 20, "class": "s-small s-mono" }, svg).textContent = "w" + w;
+          for (var i = 0; i < n; i++) {
+            var x0 = 44 + i * (c * cw + gap);
+            for (var k = 0; k < c; k++) {
+              var r = S("rect", { x: x0 + k * cw + 0.5, y: y, width: Math.max(1, cw - 1), height: 28, rx: 2, "class": "s-w" + (w % 8) }, svg);
+              r.setAttribute("opacity", c > 1 ? (0.55 + 0.45 * (k + 1) / c).toFixed(2) : "0.9");
+              r._d = { w: w, i: i, k: k, n: n, c: c };
+              r.setAttribute("aria-label", "world " + w + " element " + i + (c > 1 ? " component " + k : ""));
+              cells.push(r);
+            }
+            S("rect", { x: x0, y: y - 2, width: c * cw, height: 32, rx: 4, fill: "none", "class": "s-line" }, svg);
+          }
+        }
+        wireHot(cells, cap, function (r) {
+          var d = r._d, flat = (d.w * d.n + d.i) * d.c + d.k;
+          var wi = "a[" + d.w + ", " + d.i + "]" + (d.c > 1 ? " component " + d.k + " = a.numpy()[" + d.w + ", " + d.i + (dt.n === "wp.mat33" ? ", " + Math.floor(d.k / 3) + ", " + (d.k % 3) : ", " + d.k) + "]" : "");
+          return "<code>" + wi + "</code> · float index " + flat + " · byte offset " + flat * 4 + " · world " + d.w + " starts at byte " + d.w * d.n * d.c * 4;
+        });
+      }
+      segWire(seg, function (b) { dt = { c: +b.getAttribute("data-c"), n: b.getAttribute("data-n") }; cap.innerHTML = ""; render(); });
+      nwIn.addEventListener("input", render); nIn.addEventListener("input", render);
+      render();
+    })();
+
+    /* ---- Figure 3: thread grid (ex3 data) ---- */
+    (function () {
+      var cv = $("#tgrid"); if (!cv) return;
+      var data = MW.readJSON("data-ch04-ex3") || { nworld: 4, ndof: 6, grid: [], order: [] };
+      var NW = data.nworld, ND = data.ndof, mode = "gpu", sel = null, cap = $("#tgrid-cap");
+      var geo = {};
+      function cellAt(px, py) {
+        var c = Math.floor((px - geo.x0) / geo.cw), r = Math.floor((py - geo.y0) / geo.ch);
+        return (c >= 0 && c < ND && r >= 0 && r < NW) ? [r, c] : null;
+      }
+      function info(rc) {
+        if (!rc) return "";
+        var w = rc[0], j = rc[1];
+        return "<code>worldid, dofid = wp.tid()</code> → <b>(" + w + ", " + j + ")</b> · <code>out[" + w + ", " + j + "] = " + data.grid[w][j] +
+          "</code> · flat thread index " + (w * ND + j) + " · CPU run ticket " + data.order[w][j] + " (from ex3)";
+      }
+      var anim = MW.canvasAnim(cv, function (ctx, st) {
+        var lw = 40, top = 22;
+        geo.x0 = lw; geo.y0 = top; geo.cw = (st.w - lw - 6) / ND; geo.ch = (st.h - top - 8) / NW;
+        ctx.font = font(11, true); ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillStyle = MW.css("--muted");
+        for (var j = 0; j < ND; j++) ctx.fillText((geo.cw > 60 ? "dof " : "") + j, geo.x0 + (j + 0.5) * geo.cw, 10);
+        var T = NW * ND, cyc = mode === "gpu" ? 2.4 : T * 0.25 + 1.2, ph = st.t % cyc;
+        var cursor = mode === "cpu" ? Math.floor(ph / 0.25) : -1;
+        for (var w = 0; w < NW; w++) {
+          ctx.fillStyle = MW.css("--muted"); ctx.textAlign = "left";
+          ctx.fillText("w" + w, 6, geo.y0 + (w + 0.5) * geo.ch);
+          ctx.textAlign = "center";
+          for (j = 0; j < ND; j++) {
+            var x = geo.x0 + j * geo.cw + 2, y = geo.y0 + w * geo.ch + 2, cw = geo.cw - 4, chh = geo.ch - 4, a;
+            if (mode === "gpu") a = ph < 0.25 ? 1 : Math.max(0.28, 1 - (ph - 0.25) / 1.6);
+            else { var tk = data.order[w][j]; a = tk < cursor ? 0.85 : (tk === cursor ? 1 : 0.18); }
+            ctx.globalAlpha = a; ctx.fillStyle = MW.worldColor(w); rrect(ctx, x, y, cw, chh, 6); ctx.fill();
+            ctx.globalAlpha = 1;
+            if (mode === "cpu" && data.order[w][j] === cursor) { ctx.strokeStyle = MW.css("--text"); ctx.lineWidth = 2.5; rrect(ctx, x, y, cw, chh, 6); ctx.stroke(); }
+            ctx.fillStyle = a > 0.5 ? "#fff" : MW.css("--muted"); ctx.font = font(geo.cw > 54 ? 12 : 10, true);
+            ctx.fillText(String(data.grid[w][j]), x + cw / 2, y + chh / 2);
+          }
+        }
+        if (sel) {
+          ctx.strokeStyle = MW.css("--accent-2"); ctx.lineWidth = 3;
+          rrect(ctx, geo.x0 + sel[1] * geo.cw + 1, geo.y0 + sel[0] * geo.ch + 1, geo.cw - 2, geo.ch - 2, 7); ctx.stroke();
+        }
+        ctx.textAlign = "right"; ctx.fillStyle = MW.css("--muted"); ctx.font = font(11);
+      }, { height: 200 });
+      var pinned = false;
+      function setSel(rc, pin) { sel = rc; if (pin !== undefined) pinned = pin; cap.innerHTML = info(sel); anim.redraw(); }
+      cv.addEventListener("mousemove", function (e) { if (!pinned) setSel(cellAt(e.offsetX, e.offsetY)); });
+      cv.addEventListener("mouseleave", function () { if (!pinned) setSel(null); });
+      cv.addEventListener("click", function (e) { var rc = cellAt(e.offsetX, e.offsetY); if (pinned && rc && sel && rc[0] === sel[0] && rc[1] === sel[1]) setSel(rc, false); else setSel(rc, !!rc); });
+      cv.addEventListener("focus", function () { if (!sel) setSel([0, 0]); });
+      cv.addEventListener("keydown", function (e) {
+        var r = sel ? sel[0] : 0, c = sel ? sel[1] : 0, k = e.key;
+        if (k === "ArrowRight") c = Math.min(ND - 1, c + 1); else if (k === "ArrowLeft") c = Math.max(0, c - 1);
+        else if (k === "ArrowDown") r = Math.min(NW - 1, r + 1); else if (k === "ArrowUp") r = Math.max(0, r - 1); else return;
+        e.preventDefault(); setSel([r, c], true);
+      });
+      segWire($("#tgrid-seg"), function (b) { mode = b.getAttribute("data-mode"); anim.reset(); anim.redraw(); });
+    })();
+
+    /* ---- Figure 6: block scheduling ---- */
+    (function () {
+      var cv = $("#sched"); if (!cv) return;
+      var BD = [32, 64, 128, 256, 512, 1024], NWL = [1, 4, 16, 64, 128, 256, 512, 1024, 2048, 4096, 8192];
+      var NV = 27, NSM = 8, MAXT = 2048, MAXB = 16, dev = "gpu";
+      var bdIn = $("#sc-bd"), nwIn = $("#sc-nw"), ro = $("#sc-readout");
+      function model() {
+        var bd = dev === "cpu" ? 1 : BD[+bdIn.value], nw = NWL[+nwIn.value], T = nw * NV;
+        var B = Math.ceil(T / bd), r = Math.min(MAXB, Math.floor(MAXT / bd)), slots = NSM * r, waves = Math.ceil(B / slots);
+        var lastBlocks = B - (waves - 1) * slots;
+        var cap = NSM * MAXT, lastT = T - (waves - 1) * slots * bd;
+        return { bd: bd, nw: nw, T: T, B: B, r: r, slots: slots, waves: waves, lastUtil: lastBlocks / slots,
+                 occ1: Math.min(T, slots * bd) / cap, occLast: lastT / cap };
+      }
+      function pct(x) { var v = 100 * x; return (v > 0 && v < 1 ? v.toFixed(2) : Math.round(v)) + "%"; }
+      function readout() {
+        var m = model();
+        $("#sc-bd-out").textContent = dev === "cpu" ? "1 (forced)" : m.bd; $("#sc-nw-out").textContent = m.nw;
+        if (dev === "cpu") {
+          ro.innerHTML = "<span>threads <b>" + m.T.toLocaleString() + "</b></span><span>block_dim <b>1</b></span><span>run as <b>one loop of " + m.T.toLocaleString() + " iterations</b></span>";
+        } else {
+          ro.innerHTML = "<span>threads <b>" + m.T.toLocaleString() + "</b></span><span>blocks <b>" + m.B.toLocaleString() + "</b></span>" +
+            "<span>resident/SM <b>" + m.r + "</b></span><span>waves <b>" + m.waves.toLocaleString() + "</b></span>" +
+            "<span>thread occupancy, wave 1 <b>" + pct(m.occ1) + "</b></span>" +
+            (m.waves > 1 ? "<span>thread occupancy, last wave <b>" + pct(m.occLast) + "</b></span>" : "");
+        }
+      }
+      var anim;
+      anim = MW.canvasAnim(cv, function (ctx, st) {
+        var m = model(), W = st.w, H = st.h;
+        // Paused at the start (reduced motion, or before Play): draw wave 1 fully placed, not empty slots.
+        var still = (!anim || !anim.playing) && st.t === 0;
+        ctx.font = font(11); ctx.textBaseline = "middle";
+        if (dev === "cpu") {
+          ctx.fillStyle = MW.css("--surface-2"); rrect(ctx, 10, 20, W - 20, H - 40, 10); ctx.fill();
+          ctx.strokeStyle = MW.css("--border"); ctx.stroke();
+          ctx.fillStyle = MW.css("--text"); ctx.textAlign = "left"; ctx.fillText("CPU device: one thread at a time", 22, 38);
+          var frac = (st.t / 4) % 1, bx = 22, bw = W - 44, by = H / 2 - 8;
+          ctx.fillStyle = MW.css("--surface-3"); rrect(ctx, bx, by, bw, 16, 8); ctx.fill();
+          ctx.fillStyle = MW.css("--accent"); rrect(ctx, bx, by, Math.max(16, bw * frac), 16, 8); ctx.fill();
+          ctx.fillStyle = MW.css("--muted");
+          ctx.fillText("thread " + Math.floor(frac * m.T).toLocaleString() + " of " + m.T.toLocaleString(), bx, by + 34);
+          return;
+        }
+        var cols = W > 560 ? 4 : 2, rows = NSM / cols, pad = 8, smW = (W - pad * (cols + 1)) / cols, smH = (H - 24 - pad * (rows + 1)) / rows;
+        var waveT = 1.1, shown = Math.min(m.waves, 6), cyc = shown * waveT + 0.8, ph = st.t % cyc, wave = Math.min(shown - 1, Math.floor(ph / waveT));
+        var inWave = still ? 0.6 : (ph - wave * waveT) / waveT;
+        ctx.textAlign = "left"; ctx.fillStyle = MW.css("--muted");
+        ctx.fillText("wave " + (wave + 1) + " of " + m.waves.toLocaleString() + (still ? (m.waves > 1 ? " (press Play to see the next waves)" : "") : (m.waves > shown ? " (first " + shown + " animated)" : "")), pad, 11);
+        var sc = Math.ceil(Math.sqrt(m.r)), sr = Math.ceil(m.r / sc);
+        for (var s = 0; s < NSM; s++) {
+          var cx = pad + (s % cols) * (smW + pad), cy = 22 + pad + Math.floor(s / cols) * (smH + pad);
+          ctx.fillStyle = MW.css("--surface-2"); rrect(ctx, cx, cy, smW, smH, 8); ctx.fill();
+          ctx.strokeStyle = MW.css("--border"); ctx.lineWidth = 1; ctx.stroke();
+          ctx.fillStyle = MW.css("--muted"); ctx.fillText("SM " + s, cx + 6, cy + 10);
+          var gx = cx + 6, gy = cy + 20, gw = smW - 12, gh = smH - 26, cw = gw / sc, ch = gh / sr;
+          for (var k = 0; k < m.r; k++) {
+            var bi = wave * m.slots + k * NSM + s;   // round-robin blocks over SMs
+            var x = gx + (k % sc) * cw, y = gy + Math.floor(k / sc) * ch;
+            ctx.fillStyle = MW.css("--surface-3"); rrect(ctx, x + 1, y + 1, cw - 2, ch - 2, 3); ctx.fill();
+            if (bi < m.B && inWave > (k / m.r) * 0.5) {
+              var full = bi === m.B - 1 ? ((m.T - 1) % m.bd + 1) / m.bd : 1;
+              ctx.fillStyle = MW.worldColor(wave); ctx.globalAlpha = inWave > 0.85 ? 0.45 : 0.95;
+              rrect(ctx, x + 1, y + 1, Math.max(2, (cw - 2) * full), ch - 2, 3); ctx.fill(); ctx.globalAlpha = 1;
+            }
+          }
+        }
+      }, { height: 300 });
+      function upd() { readout(); anim.reset(); anim.redraw(); }
+      bdIn.addEventListener("input", upd); nwIn.addEventListener("input", upd);
+      segWire($("#sc-seg"), function (b) { dev = b.getAttribute("data-dev"); bdIn.disabled = dev === "cpu"; upd(); });
+      $("#sc-restart").addEventListener("click", upd);
+      readout();
+    })();
+
+    /* ---- Divergence stepper (Rule A) ---- */
+    (function () {
+      var el = $("#div-stepper"); if (!el) return;
+      var svg = $("#div-svg"), mode = "mixed";
+      var frames = [{}, {}, {}, {}, {}, {}];
+      function build() {
+        var mixed = mode === "mixed", A = [], k;
+        for (k = 0; k < 32; k++) A.push(mixed ? k % 2 === 0 : true);
+        var nA = A.filter(Boolean).length, nB = 32 - nA;
+        var st = [
+          { line: 1, act: "all", cyc: 1, useful: 32, cap: "All 32 lanes compute <code>i = wp.tid()</code> together: one instruction, 32 results." },
+          { line: 2, act: "all", show: true, cyc: 2, useful: 64, cap: "Each lane evaluates its own condition. " + (mixed ? "The branch depends on <code>i % 2</code>, as <code>i % 8</code> does in Example 4.6: even lanes take A, odd lanes take B." : "Grouped: the branch depends on <code>i // M</code> with M much larger than 32 (Example 4.6 uses <code>i // M</code> with M = N / 8), so all 32 lanes of this warp say A.") },
+          { line: 3, act: "all", show: true, cyc: 3, useful: 96, cap: mixed ? "The warp checks the 32 answers: they <strong>disagree</strong>, so it must run both sides, one after the other." : "The 32 answers <strong>agree</strong>: the warp will run only the A side." },
+          { line: 4, act: "A", show: true, cyc: 7, useful: 96 + 4 * nA, cap: "Branch A runs for 4 cycles. " + (nB ? nB + " B lanes are masked off (grey): they occupy their slot and do nothing." : "No lane is masked.") },
+          { line: 6, act: mixed ? "B" : "none", show: true, cyc: mixed ? 11 : 7, useful: 96 + 4 * nA + 4 * nB * (mixed ? 1 : 0), cap: mixed ? "Branch B runs for 4 more cycles with the A lanes masked. The branch cost the <em>sum</em> of both sides." : "No lane needs branch B, so the warp <strong>skips it</strong>: 0 cycles." },
+          { line: 7, act: "all", done: true, cyc: mixed ? 12 : 8, useful: mixed ? 96 + 128 + 32 : 96 + 128 + 32, cap: "The lanes reconverge and write <code>out[i]</code> together. " + (mixed ? "Total 12 cycles, 128 lane-cycles wasted." : "Total 8 cycles, nothing wasted: grouping the data (or launching one specialized kernel per branch, Example 4.6) removed the divergence.") }
+        ];
+        st.forEach(function (s, i) {
+          var f = frames[i];
+          f.line = s.line; f.caption = s.cap; f._s = s; f._A = A;
+          f.vars = { "warp cycles": s.cyc, "useful lane-cycles": s.useful, "wasted lane-cycles": 32 * s.cyc - s.useful,
+                     "active lanes": s.act === "all" ? 32 : (s.act === "A" ? nA : (s.act === "B" ? nB : 0)) };
+        });
+      }
+      function draw(i, f) {
+        clear(svg); var s = f._s, A = f._A;
+        S("text", { x: 8, y: 16, "class": "s-small" }, svg).textContent = "one warp: lanes 0-31";
+        for (var k = 0; k < 32; k++) {
+          var x = 8 + (k % 8) * 43, y = 26 + Math.floor(k / 8) * 34, on;
+          if (s.act === "all") on = true; else if (s.act === "A") on = A[k]; else if (s.act === "B") on = !A[k]; else on = false;
+          var cls = !on ? "lane-off" : (s.done ? "lane-done" : (s.show ? (A[k] ? "lane-a" : "lane-b") : "s-accent-soft"));
+          S("rect", { x: x, y: y, width: 38, height: 28, rx: 5, "class": cls }, svg);
+          var t = S("text", { x: x + 19, y: y + 18, "text-anchor": "middle", "class": "s-small s-mono" }, svg);
+          t.textContent = s.show && !s.done ? (A[k] ? "A" : "B") : String(k);
+          if (on && (s.show || s.done)) t.style.fill = "#fff";
+        }
+        var y0 = 172;
+        S("rect", { x: 8, y: y0, width: 14, height: 14, rx: 3, "class": "lane-a" }, svg);
+        S("text", { x: 28, y: y0 + 12, "class": "s-small" }, svg).textContent = "A side";
+        S("rect", { x: 88, y: y0, width: 14, height: 14, rx: 3, "class": "lane-b" }, svg);
+        S("text", { x: 108, y: y0 + 12, "class": "s-small" }, svg).textContent = "B side";
+        S("rect", { x: 168, y: y0, width: 14, height: 14, rx: 3, "class": "lane-off" }, svg);
+        S("text", { x: 188, y: y0 + 12, "class": "s-small" }, svg).textContent = "masked (idle)";
+        S("text", { x: 8, y: 204, "class": "s-small s-mono" }, svg).textContent = "warp cycles so far: " + s.cyc;
+      }
+      build();
+      var ctl = MW.stepper(el, frames, { onFrame: function (i, f) { draw(i, f); } });
+      segWire($("#div-seg"), function (b) { mode = b.getAttribute("data-m"); build(); ctl.go(ctl.index); });
+    })();
+
+    /* ---- Figure 8: coalescing ribbon (sectors; focus row of 8 lanes below 640px) ---- */
+    (function () {
+      var svg = $("#coal-svg"); if (!svg) return;
+      var cap = $("#coal-cap"), ro = $("#coal-readout"), stride = 1, range = 0;
+      var ex7 = MW.readJSON("data-ch04-ex7"), mq = window.matchMedia("(max-width: 640px)");
+      function render() {
+        clear(svg);
+        var narrow = mq.matches, k, j;
+        svg.setAttribute("viewBox", narrow ? "0 0 340 250" : "0 0 640 230");
+        var lanesShown = [];
+        for (k = 0; k < 32; k++) if (!narrow || (k >= range * 8 && k < range * 8 + 8)) lanesShown.push(k);
+        var segs = {}, sectors = {};
+        for (k = 0; k < 32; k++) { segs[Math.floor(k * stride / 32)] = true; sectors[Math.floor(k * stride / 8)] = true; }
+        var nseg = Object.keys(segs).length, nsec = Object.keys(sectors).length;
+        var visSegs = {};
+        lanesShown.forEach(function (q) { visSegs[Math.floor(q * stride / 32)] = true; });
+        var shownSegs = Object.keys(narrow ? visSegs : segs).map(Number).sort(function (a, b) { return a - b; }).slice(0, 8);
+        var segW = narrow ? 36 : 70, segGap = narrow ? 4 : 6, sx0 = narrow ? 10 : 16, sy = narrow ? 150 : 150;
+        var laneStep = narrow ? 40 : 19, laneW = narrow ? 30 : 16;
+        S("text", { x: sx0, y: 18, "class": "s-small" }, svg).textContent = narrow ?
+          "lanes " + range * 8 + "-" + (range * 8 + 7) + " of 32, each loads one float32" : "warp: 32 lanes, each loads one float32";
+        if (narrow) {
+          S("text", { x: sx0, y: sy + 70, "class": "s-small" }, svg).textContent = "global memory: 128-byte lines (number below),";
+          S("text", { x: sx0, y: sy + 86, "class": "s-small" }, svg).textContent = "each four 32-byte sectors (shaded = moved)";
+        } else {
+          S("text", { x: sx0, y: sy + 72, "class": "s-small" }, svg).textContent = "global memory: 128-byte lines of four 32-byte sectors (shaded = moved)" + (nseg > 8 ? "; first 8 of " + nseg + " lines shown" : "");
+        }
+        shownSegs.forEach(function (sg, si) {
+          var x = sx0 + si * (segW + segGap);
+          S("rect", { x: x, y: sy, width: segW, height: 34, rx: 4, "class": "s-box" }, svg);
+          for (var q = 0; q < 4; q++) {
+            if (sectors[sg * 4 + q]) S("rect", { x: x + q * segW / 4 + 1, y: sy + 1, width: segW / 4 - 2, height: 32, rx: 2, "class": "s-accent2-soft" }, svg);
+            if (q) S("line", { x1: x + q * segW / 4, y1: sy + 2, x2: x + q * segW / 4, y2: sy + 32, "class": "s-line", "stroke-width": 0.8 }, svg);
+          }
+          S("text", { x: x + segW / 2, y: sy + 50, "text-anchor": "middle", "class": "s-small s-mono" }, svg).textContent = narrow ? String(sg) : "line " + sg;
+        });
+        var lanes = [];
+        lanesShown.forEach(function (q, jj) {
+          var lx = sx0 + jj * laneStep, a = q * stride, sg = Math.floor(a / 32), si = shownSegs.indexOf(sg);
+          var g = S("g", {}, svg);
+          if (si >= 0) {
+            var tx = sx0 + si * (segW + segGap) + ((a % 32) + 0.5) / 32 * segW;
+            /* a labelled lane's line starts below its label (baseline 66), on the same slope */
+            var cx = lx + laneW / 2, y1 = (narrow || q % 8 === 0) ? 70 : 52;
+            S("line", { x1: cx + (tx - cx) * (y1 - 52) / (sy - 52), y1: y1, x2: tx, y2: sy, "class": "s-line" }, g);
+            S("rect", { x: tx - 1.5, y: sy + 4, width: 3, height: 26, "class": "s-accent2" }, g);
+          } else {
+            S("line", { x1: lx + laneW / 2, y1: 52, x2: lx + laneW / 2, y2: 70, "class": "s-line", "stroke-dasharray": "2 2" }, g);
+          }
+          S("rect", { x: lx, y: 28, width: laneW, height: 22, rx: 3, "class": "s-accent" }, g);
+          if (narrow || q % 8 === 0) S("text", { x: lx + laneW / 2, y: 66 + (si >= 0 ? 0 : 14), "text-anchor": "middle", "class": "s-small s-mono" }, g).textContent = String(q);
+          g._k = q; lanes.push(g);
+        });
+        if (!narrow && nseg > 8) S("text", { x: 624, y: 116, "text-anchor": "end", "class": "s-small" }, svg).textContent = "lanes 8-31: one more line each";
+        wireHot(lanes, cap, function (g) {
+          var q = g._k, a = q * stride;
+          return "lane " + q + " reads float " + a + " (byte " + 4 * a + ") in line " + Math.floor(a / 32) + ", sector " + (Math.floor(a / 8) % 4);
+        });
+        var eff = Math.round(100 * 128 / (nsec * 32));
+        var txt = "<span>lines touched <b>" + nseg + "</b></span><span>sectors moved <b>" + nsec + "</b></span><span>bytes moved <b>" + nsec * 32 + "</b></span><span>useful <b>128</b> (" + eff + "%)</span>";
+        if (stride === 2048 && ex7) txt += "<span>ex7 on CPU: strided <b>" + (ex7.ms.strided / ex7.ms.coalesced).toFixed(1) + "x</b> slower</span>";
+        ro.innerHTML = txt;
+      }
+      segWire($("#coal-seg"), function (b) { stride = +b.getAttribute("data-s"); cap.innerHTML = ""; render(); });
+      segWire($("#coal-range"), function (b) { range = +b.getAttribute("data-r"); cap.innerHTML = ""; render(); });
+      if (mq.addEventListener) mq.addEventListener("change", render); else if (mq.addListener) mq.addListener(render);
+      render();
+    })();
+
+    /* ---- Figures 7 and 9: CPU timing bars from ex6 / ex7 JSON (Rule D) ---- */
+    function bars(svgId, jsonId, keys, labels) {
+      var svg = $(svgId), d = MW.readJSON(jsonId); if (!svg || !d) return;
+      var lastVW = 0;
+      function draw() {
+        // Below ~560px of frame width, use a narrow viewBox so the labels keep their real 11px size.
+        var fw = svg.parentNode.clientWidth || 640, VW = fw < 560 ? Math.max(300, Math.round(fw)) : 640;
+        if (VW === lastVW) return; lastVW = VW;
+        var H = +svg.getAttribute("viewBox").split(" ")[3];
+        svg.setAttribute("viewBox", "0 0 " + VW + " " + H);
+        clear(svg);
+        var max = Math.max.apply(null, keys.map(function (k) { return d.ms[k]; }));
+        var x0 = VW < 640 ? 92 : 130, span = VW - x0 - 80;
+        S("text", { x: 8, y: 16, "class": "s-small" }, svg).textContent = "device: " + d.device + " (CPU numbers, best of 5, ms)";
+        keys.forEach(function (k, i) {
+          var y = 28 + i * 36, w = span * d.ms[k] / max;
+          S("text", { x: 8, y: y + 17, "class": "s-small s-mono" }, svg).textContent = labels[i];
+          S("rect", { x: x0, y: y, width: Math.max(2, w), height: 24, rx: 4, "class": "s-accent2" }, svg);
+          S("text", { x: x0 + 6 + w, y: y + 17, "class": "s-small s-mono" }, svg).textContent = d.ms[k].toFixed(2) + " ms";
+        });
+      }
+      draw();
+      if ("ResizeObserver" in window) new ResizeObserver(draw).observe(svg.parentNode);
+      else window.addEventListener("resize", draw);
+    }
+    bars("#ex6-bars", "data-ch04-ex6", ["interleaved", "grouped", "specialized"], ["interleaved", "grouped", "specialized"]);
+    bars("#ex7-bars", "data-ch04-ex7", ["coalesced", "strided"], ["coalesced", "strided"]);
+
+    /* ---- JIT figure mode ---- */
+    (function () {
+      var fig = $("#jit-fig"); if (!fig) return;
+      segWire($("#jit-seg"), function (b) { fig.setAttribute("data-mode", b.getAttribute("data-m")); });
+      /* phone layout: the six stages as a 3 x 2 grid (row 2 runs right to left) */
+      var svg = $("svg", fig), mq = window.matchMedia("(max-width: 640px)");
+      var stages = $$("g.hot", svg), arrows = $$(":scope > path", svg), hit = $(".jit-second", svg);
+      var hitPath = $("path", hit), hitText = $("text", hit), base = $(":scope > line", svg), tok = $(":scope > circle", svg);
+      var notes = $$(":scope > text", svg), wideNotes = notes.map(function (t) { return t.textContent; });
+      var phoneNotes = ["cold: every stage runs; ex12 says \"(compiled)\"", "warm: codegen and compile skipped; \"(cached)\""];
+      var wideArrows = arrows.map(function (p) { return p.getAttribute("d"); });
+      var phoneArrows = ["M100 72 H 112", "M206 72 H 218", "M266 104 V 136", "M220 172 H 208", "M114 172 H 102"];
+      var shift = [[0, 0], [0, 0], [0, 0], [-106, 100], [-318, 100], [-530, 100]];
+      function layout() {
+        var n = mq.matches;
+        svg.setAttribute("viewBox", n ? "0 0 322 270" : "0 0 640 210");
+        svg.style.minWidth = n ? "0" : "";
+        stages.forEach(function (g, i) { if (n && (shift[i][0] || shift[i][1])) g.setAttribute("transform", "translate(" + shift[i][0] + " " + shift[i][1] + ")"); else g.removeAttribute("transform"); });
+        arrows.forEach(function (p, i) { p.setAttribute("d", n ? phoneArrows[i] : wideArrows[i]); });
+        hitPath.setAttribute("d", n ? "M54 104 V 120 H 244 V 136" : "M54 104 C 54 150, 372 150, 372 108");
+        hitText.setAttribute("x", n ? "60" : "213"); hitText.setAttribute("y", n ? "133" : "160");
+        hitText.setAttribute("text-anchor", n ? "start" : "middle");
+        base.setAttribute("y1", n ? "232" : "186"); base.setAttribute("y2", n ? "232" : "186"); base.setAttribute("x2", n ? "302" : "620");
+        tok.setAttribute("cy", n ? "232" : "186"); tok.style.setProperty("--dx", n ? "274px" : "584px");
+        notes.forEach(function (t, i) { t.setAttribute("y", n ? "256" : "204"); t.textContent = n ? phoneNotes[i] : wideNotes[i]; });
+      }
+      if (mq.addEventListener) mq.addEventListener("change", layout); else if (mq.addListener) mq.addListener(layout);
+      layout();
+    })();
+
+    /* ---- Figure 12: atomic race with real float32 rounding ---- */
+    (function () {
+      var cv = $("#race"); if (!cv) return;
+      var VALS = [1e8, 3.0, -1e8, 0.75, 7.0, 0.125, -5.0, 2.5], f32 = Math.fround;
+      var order = "shuffle", run = null, hist = [], cap = $("#race-cap"), histEl = $("#race-hist");
+      function perm() {
+        var p = [0, 1, 2, 3, 4, 5, 6, 7];
+        if (order === "shuffle") for (var i = 7; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)), t = p[i]; p[i] = p[j]; p[j] = t; }
+        return p;
+      }
+      function newRun(t0) { run = { p: perm(), t0: t0, k: 0, acc: 0, partial: [] }; }
+      function advance(r, k) { while (r.k < k && r.k < 8) { r.acc = f32(r.acc + f32(VALS[r.p[r.k]])); r.partial.push(r.acc); r.k++; } }
+      function fmt(v) { return (Math.round(v * 1000) / 1000).toString(); }
+      function finish(r) {
+        advance(r, 8); hist.push(r.acc); if (hist.length > 12) hist.shift();
+        var distinct = {}; hist.forEach(function (h) { distinct[h] = 1; });
+        histEl.innerHTML = "results of the last runs: " + hist.map(function (h) { return "<b>" + fmt(h) + "</b>"; }).join(" · ") +
+          " &nbsp;(" + Object.keys(distinct).length + " distinct; exact sum 8.375)";
+      }
+      function caption(r) {
+        cap.innerHTML = "order " + r.p.map(function (i) { return "t" + i; }).join(" → ") + " · float32 running sum " + (r.partial.length ? r.partial.map(fmt).join(", ") : "0");
+      }
+      var STEP = 0.55, HOLD = 1.3;
+      var anim = MW.canvasAnim(cv, function (ctx, st) {
+        if (!run) newRun(st.t);
+        var el = st.t - run.t0, k = Math.min(8, Math.floor(el / STEP));
+        if (k > run.k) { advance(run, k); caption(run); }
+        if (el > 8 * STEP + HOLD) { finish(run); newRun(st.t); caption(run); }
+        var W = st.w, bw = Math.min(70, (W - 20) / 8 - 6), gap = (W - 20 - 8 * bw) / 7;
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        for (var i = 0; i < 8; i++) {
+          var x = 10 + i * (bw + gap), pos = run.p.indexOf(i), doneI = pos < run.k, cur = pos === run.k - 1;
+          ctx.fillStyle = MW.worldColor(i); ctx.globalAlpha = doneI ? 0.35 : 0.95; rrect(ctx, x, 14, bw, 46, 8); ctx.fill(); ctx.globalAlpha = 1;
+          ctx.fillStyle = "#fff"; ctx.font = font(11, true); ctx.fillText("t" + i, x + bw / 2, 27);
+          ctx.font = font(bw > 60 ? 12 : 9, true); ctx.fillText(VALS[i] === 1e8 ? "1e8" : (VALS[i] === -1e8 ? "-1e8" : String(VALS[i])), x + bw / 2, 46);
+          if (cur) {
+            ctx.strokeStyle = MW.worldColor(i); ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x + bw / 2, 62); ctx.lineTo(W / 2, 112); ctx.stroke();
+          }
+        }
+        var aw = Math.min(260, W - 40), ax = W / 2 - aw / 2;
+        ctx.fillStyle = MW.css("--surface-2"); rrect(ctx, ax, 114, aw, 52, 10); ctx.fill();
+        ctx.strokeStyle = MW.css("--accent"); ctx.lineWidth = 2; ctx.stroke();
+        ctx.fillStyle = MW.css("--muted"); ctx.font = font(11); ctx.fillText("total[0] (float32), after " + run.k + " of 8 atomic_adds", W / 2, 128);
+        ctx.fillStyle = MW.css("--text"); ctx.font = font(18, true); ctx.fillText(fmt(run.acc), W / 2, 150);
+      }, { height: 180 });
+      $("#race-step").addEventListener("click", function () { if (!run) newRun(anim.state.t); finish(run); caption(run); newRun(anim.state.t); anim.redraw(); });
+      segWire($("#race-seg"), function (b) { order = b.getAttribute("data-o"); hist = []; histEl.innerHTML = ""; newRun(anim.state.t); anim.redraw(); });
+      newRun(0); caption(run);
+    })();
+
+    /* ---- Figure 14: tile reduction drawing ---- */
+    (function () {
+      var row = $("#f411-row"), tile = $("#f411-tile"), tree = $("#f411-tree"); if (!row) return;
+      for (var e = 0; e < 64; e++) S("rect", { x: 10 + e * 9.6, y: 30, width: 8.6, height: 22, rx: 1.5, "class": "s-w" + (e < 32 ? 0 : 3) }, row);
+      for (var t = 0; t < 32; t++) {
+        S("rect", { x: 10 + t * 19.2, y: 90, width: 17.6, height: 24, rx: 3, "class": "s-accent" }, tile);
+        if (t % 4 === 0) S("text", { x: 10 + t * 19.2 + 8.8, y: 107, "text-anchor": "middle", "class": "s-small s-mono", style: "fill:#10200a" }, tile).textContent = String(t);
+      }
+      var widths = [16, 8, 4, 2, 1], x = 10;
+      widths.forEach(function (n, li) {
+        for (var i = 0; i < n; i++) S("rect", { x: x + i * 10, y: 152, width: 8, height: 22, rx: 2, "class": li === 4 ? "s-ok" : "s-accent-soft" }, tree);
+        x += n * 10 + 22;
+        if (li < 4) S("text", { x: x - 14, y: 168, "text-anchor": "middle", "class": "s-small" }, tree).textContent = "›";
+      });
+      S("text", { x: x + 4, y: 168, "class": "s-small" }, tree).textContent = "sum → out[worldid]";
+    })();
+  });
+});
+</script>
+</body>
+</html>

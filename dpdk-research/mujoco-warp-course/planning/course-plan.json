@@ -1,0 +1,214 @@
+{
+  "chapters": [
+    {
+      "num": 1,
+      "slug": "01-what-is-mujoco-warp",
+      "title": "What Is MuJoCo Warp?",
+      "level": "beginner",
+      "summary": "What physics simulation, MuJoCo, GPUs, Warp and MJWarp are; a pinned, driver-aware Colab setup; hello world in 1 and 1024 worlds (real 256-world replay hero); the unsupported features in plain language."
+    },
+    {
+      "num": 2,
+      "slug": "02-mujoco-essentials",
+      "title": "MuJoCo Essentials for MJWarp Users",
+      "level": "beginner",
+      "summary": "MuJoCo essentials: MJCF, MjModel/MjData, joints and coordinates, the (w,x,y,z) quaternion convention (owner), limits, defaults, soft contacts and solref/solimp intuition (owner), equalities, mocap, actuators, sensors, MjSpec, rendering a frame."
+    },
+    {
+      "num": 3,
+      "slug": "03-rigid-body-physics-primer",
+      "title": "Rigid-Body Physics from Scratch: Particles, Rigid Bodies, Joints and Contacts",
+      "level": "beginner",
+      "summary": "Rigid-body physics from scratch in NumPy: F=ma, explicit vs semi-implicit Euler, a penalty-floor bouncing ball, the 6-DOF rigid-body state, inertia tensor and principal axes, gyroscopic term, quaternion integration, reduced coordinates, contacts and limits as constraints."
+    },
+    {
+      "num": 4,
+      "slug": "04-warp-and-the-gpu",
+      "title": "NVIDIA Warp and How a GPU Runs Your Kernel",
+      "level": "beginner",
+      "summary": "NVIDIA Warp and the GPU execution model: arrays and vector dtypes, kernels, wp.func, SIMT warps, blocks, divergence, coalescing, JIT caching and the log level, atomics, timing, the wp.quat storage pitfall and reading a real MJWarp kernel; tiles as an optional preview."
+    },
+    {
+      "num": 5,
+      "slug": "05-first-simulation",
+      "title": "Your First MJWarp Simulation (and How to See It)",
+      "level": "beginner",
+      "summary": "The four-call workflow (put_model, make_data/put_data, step/forward, get_data_into), Option fields, float32 accuracy and chaos, and seeing worlds: real batch-rendered frames, videos, mjwarp-viewer and mjwarp-record (GPU-only CLI with a CPU manual loop)."
+    },
+    {
+      "num": 6,
+      "slug": "06-batched-data-layout",
+      "title": "Many Worlds: The Batched Data Layout",
+      "level": "beginner",
+      "summary": "The nworld-first layout, linear memory and coalescing, in-place writes vs replacement, round-robin batched Model fields, pooled arrays, host-read costs, plotting many worlds, and when the GPU beats C MuJoCo (throughput vs nworld)."
+    },
+    {
+      "num": 7,
+      "slug": "07-pipeline-tour",
+      "title": "A Guided Tour of step and forward",
+      "level": "intermediate",
+      "summary": "The stage order of forward and step as the 4.0.1 wheel runs it (pipeline breadcrumb), calling stages by hand, the force-budget identity, kernel counts and the pipeline-wide launch-shape atlas, disable flags, EventTracer, a CUDA-graph teaser; Part I checkpoint."
+    },
+    {
+      "num": 8,
+      "slug": "08-resets-state-and-control",
+      "title": "Resets, State, Mocap and Control Loops",
+      "level": "intermediate",
+      "summary": "Masked and keyframe resets, state snapshots with every State bit and composite (PHYSICS, WARMSTART for bitwise replays), per-world mocap targets and eq_active, step1/step2 and control callbacks, ctrl clamping, device-side auto-reset with a non-finite guard, parallel-rollout MPC."
+    },
+    {
+      "num": 9,
+      "slug": "09-contacts-and-buffer-sizing",
+      "title": "Contacts, Constraint Budgets and Overflow",
+      "level": "intermediate",
+      "summary": "The Contact struct and pooled contact buffer, normals and ContactType bits, sizing parameters and defaults, the generated OverflowType catalogue with a real-data LED panel, starvation, a sizing recipe and memory estimates, contact forces, friction-cone intuition."
+    },
+    {
+      "num": 10,
+      "slug": "10-domain-randomization",
+      "title": "Domain Randomization with Batched Model Fields",
+      "level": "intermediate",
+      "summary": "Domain randomization: per-world Model fields, batchable vs structural fields, derived constants in plain language, set_const with SetConstGroup (deprecated aliases noted) and its caveats, set_length_range, on-device re-randomization; Part II checkpoint."
+    },
+    {
+      "num": 11,
+      "slug": "11-equations-of-motion-kinematics-mass-matrix",
+      "title": "Equations of Motion, Kinematics and the Mass Matrix",
+      "level": "advanced",
+      "summary": "Equations of motion in generalized coordinates, spatial vectors and the com frame, the kinematics-outputs table, branch-parallel kinematics, contiguous subtrees, CSR mass matrix, the factorize subtlety and the four factorization paths (block router)."
+    },
+    {
+      "num": 12,
+      "slug": "12-forces-actuators-tendons",
+      "title": "Forces: Passive, Springs, Bias, Actuators and Tendons",
+      "level": "advanced",
+      "summary": "Passive forces decomposed by name (springs incl. polynomial and plastic, dampers incl. actuator damping, gravcomp, fluid), RNE as MJWarp runs it, transmissions and the sparse moment layout, the actuator pipeline, MuJoCo 4 actuators (DC motor; PID and SO3 rejected in 4.0.1), muscles, tendons."
+    },
+    {
+      "num": 13,
+      "slug": "13-integrators",
+      "title": "Time Integration: Euler, RK4, Implicit and Discrete",
+      "level": "advanced",
+      "summary": "Time integration: _advance (incl. quaternion and plastic updates), semi-implicit Euler with implicit damping, RK4, implicitfast, implicit, a discrete overview, energy behaviour, convergence studies and the quaternion-integrate widget."
+    },
+    {
+      "num": 14,
+      "slug": "14-sensors-delays-inverse-dynamics",
+      "title": "Sensors, Delays and Inverse Dynamics",
+      "level": "advanced",
+      "summary": "Sensor stages and the full catalogue, verified rangefinder/contact/interval MJCF, cutoff and interval sampling, energy, actuator and sensor delays with history ring buffers, inverse dynamics; Part III checkpoint (humanoid arm tracking)."
+    },
+    {
+      "num": 15,
+      "slug": "15-geometry-toolkit-and-broadphase",
+      "title": "Collision I: Geometry Toolkit, Pair Filtering and the Broadphase",
+      "level": "advanced",
+      "summary": "Collision I: geometry toolkit (bounding volumes, SAT, closest points), model-time pair filtering, bounding-volume filters, NXN and SAP broadphases (real projection direction, per-world sort, work packages), choosing and benchmarking a broadphase."
+    },
+    {
+      "num": 16,
+      "slug": "16-primitive-narrowphase",
+      "title": "Collision II: Geom Types and Primitive Colliders",
+      "level": "advanced",
+      "summary": "Collision II: the dispatch table, the fused primitive narrowphase kernel vs per-pair convex kernels, write_contact and material mixing, the primitive colliders including box-box SAT and clipping, surface velocity, calling core colliders from your own kernel."
+    },
+    {
+      "num": 17,
+      "slug": "17-convex-collision-gjk-epa",
+      "title": "Collision III: Convex Shapes with GJK, EPA and Multi-Contact",
+      "level": "expert",
+      "summary": "Collision III: support functions, GJK in 2D and 3D, EPA and the horizon, multi-contact clipping, the grid-stride CCD kernels, CCD scratch sizing (calculator), ccd_iterations tuning and CCD/EPA_HORIZON overflow, meshes as convex hulls."
+    },
+    {
+      "num": 18,
+      "slug": "18-heightfields-and-sdfs",
+      "title": "Collision IV: Heightfields, SDFs and User SDF Plugins",
+      "level": "expert",
+      "summary": "Collision IV: heightfield prisms, SDF narrowphase and octree sampling, user SDF plugins (patch before the first compile, fresh processes), custom analytic SDFs; Part IV checkpoint (falling clutter on rigid geometry)."
+    },
+    {
+      "num": 19,
+      "slug": "19-constraints-as-optimization",
+      "title": "Constraints as Convex Optimization",
+      "level": "expert",
+      "summary": "Constraints as convex optimization: the math toolkit (GD vs Newton vs CG, linesearch), the 1-D toy, the efc row layout and J storage (dense vs CSR), softness from solref/solimp, friction cones, limits and the six equality types, optimality checks."
+    },
+    {
+      "num": 20,
+      "slug": "20-solvers-cg-newton",
+      "title": "The Primal Solvers: CG, Newton and the Exact Linesearch",
+      "level": "expert",
+      "summary": "The primal solvers: solve flow, CG and Newton, incremental Hessian updates (state-flip strip), the exact linesearch, termination and LS_ITERATIONS, per-world convergence via capture_while, warmstart, noslip and run_qacc_smooth."
+    },
+    {
+      "num": 21,
+      "slug": "21-islands-and-sleep",
+      "title": "Islands and Sleeping",
+      "level": "expert",
+      "summary": "Islands and sleeping: GPU DSU, sleep cycles and wake triggers, the full 4.0.1 sleep requirements table, the init-asleep workaround, compacted solves and nvmax (NVMAX only with sleep), collision with sleep."
+    },
+    {
+      "num": 22,
+      "slug": "22-determinism-and-reproducibility",
+      "title": "Determinism and Reproducibility",
+      "level": "expert",
+      "summary": "Determinism and reproducibility: nondeterminism sources, what DeterminismType really does in 4.0.1, bitwise tests on contact-free models, replay testing, PHYSICS|WARMSTART snapshots, and the cost of determinism."
+    },
+    {
+      "num": 23,
+      "slug": "23-soft-bodies-flex-discrete-integrator",
+      "title": "Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator",
+      "level": "expert",
+      "summary": "Soft bodies: flexcomp ropes, cloth and volumes, elasticity and plasticity, rods, interpolated flexes, flex collision and its unsupported combinations (no hfield/SDF), flex equalities, the discrete integrator and effective metric (owner); Part V checkpoint."
+    },
+    {
+      "num": 24,
+      "slug": "24-cuda-graphs",
+      "title": "CUDA Graphs: Capture, Replay and What Gets Baked",
+      "level": "expert",
+      "summary": "CUDA graphs: capture and replay, baked vs live (knob board), the replace-array rule, conditional nodes (capture_while/capture_if), CUDA 12.4 and the graph_conditional fallback, eager vs graph throughput, the capture_step helper."
+    },
+    {
+      "num": 25,
+      "slug": "25-profiling-benchmarking-tuning",
+      "title": "Profiling, Benchmarking and Tuning for Throughput",
+      "level": "expert",
+      "summary": "Profiling, benchmarking and tuning: launch configuration, EventTracer workflow, mjwarp-testspeed with its full flags (ctrl noise defaults, --function), trajectory replay, the benchmarks suite and nightly runs, memory vs nworld, a tuning checklist."
+    },
+    {
+      "num": 26,
+      "slug": "26-custom-kernels-and-extending",
+      "title": "Writing Custom Kernels and Extending MJWarp",
+      "level": "expert",
+      "summary": "Writing custom kernels: analyzer-clean conventions, obs/reward/done kernels captured with step and auto-reset, exact callback contracts, user-written contacts, kernel factories and cache_kernel, tiles (owner), userdata, testing and the kernel analyzer."
+    },
+    {
+      "num": 27,
+      "slug": "27-rays-lidar-and-batch-rendering",
+      "title": "Rays, Lidar and Batch Rendering for Thousands of Worlds",
+      "level": "expert",
+      "summary": "Rays and rendering: mjw.ray/rays and lidar (owner of rays), the world-grouped BVH, every create_render_context option (keyword-only), camera and light modes, compute_ray and thread mapping, the megakernel and shading, buffers on real pixels, Gaussian splats, visual DR, graphs."
+    },
+    {
+      "num": 28,
+      "slug": "28-interop-torch-and-jax",
+      "title": "Interop with PyTorch and JAX",
+      "level": "expert",
+      "summary": "Interop: torch zero-copy with dtype/stream/contiguity caveats, feeding actions in place, the JAX bridge with jax_callable (XLA env vars set before import, Colab's preinstalled JAX), a corrected jax_unroll, custom_vmap and MJX pointers."
+    },
+    {
+      "num": 29,
+      "slug": "29-gradients-and-system-identification",
+      "title": "Gradients, Sampling-Based Optimization and Parallel System Identification",
+      "level": "expert",
+      "summary": "Gradients and optimization: forward vs reverse mode and wp.Tape on a plain kernel, diff.py in 4.0.1 (no registered rules, so no mjw call inside a Tape), register_adjoint options, finite differences across worlds, CEM, parallel system identification (non-RL capstone)."
+    },
+    {
+      "num": 30,
+      "slug": "30-capstone-rl-at-scale",
+      "title": "Capstone: GPU-Native Reinforcement Learning at Scale",
+      "level": "expert",
+      "summary": "Capstone: an on-device RL environment (graph-captured substeps, kernels, auto-reset, in-graph DR, torch or warp backend), reference PPO on cartpole, a contact-rich humanoid-standing track, robustness evaluation, rendering, and the course wrap-up."
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+{"device":"cpu","n":65536,"iters":64,"ms":{"interleaved":70.31,"grouped":69.5,"specialized":69.36}}

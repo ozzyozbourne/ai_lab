@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Part VI Cheat Sheet</title>
+<meta name="description" content="Code-first summary of Part VI: CUDA-graph capture and the knob board, the tuning checklist, custom kernels and callbacks, rays and batch rendering, torch/JAX interop, finite differences and the RL env graph.">
+<script>try{var t=localStorage.getItem("mwc-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="../assets/course.css">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<style>
+  /* cheat-sheet layout: dense cards that stack on phones and do not split when printed */
+  .cs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 14px; margin: 1rem 0 1.4rem; }
+  .cs-card { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); padding: 12px 14px; min-width: 0; }
+  .cs-card > h3 { margin: 0 0 6px; font-size: .98rem; }
+  .cs-card > p { margin: .3rem 0; font-size: .93rem; }
+  .cs-card .code-block { margin: .5rem 0 .2rem; }
+  .cs-card ul { margin: .3rem 0; padding-left: 1.1em; font-size: .93rem; }
+  .cs-more { font-size: .85rem; color: var(--muted); margin: .4rem 0 0; }
+  .cs-table td, .cs-table th { font-size: .9rem; vertical-align: top; }
+  .cs-table code { white-space: nowrap; }
+  .cs-table td.wrap code { white-space: normal; }
+  .cs-pitfalls li { margin-bottom: .45rem; }
+  .cs-pitfalls li strong { color: var(--warn-ink); }
+  .cs-chapters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 6px 18px; padding-left: 0; list-style: none; }
+  .cs-chapters li a { font-weight: 600; }
+  .cs-print { margin-top: 12px; }
+  .cs-cell-p { background: var(--accent-2-soft); color: var(--accent-2-ink); font-weight: 700; text-align: center; }
+  .cs-cell-c { background: var(--accent-soft); color: var(--accent-ink); font-weight: 700; text-align: center; }
+  .cs-cell-n { background: var(--surface-2); color: var(--muted); text-align: center; }
+  .cs-cell-f { outline: 2px dashed var(--warn); outline-offset: -3px; }
+  .cs-yes { color: var(--ok); font-weight: 700; }
+  .cs-no { color: var(--danger-ink); font-weight: 700; }
+  .cs-maybe { color: var(--warn-ink); font-weight: 700; }
+
+  @media print {
+    body { font-size: 10pt; }
+    .hero-actions, .cs-print, .p-stuck { display: none !important; }
+    .cs-card, figure, .table-wrap, .code-block, .callout { break-inside: avoid; }
+    .sec > h2 { break-after: avoid; }
+    .cs-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+    .layout { padding: 0; }
+  }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="progress-bar" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="icon-btn toc-toggle" type="button" aria-label="Table of contents">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+  </button>
+  <a class="brand" href="../index.html">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><circle cx="10" cy="11" r="3" fill="#10200a"/><circle cx="22" cy="11" r="3" fill="#10200a" opacity=".7"/><circle cx="10" cy="22" r="3" fill="#10200a" opacity=".7"/><circle cx="22" cy="22" r="3" fill="#10200a" opacity=".45"/></svg>
+    <span class="brand-text">MuJoCo Warp Course</span>
+  </a>
+  <span class="chap-count">Cheat sheet 6 of 6</span>
+  <span class="topbar-spacer"></span>
+  <nav class="topnav" aria-label="Cheat sheet navigation">
+    <a href="cheatsheet-part5.html" class="prev" aria-label="Part V cheat sheet"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg><span class="lbl">Prev</span></a>
+    <a href="../index.html" class="next" aria-label="Course home"><span class="lbl">Next</span><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg></a>
+  </nav>
+  <button class="icon-btn theme-toggle" type="button" aria-label="Toggle dark mode">
+    <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+</header>
+
+<div class="layout">
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <ol data-auto></ol>
+    <p class="toc-progress" aria-live="off"></p>
+  </aside>
+
+  <main id="main" class="content">
+    <header class="chapter-hero">
+      <p class="eyebrow">Reference · Part VI cheat sheet</p>
+      <h1>Part VI cheat sheet: Performance, extension and integration</h1>
+      <p class="lede">Graph baked/live table, the tuning checklist, kernels, rendering, interop, gradients and RL. Dense, printable, and checked against mujoco-warp 4.0.1 and the chapters. Every block
+        links back to the section that teaches it.</p>
+      <div class="hero-meta">
+        <span class="badge level-expert">Expert</span>
+        <span>Chapters 24-30</span><span class="sep">·</span>
+        <span>Print: about 6 pages</span>
+      </div>
+      <div class="hero-actions cs-print">
+        <button class="btn btn-sm" type="button" onclick="window.print()">Print this sheet</button>
+        <a class="btn btn-sm btn-ghost" href="../index.html#reference">All reference pages</a>
+      </div>
+    </header>
+
+    <section class="recap" aria-labelledby="recap-h">
+      <h2 id="recap-h" data-toc="Chapters">Chapters on this sheet</h2>
+      <ul class="cs-chapters">
+        <li><a href="../chapters/24-cuda-graphs.html">Ch 24 · CUDA Graphs: Capture, Replay and What Gets Baked</a></li>
+        <li><a href="../chapters/25-profiling-benchmarking-tuning.html">Ch 25 · Profiling, Benchmarking and Tuning for Throughput</a></li>
+        <li><a href="../chapters/26-custom-kernels-and-extending.html">Ch 26 · Writing Custom Kernels and Extending MJWarp</a></li>
+        <li><a href="../chapters/27-rays-lidar-and-batch-rendering.html">Ch 27 · Rays, Lidar and Batch Rendering for Thousands of Worlds</a></li>
+        <li><a href="../chapters/28-interop-torch-and-jax.html">Ch 28 · Interop with PyTorch and JAX</a></li>
+        <li><a href="../chapters/29-gradients-and-system-identification.html">Ch 29 · Gradients, Sampling-Based Optimization and Parallel System Identification</a></li>
+        <li><a href="../chapters/30-capstone-rl-at-scale.html">Ch 30 · Capstone: GPU-Native Reinforcement Learning at Scale</a></li>
+      </ul>
+    </section>
+
+    <section class="sec" id="at-a-glance">
+      <h2><span class="sec-num">1</span>Part VI at a glance: one graph per control step</h2>
+      <p>Part VI turns a working simulation into a fast, extensible one: capture the step in a CUDA graph, know what
+        the graph baked in, tune with measurements, add your own kernels, render and cast rays, hand buffers to
+        PyTorch or JAX, and get derivatives from the worlds themselves.</p>
+      <figure class="fig" data-anim>
+        <div class="fig-frame scroll-x">
+          <svg viewBox="0 0 760 270" role="img" aria-labelledby="cs6-f1t cs6-f1d" style="min-width:600px">
+            <title id="cs6-f1t">Baked switches and live sockets in a captured control step</title>
+            <desc id="cs6-f1d">A captured graph is a tape of recorded launches: action copy, substeps of mjw.step, reward and done kernel, masked reset with randomization, observation kernel. Python decisions and array addresses are baked at capture; array contents are read live at every replay.</desc>
+            <defs><marker id="cs6-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <text x="12" y="22" class="s-label">wp.capture_launch(graph): one call per control step</text>
+            <rect x="10" y="34" width="740" height="92" rx="12" class="s-box-2"/>
+            <g class="hot" data-info="Action in: <code>wp.copy(d.ctrl, actions)</code> or <code>wp.to_torch(d.ctrl).copy_(a)</code>. Never rebind <code>d.ctrl</code>.">
+              <rect x="22" y="50" width="100" height="60" rx="8" class="s-accent2-soft"/><text x="72" y="76" text-anchor="middle" class="s-label">copy ctrl</text><text x="72" y="96" text-anchor="middle" class="s-small s-mono">wp.copy</text>
+            </g>
+            <g class="hot" data-info="<code>nsub</code> recorded calls of <code>mjw.step</code> (about 100 launches each). The solver loop is a <code>capture_while</code> node when <code>graph_conditional=True</code>.">
+              <rect x="132" y="50" width="200" height="60" rx="8" class="s-accent-soft"/><text x="232" y="76" text-anchor="middle" class="s-label">mjw.step × nsub</text><text x="232" y="96" text-anchor="middle" class="s-small s-mono">capture_while(nsolving)</text>
+            </g>
+            <g class="hot" data-info="Reward and done kernels: one thread per world, preallocated outputs, no host reads (Ch 26 §2).">
+              <rect x="342" y="50" width="120" height="60" rx="8" class="s-box"/><text x="402" y="76" text-anchor="middle" class="s-label">reward, done</text><text x="402" y="96" text-anchor="middle" class="s-small s-mono">your kernels</text>
+            </g>
+            <g class="hot" data-info="Masked reset + in-graph DR of fields without derived quantities (friction, gain, damping) + forward. Mass DR needs eager <code>set_const</code> outside the graph.">
+              <rect x="472" y="50" width="140" height="60" rx="8" class="s-box"/><text x="542" y="76" text-anchor="middle" class="s-label">reset_data(done)</text><text x="542" y="96" text-anchor="middle" class="s-small s-mono">+ randomize, forward</text>
+            </g>
+            <g class="hot" data-info="Observation kernel into a buffer that torch views zero-copy. Keep <code>final_obs</code> before auto-reset overwrites it.">
+              <rect x="622" y="50" width="116" height="60" rx="8" class="s-accent2-soft"/><text x="680" y="76" text-anchor="middle" class="s-label">obs kernel</text><text x="680" y="96" text-anchor="middle" class="s-small s-mono">to_torch view</text>
+            </g>
+            <path d="M20 140 H 740" class="s-accent-stroke anim-flow" marker-end="url(#cs6-arrow)"/>
+            <text x="380" y="158" text-anchor="middle" class="s-small">replay direction</text>
+            <g class="hot" data-info="<strong>Baked</strong> at capture: which kernels and in which order (every Python <code>if</code>/<code>for</code> already ran), launch dims, scalar arguments such as <code>m.opt.iterations</code>, <code>wp.static</code> constants, and every array <em>address</em>.">
+              <rect x="10" y="176" width="365" height="84" rx="10" class="s-warn-soft" style="fill:var(--warn-soft)"/>
+              <text x="24" y="198" class="s-label">Baked (recapture to change)</text>
+              <text x="24" y="220" class="s-small s-mono">integrator, solver, iterations, cone,</text>
+              <text x="24" y="238" class="s-small s-mono">disableflags, nsub, array objects</text>
+            </g>
+            <g class="hot" data-info="<strong>Live</strong> at every replay: the contents of every array: all of <code>d.*</code>, Model array fields, and array options such as <code>timestep</code>, <code>gravity</code>, <code>tolerance</code>.">
+              <rect x="385" y="176" width="365" height="84" rx="10" class="s-ok-soft" style="fill:var(--ok-soft)"/>
+              <text x="399" y="198" class="s-label">Live (assign in place)</text>
+              <text x="399" y="220" class="s-small s-mono">d.ctrl, d.qpos, m.geom_friction,</text>
+              <text x="399" y="238" class="s-small s-mono">m.opt.timestep, gravity, tolerance</text>
+            </g>
+          </svg>
+        </div>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle" type="button"></button></div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a part."></div>
+        <figcaption><span class="fig-num">Figure 1.</span>The RL environment step of <a href="../chapters/30-capstone-rl-at-scale.html#architecture">Ch 30 §3</a> as one graph, and the baked/live rule of <a href="../chapters/24-cuda-graphs.html#baked-live">Ch 24 §3</a>. <span class="badge illustrative">Diagram</span></figcaption>
+      </figure>
+    </section>
+
+    <section class="sec" id="graphs">
+      <h2><span class="sec-num">2</span>CUDA graphs</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>Warm up, capture, replay</h3>
+          <div class="code-block"><pre><code class="language-python">if wp.get_device().is_cuda and not wp.is_conditional_graph_supported():
+    m.opt.graph_conditional = False    # CUDA &lt; 12.4: unrolled solver loop
+mjw.step(m, d)                         # 1. warm up: compile every kernel
+with wp.ScopedCapture() as capture:    # 2. record (does NOT run; d.time unchanged)
+    mjw.step(m, d)
+graph = capture.graph
+for _ in range(1000):
+    wp.capture_launch(graph)           # 3. replay: one call
+wp.synchronize()</code></pre></div>
+          <p class="cs-more"><a href="../chapters/24-cuda-graphs.html#pattern">Ch 24 §2</a>, <a href="../chapters/24-cuda-graphs.html#toolkit">§6</a></p>
+        </div>
+        <div class="cs-card">
+          <h3>A whole control step: <code>my_env.capture_step</code></h3>
+          <div class="code-block"><pre><code class="language-python">def capture_step(m, d, nsub=1, post=None):
+    with wp.ScopedCapture(device=d.qpos.device) as c:
+        for _ in range(nsub):
+            mjw.step(m, d)
+        if post is not None:
+            post(m, d)          # reward / done / reset kernels
+    return c.graph</code></pre></div>
+          <p>(Abridged; the snapshot also applies the conditional-node fallback.) <code>put_model</code> only <em>warns</em> on CUDA &lt; 12.4 and still sets <code>graph_conditional=True</code> (<a href="../chapters/24-cuda-graphs.html#own-kernels">Ch 24 §8</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>Conditional nodes</h3>
+          <ul>
+            <li><code>graph_conditional=True</code>: the solver is a <code>wp.capture_while</code> loop on the device, until the slowest world is done.</li>
+            <li><code>False</code>: <code>m.opt.iterations</code> unrolled copies; same physics, many more launches.</li>
+            <li>Need CUDA ≥ 12.4 in both toolkit and driver (<a href="../chapters/24-cuda-graphs.html#conditional">Ch 24 §5</a>).</li>
+            <li>Warp 1.19 records graphs on CPU too: CPU timings are CPU numbers (<a href="../chapters/24-cuda-graphs.html#measure">§7</a>).</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="baked-live">
+      <h2><span class="sec-num">3</span>The baked / live table</h2>
+      <div class="table-wrap"><table class="cs-table">
+        <thead><tr><th>Change after capture</th><th>Verdict</th><th>Evidence</th></tr></thead>
+        <tbody>
+          <tr><td><code>d.*.assign / fill_ / wp.copy</code>, your kernels</td><td class="cs-yes">live</td><td>array contents</td></tr>
+          <tr><td><code>m.opt.timestep</code>, <code>gravity</code>, <code>tolerance</code> (in place)</td><td class="cs-yes">live</td><td>measured, Example 24.6</td></tr>
+          <tr><td><code>ls_tolerance</code>, <code>wind</code>, <code>density</code>, <code>impratio_invsqrt</code></td><td class="cs-yes">live</td><td><code>"*"</code> arrays in types.py</td></tr>
+          <tr><td>batched Model fields edited in place</td><td class="cs-yes">live</td><td>Ch 10 method 2</td></tr>
+          <tr><td><code>m.opt.iterations</code></td><td class="cs-maybe">recapture</td><td>measured (scalar argument / unrolled loop)</td></tr>
+          <tr><td><code>m.opt.integrator</code></td><td class="cs-maybe">recapture</td><td>measured (Python branch)</td></tr>
+          <tr><td><code>m.opt.graph_conditional</code>, <code>noslip_iterations</code> 0 ↔ &gt;0</td><td class="cs-maybe">recapture</td><td>graph structure</td></tr>
+          <tr><td><code>m.opt.ls_iterations</code></td><td class="cs-no">recompile + recapture</td><td>measured (1 new module)</td></tr>
+          <tr><td><code>m.opt.warn_overflow</code></td><td class="cs-no">recompile + recapture</td><td>measured (4 new modules)</td></tr>
+          <tr><td><code>solver</code>, <code>cone</code>, <code>ccd_iterations</code>, <code>broadphase</code>, <code>broadphase_filter</code></td><td class="cs-no">recompile + recapture</td><td>factory arguments / first-use kernels</td></tr>
+          <tr><td><code>disableflags</code></td><td class="cs-no">treat as recompile + recapture</td><td>depends on the flag</td></tr>
+          <tr><td>replacing any array object (<code>d.ctrl = ...</code>, <code>m.opt.gravity = wp.array(...)</code>)</td><td class="cs-no">recapture</td><td>the graph keeps the old address</td></tr>
+        </tbody>
+      </table></div>
+      <p class="cs-more">The knob board: <a href="../chapters/24-cuda-graphs.html#knob-board">Ch 24 §4</a>. Measured on CPU with <code>ex6_knob_board.py</code>; the source-derived rows come from types.py and the kernel factories.</p>
+    </section>
+
+    <section class="sec" id="tuning">
+      <h2><span class="sec-num">4</span>Measure, then tune</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>A throughput number that means something</h3>
+          <p>World-steps/s (or ns per world-step), after warm-up, on a captured graph, between two
+            <code>wp.synchronize()</code>-bounded clock reads, at a stated <code>nworld</code>, with zero overflow (<a href="../chapters/25-profiling-benchmarking-tuning.html#measure">Ch 25 §1</a>).</p>
+          <div class="code-block"><pre><code class="language-bash">mjwarp-testspeed model.xml --nworld 8192 --nstep 1000      # GPU only
+mjwarp-testspeed model.xml --noise_std 0 --event_trace     # compare with your loop
+mjwarp-testspeed model.xml -o "opt.iterations=10" --measure_solver --measure_alloc
+mjwarp-testspeed model.xml --replay ctrl.npz --noise_rate 1e-6</code></pre></div>
+          <p>Defaults are part of every number: <code>--nworld 8192</code>, OU ctrl noise (<code>--noise_std 0.01</code>, <code>--noise_rate 0.1</code>) around the keyframe, <code>--function step</code>, abort on overflow (<a href="../chapters/25-profiling-benchmarking-tuning.html#testspeed">§4</a>, <a href="../chapters/25-profiling-benchmarking-tuning.html#trajectories">§5</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>Per-stage profile</h3>
+          <div class="code-block"><pre><code class="language-python">from mujoco_warp._src.warp_util import EventTracer   # private API
+with EventTracer(enabled=ON_GPU) as tracer:
+    with wp.ScopedCapture() as c:
+        mjw.step(m, d)
+    for _ in range(nstep):
+        wp.capture_launch(c.graph)
+        wp.synchronize()
+        t = tracer.trace()          # this replay's tree; sum, then
+                                    # divide by nstep x nworld</code></pre></div>
+          <p>Scopes inside <code>capture_while</code> do not appear. <code>m.block_dim</code> sets tiled block widths (experimental) (<a href="../chapters/25-profiling-benchmarking-tuning.html#event-trace">Ch 25 §3</a>, <a href="../chapters/25-profiling-benchmarking-tuning.html#launch-config">§2</a>).</p>
+        </div>
+      </div>
+      <div class="table-wrap"><table class="cs-table">
+        <thead><tr><th>#</th><th>Knob</th><th>Buys</th><th>Costs / watch</th><th>Owner</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>Size buffers</td><td><code>nconmax</code>/<code>njmax</code>/<code>njmax_nnz</code> from p95 + headroom</td><td>too small drops physics; too big costs memory and empty threads</td><td><a href="../chapters/09-contacts-and-buffer-sizing.html#sizing-recipe">Ch 9 §8</a>, <a href="../chapters/25-profiling-benchmarking-tuning.html#sizing">Ch 25 §7</a></td></tr>
+          <tr><td>2</td><td><code>nworld</code></td><td>raise until world-steps/s stops growing</td><td>latency and memory grow linearly</td><td><a href="../chapters/06-batched-data-layout.html#throughput">Ch 6 §11</a></td></tr>
+          <tr><td>3</td><td>CUDA graphs</td><td>remove per-launch overhead</td><td>baked values need recapture</td><td><a href="../chapters/24-cuda-graphs.html#why">Ch 24 §1</a></td></tr>
+          <tr><td>4</td><td>Solver, <code>iterations</code></td><td>cap near the converged count</td><td>ITERATIONS bit; answer changes below it</td><td><a href="../chapters/20-solvers-cg-newton.html#knobs">Ch 20 §10</a></td></tr>
+          <tr><td>5</td><td><code>ls_iterations</code>, tolerance</td><td>fewer linesearch steps</td><td>LS_ITERATIONS; tolerance ≥ 1e-6</td><td><a href="../chapters/20-solvers-cg-newton.html#linesearch">Ch 20 §8</a></td></tr>
+          <tr><td>6</td><td>Friction cone</td><td>pyramidal <code>2(condim-1)</code> vs elliptic <code>condim</code> rows</td><td>a different contact model</td><td><a href="../chapters/09-contacts-and-buffer-sizing.html#cones-rows-forces">Ch 9 §4</a></td></tr>
+          <tr><td>7</td><td>Broadphase</td><td>override <code>put_model</code>'s choice</td><td>only with measurements</td><td><a href="../chapters/15-geometry-toolkit-and-broadphase.html#choosing">Ch 15 §7</a></td></tr>
+          <tr><td>8</td><td>Integrator</td><td>Euler or implicitfast</td><td>RK4 runs forward 4 times</td><td><a href="../chapters/13-integrators.html#choosing">Ch 13 §9</a></td></tr>
+          <tr><td>9</td><td>Determinism off</td><td>NONE is the default</td><td>on only for bitwise replays</td><td><a href="../chapters/22-determinism-and-reproducibility.html#cost">Ch 22 §8</a></td></tr>
+          <tr><td>10</td><td>Sleep</td><td>scenes that come to rest</td><td>requirements, wake-up costs</td><td><a href="../chapters/21-islands-and-sleep.html#when-it-helps">Ch 21 §10</a></td></tr>
+          <tr><td>11</td><td><code>warn_overflow</code></td><td>set before the first launch</td><td>silences prints, not overflow</td><td><a href="../chapters/09-contacts-and-buffer-sizing.html#warn-overflow">Ch 9 §10</a></td></tr>
+          <tr><td>12</td><td><code>m.block_dim</code></td><td>last resort, experimental</td><td>changing <code>convex_ccd</code> compiles a new module</td><td><a href="../chapters/25-profiling-benchmarking-tuning.html#launch-config">Ch 25 §2</a></td></tr>
+        </tbody>
+      </table></div>
+      <p class="cs-more">One knob at a time; reject any faster row that overflows or moves a correctness probe (<a href="../chapters/25-profiling-benchmarking-tuning.html#tuning">Ch 25 §8</a>). Benchmark suite and nightly run: <a href="../chapters/25-profiling-benchmarking-tuning.html#suite">§6</a>.</p>
+    </section>
+
+    <section class="sec" id="extending">
+      <h2><span class="sec-num">5</span>Custom kernels and callbacks</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>House style (kernel analyzer rules)</h3>
+          <div class="code-block"><pre><code class="language-python">@wp.kernel
+def _height_reward(
+  # Model:
+  body_mass: wp.array2d[float],
+  # Data in:
+  xpos_in: wp.array2d[wp.vec3],
+  # In:
+  bodyid: int,
+  # Out:
+  reward_out: wp.array[float],
+):
+  worldid = wp.tid()
+  mass = body_mass[worldid % body_mass.shape[0], bodyid]  # "*" field
+  reward_out[worldid] = mass * xpos_in[worldid, bodyid][2]</code></pre></div>
+          <p>Data fields get <code>_in</code>/<code>_out</code>, Model fields keep their names; inputs before outputs; no defaults; factories use <code>module="unique"</code> (<a href="../chapters/26-custom-kernels-and-extending.html#anatomy">Ch 26 §1</a>, <a href="../chapters/26-custom-kernels-and-extending.html#analyzer">§12</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>The seven callback slots</h3>
+          <div class="table-wrap"><table class="cs-table">
+            <thead><tr><th>Slot</th><th>Runs in</th><th>Semantics</th></tr></thead>
+            <tbody>
+              <tr><td><code>control</code></td><td><code>_forward</code>, <code>step1</code></td><td>writes <code>d.ctrl</code></td></tr>
+              <tr><td><code>passive</code></td><td><code>passive.passive</code></td><td>adds to <code>qfrc_passive</code></td></tr>
+              <tr><td><code>act_dyn</code>, <code>act_gain</code></td><td><code>fwd_actuation</code></td><td>overwrite after the force kernel</td></tr>
+              <tr><td><code>act_bias</code></td><td><code>fwd_actuation</code></td><td>adds; forcerange not reapplied</td></tr>
+              <tr><td><code>sensor</code></td><td>every sensor stage</td><td><code>fn(m, d, stage)</code></td></tr>
+              <tr><td><code>contactfilter</code></td><td><code>collision</code></td><td>clears the CONSTRAINT bit (nacon cannot shrink)</td></tr>
+            </tbody>
+          </table></div>
+          <p class="cs-more"><a href="../chapters/26-custom-kernels-and-extending.html#callbacks">Ch 26 §3</a>-<a href="../chapters/26-custom-kernels-and-extending.html#sensor-contact">§5</a></p>
+        </div>
+        <div class="cs-card">
+          <h3>More extension points</h3>
+          <ul>
+            <li><code>m.opt.run_collision_detection = False</code>: skip collision, keep your contacts; refill them every step (<a href="../chapters/26-custom-kernels-and-extending.html#user-contacts">Ch 26 §6</a>).</li>
+            <li><code>d.userdata</code>: per-world state, zeroed by reset, saved by <code>State.USERDATA</code> (<a href="../chapters/26-custom-kernels-and-extending.html#userdata">§9</a>).</li>
+            <li>Tiles: <code>wp.launch_tiled</code>, <code>tile_load</code>, <code>tile_sum</code>, <code>tile_store</code>; every lane must reach every tile call (<a href="../chapters/26-custom-kernels-and-extending.html#tiles">§8</a>).</li>
+            <li><code>cache_kernel</code> keys are positional hashes + module + name (<a href="../chapters/26-custom-kernels-and-extending.html#factories">§7</a>).</li>
+            <li>Reused <code>_src</code> functions are private: pin and test them against MuJoCo C at 1e-5 (<a href="../chapters/26-custom-kernels-and-extending.html#reuse-test">§10</a>).</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="rays-render">
+      <h2><span class="sec-num">6</span>Rays and batch rendering</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>Rays</h3>
+          <div class="code-block"><pre><code class="language-python">dist, geomid, normal = mjw.ray(m, d, pnt, vec)     # one ray per world, allocates
+mjw.rays(m, d, pnt, vec, geomgroup, flg_static, bodyexclude,
+         dist, geomid, normal)                       # many rays, preallocated
+# pnt, vec: (nworld, nray) vec3; dist == -1 means miss</code></pre></div>
+          <p>Filters: <code>bodyexclude</code>, zero alpha, <code>flg_static</code>, geomgroup mask (all -1 = off). With a render context <code>rc</code> rays walk the scene BVH (<a href="../chapters/27-rays-lidar-and-batch-rendering.html#rays">Ch 27 §1</a>, <a href="../chapters/27-rays-lidar-and-batch-rendering.html#filters">§2</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>Render loop</h3>
+          <div class="code-block"><pre><code class="language-python">rc = mjw.create_render_context(mjm, nworld=N, cam_res=(W, H),  # (width, height)
+        render_rgb=True, render_depth=True, render_seg=True)
+mjw.step(m, d)              # or forward
+mjw.refit_bvh(m, d, rc)     # else moved objects vanish
+mjw.render(m, d, rc)        # one megakernel, dim=(nworld, total_rays)
+mjw.get_rgb(rc, 0, rgb)     # rgb: (N, H, W) vec3; camera 0 = first ACTIVE
+mjw.get_depth(rc, 0, 3.0, depth)   # planar depth / 3.0, clamped</code></pre></div>
+          <p class="cs-more"><a href="../chapters/27-rays-lidar-and-batch-rendering.html#pipeline">Ch 27 §4</a>, <a href="../chapters/27-rays-lidar-and-batch-rendering.html#depth-seg">§11</a></p>
+        </div>
+        <div class="cs-card">
+          <h3>Context options worth knowing</h3>
+          <ul>
+            <li>Pass every option as a keyword. <code>enabled_geom_groups=[0, 1, 2]</code>: groups 3+ are invisible by default.</li>
+            <li><code>use_shadows=False</code> (0.3 of the light when on), <code>samples_per_pixel=1</code> (n² supersampling), <code>use_textures=True</code>, <code>render_skybox=False</code>.</li>
+            <li>Per-world FOV needs <code>use_precomputed_rays=False</code>; changing a flag means a new context.</li>
+            <li>Hand-written cameras go after step, before refit/render, every frame. Refit and render can be captured.</li>
+          </ul>
+          <p class="cs-more"><a href="../chapters/27-rays-lidar-and-batch-rendering.html#options">Ch 27 §5</a>, <a href="../chapters/27-rays-lidar-and-batch-rendering.html#visual-dr">§12</a>, <a href="../chapters/27-rays-lidar-and-batch-rendering.html#performance">§14</a></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="interop">
+      <h2><span class="sec-num">7</span>PyTorch and JAX</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>PyTorch: zero-copy views</h3>
+          <div class="code-block"><pre><code class="language-python">qpos_t = wp.to_torch(d.qpos)       # same data_ptr; make once, reuse
+ctrl_t = wp.to_torch(d.ctrl)
+ctrl_t.copy_(actions.float())      # actions IN: copy, never rebind d.ctrl
+obs = wp.from_torch(obs_t)         # keeps a reference to obs_t</code></pre></div>
+          <ul>
+            <li>float32 everywhere; vector dtypes become trailing dims; quats stay (w, x, y, z).</li>
+            <li><code>wp.copy</code> only checks element byte size: int32 ↔ uint32 reinterpret silently; float64/int64 raise.</li>
+            <li>A non-default <code>torch.cuda.Stream()</code> needs <code>wp.stream_from_torch</code> or an explicit wait.</li>
+          </ul>
+          <p class="cs-more"><a href="../chapters/28-interop-torch-and-jax.html#zero-copy">Ch 28 §1</a>, <a href="../chapters/28-interop-torch-and-jax.html#caveats">§2</a>, <a href="../chapters/28-interop-torch-and-jax.html#actions-in">§3</a></p>
+        </div>
+        <div class="cs-card">
+          <h3>JAX: <code>wp.jax_callable</code></h3>
+          <div class="code-block"><pre><code class="language-python">import os                      # BEFORE import jax
+os.environ["XLA_FLAGS"] = "--xla_gpu_graph_min_graph_size=1"
+os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+import jax
+
+def warp_step(qpos_in: wp.array2d[float], qvel_in: wp.array2d[float],
+              qpos_out: wp.array2d[float], qvel_out: wp.array2d[float]):
+    wp.copy(d.qpos, qpos_in); wp.copy(d.qvel, qvel_in)
+    mjw.step(m, d)
+    wp.copy(qpos_out, d.qpos); wp.copy(qvel_out, d.qvel)
+
+step_fn = wp.jax_callable(warp_step, num_outputs=2,
+    graph_mode=wp.JaxCallableGraphMode.WARP,
+    output_dims={"qpos_out": (NWORLD, mjm.nq), "qvel_out": (NWORLD, mjm.nv)})
+# unroll with jax.lax.scan inside jax.jit; NWORLD is fixed</code></pre></div>
+          <p>Set <code>graph_conditional</code> explicitly; in WARP mode the Python body runs only at capture. On CPU, graph mode NONE works. MJX <code>impl="warp"</code> is the official JAX route (<a href="../chapters/28-interop-torch-and-jax.html#jax-bridge">Ch 28 §4</a>, <a href="../chapters/28-interop-torch-and-jax.html#jax-loop">§5</a>, <a href="../chapters/28-interop-torch-and-jax.html#mjx-contract">§8</a>).</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="gradients">
+      <h2><span class="sec-num">8</span>Derivatives, CEM and system identification</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>What works in 4.0.1</h3>
+          <ul>
+            <li><code>wp.Tape</code> works for your own kernels: forward under the tape, seed <code>.grad</code>, <code>backward()</code>, read input <code>.grad</code>, <code>zero()</code>.</li>
+            <li>Every public <code>mjw</code> function is wrapped by <code>diff._wrap</code> with no adjoint rule (<code>diff.RULES[name]</code> is <code>None</code>): any MJWarp call inside an active tape raises <code>NotImplementedError</code>. Keep simulation outside the tape.</li>
+            <li><code>register_adjoint</code> declares arrays and fields, an optional <code>supported</code> hook and a backward (<a href="../chapters/29-gradients-and-system-identification.html#register-adjoint">Ch 29 §4</a>).</li>
+          </ul>
+          <p class="cs-more"><a href="../chapters/29-gradients-and-system-identification.html#tape">Ch 29 §2</a>, <a href="../chapters/29-gradients-and-system-identification.html#diff-py">§3</a></p>
+        </div>
+        <div class="cs-card">
+          <h3>Finite differences across worlds</h3>
+          <div class="code-block"><pre><code class="language-python"># 2k + 1 worlds: base, +h e_i, -h e_i for k parameters
+p = np.tile(p0, (2 * k + 1, 1))
+for i in range(k):
+    p[1 + i, i] += h; p[1 + k + i, i] -= h
+# write p into batched Model fields, roll out once, then
+J[:, i] = (y[1 + i] - y[1 + k + i]) / (2 * h)</code></pre></div>
+          <p>float32: start with <code>h ≈ 1e-2</code> of the input scale and check its neighbours (<a href="../chapters/29-gradients-and-system-identification.html#finite-differences">Ch 29 §5</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>CEM and parallel system ID</h3>
+          <ul>
+            <li>CEM: sample, roll out all at once, keep elites, refit. Snapshot with <code>State.PHYSICS</code> (+ TIME, + WARMSTART with contacts) (<a href="../chapters/29-gradients-and-system-identification.html#cem">§6</a>).</li>
+            <li>System ID: one world per candidate in batched Model fields, <code>set_const</code> eagerly after mass writes, loss on the device, full covariance for correlated parameters, stop at the noise floor (<a href="../chapters/29-gradients-and-system-identification.html#sysid">§7</a>).</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="rl-env">
+      <h2><span class="sec-num">9</span>An on-device RL environment</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>Rules of the env</h3>
+          <ul>
+            <li>One captured graph per control step (Figure 1); the host copies actions in and reads statistics once per iteration.</li>
+            <li>Report terminated and truncated separately; keep <code>final_obs</code> (auto-reset overwrites obs; truncations need a value bootstrap) (<a href="../chapters/30-capstone-rl-at-scale.html#episodes">Ch 30 §5</a>).</li>
+            <li>In-graph DR only for fields without derived quantities; mass via eager <code>set_const</code> at rollout boundaries.</li>
+            <li>Observe from <code>qpos</code>/<code>qvel</code>: sensors are computed before integration and zeroed by reset.</li>
+          </ul>
+        </div>
+        <div class="cs-card">
+          <h3>Workflow</h3>
+          <ol>
+            <li>Test reward kernels against NumPy.</li>
+            <li>Baseline first (evolution strategies), then the reference PPO (<a href="../chapters/30-capstone-rl-at-scale.html#es">§6</a>, <a href="../chapters/30-capstone-rl-at-scale.html#ppo">§7</a>).</li>
+            <li>Read the learning curve before tuning; tune normalizer, clipping, learning rate first (<a href="../chapters/30-capstone-rl-at-scale.html#training">§8</a>).</li>
+            <li>Contact tasks: size <code>naconmax</code> and <code>njmax</code> from measurements, sweep the solver, monitor overflow in a copy that survives auto-reset (<a href="../chapters/30-capstone-rl-at-scale.html#contact">§10</a>).</li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="pitfalls">
+      <h2><span class="sec-num">10</span>Pitfalls</h2>
+      <ul class="cs-pitfalls">
+        <li><strong>Changing a Python-valued option after capture</strong> does nothing to the graph; recapture (and maybe recompile).</li>
+        <li><strong>Replacing an array after capture</strong>: the graph reads the old address. Applies to <code>d.ctrl</code>, <code>m.opt.*</code> and torch views.</li>
+        <li><strong>CUDA &lt; 12.4</strong>: set <code>m.opt.graph_conditional = False</code> before capture; <code>put_model</code> only warns.</li>
+        <li><strong>Python side effects in callbacks</strong> run once, at capture time.</li>
+        <li><strong>Timing CPU graphs</strong> says nothing about GPU performance; never quote it as such.</li>
+        <li><strong>Forgetting <code>refit_bvh</code></strong> makes moved objects vanish from the image: the BVH still has the old boxes.</li>
+        <li><strong>Installing JAX on Colab</strong> can break the matched jax/jaxlib/CUDA plugin; use the preinstalled one. Setting XLA variables after <code>import jax</code> is ignored.</li>
+        <li><strong>MJWarp calls inside <code>wp.Tape</code></strong> raise in 4.0.1; use finite differences across worlds.</li>
+        <li><strong>A stale snapshot of <code>.numpy()</code></strong>: it is a copy, not a view (on GPU); use <code>wp.to_torch</code> for live views.</li>
+      </ul>
+    </section>
+
+    <section class="sec" id="more-help">
+      <h2><span class="sec-num">11</span>More help</h2>
+      <p class="stuck p-stuck">Stuck? See <a href="troubleshooting.html">Troubleshooting</a> (symptom, cause, fix,
+        owning chapter) or the <a href="course-map.html">course map</a>. Terms are defined in the
+        <a href="glossary.html">glossary</a>; public names and CLI flags are in
+        <a href="api-at-a-glance.html">API at a glance</a>.</p>
+      <p class="small muted">Other cheat sheets: <a href="cheatsheet-part1.html">Part I</a>, <a href="cheatsheet-part2.html">Part II</a>, <a href="cheatsheet-part3.html">Part III</a>, <a href="cheatsheet-part4.html">Part IV</a>, <a href="cheatsheet-part5.html">Part V</a>.</p>
+    </section>
+
+    <footer class="chapter-footer">
+      <nav class="pager" aria-label="Reference pager">
+        <a class="prev" href="cheatsheet-part5.html"><span class="dir">Previous</span><span class="ttl">Part V cheat sheet</span></a>
+        <a class="index" href="../index.html"><span class="dir">All chapters</span><span class="ttl">Course home</span></a>
+        <a class="next" href="../index.html"><span class="dir">Next</span><span class="ttl">Course home</span></a>
+      </nav>
+      <p class="site-footer">MuJoCo Warp course · mujoco-warp 4.0.1 · warp-lang 1.19.0 · mujoco-core 4.0.1 · source commit 8f5b9f1</p>
+    </footer>
+  </main>
+</div>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/xml.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script defer src="../assets/course.js"></script>
+
+</body>
+</html>

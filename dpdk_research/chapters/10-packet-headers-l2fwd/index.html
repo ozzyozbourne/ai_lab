@@ -111,37 +111,38 @@
 
     <figure class="diagram">
       <div class="scroll-x">
-      <svg viewBox="0 0 760 210" role="img" aria-labelledby="f-layout-t">
+      <svg viewBox="0 0 800 250" role="img" aria-labelledby="f-layout-t">
         <title id="f-layout-t">A 54-byte Ethernet/IPv4/UDP frame with the three lib/net structs overlaid at offsets 0, 14 and 34, and the payload at 42.</title>
-        <text class="svg-label small muted" x="10" y="22">offset</text>
-        <text class="svg-label small mono" x="20" y="44">0</text>
-        <text class="svg-label small mono" x="150" y="44">14</text>
-        <text class="svg-label small mono" x="430" y="44">34</text>
-        <text class="svg-label small mono" x="545" y="44">42</text>
-        <text class="svg-label small mono" x="728" y="44">54</text>
-        <rect class="svg-box c1" x="20" y="52" width="130" height="50"/>
-        <text class="svg-label center bold" x="85" y="72">Ethernet</text>
-        <text class="svg-label center small mono" x="85" y="90">14 B</text>
-        <rect class="svg-box c2" x="150" y="52" width="280" height="50"/>
-        <text class="svg-label center bold" x="290" y="72">IPv4 (IHL 5)</text>
-        <text class="svg-label center small mono" x="290" y="90">20 B</text>
-        <rect class="svg-box c3" x="430" y="52" width="115" height="50"/>
-        <text class="svg-label center bold" x="487" y="72">UDP</text>
-        <text class="svg-label center small mono" x="487" y="90">8 B</text>
-        <rect class="svg-box c7" x="545" y="52" width="185" height="50"/>
-        <text class="svg-label center bold" x="637" y="72">payload</text>
-        <text class="svg-label center small mono" x="637" y="90">12 B</text>
-        <path class="svg-arrow c1" d="M85,150 L85,106"/>
-        <text class="svg-label center small mono" x="85" y="166">struct rte_ether_hdr *eth</text>
-        <text class="svg-label center small mono" x="85" y="182">= rte_pktmbuf_mtod(m, ...)</text>
-        <path class="svg-arrow c2" d="M290,150 L290,106"/>
-        <text class="svg-label center small mono" x="290" y="166">struct rte_ipv4_hdr *ip</text>
-        <text class="svg-label center small mono" x="290" y="182">= (void *)(eth + 1)</text>
-        <path class="svg-arrow c3" d="M487,150 L487,106"/>
-        <text class="svg-label center small mono" x="487" y="166">rte_udp_hdr *udp</text>
-        <text class="svg-label center small mono" x="487" y="182">= (void *)((char *)ip + ihl*4)</text>
-        <text class="svg-label center small muted" x="637" y="166">udp + 1</text>
-        <text class="svg-label small muted" x="20" y="205">eth + 1 works because sizeof(struct rte_ether_hdr) == 14; for IP use rte_ipv4_hdr_len(), never sizeof, because of options.</text>
+        <text class="svg-label small muted" x="60" y="22">offset</text>
+        <text class="svg-label small mono" x="60" y="44">0</text>
+        <text class="svg-label small mono" x="190" y="44">14</text>
+        <text class="svg-label small mono" x="470" y="44">34</text>
+        <text class="svg-label small mono" x="585" y="44">42</text>
+        <text class="svg-label small mono" x="760" y="44">54</text>
+        <rect class="svg-box c1" x="60" y="52" width="130" height="50"/>
+        <text class="svg-label center bold" x="125" y="72">Ethernet</text>
+        <text class="svg-label center small mono" x="125" y="90">14 B</text>
+        <rect class="svg-box c2" x="190" y="52" width="280" height="50"/>
+        <text class="svg-label center bold" x="330" y="72">IPv4 (IHL 5)</text>
+        <text class="svg-label center small mono" x="330" y="90">20 B</text>
+        <rect class="svg-box c3" x="470" y="52" width="115" height="50"/>
+        <text class="svg-label center bold" x="527" y="72">UDP</text>
+        <text class="svg-label center small mono" x="527" y="90">8 B</text>
+        <rect class="svg-box c7" x="585" y="52" width="190" height="50"/>
+        <text class="svg-label center bold" x="680" y="72">payload</text>
+        <text class="svg-label center small mono" x="680" y="90">12 B</text>
+        <path class="svg-arrow c1" d="M125,150 L125,106"/>
+        <text class="svg-label center small mono" x="125" y="166">struct rte_ether_hdr *eth</text>
+        <text class="svg-label center small mono" x="125" y="182">= rte_pktmbuf_mtod(m, ...)</text>
+        <path class="svg-arrow c2" d="M330,150 L330,106"/>
+        <text class="svg-label center small mono" x="330" y="166">struct rte_ipv4_hdr *ip</text>
+        <text class="svg-label center small mono" x="330" y="182">= (void *)(eth + 1)</text>
+        <path class="svg-arrow c3" d="M527,190 L527,106"/>
+        <text class="svg-label center small mono" x="560" y="206">struct rte_udp_hdr *udp</text>
+        <text class="svg-label center small mono" x="560" y="222">= (void *)((char *)ip + rte_ipv4_hdr_len(ip))</text>
+        <path class="svg-arrow c7" d="M680,150 L680,106"/>
+        <text class="svg-label center small mono" x="680" y="166">(void *)(udp + 1)</text>
+        <text class="svg-label small muted" x="10" y="246">eth + 1 works because sizeof(struct rte_ether_hdr) == 14; the IPv4 header length must come from the packet.</text>
       </svg>
       </div>
       <figcaption><span class="fig-num"></span>Parsing is pointer arithmetic over one buffer. Each struct is placed at the offset where the previous header ends. The IPv4 header length is variable (IHL), so the UDP offset must come from the packet, not from <code>sizeof</code>.</figcaption>
@@ -435,9 +436,9 @@
         <path class="svg-arrow c7" d="M220,56 L298,56"/><text class="svg-label center small mono" x="259" y="48">next</text>
         <rect class="svg-box c2 dashed" x="160" y="90" width="60" height="22"/>
         <rect class="svg-box c2 dashed" x="300" y="90" width="140" height="22"/>
-        <text class="svg-label center small" x="300" y="128">the IPv4 header [14, 34) lives in two places</text>
+        <text class="svg-label small" x="455" y="105">&lt;- the IPv4 header [14, 34) is split</text>
         <path class="svg-arrow c4" d="M190,114 L190,150"/>
-        <text class="svg-label small mono" x="20" y="168">mtod_offset(m, ip*, 14): reads 14 bytes past seg 0 = garbage</text>
+        <text class="svg-label small mono" x="20" y="168">mtod_offset(m, ip*, 14): 14 bytes of garbage</text>
         <path class="svg-arrow accent" d="M370,114 L470,150"/>
         <rect class="svg-box c2" x="470" y="140" width="230" height="40"/>
         <text class="svg-label center small mono" x="585" y="164">rte_pktmbuf_read(): copy in buf</text>
@@ -1347,7 +1348,7 @@ fill_udp4(const struct rte_ipv4_hdr *ip, struct rte_udp_hdr *udp, uint16_t sport
         <rect class="svg-box c1" x="310" y="110" width="60" height="36"/><text class="svg-label center small" x="340" y="132">0x0800</text>
         <rect class="svg-box c2" x="370" y="110" width="330" height="36"/><text class="svg-label center small" x="535" y="132">IPv4 / UDP / payload</text>
         <path class="svg-arrow accent" d="M175,68 L135,108"/>
-        <text class="svg-label small mono" x="20" y="176">rte_pktmbuf_prepend(m, 4); memmove(new, old, 12); type = TPID; tci = m-&gt;vlan_tci; m-&gt;l2_len += 4</text>
+        <text class="svg-label small mono" x="20" y="176">prepend(m, 4); memmove(new, old, 12); TPID; TCI = m-&gt;vlan_tci; l2_len += 4</text>
       </svg>
       <figcaption><span class="fig-num"></span>What <code>__rte_vlan_insert()</code> in <span class="src-path">lib/net/rte_ether.h</span> does. Only 12 bytes move; the original ether_type stays where it was and becomes the tag's <code>eth_proto</code>.</figcaption>
     </figure>
@@ -1584,7 +1585,7 @@ sent 8 of 8 frames to port 0
     <div class="widget" id="w-l2fwd">
       <div class="widget-head"><span class="widget-title">l2fwd data flow: TX buffer and drain timer</span><span class="badge">animation</span></div>
       <div class="widget-body">
-        <svg viewBox="0 0 720 250" role="img" aria-label="packets flow from port 0 RX through the lcore into a TX buffer and out of port 1"></svg>
+        <svg viewBox="0 0 720 200" role="img" aria-label="packets flow from port 0 RX through the lcore into a TX buffer and out of port 1"></svg>
         <div class="stat-row">
           <div class="stat"><div class="stat-label">sim time</div><div class="stat-value"><span id="l2-t">0</span><span class="stat-unit">ms</span></div></div>
           <div class="stat"><div class="stat-label">rx</div><div class="stat-value" id="l2-rx">0</div></div>
@@ -1661,7 +1662,7 @@ l2out1.pcap (port 1): 100 frames
 <span class="err">    dst 02:00:00:00:00:02  src 02:00:00:00:00:01  ttl 64  x100  WRONG</span>
 <span class="err">MAC rewrite check: FAIL (100 frames)</span></pre>
     </div>
-    <p class="output-caption">l2fwd refreshes its statistics with ANSI clear-screen codes (stripped here); the repeated blocks are the 1-second refreshes, shown once. 100 received on port 0, 100 sent on port 1, nothing dropped, and all 100 output frames carry the rewritten MACs. With <code>--no-mac-updating</code> the frames leave untouched, so the same check fails, as it should.</p>
+    <p class="output-caption">l2fwd refreshes its statistics every second (<code>-T 1</code>) with ANSI clear-screen codes, stripped here. Only one refresh is shown: the first one, printed before any frame arrived, was all zeros, and the later ones are identical to this. 100 received on port 0, 100 sent on port 1, nothing dropped, and all 100 output frames carry the rewritten MACs. With <code>--no-mac-updating</code> the frames leave untouched, so the same check fails, as it should.</p>
 
     <h3 id="mini">mini_l2fwd.c: the core loop on net_ring</h3>
     <p><code>mini_l2fwd.c</code> keeps only l2fwd's data path: two ports, one lcore, a TX buffer per port with the counting error callback, the TSC drain timer, and per-port counters that separate full flushes from timer flushes. The ports are <code>net_ring</code> vdevs. A <code>--vdev=net_ringN</code> port is a loopback (its RX and TX queue share one <code>rte_ring</code>), so frames injected into port 0 travel 0 &rarr; 1 &rarr; 0 &rarr; 1 forever.</p>

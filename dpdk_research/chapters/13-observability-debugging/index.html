@@ -1,0 +1,2642 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>13 Observability and Debugging | DPDK from Zero to Expert</title>
+<meta name="description" content="See inside a running DPDK application and fix it: telemetry with custom endpoints, the lcore usage callback and the Prometheus exporter; metrics, latency and bitrate stats; rte_trace and CTF; fast-path logging; dpdk-ethtool; gdb, ASan and mbuf checks; core-dump post-mortem with hugepage memory; five debug labs; the startup-error table; the band 2 review and project.">
+<link rel="stylesheet" href="../../assets/course.css">
+<style>
+  .btn-row { display: flex; flex-wrap: wrap; gap: .35rem; margin: .35rem 0; }
+  .btn.sel { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+  .mono-out { font-family: var(--font-mono); font-size: .78rem; white-space: pre-wrap; word-break: break-word;
+              background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
+              padding: .5rem .65rem; margin: .4rem 0; max-height: 17rem; overflow: auto; }
+  .verdict { margin: .4rem 0; padding: .45rem .65rem; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); font-size: .92rem; }
+  .verdict.ok { border-color: var(--c2); background: var(--c2-soft); }
+  .verdict.bad { border-color: var(--c4); background: var(--c4-soft); }
+  .bits { display: grid; grid-template-columns: repeat(auto-fit, minmax(12.5rem, 1fr)); gap: .25rem .8rem; margin: .4rem 0; font-size: .88rem; }
+  .bits label { display: flex; gap: .4rem; align-items: center; }
+  .bits code { font-size: .8rem; }
+  table.maps td.in { color: var(--c2); font-weight: 600; }
+  table.maps td.out { color: var(--c4); }
+  .tree-path { font-size: .85rem; color: var(--text-muted); margin: .2rem 0 .4rem; }
+  .tree-q { font-weight: 600; margin: .3rem 0; }
+  .tree-leaf { border-left: 4px solid var(--c2); padding: .4rem .7rem; background: var(--surface-2); border-radius: 0 6px 6px 0; margin: .4rem 0; }
+  .tbuf { font-family: var(--font-mono); font-size: .8rem; }
+  .ctrl-row { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; margin: .3rem 0; font-size: .9rem; }
+  #err-text { width: 100%; min-height: 3.2rem; font-family: var(--font-mono); font-size: .8rem; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: .4rem; box-sizing: border-box; }
+  dl.dec-out { margin: .4rem 0; }
+  dl.dec-out dt { font-weight: 600; margin-top: .35rem; }
+  dl.dec-out dd { margin: 0 0 0 1rem; }
+  .errtab td:first-child { font-family: var(--font-mono); font-size: .76rem; word-break: break-word; }
+  .errtab td { font-size: .85rem; vertical-align: top; }
+  .lab-cause { display: flex; flex-direction: column; gap: .3rem; margin: .4rem 0; }
+  .lab-cause .btn { text-align: left; white-space: normal; justify-content: flex-start; }
+  .lab-cause .btn.right { border-color: var(--c2); background: var(--c2-soft); }
+  .lab-cause .btn.wrong { border-color: var(--c4); background: var(--c4-soft); }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <button class="btn small toc-toggle" type="button" aria-label="Table of contents">&#9776;</button>
+  <a class="brand" href="../../index.html"><span>DPDK</span> Zero to Expert</a>
+  <span class="crumb">Chapter 13 &middot; Observability and Debugging</span>
+  <button class="btn small theme-toggle" type="button">Theme</button>
+  <div class="progress-bar"></div>
+</header>
+
+<div class="page">
+  <nav class="sidebar" data-auto-toc aria-label="On this page"></nav>
+
+  <main id="main" class="content">
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../12-port-control-stats-events/index.html"><span class="dir">&larr; Previous</span><span class="ttl">12 &middot; Port Control, Statistics and Events</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../14-concurrency-atomics-rcu/index.html"><span class="dir">Next &rarr;</span><span class="ttl">14 &middot; Concurrency: Atomics, Memory Ordering, Locks and RCU</span></a>
+    </nav>
+
+    <header class="chapter-header">
+      <div class="chapter-kicker">Chapter 13</div>
+      <h1>Observability and Debugging: Telemetry, Metrics, Tracing, Logs, gdb and Post-Mortem Analysis</h1>
+      <p class="chapter-subtitle">A DPDK application owns its NIC, so the usual Linux tools (<code>ip -s link</code>, <code>ethtool</code>, <code>tcpdump</code>, <code>top</code>) show you almost nothing. This chapter gives you the replacements: ask the running process for numbers, record what it did, read its logs cheaply, stop it in a debugger, and open its corpse after a crash. It ends with five broken programs to fix, one table of every startup error seen so far, and the band 2 project.</p>
+      <ul class="meta-row">
+        <li><span class="badge level-intermediate">Intermediate</span></li>
+        <li><span class="badge">~150 min</span></li>
+        <li><span class="badge">Prerequisites: ch3, ch7, ch8, ch9, ch11, ch12</span></li>
+        <li><span class="tag api">rte_telemetry.h</span></li>
+        <li><span class="tag api">rte_metrics.h</span></li>
+        <li><span class="tag api">rte_trace_point.h</span></li>
+      </ul>
+    </header>
+
+    <section class="objectives">
+      <div class="box-title">Learning objectives</div>
+      <ul>
+        <li>Query a running DPDK process over its telemetry socket with the shipped clients and with 25 lines of your own Python, and explain the protocol (SEQPACKET, hello message, <code>command,params</code>, one JSON reply of at most 16 KB).</li>
+        <li>Add your own telemetry endpoint with <code>rte_telemetry_register_cmd()</code> and the <code>rte_tel_data_*</code> builders, register an lcore usage callback so <code>/eal/lcore/usage</code> works, and export everything to Prometheus with <code>dpdk-telemetry-exporter.py</code> and a custom endpoint module.</li>
+        <li>Measure latency and bitrate with lib/latencystats and lib/bitratestats, publish your own values with lib/metrics, and expose them through your own endpoint (the 26.11 way, since <code>rte_metrics_tel_*</code> is gone).</li>
+        <li>Define, register and enable tracepoints, switch fast-path tracepoints on for one build, and read the CTF output (metadata and channel files) with a tiny decoder.</li>
+        <li>Use <code>RTE_LOG_DP</code> in the fast path and show with a measurement that a disabled <code>RTE_LOG_DP(DEBUG)</code> costs nothing while <code>RTE_LOG(DEBUG)</code> does not.</li>
+        <li>Debug a live process with gdb (threads, a breakpoint inside a PMD), read <code>rte_panic</code> backtraces, run gcc ASan, check mbufs with <code>rte_mbuf_check()</code>, and know what each tool cannot see.</li>
+        <li>Produce a useful core file of a hugepage DPDK process by setting <code>coredump_filter</code>, and explain why the default core contains no mbufs.</li>
+        <li>Diagnose five seeded bugs from their counters alone, decode every startup error from ch4, ch8 and this chapter, and pass the band 2 project's acceptance check.</li>
+      </ul>
+    </section>
+
+    <section class="tools-box">
+      <div class="box-title">Tools for this chapter</div>
+      <ul>
+        <li><code>code/run.sh</code>: builds and runs every example, the exercise solutions, <code>debug_labs/run_all.sh</code> and <code>band2_project/run.sh</code> (about 60 s, needs root). <code>code/expected_output.txt</code> is its real output on the course VM; every terminal box below is cut from it.</li>
+        <li>Telemetry clients installed with DPDK: <code>dpdk-telemetry.py</code>, <code>dpdk-telemetry-watcher.py</code>, <code>dpdk-telemetry-exporter.py</code> (+ <code>share/dpdk/telemetry-endpoints/</code>). Our own: <code>telclient.py</code>, <code>tq.py</code>, <code>exporter/ch13.py</code>.</li>
+        <li><code>gdb</code> 15, <code>addr2line</code>, gcc's AddressSanitizer (the clang runtime is not installed here), <code>ctf_peek.py</code> (because <code>babeltrace</code> is not installed).</li>
+        <li>The prebuilt sample <code>$DPDK_SRC/build/examples/dpdk-ethtool</code>.</li>
+        <li>Virtual ports: <code>net_null</code>, <code>net_ring</code>, <code>net_tap</code> (kernel interfaces <code>ch13tap0..2</code>). The core-dump lab uses 32 MB of real hugepages on purpose.</li>
+      </ul>
+    </section>
+
+    <!-- ============================================================ 1 -->
+    <h2 id="map"><span class="sec-num">1</span>Why a DPDK app needs its own observability</h2>
+    <p>With a kernel driver, the kernel is a witness. It counts every packet per interface, <code>tcpdump</code> can tap the stack, <code>ethtool -S</code> reads the NIC counters, and <code>top</code> tells you which process is busy. A DPDK application takes the NIC away from the kernel (ch1, ch9). The kernel no longer sees the packets, the interface may not even exist on the kernel side, and every polling lcore shows 100% CPU in <code>top</code> whether it moves 0 or 14 million packets per second. So the application itself has to answer the questions "how many?", "how busy?", "what happened, and when?" and "why did it crash?".</p>
+    <p>DPDK gives you a separate tool for each question. They differ in <em>where they run</em> and <em>what they cost</em>, and that decides when you use which:</p>
+
+    <figure class="diagram">
+      <div class="scroll-x">
+      <svg viewBox="0 0 760 330" role="img" aria-labelledby="f-map-t" style="min-width:600px">
+        <title id="f-map-t">Observability map. Inside the DPDK process: lcores running the poll loop, the telemetry thread with callbacks, per-thread trace buffers, the log. Outside: telemetry clients and the Prometheus exporter connect over a unix socket; trace files go to a directory; logs go to stderr or syslog; gdb attaches with ptrace; a core file is written on a crash; secondary processes like proc-info and dumpcap map the shared hugepage memory (ch16).</title>
+        <rect class="svg-box c7 dashed" x="210" y="10" width="340" height="310"/>
+        <text class="svg-label center bold" x="380" y="30">your DPDK process</text>
+        <rect class="svg-box c1" x="225" y="45" width="150" height="62"/>
+        <text class="svg-label center bold" x="300" y="66">lcores 1..N</text>
+        <text class="svg-label center small" x="300" y="84">poll loop, counters</text>
+        <text class="svg-label center small" x="300" y="99">(atomics, one writer)</text>
+        <rect class="svg-box c6" x="390" y="45" width="145" height="62"/>
+        <text class="svg-label center bold" x="462" y="66">telemetry thread</text>
+        <text class="svg-label center small" x="462" y="84">dpdk-telemet-v2</text>
+        <text class="svg-label center small" x="462" y="99">runs your callbacks</text>
+        <path class="svg-arrow c6 dashed" d="M388,80 L378,80"/>
+        <rect class="svg-box c5" x="225" y="125" width="150" height="56"/>
+        <text class="svg-label center bold" x="300" y="146">trace buffers</text>
+        <text class="svg-label center small" x="300" y="164">one per thread, lock-free</text>
+        <rect class="svg-box c7" x="390" y="125" width="145" height="56"/>
+        <text class="svg-label center bold" x="462" y="146">rte_log</text>
+        <text class="svg-label center small" x="462" y="164">RTE_LOG / RTE_LOG_DP</text>
+        <rect class="svg-box c2" x="225" y="200" width="310" height="50"/>
+        <text class="svg-label center bold" x="380" y="220">hugepage memory: mempools, rings, ports</text>
+        <text class="svg-label center small" x="380" y="238">rte_metrics table, latency stats (memzones)</text>
+        <rect class="svg-box c4" x="225" y="265" width="310" height="44"/>
+        <text class="svg-label center bold" x="380" y="284">rte_panic / SIGSEGV</text>
+        <text class="svg-label center small" x="380" y="300">abort() &rarr; core file (if allowed)</text>
+        <!-- outside, right -->
+        <rect class="svg-box c6" x="590" y="40" width="160" height="72"/>
+        <text class="svg-label center bold" x="670" y="60">clients</text>
+        <text class="svg-label center small mono" x="670" y="78">dpdk-telemetry.py</text>
+        <text class="svg-label center small mono" x="670" y="94">watcher, exporter</text>
+        <path class="svg-arrow c6 both" d="M537,76 L586,76"/>
+        <text class="svg-label center small" x="562" y="68">socket</text>
+        <rect class="svg-box c5" x="590" y="125" width="160" height="56"/>
+        <text class="svg-label center bold" x="670" y="146">--trace-dir</text>
+        <text class="svg-label center small" x="670" y="164">metadata + channel0_N</text>
+        <path class="svg-arrow c5" d="M377,140 L388,116 L562,116 L586,146"/>
+        <rect class="svg-box c7" x="590" y="195" width="160" height="44"/>
+        <text class="svg-label center bold" x="670" y="214">stderr / syslog</text>
+        <text class="svg-label center small" x="670" y="230">--syslog, --log-level</text>
+        <path class="svg-arrow c7" d="M537,170 Q560,195 586,212"/>
+        <rect class="svg-box c4" x="590" y="258" width="160" height="52"/>
+        <text class="svg-label center bold" x="670" y="279">core file</text>
+        <text class="svg-label center small" x="670" y="296">gdb post-mortem</text>
+        <path class="svg-arrow c4" d="M537,287 L586,284"/>
+        <!-- outside, left -->
+        <rect class="svg-box c1" x="10" y="40" width="160" height="62"/>
+        <text class="svg-label center bold" x="90" y="62">gdb (live)</text>
+        <text class="svg-label center small" x="90" y="80">ptrace: stops all</text>
+        <text class="svg-label center small" x="90" y="95">threads, breakpoints</text>
+        <path class="svg-arrow c1" d="M172,72 L221,72"/>
+        <rect class="svg-box c2 dashed" x="10" y="196" width="160" height="62"/>
+        <text class="svg-label center bold" x="90" y="218">secondary process</text>
+        <text class="svg-label center small" x="90" y="236">proc-info, dumpcap</text>
+        <text class="svg-label center small" x="90" y="251">(ch16)</text>
+        <path class="svg-arrow c2 dashed" d="M172,226 L221,226"/>
+        <rect class="svg-box c3" x="10" y="120" width="160" height="56"/>
+        <text class="svg-label center bold" x="90" y="141">ASan / debug build</text>
+        <text class="svg-label center small" x="90" y="159">compiled into the binary</text>
+        <path class="svg-arrow c3 dashed" d="M172,148 L206,148"/>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>Who sees what. Telemetry, trace and logs live <em>inside</em> the process and are designed to run in production. gdb and core files look at the process from the outside and stop it (or it is already dead). Secondary processes (ch16) share its hugepage memory. ASan and debug builds change the binary itself.</figcaption>
+    </figure>
+
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Tool</th><th>Question it answers</th><th>Cost while running</th><th>Section</th></tr></thead>
+        <tbody>
+          <tr><td>Telemetry</td><td>"What are the numbers right now?" (counters, states, sizes)</td><td>zero until asked; a callback on another thread when asked</td><td><a href="#telemetry">2</a></td></tr>
+          <tr><td>Metrics, latency, bitrate</td><td>"How long does a packet stay? How many bits per second?"</td><td>an RX and a TX callback per burst; sampling</td><td><a href="#metrics">3</a></td></tr>
+          <tr><td>Trace</td><td>"What happened, in which order, when?"</td><td>~1 load + branch per disabled tracepoint; a few stores when enabled</td><td><a href="#trace">4</a></td></tr>
+          <tr><td>Logs</td><td>"What did the program say?"</td><td>a level check per call; <code>RTE_LOG_DP</code> below the build level: nothing</td><td><a href="#logs">5</a></td></tr>
+          <tr><td>gdb, ASan, mbuf checks</td><td>"Where exactly is the bug?"</td><td>stops the process / slows it 2x / a function call</td><td><a href="#gdb">7</a></td></tr>
+          <tr><td>Core dump</td><td>"Why did it die?"</td><td>nothing until the crash; disk space after</td><td><a href="#core">8</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ============================================================ 2 -->
+    <h2 id="telemetry"><span class="sec-num">2</span>Telemetry: ask the running process</h2>
+    <p><span class="key-term">Telemetry</span> (lib/telemetry) is a tiny server built into every DPDK process. It is on by default (<code>--no-telemetry</code> turns it off). During <code>rte_eal_init()</code> it creates a Unix socket in the process's runtime directory, <code>/var/run/dpdk/&lt;file-prefix&gt;/dpdk_telemetry.v2</code> for root, and starts a control thread named <code>dpdk-telemet-v2</code> that waits in <code>accept()</code>. Any program on the same machine with permission to open that file can connect and ask questions. Your lcores are not involved at all: they keep polling while the questions are answered on other threads.</p>
+
+    <h3 id="tel-protocol">The protocol in five rules</h3>
+    <ol>
+      <li>The socket type is <code>AF_UNIX, SOCK_SEQPACKET</code>. Unlike a TCP-like stream, SEQPACKET keeps message boundaries: one <code>send()</code> is exactly one request, one <code>recv()</code> is exactly one reply.</li>
+      <li>The server speaks first. On connect it sends <code>{"version":"DPDK 26.11.0","pid":N,"max_output_len":16384}</code>.</li>
+      <li>A request is a command, optionally followed by a comma and a parameter string: <code>/ethdev/stats,0</code>. Everything after the first comma is passed to the callback as <code>params</code>.</li>
+      <li>The reply is one JSON object whose single key is the command: <code>{"/ethdev/stats": {...}}</code>. An unknown command, or a callback that returns a negative value, gives <code>{"/cmd": null}</code>.</li>
+      <li>Each connection gets its own pthread (at most 10 connections at once, <code>MAX_CONNECTIONS</code> in <span class="src-path">lib/telemetry/telemetry.c</span>). A command name is shorter than 56 bytes, a reply is at most 16 KB.</li>
+    </ol>
+
+    <div class="widget" id="w-tel">
+      <div class="widget-head"><span class="widget-title">Telemetry request and response, step by step</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="scroll-x"><svg style="min-width:560px" viewBox="0 0 720 300" role="img" aria-label="Animated telemetry exchange between a client and the threads of a DPDK process"></svg></div>
+        <div class="stat-row" style="margin-top:.4rem">
+          <div class="stat"><div class="stat-label">client state</div><div class="stat-value" id="tel-st-client" style="font-size:1rem">idle</div></div>
+          <div class="stat"><div class="stat-label">open connections</div><div class="stat-value" id="tel-st-conn">0</div><div class="stat-unit">/ 10</div></div>
+          <div class="stat"><div class="stat-label">reply bytes</div><div class="stat-value" id="tel-st-bytes">-</div></div>
+        </div>
+        <div class="mono-out" id="tel-wire" aria-live="polite">(nothing on the wire yet)</div>
+      </div>
+    </div>
+    <p class="output-caption">The JSON shown in the last steps is the real reply captured from <code>telemetry_app</code> on the course VM (section 2.2). Step 3 and step 6 ask you to predict before they reveal.</p>
+
+    <h3 id="tel-first">2.1 First queries: built-in endpoints and the shipped client</h3>
+    <p>Many libraries register endpoints for you: <code>/ethdev/list</code>, <code>/ethdev/info,&lt;port&gt;</code>, <code>/ethdev/stats,&lt;port&gt;</code>, <code>/ethdev/xstats,&lt;port&gt;</code> (the only place where per-queue counters live in 26.11, see ch12), <code>/mempool/list</code>, <code>/mempool/info,&lt;name&gt;</code>, <code>/eal/heap_info,&lt;id&gt;</code>, <code>/eal/lcore/info,&lt;id&gt;</code>, <code>/eal/lcore/usage</code>, <code>/ring/list</code>, and more. <code>/</code> lists them all, <code>/help,&lt;cmd&gt;</code> prints a command's help text. <code>dpdk-telemetry.py -f &lt;prefix&gt;</code> is the interactive client; it reads commands from stdin, so you can script it. It also understands <code>FOREACH</code>, which runs one command for every element of a list:</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 1a)</span></div>
+<pre><span class="hl">--- 1a. dpdk-telemetry.py (the shipped client, commands on stdin)</span>
+<span class="prompt">$ </span><span class="cmd">printf '/ch13/stats\n/ch13/echo,hello world\n/eal/lcore/usage\n/help,/ch13/stats\n/ch13/nothing\n' | dpdk-telemetry.py -f ch13-tel</span>
+{"/ch13/stats": {"worker_lcore": 1, "uptime_ms": 1116, "busy_polls": 22338, "idle_polls": 43898074, "port0": {"rx": 714848, "tx": 714848, "drop": 0}, "port1": {"rx": 714848, "tx": 714848, "drop": 0}}}
+{"/ch13/echo": {"cmd": "/ch13/echo", "params": "hello world"}}
+{"/eal/lcore/usage": {"lcore_ids": [1], "total_cycles": [3016390046], "busy_cycles": [37447478], "usage_ratio": ["1.24%"]}}
+{"/help": {"/ch13/stats": "Forwarder counters of telemetry_app. No parameters"}}
+{"/ch13/nothing": null}
+<span class="prompt">$ </span><span class="cmd">printf 'FOREACH /ethdev/list /ethdev/stats .opackets\nFOREACH i /ethdev/list /ethdev/info,$i .name\n' | dpdk-telemetry.py -f ch13-tel</span>
+[743616, 743648]
+[{"i": 0, "name": "net_null0"}, {"i": 1, "name": "net_null1"}]</pre>
+    </div>
+    <p class="output-caption">Notice: <code>/ch13/stats</code> and <code>/ch13/echo</code> are not built in, they are this chapter's program. <code>/eal/lcore/usage</code> reports lcore 1 at 1.16% busy; it would be <em>empty</em> without the callback of section 2.3. <code>/ch13/nothing</code> does not exist, and the answer is <code>null</code>, not an error message.</p>
+
+    <p>The protocol is simple enough that a client fits in 25 lines. <code>telclient.py</code> connects, prints the hello message, and times each request:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/telclient.py</span><span class="lang">Python</span></div>
+<pre data-lines><code>#!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-3-Clause
+# Chapter 13: telclient.py - the whole telemetry protocol in 25 lines.
+#
+# usage: python3 -I telclient.py &lt;file-prefix&gt; &lt;cmd&gt; [&lt;cmd&gt; ...]
+#
+# The socket is &lt;runtime dir&gt;/dpdk_telemetry.v2, an AF_UNIX SOCK_SEQPACKET
+# socket. SEQPACKET keeps message boundaries: one send() is one request,
+# one recv() is one complete JSON reply (at most max_output_len bytes).
+import json
+import socket
+import sys
+import time
+
+prefix = sys.argv[1]
+path = f"/var/run/dpdk/{prefix}/dpdk_telemetry.v2"
+s = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+s.connect(path)
+hello = json.loads(s.recv(1024))            # server speaks first
+print("connected to", path)
+print("hello:", hello)
+for cmd in sys.argv[2:]:
+    t0 = time.perf_counter()
+    s.send(cmd.encode())                    # "&lt;command&gt;[,&lt;params&gt;]"
+    raw = s.recv(hello["max_output_len"])
+    dt = (time.perf_counter() - t0) * 1e6
+    reply = json.loads(raw)
+    print(f"{cmd} -&gt; {len(raw)} bytes in {dt:.0f} us")
+    print("   ", json.dumps(reply)[:300])
+s.close()</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 1b)</span></div>
+<pre><span class="hl">--- 1b. telclient.py (25 lines of Python, raw SEQPACKET)</span>
+<span class="prompt">$ </span><span class="cmd">python3 -I telclient.py ch13-tel /ch13/stats /eal/lcore/usage /ethdev/xstats,0 /mempool/info,ch13_tel_pool /eal/heap_info,0</span>
+connected to /var/run/dpdk/ch13-tel/dpdk_telemetry.v2
+hello: {'version': 'DPDK 26.11.0', 'pid': 11091, 'max_output_len': 16384}
+/ch13/stats -&gt; 178 bytes in 203 us
+    {"/ch13/stats": {"worker_lcore": 1, "uptime_ms": 1215, "busy_polls": 24301, "idle_polls": 47774351, "port0": {"rx": 777632, "tx": 777632, "drop": 0}, "port1": {"rx": 777632, "tx": 777632, "drop": 0}}}
+/eal/lcore/usage -&gt; 115 bytes in 169 us
+    {"/eal/lcore/usage": {"lcore_ids": [1], "total_cycles": [3281244710], "busy_cycles": [40680014], "usage_ratio": ["1.24%"]}}
+/ethdev/xstats,0 -&gt; 291 bytes in 72 us
+    {"/ethdev/xstats": {"rx_good_packets": 777888, "tx_good_packets": 777888, "rx_good_bytes": 49784832, "tx_good_bytes": 49784832, "rx_missed_errors": 0, "rx_errors": 0, "tx_errors": 0, "rx_mbuf_allocation_errors": 0, "rx_q0_packets": 777888, "rx_q0_bytes": 49784832, "tx_q0_packets": 777888, "tx_q0_byt
+/mempool/info,ch13_tel_pool -&gt; 370 bytes in 62 us
+    {"/mempool/info": {"name": "ch13_tel_pool", "pool_id": 4430431680, "flags": 16, "socket_id": 0, "size": 4095, "cache_size": 64, "elt_size": 2304, "header_size": 64, "trailer_size": 0, "private_data_size": 128, "ops_index": 1, "populated_size": 4095, "total_cache_count": 32, "common_pool_count": 4063
+/eal/heap_info,0 -&gt; 179 bytes in 50 us
+    {"/eal/heap_info": {"Heap_id": 0, "Name": "socket_0", "Heap_size": 134217728, "Free_size": 116857984, "Alloc_size": 17359744, "Greatest_free_size": 116857984, "Alloc_count": 18, "Free_count": 1}}</pre>
+    </div>
+    <p class="output-caption">A request takes tens of microseconds. <code>/mempool/info</code> shows <code>common_pool_count</code> (objects in the pool's ring) and <code>total_cache_count</code> (objects in per-lcore caches): you will use those two in the leak and double-free labs.</p>
+
+    <h3 id="tel-custom">2.2 Your own endpoint</h3>
+    <p><code>telemetry_app.c</code> is a forwarder: a worker lcore moves packets between two <code>net_null</code> ports. It registers <code>/ch13/stats</code>, which returns its own counters as a JSON dictionary with one nested dictionary per port:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/telemetry_app.c (the endpoint and the usage callback)</span><span class="lang">C</span></div>
+<pre data-lines data-start="69" data-hl="76-78,95-98,103-104"><code class="language-c">/* ---- 1. the custom endpoint ------------------------------------------ */
+/*
+ * Runs on the telemetry thread ("dpdk-telemet-v2" spawns one pthread per
+ * client connection), NOT on an lcore. It must only read shared state in a
+ * thread-safe way, must be quick, and its JSON must fit in 16 KB.
+ * Return 0 on success; a negative value makes the client see null.
+ */
+static int
+tel_stats(const char *cmd __rte_unused, const char *params __rte_unused,
+	  struct rte_tel_data *d)
+{
+	uint64_t hz = rte_get_tsc_hz();
+	uint16_t p;
+
+	rte_tel_data_start_dict(d);
+	rte_tel_data_add_dict_uint(d, "worker_lcore", wctr.lcore);
+	rte_tel_data_add_dict_uint(d, "uptime_ms",
+		(rte_rdtsc() - wctr.start_tsc) * 1000 / hz);
+	rte_tel_data_add_dict_uint(d, "busy_polls", get(&amp;wctr.busy_polls));
+	rte_tel_data_add_dict_uint(d, "idle_polls", get(&amp;wctr.idle_polls));
+
+	for (p = 0; p &lt; 2; p++) {
+		/* a nested container must be allocated and handed over;
+		 * the library frees it after serialising (keep_data = 0) */
+		struct rte_tel_data *pd = rte_tel_data_alloc();
+		char name[16];
+
+		if (pd == NULL)
+			return -ENOMEM;
+		rte_tel_data_start_dict(pd);
+		rte_tel_data_add_dict_uint(pd, "rx", get(&amp;pctr[p].rx));
+		rte_tel_data_add_dict_uint(pd, "tx", get(&amp;pctr[p].tx));
+		rte_tel_data_add_dict_uint(pd, "drop", get(&amp;pctr[p].drop));
+		snprintf(name, sizeof(name), "port%u", p);
+		rte_tel_data_add_dict_container(d, name, pd, 0);
+	}
+	return 0;
+}
+
+/* /ch13/echo,&lt;anything&gt;: the text after the first comma is 'params' */
+static int
+tel_echo(const char *cmd, const char *params, struct rte_tel_data *d)
+{
+	rte_tel_data_start_dict(d);
+	rte_tel_data_add_dict_string(d, "cmd", cmd);
+	rte_tel_data_add_dict_string(d, "params", params ? params : "(none)");
+	return 0;
+}
+
+/* ---- 3. the lcore usage callback ------------------------------------- */
+/*
+ * Called by /eal/lcore/usage, /eal/lcore/info and rte_lcore_dump() for each
+ * lcore, on whatever thread asked. Fill only what we know; return &lt;0 for
+ * lcores we do not track (they are then left out of the report).
+ */
+static int
+usage_cb(unsigned int lcore_id, struct rte_lcore_usage *u)
+{
+	if (lcore_id != wctr.lcore || wctr.start_tsc == 0)
+		return -1;
+	u-&gt;total_cycles = rte_rdtsc() - wctr.start_tsc;
+	u-&gt;busy_cycles = get(&amp;wctr.busy_cycles);
+	return 0;
+}</code></pre>
+    </div>
+    <p>Reading it from the top:</p>
+    <ul>
+      <li>A callback has the type <code>telemetry_cb</code>: <code>int (*)(const char *cmd, const char *params, struct rte_tel_data *d)</code>. It fills <code>d</code>; the library turns <code>d</code> into JSON. You never write JSON by hand.</li>
+      <li>First choose the shape: <code>rte_tel_data_start_dict(d)</code> for <code>{"key": value}</code>, <code>rte_tel_data_start_array(d, RTE_TEL_UINT_VAL)</code> for a list of one value type, or <code>rte_tel_data_string(d, "text")</code> for a single string.</li>
+      <li>Then add entries: <code>rte_tel_data_add_dict_uint/int/string/uint_hex</code> or the <code>_array_</code> versions. A dictionary holds at most <code>RTE_TEL_MAX_DICT_ENTRIES</code> (256) entries, an array <code>RTE_TEL_MAX_ARRAY_ENTRIES</code> (512), a string value <code>RTE_TEL_MAX_STRING_LEN</code> (128) bytes.</li>
+      <li>Nesting: allocate a child with <code>rte_tel_data_alloc()</code>, fill it, and attach it with <code>rte_tel_data_add_dict_container(d, name, child, 0)</code>. The last argument <code>keep = 0</code> hands ownership to the library, which frees the child after serialising.</li>
+      <li>The callback runs on the connection's pthread, while the worker keeps writing the counters. So the counters are <code>RTE_ATOMIC(uint64_t)</code>, written with a relaxed load+store by their one writer and read with relaxed loads (ch14 explains why plain <code>uint64_t</code> would be a data race). Never take a lock that an lcore holds for long, and keep the callback short.</li>
+    </ul>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/telemetry_app.c (registration)</span><span class="lang">C</span></div>
+<pre data-lines data-start="213"><code class="language-c">	/* 1 + 2: register the endpoints. Names: '/' first, only [A-Za-z0-9_/],
+	 * shorter than 56 bytes; help text shorter than 128 bytes. */
+	printf("register /ch13/stats      -&gt; %d\n",
+	       rte_telemetry_register_cmd("/ch13/stats", tel_stats,
+			"Forwarder counters of telemetry_app. No parameters"));
+	printf("register /ch13/echo       -&gt; %d\n",
+	       rte_telemetry_register_cmd("/ch13/echo", tel_echo,
+			"Echoes its parameters back. Parameters: any text"));
+	/* two deliberate mistakes, to see the real return codes */
+	printf("register /ch13/bad-name   -&gt; %d (a '-' is not allowed)\n",
+	       rte_telemetry_register_cmd("/ch13/bad-name", tel_echo, "x"));
+	printf("register ch13/no_slash    -&gt; %d (must start with '/')\n",
+	       rte_telemetry_register_cmd("ch13/no_slash", tel_echo, "x"));
+
+	/* 3: the usage callback */
+	rte_lcore_register_usage_cb(usage_cb);</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (telemetry_app's own output, printed after SIGINT)</span></div>
+<pre><span class="hl">--- telemetry_app's own output:</span>
+register /ch13/stats      -&gt; 0
+register /ch13/echo       -&gt; 0
+register /ch13/bad-name   -&gt; -22 (a '-' is not allowed)
+register ch13/no_slash    -&gt; -22 (must start with '/')
+worker on lcore 1, 20000 busy polls/s; telemetry socket: /var/run/dpdk/ch13-tel/dpdk_telemetry.v2
+READY
+
+final: port0 rx=3441888 port1 tx=3441888 drops=0
+rte_lcore_dump() uses the same usage callback:
+lcore 0, socket 0, role RTE, cpuset 0
+lcore 1, socket 0, role RTE, cpuset 1</pre>
+    </div>
+    <p class="output-caption"><code>rte_telemetry_register_cmd()</code> returns <code>-EINVAL</code> (-22) for a name with a character outside <code>[A-Za-z0-9_/]</code> or without the leading <code>/</code>, and for help text of 128 bytes or more. Check the return value: a typo in a name otherwise just gives you a missing endpoint. You can register before or after <code>rte_eal_init()</code>; the callbacks are kept in a sorted list protected by a spinlock.</p>
+
+    <h3 id="tel-usage">2.3 The lcore usage callback</h3>
+    <p>Every polling lcore looks 100% busy to the kernel, so only the application knows how much of its loop does real work. <code>rte_lcore_register_usage_cb(cb)</code> lets you tell EAL. When someone asks <code>/eal/lcore/usage</code> (or <code>/eal/lcore/info,&lt;id&gt;</code>), EAL calls <code>cb(lcore_id, &amp;usage)</code> for each lcore; you fill <code>usage-&gt;total_cycles</code> and <code>usage-&gt;busy_cycles</code> (TSC cycles) and return 0, or return a negative value for lcores you do not track. What "busy" means is your decision. <code>telemetry_app</code> counts the cycles of loop iterations that moved packets; testpmd does the same when started with <code>--record-core-cycles</code>.</p>
+    <div class="callout warning"><div class="callout-title">Read the source, not only the comment</div><p>The header says the usage callback is also used by <code>rte_lcore_dump()</code>. In 26.11, <code>lcore_dump_cb()</code> in <span class="src-path">lib/eal/common/eal_common_lcore.c</span> does call it and builds the string <code>", busy cycles x/y (ratio z%)"</code>, then frees it without printing it. That is why the dump in the output above shows no usage. The telemetry endpoints work.</p></div>
+
+    <h3 id="tel-tools">2.4 Watcher, exporter and your own exporter module</h3>
+    <p><code>dpdk-telemetry-watcher.py</code> is a <code>top</code> for telemetry values. Give it <code>command.field</code> pairs; <code>-d</code> prints the change per second instead of the absolute value:</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 1c)</span></div>
+<pre><span class="hl">--- 1c. dpdk-telemetry-watcher.py (deltas once per second)</span>
+<span class="prompt">$ </span><span class="cmd">dpdk-telemetry-watcher.py -f ch13-tel -t 3 -d /ch13/stats.busy_polls /ethdev/stats,0.ipackets</span>
+Waiting for connection to DPDK application...
+Connected to application: "telemetry_app"
+Time         /ch13/stats.busy_polls /ethdev/stats,0.ipackets
+11:48:52                      20018                   640640
+11:48:53                      20019                   640480
+11:48:54                      20013                   640448</pre>
+    </div>
+    <p class="output-caption">The paced worker does exactly ~20,000 busy polls per second (the <code>--rate</code> default), each moving one 32-packet burst per port: 640,000 packets per second on port 0.</p>
+    <p>For dashboards and alerts you want the numbers in a time-series database. <code>dpdk-telemetry-exporter.py</code> is an HTTP server that answers Prometheus/OpenMetrics scrapes. On each <code>GET /metrics</code> it opens the telemetry socket, runs every loaded <em>endpoint module</em>, and prints the result in the text format. An endpoint module is a Python file with two functions: <code>info()</code> (metric name &rarr; help, type) and <code>metrics(sock)</code> (query telemetry, return <code>(name, value, labels)</code> tuples). DPDK ships three (<code>counters</code>, <code>cpu</code>, <code>memory</code> in <span class="src-path">usertools/telemetry-endpoints/</span>); here is one for our endpoint:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/exporter/ch13.py</span><span class="lang">Python</span></div>
+<pre data-lines><code># SPDX-License-Identifier: BSD-3-Clause
+# Chapter 13: exporter/ch13.py - a dpdk-telemetry-exporter.py endpoint module.
+#
+# The exporter imports every *.py in its load path. Each module provides
+# info() (metric name -&gt; (help text, type)) and metrics(sock), which queries
+# telemetry and returns (name, value, labels) tuples. This one turns the
+# app's own /ch13/stats endpoint into Prometheus metrics.
+#
+# run: dpdk-telemetry-exporter.py -p ./exporter -e ch13 \
+#        -s /var/run/dpdk/ch13-tel/dpdk_telemetry.v2 -o http://127.0.0.1:9913
+
+PKTS = "port_packets"
+POLLS = "worker_polls"
+
+
+def info():
+    return {
+        PKTS: ("Packets counted by telemetry_app, by port and direction.", "counter"),
+        POLLS: ("Worker loop iterations, busy or idle.", "counter"),
+    }
+
+
+def metrics(sock):
+    st = sock.cmd("/ch13/stats")
+    out = []
+    for port in ("port0", "port1"):
+        for d in ("rx", "tx", "drop"):
+            out.append((PKTS, st[port][d], {"port": port, "dir": d}))
+    out.append((POLLS, st["busy_polls"], {"kind": "busy"}))
+    out.append((POLLS, st["idle_polls"], {"kind": "idle"}))
+    return out</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 1d, HELP lines removed)</span></div>
+<pre><span class="hl">--- 1d. dpdk-telemetry-exporter.py with the shipped 'counters' endpoint and our exporter/ch13.py</span>
+<span class="prompt">$ </span><span class="cmd">dpdk-telemetry-exporter.py -p $DPDK_PREFIX/share/dpdk/telemetry-endpoints:./exporter -e counters -e ch13 -s /var/run/dpdk/ch13-tel/dpdk_telemetry.v2 -o openmetrics://127.0.0.1:9913 &amp;</span>
+<span class="prompt">$ </span><span class="cmd">python3 -c 'urllib.request.urlopen("http://127.0.0.1:9913/metrics")' | grep -v '^# HELP'</span>
+# TYPE dpdk_ch13_port_packets counter
+# TYPE dpdk_ch13_worker_polls counter
+dpdk_ch13_port_packets{port="port0", dir="rx"} 3423680
+dpdk_ch13_port_packets{port="port0", dir="tx"} 3423680
+dpdk_ch13_port_packets{port="port0", dir="drop"} 0
+dpdk_ch13_port_packets{port="port1", dir="rx"} 3423680
+dpdk_ch13_port_packets{port="port1", dir="tx"} 3423680
+dpdk_ch13_port_packets{port="port1", dir="drop"} 0
+dpdk_ch13_worker_polls{kind="busy"} 106990
+dpdk_ch13_worker_polls{kind="idle"} 209812686
+# TYPE dpdk_counters_rx_packets counter
+# TYPE dpdk_counters_rx_bytes counter
+# TYPE dpdk_counters_rx_missed counter
+# TYPE dpdk_counters_rx_nombuf counter
+# TYPE dpdk_counters_rx_errors counter
+# TYPE dpdk_counters_tx_packets counter
+# TYPE dpdk_counters_tx_bytes counter
+# TYPE dpdk_counters_tx_errors counter
+dpdk_counters_rx_packets{port="net_null0"} 3423872
+dpdk_counters_rx_packets{port="net_null0"} 3423872
+dpdk_counters_tx_packets{port="net_null0"} 3423872
+dpdk_counters_rx_packets{port="net_null1"} 3423968
+dpdk_counters_rx_packets{port="net_null1"} 3423968
+dpdk_counters_tx_packets{port="net_null1"} 3423968
+INFO using endpoint: ch13 (from ./exporter/ch13.py)
+INFO using endpoint: counters (from $DPDK_PREFIX/share/dpdk/telemetry-endpoints/counters.py)
+INFO listening on ('127.0.0.1', 9913)
+INFO 127.0.0.1 GET /metrics HTTP/1.1
+INFO shutting down</pre>
+    </div>
+    <p class="output-caption">The exporter prefixes every name with <code>dpdk_&lt;module&gt;_</code>, so name your metrics without the module name. Look at the shipped <code>counters</code> module: <code>dpdk_counters_rx_packets</code> appears twice per port. That is a real duplicate line in <span class="src-path">usertools/telemetry-endpoints/counters.py</span> (it appends <code>RX_PACKETS</code> twice); a strict scraper may complain. The install puts the modules in <code>$DPDK_PREFIX/share/dpdk/telemetry-endpoints</code>, which is not in the exporter's default search path for a non-<code>/usr</code> prefix: pass <code>-p</code>.</p>
+
+    <div class="callout tip"><div class="callout-title">Tip: one connection, many questions</div><p>Every new connection costs the server a <code>pthread_create()</code>. A poller that reconnects every 100 ms makes the process create 10 threads per second forever. Keep one connection open and send many requests on it, as <code>solutions/poll_pps.sh</code> (exercise 2) does.</p></div>
+
+    <!-- ============================================================ 3 -->
+    <h2 id="metrics"><span class="sec-num">3</span>Metrics, latency and bitrate</h2>
+    <p>Three small libraries cooperate to answer "how long does a packet stay in my application?" and "how many bits per second?":</p>
+    <ul>
+      <li><span class="key-term">lib/metrics</span> is a name &rarr; value table in a memzone (so secondary processes can read it). It has one row per port and one <em>global</em> row (<code>RTE_METRICS_GLOBAL</code> = -1). <code>rte_metrics_init(socket)</code> creates it; <code>rte_metrics_reg_name(s)</code> returns the key of a new name; <code>rte_metrics_update_value(s)(port, key, ...)</code> writes; <code>rte_metrics_get_names()</code> and <code>rte_metrics_get_values(port, ...)</code> read. Values are <code>uint64_t</code>.</li>
+      <li><span class="key-term">lib/latencystats</span>: <code>rte_latencystats_init(samp_intvl_ns, NULL)</code> adds an RX callback and a TX callback (ch12's burst callbacks) to every queue that exists at that moment. Every <code>samp_intvl</code> ns the RX callback marks one packet: it stores the TSC in the mbuf's dynamic timestamp field and sets the timestamp flag. When a marked packet goes through <code>rte_eth_tx_burst()</code>, the TX callback computes <code>now - stamp</code> and updates min, max, an average (EWMA with weight 1/4) and a jitter estimate (RFC 3550 style, weight 1/16). <code>rte_latencystats_update()</code> copies them, converted to ns, into the global metrics row.</li>
+      <li><span class="key-term">lib/bitratestats</span>: <code>rte_stats_bitrate_calc(bd, port)</code> reads <code>rte_eth_stats_get()</code>, computes the bits since the previous call, and writes <code>mean_bits_in/out</code> (last interval), <code>peak_bits_in/out</code> and <code>ewma_bits_in/out</code> (weight 20%) into the port's row. You call it on a fixed period, usually 1 s; the "per second" is your calling period.</li>
+    </ul>
+
+    <figure class="diagram">
+      <div class="scroll-x">
+      <svg viewBox="0 0 760 240" role="img" aria-labelledby="f-lat-t" style="min-width:600px">
+        <title id="f-lat-t">latencystats data path: the RX callback stamps one sampled mbuf with the TSC; the application processes the burst; the TX callback subtracts the stamp from the current TSC and updates min, avg, max and jitter in a memzone; rte_latencystats_update copies them into the rte_metrics global row; a telemetry endpoint of the application reads the metrics table.</title>
+        <rect class="svg-box c4" x="10" y="80" width="90" height="56"/>
+        <text class="svg-label center bold" x="55" y="104">RX queue</text>
+        <text class="svg-label center small" x="55" y="122">rx_burst</text>
+        <rect class="svg-box c5" x="130" y="64" width="150" height="88"/>
+        <text class="svg-label center bold" x="205" y="84">RX callback</text>
+        <text class="svg-label center small" x="205" y="102">every samp_intvl:</text>
+        <text class="svg-label center small mono" x="205" y="119">*ts(m) = rdtsc()</text>
+        <text class="svg-label center small mono" x="205" y="136">ol_flags |= TS flag</text>
+        <rect class="svg-box c1" x="310" y="80" width="120" height="56"/>
+        <text class="svg-label center bold" x="370" y="104">your code</text>
+        <text class="svg-label center small" x="370" y="122">--work-ns N</text>
+        <rect class="svg-box c5" x="460" y="64" width="160" height="88"/>
+        <text class="svg-label center bold" x="540" y="84">TX callback</text>
+        <text class="svg-label center small mono" x="540" y="102">lat = rdtsc() - ts</text>
+        <text class="svg-label center small" x="540" y="119">min, max, avg (1/4)</text>
+        <text class="svg-label center small" x="540" y="136">jitter (1/16)</text>
+        <rect class="svg-box c4" x="650" y="80" width="100" height="56"/>
+        <text class="svg-label center bold" x="700" y="104">TX queue</text>
+        <text class="svg-label center small" x="700" y="122">tx_burst</text>
+        <path class="svg-arrow c3" d="M100,108 L126,108"/>
+        <path class="svg-arrow c3" d="M280,108 L306,108"/>
+        <path class="svg-arrow c3" d="M430,108 L456,108"/>
+        <path class="svg-arrow c3" d="M620,108 L646,108"/>
+        <rect class="svg-box c2" x="300" y="180" width="200" height="50"/>
+        <text class="svg-label center bold" x="400" y="200">rte_metrics table</text>
+        <text class="svg-label center small" x="400" y="218">global row + one row per port</text>
+        <path class="svg-arrow c2 dashed" d="M540,152 Q540,200 504,204"/>
+        <text class="svg-label small" x="550" y="170">rte_latencystats_update()</text>
+        <rect class="svg-box c6" x="560" y="180" width="190" height="50"/>
+        <text class="svg-label center bold" x="655" y="200">/ch13/latency</text>
+        <text class="svg-label center small" x="655" y="218">your endpoint reads it</text>
+        <path class="svg-arrow c6" d="M502,212 L556,212"/>
+        <rect class="svg-box c2" x="40" y="180" width="200" height="50"/>
+        <text class="svg-label center bold" x="140" y="200">bitratestats</text>
+        <text class="svg-label center small" x="140" y="218">reads rte_eth_stats, 1 Hz</text>
+        <path class="svg-arrow c2" d="M240,205 L296,205"/>
+        <text class="svg-label center small muted" x="380" y="40">latency = time from "PMD gave it to the app" to "app gave it to the PMD"</text>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>What latencystats measures: the time a sampled packet spends between the RX and TX callbacks, that is, inside your application. It does not see time spent in the NIC or on the wire.</figcaption>
+    </figure>
+
+    <p>In 26.11 the old glue that exported the metrics table over telemetry (<code>rte_metrics_telemetry.h</code>, <code>rte_metrics_tel_reg_all_ethdev()</code> and friends) has been removed (<span class="src-path">doc/guides/rel_notes/release_26_11.rst</span>). So <code>latency_metrics.c</code> registers its own endpoint that walks the table:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/latency_metrics.c (setup)</span><span class="lang">C</span></div>
+<pre data-lines data-start="166"><code class="language-c">	/* 1. the metrics table must exist before anybody registers names */
+	rte_metrics_init(rte_socket_id());
+	app_key = rte_metrics_reg_name("ch13_work_ns");
+
+	/* 2. latency stats: sample one packet every 10 us. Call it AFTER the
+	 * queues are set up: it adds callbacks to the queues that exist now. */
+	ret = rte_latencystats_init(10000, NULL);
+	printf("rte_latencystats_init -&gt; %d\n", ret);
+
+	/* 3. bitrate stats: one object, registered once, computed per port */
+	br = rte_stats_bitrate_create();
+	if (br == NULL || rte_stats_bitrate_reg(br) &lt; 0)
+		rte_exit(EXIT_FAILURE, "bitrate init failed\n");
+
+	rte_telemetry_register_cmd("/ch13/latency", tel_latency,
+		"rte_metrics table (latency, bitrate, ch13_work_ns). No parameters");
+	rte_metrics_update_value(RTE_METRICS_GLOBAL, app_key, work_ns);</code></pre>
+    </div>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/latency_metrics.c (the endpoint)</span><span class="lang">C</span></div>
+<pre data-lines data-start="52"><code class="language-c">/* ---- /ch13/latency: the metrics table as JSON ------------------------ */
+/* One dict per metrics row ("global", "port0", "port1"), skipping zeros
+ * so the reply stays short. Runs on the telemetry thread; the metrics
+ * library protects its table with a spinlock, so this is safe. */
+static void
+add_row(struct rte_tel_data *d, const char *row, int port,
+	const struct rte_metric_name *names, int nnames)
+{
+	struct rte_metric_value vals[MAX_M];
+	struct rte_tel_data *rd = rte_tel_data_alloc();
+	int i, n;
+
+	if (rd == NULL)
+		return;
+	rte_tel_data_start_dict(rd);
+	n = rte_metrics_get_values(port, vals, MAX_M);
+	for (i = 0; i &lt; n; i++)
+		if (vals[i].key &lt; nnames &amp;&amp; vals[i].value != 0)
+			rte_tel_data_add_dict_uint(rd, names[vals[i].key].name,
+						   vals[i].value);
+	rte_tel_data_add_dict_container(d, row, rd, 0);
+}
+
+static int
+tel_latency(const char *cmd __rte_unused, const char *params __rte_unused,
+	    struct rte_tel_data *d)
+{
+	static struct rte_metric_name names[MAX_M];
+	int n = rte_metrics_get_names(names, MAX_M);
+	uint16_t p;
+
+	if (n &lt; 0)
+		return n;
+	rte_tel_data_start_dict(d);
+	add_row(d, "global", RTE_METRICS_GLOBAL, names, n);
+	RTE_ETH_FOREACH_DEV(p) {
+		char row[16];
+
+		snprintf(row, sizeof(row), "port%u", p);
+		add_row(d, row, p, names, n);
+	}
+	return 0;
+}</code></pre>
+    </div>
+    <p>The program forwards between two <code>net_null</code> ports for 3 s, once with no work and once spinning 5000 ns per burst. <code>net_null</code> hands out fresh mbufs on every RX call, just like a NIC on a busy wire, and frees what you send:</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 3)</span></div>
+<pre><span class="hl">########## 3. latency_metrics: latencystats + bitratestats + rte_metrics -&gt; /ch13/latency</span>
+<span class="prompt">$ </span><span class="cmd">./latency_metrics -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-lat --vdev=net_null0 --vdev=net_null1 -- --seconds 3 --work-ns 0 &amp;</span>
+<span class="prompt">$ </span><span class="cmd">echo /ch13/latency | dpdk-telemetry.py -f ch13-lat</span>
+{"/ch13/latency": {"global": {"min_latency_ns": 28, "avg_latency_ns": 107, "max_latency_ns": 21489, "jitter_ns": 11, "samples": 223340}, "port0": {"ewma_bits_in": 9018587874, "ewma_bits_out": 9018587874, "mean_bits_in": 24941445120, "mean_bits_out": 24941445120, "peak_bits_in": 25189367808, "peak_bits_out": 25189367808}, "port1": {"ewma_bits_in": 9018587874, "ewma_bits_out": 9018587874, "mean_bits_in": 24941445120, "mean_bits_out": 24941445120, "peak_bits_in": 25189367808, "peak_bits_out": 25189367808}}}
+rte_latencystats_init -&gt; 0
+driver net_null, work per burst 0 ns
+READY
+rte_metrics: 12 names registered
+  global  min_latency_ns=28 avg_latency_ns=107 max_latency_ns=23980 jitter_ns=9 samples=289506
+  port0   ewma_bits_in=9018587874 ewma_bits_out=9018587874 mean_bits_in=24941445120 mean_bits_out=24941445120 peak_bits_in=25189367808 peak_bits_out=25189367808
+  port1   ewma_bits_in=9018587874 ewma_bits_out=9018587874 mean_bits_in=24941445120 mean_bits_out=24941445120 peak_bits_in=25189367808 peak_bits_out=25189367808
+rte_latencystats_get: min_latency_ns=28 avg_latency_ns=107 max_latency_ns=23980 jitter_ns=9 samples=289506
+<span class="prompt">$ </span><span class="cmd">./latency_metrics -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-lat --vdev=net_null0 --vdev=net_null1 -- --seconds 3 --work-ns 5000 &amp;</span>
+<span class="prompt">$ </span><span class="cmd">echo /ch13/latency | dpdk-telemetry.py -f ch13-lat</span>
+{"/ch13/latency": {"global": {"ch13_work_ns": 5000, "min_latency_ns": 5057, "avg_latency_ns": 5148, "max_latency_ns": 469917, "jitter_ns": 26, "samples": 209878}, "port0": {"ewma_bits_in": 535971758, "ewma_bits_out": 535971758, "mean_bits_in": 1488584704, "mean_bits_out": 1488584704, "peak_bits_in": 1489092608, "peak_bits_out": 1489092608}, "port1": {"ewma_bits_in": 535971758, "ewma_bits_out": 535971758, "mean_bits_in": 1488584704, "mean_bits_out": 1488584704, "peak_bits_in": 1489092608, "peak_bits_out": 1489092608}}}
+rte_latencystats_init -&gt; 0
+driver net_null, work per burst 5000 ns
+READY
+rte_metrics: 12 names registered
+  global  ch13_work_ns=5000 min_latency_ns=5057 avg_latency_ns=5156 max_latency_ns=597105 jitter_ns=134 samples=272946
+  port0   ewma_bits_in=535971758 ewma_bits_out=535971758 mean_bits_in=1488584704 mean_bits_out=1488584704 peak_bits_in=1489092608 peak_bits_out=1489092608
+  port1   ewma_bits_in=535971758 ewma_bits_out=535971758 mean_bits_in=1488584704 mean_bits_out=1488584704 peak_bits_in=1489092608 peak_bits_out=1489092608
+rte_latencystats_get: min_latency_ns=5057 avg_latency_ns=5156 max_latency_ns=597105 jitter_ns=134 samples=272946</pre>
+    </div>
+    <p class="output-caption">Read the numbers. With 5000 ns of "work", <code>min_latency_ns</code> is 5060: the work plus about 60 ns of loop overhead. The average moves from ~105 ns to ~5150 ns. <code>max_latency_ns</code> (hundreds of microseconds) is the VM being descheduled once, which is exactly what a max is for. The bitrate rows show <code>ewma</code> at about 36% of <code>mean</code>: after two calls an EWMA with weight 0.2 that started at 0 has reached 0.2 + 0.8&times;0.2 = 0.36 of the steady value. An EWMA needs several periods to settle; read <code>mean</code> for the last second.</p>
+
+    <div class="callout pitfall"><div class="callout-title">Pitfall: latencystats on a loopback measures age, not latency</div>
+      <p>Run the same binary on two <code>net_ring</code> ports, which are loopbacks: 256 injected frames circulate forever, and each mbuf is received again and again <em>without being freed</em>. The RX callback skips packets whose timestamp flag is already set, and the TX callback measures from the first stamp. So "latency" becomes the time since the program started:</p>
+<div class="terminal"><pre><span class="hl">--- pitfall: the same program on a net_ring loopback (mbufs are recycled with their timestamp flag)</span>
+<span class="prompt">$ </span><span class="cmd">./latency_metrics -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-lat --vdev=net_ring0 --vdev=net_ring1 -- --seconds 2</span>
+rte_latencystats_init -&gt; 0
+net_ring loopback: injected 256 frames on port 0
+driver net_ring, work per burst 0 ns
+READY
+rte_metrics: 12 names registered
+  global  min_latency_ns=71 avg_latency_ns=1997479768 max_latency_ns=1999998669 jitter_ns=83938 samples=268173804
+  port0  
+  port1  
+rte_latencystats_get: min_latency_ns=71 avg_latency_ns=1997479768 max_latency_ns=1999998669 jitter_ns=83938 samples=268173804</pre></div>
+      <p>The same thing happens in a real application that keeps mbufs across bursts (a reassembly table, a software queue) or recycles an mbuf to send a reply. latencystats assumes "fresh mbuf on RX, freed after TX". Also notice that the port rows are empty here: <code>net_ring</code> does not count bytes, so bitratestats has nothing to divide.</p>
+    </div>
+
+    <!-- ============================================================ 4 -->
+    <h2 id="trace"><span class="sec-num">4</span>Tracing: a flight recorder for events</h2>
+    <p>Counters tell you <em>how many</em>. When you need <em>what happened, in which order, and how long apart</em> (a queue stopped, then a burst came back empty, then a reconfiguration started), you need a <span class="key-term">trace</span>: a timestamped log of events, cheap enough to leave in the code. DPDK's trace library (in EAL: <span class="src-path">lib/eal/common/eal_common_trace*.c</span>) writes binary events into a buffer per thread, with no locks, and saves them in the <span class="key-term">Common Trace Format</span> (CTF), the format of LTTng that <code>babeltrace</code> and Trace Compass read.</p>
+
+    <h3 id="trace-define">4.1 Define, register, enable</h3>
+    <p>A <span class="key-term">tracepoint</span> is declared in a header with <code>RTE_TRACE_POINT(name, RTE_TRACE_POINT_ARGS(...), emit list)</code>. The macro creates an inline function with your arguments that writes the listed fields with <code>rte_trace_point_emit_u16()</code>, <code>_u32()</code>, <code>_u64()</code>, <code>_string()</code>, <code>_ptr()</code> and friends:</p>
+    <div class="tabs">
+      <div class="tab-list"><button class="tab-btn" data-tab="h">ch13_trace.h</button><button class="tab-btn" data-tab="r">ch13_trace_reg.c</button><button class="tab-btn" data-tab="fp">trace_fp_on.h</button></div>
+      <div class="tab-panel" data-tab="h"><pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ * Chapter 13: ch13_trace.h - the application's own tracepoints.
+ *
+ * RTE_TRACE_POINT() declares an inline function ch13_trace_port_cfg(...)
+ * that writes the listed fields into this thread's trace buffer when the
+ * tracepoint is enabled at run time (--trace=&lt;regex&gt;). When it is disabled
+ * the cost is one load and one branch.
+ *
+ * RTE_TRACE_POINT_FP() is the fast-path flavour: its body is compiled to
+ * nothing unless RTE_ENABLE_TRACE_FP is defined when THIS file is compiled
+ * (meson -Denable_trace_fp=true defines it for the DPDK libraries; for your
+ * own code a -DRTE_ENABLE_TRACE_FP on the compiler line is enough).
+ *
+ * Every tracepoint must be registered exactly once, in one .c file:
+ * see ch13_trace_reg.c.
+ */
+#ifndef CH13_TRACE_H
+#define CH13_TRACE_H
+
+#include &lt;rte_trace_point.h&gt;
+
+/* slow path: once per port configuration */
+RTE_TRACE_POINT(
+	ch13_trace_port_cfg,
+	RTE_TRACE_POINT_ARGS(uint16_t port, uint16_t nb_desc, const char *drv),
+	rte_trace_point_emit_u16(port);
+	rte_trace_point_emit_u16(nb_desc);
+	rte_trace_point_emit_string(drv);
+)
+
+/* fast path: once per RX burst */
+RTE_TRACE_POINT_FP(
+	ch13_trace_burst,
+	RTE_TRACE_POINT_ARGS(uint16_t port, uint16_t nb_rx),
+	rte_trace_point_emit_u16(port);
+	rte_trace_point_emit_u16(nb_rx);
+)
+
+#endif</code></pre></div>
+      <div class="tab-panel" data-tab="r"><pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ * Chapter 13: ch13_trace_reg.c - the ONE translation unit that registers
+ * the tracepoints. rte_trace_point_register.h must come BEFORE the header
+ * that defines them: it switches RTE_TRACE_POINT() from "declare an inline
+ * emitter" to "emit the field descriptions for the CTF metadata".
+ * RTE_TRACE_POINT_REGISTER(object, name) gives each one the name that
+ * --trace=&lt;regex&gt; matches (here "ch13.port_cfg" and "ch13.burst").
+ */
+#include &lt;rte_trace_point_register.h&gt;
+#include "ch13_trace.h"
+
+RTE_TRACE_POINT_REGISTER(ch13_trace_port_cfg, ch13.port_cfg)
+RTE_TRACE_POINT_REGISTER(ch13_trace_burst, ch13.burst)</code></pre></div>
+      <div class="tab-panel" data-tab="fp"><pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ * Chapter 13: trace_fp_on.h - force fast-path tracepoints ON for one build.
+ *
+ * Why not just -DRTE_ENABLE_TRACE_FP? Because the installed
+ * rte_build_config.h (pulled in by rte_config.h, which every DPDK header
+ * includes first) says "#undef RTE_ENABLE_TRACE_FP" when DPDK itself was
+ * built without -Denable_trace_fp=true. A -D on the command line is undone
+ * by that #undef. So: include rte_config.h first (its include guard stops a
+ * second #undef), THEN define the macro. Build with:
+ *     gcc -include trace_fp_on.h ...
+ * This affects only code compiled into YOUR binary: your RTE_TRACE_POINT_FP
+ * tracepoints and the inline ones of DPDK headers (rte_eth_rx_burst's).
+ */
+#include &lt;rte_config.h&gt;
+#define RTE_ENABLE_TRACE_FP 1</code></pre></div>
+    </div>
+    <p>Three rules that cost people hours:</p>
+    <ol>
+      <li><strong>Register exactly once.</strong> One <code>.c</code> file includes <code>rte_trace_point_register.h</code> <em>before</em> the tracepoint header and lists <code>RTE_TRACE_POINT_REGISTER(object, name)</code>. The <code>name</code> (<code>ch13.port_cfg</code>) is what <code>--trace</code> matches and what the CTF metadata shows.</li>
+      <li><strong>Nothing is recorded until you enable it.</strong> <code>--trace=&lt;regex&gt;</code> (repeatable) enables the matching tracepoints at startup; <code>rte_trace_regexp()</code>, <code>rte_trace_pattern()</code>, <code>rte_trace_point_enable/disable()</code> do it at run time. <code>--trace-dir</code> chooses where files go (default: <code>$HOME/dpdk-traces/</code>), <code>--trace-bufsz</code> the size of each thread's buffer (default 1 MB), <code>--trace-mode=o|d</code> what happens when it is full: <em>overwrite</em> the oldest events (the default) or <em>discard</em> new ones.</li>
+      <li><strong>Fast-path tracepoints are compiled out by default.</strong> <code>RTE_TRACE_POINT_FP</code> only emits if <code>RTE_ENABLE_TRACE_FP</code> is defined. DPDK built without <code>-Denable_trace_fp=true</code> installs an <code>rte_build_config.h</code> that says <code>#undef RTE_ENABLE_TRACE_FP</code>, which also cancels a <code>-DRTE_ENABLE_TRACE_FP</code> on your command line. <code>trace_fp_on.h</code> is the workaround for your own code: include <code>rte_config.h</code> first, then define the macro, and build with <code>-include trace_fp_on.h</code>.</li>
+    </ol>
+    <p>The trace API is still experimental in 26.11, so these files need <code>-DALLOW_EXPERIMENTAL_API</code>. To emit a generic EAL event without defining your own, include <code>rte_eal_trace.h</code> and call <code>rte_eal_trace_generic_str("...")</code>, <code>_u64()</code>, and so on.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/trace_demo.c (the interesting part)</span><span class="lang">C</span></div>
+<pre data-lines data-start="57" data-hl="59,64,68,73"><code class="language-c">	if (rte_eth_dev_info_get(0, &amp;di) != 0)
+		rte_exit(EXIT_FAILURE, "dev_info failed\n");
+	ch13_trace_port_cfg(0, 256, di.driver_name);          /* slow path */
+
+	for (i = 0; i &lt; 1000; i++) {
+		uint16_t n = rte_eth_rx_burst(0, 0, pkts, 32);
+
+		ch13_trace_burst(0, n);                        /* fast path */
+		rx += n;
+		rte_pktmbuf_free_bulk(pkts, n);
+	}
+	rte_eal_trace_generic_str("ch13 loop done");          /* EAL generic */
+
+	/* switch one tracepoint off while running, then fire it again */
+	tp = rte_trace_point_lookup("ch13.port_cfg");
+	if (tp)
+		rte_trace_point_disable(tp);
+	ch13_trace_port_cfg(0, 999, "not recorded");
+
+	printf("received %" PRIu64 " packets in 1000 bursts\n", rx);
+	printf("rte_trace_save() -&gt; %d\n", rte_trace_save());
+	rte_eth_dev_stop(0);
+	rte_eth_dev_close(0);</code></pre>
+    </div>
+
+    <h3 id="trace-run">4.2 Running it and reading the CTF files</h3>
+    <p>First the mistake almost everyone makes once: <code>--trace-dir</code> creates only the last directory level, so a path whose parent does not exist fails, and you find out only when the trace is saved (at <code>rte_trace_save()</code> and again at <code>rte_eal_cleanup()</code>):</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 4, pitfall)</span></div>
+<pre><span class="hl">--- pitfall: --trace-dir whose parent does not exist</span>
+<span class="prompt">$ </span><span class="cmd">./trace_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch13-tr --vdev=net_null0 --trace=ch13\..* --trace-dir=$TMPD/no/such/dir</span>
+trace compiled in: yes, enabled at run time: yes, fast path: compiled out
+ch13.port_cfg: registered, enabled
+ch13.burst:    registered, enabled
+received 32000 packets in 1000 bursts
+<span class="dim">EAL: trace_mkdir():333 mkdir $TMPD/no/such/dir/ failed [No such file or directory]</span>
+rte_trace_save() -&gt; -2
+<span class="dim">EAL: trace_mkdir():333 mkdir $TMPD/no/such/dir/ failed [No such file or directory]</span></pre>
+    </div>
+    <p>Then both builds, each followed by our decoder:</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 4)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./trace_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch13-tr --vdev=net_null0 --trace=ch13\..* --trace=lib\.eal\.generic\.str --trace-dir=$TMPD/trace/trace_demo</span>
+trace compiled in: yes, enabled at run time: yes, fast path: compiled out
+ch13.port_cfg: registered, enabled
+ch13.burst:    registered, enabled
+received 32000 packets in 1000 bursts
+<span class="dim">EAL: Trace dir: $TMPD/trace/trace_demo/ch13-tr-2026-11-27-AM-11-49-09</span>
+rte_trace_save() -&gt; 0
+<span class="prompt">$ </span><span class="cmd">ls -l &lt;trace dir&gt;; python3 -I ctf_peek.py &lt;trace dir&gt; 5</span>
+  56	channel0_0
+  56	channel0_1
+  144	channel0_2
+  112293	metadata
+metadata: 112293 bytes, 532 event types registered, clock 2700000000 Hz
+channel0_0: 56 bytes, magic 0xc1fc1fc1, cpu_id 4294967295, thread 'dpdk-intr', 0 events {}
+channel0_1: 56 bytes, magic 0xc1fc1fc1, cpu_id 4294967295, thread 'dpdk-mp-msg', 0 events {}
+channel0_2: 144 bytes, magic 0xc1fc1fc1, cpu_id 0, thread 'trace_demo', 2 events {'ch13.port_cfg': 1, 'lib.eal.generic.string': 1}
+    t=    0.000 us                ch13.port_cfg: port=0 nb_desc=256 drv="net_null"
+    t=  272.899 us  (+272899 ns)  lib.eal.generic.string: str="ch13 loop done"
+<span class="prompt">$ </span><span class="cmd">./trace_demo_fp -l 0 --no-pci --no-huge -m 64 --file-prefix=ch13-tr --vdev=net_null0 --trace=ch13\..* --trace=lib\.eal\.generic\.str --trace-dir=$TMPD/trace/trace_demo_fp</span>
+trace compiled in: yes, enabled at run time: yes, fast path: compiled in (RTE_ENABLE_TRACE_FP)
+ch13.port_cfg: registered, enabled
+ch13.burst:    registered, enabled
+received 32000 packets in 1000 bursts
+<span class="dim">EAL: Trace dir: $TMPD/trace/trace_demo_fp/ch13-tr-2026-11-27-AM-11-49-09</span>
+rte_trace_save() -&gt; 0
+<span class="prompt">$ </span><span class="cmd">ls -l &lt;trace dir&gt;; python3 -I ctf_peek.py &lt;trace dir&gt; 5</span>
+  56	channel0_0
+  56	channel0_1
+  16144	channel0_2
+  112293	metadata
+metadata: 112293 bytes, 532 event types registered, clock 2700000000 Hz
+channel0_0: 56 bytes, magic 0xc1fc1fc1, cpu_id 4294967295, thread 'dpdk-intr', 0 events {}
+channel0_1: 56 bytes, magic 0xc1fc1fc1, cpu_id 4294967295, thread 'dpdk-mp-msg', 0 events {}
+channel0_2: 16144 bytes, magic 0xc1fc1fc1, cpu_id 0, thread 'trace_demo_fp', 1002 events {'ch13.port_cfg': 1, 'ch13.burst': 1000, 'lib.eal.generic.string': 1}
+    t=    0.000 us                ch13.port_cfg: port=0 nb_desc=256 drv="net_null"
+    t=    3.929 us    (+3929 ns)  ch13.burst: port=0 nb_rx=32
+    t=    4.749 us     (+820 ns)  ch13.burst: port=0 nb_rx=32
+    t=    5.004 us     (+255 ns)  ch13.burst: port=0 nb_rx=32
+    t=    5.318 us     (+314 ns)  ch13.burst: port=0 nb_rx=32
+    ... 997 more</pre>
+    </div>
+    <p class="output-caption">Same source, two builds. In <code>trace_demo</code> the 1000 <code>ch13.burst</code> calls compiled to nothing: the channel file of the main thread holds two events (144 bytes). In <code>trace_demo_fp</code> it holds 1002 events (16,144 bytes = 144 + 1000 &times; 16). The disabled <code>port_cfg</code> call at the end ("not recorded") is indeed absent. Each thread that existed got its own channel file, even the EAL interrupt and multi-process threads that recorded nothing. The decoded gaps between bursts (~300 ns) are the cost of one <code>net_null</code> RX burst plus a free.</p>
+
+    <figure class="diagram">
+      <div class="scroll-x">
+      <svg viewBox="0 0 760 200" role="img" aria-labelledby="f-ctf-t" style="min-width:620px">
+        <title id="f-ctf-t">Layout of a CTF channel file written by DPDK: a 20-byte packet header (magic 0xc1fc1fc1 and a 16-byte uuid), a 36-byte packet context (cpu id and a 32-byte thread name), then events. Each event starts with a 64-bit header holding a 48-bit timestamp and a 16-bit event id, followed by the payload fields, padded to 8 bytes.</title>
+        <rect class="svg-box c7" x="10" y="40" width="110" height="50"/><text class="svg-label center small bold" x="65" y="60">magic</text><text class="svg-label center small mono" x="65" y="78">c1 1f fc c1</text>
+        <rect class="svg-box c7" x="120" y="40" width="110" height="50"/><text class="svg-label center small bold" x="175" y="60">uuid</text><text class="svg-label center small" x="175" y="78">16 bytes</text>
+        <rect class="svg-box c6" x="230" y="40" width="80" height="50"/><text class="svg-label center small bold" x="270" y="60">cpu_id</text><text class="svg-label center small" x="270" y="78">u32</text>
+        <rect class="svg-box c6" x="310" y="40" width="130" height="50"/><text class="svg-label center small bold" x="375" y="60">thread name</text><text class="svg-label center small" x="375" y="78">char[32]</text>
+        <rect class="svg-box c3" x="440" y="40" width="130" height="50"/><text class="svg-label center small bold" x="505" y="60">event 0 (48 B)</text><text class="svg-label center small" x="505" y="78">port_cfg</text>
+        <rect class="svg-box c3" x="570" y="40" width="80" height="50"/><text class="svg-label center small bold" x="610" y="60">event (16 B)</text><text class="svg-label center small" x="610" y="78">burst</text>
+        <rect class="svg-box c3 dashed" x="650" y="40" width="100" height="50"/><text class="svg-label center small" x="700" y="68">&hellip; 999 more</text>
+        <text class="svg-label center small muted" x="120" y="28">packet.header (20 B)</text>
+        <text class="svg-label center small muted" x="335" y="28">packet.context (36 B)</text>
+        <path class="svg-line" d="M570,92 L570,120 M650,92 L650,120"/>
+        <rect class="svg-box c3" x="380" y="122" width="210" height="44"/><text class="svg-label center small bold" x="485" y="140">u64 header</text><text class="svg-label center small mono" x="485" y="157">id &lt;&lt; 48 | tsc[47:0]</text>
+        <rect class="svg-box c3" x="590" y="122" width="70" height="44"/><text class="svg-label center small mono" x="625" y="149">u16 port</text>
+        <rect class="svg-box c3" x="660" y="122" width="70" height="44"/><text class="svg-label center small mono" x="695" y="149">u16 nb_rx</text>
+        <rect class="svg-box ghost" x="730" y="122" width="20" height="44"/>
+        <path class="svg-arrow c3 dashed" d="M610,92 L520,120"/>
+        <text class="svg-label small muted" x="380" y="186">8 + 2 + 2 = 12 bytes, padded to 16: events start 8-byte aligned</text>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>A channel file, byte by byte, as written by DPDK and decoded by <code>ctf_peek.py</code>. The <code>metadata</code> file (112 KB here, because it describes all 532 registered tracepoints of the static binary) is plain TSDL text: it is what tells a reader that event id 1 is <code>ch13.burst</code> with two <code>uint16_t</code> fields.</figcaption>
+    </figure>
+    <div class="terminal">
+      <div class="term-bar"><span class="title">code/expected_output.txt (the TSDL of our two events)</span></div>
+<pre><span class="hl">--- the TSDL metadata for our two events:</span>
+event {
+    id = 0;
+    name = "ch13.port_cfg";
+    fields := struct {
+        uint16_t port;
+        uint16_t nb_desc;
+        string_bounded_t drv[32];
+    };
+};
+
+event {
+    id = 1;
+    name = "ch13.burst";
+    fields := struct {
+        uint16_t port;
+        uint16_t nb_rx;
+    };
+};
+
+event {
+    id = 2;</pre>
+    </div>
+
+    <div class="widget" id="w-trace">
+      <div class="widget-head"><span class="widget-title">Trace buffers: fill, wrap, save</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="ctrl-row">
+          <label><input type="checkbox" id="tr-fp"> build with RTE_ENABLE_TRACE_FP</label>
+          <label>mode <select id="tr-mode"><option value="o">overwrite (default)</option><option value="d">discard</option></select></label>
+          <label>buffer <select id="tr-size"><option value="8">8 events</option><option value="12" selected>12 events</option></select></label>
+        </div>
+        <div class="btn-row">
+          <button class="btn small" type="button" data-ev="cfg" data-th="0">main: port_cfg (slow path)</button>
+          <button class="btn small" type="button" data-ev="burst" data-th="0">main: burst (fast path)</button>
+          <button class="btn small" type="button" data-ev="burst" data-th="1">worker: burst x4</button>
+          <button class="btn small" type="button" data-ev="str" data-th="1">worker: generic.string</button>
+          <button class="btn small primary" type="button" id="tr-save">rte_trace_save()</button>
+          <button class="btn small" type="button" id="tr-reset">reset</button>
+        </div>
+        <div class="scroll-x"><svg style="min-width:560px" viewBox="0 0 720 216" role="img" aria-label="Two per-thread trace buffers with their events, and the CTF files written on save"></svg></div>
+        <div class="mono-out" id="tr-out" aria-live="polite">Click an event button. Each thread writes only into its own buffer: no lock, no shared cache line.</div>
+      </div>
+    </div>
+
+    <!-- ============================================================ 5 -->
+    <h2 id="logs"><span class="sec-num">5</span>Logs in the fast path</h2>
+    <p>You met <code>rte_log</code> in ch3: every message has a <em>log type</em> (a name such as <code>lib.eal</code>, <code>pmd.net.tap</code> or your own <code>user.ch13</code>) and a level from <code>EMERG</code> (1) to <code>DEBUG</code> (8). <code>--log-level=&lt;pattern&gt;:&lt;level&gt;</code> sets the level per type with wildcards (<code>--log-level='pmd.net.*:debug'</code>), <code>--log-timestamp[=delta|reltime|iso|ctime]</code> adds timestamps, <code>--syslog[=facility]</code> sends everything to syslog (and so to journald on a systemd host). A message prints only if its level is at or above the type's current level, and that check happens <em>at run time</em>, on every call.</p>
+    <p>A run-time check is cheap, but not free, and the format string and the call stay in your binary. For per-packet messages use <code>RTE_LOG_DP(level, type, ...)</code>. It adds a <em>compile-time</em> test against <code>RTE_LOG_DP_LEVEL</code>, which <span class="src-path">config/rte_config.h</span> sets to <code>RTE_LOG_INFO</code>. A <code>DEBUG</code> data-path message is then a constant-false branch: the compiler deletes it, and no <code>--log-level</code> can bring it back.</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/logdp.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="18" data-hl="20-21,52-56,71,78"><code class="language-c">
+/* a dynamic log type named "user.ch13", default level INFO */
+RTE_LOG_REGISTER(ch13_logtype, user.ch13, INFO);
+#define RTE_LOGTYPE_CH13 ch13_logtype      /* the 't' argument of RTE_LOG */
+
+#define N 10000000
+#define RUNS 5
+
+static int
+cmp_d(const void *a, const void *b)
+{
+	double x = *(const double *)a, y = *(const double *)b;
+
+	return x &lt; y ? -1 : x &gt; y;
+}
+
+int
+main(int argc, char **argv)
+{
+	static const char *what[3] = {"empty loop",
+		"+ RTE_LOG_DP(DEBUG) (gone)", "+ RTE_LOG(DEBUG) (run-time)"};
+	double c[3][RUNS];
+	volatile uint64_t sink = 0;
+	unsigned int i, r, k;
+	uint64_t t0;
+
+	if (rte_eal_init(argc, argv) &lt; 0)
+		rte_exit(EXIT_FAILURE, "EAL init failed\n");
+
+	printf("RTE_LOG_DP_LEVEL = %d (INFO=%d DEBUG=%d), user.ch13 level now %d\n",
+	       RTE_LOG_DP_LEVEL, RTE_LOG_INFO, RTE_LOG_DEBUG,
+	       rte_log_get_level(ch13_logtype));
+	fflush(stdout);
+
+	RTE_LOG(INFO, CH13, "1: RTE_LOG    INFO  - printed\n");
+	RTE_LOG(DEBUG, CH13, "2: RTE_LOG    DEBUG - printed only with user.ch13:debug\n");
+	RTE_LOG_DP(INFO, CH13, "3: RTE_LOG_DP INFO  - printed\n");
+	RTE_LOG_DP(DEBUG, CH13, "4: RTE_LOG_DP DEBUG - compiled out, never printed\n");
+	RTE_LOG_LINE(NOTICE, CH13, "5: RTE_LOG_LINE adds the newline for you");
+
+	/* What a disabled log line costs inside a loop. Lower the level to
+	 * INFO first so that the DEBUG lines are filtered at run time. */
+	rte_log_set_level(ch13_logtype, RTE_LOG_INFO);
+
+	for (r = 0; r &lt; RUNS; r++) {
+		t0 = rte_rdtsc();
+		for (i = 0; i &lt; N; i++)
+			sink += i;
+		c[0][r] = (double)(rte_rdtsc() - t0) / N;
+
+		t0 = rte_rdtsc();
+		for (i = 0; i &lt; N; i++) {
+			sink += i;
+			RTE_LOG_DP(DEBUG, CH13, "pkt %u\n", i);   /* compiled out */
+		}
+		c[1][r] = (double)(rte_rdtsc() - t0) / N;
+
+		t0 = rte_rdtsc();
+		for (i = 0; i &lt; N; i++) {
+			sink += i;
+			RTE_LOG(DEBUG, CH13, "pkt %u\n", i);      /* run-time filter */
+		}
+		c[2][r] = (double)(rte_rdtsc() - t0) / N;
+	}</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 5)</span></div>
+<pre><span class="hl">########## 5. logdp: RTE_LOG_DP vs RTE_LOG</span>
+<span class="prompt">$ </span><span class="cmd">./logdp -l 0 --no-pci --no-huge -m 64 --file-prefix=ch13-logdp --log-level=user.ch13:debug --log-timestamp=delta</span>
+<span class="dim">[&lt;     0.004361&gt;] EAL: Detected CPU lcores: 4</span>
+<span class="dim">[&lt;     0.000030&gt;] EAL: Detected NUMA nodes: 1</span>
+<span class="dim">[&lt;     0.000136&gt;] EAL: Detected static linkage of DPDK</span>
+<span class="dim">[&lt;     0.001706&gt;] EAL: Multi-process socket /var/run/dpdk/ch13-logdp/mp_socket</span>
+<span class="dim">[&lt;     0.000121&gt;] EAL: Selected IOVA mode 'VA'</span>
+RTE_LOG_DP_LEVEL = 7 (INFO=7 DEBUG=8), user.ch13 level now 8
+<span class="dim">[&lt;     0.101335&gt;] CH13: 1: RTE_LOG    INFO  - printed</span>
+<span class="dim">[&lt;     0.000002&gt;] CH13: 2: RTE_LOG    DEBUG - printed only with user.ch13:debug</span>
+<span class="dim">[&lt;     0.000000&gt;] CH13: 3: RTE_LOG_DP INFO  - printed</span>
+<span class="dim">[&lt;     0.000000&gt;] CH13: 5: RTE_LOG_LINE adds the newline for you</span>
+cycles per iteration, 10000000 iterations x 5 runs (median [min..max]):
+  empty loop                    5.21 [5.19..5.22]
+  + RTE_LOG_DP(DEBUG) (gone)    5.19 [5.19..5.21]
+  + RTE_LOG(DEBUG) (run-time)  14.51 [14.36..14.57]
+<span class="prompt">$ </span><span class="cmd">strings logdp | grep -c 'compiled out, never printed'   (is message 4 in the binary?)</span>
+0</pre>
+    </div>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Loop body (10 M iterations, level INFO)</th><th>What the compiler kept</th><th class="num">cycles / iteration, median of 5 [min..max]</th></tr></thead>
+        <tbody>
+          <tr><td>empty (<code>sink += i</code>)</td><td>the add</td><td class="num" id="logdp-1">see output</td></tr>
+          <tr><td><code>+ RTE_LOG_DP(DEBUG, ...)</code></td><td>nothing extra</td><td class="num" id="logdp-2">see output</td></tr>
+          <tr><td><code>+ RTE_LOG(DEBUG, ...)</code></td><td>a call to <code>rte_log()</code>, which checks the level and returns</td><td class="num" id="logdp-3">see output</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="output-caption">Measured on the course VM (a 4-core Xeon VM, numbers are cycles of the TSC at 2.7 GHz); the table cells are filled from the output above by the page script. Message 4's text is not even in the binary (<code>strings ... | grep -c</code> prints 0). <code>RTE_LOG_LINE</code> (used everywhere inside DPDK since 24.x) appends the newline for you; <code>RTE_LOG_DP_LINE</code> is its fast-path twin.</p>
+
+    <!-- ============================================================ 6 -->
+    <h2 id="ethtool"><span class="sec-num">6</span>dpdk-ethtool: the ethtool you lost</h2>
+    <p>Once a NIC belongs to DPDK, the kernel's <code>ethtool</code> cannot reach it. The <code>examples/ethtool</code> sample is a small shell over ethdev calls with ethtool-like commands: <code>drvinfo</code>, <code>link</code>, <code>macaddr</code>, <code>mtu</code>, <code>portstats</code>, <code>ringparam</code>, <code>regs</code>, <code>eeprom</code>, <code>validate</code>, <code>pause</code> and more (<span class="src-path">doc/guides/sample_app_ug/ethtool.rst</span>). It is also a good example of how to wrap ethdev into a library (<span class="src-path">examples/ethtool/lib/rte_ethtool.c</span>). It needs a worker lcore for its forwarding loop, and its mbuf pool is sized from the driver's maximum descriptor count, which is large for <code>net_tap</code>:</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 6)</span></div>
+<pre><span class="hl">########## 6. dpdk-ethtool on net_tap</span>
+<span class="hl">--- with only one lcore:</span>
+<span class="prompt">$ </span><span class="cmd">sh -c echo quit | $DPDK_SRC/build/examples/dpdk-ethtool -l 0 --no-pci --no-huge -m 640 --file-prefix=ch13-eth --vdev=net_tap0,iface=ch13tap0</span>
+Number of NICs: 1
+Init port 0..
+<span class="dim">EAL: Error - exiting with code: 1</span>
+No available worker core!
+[exit status 1]
+<span class="hl">--- with -m 256 (its pool is sized from desc_lim.nb_max):</span>
+<span class="prompt">$ </span><span class="cmd">sh -c echo quit | $DPDK_SRC/build/examples/dpdk-ethtool -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch13-eth --vdev=net_tap0,iface=ch13tap0</span>
+Number of NICs: 1
+<span class="dim">EAL: Error - exiting with code: 1</span>
+<span class="err">rte_pktmbuf_pool_create failed</span>
+[exit status 1]
+<span class="hl">--- working run (-l 0-1, -m 640), kernel view checked while it runs:</span>
+<span class="prompt">$ </span><span class="cmd">(printf 'drvinfo\nlink\nmacaddr 0\nmtu 0 1400\n'; sleep 1.5; printf 'portstats 0\nringparam 0\nvalidate 02:13:00:00:00:01\nquit\n') | dpdk-ethtool -l 0-1 --no-pci --no-huge -m 640 --file-prefix=ch13-eth --vdev=net_tap0,iface=ch13tap0</span>
+<span class="prompt">$ </span><span class="cmd">ip link show ch13tap0   (kernel side, while dpdk-ethtool runs)</span>
+ch13tap0: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1400 qdisc mq state UNKNOWN mode DEFAULT group default qlen 1000
+Number of NICs: 1
+Init port 0..
+EthApp&gt; drvinfo
+<span class="err">firmware version get error: (Operation not supported)</span>
+Port 0 driver: net_tap (ver: DPDK 26.11.0)
+firmware-version: 
+bus-info: net_tap0
+EthApp&gt; link
+Port 0: Up
+
+EthApp&gt; macaddr 0
+Port 0 MAC Address: 2A:5B:C1:8E:5C:0A
+EthApp&gt; mtu 0 1400
+Port 0: MTU set to 1400
+EthApp&gt; portstats 0
+Port 0 stats
+   In: 0 (0 bytes)
+  Out: 0 (0 bytes)
+  Err: 0
+EthApp&gt; ringparam 0
+<span class="err">Port 0: Operation not supported</span>
+EthApp&gt; validate 02:13:00:00:00:01
+Address is unicast
+EthApp&gt; quit
+Closing port 0... Done</pre>
+    </div>
+    <p class="output-caption">The <code>EthApp&gt;</code> prompts come first because the shell writes them directly to the terminal while the program's own output is line buffered. <code>mtu 0 1400</code> went through <code>rte_eth_dev_set_mtu()</code> to the tap PMD, which changed the kernel interface: <code>ip link</code> shows <code>mtu 1400</code> while it runs. <code>ringparam</code> and the firmware version are <code>-ENOTSUP</code> on tap, which is normal (ch12).</p>
+
+    <!-- ============================================================ 7 -->
+    <h2 id="gdb"><span class="sec-num">7</span>Debugging a live process: gdb, rte_panic, ASan, mbuf checks</h2>
+
+    <h3 id="gdb-live">7.1 gdb on a DPDK application</h3>
+    <p>gdb works on DPDK programs like on any other: <code>gdb --args ./app &lt;EAL args&gt; -- &lt;app args&gt;</code>. Three things are specific:</p>
+    <ul>
+      <li><strong>Threads have names.</strong> Each worker lcore is a pthread called <code>dpdk-worker&lt;N&gt;</code>; EAL adds <code>dpdk-intr</code> (interrupts, alarms, LSC callbacks), <code>dpdk-mp-msg</code> (multi-process IPC, ch16) and <code>dpdk-telemet-v2</code>. <code>info threads</code> and <code>thread apply all bt</code> show who is where.</li>
+      <li><strong>The burst functions are inline.</strong> <code>rte_eth_rx_burst()</code> is a <code>static inline</code> in <code>rte_ethdev.h</code> that calls through <code>rte_eth_fp_ops[port].rx_pkt_burst</code>. You cannot break on <code>rte_eth_rx_burst</code>; break on the driver function instead (<code>eth_null_rx</code>, <code>pmd_rx_burst</code> for tap, <code>eth_ring_rx</code>). <code>p rte_eth_fp_ops[0].rx_pkt_burst</code> tells you its name.</li>
+      <li><strong>DPDK itself has no debug info here.</strong> The installed libraries are a release build, so their internal structs (like the null PMD's queue) are unknown to gdb. Public structs that your <code>-g</code> code includes (<code>struct rte_mbuf</code>, <code>struct rte_mempool</code>) are fully known. Functions of the library can be called from gdb, but you must cast the return type. For full debug info rebuild DPDK with <code>meson -Dbuildtype=debug</code> (or <code>debugoptimized</code>).</li>
+    </ul>
+    <p><code>panic_demo.c</code> polls a <code>net_null</code> port on lcore 1, builds a healthy mbuf with a marker payload, then corrupts it (<code>data_len = 4000</code> in a 2176-byte buffer), asks <code>rte_mbuf_check()</code> what is wrong and calls <code>rte_panic()</code>:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/panic_demo.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="48" data-hl="54,61-62"><code class="language-c">/* a separate, non-inlined function so it shows up as its own frame */
+static void __rte_noinline
+check_and_maybe_panic(struct rte_mbuf *m, bool do_panic)
+{
+	const char *reason = NULL;
+
+	if (rte_mbuf_check(m, 1, &amp;reason) == 0) {
+		printf("mbuf %p passes rte_mbuf_check()\n", (void *)m);
+		return;
+	}
+	printf("rte_mbuf_check(): %s (data_off=%u data_len=%u buf_len=%u pkt_len=%u)\n",
+	       reason, m-&gt;data_off, m-&gt;data_len, m-&gt;buf_len, m-&gt;pkt_len);
+	fflush(stdout);
+	if (do_panic)
+		rte_panic("corrupted mbuf %p from pool %s: %s\n",
+			  (void *)m, m-&gt;pool-&gt;name, reason);
+}</code></pre>
+    </div>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/gdb_live.gdb</span><span class="lang">gdb</span></div>
+<pre data-lines><code># Chapter 13: gdb_live.gdb - a guided gdb session on a running DPDK app.
+# usage: gdb -batch -x gdb_live.gdb --args ./panic_demo &lt;EAL args&gt;
+set pagination off
+set print thread-events off
+set print pretty off
+# 1. stop inside the PMD's RX function, on the worker lcore's thread.
+#    rte_eth_rx_burst() is an inline wrapper that calls through
+#    rte_eth_fp_ops[port].rx_pkt_burst; the real code is eth_null_rx.
+break eth_null_rx
+run
+bt 4
+info threads
+p rte_eth_fp_ops[0].rx_pkt_burst
+p rte_eth_fp_ops[0].rx_pkt_burst == eth_null_rx
+# 2. let it run into rte_panic -&gt; abort -&gt; SIGABRT
+delete
+continue
+bt
+frame function check_and_maybe_panic
+printf "data_off=%u data_len=%u pkt_len=%u buf_len=%u refcnt=%u nb_segs=%u\n", m-&gt;data_off, m-&gt;data_len, m-&gt;pkt_len, m-&gt;buf_len, m-&gt;refcnt, m-&gt;nb_segs
+p m-&gt;pool-&gt;name
+# functions without debug info need their return type spelled out
+p (unsigned int) rte_mempool_in_use_count(m-&gt;pool)
+p (unsigned int) rte_mempool_avail_count(m-&gt;pool)</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 7)</span></div>
+<pre><span class="hl">########## 7. gdb on a live DPDK process (panic_demo)</span>
+<span class="prompt">$ </span><span class="cmd">gdb -batch -x gdb_live.gdb --args ./panic_demo -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch13-gdb --vdev=net_null0</span>
+Breakpoint 1 at 0xedf80 (2 locations)
+[Switching to Thread 0x7ffff2bfc6c0 (LWP 11414)]
+
+Thread 4 "dpdk-worker1" hit Breakpoint 1.1, 0x0000555555641f80 in eth_null_rx ()
+#0  0x0000555555641f80 in eth_null_rx ()
+#1  0x0000555555606b5d in rte_eth_rx_burst (port_id=0, queue_id=0, rx_pkts=0x7ffff2bfa970, nb_pkts=32) at $DPDK_PREFIX/include/rte_ethdev.h:6214
+#2  0x0000555555606e1e in worker (arg=0x0) at panic_demo.c:39
+#3  0x0000555555883436 in eal_thread_loop ()
+  Id   Target Id                                           Frame 
+  1    Thread 0x7ffff7419a00 (LWP 11409) "panic_demo"      0x0000555555601552 in rte_pause () at $DPDK_PREFIX/include/rte_pause.h:19
+  2    Thread 0x7ffff4bff6c0 (LWP 11412) "dpdk-intr"       0x00007ffff732a292 in epoll_wait (epfd=6, events=0x7ffff4bfdb00, maxevents=1, timeout=-1) at ../sysdeps/unix/sysv/linux/epoll_wait.c:30
+  3    Thread 0x7ffff43fe6c0 (LWP 11413) "dpdk-mp-msg"     0x00007ffff732c08b in __recvmsg_syscall (flags=0, msg=0x7ffff43fbc80, fd=9) at ../sysdeps/unix/sysv/linux/recvmsg.c:27
+* 4    Thread 0x7ffff2bfc6c0 (LWP 11414) "dpdk-worker1"    0x0000555555641f80 in eth_null_rx ()
+  5    Thread 0x7ffff23fb6c0 (LWP 11415) "dpdk-telemet-v2" 0x00007ffff732ba8d in __libc_accept (fd=16, addr=..., len=0x0) at ../sysdeps/unix/sysv/linux/accept.c:26
+$1 = (eth_rx_burst_t) 0x555555641f80 &lt;eth_null_rx&gt;
+$2 = 1
+worker on lcore 1 did &gt;= 100 RX bursts
+mbuf 0x10406e040: pool=ch13_panic_pool refcnt=1 data_len=64, payload "CH13-MARKER-PAYLOAD"
+mbuf 0x10406e040 passes rte_mbuf_check()
+rte_mbuf_check(): data length too big in mbuf segment (data_off=128 data_len=4000 buf_len=2176 pkt_len=4000)
+<span class="dim">EAL: PANIC in check_and_maybe_panic():</span>
+corrupted mbuf 0x10406e040 from pool ch13_panic_pool: data length too big in mbuf segment
+0: panic_demo (rte_dump_stack+0x42) [5555558930a2]
+1: panic_demo (__rte_panic+0xd0) [5555555f0754]
+2: panic_demo (555555554000+0xb2f73) [555555606f73]
+3: panic_demo (main+0x312) [55555560729b]
+4: /lib/x86_64-linux-gnu/libc.so.6 (7ffff7200000+0x2a1ca) [7ffff722a1ca]
+5: /lib/x86_64-linux-gnu/libc.so.6 (__libc_start_main+0x8b) [7ffff722a28b]
+6: panic_demo (_start+0x25) [555555601475]
+
+Thread 1 "panic_demo" received signal SIGABRT, Aborted.
+[Switching to Thread 0x7ffff7419a00 (LWP 11409)]
+__pthread_kill_implementation (no_tid=0, signo=6, threadid=&lt;optimized out&gt;) at ./nptl/pthread_kill.c:44
+#0  __pthread_kill_implementation (no_tid=0, signo=6, threadid=&lt;optimized out&gt;) at ./nptl/pthread_kill.c:44
+#1  __pthread_kill_internal (signo=6, threadid=&lt;optimized out&gt;) at ./nptl/pthread_kill.c:78
+#2  __GI___pthread_kill (threadid=&lt;optimized out&gt;, signo=signo@entry=6) at ./nptl/pthread_kill.c:89
+#3  0x00007ffff724527e in __GI_raise (sig=sig@entry=6) at ../sysdeps/posix/raise.c:26
+#4  0x00007ffff72288ff in __GI_abort () at ./stdlib/abort.c:79
+#5  0x00005555555f0759 in __rte_panic ()
+#6  0x0000555555606f73 in check_and_maybe_panic (m=0x10406e040, do_panic=true) at panic_demo.c:62
+#7  0x000055555560729b in main (argc=1, argv=0x7fffffffbf58) at panic_demo.c:128
+#6  0x0000555555606f73 in check_and_maybe_panic (m=0x10406e040, do_panic=true) at panic_demo.c:62
+62			rte_panic("corrupted mbuf %p from pool %s: %s\n",
+data_off=128 data_len=4000 pkt_len=4000 buf_len=2176 refcnt=1 nb_segs=1
+$3 = "ch13_panic_pool\000\000\000\000\000\000\000\000\000\000"
+$4 = 33
+$5 = 478
+<span class="prompt">$ </span><span class="cmd">addr2line -f -e panic_demo 0xb2f73   (frame 2 of rte_dump_stack has no symbol: a static function)</span>
+check_and_maybe_panic
+panic_demo.c:64</pre>
+    </div>
+    <p class="output-caption">What to notice: the breakpoint hit on thread 4, <code>dpdk-worker1</code>, inside <code>eth_null_rx</code>, called from the inline <code>rte_eth_rx_burst</code> (frame #1 shows the header line). <code>rte_panic()</code> printed the message and a backtrace from <code>rte_dump_stack()</code> before calling <code>abort()</code>. Frame 2 of that backtrace has no name because <code>check_and_maybe_panic</code> is <code>static</code>: <code>addr2line</code> with the offset turns it into a function and a line. gdb, which reads the debug info, names it directly (frame #6).</p>
+
+    <div class="callout note"><div class="callout-title">rte_panic, rte_exit, and signals</div><p><code>rte_panic(fmt, ...)</code> prints <code>PANIC in &lt;function&gt;()</code>, the message and a stack dump, then calls <code>abort()</code>: you get SIGABRT and a core file. <code>rte_exit(code, fmt, ...)</code> prints the message, runs <code>rte_eal_cleanup()</code> and exits cleanly: no core. Use <code>rte_exit</code> for "bad configuration", <code>rte_panic</code> for "this cannot happen, keep the evidence". EAL installs no SIGSEGV handler, so a segfault produces a core file directly (if allowed: section 8). <code>rte_dump_stack()</code> alone is handy in your own error paths.</p></div>
+
+    <h3 id="asan">7.2 AddressSanitizer</h3>
+    <p>ASan instruments every memory access of the code it compiles and reports the first out-of-bounds or use-after-free access, with the stack of the access and of the allocation. Building <em>your</em> application with <code>gcc -fsanitize=address -fno-omit-frame-pointer</code> works against the normal static DPDK. What it can see:</p>
+    <ul>
+      <li>yes: <code>malloc</code>/<code>free</code>, the stack and globals of your code;</li>
+      <li>no: <code>rte_malloc</code> memory, memzones and mempool objects (mbufs). DPDK can teach ASan about its own heap, but only when DPDK itself is built with <code>meson -Db_sanitize=address</code> (<span class="src-path">doc/guides/prog_guide/asan.rst</span>). Even then, mempool objects are not poisoned on free, so ASan does not see an mbuf double free (lab 4).</li>
+    </ul>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/asan_demo.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="25" data-hl="35-36"><code class="language-c">struct flow_rec {
+	uint32_t pkts;
+	unsigned char *head;           /* first 64 bytes of the first packet */
+};
+
+static void __rte_noinline
+record_packet(struct flow_rec *fr, struct rte_mbuf *m)
+{
+	if (fr-&gt;head == NULL)
+		fr-&gt;head = malloc(64);
+	/* BUG: should be RTE_MIN(rte_pktmbuf_data_len(m), 64) */
+	memcpy(fr-&gt;head, rte_pktmbuf_mtod(m, void *), rte_pktmbuf_data_len(m));
+	fr-&gt;pkts++;
+}</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 8)</span></div>
+<pre><span class="hl">########## 8. AddressSanitizer (gcc) on a DPDK app</span>
+<span class="prompt">$ </span><span class="cmd">./asan_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch13-asan</span>
+recording a 64-byte packet into a 64-byte buffer
+recording a 128-byte packet into a 64-byte buffer
+recorded 2 packets, no crash: the overflow went unnoticed
+<span class="prompt">$ </span><span class="cmd">./asan_demo_asan -l 0 --no-pci --no-huge -m 64 --file-prefix=ch13-asan   (start of the report)</span>
+recording a 64-byte packet into a 64-byte buffer
+recording a 128-byte packet into a 64-byte buffer
+=================================================================
+<span class="err">==PID==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x... at pc 0x... bp 0x... sp 0x...</span>
+WRITE of size 128 at 0x... thread T0
+    #0 0x... in memcpy ../../../../src/libsanitizer/sanitizer_common/sanitizer_common_interceptors_memintrinsics.inc:115
+    #1 0x... in memcpy /usr/include/x86_64-linux-gnu/bits/string_fortified.h:29
+    #2 0x... in record_packet asan_demo.c:36
+    #3 0x... in main asan_demo.c:60
+
+0x... is located 0 bytes after 64-byte region [0x...,0x...)
+allocated by thread T0 here:
+    #0 0x... in malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:69
+    #1 0x... in record_packet asan_demo.c:34
+    #2 0x... in main asan_demo.c:60
+    #3 0x... in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+
+SUMMARY: AddressSanitizer: heap-buffer-overflow ../../../../src/libsanitizer/sanitizer_common/sanitizer_common_interceptors_memintrinsics.inc:115 in memcpy
+Shadow bytes around the buggy address:</pre>
+    </div>
+    <p class="output-caption">The plain build writes 64 bytes past a 64-byte heap block and carries on. The ASan build stops at the first bad write and names both the line that wrote (<code>asan_demo.c:36</code>) and the line that allocated (<code>asan_demo.c:34</code>). The clang ASan runtime is not installed on this VM; gcc's works.</p>
+
+    <h3 id="mbufcheck">7.3 Checking mbufs</h3>
+    <ul>
+      <li><code>rte_mbuf_check(m, is_header, &amp;reason)</code> returns 0 or -1 and a reason string: pool NULL, bad IOVA, bad virtual address, refcnt 0 or 0xffff, and for a packet header <code>data_len &gt; pkt_len</code>, a segment that overruns its buffer, a wrong <code>nb_segs</code> or <code>pkt_len</code>. <code>rte_mbuf_sanity_check(m, is_header)</code> does the same and calls <code>rte_panic</code> on failure. Both are normal functions, available in every build.</li>
+      <li>Compiling <em>your</em> code with <code>-DRTE_LIBRTE_MBUF_DEBUG</code> turns on the checks hidden inside the inline mbuf functions (<code>__rte_mbuf_sanity_check</code> in <code>rte_pktmbuf_free</code>, <code>rte_mbuf_raw_alloc</code>, ...). The libraries keep whatever they were built with.</li>
+      <li><code>rte_pktmbuf_dump(stdout, m, len)</code> prints the header fields and a hex dump of the data.</li>
+      <li>Pool-level checks need a DPDK build option: <code>RTE_LIBRTE_MEMPOOL_DEBUG</code> adds cookies around every object and catches a double free on the second put. 26.11 also has <span class="key-term">mbuf history</span> (<span class="src-path">lib/mbuf/rte_mbuf_history.h</span>): with <code>RTE_MBUF_HISTORY_DEBUG</code> every mbuf records its last 16 operations (alloc, RX, TX, free by PMD/app, ...), dumped with <code>rte_mbuf_history_dump_all()</code> and decoded by <code>usertools/dpdk-mbuf-history-parser.py</code>. Neither option is enabled in this course build (<span class="src-path">config/rte_config.h</span>: "is not set").</li>
+      <li><code>rte_mempool_in_use_count()</code> and <code>rte_mempool_avail_count()</code> (or telemetry <code>/mempool/info</code>) are the leak detector you always have: at a quiet moment, in-use must equal what you know you hold.</li>
+    </ul>
+
+    <h3 id="tree">7.4 Where to look first: a troubleshooting tree</h3>
+    <p>DPDK's <span class="src-path">doc/guides/howto/debug_troubleshoot.rst</span> organises debugging by symptom. The widget below follows the same idea for the problems you can meet with the material of ch3 to ch13. Each leaf names the counter or tool to read and the usual fix.</p>
+    <div class="widget" id="w-tree">
+      <div class="widget-head"><span class="widget-title">Troubleshooting decision tree</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="tree-path" id="tree-path"></div>
+        <div class="tree-q" id="tree-q"></div>
+        <div class="btn-row" id="tree-opts"></div>
+        <div id="tree-leaf"></div>
+      </div>
+    </div>
+
+    <!-- ============================================================ 8 -->
+    <h2 id="core"><span class="sec-num">8</span>Post-mortem: core dumps that contain the packets</h2>
+    <p>A production process that crashed at 3 a.m. cannot be stepped through. What you get is a <span class="key-term">core file</span>: a snapshot of the process's memory and registers at the moment it died, which gdb opens like a stopped process (<code>gdb ./app core</code>). Three settings decide whether you get one and what is in it:</p>
+    <ol>
+      <li><strong><code>ulimit -c</code></strong>, the core size limit of the process. It is often 0 (no core at all). Set it with <code>ulimit -c unlimited</code> in the shell that starts the program, or <code>LimitCORE=infinity</code> in a systemd unit (ch29).</li>
+      <li><strong><code>/proc/sys/kernel/core_pattern</code></strong>, where the core goes. A plain name (<code>core</code>, as on this VM) writes into the process's current directory. On most distributions it is a pipe to <code>systemd-coredump</code>; then you list and open cores with <code>coredumpctl list</code> and <code>coredumpctl gdb</code>. Disk limits for systemd-coredump are in <code>/etc/systemd/coredump.conf</code>.</li>
+      <li><strong><code>/proc/&lt;pid&gt;/coredump_filter</code></strong>, a bit mask that decides <em>which kinds of mappings</em> are written (<code>man 5 core</code>). It is inherited across <code>fork()</code> and <code>exec()</code>, so you set it in the parent shell: <code>echo 0x73 &gt; /proc/self/coredump_filter</code>, then start the program.</li>
+    </ol>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>bit</th><th>mappings</th><th>in a DPDK process</th><th>default 0x33</th></tr></thead>
+        <tbody>
+          <tr><td>0</td><td>anonymous private</td><td>heap, stacks, thread stacks</td><td>yes</td></tr>
+          <tr><td>1</td><td>anonymous shared</td><td><code>--no-huge</code> memory (a <code>memfd</code>, shared)</td><td>yes</td></tr>
+          <tr><td>2</td><td>file-backed private</td><td>the binary and libraries (code, data)</td><td>no</td></tr>
+          <tr><td>3</td><td>file-backed shared</td><td><code>/run/dpdk/&lt;prefix&gt;/fbarray_*</code> (memseg tables)</td><td>no</td></tr>
+          <tr><td>4</td><td>ELF headers</td><td>first page of each ELF file (build ids)</td><td>yes</td></tr>
+          <tr><td>5</td><td>hugetlb private</td><td>(rare in DPDK)</td><td>yes</td></tr>
+          <tr><td>6</td><td>hugetlb shared</td><td><strong>all DPDK hugepage memory</strong>: mbufs, mempools, rings, memzones</td><td><strong>no</strong></td></tr>
+          <tr><td>7, 8</td><td>DAX private / shared</td><td>none here</td><td>no</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>DPDK maps its hugepages <code>MAP_SHARED</code> from files in hugetlbfs, so with the Linux default filter <code>0x33</code> the core of a hugepage DPDK process <strong>does not contain a single mbuf, ring or mempool</strong>. EAL also marks the huge virtual area it reserves for future memory with <code>MADV_DONTDUMP</code> (<code>eal_mem_set_dump()</code>, called from <span class="src-path">lib/eal/common/eal_common_memory.c</span>; the <code>dd</code> flag in <code>/proc/&lt;pid&gt;/smaps</code>), otherwise every core would claim to be 64 GB. <code>crash_postmortem.sh</code> shows all of this on the real process:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/crash_postmortem.sh (the crash function)</span><span class="lang">bash</span></div>
+<pre data-lines data-start="79"><code class="language-bash">crash() {     # crash &lt;label&gt; &lt;filter&gt; &lt;eal args...&gt;
+	local label=$1 filter=$2; shift 2
+	mkdir -p "$WORK/$label"
+	{ (
+		cd "$WORK/$label" || exit 1
+		ulimit -c unlimited
+		echo "$filter" &gt; /proc/self/coredump_filter
+		exec timeout -s INT -k 5 20 "$HERE/panic_demo" "$@" \
+			--file-prefix=ch13-core-$label &gt; run.log 2&gt;&amp;1
+	); } 2&gt;/dev/null      # hide bash's "Aborted" line; the core is the point
+	rm -f /dev/hugepages/ch13-core-${label}map_* 2&gt;/dev/null</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 9)</span></div>
+<pre><span class="hl">########## 9. crash_postmortem.sh: what is in a core file</span>
+core_pattern: core   core_uses_pid: 0
+this shell's coredump_filter: 00000033
+
+== 1. mappings of a live panic_demo (-m 32 hugepages), from /proc/&lt;pid&gt;/smaps
+   EAL VA reservation (dd)               3 mappings    65504.0 MB
+   anon private                         31 mappings      118.8 MB
+   file private (binary, libs)         155 mappings       55.4 MB
+   file shared (/run/dpdk fbarray)       3 mappings        1.7 MB
+   hugetlb shared (DPDK memory)         16 mappings       32.0 MB
+
+== 1. mappings of a live panic_demo (--no-huge -m 64), from /proc/&lt;pid&gt;/smaps
+   EAL VA reservation (dd)               2 mappings        0.0 MB
+   anon private                         32 mappings      118.7 MB
+   anon shared (memfd)                   1 mappings       64.0 MB
+   file private (binary, libs)         155 mappings       55.4 MB
+   file shared (/run/dpdk fbarray)       3 mappings        1.0 MB
+
+== 2. crash panic_demo with different coredump_filter values
+   A filter=0x33  core apparent   56.1 MB, on disk    3.0 MB
+   B filter=0x73  core apparent   88.1 MB, on disk   35.0 MB
+   C filter=0x7f  core apparent  144.1 MB, on disk   91.0 MB
+   D filter=0x33  core apparent  119.9 MB, on disk   66.9 MB
+   (what panic_demo printed before dying, run A:)
+     rte_mbuf_check(): data length too big in mbuf segment (data_off=128 data_len=4000 buf_len=2176 pkt_len=4000)
+<span class="err">     EAL: PANIC in check_and_maybe_panic():</span>
+     corrupted mbuf 0x10208c840 from pool ch13_panic_pool: data length too big in mbuf segment
+
+== 3. gdb on each core: can we read the mbuf?
+-- core A
+   [Current thread is 1 (Thread 0x... (LWP 11486))]
+   #6  0x...5f73 in check_and_maybe_panic (m=0x10208c840, do_panic=true) at panic_demo.c:62
+   62			rte_panic("corrupted mbuf %p from pool %s: %s\n",
+   $1 = (struct rte_mbuf *) 0x10208c840
+   $2 = 0
+<span class="err">   Cannot access memory at address 0x0</span>
+<span class="err">   0x0:	&lt;error: Cannot access memory at address 0x0&gt;</span>
+-- core B
+   [Current thread is 1 (Thread 0x... (LWP 11505))]
+   #6  0x...af73 in check_and_maybe_panic (m=0x1020c4040, do_panic=true) at panic_demo.c:62
+   62			rte_panic("corrupted mbuf %p from pool %s: %s\n",
+   $1 = (struct rte_mbuf *) 0x1020c4040
+   $2 = 4000
+   $3 = "ch13_panic_pool\000\000\000\000\000\000\000\000\000\000"
+   0x1020c4140:	"CH13-MARKER-PAYLOAD"
+-- core C
+   [Current thread is 1 (Thread 0x... (LWP 11524))]
+   #6  0x...6f73 in check_and_maybe_panic (m=0x1020b1840, do_panic=true) at panic_demo.c:62
+   62			rte_panic("corrupted mbuf %p from pool %s: %s\n",
+   $1 = (struct rte_mbuf *) 0x1020b1840
+   $2 = 4000
+   $3 = "ch13_panic_pool\000\000\000\000\000\000\000\000\000\000"
+   0x1020b1940:	"CH13-MARKER-PAYLOAD"
+-- core D
+   [Current thread is 1 (Thread 0x... (LWP 11543))]
+   #6  0x...7f73 in check_and_maybe_panic (m=0x10408d040, do_panic=true) at panic_demo.c:62
+   62			rte_panic("corrupted mbuf %p from pool %s: %s\n",
+   $1 = (struct rte_mbuf *) 0x10408d040
+   $2 = 4000
+   $3 = "ch13_panic_pool\000\000\000\000\000\000\000\000\000\000"
+   0x10408d140:	"CH13-MARKER-PAYLOAD"
+
+crash_postmortem.sh done (cores deleted by the trap)</pre>
+    </div>
+    <p class="output-caption">Core A (the default filter) is the trap: gdb does <em>not</em> say "cannot access" for the mbuf, it prints <code>data_len = 0</code>, because the core declares the hugepage range but contains no bytes for it, and gdb fills missing bytes with zeros. Only when it follows <code>m-&gt;pool</code> (now 0) does it fail. A zeroed mbuf in a core usually means "not dumped", not "zeroed by a bug". Cores B and C (bit 6 set) show the real <code>data_len = 4000</code>, the pool name and the marker payload. Core D (<code>--no-huge</code>) shows them with the default filter: the memfd is anonymous shared memory. Testing with <code>--no-huge</code> hides this problem until production.</p>
+
+    <div class="widget" id="w-core">
+      <div class="widget-head"><span class="widget-title">Core-dump contents explorer</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="ctrl-row">
+          <label><input type="radio" name="core-mode" value="huge" checked> hugepages (<code>-m 32</code>)</label>
+          <label><input type="radio" name="core-mode" value="nohuge"> <code>--no-huge -m 64</code></label>
+          <span>filter = <code id="core-hex">0x33</code></span>
+          <button class="btn small" type="button" id="core-def">default 0x33</button>
+          <button class="btn small" type="button" id="core-rec">recommended 0x73</button>
+        </div>
+        <div class="bits" id="core-bits"></div>
+        <div class="table-wrap"><table class="compact maps" id="core-table"></table></div>
+        <div class="verdict" id="core-verdict"></div>
+        <div class="mono-out" id="core-gdb"></div>
+      </div>
+    </div>
+    <p class="output-caption">The mapping classes and their sizes come from the real <code>/proc/&lt;pid&gt;/smaps</code> of <code>panic_demo</code>; the core sizes and the gdb output are the four measured cores above. For other filter values the widget tells you which mappings would be written, but it does not invent a size.</p>
+
+    <div class="callout tip"><div class="callout-title">A production recipe</div><p>Start DPDK services with <code>coredump_filter</code> 0x73 (or 0x7f to also keep the binary's file mappings), <code>ulimit -c unlimited</code>, and enough space for the core: with bit 6 set, the core grows by the amount of hugepage memory the process really touched, so a process with 4 GB of mbufs writes a multi-GB core. Keep the exact binary (with <code>-g</code>, or its separate debug file) for every deployed version: a core is useless without it. Exercise 3 asks you to find the mbuf's pool in a core.</p></div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 10: solutions/find_pool.gdb on a 0x7f core)</span></div>
+<pre><span class="hl">########## 10. exercise 3 solution: find the pool and refcnt in a 0x7f core</span>
+[Current thread is 1 (Thread 0x7fdf30a62a00 (LWP 11624))]
+#6  0x0000563ef8380f73 in check_and_maybe_panic (m=0x1020d6840, do_panic=true) at panic_demo.c:62
+62			rte_panic("corrupted mbuf %p from pool %s: %s\n",
+m = 0x1020d6840
+do_panic = true
+$1 = 1
+$2 = 4000
+$3 = 2176
+$4 = "ch13_panic_pool\000\000\000\000\000\000\000\000\000\000"
+$5 = 511
+$6 = 2304
+0x1020d6940:	"CH13-MARKER-PAYLOAD"</pre>
+    </div>
+
+    <!-- ============================================================ 9 -->
+    <h2 id="labs"><span class="sec-num">9</span>Five debug labs</h2>
+    <p>Each lab in <code>code/debug_labs/</code> is a small program with one realistic bug, built twice: <code>lab</code> (the bug) and <code>lab_fixed</code> (the same source with <code>-DFIXED</code>). <code>debug_labs/run_all.sh</code> starts each buggy program, reads its telemetry from outside like an operator would, and then runs the fixed one. They only use material from ch3 to ch12 plus this chapter's tools. Try them in the widget first: read the symptom, run diagnostic commands (the outputs are the real captured ones), and name the cause before you look.</p>
+    <div class="widget" id="w-lab">
+      <div class="widget-head"><span class="widget-title">Debug lab triage</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="btn-row" id="lab-pick"></div>
+        <p id="lab-story" style="margin:.4rem 0"></p>
+        <div class="tree-q">Symptom (program output)</div>
+        <div class="mono-out" id="lab-symptom"></div>
+        <div class="tree-q">Run a diagnostic</div>
+        <div class="btn-row" id="lab-diags"></div>
+        <div class="mono-out" id="lab-diag-out">(choose a command)</div>
+        <div class="tree-q">What is the cause?</div>
+        <div class="lab-cause" id="lab-causes"></div>
+        <div id="lab-reveal"></div>
+      </div>
+    </div>
+
+    <h3 id="lab-sources">The lab sources</h3>
+    <div class="tabs">
+      <div class="tab-list">
+        <button class="tab-btn" data-tab="l1">promisc_off</button><button class="tab-btn" data-tab="l2">mtu_noscatter</button><button class="tab-btn" data-tab="l3">leak</button><button class="tab-btn" data-tab="l4">double_free</button><button class="tab-btn" data-tab="l5">two_lcores_one_queue</button>
+      </div>
+      <div class="tab-panel" data-tab="l1"><pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ * Chapter 13 debug lab 1: promisc_off - "the port is up but nothing arrives".
+ *
+ * Story: the app owns a "service" MAC address 02:13:00:00:00:fe (think of a
+ * virtual router MAC). The upstream device sends every frame to that MAC.
+ * Someone turned promiscuous mode off ("we do not want other people's
+ * traffic") but nobody told the port about the service MAC. The port's
+ * receive filter only accepts its own MAC, broadcast and (maybe) multicast,
+ * so the service traffic is dropped before the application ever sees it.
+ *
+ * Build with -DFIXED for the fix: rte_eth_dev_mac_addr_add() the service MAC.
+ *
+ *   ./lab -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-promisc \
+ *       --vdev=net_tap0,iface=ch13tap1
+ */
+#include "../../ch13_common.h"
+
+#define TAPIF "ch13tap1"
+
+int
+main(int argc, char **argv)
+{
+	static const struct rte_ether_addr svc = {{0x02, 0x13, 0, 0, 0, 0xfe}};
+	static const struct rte_ether_addr bcast = {{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}};
+	struct rte_ether_addr me;
+	struct rte_mempool *mp;
+	struct rte_mbuf *pkts[32];
+	unsigned int got = 0, round;
+	char a[RTE_ETHER_ADDR_FMT_SIZE];
+
+	if (rte_eal_init(argc, argv) &lt; 0)
+		rte_exit(EXIT_FAILURE, "EAL init failed\n");
+	mp = rte_pktmbuf_pool_create("lab_pool", 1023, 32, 0,
+				     RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+	if (mp == NULL || ch13_port_init(0, mp, NULL, 256) &lt; 0)
+		rte_exit(EXIT_FAILURE, "port init failed\n");
+
+	rte_eth_promiscuous_disable(0);              /* the "harmless" change */
+#ifdef FIXED
+	/* tell the receive filter about every address we answer to */
+	printf("mac_addr_add(service MAC) -&gt; %d\n",
+	       rte_eth_dev_mac_addr_add(0, (struct rte_ether_addr *)&amp;svc, 0));
+#endif
+	rte_eth_macaddr_get(0, &amp;me);
+	rte_ether_format_addr(a, sizeof(a), &amp;me);
+	printf("port MAC %s, promiscuous=%d, service MAC 02:13:00:00:00:fe\n",
+	       a, rte_eth_promiscuous_get(0));
+
+	for (round = 0; round &lt; 10; round++) {          /* ~2.5 s */
+		uint64_t end = rte_rdtsc() + rte_get_tsc_hz() / 4;
+
+		kernel_inject(TAPIF, &amp;svc, 20, 60);     /* the real traffic */
+		kernel_inject(TAPIF, &amp;bcast, 1, 60);    /* e.g. an ARP broadcast */
+		while (rte_rdtsc() &lt; end) {
+			uint16_t n = rte_eth_rx_burst(0, 0, pkts, 32);
+
+			got += n;
+			rte_pktmbuf_free_bulk(pkts, n);
+		}
+		if (round == 4) {
+			printf("t=1.25s: app received %u frames so far (sent %u)\n",
+			       got, 21 * (round + 1));
+			fflush(stdout);
+		}
+	}
+	printf("app received %u of %u frames (%u service + %u broadcast sent)\n",
+	       got, 21 * 10, 200, 10);
+	rte_eth_dev_stop(0);
+	rte_eth_dev_close(0);
+	rte_eal_cleanup();
+	return 0;
+}</code></pre></div>
+      <div class="tab-panel" data-tab="l2"><pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ * Chapter 13 debug lab 2: mtu_noscatter - "big packets arrive broken".
+ *
+ * Story: the network now carries 9000-byte jumbo frames. Our port was left
+ * at the default MTU (1500), the mbuf pool has the default 2 KB data room
+ * (RTE_MBUF_DEFAULT_BUF_SIZE) and the SCATTER RX offload is off, so one
+ * frame must fit in ONE 2 KB mbuf. Here the peer is the kernel side of a
+ * tap interface whose MTU we raise to 9000 (that is "the wire").
+ * What the driver does with a frame that does not fit is driver specific:
+ * net_tap drops it and counts it in ierrors (seen below); other drivers
+ * truncate it or count it as rx_length_errors in xstats.
+ *
+ * Build with -DFIXED: check dev_info, enable RTE_ETH_RX_OFFLOAD_SCATTER and
+ * set the MTU to 9000 (rxmode.mtu at configure time). Then each frame
+ * arrives complete as a chain of 5 mbufs.
+ * Note: with rxmode.mtu = 9000 but WITHOUT scatter, net_tap only warns
+ * ("MTU 9000 requires 5 scatter segments, but offload not set") and
+ * scatters anyway; a real NIC may refuse the queue or drop the frames.
+ *
+ *   ./lab -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-mtu \
+ *       --vdev=net_tap0,iface=ch13tap2
+ */
+#include "../../ch13_common.h"
+
+#define TAPIF "ch13tap2"
+
+int
+main(int argc, char **argv)
+{
+	struct rte_eth_conf conf = {0};
+	struct rte_eth_dev_info di;
+	struct rte_eth_stats st;
+	struct rte_ether_addr me;
+	struct rte_mempool *mp;
+	struct rte_mbuf *pkts[32];
+	unsigned int got = 0, segs = 0, bytes = 0;
+	uint16_t mtu = 0;
+	int ret, sent;
+
+	if (rte_eal_init(argc, argv) &lt; 0)
+		rte_exit(EXIT_FAILURE, "EAL init failed\n");
+	mp = rte_pktmbuf_pool_create("lab_pool", 2047, 32, 0,
+				     RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+	if (mp == NULL || rte_eth_dev_info_get(0, &amp;di) != 0)
+		rte_exit(EXIT_FAILURE, "init failed\n");
+	printf("dev_info: max_rx_pktlen=%u max_mtu=%u, SCATTER %s, mbuf data room %u\n",
+	       di.max_rx_pktlen, di.max_mtu,
+	       (di.rx_offload_capa &amp; RTE_ETH_RX_OFFLOAD_SCATTER) ?
+			"supported" : "not supported",
+	       rte_pktmbuf_data_room_size(mp) - RTE_PKTMBUF_HEADROOM);
+#ifdef FIXED
+	conf.rxmode.mtu = 9000;
+	if (di.rx_offload_capa &amp; RTE_ETH_RX_OFFLOAD_SCATTER)
+		conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_SCATTER;
+#endif
+	ret = ch13_port_init(0, mp, &amp;conf, 256);
+	rte_eth_dev_get_mtu(0, &amp;mtu);
+	printf("port init: mtu=%u offloads=0x%" PRIx64 " -&gt; %d\n", mtu,
+	       conf.rxmode.offloads, ret);
+	if (ret &lt; 0)
+		rte_exit(EXIT_FAILURE, "port init failed\n");
+
+	/* "the wire" carries jumbo frames: raise the kernel side's MTU */
+	if (system("ip link set dev " TAPIF " mtu 9000") != 0)
+		printf("could not raise the kernel MTU\n");
+	rte_eth_macaddr_get(0, &amp;me);
+	sent = kernel_inject(TAPIF, &amp;me, 10, 9000 + 14);
+	{
+		uint64_t end = rte_rdtsc() + rte_get_tsc_hz() / 2;
+
+		while (rte_rdtsc() &lt; end) {
+			uint16_t i, n = rte_eth_rx_burst(0, 0, pkts, 32);
+
+			for (i = 0; i &lt; n; i++) {
+				segs += pkts[i]-&gt;nb_segs;
+				bytes += pkts[i]-&gt;pkt_len;
+			}
+			got += n;
+			rte_pktmbuf_free_bulk(pkts, n);
+		}
+	}
+	rte_eth_stats_get(0, &amp;st);
+	printf("kernel sent %d frames of 9014 bytes; app received %u frames, "
+	       "%u bytes (%u per frame), %.1f mbufs per frame; ierrors=%" PRIu64 "\n",
+	       sent, got, bytes, got ? bytes / got : 0,
+	       got ? (double)segs / got : 0.0, st.ierrors);
+	printf("%s\n", got == 10 &amp;&amp; bytes == 10 * 9014 ? "PASS: frames complete"
+						      : "FAIL: frames lost or truncated");
+	fflush(stdout);
+	sleep(2);                       /* time for a telemetry query */
+	rte_eth_dev_stop(0);
+	rte_eth_dev_close(0);
+	rte_eal_cleanup();
+	return 0;
+}</code></pre></div>
+      <div class="tab-panel" data-tab="l3"><pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ * Chapter 13 debug lab 3: leak - "it forwards for a moment, then stops".
+ *
+ * Story: a filter was added to the forwarder: only IPv4 is forwarded, the
+ * rest is dropped. The drop branch does "continue" and forgets to free the
+ * mbuf. net_null delivers zero-filled frames (ether_type 0), so EVERY frame
+ * takes the drop branch: each RX burst permanently loses 32 mbufs, the pool
+ * runs dry, the PMD can no longer refill (rx_nombuf climbs) and RX returns 0.
+ *
+ * Diagnosis: rte_mempool_in_use_count() creeps up to the pool size;
+ * telemetry /mempool/info shows common_pool_count falling to 0 and
+ * /ethdev/stats shows rx_nombuf rising.
+ * Build with -DFIXED: free what you drop (rte_pktmbuf_free).
+ *
+ *   ./lab -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-leak \
+ *       --vdev=net_null0 --vdev=net_null1
+ */
+#include "../../ch13_common.h"
+
+int
+main(int argc, char **argv)
+{
+	struct rte_mempool *mp;
+	struct rte_mbuf *pkts[32];
+	uint64_t fwd = 0, dropped = 0, hz;
+	unsigned int sec;
+
+	if (rte_eal_init(argc, argv) &lt; 0)
+		rte_exit(EXIT_FAILURE, "EAL init failed\n");
+	mp = rte_pktmbuf_pool_create("lab_pool", 8191, 64, 0,
+				     RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+	if (mp == NULL || ch13_port_init(0, mp, NULL, 256) &lt; 0 ||
+	    ch13_port_init(1, mp, NULL, 256) &lt; 0)
+		rte_exit(EXIT_FAILURE, "port init failed\n");
+
+	hz = rte_get_tsc_hz();
+	for (sec = 1; sec &lt;= 5; sec++) {        /* 5 x 0.5 s */
+		uint64_t end = rte_rdtsc() + hz / 2;
+		struct rte_eth_stats st;
+
+		while (rte_rdtsc() &lt; end) {
+			uint16_t i, n = rte_eth_rx_burst(0, 0, pkts, 32), k = 0;
+
+			for (i = 0; i &lt; n; i++) {
+				struct rte_ether_hdr *eh =
+					rte_pktmbuf_mtod(pkts[i], struct rte_ether_hdr *);
+
+				if (eh-&gt;ether_type != RTE_BE16(RTE_ETHER_TYPE_IPV4)) {
+					dropped++;
+#ifdef FIXED
+					rte_pktmbuf_free(pkts[i]);
+#endif
+					continue;       /* BUG without FIXED: leaked */
+				}
+				pkts[k++] = pkts[i];
+			}
+			k = rte_eth_tx_burst(1, 0, pkts, k);
+			fwd += k;
+		}
+		rte_eth_stats_get(0, &amp;st);
+		printf("t=%.1fs in_use=%u/%u avail=%u  rx=%" PRIu64 " rx_nombuf=%" PRIu64
+		       " dropped=%" PRIu64 "\n", sec * 0.5,
+		       rte_mempool_in_use_count(mp), mp-&gt;size,
+		       rte_mempool_avail_count(mp), st.ipackets, st.rx_nombuf, dropped);
+		fflush(stdout);
+	}
+	(void)fwd;
+	rte_eth_dev_stop(0);
+	rte_eth_dev_stop(1);
+	rte_eal_cleanup();
+	return 0;
+}</code></pre></div>
+      <div class="tab-panel" data-tab="l4"><pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ * Chapter 13 debug lab 4: double_free - "random packets carry the wrong data".
+ *
+ * Story: an error path frees a bad packet and then jumps to the common
+ * cleanup label, which frees it again. A freed mbuf keeps refcnt 1 and
+ * looks perfectly valid, so rte_mbuf_sanity_check() and rte_mbuf_check()
+ * say nothing, and a release build of DPDK has no mempool cookies. The
+ * second free puts the SAME pointer into the pool twice: later two
+ * rte_pktmbuf_alloc() calls return the same buffer, and two "different"
+ * packets overwrite each other.
+ *
+ * 200 mbufs are "posted to the NIC RX ring" (held) while the loop runs,
+ * so the pool is never full and the duplicate pointers fit into it.
+ * When those 200 come back at the end, the pool's ring (capacity = size)
+ * has no room for all of them: a release build silently ignores the failed
+ * bulk enqueue, and a whole bulk of real mbufs is lost. So a double free is
+ * also a leak, and in_use_count lies in both directions.
+ *
+ * How to see it anyway:
+ *   - an audit: take all 'size' objects out of the pool and sort the
+ *     pointers: duplicates show up next to each other.
+ *   - telemetry /mempool/info,lab_pool: compare common_pool_count with the
+ *     number of objects you believe are free.
+ *   - a DPDK build with RTE_LIBRTE_MEMPOOL_DEBUG checks object cookies on
+ *     every put and panics on the second one (not available in this build).
+ * Build with -DFIXED: free in exactly one place (the cleanup label).
+ *
+ *   ./lab -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-dfree
+ */
+#include "../../ch13_common.h"
+
+#define POOL 511
+
+static int
+cmp_ptr(const void *a, const void *b)
+{
+	uintptr_t x = *(const uintptr_t *)a, y = *(const uintptr_t *)b;
+
+	return x &lt; y ? -1 : x &gt; y;
+}
+
+/* returns 0 = consumed, -1 = bad packet */
+static int
+handle(struct rte_mbuf *m, unsigned int i)
+{
+	(void)m;
+	if (i % 100 == 7) {             /* every 100th packet is "malformed" */
+#ifndef FIXED
+		rte_pktmbuf_free(m);    /* BUG: the error path frees ...    */
+#endif
+		return -1;
+	}
+	return 0;
+}
+
+int
+main(int argc, char **argv)
+{
+	static void *objs[POOL];
+	static struct rte_mbuf *posted[200];
+	struct rte_mempool *mp;
+	unsigned int i, bad = 0, dups = 0;
+	const char *reason __rte_unused = NULL;
+	unsigned int avail;
+
+	if (rte_eal_init(argc, argv) &lt; 0)
+		rte_exit(EXIT_FAILURE, "EAL init failed\n");
+	/* no per-lcore cache: keeps the counts easy to read */
+	mp = rte_pktmbuf_pool_create("lab_pool", POOL, 0, 0,
+				     RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+	if (mp == NULL)
+		rte_exit(EXIT_FAILURE, "pool failed\n");
+
+	/* 200 buffers waiting in the (pretend) NIC RX ring */
+	if (rte_pktmbuf_alloc_bulk(mp, posted, RTE_DIM(posted)) != 0)
+		rte_exit(EXIT_FAILURE, "alloc failed\n");
+
+	for (i = 0; i &lt; 1000; i++) {
+		struct rte_mbuf *m = rte_pktmbuf_alloc(mp);
+
+		if (m == NULL)
+			break;
+		ch13_make_udp(m, 64, i);
+		if (handle(m, i) &lt; 0) {
+			bad++;
+#ifndef FIXED
+			/* is the already-freed mbuf detectably "bad"? */
+			if (bad == 1)
+				printf("after the first free: rte_mbuf_check() = %d, refcnt=%u\n",
+				       rte_mbuf_check(m, 1, &amp;reason),
+				       rte_mbuf_refcnt_read(m));
+#endif
+			goto cleanup;   /* ... and so does the cleanup label */
+		}
+cleanup:
+		rte_pktmbuf_free(m);
+	}
+	printf("processed %u packets, %u malformed\n", i, bad);
+	printf("with 200 posted: size=%u avail=%u in_use=%u (should be avail=311 in_use=200)\n",
+	       mp-&gt;size, rte_mempool_avail_count(mp), rte_mempool_in_use_count(mp));
+	printf("READY\n");
+	fflush(stdout);
+	sleep(1);                       /* time for a telemetry query */
+	rte_pktmbuf_free_bulk(posted, RTE_DIM(posted));   /* port stopped */
+	printf("after returning the 200: avail=%u in_use=%u\n",
+	       rte_mempool_avail_count(mp), rte_mempool_in_use_count(mp));
+
+	/* the audit: everything is idle now, so take out every free object */
+	avail = rte_mempool_avail_count(mp);
+	if (rte_mempool_get_bulk(mp, objs, avail) == 0) {
+		qsort(objs, avail, sizeof(void *), cmp_ptr);
+		for (i = 1; i &lt; avail; i++)
+			if (objs[i] == objs[i - 1])
+				dups++;
+		printf("audit: took the %u free objects out of the pool: %u duplicate "
+		       "pointers; %u mbufs missing from a pool of %u\n",
+		       avail, dups, mp-&gt;size - avail + dups, mp-&gt;size);
+		rte_mempool_put_bulk(mp, objs, avail);
+	}
+	printf("%s\n", dups || avail != mp-&gt;size ?
+	       "FAIL: duplicates in the pool and mbufs lost" :
+	       "PASS: every object is unique and back in the pool");
+	rte_eal_cleanup();
+	return 0;
+}</code></pre></div>
+      <div class="tab-panel" data-tab="l5"><pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ * Chapter 13 debug lab 5: two_lcores_one_queue - "counters do not add up".
+ *
+ * Story: to "use more cores", the same forwarding function was launched on
+ * two lcores, and both poll port 0 queue 0 (and transmit on it). An ethdev
+ * queue is single-threaded: the PMD keeps per-queue state without locks.
+ * net_ring's queue is an rte_ring created single-producer/single-consumer
+ * (RING_F_SP_ENQ | RING_F_SC_DEQ), so two consumers can dequeue the SAME
+ * mbufs, and two producers can overwrite each other's slots. Packets get
+ * duplicated or lost, and the PMD's plain (non-atomic) counters lose
+ * updates.
+ *
+ * The check: 256 frames are injected into a loopback port; after the run,
+ * drain the port and count what is left. Without the bug exactly 256
+ * distinct mbufs come back and in_use is 256 before the drain, 0 after.
+ * Build with -DFIXED: each lcore owns one port (queue) of its own.
+ *
+ *   ./lab -l 0-2 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-2lc \
+ *       --vdev=net_ring0 --vdev=net_ring1
+ */
+#include "../../ch13_common.h"
+
+#define NPKT 256
+
+static RTE_ATOMIC(uint64_t) app_rx[RTE_MAX_LCORE];
+
+static int
+fwd(void *arg)
+{
+	uint16_t port = (uint16_t)(uintptr_t)arg;
+	struct rte_mbuf *pkts[32];
+	uint64_t n_rx = 0;
+
+	while (!ch13_quit) {
+		uint16_t n = rte_eth_rx_burst(port, 0, pkts, 32), s;
+
+		n_rx += n;
+		s = rte_eth_tx_burst(port, 0, pkts, n);  /* loop back */
+		if (s &lt; n)
+			rte_pktmbuf_free_bulk(&amp;pkts[s], n - s);
+	}
+	rte_atomic_store_explicit(&amp;app_rx[rte_lcore_id()], n_rx,
+				  rte_memory_order_relaxed);
+	return 0;
+}
+
+static int
+cmp_ptr(const void *a, const void *b)
+{
+	uintptr_t x = *(const uintptr_t *)a, y = *(const uintptr_t *)b;
+
+	return x &lt; y ? -1 : x &gt; y;
+}
+
+int
+main(int argc, char **argv)
+{
+	static struct rte_mbuf *left[4096];
+	struct rte_mempool *mp;
+	unsigned int lc, nleft = 0, dups = 0, i, k = 0, injected;
+	uint64_t sum = 0, pmd_rx = 0;
+	uint16_t p;
+
+	if (rte_eal_init(argc, argv) &lt; 0)
+		rte_exit(EXIT_FAILURE, "EAL init failed\n");
+	if (rte_lcore_count() &lt; 3 || rte_eth_dev_count_avail() &lt; 2)
+		rte_exit(EXIT_FAILURE, "need -l 0-2 and two net_ring ports\n");
+	mp = rte_pktmbuf_pool_create("lab_pool", 2047, 0, 0,
+				     RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+	for (p = 0; p &lt; 2; p++)
+		if (mp == NULL || ch13_port_init(p, mp, NULL, 512) &lt; 0)
+			rte_exit(EXIT_FAILURE, "port init failed\n");
+
+	injected = ch13_inject(0, mp, NPKT, 64);
+	printf("injected %u frames on port 0", injected);
+#ifdef FIXED
+	injected += ch13_inject(1, mp, NPKT, 64);
+	printf(" and %u on port 1\n", injected - NPKT);
+#else
+	printf("\n");
+#endif
+	RTE_LCORE_FOREACH_WORKER(lc) {
+#ifdef FIXED
+		rte_eal_remote_launch(fwd, (void *)(uintptr_t)(k++), lc);
+#else
+		rte_eal_remote_launch(fwd, (void *)(uintptr_t)0, lc);  /* BUG */
+		k++;
+#endif
+	}
+	printf("%u lcores forwarding, %s\n", k,
+#ifdef FIXED
+	       "one port each"
+#else
+	       "both on port 0 queue 0"
+#endif
+	       );
+	fflush(stdout);
+	rte_delay_ms(1500);
+	ch13_quit = true;
+	rte_eal_mp_wait_lcore();
+
+	RTE_LCORE_FOREACH_WORKER(lc)
+		sum += rte_atomic_load_explicit(&amp;app_rx[lc], rte_memory_order_relaxed);
+	for (p = 0; p &lt; 2; p++) {
+		struct rte_eth_stats st;
+
+		rte_eth_stats_get(p, &amp;st);
+		pmd_rx += st.ipackets;
+	}
+	printf("app counted %" PRIu64 " RX, the PMD counted %" PRIu64 " (%s)\n",
+	       sum, pmd_rx, sum == pmd_rx ? "equal" : "DIFFERENT");
+	printf("in_use before drain: %u\n", rte_mempool_in_use_count(mp));
+
+	for (p = 0; p &lt; 2; p++) {
+		uint16_t n;
+
+		while ((n = rte_eth_rx_burst(p, 0, &amp;left[nleft],
+				RTE_MIN(32u, RTE_DIM(left) - nleft))) &gt; 0)
+			nleft += n;
+	}
+	qsort(left, nleft, sizeof(left[0]), cmp_ptr);
+	for (i = 1; i &lt; nleft; i++)
+		if (left[i] == left[i - 1])
+			dups++;
+	printf("drained %u mbufs (expected %u), %u duplicates\n", nleft,
+	       injected, dups);
+	/* free each distinct mbuf once */
+	for (i = 0; i &lt; nleft; i++)
+		if (i == 0 || left[i] != left[i - 1])
+			rte_pktmbuf_free(left[i]);
+	printf("in_use after drain: %u -&gt; %s\n", rte_mempool_in_use_count(mp),
+	       rte_mempool_in_use_count(mp) == 0 &amp;&amp; dups == 0 &amp;&amp;
+	       nleft == injected ?
+	       "PASS" : "FAIL");
+	rte_eal_cleanup();
+	return 0;
+}</code></pre></div>
+    </div>
+    <details><summary>The full captured output of debug_labs/run_all.sh</summary>
+    <div class="terminal">
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 11)</span></div>
+<pre><span class="hl">########## 11. debug labs</span>
+<span class="hl">######## LAB 1 promisc_off (net_tap ch13tap1)</span>
+<span class="prompt">$ </span><span class="cmd">promisc_off/lab -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-promisc --vdev=net_tap0,iface=ch13tap1</span>
+<span class="hl">--- diag: python3 -I ../tq.py ch13-dbg-promisc /ethdev/stats,0 ipackets ierrors imissed</span>
+{"/ethdev/stats,0": {"ipackets": 6, "ierrors": 0, "imissed": 0}}
+<span class="hl">--- diag: python3 -I ../tq.py ch13-dbg-promisc /ethdev/info,0 mac_addr promiscuous all_multicast</span>
+{"/ethdev/info,0": {"mac_addr": "DE:14:38:50:A0:95", "promiscuous": 0, "all_multicast": 0}}
+<span class="hl">--- diag: python3 -I ../tq.py ch13-dbg-promisc /ethdev/macs,0</span>
+{"/ethdev/macs,0": ["DE:14:38:50:A0:95"]}
+<span class="hl">--- diag: ip -d link show ch13tap1 (kernel side)</span>
+    link/ether de:14:38:50:a0:95 brd ff:ff:ff:ff:ff:ff promiscuity 0  allmulti 0 
+<span class="hl">--- symptom (program output):</span>
+port MAC DE:14:38:50:A0:95, promiscuous=0, service MAC 02:13:00:00:00:fe
+t=1.25s: app received 5 frames so far (sent 105)
+app received 10 of 210 frames (200 service + 10 broadcast sent)
+<span class="hl">--- fixed:</span>
+<span class="prompt">$ </span><span class="cmd">promisc_off/lab_fixed -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-promisc --vdev=net_tap0,iface=ch13tap1</span>
+mac_addr_add(service MAC) -&gt; 0
+port MAC EA:13:35:C8:CC:AC, promiscuous=0, service MAC 02:13:00:00:00:fe
+t=1.25s: app received 105 frames so far (sent 105)
+app received 210 of 210 frames (200 service + 10 broadcast sent)
+
+<span class="hl">######## LAB 2 mtu_noscatter (net_tap ch13tap2)</span>
+<span class="prompt">$ </span><span class="cmd">mtu_noscatter/lab -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-mtu --vdev=net_tap0,iface=ch13tap2</span>
+<span class="hl">--- diag: python3 -I ../tq.py ch13-dbg-mtu /ethdev/stats,0 ipackets ierrors imissed</span>
+{"/ethdev/stats,0": {"ipackets": 0, "ierrors": 10, "imissed": 0}}
+<span class="hl">--- diag: python3 -I ../tq.py ch13-dbg-mtu /ethdev/info,0 mtu rx_mbuf_size_min scattered_rx rx_offloads</span>
+{"/ethdev/info,0": {"mtu": 1500, "rx_mbuf_size_min": 2176, "scattered_rx": 0, "rx_offloads": []}}
+<span class="hl">--- symptom (program output):</span>
+dev_info: max_rx_pktlen=16128 max_mtu=65535, SCATTER supported, mbuf data room 2048
+port init: mtu=1500 offloads=0x0 -&gt; 0
+kernel sent 10 frames of 9014 bytes; app received 0 frames, 0 bytes (0 per frame), 0.0 mbufs per frame; ierrors=10
+<span class="err">FAIL: frames lost or truncated</span>
+<span class="hl">--- fixed:</span>
+<span class="prompt">$ </span><span class="cmd">mtu_noscatter/lab_fixed -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-mtu --vdev=net_tap0,iface=ch13tap2</span>
+<span class="hl">--- diag: python3 -I ../tq.py ch13-dbg-mtu /ethdev/info,0 mtu scattered_rx rx_offloads</span>
+{"/ethdev/info,0": {"mtu": 9000, "scattered_rx": 0, "rx_offloads": ["SCATTER"]}}
+dev_info: max_rx_pktlen=16128 max_mtu=65535, SCATTER supported, mbuf data room 2048
+port init: mtu=9000 offloads=0x2000 -&gt; 0
+kernel sent 10 frames of 9014 bytes; app received 10 frames, 90140 bytes (9014 per frame), 5.0 mbufs per frame; ierrors=0
+<span class="ok">PASS: frames complete</span>
+<span class="hl">--- what net_tap logs with rxmode.mtu=9000 but no SCATTER flag (warning only):</span>
+testpmd: Warning: max-pkt-len (9018) is greater than mbuf size (2176) without scattered Rx enabled
+TAP: tap_rx_queue_setup(): net_tap0: MTU 9000 requires 5 scatter segments, but offload not set
+
+<span class="hl">######## LAB 3 leak (net_null)</span>
+<span class="prompt">$ </span><span class="cmd">leak/lab -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-leak --vdev=net_null0 --vdev=net_null1</span>
+<span class="hl">--- diag: python3 -I ../tq.py ch13-dbg-leak /mempool/info,lab_pool size populated_size common_pool_count total_cache_count</span>
+{"/mempool/info,lab_pool": {"size": 8191, "populated_size": 8191, "common_pool_count": 31, "total_cache_count": 0}}
+<span class="hl">--- diag: python3 -I ../tq.py ch13-dbg-leak /ethdev/stats,0 ipackets rx_nombuf</span>
+{"/ethdev/stats,0": {"ipackets": 8160, "rx_nombuf": 0}}
+<span class="hl">--- diag: python3 -I ../tq.py ch13-dbg-leak /ethdev/stats,0 ipackets rx_nombuf</span>
+{"/ethdev/stats,0": {"ipackets": 8160, "rx_nombuf": 0}}
+<span class="hl">--- symptom (program output):</span>
+t=0.5s in_use=8160/8191 avail=31  rx=8160 rx_nombuf=0 dropped=8160
+t=1.0s in_use=8160/8191 avail=31  rx=8160 rx_nombuf=0 dropped=8160
+t=1.5s in_use=8160/8191 avail=31  rx=8160 rx_nombuf=0 dropped=8160
+t=2.0s in_use=8160/8191 avail=31  rx=8160 rx_nombuf=0 dropped=8160
+t=2.5s in_use=8160/8191 avail=31  rx=8160 rx_nombuf=0 dropped=8160
+<span class="hl">--- fixed:</span>
+<span class="prompt">$ </span><span class="cmd">leak/lab_fixed -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-leak --vdev=net_null0 --vdev=net_null1</span>
+t=0.5s in_use=0/8191 avail=8191  rx=49215712 rx_nombuf=0 dropped=49215712
+t=1.0s in_use=0/8191 avail=8191  rx=103016480 rx_nombuf=0 dropped=103016480
+t=1.5s in_use=0/8191 avail=8191  rx=159147520 rx_nombuf=0 dropped=159147520
+t=2.0s in_use=0/8191 avail=8191  rx=214495040 rx_nombuf=0 dropped=214495040
+t=2.5s in_use=0/8191 avail=8191  rx=270477408 rx_nombuf=0 dropped=270477408
+
+<span class="hl">######## LAB 4 double_free (no ports)</span>
+<span class="prompt">$ </span><span class="cmd">double_free/lab -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-dfree</span>
+<span class="hl">--- diag: python3 -I ../tq.py ch13-dbg-dfree /mempool/info,lab_pool size common_pool_count total_cache_count</span>
+{"/mempool/info,lab_pool": {"size": 511, "common_pool_count": 321, "total_cache_count": 0}}
+<span class="hl">--- symptom (program output):</span>
+after the first free: rte_mbuf_check() = 0, refcnt=1
+processed 1000 packets, 10 malformed
+with 200 posted: size=511 avail=321 in_use=190 (should be avail=311 in_use=200)
+READY
+after returning the 200: avail=457 in_use=54
+audit: took the 457 free objects out of the pool: 10 duplicate pointers; 64 mbufs missing from a pool of 511
+<span class="err">FAIL: duplicates in the pool and mbufs lost</span>
+<span class="hl">--- fixed:</span>
+<span class="prompt">$ </span><span class="cmd">double_free/lab_fixed -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-dfree</span>
+processed 1000 packets, 10 malformed
+with 200 posted: size=511 avail=311 in_use=200 (should be avail=311 in_use=200)
+READY
+after returning the 200: avail=511 in_use=0
+audit: took the 511 free objects out of the pool: 0 duplicate pointers; 0 mbufs missing from a pool of 511
+<span class="ok">PASS: every object is unique and back in the pool</span>
+
+<span class="hl">######## LAB 5 two_lcores_one_queue (net_ring)</span>
+<span class="prompt">$ </span><span class="cmd">two_lcores_one_queue/lab -l 0-2 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-2lc --vdev=net_ring0 --vdev=net_ring1</span>
+<span class="hl">--- diag: python3 -I ../tq.py ch13-dbg-2lc /ethdev/stats,0 ipackets opackets</span>
+{"/ethdev/stats,0": {"ipackets": 1013376, "opackets": 1013984}}
+<span class="hl">--- diag: python3 -I ../tq.py ch13-dbg-2lc /mempool/info,lab_pool size common_pool_count</span>
+{"/mempool/info,lab_pool": {"size": 2047, "common_pool_count": 1791}}
+<span class="hl">--- diag: python3 -I ../tq.py ch13-dbg-2lc /eal/lcore/info,1 lcore_id role cpuset</span>
+{"/eal/lcore/info,1": {"lcore_id": 1, "role": "RTE", "cpuset": [1]}}
+<span class="hl">--- symptom (program output):</span>
+injected 256 frames on port 0
+2 lcores forwarding, both on port 0 queue 0
+<span class="err">app counted 1925920 RX, the PMD counted 1013376 (DIFFERENT)</span>
+in_use before drain: 256
+drained 0 mbufs (expected 256), 0 duplicates
+<span class="err">in_use after drain: 256 -&gt; FAIL</span>
+<span class="hl">--- fixed:</span>
+<span class="prompt">$ </span><span class="cmd">two_lcores_one_queue/lab_fixed -l 0-2 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-2lc --vdev=net_ring0 --vdev=net_ring1</span>
+injected 256 frames on port 0 and 256 on port 1
+2 lcores forwarding, one port each
+<span class="ok">app counted 974169888 RX, the PMD counted 974169888 (equal)</span>
+in_use before drain: 512
+drained 512 mbufs (expected 512), 0 duplicates
+<span class="ok">in_use after drain: 0 -&gt; PASS</span>
+
+debug labs done; leftover ch13tap interfaces: 0</pre>
+    </div>
+    </details>
+    <div class="callout note"><div class="callout-title">What the labs teach beyond the fix</div>
+      <ul>
+        <li><strong>promisc_off</strong>: a port's receive filter drops frames for addresses it was not told about. <code>/ethdev/info</code> shows <code>promiscuous: 0</code> and <code>/ethdev/macs</code> lists the only accepted unicast address. <code>rte_eth_dev_mac_addr_add()</code> is the targeted fix; promiscuous mode is the blunt one.</li>
+        <li><strong>mtu_noscatter</strong>: the drop is counted in <code>ierrors</code>, not in <code>imissed</code>; the program's own counters only see "nothing arrived". With <code>rxmode.mtu = 9000</code> but no SCATTER flag, <code>net_tap</code> only <em>warns</em> and scatters anyway; do not rely on that on real NICs.</li>
+        <li><strong>leak</strong>: once the pool is empty the PMD cannot refill, and RX simply returns 0. <code>net_null</code> does not count <code>rx_nombuf</code>; a real NIC PMD does. The telemetry signature is <code>common_pool_count</code> stuck near 0 and <code>ipackets</code> frozen.</li>
+        <li><strong>double_free</strong>: invisible to <code>rte_mbuf_check()</code> (a freed mbuf keeps <code>refcnt = 1</code>) and to ASan. The signature is an <code>in_use</code> count lower than what you hold (190 instead of 200), later a pool that is short of mbufs, and duplicate pointers in an audit. A double free is also a leak: the extra put fills the ring and a later bulk put is dropped silently.</li>
+        <li><strong>two_lcores_one_queue</strong>: the result changes from run to run (sometimes 0 mbufs come back, sometimes 4096 with thousands of duplicates). Non-reproducible counts that do not add up are the classic sign of a data race; ch14 explains why, ch15 shows the right way to use more cores (one queue per lcore with RSS).</li>
+      </ul>
+    </div>
+
+    <!-- ============================================================ 10 -->
+    <h2 id="errors"><span class="sec-num">10</span>The startup-error table (ch4 + ch8 + ch13)</h2>
+    <p>Chapter 4 collected the errors of <code>rte_eal_init()</code> (part 1), chapter 8 those of port initialisation (part 2). Here they are in one place with the tool errors of this chapter. Each message was produced on the course VM by the named chapter's scripts (<code>04-memory-hugepages/code/startup_errors.sh</code>, <code>08-ethdev-first-port/code/init_errors.sh</code>, this chapter's <code>run.sh</code>). Multi-process errors ("is primary process running?" and friends) are added by ch16, and ch29 links this table from the production runbook. Paste a message into the decoder, or search the table.</p>
+    <div class="widget" id="w-err">
+      <div class="widget-head"><span class="widget-title">Error decoder</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <label for="err-text" class="small">Paste an error line (or part of one):</label>
+        <textarea id="err-text" spellcheck="false" placeholder="EAL: Cannot create lock on '/var/run/dpdk/rte/config'. Is another primary process running?"></textarea>
+        <div class="btn-row"><button class="btn small primary" type="button" id="err-go">Decode</button><select id="err-pick" aria-label="pick a known error"></select></div>
+        <dl class="dec-out" id="err-out" aria-live="polite"></dl>
+      </div>
+    </div>
+    <div class="table-wrap"><table class="compact errtab" id="err-table"><thead><tr><th>Exact message</th><th>Cause</th><th>Fix</th><th>From</th></tr></thead><tbody></tbody></table></div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 13: this chapter's rows)</span></div>
+<pre><span class="hl">########## 13. more startup / tooling errors for the consolidated table</span>
+<span class="prompt">$ </span><span class="cmd">echo /info | dpdk-telemetry.py -f ch13-nosuch   (no process with that prefix)</span>
+<span class="err">Error connecting to /var/run/dpdk/ch13-nosuch/dpdk_telemetry.v2</span>
+<span class="prompt">$ </span><span class="cmd">./telemetry_app -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch13-notel --no-telemetry --vdev=net_null0 --vdev=net_null1 -- --seconds 2 &amp;</span>
+<span class="prompt">$ </span><span class="cmd">echo /info | dpdk-telemetry.py -f ch13-notel   (the app runs with --no-telemetry)</span>
+<span class="err">Error connecting to /var/run/dpdk/ch13-notel/dpdk_telemetry.v2</span>
+<span class="prompt">$ </span><span class="cmd">./trace_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch13-tr2 --vdev=net_null0 --trace=[</span>
+<span class="dim">EAL: trace_args_apply():175 cannot enable trace for [</span>
+trace compiled in: yes, enabled at run time: no, fast path: compiled out
+ch13.port_cfg: registered, disabled
+ch13.burst:    registered, disabled
+received 32000 packets in 1000 bursts
+rte_trace_save() -&gt; 0</pre>
+    </div>
+    <p class="output-caption">A bad <code>--trace</code> regular expression is not fatal: EAL logs it and runs without tracing, so "my trace is empty" may be a typo in the regex. A telemetry client cannot tell "no such process" from "telemetry disabled": both give "Error connecting". Check <code>ls /var/run/dpdk/&lt;prefix&gt;/</code>, and remember that a crashed process leaves its runtime directory behind, so <code>dpdk-telemetry.py -l</code> lists prefixes of dead processes too (run.sh removed 10 such directories at the end).</p>
+
+    <!-- ============================================================ 11 -->
+    <h2 id="review"><span class="sec-num">11</span>Band 2 review: chapters 5 to 13</h2>
+    <p>Band 2 took you from the data structures (rings, mempools, mbufs) through ports, virtual devices, packet parsing, EAL services and port control to this chapter's tools. Predict each answer before you click; the explanation tells you which chapter to revisit.</p>
+    <div class="quiz" data-quiz>
+      <div class="quiz-head">Band 2 review: predict, then reveal</div>
+      <div class="q" data-answer="1" data-explain="A single-producer/single-consumer ring (RING_F_SP_ENQ | RING_F_SC_DEQ) skips the CAS loop, but only one thread may enqueue and one may dequeue. Lab 5 is exactly this bug: two lcores dequeued from net_ring's SC ring (ch5, ch12).">
+        <div class="q-text">An rte_ring was created with RING_F_SP_ENQ | RING_F_SC_DEQ. Two lcores dequeue from it. What happens?</div>
+        <div class="q-opts"><button class="q-opt">It works, just slower, because of cache-line bouncing</button><button class="q-opt">Objects can be returned twice or lost: the single-consumer path has no atomic update of the head</button><button class="q-opt">rte_ring_dequeue_burst returns -EBUSY to the second lcore</button></div>
+      </div>
+      <div class="q" data-answer="2" data-explain="The per-lcore cache holds up to cache_size (and briefly 1.5x) objects that are free but not in the common pool. With 4 lcores and cache 512 that is thousands of mbufs invisible to other lcores; size pools with (lcores x cache) in mind (ch6).">
+        <div class="q-text">rte_mempool_avail_count() says 3000 free mbufs, but one lcore's rte_pktmbuf_alloc() fails. Most likely?</div>
+        <div class="q-opts"><button class="q-opt">The pool is corrupted</button><button class="q-opt">Allocation from another NUMA node is forbidden</button><button class="q-opt">The free mbufs sit in other lcores' per-lcore caches, not in the common ring</button></div>
+      </div>
+      <div class="q" data-answer="0" data-explain="headroom (RTE_PKTMBUF_HEADROOM, 128) + data must fit in buf_len; data_len > buf_len - data_off is exactly what rte_mbuf_check() reported for panic_demo (ch7, ch13).">
+        <div class="q-text">An mbuf from RTE_MBUF_DEFAULT_BUF_SIZE has buf_len 2176 and data_off 128. What is the largest data_len a single segment can hold?</div>
+        <div class="q-opts"><button class="q-opt">2048 bytes</button><button class="q-opt">2176 bytes</button><button class="q-opt">1518 bytes, the Ethernet maximum</button></div>
+      </div>
+      <div class="q" data-answer="1" data-explain="rte_eth_tx_burst() returns how many it took; the rest are still yours. Not freeing them is the most common leak, and the leak lab's signature (in_use creeping, RX stopping) follows (ch8).">
+        <div class="q-text">rte_eth_tx_burst(port, 0, pkts, 32) returns 20. What must you do with pkts[20..31]?</div>
+        <div class="q-opts"><button class="q-opt">Nothing: the PMD frees them when the ring has room</button><button class="q-opt">Retry or free them yourself: they still belong to you</button><button class="q-opt">Call rte_eth_tx_done_cleanup() to send them</button></div>
+      </div>
+      <div class="q" data-answer="2" data-explain="net_null and net_ring are pure software and need no kernel interface; net_tap creates a kernel interface (ch9). The others in the course: af_packet on a veth, pcap files, memif, vhost/virtio_user.">
+        <div class="q-text">You need a port whose 'wire' you can poke from Linux with ip and a raw socket. Which virtual PMD?</div>
+        <div class="q-opts"><button class="q-opt">net_null</button><button class="q-opt">net_ring</button><button class="q-opt">net_tap</button></div>
+      </div>
+      <div class="q" data-answer="0" data-explain="The IPv4 header checksum covers only the header, so changing TTL changes it; an incremental update (RFC 1624) or rte_ipv4_cksum() fixes it. MACs are not covered by any IP checksum (ch10).">
+        <div class="q-text">A forwarder decrements the IPv4 TTL and rewrites both MAC addresses. Which checksum must be updated?</div>
+        <div class="q-opts"><button class="q-opt">The IPv4 header checksum only</button><button class="q-opt">The IPv4 and the UDP checksum</button><button class="q-opt">None: the NIC recomputes all checksums</button></div>
+      </div>
+      <div class="q" data-answer="1" data-explain="rte_timer callbacks run inside rte_timer_manage() on the lcore the timer was armed for. If nobody calls rte_timer_manage() there, they never run. The band 2 project calls it in the main lcore's control loop (ch11).">
+        <div class="q-text">An rte_timer is armed PERIODICAL for lcore 2, but its callback never runs. Why?</div>
+        <div class="q-opts"><button class="q-opt">Periodic timers need a service core</button><button class="q-opt">Nothing on lcore 2 calls rte_timer_manage()</button><button class="q-opt">The timer subsystem must be initialised per lcore</button></div>
+      </div>
+      <div class="q" data-answer="2" data-explain="In 26.11 struct rte_eth_stats has port totals only; per-queue counters exist only as xstats (rx_q0_packets, ...), also via /ethdev/xstats (ch12).">
+        <div class="q-text">Where do you read per-queue RX packet counts in DPDK 26.11?</div>
+        <div class="q-opts"><button class="q-opt">struct rte_eth_stats.q_ipackets[]</button><button class="q-opt">rte_eth_dev_set_rx_queue_stats_mapping() then rte_eth_stats_get()</button><button class="q-opt">xstats such as rx_q0_packets (rte_eth_xstats_get or /ethdev/xstats)</button></div>
+      </div>
+      <div class="controls"><button class="btn small quiz-reset" type="button">Reset</button></div>
+    </div>
+
+    <!-- ============================================================ 12 -->
+    <h2 id="project"><span class="sec-num">12</span>Band 2 project: a multi-core L2 forwarder you can watch</h2>
+    <p>The project grows ch11's evolving app into a two-lcore forwarder with this chapter's observability. The full specification is in <code>code/band2_project/README.md</code>; in short:</p>
+    <ul>
+      <li>Four <code>net_ring</code> ports. Lcore 1 owns ports 0 and 1, lcore 2 owns ports 2 and 3 (one lcore per queue: lab 5 is why). Each lcore forwards both directions of its pair with an l2fwd-style MAC rewrite.</li>
+      <li>Per-lcore statistics (rx, tx, drop) in cache-aligned entries, one writer each.</li>
+      <li>On the main lcore: an <code>rte_timer</code> report every 500 ms, a <code>cmdline</code> shell (<code>show stats</code>, <code>show pool</code>, <code>quit</code>) fed from stdin <em>without blocking</em> (<code>poll()</code> + <code>cmdline_in()</code>, since 26.11 has no <code>cmdline_poll()</code>), and a telemetry endpoint <code>/band2/stats</code>.</li>
+      <li>A finite, exact test: 512 frames per pair carry a hop budget (H = 200,000) in their payload; each receive decrements it and a frame is dropped at 0. So for each lcore the counters <em>must</em> end at rx = 512&times;H, drop = 512, tx = rx &minus; drop, and the pool must be full again.</li>
+    </ul>
+    <p><code>band2_project/run.sh</code> is the acceptance check. It drives the shell from a script, reads <code>/band2/stats</code> over telemetry while the program runs, and prints PASS only if the program's own checks pass, telemetry shows both lcores moving, and both the timer and the shell answered. Test your own version with <code>BIN=./my_l2fwd_mc ./run.sh</code>.</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 12)</span></div>
+<pre><span class="hl">########## 12. band 2 project acceptance check</span>
+<span class="prompt">$ </span><span class="cmd">(shell script) | ./l2fwd_mc -l 0-2 --no-pci --no-huge -m 128 --file-prefix=ch13-b2 --vdev=net_ring0..3 -- --frames 512 --hops 200000</span>
+512 frames per pair, hop budget 200000: expect per lcore rx=102400000 tx=102399488 drop=512
+READY
+[timer]  t=0.50s in_use=1024 | lcore1 p0&lt;-&gt;p1 rx=41228736 tx=41228736 drop=0 | lcore2 p2&lt;-&gt;p3 rx=46222432 tx=46222432 drop=0
+show stats
+[shell]  t=0.68s in_use=1024 | lcore1 p0&lt;-&gt;p1 rx=56984000 tx=56984000 drop=0 | lcore2 p2&lt;-&gt;p3 rx=62496256 tx=62496256 drop=0
+[timer]  t=1.00s in_use=1024 | lcore1 p0&lt;-&gt;p1 rx=85443360 tx=85443360 drop=0 | lcore2 p2&lt;-&gt;p3 rx=91938624 tx=91938624 drop=0
+show pool
+[shell] pool band2_pool: size 4095 avail 3071 in_use 1024
+quit
+[shell] quit: waiting for the traffic to drain
+final:  t=1.28s in_use=0 | lcore1 p0&lt;-&gt;p1 rx=102400000 tx=102399488 drop=512 | lcore2 p2&lt;-&gt;p3 rx=102400000 tx=102399488 drop=512
+<span class="ok">check lcore1: rx == tx + drop (102400000 == 102400000), rx == frames*hops, drop == frames: ok</span>
+<span class="ok">check lcore2: rx == tx + drop (102400000 == 102400000), rx == frames*hops, drop == frames: ok</span>
+<span class="ok">check mempool in_use == 0: 0 -&gt; ok</span>
+<span class="ok">RESULT: PASS</span>
+telemetry at t~1s: {"/band2/stats": {"in_use": 1024, "lcore1": {"rx": 76908352, "tx": 76908384, "drop": 0}, "lcore2": {"rx": 83126784, "tx": 83126784, "drop": 0}}}
+<span class="ok">BAND 2 PROJECT: PASS</span></pre>
+    </div>
+    <p class="output-caption">About 80 million forwards per lcore per second on <code>net_ring</code> (a pointer copy into another ring, no NIC): this measures the loop, not a network. Note how the shell's echo of the typed line ("show stats") and the answers interleave correctly: the solution uses <code>printf</code> + <code>fflush</code> for its own output because <code>cmdline</code> writes its echo with <code>write(2)</code>.</p>
+    <details><summary>Peek at the solution: the forwarding function and the control loop</summary>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/band2_project/solution/l2fwd_mc.c</span><span class="lang">C</span></div>
+<pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ * Chapter 13, band 2 project (solution): a multi-core L2 forwarder that you
+ * can watch and check.
+ *
+ * It is chapter 11's evolving app grown to two forwarding lcores, with the
+ * observability of this chapter built in:
+ *
+ *   lcore 0 (main)   control plane: rte_timer report every 500 ms, a
+ *                    cmdline shell read from stdin without blocking
+ *                    (cmdline_in), and the end-of-test check
+ *   lcore 1          forwards port 0 &lt;-&gt; port 1   (net_ring0, net_ring1)
+ *   lcore 2          forwards port 2 &lt;-&gt; port 3   (net_ring2, net_ring3)
+ *   telemetry        /band2/stats: per-lcore rx/tx/drop + pool in_use
+ *
+ * Every net_ring port is a loopback, so a frame sent on port 1 comes back
+ * on port 1 and is forwarded to port 0, and so on: the frames of a pair
+ * circulate between its two ports. To make the test finite and exact,
+ * each frame carries a hop budget (32 bits in the UDP payload). Every
+ * receive decrements it; at 0 the frame is dropped ("TTL expired").
+ * With N frames per pair and a budget of H hops the counters MUST end at
+ *     rx = N*H,  drop = N,  tx = rx - drop   for each lcore,
+ * and the mempool must be full again (in_use = 0).
+ *
+ *   ./l2fwd_mc -l 0-2 --no-pci --no-huge -m 128 --file-prefix=ch13-b2 \
+ *       --vdev=net_ring0 --vdev=net_ring1 --vdev=net_ring2 --vdev=net_ring3 \
+ *       -- [--frames N] [--hops H]  &lt; commands
+ */
+#include &lt;getopt.h&gt;
+#include &lt;poll.h&gt;
+#include &lt;rte_timer.h&gt;
+#include &lt;rte_telemetry.h&gt;
+#include &lt;cmdline.h&gt;
+#include &lt;cmdline_parse.h&gt;
+#include &lt;cmdline_parse_string.h&gt;
+#include "../../ch13_common.h"
+
+#define NB_PORTS 4
+#define BURST    32
+
+/* ---- per-lcore statistics ---------------------------------------------
+ * One writer per entry (its lcore), readers on lcore 0 and the telemetry
+ * thread. Each entry is alone in its cache line(s): no false sharing
+ * between the two forwarding lcores (chapter 14 shows the cost if not). */
+struct __rte_cache_aligned lcore_stats {
+	RTE_ATOMIC(uint64_t) rx;
+	RTE_ATOMIC(uint64_t) tx;
+	RTE_ATOMIC(uint64_t) drop;
+	uint16_t port_a, port_b;       /* the pair this lcore owns */
+	bool used;
+};
+static struct lcore_stats lstats[RTE_MAX_LCORE];
+
+static struct rte_mempool *pool;
+static unsigned int frames = 512;
+static uint32_t hops = 200000;
+static volatile bool stop_fwd, shell_done;
+static struct rte_timer report_tim;
+static uint64_t t_start;
+
+static inline void
+st_add(RTE_ATOMIC(uint64_t) *c, uint64_t n)
+{
+	rte_atomic_store_explicit(c,
+		rte_atomic_load_explicit(c, rte_memory_order_relaxed) + n,
+		rte_memory_order_relaxed);
+}
+#define ST(lc, f) rte_atomic_load_explicit(&amp;lstats[lc].f, rte_memory_order_relaxed)
+
+/* the hop budget lives right after the UDP header */
+static inline uint32_t *
+hop_field(struct rte_mbuf *m)
+{
+	return rte_pktmbuf_mtod_offset(m, uint32_t *,
+		sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) +
+		sizeof(struct rte_udp_hdr));
+}
+
+/* ---- the data plane ---------------------------------------------------- */
+static void
+fwd_one(struct lcore_stats *s, uint16_t in, uint16_t out)
+{
+	struct rte_mbuf *pkts[BURST], *keep[BURST];
+	uint16_t n = rte_eth_rx_burst(in, 0, pkts, BURST), i, k = 0, sent;
+	uint64_t dropped = 0;
+
+	if (n == 0)
+		return;
+	for (i = 0; i &lt; n; i++) {
+		uint32_t *h = hop_field(pkts[i]);
+
+		if (--*h == 0) {                   /* budget used up */
+			rte_pktmbuf_free(pkts[i]);
+			dropped++;
+			continue;
+		}
+		/* l2fwd-style MAC rewrite: src = our port, dst = next hop */
+		struct rte_ether_hdr *eh = rte_pktmbuf_mtod(pkts[i], struct rte_ether_hdr *);
+		eh-&gt;src_addr.addr_bytes[5] = (uint8_t)out;
+		keep[k++] = pkts[i];
+	}
+	sent = rte_eth_tx_burst(out, 0, keep, k);
+	if (sent &lt; k) {                            /* TX ring full */
+		rte_pktmbuf_free_bulk(&amp;keep[sent], k - sent);
+		dropped += k - sent;
+	}
+	st_add(&amp;s-&gt;rx, n);
+	st_add(&amp;s-&gt;tx, sent);
+	st_add(&amp;s-&gt;drop, dropped);
+}
+
+static int
+fwd_main(void *arg __rte_unused)
+{
+	struct lcore_stats *s = &amp;lstats[rte_lcore_id()];
+
+	while (!stop_fwd) {
+		fwd_one(s, s-&gt;port_a, s-&gt;port_b);
+		fwd_one(s, s-&gt;port_b, s-&gt;port_a);
+	}
+	return 0;
+}
+
+/* ---- observability: report, telemetry, shell ------------------------- */
+static void
+print_stats(FILE *f)
+{
+	unsigned int lc;
+
+	fprintf(f, "  t=%.2fs in_use=%u", (double)(rte_rdtsc() - t_start) / rte_get_tsc_hz(),
+		rte_mempool_in_use_count(pool));
+	RTE_LCORE_FOREACH_WORKER(lc)
+		if (lstats[lc].used)
+			fprintf(f, " | lcore%u p%u&lt;-&gt;p%u rx=%" PRIu64 " tx=%" PRIu64 " drop=%" PRIu64,
+				lc, lstats[lc].port_a, lstats[lc].port_b,
+				ST(lc, rx), ST(lc, tx), ST(lc, drop));
+	fprintf(f, "\n");
+}
+
+static void
+report_cb(struct rte_timer *t __rte_unused, void *arg __rte_unused)
+{
+	printf("[timer]");
+	print_stats(stdout);
+	fflush(stdout);
+}
+
+static int
+tel_band2(const char *cmd __rte_unused, const char *p __rte_unused,
+	  struct rte_tel_data *d)
+{
+	unsigned int lc;
+
+	rte_tel_data_start_dict(d);
+	rte_tel_data_add_dict_uint(d, "in_use", rte_mempool_in_use_count(pool));
+	RTE_LCORE_FOREACH_WORKER(lc) {
+		struct rte_tel_data *ld;
+		char name[16];
+
+		if (!lstats[lc].used || (ld = rte_tel_data_alloc()) == NULL)
+			continue;
+		rte_tel_data_start_dict(ld);
+		rte_tel_data_add_dict_uint(ld, "rx", ST(lc, rx));
+		rte_tel_data_add_dict_uint(ld, "tx", ST(lc, tx));
+		rte_tel_data_add_dict_uint(ld, "drop", ST(lc, drop));
+		snprintf(name, sizeof(name), "lcore%u", lc);
+		rte_tel_data_add_dict_container(d, name, ld, 0);
+	}
+	return 0;
+}
+
+struct cmd_res { cmdline_fixed_string_t w1, w2; };
+
+static void
+cmd_show_cb(void *parsed, struct cmdline *cl, void *data __rte_unused)
+{
+	struct cmd_res *r = parsed;
+
+	/* cmdline echoes the typed line with write(2); use stdio + fflush
+	 * for our own output so the two never interleave */
+	(void)cl;
+	if (strcmp(r-&gt;w2, "stats") == 0) {
+		printf("[shell]");
+		print_stats(stdout);
+	} else {
+		printf("[shell] pool %s: size %u avail %u in_use %u\n",
+		       pool-&gt;name, pool-&gt;size, rte_mempool_avail_count(pool),
+		       rte_mempool_in_use_count(pool));
+	}
+	fflush(stdout);
+}
+static cmdline_parse_token_string_t t_show =
+	TOKEN_STRING_INITIALIZER(struct cmd_res, w1, "show");
+static cmdline_parse_token_string_t t_what =
+	TOKEN_STRING_INITIALIZER(struct cmd_res, w2, "stats#pool");
+static cmdline_parse_inst_t cmd_show = {
+	.f = cmd_show_cb, .help_str = "show stats|pool",
+	.tokens = { (void *)&amp;t_show, (void *)&amp;t_what, NULL },
+};
+
+static void
+cmd_quit_cb(void *parsed __rte_unused, struct cmdline *cl, void *d __rte_unused)
+{
+	(void)cl;
+	printf("[shell] quit: waiting for the traffic to drain\n");
+	fflush(stdout);
+	shell_done = true;
+}
+static cmdline_parse_token_string_t t_quit =
+	TOKEN_STRING_INITIALIZER(struct cmd_res, w1, "quit");
+static cmdline_parse_inst_t cmd_quit = {
+	.f = cmd_quit_cb, .help_str = "quit",
+	.tokens = { (void *)&amp;t_quit, NULL },
+};
+static cmdline_parse_ctx_t ctx[] = {
+	(cmdline_parse_inst_t *)&amp;cmd_show, (cmdline_parse_inst_t *)&amp;cmd_quit, NULL
+};
+
+/* feed whatever stdin has into the shell, without blocking */
+static void
+shell_poll(struct cmdline *cl)
+{
+	struct pollfd pfd = { .fd = 0, .events = POLLIN };
+	char buf[128];
+	ssize_t n;
+
+	if (shell_done || poll(&amp;pfd, 1, 0) &lt;= 0)
+		return;
+	n = read(0, buf, sizeof(buf));
+	if (n &lt;= 0) {
+		shell_done = true;            /* EOF counts as quit */
+		return;
+	}
+	cmdline_in(cl, buf, n);
+}
+
+/* ---- setup ------------------------------------------------------------- */
+static void
+inject(uint16_t port, unsigned int n)
+{
+	unsigned int i;
+
+	for (i = 0; i &lt; n; i++) {
+		struct rte_mbuf *m = rte_pktmbuf_alloc(pool);
+
+		if (m == NULL || ch13_make_udp(m, 64, i) &lt; 0)
+			rte_exit(EXIT_FAILURE, "inject: no mbuf\n");
+		*hop_field(m) = hops;
+		if (rte_eth_tx_burst(port, 0, &amp;m, 1) != 1)
+			rte_exit(EXIT_FAILURE, "inject: ring full\n");
+	}
+}
+
+int
+main(int argc, char **argv)
+{
+	static const struct option lo[] = {
+		{"frames", required_argument, NULL, 'f'},
+		{"hops", required_argument, NULL, 'h'},
+		{NULL, 0, NULL, 0}
+	};
+	struct cmdline *cl;
+	unsigned int lc, k = 0, fail = 0;
+	uint64_t deadline;
+	uint16_t p;
+	int ret, c;
+
+	ret = rte_eal_init(argc, argv);
+	if (ret &lt; 0)
+		rte_exit(EXIT_FAILURE, "EAL init failed\n");
+	argc -= ret;
+	argv += ret;
+	while ((c = getopt_long(argc, argv, "", lo, NULL)) != -1) {
+		if (c == 'f')
+			frames = atoi(optarg);
+		else if (c == 'h')
+			hops = strtoul(optarg, NULL, 0);
+	}
+	ch13_signals();
+	if (rte_eth_dev_count_avail() != NB_PORTS || rte_lcore_count() != 3)
+		rte_exit(EXIT_FAILURE, "need -l 0-2 and 4 net_ring ports\n");
+	if (frames == 0 || frames &gt; 1000 || hops == 0)
+		rte_exit(EXIT_FAILURE, "--frames 1..1000, --hops &gt;= 1\n");
+
+	pool = rte_pktmbuf_pool_create("band2_pool", 4095, 64, 0,
+				       RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+	if (pool == NULL)
+		rte_exit(EXIT_FAILURE, "pool: %s\n", rte_strerror(rte_errno));
+	for (p = 0; p &lt; NB_PORTS; p++)
+		if (ch13_port_init(p, pool, NULL, 1024) &lt; 0)
+			rte_exit(EXIT_FAILURE, "port %u init failed\n", p);
+
+	RTE_LCORE_FOREACH_WORKER(lc) {             /* lcore 1: 0,1  lcore 2: 2,3 */
+		lstats[lc].port_a = 2 * k;
+		lstats[lc].port_b = 2 * k + 1;
+		lstats[lc].used = true;
+		inject(2 * k, frames);
+		k++;
+	}
+	printf("%u frames per pair, hop budget %u: expect per lcore rx=%" PRIu64
+	       " tx=%" PRIu64 " drop=%u\n", frames, hops,
+	       (uint64_t)frames * hops, (uint64_t)frames * hops - frames, frames);
+
+	rte_telemetry_register_cmd("/band2/stats", tel_band2,
+		"Band 2 forwarder: per-lcore rx/tx/drop and pool in_use");
+	rte_timer_subsystem_init();
+	rte_timer_init(&amp;report_tim);
+	rte_timer_reset(&amp;report_tim, rte_get_timer_hz() / 2, PERIODICAL,
+			rte_lcore_id(), report_cb, NULL);
+	cl = cmdline_new(ctx, "", 0, 1);
+	if (cl == NULL)
+		rte_exit(EXIT_FAILURE, "cmdline_new failed\n");
+
+	t_start = rte_rdtsc();
+	RTE_LCORE_FOREACH_WORKER(lc)
+		rte_eal_remote_launch(fwd_main, NULL, lc);
+	printf("READY\n");
+	fflush(stdout);
+
+	/* control loop: timers, shell, and "is all traffic gone?" */
+	deadline = rte_rdtsc() + 12 * rte_get_tsc_hz();
+	while (!ch13_quit &amp;&amp; rte_rdtsc() &lt; deadline) {
+		rte_timer_manage();
+		shell_poll(cl);
+		if (shell_done &amp;&amp; rte_mempool_in_use_count(pool) == 0)
+			break;
+		rte_delay_us_sleep(1000);
+	}
+	stop_fwd = true;
+	rte_eal_mp_wait_lcore();
+	rte_timer_stop_sync(&amp;report_tim);
+	cmdline_free(cl);
+
+	/* ---- acceptance check ------------------------------------------- */
+	printf("final:");
+	print_stats(stdout);
+	RTE_LCORE_FOREACH_WORKER(lc) {
+		uint64_t rx = ST(lc, rx), tx = ST(lc, tx), dr = ST(lc, drop);
+		bool ok = rx == tx + dr &amp;&amp; rx == (uint64_t)frames * hops &amp;&amp; dr == frames;
+
+		printf("check lcore%u: rx == tx + drop (%" PRIu64 " == %" PRIu64 "), "
+		       "rx == frames*hops, drop == frames: %s\n",
+		       lc, rx, tx + dr, ok ? "ok" : "WRONG");
+		fail += !ok;
+	}
+	printf("check mempool in_use == 0: %u -&gt; %s\n", rte_mempool_in_use_count(pool),
+	       rte_mempool_in_use_count(pool) == 0 ? "ok" : "WRONG");
+	fail += rte_mempool_in_use_count(pool) != 0;
+	printf("RESULT: %s\n", fail ? "FAIL" : "PASS");
+
+	for (p = 0; p &lt; NB_PORTS; p++) {
+		rte_eth_dev_stop(p);
+		rte_eth_dev_close(p);
+	}
+	rte_timer_subsystem_finalize();
+	rte_eal_cleanup();
+	return fail ? 1 : 0;
+}</code></pre>
+    </div>
+    </details>
+
+    <!-- ===================== PITFALLS ===================== -->
+    <h2 id="pitfalls">Common pitfalls</h2>
+    <ul>
+      <li><strong>"Error connecting to .../dpdk_telemetry.v2"</strong>: wrong <code>--file-prefix</code> (the client's <code>-f</code> must match), the app runs with <code>--no-telemetry</code>, or the client runs as a user who cannot open the root runtime dir. <code>dpdk-telemetry.py -l</code> lists prefixes, including those of dead processes.</li>
+      <li><strong>An endpoint silently missing</strong>: <code>rte_telemetry_register_cmd()</code> returned <code>-EINVAL</code> because of a <code>-</code> or <code>.</code> in the name, a missing leading <code>/</code>, a name of 56+ bytes or help text of 128+ bytes. Check the return value.</li>
+      <li><strong>A telemetry callback that takes a lock held by an lcore</strong>: the client hangs and, worse, the lcore may stall if it waits for the callback. Read counters with relaxed atomics; never block in a callback.</li>
+      <li><strong>Reply truncated or null</strong>: the JSON must fit in 16 KB, a dict in 256 entries, an array in 512. Split big answers by parameter (<code>/x/info,&lt;id&gt;</code>).</li>
+      <li><strong><code>/eal/lcore/usage</code> is empty</strong>: nobody registered <code>rte_lcore_register_usage_cb()</code> (testpmd: <code>--record-core-cycles</code>).</li>
+      <li><strong>latencystats numbers that grow with uptime</strong>: mbufs are recycled without passing through a fresh RX (loopbacks, reassembly, in-place replies). Call <code>rte_latencystats_init()</code> after the queues are set up; queues created later have no callbacks.</li>
+      <li><strong>Using the removed <code>rte_metrics_tel_*</code> API</strong> from an older tutorial: it is gone in 26.11; write your own endpoint (section 3).</li>
+      <li><strong>Empty trace</strong>: no <code>--trace</code> regex (nothing is enabled by default), a regex typo (only logged), a fast-path tracepoint without <code>RTE_ENABLE_TRACE_FP</code>, or a <code>--trace-dir</code> whose parent does not exist (error only at save time).</li>
+      <li><strong>Link error "undefined reference to __rte_trace_point_emit_field" or deprecation warnings</strong>: missing <code>-DALLOW_EXPERIMENTAL_API</code>; for generic tracepoints also <code>#include &lt;rte_eal_trace.h&gt;</code>.</li>
+      <li><strong><code>RTE_LOG(DEBUG)</code> in the per-packet path</strong>: ~10 extra cycles per call even when disabled (measured above). Use <code>RTE_LOG_DP</code>.</li>
+      <li><strong>gdb "Function rte_eth_rx_burst not defined"</strong>: it is inline. Break on the PMD's burst function (<code>p rte_eth_fp_ops[0].rx_pkt_burst</code> gives the name). Cast return types when calling DPDK functions from gdb.</li>
+      <li><strong>A core with zeroed mbufs, or no core</strong>: <code>coredump_filter</code> lacks bit 6, <code>ulimit -c</code> is 0, or <code>core_pattern</code> pipes to systemd-coredump (look with <code>coredumpctl</code>). Test your crash procedure with hugepages, not only with <code>--no-huge</code>.</li>
+      <li><strong>Believing ASan or <code>rte_mbuf_check()</code> found nothing, so there is no mbuf bug</strong>: neither sees a double free of a mempool object in this build. Audit counts.</li>
+    </ul>
+
+    <!-- ===================== CHECK ===================== -->
+    <h2 id="check">Check your understanding</h2>
+    <div class="quiz" data-quiz>
+      <div class="quiz-head">Five questions</div>
+      <div class="q" data-answer="1" data-explain="Each client connection gets its own pthread created by the listener thread dpdk-telemet-v2; the callback runs there, concurrently with the lcores, so it must read shared data safely.">
+        <div class="q-text">On which thread does your telemetry callback run?</div>
+        <div class="q-opts"><button class="q-opt">On the main lcore, between two iterations of its loop</button><button class="q-opt">On a pthread that the telemetry listener created for that client connection</button><button class="q-opt">On the interrupt thread dpdk-intr</button></div>
+      </div>
+      <div class="q" data-answer="2" data-explain="Bit 6 is hugetlb shared. DPDK maps hugepages MAP_SHARED, so 0x33 + 0x40 = 0x73 is the smallest common value that includes them.">
+        <div class="q-text">Which coredump_filter value adds DPDK hugepage memory to the default 0x33?</div>
+        <div class="q-opts"><button class="q-opt">0x37 (add bit 2)</button><button class="q-opt">0x3b (add bit 3)</button><button class="q-opt">0x73 (add bit 6)</button></div>
+      </div>
+      <div class="q" data-answer="0" data-explain="RTE_LOG_DP compares the level with RTE_LOG_DP_LEVEL (INFO) at compile time; a DEBUG call is removed entirely, its string is not in the binary, and no run-time option can enable it.">
+        <div class="q-text">RTE_LOG_DP(DEBUG, ...) in a default build, run with --log-level=user.*:debug. What happens?</div>
+        <div class="q-opts"><button class="q-opt">Nothing is printed: the call was compiled out</button><button class="q-opt">It prints, because the run-time level is DEBUG</button><button class="q-opt">It prints once, then is rate limited</button></div>
+      </div>
+      <div class="q" data-answer="1" data-explain="latencystats measures RX callback to TX callback, which is the time inside the application; jitter is a smoothed absolute difference of consecutive samples.">
+        <div class="q-text">What exactly does avg_latency_ns from lib/latencystats measure?</div>
+        <div class="q-opts"><button class="q-opt">Wire-to-wire latency including the NIC</button><button class="q-opt">A smoothed average of the time sampled packets spend between the RX and the TX callbacks</button><button class="q-opt">The average time of one rte_eth_rx_burst() call</button></div>
+      </div>
+      <div class="q" data-answer="2" data-explain="Without RTE_ENABLE_TRACE_FP the FP tracepoint body is compiled out. --trace only enables tracepoints that exist in the binary.">
+        <div class="q-text">An RTE_TRACE_POINT_FP tracepoint never shows up in the trace even with --trace='.*'. Why?</div>
+        <div class="q-opts"><button class="q-opt">Fast-path tracepoints are only written in discard mode</button><button class="q-opt">--trace does not accept '.*'</button><button class="q-opt">The code was compiled without RTE_ENABLE_TRACE_FP, so the emit code does not exist</button></div>
+      </div>
+      <div class="controls"><button class="btn small quiz-reset" type="button">Reset</button></div>
+    </div>
+
+    <!-- ===================== EXERCISES ===================== -->
+    <h2 id="exercises">Exercises</h2>
+    <div class="exercise">
+      <div class="box-title">Exercise 1 <span class="tag easy">easy</span></div>
+      <p>Add an endpoint <code>/ch13/port_rates</code> that returns, for every port, the RX and TX packets per second <em>since the previous call</em>. An optional parameter selects one port.</p>
+      <details><summary>Hint</summary><p>Keep the previous <code>rte_eth_stats</code> snapshot and TSC in a static struct. Two clients can call at once: protect it with an <code>rte_spinlock_t</code> (short critical section, no lcore ever takes it).</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/port_rates.c</code>; its run is in section 2 of <code>expected_output.txt</code>:</p>
+<div class="terminal"><pre><span class="hl">########## 2. exercise solutions 1 and 2: /ch13/port_rates and a pps poller</span>
+<span class="prompt">$ </span><span class="cmd">./port_rates -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch13-rates --vdev=net_null0 --vdev=net_null1 -- --seconds 5 &amp;</span>
+<span class="prompt">$ </span><span class="cmd">printf '/ch13/port_rates\n/ch13/port_rates,1\n' | dpdk-telemetry.py -f ch13-rates   (twice, 1 s apart)</span>
+{"/ch13/port_rates": {"interval_ms": 615, "port0": {"rx_pps": 1533717, "tx_pps": 1533717}, "port1": {"rx_pps": 1533717, "tx_pps": 1533717}}}
+{"/ch13/port_rates": {"interval_ms": 0, "port1": {"rx_pps": 1558369, "tx_pps": 1558369}}}
+{"/ch13/port_rates": {"interval_ms": 1030, "port0": {"rx_pps": 1535039, "tx_pps": 1535039}, "port1": {"rx_pps": 1535039, "tx_pps": 1535039}}}
+<span class="prompt">$ </span><span class="cmd">solutions/poll_pps.sh ch13-rates 0 4</span>
+port 0: rx   1.533 Mpps  tx   1.533 Mpps
+port 0: rx   1.536 Mpps  tx   1.536 Mpps
+port 0: rx   1.513 Mpps  tx   1.513 Mpps
+port 0: rx   1.531 Mpps  tx   1.531 Mpps
+register /ch13/port_rates -&gt; 0
+READY</pre></div></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 2 <span class="tag medium">medium</span></div>
+      <p>Write a shell tool that polls <code>/ethdev/stats,&lt;port&gt;</code> every 0.5 s and prints Mpps, from outside the application.</p>
+      <details><summary>Hint</summary><p>Do not start a new client per sample (each connection costs the server a thread). One persistent SEQPACKET connection, <code>time.monotonic()</code> for the interval.</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/poll_pps.sh</code> (output above, after the port_rates queries).</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 3 <span class="tag medium">medium</span></div>
+      <p>Take a core of <code>panic_demo</code> with <code>coredump_filter=0x7f</code> on hugepages and find, in gdb, the corrupted mbuf's pool name, pool size, element size and reference count, without using the <code>bad_mbuf</code> global.</p>
+      <details><summary>Hint</summary><p><code>frame function check_and_maybe_panic</code> selects the frame whose argument <code>m</code> is the mbuf; <code>m-&gt;pool</code> is a <code>struct rte_mempool *</code>.</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/find_pool.gdb</code> and <code>find_pool.sh</code>; output in section 8 above.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 4 <span class="tag stretch">stretch</span></div>
+      <p>Using <code>trace_demo_fp</code>'s trace, extend <code>ctf_peek.py</code> to print a histogram of the gaps between consecutive <code>ch13.burst</code> events. Then build <code>trace_demo_fp</code> with <code>--trace='lib\.ethdev\.rx\.burst.*'</code> added: because <code>trace_fp_on.h</code> also enables the inline fast-path tracepoints of <code>rte_ethdev.h</code>, ethdev's own RX tracepoint appears. Compare its timestamps with yours.</p>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 5 <span class="tag stretch">stretch</span></div>
+      <p>Pick one debug lab, break it a second way (for example: leak only when <code>rte_eth_tx_burst()</code> returns less than asked), and write the diagnosis steps another engineer should follow, using only telemetry and the program's normal output.</p>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 6 <span class="tag stretch">stretch</span></div>
+      <p>Band 2 project extension: add <code>set burst N</code> to the shell, make the forwarding lcores read the burst size with a relaxed atomic load, and measure Mpps per lcore for N = 1, 4, 32 (median of 5 runs each, with min and max).</p>
+    </div>
+
+    <!-- ===================== SUMMARY ===================== -->
+    <section class="summary-box">
+      <div class="box-title">Summary</div>
+      <ul>
+        <li>Telemetry is a JSON-over-SEQPACKET server in every DPDK process: one hello, <code>command[,params]</code> requests, replies of at most 16 KB, a pthread per client. Add endpoints with <code>rte_telemetry_register_cmd()</code> and <code>rte_tel_data_*</code>; read shared counters with relaxed atomics.</li>
+        <li><code>rte_lcore_register_usage_cb()</code> makes <code>/eal/lcore/usage</code> meaningful; <code>dpdk-telemetry-exporter.py</code> with your own endpoint module brings it all to Prometheus.</li>
+        <li>latencystats measures time between the RX and TX callbacks of sampled packets; bitratestats turns ethdev byte counters into bits per calling period; lib/metrics stores both. In 26.11 you expose the table with your own endpoint.</li>
+        <li>Tracepoints: declare with <code>RTE_TRACE_POINT</code>, register once, enable with <code>--trace</code>; fast-path ones need <code>RTE_ENABLE_TRACE_FP</code> at compile time. Output is CTF: TSDL metadata plus one binary channel per thread.</li>
+        <li><code>RTE_LOG_DP</code> below <code>RTE_LOG_DP_LEVEL</code> costs nothing; <code>RTE_LOG</code> always costs a call.</li>
+        <li>gdb: break on PMD burst functions, not the inline wrappers; <code>rte_panic</code> leaves a backtrace and a core; ASan and <code>rte_mbuf_check()</code> catch some bugs but not mempool double frees.</li>
+        <li>Without bit 6 in <code>coredump_filter</code> a hugepage DPDK core has no mbufs, and gdb shows zeros instead of errors. Use 0x73 or 0x7f in production.</li>
+        <li>Counters that do not add up, pools that do not refill, and frames counted in the wrong error counter diagnose most data-path bugs before you open a debugger.</li>
+      </ul>
+    </section>
+
+    <section class="references">
+      <h2 id="references">References</h2>
+      <ol>
+        <li>Telemetry library and how-to. <span class="src-path">doc/guides/prog_guide/telemetry_lib.rst</span>, <span class="src-path">doc/guides/howto/telemetry.rst</span>; <span class="src-path">lib/telemetry/rte_telemetry.h</span>, <span class="src-path">lib/telemetry/telemetry.c</span> (protocol, limits, threads), <span class="src-path">lib/telemetry/telemetry_data.c</span></li>
+        <li>Clients and exporter. <span class="src-path">usertools/dpdk-telemetry.py</span>, <span class="src-path">usertools/dpdk-telemetry-client.py</span>, <span class="src-path">usertools/dpdk-telemetry-watcher.py</span>, <span class="src-path">usertools/dpdk-telemetry-exporter.py</span>, <span class="src-path">usertools/telemetry-endpoints/</span>, <span class="src-path">doc/guides/tools/telemetrywatcher.rst</span></li>
+        <li>Lcore usage. <span class="src-path">lib/eal/include/rte_lcore.h</span> (<code>struct rte_lcore_usage</code>), <span class="src-path">lib/eal/common/eal_common_lcore.c</span></li>
+        <li>Metrics. <span class="src-path">doc/guides/prog_guide/metrics_lib.rst</span>, <span class="src-path">lib/metrics/rte_metrics.h</span>, <span class="src-path">lib/latencystats/rte_latencystats.h</span> and <span class="src-path">lib/latencystats/rte_latencystats.c</span>, <span class="src-path">lib/bitratestats/rte_bitrate.h</span> and <span class="src-path">.c</span>; removal of <code>rte_metrics_tel_*</code>: <span class="src-path">doc/guides/rel_notes/release_26_11.rst</span></li>
+        <li>Trace. <span class="src-path">doc/guides/prog_guide/trace_lib.rst</span>, <span class="src-path">lib/eal/include/rte_trace.h</span>, <span class="src-path">lib/eal/include/rte_trace_point.h</span>, <span class="src-path">lib/eal/include/rte_trace_point_register.h</span>, <span class="src-path">lib/eal/include/rte_eal_trace.h</span>, <span class="src-path">lib/eal/common/eal_common_trace_ctf.c</span>; <code>enable_trace_fp</code> in <span class="src-path">meson_options.txt</span></li>
+        <li>Logging. <span class="src-path">doc/guides/prog_guide/log_lib.rst</span>, <span class="src-path">lib/log/rte_log.h</span> (<code>RTE_LOG_DP</code>, <code>RTE_LOG_LINE</code>), <span class="src-path">config/rte_config.h</span> (<code>RTE_LOG_DP_LEVEL</code>)</li>
+        <li>ethtool sample. <span class="src-path">doc/guides/sample_app_ug/ethtool.rst</span>, <span class="src-path">examples/ethtool/</span></li>
+        <li>Debugging. <span class="src-path">doc/guides/howto/debug_troubleshoot.rst</span>, <span class="src-path">doc/guides/prog_guide/asan.rst</span>, <span class="src-path">lib/eal/include/rte_debug.h</span> (<code>rte_panic</code>, <code>rte_dump_stack</code>), <span class="src-path">lib/mbuf/rte_mbuf.h</span> (<code>rte_mbuf_check</code>, <code>RTE_LIBRTE_MBUF_DEBUG</code>), <span class="src-path">lib/mbuf/rte_mbuf_history.h</span>, <span class="src-path">usertools/dpdk-mbuf-history-parser.py</span>, <span class="src-path">lib/mempool/rte_mempool.c</span> (<code>rte_mempool_avail_count</code> clamps to size)</li>
+        <li>Core dumps. <code>man 5 core</code> (coredump_filter, core_pattern); <span class="src-path">lib/eal/common/eal_common_memory.c</span> and <span class="src-path">lib/eal/unix/eal_unix_memory.c</span> (<code>eal_mem_set_dump</code>, <code>MADV_DONTDUMP</code>)</li>
+        <li>Lab drivers. <span class="src-path">drivers/net/tap/rte_eth_tap.c</span> (scatter check in <code>tap_rx_queue_setup</code>, <code>ierrors</code>), <span class="src-path">drivers/net/ring/rte_eth_ring.c</span> (SP/SC rings), <span class="src-path">drivers/net/null/rte_eth_null.c</span>, <span class="src-path">drivers/mempool/ring/rte_mempool_ring.c</span></li>
+        <li>Startup errors, parts 1 and 2: <a href="../04-memory-hugepages/index.html#startup-errors">ch4</a> and <a href="../08-ethdev-first-port/index.html#init-errors">ch8</a>; multi-process errors in <a href="../16-multi-process-capture/index.html">ch16</a>; production runbook in <a href="../29-production-operations/index.html">ch29</a>.</li>
+        <li>Course research notes: <span class="src-path">research/10-building-debugging-ecosystem.md</span> (sections 7 to 10).</li>
+      </ol>
+    </section>
+
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../12-port-control-stats-events/index.html"><span class="dir">&larr; Previous</span><span class="ttl">12 &middot; Port Control, Statistics and Events</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../14-concurrency-atomics-rcu/index.html"><span class="dir">Next &rarr;</span><span class="ttl">14 &middot; Concurrency: Atomics, Memory Ordering, Locks and RCU</span></a>
+    </nav>
+  </main>
+</div>
+<footer class="site-footer">DPDK from Zero to Expert: Building Fast Packet Processing in User Space &middot; DPDK 26.11</footer>
+
+<script src="../../assets/course.js"></script>
+<script src="data.js"></script>
+<script src="ch13.js"></script>
+</body>
+</html>

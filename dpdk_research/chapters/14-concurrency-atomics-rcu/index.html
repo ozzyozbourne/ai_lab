@@ -1,0 +1,1123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>14 Concurrency: Atomics, Ordering, Locks, RCU | DPDK from Zero to Expert</title>
+<meta name="description" content="C11 atomics in DPDK 26.11, memory ordering on x86-TSO and Arm, CPU vs device barriers, the DPDK lock zoo with static lock checking, the ABA fix, RCU QSBR and per-lcore data without false sharing.">
+<link rel="stylesheet" href="../../assets/course.css">
+<style>
+  /* ---- chapter 14 specific ---- */
+  .seg-btns { display: inline-flex; gap: .25rem; flex-wrap: wrap; }
+  .seg-btns .btn[aria-pressed="true"], .lc-btns .btn[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--heading); }
+  .ctl-row { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; margin-bottom: .6rem; font-size: .88rem; }
+  .ctl-row label { display: inline-flex; gap: .35rem; align-items: center; }
+  .ctl-row select { font: inherit; padding: .2rem .35rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
+  .lc-btns { display: flex; flex-wrap: wrap; gap: .3rem; margin-bottom: .5rem; }
+  .w-note { font-size: .84rem; color: var(--text-muted); margin: .5rem 0 0; }
+  .w-out { font-size: .9rem; padding: .45rem .7rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); margin-top: .5rem; min-height: 2.6em; }
+  .bars { margin-top: .7rem; font-size: .82rem; }
+  .bar-row { display: grid; grid-template-columns: minmax(9rem, 15rem) 1fr 3.6rem; gap: .5rem; align-items: center; padding: .12rem .3rem; border-radius: 4px; }
+  .bar-row.sel { background: var(--accent-soft); font-weight: 600; }
+  .bar-track { height: .8rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
+  .bar-fill { display: block; height: 100%; background: var(--c4); }
+  .bar-val { font-family: var(--font-mono); text-align: right; }
+  .bar-note { color: var(--text-muted); margin-top: .3rem; }
+  @media (max-width: 560px) { .bar-row { grid-template-columns: 7.5rem 1fr 3.2rem; font-size: .75rem; } }
+  .mig td:first-child, .mig td:nth-child(2) { font-family: var(--font-mono); font-size: .85rem; }
+  .verdict-ok { color: var(--tip); font-weight: 600; }
+  .verdict-bad { color: var(--pitfall); font-weight: 600; }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <button class="btn small toc-toggle" type="button" aria-label="Table of contents">&#9776;</button>
+  <a class="brand" href="../../index.html"><span>DPDK</span> Zero to Expert</a>
+  <span class="crumb">Chapter 14 &middot; Concurrency</span>
+  <button class="btn small theme-toggle" type="button">Theme</button>
+  <div class="progress-bar"></div>
+</header>
+
+<div class="page">
+  <nav class="sidebar" data-auto-toc aria-label="On this page"></nav>
+
+  <main id="main" class="content">
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../13-observability-debugging/index.html"><span class="dir">&larr; Previous</span><span class="ttl">13 &middot; Observability and Debugging</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../15-scale-out-rss-pipelines/index.html"><span class="dir">Next &rarr;</span><span class="ttl">15 &middot; Scaling Out Across Cores</span></a>
+    </nav>
+
+    <header class="chapter-header">
+      <div class="chapter-kicker">Chapter 14</div>
+      <h1>Concurrency: Atomics, Memory Ordering, Locks and RCU</h1>
+      <p class="chapter-subtitle">Before we put a shared hash table or routing table between cores (ch17, ch18), we need the rules for sharing memory at all. After this chapter you can pick the right DPDK 26.11 atomic and memory order, tell a CPU barrier from a device barrier, choose a lock (or no lock), update shared data with RCU so that readers never wait, and lay out per-lcore data so that cores do not fight over cache lines. Every claim is checked by a program you run on this machine.</p>
+      <ul class="meta-row">
+        <li><span class="badge level-advanced">Advanced</span></li>
+        <li><span class="badge">~120 min</span></li>
+        <li><span class="badge">Prerequisites: ch5, ch6, ch11, ch12</span></li>
+        <li><span class="tag api">rte_stdatomic.h</span></li>
+        <li><span class="tag api">rte_seqlock.h</span></li>
+        <li><span class="tag api">rte_rcu_qsbr.h</span></li>
+        <li><span class="tag api">rte_lcore_var.h</span></li>
+      </ul>
+    </header>
+
+    <section class="objectives">
+      <div class="box-title">Learning objectives</div>
+      <ul>
+        <li>Explain data races, atomicity and visibility, and why <code>volatile</code> is neither atomic nor a barrier.</li>
+        <li>Use the 26.11 atomics (<code>RTE_ATOMIC</code>, <code>rte_atomic_*_explicit</code>, <code>rte_memory_order_*</code>, <code>rte_atomic_thread_fence</code>) and port code that used the removed <code>rte_atomicNN_*</code> and <code>rte_smp_*mb</code>.</li>
+        <li>Predict litmus-test outcomes on x86-TSO and on Arm, and show compiler reordering in real <code>objdump</code> output.</li>
+        <li>Tell CPU-to-CPU ordering (<code>rte_atomic_thread_fence</code>, release/acquire) from CPU-to-device ordering (<code>rte_io_wmb</code>, <code>rte_write32</code>).</li>
+        <li>Choose between spinlock, ticketlock, MCS, rwlock, pflock, seqcount and seqlock from measured costs and fairness, and catch locking bugs at compile time with clang <code>-Wthread-safety</code>.</li>
+        <li>Explain the ABA problem and DPDK's 128-bit compare-and-swap fix.</li>
+        <li>Replace shared data with an RCU QSBR pointer swap, measure grace periods, and use the defer queue.</li>
+        <li>Lay out per-lcore data (padded arrays, TLS, lcore variables) and read false sharing in MESI terms.</li>
+      </ul>
+    </section>
+
+    <section class="tools-box">
+      <div class="box-title">Tools for this chapter</div>
+      <ul>
+        <li><code>code/run.sh</code>: builds and runs all seven programs, two objdump listings and the static lock check (about 16 s). <code>code/expected_output.txt</code> is its real output on this machine.</li>
+        <li>No ports at all: this chapter is about cores and memory. Every run uses <code>--no-pci --no-huge -m 64</code> and <code>-l 0-3</code> (four lcores; the VM has four vCPUs shared with other jobs, so the benchmarks print median, min and max of 5 runs).</li>
+        <li><code>objdump</code> (x86-64) and <code>clang --target=aarch64-linux-gnu</code> + <code>llvm-objdump</code>: to read what the compiler did. The AArch64 code is only compiled, never run: there is no Arm machine here.</li>
+        <li><code>clang -Wthread-safety</code> with <code>-DRTE_ANNOTATE_LOCKS</code>: static lock checking.</li>
+      </ul>
+    </section>
+
+    <!-- ============================================================ 1 -->
+    <h2 id="why"><span class="sec-num">1</span>Three things that go wrong when cores share memory</h2>
+    <p>Up to now each lcore mostly had its own queue, its own mempool cache and its own counters. As soon as two lcores touch the same variable, three separate problems appear. They are easy to mix up, so we name them first.</p>
+    <ol>
+      <li><span class="key-term">Atomicity</span>: is the operation indivisible? <code>counter++</code> is a load, an add and a store. If two cores do it at the same time, both can load 41 and both store 42: one update is lost. A 64-byte config copied with <code>memcpy</code> is many stores; a reader in the middle sees half old, half new (a <em>torn</em> read).</li>
+      <li><span class="key-term">Visibility</span>: will the other core ever see my store, and when? The compiler may keep a variable in a register and never reload it. The CPU keeps recent stores in a private <em>store buffer</em> for a while.</li>
+      <li><span class="key-term">Ordering</span>: if I write <code>data</code> and then <code>flag</code>, does another core that sees the new <code>flag</code> also see the new <code>data</code>? Not necessarily: both the compiler and the CPU may reorder memory accesses, as long as the reordering is invisible to the current thread.</li>
+    </ol>
+    <p>The C11 standard calls two accesses to the same location from different threads, at least one a write and at least one not atomic, a <span class="key-term">data race</span>, and a program with a data race has undefined behaviour. The fix is to make every shared access either atomic (and say what ordering it needs), or protected by a lock, or not shared at all. DPDK gives you tools for all three; the third (no sharing) is usually the fastest, and we end the chapter with it.</p>
+    <div class="callout pitfall"><div class="callout-title">volatile is not the answer</div><p><code>volatile</code> forces the compiler to emit every load and store, which fixes the "kept in a register" part of visibility. It does not make <code>counter++</code> atomic (it is still load, add, store), it does not stop the CPU from reordering, and it does not order the volatile access against ordinary ones. Some old DPDK code used <code>volatile</code> fields plus <code>rte_smp_*mb()</code> barriers. In 26.11 the barriers are gone, and the right replacement is an atomic with an explicit memory order.</p></div>
+
+    <!-- ============================================================ 2 -->
+    <h2 id="atomics"><span class="sec-num">2</span>The 26.11 atomics API</h2>
+    <p>DPDK 26.11 has one atomics API: thin macros in <code>lib/eal/include/rte_stdatomic.h</code> that follow C11 <code>&lt;stdatomic.h&gt;</code> names. The old <code>rte_atomic16/32/64_t</code> types and functions, deprecated since 21.05, were removed in this release, together with the <code>rte_smp_mb/rmb/wmb</code> barriers (release notes, <code>doc/guides/rel_notes/release_26_11.rst</code>).</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">lib/eal/include/rte_stdatomic.h (the branch used by this build)</span><span class="lang">C</span></div>
+<pre data-lines data-start="173"><code class="language-c">#else /* !RTE_ENABLE_STDATOMIC */
+
+#define RTE_ATOMIC(type) type
+...
+#define rte_memory_order_relaxed __ATOMIC_RELAXED
+...
+#define rte_atomic_load_explicit(ptr, memorder) \
+	__atomic_load_n(ptr, memorder)
+#define rte_atomic_store_explicit(ptr, val, memorder) \
+	__atomic_store_n(ptr, val, memorder)</code></pre>
+    </div>
+    <p>Two builds exist. With the meson option <code>-Denable_stdatomic=true</code>, <code>RTE_ATOMIC(T)</code> is <code>_Atomic(T)</code> and the macros call the C11 functions. By default (and in our install: <code>rte_build_config.h</code> has <code>#undef RTE_ENABLE_STDATOMIC</code>) <code>RTE_ATOMIC(T)</code> is plain <code>T</code> and the macros call GCC's <code>__atomic</code> builtins. Generated code is the same. Write <code>RTE_ATOMIC(uint32_t) x;</code> anyway: in the stdatomic build the compiler then refuses plain <code>x++</code> on it, which is a good bug catcher.</p>
+
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Operation</th><th>26.11 macro</th><th>x86-64 code</th></tr></thead>
+        <tbody>
+          <tr><td>load / store</td><td><code>rte_atomic_load_explicit(p, mo)</code>, <code>rte_atomic_store_explicit(p, v, mo)</code></td><td>plain <code>mov</code> (a seq_cst store is <code>xchg</code>)</td></tr>
+          <tr><td>read-modify-write</td><td><code>rte_atomic_fetch_add/sub/and/or/xor_explicit(p, v, mo)</code></td><td><code>lock xadd</code> / <code>lock add</code> ...</td></tr>
+          <tr><td>swap</td><td><code>rte_atomic_exchange_explicit(p, v, mo)</code></td><td><code>xchg</code></td></tr>
+          <tr><td>compare and swap</td><td><code>rte_atomic_compare_exchange_strong/weak_explicit(p, &amp;exp, des, mo_ok, mo_fail)</code></td><td><code>lock cmpxchg</code></td></tr>
+          <tr><td>16-byte CAS</td><td><code>rte_atomic128_cmp_exchange(dst, exp, src, weak, mo_ok, mo_fail)</code></td><td><code>lock cmpxchg16b</code></td></tr>
+          <tr><td>fence</td><td><code>rte_atomic_thread_fence(mo)</code></td><td>nothing, except seq_cst: <code>lock addl $0,-128(%rsp)</code></td></tr>
+          <tr><td>compiler-only barrier</td><td><code>rte_compiler_barrier()</code></td><td>nothing (<code>asm volatile("" ::: "memory")</code>)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The memory order says what the operation guarantees beyond atomicity:</p>
+    <ul>
+      <li><code>rte_memory_order_relaxed</code>: atomic, no ordering. Right for statistics counters and for a flag whose only meaning is itself.</li>
+      <li><code>rte_memory_order_release</code> (stores): every load and store <em>before</em> it in program order becomes visible no later than this store. The "publish" side.</li>
+      <li><code>rte_memory_order_acquire</code> (loads): no load or store <em>after</em> it may happen before it. The "subscribe" side. An acquire load that reads the value of a release store <em>synchronizes with</em> it: everything the writer did before the release is visible to the reader after the acquire.</li>
+      <li><code>rte_memory_order_acq_rel</code>: both, for read-modify-writes (a ring head CAS, a refcount decrement).</li>
+      <li><code>rte_memory_order_seq_cst</code>: acq_rel plus one global order of all seq_cst operations. The only one that forbids store-buffering (section 3). The most expensive.</li>
+    </ul>
+    <p>You have already used this pairing: an <code>rte_ring</code> producer writes the objects, then stores <code>prod.tail</code> with release; the consumer loads <code>prod.tail</code> with acquire before reading the objects (<code>lib/ring/rte_ring_c11_pvt.h</code>, ch5). A spinlock is acquire on lock and release on unlock.</p>
+
+    <h3 id="migration">Migration table: removed in 26.11</h3>
+    <div class="table-wrap">
+      <table class="compact mig">
+        <thead><tr><th>Removed</th><th>Replacement</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>rte_atomic32_t v;</td><td>RTE_ATOMIC(uint32_t) v;</td><td>same for 16 and 64</td></tr>
+          <tr><td>rte_atomic32_read(&amp;v)</td><td>rte_atomic_load_explicit(&amp;v, rte_memory_order_relaxed)</td><td>pick acquire if it guards data</td></tr>
+          <tr><td>rte_atomic32_set(&amp;v, x)</td><td>rte_atomic_store_explicit(&amp;v, x, ...)</td><td>release if it publishes data</td></tr>
+          <tr><td>rte_atomic32_inc / add</td><td>rte_atomic_fetch_add_explicit(&amp;v, 1, relaxed)</td><td>or a per-lcore counter (section 10)</td></tr>
+          <tr><td>rte_atomic32_dec_and_test</td><td>rte_atomic_fetch_sub_explicit(&amp;v, 1, acq_rel) == 1</td><td>fetch returns the OLD value</td></tr>
+          <tr><td>rte_atomic32_cmpset(&amp;v, old, new)</td><td>rte_atomic_compare_exchange_strong_explicit(&amp;v, &amp;old, new, ...)</td><td>CAS writes the current value into <code>old</code> on failure</td></tr>
+          <tr><td>rte_atomic32_test_and_set</td><td>rte_atomic_flag_test_and_set_explicit or exchange</td><td></td></tr>
+          <tr><td>rte_smp_mb()</td><td>rte_atomic_thread_fence(rte_memory_order_seq_cst)</td><td>from the release notes</td></tr>
+          <tr><td>rte_smp_rmb()</td><td>rte_atomic_thread_fence(rte_memory_order_acquire)</td><td>often better: an acquire load</td></tr>
+          <tr><td>rte_smp_wmb()</td><td>rte_atomic_thread_fence(rte_memory_order_release)</td><td>often better: a release store</td></tr>
+          <tr><td>rte_smp_wmb() before a doorbell</td><td>rte_io_wmb() or rte_write32()</td><td>the reader is a device (section 4)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Still present: <code>rte_mb()</code>, <code>rte_wmb()</code>, <code>rte_rmb()</code> (x86: <code>mfence</code>, <code>sfence</code>, <code>lfence</code>), <code>rte_io_mb/wmb/rmb()</code>, <code>rte_compiler_barrier()</code> and <code>rte_atomic128_cmp_exchange()</code> (<code>lib/eal/include/generic/rte_atomic.h</code>). Using a removed name is a compile error, which is the friendly kind of breakage: exercise 1 ports a snippet.</p>
+
+    <!-- ============================================================ 3 -->
+    <h2 id="ordering"><span class="sec-num">3</span>Memory ordering: x86-TSO, Arm and the compiler</h2>
+    <p>Why would a CPU reorder at all? A store has to wait until the core owns the cache line (it may need to fetch it from another core, which takes hundreds of cycles). Rather than stall, the core puts the store in a <span class="key-term">store buffer</span> and keeps executing. Later loads are served from the cache straight away, even though older stores are still waiting. To the current thread this is invisible: if it loads an address it stored to, the load is served from its own store buffer (store-to-load forwarding). To other cores it is visible: they see the stores late.</p>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 720 250" role="img" aria-labelledby="f-sb-t">
+        <title id="f-sb-t">Two cores, each with a FIFO store buffer between the core and the coherent caches</title>
+        <rect class="svg-box c1" x="30" y="20" width="250" height="56"/>
+        <text class="svg-label center bold" x="155" y="42">core 0</text>
+        <text class="svg-label center small mono" x="155" y="62">x = 1;  r1 = y;</text>
+        <rect class="svg-box c1" x="440" y="20" width="250" height="56"/>
+        <text class="svg-label center bold" x="565" y="42">core 1</text>
+        <text class="svg-label center small mono" x="565" y="62">y = 1;  r2 = x;</text>
+        <rect class="svg-box c5" x="50" y="100" width="210" height="40"/>
+        <text class="svg-label center small" x="155" y="120">store buffer: [x = 1]</text>
+        <rect class="svg-box c5" x="460" y="100" width="210" height="40"/>
+        <text class="svg-label center small" x="565" y="120">store buffer: [y = 1]</text>
+        <path class="svg-arrow c1" d="M130,76 L130,98"/>
+        <path class="svg-arrow c1" d="M590,76 L590,98"/>
+        <path class="svg-arrow c5 dashed" d="M155,140 L230,186"/>
+        <path class="svg-arrow c5 dashed" d="M565,140 L490,186"/>
+        <path class="svg-arrow c2" d="M300,190 L232,60"/>
+        <path class="svg-arrow c2" d="M420,190 L488,60"/>
+        <text class="svg-label small" x="292" y="150">load y bypasses</text>
+        <text class="svg-label small" x="292" y="164">the store buffer</text>
+        <rect class="svg-box c2" x="200" y="188" width="320" height="48"/>
+        <text class="svg-label center bold" x="360" y="206">L1/L2/L3 + coherence (MESI)</text>
+        <text class="svg-label center small mono" x="360" y="225">x = 0   y = 0   (until the buffers drain)</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>The x86 store buffer. Stores leave it in program order (FIFO), so other cores always see one core's stores in order. Loads do not wait for it, so a load can complete before an older store to a different address is visible: the one reordering x86 allows (store then load).</figcaption>
+    </figure>
+
+    <p>Architectures differ in what they allow:</p>
+    <ul>
+      <li><strong>x86-64</strong> is <span class="key-term">TSO</span> (total store order, Intel SDM vol. 3, 8.2.2, quoted in <code>lib/eal/x86/include/rte_atomic.h</code>): loads are not reordered with loads, stores are not reordered with stores, stores are not reordered with older loads. Only a store followed by a load to a <em>different</em> address can appear reordered. Consequence: on x86 an acquire load and a release store are ordinary <code>mov</code> instructions; they only stop the <em>compiler</em>.</li>
+      <li><strong>Arm (AArch64)</strong> is weakly ordered: any pair of accesses to different addresses may be observed out of order unless something orders them. Release stores compile to <code>stlr</code>, acquire loads to <code>ldar</code>, fences to <code>dmb</code>.</li>
+      <li><strong>The compiler</strong> may reorder, merge or delete accesses to non-atomic variables on any architecture, as long as one thread cannot tell. Relaxed atomics may also be reordered with each other by the C11 rules.</li>
+    </ul>
+
+    <h3 id="litmus">Litmus tests</h3>
+    <p>A <span class="key-term">litmus test</span> is a tiny two-thread program and a question about its outcome. Two classics:</p>
+    <div class="grid-2">
+      <div class="box"><div class="box-title">MP: message passing</div>
+<pre data-nocopy><code class="language-c">/* T0 */            /* T1 */
+data = 1;           r1 = flag;
+flag = 1;           r2 = data;
+/* Can T1 see r1 == 1 && r2 == 0? */</code></pre>
+        <p class="small">"I saw the flag but not the data." This is the ring, the config publish, every hand-off.</p></div>
+      <div class="box"><div class="box-title">SB: store buffering (Dekker)</div>
+<pre data-nocopy><code class="language-c">/* T0 */            /* T1 */
+x = 1;              y = 1;
+r1 = y;             r2 = x;
+/* Can we get r1 == 0 && r2 == 0? */</code></pre>
+        <p class="small">"Both loads beat both stores." This breaks Dekker/Peterson mutual exclusion and any "set my flag, then check yours" protocol.</p></div>
+    </div>
+    <p>Choose a test, an ordering and an architecture, then step through the worst-case interleaving. On x86 the verdict comes with the number <code>litmus.c</code> measured on this VM; on Arm it is what the architecture model allows, clearly marked as not measured here.</p>
+
+    <div class="widget" id="w-order">
+      <div class="widget-head"><span class="widget-title">Memory-ordering playground</span><span class="badge">predict, then step</span></div>
+      <div class="widget-body">
+        <div class="ctl-row">
+          <label>test <select data-o="test"><option value="SB">SB (store buffering)</option><option value="MP">MP (message passing)</option></select></label>
+          <label>ordering <select data-o="mo"><option value="plain">plain C (no atomics)</option><option value="relaxed" selected>relaxed</option><option value="relacq">release / acquire</option><option value="fence">relaxed + seq_cst fence</option></select></label>
+          <span class="seg-btns" role="group" aria-label="architecture"><button class="btn small" type="button" data-arch="x86">x86-TSO (measured)</button><button class="btn small" type="button" data-arch="arm">Arm (model only)</button></span>
+        </div>
+        <div class="scroll-x">
+        <svg viewBox="0 0 680 350" role="img" aria-label="Two threads, their store buffers and memory"></svg>
+        </div>
+        <div class="w-out" aria-live="polite"></div>
+        <p class="w-note">Things to try: SB with release/acquire (still allowed: release/acquire does not order a store before a later load); MP relaxed on x86 vs Arm; MP with plain C on x86 (the compiler, not the CPU, breaks it).</p>
+      </div>
+    </div>
+
+    <h3 id="litmus-code">litmus.c: counting outcomes</h3>
+    <p>Each test runs one million times. Before every iteration both threads meet at a two-thread spin barrier, so that their four instructions really overlap; after it, they record <code>r1</code>/<code>r2</code> and T0 resets the variables. Every shared variable has its own cache line.</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/litmus.c (SB with a fence, and the barrier)</span><span class="lang">C</span></div>
+<pre data-lines data-start="71"><code class="language-c">static inline void
+barrier2(uint64_t *gen)
+{
+        /* Both threads add 1; generation g is complete when the counter is 2*g. */
+        *gen += 2;
+        rte_atomic_fetch_add_explicit(&amp;BAR.v, 1, rte_memory_order_acq_rel);
+        while ((uint64_t)rte_atomic_load_explicit(&amp;BAR.v, rte_memory_order_acquire) &lt; *gen)
+                rte_pause();
+}</code></pre>
+    </div>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/litmus.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="121"><code class="language-c">                case SB_RELACQ:
+                        if (me == 0) {
+                                rte_atomic_store_explicit(&amp;X.v, 1, rte_memory_order_release);
+                                r = rte_atomic_load_explicit(&amp;Y.v, rte_memory_order_acquire);
+                        } else {
+                                rte_atomic_store_explicit(&amp;Y.v, 1, rte_memory_order_release);
+                                r = rte_atomic_load_explicit(&amp;X.v, rte_memory_order_acquire);
+                        }
+                        break;</code></pre>
+<pre data-lines data-start="130"><code class="language-c">                case SB_FENCE:
+                        if (me == 0) {
+                                rte_atomic_store_explicit(&amp;X.v, 1, rte_memory_order_relaxed);
+                                rte_atomic_thread_fence(rte_memory_order_seq_cst);
+                                r = rte_atomic_load_explicit(&amp;Y.v, rte_memory_order_relaxed);
+                        } else {
+                                rte_atomic_store_explicit(&amp;Y.v, 1, rte_memory_order_relaxed);
+                                rte_atomic_thread_fence(rte_memory_order_seq_cst);
+                                r = rte_atomic_load_explicit(&amp;X.v, rte_memory_order_relaxed);
+                        }
+                        break;</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./litmus -l 0-2 --no-pci --no-huge -m 64 --file-prefix=ch14-litmus</span>
+litmus: 1000000 iterations per test, T0 on lcore 1, T1 on lcore 2
+RTE_ATOMIC(int) is plain int + GCC __atomic builtins here (enable_stdatomic=false)
+MP  relaxed store/relaxed load    r1,r2: 0,0=71839    0,1=51897    1,0=0        1,1=876264   -&gt; outcome 1,0 seen 0 times (676 ms)
+MP  release store/acquire load    r1,r2: 0,0=56514    0,1=47989    1,0=0        1,1=895497   -&gt; outcome 1,0 seen 0 times (688 ms)
+SB  relaxed                       r1,r2: 0,0=150288   0,1=824928   1,0=23456    1,1=1328     -&gt; outcome 0,0 seen 150288 times (799 ms)
+SB  release store/acquire load    r1,r2: 0,0=176609   0,1=811543   1,0=11704    1,1=144      -&gt; outcome 0,0 seen 176609 times (791 ms)
+SB  relaxed + seq_cst fence       r1,r2: 0,0=0        0,1=958234   1,0=13765    1,1=28001    -&gt; outcome 0,0 seen 0 times (825 ms)
+
+Cost of a store followed by a barrier (1 lcore, 2000000 iterations):
+  store only                                              0.4 cycles/iter
+  store + rte_compiler_barrier()                          0.5 cycles/iter
+  store + rte_atomic_thread_fence(release)                0.5 cycles/iter
+  store + rte_io_wmb()                                    0.5 cycles/iter
+  store + rte_atomic_thread_fence(seq_cst)               18.0 cycles/iter
+  store + rte_mb()  (mfence)                             32.4 cycles/iter
+  seq_cst store (xchg) instead of relaxed store          17.7 cycles/iter</pre>
+    </div>
+    <p class="output-caption">MP: <strong>0</strong> forbidden outcomes in a million, even with relaxed atomics, because x86 never reorders store-store or load-load. That is not proof that relaxed is correct: the same code is allowed to fail on Arm and the compiler is allowed to reorder it. SB: the "impossible" (0, 0) shows up about 15% of the time with relaxed, and just as often with release/acquire. Only the seq_cst fence brings it to zero. Barrier costs: release/acquire fences and <code>rte_io_wmb()</code> cost nothing on x86 (they emit no instruction); a seq_cst fence costs about 18 cycles, <code>rte_mb()</code> (<code>mfence</code>) about 32.</p>
+    <div class="callout note"><div class="callout-title">Why DPDK's seq_cst fence is not mfence</div><p><code>rte_atomic_thread_fence(rte_memory_order_seq_cst)</code> on x86 emits <code>lock addl $0,-128(%rsp)</code>: a locked add to a dummy stack slot. Any locked instruction drains the store buffer, and this one is cheaper than <code>mfence</code> (18 vs 32 cycles above). <code>mfence</code> also orders non-temporal stores and device memory, which CPU-to-CPU code does not need (<code>lib/eal/x86/include/rte_atomic.h</code>).</p></div>
+
+    <h3 id="compiler">Compiler reordering, in the machine code</h3>
+    <p>The hardware cannot break MP on x86, but the compiler can. <code>code/litmus_mp.c</code> holds six tiny functions; <code>make objdump</code> disassembles them as built at <code>-O2</code>. The writer computes <code>msg = v / 3</code> (a few instructions) and then sets the ready flag.</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/litmus_mp.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="40"><code class="language-c">/* 1. Plain stores: nothing stops the compiler from swapping them. */
+void
+writer_plain(int v)
+{
+        msg = v / 3;            /* takes a few instructions to compute ... */
+        plain_ready = 1;        /* ... so the compiler stores the constant first */
+}</code></pre>
+<pre data-lines data-start="66"><code class="language-c">/* 4. Release store: every earlier access is visible before 'ready' is. */
+void
+writer_release(int v)
+{
+        msg = v / 3;
+        rte_atomic_store_explicit(&amp;ready, 1, rte_memory_order_release);
+}</code></pre>
+    </div>
+    <div class="grid-2">
+      <div class="terminal">
+        <div class="term-bar"><span class="title">x86-64, gcc -O2 (make objdump)</span></div>
+<pre>0000000000000000 &lt;writer_plain&gt;:
+4:	movslq %edi,%rax
+7:	imul   $0x55555556,%rax,%rax
+e:	sar    $0x1f,%edi
+11:	movl   $0x1,0x0(%rip)
+1b:	shr    $0x20,%rax
+1f:	sub    %edi,%eax
+21:	mov    %eax,0x0(%rip)
+27:	ret
+
+0000000000000090 &lt;writer_release&gt;:
+94:	movslq %edi,%rax
+97:	imul   $0x55555556,%rax,%rax
+9e:	sar    $0x1f,%edi
+a1:	shr    $0x20,%rax
+a5:	sub    %edi,%eax
+a7:	mov    %eax,0x0(%rip)
+ad:	movl   $0x1,0x0(%rip)
+b7:	ret
+
+00000000000000c0 &lt;reader_plain&gt;:
+c4:	mov    0x0(%rip),%eax
+ca:	test   %eax,%eax
+cc:	jne    d0 &lt;reader_plain+0x10&gt;
+ce:	jmp    ce &lt;reader_plain+0xe&gt;
+d0:	mov    0x0(%rip),%eax
+d6:	ret</pre>
+      </div>
+      <div class="terminal">
+        <div class="term-bar"><span class="title">AArch64, clang -O2 (make objdump-arm), not run</span></div>
+<pre>0000000000000000 &lt;writer_plain&gt;:
+0:      	mov	w8, #0x5556
+4:      	adrp	x10, 0x0 &lt;writer_plain&gt;
+8:      	mov	w11, #0x1
+c:      	movk	w8, #0x5555, lsl #16
+10:      	smull	x8, w0, w8
+14:      	lsr	x9, x8, #63
+18:      	lsr	x8, x8, #32
+1c:      	add	w8, w8, w9
+20:      	adrp	x9, 0x0 &lt;writer_plain&gt;
+24:      	str	w8, [x10]
+28:      	str	w11, [x9]
+2c:      	ret
+
+0000000000000090 &lt;writer_release&gt;:
+90:      	mov	w8, #0x5556
+94:      	adrp	x10, 0x0 &lt;writer_plain&gt;
+98:      	movk	w8, #0x5555, lsl #16
+9c:      	smull	x8, w0, w8
+a0:      	lsr	x9, x8, #63
+a4:      	lsr	x8, x8, #32
+a8:      	add	w8, w8, w9
+ac:      	mov	w9, #0x1
+b0:      	str	w8, [x10]
+b4:      	adrp	x8, 0x0 &lt;writer_plain&gt;
+b8:      	add	x8, x8, #0x0
+bc:      	stlr	w9, [x8]
+c0:      	ret
+
+00000000000000c4 &lt;reader_plain&gt;:
+c4:      	adrp	x8, 0x0 &lt;writer_plain&gt;
+c8:      	ldr	w0, [x8]
+cc:      	ret</pre>
+      </div>
+    </div>
+    <p class="output-caption">Read the x86 <code>writer_plain</code>: the store of the constant 1 (<code>movl $0x1,...</code>, the flag) comes <em>before</em> the division finishes and before <code>msg</code> is stored. A reader on another core can see <code>plain_ready == 1</code> and an old <code>msg</code>, on x86, with no CPU reordering at all. <code>writer_release</code> on x86 is the same instructions in the right order: release cost nothing but stopped the compiler. On AArch64 the release store becomes <code>stlr</code>. <code>reader_plain</code> on x86 loads the flag once and then spins forever on <code>jmp ce</code> (a jump to itself); clang for Arm deleted the loop entirely. Both are legal, because a plain variable that no one in this thread writes "cannot change".</p>
+    <p>The full listing in <code>expected_output.txt</code> also shows <code>writer_barrier</code> (<code>rte_compiler_barrier()</code>: correct order, no instruction; enough for MP on x86 but not on Arm, where the two <code>str</code> can still become visible out of order) and <code>writer_relaxed</code> (here gcc happened to keep the order; the C11 model does not promise it).</p>
+    <div class="callout warning"><div class="callout-title">"It works on x86" is not a proof</div><p>Relaxed atomics for a hand-off pass every test on x86, and then fail on an Arm server, sometimes once a day. If one thread publishes data for another, use a release store and an acquire load (or a lock) even though x86 generates the same code. It documents the intent and it is correct everywhere.</p></div>
+
+    <!-- ============================================================ 4 -->
+    <h2 id="device"><span class="sec-num">4</span>CPU-to-CPU vs CPU-to-device ordering</h2>
+    <p>Everything so far ordered memory accesses between CPUs, through coherent caches. A NIC is a different observer. A driver writes descriptors in ordinary memory, which the NIC reads by DMA, then writes a <span class="key-term">doorbell</span>: a register in the device's PCI BAR, mapped as uncached I/O memory. If the doorbell write overtakes the descriptor writes, the NIC fetches stale descriptors.</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 220" role="img" aria-labelledby="f-io-t">
+        <title id="f-io-t">CPU writes descriptors to RAM, then a doorbell to the NIC BAR; the NIC then reads the descriptors by DMA</title>
+        <rect class="svg-box c1" x="20" y="70" width="150" height="80"/>
+        <text class="svg-label center bold" x="95" y="98">lcore (driver)</text>
+        <text class="svg-label center small" x="95" y="120">1. write desc[]</text>
+        <text class="svg-label center small" x="95" y="136">2. rte_io_wmb()</text>
+        <rect class="svg-box c2" x="290" y="20" width="170" height="70"/>
+        <text class="svg-label center bold" x="375" y="44">RAM: TX descriptors</text>
+        <text class="svg-label center small mono" x="375" y="66">addr, len, flags</text>
+        <rect class="svg-box c4" x="540" y="70" width="160" height="80"/>
+        <text class="svg-label center bold" x="620" y="98">NIC</text>
+        <text class="svg-label center small" x="620" y="120">BAR: tail doorbell</text>
+        <path class="svg-arrow c1" d="M170,90 L288,60"/>
+        <text class="svg-label small" x="186" y="62">cached stores</text>
+        <path class="svg-arrow c4" d="M170,130 L538,130"/>
+        <text class="svg-label small" x="250" y="150">3. MMIO write: rte_write32_relaxed(tail, db)</text>
+        <path class="svg-arrow c4 dashed" d="M560,70 L462,50"/>
+        <text class="svg-label small" x="470" y="36">4. DMA read</text>
+        <text class="svg-label small muted" x="20" y="196">rte_write32(v, addr) = rte_io_wmb() + rte_write32_relaxed(v, addr)   (lib/eal/include/generic/rte_io.h)</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>The doorbell pattern. The barrier between step 1 and 3 orders cached memory writes against an I/O write: an I/O barrier. ch23 builds a real descriptor ring around it.</figcaption>
+    </figure>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Who reads the data after the barrier?</th><th>Use</th><th>x86-64</th><th>AArch64</th></tr></thead>
+        <tbody>
+          <tr><td>another lcore</td><td>release store / acquire load, or <code>rte_atomic_thread_fence(mo)</code></td><td>compiler barrier (seq_cst: locked add)</td><td><code>stlr</code>/<code>ldar</code>, <code>dmb ish</code></td></tr>
+          <tr><td>a device, after CPU writes (doorbell)</td><td><code>rte_io_wmb()</code>, or <code>rte_write32()</code></td><td>compiler barrier: MMIO is strongly ordered</td><td><code>dmb oshst</code></td></tr>
+          <tr><td>the CPU, after the device wrote (descriptor done bit)</td><td><code>rte_io_rmb()</code>, or <code>rte_read32()</code></td><td>compiler barrier</td><td><code>dmb oshld</code></td></tr>
+          <tr><td>everything, including write-combining / non-temporal stores</td><td><code>rte_mb()</code> / <code>rte_wmb()</code></td><td><code>mfence</code> / <code>sfence</code></td><td><code>dmb osh</code> / <code>dmb oshst</code> (rte_io_wmb is rte_wmb on Arm)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The release notes say it directly: barriers that order CPU accesses against a device should use <code>rte_io_wmb()</code> and <code>rte_io_rmb()</code>. On x86 those are compiler barriers (<code>lib/eal/x86/include/rte_atomic.h</code>), which is why the litmus timing showed 0.5 cycles. On Arm they are real instructions. <code>code/solutions/port_26_11.c</code> (exercise 1) shows both kinds side by side.</p>
+
+    <h3 id="pause">Waiting politely: rte_pause and rte_wait_until_equal</h3>
+    <p>Every spin loop in this chapter calls <code>rte_pause()</code> (x86 <code>pause</code>: tells the core it is spinning, saves power, frees resources for the hyper-thread sibling and avoids a pipeline flush when the value changes). <code>rte_wait_until_equal_16/32/64(addr, expected, memorder)</code> in <code>lib/eal/include/generic/rte_pause.h</code> packages the loop "spin with pause until <code>*addr == expected</code>" with relaxed or acquire ordering; on Arm with <code>RTE_ARM_USE_WFE</code> it sleeps in <code>wfe</code> until the line changes. The generic ticketlock is built from it: <code>rte_wait_until_equal_16(&amp;tl-&gt;s.current, me, rte_memory_order_acquire)</code>.</p>
+
+    <!-- ============================================================ 5 -->
+    <h2 id="locks"><span class="sec-num">5</span>The lock zoo</h2>
+    <p>All DPDK locks are busy-waiting locks: a waiter spins on its lcore instead of sleeping in the kernel. That is right for a pinned lcore that has nothing else to do, and wrong for a thread that shares its CPU (a spinning waiter can burn the time slice the lock holder needs). They live in <code>lib/eal/include/</code>.</p>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Lock</th><th>Header</th><th>How it works</th><th>Fair?</th><th>Use when</th></tr></thead>
+        <tbody>
+          <tr><td><code>rte_spinlock_t</code></td><td>generic/rte_spinlock.h</td><td>x86: <code>xchg</code>, then spin reading with <code>pause</code> (test-and-test-and-set). Also trylock, recursive (<code>rte_spinlock_recursive_t</code>, owner = <code>rte_gettid()</code>) and <code>_tm</code> variants (Intel TSX lock elision; falls back when RTM is absent).</td><td>no</td><td>short sections, low contention</td></tr>
+          <tr><td><code>rte_ticketlock_t</code></td><td>rte_ticketlock.h</td><td><code>{current, next}</code>: take a ticket with fetch_add on <code>next</code>, wait until <code>current</code> equals it; unlock increments <code>current</code> (release).</td><td>FIFO</td><td>fairness matters</td></tr>
+          <tr><td><code>rte_mcslock_t</code></td><td>rte_mcslock.h</td><td>A queue of per-thread nodes: exchange the tail with my node, link from the predecessor, spin on <em>my own</em> <code>locked</code> flag. Unlock hands over by writing the successor's flag. The caller supplies the node (often on the stack).</td><td>FIFO</td><td>many waiters on big machines: local spinning</td></tr>
+          <tr><td><code>rte_rwlock_t</code></td><td>generic/rte_rwlock.h</td><td>One int: readers add 4, bit 1 = writer, bit 0 = writer waiting (blocks new readers).</td><td>writer-preferring</td><td>read-mostly, readers can wait</td></tr>
+          <tr><td><code>rte_pflock_t</code></td><td>rte_pflock.h</td><td>Phase-fair reader-writer lock (Brandenburg and Anderson): reader and writer phases alternate, so neither side starves.</td><td>phase-fair</td><td>bounded latency for both sides</td></tr>
+          <tr><td><code>rte_seqcount_t</code></td><td>rte_seqcount.h</td><td>A sequence number only: writer makes it odd, writes, makes it even; readers copy and retry if it changed. <strong>No lock: one writer only</strong> (or writers serialised elsewhere).</td><td>readers never block the writer</td><td>small data, many fast readers, one writer</td></tr>
+          <tr><td><code>rte_seqlock_t</code></td><td>rte_seqlock.h</td><td><code>rte_seqcount_t</code> + <code>rte_spinlock_t</code>: the spinlock serialises writers, readers behave exactly like seqcount readers.</td><td>same</td><td>same, with several writers</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Two rows are often confused. <strong>seqcount vs seqlock</strong>: the read side is identical (<code>rte_seqlock_read_begin()</code> just calls <code>rte_seqcount_read_begin()</code>); the difference is only that the seqlock's writers take a spinlock. With one control thread updating a config, a seqcount is enough. <strong>rwlock vs pflock</strong>: under a steady stream of readers the rwlock lets a waiting writer in first (writer preference), and readers queue behind; the pflock alternates phases, so a waiting writer gets in after the current readers, and readers that arrive meanwhile get in after that one writer.</p>
+
+    <div class="widget" id="w-locks">
+      <div class="widget-head"><span class="widget-title">Lock zoo: who spins on what</span><span class="badge">animation</span></div>
+      <div class="widget-body">
+        <div class="ctl-row"><span>lock:</span>
+          <span class="seg-btns" role="group" aria-label="lock type"><button class="btn small" type="button" data-lock="spin">spinlock</button><button class="btn small" type="button" data-lock="ticket">ticketlock</button><button class="btn small" type="button" data-lock="mcs">MCS lock</button><button class="btn small" type="button" data-lock="seq">seqlock</button></span>
+        </div>
+        <div class="scroll-x">
+        <svg viewBox="0 0 680 290" role="img" aria-label="Three cores, a lock word and the protected data"></svg>
+        </div>
+        <div class="w-out" aria-live="polite"></div>
+        <p class="w-note">Red dashed arrows: a waiter polling the shared lock line (every release invalidates it in all of them). Orange: an MCS waiter polling its own queue node. Green: the holder working on the protected data. Seqlock: C1 is the writer, C2 and C3 are readers.</p>
+      </div>
+    </div>
+
+    <h3 id="locks-bench">locks_bench.c: measured costs and fairness</h3>
+    <p>Each worker loops <code>lock(); shared.counter++; unlock(); ops++;</code> for 20 ms of TSC time; we report cycles per lock/unlock pair as one thread sees it (<code>elapsed &times; threads / ops</code>), median of 5 runs, each lcore's share of the acquisitions, and whether <code>shared.counter</code> equals the total (no lost updates). Note how MCS gets its node:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/locks_bench.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="84"><code class="language-c">        rte_mcslock_t me;       /* MCS: each thread brings its own queue node */</code></pre>
+<pre data-lines data-start="101"><code class="language-c">                case L_MCS:
+                        rte_mcslock_lock(&amp;mcs.l, &amp;me);
+                        shared.counter++;
+                        rte_mcslock_unlock(&amp;mcs.l, &amp;me);
+                        break;</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./locks_bench -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch14-locks</span>
+locks_bench: 20 ms per run, median of 5 runs, TSC 2.70 GHz, workers on lcores 1 2 3
+
+lock                 thr     median        min        max   share per lcore (median) check
+                             cyc/op     cyc/op     cyc/op
+rte_spinlock           1       32.5       32.4       32.5   100.0%                   ok
+rte_spinlock           2     1181.5      728.2     1363.2   56.4% 43.6%              ok
+rte_spinlock           3     2231.3     2029.1     2303.0   37.1% 37.4% 25.5%        ok
+rte_ticketlock         1       21.2       17.7       21.9   100.0%                   ok
+rte_ticketlock         2     1809.9     1769.4     1828.5   50.0% 50.0%              ok
+rte_ticketlock         3     2959.4     2957.3     3004.5   33.3% 33.3% 33.4%        ok
+rte_mcslock            1       39.8       39.8       39.9   100.0%                   ok
+rte_mcslock            2     2414.4     2382.8     2433.7   50.7% 49.3%              ok
+rte_mcslock            3     3126.0     3109.5     3320.4   33.2% 33.3% 33.5%        ok
+rte_rwlock (write)     1       44.5       44.4       44.9   100.0%                   ok
+rte_rwlock (write)     2     1550.1     1158.0     1806.1   60.1% 39.9%              ok
+rte_rwlock (write)     3     2735.5     2666.3     2802.1   33.2% 34.1% 32.8%        ok
+rte_pflock (write)     1       58.7       58.6       58.8   100.0%                   ok
+rte_pflock (write)     2     2682.4     1658.9     2806.1   50.7% 49.3%              ok
+rte_pflock (write)     3     5202.2     5132.6     5252.4   33.2% 33.1% 33.8%        ok
+rte_seqlock (write)    1       29.8       29.7       29.8   100.0%                   ok
+rte_seqlock (write)    2     1048.0      835.7     1109.3   49.3% 50.7%              ok
+rte_seqlock (write)    3     1989.9     1968.3     1992.7   35.2% 39.3% 25.5%        ok
+pthread_mutex          1       36.2       36.1       36.4   100.0%                   ok
+pthread_mutex          2      260.1      181.2      271.0   54.0% 46.0%              ok
+pthread_mutex          3      221.1      211.0      233.9   32.7% 33.5% 33.8%        ok
+rte_rwlock (read)      1       34.8       34.6       35.5   100.0%                   ok
+rte_rwlock (read)      2      408.3      280.4      503.0   65.9% 34.1%              ok
+rte_rwlock (read)      3      711.2      698.4      727.6   48.2% 26.3% 25.6%        ok
+rte_pflock (read)      1       24.0       23.9       24.7   100.0%                   ok
+rte_pflock (read)      2      486.0      352.0      495.9   60.8% 39.2%              ok
+rte_pflock (read)      3      790.4      766.9      809.5   36.1% 27.4% 36.5%        ok</pre>
+    </div>
+    <p class="output-caption">Uncontended (1 thread), every lock costs 20 to 60 cycles: one or two atomic instructions. The ticketlock is cheapest because unlock is a plain release store. With 2 or 3 threads the cost jumps 30 to 100 times: the cache line holding the lock (and the counter) must move between cores on every hand-off. The spinlock is not fair (37/37/26%), the ticket, MCS and phase-fair locks give exactly a third each, and fairness costs: strict FIFO means the lock always moves to another core, never staying with the core that just released it.</p>
+    <p>Three results deserve a comment:</p>
+    <ul>
+      <li><strong>MCS is the slowest here</strong>. MCS wins when many waiters would all hammer one line; with three vCPUs that advantage is small, and each acquisition does more atomic operations plus a hand-off write to a line owned by another core. On a 64-core socket the picture reverses (exercise 3).</li>
+      <li><strong>Read locks do not scale for tiny sections</strong>. <code>rte_rwlock_read_lock</code> with 3 readers costs 711 cycles, not 35: every reader writes the lock word (reader count +4), so the line still ping-pongs. A read lock helps only when the read section is long. For short reads of shared data, use RCU (section 9) or a seqlock (section 6): readers write nothing shared.</li>
+      <li><strong>pthread_mutex looks fast with 3 threads</strong> (221 cycles). It sleeps waiters in the kernel (futex) and the thread that releases the lock usually takes it again many times before a sleeper wakes up, so the line stays put. Throughput is good; the latency for the sleeper is a system call and a wake-up (microseconds), which is why it is not used on a data-plane lcore.</li>
+    </ul>
+    <div class="callout warning"><div class="callout-title">Lock-holder preemption</div><p>Every busy-waiting lock assumes the holder is running. If its thread is descheduled (an overloaded VM, two lcores mapped to one CPU with <code>--lcores</code>, a control thread spinning on a data-plane core), every waiter spins for the whole time slice. Fair locks are worse: the next ticket holder may itself be descheduled, and the lock sits idle. Pin lcores, do not oversubscribe, and never take a data-plane lock from a thread that can sleep.</p></div>
+
+    <!-- ============================================================ 6 -->
+    <h2 id="seqlock"><span class="sec-num">6</span>Seqlocks: readers retry instead of waiting</h2>
+    <p>The data plane reads a 64-byte config millions of times per second; the control plane changes it a few times per second. A lock makes every reader pay. A seqlock makes the writer pay a little and readers pay only when they actually overlapped a write.</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 190" role="img" aria-labelledby="f-seq-t">
+        <title id="f-seq-t">Sequence number timeline: even, odd during a write, even again; one reader succeeds, one overlaps and retries</title>
+        <line class="svg-line" x1="40" y1="60" x2="700" y2="60"/>
+        <text class="svg-label small bold" x="40" y="30">writer</text>
+        <rect class="svg-box c4" x="260" y="44" width="160" height="32"/>
+        <text class="svg-label center small" x="340" y="60">write fields (sn odd)</text>
+        <text class="svg-label small mono" x="120" y="50">sn = 4</text>
+        <text class="svg-label small mono" x="262" y="40">sn = 5</text>
+        <text class="svg-label small mono" x="430" y="50">sn = 6</text>
+        <text class="svg-label small bold" x="40" y="110">reader A</text>
+        <rect class="svg-box c2" x="100" y="96" width="120" height="28"/>
+        <text class="svg-label center small" x="160" y="110">begin=4 copy end=4</text>
+        <text class="svg-label small verdict-ok" x="226" y="114">keep</text>
+        <text class="svg-label small bold" x="40" y="160">reader B</text>
+        <rect class="svg-box c3" x="200" y="146" width="140" height="28"/>
+        <text class="svg-label center small" x="270" y="160">begin=4 copy end=5</text>
+        <text class="svg-label small" x="346" y="152">sn changed:</text>
+        <text class="svg-label small" x="346" y="166">retry</text>
+        <rect class="svg-box c2" x="440" y="146" width="120" height="28"/>
+        <text class="svg-label center small" x="500" y="160">begin=6 copy end=6</text>
+        <text class="svg-label small verdict-ok" x="566" y="164">keep</text>
+        <path class="svg-arrow dashed" d="M392,160 L438,160"/>
+      </svg>
+      <figcaption><span class="fig-num"></span>The seqlock protocol. <code>rte_seqlock_read_begin()</code> returns the sequence number (and waits while it is odd); <code>rte_seqlock_read_retry()</code> returns true if it is odd or has changed, meaning the copy may be torn and must be thrown away.</figcaption>
+    </figure>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/seqlock_cfg.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="111"><code class="language-c">                case SEQLOCK:
+                        do {
+                                sn = rte_seqlock_read_begin(&amp;lock.sl);
+                                memcpy(&amp;copy, &amp;config, sizeof(copy));
+                                if (!rte_seqlock_read_retry(&amp;lock.sl, sn))
+                                        break;</code></pre>
+<pre data-lines data-start="171"><code class="language-c">                        case SEQLOCK:
+                                rte_seqlock_write_lock(&amp;lock.sl);       /* sn becomes odd */
+                                write_fields(++v);
+                                rte_seqlock_write_unlock(&amp;lock.sl);     /* sn even again */
+                                break;</code></pre>
+    </div>
+    <p>The first excerpt is the reader, the second the writer (between them, <code>write_fields()</code> stores <code>version</code> into all eight fields with small pauses, so a write takes about a microsecond). The protected data may be read with plain loads, as <code>rte_seqlock.h</code>'s own example does; the copy may be garbage, but it is never used unless the sequence number proves it is not.</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./seqlock_cfg -l 0-2 --no-pci --no-huge -m 64 --file-prefix=ch14-seq</span>
+seqlock_cfg: writer on lcore 0 at ~1000 Hz, 2 reader lcore(s), 500 ms per phase
+
+phase              writes        reads    retries       torn   write cycles
+naive (no lock)       501    419175646          0      12848            760
+rte_seqlock           501    379025023      38876          0           1990
+rte_seqcount          501    387765929      16656          0            980
+
+final version 1506, seqlock sn=1002 (even = no writer inside)</pre>
+    </div>
+    <p class="output-caption">Without protection, about 12,800 of 419 million copies were torn: the reader saw some fields from one version and some from the next. With <code>rte_seqlock</code> and with <code>rte_seqcount</code>: <strong>0 torn</strong>, at the price of tens of thousands of retries (about one in 10,000 reads overlapped a write). The writer is slower with the seqlock (1990 vs 980 cycles per update) because it also takes the spinlock and because the readers keep pulling the sequence-number line. The seqcount version is correct here only because there is exactly one writer.</p>
+    <div class="callout pitfall"><div class="callout-title">Pointers inside seqlocked data</div><p>A seqlock copy is safe only if the data is self-contained. If the config held a pointer and the writer freed what it pointed to, a reader could dereference it between <code>read_begin</code> and <code>read_retry</code>: a use-after-free that the retry detects too late. For pointers to dynamically allocated objects, use RCU.</p></div>
+
+    <!-- ============================================================ 7 -->
+    <h2 id="annotations"><span class="sec-num">7</span>Static lock checking with clang -Wthread-safety</h2>
+    <p>DPDK's lock types carry <span class="key-term">capability annotations</span> (<code>lib/eal/include/rte_lock_annotations.h</code>, since 23.03): <code>rte_spinlock_t</code> is declared <code>__rte_capability("spinlock")</code>, <code>rte_spinlock_lock()</code> is <code>__rte_acquire_capability(sl)</code>, and so on. Clang can then check, at compile time, that a variable marked <code>__rte_guarded_by(&amp;lk)</code> is only accessed with <code>lk</code> held. The annotations expand to nothing unless <code>RTE_ANNOTATE_LOCKS</code> is defined, and gcc ignores them; DPDK's own libraries enable it with <code>annotate_locks = true</code> in <code>lib/meson.build</code>.</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/thread_safety/counter_ts.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="13"><code class="language-c">static rte_spinlock_t lk = RTE_SPINLOCK_INITIALIZER;
+static uint64_t counter __rte_guarded_by(&amp;lk);  /* only touch with lk held */
+
+void count_wrong(void)
+{
+        counter++;              /* BUG: no lock -&gt; clang warns here */
+}</code></pre>
+<pre data-lines data-start="32"><code class="language-c">void add_wrong(void)
+{
+        add_locked(2);          /* BUG: caller does not hold lk -&gt; warning */
+}</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">clang -fsyntax-only -Wthread-safety -DRTE_ANNOTATE_LOCKS $(pkg-config --cflags libdpdk) thread_safety/counter_ts.c</span>
+<span class="hl">thread_safety/counter_ts.c:18:2: warning: writing variable 'counter' requires holding spinlock 'lk' exclusively [-Wthread-safety-analysis]</span>
+   18 |         counter++;              /* BUG: no lock -&gt; clang warns here */
+      |         ^
+<span class="hl">thread_safety/counter_ts.c:34:2: warning: calling function 'add_locked' requires holding spinlock 'lk' exclusively [-Wthread-safety-analysis]</span>
+   34 |         add_locked(2);          /* BUG: caller does not hold lk -&gt; warning */
+      |         ^
+<span class="hl">thread_safety/counter_ts.c:43:1: warning: spinlock 'lk' is not held on every path through here [-Wthread-safety-analysis]</span>
+   43 | }
+      | ^
+thread_safety/counter_ts.c:39:2: note: spinlock acquired here
+   39 |         rte_spinlock_lock(&amp;lk);
+      |         ^
+3 warnings generated.</pre>
+    </div>
+    <p class="output-caption">Three real bugs, found without running anything: a write without the lock, a call to a function that requires the lock, and an early return that leaves the lock held. <code>make thread_safety</code> runs this; it drops <code>-march=native</code> from the pkg-config flags, which clang does not need for a syntax check. Annotate your own helpers with <code>__rte_exclusive_locks_required(&amp;lk)</code>, <code>__rte_requires_capability</code> and, where the analysis cannot follow (lock handed across functions), <code>__rte_no_thread_safety_analysis</code>.</p>
+
+    <!-- ============================================================ 8 -->
+    <h2 id="aba"><span class="sec-num">8</span>Lock-free structures and the ABA fix</h2>
+    <p>"Lock-free" means some thread always makes progress, even if others are stopped at any point. The ring (ch5) is the main DPDK example: producers reserve slots with a CAS on <code>prod.head</code>. Chapter 6 showed the lock-free stack and its trap, the <span class="key-term">ABA problem</span>: a CAS compares values, not history, so a pointer that went A &rarr; B &rarr; A looks unchanged. Here is ch6's widget again; this chapter adds the fix.</p>
+    <div class="widget" id="w-aba">
+      <div class="widget-head"><span class="widget-title">Lock-free stack pop: ABA (from ch6)</span><span class="badge">predict, then step</span></div>
+      <div class="widget-body">
+        <div class="ctl-row"><span>CAS compares:</span>
+          <span class="seg-btns" role="group" aria-label="CAS mode"><button class="btn small" type="button" data-aba-mode="ptr">pointer only (64-bit)</button><button class="btn small" type="button" data-aba-mode="cnt">{pointer, counter} (128-bit)</button></span>
+        </div>
+        <svg viewBox="0 0 680 330" role="img" aria-label="Stack head, list, three threads and the elements they hold"></svg>
+        <p class="w-note">Owned by <a href="../06-mempools/index.html#aba">chapter 6</a> and embedded here unchanged.</p>
+      </div>
+    </div>
+    <p>The fix is to compare and replace two words at once: the pointer and a counter that every successful push or pop increments. x86-64 has <code>cmpxchg16b</code>; DPDK exposes it as <code>rte_atomic128_cmp_exchange()</code> on a 16-byte-aligned <code>rte_int128_t</code>, and <code>lib/stack/rte_stack_lf_c11.h</code> uses it for the stack head <code>{top, cnt}</code>, with release on push (the new element's <code>next</code> must be visible before the head) and relaxed or acquire on pop. <code>cas128.c</code> replays the ABA history on one lcore with both kinds of CAS:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/cas128.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="55"><code class="language-c">        /* ---- 2. {pointer, counter} CAS ---- */
+        A.next = &amp;B;
+        struct head h = { &amp;A, 0 };
+        struct head old = h;                    /* T1 reads {A, 0} */
+        struct head nh  = { old.top-&gt;next, old.cnt + 1 };       /* wants {B, 1} */
+        /* the same history; every push/pop bumps the counter */
+        struct head t;
+        t = h; h.top = &amp;B; h.cnt++; (void)t;    /* pop A  -&gt; {B, 1} */
+        h.top = &amp;C; h.cnt++;                    /* pop B  -&gt; {C, 2} */
+        A.next = &amp;C; h.top = &amp;A; h.cnt++;       /* push A -&gt; {A, 3} */
+        ok = rte_atomic128_cmp_exchange((rte_int128_t *)&amp;h, (rte_int128_t *)&amp;old,
+                        (const rte_int128_t *)&amp;nh, 0,
+                        rte_memory_order_acq_rel, rte_memory_order_acquire);
+        printf("128-bit CAS {top,cnt} : %s, head is {%s, %" PRIu64 "}; T1 now sees {%s, %" PRIu64
+               "} and retries\n", ok ? "SUCCEEDED" : "failed", h.top-&gt;name, h.cnt,
+               old.top-&gt;name, old.cnt);</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./cas128 -l 0 --no-pci --no-huge -m 64 --file-prefix=ch14-cas</span>
+<span class="err">64-bit CAS {top}      : SUCCEEDED, top is now B (B was popped by T2: stack corrupted)</span>
+<span class="ok">128-bit CAS {top,cnt} : failed, head is {A, 3}; T1 now sees {A, 3} and retries</span>
+sizeof(struct head) = 16, alignof = 16</pre>
+    </div>
+    <p class="output-caption">The 64-bit CAS accepts the recycled A and installs B, which is no longer on the stack: corruption. The 128-bit CAS sees counter 3 instead of 0, fails, and gives T1 the current head to retry with. A 64-bit counter cannot wrap around during the nanoseconds a thread spends between its read and its CAS.</p>
+
+    <!-- ============================================================ 9 -->
+    <h2 id="rcu"><span class="sec-num">9</span>RCU: readers that never wait</h2>
+    <p>Locks, seqlocks and CAS loops all make readers do something shared. The data plane mostly <em>reads</em> shared tables (routes, ACL rules, configs), and they change rarely. <span class="key-term">RCU</span> (read-copy-update) makes reading free: readers follow a pointer and use what they find, with no lock and no shared write. The writer never modifies an object readers can see. It builds a new copy, swaps the pointer atomically, and frees the old copy only when no reader can still hold it.</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 200" role="img" aria-labelledby="f-rcu-t">
+        <title id="f-rcu-t">RCU in three phases: unlink with a pointer swap, wait for a grace period, then reclaim</title>
+        <rect class="svg-box c5" x="20" y="30" width="110" height="44"/>
+        <text class="svg-label center small mono" x="75" y="52">cur</text>
+        <rect class="svg-box c7" x="200" y="16" width="130" height="40"/>
+        <text class="svg-label center small" x="265" y="36">old config v1</text>
+        <rect class="svg-box c2" x="200" y="76" width="130" height="40"/>
+        <text class="svg-label center small" x="265" y="96">new config v2</text>
+        <path class="svg-arrow c7 dashed" d="M130,46 L198,36"/>
+        <path class="svg-arrow c2" d="M130,58 L198,92"/>
+        <text class="svg-label small" x="20" y="100">1. unlink:</text>
+        <text class="svg-label small mono" x="20" y="116">exchange(&amp;cur, v2)</text>
+        <rect class="svg-box c5" x="380" y="30" width="170" height="70" style="opacity:.6"/>
+        <text class="svg-label center small bold" x="465" y="52">2. grace period</text>
+        <text class="svg-label center small" x="465" y="70">wait until every reader</text>
+        <text class="svg-label center small" x="465" y="86">passed a quiescent state</text>
+        <rect class="svg-box c4" x="590" y="40" width="110" height="50"/>
+        <text class="svg-label center small bold" x="645" y="58">3. reclaim</text>
+        <text class="svg-label center small mono" x="645" y="76">free(v1)</text>
+        <path class="svg-arrow" d="M335,64 L376,64"/>
+        <path class="svg-arrow" d="M552,64 L588,64"/>
+        <text class="svg-label small muted" x="20" y="160">Readers that loaded cur before the swap may still use v1 until their next quiescent state.</text>
+        <text class="svg-label small muted" x="20" y="180">Readers that load cur after the swap see v2. Nobody ever sees a half-written config.</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>Delete = unlink + reclaim later. The hard part is knowing when "later" is.</figcaption>
+    </figure>
+    <p>DPDK's <code>lib/rcu</code> implements <span class="key-term">QSBR</span> (quiescent-state-based reclamation). A <span class="key-term">quiescent state</span> is a point where a reader holds no references to shared data. For a poll-mode lcore there is a natural one: the top of its <code>while (1)</code> loop. Each reader announces it there; the writer waits until every registered, online reader has announced one after the swap. That wait is the <span class="key-term">grace period</span>.</p>
+    <ul>
+      <li><code>rte_rcu_qsbr_get_memsize(max_threads)</code>, <code>rte_rcu_qsbr_init(v, max_threads)</code>: create the QSBR variable (one cache-aligned counter per thread id plus a bitmap of registered ids).</li>
+      <li>Reader, once: <code>rte_rcu_qsbr_thread_register(v, id)</code>, then <code>rte_rcu_qsbr_thread_online(v, id)</code> before the first dereference.</li>
+      <li>Reader, every loop: <code>rte_rcu_qsbr_quiescent(v, id)</code>: an acquire load of the global token and, if it changed, a release store of it into my counter. Usually just one load.</li>
+      <li>Reader, before blocking (sleep, syscall, long wait): <code>rte_rcu_qsbr_thread_offline(v, id)</code>; the writer then ignores it. <code>_online</code> again before touching shared data. At exit: <code>_offline</code> and <code>rte_rcu_qsbr_thread_unregister()</code>.</li>
+      <li>Writer: <code>t = rte_rcu_qsbr_start(v)</code> (bump the token, release) and <code>rte_rcu_qsbr_check(v, t, wait)</code> (has every online reader reached <code>t</code>?), or both in one call: <code>rte_rcu_qsbr_synchronize(v, my_id)</code>. A writer that is not itself a reader passes <code>RTE_QSBR_THRID_INVALID</code>.</li>
+    </ul>
+
+    <div class="widget" id="w-rcu">
+      <div class="widget-head"><span class="widget-title">RCU grace period timeline</span><span class="badge">interactive: drag</span></div>
+      <div class="widget-body">
+        <div class="ctl-row">
+          <label><input type="checkbox" data-rcu="off1"> reader 1 offline</label>
+          <label><input type="checkbox" data-rcu="off3"> reader 3 offline</label>
+          <label><input type="checkbox" data-rcu="broken"> free immediately (broken)</label>
+          <button class="btn small" type="button" data-rcu="reset">Reset</button>
+        </div>
+        <svg viewBox="0 0 680 236" role="img" aria-label="Three reader lanes of critical sections with quiescent ticks, and the writer's swap and free times"></svg>
+        <div class="w-out" aria-live="polite"></div>
+        <p class="w-note">Drag the red writer line (or use the Left/Right keys) to move the swap. Drag any reader block sideways to make that loop iteration longer or shorter. Each blue block is one loop iteration that uses the config; the green tick at its end is <code>rte_rcu_qsbr_quiescent()</code>.</p>
+      </div>
+    </div>
+
+    <h3 id="rcu-code">rcu_swap.c</h3>
+    <p>Configs live in a pool of four slots; "freeing" one poisons it (<code>magic = DEAD</code>) and the writer soon reuses it, as a mempool would. A reader that ever sees a poisoned or half-rewritten config has hit a use-after-free, and counts it.</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/rcu_swap.c (reader)</span><span class="lang">C</span></div>
+<pre data-lines data-start="91"><code class="language-c">        /* 1. register once, 2. go online before the first dereference */
+        rte_rcu_qsbr_thread_register(qs, id);
+        rte_rcu_qsbr_thread_online(qs, id);
+
+        while (!rte_atomic_load_explicit(&amp;stop, rte_memory_order_relaxed)) {
+                /* ---- critical section: we hold a reference to *c ---- */
+                struct cfg *c = rte_atomic_load_explicit(&amp;cur, rte_memory_order_acquire);
+                int bad = rte_atomic_load_explicit(&amp;c-&gt;magic, rte_memory_order_relaxed) != ALIVE;
+                uint64_t v = c-&gt;version;
+                for (int i = 0; i &lt; NPAY; i++)
+                        bad |= (c-&gt;payload[i] != v);
+                if (is_slow &amp;&amp; mode == M_SLOW)
+                        rte_delay_us_block(50); /* still holding c */
+                /* re-check after use: was it freed under our feet? */
+                bad |= rte_atomic_load_explicit(&amp;c-&gt;magic, rte_memory_order_acquire) != ALIVE;
+                s-&gt;uaf += bad;
+                s-&gt;reads++;
+                /* ---- end of critical section: no references held ---- */
+                rte_rcu_qsbr_quiescent(qs, id);</code></pre>
+    </div>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/rcu_swap.c (writer)</span><span class="lang">C</span></div>
+<pre data-lines data-start="171"><code class="language-c">                /* build the new version in a free slot (nobody can see it yet) */
+                struct cfg *n = &amp;slots[next_slot];
+                next_slot = (next_slot + 1) % NSLOTS;
+                cfg_fill(n, nswaps + 2);
+
+                /* publish: one atomic pointer swap; readers see old or new */
+                struct cfg *old = rte_atomic_exchange_explicit(&amp;cur, n, rte_memory_order_acq_rel);
+
+                uint64_t t0 = rte_rdtsc();
+                if (mode != M_BROKEN)
+                        /* wait until every online reader has reported a quiescent
+                         * state after the swap; the writer is not a reader, so it
+                         * passes RTE_QSBR_THRID_INVALID */
+                        rte_rcu_qsbr_synchronize(qs, RTE_QSBR_THRID_INVALID);
+                gp[nswaps++] = rte_rdtsc() - t0;
+
+                cfg_free(old);  /* safe only after the grace period */</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./rcu_swap -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch14-rcu -- sync</span>
+rcu_swap mode=sync: qsbr variable for 128 thread ids = 8384 bytes, 3 readers
+swaps: 20000 in 29 ms
+grace period: median 0.66 us, min 0.40 us, p99 0.95 us, max 35.16 us
+  reader lcore 1:    5423268 reads,        0 saw freed/torn config
+  reader lcore 2:    5908332 reads,        0 saw freed/torn config
+  reader lcore 3:    5929925 reads,        0 saw freed/torn config
+<span class="ok">result: no use-after-free</span>
+
+<span class="prompt">$ </span><span class="cmd">./rcu_swap -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch14-rcu -- broken</span>
+rcu_swap mode=broken: qsbr variable for 128 thread ids = 8384 bytes, 3 readers
+swaps: 20000 in 9 ms
+grace period: median 0.01 us, min 0.01 us, p99 0.01 us, max 20.23 us
+  reader lcore 1:    3315216 reads,        0 saw freed/torn config
+  reader lcore 2:    3477338 reads,        2 saw freed/torn config
+  reader lcore 3:    3348392 reads,        2 saw freed/torn config
+<span class="err">result: USE-AFTER-FREE DETECTED</span>
+
+<span class="prompt">$ </span><span class="cmd">./rcu_swap -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch14-rcu -- slow</span>
+rcu_swap mode=slow: qsbr variable for 128 thread ids = 8384 bytes, 3 readers
+swaps: 19790 in 1001 ms
+grace period: median 49.45 us, min 1.86 us, p99 53.91 us, max 1528.20 us
+  reader lcore 1 (slow):      20121 reads,        0 saw freed/torn config
+  reader lcore 2:  336974660 reads,        0 saw freed/torn config
+  reader lcore 3:  340883360 reads,        0 saw freed/torn config
+<span class="ok">result: no use-after-free</span>
+
+<span class="prompt">$ </span><span class="cmd">./rcu_swap -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch14-rcu -- offline</span>
+rcu_swap mode=offline: qsbr variable for 128 thread ids = 8384 bytes, 3 readers
+swaps: 20000 in 21 ms
+grace period: median 0.66 us, min 0.35 us, p99 0.94 us, max 71.78 us
+  reader lcore 1 (slow):        589 reads,        0 saw freed/torn config
+  reader lcore 2:    4717942 reads,        0 saw freed/torn config
+  reader lcore 3:    5161963 reads,        0 saw freed/torn config
+<span class="ok">result: no use-after-free</span></pre>
+    </div>
+    <p class="output-caption"><strong>sync</strong>: 20,000 swaps, median grace period 0.66 &micro;s with three busy readers, zero use-after-free. <strong>broken</strong> (free right after the swap): the readers caught freed or half-rewritten configs; the count changes from run to run (it is a race), but it is not zero. <strong>slow</strong>: one reader holds its config for 50 &micro;s per iteration, and the median grace period becomes 49.45 &micro;s: the writer waits for the slowest reader, and the other readers do not care at all (340 million reads each). <strong>offline</strong>: the same slow reader goes offline around its pause, and the grace period is back to 0.66 &micro;s. The occasional large max is the VM descheduling a vCPU.</p>
+    <div class="callout pitfall"><div class="callout-title">The two classic RCU bugs</div><p>A reader that blocks (sleeps, waits on a socket, spins on something slow) while <em>online</em> stretches every grace period to its blocking time, and the writer, or the memory waiting to be freed, piles up. A reader that forgets <code>rte_rcu_qsbr_thread_online()</code> (or goes offline while still holding a pointer) is not waited for, and its pointer can be freed under it.</p></div>
+
+    <h3 id="rcu-dq">The defer queue: do not wait, free later</h3>
+    <p><code>rte_rcu_qsbr_synchronize()</code> blocks the writer for a grace period per update. With the <span class="key-term">defer queue</span> the writer enqueues the old object together with a new token and returns; the queue frees entries whose grace period is over, automatically inside later enqueues or explicitly with <code>rte_rcu_qsbr_dq_reclaim()</code>.</p>
+<pre><code class="language-c">struct rte_rcu_qsbr_dq_parameters p = {
+	.name = "ch14_dq",
+	.flags = RTE_RCU_QSBR_DQ_MT_UNSAFE,   /* only one writer uses it */
+	.size = NSLOTS,                      /* max objects waiting */
+	.esize = sizeof(struct cfg *),       /* what we enqueue: the pointer (multiple of 4 B) */
+	.trigger_reclaim_limit = 32,         /* auto-reclaim when >= 32 wait */
+	.max_reclaim_size = 32,
+	.free_fn = dq_free,                  /* void (*)(void *p, void *e, unsigned int n) */
+	.v = qs,
+};
+struct rte_rcu_qsbr_dq *dq = rte_rcu_qsbr_dq_create(&amp;p);
+...
+old = rte_atomic_exchange_explicit(&amp;cur, n, rte_memory_order_acq_rel);
+rte_rcu_qsbr_dq_enqueue(dq, &amp;old);     /* returns at once */</code></pre>
+    <p>Exercise 2's solution (<code>code/solutions/rcu_dq.c</code>) runs both styles against the same readers. The flag name to remember is <code>RTE_RCU_QSBR_DQ_MT_UNSAFE</code> (the default is multi-thread safe).</p>
+    <p>You will not usually write this by hand for tables: <code>rte_hash_rcu_qsbr_add()</code> (ch17), <code>rte_lpm_rcu_qsbr_add()</code> and <code>rte_fib_rcu_qsbr_add()</code> (ch18) attach a QSBR variable to the table, which then frees deleted entries through a defer queue or with synchronize, as you choose.</p>
+
+    <!-- ============================================================ 10 -->
+    <h2 id="perlcore"><span class="sec-num">10</span>Per-lcore data: the fastest sharing is none</h2>
+    <p>Statistics are the most common shared data, and they do not need to be shared at all: give each lcore its own counter, let only that lcore write it, and let a stats reader (telemetry, ch13) sum them occasionally. There are three ways to give each lcore its own copy.</p>
+    <ul>
+      <li><strong>An array indexed by <code>rte_lcore_id()</code></strong>. Simple and readable by anyone. Each element must be cache-aligned, or neighbouring lcores share a line (false sharing, below). <code>RTE_CACHE_GUARD</code> (<code>lib/eal/include/rte_common.h</code>) adds <code>RTE_CACHE_GUARD_LINES</code> (1 here) empty lines after it, against the adjacent-line prefetcher. Cost: <code>RTE_MAX_LCORE</code> (128 in this build) &times; 128 B even if you use four lcores.</li>
+      <li><strong>Thread-local storage</strong>: <code>RTE_DEFINE_PER_LCORE(type, name)</code> and <code>RTE_PER_LCORE(name)</code> (<code>lib/eal/include/rte_per_lcore.h</code>) are <code>__thread</code> variables. Cheap, but other threads cannot reach them, so a stats reader cannot sum them.</li>
+      <li><strong>Lcore variables</strong> (24.11+, <code>lib/eal/include/rte_lcore_var.h</code>, experimental: build with <code>-DALLOW_EXPERIMENTAL_API</code>). <code>static RTE_LCORE_VAR_HANDLE(struct foo, h);</code> declares a typed handle; <code>RTE_LCORE_VAR_ALLOC(h)</code> allocates one zeroed instance per lcore id; <code>RTE_LCORE_VAR(h)</code> is a pointer to the calling lcore's instance; <code>RTE_LCORE_VAR_LCORE(id, h)</code> to any lcore's; <code>RTE_LCORE_VAR_FOREACH(id, ptr, h)</code> iterates over all. There is no <code>RTE_LCORE_VAR_VALUE</code>. Instances are never freed.</li>
+    </ul>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 210" role="img" aria-labelledby="f-lv-t">
+        <title id="f-lv-t">Lcore variable storage: one slice of RTE_MAX_LCORE_VAR bytes per lcore id; all modules' variables for one lcore are packed together inside its slice</title>
+        <text class="svg-label small bold" x="20" y="22">lcore-variable buffer (RTE_MAX_LCORE x 128 KiB, ordinary memory, not hugepages)</text>
+        <rect class="svg-box c1" x="20" y="34" width="160" height="70"/>
+        <text class="svg-label center small bold" x="100" y="50">lcore 0 slice</text>
+        <rect class="svg-box c3" x="28" y="60" width="44" height="34"/><text class="svg-label center small mono" x="50" y="77">ctr</text>
+        <rect class="svg-box c5" x="76" y="60" width="44" height="34"/><text class="svg-label center small mono" x="98" y="77">A</text>
+        <rect class="svg-box c6" x="124" y="60" width="44" height="34"/><text class="svg-label center small mono" x="146" y="77">B</text>
+        <rect class="svg-box c1" x="200" y="34" width="160" height="70"/>
+        <text class="svg-label center small bold" x="280" y="50">lcore 1 slice</text>
+        <rect class="svg-box c3" x="208" y="60" width="44" height="34"/><text class="svg-label center small mono" x="230" y="77">ctr</text>
+        <rect class="svg-box c5" x="256" y="60" width="44" height="34"/><text class="svg-label center small mono" x="278" y="77">A</text>
+        <rect class="svg-box c6" x="304" y="60" width="44" height="34"/><text class="svg-label center small mono" x="326" y="77">B</text>
+        <rect class="svg-box c1" x="380" y="34" width="160" height="70"/>
+        <text class="svg-label center small bold" x="460" y="50">lcore 2 slice</text>
+        <rect class="svg-box c3" x="388" y="60" width="44" height="34"/><text class="svg-label center small mono" x="410" y="77">ctr</text>
+        <rect class="svg-box c5" x="436" y="60" width="44" height="34"/><text class="svg-label center small mono" x="458" y="77">A</text>
+        <rect class="svg-box c6" x="484" y="60" width="44" height="34"/><text class="svg-label center small mono" x="506" y="77">B</text>
+        <text class="svg-label center bold" x="600" y="72">. . .</text>
+        <path class="svg-arrow both" d="M100,118 L280,118"/>
+        <text class="svg-label center small" x="190" y="134">RTE_MAX_LCORE_VAR = 131072 B</text>
+        <text class="svg-label small" x="20" y="166">handle h = address of the lcore 0 instance; lcore i's instance = h + i * RTE_MAX_LCORE_VAR (rte_lcore_var_lcore())</text>
+        <text class="svg-label small" x="20" y="186">ctr, A, B: variables from three different modules. One lcore's variables are adjacent (good locality for the owner);</text>
+        <text class="svg-label small" x="20" y="202">different lcores are 128 KiB apart (no false sharing, so no padding needed: lcore_var.rst says not to add any).</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>How lcore variables are laid out (<code>doc/guides/prog_guide/lcore_var.rst</code>, <code>lib/eal/common/eal_common_lcore_var.c</code>). counters.c prints the 131072-byte distance between two instances.</figcaption>
+    </figure>
+
+    <div class="widget" id="w-layout">
+      <div class="widget-head"><span class="widget-title">Per-lcore data layouts</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="lc-btns" role="group" aria-label="choose an lcore"></div>
+        <svg viewBox="0 0 680 290" role="img" aria-label="Three layouts of eight per-lcore counters"></svg>
+        <div class="w-out" aria-live="polite"></div>
+      </div>
+    </div>
+
+    <h3 id="false-sharing">False sharing and the MESI ping-pong</h3>
+    <p>Caches keep copies coherent per 64-byte <span class="key-term">cache line</span>, using a protocol of the MESI family: a line in a core's cache is <strong>M</strong>odified (only copy, dirty), <strong>E</strong>xclusive (only copy, clean), <strong>S</strong>hared (read-only, others may have it) or <strong>I</strong>nvalid. To write, a core needs the line in M or E, so it invalidates every other copy. If two cores write two <em>different</em> counters that happen to sit in the same line, the line moves back and forth on every write, although no data is shared: <span class="key-term">false sharing</span>.</p>
+    <div class="widget" id="w-mesi">
+      <div class="widget-head"><span class="widget-title">Cache-line ping-pong (MESI)</span><span class="badge">animation</span></div>
+      <div class="widget-body">
+        <div class="ctl-row">
+          <span>layout:</span><span class="seg-btns" role="group" aria-label="layout"><button class="btn small" type="button" data-layout="packed">packed (same line)</button><button class="btn small" type="button" data-layout="padded">padded (own lines)</button></span>
+          <span>increment:</span><span class="seg-btns" role="group" aria-label="increment"><button class="btn small" type="button" data-inc="fa">locked fetch_add</button><button class="btn small" type="button" data-inc="ls">plain load + store</button></span>
+        </div>
+        <svg viewBox="0 0 680 250" role="img" aria-label="Two cores with their L1 copies of the counter lines and the interconnect"></svg>
+        <div class="w-out" aria-live="polite"></div>
+        <div class="bars" aria-label="measured cycles per increment"></div>
+      </div>
+    </div>
+    <p>ch22 (performance engineering) links back to this widget and reuses these numbers.</p>
+
+    <h3 id="counters">counters.c: four layouts, measured</h3>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/counters.c (declarations)</span><span class="lang">C</span></div>
+<pre data-lines data-start="47"><code class="language-c">/* Layout 1: one shared counter */
+static struct __rte_cache_aligned { RTE_ATOMIC(uint64_t) v; } shared;
+
+/* Layout 2: packed array (false sharing between neighbouring lcores) */
+static __rte_cache_aligned RTE_ATOMIC(uint64_t) packed[RTE_MAX_LCORE];
+
+/* Layout 3: padded array: 64 B counter line + 64 B guard line per lcore */
+struct padded_ctr {
+        alignas(RTE_CACHE_LINE_SIZE) RTE_ATOMIC(uint64_t) v;
+        RTE_CACHE_GUARD;
+};
+static struct padded_ctr padded[RTE_MAX_LCORE];
+
+/* Layout 4: lcore variable. No alignment or guard needed (and the docs say
+ * not to add them): each lcore's copy is in its own RTE_MAX_LCORE_VAR slice. */
+struct lv_ctr {
+        RTE_ATOMIC(uint64_t) v;
+};
+static RTE_LCORE_VAR_HANDLE(struct lv_ctr, lv);</code></pre>
+    </div>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/counters.c (the single-writer increment and the reader)</span><span class="lang">C</span></div>
+<pre data-lines data-start="91"><code class="language-c">static inline void
+inc_owned(RTE_ATOMIC(uint64_t) *p)
+{
+        rte_atomic_store_explicit(p,
+                rte_atomic_load_explicit(p, rte_memory_order_relaxed) + 1,
+                rte_memory_order_relaxed);
+}</code></pre>
+<pre data-lines data-start="131"><code class="language-c">/* The reader side: sum everything (the stats thread / telemetry does this). */
+static uint64_t
+aggregate(enum layout l)
+{
+        uint64_t sum = 0;
+        unsigned int i;
+        struct lv_ctr *val;
+
+        switch (l) {
+        case SHARED:
+                return rte_atomic_load_explicit(&amp;shared.v, rte_memory_order_relaxed);
+        case PACKED:
+                for (i = 0; i &lt; RTE_MAX_LCORE; i++)
+                        sum += rte_atomic_load_explicit(&amp;packed[i], rte_memory_order_relaxed);
+                return sum;
+        case PADDED:
+                for (i = 0; i &lt; RTE_MAX_LCORE; i++)
+                        sum += rte_atomic_load_explicit(&amp;padded[i].v, rte_memory_order_relaxed);
+                return sum;
+        case LCOREVAR:
+                RTE_LCORE_VAR_FOREACH(i, val, lv)
+                        sum += rte_atomic_load_explicit(&amp;val-&gt;v, rte_memory_order_relaxed);
+                return sum;
+        default:
+                return 0;
+        }
+}</code></pre>
+    </div>
+    <p>The worker picks its counter once (<code>mine = &amp;RTE_LCORE_VAR(lv)-&gt;v</code> for the lcore variable) and then increments it 5 million times; <code>main()</code> calls <code>RTE_LCORE_VAR_ALLOC(lv)</code> once after <code>rte_eal_init()</code>. Each layout runs with the natural single-writer increment (relaxed load + relaxed store: no lock prefix, never torn, because only the owner writes), with a stats reader polling all counters at the same time, and with a locked <code>fetch_add</code> on the lcore's own counter.</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./counters -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch14-cnt</span>
+counters: 3 workers x 5000000 increments, median of 5 runs
+layout addresses (lcore slot 0 and 1):
+  packed   0x55696cba9e80 0x55696cba9e88  (distance 8 B)
+  padded   0x55696cba5e80 0x55696cba5f00  (distance 128 B)
+  lcorevar 0x7fb98da1d8c0 0x7fb98da3d8c0  (distance 131072 B = RTE_MAX_LCORE_VAR)
+
+layout          increment poller     median      min      max      total check
+                                    cyc/inc  cyc/inc  cyc/inc
+shared atomic   fetch_add no         165.29   163.82   228.43   15000000 ok
+packed array    ld+st     no           0.74     0.73     0.76   15000000 ok
+padded+GUARD    ld+st     no           0.71     0.70     0.72   15000000 ok
+lcore variable  ld+st     no           0.71     0.70     0.86   15000000 ok
+packed array    ld+st     yes          0.74     0.72     0.74   15000000 ok
+padded+GUARD    ld+st     yes          0.74     0.73     0.74   15000000 ok
+lcore variable  ld+st     yes          0.74     0.73     0.74   15000000 ok
+packed array    fetch_add no         236.32   229.36   241.94   15000000 ok
+padded+GUARD    fetch_add no          12.81    12.73    13.10   15000000 ok
+lcore variable  fetch_add no          12.81    12.74    13.07   15000000 ok</pre>
+    </div>
+    <p class="output-caption">One shared atomic counter costs 165 cycles per increment with three writers: every increment drags the line across. A locked <code>fetch_add</code> on a <em>private</em> counter in a packed array is even worse (236 cycles): false sharing, with no shared data at all. Padding or an lcore variable brings the same locked add to 12.8 cycles, the uncontended cost of a locked instruction. The plain load+store increment costs about 0.7 cycles in <em>every</em> layout on this CPU, even packed, even with a reader polling: the store buffer (and store-to-load forwarding) absorbs repeated stores to one address, so the line does not have to move on every increment. Do not rely on that: it depends on the microarchitecture and on the loop doing nothing else; a locked operation, or real work between increments, exposes the false sharing again. The rule stays: one writer per counter, no lock prefix, counters on their own lines (or in lcore variables), and correctness is the same in all ten rows (<code>total</code> = 15,000,000).</p>
+
+    <h3 id="thread-safety">Which DPDK APIs are thread-safe?</h3>
+    <p><code>doc/guides/prog_guide/thread_safety.rst</code> sums it up; the short version:</p>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>API</th><th>From several lcores at once?</th></tr></thead>
+        <tbody>
+          <tr><td><code>rte_eth_rx_burst</code> / <code>tx_burst</code></td><td>yes on <em>different</em> queues; never two lcores on one queue without your own lock (ch15)</td></tr>
+          <tr><td><code>rte_ring</code> MP/MC, <code>rte_mempool</code> get/put</td><td>yes (lock-free; SP/SC variants only from one thread per side)</td></tr>
+          <tr><td><code>rte_hash</code>, <code>rte_lpm</code> lookups</td><td>yes, concurrently with each other</td></tr>
+          <tr><td><code>rte_hash</code>, <code>rte_lpm</code> add/delete</td><td>not by default: one writer, plus RCU or lock-free flags so lookups can continue (ch17, ch18)</td></tr>
+          <tr><td>port configure/start/stop, queue setup</td><td>no; do it from one control thread</td></tr>
+          <tr><td><code>rte_malloc</code>, <code>rte_memzone_*</code></td><td>yes (also across processes)</td></tr>
+          <tr><td><code>rte_lcore_var_alloc</code> / <code>RTE_LCORE_VAR_ALLOC</code></td><td>no: allocate at init time</td></tr>
+          <tr><td>library init functions</td><td>call from the main lcore at startup</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ===================== PITFALLS ===================== -->
+    <h2 id="pitfalls">Common pitfalls</h2>
+    <ul>
+      <li><strong><code>error: unknown type name 'rte_atomic32_t'</code> or implicit declaration of <code>rte_smp_wmb</code></strong>: code written for DPDK &lt;= 25.x. Port with the migration table (section 2); decide for each barrier whether the reader is a CPU or a device.</li>
+      <li><strong>Hand-off with relaxed atomics "works"</strong>: on x86 the hardware hides it (MP: 0 in a million). It fails on Arm or after the compiler moves a store. Publish with release, consume with acquire.</li>
+      <li><strong>Release/acquire to implement "set my flag, check yours"</strong>: SB still happens (176,609 times in a million above). Needs <code>seq_cst</code> fences or seq_cst operations.</li>
+      <li><strong>A plain flag in a spin loop</strong>: the compiler hoists the load and the loop never ends (<code>reader_plain</code>: <code>jmp</code> to itself). Use an atomic load (acquire if it guards data).</li>
+      <li><strong><code>rte_smp_wmb()</code> before a doorbell replaced by <code>rte_atomic_thread_fence(release)</code></strong>: correct on x86 by accident, wrong on Arm. A device is the reader: <code>rte_io_wmb()</code> or <code>rte_write32()</code>.</li>
+      <li><strong>seq_cst everywhere "to be safe"</strong>: every seq_cst store is an <code>xchg</code> (18 cycles here vs 0.4). Use it only where SB-style ordering is needed.</li>
+      <li><strong>A spinlock taken by a thread that can be preempted</strong> (or two lcores on one CPU): waiters spin for whole time slices. Keep locks off non-pinned threads; prefer RCU or rings for control/data-plane hand-offs.</li>
+      <li><strong>rwlock for tiny read sections</strong>: readers still write the lock word; 711 cycles with 3 readers here. Use RCU or a seqlock.</li>
+      <li><strong>seqcount with two writers</strong>: the sequence number gets corrupted and readers accept torn data. Two writers need <code>rte_seqlock_t</code>.</li>
+      <li><strong>Pointers inside seqlocked data</strong>: retry detects the race too late for a freed pointer. Use RCU for pointers.</li>
+      <li><strong>RCU reader blocks while online</strong>: grace periods grow to the blocking time (50 &micro;s reader: 49.45 &micro;s grace periods). Call <code>rte_rcu_qsbr_thread_offline()</code> around blocking calls.</li>
+      <li><strong>RCU reader never went online</strong>, or reports a quiescent state while still holding a pointer: use-after-free.</li>
+      <li><strong>Freeing right after unlinking from a lock-free table</strong>: the "broken" mode. Free after a grace period (synchronize or defer queue).</li>
+      <li><strong>Per-lcore counters in a packed array</strong>, or per-lcore structs without <code>__rte_cache_aligned</code>: false sharing (236 vs 12.8 cycles for a locked add). Align and guard, or use lcore variables (and do not pad those).</li>
+      <li><strong>Atomic RMW on a counter only one lcore writes</strong>: 12.8 cycles instead of 0.7. A relaxed load + store is enough.</li>
+      <li><strong><code>RTE_LCORE_VAR</code> from an unregistered non-EAL thread</strong>: <code>rte_lcore_id()</code> is <code>LCORE_ID_ANY</code> and the pointer is invalid. Register the thread or use <code>RTE_LCORE_VAR_LCORE()</code>.</li>
+      <li><strong>Compiling <code>rte_lcore_var.h</code> users without <code>-DALLOW_EXPERIMENTAL_API</code></strong>: errors about the experimental <code>rte_lcore_var_alloc</code>.</li>
+    </ul>
+
+    <!-- ===================== CHECK ===================== -->
+    <h2 id="check">Check your understanding</h2>
+    <div class="quiz" data-quiz>
+      <div class="quiz-head">Five questions</div>
+      <div class="q" data-answer="2" data-explain="x86-TSO keeps store-store and load-load order, so the MP forbidden outcome never appears in hardware (litmus.c: 0 of 1,000,000). The compiler and other architectures may still reorder, so release/acquire is still required for correctness.">
+        <div class="q-text">litmus.c ran MP with relaxed atomics a million times on x86 and saw (r1, r2) = (1, 0) zero times. What follows?</div>
+        <div class="q-opts">
+          <button class="q-opt">Relaxed is correct for message passing.</button>
+          <button class="q-opt">The test is broken: the threads did not overlap.</button>
+          <button class="q-opt">x86 hardware cannot produce it, but the code is still wrong for Arm and for the compiler.</button>
+        </div>
+      </div>
+      <div class="q" data-answer="1" data-explain="Release orders earlier accesses before the store; acquire orders later accesses after the load. Neither stops a store from being overtaken by a LATER load to another address. Only seq_cst (here a seq_cst fence) does: 176,609 vs 0 in the measurement.">
+        <div class="q-text">Which change makes the SB outcome r1 = r2 = 0 impossible?</div>
+        <div class="q-opts">
+          <button class="q-opt">Make the stores release and the loads acquire.</button>
+          <button class="q-opt">Put rte_atomic_thread_fence(rte_memory_order_seq_cst) between each store and load.</button>
+          <button class="q-opt">Declare x and y volatile.</button>
+        </div>
+      </div>
+      <div class="q" data-answer="0" data-explain="The NIC reads the descriptors by DMA after it sees the doorbell, so the order must hold between cached memory writes and an I/O write: rte_io_wmb(), or rte_write32() which includes it. A thread fence orders CPU against CPU.">
+        <div class="q-text">Old driver code: write descriptors; rte_smp_wmb(); write the tail doorbell. The 26.11 replacement is:</div>
+        <div class="q-opts">
+          <button class="q-opt">rte_io_wmb() before the doorbell, or rte_write32() for the doorbell</button>
+          <button class="q-opt">rte_atomic_thread_fence(rte_memory_order_release)</button>
+          <button class="q-opt">Nothing: x86 is TSO</button>
+        </div>
+      </div>
+      <div class="q" data-answer="2" data-explain="rte_rcu_qsbr_synchronize waits until every online registered reader has passed a quiescent state after the start of the grace period. A reader that holds its config for 50 us per iteration makes every grace period about 50 us (49.45 us measured). Going offline around the pause fixes it.">
+        <div class="q-text">One RCU reader spends 50 &micro;s per loop iteration. What happens to rte_rcu_qsbr_synchronize() in the writer?</div>
+        <div class="q-opts">
+          <button class="q-opt">Nothing: QSBR readers never affect the writer.</button>
+          <button class="q-opt">It returns at once but frees memory too early.</button>
+          <button class="q-opt">It waits about 50 &micro;s each time, until that reader reaches its next quiescent state.</button>
+        </div>
+      </div>
+      <div class="q" data-answer="1" data-explain="Each lcore writes only its own counter, but 8 counters share one 64-byte line. A write needs the line in Modified state, which invalidates it in the other cores: false sharing. Padding to a line (plus a guard) or lcore variables fix it (236 to 12.8 cycles for a locked add).">
+        <div class="q-text">Three lcores each do a locked add on their own element of <code>uint64_t c[RTE_MAX_LCORE]</code>. Why is it as slow as one shared counter?</div>
+        <div class="q-opts">
+          <button class="q-opt">Locked adds always lock the whole memory bus.</button>
+          <button class="q-opt">The elements share a cache line, which must move to each writer in M state.</button>
+          <button class="q-opt">rte_lcore_id() is slow.</button>
+        </div>
+      </div>
+      <div class="controls"><button class="btn small quiz-reset" type="button">Reset</button></div>
+    </div>
+
+    <!-- ===================== EXERCISES ===================== -->
+    <h2 id="exercises">Exercises</h2>
+    <div class="exercise">
+      <div class="box-title">Exercise 1 <span class="tag easy">easy</span> Port old atomics and a doorbell to 26.11</div>
+      <p>This pre-26.11 code no longer compiles. Port it, deciding for each barrier whether the reader is another CPU or a device:</p>
+<pre><code class="language-c">static rte_atomic32_t pkts;
+rte_atomic32_inc(&amp;pkts);
+ring-&gt;slot[i] = m;  rte_smp_wmb();  ring-&gt;tail = i + 1;        /* to another lcore */
+txd-&gt;addr = iova;  txd-&gt;len = len;  rte_smp_wmb();  *db = tail; /* to the NIC */</code></pre>
+      <details><summary>Hint</summary><p>A counter: <code>RTE_ATOMIC(uint32_t)</code> and a relaxed <code>fetch_add</code>. The ring tail publishes data to a CPU: make the tail store a release store (and the consumer's load acquire). The doorbell publishes to a device: <code>rte_write32(tail, db)</code>.</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/port_26_11.c</code> runs a producer/consumer over the ported hand-off (1,000,000 items, checked sum) and rings a fake doorbell. Its output is at the end of <code>expected_output.txt</code>.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 2 <span class="tag medium">medium</span> Defer queue vs synchronize</div>
+      <p>Make <code>rcu_swap</code> use the RCU defer queue instead of <code>rte_rcu_qsbr_synchronize()</code>, and compare the writer's per-update latency (median, p99, max). How big must the pool be, and why?</p>
+      <details><summary>Hint</summary><p>Freed configs now wait in the queue, so the pool needs room for them: size it and the dq at the same number. The free callback gets a pointer to the bytes you enqueued (here a <code>struct cfg *</code>). If the pool runs dry, call <code>rte_rcu_qsbr_dq_reclaim()</code>.</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/rcu_dq.c</code>. Measured here: synchronize median 0.69 &micro;s, p99 1.23 &micro;s; defer queue median 0.43 &micro;s, p99 8.74 &micro;s. The median drops because the writer no longer waits; the p99 rises because every 32nd enqueue does a batch of reclamation. With slow readers the difference is much larger (try adding the 50 &micro;s reader from rcu_swap's slow mode).</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 3 <span class="tag medium">medium</span> Why is MCS slower here?</div>
+      <p>In locks_bench, the MCS lock is slower than the spinlock with 2 and 3 threads. Explain why, and why MCS still scales better on a machine with 64 cores contending.</p>
+      <details><summary>Hint</summary><p>Count atomic operations and remote cache-line transfers per hand-off for each lock, as a function of the number of waiters <em>n</em>. Then look at what happens to the spinlock's line when <em>n</em> waiters all re-read it after every release.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 4 <span class="tag stretch">stretch</span> Break a non-thread-safe API</div>
+      <p>Pick a DPDK API that is documented as not thread-safe (for example an SP/SC <code>rte_ring</code> used from two producers, or <code>rte_eth_tx_burst</code> on one <code>net_null</code> queue from two lcores) and write a test that shows the damage (lost or duplicated objects, wrong counters). Then fix it with the cheapest correct tool from this chapter.</p>
+    </div>
+
+    <!-- ===================== SUMMARY ===================== -->
+    <section class="summary-box">
+      <div class="box-title">Summary</div>
+      <ul>
+        <li>Shared memory has three separate problems: atomicity, visibility and ordering. <code>volatile</code> solves none of them completely.</li>
+        <li>26.11 has only C11-style atomics: <code>RTE_ATOMIC(T)</code> and <code>rte_atomic_*_explicit(..., rte_memory_order_*)</code>. <code>rte_atomicNN_*</code> and <code>rte_smp_*mb</code> are gone.</li>
+        <li>x86-TSO only reorders a store with a later load (SB: about 15% here; MP: 0). Arm reorders much more (model only here). The compiler reorders plain accesses anywhere (objdump shows the flag stored first).</li>
+        <li>Publish with release, consume with acquire. Use seq_cst fences only for store-then-load protocols. Order CPU writes against a device with <code>rte_io_wmb()</code> / <code>rte_write32()</code>.</li>
+        <li>Locks cost 20 to 60 cycles alone and thousands under contention; fairness (ticket, MCS, pflock) has a price. Seqlocks let readers retry instead of block; seqcount is the single-writer variant. clang <code>-Wthread-safety</code> finds lock bugs at compile time.</li>
+        <li>The ABA problem is fixed with a 128-bit CAS of {pointer, counter} (<code>rte_atomic128_cmp_exchange</code>).</li>
+        <li>RCU QSBR makes readers free: swap a pointer, wait for a grace period (0.66 &micro;s here, but as long as the slowest online reader's loop), then free; or hand the old object to a defer queue.</li>
+        <li>The cheapest sharing is none: per-lcore counters on their own cache lines, preferably in lcore variables, written by one lcore and summed by a reader.</li>
+      </ul>
+    </section>
+
+    <section class="references">
+      <h2 id="references">References</h2>
+      <ol>
+        <li>Release notes, removed atomics and SMP barriers <span class="src-path">doc/guides/rel_notes/release_26_11.rst</span></li>
+        <li>Atomics API <span class="src-path">lib/eal/include/rte_stdatomic.h</span>, <span class="src-path">lib/eal/include/generic/rte_atomic.h</span>, <span class="src-path">lib/eal/x86/include/rte_atomic.h</span>, <span class="src-path">lib/eal/x86/include/rte_atomic_64.h</span></li>
+        <li>I/O accessors <span class="src-path">lib/eal/include/generic/rte_io.h</span>; pause and wait <span class="src-path">lib/eal/include/generic/rte_pause.h</span></li>
+        <li>Locks <span class="src-path">lib/eal/include/generic/rte_spinlock.h</span>, <span class="src-path">lib/eal/x86/include/rte_spinlock.h</span>, <span class="src-path">lib/eal/include/rte_ticketlock.h</span>, <span class="src-path">lib/eal/include/rte_mcslock.h</span>, <span class="src-path">lib/eal/include/generic/rte_rwlock.h</span>, <span class="src-path">lib/eal/include/rte_pflock.h</span>, <span class="src-path">lib/eal/include/rte_seqcount.h</span>, <span class="src-path">lib/eal/include/rte_seqlock.h</span></li>
+        <li>Lock annotations <span class="src-path">lib/eal/include/rte_lock_annotations.h</span>, <span class="src-path">lib/meson.build</span> (annotate_locks)</li>
+        <li>Lock-free stack and 128-bit CAS <span class="src-path">lib/stack/rte_stack_lf_c11.h</span>, <span class="src-path">doc/guides/prog_guide/stack_lib.rst</span></li>
+        <li>RCU <span class="src-path">lib/rcu/rte_rcu_qsbr.h</span>, <span class="src-path">lib/rcu/rte_rcu_qsbr.c</span>, <span class="src-path">doc/guides/prog_guide/rcu_lib.rst</span></li>
+        <li>Per-lcore data <span class="src-path">lib/eal/include/rte_lcore_var.h</span>, <span class="src-path">doc/guides/prog_guide/lcore_var.rst</span>, <span class="src-path">lib/eal/include/rte_per_lcore.h</span>, <span class="src-path">lib/eal/include/rte_common.h</span> (RTE_CACHE_GUARD), <span class="src-path">config/rte_config.h</span> (RTE_MAX_LCORE_VAR, RTE_CACHE_GUARD_LINES)</li>
+        <li>Thread safety of DPDK APIs <span class="src-path">doc/guides/prog_guide/thread_safety.rst</span></li>
+        <li>Ring ordering (release/acquire on head/tail) <span class="src-path">lib/ring/rte_ring_c11_pvt.h</span></li>
+        <li>Intel SDM vol. 3A, section 8.2 "Memory Ordering"; Arm Architecture Reference Manual, B2 "The AArch64 Application Level Memory Model"; the herd7/litmus7 tools (diy7 suite) for the Arm outcomes in the playground.</li>
+        <li>Course research notes <span class="src-path">research/09-performance-concurrency.md</span>, <span class="src-path">research/09-examples/bench.c</span>, <span class="src-path">research/09-examples/rcu.c</span> (paths relative to the course root)</li>
+      </ol>
+    </section>
+
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../13-observability-debugging/index.html"><span class="dir">&larr; Previous</span><span class="ttl">13 &middot; Observability and Debugging</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../15-scale-out-rss-pipelines/index.html"><span class="dir">Next &rarr;</span><span class="ttl">15 &middot; Scaling Out Across Cores</span></a>
+    </nav>
+  </main>
+</div>
+<footer class="site-footer">DPDK from Zero to Expert: Building Fast Packet Processing in User Space &middot; DPDK 26.11</footer>
+
+<script src="../../assets/course.js"></script>
+<script src="../06-mempools/aba_widget.js"></script>
+<script src="chapter14.js"></script>
+</body>
+</html>

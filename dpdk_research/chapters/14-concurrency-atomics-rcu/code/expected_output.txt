@@ -1,0 +1,282 @@
+=== 1. Compiler reordering: litmus_mp.c at -O2 (x86-64, gcc) ===
+$ make objdump
+0000000000000000 <writer_plain>:
+4:	movslq %edi,%rax
+7:	imul   $0x55555556,%rax,%rax
+e:	sar    $0x1f,%edi
+11:	movl   $0x1,0x0(%rip)
+1b:	shr    $0x20,%rax
+1f:	sub    %edi,%eax
+21:	mov    %eax,0x0(%rip)
+27:	ret
+0000000000000030 <writer_barrier>:
+34:	movslq %edi,%rax
+37:	imul   $0x55555556,%rax,%rax
+3e:	sar    $0x1f,%edi
+41:	shr    $0x20,%rax
+45:	sub    %edi,%eax
+47:	mov    %eax,0x0(%rip)
+4d:	movl   $0x1,0x0(%rip)
+57:	ret
+0000000000000060 <writer_relaxed>:
+64:	movslq %edi,%rax
+67:	imul   $0x55555556,%rax,%rax
+6e:	sar    $0x1f,%edi
+71:	shr    $0x20,%rax
+75:	sub    %edi,%eax
+77:	mov    %eax,0x0(%rip)
+7d:	movl   $0x1,0x0(%rip)
+87:	ret
+0000000000000090 <writer_release>:
+94:	movslq %edi,%rax
+97:	imul   $0x55555556,%rax,%rax
+9e:	sar    $0x1f,%edi
+a1:	shr    $0x20,%rax
+a5:	sub    %edi,%eax
+a7:	mov    %eax,0x0(%rip)
+ad:	movl   $0x1,0x0(%rip)
+b7:	ret
+00000000000000c0 <reader_plain>:
+c4:	mov    0x0(%rip),%eax
+ca:	test   %eax,%eax
+cc:	jne    d0 <reader_plain+0x10>
+ce:	jmp    ce <reader_plain+0xe>
+d0:	mov    0x0(%rip),%eax
+d6:	ret
+00000000000000e0 <reader_acquire>:
+e4:	nopl   0x0(%rax)
+e8:	mov    0x0(%rip),%eax
+ee:	test   %eax,%eax
+f0:	je     e8 <reader_acquire+0x8>
+f2:	mov    0x0(%rip),%eax
+f8:	ret
+
+=== 1b. The same source for AArch64 (clang cross-compile, NOT run) ===
+$ make objdump-arm
+0000000000000000 <writer_plain>:
+0:      	mov	w8, #0x5556
+4:      	adrp	x10, 0x0 <writer_plain>
+8:      	mov	w11, #0x1
+c:      	movk	w8, #0x5555, lsl #16
+10:      	smull	x8, w0, w8
+14:      	lsr	x9, x8, #63
+18:      	lsr	x8, x8, #32
+1c:      	add	w8, w8, w9
+20:      	adrp	x9, 0x0 <writer_plain>
+24:      	str	w8, [x10]
+28:      	str	w11, [x9]
+2c:      	ret
+0000000000000030 <writer_barrier>:
+30:      	mov	w8, #0x5556
+34:      	movk	w8, #0x5555, lsl #16
+38:      	smull	x8, w0, w8
+3c:      	lsr	x9, x8, #63
+40:      	lsr	x8, x8, #32
+44:      	add	w8, w8, w9
+48:      	adrp	x9, 0x0 <writer_plain>
+4c:      	str	w8, [x9]
+50:      	adrp	x8, 0x0 <writer_plain>
+54:      	mov	w9, #0x1
+58:      	str	w9, [x8]
+5c:      	ret
+0000000000000060 <writer_relaxed>:
+60:      	mov	w8, #0x5556
+64:      	adrp	x10, 0x0 <writer_plain>
+68:      	mov	w11, #0x1
+6c:      	movk	w8, #0x5555, lsl #16
+70:      	smull	x8, w0, w8
+74:      	lsr	x9, x8, #63
+78:      	lsr	x8, x8, #32
+7c:      	add	w8, w8, w9
+80:      	adrp	x9, 0x0 <writer_plain>
+84:      	str	w8, [x10]
+88:      	str	w11, [x9]
+8c:      	ret
+0000000000000090 <writer_release>:
+90:      	mov	w8, #0x5556
+94:      	adrp	x10, 0x0 <writer_plain>
+98:      	movk	w8, #0x5555, lsl #16
+9c:      	smull	x8, w0, w8
+a0:      	lsr	x9, x8, #63
+a4:      	lsr	x8, x8, #32
+a8:      	add	w8, w8, w9
+ac:      	mov	w9, #0x1
+b0:      	str	w8, [x10]
+b4:      	adrp	x8, 0x0 <writer_plain>
+b8:      	add	x8, x8, #0x0
+bc:      	stlr	w9, [x8]
+c0:      	ret
+00000000000000c4 <reader_plain>:
+c4:      	adrp	x8, 0x0 <writer_plain>
+c8:      	ldr	w0, [x8]
+cc:      	ret
+00000000000000d0 <reader_acquire>:
+d0:      	adrp	x8, 0x0 <writer_plain>
+d4:      	add	x8, x8, #0x0
+d8:      	ldar	w9, [x8]
+dc:      	cbz	w9, 0xd8 <reader_acquire+0x8>
+e0:      	adrp	x8, 0x0 <writer_plain>
+e4:      	ldr	w0, [x8]
+e8:      	ret
+
+=== 2. Litmus tests on two lcores (1M iterations each) ===
+
+$ ./litmus -l 0-2 --no-pci --no-huge -m 64 --file-prefix=ch14-litmus
+litmus: 1000000 iterations per test, T0 on lcore 1, T1 on lcore 2
+RTE_ATOMIC(int) is plain int + GCC __atomic builtins here (enable_stdatomic=false)
+MP  relaxed store/relaxed load    r1,r2: 0,0=71839    0,1=51897    1,0=0        1,1=876264   -> outcome 1,0 seen 0 times (676 ms)
+MP  release store/acquire load    r1,r2: 0,0=56514    0,1=47989    1,0=0        1,1=895497   -> outcome 1,0 seen 0 times (688 ms)
+SB  relaxed                       r1,r2: 0,0=150288   0,1=824928   1,0=23456    1,1=1328     -> outcome 0,0 seen 150288 times (799 ms)
+SB  release store/acquire load    r1,r2: 0,0=176609   0,1=811543   1,0=11704    1,1=144      -> outcome 0,0 seen 176609 times (791 ms)
+SB  relaxed + seq_cst fence       r1,r2: 0,0=0        0,1=958234   1,0=13765    1,1=28001    -> outcome 0,0 seen 0 times (825 ms)
+
+Cost of a store followed by a barrier (1 lcore, 2000000 iterations):
+  store only                                              0.4 cycles/iter
+  store + rte_compiler_barrier()                          0.5 cycles/iter
+  store + rte_atomic_thread_fence(release)                0.5 cycles/iter
+  store + rte_io_wmb()                                    0.5 cycles/iter
+  store + rte_atomic_thread_fence(seq_cst)               18.0 cycles/iter
+  store + rte_mb()  (mfence)                             32.4 cycles/iter
+  seq_cst store (xchg) instead of relaxed store          17.7 cycles/iter
+
+=== 3. Lock costs and fairness ===
+
+$ ./locks_bench -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch14-locks
+locks_bench: 20 ms per run, median of 5 runs, TSC 2.70 GHz, workers on lcores 1 2 3
+
+lock                 thr     median        min        max   share per lcore (median) check
+                             cyc/op     cyc/op     cyc/op
+rte_spinlock           1       32.5       32.4       32.5   100.0%                   ok
+rte_spinlock           2     1181.5      728.2     1363.2   56.4% 43.6%              ok
+rte_spinlock           3     2231.3     2029.1     2303.0   37.1% 37.4% 25.5%        ok
+rte_ticketlock         1       21.2       17.7       21.9   100.0%                   ok
+rte_ticketlock         2     1809.9     1769.4     1828.5   50.0% 50.0%              ok
+rte_ticketlock         3     2959.4     2957.3     3004.5   33.3% 33.3% 33.4%        ok
+rte_mcslock            1       39.8       39.8       39.9   100.0%                   ok
+rte_mcslock            2     2414.4     2382.8     2433.7   50.7% 49.3%              ok
+rte_mcslock            3     3126.0     3109.5     3320.4   33.2% 33.3% 33.5%        ok
+rte_rwlock (write)     1       44.5       44.4       44.9   100.0%                   ok
+rte_rwlock (write)     2     1550.1     1158.0     1806.1   60.1% 39.9%              ok
+rte_rwlock (write)     3     2735.5     2666.3     2802.1   33.2% 34.1% 32.8%        ok
+rte_pflock (write)     1       58.7       58.6       58.8   100.0%                   ok
+rte_pflock (write)     2     2682.4     1658.9     2806.1   50.7% 49.3%              ok
+rte_pflock (write)     3     5202.2     5132.6     5252.4   33.2% 33.1% 33.8%        ok
+rte_seqlock (write)    1       29.8       29.7       29.8   100.0%                   ok
+rte_seqlock (write)    2     1048.0      835.7     1109.3   49.3% 50.7%              ok
+rte_seqlock (write)    3     1989.9     1968.3     1992.7   35.2% 39.3% 25.5%        ok
+pthread_mutex          1       36.2       36.1       36.4   100.0%                   ok
+pthread_mutex          2      260.1      181.2      271.0   54.0% 46.0%              ok
+pthread_mutex          3      221.1      211.0      233.9   32.7% 33.5% 33.8%        ok
+rte_rwlock (read)      1       34.8       34.6       35.5   100.0%                   ok
+rte_rwlock (read)      2      408.3      280.4      503.0   65.9% 34.1%              ok
+rte_rwlock (read)      3      711.2      698.4      727.6   48.2% 26.3% 25.6%        ok
+rte_pflock (read)      1       24.0       23.9       24.7   100.0%                   ok
+rte_pflock (read)      2      486.0      352.0      495.9   60.8% 39.2%              ok
+rte_pflock (read)      3      790.4      766.9      809.5   36.1% 27.4% 36.5%        ok
+
+=== 4. Seqlock-protected config ===
+
+$ ./seqlock_cfg -l 0-2 --no-pci --no-huge -m 64 --file-prefix=ch14-seq
+seqlock_cfg: writer on lcore 0 at ~1000 Hz, 2 reader lcore(s), 500 ms per phase
+
+phase              writes        reads    retries       torn   write cycles
+naive (no lock)       501    419175646          0      12848            760
+rte_seqlock           501    379025023      38876          0           1990
+rte_seqcount          501    387765929      16656          0            980
+
+final version 1506, seqlock sn=1002 (even = no writer inside)
+
+=== 5. RCU QSBR pointer swap, four modes ===
+
+$ ./rcu_swap -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch14-rcu -- sync
+rcu_swap mode=sync: qsbr variable for 128 thread ids = 8384 bytes, 3 readers
+swaps: 20000 in 29 ms
+grace period: median 0.66 us, min 0.40 us, p99 0.95 us, max 35.16 us
+  reader lcore 1:    5423268 reads,        0 saw freed/torn config
+  reader lcore 2:    5908332 reads,        0 saw freed/torn config
+  reader lcore 3:    5929925 reads,        0 saw freed/torn config
+result: no use-after-free
+
+$ ./rcu_swap -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch14-rcu -- broken
+rcu_swap mode=broken: qsbr variable for 128 thread ids = 8384 bytes, 3 readers
+swaps: 20000 in 9 ms
+grace period: median 0.01 us, min 0.01 us, p99 0.01 us, max 20.23 us
+  reader lcore 1:    3315216 reads,        0 saw freed/torn config
+  reader lcore 2:    3477338 reads,        2 saw freed/torn config
+  reader lcore 3:    3348392 reads,        2 saw freed/torn config
+result: USE-AFTER-FREE DETECTED
+
+$ ./rcu_swap -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch14-rcu -- slow
+rcu_swap mode=slow: qsbr variable for 128 thread ids = 8384 bytes, 3 readers
+swaps: 19790 in 1001 ms
+grace period: median 49.45 us, min 1.86 us, p99 53.91 us, max 1528.20 us
+  reader lcore 1 (slow):      20121 reads,        0 saw freed/torn config
+  reader lcore 2:  336974660 reads,        0 saw freed/torn config
+  reader lcore 3:  340883360 reads,        0 saw freed/torn config
+result: no use-after-free
+
+$ ./rcu_swap -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch14-rcu -- offline
+rcu_swap mode=offline: qsbr variable for 128 thread ids = 8384 bytes, 3 readers
+swaps: 20000 in 21 ms
+grace period: median 0.66 us, min 0.35 us, p99 0.94 us, max 71.78 us
+  reader lcore 1 (slow):        589 reads,        0 saw freed/torn config
+  reader lcore 2:    4717942 reads,        0 saw freed/torn config
+  reader lcore 3:    5161963 reads,        0 saw freed/torn config
+result: no use-after-free
+
+=== 6. Four counter layouts ===
+
+$ ./counters -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch14-cnt
+counters: 3 workers x 5000000 increments, median of 5 runs
+layout addresses (lcore slot 0 and 1):
+  packed   0x55696cba9e80 0x55696cba9e88  (distance 8 B)
+  padded   0x55696cba5e80 0x55696cba5f00  (distance 128 B)
+  lcorevar 0x7fb98da1d8c0 0x7fb98da3d8c0  (distance 131072 B = RTE_MAX_LCORE_VAR)
+
+layout          increment poller     median      min      max      total check
+                                    cyc/inc  cyc/inc  cyc/inc
+shared atomic   fetch_add no         165.29   163.82   228.43   15000000 ok
+packed array    ld+st     no           0.74     0.73     0.76   15000000 ok
+padded+GUARD    ld+st     no           0.71     0.70     0.72   15000000 ok
+lcore variable  ld+st     no           0.71     0.70     0.86   15000000 ok
+packed array    ld+st     yes          0.74     0.72     0.74   15000000 ok
+padded+GUARD    ld+st     yes          0.74     0.73     0.74   15000000 ok
+lcore variable  ld+st     yes          0.74     0.73     0.74   15000000 ok
+packed array    fetch_add no         236.32   229.36   241.94   15000000 ok
+padded+GUARD    fetch_add no          12.81    12.73    13.10   15000000 ok
+lcore variable  fetch_add no          12.81    12.74    13.07   15000000 ok
+
+=== 7. ABA and the 128-bit CAS ===
+
+$ ./cas128 -l 0 --no-pci --no-huge -m 64 --file-prefix=ch14-cas
+64-bit CAS {top}      : SUCCEEDED, top is now B (B was popped by T2: stack corrupted)
+128-bit CAS {top,cnt} : failed, head is {A, 3}; T1 now sees {A, 3} and retries
+sizeof(struct head) = 16, alignof = 16
+
+=== 8. Static lock checking (clang -Wthread-safety, compile only) ===
+$ make thread_safety
+thread_safety/counter_ts.c:18:2: warning: writing variable 'counter' requires holding spinlock 'lk' exclusively [-Wthread-safety-analysis]
+   18 |         counter++;              /* BUG: no lock -> clang warns here */
+      |         ^
+thread_safety/counter_ts.c:34:2: warning: calling function 'add_locked' requires holding spinlock 'lk' exclusively [-Wthread-safety-analysis]
+   34 |         add_locked(2);          /* BUG: caller does not hold lk -> warning */
+      |         ^
+thread_safety/counter_ts.c:43:1: warning: spinlock 'lk' is not held on every path through here [-Wthread-safety-analysis]
+   43 | }
+      | ^
+thread_safety/counter_ts.c:39:2: note: spinlock acquired here
+   39 |         rte_spinlock_lock(&lk);
+      |         ^
+3 warnings generated.
+
+=== Exercise solutions ===
+
+$ ./port_26_11 -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch14-port
+consumer: sum of 1000000 items = 499999500000 (expected 499999500000)
+pkts=1000000, doorbell=4, desc[3].addr=0x101800
+
+$ ./rcu_dq -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch14-rcudq
+synchronize   20000 updates in   18.49 ms | per update: median   0.69 us, p99   1.23 us, max    78.73 us
+defer queue   20000 updates in   15.72 ms | per update: median   0.43 us, p99   8.74 us, max    22.71 us
+after the run: dq reclaimed 24 more, 0 still pending, 255 free in pool
+readers saw freed/torn config: 0 times

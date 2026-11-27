@@ -1,0 +1,4 @@
+show stats
+set burst <UINT16>n
+show keepalive
+quit

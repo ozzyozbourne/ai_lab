@@ -1,0 +1,1765 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>12 Port Control, Stats and Events | DPDK from Zero to Expert</title>
+<meta name="description" content="Everything you do to a DPDK port besides RX and TX: MAC, promiscuous mode, MTU, the 26.11 statistics model, events and burst callbacks, hotplug, per-queue control, live reconfiguration, graceful shutdown, failure recovery, bonding and failsafe.">
+<link rel="stylesheet" href="../../assets/course.css">
+<style>
+  .qx-out { margin: .5rem 0 0; padding: .5rem .7rem; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); font-size: .9rem; min-height: 2.6rem; }
+  .qx-out.ok { border-color: var(--c2); }
+  .qx-out.bad { border-color: var(--c4); }
+  .api-row { display: flex; flex-wrap: wrap; gap: .35rem; margin: .4rem 0; }
+  .api-row .btn { font-family: var(--font-mono); font-size: .74rem; }
+  #qx-choice { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .4rem; }
+  #qx-choice[hidden] { display: none; }
+  .evt-log { list-style: none; padding: 0; margin: .4rem 0 0; font-size: .85rem; max-height: 9.5rem; overflow: auto; }
+  .evt-log li { padding: .15rem .4rem; border-left: 3px solid var(--c6); margin-bottom: .2rem; background: var(--surface-2); }
+  .evt-log li.bad { border-left-color: var(--c4); }
+  .fail-ctrs { display: grid; grid-template-columns: repeat(auto-fit, minmax(7.2rem, 1fr)); gap: .4rem; margin: .6rem 0; }
+  .fail-ctrs .stat { transition: border-color .3s, background .3s; }
+  .fail-ctrs .stat.alarm { border-color: var(--c4); background: var(--c4-soft); }
+  .fail-ctrs .stat.stall { border-color: var(--c3); background: var(--c3-soft); }
+  .fail-rec { margin: .4rem 0 0 1.2rem; padding: 0; font-size: .9rem; }
+  .fail-rec li { padding: .15rem .3rem; border-radius: 4px; }
+  .fail-rec li.active { background: var(--accent-soft); font-weight: 600; }
+  .fail-rec li.done { color: var(--text-muted); text-decoration: line-through; text-decoration-color: var(--c2); }
+  .fail-sig { font-size: .92rem; margin: .3rem 0; }
+  .btn-row { display: flex; flex-wrap: wrap; gap: .35rem; }
+  .ctl-row { display: flex; flex-wrap: wrap; gap: .6rem 1.2rem; align-items: center; margin: .3rem 0; font-size: .9rem; }
+  td.r-ok { color: var(--c2); font-weight: 600; }
+  td.r-busy { color: var(--c3); font-weight: 600; }
+  td.r-no { color: var(--c4); }
+  svg.wide-svg { min-width: 600px; }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <button class="btn small toc-toggle" type="button" aria-label="Table of contents">&#9776;</button>
+  <a class="brand" href="../../index.html"><span>DPDK</span> Zero to Expert</a>
+  <span class="crumb">Chapter 12 &middot; Port Control, Stats and Events</span>
+  <button class="btn small theme-toggle" type="button">Theme</button>
+  <div class="progress-bar"></div>
+</header>
+
+<div class="page">
+  <nav class="sidebar" data-auto-toc aria-label="On this page"></nav>
+
+  <main id="main" class="content">
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../11-eal-services-timers/index.html"><span class="dir">&larr; Previous</span><span class="ttl">11 &middot; EAL Services in One Evolving App</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../13-observability-debugging/index.html"><span class="dir">Next &rarr;</span><span class="ttl">13 &middot; Observability and Debugging</span></a>
+    </nav>
+
+    <header class="chapter-header">
+      <div class="chapter-kicker">Chapter 12</div>
+      <h1>Port Control, Statistics, Events, Live Reconfiguration and Composite PMDs</h1>
+      <p class="chapter-subtitle">Chapter 8 taught you to bring a port up and move packets. This chapter covers everything else you do to a running port: change its MAC, MTU and filters, read the right counters, react to events, take one queue out of service, restart it safely, shut it down without leaking a single mbuf, recover from faults, and build one logical port out of several.</p>
+      <ul class="meta-row">
+        <li><span class="badge level-intermediate">Intermediate</span></li>
+        <li><span class="badge">~120 min</span></li>
+        <li><span class="badge">Prerequisites: ch8, ch9, ch10, ch11</span></li>
+        <li><span class="tag api">rte_ethdev.h</span></li>
+        <li><span class="tag api">rte_eth_bond.h</span></li>
+      </ul>
+    </header>
+
+    <section class="objectives">
+      <div class="box-title">Learning objectives</div>
+      <ul>
+        <li>Change MAC, promiscuous mode, MTU, VLAN filter, link state and packet types on a live port, and treat <code>-ENOTSUP</code> as normal information rather than a bug.</li>
+        <li>Explain the 26.11 statistics model: port totals in <code>struct rte_eth_stats</code>, per-queue counters only as xstats, read cheaply by id.</li>
+        <li>Register event callbacks (LSC, NEW, DESTROY, QUEUE_STATE, INTR_RESET, RECOVERY_*), know which thread runs them and what is safe inside them; use RX/TX burst callbacks and remove them safely.</li>
+        <li>Hotplug and unplug devices at runtime and know what the kernel device event monitor does and does not report.</li>
+        <li>Use deferred start, per-queue start/stop and runtime queue setup, and predict <code>OK</code> / <code>-EBUSY</code> / <code>-ENOTSUP</code> per PMD.</li>
+        <li>Classify changes into "live" and "needs a restart", measure the outage of a restart, and run an ordered graceful shutdown that ends with <code>rte_mempool_in_use_count() == 0</code>.</li>
+        <li>Read the counter signature of four seeded faults and run the matching recovery, including the passive and proactive <code>err_handle_mode</code> paths.</li>
+        <li>Build bonding and failsafe ports, see their real behaviour (including where they fail), and tell them apart from hardware aggregated ports.</li>
+      </ul>
+    </section>
+
+    <section class="tools-box">
+      <div class="box-title">Tools for this chapter</div>
+      <ul>
+        <li><code>code/run.sh</code>: builds and runs all eight examples and two exercise solutions (about 25 s). <code>code/expected_output.txt</code> is its real output on this machine.</li>
+        <li>Virtual ports only: <code>net_null</code>, <code>net_ring</code>, <code>net_tap</code> (kernel interfaces <code>ch12tap*</code>), <code>net_pcap</code> (files from <code>gen_pcap.py</code>), <code>net_vhost</code> + <code>virtio_user</code>, <code>net_bonding</code>, <code>net_failsafe</code>.</li>
+        <li><code>dpdk-testpmd</code> for the failsafe port; <code>ip link</code> to flap a tap link like a pulled cable.</li>
+        <li>The process's own telemetry socket (<code>/ethdev/info</code>), queried from C, to read queue states. Telemetry itself is ch13's topic.</li>
+      </ul>
+    </section>
+
+    <!-- ============================================================ 1 -->
+    <h2 id="surface"><span class="sec-num">1</span>The control surface of a port</h2>
+    <p>In ch8 you used the <span class="key-term">data path</span> of a port: <code>rte_eth_rx_burst()</code> and <code>rte_eth_tx_burst()</code>, called millions of times per second from a polling lcore. Everything else you can do to a port is the <span class="key-term">control path</span>: setting addresses and filters, reading counters, changing the MTU, starting and stopping queues, reacting to the link going down. Control calls are slow (microseconds to milliseconds), are made rarely, and usually run on the main lcore or a control thread, not on the polling lcores.</p>
+    <p>Every control call follows the same route. The public function in <code>lib/ethdev/rte_ethdev.c</code> checks the port id and the arguments, then calls one entry of the driver's <code>struct eth_dev_ops</code>, a table of about 150 function pointers. A PMD fills in only the entries it can support. If the entry is <code>NULL</code>, ethdev returns <code>-ENOTSUP</code> without calling the driver. So <code>-ENOTSUP</code> is not an error in your program: it is the driver telling you "I do not have this feature". Your code must expect it.</p>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 720 230" role="img" aria-labelledby="f-ops-t">
+        <title id="f-ops-t">An application calls rte_eth_dev_set_mtu. ethdev validates and looks up the mtu_set entry in the PMD's eth_dev_ops table. For net_tap the entry points to tap_mtu_set and the call succeeds; for net_ring the entry is NULL and ethdev returns -ENOTSUP.</title>
+        <rect class="svg-box c1" x="10" y="85" width="150" height="56"/>
+        <text class="svg-label center bold" x="85" y="105">application</text>
+        <text class="svg-label center small mono" x="85" y="125">rte_eth_dev_set_mtu()</text>
+        <rect class="svg-box c7" x="210" y="70" width="170" height="86"/>
+        <text class="svg-label center bold" x="295" y="92">lib/ethdev</text>
+        <text class="svg-label center small" x="295" y="112">check port id, args,</text>
+        <text class="svg-label center small" x="295" y="128">port state (configured?)</text>
+        <text class="svg-label center small mono" x="295" y="145">dev-&gt;dev_ops-&gt;mtu_set</text>
+        <path class="svg-arrow c1" d="M160,113 L206,113"/>
+        <rect class="svg-box c4" x="440" y="12" width="276" height="92"/>
+        <text class="svg-label bold" x="450" y="32">net_tap eth_dev_ops</text>
+        <text class="svg-label small mono" x="450" y="52">.mtu_set     = tap_mtu_set</text>
+        <text class="svg-label small mono" x="450" y="70">.mac_addr_set = tap_mac_set</text>
+        <text class="svg-label small mono" x="450" y="88">.rx_queue_start = tap_rx_queue_start</text>
+        <rect class="svg-box c4" x="440" y="122" width="276" height="92"/>
+        <text class="svg-label bold" x="450" y="142">net_ring eth_dev_ops</text>
+        <text class="svg-label small mono" x="450" y="162">.mtu_set     = NULL</text>
+        <text class="svg-label small mono" x="450" y="180">.mac_addr_set = NULL</text>
+        <text class="svg-label small mono" x="450" y="198">.rx_queue_start = NULL</text>
+        <path class="svg-arrow c2" d="M380,100 L436,60"/>
+        <text class="svg-label small" x="388" y="68">OK</text>
+        <path class="svg-arrow c4 dashed" d="M380,130 L436,160"/>
+        <text class="svg-label small bold svg-fill-c4" x="360" y="178">-ENOTSUP</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>One API, two drivers. ethdev answers <code>-ENOTSUP</code> itself when the PMD left the entry empty. The op names are from <span class="src-path">drivers/net/tap/rte_eth_tap.c</span> and <span class="src-path">drivers/net/ring/rte_eth_ring.c</span>.</figcaption>
+    </figure>
+
+    <p>The first program of this chapter, <code>port_ctl.c</code>, tries fourteen control calls on three started ports and prints what each returned. Here is the loop body; every call returns an <code>int</code> (or a count) and nothing is assumed:</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/port_ctl.c (lines 71-86)</span><span class="lang">C</span></div>
+<pre data-lines data-start="71" data-hl="85"><code class="language-c">		rc[0] = rte_eth_dev_default_mac_addr_set(port, &amp;a);
+		rc[1] = rte_eth_dev_mac_addr_add(port, &amp;extra, 0);
+		rc[2] = rte_eth_promiscuous_disable(port);
+		rc[3] = rte_eth_allmulticast_enable(port);
+		rc[4] = rte_eth_dev_set_mtu(port, 1400);
+		rc[5] = rte_eth_dev_vlan_filter(port, 100, 1);
+		rc[6] = rte_eth_dev_set_link_down(port);
+		rte_eth_dev_set_link_up(port);
+		rc[7] = rte_eth_dev_get_supported_ptypes(port, RTE_PTYPE_ALL_MASK,
+							 ptypes, RTE_DIM(ptypes));
+		rc[8] = rte_eth_dev_set_ptypes(port, RTE_PTYPE_L3_MASK, NULL, 0);
+		rc[9] = rte_eth_rx_queue_info_get(port, 0, &amp;qi);
+		rc[10] = rte_eth_rx_burst_mode_get(port, 0, &amp;bm);
+		rc[11] = rte_eth_xstats_get(port, NULL, 0);	/* = count */
+		rc[12] = rte_eth_tx_done_cleanup(port, 0, 0);
+		rc[13] = rte_eth_dev_count_aggr_ports(port);</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./port_ctl -l 0 --no-pci --no-huge -m 128 --file-prefix=ch12-ctl --vdev=net_null0 --vdev=net_ring0 --vdev=net_tap0,iface=ch12tap0</span>
+<span class="dim">(EAL start-up lines omitted)</span>
+
+=== Part 1: optional ops matrix (started ports, 1 RX + 1 TX queue) ===
+port/pmd     mac_set     mac_add     promisc_off allmulti_on set_mtu     vlan_filt   link_down   ptypes      set_ptypes  rxq_info    burst_mode  xstats      done_clean  aggr_ports 
+<span class="dim">ETHDEV: Port 0: VLAN-filtering disabled</span>
+0 null       OK          -ENOTSUP    -ENOTSUP    OK          OK          -ENOSYS     -ENOTSUP    0           OK          -ENOTSUP    -ENOTSUP    12          -ENOTSUP    0          
+<span class="dim">ETHDEV: Port 1: VLAN-filtering disabled</span>
+<span class="dim">ETHDEV: Port 1: Cannot remove default MAC address</span>
+1 ring       -ENOTSUP    OK          OK          OK          -ENOTSUP    -ENOSYS     OK          0           OK          -ENOTSUP    -ENOTSUP    12          -ENOTSUP    0          
+<span class="dim">ETHDEV: Port 2: VLAN-filtering disabled</span>
+2 tap        OK          OK          OK          OK          OK          -ENOSYS     OK          22          OK          -ENOTSUP    -ENOTSUP    12          -ENOTSUP    0          
+(numbers = counts: supported ptypes, xstats, freed mbufs, aggregated ports)</pre>
+</div>
+    <p class="output-caption">Read it column by column. No PMD supports everything. <code>net_null</code> cannot turn promiscuous mode off, <code>net_ring</code> cannot change its MAC or MTU, and none of them implements <code>rx_queue_info_get</code>, <code>rx_burst_mode_get</code> or <code>tx_done_cleanup</code>. All three report 12 xstats (the generic ones, section 3). <code>vlan_filt</code> is <code>-ENOSYS</code>, not <code>-ENOTSUP</code>: the call is refused because the port was not configured with <code>RTE_ETH_RX_OFFLOAD_VLAN_FILTER</code>, before the driver is even asked.</p>
+
+    <div class="callout tip"><div class="callout-title">Tip: probe, then decide</div><p>Do not hard-code "this NIC supports X". Call the function at start-up, keep the result in a capability flag, and pick a fallback. The driver feature matrix in <span class="src-path">doc/guides/nics/features/*.ini</span> (rendered in <span class="src-path">doc/guides/nics/overview.rst</span>) tells you what to expect, and the return code tells you what you got. <code>rte_eth_rx_queue_info_get()</code> and <code>rte_eth_rx_burst_mode_get()</code> do work on virtio and vhost; ch24 shows them there.</p></div>
+
+    <!-- ============================================================ 2 -->
+    <h2 id="basics"><span class="sec-num">2</span>MAC, promiscuous mode, MTU, VLAN, link and packet types</h2>
+
+    <h3 id="mac">MAC addresses</h3>
+    <p>A port has one <span class="key-term">default MAC address</span> (slot 0) and, on most NICs, extra slots for more unicast addresses it should accept. <code>rte_eth_macaddr_get()</code> reads slot 0, <code>rte_eth_dev_default_mac_addr_set()</code> replaces it, <code>rte_eth_dev_mac_addr_add()</code> / <code>_remove()</code> manage the extra slots (<code>dev_info.max_mac_addrs</code> says how many). On a real NIC these program the hardware receive filter. On net_tap they also change the kernel interface: the output below shows the kernel's <code>/sys/class/net/ch12tap0/address</code> following the DPDK call.</p>
+
+    <h3 id="promisc">Promiscuous and all-multicast</h3>
+    <p>A NIC normally drops, in hardware, every frame whose destination MAC is neither its own address, broadcast, nor a multicast group it joined. <span class="key-term">Promiscuous mode</span> turns that filter off: every frame is delivered. <span class="key-term">All-multicast</span> accepts every multicast frame but still filters unicast. A software switch, a bridge, a capture tool, or a router whose neighbours address frames to a virtual MAC all need promiscuous mode. DPDK ports usually start with promiscuous mode on for exactly this reason (testpmd enables it on every port).</p>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 720 210" role="img" aria-labelledby="f-promisc-t">
+        <title id="f-promisc-t">Three kinds of frames hit the port's receive filter. With promiscuous mode on all three are delivered. With it off, the frame addressed to another unicast MAC is dropped. Measured on net_tap: 10, 10, 10 with promisc on, and 10, 0, 10 with promisc off.</title>
+        <text class="svg-label bold" x="10" y="20">frames from the wire</text>
+        <rect class="svg-box c3" x="10" y="35" width="200" height="34"/>
+        <text class="svg-label small center mono" x="110" y="52">dst = port MAC</text>
+        <rect class="svg-box c3" x="10" y="85" width="200" height="34"/>
+        <text class="svg-label small center mono" x="110" y="102">dst = 02:12:de:ad:be:ef</text>
+        <rect class="svg-box c3" x="10" y="135" width="200" height="34"/>
+        <text class="svg-label small center mono" x="110" y="152">dst = ff:ff:ff:ff:ff:ff</text>
+        <rect class="svg-box c4" x="270" y="30" width="120" height="145"/>
+        <text class="svg-label center bold" x="330" y="90">RX filter</text>
+        <text class="svg-label center small" x="330" y="110">(NIC hardware;</text>
+        <text class="svg-label center small" x="330" y="126">kernel for tap)</text>
+        <path class="svg-arrow c3" d="M210,52 L266,52"/>
+        <path class="svg-arrow c3" d="M210,102 L266,102"/>
+        <path class="svg-arrow c3" d="M210,152 L266,152"/>
+        <text class="svg-label bold" x="440" y="20">promisc on</text>
+        <text class="svg-label bold" x="590" y="20">promisc off</text>
+        <path class="svg-arrow c2" d="M390,52 L430,52"/><text class="svg-label mono" x="440" y="57">10 / 10</text>
+        <path class="svg-arrow c2" d="M390,102 L430,102"/><text class="svg-label mono" x="440" y="107">10 / 10</text>
+        <path class="svg-arrow c2" d="M390,152 L430,152"/><text class="svg-label mono" x="440" y="157">10 / 10</text>
+        <text class="svg-label mono" x="590" y="57">10 / 10</text>
+        <text class="svg-label mono bold svg-fill-c4" x="590" y="107">0 / 10 dropped</text>
+        <text class="svg-label mono" x="590" y="157">10 / 10</text>
+        <text class="svg-label small muted" x="440" y="198">measured on net_tap, port_ctl.c Part 2</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>The promiscuous filter. On net_tap the filter is the kernel's: <code>rte_eth_promiscuous_disable()</code> clears <code>IFF_PROMISC</code> on <code>ch12tap0</code> and the kernel stops passing foreign unicast frames to the tap file descriptor.</figcaption>
+    </figure>
+
+    <h3 id="mtu">MTU and the mbuf data room</h3>
+    <p>The <span class="key-term">MTU</span> is the largest L3 payload a frame may carry: 1500 bytes for standard Ethernet, so a full frame is 1500 + 14 (header) + 4 (FCS) = 1518 bytes. <code>rte_eth_dev_set_mtu()</code> changes what the port accepts and sends, within <code>dev_info.min_mtu</code>..<code>max_mtu</code>. It does not change your mbufs. A pool made with <code>RTE_MBUF_DEFAULT_BUF_SIZE</code> has 2048 bytes of data room after the headroom, so a 9000-byte jumbo frame does not fit in one mbuf. Either create the pool with a larger data room, or enable <code>RTE_ETH_RX_OFFLOAD_SCATTER</code> so the PMD chains several mbufs per frame (ch19 covers scatter and buffer split). If you do neither, a PMD that supports jumbo frames will drop them or refuse the MTU.</p>
+
+    <h3 id="vlan-link">VLAN filter, link control, packet types</h3>
+    <ul>
+      <li><code>rte_eth_dev_vlan_filter(port, vid, on)</code> adds a VLAN id to the hardware VLAN filter. The port must be configured with <code>RTE_ETH_RX_OFFLOAD_VLAN_FILTER</code>, otherwise ethdev returns <code>-ENOSYS</code> (you saw it in the matrix). VLAN stripping is an RX offload too, changed at runtime with <code>rte_eth_dev_set_vlan_offload()</code> only if the PMD lists it in <code>rx_offload_capa</code>.</li>
+      <li><code>rte_eth_dev_set_link_down()</code> / <code>_up()</code> take the link administratively down, like <code>ip link set dev X down</code>. <code>rte_eth_link_get()</code> may <em>wait</em> up to several seconds for autonegotiation on a real NIC; on the data path or in a callback use <code>rte_eth_link_get_nowait()</code>, which returns the last known state immediately. <code>rte_eth_link_to_str()</code> formats it.</li>
+      <li><code>rte_eth_dev_get_supported_ptypes()</code> lists the packet types the PMD can recognise and write into <code>mbuf-&gt;packet_type</code> (ch10). <code>rte_eth_dev_set_ptypes()</code> tells the PMD which ones you actually need, so it can skip work; when the PMD has no <code>dev_ptypes_set</code> op, ethdev quietly returns 0, which is why the matrix shows <code>OK</code> everywhere.</li>
+    </ul>
+    <p>Part 2 of <code>port_ctl</code> walks through all of these on one net_tap port. The promiscuous test sends frames from the kernel side of the tap with an <code>AF_PACKET</code> socket (<code>kernel_inject()</code> in <code>ch12_common.h</code>), so for DPDK they arrive "from the wire":</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/port_ctl.c (lines 144-166)</span><span class="lang">C</span></div>
+<pre data-lines data-start="144" data-hl="157"><code class="language-c">	printf("\n  promiscuous filter test (10 frames each, sent from the kernel side):\n");
+	printf("  %-8s %-22s %-22s %-22s\n", "promisc", "dst = port MAC",
+	       "dst = 02:12:de:ad:be:ef", "dst = broadcast");
+	for (on = 1; on &gt;= 0; on--) {
+		unsigned got[3];
+
+		if (on)
+			rte_eth_promiscuous_enable(port);
+		else
+			rte_eth_promiscuous_disable(port);
+		drain(port, 20);
+		kernel_inject(TAPIF, &amp;me, 10, 1);
+		got[0] = drain(port, 50);
+		kernel_inject(TAPIF, &amp;other, 10, 1);
+		got[1] = drain(port, 50);
+		kernel_inject(TAPIF, &amp;bcast, 10, 1);
+		got[2] = drain(port, 50);
+		printf("  %-8s %-22u %-22u %-22u   (kernel IFF_PROMISC=%s)\n",
+		       on ? "on" : "off", got[0], got[1], got[2],
+		       (strtoul(if_sysfs(TAPIF, "flags"), NULL, 16) &amp; 0x100) ?
+		       "1" : "0");
+	}
+	rte_eth_promiscuous_enable(port);</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre>=== Part 2: net_tap walk-through (port 2, kernel side ch12tap0) ===
+  initial MAC (random per run):      DPDK side 96:79:EF:0A:65:EB | kernel ch12tap0 address 96:79:ef:0a:65:eb
+  after default_mac_addr_set:        DPDK side 02:12:00:00:00:01 | kernel ch12tap0 address 02:12:00:00:00:01
+
+  promiscuous filter test (10 frames each, sent from the kernel side):
+  promisc  dst = port MAC         dst = 02:12:de:ad:be:ef dst = broadcast       
+  on       10                     10                     10                       (kernel IFF_PROMISC=1)
+  off      10                     0                      10                       (kernel IFF_PROMISC=0)
+
+  MTU now 1500 (min_mtu 46, max_mtu 65535, max_rx_pktlen 16128)
+  set_mtu(9000)  -&gt; OK       get_mtu=9000, kernel mtu=9000
+<span class="dim">ETHDEV: MTU (40) &lt; device min MTU (46) for port_id 2</span>
+  set_mtu(40)    -&gt; -EINVAL  (below min_mtu)
+  set_mtu(1500)  -&gt; OK
+  mbuf data room in this pool: 2048 bytes -&gt; a 9000-byte frame would need scatter RX
+
+  set_link_down -&gt; OK     link: Link down                    kernel operstate=down
+  set_link_up   -&gt; OK     link: Link up at 10 Gbps FDX Fixed None kernel operstate=unknown
+
+  supported ptypes (22):
+    INNER_L2_ETHER, INNER_L2_ETHER_VLAN, INNER_L2_ETHER_QINQ, INNER_L3_IPV4, INNER_L3_IPV4_EXT, INNER_L3_IPV6
+    INNER_L3_IPV6_EXT, INNER_L4_FRAG, INNER_L4_UDP, INNER_L4_TCP, INNER_L4_SCTP, L2_ETHER
+    L2_ETHER_VLAN, L2_ETHER_QINQ, L3_IPV4, L3_IPV4_EXT, L3_IPV6_EXT, L3_IPV6
+    L4_FRAG, L4_UDP, L4_TCP, L4_SCTP
+
+  rte_eth_stats after 25 injected frames:
+    ipackets=25 ibytes=1500 imissed=0 ierrors=0 rx_nombuf=0
+    opackets=0 obytes=0 oerrors=0
+  all 12 xstats (name = value):
+    [ 0] rx_good_packets      = 25
+    [ 1] tx_good_packets      = 0
+    [ 2] rx_good_bytes        = 1500
+    [ 3] tx_good_bytes        = 0
+    [ 4] rx_missed_errors     = 0
+    [ 5] rx_errors            = 0
+    [ 6] tx_errors            = 0
+    [ 7] rx_mbuf_allocation_errors = 0
+    [ 8] rx_q0_packets        = 25
+    [ 9] rx_q0_bytes          = 1500
+    [10] tx_q0_packets        = 0
+    [11] tx_q0_bytes          = 0
+  by id: get_id_by_name(&quot;rx_q0_packets&quot;) -&gt; OK id=8, get_by_id -&gt; 25
+  by id: get_id_by_name(&quot;rx_q0_errors&quot;)  -&gt; -EINVAL (removed in 26.11)</pre>
+</div>
+    <p class="output-caption">MAC and MTU changes show up on the kernel side too (<code>address</code>, <code>mtu</code> in sysfs). <code>set_mtu(40)</code> is refused by ethdev itself because it is below <code>min_mtu</code>. After <code>set_link_up</code> the kernel reports <code>operstate=unknown</code>: normal for a tun/tap device, which has no carrier detection. The xstats list is the subject of the next section.</p>
+
+    <!-- ============================================================ 3 -->
+    <h2 id="stats"><span class="sec-num">3</span>The 26.11 statistics model</h2>
+    <p>Statistics answer the first question of every incident: "where did my packets go?" DPDK has two layers.</p>
+    <p><strong>Basic stats</strong>, <code>rte_eth_stats_get(port, &amp;stats)</code>, fill a small fixed struct of port totals. In DPDK 26.11 it has exactly eight fields:</p>
+    <div class="table-wrap"><table class="compact">
+      <thead><tr><th>field</th><th>counts</th><th>where it happens</th></tr></thead>
+      <tbody>
+        <tr><td><code>ipackets</code>, <code>ibytes</code></td><td>packets/bytes received and handed to the app</td><td>PMD RX</td></tr>
+        <tr><td><code>imissed</code></td><td>dropped by the NIC because the RX ring had no free descriptor (the app did not poll fast enough)</td><td>NIC hardware</td></tr>
+        <tr><td><code>ierrors</code></td><td>received with errors (bad CRC, runt, too long)</td><td>NIC hardware</td></tr>
+        <tr><td><code>rx_nombuf</code></td><td>RX mbuf allocation failures: the pool was empty when the PMD wanted to refill</td><td>PMD RX</td></tr>
+        <tr><td><code>opackets</code>, <code>obytes</code></td><td>packets/bytes the PMD accepted for transmission</td><td>PMD TX</td></tr>
+        <tr><td><code>oerrors</code></td><td>packets the PMD accepted but failed to send</td><td>PMD TX / NIC</td></tr>
+      </tbody>
+    </table></div>
+    <p>Older DPDK versions also had per-queue arrays <code>q_ipackets[]</code>, <code>q_opackets[]</code>, <code>q_ibytes[]</code>, <code>q_obytes[]</code>, <code>q_errors[]</code> in this struct, limited to <code>RTE_ETHDEV_QUEUE_STAT_CNTRS</code> queues and steered with <code>rte_eth_dev_set_rx_queue_stats_mapping()</code>. <strong>26.11 removed all of that</strong>, together with the <code>rx_qN_errors</code> xstat (see <span class="src-path">doc/guides/rel_notes/release_26_11.rst</span>). Per-queue counters now exist only as <span class="key-term">extended statistics</span> (xstats), for every queue.</p>
+    <p><strong>xstats</strong> are name/value pairs. The names follow a pattern, direction first, then detail, then unit: <code>rx_good_packets</code>, <code>rx_q0_packets</code>, <code>tx_q3_bytes</code>, <code>rx_size_128_to_255_packets</code>. ethdev itself provides the 8 generic ones plus, for PMDs that set <code>RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS</code>, 4 per queue (<code>rx_qN_packets</code>, <code>rx_qN_bytes</code>, <code>tx_qN_packets</code>, <code>tx_qN_bytes</code>). That is the 12 you saw on a 1-queue port. Drivers add their own on top: a real NIC typically exposes hundreds (size histograms, per-priority pause frames, error kinds). In this chapter failsafe adds per-sub-device copies (section 9).</p>
+
+    <figure class="diagram">
+      <div class="scroll-x">
+      <svg viewBox="0 0 760 292" role="img" aria-labelledby="f-sankey-t">
+        <title id="f-sankey-t">Packets flow from the wire through the NIC, the PMD, the application and back out. At each stage some can be dropped, and each drop point increments a different counter: ierrors and imissed in the NIC, rx_nombuf in the PMD, app drops only in your own counters, oerrors at TX. Per-queue counters exist only as xstats.</title>
+        <!-- main flow band -->
+        <path d="M10,60 L130,60 L130,120 L10,120 Z" class="svg-box c3"/>
+        <text class="svg-label center bold" x="70" y="90">wire</text>
+        <path d="M130,64 L270,70 L270,116 L130,120 Z" class="svg-fill-c3" opacity=".35"/>
+        <rect class="svg-box c4" x="270" y="50" width="100" height="86"/>
+        <text class="svg-label center bold" x="320" y="82">NIC</text>
+        <text class="svg-label center small" x="320" y="100">RX ring</text>
+        <path d="M370,74 L470,78 L470,112 L370,116 Z" class="svg-fill-c3" opacity=".35"/>
+        <rect class="svg-box c5" x="470" y="58" width="90" height="70"/>
+        <text class="svg-label center bold" x="515" y="86">PMD</text>
+        <text class="svg-label center small" x="515" y="104">rx_burst</text>
+        <path d="M560,80 L640,82 L640,108 L560,110 Z" class="svg-fill-c3" opacity=".35"/>
+        <rect class="svg-box c1" x="640" y="62" width="110" height="64"/>
+        <text class="svg-label center bold" x="695" y="88">app</text>
+        <text class="svg-label center small mono" x="695" y="106">ipackets</text>
+        <!-- drop branches -->
+        <path d="M300,136 C300,175 260,185 230,200" class="svg-arrow c4"/>
+        <text class="svg-label small mono" x="140" y="215">ierrors</text>
+        <text class="svg-label small" x="140" y="230">bad CRC, runt</text>
+        <path d="M345,136 C345,180 350,190 350,200" class="svg-arrow c4"/>
+        <text class="svg-label small mono" x="318" y="215">imissed</text>
+        <text class="svg-label small" x="290" y="230">ring full: app too slow</text>
+        <path d="M515,128 C515,175 520,190 520,200" class="svg-arrow c4"/>
+        <text class="svg-label small mono" x="480" y="215">rx_nombuf</text>
+        <text class="svg-label small" x="470" y="230">pool empty at refill</text>
+        <path d="M720,126 C720,175 700,190 690,200" class="svg-arrow c4 dashed"/>
+        <text class="svg-label small" x="620" y="215">app drops</text>
+        <text class="svg-label small" x="610" y="230">only YOUR counters</text>
+        <text class="svg-label small" x="572" y="76">tx_burst: app's job</text>
+        <!-- tx side (top row) -->
+        <path d="M695,62 L695,30 L566,30" class="svg-arrow c1"/>
+        <text class="svg-label small mono" x="600" y="22">tx_burst</text>
+        <rect class="svg-box c5" x="470" y="12" width="94" height="36"/>
+        <text class="svg-label center small mono" x="517" y="30">opackets</text>
+        <path d="M470,30 L374,30" class="svg-arrow c5"/>
+        <rect class="svg-box c4" x="272" y="12" width="100" height="36"/>
+        <text class="svg-label center small mono" x="322" y="30">oerrors</text>
+        <path d="M272,30 L134,30" class="svg-arrow c4"/>
+        <text class="svg-label small" x="150" y="22">to the wire</text>
+        <path d="M640,30 C630,45 610,50 600,52" class="svg-arrow c4 dashed"/>
+        <text class="svg-label small" x="572" y="64">refused by</text>
+        <!-- xstats band -->
+        <rect class="svg-box c7 dashed" x="10" y="252" width="740" height="32"/>
+        <text class="svg-label small center mono" x="380" y="269">per-queue counters: xstats only (rx_q0_packets, rx_q1_packets, tx_q0_bytes ...)</text>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>Where packets get counted. Each drop point moves a different counter; the two your PMD never counts are the ones the app causes: mbufs the app drops itself, and packets <code>rte_eth_tx_burst()</code> did not accept. The failure lab in section 8 produces each of these on purpose.</figcaption>
+    </figure>
+
+    <h3 id="xstats-by-id">Reading xstats cheaply</h3>
+    <p>The full API is two-step: <code>rte_eth_xstats_get_names(port, NULL, 0)</code> returns the count, then you allocate and call <code>rte_eth_xstats_get_names()</code> and <code>rte_eth_xstats_get()</code>. Each value carries an <code>id</code> that indexes the names array. That is fine for a dump, but a monitor that reads one counter every 100 ms should not copy hundreds of names each time. Look the id up once, then read only that id:</p>
+<pre><code class="language-c">uint64_t id, val;
+rte_eth_xstats_get_id_by_name(port, "rx_q0_packets", &amp;id);   /* once, at start-up */
+...
+rte_eth_xstats_get_by_id(port, &amp;id, &amp;val, 1);               /* every 100 ms: one value */</code></pre>
+    <p>The ids are stable while the port's configuration does not change; look them up again after a reconfigure that changes the queue count. <code>rte_eth_stats_reset()</code> and <code>rte_eth_xstats_reset()</code> zero the counters (PMDs that keep counters in hardware may implement the reset as "remember an offset").</p>
+
+    <div class="callout warning"><div class="callout-title">Warning: a counter that does not move is not proof</div><p>A PMD counts only what it decides to count. In the failure lab (section 8) <code>net_pcap</code> with <code>infinite_rx=1</code> runs out of mbufs and simply returns 0 packets with <code>rx_nombuf</code> still at 0, and <code>net_ring</code> never counts <code>oerrors</code>. When the counters and the traffic disagree, believe the traffic and read the PMD source.</p></div>
+
+    <!-- ============================================================ 4 -->
+    <h2 id="events"><span class="sec-num">4</span>Events, hotplug and the device monitor</h2>
+    <p>Some things happen to a port without you asking: the link goes down, a VM connects to a vhost port, a device is hot-unplugged, the NIC needs a reset. ethdev reports these as <span class="key-term">events</span>. You register a function per event type with</p>
+<pre><code class="language-c">int rte_eth_dev_callback_register(uint16_t port_id, enum rte_eth_event_type event,
+                                  rte_eth_dev_cb_fn cb_fn, void *cb_arg);
+typedef int (*rte_eth_dev_cb_fn)(uint16_t port_id, enum rte_eth_event_type event,
+                                 void *cb_arg, void *ret_param);</code></pre>
+    <p>Pass <code>RTE_ETH_ALL</code> as the port to get the event for every port, including ports that do not exist yet. The events you will meet most:</p>
+    <div class="table-wrap"><table class="compact">
+      <thead><tr><th>event</th><th>meaning</th><th>raised here by</th></tr></thead>
+      <tbody>
+        <tr><td><code>RTE_ETH_EVENT_INTR_LSC</code></td><td>link status changed. Needs <code>conf.intr_conf.lsc = 1</code> and <code>RTE_ETH_DEV_INTR_LSC</code> in <code>dev_flags</code></td><td>pcap (<code>eof=1</code>), vhost, virtio, bonding, failsafe. <strong>Not</strong> tap: it sets the flag but never raises the event</td></tr>
+        <tr><td><code>RTE_ETH_EVENT_QUEUE_STATE</code></td><td>a queue was enabled/disabled by the peer</td><td>vhost (the guest enables its virtqueues)</td></tr>
+        <tr><td><code>RTE_ETH_EVENT_NEW</code> / <code>_DESTROY</code></td><td>a port was created (probe) / released (close)</td><td>every PMD, through ethdev</td></tr>
+        <tr><td><code>RTE_ETH_EVENT_INTR_RMV</code></td><td>the device was removed (surprise unplug)</td><td>PCI PMDs, failsafe sub-devices</td></tr>
+        <tr><td><code>RTE_ETH_EVENT_INTR_RESET</code></td><td>the device needs <code>rte_eth_dev_reset()</code></td><td>"passive" PMDs, e.g. iavf, ena, igb (section 8)</td></tr>
+        <tr><td><code>RTE_ETH_EVENT_ERR_RECOVERING</code>, <code>RECOVERY_SUCCESS</code>, <code>RECOVERY_FAILED</code></td><td>the PMD is recovering by itself, and how it ended</td><td>"proactive" PMDs, e.g. bnxt</td></tr>
+      </tbody>
+    </table></div>
+
+    <h3 id="cb-thread">Who calls your callback</h3>
+    <p>A callback runs in the thread that <em>noticed</em> the event, never on your polling lcores. Interrupt-driven events (LSC from a NIC, events a PMD defers with an alarm) run in the EAL interrupt thread, <code>dpdk-intr</code>. A PMD with its own thread raises events from it (vhost uses <code>dpdk-vhost-evt</code>). NEW and DESTROY run synchronously in whatever thread called <code>rte_dev_probe()</code> or <code>rte_eth_dev_close()</code>. While the callback runs, your data-path lcores keep polling, so a callback touches the same port concurrently with them. The rules that follow:</p>
+    <ul>
+      <li>Be short and never block: while you run, no other interrupt or alarm in the process is serviced.</li>
+      <li>Do not stop, close or reconfigure the port from its own callback. Record what happened (an atomic flag, a message on a ring) and do the work later, from the control thread or from an <code>rte_eal_alarm_set()</code> callback (an alarm runs outside the ethdev callback list).</li>
+      <li>In a NEW callback the port is not yet usable: it is announced before probing finishes. Our program shows <code>ETHDEV: Invalid port_id=1</code> when it calls <code>rte_eth_dev_get_name_by_port()</code> from NEW. Attach and configure it later.</li>
+    </ul>
+
+    <div class="widget" id="w-evt">
+      <div class="widget-head"><span class="widget-title">Event flow: data path keeps polling while callbacks run elsewhere</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="scroll-x"><svg class="wide-svg" viewBox="0 0 640 220" role="img" aria-label="Four thread lanes; packets move on the two lcore lanes; event tokens move on the interrupt and control lanes and trigger the callback"></svg></div>
+        <div class="btn-row">
+          <button class="btn small" type="button" data-evt="LSC">link change (LSC)</button>
+          <button class="btn small" type="button" data-evt="NEW">rte_dev_probe (NEW)</button>
+          <button class="btn small" type="button" data-evt="DESTROY">rte_eth_dev_close (DESTROY)</button>
+          <button class="btn small" type="button" data-evt="UNSAFE">LSC + close inside callback</button>
+          <button class="btn small" type="button" data-evt="ALARM">LSC + defer with alarm</button>
+        </div>
+        <div class="stat-row">
+          <div class="stat"><div class="stat-label">callbacks run</div><div class="stat-value" id="evt-n">0</div></div>
+          <div class="stat"><div class="stat-label">bursts polled meanwhile</div><div class="stat-value" id="evt-p">0</div></div>
+        </div>
+        <ul class="evt-log" id="evt-log" aria-live="polite"></ul>
+      </div>
+    </div>
+
+    <h3 id="hotplug">Hotplug and unplug at runtime</h3>
+    <p>Ports do not have to exist at start-up. <code>rte_dev_probe(devargs)</code> takes the same string you would give to <code>--vdev</code> (or a PCI address) and probes it now: a new port id appears and NEW fires. Removing is a three-step sequence, in this order:</p>
+    <ol>
+      <li><code>rte_eth_dev_info_get()</code> and keep <code>dev_info.device</code>: after close the port no longer knows its device.</li>
+      <li><code>rte_eth_dev_stop()</code>, then <code>rte_eth_dev_close()</code>: the port is released and DESTROY fires.</li>
+      <li><code>rte_dev_remove(device)</code>: the bus driver detaches the device.</li>
+    </ol>
+    <p>The EAL can also watch the kernel for devices appearing and disappearing: <code>rte_dev_event_monitor_start()</code> opens a netlink uevent socket and <code>rte_dev_event_callback_register(NULL, fn, arg)</code> gets <code>RTE_DEV_EVENT_ADD</code>/<code>_REMOVE</code> for every device. It is built for PCI hot-unplug (with <code>rte_dev_hotplug_handle_enable()</code>), and the Linux implementation parses only uevents whose subsystem is <code>pci</code>, <code>uio</code> or <code>vfio</code> (<span class="src-path">lib/eal/linux/eal_dev.c</span>). Our program creates a veth pair to prove the point: nothing is reported.</p>
+    <p><code>events.c</code> registers one callback for nine event types and then makes five things happen:</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/events.c (lines 86-100)</span><span class="lang">C</span></div>
+<pre data-lines data-start="86" data-hl="98"><code class="language-c">on_event(uint16_t port, enum rte_eth_event_type ev, void *arg, void *ret)
+{
+	char name[RTE_ETH_NAME_MAX_LEN] = "?";
+
+	(void)arg;
+	(void)ret;
+	rte_eth_dev_get_name_by_port(port, name, sizeof(name)); /* 26.11: size arg */
+	printf("  %8.1f ms  [event] port %u (%s) %-12s in thread \"%s\" (lcore %d)\n",
+	       ms_now(), port, name, evname[ev], thread_name(),
+	       (int)rte_lcore_id() == (int)LCORE_ID_ANY ? -1 : (int)rte_lcore_id());
+	atomic_fetch_add(&amp;n_events, 1);
+	if (ev == RTE_ETH_EVENT_INTR_LSC)
+		rte_eal_alarm_set(2000, deferred_link_check, (void *)(uintptr_t)port);
+	return 0;
+}</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./events -l 0 --no-pci --no-huge -m 128 --file-prefix=ch12-evt --vdev=net_null0 --log-level=lib.vhost.*:warning --log-level=pmd.net.virtio.*:warning -- tiny.pcap $TMPD/vhost.sock</span>
+<span class="dim">(EAL start-up lines omitted)</span>
+main thread is &quot;events&quot;
+
+-- 1. hotplug: rte_dev_probe(&quot;net_null7&quot;)
+<span class="dim">ETHDEV: Invalid port_id=1</span>
+<span class="hl">       3.9 ms  [event] port 1 (?) NEW          in thread &quot;events&quot; (lcore 0)</span>
+<span class="ok">  rte_dev_probe -&gt; OK, ports now: 2</span>
+
+-- 2. net_pcap with eof=1: link goes down at end of file
+<span class="dim">ETHDEV: Invalid port_id=2</span>
+<span class="hl">       4.0 ms  [event] port 2 (?) NEW          in thread &quot;events&quot; (lcore 0)</span>
+  pcap port 2: RTE_ETH_DEV_INTR_LSC flag = 1
+  configured with intr_conf.lsc=1, start -&gt; OK
+<span class="hl">       5.2 ms  [event] port 2 (net_pcap0) INTR_LSC     in thread &quot;dpdk-intr&quot; (lcore -1)</span>
+<span class="hl">       7.3 ms  [alarm] deferred work for port 2 in thread dpdk-intr: Link down</span>
+  received 40 packets, then EOF
+
+-- 3. vhost server + virtio_user client in one process
+<span class="dim">ETHDEV: Invalid port_id=3</span>
+<span class="hl">     131.2 ms  [event] port 3 (?) NEW          in thread &quot;events&quot; (lcore 0)</span>
+  probe net_vhost0,iface=$TMPD/vhost.sock,queues=1 -&gt; OK
+  vhost port 3 started -&gt; OK (link down until a driver connects)
+<span class="dim">VIRTIO_DRIVER: virtio_user_dev_init_mac(): ($TMPD/vhost.sock) No valid MAC in devargs or device, use random</span>
+<span class="hl">     134.0 ms  [event] port 3 (net_vhost0) QUEUE_STATE  in thread &quot;dpdk-vhost-evt&quot; (lcore -1)</span>
+<span class="hl">     134.0 ms  [event] port 3 (net_vhost0) QUEUE_STATE  in thread &quot;dpdk-vhost-evt&quot; (lcore -1)</span>
+<span class="hl">     134.0 ms  [event] port 3 (net_vhost0) INTR_LSC     in thread &quot;dpdk-vhost-evt&quot; (lcore -1)</span>
+<span class="dim">ETHDEV: Invalid port_id=4</span>
+<span class="hl">     134.0 ms  [event] port 4 (?) NEW          in thread &quot;events&quot; (lcore 0)</span>
+  probe virtio_user0 -&gt; OK
+  virtio_user port 4 started -&gt; OK
+<span class="hl">     136.0 ms  [alarm] deferred work for port 3 in thread dpdk-intr: Link up at 10 Gbps FDX Fixed None</span>
+  stopping virtio_user (the &#x27;VM&#x27; goes away)
+<span class="hl">     334.3 ms  [event] port 3 (net_vhost0) QUEUE_STATE  in thread &quot;dpdk-vhost-evt&quot; (lcore -1)</span>
+<span class="hl">     334.3 ms  [event] port 3 (net_vhost0) QUEUE_STATE  in thread &quot;dpdk-vhost-evt&quot; (lcore -1)</span>
+<span class="hl">     334.3 ms  [event] port 3 (net_vhost0) INTR_LSC     in thread &quot;dpdk-vhost-evt&quot; (lcore -1)</span>
+<span class="dim">EAL: Some interrupt handle is leaking an event FD: 20 (index 0)</span>
+<span class="hl">     334.6 ms  [event] port 4 (virtio_user0) DESTROY      in thread &quot;events&quot; (lcore 0)</span>
+<span class="hl">     336.3 ms  [alarm] deferred work for port 3 in thread dpdk-intr: Link down</span>
+
+-- 4. hot-unplug net_null7: stop, close, rte_dev_remove
+<span class="dim">ETHDEV: Device with port_id=1 already stopped</span>
+<span class="hl">     384.7 ms  [event] port 1 (net_null7) DESTROY      in thread &quot;events&quot; (lcore 0)</span>
+  rte_eth_dev_close -&gt; OK
+<span class="ok">  rte_dev_remove -&gt; OK, ports now: 3</span>
+
+-- 5. kernel device event monitor
+  rte_dev_event_callback_register(all devices) -&gt; OK
+  rte_dev_event_monitor_start -&gt; OK
+  creating and deleting veth pair ch12a/ch12b (uevents: SUBSYSTEM=net)
+<span class="hl">  -&gt; no [uevent] lines: the monitor only parses pci/uio/vfio uevents</span>
+
+13 ethdev events seen. Closing remaining ports.
+<span class="dim">ETHDEV: Device with port_id=0 already stopped</span>
+<span class="hl">    1012.2 ms  [event] port 0 (net_null0) DESTROY      in thread &quot;events&quot; (lcore 0)</span>
+<span class="hl">    1012.3 ms  [event] port 2 (net_pcap0) DESTROY      in thread &quot;events&quot; (lcore 0)</span>
+<span class="hl">    1335.9 ms  [event] port 3 (net_vhost0) DESTROY      in thread &quot;events&quot; (lcore 0)</span></pre>
+</div>
+    <p class="output-caption">Look at the thread names. NEW and DESTROY run in <code>events</code> (our main thread, inside <code>rte_dev_probe</code>/<code>rte_eth_dev_close</code>). The pcap EOF link-down arrives in <code>dpdk-intr</code>: the PMD deliberately raises it from an alarm rather than from inside <code>rx_burst</code>. vhost's QUEUE_STATE and LSC arrive in <code>dpdk-vhost-evt</code> the moment virtio_user connects (both run in this one process). Our LSC callback defers its real work with a 2 ms alarm, which runs in <code>dpdk-intr</code>. The <code>Some interrupt handle is leaking an event FD</code> line is printed by EAL while virtio_user is torn down; it is harmless here.</p>
+
+    <!-- ============================================================ 5 -->
+    <h2 id="burst-cb"><span class="sec-num">5</span>RX and TX burst callbacks</h2>
+    <p>Events tell you about the port. <span class="key-term">Burst callbacks</span> let you see every burst of packets. <code>rte_eth_add_rx_callback(port, queue, fn, arg)</code> registers a function that ethdev calls inside <code>rte_eth_rx_burst()</code>, after the PMD has filled the array and before it returns to you. <code>rte_eth_add_tx_callback()</code> does the same inside <code>rte_eth_tx_burst()</code>, before the PMD. The callback gets the packet array and returns the new number of packets, so it can inspect, modify, timestamp, or filter. Typical uses are latency measurement (the <code>examples/rxtx_callbacks</code> sample, and <code>lib/latencystats</code> in ch13), packet capture (<code>lib/pdump</code>, ch16) and software classification for a PMD that lacks it.</p>
+    <p>Callbacks are a per-queue list. <code>rte_eth_add_rx_callback()</code> appends to the tail; <code>rte_eth_add_first_rx_callback()</code> inserts at the head. They cost a function call per burst even when they do nothing, and they need <code>RTE_ETHDEV_RXTX_CALLBACKS</code>, which is enabled in the default build (<span class="src-path">config/rte_config.h</span>).</p>
+
+    <div class="widget" id="w-cb">
+      <div class="widget-head"><span class="widget-title">Inside rx_burst and tx_burst: the callback chain</span><span class="badge">predict, then step</span></div>
+      <div class="widget-body">
+        <div class="scroll-x"><svg class="wide-svg" viewBox="0 0 640 220" role="img" aria-label="Application, PMD and three RX callbacks in a row; a TX callback before the TX PMD; four packets move through them"></svg></div>
+      </div>
+    </div>
+
+    <p><code>rxtx_latency.c</code> builds exactly that chain on two <code>net_ring</code> loopback ports. Callback C stores the TSC in a private <span class="key-term">mbuf dynamic field</span>: <code>rte_mbuf_dynfield_register()</code> reserves 8 bytes in every mbuf of the process, and <code>RTE_MBUF_DYNFIELD(m, offset, uint64_t *)</code> reaches them (ch7 introduced dynamic fields). The TX callback subtracts:</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/rxtx_latency.c (lines 77-88)</span><span class="lang">C</span></div>
+<pre data-lines data-start="77" data-hl="86"><code class="language-c">cb_stamp(uint16_t port, uint16_t q, struct rte_mbuf **pkts, uint16_t n,
+	 uint16_t max, void *arg)
+{
+	uint64_t now = rte_rdtsc();
+	uint16_t i;
+
+	(void)port; (void)q; (void)max; (void)arg;
+	mark('C');
+	for (i = 0; i &lt; n; i++)
+		*stamp(pkts[i]) = now;
+	return n;
+}</code></pre>
+</div>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/rxtx_latency.c (lines 92-104)</span><span class="lang">C</span></div>
+<pre data-lines data-start="92" data-hl="101"><code class="language-c">cb_latency(uint16_t port, uint16_t q, struct rte_mbuf **pkts, uint16_t n,
+	   void *arg)
+{
+	uint64_t now = rte_rdtsc();
+	uint16_t i;
+
+	(void)port; (void)q; (void)arg;
+	mark('T');
+	for (i = 0; i &lt; n; i++)
+		lat_cycles += now - *stamp(pkts[i]);
+	lat_pkts += n;
+	return n;
+}</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./rxtx_latency -l 0 --no-pci --no-huge -m 128 --file-prefix=ch12-cb --vdev=net_ring0 --vdev=net_ring1</span>
+<span class="dim">(EAL start-up lines omitted)</span>
+dynfield &quot;ch12_rx_tsc&quot; registered at mbuf offset 96
+callback order in one burst (registered B, C, then first A; T = TX): ABCT
+TSC 2700 MHz; 20000 bursts of 32 per trial, 5 trials
+work/pkt         RX-cb -&gt; TX-cb latency/pkt   (median, min..max)
+    0 cycles          2251 cycles =     0.83 us   (2237..2262 cycles)
+  100 cycles          6344 cycles =     2.35 us   (6314..6361 cycles)
+  500 cycles         19120 cycles =     7.08 us   (19083..19361 cycles)
+ 2000 cycles         67436 cycles =    24.98 us   (67311..68250 cycles)
+note: the TX callback runs when the WHOLE burst is handed to
+      tx_burst, so every packet waits for all 32 packets of work:
+      latency ~ work x 32 + fixed overhead
+remove callbacks -&gt; OK
+after removal: callback B counted 0 bursts, TX callback saw 0 packets
+remove again -&gt; -EINVAL (already gone)</pre>
+</div>
+    <p class="output-caption">Median of 5 trials of 20,000 bursts, min..max in brackets, on a shared 4-core VM with software ports: compare the rows with each other, not with a real NIC. Latency grows by about 32 x the per-packet work because the TX callback sees a packet only when the whole burst is handed to <code>tx_burst</code>. That is the burst-latency trade-off from ch8, now measured.</p>
+
+    <div class="callout pitfall"><div class="callout-title">Pitfall: freeing a callback while another lcore runs it</div><p><code>rte_eth_remove_rx_callback()</code> unlinks the callback but does <strong>not</strong> free it, because another lcore may be executing it at that very moment. The program above removes its callbacks from the only thread that polls those queues, so it can <code>rte_free()</code> them immediately. With other polling lcores you must wait until each has finished at least one burst after the removal: a fixed delay, or properly, an RCU quiescent-state check (ch14). Exercise 3 asks you to do this.</p></div>
+
+    <!-- ============================================================ 6 -->
+    <h2 id="queues"><span class="sec-num">6</span>Per-queue control and runtime queue setup</h2>
+    <p>Stopping a whole port to change one queue is heavy: every queue loses traffic. ethdev therefore lets you control queues one by one on a started port.</p>
+    <ul>
+      <li><strong>Deferred start.</strong> Set <code>rx_deferred_start = 1</code> in the <code>struct rte_eth_rxconf</code> you pass to <code>rte_eth_rx_queue_setup()</code> (<code>tx_deferred_start</code> in <code>rte_eth_txconf</code>). <code>rte_eth_dev_start()</code> then leaves that queue stopped, and you start it later with <code>rte_eth_dev_rx_queue_start()</code>. Use it to bring a port up before the lcore that will poll a queue is ready.</li>
+      <li><strong>Queue start/stop</strong>: <code>rte_eth_dev_rx_queue_start/stop(port, q)</code> and <code>rte_eth_dev_tx_queue_start/stop()</code>, only on a started port, and only if the PMD implements them.</li>
+      <li><strong>Validity</strong>: <code>rte_eth_rx_queue_is_valid()</code> / <code>rte_eth_tx_queue_is_valid()</code> return 0 if the queue id exists and has been set up.</li>
+      <li><strong>Queue state</strong> is recorded by ethdev as STOPPED (0) or STARTED (1). The public way to read it is <code>rte_eth_rx_queue_info_get()</code> (<code>qinfo.queue_state</code>), but that is <code>-ENOTSUP</code> on most vdevs, so our programs ask the process's own telemetry socket for <code>/ethdev/info,N</code> and read its <code>rxq_state</code> array (<code>rxq_states()</code> in <code>ch12_common.h</code>).</li>
+      <li><strong>Runtime queue setup.</strong> Calling <code>rte_eth_rx_queue_setup()</code> on a started port is allowed only if <code>dev_info.dev_capa</code> has <code>RTE_ETH_DEV_CAPA_RUNTIME_RX_QUEUE_SETUP</code> (<code>_TX_</code> for TX), and the queue is stopped. Otherwise it returns <code>-EBUSY</code>. Print capability bits by name with <code>rte_eth_dev_capability_name(bit)</code>.</li>
+    </ul>
+    <p><code>queue_ctl.c</code> runs the same script on five ports:</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/queue_ctl.c (lines 70-100)</span><span class="lang">C</span></div>
+<pre data-lines data-start="70" data-hl="72"><code class="language-c">	rxc = di.default_rxconf;
+	rte_eth_rx_queue_setup(port, 0, 256, 0, &amp;rxc, mp);
+	rxc.rx_deferred_start = 1;		/* queue 1: do not start with the port */
+	rc = rte_eth_rx_queue_setup(port, 1, 256, 0, &amp;rxc, mp);
+	printf("    rx_queue_setup(q1, rx_deferred_start=1) -&gt; %s\n", rcname(rc));
+	for (q = 0; q &lt; ntxq; q++)
+		rte_eth_tx_queue_setup(port, q, 256, 0, NULL);
+	rc = rte_eth_dev_start(port);
+	printf("    dev_start -&gt; %-8s rxq_state %s  (q1 was set rx_deferred_start=1)\n",
+	       rcname(rc), rxq_states(port));
+
+	printf("    rx_queue_is_valid(q1) -&gt; %s, (q7) -&gt; %s\n",
+	       rcname(rte_eth_rx_queue_is_valid(port, 1)),
+	       rcname(rte_eth_rx_queue_is_valid(port, 7)));
+	rc = rte_eth_dev_rx_queue_stop(port, 1);
+	printf("    rx_queue_stop(q1)  -&gt; %-8s rxq_state %s\n", rcname(rc),
+	       rxq_states(port));
+	rc = rte_eth_rx_queue_setup(port, 1, 512, 0, NULL, mp);
+	printf("    rx_queue_setup(q1, port started, q1 %s) -&gt; %s\n",
+	       strcmp(rxq_states(port), "[1,0]") == 0 ? "stopped" : "not stopped",
+	       rcname(rc));
+	rc = rte_eth_dev_rx_queue_start(port, 1);
+	printf("    rx_queue_start(q1) -&gt; %-8s rxq_state %s\n", rcname(rc),
+	       rxq_states(port));
+	rc = rte_eth_dev_tx_queue_stop(port, 0);
+	printf("    tx_queue_stop(q0)  -&gt; %-8s", rcname(rc));
+	rc = rte_eth_dev_tx_queue_start(port, 0);
+	printf(" tx_queue_start(q0) -&gt; %s\n", rcname(rc));
+	rte_eth_dev_stop(port);
+	rc = rte_eth_dev_rx_queue_start(port, 1);
+	printf("    port stopped: rx_queue_start(q1) -&gt; %s\n", rcname(rc));</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./queue_ctl -l 0 --no-pci --no-huge -m 128 --file-prefix=ch12-qc --vdev=net_tap0,iface=ch12tap2 --vdev=net_pcap0,rx_pcap=in.pcap,rx_pcap=in.pcap,tx_pcap=/dev/null --vdev=net_null0 --vdev=net_ring0 --vdev=net_failsafe0,dev(net_tap1,iface=ch12tap4)</span>
+<span class="dim">(EAL start-up lines omitted)</span>
+<span class="dim">EAL: Device net_tap1 is already probed</span>
+=== Part A: deferred start, queue start/stop, runtime setup ===
+(rxq_state: 0 = STOPPED, 1 = STARTED, read via telemetry /ethdev/info)
+
+port 0 net_tap0 (net_tap), max_rx_queues 64
+    dev_capa 0x0: (none)
+    rx_queue_setup(q1, rx_deferred_start=1) -&gt; OK
+    dev_start -&gt; OK       rxq_state [1,1]  (q1 was set rx_deferred_start=1)
+<span class="dim">ETHDEV: Invalid Rx queue_id=7 of device with port_id=0</span>
+    rx_queue_is_valid(q1) -&gt; OK, (q7) -&gt; -EINVAL
+    rx_queue_stop(q1)  -&gt; OK       rxq_state [1,0]
+    rx_queue_setup(q1, port started, q1 stopped) -&gt; -EBUSY
+    rx_queue_start(q1) -&gt; OK       rxq_state [1,1]
+    tx_queue_stop(q0)  -&gt; OK       tx_queue_start(q0) -&gt; OK
+<span class="dim">ETHDEV: Port 0 must be started before start any queue</span>
+    port stopped: rx_queue_start(q1) -&gt; -EINVAL
+
+port 1 net_pcap0 (net_pcap), max_rx_queues 2
+    dev_capa 0x0: (none)
+    rx_queue_setup(q1, rx_deferred_start=1) -&gt; OK
+    dev_start -&gt; OK       rxq_state [1,1]  (q1 was set rx_deferred_start=1)
+<span class="dim">ETHDEV: Invalid Rx queue_id=7 of device with port_id=1</span>
+    rx_queue_is_valid(q1) -&gt; OK, (q7) -&gt; -EINVAL
+    rx_queue_stop(q1)  -&gt; OK       rxq_state [1,0]
+    rx_queue_setup(q1, port started, q1 stopped) -&gt; -EBUSY
+    rx_queue_start(q1) -&gt; OK       rxq_state [1,1]
+    tx_queue_stop(q0)  -&gt; OK       tx_queue_start(q0) -&gt; OK
+<span class="dim">ETHDEV: Port 1 must be started before start any queue</span>
+    port stopped: rx_queue_start(q1) -&gt; -EINVAL
+
+port 2 net_null0 (net_null), max_rx_queues 1024
+    dev_capa 0x0: (none)
+<span class="dim">ETHDEV: Deferred start requested, but driver does not support Rx queue start</span>
+    rx_queue_setup(q1, rx_deferred_start=1) -&gt; -ENOTSUP
+    dev_start -&gt; OK       rxq_state [1,1]  (q1 was set rx_deferred_start=1)
+<span class="dim">ETHDEV: Invalid Rx queue_id=7 of device with port_id=2</span>
+<span class="dim">ETHDEV: Queue 1 of device with port_id=2 has not been setup</span>
+    rx_queue_is_valid(q1) -&gt; -EINVAL, (q7) -&gt; -EINVAL
+<span class="dim">ETHDEV: Queue 1 of device with port_id=2 has not been setup</span>
+    rx_queue_stop(q1)  -&gt; -EINVAL  rxq_state [1,1]
+    rx_queue_setup(q1, port started, q1 not stopped) -&gt; -EBUSY
+<span class="dim">ETHDEV: Queue 1 of device with port_id=2 has not been setup</span>
+    rx_queue_start(q1) -&gt; -EINVAL  rxq_state [1,1]
+    tx_queue_stop(q0)  -&gt; -ENOTSUP tx_queue_start(q0) -&gt; -ENOTSUP
+<span class="dim">ETHDEV: Port 2 must be started before start any queue</span>
+    port stopped: rx_queue_start(q1) -&gt; -EINVAL
+
+port 3 net_ring0 (net_ring), max_rx_queues 16
+    dev_capa 0x0: (none)
+<span class="dim">ETHDEV: Deferred start requested, but driver does not support Rx queue start</span>
+    rx_queue_setup(q1, rx_deferred_start=1) -&gt; -ENOTSUP
+    dev_start -&gt; OK       rxq_state [0,0]  (q1 was set rx_deferred_start=1)
+<span class="dim">ETHDEV: Invalid Rx queue_id=7 of device with port_id=3</span>
+    rx_queue_is_valid(q1) -&gt; OK, (q7) -&gt; -EINVAL
+    rx_queue_stop(q1)  -&gt; -ENOTSUP rxq_state [0,0]
+    rx_queue_setup(q1, port started, q1 not stopped) -&gt; -EBUSY
+    rx_queue_start(q1) -&gt; -ENOTSUP rxq_state [0,0]
+    tx_queue_stop(q0)  -&gt; -ENOTSUP tx_queue_start(q0) -&gt; -ENOTSUP
+<span class="dim">ETHDEV: Port 3 must be started before start any queue</span>
+    port stopped: rx_queue_start(q1) -&gt; -EINVAL
+
+port 4 net_failsafe0 (net_failsafe), max_rx_queues 64
+    dev_capa 0x3: RUNTIME_RX_QUEUE_SETUP RUNTIME_TX_QUEUE_SETUP
+    rx_queue_setup(q1, rx_deferred_start=1) -&gt; OK
+    dev_start -&gt; OK       rxq_state [1,0]  (q1 was set rx_deferred_start=1)
+<span class="dim">ETHDEV: Invalid Rx queue_id=7 of device with port_id=4</span>
+    rx_queue_is_valid(q1) -&gt; OK, (q7) -&gt; -EINVAL
+<span class="dim">ETHDEV: Queue 1 of device with port_id=4 already stopped</span>
+    rx_queue_stop(q1)  -&gt; OK       rxq_state [1,0]
+<span class="dim">NET_FAILSAFE: RX queue setup failed for sub_device 0</span>
+    rx_queue_setup(q1, port started, q1 stopped) -&gt; -EBUSY
+<span class="dim">ETHDEV: Queue 1 of device with port_id=4 has not been setup</span>
+    rx_queue_start(q1) -&gt; -EINVAL  rxq_state [1,0]
+    tx_queue_stop(q0)  -&gt; OK       tx_queue_start(q0) -&gt; OK
+<span class="dim">ETHDEV: Port 4 must be started before start any queue</span>
+    port stopped: rx_queue_start(q1) -&gt; -EINVAL</pre>
+</div>
+    <p class="output-caption">Five PMDs, five behaviours. <b>tap and pcap</b> implement queue start/stop, but their <code>dev_start</code> marks every queue STARTED and ignores <code>rx_deferred_start</code> (<code>[1,1]</code>). <b>null and ring</b> have no <code>rx_queue_start</code>, so ethdev refuses the deferred setup itself with <code>-ENOTSUP</code>; note that the port still starts with queue 1 never set up. net_ring also never writes the queue state (<code>[0,0]</code> after start) and pre-assigns queue pointers at probe, so <code>is_valid</code> says OK for a queue whose setup failed. <b>failsafe</b> honours deferred start (<code>[1,0]</code>) and advertises both RUNTIME capabilities, but its tap sub-device refuses the runtime setup, and the failed attempt released queue 1: afterwards "Queue 1 has not been setup".</p>
+
+    <div class="widget" id="w-qx">
+      <div class="widget-head"><span class="widget-title">Queue and port state explorer</span><span class="badge">predict, then click</span></div>
+      <div class="widget-body">
+        <div class="ctl-row">
+          <label>PMD <select id="qx-pmd">
+            <option value="tap">net_tap</option><option value="pcap">net_pcap</option><option value="null">net_null</option>
+            <option value="ring">net_ring</option><option value="fs">net_failsafe (over tap)</option></select></label>
+          <label><input type="checkbox" id="qx-predict" checked> predict before each call</label>
+          <button class="btn small" type="button" id="qx-reset">reset port</button>
+        </div>
+        <div class="scroll-x"><svg class="wide-svg" viewBox="0 0 640 170" role="img" aria-label="Port state machine, two RX queue boxes and a traffic-gap bar"></svg></div>
+        <div class="api-row">
+          <button class="btn small" type="button" data-api="configure">configure(2,2)</button>
+          <button class="btn small" type="button" data-api="setup0">rx_queue_setup(q0)</button>
+          <button class="btn small" type="button" data-api="setup1def">rx_queue_setup(q1, deferred)</button>
+          <button class="btn small" type="button" data-api="start">dev_start</button>
+          <button class="btn small" type="button" data-api="qstop">rx_queue_stop(q1)</button>
+          <button class="btn small" type="button" data-api="qstart">rx_queue_start(q1)</button>
+          <button class="btn small" type="button" data-api="setup1rt">rx_queue_setup(q1) again</button>
+          <button class="btn small" type="button" data-api="mtu">set_mtu(1400)</button>
+          <button class="btn small" type="button" data-api="reta">reta_update</button>
+          <button class="btn small" type="button" data-api="mac">default_mac_addr_set</button>
+          <button class="btn small" type="button" data-api="stop">dev_stop</button>
+        </div>
+        <div id="qx-choice" hidden><span class="small">Your prediction:</span>
+          <button class="btn small" type="button">OK</button><button class="btn small" type="button">-EBUSY</button>
+          <button class="btn small" type="button">-ENOTSUP</button><button class="btn small" type="button">-EINVAL</button></div>
+        <div class="qx-out" id="qx-out" aria-live="polite">Pick a PMD, then click the calls in lifecycle order: configure, queue setups, dev_start, then the queue calls.</div>
+      </div>
+    </div>
+    <p class="small muted">Results come from the runs on this page (<code>queue_ctl</code>, <code>runtime_reconf</code>, <code>port_ctl</code>); the few marked "from the PMD source" were read from the driver's <code>eth_dev_ops</code> table.</p>
+
+    <h3 id="stop-is-bookkeeping">A stopped queue is a contract, not a wall</h3>
+    <p>What does "stopped" do to packets? On a real NIC, <code>rx_queue_stop</code> disables the hardware ring and frees its mbufs. On net_tap and net_pcap it only writes the state: <code>tap_rx_queue_stop()</code> is one line. Part B of <code>queue_ctl</code> sends traffic from the kernel and stops queue 1:</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre>=== Part B: tap port 0, 2 RX queues, traffic from the kernel ===
+  200 frames, 16 flows, both queues polled:      rx_q0_packets=76   rx_q1_packets=124  ipackets(total)=200
+  q1 stopped, 200 more, only q0 polled:          rx_q0_packets=152  rx_q1_packets=124  ipackets(total)=276
+    rxq_state [1,0]; frames for q1 wait in the kernel tap queue
+  poll the STOPPED q1 anyway:                    rx_q0_packets=152  rx_q1_packets=248  ipackets(total)=400
+    -&gt; rx_burst on a stopped tap queue returned 124 packets: the state
+       is bookkeeping; the app must not poll a stopped queue
+  q1 restarted after another 200 frames:         rx_q0_packets=228  rx_q1_packets=372  ipackets(total)=600
+    -&gt; q1 delivered 124 stale frames that queued while it was stopped</pre>
+</div>
+    <p class="output-caption">Polling a "stopped" tap queue still returned 124 packets, and frames the kernel queued for it while stopped were delivered late after the restart. The portable rule: <b>stop polling the queue first, drain it, then call <code>rx_queue_stop()</code>; after <code>rx_queue_start()</code>, decide what to do with the backlog</b>. The exercise 6 solution (<code>solutions/drain_restart.c</code>) does exactly that and checks for leaks.</p>
+
+    <!-- ============================================================ 7 -->
+    <h2 id="reconf"><span class="sec-num">7</span>Live reconfiguration and graceful shutdown</h2>
+    <h3 id="restart-table">What needs a restart</h3>
+    <p>Some settings live in registers the NIC reads on every packet, so the driver can change them at any time (MAC, promiscuous mode, the RSS indirection table). Others decide how the queues and DMA rings are built (queue count, RX offloads, descriptor counts), and can only change through <code>rte_eth_dev_stop()</code>, <code>rte_eth_dev_configure()</code>, queue setup again, <code>rte_eth_dev_start()</code>. ethdev enforces this with <code>-EBUSY</code>. <code>runtime_reconf.c</code> Part 1 tries each change on three started ports:</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/runtime_reconf.c (lines 85-101)</span><span class="lang">C</span></div>
+<pre data-lines data-start="85" data-hl="85"><code class="language-c">		pr[0].rc[k] = rte_eth_dev_configure(p, 2, 2, &amp;c);
+		c.rxmode.offloads = RTE_ETH_RX_OFFLOAD_SCATTER;
+		pr[1].rc[k] = rte_eth_dev_configure(p, 1, 1, &amp;c);
+		pr[2].rc[k] = rte_eth_rx_queue_setup(p, 0, 256, 0, NULL, mp);
+		pr[3].rc[k] = rte_eth_dev_default_mac_addr_set(p, &amp;mac);
+		r = rte_eth_promiscuous_disable(p);
+		pr[4].rc[k] = r ? r : rte_eth_promiscuous_enable(p);
+		pr[5].rc[k] = rte_eth_dev_set_mtu(p, 1400);
+		rss.rss_hf = di.flow_type_rss_offloads &amp; RTE_ETH_RSS_IP;
+		pr[6].rc[k] = rte_eth_dev_rss_hash_update(p, &amp;rss);
+		memset(rt, 0, sizeof(rt));
+		rt[0].mask = 1;		/* change entry 0 only: point it at queue 0 */
+		pr[7].rc[k] = rte_eth_dev_rss_reta_update(p, rt,
+				di.reta_size ? di.reta_size : 64);
+		pr[8].rc[k] = rte_eth_dev_set_vlan_offload(p, RTE_ETH_VLAN_STRIP_OFFLOAD);
+		r = rte_eth_dev_set_link_down(p);
+		pr[9].rc[k] = r ? r : rte_eth_dev_set_link_up(p);</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./runtime_reconf -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch12-rr --vdev=net_null0 --vdev=net_ring0 --vdev=net_tap0,iface=ch12tap3</span>
+<span class="dim">(EAL start-up lines omitted)</span>
+<span class="dim">ETHDEV: Port 0 must be stopped to allow configuration</span>
+<span class="dim">ETHDEV: Port 0 must be stopped to allow configuration</span>
+<span class="dim">ETHDEV: Ethdev port_id=0 requested new added VLAN offloads 0x1 must be within Rx offloads capabilities 0x0 in rte_eth_dev_set_vlan_offload()</span>
+<span class="dim">ETHDEV: Port 1 must be stopped to allow configuration</span>
+<span class="dim">ETHDEV: Port 1 must be stopped to allow configuration</span>
+<span class="dim">ETHDEV: Multi-queue RSS mode isn&#x27;t enabled.</span>
+<span class="dim">ETHDEV: Multi-queue RSS mode isn&#x27;t enabled.</span>
+<span class="dim">ETHDEV: Ethdev port_id=1 requested new added VLAN offloads 0x1 must be within Rx offloads capabilities 0x2000 in rte_eth_dev_set_vlan_offload()</span>
+<span class="dim">ETHDEV: Port 2 must be stopped to allow configuration</span>
+<span class="dim">ETHDEV: Port 2 must be stopped to allow configuration</span>
+<span class="dim">ETHDEV: Ethdev port_id=2 requested new added VLAN offloads 0x1 must be within Rx offloads capabilities 0x200e in rte_eth_dev_set_vlan_offload()</span>
+
+=== Part 1: change attempted while the port is STARTED ===
+change                             null      ring      tap      
+configure (queue count 1-&gt;2)       -EBUSY    -EBUSY    -EBUSY   
+rx offload change (configure)      -EBUSY    -EBUSY    -EBUSY   
+rx_queue_setup on started port     -EBUSY    -EBUSY    -EBUSY   
+default_mac_addr_set               OK        -ENOTSUP  OK       
+promiscuous_disable / enable       -ENOTSUP  OK        OK       
+set_mtu 1500 -&gt; 1400               OK        -ENOTSUP  OK       
+rss_hash_update                    OK        -ENOTSUP  OK       
+reta_update                        OK        -ENOTSUP  -ENOTSUP 
+vlan offload set                   -EINVAL   -EINVAL   -EINVAL  
+set_link_down / up                 -ENOTSUP  OK        OK       
+-EBUSY = needs stop/reconfigure/start; -ENOTSUP/-ENOSYS = PMD or
+offload missing; OK = changed live
+
+=== Part 2: outage of a full restart (worker paused around it) ===
+  null   stop+configure+setup+start: median     10.4 us  (min 9.3, max 15.2)  forwarded 13963104 pkts total
+  tap    stop+configure+setup+start: median    214.5 us  (min 167.3, max 412.6)  forwarded 0 pkts total</pre>
+</div>
+    <p class="output-caption">Two kinds of "no". <code>-EBUSY</code> (the first three rows, on every PMD) means "stop the port first": ethdev logs <i>Port N must be stopped to allow configuration</i>. <code>-ENOTSUP</code> means the PMD cannot do it at all, started or not. <code>vlan offload set</code> is <code>-EINVAL</code> because none of these PMDs lists VLAN stripping in <code>rx_offload_capa</code>. The RSS rows needed the port to be configured in RSS mode first (<code>mq_mode = RTE_ETH_MQ_RX_RSS</code>, ch15).</p>
+
+    <div class="table-wrap"><table class="compact">
+      <thead><tr><th>change</th><th>live?</th><th>notes</th></tr></thead>
+      <tbody>
+        <tr><td>number of RX/TX queues, RX/TX port offloads, descriptor counts, <code>mq_mode</code></td><td class="r-busy">restart</td><td>stop, configure, set up every queue, start</td></tr>
+        <tr><td>one queue's setup</td><td class="r-busy">restart, or stop that queue</td><td>live only with <code>RUNTIME_*_QUEUE_SETUP</code> and the queue stopped</td></tr>
+        <tr><td>MAC, extra MACs, promiscuous, all-multicast</td><td class="r-ok">live</td><td>if the PMD implements it</td></tr>
+        <tr><td>MTU</td><td class="r-ok">live on most</td><td>some PMDs refuse while started, or need scatter for jumbo; check the return code</td></tr>
+        <tr><td>RSS hash key/types, RETA</td><td class="r-ok">live</td><td>in RSS mode (ch15)</td></tr>
+        <tr><td>VLAN filter entries, VLAN strip</td><td class="r-ok">live</td><td>only if the offload is enabled / in the capability</td></tr>
+        <tr><td>rte_flow rules</td><td class="r-ok">live</td><td>whether they survive a restart depends on <code>RTE_ETH_DEV_CAPA_FLOW_RULE_KEEP</code> (ch20)</td></tr>
+      </tbody>
+    </table></div>
+
+    <h3 id="outage">The cost of a restart</h3>
+    <p>A restart is an outage, and the data path must not touch the port during it: <code>rte_eth_rx_burst()</code> on a stopped port calls a dummy function (ch8). So the control thread asks the forwarding lcore to pause, waits for its acknowledgement, restarts the port, and releases it:</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/runtime_reconf.c (lines 179-191)</span><span class="lang">C</span></div>
+<pre data-lines data-start="179"><code class="language-c">		/* 1. ask the data path to stop touching the port and WAIT */
+		atomic_store(&amp;pause_req, 1);
+		while (!atomic_load(&amp;paused))
+			rte_pause();
+		before = atomic_load(&amp;fwd_pkts);
+		t0 = rte_get_timer_cycles();
+		/* 2. the restart itself */
+		rte_eth_dev_stop(port);
+		ch12_port_init(port, 1, 1, mp, NULL, NULL, 1);
+		t1 = rte_get_timer_cycles();
+		after = atomic_load(&amp;fwd_pkts);
+		/* 3. let the data path go again */
+		atomic_store(&amp;pause_req, 0);</code></pre>
+</div>
+    <p>Part 2 of the output above measured it: about 4 to 10 us on net_null (nothing to tear down) and about 200 us on net_tap, which talks to the kernel through ioctls and netlink. On a real NIC expect milliseconds, plus the time the link needs to come back up: hundreds of milliseconds to seconds with autonegotiation. That is why you prefer the live operations and per-queue control.</p>
+
+    <h3 id="shutdown">Graceful shutdown, in order</h3>
+    <p>An application that exits without care loses packets that were already received, and a test harness cannot tell a leak from a normal exit. The order matters because each step needs the previous one to be finished:</p>
+    <figure class="diagram">
+      <div class="scroll-x">
+      <svg viewBox="0 0 760 150" role="img" aria-labelledby="f-shut-t">
+        <title id="f-shut-t">Eight shutdown steps from left to right: stop RX polling and join workers, drain app rings, flush TX buffers, tx_done_cleanup, drain software wires, stop and close ports, check in_use_count is zero, free pools and call rte_eal_cleanup.</title>
+        <rect class="svg-box c1" x="5" y="20" width="85" height="70"/><text class="svg-label center small bold" x="47" y="40">1 stop RX</text><text class="svg-label center small" x="47" y="58">polling, join</text><text class="svg-label center small" x="47" y="74">workers</text>
+        <rect class="svg-box c5" x="100" y="20" width="85" height="70"/><text class="svg-label center small bold" x="142" y="40">2 drain</text><text class="svg-label center small" x="142" y="58">app rings</text>
+        <rect class="svg-box c5" x="195" y="20" width="85" height="70"/><text class="svg-label center small bold" x="237" y="40">3 flush</text><text class="svg-label center small" x="237" y="58">tx_buffers</text>
+        <rect class="svg-box c4" x="290" y="20" width="85" height="70"/><text class="svg-label center small bold" x="332" y="40">4 tx_done</text><text class="svg-label center small" x="332" y="58">_cleanup</text>
+        <rect class="svg-box c5" x="385" y="20" width="85" height="70"/><text class="svg-label center small bold" x="427" y="40">5 drain</text><text class="svg-label center small" x="427" y="58">software</text><text class="svg-label center small" x="427" y="74">"wires"</text>
+        <rect class="svg-box c4" x="480" y="20" width="85" height="70"/><text class="svg-label center small bold" x="522" y="40">6 stop +</text><text class="svg-label center small" x="522" y="58">close ports</text>
+        <rect class="svg-box c2" x="575" y="20" width="85" height="70"/><text class="svg-label center small bold" x="617" y="40">7 in_use</text><text class="svg-label center small" x="617" y="58">== 0 ?</text>
+        <rect class="svg-box c2" x="670" y="20" width="85" height="70"/><text class="svg-label center small bold" x="712" y="40">8 free pools,</text><text class="svg-label center small" x="712" y="58">eal_cleanup</text>
+        <path class="svg-arrow c7" d="M90,55 L98,55"/><path class="svg-arrow c7" d="M185,55 L193,55"/><path class="svg-arrow c7" d="M280,55 L288,55"/><path class="svg-arrow c7" d="M375,55 L383,55"/><path class="svg-arrow c7" d="M470,55 L478,55"/><path class="svg-arrow c7" d="M565,55 L573,55"/><path class="svg-arrow c7" d="M660,55 L668,55"/>
+        <text class="svg-label small muted" x="5" y="118">nobody may poll a port after step 1; a pool may not be freed while a port or ring still holds its mbufs (step 8 after 6)</text>
+        <text class="svg-label small muted" x="5" y="138">step 4 is -ENOTSUP on most PMDs (only vhost here): stop/close then frees the TX ring's mbufs</text>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>Ordered teardown. Step 7 is the test: every mbuf ever allocated must be back in its pool.</figcaption>
+    </figure>
+    <p>Part 3 of <code>runtime_reconf</code> runs a small pipeline (net_null RX, an app ring, a <code>tx_buffer</code>, a net_ring loopback that nobody reads) until <code>timeout</code> sends SIGINT, then tears down:</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/runtime_reconf.c (lines 219-255)</span><span class="lang">C</span></div>
+<pre data-lines data-start="219" data-hl="221,219"><code class="language-c">	/* 1. stop RX polling: the worker leaves its loop, then we join it */
+	atomic_store(&amp;run_worker, 0);
+	rte_eal_wait_lcore(1);
+	printf("  1. worker stopped and joined\n");
+	/* 2. drain application rings */
+	if (!sloppy) {
+		for (total = 0; (n = rte_ring_dequeue_burst(app_ring, (void **)b, 64,
+							    NULL)) &gt; 0; total += n)
+			rte_pktmbuf_free_bulk(b, n);
+		printf("  2. app ring drained: %u mbufs freed\n", total);
+	} else {
+		printf("  2. (skipped) app ring still holds %u mbufs\n",
+		       rte_ring_count(app_ring));
+	}
+	/* 3. flush buffered TX */
+	n = rte_eth_tx_buffer_flush(P_RING, 0, txb);
+	printf("  3. tx_buffer flushed: %u sent\n", n);
+	/* 4. ask the PMD to free completed TX mbufs */
+	rc = rte_eth_tx_done_cleanup(P_RING, 0, 0);
+	printf("  4. rte_eth_tx_done_cleanup -&gt; %s\n", rc &gt;= 0 ? "OK" : rcname(rc));
+	/* 5. a software 'wire' (net_ring loopback) holds mbufs: drain it */
+	if (!sloppy) {
+		for (total = 0; (n = rte_eth_rx_burst(P_RING, 0, b, 64)) &gt; 0; total += n)
+			rte_pktmbuf_free_bulk(b, n);
+		printf("  5. net_ring0 loopback drained: %u mbufs\n", total);
+	} else {
+		printf("  5. (skipped) net_ring0 loopback not drained\n");
+	}
+	/* 6. stop and close every port: PMDs free their RX ring mbufs */
+	RTE_ETH_FOREACH_DEV(p) {
+		rte_eth_dev_stop(p);
+		rte_eth_dev_close(p);
+	}
+	printf("  6. all ports stopped and closed\n");
+	/* 7. the check */
+	n = rte_mempool_in_use_count(mp);
+	printf("  7. rte_mempool_in_use_count = %u -&gt; %s\n", n, n == 0 ? "PASS" : "FAIL");</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre>=== Part 3: ordered teardown ===
+  in use before teardown: 2071 of 8191 mbufs
+  1. worker stopped and joined
+  2. app ring drained: 1015 mbufs freed
+  3. tx_buffer flushed: 0 sent
+  4. rte_eth_tx_done_cleanup -&gt; -ENOTSUP
+  5. net_ring0 loopback drained: 1023 mbufs
+<span class="dim">ETHDEV: Device with port_id=2 already stopped</span>
+  6. all ports stopped and closed
+<span class="ok">  7. rte_mempool_in_use_count = 0 -&gt; PASS</span>
+  8. pool freed, calling rte_eal_cleanup()
+[stopped by SIGINT from timeout after 4s]</pre>
+</div>
+    <p>The same run with <code>--sloppy</code> skips the two drain steps:</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre>=== Part 3: ordered teardown (SLOPPY) ===
+  in use before teardown: 2081 of 8191 mbufs
+  1. worker stopped and joined
+  2. (skipped) app ring still holds 1015 mbufs
+  3. tx_buffer flushed: 0 sent
+  4. rte_eth_tx_done_cleanup -&gt; -ENOTSUP
+  5. (skipped) net_ring0 loopback not drained
+<span class="dim">ETHDEV: Device with port_id=2 already stopped</span>
+  6. all ports stopped and closed
+<span class="err">  7. rte_mempool_in_use_count = 2038 -&gt; FAIL</span>
+  8. pool freed, calling rte_eal_cleanup()
+[stopped by SIGINT from timeout after 4s]</pre>
+</div>
+    <p class="output-caption">2,038 mbufs never came back: 1,015 in the app ring and 1,023 inside the net_ring "wire". A software ring device holds mbufs exactly like a NIC TX ring does, and closing the port does not free mbufs that are sitting in a plain <code>rte_ring</code> the PMD does not own. <code>rte_mempool_in_use_count()</code> counts mbufs in per-lcore caches as available, so a clean shutdown really reaches 0.</p>
+
+    <!-- ============================================================ 8 -->
+    <h2 id="failures"><span class="sec-num">8</span>Failure labs: signatures and recovery</h2>
+    <p>Production problems show up as counters first. <code>failure_lab.c</code> seeds four faults on purpose so you learn what each looks like. Click a fault to see its signature, then run its recovery steps.</p>
+
+    <div class="widget" id="w-fail">
+      <div class="widget-head"><span class="widget-title">Failure signature board</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="btn-row" id="fail-btns" role="group" aria-label="seeded fault"></div>
+        <div class="fail-ctrs">
+          <div class="stat"><div class="stat-label">ipackets</div><div class="stat-value" id="fc-rx">0</div></div>
+          <div class="stat"><div class="stat-label">rx_nombuf</div><div class="stat-value" id="fc-nombuf">0</div></div>
+          <div class="stat"><div class="stat-label">imissed</div><div class="stat-value" id="fc-imissed">0</div></div>
+          <div class="stat"><div class="stat-label">oerrors</div><div class="stat-value" id="fc-oerr">0</div></div>
+          <div class="stat"><div class="stat-label">app drops</div><div class="stat-value" id="fc-drops">0</div></div>
+          <div class="stat"><div class="stat-label">in_use</div><div class="stat-value" id="fc-inuse">0</div></div>
+          <div class="stat"><div class="stat-label">link</div><div class="stat-value" id="fc-link">UP</div></div>
+        </div>
+        <p class="fail-sig" id="fail-sig" aria-live="polite"></p>
+        <div class="ctl-row"><button class="btn small primary" type="button" id="fail-run">run recovery steps</button><span class="small muted">red = counter rising or alarm, orange = throughput stalled; the counters are a model, the numbers in the text are from the runs below</span></div>
+        <ol class="fail-rec" id="fail-rec"></ol>
+      </div>
+    </div>
+
+    <h3 id="pool-dry">Fault 1: the pool runs dry</h3>
+    <p>The app keeps every mbuf it receives (a leak, or a consumer that is too slow), with a pool of only 255. net_pcap reading a finite file allocates one mbuf per packet and counts a failure in <code>rx_nombuf</code>:</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">(show port info 0; start; sleep 2; stop; show port stats 0; show port xstats 0; quit) | \</span>
+  dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch12-fs \
+  --vdev=&#x27;net_failsafe0,dev(net_null0,size=128),dev(net_ring0)&#x27; -- -i --total-num-mbufs=8192 --forward-mode=txonly
+<span class="dim">(EAL start-up lines omitted)</span>
+<span class="dim">EAL: Device net_null0 is already probed</span>
+<span class="dim">EAL: Device net_ring0 is already probed</span>
+<span class="dim">Warning: NUMA should be configured manually by using --port-numa-config and --ring-numa-config parameters along with --numa.</span>
+<span class="dim">testpmd: create a new mbuf pool &lt;mb_pool_0&gt;: n=8192, size=2176, socket=0</span>
+<span class="dim">testpmd: preferred mempool ops selected: ring_mp_mc</span>
+
+<span class="dim">Warning! port-topology=paired and odd forward ports number, the last port will pair with itself.</span>
+
+<span class="dim">NET_FAILSAFE: Operation rte_eth_dev_mac_addr_set failed for sub_device 1 with error -95</span>
+<span class="dim">NET_FAILSAFE: Promiscuous mode disable failed for subdevice 1</span>
+<span class="dim">NET_FAILSAFE: All-multicast mode disable failed for subdevice 1</span>
+Interactive-mode selected
+Set txonly packet forwarding mode
+Configuring Port 0 (socket 0)
+Port 0: 5A:89:2F:33:35:E6
+Checking link statuses...
+testpmd&gt; show port info 0
+testpmd&gt; start
+testpmd&gt; stop
+testpmd&gt; show port stats 0
+testpmd&gt; show port xstats 0
+Done
+
+********************* Infos for port 0  *********************
+MAC address: 5A:89:2F:33:35:E6
+Device name: net_failsafe0
+Driver name: net_failsafe
+Firmware-version: not available
+Devargs: dev(net_null0,size=128),dev(net_ring0)
+Connect to socket: 0
+memory allocation on the socket: 0
+Link status: up
+Link speed: 10 Gbps
+Link duplex: full-duplex
+Autoneg status: On
+MTU: 1500
+Minimum MTU: 68
+Maximum MTU: 65535
+Promiscuous mode: enabled
+Allmulticast mode: disabled
+Maximum number of MAC addresses: 1
+Maximum number of MAC addresses of hash filtering: 0
+VLAN offload: 
+  strip off, filter off, extend off, qinq strip off
+No RSS offload flow type is supported.
+Minimum size of RX buffer: 0
+Maximum configurable length of RX packet: 4294967295
+Maximum configurable size of LRO aggregated packet: 0
+Rx split:
+	Max segments: 0
+Current number of RX queues: 1
+Max possible RX queues: 16
+Max possible number of RXDs per queue: 65535
+Min possible number of RXDs per queue: 0
+RXDs number alignment: 1
+Current number of TX queues: 1
+Max possible TX queues: 16
+Max possible number of TXDs per queue: 65535
+Min possible number of TXDs per queue: 0
+TXDs number alignment: 1
+Max segment number per packet: 65535
+Max segment number per MTU/TSO: 65535
+Device capabilities: 0x3( RUNTIME_RX_QUEUE_SETUP RUNTIME_TX_QUEUE_SETUP )
+Device error handling mode: none
+Device private info:
+  none
+txonly packet forwarding - ports=1 - cores=1 - streams=1 - NUMA support enabled, MP allocation mode: native
+Logical Core 1 (socket 0) forwards packets on 1 streams:
+  RX P=0/Q=0 (socket 0) -&gt; TX P=0/Q=0 (socket 0) peer=02:00:00:00:00:00
+
+  txonly packet forwarding packets/burst=32
+  packet len=64 - nb packet segments=1
+  nb forwarding cores=1 - nb forwarding ports=1
+  port 0: RX queue number: 1 Tx queue number: 1
+    Rx offloads=0x0 Tx offloads=0x0
+    RX queue: 0
+      RX desc=0 - RX free threshold=0
+      RX threshold registers: pthresh=0 hthresh=0  wthresh=0
+      RX Offloads=0x0
+    TX queue: 0
+      TX desc=0 - TX free threshold=0
+      TX threshold registers: pthresh=0 hthresh=0  wthresh=0
+      TX offloads=0x0 - TX RS bit threshold=0
+Telling cores to stop...
+Waiting for lcores to finish...
+
+  ---------------------- Forward statistics for port 0  ----------------------
+  RX-packets: 0              RX-dropped: 0             RX-total: 0
+  TX-packets: 168124288      TX-dropped: 0             TX-total: 168124288
+  ----------------------------------------------------------------------------
+
+  +++++++++++++++ Accumulated forward statistics for all ports+++++++++++++++
+  RX-packets: 0              RX-dropped: 0             RX-total: 0
+  TX-packets: 168124288      TX-dropped: 0             TX-total: 168124288
+  ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+Done.
+
+  ######################## NIC statistics for port 0  ########################
+  RX-packets: 302592     RX-missed: 0          RX-bytes:  38731776
+  RX-errors: 0
+  RX-nombuf:  0         
+  TX-packets: 168124288  TX-errors: 0          TX-bytes:  10759954432
+
+  Throughput (since last show)
+  Rx-pps:            0          Rx-bps:            0
+  Tx-pps:            0          Tx-bps:            0
+  ############################################################################
+###### NIC extended statistics for port 0 
+rx_good_packets: 302592
+tx_good_packets: 168124288
+rx_good_bytes: 38731776
+tx_good_bytes: 10759954432
+rx_missed_errors: 0
+rx_errors: 0
+tx_errors: 0
+rx_mbuf_allocation_errors: 0
+rx_q0_packets: 0
+rx_q0_bytes: 0
+tx_q0_packets: 0
+tx_q0_bytes: 0
+rx_sub0_good_packets: 302592
+tx_sub0_good_packets: 168124288
+rx_sub0_good_bytes: 38731776
+tx_sub0_good_bytes: 10759954432
+rx_sub0_missed_errors: 0
+rx_sub0_errors: 0
+tx_sub0_errors: 0
+rx_sub0_mbuf_allocation_errors: 0
+rx_sub0_q0_packets: 302592
+rx_sub0_q0_bytes: 38731776
+tx_sub0_q0_packets: 168124288
+tx_sub0_q0_bytes: 10759954432
+rx_sub1_good_packets: 0
+tx_sub1_good_packets: 0
+rx_sub1_good_bytes: 0
+tx_sub1_good_bytes: 0
+rx_sub1_missed_errors: 0
+rx_sub1_errors: 0
+tx_sub1_errors: 0
+rx_sub1_mbuf_allocation_errors: 0
+rx_sub1_q0_packets: 0
+rx_sub1_q0testpmd&gt; quit
+_bytes: 0
+tx_sub1_q0_packets: 0
+tx_sub1_q0_bytes: 0
+
+Stopping port 0...
+Stopping ports...
+Done
+
+Shutting down port 0...
+Closing ports...
+Port 1 is closed
+Port 2 is closed
+Port 0 is closed
+Done
+
+Bye...
+
+########## 8. failure_lab: four seeded faults
+
+<span class="prompt">$ </span><span class="cmd">./failure_lab -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch12-fail-pool --vdev=net_pcap0,rx_pcap=big.pcap,tx_pcap=/dev/null --vdev=net_pcap1,rx_pcap=in.pcap,infinite_rx=1,tx_pcap=/dev/null -- --mode pool_dry</span>
+=== failure_lab --mode pool_dry ===
+
+net_pcap, finite file (port 0, pool of 255 mbufs)
+  phase                           received  ipackets  rx_nombuf    in_use
+  200 polls, app holds mbufs           255       255        193       255
+  app freed all, 20 more polls         640       895        193         0
+  (freed 255 held mbufs)
+
+net_pcap infinite_rx=1 (in.pcap: 2000 pkts kept in the pool) (port 1, pool of 2255 mbufs)
+  phase                           received  ipackets  rx_nombuf    in_use
+  200 polls, app holds mbufs           224       224          0      2224
+  app freed all, 20 more polls         640       864          0      2000
+  (freed 224 held mbufs)</pre>
+</div>
+    <p class="output-caption">With the finite file: 255 packets, then <code>rx_nombuf</code> grows by one per poll while <code>ipackets</code> stays flat, and RX recovers on the very next poll after the app frees its mbufs. With <code>infinite_rx=1</code> the same fault is invisible: the PMD bulk-allocates, fails silently and returns 0 (<code>rx_nombuf</code> stays 0). It also keeps a private copy of the whole file in the pool (2,000 mbufs), and refused to start with a smaller pool. On a real NIC the refill failure leaves descriptors empty, the RX ring fills, and <code>imissed</code> rises as well.</p>
+
+    <h3 id="tx-full">Fault 2: the TX side is full</h3>
+    <p>When the far end is slower than you, <code>rte_eth_tx_burst()</code> returns less than you asked for. What you do with the rest is a policy decision. Here one lcore feeds a slow port (a 256-slot ring drained at about one packet per 2 us by lcore 1) and a fast port, for 300 ms per policy:</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/failure_lab.c (lines 188-196)</span><span class="lang">C</span></div>
+<pre data-lines data-start="188" data-hl="192"><code class="language-c">				if (p == 0) {			/* drop */
+					rte_pktmbuf_free_bulk(b + k, 32 - k);
+					drops += 32 - k;
+				} else if (p == 1) {		/* retry */
+					while (k &lt; 32) {
+						k += rte_eth_tx_burst(slow, 0, b + k, 32 - k);
+						stalls++;
+					}
+				} else {			/* back-pressure */</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./failure_lab -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch12-fail-pool --vdev=net_pcap0,rx_pcap=big.pcap,tx_pcap=/dev/null --vdev=net_pcap1,rx_pcap=in.pcap,infinite_rx=1,tx_pcap=/dev/null -- --mode pool_dry</span>
+<span class="dim">(EAL start-up lines omitted)</span>
+=== failure_lab --mode pool_dry ===
+
+net_pcap, finite file (port 0, pool of 255 mbufs)
+  phase                           received  ipackets  rx_nombuf    in_use
+  200 polls, app holds mbufs           255       255        193       255
+  app freed all, 20 more polls         640       895        193         0
+  (freed 255 held mbufs)
+
+net_pcap infinite_rx=1 (in.pcap: 2000 pkts kept in the pool) (port 1, pool of 2255 mbufs)
+  phase                           received  ipackets  rx_nombuf    in_use
+  200 polls, app holds mbufs           224       224          0      2224
+  app freed all, 20 more polls         640       864          0      2000
+  (freed 224 held mbufs)
+
+<span class="prompt">$ </span><span class="cmd">./failure_lab -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch12-fail-tx -- --mode tx_full</span>
+=== failure_lab --mode tx_full ===
+slow port 0 (256-slot wire, consumer ~1 pkt / 2 us), fast port 1
+one lcore sends a burst of 32 to EACH port per loop, for 300 ms
+
+policy          slow sent  fast sent    oerrors  app drops loops/stalls
+drop                77315    4924256          0    4846269 166031/0
+retry              119296     119296          0          0   3728/30765164
+back-pressure       68354    4360864          0          0 482091/477450
+
+retry: the fast port is held hostage by the slow one (head-of-line
+blocking). drop: both run at full speed; the losses appear ONLY in
+the app&#x27;s own counter (net_ring does not count oerrors, and a PMD
+never counts what tx_burst did not accept). back-pressure: no loss
+here, input waits upstream; on a real NIC its RX ring fills -&gt; imissed.
+in use at exit: 0</pre>
+</div>
+    <p class="output-caption"><b>drop</b> keeps both ports at full speed and loses packets, visible only in the app's counter. <b>retry</b> loses nothing but the fast port sent exactly as many packets as the slow one (131,840): one slow destination blocks every other destination served by the same loop. This is <span class="key-term">head-of-line blocking</span>. <b>back-pressure</b> holds the unsent packets and stops taking input for that path; on a NIC the loss reappears upstream as <code>imissed</code>, which is often the right place for it.</p>
+
+    <h3 id="link-flap">Fault 3: the link flaps</h3>
+    <p>The program pulls the "cable" itself with <code>ip link set ch12tap5 down</code>, keeps sending, and watches the link two ways: an LSC callback and a 50 ms poll of <code>rte_eth_link_get_nowait()</code>:</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./failure_lab -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch12-fail-tx -- --mode tx_full</span>
+<span class="dim">(EAL start-up lines omitted)</span>
+=== failure_lab --mode tx_full ===
+slow port 0 (256-slot wire, consumer ~1 pkt / 2 us), fast port 1
+one lcore sends a burst of 32 to EACH port per loop, for 300 ms
+
+policy          slow sent  fast sent    oerrors  app drops loops/stalls
+drop                77315    4924256          0    4846269 166031/0
+retry              119296     119296          0          0   3728/30765164
+back-pressure       68354    4360864          0          0 482091/477450
+
+retry: the fast port is held hostage by the slow one (head-of-line
+blocking). drop: both run at full speed; the losses appear ONLY in
+the app&#x27;s own counter (net_ring does not count oerrors, and a PMD
+never counts what tx_burst did not accept). back-pressure: no loss
+here, input waits upstream; on a real NIC its RX ring fills -&gt; imissed.
+in use at exit: 0
+
+<span class="prompt">$ </span><span class="cmd">./failure_lab -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch12-fail-flap --vdev=net_tap0,iface=ch12tap5 -- --mode link_flap</span>
+=== failure_lab --mode link_flap ===
+tap port 0: dev_flags INTR_LSC=1, LSC callback register -&gt; OK
+started with intr_conf.lsc=1 -&gt; OK; polling link every 50 ms, sending 32 pkts every 10 ms
+
+      0.0 ms  poll: link UP    (opackets +32, oerrors +0 since last change)  LSC callbacks so far: 0
+    403.9 ms  operator: ip link set ch12tap5 down
+    403.9 ms  poll: link DOWN  (opackets +1248, oerrors +33 since last change)  LSC callbacks so far: 0
+    902.3 ms  operator: ip link set ch12tap5 up
+    918.3 ms  poll: link UP    (opackets +64, oerrors +1584 since last change)  LSC callbacks so far: 0
+   1504.5 ms  end: opackets +1824, oerrors +0, LSC callbacks: 0
+
+net_tap advertises RTE_ETH_DEV_INTR_LSC but never raises the event:
+only polling saw the flap. While down, tx_burst failed (oerrors).</pre>
+</div>
+    <p class="output-caption">Polling caught both transitions; the callback never ran, even though the port was configured with <code>intr_conf.lsc = 1</code> and its <code>dev_flags</code> say it supports LSC. While the link was down, the tap PMD's writes failed and <code>oerrors</code> counted them (1,584). Exercise 1 makes this a reusable pattern.</p>
+
+    <h3 id="reset">Fault 4: the device needs a reset</h3>
+    <p>Some NICs detect an internal error (a firmware hang, a PF reset under a VF) and need to be re-initialised. How the app learns about it depends on <code>dev_info.err_handle_mode</code>, an <code>enum rte_eth_err_handle_mode</code>:</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 250" role="img" aria-labelledby="f-rec-t">
+        <title id="f-rec-t">Passive mode: the PMD raises INTR_RESET, the app's callback sets a flag, the control thread pauses the data path, stops the port, calls rte_eth_dev_reset, reconfigures, sets up queues, starts and resumes. Proactive mode: the PMD raises ERR_RECOVERING, the app stops calling burst functions, the PMD recovers by itself and raises RECOVERY_SUCCESS (app restores flow rules and resumes) or RECOVERY_FAILED (app closes or removes the port). NONE: no event, the port just stops working.</title>
+        <text class="svg-label bold" x="10" y="20">PASSIVE (iavf, ena, igb ...): the app recovers</text>
+        <rect class="svg-box c4" x="10" y="32" width="110" height="38"/><text class="svg-label center small" x="65" y="51">PMD: INTR_RESET</text>
+        <rect class="svg-box c6" x="135" y="32" width="100" height="38"/><text class="svg-label center small" x="185" y="51">cb: set flag</text>
+        <rect class="svg-box c1" x="250" y="32" width="100" height="38"/><text class="svg-label center small" x="300" y="51">pause lcores</text>
+        <rect class="svg-box c7" x="365" y="32" width="110" height="38"/><text class="svg-label center small" x="420" y="45">stop +</text><text class="svg-label center small mono" x="420" y="60">dev_reset()</text>
+        <rect class="svg-box c7" x="490" y="32" width="110" height="38"/><text class="svg-label center small" x="545" y="45">configure +</text><text class="svg-label center small" x="545" y="60">queues + start</text>
+        <rect class="svg-box c2" x="615" y="32" width="95" height="38"/><text class="svg-label center small" x="662" y="51">resume</text>
+        <path class="svg-arrow c7" d="M120,51 L133,51"/><path class="svg-arrow c7" d="M235,51 L248,51"/><path class="svg-arrow c7" d="M350,51 L363,51"/><path class="svg-arrow c7" d="M475,51 L488,51"/><path class="svg-arrow c7" d="M600,51 L613,51"/>
+        <text class="svg-label bold" x="10" y="108">PROACTIVE (bnxt ...): the PMD recovers</text>
+        <rect class="svg-box c4" x="10" y="120" width="130" height="38"/><text class="svg-label center small" x="75" y="139">ERR_RECOVERING</text>
+        <rect class="svg-box c1" x="155" y="120" width="150" height="38"/><text class="svg-label center small" x="230" y="133">stop calling rx/tx burst</text><text class="svg-label center small" x="230" y="149">on this port</text>
+        <rect class="svg-box c7" x="320" y="120" width="120" height="38"/><text class="svg-label center small" x="380" y="139">PMD re-inits</text>
+        <rect class="svg-box c2" x="460" y="105" width="250" height="34"/><text class="svg-label center small" x="585" y="122">RECOVERY_SUCCESS: restore flows, resume</text>
+        <rect class="svg-box c4" x="460" y="145" width="250" height="34"/><text class="svg-label center small" x="585" y="162">RECOVERY_FAILED: close / remove port</text>
+        <path class="svg-arrow c7" d="M140,139 L153,139"/><path class="svg-arrow c7" d="M305,139 L318,139"/><path class="svg-arrow c2" d="M440,135 L458,123"/><path class="svg-arrow c4" d="M440,143 L458,160"/>
+        <text class="svg-label bold" x="10" y="212">NONE (every vdev here): no event; the port just misbehaves</text>
+        <text class="svg-label small" x="10" y="232">rte_eth_dev_reset() returns -ENOTSUP; the closest equivalent is close + rte_dev_remove + rte_dev_probe</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>The three error-handling modes (<span class="src-path">lib/ethdev/rte_ethdev.h</span>, <code>enum rte_eth_err_handle_mode</code>). The common rule: the callback only records the event; the work happens in the control thread after the data path has stopped touching the port.</figcaption>
+    </figure>
+    <p>No PMD built here can raise a real reset, so the lab calls the app's own callback from an EAL alarm, which runs it in <code>dpdk-intr</code> exactly as a PMD interrupt would. Then it shows a wrong order, the right order, and the fallback when <code>rte_eth_dev_reset()</code> is not implemented:</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/failure_lab.c (lines 423-451)</span><span class="lang">C</span></div>
+<pre data-lines data-start="423" data-hl="433"><code class="language-c">	atomic_store(&amp;pause_req, 1);		/* 1. quiesce the data path */
+	while (!atomic_load(&amp;paused))
+		rte_pause();
+	before = atomic_load(&amp;fwd);
+	printf("  1. data path paused\n");
+	rc = rte_eth_dev_stop(port);		/* 2. stop */
+	printf("  2. rte_eth_dev_stop -&gt; %s\n", rcname(rc));
+	rc = rte_eth_dev_reset(port);		/* 3. reset */
+	printf("  3. rte_eth_dev_reset -&gt; %s\n", rcname(rc));
+	if (rc == -ENOTSUP) {
+		/* 3b. no dev_reset op (every vdev here): emulate it by hot
+		 * re-plugging the device; the port id may change */
+		struct rte_device *dev = di.device;
+
+		rte_eth_dev_close(port);
+		rc = rte_dev_remove(dev);
+		printf("  3b. fallback: close + rte_dev_remove -&gt; %s", rcname(rc));
+		rc = rte_dev_probe(devargs);
+		rte_eth_dev_get_port_by_name("net_null0", &amp;port);
+		printf(", rte_dev_probe(\"%s\") -&gt; %s, new port id %u\n", devargs,
+		       rcname(rc), port);
+	}
+	/* (queue setup before configure is the other classic wrong order;
+	 * on net_null it crashes, see ch08 lifecycle_rules) */
+	rc = ch12_port_init(port, 1, 1, mp, NULL, NULL, 1);	/* 4. */
+	printf("  4. configure + queue setup + start -&gt; %s\n", rcname(rc));
+	atomic_store(&amp;cur_port, port);
+	atomic_store(&amp;reset_pending, 0);
+	atomic_store(&amp;pause_req, 0);		/* 5. resume */</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./failure_lab -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch12-fail-flap --vdev=net_tap0,iface=ch12tap5 -- --mode link_flap</span>
+<span class="dim">(EAL start-up lines omitted)</span>
+=== failure_lab --mode link_flap ===
+tap port 0: dev_flags INTR_LSC=1, LSC callback register -&gt; OK
+started with intr_conf.lsc=1 -&gt; OK; polling link every 50 ms, sending 32 pkts every 10 ms
+
+      0.0 ms  poll: link UP    (opackets +32, oerrors +0 since last change)  LSC callbacks so far: 0
+    403.9 ms  operator: ip link set ch12tap5 down
+    403.9 ms  poll: link DOWN  (opackets +1248, oerrors +33 since last change)  LSC callbacks so far: 0
+    902.3 ms  operator: ip link set ch12tap5 up
+    918.3 ms  poll: link UP    (opackets +64, oerrors +1584 since last change)  LSC callbacks so far: 0
+   1504.5 ms  end: opackets +1824, oerrors +0, LSC callbacks: 0
+
+net_tap advertises RTE_ETH_DEV_INTR_LSC but never raises the event:
+only polling saw the flap. While down, tx_burst failed (oerrors).
+
+<span class="prompt">$ </span><span class="cmd">./failure_lab -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch12-fail-rst --vdev=net_null0 -- --mode reset</span>
+=== failure_lab --mode reset ===
+port 0 net_null: err_handle_mode = NONE
+  (PASSIVE PMDs e.g. iavf/ena/igb raise INTR_RESET and wait for the app;
+   PROACTIVE ones e.g. bnxt raise ERR_RECOVERING, recover, then
+   RECOVERY_SUCCESS or RECOVERY_FAILED)
+forwarding on lcore 1: 5845952 pkts in 50 ms
+<span class="hl">  [event] port 0 INTR_RESET (callback only sets a flag)</span>
+
+wrong order 1: reconfigure while the port is still started
+<span class="dim">ETHDEV: Port 0 must be stopped to allow configuration</span>
+  rte_eth_dev_configure -&gt; -EBUSY
+
+right order:
+  1. data path paused
+  2. rte_eth_dev_stop -&gt; OK
+  3. rte_eth_dev_reset -&gt; -ENOTSUP
+  3b. fallback: close + rte_dev_remove -&gt; OK, rte_dev_probe(&quot;net_null0&quot;) -&gt; OK, new port id 0
+  4. configure + queue setup + start -&gt; OK
+  5. data path resumed after 0.164 ms outage
+  forwarded 5867168 pkts in the 50 ms after recovery
+in use at exit: 0</pre>
+</div>
+    <p class="output-caption">Reconfiguring a started port is <code>-EBUSY</code>. Reset itself is <code>-ENOTSUP</code> on every vdev (no PMD here sets <code>dev_reset</code>), so the lab re-plugs the device, which gives a fresh port (here with the same id). A real <code>rte_eth_dev_reset()</code> also forgets every queue, so the app sets them all up again. The data path was paused for 0.14 ms and forwarded normally afterwards. Exercise 5 makes this safe while traffic is flowing.</p>
+
+    <!-- ============================================================ 9 -->
+    <h2 id="composite"><span class="sec-num">9</span>Composite PMDs: bonding, failsafe and hardware aggregation</h2>
+    <p>A <span class="key-term">composite PMD</span> is a driver whose "hardware" is other ports. Your application sees one port; underneath, the composite forwards each call to its members. To stop the application from using the members directly, a composite takes <span class="key-term">ownership</span> of them with <code>rte_eth_dev_owner_new()</code> / <code>rte_eth_dev_owner_set()</code>: owned ports disappear from <code>RTE_ETH_FOREACH_DEV</code> (you can still list them with <code>RTE_ETH_FOREACH_DEV_OWNED_BY</code>). Representor ports, which also form groups, are a different idea and belong to ch20.</p>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 720 200" role="img" aria-labelledby="f-comp-t">
+        <title id="f-comp-t">Left: software bonding, one bond port owning two member ports, each a separate NIC port with its own link. Middle: failsafe, one port with a preferred sub-device and a fallback. Right: a hardware aggregated port, one DPDK port whose NIC aggregates two physical ports internally; the app chooses with rte_eth_dev_map_aggr_tx_affinity.</title>
+        <rect class="svg-box c5" x="20" y="20" width="180" height="40"/><text class="svg-label center bold" x="110" y="40">net_bonding (port 2)</text>
+        <rect class="svg-box c2" x="20" y="110" width="80" height="40"/><text class="svg-label center small" x="60" y="130">member 0</text>
+        <rect class="svg-box c2" x="120" y="110" width="80" height="40"/><text class="svg-label center small" x="160" y="130">member 1</text>
+        <path class="svg-arrow c5" d="M80,60 L62,108"/><path class="svg-arrow c5" d="M140,60 L158,108"/>
+        <text class="svg-label center small muted" x="110" y="175">software: hash/mode in the bond PMD</text>
+        <text class="svg-label center small muted" x="110" y="190">two links, two ports owned</text>
+        <rect class="svg-box c5" x="260" y="20" width="180" height="40"/><text class="svg-label center bold" x="350" y="40">net_failsafe</text>
+        <rect class="svg-box c2" x="260" y="110" width="80" height="40"/><text class="svg-label center small" x="300" y="125">preferred</text><text class="svg-label center small" x="300" y="140">(sub 0)</text>
+        <rect class="svg-box c7 dashed" x="360" y="110" width="80" height="40"/><text class="svg-label center small" x="400" y="125">fallback</text><text class="svg-label center small" x="400" y="140">(sub 1)</text>
+        <path class="svg-arrow c5" d="M320,60 L302,108"/><path class="svg-arrow c7 dashed" d="M380,60 L398,108"/>
+        <text class="svg-label center small muted" x="350" y="175">TX/RX through one sub-device;</text>
+        <text class="svg-label center small muted" x="350" y="190">survives hot-unplug of the other</text>
+        <rect class="svg-box c4" x="500" y="20" width="200" height="40"/><text class="svg-label center bold" x="600" y="40">one NIC port (DPDK port)</text>
+        <rect class="svg-box c4" x="500" y="60" width="200" height="34"/><text class="svg-label center small" x="600" y="77">hardware aggregation (e.g. LAG)</text>
+        <rect class="svg-box c7" x="510" y="110" width="80" height="40"/><text class="svg-label center small" x="550" y="130">phys 1</text>
+        <rect class="svg-box c7" x="610" y="110" width="80" height="40"/><text class="svg-label center small" x="650" y="130">phys 2</text>
+        <path class="svg-arrow c4" d="M560,94 L552,108"/><path class="svg-arrow c4" d="M640,94 L648,108"/>
+        <text class="svg-label center small muted" x="600" y="175">count_aggr_ports() = 2;</text>
+        <text class="svg-label center small muted" x="600" y="190">map_aggr_tx_affinity(txq, 1|2)</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>Three ways to make one port out of several. Only the right-hand one is visible to <code>rte_eth_dev_count_aggr_ports()</code>.</figcaption>
+    </figure>
+
+    <h3 id="bonding">Bonding</h3>
+    <p>The bonding PMD (<span class="src-path">drivers/net/bonding/</span>, API in <code>rte_eth_bond.h</code>) creates a port with <code>rte_eth_bond_create(name, mode, socket)</code>, adds members with <code>rte_eth_bond_member_add(bond, port)</code> (26.11 says "member"; the old word "slave" is gone) and then is configured and started like any port. It needs to set the members' MAC address: with <code>net_ring</code> members (no <code>mac_addr_set</code>) the bond refused to start, so the program uses two net_tap members. Modes:</p>
+    <div class="table-wrap"><table class="compact">
+      <thead><tr><th>mode</th><th>TX behaviour</th><th>needs</th></tr></thead>
+      <tbody>
+        <tr><td>0 <code>BONDING_MODE_ROUND_ROBIN</code></td><td>packet k to member k mod n: reorders flows</td><td>nothing</td></tr>
+        <tr><td>1 <code>BONDING_MODE_ACTIVE_BACKUP</code></td><td>only the primary sends; failover on link loss</td><td>member link status</td></tr>
+        <tr><td>2 <code>BONDING_MODE_BALANCE</code></td><td>hash of L2, L2+L3 or L3+L4 headers picks the member: flows stay in order</td><td><code>rte_eth_bond_xmit_policy_set()</code></td></tr>
+        <tr><td>3 <code>BONDING_MODE_BROADCAST</code></td><td>every packet on every member</td><td>nothing</td></tr>
+        <tr><td>4 <code>BONDING_MODE_8023AD</code></td><td>LACP (IEEE 802.3ad) aggregation with a switch</td><td>an LACP partner, and rx/tx calls at least every 100 ms</td></tr>
+        <tr><td>5 <code>BONDING_MODE_TLB</code></td><td>adaptive: send on the least-loaded member</td><td>nothing</td></tr>
+        <tr><td>6 <code>BONDING_MODE_ALB</code></td><td>TLB plus receive balancing via ARP replies</td><td>IPv4 peers that use ARP</td></tr>
+      </tbody>
+    </table></div>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/bonding_modes.c (lines 112-134)</span><span class="lang">C</span></div>
+<pre data-lines data-start="112" data-hl="124"><code class="language-c">make_bond(const char *name, uint8_t mode, int policy)
+{
+	int bond = rte_eth_bond_create(name, mode, rte_socket_id());
+	unsigned i;
+
+	if (bond &lt; 0) {
+		printf("bond_create(%s) -&gt; %s\n", name, rcname(bond));
+		return bond;
+	}
+	if (policy &gt;= 0)
+		rte_eth_bond_xmit_policy_set(bond, policy);
+	for (i = 0; i &lt; 2; i++)
+		if (rte_eth_bond_member_add(bond, mem[i]) != 0)
+			printf("member_add(%u) failed\n", mem[i]);
+	rte_eth_dev_callback_register(bond, RTE_ETH_EVENT_INTR_LSC, on_lsc, NULL);
+	if (ch12_port_init(bond, 1, 1, mp, &amp;(struct rte_eth_conf){
+			.intr_conf.lsc = 1 }, NULL, 1) &lt; 0)
+		printf("bond start failed\n");
+	rte_delay_ms(50);	/* let link polling mark members up */
+	for (i = 0; i &lt; 2; i++)
+		rte_eth_stats_reset(mem[i]);
+	return bond;
+}</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./bonding_modes -l 0 --no-pci --no-huge -m 256 --file-prefix=ch12-bond</span>
+<span class="dim">(EAL start-up lines omitted)</span>
+members: port 0 (ch12tapb0) and port 1 (ch12tapb1)
+<span class="hl">    [event] LSC on bond port 2: link up</span>
+  mode 0 round-robin                 sent 1000  member0  500  member1  500
+<span class="hl">    [event] LSC on bond port 2: link up</span>
+  mode 2 balance, L2 hash            sent 1000  member0    0  member1 1000
+<span class="hl">    [event] LSC on bond port 2: link up</span>
+  mode 2 balance, L23 hash           sent 1000  member0  500  member1  500
+<span class="hl">    [event] LSC on bond port 2: link up</span>
+  mode 2 balance, L34 hash           sent 1000  member0 1000  member1    0
+<span class="hl">    [event] LSC on bond port 2: link up</span>
+  mode 3 broadcast                   sent 1000  member0 1000  member1 1000
+<span class="hl">    [event] LSC on bond port 2: link up</span>
+  mode 5 TLB (adaptive tx)           sent 1000  member0 1000  member1    0
+
+mode 1 active-backup and failover:
+<span class="hl">    [event] LSC on bond port 2: link up</span>
+    active members: 0 1  (primary 0)
+  both members up                    sent 1000  member0 1000  member1    0
+    rte_eth_dev_set_link_down(member 0) (the primary&#x27;s cable is pulled)
+    member 0 link is down, but the bond still says:
+    active members: 0 1  (primary 0)
+  primary link down (not noticed)    sent    0  member0    0  member1    0
+    active members: 0 1  (primary 0)
+    rte_eth_bond_member_remove(member 0)
+<span class="dim">ETHDEV: Port 0 must be stopped to allow reset</span>
+    active members: 1  (primary 1)
+  after removing the primary         sent 1000  member0    0  member1 1000
+
+hardware aggregated ports (rte_eth_dev_count_aggr_ports):
+  member0 0, member1 0, bond 0  (0 = not a HW-aggregated port)
+  rte_eth_dev_map_aggr_tx_affinity(bond, 0, 1) -&gt; -ENOTSUP
+mbufs still in use: 0</pre>
+</div>
+    <p class="output-caption">(The repeated <i>Device with port_id=N already stopped</i> lines, printed when the bond reconfigures its members, are left out.) Balance mode is only as good as the hash input. All 16 flows share one MAC pair, so <b>L2</b> sends everything to one member. <b>L23</b> splits on the 16 source IPs. <b>L34</b> XORs IP and port; the program changed both together, the XOR came out even every time, and all 1,000 went to member 0. TLB depends on recent load, so its split changes from run to run. In active-backup, removing the primary failed over at once, but <b>pulling the primary's link did not</b>: 1,000 packets sent into a dead link.</p>
+
+    <div class="callout pitfall"><div class="callout-title">Pitfall: the bond trusts the LSC flag</div><p>The bond watches a member's link with an LSC callback if the member sets <code>RTE_ETH_DEV_INTR_LSC</code> in <code>dev_flags</code>, and polls it only otherwise (<span class="src-path">drivers/net/bonding/rte_eth_bond_pmd.c</span>). net_tap sets the flag but never raises the event, so the bond never learns that the link went down. The same trap catches your own code (section 8, fault 3). Test failover on the real NIC you deploy on.</p></div>
+
+    <div class="widget" id="w-bond">
+      <div class="widget-head"><span class="widget-title">Bonding mode selector</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="ctl-row">
+          <label>mode <select id="bond-mode">
+            <option value="rr">0 round-robin</option><option value="ab">1 active-backup</option>
+            <option value="l2">2 balance L2</option><option value="l23">2 balance L23</option><option value="l34" selected>2 balance L34</option>
+            <option value="bc">3 broadcast</option><option value="tlb">5 TLB</option></select></label>
+          <label><input type="checkbox" id="bond-cable"> pull member 0's cable</label>
+          <label>member link events <select id="bond-lsc"><option value="nic">raised (real NIC / polled)</option><option value="tap">flag set, never raised (net_tap)</option></select></label>
+        </div>
+        <div class="scroll-x"><svg class="wide-svg" viewBox="0 0 640 200" role="img" aria-label="Packets from the app enter the bond and fan out to member 0 and member 1 according to the mode"></svg></div>
+        <p class="small">The balance modes use the bonding PMD's own hash functions, ported to JavaScript and fed the 16 flows of <code>bonding_modes.c</code>. Their split of 1,000 packets matches the program's output:</p>
+        <div class="table-wrap"><table class="compact"><thead><tr><th>policy</th><th class="num">member 0</th><th class="num">member 1</th></tr></thead><tbody id="bond-check"></tbody></table></div>
+      </div>
+    </div>
+
+    <h3 id="failsafe">Failsafe</h3>
+    <p>net_failsafe (<span class="src-path">doc/guides/nics/fail_safe.rst</span>) was made for VMs whose fast NIC (an SR-IOV VF) can be hot-unplugged during live migration: the app keeps one stable port, and failsafe switches between a preferred sub-device and a fallback, re-applying the configuration when the preferred device comes back. You declare the sub-devices in its devargs, <code>dev(...)</code> for each. In testpmd:</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre>########## 7. failsafe in testpmd (commands fed on stdin)
+<span class="prompt">$ </span><span class="cmd">(show port info 0; start; sleep 2; stop; show port stats 0; show port xstats 0; quit) | \</span>
+  dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch12-fs \
+  --vdev=&#x27;net_failsafe0,dev(net_null0,size=128),dev(net_ring0)&#x27; -- -i --total-num-mbufs=8192 --forward-mode=txonly
+<span class="dim">(EAL start-up lines omitted)</span>
+<span class="dim">EAL: Device net_null0 is already probed</span>
+<span class="dim">EAL: Device net_ring0 is already probed</span>
+<span class="dim">Warning: NUMA should be configured manually by using --port-numa-config and --ring-numa-config parameters along with --numa.</span>
+<span class="dim">testpmd: create a new mbuf pool &lt;mb_pool_0&gt;: n=8192, size=2176, socket=0</span>
+<span class="dim">testpmd: preferred mempool ops selected: ring_mp_mc</span>
+
+<span class="dim">Warning! port-topology=paired and odd forward ports number, the last port will pair with itself.</span>
+
+<span class="dim">NET_FAILSAFE: Operation rte_eth_dev_mac_addr_set failed for sub_device 1 with error -95</span>
+<span class="dim">NET_FAILSAFE: Promiscuous mode disable failed for subdevice 1</span>
+<span class="dim">NET_FAILSAFE: All-multicast mode disable failed for subdevice 1</span>
+Interactive-mode selected
+Set txonly packet forwarding mode
+Configuring Port 0 (socket 0)
+Port 0: 5A:89:2F:33:35:E6
+Checking link statuses...
+testpmd&gt; show port info 0
+testpmd&gt; start
+testpmd&gt; stop
+testpmd&gt; show port stats 0
+testpmd&gt; show port xstats 0
+Done
+
+********************* Infos for port 0  *********************
+MAC address: 5A:89:2F:33:35:E6
+Device name: net_failsafe0
+Driver name: net_failsafe
+Firmware-version: not available
+Devargs: dev(net_null0,size=128),dev(net_ring0)
+Connect to socket: 0
+memory allocation on the socket: 0
+Link status: up
+Link speed: 10 Gbps
+Link duplex: full-duplex
+Autoneg status: On
+MTU: 1500
+Minimum MTU: 68
+Maximum MTU: 65535
+Promiscuous mode: enabled
+Allmulticast mode: disabled
+Maximum number of MAC addresses: 1
+Maximum number of MAC addresses of hash filtering: 0
+VLAN offload: 
+  strip off, filter off, extend off, qinq strip off
+No RSS offload flow type is supported.
+Minimum size of RX buffer: 0
+Maximum configurable length of RX packet: 4294967295
+Maximum configurable size of LRO aggregated packet: 0
+Rx split:
+	Max segments: 0
+Current number of RX queues: 1
+Max possible RX queues: 16
+Max possible number of RXDs per queue: 65535
+Min possible number of RXDs per queue: 0
+RXDs number alignment: 1
+Current number of TX queues: 1
+Max possible TX queues: 16
+Max possible number of TXDs per queue: 65535
+Min possible number of TXDs per queue: 0
+TXDs number alignment: 1
+Max segment number per packet: 65535
+Max segment number per MTU/TSO: 65535
+Device capabilities: 0x3( RUNTIME_RX_QUEUE_SETUP RUNTIME_TX_QUEUE_SETUP )
+Device error handling mode: none
+Device private info:
+  none</pre>
+</div>
+    <p>and after two seconds of <code>txonly</code> forwarding:</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre>  ######################## NIC statistics for port 0  ########################
+  RX-packets: 302592     RX-missed: 0          RX-bytes:  38731776
+  RX-errors: 0
+  RX-nombuf:  0         
+  TX-packets: 168124288  TX-errors: 0          TX-bytes:  10759954432
+
+  Throughput (since last show)
+  Rx-pps:            0          Rx-bps:            0
+  Tx-pps:            0          Tx-bps:            0
+  ############################################################################
+###### NIC extended statistics for port 0 
+rx_good_packets: 302592
+tx_good_packets: 168124288
+rx_good_bytes: 38731776
+tx_good_bytes: 10759954432
+rx_missed_errors: 0
+rx_errors: 0
+tx_errors: 0
+rx_mbuf_allocation_errors: 0
+rx_q0_packets: 0
+rx_q0_bytes: 0
+tx_q0_packets: 0
+tx_q0_bytes: 0
+rx_sub0_good_packets: 302592
+tx_sub0_good_packets: 168124288
+rx_sub0_good_bytes: 38731776
+tx_sub0_good_bytes: 10759954432
+rx_sub0_missed_errors: 0
+rx_sub0_errors: 0
+tx_sub0_errors: 0
+rx_sub0_mbuf_allocation_errors: 0
+rx_sub0_q0_packets: 302592
+rx_sub0_q0_bytes: 38731776
+tx_sub0_q0_packets: 168124288
+tx_sub0_q0_bytes: 10759954432</pre>
+</div>
+    <p class="output-caption">One port, <code>net_failsafe</code>, with <code>Device capabilities: 0x3 (RUNTIME_RX_QUEUE_SETUP RUNTIME_TX_QUEUE_SETUP)</code> and <code>Device error handling mode: none</code>. The warnings at start-up come from sub-device 1 (net_ring) refusing MAC and promiscuous changes: failsafe forwards each call to every sub-device. All traffic went through sub 0 (<code>tx_sub0_good_packets</code>); sub 1 is the idle fallback. The xstats are prefixed per sub-device, and the per-queue counters are xstats here too.</p>
+
+    <h3 id="aggr">Hardware aggregated ports</h3>
+    <p>Some NICs (for example mlx5 in a bonding/LAG configuration) aggregate two physical ports in hardware and present <em>one</em> DPDK port. There is no member list to manage; instead, <code>rte_eth_dev_count_aggr_ports(port)</code> returns how many physical ports are behind it, and <code>rte_eth_dev_map_aggr_tx_affinity(port, tx_queue, affinity)</code> pins a TX queue to physical port <code>affinity</code> (1..n; 0 means "let the NIC choose"). Both are stable API in 26.11. Our bond and its tap members all returned 0, and the affinity call <code>-ENOTSUP</code>: software bonding is not hardware aggregation, and code that wants affinity must check for a count of at least 2 first.</p>
+
+    <!-- ============================================================ pitfalls -->
+    <h2 id="pitfalls">Common pitfalls</h2>
+    <ul>
+      <li><strong>Treating <code>-ENOTSUP</code> as fatal</strong>: half the control API is optional. Probe once, record a capability, continue with a fallback.</li>
+      <li><strong>Looking for <code>stats.q_ipackets[]</code></strong>: gone in 26.11, along with queue-stats mapping and <code>rx_qN_errors</code>. Read <code>rx_qN_packets</code> as an xstat, by id.</li>
+      <li><strong>Waiting for an LSC callback that never comes</strong>: net_tap (and any PMD that sets the flag without raising the event) needs link polling with <code>rte_eth_link_get_nowait()</code>. Bonding falls into the same trap.</li>
+      <li><strong>Calling <code>rte_eth_link_get()</code> on the data path</strong>: it may block for seconds on a real NIC. Use <code>_nowait</code>.</li>
+      <li><strong>Closing or reconfiguring a port inside its own event callback</strong>: set a flag, or <code>rte_eal_alarm_set()</code>, and do it outside.</li>
+      <li><strong>Using the port id in a NEW callback</strong>: the port is not attached yet (<code>Invalid port_id</code>).</li>
+      <li><strong>Freeing a removed RX/TX callback immediately</strong> while other lcores poll that queue: use-after-free. Wait for quiescence (RCU, ch14).</li>
+      <li><strong>Trusting <code>rx_deferred_start</code></strong>: tap and pcap ignore it; null and ring reject it with <code>-ENOTSUP</code> and the port still starts with the queue unset. Check the queue state after start.</li>
+      <li><strong>Assuming <code>rx_queue_stop()</code> stops packets</strong>: on tap/pcap it is bookkeeping only. Stop polling first, drain, then stop; expect a backlog on restart.</li>
+      <li><strong>Trusting a composite's <code>dev_capa</code></strong>: failsafe advertises runtime queue setup that its sub-device refuses, and the failed attempt released the queue.</li>
+      <li><strong>Reconfiguring while a worker still polls</strong>: pause the data path and wait for its acknowledgement before <code>rte_eth_dev_stop()</code>.</li>
+      <li><strong>Freeing the pool before closing the ports, or never draining software rings</strong>: <code>rte_mempool_in_use_count()</code> must be 0 at the end; 2,038 here when two drains were skipped.</li>
+      <li><strong>Retrying <code>tx_burst</code> forever in a shared loop</strong>: head-of-line blocking of every other port. Bound retries; drop or buffer per destination.</li>
+      <li><strong>Believing a flat counter</strong>: <code>net_pcap infinite_rx</code> fails allocations without counting, <code>net_ring</code> never counts <code>oerrors</code>, and no PMD counts what <code>tx_burst</code> refused.</li>
+      <li><strong>Setting MTU 9000 with 2 KB mbufs</strong>: frames do not fit. Enlarge the data room or enable scatter.</li>
+    </ul>
+
+    <!-- ============================================================ quiz -->
+    <h2 id="check">Check your understanding</h2>
+    <div class="quiz" data-quiz>
+      <div class="quiz-head">Five questions</div>
+      <div class="q" data-answer="1" data-explain="ethdev returns -ENOTSUP when the PMD's eth_dev_ops entry is NULL. It is information about the driver, not a bug in the call.">
+        <div class="q-text"><code>rte_eth_dev_set_mtu()</code> returns <code>-ENOTSUP</code> on a started net_ring port. What does that mean?</div>
+        <div class="q-opts">
+          <button class="q-opt">The port must be stopped first</button>
+          <button class="q-opt">net_ring has no mtu_set op; no state will make it work</button>
+          <button class="q-opt">The MTU is outside min_mtu..max_mtu</button>
+        </div>
+      </div>
+      <div class="q" data-answer="2" data-explain="26.11 removed the q_* arrays and the queue-stats mapping. Per-queue counters are xstats such as rx_q1_packets; look the id up once with rte_eth_xstats_get_id_by_name, then read it with rte_eth_xstats_get_by_id.">
+        <div class="q-text">You need the packet count of RX queue 1 every 100 ms in 26.11. Best way?</div>
+        <div class="q-opts">
+          <button class="q-opt"><code>stats.q_ipackets[1]</code> from <code>rte_eth_stats_get()</code></button>
+          <button class="q-opt">Dump all xstats and strcmp each name</button>
+          <button class="q-opt">Look up the id of <code>rx_q1_packets</code> once, then <code>rte_eth_xstats_get_by_id()</code></button>
+        </div>
+      </div>
+      <div class="q" data-answer="0" data-explain="A callback runs in the thread that noticed the event (dpdk-intr, a PMD thread, or the caller of probe/close) while the lcores keep polling. Closing the port from its own callback is unsafe; record the event and defer.">
+        <div class="q-text">Your LSC callback decides the port must be restarted. What should it do?</div>
+        <div class="q-opts">
+          <button class="q-opt">Set a flag (or schedule an alarm) and return; the control thread pauses the data path and restarts</button>
+          <button class="q-opt">Call rte_eth_dev_stop/configure/start right there; it already runs on the main lcore</button>
+          <button class="q-opt">Call rte_eth_dev_reset(), which is safe from any thread</button>
+        </div>
+      </div>
+      <div class="q" data-answer="1" data-explain="queue_ctl Part B: tap's rx_queue_stop only writes the state, rx_burst still returned 124 packets, and frames queued while stopped arrived after restart. Stop polling, drain, then stop.">
+        <div class="q-text">On net_tap you call <code>rte_eth_dev_rx_queue_stop(port, 1)</code> and the call returns 0. What happens if an lcore keeps polling queue 1?</div>
+        <div class="q-opts">
+          <button class="q-opt">rx_burst returns 0: the queue is disabled</button>
+          <button class="q-opt">It still receives packets: the stop was bookkeeping only</button>
+          <button class="q-opt">The process crashes</button>
+        </div>
+      </div>
+      <div class="q" data-answer="2" data-explain="In passive mode the app owns recovery: quiesce, stop, rte_eth_dev_reset, then configure, set up ALL queues again and start. In proactive mode the PMD recovers and reports RECOVERY_SUCCESS/FAILED.">
+        <div class="q-text">A PMD with <code>err_handle_mode = PASSIVE</code> raises <code>INTR_RESET</code>. Which order is right after the callback sets its flag?</div>
+        <div class="q-opts">
+          <button class="q-opt">rte_eth_dev_reset, then pause the data path</button>
+          <button class="q-opt">Wait for RECOVERY_SUCCESS</button>
+          <button class="q-opt">pause data path, stop, rte_eth_dev_reset, configure + all queue setups + start, resume</button>
+        </div>
+      </div>
+      <div class="controls"><button class="btn small quiz-reset" type="button">Reset</button></div>
+    </div>
+
+    <!-- ============================================================ exercises -->
+    <h2 id="exercises">Exercises</h2>
+    <div class="exercise">
+      <div class="box-title">Exercise 1 <span class="tag easy">easy</span></div>
+      <p>Add an LSC callback to a net_tap port and toggle the kernel link with <code>ip link set ... down/up</code>. Explain why the callback never fires, then detect the changes by polling instead, without touching the data path.</p>
+      <details><summary>Hint</summary><p>grep <code>rte_eth_dev_callback_process</code> in <span class="src-path">drivers/net/tap/</span>. A self-re-arming <code>rte_eal_alarm_set()</code> runs in the same thread a real LSC callback would.</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/lsc_poll.c</code>. Its output:</p>
+      <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./lsc_poll -l 0 --no-pci --no-huge -m 64 --file-prefix=ch12-lsc --vdev=net_tap0,iface=ch12tap6</span>
+<span class="dim">(EAL start-up lines omitted)</span>
+      0.0 ms  port 0 link UP  (source: 50 ms link poll)
+  ip link set ch12tap6 down
+    250.4 ms  port 0 link DOWN  (source: 50 ms link poll)
+  ip link set ch12tap6 up
+    550.7 ms  port 0 link UP  (source: 50 ms link poll)
+real LSC callbacks: 0, changes found by polling: 3</pre>
+</div>
+      </details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 2 <span class="tag medium">medium</span></div>
+      <p>Write a monitor that reads only <code>rx_good_packets</code> of port 0 every 100 ms with the by-id API and prints packets per second. Measure how long one <code>rte_eth_xstats_get_by_id()</code> call takes compared with a full <code>rte_eth_xstats_get_names()</code> + <code>rte_eth_xstats_get()</code> + strcmp (median of 5, min/max).</p>
+      <details><summary>Hint</summary><p><code>xstat()</code> in <code>ch12_common.h</code> looks the id up every call; split it into a look-up at start-up and a read in the loop. Time with <code>rte_rdtsc()</code> around 1,000 calls.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 3 <span class="tag medium">medium</span></div>
+      <p>Change <code>rxtx_latency</code> so that a second lcore polls the ports while the main lcore removes the callbacks. Make the removal safe: no packet may reach a freed callback.</p>
+      <details><summary>Hint</summary><p>After <code>rte_eth_remove_rx_callback()</code>, wait until the polling lcore has completed one full loop iteration (a per-lcore counter it increments each loop), then <code>rte_free()</code>. ch14 replaces the counter with <code>rte_rcu_qsbr</code>.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 4 <span class="tag stretch">stretch</span></div>
+      <p>In <code>bonding_modes</code>, generate 16 flows whose source IPs and ports vary independently (for example <code>port = 1000 + 7 * i</code>) and compare the L2, L23 and L34 splits. Predict them first with the JavaScript hash in the widget, then check with the program.</p>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 5 <span class="tag stretch">stretch</span></div>
+      <p>Make <code>failure_lab --mode reset</code> survive a reset requested while two lcores forward on the port: each must acknowledge the pause, and neither may call a burst function on the old port id after the re-probe.</p>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 6 <span class="tag medium">medium</span></div>
+      <p>Drain and stop RX queue 1 of a running 2-queue tap port without stopping the port, then restart it, and prove that no mbuf leaked and no stale frame reached the application.</p>
+      <details><summary>Hint</summary><p>Order: stop polling, drain until several empty polls, <code>rx_queue_stop</code>, ..., <code>rx_queue_start</code>, drain and discard the backlog, resume. Compare <code>rte_mempool_in_use_count()</code> with a baseline taken after start.</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/drain_restart.c</code>. Its output:</p>
+      <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./drain_restart -l 0 --no-pci --no-huge -m 128 --file-prefix=ch12-dr --vdev=net_tap0,iface=ch12tap7</span>
+<span class="dim">(EAL start-up lines omitted)</span>
+baseline in_use (mbufs the tap PMD keeps per RX queue) = 2
+traffic: q0 112, q1 188
+1-2. stopped polling q1, drained 188 in-flight frames
+3.   rx_queue_stop(q1) -&gt; OK, rxq_state [1,0]
+     while stopped: q0 got 112 (q1 not polled)
+4.   rx_queue_start(q1) -&gt; OK, rxq_state [1,1]
+5.   discarded 188 stale frames, resuming q1
+traffic: q0 112, q1 188
+<span class="ok">in_use = 2 (baseline 2) -&gt; no leak</span>
+<span class="ok">after close in_use = 0 -&gt; PASS</span></pre>
+</div>
+      </details>
+    </div>
+
+    <!-- ============================================================ summary -->
+    <section class="summary-box">
+      <div class="box-title">Summary</div>
+      <ul>
+        <li>Every control call goes through an optional <code>eth_dev_ops</code> entry; <code>-ENOTSUP</code> means "this PMD lacks it", <code>-EBUSY</code> means "stop the port first", <code>-ENOSYS</code> here meant "offload not enabled".</li>
+        <li>Promiscuous mode turns off the destination-MAC filter (10/0/10 vs 10/10/10 on tap). MTU does not resize mbufs.</li>
+        <li><code>struct rte_eth_stats</code> has 8 port totals in 26.11; per-queue counters are xstats, read by id. PMDs count only what they choose to count.</li>
+        <li>Event callbacks run in the thread that noticed the event; keep them short and defer real work. tap never raises LSC: poll.</li>
+        <li>RX/TX burst callbacks run inside the burst calls, in list order; removing one does not free it.</li>
+        <li>Deferred start, queue start/stop and runtime setup are PMD-specific: measured behaviour differed on all five ports.</li>
+        <li>A restart costs microseconds on software ports and much more on hardware; pause the data path around it. Teardown has an order, and the proof is <code>in_use_count == 0</code>.</li>
+        <li>Pool dry, TX full, link flap and reset each have a counter signature; passive vs proactive <code>err_handle_mode</code> decides who recovers.</li>
+        <li>Bonding and failsafe make one port from several in software (with real limits); hardware aggregation is one port with <code>count_aggr_ports() &gt;= 2</code>.</li>
+      </ul>
+    </section>
+
+    <section class="references">
+      <h2 id="references">References</h2>
+      <ol>
+        <li>Poll Mode Driver guide: xstats, reset, error recovery. <span class="src-path">doc/guides/prog_guide/ethdev/ethdev.rst</span></li>
+        <li><span class="src-path">lib/ethdev/rte_ethdev.h</span> (control API, <code>struct rte_eth_stats</code>, events, <code>enum rte_eth_err_handle_mode</code>, <code>RTE_ETH_DEV_CAPA_*</code>) and <span class="src-path">lib/ethdev/rte_ethdev.c</span> (the -ENOTSUP/-EBUSY checks, <code>rte_eth_dev_capability_name</code>)</li>
+        <li><span class="src-path">lib/ethdev/rte_ethdev_telemetry.c</span> (<code>/ethdev/info</code> and <code>rxq_state</code>)</li>
+        <li>Release notes: removal of queue stats mapping. <span class="src-path">doc/guides/rel_notes/release_26_11.rst</span></li>
+        <li>Hotplug. <span class="src-path">doc/guides/prog_guide/device_hotplug.rst</span>; <span class="src-path">lib/eal/include/rte_dev.h</span> (device events); <span class="src-path">lib/eal/linux/eal_dev.c</span> (uevent parsing)</li>
+        <li>Burst callbacks sample. <span class="src-path">doc/guides/sample_app_ug/rxtx_callbacks.rst</span>, <span class="src-path">examples/rxtx_callbacks/main.c</span></li>
+        <li>Link status interrupt sample. <span class="src-path">doc/guides/sample_app_ug/link_status_intr.rst</span></li>
+        <li>Bonding. <span class="src-path">doc/guides/prog_guide/link_bonding_poll_mode_drv_lib.rst</span>, <span class="src-path">drivers/net/bonding/rte_eth_bond.h</span>, <span class="src-path">drivers/net/bonding/rte_eth_bond_pmd.c</span> (hashes, LSC vs polling), <span class="src-path">examples/bond/main.c</span></li>
+        <li>Failsafe. <span class="src-path">doc/guides/nics/fail_safe.rst</span>, <span class="src-path">drivers/net/failsafe/</span></li>
+        <li>Queue start/stop in virtual PMDs: <span class="src-path">drivers/net/tap/rte_eth_tap.c</span>, <span class="src-path">drivers/net/pcap/pcap_ethdev.c</span> (also <code>eof</code> and <code>infinite_rx</code>), <span class="src-path">drivers/net/ring/rte_eth_ring.c</span>, <span class="src-path">drivers/net/null/rte_eth_null.c</span></li>
+        <li>Switch representation and representors (ch20). <span class="src-path">doc/guides/prog_guide/ethdev/switch_representation.rst</span></li>
+        <li>Driver feature matrix. <span class="src-path">doc/guides/nics/overview.rst</span>, <span class="src-path">doc/guides/nics/features.rst</span></li>
+      </ol>
+    </section>
+
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../11-eal-services-timers/index.html"><span class="dir">&larr; Previous</span><span class="ttl">11 &middot; EAL Services in One Evolving App</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../13-observability-debugging/index.html"><span class="dir">Next &rarr;</span><span class="ttl">13 &middot; Observability and Debugging</span></a>
+    </nav>
+  </main>
+</div>
+<footer class="site-footer">DPDK from Zero to Expert: Building Fast Packet Processing in User Space &middot; DPDK 26.11</footer>
+
+<script src="../../assets/course.js"></script>
+<script src="ch12.js"></script>
+</body>
+</html>

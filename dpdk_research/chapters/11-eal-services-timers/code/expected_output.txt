@@ -1,0 +1,823 @@
+################ step 1: mini_l2fwd + rte_timer (one lcore)
+
+$ ./step1_timer -l 0 --file-prefix=ch11-s1 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-s1/mp_socket
+EAL: Selected IOVA mode 'VA'
+injected 64 frames into port 0
+timer hz 2700000000, stats every 1 s (PERIODICAL), stop after 3 s (SINGLE), rte_timer_manage every 100 us
+t=1s port 0: rx  84322848 (+84.32 Mpps)  tx  84322848  drop 0
+t=1s port 1: rx  84322848 (+84.32 Mpps)  tx  84322848  drop 0
+      (stats_cb runs in thread 'step1_timer', lcore 0)
+t=2s port 0: rx 168852928 (+84.53 Mpps)  tx 168852928  drop 0
+t=2s port 1: rx 168852928 (+84.53 Mpps)  tx 168852928  drop 0
+t=3s port 0: rx 253433952 (+84.58 Mpps)  tx 253433952  drop 0
+t=3s port 1: rx 253433952 (+84.58 Mpps)  tx 253433952  drop 0
+stop timer fired (SINGLE): state now not pending
+rte_timer_manage(): 29911 calls, average 125 cycles per call (includes the callbacks that ran)
+stats timer still pending: yes (PERIODICAL re-arms itself)
+after rte_timer_stop(): pending=0
+No timer statistics, RTE_LIBRTE_TIMER_DEBUG is disabled
+
+################ step 2: stats on a service lcore (-l 0,2 -S 2)
+
+$ ./step2_service -l 0,2 -S 2 --file-prefix=ch11-s2 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-s2/mp_socket
+EAL: Selected IOVA mode 'VA'
+service lcores: 1 (first = lcore 2, role SERVICE)
+injected 64 frames into port 0
+[before register] 0 service(s) registered:
+map service 0 -> lcore 2: 0
+rte_service_lcore_start(2): -114 (-EALREADY: rte_eal_init() started it already)
+[after register+map] 1 service(s) registered:
+  id 0  ch11_stats               MT_SAFE=0  app runstate=0  mapped to lcore 2: 1
+app runstate=0 for 200 ms: service calls = 0
+app runstate=1: service is now running on lcore 2
+t=1s port 0: rx  84309760 (+84.31 Mpps)  tx  84309728  drop 0
+t=1s port 1: rx  84311616 (+84.31 Mpps)  tx  84311616  drop 0
+      (stats_service runs in thread 'dpdk-worker2', lcore 2)
+t=2s port 0: rx 168482560 (+84.17 Mpps)  tx 168482560  drop 0
+t=2s port 1: rx 168484640 (+84.17 Mpps)  tx 168484672  drop 0
+t=3s port 0: rx 252541344 (+84.06 Mpps)  tx 252541344  drop 0
+t=3s port 1: rx 252543136 (+84.06 Mpps)  tx 252543168  drop 0
+lcore_stop while service still running: -16 (-EBUSY: it is the only lcore for a running service)
+lcore_stop after runstate_set(0): 0
+service: 69230296 calls, 69230293 idle (-EAGAIN), 3 busy; 250566 cycles in busy calls (83522 per report)
+service lcore 2 ran its loop 184853991 times
+Service ch11_stats Summary
+  ch11_stats: stats 1	calls 69230296	cycles 250566	avg: 0
+unregister: 0
+
+# step 2 again with an event_sw vdev: a driver registers its own service
+
+$ ./step2_service -l 0,2 -S 2 --file-prefix=ch11-s2ev --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 --vdev=event_sw0 -- --seconds 1
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-s2ev/mp_socket
+EAL: Selected IOVA mode 'VA'
+service lcores: 1 (first = lcore 2, role SERVICE)
+injected 64 frames into port 0
+[before register] 1 service(s) registered:
+  id 0  event_sw0_service        MT_SAFE=0  app runstate=0  mapped to lcore 2: 1
+map service 1 -> lcore 2: 0
+rte_service_lcore_start(2): -114 (-EALREADY: rte_eal_init() started it already)
+[after register+map] 2 service(s) registered:
+  id 0  event_sw0_service        MT_SAFE=0  app runstate=0  mapped to lcore 2: 1
+  id 1  ch11_stats               MT_SAFE=0  app runstate=0  mapped to lcore 2: 1
+app runstate=0 for 200 ms: service calls = 0
+app runstate=1: service is now running on lcore 2
+t=1s port 0: rx  82403424 (+82.40 Mpps)  tx  82403424  drop 0
+t=1s port 1: rx  82405408 (+82.41 Mpps)  tx  82405408  drop 0
+      (stats_service runs in thread 'dpdk-worker2', lcore 2)
+lcore_stop while service still running: -16 (-EBUSY: it is the only lcore for a running service)
+lcore_stop after runstate_set(0): 0
+service: 25055093 calls, 25055092 idle (-EAGAIN), 1 busy; 94908 cycles in busy calls (94908 per report)
+service lcore 2 ran its loop 78963952 times
+Service ch11_stats Summary
+  ch11_stats: stats 1	calls 25055093	cycles 94908	avg: 0
+unregister: 0
+
+# step 2 with the deprecated -s <coremask> (first lines only)
+
+$ ./step2_service -l 0,2 -s 0x4 --file-prefix=ch11-s2old --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --seconds 1
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: '-s <service-coremask>' is deprecated, and will be removed in a future release.
+EAL: 	Use '-S <service-corelist>' option instead.
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-s2old/mp_socket
+EAL: Selected IOVA mode 'VA'
+service lcores: 1 (first = lcore 2, role SERVICE)
+injected 64 frames into port 0
+[before register] 0 service(s) registered:
+
+# step 2 with -S 2 but lcore 2 missing from -l (first lines only)
+
+$ ./step2_service -l 0-1 -S 2 --file-prefix=ch11-s2nol --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --seconds 1
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Not all service cores were in the coremask. Please ensure -c or -l includes service cores
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-s2nol/mp_socket
+EAL: Selected IOVA mode 'VA'
+service lcores: 1 (first = lcore 2, role SERVICE)
+injected 64 frames into port 0
+
+################ step 3: keepalive watchdog, the worker hangs after 3 s
+
+$ ./step3_keepalive -l 0-2 -S 2 --file-prefix=ch11-s3 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --stall-after 3
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-s3/mp_socket
+EAL: Selected IOVA mode 'VA'
+main lcore 0 = control, lcore 1 = forwarding, lcore 2 = service
+injected 64 frames into port 0
+keepalive: ping every 250 ms; a core is declared dead after 3 pings without a mark
+[0.25s] relay: lcore 1 UNUSED -> MISSING (last seen 0 ms ago)
+t=1s port 0: rx  83337472 (+83.34 Mpps)  tx  83337472  drop 0
+t=1s port 1: rx  83339808 (+83.34 Mpps)  tx  83339808  drop 0
+t=2s port 0: rx 167060064 (+83.72 Mpps)  tx 167060064  drop 0
+t=2s port 1: rx 167062560 (+83.72 Mpps)  tx 167062560  drop 0
+[3.00s] lcore 1: simulating a hang (no forwarding, no mark_alive)
+t=3s port 0: rx 250826848 (+83.77 Mpps)  tx 250826848  drop 0
+t=3s port 1: rx 250826848 (+83.76 Mpps)  tx 250826848  drop 0
+EAL: Core MIA. Last seen 250ms ago.
+[3.25s] relay: lcore 1 MISSING -> DEAD (last seen 250 ms ago)
+EAL: Core died. Last seen 499ms ago.
+[3.50s] FAILURE CALLBACK: lcore 1 is dead (callback runs in thread 'step3_keepalive', lcore 0)
+[3.50s] relay: lcore 1 DEAD -> GONE (last seen 500 ms ago)
+[3.50s] lcore 1: back to work
+[3.75s] relay: lcore 1 GONE -> MISSING (last seen 0 ms ago)
+t=4s port 0: rx 292642304 (+41.82 Mpps)  tx 292642304  drop 0
+t=4s port 1: rx 292644672 (+41.82 Mpps)  tx 292644672  drop 0
+t=5s port 0: rx 376373216 (+83.73 Mpps)  tx 376373216  drop 0
+t=5s port 1: rx 376376128 (+83.73 Mpps)  tx 376376128  drop 0
+t=6s port 0: rx 459984416 (+83.61 Mpps)  tx 459984416  drop 0
+t=6s port 1: rx 459987168 (+83.61 Mpps)  tx 459987168  drop 0
+final keepalive state of lcore 1: MISSING (healthy)
+
+################ step 4: a cmdline shell on the main lcore
+
+$ (sleep 1.2; echo 'show stats'; echo 'set burst 8'; sleep 1.1; echo 'show stats'; echo 'set burst 999'; echo 'set burst 70000'; echo 'show keepalive'; echo stall; sleep 1.2; echo 'show keepalive'; echo bogus; echo help; echo quit ) | ./step4_cli -l 0-2 -S 2 --file-prefix=ch11-s4 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-s4/mp_socket
+EAL: Selected IOVA mode 'VA'
+injected 64 frames; shell on lcore 0, forwarding on lcore 1, timers on service lcore 2
+ch11> show stats
+port 0: rx 91682720 tx 91682688 drop 0  last second 85.24 Mpps
+port 1: rx 91683424 tx 91683456 drop 0  last second 85.24 Mpps
+burst 32
+ch11> set burst 8
+burst set to 8
+ch11> show stats
+port 0: rx 229392080 tx 229392080 drop 0  last second 122.39 Mpps
+port 1: rx 229393072 tx 229393080 drop 0  last second 122.39 Mpps
+burst 8
+ch11> set burst 999
+burst must be 1..64
+ch11> set burst 70000
+Bad arguments
+ch11> show keepalive
+lcore 1 keepalive state after last ping: ALIVE, failure callbacks so far: 0
+ch11> stall
+worker lcore 1 now hangs; keepalive should notice
+ch11> EAL: Core MIA. Last seen 249ms ago.
+EAL: Core died. Last seen 499ms ago.
+
+[keepalive] lcore 1 is dead -> releasing it (callback in thread 'dpdk-worker2', lcore 2)
+show keepalive
+lcore 1 keepalive state after last ping: ALIVE, failure callbacks so far: 1
+ch11> bogus
+Command not found
+ch11> help
+  show stats|keepalive: print counters or watchdog state
+  set burst <1..64>: RX burst size of the forwarding lcore
+  stall|help|quit
+ch11> quit
+
+shell closed, stopping
+housekeeping service: 65098200 calls, 16 ran timers
+
+################ step 5: rte_argparse + rte_cfgfile
+$ cat app.ini
+; Chapter 11 step 5 configuration, read with rte_cfgfile_load().
+; Format: INI. [section] headers, "name = value" entries, ';' starts a comment.
+; Command-line options override every value here.
+
+[forward]
+burst = 32
+; pairN = rx_port,tx_port : frames received on rx_port are sent on tx_port
+pair0 = 0,1
+pair1 = 1,0
+
+[stats]
+interval_ms = 500
+
+[keepalive]
+period_ms = 250
+stall_after = 0
+
+$ ./step5_options -l 0-2 -S 2 --file-prefix=ch11-s5 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --config app.ini --burst 16
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-s5/mp_socket
+EAL: Selected IOVA mode 'VA'
+config: loaded app.ini, 3 section(s)
+config: pair0 = 0,1 -> frames from port 0 go to port 1
+config: pair1 = 1,0 -> frames from port 1 go to port 0
+effective config: burst=16 (cli) stats-interval=500 ms (ini) ka=250 ms (ini) stall-after=0 s (ini) seconds=3 (default) shell=no
+injected 64 frames; forwarding on lcore 1, timers on service lcore 2
+t=0.5s port 0: rx 40163104 (80.33 Mpps) burst 16
+t=0.5s port 1: rx 40165840 (80.33 Mpps) burst 16
+t=1.0s port 0: rx 78565296 (76.80 Mpps) burst 16
+t=1.0s port 1: rx 78567616 (76.80 Mpps) burst 16
+t=1.5s port 0: rx 118668576 (80.21 Mpps) burst 16
+t=1.5s port 1: rx 118669952 (80.20 Mpps) burst 16
+t=2.0s port 0: rx 158566832 (79.80 Mpps) burst 16
+t=2.0s port 1: rx 158567664 (79.80 Mpps) burst 16
+t=2.5s port 0: rx 197405936 (77.68 Mpps) burst 16
+t=2.5s port 1: rx 197406960 (77.68 Mpps) burst 16
+t=3.0s port 0: rx 237493664 (80.18 Mpps) burst 16
+t=3.0s port 1: rx 237494768 (80.18 Mpps) burst 16
+keepalive failure callbacks: 0
+
+# step 5: keepalive settings from the command line, hang after 1 s
+
+$ ./step5_options -l 0-2 -S 2 --file-prefix=ch11-s5 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --config app.ini --ka-ms 100 --stall-after 1 --seconds 2
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-s5/mp_socket
+EAL: Selected IOVA mode 'VA'
+config: loaded app.ini, 3 section(s)
+config: pair0 = 0,1 -> frames from port 0 go to port 1
+config: pair1 = 1,0 -> frames from port 1 go to port 0
+effective config: burst=32 (ini) stats-interval=500 ms (ini) ka=100 ms (cli) stall-after=1 s (cli) seconds=2 (cli) shell=no
+injected 64 frames; forwarding on lcore 1, timers on service lcore 2
+t=0.5s port 0: rx 42284064 (84.57 Mpps) burst 32
+t=0.5s port 1: rx 42286336 (84.57 Mpps) burst 32
+t=1.0s port 0: rx 83431328 (82.29 Mpps) burst 32
+t=1.0s port 1: rx 83431936 (82.29 Mpps) burst 32
+[stall timer] worker lcore 1 now hangs
+EAL: Core MIA. Last seen 100ms ago.
+EAL: Core died. Last seen 199ms ago.
+
+[keepalive] lcore 1 is dead -> releasing it (callback in thread 'dpdk-worker2', lcore 2)
+t=1.5s port 0: rx 100295264 (33.73 Mpps) burst 32
+t=1.5s port 1: rx 100297504 (33.73 Mpps) burst 32
+t=2.0s port 0: rx 142488928 (84.39 Mpps) burst 32
+t=2.0s port 1: rx 142490272 (84.39 Mpps) burst 32
+keepalive failure callbacks: 1
+
+# step 5: the help text is generated by rte_argparse
+
+$ ./step5_options -l 0-2 -S 2 --file-prefix=ch11-s5 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --help
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-s5/mp_socket
+EAL: Selected IOVA mode 'VA'
+usage: step5_options [EAL options] -- [--config FILE] [--burst N] [--shell] ...
+
+descriptor: Chapter 11 evolving app: l2fwd + timers + service core + keepalive + shell.
+
+options:
+ -h, --help            show this help message and exit.
+ -c, --config          INI file with [forward] [stats] [keepalive] sections
+ -b, --burst           RX burst size, 1..64 (default 32)
+ -i, --stats-interval  stats period in ms (default 1000)
+ -k, --ka-ms           keepalive ping period in ms (default 250)
+ -a, --stall-after     make the worker hang after S seconds (0 = never)
+ -t, --seconds         run time in seconds without --shell (default 3)
+ --shell               run the interactive shell on the main lcore
+
+Precedence: built-in default < --config FILE < command line.
+
+# step 5: bad input
+
+$ ./step5_options -l 0-2 -S 2 --file-prefix=ch11-s5 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --burst abc
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-s5/mp_socket
+EAL: Selected IOVA mode 'VA'
+ARGPARSE: argument --burst expect an uint16 value!
+ARGPARSE: argument --burst parse value fail!
+argument error (-22)
+
+usage: step5_options [EAL options] -- [--config FILE] [--burst N] [--shell] ...
+
+descriptor: Chapter 11 evolving app: l2fwd + timers + service core + keepalive + shell.
+
+options:
+ -h, --help            show this help message and exit.
+ -c, --config          INI file with [forward] [stats] [keepalive] sections
+ -b, --burst           RX burst size, 1..64 (default 32)
+ -i, --stats-interval  stats period in ms (default 1000)
+ -k, --ka-ms           keepalive ping period in ms (default 250)
+ -a, --stall-after     make the worker hang after S seconds (0 = never)
+ -t, --seconds         run time in seconds without --shell (default 3)
+ --shell               run the interactive shell on the main lcore
+
+Precedence: built-in default < --config FILE < command line.
+[exit status 1]
+
+$ ./step5_options -l 0-2 -S 2 --file-prefix=ch11-s5 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --burst 200
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-s5/mp_socket
+EAL: Selected IOVA mode 'VA'
+burst 200 out of range 1..64
+[exit status 1]
+
+$ ./step5_options -l 0-2 -S 2 --file-prefix=ch11-s5 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --bogus
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-s5/mp_socket
+EAL: Selected IOVA mode 'VA'
+ARGPARSE: unknown argument --bogus!
+argument error (-22)
+
+usage: step5_options [EAL options] -- [--config FILE] [--burst N] [--shell] ...
+
+descriptor: Chapter 11 evolving app: l2fwd + timers + service core + keepalive + shell.
+
+options:
+ -h, --help            show this help message and exit.
+ -c, --config          INI file with [forward] [stats] [keepalive] sections
+ -b, --burst           RX burst size, 1..64 (default 32)
+ -i, --stats-interval  stats period in ms (default 1000)
+ -k, --ka-ms           keepalive ping period in ms (default 250)
+ -a, --stall-after     make the worker hang after S seconds (0 = never)
+ -t, --seconds         run time in seconds without --shell (default 3)
+ --shell               run the interactive shell on the main lcore
+
+Precedence: built-in default < --config FILE < command line.
+[exit status 1]
+
+$ ./step5_options -l 0-2 -S 2 --file-prefix=ch11-s5 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --config nope.ini
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-s5/mp_socket
+EAL: Selected IOVA mode 'VA'
+cannot load config file 'nope.ini'
+[exit status 1]
+$ cat bad.ini
+[forward]
+burst = lots
+
+$ ./step5_options -l 0-2 -S 2 --file-prefix=ch11-s5 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --config bad.ini
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-s5/mp_socket
+EAL: Selected IOVA mode 'VA'
+config: loaded bad.ini, 1 section(s)
+bad.ini: [forward] burst = 'lots' is not a number
+[exit status 1]
+
+# step 5 with the shell
+
+$ (sleep 1.2; echo 'show stats'; echo quit ) | ./step5_options -l 0-2 -S 2 --file-prefix=ch11-s5 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --config app.ini --shell
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-s5/mp_socket
+EAL: Selected IOVA mode 'VA'
+config: loaded app.ini, 3 section(s)
+config: pair0 = 0,1 -> frames from port 0 go to port 1
+config: pair1 = 1,0 -> frames from port 1 go to port 0
+effective config: burst=32 (ini) stats-interval=500 ms (ini) ka=250 ms (ini) stall-after=0 s (ini) seconds=3 (default) shell=yes
+injected 64 frames; forwarding on lcore 1, timers on service lcore 2
+ch11> show stats
+port 0: rx 89962048 tx 89962016 drop 0  last interval 83.65 Mpps
+port 1: rx 89963104 tx 89963136 drop 0  last interval 83.65 Mpps
+burst 32
+ch11> quit
+
+shell closed, stopping
+keepalive failure callbacks: 0
+
+################ side demo: EAL alarms
+
+$ ./alarm_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch11-alarm
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-alarm/mp_socket
+EAL: Selected IOVA mode 'VA'
+main()    runs in thread 'alarm_demo', rte_lcore_id() = an lcore
+
+--- 1. where an alarm runs ---
+where_cb  runs in thread 'dpdk-intr', rte_lcore_id() = LCORE_ID_ANY (not an lcore)
+          asked for +100.0 ms, ran at +100.4 ms (late by 0.37 ms)
+
+--- 2. periodic work by re-arming (5 ticks, 50 ms) ---
+tick_cb   at +  50.1 ms (0.0 ms since the previous tick)
+tick_cb   at + 100.2 ms (50.1 ms since the previous tick)
+tick_cb   at + 150.3 ms (50.1 ms since the previous tick)
+tick_cb   at + 200.4 ms (50.1 ms since the previous tick)
+tick_cb   at + 250.5 ms (50.1 ms since the previous tick)
+
+--- 3. cancelling ---
+cancel(never_cb, arg 2)            -> 1 (one alarm matched cb AND arg)
+cancel(never_cb, (void *)-1)       -> 2 (wildcard: every arg)
+cancel again                       -> 0, rte_errno=ENOENT
+self_cancel_cb: cancel(itself) from its own callback -> 0, rte_errno=EINPROGRESS
+
+--- 4. a blocking callback delays everyone ---
+slow_cb   at +  20.1 ms: sleeping 300 ms inside the interrupt thread (DON'T)
+slow_cb   done at + 320.2 ms
+victim_cb was due at +  70.0 ms, ran at + 320.3 ms: 250 ms late
+
+################ appendix: the EAL toolbox
+
+$ ./toolbox -l 0 --no-pci --no-huge -m 64 --file-prefix=ch11-tool
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-tool/mp_socket
+EAL: Selected IOVA mode 'VA'
+
+=== A. rte_common.h ===
+RTE_MIN(3, 9)=3  RTE_MAX(3, 9)=9  RTE_DIM(ports)=4
+RTE_ALIGN_CEIL(100, 64)=128  RTE_ALIGN_FLOOR(100, 64)=64  RTE_DIV_ROUND_UP(100, 64)=2
+rte_is_power_of_2(48)=0  rte_align32pow2(48)=64  RTE_CACHE_LINE_SIZE=64
+sizeof(packed wire_hdr)=7, sizeof(natural_hdr)=12 (seq at offset 1 vs 4)
+RTE_PTR_ADD(buf, 10) - buf = 10  RTE_PTR_DIFF = 10  RTE_PTR_SUB back == buf: yes
+container_of(&f.id, struct flow, id) == &f: yes
+
+=== B. random numbers ===
+rte_rand() x3 after rte_srand(42): 948c2d7b8865ba86 047fb116765d56a8 1d7714e8c9c6a2f0
+rte_rand_max(6) histogram of 60000 draws: 10021 9904 9964 10122 10025 9964
+rte_drand() = 0.266786 (a double in [0, 1))
+
+=== C. bit sets ===
+rte_bitset: count=3 first=3 test(64)=1 test(65)=0; set bits: 3 64 100
+rte_bitmap: 1048576 bits in 131392 bytes; get(700000)=1 get(6)=0
+rte_bitmap_scan: first slab at bit 0, slab=0x20
+rte_bitmap_scan: next  slab at bit 699968, slab=0x100000000 (bit 700000)
+
+=== D. rte_reciprocal ===
+rte_reciprocal_divide(a, 7) == a / 7 for 3.3M values: 0 errors
+cycles per division, median of 5 runs [min..max] (VM, gcc -O2):
+  a / d (DIV):            4.56 [4.27..4.79]
+  rte_reciprocal_divide:  1.74 [1.65..2.05]
+
+=== E. errors and strings ===
+rte_memzone_lookup(missing) -> (nil), rte_errno=2 (No such file or directory)
+rte_strerror(E_RTE_NO_CONFIG)="Missing rte_config structure" (DPDK-specific codes too)
+rte_strscpy("abc") -> 3
+rte_strscpy(too long) -> -7 (-E2BIG=-7), dst="net_rin" (always terminated)
+rte_strsplit -> 4 tokens: [10.11.0.1] [10.11.0.2] [] [eth1]
+
+=== F. rte_hexdump / rte_memdump ===
+wire_hdr (packed, 7 bytes) at [0x7ffdc4b20c68], len=7
+00000000: 11 EF BE AD DE 40 00                            | .....@.
+same bytes, rte_memdump: 11:ef:be:ad:de:40:00
+
+=== G. TAILQ lists ===
+flows after removing id 2: 1:dns 3:ssh
+
+=== H. rte_uuid ===
+parsed+unparsed: 6ba7b810-9dad-11d1-80b4-00c04fd430c8  is_null(a)=0 is_null(cleared)=1 compare=1
+
+################ exercise solutions
+
+$ ./ex1_timer_service -l 0,2 -S 2 --file-prefix=ch11-ex1 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-ex1/mp_socket
+EAL: Selected IOVA mode 'VA'
+injected 64 frames
+t=1s port 0: rx  81657056 (+81.66 Mpps)  tx  81657024  drop 0
+t=1s port 1: rx  81659136 (+81.66 Mpps)  tx  81659168  drop 0
+      (stats_cb runs in thread 'dpdk-worker2', lcore 2)
+t=2s port 0: rx 166764224 (+85.11 Mpps)  tx 166764224  drop 0
+t=2s port 1: rx 166766112 (+85.11 Mpps)  tx 166766112  drop 0
+t=3s port 0: rx 252541728 (+85.78 Mpps)  tx 252541696  drop 0
+t=3s port 1: rx 252543936 (+85.78 Mpps)  tx 252543968  drop 0
+timer service: 58021571 calls, 3 ran rte_timer_manage()
+
+$ ./ex3_manage_cost -l 0 --no-pci --no-huge -m 128 --file-prefix=ch11-ex3
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-ex3/mp_socket
+EAL: Selected IOVA mode 'VA'
+pending timers   cycles per rte_timer_manage() call, median [min..max] of 5 runs
+             0      5.0 [4.8..5.8]
+            10     41.8 [41.5..42.4]
+          1000     41.9 [41.5..42.3]
+        100000     41.8 [41.7..42.5]
+1000 expired timers in one call: 18510 cycles [18316..21018] = 19 cycles per callback; fired 5000
+
+$ ./ex4_burst_range -l 0 --no-pci --no-huge -m 64 --file-prefix=ch11-ex4 -- --burst 16
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-ex4/mp_socket
+EAL: Selected IOVA mode 'VA'
+burst = 16
+
+$ ./ex4_burst_range -l 0 --no-pci --no-huge -m 64 --file-prefix=ch11-ex4 -- --burst 0
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-ex4/mp_socket
+EAL: Selected IOVA mode 'VA'
+--burst: 0 is out of range 1..64
+ARGPARSE: argument --burst parse value fail!
+rte_argparse_parse -> -34, keeping burst=32
+[exit status 1]
+
+$ ./ex4_burst_range -l 0 --no-pci --no-huge -m 64 --file-prefix=ch11-ex4 -- --burst 100
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-ex4/mp_socket
+EAL: Selected IOVA mode 'VA'
+--burst: 100 is out of range 1..64
+ARGPARSE: argument --burst parse value fail!
+rte_argparse_parse -> -34, keeping burst=32
+[exit status 1]
+
+$ ./ex4_burst_range -l 0 --no-pci --no-huge -m 64 --file-prefix=ch11-ex4 -- --burst x
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-ex4/mp_socket
+EAL: Selected IOVA mode 'VA'
+ARGPARSE: argument x expect an uint16 value!
+--burst: 'x' is not a uint16
+ARGPARSE: argument --burst parse value fail!
+rte_argparse_parse -> -22, keeping burst=32
+[exit status 1]
+
+################ dpdk-cmdline-gen.py: generate the boilerplate from cmds.list
+$ cat cmds.list
+show stats
+set burst <UINT16>n
+show keepalive
+quit
+$ python3 $DPDK_SRC/buildtools/dpdk-cmdline-gen.py cmds.list | head -40
+/* File autogenerated by $DPDK_SRC/buildtools/dpdk-cmdline-gen.py */
+#ifndef GENERATED_COMMANDS_H
+#define GENERATED_COMMANDS_H
+
+#include <stdint.h>
+#include <rte_common.h>
+#include <cmdline.h>
+#include <cmdline_socket.h>
+#include <cmdline_parse_string.h>
+#include <cmdline_parse_num.h>
+#include <cmdline_parse_ipaddr.h>
+
+/* Auto-generated handling for command "show stats" */
+extern void
+cmd_show_stats_parsed(void *parsed_result, struct cmdline *cl, void *data);
+
+struct cmd_show_stats_result {
+	cmdline_fixed_string_t show;
+	cmdline_fixed_string_t stats;
+};
+
+static cmdline_parse_token_string_t cmd_show_stats_show_tok =
+	TOKEN_STRING_INITIALIZER(struct cmd_show_stats_result, show, "show");
+static cmdline_parse_token_string_t cmd_show_stats_stats_tok =
+	TOKEN_STRING_INITIALIZER(struct cmd_show_stats_result, stats, "stats");
+
+static cmdline_parse_inst_t cmd_show_stats = {
+	.f = cmd_show_stats_parsed,
+	.data = NULL,
+	.help_str = "",
+	.tokens = {
+		(void *)&cmd_show_stats_show_tok,
+		(void *)&cmd_show_stats_stats_tok,
+		NULL,
+	}
+};
+/* Auto-generated handling for command "set burst <UINT16>n" */
+extern void
+cmd_set_burst_parsed(void *parsed_result, struct cmdline *cl, void *data);
+
+
+################ prebuilt samples
+
+$ $E/dpdk-timer -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch11-tmr
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-tmr/mp_socket
+EAL: Selected IOVA mode 'VA'
+Starting mainloop on core 1
+Starting mainloop on core 0
+timer1_cb() on lcore 1
+timer1_cb() on lcore 0
+timer0_cb() on lcore 0
+timer1_cb() on lcore 1
+timer1_cb() on lcore 0
+timer1_cb() on lcore 1
+timer0_cb() on lcore 0
+timer1_cb() on lcore 0
+timer1_cb() on lcore 1
+timer1_cb() on lcore 0
+timer0_cb() on lcore 0
+timer1_cb() on lcore 1
+timer1_cb() on lcore 0
+timer1_cb() on lcore 1
+[stopped by SIGINT from timeout after 4s]
+# service_cores wants 6 lcores (5 service + main): with 4 it refuses its first profile
+
+$ $E/dpdk-service_cores -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch11-svc
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-svc/mp_socket
+EAL: Selected IOVA mode 'VA'
+insufficent cores to run (High Performance)
+==> Profile: High Performance
+
+Services Summary
+  service_1: stats 1	calls 1	cycles 0	avg: 0
+  service_2: stats 1	calls 1	cycles 0	avg: 0
+  service_3: stats 1	calls 1	cycles 0	avg: 0
+  service_4: stats 1	calls 1	cycles 0	avg: 0
+  service_5: stats 1	calls 1	cycles 0	avg: 0
+Service Cores Summary
+[stopped by SIGINT from timeout after 3s]
+
+$ $E/dpdk-l2fwd-keepalive -l 0-2 --no-pci --no-huge -m 256 --file-prefix=ch11-ka --vdev=net_ring0 --vdev=net_ring1 -- -p 0x3 -K 100 -T 2
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-ka/mp_socket
+EAL: Selected IOVA mode 'VA'
+Lcore 1: RX port 0
+Lcore 2: RX port 1
+Initializing port 0... Port 0, MAC address: 00:00:00:00:00:00
+
+Initializing port 1... Port 1, MAC address: 00:00:00:00:00:00
+
+
+Checking link statusdone
+Port 0 Link up at 10 Gbps FDX Fixed None
+Port 1 Link up at 10 Gbps FDX Fixed None
+L2FWD: entering main loop on lcore 1
+L2FWD:  -- lcoreid=1 portid=0
+L2FWD: entering main loop on lcore 2
+L2FWD:  -- lcoreid=2 portid=1
+EAL: Core MIA. Last seen 100ms ago.
+EAL: Core died. Last seen 200ms ago.
+Dead core 2 - restarting..
+L2FWD: entering main loop on lcore 2
+L2FWD:  -- lcoreid=2 portid=1
+
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                        0
+Packets received:                    0
+Packets dropped:                     0
+Statistics for port 1 ------------------------------
+Packets sent:                        0
+Packets received:                    0
+Packets dropped:                     0
+Aggregate statistics ===============================
+Total packets sent:                  0
+Total packets received:              0
+Total packets dropped:               0
+====================================================
+
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                        0
+Packets received:                    0
+Packets dropped:                     0
+Statistics for port 1 ------------------------------
+Packets sent:                        0
+Packets received:                    0
+Packets dropped:                     0
+Aggregate statistics ===============================
+Total packets sent:                  0
+Total packets received:              0
+Total packets dropped:               0
+====================================================
+[stopped by SIGINT from timeout after 5s]
+
+$ $E/dpdk-l2fwd-jobstats -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch11-js --vdev=net_ring0 --vdev=net_ring1 -- -p 0x3 -q 2 -T 2
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-js/mp_socket
+EAL: Selected IOVA mode 'VA'
+Lcore 0: RX port 0
+Lcore 0: RX port 1
+Initializing port 0... done:
+Port 0, MAC address: 00:00:00:00:00:00
+
+Initializing port 1... done:
+Port 1, MAC address: 00:00:00:00:00:00
+
+
+Checking link statusdone
+Port 0 Link up at 10 Gbps FDX Fixed None
+Port 1 Link up at 10 Gbps FDX Fixed None
+Setting forward job for port 0
+Setting forward job for port 1
+L2FWD: lcore 1: no ports so no jobs stats context initialization
+L2FWD: lcore 1 has nothing to do
+L2FWD: entering main loop on lcore 0
+L2FWD:  -- lcoreid=0 portid=0
+L2FWD:  -- lcoreid=0 portid=1
+
+Port statistics ===================================
+Statistics for port 0 ------------------------------
+Packets sent:                        0
+Packets received:                    0
+Packets dropped:                     0
+Statistics for port 1 ------------------------------
+Packets sent:                        0
+Packets received:                    0
+Packets dropped:                     0
+Aggregate statistics ===============================
+Total packets sent:                  0
+Total packets received:              0
+Total packets dropped:               0
+====================================================
+----------------
+LCore   0: statistics (time in ns, collected in      1329)
+Stat type                   total  %total        avg        min        max 
+Stats duration:           2106351
+Loop count:                  5196
+Exec time                  144543    6.9%         28         24      13977
+Management time           1120801   53.2%        216         17     172864
+Exec + management         1265344   60.1%        243         41     186841
+Idle (job)                 841007   39.9%        261         46      13977
+
+Job 0: port 0 fwd           
+Exec count:                  2786
+Exec period:                 1032
+Exec time                   72167    3.4%         26         24        659
+
+Job 1: port 1 fwd           
+Exec count:                  2785
+Exec period:                 1031
+Exec time                   71559    3.4%         26         24        186
+
+Job 2: flush                
+Exec count:                    21
+Exec period:               100037
+Exec time                     817    0.0%         39         35         75
+====================================================
+
+Port statistics ===================================
+Statistics for port 0 ------------------------------
+Packets sent:                        0
+Packets received:                    0
+Packets dropped:                     0
+Statistics for port 1 ------------------------------
+Packets sent:                        0
+Packets received:                    0
+Packets dropped:                     0
+Aggregate statistics ===============================
+Total packets sent:                  0
+Total packets received:              0
+Total packets dropped:               0
+====================================================
+----------------
+LCore   0: statistics (time in ns, collected in      1627)
+Stat type                   total  %total        avg        min        max 
+Stats duration:        2000142730
+Loop count:                218286
+Exec time                 7141545    0.4%         33         23     624896
+Management time          37930854    1.9%        174         16      38019
+Exec + management        45072399    2.3%        206         39     662916
+Idle (job)             1955070331   97.7%      10977         45     624896
+
+Job 0: port 0 fwd           
+Exec count:                100350
+Exec period:                38199
+Exec time                 3166676    0.2%         31         24      15978
+
+Job 1: port 1 fwd           
+Exec count:                100351
+Exec period:                38199
+Exec time                 3234021    0.2%         32         23      25293
+
+Job 2: flush                
+Exec count:                 19994
+Exec period:               100037
+Exec time                  740847    0.0%         37         33        341
+====================================================
+[stopped by SIGINT from timeout after 3s]
+
+$ (sleep 0.5; echo 'add obj1 10.11.0.1'; echo 'show obj1'; echo 'del obj1'; echo quit ) | $E/dpdk-cmdline -l 0 --no-pci --no-huge -m 64 --file-prefix=ch11-cmd
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch11-cmd/mp_socket
+EAL: Selected IOVA mode 'VA'
+example> add obj1 10.11.0.1
+Object obj1 added, ip=10.11.0.1
+example> show obj1
+Object obj1, ip=10.11.0.1
+example> del obj1
+Object obj1 removed, ip=10.11.0.1
+example> quit
+Command not found
+example> 
+################ done

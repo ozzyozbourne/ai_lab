@@ -1,0 +1,1407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>11 EAL Services in One Evolving App | DPDK from Zero to Expert</title>
+<meta name="description" content="Grow chapter 10's mini_l2fwd step by step: rte_timer for periodic stats, a stats service on a service lcore, a keepalive watchdog, a cmdline control shell and real options with rte_argparse and rte_cfgfile; plus EAL alarms, jobstats and the EAL toolbox.">
+<link rel="stylesheet" href="../../assets/course.css">
+<style>
+  /* ---- chapter 11 specific ---- */
+  .evo-bar { display: flex; flex-wrap: wrap; gap: .35rem; padding: .6rem 1rem 0; }
+  .evo-cap { padding: .5rem 1rem .8rem; font-size: .9rem; min-height: 3.2em; }
+  table.svc { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  table.svc th, table.svc td { padding: .3rem .4rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  table.svc td.c, table.svc th.c { text-align: center; }
+  table.svc th { white-space: normal; font-size: .76rem; }
+  .svc-st { font-size: .78rem; }
+  .svc-st.ok { color: var(--tip); } .svc-st.warn { color: var(--warn); } .svc-st.err { color: var(--pitfall); font-weight: 600; }
+  .svc-msg { font-size: .8rem; padding: .3rem 1rem .5rem; min-height: 1.6em; overflow-wrap: anywhere; }
+  .svc-msg.bad code { color: var(--pitfall); }
+  .svc-lcbar { display: flex; flex-wrap: wrap; gap: .4rem; padding: .5rem 1rem 0; align-items: center; }
+  .ka-bar { display: flex; flex-wrap: wrap; gap: .4rem; padding: .5rem 1rem; align-items: center; }
+  .ka-log { font-family: var(--font-mono); font-size: .74rem; max-height: 11rem; overflow-y: auto; margin: 0 1rem .8rem; padding: .4rem .6rem; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+  .ka-log .warn { color: var(--warn); } .ka-log .err { color: var(--pitfall); }
+  .cmd-inrow { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; padding: .7rem 1rem .3rem; }
+  .cmd-inrow input { font-family: var(--font-mono); font-size: .9rem; width: min(100%, 22rem); padding: .35rem .5rem; background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); border-radius: 4px; }
+  .cmd-ex-bar { display: flex; flex-wrap: wrap; gap: .3rem; padding: 0 1rem .4rem; }
+  .cmd-out { padding: .2rem 1rem; font-size: .82rem; }
+  .cmd-row { padding: .3rem 0; border-bottom: 1px dashed var(--border); overflow-wrap: anywhere; }
+  .cmd-f { font-size: .75rem; color: var(--text-muted); }
+  .tk { display: inline-block; font-family: var(--font-mono); font-size: .78rem; padding: .08rem .4rem; margin: .1rem .15rem; border-radius: 4px; border: 1px solid var(--border-strong); }
+  .tk-ok { background: var(--tip-bg); border-color: var(--tip); }
+  .tk-bad { background: var(--pitfall-bg); border-color: var(--pitfall); }
+  .tk-wait { opacity: .55; border-style: dashed; }
+  .tk-ok-t { color: var(--tip); font-weight: 600; } .tk-bad-t { color: var(--pitfall); font-weight: 600; }
+  .cmd-res { padding: .5rem 1rem .9rem; font-size: .9rem; }
+  .muted { color: var(--text-muted); }
+  .content p code, .content li code, .exercise code, .callout code { overflow-wrap: anywhere; }
+  .exercise .box-title { flex-wrap: wrap; overflow-wrap: anywhere; }
+  .twocol { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; }
+  @media (max-width: 760px) { .twocol { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <button class="btn small toc-toggle" type="button" aria-label="Table of contents">&#9776;</button>
+  <a class="brand" href="../../index.html"><span>DPDK</span> Zero to Expert</a>
+  <span class="crumb">Chapter 11 &middot; EAL Services in One Evolving App</span>
+  <button class="btn small theme-toggle" type="button">Theme</button>
+  <div class="progress-bar"></div>
+</header>
+
+<div class="page">
+  <nav class="sidebar" data-auto-toc aria-label="On this page"></nav>
+
+  <main id="main" class="content">
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../10-packet-headers-l2fwd/index.html"><span class="dir">&larr; Previous</span><span class="ttl">10 &middot; Parsing and Building Packets: lib/net, Checksums and l2fwd</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../12-port-control-stats-events/index.html"><span class="dir">Next &rarr;</span><span class="ttl">12 &middot; Port Control, Statistics, Events, Live Reconfiguration and Composite PMDs</span></a>
+    </nav>
+
+    <header class="chapter-header">
+      <div class="chapter-kicker">Chapter 11</div>
+      <h1>EAL Services in One Evolving App: Timers, Service Cores, Alarms, Keepalive, a Control Shell and App Options</h1>
+      <p class="chapter-subtitle">A forwarder that only forwards is a toy. Real applications also print statistics, run housekeeping, notice a stuck core, take operator commands and read a configuration file, all without slowing the poll loop. We grow chapter 10's <code>mini_l2fwd</code> through five steps, one EAL facility per step, and run every step on this machine.</p>
+      <ul class="meta-row">
+        <li><span class="badge level-intermediate">Intermediate</span></li>
+        <li><span class="badge">~100 min</span></li>
+        <li><span class="badge">Prerequisites: ch3, ch8, ch10</span></li>
+        <li><span class="tag api">rte_timer</span></li>
+        <li><span class="tag api">rte_service</span></li>
+        <li><span class="tag api">rte_keepalive</span></li>
+        <li><span class="tag api">cmdline</span></li>
+        <li><span class="tag api">rte_argparse</span></li>
+        <li><span class="tag api">rte_cfgfile</span></li>
+      </ul>
+    </header>
+
+    <section class="objectives">
+      <div class="box-title">Learning objectives</div>
+      <ul>
+        <li>Explain why periodic and control work must not sit inline in the poll loop, and choose between an <code>rte_timer</code>, a service on a service lcore, an EAL alarm and a control thread.</li>
+        <li>Arm SINGLE and PERIODICAL timers on a chosen lcore, drive them with <code>rte_timer_manage()</code>, and predict when they fire and what they cost.</li>
+        <li>Register a service, map it to a service lcore given with <code>-S</code>, and reason about the two runstates, MT safety, the statistics and the shutdown order.</li>
+        <li>Detect a stalled forwarding lcore with <code>rte_keepalive</code> and say exactly at which ping the failure callback fires.</li>
+        <li>Build an interactive shell from cmdline tokens and instructions, and drive it from a script.</li>
+        <li>Parse typed application options with <code>rte_argparse</code>, read an <code>.ini</code> file with <code>rte_cfgfile</code>, and apply a clear precedence.</li>
+        <li>Use the EAL toolbox and the <code>rte_common.h</code> macros the 26.11 way (<code>RTE_PTR_ADD</code> on pointers only, <code>__rte_packed_begin/end</code>).</li>
+      </ul>
+    </section>
+
+    <section class="tools-box">
+      <div class="box-title">Tools for this chapter</div>
+      <ul>
+        <li><code>code/run.sh</code>: builds everything with the <code>Makefile</code> (static <code>pkg-config libdpdk</code>) and runs every step with <code>--no-pci --no-huge -m 128</code>, two <code>net_ring</code> loopback ports and a unique <code>--file-prefix=ch11-*</code>. Its real output is <code>code/expected_output.txt</code>.</li>
+        <li>Prebuilt samples, called as <code>$DPDK_SRC/build/examples/dpdk-&lt;name&gt;</code>: <code>dpdk-timer</code>, <code>dpdk-service_cores</code>, <code>dpdk-l2fwd-keepalive</code>, <code>dpdk-l2fwd-jobstats</code>, <code>dpdk-cmdline</code>.</li>
+        <li><code>$DPDK_SRC/buildtools/dpdk-cmdline-gen.py</code>: generates cmdline boilerplate from a list of commands.</li>
+        <li>Four lcores are enough: the steps use at most <code>-l 0-2 -S 2</code>.</li>
+      </ul>
+    </section>
+
+    <!-- ===================================================== 1 -->
+    <h2 id="why"><span class="sec-num">1</span>Why an app needs background work</h2>
+    <p>Chapter 10 ended with <code>mini_l2fwd</code>: a loop that receives a burst, rewrites the MAC addresses and transmits it on the other port, forever. On this VM, with two <code>net_ring</code> loopback ports, that loop moves around 80 million frames per second in software. At 2.7 GHz that is about 32 CPU cycles per frame. Now ask what else a real application must do:</p>
+    <ul>
+      <li><strong>Periodic statistics</strong>: rates per port every second, for a dashboard or a log.</li>
+      <li><strong>Housekeeping</strong>: flush half-full TX buffers, age out flow table entries, refresh ARP entries, rotate counters.</li>
+      <li><strong>A watchdog</strong>: notice that a forwarding lcore is stuck in an endless loop. A stuck lcore does not crash; it silently stops forwarding.</li>
+      <li><strong>A control plane</strong>: let an operator ask "how are you doing?" and change a setting without a restart.</li>
+      <li><strong>Configuration</strong>: typed command-line options with help text and a config file.</li>
+    </ul>
+    <p>None of this may cost the poll loop much. A single <code>printf()</code> of a stats line takes tens of microseconds: hundreds of thousands of cycles, or thousands of frames that were not forwarded. The EAL and a few small libraries give you four places to put this <span class="key-term">background work</span>, and this chapter uses all four:</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Mechanism</th><th>Where the callback runs</th><th>Good for</th><th>Step</th></tr></thead>
+        <tbody>
+          <tr><td><code>rte_timer</code> (lib/timer)</td><td>On the lcore that calls <code>rte_timer_manage()</code> and was named when the timer was armed</td><td>Many cheap periodic or one-shot jobs, tied to a specific lcore</td><td>1, 3, 4</td></tr>
+          <tr><td>Service (EAL service cores)</td><td>On a <span class="key-term">service lcore</span> (<code>-S</code>), called in a loop by the EAL</td><td>Work that needs a core of its own, or that a driver provides (software event scheduler, adapters)</td><td>2, 4</td></tr>
+          <tr><td>EAL alarm (<code>rte_alarm.h</code>)</td><td>In the EAL interrupt thread <code>dpdk-intr</code>, not an lcore</td><td>Rare one-shot events (retry later, delayed link check); never blocking work</td><td>side demo</td></tr>
+          <tr><td>Control thread / blocking main lcore</td><td>A normal thread that may block (here: the shell reading stdin)</td><td>Operator interaction, slow I/O</td><td>4, 5</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>We add them one at a time to the same program. The shared, unchanging part (port setup, packet injection, the forwarding pass, counters) lives in <code>code/evolve/app_common.h</code>; each <code>stepN_*.c</code> file adds exactly one new idea, so <code>diff step1_timer.c step2_service.c</code> shows what a step changes. Click through the steps to see how the threads of the app evolve.</p>
+
+    <div class="widget" id="w-evo">
+      <div class="widget-head"><span class="widget-title">The evolving app: which thread does what after each step</span><span class="badge">interactive</span></div>
+      <div class="evo-bar">
+        <button class="btn small evo-btn" type="button">Step 1: timer</button>
+        <button class="btn small evo-btn" type="button">Step 2: service</button>
+        <button class="btn small evo-btn" type="button">Step 3: keepalive</button>
+        <button class="btn small evo-btn" type="button">Step 4: shell</button>
+        <button class="btn small evo-btn" type="button">Step 5: options</button>
+      </div>
+      <div class="widget-body">
+        <div class="scroll-x"><svg viewBox="0 0 760 244" role="img" aria-label="Lanes for lcore 0, lcore 1, service lcore 2 and the interrupt thread, with the components running on each" style="min-width:600px"></svg></div>
+      </div>
+      <div class="evo-cap" id="evo-cap" aria-live="polite"></div>
+    </div>
+
+    <p>The counters are shared between threads: the forwarding lcore writes them and the stats code reads them on another thread. <code>app_common.h</code> uses one writer per counter with relaxed atomic loads and stores (<code>rte_atomic_load_explicit</code>/<code>rte_atomic_store_explicit</code> from <code>rte_stdatomic.h</code>). That costs the same as a plain <code>+=</code> but is not a data race in C. Why relaxed is enough here, and when it is not, is the subject of ch14.</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/evolve/app_common.h: single-writer counters</span><span class="lang">C</span></div>
+<pre data-lines data-start="60"><code class="language-c">struct __rte_cache_aligned port_ctr {
+	RTE_ATOMIC(uint64_t) rx;
+	RTE_ATOMIC(uint64_t) tx;
+	RTE_ATOMIC(uint64_t) drop;
+};
+
+static struct port_ctr app_ctr[NB_PORTS];
+static struct rte_ether_addr app_mac[NB_PORTS];
+/* Where frames received on port p are sent. Step 5 reads it from app.ini. */
+static uint16_t app_peer[NB_PORTS] = {1, 0};
+static volatile bool force_quit;
+
+static inline void
+ctr_add(RTE_ATOMIC(uint64_t) *c, uint64_t n)
+{
+	rte_atomic_store_explicit(c,
+		rte_atomic_load_explicit(c, rte_memory_order_relaxed) + n,
+		rte_memory_order_relaxed);
+}
+
+static inline uint64_t
+ctr_get(RTE_ATOMIC(uint64_t) *c)</code></pre>
+</div>
+
+    <!-- ===================================================== 2 -->
+    <h2 id="timer"><span class="sec-num">2</span>Step 1: periodic stats with rte_timer</h2>
+    <p>The simplest way to run something every second is to check the clock in the poll loop. Chapter 10's drain timer did exactly that with one TSC compare. That works for one job, but it gets messy with ten jobs, with one-shot jobs, or with jobs that should run on another lcore. The <span class="key-term">timer library</span> (<code>lib/timer</code>) packages the pattern: you arm timer objects, and one call, <code>rte_timer_manage()</code>, runs every callback that is due.</p>
+
+    <h3 id="timer-api">The API in five calls</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Call</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>rte_timer_subsystem_init()</code></td><td>Once per process, after <code>rte_eal_init()</code>. Allocates one pending list per lcore (in shared memory, so secondaries can use it). Without it <code>rte_timer_manage()</code> returns <code>-EINVAL</code>.</td></tr>
+          <tr><td><code>rte_timer_init(&amp;tim)</code></td><td>Puts a <code>struct rte_timer</code> in the STOPPED state with no owner. Do this once before the first reset; the struct must stay alive (static or heap) while the timer is armed.</td></tr>
+          <tr><td><code>rte_timer_reset(&amp;tim, ticks, type, tim_lcore, cb, arg)</code></td><td>Arms (or re-arms) the timer: expire = now + <code>ticks</code>. <code>type</code> is <code>SINGLE</code> (one shot) or <code>PERIODICAL</code> (re-armed automatically). <code>tim_lcore</code> is the lcore whose <code>rte_timer_manage()</code> will run <code>cb(tim, arg)</code>; <code>LCORE_ID_ANY</code> picks a different worker lcore round-robin. Returns 0, or -1 if the timer is RUNNING or being configured on another lcore.</td></tr>
+          <tr><td><code>rte_timer_manage()</code></td><td>Call it often from the lcore's loop. Runs every timer of <em>this</em> lcore whose expiry has passed, in expiry order.</td></tr>
+          <tr><td><code>rte_timer_stop(&amp;tim)</code></td><td>Disarms. Like reset it can fail with -1 if the callback is running right now on another lcore. <code>rte_timer_reset_sync()</code> and <code>rte_timer_stop_sync()</code> spin until they succeed (never call them from a timer callback to reset <em>another</em> timer: they can deadlock).</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Ticks are cycles of the timer clock, <code>rte_get_timer_hz()</code> per second. On x86 that is the TSC (2.7 GHz here), so "one second" is <code>rte_get_timer_hz()</code> and "100 ms" is <code>rte_get_timer_hz() / 10</code>. Other useful calls: <code>rte_timer_pending()</code>, <code>rte_timer_next_ticks()</code> (ticks until this lcore's next timer, 0 if one is due, <code>-ENOENT</code> if none) and <code>rte_timer_dump_stats()</code>, which only has numbers in a build with <code>RTE_LIBRTE_TIMER_DEBUG</code>.</p>
+
+    <figure class="diagram">
+      <div class="scroll-x"><svg style="min-width:560px" viewBox="0 0 720 190" role="img" aria-labelledby="f-tst">
+        <title id="f-tst">Timer states: STOPPED, CONFIG, PENDING, RUNNING and the transitions between them</title>
+        <rect class="svg-box c7" x="20" y="70" width="120" height="50"/>
+        <text class="svg-label center bold" x="80" y="95">STOPPED</text>
+        <rect class="svg-box c3" x="210" y="70" width="120" height="50"/>
+        <text class="svg-label center bold" x="270" y="95">CONFIG</text>
+        <rect class="svg-box c2" x="400" y="70" width="120" height="50"/>
+        <text class="svg-label center bold" x="460" y="95">PENDING</text>
+        <rect class="svg-box c1" x="590" y="70" width="120" height="50"/>
+        <text class="svg-label center bold" x="650" y="95">RUNNING</text>
+        <path class="svg-arrow c3" d="M140,88 L206,88"/>
+        <text class="svg-label small center" x="173" y="78">reset()</text>
+        <path class="svg-arrow c2" d="M330,88 L396,88"/>
+        <text class="svg-label small center" x="363" y="78">linked</text>
+        <path class="svg-arrow c1" d="M520,88 L586,88"/>
+        <text class="svg-label small center" x="553" y="64">manage():</text>
+        <text class="svg-label small center" x="553" y="78">expired</text>
+        <path class="svg-arrow c2" d="M650,120 C650,165 460,165 460,124"/>
+        <text class="svg-label small center" x="560" y="180">PERIODICAL: re-linked at expire + period</text>
+        <path class="svg-arrow c7" d="M610,70 C560,10 140,10 90,66"/>
+        <text class="svg-label small center" x="350" y="26">SINGLE: callback done, back to STOPPED</text>
+        <path class="svg-arrow c7 dashed" d="M430,120 C390,160 140,160 100,124"/>
+        <text class="svg-label small center" x="200" y="168">stop()</text>
+      </svg></div>
+      <figcaption><span class="fig-num"></span>The timer state machine (<code>RTE_TIMER_STOP/CONFIG/PENDING/RUNNING</code> in <code>rte_timer.h</code>). State and owner lcore are one 32-bit word changed with compare-and-swap, which is why reset and stop can fail when another lcore holds the timer in CONFIG or RUNNING.</figcaption>
+    </figure>
+
+    <h3 id="skiplist">How the pending list works: a skiplist per lcore</h3>
+    <p>Each lcore's pending timers sit in a <span class="key-term">skiplist</span> sorted by expiry time. A skiplist is a linked list with extra "express lanes": every timer has between 1 and 10 forward pointers (<code>sl_next[MAX_SKIPLIST_DEPTH]</code>), and the number is drawn at random when the timer is inserted. Insertion walks the express lanes first and drops a level whenever it would overshoot, which costs about log(n) steps. Expiry is even cheaper: the earliest timer is always first, so <code>rte_timer_manage()</code> only looks at the head. Step through it and answer the two predictions.</p>
+
+    <div class="widget" id="w-skip">
+      <div class="widget-head"><span class="widget-title">Timer skiplist: insert, expire, re-arm, move to another lcore</span><span class="badge">predict, then step</span></div>
+      <div class="widget-body">
+        <div class="scroll-x"><svg viewBox="0 0 640 292" role="img" aria-label="Two per-lcore skiplists with timers ordered by expiry" style="min-width:540px"></svg></div>
+      </div>
+    </div>
+
+    <h3 id="step1-code">The code: step1_timer.c</h3>
+    <p>Step 1 keeps everything on one lcore (<code>-l 0</code>). Two timers: a PERIODICAL one that prints the per-port deltas every second, and a SINGLE one that ends the run. The poll loop calls <code>rte_timer_manage()</code> at most every 100 microseconds, using one TSC compare as a rate limiter, and measures how long each call takes.</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/evolve/step1_timer.c (main, abridged)</span><span class="lang">C</span></div>
+<pre data-lines data-start="83" data-hl="84,86,89,90,95,98,101,118"><code class="language-c">	/* 1. once per process, after rte_eal_init() */
+	ret = rte_timer_subsystem_init();
+	if (ret &lt; 0)
+		rte_exit(EXIT_FAILURE, "rte_timer_subsystem_init: %d\n", ret);
+
+	/* 2. a timer must be initialised before its first reset */
+	rte_timer_init(&amp;stats_tim);
+	rte_timer_init(&amp;stop_tim);
+
+	/* 3. arm them. Ticks are TSC cycles; tim_lcore = the lcore whose
+	 *    rte_timer_manage() will run the callback (here: ourselves). */
+	hz = rte_get_timer_hz();
+	ret = rte_timer_reset(&amp;stats_tim, hz, PERIODICAL, rte_lcore_id(),
+			      stats_cb, &amp;tick);
+	if (ret == 0)
+		ret = rte_timer_reset(&amp;stop_tim, seconds * hz, SINGLE,
+				      rte_lcore_id(), stop_cb, NULL);
+	if (ret != 0)
+		rte_exit(EXIT_FAILURE, "rte_timer_reset failed\n");
+	printf("timer hz %" PRIu64 ", stats every 1 s (PERIODICAL), stop after %u s (SINGLE), "
+	       "rte_timer_manage every %u us\n", hz, seconds, manage_us);
+
+	manage_period = hz / 1000000 * manage_us;
+	prev_manage = rte_get_timer_cycles();
+
+	while (!force_quit) {
+		uint64_t now;
+
+		app_forward_once(32);
+
+		/* 4. drive the timers. Calling rte_timer_manage() on every loop
+		 *    pass would work too, but it reads the clock and touches the
+		 *    skiplist head each time: rate-limit it with one TSC compare. */
+		now = rte_get_timer_cycles();
+		if (now - prev_manage &gt;= manage_period) {
+			rte_timer_manage();
+			manage_cycles += rte_get_timer_cycles() - now;
+			manage_calls++;
+			prev_manage = now;
+		}
+	}
+
+	printf("rte_timer_manage(): %" PRIu64 " calls, average %.0f cycles per call "</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./step1_timer -l 0 --file-prefix=ch11-s1 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch11-s1/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+injected 64 frames into port 0
+timer hz 2700000000, stats every 1 s (PERIODICAL), stop after 3 s (SINGLE), rte_timer_manage every 100 us
+t=1s port 0: rx  84322848 (+84.32 Mpps)  tx  84322848  drop 0
+t=1s port 1: rx  84322848 (+84.32 Mpps)  tx  84322848  drop 0
+<span class="hl">      (stats_cb runs in thread 'step1_timer', lcore 0)</span>
+t=2s port 0: rx 168852928 (+84.53 Mpps)  tx 168852928  drop 0
+t=2s port 1: rx 168852928 (+84.53 Mpps)  tx 168852928  drop 0
+t=3s port 0: rx 253433952 (+84.58 Mpps)  tx 253433952  drop 0
+t=3s port 1: rx 253433952 (+84.58 Mpps)  tx 253433952  drop 0
+<span class="hl">stop timer fired (SINGLE): state now not pending</span>
+<span class="hl">rte_timer_manage(): 29911 calls, average 125 cycles per call (includes the callbacks that ran)</span>
+stats timer still pending: yes (PERIODICAL re-arms itself)
+after rte_timer_stop(): pending=0
+No timer statistics, RTE_LIBRTE_TIMER_DEBUG is disabled</pre>
+</div>
+    <p class="output-caption">The stats callback runs in the main thread on lcore 0, because that is the lcore that armed it and calls <code>rte_timer_manage()</code>. 3 seconds at one call per 100 us would be 30,000 calls; we got 29,911. Each call costs about 125 cycles on average, and that average includes the four callbacks that printed. The PERIODICAL timer is still pending at exit until <code>rte_timer_stop()</code>. The frame rates are software numbers from a loopback vdev on a shared VM, single run: read them as "the loop is busy", not as a benchmark.</p>
+
+    <h3 id="timer-cost">What rte_timer_manage() costs</h3>
+    <p>Exercise 3 asks you to measure it; the solution <code>code/solutions/ex3_manage_cost.c</code> arms N timers one hour in the future and times 200,000 calls, five runs per N:</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./ex3_manage_cost -l 0 --no-pci --no-huge -m 128 --file-prefix=ch11-ex3</span>
+pending timers   cycles per rte_timer_manage() call, median [min..max] of 5 runs
+             0      5.0 [4.8..5.8]
+            10     41.8 [41.5..42.4]
+          1000     41.9 [41.5..42.3]
+        100000     41.8 [41.7..42.5]
+<span class="hl">1000 expired timers in one call: 18510 cycles [18316..21018] = 19 cycles per callback; fired 5000</span></pre>
+</div>
+    <p class="output-caption">With no timer at all the call returns after a handful of cycles. With any number of pending timers, from 10 to 100,000, it costs about the same ~42 cycles: it reads the clock, takes this lcore's list lock and compares the head's expiry. The skiplist makes the number of pending timers irrelevant for <code>manage()</code>. Running callbacks is what costs: 1,000 due timers took about 19 cycles each (empty callbacks). Median of 5 runs with min..max, this VM.</p>
+    <div class="callout tip"><div class="callout-title">Tip: precision is your call rate</div><p>A timer cannot fire earlier than its expiry, but it fires late by up to the time between two <code>rte_timer_manage()</code> calls, plus whatever the loop was doing. Calling it every 100 us gives 100 us precision for a cost of about 0.05% of a core here. l2fwd and the course programs rate-limit the call with one TSC compare; calling it on every loop pass is also legal, just wasteful.</p></div>
+
+    <p>The prebuilt sample <code>examples/timer</code> shows the two other patterns: <code>timer0</code> is PERIODICAL on the main lcore, and <code>timer1</code> is a SINGLE timer whose callback re-arms it on the <em>next</em> lcore with <code>rte_get_next_lcore()</code>, so it hops between lcores:</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">$E/dpdk-timer -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch11-tmr</span>
+Starting mainloop on core 1
+Starting mainloop on core 0
+timer1_cb() on lcore 1
+timer1_cb() on lcore 0
+timer0_cb() on lcore 0
+timer1_cb() on lcore 1
+timer1_cb() on lcore 0
+timer1_cb() on lcore 1
+timer0_cb() on lcore 0
+timer1_cb() on lcore 0
+<span class="dim">... (trimmed; full output in code/expected_output.txt)</span></pre>
+</div>
+
+    <!-- ===================================================== 3 -->
+    <h2 id="services"><span class="sec-num">3</span>Step 2: moving the stats onto a service lcore</h2>
+    <p>In step 1 the stats callback still ran on the forwarding lcore: every second the loop stopped for a <code>printf()</code>. We would rather give that work to another core. You could launch your own function on a spare lcore with <code>rte_eal_remote_launch()</code> (ch3), and for one job that is fine. The <span class="key-term">service cores</span> framework in the EAL standardises the idea so that many jobs, including jobs written by <em>drivers</em>, can share a few dedicated cores.</p>
+
+    <h3 id="svc-model">The model: component, application, service lcore</h3>
+    <p>A <span class="key-term">service</span> is a function that does a small amount of work per call: "schedule one batch of events", "print the stats if a second has passed". Two parties are involved:</p>
+    <ul>
+      <li>The <strong>component</strong> (a driver, a library, or your own code) <em>registers</em> the service with <code>rte_service_component_register(&amp;spec, &amp;id)</code> and says when it is ready with <code>rte_service_component_runstate_set(id, 1)</code>. The <code>event_sw</code> software event device, the eventdev Rx/Tx/timer/crypto/DMA/vector adapters, the dispatcher library, softnic and failsafe all register services this way.</li>
+      <li>The <strong>application</strong> decides <em>where and whether</em> it runs: it maps the service to one or more service lcores with <code>rte_service_map_lcore_set(id, lcore, 1)</code> and switches it on with <code>rte_service_runstate_set(id, 1)</code>.</li>
+    </ul>
+    <p>A service lcore runs the EAL's <code>service_runner_func()</code>: a loop that calls every service mapped to it, again and again, as fast as it can. A service runs only when all four conditions hold: component runstate 1, application runstate 1, mapped to the lcore, and the lcore started.</p>
+
+    <figure class="diagram">
+      <div class="scroll-x"><svg style="min-width:560px" viewBox="0 0 720 230" role="img" aria-labelledby="f-svc">
+        <title id="f-svc">The component registers a service, the application maps it and sets its runstate, and the service lcore calls it in a loop</title>
+        <rect class="svg-box c3" x="10" y="20" width="200" height="80"/>
+        <text class="svg-label center bold" x="110" y="42">component</text>
+        <text class="svg-label center small mono" x="110" y="64">component_register()</text>
+        <text class="svg-label center small mono" x="110" y="82">component_runstate_set(1)</text>
+        <rect class="svg-box c1" x="10" y="130" width="200" height="80"/>
+        <text class="svg-label center bold" x="110" y="152">application</text>
+        <text class="svg-label center small mono" x="110" y="174">map_lcore_set(id, 2, 1)</text>
+        <text class="svg-label center small mono" x="110" y="192">runstate_set(id, 1)</text>
+        <rect class="svg-box c7" x="270" y="60" width="170" height="110"/>
+        <text class="svg-label center bold" x="355" y="82">service id 0</text>
+        <text class="svg-label center small" x="355" y="104">callback + userdata</text>
+        <text class="svg-label center small" x="355" y="122">comp runstate, app runstate</text>
+        <text class="svg-label center small" x="355" y="140">MT_SAFE? stats on?</text>
+        <text class="svg-label center small" x="355" y="158">mapped lcores</text>
+        <path class="svg-arrow c3" d="M210,60 L266,90"/>
+        <path class="svg-arrow c1" d="M210,170 L266,140"/>
+        <rect class="svg-box c5" x="500" y="40" width="210" height="150"/>
+        <text class="svg-label center bold" x="605" y="62">service lcore 2</text>
+        <text class="svg-label center small mono" x="605" y="86">service_runner_func():</text>
+        <text class="svg-label center small mono" x="605" y="106">while (running)</text>
+        <text class="svg-label center small mono" x="605" y="124">  for each mapped id:</text>
+        <text class="svg-label center small mono" x="605" y="142">    if (all on) cb(data)</text>
+        <text class="svg-label center small" x="605" y="170">returns 0 or -EAGAIN (idle)</text>
+        <path class="svg-arrow c5 flow" d="M440,115 L496,115"/>
+      </svg></div>
+      <figcaption><span class="fig-num"></span>Who calls what. The component never decides on which core its service runs; the application never needs to know what the service does.</figcaption>
+    </figure>
+
+    <h3 id="svc-lcores">Service lcores on the command line: -S (not -s)</h3>
+    <p>You declare service lcores with <code>-S &lt;corelist&gt;</code>, for example <code>-l 0,2 -S 2</code>. The service lcore must also be in <code>-l</code>: EAL takes it out of the worker set and gives it the role <code>ROLE_SERVICE</code>, so <code>RTE_LCORE_FOREACH_WORKER</code> and <code>rte_get_next_lcore()</code> skip it. The old <code>-s &lt;coremask&gt;</code> still works in 26.11 but prints a deprecation warning (captured below); never use it in new code.</p>
+    <p>Two things happen inside <code>rte_eal_init()</code> that surprise people. First, <code>rte_service_init()</code> runs <em>before</em> the bus probe, so vdevs like <code>event_sw0</code> can register their service during probing. Second, at the end of init the EAL calls <code>rte_service_start_with_defaults()</code>: it maps every service registered so far to the service lcores and <em>starts</em> them. So by the time your <code>main()</code> continues, the service lcores are already running and <code>rte_service_lcore_start()</code> returns <code>-EALREADY</code>. Services you register later must be mapped by you.</p>
+
+    <h3 id="svc-matrix">Play with the matrix</h3>
+    <p>Three services and two service lcores. Toggle the runstates and mappings, stop and start the lcores, and watch the runner on each lcore walk through its mapped services. Things to try: map <code>ch11_stats</code> (not MT-safe) to both lcores and watch the trylock turn half the attempts into <code>-EBUSY</code> skips; switch on <code>event_sw0_service</code>'s application runstate; try to stop lcore 2 while it is the only home of a running service.</p>
+    <div class="widget" id="w-svc">
+      <div class="widget-head"><span class="widget-title">Service mapping matrix and runstates</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="table-wrap" style="margin:0">
+          <table class="svc compact">
+            <thead><tr><th>service</th><th class="c">comp. runstate</th><th class="c">app runstate</th><th class="c">map to lcore 2</th><th class="c">map to lcore 3</th><th>status</th><th class="num">calls</th></tr></thead>
+            <tbody id="svc-body"></tbody>
+          </table>
+        </div>
+        <div class="svc-lcbar"><button class="btn small svc-lc" data-j="0" type="button">lcore 2</button><button class="btn small svc-lc" data-j="1" type="button">lcore 3</button><span class="small muted">rte_service_lcore_start / stop</span></div>
+        <div class="svc-msg" id="svc-msg" aria-live="polite"></div>
+        <div class="scroll-x"><svg viewBox="0 0 640 150" role="img" aria-label="Two service lcores and the services mapped to each, with call counters" style="min-width:520px"></svg></div>
+      </div>
+      <div class="controls"></div>
+    </div>
+
+    <h3 id="svc-safety">MT safety and running a service yourself</h3>
+    <p>A service registered without <code>RTE_SERVICE_CAP_MT_SAFE</code> in <code>spec.capabilities</code> must never run on two lcores at the same time. If you map it to two service lcores anyway, the runner protects it with a spin <em>trylock</em>: one lcore runs it and the other skips it for that iteration. You lose nothing in correctness but gain nothing in throughput. An MT-safe service mapped to two lcores really runs twice in parallel.</p>
+    <p>You can also run one iteration of a service from an ordinary lcore with <code>rte_service_run_iter_on_app_lcore(id, serialize_mt_unsafe)</code>. With <code>serialize_mt_unsafe = 1</code> it takes the same trylock and returns <code>-EBUSY</code> if a service lcore is running it; with 0 you promise that nobody else runs it and save the atomic operation. It returns <code>-ENOEXEC</code> if a runstate is 0. Unit tests and apps that cannot spare a whole core use it (exercise 2).</p>
+
+    <h3 id="step2-code">The code: step2_service.c</h3>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/evolve/step2_service.c: the service callback</span><span class="lang">C</span></div>
+<pre data-lines data-start="49" data-hl="56,62"><code class="language-c">stats_service(void *userdata)
+{
+	struct stats_svc *s = userdata;
+	uint64_t now = rte_get_timer_cycles();
+	char tag[24], where[64];
+
+	if (now &lt; s-&gt;next)
+		return -EAGAIN;
+	s-&gt;next += s-&gt;hz;
+	snprintf(tag, sizeof(tag), "t=%us", ++s-&gt;tick);
+	app_print_delta(tag, 1.0);
+	if (s-&gt;tick == 1)
+		printf("      (stats_service runs in %s)\n", app_where(where, sizeof(where)));
+	return 0;
+}</code></pre>
+</div>
+    <p>The callback returns <code>-EAGAIN</code> when it had nothing to do. That is not an error: the EAL counts it as an <em>idle call</em> and does not add its cycles to the service's busy time. Registration and mapping:</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/evolve/step2_service.c (main, abridged)</span><span class="lang">C</span></div>
+<pre data-lines data-start="127" data-hl="135,138,141,143,158"><code class="language-c">	/* ---- component side: create the service ---- */
+	memset(&amp;spec, 0, sizeof(spec));
+	snprintf(spec.name, sizeof(spec.name), "ch11_stats");
+	spec.callback = stats_service;
+	spec.callback_userdata = &amp;svc;
+	spec.capabilities = 0;           /* NOT MT-safe: run on one lcore at a time */
+	spec.socket_id = rte_socket_id();
+	svc.hz = rte_get_timer_hz();
+	if (rte_service_component_register(&amp;spec, &amp;svc_id) != 0)
+		rte_exit(EXIT_FAILURE, "service register failed\n");
+	/* The component says "I am ready to be run". */
+	rte_service_component_runstate_set(svc_id, 1);
+
+	/* ---- application side: where and whether it runs ---- */
+	ret = rte_service_map_lcore_set(svc_id, svc_lcore, 1);
+	printf("map service %u -&gt; lcore %u: %d\n", svc_id, svc_lcore, ret);
+	rte_service_set_stats_enable(svc_id, 1);   /* needed for the cycle counter */
+	/* rte_eal_init() already called rte_service_start_with_defaults(),
+	 * which started every -S lcore, so this normally says -EALREADY. */
+	ret = rte_service_lcore_start(svc_lcore);
+	printf("rte_service_lcore_start(%u): %d%s\n", svc_lcore, ret,
+	       ret == -EALREADY ? " (-EALREADY: rte_eal_init() started it already)" : "");
+	list_services("after register+map");
+
+	/* App runstate is still 0, so the service lcore loops but never calls it. */
+	rte_delay_ms(200);
+	rte_service_attr_get(svc_id, RTE_SERVICE_ATTR_CALL_COUNT, &amp;calls);
+	printf("app runstate=0 for 200 ms: service calls = %" PRIu64 "\n", calls);
+
+	/* Now the application flips its switch, and reporting starts. */
+	svc.next = rte_get_timer_cycles() + svc.hz;
+	rte_service_runstate_set(svc_id, 1);
+	printf("app runstate=1: service is now running on lcore %u\n", svc_lcore);</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./step2_service -l 0,2 -S 2 --file-prefix=ch11-s2 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch11-s2/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+service lcores: 1 (first = lcore 2, role SERVICE)
+injected 64 frames into port 0
+[before register] 0 service(s) registered:
+map service 0 -&gt; lcore 2: 0
+<span class="hl">rte_service_lcore_start(2): -114 (-EALREADY: rte_eal_init() started it already)</span>
+[after register+map] 1 service(s) registered:
+  id 0  ch11_stats               MT_SAFE=0  app runstate=0  mapped to lcore 2: 1
+<span class="hl">app runstate=0 for 200 ms: service calls = 0</span>
+app runstate=1: service is now running on lcore 2
+t=1s port 0: rx  84309760 (+84.31 Mpps)  tx  84309728  drop 0
+t=1s port 1: rx  84311616 (+84.31 Mpps)  tx  84311616  drop 0
+<span class="hl">      (stats_service runs in thread 'dpdk-worker2', lcore 2)</span>
+t=2s port 0: rx 168482560 (+84.17 Mpps)  tx 168482560  drop 0
+t=2s port 1: rx 168484640 (+84.17 Mpps)  tx 168484672  drop 0
+t=3s port 0: rx 252541344 (+84.06 Mpps)  tx 252541344  drop 0
+t=3s port 1: rx 252543136 (+84.06 Mpps)  tx 252543168  drop 0
+<span class="hl">lcore_stop while service still running: -16 (-EBUSY: it is the only lcore for a running service)</span>
+lcore_stop after runstate_set(0): 0
+<span class="hl">service: 69230296 calls, 69230293 idle (-EAGAIN), 3 busy; 250566 cycles in busy calls (83522 per report)</span>
+service lcore 2 ran its loop 184853991 times
+Service ch11_stats Summary
+  ch11_stats: stats 1	calls 69230296	cycles 250566	avg: 0
+unregister: 0
+
+# step 2 again with an event_sw vdev: a driver registers its own service</pre>
+</div>
+    <p class="output-caption">Read it top to bottom. <code>-EALREADY</code>: EAL init had already started lcore 2. With the application runstate still 0 the service lcore spins for 200 ms without calling us (calls = 0). Then the stats appear, printed by thread <code>dpdk-worker2</code>, lcore 2, while lcore 0 only forwards. Of 69 million calls, 3 did work and the rest returned <code>-EAGAIN</code>: the busy cycles (about 84,000 per report, a <code>printf</code> of two lines) are counted only for those 3. <code>rte_service_dump()</code> prints <code>avg: 0</code> because it divides by <em>all</em> calls. Shutdown order matters: <code>rte_service_lcore_stop()</code> refuses with <code>-EBUSY</code> while the lcore is the only one mapped to a running service; stop the service first.</p>
+
+    <p>Add <code>--vdev=event_sw0</code> and a second service appears that we did not write: the software event device registered <code>event_sw0_service</code> during the bus probe, and <code>rte_service_start_with_defaults()</code> mapped it to lcore 2 already. Its application runstate stays 0 until an eventdev application (ch25) starts it.</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./step2_service -l 0,2 -S 2 --file-prefix=ch11-s2ev --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 --vdev=event_sw0 -- --seconds 1</span>
+service lcores: 1 (first = lcore 2, role SERVICE)
+injected 64 frames into port 0
+[before register] 1 service(s) registered:
+<span class="hl">  id 0  event_sw0_service        MT_SAFE=0  app runstate=0  mapped to lcore 2: 1</span>
+map service 1 -&gt; lcore 2: 0
+rte_service_lcore_start(2): -114 (-EALREADY: rte_eal_init() started it already)
+[after register+map] 2 service(s) registered:</pre>
+</div>
+    <p>The deprecated coremask option, and a service lcore that is missing from <code>-l</code>: both only warn in 26.11.</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./step2_service -l 0,2 -s 0x4 --file-prefix=ch11-s2old --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --seconds 1</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="err">EAL: '-s &lt;service-coremask&gt;' is deprecated, and will be removed in a future release.</span>
+<span class="err">EAL: 	Use '-S &lt;service-corelist&gt;' option instead.</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">... (trimmed; full output in code/expected_output.txt)</span></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./step2_service -l 0-1 -S 2 --file-prefix=ch11-s2nol --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --seconds 1</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="err">EAL: Not all service cores were in the coremask. Please ensure -c or -l includes service cores</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch11-s2nol/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+service lcores: 1 (first = lcore 2, role SERVICE)
+injected 64 frames into port 0</pre>
+</div>
+
+    <div class="callout pitfall"><div class="callout-title">Pitfall: a service that never returns</div><p>A service callback must do a bounded amount of work and return. A <code>while (1)</code> inside a service starves every other service mapped to the same lcore, and <code>rte_service_lcore_stop()</code> can never complete. If your work really is an endless loop, it is not a service: launch it on its own lcore.</p></div>
+
+    <!-- ===================================================== 4 -->
+    <h2 id="keepalive"><span class="sec-num">4</span>Step 3: a keepalive watchdog</h2>
+    <p>Step 3 moves forwarding to worker lcore 1 and turns the main lcore into a control lcore. That opens the door to a classic failure: the worker gets stuck (a lock that is never released, a driver call that never returns, a bug in a loop). The process is alive, the other lcores are fine, but one port stops forwarding and nothing crashes. The <span class="key-term">keepalive</span> helper in the EAL (<code>rte_keepalive.h</code>) detects it with two cheap actions:</p>
+    <ul>
+      <li>The watched lcore calls <code>rte_keepalive_mark_alive(ka)</code> from its poll loop. It is one store of <code>ALIVE</code> into this lcore's own slot; each slot has its own cache line (<code>alignas(RTE_CACHE_LINE_SIZE)</code>), so cores do not false-share.</li>
+      <li>A periodic timer calls <code>rte_keepalive_dispatch_pings(timer, ka)</code>. Each ping moves every watched core one step through the state machine below. A core that keeps marking is pushed back to ALIVE before the next ping; a core that stopped marking slides to DEAD and then GONE.</li>
+    </ul>
+    <figure class="diagram">
+      <div class="scroll-x"><svg style="min-width:560px" viewBox="0 0 720 230" role="img" aria-labelledby="f-ka">
+        <title id="f-ka">Keepalive states: UNUSED, ALIVE, MISSING, DEAD, GONE, with mark_alive and ping transitions</title>
+        <rect class="svg-box c7" x="10" y="70" width="100" height="44"/><text class="svg-label center bold small" x="60" y="92">UNUSED</text>
+        <rect class="svg-box c2" x="160" y="70" width="100" height="44"/><text class="svg-label center bold small" x="210" y="92">ALIVE</text>
+        <rect class="svg-box c3" x="310" y="70" width="100" height="44"/><text class="svg-label center bold small" x="360" y="92">MISSING</text>
+        <rect class="svg-box c4" x="460" y="70" width="100" height="44"/><text class="svg-label center bold small" x="510" y="92">DEAD</text>
+        <rect class="svg-box c4" x="610" y="70" width="100" height="44"/><text class="svg-label center bold small" x="660" y="92">GONE</text>
+        <path class="svg-arrow c2" d="M110,92 L156,92"/><text class="svg-label small center" x="133" y="82">mark</text>
+        <path class="svg-arrow c1" d="M260,86 L306,86"/><text class="svg-label small center" x="283" y="64">ping</text>
+        <path class="svg-arrow c2" d="M310,100 L264,100"/><text class="svg-label small center" x="287" y="124">mark</text>
+        <path class="svg-arrow c1" d="M410,92 L456,92"/><text class="svg-label small center" x="433" y="64">ping</text>
+        <text class="svg-label small center" x="433" y="138">"Core MIA"</text>
+        <path class="svg-arrow c1" d="M560,92 L606,92"/><text class="svg-label small center" x="583" y="64">ping</text>
+        <text class="svg-label small center" x="583" y="138">"Core died"</text>
+        <text class="svg-label small center bold" x="583" y="154">failure callback</text>
+        <path class="svg-arrow c2 dashed" d="M660,114 C660,222 210,222 210,118"/>
+        <text class="svg-label small center" x="440" y="222">mark_alive() again: back to ALIVE</text>
+        <path class="svg-arrow c2 dashed" d="M510,70 C510,20 230,20 220,66"/>
+        <text class="svg-label small center" x="370" y="30">a late mark rescues DEAD or MISSING</text>
+      </svg></div>
+      <figcaption><span class="fig-num"></span>The states of <code>lib/eal/common/rte_keepalive.c</code>. Pings only move a core to the right; only the core itself (by marking) moves it back to ALIVE. <code>rte_keepalive_mark_sleep()</code> adds DOZING and SLEEP for cores that idle on purpose (not shown).</figcaption>
+    </figure>
+    <p>Count the pings. Ping 1 after the last mark finds ALIVE and sets MISSING (that is normal; a healthy core re-marks right away). Ping 2 finds MISSING: the EAL logs "Core MIA" and sets DEAD. Ping 3 finds DEAD: it logs "Core died", sets GONE and calls your <span class="key-term">failure callback</span>. So the callback fires 2 to 3 ping periods after the core stopped marking. The "last seen" time is the time of the first ping after the last mark, so it has the ping period as its resolution.</p>
+
+    <div class="widget" id="w-ka">
+      <div class="widget-head"><span class="widget-title">Keepalive watchdog: stall a core and watch it die</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="scroll-x"><svg viewBox="0 0 640 150" role="img" aria-label="Ping timer on lcore 0 and three watched lcores with their keepalive state" style="min-width:520px"></svg></div>
+        <div class="ka-bar">
+          <button class="btn small ka-stall" type="button">Stall lcore 1</button>
+          <button class="btn small ka-stall" type="button">Stall lcore 2</button>
+          <button class="btn small ka-stall" type="button">Stall lcore 3</button>
+          <label class="small"><input type="checkbox" id="ka-restart"> callback restarts the lcore</label>
+        </div>
+        <div class="ka-log" id="ka-log" aria-live="polite"></div>
+      </div>
+      <div class="controls"><span class="grow"></span><label>ping period <input type="range" id="ka-per" min="100" max="1000" step="50" value="250"> <output id="ka-per-out"></output></label></div>
+    </div>
+
+    <h3 id="step3-code">The code: step3_keepalive.c</h3>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/evolve/step3_keepalive.c: setting up the watchdog</span><span class="lang">C</span></div>
+<pre data-lines data-start="216" data-hl="217,219,220,221,225"><code class="language-c">	/* NEW: keepalive. Create, register the cores to watch, ping from a timer. */
+	ka = rte_keepalive_create(ka_dead, NULL);
+	if (ka == NULL)
+		rte_exit(EXIT_FAILURE, "rte_keepalive_create failed\n");
+	rte_keepalive_register_relay_callback(ka, ka_relay, NULL);
+	rte_keepalive_register_core(ka, fwd_lcore);
+	rte_timer_subsystem_init();
+	rte_timer_init(&amp;ka_tim);
+	rte_timer_init(&amp;stop_tim);
+	rte_timer_reset(&amp;ka_tim, hz / 1000 * ka_ms, PERIODICAL, rte_lcore_id(), ka_ping, ka);
+	rte_timer_reset(&amp;stop_tim, seconds * hz + hz / 10, SINGLE, rte_lcore_id(), stop_cb, NULL);
+	printf("keepalive: ping every %u ms; a core is declared dead after 3 pings without a mark\n",
+	       ka_ms);
+
+	rte_eal_remote_launch(fwd_main, NULL, fwd_lcore);</code></pre>
+</div>
+    <p>Two notes on the code. <code>rte_keepalive_dispatch_pings()</code> takes <code>(void *, void *)</code>, not a <code>struct rte_timer *</code>; the sample l2fwd-keepalive casts the function pointer, we wrap it in a three-line <code>ka_ping()</code> instead. And the optional <em>relay callback</em> is called for every watched core on every ping with the state after the ping. A healthy core shows up there as MISSING or ALIVE depending on whether it re-marked between the ping's store and the relay call, so we only print transitions that involve DEAD, GONE or UNUSED. The worker loop:</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/evolve/step3_keepalive.c: the forwarding lcore</span><span class="lang">C</span></div>
+<pre data-lines data-start="80" data-hl="89"><code class="language-c">fwd_main(void *arg)
+{
+	uint64_t stall_at = stall_after ? t0 + stall_after * hz : UINT64_MAX;
+
+	(void)arg;
+	while (!force_quit) {
+		app_forward_once(32);
+		/* One store into this lcore's own cache line: cheap enough for
+		 * every loop pass. */
+		rte_keepalive_mark_alive(ka);
+
+		if (rte_get_timer_cycles() &gt;= stall_at) {
+			stall_at = UINT64_MAX;
+			stalled = true;
+			printf("[%.2fs] lcore %u: simulating a hang (no forwarding, no mark_alive)\n",
+			       since_start(), rte_lcore_id());
+			while (!resume &amp;&amp; !force_quit)
+				rte_pause();          /* stuck: nothing marks us alive */
+			stalled = false;
+			printf("[%.2fs] lcore %u: back to work\n", since_start(), rte_lcore_id());
+		}
+	}
+	return 0;
+}</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./step3_keepalive -l 0-2 -S 2 --file-prefix=ch11-s3 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --stall-after 3</span>
+main lcore 0 = control, lcore 1 = forwarding, lcore 2 = service
+injected 64 frames into port 0
+keepalive: ping every 250 ms; a core is declared dead after 3 pings without a mark
+[0.25s] relay: lcore 1 UNUSED -&gt; MISSING (last seen 0 ms ago)
+t=1s port 0: rx  83337472 (+83.34 Mpps)  tx  83337472  drop 0
+t=1s port 1: rx  83339808 (+83.34 Mpps)  tx  83339808  drop 0
+t=2s port 0: rx 167060064 (+83.72 Mpps)  tx 167060064  drop 0
+t=2s port 1: rx 167062560 (+83.72 Mpps)  tx 167062560  drop 0
+<span class="hl">[3.00s] lcore 1: simulating a hang (no forwarding, no mark_alive)</span>
+t=3s port 0: rx 250826848 (+83.77 Mpps)  tx 250826848  drop 0
+t=3s port 1: rx 250826848 (+83.76 Mpps)  tx 250826848  drop 0
+EAL: Core MIA. Last seen 250ms ago.
+[3.25s] relay: lcore 1 MISSING -&gt; DEAD (last seen 250 ms ago)
+EAL: Core died. Last seen 499ms ago.
+<span class="hl">[3.50s] FAILURE CALLBACK: lcore 1 is dead (callback runs in thread 'step3_keepalive', lcore 0)</span>
+[3.50s] relay: lcore 1 DEAD -&gt; GONE (last seen 500 ms ago)
+<span class="hl">[3.50s] lcore 1: back to work</span>
+<span class="hl">[3.75s] relay: lcore 1 GONE -&gt; MISSING (last seen 0 ms ago)</span>
+t=4s port 0: rx 292642304 (+41.82 Mpps)  tx 292642304  drop 0
+t=4s port 1: rx 292644672 (+41.82 Mpps)  tx 292644672  drop 0
+t=5s port 0: rx 376373216 (+83.73 Mpps)  tx 376373216  drop 0
+t=5s port 1: rx 376376128 (+83.73 Mpps)  tx 376376128  drop 0
+t=6s port 0: rx 459984416 (+83.61 Mpps)  tx 459984416  drop 0
+t=6s port 1: rx 459987168 (+83.61 Mpps)  tx 459987168  drop 0
+final keepalive state of lcore 1: MISSING (healthy)</pre>
+</div>
+    <p class="output-caption">The hang starts at 3.00 s, right after a ping. The ping at 3.25 s finds MISSING ("Core MIA", 250 ms), the ping at 3.50 s finds DEAD ("Core died", 500 ms) and calls the failure callback. It runs on lcore 0, in the main thread, because that lcore runs the ping timer. Our callback lifts the simulated hang, the worker marks itself ALIVE again, and the rate for second 4 shows the half second of lost forwarding.</p>
+
+    <div class="callout warning"><div class="callout-title">What can a failure callback actually do?</div><p>The sample <code>examples/l2fwd-keepalive</code> "restarts" a dead lcore with <code>rte_eal_remote_launch()</code>. That works there because its workers simulate death by <em>returning</em> after a random lifetime (<code>rte_rand_max()</code>), so the lcore is idle again. A truly stuck lcore never returns: <code>rte_eal_remote_launch()</code> would fail with <code>-EBUSY</code> and you cannot kill one thread of a DPDK process safely. Realistic reactions are: stop sending traffic to that core's queues, raise an alarm, and exit so that a supervisor restarts the process (ch29). The sample also publishes core states in POSIX shared memory (<code>/dev/shm/dpdk_keepalive_shm_name</code>) for an external agent.</p></div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">$E/dpdk-l2fwd-keepalive -l 0-2 --no-pci --no-huge -m 256 --file-prefix=ch11-ka --vdev=net_ring0 --vdev=net_ring1 -- -p 0x3 -K 100 -T 2</span>
+L2FWD: entering main loop on lcore 1
+L2FWD:  -- lcoreid=1 portid=0
+L2FWD: entering main loop on lcore 2
+L2FWD:  -- lcoreid=2 portid=1
+EAL: Core MIA. Last seen 100ms ago.
+<span class="hl">EAL: Core died. Last seen 200ms ago.</span>
+<span class="hl">Dead core 2 - restarting..</span></pre>
+</div>
+
+    <!-- ===================================================== 5 -->
+    <h2 id="cmdline"><span class="sec-num">5</span>Step 4: a control shell with lib/cmdline</h2>
+    <p>Restarting the app to change the burst size is not acceptable in production. Step 4 gives the main lcore a <span class="key-term">control shell</span>, the same library testpmd's prompt is built on (ch9). <code>lib/cmdline</code> is small and a little old-fashioned: you describe each command as a list of typed tokens, and the library parses, completes and dispatches.</p>
+
+    <h3 id="cmd-model">Tokens, instructions and a context</h3>
+    <ul>
+      <li>A <strong>result struct</strong> has one field per word of the command.</li>
+      <li>A <strong>token</strong> parses one word into one field, located with <code>offsetof()</code> by the <code>TOKEN_*_INITIALIZER(struct, field, ...)</code> macros. <code>TOKEN_STRING_INITIALIZER(s, f, "show")</code> accepts exactly <code>show</code>; <code>"stats#keepalive"</code> accepts either word; <code>TOKEN_NUM_INITIALIZER(s, f, RTE_UINT16)</code> parses a number (decimal, <code>0x</code> hex, <code>0b</code> binary) and rejects one that does not fit. There are also tokens for IPv4/IPv6 addresses and prefixes, MAC addresses, port lists, booleans and <code>TOKEN_STRING_MULTI</code> (the rest of the line).</li>
+      <li>An <strong>instruction</strong> (<code>cmdline_parse_inst_t</code>) is a NULL-terminated token list, a handler <code>f(parsed_result, cl, data)</code> and a help string.</li>
+      <li>The <strong>context</strong> (<code>cmdline_parse_ctx_t[]</code>) is a NULL-terminated array of instructions.</li>
+    </ul>
+    <p>For each input line, cmdline tries every instruction. If exactly one matches all its tokens with nothing left over, its handler runs. If none does, it prints <code>Bad arguments</code> when some instruction matched at least its first token, otherwise <code>Command not found</code>; two full matches give <code>Ambiguous command</code>. Type into the matcher below, which models the step 4 instructions with the same rules (<code>lib/cmdline/cmdline_parse.c</code>).</p>
+    <div class="widget" id="w-cmd">
+      <div class="widget-head"><span class="widget-title">cmdline: which instruction matches?</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="cmd-inrow"><label for="cmd-in" class="small">ch11&gt;</label><input id="cmd-in" type="text" value="set burst 70000" autocomplete="off" spellcheck="false"></div>
+        <div class="cmd-ex-bar">
+          <button class="btn small cmd-ex" data-v="show stats" type="button">show stats</button>
+          <button class="btn small cmd-ex" data-v="set burst 8" type="button">set burst 8</button>
+          <button class="btn small cmd-ex" data-v="set burst 0x20" type="button">set burst 0x20</button>
+          <button class="btn small cmd-ex" data-v="set burst 70000" type="button">set burst 70000</button>
+          <button class="btn small cmd-ex" data-v="show kee" type="button">show kee</button>
+          <button class="btn small cmd-ex" data-v="quit now" type="button">quit now</button>
+          <button class="btn small cmd-ex" data-v="bogus" type="button">bogus</button>
+        </div>
+        <div class="cmd-out" id="cmd-out"></div>
+        <div class="cmd-res" id="cmd-res" aria-live="polite"></div>
+      </div>
+    </div>
+
+    <h3 id="step4-code">The code: step4_cli.c</h3>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/evolve/step4_cli.c: one command</span><span class="lang">C</span></div>
+<pre data-lines data-start="187"><code class="language-c">/* ---- "set burst &lt;N&gt;" ---- */
+struct cmd_burst_result {
+	cmdline_fixed_string_t set;
+	cmdline_fixed_string_t burst;
+	uint16_t n;
+};
+
+static void
+cmd_burst_parsed(void *parsed, struct cmdline *cl, void *data)
+{
+	struct cmd_burst_result *res = parsed;
+
+	(void)data;
+	/* the NUM token only checked "fits in a uint16_t"; the range is ours */
+	if (res-&gt;n &lt; 1 || res-&gt;n &gt; MAX_BURST) {
+		cmdline_printf(cl, "burst must be 1..%u\n", MAX_BURST);
+		return;
+	}
+	rte_atomic_store_explicit(&amp;burst, res-&gt;n, rte_memory_order_relaxed);
+	cmdline_printf(cl, "burst set to %u\n", res-&gt;n);
+}
+
+static cmdline_parse_token_string_t cmd_burst_set =
+	TOKEN_STRING_INITIALIZER(struct cmd_burst_result, set, "set");
+static cmdline_parse_token_string_t cmd_burst_burst =
+	TOKEN_STRING_INITIALIZER(struct cmd_burst_result, burst, "burst");
+static cmdline_parse_token_num_t cmd_burst_n =
+	TOKEN_NUM_INITIALIZER(struct cmd_burst_result, n, RTE_UINT16);
+
+static cmdline_parse_inst_t cmd_burst = {</code></pre>
+</div>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/evolve/step4_cli.c: its instruction</span><span class="lang">C</span></div>
+<pre data-lines data-start="216"><code class="language-c">static cmdline_parse_inst_t cmd_burst = {
+	.f = cmd_burst_parsed,
+	.help_str = "set burst &lt;1..64&gt;: RX burst size of the forwarding lcore",
+	.tokens = { (void *)&amp;cmd_burst_set, (void *)&amp;cmd_burst_burst,
+		    (void *)&amp;cmd_burst_n, NULL },
+};</code></pre>
+</div>
+    <p>The handler checks the <em>semantic</em> range (1..64) itself: the token only knows "fits in a <code>uint16_t</code>". It writes the burst size with a relaxed atomic store and the worker reads it on its next pass. Every other command follows the same pattern, and the context ties them together:</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/evolve/step4_cli.c: the context</span><span class="lang">C</span></div>
+<pre data-lines data-start="259"><code class="language-c">static cmdline_parse_ctx_t main_ctx[] = {
+	(cmdline_parse_inst_t *)&amp;cmd_show,
+	(cmdline_parse_inst_t *)&amp;cmd_burst,
+	(cmdline_parse_inst_t *)&amp;cmd_word,
+	NULL,
+};</code></pre>
+</div>
+    <p>The main lcore now blocks in <code>cmdline_interact()</code>, reading stdin one character at a time. It can no longer call <code>rte_timer_manage()</code>, so the timers move: step 4 arms the keepalive ping and a 1 s snapshot timer with <code>tim_lcore</code> = the service lcore, and a <code>ch11_housekeeping</code> service there calls <code>rte_timer_manage()</code> (returning <code>-EAGAIN</code> when <code>rte_timer_next_ticks()</code> says nothing is due). Same timers, different lcore: exactly the "move C to lcore 1" step of the skiplist widget.</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/evolve/step4_cli.c: timers for another lcore</span><span class="lang">C</span></div>
+<pre data-lines data-start="299" data-hl="304,305"><code class="language-c">	/* Timers armed FOR the service lcore: tim_lcore = svc_lcore. Only that
+	 * lcore's rte_timer_manage() will run them. */
+	rte_timer_subsystem_init();
+	rte_timer_init(&amp;ka_tim);
+	rte_timer_init(&amp;snap_tim);
+	rte_timer_reset(&amp;ka_tim, hz / 4, PERIODICAL, svc_lcore, ka_ping, ka);
+	rte_timer_reset(&amp;snap_tim, hz, PERIODICAL, svc_lcore, snapshot_cb, NULL);</code></pre>
+</div>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/evolve/step4_cli.c: running the shell</span><span class="lang">C</span></div>
+<pre data-lines data-start="320" data-hl="320,321,322,324,325,326"><code class="language-c">	/* The shell. cmdline_stdin_new() puts a tty in raw mode (no-op on a
+	 * pipe); cmdline_interact() reads until "quit" or end of input. */
+	cl = cmdline_stdin_new(main_ctx, "ch11&gt; ");
+	if (cl == NULL)
+		rte_exit(EXIT_FAILURE, "cmdline_stdin_new failed\n");
+	cmdline_interact(cl);
+	cmdline_stdin_exit(cl);           /* restores the terminal settings */</code></pre>
+</div>
+    <p><code>run.sh</code> drives the shell from a script: a subshell echoes commands with <code>sleep</code>s in between and pipes them into stdin. The line editor echoes each command after the prompt, so the transcript reads like an interactive session.</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">(sleep 1.2; echo 'show stats'; echo 'set burst 8'; sleep 1.1; echo 'show stats'; echo 'set burst 999'; echo 'set burst 70000'; echo 'show keepalive'; echo stall; sleep 1.2; echo 'show keepalive'; echo bogus; echo help; echo quit ) | ./step4_cli -l 0-2 -S 2 --file-prefix=ch11-s4 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1</span>
+injected 64 frames; shell on lcore 0, forwarding on lcore 1, timers on service lcore 2
+ch11&gt; show stats
+port 0: rx 91682720 tx 91682688 drop 0  last second 85.24 Mpps
+port 1: rx 91683424 tx 91683456 drop 0  last second 85.24 Mpps
+burst 32
+ch11&gt; set burst 8
+<span class="hl">burst set to 8</span>
+ch11&gt; show stats
+port 0: rx 229392080 tx 229392080 drop 0  last second 122.39 Mpps
+port 1: rx 229393072 tx 229393080 drop 0  last second 122.39 Mpps
+burst 8
+ch11&gt; set burst 999
+burst must be 1..64
+ch11&gt; set burst 70000
+<span class="hl">Bad arguments</span>
+ch11&gt; show keepalive
+lcore 1 keepalive state after last ping: ALIVE, failure callbacks so far: 0
+ch11&gt; stall
+worker lcore 1 now hangs; keepalive should notice
+ch11&gt; EAL: Core MIA. Last seen 249ms ago.
+EAL: Core died. Last seen 499ms ago.
+
+<span class="hl">[keepalive] lcore 1 is dead -&gt; releasing it (callback in thread 'dpdk-worker2', lcore 2)</span>
+show keepalive
+<span class="hl">lcore 1 keepalive state after last ping: ALIVE, failure callbacks so far: 1</span>
+ch11&gt; bogus
+<span class="hl">Command not found</span>
+ch11&gt; help
+  show stats|keepalive: print counters or watchdog state
+  set burst &lt;1..64&gt;: RX burst size of the forwarding lcore
+  stall|help|quit
+ch11&gt; quit
+
+shell closed, stopping
+housekeeping service: 65098200 calls, 16 ran timers</pre>
+</div>
+    <p class="output-caption"><code>set burst 999</code> passes the token (it fits a uint16) and fails our range check; <code>set burst 70000</code> fails the token itself, so cmdline prints <code>Bad arguments</code>. After <code>stall</code>, the keepalive failure callback fires on lcore 2, the service lcore, because the ping timer lives there now. Its output lands in the middle of the prompt: background threads and an interactive shell share one terminal. (On this run, burst 8 happened to forward faster than burst 32 with only 64 frames in flight; that is a property of this loopback test, not advice.)</p>
+    <p>Writing token boilerplate by hand gets old quickly. <code>buildtools/dpdk-cmdline-gen.py</code> turns a list of commands into the structs, tokens, instructions and context; you write only the <code>*_parsed()</code> handlers:</p>
+    <pre><code class="language-bash">$ cat cmds.list
+show stats
+set burst &lt;UINT16&gt;n
+show keepalive
+quit
+$ python3 $DPDK_SRC/buildtools/dpdk-cmdline-gen.py cmds.list &gt; commands.h   # add --stubs for empty handlers</code></pre>
+    <p>The generated header for <code>set burst &lt;UINT16&gt;n</code> is the same struct, three tokens and instruction you see above (full output in <code>expected_output.txt</code>). <code>examples/cmdline</code> shows a custom token type (an object list); its prebuilt binary runs here with piped input as well.</p>
+
+    <!-- ===================================================== 6 -->
+    <h2 id="options"><span class="sec-num">6</span>Step 5: real options with rte_argparse and rte_cfgfile</h2>
+    <p>Steps 1 to 4 parsed a few options with <code>getopt_long()</code> after <code>rte_eal_init()</code> (ch2). That is fine, but you write the type conversion, the error messages and the help text yourself, and nothing ties an option to its documentation. The final app uses two DPDK libraries instead.</p>
+
+    <h3 id="argparse">rte_argparse: options described by a table</h3>
+    <p>You describe the program in a <code>struct rte_argparse</code> and each option in an <code>args[]</code> entry ending with <code>ARGPARSE_ARG_END()</code>. Each entry has:</p>
+    <ul>
+      <li><code>name_long</code> (<code>"--burst"</code>; a name without dashes is a <em>positional</em> argument) and an optional <code>name_short</code> (<code>"-b"</code>);</li>
+      <li><code>help</code>, which must not be NULL: it becomes the generated <code>--help</code> text;</li>
+      <li><code>value_required</code>: <code>RTE_ARGPARSE_VALUE_NONE</code> (a flag), <code>_REQUIRED</code> or <code>_OPTIONAL</code>;</li>
+      <li><code>value_type</code>: <code>_TYPE_INT</code>, <code>_U8/_U16/_U32/_U64</code>, <code>_STR</code>, <code>_BOOL</code> or <code>_CORELIST</code>;</li>
+      <li><code>val_saver</code>: where to store the converted value (<em>autosave</em>). If it is NULL, argparse calls <code>obj-&gt;callback(index, value, opaque)</code> instead, with <code>index = (uint32_t)val_set</code>;</li>
+      <li><code>val_set</code>: for a flag, the value stored when it is present; <code>flags</code>: <code>RTE_ARGPARSE_FLAG_SUPPORT_MULTI</code> to allow repeats.</li>
+    </ul>
+    <p><code>rte_argparse_parse(&amp;obj, argc, argv)</code> returns the number of arguments parsed or a negative errno, skipping <code>argv[0]</code>; after <code>argc -= ret; argv += ret</code> from <code>rte_eal_init()</code>, <code>argv[0]</code> is still the program name, so this just works. <code>-h</code>/<code>--help</code> is built in: it prints the help and calls <code>exit(0)</code>. With <code>exit_on_error = true</code> an error calls <code>exit(ret)</code> with a negative number (an exit status of 234 for <code>-EINVAL</code>), skipping your cleanup, so the final app sets it to false and handles the error. The API is still <code>__rte_experimental</code> in 26.11: build with <code>-DALLOW_EXPERIMENTAL_API</code>.</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/evolve/step5_options.c: the option table</span><span class="lang">C</span></div>
+<pre data-lines data-start="298"><code class="language-c">static struct rte_argparse app_args = {
+	.prog_name = "step5_options",
+	.usage = "[EAL options] -- [--config FILE] [--burst N] [--shell] ...",
+	.descriptor = "Chapter 11 evolving app: l2fwd + timers + service core + keepalive + shell.",
+	.epilog = "Precedence: built-in default &lt; --config FILE &lt; command line.",
+	.exit_on_error = false,       /* we print the help and clean up ourselves */
+	.args = {
+		/* long, short, help, val_saver, val_set, value_required, value_type */
+		{ "--config", "-c", "INI file with [forward] [stats] [keepalive] sections",
+		  &amp;cli_config, NULL, RTE_ARGPARSE_VALUE_REQUIRED, RTE_ARGPARSE_VALUE_TYPE_STR, 0 },
+		{ "--burst", "-b", "RX burst size, 1..64 (default 32)",
+		  &amp;cli_burst, NULL, RTE_ARGPARSE_VALUE_REQUIRED, RTE_ARGPARSE_VALUE_TYPE_U16, 0 },
+		{ "--stats-interval", "-i", "stats period in ms (default 1000)",
+		  &amp;cli_interval, NULL, RTE_ARGPARSE_VALUE_REQUIRED, RTE_ARGPARSE_VALUE_TYPE_U32, 0 },
+		{ "--ka-ms", "-k", "keepalive ping period in ms (default 250)",
+		  &amp;cli_ka, NULL, RTE_ARGPARSE_VALUE_REQUIRED, RTE_ARGPARSE_VALUE_TYPE_U32, 0 },
+		{ "--stall-after", "-a", "make the worker hang after S seconds (0 = never)",
+		  &amp;cli_stall, NULL, RTE_ARGPARSE_VALUE_REQUIRED, RTE_ARGPARSE_VALUE_TYPE_U32, 0 },
+		{ "--seconds", "-t", "run time in seconds without --shell (default 3)",
+		  &amp;cli_seconds, NULL, RTE_ARGPARSE_VALUE_REQUIRED, RTE_ARGPARSE_VALUE_TYPE_U32, 0 },
+		/* a flag: no value, *val_saver = val_set when present */
+		{ "--shell", NULL, "run the interactive shell on the main lcore",
+		  &amp;cli_shell, (void *)1, RTE_ARGPARSE_VALUE_NONE, RTE_ARGPARSE_VALUE_TYPE_INT, 0 },
+		ARGPARSE_ARG_END(),
+	},
+};</code></pre>
+</div>
+
+    <h3 id="cfgfile">rte_cfgfile: an .ini file</h3>
+    <p><code>rte_cfgfile_load(path, flags)</code> reads an INI file: <code>[section]</code> headers, <code>name = value</code> entries, <code>;</code> comments (change the comment character with <code>rte_cfgfile_load_with_params()</code>). Flags: <code>CFG_FLAG_GLOBAL_SECTION</code> accepts entries before the first header, <code>CFG_FLAG_EMPTY_VALUES</code> accepts <code>name =</code>. Then <code>rte_cfgfile_get_entry(cfg, "stats", "interval_ms")</code> returns the value as a string or NULL; <code>rte_cfgfile_has_section/has_entry</code>, <code>rte_cfgfile_num_sections</code> and <code>rte_cfgfile_section_entries</code> let you walk unknown keys (we use it for <code>pairN</code>); <code>rte_cfgfile_close()</code> frees it. All values are strings: converting and validating them is your job. The library can also build and save a file (<code>rte_cfgfile_create</code>, <code>_add_section</code>, <code>_add_entry</code>, <code>_save</code>).</p>
+
+    <figure class="diagram">
+      <div class="scroll-x"><svg style="min-width:560px" viewBox="0 0 720 150" role="img" aria-labelledby="f-prec">
+        <title id="f-prec">Configuration precedence: defaults, then the ini file, then the command line, then semantic checks</title>
+        <rect class="svg-box c7" x="10" y="40" width="140" height="70"/>
+        <text class="svg-label center bold" x="80" y="64">1. defaults</text>
+        <text class="svg-label center small mono" x="80" y="88">burst = 32</text>
+        <rect class="svg-box c2" x="190" y="40" width="160" height="70"/>
+        <text class="svg-label center bold" x="270" y="64">2. --config app.ini</text>
+        <text class="svg-label center small mono" x="270" y="88">rte_cfgfile_get_entry()</text>
+        <rect class="svg-box c1" x="390" y="40" width="160" height="70"/>
+        <text class="svg-label center bold" x="470" y="64">3. command line</text>
+        <text class="svg-label center small mono" x="470" y="88">rte_argparse autosave</text>
+        <rect class="svg-box c4" x="590" y="40" width="120" height="70"/>
+        <text class="svg-label center bold" x="650" y="64">4. checks</text>
+        <text class="svg-label center small mono" x="650" y="88">1 &lt;= burst &lt;= 64</text>
+        <path class="svg-arrow c7" d="M150,75 L186,75"/>
+        <path class="svg-arrow c2" d="M350,75 L386,75"/>
+        <path class="svg-arrow c1" d="M550,75 L586,75"/>
+        <text class="svg-label small center muted" x="360" y="135">each stage overwrites only the values it actually provides; the source of each value is printed</text>
+      </svg></div>
+      <figcaption><span class="fig-num"></span>The precedence rule of the final app. To know whether the user gave an option, the CLI variables start at a sentinel (<code>UINT32_MAX</code>, or 0 for the burst) and are applied only if they changed.</figcaption>
+    </figure>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/evolve/step5_options.c: defaults, file, command line</span><span class="lang">C</span></div>
+<pre data-lines data-start="380" data-hl="396,408,413"><code class="language-c">build_config(struct app_cfg *c)
+{
+	struct rte_cfgfile *f;
+	int i, err = 0;
+
+	/* 1. built-in defaults */
+	c-&gt;burst = 32;
+	c-&gt;interval_ms = 1000;
+	c-&gt;ka_ms = 250;
+	c-&gt;stall_after = 0;
+	c-&gt;seconds = 3;
+	for (i = 0; i &lt; 5; i++)
+		c-&gt;src[i] = "default";
+
+	/* 2. the INI file */
+	if (cli_config != NULL) {
+		f = rte_cfgfile_load(cli_config, 0);
+		if (f == NULL) {
+			printf("cannot load config file '%s'\n", cli_config);
+			return -1;
+		}
+		printf("config: loaded %s, %d section(s)\n", cli_config,
+		       rte_cfgfile_num_sections(f, NULL, 0));
+		err |= ini_u32(f, "forward", "burst", &amp;c-&gt;burst, &amp;c-&gt;src[0]);
+		err |= ini_u32(f, "stats", "interval_ms", &amp;c-&gt;interval_ms, &amp;c-&gt;src[1]);
+		err |= ini_u32(f, "keepalive", "period_ms", &amp;c-&gt;ka_ms, &amp;c-&gt;src[2]);
+		err |= ini_u32(f, "keepalive", "stall_after", &amp;c-&gt;stall_after, &amp;c-&gt;src[3]);
+		err |= ini_pairs(f);
+		rte_cfgfile_close(f);
+		if (err)
+			return -1;
+	}
+
+	/* 3. the command line wins */
+	if (cli_burst != 0)        { c-&gt;burst = cli_burst;          c-&gt;src[0] = "cli"; }
+	if (cli_interval != UNSET) { c-&gt;interval_ms = cli_interval; c-&gt;src[1] = "cli"; }
+	if (cli_ka != UNSET)       { c-&gt;ka_ms = cli_ka;             c-&gt;src[2] = "cli"; }
+	if (cli_stall != UNSET)    { c-&gt;stall_after = cli_stall;    c-&gt;src[3] = "cli"; }
+	if (cli_seconds != UNSET)  { c-&gt;seconds = cli_seconds;      c-&gt;src[4] = "cli"; }
+
+	/* 4. semantic checks that no parser can do for us */
+	if (c-&gt;burst &lt; 1 || c-&gt;burst &gt; MAX_BURST) {
+		printf("burst %u out of range 1..%u\n", c-&gt;burst, MAX_BURST);
+		return -1;
+	}
+	if (c-&gt;interval_ms &lt; 10 || c-&gt;ka_ms &lt; 10) {
+		printf("stats interval and keepalive period must be &gt;= 10 ms\n");
+		return -1;
+	}
+	return 0;
+}</code></pre>
+</div>
+    <p>The run with <code>--config app.ini --burst 16</code> shows the source of every value: the burst from the command line, the 500 ms stats interval from the file, the run time from the defaults.</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./step5_options -l 0-2 -S 2 --file-prefix=ch11-s5 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --config app.ini --burst 16</span>
+config: loaded app.ini, 3 section(s)
+config: pair0 = 0,1 -&gt; frames from port 0 go to port 1
+config: pair1 = 1,0 -&gt; frames from port 1 go to port 0
+<span class="hl">effective config: burst=16 (cli) stats-interval=500 ms (ini) ka=250 ms (ini) stall-after=0 s (ini) seconds=3 (default) shell=no</span>
+injected 64 frames; forwarding on lcore 1, timers on service lcore 2
+t=0.5s port 0: rx 40163104 (80.33 Mpps) burst 16
+t=0.5s port 1: rx 40165840 (80.33 Mpps) burst 16
+t=1.0s port 0: rx 78565296 (76.80 Mpps) burst 16
+t=1.0s port 1: rx 78567616 (76.80 Mpps) burst 16
+t=1.5s port 0: rx 118668576 (80.21 Mpps) burst 16
+t=1.5s port 1: rx 118669952 (80.20 Mpps) burst 16
+t=2.0s port 0: rx 158566832 (79.80 Mpps) burst 16
+t=2.0s port 1: rx 158567664 (79.80 Mpps) burst 16
+t=2.5s port 0: rx 197405936 (77.68 Mpps) burst 16
+t=2.5s port 1: rx 197406960 (77.68 Mpps) burst 16
+t=3.0s port 0: rx 237493664 (80.18 Mpps) burst 16
+t=3.0s port 1: rx 237494768 (80.18 Mpps) burst 16
+keepalive failure callbacks: 0
+
+# step 5: keepalive settings from the command line, hang after 1 s</pre>
+</div>
+    <p>The same app with keepalive settings from the command line and a hang after one second (the hang is now a SINGLE timer on the service lcore):</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./step5_options -l 0-2 -S 2 --file-prefix=ch11-s5 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --config app.ini --ka-ms 100 --stall-after 1 --seconds 2</span>
+config: loaded app.ini, 3 section(s)
+config: pair0 = 0,1 -&gt; frames from port 0 go to port 1
+config: pair1 = 1,0 -&gt; frames from port 1 go to port 0
+<span class="hl">effective config: burst=32 (ini) stats-interval=500 ms (ini) ka=100 ms (cli) stall-after=1 s (cli) seconds=2 (cli) shell=no</span>
+injected 64 frames; forwarding on lcore 1, timers on service lcore 2
+t=0.5s port 0: rx 42284064 (84.57 Mpps) burst 32
+t=0.5s port 1: rx 42286336 (84.57 Mpps) burst 32
+t=1.0s port 0: rx 83431328 (82.29 Mpps) burst 32
+t=1.0s port 1: rx 83431936 (82.29 Mpps) burst 32
+[stall timer] worker lcore 1 now hangs
+EAL: Core MIA. Last seen 100ms ago.
+EAL: Core died. Last seen 199ms ago.
+
+<span class="hl">[keepalive] lcore 1 is dead -&gt; releasing it (callback in thread 'dpdk-worker2', lcore 2)</span>
+t=1.5s port 0: rx 100295264 (33.73 Mpps) burst 32
+t=1.5s port 1: rx 100297504 (33.73 Mpps) burst 32
+t=2.0s port 0: rx 142488928 (84.39 Mpps) burst 32
+t=2.0s port 1: rx 142490272 (84.39 Mpps) burst 32
+keepalive failure callbacks: 1
+
+# step 5: the help text is generated by rte_argparse</pre>
+</div>
+    <p>The generated help and the error paths:</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./step5_options -l 0-2 -S 2 --file-prefix=ch11-s5 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --help</span>
+usage: step5_options [EAL options] -- [--config FILE] [--burst N] [--shell] ...
+
+descriptor: Chapter 11 evolving app: l2fwd + timers + service core + keepalive + shell.
+
+options:
+ -h, --help            show this help message and exit.
+ -c, --config          INI file with [forward] [stats] [keepalive] sections
+ -b, --burst           RX burst size, 1..64 (default 32)
+ -i, --stats-interval  stats period in ms (default 1000)
+ -k, --ka-ms           keepalive ping period in ms (default 250)
+ -a, --stall-after     make the worker hang after S seconds (0 = never)
+ -t, --seconds         run time in seconds without --shell (default 3)
+ --shell               run the interactive shell on the main lcore
+
+Precedence: built-in default &lt; --config FILE &lt; command line.
+
+# step 5: bad input</pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./step5_options -l 0-2 -S 2 --file-prefix=ch11-s5 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --burst abc</span>
+<span class="err">ARGPARSE: argument --burst expect an uint16 value!</span>
+<span class="err">ARGPARSE: argument --burst parse value fail!</span>
+argument error (-22)</pre>
+</div>
+    <div class="twocol">
+      <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./step5_options -l 0-2 -S 2 --file-prefix=ch11-s5 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --burst 200</span>
+<span class="err">burst 200 out of range 1..64</span>
+[exit status 1]</pre>
+</div>
+      <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./step5_options -l 0-2 -S 2 --file-prefix=ch11-s5 --no-pci --no-huge -m 128 --vdev=net_ring0 --vdev=net_ring1 -- --config bad.ini</span>
+config: loaded bad.ini, 1 section(s)
+<span class="err">bad.ini: [forward] burst = 'lots' is not a number</span>
+[exit status 1]
+
+# step 5 with the shell</pre>
+</div>
+    </div>
+    <p class="output-caption"><code>--burst abc</code> is rejected by argparse's U16 conversion, before our code runs. <code>--burst 200</code> is a valid uint16, so only our semantic check catches it; exercise 4 moves that check into the parser with a callback. A bad value in the file is our <code>ini_u32()</code> at work: <code>rte_cfgfile</code> only knows strings.</p>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th></th><th>getopt_long (ch2)</th><th>rte_argparse</th></tr></thead>
+        <tbody>
+          <tr><td>Type conversion</td><td>yours (<code>atoi</code>, <code>strtoul</code>)</td><td>built in for int/u8..u64/str/bool/corelist</td></tr>
+          <tr><td>Help text</td><td>you write <code>usage()</code></td><td>generated from the table, <code>-h</code>/<code>--help</code> built in</td></tr>
+          <tr><td>Errors</td><td><code>'?'</code> from getopt, message yours</td><td>logged by the library, negative return</td></tr>
+          <tr><td>Portability</td><td>POSIX/glibc</td><td>DPDK, also on Windows; experimental API</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ===================================================== 7 -->
+    <h2 id="alarms"><span class="sec-num">7</span>Side demo: EAL alarms</h2>
+    <p>An <span class="key-term">EAL alarm</span> is the simplest delayed call: <code>rte_eal_alarm_set(us, cb, arg)</code> runs <code>cb(arg)</code> once, at least <code>us</code> microseconds from now. You do not poll anything. The EAL's interrupt thread (<code>dpdk-intr</code>, created by <code>rte_eal_init()</code>) waits on a timerfd together with all device interrupt file descriptors and runs the callback itself. Drivers use alarms for "check the link again in 100 ms" and for delayed device reset handling. <code>rte_eal_alarm_cancel(cb, arg)</code> removes pending alarms that match both; <code>(void *)-1</code> as <code>arg</code> matches any argument.</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/alarm_demo.c: periodic work by re-arming</span><span class="lang">C</span></div>
+<pre data-lines data-start="70" data-hl="80"><code class="language-c">tick_cb(void *arg)
+{
+	static double last;
+	double now = ms_now();
+
+	(void)arg;
+	printf("tick_cb   at +%6.1f ms (%.1f ms since the previous tick)\n",
+	       now, last ? now - last : 0.0);
+	last = now;
+	if (--ticks_left &gt; 0)
+		rte_eal_alarm_set(50 * 1000, tick_cb, NULL);   /* re-arm */
+}</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./alarm_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch11-alarm</span>
+main()    runs in thread 'alarm_demo', rte_lcore_id() = an lcore
+
+--- 1. where an alarm runs ---
+<span class="hl">where_cb  runs in thread 'dpdk-intr', rte_lcore_id() = LCORE_ID_ANY (not an lcore)</span>
+          asked for +100.0 ms, ran at +100.4 ms (late by 0.37 ms)
+
+--- 2. periodic work by re-arming (5 ticks, 50 ms) ---
+tick_cb   at +  50.1 ms (0.0 ms since the previous tick)
+tick_cb   at + 100.2 ms (50.1 ms since the previous tick)
+tick_cb   at + 150.3 ms (50.1 ms since the previous tick)
+tick_cb   at + 200.4 ms (50.1 ms since the previous tick)
+tick_cb   at + 250.5 ms (50.1 ms since the previous tick)
+
+--- 3. cancelling ---
+cancel(never_cb, arg 2)            -&gt; 1 (one alarm matched cb AND arg)
+cancel(never_cb, (void *)-1)       -&gt; 2 (wildcard: every arg)
+<span class="hl">cancel again                       -&gt; 0, rte_errno=ENOENT</span>
+<span class="hl">self_cancel_cb: cancel(itself) from its own callback -&gt; 0, rte_errno=EINPROGRESS</span>
+
+--- 4. a blocking callback delays everyone ---
+slow_cb   at +  20.1 ms: sleeping 300 ms inside the interrupt thread (DON'T)
+slow_cb   done at + 320.2 ms
+<span class="hl">victim_cb was due at +  70.0 ms, ran at + 320.3 ms: 250 ms late</span></pre>
+</div>
+    <p class="output-caption">Four facts. The callback runs in <code>dpdk-intr</code> and <code>rte_lcore_id()</code> there is <code>LCORE_ID_ANY</code>, so per-lcore APIs (an mbuf pool's per-lcore cache, <code>rte_timer_reset</code> with "this lcore") do not behave as on an lcore. Re-arming from the callback gives periodic work that drifts a little (the period is measured from when the callback ran). Cancel returns how many alarms it removed, 0 with <code>ENOENT</code> when none matched, and <code>EINPROGRESS</code> when an alarm tries to cancel itself from its own callback. And one callback that sleeps 300 ms delays the next alarm by 250 ms: the thread is shared by every alarm and every interrupt and device event callback of the process (link-state events in ch12 arrive there too).</p>
+    <div class="callout pitfall"><div class="callout-title">Pitfall: blocking in dpdk-intr</div><p>Never block in an alarm or an interrupt callback: no <code>sleep</code>, no waiting for a lock that a data-plane lcore holds, no <code>rte_eth_dev_stop()</code> of a port whose interrupt you are handling. If the work is slow, have the callback set a flag or post to a ring, and do the work on a control thread or lcore.</p></div>
+
+    <!-- ===================================================== 8 -->
+    <h2 id="jobstats"><span class="sec-num">8</span>jobstats: where does the loop's time go?</h2>
+    <p>Once a loop does several jobs (forward port 0, forward port 1, flush, timers), you want to know how its time splits between them and how much is overhead. <code>lib/jobstats</code> is a tiny accounting helper for that. A <code>struct rte_jobstats_context</code> belongs to one lcore's loop: <code>rte_jobstats_context_start()</code> and <code>_finish()</code> bracket one loop iteration. Each job is a <code>struct rte_jobstats</code> set up with <code>rte_jobstats_init(&amp;job, name, min_period, max_period, initial_period, target)</code>; <code>rte_jobstats_start(&amp;ctx, &amp;job)</code> and <code>rte_jobstats_finish(&amp;job, value)</code> bracket one execution. The <code>value</code> (for example packets received) is compared with <code>target</code>, and an optional callback adapts the job's period: poll a quiet port less often, a busy one more often. The sample <code>examples/l2fwd-jobstats</code> drives its jobs with <code>rte_timer</code> and prints the split:</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">$E/dpdk-l2fwd-jobstats -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch11-js --vdev=net_ring0 --vdev=net_ring1 -- -p 0x3 -q 2 -T 2</span>
+LCore   0: statistics (time in ns, collected in      1627)
+Stat type                   total  %total        avg        min        max 
+Stats duration:        2000142730
+Loop count:                218286
+Exec time                 7141545    0.4%         33         23     624896
+<span class="hl">Management time          37930854    1.9%        174         16      38019</span>
+Exec + management        45072399    2.3%        206         39     662916
+<span class="hl">Idle (job)             1955070331   97.7%      10977         45     624896</span>
+
+Job 0: port 0 fwd           
+Exec count:                100350
+Exec period:                38199
+Exec time                 3166676    0.2%         31         24      15978
+
+Job 1: port 1 fwd           
+Exec count:                100351
+Exec period:                38199
+Exec time                 3234021    0.2%         32         23      25293
+
+Job 2: flush                
+Exec count:                 19994
+Exec period:               100037
+Exec time                  740847    0.0%         37         33        341
+====================================================</pre>
+</div>
+    <p class="output-caption">With no traffic, 98% of the time is "idle" job time and the management overhead (timers, the jobstats bookkeeping itself) is a few percent. The forward jobs run every 38 us on average: the period adapted to the idle ports. This is an accounting tool, not a scheduler; ch22 covers measurement in depth.</p>
+
+    <!-- ===================================================== 9 -->
+    <h2 id="where"><span class="sec-num">9</span>Where does each callback run?</h2>
+    <p>Every mechanism in this chapter runs your code somewhere else. Get this wrong and you call an lcore-only API from the interrupt thread, or block a thread that other work depends on.</p>
+    <figure class="diagram">
+      <div class="scroll-x">
+      <svg viewBox="0 0 720 270" role="img" aria-labelledby="f-where" style="min-width:560px">
+        <title id="f-where">Threads of a DPDK process and which callbacks run on each</title>
+        <rect class="svg-box c1" x="10" y="10" width="220" height="120"/>
+        <text class="svg-label center bold" x="120" y="30">EAL lcores (main + workers)</text>
+        <text class="svg-label small" x="22" y="54">your loop, rte_eal_remote_launch()</text>
+        <text class="svg-label small" x="22" y="74">timer callbacks armed for this lcore,</text>
+        <text class="svg-label small" x="22" y="90">run by its rte_timer_manage()</text>
+        <text class="svg-label small" x="22" y="110">rte_service_run_iter_on_app_lcore()</text>
+        <rect class="svg-box c5" x="250" y="10" width="220" height="120"/>
+        <text class="svg-label center bold" x="360" y="30">service lcores (-S)</text>
+        <text class="svg-label small" x="262" y="54">service callbacks, in a loop</text>
+        <text class="svg-label small" x="262" y="74">timers armed for this lcore if a</text>
+        <text class="svg-label small" x="262" y="90">service calls rte_timer_manage()</text>
+        <text class="svg-label small" x="262" y="110">rte_lcore_id() = the service lcore</text>
+        <rect class="svg-box c6" x="490" y="10" width="220" height="120"/>
+        <text class="svg-label center bold" x="600" y="30">dpdk-intr (interrupt thread)</text>
+        <text class="svg-label small" x="502" y="54">EAL alarms</text>
+        <text class="svg-label small" x="502" y="74">device interrupts, LSC and other</text>
+        <text class="svg-label small" x="502" y="90">ethdev event callbacks (ch12)</text>
+        <text class="svg-label small" x="502" y="110">rte_lcore_id() = LCORE_ID_ANY</text>
+        <rect class="svg-box c7" x="130" y="150" width="220" height="100"/>
+        <text class="svg-label center bold" x="240" y="170">control threads</text>
+        <text class="svg-label small" x="142" y="194">telemetry, mp handler (ch13, ch16)</text>
+        <text class="svg-label small" x="142" y="214">rte_thread_create_control()</text>
+        <text class="svg-label small" x="142" y="234">may block; not lcores</text>
+        <rect class="svg-box c3" x="370" y="150" width="220" height="100"/>
+        <text class="svg-label center bold" x="480" y="170">keepalive callbacks</text>
+        <text class="svg-label small" x="382" y="194">run inside dispatch_pings(), i.e.</text>
+        <text class="svg-label small" x="382" y="214">wherever the ping timer runs</text>
+        <text class="svg-label small" x="382" y="234">(lcore 0 in step 3, lcore 2 in step 4)</text>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>The threads you met in this chapter. Callbacks inherit the rules of the thread they run on.</figcaption>
+    </figure>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Callback</th><th>Thread</th><th>May block?</th><th>Per-lcore APIs OK?</th><th>Seen here</th></tr></thead>
+        <tbody>
+          <tr><td>Timer callback</td><td>lcore that calls <code>rte_timer_manage()</code></td><td>No (delays that lcore's loop and its other timers)</td><td>Yes</td><td>step 1 "lcore 0", ex1 "dpdk-worker2, lcore 2"</td></tr>
+          <tr><td>Service callback</td><td>service lcore</td><td>No (starves other services on it)</td><td>Yes</td><td>step 2 "dpdk-worker2, lcore 2"</td></tr>
+          <tr><td>Keepalive failure/relay</td><td>where the ping timer runs</td><td>No</td><td>Yes</td><td>step 3 lcore 0, step 4 lcore 2</td></tr>
+          <tr><td>EAL alarm</td><td><code>dpdk-intr</code></td><td>Never</td><td>No (<code>LCORE_ID_ANY</code>)</td><td>alarm_demo</td></tr>
+          <tr><td>cmdline handler</td><td>thread in <code>cmdline_interact()</code></td><td>Yes, it is the control thread</td><td>Yes on the main lcore</td><td>step 4</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ===================================================== 10 -->
+    <h2 id="toolbox"><span class="sec-num">10</span>Appendix: the EAL toolbox and rte_common.h</h2>
+    <p>Small helpers you will meet in every DPDK code base. <code>code/toolbox.c</code> calls each one and prints the result; read the program and its output side by side. Per-lcore data and lcore variables (<code>RTE_LCORE_VAR_*</code>) are covered in ch14.</p>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Header</th><th>What</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><code>rte_common.h</code></td><td><code>RTE_MIN/MAX</code>, <code>RTE_DIM</code>, <code>RTE_ALIGN_CEIL/FLOOR</code>, <code>RTE_DIV_ROUND_UP</code> (new in 26.11), <code>RTE_BUILD_BUG_ON</code>, <code>RTE_PTR_ADD/SUB/DIFF</code>, <code>container_of</code>, <code>RTE_SET_USED</code>, <code>__rte_cache_aligned</code>, <code>__rte_packed_begin/end</code></td><td>26.11: <code>RTE_PTR_ADD/SUB</code> keep const/volatile and no longer accept an integer as the pointer argument (use <code>+</code>/<code>-</code> on integers); <code>__rte_packed</code> is removed</td></tr>
+          <tr><td><code>rte_random.h</code></td><td><code>rte_srand</code>, <code>rte_rand</code> (64 bit), <code>rte_rand_max(n)</code> (uniform in [0, n), no modulo bias), <code>rte_drand</code> ([0, 1))</td><td>Per-lcore state, fast, <em>not</em> cryptographic. (<code>rte_fast_rand</code> was removed from sched.)</td></tr>
+          <tr><td><code>rte_bitset.h</code></td><td>Flat bitset in <code>uint64_t</code> words: <code>RTE_BITSET_DECLARE</code>, <code>rte_bitset_set/test/clear</code>, <code>_count_set</code>, <code>_find_first_set</code>, <code>RTE_BITSET_FOREACH_SET</code></td><td>Good up to a few thousand bits; the EAL uses it for service mappings</td></tr>
+          <tr><td><code>rte_bitmap.h</code></td><td>Two-level bitmap: <code>rte_bitmap_get_memory_footprint</code>, <code>_init</code>, <code>_set</code>, <code>_get</code>, <code>_scan</code></td><td>Millions of bits; the scan skips empty 512-bit groups (used by the QoS scheduler, ch21)</td></tr>
+          <tr><td><code>rte_bitops.h</code></td><td><code>rte_ctz64</code>, <code>rte_popcount64</code>, <code>rte_align32pow2</code>, <code>rte_is_power_of_2</code>, <code>RTE_BIT64</code></td><td>Compiler builtins with names</td></tr>
+          <tr><td><code>rte_reciprocal.h</code></td><td><code>rte_reciprocal_value(d)</code> once, then <code>rte_reciprocal_divide(a, r)</code></td><td>Division by a run-time constant with a multiply and shifts</td></tr>
+          <tr><td><code>rte_errno.h</code></td><td><code>rte_errno</code> (per-lcore), <code>rte_strerror()</code></td><td>Set by calls that return NULL or -1; also DPDK codes like <code>E_RTE_NO_CONFIG</code></td></tr>
+          <tr><td><code>rte_string_fns.h</code></td><td><code>rte_strscpy</code> (returns <code>-E2BIG</code> on truncation), <code>rte_strsplit</code> (in place, keeps empty fields), <code>rte_strlcpy</code></td><td>Used by step 5 for <code>pairN = 0,1</code></td></tr>
+          <tr><td><code>rte_hexdump.h</code></td><td><code>rte_hexdump</code>, <code>rte_memdump</code></td><td>Debugging packet bytes (ch10, ch13)</td></tr>
+          <tr><td><code>rte_tailq.h</code>, <code>sys/queue.h</code></td><td><code>TAILQ_*</code>, <code>RTE_TAILQ_FOREACH_SAFE</code>; named shared lists for multi-process (<code>rte_eal_tailq_*</code>)</td><td>The EAL keeps rings, mempools and hashes in such lists</td></tr>
+          <tr><td><code>rte_uuid.h</code></td><td><code>rte_uuid_parse/unparse/compare/is_null</code></td><td>Device and VF identifiers</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/toolbox.c: a packed struct the 26.11 way</span><span class="lang">C</span></div>
+<pre data-lines data-start="42"><code class="language-c">struct __rte_packed_begin wire_hdr {
+	uint8_t  type;
+	uint32_t seq;          /* would be at offset 4 without packing */
+	uint16_t len;
+} __rte_packed_end;</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./toolbox -l 0 --no-pci --no-huge -m 64 --file-prefix=ch11-tool</span>
+
+=== A. rte_common.h ===
+RTE_MIN(3, 9)=3  RTE_MAX(3, 9)=9  RTE_DIM(ports)=4
+RTE_ALIGN_CEIL(100, 64)=128  RTE_ALIGN_FLOOR(100, 64)=64  RTE_DIV_ROUND_UP(100, 64)=2
+rte_is_power_of_2(48)=0  rte_align32pow2(48)=64  RTE_CACHE_LINE_SIZE=64
+<span class="hl">sizeof(packed wire_hdr)=7, sizeof(natural_hdr)=12 (seq at offset 1 vs 4)</span>
+RTE_PTR_ADD(buf, 10) - buf = 10  RTE_PTR_DIFF = 10  RTE_PTR_SUB back == buf: yes
+container_of(&amp;f.id, struct flow, id) == &amp;f: yes
+
+=== B. random numbers ===
+rte_rand() x3 after rte_srand(42): 948c2d7b8865ba86 047fb116765d56a8 1d7714e8c9c6a2f0
+rte_rand_max(6) histogram of 60000 draws: 10021 9904 9964 10122 10025 9964
+rte_drand() = 0.266786 (a double in [0, 1))
+
+=== C. bit sets ===
+rte_bitset: count=3 first=3 test(64)=1 test(65)=0; set bits: 3 64 100
+rte_bitmap: 1048576 bits in 131392 bytes; get(700000)=1 get(6)=0
+rte_bitmap_scan: first slab at bit 0, slab=0x20
+rte_bitmap_scan: next  slab at bit 699968, slab=0x100000000 (bit 700000)
+
+=== D. rte_reciprocal ===
+rte_reciprocal_divide(a, 7) == a / 7 for 3.3M values: 0 errors
+<span class="hl">cycles per division, median of 5 runs [min..max] (VM, gcc -O2):</span>
+  a / d (DIV):            4.56 [4.27..4.79]
+  rte_reciprocal_divide:  1.74 [1.65..2.05]
+
+=== E. errors and strings ===
+rte_memzone_lookup(missing) -&gt; (nil), rte_errno=2 (No such file or directory)
+rte_strerror(E_RTE_NO_CONFIG)="Missing rte_config structure" (DPDK-specific codes too)
+rte_strscpy("abc") -&gt; 3
+<span class="hl">rte_strscpy(too long) -&gt; -7 (-E2BIG=-7), dst="net_rin" (always terminated)</span>
+rte_strsplit -&gt; 4 tokens: [10.11.0.1] [10.11.0.2] [] [eth1]
+
+=== F. rte_hexdump / rte_memdump ===
+wire_hdr (packed, 7 bytes) at [0x7ffdc4b20c68], len=7
+00000000: 11 EF BE AD DE 40 00                            | .....@.
+same bytes, rte_memdump: 11:ef:be:ad:de:40:00
+
+=== G. TAILQ lists ===
+flows after removing id 2: 1:dns 3:ssh
+
+=== H. rte_uuid ===
+parsed+unparsed: 6ba7b810-9dad-11d1-80b4-00c04fd430c8  is_null(a)=0 is_null(cleared)=1 compare=1</pre>
+</div>
+    <p class="output-caption">The hexdump address differs on every run. The division timing is a median of 5 runs of 10 million divisions in a loop (throughput, not latency) on this VM; the point is the ratio, about 2.6x, not the absolute numbers.</p>
+    <div class="callout note"><div class="callout-title">26.11: two changes that break old code</div><p><code>struct foo {...} __rte_packed;</code> no longer compiles: write <code>struct __rte_packed_begin foo {...} __rte_packed_end;</code> (and put alignment attributes before <code>__rte_packed_begin</code>). <code>RTE_PTR_ADD(addr, 16)</code> where <code>addr</code> is a <code>uintptr_t</code> no longer compiles either: use <code>addr + 16</code>, or a real pointer. See <span class="src-path">doc/guides/rel_notes/release_26_11.rst</span>.</p></div>
+
+    <!-- ===================================================== PITFALLS -->
+    <h2 id="pitfalls">Common pitfalls</h2>
+    <ul>
+      <li><strong>Timers never fire</strong>: nobody calls <code>rte_timer_manage()</code> on the lcore named in <code>rte_timer_reset()</code>. A timer armed for lcore 2 is invisible to lcore 0's <code>manage()</code>. Also check that <code>rte_timer_subsystem_init()</code> ran (<code>manage()</code> returns <code>-EINVAL</code> otherwise).</li>
+      <li><strong>A timer on the stack</strong>: <code>struct rte_timer</code> is linked into a shared list. If it goes out of scope while pending, the list points into a dead stack frame. Make timers static or heap-allocated, and stop them before freeing.</li>
+      <li><strong>Ignoring <code>rte_timer_reset()</code>'s return value</strong>: it returns -1 while the timer's callback is running on another lcore. Check it, or use <code>rte_timer_reset_sync()</code> outside callbacks.</li>
+      <li><strong>Service never runs</strong>: one of the four switches is off. Component runstate, application runstate, mapping, lcore started. <code>rte_service_dump()</code> and <code>rte_service_runstate_get()</code> tell you which.</li>
+      <li><strong>Service lcore not in <code>-l</code></strong>: <code>-S 2</code> with <code>-l 0-1</code> is not rejected in 26.11: EAL warns "Not all service cores were in the coremask" and makes lcore 2 a service lcore anyway (captured above). Keep <code>-S</code> inside <code>-l</code> so the lcore list says what really runs. And <code>-s</code> is deprecated.</li>
+      <li><strong><code>rte_service_lcore_stop()</code> returns <code>-EBUSY</code></strong>: a running service is mapped only to that lcore. Set its runstate to 0 first, then stop, then <code>rte_eal_wait_lcore()</code>, then unmap and unregister.</li>
+      <li><strong>Cycle counters stay 0</strong>: service cycle statistics are off until <code>rte_service_set_stats_enable(id, 1)</code>.</li>
+      <li><strong>Keepalive callback "too late"</strong>: it fires on the third ping after the last mark, so detection takes 2 to 3 ping periods. Shorter periods detect faster and cost more pings; a core that legitimately blocks longer than that (a long rte_flow operation) must call <code>rte_keepalive_mark_sleep()</code> first.</li>
+      <li><strong>Registered cores show UNUSED forever</strong>: a core is UNUSED until its first <code>rte_keepalive_mark_alive()</code>. A core that hangs before its first mark is never detected.</li>
+      <li><strong>The shell freezes the timers</strong>: <code>cmdline_interact()</code> blocks its thread. Anything that thread used to drive (timers, keepalive pings) must move to another lcore first, as in step 4.</li>
+      <li><strong>Blocking in an alarm</strong>: all alarms and interrupt callbacks share <code>dpdk-intr</code>; one slow callback delays them all (250 ms in our demo).</li>
+      <li><strong><code>exit_on_error = true</code> in rte_argparse</strong>: errors call <code>exit()</code> with a negative value, skipping your cleanup; the shell sees exit status 234 or similar.</li>
+    </ul>
+
+    <!-- ===================================================== CHECK -->
+    <h2 id="check">Check your understanding</h2>
+    <div class="quiz" data-quiz>
+      <div class="quiz-head">Five questions</div>
+      <div class="q" data-answer="1" data-explain="A timer runs only in <code>rte_timer_manage()</code> called on the lcore given as <code>tim_lcore</code>. Lcore 0's manage() never looks at lcore 2's list.">
+        <div class="q-text">Lcore 0 arms a timer with <code>tim_lcore = 2</code>, and only lcore 0 calls <code>rte_timer_manage()</code>. What happens?</div>
+        <div class="q-opts">
+          <button class="q-opt">The callback runs on lcore 0, a little late</button>
+          <button class="q-opt">The callback never runs</button>
+          <button class="q-opt"><code>rte_timer_reset()</code> fails because lcore 2 is a service lcore</button>
+        </div>
+      </div>
+      <div class="q" data-answer="2" data-explain="Component runstate, application runstate, a mapping to a service lcore, and that lcore running. <code>-EAGAIN</code> is a normal &quot;idle&quot; return, not a stop condition.">
+        <div class="q-text">Which of these is NOT required for a service callback to be called?</div>
+        <div class="q-opts">
+          <button class="q-opt"><code>rte_service_runstate_set(id, 1)</code></button>
+          <button class="q-opt">The service is mapped to a started service lcore</button>
+          <button class="q-opt">The previous call returned 0 rather than <code>-EAGAIN</code></button>
+        </div>
+      </div>
+      <div class="q" data-answer="0" data-explain="Ping 1 (3.00 s) ALIVE&rarr;MISSING, ping 2 (3.25 s) MISSING&rarr;DEAD (&quot;Core MIA&quot;), ping 3 (3.50 s) DEAD&rarr;GONE (&quot;Core died&quot;, callback). Exactly what step 3 printed.">
+        <div class="q-text">Pings every 250 ms at 3.00, 3.25, 3.50 s... A core makes its last mark at 2.99 s. When does the failure callback run?</div>
+        <div class="q-opts">
+          <button class="q-opt">At the 3.50 s ping</button>
+          <button class="q-opt">At the 3.00 s ping</button>
+          <button class="q-opt">At the 3.25 s ping</button>
+        </div>
+      </div>
+      <div class="q" data-answer="1" data-explain="<code>set</code> and <code>burst</code> matched, the UINT16 token failed: at least one token matched, so cmdline reports <code>Bad arguments</code>. <code>Command not found</code> means not even the first token matched any instruction.">
+        <div class="q-text">With the step 4 shell, what does <code>set burst 70000</code> print?</div>
+        <div class="q-opts">
+          <button class="q-opt"><code>burst must be 1..64</code></button>
+          <button class="q-opt"><code>Bad arguments</code></button>
+          <button class="q-opt"><code>Command not found</code></button>
+        </div>
+      </div>
+      <div class="q" data-answer="2" data-explain="Alarms run in the dpdk-intr thread, where <code>rte_lcore_id()</code> is <code>LCORE_ID_ANY</code>, and that thread also delivers interrupts and device events. Blocking there delays all of them.">
+        <div class="q-text">Why must an EAL alarm callback never sleep?</div>
+        <div class="q-opts">
+          <button class="q-opt">It runs on the main lcore and would stop forwarding</button>
+          <button class="q-opt">Alarms are cancelled automatically after 100 ms</button>
+          <button class="q-opt">It shares the interrupt thread with every other alarm and interrupt callback</button>
+        </div>
+      </div>
+      <div class="controls"><button class="btn small quiz-reset" type="button">Reset</button></div>
+    </div>
+
+    <!-- ===================================================== EXERCISES -->
+    <h2 id="exercises">Exercises</h2>
+    <div class="exercise">
+      <div class="box-title">Exercise 1 <span class="tag easy">easy</span> Timers driven by a service</div>
+      <p>Change step 1 so that the forwarding loop contains no timer code at all: arm the stats timer for a service lcore and drive it from a service. Run it with <code>-l 0,2 -S 2</code> and show that the callback now runs on lcore 2.</p>
+      <details><summary>Hint</summary><p>Step 4 does this for the keepalive timer: <code>tim_lcore = svc_lcore</code> in <code>rte_timer_reset()</code>, and a service whose callback is <code>rte_timer_manage()</code> (return <code>-EAGAIN</code> when <code>rte_timer_next_ticks() &gt; 0</code>).</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/ex1_timer_service.c</code>; its output is in <code>expected_output.txt</code>: <code>stats_cb runs in thread 'dpdk-worker2', lcore 2</code>, and of 58 million service calls only 3 ran <code>rte_timer_manage()</code>.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 2 <span class="tag medium">medium</span> No spare core</div>
+      <p>Run step 2's stats service <em>without</em> a service lcore: start with <code>-l 0</code>, do not map the service, and call <code>rte_service_run_iter_on_app_lcore(id, 1)</code> from the forwarding loop every 1000 passes. Measure the forwarding rate against step 2 and explain the trade-off. What changes if you pass 0 as the second argument?</p>
+      <details><summary>Hint</summary><p>The call checks both runstates and returns <code>-ENOEXEC</code> if one is 0. With <code>serialize_mt_unsafe = 1</code> it takes the service's spinlock (an atomic per call); with 0 you promise that no service lcore runs it. The stats work now steals time from your loop again, like step 1, but you can move it to a service lcore later without changing the service.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 3 <span class="tag medium">medium</span> The cost of rte_timer_manage()</div>
+      <p>Measure the cost of one <code>rte_timer_manage()</code> call with 0, 10 and 1000 pending timers that do not expire, and with 1000 timers that all expire. Report median, min and max of 5 runs. Explain the result with the skiplist.</p>
+      <details><summary>Solution</summary><p><code>code/solutions/ex3_manage_cost.c</code>; results and discussion in section 2.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 4 <span class="tag medium">medium</span> --burst with a range check in the parser</div>
+      <p>In step 5 the range of <code>--burst</code> is checked after parsing. Move the check into <code>rte_argparse</code> so that <code>--burst 0</code> and <code>--burst 100</code> fail inside <code>rte_argparse_parse()</code> like any other bad argument.</p>
+      <details><summary>Hint</summary><p>Leave <code>val_saver</code> NULL and put an index in <code>val_set</code>: argparse then calls <code>obj.callback(index, value, opaque)</code>. Convert with <code>rte_argparse_parse_type(value, RTE_ARGPARSE_VALUE_TYPE_U16, &amp;v)</code> and return <code>-ERANGE</code> when out of range.</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/ex4_burst_range.c</code>, run with 16, 0, 100 and <code>x</code> in <code>expected_output.txt</code>.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 5 <span class="tag stretch">stretch</span> show keepalive, properly</div>
+      <p>Extend step 4's <code>show keepalive</code> to print, for every watched lcore, its state and how long ago it was last seen, using the <code>last_seen</code> TSC the relay callback receives. Then watch more than one worker lcore and stall one of them from the shell with <code>stall &lt;lcore&gt;</code> (a <code>TOKEN_NUM_INITIALIZER</code> argument).</p>
+    </div>
+
+    <!-- ===================================================== SUMMARY -->
+    <section class="summary-box">
+      <div class="box-title">Summary</div>
+      <ul>
+        <li>Background work must not sit inline in the poll loop. DPDK gives four places for it: timers (on the lcore that manages them), services (on service lcores), alarms (in the interrupt thread) and control threads (which may block).</li>
+        <li><code>rte_timer</code>: init the subsystem once, init each timer, <code>rte_timer_reset()</code> with SINGLE or PERIODICAL and a target lcore, and call <code>rte_timer_manage()</code> there. Per-lcore skiplists make <code>manage()</code> cost the same (~42 cycles here) for 10 or 100,000 pending timers; precision is your call interval.</li>
+        <li>Services split "what" (component: register, component runstate) from "where" (application: map, app runstate, <code>-S</code> lcores). EAL init already starts the service lcores. Return <code>-EAGAIN</code> when idle, enable stats for cycle counts, stop services before their lcores.</li>
+        <li>Keepalive: mark alive from the loop, dispatch pings from a timer; the failure callback fires on the third ping after the last mark. You can detect a hung lcore, but you cannot revive it in-process.</li>
+        <li>cmdline builds a shell from typed tokens, instructions and a context; <code>cmdline_interact()</code> blocks, so move timers away from that thread. <code>dpdk-cmdline-gen.py</code> writes the boilerplate.</li>
+        <li><code>rte_argparse</code> turns an option table into parsing, conversion and help; <code>rte_cfgfile</code> reads INI files as strings. Apply defaults &lt; file &lt; command line, then semantic checks.</li>
+        <li>Know your toolbox: <code>rte_rand_max</code>, bitsets and bitmaps, <code>rte_reciprocal</code>, <code>rte_errno</code>, <code>rte_strscpy/strsplit</code>, and the 26.11 forms of <code>RTE_PTR_ADD</code> and packed structs.</li>
+      </ul>
+    </section>
+
+    <section class="references">
+      <h2 id="references">References</h2>
+      <ol>
+        <li>Timer Library. <span class="src-path">doc/guides/prog_guide/timer_lib.rst</span>; API <span class="src-path">lib/timer/rte_timer.h</span>, implementation <span class="src-path">lib/timer/rte_timer.c</span></li>
+        <li>Service Cores. <span class="src-path">doc/guides/prog_guide/service_cores.rst</span>; <span class="src-path">lib/eal/include/rte_service.h</span>, <span class="src-path">lib/eal/include/rte_service_component.h</span>, <span class="src-path">lib/eal/common/rte_service.c</span></li>
+        <li>Keepalive: <span class="src-path">lib/eal/include/rte_keepalive.h</span>, <span class="src-path">lib/eal/common/rte_keepalive.c</span>; sample guide <span class="src-path">doc/guides/sample_app_ug/keep_alive.rst</span> and <span class="src-path">examples/l2fwd-keepalive/</span></li>
+        <li>Command Line Library. <span class="src-path">doc/guides/prog_guide/cmdline.rst</span>; <span class="src-path">lib/cmdline/</span>; <span class="src-path">buildtools/dpdk-cmdline-gen.py</span>; <span class="src-path">examples/cmdline/</span></li>
+        <li>Argparse Library. <span class="src-path">doc/guides/prog_guide/argparse_lib.rst</span>; <span class="src-path">lib/argparse/rte_argparse.h</span></li>
+        <li>Config file library: <span class="src-path">lib/cfgfile/rte_cfgfile.h</span></li>
+        <li>Alarms: <span class="src-path">lib/eal/include/rte_alarm.h</span>, <span class="src-path">lib/eal/linux/eal_alarm.c</span></li>
+        <li>Jobstats: <span class="src-path">lib/jobstats/rte_jobstats.h</span>; <span class="src-path">examples/l2fwd-jobstats/</span></li>
+        <li>Samples: <span class="src-path">examples/timer/main.c</span>, <span class="src-path">examples/service_cores/main.c</span> (needs 6 lcores; with 4 it prints "insufficent cores to run")</li>
+        <li>Toolbox headers: <span class="src-path">lib/eal/include/rte_common.h</span>, <span class="src-path">rte_random.h</span>, <span class="src-path">rte_bitmap.h</span>, <span class="src-path">rte_bitset.h</span>, <span class="src-path">rte_reciprocal.h</span>, <span class="src-path">rte_errno.h</span>, <span class="src-path">rte_hexdump.h</span>, <span class="src-path">rte_string_fns.h</span>, <span class="src-path">rte_tailq.h</span>, <span class="src-path">rte_uuid.h</span> (all in <span class="src-path">lib/eal/include/</span>)</li>
+        <li>26.11 changes: <span class="src-path">doc/guides/rel_notes/release_26_11.rst</span> (RTE_PTR_* macros, <code>__rte_packed</code> removed, <code>RTE_DIV_ROUND_UP</code> added)</li>
+        <li>Course research notes: <span class="src-path">research/02-eal.md</span>, <span class="src-path">research/10-examples/cliapp.c</span></li>
+      </ol>
+    </section>
+
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../10-packet-headers-l2fwd/index.html"><span class="dir">&larr; Previous</span><span class="ttl">10 &middot; Parsing and Building Packets: lib/net, Checksums and l2fwd</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../12-port-control-stats-events/index.html"><span class="dir">Next &rarr;</span><span class="ttl">12 &middot; Port Control, Statistics, Events, Live Reconfiguration and Composite PMDs</span></a>
+    </nav>
+  </main>
+</div>
+<footer class="site-footer">DPDK from Zero to Expert: Building Fast Packet Processing in User Space &middot; DPDK 26.11</footer>
+
+<script src="../../assets/course.js"></script>
+<script src="ch11.js"></script>
+</body>
+</html>

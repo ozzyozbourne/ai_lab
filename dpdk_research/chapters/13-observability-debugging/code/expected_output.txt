@@ -1,0 +1,575 @@
+########## 1. telemetry_app: custom endpoints, usage callback, clients, exporter
+$ ./telemetry_app -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch13-tel --vdev=net_null0 --vdev=net_null1 &
+
+--- 1a. dpdk-telemetry.py (the shipped client, commands on stdin)
+$ printf '/ch13/stats\n/ch13/echo,hello world\n/eal/lcore/usage\n/help,/ch13/stats\n/ch13/nothing\n' | dpdk-telemetry.py -f ch13-tel
+{"/ch13/stats": {"worker_lcore": 1, "uptime_ms": 1116, "busy_polls": 22338, "idle_polls": 43898074, "port0": {"rx": 714848, "tx": 714848, "drop": 0}, "port1": {"rx": 714848, "tx": 714848, "drop": 0}}}
+{"/ch13/echo": {"cmd": "/ch13/echo", "params": "hello world"}}
+{"/eal/lcore/usage": {"lcore_ids": [1], "total_cycles": [3016390046], "busy_cycles": [37447478], "usage_ratio": ["1.24%"]}}
+{"/help": {"/ch13/stats": "Forwarder counters of telemetry_app. No parameters"}}
+{"/ch13/nothing": null}
+$ printf 'FOREACH /ethdev/list /ethdev/stats .opackets\nFOREACH i /ethdev/list /ethdev/info,$i .name\n' | dpdk-telemetry.py -f ch13-tel
+[743616, 743648]
+[{"i": 0, "name": "net_null0"}, {"i": 1, "name": "net_null1"}]
+
+--- 1b. telclient.py (25 lines of Python, raw SEQPACKET)
+$ python3 -I telclient.py ch13-tel /ch13/stats /eal/lcore/usage /ethdev/xstats,0 /mempool/info,ch13_tel_pool /eal/heap_info,0
+connected to /var/run/dpdk/ch13-tel/dpdk_telemetry.v2
+hello: {'version': 'DPDK 26.11.0', 'pid': 11091, 'max_output_len': 16384}
+/ch13/stats -> 178 bytes in 203 us
+    {"/ch13/stats": {"worker_lcore": 1, "uptime_ms": 1215, "busy_polls": 24301, "idle_polls": 47774351, "port0": {"rx": 777632, "tx": 777632, "drop": 0}, "port1": {"rx": 777632, "tx": 777632, "drop": 0}}}
+/eal/lcore/usage -> 115 bytes in 169 us
+    {"/eal/lcore/usage": {"lcore_ids": [1], "total_cycles": [3281244710], "busy_cycles": [40680014], "usage_ratio": ["1.24%"]}}
+/ethdev/xstats,0 -> 291 bytes in 72 us
+    {"/ethdev/xstats": {"rx_good_packets": 777888, "tx_good_packets": 777888, "rx_good_bytes": 49784832, "tx_good_bytes": 49784832, "rx_missed_errors": 0, "rx_errors": 0, "tx_errors": 0, "rx_mbuf_allocation_errors": 0, "rx_q0_packets": 777888, "rx_q0_bytes": 49784832, "tx_q0_packets": 777888, "tx_q0_byt
+/mempool/info,ch13_tel_pool -> 370 bytes in 62 us
+    {"/mempool/info": {"name": "ch13_tel_pool", "pool_id": 4430431680, "flags": 16, "socket_id": 0, "size": 4095, "cache_size": 64, "elt_size": 2304, "header_size": 64, "trailer_size": 0, "private_data_size": 128, "ops_index": 1, "populated_size": 4095, "total_cache_count": 32, "common_pool_count": 4063
+/eal/heap_info,0 -> 179 bytes in 50 us
+    {"/eal/heap_info": {"Heap_id": 0, "Name": "socket_0", "Heap_size": 134217728, "Free_size": 116857984, "Alloc_size": 17359744, "Greatest_free_size": 116857984, "Alloc_count": 18, "Free_count": 1}}
+
+--- 1c. dpdk-telemetry-watcher.py (deltas once per second)
+$ dpdk-telemetry-watcher.py -f ch13-tel -t 3 -d /ch13/stats.busy_polls /ethdev/stats,0.ipackets
+Waiting for connection to DPDK application...
+Connected to application: "telemetry_app"
+Time         /ch13/stats.busy_polls /ethdev/stats,0.ipackets
+11:48:52                      20018                   640640
+11:48:53                      20019                   640480
+11:48:54                      20013                   640448
+
+--- 1d. dpdk-telemetry-exporter.py with the shipped 'counters' endpoint and our exporter/ch13.py
+$ dpdk-telemetry-exporter.py -p $DPDK_PREFIX/share/dpdk/telemetry-endpoints:./exporter -e counters -e ch13 -s /var/run/dpdk/ch13-tel/dpdk_telemetry.v2 -o openmetrics://127.0.0.1:9913 &
+$ python3 -c 'urllib.request.urlopen("http://127.0.0.1:9913/metrics")' | grep -v '^# HELP'
+# TYPE dpdk_ch13_port_packets counter
+# TYPE dpdk_ch13_worker_polls counter
+dpdk_ch13_port_packets{port="port0", dir="rx"} 3423680
+dpdk_ch13_port_packets{port="port0", dir="tx"} 3423680
+dpdk_ch13_port_packets{port="port0", dir="drop"} 0
+dpdk_ch13_port_packets{port="port1", dir="rx"} 3423680
+dpdk_ch13_port_packets{port="port1", dir="tx"} 3423680
+dpdk_ch13_port_packets{port="port1", dir="drop"} 0
+dpdk_ch13_worker_polls{kind="busy"} 106990
+dpdk_ch13_worker_polls{kind="idle"} 209812686
+# TYPE dpdk_counters_rx_packets counter
+# TYPE dpdk_counters_rx_bytes counter
+# TYPE dpdk_counters_rx_missed counter
+# TYPE dpdk_counters_rx_nombuf counter
+# TYPE dpdk_counters_rx_errors counter
+# TYPE dpdk_counters_tx_packets counter
+# TYPE dpdk_counters_tx_bytes counter
+# TYPE dpdk_counters_tx_errors counter
+dpdk_counters_rx_packets{port="net_null0"} 3423872
+dpdk_counters_rx_packets{port="net_null0"} 3423872
+dpdk_counters_tx_packets{port="net_null0"} 3423872
+dpdk_counters_rx_packets{port="net_null1"} 3423968
+dpdk_counters_rx_packets{port="net_null1"} 3423968
+dpdk_counters_tx_packets{port="net_null1"} 3423968
+INFO using endpoint: ch13 (from ./exporter/ch13.py)
+INFO using endpoint: counters (from $DPDK_PREFIX/share/dpdk/telemetry-endpoints/counters.py)
+INFO listening on ('127.0.0.1', 9913)
+INFO 127.0.0.1 GET /metrics HTTP/1.1
+INFO shutting down
+--- telemetry_app's own output:
+register /ch13/stats      -> 0
+register /ch13/echo       -> 0
+register /ch13/bad-name   -> -22 (a '-' is not allowed)
+register ch13/no_slash    -> -22 (must start with '/')
+worker on lcore 1, 20000 busy polls/s; telemetry socket: /var/run/dpdk/ch13-tel/dpdk_telemetry.v2
+READY
+
+final: port0 rx=3441888 port1 tx=3441888 drops=0
+rte_lcore_dump() uses the same usage callback:
+lcore 0, socket 0, role RTE, cpuset 0
+lcore 1, socket 0, role RTE, cpuset 1
+
+########## 2. exercise solutions 1 and 2: /ch13/port_rates and a pps poller
+$ ./port_rates -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch13-rates --vdev=net_null0 --vdev=net_null1 -- --seconds 5 &
+$ printf '/ch13/port_rates\n/ch13/port_rates,1\n' | dpdk-telemetry.py -f ch13-rates   (twice, 1 s apart)
+{"/ch13/port_rates": {"interval_ms": 615, "port0": {"rx_pps": 1533717, "tx_pps": 1533717}, "port1": {"rx_pps": 1533717, "tx_pps": 1533717}}}
+{"/ch13/port_rates": {"interval_ms": 0, "port1": {"rx_pps": 1558369, "tx_pps": 1558369}}}
+{"/ch13/port_rates": {"interval_ms": 1030, "port0": {"rx_pps": 1535039, "tx_pps": 1535039}, "port1": {"rx_pps": 1535039, "tx_pps": 1535039}}}
+$ solutions/poll_pps.sh ch13-rates 0 4
+port 0: rx   1.533 Mpps  tx   1.533 Mpps
+port 0: rx   1.536 Mpps  tx   1.536 Mpps
+port 0: rx   1.513 Mpps  tx   1.513 Mpps
+port 0: rx   1.531 Mpps  tx   1.531 Mpps
+register /ch13/port_rates -> 0
+READY
+
+########## 3. latency_metrics: latencystats + bitratestats + rte_metrics -> /ch13/latency
+$ ./latency_metrics -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-lat --vdev=net_null0 --vdev=net_null1 -- --seconds 3 --work-ns 0 &
+$ echo /ch13/latency | dpdk-telemetry.py -f ch13-lat
+{"/ch13/latency": {"global": {"min_latency_ns": 28, "avg_latency_ns": 107, "max_latency_ns": 21489, "jitter_ns": 11, "samples": 223340}, "port0": {"ewma_bits_in": 9018587874, "ewma_bits_out": 9018587874, "mean_bits_in": 24941445120, "mean_bits_out": 24941445120, "peak_bits_in": 25189367808, "peak_bits_out": 25189367808}, "port1": {"ewma_bits_in": 9018587874, "ewma_bits_out": 9018587874, "mean_bits_in": 24941445120, "mean_bits_out": 24941445120, "peak_bits_in": 25189367808, "peak_bits_out": 25189367808}}}
+rte_latencystats_init -> 0
+driver net_null, work per burst 0 ns
+READY
+rte_metrics: 12 names registered
+  global  min_latency_ns=28 avg_latency_ns=107 max_latency_ns=23980 jitter_ns=9 samples=289506
+  port0   ewma_bits_in=9018587874 ewma_bits_out=9018587874 mean_bits_in=24941445120 mean_bits_out=24941445120 peak_bits_in=25189367808 peak_bits_out=25189367808
+  port1   ewma_bits_in=9018587874 ewma_bits_out=9018587874 mean_bits_in=24941445120 mean_bits_out=24941445120 peak_bits_in=25189367808 peak_bits_out=25189367808
+rte_latencystats_get: min_latency_ns=28 avg_latency_ns=107 max_latency_ns=23980 jitter_ns=9 samples=289506
+$ ./latency_metrics -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-lat --vdev=net_null0 --vdev=net_null1 -- --seconds 3 --work-ns 5000 &
+$ echo /ch13/latency | dpdk-telemetry.py -f ch13-lat
+{"/ch13/latency": {"global": {"ch13_work_ns": 5000, "min_latency_ns": 5057, "avg_latency_ns": 5148, "max_latency_ns": 469917, "jitter_ns": 26, "samples": 209878}, "port0": {"ewma_bits_in": 535971758, "ewma_bits_out": 535971758, "mean_bits_in": 1488584704, "mean_bits_out": 1488584704, "peak_bits_in": 1489092608, "peak_bits_out": 1489092608}, "port1": {"ewma_bits_in": 535971758, "ewma_bits_out": 535971758, "mean_bits_in": 1488584704, "mean_bits_out": 1488584704, "peak_bits_in": 1489092608, "peak_bits_out": 1489092608}}}
+rte_latencystats_init -> 0
+driver net_null, work per burst 5000 ns
+READY
+rte_metrics: 12 names registered
+  global  ch13_work_ns=5000 min_latency_ns=5057 avg_latency_ns=5156 max_latency_ns=597105 jitter_ns=134 samples=272946
+  port0   ewma_bits_in=535971758 ewma_bits_out=535971758 mean_bits_in=1488584704 mean_bits_out=1488584704 peak_bits_in=1489092608 peak_bits_out=1489092608
+  port1   ewma_bits_in=535971758 ewma_bits_out=535971758 mean_bits_in=1488584704 mean_bits_out=1488584704 peak_bits_in=1489092608 peak_bits_out=1489092608
+rte_latencystats_get: min_latency_ns=5057 avg_latency_ns=5156 max_latency_ns=597105 jitter_ns=134 samples=272946
+--- pitfall: the same program on a net_ring loopback (mbufs are recycled with their timestamp flag)
+$ ./latency_metrics -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-lat --vdev=net_ring0 --vdev=net_ring1 -- --seconds 2
+rte_latencystats_init -> 0
+net_ring loopback: injected 256 frames on port 0
+driver net_ring, work per burst 0 ns
+READY
+rte_metrics: 12 names registered
+  global  min_latency_ns=71 avg_latency_ns=1997479768 max_latency_ns=1999998669 jitter_ns=83938 samples=268173804
+  port0  
+  port1  
+rte_latencystats_get: min_latency_ns=71 avg_latency_ns=1997479768 max_latency_ns=1999998669 jitter_ns=83938 samples=268173804
+
+########## 4. trace_demo: application tracepoints, CTF output
+--- pitfall: --trace-dir whose parent does not exist
+$ ./trace_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch13-tr --vdev=net_null0 --trace=ch13\..* --trace-dir=$TMPD/no/such/dir
+trace compiled in: yes, enabled at run time: yes, fast path: compiled out
+ch13.port_cfg: registered, enabled
+ch13.burst:    registered, enabled
+received 32000 packets in 1000 bursts
+EAL: trace_mkdir():333 mkdir $TMPD/no/such/dir/ failed [No such file or directory]
+rte_trace_save() -> -2
+EAL: trace_mkdir():333 mkdir $TMPD/no/such/dir/ failed [No such file or directory]
+$ ./trace_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch13-tr --vdev=net_null0 --trace=ch13\..* --trace=lib\.eal\.generic\.str --trace-dir=$TMPD/trace/trace_demo
+trace compiled in: yes, enabled at run time: yes, fast path: compiled out
+ch13.port_cfg: registered, enabled
+ch13.burst:    registered, enabled
+received 32000 packets in 1000 bursts
+EAL: Trace dir: $TMPD/trace/trace_demo/ch13-tr-2026-11-27-AM-11-49-09
+rte_trace_save() -> 0
+$ ls -l <trace dir>; python3 -I ctf_peek.py <trace dir> 5
+  56	channel0_0
+  56	channel0_1
+  144	channel0_2
+  112293	metadata
+metadata: 112293 bytes, 532 event types registered, clock 2700000000 Hz
+channel0_0: 56 bytes, magic 0xc1fc1fc1, cpu_id 4294967295, thread 'dpdk-intr', 0 events {}
+channel0_1: 56 bytes, magic 0xc1fc1fc1, cpu_id 4294967295, thread 'dpdk-mp-msg', 0 events {}
+channel0_2: 144 bytes, magic 0xc1fc1fc1, cpu_id 0, thread 'trace_demo', 2 events {'ch13.port_cfg': 1, 'lib.eal.generic.string': 1}
+    t=    0.000 us                ch13.port_cfg: port=0 nb_desc=256 drv="net_null"
+    t=  272.899 us  (+272899 ns)  lib.eal.generic.string: str="ch13 loop done"
+$ ./trace_demo_fp -l 0 --no-pci --no-huge -m 64 --file-prefix=ch13-tr --vdev=net_null0 --trace=ch13\..* --trace=lib\.eal\.generic\.str --trace-dir=$TMPD/trace/trace_demo_fp
+trace compiled in: yes, enabled at run time: yes, fast path: compiled in (RTE_ENABLE_TRACE_FP)
+ch13.port_cfg: registered, enabled
+ch13.burst:    registered, enabled
+received 32000 packets in 1000 bursts
+EAL: Trace dir: $TMPD/trace/trace_demo_fp/ch13-tr-2026-11-27-AM-11-49-09
+rte_trace_save() -> 0
+$ ls -l <trace dir>; python3 -I ctf_peek.py <trace dir> 5
+  56	channel0_0
+  56	channel0_1
+  16144	channel0_2
+  112293	metadata
+metadata: 112293 bytes, 532 event types registered, clock 2700000000 Hz
+channel0_0: 56 bytes, magic 0xc1fc1fc1, cpu_id 4294967295, thread 'dpdk-intr', 0 events {}
+channel0_1: 56 bytes, magic 0xc1fc1fc1, cpu_id 4294967295, thread 'dpdk-mp-msg', 0 events {}
+channel0_2: 16144 bytes, magic 0xc1fc1fc1, cpu_id 0, thread 'trace_demo_fp', 1002 events {'ch13.port_cfg': 1, 'ch13.burst': 1000, 'lib.eal.generic.string': 1}
+    t=    0.000 us                ch13.port_cfg: port=0 nb_desc=256 drv="net_null"
+    t=    3.929 us    (+3929 ns)  ch13.burst: port=0 nb_rx=32
+    t=    4.749 us     (+820 ns)  ch13.burst: port=0 nb_rx=32
+    t=    5.004 us     (+255 ns)  ch13.burst: port=0 nb_rx=32
+    t=    5.318 us     (+314 ns)  ch13.burst: port=0 nb_rx=32
+    ... 997 more
+--- the TSDL metadata for our two events:
+event {
+    id = 0;
+    name = "ch13.port_cfg";
+    fields := struct {
+        uint16_t port;
+        uint16_t nb_desc;
+        string_bounded_t drv[32];
+    };
+};
+
+event {
+    id = 1;
+    name = "ch13.burst";
+    fields := struct {
+        uint16_t port;
+        uint16_t nb_rx;
+    };
+};
+
+event {
+    id = 2;
+
+########## 5. logdp: RTE_LOG_DP vs RTE_LOG
+$ ./logdp -l 0 --no-pci --no-huge -m 64 --file-prefix=ch13-logdp --log-level=user.ch13:debug --log-timestamp=delta
+[<     0.004361>] EAL: Detected CPU lcores: 4
+[<     0.000030>] EAL: Detected NUMA nodes: 1
+[<     0.000136>] EAL: Detected static linkage of DPDK
+[<     0.001706>] EAL: Multi-process socket /var/run/dpdk/ch13-logdp/mp_socket
+[<     0.000121>] EAL: Selected IOVA mode 'VA'
+RTE_LOG_DP_LEVEL = 7 (INFO=7 DEBUG=8), user.ch13 level now 8
+[<     0.101335>] CH13: 1: RTE_LOG    INFO  - printed
+[<     0.000002>] CH13: 2: RTE_LOG    DEBUG - printed only with user.ch13:debug
+[<     0.000000>] CH13: 3: RTE_LOG_DP INFO  - printed
+[<     0.000000>] CH13: 5: RTE_LOG_LINE adds the newline for you
+cycles per iteration, 10000000 iterations x 5 runs (median [min..max]):
+  empty loop                    5.21 [5.19..5.22]
+  + RTE_LOG_DP(DEBUG) (gone)    5.19 [5.19..5.21]
+  + RTE_LOG(DEBUG) (run-time)  14.51 [14.36..14.57]
+$ strings logdp | grep -c 'compiled out, never printed'   (is message 4 in the binary?)
+0
+
+########## 6. dpdk-ethtool on net_tap
+--- with only one lcore:
+$ sh -c echo quit | $DPDK_SRC/build/examples/dpdk-ethtool -l 0 --no-pci --no-huge -m 640 --file-prefix=ch13-eth --vdev=net_tap0,iface=ch13tap0
+Number of NICs: 1
+Init port 0..
+EAL: Error - exiting with code: 1
+No available worker core!
+[exit status 1]
+--- with -m 256 (its pool is sized from desc_lim.nb_max):
+$ sh -c echo quit | $DPDK_SRC/build/examples/dpdk-ethtool -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch13-eth --vdev=net_tap0,iface=ch13tap0
+Number of NICs: 1
+EAL: Error - exiting with code: 1
+rte_pktmbuf_pool_create failed
+[exit status 1]
+--- working run (-l 0-1, -m 640), kernel view checked while it runs:
+$ (printf 'drvinfo\nlink\nmacaddr 0\nmtu 0 1400\n'; sleep 1.5; printf 'portstats 0\nringparam 0\nvalidate 02:13:00:00:00:01\nquit\n') | dpdk-ethtool -l 0-1 --no-pci --no-huge -m 640 --file-prefix=ch13-eth --vdev=net_tap0,iface=ch13tap0
+$ ip link show ch13tap0   (kernel side, while dpdk-ethtool runs)
+ch13tap0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1400 qdisc mq state UNKNOWN mode DEFAULT group default qlen 1000
+Number of NICs: 1
+Init port 0..
+EthApp> drvinfo
+firmware version get error: (Operation not supported)
+Port 0 driver: net_tap (ver: DPDK 26.11.0)
+firmware-version: 
+bus-info: net_tap0
+EthApp> link
+Port 0: Up
+
+EthApp> macaddr 0
+Port 0 MAC Address: 2A:5B:C1:8E:5C:0A
+EthApp> mtu 0 1400
+Port 0: MTU set to 1400
+EthApp> portstats 0
+Port 0 stats
+   In: 0 (0 bytes)
+  Out: 0 (0 bytes)
+  Err: 0
+EthApp> ringparam 0
+Port 0: Operation not supported
+EthApp> validate 02:13:00:00:00:01
+Address is unicast
+EthApp> quit
+Closing port 0... Done
+
+########## 7. gdb on a live DPDK process (panic_demo)
+$ gdb -batch -x gdb_live.gdb --args ./panic_demo -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch13-gdb --vdev=net_null0
+Breakpoint 1 at 0xedf80 (2 locations)
+[Switching to Thread 0x7ffff2bfc6c0 (LWP 11414)]
+
+Thread 4 "dpdk-worker1" hit Breakpoint 1.1, 0x0000555555641f80 in eth_null_rx ()
+#0  0x0000555555641f80 in eth_null_rx ()
+#1  0x0000555555606b5d in rte_eth_rx_burst (port_id=0, queue_id=0, rx_pkts=0x7ffff2bfa970, nb_pkts=32) at $DPDK_PREFIX/include/rte_ethdev.h:6214
+#2  0x0000555555606e1e in worker (arg=0x0) at panic_demo.c:39
+#3  0x0000555555883436 in eal_thread_loop ()
+  Id   Target Id                                           Frame 
+  1    Thread 0x7ffff7419a00 (LWP 11409) "panic_demo"      0x0000555555601552 in rte_pause () at $DPDK_PREFIX/include/rte_pause.h:19
+  2    Thread 0x7ffff4bff6c0 (LWP 11412) "dpdk-intr"       0x00007ffff732a292 in epoll_wait (epfd=6, events=0x7ffff4bfdb00, maxevents=1, timeout=-1) at ../sysdeps/unix/sysv/linux/epoll_wait.c:30
+  3    Thread 0x7ffff43fe6c0 (LWP 11413) "dpdk-mp-msg"     0x00007ffff732c08b in __recvmsg_syscall (flags=0, msg=0x7ffff43fbc80, fd=9) at ../sysdeps/unix/sysv/linux/recvmsg.c:27
+* 4    Thread 0x7ffff2bfc6c0 (LWP 11414) "dpdk-worker1"    0x0000555555641f80 in eth_null_rx ()
+  5    Thread 0x7ffff23fb6c0 (LWP 11415) "dpdk-telemet-v2" 0x00007ffff732ba8d in __libc_accept (fd=16, addr=..., len=0x0) at ../sysdeps/unix/sysv/linux/accept.c:26
+$1 = (eth_rx_burst_t) 0x555555641f80 <eth_null_rx>
+$2 = 1
+worker on lcore 1 did >= 100 RX bursts
+mbuf 0x10406e040: pool=ch13_panic_pool refcnt=1 data_len=64, payload "CH13-MARKER-PAYLOAD"
+mbuf 0x10406e040 passes rte_mbuf_check()
+rte_mbuf_check(): data length too big in mbuf segment (data_off=128 data_len=4000 buf_len=2176 pkt_len=4000)
+EAL: PANIC in check_and_maybe_panic():
+corrupted mbuf 0x10406e040 from pool ch13_panic_pool: data length too big in mbuf segment
+0: panic_demo (rte_dump_stack+0x42) [5555558930a2]
+1: panic_demo (__rte_panic+0xd0) [5555555f0754]
+2: panic_demo (555555554000+0xb2f73) [555555606f73]
+3: panic_demo (main+0x312) [55555560729b]
+4: /lib/x86_64-linux-gnu/libc.so.6 (7ffff7200000+0x2a1ca) [7ffff722a1ca]
+5: /lib/x86_64-linux-gnu/libc.so.6 (__libc_start_main+0x8b) [7ffff722a28b]
+6: panic_demo (_start+0x25) [555555601475]
+
+Thread 1 "panic_demo" received signal SIGABRT, Aborted.
+[Switching to Thread 0x7ffff7419a00 (LWP 11409)]
+__pthread_kill_implementation (no_tid=0, signo=6, threadid=<optimized out>) at ./nptl/pthread_kill.c:44
+#0  __pthread_kill_implementation (no_tid=0, signo=6, threadid=<optimized out>) at ./nptl/pthread_kill.c:44
+#1  __pthread_kill_internal (signo=6, threadid=<optimized out>) at ./nptl/pthread_kill.c:78
+#2  __GI___pthread_kill (threadid=<optimized out>, signo=signo@entry=6) at ./nptl/pthread_kill.c:89
+#3  0x00007ffff724527e in __GI_raise (sig=sig@entry=6) at ../sysdeps/posix/raise.c:26
+#4  0x00007ffff72288ff in __GI_abort () at ./stdlib/abort.c:79
+#5  0x00005555555f0759 in __rte_panic ()
+#6  0x0000555555606f73 in check_and_maybe_panic (m=0x10406e040, do_panic=true) at panic_demo.c:62
+#7  0x000055555560729b in main (argc=1, argv=0x7fffffffbf58) at panic_demo.c:128
+#6  0x0000555555606f73 in check_and_maybe_panic (m=0x10406e040, do_panic=true) at panic_demo.c:62
+62			rte_panic("corrupted mbuf %p from pool %s: %s\n",
+data_off=128 data_len=4000 pkt_len=4000 buf_len=2176 refcnt=1 nb_segs=1
+$3 = "ch13_panic_pool\000\000\000\000\000\000\000\000\000\000"
+$4 = 33
+$5 = 478
+$ addr2line -f -e panic_demo 0xb2f73   (frame 2 of rte_dump_stack has no symbol: a static function)
+check_and_maybe_panic
+panic_demo.c:64
+
+########## 8. AddressSanitizer (gcc) on a DPDK app
+$ ./asan_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch13-asan
+recording a 64-byte packet into a 64-byte buffer
+recording a 128-byte packet into a 64-byte buffer
+recorded 2 packets, no crash: the overflow went unnoticed
+$ ./asan_demo_asan -l 0 --no-pci --no-huge -m 64 --file-prefix=ch13-asan   (start of the report)
+recording a 64-byte packet into a 64-byte buffer
+recording a 128-byte packet into a 64-byte buffer
+=================================================================
+==PID==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x... at pc 0x... bp 0x... sp 0x...
+WRITE of size 128 at 0x... thread T0
+    #0 0x... in memcpy ../../../../src/libsanitizer/sanitizer_common/sanitizer_common_interceptors_memintrinsics.inc:115
+    #1 0x... in memcpy /usr/include/x86_64-linux-gnu/bits/string_fortified.h:29
+    #2 0x... in record_packet asan_demo.c:36
+    #3 0x... in main asan_demo.c:60
+
+0x... is located 0 bytes after 64-byte region [0x...,0x...)
+allocated by thread T0 here:
+    #0 0x... in malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:69
+    #1 0x... in record_packet asan_demo.c:34
+    #2 0x... in main asan_demo.c:60
+    #3 0x... in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+
+SUMMARY: AddressSanitizer: heap-buffer-overflow ../../../../src/libsanitizer/sanitizer_common/sanitizer_common_interceptors_memintrinsics.inc:115 in memcpy
+Shadow bytes around the buggy address:
+
+########## 9. crash_postmortem.sh: what is in a core file
+core_pattern: core   core_uses_pid: 0
+this shell's coredump_filter: 00000033
+
+== 1. mappings of a live panic_demo (-m 32 hugepages), from /proc/<pid>/smaps
+   EAL VA reservation (dd)               3 mappings    65504.0 MB
+   anon private                         31 mappings      118.8 MB
+   file private (binary, libs)         155 mappings       55.4 MB
+   file shared (/run/dpdk fbarray)       3 mappings        1.7 MB
+   hugetlb shared (DPDK memory)         16 mappings       32.0 MB
+
+== 1. mappings of a live panic_demo (--no-huge -m 64), from /proc/<pid>/smaps
+   EAL VA reservation (dd)               2 mappings        0.0 MB
+   anon private                         32 mappings      118.7 MB
+   anon shared (memfd)                   1 mappings       64.0 MB
+   file private (binary, libs)         155 mappings       55.4 MB
+   file shared (/run/dpdk fbarray)       3 mappings        1.0 MB
+
+== 2. crash panic_demo with different coredump_filter values
+   A filter=0x33  core apparent   56.1 MB, on disk    3.0 MB
+   B filter=0x73  core apparent   88.1 MB, on disk   35.0 MB
+   C filter=0x7f  core apparent  144.1 MB, on disk   91.0 MB
+   D filter=0x33  core apparent  119.9 MB, on disk   66.9 MB
+   (what panic_demo printed before dying, run A:)
+     rte_mbuf_check(): data length too big in mbuf segment (data_off=128 data_len=4000 buf_len=2176 pkt_len=4000)
+     EAL: PANIC in check_and_maybe_panic():
+     corrupted mbuf 0x10208c840 from pool ch13_panic_pool: data length too big in mbuf segment
+
+== 3. gdb on each core: can we read the mbuf?
+-- core A
+   [Current thread is 1 (Thread 0x... (LWP 11486))]
+   #6  0x...5f73 in check_and_maybe_panic (m=0x10208c840, do_panic=true) at panic_demo.c:62
+   62			rte_panic("corrupted mbuf %p from pool %s: %s\n",
+   $1 = (struct rte_mbuf *) 0x10208c840
+   $2 = 0
+   Cannot access memory at address 0x0
+   0x0:	<error: Cannot access memory at address 0x0>
+-- core B
+   [Current thread is 1 (Thread 0x... (LWP 11505))]
+   #6  0x...af73 in check_and_maybe_panic (m=0x1020c4040, do_panic=true) at panic_demo.c:62
+   62			rte_panic("corrupted mbuf %p from pool %s: %s\n",
+   $1 = (struct rte_mbuf *) 0x1020c4040
+   $2 = 4000
+   $3 = "ch13_panic_pool\000\000\000\000\000\000\000\000\000\000"
+   0x1020c4140:	"CH13-MARKER-PAYLOAD"
+-- core C
+   [Current thread is 1 (Thread 0x... (LWP 11524))]
+   #6  0x...6f73 in check_and_maybe_panic (m=0x1020b1840, do_panic=true) at panic_demo.c:62
+   62			rte_panic("corrupted mbuf %p from pool %s: %s\n",
+   $1 = (struct rte_mbuf *) 0x1020b1840
+   $2 = 4000
+   $3 = "ch13_panic_pool\000\000\000\000\000\000\000\000\000\000"
+   0x1020b1940:	"CH13-MARKER-PAYLOAD"
+-- core D
+   [Current thread is 1 (Thread 0x... (LWP 11543))]
+   #6  0x...7f73 in check_and_maybe_panic (m=0x10408d040, do_panic=true) at panic_demo.c:62
+   62			rte_panic("corrupted mbuf %p from pool %s: %s\n",
+   $1 = (struct rte_mbuf *) 0x10408d040
+   $2 = 4000
+   $3 = "ch13_panic_pool\000\000\000\000\000\000\000\000\000\000"
+   0x10408d140:	"CH13-MARKER-PAYLOAD"
+
+crash_postmortem.sh done (cores deleted by the trap)
+
+########## 10. exercise 3 solution: find the pool and refcnt in a 0x7f core
+[Current thread is 1 (Thread 0x7fdf30a62a00 (LWP 11624))]
+#6  0x0000563ef8380f73 in check_and_maybe_panic (m=0x1020d6840, do_panic=true) at panic_demo.c:62
+62			rte_panic("corrupted mbuf %p from pool %s: %s\n",
+m = 0x1020d6840
+do_panic = true
+$1 = 1
+$2 = 4000
+$3 = 2176
+$4 = "ch13_panic_pool\000\000\000\000\000\000\000\000\000\000"
+$5 = 511
+$6 = 2304
+0x1020d6940:	"CH13-MARKER-PAYLOAD"
+
+########## 11. debug labs
+######## LAB 1 promisc_off (net_tap ch13tap1)
+$ promisc_off/lab -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-promisc --vdev=net_tap0,iface=ch13tap1
+--- diag: python3 -I ../tq.py ch13-dbg-promisc /ethdev/stats,0 ipackets ierrors imissed
+{"/ethdev/stats,0": {"ipackets": 6, "ierrors": 0, "imissed": 0}}
+--- diag: python3 -I ../tq.py ch13-dbg-promisc /ethdev/info,0 mac_addr promiscuous all_multicast
+{"/ethdev/info,0": {"mac_addr": "DE:14:38:50:A0:95", "promiscuous": 0, "all_multicast": 0}}
+--- diag: python3 -I ../tq.py ch13-dbg-promisc /ethdev/macs,0
+{"/ethdev/macs,0": ["DE:14:38:50:A0:95"]}
+--- diag: ip -d link show ch13tap1 (kernel side)
+    link/ether de:14:38:50:a0:95 brd ff:ff:ff:ff:ff:ff promiscuity 0  allmulti 0 
+--- symptom (program output):
+port MAC DE:14:38:50:A0:95, promiscuous=0, service MAC 02:13:00:00:00:fe
+t=1.25s: app received 5 frames so far (sent 105)
+app received 10 of 210 frames (200 service + 10 broadcast sent)
+--- fixed:
+$ promisc_off/lab_fixed -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-promisc --vdev=net_tap0,iface=ch13tap1
+mac_addr_add(service MAC) -> 0
+port MAC EA:13:35:C8:CC:AC, promiscuous=0, service MAC 02:13:00:00:00:fe
+t=1.25s: app received 105 frames so far (sent 105)
+app received 210 of 210 frames (200 service + 10 broadcast sent)
+
+######## LAB 2 mtu_noscatter (net_tap ch13tap2)
+$ mtu_noscatter/lab -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-mtu --vdev=net_tap0,iface=ch13tap2
+--- diag: python3 -I ../tq.py ch13-dbg-mtu /ethdev/stats,0 ipackets ierrors imissed
+{"/ethdev/stats,0": {"ipackets": 0, "ierrors": 10, "imissed": 0}}
+--- diag: python3 -I ../tq.py ch13-dbg-mtu /ethdev/info,0 mtu rx_mbuf_size_min scattered_rx rx_offloads
+{"/ethdev/info,0": {"mtu": 1500, "rx_mbuf_size_min": 2176, "scattered_rx": 0, "rx_offloads": []}}
+--- symptom (program output):
+dev_info: max_rx_pktlen=16128 max_mtu=65535, SCATTER supported, mbuf data room 2048
+port init: mtu=1500 offloads=0x0 -> 0
+kernel sent 10 frames of 9014 bytes; app received 0 frames, 0 bytes (0 per frame), 0.0 mbufs per frame; ierrors=10
+FAIL: frames lost or truncated
+--- fixed:
+$ mtu_noscatter/lab_fixed -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-mtu --vdev=net_tap0,iface=ch13tap2
+--- diag: python3 -I ../tq.py ch13-dbg-mtu /ethdev/info,0 mtu scattered_rx rx_offloads
+{"/ethdev/info,0": {"mtu": 9000, "scattered_rx": 0, "rx_offloads": ["SCATTER"]}}
+dev_info: max_rx_pktlen=16128 max_mtu=65535, SCATTER supported, mbuf data room 2048
+port init: mtu=9000 offloads=0x2000 -> 0
+kernel sent 10 frames of 9014 bytes; app received 10 frames, 90140 bytes (9014 per frame), 5.0 mbufs per frame; ierrors=0
+PASS: frames complete
+--- what net_tap logs with rxmode.mtu=9000 but no SCATTER flag (warning only):
+testpmd: Warning: max-pkt-len (9018) is greater than mbuf size (2176) without scattered Rx enabled
+TAP: tap_rx_queue_setup(): net_tap0: MTU 9000 requires 5 scatter segments, but offload not set
+
+######## LAB 3 leak (net_null)
+$ leak/lab -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-leak --vdev=net_null0 --vdev=net_null1
+--- diag: python3 -I ../tq.py ch13-dbg-leak /mempool/info,lab_pool size populated_size common_pool_count total_cache_count
+{"/mempool/info,lab_pool": {"size": 8191, "populated_size": 8191, "common_pool_count": 31, "total_cache_count": 0}}
+--- diag: python3 -I ../tq.py ch13-dbg-leak /ethdev/stats,0 ipackets rx_nombuf
+{"/ethdev/stats,0": {"ipackets": 8160, "rx_nombuf": 0}}
+--- diag: python3 -I ../tq.py ch13-dbg-leak /ethdev/stats,0 ipackets rx_nombuf
+{"/ethdev/stats,0": {"ipackets": 8160, "rx_nombuf": 0}}
+--- symptom (program output):
+t=0.5s in_use=8160/8191 avail=31  rx=8160 rx_nombuf=0 dropped=8160
+t=1.0s in_use=8160/8191 avail=31  rx=8160 rx_nombuf=0 dropped=8160
+t=1.5s in_use=8160/8191 avail=31  rx=8160 rx_nombuf=0 dropped=8160
+t=2.0s in_use=8160/8191 avail=31  rx=8160 rx_nombuf=0 dropped=8160
+t=2.5s in_use=8160/8191 avail=31  rx=8160 rx_nombuf=0 dropped=8160
+--- fixed:
+$ leak/lab_fixed -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-leak --vdev=net_null0 --vdev=net_null1
+t=0.5s in_use=0/8191 avail=8191  rx=49215712 rx_nombuf=0 dropped=49215712
+t=1.0s in_use=0/8191 avail=8191  rx=103016480 rx_nombuf=0 dropped=103016480
+t=1.5s in_use=0/8191 avail=8191  rx=159147520 rx_nombuf=0 dropped=159147520
+t=2.0s in_use=0/8191 avail=8191  rx=214495040 rx_nombuf=0 dropped=214495040
+t=2.5s in_use=0/8191 avail=8191  rx=270477408 rx_nombuf=0 dropped=270477408
+
+######## LAB 4 double_free (no ports)
+$ double_free/lab -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-dfree
+--- diag: python3 -I ../tq.py ch13-dbg-dfree /mempool/info,lab_pool size common_pool_count total_cache_count
+{"/mempool/info,lab_pool": {"size": 511, "common_pool_count": 321, "total_cache_count": 0}}
+--- symptom (program output):
+after the first free: rte_mbuf_check() = 0, refcnt=1
+processed 1000 packets, 10 malformed
+with 200 posted: size=511 avail=321 in_use=190 (should be avail=311 in_use=200)
+READY
+after returning the 200: avail=457 in_use=54
+audit: took the 457 free objects out of the pool: 10 duplicate pointers; 64 mbufs missing from a pool of 511
+FAIL: duplicates in the pool and mbufs lost
+--- fixed:
+$ double_free/lab_fixed -l 0 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-dfree
+processed 1000 packets, 10 malformed
+with 200 posted: size=511 avail=311 in_use=200 (should be avail=311 in_use=200)
+READY
+after returning the 200: avail=511 in_use=0
+audit: took the 511 free objects out of the pool: 0 duplicate pointers; 0 mbufs missing from a pool of 511
+PASS: every object is unique and back in the pool
+
+######## LAB 5 two_lcores_one_queue (net_ring)
+$ two_lcores_one_queue/lab -l 0-2 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-2lc --vdev=net_ring0 --vdev=net_ring1
+--- diag: python3 -I ../tq.py ch13-dbg-2lc /ethdev/stats,0 ipackets opackets
+{"/ethdev/stats,0": {"ipackets": 1013376, "opackets": 1013984}}
+--- diag: python3 -I ../tq.py ch13-dbg-2lc /mempool/info,lab_pool size common_pool_count
+{"/mempool/info,lab_pool": {"size": 2047, "common_pool_count": 1791}}
+--- diag: python3 -I ../tq.py ch13-dbg-2lc /eal/lcore/info,1 lcore_id role cpuset
+{"/eal/lcore/info,1": {"lcore_id": 1, "role": "RTE", "cpuset": [1]}}
+--- symptom (program output):
+injected 256 frames on port 0
+2 lcores forwarding, both on port 0 queue 0
+app counted 1925920 RX, the PMD counted 1013376 (DIFFERENT)
+in_use before drain: 256
+drained 0 mbufs (expected 256), 0 duplicates
+in_use after drain: 256 -> FAIL
+--- fixed:
+$ two_lcores_one_queue/lab_fixed -l 0-2 --no-pci --no-huge -m 128 --file-prefix=ch13-dbg-2lc --vdev=net_ring0 --vdev=net_ring1
+injected 256 frames on port 0 and 256 on port 1
+2 lcores forwarding, one port each
+app counted 974169888 RX, the PMD counted 974169888 (equal)
+in_use before drain: 512
+drained 512 mbufs (expected 512), 0 duplicates
+in_use after drain: 0 -> PASS
+
+debug labs done; leftover ch13tap interfaces: 0
+
+########## 12. band 2 project acceptance check
+$ (shell script) | ./l2fwd_mc -l 0-2 --no-pci --no-huge -m 128 --file-prefix=ch13-b2 --vdev=net_ring0..3 -- --frames 512 --hops 200000
+512 frames per pair, hop budget 200000: expect per lcore rx=102400000 tx=102399488 drop=512
+READY
+[timer]  t=0.50s in_use=1024 | lcore1 p0<->p1 rx=41228736 tx=41228736 drop=0 | lcore2 p2<->p3 rx=46222432 tx=46222432 drop=0
+show stats
+[shell]  t=0.68s in_use=1024 | lcore1 p0<->p1 rx=56984000 tx=56984000 drop=0 | lcore2 p2<->p3 rx=62496256 tx=62496256 drop=0
+[timer]  t=1.00s in_use=1024 | lcore1 p0<->p1 rx=85443360 tx=85443360 drop=0 | lcore2 p2<->p3 rx=91938624 tx=91938624 drop=0
+show pool
+[shell] pool band2_pool: size 4095 avail 3071 in_use 1024
+quit
+[shell] quit: waiting for the traffic to drain
+final:  t=1.28s in_use=0 | lcore1 p0<->p1 rx=102400000 tx=102399488 drop=512 | lcore2 p2<->p3 rx=102400000 tx=102399488 drop=512
+check lcore1: rx == tx + drop (102400000 == 102400000), rx == frames*hops, drop == frames: ok
+check lcore2: rx == tx + drop (102400000 == 102400000), rx == frames*hops, drop == frames: ok
+check mempool in_use == 0: 0 -> ok
+RESULT: PASS
+telemetry at t~1s: {"/band2/stats": {"in_use": 1024, "lcore1": {"rx": 76908352, "tx": 76908384, "drop": 0}, "lcore2": {"rx": 83126784, "tx": 83126784, "drop": 0}}}
+BAND 2 PROJECT: PASS
+
+########## 13. more startup / tooling errors for the consolidated table
+$ echo /info | dpdk-telemetry.py -f ch13-nosuch   (no process with that prefix)
+Error connecting to /var/run/dpdk/ch13-nosuch/dpdk_telemetry.v2
+$ ./telemetry_app -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch13-notel --no-telemetry --vdev=net_null0 --vdev=net_null1 -- --seconds 2 &
+$ echo /info | dpdk-telemetry.py -f ch13-notel   (the app runs with --no-telemetry)
+Error connecting to /var/run/dpdk/ch13-notel/dpdk_telemetry.v2
+$ ./trace_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch13-tr2 --vdev=net_null0 --trace=[
+EAL: trace_args_apply():175 cannot enable trace for [
+trace compiled in: yes, enabled at run time: no, fast path: compiled out
+ch13.port_cfg: registered, disabled
+ch13.burst:    registered, disabled
+received 32000 packets in 1000 bursts
+rte_trace_save() -> 0
+
+stale runtime dirs left by crashed runs: 10 (removed now)
+run.sh done; leftover ch13 interfaces: 0

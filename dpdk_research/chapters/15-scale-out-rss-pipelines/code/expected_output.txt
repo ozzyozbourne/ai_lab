@@ -1,0 +1,262 @@
+=== 1. rss_lab: Toeplitz, symmetric RSS, RETA, adjust_tuple, port capabilities ===
+$ ./rss_lab -l 0 --no-pci --no-huge -m 128 --file-prefix=ch15-rss --vdev=net_null0
+== Part A: rte_softrss() vs the RSS verification suite ==
+  vector 0: ip-only 0x323e8fc2 (ok)  ip+ports 0x51ccc178 (ok)  softrss_be 0x51ccc178
+  vector 1: ip-only 0xd718262a (ok)  ip+ports 0xc626b0ea (ok)  softrss_be 0xc626b0ea
+  vector 2: ip-only 0xd2d0a5de (ok)  ip+ports 0x5c2b394a (ok)  softrss_be 0x5c2b394a
+  GFNI Toeplitz available on this CPU: no
+
+== Part B: both directions of one TCP connection ==
+  flow 10.15.0.1:40000 -> 10.15.0.2:80 and its reply
+  default key     fwd 0xe827b12a  rev 0x9861b017  -> queues 2 / 3
+  0x6d5a key      fwd 0x07f307f3  rev 0x07f307f3  -> queues 3 / 3
+  sort model      fwd 0xb370af17  rev 0xb370af17  (default key, fields sorted first)
+
+== Part C: 10000 random flows -> RETA[hash & 127] -> queue ==
+  default key : q0 2497  q1 2554  q2 2401  q3 2548
+  0x6d5a key  : q0 2545  q1 2499  q2 2483  q3 2473
+
+== Part D: rte_thash_adjust_tuple(): pick a source port per queue ==
+  key bytes 8..13 after add_helper: 94 2c 32 fe b7 79 (Microsoft key: 41 67 25 3d 43 a3)
+  want queue 0: sport 30000 -> 29954  hash 0x59420f00  RETA idx   0 -> queue 0
+  want queue 1: sport 30000 -> 30022  hash 0x87782481  RETA idx   1 -> queue 1
+  want queue 2: sport 30000 -> 30052  hash 0x3b0c7382  RETA idx   2 -> queue 2
+  want queue 3: sport 30000 -> 29984  hash 0xe5365803  RETA idx   3 -> queue 3
+
+== Part E: RSS on a real ethdev port (net_null0) ==
+  driver net_null: max_rx_queues 1024, reta_size 128, hash_key_size 40
+  flow_type_rss_offloads 0x2003ffffc
+  rss_algo_capa 0x1: default
+  rte_eth_find_rss_algo("symmetric_toeplitz_sort") = 4
+ETHDEV: Ethdev port_id=0 configured RSS hash algorithm (3)is not in the algorithm capability (0x1)
+  configure(algorithm=symmetric_toeplitz) -> -22 (Invalid argument)
+ETHDEV: Ethdev port_id=0 invalid RSS key len: 52, valid value: 40
+  configure(rss_key_len=52) -> -22 (Invalid argument)
+  configure(4 rxq, RSS, 40-byte 0x6d5a key, rss_hf 0x3afbc) -> 0
+  rss_hash_conf_get: rss_hf 0x3afbc, key 6d5a56da..., algorithm default
+  rss_hash_update(0x6d5a key) -> 0; conf_get now: key 6d5a6d5a...
+ETHDEV: Ethdev port_id=0 invalid rss_hf: 0x800000000a38c, valid value: 0x2003ffffc
+  rss_hash_update(rss_hf = IP | RTE_ETH_RSS_LEVEL_INNERMOST) -> -22 (Invalid argument)
+  RETA at start  entries per queue: q0 128  q1 0  q2 0  q3 0   first 16: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+  reta_update(i % 4) -> 0
+  RETA i % 4     entries per queue: q0 32  q1 32  q2 32  q3 32   first 16: 0 1 2 3 0 1 2 3 0 1 2 3 0 1 2 3
+  reta_update(move q3 entries to q0..q2, masked) -> 0
+  RETA no q3     entries per queue: q0 43  q1 43  q2 42  q3 0   first 16: 0 1 2 0 0 1 2 1 0 1 2 2 0 1 2 0
+  reta_update(reta_size=64 on a 128-entry port) -> -22 (Invalid argument)
+  per-queue xstats: rx_q0_packets=320 rx_q1_packets=320 rx_q2_packets=320 rx_q3_packets=320
+  -> equal counts although q3 has no RETA entries: net_null is poll-driven
+
+=== 2. rss_fanout.sh: real steering with af_packet fanout_mode=hash ===
+=== 40 flows x 10 packets: the kernel flow hash spreads flows ===
+$ dpdk-testpmd -l 0-2 --no-pci --no-huge -m 256 --file-prefix=ch15-fan \
+    --vdev=net_af_packet0,iface=ch15va,qpairs=2,fanout_mode=hash -- -i \
+    --rxq=2 --txq=2 --nb-cores=2 --forward-mode=rxonly --total-num-mbufs=8192
+  (sending 40 flows x 10 packets into ch15vb while forwarding is started)
+flows.py: sent 400 packets (40 flows x 10) on ch15vb
+  rx_q0_packets: 200
+  rx_q1_packets: 200
+  ------- Forward Stats for RX Port= 0/Queue= 0 -> TX Port= 0/Queue= 0 -------
+  RX-packets: 200            TX-packets: 0              TX-dropped: 0             
+  ------- Forward Stats for RX Port= 0/Queue= 1 -> TX Port= 0/Queue= 1 -------
+  RX-packets: 200            TX-packets: 0              TX-dropped: 0             
+  RX-packets: 400            RX-dropped: 0             RX-total: 400
+  RX-packets: 400            RX-dropped: 0             RX-total: 400
+
+=== 1 flow x 400 packets: one flow always lands on one queue ===
+$ dpdk-testpmd -l 0-2 --no-pci --no-huge -m 256 --file-prefix=ch15-fan \
+    --vdev=net_af_packet0,iface=ch15va,qpairs=2,fanout_mode=hash -- -i \
+    --rxq=2 --txq=2 --nb-cores=2 --forward-mode=rxonly --total-num-mbufs=8192
+  (sending 1 flows x 400 packets into ch15vb while forwarding is started)
+flows.py: sent 400 packets (1 flows x 400) on ch15vb
+  rx_q1_packets: 400
+  ------- Forward Stats for RX Port= 0/Queue= 1 -> TX Port= 0/Queue= 1 -------
+  RX-packets: 400            TX-packets: 0              TX-dropped: 0             
+  RX-packets: 400            RX-dropped: 0             RX-total: 400
+  RX-packets: 400            RX-dropped: 0             RX-total: 400
+
+=== 3. rtc_multiqueue: one queue per lcore on af_packet fanout ===
+$ ./rtc_multiqueue -l 0-2 --no-pci --no-huge -m 256 --file-prefix=ch15-rtc --vdev=net_af_packet0,iface=ch15va,qpairs=2,fanout_mode=hash -- --seconds 4
+flows.py: sent 1000 packets (40 flows x 25) on ch15vb
+port 0 (net_af_packet): 2 RX/TX queue pairs, mq_mode NONE (device spreads)
+ready: 2 workers polling for 4 s
+lcore 1 queue 0: rx 500 (test frames 500) tx 500 flows 20 out-of-order 0
+lcore 2 queue 1: rx 500 (test frames 500) tx 500 flows 20 out-of-order 0
+flows seen on more than one lcore: 0
+
+--- the same program as a load test on net_null (poll-driven, CPU-bound) ---
+$ ./rtc_multiqueue -l 0-2 --no-pci --no-huge -m 256 --file-prefix=ch15-rtcn --vdev=net_null0,size=64 -- --null --seconds 2 --work 200
+port 0 (net_null): 2 RX/TX queue pairs, mq_mode RSS
+ready: 2 workers polling for 2 s
+lcore 1 queue 0: rx 17413664 (8.71 Mpps)  busy 92%
+lcore 2 queue 1: rx 17189152 (8.59 Mpps)  busy 91%
+RESULT model=rtc work=200 mpps=17.301
+
+=== 4. pipeline_rings: RX -> 2 workers -> TX with per-stage accounting ===
+--- 4a. balanced: work 200 cycles/packet in each worker ---
+$ ./pipeline_rings -l 0-3 --no-pci --no-huge -m 256 --file-prefix=ch15-pipe --vdev=net_null0,size=64 -- --work 200
+pipeline: RX(lcore 0) -> 2 workers -> TX, work 200 cyc/pkt, slow-worker +0, policy drop, ring 1024 x 8-byte pointer
+stage     packets          rate      busy     cost         input ring       ring-full       drops
+  rx         152343872 pkts  76.17 Mpps  busy  91.6%    32.5 cyc/pkt  in-ring fill   0.0%  full  3697416  drops 118316909
+  worker0     17141210 pkts   8.57 Mpps  busy  99.3%   313.0 cyc/pkt  in-ring fill  96.5%  full     7868  drops    250908
+  worker1     16883707 pkts   8.44 Mpps  busy  99.5%   318.3 cyc/pkt  in-ring fill  96.5%  full     8177  drops    261075
+  tx          33512870 pkts  16.76 Mpps  busy  60.8%    97.9 cyc/pkt  in-ring fill   0.7%  full        0  drops         0
+bottleneck (busiest stage after RX): worker1 (busy 99.5%)
+RESULT model=pipeline work=200 compress=0 mpps=16.756
+--- 4b. worker0 is slow (+600 cycles), policy drop ---
+$ ./pipeline_rings -l 0-3 --no-pci --no-huge -m 256 --file-prefix=ch15-pipe --vdev=net_null0,size=64 -- --work 200 --slow-worker 600
+pipeline: RX(lcore 0) -> 2 workers -> TX, work 200 cyc/pkt, slow-worker +600, policy drop, ring 1024 x 8-byte pointer
+stage     packets          rate      busy     cost         input ring       ring-full       drops
+  rx         129714784 pkts  64.86 Mpps  busy  93.6%    39.0 cyc/pkt  in-ring fill   0.0%  full  3395195  drops 108644721
+  worker0      5786996 pkts   2.89 Mpps  busy  99.3%   926.9 cyc/pkt  in-ring fill  96.5%  full     6393  drops    204327
+  worker1     15281021 pkts   7.64 Mpps  busy  97.3%   344.0 cyc/pkt  in-ring fill  96.2%  full    15126  drops    483101
+  tx          20380525 pkts  10.19 Mpps  busy  40.3%   106.9 cyc/pkt  in-ring fill   0.4%  full        0  drops         0
+bottleneck (busiest stage after RX): worker0 (busy 99.3%)
+RESULT model=pipeline work=200 compress=0 mpps=10.190
+--- 4c. worker0 is slow, policy wait (back-pressure reaches RX) ---
+$ ./pipeline_rings -l 0-3 --no-pci --no-huge -m 256 --file-prefix=ch15-pipe --vdev=net_null0,size=64 -- --work 200 --slow-worker 600 --policy wait
+pipeline: RX(lcore 0) -> 2 workers -> TX, work 200 cyc/pkt, slow-worker +600, policy wait, ring 1024 x 8-byte pointer
+stage     packets          rate      busy     cost         input ring       ring-full       drops
+  rx          11559584 pkts   5.78 Mpps  busy  97.9%   457.4 cyc/pkt  in-ring fill   0.0%  full   179182  drops         0
+  worker0      5778816 pkts   2.89 Mpps  busy  97.0%   906.4 cyc/pkt  in-ring fill  96.6%  full     2569  drops     82022
+  worker1      5779776 pkts   2.89 Mpps  busy  34.1%   318.4 cyc/pkt  in-ring fill   0.1%  full     2601  drops     82770
+  tx          11393768 pkts   5.70 Mpps  busy  30.7%   145.5 cyc/pkt  in-ring fill   0.2%  full        0  drops         0
+bottleneck (busiest stage after RX): worker0 (busy 97.0%)
+RESULT model=pipeline work=200 compress=0 mpps=5.697
+--- 4d. compressed pointers on every ring ---
+$ ./pipeline_rings -l 0-3 --no-pci --no-huge -m 256 --file-prefix=ch15-pipe --vdev=net_null0,size=64 -- --work 200 --compress
+compress: pool memory 67105408 bytes -> 26 offset bits, objects aligned to 64 bytes -> shift 6, fits in 32 bits: yes
+pipeline: RX(lcore 0) -> 2 workers -> TX, work 200 cyc/pkt, slow-worker +0, policy drop, ring 1024 x 4-byte compressed
+stage     packets          rate      busy     cost         input ring       ring-full       drops
+  rx         133784736 pkts  66.89 Mpps  busy  95.0%    38.3 cyc/pkt  in-ring fill   0.0%  full  3123295  drops  99944076
+  worker0     16937515 pkts   8.47 Mpps  busy  99.2%   316.4 cyc/pkt  in-ring fill  96.3%  full     5376  drops    171440
+  worker1     16901163 pkts   8.45 Mpps  busy  99.3%   317.2 cyc/pkt  in-ring fill  96.3%  full     5541  drops    176782
+  tx          33489433 pkts  16.74 Mpps  busy  59.6%    96.2 cyc/pkt  in-ring fill   0.4%  full        0  drops         0
+bottleneck (busiest stage after RX): worker1 (busy 99.3%)
+RESULT model=pipeline work=200 compress=1 mpps=16.745
+
+=== 5. distributor_reorder: reorder script, then distributor + reorder ===
+$ ./distributor_reorder -l 0-2 --no-pci --no-huge -m 128 --file-prefix=ch15-dist
+reorder seqn dynfield at mbuf offset 92
+== Part 1: rte_reorder, window size 8 ==
+  without min_seqn_set, insert: 1:ok 0:ERANGE
+  drain -> 1 packets: 1
+  min_seqn_set(0), insert: 1:ok 0:ok 3:ok 2:ok 5:ok 4:ok 20:ERANGE 6:ok
+  drain -> 7 packets: 0 1 2 3 4 5 6
+  insert: 12:ok 16:ok 7:ERANGE
+  drain -> 0 packets:
+  insert: 9:ok 10:ok 11:ok
+  drain -> 4 packets: 9 10 11 12
+  insert: 13:ok 14:ok 15:ok
+  drain -> 4 packets: 13 14 15 16
+
+== Part 2: distributor -> 2 workers -> rte_reorder (200000 packets, 64 flows) ==
+  returned out of order (before reorder): 7379 of 200000
+  drained out of order  (after reorder) : 0 of 200000
+  worker 0: 100000 packets, 32 distinct flows, tag conflicts 0
+  worker 1: 100000 packets, 32 distinct flows, tag conflicts 0
+  flows that ran on more than one worker over the run: 0 of 64
+  (affinity holds only while a tag is in flight; idle flows may move)
+  7.05 Mpps through distributor + reorder
+
+=== 6. exercise solutions ===
+$ ./reta_rebalance -l 0 --no-pci --no-huge -m 128 --file-prefix=ch15-ex1 --vdev=net_null0
+reta_update -> 0
+reta_query: q0 11  q1 96  q2 11  q3 10 (of 128)
+one burst per queue: ipackets 128 (= 4 x 32, the RETA is not consulted)
+$ ./adjust4 -l 0 --no-pci --no-huge -m 64 --file-prefix=ch15-ex2
+queue 0: source port 39992  hash 0x64499e80  -> RETA[  0] = queue 0
+queue 1: source port 39998  hash 0xbea15601  -> RETA[  1] = queue 1
+queue 2: source port 39995  hash 0xd1980f82  -> RETA[  2] = queue 2
+queue 3: source port 39997  hash 0x0b70c703  -> RETA[  3] = queue 3
+program this key into the NIC (rte_eth_dev_rss_hash_update), first bytes: 6d 5a 56 da
+
+=== 7. shipped samples (prebuilt in $DPDK_SRC/build/examples) ===
+--- dpdk-distributor: 5 lcores (RX, distributor, TX, 1 worker + main), -m 640; last report ---
+$ dpdk-distributor --lcores='(0-4)@(0-3)' --no-pci --no-huge -m 640 --file-prefix=ch15-sdist --vdev=net_null0 --vdev=net_null1 -- -p 0x3
+POWER: Env isn't set yet!
+POWER: Unable to set Power Management Environment for lcore 1
+Library initialization failed on core 1
+Initializing port 0... done
+Port 0 MAC: 8a 60 b5 0b 54 fe
+Initializing port 1... done
+Port 1 MAC: 66 0d 9b f3 01 42
+Distributor on core 1
+Rx on core 2
+Tx on core 3
+ tx id 3, dist id 1, rx id 2
+Starting thread 0 as worker, lcore_id 4
+Core 4 acting as worker core.
+Core 3 doing packet TX.
+Core 2 exiting rx task.
+Core 1 exiting distributor task.
+Core 3 exiting tx task.
+RX Thread:
+Port 0 Pktsin : 21.77
+Port 1 Pktsin : 21.77
+ - Received:    43.54
+ - Returned:     0.00
+ - Enqueued:     3.39
+ - Dropped:     40.15
+Distributor thread:
+ - In:           3.39
+ - Returned:     3.39
+ - Sent:         3.02
+ - Dropped       0.36
+TX thread:
+ - Dequeued:     3.02
+Port 0 Pktsout:  1.50
+Port 1 Pktsout:  1.52
+ - Transmitted:  3.02
+ - Dropped:      0.00
+Worker 00 Pkts:  3.39. Bursts(1-8): 0 0 0 1 0 0 2 423537 
+--- dpdk-packet_ordering -m 384 (works) ---
+$ dpdk-packet_ordering -l 0-3 --no-pci --no-huge -m 384 --file-prefix=ch15-po --vdev=net_null0 --vdev=net_null1 -- -p 0x3
+Initializing port 0... done
+Initializing port 1... done
+REORDERAPP: worker_thread() started on lcore 1
+REORDERAPP: worker_thread() started on lcore 2
+REORDERAPP: send_thread() started on lcore 3
+REORDERAPP: rx_thread() started on lcore 0
+Exiting on signal 2
+RX thread stats:
+ - Pkts rxd:				6467264
+ - Pkts enqd to workers ring:		6467264
+Worker thread stats:
+ - Pkts deqd from workers ring:		6467264
+ - Pkts enqd to tx ring:		6334079
+ - Pkts enq to tx failed:		133185
+TX stats:
+ - Pkts deqd from tx ring:		6334079
+ - Ro Pkts transmitted:			6269184
+ - Ro Pkts tx failed:			0
+ - Pkts transmitted w/o reorder:	59776
+ - Pkts tx failed w/o reorder:		0
+Port 0 stats:
+ - Pkts in:   3233632
+ - Pkts out:  3163712
+ - In Errs:   0
+ - Out Errs:  0
+ - Mbuf Errs: 0
+Port 1 stats:
+ - Pkts in:   3233632
+ - Pkts out:  3165248
+ - In Errs:   0
+ - Out Errs:  0
+ - Mbuf Errs: 0
+Exiting on signal 2
+--- dpdk-packet_ordering -m 256 (fails) ---
+$ $E/dpdk-packet_ordering -l 0-3 --no-pci --no-huge -m 256 --file-prefix=ch15-po2 --vdev=net_null0 --vdev=net_null1 -- -p 0x3
+EAL: Error - exiting with code: 1
+Cannot allocate memory
+[exit status 1]
+
+=== 8. compare.sh: the models side by side (median of 5) ===
+WORK=200 cycles/packet, 5 runs x 2s each, Mpps delivered to TX
+model (lcores busy)                  median      min      max
+RTC queue-per-lcore (2)               17.93    17.30    18.11   runs: 18.113 18.002 17.295 17.548 17.930
+pipeline RX/2W/TX (4)                 13.26     9.93    16.27   runs: 13.255 15.743 16.275 9.927 12.098
+distributor + 2 workers (3)           13.89    12.35    16.43   runs: 13.296 16.288 16.432 13.887 12.353
+
+Pointer compression on the pipeline rings, WORK=0:
+pipeline, 8-byte pointers             13.50    12.75    30.37   runs: 13.501 30.370 13.104 12.751 15.511
+pipeline, 4-byte compressed           14.79    12.78    23.40   runs: 17.219 14.786 12.782 14.257 23.404

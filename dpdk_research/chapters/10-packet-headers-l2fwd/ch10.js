@@ -296,7 +296,7 @@
           r.classList.toggle('cur', isCur);
           r.children[3].textContent = '0x' + hex(sumTo(k + 1), 5);
           var before = sumTo(k), after = sumTo(k + 1);
-          r.children[4].textContent = (Math.floor(after / 65536) > Math.floor(before / 65536)) ? 'carry into bit 16' : '';
+          r.children[4].textContent = (Math.floor(after / 65536) > Math.floor(before / 65536)) ? 'sum passed another 0x10000: a carry' : '';
           setRes([['32-bit sum', '0x' + hex(after, 5)]]);
         }
       });
@@ -423,29 +423,32 @@
     function size() { return SIZES[+sizeIn.value]; }
     function drain() { return DRAINS[+drainIn.value]; }
 
-    var SX = 300, SY = 130, SW = 300;          // slot strip
+    var SX = 310, SY = 100, SW = 300, LANE = 100;   // slot strip and packet lane
     function slotX(i) { var n = size(), w = SW / n; return SX + i * w + w / 2; }
+    function box(x, y, w, h, t1, t2, cls) {
+      S.rect(svg, x, y, w, h, 'svg-box ' + cls);
+      S.text(svg, x + w / 2, y + 17, t1, 'svg-label center small bold');
+      if (t2) S.text(svg, x + w / 2, y + h + 14, t2, 'svg-label center small mono muted');
+    }
     function build() {
       S.clear(svg);
-      S.box(svg, 10, 95, 90, 70, 'port 0 RX', 'c4');
-      S.text(svg, 55, 180, 'rx_burst()', 'svg-label center small mono muted');
-      S.box(svg, 150, 95, 110, 70, 'lcore: MAC rewrite', 'c1');
-      S.text(svg, 205, 180, 'l2fwd_mac_updating()', 'svg-label center small mono muted');
-      S.rect(svg, SX - 6, SY - 30, SW + 12, 62, 'svg-box c5 dashed');
-      S.text(svg, SX + SW / 2, SY - 40, 'tx_buffer[1]: rte_eth_tx_buffer()', 'svg-label center small mono');
+      box(10, 62, 90, 56, 'port 0 RX', 'rx_burst()', 'c4');
+      box(140, 62, 130, 56, 'lcore: rewrite MACs', 'l2fwd_mac_updating()', 'c1');
+      S.rect(svg, SX - 6, SY - 28, SW + 12, 56, 'svg-box c5 dashed');
+      S.text(svg, SX + SW / 2, SY - 36, 'tx_buffer[1]: rte_eth_tx_buffer()', 'svg-label center small mono');
       slotsG = S.group(svg);
       var n = size(), w = SW / n;
-      for (var i = 0; i < n; i++) S.rect(slotsG, SX + i * w + 1, SY - 20, w - 2, 40, 'svg-slot');
-      bufTxt = S.text(svg, SX + SW / 2, SY + 46, '', 'svg-label center small');
-      S.box(svg, 640, 95, 72, 70, 'port 1 TX', 'c4');
-      S.arrow(svg, 100, 130, 148, 130, 'c7');
-      S.arrow(svg, 260, 130, SX - 8, 130, 'c7');
-      S.arrow(svg, SX + SW + 8, 130, 638, 130, 'c7');
+      for (var i = 0; i < n; i++) S.rect(slotsG, SX + i * w + 1, SY - 18, w - 2, 36, 'svg-slot');
+      bufTxt = S.text(svg, SX + SW / 2, SY + 44, '', 'svg-label center small');
+      box(646, 62, 68, 56, 'port 1 TX', 'tx_burst()', 'c4');
+      S.arrow(svg, 100, LANE, 138, LANE, 'c7');
+      S.arrow(svg, 270, LANE, SX - 8, LANE, 'c7');
+      S.arrow(svg, SX + SW + 8, LANE, 644, LANE, 'c7');
       // drain timer bar
-      S.rect(svg, SX, 205, SW, 14, 'svg-box c7 ghost');
-      timerBar = S.rect(svg, SX, 205, 0, 14, 'svg-box c6');
-      timerTxt = S.text(svg, SX + SW / 2, 236, '', 'svg-label center small');
-      S.text(svg, SX - 10, 216, 'drain timer', 'svg-label small muted', { 'text-anchor': 'end' });
+      S.rect(svg, SX, 160, SW, 12, 'svg-box c7 ghost');
+      timerBar = S.rect(svg, SX, 160, 0, 12, 'svg-box c6');
+      timerTxt = S.text(svg, SX + SW / 2, 190, '', 'svg-label center small');
+      S.text(svg, SX - 10, 170, 'drain timer', 'svg-label small muted', { 'text-anchor': 'end' });
       layer = S.group(svg);
     }
     function stat(id, v) { var e = $(id); if (e) e.textContent = v; }
@@ -453,7 +456,7 @@
       if (!st.buf.length) return;
       var wsum = 0;
       st.buf.forEach(function (p) {
-        p.tx = 676; p.ty = 130; p.leaving = true;
+        p.tx = 680; p.ty = LANE; p.leaving = true;
         var w = st.t - p.born; wsum += w; if (w > st.maxWait) st.maxWait = w;
       });
       st.waitSum += wsum; st.waitN += st.buf.length;
@@ -475,8 +478,8 @@
         var gap = 1e6 / rate();
         if (st.next === 0) st.next = gap * Math.random();
         while (st.t >= st.next) {
-          var p = S.packet(layer, 55, 130, 14, 12, 'c2');
-          p.born = st.next; p.tx = 205; p.ty = 130; p.phase = 0;
+          var p = S.packet(layer, 55, LANE, 14, 12, 'c2');
+          p.born = st.next; p.tx = 205; p.ty = LANE; p.phase = 0;
           st.pk.push(p); st.rx++;
           p.slot = st.buf.length; st.buf.push(p);
           if (st.buf.length >= n) flush('full');

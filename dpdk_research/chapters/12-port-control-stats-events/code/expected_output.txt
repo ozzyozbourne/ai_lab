@@ -1,0 +1,718 @@
+########## 1. port_ctl: control ops matrix + tap walk-through
+
+$ ./port_ctl -l 0 --no-pci --no-huge -m 128 --file-prefix=ch12-ctl --vdev=net_null0 --vdev=net_ring0 --vdev=net_tap0,iface=ch12tap0
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch12-ctl/mp_socket
+EAL: Selected IOVA mode 'VA'
+
+=== Part 1: optional ops matrix (started ports, 1 RX + 1 TX queue) ===
+port/pmd     mac_set     mac_add     promisc_off allmulti_on set_mtu     vlan_filt   link_down   ptypes      set_ptypes  rxq_info    burst_mode  xstats      done_clean  aggr_ports 
+ETHDEV: Port 0: VLAN-filtering disabled
+0 null       OK          -ENOTSUP    -ENOTSUP    OK          OK          -ENOSYS     -ENOTSUP    0           OK          -ENOTSUP    -ENOTSUP    12          -ENOTSUP    0          
+ETHDEV: Port 1: VLAN-filtering disabled
+ETHDEV: Port 1: Cannot remove default MAC address
+1 ring       -ENOTSUP    OK          OK          OK          -ENOTSUP    -ENOSYS     OK          0           OK          -ENOTSUP    -ENOTSUP    12          -ENOTSUP    0          
+ETHDEV: Port 2: VLAN-filtering disabled
+2 tap        OK          OK          OK          OK          OK          -ENOSYS     OK          22          OK          -ENOTSUP    -ENOTSUP    12          -ENOTSUP    0          
+(numbers = counts: supported ptypes, xstats, freed mbufs, aggregated ports)
+
+=== Part 2: net_tap walk-through (port 2, kernel side ch12tap0) ===
+  initial MAC (random per run):      DPDK side 96:79:EF:0A:65:EB | kernel ch12tap0 address 96:79:ef:0a:65:eb
+  after default_mac_addr_set:        DPDK side 02:12:00:00:00:01 | kernel ch12tap0 address 02:12:00:00:00:01
+
+  promiscuous filter test (10 frames each, sent from the kernel side):
+  promisc  dst = port MAC         dst = 02:12:de:ad:be:ef dst = broadcast       
+  on       10                     10                     10                       (kernel IFF_PROMISC=1)
+  off      10                     0                      10                       (kernel IFF_PROMISC=0)
+
+  MTU now 1500 (min_mtu 46, max_mtu 65535, max_rx_pktlen 16128)
+  set_mtu(9000)  -> OK       get_mtu=9000, kernel mtu=9000
+ETHDEV: MTU (40) < device min MTU (46) for port_id 2
+  set_mtu(40)    -> -EINVAL  (below min_mtu)
+  set_mtu(1500)  -> OK
+  mbuf data room in this pool: 2048 bytes -> a 9000-byte frame would need scatter RX
+
+  set_link_down -> OK     link: Link down                    kernel operstate=down
+  set_link_up   -> OK     link: Link up at 10 Gbps FDX Fixed None kernel operstate=unknown
+
+  supported ptypes (22):
+    INNER_L2_ETHER, INNER_L2_ETHER_VLAN, INNER_L2_ETHER_QINQ, INNER_L3_IPV4, INNER_L3_IPV4_EXT, INNER_L3_IPV6
+    INNER_L3_IPV6_EXT, INNER_L4_FRAG, INNER_L4_UDP, INNER_L4_TCP, INNER_L4_SCTP, L2_ETHER
+    L2_ETHER_VLAN, L2_ETHER_QINQ, L3_IPV4, L3_IPV4_EXT, L3_IPV6_EXT, L3_IPV6
+    L4_FRAG, L4_UDP, L4_TCP, L4_SCTP
+
+  rte_eth_stats after 25 injected frames:
+    ipackets=25 ibytes=1500 imissed=0 ierrors=0 rx_nombuf=0
+    opackets=0 obytes=0 oerrors=0
+  all 12 xstats (name = value):
+    [ 0] rx_good_packets      = 25
+    [ 1] tx_good_packets      = 0
+    [ 2] rx_good_bytes        = 1500
+    [ 3] tx_good_bytes        = 0
+    [ 4] rx_missed_errors     = 0
+    [ 5] rx_errors            = 0
+    [ 6] tx_errors            = 0
+    [ 7] rx_mbuf_allocation_errors = 0
+    [ 8] rx_q0_packets        = 25
+    [ 9] rx_q0_bytes          = 1500
+    [10] tx_q0_packets        = 0
+    [11] tx_q0_bytes          = 0
+  by id: get_id_by_name("rx_q0_packets") -> OK id=8, get_by_id -> 25
+  by id: get_id_by_name("rx_q0_errors")  -> -EINVAL (removed in 26.11)
+
+########## 2. events: NEW / LSC / QUEUE_STATE / DESTROY, device monitor
+
+$ ./events -l 0 --no-pci --no-huge -m 128 --file-prefix=ch12-evt --vdev=net_null0 --log-level=lib.vhost.*:warning --log-level=pmd.net.virtio.*:warning -- tiny.pcap $TMPD/vhost.sock
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch12-evt/mp_socket
+EAL: Selected IOVA mode 'VA'
+main thread is "events"
+
+-- 1. hotplug: rte_dev_probe("net_null7")
+ETHDEV: Invalid port_id=1
+       3.9 ms  [event] port 1 (?) NEW          in thread "events" (lcore 0)
+  rte_dev_probe -> OK, ports now: 2
+
+-- 2. net_pcap with eof=1: link goes down at end of file
+ETHDEV: Invalid port_id=2
+       4.0 ms  [event] port 2 (?) NEW          in thread "events" (lcore 0)
+  pcap port 2: RTE_ETH_DEV_INTR_LSC flag = 1
+  configured with intr_conf.lsc=1, start -> OK
+       5.2 ms  [event] port 2 (net_pcap0) INTR_LSC     in thread "dpdk-intr" (lcore -1)
+       7.3 ms  [alarm] deferred work for port 2 in thread dpdk-intr: Link down
+  received 40 packets, then EOF
+
+-- 3. vhost server + virtio_user client in one process
+ETHDEV: Invalid port_id=3
+     131.2 ms  [event] port 3 (?) NEW          in thread "events" (lcore 0)
+  probe net_vhost0,iface=$TMPD/vhost.sock,queues=1 -> OK
+  vhost port 3 started -> OK (link down until a driver connects)
+VIRTIO_DRIVER: virtio_user_dev_init_mac(): ($TMPD/vhost.sock) No valid MAC in devargs or device, use random
+     134.0 ms  [event] port 3 (net_vhost0) QUEUE_STATE  in thread "dpdk-vhost-evt" (lcore -1)
+     134.0 ms  [event] port 3 (net_vhost0) QUEUE_STATE  in thread "dpdk-vhost-evt" (lcore -1)
+     134.0 ms  [event] port 3 (net_vhost0) INTR_LSC     in thread "dpdk-vhost-evt" (lcore -1)
+ETHDEV: Invalid port_id=4
+     134.0 ms  [event] port 4 (?) NEW          in thread "events" (lcore 0)
+  probe virtio_user0 -> OK
+  virtio_user port 4 started -> OK
+     136.0 ms  [alarm] deferred work for port 3 in thread dpdk-intr: Link up at 10 Gbps FDX Fixed None
+  stopping virtio_user (the 'VM' goes away)
+     334.3 ms  [event] port 3 (net_vhost0) QUEUE_STATE  in thread "dpdk-vhost-evt" (lcore -1)
+     334.3 ms  [event] port 3 (net_vhost0) QUEUE_STATE  in thread "dpdk-vhost-evt" (lcore -1)
+     334.3 ms  [event] port 3 (net_vhost0) INTR_LSC     in thread "dpdk-vhost-evt" (lcore -1)
+EAL: Some interrupt handle is leaking an event FD: 20 (index 0)
+     334.6 ms  [event] port 4 (virtio_user0) DESTROY      in thread "events" (lcore 0)
+     336.3 ms  [alarm] deferred work for port 3 in thread dpdk-intr: Link down
+
+-- 4. hot-unplug net_null7: stop, close, rte_dev_remove
+ETHDEV: Device with port_id=1 already stopped
+     384.7 ms  [event] port 1 (net_null7) DESTROY      in thread "events" (lcore 0)
+  rte_eth_dev_close -> OK
+  rte_dev_remove -> OK, ports now: 3
+
+-- 5. kernel device event monitor
+  rte_dev_event_callback_register(all devices) -> OK
+  rte_dev_event_monitor_start -> OK
+  creating and deleting veth pair ch12a/ch12b (uevents: SUBSYSTEM=net)
+  -> no [uevent] lines: the monitor only parses pci/uio/vfio uevents
+
+13 ethdev events seen. Closing remaining ports.
+ETHDEV: Device with port_id=0 already stopped
+    1012.2 ms  [event] port 0 (net_null0) DESTROY      in thread "events" (lcore 0)
+    1012.3 ms  [event] port 2 (net_pcap0) DESTROY      in thread "events" (lcore 0)
+    1335.9 ms  [event] port 3 (net_vhost0) DESTROY      in thread "events" (lcore 0)
+
+########## 3. rxtx_latency: RX/TX burst callbacks
+
+$ ./rxtx_latency -l 0 --no-pci --no-huge -m 128 --file-prefix=ch12-cb --vdev=net_ring0 --vdev=net_ring1
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch12-cb/mp_socket
+EAL: Selected IOVA mode 'VA'
+dynfield "ch12_rx_tsc" registered at mbuf offset 96
+callback order in one burst (registered B, C, then first A; T = TX): ABCT
+TSC 2700 MHz; 20000 bursts of 32 per trial, 5 trials
+work/pkt         RX-cb -> TX-cb latency/pkt   (median, min..max)
+    0 cycles          2251 cycles =     0.83 us   (2237..2262 cycles)
+  100 cycles          6344 cycles =     2.35 us   (6314..6361 cycles)
+  500 cycles         19120 cycles =     7.08 us   (19083..19361 cycles)
+ 2000 cycles         67436 cycles =    24.98 us   (67311..68250 cycles)
+note: the TX callback runs when the WHOLE burst is handed to
+      tx_burst, so every packet waits for all 32 packets of work:
+      latency ~ work x 32 + fixed overhead
+remove callbacks -> OK
+after removal: callback B counted 0 bursts, TX callback saw 0 packets
+remove again -> -EINVAL (already gone)
+
+########## 4. queue_ctl: deferred start, queue start/stop, dev_capa
+
+$ ./queue_ctl -l 0 --no-pci --no-huge -m 128 --file-prefix=ch12-qc --vdev=net_tap0,iface=ch12tap2 --vdev=net_pcap0,rx_pcap=in.pcap,rx_pcap=in.pcap,tx_pcap=/dev/null --vdev=net_null0 --vdev=net_ring0 --vdev=net_failsafe0,dev(net_tap1,iface=ch12tap4)
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch12-qc/mp_socket
+EAL: Selected IOVA mode 'VA'
+EAL: Device net_tap1 is already probed
+=== Part A: deferred start, queue start/stop, runtime setup ===
+(rxq_state: 0 = STOPPED, 1 = STARTED, read via telemetry /ethdev/info)
+
+port 0 net_tap0 (net_tap), max_rx_queues 64
+    dev_capa 0x0: (none)
+    rx_queue_setup(q1, rx_deferred_start=1) -> OK
+    dev_start -> OK       rxq_state [1,1]  (q1 was set rx_deferred_start=1)
+ETHDEV: Invalid Rx queue_id=7 of device with port_id=0
+    rx_queue_is_valid(q1) -> OK, (q7) -> -EINVAL
+    rx_queue_stop(q1)  -> OK       rxq_state [1,0]
+    rx_queue_setup(q1, port started, q1 stopped) -> -EBUSY
+    rx_queue_start(q1) -> OK       rxq_state [1,1]
+    tx_queue_stop(q0)  -> OK       tx_queue_start(q0) -> OK
+ETHDEV: Port 0 must be started before start any queue
+    port stopped: rx_queue_start(q1) -> -EINVAL
+
+port 1 net_pcap0 (net_pcap), max_rx_queues 2
+    dev_capa 0x0: (none)
+    rx_queue_setup(q1, rx_deferred_start=1) -> OK
+    dev_start -> OK       rxq_state [1,1]  (q1 was set rx_deferred_start=1)
+ETHDEV: Invalid Rx queue_id=7 of device with port_id=1
+    rx_queue_is_valid(q1) -> OK, (q7) -> -EINVAL
+    rx_queue_stop(q1)  -> OK       rxq_state [1,0]
+    rx_queue_setup(q1, port started, q1 stopped) -> -EBUSY
+    rx_queue_start(q1) -> OK       rxq_state [1,1]
+    tx_queue_stop(q0)  -> OK       tx_queue_start(q0) -> OK
+ETHDEV: Port 1 must be started before start any queue
+    port stopped: rx_queue_start(q1) -> -EINVAL
+
+port 2 net_null0 (net_null), max_rx_queues 1024
+    dev_capa 0x0: (none)
+ETHDEV: Deferred start requested, but driver does not support Rx queue start
+    rx_queue_setup(q1, rx_deferred_start=1) -> -ENOTSUP
+    dev_start -> OK       rxq_state [1,1]  (q1 was set rx_deferred_start=1)
+ETHDEV: Invalid Rx queue_id=7 of device with port_id=2
+ETHDEV: Queue 1 of device with port_id=2 has not been setup
+    rx_queue_is_valid(q1) -> -EINVAL, (q7) -> -EINVAL
+ETHDEV: Queue 1 of device with port_id=2 has not been setup
+    rx_queue_stop(q1)  -> -EINVAL  rxq_state [1,1]
+    rx_queue_setup(q1, port started, q1 not stopped) -> -EBUSY
+ETHDEV: Queue 1 of device with port_id=2 has not been setup
+    rx_queue_start(q1) -> -EINVAL  rxq_state [1,1]
+    tx_queue_stop(q0)  -> -ENOTSUP tx_queue_start(q0) -> -ENOTSUP
+ETHDEV: Port 2 must be started before start any queue
+    port stopped: rx_queue_start(q1) -> -EINVAL
+
+port 3 net_ring0 (net_ring), max_rx_queues 16
+    dev_capa 0x0: (none)
+ETHDEV: Deferred start requested, but driver does not support Rx queue start
+    rx_queue_setup(q1, rx_deferred_start=1) -> -ENOTSUP
+    dev_start -> OK       rxq_state [0,0]  (q1 was set rx_deferred_start=1)
+ETHDEV: Invalid Rx queue_id=7 of device with port_id=3
+    rx_queue_is_valid(q1) -> OK, (q7) -> -EINVAL
+    rx_queue_stop(q1)  -> -ENOTSUP rxq_state [0,0]
+    rx_queue_setup(q1, port started, q1 not stopped) -> -EBUSY
+    rx_queue_start(q1) -> -ENOTSUP rxq_state [0,0]
+    tx_queue_stop(q0)  -> -ENOTSUP tx_queue_start(q0) -> -ENOTSUP
+ETHDEV: Port 3 must be started before start any queue
+    port stopped: rx_queue_start(q1) -> -EINVAL
+
+port 4 net_failsafe0 (net_failsafe), max_rx_queues 64
+    dev_capa 0x3: RUNTIME_RX_QUEUE_SETUP RUNTIME_TX_QUEUE_SETUP
+    rx_queue_setup(q1, rx_deferred_start=1) -> OK
+    dev_start -> OK       rxq_state [1,0]  (q1 was set rx_deferred_start=1)
+ETHDEV: Invalid Rx queue_id=7 of device with port_id=4
+    rx_queue_is_valid(q1) -> OK, (q7) -> -EINVAL
+ETHDEV: Queue 1 of device with port_id=4 already stopped
+    rx_queue_stop(q1)  -> OK       rxq_state [1,0]
+NET_FAILSAFE: RX queue setup failed for sub_device 0
+    rx_queue_setup(q1, port started, q1 stopped) -> -EBUSY
+ETHDEV: Queue 1 of device with port_id=4 has not been setup
+    rx_queue_start(q1) -> -EINVAL  rxq_state [1,0]
+    tx_queue_stop(q0)  -> OK       tx_queue_start(q0) -> OK
+ETHDEV: Port 4 must be started before start any queue
+    port stopped: rx_queue_start(q1) -> -EINVAL
+
+=== Part B: tap port 0, 2 RX queues, traffic from the kernel ===
+  200 frames, 16 flows, both queues polled:      rx_q0_packets=76   rx_q1_packets=124  ipackets(total)=200
+  q1 stopped, 200 more, only q0 polled:          rx_q0_packets=152  rx_q1_packets=124  ipackets(total)=276
+    rxq_state [1,0]; frames for q1 wait in the kernel tap queue
+  poll the STOPPED q1 anyway:                    rx_q0_packets=152  rx_q1_packets=248  ipackets(total)=400
+    -> rx_burst on a stopped tap queue returned 124 packets: the state
+       is bookkeeping; the app must not poll a stopped queue
+  q1 restarted after another 200 frames:         rx_q0_packets=228  rx_q1_packets=372  ipackets(total)=600
+    -> q1 delivered 124 stale frames that queued while it was stopped
+
+########## 5. runtime_reconf: restart table, outage, ordered teardown
+
+$ ./runtime_reconf -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch12-rr --vdev=net_null0 --vdev=net_ring0 --vdev=net_tap0,iface=ch12tap3
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch12-rr/mp_socket
+EAL: Selected IOVA mode 'VA'
+ETHDEV: Port 0 must be stopped to allow configuration
+ETHDEV: Port 0 must be stopped to allow configuration
+ETHDEV: Ethdev port_id=0 requested new added VLAN offloads 0x1 must be within Rx offloads capabilities 0x0 in rte_eth_dev_set_vlan_offload()
+ETHDEV: Port 1 must be stopped to allow configuration
+ETHDEV: Port 1 must be stopped to allow configuration
+ETHDEV: Multi-queue RSS mode isn't enabled.
+ETHDEV: Multi-queue RSS mode isn't enabled.
+ETHDEV: Ethdev port_id=1 requested new added VLAN offloads 0x1 must be within Rx offloads capabilities 0x2000 in rte_eth_dev_set_vlan_offload()
+ETHDEV: Port 2 must be stopped to allow configuration
+ETHDEV: Port 2 must be stopped to allow configuration
+ETHDEV: Ethdev port_id=2 requested new added VLAN offloads 0x1 must be within Rx offloads capabilities 0x200e in rte_eth_dev_set_vlan_offload()
+
+=== Part 1: change attempted while the port is STARTED ===
+change                             null      ring      tap      
+configure (queue count 1->2)       -EBUSY    -EBUSY    -EBUSY   
+rx offload change (configure)      -EBUSY    -EBUSY    -EBUSY   
+rx_queue_setup on started port     -EBUSY    -EBUSY    -EBUSY   
+default_mac_addr_set               OK        -ENOTSUP  OK       
+promiscuous_disable / enable       -ENOTSUP  OK        OK       
+set_mtu 1500 -> 1400               OK        -ENOTSUP  OK       
+rss_hash_update                    OK        -ENOTSUP  OK       
+reta_update                        OK        -ENOTSUP  -ENOTSUP 
+vlan offload set                   -EINVAL   -EINVAL   -EINVAL  
+set_link_down / up                 -ENOTSUP  OK        OK       
+-EBUSY = needs stop/reconfigure/start; -ENOTSUP/-ENOSYS = PMD or
+offload missing; OK = changed live
+
+=== Part 2: outage of a full restart (worker paused around it) ===
+  null   stop+configure+setup+start: median     10.4 us  (min 9.3, max 15.2)  forwarded 13963104 pkts total
+  tap    stop+configure+setup+start: median    214.5 us  (min 167.3, max 412.6)  forwarded 0 pkts total
+
+(Part 3 pipeline running until SIGINT)
+SIGINT received
+
+=== Part 3: ordered teardown ===
+  in use before teardown: 2071 of 8191 mbufs
+  1. worker stopped and joined
+  2. app ring drained: 1015 mbufs freed
+  3. tx_buffer flushed: 0 sent
+  4. rte_eth_tx_done_cleanup -> -ENOTSUP
+  5. net_ring0 loopback drained: 1023 mbufs
+ETHDEV: Device with port_id=2 already stopped
+  6. all ports stopped and closed
+  7. rte_mempool_in_use_count = 0 -> PASS
+  8. pool freed, calling rte_eal_cleanup()
+[stopped by SIGINT from timeout after 4s]
+
+$ ./runtime_reconf -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch12-rr --vdev=net_null0 --vdev=net_ring0 --vdev=net_tap0,iface=ch12tap3 -- --sloppy
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch12-rr/mp_socket
+EAL: Selected IOVA mode 'VA'
+ETHDEV: Port 0 must be stopped to allow configuration
+ETHDEV: Port 0 must be stopped to allow configuration
+ETHDEV: Ethdev port_id=0 requested new added VLAN offloads 0x1 must be within Rx offloads capabilities 0x0 in rte_eth_dev_set_vlan_offload()
+ETHDEV: Port 1 must be stopped to allow configuration
+ETHDEV: Port 1 must be stopped to allow configuration
+ETHDEV: Multi-queue RSS mode isn't enabled.
+ETHDEV: Multi-queue RSS mode isn't enabled.
+ETHDEV: Ethdev port_id=1 requested new added VLAN offloads 0x1 must be within Rx offloads capabilities 0x2000 in rte_eth_dev_set_vlan_offload()
+ETHDEV: Port 2 must be stopped to allow configuration
+ETHDEV: Port 2 must be stopped to allow configuration
+ETHDEV: Ethdev port_id=2 requested new added VLAN offloads 0x1 must be within Rx offloads capabilities 0x200e in rte_eth_dev_set_vlan_offload()
+
+=== Part 1: change attempted while the port is STARTED ===
+change                             null      ring      tap      
+configure (queue count 1->2)       -EBUSY    -EBUSY    -EBUSY   
+rx offload change (configure)      -EBUSY    -EBUSY    -EBUSY   
+rx_queue_setup on started port     -EBUSY    -EBUSY    -EBUSY   
+default_mac_addr_set               OK        -ENOTSUP  OK       
+promiscuous_disable / enable       -ENOTSUP  OK        OK       
+set_mtu 1500 -> 1400               OK        -ENOTSUP  OK       
+rss_hash_update                    OK        -ENOTSUP  OK       
+reta_update                        OK        -ENOTSUP  -ENOTSUP 
+vlan offload set                   -EINVAL   -EINVAL   -EINVAL  
+set_link_down / up                 -ENOTSUP  OK        OK       
+-EBUSY = needs stop/reconfigure/start; -ENOTSUP/-ENOSYS = PMD or
+offload missing; OK = changed live
+
+=== Part 2: outage of a full restart (worker paused around it) ===
+  null   stop+configure+setup+start: median      4.3 us  (min 2.7, max 7.2)  forwarded 15028800 pkts total
+  tap    stop+configure+setup+start: median    207.7 us  (min 144.0, max 264.7)  forwarded 0 pkts total
+
+(Part 3 pipeline running until SIGINT)
+SIGINT received
+
+=== Part 3: ordered teardown (SLOPPY) ===
+  in use before teardown: 2081 of 8191 mbufs
+  1. worker stopped and joined
+  2. (skipped) app ring still holds 1015 mbufs
+  3. tx_buffer flushed: 0 sent
+  4. rte_eth_tx_done_cleanup -> -ENOTSUP
+  5. (skipped) net_ring0 loopback not drained
+ETHDEV: Device with port_id=2 already stopped
+  6. all ports stopped and closed
+  7. rte_mempool_in_use_count = 2038 -> FAIL
+  8. pool freed, calling rte_eal_cleanup()
+[stopped by SIGINT from timeout after 4s]
+
+########## 6. bonding_modes: modes, failover, aggregated-port probe
+
+$ ./bonding_modes -l 0 --no-pci --no-huge -m 256 --file-prefix=ch12-bond
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch12-bond/mp_socket
+EAL: Selected IOVA mode 'VA'
+members: port 0 (ch12tapb0) and port 1 (ch12tapb1)
+ETHDEV: Device with port_id=0 already stopped
+ETHDEV: Device with port_id=1 already stopped
+ETHDEV: Device with port_id=0 already stopped
+    [event] LSC on bond port 2: link up
+ETHDEV: Device with port_id=1 already stopped
+  mode 0 round-robin                 sent 1000  member0  500  member1  500
+ETHDEV: Device with port_id=0 already stopped
+ETHDEV: Device with port_id=1 already stopped
+ETHDEV: Device with port_id=0 already stopped
+    [event] LSC on bond port 2: link up
+ETHDEV: Device with port_id=1 already stopped
+  mode 2 balance, L2 hash            sent 1000  member0    0  member1 1000
+ETHDEV: Device with port_id=0 already stopped
+ETHDEV: Device with port_id=1 already stopped
+ETHDEV: Device with port_id=0 already stopped
+    [event] LSC on bond port 2: link up
+ETHDEV: Device with port_id=1 already stopped
+  mode 2 balance, L23 hash           sent 1000  member0  500  member1  500
+ETHDEV: Device with port_id=0 already stopped
+ETHDEV: Device with port_id=1 already stopped
+ETHDEV: Device with port_id=0 already stopped
+    [event] LSC on bond port 2: link up
+ETHDEV: Device with port_id=1 already stopped
+  mode 2 balance, L34 hash           sent 1000  member0 1000  member1    0
+ETHDEV: Device with port_id=0 already stopped
+ETHDEV: Device with port_id=1 already stopped
+ETHDEV: Device with port_id=0 already stopped
+    [event] LSC on bond port 2: link up
+ETHDEV: Device with port_id=1 already stopped
+  mode 3 broadcast                   sent 1000  member0 1000  member1 1000
+ETHDEV: Device with port_id=0 already stopped
+ETHDEV: Device with port_id=1 already stopped
+ETHDEV: Device with port_id=0 already stopped
+    [event] LSC on bond port 2: link up
+ETHDEV: Device with port_id=1 already stopped
+  mode 5 TLB (adaptive tx)           sent 1000  member0 1000  member1    0
+
+mode 1 active-backup and failover:
+ETHDEV: Device with port_id=0 already stopped
+ETHDEV: Device with port_id=1 already stopped
+ETHDEV: Device with port_id=0 already stopped
+    [event] LSC on bond port 2: link up
+ETHDEV: Device with port_id=1 already stopped
+    active members: 0 1  (primary 0)
+  both members up                    sent 1000  member0 1000  member1    0
+    rte_eth_dev_set_link_down(member 0) (the primary's cable is pulled)
+    member 0 link is down, but the bond still says:
+    active members: 0 1  (primary 0)
+  primary link down (not noticed)    sent    0  member0    0  member1    0
+    active members: 0 1  (primary 0)
+    rte_eth_bond_member_remove(member 0)
+ETHDEV: Port 0 must be stopped to allow reset
+    active members: 1  (primary 1)
+  after removing the primary         sent 1000  member0    0  member1 1000
+
+hardware aggregated ports (rte_eth_dev_count_aggr_ports):
+  member0 0, member1 0, bond 0  (0 = not a HW-aggregated port)
+  rte_eth_dev_map_aggr_tx_affinity(bond, 0, 1) -> -ENOTSUP
+ETHDEV: Device with port_id=1 already stopped
+mbufs still in use: 0
+
+########## 7. failsafe in testpmd (commands fed on stdin)
+$ (show port info 0; start; sleep 2; stop; show port stats 0; show port xstats 0; quit) | \
+  dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch12-fs \
+  --vdev='net_failsafe0,dev(net_null0,size=128),dev(net_ring0)' -- -i --total-num-mbufs=8192 --forward-mode=txonly
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch12-fs/mp_socket
+EAL: Selected IOVA mode 'VA'
+EAL: Device net_null0 is already probed
+EAL: Device net_ring0 is already probed
+Warning: NUMA should be configured manually by using --port-numa-config and --ring-numa-config parameters along with --numa.
+testpmd: create a new mbuf pool <mb_pool_0>: n=8192, size=2176, socket=0
+testpmd: preferred mempool ops selected: ring_mp_mc
+
+Warning! port-topology=paired and odd forward ports number, the last port will pair with itself.
+
+NET_FAILSAFE: Operation rte_eth_dev_mac_addr_set failed for sub_device 1 with error -95
+NET_FAILSAFE: Promiscuous mode disable failed for subdevice 1
+NET_FAILSAFE: All-multicast mode disable failed for subdevice 1
+Interactive-mode selected
+Set txonly packet forwarding mode
+Configuring Port 0 (socket 0)
+Port 0: 5A:89:2F:33:35:E6
+Checking link statuses...
+testpmd> show port info 0
+testpmd> start
+testpmd> stop
+testpmd> show port stats 0
+testpmd> show port xstats 0
+Done
+
+********************* Infos for port 0  *********************
+MAC address: 5A:89:2F:33:35:E6
+Device name: net_failsafe0
+Driver name: net_failsafe
+Firmware-version: not available
+Devargs: dev(net_null0,size=128),dev(net_ring0)
+Connect to socket: 0
+memory allocation on the socket: 0
+Link status: up
+Link speed: 10 Gbps
+Link duplex: full-duplex
+Autoneg status: On
+MTU: 1500
+Minimum MTU: 68
+Maximum MTU: 65535
+Promiscuous mode: enabled
+Allmulticast mode: disabled
+Maximum number of MAC addresses: 1
+Maximum number of MAC addresses of hash filtering: 0
+VLAN offload: 
+  strip off, filter off, extend off, qinq strip off
+No RSS offload flow type is supported.
+Minimum size of RX buffer: 0
+Maximum configurable length of RX packet: 4294967295
+Maximum configurable size of LRO aggregated packet: 0
+Rx split:
+	Max segments: 0
+Current number of RX queues: 1
+Max possible RX queues: 16
+Max possible number of RXDs per queue: 65535
+Min possible number of RXDs per queue: 0
+RXDs number alignment: 1
+Current number of TX queues: 1
+Max possible TX queues: 16
+Max possible number of TXDs per queue: 65535
+Min possible number of TXDs per queue: 0
+TXDs number alignment: 1
+Max segment number per packet: 65535
+Max segment number per MTU/TSO: 65535
+Device capabilities: 0x3( RUNTIME_RX_QUEUE_SETUP RUNTIME_TX_QUEUE_SETUP )
+Device error handling mode: none
+Device private info:
+  none
+txonly packet forwarding - ports=1 - cores=1 - streams=1 - NUMA support enabled, MP allocation mode: native
+Logical Core 1 (socket 0) forwards packets on 1 streams:
+  RX P=0/Q=0 (socket 0) -> TX P=0/Q=0 (socket 0) peer=02:00:00:00:00:00
+
+  txonly packet forwarding packets/burst=32
+  packet len=64 - nb packet segments=1
+  nb forwarding cores=1 - nb forwarding ports=1
+  port 0: RX queue number: 1 Tx queue number: 1
+    Rx offloads=0x0 Tx offloads=0x0
+    RX queue: 0
+      RX desc=0 - RX free threshold=0
+      RX threshold registers: pthresh=0 hthresh=0  wthresh=0
+      RX Offloads=0x0
+    TX queue: 0
+      TX desc=0 - TX free threshold=0
+      TX threshold registers: pthresh=0 hthresh=0  wthresh=0
+      TX offloads=0x0 - TX RS bit threshold=0
+Telling cores to stop...
+Waiting for lcores to finish...
+
+  ---------------------- Forward statistics for port 0  ----------------------
+  RX-packets: 0              RX-dropped: 0             RX-total: 0
+  TX-packets: 168124288      TX-dropped: 0             TX-total: 168124288
+  ----------------------------------------------------------------------------
+
+  +++++++++++++++ Accumulated forward statistics for all ports+++++++++++++++
+  RX-packets: 0              RX-dropped: 0             RX-total: 0
+  TX-packets: 168124288      TX-dropped: 0             TX-total: 168124288
+  ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+Done.
+
+  ######################## NIC statistics for port 0  ########################
+  RX-packets: 302592     RX-missed: 0          RX-bytes:  38731776
+  RX-errors: 0
+  RX-nombuf:  0         
+  TX-packets: 168124288  TX-errors: 0          TX-bytes:  10759954432
+
+  Throughput (since last show)
+  Rx-pps:            0          Rx-bps:            0
+  Tx-pps:            0          Tx-bps:            0
+  ############################################################################
+###### NIC extended statistics for port 0 
+rx_good_packets: 302592
+tx_good_packets: 168124288
+rx_good_bytes: 38731776
+tx_good_bytes: 10759954432
+rx_missed_errors: 0
+rx_errors: 0
+tx_errors: 0
+rx_mbuf_allocation_errors: 0
+rx_q0_packets: 0
+rx_q0_bytes: 0
+tx_q0_packets: 0
+tx_q0_bytes: 0
+rx_sub0_good_packets: 302592
+tx_sub0_good_packets: 168124288
+rx_sub0_good_bytes: 38731776
+tx_sub0_good_bytes: 10759954432
+rx_sub0_missed_errors: 0
+rx_sub0_errors: 0
+tx_sub0_errors: 0
+rx_sub0_mbuf_allocation_errors: 0
+rx_sub0_q0_packets: 302592
+rx_sub0_q0_bytes: 38731776
+tx_sub0_q0_packets: 168124288
+tx_sub0_q0_bytes: 10759954432
+rx_sub1_good_packets: 0
+tx_sub1_good_packets: 0
+rx_sub1_good_bytes: 0
+tx_sub1_good_bytes: 0
+rx_sub1_missed_errors: 0
+rx_sub1_errors: 0
+tx_sub1_errors: 0
+rx_sub1_mbuf_allocation_errors: 0
+rx_sub1_q0_packets: 0
+rx_sub1_q0testpmd> quit
+_bytes: 0
+tx_sub1_q0_packets: 0
+tx_sub1_q0_bytes: 0
+
+Stopping port 0...
+Stopping ports...
+Done
+
+Shutting down port 0...
+Closing ports...
+Port 1 is closed
+Port 2 is closed
+Port 0 is closed
+Done
+
+Bye...
+
+########## 8. failure_lab: four seeded faults
+
+$ ./failure_lab -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch12-fail-pool --vdev=net_pcap0,rx_pcap=big.pcap,tx_pcap=/dev/null --vdev=net_pcap1,rx_pcap=in.pcap,infinite_rx=1,tx_pcap=/dev/null -- --mode pool_dry
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch12-fail-pool/mp_socket
+EAL: Selected IOVA mode 'VA'
+=== failure_lab --mode pool_dry ===
+
+net_pcap, finite file (port 0, pool of 255 mbufs)
+  phase                           received  ipackets  rx_nombuf    in_use
+  200 polls, app holds mbufs           255       255        193       255
+  app freed all, 20 more polls         640       895        193         0
+  (freed 255 held mbufs)
+
+net_pcap infinite_rx=1 (in.pcap: 2000 pkts kept in the pool) (port 1, pool of 2255 mbufs)
+  phase                           received  ipackets  rx_nombuf    in_use
+  200 polls, app holds mbufs           224       224          0      2224
+  app freed all, 20 more polls         640       864          0      2000
+  (freed 224 held mbufs)
+
+$ ./failure_lab -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch12-fail-tx -- --mode tx_full
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch12-fail-tx/mp_socket
+EAL: Selected IOVA mode 'VA'
+=== failure_lab --mode tx_full ===
+slow port 0 (256-slot wire, consumer ~1 pkt / 2 us), fast port 1
+one lcore sends a burst of 32 to EACH port per loop, for 300 ms
+
+policy          slow sent  fast sent    oerrors  app drops loops/stalls
+drop                77315    4924256          0    4846269 166031/0
+retry              119296     119296          0          0   3728/30765164
+back-pressure       68354    4360864          0          0 482091/477450
+
+retry: the fast port is held hostage by the slow one (head-of-line
+blocking). drop: both run at full speed; the losses appear ONLY in
+the app's own counter (net_ring does not count oerrors, and a PMD
+never counts what tx_burst did not accept). back-pressure: no loss
+here, input waits upstream; on a real NIC its RX ring fills -> imissed.
+in use at exit: 0
+
+$ ./failure_lab -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch12-fail-flap --vdev=net_tap0,iface=ch12tap5 -- --mode link_flap
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch12-fail-flap/mp_socket
+EAL: Selected IOVA mode 'VA'
+=== failure_lab --mode link_flap ===
+tap port 0: dev_flags INTR_LSC=1, LSC callback register -> OK
+started with intr_conf.lsc=1 -> OK; polling link every 50 ms, sending 32 pkts every 10 ms
+
+      0.0 ms  poll: link UP    (opackets +32, oerrors +0 since last change)  LSC callbacks so far: 0
+    403.9 ms  operator: ip link set ch12tap5 down
+    403.9 ms  poll: link DOWN  (opackets +1248, oerrors +33 since last change)  LSC callbacks so far: 0
+    902.3 ms  operator: ip link set ch12tap5 up
+    918.3 ms  poll: link UP    (opackets +64, oerrors +1584 since last change)  LSC callbacks so far: 0
+   1504.5 ms  end: opackets +1824, oerrors +0, LSC callbacks: 0
+
+net_tap advertises RTE_ETH_DEV_INTR_LSC but never raises the event:
+only polling saw the flap. While down, tx_burst failed (oerrors).
+
+$ ./failure_lab -l 0-1 --no-pci --no-huge -m 128 --file-prefix=ch12-fail-rst --vdev=net_null0 -- --mode reset
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch12-fail-rst/mp_socket
+EAL: Selected IOVA mode 'VA'
+=== failure_lab --mode reset ===
+port 0 net_null: err_handle_mode = NONE
+  (PASSIVE PMDs e.g. iavf/ena/igb raise INTR_RESET and wait for the app;
+   PROACTIVE ones e.g. bnxt raise ERR_RECOVERING, recover, then
+   RECOVERY_SUCCESS or RECOVERY_FAILED)
+forwarding on lcore 1: 5845952 pkts in 50 ms
+  [event] port 0 INTR_RESET (callback only sets a flag)
+
+wrong order 1: reconfigure while the port is still started
+ETHDEV: Port 0 must be stopped to allow configuration
+  rte_eth_dev_configure -> -EBUSY
+
+right order:
+  1. data path paused
+  2. rte_eth_dev_stop -> OK
+  3. rte_eth_dev_reset -> -ENOTSUP
+  3b. fallback: close + rte_dev_remove -> OK, rte_dev_probe("net_null0") -> OK, new port id 0
+  4. configure + queue setup + start -> OK
+  5. data path resumed after 0.164 ms outage
+  forwarded 5867168 pkts in the 50 ms after recovery
+in use at exit: 0
+
+########## exercise solutions
+
+$ ./lsc_poll -l 0 --no-pci --no-huge -m 64 --file-prefix=ch12-lsc --vdev=net_tap0,iface=ch12tap6
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch12-lsc/mp_socket
+EAL: Selected IOVA mode 'VA'
+      0.0 ms  port 0 link UP  (source: 50 ms link poll)
+  ip link set ch12tap6 down
+    250.4 ms  port 0 link DOWN  (source: 50 ms link poll)
+  ip link set ch12tap6 up
+    550.7 ms  port 0 link UP  (source: 50 ms link poll)
+real LSC callbacks: 0, changes found by polling: 3
+
+$ ./drain_restart -l 0 --no-pci --no-huge -m 128 --file-prefix=ch12-dr --vdev=net_tap0,iface=ch12tap7
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch12-dr/mp_socket
+EAL: Selected IOVA mode 'VA'
+baseline in_use (mbufs the tap PMD keeps per RX queue) = 2
+traffic: q0 112, q1 188
+1-2. stopped polling q1, drained 188 in-flight frames
+3.   rx_queue_stop(q1) -> OK, rxq_state [1,0]
+     while stopped: q0 got 112 (q1 not polled)
+4.   rx_queue_start(q1) -> OK, rxq_state [1,1]
+5.   discarded 188 stale frames, resuming q1
+traffic: q0 112, q1 188
+in_use = 2 (baseline 2) -> no leak
+after close in_use = 0 -> PASS
+
+leftover ch12 interfaces: 0

@@ -256,10 +256,11 @@
       var hitNames = (r.hit || []).map(function (d) { return d.name; });
       /* buses */
       S.box(svg, 10, 10, 110, 40, 'bus: vdev', 'c7');
-      S.box(svg, 10, 200, 110, 40, 'bus: pci', 'c7');
-      S.text(svg, 65, 256, '--no-pci: not scanned', 'svg-label center small muted');
+      S.box(svg, 10, 214, 110, 40, 'bus: pci', 'c7');
+      S.text(svg, 65, 270, '--no-pci: not scanned', 'svg-label center small muted');
       S.box(svg, 520, 40, 110, 40, 'class: eth', 'c4');
-      S.box(svg, 520, 150, 110, 40, 'crypto (no rte_class)', 'c7');
+      var cb = S.box(svg, 520, 150, 115, 40, 'no rte_class', 'c7'); cb.label.setAttribute('class', 'svg-label center small');
+      S.text(svg, 577, 204, 'crypto devices', 'svg-label center small muted');
       devs.forEach(function (d, i) {
         var y = 12 + i * 21, x = 170;
         var hit = hitNames.indexOf(d.name) >= 0;
@@ -292,58 +293,61 @@
     if (!root) return;
     var svg = root.querySelector('svg');
     var stages = [
-      { t: '--vdev string', s: 'net_null0,size=64' },
-      { t: 'rte_devargs', s: 'bus=vdev name=net_null0 args="size=64"' },
-      { t: 'vdev bus scan', s: 'struct rte_vdev_device "net_null0"' },
-      { t: 'driver match', s: 'name starts with "net_null"' },
-      { t: 'driver probe()', s: 'rte_kvargs_parse("size=64")' },
-      { t: 'ethdev port', s: 'port 0, rte_eth_dev_probing_finish()' }
+      { t: '--vdev string', s: ['net_null0,size=64', 'still just argv'] },
+      { t: 'struct rte_devargs', s: ['bus=vdev name=net_null0', 'args="size=64"'] },
+      { t: 'vdev bus scan', s: ['one rte_vdev_device', 'named "net_null0"'] },
+      { t: 'driver match', s: ['"net_null0" starts', 'with "net_null"'] },
+      { t: 'driver probe()', s: ['rte_kvargs_parse(', '"size=64", keys)'] },
+      { t: 'ethdev port', s: ['port 0 allocated,', 'probing_finish()'] }
     ];
     var boxes = [];
+    var BW = 196, BH = 74;
+    function pos(i) { var col = i % 3, row = Math.floor(i / 3); return { x: 12 + col * 212, y: 14 + row * 104 }; }
     stages.forEach(function (st, i) {
-      var col = i % 3, row = Math.floor(i / 3);
-      var x = 15 + col * 210, y = 18 + row * 92;
+      var P = pos(i);
       var g = S.group(svg, 'svg-fade');
-      g.rect = S.rect(g, x, y, 190, 62, 'svg-box c7');
-      g.t = S.text(g, x + 95, y + 22, st.t, 'svg-label center bold');
-      g.s = S.text(g, x + 95, y + 44, st.s, 'svg-label center small mono');
+      g.rect = S.rect(g, P.x, P.y, BW, BH, 'svg-box c7');
+      g.t = S.text(g, P.x + BW / 2, P.y + 20, st.t, 'svg-label center bold');
+      g.s1 = S.text(g, P.x + BW / 2, P.y + 42, st.s[0], 'svg-label center small mono');
+      g.s2 = S.text(g, P.x + BW / 2, P.y + 60, st.s[1], 'svg-label center small mono');
+      g.num = S.text(g, P.x + 12, P.y + 18, String(i + 1), 'svg-label small muted');
       boxes.push(g);
-      if (i < stages.length - 1 && col < 2) S.arrow(svg, x + 190, y + 31, x + 208, y + 31, 'c7');
+      if (i % 3 < 2) S.arrow(svg, P.x + BW, P.y + BH / 2, P.x + 212, P.y + BH / 2, 'c7');
     });
-    S.path(svg, 'M435,80 C435,95 110,85 110,108', 'svg-arrow c7');
-    var pkt = S.packet(svg, 20, 200, 120, 18, 'c3', '');
-    pkt.label = S.text(pkt, 0, 1, '', 'svg-label small center', { style: 'fill:#fff;font-size:10px;font-weight:700' });
-    function lit(ctx, n, cls) {
-      for (var i = 0; i <= n && i < boxes.length; i++) boxes[i].rect.setAttribute('class', 'svg-box ' + (i === n ? (cls || 'c3') : 'c2'));
-    }
-    function at(i) {
-      var col = i % 3, row = Math.floor(i / 3);
-      S.moveTo(pkt, 15 + col * 210 + 95, 18 + row * 92 + 74);
+    S.path(svg, 'M' + (pos(2).x + BW / 2) + ',' + (pos(2).y + BH) + ' C' + (pos(2).x + BW / 2) + ',104 ' +
+      (pos(3).x + BW / 2) + ',100 ' + (pos(3).x + BW / 2) + ',' + (pos(3).y - 2), 'svg-arrow c7');
+    var marker = S.el('circle', { r: 7, 'class': 'svg-fill-c3 svg-pulse', cx: -50, cy: -50 }, svg);
+    function lit(n, cls) {
+      boxes.forEach(function (b, i) {
+        b.rect.setAttribute('class', 'svg-box ' + (i < n ? 'c2' : i === n ? (cls || 'c3') + ' svg-highlight' : 'c7'));
+      });
+      var P = pos(n);
+      marker.setAttribute('cx', P.x + BW - 12); marker.setAttribute('cy', P.y + 14);
     }
     new CJ.Stepper(root, {
       reset: function () {
-        boxes.forEach(function (b, i) { b.rect.setAttribute('class', 'svg-box c7'); b.s.textContent = stages[i].s; });
-        S.moveTo(pkt, -200, -200);
+        boxes.forEach(function (b) { b.rect.setAttribute('class', 'svg-box c7'); });
+        marker.setAttribute('cx', -50); marker.setAttribute('cy', -50);
       },
       steps: [
         { caption: 'The application is started with <code>--vdev=net_null0,size=64</code>. Nothing has happened yet: it is just a string in <code>argv</code>.',
-          run: function () { lit(null, 0); at(0); pkt.label.textContent = 'argv'; } },
+          run: function () { lit(0); } },
         { caption: '<code>rte_eal_init()</code> parses the option into a <code>struct rte_devargs</code> (bus, name, args) and adds it to the EAL devargs list. <code>rte_devargs_parse()</code> does the same split; <code>kvargs_demo</code> prints it.',
-          run: function () { lit(null, 1); at(1); pkt.label.textContent = 'devargs list'; } },
+          run: function () { lit(1); } },
         { caption: 'Bus scan: the vdev bus walks the devargs that belong to it and creates one <code>struct rte_vdev_device</code> per entry. PCI would read sysfs instead; vdevs exist only because you named them.',
-          run: function () { lit(null, 2); at(2); pkt.label.textContent = 'rte_device'; } },
+          run: function () { lit(2); } },
         { caption: 'Bus probe: for each device the vdev bus looks for a registered driver whose name (or alias) is a <em>prefix</em> of the device name. <code>net_null0</code> starts with <code>net_null</code>, so <code>RTE_PMD_REGISTER_VDEV(net_null, ...)</code> wins.',
-          run: function () { lit(null, 3); at(3); pkt.label.textContent = 'driver found'; },
+          run: function () { lit(3); },
           predict: { question: 'You pass <code>--vdev=net_null_lab</code> (no digit at the end). What happens?',
             options: ['It is probed by net_null: matching is by name prefix', 'EAL rejects it: the name must end in a number', 'No driver is found and EAL init fails'],
             answer: 0, explain: 'vdev_probe_all_drivers() compares strncmp(device, driver->name, strlen(driver->name)). The trailing number is only a convention that keeps names unique; the chapter runs net_null_lab to show it.' } },
         { caption: 'The driver\'s <code>probe()</code> runs. It reads <code>rte_vdev_device_args()</code> ("size=64"), parses it with <code>rte_kvargs_parse()</code> against its own key list and fills its private config. An unknown key makes probe fail.',
-          run: function () { lit(null, 4); at(4); pkt.label.textContent = 'size=64 parsed'; },
+          run: function () { lit(4); },
           predict: { question: '<code>--vdev=net_null0,colour=red</code>: what does <code>rte_eal_init()</code> do?',
             options: ['Ignores the unknown key and creates the port', 'Logs "Failed to probe device", still returns success, and the app has no port 0', 'Returns an error and the app exits'],
             answer: 1, explain: 'net_null passes a valid-key list to rte_kvargs_parse(), which returns NULL for "colour", so probe fails. The EAL logs "EAL: Failed to probe device net_null0" and "Bus (vdev) probe failed." but rte_eal_init() succeeds: check rte_eth_dev_count_avail() yourself (run.sh captures this).'} },
         { caption: 'The driver allocates an ethdev (<code>rte_eth_vdev_allocate()</code>), installs its <code>eth_dev_ops</code>, and calls <code>rte_eth_dev_probing_finish()</code>. The port gets the next free id (0) and is now visible to <code>RTE_ETH_FOREACH_DEV</code>. The same pipeline runs later for <code>rte_vdev_init()</code>, <code>rte_dev_probe()</code> and testpmd\'s <code>port attach</code>.',
-          run: function (ctx, cur) { lit(null, 5, 'c4'); at(5); pkt.label.textContent = 'port 0'; } }
+          run: function () { lit(5, 'c4'); } }
       ]
     });
   }
@@ -386,8 +390,9 @@
       st = { free: [], fill: [], rx: [], app: [], tx: [], comp: [], t: 0, acc: 0, tacc: 0,
         recv: 0, sent: 0, drop: 0 };
       for (var i = 0; i < NF; i++) st.free.push(i);
-      /* the PMD pre-fills the fill ring at start (xsk_configure -> reserve_fill_queue) */
-      while (st.fill.length < RS && st.free.length) st.fill.push(st.free.shift());
+      /* the PMD pre-fills the fill ring at start (reserve_fill_queue() in
+       * rte_eth_af_xdp.c); here half full so the effect of not refilling shows quickly */
+      while (st.fill.length < 4 && st.free.length) st.fill.push(st.free.shift());
       build();
       draw();
     }
@@ -472,7 +477,8 @@
         S.line(svg, sx(r.min), y + 13, sx(r.max), y + 13, 'svg-line', { style: 'stroke-width:2' });
         S.line(svg, sx(r.min), y + 8, sx(r.min), y + 18, 'svg-line', { style: 'stroke-width:2' });
         S.line(svg, sx(r.max), y + 8, sx(r.max), y + 18, 'svg-line', { style: 'stroke-width:2' });
-        S.text(svg, Math.min(sx(r.max) + 6, 600), y + 17, r.med.toFixed(r.med < 10 ? 2 : 1), 'svg-label small mono');
+        if (sx(r.max) > 560) S.text(svg, sx(r.min) - 6, y + 17, r.med.toFixed(1), 'svg-label small mono', { 'text-anchor': 'end' });
+        else S.text(svg, sx(r.max) + 6, y + 17, r.med.toFixed(r.med < 10 ? 2 : 1), 'svg-label small mono');
         function show() { tip.innerHTML = '<strong>' + esc(r.name) + '</strong> (' + esc(r.mode) + '): median ' + r.med.toFixed(2) + ' Mpps, min ' + r.min.toFixed(2) + ', max ' + r.max.toFixed(2) + '.'; }
         bar.addEventListener('mouseenter', show); bar.addEventListener('focus', show); bar.addEventListener('click', show);
       });

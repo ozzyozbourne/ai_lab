@@ -135,7 +135,7 @@
       <div class="widget-head"><span class="widget-title">Same app, many backends</span><span class="badge">interactive</span></div>
       <div class="ch9-backend-btns" aria-label="Choose a PMD"></div>
       <div class="widget-body">
-        <svg viewBox="0 0 640 240" role="img" aria-label="Data path of the selected PMD under the ethdev API"></svg>
+        <div class="wide-svg"><svg viewBox="0 0 640 240" role="img" aria-label="Data path of the selected PMD under the ethdev API"></svg></div>
         <div class="ch9-info" aria-live="polite"></div>
       </div>
       <div class="controls"></div>
@@ -212,18 +212,16 @@
       <div class="wide-svg">
       <svg viewBox="0 0 720 190" role="img" aria-labelledby="f3t">
         <title id="f3t">Anatomy of the two devargs syntaxes</title>
-        <text class="svg-label mono ch9-label-big" x="20" y="40">vdev:net_pcap0,rx_pcap=in.pcap,tx_pcap=out.pcap</text>
-        <path class="svg-line" d="M20,50 L60,50 M68,50 L148,50 M156,50 L470,50"/>
-        <text class="svg-label center small" x="40" y="68">bus</text>
-        <text class="svg-label center small" x="108" y="68">device name</text>
-        <text class="svg-label center small" x="312" y="68">driver arguments (kvargs)</text>
-        <text class="svg-label small muted" x="490" y="40">simplified syntax</text>
-        <text class="svg-label mono ch9-label-big" x="20" y="120">bus=vdev,name=net_null0/class=eth,mac=../driver=net_null,size=64</text>
-        <path class="svg-line" d="M20,130 L218,130 M226,130 L428,130 M436,130 L640,130"/>
-        <text class="svg-label center small" x="120" y="148">bus layer (bus_str)</text>
-        <text class="svg-label center small" x="326" y="148">class layer (cls_str)</text>
-        <text class="svg-label center small" x="538" y="148">driver layer (drv_str)</text>
-        <text class="svg-label small muted" x="20" y="176">generic syntax: layers are split at "/" followed by bus=, class= or driver=</text>
+        <text class="svg-label small muted" x="20" y="22">simplified syntax</text>
+        <text class="svg-label mono ch9-label-big" x="20" y="50"><tspan class="svg-fill-c7">vdev:</tspan><tspan class="svg-fill-c4" style="font-weight:700">net_pcap0</tspan><tspan>,</tspan><tspan class="svg-fill-c5">rx_pcap=in.pcap,tx_pcap=out.pcap</tspan></text>
+        <rect class="svg-box c7" x="20" y="64" width="14" height="14" rx="2"/><text class="svg-label small" x="40" y="76">bus prefix (optional)</text>
+        <rect class="svg-box c4" x="190" y="64" width="14" height="14" rx="2"/><text class="svg-label small" x="210" y="76">device name (vdev: also picks the driver)</text>
+        <rect class="svg-box c5" x="470" y="64" width="14" height="14" rx="2"/><text class="svg-label small" x="490" y="76">driver arguments (kvargs)</text>
+        <text class="svg-label small muted" x="20" y="116">generic syntax: layers are split at "/" followed by bus=, class= or driver=</text>
+        <text class="svg-label mono ch9-label-big" x="20" y="144"><tspan class="svg-fill-c7" style="font-weight:700">bus=vdev,name=net_null0</tspan><tspan>/</tspan><tspan class="svg-fill-c1" style="font-weight:700">class=eth,mac=..</tspan><tspan>/</tspan><tspan class="svg-fill-c5" style="font-weight:700">driver=net_null,size=64</tspan></text>
+        <rect class="svg-box c7" x="20" y="158" width="14" height="14" rx="2"/><text class="svg-label small" x="40" y="170">bus layer (bus_str)</text>
+        <rect class="svg-box c1" x="190" y="158" width="14" height="14" rx="2"/><text class="svg-label small" x="210" y="170">class layer (cls_str)</text>
+        <rect class="svg-box c5" x="400" y="158" width="14" height="14" rx="2"/><text class="svg-label small" x="420" y="170">driver layer (drv_str = args)</text>
       </svg>
       </div>
       <figcaption><span class="fig-num"></span>The two syntaxes. For a vdev the device name doubles as the driver selector: <code>net_pcap0</code> is probed by the driver <code>net_pcap</code>.</figcaption>
@@ -451,7 +449,7 @@ rte_devargs_parse() on -a / --vdev style strings
         <button class="btn small" type="button" data-preset="class=crypto" data-mode="dev">class=crypto</button>
       </div>
       <div class="widget-body">
-        <svg viewBox="0 0 640 210" role="img" aria-label="Buses, devices and classes; devices visited by the filter are outlined"></svg>
+        <div class="wide-svg"><svg viewBox="0 0 640 280" role="img" aria-label="Buses, devices and classes; devices visited by the filter are outlined"></svg></div>
         <div class="ch9-parse" aria-live="polite"></div>
       </div>
     </div>
@@ -626,7 +624,7 @@ RTE_PMD_REGISTER_PARAM_STRING(net_null,
     <div class="widget" id="w-probe">
       <div class="widget-head"><span class="widget-title">vdev probe pipeline: from a string to a port id</span><span class="badge">predict, then step</span></div>
       <div class="widget-body">
-        <svg viewBox="0 0 640 210" role="img" aria-label="Stages of vdev creation"></svg>
+        <div class="wide-svg"><svg viewBox="0 0 650 200" role="img" aria-label="Stages of vdev creation"></svg></div>
       </div>
     </div>
 
@@ -784,7 +782,7 @@ rte_dev_remove(&lt;net_null1&gt;) = 0
     <div class="widget" id="w-afxdp">
       <div class="widget-head"><span class="widget-title">AF_XDP: frame addresses cycling through the four rings</span><span class="badge">interactive</span></div>
       <div class="widget-body">
-        <svg viewBox="0 0 640 300" role="img" aria-label="UMEM frames moving between fill, rx, tx and completion rings"></svg>
+        <div class="wide-svg"><svg viewBox="0 0 640 300" role="img" aria-label="UMEM frames moving between fill, rx, tx and completion rings"></svg></div>
         <div class="stat-row">
           <div class="stat"><div class="stat-label">received</div><div class="stat-value" id="ax-recv">0</div></div>
           <div class="stat"><div class="stat-label">sent (completed)</div><div class="stat-value" id="ax-sent">0</div></div>
@@ -794,7 +792,7 @@ rte_dev_remove(&lt;net_null1&gt;) = 0
       </div>
       <div class="controls">
         <span class="grow"></span>
-        <label>arrival rate <input type="range" id="ax-rate" min="1" max="8" value="2"> <output id="ax-rate-out"></output></label>
+        <label>arrival rate <input type="range" id="ax-rate" min="1" max="8" value="3"> <output id="ax-rate-out"></output></label>
         <label><input type="checkbox" id="ax-nofill"> app stops refilling the fill ring</label>
       </div>
     </div>
@@ -927,8 +925,8 @@ Port 0: 7A:A2:A9:1F:AF:45
         <title id="f6t">testpmd streams, lcores and port topologies</title>
         <rect class="svg-box c7" x="10" y="10" width="90" height="36"/><text class="svg-label center small" x="55" y="28">lcore 0: CLI</text>
         <rect class="svg-box c1" x="10" y="56" width="90" height="56"/><text class="svg-label center small" x="55" y="78">lcore 1</text><text class="svg-label center small muted" x="55" y="96">fwd core</text>
-        <rect class="svg-box c3" x="120" y="56" width="230" height="24"/><text class="svg-label small mono" x="128" y="72">stream: RX P=0/Q=0 -&gt; TX P=1/Q=0</text>
-        <rect class="svg-box c3" x="120" y="86" width="230" height="24"/><text class="svg-label small mono" x="128" y="102">stream: RX P=1/Q=0 -&gt; TX P=0/Q=0</text>
+        <rect class="svg-box c3" x="120" y="56" width="250" height="24"/><text class="svg-label small mono" x="128" y="72">stream RX P0/Q0 -&gt; TX P1/Q0</text>
+        <rect class="svg-box c3" x="120" y="86" width="250" height="24"/><text class="svg-label small mono" x="128" y="102">stream RX P1/Q0 -&gt; TX P0/Q0</text>
         <path class="svg-arrow c1" d="M100,72 L118,68 M100,96 L118,98"/>
         <text class="svg-label small muted" x="10" y="140">one stream = (RX port, queue) to (TX port, queue);</text>
         <text class="svg-label small muted" x="10" y="156">streams are shared out over --nb-cores lcores;</text>
@@ -950,7 +948,7 @@ Port 0: 7A:A2:A9:1F:AF:45
         <circle class="svg-fill-c4" cx="530" cy="176" r="11"/><text class="svg-label center small" x="530" y="180" style="fill:#fff">0</text>
         <path class="svg-arrow" d="M541,170 C570,150 570,202 541,182"/>
         <text class="svg-label small muted" x="590" y="180">RX port = TX port</text>
-        <text class="svg-label small muted" x="400" y="218">paired: 0&lt;-&gt;1, 2&lt;-&gt;3; chained: 0-&gt;1-&gt;2-&gt;0; loop: each port to itself</text>
+        <text class="svg-label small muted" x="400" y="218">loop: what comes in goes back out</text>
       </svg>
       </div>
       <figcaption><span class="fig-num"></span>The main lcore runs the command line (or the stats printer); forwarding lcores run streams. Topology decides which TX port each RX port feeds.</figcaption>
@@ -963,7 +961,7 @@ Port 0: 7A:A2:A9:1F:AF:45
       <div class="ch9-fwd-btns"></div>
       <div class="widget-body"><div class="ch9-fwd-out" aria-live="polite"></div></div>
     </div>
-    <p>This chapter runs io, macswap, rxonly, txonly, flowgen, csum and noisy; icmpecho returns in ch30, 5tswap in ch15, ieee1588 in ch19. recycle_mbufs and shared_rxq need NIC driver support and cannot run on vdevs.</p>
+    <p>This chapter runs io, macswap, rxonly, txonly, flowgen, csum and noisy. icmpecho is the one to reach for when a peer needs to ping a DPDK port; ieee1588 belongs to the timestamping material of ch19. recycle_mbufs and shared_rxq need NIC driver support and do nothing useful on vdevs.</p>
 
     <h3 id="tp-options">Command-line essentials</h3>
     <p>testpmd's own options come after <code>--</code>, like any DPDK application (ch2). The ones used in this chapter:</p>
@@ -1439,7 +1437,7 @@ tx_q0_bytes: 4419182592
     <div class="widget" id="w-ladder">
       <div class="widget-head"><span class="widget-title">Measured ladder: median of 5, whiskers min..max</span><span class="badge">interactive</span></div>
       <div class="widget-body">
-        <svg viewBox="0 0 640 340" role="img" aria-label="Bar chart of Mpps per software PMD"></svg>
+        <div class="wide-svg"><svg viewBox="0 0 640 340" role="img" aria-label="Bar chart of Mpps per software PMD"></svg></div>
         <div class="ch9-tip" aria-live="polite">Hover, tap or focus a bar for its five-run summary.</div>
       </div>
       <div class="controls"><label><input type="checkbox" id="lad-log" checked> log scale</label></div>

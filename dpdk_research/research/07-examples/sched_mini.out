@@ -1,0 +1,6 @@
+pipe 0 (limit 100 KB/s):   98000 bytes/s
+pipe 1 (limit 400 KB/s):  294000 bytes/s
+pipe 2 (limit 400 KB/s):  292000 bytes/s
+pipe 3 (limit 400 KB/s):  292000 bytes/s
+TC0 (strict high prio): 879000 bytes, TC12 (best effort): 97000 bytes
+subport drops: TC0 22553169 pkts, TC12 22553951 pkts

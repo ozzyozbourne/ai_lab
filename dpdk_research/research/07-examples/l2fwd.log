@@ -1,0 +1,95 @@
+MAC updating enabled
+Lcore 0: RX port 0 TX port 1
+Lcore 0: RX port 1 TX port 0
+Initializing port 0... done: 
+Port 0, MAC address: 02:70:63:61:70:00
+
+Initializing port 1... done: 
+Port 1, MAC address: 02:70:63:61:70:01
+
+
+Checking link statusL2FWD: lcore 1 has nothing to do
+L2FWD: entering main loop on lcore 0
+L2FWD:  -- lcoreid=0 portid=0
+L2FWD:  -- lcoreid=0 portid=1
+done
+Port 0 Link up at 10 Gbps FDX Fixed None
+Port 1 Link up at 10 Gbps FDX Fixed None
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                        0
+Packets received:                    0
+Packets dropped:                     0
+Statistics for port 1 ------------------------------
+Packets sent:                        0
+Packets received:                    0
+Packets dropped:                     0
+Aggregate statistics ===============================
+Total packets sent:                  0
+Total packets received:              0
+Total packets dropped:               0
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                        0
+Packets received:                 1000
+Packets dropped:                     0
+Statistics for port 1 ------------------------------
+Packets sent:                     1000
+Packets received:                    0
+Packets dropped:                     0
+Aggregate statistics ===============================
+Total packets sent:               1000
+Total packets received:           1000
+Total packets dropped:               0
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                        0
+Packets received:                 1000
+Packets dropped:                     0
+Statistics for port 1 ------------------------------
+Packets sent:                     1000
+Packets received:                    0
+Packets dropped:                     0
+Aggregate statistics ===============================
+Total packets sent:               1000
+Total packets received:           1000
+Total packets dropped:               0
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                        0
+Packets received:                 1000
+Packets dropped:                     0
+Statistics for port 1 ------------------------------
+Packets sent:                     1000
+Packets received:                    0
+Packets dropped:                     0
+Aggregate statistics ===============================
+Total packets sent:               1000
+Total packets received:           1000
+Total packets dropped:               0
+====================================================
+[2J[1;1H
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                        0
+Packets received:                 1000
+Packets dropped:                     0
+Statistics for port 1 ------------------------------
+Packets sent:                     1000
+Packets received:                    0
+Packets dropped:                     0
+Aggregate statistics ===============================
+Total packets sent:               1000
+Total packets received:           1000
+Total packets dropped:               0
+====================================================
+Closing port 0... Done
+Closing port 1... Done
+Bye...

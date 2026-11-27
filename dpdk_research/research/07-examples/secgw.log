@@ -1,0 +1,182 @@
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch07sg/mp_socket
+EAL: Selected IOVA mode 'VA'
+CRYPTODEV: Creating cryptodev crypto_openssl0
+CRYPTODEV: Initialisation parameters - name: crypto_openssl0,socket id: 0, max queue pairs: 8
+IPSEC: No IPv6 SP Inbound rule specified
+IPSEC: No IPv6 SP Outbound rule specified
+Promiscuous mode selected
+librte_ipsec usage: disabled
+replay window size: 0
+ESN: disabled
+SA flags: 0
+Frag TTL: 10000000000 ns
+lcore/cryptodev/qp mappings:
+Outbound cdev mapping: lcore 1 using cdev 0 qp 0 (cdev_id_qp 0)
+Inbound cdev mapping: lcore 1 using cdev 0 qp 1 (cdev_id_qp 0)
+
+Allocated mbuf pool on socket 0
+Allocated session pool on socket 0
+Number of mbufs in packet pool 8512
+Configuring device port 0:
+Address: F6:B8:1A:63:F0:6B
+Creating queues: nb_rx_queue=1 nb_tx_queue=1...
+port 0 configuring rx_offloads=0xe, tx_offloads=0x2
+Port 0 modified RSS hash function based on hardware support,requested:0x3bffc configured:0x3afbc
+port 0 cannot parse RTE_PTYPE_TUNNEL_ESP
+Port 0: softly parse packet type info
+Setup txq=1,0,0
+Setup rxq=0,0,0
+
+Configuring device port 1:
+Address: 7A:D2:68:1C:F6:15
+Creating queues: nb_rx_queue=1 nb_tx_queue=1...
+port 1 configuring rx_offloads=0xe, tx_offloads=0x2
+Port 1 modified RSS hash function based on hardware support,requested:0x3bffc configured:0x3afbc
+port 1 cannot parse RTE_PTYPE_TUNNEL_ESP
+Port 1: softly parse packet type info
+Setup txq=1,0,0
+Setup rxq=1,0,0
+
+Creating SA context with 1 maximum entries on socket 0
+	spi_in(105):aes-128-cbc sha1-hmac mode:IP4Tunnel 172.16.2.5 172.16.1.5 type:no-offload 
+Creating SA context with 1 maximum entries on socket 0
+	spi_out(  5):aes-128-cbc sha1-hmac mode:IP4Tunnel 172.16.1.5 172.16.2.5 type:no-offload 
+Creating SP context with 1 rules
+IPv4 sp_ip4_in_0 entries [1]:
+	1:0.0.0.0/0 192.168.115.0/24 0 : 65535 0 : 65535 0x0/0x0 0x1-0x1-0x1 
+acl context <sp_ip4_in_0>@0x11e29d740
+  socket_id=0
+  alg=6
+  first_load_sz=4
+  max_rules=1
+  rule_size=96
+  num_rules=1
+  num_categories=1
+  num_tries=1
+Creating SP context with 1 rules
+IPv4 sp_ip4_out_0 entries [1]:
+	1:0.0.0.0/0 192.168.105.0/24 0 : 65535 0 : 65535 0x0/0x0 0x1-0x1-0x1 
+acl context <sp_ip4_out_0>@0x11e29afc0
+  socket_id=0
+  alg=6
+  first_load_sz=4
+  max_rules=1
+  rule_size=96
+  num_rules=1
+  num_categories=1
+  num_tries=1
+Creating IPv4 Routing Table (RT) context with 1024 max routes
+LPM: Adding route 172.16.2.5/32 (1)
+LPM: Adding route 192.168.105.0/24 (1)
+LPM: Adding route 192.168.115.0/24 (0)
+
+Checking link statusIPSEC: entering main loop on lcore 1
+IPSEC:  -- lcoreid=1 portid=0 rxqueueid=0
+IPSEC:  -- lcoreid=1 portid=1 rxqueueid=0
+CRYPTODEV: Closing crypto device crypto_openssl0
+done
+Port 0 Link up at 10 Gbps FDX Fixed None
+Port 1 Link up at 10 Gbps FDX Fixed None
+[2J[1;1H
+Core statistics ====================================
+Statistics for core 1 ------------------------------
+Packets received:                  100
+Packets sent:                      100
+Packets dropped:                     0
+Frag Packets dropped:                0
+Burst percent:                   64.00
+Packets per Rx call:             25.00
+Packets per Tx call:             25.00
+Aggregate statistics ===============================
+Total packets received:            100
+Total packets sent:                100
+Total packets dropped:               0
+Total frag packets dropped:          0
+====================================================
+[2J[1;1H
+Core statistics ====================================
+Statistics for core 1 ------------------------------
+Packets received:                  100
+Packets sent:                      100
+Packets dropped:                     0
+Frag Packets dropped:                0
+Burst percent:                   64.00
+Packets per Rx call:             25.00
+Packets per Tx call:             25.00
+Aggregate statistics ===============================
+Total packets received:            100
+Total packets sent:                100
+Total packets dropped:               0
+Total frag packets dropped:          0
+====================================================
+[2J[1;1H
+Core statistics ====================================
+Statistics for core 1 ------------------------------
+Packets received:                  100
+Packets sent:                      100
+Packets dropped:                     0
+Frag Packets dropped:                0
+Burst percent:                   64.00
+Packets per Rx call:             25.00
+Packets per Tx call:             25.00
+Aggregate statistics ===============================
+Total packets received:            100
+Total packets sent:                100
+Total packets dropped:               0
+Total frag packets dropped:          0
+====================================================
+[2J[1;1H
+Core statistics ====================================
+Statistics for core 1 ------------------------------
+Packets received:                  100
+Packets sent:                      100
+Packets dropped:                     0
+Frag Packets dropped:                0
+Burst percent:                   64.00
+Packets per Rx call:             25.00
+Packets per Tx call:             25.00
+Aggregate statistics ===============================
+Total packets received:            100
+Total packets sent:                100
+Total packets dropped:               0
+Total frag packets dropped:          0
+====================================================
+[2J[1;1H
+Core statistics ====================================
+Statistics for core 1 ------------------------------
+Packets received:                  100
+Packets sent:                      100
+Packets dropped:                     0
+Frag Packets dropped:                0
+Burst percent:                   64.00
+Packets per Rx call:             25.00
+Packets per Tx call:             25.00
+Aggregate statistics ===============================
+Total packets received:            100
+Total packets sent:                100
+Total packets dropped:               0
+Total frag packets dropped:          0
+====================================================
+[2J[1;1H
+Core statistics ====================================
+Statistics for core 1 ------------------------------
+Packets received:                  100
+Packets sent:                      100
+Packets dropped:                     0
+Frag Packets dropped:                0
+Burst percent:                   64.00
+Packets per Rx call:             25.00
+Packets per Tx call:             25.00
+Aggregate statistics ===============================
+Total packets received:            100
+Total packets sent:                100
+Total packets dropped:               0
+Total frag packets dropped:          0
+====================================================
+Closing cryptodev 0... Done
+Closing port 0... Done
+Closing port 1... Done
+Bye...

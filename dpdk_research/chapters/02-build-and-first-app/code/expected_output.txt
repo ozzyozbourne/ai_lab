@@ -1,0 +1,356 @@
+
+=================== 0. build everything (make, -Wall -Wextra) ===================
+[make exit code 0]
+  args            5104904 bytes
+  hello           5119264 bytes
+  hello_shared      37688 bytes
+  ports_broken    1118992 bytes
+  ports_ok        5122760 bytes
+  verbose         5102984 bytes
+
+=================== 1. hello: helloworld from scratch ===================
+$ timeout -s INT -k 5 20 ./hello -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch02-hello
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch02-hello/mp_socket
+EAL: Selected IOVA mode 'VA'
+compiled against DPDK >= 26.11, running DPDK 26.11.0
+hello from lcore 1
+hello from lcore 0
+lcores=2 ports=0
+[exit code 0]
+$ timeout -s INT -k 5 20 ./hello -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch02-hello --vdev=net_null0
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch02-hello/mp_socket
+EAL: Selected IOVA mode 'VA'
+compiled against DPDK >= 26.11, running DPDK 26.11.0
+hello from lcore 1
+hello from lcore 0
+lcores=2 ports=1
+[exit code 0]
+
+=================== 2. args: EAL options -- application options ===================
+$ timeout -s INT -k 5 20 ./args -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-args -- --count 3 --name demo
+main() before rte_eal_init sees argc=13: [0]=./args [1]=-l [2]=0 [3]=--no-pci [4]=--no-huge [5]=-m [6]=64 [7]=--file-prefix=ch02-args [8]=-- [9]=--count [10]=3 [11]=--name [12]=demo
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch02-args/mp_socket
+EAL: Selected IOVA mode 'VA'
+rte_eal_init() consumed 8 arguments
+app after shift sees argc=5: [0]=./args [1]=--count [2]=3 [3]=--name [4]=demo
+app options: count=3 name=demo (EAL gave us 1 lcore(s))
+  1: hello, demo
+  2: hello, demo
+  3: hello, demo
+[exit code 0]
+--- forgetting the -- separator: EAL sees --count and exits the process
+$ timeout -s INT -k 5 20 ./args -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-args --count 3 --name demo
+main() before rte_eal_init sees argc=12: [0]=./args [1]=-l [2]=0 [3]=--no-pci [4]=--no-huge [5]=-m [6]=64 [7]=--file-prefix=ch02-args [8]=--count [9]=3 [10]=--name [11]=demo
+ARGPARSE: unknown argument --count!
+[exit code 234]
+--- plain words (no leading dash) are not EAL options: EAL moves them behind its own
+$ timeout -s INT -k 5 20 ./args foo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-args bar
+main() before rte_eal_init sees argc=10: [0]=./args [1]=foo [2]=-l [3]=0 [4]=--no-pci [5]=--no-huge [6]=-m [7]=64 [8]=--file-prefix=ch02-args [9]=bar
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch02-args/mp_socket
+EAL: Selected IOVA mode 'VA'
+rte_eal_init() consumed 7 arguments
+app after shift sees argc=3: [0]=./args [1]=foo [2]=bar
+app options: count=1 name=world (EAL gave us 1 lcore(s))
+  1: hello, world
+[exit code 0]
+--- --help after -- reaches the application, not EAL
+$ timeout -s INT -k 5 20 ./args -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-args -- --help
+main() before rte_eal_init sees argc=10: [0]=./args [1]=-l [2]=0 [3]=--no-pci [4]=--no-huge [5]=-m [6]=64 [7]=--file-prefix=ch02-args [8]=-- [9]=--help
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch02-args/mp_socket
+EAL: Selected IOVA mode 'VA'
+rte_eal_init() consumed 8 arguments
+app after shift sees argc=2: [0]=./args [1]=--help
+usage: ./args [EAL options] -- [--count N] [--name NAME]
+EAL: Error - exiting with code: 1
+Invalid application arguments
+[exit code 1]
+
+=================== 3. the --whole-archive pitfall ===================
+--- link line difference (first 3 words of each):
+  ports_ok:     -Wl,--whole-archive -L$LIBDIR -l:librte_bus_pci.a 
+  ports_broken: same list with every -Wl,--whole-archive / -Wl,--no-whole-archive removed
+$ timeout -s INT -k 5 20 ./ports_ok -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-ok --vdev=net_null0 --vdev=net_ring0
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch02-ok/mp_socket
+EAL: Selected IOVA mode 'VA'
+ports=2
+  port 0: driver net_null
+  port 1: driver net_ring
+[exit code 0]
+$ timeout -s INT -k 5 20 ./ports_broken -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-broken --vdev=net_null0 --vdev=net_ring0
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: failed to parse device "net_null0"
+EAL: Unable to parse device 'net_null0'
+EAL: Error - exiting with code: 1
+Cannot init EAL
+EAL: Unable to open directory 
+EAL: Unregistering with invalid input parameter
+[exit code 1]
+$ timeout -s INT -k 5 20 ./ports_broken -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-broken
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch02-broken/mp_socket
+EAL: Selected IOVA mode 'VA'
+ports=0
+[exit code 1]
+--- constructor functions present in each binary (nm, readelf):
+  ports_ok      .init_array=712  log=61  bus=2 class=2 driver=21
+  ports_broken  .init_array=351  log=5   bus=0 class=0 driver=0
+    00000000000a6370 t businitfn_pci
+    00000000000a6430 t businitfn_vdev
+    00000000000a67b0 t vdrvinitfn_pmd_null_drv
+    00000000000a6870 t vdrvinitfn_pmd_ring_drv
+--- dpdk-pmdinfo.py (reads the PMD info strings embedded in the binary):
+  ports_ok:     23 drivers in total; net PMDs: net_af_packet net_af_xdp net_bonding net_failsafe net_memif net_null net_pcap net_ring net_tap net_tun net_vhost net_virtio net_virtio_user
+  ports_broken: []
+
+=================== 4. shared build: the insecure plugin path ===================
+$ ldd ./hello_shared | grep librte
+	librte_ethdev.so.27 => not found
+	librte_eal.so.27 => not found
+$ timeout -s INT -k 5 20 ./hello_shared -l 0 --no-pci --no-huge -m 64 --in-memory --vdev=net_null0
+./hello_shared: error while loading shared libraries: librte_ethdev.so.27: cannot open shared object file: No such file or directory
+[exit code 127]
+$ env LD_LIBRARY_PATH=$LIBDIR timeout -s INT -k 5 20 ./hello_shared -l 0 --no-pci --no-huge -m 64 --in-memory --vdev=net_null0
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected shared linkage of DPDK
+EAL: Error, directory path /tmp is world-writable and insecure
+EAL: Cannot init plugins
+EAL: Error - exiting with code: 1
+Cannot init EAL
+EAL: Unable to open directory 
+EAL: Unregistering with invalid input parameter
+[exit code 1]
+--- -d with a driver copied to a safe directory does not help: the compiled-in
+--- RTE_EAL_PMD_PATH ("$LIBDIR/dpdk/pmds-27.0") is still checked
+$ env LD_LIBRARY_PATH=$LIBDIR timeout -s INT -k 5 20 ./hello_shared -l 0 --no-pci --no-huge -m 64 --in-memory -d <code>/.ch02-pmds/librte_net_null.so.27.0 --vdev=net_null0
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected shared linkage of DPDK
+EAL: Error, directory path /tmp is world-writable and insecure
+EAL: Cannot init plugins
+EAL: Error - exiting with code: 1
+Cannot init EAL
+EAL: Unable to open directory 
+EAL: Unregistering with invalid input parameter
+[exit code 1]
+--- fix for this lab only: a private mount namespace where /tmp is a 0755 tmpfs
+--- and only our own (0700) /tmp/claude-0 tree is bind-mounted back
+$ ls -ld /tmp /tmp/claude-0
+  drwxrwxrwt /tmp
+  drwx------ /tmp/claude-0
+$ unshare -m sh -c 'mount --make-rprivate / && ... && ./hello_shared -l 0 --no-pci --no-huge -m 64 --in-memory --vdev=net_null0'
+  inside: drwxr-xr-x /tmp
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected shared linkage of DPDK
+EAL: Selected IOVA mode 'VA'
+compiled against DPDK >= 26.11, running DPDK 26.11.0
+hello from lcore 0
+lcores=1 ports=1
+[exit code 0]
+
+=================== 5. mesonapp: a two-file meson project ===================
+$ meson setup build && ninja -C build
+Project name: ch02-mesonapp
+Run-time dependency libdpdk found: YES 26.11.0
+Build targets in project: 1
+[1/3] Compiling C object app.p/util.c.o
+[2/3] Compiling C object app.p/main.c.o
+[3/3] Linking target app
+$ timeout -s INT -k 5 20 ./mesonapp/build/app -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch02-meson --vdev=net_null0
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch02-meson/mp_socket
+EAL: Selected IOVA mode 'VA'
+mesonapp: DPDK 26.11.0, ports=1
+  lcore 0 -> cpu 0 -> numa node 0
+  lcore 1 -> cpu 1 -> numa node 0
+[exit code 0]
+--- the pitfall variant: declare_dependency(link_args: ...) reorders the flags
+$ meson setup build-bad -Dlink_mode=declare_dep && ninja -C build-bad
+  link args meson generated: LINK_ARGS = -Wl,--as-needed -Wl,--no-undefined -Wl,--whole-archive -Wl,--no-whole-archive -Wl,--export-dynamic -Wl,--as-ne...
+$ timeout -s INT -k 5 20 ./mesonapp/build-bad/app -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-mesonbad --vdev=net_null0
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: failed to parse device "net_null0"
+EAL: Unable to parse device 'net_null0'
+EAL: Error - exiting with code: 1
+Cannot init EAL
+EAL: Unable to open directory 
+EAL: Unregistering with invalid input parameter
+[exit code 1]
+$ timeout -s INT -k 5 20 ./mesonapp/build-bad/app -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-mesonbad
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch02-mesonbad/mp_socket
+EAL: Selected IOVA mode 'VA'
+mesonapp: DPDK 26.11.0, ports=0
+  lcore 0 -> cpu 0 -> numa node 0
+[exit code 0]
+--- an experimental API without -DALLOW_EXPERIMENTAL_API:
+$ gcc -Wall -c mesonapp/util.c $(pkg-config --cflags libdpdk)
+mesonapp/util.c: In function 'print_lcore_numa':
+mesonapp/util.c:24:24: warning: 'rte_cpu_socket_id' is deprecated: Symbol is not yet part of stable ABI [-Wdeprecated-declarations]
+   24 |                        rte_cpu_socket_id((unsigned int)cpu));
+
+=================== 6. exercise 1 solution: --verbose after -- ===================
+$ timeout -s INT -k 5 20 ./verbose -l 0-2 --no-pci --no-huge -m 64 --file-prefix=ch02-verbose -- --verbose
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch02-verbose/mp_socket
+EAL: Selected IOVA mode 'VA'
+3 lcore(s) enabled
+  lcore 0: cpu 0 (main)
+  lcore 1: cpu 1
+  lcore 2: cpu 2
+[exit code 0]
+
+=================== 6b. exercise 2 solution: dpdk-pmdinfo.py on the static binary ===================
+$ ./solutions/pmdinfo.sh ./hello
+23 drivers, 13 net PMDs:
+   net_af_packet
+   net_af_xdp
+   net_bonding
+   net_failsafe
+   net_memif
+   net_null
+   net_pcap
+   net_ring
+   net_tap
+   net_tun
+   net_vhost
+   net_virtio
+   net_virtio_user
+[exit code 0]
+
+=================== 7. first_look.sh ===================
+=== first look 1: examples/skeleton (basicfwd.c) on two net_null ports, 3 s ===
+$ dpdk-skeleton -l 0 --no-pci --no-huge -m 256 --file-prefix=ch02-skel --vdev=net_null0 --vdev=net_null1
+(exit code 124 : 124 = stopped by timeout, the skeleton loops forever)
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch02-skel/mp_socket
+EAL: Selected IOVA mode 'VA'
+Port 0 MAC: 66 c6 68 4a 36 4f
+Port 1 MAC: 5a 7b ef 73 0e 4f
+
+Core 0 forwarding packets. [Ctrl+C to quit]
+
+=== first look 2: testpmd io forwarding on two net_null ports, 8 s ===
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch02-first --vdev=net_null0 --vdev=net_null1 -- --total-num-mbufs=8192 --stats-period 2 --forward-mode=io
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch02-first/mp_socket
+EAL: Selected IOVA mode 'VA'
+Set io packet forwarding mode
+testpmd: create a new mbuf pool <mb_pool_0>: n=8192, size=2176, socket=0
+testpmd: preferred mempool ops selected: ring_mp_mc
+Configuring Port 0 (socket 0)
+Port 0: 8A:3B:7A:B3:EC:F2
+Configuring Port 1 (socket 0)
+Port 1: DA:FA:F1:B3:3E:5A
+Checking link statuses...
+Done
+No commandline core given, start packet forwarding
+io packet forwarding - ports=2 - cores=1 - streams=2 - NUMA support enabled, MP allocation mode: native
+Logical Core 1 (socket 0) forwards packets on 2 streams:
+  [... per-queue configuration and earlier stats blocks trimmed ...]
+Port statistics ====================================
+  ######################## NIC statistics for port 0  ########################
+  RX-packets: 335706688  RX-missed: 0          RX-bytes:  21485228032
+  RX-errors: 0
+  RX-nombuf:  0         
+  TX-packets: 335226400  TX-errors: 0          TX-bytes:  21454489600
+
+  Throughput (since last show)
+  Rx-pps:     56896976          Rx-bps:  29131252144
+  Tx-pps:     56896976          Tx-bps:  29131252144
+  ############################################################################
+
+  ######################## NIC statistics for port 1  ########################
+  RX-packets: 335708224  RX-missed: 0          RX-bytes:  21485326336
+  RX-errors: 0
+  RX-nombuf:  0         
+  TX-packets: 335226976  TX-errors: 0          TX-bytes:  21454526464
+
+  Throughput (since last show)
+  Rx-pps:     56896998          Rx-bps:  29131263344
+  Tx-pps:     56896998          Tx-bps:  29131263344
+  ############################################################################
+Telling cores to stop...
+Waiting for lcores to finish...
+
+  ---------------------- Forward statistics for port 0  ----------------------
+  RX-packets: 449120928      RX-dropped: 0             RX-total: 449120928
+  TX-packets: 449120928      TX-dropped: 0             TX-total: 449120928
+  ----------------------------------------------------------------------------
+
+  ---------------------- Forward statistics for port 1  ----------------------
+  RX-packets: 449120928      RX-dropped: 0             RX-total: 449120928
+  TX-packets: 449120928      TX-dropped: 0             TX-total: 449120928
+  ----------------------------------------------------------------------------
+
+  +++++++++++++++ Accumulated forward statistics for all ports+++++++++++++++
+  RX-packets: 898241856      RX-dropped: 0             RX-total: 898241856
+  TX-packets: 898241856      TX-dropped: 0             TX-total: 898241856
+  ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+Done.
+
+Stopping port 0...
+Stopping ports...
+Done
+
+Stopping port 1...
+Stopping ports...
+Done
+
+Shutting down port 0...
+Closing ports...
+Port 0 is closed
+Done
+
+Shutting down port 1...
+Closing ports...
+Port 1 is closed
+Done
+
+Bye...
+
+=== first look 3: how fast? 5 runs x 4 s, Rx-pps of port 0 in the last 1 s period ===
+  run 1: port 0 Rx-pps = 51905996
+  run 2: port 0 Rx-pps = 54729683
+  run 3: port 0 Rx-pps = 53853626
+  run 4: port 0 Rx-pps = 56986358
+  run 5: port 0 Rx-pps = 56606295
+  median 54.7 Mpps  (min 51.9, max 57.0) per port, net_null software ports, 1 forwarding lcore, this VM
+
+run.sh: done

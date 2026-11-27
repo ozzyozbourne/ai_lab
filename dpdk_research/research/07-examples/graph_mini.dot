@@ -1,0 +1,11 @@
+digraph "mini" {
+	rankdir=LR;
+	node [margin=0.02 fontsize=11 fontname=sans];
+	"gen" [color=blue style=bold];
+	"gen" -> "classify" [color=blue style=bold];
+	"classify";
+	"classify" -> "even" [color=darkorange];
+	"classify" -> "odd" [color=darkorange];
+	"even" [fontcolor=darkorange shape=plain];
+	"odd" [fontcolor=darkorange shape=plain];
+}

@@ -1,0 +1,9 @@
+hello
+args
+ports_ok
+ports_broken
+hello_shared
+verbose
+mesonapp/build/
+mesonapp/build-bad/
+.ch02-pmds/

@@ -1,0 +1,14 @@
+flow validate 0 ingress pattern eth / ipv4 / udp / vxlan / end actions queue index 0 / end
+flow validate 0 ingress pattern eth / ipv4 / tcp dst is 80 / end actions queue index 7 / end
+flow validate 0 ingress pattern eth / ipv4 / tcp dst is 80 / end actions mark id 5 / queue index 1 / end
+flow validate 0 ingress pattern eth / ipv4 / tcp dst is 80 / end actions rss queues 0 1 end / end
+flow validate 0 egress pattern eth / end actions drop / end
+flow validate 0 ingress pattern eth type is 0x0806 / end actions drop / end
+flow isolate 0 true
+flow info 0
+flow configure 0 queues_number 1 queues_size 64
+port stop 0
+flow isolate 0 true
+port start 0
+flow configure 0 queues_number 1 queues_size 64
+quit

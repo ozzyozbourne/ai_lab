@@ -1,0 +1,226 @@
+<!doctype html>
+<!--
+  CHAPTER TEMPLATE
+  Copy to chapters/NN-slug/index.html. Paths below assume that location
+  (../../assets/ and ../../index.html). Replace every {{...}} placeholder and
+  delete the HTML comments that explain the template.
+  Rules: offline (no CDN), inline SVG only, colours only through CSS variables
+  or .svg-* classes, every h2/h3 has an id (the sidebar TOC is built from them),
+  expected output is real captured output from code/expected_output.txt.
+  Component catalogue: ../../assets/demo.html; API: ../../assets/README.md.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{NN}} {{Short Title}} | DPDK from Zero to Expert</title>
+<meta name="description" content="{{One-sentence chapter summary}}">
+<link rel="stylesheet" href="../../assets/course.css">
+<style>
+  /* chapter-specific styles only (prefer course.css classes) */
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <button class="btn small toc-toggle" type="button" aria-label="Table of contents">&#9776;</button>
+  <a class="brand" href="../../index.html"><span>DPDK</span> Zero to Expert</a>
+  <span class="crumb">Chapter {{NN}} &middot; {{Short Title}}</span>
+  <button class="btn small theme-toggle" type="button">Theme</button>
+  <div class="progress-bar"></div>
+</header>
+
+<div class="page">
+  <nav class="sidebar" data-auto-toc aria-label="On this page"></nav>
+
+  <main id="main" class="content">
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../{{PREV-slug}}/index.html"><span class="dir">&larr; Previous</span><span class="ttl">{{PREV-NN}} &middot; {{Prev title}}</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../{{NEXT-slug}}/index.html"><span class="dir">Next &rarr;</span><span class="ttl">{{NEXT-NN}} &middot; {{Next title}}</span></a>
+    </nav>
+    <!-- first chapter: replace the .prev link with <span class="placeholder"></span>; last chapter: same for .next -->
+
+    <header class="chapter-header">
+      <div class="chapter-kicker">Chapter {{NN}}</div>
+      <h1>{{Full Chapter Title}}</h1>
+      <p class="chapter-subtitle">{{One or two sentences: what the reader will be able to do after this chapter.}}</p>
+      <ul class="meta-row">
+        <li><span class="badge level-beginner">Beginner</span></li> <!-- level-intermediate / level-advanced -->
+        <li><span class="badge">~{{60}} min</span></li>
+        <li><span class="badge">Prerequisites: ch{{NN}}</span></li>
+        <li><span class="tag api">rte_{{main_api}}</span></li>
+      </ul>
+    </header>
+
+    <section class="objectives">
+      <div class="box-title">Learning objectives</div>
+      <ul>
+        <li>{{Explain ...}}</li>
+        <li>{{Build and run ...}}</li>
+        <li>{{Diagnose ...}}</li>
+      </ul>
+    </section>
+
+    <section class="tools-box">
+      <div class="box-title">Tools for this chapter</div>
+      <ul>
+        <li><code>{{tool}}</code>: {{what it is used for here}}</li>
+      </ul>
+    </section>
+
+    <!-- ===================== SECTIONS: easy -> complex ===================== -->
+    <h2 id="{{s1-id}}"><span class="sec-num">1</span>{{Section title}}</h2>
+    <p>{{Concept explanation. Introduce terms with <span class="key-term">term</span>.}}</p>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 720 200" role="img" aria-labelledby="f1-title">
+        <title id="f1-title">{{Accessible description}}</title>
+        <rect class="svg-box c1" x="20" y="70" width="140" height="60"/>
+        <text class="svg-label center bold" x="90" y="100">{{lcore}}</text>
+        <rect class="svg-box c5" x="290" y="70" width="140" height="60"/>
+        <text class="svg-label center" x="360" y="100">{{rte_ring}}</text>
+        <path class="svg-arrow c1" d="M160,100 L286,100"/>
+      </svg>
+      <figcaption><span class="fig-num"></span>{{Caption that says what to notice.}}</figcaption>
+    </figure>
+
+    <h3 id="{{s1-api}}">{{API walk-through}}</h3>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/{{file}}.c</span><span class="lang">C</span></div>
+<pre data-lines data-hl="{{3-4}}"><code class="language-c">{{/* paste code from code/*.c; escape &lt; &gt; &amp; */}}</code></pre>
+    </div>
+
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">{{./prog -l 0 --no-pci --no-huge -m 64 --file-prefix=chNN-name --vdev=net_null0}}</span>
+<span class="dim">{{EAL noise}}</span>
+{{real output}}</pre>
+    </div>
+
+    <div class="callout pitfall"><div class="callout-title">Pitfall</div><p>{{A mistake people actually make, and its symptom.}}</p></div>
+
+    <!-- Interactive widget (at least two counted interactives per chapter). -->
+    <h2 id="{{s2-id}}"><span class="sec-num">2</span>{{Mechanism, step by step}}</h2>
+    <div class="widget" id="{{w1}}">
+      <div class="widget-head"><span class="widget-title">{{Widget title}}</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <svg viewBox="0 0 640 180" role="img" aria-label="{{description}}"></svg>
+      </div>
+      <!-- .stepper-caption and .controls are added by CourseJS.Stepper -->
+    </div>
+
+    <div class="callout note"><div class="callout-title">Note</div><p>{{Side information.}}</p></div>
+    <div class="callout tip"><div class="callout-title">Tip</div><p>{{Practical advice.}}</p></div>
+    <div class="callout warning"><div class="callout-title">Warning</div><p>{{Something that can break the system.}}</p></div>
+
+    <h2 id="{{s3-id}}"><span class="sec-num">3</span>{{Putting it together: a runnable program}}</h2>
+    <div class="tabs">
+      <div class="tab-list">
+        <button class="tab-btn" data-tab="src">{{prog}}.c</button>
+        <button class="tab-btn" data-tab="mk">Makefile</button>
+        <button class="tab-btn" data-tab="run">run.sh</button>
+      </div>
+      <div class="tab-panel" data-tab="src"><pre><code class="language-c">{{source}}</code></pre></div>
+      <div class="tab-panel" data-tab="mk"><pre><code class="language-make">APPS = {{prog}}
+include ../../../common/Makefile.inc</code></pre></div>
+      <div class="tab-panel" data-tab="run"><pre><code class="language-bash">{{run.sh}}</code></pre></div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>{{API}}</th><th>{{What it does}}</th><th class="num">{{Value}}</th></tr></thead>
+        <tbody><tr><td><code>{{rte_x}}</code></td><td>{{...}}</td><td class="num">{{1}}</td></tr></tbody>
+      </table>
+    </div>
+
+    <!-- ===================== PITFALLS ===================== -->
+    <h2 id="pitfalls">Common pitfalls</h2>
+    <ul>
+      <li><strong>{{Symptom}}</strong>: {{cause and fix}}</li>
+    </ul>
+
+    <!-- ===================== CHECK ===================== -->
+    <h2 id="check">Check your understanding</h2>
+    <div class="quiz" data-quiz>
+      <div class="quiz-head">Five questions</div>
+      <div class="q" data-answer="0" data-explain="{{Why the answer is right.}}">
+        <div class="q-text">{{Question 1}}</div>
+        <div class="q-opts">
+          <button class="q-opt">{{correct option}}</button>
+          <button class="q-opt">{{distractor}}</button>
+          <button class="q-opt">{{distractor}}</button>
+        </div>
+      </div>
+      <!-- 4 more .q blocks -->
+      <div class="controls"><button class="btn small quiz-reset" type="button">Reset</button></div>
+    </div>
+
+    <!-- ===================== EXERCISES ===================== -->
+    <h2 id="exercises">Exercises</h2>
+    <div class="exercise">
+      <div class="box-title">Exercise 1 <span class="tag easy">easy</span></div>
+      <p>{{Task}}</p>
+      <details><summary>Hint</summary><p>{{hint}}</p></details>
+      <details><summary>Solution</summary><p>See <code>code/solutions/{{ex1}}.c</code>.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 2 <span class="tag medium">medium</span></div>
+      <p>{{Task}}</p>
+      <details><summary>Hint</summary><p>{{hint}}</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 3 <span class="tag stretch">stretch</span></div>
+      <p>{{Task}}</p>
+    </div>
+
+    <!-- ===================== SUMMARY ===================== -->
+    <section class="summary-box">
+      <div class="box-title">Summary</div>
+      <ul>
+        <li>{{Key takeaway 1}}</li>
+        <li>{{Key takeaway 2}}</li>
+      </ul>
+    </section>
+
+    <section class="references">
+      <h2 id="references">References</h2>
+      <ol>
+        <li>{{Programmer's Guide section}} <span class="src-path">doc/guides/prog_guide/{{file}}.rst</span></li>
+        <li><span class="src-path">lib/{{lib}}/rte_{{lib}}.h</span></li>
+        <li><span class="src-path">examples/{{example}}/main.c</span></li>
+      </ol>
+    </section>
+
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../{{PREV-slug}}/index.html"><span class="dir">&larr; Previous</span><span class="ttl">{{PREV-NN}} &middot; {{Prev title}}</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../{{NEXT-slug}}/index.html"><span class="dir">Next &rarr;</span><span class="ttl">{{NEXT-NN}} &middot; {{Next title}}</span></a>
+    </nav>
+  </main>
+</div>
+<footer class="site-footer">DPDK from Zero to Expert: Building Fast Packet Processing in User Space &middot; DPDK 26.11</footer>
+
+<script src="../../assets/course.js"></script>
+<script>
+CourseJS.ready(function () {
+  var S = CourseJS.svg;
+  /* Widget 1: replace with the chapter's mechanism. */
+  var root = document.getElementById('{{w1}}');
+  if (!root) return;
+  var svg = root.querySelector('svg');
+  var box = S.box(svg, 40, 60, 120, 60, 'state', 'c1');
+  new CourseJS.Stepper(root, {
+    reset: function (ctx) { box.label.textContent = 'state 0'; },
+    steps: [
+      { caption: '{{Initial state}}' },
+      { caption: '{{What changes}}', run: function (ctx) { box.label.textContent = 'state 1'; } },
+      { caption: '{{Result}}', run: function (ctx) { box.label.textContent = 'state 2'; },
+        predict: { question: '{{What happens next?}}', options: ['{{A}}', '{{B}}'], answer: 0, explain: '{{why}}' } }
+    ]
+  });
+});
+</script>
+</body>
+</html>

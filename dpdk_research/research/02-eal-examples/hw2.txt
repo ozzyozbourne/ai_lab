@@ -1,0 +1,48 @@
+EAL: lib.eal log level changed from info to debug
+EAL: Detected lcore 0 as core 0 on NUMA node 0
+EAL: Detected lcore 1 as core 1 on NUMA node 0
+EAL: Detected lcore 2 as core 2 on NUMA node 0
+EAL: Detected lcore 3 as core 3 on NUMA node 0
+EAL: Maximum logical cores by configuration: 128
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Control threads will use cores: 3
+EAL: Checking presence of .so 'librte_eal.so.27.0'
+EAL: Checking presence of .so 'librte_eal.so.27'
+EAL: Checking presence of .so 'librte_eal.so'
+EAL: Detected static linkage of DPDK
+EAL: Ask a virtual area of 0x7000 bytes
+EAL: Virtual area found at 0x100000000 (size = 0x7000)
+EAL: Multi-process socket /var/run/dpdk/ch02b/mp_socket
+EAL: Probing VFIO support...
+EAL: Module /sys/module/vfio not found! error 2 (No such file or directory)
+EAL: VFIO modules not loaded, skipping VFIO support...
+EAL: Bus pci wants IOVA as 'DC'
+EAL: Bus vdev wants IOVA as 'DC'
+EAL: Buses did not request a specific IOVA mode.
+EAL: Physical addresses are unavailable, selecting IOVA as VA mode.
+EAL: Selected IOVA mode 'VA'
+EAL: Ask a virtual area of 0x2e000 bytes
+EAL: Virtual area found at 0x100007000 (size = 0x2e000)
+EAL: Setting up physically contiguous memory...
+EAL: Setting maximum number of open files to 20000
+EAL: Ask a virtual area of 0xc1000 bytes
+EAL: Virtual area found at 0x100035000 (size = 0xc1000)
+EAL: Memseg list allocated at socket 0, page size 0x4kB
+EAL: Using memfd for anonymous memory
+EAL: Ask a virtual area of 0x4000000 bytes
+EAL: Virtual area found at 0x1000f6000 (size = 0x4000000)
+EAL: VA reserved for memseg list at 0x1000f6000, size 4000000
+EAL: Added 64M to heap on socket 0
+EAL: TSC frequency is ~2700000 KHz
+EAL: Allocated 64 bytes of per-lcore data with a 64-byte alignment
+EAL: Main lcore 0 is ready (tid=7f9053516a00;cpuset=[0])
+EAL: lcore 1 is ready (tid=7f904e1fc6c0;cpuset=[1-2])
+EAL: lcore 2 is ready (tid=7f904d9fb6c0;cpuset=[1-2])
+EAL: lcore 3 is ready (tid=7f904d1fa6c0;cpuset=[1-2])
+EAL: Allocated 2112 bytes of per-lcore data with a 64-byte alignment
+EAL: sendmsg: mp_eal
+hello from core 1
+hello from core 2
+hello from core 3
+hello from core 0

@@ -1,0 +1,6 @@
+# demo commands
+show counter          # print the counter
+add <UINT32>n         # add n to the counter
+set mode <(rx,tx)>m   # choose mode
+echo <STRING>msg      # echo text
+quit                  # exit

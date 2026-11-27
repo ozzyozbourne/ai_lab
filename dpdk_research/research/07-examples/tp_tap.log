@@ -1,0 +1,82 @@
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch07tp/mp_socket
+EAL: Selected IOVA mode 'VA'
+testpmd: create a new mbuf pool <mb_pool_0>: n=4096, size=2176, socket=0
+testpmd: preferred mempool ops selected: ring_mp_mc
+Set io packet forwarding mode
+Configuring Port 0 (socket 0)
+Port 0: A2:32:E5:54:B4:73
+Configuring Port 1 (socket 0)
+Port 1: 3E:F1:EB:82:4E:89
+Checking link statuses...
+Done
+No commandline core given, start packet forwarding
+io packet forwarding - ports=2 - cores=1 - streams=2 - NUMA support enabled, MP allocation mode: native
+Logical Core 1 (socket 0) forwards packets on 2 streams:
+  RX P=0/Q=0 (socket 0) -> TX P=1/Q=0 (socket 0) peer=02:00:00:00:00:01
+  RX P=1/Q=0 (socket 0) -> TX P=0/Q=0 (socket 0) peer=02:00:00:00:00:00
+
+  io packet forwarding packets/burst=32
+  nb forwarding cores=1 - nb forwarding ports=2
+  port 0: RX queue number: 1 Tx queue number: 1
+    Rx offloads=0x0 Tx offloads=0x0
+    RX queue: 0
+      RX desc=0 - RX free threshold=0
+      RX threshold registers: pthresh=0 hthresh=0  wthresh=0
+      RX Offloads=0x0
+    TX queue: 0
+      TX desc=0 - TX free threshold=0
+      TX threshold registers: pthresh=0 hthresh=0  wthresh=0
+      TX offloads=0x0 - TX RS bit threshold=0
+  port 1: RX queue number: 1 Tx queue number: 1
+    Rx offloads=0x0 Tx offloads=0x0
+    RX queue: 0
+      RX desc=0 - RX free threshold=0
+      RX threshold registers: pthresh=0 hthresh=0  wthresh=0
+      RX Offloads=0x0
+    TX queue: 0
+      TX desc=0 - TX free threshold=0
+      TX threshold registers: pthresh=0 hthresh=0  wthresh=0
+      TX offloads=0x0 - TX RS bit threshold=0
+Press enter to exit
+Telling cores to stop...
+Waiting for lcores to finish...
+
+  ---------------------- Forward statistics for port 0  ----------------------
+  RX-packets: 100            RX-dropped: 0             RX-total: 100
+  TX-packets: 0              TX-dropped: 0             TX-total: 0
+  ----------------------------------------------------------------------------
+
+  ---------------------- Forward statistics for port 1  ----------------------
+  RX-packets: 0              RX-dropped: 0             RX-total: 0
+  TX-packets: 100            TX-dropped: 0             TX-total: 100
+  ----------------------------------------------------------------------------
+
+  +++++++++++++++ Accumulated forward statistics for all ports+++++++++++++++
+  RX-packets: 100            RX-dropped: 0             RX-total: 100
+  TX-packets: 100            TX-dropped: 0             TX-total: 100
+  ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+Done.
+
+Stopping port 0...
+Stopping ports...
+Done
+
+Stopping port 1...
+Stopping ports...
+Done
+
+Shutting down port 0...
+Closing ports...
+Port 0 is closed
+Done
+
+Shutting down port 1...
+Closing ports...
+Port 1 is closed
+Done
+
+Bye...

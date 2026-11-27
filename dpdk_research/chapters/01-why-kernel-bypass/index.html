@@ -1,0 +1,1483 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>01 Why Kernel Bypass | DPDK from Zero to Expert</title>
+<meta name="description" content="What a packet is on the wire, how little time each one gets at 10-400 GbE, where the Linux kernel spends that time, and the five techniques DPDK uses to go faster.">
+<link rel="stylesheet" href="../../assets/course.css">
+<style>
+  /* chapter 01 specific styles */
+  .ch01-info { min-height: 6.5em; margin-top: .6rem; padding: .7rem .9rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); font-size: .92rem; }
+  .ch01-info .hdr { font-family: var(--font-mono); font-size: .82rem; color: var(--text-muted); }
+  .ch01-info .ttl { font-weight: 700; color: var(--heading); }
+  .ch01-cake-box { cursor: pointer; }
+  .ch01-cake-box:focus { outline: none; }
+  .ch01-cake-box:focus rect, .ch01-cake-box.sel rect { stroke: var(--accent); stroke-width: 3; }
+  .ch01-over rect.bar { fill: var(--c4) !important; }
+  .ch01-seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 6px; overflow: hidden; }
+  .ch01-seg button { border: 0; background: var(--surface); color: var(--text); padding: .25rem .7rem; font: inherit; font-size: .85rem; cursor: pointer; }
+  .ch01-seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  .ch01-note { font-size: .82rem; color: var(--text-muted); padding: 0 1rem .7rem; }
+  .ch01-tally { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .5rem; margin-top: .6rem; }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <button class="btn small toc-toggle" type="button" aria-label="Table of contents">&#9776;</button>
+  <a class="brand" href="../../index.html"><span>DPDK</span> Zero to Expert</a>
+  <span class="crumb">Chapter 01 &middot; Why Kernel Bypass</span>
+  <button class="btn small theme-toggle" type="button">Theme</button>
+  <div class="progress-bar"></div>
+</header>
+
+<div class="page">
+  <nav class="sidebar" data-auto-toc aria-label="On this page"></nav>
+
+  <main id="main" class="content">
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <span class="placeholder"></span>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../02-build-and-first-app/index.html"><span class="dir">Next &rarr;</span><span class="ttl">02 &middot; Building DPDK and Your First Application</span></a>
+    </nav>
+
+    <header class="chapter-header">
+      <div class="chapter-kicker">Chapter 01</div>
+      <h1>What Is a Packet, and Why Bypass the Kernel?</h1>
+      <p class="chapter-subtitle">You will be able to work out how many nanoseconds and CPU cycles a single packet gets at any link speed, explain why the normal Linux receive path cannot keep up, name the five techniques DPDK uses instead, and run your first DPDK program.</p>
+      <ul class="meta-row">
+        <li><span class="badge level-beginner">Beginner</span></li>
+        <li><span class="badge">~75 min</span></li>
+        <li><span class="badge">Prerequisites: none</span></li>
+        <li><span class="tag api">rte_eal_init</span></li>
+        <li><span class="tag api">rte_version</span></li>
+        <li><span class="tag api">rte_eth_dev_count_avail</span></li>
+        <li><span class="tag api">rte_rdtsc</span></li>
+      </ul>
+    </header>
+
+    <section class="objectives">
+      <div class="box-title">Learning objectives</div>
+      <ul>
+        <li>Describe every field of an Ethernet frame, including the preamble and inter-frame gap that occupy the wire but never reach software.</li>
+        <li>Calculate packets per second, nanoseconds per packet and CPU cycles per packet for any link speed and frame size.</li>
+        <li>List the steps the Linux kernel takes to deliver one packet to a socket, and say which of them are expensive.</li>
+        <li>Name DPDK's five techniques (user-space drivers, polling, hugepages, lock-free rings and pools, bursts and SIMD) and the library that implements each.</li>
+        <li>Compare run-to-completion, pipeline and event-driven designs at a high level.</li>
+        <li>Build and run <code>hello_dpdk.c</code>, and run two "peek ahead" benchmarks that measure the kernel path against the DPDK path on this machine.</li>
+        <li>Decide when DPDK is the wrong tool, and what to use instead (AF_XDP, io_uring, plain sockets).</li>
+      </ul>
+    </section>
+
+    <section class="tools-box">
+      <div class="box-title">Tools for this chapter</div>
+      <ul>
+        <li><code>gcc</code> + <code>pkg-config libdpdk</code>: build the three programs in <code>code/</code> (<code>make</code>). Chapter 2 explains the build in detail.</li>
+        <li><code>$DPDK_SRC/build/examples/dpdk-helloworld</code> and <code>dpdk-skeleton</code>: prebuilt sample applications.</li>
+        <li>Virtual devices: <code>--vdev=net_null0</code> (a fake port that makes and eats packets), <code>net_ring0</code>, <code>net_tap0</code> (a Linux tap interface). No real NIC is needed.</li>
+        <li><code>python3</code>: <code>code/inject.py</code> writes raw frames into the tap interface.</li>
+        <li><code>code/run.sh</code> builds and runs everything (about 45 s, as root). <code>code/ivp_sweep.sh</code> repeats the interrupt-vs-poll test 5 times per setting.</li>
+      </ul>
+    </section>
+
+    <!-- ===================================================== 1 -->
+    <h2 id="packet"><span class="sec-num">1</span>What is a packet, on the wire?</h2>
+    <p>You already know that an application hands data to a UDP socket and the kernel wraps it in UDP, IP and Ethernet headers. What leaves the network card is an <span class="key-term">Ethernet frame</span>: a run of bytes sent one bit after another down a copper pair, a fibre or a radio. Software sees most of these bytes. A few it never sees, but they still use up the link's time, and that matters for every calculation in this chapter.</p>
+
+    <figure class="diagram">
+      <div class="scroll-x">
+      <svg viewBox="0 0 760 250" role="img" aria-labelledby="f-frame-t">
+        <title id="f-frame-t">A minimum-size Ethernet frame drawn to scale: 8 bytes preamble and SFD, 14 bytes header, 46 bytes payload, 4 bytes FCS, then 12 bytes inter-frame gap: 84 bytes of wire time.</title>
+        <!-- scale: 8.5 px per byte, origin x=20 -->
+        <text class="svg-title" x="20" y="22">A 64-byte frame occupies 84 bytes of wire time (to scale: 1 byte = 1 small tick)</text>
+        <g>
+          <rect class="svg-box c7 dashed" x="20" y="50" width="68" height="56" rx="3"/>
+          <text class="svg-label center small" x="54" y="70">preamble</text>
+          <text class="svg-label center small" x="54" y="88">+ SFD 8 B</text>
+          <rect class="svg-box c4" x="88" y="50" width="51" height="56" rx="3"/>
+          <text class="svg-label center small" x="113" y="70">dst MAC</text>
+          <text class="svg-label center small" x="113" y="88">6 B</text>
+          <rect class="svg-box c4" x="139" y="50" width="51" height="56" rx="3"/>
+          <text class="svg-label center small" x="164" y="70">src MAC</text>
+          <text class="svg-label center small" x="164" y="88">6 B</text>
+          <rect class="svg-box c4" x="190" y="50" width="17" height="56" rx="3"/>
+          <text class="svg-label center small" x="198" y="120">type</text>
+          <text class="svg-label center small" x="198" y="134">2 B</text>
+          <rect class="svg-box c3" x="207" y="50" width="391" height="56" rx="3"/>
+          <text class="svg-label center" x="402" y="70">payload: IP header + UDP header + data</text>
+          <text class="svg-label center small" x="402" y="88">46 B minimum, 1500 B maximum (standard MTU)</text>
+          <rect class="svg-box c4" x="598" y="50" width="34" height="56" rx="3"/>
+          <text class="svg-label center small" x="615" y="70">FCS</text>
+          <text class="svg-label center small" x="615" y="88">4 B</text>
+          <rect class="svg-box ghost" x="632" y="50" width="102" height="56" rx="3"/>
+          <text class="svg-label center small" x="683" y="70">inter-frame gap</text>
+          <text class="svg-label center small" x="683" y="88">12 B of silence</text>
+        </g>
+        <g class="ch01-ticks"></g>
+        <!-- braces -->
+        <path class="svg-line" d="M88,150 L88,158 L632,158 L632,150"/>
+        <text class="svg-label center bold" x="360" y="176">the "64-byte frame": 14 + 46 + 4 = 64 B. This is what DPDK hands you (minus the 4-byte FCS, usually)</text>
+        <path class="svg-line" d="M20,196 L20,204 L734,204 L734,196"/>
+        <text class="svg-label center bold" x="377" y="222">wire time: 8 + 64 + 12 = 84 B = 672 bit-times. At 10 Gbit/s that is 67.2 ns</text>
+        <text class="svg-label small muted" x="20" y="244">grey dashed and dotted parts are added and removed by the NIC hardware: software never sees them, but they use link time</text>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>A minimum-size Ethernet frame, drawn to scale. The <strong>FCS</strong> (frame check sequence) is a CRC-32 the NIC checks and usually strips. The <strong>preamble</strong> lets the receiver's clock lock on; the <strong>SFD</strong> (start frame delimiter) marks where the frame starts; the <strong>inter-frame gap</strong> is mandatory idle time between frames.</figcaption>
+    </figure>
+
+    <p>Three numbers to remember:</p>
+    <ul>
+      <li><strong>64 B</strong> is the smallest legal frame (header 14 + payload 46 + FCS 4). A short UDP datagram is padded up to it. With 20 B of IPv4 header and 8 B of UDP header, 18 B of data is the most that still fits in a 64-byte frame.</li>
+      <li><strong>84 B</strong> of wire time per minimum frame, because of the 8 B preamble+SFD and the 12 B gap. Every line-rate figure you will see (14.88 Mpps at 10 GbE, and so on) uses 84, not 64.</li>
+      <li><strong>1518 B</strong> is the largest standard frame (1500 B payload + 18). Jumbo frames (up to about 9 KB) exist but must be configured on every hop.</li>
+    </ul>
+
+    <h3 id="line-rate">Line-rate arithmetic</h3>
+    <p>The <span class="key-term">line rate</span> is the fastest a link can carry frames back to back. For a frame of <var>S</var> bytes on a link of <var>R</var> bits per second:</p>
+<pre data-nocopy><code>packets per second   pps    = R / ((S + 20) &times; 8)          (20 = preamble/SFD 8 + gap 12)
+time per packet      t      = 1 / pps
+cycles per packet    cycles = t &times; f_cpu                    (f_cpu = clock frequency of the core)</code></pre>
+    <p>At 10 Gbit/s with 64-byte frames: 10&times;10<sup>9</sup> / 672 = <strong>14.88 million packets per second</strong>, one every <strong>67.2 ns</strong>. The cores in this course's VM run at 2.7 GHz (the TSC rate that <code>hello_dpdk</code> prints below), so that is <strong>181 cycles</strong> for everything you want to do with a packet: receive it, look at its headers, decide where it goes, send it, and free its buffer. At 100 GbE the budget shrinks to 6.72 ns, or <strong>18 cycles</strong>. A single cache miss to main memory costs more than that.</p>
+
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Link</th><th class="num">Mpps @ 64 B</th><th class="num">ns / packet</th><th class="num">cycles @ 2.7 GHz</th><th class="num">Mpps @ 1518 B</th><th class="num">ns / packet</th></tr></thead>
+        <tbody>
+          <tr><td>1 GbE</td><td class="num">1.488</td><td class="num">672</td><td class="num">1814</td><td class="num">0.081</td><td class="num">12 304</td></tr>
+          <tr><td>10 GbE</td><td class="num">14.88</td><td class="num">67.2</td><td class="num">181</td><td class="num">0.813</td><td class="num">1230</td></tr>
+          <tr><td>25 GbE</td><td class="num">37.20</td><td class="num">26.9</td><td class="num">73</td><td class="num">2.03</td><td class="num">492</td></tr>
+          <tr><td>100 GbE</td><td class="num">148.8</td><td class="num">6.72</td><td class="num">18</td><td class="num">8.13</td><td class="num">123</td></tr>
+          <tr><td>400 GbE</td><td class="num">595.2</td><td class="num">1.68</td><td class="num">4.5</td><td class="num">32.5</td><td class="num">30.8</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Small packets are the hard case: the same link carries 18 times more of them per second than full-size ones. Real traffic is a mix (a TCP flow sends big data segments one way and 64-byte ACKs the other way), but a router, firewall or load balancer has to survive a flood of small packets, so the 64-byte numbers are what people design for.</p>
+
+    <h3 id="budget-calc">Try it: the packet-time budget</h3>
+    <p>Move the sliders. The orange line is the time one packet gets. The bars are what common operations cost. A bar that crosses the line turns red: you cannot afford even one of those per packet. Two bars were measured on this machine by this chapter's code; the others are typical published figures for a modern x86 server, to show the order of magnitude.</p>
+
+    <div class="widget" id="w-budget">
+      <div class="widget-head"><span class="widget-title">Packet-time budget calculator</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="stat-row">
+          <div class="stat"><div class="stat-label">packets / second</div><div class="stat-value"><span id="b-pps">-</span><span class="stat-unit">Mpps</span></div></div>
+          <div class="stat"><div class="stat-label">time / packet</div><div class="stat-value"><span id="b-ns">-</span><span class="stat-unit">ns</span></div></div>
+          <div class="stat"><div class="stat-label">cycles / packet</div><div class="stat-value"><span id="b-cyc">-</span></div></div>
+          <div class="stat"><div class="stat-label">DRAM misses that fit</div><div class="stat-value"><span id="b-dram">-</span></div></div>
+        </div>
+        <div class="scroll-x"><svg viewBox="0 0 680 300" role="img" aria-label="Log-scale bars of operation costs compared with the per-packet time budget"></svg></div>
+      </div>
+      <div class="controls">
+        <label>link <input type="range" id="b-speed" min="0" max="8" step="1" value="2"> <output id="b-speed-o"></output></label>
+        <label>frame <input type="range" id="b-size" min="64" max="1518" step="1" value="64"> <output id="b-size-o"></output></label>
+        <label>CPU <input type="range" id="b-ghz" min="1.5" max="4.5" step="0.1" value="2.7"> <output id="b-ghz-o"></output></label>
+      </div>
+    </div>
+
+    <!-- ===================================================== 2 -->
+    <h2 id="kernel-path"><span class="sec-num">2</span>What the kernel does with each packet</h2>
+    <p>The Linux network stack is a fine piece of engineering, but it is general purpose: it has to serve thousands of sockets, enforce firewall rules, support every protocol, protect processes from each other, and share the CPU fairly. Each of those duties costs time per packet. Here is the path of one received UDP packet, from wire to your <code>recv()</code>:</p>
+    <ol>
+      <li><strong>DMA.</strong> The NIC writes the frame into a buffer in RAM that the driver gave it earlier, and marks the receive <span class="key-term">descriptor</span> (a small record in a ring the NIC and driver share) as done. No CPU work yet.</li>
+      <li><strong>Interrupt (IRQ).</strong> The NIC raises an interrupt. The CPU stops whatever it was running, saves its state and jumps into the kernel's interrupt handler.</li>
+      <li><strong>NAPI softirq.</strong> The handler schedules a <span class="key-term">softirq</span>; the driver's NAPI poll function then reads descriptors and, for each packet, allocates an <code>sk_buff</code> (the kernel's packet metadata structure, a few hundred bytes) and refills the ring.</li>
+      <li><strong>Protocol stack.</strong> GRO, netfilter hooks (iptables/nftables), routing decision, IP checks, UDP checksum, socket lookup.</li>
+      <li><strong>Socket queue.</strong> The <code>sk_buff</code> is queued on the socket's receive queue (with a lock), and the sleeping reader is woken.</li>
+      <li><strong>Context switch + system call.</strong> The scheduler switches to your process; <code>recv()</code> enters the kernel (crossing the user/kernel boundary, with its speculative-execution mitigations), dequeues the <code>sk_buff</code>...</li>
+      <li><strong>Copy.</strong> ...and copies the payload into your buffer, frees the <code>sk_buff</code>, and returns to user space.</li>
+    </ol>
+    <p>Sending is the mirror image: a system call, a copy into a new <code>sk_buff</code>, the stack, the queueing discipline (qdisc), the driver, a doorbell write to the NIC, and later a "transmit complete" interrupt to free the buffer. Interrupt moderation, NAPI batching, GRO and <code>recvmmsg()</code> all reduce these costs, and the kernel can move a lot of traffic, but the per-packet overhead stays in the hundreds of nanoseconds to microseconds. Against a 67 ns budget, that is too much.</p>
+
+    <h3 id="journey">Step through it: count the costs</h3>
+    <p>This stepper follows one packet down each path and keeps a tally of the expensive events. Some steps ask you to predict first.</p>
+    <div class="widget" id="w-journey">
+      <div class="widget-head"><span class="widget-title">One packet, two paths: what gets paid</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="scroll-x"><svg viewBox="0 0 680 270" role="img" aria-label="Kernel receive path and DPDK receive path, step by step"></svg></div>
+        <div class="ch01-tally">
+          <div class="stat"><div class="stat-label">kernel: interrupts</div><div class="stat-value" id="j-irq">0</div></div>
+          <div class="stat"><div class="stat-label">kernel: syscalls</div><div class="stat-value" id="j-sys">0</div></div>
+          <div class="stat"><div class="stat-label">kernel: CPU copies</div><div class="stat-value" id="j-copy">0</div></div>
+          <div class="stat"><div class="stat-label">kernel: ctx switches</div><div class="stat-value" id="j-ctx">0</div></div>
+          <div class="stat"><div class="stat-label">DPDK: interrupts / syscalls / copies</div><div class="stat-value" id="j-dpdk">0 / 0 / 0</div></div>
+        </div>
+      </div>
+    </div>
+
+    <h3 id="race">Watch it: the two-lane race</h3>
+    <p>Now many packets. The top lane is the kernel path; the bottom lane is DPDK. Each lane's speed comes from the two measurements in <a href="#measure">section 3</a>: about 829 ns per packet for the kernel socket path and about 9.5 ns for the DPDK burst path. The animation runs in slow motion (1 second on screen = 2 &micro;s of real time). Raise the offered rate above the kernel's capacity (about 1.2 Mpps) and watch its backlog fill and drop packets, while the DPDK lane takes packets in <em>bursts</em>: each <code>rx_burst()</code> call grabs everything waiting in the receive ring, up to the burst size. Then set the rate to about 80 Mpps and the burst to 1: now even DPDK cannot keep up (it tops out near 58 Mpps), because it pays the per-call cost for every single packet. Set the burst back to 32 and the drops stop. That is technique 5 in action. Above about 106 Mpps even bursts of 32 are not enough for one core on this VM: that is when you add cores and queues (ch15).</p>
+
+    <div class="widget" id="w-race">
+      <div class="widget-head"><span class="widget-title">Kernel path vs DPDK path (slow motion)</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="scroll-x"><svg viewBox="0 0 680 232" role="img" aria-label="Packets travelling along a kernel lane and a DPDK lane"></svg></div>
+        <div class="stat-row">
+          <div class="stat"><div class="stat-label">offered</div><div class="stat-value" id="r-off">0</div></div>
+          <div class="stat"><div class="stat-label">kernel delivered</div><div class="stat-value" id="r-kd">0</div></div>
+          <div class="stat"><div class="stat-label">kernel dropped</div><div class="stat-value" id="r-kx">0</div></div>
+          <div class="stat"><div class="stat-label">DPDK delivered</div><div class="stat-value" id="r-dd">0</div></div>
+          <div class="stat"><div class="stat-label">DPDK dropped</div><div class="stat-value" id="r-dx">0</div></div>
+          <div class="stat"><div class="stat-label">DPDK last burst</div><div class="stat-value" id="r-db">0</div></div>
+        </div>
+      </div>
+      <div class="controls">
+        <span class="grow"></span>
+        <label>offered rate <input type="range" id="r-rate" min="0" max="1" step="0.01" value="0.35"> <output id="r-rate-o"></output></label>
+        <label>DPDK burst <input type="range" id="r-burst" min="1" max="32" step="1" value="32"> <output id="r-burst-o"></output></label>
+      </div>
+      <p class="ch01-note">Model, built from the measurements: the kernel lane serves one packet at a time (829 ns each) behind an 8-packet backlog. The DPDK lane polls without pause; one <code>rx_burst</code> + <code>tx_burst</code> call on <var>n</var> packets costs <var>a</var> + <var>b</var>&middot;<var>n</var> ns, with <var>a</var> = 8.1 ns and <var>b</var> = 9.2 ns fitted to the burst=1 and burst=32 runs. Real rings are 512 or more entries; 30 are drawn. Rates above about 15 Mpps exceed any 10 GbE link, but 100 GbE carries 148.8 Mpps of 64-byte frames.</p>
+    </div>
+
+    <!-- ===================================================== 3 -->
+    <h2 id="measure"><span class="sec-num">3</span>Measuring it on this machine (peek ahead)</h2>
+    <p>Claims are cheap, so let us measure. <code>code/bypass_bench.c</code> times two things on one core:</p>
+    <ul>
+      <li><strong>kernel</strong>: 200 000 iterations of <code>sendto()</code> + <code>recv()</code> of a 64-byte UDP datagram over the loopback interface. Two system calls, two copies, the UDP/IP stack twice, no real NIC.</li>
+      <li><strong>DPDK</strong>: 5 million packets received with <code>rte_eth_rx_burst()</code> and sent back with <code>rte_eth_tx_burst()</code> on a <code>net_null</code> port, 32 at a time.</li>
+    </ul>
+    <p>Each measurement is repeated 5 times and the program prints the median with the minimum and maximum. This is a <strong>peek ahead</strong>: you are not expected to understand every line yet (you will be able to write it yourself after ch8). Here are the ten lines that matter:</p>
+
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/bypass_bench.c (excerpt)</span><span class="lang">C</span></div>
+<pre data-lines data-start="72" data-hl="78-79,81-82"><code class="language-c">static double dpdk_run(uint16_t port, unsigned int burst, double hz)
+{
+	struct rte_mbuf *pkts[MAX_BURST];
+	uint64_t rx = 0;
+	uint64_t t0 = rte_rdtsc();
+	while (rx &lt; DPDK_N) {
+		uint16_t n = rte_eth_rx_burst(port, 0, pkts, burst);
+		uint16_t sent = rte_eth_tx_burst(port, 0, pkts, n);
+		/* tx_burst may accept fewer than n: we still own the rest */
+		if (sent &lt; n)
+			rte_pktmbuf_free_bulk(&amp;pkts[sent], n - sent);
+		rx += n;
+	}
+	return (rte_rdtsc() - t0) / hz * 1e9 / rx;
+}</code></pre>
+    </div>
+    <ul>
+      <li><strong>Line 78.</strong> <code>rte_eth_rx_burst(port, queue, array, n)</code> fills an array with up to <var>n</var> packet pointers and returns how many it got. It is an ordinary function call in your own process: no system call, no interrupt, no copy.</li>
+      <li><strong>Line 79.</strong> <code>rte_eth_tx_burst()</code> queues the same packets for sending and returns how many it accepted.</li>
+      <li><strong>Lines 81-82.</strong> Whatever transmit did not accept still belongs to you and must be freed, or the pool leaks. You will meet this rule again in every forwarding loop.</li>
+    </ul>
+
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 3)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./bypass_bench -l 1 --no-pci --no-huge -m 128 --file-prefix=ch01-bb --vdev=net_null0</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch01-bb/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+TSC 2.70 GHz, 5 runs per measurement, 64-byte packets
+<span class="hl">kernel sendto()+recv() 127.0.0.1      828.9 ns/pkt  (min 826.1, max 832.6)     2238 cycles/pkt     1.21 Mpps</span>
+<span class="hl">dpdk rx+tx burst=32 (net_null)          9.5 ns/pkt  (min 9.4, max 9.6)       26 cycles/pkt   105.82 Mpps</span>
+<span class="dim"># exercise 2: the same with bursts of 1, 8 and 32</span>
+
+<span class="prompt">$ </span><span class="cmd">./bypass_bench -l 1 --no-pci --no-huge -m 128 --file-prefix=ch01-bb --vdev=net_null0 -- 1 8 32</span>
+TSC 2.70 GHz, 5 runs per measurement, 64-byte packets
+<span class="hl">kernel sendto()+recv() 127.0.0.1      823.6 ns/pkt  (min 822.3, max 832.4)     2224 cycles/pkt     1.21 Mpps</span>
+<span class="hl">dpdk rx+tx burst=1 (net_null)          17.3 ns/pkt  (min 17.3, max 18.0)       47 cycles/pkt    57.80 Mpps</span>
+<span class="hl">dpdk rx+tx burst=8 (net_null)           6.8 ns/pkt  (min 6.7, max 7.1)       18 cycles/pkt   147.92 Mpps</span>
+<span class="hl">dpdk rx+tx burst=32 (net_null)          9.3 ns/pkt  (min 9.3, max 9.3)       25 cycles/pkt   107.24 Mpps</span></pre>
+    </div>
+    <p class="output-caption">Median of 5 runs, with min and max, on a 4-core VM at 2.7 GHz. The kernel round trip costs about 829 ns (2238 cycles); the DPDK burst path about 9.5 ns (26 cycles), roughly 87&times; less.</p>
+
+    <div class="callout warning"><div class="callout-title">Read this number honestly</div>
+      <p><code>net_null</code> is a software driver that does no real I/O: its receive function just takes mbufs (packet buffers) from a pool and sets their length to 64, and its transmit function frees them (<span class="src-path">drivers/net/null/rte_eth_null.c</span>, <code>eth_null_rx</code> / <code>eth_null_tx</code>). So the DPDK figure is the cost of the <em>framework</em>: the burst call, the driver dispatch and the buffer pool. It is not a NIC benchmark. The kernel figure, on the other hand, skips the NIC, the interrupt and the softirq entirely (loopback), so a real kernel receive path costs <em>more</em>. Real NIC numbers need real hardware and the method of ch22.</p>
+    </div>
+
+    <details><summary>Peek ahead: full source of bypass_bench.c</summary>
+<pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ * bypass_bench.c - PEEK AHEAD for chapter 01 (you can write this yourself
+ * after ch8). Run it and look at the numbers; do not worry about every API.
+ *
+ * Question: what does it cost to move ONE small packet
+ *   (a) through the Linux kernel: sendto() + recv() of a 64-byte UDP
+ *       datagram on the loopback interface (two system calls, two copies,
+ *       the whole UDP/IP stack, socket queues), versus
+ *   (b) through DPDK: rte_eth_rx_burst() + rte_eth_tx_burst() on a net_null
+ *       port (no syscalls, no copies, packets handled in bursts)?
+ *
+ * HONEST CAVEAT: net_null is a software PMD that does no real I/O. Its Rx
+ * just takes mbufs from the mempool and its Tx frees them. So (b) measures the
+ * DPDK *framework* cost (burst dispatch + mempool), not a NIC. Real NIC
+ * numbers come in ch22.
+ *
+ * Each measurement is repeated RUNS times; we print median, min and max.
+ *
+ * Usage: ./bypass_bench &lt;EAL args&gt; --vdev=net_null0 [-- burst1 burst2 ...]
+ *        default burst list: 32
+ */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;arpa/inet.h&gt;
+#include &lt;sys/socket.h&gt;
+
+#include &lt;rte_eal.h&gt;
+#include &lt;rte_debug.h&gt;
+#include &lt;rte_lcore.h&gt;
+#include &lt;rte_ethdev.h&gt;
+#include &lt;rte_mbuf.h&gt;
+#include &lt;rte_cycles.h&gt;
+
+#define RUNS      5
+#define KERNEL_N  200000    /* datagrams per kernel run */
+#define DPDK_N    5000000   /* packets per DPDK run     */
+#define MAX_BURST 256
+
+static int cmp_double(const void *a, const void *b)
+{
+	double x = *(const double *)a, y = *(const double *)b;
+	return (x &gt; y) - (x &lt; y);
+}
+
+/* print "label: median ns/pkt (min..max), cycles/pkt, Mpps" */
+static void report(const char *label, double ns[RUNS], double hz)
+{
+	qsort(ns, RUNS, sizeof(double), cmp_double);
+	double med = ns[RUNS / 2];
+	printf("%-34s %8.1f ns/pkt  (min %.1f, max %.1f)  %7.0f cycles/pkt  %7.2f Mpps\n",
+	       label, med, ns[0], ns[RUNS - 1], med * hz / 1e9, 1e3 / med);
+}
+
+/* (a) kernel path: one sendto() and one recv() per 64-byte datagram */
+static double kernel_run(int tx, int rx, struct sockaddr_in *dst, double hz)
+{
+	char buf[64] = {0}, in[2048];
+	uint64_t t0 = rte_rdtsc();
+	for (int i = 0; i &lt; KERNEL_N; i++) {
+		if (sendto(tx, buf, sizeof(buf), 0, (struct sockaddr *)dst,
+			   sizeof(*dst)) != sizeof(buf))
+			rte_exit(EXIT_FAILURE, "sendto failed\n");
+		if (recv(rx, in, sizeof(in), 0) != sizeof(buf))
+			rte_exit(EXIT_FAILURE, "recv failed\n");
+	}
+	return (rte_rdtsc() - t0) / hz * 1e9 / KERNEL_N;
+}
+
+/* (b) DPDK path: receive a burst from net_null, send the same burst back */
+static double dpdk_run(uint16_t port, unsigned int burst, double hz)
+{
+	struct rte_mbuf *pkts[MAX_BURST];
+	uint64_t rx = 0;
+	uint64_t t0 = rte_rdtsc();
+	while (rx &lt; DPDK_N) {
+		uint16_t n = rte_eth_rx_burst(port, 0, pkts, burst);
+		uint16_t sent = rte_eth_tx_burst(port, 0, pkts, n);
+		/* tx_burst may accept fewer than n: we still own the rest */
+		if (sent &lt; n)
+			rte_pktmbuf_free_bulk(&amp;pkts[sent], n - sent);
+		rx += n;
+	}
+	return (rte_rdtsc() - t0) / hz * 1e9 / rx;
+}
+
+int main(int argc, char **argv)
+{
+	int ret = rte_eal_init(argc, argv);
+	if (ret &lt; 0)
+		rte_exit(EXIT_FAILURE, "rte_eal_init failed\n");
+	argc -= ret;
+	argv += ret;
+	double hz = rte_get_tsc_hz();
+	double ns[RUNS];
+
+	printf("TSC %.2f GHz, %d runs per measurement, 64-byte packets\n",
+	       hz / 1e9, RUNS);
+
+	/* ---------- (a) the kernel path ---------- */
+	int rx = socket(AF_INET, SOCK_DGRAM, 0);
+	int tx = socket(AF_INET, SOCK_DGRAM, 0);
+	struct sockaddr_in a = { .sin_family = AF_INET,
+				 .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+	socklen_t alen = sizeof(a);
+	if (rx &lt; 0 || tx &lt; 0 || bind(rx, (struct sockaddr *)&amp;a, sizeof(a)) ||
+	    getsockname(rx, (struct sockaddr *)&amp;a, &amp;alen))  /* learn our port */
+		rte_exit(EXIT_FAILURE, "socket setup failed\n");
+	for (int r = 0; r &lt; RUNS; r++)
+		ns[r] = kernel_run(tx, rx, &amp;a, hz);
+	report("kernel sendto()+recv() 127.0.0.1", ns, hz);
+	close(tx);
+	close(rx);
+
+	/* ---------- (b) the DPDK path ---------- */
+	if (rte_eth_dev_count_avail() &lt; 1)
+		rte_exit(EXIT_FAILURE, "need a port: --vdev=net_null0\n");
+	uint16_t port = 0;
+	struct rte_mempool *mp = rte_pktmbuf_pool_create("bb_pool", 8191, 256,
+				0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+	struct rte_eth_conf conf;
+	memset(&amp;conf, 0, sizeof(conf));
+	if (mp == NULL ||
+	    rte_eth_dev_configure(port, 1, 1, &amp;conf) != 0 ||
+	    rte_eth_rx_queue_setup(port, 0, 512, rte_socket_id(), NULL, mp) != 0 ||
+	    rte_eth_tx_queue_setup(port, 0, 512, rte_socket_id(), NULL) != 0 ||
+	    rte_eth_dev_start(port) != 0)
+		rte_exit(EXIT_FAILURE, "port setup failed\n");
+
+	int nb = argc &gt; 1 ? argc - 1 : 1;
+	for (int i = 0; i &lt; nb; i++) {
+		unsigned int burst = argc &gt; 1 ? (unsigned int)atoi(argv[i + 1]) : 32;
+		char label[64];
+		if (burst &lt; 1 || burst &gt; MAX_BURST)
+			rte_exit(EXIT_FAILURE, "burst must be 1..%d\n", MAX_BURST);
+		dpdk_run(port, burst, hz);  /* warm-up: fill the mempool cache */
+		for (int r = 0; r &lt; RUNS; r++)
+			ns[r] = dpdk_run(port, burst, hz);
+		snprintf(label, sizeof(label), "dpdk rx+tx burst=%u (net_null)", burst);
+		report(label, ns, hz);
+	}
+
+	rte_eth_dev_stop(port);
+	rte_eth_dev_close(port);
+	rte_mempool_free(mp);
+	rte_eal_cleanup();
+	return 0;
+}</code></pre>
+    </details>
+
+    <!-- ===================================================== 4 -->
+    <h2 id="five"><span class="sec-num">4</span>DPDK's five techniques</h2>
+    <p>The <strong>Data Plane Development Kit</strong> is a set of C libraries and drivers that lets an ordinary Linux process own a network card and move packets itself. In the words of its programmer's guide, its goal is "to provide a simple, complete framework for fast packet processing in data plane applications" (<span class="src-path">doc/guides/prog_guide/overview.rst</span>). It gets its speed from five techniques. None is magic; each removes one of the costs you just counted.</p>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 720 380" role="img" aria-labelledby="f-five-t">
+        <title id="f-five-t">The five DPDK techniques, the kernel cost each removes, the library that implements it and the chapter that teaches it.</title>
+        <text class="svg-label bold" x="20" y="22">technique</text>
+        <text class="svg-label bold" x="300" y="22">removes this cost</text>
+        <text class="svg-label bold" x="510" y="22">lives in (taught in)</text>
+        <g id="five-rows"></g>
+      </svg>
+      <figcaption><span class="fig-num"></span>Each technique removes one cost. Chapter numbers show where the course teaches it in depth.</figcaption>
+    </figure>
+
+    <ol>
+      <li><strong>User-space drivers.</strong> The NIC is detached from its kernel driver and handed to <code>vfio-pci</code>, a small kernel module whose only job is to let a process map the device's registers into its address space and let the device DMA into the process's memory, safely, through the IOMMU. A DPDK <span class="key-term">poll mode driver</span> (PMD) in your process then programs the NIC directly. No system call sits between your code and the packets. (Binding devices: ch9 sidebar; VFIO and PMD internals: ch23.)</li>
+      <li><strong>Polling instead of interrupts.</strong> A dedicated core calls <code>rte_eth_rx_burst()</code> in a tight loop. There are no interrupts, no context switches and no wake-up latency. The price is that this core runs at 100% even when no traffic arrives. <a href="#intr-poll">Section 5</a> measures that price.</li>
+      <li><strong>Hugepages.</strong> All packet memory comes from 2 MB or 1 GB pages instead of 4 KB ones. A few TLB entries then cover every buffer, so address translation stays cheap, and the memory does not move, so the NIC can DMA into it (ch4).</li>
+      <li><strong>Lock-free rings and pools with per-core caches.</strong> Packet buffers are preallocated in a <span class="key-term">mempool</span>, and each core keeps a small private cache of free buffers, so getting and freeing a buffer needs no lock and usually no atomic operation. Cores hand packets to each other through <code>rte_ring</code>, a lock-free FIFO of pointers (ch5, ch6).</li>
+      <li><strong>Bursts, cache awareness and SIMD.</strong> Every fast-path call works on an array of up to 32 (or more) packets, so its fixed cost is shared by all of them. Data structures are cache-line aligned, drivers prefetch the next descriptors, and many PMDs have vector (SSE/AVX/NEON) receive paths that handle 4 to 8 descriptors per instruction (ch7, ch22, ch23).</li>
+    </ol>
+    <p>Two habits complete the picture: <strong>core pinning</strong> (each DPDK thread, an <span class="key-term">lcore</span>, is fixed to one CPU and ideally isolated from the kernel scheduler, ch3, ch29) and <strong>NUMA awareness</strong> (allocate memory on the socket the NIC and core sit on, ch4, ch22).</p>
+    <p>One more fact about packet movement: when the application has finished with a burst, <code>rte_eth_tx_burst()</code> writes the descriptors and then one doorbell register write tells the NIC "there is new work". One expensive device write per burst instead of per packet: another way bursts pay.</p>
+
+    <div class="callout note"><div class="callout-title">What DPDK does <em>not</em> give you</div>
+      <p>DPDK has no TCP/IP stack and no sockets. <code>rte_eth_rx_burst()</code> hands you raw Ethernet frames, and you parse the headers yourself (ch10 shows how). If you need TCP on top of DPDK, use a project that adds one: F-Stack (FreeBSD's stack), Seastar, mTCP or the VPP host stack. The capstone (ch30) shows the other common pattern: DPDK handles the fast path and the Linux kernel keeps everything else, such as ARP, SSH and routing daemons.</p>
+    </div>
+
+    <!-- ===================================================== 5 -->
+    <h2 id="intr-poll"><span class="sec-num">5</span>Polling vs interrupts: the price of speed (peek ahead)</h2>
+    <p>Polling wins on latency and throughput because the core is always ready. But it burns a whole core when the link is idle. The opposite design sleeps until an interrupt says a packet has arrived: almost free when idle, but every packet now pays a wake-up. Linux's NAPI is a hybrid (interrupt first, then poll while busy), and DPDK can do the same: many PMDs, including <code>net_tap</code> and <code>virtio</code>, support Rx interrupts ("Rx interrupt = Y" in <span class="src-path">doc/guides/nics/features/tap.ini</span>).</p>
+    <p><code>code/intr_vs_poll.c</code> runs one <code>net_tap</code> port in either mode for 4 seconds while <code>code/inject.py</code> writes frames into the Linux side of the tap interface at a fixed rate. Each frame carries the sender's clock, so the program can also measure the latency from <code>send()</code> in Python to <code>rte_eth_rx_burst()</code> in C. The interesting part of the loop:</p>
+
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/intr_vs_poll.c (excerpt)</span><span class="lang">C</span></div>
+<pre data-lines data-start="107" data-hl="117-118,120-126"><code class="language-c">	while (!quit &amp;&amp; rte_rdtsc() &lt; end) {
+		uint16_t n = rte_eth_rx_burst(port, 0, b, 32);
+		polls++;
+		pkts += n;
+		if (n != 0) {
+			uint64_t t_rx = now_ns();
+			for (uint16_t i = 0; i &lt; n; i++)
+				sample_latency(b[i], t_rx);
+		}
+		rte_pktmbuf_free_bulk(b, n);       /* we only count packets */
+		if (n != 0)
+			continue;
+		empty++;
+		if (use_intr) {
+			struct rte_epoll_event ev;
+			rte_eth_dev_rx_intr_enable(port, 0);   /* arm   */
+			rte_epoll_wait(RTE_EPOLL_PER_THREAD, &amp;ev, 1, 100); /* sleep */
+			rte_eth_dev_rx_intr_disable(port, 0);  /* disarm */
+			wakeups++;
+		}
+	}</code></pre>
+    </div>
+    <p>In poll mode the loop just spins. In intr mode, after an empty poll it arms the queue's interrupt, sleeps in <code>rte_epoll_wait()</code> for up to 100 ms, then disarms it and polls again. The full lab (with <code>rte_power</code> and the l3fwd-power heuristics) is in ch22.</p>
+
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 4)</span></div>
+<pre><span class="dim"># each run: 4 s; inject.py writes frames into ch01tap0 from t=1.0 s to t=3.5 s</span>
+
+<span class="prompt">$ </span><span class="cmd">./intr_vs_poll -l 1 --no-pci --no-huge -m 128 --file-prefix=ch01-ivp --vdev=net_tap0,iface=ch01tap0 -- poll 4   # offered 0 pkt/s</span>
+<span class="hl">mode=poll wall=4.00s pkts=0 polls=21876553 empty_polls=21876553 wakeups=0 user=1.63s sys=2.39s cpu=100.4% ivcsw=9</span>
+
+<span class="prompt">$ </span><span class="cmd">./intr_vs_poll -l 1 --no-pci --no-huge -m 128 --file-prefix=ch01-ivp --vdev=net_tap0,iface=ch01tap0 -- intr 4   # offered 0 pkt/s</span>
+<span class="hl">mode=intr wall=4.01s pkts=0 polls=40 empty_polls=40 wakeups=40 user=0.01s sys=0.01s cpu=0.5% ivcsw=0</span>
+
+<span class="prompt">$ </span><span class="cmd">./intr_vs_poll -l 1 --no-pci --no-huge -m 128 --file-prefix=ch01-ivp --vdev=net_tap0,iface=ch01tap0 -- poll 4   # offered 100 pkt/s</span>
+<span class="hl">mode=poll wall=4.00s pkts=250 polls=201234620 empty_polls=201234370 wakeups=0 user=3.44s sys=0.58s cpu=100.5% ivcsw=9</span>
+<span class="hl">          latency send-&gt;rx_burst over 250 pkts: median 21.6 us (min 12.3, p99 53.5, max 74.1)</span>
+
+<span class="prompt">$ </span><span class="cmd">./intr_vs_poll -l 1 --no-pci --no-huge -m 128 --file-prefix=ch01-ivp --vdev=net_tap0,iface=ch01tap0 -- intr 4   # offered 100 pkt/s</span>
+<span class="hl">mode=intr wall=4.09s pkts=250 polls=515 empty_polls=265 wakeups=265 user=0.02s sys=0.01s cpu=0.7% ivcsw=1</span>
+<span class="hl">          latency send-&gt;rx_burst over 250 pkts: median 42.8 us (min 24.4, p99 134.0, max 434.9)</span>
+
+<span class="prompt">$ </span><span class="cmd">./intr_vs_poll -l 1 --no-pci --no-huge -m 128 --file-prefix=ch01-ivp --vdev=net_tap0,iface=ch01tap0 -- poll 4   # offered 1000 pkt/s</span>
+<span class="hl">mode=poll wall=4.00s pkts=2500 polls=198762700 empty_polls=198760201 wakeups=0 user=3.44s sys=0.57s cpu=100.3% ivcsw=8</span>
+<span class="hl">          latency send-&gt;rx_burst over 2500 pkts: median 14.1 us (min 12.0, p99 24.7, max 343.4)</span>
+
+<span class="prompt">$ </span><span class="cmd">./intr_vs_poll -l 1 --no-pci --no-huge -m 128 --file-prefix=ch01-ivp --vdev=net_tap0,iface=ch01tap0 -- intr 4   # offered 1000 pkt/s</span>
+<span class="hl">mode=intr wall=4.09s pkts=2500 polls=5015 empty_polls=2515 wakeups=2515 user=0.00s sys=0.05s cpu=1.3% ivcsw=0</span>
+<span class="hl">          latency send-&gt;rx_burst over 2500 pkts: median 25.7 us (min 19.1, p99 82.6, max 178.9)</span>
+
+<span class="prompt">$ </span><span class="cmd">./intr_vs_poll -l 1 --no-pci --no-huge -m 128 --file-prefix=ch01-ivp --vdev=net_tap0,iface=ch01tap0 -- poll 4   # offered 10000 pkt/s</span>
+<span class="hl">mode=poll wall=4.00s pkts=25000 polls=189135433 empty_polls=189110547 wakeups=0 user=3.46s sys=0.56s cpu=100.5% ivcsw=8</span>
+<span class="hl">          latency send-&gt;rx_burst over 25000 pkts: median 12.6 us (min 3.5, p99 17.8, max 286.8)</span>
+
+<span class="prompt">$ </span><span class="cmd">./intr_vs_poll -l 1 --no-pci --no-huge -m 128 --file-prefix=ch01-ivp --vdev=net_tap0,iface=ch01tap0 -- intr 4   # offered 10000 pkt/s</span>
+<span class="hl">mode=intr wall=4.10s pkts=25000 polls=49593 empty_polls=24803 wakeups=24803 user=0.04s sys=0.10s cpu=3.5% ivcsw=0</span>
+<span class="hl">          latency send-&gt;rx_burst over 25000 pkts: median 14.6 us (min 3.6, p99 39.4, max 2459.1)</span></pre>
+    </div>
+    <p class="output-caption">One 4-second run per setting. Poll mode costs a full core (about 100% CPU) at every rate, idle included, and makes tens to hundreds of millions of empty polls. Intr mode uses a few percent at most, even at 10 000 pkt/s, and its idle wake-ups are just the 100 ms timeout (40 in 4 s). It pays in latency: compare the medians, especially at low rates where every packet finds the core asleep. <code>ivcsw</code> counts involuntary context switches: how often the scheduler took the core away. A few per run are normal on a shared VM; hundreds would mean another busy thread shares the core and every number is suspect (core isolation: ch3, ch29).</p>
+
+    <div class="callout pitfall"><div class="callout-title">A PMD on top of a kernel interface is not kernel bypass</div>
+      <p>Look at poll mode with no traffic: most of its CPU time is <code>sys</code>, kernel time. <code>net_tap</code> reads packets from the tap file descriptor with <code>readv()</code>, a system call (<code>pmd_rx_burst</code> in <span class="src-path">drivers/net/tap/rte_eth_tap.c</span>). Until the first SIGIO signal says data is waiting, it calls <code>readv()</code> on every poll; once traffic has started, it skips the call while no new signal has arrived, which is why <code>sys</code> drops in the runs with traffic. <code>net_tap</code>, <code>net_af_packet</code> and <code>net_af_xdp</code> are very useful for testing and for talking to the kernel (the course uses them a lot), but only a PMD that drives real hardware, or shared memory (<code>net_memif</code>, vhost/virtio, ch24), skips the kernel completely.</p>
+    </div>
+
+    <h3 id="intr-poll-widget">See it: CPU and latency vs offered rate</h3>
+    <p>The widget below uses the numbers from <code>code/ivp_sweep.sh</code>, which repeats each run 5 times (3 s each) and reports the median with min and max:</p>
+    <div class="terminal">
+      <div class="term-bar"><span class="title">code/ivp_sweep_output.txt (summary)</span></div>
+<pre>intr_vs_poll sweep: 5 runs of 3 s per cell (net_tap, 1 lcore, VM)
+ rate/s mode | cpu% med    min    max | lat us med    min    max | wakeups/s ivcsw max
+      0 poll |    100.6  100.5  100.7 |          -      -      - |         0         8
+      0 intr |      0.7    0.7    0.9 |          -      -      - |        10         0
+    100 poll |    100.5  100.4  100.7 |       24.4   20.7   27.2 |         0         8
+    100 intr |      0.8    0.8    0.9 |       43.8   34.9   62.7 |        64         1
+   1000 poll |    100.5  100.3  100.6 |       14.8   13.4   15.9 |         0         8
+   1000 intr |      1.2    1.1    1.3 |       24.4   22.4   27.6 |       604         1
+  10000 poll |    100.6  100.5  100.7 |       12.0   11.4   13.7 |         0         7
+  10000 intr |      3.1    2.9    3.3 |       12.9   12.6   13.5 |      5990         2</pre>
+    </div>
+    <p>Drag the rate. The strip chart shows what the core does over a 100 ms window: a solid block in poll mode, short spikes (one per wake-up) in interrupt mode. Notice the crossover: at 10 000 pkt/s interrupt mode wakes up for almost every packet, so its latency is close to polling, while its CPU use keeps growing with the rate. At millions of packets per second the wake-ups would cost more than polling, which is why DPDK polls by default and why NAPI switches to polling under load.</p>
+
+    <div class="widget" id="w-ivp">
+      <div class="widget-head"><span class="widget-title">Interrupt vs polling: CPU timeline</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="scroll-x"><svg viewBox="0 0 680 230" role="img" aria-label="Strip chart of CPU busy time for polling and interrupt mode"></svg></div>
+        <div class="stat-row">
+          <div class="stat"><div class="stat-label">poll: CPU</div><div class="stat-value"><span id="i-pcpu">-</span><span class="stat-unit">%</span></div></div>
+          <div class="stat"><div class="stat-label">intr: CPU</div><div class="stat-value"><span id="i-icpu">-</span><span class="stat-unit">%</span></div></div>
+          <div class="stat"><div class="stat-label" id="i-wk-l">intr: wake-ups / packet</div><div class="stat-value"><span id="i-wk">-</span></div></div>
+          <div class="stat"><div class="stat-label">poll: median latency</div><div class="stat-value"><span id="i-plat">-</span><span class="stat-unit">&micro;s</span></div></div>
+          <div class="stat"><div class="stat-label">intr: median latency</div><div class="stat-value"><span id="i-ilat">-</span><span class="stat-unit">&micro;s</span></div></div>
+        </div>
+      </div>
+      <div class="controls">
+        <span class="grow"></span>
+        <span class="readout" id="i-src"></span>
+        <label>offered rate <input type="range" id="i-rate" min="0" max="3" step="0.05" value="2"> <output id="i-rate-o"></output></label>
+      </div>
+      <p class="ch01-note" id="i-note">Values at 0, 100, 1000 and 10 000 pkt/s are measured medians of 5 runs (<code>code/ivp_sweep_output.txt</code>); in between they are interpolated on a log scale. CPU is averaged over each 3 s run, of which traffic flowed for 1.8 s. Latency includes the Python sender and the kernel tap path, which are the same in both modes, so look at the difference. The animation runs slowed down (try the speed button); bar heights in intr mode come from the measured CPU cost per packet, 4.0 &micro;s at 10 000 pkt/s.</p>
+    </div>
+
+    <!-- ===================================================== 6 -->
+    <h2 id="models"><span class="sec-num">6</span>Three ways to organise the work</h2>
+    <p>Once packets reach your code, you have to decide which core does what. DPDK supports three broad designs, and the course builds all of them:</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 330" role="img" aria-labelledby="f-models-t">
+        <title id="f-models-t">Run-to-completion, pipeline and event-driven execution models.</title>
+        <text class="svg-title" x="20" y="24">run-to-completion</text>
+        <rect class="svg-box c4" x="20" y="40" width="70" height="80"/><text class="svg-label center small" x="55" y="80">NIC</text>
+        <rect class="svg-box c5" x="110" y="45" width="60" height="28"/><text class="svg-label center small" x="140" y="59">rxq 0</text>
+        <rect class="svg-box c5" x="110" y="87" width="60" height="28"/><text class="svg-label center small" x="140" y="101">rxq 1</text>
+        <rect class="svg-box c1" x="190" y="45" width="140" height="28"/><text class="svg-label center small" x="260" y="59">lcore 1: rx &rarr; work &rarr; tx</text>
+        <rect class="svg-box c1" x="190" y="87" width="140" height="28"/><text class="svg-label center small" x="260" y="101">lcore 2: rx &rarr; work &rarr; tx</text>
+        <path class="svg-arrow c4" d="M90,59 L106,59"/><path class="svg-arrow c4" d="M90,101 L106,101"/>
+        <path class="svg-arrow c5 flow" d="M170,59 L186,59"/><path class="svg-arrow c5 flow" d="M170,101 L186,101"/>
+        <text class="svg-label small" x="350" y="56">each core owns its queues and does everything</text>
+        <text class="svg-label small" x="350" y="74">NIC hashes flows to queues (RSS, ch15)</text>
+        <text class="svg-label small muted" x="350" y="92">+ no sharing, best cache locality</text>
+        <text class="svg-label small muted" x="350" y="110">&minus; every core needs all the code; uneven flows</text>
+        <text class="svg-label small muted" x="350" y="128">examples: skeleton, l2fwd, l3fwd</text>
+
+        <text class="svg-title" x="20" y="160">pipeline</text>
+        <rect class="svg-box c1" x="20" y="172" width="80" height="34"/><text class="svg-label center small" x="60" y="189">rx lcore</text>
+        <rect class="svg-box c5" x="118" y="178" width="60" height="22"/><text class="svg-label center small" x="148" y="189">ring</text>
+        <rect class="svg-box c1" x="196" y="172" width="80" height="34"/><text class="svg-label center small" x="236" y="189">worker</text>
+        <rect class="svg-box c5" x="294" y="178" width="60" height="22"/><text class="svg-label center small" x="324" y="189">ring</text>
+        <rect class="svg-box c1" x="372" y="172" width="80" height="34"/><text class="svg-label center small" x="412" y="189">tx lcore</text>
+        <path class="svg-arrow c5 flow" d="M100,189 L114,189"/><path class="svg-arrow c5 flow" d="M178,189 L192,189"/>
+        <path class="svg-arrow c5 flow" d="M276,189 L290,189"/><path class="svg-arrow c5 flow" d="M354,189 L368,189"/>
+        <text class="svg-label small" x="470" y="182">stages on different cores, joined by rte_ring</text>
+        <text class="svg-label small muted" x="470" y="200">+ specialised stages; &minus; ring hops, ordering</text>
+        <text class="svg-label small muted" x="470" y="218">ch5, ch15 (distributor, reorder)</text>
+
+        <text class="svg-title" x="20" y="252">event-driven</text>
+        <rect class="svg-box c1" x="20" y="266" width="80" height="34"/><text class="svg-label center small" x="60" y="283">rx adapter</text>
+        <rect class="svg-box c5" x="130" y="262" width="110" height="42"/><text class="svg-label center small" x="185" y="277">event scheduler</text><text class="svg-label center small" x="185" y="293">(eventdev)</text>
+        <rect class="svg-box c1" x="270" y="258" width="70" height="22"/><text class="svg-label center small" x="305" y="269">worker</text>
+        <rect class="svg-box c1" x="270" y="286" width="70" height="22"/><text class="svg-label center small" x="305" y="297">worker</text>
+        <path class="svg-arrow c5" d="M100,283 L126,283"/>
+        <path class="svg-arrow c5 flow" d="M240,276 L266,269"/><path class="svg-arrow c5 flow" d="M240,290 L266,297"/>
+        <text class="svg-label small" x="360" y="276">a scheduler hands each event to a free worker,</text>
+        <text class="svg-label small" x="360" y="294">keeping per-flow order (atomic/ordered queues)</text>
+        <text class="svg-label small muted" x="360" y="312">+ automatic load balancing; &minus; scheduler cost (ch25)</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>The three execution models. Most real applications start with run-to-completion and add pipeline stages or an event scheduler only when one core cannot do all the work for a flow.</figcaption>
+    </figure>
+
+    <!-- ===================================================== 7 -->
+    <h2 id="first-app"><span class="sec-num">7</span>Your first DPDK program</h2>
+    <p>Enough theory. The smallest useful DPDK program starts the <span class="key-term">EAL</span> (Environment Abstraction Layer, the part of DPDK that sets up cores, memory and devices), prints what it found, and shuts it down again.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/hello_dpdk.c</span><span class="lang">C</span></div>
+<pre data-lines data-hl="34,37-38,40-42,45,60,63-64,73"><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ * hello_dpdk.c - the smallest useful DPDK program (chapter 01).
+ *
+ * What it does:
+ *   1. rte_eal_init()        : start the Environment Abstraction Layer (EAL).
+ *                              It parses the EAL options (-l, --vdev, -m ...),
+ *                              reserves memory, starts lcore threads and probes
+ *                              devices. It returns how many argv entries it used.
+ *   2. rte_version()         : which DPDK we linked against.
+ *   3. rte_lcore_count()     : how many lcores (EAL worker threads) exist.
+ *   4. rte_eth_dev_count_avail(): how many Ethernet ports were probed.
+ *      With --vdev=net_null0 --vdev=net_ring0 we get two software ports.
+ *   5. rte_rdtsc()/rte_get_tsc_hz(): the CPU time-stamp counter, the clock
+ *      every DPDK benchmark in this course uses.
+ *   6. rte_eal_cleanup()     : release everything the EAL took.
+ *
+ * Run: ./hello_dpdk -l 0 --no-pci --no-huge -m 64 --file-prefix=ch01-hello \
+ *        --vdev=net_null0 --vdev=net_ring0
+ */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+
+#include &lt;rte_eal.h&gt;      /* rte_eal_init, rte_eal_cleanup */
+#include &lt;rte_debug.h&gt;    /* rte_exit */
+#include &lt;rte_version.h&gt;  /* rte_version */
+#include &lt;rte_lcore.h&gt;    /* rte_lcore_count, rte_get_main_lcore */
+#include &lt;rte_ethdev.h&gt;   /* rte_eth_dev_count_avail, RTE_ETH_FOREACH_DEV */
+#include &lt;rte_cycles.h&gt;   /* rte_rdtsc, rte_get_tsc_hz */
+
+int
+main(int argc, char **argv)
+{
+	/* Everything before "--" on the command line belongs to the EAL. */
+	int ret = rte_eal_init(argc, argv);
+	if (ret &lt; 0)
+		rte_exit(EXIT_FAILURE, "rte_eal_init failed\n");
+	argc -= ret;   /* skip what the EAL consumed; the rest is ours */
+	argv += ret;
+
+	printf("Hello from %s\n", rte_version());
+	printf("lcores: %u (main lcore %u)\n", rte_lcore_count(),
+	       rte_get_main_lcore());
+
+	/* Each --vdev became one ethdev port, numbered from 0. */
+	uint16_t nb_ports = rte_eth_dev_count_avail();
+	printf("Ethernet ports available: %u\n", nb_ports);
+
+	uint16_t port;
+	RTE_ETH_FOREACH_DEV(port) {
+		char name[RTE_ETH_NAME_MAX_LEN];
+		struct rte_eth_dev_info info;
+
+		rte_eth_dev_get_name_by_port(port, name, sizeof(name));
+		if (rte_eth_dev_info_get(port, &amp;info) == 0)
+			printf("  port %u: %-10s driver=%s\n", port, name,
+			       info.driver_name);
+	}
+
+	/* The TSC ticks at a fixed rate; that rate is our "cycles" unit. */
+	uint64_t hz = rte_get_tsc_hz();
+	uint64_t best = UINT64_MAX;
+	for (int i = 0; i &lt; 1000; i++) {       /* cheapest of 1000 tries */
+		uint64_t t0 = rte_rdtsc();
+		uint64_t t1 = rte_rdtsc();
+		if (t1 - t0 &lt; best)
+			best = t1 - t0;
+	}
+	printf("TSC: %.2f GHz, so 1 ns = %.1f cycles\n", hz / 1e9, hz / 1e9);
+	printf("Two back-to-back rte_rdtsc() calls: %lu cycles apart (best of 1000)\n",
+	       (unsigned long)best);
+
+	/* Give memory, hugepage files and threads back. */
+	rte_eal_cleanup();
+	return 0;
+}</code></pre>
+    </div>
+    <p>Walking through it:</p>
+    <ul>
+      <li><strong><code>rte_eal_init(argc, argv)</code></strong> (line 34) does a lot: it parses the EAL options, detects CPUs and NUMA nodes, reserves memory, creates one pinned thread per extra lcore, scans the buses and probes devices. It returns the number of arguments it consumed (or a negative value on error), so lines 37-38 shift <code>argv</code> to reach your own options after <code>--</code>. ch2 and ch3 take this apart.</li>
+      <li><strong><code>rte_version()</code></strong> returns a string such as <code>"DPDK 26.11.0"</code>; <strong><code>rte_lcore_count()</code></strong> counts the lcores you asked for with <code>-l</code>.</li>
+      <li><strong><code>rte_eth_dev_count_avail()</code></strong> (line 45) counts Ethernet ports. Here they are virtual: every <code>--vdev=net_null0</code>, <code>--vdev=net_ring0</code> creates one. <code>RTE_ETH_FOREACH_DEV</code> loops over port numbers.</li>
+      <li><strong><code>rte_rdtsc()</code></strong> reads the CPU's time-stamp counter, and <strong><code>rte_get_tsc_hz()</code></strong> says how fast it ticks. This is the "cycles" unit used for every number in this chapter.</li>
+      <li><strong><code>rte_eal_cleanup()</code></strong> (line 73) gives the memory and threads back. Call it before exiting.</li>
+    </ul>
+<pre><code class="language-bash">cd chapters/01-why-kernel-bypass/code
+source ../../../common/env.sh      # or your own script that sets PKG_CONFIG_PATH
+make
+./hello_dpdk -l 0 --no-pci --no-huge -m 64 --file-prefix=ch01-hello --vdev=net_null0 --vdev=net_ring0</code></pre>
+    <p>The EAL options: <code>-l 0</code> uses only CPU 0; <code>--no-pci</code> skips scanning for real PCI NICs; <code>--no-huge -m 64</code> uses 64 MB of ordinary memory instead of hugepages (fine for learning, ch4 covers hugepages); <code>--file-prefix</code> gives this process its own runtime directory so it does not clash with other DPDK processes on the machine.</p>
+
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 1)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./hello_dpdk -l 0 --no-pci --no-huge -m 64 --file-prefix=ch01-hello --vdev=net_null0 --vdev=net_ring0</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch01-hello/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+<span class="hl">Hello from DPDK 26.11.0</span>
+lcores: 1 (main lcore 0)
+<span class="hl">Ethernet ports available: 2</span>
+<span class="hl">  port 0: net_null0  driver=net_null</span>
+<span class="hl">  port 1: net_ring0  driver=net_ring</span>
+TSC: 2.70 GHz, so 1 ns = 2.7 cycles
+Two back-to-back rte_rdtsc() calls: 30 cycles apart (best of 1000)</pre>
+    </div>
+    <p class="output-caption">Grey lines are the EAL's own log. "Selected IOVA mode 'VA'" means the devices will be given virtual addresses for DMA (ch4). The two ports are the two <code>--vdev</code> options, in order. Reading the TSC twice costs a couple of dozen cycles, small enough to time even short code.</p>
+
+    <h3 id="helloworld">Four cores say hello</h3>
+    <p>The shipped <span class="src-path">examples/helloworld/main.c</span> launches a function on every lcore. With <code>-l 0-3</code> the EAL creates three worker threads (lcores 1-3) next to the main thread (lcore 0); each prints its id.</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 2)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">$E/dpdk-helloworld -l 0-3 --no-huge -m 64 --no-pci --file-prefix=ch01-hw</span>
+<span class="hl">hello from core 1</span>
+<span class="hl">hello from core 2</span>
+<span class="hl">hello from core 3</span>
+<span class="hl">hello from core 0</span>
+
+<span class="prompt">$ </span><span class="cmd">$E/dpdk-helloworld -l 0-3 --no-huge -m 64 --no-pci --file-prefix=ch01-hw</span>
+<span class="hl">hello from core 1</span>
+<span class="hl">hello from core 2</span>
+<span class="hl">hello from core 3</span>
+<span class="hl">hello from core 0</span></pre>
+    </div>
+    <p class="output-caption">The main lcore launches the workers first and then runs the function itself, so "core 0" usually comes last. The order of the workers is not guaranteed: they are separate threads running at the same time. If you run it a few times you may see it change. ch3 explains launching.</p>
+
+    <h3 id="xray">The skeleton x-ray: the loop this course fills in</h3>
+    <p>Here is the heart of DPDK's basic forwarding sample, <span class="src-path">examples/skeleton/basicfwd.c</span>. It is a complete forwarder: every packet received on port 0 goes out of port 1 and the other way round. Chapters 3 to 8 open with this loop and explain one more piece each time ("x-ray" style): ch3 the lcore it runs on, ch4 the memory, ch5 and ch6 the pool behind the buffers, ch7 the <code>rte_mbuf</code>, and ch8 the port setup and the burst calls.</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">$DPDK_SRC/examples/skeleton/basicfwd.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="137" data-hl="146-147,153-154,157-161"><code class="language-c">	for (;;) {
+		/*
+		 * Receive packets on a port and forward them on the paired
+		 * port. The mapping is 0 -&gt; 1, 1 -&gt; 0, 2 -&gt; 3, 3 -&gt; 2, etc.
+		 */
+		RTE_ETH_FOREACH_DEV(port) {
+
+			/* Get burst of RX packets, from first port of pair. */
+			struct rte_mbuf *bufs[BURST_SIZE];
+			const uint16_t nb_rx = rte_eth_rx_burst(port, 0,
+					bufs, BURST_SIZE);
+
+			if (unlikely(nb_rx == 0))
+				continue;
+
+			/* Send burst of TX packets, to second port of pair. */
+			const uint16_t nb_tx = rte_eth_tx_burst(port ^ 1, 0,
+					bufs, nb_rx);
+
+			/* Free any unsent packets. */
+			if (unlikely(nb_tx &lt; nb_rx)) {
+				uint16_t buf;
+				for (buf = nb_tx; buf &lt; nb_rx; buf++)
+					rte_pktmbuf_free(bufs[buf]);
+			}
+		}
+	}</code></pre>
+    </div>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 200" role="img" aria-labelledby="f-xray-t">
+        <title id="f-xray-t">The skeleton loop: receive a burst from port p, transmit it on port p xor 1, free what was not sent, repeat forever.</title>
+        <rect class="svg-box c4" x="20" y="70" width="90" height="60"/><text class="svg-label center bold" x="65" y="92">port 0</text><text class="svg-label center small muted" x="65" y="112">ch8, ch9</text>
+        <rect class="svg-box c4" x="610" y="70" width="90" height="60"/><text class="svg-label center bold" x="655" y="92">port 1</text><text class="svg-label center small muted" x="655" y="112">ch8, ch9</text>
+        <rect class="svg-box c1" x="170" y="40" width="380" height="120"/>
+        <text class="svg-label center bold" x="360" y="58">lcore (one core, polling forever): ch3</text>
+        <rect class="svg-box c5" x="190" y="74" width="100" height="40"/><text class="svg-label center small mono" x="240" y="94">rx_burst(p)</text>
+        <rect class="svg-box c3" x="310" y="74" width="100" height="40"/><text class="svg-label center small" x="360" y="88">bufs[32]</text><text class="svg-label center small muted" x="360" y="104">mbufs: ch7</text>
+        <rect class="svg-box c5" x="430" y="74" width="100" height="40"/><text class="svg-label center small mono" x="480" y="94">tx_burst(p^1)</text>
+        <rect class="svg-box c2 dashed" x="310" y="122" width="220" height="30"/><text class="svg-label center small" x="420" y="137">free unsent &rarr; mempool (ch6)</text>
+        <path class="svg-arrow c4" d="M110,100 L186,94"/>
+        <path class="svg-arrow c3" d="M290,94 L306,94"/>
+        <path class="svg-arrow c3" d="M410,94 L426,94"/>
+        <path class="svg-arrow c4" d="M530,94 L606,100"/>
+        <path class="svg-arrow c2 dashed" d="M480,114 L480,120"/>
+        <path class="svg-arrow dashed" d="M200,160 C200,190 520,190 520,160"/>
+        <text class="svg-label center small muted" x="360" y="194">for (;;) &mdash; and the same for port 1 &rarr; port 0</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>The skeleton loop and the chapter that explains each part.</figcaption>
+    </figure>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 5)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">$E/dpdk-skeleton -l 1 --no-huge -m 128 --no-pci --file-prefix=ch01-sk --vdev=net_null0 --vdev=net_null1</span>
+<span class="dim"># ps while it runs (an idle-or-busy DPDK loop always shows ~100% CPU):</span>
+<span class="hl">  %CPU 96.0  dpdk-skeleton</span>
+Port 0 MAC: a2 a7 89 b3 74 45
+Port 1 MAC: ee 63 e6 84 37 af
+
+Core 1 forwarding packets. [Ctrl+C to quit]</pre>
+    </div>
+    <p class="output-caption"><code>ps</code> shows the polling core at about 100% CPU, which is expected (section 5). The skeleton prints nothing per packet; it just forwards, at tens of millions of packets per second between the two null ports, until <code>timeout</code> stops it with SIGINT.</p>
+
+    <!-- ===================================================== 8 -->
+    <h2 id="map"><span class="sec-num">8</span>The DPDK architecture map</h2>
+    <p>DPDK 26.11 is about sixty libraries plus drivers. They stack in layers: the EAL at the bottom talks to the operating system; core libraries (rings, pools, packet buffers) build on it; <span class="key-term">device-class</span> libraries such as <code>ethdev</code> (Ethernet) or <code>cryptodev</code> define one generic API per kind of device; <span class="key-term">drivers</span> implement those APIs for specific hardware or software devices; and applications sit on top. Click (or tab to) any box.</p>
+
+    <div class="widget" id="w-cake">
+      <div class="widget-head"><span class="widget-title">DPDK layer cake</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="scroll-x"><svg viewBox="0 0 680 400" role="img" aria-label="Layered map of DPDK libraries"></svg></div>
+        <div class="ch01-info" id="cake-info" aria-live="polite"><span class="muted">Select a box to see what it does, its main header and the chapter that teaches it.</span></div>
+      </div>
+    </div>
+
+    <p>Two patterns repeat everywhere and are worth noticing now:</p>
+    <ul>
+      <li><strong>Dependencies run downwards.</strong> A packet buffer (<code>rte_mbuf</code>) lives in a pool (<code>rte_mempool</code>), whose default storage is a ring (<code>rte_ring</code>), which lives in memory the EAL reserved. That is exactly the order of ch4 to ch7.</li>
+      <li><strong>Every device class works the same way.</strong> A generic library (<code>lib/ethdev</code>, <code>lib/cryptodev</code>, ...) defines the API; each driver registers itself with a bus (PCI or vdev), and the EAL's bus probe at start-up creates the devices. Fast-path functions such as <code>rte_eth_rx_burst()</code> are <code>static inline</code> wrappers that jump straight into the driver's burst function through a table of function pointers (<span class="src-path">lib/ethdev/rte_ethdev.h</span>, <span class="src-path">lib/ethdev/rte_ethdev_core.h</span>).</li>
+    </ul>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 6)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">ls $DPDK_SRC/lib | wc -l</span>
+<span class="hl">59</span>
+
+<span class="prompt">$ </span><span class="cmd">pkg-config --libs --static libdpdk | tr ' ' '\n' | grep -c 'l:librte_'</span>
+<span class="hl">83</span>
+
+<span class="prompt">$ </span><span class="cmd">ls $DPDK_SRC/drivers/net | wc -l   # Ethernet PMDs in the tree</span>
+<span class="hl">57</span></pre>
+    </div>
+    <p class="output-caption">The source tree has 59 library directories; this installation links 83 static archives (libraries plus the drivers that were built), and the tree contains 57 Ethernet drivers. <span class="src-path">doc/guides/prog_guide/source_org.rst</span> describes the layout.</p>
+
+    <!-- ===================================================== 9 -->
+    <h2 id="history"><span class="sec-num">9</span>Where DPDK came from</h2>
+    <figure class="diagram">
+      <div class="scroll-x">
+      <svg viewBox="0 0 760 304" role="img" aria-labelledby="f-hist-t">
+        <title id="f-hist-t">DPDK history from 2010 to 26.11, with the release cadence change and three-year LTS bars.</title>
+        <g id="hist-ticks"></g>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>From an Intel project to a Linux Foundation project. Since 2016 versions are named YY.MM; since 2022 there are three releases a year (.03, .07, .11), and every .11 release is a long-term-support (LTS) release maintained for 3 years (<span class="src-path">doc/guides/contributing/stable.rst</span>). 26.11, used in this course, is an LTS release.</figcaption>
+    </figure>
+    <ul>
+      <li><strong>About 2010:</strong> started inside Intel to show that ordinary x86 servers could do packet processing that used to need network processors. 6WIND contributed early on.</li>
+      <li><strong>2013:</strong> 6WIND launched <code>dpdk.org</code> as an open community with a public mailing list.</li>
+      <li><strong>2016:</strong> version numbers became YY.MM (16.04); 16.11 was the first LTS.</li>
+      <li><strong>April 2017:</strong> DPDK became a Linux Foundation project with a governing board and a technical board.</li>
+      <li><strong>Since then:</strong> meson replaced make (20.11), eventdev, rte_flow, cryptodev, dmadev, graph and many more arrived, and DPDK runs on x86, Arm, POWER, RISC-V and LoongArch, on Linux, FreeBSD and Windows.</li>
+      <li><strong>Licence:</strong> BSD-3-Clause for libraries and drivers, so it can be used in closed-source products. That is one reason vendors adopted it so widely.</li>
+    </ul>
+
+    <!-- ===================================================== 10 -->
+    <h2 id="ecosystem"><span class="sec-num">10</span>Ecosystem, alternatives, and when not to use DPDK</h2>
+    <h3 id="who-uses">Who builds on DPDK</h3>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Project</th><th>What it is</th><th>How it uses DPDK</th></tr></thead>
+        <tbody>
+          <tr><td>Open vSwitch (OVS-DPDK)</td><td>virtual switch for clouds and NFV</td><td>PMD threads poll physical ports and vhost-user ports to VMs</td></tr>
+          <tr><td>FD.io VPP</td><td>software router/switch</td><td>DPDK is one input driver; processes vectors of packets through a node graph (like <code>lib/graph</code>, ch28)</td></tr>
+          <tr><td>SPDK</td><td>user-space NVMe storage</td><td>reuses the EAL (hugepages, PCI/VFIO, rings): same bypass idea, for disks</td></tr>
+          <tr><td>TRex, Pktgen-DPDK, MoonGen</td><td>traffic generators</td><td>line-rate packet generation and measurement</td></tr>
+          <tr><td>F-Stack, Seastar, mTCP</td><td>user-space TCP/IP stacks</td><td>add the TCP and sockets that DPDK does not have</td></tr>
+          <tr><td>Suricata, DPVS, 5G user-plane functions</td><td>IDS, load balancer, mobile core</td><td>fast packet I/O and classification</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="alternatives">The alternatives</h3>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th></th><th>DPDK</th><th>AF_XDP (+ XDP/eBPF)</th><th>io_uring</th><th>netmap / PF_RING ZC</th><th>RDMA (verbs)</th></tr></thead>
+        <tbody>
+          <tr><td>Who drives the NIC</td><td>user-space PMD</td><td>kernel driver, packets redirected to a user socket</td><td>kernel</td><td>modified kernel drivers</td><td>NIC does the transport</td></tr>
+          <tr><td>Kernel stack bypassed</td><td>fully</td><td>for redirected packets</td><td>no, fewer syscalls and copies</td><td>yes</td><td>yes</td></tr>
+          <tr><td>Kernel can still use the NIC</td><td>no (except bifurcated drivers such as mlx5)</td><td>yes, per queue</td><td>yes</td><td>partly</td><td>yes</td></tr>
+          <tr><td>Best for</td><td>highest packet rate, rich libraries (flow offload, crypto, QoS, eventdev)</td><td>fast path in a kernel-managed system</td><td>general servers with many connections</td><td>capture, simple forwarding</td><td>storage, HPC, AI clusters</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The lines are blurry: DPDK itself has an <code>net_af_xdp</code> and an <code>net_af_packet</code> driver, so a DPDK application can run on top of kernel sockets when you cannot give it the whole NIC. XDP processes packets inside the kernel driver with eBPF programs, before an <code>sk_buff</code> exists (H&oslash;iland-J&oslash;rgensen et al., "The eXpress Data Path", CoNEXT 2018).</p>
+
+    <h3 id="when-not">When <em>not</em> to use DPDK</h3>
+    <ul>
+      <li><strong>The packet rate is modest.</strong> A web server or a database that needs TCP and handles a few hundred thousand packets per second is better off with the kernel (plus <code>epoll</code>, <code>io_uring</code> or <code>SO_REUSEPORT</code>).</li>
+      <li><strong>You need the kernel's TCP/IP stack, tools and firewall.</strong> With DPDK, <code>ip</code>, <code>tcpdump</code> and <code>iptables</code> no longer see the port (you use <code>dpdk-dumpcap</code>, telemetry and testpmd instead, ch13, ch16).</li>
+      <li><strong>You cannot dedicate cores or the NIC.</strong> Polling cores show 100% CPU, and a NIC bound to vfio-pci disappears from Linux. AF_XDP keeps the NIC shared.</li>
+      <li><strong>Power or idle cost matters more than latency,</strong> and traffic is bursty (see section 5; ch22 shows the power-saving options).</li>
+      <li><strong>The team is small and has no measured performance problem.</strong> DPDK is a big toolkit with its own operational model (hugepages, device binding, versions; ch29).</li>
+    </ul>
+
+    <!-- ===================================================== PITFALLS -->
+    <h2 id="pitfalls">Common pitfalls</h2>
+    <ul>
+      <li><strong>Calculating line rate with 64 B instead of 84 B.</strong> You get 19.5 Mpps at 10 GbE instead of 14.88. Always add the 20 bytes of preamble, SFD and gap.</li>
+      <li><strong>Binding the NIC that carries your SSH session to DPDK.</strong> The interface vanishes from Linux and your session dies. On this course's machine <code>eth0</code> is never touched; all examples use virtual devices.</li>
+      <li><strong>"My DPDK app uses 100% CPU while idle, is it broken?"</strong> No: polling cores always look busy. Measure useful work with DPDK's own counters (ch13), not <code>top</code>.</li>
+      <li><strong>Treating <code>net_null</code> numbers as NIC numbers.</strong> They measure framework overhead only. Likewise, <code>net_tap</code> and <code>net_af_packet</code> make system calls, so they are not kernel bypass.</li>
+      <li><strong>Forgetting <code>--file-prefix</code>.</strong> Two DPDK processes with the default prefix fight over <code>/var/run/dpdk/rte/</code>; the second one may fail or attach to the first as a "secondary" process (ch16).</li>
+      <li><strong>Losing output when a sample is killed.</strong> When stdout is a file or pipe, it is fully buffered; a program stopped by <code>timeout</code> loses what it printed. Run it under <code>stdbuf -oL</code>, as <code>run.sh</code> does for <code>dpdk-skeleton</code>.</li>
+      <li><strong>Expecting sockets.</strong> DPDK gives you raw frames; there is no <code>connect()</code> or <code>accept()</code>.</li>
+    </ul>
+
+    <!-- ===================================================== CHECK -->
+    <h2 id="check">Check your understanding</h2>
+    <div class="quiz" data-quiz>
+      <div class="quiz-head">Five questions</div>
+      <div class="q" data-answer="1" data-explain="10&times;10<sup>9</sup> / (84 &times; 8) = 14.88 million. The preamble, SFD and inter-frame gap add 20 bytes to every 64-byte frame.">
+        <div class="q-text">How many 64-byte frames per second fit on a 10 Gbit/s link?</div>
+        <div class="q-opts"><button class="q-opt">19.53 million</button><button class="q-opt">14.88 million</button><button class="q-opt">1.49 million</button></div>
+      </div>
+      <div class="q" data-answer="2" data-explain="6.72 ns &times; 2.7 GHz &asymp; 18 cycles, less than one DRAM access.">
+        <div class="q-text">At 100 GbE with 64-byte frames and a 2.7 GHz core, roughly how many cycles does each packet get?</div>
+        <div class="q-opts"><button class="q-opt">about 1800</button><button class="q-opt">about 180</button><button class="q-opt">about 18</button></div>
+      </div>
+      <div class="q" data-answer="0" data-explain="The PMD runs in your process and the NIC DMAs straight into buffers your process can read, so receiving is a normal function call. Polling removes the interrupt.">
+        <div class="q-text">Why does <code>rte_eth_rx_burst()</code> not need a system call?</div>
+        <div class="q-opts"><button class="q-opt">The driver runs in the application's process and the packet memory is mapped into it</button><button class="q-opt">It uses a faster system call called vDSO</button><button class="q-opt">The kernel copies packets in the background</button></div>
+      </div>
+      <div class="q" data-answer="1" data-explain="Polling never sleeps, so the core is busy even with no traffic; the measured poll mode used about 100% CPU at every rate.">
+        <div class="q-text">What is the main cost of polling?</div>
+        <div class="q-opts"><button class="q-opt">Higher latency per packet</button><button class="q-opt">A core runs at 100% even when no packets arrive</button><button class="q-opt">More memory copies</button></div>
+      </div>
+      <div class="q" data-answer="2" data-explain="DPDK provides packet I/O and libraries, not a TCP stack. F-Stack, Seastar or mTCP add one; or keep the kernel for TCP.">
+        <div class="q-text">You need a TCP server handling 10 000 connections at a low packet rate. What does DPDK give you for that?</div>
+        <div class="q-opts"><button class="q-opt">A socket API compatible with Linux</button><button class="q-opt">A built-in TCP/IP stack in lib/net</button><button class="q-opt">Nothing: DPDK has no TCP stack, and the kernel is the better choice here</button></div>
+      </div>
+      <div class="controls"><button class="btn small quiz-reset" type="button">Reset</button></div>
+    </div>
+
+    <!-- ===================================================== EXERCISES -->
+    <h2 id="exercises">Exercises</h2>
+    <div class="exercise">
+      <div class="box-title">Exercise 1 <span class="tag easy">easy</span></div>
+      <p>Compute packets per second, ns per packet and cycles per packet for 25 GbE with 128-byte frames on a 3.0 GHz core. If one DRAM miss costs about 80 ns, how many fit in the budget? Check your answer with the calculator above.</p>
+      <details><summary>Hint</summary><p>Wire size is 128 + 20 = 148 bytes = 1184 bits.</p></details>
+      <details><summary>Solution</summary><p>25&times;10<sup>9</sup> / 1184 = 21.1 Mpps; 47.4 ns per packet; 142 cycles at 3.0 GHz; 47.4 / 80 = 0.59, so not even one DRAM miss per packet. <code>code/solutions/ex1_budget.c</code> prints the whole table; its output is in <code>code/solutions/ex1_output.txt</code>.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 2 <span class="tag medium">medium</span></div>
+      <p>Run <code>bypass_bench</code> with bursts of 1, 8 and 32 (<code>./bypass_bench &lt;EAL args&gt; -- 1 8 32</code>; the program reads burst sizes after <code>--</code>). Plot cycles per packet against burst size. Why does the cost per packet fall as the burst grows, and why does it not fall in proportion?</p>
+      <details><summary>Hint</summary><p>Split the cost of one call into a fixed part (the call, the driver dispatch, reading queue state) and a part per packet (getting and freeing each buffer).</p></details>
+      <details><summary>Solution</summary><p>Measured on this machine (section 3 of <code>expected_output.txt</code>):</p>
+<pre data-nocopy>dpdk rx+tx burst=1 (net_null)          17.3 ns/pkt  (min 17.3, max 18.0)       47 cycles/pkt    57.80 Mpps
+dpdk rx+tx burst=8 (net_null)           6.8 ns/pkt  (min 6.7, max 7.1)       18 cycles/pkt   147.92 Mpps
+dpdk rx+tx burst=32 (net_null)          9.3 ns/pkt  (min 9.3, max 9.3)       25 cycles/pkt   107.24 Mpps</pre>
+        <p>The fixed cost of each pair of calls is shared by <var>n</var> packets, so it shrinks per packet as 1/<var>n</var>. The per-packet part (taking an mbuf from the pool cache in Rx, returning it in Tx) does not shrink, so the curve flattens. Going from 1 to 8 is the big win. Between 8 and 32 the result on this VM changed from one process to the next (in other runs burst 8 took 13.0 ns and burst 32 11.9 ns), so it is within the noise of where buffers and arrays land in the caches: measure on your own machine before you tune. On a real NIC larger bursts also mean fewer doorbell writes.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 3 <span class="tag medium">medium</span></div>
+      <p>List three workloads where AF_XDP or plain sockets are a better choice than DPDK, and say why for each.</p>
+      <details><summary>Solution</summary><p>See <code>code/solutions/ex3_answers.md</code>. Examples: an HTTP API server (needs the kernel TCP stack, low packet rate); a firewall/DDoS filter on a shared host (XDP drops early while the kernel keeps the NIC); a monitoring agent that runs on every server (cannot dedicate a core or hugepages).</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 4 <span class="tag stretch">stretch</span></div>
+      <p>Using <code>ls $DPDK_SRC/lib</code> and <code>pkg-config --libs --static libdpdk</code>, count the libraries and drivers, then place five of them on the layer cake. Which ones depend on which? (Hint: look at the <code>deps</code> line in each <code>lib/*/meson.build</code>.)</p>
+    </div>
+
+    <!-- ===================================================== SUMMARY -->
+    <section class="summary-box">
+      <div class="box-title">Summary</div>
+      <ul>
+        <li>A minimum Ethernet frame is 64 B but takes 84 B of wire time; at 10 GbE that is 14.88 Mpps and 67.2 ns per packet (181 cycles at 2.7 GHz), and only 18 cycles at 100 GbE.</li>
+        <li>The kernel path pays for an interrupt, a softirq, an <code>sk_buff</code>, the protocol stack, a socket queue, a context switch, a system call and a copy. Measured here, a loopback UDP <code>sendto()</code> + <code>recv()</code> costs about 829 ns; a DPDK burst rx+tx on <code>net_null</code> about 9.5 ns.</li>
+        <li>DPDK's five techniques: user-space drivers (VFIO + PMDs), polling, hugepages, lock-free rings and pools with per-core caches, and bursts with cache-aware and SIMD code.</li>
+        <li>Polling costs a full core even when idle; interrupts save CPU but add wake-up latency. DPDK supports both (ch22).</li>
+        <li>Work can be organised as run-to-completion, pipeline or event-driven; DPDK has no TCP stack and no sockets.</li>
+        <li><code>rte_eal_init()</code> starts everything, <code>rte_eth_dev_count_avail()</code> counts ports, <code>rte_rdtsc()</code> measures cycles, <code>rte_eal_cleanup()</code> releases it all.</li>
+        <li>Use DPDK when you need the highest packet rate and can dedicate cores and NICs; otherwise consider AF_XDP, io_uring or plain sockets.</li>
+      </ul>
+    </section>
+
+    <section class="references">
+      <h2 id="references">References</h2>
+      <ol>
+        <li>Programmer's Guide, Introduction and Overview. <span class="src-path">doc/guides/prog_guide/intro.rst</span>, <span class="src-path">doc/guides/prog_guide/overview.rst</span></li>
+        <li>Source organisation (lib, drivers, app, examples). <span class="src-path">doc/guides/prog_guide/source_org.rst</span></li>
+        <li>Linux drivers: VFIO, UIO, bifurcated drivers. <span class="src-path">doc/guides/linux_gsg/linux_drivers.rst</span></li>
+        <li>Stable and LTS releases. <span class="src-path">doc/guides/contributing/stable.rst</span>; release notes <span class="src-path">doc/guides/rel_notes/release_26_11.rst</span></li>
+        <li>NIC feature matrix (Rx interrupt support). <span class="src-path">doc/guides/nics/features/tap.ini</span>, <span class="src-path">doc/guides/nics/features/virtio.ini</span></li>
+        <li><code>rte_eal_init</code>: <span class="src-path">lib/eal/include/rte_eal.h</span>, <span class="src-path">lib/eal/linux/eal.c</span>; <code>rte_version</code>: <span class="src-path">lib/eal/include/rte_version.h</span>; <code>rte_rdtsc</code>: <span class="src-path">lib/eal/x86/include/rte_cycles.h</span></li>
+        <li><code>rte_eth_rx_burst</code> / <code>rte_eth_tx_burst</code> / <code>rte_eth_dev_count_avail</code>: <span class="src-path">lib/ethdev/rte_ethdev.h</span>; fast-path table <span class="src-path">lib/ethdev/rte_ethdev_core.h</span></li>
+        <li>Software PMDs used here: <span class="src-path">drivers/net/null/rte_eth_null.c</span>, <span class="src-path">drivers/net/tap/rte_eth_tap.c</span>, <span class="src-path">drivers/net/ring/rte_eth_ring.c</span></li>
+        <li>Samples: <span class="src-path">examples/helloworld/main.c</span>, <span class="src-path">examples/skeleton/basicfwd.c</span>, <span class="src-path">examples/l3fwd-power/main.c</span></li>
+        <li>Course research notes: <code>research/01-overview-history-architecture.md</code></li>
+        <li>DPDK project: https://www.dpdk.org/about/</li>
+        <li>T. H&oslash;iland-J&oslash;rgensen et al., "The eXpress Data Path: Fast Programmable Packet Processing in the Operating System Kernel", CoNEXT 2018.</li>
+      </ol>
+    </section>
+
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <span class="placeholder"></span>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../02-build-and-first-app/index.html"><span class="dir">Next &rarr;</span><span class="ttl">02 &middot; Building DPDK and Your First Application</span></a>
+    </nav>
+  </main>
+</div>
+<footer class="site-footer">DPDK from Zero to Expert: Building Fast Packet Processing in User Space &middot; DPDK 26.11</footer>
+
+<script src="../../assets/course.js"></script>
+<script>
+/* Measured on this machine by code/bypass_bench.c and code/ivp_sweep.sh (filled in by the build). */
+var CH01_BB = {"kernel_ns": 828.9, "dpdk_ns": 9.5, "burst1_ns": 17.3, "a": 8.1, "b": 9.2};
+var CH01_IVP = {"rows": [{"poll": {"cpu": 100.6, "lat": null, "wps": 0.0}, "intr": {"cpu": 0.7, "lat": null, "wps": 10.0, "wpp": null, "busy_us": 0}}, {"poll": {"cpu": 100.5, "lat": 24.4, "wps": 0.0}, "intr": {"cpu": 0.8, "lat": 43.8, "wps": 64.0, "wpp": 1.067, "busy_us": 16.67}}, {"poll": {"cpu": 100.5, "lat": 14.8, "wps": 0.0}, "intr": {"cpu": 1.2, "lat": 24.4, "wps": 604.0, "wpp": 1.007, "busy_us": 8.33}}, {"poll": {"cpu": 100.6, "lat": 12.0, "wps": 0.0}, "intr": {"cpu": 3.1, "lat": 12.9, "wps": 5990.0, "wpp": 0.998, "busy_us": 4.0}}]};
+
+CourseJS.ready(function () {
+  var S = CourseJS.svg, fmt = CourseJS.fmt;
+
+  /* ---------------- static: frame ticks (1 tick per byte) ---------------- */
+  (function () {
+    var g = document.querySelector('.ch01-ticks');
+    if (!g) return;
+    for (var i = 0; i <= 84; i++) {
+      var x = 20 + i * (714 / 84);
+      S.line(g, x, 106, x, i % 8 === 0 ? 116 : 111, 'svg-line');
+    }
+  })();
+
+  /* ---------------- static: five techniques ---------------- */
+  (function () {
+    var g = document.getElementById('five-rows');
+    var rows = [
+      ['User-space drivers (VFIO + PMD)', 'syscalls, kernel driver, copies', 'drivers/net, bus/pci (ch9, ch23)', 'c4'],
+      ['Polling (poll mode drivers)', 'interrupts, wake-ups, ctx switches', 'rte_eth_rx_burst (ch8, ch22)', 'c1'],
+      ['Hugepages (2 MB / 1 GB)', 'TLB misses, pages that move', 'lib/eal memory (ch4)', 'c2'],
+      ['Lock-free rings + pools', 'locks, per-packet allocation', 'lib/ring, lib/mempool (ch5, ch6)', 'c5'],
+      ['Bursts, prefetch, SIMD', 'per-call cost, cache-miss stalls', 'lib/mbuf, vector PMDs (ch7, ch22)', 'c3']
+    ];
+    rows.forEach(function (r, i) {
+      var y = 40 + i * 66;
+      S.rect(g, 20, y, 250, 50, 'svg-box ' + r[3]);
+      S.text(g, 145, y + 25, r[0], 'svg-label center bold small');
+      S.arrow(g, 272, y + 25, 296, y + 25, r[3]);
+      S.rect(g, 300, y, 200, 50, 'svg-box c6 dashed');
+      S.text(g, 400, y + 25, r[1], 'svg-label center small');
+      S.rect(g, 510, y, 200, 50, 'svg-box c7');
+      S.text(g, 610, y + 25, r[2], 'svg-label center small');
+    });
+  })();
+
+  /* ---------------- static: history timeline ---------------- */
+  (function () {
+    var g = document.getElementById('hist-ticks');
+    if (!g) return;
+    var LY = 100;
+    function X(year) { return 30 + (year - 2010) * (700 / 17); }
+    /* [year, title, subtitle, level]: level -2/-1 above the line, 1/2 below */
+    var ev = [
+      [2010, 'Intel internal', 'project starts', -1],
+      [2013, 'dpdk.org', 'open community', 1],
+      [2016.3, '16.04', 'YY.MM versions', -1],
+      [2016.9, '16.11', 'first LTS', 1],
+      [2017.3, 'Linux Foundation', 'April 2017', -2],
+      [2020.9, '20.11', 'meson only', 1],
+      [2022.2, '22.03', '3 releases / year', -1],
+      [2026.9, '26.11 LTS', 'this course', -2]
+    ];
+    S.line(g, 30, LY, 740, LY, 'svg-line');
+    ev.forEach(function (e) {
+      var x = X(e[0]), lv = e[3], ty = lv === -2 ? 22 : lv === -1 ? 58 : lv === 1 ? 136 : 172;
+      var anchor = x > 690 ? 'end' : x < 60 ? 'start' : 'middle';
+      S.el('circle', { cx: x, cy: LY, r: 5, 'class': 'svg-fill-c1' }, g);
+      S.line(g, x, lv < 0 ? ty + 18 : LY + 6, x, lv < 0 ? LY - 6 : ty - 14, 'svg-line', { style: 'stroke-dasharray:2 3' });
+      S.text(g, x, ty, e[1], 'svg-label small bold', { 'text-anchor': anchor });
+      S.text(g, x, ty + 13, e[2], 'svg-label small muted', { 'text-anchor': anchor });
+    });
+    for (var y = 2010; y <= 2027; y++) S.text(g, X(y), LY + 16, "'" + String(y).slice(2), 'svg-label small muted', { 'text-anchor': 'middle', style: 'font-size:9px' });
+    /* LTS bars: each .11 release is maintained for 3 years */
+    [2020, 2021, 2022, 2023, 2024, 2025, 2026].forEach(function (yr, i) {
+      var x0 = X(yr + 0.9), x1 = X(Math.min(yr + 3.9, 2027)), y = 196 + i * 12;
+      S.rect(g, x0, y, x1 - x0, 9, 'svg-box c2', { rx: 3 });
+      S.text(g, x0 - 3, y + 8, (yr % 100) + '.11', 'svg-label small', { 'text-anchor': 'end', style: 'font-size:9px' });
+    });
+    S.text(g, 30, 296, 'green bars: every November (.11) release is an LTS, maintained for 3 years (bars cut at the right edge)', 'svg-label small muted');
+  })();
+
+  /* ================= Widget 1: packet-time budget ================= */
+  (function () {
+    var root = document.getElementById('w-budget');
+    if (!root) return;
+    var svg = root.querySelector('svg');
+    var SPEEDS = [1, 10, 25, 40, 50, 100, 200, 400, 800];
+    var COSTS = [
+      { n: 'L1 cache hit', ns: 1.2, src: 'typical' },
+      { n: 'last-level cache hit', ns: 14, src: 'typical' },
+      { n: 'DPDK rx+tx burst/pkt (net_null)', ns: CH01_BB.dpdk_ns, src: 'measured here' },
+      { n: 'DRAM access (cache miss)', ns: 80, src: 'typical' },
+      { n: 'system call (empty, mitigations on)', ns: 150, src: 'typical' },
+      { n: 'kernel UDP sendto()+recv()', ns: CH01_BB.kernel_ns, src: 'measured here' },
+      { n: 'context switch', ns: 2000, src: 'typical' }
+    ];
+    var X0 = 250, X1 = 600, LMIN = Math.log10(0.5), LMAX = Math.log10(5000);
+    function X(ns) { return X0 + (Math.log10(Math.max(ns, 0.5)) - LMIN) / (LMAX - LMIN) * (X1 - X0); }
+    [0.5, 1, 10, 100, 1000, 5000].forEach(function (v) {
+      S.line(svg, X(v), 20, X(v), 250, 'svg-grid');
+      S.text(svg, X(v), 266, v >= 1000 ? (v / 1000) + ' µs' : v + ' ns', 'svg-label small center muted');
+    });
+    S.text(svg, X0, 290, 'cost of one operation (log scale)', 'svg-label small muted');
+    var bars = COSTS.map(function (c, i) {
+      var y = 28 + i * 32;
+      var g = S.group(svg);
+      S.text(g, X0 - 8, y + 9, c.n, 'svg-label small', { 'text-anchor': 'end' });
+      S.text(g, X0 - 8, y + 21, c.src, 'svg-label small muted', { 'text-anchor': 'end', style: 'font-size:9.5px' });
+      var r = S.rect(g, X0, y, X(c.ns) - X0, 18, 'bar svg-fade', { rx: 3, style: 'fill:' + (c.src === 'measured here' ? 'var(--c1)' : 'var(--c7)') });
+      var t = S.text(g, X(c.ns) + 6, y + 13, '', 'svg-label small mono');
+      return { g: g, r: r, t: t, c: c };
+    });
+    var line = S.line(svg, X0, 14, X0, 252, 'svg-line', { style: 'stroke:var(--c3);stroke-width:3' });
+    var lineLbl = S.text(svg, X0, 10, '', 'svg-label small bold center', { style: 'fill:var(--c3)' });
+    var sp = document.getElementById('b-speed'), sz = document.getElementById('b-size'), gh = document.getElementById('b-ghz');
+    function update() {
+      var R = SPEEDS[+sp.value] * 1e9, size = +sz.value, ghz = +gh.value;
+      var pps = R / ((size + 20) * 8), ns = 1e9 / pps, cyc = ns * ghz;
+      document.getElementById('b-pps').textContent = fmt(pps / 1e6, pps < 1e7 ? 3 : 2);
+      document.getElementById('b-ns').textContent = ns < 10 ? ns.toFixed(2) : fmt(ns, 1);
+      document.getElementById('b-cyc').textContent = fmt(cyc, cyc < 10 ? 1 : 0);
+      document.getElementById('b-dram').textContent = (ns / 80).toFixed(2);
+      var x = X(ns);
+      line.setAttribute('x1', x); line.setAttribute('x2', x);
+      lineLbl.setAttribute('x', CourseJS.clamp(x, 300, 620)); lineLbl.textContent = 'budget ' + (ns < 10 ? ns.toFixed(2) : fmt(ns, 1)) + ' ns';
+      bars.forEach(function (b) {
+        b.g.classList.toggle('ch01-over', b.c.ns > ns);
+        b.t.textContent = fmt(b.c.ns * ghz, 0) + ' cyc';
+      });
+    }
+    CourseJS.bindRange(sp, '#b-speed-o', function (v) { return SPEEDS[v] + ' GbE'; }, update);
+    CourseJS.bindRange(sz, '#b-size-o', function (v) { return v + ' B'; }, update);
+    CourseJS.bindRange(gh, '#b-ghz-o', function (v) { return v.toFixed(1) + ' GHz'; }, update);
+    update();
+  })();
+
+  /* ================= Widget 2: journey stepper ================= */
+  (function () {
+    var root = document.getElementById('w-journey');
+    if (!root) return;
+    var svg = root.querySelector('svg');
+    S.text(svg, 10, 20, 'kernel path', 'svg-title');
+    S.text(svg, 10, 178, 'DPDK path', 'svg-title');
+    var K = ['NIC DMA', 'IRQ', 'softirq + sk_buff', 'IP/UDP stack', 'socket queue', 'wake + switch', 'recv() + copy', 'app'];
+    var D = ['NIC DMA', 'Rx ring (descriptors)', 'rx_burst() in app', 'app'];
+    function boxes(names, y, w, gap, cls) {
+      return names.map(function (n, i) {
+        var x = 10 + i * (w + gap);
+        var b = S.box(svg, x, y, w, 50, '', cls);
+        b.rect.classList.add('svg-fade');
+        var words = n.split(' ');
+        var half = Math.ceil(words.length / 2);
+        if (words.length > 1 && n.length > 10) {
+          S.text(b, x + w / 2, y + 18, words.slice(0, half).join(' '), 'svg-label center small');
+          S.text(b, x + w / 2, y + 34, words.slice(half).join(' '), 'svg-label center small');
+        } else S.text(b, x + w / 2, y + 25, n, 'svg-label center small');
+        if (i > 0) S.arrow(svg, x - gap + 1, y + 25, x - 2, y + 25, cls === 'c6' ? 'c6' : 'c1');
+        return b;
+      });
+    }
+    var kb = boxes(K, 34, 72, 12, 'c6');
+    var db = boxes(D, 192, 150, 20, 'c1');
+    var note = S.text(svg, 10, 120, '', 'svg-label small');
+    var note2 = S.text(svg, 10, 138, '', 'svg-label small muted');
+    var pk = S.packet(svg, 46, 59, 22, 12);
+    var pd = S.packet(svg, 85, 217, 22, 12);
+    function setT(ctx) {
+      var t = ctx.data;
+      document.getElementById('j-irq').textContent = t.irq;
+      document.getElementById('j-sys').textContent = t.sys;
+      document.getElementById('j-copy').textContent = t.copy;
+      document.getElementById('j-ctx').textContent = t.ctx;
+      document.getElementById('j-dpdk').textContent = '0 / 0 / 0';
+    }
+    function at(list, i, p, y) {
+      list.forEach(function (b, k) { b.rect.classList.toggle('svg-highlight', k === i); });
+      var r = list[i].rect;
+      S.moveTo(p, +r.getAttribute('x') + +r.getAttribute('width') / 2, y);
+    }
+    function k(i, add, txt, txt2) {
+      return function (ctx, cur) {
+        at(kb, i, pk, 92); for (var key in add) ctx.data[key] += add[key];
+        if (cur) { note.textContent = txt; note2.textContent = txt2 || ''; }
+        setT(ctx);
+      };
+    }
+    function d(i, txt, txt2) {
+      return function (ctx, cur) {
+        kb.forEach(function (b) { b.rect.classList.remove('svg-highlight'); });
+        at(db, i, pd, 250);
+        if (cur) { note.textContent = txt; note2.textContent = txt2 || ''; }
+        setT(ctx);
+      };
+    }
+    new CourseJS.Stepper(root, {
+      interval: 2200,
+      reset: function (ctx) {
+        ctx.data.irq = 0; ctx.data.sys = 0; ctx.data.copy = 0; ctx.data.ctx = 0;
+        kb.concat(db).forEach(function (b) { b.rect.classList.remove('svg-highlight'); });
+        S.moveTo(pk, 46, 92); S.moveTo(pd, 85, 250);
+        note.textContent = ''; note2.textContent = ''; setT(ctx);
+      },
+      steps: [
+        { caption: 'A 64-byte UDP packet arrives. Follow it through the kernel first.' },
+        { caption: 'The NIC writes the frame into a kernel buffer by DMA and marks the descriptor done. No CPU involved.', run: k(0, {}, 'DMA: the NIC writes into RAM by itself.') },
+        { caption: 'The NIC raises an interrupt; the CPU drops what it was doing.', run: k(1, { irq: 1 }, 'Interrupt: save state, enter the handler, schedule NAPI.', 'Interrupt moderation can share one IRQ between many packets.') },
+        { caption: 'NAPI softirq: the driver reads the descriptor and allocates an sk_buff (packet metadata) for the frame.', run: k(2, {}, 'One sk_buff allocation and initialisation per packet.') },
+        { caption: 'GRO, netfilter, routing, IP and UDP checks, socket lookup.', run: k(3, {}, 'General-purpose stack: firewall hooks, routing, checksum, lookup.') },
+        { caption: 'The sk_buff is queued on the socket (taking its lock) and the sleeping reader is woken.', run: k(4, {}, 'Socket queue: lock, enqueue, wake up the reader.') },
+        { caption: 'The scheduler switches to the application, which is inside recv().', run: k(5, { ctx: 1 }, 'Context switch to the receiving thread.'),
+          predict: { question: 'Is the thread that called <code>recv()</code> already running when the packet arrives?', options: ['Usually not: it is asleep and must be scheduled', 'Always: recv() spins until data arrives'], answer: 0,
+            explain: 'A blocking recv() sleeps. Waking it means a scheduler decision and a context switch, typically microseconds.' } },
+        { caption: 'recv() was a system call; it copies the payload into the user buffer and returns.', run: k(6, { sys: 1, copy: 1 }, 'System call + copy kernel -> user, then return to user space.'),
+          predict: { question: 'How many times has the CPU copied the payload so far?', options: ['0', '1', '2'], answer: 1,
+            explain: 'The NIC DMA is not a CPU copy. The one CPU copy is kernel buffer -> your buffer inside recv(). (Sending adds another copy in the other direction.)' } },
+        { caption: 'The application finally has the data. Tally: 1 interrupt, 1 context switch, 1 syscall, 1 copy, plus a whole stack, for ONE packet.', run: k(7, {}, 'Done. Now the DPDK path.') },
+        { caption: 'DPDK: the NIC DMAs the frame into an mbuf that lives in hugepage memory already mapped into the application.', run: d(0, 'DMA straight into application-owned packet memory.') },
+        { caption: 'The descriptor in the Rx ring is marked done. Nobody is interrupted: the core is busy polling.', run: d(1, 'No interrupt: an lcore is polling the ring.') },
+        { caption: 'The application calls rte_eth_rx_burst(): an ordinary function call that returns up to 32 mbuf pointers.', run: d(2, 'Pointers, not copies: the packet stays where the NIC wrote it.'),
+          predict: { question: 'How many system calls does <code>rte_eth_rx_burst()</code> make to receive 32 packets from a hardware PMD?', options: ['32', '1', '0'], answer: 2,
+            explain: 'Zero. The driver runs in your process and reads descriptors in memory shared with the NIC.' } },
+        { caption: 'The application processes the burst. Tally for 32 packets: 0 interrupts, 0 syscalls, 0 copies, 0 context switches.', run: d(3, 'Same packet, none of the kernel costs. The price: a core that polls all the time.') }
+      ]
+    });
+  })();
+
+  /* ================= Widget 3: two-lane race ================= */
+  (function () {
+    var root = document.getElementById('w-race');
+    if (!root) return;
+    var svg = root.querySelector('svg');
+    var SLOW = 2000;                 /* ns of real time per screen second */
+    var KNS = CH01_BB.kernel_ns, A = CH01_BB.a, B = CH01_BB.b, KQ = 8, DQ = 30;
+    S.text(svg, 10, 18, 'kernel lane: one packet at a time, ' + Math.round(KNS) + ' ns each', 'svg-label small bold');
+    S.text(svg, 10, 146, 'DPDK lane: poll, take a burst; ' + A.toFixed(1) + ' ns per call + ' + B.toFixed(1) + ' ns per packet', 'svg-label small bold');
+    S.rect(svg, 4, 38, 52, 44, 'svg-box c4'); S.text(svg, 30, 60, 'NIC', 'svg-label small center');
+    S.rect(svg, 64, 38, 140, 44, 'svg-box c5'); S.text(svg, 134, 94, 'backlog (8 max)', 'svg-label small center muted'); S.text(svg, 400, 110, 'the packet in service moves along under the hops', 'svg-label small center muted', { style: 'font-size:9.5px' });
+    var KH = [['IRQ+softirq', 250], ['stack', 340], ['socket', 430], ['recv+copy', 520]];
+    KH.forEach(function (h) { S.rect(svg, h[1] - 40, 38, 80, 44, 'svg-box c6'); S.text(svg, h[1], 60, h[0], 'svg-label small center'); });
+    S.rect(svg, 596, 38, 76, 44, 'svg-box c1'); S.text(svg, 634, 60, 'app', 'svg-label small center');
+    S.rect(svg, 4, 166, 52, 44, 'svg-box c4'); S.text(svg, 30, 188, 'NIC', 'svg-label small center');
+    var dring = S.rect(svg, 64, 166, 300, 44, 'svg-box c5'); S.text(svg, 214, 222, 'Rx descriptor ring (30 shown)', 'svg-label small center muted');
+    var poller = S.rect(svg, 384, 166, 150, 44, 'svg-box c1'); S.text(svg, 459, 188, 'lcore: rx_burst()', 'svg-label small center mono');
+    S.rect(svg, 596, 166, 76, 44, 'svg-box c1'); S.text(svg, 634, 188, 'app', 'svg-label small center');
+    var layer = S.group(svg);
+    var rate = document.getElementById('r-rate'), burst = document.getElementById('r-burst');
+    function mpps(v) { return 0.2 * Math.pow(750, v); }        /* slider 0..1 -> 0.2..150 Mpps */
+    CourseJS.bindRange(rate, '#r-rate-o', function (v) { var m = mpps(v); return (m < 10 ? m.toFixed(1) : m.toFixed(0)) + ' Mpps'; });
+    CourseJS.bindRange(burst, '#r-burst-o', function (v) { return String(v); });
+    var st;
+    function mk(x, y, cls) { var p = S.packet(layer, x, y, 12, 10, cls); p.classList.remove('svg-fade'); return p; }
+    function upd() {
+      document.getElementById('r-off').textContent = fmt(st.off);
+      document.getElementById('r-kd').textContent = fmt(st.kd);
+      document.getElementById('r-kx').textContent = fmt(st.kx);
+      document.getElementById('r-dd').textContent = fmt(st.dd);
+      document.getElementById('r-dx').textContent = fmt(st.dx);
+      document.getElementById('r-db').textContent = st.db;
+    }
+    function drop(x, y) { if (st.fly.length < 160) { var d = mk(x, y, 'dropped'); d.drop = 0; st.fly.push(d); } }
+    new CourseJS.Animator({
+      root: root, autoplay: 'visible',
+      onReset: function () {
+        S.clear(layer);
+        st = { acc: 0, off: 0, kd: 0, kx: 0, dd: 0, dx: 0, db: 0, kq: [], ks: null, kt: 0, dq: [], dbusy: 0, fly: [] };
+        upd();
+      },
+      onFrame: function (dt) {
+        var simNs = dt * SLOW;
+        st.acc += simNs * mpps(+rate.value) / 1000;   /* Mpps = packets per microsecond */
+        while (st.acc >= 1) {
+          st.acc -= 1; st.off++;
+          if (st.kq.length < KQ) st.kq.push(mk(30, 60)); else { st.kx++; drop(70, 60); }
+          if (st.dq.length < DQ) st.dq.push(mk(30, 188)); else { st.dx++; drop(70, 188); }
+        }
+        /* kernel: a single server, KNS ns per packet */
+        var left = simNs;
+        while (left > 0) {
+          if (!st.ks) { if (!st.kq.length) break; st.ks = st.kq.shift(); st.kt = 0; }
+          var need = KNS - st.kt, use = Math.min(need, left);
+          st.kt += use; left -= use;
+          if (st.kt >= KNS) { st.ks.life = 0; st.fly.push(st.ks); S.moveTo(st.ks, 634, 94); st.ks = null; st.kd++; }
+        }
+        if (st.ks) S.moveTo(st.ks, 214 + (st.kt / KNS) * (590 - 214), 94);
+        st.kq.forEach(function (p, i) { S.moveTo(p, 194 - i * 16, 60); });
+        /* DPDK: poll continuously; one call costs A + B*n ns */
+        left = simNs + st.dbusy;
+        while (left > 0) {
+          var n = Math.min(st.dq.length, +burst.value), cost = A + B * n;
+          if (cost > left) break;
+          left -= cost;
+          if (n > 0) {
+            st.dq.splice(0, n).forEach(function (p, i) { p.life = 0; p.tx = 634; S.moveTo(p, 548 + (i % 8) * 4, 188 + ((i >> 3) % 4) * 3 - 5); if (st.fly.length < 220) st.fly.push(p); else p.remove(); });
+            st.dd += n; st.db = n;
+            poller.classList.add('svg-highlight'); st.hl = 0.12;
+          }
+        }
+        st.dbusy = Math.max(0, left);
+        if (st.hl != null) { st.hl -= dt; if (st.hl <= 0) { poller.classList.remove('svg-highlight'); st.hl = null; } }
+        dring.classList.toggle('svg-highlight', st.dq.length >= DQ);
+        st.dq.forEach(function (p, i) { S.moveTo(p, 354 - i * 9.6, 188); });
+        st.fly = st.fly.filter(function (p) {
+          if (p.drop != null) {
+            p.drop += dt; S.moveTo(p, p._x + 20 * dt, p._y + 70 * dt);
+            p.style.opacity = Math.max(0, 1 - p.drop * 1.6);
+            if (p.drop > 0.6) { p.remove(); return false; } return true;
+          }
+          p.life += dt;
+          if (p.tx) S.moveTo(p, Math.min(p.tx, p._x + 600 * dt), p._y);
+          p.style.opacity = Math.max(0, 1 - p.life * 2.2);
+          if (p.life > 0.45) { p.remove(); return false; } return true;
+        });
+        upd();
+      }
+    });
+  })();
+
+  /* ================= Widget 4: interrupt vs polling ================= */
+  (function () {
+    var root = document.getElementById('w-ivp');
+    if (!root) return;
+    var svg = root.querySelector('svg');
+    var M = CH01_IVP;                /* M.rows[i] for rates 0, 100, 1000, 10000 */
+    var NB = 100, WIN = 0.1;         /* 100 bins of 1 ms = a 100 ms window */
+    var lanes = [{ y: 30, name: 'poll mode: the core spins on rx_burst()', cls: 'c1' },
+                 { y: 128, name: 'intr mode: the core sleeps in rte_epoll_wait() between packets', cls: 'c2' }];
+    lanes.forEach(function (l) {
+      S.text(svg, 10, l.y - 10, l.name, 'svg-label small bold');
+      S.rect(svg, 10, l.y, 660, 70, 'svg-box c7', { rx: 2, style: 'fill:none' });
+      l.bars = [];
+      for (var i = 0; i < NB; i++) l.bars.push(S.rect(svg, 10 + i * 6.6, l.y + 70, 5.6, 0, 'svg-fill-' + l.cls, { rx: 0 }));
+      l.marks = S.group(svg);
+    });
+    S.text(svg, 10, 222, 'time → (100 ms window). Orange ticks = packet arrivals; bar height = share of each 1 ms the core is busy', 'svg-label small muted');
+    var rateEl = document.getElementById('i-rate');
+    function rate(v) { return v <= 0.001 ? 0 : Math.pow(10, v + 1); }   /* slider 0..3 -> 0, 10^1..10^4 */
+    function val(v, mode, key) {                                         /* linear in slider units = log rate */
+      var i = Math.min(2, Math.floor(v)), f = Math.min(1, v - i);
+      var a = M.rows[i][mode][key], b = M.rows[i + 1][mode][key];
+      if (a == null) return b; if (b == null) return a;
+      return a + (b - a) * f;
+    }
+    function put(id, x, d) { document.getElementById(id).textContent = x == null || isNaN(x) ? '-' : x.toFixed(d); }
+    function show() {
+      var v = +rateEl.value, r = rate(v);
+      put('i-pcpu', val(v, 'poll', 'cpu'), 1);
+      put('i-icpu', val(v, 'intr', 'cpu'), 1);
+      put('i-wk', r > 0 ? val(Math.max(v, 1), 'intr', 'wpp') : M.rows[0].intr.wps, r > 0 ? 2 : 0);
+      document.getElementById('i-wk-l').textContent = r > 0 ? 'intr: wake-ups / packet' : 'intr: idle wake-ups / s';
+      put('i-plat', r > 0 ? val(Math.max(v, 1), 'poll', 'lat') : NaN, 1);
+      put('i-ilat', r > 0 ? val(Math.max(v, 1), 'intr', 'lat') : NaN, 1);
+      var exact = Math.abs(v - Math.round(v)) < 0.001;
+      document.getElementById('i-src').textContent = exact ? 'measured (median of 5 runs)' : 'interpolated between measured points';
+    }
+    CourseJS.bindRange(rateEl, '#i-rate-o', function (v) { var r = rate(v); return (r < 1 ? '0' : fmt(r, 0)) + ' pkt/s'; }, show);
+    show();
+    var hist, acc, tnow;
+    new CourseJS.Animator({
+      root: root, autoplay: 'visible', speeds: [0.02, 0.05, 0.1, 0.25, 0.5], speed: 0.05,
+      onReset: function () { hist = []; acc = 0; tnow = 0; },
+      onFrame: function (dt) {
+        var v = +rateEl.value, r = rate(v), binT = WIN / NB;
+        var busyPkt = (r > 0 ? val(Math.max(v, 1), 'intr', 'busy_us') : 0) * 1e-6;  /* s of CPU per packet */
+        var pollCpu = val(v, 'poll', 'cpu') / 100;
+        acc += dt;
+        while (acc >= binT) {
+          acc -= binT; tnow += binT;
+          var lam = r * binT, n = 0;
+          if (lam > 30) n = Math.max(0, Math.round(lam + Math.sqrt(lam) * (Math.random() + Math.random() + Math.random() - 1.5) * 2));
+          else { var L = Math.exp(-lam), p = 1; do { n++; p *= Math.random(); } while (p > L); n--; }
+          var to = n === 0 && Math.floor(tnow / 0.1) !== Math.floor((tnow - binT) / 0.1);  /* 100 ms epoll timeout */
+          hist.push({ p: Math.min(1, pollCpu), i: Math.min(1, (n * busyPkt + (to ? 3e-5 : 0)) / binT), n: n });
+          if (hist.length > NB) hist.shift();
+        }
+        var off = NB - hist.length;
+        lanes.forEach(function (l, li) {
+          S.clear(l.marks);
+          for (var i = 0; i < NB; i++) {
+            var e = hist[i - off], b = e ? (li === 0 ? e.p : e.i) : 0;
+            var h = b > 0 ? Math.max(1.5, b * 68) : 0;
+            l.bars[i].setAttribute('y', l.y + 70 - h); l.bars[i].setAttribute('height', h);
+            if (li === 1 && e && e.n) S.line(l.marks, 12.8 + i * 6.6, l.y - 6, 12.8 + i * 6.6, l.y - 1, 'svg-line', { style: 'stroke:var(--c3);stroke-width:2' });
+          }
+        });
+      }
+    });
+  })();
+
+  /* ================= Widget 5: layer cake ================= */
+  (function () {
+    var root = document.getElementById('w-cake');
+    if (!root) return;
+    var svg = root.querySelector('svg'), info = document.getElementById('cake-info');
+    var L = [
+      { name: 'Applications', cls: 'c7', items: [
+        ['testpmd', 'Swiss-army test app for ports and drivers.', 'app/test-pmd/', 9],
+        ['examples/', 'Sample apps: helloworld, skeleton, l2fwd, l3fwd ...', 'examples/', 2],
+        ['dumpcap, proc-info', 'Capture and inspect a running DPDK app.', 'app/dumpcap/', 16],
+        ['your app', 'Your main(): rte_eal_init, then your loop.', 'code/hello_dpdk.c', 1]] },
+      { name: 'Protocol libs', cls: 'c3', items: [
+        ['net', 'Header structs, checksums, packet types.', 'lib/net/rte_ether.h', 10],
+        ['hash / lpm / fib / acl', 'Exact match, longest-prefix match, classification.', 'lib/hash/rte_hash.h, lib/lpm/rte_lpm.h', 17],
+        ['ip_frag / gso / gro', 'Fragmentation, segmentation, reassembly.', 'lib/ip_frag/rte_ip_frag.h', 19],
+        ['sched / meter', 'QoS: policing and hierarchical scheduling.', 'lib/sched/rte_sched.h', 21],
+        ['graph / bpf / pipeline', 'Programmable data planes.', 'lib/graph/rte_graph.h', 28],
+        ['telemetry / pdump', 'Observability and capture.', 'lib/telemetry/rte_telemetry.h', 13]] },
+      { name: 'Device classes', cls: 'c5', items: [
+        ['ethdev', 'Ethernet ports: configure, start, rx/tx bursts, rte_flow, stats.', 'lib/ethdev/rte_ethdev.h', 8],
+        ['cryptodev + security', 'Lookaside crypto and IPsec.', 'lib/cryptodev/rte_cryptodev.h', 26],
+        ['eventdev', 'Event scheduler for pipelines.', 'lib/eventdev/rte_eventdev.h', 25],
+        ['dma / compress / bbdev', 'dmadev, compressdev, bbdev, mldev, rawdev: other accelerators.', 'lib/dmadev/rte_dmadev.h', 27],
+        ['vhost', 'Back end for virtio guests.', 'lib/vhost/rte_vhost.h', 24]] },
+      { name: 'Core libs', cls: 'c2', items: [
+        ['mbuf', 'The packet buffer: metadata + data.', 'lib/mbuf/rte_mbuf.h', 7],
+        ['mempool', 'Fixed-size object pools with per-core caches.', 'lib/mempool/rte_mempool.h', 6],
+        ['ring', 'Lock-free FIFO of pointers.', 'lib/ring/rte_ring.h', 5],
+        ['timer / rcu / hash ...', 'Timers, RCU and helpers used by everything above.', 'lib/timer/rte_timer.h, lib/rcu/rte_rcu_qsbr.h', 11]] },
+      { name: 'EAL', cls: 'c1', items: [
+        ['lcores & launch', 'Threads pinned to cores; rte_eal_remote_launch.', 'lib/eal/include/rte_launch.h', 3],
+        ['memory', 'Hugepages, memzones, rte_malloc, IOVA.', 'lib/eal/include/rte_memory.h', 4],
+        ['buses & devargs', 'PCI and vdev scanning and probing.', 'lib/eal/include/rte_dev.h', 9],
+        ['atomics, locks, cycles', 'rte_rdtsc, spinlocks, memory ordering.', 'lib/eal/include/generic/rte_cycles.h', 14],
+        ['log / trace / services', 'Logging, tracing, service cores.', 'lib/log/rte_log.h', 11]] },
+      { name: 'Drivers', cls: 'c4', items: [
+        ['net PMDs', '57 Ethernet drivers: ixgbe, ice, mlx5 ... and null, ring, tap, af_xdp.', 'drivers/net/', 23],
+        ['bus/pci, bus/vdev', 'How devices are found.', 'drivers/bus/pci/, drivers/bus/vdev/', 9],
+        ['crypto / event / dma', 'Drivers for the other device classes.', 'drivers/crypto/, drivers/event/', 26],
+        ['mempool drivers', 'ring, stack, bucket backends for mempool.', 'drivers/mempool/', 6]] },
+      { name: 'OS & hardware', cls: 'c6', items: [
+        ['VFIO / UIO', 'Kernel modules that give a process the device.', 'doc/guides/linux_gsg/linux_drivers.rst', 23],
+        ['hugetlbfs', 'Large pages for packet memory.', 'doc/guides/linux_gsg/sys_reqs.rst', 4],
+        ['NIC / accelerators', 'The hardware.', 'doc/guides/nics/', 23]] }
+    ];
+    var SLUG = { 1: '01-why-kernel-bypass', 2: '02-build-and-first-app', 3: '03-eal-fundamentals', 4: '04-memory-hugepages', 5: '05-rings', 6: '06-mempools', 7: '07-mbufs', 8: '08-ethdev-first-port', 9: '09-virtual-devices-testpmd', 10: '10-packet-headers-l2fwd', 11: '11-eal-services-timers', 13: '13-observability-debugging', 14: '14-concurrency-atomics-rcu', 16: '16-multi-process-capture', 17: '17-hash-exact-match', 19: '19-offloads-gso-gro-frag', 21: '21-qos-meter-sched', 23: '23-inside-a-pmd', 24: '24-virtio-vhost-memif', 25: '25-eventdev-pipelines', 26: '26-cryptodev-ipsec', 27: '27-other-accelerators', 28: '28-graph-bpf-swx' };
+    var all = [];
+    L.forEach(function (layer, li) {
+      var y = 6 + li * 56;
+      S.text(svg, 4, y + 27, layer.name, 'svg-label small bold', { style: 'font-size:10.5px' });
+      var x0 = 132, W = 544, n = layer.items.length, gap = 5, w = (W - gap * (n - 1)) / n;
+      layer.items.forEach(function (it, k) {
+        var g = S.group(svg, 'ch01-cake-box', { tabindex: 0, role: 'button', 'aria-label': it[0] });
+        S.rect(g, x0 + k * (w + gap), y, w, 46, 'svg-box ' + layer.cls);
+        var words = it[0].split(' ');
+        if (it[0].length * 6.2 > w && words.length > 1) {
+          var h = Math.ceil(words.length / 2);
+          S.text(g, x0 + k * (w + gap) + w / 2, y + 16, words.slice(0, h).join(' '), 'svg-label small center');
+          S.text(g, x0 + k * (w + gap) + w / 2, y + 31, words.slice(h).join(' '), 'svg-label small center');
+        } else S.text(g, x0 + k * (w + gap) + w / 2, y + 23, it[0], 'svg-label small center');
+        function pick() {
+          all.forEach(function (o) { o.classList.remove('sel'); }); g.classList.add('sel');
+          var ch = it[3], nn = (ch < 10 ? '0' : '') + ch;
+          var link = SLUG[ch] ? '<a href="../' + SLUG[ch] + '/index.html">ch' + nn + '</a>' : 'ch' + nn;
+          info.innerHTML = '<div class="ttl">' + layer.name + ' &rsaquo; ' + it[0] + '</div><div>' + it[1] + '</div><div class="hdr">' + it[2] + '</div><div>Taught in ' + link + '</div>';
+        }
+        g.addEventListener('click', pick);
+        g.addEventListener('mouseenter', pick);
+        g.addEventListener('focus', pick);
+        g.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } });
+        all.push(g);
+      });
+    });
+  })();
+});
+</script>
+</body>
+</html>

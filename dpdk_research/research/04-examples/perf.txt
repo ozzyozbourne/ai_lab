@@ -1,0 +1,10 @@
+ring SP/SC          burst= 1 : 194.92 cycles/obj (1 prod lcore1 -> 1 cons lcore2)
+ring MP/MC          burst= 1 : 757.53 cycles/obj (1 prod lcore1 -> 1 cons lcore2)
+ring MP_RTS/MC_RTS  burst= 1 : 1025.85 cycles/obj (1 prod lcore1 -> 1 cons lcore2)
+ring MP_HTS/MC_HTS  burst= 1 : 845.35 cycles/obj (1 prod lcore1 -> 1 cons lcore2)
+ring SP/SC          burst=32 : 21.55 cycles/obj (1 prod lcore1 -> 1 cons lcore2)
+ring MP/MC          burst=32 : 36.90 cycles/obj (1 prod lcore1 -> 1 cons lcore2)
+ring MP_RTS/MC_RTS  burst=32 : 41.83 cycles/obj (1 prod lcore1 -> 1 cons lcore2)
+ring MP_HTS/MC_HTS  burst=32 : 41.65 cycles/obj (1 prod lcore1 -> 1 cons lcore2)
+mempool cache=  0, 2 lcores get/put bulk32: 86.09 cycles/obj
+mempool cache=256, 2 lcores get/put bulk32: 1.33 cycles/obj

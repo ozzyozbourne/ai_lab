@@ -1,0 +1,6 @@
+port 0 tx=4 ring count=4
+ rx[0]=0x1080b5040 same as tx: 1
+ rx[1]=0x1080b6040 same as tx: 1
+ rx[2]=0x1080b7040 same as tx: 1
+ rx[3]=0x1080b8040 same as tx: 1
+avail=255

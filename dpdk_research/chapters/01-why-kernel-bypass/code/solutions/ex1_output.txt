@@ -1,0 +1,8 @@
+exercise 1: 25 GbE, 128-byte frames, 3.0 GHz
+    25 GbE   128 B  3.0 GHz |    21.11 Mpps    47.36 ns     142 cycles  0.59 DRAM misses
+
+for comparison (64-byte frames, 2.7 GHz like this VM):
+    10 GbE    64 B  2.7 GHz |    14.88 Mpps    67.20 ns     181 cycles  0.84 DRAM misses
+    25 GbE    64 B  2.7 GHz |    37.20 Mpps    26.88 ns      73 cycles  0.34 DRAM misses
+   100 GbE    64 B  2.7 GHz |   148.81 Mpps     6.72 ns      18 cycles  0.08 DRAM misses
+   400 GbE    64 B  2.7 GHz |   595.24 Mpps     1.68 ns       5 cycles  0.02 DRAM misses

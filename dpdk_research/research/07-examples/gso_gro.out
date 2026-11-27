@@ -1,0 +1,8 @@
+GSO: 1 packet of 8054 bytes -> 6 segments
+  seg 0 len=1514 nb_segs=2 ip_id=100 seq=1000
+  seg 1 len=1514 nb_segs=2 ip_id=101 seq=2460
+  seg 2 len=1514 nb_segs=2 ip_id=102 seq=3920
+  seg 3 len=1514 nb_segs=2 ip_id=103 seq=5380
+  seg 4 len=1514 nb_segs=2 ip_id=104 seq=6840
+  seg 5 len= 754 nb_segs=2 ip_id=105 seq=8300
+GRO: 6 segments -> 1 packet(s); first len=8054 nb_segs=12

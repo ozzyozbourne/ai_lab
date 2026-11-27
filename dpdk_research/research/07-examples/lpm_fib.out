@@ -1,0 +1,8 @@
+probe            lpm    fib    rib best match      
+10.9.9.9        1      1      10.0.0.0/8
+10.1.9.9        2      2      10.1.0.0/16
+10.1.2.3        3      3      10.1.2.0/24
+10.1.2.130      4      4      10.1.2.128/25
+10.1.2.200      5      5      10.1.2.200/32
+11.0.0.1        miss   0      0.0.0.0/0
+lpm single 5.7 cyc/lookup, fib bulk 10.9 cyc/lookup (ips in 10.1.2.0/24, half hit tbl8)

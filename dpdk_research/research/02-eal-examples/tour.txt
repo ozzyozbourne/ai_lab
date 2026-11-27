@@ -1,0 +1,24 @@
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch02tour/mp_socket
+EAL: Selected IOVA mode 'VA'
+TOUR: lcore 1 (cpu 1, socket 0) did 8134427 loops
+TOUR: lcore 2 (cpu 2, socket 0) did 8011399 loops
+process type=primary iova=VA main lcore=0 count=3 hugepages=0
+TSC hz=2700000000 runtime dir=/var/run/dpdk/ch02tour
+lcore 1 returned 10
+lcore 2 returned 20
+lcore_var[1].n = 8134427
+lcore_var[2].n = 8011399
+non-EAL thread before register: lcore_id=-1
+non-EAL thread after register: lcore_id=3 role=3
+alarm fired=1
+service 'tour_svc' id=0 ran 1000 times on app lcore
+rte_dev_probe(net_null7) = 0
+vdev bus device: net_null0
+vdev bus device: net_null7
+lcore 0, socket 0, role RTE, cpuset 0
+lcore 1, socket 0, role RTE, cpuset 1
+lcore 2, socket 0, role RTE, cpuset 2
+cleanup=0

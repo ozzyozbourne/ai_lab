@@ -1,0 +1,54 @@
+Warning: NUMA should be configured manually by using --port-numa-config and --ring-numa-config parameters along with --numa.
+testpmd: create a new mbuf pool <mb_pool_0>: n=4096, size=2176, socket=0
+testpmd: preferred mempool ops selected: ring_mp_mc
+
+Warning! port-topology=paired and odd forward ports number, the last port will pair with itself.
+
+Set io packet forwarding mode
+Configuring Port 0 (socket 0)
+Port 0: 02:70:63:61:70:00
+Checking link statuses...
+Done
+No commandline core given, start packet forwarding
+io packet forwarding - ports=1 - cores=1 - streams=1 - NUMA support enabled, MP allocation mode: native
+Logical Core 1 (socket 0) forwards packets on 1 streams:
+  RX P=0/Q=0 (socket 0) -> TX P=0/Q=0 (socket 0) peer=02:00:00:00:00:00
+
+  io packet forwarding packets/burst=32
+  nb forwarding cores=1 - nb forwarding ports=1
+  port 0: RX queue number: 1 Tx queue number: 1
+    Rx offloads=0x0 Tx offloads=0x0
+    RX queue: 0
+      RX desc=0 - RX free threshold=0
+      RX threshold registers: pthresh=0 hthresh=0  wthresh=0
+      RX Offloads=0x0
+    TX queue: 0
+      TX desc=0 - TX free threshold=0
+      TX threshold registers: pthresh=0 hthresh=0  wthresh=0
+      TX offloads=0x0 - TX RS bit threshold=0
+Press enter to exit
+Telling cores to stop...
+Waiting for lcores to finish...
+
+  ---------------------- Forward statistics for port 0  ----------------------
+  RX-packets: 1000           RX-dropped: 0             RX-total: 1000
+  TX-packets: 1000           TX-dropped: 0             TX-total: 1000
+  ----------------------------------------------------------------------------
+
+  +++++++++++++++ Accumulated forward statistics for all ports+++++++++++++++
+  RX-packets: 1000           RX-dropped: 0             RX-total: 1000
+  TX-packets: 1000           TX-dropped: 0             TX-total: 1000
+  ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+Done.
+
+Stopping port 0...
+Stopping ports...
+Done
+
+Shutting down port 0...
+Closing ports...
+Port 0 is closed
+Done
+
+Bye...

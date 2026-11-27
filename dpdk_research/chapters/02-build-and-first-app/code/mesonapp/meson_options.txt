@@ -1,0 +1,5 @@
+# link_mode=link_args   (default) correct static link, PMDs kept
+# link_mode=declare_dep the tempting variant that silently drops every PMD
+# link_mode=shared      dependency('libdpdk'): shared libraries + plugin dir
+option('link_mode', type: 'combo', choices: ['link_args', 'declare_dep', 'shared'],
+       value: 'link_args', description: 'How to link DPDK')

@@ -1,0 +1,65 @@
+L3FWD: Using Rx burst 32 Tx burst 32
+soft parse-ptype is enabled
+RSS is disabled
+Rx offload is relaxed
+Initializing port 0 ... L3FWDACL: IPv4 Route entries 4:
+L3FWDACL: IPv4 ACL entries 1:
+L3FWDACL: IPv6 Route entries 1:
+L3FWDACL: IPv6 ACL entries 0:
+Creating queues: nb_rxq=1 nb_txq=1... Port 0 modified RSS hash function based on hardware support,requested:0x3bffc configured:0
+Port 0 requested Rx offloads 0xe does not match Rx offloads capabilities 0x6001
+Warning: modified Rx offload to 0x0 based on device capability
+ Address:02:70:63:61:70:00, Destination:02:00:00:00:00:00, Allocated mbuf pool on socket 0
+ACL options are:
+rule_ipv4: acl_rules_v4.txt
+rule_ipv6: acl_rules_v6.txt
+alg: default
+	1:0.0.0.0/0 198.18.0.0/24 0 : 65535 0 : 65535 0x0/0x0 0xffffffff-0x1ffffffe-0x1 
+	2:0.0.0.0/0 198.18.1.0/24 0 : 65535 0 : 65535 0x0/0x0 0xffffffff-0x1ffffffd-0x2 
+	3:0.0.0.0/0 198.18.2.0/24 0 : 65535 0 : 65535 0x0/0x0 0xffffffff-0x1ffffffc-0x1 
+	4:0.0.0.0/0 198.18.3.0/24 0 : 65535 0 : 65535 0x0/0x0 0xffffffff-0x1ffffffb-0x2 
+	1:0.0.0.0/0 198.18.3.0/24 0 : 65535 2000 : 2002 0x11/0xff 0xffffffff-0x1fffffff-0xf0000000 
+	1:0000:0000:0000:0000:0000:0000:0000:0000/0 0000:0000:0000:0000:0000:0000:0000:0000/0 0 : 65535 0 : 65535 0x0/0x0 0xffffffff-0x1fffffff-0x1 
+acl context <l3fwd-acl-ipv40>@0x10d8d2640
+  socket_id=0
+  alg=6
+  first_load_sz=4
+  max_rules=100000
+  rule_size=96
+  num_rules=5
+  num_categories=1
+  num_tries=1
+acl context <l3fwd-acl-ipv60>@0x10c67fc40
+  socket_id=0
+  alg=6
+  first_load_sz=4
+  max_rules=100000
+  rule_size=192
+  num_rules=1
+  num_categories=1
+  num_tries=1
+txq=1,0,0 
+Initializing port 1 ... Creating queues: nb_rxq=1 nb_txq=1... Port 1 modified RSS hash function based on hardware support,requested:0x3bffc configured:0
+Port 1 requested Rx offloads 0xe does not match Rx offloads capabilities 0x6001
+Warning: modified Rx offload to 0x0 based on device capability
+ Address:02:70:63:61:70:01, Destination:02:00:00:00:00:01, txq=1,0,0 
+
+Initializing rx queues on lcore 1 ... rxq=0,0,0 rxq=1,0,0 
+Port 0: softly parse packet type info
+Port 1: softly parse packet type info
+
+Checking link statusL3FWD: entering main loop on lcore 1
+L3FWD:  -- lcoreid=1 portid=0 rxqueueid=0
+L3FWD:  -- lcoreid=1 portid=1 rxqueueid=0
+done
+Port 0 Link up at 10 Gbps FDX Fixed None
+Port 1 Link up at 10 Gbps FDX Fixed None
+
+
+Signal 2 received, preparing to exit...
+
+
+Signal 2 received, preparing to exit...
+Closing port 0... Done
+Closing port 1... Done
+Bye...

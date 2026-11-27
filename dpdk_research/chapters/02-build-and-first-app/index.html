@@ -1,0 +1,1865 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>02 Building DPDK and Your First App | DPDK from Zero to Expert</title>
+<meta name="description" content="How DPDK is built with meson and ninja, how your own program links it with pkg-config, why static links need --whole-archive, the anatomy of main() and the -- separator, shared builds and the insecure plugin path, and a first look at testpmd.">
+<link rel="stylesheet" href="../../assets/course.css">
+<style>
+  /* ---- chapter 2 specific ---- */
+  .tok-row { display: flex; flex-wrap: wrap; gap: .3rem; margin: .6rem 0; }
+  .tok { font: .8rem/1.35 var(--font-mono); padding: .18rem .45rem; border-radius: 5px; border: 1.5px solid var(--border);
+         background: var(--surface-2); color: var(--text); cursor: pointer; }
+  .tok:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .tok.sel { box-shadow: 0 0 0 2px var(--accent); }
+  .tok.prog { border-color: var(--c7); background: var(--c7-soft); }
+  .tok.eal  { border-color: var(--c1); background: var(--c1-soft); }
+  .tok.val  { border-color: var(--c1); border-style: dashed; background: var(--surface); }
+  .tok.sep  { border-color: var(--c5); background: var(--c5-soft); font-weight: 700; }
+  .tok.moved{ border-color: var(--c3); background: var(--c3-soft); }
+  .tok.app  { border-color: var(--c2); background: var(--c2-soft); }
+  .tok.bad  { border-color: var(--c4); background: var(--c4-soft); }
+  .tok.dep  { border-color: var(--warn); background: var(--warn-bg); }
+  .tok .ix  { font-size: .65rem; color: var(--text-faint); margin-right: .25rem; }
+  .split-legend { display: flex; flex-wrap: wrap; gap: .35rem .9rem; font-size: .78rem; color: var(--text-muted); }
+  .split-legend .tok { cursor: default; font-size: .7rem; padding: .05rem .35rem; }
+  .split-input { width: 100%; font: .85rem/1.4 var(--font-mono); }
+  .split-out { font-size: .9rem; }
+  .split-out .verdict { padding: .5rem .7rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); margin: .5rem 0; }
+  .split-out .verdict.bad { border-color: var(--c4); background: var(--c4-soft); }
+  .split-out .verdict.good { border-color: var(--c2); background: var(--c2-soft); }
+  .split-out .explain { min-height: 2.6em; font-size: .86rem; color: var(--text-muted); }
+  .argv-row { display: flex; flex-wrap: wrap; gap: 0; margin: .3rem 0 .6rem; }
+  .argv-row .cell { font: .78rem/1.3 var(--font-mono); border: 1px solid var(--border); padding: .2rem .4rem; background: var(--surface); }
+  .argv-row .cell b { display: block; font-size: .62rem; color: var(--text-faint); font-weight: 600; }
+  .presets { display: flex; flex-wrap: wrap; gap: .35rem; }
+
+  .xray { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); overflow-x: auto; }
+  .xray .xl { display: grid; grid-template-columns: 9.5rem 1fr; gap: .6rem; align-items: center; padding: .14rem .7rem;
+              border-left: 4px solid transparent; transition: opacity .25s, background .25s; }
+  .xray .xl code { background: none; border: 0; padding: 0; font-size: .78rem; white-space: pre; color: var(--text); }
+  .xray .xl.c { color: var(--text-faint); }
+  .xray .xl.dim { opacity: .28; }
+  .xray .xl.on { background: var(--accent-soft); }
+  .xl > span { order: -1; justify-self: start; }
+  .xtag { font: 600 .68rem/1 var(--font-sans); padding: .2rem .4rem; border-radius: 999px; white-space: nowrap; border: 1px solid; }
+  .xtag.ch2 { color: var(--c7); border-color: var(--c7); background: var(--c7-soft); }
+  .xtag.ch3 { color: var(--c1); border-color: var(--c1); background: var(--c1-soft); }
+  .xtag.ch4 { color: var(--c6); border-color: var(--c6); background: var(--c6-soft); }
+  .xtag.ch6 { color: var(--c2); border-color: var(--c2); background: var(--c2-soft); }
+  .xtag.ch7 { color: var(--c3); border-color: var(--c3); background: var(--c3-soft); }
+  .xtag.ch8 { color: var(--c4); border-color: var(--c4); background: var(--c4-soft); }
+  .xl[data-ch="2"] { border-left-color: var(--c7); } .xl[data-ch="3"] { border-left-color: var(--c1); }
+  .xl[data-ch="4"] { border-left-color: var(--c6); } .xl[data-ch="6"] { border-left-color: var(--c2); }
+  .xl[data-ch="7"] { border-left-color: var(--c3); } .xl[data-ch="8"] { border-left-color: var(--c4); }
+  .xray-filter { display: flex; flex-wrap: wrap; gap: .35rem; margin: .5rem 0; }
+  .xray-filter .btn[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+
+  #ctor-widget .kept { opacity: 1; }
+  #ctor-widget .gone { opacity: .3; }
+  #ctor-widget .lit rect { stroke-width: 2.5; }
+  #ctor-widget svg text.strike { text-decoration: line-through; }
+  .toggle-wa { font-weight: 600; }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <button class="btn small toc-toggle" type="button" aria-label="Table of contents">&#9776;</button>
+  <a class="brand" href="../../index.html"><span>DPDK</span> Zero to Expert</a>
+  <span class="crumb">Chapter 02 &middot; Build and First App</span>
+  <button class="btn small theme-toggle" type="button">Theme</button>
+  <div class="progress-bar"></div>
+</header>
+
+<div class="page">
+  <nav class="sidebar" data-auto-toc aria-label="On this page"></nav>
+
+  <main id="main" class="content">
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../01-why-kernel-bypass/index.html"><span class="dir">&larr; Previous</span><span class="ttl">01 &middot; What Is a Packet, and Why Bypass the Kernel?</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../03-eal-fundamentals/index.html"><span class="dir">Next &rarr;</span><span class="ttl">03 &middot; The EAL: Lcores, Launching Work, Threads, Logging and Time</span></a>
+    </nav>
+
+    <header class="chapter-header">
+      <div class="chapter-kicker">Chapter 02</div>
+      <h1>Building DPDK and Your First Application (Build, Link, <code>main()</code> and Options)</h1>
+      <p class="chapter-subtitle">You will build a DPDK program from an empty directory, link it correctly against an installed DPDK, split the command line between DPDK and your own code, and explain the two linking mistakes that make a perfectly good program find zero network ports.</p>
+      <ul class="meta-row">
+        <li><span class="badge level-beginner">Beginner</span></li>
+        <li><span class="badge">~75 min</span></li>
+        <li><span class="badge">Prerequisites: ch1</span></li>
+        <li><span class="tag api">rte_eal_init</span></li>
+        <li><span class="tag api">rte_exit</span></li>
+        <li><span class="tag api">rte_eal_cleanup</span></li>
+        <li><span class="tag api">rte_version</span></li>
+      </ul>
+    </header>
+
+    <section class="objectives">
+      <div class="box-title">Learning objectives</div>
+      <ul>
+        <li>Describe the DPDK source tree, the meson/ninja build, the options that shape it and what <code>meson install</code> puts on disk.</li>
+        <li>Compile and link your own program against DPDK with <code>pkg-config</code>, from a Makefile and from a meson project.</li>
+        <li>Explain how drivers register themselves with <em>constructors</em> before <code>main()</code>, and why a static link without <code>--whole-archive</code> silently loses every driver.</li>
+        <li>Write a correct <code>main()</code>: call <code>rte_eal_init()</code>, shift <code>argc</code>/<code>argv</code>, parse your own options after <code>--</code>, and exit with <code>rte_exit()</code> or <code>rte_eal_cleanup()</code>.</li>
+        <li>Diagnose a shared build that aborts with <code>Cannot init plugins</code>, and say how real deployments avoid it.</li>
+        <li>Run <code>testpmd</code> on two software ports and read its counters (a first look at what chapters 3 to 8 explain).</li>
+      </ul>
+    </section>
+
+    <section class="tools-box">
+      <div class="box-title">Tools for this chapter</div>
+      <ul>
+        <li><code>meson</code> 1.12 and <code>ninja</code>: DPDK's build system, also usable for your own project.</li>
+        <li><code>pkg-config</code>: reads <code>libdpdk.pc</code> and prints compiler and linker flags.</li>
+        <li><code>gcc</code>, <code>make</code>, <code>nm</code>, <code>readelf</code>, <code>ldd</code>: build and inspect binaries.</li>
+        <li><code>dpdk-pmdinfo.py</code> (in <code>usertools/</code>, installed to <code>bin/</code>): lists the drivers inside a binary.</li>
+        <li><code>dpdk-testpmd</code> and the prebuilt <code>dpdk-skeleton</code> example: the first-look lab.</li>
+        <li><code>unshare</code>: a private mount namespace for the shared-build lab.</li>
+        <li>All code: <code>code/</code> in this chapter's folder. <code>./run.sh</code> builds and runs everything; its real output is in <code>code/expected_output.txt</code>.</li>
+      </ul>
+    </section>
+
+    <!-- ============================================================ 1 -->
+    <h2 id="big-picture"><span class="sec-num">1</span>The big picture: from source tree to running binary</h2>
+    <p>DPDK is not one library. It is about sixty libraries (<code>lib/</code>), a few hundred drivers (<code>drivers/</code>), tools (<code>app/</code>, <code>usertools/</code>) and examples (<code>examples/</code>). You do not link "DPDK" by hand; you build and <span class="key-term">install</span> it once, and then every program you write asks a small text file, <code>libdpdk.pc</code>, which compiler and linker flags it needs. The whole chapter follows the path in Figure 1.</p>
+
+    <figure class="diagram">
+      <div class="scroll-x">
+      <svg viewBox="0 0 720 250" role="img" aria-labelledby="f-pipe-t" style="min-width:600px">
+        <title id="f-pipe-t">Pipeline from DPDK source to your running binary in eight stages</title>
+        <text class="svg-title" x="10" y="18">Build DPDK once (DPDK's side)</text>
+        <rect class="svg-box c7" x="10" y="30" width="150" height="62"/>
+        <text class="svg-label center bold" x="85" y="50">1 Source tree</text>
+        <text class="svg-label center small mono" x="85" y="72">lib/ drivers/ app/</text>
+        <rect class="svg-box c1" x="196" y="30" width="150" height="62"/>
+        <text class="svg-label center bold" x="271" y="50">2 Configure</text>
+        <text class="svg-label center small mono" x="271" y="72">meson setup build</text>
+        <rect class="svg-box c1" x="382" y="30" width="150" height="62"/>
+        <text class="svg-label center bold" x="457" y="50">3 Compile</text>
+        <text class="svg-label center small mono" x="457" y="72">ninja -C build</text>
+        <rect class="svg-box c2" x="568" y="30" width="142" height="62"/>
+        <text class="svg-label center bold" x="639" y="50">4 Install</text>
+        <text class="svg-label center small mono" x="639" y="72">meson install</text>
+        <path class="svg-arrow flow" d="M160,61 L192,61"/>
+        <path class="svg-arrow flow" d="M346,61 L378,61"/>
+        <path class="svg-arrow flow" d="M532,61 L564,61"/>
+        <path class="svg-arrow c2 flow" d="M639,92 C639,122 85,112 85,150"/>
+        <text class="svg-title" x="10" y="140">Build your app many times (your side)</text>
+        <rect class="svg-box c2" x="10" y="152" width="150" height="62"/>
+        <text class="svg-label center bold" x="85" y="172">5 libdpdk.pc</text>
+        <text class="svg-label center small mono" x="85" y="194">pkg-config --cflags</text>
+        <rect class="svg-box c3" x="196" y="152" width="150" height="62"/>
+        <text class="svg-label center bold" x="271" y="172">6 Compile + link</text>
+        <text class="svg-label center small mono" x="271" y="194">gcc app.c $(pkg-config …)</text>
+        <rect class="svg-box c3" x="382" y="152" width="150" height="62"/>
+        <text class="svg-label center bold" x="457" y="172">7 Your binary</text>
+        <text class="svg-label center small mono" x="457" y="194">./hello (5.1 MB static)</text>
+        <rect class="svg-box c4" x="568" y="152" width="142" height="62"/>
+        <text class="svg-label center bold" x="639" y="172">8 Run</text>
+        <text class="svg-label center small mono" x="639" y="194">EAL probes devices</text>
+        <path class="svg-arrow flow" d="M160,183 L192,183"/>
+        <path class="svg-arrow flow" d="M346,183 L378,183"/>
+        <path class="svg-arrow flow" d="M532,183 L564,183"/>
+        <text class="svg-label small muted" x="10" y="240">Stages 1-4 happened once on this machine (the course DPDK). Stages 5-8 are what you do in this chapter.</text>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>The path from source to a running program. The handover point between DPDK's build and yours is the installed <code>libdpdk.pc</code> file.</figcaption>
+    </figure>
+
+    <h3 id="source-tree">The source tree</h3>
+    <p>Open the DPDK 26.11 tree and you find these top-level directories. You will spend most of the course in <code>lib/</code>, <code>drivers/</code>, <code>examples/</code> and <code>doc/guides/</code>.</p>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Directory</th><th>What lives there</th><th>Used in</th></tr></thead>
+        <tbody>
+          <tr><td><code>lib/</code></td><td>The libraries: <code>eal</code>, <code>ring</code>, <code>mempool</code>, <code>mbuf</code>, <code>ethdev</code>, <code>hash</code>, <code>lpm</code> &hellip; (60 directories). Public headers are <code>lib/*/rte_*.h</code>.</td><td>every chapter</td></tr>
+          <tr><td><code>drivers/</code></td><td>Drivers by class: <code>bus</code>, <code>mempool</code>, <code>net</code>, <code>crypto</code>, <code>event</code>, <code>dma</code>, <code>baseband</code>, <code>compress</code>, <code>ml</code>, <code>raw</code>, <code>regex</code>, <code>gpu</code>, <code>vdpa</code>, <code>power</code>, plus <code>common</code> code shared by drivers.</td><td>ch9, ch23</td></tr>
+          <tr><td><code>app/</code></td><td>Tools: <code>test-pmd</code> (testpmd), <code>dumpcap</code>, <code>proc-info</code>, <code>pdump</code>, <code>graph</code>, the <code>test-*</code> benchmarks and the unit tests in <code>test/</code>.</td><td>ch2, ch9, ch16</td></tr>
+          <tr><td><code>examples/</code></td><td>Sample applications: <code>helloworld</code>, <code>skeleton</code>, <code>l2fwd</code>, <code>l3fwd</code> &hellip;, each with a Makefile that uses pkg-config.</td><td>throughout</td></tr>
+          <tr><td><code>usertools/</code></td><td>Python helpers: <code>dpdk-devbind.py</code>, <code>dpdk-hugepages.py</code>, <code>dpdk-pmdinfo.py</code>, <code>dpdk-telemetry.py</code> &hellip;</td><td>ch2, ch4, ch13</td></tr>
+          <tr><td><code>buildtools/</code></td><td>Scripts the build runs, e.g. <code>pmdinfogen.py</code> (embeds driver info into binaries) and <code>pkg-config/</code> (writes <code>libdpdk.pc</code>).</td><td>ch2</td></tr>
+          <tr><td><code>config/</code></td><td><code>rte_config.h</code> (fixed tunables), per-architecture meson files and cross-compile files such as <code>config/arm/arm64_armv8_linux_gcc</code>.</td><td>ch2</td></tr>
+          <tr><td><code>doc/guides/</code></td><td>The documentation sources: <code>prog_guide/</code>, <code>nics/</code>, <code>sample_app_ug/</code>, <code>linux_gsg/</code> &hellip;</td><td>references</td></tr>
+          <tr><td><code>VERSION</code>, <code>ABI_VERSION</code>, <code>meson_options.txt</code></td><td><code>26.11.0</code>, <code>27.0</code>, and the list of build options.</td><td>ch2</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ============================================================ 2 -->
+    <h2 id="meson"><span class="sec-num">2</span>Building DPDK with meson and ninja</h2>
+    <p><span class="key-term">meson</span> is a build <em>configurator</em>: it reads <code>meson.build</code> files and your options, checks the compiler and the system libraries, and writes a <code>build.ninja</code> file. <span class="key-term">ninja</span> then runs the actual compiler commands, in parallel. The standard sequence, from <span class="src-path">doc/guides/linux_gsg/build_dpdk.rst</span>, is:</p>
+<pre><code class="language-bash"># from the top of the DPDK source tree
+meson setup build                      # configure into ./build (options: -Dname=value)
+meson configure build -Dexamples=all   # change options later, then rebuild
+ninja -C build                         # compile everything
+meson install -C build                 # copy headers, libs, drivers, tools, libdpdk.pc
+ldconfig                               # refresh the shared-library cache (system prefix only)</code></pre>
+    <p>The course DPDK was built this way once, before the course started. Building DPDK takes many CPU minutes, so we do not repeat it here; instead we ask meson what that build was configured with (read-only, no rebuild):</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">real output (meson configure, trimmed to the options discussed)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">meson configure $DPDK_SRC/build | grep -E '^ *(buildtype|default_library|b_lto|platform|cpu_instruction_set|enable_drivers|examples|tests|enable_iova_as_pa|max_lcores) '</span>
+  buildtype                      release                          [plain, debug, debugoptimized,   Build type to use
+  default_library                static                           [shared, static, both]           Default library type
+  b_lto                          false                            [True, False]                    Use link time optimization
+  cpu_instruction_set            auto                                                              Set the target machine ISA (instruction set archite
+  enable_drivers                 bus/vdev,bus/pci,mempool/ring,me                                  Comma-separated list of drivers to build. If unspec
+  enable_iova_as_pa              true                             [True, False]                    Support the use of physical addresses for IO addres
+  examples                       all                                                               Comma-separated list of examples to build by defaul
+  max_lcores                     default                                                           Set maximum number of cores/threads supported by EA
+  platform                       native                                                            Platform to build, either "native", "generic" or a
+  tests                          false                            [True, False]                    [Deprecated] Value unused. Add "tests" to disable_a</pre>
+    </div>
+
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Option</th><th>What it controls</th><th>This build</th></tr></thead>
+        <tbody>
+          <tr><td><code>buildtype</code></td><td>Optimisation and debug info: <code>debug</code>, <code>debugoptimized</code> (default, <code>-O2 -g</code>), <code>release</code> (<code>-O3</code>).</td><td><code>release</code></td></tr>
+          <tr><td><code>platform</code></td><td><code>native</code> tunes for <em>this</em> CPU (<code>-march=native</code>); <code>generic</code> builds a binary that runs on any CPU of the architecture; or a named SoC.</td><td><code>native</code></td></tr>
+          <tr><td><code>cpu_instruction_set</code></td><td>Overrides the <code>-march</code> value picked by <code>platform</code>.</td><td><code>auto</code></td></tr>
+          <tr><td><code>enable_drivers</code> / <code>disable_drivers</code></td><td>Which drivers to build. The default is "all that can be built here". This course enables 26 software drivers.</td><td>26 drivers</td></tr>
+          <tr><td><code>enable_libs</code> / <code>disable_libs</code></td><td>Drop optional libraries you do not need (EAL, ring, mempool, mbuf &hellip; cannot be disabled).</td><td>(none)</td></tr>
+          <tr><td><code>examples</code></td><td>Comma list of <code>examples/</code> to build, or <code>all</code>. Built samples land in <code>build/examples/dpdk-&lt;name&gt;</code>.</td><td><code>all</code></td></tr>
+          <tr><td><code>enable_apps</code> / <code>disable_apps</code></td><td>Which <code>app/</code> tools to build. <code>tests</code> is deprecated: add <code>test</code> to <code>disable_apps</code> instead.</td><td>defaults</td></tr>
+          <tr><td><code>enable_iova_as_pa</code></td><td>Whether mbufs carry a physical-address field. Turning it off saves 8 bytes per mbuf but needs IOVA=VA drivers (ch4, ch7).</td><td><code>true</code></td></tr>
+          <tr><td><code>max_lcores</code>, <code>max_numa_nodes</code>, <code>max_ethports</code></td><td>Sizes of static arrays (see the tunables reference below).</td><td>128, 32, 32</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>meson turns your options into a generated header, <code>build/rte_build_config.h</code>, which is installed and included (through <code>rte_config.h</code>) by every DPDK header. Some real lines from this build:</p>
+    <div class="terminal">
+      <div class="term-bar"><span class="title">real output: grep of $DPDK_SRC/build/rte_build_config.h</span></div>
+<pre><span class="dim">#define RTE_ARCH_X86_64 1
+#define RTE_CACHE_LINE_SIZE 64</span>
+<span class="hl">#define RTE_EAL_PMD_PATH "/tmp/claude-0/…/dpdk-install/lib/x86_64-linux-gnu/dpdk/pmds-27.0"</span>
+#define RTE_IOVA_IN_MBUF 1
+#define RTE_MAX_ETHPORTS 32
+#define RTE_MAX_LCORE 128
+#define RTE_MAX_NUMA_NODES 32
+#define RTE_PKTMBUF_HEADROOM 128
+#define RTE_VER_MONTH 11
+#define RTE_VER_YEAR 26</pre>
+    </div>
+    <p class="output-caption">Remember <code>RTE_EAL_PMD_PATH</code>: it is the compiled-in driver directory, and it is what breaks the shared build in <a href="#shared">section 8</a>.</p>
+
+    <details>
+      <summary>Reference: build-time tunables and the chapter that uses each (collapsed)</summary>
+      <p>Two kinds of knobs: meson options (become <code>rte_build_config.h</code>) and fixed defines in <span class="src-path">config/rte_config.h</span>, which you change by editing that file and rebuilding. You will rarely touch them; this table tells you where each one matters.</p>
+      <div class="table-wrap">
+        <table class="compact">
+          <thead><tr><th>Knob</th><th>Where</th><th>Default</th><th>Matters in</th></tr></thead>
+          <tbody>
+            <tr><td><code>max_lcores</code> &rarr; <code>RTE_MAX_LCORE</code></td><td>meson option</td><td>128 here</td><td>ch3 (lcore ids must be below it)</td></tr>
+            <tr><td><code>max_numa_nodes</code> &rarr; <code>RTE_MAX_NUMA_NODES</code></td><td>meson option</td><td>32</td><td>ch4</td></tr>
+            <tr><td><code>max_ethports</code> &rarr; <code>RTE_MAX_ETHPORTS</code></td><td>meson option</td><td>32</td><td>ch8</td></tr>
+            <tr><td><code>pkt_mbuf_headroom</code> &rarr; <code>RTE_PKTMBUF_HEADROOM</code></td><td>meson option</td><td>128</td><td>ch7</td></tr>
+            <tr><td><code>enable_trace_fp</code> &rarr; <code>RTE_ENABLE_TRACE_FP</code></td><td>meson option</td><td>off</td><td>ch13 (fast-path trace points)</td></tr>
+            <tr><td><code>RTE_MEMPOOL_CACHE_MAX_SIZE</code></td><td><code>config/rte_config.h</code></td><td>512</td><td>ch6: in 26.11 it no longer limits the cache size you may request</td></tr>
+            <tr><td><code>RTE_LIBRTE_MBUF_DEBUG</code></td><td>define it with <code>-D</code> when building</td><td>undefined</td><td>ch7, ch13 (mbuf sanity checks)</td></tr>
+            <tr><td><code>RTE_GRAPH_PROFILE</code></td><td>define it with <code>-D</code></td><td>undefined</td><td>ch28 (per-node burst profiling)</td></tr>
+            <tr><td><code>RTE_LOG_DP_LEVEL</code></td><td><code>config/rte_config.h</code></td><td><code>RTE_LOG_INFO</code></td><td>ch13 (compile-time data-path log level)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </details>
+    <details>
+      <summary>Reference: link-time optimisation (LTO) in one paragraph (collapsed)</summary>
+      <p>Configure with <code>meson setup build -Db_lto=true</code> and the compiler keeps its intermediate representation in every object file, then optimises the whole program at link time. That lets it inline a small function from <code>librte_mbuf</code> into <code>librte_ethdev</code> or into your code, across library boundaries that normally stop inlining. DPDK needs <em>fat</em> LTO objects (<code>-ffat-lto-objects</code>, added by <span class="src-path">config/meson.build</span>) because <code>pmdinfogen</code> must still read normal ELF objects during the build. The gain depends on the code; measure it (ch22). Source: <span class="src-path">doc/guides/prog_guide/lto.rst</span>.</p>
+    </details>
+    <details>
+      <summary>Reference: other platforms (collapsed)</summary>
+      <p>The same meson flow works on FreeBSD (<span class="src-path">doc/guides/freebsd_gsg/index.rst</span>) and Windows (<span class="src-path">doc/guides/windows_gsg/index.rst</span>, with clang or MSVC; fewer drivers). Cross-compiling for Arm uses a cross file: <code>meson setup arm-build --cross-file config/arm/arm64_armv8_linux_gcc</code> (<span class="src-path">doc/guides/linux_gsg/cross_build_dpdk_for_arm64.rst</span>). This course only uses Linux on x86-64.</p>
+    </details>
+
+    <!-- ============================================================ 3 -->
+    <h2 id="install-layout"><span class="sec-num">3</span>What gets installed, and the version numbers</h2>
+    <p><code>meson install</code> copies everything under the <span class="key-term">install prefix</span> (default <code>/usr/local</code>; this course uses <code>$DPDK_PREFIX</code>, a directory under <code>/tmp</code>). Figure 2 shows the real layout with real counts.</p>
+    <figure class="diagram">
+      <div class="scroll-x">
+      <svg viewBox="0 0 720 300" role="img" aria-labelledby="f-tree-t" style="min-width:600px">
+        <title id="f-tree-t">Installed DPDK directory tree</title>
+        <rect class="svg-box c7" x="10" y="10" width="220" height="30"/>
+        <text class="svg-label center bold mono" x="120" y="25">$DPDK_PREFIX/</text>
+        <path class="svg-line" d="M30,40 L30,272"/>
+        <path class="svg-line" d="M30,66 L60,66 M30,116 L60,116 M30,166 L60,166 M30,272 L60,272"/>
+        <rect class="svg-box c4" x="60" y="52" width="130" height="28"/>
+        <text class="svg-label center mono" x="125" y="66">bin/</text>
+        <text class="svg-label small" x="202" y="62">8 programs: dpdk-testpmd, dpdk-dumpcap, dpdk-proc-info, dpdk-pdump, dpdk-graph …</text>
+        <text class="svg-label small muted" x="202" y="77">and 8 usertools scripts: dpdk-pmdinfo.py, dpdk-devbind.py, dpdk-hugepages.py …</text>
+        <rect class="svg-box c1" x="60" y="102" width="130" height="28"/>
+        <text class="svg-label center mono" x="125" y="116">include/</text>
+        <text class="svg-label small" x="202" y="112">285 headers: rte_eal.h, rte_ethdev.h, rte_mbuf.h …</text>
+        <text class="svg-label small muted" x="202" y="127">plus rte_config.h and the generated rte_build_config.h</text>
+        <rect class="svg-box c2" x="60" y="152" width="200" height="28"/>
+        <text class="svg-label center mono" x="160" y="166">lib/x86_64-linux-gnu/</text>
+        <path class="svg-line" d="M80,180 L80,250"/>
+        <path class="svg-line" d="M80,196 L100,196 M80,223 L100,223 M80,250 L100,250"/>
+        <text class="svg-label small mono" x="104" y="200">librte_eal.a, librte_eal.so → .so.27 → .so.27.0  (83 libs+drivers, .a and .so)</text>
+        <text class="svg-label small mono" x="104" y="227">dpdk/pmds-27.0/   25 driver .so files: the plugin directory for shared apps</text>
+        <text class="svg-label small mono" x="104" y="254">pkgconfig/   libdpdk.pc  libdpdk-libs.pc</text>
+        <text class="svg-label small mono" x="64" y="290">share/dpdk/examples/   46 example source directories (copy one to start a project)</text>
+        <rect class="svg-highlight" x="100" y="242" width="300" height="18" rx="4" fill="none"/>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>The installed layout on this machine (counts from <code>ls</code>). <code>pkgconfig/libdpdk.pc</code> (outlined) is the only file your build needs to know about.</figcaption>
+    </figure>
+
+    <h3 id="versions">Three version numbers</h3>
+    <ul>
+      <li><strong>Release</strong> <code>26.11.0</code> (file <code>VERSION</code>): year.month.patch. Releases come out in March, July and November; the November one (<code>YY.11</code>) is the long-term-support (LTS) release that keeps receiving fixes for years.</li>
+      <li><strong>ABI</strong> <code>27.0</code> (file <code>ABI_VERSION</code>): the binary interface version. It becomes the <em>soname</em> <code>librte_eal.so.27</code> and the driver directory <code>pmds-27.0</code>. A program linked against <code>.so.27</code> keeps working with any later library that keeps ABI 27; the ABI only changes at the yearly LTS release.</li>
+      <li><strong>API</strong>: in your code. <code>RTE_VERSION</code> is a compile-time number built with <code>RTE_VERSION_NUM(year, month, minor, release)</code> from <span class="src-path">lib/eal/include/rte_version.h</span>; <code>rte_version()</code> returns the run-time string of the library actually linked in (<code>"DPDK 26.11.0"</code>). Use the macro in <code>#if</code> to support several DPDK versions from one source file.</li>
+    </ul>
+    <p>Functions marked <code>__rte_experimental</code> are outside the ABI promise. Using one without <code>-DALLOW_EXPERIMENTAL_API</code> gives a deprecation warning (you will see it in <a href="#meson-app">section 9</a>). <code>__rte_internal</code> functions are for drivers only; calling one needs <code>-DALLOW_INTERNAL_API</code> and is a hard error otherwise (ch23 writes a driver and needs it). Both are defined in <span class="src-path">lib/eal/include/rte_compat.h</span>.</p>
+
+    <!-- ============================================================ 4 -->
+    <h2 id="pkg-config"><span class="sec-num">4</span>Consuming DPDK: pkg-config</h2>
+    <p><span class="key-term">pkg-config</span> reads <code>.pc</code> files from the directories in <code>PKG_CONFIG_PATH</code>. For DPDK you need three queries:</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">real output on this machine (paths shortened to $DPDK_PREFIX)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">pkg-config --modversion libdpdk</span>
+26.11.0
+<span class="prompt">$ </span><span class="cmd">pkg-config --cflags libdpdk</span>
+-I$DPDK_PREFIX/include <span class="hl">-include rte_config.h -march=native -mrtm</span> -I/usr/include/dbus-1.0 -I/usr/lib/x86_64-linux-gnu/dbus-1.0/include -I/usr/include/libnl3
+<span class="prompt">$ </span><span class="cmd">pkg-config --libs libdpdk</span>
+-Wl,--as-needed -L$DPDK_PREFIX/lib/x86_64-linux-gnu -lrte_node -lrte_graph … -lrte_eal -lrte_pmu -lrte_telemetry -lrte_argparse -lrte_kvargs -lrte_log
+<span class="prompt">$ </span><span class="cmd">pkg-config --libs --static libdpdk</span>
+<span class="hl">-Wl,--whole-archive</span> -L$DPDK_PREFIX/lib/x86_64-linux-gnu -l:librte_bus_pci.a -l:librte_bus_vdev.a -l:librte_mempool_bucket.a … -l:librte_net_null.a … -l:librte_eal.a … -l:librte_log.a <span class="hl">-Wl,--no-whole-archive</span> -Wl,--export-dynamic … -lnuma -lpcap -larchive -lxdp -lbpf -lcrypto -lz -lelf …</pre>
+    </div>
+    <p class="output-caption">Two details in the compile flags matter. <code>-include rte_config.h</code> force-includes the configuration header in every file. <code>-march=native</code> comes from <code>platform=native</code>: DPDK headers contain inline functions that use AVX2/AVX-512 here, so the binary may not run on an older CPU. Build DPDK with <code>-Dplatform=generic</code> if you ship binaries to other machines.</p>
+    <p>The static list is the interesting one. Drivers <em>and</em> libraries are wrapped in <code>-Wl,--whole-archive</code> &hellip; <code>-Wl,--no-whole-archive</code>, then come the system libraries the drivers need. <code>libdpdk.pc</code> and the internal <code>libdpdk-libs.pc</code> are split exactly so that pkg-config prints things in this order. <a href="#constructors">Section 6</a> explains why the bracket is essential.</p>
+
+    <h3 id="makefile">A Makefile that uses it</h3>
+    <p>This is the chapter's Makefile, modelled on <span class="src-path">examples/helloworld/Makefile</span>. It builds the same <code>hello.c</code> as a static program (<code>hello</code>) and as a shared one (<code>hello_shared</code>), and it builds the deliberately broken <code>ports_broken</code>.</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/Makefile</span><span class="lang">make</span></div>
+<pre data-lines data-hl="12,17,21,25"><code class="language-make"># SPDX-License-Identifier: BSD-3-Clause
+# Chapter 2 Makefile: build DPDK applications against an installed DPDK
+# using pkg-config. Run &quot;source &lt;dpdk-env.sh&gt;&quot; first so that pkg-config
+# can find libdpdk.pc (PKG_CONFIG_PATH).
+
+PKGCONF ?= pkg-config
+
+ifneq ($(shell $(PKGCONF) --exists libdpdk &amp;&amp; echo 0),0)
+$(error &quot;no installation of DPDK found (is PKG_CONFIG_PATH set?)&quot;)
+endif
+
+CFLAGS  += -O2 -g -Wall -Wextra $(shell $(PKGCONF) --cflags libdpdk)
+
+# Static link (the course default). The output starts with
+#   -Wl,--whole-archive -l:librte_bus_pci.a ... -l:librte_log.a -Wl,--no-whole-archive
+# so that every driver&#x27;s constructor is kept.
+LDLIBS_STATIC = $(shell $(PKGCONF) --libs --static libdpdk)
+
+# Shared link: only -L&lt;libdir&gt; -lrte_xxx; drivers are loaded at run time
+# from the plugin directory (RTE_EAL_PMD_PATH) or from -d &lt;path&gt;.
+LDLIBS_SHARED = $(shell $(PKGCONF) --libs libdpdk)
+
+# The pitfall: the same static flags with the --whole-archive bracket removed.
+comma := ,
+LDLIBS_BROKEN = $(filter-out -Wl$(comma)--whole-archive -Wl$(comma)--no-whole-archive,$(LDLIBS_STATIC))
+
+APPS = hello args ports_ok ports_broken hello_shared verbose
+
+all: $(APPS)
+
+hello: hello.c
+	$(CC) $(CFLAGS) $&lt; -o $@ $(LDLIBS_STATIC)
+
+args: args.c
+	$(CC) $(CFLAGS) $&lt; -o $@ $(LDLIBS_STATIC)
+
+# make pitfall -&gt; both port counters
+pitfall: ports_ok ports_broken
+
+ports_ok: ports.c
+	$(CC) $(CFLAGS) $&lt; -o $@ $(LDLIBS_STATIC)
+
+ports_broken: ports.c
+	$(CC) $(CFLAGS) $&lt; -o $@ $(LDLIBS_BROKEN)
+
+# make shared -&gt; hello linked against the .so files
+shared: hello_shared
+
+hello_shared: hello.c
+	$(CC) $(CFLAGS) $&lt; -o $@ $(LDLIBS_SHARED)
+
+# Exercise 1 solution
+verbose: solutions/verbose.c
+	$(CC) $(CFLAGS) $&lt; -o $@ $(LDLIBS_STATIC)
+
+clean:
+	rm -f $(APPS)
+	rm -rf mesonapp/build
+
+.PHONY: all pitfall shared clean</code></pre>
+    </div>
+    <p>Line 12: <code>pkg-config --cflags</code> goes into <code>CFLAGS</code>. Line 17: the static list goes at the <em>end</em> of the link command, after your source or objects, because the linker resolves symbols left to right. Line 21: the shared list. Line 25: the broken variant, made with make's <code>filter-out</code> to delete the two <code>--whole-archive</code> words.</p>
+
+    <!-- ============================================================ 5 -->
+    <h2 id="hello"><span class="sec-num">5</span>Your first program: <code>hello.c</code></h2>
+    <p>Here is the DPDK "hello world" (compare <span class="src-path">examples/helloworld/main.c</span>), rewritten with comments. It does five things: start the EAL, print versions, run a function on every lcore, count ports, and clean up.</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/hello.c</span><span class="lang">C</span></div>
+<pre data-lines data-hl="42-44,48-52,56,60,64-65,68"><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * hello.c - Chapter 2: the smallest useful DPDK program, written from scratch.
+ *
+ * What it shows:
+ *   1. rte_eal_init() is the first DPDK call; it eats the EAL options.
+ *   2. Work is launched on every lcore (details of launching: ch3).
+ *   3. rte_version() and rte_eth_dev_count_avail() prove that the library
+ *      and the drivers (PMDs) really are inside this binary.
+ *   4. rte_eal_cleanup() releases what rte_eal_init() took.
+ *
+ * Build:  make hello
+ * Run:    ./hello -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch02-hello
+ */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+
+#include &lt;rte_eal.h&gt;      /* rte_eal_init(), rte_eal_cleanup() */
+#include &lt;rte_lcore.h&gt;    /* rte_lcore_id(), RTE_LCORE_FOREACH_WORKER */
+#include &lt;rte_launch.h&gt;   /* rte_eal_remote_launch(), rte_eal_mp_wait_lcore() */
+#include &lt;rte_version.h&gt;  /* rte_version(), RTE_VERSION, RTE_VERSION_NUM() */
+#include &lt;rte_ethdev.h&gt;   /* rte_eth_dev_count_avail() */
+#include &lt;rte_common.h&gt;   /* rte_exit() (lives in rte_common.h in 26.11) */
+
+/* The function every lcore runs. It must have the lcore_function_t shape:
+ * int fn(void *arg). */
+static int
+lcore_hello(void *arg)
+{
+	(void)arg;
+	printf(&quot;hello from lcore %u\n&quot;, rte_lcore_id());
+	return 0;
+}
+
+int
+main(int argc, char **argv)
+{
+	unsigned int lcore_id;
+
+	/* Step 1: initialise the EAL. It parses (and consumes) the EAL options,
+	 * creates one thread per extra lcore, sets up memory and probes devices. */
+	int ret = rte_eal_init(argc, argv);
+	if (ret &lt; 0)
+		rte_exit(EXIT_FAILURE, &quot;Cannot init EAL\n&quot;);
+
+	/* Compile-time version (from the headers) vs run-time version (from the
+	 * library that is actually linked in). */
+#if RTE_VERSION &gt;= RTE_VERSION_NUM(26, 11, 0, 0)
+	printf(&quot;compiled against DPDK &gt;= 26.11, running %s\n&quot;, rte_version());
+#else
+	printf(&quot;compiled against an older DPDK, running %s\n&quot;, rte_version());
+#endif
+
+	/* Step 2: run lcore_hello() on every worker lcore ... (launch: ch3) */
+	RTE_LCORE_FOREACH_WORKER(lcore_id)
+		rte_eal_remote_launch(lcore_hello, NULL, lcore_id);
+
+	/* ... and on the main lcore too, then wait for the workers. */
+	lcore_hello(NULL);
+	rte_eal_mp_wait_lcore();
+
+	/* Step 3: how many Ethernet ports did the EAL probe? Each --vdev=net_*
+	 * adds one, but only if its driver was linked into this binary. */
+	printf(&quot;lcores=%u ports=%u\n&quot;, rte_lcore_count(),
+	       (unsigned int)rte_eth_dev_count_avail());
+
+	/* Step 4: give back hugepages/memory, threads, and runtime files. */
+	rte_eal_cleanup();
+	return 0;
+}</code></pre>
+    </div>
+    <ul>
+      <li><strong>Lines 42-44.</strong> <code>rte_eal_init()</code> must be the first DPDK call. It parses the EAL options, reserves memory, starts one thread per extra lcore, and scans buses for devices. On failure it returns -1 and sets <code>rte_errno</code>; there is no point continuing.</li>
+      <li><strong>Lines 48-52.</strong> Compile time vs run time: <code>RTE_VERSION</code> comes from the headers you compiled with; <code>rte_version()</code> from the library you run with. They differ only with shared libraries.</li>
+      <li><strong>Lines 56-60.</strong> Launch <code>lcore_hello</code> on every worker lcore, run it on the main lcore too, and wait. Chapter 3 explains lcores and launching; for now, "lcore" means "a thread pinned to one CPU that EAL created for you".</li>
+      <li><strong>Lines 64-65.</strong> <code>rte_eth_dev_count_avail()</code> counts the Ethernet ports the EAL found. We pass no device, so expect 0, then add <code>--vdev=net_null0</code>.</li>
+      <li><strong>Line 68.</strong> <code>rte_eal_cleanup()</code> releases memory, stops the lcore threads and removes runtime files. Call it before you return from <code>main()</code>.</li>
+    </ul>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 1)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./hello -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch02-hello</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch02-hello/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+compiled against DPDK &gt;= 26.11, running DPDK 26.11.0
+hello from lcore 1
+hello from lcore 0
+<span class="hl">lcores=2 ports=0</span>
+<span class="ok">[exit code 0]</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./hello -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch02-hello --vdev=net_null0</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch02-hello/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+compiled against DPDK &gt;= 26.11, running DPDK 26.11.0
+hello from lcore 1
+hello from lcore 0
+<span class="hl">lcores=2 ports=1</span>
+<span class="ok">[exit code 0]</span></pre>
+    </div>
+    <p class="output-caption">The lines in grey are EAL's start-up log. "Detected static linkage" is printed by <code>is_shared_build()</code> in <span class="src-path">lib/eal/common/eal_common_options.c</span>. The two "hello" lines may appear in either order: two threads print at the same time. One <code>--vdev</code> creates one port.</p>
+
+    <h3 id="sandbox-flags">The minimal sandbox flags</h3>
+    <p>Every program in this course starts with the same few EAL options. They keep DPDK away from hardware and from the other DPDK processes on this shared machine:</p>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Option</th><th>Effect</th><th>Why we use it</th></tr></thead>
+        <tbody>
+          <tr><td><code>-l 0-1</code></td><td>Run on CPUs 0 and 1 (lcore list). The first is the main lcore.</td><td>Never use <code>-c</code> (hex mask): deprecated in 26.11, EAL warns.</td></tr>
+          <tr><td><code>--no-pci</code></td><td>Do not scan the PCI bus.</td><td>The only real NIC carries this machine's network; DPDK must not touch it.</td></tr>
+          <tr><td><code>--no-huge -m 64</code></td><td>Use 64 MB of ordinary memory instead of hugepages.</td><td>Hugepages are shared by many students here; ch4 covers them.</td></tr>
+          <tr><td><code>--file-prefix=ch02-x</code></td><td>Name of the runtime directory <code>/var/run/dpdk/ch02-x/</code>.</td><td>Two primary processes with the same prefix collide.</td></tr>
+          <tr><td><code>--in-memory</code></td><td>No runtime files at all (no secondary processes possible).</td><td>An alternative to a unique prefix.</td></tr>
+          <tr><td><code>--vdev=net_null0</code></td><td>Create a virtual device with the <code>net_null</code> driver.</td><td>Software ports, no hardware needed (ch9).</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="rte-exit">Exiting: <code>rte_exit()</code> vs <code>return</code></h3>
+    <p><code>rte_exit(code, fmt, ...)</code> logs the message at CRIT level (plus <code>Error - exiting with code: N</code> when the code is non-zero), calls <code>rte_eal_cleanup()</code>, and then calls <code>exit()</code>. Use it for fatal errors anywhere. In 26.11 it is declared in <span class="src-path">lib/eal/include/rte_common.h</span> and implemented in <span class="src-path">lib/eal/common/eal_common_debug.c</span>. Its harsher sibling <code>rte_panic()</code> also prints a stack trace and calls <code>abort()</code> (core dump): use it for "this cannot happen" bugs. A normal end is <code>rte_eal_cleanup(); return 0;</code>. After <code>rte_eal_cleanup()</code> no DPDK function may be called.</p>
+
+    <!-- ============================================================ 6 -->
+    <h2 id="constructors"><span class="sec-num">6</span>Constructors and the <code>--whole-archive</code> pitfall</h2>
+    <p>Your code never mentions <code>net_null</code>. So how does <code>--vdev=net_null0</code> find a driver? Every driver ends with a registration macro. The null driver's last lines are (<span class="src-path">drivers/net/null/rte_eth_null.c</span>):</p>
+<pre><code class="language-c">RTE_LOG_REGISTER_DEFAULT(eth_null_logtype, NOTICE);   /* line 81  */
+RTE_PMD_REGISTER_VDEV(net_null, pmd_null_drv);        /* line 775 */</code></pre>
+    <p>and the macro expands to a <span class="key-term">constructor</span>: a function that the C runtime runs <em>before</em> <code>main()</code> (<span class="src-path">drivers/bus/vdev/bus_vdev_driver.h</span>, <span class="src-path">lib/eal/include/rte_common.h</span>):</p>
+<pre><code class="language-c">#define RTE_PMD_REGISTER_VDEV(nm, vdrv)\
+RTE_INIT(vdrvinitfn_ ##vdrv)\
+{\
+	(vdrv).driver.name = RTE_STR(nm);\
+	rte_vdev_register(&amp;vdrv);\
+} \
+RTE_PMD_EXPORT_NAME(nm)
+
+#define RTE_INIT(func) RTE_INIT_PRIO(func, LAST)
+#define RTE_INIT_PRIO(func, prio) \
+static void __attribute__((constructor(RTE_PRIO(prio)), used)) func(void)</code></pre>
+    <p>Constructors run in priority order: <code>RTE_PRIORITY_LOG</code> (101) registers log types, <code>RTE_PRIORITY_BUS</code> (110) registers buses (<code>RTE_REGISTER_BUS</code>), <code>RTE_PRIORITY_CLASS</code> (120) registers device classes, and <code>LAST</code> registers drivers. When <code>main()</code> finally calls <code>rte_eal_init()</code>, the vdev bus already has a list of drivers and can match the name <code>net_null0</code> to the driver <code>net_null</code>.</p>
+    <p>Now the trap. A static library (<code>.a</code>) is a bag of object files. By default the linker copies an object file into your program only if it defines a symbol that something already in the program needs. Nothing calls <code>vdrvinitfn_pmd_null_drv</code>; it is only listed in the object's <code>.init_array</code>. So without help, the linker throws the whole driver away. <code>-Wl,--whole-archive</code> says "take every object from the following archives, needed or not".</p>
+
+    <div class="widget" id="ctor-widget">
+      <div class="widget-head"><span class="widget-title">Constructors before main(): toggle --whole-archive and predict the port count</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="scroll-x"><svg viewBox="0 0 720 348" role="img" aria-label="Linker keeps or drops archive members, constructors run, then main counts ports" style="min-width:640px"></svg></div>
+        <div class="stat-row">
+          <div class="stat"><div class="stat-label">.init_array entries</div><div class="stat-value" id="cw-init">712</div></div>
+          <div class="stat"><div class="stat-label">buses registered</div><div class="stat-value" id="cw-bus">0</div></div>
+          <div class="stat"><div class="stat-label">vdev drivers registered</div><div class="stat-value" id="cw-drv">0</div></div>
+          <div class="stat"><div class="stat-label">ports</div><div class="stat-value" id="cw-ports">?</div></div>
+        </div>
+      </div>
+      <div class="controls">
+        <label class="toggle-wa"><input type="checkbox" id="cw-wa" checked> link with <code>-Wl,--whole-archive</code></label>
+        <span class="grow"></span>
+      </div>
+    </div>
+    <p>The numbers in the widget (712 vs 351 constructors, 2 buses, 21 drivers) are measured from the two real binaries below with <code>readelf</code> and <code>nm</code>. Here is the program; it only counts ports:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/ports.c</span><span class="lang">C</span></div>
+<pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * ports.c - Chapter 2: the --whole-archive pitfall.
+ *
+ * The program only counts Ethernet ports. It is linked twice by the Makefile:
+ *   ports_ok      $(pkg-config --libs --static libdpdk)
+ *                 -&gt; drivers are wrapped in -Wl,--whole-archive, every PMD
+ *                    constructor is kept, --vdev=net_null0 creates a port.
+ *   ports_broken  the same archives, but WITHOUT --whole-archive
+ *                 -&gt; nothing in this file references a driver symbol, so the
+ *                    linker drops every driver object file, the RTE_INIT
+ *                    constructors never run, no driver registers, 0 ports.
+ */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+
+#include &lt;rte_eal.h&gt;
+#include &lt;rte_common.h&gt;
+#include &lt;rte_ethdev.h&gt;
+
+int
+main(int argc, char **argv)
+{
+	int ret = rte_eal_init(argc, argv);
+	if (ret &lt; 0)
+		rte_exit(EXIT_FAILURE, &quot;Cannot init EAL\n&quot;);
+
+	uint16_t n = rte_eth_dev_count_avail();
+	printf(&quot;ports=%u\n&quot;, (unsigned int)n);
+
+	uint16_t port;
+	RTE_ETH_FOREACH_DEV(port) {
+		struct rte_eth_dev_info info;
+		if (rte_eth_dev_info_get(port, &amp;info) == 0)
+			printf(&quot;  port %u: driver %s\n&quot;, (unsigned int)port, info.driver_name);
+	}
+
+	rte_eal_cleanup();
+	return n == 0 ? 1 : 0;   /* non-zero exit when no port was found */
+}</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 3)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./ports_ok -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-ok --vdev=net_null0 --vdev=net_ring0</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch02-ok/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+<span class="hl">ports=2</span>
+<span class="hl">  port 0: driver net_null</span>
+<span class="hl">  port 1: driver net_ring</span>
+<span class="ok">[exit code 0]</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./ports_broken -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-broken --vdev=net_null0 --vdev=net_ring0</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="hl">EAL: failed to parse device &quot;net_null0&quot;</span>
+<span class="err">EAL: Unable to parse device &#x27;net_null0&#x27;</span>
+<span class="err">EAL: Error - exiting with code: 1</span>
+<span class="err">Cannot init EAL</span>
+<span class="err">EAL: Unable to open directory </span>
+<span class="err">EAL: Unregistering with invalid input parameter</span>
+<span class="err">[exit code 1]</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./ports_broken -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-broken</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch02-broken/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+<span class="hl">ports=0</span>
+<span class="err">[exit code 1]</span>
+<span class="dim">--- constructor functions present in each binary (nm, readelf):</span>
+<span class="hl">  ports_ok      .init_array=712  log=61  bus=2 class=2 driver=21</span>
+<span class="hl">  ports_broken  .init_array=351  log=5   bus=0 class=0 driver=0</span>
+    00000000000a6370 t businitfn_pci
+    00000000000a6430 t businitfn_vdev
+    00000000000a67b0 t vdrvinitfn_pmd_null_drv
+    00000000000a6870 t vdrvinitfn_pmd_ring_drv
+<span class="dim">--- dpdk-pmdinfo.py (reads the PMD info strings embedded in the binary):</span>
+  ports_ok:     23 drivers in total; net PMDs: net_af_packet net_af_xdp net_bonding net_failsafe net_memif net_null net_pcap net_ring net_tap net_tun net_vhost net_virtio net_virtio_user
+  ports_broken: []</pre>
+    </div>
+    <p class="output-caption">Two different symptoms of one mistake. With a <code>--vdev</code> argument, <code>rte_eal_init()</code> itself fails: not even the <em>vdev bus</em> was linked in, so no bus can parse the name <code>net_null0</code>. Without device arguments, initialisation succeeds and the program silently sees 0 ports. Note the size too: 5.1 MB vs 1.1 MB (section 0 of the output).</p>
+    <div class="callout tip"><div class="callout-title">Tip: always check what is inside</div><p><code>dpdk-pmdinfo.py ./yourapp</code> prints a JSON list of the drivers embedded in a binary (it reads the <code>PMD_INFO_STRING</code> blobs that <span class="src-path">buildtools/pmdinfogen.py</span> generates from <code>RTE_PMD_REGISTER_*</code>). An empty list <code>[]</code> on a static binary means a broken link. It also works on driver <code>.so</code> files.</p></div>
+
+    <!-- ============================================================ 7 -->
+    <h2 id="main-anatomy"><span class="sec-num">7</span>Anatomy of <code>main()</code> and the <code>--</code> separator</h2>
+    <p>A DPDK program's command line has two halves: options for the EAL, then <code>--</code>, then options for your application.</p>
+<pre><code class="language-bash">./args -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-args -- --count 3 --name demo
+#      \_________________ EAL options _______________________/  \__ app options __/</code></pre>
+    <p><code>rte_eal_init(argc, argv)</code> parses the EAL half and returns how many <code>argv</code> entries it consumed (including the <code>--</code>). Before returning it copies the program name into the last consumed slot. So the two lines found in every DPDK example, <code>argc -= ret; argv += ret;</code>, leave you with an ordinary <code>argv</code> whose element 0 is the program name and whose remaining elements are only your options. Figure 3 shows this with the real numbers from the run below.</p>
+
+    <figure class="diagram">
+      <div class="scroll-x">
+      <svg viewBox="0 0 720 200" role="img" aria-labelledby="f-argv-t" style="min-width:560px">
+        <title id="f-argv-t">argv before and after rte_eal_init and the shift by ret</title>
+        <text class="svg-label small bold" x="10" y="20">argv before rte_eal_init() (argc = 13)</text>
+        <g id="argv-before"></g>
+        <text class="svg-label small bold" x="10" y="122">after: ret = 8; argc -= ret; argv += ret (argc = 5)</text>
+        <g id="argv-after"></g>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>Indices 1-7 are EAL options (blue), index 8 is the separator (purple). EAL overwrites slot 8 with the program name, so after <code>argv += 8</code> the application sees <code>./args --count 3 --name demo</code>.</figcaption>
+    </figure>
+
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/args.c</span><span class="lang">C</span></div>
+<pre data-lines data-hl="50-51,82-84,91-92"><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * args.c - Chapter 2: how EAL options and application options share argv.
+ *
+ *   ./args &lt;EAL options&gt; -- &lt;application options&gt;
+ *
+ * rte_eal_init() parses everything up to (and including) the &quot;--&quot; separator
+ * and returns how many argv entries it consumed. We shift argc/argv by that
+ * amount (EAL has already copied the program name into the slot that held
+ * &quot;--&quot;, so the new argv[0] is the program name again) and hand the rest to
+ * plain getopt_long(). Words without a leading dash that appear before &quot;--&quot;
+ * are not EAL options: EAL moves them behind its own, so the app gets them.
+ *
+ * Run: ./args -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-args \
+ *             -- --count 3 --name demo
+ */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;getopt.h&gt;
+
+#include &lt;rte_eal.h&gt;
+#include &lt;rte_common.h&gt;
+#include &lt;rte_lcore.h&gt;
+
+/* Application settings with defaults. */
+static unsigned int app_count = 1;
+static const char *app_name = &quot;world&quot;;
+
+static void
+usage(const char *prog)
+{
+	printf(&quot;usage: %s [EAL options] -- [--count N] [--name NAME]\n&quot;, prog);
+}
+
+/* Parse the application part of the command line with ordinary getopt. */
+static int
+parse_app_args(int argc, char **argv)
+{
+	static const struct option longopts[] = {
+		{ &quot;count&quot;, required_argument, NULL, &#x27;c&#x27; },
+		{ &quot;name&quot;,  required_argument, NULL, &#x27;n&#x27; },
+		{ &quot;help&quot;,  no_argument,       NULL, &#x27;h&#x27; },
+		{ NULL, 0, NULL, 0 }
+	};
+	int opt;
+
+	/* getopt keeps its cursor in the global optind. EAL in 26.11 parses
+	 * its options with rte_argparse, but older EALs used getopt and left
+	 * optind pointing past their options: always reset it to 1. */
+	optind = 1;
+	while ((opt = getopt_long(argc, argv, &quot;c:n:h&quot;, longopts, NULL)) != -1) {
+		switch (opt) {
+		case &#x27;c&#x27;:
+			app_count = (unsigned int)strtoul(optarg, NULL, 10);
+			break;
+		case &#x27;n&#x27;:
+			app_name = optarg;
+			break;
+		case &#x27;h&#x27;:
+		default:
+			usage(argv[0]);
+			return -1;
+		}
+	}
+	return 0;
+}
+
+static void
+dump_argv(const char *who, int argc, char **argv)
+{
+	printf(&quot;%s sees argc=%d:&quot;, who, argc);
+	for (int i = 0; i &lt; argc; i++)
+		printf(&quot; [%d]=%s&quot;, i, argv[i]);
+	printf(&quot;\n&quot;);
+}
+
+int
+main(int argc, char **argv)
+{
+	dump_argv(&quot;main() before rte_eal_init&quot;, argc, argv);
+
+	int ret = rte_eal_init(argc, argv);
+	if (ret &lt; 0)
+		rte_exit(EXIT_FAILURE, &quot;Invalid EAL arguments\n&quot;);
+
+	printf(&quot;rte_eal_init() consumed %d arguments\n&quot;, ret);
+
+	/* The classic two lines found in every DPDK example. EAL copies
+	 * argv[0] into the last argument it parsed (the &quot;--&quot;), so after the
+	 * shift argv[0] is still the program name. */
+	argc -= ret;
+	argv += ret;
+	dump_argv(&quot;app after shift&quot;, argc, argv);
+
+	if (parse_app_args(argc, argv) &lt; 0)
+		rte_exit(EXIT_FAILURE, &quot;Invalid application arguments\n&quot;);
+
+	printf(&quot;app options: count=%u name=%s (EAL gave us %u lcore(s))\n&quot;,
+	       app_count, app_name, rte_lcore_count());
+	for (unsigned int i = 0; i &lt; app_count; i++)
+		printf(&quot;  %u: hello, %s\n&quot;, i + 1, app_name);
+
+	rte_eal_cleanup();
+	return 0;
+}</code></pre>
+    </div>
+    <p>After the shift, plain <code>getopt_long()</code> works as in any C program (lines 50-51). Reset <code>optind = 1</code> first: getopt keeps its position in a global variable. (EAL 26.11 parses with <code>rte_argparse</code>, which does not use getopt, but older EALs did, and the reset costs nothing.) Chapter 11 replaces getopt with <code>rte_argparse</code> and a config file.</p>
+
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 2)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./args -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-args -- --count 3 --name demo</span>
+main() before rte_eal_init sees argc=13: [0]=./args [1]=-l [2]=0 [3]=--no-pci [4]=--no-huge [5]=-m [6]=64 [7]=--file-prefix=ch02-args [8]=-- [9]=--count [10]=3 [11]=--name [12]=demo
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch02-args/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+<span class="hl">rte_eal_init() consumed 8 arguments</span>
+<span class="hl">app after shift sees argc=5: [0]=./args [1]=--count [2]=3 [3]=--name [4]=demo</span>
+app options: count=3 name=demo (EAL gave us 1 lcore(s))
+  1: hello, demo
+  2: hello, demo
+  3: hello, demo
+<span class="ok">[exit code 0]</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./args -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-args --count 3 --name demo</span>
+main() before rte_eal_init sees argc=12: [0]=./args [1]=-l [2]=0 [3]=--no-pci [4]=--no-huge [5]=-m [6]=64 [7]=--file-prefix=ch02-args [8]=--count [9]=3 [10]=--name [11]=demo
+<span class="hl">ARGPARSE: unknown argument --count!</span>
+<span class="err">[exit code 234]</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./args foo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-args bar</span>
+main() before rte_eal_init sees argc=10: [0]=./args [1]=foo [2]=-l [3]=0 [4]=--no-pci [5]=--no-huge [6]=-m [7]=64 [8]=--file-prefix=ch02-args [9]=bar
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch02-args/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+<span class="hl">rte_eal_init() consumed 7 arguments</span>
+<span class="hl">app after shift sees argc=3: [0]=./args [1]=foo [2]=bar</span>
+app options: count=1 name=world (EAL gave us 1 lcore(s))
+  1: hello, world
+<span class="ok">[exit code 0]</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./args -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-args -- --help</span>
+main() before rte_eal_init sees argc=10: [0]=./args [1]=-l [2]=0 [3]=--no-pci [4]=--no-huge [5]=-m [6]=64 [7]=--file-prefix=ch02-args [8]=-- [9]=--help
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch02-args/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+rte_eal_init() consumed 8 arguments
+app after shift sees argc=2: [0]=./args [1]=--help
+<span class="hl">usage: ./args [EAL options] -- [--count N] [--name NAME]</span>
+<span class="err">EAL: Error - exiting with code: 1</span>
+Invalid application arguments
+<span class="err">[exit code 1]</span></pre>
+    </div>
+    <p class="output-caption">Four real runs. (1) The normal case: 8 consumed, 5 left. (2) Forget the <code>--</code> and EAL meets <code>--count</code>, which it does not know: EAL's option parser was created with <code>exit_on_error = true</code>, so the <em>process exits</em> with code 234 (that is <code>-EINVAL</code> truncated to 8 bits) before <code>rte_eal_init()</code> even returns. (3) Words without a dash (<code>foo</code>, <code>bar</code>) are not EAL options; EAL moves them behind its own and passes them on. (4) <code>--help</code> after <code>--</code> reaches your program; before <code>--</code>, EAL prints its own help and exits 0.</p>
+
+    <h3 id="splitter">Try it: the command-line splitter</h3>
+    <p>Type any DPDK command line, or pick a preset. The widget applies the same rules as EAL 26.11's parser (<span class="src-path">lib/argparse/rte_argparse.c</span> with the option table in <span class="src-path">lib/eal/common/eal_option_list.h</span>): known options and their values, <code>--opt=value</code> and <code>-l0-1</code> forms, options that may not repeat, options that take no value, words that are moved, and what <code>rte_eal_init()</code> returns. Click a token to see what it means. It checks syntax only, not values (it does not know whether CPU 7 exists).</p>
+    <div class="widget" id="splitter">
+      <div class="widget-head"><span class="widget-title">EAL options vs application options</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <label for="split-in" class="small muted">command line</label>
+        <input type="text" id="split-in" class="split-input" spellcheck="false" autocomplete="off"
+               value="./args -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch02-args --vdev=net_null0 -- --count 3 --name demo">
+        <div class="presets" style="margin-top:.5rem">
+          <button class="btn small" type="button" data-cmd="./args -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch02-args --vdev=net_null0 -- --count 3 --name demo">correct</button>
+          <button class="btn small" type="button" data-cmd="./args -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-args --count 3 --name demo">forgot --</button>
+          <button class="btn small" type="button" data-cmd="./args foo -l0 --no-pci --no-huge -m 64 --file-prefix=ch02-args bar -- --count 2">plain words</button>
+          <button class="btn small" type="button" data-cmd="./args -l 0 -l 1 --no-pci --in-memory">-l twice</button>
+          <button class="btn small" type="button" data-cmd="./args -c 0x3 --no-pci --no-huge -m 64 --in-memory">deprecated -c</button>
+          <button class="btn small" type="button" data-cmd="./args -c 0x3 -l 0 --no-pci --in-memory">-c with -l</button>
+          <button class="btn small" type="button" data-cmd="./args -l 0 --no-pci --in-memory=yes">value on a flag</button>
+          <button class="btn small" type="button" data-cmd="./args -l 0 --no-pci --log-color always -- -v">optional value</button>
+          <button class="btn small" type="button" data-cmd="dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch02-first --vdev=net_null0 --vdev=net_null1 -- --total-num-mbufs=8192 --stats-period 2 --forward-mode=io">testpmd</button>
+        </div>
+        <div class="split-out" aria-live="polite">
+          <div class="tok-row" id="split-toks"></div>
+          <div class="split-legend">
+            <span><span class="tok prog">prog</span> argv[0]</span><span><span class="tok eal">-x</span> EAL option</span>
+            <span><span class="tok val">v</span> its value</span><span><span class="tok sep">--</span> separator</span>
+            <span><span class="tok moved">w</span> moved to app</span><span><span class="tok app">a</span> app option</span>
+            <span><span class="tok dep">-c</span> deprecated</span><span><span class="tok bad">?</span> error</span>
+          </div>
+          <div class="verdict" id="split-verdict"></div>
+          <div class="small muted">argv as the application sees it after <code>argc -= ret; argv += ret;</code></div>
+          <div class="argv-row" id="split-argv"></div>
+          <div class="explain" id="split-explain">Click a token for details.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================ 8 -->
+    <h2 id="shared"><span class="sec-num">8</span>Shared builds and the insecure plugin path</h2>
+    <p>Linking with <code>pkg-config --libs libdpdk</code> (no <code>--static</code>) gives a 37 KB program instead of 5.1 MB. Your program now depends on <code>librte_*.so.27</code> files, and drivers are not linked at all: the EAL loads them at run time as <span class="key-term">plugins</span>, with <code>dlopen()</code>, from the compiled-in <code>RTE_EAL_PMD_PATH</code> directory and from any <code>-d &lt;file-or-dir&gt;</code> option. This lets you upgrade DPDK or add a driver without relinking. On this machine it fails twice, and both failures teach something.</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 4)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">ldd ./hello_shared | grep librte</span>
+<span class="err">	librte_ethdev.so.27 => not found
+	librte_eal.so.27 => not found</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./hello_shared -l 0 --no-pci --no-huge -m 64 --in-memory --vdev=net_null0</span>
+<span class="err">./hello_shared: error while loading shared libraries: librte_ethdev.so.27: cannot open shared object file: No such file or directory</span>
+<span class="err">[exit code 127]</span>
+<span class="prompt">$ </span><span class="cmd">env LD_LIBRARY_PATH=$LIBDIR timeout -s INT -k 5 20 ./hello_shared -l 0 --no-pci --no-huge -m 64 --in-memory --vdev=net_null0</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected shared linkage of DPDK</span>
+<span class="err">EAL: Error, directory path /tmp is world-writable and insecure</span>
+<span class="err">EAL: Cannot init plugins</span>
+<span class="err">EAL: Error - exiting with code: 1</span>
+<span class="err">Cannot init EAL</span>
+<span class="err">EAL: Unable to open directory </span>
+<span class="err">EAL: Unregistering with invalid input parameter</span>
+<span class="err">[exit code 1]</span>
+<span class="prompt">$ </span><span class="cmd">env LD_LIBRARY_PATH=$LIBDIR timeout -s INT -k 5 20 ./hello_shared -l 0 --no-pci --no-huge -m 64 --in-memory -d &lt;code&gt;/.ch02-pmds/librte_net_null.so.27.0 --vdev=net_null0</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected shared linkage of DPDK</span>
+<span class="err">EAL: Error, directory path /tmp is world-writable and insecure</span>
+<span class="err">EAL: Cannot init plugins</span>
+<span class="err">EAL: Error - exiting with code: 1</span>
+<span class="err">Cannot init EAL</span>
+<span class="err">EAL: Unable to open directory </span>
+<span class="err">EAL: Unregistering with invalid input parameter</span>
+<span class="err">[exit code 1]</span></pre>
+    </div>
+    <p class="output-caption">Failure 1: the dynamic loader cannot find the libraries because <code>$DPDK_PREFIX/lib/…</code> is not a system library directory (fix: <code>LD_LIBRARY_PATH</code>, or install to <code>/usr/local</code> and run <code>ldconfig</code>). Failure 2: EAL refuses to load any plugin, and even <code>-d</code> pointing at a copy of the driver in a safe directory does not help, because the default directory is always checked as well.</p>
+    <p>Why? Before <code>dlopen()</code>ing a driver, <code>verify_perms()</code> in <span class="src-path">lib/eal/common/eal_common_options.c</span> walks every parent directory of the plugin path, from <code>/</code> down, and rejects any that is <em>world-writable</em> (<code>S_IWOTH</code>). If any user could write into a directory on the path, any user could swap the driver for their own code, which then runs inside your (often root) DPDK process. <code>/tmp</code> is world-writable (<code>drwxrwxrwt</code>), and the course DPDK is installed under <code>/tmp</code>.</p>
+
+    <figure class="diagram">
+      <div class="scroll-x">
+      <svg viewBox="0 0 720 230" role="img" aria-labelledby="f-perm-t" style="min-width:600px">
+        <title id="f-perm-t">verify_perms walking the plugin path, on the host and inside a private mount namespace</title>
+        <text class="svg-title" x="10" y="18">Host: verify_perms("…/dpdk/pmds-27.0")</text>
+        <rect class="svg-box c7" x="10" y="30" width="80" height="50"/>
+        <text class="svg-label center mono" x="50" y="48">/</text>
+        <text class="svg-label center small mono" x="50" y="66">drwxr-xr-x</text>
+        <rect class="svg-box c4 svg-highlight" x="110" y="30" width="100" height="50"/>
+        <text class="svg-label center mono" x="160" y="48">/tmp</text>
+        <text class="svg-label center small mono" x="160" y="66">drwxrwxrwt</text>
+        <rect class="svg-box ghost" x="230" y="30" width="110" height="50"/>
+        <text class="svg-label center mono muted" x="285" y="48">claude-0</text>
+        <text class="svg-label center small mono muted" x="285" y="66">drwx------</text>
+        <rect class="svg-box ghost" x="360" y="30" width="150" height="50"/>
+        <text class="svg-label center mono muted" x="435" y="48">… /dpdk-install/lib/…</text>
+        <text class="svg-label center small mono muted" x="435" y="66">drwxr-xr-x</text>
+        <rect class="svg-box ghost" x="530" y="30" width="180" height="50"/>
+        <text class="svg-label center mono muted" x="620" y="48">dpdk/pmds-27.0</text>
+        <text class="svg-label center small mono muted" x="620" y="66">25 driver .so files</text>
+        <path class="svg-arrow" d="M90,55 L106,55"/>
+        <path class="svg-arrow c4" d="M210,55 L226,55"/>
+        <text class="svg-label small" x="110" y="100" style="fill:var(--c4)">"Error, directory path /tmp is world-writable and insecure"  →  Cannot init plugins  →  rte_eal_init() = -1</text>
+
+        <text class="svg-title" x="10" y="138">Inside unshare -m: /tmp replaced by a private 0755 tmpfs</text>
+        <rect class="svg-box c2" x="10" y="150" width="80" height="50"/>
+        <text class="svg-label center mono" x="50" y="168">/</text>
+        <text class="svg-label center small mono" x="50" y="186">drwxr-xr-x</text>
+        <rect class="svg-box c2" x="110" y="150" width="100" height="50"/>
+        <text class="svg-label center mono" x="160" y="168">/tmp (tmpfs)</text>
+        <text class="svg-label center small mono" x="160" y="186">drwxr-xr-x</text>
+        <rect class="svg-box c2" x="230" y="150" width="110" height="50"/>
+        <text class="svg-label center mono" x="285" y="168">claude-0</text>
+        <text class="svg-label center small mono" x="285" y="186">bind mount, 0700</text>
+        <rect class="svg-box c2" x="360" y="150" width="150" height="50"/>
+        <text class="svg-label center mono" x="435" y="168">… /dpdk-install/lib/…</text>
+        <text class="svg-label center small mono" x="435" y="186">drwxr-xr-x</text>
+        <rect class="svg-box c2" x="530" y="150" width="180" height="50"/>
+        <text class="svg-label center mono" x="620" y="168">dpdk/pmds-27.0</text>
+        <text class="svg-label center small mono" x="620" y="186">dlopen() each .so ✓</text>
+        <path class="svg-arrow c2 flow" d="M90,175 L106,175"/>
+        <path class="svg-arrow c2 flow" d="M210,175 L226,175"/>
+        <path class="svg-arrow c2 flow" d="M340,175 L356,175"/>
+        <path class="svg-arrow c2 flow" d="M510,175 L526,175"/>
+        <text class="svg-label small" x="10" y="222" style="fill:var(--c2)">every component passes  →  drivers load  →  lcores=1 ports=1</text>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>The check walks the path from the root down and stops at the first world-writable directory. The lab fix changes what <code>/tmp</code> looks like for one process only.</figcaption>
+    </figure>
+
+    <p>To see the shared build work without touching the rest of the machine, we start a shell in a private <span class="key-term">mount namespace</span> (<code>unshare -m</code>): mounts made inside it are invisible to every other process. In it we hide the real <code>/tmp</code> under a fresh <code>tmpfs</code> with mode 0755 and bind-mount just our own install tree back:</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 4, continued)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">ls -ld /tmp /tmp/claude-0</span>
+  drwxrwxrwt /tmp
+  drwx------ /tmp/claude-0
+<span class="prompt">$ </span><span class="cmd">unshare -m sh -c &#x27;mount --make-rprivate / &amp;&amp; ... &amp;&amp; ./hello_shared -l 0 --no-pci --no-huge -m 64 --in-memory --vdev=net_null0&#x27;</span>
+<span class="hl">  inside: drwxr-xr-x /tmp</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected shared linkage of DPDK</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+compiled against DPDK &gt;= 26.11, running DPDK 26.11.0
+hello from lcore 0
+<span class="hl">lcores=1 ports=1</span></pre>
+    </div>
+<pre><code class="language-bash">unshare -m sh -c '
+  mount --make-rprivate / &amp;&amp;                         # do not leak mounts to the host
+  mkdir -p /run/ch02-tmp &amp;&amp; mount --bind /tmp /run/ch02-tmp &amp;&amp;   # keep a handle on the real /tmp
+  mount -t tmpfs -o mode=0755 tmpfs /tmp &amp;&amp;           # new, non-world-writable /tmp
+  mkdir -p /tmp/claude-0 &amp;&amp; mount --bind /run/ch02-tmp/claude-0 /tmp/claude-0 &amp;&amp;
+  LD_LIBRARY_PATH=$LIBDIR ./hello_shared -l 0 --no-pci --no-huge -m 64 --in-memory --vdev=net_null0'</code></pre>
+    <div class="callout note"><div class="callout-title">How real deployments avoid this</div><p>They never install DPDK under a world-writable directory. Distribution packages put libraries in <code>/usr/lib/…</code> and drivers in <code>/usr/lib/…/dpdk/pmds-27.0</code>, all owned by root with mode 0755, and <code>ldconfig</code> makes <code>LD_LIBRARY_PATH</code> unnecessary. Or they link statically, as this course does, where no plugin is ever loaded. The <code>unshare</code> trick is only a lab tool; ch29 uses the same idea to show containers.</p></div>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th></th><th>Static (<code>--libs --static</code>)</th><th>Shared (<code>--libs</code>)</th></tr></thead>
+        <tbody>
+          <tr><td>Size of <code>hello</code> here</td><td class="num">5,119,264 B</td><td class="num">37,688 B</td></tr>
+          <tr><td>Drivers</td><td>linked in (need <code>--whole-archive</code>)</td><td>loaded at run time from <code>pmds-27.0</code> or <code>-d</code></td></tr>
+          <tr><td>Run-time needs</td><td>nothing (system libs like libnuma only)</td><td><code>librte_*.so.27</code> on the loader path; safe plugin directories</td></tr>
+          <tr><td>Upgrade DPDK</td><td>rebuild the app</td><td>replace the .so files (same ABI 27)</td></tr>
+          <tr><td>EAL log line</td><td><code>Detected static linkage of DPDK</code></td><td><code>Detected shared linkage of DPDK</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ============================================================ 9 -->
+    <h2 id="meson-app"><span class="sec-num">9</span>Your own project with meson</h2>
+    <p>For a project with several files, meson is more pleasant than a Makefile. The obvious line, <code>dependency('libdpdk')</code>, works but links <em>shared</em> (and so fails here as in section 8). Two "obvious" ways to make it static both fail, which is why our <code>meson.build</code> takes the compile flags from the dependency and passes the static link list, untouched, to <code>executable(link_args:)</code>:</p>
+    <div class="tabs">
+      <div class="tab-list">
+        <button class="tab-btn" data-tab="mb">meson.build</button>
+        <button class="tab-btn" data-tab="mo">meson_options.txt</button>
+        <button class="tab-btn" data-tab="mm">main.c</button>
+        <button class="tab-btn" data-tab="mu">util.c</button>
+        <button class="tab-btn" data-tab="mh">util.h</button>
+      </div>
+      <div class="tab-panel" data-tab="mb"><pre data-lines data-hl="11-12,15-17,24-27"><code class="language-bash"># SPDX-License-Identifier: BSD-3-Clause
+# Chapter 2: an out-of-tree meson project that links DPDK *statically*.
+#
+#   meson setup build &amp;&amp; ninja -C build &amp;&amp; ./build/app &lt;EAL args&gt;
+#   meson setup build-bad -Dlink_mode=declare_dep   (the pitfall)
+#
+project(&#x27;ch02-mesonapp&#x27;, &#x27;c&#x27;, default_options: [&#x27;warning_level=2&#x27;])
+
+# 1. Compile flags (include path, -include rte_config.h, -march=native)
+#    come from the normal pkg-config dependency.
+dpdk = dependency(&#x27;libdpdk&#x27;)
+dpdk_cflags = dpdk.partial_dependency(compile_args: true, includes: true)
+
+# 2. Link flags: ask pkg-config for the --static list.
+pkgconf = find_program(&#x27;pkg-config&#x27;)
+static_libs = run_command(pkgconf, &#x27;--libs&#x27;, &#x27;--static&#x27;, &#x27;libdpdk&#x27;,
+                          check: true).stdout().strip().split()
+
+srcs = [&#x27;main.c&#x27;, &#x27;util.c&#x27;]
+cargs = [&#x27;-DALLOW_EXPERIMENTAL_API&#x27;]   # we call rte_cpu_socket_id()
+mode = get_option(&#x27;link_mode&#x27;)
+
+if mode == &#x27;link_args&#x27;
+    # Correct: pass the list unmodified through executable(link_args:), so
+    # the -Wl,--whole-archive ... -Wl,--no-whole-archive bracket stays intact.
+    executable(&#x27;app&#x27;, srcs, c_args: cargs, dependencies: dpdk_cflags,
+               link_args: static_libs)
+elif mode == &#x27;declare_dep&#x27;
+    # Pitfall: meson de-duplicates and reorders the link arguments of a
+    # dependency object, which breaks the --whole-archive bracket.
+    dpdk_static = declare_dependency(link_args: static_libs)
+    executable(&#x27;app&#x27;, srcs, c_args: cargs,
+               dependencies: [dpdk_cflags, dpdk_static])
+else
+    # Shared libraries: what plain dependency(&#x27;libdpdk&#x27;) gives you.
+    executable(&#x27;app&#x27;, srcs, c_args: cargs, dependencies: dpdk)
+endif</code></pre></div>
+      <div class="tab-panel" data-tab="mo"><pre><code class="language-bash"># link_mode=link_args   (default) correct static link, PMDs kept
+# link_mode=declare_dep the tempting variant that silently drops every PMD
+# link_mode=shared      dependency(&#x27;libdpdk&#x27;): shared libraries + plugin dir
+option(&#x27;link_mode&#x27;, type: &#x27;combo&#x27;, choices: [&#x27;link_args&#x27;, &#x27;declare_dep&#x27;, &#x27;shared&#x27;],
+       value: &#x27;link_args&#x27;, description: &#x27;How to link DPDK&#x27;)</code></pre></div>
+      <div class="tab-panel" data-tab="mm"><pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * mesonapp/main.c - Chapter 2: a two-file DPDK application built with meson.
+ * Run: ./build/app -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch02-meson --vdev=net_null0
+ */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+
+#include &lt;rte_eal.h&gt;
+#include &lt;rte_common.h&gt;
+#include &lt;rte_version.h&gt;
+#include &lt;rte_ethdev.h&gt;
+
+#include &quot;util.h&quot;
+
+int
+main(int argc, char **argv)
+{
+	int ret = rte_eal_init(argc, argv);
+	if (ret &lt; 0)
+		rte_exit(EXIT_FAILURE, &quot;Cannot init EAL\n&quot;);
+
+	printf(&quot;mesonapp: %s, ports=%u\n&quot;, rte_version(),
+	       (unsigned int)rte_eth_dev_count_avail());
+	print_lcore_numa();        /* defined in util.c */
+
+	rte_eal_cleanup();
+	return 0;
+}</code></pre></div>
+      <div class="tab-panel" data-tab="mu"><pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * mesonapp/util.c - uses one EXPERIMENTAL EAL API, rte_cpu_socket_id().
+ * Experimental functions are marked __rte_experimental in the headers
+ * (lib/eal/include/rte_compat.h). Unless ALLOW_EXPERIMENTAL_API is defined,
+ * that macro adds __attribute__((deprecated)) and every call warns.
+ * meson.build defines it with c_args: &#x27;-DALLOW_EXPERIMENTAL_API&#x27;.
+ */
+#include &lt;stdio.h&gt;
+
+#include &lt;rte_lcore.h&gt;
+
+#include &quot;util.h&quot;
+
+void
+print_lcore_numa(void)
+{
+	unsigned int lcore;
+
+	RTE_LCORE_FOREACH(lcore) {
+		/* rte_lcore_to_cpu_id(): stable API; rte_cpu_socket_id(): experimental */
+		int cpu = rte_lcore_to_cpu_id(lcore);
+		printf(&quot;  lcore %u -&gt; cpu %d -&gt; numa node %u\n&quot;, lcore, cpu,
+		       rte_cpu_socket_id((unsigned int)cpu));
+	}
+}</code></pre></div>
+      <div class="tab-panel" data-tab="mh"><pre><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause */
+#ifndef CH02_UTIL_H
+#define CH02_UTIL_H
+/* Print every enabled lcore and the NUMA node of its CPU. */
+void print_lcore_numa(void);
+#endif</code></pre></div>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 5)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">meson setup build &amp;&amp; ninja -C build</span>
+Project name: ch02-mesonapp
+Run-time dependency libdpdk found: YES 26.11.0
+Build targets in project: 1
+[1/3] Compiling C object app.p/util.c.o
+[2/3] Compiling C object app.p/main.c.o
+[3/3] Linking target app
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./mesonapp/build/app -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch02-meson --vdev=net_null0</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch02-meson/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+<span class="hl">mesonapp: DPDK 26.11.0, ports=1</span>
+  lcore 0 -&gt; cpu 0 -&gt; numa node 0
+  lcore 1 -&gt; cpu 1 -&gt; numa node 0
+<span class="ok">[exit code 0]</span>
+<span class="prompt">$ </span><span class="cmd">meson setup build-bad -Dlink_mode=declare_dep &amp;&amp; ninja -C build-bad</span>
+<span class="hl">  link args meson generated: LINK_ARGS = -Wl,--as-needed -Wl,--no-undefined -Wl,--whole-archive -Wl,--no-whole-archive -Wl,--export-dynamic -Wl,--as-ne...</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./mesonapp/build-bad/app -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-mesonbad --vdev=net_null0</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="hl">EAL: failed to parse device &quot;net_null0&quot;</span>
+<span class="err">EAL: Unable to parse device &#x27;net_null0&#x27;</span>
+<span class="err">EAL: Error - exiting with code: 1</span>
+<span class="err">Cannot init EAL</span>
+<span class="err">EAL: Unable to open directory </span>
+<span class="err">EAL: Unregistering with invalid input parameter</span>
+<span class="err">[exit code 1]</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./mesonapp/build-bad/app -l 0 --no-pci --no-huge -m 64 --file-prefix=ch02-mesonbad</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch02-mesonbad/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+<span class="hl">mesonapp: DPDK 26.11.0, ports=0</span>
+  lcore 0 -&gt; cpu 0 -&gt; numa node 0
+<span class="ok">[exit code 0]</span></pre>
+    </div>
+    <p class="output-caption">The pitfall in the generated <code>build.ninja</code>: meson treats the link arguments of a <code>declare_dependency()</code> as a set to de-duplicate and reorder, and the result is <code>-Wl,--whole-archive -Wl,--no-whole-archive</code> with nothing in between, then the archives. It links, it runs, and it has zero drivers. The third variant, <code>dependency('libdpdk', static: true)</code>, makes meson resolve <em>all</em> system libraries statically too and fails to link here (<code>libsystemd.a</code> needs <code>libcap</code>), according to the course research notes.</p>
+
+    <h3 id="experimental">Experimental APIs</h3>
+    <p><code>util.c</code> calls <code>rte_cpu_socket_id()</code>, which is marked <code>__rte_experimental</code> in <span class="src-path">lib/eal/include/rte_lcore.h</span>. Without the define, every call warns:</p>
+    <div class="terminal">
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 5, end)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">gcc -Wall -c mesonapp/util.c $(pkg-config --cflags libdpdk)</span>
+mesonapp/util.c: In function &#x27;print_lcore_numa&#x27;:
+<span class="hl">mesonapp/util.c:24:24: warning: &#x27;rte_cpu_socket_id&#x27; is deprecated: Symbol is not yet part of stable ABI [-Wdeprecated-declarations]</span>
+   24 |                        rte_cpu_socket_id((unsigned int)cpu));</pre>
+    </div>
+    <p class="output-caption">The "deprecated" wording is a trick: <code>rte_compat.h</code> implements "experimental" with <code>__attribute__((deprecated(...)))</code> to get the compiler to warn. Add <code>-DALLOW_EXPERIMENTAL_API</code> (meson: <code>c_args</code>) to say "I accept that this API may change".</p>
+
+    <!-- ============================================================ 10 -->
+    <h2 id="first-look"><span class="sec-num">10</span>First look: testpmd and the skeleton</h2>
+    <p>Before we open the box in chapter 3, run two real DPDK programs and just look. <code>first_look.sh</code> starts the prebuilt <code>dpdk-skeleton</code> (source: <span class="src-path">examples/skeleton/basicfwd.c</span>) and <code>dpdk-testpmd</code> on two <code>net_null</code> ports. A <code>net_null</code> port invents packets on receive and discards them on transmit, so the numbers measure DPDK's software path only: no wire, no NIC.</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 7: first_look.sh, trimmed)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">dpdk-skeleton -l 0 --no-pci --no-huge -m 256 --file-prefix=ch02-skel --vdev=net_null0 --vdev=net_null1</span>
+(exit code 124 : 124 = stopped by timeout, the skeleton loops forever)
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch02-skel/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+<span class="hl">Port 0 MAC: 66 c6 68 4a 36 4f</span>
+Port 1 MAC: 5a 7b ef 73 0e 4f
+
+<span class="hl">Core 0 forwarding packets. [Ctrl+C to quit]</span>
+<span class="dim">…</span>
+<span class="prompt">$ </span><span class="cmd">dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch02-first --vdev=net_null0 --vdev=net_null1 -- --total-num-mbufs=8192 --stats-period 2 --forward-mode=io</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch02-first/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+Set io packet forwarding mode
+testpmd: create a new mbuf pool &lt;mb_pool_0&gt;: n=8192, size=2176, socket=0
+testpmd: preferred mempool ops selected: ring_mp_mc
+Configuring Port 0 (socket 0)
+Port 0: 8A:3B:7A:B3:EC:F2
+Configuring Port 1 (socket 0)
+Port 1: DA:FA:F1:B3:3E:5A
+Checking link statuses...
+Done
+No commandline core given, start packet forwarding
+<span class="hl">io packet forwarding - ports=2 - cores=1 - streams=2 - NUMA support enabled, MP allocation mode: native</span>
+Logical Core 1 (socket 0) forwards packets on 2 streams:
+<span class="dim">  [... per-queue configuration and earlier stats blocks trimmed ...]</span>
+  ######################## NIC statistics for port 0  ########################
+<span class="hl">  RX-packets: 335706688  RX-missed: 0          RX-bytes:  21485228032</span>
+  RX-errors: 0
+  RX-nombuf:  0         
+  TX-packets: 335226400  TX-errors: 0          TX-bytes:  21454489600
+
+  Throughput (since last show)
+<span class="hl">  Rx-pps:     56896976          Rx-bps:  29131252144</span>
+  Tx-pps:     56896976          Tx-bps:  29131252144
+<span class="dim">  …</span>
+  +++++++++++++++ Accumulated forward statistics for all ports+++++++++++++++
+<span class="hl">  RX-packets: 898241856      RX-dropped: 0             RX-total: 898241856</span>
+  TX-packets: 898241856      TX-dropped: 0             TX-total: 898241856
+<span class="dim">…</span>
+=== first look 3: how fast? 5 runs x 4 s, Rx-pps of port 0 in the last 1 s period ===
+  run 1: port 0 Rx-pps = 51905996
+  run 2: port 0 Rx-pps = 54729683
+  run 3: port 0 Rx-pps = 53853626
+  run 4: port 0 Rx-pps = 56986358
+  run 5: port 0 Rx-pps = 56606295
+<span class="hl">  median 54.7 Mpps  (min 51.9, max 57.0) per port, net_null software ports, 1 forwarding lcore, this VM</span></pre>
+    </div>
+    <p class="output-caption">What to read. <code>RX-packets</code>/<code>TX-packets</code> are per-port counters; <code>Rx-pps</code> is packets per second over the last stats period. One forwarding lcore moved tens of millions of packets per second per port in each direction: that is what "no kernel, no system calls, no interrupts" (ch1) buys, even in a VM. The median line comes from five 4-second runs; on this shared 4-core VM the runs vary because other programs compete for the CPUs. Do not compare these numbers with a real NIC; ch22 teaches how to measure properly.</p>
+    <div class="callout warning"><div class="callout-title">testpmd needs a small pool here</div><p>testpmd's default mbuf pool (155,456 buffers) does not fit in <code>--no-huge -m 256</code>; it fails with <code>Creation of mbuf pool for socket 0 failed: Cannot allocate memory</code>. Every testpmd command in this course passes <code>--total-num-mbufs=8192</code> (or similar). A non-interactive testpmd also needs <code>--stats-period N</code> and stops on SIGINT, which is why the script uses <code>timeout -s INT</code>.</p></div>
+
+    <h3 id="xray">Skeleton x-ray</h3>
+    <p><code>basicfwd.c</code> is about 200 lines and contains the whole shape of a DPDK application. Each important line is tagged with the chapter that explains it. Chapters 3 to 8 open with this same picture, with their own lines highlighted. Click a chapter to highlight its lines.</p>
+    <div class="xray-filter" id="xray-filter" role="group" aria-label="Highlight lines by chapter">
+      <button class="btn small" type="button" data-ch="all" aria-pressed="true">all</button>
+      <button class="btn small" type="button" data-ch="2" aria-pressed="false">ch2 build/main</button>
+      <button class="btn small" type="button" data-ch="3" aria-pressed="false">ch3 EAL</button>
+      <button class="btn small" type="button" data-ch="4" aria-pressed="false">ch4 memory</button>
+      <button class="btn small" type="button" data-ch="6" aria-pressed="false">ch6 mempool</button>
+      <button class="btn small" type="button" data-ch="7" aria-pressed="false">ch7 mbuf</button>
+      <button class="btn small" type="button" data-ch="8" aria-pressed="false">ch8 ethdev</button>
+    </div>
+    <figure class="diagram">
+    <div class="xray" id="xray" role="img" aria-label="Lines of examples/skeleton/basicfwd.c tagged with the chapter that explains them">
+      <div class="xl" data-ch="2"><code>#include &lt;rte_eal.h&gt; &lt;rte_ethdev.h&gt; &lt;rte_cycles.h&gt; &lt;rte_lcore.h&gt; &lt;rte_mbuf.h&gt;</code><span class="xtag ch2">ch2 headers</span></div>
+      <div class="xl" data-ch="8"><code>#define RX_RING_SIZE 1024   /* TX_RING_SIZE 1024 */</code><span class="xtag ch8">ch8 descriptors</span></div>
+      <div class="xl" data-ch="6"><code>#define NUM_MBUFS 8191      /* MBUF_CACHE_SIZE 250 */</code><span class="xtag ch6">ch6 pool + cache</span></div>
+      <div class="xl" data-ch="7"><code>#define BURST_SIZE 32</code><span class="xtag ch7">ch7/ch8 bursts</span></div>
+      <div class="xl c"><code>static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool) {</code><span></span></div>
+      <div class="xl" data-ch="8"><code>    retval = rte_eth_dev_info_get(port, &amp;dev_info);</code><span class="xtag ch8">ch8 capabilities</span></div>
+      <div class="xl" data-ch="8"><code>    if (dev_info.tx_offload_capa &amp; RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE) ...</code><span class="xtag ch8">ch8 offload flags</span></div>
+      <div class="xl" data-ch="8"><code>    retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &amp;port_conf);</code><span class="xtag ch8">ch8 configure</span></div>
+      <div class="xl" data-ch="8"><code>    retval = rte_eth_dev_adjust_nb_rx_tx_desc(port, &amp;nb_rxd, &amp;nb_txd);</code><span class="xtag ch8">ch8 ring sizes</span></div>
+      <div class="xl" data-ch="8"><code>    rte_eth_rx_queue_setup(port, q, nb_rxd, rte_eth_dev_socket_id(port), NULL, mbuf_pool);</code><span class="xtag ch8">ch8 rx queue</span></div>
+      <div class="xl" data-ch="4"><code>                                            ^ rte_eth_dev_socket_id(port): NUMA node of the NIC</code><span class="xtag ch4">ch4 NUMA</span></div>
+      <div class="xl" data-ch="8"><code>    rte_eth_tx_queue_setup(port, q, nb_txd, rte_eth_dev_socket_id(port), &amp;txconf);</code><span class="xtag ch8">ch8 tx queue</span></div>
+      <div class="xl" data-ch="8"><code>    retval = rte_eth_dev_start(port);   rte_eth_promiscuous_enable(port);</code><span class="xtag ch8">ch8 start</span></div>
+      <div class="xl c"><code>}</code><span></span></div>
+      <div class="xl c"><code>static __rte_noreturn void lcore_main(void) {</code><span></span></div>
+      <div class="xl" data-ch="4"><code>    if (rte_eth_dev_socket_id(port) != (int)rte_socket_id()) printf("WARNING, ... remote NUMA node")</code><span class="xtag ch4">ch4 NUMA</span></div>
+      <div class="xl" data-ch="3"><code>    printf("Core %u forwarding packets.", rte_lcore_id());</code><span class="xtag ch3">ch3 lcore id</span></div>
+      <div class="xl" data-ch="7"><code>    struct rte_mbuf *bufs[BURST_SIZE];</code><span class="xtag ch7">ch7 mbuf</span></div>
+      <div class="xl" data-ch="8"><code>    const uint16_t nb_rx = rte_eth_rx_burst(port, 0, bufs, BURST_SIZE);</code><span class="xtag ch8">ch8 rx burst</span></div>
+      <div class="xl" data-ch="8"><code>    const uint16_t nb_tx = rte_eth_tx_burst(port ^ 1, 0, bufs, nb_rx);</code><span class="xtag ch8">ch8 tx burst</span></div>
+      <div class="xl" data-ch="7"><code>    for (buf = nb_tx; buf &lt; nb_rx; buf++) rte_pktmbuf_free(bufs[buf]);</code><span class="xtag ch7">ch7 free unsent</span></div>
+      <div class="xl c"><code>}</code><span></span></div>
+      <div class="xl c"><code>int main(int argc, char *argv[]) {</code><span></span></div>
+      <div class="xl" data-ch="3"><code>    int ret = rte_eal_init(argc, argv);  if (ret &lt; 0) rte_exit(EXIT_FAILURE, ...);</code><span class="xtag ch3">ch2/ch3 EAL init</span></div>
+      <div class="xl" data-ch="2"><code>    argc -= ret;  argv += ret;</code><span class="xtag ch2">ch2 the shift</span></div>
+      <div class="xl" data-ch="8"><code>    nb_ports = rte_eth_dev_count_avail();   /* must be even */</code><span class="xtag ch8">ch8 ports</span></div>
+      <div class="xl" data-ch="6"><code>    mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS * nb_ports, MBUF_CACHE_SIZE, 0,</code><span class="xtag ch6">ch6 mempool</span></div>
+      <div class="xl" data-ch="7"><code>                    RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());</code><span class="xtag ch7">ch7 buffer size</span></div>
+      <div class="xl" data-ch="8"><code>    RTE_ETH_FOREACH_DEV(portid) if (port_init(portid, mbuf_pool) != 0) rte_exit(...);</code><span class="xtag ch8">ch8 port loop</span></div>
+      <div class="xl" data-ch="3"><code>    if (rte_lcore_count() &gt; 1) printf("WARNING: Too many lcores enabled. Only 1 used.");</code><span class="xtag ch3">ch3 lcores</span></div>
+      <div class="xl" data-ch="3"><code>    lcore_main();   rte_eal_cleanup();</code><span class="xtag ch3">ch2/ch3 run, clean up</span></div>
+      <div class="xl c"><code>}</code><span></span></div>
+    </div>
+    <figcaption><span class="fig-num"></span>The skeleton x-ray: the important lines of <span class="src-path">examples/skeleton/basicfwd.c</span> (condensed) and the chapter that explains each.</figcaption>
+    </figure>
+
+    <!-- ============================================================ pitfalls -->
+    <h2 id="pitfalls">Common pitfalls</h2>
+    <ul>
+      <li><strong><code>No Ethernet ports</code> / <code>ports=0</code>, or <code>EAL: failed to parse device "net_null0"</code> in a static build</strong>: the drivers were not linked. You removed or reordered <code>-Wl,--whole-archive</code> (hand-written link line, meson <code>declare_dependency</code>, a build system that "cleans up" flags). Check with <code>dpdk-pmdinfo.py ./app</code>; it must not print <code>[]</code>.</li>
+      <li><strong><code>EAL: Error, directory path /tmp is world-writable and insecure</code> / <code>Cannot init plugins</code></strong>: a shared build whose plugin directory has a world-writable parent. Install DPDK under a root-owned path, or link statically.</li>
+      <li><strong><code>error while loading shared libraries: librte_eal.so.27</code></strong>: shared build, libraries not on the loader path. Use <code>LD_LIBRARY_PATH</code> or install to a system prefix and run <code>ldconfig</code>.</li>
+      <li><strong><code>ARGPARSE: unknown argument --foo!</code> and the program exits with code 234</strong>: an application option before <code>--</code>. In 26.11 EAL exits the process; your error handling after <code>rte_eal_init()</code> never runs.</li>
+      <li><strong>The app's options are ignored or misread</strong>: you forgot <code>argc -= ret; argv += ret;</code> and parsed EAL's options as your own.</li>
+      <li><strong><code>Package libdpdk was not found</code></strong>: <code>PKG_CONFIG_PATH</code> does not include <code>&lt;prefix&gt;/lib/&lt;arch&gt;/pkgconfig</code>. (In this course, <code>source</code> the environment script.)</li>
+      <li><strong><code>Illegal instruction</code> on another machine</strong>: the binary was built with <code>-march=native</code> from <code>platform=native</code>. Build DPDK with <code>-Dplatform=generic</code> for portable binaries.</li>
+      <li><strong><code>'rte_xxx' is deprecated: Symbol is not yet part of stable ABI</code></strong>: an experimental API; add <code>-DALLOW_EXPERIMENTAL_API</code> knowingly.</li>
+      <li><strong>Output missing when the program is killed</strong>: stdout to a file or pipe is block-buffered, and a SIGINT/timeout kill loses the buffer. Use <code>stdbuf -oL</code> (as <code>run.sh</code> does) or <code>setvbuf()</code>/<code>fflush()</code>.</li>
+      <li><strong>A second run fails with "Cannot create lock" or "Is another primary process running?"</strong>: two primaries with the same <code>--file-prefix</code>. Give each program its own prefix, or use <code>--in-memory</code> (ch4 has the full start-up error catalogue).</li>
+    </ul>
+
+    <!-- ============================================================ quiz -->
+    <h2 id="check">Check your understanding</h2>
+    <div class="quiz" data-quiz>
+      <div class="quiz-head">Five questions</div>
+      <div class="q" data-answer="2" data-explain="Driver registration code runs from constructors in .init_array. Nothing references it, so without --whole-archive the linker never copies those object files from the .a archives.">
+        <div class="q-text">A static program linked with a hand-written list of <code>-l:librte_*.a</code> files (no <code>--whole-archive</code>) is started with <code>--vdev=net_null0</code>, and <code>rte_eal_init()</code> fails with <code>failed to parse device "net_null0"</code>. Why?</div>
+        <div class="q-opts">
+          <button class="q-opt">net_null needs hugepages</button>
+          <button class="q-opt">The PCI bus scan failed because of <code>--no-pci</code></button>
+          <button class="q-opt">The bus and driver object files were never linked, so their constructors never registered them</button>
+        </div>
+      </div>
+      <div class="q" data-answer="1" data-explain="ret counts the 7 EAL tokens plus the separator, and EAL copies argv[0] into slot ret, so after the shift argv[0] is the program name.">
+        <div class="q-text"><code>./app -l 0 --no-pci -m 64 -- -v</code>: what does <code>rte_eal_init()</code> return, and what is <code>argv[0]</code> after <code>argv += ret</code>?</div>
+        <div class="q-opts">
+          <button class="q-opt">4, and <code>argv[0]</code> is <code>-v</code></button>
+          <button class="q-opt">5, and <code>argv[0]</code> is <code>./app</code></button>
+          <button class="q-opt">6, and <code>argv[0]</code> is <code>--</code></button>
+        </div>
+      </div>
+      <div class="q" data-answer="0" data-explain="verify_perms() rejects any world-writable directory on the plugin path, and the compiled-in default directory is always added for a shared build.">
+        <div class="q-text">Why does a shared-linked DPDK app installed under <code>/tmp/…</code> abort with <code>Cannot init plugins</code> even when you pass <code>-d</code> with a safe path?</div>
+        <div class="q-opts">
+          <button class="q-opt">EAL also checks the compiled-in <code>RTE_EAL_PMD_PATH</code>, whose parent <code>/tmp</code> is world-writable</button>
+          <button class="q-opt"><code>-d</code> only works for static builds</button>
+          <button class="q-opt"><code>LD_LIBRARY_PATH</code> is not set</button>
+        </div>
+      </div>
+      <div class="q" data-answer="2" data-explain="EAL's rte_argparse object has exit_on_error = true, so an unknown option ends the process with exit(-EINVAL), seen as 234.">
+        <div class="q-text">You forget the <code>--</code> and pass <code>--count 3</code> to EAL. What happens in DPDK 26.11?</div>
+        <div class="q-opts">
+          <button class="q-opt"><code>rte_eal_init()</code> returns -1 and your <code>rte_exit()</code> runs</button>
+          <button class="q-opt">EAL ignores it and passes it to the app</button>
+          <button class="q-opt">EAL prints <code>unknown argument --count!</code> and exits the process</button>
+        </div>
+      </div>
+      <div class="q" data-answer="1" data-explain="RTE_VERSION and RTE_VERSION_NUM are compile-time macros; rte_version() returns the string of the library linked in at run time.">
+        <div class="q-text">Which tells you the DPDK version of the library your program is <em>running</em> with?</div>
+        <div class="q-opts">
+          <button class="q-opt"><code>RTE_VERSION</code></button>
+          <button class="q-opt"><code>rte_version()</code></button>
+          <button class="q-opt"><code>RTE_VERSION_NUM(26, 11, 0, 0)</code></button>
+        </div>
+      </div>
+      <div class="controls"><button class="btn small quiz-reset" type="button">Reset</button></div>
+    </div>
+
+    <!-- ============================================================ exercises -->
+    <h2 id="exercises">Exercises</h2>
+    <div class="exercise">
+      <div class="box-title">Exercise 1 <span class="tag easy">easy</span></div>
+      <p>Copy <code>args.c</code> and add an application option <code>--verbose</code>, parsed after <code>--</code>, that prints every EAL lcore with its CPU and marks the main lcore. Run it with <code>-l 0-2</code>.</p>
+      <details><summary>Hint</summary><p><code>RTE_LCORE_FOREACH(lcore)</code> visits every enabled lcore; <code>rte_lcore_to_cpu_id()</code> and <code>rte_get_main_lcore()</code> are in <code>rte_lcore.h</code>.</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/verbose.c</code> (built by <code>make verbose</code>). Real output:</p>
+        <div class="terminal"><div class="term-bar"><span class="title">code/expected_output.txt (section 6)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./verbose -l 0-2 --no-pci --no-huge -m 64 --file-prefix=ch02-verbose -- --verbose</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch02-verbose/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+3 lcore(s) enabled
+<span class="hl">  lcore 0: cpu 0 (main)</span>
+  lcore 1: cpu 1
+  lcore 2: cpu 2
+<span class="ok">[exit code 0]</span></pre></div>
+      </details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 2 <span class="tag medium">medium</span></div>
+      <p>Run <code>dpdk-pmdinfo.py</code> on your static <code>hello</code> binary and list the net PMDs it contains. Then run it on <code>ports_broken</code> and on <code>hello_shared</code>. Explain each result.</p>
+      <details><summary>Hint</summary><p>The tool prints JSON; filter names starting with <code>net_</code> (with <code>python3 -c</code> or <code>jq</code> if you have it).</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/pmdinfo.sh</code>. <code>ports_broken</code> prints <code>[]</code> (no driver linked); <code>hello_shared</code> also prints <code>[]</code> because its drivers are separate <code>.so</code> files (run the tool on <code>pmds-27.0/*.so</code> instead).</p>
+        <div class="terminal"><div class="term-bar"><span class="title">code/expected_output.txt (section 6b)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./solutions/pmdinfo.sh ./hello</span>
+<span class="hl">23 drivers, 13 net PMDs:</span>
+   net_af_packet
+   net_af_xdp
+   net_bonding
+   net_failsafe
+   net_memif
+   net_null
+   net_pcap
+   net_ring
+   net_tap
+   net_tun
+   net_vhost
+   net_virtio
+   net_virtio_user
+<span class="ok">[exit code 0]</span></pre></div>
+      </details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 3 <span class="tag medium">medium</span></div>
+      <p>Write a <code>meson.build</code> for a project with two <code>.c</code> files, one of which calls an experimental API, so that it compiles with <code>warning_level=2</code> and no warnings and links statically with all drivers. Prove the drivers are there.</p>
+      <details><summary>Hint</summary><p>Take <code>partial_dependency(compile_args: true, includes: true)</code> from <code>dependency('libdpdk')</code>, get the static list with <code>run_command(pkg-config, '--libs', '--static', 'libdpdk')</code>, and give it to <code>executable(link_args:)</code>. Add <code>-DALLOW_EXPERIMENTAL_API</code> in <code>c_args</code>.</p></details>
+      <details><summary>Solution</summary><p><code>code/mesonapp/</code> is exactly this project; <code>run.sh</code> builds it and runs it with <code>--vdev=net_null0</code> (<code>ports=1</code>).</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 4 <span class="tag stretch">stretch</span></div>
+      <p>In two sentences: why does the shared build fail on this machine, and how does a real deployment avoid it? Then find, in <span class="src-path">lib/eal/common/eal_common_options.c</span>, the function that decides whether a build is static or shared, and say how it decides.</p>
+      <details><summary>Answer</summary><p>EAL's <code>verify_perms()</code> refuses to <code>dlopen()</code> drivers from a directory with a world-writable parent, and the compiled-in plugin directory lies under <code>/tmp</code>. Real deployments install DPDK in root-owned 0755 directories (distribution packages under <code>/usr</code>) or link statically. <code>is_shared_build()</code> calls <code>dlopen("librte_eal.so.27", RTLD_LAZY | RTLD_NOLOAD)</code>: if the EAL shared library is already loaded in the process, the build is shared.</p></details>
+    </div>
+
+    <!-- ============================================================ summary -->
+    <section class="summary-box">
+      <div class="box-title">Summary</div>
+      <ul>
+        <li>DPDK is built once with <code>meson setup</code> / <code>ninja</code> / <code>meson install</code>; options such as <code>platform</code>, <code>enable_drivers</code> and <code>examples</code> end up in <code>rte_build_config.h</code>.</li>
+        <li>Your program gets its flags from <code>pkg-config --cflags libdpdk</code> and <code>pkg-config --libs --static libdpdk</code>, placed after your sources.</li>
+        <li>Buses, classes and drivers register themselves in constructors that run before <code>main()</code>. A static link must keep them with <code>-Wl,--whole-archive</code>, or you get 0 ports or a failed <code>rte_eal_init()</code>. <code>dpdk-pmdinfo.py</code> shows what is inside.</li>
+        <li><code>main()</code>: <code>ret = rte_eal_init(argc, argv)</code>; check for <code>ret &lt; 0</code>; <code>argc -= ret; argv += ret;</code>; parse your options after <code>--</code>; finish with <code>rte_eal_cleanup()</code>, or <code>rte_exit()</code> on fatal errors.</li>
+        <li>In 26.11 an unknown option before <code>--</code> makes EAL exit the process; plain words are passed on to the app.</li>
+        <li>Shared builds load drivers from <code>pmds-27.0</code> and refuse any plugin path with a world-writable parent.</li>
+        <li><code>testpmd</code> on two <code>net_null</code> ports forwards tens of millions of packets per second on one lcore here: the starting point for chapters 3 to 8.</li>
+      </ul>
+    </section>
+
+    <section class="references">
+      <h2 id="references">References</h2>
+      <ol>
+        <li>Programmer's Guide, Installing DPDK Using the meson build system <span class="src-path">doc/guides/prog_guide/build-sdk-meson.rst</span></li>
+        <li>Programmer's Guide, Building Your Own Application <span class="src-path">doc/guides/prog_guide/build_app.rst</span></li>
+        <li>Linux Getting Started Guide, Compiling the DPDK Target from Source <span class="src-path">doc/guides/linux_gsg/build_dpdk.rst</span></li>
+        <li>Build options <span class="src-path">meson_options.txt</span>, fixed tunables <span class="src-path">config/rte_config.h</span>, versions <span class="src-path">VERSION</span>, <span class="src-path">ABI_VERSION</span></li>
+        <li>EAL API <span class="src-path">lib/eal/include/rte_eal.h</span>, <span class="src-path">lib/eal/include/rte_version.h</span>, <span class="src-path">lib/eal/include/rte_common.h</span> (<code>rte_exit</code>, <code>RTE_INIT</code>), <span class="src-path">lib/eal/include/rte_compat.h</span></li>
+        <li>Option parsing and plugin loading <span class="src-path">lib/eal/common/eal_common_options.c</span> (<code>eal_collate_args</code>, <code>verify_perms</code>, <code>is_shared_build</code>, <code>eal_plugins_init</code>), <span class="src-path">lib/eal/common/eal_option_list.h</span>, <span class="src-path">lib/argparse/rte_argparse.c</span></li>
+        <li>Driver registration <span class="src-path">drivers/bus/vdev/bus_vdev_driver.h</span>, <span class="src-path">lib/eal/include/bus_driver.h</span>, <span class="src-path">drivers/net/null/rte_eth_null.c</span>, <span class="src-path">buildtools/pmdinfogen.py</span>, <span class="src-path">usertools/dpdk-pmdinfo.py</span></li>
+        <li>Examples <span class="src-path">examples/helloworld/main.c</span>, <span class="src-path">examples/helloworld/Makefile</span>, <span class="src-path">examples/skeleton/basicfwd.c</span></li>
+        <li>Link-time optimisation <span class="src-path">doc/guides/prog_guide/lto.rst</span>; other platforms <span class="src-path">doc/guides/freebsd_gsg/index.rst</span>, <span class="src-path">doc/guides/windows_gsg/index.rst</span>, <span class="src-path">doc/guides/linux_gsg/cross_build_dpdk_for_arm64.rst</span></li>
+        <li>testpmd user guide <span class="src-path">doc/guides/testpmd_app_ug/run_app.rst</span></li>
+        <li>Course research note: <code>research/10-building-debugging-ecosystem.md</code> (static vs shared and meson measurements)</li>
+      </ol>
+    </section>
+
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../01-why-kernel-bypass/index.html"><span class="dir">&larr; Previous</span><span class="ttl">01 &middot; What Is a Packet, and Why Bypass the Kernel?</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../03-eal-fundamentals/index.html"><span class="dir">Next &rarr;</span><span class="ttl">03 &middot; The EAL: Lcores, Launching Work, Threads, Logging and Time</span></a>
+    </nav>
+  </main>
+</div>
+<footer class="site-footer">DPDK from Zero to Expert: Building Fast Packet Processing in User Space &middot; DPDK 26.11</footer>
+
+<script src="../../assets/course.js"></script>
+<script>
+CourseJS.ready(function () {
+  var S = CourseJS.svg;
+
+  /* =====================================================================
+   * Figure: argv before / after the shift (static picture, drawn by JS)
+   * ===================================================================== */
+  (function () {
+    var before = document.getElementById('argv-before');
+    var after = document.getElementById('argv-after');
+    if (!before || !after) return;
+    var toks = ['./args', '-l', '0', '--no-pci', '--no-huge', '-m', '64',
+      '--file-prefix=ch02-args', '--', '--count', '3', '--name', 'demo'];
+    var RET = 8, xs = [], x = 10;
+    toks.forEach(function (t, i) { var n = i === RET ? 6 : t.length; var w = 12 + n * 6.6; xs.push([x, w]); x += w + 2; });
+    function role(i) { return i === 0 ? 'c7' : i < RET ? 'c1' : i === RET ? 'c5' : 'c2'; }
+    toks.forEach(function (t, i) {
+      var p = xs[i];
+      S.rect(before, p[0], 30, p[1], 30, 'svg-box ' + role(i), { rx: 3 });
+      S.text(before, p[0] + p[1] / 2, 45, t, 'svg-label center mono small');
+      S.text(before, p[0] + p[1] / 2, 72, String(i), 'svg-label center small muted');
+    });
+    toks.forEach(function (t, i) {
+      var p = xs[i], gone = i < RET, label = i === RET ? './args' : t;
+      S.rect(after, p[0], 132, p[1], 30, gone ? 'svg-box ghost' : (i === RET ? 'svg-box c7 svg-highlight' : 'svg-box c2'), { rx: 3 });
+      S.text(after, p[0] + p[1] / 2, 147, label, 'svg-label center mono small' + (gone ? ' muted' : ''));
+      if (!gone) S.text(after, p[0] + p[1] / 2, 174, String(i - RET), 'svg-label center small bold');
+    });
+    var ax = xs[RET][0] + xs[RET][1] / 2;
+    S.arrow(after, ax, 196, ax, 180, 'accent');
+    S.text(after, ax + 10, 194, 'new argv (old argv + 8): argc = 5', 'svg-label small bold');
+    S.text(after, 10, 194, 'old slots, still in memory', 'svg-label small muted');
+  })();
+
+  /* =====================================================================
+   * Widget 1: constructors before main(), with and without --whole-archive
+   * ===================================================================== */
+  (function () {
+    var root = document.getElementById('ctor-widget');
+    if (!root) return;
+    var svg = root.querySelector('svg');
+    var wa = document.getElementById('cw-wa');
+    var st = { init: document.getElementById('cw-init'), bus: document.getElementById('cw-bus'),
+      drv: document.getElementById('cw-drv'), ports: document.getElementById('cw-ports') };
+
+    S.text(svg, 10, 16, '1  ld: link time', 'svg-title');
+    S.text(svg, 252, 16, '2  load time, before main()', 'svg-title');
+    S.text(svg, 495, 16, '3  main(): rte_eal_init()', 'svg-title');
+
+    /* column 1: archive members */
+    var arch = [
+      { name: 'main.o (your code)', note: 'always linked', always: true },
+      { name: 'librte_eal.a objects', note: 'kept: main() calls rte_eal_init', always: true },
+      { name: 'librte_ethdev.a objects', note: 'kept: main() calls rte_eth_*', always: true },
+      { name: 'librte_bus_vdev.a', note: 'nothing references it', always: false },
+      { name: 'librte_net_null.a', note: 'nothing references it', always: false },
+      { name: 'librte_net_ring.a', note: 'nothing references it', always: false },
+      { name: '+ 19 more driver archives', note: 'nothing references them', always: false }
+    ];
+    arch.forEach(function (a, i) {
+      var y = 28 + i * 42;
+      a.g = S.group(svg, 'svg-fade');
+      a.rect = S.rect(a.g, 10, y, 228, 34, 'svg-box c7', { rx: 5 });
+      a.t = S.text(a.g, 20, y + 14, a.name, 'svg-label small mono bold');
+      a.n = S.text(a.g, 20, y + 28, '', 'svg-label small muted');
+    });
+
+    /* column 2: constructors by priority */
+    var ctors = [
+      { prio: '101 LOG', name: 'log types', key: 'log' },
+      { prio: '110 BUS', name: 'businitfn_vdev, businitfn_pci', key: 'bus' },
+      { prio: '120 CLASS', name: 'classinitfn_eth, …', key: 'class' },
+      { prio: 'LAST', name: 'vdrvinitfn_pmd_null_drv', key: 'null' },
+      { prio: 'LAST', name: 'vdrvinitfn_pmd_ring_drv', key: 'ring' },
+      { prio: 'LAST', name: '+ 19 more driver ctors', key: 'more' }
+    ];
+    ctors.forEach(function (c, i) {
+      var y = 28 + i * 42;
+      c.g = S.group(svg, 'svg-fade');
+      c.rect = S.rect(c.g, 252, y, 228, 34, 'svg-box c7', { rx: 5 });
+      S.text(c.g, 262, y + 14, 'prio ' + c.prio, 'svg-label small bold');
+      c.t = S.text(c.g, 262, y + 28, c.name, 'svg-label small mono');
+    });
+
+    /* column 3: main() */
+    var mains = [
+      'parse argv: two --vdev arguments',
+      'which bus can parse "net_null0"?',
+      'vdev bus probes, matches by name',
+      'result'
+    ];
+    var mm = mains.map(function (m, i) {
+      var y = 28 + i * 63, o = {};
+      o.g = S.group(svg, 'svg-fade');
+      o.rect = S.rect(o.g, 495, y, 215, 52, 'svg-box c7', { rx: 5 });
+      o.t = S.text(o.g, 505, y + 18, m, 'svg-label small');
+      o.r = S.text(o.g, 505, y + 38, '', 'svg-label small mono bold');
+      return o;
+    });
+    var a1 = S.path(svg, 'M240,150 L250,150', 'svg-arrow');
+    var a2 = S.path(svg, 'M482,150 L493,150', 'svg-arrow');
+    var foot = S.text(svg, 10, 340, '', 'svg-label small muted');
+
+    function fade(g, on) { g.style.opacity = on ? 1 : 0.18; }
+    function setBox(rect, cls) { rect.setAttribute('class', 'svg-box ' + cls); }
+
+    function reset(ctx) {
+      ctx.data.wa = wa.checked;
+      arch.forEach(function (a) { setBox(a.rect, 'c7'); a.n.textContent = ''; fade(a.g, true);
+        a.t.classList.remove('strike'); });
+      ctors.forEach(function (c) { setBox(c.rect, 'c7'); fade(c.g, false); });
+      ctors[0].t.textContent = 'log types';
+      mm.forEach(function (o) { setBox(o.rect, 'c7'); fade(o.g, false); o.r.textContent = ''; });
+      a1.style.opacity = a2.style.opacity = 0.2;
+      st.init.textContent = '?'; st.bus.textContent = '0'; st.drv.textContent = '0'; st.ports.textContent = '?';
+      foot.textContent = ctx.data.wa ? 'Link line: -Wl,--whole-archive … -l:librte_net_null.a … -Wl,--no-whole-archive (pkg-config --static)'
+        : 'Link line: the same -l:librte_*.a list, but the --whole-archive bracket is missing';
+    }
+    function link(ctx) {
+      var w = ctx.data.wa;
+      arch.forEach(function (a) {
+        var kept = a.always || w;
+        setBox(a.rect, kept ? 'c2' : 'ghost');
+        a.n.textContent = kept ? (a.always ? a.note : 'kept: --whole-archive') : 'dropped: ' + a.note;
+        if (!kept) a.t.classList.add('strike');
+      });
+      st.init.textContent = w ? '712' : '351';
+      a1.style.opacity = 1;
+    }
+    function ctorStep(keys) {
+      return function (ctx) {
+        var w = ctx.data.wa;
+        ctors.forEach(function (c) {
+          if (keys.indexOf(c.key) < 0) return;
+          fade(c.g, true);
+          if (c.key === 'log') { setBox(c.rect, 'c1'); c.t.textContent = w ? '61 log types registered' : '5 log types (eal, mbuf, …)'; return; }
+          setBox(c.rect, w ? 'c1' : 'ghost');
+          if (!w) c.t.textContent = '(not in the binary)';
+        });
+        if (keys.indexOf('bus') >= 0) st.bus.textContent = w ? '2' : '0';
+        if (keys.indexOf('null') >= 0) st.drv.textContent = w ? '21' : '0';
+      };
+    }
+    function mainStep(ctx) {
+      var w = ctx.data.wa;
+      a2.style.opacity = 1;
+      fade(mm[0].g, true); setBox(mm[0].rect, 'c1'); mm[0].r.textContent = '2 devargs saved';
+      fade(mm[1].g, true);
+      if (w) {
+        setBox(mm[1].rect, 'c1'); mm[1].r.textContent = 'vdev bus: yes';
+        fade(mm[2].g, true); setBox(mm[2].rect, 'c1'); mm[2].r.textContent = 'null0→port 0, ring0→port 1';
+        fade(mm[3].g, true); setBox(mm[3].rect, 'c2'); mm[3].r.textContent = 'ports=2 (exit 0)';
+        st.ports.textContent = '2';
+      } else {
+        setBox(mm[1].rect, 'c4'); mm[1].r.textContent = 'no bus: failed to parse';
+        fade(mm[2].g, true); setBox(mm[2].rect, 'ghost'); mm[2].r.textContent = '(never reached)';
+        fade(mm[3].g, true); setBox(mm[3].rect, 'c4'); mm[3].r.textContent = 'Cannot init EAL (exit 1)';
+        st.ports.textContent = '–';
+      }
+    }
+
+    var predictStep = {
+      caption: '', run: mainStep,
+      predict: { question: '', options: ['2 ports', '1 port', '0 ports', 'rte_eal_init() fails before ports are counted'], answer: 0, explain: '' }
+    };
+    function configure() {
+      var w = wa.checked;
+      predictStep.predict.question = (w ? 'Linked WITH --whole-archive. ' : 'Linked WITHOUT --whole-archive. ') +
+        'Run with <code>--vdev=net_null0 --vdev=net_ring0</code>. What happens?';
+      predictStep.predict.answer = w ? 0 : 3;
+      predictStep.predict.explain = w
+        ? 'Both drivers registered before main(), the vdev bus finds them by name: <code>ports=2</code>, drivers net_null and net_ring (real output of <code>./ports_ok</code>).'
+        : 'Not even the vdev bus is in the binary, so EAL cannot place the device argument: <code>EAL: failed to parse device "net_null0"</code>, <code>Cannot init EAL</code> (real output of <code>./ports_broken</code>). Without any --vdev the same binary starts and prints <code>ports=0</code>.';
+      predictStep.caption = w
+        ? '<code>rte_eal_init()</code> hands each <code>--vdev</code> to the vdev bus, which matches the name prefix <code>net_null</code> / <code>net_ring</code> against its registered drivers and probes them: one port each.'
+        : '<code>rte_eal_init()</code> asks every registered bus to parse <code>net_null0</code>. The bus list is empty, so initialisation fails. This is exactly what <code>./ports_broken</code> printed.';
+    }
+    configure();
+    var stepper = new CourseJS.Stepper(root, {
+      interval: 2200,
+      reset: reset,
+      steps: [
+        { caption: 'The linker gets your <code>main.o</code> and the archives from <code>pkg-config --libs --static</code>. Toggle <code>--whole-archive</code> below, then step.' },
+        { caption: 'Link: an archive member is copied only if it defines a symbol something already needs, unless <code>--whole-archive</code> is active. The bus and driver members define only constructors, which nobody calls by name.', run: link },
+        { caption: 'The program starts. Before <code>main()</code>, the C runtime walks <code>.init_array</code> in priority order. Priority 101: log types register.', run: ctorStep(['log']) },
+        { caption: 'Priority 110: <code>RTE_REGISTER_BUS</code> constructors call <code>rte_bus_register()</code> for the vdev and PCI buses. Priority 120: device classes.', run: ctorStep(['bus', 'class']) },
+        { caption: 'Priority LAST: each <code>RTE_PMD_REGISTER_VDEV</code> constructor calls <code>rte_vdev_register()</code>, adding the driver to the vdev bus\'s list.', run: ctorStep(['null', 'ring', 'more']) },
+        predictStep,
+        { caption: 'Compare with <code>code/expected_output.txt</code>, section 3. Flip the checkbox and step through again.', run: function () {} }
+      ]
+    });
+    wa.addEventListener('change', function () {
+      configure();
+      stepper.answered = {};
+      stepper.pause();
+      stepper.go(0);
+    });
+  })();
+
+  /* =====================================================================
+   * Widget 2: command-line splitter (rules of EAL 26.11 + rte_argparse)
+   * ===================================================================== */
+  (function () {
+    var input = document.getElementById('split-in');
+    if (!input) return;
+    var toksEl = document.getElementById('split-toks');
+    var verdict = document.getElementById('split-verdict');
+    var argvEl = document.getElementById('split-argv');
+    var explain = document.getElementById('split-explain');
+
+    /* From lib/eal/common/eal_option_list.h (Linux build).
+     * L = list (repeatable, value required), S = value required,
+     * O = optional value (only as --opt=value), B = no value. */
+    var OPTS = [
+      ['--auto-probing', null, 'B', 'Let EAL probe all available devices unless some -a/-b option is set.'],
+      ['--allow', '-a', 'L', 'Add device to allow-list, causing DPDK to only use specified devices'],
+      ['--base-virtaddr', null, 'S', 'Base virtual address to reserve memory'],
+      ['--block', '-b', 'L', 'Add device to block-list, preventing DPDK from using the device'],
+      ['--coremask', '-c', 'S', '[Deprecated] Hexadecimal bitmask of cores to use'],
+      ['--driver-path', '-d', 'L', 'Path to external driver shared object, or directory of drivers'],
+      ['--force-max-simd-bitwidth', null, 'S', 'Set max SIMD bitwidth to use in vector code paths'],
+      ['--huge-unlink', null, 'O', 'Unlink hugetlbfs files on exit (existing|always|never)'],
+      ['--in-memory', null, 'B', 'DPDK should not create shared mmap files in filesystem (disables secondary process support)'],
+      ['--iova-mode', null, 'S', 'IOVA mapping mode, physical (pa)/virtual (va)'],
+      ['--lcores', '-l', 'S', 'List of CPU cores to use'],
+      ['--legacy-mem', null, 'B', 'Enable legacy memory behavior'],
+      ['--log-color', null, 'O', 'Enable/disable color in log output'],
+      ['--log-level', null, 'L', 'Log level for loggers; use log-level=help for list of log types and levels'],
+      ['--log-timestamp', null, 'O', 'Enable/disable timestamp in log output'],
+      ['--main-lcore', null, 'S', 'Select which core to use for the main thread'],
+      ['--mbuf-pool-ops-name', null, 'S', 'User defined mbuf default pool ops name'],
+      ['--memory-channels', '-n', 'S', 'Number of memory channels per socket'],
+      ['--memory-ranks', '-r', 'S', 'Force number of memory ranks (don\'t detect)'],
+      ['--memory-size', '-m', 'S', 'Total size of memory to allocate initially (MB)'],
+      ['--no-auto-probing', '-A', 'B', 'Do not probe any devices unless some -a option is set'],
+      ['--no-hpet', null, 'B', 'Disable HPET timer'],
+      ['--no-huge', null, 'B', 'Disable hugetlbfs support'],
+      ['--no-pci', null, 'B', 'Disable all PCI devices'],
+      ['--no-shconf', null, 'B', 'Disable shared config file generation'],
+      ['--no-telemetry', null, 'B', 'Disable telemetry'],
+      ['--pagesz-mem', null, 'L', 'Memory allocation per hugepage size (format: <pagesz>:<limit>)'],
+      ['--proc-type', null, 'S', 'Type of process (primary|secondary|auto)'],
+      ['--remap-lcore-ids', '-R', 'O', 'Remap lcore IDs to be contiguous starting from 0, or supplied value'],
+      ['--service-corelist', '-S', 'S', 'List of cores to use for service threads'],
+      ['--service-coremask', '-s', 'S', '[Deprecated] Bitmask of cores to use for service threads'],
+      ['--single-file-segments', null, 'B', 'Store all pages within single files (per-page-size, per-node)'],
+      ['--telemetry', null, 'B', 'Enable telemetry'],
+      ['--vdev', null, 'L', 'Add a virtual device to the system; format=<driver><id>[,key=val,...]'],
+      ['--vmware-tsc-map', null, 'B', 'Use VMware TSC mapping instead of native RDTSC'],
+      ['--version', '-v', 'B', 'Show version'],
+      ['--syslog', null, 'O', 'Log to syslog (and optionally set facility)'],
+      ['--trace', null, 'L', 'Enable trace based on regular expression trace name'],
+      ['--trace-bufsz', null, 'S', 'Trace buffer size'],
+      ['--trace-dir', null, 'S', 'Trace directory'],
+      ['--trace-mode', null, 'S', 'Trace mode'],
+      ['--create-uio-dev', null, 'B', 'Create /dev/uioX devices'],
+      ['--file-prefix', null, 'S', 'Base filename of hugetlbfs files (and name of /var/run/dpdk/<prefix>/)'],
+      ['--huge-dir', null, 'S', 'Directory for hugepage files'],
+      ['--huge-worker-stack', null, 'O', 'Allocate worker thread stacks from hugepage memory, with optional size (kB)'],
+      ['--match-allocations', null, 'B', 'Free hugepages exactly as allocated'],
+      ['--numa-mem', null, 'S', 'Memory to allocate on NUMA nodes (comma separated values)'],
+      ['--numa-limit', null, 'S', 'Limit memory allocation on NUMA nodes (comma separated values)'],
+      ['--socket-mem', null, 'S', 'Alias for --numa-mem'],
+      ['--socket-limit', null, 'S', 'Alias for --numa-limit'],
+      ['--vfio-intr', null, 'S', 'VFIO interrupt mode (legacy|msi|msix)'],
+      ['--vfio-vf-token', null, 'S', 'VF token (UUID) shared between SR-IOV PF and VFs']
+    ];
+    var KIND = { L: 'repeatable, needs a value', S: 'needs a value', O: 'optional value, only as --opt=value', B: 'takes no value' };
+    function findOpt(name) {
+      for (var i = 0; i < OPTS.length; i++) if (OPTS[i][0] === name || OPTS[i][1] === name) return OPTS[i];
+      return null;
+    }
+    function tokenize(s) {
+      var out = [], cur = '', q = null, has = false;
+      for (var i = 0; i < s.length; i++) {
+        var ch = s[i];
+        if (q) { if (ch === q) q = null; else cur += ch; continue; }
+        if (ch === '"' || ch === "'") { q = ch; has = true; continue; }
+        if (/\s/.test(ch)) { if (cur || has) out.push(cur); cur = ''; has = false; continue; }
+        cur += ch;
+      }
+      if (cur || has) out.push(cur);
+      return out;
+    }
+    function esc(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+    /* Mirror of parse_args() in lib/argparse/rte_argparse.c + eal_collate_args() checks. */
+    function analyse(argv) {
+      var info = argv.map(function (t) { return { t: t, cls: 'app', msg: '' }; });
+      var r = { info: info, error: null, help: false, warns: [], consumed: 0, moved: [], app: [], seen: {} };
+      if (!argv.length) { r.error = 'empty command line'; return r; }
+      info[0].cls = 'prog'; info[0].msg = 'argv[0], the program name. EAL copies it into the last slot it consumed, so it survives the shift.';
+      var i, sepAt = -1;
+      for (i = 1; i < argv.length; i++) {
+        var a = argv[i];
+        if (a === '--') { info[i].cls = 'sep'; info[i].msg = 'The separator. EAL stops here and counts it as consumed. Everything after it belongs to the application.'; sepAt = i; r.consumed++; i++; break; }
+        if (a[0] !== '-') {
+          info[i].cls = 'moved'; r.moved.push(a);
+          info[i].msg = 'No leading dash, so not an EAL option. EAL 26.11 parses with ignore_non_flag_args = true: the word is moved behind EAL\'s own arguments and given to the application.';
+          continue;
+        }
+        if (a === '-h' || a === '--help') { info[i].cls = 'eal'; r.help = true; r.consumed++; info[i].msg = 'EAL help: rte_argparse prints the option list and calls exit(0) once parsing ends. Put --help after -- to reach your own program.'; continue; }
+        var eq = a.indexOf('='), name = a, value = null;
+        if (eq >= 0) { name = a.slice(0, eq); value = a.slice(eq + 1); }
+        else if (a[1] !== '-' && a.length > 2) { name = a.slice(0, 2); value = a.slice(2); }
+        var o = findOpt(name);
+        if (!o) {
+          info[i].cls = 'bad'; info[i].msg = 'Not an EAL option. EAL prints "ARGPARSE: unknown argument ' + esc(a) + '!" and, because EAL\'s parser has exit_on_error = true, the process exits with exit(-EINVAL), which the shell shows as 234. Did you forget the -- separator?';
+          r.error = { text: 'ARGPARSE: unknown argument ' + a + '!', exit: 234, idx: i }; break;
+        }
+        var key = o[0];
+        if (r.seen[key] && o[2] !== 'L') {
+          info[i].cls = 'bad'; info[i].msg = esc(o[0]) + ' may appear only once (only list options such as --vdev, -a, -d, --log-level repeat).';
+          r.error = { text: 'ARGPARSE: argument ' + name + ' should not occur multiple times!', exit: 234, idx: i }; break;
+        }
+        var desc = '<code>' + esc(o[0]) + (o[1] ? ', ' + esc(o[1]) : '') + '</code>: ' + esc(o[3]) + ' <span class="muted">(' + KIND[o[2]] + ')</span>';
+        if (o[2] === 'B') {
+          if (value !== null) {
+            info[i].cls = 'bad'; info[i].msg = desc + '<br>This option takes no value, but one was attached.';
+            r.error = { text: 'ARGPARSE: argument ' + name + ' should not take value!', exit: 234, idx: i }; break;
+          }
+        } else if (o[2] === 'S' || o[2] === 'L') {
+          if (value === null) {
+            if (i >= argv.length - 1) {
+              info[i].cls = 'bad'; info[i].msg = desc + '<br>The value is missing.';
+              r.error = { text: 'ARGPARSE: argument ' + name + ' doesn\'t have value!', exit: 234, idx: i }; break;
+            }
+            info[i].cls = 'eal'; info[i].msg = desc; r.consumed++; r.seen[key] = true;
+            if (o[1] === '-c' || o[1] === '-s') info[i].cls = 'dep';
+            i++; info[i].cls = 'val'; info[i].msg = 'Value of <code>' + esc(name) + '</code>, taken from the next argv entry (also consumed by EAL).';
+            r.consumed++;
+            if (o[1] === '-c') r.warns.push("EAL: '-c <coremask>' option is deprecated, and will be removed in a future release", "EAL: \tUse '-l <corelist>' or '--lcores=<corelist>' option instead");
+            if (o[1] === '-s') r.warns.push("EAL: '-s <service-coremask>' is deprecated, and will be removed in a future release.");
+            continue;
+          }
+        }
+        info[i].cls = (o[1] === '-c' || o[1] === '-s') ? 'dep' : 'eal';
+        info[i].msg = desc + (value !== null ? '<br>Value given in the same token: <code>' + esc(value) + '</code>.' : '') +
+          (o[2] === 'O' && value === null ? '<br>Optional value: a following word would NOT be taken as its value (it would be moved to the app).' : '');
+        if (o[1] === '-c') r.warns.push("EAL: '-c <coremask>' option is deprecated, and will be removed in a future release", "EAL: \tUse '-l <corelist>' or '--lcores=<corelist>' option instead");
+        if (o[1] === '-s') r.warns.push("EAL: '-s <service-coremask>' is deprecated, and will be removed in a future release.");
+        r.seen[key] = true; r.consumed++;
+      }
+      if (!r.error) {
+        for (; i < argv.length; i++) {
+          if (sepAt >= 0 && i > sepAt) { info[i].cls = 'app'; info[i].msg = 'Application argument: after the shift, parse it with getopt or rte_argparse (ch11).'; r.app.push(argv[i]); }
+        }
+        if (r.seen['--coremask'] && r.seen['--lcores']) r.error = { text: "EAL: Options 'coremask' and 'lcores' can't be used at the same time", ret: -1 };
+        else if (r.seen['--service-coremask'] && r.seen['--service-corelist']) r.error = { text: "EAL: Options 'service-coremask' and 'service-corelist' can't be used at the same time", ret: -1 };
+        else if (r.seen['--allow'] && r.seen['--block']) r.error = { text: 'EAL: Options allow (-a) and block (-b) can\'t be used at the same time', ret: -1 };
+        else if (r.seen['--pagesz-mem'] && r.seen['--no-huge']) r.error = { text: "EAL: Options pagesz-mem and no-huge can't be used at the same time", ret: -1 };
+      } else {
+        for (var k = r.error.idx + 1; k < argv.length; k++) { info[k].cls = 'app'; info[k].msg = 'Never examined: the process already exited.'; info[k].dim = true; }
+      }
+      return r;
+    }
+
+    var selected = -1, last = null;
+    function render() {
+      var argv = tokenize(input.value);
+      var r = analyse(argv);
+      last = r;
+      toksEl.innerHTML = '';
+      r.info.forEach(function (x, i) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'tok ' + x.cls + (i === selected ? ' sel' : '');
+        if (x.dim) b.style.opacity = 0.45;
+        b.innerHTML = '<span class="ix">' + i + '</span>' + esc(x.t || '""');
+        b.addEventListener('click', function () { selected = i; render(); });
+        toksEl.appendChild(b);
+      });
+      var v = '';
+      verdict.className = 'verdict';
+      if (r.error && r.error.exit) {
+        verdict.classList.add('bad');
+        v = '<strong>The process exits inside rte_eal_init()</strong> with exit code ' + r.error.exit + ':<br><code>' + esc(r.error.text) + '</code>';
+        argvEl.innerHTML = '<span class="small muted">(none: main() never gets control back)</span>';
+      } else if (r.help) {
+        v = '<strong>EAL prints its help and exits with code 0.</strong> <code>usage: ' + esc(argv[0]) + ' &lt;DPDK EAL options&gt; -- &lt;App options&gt;</code>';
+        argvEl.innerHTML = '<span class="small muted">(none)</span>';
+      } else if (r.error) {
+        verdict.classList.add('bad');
+        v = (r.warns.length ? '<code>' + r.warns.map(esc).join('<br>') + '</code><br>' : '') + 'Parsing succeeds, then EAL rejects the combination and <strong>rte_eal_init() returns -1</strong> (your <code>rte_exit()</code> runs):<br><code>' + esc(r.error.text) + '</code><br><code>EAL: Invalid command line arguments.</code>';
+        argvEl.innerHTML = '<span class="small muted">(none: you exit on ret &lt; 0)</span>';
+      } else {
+        verdict.classList.add('good');
+        var appv = [argv[0]].concat(r.moved, r.app);
+        v = (r.warns.length ? '<code>' + r.warns.map(esc).join('<br>') + '</code><br>' : '') +
+          '<strong>rte_eal_init() returns ' + r.consumed + '</strong> (' + r.consumed + ' argv entries consumed' +
+          (r.moved.length ? ', ' + r.moved.length + ' word(s) moved to the app' : '') + '). New argc = ' + appv.length + '.';
+        argvEl.innerHTML = appv.map(function (t, i) {
+          var cls = i === 0 ? 'prog' : (i <= r.moved.length ? 'moved' : 'app');
+          return '<span class="cell tok ' + cls + '" style="cursor:default"><b>argv[' + i + ']</b>' + esc(t) + '</span>';
+        }).join('');
+      }
+      verdict.innerHTML = v;
+      if (selected >= 0 && selected < r.info.length) explain.innerHTML = '<strong>argv[' + selected + '] <code>' + esc(r.info[selected].t) + '</code></strong>: ' + (r.info[selected].msg || '');
+      else explain.textContent = 'Click a token for details.';
+    }
+    input.addEventListener('input', function () { selected = -1; render(); });
+    CourseJS.$$('#splitter .presets button').forEach(function (b) {
+      b.addEventListener('click', function () { input.value = b.getAttribute('data-cmd'); selected = -1; render(); });
+    });
+    render();
+  })();
+
+  /* =====================================================================
+   * Skeleton x-ray: highlight the lines of one chapter
+   * ===================================================================== */
+  (function () {
+    var bar = document.getElementById('xray-filter');
+    var lines = CourseJS.$$('#xray .xl');
+    if (!bar) return;
+    CourseJS.$$('button', bar).forEach(function (b) {
+      b.addEventListener('click', function () {
+        var ch = b.getAttribute('data-ch');
+        CourseJS.$$('button', bar).forEach(function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
+        lines.forEach(function (l) {
+          var mine = l.getAttribute('data-ch');
+          l.classList.toggle('dim', ch !== 'all' && mine !== ch);
+          l.classList.toggle('on', ch !== 'all' && mine === ch);
+        });
+      });
+    });
+  })();
+});
+
+</script>
+</body>
+</html>

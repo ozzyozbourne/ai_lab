@@ -1,0 +1,125 @@
+RING: Requested number of elements is invalid, must be power of 2, and not exceed 2147483647
+sizeof(rte_mbuf)=128 off: buf_addr=0 data_off=16 refcnt=18 nb_segs=20 port=22 ol_flags=24 packet_type=32 pkt_len=36 data_len=40 vlan_tci=42 hash=44 buf_len=54 pool=56 next=64 tx_offload=72 shinfo=80 priv_size=88 dynfield1=92
+sizeof(rte_ring)=384 prod off=128 cons off=256
+ring 1024: size=1024 cap=1023; EXACT 1000: size=1024 cap=1000; non-pow2 1000 w/o EXACT -> (nil) rte_errno=22(Invalid argument)
+memsize ring 1024 ptrs=8640
+bulk enqueue 1500 into cap 1023 -> 0
+burst enqueue 1500 -> 1023 free=0
+dequeue burst 64 -> 64 first=1
+prod.head=1023 prod.tail=1023 cons.head=64 cons.tail=64 count=959
+peek start got 65; finish(0) keeps it
+peek again -> 65 (same)
+zc start n=8 n1=4 ptr2=0x110333e80 (wrap split)
+count after zc=8
+elem ring HTS: eout[3]={7,8} prod sync=3
+RTS htd_max prod=127
+mempool 4095 elt64 cache256: ops=ring_mp_mc avail=4095 inuse=0 header=64 trailer=64
+ after get 1: cache len=127 (refill size/2=128 then -1)
+ after put 1: cache len=128
+ after get 200 (>size/2): cache len=56 ring count=3839
+ after put 200: cache len=256
+ after flush: cache len=0
+ ops ring_sp_sc   set=0 populate=1023 avail=1023
+ ops stack        set=0 populate=1023 avail=1023
+ ops lf_stack     set=0 populate=1023 avail=1023
+ ops pile         set=0 populate=1023 avail=1023
+ ops bucket       set=0 populate=1023 avail=1023
+ ops ring_mt_hts  set=0 populate=1023 avail=1023
+pktmbuf pool: elt_size=2320 header=64 dataroom=2176 priv=16 ops=ring_mp_mc best_ops=ring_mp_mc
+new mbuf: data_off=128 headroom=128 tailroom=2048 buf_len=2176 refcnt=1 nb_segs=1 pkt_len=0 priv area 0x10fe9d0c0 buf_addr-m=144
+after append100+prepend14: data_off=114 data_len=114 pkt_len=114
+after adj14 trim10: data_off=128 len=90
+prepend 200 (>headroom) -> (nil)
+chained: nb_segs=2 pkt_len=140 contig=0
+read across segs at 80 len30 -> copied=1
+linearize -> 0 nb_segs=1 contig=1
+pool avail before clone=510
+clone: m refcnt=2 cl indirect=1 cl->buf_addr==m->buf_addr 1, indir elt_size=128
+after free(m): avail=510 (data still alive)
+after free(clone): avail=511
+refcnt3, freed twice: refcnt now=1
+extbuf attached: HAS_EXTBUF=1 buf_len=1000 shinfo refcnt=1
+clone of extbuf: ext refcnt=2
+freed orig
+  ext_free_cb called addr=0x10fe8a240
+dynfield off=92 (dynfield1 at 92) dynflag bit=23; lookup=92
+timestamp register rc=0 off=96
+Reserved fields:
+  name=course_seq offset=92 size=4 align=4 flags=0
+  name=rte_dynfield_timestamp offset=96 size=8 align=8 flags=0
+Reserved flags:
+  name=course_flag bitnum=23 flags=0
+  name=rte_dynflag_rx_timestamp bitnum=24 flags=0
+Free space in mbuf (0 = occupied, value = free zone alignment):
+  0000: 00 00 00 00 00 00 00 00
+  0008: 00 00 00 00 00 00 00 00
+  0010: 00 00 00 00 00 00 00 00
+  0018: 00 00 00 00 00 00 00 00
+  0020: 00 00 00 00 00 00 00 00
+  0028: 00 00 00 00 00 00 00 00
+  0030: 00 00 00 00 00 00 00 00
+  0038: 00 00 00 00 00 00 00 00
+  0040: 00 00 00 00 00 00 00 00
+  0048: 00 00 00 00 00 00 00 00
+  0050: 00 00 00 00 00 00 00 00
+  0058: 00 00 00 00 00 00 00 00
+  0060: 00 00 00 00 00 00 00 00
+  0068: 08 08 08 08 08 08 08 08
+  0070: 10 10 10 10 10 10 10 10
+  0078: 10 10 10 10 10 10 10 10
+Free bit in mbuf->ol_flags (0 = occupied, 1 = free):
+  0000: 0 0 0 0 0 0 0 0
+  0008: 0 0 0 0 0 0 0 0
+  0010: 0 0 0 0 0 0 0 0
+  0018: 0 1 1 1 1 1 1 1
+  0020: 1 1 1 1 1 1 1 1
+  0028: 1 0 0 0 0 0 0 0
+  0030: 0 0 0 0 0 0 0 0
+  0038: 0 0 0 0 0 0 0 0
+ptype: L2_ETHER L3_IPV4 L4_UDP TUNNEL_VXLAN INNER_L3_IPV6 INNER_L4_TCP 
+stack pop order: 5 4 ..; LF stack=0x10fe895c0 count=0 free=16
+reorder seqn dynfield offset=104
+ insert 1 rc=0 errno=0
+ insert 0 rc=-1 errno=34
+ insert 3 rc=0 errno=0
+ insert 2 rc=0 errno=0
+ insert 5 rc=0 errno=0
+ insert 4 rc=0 errno=0
+ insert 20 rc=-1 errno=34
+ insert 6 rc=0 errno=0
+ drained 6: 1 2 3 4 5 6
+mempool <pp>@0x11008de40
+  flags=10
+  socket_id=-1
+  pool=0x11008cc00
+  iova=0x11008de40
+  nb_mem_chunks=1
+  size=511
+  populated_size=511
+  header_size=64
+  elt_size=2320
+  trailer_size=112
+  total_obj_size=2496
+  private_data_size=128
+  ops_index=1
+  ops_name: <ring_mp_mc>
+  memory chunk at 0x11010a8c0, addr=0x10fe8d800, iova=0x10fe8d800, len=2093952
+  avg bytes/object=4097.753425
+  internal cache infos (hide zero value items):
+    cache_size=32
+    cache_count[0]=16
+    total_cache_count=16
+  common_pool_count=495
+  no statistics available
+ring <r1>@0x110333d00
+  flags=3
+  size=1024
+  capacity=1023
+  used=8
+  avail=1015
+  cons.sync_type=ST
+  cons.head=1020
+  cons.tail=1020
+  prod.sync_type=ST
+  prod.head=1028
+  prod.tail=1028

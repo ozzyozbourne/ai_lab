@@ -1,0 +1,7 @@
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch02ipc/mp_socket_20161_30e2a2a8f2c
+EAL: Selected IOVA mode 'PA'
+[S] memzone va=0x1021fdf40 content='written by primary pid 20156'
+[S] sent=1 received=1 reply='pong to 'ping' from pid 20156'

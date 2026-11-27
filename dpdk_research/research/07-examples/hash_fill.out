@@ -1,0 +1,8 @@
+crc        first failure after  64677 keys -> load 98.7% (capacity 65536)
+           lookup: single 60.3 cycles/key, bulk(64) 32.6 cycles/key
+jhash      first failure after  64392 keys -> load 98.3% (capacity 65536)
+           lookup: single 71.4 cycles/key, bulk(64) 38.7 cycles/key
+crc+ext    first failure after  65536 keys -> load 100.0% (capacity 65536)
+           lookup: single 59.7 cycles/key, bulk(64) 37.0 cycles/key
+crc+lf     first failure after  64677 keys -> load 98.7% (capacity 65536)
+           lookup: single 59.2 cycles/key, bulk(64) 35.4 cycles/key

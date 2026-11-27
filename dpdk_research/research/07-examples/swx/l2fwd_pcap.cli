@@ -1,0 +1,7 @@
+; Run from 07-examples/:  dpdk-pipeline -l 0,1 --no-pci --no-huge -m 256 --file-prefix=ch07swx -- -s swx/l2fwd_pcap.cli
+; RTE_INSTALL_DIR must point at a DPDK source tree (libbuild compiles the generated C)
+pipeline codegen ./swx/l2fwd.spec /tmp/claude-0/-home-user-ai-lab/fae9d2b5-bcbe-5be9-a4f0-08ae6c821ee6/scratchpad/swx_l2fwd.c
+pipeline libbuild /tmp/claude-0/-home-user-ai-lab/fae9d2b5-bcbe-5be9-a4f0-08ae6c821ee6/scratchpad/swx_l2fwd.c /tmp/claude-0/-home-user-ai-lab/fae9d2b5-bcbe-5be9-a4f0-08ae6c821ee6/scratchpad/swx_l2fwd.so
+mempool MEMPOOL0 meta 0 pkt 2176 pool 8K cache 256 numa 0
+pipeline PIPELINE0 build lib /tmp/claude-0/-home-user-ai-lab/fae9d2b5-bcbe-5be9-a4f0-08ae6c821ee6/scratchpad/swx_l2fwd.so io ./swx/pcap2.io numa 0
+pipeline PIPELINE0 enable thread 1

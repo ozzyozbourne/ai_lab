@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Course Component Demo</title>
+<link rel="stylesheet" href="course.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <button class="btn small toc-toggle" type="button" aria-label="Table of contents">&#9776;</button>
+  <a class="brand" href="../index.html"><span>DPDK</span> Zero to Expert</a>
+  <span class="crumb">Design system &middot; component demo</span>
+  <button class="btn small theme-toggle" type="button">Theme</button>
+  <div class="progress-bar"></div>
+</header>
+
+<div class="page">
+  <nav class="sidebar" data-auto-toc aria-label="On this page"></nav>
+
+  <main id="main" class="content">
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="#"><span class="dir">&larr; Previous</span><span class="ttl">00 &middot; Nothing before this</span></a>
+      <a class="index" href="../index.html">Course index</a>
+      <a class="next" href="#"><span class="dir">Next &rarr;</span><span class="ttl">01 &middot; Why kernel bypass</span></a>
+    </nav>
+
+    <header class="chapter-header">
+      <div class="chapter-kicker">Chapter 00 &middot; Demo</div>
+      <h1>Every Component in the Course Design System</h1>
+      <p class="chapter-subtitle">Copy any block on this page into a chapter. Classes are in <code>course.css</code>, behaviour in <code>course.js</code>.</p>
+      <ul class="meta-row">
+        <li><span class="badge level-beginner">Beginner</span></li>
+        <li><span class="badge level-intermediate">Intermediate</span></li>
+        <li><span class="badge level-advanced">Advanced</span></li>
+        <li><span class="badge">~45 min</span></li>
+        <li><span class="tag api">rte_ring_enqueue_burst</span></li>
+      </ul>
+    </header>
+
+    <section class="objectives">
+      <div class="box-title">Learning objectives</div>
+      <ul>
+        <li>Recognise each component and know which class or JS call creates it.</li>
+        <li>Build a step-through diagram with <code>CourseJS.Stepper</code>, including a "predict, then step" question.</li>
+        <li>Drive a continuous animation with <code>CourseJS.Animator</code>.</li>
+      </ul>
+    </section>
+
+    <section class="tools-box">
+      <div class="box-title">Tools for this chapter</div>
+      <ul>
+        <li><code>dpdk-testpmd</code>: interactive test application (installed in <code>$DPDK_PREFIX/bin</code>).</li>
+        <li><code>$DPDK_SRC/build/examples/dpdk-helloworld</code>: prebuilt sample.</li>
+      </ul>
+    </section>
+
+    <h2 id="callouts">Callouts</h2>
+    <p>Four kinds, with an optional title. Use them sparingly: one per idea that the reader must not miss.</p>
+    <div class="callout note"><div class="callout-title">Note</div><p>The EAL parses its own options first; <code>rte_eal_init()</code> returns how many <code>argv</code> entries it consumed.</p></div>
+    <div class="callout tip"><div class="callout-title">Tip</div><p>Use <code>--file-prefix</code> to run several DPDK processes side by side.</p></div>
+    <div class="callout warning"><div class="callout-title">Warning</div><p>Never bind the NIC that carries your SSH session to a DPDK driver.</p></div>
+    <div class="callout pitfall"><div class="callout-title">Pitfall</div><p><code>rte_eth_tx_burst()</code> may send fewer packets than asked. Free the rest or you leak mbufs.</p></div>
+
+    <h2 id="code">Code</h2>
+    <h3 id="code-block">A code block with a file header</h3>
+    <div class="code-block">
+      <div class="code-head"><span class="file">hello_dpdk.c</span><span class="lang">C</span></div>
+<pre data-lines data-hl="9-11"><code class="language-c">#include &lt;stdio.h&gt;
+#include &lt;rte_eal.h&gt;
+#include &lt;rte_ethdev.h&gt;
+#include &lt;rte_version.h&gt;
+
+/* Smallest possible DPDK program. */
+int main(int argc, char **argv)
+{
+	int ret = rte_eal_init(argc, argv);   // parse EAL options
+	if (ret &lt; 0)
+		rte_exit(EXIT_FAILURE, "EAL init failed\n");
+	printf("%s: %u lcores, %u ports, burst=%d, mask=0x%x\n", rte_version(),
+	       rte_lcore_count(), rte_eth_dev_count_avail(), 32, 0xffu);
+	struct rte_mbuf *pkts[32];
+	(void)pkts;
+	return rte_eal_cleanup();
+}</code></pre>
+    </div>
+
+    <h3 id="plain-pre">A plain block (shell)</h3>
+<pre><code class="language-bash"># build against the installed DPDK (static)
+source common/env.sh
+gcc hello_dpdk.c -o hello_dpdk $(pkg-config --cflags libdpdk) $(pkg-config --libs --static libdpdk)
+./hello_dpdk -l 0 --no-pci --no-huge -m 64 --file-prefix=ch01-hello --vdev=net_null0</code></pre>
+
+    <h3 id="terminal">Terminal output</h3>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./hello_dpdk -l 0 --no-pci --no-huge -m 64 --file-prefix=ch01-hello --vdev=net_null0 --vdev=net_ring0</span>
+<span class="dim">EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Static memory layout is selected, amount of reserved memory can be adjusted with -m or --socket-mem</span>
+<span class="hl">DPDK 26.11.0: 1 lcores, 2 ports</span>
+<span class="ok">ok</span> <span class="err">(an error line looks like this)</span></pre>
+    </div>
+    <p class="output-caption">Real output is captured by <code>run.sh</code>; lines in grey are EAL noise.</p>
+
+    <h3 id="tabs">Tabs</h3>
+    <div class="tabs">
+      <div class="tab-list">
+        <button class="tab-btn" data-tab="c">main.c</button>
+        <button class="tab-btn" data-tab="mk">Makefile</button>
+        <button class="tab-btn" data-tab="run">run.sh</button>
+      </div>
+      <div class="tab-panel" data-tab="c">
+<pre><code class="language-c">uint16_t nb_rx = rte_eth_rx_burst(port, 0, bufs, BURST_SIZE);
+if (unlikely(nb_rx == 0))
+	continue;</code></pre>
+      </div>
+      <div class="tab-panel" data-tab="mk">
+<pre><code class="language-make">include ../../../common/Makefile.inc
+APPS = hello_dpdk
+all: $(APPS)</code></pre>
+      </div>
+      <div class="tab-panel" data-tab="run">
+<pre><code class="language-bash">timeout -s INT -k 5 20 ./hello_dpdk --file-prefix=ch00 --no-pci --no-huge -m 64 &gt; out.txt 2&gt;&amp;1</code></pre>
+      </div>
+    </div>
+
+    <h2 id="tables">Tables</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Link</th><th class="num">Mpps @ 64 B</th><th class="num">ns / packet</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>10 GbE</td><td class="num">14.88</td><td class="num">67.2</td><td>84 B on the wire per frame</td></tr>
+          <tr><td>25 GbE</td><td class="num">37.20</td><td class="num">26.9</td><td>&nbsp;</td></tr>
+          <tr><td>100 GbE</td><td class="num">148.81</td><td class="num">6.7</td><td>~18 cycles at 2.7 GHz</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="diagrams">Static diagrams</h2>
+    <p>Inline SVG with <code>.svg-*</code> classes follows the theme. Arrow markers are injected by <code>course.js</code>; this figure also works without JS except for arrowheads.</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 230" role="img" aria-labelledby="fig1t">
+        <title id="fig1t">Receive path: NIC, Rx ring, mempool and lcore</title>
+        <rect class="svg-box c4" x="20" y="80" width="120" height="70"/>
+        <text class="svg-label center bold" x="80" y="108">NIC</text>
+        <text class="svg-label center small muted" x="80" y="128">port 0, queue 0</text>
+
+        <rect class="svg-box c5" x="200" y="90" width="200" height="50"/>
+        <g>
+          <rect class="svg-slot full" x="210" y="100" width="22" height="30" rx="3"/>
+          <rect class="svg-slot full" x="237" y="100" width="22" height="30" rx="3"/>
+          <rect class="svg-slot full" x="264" y="100" width="22" height="30" rx="3"/>
+          <rect class="svg-slot" x="291" y="100" width="22" height="30" rx="3"/>
+          <rect class="svg-slot" x="318" y="100" width="22" height="30" rx="3"/>
+          <rect class="svg-slot" x="345" y="100" width="22" height="30" rx="3"/>
+          <rect class="svg-slot" x="372" y="100" width="22" height="30" rx="3"/>
+        </g>
+        <text class="svg-label center small" x="300" y="158">Rx descriptor ring</text>
+
+        <rect class="svg-box c1" x="470" y="80" width="120" height="70"/>
+        <text class="svg-label center bold" x="530" y="108">lcore 1</text>
+        <text class="svg-label center small mono" x="530" y="128">rx_burst()</text>
+
+        <rect class="svg-box c2 dashed" x="200" y="10" width="200" height="44"/>
+        <text class="svg-label center" x="300" y="32">mempool (free mbufs)</text>
+
+        <rect class="svg-box c6" x="620" y="80" width="80" height="70"/>
+        <text class="svg-label center small" x="660" y="115">kernel</text>
+
+        <path class="svg-arrow c4" d="M140,115 L196,115"/>
+        <path class="svg-arrow c5 flow" d="M400,115 L466,115"/>
+        <path class="svg-arrow c2 dashed" d="M300,54 L300,86"/>
+        <path class="svg-arrow" d="M590,115 L616,115"/>
+        <g transform="translate(168,190)"><rect class="svg-packet" x="-13" y="-8" width="26" height="16" rx="3"/></g>
+        <text class="svg-label small" x="188" y="194">= a packet (.svg-packet)</text>
+        <circle class="svg-fill-c3 svg-pulse" cx="470" cy="194" r="6"/>
+        <text class="svg-label small" x="484" y="198">.svg-pulse</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>The receive path. <code>.svg-box.c1..c7</code> colour roles: blue = cores, green = memory, orange = packets, red = NIC, purple = rings, teal = kernel, grey = neutral.</figcaption>
+      <div class="diagram-legend">
+        <span><span class="sw" style="background:var(--c1-soft);border-color:var(--c1)"></span>lcore</span>
+        <span><span class="sw" style="background:var(--c2-soft);border-color:var(--c2)"></span>memory</span>
+        <span><span class="sw" style="background:var(--c3)"></span>packet</span>
+        <span><span class="sw" style="background:var(--c4-soft);border-color:var(--c4)"></span>NIC</span>
+        <span><span class="sw" style="background:var(--c5-soft);border-color:var(--c5)"></span>ring</span>
+      </div>
+    </figure>
+
+    <h2 id="stepper">Stepper: predict, then step</h2>
+    <p>A ring of 8 slots. Each step enqueues or dequeues; the fourth step asks the reader to predict before it is shown. Use the buttons, the dots, or the arrow keys.</p>
+    <div class="widget" id="ring-stepper">
+      <div class="widget-head"><span class="widget-title">rte_ring: head and tail indices</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <svg viewBox="0 0 640 170" role="img" aria-label="Ring with producer and consumer indices"></svg>
+      </div>
+    </div>
+
+    <h2 id="animator">Animator: continuous animation</h2>
+    <p>Packets arrive at a configurable rate; the lcore polls in bursts of up to 4. Raise the rate above the service rate and the ring fills, then drops (red).</p>
+    <div class="widget" id="flow-anim">
+      <div class="widget-head"><span class="widget-title">Polling a queue in bursts</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <svg viewBox="0 0 640 150" role="img" aria-label="Packets flowing into a ring and being polled"></svg>
+        <div class="stat-row">
+          <div class="stat"><div class="stat-label">received</div><div class="stat-value" id="st-rx">0</div></div>
+          <div class="stat"><div class="stat-label">processed</div><div class="stat-value" id="st-done">0</div></div>
+          <div class="stat"><div class="stat-label">dropped</div><div class="stat-value" id="st-drop">0</div></div>
+          <div class="stat"><div class="stat-label">ring fill</div><div class="stat-value"><span id="st-fill">0</span><span class="stat-unit">/ 8</span></div></div>
+        </div>
+      </div>
+      <div class="controls">
+        <span class="grow"></span>
+        <label>arrival rate <input type="range" id="rate" min="1" max="12" value="4"> <output id="rate-out"></output></label>
+      </div>
+    </div>
+
+    <h2 id="quiz">Quiz</h2>
+    <div class="quiz" data-quiz>
+      <div class="quiz-head">Check your understanding</div>
+      <div class="q" data-answer="1" data-explain="An 84-byte wire slot at 10 Gbit/s lasts 67.2 ns.">
+        <div class="q-text">How long does one minimum-size frame occupy a 10 GbE link?</div>
+        <div class="q-opts">
+          <button class="q-opt">6.7 ns</button>
+          <button class="q-opt">67.2 ns</button>
+          <button class="q-opt">672 ns</button>
+        </div>
+      </div>
+      <div class="q" data-answer="0" data-explain="<code>--file-prefix</code> names the runtime directory and hugepage files.">
+        <div class="q-text">Which option lets two primaries run side by side?</div>
+        <div class="q-opts">
+          <button class="q-opt"><code>--file-prefix</code></button>
+          <button class="q-opt"><code>--no-pci</code></button>
+        </div>
+      </div>
+      <div class="controls"><button class="btn small quiz-reset" type="button">Reset quiz</button></div>
+    </div>
+    <div id="quiz-js"></div>
+
+    <h2 id="exercises">Exercises</h2>
+    <div class="exercise">
+      <div class="box-title">Exercise 1 <span class="tag easy">easy</span></div>
+      <p>Run <code>hello_dpdk</code> with three <code>--vdev=net_null</code> devices. What does it print?</p>
+      <details><summary>Hint</summary><p>Each <code>--vdev</code> creates one port.</p></details>
+      <details><summary>Solution</summary><p>It prints <code>3 ports</code>. See <code>code/solutions/ex1.txt</code>.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 2 <span class="tag medium">medium</span></div>
+      <p>Change the burst size in the Animator demo and explain the effect on drops.</p>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 3 <span class="tag stretch">stretch</span></div>
+      <p>Write a two-lcore pipeline connected by an <code>rte_ring</code>.</p>
+    </div>
+
+    <h2 id="misc">Other bits</h2>
+    <div class="grid-2">
+      <div class="box"><div class="box-title">Plain box</div><p>Neutral container, <kbd>Ctrl</kbd>+<kbd>C</kbd> stops testpmd.</p></div>
+      <div class="box"><div class="box-title">Key terms</div><p>An <span class="key-term">lcore</span> is an EAL thread.</p></div>
+    </div>
+    <details><summary>Peek ahead: full source (collapsible)</summary>
+<pre><code class="language-c">for (;;) {
+	nb = rte_eth_rx_burst(0, 0, pkts, 32);
+	rte_pktmbuf_free_bulk(pkts, nb);
+}</code></pre>
+    </details>
+    <div class="card-grid">
+      <a class="card" href="#"><div class="card-num">01</div><div class="card-title">What Is a Packet, and Why Bypass the Kernel?</div><div class="card-desc">Line rate arithmetic and the five techniques.</div></a>
+      <a class="card" href="#"><div class="card-num">02</div><div class="card-title">Building DPDK and Your First Application</div><div class="card-desc">meson, pkg-config, main() and EAL options.</div></a>
+    </div>
+
+    <section class="summary-box">
+      <div class="box-title">Summary</div>
+      <ul><li>Colours come from CSS variables, so diagrams follow the theme.</li><li>Steppers replay steps from a reset state, so each step only applies its own change.</li></ul>
+    </section>
+
+    <section class="references">
+      <h2 id="references">References</h2>
+      <ol>
+        <li>DPDK Programmer's Guide, Ring Library. <span class="src-path">doc/guides/prog_guide/ring_lib.rst</span></li>
+        <li><span class="src-path">lib/ring/rte_ring.h</span></li>
+      </ol>
+    </section>
+
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <span class="placeholder"></span>
+      <a class="index" href="../index.html">Course index</a>
+      <a class="next" href="#"><span class="dir">Next &rarr;</span><span class="ttl">01 &middot; Why kernel bypass</span></a>
+    </nav>
+  </main>
+</div>
+<footer class="site-footer">DPDK from Zero to Expert &middot; DPDK 26.11</footer>
+
+<script src="course.js"></script>
+<script>
+CourseJS.ready(function () {
+  var S = CourseJS.svg;
+
+  /* ---------- Stepper demo: ring of 8 ---------- */
+  (function () {
+    var root = document.getElementById('ring-stepper');
+    var svg = root.querySelector('svg');
+    var N = 8, slots = [], vals = [];
+    for (var i = 0; i < N; i++) {
+      slots.push(S.rect(svg, 40 + i * 70, 50, 60, 44, 'svg-slot svg-fade', { rx: 4 }));
+      vals.push(S.text(svg, 70 + i * 70, 73, '', 'svg-label center mono'));
+      S.text(svg, 70 + i * 70, 112, String(i), 'svg-label center small muted');
+    }
+    var prodArrow = S.arrow(svg, 0, 18, 0, 46, 'c1');
+    var prodLbl = S.text(svg, 0, 12, 'prod.head', 'svg-label small center bold');
+    var consArrow = S.arrow(svg, 0, 150, 0, 120, 'c2');
+    var consLbl = S.text(svg, 0, 162, 'cons.head', 'svg-label small center bold');
+    function setIdx(arrow, lbl, idx, top) {
+      var x = 70 + (idx % N) * 70;
+      arrow.setAttribute('d', top ? 'M' + x + ',18 L' + x + ',46' : 'M' + x + ',150 L' + x + ',120');
+      lbl.setAttribute('x', x);
+    }
+    function st(ctx) { return ctx.data; }
+    function enq(n) {
+      return function (ctx) {
+        var d = st(ctx);
+        for (var k = 0; k < n; k++) { var s = d.prod % N; d.items[s] = 'p' + d.prod; d.prod++; }
+        draw(ctx);
+      };
+    }
+    function deq(n) {
+      return function (ctx) {
+        var d = st(ctx);
+        for (var k = 0; k < n; k++) { d.items[d.cons % N] = null; d.cons++; }
+        draw(ctx);
+      };
+    }
+    function draw(ctx) {
+      var d = st(ctx);
+      for (var i = 0; i < N; i++) {
+        slots[i].setAttribute('class', 'svg-slot svg-fade' + (d.items[i] ? ' full' : ''));
+        vals[i].textContent = d.items[i] || '';
+      }
+      setIdx(prodArrow, prodLbl, d.prod, true);
+      setIdx(consArrow, consLbl, d.cons, false);
+    }
+    new CourseJS.Stepper(root, {
+      interval: 1600,
+      reset: function (ctx) { ctx.data.prod = 0; ctx.data.cons = 0; ctx.data.items = []; draw(ctx); },
+      steps: [
+        { caption: 'Empty ring: <code>prod.head == cons.head == 0</code>. Count = prod &minus; cons = 0.' },
+        { caption: '<code>rte_ring_enqueue_burst(r, objs, 3, NULL)</code> stores 3 pointers and moves the producer index by 3.', run: enq(3) },
+        { caption: 'The consumer dequeues 2. Its index moves; the slots are free again.', run: deq(2) },
+        { caption: 'Enqueue 6 more. The producer index passes the end of the array and <em>wraps</em>: slot = index &amp; mask.', run: enq(6),
+          predict: { question: 'After enqueueing 6 more objects, which slot does <code>prod.head</code> point at?',
+            options: ['slot 1', 'slot 9', 'the enqueue fails'], answer: 0,
+            explain: 'prod = 3 + 6 = 9, and 9 &amp; 7 = 1. Indices are free-running 32-bit counters; only the slot is masked.' } },
+        { caption: 'Count = prod &minus; cons = 9 &minus; 2 = 7. With capacity 7 (size 8 minus one) the ring is now full.', run: function (ctx) { draw(ctx); } }
+      ]
+    });
+  })();
+
+  /* ---------- Animator demo: arrivals into a ring, burst polling ---------- */
+  (function () {
+    var root = document.getElementById('flow-anim');
+    var svg = root.querySelector('svg');
+    S.box(svg, 10, 50, 90, 50, 'NIC', 'c4');
+    var ringBox = S.rect(svg, 180, 45, 290, 60, 'svg-box c5');
+    S.text(svg, 325, 125, 'Rx ring (8 slots)', 'svg-label small center');
+    var core = S.box(svg, 540, 50, 90, 50, 'lcore', 'c1');
+    S.arrow(svg, 100, 75, 176, 75, 'c4');
+    S.arrow(svg, 470, 75, 536, 75, 'c5');
+    var layer = S.group(svg);
+    var rate = document.getElementById('rate');
+    CourseJS.bindRange(rate, '#rate-out', function (v) { return v + ' pkt/s'; });
+    var BURST = 4, POLL = 1.0, CAP = 8;
+    var state;
+    function slotX(i) { return 205 + i * 35; }
+    function layout() {
+      state.ring.forEach(function (p, i) { p.tx = slotX(i); p.ty = 75; });
+    }
+    var anim = new CourseJS.Animator({
+      root: root,
+      autoplay: 'visible',
+      onReset: function () {
+        S.clear(layer);
+        state = { acc: 0, poll: 0, flying: [], ring: [], gone: [], rx: 0, done: 0, drop: 0 };
+        ringBox.classList.remove('svg-highlight');
+        update();
+      },
+      onFrame: function (dt) {
+        state.acc += dt * parseFloat(rate.value);
+        while (state.acc >= 1) {
+          state.acc -= 1; state.rx++;
+          var p = S.packet(layer, 60, 75, 24, 14);
+          p.vx = 0;
+          if (state.ring.length < CAP) { state.ring.push(p); layout(); }
+          else { p.body.classList.add('dropped'); p.dropT = 0; state.gone.push(p); state.drop++; }
+        }
+        state.poll += dt;
+        if (state.poll >= POLL) {
+          state.poll = 0;
+          var burst = state.ring.splice(0, BURST);
+          burst.forEach(function (p, k) { p.tx = 585; p.ty = 75; p.done = true; p.delay = k * 0.06; });
+          state.gone = state.gone.concat(burst);
+          state.done += burst.length;
+          layout();
+          core.rect.classList.add('svg-highlight');
+          setTimeout(function () { core.rect.classList.remove('svg-highlight'); }, 180);
+        }
+        // move packets toward their targets
+        state.ring.concat(state.gone).forEach(function (p) {
+          if (p.dropT != null) {
+            p.dropT += dt;
+            S.moveTo(p, p._x + 40 * dt, p._y + 70 * dt);
+            p.style.opacity = Math.max(0, 1 - p.dropT);
+            return;
+          }
+          if (p.delay > 0) { p.delay -= dt; return; }
+          var k = Math.min(1, dt * 8);
+          S.moveTo(p, CourseJS.lerp(p._x, p.tx, k), CourseJS.lerp(p._y, p.ty, k));
+          if (p.done && Math.abs(p._x - p.tx) < 2) p.style.opacity = 0;
+        });
+        state.gone = state.gone.filter(function (p) {
+          var dead = p.style.opacity === '0';
+          if (dead) p.remove();
+          return !dead;
+        });
+        ringBox.classList.toggle('svg-highlight', state.ring.length >= CAP);
+        update();
+      }
+    });
+    function update() {
+      document.getElementById('st-rx').textContent = CourseJS.fmt(state.rx);
+      document.getElementById('st-done').textContent = CourseJS.fmt(state.done);
+      document.getElementById('st-drop').textContent = CourseJS.fmt(state.drop);
+      document.getElementById('st-fill').textContent = state.ring.length;
+    }
+    window.__flowAnim = anim;
+  })();
+
+  /* ---------- Quiz built from JS ---------- */
+  CourseJS.quiz('#quiz-js', [
+    { q: 'What does <code>rte_eal_init()</code> return on success?', options: ['0', 'The number of parsed EAL arguments', 'The number of lcores'], answer: 1,
+      explain: 'Shift argc/argv by the return value to reach your application options.' }
+  ], 'Quiz built with CourseJS.quiz()');
+});
+</script>
+</body>
+</html>

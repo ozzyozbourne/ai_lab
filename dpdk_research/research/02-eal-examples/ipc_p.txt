@@ -1,0 +1,7 @@
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch02ipc/mp_socket
+EAL: Selected IOVA mode 'PA'
+[P] memzone va=0x1021fdf40 iova=0x168ffdf40
+[P] memzone now: overwritten by secondary pid 20161

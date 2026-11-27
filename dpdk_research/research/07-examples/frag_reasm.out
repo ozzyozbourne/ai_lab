@@ -1,0 +1,10 @@
+IPFRAG: rte_ip_frag_table_create: allocated of 131200 bytes at socket -1
+original: pkt_len=4028 segs=1 refcnt=1
+fragments: 3, original refcnt now 4 (indirect mbufs point into it)
+  frag 0: pkt_len=1500 segs=2 off=   0 MF=1 cksum=0x0000
+  frag 1: pkt_len=1500 segs=2 off=1480 MF=1 cksum=0x0000
+  frag 2: pkt_len=1068 segs=2 off=2960 MF=0 cksum=0x0000
+  feed frag 2 -> pending
+  feed frag 0 -> pending
+  feed frag 1 -> REASSEMBLED
+reassembled: pkt_len=4028 nb_segs=6 (chained, not copied)
